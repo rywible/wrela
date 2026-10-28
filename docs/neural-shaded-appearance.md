@@ -6816,3 +6816,191 @@ Original engine source law reused; existing
 [metric/method citations](citations.md#neural-reconstruction-instrument) apply.
 Evidence on Pop!_OS: build/neural-evidence/g4-source-density-v1.
 Manifest SHA-256: `20b390687a314d3f54761f447500eac1ad06b5267bb2cf18c6a7fb400ab2c1b3`.
+
+## Hardware response grids: exact silhouettes, insufficient material fidelity
+
+**Decision: retire the tested uniform response grids for G4.** An 11³ texture
+reduces the one normal/depth cache by about 20× but passes 0/24 shaded cases.
+A 22³ texture consumes eight times as many bytes and passes only 2/24.
+One targeted change to raw gradient/signed-distance interpolation is slightly
+worse. Near-cache query time cannot compensate for the rendered quality loss.
+No training or new references; runtime restored.
+
+First complete comparison **7.98 minutes**;
+decision **12.89 minutes**, conservatively timed from parent
+37102f0b. One follow-up; no second resolution sweep. All G1–G7 unchanged/unmet.
+
+### Preserve every surface and change only response storage
+
+The density experiment lost specific surfaces. This test retains all 26,560
+source cards, original per-card seeds/positions, authored cutouts, sample depth
+and source identity, and all 7,392 wood triangles. The 4×4 visibility samples and
+existing packed visibility representation remain exact. Only the source card's
+material normal and crown-depth response are approximated.
+
+At initialization, the GPU evaluates the exact authored crown field at each
+grid point over the original source bake cube, centred at
+(0, 7.52653408, 0) with half extent 11.4063625. The original implementation stores
+unit normal XYZ and nonnegative crown depth in Rgba16Float. At the selected
+source card's exact centre, a hardware trilinear sample returns the response;
+the normal is normalized and encoded to the existing Oct32 convention before
+the unchanged source material and directional lighting functions consume it.
+
+Grid vertices include both cube endpoints. Query coordinates map those vertices
+to texel centres, following the same Texture3d sampling convention as the
+engine's [colour-grading table](../engine/paint.wrela). This is ordinary
+conventional partial evaluation of [the authored source field](../engine/plant.wrela),
+not a neural decoder or optical volume. No rendered reference, baked RGB or
+teacher view is an input. Source blend remains the actual 1.10 supplied by the
+verified runtime nodes.
+
+| Grid | Texels | Stored bytes | Exact per-card response cache / grid |
+|---|---:|---:|---:|
+| 11³ | 1,331 | 10,648 | 19.96× |
+| 22³ | 10,648 | 85,184 | 2.49× |
+
+The ratio is for the 212,480-byte **normal/depth cache alone**. Coverage,
+visibility, geometry/common resources and other allocations remain charged
+below; it is not G4 appearance compression. There is no exact-field fallback
+hidden behind the grid. Static grid cooking is setup work, excluded from steady
+frame timing, but its decoded texture and setup peak are counted. Source-edit
+rebuild latency is unmeasured.
+
+Native cache, compact exact cache, compact full source-field evaluation and the
+frozen optical fit remain controls. All receive the same useful source program,
+geometry, masks, lighting and sampling information. The grid is itself an
+equally informed conventional alternative.
+
+### One targeted interpolation follow-up
+
+The initial 11³/22³ renders retain exact alpha but lose 6.337/1.632 dB versus
+the matching source. To test whether nonlinear material conversion before
+interpolation caused the loss, keep grid sizes, format, bounds and queries fixed,
+but store the source field's unnormalized weighted gradient and signed distance.
+Normalize the gradient and clamp negative distance into crown depth only after
+hardware sampling. There is no optimizer, refit, extra source sample or new truth.
+
+The follow-up loses 6.841/1.759 dB and passes 0/24 and 1/24 respectively.
+This rules out that simple coefficient change as the needed fix for this tested
+implementation. It does not prove that every possible spatial interpolation
+scheme or asset family is unsuitable. A further uniform-resolution sweep is
+not justified by the combined budget: 22³ is already eight times the compact
+payload and still fails broadly; 44³ would require 681,472 texture bytes before
+any other resource, more than three times the exact response cache.
+
+### Shaded quality, including silhouettes
+
+Same completed AA64 references: static 64-pixel tree, two public views, four
+analytic lights and three backgrounds. Exposure 0.62, ACES→sRGB, FLIP 67 ppd
+and AlexNet LPIPS v0.1 unchanged.
+
+| Method | Shaded gates /24 | Mean PSNR dB | Mean FLIP | Mean LPIPS |
+|---|---:|---:|---:|---:|
+| Native source | 24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Packed exact response cache | 24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Packed exact source field | 24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Frozen optical | 8 | 40.127682 | 0.01234846 | 0.00188937 |
+| 11³ normal/depth | 0 | 33.958585 | 0.04768960 | 0.01062023 |
+| 22³ normal/depth | 2 | 38.663742 | 0.02221810 | 0.00342961 |
+| 11³ gradient/distance | 0 | 33.455339 | 0.05354465 | 0.01178142 |
+| 22³ gradient/distance | 1 | 38.537242 | 0.02330651 | 0.00344840 |
+
+Every case must meet PSNR loss≤0.25 dB and FLIP/LPIPS≤1.05× with the unchanged
+1e-4 floor. Counts agree against current native and compact exact source
+controls. Better means do not excuse failed individual cases.
+
+All 32 grid alpha captures match the exact source byte-for-byte. Consequently
+their silhouette diagnostics remain the source's: mean coverage MAE 0.01005954,
+worst boundary-distance p99 2 pixels, worst half-coverage precision/recall
+0.983065/0.994007. All method/view coverage sequences are light-independent.
+These static diagnostics do not establish G3's motion/strand gates.
+
+The three checked original control paths reproduce their 24 previously sealed
+RGBA captures exactly. The quality loss is confined to material response in
+these renders; visibility is unchanged. No material-moment proxy is treated as
+a rendering success.
+
+### Complete AMD runtime and actual residency
+
+AMD RADV RENOIR 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Wrela 0.9.0/compiler de9b81e5. Solo Pop!_OS,
+sequential GPU profiles, no overlapping CPU scoring. 64×64 output,
+60 warmup and 240 measured frames; views and lights change every frame.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | CPU p99 ms | Completion p95 / p99 ms |
+|---|---:|---:|---:|---:|---:|
+| Native source | 0.27440 / 0.39532 | 1.08051 / 1.08779 | 0.68525 | 4.49149 / 4.76491 |
+| Packed exact response cache | 0.34600 / 0.47376 | 1.21102 / 1.27494 | 0.75075 | 4.49536 / 4.78804 |
+| Packed exact source field | 0.64036 / 0.75400 | 1.52134 / 1.58237 | 0.68220 | 4.68555 / 4.83618 |
+| Frozen optical | 0.06860 / 0.07856 | 0.27220 / 0.27508 | 1.02305 | 4.81106 / 4.93624 |
+| 11³ normal/depth | 0.37112 / 0.48528 | 1.22951 / 1.26261 | 0.63500 | 4.63990 / 4.89112 |
+| 22³ normal/depth | 0.36056 / 0.47876 | 1.23669 / 1.26564 | 0.61500 | 4.55079 / 4.64800 |
+| 11³ gradient/distance | 0.35836 / 0.47392 | 1.18704 / 1.26359 | 0.74805 | 4.60161 / 4.81964 |
+| 22³ gradient/distance | 0.34920 / 0.53508 | 1.19242 / 1.25407 | 0.77465 | 6.07521 / 6.22417 |
+
+Complete spans include exact source placement/cutout evaluation, packed
+depth/identity ordering, source-centre decoding and grid query, full material
+lighting, wood, updates and compositing. Frozen sorting is included. Grid
+cooking is static asset setup as declared above, not omitted per-frame decoding.
+
+These short timings are descriptive, not paired statistical improvements.
+The original 22³ path is close to the exact cached source in saturated and paced
+GPU time, while much faster than direct full-field evaluation. It still fails
+22 of 24 quality cases. Raw-gradient 22³ has a worse completion tail; no stable
+tail equivalence is asserted. Completion includes host/queue/notification
+overhead rather than display-photon latency.
+
+| Method | Engine appearance + scratch B | All requested live / peak B | Actual DRM VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|---:|
+| Native source | 1,466,068 | 1,875,668 / 1,892,052 | 17,670,144 / 9,936,896 | 487,200,768 |
+| Packed exact response cache | 633,460 | 1,043,060 / 1,059,444 | 17,670,144 / 10,035,200 | 489,246,720 |
+| Packed exact source field | 420,988 | 830,588 / 846,972 | 17,408,000 / 10,051,584 | 488,088,576 |
+| Frozen optical | 316,540 | 726,140 / 742,524 | 17,367,040 / 9,838,592 | 473,530,368 |
+| 11³ normal/depth | 431,628 | 841,228 / 857,612 | 17,682,432 / 9,936,896 | 488,664,064 |
+| 22³ normal/depth | 506,164 | 915,764 / 932,148 | 17,698,816 / 9,936,896 | 488,910,848 |
+| 11³ gradient/distance | 431,628 | 841,228 / 857,612 | 17,416,192 / 9,936,896 | 488,002,560 |
+| 22³ gradient/distance | 506,164 | 915,764 / 932,148 | 17,682,432 / 10,051,584 | 489,262,080 |
+
+Engine appearance/scratch excludes the identical 65,536-byte output. All
+requested totals additionally count executor upload/uniform resources, caches,
+scratch and inactive/fallback objects. Controls acquire an 8-byte inactive 3D
+texture; this overhead is included in their current measurements. No new
+hardware-local shared storage is declared.
+
+Compared with the exact packed cache, 11³ saves 201,832 requested live bytes
+and 22³ saves 127,296, approximately 19.35% and 12.20%. Both use more memory
+than the exact full-field control. The one-component ratio above does not
+become a 16× appearance-residency result after all resources are included.
+
+Actual DRM/PSS observations cover the whole client and observable driver/cache
+overhead. They do not attribute physical pages to an asset or establish a
+transient physical peak. Overlapping UMA pools must not be summed.
+
+### Preservation and next architecture bet
+
+The initial build passed a CPU slice where dispatch required a GPU-buffer
+handle. That build failure, source and installer are preserved; it was repaired
+before measurements. The first rendered variants and the unsuccessful
+gradient/distance follow-up are all retained.
+
+Eight variants, 64 shaded captures, complete cost/allocation/residency records,
+source archives and comparison files are sealed. Runtime is restored exactly
+to 37102f0b; the retained source-guided reconstruction is unaffected. Builds and
+source checks plus focused alpha/prior-control parity suffice; no broad
+unchanged machinery audit or restored-runtime rerun is repeated.
+
+**Next architecture bet:** extend the retained source-guided reconstruction to
+spatially varying radiance, using exact authored coverage and local coefficients
+recovered from observations. Start with the equally informed conventional
+coefficient method and a consequential rendered counterexample to the present
+three-global-colour assumption. This follows an actual demonstrated gain.
+G4 remains unresolved; uniform material-response grids and further blind
+material-moment training are not the next step.
+
+All G1–G7 thresholds and frozen models remain unchanged. No unseen-family,
+footprint 8–512, dynamic-edit, motion, richness, sustained latency or global
+leadership claim. Existing [metric citations](citations.md#neural-reconstruction-instrument)
+apply; no external implementation or model imported.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-response-grid-v1.
+Manifest SHA-256: `ee6b70a01567ab7f25a2dbe606a1e20fe67b0b441dda385da9c2227b91dd36c3`.

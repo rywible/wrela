@@ -2838,3 +2838,24 @@ No follow-up, training or new reference.64captures,16field/cache exact pairs,
 24prior-control exact images. Initial cache-tail guard defect preserved/fixed
 before reduced cache runs. Runtime restored; existing engineLOD unchanged.
 [Full measurements and architectural decision](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4).
+
+### AMD hardware response grid retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent37102f0b plus archived variants.
+Same64px tree,2views×4lights×3backgrounds, completedAA64references.
+11³/22³Rgba16Float normal-depth grids:10,648/85,184B, PSNR33.95858/38.66374dB,
+FLIP0.04768960/0.02221810, LPIPS0.01062023/0.00342961, gates0/24and2/24.
+One raw-gradient/signed-distance follow-up:PSNR33.45534/38.53724dB,
+gates0/24and1/24. All32grid alpha images exactly match source.
+22³normal-depth fullGPUmedian/p95 0.36056/0.47876ms versus exactcache
+0.34600/0.47376ms; pacedp95/p99 1.23669/1.26564 versus1.21102/1.27494ms.
+Live/peak915,764/932,148B versus1,043,060/1,059,444B. Grid11live841,228B.
+Actual22³DRM VRAM/GTT17,698,816/9,936,896B; PSS488,910,848B, whole-client.
+Source geometry, cutouts, wood, visibility, gridquery, shading, updates and
+composite charged. Static gridcooking excluded from steadytime but storage/peak
+included; dynamicedit rebuild unmeasured. No paired or16×appearance claim.
+First comparison7.98min; decision12.89min.
+Onefollow-up, no training/newreference. Failedbinding/build preserved.
+64captures,24prior controls exact; runtime restored.
+[Full measurements and decision](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity).

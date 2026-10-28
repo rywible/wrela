@@ -18,21 +18,22 @@
 
 ## Immediate milestone
 
-[Direct source density](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4)
-is retired as the G4 surface representation. Existing half/quarter density LOD
-draws fewer source cards directly, but both pass0/24 shaded cases and lose
-4.05/6.82dB. Source-field GPU medians improve only7%/11%, with no allocation
-saving; cached variants save10%/15% requested live bytes while failing quality.
-Runtime restored. No training or new references.
+[Hardware response grids](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity)
+are retired. Exact source visibility plus11³/22³normal-depth textures passes
+0/24and2/24shaded gates; raw-gradient/signed-distance follow-up passes0/24and1/24.
+22³normal-depth GPU0.36056ms versus exactcache0.34600ms, but1.632dBloss.
+The11³payload is about20×smaller than one responsecache; complete requested
+residency improves only19.35%, and quality fails. Runtime restored.
 
 The retained [source-guided material basis](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family)
-remains a useful conventional control for its narrow analytic family. It does
-not establish G4. Frozen appearance remains8/24; G1–G7 unchanged/unmet.
+is the next useful architecture to extend: exact authored coverage plus local
+observed-radiance coefficients for spatially varying shading. First expose a
+consequential counterexample to its three-global-colour assumption and compare
+equally informed conventional coefficients. No blind fitting.
 
-Next patches must preserve source coverage and local depth, not merely total
-area, and reduce the visibility working set as well as primitive count. Charge
-material/scratch/fallback together and reject an infeasible budget before fitting.
-Use the equally informed conventional patch representation first.
+G4 remains unmet; frozen optical still8/24. Direct surface thinning and uniform
+response grids do not provide the joint quality/runtime/residency result.
+G1–G7 remain unchanged/unmet.
 
 ## Evidence recorded so far
 
@@ -2801,3 +2802,15 @@ full0.34564ms/1,043,052B, but6.82dBloss. ActualDRM/PSS retained separately.
 Retire area-preserving thinning forG4; existing engineLOD unchanged.
 [Joint quality/runtime/memory evidence](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4).
 Manifest: `20b390687a314d3f54761f447500eac1ad06b5267bb2cf18c6a7fb400ab2c1b3`.
+
+### Hardware response grid checkpoint (2026-10-28)
+
+First assessment7.98min; decision12.89min.
+One coefficient follow-up, zero training/new references. Eight variants/64captures
+preserved. All32grid alpha images exact;24prior controls exact.
+11³/22³normal-depth0/24and2/24; gradient/distance0/24and1/24.
+22³normal-depth0.36056ms/915,764requestedliveB versus exactcache
+0.34600ms/1,043,060B, but1.632dBloss. No jointG4advantage.
+Runtime restored; next extend the retained source-guided radiance basis.
+[Full joint evidence](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity).
+Manifest: `ee6b70a01567ab7f25a2dbe606a1e20fe67b0b441dda385da9c2227b91dd36c3`.
