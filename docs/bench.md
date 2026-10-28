@@ -2722,3 +2722,22 @@ First comparison6.23min; decision22.89min.
 Two follow-ups,2,400 corrective steps/head, no new references. Actual DRM/PSS,
 all costs, source/decoder checks and failed results preserved. Runtime restored.
 [Full comparison and correction](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
+
+### AMD source contributor routing retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent bf9314f1 plus archived variants.
+Existing 64-pixel tree, two views × four lights × three backgrounds.
+Owner/spatial masks pass 24/24 shaded gates with exact source alpha but cost
+0.69940 / 0.73768 ms versus stable full field 0.63848 ms. One follow-up applies
+direct summation fairly: full 0.59024 ms, owner 0.66040 ms, spatial 0.69468 ms;
+requested live 830,580 / 830,924 / 838,748 bytes. Matched cached source:
+0.34460 ms / 1,043,052 bytes; native source: 0.28416 ms / 1,875,660 bytes.
+Direct full-field paced GPU p95/p99 1.82223 / 2.03297 ms versus matched cache
+1.22550 / 1.26566 ms. No paired or sustained tail improvement claimed.
+Frozen fit 0.06840 ms / 726,132 bytes still passes only 8/24.
+Actual DRM/PSS snapshots, all requested allocations, full frame costs and failed
+results retained. First comparison 3.60 minutes;
+decision 13.82 minutes. No training or new references.
+Retire masks, restore runtime; no joint G4 advantage.
+[Full comparison](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost).

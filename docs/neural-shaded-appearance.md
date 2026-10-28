@@ -5911,3 +5911,176 @@ apply; fitting uses pinned Torch 2.5.1 CPU, with no imported model weights.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-adaptive-response-v1.
 Manifest SHA-256: `f5c1852086f181f7ea8c5055b8fd62c0e97614ac9c8d9499668ec479789ce394`.
+
+## Source contributor routing: preserve quality, retire the lookup cost
+
+**Decision: change representation.** Retire source-point contributor masks as a
+G4 path. Both masks pass all 24 shaded comparisons, but cost more time and memory
+than evaluating the full source field. One targeted follow-up applies bounded
+direct exponential summation to both masks and the full-field control; it does
+not reverse that conclusion. The second permitted follow-up is unused.
+
+The first six-method assessment completed in **3.60 minutes**;
+the decision, including the follow-up and focused GPU checks, took
+**13.82 minutes**, within the two-hour limit. No training,
+reference expansion or frozen-weight changes. Solo on Pop!_OS, AMD measurements.
+Parent: bf9314f19ed3964195e7fdb8571283caa0db1cdf.
+
+### What this tests
+
+Use the same verified authored clumps, 26,560 canonical source cards, exact leaf
+geometry/cutouts, source albedo and wood as the conventional controls. The field
+blend is **1.100000023841858**, verified from current GPU metadata and the existing
+geometry export at row 4,w. Leaf coverage at row 1,w is not the blend.
+The [previous target correction](#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff)
+is retained; no new reference system was needed.
+
+A source compiler selects clumps whose exponential contribution is significant
+at the canonical source points. It starts with every contributor within exponent
+8 of the nearest plus the owning clump, unions those masks over each region, then
+adds the largest omitted contributor at the worst violating point until float64
+normal/depth errors are at most 0.1 degree / 0.0001 metre. It uses no reference RGB,
+optimizer or fitted material responses.
+
+- **Owner masks:** one 44-bit mask per owner, 352 bytes total. Mean 36.372 of 44
+  source functions remain; some masks still select all 44.
+- **Spatial masks:** a world-space median tree with at most 128 source points per
+  leaf, 511 nodes / 256 leaves, 8,176 bytes. Mean 34.066 functions remain; the query
+  reads nine nodes per point.
+
+The decoder evaluates the selected analytic functions in original source order.
+The first implementation uses the source's stabilized exponential union.
+The follow-up uses direct weights exp(-k*d), then normalizes the weighted normal
+and computes depth from log(sum)/k. For this source, each exponent is at most
+2.088864 and the total sum at most 355.333. Source points lie inside their owner,
+so their sum is at least one. Initialization guards positive blend and the size
+bound; extreme sums retain the original stable fallback, whose code/data cost
+is included. This simplification is applied to the unmasked control as well.
+
+These are finite compiled-source-domain bounds, not proof for arbitrary points,
+new assets or deformed geometry. Changed source points require recompilation.
+
+### Shaded quality and silhouettes
+
+Same completed AA64 references, 64×64 output, two public views, four lights,
+three compositing backgrounds. Exposure 0.62, existing tone/display conversion,
+FLIP at 67 pixels/degree and pinned LPIPS v0.1. The 24 comparisons are not 24
+independent scenes. Per-case gates use the matched packed-cache conventional
+control: PSNR loss at most 0.25 dB; FLIP and LPIPS at most 1.05 times the control,
+with the unchanged 1e-4 denominator floor. Native-source comparisons also pass
+24/24 for all new conventional variants. A mean score does not replace these gates.
+
+| Method | Mean FLIP | Mean LPIPS | Mean PSNR dB |
+|---|---:|---:|---:|
+| Native cached source | 0.013001932 | 0.002491044 | 40.295971 |
+| Packed visibility + exact cache | 0.013003201 | 0.002490588 | 40.295900 |
+| Packed visibility + full stable field | 0.013003201 | 0.002490588 | 40.295900 |
+| Frozen fitted appearance | 0.012348465 | 0.001889372 | 40.127682 |
+| Stable owner masks | 0.013003533 | 0.002490619 | 40.295885 |
+| Stable spatial masks | 0.013003611 | 0.002490677 | 40.295893 |
+| Direct full field | 0.013003193 | 0.002490591 | 40.295900 |
+| Direct owner masks | 0.013003537 | 0.002490622 | 40.295885 |
+| Direct spatial masks | 0.013003609 | 0.002490676 | 40.295892 |
+
+All five routing/direct variants preserve source alpha exactly in all eight
+outputs each. Coverage is light-independent. Worst-view boundary p99 remains
+2 pixels, precision at 0.5 coverage 0.983065 and recall 0.994007. Preserving that
+silhouette does not establish G3: it retains the conventional sampling error,
+and there is no motion or camera-cut test in this fixture.
+
+Focused GPU captures check all 26,560 source outputs for each of the five new
+decoders. Maximum GPU/CPU component disagreement is 5.836e-5. Actual owner/spatial
+normal errors reach 0.071541 / 0.095379 degree. Spatial depth reaches
+**0.000100255013 metre**, exceeding the strict float64 compiler threshold by
+2.55e-7 metre after GPU arithmetic. That numerical excess is recorded; the bound
+is not silently certified for the GPU. All rendered gates still pass.
+
+### Complete measured runtime and memory
+
+AMD RADV RENOIR, PCI 1002:164c, Ryzen 5 5500U; Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0, compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Sequential GPU runs, no overlapping
+training or CPU scoring. Each profile uses 240 measured frames after 60 warmup;
+the allocation/completion observer uses 300 after 60.
+
+| Method | Shaded gates /24 | GPU span median / p95 ms | Paced GPU p95 / p99 ms | CPU p95 ms | Live / peak requested bytes |
+|---|---:|---:|---:|---:|---:|
+| Native cached source | 24 | 0.28416 / 0.42008 | 1.08730 / 1.09024 | 0.66000 | 1,875,660 / 1,892,044 |
+| Packed visibility + exact cache | 24 | 0.34460 / 0.47144 | 1.22550 / 1.26566 | 0.61000 | 1,043,052 / 1,059,436 |
+| Packed visibility + full stable field | 24 | 0.63848 / 0.70132 | 1.46797 / 1.51647 | 0.67025 | 830,580 / 846,964 |
+| Frozen fitted appearance | 8 | 0.06840 / 0.08288 | 0.27028 / 0.27205 | 0.92000 | 726,132 / 742,516 |
+| Stable owner masks | 24 | 0.69940 / 0.78316 | 1.52721 / 1.59483 | 0.64500 | 830,924 / 847,308 |
+| Stable spatial masks | 24 | 0.73768 / 0.89316 | 1.58612 / 1.63573 | 0.66525 | 838,748 / 855,132 |
+| Direct full field | 24 | 0.59024 / 0.64212 | 1.82223 / 2.03297 | 0.65500 | 830,580 / 846,964 |
+| Direct owner masks | 24 | 0.66040 / 0.69548 | 1.79615 / 1.91265 | 0.67000 | 830,924 / 847,308 |
+| Direct spatial masks | 24 | 0.69468 / 0.70616 | 1.57971 / 1.63831 | 0.64525 | 838,748 / 855,132 |
+
+The complete source path includes placement, mask traversal/field evaluation or
+cached response, visibility rebuilt each frame, the exact expanded 7,392-triangle
+wood, authored material lighting, resolve and compositing. Source methods need
+no optical sort. The frozen path includes optical decoding/projection, CPU depth
+sorting, indexed wood, ordered blending, resolve and compositing. View/light
+updates, uploads and CPU command submission are measured. Static initialization
+is outside steady frame timing; its allocation peak is retained. Dynamic source
+edits and recompilation are unmeasured, so this is not a complete dynamic-game
+cost claim.
+
+Direct full-field saturated time is 0.59024 ms versus stable 0.63848 ms in these
+single runs, but its paced p95/p99 are worse. It still loses to the matched exact
+cache at 0.34460 ms and native cached source at 0.28416 ms. No paired repeat or
+sustained tail claim is made, and no production optimization is promoted.
+
+| Method | Appearance + scratch, excluding common output B | DRM resident VRAM / GTT B | Browser group PSS B | Completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Native cached source | 1,466,060 | 17,670,144 / 9,936,896 | 483,094,528 | 4.65603 / 4.95025 |
+| Packed visibility + exact cache | 633,452 | 17,670,144 / 10,035,200 | 486,791,168 | 4.58057 / 4.75420 |
+| Packed visibility + full stable field | 420,980 | 17,403,904 / 9,936,896 | 484,552,704 | 4.60573 / 4.74747 |
+| Frozen fitted appearance | 316,532 | 17,629,184 / 9,854,976 | 469,737,472 | 4.85598 / 5.02350 |
+| Stable owner masks | 421,324 | 17,408,000 / 10,035,200 | 486,303,744 | 4.30104 / 4.55781 |
+| Stable spatial masks | 429,148 | 17,424,384 / 9,936,896 | 486,465,536 | 4.28590 / 4.39522 |
+| Direct full field | 420,980 | 17,342,464 / 10,051,584 | 484,682,752 | 4.71022 / 4.81217 |
+| Direct owner masks | 421,324 | 17,424,384 / 9,953,280 | 486,387,712 | 5.48074 / 5.71929 |
+| Direct spatial masks | 429,148 | 17,403,904 / 9,953,280 | 486,397,952 | 5.40015 / 5.77520 |
+
+Requested live/peak allocations count the actual created buffers and textures,
+including response tables, visibility scratch, common output, upload rings and
+fallback data. Encoded masks are not total residency. DRM fdinfo and browser PSS
+are actual whole-client snapshots; they cannot attribute physical residency to
+one asset, and requested bytes must not be relabelled as physical resident bytes.
+
+The direct full-field path saves 20.37% of requested live allocations versus the
+matched cache while taking 71.28% more saturated GPU time. Its appearance/scratch
+allocation excluding common output is 420,980 bytes versus 633,452 bytes.
+Neither ratio approaches 16×, and the actual resident snapshots show no such
+reduction. Routing adds bytes and runtime to that full-field path. The frozen
+fit is fast, but only passes 8/24 quality gates. There is **no joint G4 advantage**.
+
+### Preserved failures and next architecture bet
+
+Preserved: all nine variants, 72 shaded captures, 40 focused GPU captures,
+payloads, source masks and bounds, full profiles, physical memory observations,
+the direct-sum experiment and the initial NumPy-integer JSON serialization
+failure (before runtime measurements). The setup repair only converts mask words
+to Python integers. Experimental source passed compilation and the established
+capture path. Runtime is restored byte-for-byte to bf9314f1; unchanged checks are
+reused without another broad test run.
+
+**Next bet:** change the unit of representation and execution to sparse
+source-space bricks containing coverage, depth and material response. Decode
+once per visible brick and share the result across samples, with a bounded
+resident cache and explicit source fallback. This must replace both per-leaf
+visibility storage and repeated response evaluation to address the measured
+floor. First compare an ordinary quantized brick against a same-budget learned
+residual, giving both identical useful source information. Charge decoded bricks,
+indices, fallback, updates and eviction. Use the existing shaded cases to reject
+an unsuitable layout before a training sweep. This is an untested hypothesis,
+not an infrastructure or rendering win.
+
+G1–G7 remain unchanged and unmet. This block establishes no unseen-family,
+8–512-pixel footprint, richness scaling, human preference or sustained-latency
+result. The compiler and decoder are original; existing
+[metric and method citations](citations.md#neural-reconstruction-instrument)
+continue to apply. No external implementation or model weights were imported.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-field-routing-v1.
+Manifest SHA-256: `f5d6c6ee32044e9a7d954b5b588ddc0a222256f5af9fdc81ac81345280cf5d65`.

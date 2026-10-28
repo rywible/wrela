@@ -18,21 +18,19 @@
 
 ## Immediate milestone
 
-[Adaptive response trees and corrected residuals](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff)
-are retired after two targeted follow-ups. A reused source parser confused leaf
-coverage 1.65 with field blend 1.10; actual GPU metadata and all-card responses
-now establish the corrected labels. Historical target-based interpretations are
-explicitly corrected without modifying sealed measurements.
+[Source contributor routing](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost)
+is retired after one targeted follow-up. Both source masks pass 24/24 shaded
+cases and preserve sampled silhouettes, but lose time and memory to the full
+field. Direct full-field summation measures 0.59024 ms / 830,580 requested live
+bytes; the direct masks cost 0.66040–0.69468 ms with more memory. Matched cached
+source measures 0.34460 ms / 1,043,052 bytes. Frozen appearance still passes 8/24.
+No joint G4 win. Runtime restored; frozen models and G1–G7 unchanged.
 
-Corrected trees pass 24/24, but full tree0.63988ms/1,479,420 live B loses to matched
-cache0.37568ms/1,043,052B; budget tree1.36124ms/843,852B loses to exact field
-0.63832ms/830,580B. Corrective7040B neural/poly fits pass4/24 and6/24.
-No joint neural or G4 advantage. Runtime restored; G1–G7 unchanged/unmet.
-
-Next compile spatial masks that select relevant source functions, preserving their
-nonlinear response instead of approximating final normals/depth. Use verified
-source parameters and compare against exact field and matched cache, including
-routing, fallback, visibility, wood, updates and compositing before more fitting.
+Next test a different representation unit: sparse source-space bricks combining
+coverage, depth and material response, decoded once per visible brick with
+bounded caching and charged fallback. Compare conventional quantization and
+same-budget learned residuals on identical source information. It must reduce
+visibility storage and repeated work together, before more training is justified.
 
 ## Evidence recorded so far
 
@@ -2730,3 +2728,15 @@ prior sealed failures remain, with explicit correction of their interpretation.
 Runtime restored exactly; no rendering win claimed.
 [Full measurements and next bet](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
 Manifest: `f5c1852086f181f7ea8c5055b8fd62c0e97614ac9c8d9499668ec479789ce394`.
+
+### Source contributor routing checkpoint (2026-10-28)
+
+First assessment 3.60 minutes; decision
+13.82 minutes. One targeted follow-up, zero training,
+zero new references. Nine complete comparisons, 72 shaded captures and 40
+focused GPU captures preserved. Source masks retain quality but lose complete
+runtime and memory versus full-field evaluation; direct full-field summation
+still loses runtime versus matched cached source. No tail-latency win promoted.
+Runtime restored exactly; change representation rather than tune more masks.
+[Measurements and next bet](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost).
+Manifest: `f5d6c6ee32044e9a7d954b5b588ddc0a222256f5af9fdc81ac81345280cf5d65`.
