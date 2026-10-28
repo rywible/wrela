@@ -6645,3 +6645,174 @@ and [source material](../engine/plant.wrela) apply.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-hardware-proxies-v1.
 Manifest SHA-256: `80a7a1340e0a475872ae8b29a0cd6a8fa0f23f401bc2d2ebf47bd97f0396fba1`.
+
+## Direct source density: retire area-preserving thinning for G4
+
+**Decision: retire simple source-density thinning as the compact G4 surface
+representation.** Direct hardware drawing is much cheaper than the previously
+retired per-fragment traversal, but half and quarter density both fail every
+shaded case. Preserving total leaf area does not preserve the image's coverage,
+depth or material selection. Existing engine LOD remains unchanged; only this
+experimental G4 configuration is retired and restored.
+
+First complete assessment **7.06 minutes**;
+decision **8.53 minutes** from parent 02a84e9f's commit
+time. No optimization follow-ups were needed; both optional attempts remain
+unused. No training or new reference. G1–G7 and frozen models stay unchanged.
+
+### The strongest available conventional reduction comes first
+
+The engine already provides a nested card-density hierarchy through
+[plant level_cards and card_scale](../engine/plant.wrela): half as many cards
+with sqrt(2) width, or a quarter with twice the width. This experiment exposes
+those existing source-aware choices as measured conventional alternatives before
+inventing a learned patch decoder. The original 26,560 cards become 13,280 or
+6,640 cards. The nested source prefix retains the authored clump distribution,
+seed, position, rotation and cutout law. No new source fitting or learned
+parameters are introduced.
+
+Hardware rasterizes the selected enlarged cards directly; fragments sample
+their existing cutouts rather than traversing the original cards inside proxy
+rectangles. The exact selected card supplies depth and identity. Material
+resolve uses either its full authored crown field or its exact cached normal
+and crown depth. The cached response is allocated only for the submitted
+prefix: 212,480 bytes at full density, 106,240 at half and 53,120 at quarter.
+The source hierarchy still records the original distribution/count so source
+identity and placement remain consistent.
+
+All 7,392 wood triangles, 4×4 visibility samples per output pixel, packed
+depth/identity buffer, coverage tiles, output, updates and compositing remain.
+There is no hidden full-card fallback. Static hierarchy/cache initialization is
+excluded from steady-frame time but charged in live/peak allocations. Dynamic
+source edits are unmeasured. The frozen optical path includes its sort/update.
+
+Controls include native cached source, compact packed source with exact cache,
+compact packed source evaluating the full field, and the immutable optical fit.
+Every conventional method receives the same useful source knowledge, masks,
+material laws and sampling information. This is a conventional LOD comparison;
+there is no learned-method advantage or withheld source input.
+
+### Shaded quality and silhouettes decide against thinning
+
+Same completed AA64 references: one static 64-pixel tree, two public views,
+four analytic lights and three backgrounds. Exposure 0.62, ACES→sRGB,
+FLIP 67 ppd and AlexNet LPIPS v0.1 unchanged.
+
+| Method | Shaded gates /24 | Mean PSNR dB | Mean FLIP | Mean LPIPS | Coverage MAE | Worst boundary p99 px |
+|---|---:|---:|---:|---:|---:|---:|
+| Native source | 24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 2.000 |
+| Full density, cached response | 24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 | 2.000 |
+| Full density, source field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 | 2.000 |
+| Frozen optical | 8 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 | 1.414 |
+| Half density, source field | 0 | 36.241213 | 0.02011820 | 0.00541399 | 0.01550704 | 2.000 |
+| Quarter density, source field | 0 | 33.477241 | 0.02736943 | 0.01412255 | 0.02092874 | 2.236 |
+| Half density, cached response | 0 | 36.241213 | 0.02011820 | 0.00541399 | 0.01550704 | 2.000 |
+| Quarter density, cached response | 0 | 33.477241 | 0.02736943 | 0.01412255 | 0.02092874 | 2.236 |
+
+The numeric gate requires PSNR loss≤0.25 dB and FLIP/LPIPS≤1.05× with the
+unchanged 1e-4 floor in each case. The four reduced paths pass 0/24 against
+both current native and compact source controls. Half density loses 4.055 dB;
+quarter loses 6.819 dB versus full source. This is far larger than the allowed
+loss and does not justify a training sweep.
+
+Worst half-coverage precision/recall changes from full source
+0.983065/0.994007 to half 0.971986/0.980308 and quarter
+0.963058/0.959760. Mean coverage MAE grows about 54% and 108%.
+Worst boundary-distance p99 alone misses some of this loss: it remains
+2 pixels at half density but increases to 2.236 pixels at quarter.
+
+The error is not confined to silhouettes. On pixels where both full and reduced
+renders have alpha exactly one, mean scene-linear RGB absolute difference across
+the eight captures is 0.00801474 for half and 0.01061866
+for quarter. These are source-to-source diagnostics, not reference quality scores.
+They show that different front surfaces also change interior shading.
+
+Field and cached-response images match exactly for all 16 corresponding reduced
+captures. This isolates the density representation from material-cache
+implementation. All method/view coverage sequences are light-independent.
+The original three checked control paths reproduce their 24 sealed images
+exactly; no unchanged evaluator re-audit was needed.
+
+### Complete AMD cost and actual resident observations
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Wrela 0.9.0/compiler de9b81e5. Solo Pop!_OS,
+sequential GPU profiles, 60 warmup plus 240 measured frames, 64×64 output.
+Views and lights alternate every frame. No CPU scoring overlaps GPU timing.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | CPU p99 ms | Completion p95 / p99 ms |
+|---|---:|---:|---:|---:|---:|
+| Native source | 0.27696 / 0.42824 | 1.02384 / 1.08439 | 0.73330 | 4.56545 / 4.88741 |
+| Full density, cached response | 0.34564 / 0.54596 | 1.18121 / 1.21771 | 0.71805 | 4.59521 / 4.70010 |
+| Full density, source field | 0.64056 / 0.78444 | 1.51103 / 1.56699 | 0.77805 | 5.37500 / 5.54302 |
+| Frozen optical | 0.06832 / 0.07476 | 0.27248 / 0.27641 | 1.02000 | 4.01027 / 4.31304 |
+| Half density, source field | 0.59596 / 0.64712 | 1.47229 / 1.53178 | 0.74830 | 5.45021 / 5.55401 |
+| Quarter density, source field | 0.57240 / 0.64108 | 1.75356 / 1.95366 | 0.78355 | 4.14652 / 4.45317 |
+| Half density, cached response | 0.30080 / 0.44648 | 1.14212 / 1.20754 | 0.69110 | 4.06205 / 4.34497 |
+| Quarter density, cached response | 0.28076 / 0.44188 | 1.18521 / 1.18750 | 0.71915 | 4.58596 / 4.80963 |
+
+Relative to matching packed full-density paths, saturated field medians fall
+about 7%/11%, and cached medians about 13%/19%. These are short descriptive
+measurements, not paired statistically established gains. Paced tails are
+reported independently; quarter-field p95/p99 are worse than full field.
+A quality failure this large makes more timing repetitions unnecessary.
+Start-to-completion includes host/queue/notification latency, not photon latency.
+
+| Method | Engine appearance + scratch B | All requested live / peak B | Actual DRM VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|---:|
+| Native source | 1,466,060 | 1,875,660 / 1,892,044 | 17,670,144 / 10,035,200 | 485,493,760 |
+| Full density, cached response | 633,452 | 1,043,052 / 1,059,436 | 17,408,000 / 9,936,896 | 490,660,864 |
+| Full density, source field | 420,980 | 830,580 / 846,964 | 17,670,144 / 10,051,584 | 488,994,816 |
+| Frozen optical | 316,532 | 726,132 / 742,516 | 17,649,664 / 9,838,592 | 472,461,312 |
+| Half density, source field | 420,980 | 830,580 / 846,964 | 17,403,904 / 10,051,584 | 488,786,944 |
+| Quarter density, source field | 420,980 | 830,580 / 846,964 | 17,338,368 / 9,936,896 | 487,772,160 |
+| Half density, cached response | 527,212 | 936,812 / 953,196 | 17,424,384 / 9,936,896 | 489,249,792 |
+| Quarter density, cached response | 474,092 | 883,692 / 900,076 | 17,403,904 / 9,936,896 | 489,517,056 |
+
+Engine appearance/scratch excludes the identical 65,536-byte output and follows
+the established host GPU counter. All-requested totals additionally include the
+executor's upload/uniform resources and every inactive/fallback allocation.
+No hardware-local shared scratch is introduced.
+
+The field path has **zero requested resident allocation saving**: hierarchy,
+coverage and visibility storage are unchanged. Reducing the response cache
+saves 106,240/159,360 bytes, only 10.19%/15.28% of all requested live resources.
+Quarter-cache still uses more memory than full-density source-field rendering.
+No path approaches G4's 16× requirement.
+
+DRM/PSS are actual whole-client resident snapshots, including observable caches
+and driver overhead; they are not asset-attributed physical memory or transient
+physical peaks. UMA pools overlap and must not be summed. Similar DRM readings
+do not demonstrate appearance compression.
+
+### Preserve the failure and change what a patch retains
+
+A pre-measurement code review caught a cache dispatch-tail guard using the
+original count instead of the selected count. It was corrected before reduced
+cache variants ran; the original source/installer and correction record are
+preserved. Level-zero control behavior is unchanged. All measured variants built
+and executed. This is not a failed rendered result being silently replaced.
+
+Eight variants and 64 shaded captures, all timing/physical-memory records,
+source snapshots, field/cache parity and the initial guard defect are retained.
+Runtime files are restored byte-for-byte to 02a84e9f. The separately retained
+source-guided reconstruction path stays intact. No broad test suite or redundant
+restored-runtime measurement is repeated.
+
+**Next architecture bet:** adaptive patches must retain source-derived coverage
+and local depth structure, with exact fallback when an error bound cannot be
+met. They must also reduce the visibility working set: fewer source instances
+alone leave that memory untouched. Establish a feasible combined coverage,
+depth, material, scratch and fallback budget before any learned fit. A same-input
+conventional patch representation is the first control. This result rejects
+simple area-preserving thinning; it does not establish that all reduced-surface
+representations fail.
+
+G1–G7 remain unchanged/unmet. No new scene-family, 8–512 footprint, motion,
+dynamic-edit, richness or sustained-latency evidence. The frozen optical fit
+still passes only 8/24 existing numeric shaded cases.
+
+Original engine source law reused; existing
+[metric/method citations](citations.md#neural-reconstruction-instrument) apply.
+Evidence on Pop!_OS: build/neural-evidence/g4-source-density-v1.
+Manifest SHA-256: `20b390687a314d3f54761f447500eac1ad06b5267bb2cf18c6a7fb400ab2c1b3`.

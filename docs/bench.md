@@ -2818,3 +2818,23 @@ Initial assessment13.94min; decision35.74min.
 Two follow-ups, zero training, two justified existing-catalog reference cases.
 Frozen models/goals unchanged. 3,200 parity files and cut/source checks pass.
 [Full comparison and limitations](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family).
+
+### AMD direct source density retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent02a84e9f plus archived variants.
+Existing64px tree, two views × four lights × three backgrounds, AA64 references.
+Full/half/quarter source density: PSNR40.29590/36.24121/33.47724dB,
+FLIP0.0130032/0.0201182/0.0273694, LPIPS0.00249059/0.00541399/0.01412255.
+Both reduced levels0/24 numeric gates. Worst boundary p99:2/2/2.236px.
+Field full/half/quarter saturatedGPU0.64056/0.59596/0.57240ms,
+all830,580requestedliveB. Cache0.34564/0.30080/0.28076ms,
+live1,043,052/936,812/883,692B. Quarter-field pacedp95/p99
+1.75356/1.95366ms versus full1.51103/1.56699ms; no paired gain claim.
+Full decode, original cutouts, ordering, wood, exact field/cache, updates and
+composite counted. Whole-clientDRM/PSS preserved; no16xresident claim.
+First comparison7.06min; decision8.53min.
+No follow-up, training or new reference.64captures,16field/cache exact pairs,
+24prior-control exact images. Initial cache-tail guard defect preserved/fixed
+before reduced cache runs. Runtime restored; existing engineLOD unchanged.
+[Full measurements and architectural decision](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4).

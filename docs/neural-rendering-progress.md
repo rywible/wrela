@@ -18,21 +18,21 @@
 
 ## Immediate milestone
 
-[Source-guided material basis](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family)
-is retained as an opt-in conventional control for the analytic slat/checker
-family. Four existing clips at 4× improve descriptive FLIP 0.17218 to 0.00200;
-full 1080p GPU median 1.60788 ms and requested live 48,045,912 B. This broader
-source-material input contract is equally available to all methods. Three
-guided existing samples eliminate measured cold missing-colour failures; paired
-runtime is inconclusive and slightly slower, with unchanged allocation.
-No neural, fixed-input, G1–G7 or general 3D rendering win is claimed.
+[Direct source density](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4)
+is retired as the G4 surface representation. Existing half/quarter density LOD
+draws fewer source cards directly, but both pass0/24 shaded cases and lose
+4.05/6.82dB. Source-field GPU medians improve only7%/11%, with no allocation
+saving; cached variants save10%/15% requested live bytes while failing quality.
+Runtime restored. No training or new references.
 
-G4 remains unresolved: frozen appearance passes 8/24 shaded cases, and no 16×
-quality-matched resident saving is demonstrated. Exact original-surface software
-and rectangle traversal remain retired for excessive full cost. Next separate
-explicit coverage/material support from local radiance coefficients, and compare
-conventional bases before learned residuals. Directly rasterized reduced
-coverage/depth/material patches remain the G4 architecture bet.
+The retained [source-guided material basis](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family)
+remains a useful conventional control for its narrow analytic family. It does
+not establish G4. Frozen appearance remains8/24; G1–G7 unchanged/unmet.
+
+Next patches must preserve source coverage and local depth, not merely total
+area, and reduce the visibility working set as well as primitive count. Charge
+material/scratch/fallback together and reject an infeasible budget before fitting.
+Use the equally informed conventional patch representation first.
 
 ## Evidence recorded so far
 
@@ -2789,3 +2789,15 @@ Retain this narrow conventional path; G4 and G1–G7 remain unmet.
 checks pass. Failures preserved.
 [Quality, complete costs, actual residency and scope](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family).
 Manifest: `822b9c163dcc10881af528c1da7bebabd13c18ad911d003c4f65096fb8c44356`.
+
+### Direct source density checkpoint (2026-10-28)
+
+First assessment7.06min; decision8.53min.
+No follow-ups, training or new references. Eight variants/64captures preserved.
+Half/quarter density both0/24 shaded gates; source-field0.59596/0.57240ms versus
+full0.64056ms, all830,580requestedliveB. Cached quarter0.28076ms/883,692B versus
+full0.34564ms/1,043,052B, but6.82dBloss. ActualDRM/PSS retained separately.
+16reduced field/cache captures exact,24prior controls exact; runtime restored.
+Retire area-preserving thinning forG4; existing engineLOD unchanged.
+[Joint quality/runtime/memory evidence](neural-shaded-appearance.md#direct-source-density-retire-area-preserving-thinning-for-g4).
+Manifest: `20b390687a314d3f54761f447500eac1ad06b5267bb2cf18c6a7fb400ab2c1b3`.
