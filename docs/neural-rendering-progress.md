@@ -18,19 +18,19 @@
 
 ## Immediate milestone
 
-[Sparse optical bricks](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity)
-are retired after two follow-ups. Corrected 16³/32³/64³ volumes all pass 0/24
-shaded gates: 26.78/30.69/35.89 dB versus source 40.30 dB. The finest path costs
-0.53292 ms / 1,549,792 requested live bytes, versus matched source
-0.34568 ms / 1,043,064 bytes. Higher sampling adds little quality and large cost.
-The first projection bug and all failed results are preserved; the corrected
-analytic box and half decoder checks pass. No neural fit is justified.
-Runtime restored; frozen models and G1–G7 unchanged/unmet.
+[Exact surface blocks](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost)
+preserve all eight source images exactly and pass 24/24 shaded gates, but their
+software rasterization is retired after one scheduling follow-up. Balanced
+full-field blocks cost 3.914 ms / 619,968 requested live bytes versus matching
+hardware source 0.64852 ms / 830,580 bytes: 25.36% fewer bytes, 6.04× GPU cost.
+Cached blocks cost 3.71784 ms versus matched cache 0.34576 ms. Actual whole-client
+resident observations do not demonstrate 16× savings. Frozen fit remains 8/24.
+No joint G4 advantage; no training or new references; runtime restored.
 
-Next preserve discrete surface events in small source-space blocks: coverage,
-depth and material identity tied to each ordered hit. Test an equally informed
-conventional quantized surface-block control before any learned residual. Reject
-layouts that restore the full per-leaf working set before spending training cycles.
+Next retain hardware rasterization and decode compact block-level coverage,
+depth and material identity into a few local surface proxies. First test an
+equally informed conventional decoder; train only for a demonstrated rendered
+error after complete runtime and memory become plausible.
 
 ## Evidence recorded so far
 
@@ -2752,3 +2752,14 @@ AA4 at 32³ adds only 0.12 dB. Ten full variants, 80 shaded captures and 24
 focused GPU captures (eight failed) preserved. Runtime restored exactly.
 [Joint quality/cost evidence and next bet](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity).
 Manifest: `095f9b70fd509d5aa1029d513546136f0cbc55c3d1fcfeea9a39e709c2d205f7`.
+
+### Exact surface blocks checkpoint (2026-10-28)
+
+First complete assessment 14.24 minutes; decision
+23.10 minutes. One follow-up, zero training/new references.
+Eight full variants and 64 shaded captures preserved; all four block candidates
+match source RGBA exactly. Balanced scheduling reduces 13.25 to 3.91 ms but remains
+6× slower than hardware source for 25% fewer requested live bytes. Retire software
+per-surface rasterization; restore runtime exactly. G1–G7 unchanged/unmet.
+[Joint evidence and next bet](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost).
+Manifest: `b8025da32e1fed8d50bc87c5e1d25d44e8098601de3eb18e0e189837d29c39cc`.

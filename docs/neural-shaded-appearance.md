@@ -6291,3 +6291,188 @@ apply; the compiler and renderer are original, without imported model weights.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-source-bricks-v1.
 Manifest SHA-256: `095f9b70fd509d5aa1029d513546136f0cbc55c3d1fcfeea9a39e709c2d205f7`.
+
+## Exact surface blocks: preserved quality, excessive software rasterization cost
+
+**Decision: retire per-surface software rasterization within source-space blocks.**
+All four candidates preserve packed-source RGBA exactly on the measured fixture.
+One scheduling optimization cuts full-field rendering from 13.25096 to 3.91400 ms,
+but it remains 6.04× slower than hardware rendering with the same field information.
+Requested live memory falls 25.36%; actual asset-attributed 16× residency savings
+are not established. Quality, runtime and memory together do not support G4.
+
+First complete comparison: **14.24 minutes**.
+Decision: **23.10 minutes**, measured conservatively from the
+parent commit before this block's prior-art inspection. One follow-up, no second
+tuning experiment, zero training and zero new shaded references. All work solo on
+Pop!_OS AMD; parent d4628d37634ef9b6202726e56edd1d1d61afee8a.
+
+### Representation and comparison
+
+The previous homogeneous optical bricks lost discrete visibility. This experiment
+keeps all original 26,560 leaf cards and 7,392 wood triangles, grouped into 2,048
+source-space blocks of 16 or 17 surfaces. Blocks reuse the already verified leaf
+bounds and ordering from the existing spatial hierarchy; no reclustering, learned
+response, reference pixels or current-view labels enter compilation.
+
+Each block stores six outward-quantized 16-bit bounds and a source-list span in
+16 bytes. Bounds occupy 32,768 bytes; original surface IDs occupy 67,904 bytes.
+A 64-tile bitmap adds 16,384 bytes. The combined persistent buffer is **117,056
+bytes**. The source-only compiler takes 0.0784 seconds and verifies that every
+surface occurs exactly once and all decoded bounds enclose their source bounds.
+This compilation time is not included in steady frame rendering; dynamic edit
+and rebuild cost remains unmeasured.
+
+Each frame clears the bitmap and projects each block once. Overlapping blocks
+are marked for 8×8 output-pixel tiles. A 64-thread workgroup rasterizes their
+original surfaces into 1,024 shared depth/source-ID words at 4×4 samples per pixel.
+It uses the previously verified 1/256-subpixel coverage and interpolation
+convention, shades the exact winning source material, resolves samples, and
+composites the output. Source wood participates in the same depth ordering.
+There is no persistent full-frame visibility image or per-surface count/prefix/fill
+worklist. Original geometry decoding and shading remain necessary.
+
+Equally informed controls include native source with cached response, packed source
+with exact response cache, packed source evaluating the full field, and the frozen
+explicit optical fit. They all receive the useful authored source information,
+visibility and sampling knowledge. The block paths use either the same exact
+cache or the same full field, with identical authored cutouts and wood. The
+correct source blend remains 1.1. This is a conventional representation experiment;
+the frozen optical and raw learned weights are unchanged.
+
+### One consequential optimization
+
+The initial kernel assigns each lane one bitmap word, grouping 32 spatial blocks.
+A source-only CPU estimate shows a median maximum-to-mean lane workload ratio of
+18.75 and 19.91 for the two views. These are scheduling estimates from bounds and
+cameras, not measured GPU instruction times or a complete causal decomposition.
+
+The single follow-up compacts active block IDs into a workgroup list, then
+distributes their 17 potential surface slots across all 64 lanes. Invalid slots
+for 16-surface blocks are skipped. Declared shared scratch increases from
+**4,096 to 12,292 bytes per workgroup**; persistent requested memory is unchanged.
+The additional 8,196 bytes hold a counter and up to 2,048 block IDs.
+
+Cache/full-field GPU medians fall from 13.05464/13.25096 to 3.71784/3.91400 ms.
+All resulting images remain byte-identical. This is useful evidence about
+scheduling, but complete rendering still loses by 10.75× against the matching
+cache and 6.04× against the matching field control. No second minor optimization
+is justified by that remaining gap.
+
+### Shaded quality and silhouettes
+
+Reuse completed AA64 truth for one static 64×64 tree, two public views, four
+analytic lights and three backgrounds. The exposure 0.62 display transform,
+LDR-FLIP at 67 pixels/degree and LPIPS v0.1 are unchanged. Per-case gates use
+PSNR loss ≤0.25 dB and FLIP/LPIPS ≤1.05× with the existing 1e-4 floor against the
+packed exact-cache source. Counts also agree against native source. These are
+24 cases of one asset, not 24 independent held-out assets.
+
+| Method | Shaded gates /24 | PSNR dB | FLIP | LPIPS | Worst boundary p99 px |
+|---|---:|---:|---:|---:|---:|
+| Native cached source | 24 | 40.295971 | 0.01300193 | 0.00249104 | 2.000 |
+| Packed source + exact cache | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Packed source + full field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Frozen fitted appearance | 8 | 40.127682 | 0.01234846 | 0.00188937 | 1.414 |
+| Surface blocks + cache | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Surface blocks + field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Balanced blocks + cache | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Balanced blocks + field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+
+All **32 candidate RGBA captures** are byte-identical to the packed full-field
+control, including alpha. Mean coverage MAE against AA64 is 0.0100595; worst-view
+precision/recall at half coverage are 0.983065/0.994007, and worst boundary p99 is
+2 pixels. Exact parity preserves the source renderer's remaining reference error;
+it does not establish the G3 motion or silhouette target.
+
+The frozen fit still passes only 8/24 per-case comparisons, despite favorable
+aggregate FLIP/LPIPS. Its mean scores do not override those failures. No
+material-moment training was performed.
+
+### Complete runtime and memory
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0/compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Sequential profiles use 60 warmup
+and 240 measured frames; allocation/completion runs use 60 + 300. No CPU scoring
+overlaps GPU measurement.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | CPU p99 ms | CPU-to-completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Native cached source | 0.28436 / 0.62860 | 1.08233 / 1.08704 | 0.73305 | 4.57521 / 4.66313 |
+| Packed source + exact cache | 0.34576 / 0.60448 | 1.19321 / 1.23888 | 0.72305 | 4.50026 / 4.72730 |
+| Packed source + full field | 0.64852 / 0.94560 | 1.78904 / 1.88645 | 0.74500 | 5.36989 / 5.53151 |
+| Frozen fitted appearance | 0.06848 / 0.07140 | 0.27218 / 0.27529 | 1.00415 | 4.84521 / 5.03854 |
+| Surface blocks + cache | 13.05464 / 13.28864 | 14.05803 / 14.15712 | 0.57220 | 17.00813 / 17.28033 |
+| Surface blocks + field | 13.25096 / 13.51008 | 14.28637 / 14.37382 | 0.60270 | 17.11185 / 17.31304 |
+| Balanced blocks + cache | 3.71784 / 3.90640 | 4.94372 / 5.07557 | 0.61305 | 7.32281 / 7.65631 |
+| Balanced blocks + field | 3.91400 / 4.13112 | 4.97893 / 5.07260 | 0.74490 | 7.82571 / 7.90503 |
+
+Spans include source placement and geometry decoding, bitmap clear/projection/
+routing, depth and source-ID ordering, all wood, material cache/full-field reads
+and shading, resolve, updates and composite. There is no separate optical sort
+in source paths; depth ordering occurs in the timed rasterization. The frozen
+fit retains its measured CPU sort. CPU costs include view/light updates, uploads
+and command submission. Static compilation and startup are outside steady frame
+time. Completion includes browser/driver notification, not input-to-photon
+latency. These are single variant runs, not paired sustained speed claims.
+
+| Method | Engine appearance + scratch B | All requested live / peak B | DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|---:|
+| Native cached source | 1,466,060 | 1,875,660 / 1,892,044 | 17,670,144 / 10,051,584 | 490,738,688 |
+| Packed source + exact cache | 633,452 | 1,043,052 / 1,059,436 | 17,424,384 / 10,035,200 | 494,409,728 |
+| Packed source + full field | 420,980 | 830,580 / 846,964 | 17,670,144 / 10,051,584 | 494,272,512 |
+| Frozen fitted appearance | 316,532 | 726,132 / 742,516 | 17,301,504 / 9,740,288 | 469,591,040 |
+| Surface blocks + cache | 422,840 | 832,440 / 848,824 | 17,424,384 / 10,149,888 | 492,911,616 |
+| Surface blocks + field | 210,368 | 619,968 / 636,352 | 17,674,240 / 10,149,888 | 493,771,776 |
+| Balanced blocks + cache | 422,840 | 832,440 / 848,824 | 17,424,384 / 10,133,504 | 495,824,896 |
+| Balanced blocks + field | 210,368 | 619,968 / 636,352 | 17,674,240 / 10,133,504 | 492,418,048 |
+
+Engine appearance/scratch excludes common output. All requested live/peak totals
+include encoded bounds/IDs, bitmaps, source inputs, caches or field parameters,
+dummy/fallback resources, outputs, and resident host upload/uniform/screen buffers.
+Block paths have 12 additional bytes of inactive output storage versus controls.
+The balanced path adds shared scratch as recorded above; declared workgroup
+scratch is not a separately attributed physical-memory allocation in these totals.
+
+Full-field blocks save 210,612 requested live bytes (25.36%) against their matching
+control; cached blocks save the same bytes (20.19%). Even engine-only storage is
+210,368 versus 420,980 bytes for field paths, only about 2×. The cache candidate's
+832,440 all-live bytes also exceed the full-field hardware control's 830,580.
+
+DRM fdinfo VRAM/GTT and browser-group PSS are actual whole-client resident
+snapshots. They do not isolate physical per-asset residency or transient physical
+peaks, and overlapping UMA pools must not be summed. They do not establish a
+16× reduction. Paced GPU p95/p99 regress substantially as well; the smaller
+requested allocation is not a joint rendering win.
+
+### Preservation and next architecture bet
+
+Eight measured variants, 64 shaded captures, complete profiles, allocations,
+completion and resident observations are preserved. The initial missing
+SNAP_RULE constant caused a compile failure before measurement; its source
+and diagnostics are preserved. Reusing the established snapped interpolation
+unconditionally repaired it. All measured variants compile and execute.
+
+Verification covers the new block bounds/list, exact candidate RGBA parity,
+24 unchanged prior-control captures, and light-independent coverage for all
+16 method/view pairs. Runtime is restored byte-for-byte to d4628d37, with no
+new runtime module retained. Existing checks cover unchanged restored code;
+no broad suite is repeated. Failed results remain available.
+
+**Next bet:** retain hardware rasterization while decoding compact block-level
+coverage, depth and material identity into local surface proxies. A small number
+of view-conditioned surfaces should replace repeated reconstruction of every
+original triangle in compute. Start with an equally informed conventional decoder
+and charge its generation, updates, scratch and fallback. A learned residual is
+justified only by a specific rendered-quality failure and a plausible complete
+memory/runtime budget. This is an untested hypothesis, not a rendering result.
+
+This decision retires this software execution architecture, not every source-block
+or neural representation. G1–G7 and all frozen weights remain unchanged/unmet.
+No unseen families, 8–512-pixel range, dynamic edits, richness scaling or sustained
+latency proof. Existing [metric and method citations](citations.md#neural-reconstruction-instrument)
+and [source material](../engine/plant.wrela) apply; no imported model weights.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-surface-blocks-v1.
+Manifest SHA-256: `b8025da32e1fed8d50bc87c5e1d25d44e8098601de3eb18e0e189837d29c39cc`.

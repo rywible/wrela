@@ -2759,3 +2759,22 @@ pass. First corrected comparison 6.44 minutes,
 decision 10.71 minutes. Two follow-ups; no training/new references.
 Retire homogeneous optical cells; restore runtime; no joint G4 advantage.
 [Full measurements](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity).
+
+### AMD exact surface blocks retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent d4628d37 plus archived variants.
+Existing static 64-pixel tree, two views × four lights × three backgrounds.
+All four block variants pass 24/24 gates and reproduce packed source RGBA exactly.
+One balanced-scheduling follow-up lowers full-field GPU median 13.25096 to
+3.91400 ms; matching hardware field 0.64852 ms. Requested live 619,968 versus
+830,580 B. Balanced cache 3.71784 ms / 832,440 B; matching cache
+0.34576 ms / 1,043,052 B. Field paced GPU p95/p99 4.97893/5.07260 ms versus
+1.78904/1.88645 ms. Shared scratch rises 4,096 to 12,292 B per workgroup.
+Full decoding, block routing, depth ordering, wood, material response, updates
+and composite included; all buffers/caches counted. Whole-client DRM/PSS
+observations retained separately; no asset-attributed 16× residency claim.
+First assessment 14.24 minutes, decision
+23.10 minutes. No second follow-up, training or new references.
+Retire this software rasterization architecture; restore parent runtime.
+[Full quality/runtime/memory measurements](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost).
