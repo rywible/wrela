@@ -509,3 +509,181 @@ implementation, model, asset or hardware result is imported.
 
 Evidence on Pop!_OS: build/neural-evidence/factor-cooperative-v1.
 Manifest SHA-256: `6b57efb2553344a1646e0553f64e0d1d94065d19afe7166378a470ebcdee5ace`.
+
+## Source material basis: retain guided observations for the supported family
+
+**Decision: continue this conventional source-material representation as an
+opt-in fixture control; retire its unguided sampling.** The useful result comes
+from exact authored region coverage and deliberate placement of existing colour
+samples. No neural contribution or G1–G7 completion is demonstrated. The compact
+G4 optical representation remains unqualified; this reconstruction experiment
+does not reverse its shaded quality/runtime/memory rejection.
+
+The first complete assessment took **13.94 minutes**;
+the decision took **35.74 minutes**, including two follow-ups.
+No training occurred. Two targeted cases from the existing catalog were rendered
+only after a sampling census exposed missing material observations. The same
+reference integrator and scoring tools were reused. No reference infrastructure
+was added. All initial results and compile failures are preserved.
+
+### Source contract and implementation
+
+This is a hand-authored specialization of the existing moving-slat/checkerboard
+source program, with three globally constant RGB material regions. The decoder
+receives slat period, width, phase, speed and checker period; it never receives
+the source RGB constants, reference image, reference pixel integrator or future
+observations. It computes visible areas by clipping checker rectangles against
+opaque slat intervals, independently of the reference's pulse antiderivative.
+
+A 64-thread reduction identifies current observed low-resolution samples of
+foreground, bright background and dark background. Three GPU invocations select
+their RGB coefficients. Missing coefficients may retain a valid observation for
+at most 16 frames; reset or expiry discards it. Reconstruction multiplies the
+three observed colours by nonnegative visible areas summing to one. The final
+guided version refreshes all three coefficients every measured frame.
+
+The guided sampler replaces the first three existing sample locations with
+visible in-frame representatives of those regions. The ordinary source shader
+still evaluates each RGB. There are no additional colour evaluations: at 4×
+linear upscaling, the pass shades exactly 1/16 of the output pixel count.
+Representative placement uses geometry and material membership only. The
+supported catalog keeps probes inside a 32×32 region; smaller views are rejected.
+
+This explicitly broadens the old geometry-only input track with checker-region
+information and sampling control. **All useful information is available to
+conventional methods; the new method is itself the conventional baseline.**
+The raw-factor comparison below describes the effect of exploiting more source
+knowledge. It is not a fixed-input algorithm victory, a learned-method win or
+a comparison against FSR/DLSS. General 3D assets, arbitrary shading and automatic
+source-program compilation are not implemented by this experiment.
+
+### Rendered quality and the consequential counterexample
+
+The initial four existing public clips are cases 1, 6, 13 and 23, each 32 frames
+at 192×108, measured at 1×–4× against unchanged integrated references. At 4×:
+
+| Method | Mean FLIP | LPIPS | Mean PSNR dB | Mean clip-worst FLIP |
+|---|---:|---:|---:|---:|
+| Geometry-only raw-factor | 0.172175541 | 0.19584559 | 18.104271 | 0.428388476 |
+| Material basis, regular samples | 0.002000354 | 4.85657882e-08 | 87.140790 | 0.002057097 |
+| Material basis, guided samples | 0.002000354 | 4.85657882e-08 | 87.140790 | 0.002057097 |
+
+The guided and unguided basis have identical RGB on these four clips at every
+scale. Their displayed quality metrics are also identical across scales. PSNR
+here is the mean of the four finite per-clip PSNR values, not a pooled MSE score.
+The same established exposure/display transform and FLIP/LPIPS evaluator apply.
+
+A source sampling census across the existing 72-case catalog found seven cold
+frames without every colour in cases 19 and 53 at 4×. This is a real limitation
+of the initial architecture, despite the attractive four-clip average. The first
+follow-up rendered these two cases; the second introduced the three guided
+locations. At 4×, using the same reference and visibility bytes:
+
+| Case | Regular-sample basis mean / worst-frame FLIP | Guided mean / worst-frame FLIP | Guided PSNR |
+|---|---:|---:|---:|
+| 19 | 0.007323615 / 0.034874395 | 0 / 0 | Infinite: exact RGB |
+| 53 | 0.010475118 / 0.048199862 | 0.000300726 / 0.000305151 | 99.233432 dB |
+
+The infinite PSNR is serialized as null with zero MSE; it is not averaged into
+a finite score. Both counterexamples are targeted development cases, not a
+new sealed test set. All 768 measured guided palette frames contain three
+finite coefficients stamped with the current frame.
+
+Edges and silhouettes are reconstructed through source coverage, including
+subpixel mixtures. On the original four clips, guided visibility-change RGB
+residual averages 0.0000606264; newly exposed RGB error is 0.0000238065.
+These are useful image/temporal diagnostics, not G3's required trail, strand or
+full silhouette gate. Output alpha retains the fixture's sampled material tag,
+not opacity; scoring uses RGB and independent reference visibility masks.
+
+### Complete runtime and memory
+
+AMD RADV RENOIR 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Wrela 0.9.0/compiler de9b81e5. Parent 4e78b3ae
+plus archived sources. Sequential measurements, no overlapping CPU scoring.
+Timing is case 1 at 1920×1080 output / 480×270 input, 32 warmup and 240
+measured frames. This is a short fixture profile, not the G6 20-minute workload.
+
+| Method | Complete GPU median / p95 ms | CPU p99 ms | Completion p95 / p99 ms |
+|---|---:|---:|---:|
+| Geometry-only raw-factor | 10.75508 / 12.03020 | 0.71610 | 16.86309 / 30.62191 |
+| Material basis, regular samples | 1.67136 / 1.93404 | 0.66635 | 5.56494 / 5.84397 |
+| Material basis, guided samples | 1.60788 / 1.90288 | 0.65270 | 5.85574 / 6.08106 |
+
+Complete GPU spans include source colour and motion sampling, palette selection,
+coverage integration, the existing unused neighbourhood dispatch, gaps and
+diagnostic compositing. Source visibility is analytic in this two-layer fixture;
+there is no wood or sorting workload to charge here. The earlier shaded G4
+comparisons remain the evidence for those stages. Decode-only numbers must not
+stand in for the full path.
+
+The guided single run's palette selection median/p95 is 0.14332/0.16760 ms,
+coverage reconstruction 0.59976/0.73880 ms and composite 0.72556/0.84556 ms.
+Do not add stage quantiles to infer complete-frame tails. Completion includes
+host/queue/notification overhead, not display-photon latency.
+
+Three alternating guided-versus-regular basis pairs use the same material source
+contract and sample count. Baseline GPU medians are 1.64364, 1.66404 and
+1.65888 ms; guided 1.66724, 1.66040 and 1.68572 ms. Paired changes are
++1.43584%, -0.21874%, +1.61796% (positive is slower). The tool reports
+**inconclusive**. The repair is retained for quality with unchanged allocation;
+no speed improvement or statistical equivalence is claimed. The earlier
+raw-factor timing is descriptive and was not a paired same-input contest.
+
+| Method | Requested live / peak B | Actual DRM VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|
+| Geometry-only raw-factor | 92,013,084 / 100,307,484 | 186,384,384 / 18,706,432 | 558,983,168 |
+| Material basis, regular samples | 48,045,912 / 56,340,312 | 136,515,584 / 18,608,128 | 577,951,744 |
+| Material basis, guided samples | 48,045,912 / 56,340,312 | 145,371,136 / 18,608,128 | 537,577,472 |
+
+Requested totals include output, histories, upload/uniform resources, inactive
+fixture allocations, scratch and fallback. The basis removes raw history and
+factor query tables, saving **43,967,172 requested live bytes** in this fixture.
+Its current colour/timestamp palette occupies 48 bytes; selection scratch is
+24,300 bytes at 480×270, plus 12 bytes shared scratch per workgroup. Shared
+scratch is reported separately from persistent allocations. Common textures and
+output dominate the 48,045,912-byte live total. Existing modes gain 20 bytes of
+inactive handles; that overhead is included in the new baseline.
+
+DRM/PSS are actual whole-client resident snapshots, including observable browser
+and driver caches. They are not per-asset residency, transient physical peaks,
+or proof of a 16× appearance-memory reduction. UMA pools overlap; do not sum
+them. Register/spill occupancy and physical shared-storage peaks are unmeasured.
+
+### Retention checks, limits and next bet
+
+Retain only explicit --decoder source-basis; default and existing modes remain.
+Three focused tests cover clipping against the independent integral, history
+expiry/reset, and representative visibility/material membership. Final captures
+match 3,200 established files exactly, including the two frozen raw models.
+Cut frames match fresh-scene output with and without reset because current
+observations refresh every coefficient; the missing-colour reset rule has its
+own focused check. The two counterexamples have 512 exact reference/mask
+comparisons. Final source/type checks pass. A final CLI-only change rejects tiny
+probe views and labels snapshot alpha/input metadata; all 11 renderer source
+files remain identical to the measured retained archive.
+
+Failed explicit-workgroup dispatch, census syntax and guided syntax builds are
+archived alongside the initial rendered missing-colour failures. No third
+optimization, further training or broad unchanged test rerun was performed.
+
+**Remaining gap:** this result depends on three globally constant colours and
+simple authored region boundaries. It does not show general scene reconstruction,
+G4 compact appearance viability, required full-resolution quality, long-run
+G6 tails, held-out content, human preference or vendor superiority. G1–G7 and
+all frozen models remain unchanged; the frozen G4 fit still passes only 8/24
+existing shaded gates.
+
+**Next architecture bet:** keep coverage and material support explicit, and
+represent spatially varying radiance with compact local coefficient fields.
+First test a conventional low-order basis using the same source and observations;
+a learned residual must beat that control jointly on rendered quality, complete
+runtime and actual/requested memory. For G4, test directly rasterized compact
+coverage/depth/material patches; repeated original-surface traversal remains
+retired. Further material-moment fitting is not justified by this result.
+
+Original Wrela implementation; existing evaluator
+[citations](citations.md#neural-reconstruction-instrument) apply. No external
+implementation or model was imported. Evidence on Pop!_OS:
+build/neural-evidence/source-material-basis-v1.
+Manifest SHA-256: `822b9c163dcc10881af528c1da7bebabd13c18ad911d003c4f65096fb8c44356`.

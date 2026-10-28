@@ -2796,3 +2796,25 @@ First corrected comparison 12.30 minutes;
 decision 13.70 minutes. One repair, no training/new references.
 Retire rectangle proxies with per-fragment source traversal; restore runtime.
 [Full quality/runtime/memory evidence](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal).
+
+### AMD source material basis retention (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent 4e78b3ae plus archived sources.
+Four public 192×108 clips, 32 frames, 1×–4×: at4× raw-factor FLIP0.17217554,
+LPIPS0.19584559, mean PSNR18.10427dB; guided material basis FLIP0.00200035,
+LPIPS4.85658e-8, PSNR87.14079dB. Adds authored material-region inputs;
+this is a conventional specialization, not a fixed-input/neural win.
+Full1080p4×case1 GPU median/p95: raw-factor10.75508/12.03020ms,
+guided1.60788/1.90288ms. Requested live/peak92,013,084/100,307,484B
+versus48,045,912/56,340,312B. Actual guided DRM VRAM/GTT145,371,136/
+18,608,128B; browser PSS537,577,472B, whole-client, not asset residency.
+Three paired guidance changes+1.43584/-0.21874/+1.61796% are inconclusive;
+retain for fixed cold missing-colour quality with unchanged allocation.
+Targeted cases19/53 improve worst-frame FLIP0.03487/0.04820 to0/0.000305.
+All source samples, selection, coverage integration, common textures/scratch,
+motion and composite counted. This fixture has no wood/sorting workload.
+Initial assessment13.94min; decision35.74min.
+Two follow-ups, zero training, two justified existing-catalog reference cases.
+Frozen models/goals unchanged. 3,200 parity files and cut/source checks pass.
+[Full comparison and limitations](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family).

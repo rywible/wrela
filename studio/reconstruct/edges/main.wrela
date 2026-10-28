@@ -20,14 +20,48 @@ use std::gpu::{
 }
 
 @fragment
-fn sampled(p: FragCoord, f: Field, tick: u32, jitter: vec2, scale: vec2) -> WithDepth<vec4> {
-    let at = (p.position.xy - jitter) / scale
+fn sampled(
+    p: FragCoord,
+    f: Field,
+    tick: u32,
+    jitter: vec2,
+    scale: vec2,
+    width: u32,
+    guided: u32,
+) -> WithDepth<vec4> {
+    let at = source_basis::observation_point(
+        p.position.xy,
+        width,
+        jitter,
+        scale,
+        tick,
+        vec4(f.period, f.width, f.offset, f.speed),
+        f.checker,
+        guided,
+    )
     WithDepth { color: point(f, at, tick), depth: if front_at(f, at, tick) { 0.5 } else { 0.25 } }
 }
 
 @fragment
-fn moved(p: FragCoord, f: Field, tick: u32, jitter: vec2, scale: vec2) -> vec4 {
-    let at = (p.position.xy - jitter) / scale
+fn moved(
+    p: FragCoord,
+    f: Field,
+    tick: u32,
+    jitter: vec2,
+    scale: vec2,
+    width: u32,
+    guided: u32,
+) -> vec4 {
+    let at = source_basis::observation_point(
+        p.position.xy,
+        width,
+        jitter,
+        scale,
+        tick,
+        vec4(f.period, f.width, f.offset, f.speed),
+        f.checker,
+        guided,
+    )
     if front_at(f, at, tick) { vec4(f.speed * scale.x, 0.0, 0.5, 1.0) } else { vec4(0.0) }
 }
 
@@ -99,6 +133,9 @@ pub struct State {
     raw_source: bool,
     raw_indexed: bool,
     raw_factorized: bool,
+    source_basis: bool,
+    basis_choices: GpuBuffer<u32>,
+    basis_palette: GpuBuffer<vec4>,
     raw_heads: GpuBuffer<u32>,
     raw_links: GpuBuffer<u32>,
     exported_raw_index: GpuBuffer<u32>,
@@ -173,6 +210,9 @@ pub fn init() -> State {
         raw_source: false,
         raw_indexed: false,
         raw_factorized: false,
+        source_basis: false,
+        basis_choices: buffer(1),
+        basis_palette: buffer(1),
         raw_heads: buffer(1),
         raw_links: buffer(1),
         exported_raw_index: buffer(1),
@@ -249,6 +289,10 @@ fn resize(s: mut State, width: u32, height: u32) {
         s.raw_links = buffer(w * h * raw::HISTORY)
     }
     if s.raw_factorized { s.raw_kernel = buffer(16) }
+    if s.source_basis {
+        s.basis_choices = buffer(source_basis::groups(w, h) * 3)
+        s.basis_palette = buffer(3)
+    }
     s.raw_count = 0
     s.patch_frames = 0
     if s.patch_enabled { s.patch_cells = buffer(w * h) }
@@ -295,14 +339,58 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     draw(
         p,
         full.bind(z: 0.5),
-        sampled.bind(f, tick: s.tick, jitter: jitter, scale: scale),
+        sampled.bind(
+            f,
+            tick: s.tick,
+            jitter: jitter,
+            scale: scale,
+            width: w,
+            guided: u32(s.source_basis && source_basis::GUIDED),
+        ),
         vertices: 3,
         depth: Depth { compare: Compare::Always, write: true },
     )
     p.end()
     let p = begin_pass(mut s.motion)
-    fullscreen(p, moved.bind(f, tick: s.tick, jitter: jitter, scale: scale))
+    fullscreen(
+        p,
+        moved.bind(
+            f,
+            tick: s.tick,
+            jitter: jitter,
+            scale: scale,
+            width: w,
+            guided: u32(s.source_basis && source_basis::GUIDED),
+        ),
+    )
     p.end()
+    if s.source_basis {
+        assert(width >= 32 && height >= 32, "source basis requires in-frame material probes")
+        label("source material observations")
+        dispatch(
+            source_basis::select_observations.bind(
+                s.scene,
+                s.depth,
+                jitter,
+                scale,
+                f.checker,
+                s.tick,
+                vec4(f.period, f.width, f.offset, f.speed),
+                mut s.basis_choices,
+            ),
+            groups: source_basis::groups(w, h),
+        )
+        dispatch(
+            source_basis::update_palette.bind(
+                s.scene,
+                s.basis_choices.items(),
+                u32(s.reset),
+                s.tick,
+                mut s.basis_palette,
+            ),
+            over: 3,
+        )
+    }
     if s.raw_enabled {
         if s.reset { s.raw_count = 0 }
         s.raw_count = min(s.raw_count + 1, raw::HISTORY)
@@ -494,7 +582,20 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     label(if s.patch_enabled { "patch decode" } else { "temporal control" })
     let p = begin_pass(mut s.current)
-    if s.patch_enabled {
+    if s.source_basis {
+        fullscreen(
+            p,
+            source_basis::reconstruct.bind(
+                s.scene,
+                s.basis_palette.items(),
+                s.tick,
+                jitter,
+                scale,
+                vec4(f.period, f.width, f.offset, f.speed),
+                f.checker,
+            ),
+        )
+    } else if s.patch_enabled {
         if s.patch_history > 0.0 && s.patch_source == 1 {
             fullscreen(
                 p,
@@ -749,13 +850,14 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 5 && !s.rgb_enabled && s.width == 0)
-    s.raw_enabled = mode == 1 || mode >= 3
-    s.raw_source = mode >= 3
+    assert(mode <= 6 && !s.rgb_enabled && s.width == 0)
+    s.raw_enabled = mode == 1 || (mode >= 3 && mode <= 5)
+    s.raw_source = mode >= 3 && mode <= 5
     s.raw_indexed = mode == 4
     s.raw_factorized = mode == 5
+    s.source_basis = mode == 6
     s.patch_enabled = mode == 2
-    if s.raw_enabled { s.collect_rows = false }
+    if s.raw_enabled || s.source_basis { s.collect_rows = false }
 }
 
 /// Observation only, after capture. Its RGBA tags and motion/depth are not display pixels.
@@ -959,4 +1061,12 @@ pub fn publish_raw_prepared(s: mut State) -> u32 {
     s.exported_raw_prepared = buffer(s.raw_prepared.len())
     copy(from: s.raw_prepared.items(), to: s.exported_raw_prepared.items_mut())
     s.raw_prepared.len()
+}
+
+// Observation only after capture; no reference data feeds source-basis reconstruction.
+pub fn publish_basis(s: mut State) -> u32 {
+    assert(s.source_basis && !s.collecting && s.captured_count == 1)
+    s.exported_source = buffer(3)
+    copy(from: s.basis_palette.items(), to: s.exported_source.items_mut())
+    3
 }

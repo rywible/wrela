@@ -1,0 +1,216 @@
+// Explicit specialization of the authored slat/checker material program.
+// RGB enters only through observed low-resolution samples, never source colours or truth.
+use std::gpu::{
+    Atomics, DepthTexture, FragCoord, GlobalId, LocalId, Rgba16Float, SharedAtomics, Slots, Texture,
+    WorkgroupId,
+}
+
+pub fn groups(width: u32, height: u32) -> u32 {
+    (width * height + 63) / 64
+}
+
+fn background_class(at: vec2, period: f32) -> u32 {
+    let cell = floor(at / period)
+    let sum = cell.x + cell.y
+    if sum - floor(sum * 0.5) * 2.0 < 1.0 { 1 } else { 2 }
+}
+
+@compute(64)
+pub fn select_observations(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    jitter: vec2,
+    scale: vec2,
+    checker: f32,
+    tick: u32,
+    shape: vec4,
+    out: mut Atomics<u32>,
+    local: mut SharedAtomics<3>,
+    id: GlobalId,
+    lid: LocalId,
+    group: WorkgroupId,
+) {
+    if lid.x < 3 { local.store(lid.x, 0xffffffff) }
+    local.barrier()
+    if id.x < scene.width() * scene.height() {
+        let x = id.x % scene.width()
+        let y = id.x / scene.width()
+        let at = observation_point(
+            vec2(f32(x), f32(y)) + vec2(0.5),
+            scene.width(),
+            jitter,
+            scale,
+            tick,
+            shape,
+            checker,
+            u32(GUIDED),
+        )
+        let material = if depth.load(x, y) > 0.375 { 0 } else { background_class(at, checker) }
+        let _ = local.min(material, id.x)
+    }
+    local.barrier()
+    if lid.x < 3 { out.store(group.x * 3 + lid.x, local.load(lid.x)) }
+}
+
+pub fn retained(previous: vec4, reset: u32, tick: u32) -> bool {
+    reset == 0 && previous.w > 0.0 && f32(tick + 1) - previous.w < 16.0
+}
+
+@compute(3)
+pub fn update_palette(
+    scene: Texture<Rgba16Float>,
+    choices: [u32],
+    reset: u32,
+    tick: u32,
+    palette: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 3 { return }
+    for group in 0..groups(scene.width(), scene.height()) {
+        let sample = choices[group * 3 + id.x]
+        if sample != 0xffffffff {
+            let rgb = max(scene.load(sample % scene.width(), sample / scene.width()).rgb, vec3(0.0))
+            palette[id] = vec4(rgb, f32(tick + 1))
+            return
+        }
+    }
+    if !retained(palette[id], reset, tick) {
+        palette[id] = vec4(max(scene.load(x: 0, y: 0).rgb, vec3(0.0)), 0.0)
+    }
+}
+
+// Explicitly clip checker cells and subtract opaque slat intervals.
+// This uses boundary intersections, independently of the reference antiderivative.
+pub fn weights(at: vec2, tick: u32, shape: vec4, checker: f32) -> vec3 {
+    let shift = shape.z + shape.w * f32(tick)
+    let first = floor((at.x - shift) / shape.x)
+    var intervals = [vec2(0.0); 2]
+    var front = 0.0
+    for k in 0..2 {
+        let left = (first + f32(k)) * shape.x + shift
+        let a = max(at.x, left)
+        let b = min(at.x + 1.0, left + shape.y)
+        intervals[k] = vec2(a, max(a, b))
+        front += max(b - a, 0.0)
+    }
+    let cell = floor(at / checker)
+    var bright = 0.0
+    for x in 0..3 {
+        let left = (cell.x + f32(x)) * checker
+        let lo = max(at.x, left)
+        let hi = min(at.x + 1.0, left + checker)
+        var width = max(hi - lo, 0.0)
+        for k in 0..2 {
+            width -= max(min(hi, intervals[k].y) - max(lo, intervals[k].x), 0.0)
+        }
+        for y in 0..3 {
+            let bottom = (cell.y + f32(y)) * checker
+            let height = max(min(at.y + 1.0, bottom + checker) - max(at.y, bottom), 0.0)
+            let sum = cell.x + cell.y + f32(x + y)
+            if sum - floor(sum * 0.5) * 2.0 < 1.0 { bright += max(width, 0.0) * height }
+        }
+    }
+    let covered = clamp(front, 0.0, 1.0)
+    let light = clamp(bright, 0.0, 1.0 - covered)
+    vec3(covered, light, 1.0 - covered - light)
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    scene: Texture<Rgba16Float>,
+    palette: [vec4],
+    tick: u32,
+    jitter: vec2,
+    scale: vec2,
+    shape: vec4,
+    checker: f32,
+) -> vec4 {
+    let w = weights(floor(p.position.xy), tick, shape, checker)
+    let rgb = palette[0].rgb * w.x + palette[1].rgb * w.y + palette[2].rgb * w.z
+    let xy = clamp(
+        vec2i(floor(p.position.xy * scale + jitter)),
+        vec2i(0),
+        vec2i(i32(scene.width()) - 1, i32(scene.height()) - 1),
+    )
+    vec4(rgb, scene.load(u32(xy.x), u32(xy.y)).a)
+}
+
+@test
+fn clipped_material_basis_matches_independent_integral() {
+    for index in [1, 6, 13, 23, 8, 71] {
+        let f = field::case(index)
+        for tick in [0, 1, 15, 31] {
+            for at in [vec2(-2.0, -1.0), vec2(0.0), vec2(7.0, 4.0), vec2(191.0, 107.0)] {
+                let w = weights(at, tick, vec4(f.period, f.width, f.offset, f.speed), f.checker)
+                let rgb = f.front * w.x + f.light * w.y + f.dark * w.z
+                let error = abs(rgb - field::pixel(f, at, tick).rgb)
+                assert(max(error.x, max(error.y, error.z)) < 0.0001)
+                assert(min(w.x, min(w.y, w.z)) >= 0.0 && abs(w.x + w.y + w.z - 1.0) < 0.00001)
+            }
+        }
+    }
+}
+
+@test
+fn missing_material_never_survives_cut_or_history_limit() {
+    let previous = vec4(4.0, 1.0, 0.0, 11.0)
+    assert(retained(previous, reset: 0, tick: 10))
+    assert(retained(previous, reset: 0, tick: 25))
+    assert(!retained(previous, reset: 0, tick: 26))
+    assert(!retained(previous, reset: 1, tick: 11))
+    assert(!retained(vec4(0.0), reset: 0, tick: 0))
+}
+
+// Three in-frame representatives of the supported source material regions.
+// These choose where to evaluate the ordinary source shader, not its RGB values.
+pub const GUIDED: bool = true
+
+pub fn representative(material: u32, tick: u32, shape: vec4, checker: f32) -> vec2 {
+    let shift = shape.z + shape.w * f32(tick)
+    let phase = shift - floor(shift / shape.x) * shape.x
+    if material == 0 { return vec2(phase + shape.y * 0.5, checker * 0.5) }
+    let x = phase + (shape.y + shape.x) * 0.5
+    let column = floor(x / checker)
+    let odd = column - floor(column * 0.5) * 2.0
+    let row = if material == 1 { odd } else { 1.0 - odd }
+    vec2(x, (row + 0.5) * checker)
+}
+
+pub fn observation_point(
+    pixel: vec2,
+    width: u32,
+    jitter: vec2,
+    scale: vec2,
+    tick: u32,
+    shape: vec4,
+    checker: f32,
+    guided: u32,
+) -> vec2 {
+    let index = u32(pixel.y) * width + u32(pixel.x)
+    if guided != 0 && index < 3 { representative(index, tick, shape, checker) } else {
+        (pixel - jitter) / scale
+    }
+}
+
+@test
+fn representatives_are_visible_in_frame_and_cover_each_material() {
+    for index in 0..field::CASES {
+        let f = field::case(index)
+        for tick in [0, 1, 7, 15, 31, 300] {
+            for material in 0..3 {
+                let p = representative(
+                    material,
+                    tick,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    f.checker,
+                )
+                assert(p.x >= 0.0 && p.y >= 0.0 && p.x < 32.0 && p.y < 32.0)
+                if material == 0 { assert(field::front_at(f, p, tick)) } else {
+                    assert(!field::front_at(f, p, tick))
+                    assert(background_class(p, f.checker) == material)
+                }
+            }
+        }
+    }
+}

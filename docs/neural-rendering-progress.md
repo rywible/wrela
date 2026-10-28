@@ -18,19 +18,21 @@
 
 ## Immediate milestone
 
-[Hardware block rectangles](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal)
-are retired: exact full-frame/corrected banded RGBA, but per-fragment original-
-surface traversal remains too expensive. Corrected eight-row field rendering
-costs 9.21288 ms / 644,532 requested live bytes versus matching conventional
-0.64120 ms / 830,584 bytes. A 22.40% allocation saving costs 14.37× GPU time.
-Cache variant costs 8.04348 ms versus 0.35888 ms. Whole-client residency does
-not establish 16× savings. Initial streamed coordinate defect preserved/repaired;
-frozen fit remains 8/24. No training or new references; runtime restored.
+[Source-guided material basis](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family)
+is retained as an opt-in conventional control for the analytic slat/checker
+family. Four existing clips at 4× improve descriptive FLIP 0.17218 to 0.00200;
+full 1080p GPU median 1.60788 ms and requested live 48,045,912 B. This broader
+source-material input contract is equally available to all methods. Three
+guided existing samples eliminate measured cold missing-colour failures; paired
+runtime is inconclusive and slightly slower, with unchanged allocation.
+No neural, fixed-input, G1–G7 or general 3D rendering win is claimed.
 
-Next decode a genuinely smaller set of explicit coverage/depth/material patches
-and rasterize those surfaces directly. Share decoding across pixels and count
-decoded storage/refresh/fallback. Hardware rectangles around original per-fragment
-traversal do not suffice. Direct drawing of reduced surfaces remains untested.
+G4 remains unresolved: frozen appearance passes 8/24 shaded cases, and no 16×
+quality-matched resident saving is demonstrated. Exact original-surface software
+and rectangle traversal remain retired for excessive full cost. Next separate
+explicit coverage/material support from local radiance coefficients, and compare
+conventional bases before learned residuals. Directly rasterized reduced
+coverage/depth/material patches remain the G4 architecture bet.
 
 ## Evidence recorded so far
 
@@ -2774,3 +2776,16 @@ but full-frame costs 7.37 ms and streamed field 9.21 ms versus source 0.64 ms.
 Retire per-fragment surface traversal; runtime restored; G1–G7 unchanged/unmet.
 [Joint evidence and next bet](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal).
 Manifest: `80a7a1340e0a475872ae8b29a0cd6a8fa0f23f401bc2d2ebf47bd97f0396fba1`.
+
+### Source material basis checkpoint (2026-10-28)
+
+Initial assessment 13.94 minutes; decision
+35.74 minutes. Two follow-ups, zero training; two existing
+catalog counterexamples reused the established reference method. Guided samples
+fix seven cold missing-colour frames; case19 RGB exact, case53 FLIP0.000300726.
+Full1080p GPU1.60788ms, live48,045,912B; paired guidance cost inconclusive.
+Retain this narrow conventional path; G4 and G1–G7 remain unmet.
+3,200 exact retained/frozen files, 768 current palette frames, cut and source
+checks pass. Failures preserved.
+[Quality, complete costs, actual residency and scope](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family).
+Manifest: `822b9c163dcc10881af528c1da7bebabd13c18ad911d003c4f65096fb8c44356`.
