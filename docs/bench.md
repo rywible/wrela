@@ -2371,3 +2371,36 @@ prior8frozen+8cache captures unchanged. Reuse default checks, no redundant suite
 G1–G7 unchanged/unmet.
 [Full report](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction).
 Evidence build/neural-evidence/g4-rendered-error-attribution-v1 on Pop!_OS.
+
+
+### 2026-10-28 — Geometric opacity heads preserve lighting invariance but lose quality
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent702ddab3 plus archived sources; solo/sequential,64px,60warmup+240measured.
+First complete comparison327.1s,
+decision605.9s; zero follow-up optimizations.
+Two1200-step rendered-coverage fits; no material-moment fitting/new shaded truth.
+
+Equal-input/equal-byte33-parameter polynomial and ReLU4 opacity predictors run
+inside the primitive vertex path, radiance/support frozen. Both preserve exact
+lighting-invariant coverage and add128requested bytes with no image scratch.
+Both fail quality:5/24 vs frozen8/24, zero/12 on view excluded from fitting.
+Polynomial39.867820dB/0.01522767FLIP/0.00200208LPIPS; neural39.451052dB/
+0.01581269/0.00231367. Neural worst boundaryp99 rises1.414 to2pixels.
+
+Complete paced GPU95/99 polynomial0.282/0.286ms, neural0.280/0.283ms,
+frozen0.269/0.270ms, source1.084/1.088ms. Saturated medians
+0.07036/0.06976/0.06820/0.27780ms. Requested engine bytes316,676candidate/
+316,548frozen/1,466,076source, only4.630x; no demonstrated16x physical saving.
+DRM/PSS and complete CPU/completion costs recorded; no paired speedup claim.
+
+Initial parity failure preserved; one differing wood sample was resolved through
+native readback before fitting. ActualGPU/Torch predictors agree within6.855e-7
+across1897primitives,2views,2models.8frozen+8cache images unchanged.
+Retire scalar-opacity correction; restore prior runtime and reuse default checks.
+Next: source-guided support/visibility changes at smaller payload, judged by
+shaded images with lighting invariants and equally informed conventional controls.
+G1–G7 unchanged/unmet.
+[Full report](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality).
+Evidence build/neural-evidence/g4-geometric-coverage-v1 on Pop!_OS.

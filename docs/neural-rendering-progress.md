@@ -18,26 +18,24 @@
 
 ## Immediate milestone
 
-The [rendered-error and joint-correction comparison](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction)
-requires a representation change. A perceptually trained CNN improves numeric
-passes from frozen8/24 to14/24; a conventional linear filter reaches13/24 with
-fewer parameters and lower measured cost. Both pass only5/12 on the view excluded
-from fitting. Lighting also incorrectly changes their predicted coverage.
+The [geometric-opacity comparison](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality)
+rejects the next small-head approach too. Equal-input/equal-byte polynomial and
+ReLU4 predictors preserve exact coverage invariance across lighting and add only
+128requested bytes, with no extra image target. But both fall from frozen8/24 to
+5/24 shaded cases and zero/12 on the view excluded from fitting. No model promoted.
 
-The final CNN requests384,420engine representation/scratch bytes versus
-1,466,092source control, only3.814x; actual resident savings are unproved.
-Complete saturated GPU median is0.161ms versus linear0.103ms and frozen0.068ms.
-Retire joint RGBA post-correction, preserve every failed source/model/result, and
-restore prior runtime4e07e0c1/54aaf879 byte-for-byte. No default allocation change.
-First executable comparison799.3s; decision1558.9s; two targeted experiments,
-3,600 rendered-loss steps, no material-moment fitting or new shaded truth.
+Complete neural GPU saturated median0.06976ms versus frozen0.06820ms; requested
+engine bytes316,676 versus source1,466,076, only4.630x and no16x actual resident
+saving. Two1200-step coverage fits, no new shaded references. One native wood
+sample mismatch was resolved before fitting; failed precheck preserved.
+First assessment327.1s, decision605.9s; no follow-up tuning was warranted.
+Prior runtime702ddab3/54aaf879 restored exactly; no new default allocations.
 
-Next architecture bet: geometry/visibility-only coverage separated from conditional
-visible-surface radiance inside a compact representation. Use Wrela's source
-ownership, view and sampling footprint for equally informed conventional and learned
-candidates at the same byte budget. First change only coverage with radiance frozen;
-require lighting invariance, rendered quality and complete AMD runtime/residency.
-G1–G7 remain unchanged and unmet.
+Next: change local support/ordered visibility at a materially smaller payload,
+using source ownership and sampling knowledge equally for conventional and learned
+alternatives. Judge shaded images with lighting-invariant coverage as a constraint.
+Do not repeat scalar-opacity heads, coverage-only proxy optimization or full-image
+postfilters. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2424,3 +2422,18 @@ Next: separate light-invariant geometry coverage from conditional radiance insid
 the representation, with equal-input/equal-byte conventional controls.
 [Report](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction).
 Manifest SHA-256: `b303fcfb330ca9eca5b5284a304d37edaa712e93c70fecd8f4e1b87003f1f988`.
+
+
+### Geometric scalar-opacity correction is retired
+
+Matched33-parameter conventional polynomial and neuralReLU4: both5/24 versus
+frozen8/24, zero/12 on the view excluded from fitting. Lighting invariant exact;
+only128additional requested bytes, no new target. GPU saturated medians
+0.07036/0.06976ms versus frozen0.06820ms. Requested engine bytes316,676,
+4.630x source control;16x actual resident reduction unproved. No rendering win.
+Retire this head after the initial complete comparison; zero follow-up tuning.
+Native predictor conformance max6.855e-7;8frozen+8cache images unchanged.
+Prior runtime restored, all failures preserved. Next support/visibility change
+must reduce payload and be judged by shaded images with equally informed controls.
+[Report](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality).
+Manifest SHA-256: `1e31da11ddbce856e8f7ffd2a0cea0e6c134af52c70f7e2255e2c0befb1bf081`.

@@ -2871,3 +2871,171 @@ and unmet.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-rendered-error-attribution-v1.
 Manifest SHA-256: `b303fcfb330ca9eca5b5284a304d37edaa712e93c70fecd8f4e1b87003f1f988`.
+
+
+## Geometric opacity predictors: invariant silhouettes do not recover shaded quality
+
+**Decision: retire the tested shared scalar-opacity predictor as a G4 optimization.**
+Keep lighting-invariant coverage as a design constraint, but change spatial support
+and visibility rather than tuning this head. The conventional and neural candidates
+both fall from the frozen model's 8/24 to 5/24 passing shaded cases, and from 3/12
+to zero on the view excluded from fitting.
+
+Both candidates eliminate the preceding postfilter's lighting-dependent silhouette
+and full-image scratch. Each has 33 active float32 parameters in a 144-byte GPU
+buffer, only 128 bytes beyond the frozen control's dummy buffer. That is an
+execution improvement over the rejected postfilter, **not a rendering win**:
+quality is worse, the base representation remains the same size, and actual
+16x residency savings are unproved.
+
+Solo Pop!_OS start 2026-10-28T00:21:44.496826+00:00; first complete four-way AMD comparison
+2026-10-28T00:27:11.548576+00:00 (327.1s elapsed);
+decision 2026-10-28T00:31:50.358018+00:00 (605.9s).
+No follow-up optimization was warranted or used after these first measurements.
+Total fitting: 2,400 rendered-coverage steps; no material-moment fitting or new
+shaded references. The frozen 106,232-byte explicit primitive payload is unchanged.
+
+### Matched inputs and bytes, integrated in the existing renderer
+
+Both predictors receive the same six geometric features: normalized primitive
+center height, mean-normal vertical component, normal/view dot product, projected
+standard deviations x/y times 16, and projected xy correlation. No lighting,
+radiance, view ID or reference image is available to either at runtime.
+
+The conventional function contains a constant, six linear features, all 21
+quadratic pairs and cubes of the first five features: 33 coefficients.
+The neural function has six inputs, four ReLU hidden units and one output:
+24 input weights, four hidden biases, four output weights and one output bias.
+Both use 33 float32 values plus three padding values, exactly 144 bytes.
+
+Output is a log optical-density multiplier clamped to [-1,1], exponentiated
+inside the vertex shader. It changes the primitive's optical mass only.
+Primitive positions, covariance/support, ordering, material/radiance attributes,
+wood, four visibility samples and compositing remain frozen. The shader evaluates
+the predictor for the existing six vertices per primitive; this cost is measured.
+There is no new output target, hidden activation image or workgroup-shared array.
+
+Fit each model for 1,200 Adam steps against coverage from existing AA64 view0,
+selecting by unaugmented training-view MSE at 50-step checkpoints. The polynomial
+uses learning rate 0.01; the neural model 0.005 with deterministic seed903.
+Both select step1200. They reduce analytic training MSE from 0.000703109 to
+0.000670834 and 0.000675545 respectively, but this does not improve complete
+shaded quality. View1 is excluded from fitting and checkpoint selection, while
+remaining a previously examined public view, not a sealed G4 holdout.
+
+### A necessary parity check, not expanded reference infrastructure
+
+The first coverage precheck stopped before any fitting: analytic coverage differed
+from the native frozen output by 0.049255 at one view0 pixel. A bounded native
+readback of the existing indexed wood found exactly one different subpixel
+coverage value versus the old CPU wood cache. View1 had no differences.
+
+The fitter now reuses native four-sample wood coverage. Its zero-correction
+maximum discrepancy falls to 0.002324/0.002536 across the two views; candidate
+discrepancies remain <=0.002591. The sparse float density sum is not the native
+half-float blend path, so this is a disclosed analytic fitting approximation,
+not exact renderer conformance. Decisions use native rendered images.
+
+Independently, all 1,897 predictor coefficients on both views for both models
+match Torch within 6.855e-7 on AMD. All four light repeats produce identical
+coefficients. This separates actual kernel correctness from the renderer's
+floating-point accumulation approximation.
+
+The failing precheck, its source and log are preserved. The additional captures
+are unshaded current-runtime wood samples and predictor readbacks; they are not
+new high-quality source references. Existing AA64 shaded truth is reused unchanged.
+
+### Shaded quality and silhouettes
+
+Same existing 64x64 fixture: two views, four analytic lights, three backgrounds,
+exposure0.62, sRGB, LDR FLIP at67pixels/degree and AlexNet LPIPSv0.1.
+Metric sources and rights remain in [citations](citations.md).
+Every numeric case must satisfy PSNR loss <=0.25dB and both perceptual metrics
+<=1.05x, using the established 1e-4 denominator floor.
+
+| Candidate | Mean PSNR dB | FLIP | LPIPS | Cases /24 | Training view /12 | Evaluation view /12 | Coverage MAE | Worst boundary p99 pixels |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 40.295971 | 0.01300193 | 0.00249104 | 24 | 12 | 12 | 0.01005954 | 2.000 |
+| Frozen explicit fit | 40.127682 | 0.01234846 | 0.00188937 | 8 | 5 | 3 | 0.00883219 | 1.414 |
+| Conventional polynomial | 39.867820 | 0.01522767 | 0.00200208 | 5 | 5 | 0 | 0.00912901 | 1.414 |
+| Neural, four hidden units | 39.451052 | 0.01581269 | 0.00231367 | 5 | 5 | 0 | 0.00976873 | 2.000 |
+
+Counts are identical against archived forward-source and packed-mask controls.
+The current source-cache control receives the same authored fields, source,
+shading and useful information. The eight new frozen and eight new source-cache
+captures are byte-identical to earlier measurements.
+
+All four candidates now preserve coverage exactly across all four lights:
+maximum alpha change0, no 0.5-threshold crossings. This establishes the fixture's
+lighting invariant, not motion/trail or complete G3 behavior. The neural model
+nevertheless worsens the worst boundary p99 from1.414 to2pixels. Enforcing one
+physical property does not establish image quality.
+
+### Complete runtime and actual memory observations
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS. Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent702ddab3 plus archived sources.
+Sequential measurements:60warmup+240measured frames.
+
+GPU spans include primitive decoding/prediction, exact indexed wood, visibility,
+resolve and final compositing. CPU spans include per-frame sorting and order upload
+for frozen/corrected paths, view/light updates and command recording. The source
+control uses stable source order, compact leaf coverage cache, sixteen-sample
+ID/depth visibility and deferred shading. All steady costs are included in their
+respective GPU/CPU scopes. Initialization is excluded from steady timing and its
+requested allocation peak retained. Dynamic geometry edits remain untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to last GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 1.084/1.088 | 0.278/0.421 | 0.681 | 4.442/4.590 |
+| Frozen explicit fit | 0.269/0.270 | 0.068/0.079 | 0.992 | 4.755/4.890 |
+| Conventional polynomial | 0.282/0.286 | 0.070/0.074 | 1.070 | 4.880/5.062 |
+| Neural, four hidden units | 0.280/0.283 | 0.070/0.082 | 1.019 | 4.661/4.823 |
+
+Single sequential runs; no paired speedup claim or power-state explanation.
+Completion includes browser/driver notification, not photon latency.
+Additional timing repetitions cannot rescue the failed quality and compression.
+
+| Candidate | Engine persistent representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 1,466,076 | 1,875,676/1,892,060 | 17,670,144/9,936,896 | 485,529,600 |
+| Frozen explicit fit | 316,548 | 726,148/742,532 | 17,301,504/9,838,592 | 476,138,496 |
+| Conventional polynomial | 316,676 | 726,276/742,660 | 17,367,040/9,838,592 | 477,351,936 |
+| Neural, four hidden units | 316,676 | 726,276/742,660 | 17,367,040/9,740,288 | 478,170,112 |
+
+Engine bytes exclude the same409,600common output/upload/uniform/screen bytes;
+all-live includes them. Active representation, ordering, indexed wood, predictor
+weights, visibility, cache and fallback/dummy allocations are counted.
+Both heads add128requested bytes over the control, with no new image scratch.
+The unchanged frozen primitive payload itself remains106,232bytes.
+
+Candidate requested engine compression against the fast source control is only
+4.630x. DRM/PSS are actual whole-client residency snapshots, not per-asset physical
+allocations or transient physical peaks; do not sum UMA pools. Private spills,
+compiled shaders and driver caches are not separately attributable. No16x actual
+resident saving is demonstrated.
+
+### Retirement and next consequential question
+
+Do not keep optimizing this shared scalar-opacity function or its coverage-only
+loss. It cannot change support, spatial overlap, order or the underlying payload,
+and neither fitted form preserves the frozen image quality. The initial complete
+comparison is already decisive; zero follow-up tuning trials were used.
+
+Keep light-invariant coverage as a constraint. The next representation bet is
+source-guided local support and ordered visibility, judged by shaded image losses
+as well as silhouette invariants. Give conventional and learned alternatives the
+same source ownership, geometry and sampling information. The next experiment
+must test an actual support/visibility change at a materially smaller payload,
+not another scalar head or full-image postfilter.
+
+All failed models, weights, measurements, precheck failure and native diagnostic
+sources are preserved. Experimental modules are removed and every tracked runtime
+file restored byte-for-byte to702ddab3/54aaf879. Existing default checks therefore
+remain applicable; no redundant default capture or full suite is claimed.
+No new default allocations. One asset at64px and two known views remains far
+short of the full G4 family/scale/lighting/motion suite. G1–G7 unchanged and unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-geometric-coverage-v1.
+Manifest SHA-256: `1e31da11ddbce856e8f7ffd2a0cea0e6c134af52c70f7e2255e2c0befb1bf081`.
