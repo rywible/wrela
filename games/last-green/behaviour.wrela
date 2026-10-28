@@ -18,7 +18,7 @@ use land::senses::{Awareness, Occluders, Presence, Senses, sense}
 use engine::sim::{SimState, Transform}
 use engine::terrain::{Flat, Terrain}
 use fawn::creature::{skeleton, walker_body}
-use fawns::{HEAD_LIFT, NECK_LEAN, SIZE}
+use fawn::character::{HEAD_LIFT, NECK_LEAN, SIZE}
 use std::hash::StateHash
 use std::math::TAU
 use std::serialize::Serialize
@@ -404,7 +404,7 @@ fn rest_of(name: Text) -> vec3 {
 /// Its palette as `f` stands, in the world less `origin` (render space): its walker's pose
 /// (`gait::palette`, at its size), its neck leaned forward and pitched down by its neck's pitch
 /// about its base, turned there by most of its neck's turn and at the poll by the rest, and its
-/// head lifted at the poll as the lookbook's fawn stands (`fawns::at_rest`).
+/// head lifted at the poll as the lookbook's fawn stands (`fawn::character::at_rest`).
 pub fn palette(f: Fawn, origin: vec3) -> [mat4; MAX_BONES] {
     let s = SKELETON
     let posed = engine::gait::palette(s, BODY, f.walker)

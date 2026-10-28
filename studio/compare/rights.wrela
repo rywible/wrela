@@ -5,15 +5,36 @@
 
 use references::vale::VisualReference
 
-/// Whether `licence` (as a reference's page states it) permits what a review does with a
-/// reference (a copy kept outside the repository, shown to an agent judge with its credit beside
-/// it, resized for display, and published with its credit and notice): a public-domain or CC0
-/// work, or a CC BY or CC BY-SA one with its credit and notice; anything else (unknown, all rights
-/// reserved, a silent page) is link-only and permits none of it.
+/// The licences that permit what a review does with a reference (a copy kept outside the
+/// repository, shown to an agent judge with its credit beside it, resized for display, and
+/// published with its credit and notice), each exactly as a reference's page states it: public
+/// domain, CC0, and CC BY or CC BY-SA at a version Creative Commons published. Anything else
+/// (unknown, all rights reserved, a silent page, a non-commercial or no-derivatives licence) is
+/// link-only and permits none of it.
+pub const PERMITTING = [
+    "Public domain",
+    "CC0",
+    "CC0 1.0",
+    "CC BY 1.0",
+    "CC BY 2.0",
+    "CC BY 2.5",
+    "CC BY 3.0",
+    "CC BY 4.0",
+    "CC BY-SA 1.0",
+    "CC BY-SA 2.0",
+    "CC BY-SA 2.5",
+    "CC BY-SA 3.0",
+    "CC BY-SA 4.0",
+]
+
+/// Whether `licence` is one of `PERMITTING`.
 pub fn permits(licence: str) -> bool {
-    licence.starts_with("CC0") ||
-        licence.starts_with("Public domain") ||
-        licence.starts_with("CC BY")
+    for l in PERMITTING {
+        if licence == l {
+            return true
+        }
+    }
+    false
 }
 
 /// Whether reference `r` may stand in a panel: its permission covers a local copy, an agent
@@ -28,6 +49,12 @@ pub fn eligible(r: VisualReference) -> Option<String> {
     }
     if r.local_file.len() == 0 || r.sha256.len() != 64 {
         return Some(String::from(f"{r.id}: no local copy and hash: link-only, refused"))
+    }
+    // An attributed licence's credit and notice, shown with it.
+    if r.creator.len() == 0 || r.licence_url.len() == 0 || r.source_page.len() == 0 {
+        return Some(
+            String::from(f"{r.id}: no creator, licence URL or source page to credit: refused"),
+        )
     }
     None
 }

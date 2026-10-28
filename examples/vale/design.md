@@ -118,16 +118,21 @@ the ground; every place is **proposed** until §B5's panel freezes the list.
 | D7 | the creature in the wood | (−64.4, 1.4, 58.4) | 14:00 | fair |
 | D8 | the wood under cloud | (150, 1.7, 301.6) | 13:00 | overcast |
 
-The creature's shots (9, 10, D7) hold its place (`Shot::cast` 0) until Part F draws it.
+The creature's shots (9, 10, D7) draw the floor's fawn (`fawn::character`, a young deer, the
+creature the floor casts) standing at rest where the shot looks, facing the eye (`Shot::cast` 0);
+Part F grows the vale's grazer from its genome and gives it its gaits (shot 10's walk toward the
+eye).
 
 ## The walk (`walk.wrela`)
 
-A camera path of 1,200 frames, a step a frame once W begins it and the vale is playable (the bench
-presses W as its 60-frame warmup ends: the scene `vale-walk`). It runs 340 m through eight
+A camera path of 1,200 frames, a step a frame once W begins it, playable or not, so every run
+walks the same frames. The bench (the scene `vale-walk`) presses W at frame 240, as the floor's
+walk is scripted: the vale loads at rest and becomes playable first, and its 1,200 measured frames
+(after 60 of warm-up) are 180 at rest and the walk's first 1,020. It runs 340 m through eight
 points, passing within 20 m of six shots' eyes (11, 10, 6, 9, 3, 2), about 17 m/s. The eye goes
 2 m over the ground looking 15 m ahead, at 10:30 in fair weather (**proposed**). A first walk of
 a kilometre (about 50 m/s, begun before the vale was playable) never let the frame become playable
-in Chrome: its near cascade and its probes never settled.
+in Chrome: its near cascade and its probes never settled; nor does this one, begun at frame 60.
 
 ## How it's drawn
 

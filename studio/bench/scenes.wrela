@@ -50,7 +50,7 @@ pub const SCENES: [Scene; 8] = [
 ]
 
 /// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), the vale's
-/// walk begun as the warmup ends (its 1,200 frames the measured ones), or none.
+/// walk begun at frame 240 as the floor's is (the vale loads at rest, then walks), or none.
 pub fn script(name: str) -> Script {
     if name == "clearing-path" {
         return Script::frames()
@@ -76,7 +76,7 @@ pub fn script(name: str) -> Script {
             .key_up(1140, Key::W)
     }
     if name == "vale-walk" {
-        return Script::frames().key_down(60, Key::W).key_up(61, Key::W)
+        return Script::frames().key_down(240, Key::W).key_up(241, Key::W)
     }
     if name == "capybara-run" || name == "capybara-run-large" {
         return Script::frames()

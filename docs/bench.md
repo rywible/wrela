@@ -485,7 +485,8 @@ table is under "2026-10-26: B16" at the end), a sentence each:
 - **The other engines** (Part C, "Other engines on this machine"): three.js, Babylon.js and
   PlayCanvas keep up at 60 Hz with the brief's far sparser content (no frame over 33 ms in
   1,200); three.js's own GPU timing reads 36 ms a sample. (Plan three's B7 found those samples
-  each gathered several frames' work, and re-measured: 9.05 ms a frame; see that section.)
+  each gathered several frames' work, and the scenes' water and Babylon.js's shadows wrong, and
+  re-measured: see that section.)
 
 What B13 left (toolchain 0.6.3), against §0.1's first wording, kept for the record:
 
@@ -990,6 +991,186 @@ equivalence.
 
 ### 2026-10-28: the baseline (B5), today's renderer, toolchain 0.10.0
 
+The vale as Part B leaves it (every switch on, its creature shots with the fawn), its twelve
+evaluation shots at 1920×1080 (`build/vale-b5c/stills`, kept and never regenerated) against
+`references::vale::VALE`'s twelve evaluation references. Eight agent judges in fresh contexts, each
+given the rubric, the pairs and the references' credits and conditions, told to judge by viewing
+alone; all eight passed both calibration pairs (an original against its 3×3 blur passed eight
+times, and against its quarter-resolution copy, each image under a neutral name).
+
+- **Mode:** attributed (each reference's credit, licence, source and conditions shown beside it).
+- **The shots' hash** (SHA-256 over `lookbook.wrela`'s `SHOTS` as JSON, every field of each):
+  `88c877da27abda2b01a81d2777a35b66b533f7c5b82902306b64c2825ede6ca1`.
+- **The references' manifest hash** (every field of each record):
+  `b78df49ef41682168868ef3443f88f0d7a423eaf4f8d0595d938924b551bdaf3`.
+  Both are frozen from here (`studio/compare`'s `FROZEN_SHOTS`, `FROZEN_MANIFEST`): every later panel
+  asserts them.
+- **Order:** seed 5 (`build/vale-b5c/key.json`); every judge's file in `build/vale-b5c/judges/`, the
+  tally in `build/vale-b5c/tally.json`.
+- **Commands:** `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR --
+  build/vale-b5c --a build/vale-b5c/stills --set evaluation --seed 5`, the eight judges, then
+  `wrela tool studio/compare --write ws=. -- build/vale-b5c --tally`.
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.38, 1.12, 1.25, 1.12, 0.62 | 2.50, 3.00, 2.62, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.12, 3.00, 2.25, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.88, 1.88, 2.00, 1.00 | 2.12, 3.00, 2.62, 2.38, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.38, 1.00, 1.00, 0.25, 0.75 | 2.00, 3.00, 2.38, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.75, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.62, 2.00, 0.88 | 2.50, 3.00, 3.00, 2.50, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.88, 1.88, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 1.00, 0.00 | 2.75, 2.88, 2.00, 2.25, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.88, 3.00, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: a pair lost worse than 6 to 2; majority: 0 pairs won or equal (fails). **Fails.**
+
+Ranked losses (the reference's mean less the still's, summed over the pairs):
+
+- artifacts: 26.75
+- colour: 15.88
+- value: 14.38
+- depth: 13.62
+- light: 12.50
+
+Each pair's worst row, and its judges' sentences on it:
+
+- Pair 1, artifacts:
+  - c1: None seen in the photo; the render shows polygon faceting on the log ends, stretched bark texture and hard-edged water cutouts around the trunk.
+  - c2: None seen in the photograph; the render shows stretched bark texture, faceted cylinder silhouettes, logs interpenetrating and a hard-edged water card.
+  - c3: The photograph shows none; the render has faceted cylinder geometry, a water plane slicing through the log and ground, stray translucent shapes, stretched bark textures and spiky branch stubs.
+  - c4: The photo shows no artifacts, while the render shows faceted cylinders, stretched and repeating bark texture, dark outlines and a hard-edged water polygon cutting into the log.
+  - c5: The photo shows none; the render has faceted cylinder silhouettes, stretched bark texture, dark outline seams and a hard-edged water plane cutting the logs.
+  - c6: None seen in the photograph; the render shows smeared, stretched bark textures, faceted log ends and hard-edged water planes cutting through the logs.
+  - c7: None seen in the photograph; the render shows faceted polygon silhouettes, badly stretched bark textures, a hard-edged translucent water sheet over the soil and spikes clipping into the ground.
+  - c8: None seen in the photo; the render shows faceted log ends, stretched texture and a hard-edged water cut-out around the log.
+- Pair 2, artifacts:
+  - c1: The render shows dithered leaf decals, a smeared blotch near the centre and logs hovering above the ground; none seen in the photo.
+  - c2: The render shows floating leaf cards, logs hovering over the ground and blocky shadow shapes; none seen in the photograph.
+  - c3: The render has scattered leaf decals that read as noise, blocky stippled shadows, floating fallen logs and a smudged dark blot mid-frame; the photograph shows none.
+  - c4: The render shows floating leaf cards, dithered shadow edges and sticks crossing oddly, while the photo shows nothing beyond a slightly clipped sky.
+  - c5: The render has stippled leaf-card scatter, dithered foliage edges and floating or intersecting logs; none are seen in the photo.
+  - c6: The render shows stippled, dithered shadow edges, sparse floating leaf cards and logs that hover or clip the ground; none are seen in the photograph.
+  - c7: The render shows dithered checker patterns in the shadows, leaf cards floating over the soil, sticks intersecting the terrain and a smeared blotch at centre; the photograph shows only minor compression.
+  - c8: The render shows stipple dither in sunlit patches, floating leaf cards and a blurred smear on the ground; none seen in the photo.
+- Pair 3, artifacts:
+  - c1: The render shows stippled shadow dithering, repeating bark tiles on the near trunk and a floating stump with roots; none seen in the photo.
+  - c2: The render shows a tiled block pattern on the near bark, stamped decals on the ground, and spiked log stubs; none seen in the photograph.
+  - c3: The render shows a regular stipple pattern on the ground, star-shaped spiky log ends, stamp-like bark and a floating white stump; the photograph shows none.
+  - c4: The render shows repeating bark rectangles on the near trunk, dithered leaf shadows, outlines and odd spiky stumps, while the photo is clean.
+  - c5: The render shows dithered shadow speckle, blocky tiled bark, spiky log stubs and a floating pale stump; none are seen in the photo.
+  - c6: The render shows a tiled, blocky bark texture on the near trunk, a dotted tiling pattern on the floor, a floating white trunk stub and crude star-shaped log ends; none are seen in the photograph.
+  - c7: The render shows a floating stump with leg-like roots, spiky polygon branch stubs, stretched log textures and dot-pattern dithering in the shadows; none are seen in the photograph.
+  - c8: The render shows dithered shadow stipple, brick-like bark tiling and spiked log ends; none seen in the photo.
+- Pair 4, artifacts:
+  - c1: None seen in the photo; the render shows repeating arrow-shaped decals along the right, thin squiggle lines and streaky shadow aliasing.
+  - c2: None seen in the photograph; the render shows stamped triangular decals, thin wiggly lines and smeared shadow banding.
+  - c3: The photograph shows none; the render has arrow-shaped decals along the sunlit edge, squiggly line marks, and stippled, streaky shadows.
+  - c4: The render shows triangular arrow-shaped stamps, black squiggle decals and streaked shadow sampling, and the photo has none.
+  - c5: None are seen in the photo; the render has arrow-shaped decal marks, squiggly dark line patterns and streaky smeared shadows.
+  - c6: None seen in the photograph; the render shows triangular arrow-shaped decals, thin black squiggle lines and smeared, streaked shadow shapes.
+  - c7: None seen in the photograph; the render shows arrow-shaped triangle decals, thin squiggle lines on the surface and streaky, stepped shadow edges.
+  - c8: None seen in the photo; the render shows blocky stepped shadow patterns, arrow-shaped decals and drawn-looking crack lines.
+- Pair 5, value:
+  - c1: The photo spans dark shaded trunks to bright leaves; the render's half-frame of dark mud and pale haze sit in a narrow mid range.
+  - c2: The photograph runs from deep shade to lit leaves; the render's large dark ground and pale haze leave the forms in a narrow band.
+  - c3: The photograph runs from dark shade to sunlit leaves and every trunk reads; the render's foreground is a large field of one muddy mid-tone and the trees sit in a narrow band.
+  - c4: The photo spans dark understorey to lit trunks, while the render's values are compressed into dull mid-tones.
+  - c5: The photo has a full range from dark trunks to lit foliage; the render's large dull ground plane and mid-green foliage compress the values.
+  - c6: The photograph has a full range from shaded trunks to sunlit leaves; the render sits mostly in the mid-tones with a dark, featureless ground slab.
+  - c7: The photograph reads from dark trunks to lit leaves; the render's large ground slab is a single dull midtone and the trunks are uniformly pale.
+  - c8: The photo spans dark trunks to sunlit leaves; the render is dominated by a large flat midtone ground.
+- Pair 6, artifacts:
+  - c1: None seen in the photo; the render shows repeating brick-like bark on the near log, a pale translucent patch mid-frame and dark outlines on the snags.
+  - c2: None seen in the photograph; the render shows blocky tiled bark on the near log, spiky branch stubs and blob-like cloud shapes.
+  - c3: The photograph shows none; the render has blocky, tiled bark on the near log, spiky branch ends, blobby cloud edges and a faint pale patch mid-frame.
+  - c4: The render's near log carries a tiled brick-like bark pattern with outlines, and its blobby clouds and forked dead trunks look synthetic.
+  - c5: The photo shows none; the render has blocky tiled bark on the logs, low-poly log ends and blobby cloud shapes.
+  - c6: None seen in the photograph; the render shows a tiled, brick-like bark texture on the near log, blobby clouds, a smeared plain texture and a pale patch in the mid-distance.
+  - c7: None seen in the photograph; the render shows a repeating brick-pattern log texture, black outlines on silhouettes, a smeared flat plane at the horizon with a pale blotch in it, and puffy cloud cut-outs.
+  - c8: None seen in the photo; the render shows outlined dead trees, brick-patterned bark, blobby cloud shapes and a pinkish patch in the mid-ground.
+- Pair 7, artifacts:
+  - c1: The render shows leaf decals sprayed like stickers, a bluish seam down the trail and stretched texture on the near log; none seen in the photo.
+  - c2: The render shows floating leaf cards, untextured pale trunks, spiked log stubs and a flat-shaded deer; none seen in the photograph.
+  - c3: The render has scattered leaf decals floating over the ground, a low-detail deer, star-shaped log ends and a pale smeared strip along the path; the photograph shows none.
+  - c4: The render shows floating ground-cover leaf cards, a faceted deer, a tiled log and a stray water strip, while the photo has none.
+  - c5: The render has noisy leaf-card scatter, stretched log textures and a flat-shaded low-poly deer; none are seen in the photo.
+  - c6: The render shows black-edged leaf cards, a hovering log, crude star-shaped log ends and a low-detail deer; none are seen in the photograph.
+  - c7: The render shows black leaf cards floating above the soil, a seam strip across the trail, stretched log textures and an unshaded creature; none are seen in the photograph.
+  - c8: The render shows confetti-like floating leaf cards, ground stipple and a pale seam line across the ground; none seen in the photo.
+- Pair 8, artifacts:
+  - c1: The render shows a crude low-poly deer, a hovering log, dithered foliage edges and a few isolated grass sprites; none seen in the photo.
+  - c2: The render shows a plastic-looking flat-shaded deer, floating grass tufts and a smeared foreground ground texture; none seen in the photograph.
+  - c3: The render has a low-poly deer with faceted shading, a fallen log that appears to float, and painterly foliage blotches; the photograph shows none.
+  - c4: The render shows a low-poly deer, smeared ground texture and floating grass sprigs, while the photo is clean.
+  - c5: The render shows a low-poly deer with oversized ears, a smeared ground texture and stippled foliage edges; none are seen in the photo.
+  - c6: The render shows a floating, low-detail deer, blotchy foliage clumps and a repeating bark texture; none are seen in the photograph.
+  - c7: The render shows a low-polygon deer with a toon-like shadow patch, blotchy foliage clusters and grass blades floating on bare soil; none are seen in the photograph.
+  - c8: The render shows a dark blotch on the deer, floating grass cards and smeared foreground ground texture; none seen in the photo.
+- Pair 9, artifacts:
+  - c1: None seen in the photo; the render shows dark outline strokes on trunks, a stray blue vertical line at the right and spiky stub branches on the logs.
+  - c2: None seen in the photograph; the render shows dark outlines around trunks, spiked log stubs and a thin blue vertical leak at right.
+  - c3: The photograph shows none; the render has hard dark outlines around the trunks, spiky star-shaped log ends, and a stray bluish sliver at the right edge.
+  - c4: The render shows black outlines on trunks, fog halos at silhouette edges, blotchy foliage and spiky log ends.
+  - c5: The photo shows none; the render has dark toon-like outlines on the trunks, spiky log stubs, tiled bark and dithered foliage edges.
+  - c6: None seen in the photograph; the render shows black outline strokes around trunks and logs, a tiled log texture, a spiked log end and a blue sliver at the right edge.
+  - c7: None seen in the photograph; the render shows dark ink-like outlines on trunks, a halo around the main trunk, spiky polygon log stubs and a stray blue vertical line at the right edge.
+  - c8: None seen in the photo; the render shows black outlines on trunks and logs, faceted spiky log ends and blocky leaf clumps.
+- Pair 10, artifacts:
+  - c1: The render shows heavy pixelated shadow-map aliasing, a flat translucent quad for the waterfall and floating grass blades; none seen in the photo.
+  - c2: The render shows heavily blocky shadow maps, stretched log texture, floating grass blades and a flat translucent water card; none seen in the photograph.
+  - c3: The render has heavily pixelated shadow maps, stretched wall textures, a flat translucent waterfall slab and a blurred bark texture on the log; the photograph shows none.
+  - c4: The render shows heavily pixelated shadow maps, stretched wall texture and a flat translucent card standing in for the waterfall.
+  - c5: The render has severe blocky shadow-map patterns, stretched wall textures, smeared surfaces and floating grass blades; the photo shows none beyond mild sharpening.
+  - c6: The render shows blocky, pixelated shadow maps, stretched wall textures, a flat translucent waterfall sheet and floating grass blades; none are seen in the photograph.
+  - c7: The render shows heavily pixelated, dithered shadow maps, a waterfall reduced to a flat translucent blue card, stretched log textures and floating grass blades; none are seen in the photograph.
+  - c8: The render shows heavy blocky shadow dither, a flat translucent waterfall quad, scribbled crack lines and floating grass cards; none seen in the photo.
+- Pair 11, artifacts:
+  - c1: None seen in the photo; the render shows a magnified, blurred, stretched bark texture and visible polygon facets at the silhouette.
+  - c2: None seen in the photograph; the render shows a blurry, stretched bark texture in repeating bars and a faceted silhouette.
+  - c3: The photograph shows none; the render has a blurred, magnified bark texture, repeating slot tiling and faceted silhouette edges.
+  - c4: The render shows a magnified, blurred and repeating bark texture and a faceted silhouette edge, and the photo has none.
+  - c5: None are seen in the photo; the render has heavily stretched, blurred bark texture and faceted polygon silhouettes.
+  - c6: None seen in the photograph; the render's magnified, blurred bark texture, smeared stripes and faceted silhouette are all plainly visible.
+  - c7: None seen in the photograph; the render shows a heavily magnified, blurred, repeating bark texture and a faceted silhouette.
+  - c8: None seen in the photo; the render shows smeared, stretched magnified bark texture.
+- Pair 12, artifacts:
+  - c1: The render shows tiled brick-like bark, dithered foliage edges and outline strokes on the trunk; none seen in the photo.
+  - c2: The render shows tiled blocky bark, dark outlines on the limbs, stub branches and pixel-clumped foliage; none seen in the photograph.
+  - c3: The render has a blocky, tiled bark texture with hard outlines and blotchy foliage cards with ragged edges; the photograph shows none.
+  - c4: The render's trunk shows a tiled brick-like bark pattern with outlines and its foliage is blotchy, while the photo is clean.
+  - c5: The render has blocky tiled bark, dithered foliage card edges and dark outlines; none are seen in the photo.
+  - c6: The render shows a tiled, brick-like bark texture, dark outlines on the limbs and blotchy foliage clumps; none are seen in the photograph.
+  - c7: The render shows a brick-like tiled bark texture, black outlines on the trunk and blotchy foliage clusters; none are seen in the photograph.
+  - c8: The render shows brick-like bark tiling, dithered leaf-clump edges and black outlines; none seen in the photo.
+
+Judges: 8 used; rejected by the calibration: 0.
+
+**Verdict: fails** (expected). Overall: 0 of 96 judgements prefer the vale or rate the pair equal
+(rule (a): 50 %); every pair is lost 8 to 0 (rule (b): no worse than 6 to 2); no pair is won or equal
+by the judges' median (rule (c): 6 of 12). Hill to climb: pairs won or equal, 0 → 6 of 12 at §H. The
+ranked losses above are the baseline loss record Part G chooses its work from (§G0).
+
+**Two earlier attempts, superseded** (kept for the record; neither is the baseline):
+
+- `build/vale-b5c`'s first, `build/vale-b5` (below): its calibration pairs' files were named
+  `controls/blurred.png` and `controls/quarter.png`, which gave their answers away; its hashes left
+  out fields a judge is shown (a reference's creator, its processing) and a shot's framing (its
+  field of view); its creature shots had no creature; and its tally counted an unresolvable
+  "equal" and a judge's file twice (plan three's Part B council). Its tally was 0 of 96, the
+  same as this one.
+- `build/vale-b5b`: the tool fixed, the fawn drawn; a single 3×3 blur pass proved invisible at
+  the size an agent judge is shown a 1080p still (5 of 10 judges viewing honestly rated it equal;
+  one found the original by comparing files' checksums, the originals then byte copies of a
+  still), so the calibration couldn't separate judges and the panel was laid out again with the
+  stronger blur and marked originals.
+
+#### The first attempt (superseded)
+
+
 The vale as B1 left it, every switch on, its twelve evaluation shots at 1920×1080
 (`build/vale-b5/stills`, kept and never regenerated) against `references::vale::VALE`'s twelve
 evaluation references. Eight agent judges in fresh contexts, each given the rubric, the pairs and
@@ -1219,32 +1400,43 @@ projected. The floor's own walk, which these scenes follow, on this machine: GPU
 18.14 ms, intervals 19.93 / 21.95 / 25.94, 5 of 1,200 frames over 33 ms (B16).
 
 Plan three's B7 fixed what the council found in these scenes (rywible/wrela-others#1's review),
-and these rows replace the 2026-10-26 ones it invalidated. Each engine's GPU span is now the
-same measurement as wrela's own: one timer under all three (`GpuTimer`) gives every pass of a
-frame timestamp writes and takes the frame's first start to its last end, each sample tagged
-with its frame. three.js's own timing had resolved whatever frames were pending into one sample,
-which is why it read 36 ms; Babylon.js's and PlayCanvas's weren't read at all. Each scene's land
-is now sampled at the export's texel centres; its mere is at the export's level (`wrela tool
-export -- water`: −0.482 m, where the scenes had derived −1.09); PlayCanvas's grass is set on the
-land in its vertex shader; and each run is rejected unless it holds the harness's checks (1,201
-frame boundaries, WebGPU, one sample a measured frame, no WebGPU error, and each scene's own:
-the trees upright, the forest in Babylon.js's reflection and refraction, PlayCanvas's 4096² atlas
-of four 2048² cascades and its water out of its own mirror, three.js's normal map uploaded, the
-billboards' bases on the ground, the terrain receiving shadows and casting none).
+and what its own reviews found after (rywible/wrela-others#2), and these rows replace the
+2026-10-26 ones they invalidated.
+
+- **One GPU timer** under all three (`GpuTimer`): every pass of a frame gets timestamp writes,
+  each pass belongs to the frame whose submission carries it (Babylon.js submits some a frame
+  late), and the frame's span is its first start to its last end, as wrela's own. three.js's own
+  timing had resolved whatever frames were pending into one sample (its old 36 ms); Babylon.js's
+  and PlayCanvas's weren't read. Babylon.js's four shadow cascades write no timestamps on Metal
+  (no fragment stage) and lie inside their frames' spans.
+- **Babylon.js drew no trees in its water's targets or its shadow map**: a render target draws
+  only the instances its list holds, and it held the trees' sources alone. Now every tree is in
+  them, the first two levels casting as in the other scenes; its CPU time is what that costs
+  (p50 34 ms: 20,000 instances evaluated for four cascades), and it runs at 30 fps.
+- **The water was a 1 km² lake**: a plane over the whole square at the mere's level flooded the
+  44 % of the land below it, and no tree stood there. It's now the mere (its reach, from the
+  export's `water.json`: −0.482 m, where the scenes had derived −1.09), which the walk never sees:
+  every engine's water draws nothing on the walk (PlayCanvas's mirror camera now renders only while
+  the water's in view, as the others' reflections do).
+- The land is sampled at the export's texel centres; PlayCanvas's grass is set on the land in its
+  vertex shader; Babylon.js's TAA accumulates while the camera moves (its default drops it).
+- Each run is rejected unless it holds the harness's checks: 1,201 frame boundaries, WebGPU, one
+  GPU sample for every measured frame, every pass timed or inside its frame's span, no WebGPU
+  error, and each scene's own (the trees upright and turned, in Babylon.js's targets and drawn
+  there, PlayCanvas's 4096² atlas of four 2048² cascades and its water out of its own mirror, its
+  grass never rewritten, three.js's normal map uploaded, the billboards' bases on the ground, the
+  terrain receiving shadows and casting none). No engine compiled a pipeline in the measured
+  frames. The first frame is the animation frame after that frame's GPU work is done.
 
 Each row is the second of two sustained runs on a warm machine (2026-10-28, toolchain 0.10.0,
-wrela-others `wc3-b7`), in one session, nothing else building. The first runs: three.js 10.20 /
-21.26 / 22.10 ms, 0 over 33 ms; Babylon.js 13.95 / 14.78 / 15.04, 0 over 33; PlayCanvas 12.73 /
-15.94 / 17.25, 44 over 33. PlayCanvas's frames over 33 ms (28 and 44 of 1,200) go with its GPU
-span's tail: its p99 (17.10 and 17.25 ms) is over a refresh, so more than 1 % of its frames can't
-be presented at the next one; which frames those are isn't recorded (the report keeps the
-spans' percentiles).
+wrela-others `wc3-b7`), nothing else building. The first runs: three.js GPU p50 11.02 ms, 0 over
+33; Babylon.js 7.31 ms, 1,187 over 33 (CPU p50 33.86); PlayCanvas 10.58 ms, 0 over 33.
 
 | Engine | Scene | GPU span p50 / p95 / p99 ms | Intervals p50 / p95 / p99 ms | Over 33 ms | Cold first frame ms | Warm first frame ms | Loaded MiB | Measured |
 |---|---|---|---|---|---|---|---|---|
-| Babylon.js 9.32.0 | babylon-walk | 13.76 / 14.90 / 15.34 | 16.67 / 16.67 / 16.67 | 0 | 789 | 761 | 23.7 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine babylon` (build/others/babylon-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
-| PlayCanvas 2.23.3 | playcanvas-walk | 10.32 / 15.51 / 17.10 | 16.67 / 16.67 / 33.34 | 28 | 274 | 257 | 17.5 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine playcanvas` (build/others/playcanvas-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
-| three.js 186 | three-walk | 9.05 / 20.43 / 21.09 | 16.67 / 16.67 / 16.67 | 0 | 407 | 338 | 17.2 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine three` (build/others/three-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
+| Babylon.js 9.32.0 | babylon-walk | 7.16 / 13.79 / 15.97 | 33.33 / 50.00 / 50.00 | 1194 | 1708 | 1733 | 23.7 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine babylon` (build/others/babylon-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
+| PlayCanvas 2.23.3 | playcanvas-walk | 8.97 / 13.97 / 14.14 | 16.67 / 16.67 / 16.67 | 0 | 340 | 303 | 17.5 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine playcanvas` (build/others/playcanvas-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
+| three.js 186 | three-walk | 9.83 / 16.50 / 17.09 | 16.67 / 16.67 / 16.67 | 0 | 532 | 415 | 17.2 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine three` (build/others/three-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
 
 ## Browsers
 
@@ -1566,7 +1758,12 @@ Slowest compiles, leapling (cold):
 |---|---|---|
 | full+shade | 137.83 | 45.4 |
 
-## 2026-10-28, apple metal-3 Apple M4
+## 2026-10-28, apple metal-3 Apple M4: B1.5's first run (superseded)
+
+The vale's first bench, its walk stepping only once the vale was playable, so its measured frames
+held a stationary load of about 40 frames and missed the walk's last 40, and runs sampled
+different stretches of it (plan three's Part B council). Superseded by the run below (W at frame
+240, the walk stepping from it, as the floor's walk is scripted), kept for the record.
 
 | Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -1623,4 +1820,76 @@ Slowest compiles, vale-walk (cold):
 | card+leaf_shade | 27.02 | 93.6 |
 | trace | 26.46 | 95.6 |
 | full+dab_map | 26.38 | 83.9 |
+
+## 2026-10-28, apple metal-3 Apple M4: B1.5, the vale's walk (the *now* of Part C)
+
+The vale loads at rest, W at frame 240, the walk stepping from it every run alike: its 1,200
+measured frames (after 60 of warm-up) are 180 at rest and the walk's first 1,020. Its fawn is
+drawn only in the shots that cast it, not on the walk.
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| vale-walk | 15.96 / 19.70 / 21.40 | 17.81 / 23.15 / 40.14 | 788 / 20 | 0.82 / 2.44 | 20.68 / 29.62 | 489.18 | 4978.83 | 3619.40 | 3.3 | 4173.63 | 0.0 | 781.8 |
+
+Hitches, vale-walk (frames over 33 ms, the five heaviest labels each):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 86 | 89.81 | 0.75 | vegetation 4.37, terrain 4.32, creature 4.20, vegetation prepass 3.58, temporal 3.28 | finish 0.16, cook 0.13, passes 0.04, choose 0.00 | 1032 | 75 |
+| 292 | 68.61 | 0.74 | bloom 28.01, terrain 5.45, creature 5.33, vegetation 5.16, look 4.42 | cook 0.14, present 0.07, passes 0.04, finish 0.01, choose 0.00 | 971 | 382 |
+| 380 | 36.07 | 2.29 | bloom 17.19, vegetation 6.31, terrain 5.95, creature 5.83, vegetation prepass 4.29 | cook 0.94, present 0.10, passes 0.05, choose 0.01, finish 0.01 | 970 | 2703 |
+| 451 | 40.73 | 1.61 | bloom 20.58, vegetation 4.09, vegetation prepass 3.61, terrain 2.89, look 2.82 | cook 0.77, present 0.08, passes 0.03, choose 0.01, finish 0.01 | 962 | 1519 |
+| 458 | 39.40 | 1.06 | bloom 19.58, vegetation 3.49, vegetation prepass 3.00, terrain 2.70, look 2.67 | cook 0.26, present 0.07, passes 0.02, finish 0.01, choose 0.00 | 962 | 1534 |
+| 464 | 36.34 | 1.25 | bloom 23.65, vegetation 3.57, look 3.21, vegetation prepass 2.89, terrain 2.86 | cook 0.27, present 0.12, passes 0.06, choose 0.01, finish 0.00 | 962 | 1245 |
+| 530 | 40.31 | 0.51 | bloom 19.58, look 2.87, vegetation 2.82, clouds 2.54, vegetation prepass 2.37 | cook 0.13, present 0.05, passes 0.02, finish 0.01, choose 0.00 | 959 | 382 |
+| 538 | 39.36 | 0.72 | bloom 28.25, look 3.87, terrain 2.96, creature 2.82, temporal 2.77 | cook 0.17, present 0.09, passes 0.03, choose 0.00, finish 0.00 | 959 | 669 |
+| 568 | 39.76 | 0.54 | bloom 27.68, look 4.88, terrain 2.81, vegetation 2.64, temporal 2.63 | cook 0.13, present 0.06, passes 0.03, choose 0.01, finish 0.00 | 957 | 381 |
+| 599 | 44.52 | 0.44 | bloom 22.38, clouds 5.06, shadows near 4.86, terrain 3.75, creature 3.67 | cook 0.17, present 0.03, passes 0.02, choose 0.00, finish 0.00 | 1037 | 93 |
+| 701 | 34.03 | 0.72 | bloom 17.78, vegetation 6.61, terrain 5.93, creature 5.82, vegetation prepass 5.16 | cook 0.15, present 0.07, passes 0.04, choose 0.01, finish 0.00 | 970 | 382 |
+| 709 | 34.57 | 0.59 | bloom 17.76, vegetation 6.49, terrain 5.92, creature 5.81, vegetation prepass 5.25 | cook 0.14, present 0.05, passes 0.03, finish 0.00, choose 0.00 | 969 | 382 |
+| 785 | 45.13 | 0.62 | bloom 21.83, vegetation 3.60, vegetation prepass 3.20, terrain 3.18, look 3.15 | cook 0.15, present 0.07, passes 0.02, choose 0.00, finish 0.00 | 958 | 669 |
+| 791 | 45.44 | 0.49 | bloom 27.10, look 3.75, vegetation 3.73, terrain 3.25, vegetation prepass 3.25 | cook 0.12, present 0.06, passes 0.01, choose 0.01, finish 0.01 | 958 | 381 |
+| 822 | 44.71 | 0.50 | bloom 23.14, vegetation 3.32, look 3.21, terrain 2.87, clouds 2.79 | cook 0.12, present 0.06, passes 0.02, choose 0.00, finish 0.00 | 960 | 382 |
+| 837 | 42.14 | 0.63 | bloom 22.74, vegetation 3.64, look 3.17, vegetation prepass 3.12, terrain 3.07 | cook 0.14, present 0.07, passes 0.02, choose 0.01, finish 0.00 | 961 | 669 |
+| 1172 | 42.80 | 0.68 | bloom 22.39, vegetation 5.14, vegetation prepass 4.05, terrain 3.79, creature 3.69 | cook 0.15, present 0.08, passes 0.02, choose 0.01, finish 0.00 | 956 | 669 |
+| 1186 | 43.50 | 0.79 | bloom 22.76, vegetation 4.60, vegetation prepass 3.75, look 3.13, terrain 3.01 | cook 0.17, present 0.10, passes 0.02, choose 0.00, finish 0.00 | 957 | 958 |
+| 1209 | 40.14 | 0.47 | bloom 16.17, vegetation 3.08, terrain 2.96, creature 2.77, look 2.39 | cook 0.12, present 0.04, passes 0.01, choose 0.01, finish 0.01 | 957 | 381 |
+| 1225 | 45.18 | 0.51 | bloom 26.74, vegetation 3.92, look 3.70, terrain 3.28, creature 3.12 | cook 0.12, present 0.05, passes 0.02, choose 0.01, finish 0.00 | 958 | 381 |
+
+0 of 20 unattributed (no label over 2 ms, CPU under 2 ms).
+
+Memory at playable, vale-walk (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 528.1 |
+| targets | 90.8 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 34.0 |
+| distance | 10.0 |
+| fog | 15.8 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+| lights | 0.4 |
+| wood lists | 18.3 |
+| impostors | 78.0 |
+| wood | 58.1 |
+| leaves' atlas | 0.0 |
+| realizer | 0.0 |
+
+Slowest compiles, vale-walk (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| skin_vertices | 1140.81 | 162.5 |
+| cook_materials | 931.02 | 227.4 |
+| place_vertices | 875.31 | 194.0 |
+| cull_blocks | 294.80 | 163.9 |
+| far_quad+volume_shade | 52.13 | 98.4 |
+| ground+ground_shade | 42.43 | 103.7 |
+| bake | 40.69 | 114.6 |
+| trace_again | 34.30 | 112.0 |
+| character+character_shade | 31.12 | 94.8 |
+| trace | 30.89 | 95.6 |
 

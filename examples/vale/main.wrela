@@ -6,7 +6,8 @@
 
 use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
 use engine::shadow::Cascade
-use engine::shot::{Shots, Skies, place}
+use engine::shot::{NO_CAST, Shots, Skies, place}
+use fawn::character::at_rest
 use engine::view::first_camera
 use land::stage::{fields_clipmap, probe_grid}
 use landscape::height_at
@@ -50,8 +51,7 @@ pub struct Vale {
     ready: bool,
     /// The hour the frame is lit at (`day`; its weather is the stage's, `Stage::skies`).
     hour: f32,
-    /// How many frames the walk has run (none: it hasn't begun; W begins it, and it steps once the
-    /// vale's playable).
+    /// How many frames the walk has run (none: it hasn't begun; W begins it).
     walked: Option<u32>,
 }
 
@@ -147,14 +147,29 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
         },
     }
     light(mut s, hour, skies, eye.y)
+    // The fawn, where a held shot casts it (`Shot::cast`): standing at rest where the shot looks,
+    // facing the eye (Part F grows the vale's grazer and its gaits); not drawn otherwise.
+    let cast_at = match (s.held, s.shots.held) {
+        (None, Some(i)) => if lookbook::SHOTS[i].cast != NO_CAST { Some(at) } else { None },
+        _ => None,
+    }
+    if let Some(p) = cast_at {
+        let feet = vec3(p.x, height_at(p.xz), p.z) - s.frame.origin
+        s.stage.fawn.pose(
+            at_rest(feet, atan2(eye.x - p.x, eye.z - p.z)),
+            shadowed: true,
+            moved: false,
+        )
+    } else {
+        s.stage.fawn.hide()
+    }
     let aim = Aim { eye, at, fovy, moving_at: eye }
     let _ = s.frame.begin(mut s.stage, aim, time, width, height)
     s.frame.draw(mut s.stage, aim)
-    // The walk steps once the vale is playable: what the frame round the eye needs is in.
+    // The walk steps a frame from W, playable or not, so every run walks the same frames (the
+    // bench's `vale-walk` presses W at frame 240, once the vale has loaded at rest).
     if let Some(n) = s.walked {
-        if s.ready {
-            s.walked = Some(min(n + 1, walk::FRAMES))
-        }
+        s.walked = Some(min(n + 1, walk::FRAMES))
     }
     if !s.ready && s.frame.ready.playable_at.is_some() {
         s.ready = true

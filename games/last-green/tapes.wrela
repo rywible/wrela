@@ -94,7 +94,7 @@ const BUILT: [Text; 9] = [
 @test
 fn every_kind_tapes() {
     var rows = [Row { count: 0, ops: 0, consts: 0 }; 12]
-    note(mut rows[0], taped(fawns::grown()))
+    note(mut rows[0], taped(fawn::character::grown()))
     note(mut rows[1], taped(wolf::creature::wolf()))
     for k in 0..BANK_PROTOTYPES {
         note(mut rows[2], taped(bank_creature(k)))

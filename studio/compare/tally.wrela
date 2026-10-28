@@ -92,6 +92,13 @@ pub fn read_judge(text: str) -> Result<Judge, String> {
         let Some(prefer) = prefer else {
             return Err(String::from(f"pair {number}: prefer isn't a, b or equal"))
         }
+        if prefer == EQUAL && !close(a, b) && total(a) == total(b) {
+            return Err(
+                String::from(
+                    f"pair {number}: equal, but a row is more than a point apart and the totals tie: say which",
+                ),
+            )
+        }
         let why = match d.get(p, "why") {
             Some(n) => d.text(n).unwrap_or(String::new()),
             None => String::new(),
@@ -109,23 +116,38 @@ pub fn read_judge(text: str) -> Result<Judge, String> {
         }
         judge.judgements.push(Judgement { pair: number, a, b, prefer, why, notes })
     }
+    // Each calibration pair's answer at its id's place (`control`, from 1): an answer whose id is
+    // missing, repeated or unknown is refused, not read in its order.
     if let Some(cs) = d.get(TOP, "controls") {
-        for i in 0..d.count(cs) {
+        let n = d.count(cs)
+        judge.controls = Vec::filled(n, value: UNANSWERED)
+        for i in 0..n {
             let Some(c) = d.at(cs, i) else { continue }
+            let id = match d.get(c, "control") {
+                Some(v) => u32(d.num(v).unwrap_or(0.0)),
+                None => 0,
+            }
+            if id < 1 || id > n || judge.controls[id - 1] != UNANSWERED {
+                return Err(String::from(f"control {id}: missing, repeated or unknown"))
+            }
             let prefer = match d.get(c, "prefer") {
-                Some(n) => side_of(d.text(n).unwrap_or(String::new()).as_str()),
+                Some(v) => side_of(d.text(v).unwrap_or(String::new()).as_str()),
                 None => None,
             }
-            judge.controls.push(prefer.unwrap_or(EQUAL))
+            judge.controls[id - 1] = prefer.unwrap_or(EQUAL)
         }
     }
     Ok(judge)
 }
 
+/// A calibration pair a judge's file doesn't answer.
+const UNANSWERED: u32 = 99
+
 /// Whether `j` passes the calibration: in each control pair it prefers the original (`original`,
 /// each pair's original's side).
 pub fn calibrated(j: Judge, original: [u32]) -> bool {
-    if j.controls.len() < original.len() {
+    // Its answers are the panel's pairs', no more (an unknown id) and no fewer.
+    if j.controls.len() != original.len() {
         return false
     }
     for k in 0..original.len() {
@@ -136,22 +158,37 @@ pub fn calibrated(j: Judge, original: [u32]) -> bool {
     true
 }
 
+/// Whether two images' scores are within one point on every row.
+fn close(a: [f32; 5], b: [f32; 5]) -> bool {
+    var out = true
+    for k in 0..5 {
+        out = out && abs(a[k] - b[k]) <= 1.0
+    }
+    out
+}
+
+/// An image's scores summed.
+fn total(s: [f32; 5]) -> f32 {
+    var out = 0.0
+    for k in 0..5 {
+        out += s[k]
+    }
+    out
+}
+
 /// What a judgement says of the program's still (`still`, its side): +1 it's preferred, 0 the pair
 /// is equal (the judge says so and both images are within one point on every row: a judge who says
-/// equal of images further apart prefers the one scored higher in all, or neither), -1 the
-/// reference is preferred.
+/// equal of images further apart prefers the one scored higher in all; `read_judge` refuses one
+/// whose totals tie), -1 the reference is preferred.
 pub fn verdict_of(j: Judgement, still: u32) -> i32 {
-    var close = true
-    var sa = 0.0
-    var sb = 0.0
-    for k in 0..5 {
-        close = close && abs(j.a[k] - j.b[k]) <= 1.0
-        sa += j.a[k]
-        sb += j.b[k]
-    }
     var prefer = j.prefer
-    if prefer == EQUAL && !close {
-        prefer = if sa > sb { A } else if sb > sa { B } else { EQUAL }
+    if prefer == EQUAL && !close(j.a, j.b) {
+        // (Totals tied, it says nothing: `read_judge` refuses it, and it never counts for the
+        // still.)
+        if total(j.a) == total(j.b) {
+            return -1
+        }
+        prefer = if total(j.a) > total(j.b) { A } else { B }
     }
     if prefer == EQUAL { 0 } else if prefer == still { 1 } else { -1 }
 }
@@ -207,6 +244,20 @@ pub fn tally(still: [u32], original: [u32], judges: [Judge], most: u32) -> Tally
         majority: 0,
         majority_ok: false,
         passed: false,
+    }
+    // Each judge once, by a name of its own: a copy of one judge's file is no second judge.
+    for k in 0..judges.len() {
+        let name = judges[k].name.as_str()
+        var again = name.is_empty() || name == "?"
+        for q in 0..k {
+            again = again || judges[q].name.as_str() == name
+        }
+        if again {
+            t.why = String::from(
+                f"a judge's name ({name}) is missing or repeated: each judge's file is its own",
+            )
+            return t
+        }
     }
     var valid: Vec<Judge> = Vec::new()
     for j in judges {

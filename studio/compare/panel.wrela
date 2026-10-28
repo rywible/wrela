@@ -50,8 +50,8 @@ pub struct Panel: Clone {
 
 /// The hashes frozen at the baseline review (plan three's §B5, docs/bench.md "Public visual
 /// references"): every later panel asserts them; a changed reference or shot makes a new baseline.
-pub const FROZEN_MANIFEST: Text = "825cf5a0ca9400cfd61ee133f0ea739ff81bd6701e341164d4b91873ca93f40a"
-pub const FROZEN_SHOTS: Text = "922566c1df111e6c40d02f93fd398eeddab31bb15cbeaef6ffa01a014e8381f9"
+pub const FROZEN_MANIFEST: Text = "b78df49ef41682168868ef3443f88f0d7a423eaf4f8d0595d938924b551bdaf3"
+pub const FROZEN_SHOTS: Text = "88c877da27abda2b01a81d2777a35b66b533f7c5b82902306b64c2825ede6ca1"
 
 /// The review's one mode: attributed, the credits shown (plan three's §B4).
 pub const ATTRIBUTED: Text = "attributed"
@@ -69,13 +69,13 @@ pub fn quoted(s: str) -> String {
     out
 }
 
-/// The references' manifest as the hash reads it: each one's id, set, class, local file, hash,
-/// licence and source, a line each.
+/// The references' manifest as the hash reads it: each one's every field (what a judge is shown
+/// beside it, its rights and where its copy is), a JSON object a line.
 pub fn manifest_text(refs: [VisualReference]) -> String {
     var out = String::new()
     for r in refs {
         out.push_str(
-            f"{r.id}\t{r.set}\t{r.shot_class}\t{r.local_file}\t{r.sha256}\t{r.licence}\t{r.source_page}\n",
+            f"{{\"id\":{quoted(r.id).as_str()},\"set\":{quoted(r.set).as_str()},\"class\":{r.shot_class},\"subject\":{quoted(r.subject).as_str()},\"why\":{quoted(r.why).as_str()},\"kind\":{quoted(r.kind).as_str()},\"title\":{quoted(r.title).as_str()},\"creator\":{quoted(r.creator).as_str()},\"source\":{quoted(r.source_page).as_str()},\"file\":{quoted(r.file_url).as_str()},\"licence\":{quoted(r.licence).as_str()},\"licence_url\":{quoted(r.licence_url).as_str()},\"taken\":{quoted(r.date_taken).as_str()},\"processing\":{quoted(r.processing).as_str()},\"size\":[{r.size.x},{r.size.y}],\"segment\":{quoted(r.segment).as_str()},\"local\":{quoted(r.local_file).as_str()},\"sha256\":{quoted(r.sha256).as_str()},\"accessed\":{quoted(r.accessed).as_str()}}}\n",
         )
     }
     out
@@ -87,7 +87,8 @@ pub fn manifest_hash(refs: [VisualReference]) -> String {
 }
 
 /// The hash that freezes the vale's shots: SHA-256 over `lookbook.wrela`'s `SHOTS` as JSON, each
-/// shot's name, eye, aim, hour and weather (§B1.4).
+/// shot's every field (its name, eye, aim, move, field of view, reach, cast, hour and weather:
+/// §B1.4).
 pub fn shots_hash() -> String {
     var out = String::from("[")
     let shots = vale::lookbook::SHOTS
@@ -97,7 +98,7 @@ pub fn shots_hash() -> String {
             out.push_str(",")
         }
         out.push_str(
-            f"{{\"name\":{quoted(s.name).as_str()},\"eye\":[{s.eye.x},{s.eye.y},{s.eye.z}],\"at\":[{s.at.x},{s.at.y},{s.at.z}],\"time\":{s.time},\"weather\":{u32(s.weather)}}}",
+            f"{{\"name\":{quoted(s.name).as_str()},\"eye\":[{s.eye.x},{s.eye.y},{s.eye.z}],\"at\":[{s.at.x},{s.at.y},{s.at.z}],\"moves\":[{s.moves.x},{s.moves.y}],\"fovy\":{s.fovy},\"reach\":{s.reach},\"cast\":{s.cast},\"time\":{s.time},\"weather\":{u32(s.weather)}}}",
         )
     }
     out.push_str("]")
@@ -195,18 +196,26 @@ pub fn panel(
     )
 }
 
-/// The panel's two calibration pairs from the still `original` (its blur `blurred` and its
-/// quarter-resolution copy `quarter`), their sides in an order from its seed.
-pub fn with_controls(p: take Panel, original: str, blurred: str, quarter: str) -> Panel {
+/// What the calibration pairs' worse copies are, in order: the still's 3×3 blur and its
+/// quarter-resolution copy.
+pub const CONTROLS = ["blurred", "quarter"]
+
+/// A neutral name for the calibration pairs' image `what` of pair `k` in the panel seeded `seed`
+/// (`controls/<name>.png`): names that say nothing of which image is the original.
+pub fn neutral(seed: u32, k: u32, what: str) -> String {
+    String::from(hex_sha256(f"{seed}:{k}:{what}".as_bytes()).as_str().slice(from: 0, to: 16))
+}
+
+/// The panel's two calibration pairs (`CONTROLS`' order), each its copy of the still `originals[k]`
+/// and its worse copy `worse[k]`, their sides in an order from its seed.
+pub fn with_controls(p: take Panel, originals: [String; 2], worse: [String; 2]) -> Panel {
     var out = take p
     var state = out.seed * 7 + 3
-    let names = [String::from("blurred"), String::from("quarter")]
-    let worse = [String::from(blurred), String::from(quarter)]
     for k in 0..2 {
         out.controls.push(
             Control {
-                name: names[k].clone(),
-                original: String::from(original),
+                name: String::from(CONTROLS[k]),
+                original: originals[k].clone(),
                 worse: worse[k].clone(),
                 original_first: next(mut state, 2) == 0,
             },

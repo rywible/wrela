@@ -472,7 +472,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     match cast {
         Some(c) => {
             s.stage.fawn.pose(
-                fawns::at_rest(on_ground(c.fawn), c.fawn.z),
+                fawn::character::at_rest(on_ground(c.fawn), c.fawn.z),
                 shadowed: true,
                 moved: moved,
             )

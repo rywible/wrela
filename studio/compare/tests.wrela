@@ -1,11 +1,11 @@
 // The review tool's own tests (plan three's §B4), on synthetic judgements and the vale's own
 // manifest: no outside media is read.
 
-use panel::{key_json, manifest_hash, pairs_json, panel}
+use panel::{key_json, manifest_hash, neutral, pairs_json, panel}
 use references::vale::{VALE, VisualReference}
 use rights::{eligible, permits}
 use std::string::String
-use tally::{A, B, EQUAL, Judge, Judgement, calibrated, ranked_losses, tally}
+use tally::{A, B, EQUAL, Judge, Judgement, calibrated, ranked_losses, read_judge, tally}
 
 /// Scores of an image that wins (3 on every row) and one that loses (1).
 const HIGH = [3.0, 3.0, 3.0, 3.0, 3.0]
@@ -163,6 +163,69 @@ fn unknown_permissions_refuse_every_use() {
     for licence in ["CC0", "CC BY 4.0", "CC BY-SA 2.0", "Public domain"] {
         assert(permits(licence), licence)
     }
+    // Nor a non-commercial or no-derivatives licence, or one only like an attributed one.
+    for licence in ["CC BY-NC 4.0", "CC BY-ND 4.0", "CC BY-NC-SA 4.0", "CC BY unknown", "CC BY"] {
+        assert(!permits(licence), f"{licence} permits a use")
+    }
+}
+
+/// A judge who says equal of images more than a point apart on a row, their totals tied, says
+/// nothing: its file is refused until it says which.
+@test
+fn an_equal_whose_totals_tie_is_refused() {
+    let text = "{\"judge\": \"j\", \"pairs\": [{\"pair\": 1, \"a\": {\"light\": 3, \"colour\": 0, \"value\": 2, \"depth\": 2, \"artifacts\": 2}, \"b\": {\"light\": 0, \"colour\": 3, \"value\": 2, \"depth\": 2, \"artifacts\": 2}, \"prefer\": \"equal\"}]}"
+    match read_judge(text) {
+        Ok(_) => panic("an unresolvable equal was read"),
+        Err(why) => assert(why.as_str().find("say which").is_some(), why.as_str()),
+    }
+}
+
+/// A judge's calibration answers are read by their pairs' ids, whatever their order; a missing,
+/// repeated or unknown id is refused.
+@test
+fn controls_are_read_by_their_ids() {
+    let head = "{\"judge\": \"j\", \"pairs\": [], \"controls\": "
+    let Ok(j) = read_judge(
+        f"{head}[{{\"control\": 2, \"prefer\": \"b\"}}, {{\"control\": 1, \"prefer\": \"a\"}}]}}".as_str(),
+    ) else {
+        panic("controls in another order")
+    }
+    assert(calibrated(j, ORIGINALS), "the answers by their ids")
+    for bad in [
+        "[{\"control\": 1, \"prefer\": \"a\"}, {\"control\": 1, \"prefer\": \"b\"}]",
+        "[{\"control\": 3, \"prefer\": \"a\"}, {\"control\": 1, \"prefer\": \"b\"}]",
+        "[{\"prefer\": \"a\"}, {\"prefer\": \"b\"}]",
+    ] {
+        assert(read_judge(f"{head}{bad}}}".as_str()).is_err(), bad)
+    }
+}
+
+/// One judge's file twice (or a file without a judge's name) is no second judge: the tally is
+/// incomplete.
+@test
+fn a_judge_twice_is_no_second_judge() {
+    var judges = panel_of_42()
+    judges[1].name = String::from("j0")
+    let t = tally([A; 12], ORIGINALS, judges, 6)
+    assert(!t.complete && t.why.as_str().find("repeated").is_some(), t.why.as_str())
+}
+
+/// The calibration pairs' images are named for nothing about them: which is the original is the
+/// key's alone.
+@test
+fn the_controls_names_say_nothing() {
+    let names = [
+        neutral(seed: 5, k: 0, what: "original"),
+        neutral(seed: 5, k: 0, what: "worse"),
+        neutral(seed: 5, k: 1, what: "original"),
+    ]
+    for n in names {
+        assert(
+            n.len() == 16 && n.as_str().find("orig").is_none() && n.as_str().find("blur").is_none(),
+            n.as_str(),
+        )
+    }
+    assert(names[0] != names[1] && names[0] != names[2], "each image its own name")
 }
 
 /// A link-only reference (no local copy, or a licence that doesn't permit a review) is refused
@@ -218,18 +281,26 @@ fn the_frozen_manifest_hash_follows_every_reference() {
     var changed: Vec<VisualReference> = Vec::from(VALE)
     changed[4].sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     assert(manifest_hash(changed) != frozen, "a changed copy")
+    // And with what a judge is shown beside a reference: its creator, its processing.
+    var credited: Vec<VisualReference> = Vec::from(VALE)
+    credited[2].creator = "someone else"
+    assert(manifest_hash(credited) != frozen, "a changed credit")
+    var processed: Vec<VisualReference> = Vec::from(VALE)
+    processed[2].processing = "HDR"
+    assert(manifest_hash(processed) != frozen, "a changed processing")
     assert(manifest_hash(VALE) == frozen && frozen.len() == 64, "the same manifest, the same hash")
 }
 
 /// The references and the shots are the baseline's (§B5's frozen hashes).
 @test
 fn the_references_and_shots_are_the_baselines() {
+    let (m, h) = (manifest_hash(VALE), panel::shots_hash())
     assert(
-        manifest_hash(VALE).as_str() == panel::FROZEN_MANIFEST,
-        "the references changed since the baseline",
+        m.as_str() == panel::FROZEN_MANIFEST,
+        f"the references changed since the baseline: {m}",
     )
     assert(
         panel::shots_hash().as_str() == panel::FROZEN_SHOTS,
-        "the shots changed since the baseline",
+        f"the shots changed since the baseline: {h}",
     )
 }
