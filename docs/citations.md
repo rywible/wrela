@@ -9,6 +9,74 @@
 - **Ship only what a licence allows, with its credit.** A reference file in the repo has its source, author and licence in the `references` package beside it. Work adapted from a CC BY source carries its credit into the game.
 - **Style references stay private.** Images used only to judge the look are kept outside the repo.
 
+## Public visual references and benchmark context
+
+The vale's look is judged against freely licensed photographs and footage of the real subjects
+it draws (docs/plan-world-class-3.md D29, Ryan's 2026-10-28 revision): agents alone judge, so a
+reference must be licensed for a copy shown to an agent, and freely licensed Unreal 5 imagery of
+these subjects barely exists. Public engine visuals may still inform look development as cited
+context, without installing Unreal or acquiring its assets. Select and cite the actual works when they are first used; the policy links below do
+not grant rights to a particular image or clip. Public availability and attribution alone do
+not authorize copying. Keeping a reference private does not create permission either.
+
+- Record the original creator/publisher, title, source URL, image locator or video timestamps,
+  access date, known rendering conditions, rights/permission URL and required credit. Record
+  unknown settings and rights as unknown. For the vale, `references/vale.wrela` holds
+  the subject mappings and per-use decisions; it contains metadata, not reference media.
+- Default to links to the original page. Use source-page viewing or an official player only
+  as its terms permit. Check separately before downloading, extracting frames, cropping,
+  re-encoding, uploading to an agent service or publishing a comparison containing the media.
+  Prefer clearly licensed or creator-permitted references for agent review; an inaccessible
+  or restricted source is replaced with another suitable source, not bypassed or guessed at.
+- Preserve required credits and notices wherever a permitted copy is displayed. Use an
+  attributed review if blinding would hide required credit. Do not remove watermarks. Keep
+  reference copies and viewers containing them outside the repo and release. Public reports
+  normally contain our renders, original observations, scores and source links; reproducing
+  third-party media needs a grant covering publication. Do not label it MIT or imply endorsement.
+- Evaluation references teach visual qualities; they do not supply textures, geometry,
+  reconstructed shots or training/fitting inputs. A separate fitting workflow must use its
+  own authorized inputs. No acquired Fab assets are required for this reference workflow.
+- Public benchmark summaries cite the original publisher, date, workload, engine version,
+  hardware, resolution, settings/upscaling and metric/method, with unknowns labelled. Keep
+  them separate from measurements made here. Do not infer an M4 result or engine speedup
+  from another device's numbers, or copy a chart/table without appropriate permission.
+
+Primary terms consulted 2026-10-27 (recheck the applicable terms when selecting a work):
+
+| Source | What to check |
+|---|---|
+| [YouTube Terms of Service](https://www.youtube.com/static?template=terms), “Permissions and Restrictions” | Viewing, official-player use, copying and automated access have distinct conditions. A playable public video is not a grant to download or rehost it. |
+| [Creative Commons Attribution 4.0 legal code](https://creativecommons.org/licenses/by/4.0/legalcode.en), §§2–3 | For a work actually offered under CC BY 4.0, retain the required attribution and licence information and identify modifications; do not imply endorsement. Check rights not covered by the grant too. |
+| [Fab licence page](https://www.fab.com/eula) | Its summary distinguishes using acquired assets in projects from standalone redistribution and points to the binding agreement. It is not a blanket permission for a creator's promotional screenshots or videos. |
+
+### The vale's references
+
+Photographs and footage from Wikimedia Commons, each licence read from its own page on 2026-10-28. Copies live outside the repo under `$WRELA_REFERENCE_DIR/vale` with a `CREDITS.md`; `references/vale.wrela` holds the metadata and each file's SHA-256. Shown to agent judges with the credit and licence; never used as textures, geometry, fitting or training inputs.
+
+| ID | Set | Subject | Creator | Licence | Source |
+|---|---|---|---|---|---|
+| vale-e01-floor | evaluation | forest floor: ferns and undergrowth, trunks beyond | W.carter | [CC0](http://creativecommons.org/publicdomain/zero/1.0/deed.en) | [Commons](https://commons.wikimedia.org/wiki/File:Beech_and_ferns_in_Gullmarsskogen.jpg) |
+| vale-e02-canopy | evaluation | beech leaves against the sun | Sixflashphoto | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Blacklick_Woods_-_Sunlight_through_American_beech_1.jpg) |
+| vale-e03-trunk | evaluation | an old oak's trunk with moss | Dietmar Rabich | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Senden,_Venner_Moor_--_2013_--_2345.jpg) |
+| vale-e04-water | evaluation | a small fall in a temperate wood | David Medcalf | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:A_waterfall_on_the_stream_at_Oerddwr_-_geograph.org.uk_-_7747358.jpg) |
+| vale-e05-rock | evaluation | a layered rock face in a wood | James St. John | [CC BY 2.0](https://creativecommons.org/licenses/by/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Cross-bedded_quartzose_sandstone_(Dundee_Sandstone,_Middle_Pennsylvanian;_cliffs_along_Walnut_Creek_Bottom_Road,_west_of_Dundee,_Ohio,_USA)_3_(23232718273).jpg) |
+| vale-e06-meadow | evaluation | a flower meadow at a wood's edge | Peter O'Connor aka anemoneprojectors | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Wildflower_meadow,_Heartwood_Forest_(28861233370).jpg) |
+| vale-e07-mist | evaluation | sun through morning mist among trees | Dietmar Rabich | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:D%C3%BClmen,_Umland,_Sonnenaufgang_--_2012_--_8069.jpg) |
+| vale-e08-vista | evaluation | a lake among hills at sunset | Sanu N | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Sun_Set_over_Phewa_Lake.jpg) |
+| vale-e09-deer | evaluation | fallow deer under trees in dappled light | Johan Pisuisse | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0) | [Commons](https://commons.wikimedia.org/wiki/File:Hind_(228949475).jpeg) |
+| vale-e10-walking | evaluation | a roe buck walking in a wood | Jg44.89 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Samiec_sarny.jpg) |
+| vale-e11-deadwood | evaluation | bracket fungi on a rotting log among ferns | John Robert McPherson | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Bracket_fungi_on_fallen_log_Border_Track_Lamington_National_Park_Queensland_IMGP2516.jpg) |
+| vale-e12-overcast | evaluation | a beech wood's interior in even light | Ermell | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-155854.jpg) |
+| vale-d1-floor | development | ferns on a woodland floor | W.carter | [CC0](http://creativecommons.org/publicdomain/zero/1.0/deed.en) | [Commons](https://commons.wikimedia.org/wiki/File:Beech,_ferns_and_lily_of_the_valley_in_Gullmarsskogen_1.jpg) |
+| vale-d2-canopy | development | beech leaves backlit in a dark wood | W.carter | [CC0](http://creativecommons.org/publicdomain/zero/1.0/deed.en) | [Commons](https://commons.wikimedia.org/wiki/File:Sunlight_on_beech_leaves_in_Gullmarsskogen_ravine_1.jpg) |
+| vale-d3-trunk | development | an oak's trunk in autumn bracken | Nicholas A. Tonelli from Northeast Pennsylvania, USA | [CC BY 2.0](https://creativecommons.org/licenses/by/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Round_Top_(Revisited)_(7)_(10282805645).jpg) |
+| vale-d4-water | development | a small woodland fall into a pool | David Smith | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Waterfall_and_stream_pool,_Hafod_Estate_-_geograph.org.uk_-_7521443.jpg) |
+| vale-d5-meadow | development | a yellow meadow with trees behind | Mat Fascione | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Wildflower_meadow_near_Bite_Farm_-_geograph.org.uk_-_7514202.jpg) |
+| vale-d6-vista | development | a sunset over a lake among hills | Ncearle | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Sunset_Over_Pitt_Lake.jpg) |
+| vale-d7-deer | development | a roe deer in long grass | Peter Trimming | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Roe_Deer_at_Forest_How_-_geograph.org.uk_-_4074511.jpg) |
+| vale-d8-overcast | development | a beech wood with a path, even light | Ermell | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-170853.jpg) |
+| vale-motion-walk | motion | a wild roe buck walking across a meadow by bracken | Peter Trimming | [CC BY 2.0](https://creativecommons.org/licenses/by/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Roe_deer_in_England.webm) |
+
 ## Assets and data in the repo
 
 | Source | Rights | How and why |
@@ -122,4 +190,4 @@ Named in words; no image is copied from them.
 | A grim reaper; the mood of a dementor | Ryan's words for the climber, an original character |
 | Miro and Lucid; shadcn/ui's documentation | Interaction conventions for the board; the polish the docs aim past |
 
-The lookdev rubric's "hero" anchor is a private set of 83 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0), 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense"), and 8 Nintendo store screenshots (private study only). An agent looks at them beside a render to judge light, colour, value and depth.
+The lookdev rubric's "hero" anchor is a private set of 75 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0) and 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense", Ghibli's statement of September 2020). Ryan accepted that statement on 2026-10-28 as covering private review by an agent judge (docs/plan-world-class-3.md §B3.1): it is the rights holder's own public invitation, though not a formal licence, and it covers only stills from Ghibli's own release, not reposts. An agent looks at them beside a render to judge light, colour, value and depth. Eight Nintendo store screenshots that were in it were removed on 2026-10-28: their terms allowed private study only, not showing them to an agent judge (docs/plan-world-class-3.md D38).
