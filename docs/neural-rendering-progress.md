@@ -18,17 +18,21 @@
 
 ## Immediate milestone
 
-[Cooperative observation gathering](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding)
-is retired. All tested images match, but direct compute costs 13.10052 ms and
-cooperative compute 47.71356 ms versus the retained fragment path's 10.78208 ms,
-with identical requested live memory. Zero follow-ups/training/new references.
-Runtime restored exactly; the prior 32.52% shared-support improvement remains.
+[Adaptive response trees and corrected residuals](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff)
+are retired after two targeted follow-ups. A reused source parser confused leaf
+coverage 1.65 with field blend 1.10; actual GPU metadata and all-card responses
+now establish the corrected labels. Historical target-based interpretations are
+explicitly corrected without modifying sealed measurements.
 
-Return to G4: first test the size/error budget for an adaptive source-space
-response representation with exact cutouts and surface identity. Use completed
-source samples, the existing shaded references and equally informed conventional
-controls. Charge all scratch, fallback, wood, updates and compositing before
-considering another learned residual. G1–G7 remain unchanged and unmet.
+Corrected trees pass 24/24, but full tree0.63988ms/1,479,420 live B loses to matched
+cache0.37568ms/1,043,052B; budget tree1.36124ms/843,852B loses to exact field
+0.63832ms/830,580B. Corrective7040B neural/poly fits pass4/24 and6/24.
+No joint neural or G4 advantage. Runtime restored; G1–G7 unchanged/unmet.
+
+Next compile spatial masks that select relevant source functions, preserving their
+nonlinear response instead of approximating final normals/depth. Use verified
+source parameters and compare against exact field and matched cache, including
+routing, fallback, visibility, wood, updates and compositing before more fitting.
 
 ## Evidence recorded so far
 
@@ -2713,3 +2717,16 @@ Complete GPU: fragment 10.78208 ms, direct compute 13.10052 ms, cooperative
 No new rendering advantage. Retire both, restore runtime exactly to 147049ed.
 [Decision and next G4 bet](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding).
 Manifest: `6b57efb2553344a1646e0553f64e0d1d94065d19afe7166378a470ebcdee5ace`.
+
+### Adaptive response and source-target correction checkpoint (2026-10-28)
+
+First complete comparison 6.23 minutes; decision
+22.89 minutes. Exactly two follow-ups: corrected tree targets,
+then corrected equal-byte compact fits (2,400 steps each). No new references.
+Full/budget corrected trees pass24/24 but lose complete cost; corrected neural
+passes4/24, polynomial6/24. Leaf coverage had been misread as field blend;
+prior sealed failures remain, with explicit correction of their interpretation.
+80 shaded captures and56 focused source/decoder captures preserved.
+Runtime restored exactly; no rendering win claimed.
+[Full measurements and next bet](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
+Manifest: `f5c1852086f181f7ea8c5055b8fd62c0e97614ac9c8d9499668ec479789ce394`.

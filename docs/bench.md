@@ -2655,6 +2655,8 @@ complete CPU/GPU/completion,DRM/PSS andfailedvariants preserved. Runtime restore
 
 ### AMD sparse source directional field (2026-10-28)
 
+Correction: inherited CPU targets used leaf coverage as field blend. GPU measurements remain valid; see the [corrected source-target comparison](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
+
 RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
 Wrela0.9.0/compilerde9b81e5; parent250fcd5c plus archived variants.
 Existing64px tree,2views×4lights×3backgrounds; allsourcevariants24/24 numericcases.
@@ -2666,6 +2668,8 @@ andfailedinit preserved. Appearance runtime restored exactly toparent.
 [Full comparison and decision](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired).
 
 ### AMD compact neighbor-field residuals (2026-10-28)
+
+Correction: inherited CPU targets used leaf coverage as field blend. GPU measurements remain valid; see the [corrected source-target comparison](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
 
 RADV RENOIR 1002:164c/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
 Wrela 0.9.0/compiler de9b81e5; parent 76b78aab plus archived variants.
@@ -2703,3 +2707,18 @@ First comparison7.10min; decision8.87min.
 Zero follow-ups/training/new references. Failed build and variants preserved;
 runtime restored exactly. No neural/G4/sustained-G6 claim.
 [Full comparison](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding).
+
+### AMD adaptive response and corrected-target retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent28ea20bf plus archived variants.
+Existing64px tree,2views×4lights×3backgrounds. Corrected full/budget trees24/24:
+GPU0.63988/1.36124ms, live1,479,420/843,852B. Matched cache0.37568ms/1,043,052B;
+exact field0.63832ms/830,580B. Corrected7040B neural4/24, polynomial6/24.
+Both837,612liveB; neural0.44104ms, polynomial0.49860ms. No joint win.
+Inherited CPU parser misread leaf coverage1.65 as field blend1.10; prior GPU
+measurements stand, but affected target-based interpretations are superseded.
+First comparison6.23min; decision22.89min.
+Two follow-ups,2,400 corrective steps/head, no new references. Actual DRM/PSS,
+all costs, source/decoder checks and failed results preserved. Runtime restored.
+[Full comparison and correction](neural-shaded-appearance.md#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).

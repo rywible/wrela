@@ -5349,6 +5349,8 @@ Manifest SHA-256: `f82d5df92e0f8a760aa4c4ae136c38cff8b72bd4999b168d0f6980fd96f1d
 
 ## Sparse source field evaluation: quality preserved, execution retired
 
+> Correction (2026-10-28): the inherited source audit/fitting targets used leaf coverage as field blend. Measured GPU results stand; the target-based interpretation is superseded by the [corrected comparison](#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
+
 **Decision: retire dynamic threshold and owner-list sparse field execution.**
 All source-field variants pass24/24 shaded numeric cases with identical source
 coverage, but reducing field terms does not deliver a useful complete rendering
@@ -5536,6 +5538,8 @@ Manifest SHA-256: `3671d01d79187eb46ee8b6a2dc038e184df80525c28b7db9d074799db9b45
 
 ## Neighbor-field residuals: retire compact owner-local response fitting
 
+> Correction (2026-10-28): the inherited source audit/fitting targets used leaf coverage as field blend. Measured GPU results stand; the target-based interpretation is superseded by the [corrected comparison](#adaptive-response-trees-correct-the-targets-retire-the-cost-tradeoff).
+
 **Decision: retire both the 7,040-byte neural and equal-byte conventional
 neighbor-field fits.** Each preserves exact source coverage but fails all 24 shaded
 numeric cases. The neural model costs 0.44136 ms versus the exact field's 0.64056 ms,
@@ -5693,3 +5697,217 @@ Own Wrela decoder; no external code/weights/assets imported.
 
 Evidence: build/neural-evidence/g4-field-residual-v1 on Pop!_OS.
 Manifest SHA-256: `aa48d2889f0363c44788c4c306fccce64383f8328c6a7744177f43f436fb46c6`.
+
+## Adaptive response trees: correct the targets, retire the cost tradeoff
+
+**Decision: change representation. Retire both adaptive response trees and both
+corrected compact residual fits.** The corrected trees match all 24 shaded cases,
+but the full tree costs 0.63988 ms and 1,479,420 requested live bytes versus an
+equally informed, geometrically identical cache's 0.37568 ms and 1,043,052 bytes.
+The 13,280-byte tree falls back on 96.63% of source points and costs 1.36124 ms,
+versus the smaller exact field's 0.63832 ms. No joint rendering advantage.
+
+The important correction is to the experiment's targets, not a rendering win:
+an inherited parser treated leaf coverage 1.65 as field blend, whose actual value
+is 1.10. Corrected GPU/source checks and fresh rendered results supersede the
+earlier target-based interpretation. Sealed failed evidence remains untouched.
+
+First complete comparison: 6.23 minutes. Decision:
+22.89 minutes at 2026-10-28T17:29:53.975791+00:00. Exactly two targeted
+follow-ups; no new references. The second follow-up refits two unchanged compact
+heads for 2,400 steps each, justified by the demonstrated wrong-target problem.
+Frozen optical/reconstruction models and G1–G7 remain unchanged and unmet.
+
+### Source compilation and fair controls
+
+The first representation is a binary tree for each of 44 source owners. Split the
+longest local-coordinate axis at the median source position. At each leaf, fit a
+four-output affine normal/depth response, quantize its coefficients to half,
+normalize its predicted normal, and test every resident source card assigned to
+that leaf. Split until maximum normal error is at most 1 degree and depth error
+at most 0.001 m; unresolved small leaves use exact source evaluation.
+
+This is per-asset source compilation over the existing 26,560 source cards, with
+no image fitting or optimizer sweep. The finite source-point bound does not cover
+unseen individuals, arbitrary positions or deformation. Runtime uses the original
+source owner/position, cutouts, albedo, lighting, wood and visibility.
+
+A single vec2u payload contains 176 bytes of roots, 8-byte tree nodes and 32-byte
+half coefficient blocks. The initial wrong-target full tree needs 390,256 bytes.
+The corrected tree needs 386,704 bytes: 16,276 nodes and 8,010 affine leaves,
+with 579 source points using exact fallback. Mean query path is 8.63 nodes.
+Even this payload alone exceeds the exact 212,480-byte per-card response cache.
+
+The fixed 13,280-byte variant is an optimistic 16× reduction of that **one response
+cache**, not a G4 appearance-memory result. Select accurate leaves greedily by
+covered-source-point count per added byte, including their ancestor branches.
+Unselected regions retain exact field fallback. Selection uses no rendered metric.
+After correction, only 896 points use interpolation; 25,664 use the exact field.
+
+All controls receive the same useful source functions, geometry, visibility and
+sampling information. The matched packed cache uses precisely the candidates'
+source hierarchy, packed visibility and cutouts, with exact stored responses.
+The smaller exact-field and fastest native-cache controls are also retained;
+the frozen optical model is a quality/cost point, not a quality-matched winner.
+
+### A measured target defect, then two bounded follow-ups
+
+The first full tree fails all shaded cases despite its claimed source-point
+bounds. An all-card GPU probe shows that interpolated values match their CPU
+coefficients, while exact fallback disagrees with the reused target labels.
+That contradiction warrants the focused source probe; it is not an excuse to
+expand the reference suite.
+
+The existing geometry export already contains the needed parameter:
+
+| Zero-based row / component | Actual meaning | Value |
+| --- | --- | ---: |
+| geometry.f32 row 1, w | plant.leaves.cover | 1.65 |
+| geometry.f32 row 4, w | plant.blend | 1.10 |
+| Runtime source-node row 0, w | plant.blend | 1.10 |
+
+See the actual producer in [geometry.wrela](../studio/appearance/fixture/geometry.wrela)
+and the runtime node construction in [source_hierarchy.wrela](../studio/appearance/runtime/source_hierarchy.wrela).
+Clump centres, radii and squash agree exactly; the parameter was misidentified,
+not a changed asset. The float64 field with the correct exported blend agrees
+with all 26,560 actual GPU source responses: maximum decoded-normal component
+error 5.4464e−5 and depth error 5.2554e−7 m. The old labels differ by up to
+0.63534 m in depth. No new metadata/reference infrastructure is needed.
+
+1. **Correct both trees' targets.** Recompile with the measured blend, preserving
+   bounds, splitting, packing and budget rules. Both now pass 24/24 shaded cases.
+   GPU maximum normal/depth errors are 0.94011°/0.00099949 m for the full tree
+   and 0.89669°/0.00099328 m for the budget tree. CPU/GPU decode agreement is
+   within 5.4464e−5; no routing discrepancy remains on the compiled source points.
+2. **Fairly reassess the compact residuals.** Repeat the earlier equal-byte
+   7,040-byte cubic and 3→8 SiLU→4 neighbor-gradient/log-partition fits with the
+   correct blend. Keep the same sourceID%5 holdout, seed 19743, half precision,
+   loss, 2,400-step schedule and architecture; no sweep. Source-target agreement
+   is asserted against the actual GPU probe before fitting. Polynomial passes
+   6/24 and neural 4/24, improved from the earlier 0/24 but still unqualified.
+
+The corrected polynomial's held-out normal mean/p99 is 4.37°/28.11° and depth
+MAE 0.01349 m; neural is 6.50°/43.10° and 0.03894 m. These are diagnostics,
+not rendered wins. All-card packed residual decoding agrees with independent
+CPU predictions within 4.06e−6 and 3.58e−6 respectively.
+
+**Historical correction:** the neighbor-field residual block's measured images,
+quality failures and timings remain valid observations of its artifacts. Its
+wrong 1.65 labels did not fairly establish the representation's failure against
+the authored renderer. This block supplies the corrected comparison. The sparse
+field block's CPU audit also read row 1,w as blend; its numerical source-point
+bounds are not runtime-specific bounds. Its actual GPU images and timings remain
+valid. Those sealed manifests are preserved, with this explicit correction.
+
+### Shaded quality and silhouettes
+
+Existing AA64 references, 64×64 tree, two public views, four lights and three
+backgrounds. Exposure 0.62, engine tone mapping→sRGB, FLIP 67 ppd and AlexNet
+LPIPS v0.1 remain fixed. Cases must independently satisfy PSNR loss≤0.25 dB and
+FLIP/LPIPS≤1.05× with denominator floor 1e−4.
+
+| Method | Cases vs matched cache | Mean PSNR dB | FLIP | LPIPS |
+| --- | ---: | ---: | ---: | ---: |
+| Fast native cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Matched packed cache | 24/24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Compact exact field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Frozen optical | 8/24 | 40.127682 | 0.01234846 | 0.00188937 |
+| Full tree, wrong targets | 0/24 | 35.361558 | 0.05335494 | 0.00690500 |
+| Budget tree, wrong targets | 4/24 | 39.959138 | 0.01459057 | 0.00267863 |
+| Full tree, corrected | 24/24 | 40.295905 | 0.01300274 | 0.00249073 |
+| Budget tree, corrected | 24/24 | 40.295885 | 0.01300308 | 0.00249080 |
+| Corrected cubic residual | 6/24 | 39.894526 | 0.01417313 | 0.00261352 |
+| Corrected SiLU8 residual | 4/24 | 39.603822 | 0.01585790 | 0.00277488 |
+
+All 56 non-original-control alpha captures match the exact-field control
+byte-for-byte; coverage is light-independent in all 20 method/view sequences.
+Worst source boundary p99 remains 2 px, half-coverage precision 0.983065 and
+recall 0.994007. Exact coverage between variants does not imply perfect reference
+silhouettes or a new G3 motion pass. All 24 original-control RGBA images match
+previous sealed results.
+
+### Complete AMD runtime and actual memory
+
+RADV RENOIR PCI1002:164c, Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Pop!_OS; Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 28ea20bf plus archived variants. Sequential 64×64 profiles, 60 warm-up
+plus 240 measured frames; separate 300-frame completion/residency runs discard
+60. Fitting and scoring never overlap GPU measurements.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | Start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Fast native cache | 0.28016/0.40536 | 1.0811/1.0890 | 0.6611 | 4.5054/4.7016 |
+| Matched packed cache | 0.37568/0.54912 | 0.3697/1.0480 | 0.7292 | 4.6252/4.8394 |
+| Compact exact field | 0.63832/0.66260 | 0.7495/0.8325 | 0.6881 | 4.6399/4.8137 |
+| Frozen optical | 0.06824/0.07080 | 0.2716/0.2757 | 1.0169 | 4.8106/4.9260 |
+| Full tree, wrong targets | 0.64956/0.70996 | 1.5215/1.5943 | 0.7061 | 4.5256/4.6995 |
+| Budget tree, wrong targets | 1.55400/1.56340 | 2.4336/2.4944 | 0.7091 | 3.9661/4.5543 |
+| Full tree, corrected | 0.63988/0.73072 | 1.8278/2.0324 | 0.7150 | 5.5557/5.7597 |
+| Budget tree, corrected | 1.36124/1.36956 | 2.1791/2.2501 | 0.7472 | 4.5259/4.9432 |
+| Corrected cubic residual | 0.49860/0.58652 | 1.3498/1.4282 | 0.6881 | 4.5952/4.8405 |
+| Corrected SiLU8 residual | 0.44104/0.51120 | 1.3193/1.3812 | 0.6761 | 4.5549/4.7192 |
+
+Complete costs include source reconstruction, cutouts, rebuilt visibility, exact
+wood, tree traversal or residual/field/cache decoding, material shading, view/light
+updates, uploads, resolve and compositing. Source paths use packed or hardware
+visibility and need no optical sort; frozen optical includes CPU depth sorting
+and indexed wood. Initialization is outside steady timing and included in
+allocation peaks. Dynamic source edits/recompilation and sustained G6 remain
+unmeasured. Completion includes notification/queueing, not photon latency.
+
+These are descriptive single-run measurements. No paired promotion claim is
+made. In particular, a lower saturated median cannot override slower paced tails,
+failed quality or larger storage. No repeat speedup campaign is needed to retire
+these losing joint tradeoffs.
+
+| Method | Engine representation/scratch B | All requested live/peak B | Actual DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| Fast native cache | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/9,936,896 | 484,114,432 |
+| Matched packed cache | 633,452 | 1,043,052/1,059,436 | 17,686,528/9,936,896 | 486,801,408 |
+| Compact exact field | 420,980 | 830,580/846,964 | 17,403,904/10,035,200 | 485,751,808 |
+| Frozen optical | 316,532 | 726,132/742,516 | 17,367,040/9,740,288 | 471,616,512 |
+| Full tree, wrong targets | 811,228 | 1,482,972/1,499,356 | 17,670,144/9,936,896 | 489,619,456 |
+| Budget tree, wrong targets | 434,252 | 843,852/860,236 | 17,674,240/10,035,200 | 485,273,600 |
+| Full tree, corrected | 807,676 | 1,479,420/1,495,804 | 17,670,144/9,953,280 | 489,091,072 |
+| Budget tree, corrected | 434,252 | 843,852/860,236 | 17,686,528/10,035,200 | 485,840,896 |
+| Corrected cubic residual | 428,012 | 837,612/853,996 | 17,670,144/9,936,896 | 484,508,672 |
+| Corrected SiLU8 residual | 428,012 | 837,612/853,996 | 17,670,144/10,035,200 | 485,350,400 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals include
+geometry, wood, cutout pages, visibility scratch, source nodes, tree/coefficients,
+exact fallback, inactive buffers, output, screen, upload and uniform resources.
+The full trees also grow the retained upload ring by 262,144 bytes, which is
+included above. A small encoded payload is not the renderer's resident footprint.
+
+DRM/PSS are actual whole-client snapshots with observable driver/cache overhead,
+not asset-attributed appearance residency or transient physical peaks. UMA pools
+may overlap and must not be added. No 16× physical appearance-memory claim follows.
+The candidates already fail quality or complete cost, so additional attribution
+infrastructure cannot change this decision.
+
+### Preserved evidence and next architecture bet
+
+All ten variants, 80 shaded captures, 56 focused source/decoder captures,
+initial wrong targets, corrected targets, failed fits, tree payloads, complete
+profiles and actual memory observations are preserved. Experimental source/type
+checking passes. Runtime is restored byte-for-byte to 28ea20bf; established
+unchanged default checks are reused without another broad test run.
+
+**Next bet:** compile spatial routing of relevant source-field contributors,
+rather than interpolate their final normal/depth. A small region tree and masks
+may skip unnecessary clump functions while retaining the nonlinear source response.
+Use the verified blend at geometry row 4,w and actual source-response checks.
+Compare with both exact-field and matched-cache controls, charging routing,
+fallback, visibility, wood, updates and compositing. This is a new hypothesis,
+not a speed or compression claim. More material fitting is not justified here.
+
+G1–G7 remain unchanged and unmet. No unseen-family, footprint range, richness
+scaling, human evaluation or sustained latency claim is established.
+
+The affine compiler and decoder are original code. Existing
+[metric/method citations](citations.md#neural-reconstruction-instrument) and the
+[SiLU definition](https://docs.pytorch.org/docs/2.14/generated/torch.nn.SiLU.html)
+apply; fitting uses pinned Torch 2.5.1 CPU, with no imported model weights.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-adaptive-response-v1.
+Manifest SHA-256: `f5c1852086f181f7ea8c5055b8fd62c0e97614ac9c8d9499668ec479789ce394`.
