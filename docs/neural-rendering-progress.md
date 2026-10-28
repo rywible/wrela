@@ -2844,3 +2844,27 @@ Uniform-loop follow-up is slower and retired.64captures,24priorcontrols,
 32candidatealpha and16retained RGBA checks preserved. G1–G7 unchanged/unmet.
 [Complete quality/runtime/residency and scope](neural-shaded-appearance.md#source-domain-field-bounds-retain-a-conventional-gpu-speed-tradeoff).
 Manifest: `301ffc8d04fa9596474aab01b802b9210ae4c762eff61271c1dadfca13f6ba17`.
+
+
+### Broader source-bound views checkpoint (2026-10-28)
+
+First joint assessment 12.61 minutes; decision 18.09 minutes. Two targeted
+follow-ups; no training. Reused 16 existing AA8 validation views (192 comparisons)
+and refined only two demonstrated problem view/light pairs with the existing CLI.
+Cutoff 4 fails with 0.44766 dB loss / 1.100013 LPIPS ratio; cutoff 5 still fails
+1.058506 LPIPS. Cutoff 6 passes 192 screen rows and six selected AA64 rows.
+All 192 candidate alpha images match source visibility exactly.
+
+Cutoff 6 paired median GPU saving is 4.35% vs uncached full field; geometric
+saving 3.51%, conditional 95% interval 2.20–4.63%. Requested live/peak
+830,924/847,308 B; 344 B above full field. Compact cache remains faster
+(0.35216 vs 0.57744 ms) at 1,043,052 B. Actual whole-client DRM/PSS and full
+completion costs are recorded. No 16× residency or broad quality promotion.
+
+Decision: change representation for G4. Retain cutoff 6 as an opt-in diagnostic,
+reject cutoffs 4/5 qualification and stop cutoff tuning. Next test a source-compiled
+smooth far-field aggregate while preserving exact near-field terms and visibility.
+Eight retained captures match prior measurements; other runtime files restored.
+G1–G7 and frozen models unchanged. Failures preserved.
+[Full measurements and decision](neural-shaded-appearance.md#broader-views-overturn-the-aggressive-cutoff).
+Manifest: `ebc652b8bc4874596b5ace82fb68b8c7a57ba57e2469b65fe2f953da277bf1f8`.

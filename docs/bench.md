@@ -2902,3 +2902,29 @@ counted; staticmaskcook excludedsteadytime butstorage/peak included.
 Twofollowups, no training/newreferences; firstassessment7.09min,decision14.99min.
 Retain opt-in bounded field; exactcache faster/larger. NoG4/16x/global claim.
 [Full comparison and limitations](neural-shaded-appearance.md#source-domain-field-bounds-retain-a-conventional-gpu-speed-tradeoff).
+
+
+### AMD source bounds across additional views (2026-10-28)
+
+RADV RENOIR1002:164c / Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent2cc22613 plus archived variants.
+16 existing public validation views, 64px, four lights, three backgrounds.
+AA8 screen passes: cutoff4 178/192, cutoff5 191/192, cutoff6 192/192.
+Existing CLI AA32/64 confirmation: cutoff4 loses0.44766dB and reaches
+1.100013LPIPS; cutoff5 stillfails1.058506LPIPS; cutoff6 passes6/6selectedcases.
+All192candidate alpha images exactly match source. No broad AA64 qualification.
+
+Cutoff6 five-pair median GPU saving4.35% vs full field; geometric3.51%,
+conditional pairedbootstrap95%CI2.20–4.63%. CPU inconclusive.
+Single fullfield/cutoff6/cache GPUmedian0.60500/0.57744/0.35216ms;
+pacedp95/p99 1.49421/1.53206,1.47600/1.51526,1.42566/1.48716ms.
+Requestedlive830,580/830,924/1,043,052B; cutoff6peak847,308B.
+Cutoff6actualDRM VRAM/GTT17,678,336/10,035,200B,PSS488,007,680B,
+whole-client observations, not per-asset physical savings.
+All source geometry, decoding, cutouts, visibility, wood, field/shade, updates
+and composite counted; static maskcook excluded steady time but storage/peak
+included. Dynamic edits unmeasured. Two follow-ups; no training; four justified
+reference captures. First assessment12.61min; decision18.09min.
+Change representation for G4; retain stricter cutoff6 diagnostic. Earlier21.53%
+cutoff4speed result remains true on its two views but fails broader quality.
+[Full measurements and limitations](neural-shaded-appearance.md#broader-views-overturn-the-aggressive-cutoff).

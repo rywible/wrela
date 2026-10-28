@@ -1,6 +1,7 @@
 // Opt-in source-domain field evaluation for this diagnostic family.
 // 0: original stabilized field; 1: finite-range direct exponentials;
 // 2: direct exponentials with conservative owner-region influence masks.
-// Cutoff4 passes the recorded shaded cases; it is not an exact field evaluator.
+// Cutoffs 4 and 5 fail broader shaded checks. Cutoff 6 passes the recorded
+// screen and two refined cases, but is not an exact field or a G4 promotion.
 pub const MODE: u32 = 0
-pub const CUTOFF: f32 = 4.0
+pub const CUTOFF: f32 = 6.0

@@ -7008,6 +7008,10 @@ Manifest SHA-256: `ee6b70a01567ab7f25a2dbe606a1e20fe67b0b441dda385da9c2227b91dd3
 
 ## Source-domain field bounds: retain a conventional GPU speed tradeoff
 
+Later validation: the [broader-view block](#broader-views-overturn-the-aggressive-cutoff)
+finds confirmed quality failures at cutoff 4. The measurements below remain
+valid for their stated two views; the opt-in cutoff is now 6.
+
 **Decision: continue source-domain partial evaluation as an opt-in conventional
 field mode.** Five paired AMD runs show a **21.53% median reduction in complete
 GPU time** versus the original uncached field path. The retained cutoff4 passes
@@ -7157,3 +7161,139 @@ Original Wrela implementation; existing evaluator
 [citations](citations.md#neural-reconstruction-instrument) apply.
 Evidence on Pop!_OS: build/neural-evidence/g4-source-bounds-v1.
 Manifest SHA-256: `301ffc8d04fa9596474aab01b802b9210ae4c762eff61271c1dadfca13f6ba17`.
+
+
+## Broader views overturn the aggressive cutoff
+
+**Decision: change representation for G4.** The previous cutoff 4 speedup is
+real on its two measured views, but its quality qualification does not
+generalize. Reject cutoffs 4 and 5 as quality-qualified options. Retain cutoff 6
+only as a limited conventional diagnostic, with the original exact/default
+paths intact. Stop global-cutoff tuning after the two allowed follow-ups.
+
+The first joint assessment took 12.61 minutes; the decision took 18.09 minutes.
+No training occurred. G1–G7 and the frozen optical/raw models remain unchanged.
+This block ran solo on Pop!_OS's AMD GPU.
+
+### Reuse existing views, confirm only demonstrated uncertainty
+
+The screen reuses completed AA8 source captures for 16 additional public
+validation views, 130–145, at 64×64 pixels: four lights and three backgrounds,
+192 comparisons per method. These views were not used to choose cutoff 4, but
+remain public development data, not a sealed unseen-family test. AA8 is a
+screen, not converged truth. Exposure, display conversion and FLIP/LPIPS
+preprocessing remain unchanged. All controls receive the same source knowledge,
+geometry, material laws, lights and camera information.
+
+| Method | Screen passes vs compact exact cache | Mean PSNR dB | Mean FLIP | Mean LPIPS |
+|---|---:|---:|---:|---:|
+| Compact exact cache/full field | 192 / 192 | 39.72105 | 0.01353074 | 0.00225478 |
+| Cutoff 4 | 178 / 192 | 39.70546 | 0.01362083 | 0.00225911 |
+| Cutoff 5 | 191 / 192 | 39.71699 | 0.01354838 | 0.00225615 |
+| Cutoff 6 | 192 / 192 | 39.71998 | 0.01353282 | 0.00225493 |
+
+The failure changes the decision despite small aggregate differences:
+
+- Cutoff 4 fails view 141/light 2. The existing shaded CLI, refined from AA32
+  to AA64, confirms a worst **0.44766 dB PSNR loss** and **1.100013 LPIPS ratio**
+  against the exact compact cache. All three backgrounds fail at both sample
+  levels. The fixed limits remain 0.25 dB and 1.05.
+- Follow-up 1 raises only the cutoff to 5. It fixes that case but fails
+  view 138/light 0/background 1. AA32 and AA64 both confirm the failure;
+  the AA64 LPIPS ratio is **1.058506**.
+- Follow-up 2 raises only the cutoff to 6. It passes all 192 screen comparisons
+  against all three exact controls and all six AA64 comparisons at the two
+  demonstrated problem view/light pairs. Worst screen PSNR loss is 0.02893 dB;
+  maximum FLIP/LPIPS ratios are 1.004310/1.030325.
+
+Only these two view/light pairs needed new high-sample captures: four CLI runs,
+no new reference framework. Their AA32→AA64 mean radiance differences are
+0.00019230 and 0.00009526; coverage means are 0.00042218 and 0.00039423, and
+coverage p99 differences 0.006116 and 0.006360. Both pass the established
+radiance/coverage convergence checks. Remaining views have not been promoted
+from AA8 screening to converged-reference qualification.
+
+All 192 candidate alpha images (64 each for the three cutoffs) are byte-exact
+to source visibility. This preserves, rather than eliminates, source
+silhouette error. Against AA8, coverage MAE averages 0.0101764; worst boundary
+p99 is 2.236 pixels, worst half-coverage precision 0.97684 and recall 0.98809.
+The higher-sample selected cases also retain their full silhouette measurements.
+
+### Complete cost and resident observations
+
+RADV RENOIR PCI1002:164c, Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent2cc22613 plus archived configurations.
+Each profile covers 240 frames after 60 warmup, cycling all 16 views and four
+lights. No CPU scoring overlaps GPU timing.
+
+| Method | Complete GPU median / p95 ms | Paced GPU p95 / p99 ms | Requested live / peak B |
+|---|---:|---:|---:|
+| Native cached source | 0.28136 / 0.45064 | 1.07122 / 1.11151 | 1,875,660 / 1,892,044 |
+| Compact exact cache | 0.35216 / 0.52236 | 1.42566 / 1.48716 | 1,043,052 / 1,059,436 |
+| Compact full field | 0.60500 / 0.65920 | 1.49421 / 1.53206 | 830,580 / 846,964 |
+| Cutoff 4 | 0.48900 / 0.61772 | 1.36288 / 1.41750 | 830,924 / 847,308 |
+| Cutoff 5 | 0.55288 / 0.66868 | 1.41993 / 1.50879 | 830,924 / 847,308 |
+| Cutoff 6 | 0.57744 / 0.64868 | 1.47600 / 1.51526 | 830,924 / 847,308 |
+
+Five alternating full-field/cutoff-6 pairs give a **4.35% median GPU saving**.
+The geometric-mean saving is 3.51%; the conditional 95% paired-bootstrap
+interval is 2.20–4.63%, enumerating all 3,125 resamples of five paired log
+ratios. Frames are not treated as independent runs. CPU change is inconclusive.
+Raw pairs and builds are preserved in paired-bounded6-field/result.json.
+
+The complete tree includes source-card generation/decoding, original cutouts,
+visibility and depth ordering, wood, field or cache evaluation, shading,
+per-frame updates and final compositing. All 26,560 cards and 7,392 wood
+triangles remain. Static mask cooking is outside steady-frame timing, while
+its storage and allocation peak are charged. Dynamic edit/rebuild latency is
+unmeasured. This is a 64px fixture, not a 1080p production scene.
+
+| Method | Observed DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|
+| Native cached source | 17,670,144 / 9,936,896 | 486,301,696 |
+| Compact exact cache | 17,670,144 / 9,953,280 | 489,057,280 |
+| Compact full field | 17,670,144 / 10,035,200 | 486,304,768 |
+| Cutoff 4 | 17,678,336 / 10,035,200 | 488,255,488 |
+| Cutoff 5 | 17,694,720 / 9,936,896 | 485,293,056 |
+| Cutoff 6 | 17,678,336 / 10,035,200 | 488,007,680 |
+
+Requested totals include source/wood data, visibility scratch, masks, caches,
+output, uploads, uniforms and inactive/fallback allocations. The masked field
+adds 344 B over full-field evaluation. Cutoff 6 saves 212,128 requested bytes
+against the compact cache, but is 64% slower in the single saturated profile.
+Native stored source is faster again and larger. These are tradeoffs, not
+joint dominance over the strongest conventional baseline.
+
+Actual DRM/PSS observations are whole-client snapshots. They include observable
+driver/browser residency but cannot isolate private shader spills, caches or
+per-asset physical pages. Do not add UMA pools or claim a physical saving from
+their small differences. CPU-start-to-final-GPU-completion p95/p99 for cutoff 6
+is 4.60597/4.73716 ms versus cache 4.49025/4.58618 ms; those observed times
+include completion notification overhead and are not input-to-photon latency.
+All six methods' completion samples remain in the evidence.
+
+### Retention and next architecture bet
+
+The only runtime change is the opt-in cutoff value 4→6 plus a comment recording
+the broader failure. MODE0 and FIELD_RESPONSE=false remain default. Other
+runtime files, including the normal profile camera loop, are restored to the
+parent. Eight cutoff-6 captures exactly match the prior two-view captures that
+already passed 24 converged shaded comparisons. Existing format/type checks
+pass; no unchanged bound-test or reference machinery audit was repeated.
+
+**Next bet:** compile the smooth far-field remainder from authored source into
+a small regional aggregate of scalar weights and gradients. Keep exact
+near-field terms and exact visibility. A conservative influence bound does not
+by itself control normalized shading error, especially when gradients nearly
+cancel. Test a conventional aggregate before considering a learned residual;
+no new material-moment training is justified.
+
+This block demonstrates a small conventional GPU tradeoff and invalidates the
+broader interpretation of the earlier 21% gain. It does not demonstrate G4's
+16× resident benefit, unseen-family/8–512px quality, motion/richness behavior,
+or sustained G6 performance. All G1–G7 remain unchanged and unmet.
+
+Original Wrela experiment; established metric
+[citations](citations.md#neural-reconstruction-instrument) apply.
+Evidence on Pop!_OS: build/neural-evidence/g4-source-bounds-views-v1.
+Manifest SHA-256: `ebc652b8bc4874596b5ace82fb68b8c7a57ba57e2469b65fe2f953da277bf1f8`.
