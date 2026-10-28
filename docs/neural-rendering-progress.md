@@ -2570,3 +2570,20 @@ decision 23.25min, exactly two follow-ups, no training/new references.
 preserved; production runtime restored byte-exactly. G1–G7 unchanged/unmet.
 [Complete comparison](neural-shaded-appearance.md#conditional-unlit-material-useful-gain-change-the-g4-representation).
 Manifest SHA-256: `54062ed20c5ca1c107da2f56b405606625c896213ed9513f701278d698f9a630`.
+
+### Explicit leaf boundary meshes are retired
+
+Source-only shared meshes preserve source depths/material fields but fine geometry
+passes 17/24 at 8.75952 ms versus compact field 24/24 at 0.64060 ms. Live requested bytes
+801,772 versus 830,580. One coarser follow-up reduces mesh 53,624→12,664 bytes and
+GPU time to 1.78924 ms, but quality drops to 1/24; live 760,812 bytes remains far from 16×.
+Neither candidate meets quality and runtime together. No second sweep.
+
+First assessment 234.08 s, decision 12.60 min; no training/new references.
+40 rendered captures; 24 original control RGBA exact; source mesh/index/mapping
+checks pass and quantify boundary errors. Failed meshes and measurements preserved.
+Default runtime restored byte-exactly. G1–G7 unchanged/unmet.
+Next keep source-card quads/exact depth and test compact coverage decoding against
+a matched-size conventional approximation, targeting the rendered boundary error.
+[Complete comparison](neural-shaded-appearance.md#source-boundary-meshes-retire-the-per-leaf-geometry-expansion).
+Manifest SHA-256: `2f40a667ceed6294e82a21ae15074165308c404b07b6f13016f607029508e0cc`.

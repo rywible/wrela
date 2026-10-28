@@ -4666,3 +4666,173 @@ Evidence: build/neural-evidence/g4-conditional-material-v1 on Pop!_OS.
 Plan/decision, initial and follow-up results, complete cost and physical memory
 observations, failed build, mathematical probes, source statistics and replay
 archives are preserved. Manifest SHA-256: `54062ed20c5ca1c107da2f56b405606625c896213ed9513f701278d698f9a630`.
+
+## Source boundary meshes: retire the per-leaf geometry expansion
+
+**Decision: retire this representation for the distant G4 path.** Explicit source
+boundaries preserve front-surface depth and improve some image averages, but the
+fine mesh passes only 17/24 numeric quality cases and costs 8.75952 ms versus 0.64060 ms
+for the compact conventional field renderer. Requested live resources fall only
+3.47%. One follow-up cuts the mesh from 53,624 to 12,664 bytes and runtime to 1.78924 ms,
+but quality falls to 1/24; its 8.40% live-resource saving cannot offset those losses.
+There is no joint quality, memory and runtime win and no neural advantage.
+
+The first comparison completed in 234.08 seconds.
+Decision at 2026-10-28T04:45:21.084617+00:00, 12.60 minutes
+after start, inside the two-hour limit. One targeted follow-up; a second tolerance
+sweep is not justified. No training and no new shaded references. G1–G7 stay fixed.
+
+### Source-only representation and fair controls
+
+Compile the original 16 quantized 128×128 source coverage patterns into boundary
+geometry. Split each texel cell along a fixed diagonal, clip its two linear
+triangles at coverage 0.5, union the covered polygons, simplify while preserving
+topology, then perform constrained triangulation. This approximates the original
+bilinear contour; it does not claim exact coverage. Texel-edge clamping is retained.
+
+The initial tolerance is 0.25 source texel, followed once by 2.0 source texels.
+Vertices use two unsigned 16-bit normalized coordinates packed into one u32.
+Indices are u32. The fine mesh has 3,272 shared vertices and 3,378 triangles;
+the coarse mesh has 712 vertices and 818 triangles. Both reuse the same 26,560
+source card centres, sizes, rotations, exact per-card depth, authored normal/depth
+field and original wood. No aggregate material mean or post-lighting correction.
+
+The source seed rule maps pattern to card index exactly:
+index = instance×16 + (pattern xor 9). It permits 16 indexed instanced draws
+without a per-card mapping buffer. All 26,560 source IDs occur once, in the correct
+pattern. Packed depth/source-ID visibility preserves the original tie ordering
+independently of pattern draw order. Hardware rasterization still determines
+coverage and introduces its normal subpixel edge rounding.
+
+The compact conventional control retains its original source coverage tiles.
+The native control retains source cards and cached responses. Both receive all
+source information, masks, materials and field knowledge. The frozen optical
+payload remains unchanged. These source meshes are conventional alternatives,
+not learned models. Compilation uses no view, lighting, rendered label or reference
+image; the completed shaded references are evaluation-only.
+
+### Rendered quality and silhouettes
+
+| Candidate | Numeric cases vs each source control | PSNR dB | FLIP | LPIPS | Coverage MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native source | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 |
+| Compact source field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 |
+| Frozen optical | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Fine boundary mesh | 17/24 | 40.283478 | 0.01279975 | 0.00258091 | 0.01004100 |
+| Coarse boundary mesh | 1/24 | 39.968189 | 0.01462202 | 0.00299227 | 0.01040828 |
+
+Counts require PSNR loss≤0.25 dB and FLIP/LPIPS ratios≤1.05 with the unchanged
+1e-4 floor in every case. The listed counts are identical against current native,
+current compact source field, and the earlier hierarchy-raster/masks controls.
+These are partial numeric gates, not full G4 or G3 passes.
+
+The fine mesh's mean PSNR is almost unchanged, and mean FLIP improves, but seven
+cases fail LPIPS; the worst ratio is 1.14093. Coarse simplification loses 0.328 dB
+mean PSNR, increases mean FLIP about 12.5% and LPIPS about 20.1% versus native,
+and fails 23 cases. Better average coverage in the fine case does not excuse
+these shaded failures.
+
+Worst boundary-distance p99 remains 2 pixels for the native, compact field and both
+mesh paths. Fine mesh mean boundary p99 rises 1.707→2 pixels. Worst half-coverage
+recall is 0.994007 for fine/source but 0.991438 for coarse; worst precision is
+0.983065 for fine/source and 0.983022 for coarse. All ten candidate/view coverage
+sequences are light-independent. All 24 original control RGBA captures reproduce
+their earlier sealed images exactly.
+
+Evaluation reuses one static 64px tree, two public views, four analytic lights and
+three backgrounds; AA64 references, exposure 0.62, ACES→sRGB, LDR FLIP 67 ppd and
+AlexNet LPIPS v0.1. No new reference infrastructure, unseen-family claim or temporal
+result. Flat bark and analytic illumination remain fixture limitations.
+
+### Complete AMD cost and resident observations
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent 60e6b323 plus archived variant
+sources. Sequential runs, 60 warm-up and 240 measured frames at 64×64.
+
+The mesh paths submit 5,607,480 fine or 1,357,880 coarse leaf triangles per frame,
+plus the original 7,392 expanded wood triangles. The compact field control submits
+53,120 leaf triangles. Mesh paths use 18 total draws including wood and composite,
+versus 3 for the control; uniform uploads rise 1,040→4,880 bytes per frame.
+
+GPU costs include placement and decoding, all geometry, packed 16-sample visibility,
+wood, authored field shading, resolve and composite. Source paths use depth
+ordering and require no optical sort. CPU includes view/light updates, uploads and
+commands. Frozen optical timings include its CPU centre-depth sort and indexed
+wood. Source compilation takes 5.74 s fine and 5.49 s coarse and is excluded from steady
+runtime, as is initialization. Dynamic source edits/recompilation are unmeasured;
+initial requested allocation peaks are included.
+
+| Candidate | GPU saturated median/p95 ms | GPU paced p95/p99 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 0.28108/0.40100 | 1.0224/1.0700 | 0.6492 | 4.4509/4.5693 |
+| Compact source field | 0.64060/0.81652 | 1.5070/1.5394 | 0.7030 | 4.4927/4.6365 |
+| Frozen optical | 0.06832/0.07124 | 0.2729/0.2766 | 1.0080 | 4.7600/4.8293 |
+| Fine boundary mesh | 8.75952/8.87596 | 9.7625/9.8240 | 0.8200 | 11.8423/12.4075 |
+| Coarse boundary mesh | 1.78924/1.79904 | 2.7372/2.7876 | 0.9281 | 6.8672/7.2052 |
+
+Both mesh candidates exceed the 1.1× p95 and p99 GPU allowance even against the
+slower compact field control. Completion includes browser/driver notification
+after all GPU submissions; it is not input-to-photon. Single runs establish this
+large cost gap, not repeatable small performance differences.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/9,936,896 | 491,378,688 |
+| Compact source field | 420,980 | 830,580/846,964 | 17,686,528/9,936,896 | 492,931,072 |
+| Frozen optical | 316,532 | 726,132/742,516 | 17,633,280/9,740,288 | 477,833,216 |
+| Fine boundary mesh | 392,172 | 801,772/818,156 | 17,678,336/10,133,504 | 487,798,784 |
+| Coarse boundary mesh | 351,212 | 760,812/777,196 | 17,395,712/10,051,584 | 488,204,288 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals add
+409,600 bytes for output/screen/upload/uniform resources. All geometry, indices,
+field nodes, source parameters, visibility scratch and dummy/fallback allocations
+are counted. The two shared meshes use 53,624 and 12,664 GPU bytes. CPU draw metadata
+adds 128 bytes, also present in the whole-process observations. The 3,328-byte source
+parameter table remains available for the unchanged tissue fallback.
+
+Relative to compact field, total requested memory improves only 1.036× or 1.092×.
+These are broad allocation ratios, not appearance-only G4 residency after declared
+identical common-geometry exclusions. DRM VRAM/GTT and PSS are actual whole-client
+physical snapshots, including wider browser/driver state; they do not isolate
+asset appearance or physical transient peaks. Do not sum overlapping UMA pools.
+Nothing here demonstrates 16× quality-matched physical memory savings.
+
+### Verification, retirement and next bet
+
+The new compiler was checked directly: all 32 packed pattern meshes are valid,
+triangle overlap is below 1e-5 source-texel area, indices stay in their pattern's
+vertex range, and constrained triangles reproduce the simplified polygon areas.
+Against the original bilinear source mask at 512×512 points per pattern, packed
+fine geometry disagrees on 0.2357% of samples and coarse on 1.6871%. These diagnostics
+validate and quantify the source approximation; they are not new shaded references
+or substitutes for the rendered gates. The authored material-field body is
+unchanged, so its prior checks are reused.
+
+No second optimization is warranted. More boundary simplification worsens the
+quality already failing with the fine mesh; a per-card geometry cache would add
+resident state to a path whose memory savings are small. Preserve both rejected
+candidates, meshes and full measurements. All runtime files are restored
+byte-for-byte to 60e6b323; the two experimental modules are archived and removed.
+Established default allocation/image checks apply; no broad suite was repeated.
+
+Next hypothesis: retain one quad per source card and exact per-sample depth, then
+test a small source-derived coverage decoder against an equally compact
+conventional approximation using identical source masks and sampling conventions.
+The measured problem is boundary compression at acceptable whole-render cost.
+Keep authored material fields, count decoder/latents/fallback/update storage and
+complete visibility cost, and declare identical common-geometry exclusions.
+This is a proposed experiment, not a claim that a neural decoder will succeed.
+Do not resume material-moment fitting or expand shaded references.
+
+Offline polygon operations use Shapely 2.1.2/GEOS 3.13.1:
+[constrained triangulation](https://shapely.readthedocs.io/en/2.1.2/reference/shapely.constrained_delaunay_triangles.html)
+and [topology-preserving simplification](https://shapely.readthedocs.io/en/2.1.2/reference/shapely.simplify.html).
+Our clipping, packing, source mapping and Wrela renderer are original; no external
+shader or geometry asset was copied. G1–G7 remain unchanged and unmet.
+
+Evidence: build/neural-evidence/g4-surface-patches-v1 on Pop!_OS; five measured
+variants, 40 rendered captures, source meshes/polygons, compiler checks, initial
+and follow-up assessments, physical observations and exact replay archives.
+Manifest SHA-256: `2f40a667ceed6294e82a21ae15074165308c404b07b6f13016f607029508e0cc`.

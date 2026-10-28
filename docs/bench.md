@@ -2559,3 +2559,14 @@ Physical DRM/PSS recorded, but 16x asset appearance residency remains unproved.
 Decision: change coverage/visibility representation; preserve cached derivatives
 as a component. Two follow-ups, zero training/new references; default restored.
 [Full quality, runtime and physical memory evidence](neural-shaded-appearance.md#conditional-unlit-material-useful-gain-change-the-g4-representation).
+
+### AMD source boundary mesh retirement (2026-10-28)
+
+RADV RENOIR 1002:164c/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e5, parent 60e6b323 plus exact archived variants.
+Fine source-boundary mesh 17/24 quality cases, 8.75952 ms GPU, 801,772 live requested
+bytes; compact informed field 24/24, 0.64060 ms, 830,580 bytes. One coarser follow-up:
+1/24, 1.78924 ms, 760,812 bytes. No joint quality-memory-runtime advantage.
+40 captures; original controls byte-exact; source compiler checks passed.
+Retire; no second sweep, training or new references. Runtime restored.
+[Full quality, cost and physical memory evidence](neural-shaded-appearance.md#source-boundary-meshes-retire-the-per-leaf-geometry-expansion).
