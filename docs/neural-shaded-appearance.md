@@ -6084,3 +6084,210 @@ continue to apply. No external implementation or model weights were imported.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-field-routing-v1.
 Manifest SHA-256: `f5d6c6ee32044e9a7d954b5b588ddc0a222256f5af9fdc81ac81345280cf5d65`.
+
+## Sparse optical bricks: fast coarse rendering, insufficient surface fidelity
+
+**Decision: change representation; retire homogeneous optical source bricks for
+G4.** Coarse blocks reduce measured runtime and requested memory, but every
+corrected variant fails all 24 shaded gates. Finer cells improve quality at rising
+storage and rendering cost. No quality-matched neural or rendering advantage is
+demonstrated; no learned residual is trained.
+
+The first six-method run completed in 3.81 minutes,
+but its volume rays used the wrong vertical convention. Those results are an
+implementation failure, not evidence against the representation. The first
+corrected comparison completed in **6.44 minutes**;
+the final decision took **10.71 minutes**, within two hours.
+Exactly two follow-ups: repair the demonstrated projection error, then isolate
+cell resolution versus quadrature. No new shaded references or training.
+Parent 3a945ec652af7dd48772fcb9e43869355aee91c1; solo Pop!_OS AMD execution.
+
+### Representation and equally informed controls
+
+The previous per-pixel source hierarchy was too expensive, while clump tiles lost
+surface identity. This test instead replaces individual leaf traversal with a
+source-space optical volume, decoding and shading its cells once per view/light
+and sharing those results across rays.
+
+Canonical source positions, linear albedo, crown normals and depths come from
+the existing source exports. All 26,560 normal/depth records exactly match the
+recent verified GPU responses. Projected leaf area comes from the established
+512-sample cutout moment export. No rendered target, teacher view or current-view
+reference enters the runtime or compiler. The original source laws are
+[plant geometry and leaf material](../engine/plant.wrela) and
+[the authored tree](../content/great-tree/tree.wrela).
+
+The normalized source cube is divided into 16³, 32³ or 64³ cells. Trilinear
+splatting conserves total projected source leaf area, 2.912142724 normalized area
+units. Dividing deposited area by cell volume yields an extinction coefficient.
+Each cell stores eight half values: density, linear albedo RGB, raw normal XYZ
+and crown depth divided by 40. Materials are area-weighted means. Empty 4×4×4
+bricks are omitted through a dense brick-index table.
+
+| Grid | Occupied bricks | Stored cells / nonempty cells | Encoded index + cells B | Decoded lighting cache B |
+|---|---:|---:|---:|---:|
+| 16³ | 37 | 2,368 / 722 | 38,144 | 18,944 |
+| 32³ | 113 | 7,232 / 2,850 | 117,760 | 57,856 |
+| 64³ | 429 | 27,456 / 13,250 | 455,680 | 219,648 |
+
+One 64-thread group decodes each resident brick. The production leaf lighting
+function shades each cell from its decoded material and current view/light;
+premultiplied radiance and extinction are cached as four half values.
+The cache is rebuilt every measured frame as views and lights change.
+DDA traversal integrates piecewise-constant density in front-to-back order,
+terminating at the actual source wood depth or negligible transmittance.
+The exact source wood triangles are rendered separately with indexed drawing.
+There is no hidden source-card fallback or pre-rendered image cache.
+
+This is a deliberately approximate optical law: homogeneous density and mean
+material replace discrete opaque, view-facing cutouts and their visibility/material
+correlations. Source-pattern centroid offsets and local anisotropy are not encoded.
+A source edit requires recompilation; dynamic edit/rebuild cost is not measured.
+The volume is conventional, not a neural model.
+
+Controls retain native cached source, packed source with the exact response cache,
+packed source evaluating the full field, and the unchanged frozen explicit optical
+fit. All have the same useful authored information. Source controls use 4×4
+visibility samples; the first volume paths use 2×2 rays and wood samples. The
+final AA4 volume isolates that sampling difference rather than hiding it.
+
+### Correct the projection before judging quality
+
+The initial ray origin used -up times vertical image coordinate, while the
+existing raster projection negates clip Y and therefore requires +up. The wrong
+implementation places the leaf volume incorrectly relative to the wood.
+
+An independent analytic unit-density box check, using the existing raster
+convention, failed with maximum RGBA error 0.8580638. After the sign repair,
+all eight outputs agree within **7.033e-7**. A separate GPU probe decodes all
+7,232 cells × eight channels exactly from their half payload. These focused checks
+cover the new traversal and packing, not unchanged evaluator infrastructure.
+Failed source, images, timings and probe outputs are retained.
+
+The second follow-up holds all other choices fixed: 64³/AA2 changes cell
+resolution relative to corrected 32³/AA2; 32³/AA4 changes ray and wood quadrature.
+The resolution test gains 5.198 dB but costs more time and memory. The sampling
+test gains only 0.120 dB, with slightly worse LPIPS, and raises GPU cost from
+0.29108 to 1.05260 ms. More sampling is not a useful remedy here.
+
+### Shaded image and silhouette results
+
+Reuse completed AA64 truth for one static 64×64 tree, two public views, four
+analytic lights and three backgrounds. Exposure 0.62 and the established display
+transform, LDR-FLIP at 67 pixels/degree and LPIPS v0.1 are unchanged.
+Per-case gates compare with the packed exact-cache source: PSNR loss ≤0.25 dB,
+FLIP/LPIPS ≤1.05× with the unchanged 1e-4 floor. Counts also agree against native
+source. The 24 cases are not independent assets.
+
+| Method | Shaded gates /24 | PSNR dB | FLIP | LPIPS | Worst boundary p99 px |
+|---|---:|---:|---:|---:|---:|
+| Native cached source | 24 | 40.295971 | 0.01300193 | 0.00249104 | 2.000 |
+| Packed source + exact cache | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Packed source + full field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Frozen fitted appearance | 8 | 40.127682 | 0.01234846 | 0.00188937 | 1.414 |
+| 16³ cells, AA2 | 0 | 26.781696 | 0.10604341 | 0.13873942 | 6.000 |
+| 32³ cells, AA2 | 0 | 30.692174 | 0.06062705 | 0.07778751 | 4.000 |
+| 64³ cells, AA2 | 0 | 35.890242 | 0.03231476 | 0.01684170 | 3.000 |
+| 32³ cells, AA4 | 0 | 30.811814 | 0.05989700 | 0.08245391 | 4.000 |
+| 16³, wrong projection | 0 | 19.359730 | 0.24518378 | 0.26790861 | 12.133 |
+| 32³, wrong projection | 0 | 19.187688 | 0.23498813 | 0.22602879 | 11.472 |
+
+Corrected 16³/32³/64³ mean coverage MAE is 0.073677 / 0.040504 / 0.019626
+versus source 0.010060. Exact per-view silhouette statistics remain in each assessment.
+All variants' coverage is light-independent, but volume alpha is not identical
+to the source. The frozen fit still passes only 8/24. Mean image scores do not
+override per-case failures, and none of this proves G3 motion behavior.
+
+The best volume remains 4.406 dB behind the source, with roughly 2.49× FLIP and
+6.76× LPIPS error. Finer cells recover shape and shading together, but this block
+does not uniquely attribute every remaining error to density versus averaged
+material. It does establish that a material-only training sweep cannot be
+justified as the next step while visibility and complete cost fail.
+
+### Complete AMD runtime and memory
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0/compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Sequential profiles use 60 warmup
+and 240 measured frames at 64×64; allocation/completion runs use 60 + 300.
+No CPU scoring overlaps GPU timing.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | CPU p99 ms | CPU-to-completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Native cached source | 0.28136 / 0.42364 | 1.02343 / 1.07252 | 0.59110 | 4.44120 / 4.55035 |
+| Packed source + exact cache | 0.34568 / 0.55456 | 0.35947 / 0.90365 | 0.66575 | 4.18043 / 4.50240 |
+| Packed source + full field | 0.63856 / 0.65968 | 0.83586 / 1.43481 | 0.65025 | 5.30082 / 5.65773 |
+| Frozen fitted appearance | 0.06832 / 0.07028 | 0.27188 / 0.27278 | 0.98355 | 4.80005 / 4.92951 |
+| 16³ cells, AA2 | 0.16816 / 0.22036 | 0.73414 / 0.73553 | 0.65515 | 4.29178 / 4.53614 |
+| 32³ cells, AA2 | 0.29108 / 0.34184 | 1.17872 / 1.27673 | 0.55110 | 4.53102 / 4.68434 |
+| 64³ cells, AA2 | 0.53292 / 0.59348 | 1.33754 / 1.44686 | 0.41220 | 4.46559 / 4.64707 |
+| 32³ cells, AA4 | 1.05260 / 1.06596 | 1.88641 / 1.99792 | 0.51830 | 4.44020 / 4.62622 |
+| 16³, wrong projection | 0.17256 / 0.19196 | 0.75877 / 0.76011 | 0.58880 | 4.47684 / 4.65020 |
+| 32³, wrong projection | 0.30064 / 0.35804 | 1.16893 / 1.28628 | 0.49000 | 4.77178 / 5.03941 |
+
+Complete spans include cell decode and lighting, the cache writes/reads, ray
+traversal and depth ordering, all wood rendering, resolve and final composite.
+Source controls include placement, visibility, response, wood and composite;
+the frozen optical renderer includes its CPU sort. CPU timings include view/light
+updates, uploads and command submission. There is no untimed optical sort in the
+volume: front-to-back traversal supplies ordering. Static compilation and startup
+are excluded from steady frame time; allocation peaks are retained. Completion
+includes browser/driver notification and is not input-to-photon latency.
+These are single variant runs, not paired or sustained speed claims.
+
+| Method | Engine appearance + scratch B | All requested live / peak B | DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|---:|
+| Native cached source | 1,466,072 | 1,875,672 / 1,892,056 | 17,686,528 / 9,936,896 | 483,744,768 |
+| Packed source + exact cache | 633,464 | 1,043,064 / 1,059,448 | 17,403,904 / 10,035,200 | 487,567,360 |
+| Packed source + full field | 420,992 | 830,592 / 846,976 | 17,403,904 / 10,051,584 | 485,895,168 |
+| Frozen fitted appearance | 316,544 | 726,144 / 742,528 | 17,367,040 / 9,740,288 | 470,480,896 |
+| 16³ cells, AA2 | 259,808 | 669,408 / 685,792 | 17,301,504 / 9,740,288 | 467,776,512 |
+| 32³ cells, AA2 | 378,336 | 787,936 / 804,320 | 17,629,184 / 9,740,288 | 467,392,512 |
+| 64³ cells, AA2 | 878,048 | 1,549,792 / 1,566,176 | 17,629,184 / 9,740,288 | 469,468,160 |
+| 32³ cells, AA4 | 968,160 | 1,377,760 / 1,394,144 | 17,367,040 / 9,740,288 | 466,820,096 |
+| 16³, wrong projection | 259,808 | 669,408 / 685,792 | 17,629,184 / 9,740,288 | 466,786,304 |
+| 32³, wrong projection | 378,336 | 787,936 / 804,320 | 17,301,504 / 9,756,672 | 468,040,704 |
+
+Engine appearance/scratch excludes the common output allocation. All requested
+live/peak bytes include decoded cells, indices, wood colour/depth, source/dummy
+resources, output and host upload/uniform/screen allocations. Added inactive
+brick handles account for **12 bytes** in each control; their rendered images
+remain unchanged.
+
+The 64³ payload increases the resident upload ring from 262,144 to 524,288 bytes.
+That extra capacity is charged: its all-live total is **1,549,792 bytes**, not
+encoded-payload size. Raising wood/ray AA from two to four adds 589,824 bytes
+of wood colour/depth targets. The 32³/AA4 total is 1,377,760 bytes.
+
+DRM fdinfo VRAM/GTT and browser PSS are actual whole-client resident snapshots,
+not asset-attributed physical residency or transient physical peaks. Do not sum
+overlapping UMA pools. No 16× resident-memory saving is established. Even the
+coarse, quality-failing 16³ path uses 259,808 engine bytes versus the matched
+source's 633,464: only 2.44×. The finer quality-failing path exceeds that source
+in both engine memory and GPU cost.
+
+### Preservation and next architecture bet
+
+All ten variants, 80 shaded captures, 16 successful focused GPU captures and eight
+failed analytic-probe captures are retained. Initial missing-branch-brace errors
+and the projection defect are preserved separately. The new packing/traversal
+checks pass; the complete captures compile and execute. Runtime is restored
+byte-for-byte to 3a945ec6, reusing established checks for unchanged code.
+
+**Next bet:** preserve discrete surface events within small source-space blocks.
+Represent view-conditioned coverage/depth with material identity attached to
+each ordered hit, rather than one density and averaged material per cell.
+First compare an informed conventional quantized surface-block decoder; a learned
+residual receives the same source information and is justified only after a
+specific rendered error and a plausible complete memory/runtime budget exist.
+If hard visibility restores the original full per-leaf working set, reject that
+layout before training. This is an untested architecture hypothesis.
+
+The result retires this homogeneous optical approximation, not every sparse
+block representation. G1–G7 and the frozen models remain unchanged and unmet.
+No unseen families, 8–512-pixel range, richness scaling or sustained latency proof.
+Existing [metric/method citations](citations.md#neural-reconstruction-instrument)
+apply; the compiler and renderer are original, without imported model weights.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-source-bricks-v1.
+Manifest SHA-256: `095f9b70fd509d5aa1029d513546136f0cbc55c3d1fcfeea9a39e709c2d205f7`.

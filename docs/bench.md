@@ -2741,3 +2741,21 @@ results retained. First comparison 3.60 minutes;
 decision 13.82 minutes. No training or new references.
 Retire masks, restore runtime; no joint G4 advantage.
 [Full comparison](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost).
+
+### AMD sparse optical source bricks retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent 3a945ec6 plus archived variants.
+Existing static 64-pixel tree, two views × four lights × three backgrounds.
+Corrected 16³/32³/64³ volumes pass 0/24 gates; PSNR 26.78/30.69/35.89 dB,
+GPU median 0.16816/0.29108/0.53292 ms, live 669,408/787,936/1,549,792 B.
+Matched source passes 24/24: 40.30 dB, 0.34568 ms, 1,043,064 B.
+32³/AA4 gains only 0.12 dB, costs 1.05260 ms / 1,377,760 B and still passes 0/24.
+64³ paced GPU p95/p99 1.33754/1.44686 ms versus matched 0.35947/0.90365 ms.
+Full cell decode/lighting/cache, visibility, wood, updates and composite included;
+decoded buffers and larger upload ring charged. Actual DRM/PSS retained separately.
+Initial wrong projection is preserved; corrected analytic traversal and half decode
+pass. First corrected comparison 6.44 minutes,
+decision 10.71 minutes. Two follow-ups; no training/new references.
+Retire homogeneous optical cells; restore runtime; no joint G4 advantage.
+[Full measurements](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity).

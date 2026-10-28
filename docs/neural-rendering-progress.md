@@ -18,19 +18,19 @@
 
 ## Immediate milestone
 
-[Source contributor routing](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost)
-is retired after one targeted follow-up. Both source masks pass 24/24 shaded
-cases and preserve sampled silhouettes, but lose time and memory to the full
-field. Direct full-field summation measures 0.59024 ms / 830,580 requested live
-bytes; the direct masks cost 0.66040–0.69468 ms with more memory. Matched cached
-source measures 0.34460 ms / 1,043,052 bytes. Frozen appearance still passes 8/24.
-No joint G4 win. Runtime restored; frozen models and G1–G7 unchanged.
+[Sparse optical bricks](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity)
+are retired after two follow-ups. Corrected 16³/32³/64³ volumes all pass 0/24
+shaded gates: 26.78/30.69/35.89 dB versus source 40.30 dB. The finest path costs
+0.53292 ms / 1,549,792 requested live bytes, versus matched source
+0.34568 ms / 1,043,064 bytes. Higher sampling adds little quality and large cost.
+The first projection bug and all failed results are preserved; the corrected
+analytic box and half decoder checks pass. No neural fit is justified.
+Runtime restored; frozen models and G1–G7 unchanged/unmet.
 
-Next test a different representation unit: sparse source-space bricks combining
-coverage, depth and material response, decoded once per visible brick with
-bounded caching and charged fallback. Compare conventional quantization and
-same-budget learned residuals on identical source information. It must reduce
-visibility storage and repeated work together, before more training is justified.
+Next preserve discrete surface events in small source-space blocks: coverage,
+depth and material identity tied to each ordered hit. Test an equally informed
+conventional quantized surface-block control before any learned residual. Reject
+layouts that restore the full per-leaf working set before spending training cycles.
 
 ## Evidence recorded so far
 
@@ -2740,3 +2740,15 @@ still loses runtime versus matched cached source. No tail-latency win promoted.
 Runtime restored exactly; change representation rather than tune more masks.
 [Measurements and next bet](neural-shaded-appearance.md#source-contributor-routing-preserve-quality-retire-the-lookup-cost).
 Manifest: `f5d6c6ee32044e9a7d954b5b588ddc0a222256f5af9fdc81ac81345280cf5d65`.
+
+### Sparse optical source bricks checkpoint (2026-10-28)
+
+First run 3.81 minutes had a projection defect;
+first corrected comparison 6.44 minutes;
+decision 10.71 minutes. Exactly two follow-ups, zero training
+and no new references. All corrected variants fail every shaded gate.
+64³ cells improve quality but cost more time and memory than matched source;
+AA4 at 32³ adds only 0.12 dB. Ten full variants, 80 shaded captures and 24
+focused GPU captures (eight failed) preserved. Runtime restored exactly.
+[Joint quality/cost evidence and next bet](neural-shaded-appearance.md#sparse-optical-bricks-fast-coarse-rendering-insufficient-surface-fidelity).
+Manifest: `095f9b70fd509d5aa1029d513546136f0cbc55c3d1fcfeea9a39e709c2d205f7`.
