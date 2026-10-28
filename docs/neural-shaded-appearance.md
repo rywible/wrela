@@ -4460,3 +4460,209 @@ Evidence: build/neural-evidence/g4-joint-partition-v1 on Pop!_OS. Six variants,
 48validcaptures, source inputs and partitions, exact-control compiler check,
 quality/cost/memory observations, plan/decision, archived runtime and replay scripts.
 Manifest SHA-256: `d281baf3e2ea503e1eb3814c116bb33ab5ef30de22eb5355f203244c18b2bbde`.
+
+## Conditional unlit material: useful gain, change the G4 representation
+
+**Decision: change the representation for G4.** Source-derived material variation
+inside fixed optical footprints improves rendered quality. The cached field
+derivative variant passes 14/24 cases versus 8/24 for the frozen model, with mean
+PSNR +0.404 dB, FLIP 6.98% lower and LPIPS 10.79% lower. Complete saturated GPU time
+rises 0.06120→0.10108 ms and all requested live resources rise 726,132→773,064 bytes.
+The informed conventional optical control also improves 5/24→9/24. This is evidence
+for exploiting the authored field before lighting; it is not a neural-network win.
+
+Ten cases still fail, silhouette errors are unchanged, and even the requested
+live-resource ratio against the compact conventional field path is only 1.074x.
+No 16x quality-matched physical appearance reduction is demonstrated. Preserve the
+cached derivative as an experimental component; promote no candidate. The
+production/default runtime is restored byte-for-byte to parent 5a1aa8db.
+
+### Bounded experiment and useful source information
+
+Started 2026-10-28T03:59:17.620077+00:00; first six-variant comparison completed after
+124.35s. Decision 2026-10-28T04:22:32.672764+00:00, after
+23.25 minutes, within the two-hour assessment limit.
+Exactly two targeted follow-ups, zero neural training steps and zero new shaded
+references. The fixed 106,232-byte frozen optical payload and G1–G7 are unchanged.
+The frozen payload is an optimized explicit optical representation, not an MLP.
+
+Initial experiment: source-position/material cross-covariance predicts unlit
+albedo, normal and crown-depth variation within each aggregate, before production
+lighting. It keeps geometry, opacity, centre-depth order and wood unchanged.
+The 7×5 half-precision cross-covariance adds 132,792 bytes including padding.
+The original 1,897 source assignments define the statistics. Candidate covariance
+projects the source latent correlations into the view; on frozen geometry this
+is a stated deformation approximation, not the exact visible-surface conditional
+distribution. Original material means remain the intercepts.
+
+A fragment-lighting control with no variation reproduces all eight frozen RGBA
+images byte-exactly while GPU cost rises 0.06120→0.09564 ms. This isolates most of
+the cost of changing the shading stage from the gain due to conditional values.
+
+Follow-up 1 replaces the cross-covariance payload with the existing 44-clump
+authored normal/depth field. Query the conditional expected world point and
+subtract the field at the aggregate centre; add that difference to the original
+mean. Albedo remains constant. Only 1,408 additional requested bytes are needed,
+but per-frame field evaluation costs 0.82048 ms for 13/24 frozen cases, slower than
+the 0.27488 ms native source renderer. Retire this execution path.
+
+Follow-up 2 evaluates central differences at initialization, at fixed ±0.05m
+offsets along world XYZ. Cache three normal components and depth derivatives as 12 half values per
+aggregate: 45,528 bytes, replacing a 4-byte dummy. Together with field nodes the net
+increase is 46,932 bytes. Project the cached derivatives per view and light the
+conditional materials per fragment. It retains 14/24 cases at 0.10108 ms. No step
+sweep, third optimization, image supervision or material-moment fitting occurred.
+
+The same source-statistic and authored-field methods are applied to the frozen
+and conventional optical payloads. Native and packed-field controls retain all
+useful source information, exact cards and field knowledge. The learned/optimized
+path receives no new privileged teacher input. The compact packed-field control's
+earlier sealed quality/memory measurements are reused; native, frozen and
+conventional optical controls are freshly measured and all 24 RGBA captures
+reproduce their previous results exactly.
+
+### Shaded quality and silhouettes
+
+| Candidate | Passes vs each source control | Mean PSNR dB | Mean FLIP | Mean LPIPS | Coverage MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native source | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 |
+| Frozen optical | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Conventional optical | 5/24 | 39.739577 | 0.01392093 | 0.00211637 | 0.00934771 |
+| Frozen fragment mean | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Frozen cross-covariance | 14/24 | 40.552784 | 0.01142245 | 0.00168828 | 0.00883219 |
+| Conventional cross-covariance | 9/24 | 40.190446 | 0.01274858 | 0.00181844 | 0.00934771 |
+| Frozen direct field | 13/24 | 40.558319 | 0.01152316 | 0.00164711 | 0.00883219 |
+| Conventional direct field | 9/24 | 40.185468 | 0.01288993 | 0.00180872 | 0.00934771 |
+| Frozen cached field derivative | 14/24 | 40.531697 | 0.01148620 | 0.00168558 | 0.00883219 |
+| Conventional cached field derivative | 9/24 | 40.159085 | 0.01290697 | 0.00183576 | 0.00934771 |
+
+Pass counts require the unchanged G4 numeric quality tolerances simultaneously
+per view/light/background: PSNR loss≤0.25 dB and FLIP/LPIPS ratios≤1.05 with the
+existing 1e-4 floor. Counts are the same against each informed control: current
+native and prior packed-field, hierarchy-raster and hierarchy-masks. They are
+partial numeric gates, not full G4 passes or a new benchmark score.
+
+Cached frozen derivatives pass 8/12 first-view and 6/12 second-view cases. Worst
+loss versus native is 1.3784 dB; worst FLIP ratio 1.08283 and LPIPS ratio 1.54844.
+Better means do not excuse those failing cases. Source-only conventional
+derivatives pass 6/12 and 3/12 respectively.
+
+All 56 changed-path coverage images are byte-identical to their corresponding
+frozen/conventional controls. Coverage is light-independent in all 20 candidate
+views. Frozen coverage MAE stays 0.00883219, soft-IoU mean 0.964202, worst
+boundary-distance p99=1.414214 pixels, worst half-coverage precision 0.978010 and
+recall 0.985445. This block fixes no silhouette or temporal errors.
+
+Completed AA64 shaded references are reused: one static 64px tree, two public
+views, four analytic lights and three backgrounds. Exposure 0.62, ACES→sRGB,
+LDR FLIP 67 ppd and AlexNet LPIPS v0.1; no resize. Flat bark and analytic illumination
+remain fixture limitations. No claim of unseen-family or motion generalization.
+
+### Complete rendering cost and memory
+
+AMD RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS. Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent 5a1aa8db plus exact archived
+variant sources. Sequential measurements, 60 warm-up and 240 measured frames 64x64.
+
+GPU spans include optical decoding/projection, conditional response and lighting,
+visibility/ordered compositing, exact indexed wood, four-sample resolve and final
+composite. Native includes 16-sample hardware visibility and source shading.
+CPU includes centre-depth sorting, order uploads, view/light updates and commands.
+Cached derivatives rebuild at initialization; dynamic geometry edits and their
+required cache rebuild are not implemented or timed. Initialization and source
+compilation are outside steady runtime; requested peaks include initialization.
+The initial source cross-statistic compilation took 0.241s.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1.0678/1.0858 | 0.27488 / 0.36708 | 0.7400 | 3.8899/4.1038 |
+| Frozen optical | 0.2500 / 0.2514 | 0.06120 / 0.06560 | 0.9872 | 4.7600/4.8572 |
+| Conventional optical | 0.2508 / 0.2514 | 0.06144 / 0.06336 | 1.0781 | 4.8005/4.9681 |
+| Frozen fragment mean | 0.4018 / 0.4024 | 0.09564 / 0.13539 | 1.0502 | 4.7903/5.3029 |
+| Frozen cross-covariance | 0.5137 / 0.5156 | 0.12044 / 0.25352 | 0.9872 | 3.7654/3.9758 |
+| Conventional cross-covariance | 0.5090 / 0.5111 | 0.11928 / 0.28644 | 0.9850 | 4.8303/5.0127 |
+| Frozen direct field | 1.5647/1.6274 | 0.82048 / 0.91744 | 1.0152 | 5.8565/6.1653 |
+| Conventional direct field | 1.6134/1.6943 | 0.72716 / 0.81136 | 0.9061 | 5.7058/5.9478 |
+| Frozen cached field derivative | 0.4272 / 0.4298 | 0.10108 / 0.17508 | 1.0472 | 3.8853/4.1963 |
+| Conventional cached field derivative | 0.4242 / 0.4304 | 0.10048 / 0.17884 | 1.0036 | 4.8110/5.0795 |
+
+Completion includes all submissions and browser/driver notification, not
+input-to-photon. These single runs do not establish repeatable small speedups.
+The cached path remains faster than native in both saturated and paced GPU
+measurements, while it is slower than the original frozen optical path.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1,466,060 | 1,875,660/1,892,044 | 17,424,384/10,035,200 | 492,036,096 |
+| Frozen optical | 316,532 | 726,132/742,516 | 17,367,040/9,740,288 | 474,422,272 |
+| Conventional optical | 316,532 | 726,132/742,516 | 17,301,504/9,641,984 | 473,790,464 |
+| Frozen fragment mean | 316,532 | 726,132/742,516 | 17,629,184/9,641,984 | 475,543,552 |
+| Frozen cross-covariance | 449,324 | 858,924/875,308 | 17,731,584/9,838,592 | 477,193,216 |
+| Conventional cross-covariance | 449,324 | 858,924/875,308 | 17,301,504/9,838,592 | 476,219,392 |
+| Frozen direct field | 317,940 | 727,540/743,924 | 17,575,936/9,854,976 | 479,503,360 |
+| Conventional direct field | 317,940 | 727,540/743,924 | 17,641,472/9,854,976 | 479,178,752 |
+| Frozen cached field derivative | 363,464 | 773,064/789,448 | 17,661,952/9,838,592 | 480,776,192 |
+| Conventional cached field derivative | 363,464 | 773,064/789,448 | 17,383,424/9,854,976 | 480,251,904 |
+
+Engine bytes exclude the common 65,536-byte output. All-requested totals include
+model, wood, sorting, source nodes, derivative cache, scratch, dummy/fallback
+resources, output, screen, upload and uniform rings. The common difference is
+409,600 bytes. The cached path needs no full-source GPU response array;
+CPU and driver state are covered by the whole-client observations below.
+
+The smaller conventional packed-field path uses 420,980 engine bytes and 830,580
+all-live bytes. Against cached derivatives these give only 1.158x and1.074x
+requested-allocation ratios. Against native, all-live is2.426x. These broad
+resource ratios are not the appearance-only G4 metric with matched common
+geometry exclusions, and do not establish 16x.
+
+DRM VRAM/GTT and browser-group PSS are actual whole-client physical snapshots,
+not asset-attributed appearance residency or transient physical peaks. Do not
+sum overlapping UMA pools. Driver/private shader storage and compiled caches
+are present in physical observations but not separately attributable to an asset.
+The missing physical attribution cannot turn this candidate into a pass: it
+already fails ten quality cases, so no extra memory infrastructure is warranted.
+
+### Architecture decision and next consequential experiment
+
+Change coverage and visibility representation before spending more training.
+Retain the demonstrated idea of source-derived material variation before
+lighting, but stop treating a Gaussian optical aggregate with centre-depth order
+as the final representation.
+
+Next bet: source-compiled front-surface patches that carry explicit or analytic
+coverage and front-depth, with conditional unlit material gradients tied to the
+visible fragment. The first source-only comparison should use the same references
+and informed native/packed-field controls. Count complete geometry/wood/order,
+patch data, scratch, updates and fallback resources. Require all per-case quality
+gates and a credible memory/runtime budget before fitting a neural component.
+This is a hypothesis, not evidence that the remaining silhouette or G4 gap is
+solved. Preserve the cached derivative path as an ablation.
+
+### Focused verification and preserved failures
+
+Ten measured variants produce 80 rendered captures. Sixteen new GPU probes compare
+all 14 cross-statistic material gradients with independent float64 matrix algebra:
+maximum absolute error 1.62814e-5. Sixteen further probes check cached half packing
+exactly against NumPy rounding and world projection against float64 covariance:
+maximum absolute world-gradient error 9.40698e-6. Every cache value is finite.
+The authored field function body is unchanged; its established checks are reused.
+
+The first direct-field build failed because a helper tried to move a GPU buffer
+from a borrowed source. Its logs and source archive remain under
+field-borrow-build-failure. Binding the borrowed buffer directly repaired it
+without changing the algorithm or counted bytes. All candidate sources, including
+the slow direct field and larger covariance path, and exact payloads are archived.
+No broad suite or unchanged-reference audit was repeated. Default runtime source
+is byte-identical to 5a1aa8db, so established default allocation/image checks apply.
+
+The conditional mean rule follows the already cited
+[Cornell Gaussian lecture notes](https://www.cs.cornell.edu/courses/cs4780/2015fa/web/lecturenotes/lecturenote15.html).
+The field and finite-difference cache are our own Wrela implementation; no external
+shader, model, weights or data were copied. G1–G7 remain unchanged and unmet.
+
+Evidence: build/neural-evidence/g4-conditional-material-v1 on Pop!_OS.
+Plan/decision, initial and follow-up results, complete cost and physical memory
+observations, failed build, mathematical probes, source statistics and replay
+archives are preserved. Manifest SHA-256: `54062ed20c5ca1c107da2f56b405606625c896213ed9513f701278d698f9a630`.

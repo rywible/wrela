@@ -2550,3 +2550,23 @@ Retire; no second sweep, neural training or newtruth. Runtime restored exactly.
 Next isolate conditional unlit response inside fixed coverage/visibility.
 [Complete comparison](neural-shaded-appearance.md#joint-source-partitioning-better-response-statistics-worse-rendered-gates).
 Manifest SHA-256: `d281baf3e2ea503e1eb3814c116bb33ab5ef30de22eb5355f203244c18b2bbde`.
+
+### Conditional material helps; change the G4 representation
+
+Conditional source-field derivatives inside unchanged optical coverage improve
+frozen quality 8/24→14/24 (PSNR +0.404 dB, FLIP −6.98%, LPIPS −10.79%).
+Conventional optical gets the same information and improves 5/24→9/24.
+Cached variant 0.10108 ms GPU  / 773,064 live requested bytes versus original
+0.06120 ms  / 726,132 bytes; direct field 0.82048 ms is retired.
+Only 1.074x requested-live ratio against the compact informed field baseline;
+ten quality cases and silhouettes still fail. No neural advantage or G4 pass.
+
+Decision: change the coverage/visibility representation, retaining conditional
+pre-lighting material gradients as an experimental component. Next source-only
+front-surface patches must combine coverage/front-depth and material variation,
+with complete cost counted before any fitting. First assessment 124.35s,
+decision 23.25min, exactly two follow-ups, no training/new references.
+80 rendered captures, 32 focused math probes; failed sources and measurements
+preserved; production runtime restored byte-exactly. G1–G7 unchanged/unmet.
+[Complete comparison](neural-shaded-appearance.md#conditional-unlit-material-useful-gain-change-the-g4-representation).
+Manifest SHA-256: `54062ed20c5ca1c107da2f56b405606625c896213ed9513f701278d698f9a630`.

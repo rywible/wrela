@@ -2546,3 +2546,16 @@ Same316,532engine/726,132all-live requestedbytes. JointGPU0.06872ms vscontrol
 0.06804ms; no quality-memory-runtime win. One follow-up, no neuraltraining/newrefs.
 24controlRGBA exact; allcoverage light-independent; runtime restored.
 [Full quality, runtime and physical memory evidence](neural-shaded-appearance.md#joint-source-partitioning-better-response-statistics-worse-rendered-gates).
+
+### AMD conditional material comparison (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e5, parent 5a1aa8db plus archived variants.
+Frozen conditional field derivatives pass14/24 vs 8/24 original; conventional 9/24
+vs 5/24. Complete GPU 0.10108 ms vs 0.06120 frozen  / 0.27488 native; requested-live
+773,064 vs726,132 frozen /830,580 packed-field /1,875,660 native bytes.
+Mean image quality improves, coverage stays exact and ten cases still fail.
+Physical DRM/PSS recorded, but 16x asset appearance residency remains unproved.
+Decision: change coverage/visibility representation; preserve cached derivatives
+as a component. Two follow-ups, zero training/new references; default restored.
+[Full quality, runtime and physical memory evidence](neural-shaded-appearance.md#conditional-unlit-material-useful-gain-change-the-g4-representation).
