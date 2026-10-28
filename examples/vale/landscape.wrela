@@ -1,0 +1,463 @@
+// The vale's land: a square kilometre made by `land::landform` from its rock, the uplift under it
+// and its water, as the floor's geology is, at the history's 4 m grain.
+//
+// The valley runs from its head (+z) down to its mouth (-z), where its one outlet holds the base
+// level. Its rock is a soft shale crossed, a third of the way up from the mouth, by a band of hard
+// grit, which rises as the land does and more (a fold across the valley): its stream cuts the
+// band slowly, so above it the water ponds, a mere, and below it the soft rock goes, so the
+// stream falls off the band's face. Every number here is **proposed** (examples/vale/design.md).
+// The land is made when the vale is built and cached while nothing it reads changes.
+
+use engine::noise::fbm2
+use land::grow::{Grid, NONE, Stream}
+use land::landform::{
+    Basins, Landscape, Relief, Shaping, Strength, basins, channels, drainage, evolve,
+}
+use land::soil::{SoilKind, soil}
+
+// ---- the square ---------------------------------------------------------------------------------
+
+/// The square (m): from (-512, -512) to (512, 512), its head at +z and its mouth at -z.
+pub const LO = vec2(-512.0)
+pub const HI = vec2(512.0)
+
+/// The grid it's made on: 4 m cells, as the history's preview grain.
+pub const GRID = Grid { lo: LO, nx: 256, nz: 256, cell: 4.0 }
+pub const CELLS: u32 = 65536
+
+/// How long the valley is (m), its mouth's and its head's z, and how wide its one outlet is (m,
+/// either side of the axis): the base level its water leaves by.
+pub const LENGTH: f32 = 1024.0
+pub const MOUTH_Z: f32 = -512.0
+pub const HEAD_Z: f32 = 512.0
+const OUTLET: f32 = 12.0
+
+/// Where the hard band crosses the valley (z: a third of its length up from the mouth), how thick
+/// it is (m), and how much faster it rises than the land round it, at its middle (m a year).
+pub const BAND_Z: f32 = MOUTH_Z + LENGTH / 3.0
+pub const BAND_HALF: f32 = 14.0
+const BAND_RISE: f32 = 2.2e-4
+const BAND_WIDTH: f32 = 50.0
+
+// ---- the rock ---------------------------------------------------------------------------------
+
+/// The soft shale and the hard band's grit: how fast the water cuts each (K, scaled for the 4 m
+/// grain as the floor's square is), the slope each stands at, how fast a face of it weathers back,
+/// and how much it creeps.
+const SHALE = Strength { erodibility: 3.5e-5, standing: 0.6, weathering: 2.0e-3, creep: 1.0 }
+const GRIT = Strength { erodibility: 1.5e-6, standing: 3.5, weathering: 6.0e-5, creep: 0.03 }
+
+/// Whether `p` is in the hard band: a bed `BAND_HALF` either side of `BAND_Z`, its edges a little
+/// irregular (a few metres, at tens of metres along it).
+pub fn in_band(p: vec2) -> bool {
+    let wander = 4.0 * (fbm2(vec2(p.x * 0.02, 3.0), 2) - 0.5)
+    abs(p.y - BAND_Z - wander) <= BAND_HALF
+}
+
+/// The rock's strength at `p` (its height doesn't change which rock it is: the band stands on
+/// end), its joints making it weaker or stronger from place to place.
+pub fn strength(p: vec2) -> Strength {
+    let s = if in_band(p) { GRIT } else { SHALE }
+    let joints = 0.8 + 0.4 * fbm2(p * 0.02 + vec2(5.0, -3.0), 2)
+    Strength { erodibility: s.erodibility * joints, ..s }
+}
+
+// ---- the uplift -------------------------------------------------------------------------------
+
+/// How fast the land rises (m a year): most at the head and along its crests, least at the mouth
+/// (a dome highest at the head, about 400 m over the making), and the band faster than the
+/// shale round it.
+pub fn uplift(p: vec2) -> f32 {
+    let up = smoothstep(MOUTH_Z, HEAD_Z, p.y)
+    let crest = smoothstep(80.0, 480.0, abs(p.x))
+    let dome = 0.9e-3 * (0.06 + 0.94 * up) * (0.6 + 0.4 * crest)
+    let fold = BAND_RISE * exp(-((p.y - BAND_Z) / BAND_WIDTH) * ((p.y - BAND_Z) / BAND_WIDTH))
+    dome + fold
+}
+
+/// The land it was made from: nearly level, falling a little to the mouth and to the axis, rough
+/// by a metre or so so its water finds its own ways; and an old hollow just above the band, which
+/// the band's rise keeps a hollow and its water fills: the mere.
+pub fn old_land(p: vec2) -> f32 {
+    let fall = 6.0 * smoothstep(MOUTH_Z, HEAD_Z, p.y)
+    let sides = 4.0 * smoothstep(0.0, 500.0, abs(p.x))
+    let d = (p - HOLLOW_AT) / HOLLOW_REACH
+    let hollow = HOLLOW_DEPTH * exp(-dot(d, d))
+    fall + sides - hollow + 1.2 * (fbm2(p * 0.03 + vec2(7.0, 1.0), 3) - 0.5)
+}
+
+/// The old hollow: its middle (on the axis, upstream of the band), how far it reaches along and
+/// across the valley (m), and how deep it was (m).
+const HOLLOW_AT = vec2(0.0, BAND_Z + 80.0)
+const HOLLOW_REACH = vec2(70.0, 55.0)
+const HOLLOW_DEPTH: f32 = 8.0
+
+/// How the land is made: 300,000 years in steps of 2000. Water runs in a channel where more than
+/// 0.15 ha drains to it, and lays down some of what it carries where its load is heavy (its
+/// floor's alluvium); its soil creeps faster as the slope nears the one its rock stands at, and
+/// its faces fail at that slope give or take a fifth.
+const MAKING = Shaping {
+    steps: 150,
+    years: 2000.0,
+    m: 0.5,
+    creep: 0.0025,
+    channel: 1.5e3,
+    laying: 0.45,
+    critical: 1.0,
+    scatter: 0.4,
+}
+
+/// The cells that hold the base level: the outlet, at the mouth's edge either side of the axis.
+pub fn outlets(g: Grid) -> Vec<bool> {
+    Vec::from_fn(g.cells(), |c| {
+        let p = g.centre(c)
+        c / g.nx == 0 && abs(p.x) <= OUTLET
+    })
+}
+
+/// The land as its water, its creep and its rock made it.
+pub fn made() -> Landscape {
+    let g = GRID
+    let start: Vec<f32> = Vec::from_fn(g.cells(), |c| old_land(g.centre(c)))
+    let up: Vec<f32> = Vec::from_fn(g.cells(), |c| uplift(g.centre(c)))
+    evolve(g, start, outlets(g), up, |at: vec3| strength(at.xz), MAKING)
+}
+
+// ---- what its making left -----------------------------------------------------------------------
+
+/// The drained area (m²) past which a channel shows as a stream: about 2 ha.
+pub const STREAM: f32 = 2.0e4
+
+/// The vale's land as it was made: its making (`Landscape`), its relief over level ground (the
+/// terrain's), its lakes, its streams (each as cells down their receivers, the main stream's
+/// first), its main stream's course from the head to the mouth (`main`), its fall, its mere, how
+/// wet each cell's ground is (`wetness`), and each cell's soil kind.
+pub struct Vale: Clone {
+    pub made: Landscape,
+    pub relief: Relief<CELLS>,
+    pub lakes: Basins,
+    pub channels: Vec<Vec<u32>>,
+    pub main: Vec<u32>,
+    pub fall: Fall,
+    pub mere: u32,
+    pub wet: Vec<f32>,
+    pub soil: Vec<SoilKind>,
+}
+
+/// Where the main stream falls most sharply: the cells at its lip and its foot, along its course
+/// (`Vale::main`'s indices), how far it drops between them (m), and over how long a course (m).
+pub struct Fall: Copy {
+    pub lip: u32,
+    pub foot: u32,
+    pub drop: f32,
+    pub run: f32,
+}
+
+/// How long a course a fall is measured over, at most (m).
+pub const FALL_RUN: f32 = 6.0
+
+@fuel(2 ** 40)
+pub const VALE: Vale = vale()
+
+fn vale() -> Vale {
+    let (l, plain) = floodplains(made())
+    let g = l.grid
+    let lakes = basins(l)
+    let chans = channels(l, STREAM, lakes)
+    let main = main_stream(l)
+    let fall = fall_of(l, main)
+    let mere = mere_of(l, lakes, main, fall)
+    let flat: Vec<f32> = Vec::filled(CELLS, 0.0)
+    let relief: Relief<CELLS> = Relief::of(l, flat)
+    let wet: Vec<f32> = Vec::from_fn(g.cells(), |c| wetness(l, relief, c, plain[c]))
+    let soil: Vec<SoilKind> = Vec::from_fn(g.cells(), |c| soil_kind(l, relief, c, wet[c]))
+    Vale { made: l, relief, lakes, channels: chans, main, fall, mere, wet, soil }
+}
+
+/// The main stream: from the outlet up, at each cell the neighbour draining most into it, to the
+/// head; returned head first.
+pub fn main_stream(l: Landscape) -> Vec<u32> {
+    let g = l.grid
+    // Each cell's donors' greatest area: the next cell up the main stream.
+    var up: Vec<u32> = Vec::filled(g.cells(), NONE)
+    for c in 0..g.cells() {
+        let d = l.down[c]
+        if d != NONE && (up[d] == NONE || l.area[c] > l.area[up[d]]) {
+            up[d] = c
+        }
+    }
+    var outlet = NONE
+    for c in 0..g.cells() {
+        if l.base[c] && (outlet == NONE || l.area[c] > l.area[outlet]) {
+            outlet = c
+        }
+    }
+    var mouth_first: Vec<u32> = Vec::new()
+    var c = outlet
+    while c != NONE {
+        mouth_first.push(c)
+        c = up[c]
+    }
+    let n = mouth_first.len()
+    Vec::from_fn(n, |k| mouth_first[n - 1 - k])
+}
+
+/// The fall: along the main stream `main` (head first), the steepest drop over a course of at
+/// most `FALL_RUN` metres, its lip the higher end.
+pub fn fall_of(l: Landscape, main: [u32]) -> Fall {
+    let g = l.grid
+    var best = Fall { lip: 0, foot: 0, drop: 0.0, run: 0.0 }
+    for a in 0..main.len() {
+        var run = 0.0
+        var b = a + 1
+        while b < main.len() {
+            run += length(g.centre(main[b]) - g.centre(main[b - 1]))
+            if run > FALL_RUN + 1.0e-3 {
+                break
+            }
+            let drop = l.heights[main[a]] - l.heights[main[b]]
+            if drop > best.drop {
+                best = Fall { lip: a, foot: b, drop, run }
+            }
+            b += 1
+        }
+    }
+    best
+}
+
+/// The mere: the lake the main stream runs through above its fall (the nearest one up from the
+/// lip), or `NONE`.
+pub fn mere_of(l: Landscape, lakes: Basins, main: [u32], fall: Fall) -> u32 {
+    var k = fall.lip
+    loop {
+        let id = lakes.of[main[k]]
+        if id != NONE {
+            return id
+        }
+        if k == 0 {
+            return NONE
+        }
+        k -= 1
+    }
+}
+
+/// How wet cell `c`'s ground is (0 to 1): its topographic index, ln of the area draining through
+/// it a metre of its width over its slope, as the floor's geology reads it (`land::soil`'s
+/// wetness); and on a floodplain (`plain`, how far across it the cell is), as wet as its stream's
+/// floods leave it, wettest beside the stream and less across the floor.
+pub fn wetness(l: Landscape, r: Relief<CELLS>, c: u32, plain: f32) -> f32 {
+    let g = l.grid
+    let slope = length(r.rise_grad(g.centre(c)).yz)
+    let twi = smoothstep(4.2, 8.5, log(l.area[c] / g.cell / (slope + 0.01)))
+    let flooded = if plain <= 1.0 { 1.0 - 0.45 * plain } else { 0.0 }
+    max(twi, flooded)
+}
+
+// ---- the floodplains ----------------------------------------------------------------------------
+
+/// What drains to a stream before it has a floor of its own (m²): 10 ha; and the steepest it runs
+/// and still has one (rise over run: where it's steeper it cuts down, in a gorge, not across).
+const FLOOR_FROM: f32 = 1.0e5
+const FLOOR_STEEPEST: f32 = 0.08
+
+/// How far a stream's floor reaches either side of it (m), from the area draining to it (m²): 6 m,
+/// and 30 more at a square kilometre; how much it rises a metre away from the stream; and how far
+/// past it, at most, the valley's side comes down to it, and how steeply (rise over run: steeper
+/// than the sides the making left, so it meets them).
+fn floor_reach(area: f32) -> f32 {
+    6.0 + 30.0 * sqrt(area / 1.0e6)
+}
+
+const FLOOR_RISE: f32 = 0.015
+const FLOOR_BLEND: f32 = 40.0
+const FLOOR_SIDE: f32 = 0.8
+
+/// The land with its floodplains: the making cuts down, not across (`land::landform` has no
+/// stream that swings from side to side), so its gentle streams' floors are levelled here, as
+/// their water would have levelled them, to the height of the stream beside them and a little
+/// more away from it (`FLOOR_RISE`), as far either side as `floor_reach` says, the valley's side
+/// coming down to it at `FLOOR_SIDE`. Only lowered, never raised, never a stream's own cell and
+/// never the band's grit (the water doesn't plane it: the mere's sill and the fall stand); then its
+/// water is routed again. Also how far across its floor each cell is (0 at the stream,
+/// 1 at the floor's edge, past it 2).
+pub fn floodplains(l: take Landscape) -> (Landscape, Vec<f32>) {
+    let g = l.grid
+    let n = g.cells()
+    // Each cell's nearest gentle stream cell within reach, and how far it is (m).
+    var nearest: Vec<u32> = Vec::filled(n, NONE)
+    var near: Vec<f32> = Vec::filled(n, 1.0e9)
+    for s in 0..n {
+        let d = l.down[s]
+        if l.area[s] < FLOOR_FROM || l.lakes[s] > 0.0 || d == NONE {
+            continue
+        }
+        let run = length(g.centre(s) - g.centre(d))
+        if (l.heights[s] - l.heights[d]) / run > FLOOR_STEEPEST {
+            continue
+        }
+        let reach = floor_reach(l.area[s]) + FLOOR_BLEND
+        let r = i32(ceil(reach / g.cell))
+        let (i, j) = (i32(s % g.nx), i32(s / g.nx))
+        for dj in -r..r + 1 {
+            for di in -r..r + 1 {
+                let (x, z) = (i + di, j + dj)
+                if x < 0 || z < 0 || x >= i32(g.nx) || z >= i32(g.nz) {
+                    continue
+                }
+                let c = u32(z) * g.nx + u32(x)
+                let dist = length(vec2(f32(di), f32(dj))) * g.cell
+                if dist <= reach && dist < near[c] {
+                    near[c] = dist
+                    nearest[c] = s
+                }
+            }
+        }
+    }
+    // The land under its lakes (`evolve` leaves a lake's surface as its cells' heights, its depth
+    // in `lakes`), so routing it again fills them as before.
+    var h: Vec<f32> = Vec::from_fn(n, |c| l.heights[c] - l.lakes[c])
+    var plain: Vec<f32> = Vec::filled(n, 2.0)
+    for c in 0..n {
+        let s = nearest[c]
+        if s == NONE || l.area[c] >= FLOOR_FROM || l.lakes[c] > 0.0 || in_band(g.centre(c)) {
+            continue
+        }
+        let reach = floor_reach(l.area[s])
+        let d = near[c]
+        let level = if d <= reach {
+            l.heights[s] + FLOOR_RISE * d
+        } else {
+            l.heights[s] + FLOOR_RISE * reach + FLOOR_SIDE * (d - reach)
+        }
+        h[c] = min(h[c], level)
+        if d <= reach {
+            plain[c] = d / reach
+        }
+    }
+    (routed(take l, h), plain)
+}
+
+/// `l` with the land `h` (under its lakes), its water routed again over it: its pits filled (what
+/// the fill raised a lake, as `evolve` leaves it), each cell's receiver and the area draining
+/// through it.
+fn routed(l: take Landscape, h: [f32]) -> Landscape {
+    let g = l.grid
+    let n = g.cells()
+    let d = drainage(g, h, l.base)
+    var out = take l
+    for c in 0..n {
+        out.lakes[c] = if d.filled[c] - h[c] > LAKE { d.filled[c] - h[c] } else { 0.0 }
+        out.heights[c] = d.filled[c]
+        out.down[c] = if out.base[c] { NONE } else { d.down[c] }
+        out.area[c] = g.cell * g.cell
+    }
+    var k = d.order.len()
+    while k > 0 {
+        k -= 1
+        let c = d.order[k]
+        if out.down[c] != NONE {
+            out.area[out.down[c]] += out.area[c]
+        }
+    }
+    out
+}
+
+/// The least depth a filled pit holds to be a lake (m), as `land::landform` counts one.
+const LAKE: f32 = 0.25
+
+/// Cell `c`'s soil kind (`land::soil::soil`): the curvature and slope of the land there, at the
+/// soil's spans; how much of it is the band's bare grit on a face; and how wet it is (`wet`).
+fn soil_kind(l: Landscape, r: Relief<CELLS>, c: u32, wet: f32) -> SoilKind {
+    let g = l.grid
+    let p = g.centre(c)
+    let h0 = r.rise_at(p)
+    var lap = 0.0
+    var slope = 0.0
+    for k in 0..2 {
+        let d = land::soil::SOIL_SPANS[k]
+        let e = r.rise_at(p + vec2(d, 0.0))
+        let w = r.rise_at(p - vec2(d, 0.0))
+        let n = r.rise_at(p - vec2(0.0, d))
+        let s = r.rise_at(p + vec2(0.0, d))
+        lap += 0.5 * (e + w + n + s - 4.0 * h0) / (d * d)
+        if k == 0 {
+            slope = length(vec2(e - w, n - s)) / (2.0 * d)
+        }
+    }
+    let rock = if in_band(p) && slope > 0.9 { 1.0 } else { 0.0 }
+    soil(lap: lap, slope: slope, rock: rock, wet: wet).kind
+}
+
+/// A stream's point at cell `c` of `v` as `land::grow` and `land::water` read it (x, z, width,
+/// depth): its width and depth from the area draining through it, 0.6 m wide and 15 cm deep where
+/// it shows as a stream.
+pub fn point_of(v: Vale, c: u32) -> vec4 {
+    let k = sqrt(v.made.area[c] / STREAM)
+    let p = v.made.grid.centre(c)
+    vec4(p.x, p.y, clamp(0.6 * k, 0.6, 4.0), clamp(0.15 * k, 0.1, 0.6))
+}
+
+/// The vale's streams as `land::grow` and `land::water` read them: each channel's points.
+pub fn streams(v: Vale) -> Vec<Stream> {
+    var out: Vec<Stream> = Vec::new()
+    for course in v.channels {
+        if course.len() >= 2 {
+            out.push(Stream { points: Vec::from_fn(course.len(), |k| point_of(v, course[k])) })
+        }
+    }
+    out
+}
+
+/// The land's height at `p` (m): its relief over level ground.
+pub fn height_at(p: vec2) -> f32 {
+    VALE.relief.rise_at(p)
+}
+
+// ---- the ground, as `land` reads it -------------------------------------------------------------
+
+/// The vale's ground: its relief over level ground (m) and its soil's kind, four bits a cell,
+/// eight cells to a word. What the history grows on and the water lies on, on the CPU and the GPU.
+pub struct Ground: Copy + GpuData {
+    pub relief: Relief<CELLS>,
+    pub soil: [u32; SOIL_WORDS],
+}
+
+/// The words its soil takes.
+pub const SOIL_WORDS: u32 = 8192
+
+/// The vale's ground (`Ground`).
+@fuel(2 ** 32)
+pub const GROUND: Ground = ground_of(VALE)
+
+fn ground_of(v: Vale) -> Ground {
+    var soil = [0; SOIL_WORDS]
+    for c in 0..CELLS {
+        soil[c / 8] |= u32(v.soil[c]) << (4 * (c % 8))
+    }
+    Ground { relief: v.relief, soil }
+}
+
+impl Ground {
+    /// The soil's kind at `p` (the cell's it's in, clamped to the square), as `SoilKind`'s `u32`.
+    pub fn soil_at(self, p: vec2) -> u32 {
+        let ij = clamp(vec2i(floor((p - LO) / 4.0)), vec2i(0), vec2i(255))
+        let c = u32(ij.y) * 256 + u32(ij.x)
+        (self.soil[c / 8] >> (4 * (c % 8))) & 15
+    }
+}
+
+impl engine::terrain::Ground for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.relief.rise_at(vec2(x, z))
+    }
+
+    /// How far past the square's edge `p` is (negative within it).
+    fn past_edge(self, p: vec2) -> f32 {
+        -min(min(p.x - LO.x, HI.x - p.x), min(p.y - LO.y, HI.y - p.y))
+    }
+
+    /// Bare rock (no soil, where no tree stands): 1, else 0.
+    fn rock(self, p: vec2) -> f32 {
+        if self.soil_at(p) == u32(SoilKind::Rock) { 1.0 } else { 0.0 }
+    }
+}

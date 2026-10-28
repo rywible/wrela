@@ -1,0 +1,12 @@
+# The vale (plan three's §B1): a grown valley drawn by the engine's frame, with no game sim. A
+# square kilometre of land made by `land::landform` from its rock and its uplift, its water laid by
+# `land::water`, a forest grown over it by `land::grow` from the floor's species (`trees`), a
+# walk through it and twelve fixed shots: the showcase the public references are judged against.
+[package]
+name = "vale"
+
+[dependencies]
+engine = { workspace = true }
+great_tree = { workspace = true }
+land = { workspace = true }
+trees = { workspace = true }

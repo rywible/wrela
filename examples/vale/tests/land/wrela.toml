@@ -1,0 +1,8 @@
+# The vale's land (examples/vale/landscape.wrela), tested in a package of its own so its making runs
+# once, in this package's build: its stream, its fall, its mere and its soil.
+[package]
+name = "vale_land_tests"
+
+[dependencies]
+land = { workspace = true }
+vale = { workspace = true }
