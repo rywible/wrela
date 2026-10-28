@@ -2511,3 +2511,15 @@ Tight-footprint GPUmedian36.71596ms/pace95/99=37.12236/37.16383ms versuspacked
 0.64360ms/1.49463/1.54513ms. Fastnative0.27908ms. One follow-up roughlyhalves
 initial traversal cost but fails decisively. Retire;0training/newrefs;runtime restored.
 [Complete cost, quality and memory evidence](neural-shaded-appearance.md#source-space-visibility-hierarchy-exact-quality-unacceptable-cost).
+
+### AMD wood-depth integration retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compiler de9b81e5, parent f586361b plus archived sources.
+Five 64px variants: frozen hard/CDF both 8/24, conventional hard/CDF both 5/24
+against each of four source controls. Frozen saturated GPU0.06100 ->0.07376ms;
+paced p95/p99 0.24960/0.25230 ->0.29860/0.30254ms. Mean PSNR+0.00225dB;
+16 coverage images exact; engine/live allocation316,532/726,132bytes unchanged.
+Native control0.27752ms, engine/live1,466,060/1,875,660bytes. Actual asset-specific
+physical16x reduction unproved. Retire; no follow-ups/training/newreferences.
+[Complete quality, runtime, physical memory and focused checks](neural-shaded-appearance.md#conditional-depth-at-wood-no-useful-rendered-advantage).

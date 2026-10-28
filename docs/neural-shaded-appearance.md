@@ -3934,3 +3934,171 @@ source-only hierarchy payload and input hashes, plan/decision, all six exact
 sources/builds/captures, quality comparisons, timings, allocation/DRM/PSS records,
 checks, retired/restored source archives, scripts and replay instructions.
 Manifest SHA-256: `3892d286404bddb7f0026e599d284946a5e0274747e162c5b1283011028481d9`.
+
+## Conditional depth at wood: no useful rendered advantage
+
+**Decision: retire wood-only conditional-depth integration; change the aggregate
+representation before further fitting.** The frozen model still passes 8/24 cases
+against every equally informed source control, and the conventional aggregate
+still passes 5/24. Conditional depth improves mean PSNR by only 0.00225/0.00291 dB,
+with identical coverage and requested allocation. Saturated GPU cost increases
+20.92%/19.31%. Neither optimization slot is used; the initial result is decisive.
+
+Solo Pop!_OS block: start 2026-10-28T03:01:07.422101+00:00; first complete comparison
+2026-10-28T03:02:49.766211+00:00 (102.3 seconds);
+decision 2026-10-28T03:16:52.365582+00:00 (944.9 seconds).
+No training, no new shaded references, no changes to frozen parameters or G1–G7.
+
+### Integrate the existing depth distribution at opaque wood
+
+The frozen representation has 1,897 explicit optimized optical primitives, not
+an MLP. Each already stores a five-dimensional mean/covariance over world position
+and local pattern coordinates. Both it and the same-size conventional source-derived
+aggregate receive the same new query: derive joint projected-XY/toward-depth
+covariance, condition depth on the pixel's XY offset, and integrate the fraction
+of optical density in front of the exact wood depth.
+
+The conditional mean and variance use the standard Gaussian conditioning rule,
+documented in [Cornell's Gaussian-process notes](https://www.cs.cornell.edu/courses/cs4780/2015fa/web/lecturenotes/lecturenote15.html).
+The normal CDF uses our implementation of the erf approximation from
+[Abramowitz and Stegun, equation 7.1.26, page 299](https://digital.library.unt.edu/ark:/67531/metadc40302/m1/315/).
+No external implementation was copied. Applying this Gaussian law to actual leaf
+depth is a representation approximation, not a claim that source geometry is Gaussian.
+
+Exact indexed wood is drawn first. A separate colour pass keeps that result and
+samples wood depth. If no wood is present, the visible fraction is one; otherwise
+density is multiplied by the conditional depth CDF before conversion to opacity.
+Degenerate variance uses the hard threshold. The additional projected parameters
+are one flat vec4 vertex output. There are no new buffers, image targets, caches
+or model bytes. Inter-aggregate ordering remains the original centre-depth sort;
+normal/material evaluation and four-sample resolve are unchanged.
+
+Both payloads remain 106,232 bytes. Frozen SHA-256:
+dc329e4b4c4eaa8ad0bbbb93eeea90cb2a94f4a0f01b284487f344d4ee2ff71c.
+Conventional source-calibrated SHA-256:
+065549765511b660a115519d86c2d307bf04c5d56bc2536f17d60d80bb111114.
+The fast native source control retains exact source cards, masks, normals, material,
+wood and sampling knowledge. Packed full-field, forward-source and hierarchy-mask
+controls reuse their established captures. No candidate receives privileged inputs.
+
+### Shaded quality and silhouettes
+
+| Candidate | Cases passing vs each source control | Mean PSNR dB | Mean FLIP | Mean LPIPS |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 24/24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Frozen, hard depth | 8/24 | 40.127682 | 0.01234846 | 0.00188937 |
+| Frozen, conditional depth | 8/24 | 40.129932 | 0.01233995 | 0.00188812 |
+| Conventional aggregate, hard depth | 5/24 | 39.739577 | 0.01392093 | 0.00211637 |
+| Conventional aggregate, conditional depth | 5/24 | 39.742486 | 0.01391034 | 0.00211346 |
+
+A case passes only when PSNR loss is <=0.25 dB and FLIP/LPIPS increases are <=5%
+with the established ratio floor of 1e-4. The four source controls independently
+produce the same pass counts. Means alone hide the failing cases. Legacy BC
+comparisons remain in individual assessments but do not decide acceptance.
+
+All 24 hard/native control captures match their prior images byte-for-byte.
+Across the 16 conditional-depth captures, 597 pixels change in RGB, with maximum
+raw RGB difference 0.01394653. All 16 coverage images remain exactly unchanged.
+That is expected: over opaque wood, composite coverage is a+(1-a)*1=1; elsewhere
+the visible fraction stays one. This modification therefore cannot repair silhouette
+or aggregate-coverage errors. It only adjusts colour where wood overlaps aggregates.
+
+Frozen coverage MAE is 0.00883219, worst boundary p99 is 1.4142 pixels, and worst
+half-coverage precision/recall are 0.978010/0.985445. Conventional aggregate values
+are 0.00934771, 1.4142 pixels and 0.978079/0.988014. Native source values are
+0.01005954, 2 pixels and 0.983065/0.994007. These static measurements do not establish
+G3, and exact agreement with a source control is not perfect reference fidelity.
+
+The completed AA64 references remain the only image truth: one 64px asset,
+two public views, four analytic lights and three backgrounds; exposure 0.62,
+ACES/sRGB, LDR FLIP at 67 pixels/degree and AlexNet LPIPS v0.1. No new reference
+infrastructure, proxy objective or training cycles were introduced.
+
+### Complete runtime and memory
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent f586361b plus each exact
+archived variant. Sequential native/browser runs, 60 warmup and 240 measured
+frames at 64x64; no concurrent fitting or scoring during GPU measurement.
+
+GPU spans include aggregate decode/projection, conditional covariance/CDF where
+enabled, visibility, source shading, exact indexed wood, ordered blending,
+sample resolve and final composite. CPU frame calls include centre-depth sorting,
+order uploads, view/light/source updates and commands. The new path adds one
+render pass, taking three instead of two. Static initialization is outside steady
+runtime but included in requested allocation peaks. Geometry edits/refits are untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 0.3277/0.3994 | 0.27752/0.37716 | 0.7142 | 4.5908/4.8485 |
+| Frozen, hard depth | 0.2496/0.2523 | 0.06100/0.06276 | 0.9850 | 4.4558/4.6422 |
+| Frozen, conditional depth | 0.2986/0.3025 | 0.07376/0.08588 | 1.0381 | 5.0803/5.1621 |
+| Conventional aggregate, hard depth | 0.2477/0.2501 | 0.06112/0.06412 | 0.8792 | 4.9099/5.1580 |
+| Conventional aggregate, conditional depth | 0.2918/0.2956 | 0.07292/0.07812 | 0.9000 | 4.8904/5.1349 |
+
+Completion includes submissions and browser/driver notification, not input-to-photon.
+These single runs distinguish saturated, paced and completion costs; they do not
+establish repeatable small speedups or a hardware explanation for timing variation.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/10,035,200 | 491,627,520 |
+| Frozen, hard depth | 316,532 | 726,132/742,516 | 17,301,504/9,658,368 | 474,143,744 |
+| Frozen, conditional depth | 316,532 | 726,132/742,516 | 17,375,232/9,740,288 | 476,350,464 |
+| Conventional aggregate, hard depth | 316,532 | 726,132/742,516 | 17,301,504/9,756,672 | 473,652,224 |
+| Conventional aggregate, conditional depth | 316,532 | 726,132/742,516 | 17,641,472/9,854,976 | 476,758,016 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals also
+include output, upload/uniform/screen resources, all source/response/coverage
+caches, sorting, wood, scratch and dummy/fallback data. Their common difference
+is 409,600 bytes. Additional shader registers/spills and compiled caches are not
+independently attributable from requested GPU resources.
+
+The frozen/CDF path has 4.63x fewer engine bytes and 2.58x fewer all-requested live
+bytes than fast stored source, with failing quality. Against the established
+packed full-field control's 420,980 engine / 830,580 all-live bytes, those ratios
+are only 1.33x / 1.14x. Neither is a quality-matched 16x result.
+
+DRM resident VRAM/GTT and browser-group PSS are actual whole-client physical
+snapshots, not asset-specific physical residency or transient physical peaks.
+Do not add overlapping UMA pools. Physical appearance residency remains a G4
+measurement gap; the current quality failure already decides against promotion,
+so expanding memory attribution cannot change this block's decision.
+
+### Verification, retirement and next bet
+
+Eight manual hard-depth captures using the new split/load-preserving pass are
+byte-identical to the original frozen captures. The changed pass setup is therefore
+not the cause of the conditional-depth result. Sixteen GPU probes compare both
+packed models, two views and four lights against independent NumPy float64
+conditioning and SciPy normal CDF. Maximum parameter error is 2.91e-7, CDF error
+1.79e-7 and visible-fraction error 2.39e-7; outputs are finite and light-independent.
+These are focused implementation checks, not additional rendered references.
+
+Retire the wood-only correction. The result does not disprove conditional Gaussian
+math or all aggregate rendering; it shows this correction cannot fix coverage and
+does not materially resolve the measured shaded failures. Both optimization slots
+remain unused. No more fitting is justified for it.
+
+The next hypothesis is to retain source-derived normal/material response mixtures
+inside aggregates, evaluate lighting per component, then integrate before compositing.
+The earlier [rendered-error attribution](#rendered-error-attribution-change-representation-retire-joint-rgba-correction)
+identified radiance loss as consequential; this is a hypothesis for testing its
+representation cause, not a demonstrated solution. First compare small conventional
+source-conditioned quadrature/mixtures at equal resident bytes and complete cost.
+Avoid repeating the rejected 88-aggregate local MLP, fixed depth slabs, scalar
+opacity corrections or RGBA postfilter. Neural fitting must target a demonstrated
+rendered residual after that comparison.
+
+All experimental source is archived and tracked runtime restored byte-for-byte to
+f586361b. The new module is removed. Established default/packed checks are reused
+for unchanged code; no broad suite rerun. All measured failures, exact sources,
+captures, numerical probes, timings and memory records are preserved.
+G1–G7 remain unchanged and unmet. Unseen assets/families, motion, 8–512px scale,
+10x source richness, dynamic edits and sustained G6 are not established here.
+
+Evidence: build/neural-evidence/g4-conditional-depth-v1 on Pop!_OS, including
+plan/decision, five exact variants, comparisons, focused checks, physical snapshots,
+retired/restored sources, scripts, known metadata-field notes and replay instructions.
+Manifest SHA-256: `1008e19fd701e38eb42384da7c01b4ad53f20f69cc081cc42ecb37001b50bb07`.

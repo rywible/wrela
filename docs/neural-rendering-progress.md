@@ -2511,3 +2511,17 @@ aggregate nodes with equal-input conventional controls and counted fallback.
 No second tuning,training,newtruth or runtime promotion; restored code exact.
 [Report](neural-shaded-appearance.md#source-space-visibility-hierarchy-exact-quality-unacceptable-cost).
 Manifest SHA-256: `3892d286404bddb7f0026e599d284946a5e0274747e162c5b1283011028481d9`.
+
+### Wood-only conditional depth is retired
+
+Frozen best remains 8/24 shaded cases; conventional source aggregate remains 5/24
+against all four source controls. Conditional covariance/CDF gains only
+0.00225/0.00291 dB, with identical silhouettes and allocations, while saturated
+GPU cost rises 20.92%/19.31%. Engine/live bytes remain 316,532/726,132;
+actual 16x appearance residency is unproved. Initial comparison completed in
+102.3s; no follow-up optimization, training or new truth.
+Pass setup matches eight original images exactly; sixteen independent GPU math
+probes validate conditioning. Runtime restored exactly. Next hypothesis: preserve
+source normal/material response mixtures, test conventional quadrature first.
+[Quality, complete cost and memory](neural-shaded-appearance.md#conditional-depth-at-wood-no-useful-rendered-advantage).
+Manifest SHA-256: `1008e19fd701e38eb42384da7c01b4ad53f20f69cc081cc42ecb37001b50bb07`.
