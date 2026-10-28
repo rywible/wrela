@@ -962,7 +962,10 @@ pub fn bake() -> Baked {
                 let p = vec2(left + f32(x) + 0.5, top - f32(y) - 0.5) / em
                 var distance = 100.0
                 for part in parts { distance = min(distance, piece_distance(p, part)) }
-                fields.push(u8(round(saturate(0.5 - distance * em / (2.0 * spread)) * 255.0)))
+                // A `Baked` field's texel is three channels whose median is the distance: the
+                // same distance in each.
+                let v = u8(round(saturate(0.5 - distance * em / (2.0 * spread)) * 255.0))
+                for _ in 0..3 { fields.push(v) }
             }
         }
     }
@@ -987,7 +990,7 @@ fn facet_has_printable_ascii_with_ink_and_shared_capitals() {
         let g = font.glyphs[i]
         assert(g.codepoint == i + 32 && g.advance > 0.0 && g.advance < 1.1)
         assert(g.offset == end)
-        end += g.width * g.height
+        end += 3 * g.width * g.height
         assert(end <= font.fields.len())
         if i == 0 { assert(g.width == 0 && g.height == 0) } else {
             var ink = 0
