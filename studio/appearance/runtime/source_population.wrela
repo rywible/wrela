@@ -1,0 +1,8 @@
+// Bounded population fixture. Each seed changes leaf placement, not the crown field.
+// Ordinary copies of one individual already share exact caches in the engine.
+pub const LAYOUTS: u32 = 1
+pub const CAPTURE: u32 = 0
+
+pub fn seed(layout: u32) -> u32 {
+    [7, 13, 29, 43, 73, 101, 151, 199, 251, 307][layout]
+}

@@ -2952,3 +2952,19 @@ First assessment9.71min; decision30.68min. Two follow-ups, no training,
 four justified reference captures; one layout repair and one helper fix preserved.
 Retain both conventional diagnostic recipes; defaults unchanged.
 [Full measurements and limitations](neural-shaded-appearance.md#source-compiled-far-fields-recover-quality-and-useful-gpu-savings).
+
+## Source population viability: compact table sharing and hidden resident cost (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR, Wrela 0.9.0/de9b81e. Ten26,560-card layouts over one 44-clump crown, two difficult views/lights, three backgrounds; AA 32→AA 64 convergence passes all 20 cases. All controls share wood/cutouts/clumps/visibility scratch. Complete320×128 ten-crown frames include decoding/placement, visibility/depth ordering, wood, updates, copies and composite. Static cooking excluded steady time, retained allocations counted. Not the fixed-canopy10× density gate.
+
+| Method | Saturated GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: |
+| Native exact cards | 2.58168 / 2.61652 | 10,327,756 / 10,491,596 | 26,271,744 / 9,936,896 |
+| Compact exact cache | 3.29660 / 3.33384 | 3,758,188 / 3,922,028 | 18,231,296 / 10,199,040 |
+| Exact full field | 6.01572 / 6.04880 | 1,633,396 / 1,797,236 | 18,038,784 / 10,297,344 |
+| Compact cutoff 5 | 5.44260 / 5.53416 | 1,640,780 / 1,804,620 | 18,046,976 / 10,297,344 |
+| Exact cache + owner table, retired | 3.09440 / 3.13384 | 3,784,748 / 3,948,588 | 101,040,128 / 10,199,040 |
+
+Cutoff 4 and regional 2 fail1/60 and 5/60 rows. First follow-up cutoff 5 passes all 60 plus36 legacy rows (90 distinct); silhouettes match the compact exact control. Five paired complete GPU runs show9.63% saving versus full-field (geometric 95%CI9.564–9.735%). It remains65.1% slower than compact caching, at 2.290× lower requested allocations. Second follow-up owner table is byte-exact and 6.04% faster than exact cache but rejected for80+MB resident VRAM growth in all three variants. Removing its GPU-cooked implementation restores18,042,880 B resident VRAM,10,297,344 B GTT and 1,640,780 B requested live. Exact driver allocation cause is unproved. DRM/PSS are whole-client observations; do notsum UMA pools.
+
+First assessment 23.19 minutes; exactly two optimizations, zero training. Frozen models and G1–G7 unchanged/unmet. Decision: change representation toward source-compiled response residuals; retain cutoff 5 as a bounded diagnostic. [Full quality, pacedGPU/CPU completion, resident observations and evidence](neural-source-population.md).

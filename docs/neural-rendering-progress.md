@@ -2891,3 +2891,11 @@ caches by measured benefit, validated across families, footprints and multiasset
 G1–G7 and frozen models unchanged.
 [Complete comparison and limitations](neural-shaded-appearance.md#source-compiled-far-fields-recover-quality-and-useful-gpu-savings).
 Manifest: `0e9177f7ac4cb92e13d2ca5c4de56e4a7b9b5407bf574279d0b2ee92128d1ec8`.
+
+## 2026-10-28: Population sharing changes the G4 direction
+
+The ten-layout AMD experiment completed its first assessment in23.19 minutes and used exactly two follow-ups, with no training. Compact cutoff 4 fails1/60 rendered comparisons; regional cutoff 2 fails5/60. Cutoff 5 repairs all 60, also passes the 36 prior converged rows (90 distinct total), and is 9.63% faster than full-field evaluation. It uses1.641 MB requested live versus3.758 MB for the compact exact cache, but is 65.1% slower. No G4 promotion.
+
+The shared exact owner table gains 6.04% GPU time but adds roughly83MB actual resident VRAM despite only26.6 KB additional requested buffers. It is rejected and removed; restoring the no-owner code returns resident VRAM to 18.043 MB. All failed outputs and binaries are preserved.
+
+Decision: change the G4 representation toward source-compiled response residuals and cheap decode; retain cutoff 5 only as a measured memory/runtime diagnostic. Same source information and shared wood/cutouts/scratch for all controls. This tests distinct leaf layouts over one crown field, not 10× density or unseen families. [Full joint results and limits](neural-source-population.md). Evidence manifest: `38eb09675763f99ed58c6c3136f127a3f0f6000bbb259cefeea51d3374a9a3e3`. G1–G7 and frozen models remain unchanged/unmet.

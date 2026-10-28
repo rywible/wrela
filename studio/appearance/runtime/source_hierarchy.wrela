@@ -88,8 +88,8 @@ fn cook_nodes(plant: Plant, n: u32, nodes: mut Slots<vec4>, id: GlobalId) {
 
 @compute(64)
 fn cook_response(plant: Plant, n: u32, response: mut Slots<vec2u>, id: GlobalId) {
-    if id.x >= n { return }
-    let card = card_at(plant, n, seed: 7, index: id.x)
+    if id.x >= n * source_population::LAYOUTS { return }
+    let card = card_at(plant, n, seed: source_population::seed(id.x / n), index: id.x % n)
     response[id] = vec2u(card.normal.bits, bitcast_u32(card.depth))
 }
 
@@ -120,8 +120,8 @@ pub fn response(plant: Plant, n: u32) -> GpuBuffer<vec2u> {
         if source_bounds::MODE == 2 { return bound_masks(plant) }
         return buffer(1)
     }
-    var response = buffer(n)
-    dispatch(cook_response.bind(plant, n, mut response), over: n)
+    var response = buffer(n * source_population::LAYOUTS)
+    dispatch(cook_response.bind(plant, n, mut response), over: n * source_population::LAYOUTS)
     take response
 }
 
@@ -141,8 +141,8 @@ fn clump(which: u32, nodes: [vec4]) -> Clump {
     Clump { centre: a.xyz, radius: a.w, squash: nodes[2 + which * 2].x }
 }
 
-fn attributes(index: u32, which: u32, nodes: [vec4]) -> Card {
-    let k = u32(7).wrapping_mul(7919) ^ index.wrapping_mul(2654435761)
+fn attributes(index: u32, which: u32, nodes: [vec4], layout: u32) -> Card {
+    let k = source_population::seed(layout).wrapping_mul(7919) ^ index.wrapping_mul(2654435761)
     Card {
         centre: vec3(0.0),
         size: nodes[0].z * pick(k, 6, lo: 0.8, hi: 1.2),
@@ -153,20 +153,26 @@ fn attributes(index: u32, which: u32, nodes: [vec4]) -> Card {
     }
 }
 
-pub fn placed(index: u32, which: u32, nodes: [vec4]) -> Card {
-    let card = attributes(index, which, nodes)
+pub fn placed(index: u32, which: u32, nodes: [vec4], layout: u32) -> Card {
+    let card = attributes(index, which, nodes, layout)
     let k = card.seed
     let dir = direction(rand(k, 3), rand(k, 4))
     Card { centre: clump(which, nodes).point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), ..card }
 }
 
-pub fn shaded(index: u32, nodes: [vec4], response: [vec2u], position_needed: bool) -> Card {
+pub fn shaded(
+    index: u32,
+    nodes: [vec4],
+    response: [vec2u],
+    position_needed: bool,
+    layout: u32,
+) -> Card {
     let which = owner(index, nodes)
-    let card = if position_needed || FIELD_RESPONSE { placed(index, which, nodes) } else {
-        attributes(index, which, nodes)
+    let card = if position_needed || FIELD_RESPONSE { placed(index, which, nodes, layout) } else {
+        attributes(index, which, nodes, layout)
     }
     let r = if FIELD_RESPONSE { source_field(card.centre, nodes, response, which) } else {
-        response[index]
+        response[layout * u32(nodes[0].y) + index]
     }
     Card { normal: Oct32 { bits: r.x }, depth: bitcast_f32(r.y), ..card }
 }

@@ -9,7 +9,7 @@ use std::gpu::{
     Bc5, Bc7, Blend, ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId,
     GpuBuffer, Half2, InstanceIndex, DepthPass, Memory, R32Uint, Rgba16Float, Rgba32Float, Slots,
     Targets2, Targets3, Texture, VertexIndex, begin_screen_pass, begin_pass_with_depth,
-    begin_pass3_with_depth, begin_pass2_with_depth, begin_pass2, buffer, buffer_of,
+    begin_pass3_with_depth, begin_pass2_with_depth, begin_pass2, buffer, buffer_of, copy,
     copy_buffer_to_texture, depth_texture, dispatch, draw, label, memory, texture, write,
 }
 
@@ -629,6 +629,8 @@ fn composite_tiles(pixel: FragCoord, source: [u32]) -> vec4 {
 }
 
 pub struct State {
+    layout: u32,
+    population: Option<GpuBuffer<vec4>>,
     source: source_control::Source,
     view: u32,
     illumination: u32,
@@ -733,6 +735,8 @@ pub fn init() -> State {
     assert(source_hierarchy::rows() > 0 && 64 % source_hierarchy::rows() == 0)
     let aa = config::AA
     var s = State {
+        layout: 0,
+        population: None,
         source: source_control::init(config::MODE == 3 || config::MODE == 10),
         view: 0,
         illumination: 0,
@@ -800,6 +804,10 @@ pub fn init() -> State {
             }
         }
         if !wood_visibility::ENABLED { s.depth = depth_texture(width: 64 * aa, height: 64 * aa) }
+    }
+    if source_population::LAYOUTS > 1 {
+        assert(config::MODE == 10)
+        s.population = Some(buffer(source_population::LAYOUTS * 4096))
     }
     if footprint::INDEXED_WOOD && config::MODE == 2 && !wood_visibility::ENABLED {
         var indices: Vec<u32> = Vec::new()
@@ -941,6 +949,8 @@ pub fn render(s: mut State) {
                 level: 0,
                 band: band * rows,
                 rows,
+                layout: s.layout,
+                card_offset: s.layout * source_control::card_count(),
             }
             match mut s.packed_visibility {
                 Some(packed) => {
@@ -1164,6 +1174,7 @@ pub fn render(s: mut State) {
 }
 
 pub fn publish(s: mut State) -> u32 {
+    s.layout = source_population::CAPTURE
     render(mut s)
     64 * 64 * 16
 }
@@ -1173,15 +1184,40 @@ pub fn resident(s: State) -> (u32, u32, u32, u32) {
     (u32(m.buffers), u32(m.textures), u32(m.peak_buffers), u32(m.peak_textures))
 }
 
+// A population frame shares visibility scratch, then composites every distinct layout.
+@fragment
+fn composite_population(at: FragCoord, pixels: [vec4]) -> vec4 {
+    let x = u32(at.position.x)
+    let y = u32(at.position.y)
+    let layout = (y / 64) * 5 + x / 64
+    if layout >= source_population::LAYOUTS { return vec4(0.0) }
+    let value = pixels[layout * 4096 + (y % 64) * 64 + x % 64]
+    vec4(engine::light::tone(value.rgb + vec3(0.18) * (1.0 - value.a), 0.62), 1.0)
+}
+
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // Alternating reference views forces the candidate's sorting and updates every frame.
     s.view = s.step % 2
     s.illumination = (s.step / 2) % 4
-    render(mut s)
+    if source_population::LAYOUTS > 1 {
+        for layout in 0..source_population::LAYOUTS {
+            s.layout = layout
+            render(mut s)
+            match mut s.population {
+                Some(pixels) => copy(s.out.items(), pixels.span_mut(layout * 4096, 4096)),
+                None => {},
+            }
+        }
+    } else { render(mut s) }
     let screen = begin_screen_pass(vec4(0.0))
-    if config::MODE == 7 || config::MODE == 8 || wood_visibility::ENABLED {
-        draw(screen, full, composite_tiles.bind(s.tile_out.items()), vertices: 3)
-    } else { draw(screen, full, composite.bind(s.out.items()), vertices: 3) }
+    match s.population {
+        Some(pixels) => draw(screen, full, composite_population.bind(pixels.items()), vertices: 3),
+        None => {
+            if config::MODE == 7 || config::MODE == 8 || wood_visibility::ENABLED {
+                draw(screen, full, composite_tiles.bind(s.tile_out.items()), vertices: 3)
+            } else { draw(screen, full, composite.bind(s.out.items()), vertices: 3) }
+        },
+    }
     screen.present()
     s.step += 1
 }

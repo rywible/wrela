@@ -7484,3 +7484,9 @@ unchanged. Original Wrela implementation; established metric
 
 Evidence on Pop!_OS: build/neural-evidence/g4-source-tail-v1.
 Manifest SHA-256: `0e9177f7ac4cb92e13d2ca5c4de56e4a7b9b5407bf574279d0b2ee92128d1ec8`.
+
+## Population validation supersedes the seed 7-only aggregate recipes
+
+The [ten-layout joint experiment](neural-source-population.md) rejects compact cutoff 4 and regional cutoff 2 for broader-layout quality. Compact cutoff 5 passes 90 distinct converged shaded comparisons but remains65.1% slower than the compact exact cache, at 2.290× lower requested live allocations. Its9.63% paired GPU gain is relative to uncached full-field evaluation only. The exact owner-table experiment is retired because actual resident VRAM rises by roughly83MB; a26.6 KB requested-buffer delta hid this cost. No G4 success or physical 16× claim.
+
+The retained opt-in compact recipe is cutoff 5/degree 2/log false/regions 1; normal defaults and frozen models are restored. The next G4 bet changes representation toward source-compiled response residuals. Evidence manifest: `38eb09675763f99ed58c6c3136f127a3f0f6000bbb259cefeea51d3374a9a3e3`.

@@ -3,7 +3,7 @@
 use engine::impostor::{BAKED, Bake, BakeVertex}
 use engine::plant::{
     Card, Plant, LIMB_VERTICES, card_at, limb_point, limb_corner, card_scale, card_tint, card_turn,
-    cook_cards, leaf_age, leaf_at, leaf_atlas, leaf_uv, limb_vertex, tinted,
+    leaf_age, leaf_at, leaf_atlas, leaf_uv, limb_vertex, tinted,
 }
 use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
@@ -56,6 +56,8 @@ pub struct Camera: Copy + GpuData {
     pub level: u32,
     pub band: u32 = 0,
     pub rows: u32 = 64,
+    pub layout: u32 = 0,
+    pub card_offset: u32 = 0,
 }
 
 // Three coverage-weighted moments. Normal components are decoded before averaging;
@@ -99,14 +101,14 @@ fn card_vertex_value(card: Card, k: u32, b: Bake, c: Camera) -> BakeVertex {
 
 @vertex
 fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
-    card_vertex_value(cards[v.index / 6], v.index % 6, b, c)
+    card_vertex_value(cards[c.card_offset + v.index / 6], v.index % 6, b, c)
 }
 
 @vertex
 fn indexed_card(v: VertexIndex, i: InstanceIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
     // Index buffer addresses the original six-corner sequence's four distinct points.
     let corner = [0, 1, 2, 5][v.index]
-    card_vertex_value(cards[i.index], corner, b, c)
+    card_vertex_value(cards[c.card_offset + i.index], corner, b, c)
 }
 
 @vertex
@@ -312,7 +314,23 @@ pub struct Source {
     hierarchy_response: GpuBuffer<vec2u>,
 }
 
+@compute(64)
+fn cook_population(plant: Plant, n: u32, out: mut Slots<Card>, id: GlobalId) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    out[id] = card_at(plant, n, seed: source_population::seed(id.x / n), index: id.x % n)
+}
+
+pub fn card_count() -> u32 {
+    great_tree().cards()
+}
+
 pub fn init(active: bool) -> Source {
+    assert(source_population::LAYOUTS > 0 && source_population::LAYOUTS <= 10)
+    assert(source_population::CAPTURE < source_population::LAYOUTS)
+    assert(
+        source_population::LAYOUTS == 1 ||
+            (!source_options::PROCEDURAL && !source_options::CACHE_DISTRIBUTION),
+    )
     if !active {
         return Source {
             cards: buffer(1),
@@ -334,8 +352,11 @@ pub fn init(active: bool) -> Source {
     let n = plant.cards()
     var cards = buffer(1)
     if !source_options::PROCEDURAL && !source_hierarchy::ENABLED {
-        cards = buffer(n)
-        dispatch(cook_cards.bind(plant, n, seed: 7, out: mut cards), over: n)
+        cards = buffer(n * source_population::LAYOUTS)
+        dispatch(
+            cook_population.bind(plant, n, out: mut cards),
+            over: n * source_population::LAYOUTS,
+        )
     }
     var wood_indices: Vec<u32> = Vec::new()
     if source_options::INDEXED {
@@ -577,8 +598,8 @@ fn identity_card(
         }
     }
     let card = if source_hierarchy::ENABLED {
-        source_hierarchy::placed(i.index, which, nodes)
-    } else { cards[i.index] }
+        source_hierarchy::placed(i.index, which, nodes, c.layout)
+    } else { cards[c.card_offset + i.index] }
     let f = card_vertex_value(card, [0, 1, 2, 5][v.index], b, c)
     IdentityVertex { clip: f.clip, uv: f.uv, surface: Flat { value: i.index + 1 }, seed: f.seed }
 }
@@ -830,8 +851,8 @@ fn identity_value(
         let pixels = b.leaves.leaf_width() * 64.0 / (2.0 * b.half)
         let resolved = smoothstep(4.0, 12.0, pixels)
         let card = if source_hierarchy::ENABLED {
-            source_hierarchy::shaded(key - 1, nodes, response, resolved > 0.0)
-        } else { cards[key - 1] }
+            source_hierarchy::shaded(key - 1, nodes, response, resolved > 0.0, c.layout)
+        } else { cards[c.card_offset + key - 1] }
         let n = normalize(card.normal.decode())
         var tissue = vec2(1.0, 0.5)
         if resolved > 0.0 {
