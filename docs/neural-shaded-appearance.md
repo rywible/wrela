@@ -4281,3 +4281,182 @@ variants, three invalid preserved runs, component/source payloads, exact archive
 all captures, quality/cost/memory records, mathematical probes, plan/decision,
 restored sources and replay scripts.
 Manifest SHA-256: `8ea276e73c7fe24759e09b590be7b5fb3f0f3201d3cef7afed19d020f8a94792`.
+
+## Joint source partitioning: better response statistics, worse rendered gates
+
+**Decision: retire response-driven repartitioning of the fixed optical budget.**
+The strongest tested joint partition reduces source response residual variance
+by43.4%, but passes only3/24 shaded cases versus5/24 for the established spatial
+control and8/24 for the frozen best. Coverage MAE rises from0.00934771 to0.00960004.
+All optical variants use the same316,532 engine /726,132 all-requested live bytes;
+joint GPU0.06872ms is comparable to spatial0.06804ms. No combined quality,
+memory or runtime advantage is established.
+
+Solo Pop!_OS: start 2026-10-28T03:42:12.412053+00:00; initial comparison complete
+2026-10-28T03:43:56.096107+00:00 (103.7s);
+decision 2026-10-28T03:50:07.543535+00:00 (475.1s).
+One targeted follow-up; no second tuning attempt, neural training or new shaded
+references. Eight fixed source-clustering assignment/centroid updates are part
+of the declared asset compiler, not image-supervised model training. G1–G7 and
+the frozen best remain unchanged.
+
+### Preserve correlation by repartitioning, not adding response storage
+
+The previous response-mixture experiment assigned one averaged colour across
+each optical footprint. Here the same1,897 primitive records are rebuilt so
+sources with different material response can receive different projected
+footprints and centre depths. All26,560 original cards remain assigned once.
+
+Each record still uses28f16 values: joint world-position/local-pattern mean5,
+lower Cholesky covariance15, optical mass1, sqrt(albedo)3, normal3 and crown
+depth1. Payload size stays106,232bytes, with identical wood, rendering, sorting,
+sample count, scratch and fallback resources. Source pattern covariances are
+included in each aggregate. The inherited conventional mass gain1.15 is fixed
+before this block; no new calibration to reference images is performed.
+
+The initial source-only compiler repeatedly splits the leaf with largest total
+weighted feature variance, using a stable weighted-median cut on its largest
+variance axis, until1,897 nonempty groups remain. Spatial features are joint
+worldXYZ/local-patternXY scaled by32, the64px orthographic pixel scale.
+Joint features also include normal3, sqrt(albedo)3 and crownDepth/2.4m.
+The paired spatial-only tree zeros those response features.
+
+Both initial tree partitions fail0/24. Their mean PSNR is38.57dB, about1.17dB
+below the established spatial control. At unit response scale, only3 of1,896
+joint-tree cuts use response axes. This is weak evidence about conditional
+material representation, because the replacement spatial partition already
+degrades rendering before material information is added.
+
+### One follow-up isolates the material tradeoff with the established compiler
+
+Recreate the established eight-step spatial Lloyd compiler with its original
+initialization, weighted means and empty-cluster repair. Exact Euclidean nearest
+centroids use [SciPy cKDTree.query](https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.cKDTree.query.html)
+with its default eps=0 and one worker. All26,560 assignments reproduce the archived
+original exactly. The two-step f16 packing and1.15mass gain reproduce all106,232
+bytes of the current conventional payload. Its existing executable captures and
+timings are therefore the direct control; no redundant GPU rerun is needed.
+
+The joint follow-up adds source response features to worldXYZ and uses one
+source-derived balance: sqrt(position residual / response residual) measured
+inside that original spatial partition. This gives3.21672069294, with no weight
+sweep or rendered labels. The same eight source-clustering iterations produce
+the joint payload in0.188seconds.
+
+Position residual increases from0.450562 to0.491659 pixel-squared; response
+residual falls from0.043544 to0.024639. These are diagnostic source statistics,
+not acceptance metrics. The rendered result improves mean LPIPS but loses
+passing cases and coverage accuracy. Lower material variation is not sufficient
+to choose a rendering representation.
+
+All candidates and source controls receive the same useful source geometry,
+fields, masks, response and sampling information. The frozen explicit optical
+payload is unchanged; it is not a newly trained neural network. This experiment
+does not grant privileged runtime reference information to any candidate.
+
+### Shaded quality and silhouettes
+
+| Candidate | Passes vs each source control | Mean PSNR dB | Mean FLIP | Mean LPIPS | Coverage MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native source | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 |
+| Frozen best | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Established spatial control | 5/24 | 39.739577 | 0.01392093 | 0.00211637 | 0.00934771 |
+| Spatial median tree | 0/24 | 38.573127 | 0.01807045 | 0.00274817 | 0.01088606 |
+| Joint median tree | 0/24 | 38.577836 | 0.01801559 | 0.00273470 | 0.01086929 |
+| Balanced joint Lloyd | 3/24 | 39.755566 | 0.01372136 | 0.00187963 | 0.00960004 |
+
+Each case must satisfy PSNR loss<=0.25dB and FLIP/LPIPS increase<=5%, floor1e-4.
+The same pass counts hold against each of four source controls: current native,
+established packed full-field, forward-source and hierarchy-mask. Means alone
+hide the joint candidate's failures. Legacy BC-only scores remain archived but
+do not decide acceptance.
+
+Worst boundary p99 is1.4142pixels for all optical variants and2pixels for native.
+Balanced joint half-coverage precision/recall minima are0.977083/0.988014,
+versus conventional0.978079/0.988014 and frozen0.978010/0.985445.
+Coverage is byte-identical across all four lights for each candidate/view.
+All24 original-control RGBA images reproduce prior captures exactly.
+Geometry changes intentionally alter candidate coverage; no silhouette/G3 win
+is claimed.
+
+The completed AA64 shaded references are reused: one64pxasset, two public views,
+four analytic lights, three backgrounds, exposure0.62/ACES/sRGB, LDR FLIP67ppd
+and AlexNet LPIPSv0.1. There is no reference expansion or new proxy-trained model.
+
+### Complete runtime and memory
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent4a7d04b9 plus exact archived
+payload/configuration variants; sequential runs,60warmup/240measured frames64x64.
+
+The renderer itself is unchanged. GPU spans include decoding/projection, shading,
+visibility, exact indexed wood, ordered blending, resolve and final composite.
+CPU includes centre-depth sorting, order uploads, view/light updates and commands.
+Changed aggregate footprints can change overdraw despite equal primitive counts.
+Source asset compilation and initial upload are outside steady runtime; requested
+allocation peaks include initialization. Dynamic edits/refits remain untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1.0778/1.0868 | 0.27460/0.41684 | 0.6585 | 4.1748/4.3380 |
+| Frozen best | 0.2721/0.2743 | 0.06820/0.07364 | 1.0800 | 4.9961/5.2017 |
+| Established spatial control | 0.2714/0.2735 | 0.06804/0.07844 | 1.0281 | 4.7500/5.0565 |
+| Spatial median tree | 0.2828/0.2854 | 0.06992/0.07776 | 1.0333 | 4.8221/5.2731 |
+| Joint median tree | 0.2830/0.2854 | 0.06984/0.08000 | 1.0353 | 4.5801/4.7264 |
+| Balanced joint Lloyd | 0.0850/0.2511 | 0.06872/0.07152 | 0.9100 | 4.6155/4.7200 |
+
+Completion includes all submissions and browser/driver notification, not
+input-to-photon. These single-run saturated/paced/completion measurements do not
+prove repeatable small speedups or a hardware explanation for timing variation.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1,466,060 | 1,875,660/1,892,044 | 17,424,384/9,936,896 | 491,318,272 |
+| Frozen best | 316,532 | 726,132/742,516 | 17,367,040/9,854,976 | 477,166,592 |
+| Established spatial control | 316,532 | 726,132/742,516 | 17,633,280/9,740,288 | 478,373,888 |
+| Spatial median tree | 316,532 | 726,132/742,516 | 17,649,664/9,854,976 | 479,707,136 |
+| Joint median tree | 316,532 | 726,132/742,516 | 17,633,280/9,838,592 | 478,450,688 |
+| Balanced joint Lloyd | 316,532 | 726,132/742,516 | 17,633,280/9,838,592 | 478,369,792 |
+
+Engine bytes exclude the common65,536-byte output. All-requested totals include
+output, screen, upload/uniform rings, model, sorting, wood, caches, scratch and
+dummy/fallback resources. The common difference is409,600bytes.
+These paths add no memory advantage over the original compact candidates.
+Versus the smaller packed full-field control's830,580 all-live bytes, the ratio
+remains only1.14x, with failing quality.
+
+DRM resident VRAM/GTT and browser-group PSS are actual whole-client physical
+snapshots, not asset-attributed appearance residency or transient physical peaks.
+Do not sum overlapping UMA pools. Private shader storage and compiled caches
+are not separately attributable from requested resources.16xquality-matched
+physical appearance reduction remains unproved.
+
+### Preserve spatial coverage in the next representation
+
+Retire these joint partitions. The result rules out the tested source-variance
+allocation choices, not every possible conditional material representation.
+No second feature-weight sweep or additional proxy fitting is justified.
+
+The next hypothesis keeps spatial coverage/depth fixed and predicts unlit
+material response within each footprint before lighting, using source
+position/material cross-statistics or a shared source-field decoder. Count all
+sidecar/model bytes and require a rendered gain before fitting. The first
+comparison must isolate conditional versus spatially constant response with
+identical coverage and visibility. This differs from post-shading RGBA correction
+and from spending geometric primitive capacity to reduce material variance.
+
+Independent direct source means/covariances/material moments agree with compiled
+full-precision records within1e-12; packed projected covariance stays positive in
+both scored views. The unchanged renderer's established numerical checks are
+reused. All tracked runtime files are restored byte-for-byte to4a7d04b9; no new
+module remains and no broad suite was rerun. Failed tree/joint payloads, assignments,
+split traces, source statistics and complete GPU measurements are preserved.
+
+G1–G7 remain unmet.64pxfeature scaling is not8–512pxgeneralization; unseen assets,
+motion,10xrichness,source edits and sustainedG6 are untested.
+
+Evidence: build/neural-evidence/g4-joint-partition-v1 on Pop!_OS. Six variants,
+48validcaptures, source inputs and partitions, exact-control compiler check,
+quality/cost/memory observations, plan/decision, archived runtime and replay scripts.
+Manifest SHA-256: `d281baf3e2ea503e1eb3814c116bb33ab5ef30de22eb5355f203244c18b2bbde`.

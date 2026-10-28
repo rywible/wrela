@@ -2535,3 +2535,14 @@ native0.27936ms/1,875,660bytes. No quality-matchedmemory or neural win.
 40coverageexact,24controlRGBAexact,24mathprobes. Inactive selector runs preserved,
 excluded and repaired. No training/newrefs; runtime restored.
 [Quality, complete cost and physical memory](neural-shaded-appearance.md#source-response-mixtures-retire-a-single-colour-per-aggregate).
+
+### AMD joint source partition retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compilerde9b81e5, parent4a7d04b9 plus archived payloads.
+Spatial/joint median trees0/24. Source-balancedLloyd3/24 vsestablishedspatial5/24
+andfrozen8/24, despite43.4%lower source response residual; coverageMAE worsens.
+Same316,532engine/726,132all-live requestedbytes. JointGPU0.06872ms vscontrol
+0.06804ms; no quality-memory-runtime win. One follow-up, no neuraltraining/newrefs.
+24controlRGBA exact; allcoverage light-independent; runtime restored.
+[Full quality, runtime and physical memory evidence](neural-shaded-appearance.md#joint-source-partitioning-better-response-statistics-worse-rendered-gates).

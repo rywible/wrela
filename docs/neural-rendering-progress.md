@@ -2538,3 +2538,15 @@ Inactive-selector setup runs preserved/excluded. Runtime restored exactly.
 Next hypothesis: projected position/visibility-conditioned response at fixed bytes.
 [Complete comparison](neural-shaded-appearance.md#source-response-mixtures-retire-a-single-colour-per-aggregate).
 Manifest SHA-256: `8ea276e73c7fe24759e09b590be7b5fb3f0f3201d3cef7afed19d020f8a94792`.
+
+### Source joint partitioning is retired
+
+Same1897x56byte budget; source median-tree spatial/joint both0/24.
+One follow-up reproduces establishedLloyd assignments/payload byte-exact, then
+adds source-balanced response features. Response residual falls43.4%, but shaded
+passes fall5/24to3/24 and coverageMAE rises0.00934771to0.00960004.
+JointGPU0.06872 vsconventional0.06804ms; sameengine/live316,532/726,132bytes.
+Retire; no second sweep, neural training or newtruth. Runtime restored exactly.
+Next isolate conditional unlit response inside fixed coverage/visibility.
+[Complete comparison](neural-shaded-appearance.md#joint-source-partitioning-better-response-statistics-worse-rendered-gates).
+Manifest SHA-256: `d281baf3e2ea503e1eb3814c116bb33ab5ef30de22eb5355f203244c18b2bbde`.
