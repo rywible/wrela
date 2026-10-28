@@ -211,9 +211,40 @@ pub struct Options: Clone {
     pub jobs: u32,
     pub workers: u32,
     pub picks: Vec<u32>,
+    /// Which of the shots, when none is picked by number (`--shots dev`, `--shots evaluation`):
+    /// `ALL`, `EVALUATION` or `DEVELOPMENT`.
+    pub set: u32 = ALL,
 }
 
-pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture] [--quality [--controls]] [--shots a,b,c] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
+/// The shots a run takes when none is picked by number: all of them, a lookbook's evaluation
+/// shots alone, or its development shots alone (plan three's §B1.4: a development shot is named
+/// `D` and its number, as `D3 another old oak`).
+pub const ALL: u32 = 0
+pub const EVALUATION: u32 = 1
+pub const DEVELOPMENT: u32 = 2
+
+/// Whether a shot named `name` is a development shot: `D`, then a digit.
+pub fn developing(name: str) -> bool {
+    name.len() >= 2 && name.byte(0) == 68 && name.byte(1) >= 48 && name.byte(1) <= 57
+}
+
+/// The shots of `shots` (their names) a run takes: those picked by number, or else those of its
+/// set (`Options::set`).
+pub fn chosen(o: Options, shots: [String]) -> Vec<u32> {
+    if !o.picks.is_empty() {
+        return o.picks.clone()
+    }
+    var out: Vec<u32> = Vec::new()
+    for i in 0..shots.len() {
+        let dev = developing(shots[i].as_str())
+        if o.set == ALL || (o.set == DEVELOPMENT) == dev {
+            out.push(i)
+        }
+    }
+    out
+}
+
+pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture] [--quality [--controls]] [--shots a,b,c|dev|evaluation] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
 
 /// The options the command line gives, or what's wrong with it.
 pub fn parse_args(given: [String]) -> Result<Options, String> {
@@ -251,10 +282,18 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             o.quality = true
         } else if a == "--controls" {
             o.controls = true
+        } else if a == "--shots" && value == "dev" {
+            o.set = DEVELOPMENT
+            k += 1
+        } else if a == "--shots" && value == "evaluation" {
+            o.set = EVALUATION
+            k += 1
         } else if a == "--shots" {
             for (from, to) in value.split(",") {
                 let Some(n) = value.slice(from, to).parse_u32() else {
-                    return Err(String::from("--shots takes shot numbers, as 2,7,11"))
+                    return Err(
+                        String::from("--shots takes shot numbers, as 2,7,11, or dev or evaluation"),
+                    )
                 }
                 o.picks.push(n)
             }

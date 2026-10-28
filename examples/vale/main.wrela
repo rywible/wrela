@@ -4,13 +4,13 @@
 // is held on the lookbook's shots (L, the shot's number, Enter; Escape lets it go), or walks the
 // vale's walk (walk.wrela), or stands where a test holds it.
 
-use engine::frame::{Aim, Frame, Quality, ShadowQuality, Shared}
+use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
 use engine::shadow::Cascade
-use engine::shot::{Shots, place}
+use engine::shot::{Shots, Skies, place}
 use engine::view::first_camera
 use land::stage::{fields_clipmap, probe_grid}
 use landscape::height_at
-use stage::{Stage, TILES, air_of, stage, sun_light}
+use stage::{Stage, TILES, stage}
 use std::input::{Event, events}
 use std::io::print
 
@@ -48,25 +48,67 @@ pub struct Vale {
     held: Option<(vec3, vec3)>,
     /// Whether the vale's ready: playable, its tiles round the eye in.
     ready: bool,
+    /// The hour and the weather the frame is lit in (`day`).
+    hour: f32,
+    skies: Skies,
+    /// How many frames the walk has run (none: it hasn't begun; W begins it).
+    walked: Option<u32>,
+}
+
+/// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
+pub const WALK_HOUR: f32 = 10.5
+pub const WALK_SKIES: Skies = Skies::Fair
+
+/// The air and the light at `hour` in `skies`, for an eye `eye` m high.
+fn lit(hour: f32, skies: Skies, eye: f32) -> (engine::air::Air, engine::light::Light) {
+    let air = day::air_at(hour, skies, eye)
+    (air, day::light_at(air, skies))
+}
+
+/// The frame lit at `hour` in `skies`: its air and light (the frame draws its shadows and its sky
+/// again as the sun moves), and its sky's weather cooked again when the weather changes.
+fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
+    if hour == s.hour && skies == s.skies {
+        return
+    }
+    let (air, light) = lit(hour, skies, eye)
+    s.frame.air = air
+    s.frame.light = light
+    if skies != s.skies {
+        s.stage.skies = skies
+        s.frame.changed(Change::Weather)
+    }
+    s.hour = hour
+    s.skies = skies
 }
 
 pub fn init() -> Vale {
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
+    let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
     let f: Frame<Shared> = Frame::new(
         quality(),
-        sun_light(),
-        air_of(),
+        light,
+        air,
         fields_clipmap(),
         first_camera(eye, at, FOVY, width: 960, height: 540),
         probe_grid(eye.xz, vec2(0.0), TILES),
         eye.xz,
     )
-    Vale { frame: f, stage: stage(), shots: Shots {}, held: None, ready: false }
+    Vale {
+        frame: f,
+        stage: stage(),
+        shots: Shots {},
+        held: None,
+        ready: false,
+        hour: WALK_HOUR,
+        skies: WALK_SKIES,
+        walked: None,
+    }
 }
 
-/// The keys: L, a number and Enter hold the camera on a lookbook shot, and Escape lets it go;
-/// the frame's own (its views, its lookdev instrument) otherwise.
+/// The keys: L, a number and Enter hold the camera on a lookbook shot, and Escape lets it go; W
+/// begins the walk; the frame's own (its views, its lookdev instrument) otherwise.
 fn keys(s: mut Vale, time: f32) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
@@ -74,7 +116,12 @@ fn keys(s: mut Vale, time: f32) {
             if chose.chosen {
                 s.frame.arrive()
             }
-            if !chose.taken {
+            if chose.taken {
+                continue
+            }
+            if key == std::input::Key::W && s.walked.is_none() {
+                s.walked = Some(0)
+            } else {
                 let _ = s.frame.key(key)
             }
         }
@@ -86,21 +133,28 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
     // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
     let time = s.frame.held_time(time)
     s.shots.clock(time, covered: s.frame.ready.arriving)
-    let (eye, at, fovy) = match (s.held, s.shots.held) {
-        (Some(h), _) => (h.0, h.1, FOVY),
+    let (eye, at, fovy, hour, skies) = match (s.held, s.shots.held) {
+        (Some(h), _) => (h.0, h.1, FOVY, WALK_HOUR, WALK_SKIES),
         (None, Some(i)) => {
             let sh = lookbook::SHOTS[i]
             let (e, a) = place(sh, s.shots.since(time), height_at)
-            (e, a, sh.fovy)
+            (e, a, sh.fovy, sh.time, sh.weather)
         },
         (None, None) => {
-            let eye = start_eye()
-            (eye, eye + vec3(0.0, 0.0, 1.0), FOVY)
+            let (e, a) = walk::at(match s.walked {
+                Some(n) => n,
+                None => 0,
+            })
+            (e, a, FOVY, WALK_HOUR, WALK_SKIES)
         },
     }
+    light(mut s, hour, skies, eye.y)
     let aim = Aim { eye, at, fovy, moving_at: eye }
     let _ = s.frame.begin(mut s.stage, aim, time, width, height)
     s.frame.draw(mut s.stage, aim)
+    if let Some(n) = s.walked {
+        s.walked = Some(min(n + 1, walk::FRAMES))
+    }
     if !s.ready && s.frame.ready.playable_at.is_some() {
         s.ready = true
         print(f"vale ready at frame {s.frame.frames}")

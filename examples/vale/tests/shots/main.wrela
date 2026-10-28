@@ -1,0 +1,88 @@
+// The vale's lookbook and walk (plan three's §B1.4): twelve evaluation shots, one of each class,
+// and eight development shots, each at least 80 m from its class's evaluation shot; each class's
+// own checks; and the walk, 1,200 frames long, passing within 20 m of at least six shots' eyes.
+
+use engine::shot::Skies
+use std::math::PI
+use vale::landscape::height_at
+use vale::lookbook::{EVALUATION, SHOTS}
+
+/// The development shots' classes (D1–D8), by the evaluation shots' numbers from 1.
+const DEVELOPMENT_CLASSES = [1, 2, 3, 4, 6, 8, 9, 12]
+
+/// A shot's eye and what it looks at, the world's.
+fn world(k: u32) -> (vec3, vec3) {
+    let s = SHOTS[k]
+    (
+        vec3(s.eye.x, height_at(s.eye.xz) + s.eye.y, s.eye.z),
+        vec3(s.at.x, height_at(s.at.xz) + s.at.y, s.at.z),
+    )
+}
+
+@test
+fn twelve_shots_and_eight_for_development_each_80_m_from_its_class() {
+    assert(SHOTS.len() == 20 && EVALUATION == 12, f"{SHOTS.len()} shots, {EVALUATION} of them evaluated")
+    for d in 0..8 {
+        let class = DEVELOPMENT_CLASSES[d]
+        let dev = SHOTS[EVALUATION + d].eye.xz
+        let eval = SHOTS[class - 1].eye.xz
+        assert(length(dev - eval) >= 80.0, f"D{d + 1} is {length(dev - eval)} m from shot {class}")
+    }
+}
+
+/// Shot 1's eye is 1.6 m over the ground, give or take 0.2.
+@test
+fn the_forest_floor_is_seen_from_1_6_m() {
+    let (eye, _) = world(0)
+    let over = eye.y - height_at(eye.xz)
+    assert(abs(over - 1.6) <= 0.2, f"shot 1's eye is {over} m over the ground")
+}
+
+/// Shot 2 looks within 20° of the sun at its hour (`day::sun_toward`).
+@test
+fn the_canopy_shot_looks_toward_the_sun() {
+    let (eye, at) = world(1)
+    let sun = vale::day::sun_toward(SHOTS[1].time)
+    let angle = acos(clamp(dot(normalize(at - eye), sun), -1.0, 1.0)) * 180.0 / PI
+    assert(angle <= 20.0, f"shot 2 looks {angle}° from the sun")
+}
+
+/// Shots 9 and 10 hold the creature (their cast, at what they look at, its reach round it) within
+/// the frame: it subtends less than the frame's height.
+@test
+fn the_creatures_shots_hold_it_in_frame() {
+    for k in [8, 9] {
+        let s = SHOTS[k]
+        assert(s.cast != engine::shot::NO_CAST, f"shot {k + 1} casts nobody")
+        let (eye, at) = world(k)
+        let half = atan(s.reach / length(at - eye))
+        assert(2.0 * half < s.fovy, f"shot {k + 1}'s creature fills {2.0 * half} of a {s.fovy} frame")
+    }
+}
+
+/// Shot 12 is under an overcast sky.
+@test
+fn the_last_shot_is_overcast() {
+    assert(SHOTS[11].weather == Skies::Overcast, "shot 12's sky")
+}
+
+/// The walk: 1,200 frames, passing within 20 m of at least six shots' eyes.
+@test
+fn the_walk_passes_six_shots() {
+    assert(vale::walk::FRAMES == 1200, f"{vale::walk::FRAMES} frames")
+    var passed = 0
+    for k in 0..EVALUATION {
+        let eye = SHOTS[k].eye.xz
+        var nearest = 1.0e9
+        for f in 0..vale::walk::FRAMES + 1 {
+            let (e, _) = vale::walk::at(f)
+            nearest = min(nearest, length(e.xz - eye))
+        }
+        if nearest <= 20.0 {
+            passed += 1
+        }
+    }
+    assert(passed >= 6, f"the walk passes within 20 m of {passed} shots' eyes")
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}

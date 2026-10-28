@@ -1,0 +1,8 @@
+# The vale's shots and its walk (examples/vale/lookbook.wrela, walk.wrela; plan three's §B1.4),
+# tested in a package of their own.
+[package]
+name = "vale_shots_tests"
+
+[dependencies]
+engine = { workspace = true }
+vale = { workspace = true }

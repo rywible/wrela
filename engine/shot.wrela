@@ -19,8 +19,9 @@ pub const NO_CAST: u32 = 0xFFFFFFFF
 
 /// A shot: its name, where the eye is and what it looks at (x, height above the ground, z), how far
 /// the eye moves over the shot's move (m, on the plane), the field of view (radians), how far round
-/// what it looks at its subject reaches (m: a sightline is judged to it, not through it), and who
-/// stands in it (the program's own number for them: `NO_CAST`, nobody).
+/// what it looks at its subject reaches (m: a sightline is judged to it, not through it), who
+/// stands in it (the program's own number for them: `NO_CAST`, nobody), the hour of the program's
+/// day it's taken at (0 to 24: a program with a day sets its sun by it), and its weather.
 pub struct Shot: Copy {
     pub name: Text,
     pub eye: vec3,
@@ -29,6 +30,16 @@ pub struct Shot: Copy {
     pub fovy: f32 = 0.82,
     pub reach: f32 = 3.0,
     pub cast: u32 = NO_CAST,
+    pub time: f32 = 12.0,
+    pub weather: Skies = Skies::Fair,
+}
+
+/// A shot's weather: fair (the sun out, the program's clouds), overcast (the sky covered, no sun
+/// reaching the ground), or mist (the sun low through it, the air thick over the ground).
+pub enum Skies: Copy + Eq + Fieldless {
+    Fair,
+    Overcast,
+    Mist,
 }
 
 /// Where shot `s`'s eye is and what it looks at, `t` seconds after it was chosen (it holds still

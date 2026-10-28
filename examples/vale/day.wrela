@@ -1,0 +1,63 @@
+// The vale's day: where the sun is at an hour of it, and the sky, the air and the light in a
+// shot's weather (`engine::shot::Skies`). The vale lies at 52° north in late August
+// (**proposed**), its head (+z) to the north and +x to the east: by the sun's own time it rises a
+// little north of east at about 5:10, stands 48° high in the south at noon, and sets a little north
+// of west at about 18:50.
+
+use engine::air::{Air, hazy}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::shot::Skies
+use engine::sky::{Gap, Weather}
+use std::math::PI
+
+/// The vale's latitude, and the sun's declination on its day (degrees).
+pub const LATITUDE: f32 = 52.0
+pub const DECLINATION: f32 = 10.0
+
+/// Toward the sun at `hour` (0 to 24, the sun's own time: noon is 12), normalized: x east, y up,
+/// z north.
+pub fn sun_toward(hour: f32) -> vec3 {
+    let phi = LATITUDE * PI / 180.0
+    let delta = DECLINATION * PI / 180.0
+    let h = (hour - 12.0) * PI / 12.0
+    let up = sin(phi) * sin(delta) + cos(phi) * cos(delta) * cos(h)
+    let alt = asin(clamp(up, -1.0, 1.0))
+    let c = clamp((sin(delta) - up * sin(phi)) / max(cos(alt) * cos(phi), 1.0e-6), -1.0, 1.0)
+    let az = if h < 0.0 { acos(c) } else { 2.0 * PI - acos(c) }
+    normalize(vec3(cos(alt) * sin(az), up, cos(alt) * cos(az)))
+}
+
+/// How thick the mist is at the world's y = 0 (per km) and how fast it thins up (its scale height,
+/// km), in a misty shot (**proposed**: the floor's grown land's, thinner and lower): over the
+/// vale's floor most of it, over its crests none.
+const MIST: f32 = 1.2
+const MIST_HEIGHT: f32 = 0.03
+
+/// The air at `hour` in `skies`, from an eye at height `eye` (m): the floor's haze, and in a misty
+/// shot its mist lying over the vale's floor.
+pub fn air_at(hour: f32, skies: Skies, eye: f32) -> Air {
+    let a = hazy(sun_toward(hour), SUN_TOP, eye: eye)
+    if skies == Skies::Mist { Air { mist: MIST, mist_height: MIST_HEIGHT, ..a } } else { a }
+}
+
+/// The light at `hour` in `skies` through `air`: the sun's (none under an overcast sky: the sky's
+/// light and the probes' alone).
+pub fn light_at(air: Air, skies: Skies) -> Light {
+    let l = sunlight(air)
+    if skies == Skies::Overcast { Light { sun_colour: vec3(0.0), ..l } } else { l }
+}
+
+/// The weather the sky is cooked with in `skies`: the floor's clouds (`clouds::weather`) fair; the
+/// sky covered, no gap toward the sun, overcast; a thin cover in mist.
+pub fn weather_of(skies: Skies) -> Weather {
+    let w = clouds::weather::weather()
+    match skies {
+        Skies::Fair => w,
+        Skies::Overcast => Weather {
+            fair: 1.0,
+            gap: Gap { a: vec2(0.0), b: vec2(0.0), radius: 0.0 },
+            ..w,
+        },
+        Skies::Mist => Weather { fair: 0.15, ..w },
+    }
+}

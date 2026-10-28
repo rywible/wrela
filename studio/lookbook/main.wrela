@@ -41,8 +41,8 @@
 // `quality.json`; `--controls` adds the instrument's negative controls (`controls.json`).
 
 use shots::{
-    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, keys,
-    lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
+    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, chosen,
+    keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
 use quality::{
     CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, measure, measured_json, row,
@@ -147,12 +147,7 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
         }
         take n
     }
-    var picks = o.picks.clone()
-    if picks.is_empty() {
-        for i in 0..shots.len() {
-            picks.push(i)
-        }
-    }
+    let picks = chosen(o, shots)
     for i in picks {
         if i >= shots.len() {
             return Err(ToolError::new(f"no shot {i}: the {view} view has {shots.len()}"))
@@ -216,12 +211,7 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
 /// too, as `controls.json` (docs/lookdev.md): on `CONTROL_SHOT`, and the detail removal on
 /// `DETAIL_SHOT`.
 fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(), ToolError> {
-    var picks = o.picks.clone()
-    if picks.is_empty() {
-        for i in 0..shots.len() {
-            picks.push(i)
-        }
-    }
+    let picks = chosen(o, shots)
     let out = o.out.as_str()
     // Shot `i`'s run (`what` names its files after the shot's), with the blurred play's measures
     // if `blurs`, changed as `c` says.

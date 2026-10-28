@@ -1,14 +1,18 @@
 // The vale's history: its forest grown by `land::grow` on its land as its water left it, from the
 // floor's species (`trees::species`, the old wood's habits), as the floor's grown land's is
 // (`land::grow::simulate_given`), from the soil its rock and its shape made (`landscape`) and as
-// wet as its water makes it; with no people, and a herd of deer that came three centuries before
-// the present, which grazes the meadow at the mere's head and drinks at its shore. Grown at the bake's grain (2 m cells, 2-year steps) over the
+// wet as its water makes it; with no people, a herd of deer that came three centuries before the
+// present, which grazes the meadow at the mere's head and drinks at its shore, and a gale six years
+// before the present that threw two of the crests' exposed stands, east and west of the mere. Grown at the bake's grain (2 m cells, 2-year steps) over the
 // square's tiles, baked a file a tile with the far layer (`land::bake`), and cached by the build
 // while nothing it reads changes.
 
 use land::bake::{bake, unbake}
 use land::grow::{BAKE, Given, Grain, Grid, History, Land, NONE, Start, simulate_given}
-use land::place::{Character, Herd, Keeper, Kind, Map, Opening, Region, Route, RouteKind, tile_of}
+use land::place::{
+    Character, Event, EventKind, Herd, Keeper, Kind, Map, Opening, Region, Route, RouteKind,
+    tile_of,
+}
 use land::soil::SoilKind
 use landscape::{CELLS, GRID, GROUND, HI, LO, VALE}
 use std::io::{Shipped, ship}
@@ -92,12 +96,45 @@ pub fn trail() -> Route {
     }
 }
 
+/// The gale six years before the present: where it threw the crests' stands (the east one's and the
+/// west one's middles: from their gaps the vale shows wide, the lookbook's dusk shots), how far it
+/// reached, and how it blew (**proposed**).
+pub const GALE_YEAR: i32 = PRESENT - 6
+pub const EAST_GAP = vec2(330.0, 236.0)
+pub const WEST_GAP = vec2(-300.0, 24.0)
+const GAP_REACH: f32 = 90.0
+const GALE = vec2(0.75, -0.66)
+
+/// The gale's two throws, and the gaps they opened, which the deer keep browsed while they're
+/// recent (`land::place::RECENT`).
+fn gale() -> (Vec<Event>, Vec<Opening>) {
+    var events: Vec<Event> = Vec::new()
+    var openings: Vec<Opening> = Vec::new()
+    for (at, name) in [
+        (EAST_GAP, "the east crest's windthrow"),
+        (WEST_GAP, "the west crest's windthrow"),
+    ] {
+        events.push(
+            Event {
+                year: GALE_YEAR,
+                kind: EventKind::Storm { at, reach: GAP_REACH, dir: GALE, share: 0.95 },
+                name,
+            },
+        )
+        openings.push(
+            Opening { at, radius: GAP_REACH, keeper: Keeper::Event { year: GALE_YEAR }, name },
+        )
+    }
+    (events, openings)
+}
+
 /// When the herd came (300 years before the present) and how many trips it makes a year.
 const HERD_CAME: i32 = 300
 const HERD_TRIPS: u32 = 12
 
-/// The vale's map, as the history reads it: the square; its one opening (the meadow) and its herd's
-/// trail; no sites, events or kept trees; one wood all over (`WOOD`); its mere; and its herd.
+/// The vale's map, as the history reads it: the square; its openings (the meadow, the gale's gaps),
+/// its herd's trail and the gale; no sites or kept trees; one wood all over (`WOOD`); its mere; and
+/// its herd.
 pub fn vale_map() -> Map {
     let middle = 0.5 * (LO + HI)
     var regions: Vec<Region> = Vec::new()
@@ -109,8 +146,12 @@ pub fn vale_map() -> Map {
             character: Character { mix: WOOD },
         },
     )
+    let (events, gaps) = gale()
     var openings: Vec<Opening> = Vec::new()
     openings.push(meadow())
+    for g in gaps {
+        openings.push(g)
+    }
     var routes: Vec<Route> = Vec::new()
     routes.push(trail())
     Map {
@@ -123,7 +164,7 @@ pub fn vale_map() -> Map {
         openings,
         routes,
         water: land::place::Water { meres: [mere(), vec4(0.0)] },
-        events: Vec::new(),
+        events,
         wind: vec2(0.75, -0.66),
         kept: Vec::new(),
         regions,

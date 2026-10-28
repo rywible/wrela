@@ -8,7 +8,8 @@ use engine::distance::Solids
 use engine::fog::FogField
 use engine::frame::{Cooks, Effects, Scene, Targets}
 use engine::grass::{Blooms, GrassLook}
-use engine::light::{Light, SUN_TOP, sunlight}
+use engine::light::Light
+use engine::shot::Skies
 use engine::lit::Lighting
 use engine::memory::{Share, Usage}
 use engine::particles::Emits
@@ -19,7 +20,6 @@ use engine::sky::Weather
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::Placed
 use engine::view::Camera
-use engine::air::{Air, hazy}
 use history::{BAKED, PRESENT, tiles_hi, tiles_lo}
 use land::bake::{Decisions, Far, WEAR_N, WET_N}
 use land::grow::Tree
@@ -31,19 +31,6 @@ use landscape::{GROUND, height_at}
 use std::gpu::{GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Sampler, Texture, buffer_of}
 use std::io::Pending
 
-/// Toward the sun (**proposed**: the floor's, low in the south-west).
-pub const SUN = vec3(0.900, 0.407, -0.159)
-
-/// The vale's air: the floor's haze over its land, from the eye's height at its middle.
-pub fn air_of() -> Air {
-    hazy(SUN, SUN_TOP, eye: height_at(vec2(0.0)) + 2.0)
-}
-
-/// The sun's light through the air.
-pub fn sun_light() -> Light {
-    sunlight(air_of())
-}
-
 /// The wind at `time` (**proposed**: the floor's).
 pub fn wind(time: f32) -> Wind {
     Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
@@ -53,7 +40,9 @@ pub fn wind(time: f32) -> Wind {
 @fuel(2 ** 32)
 const ROUTES: Vec<land::place::Route> = history::vale_map().routes
 
-/// What the vale is drawn from: its bake, every tile of it; none grown where it's wanted.
+/// What the vale is drawn from: its bake, every tile of its square; a tile past it is grown where
+/// it's wanted, as an empty one (nothing stands past the square), so what waits on the tiles round
+/// the eye (its readiness, the probes' occluders) doesn't wait on one that would never come.
 pub struct ValeTiles: Copy + Eq {
     pub bake: u32,
 }
@@ -71,10 +60,11 @@ impl Tiles for ValeTiles {
     }
 
     fn wild(self, t: vec2i) -> bool {
-        false
+        let (lo, hi) = (tiles_lo(), tiles_hi())
+        t.x < lo.x || t.y < lo.y || t.x > hi.x || t.y > hi.y
     }
 
-    /// No tile is grown where it's wanted: past the bake, nothing stands.
+    /// A tile past the bake: nothing stands there.
     fn grow(self, t: vec2i, own: take Vec<Tree>) -> Decisions {
         Decisions {
             tile: t,
@@ -118,10 +108,11 @@ impl Tiles for ValeTiles {
 pub const TILES = ValeTiles { bake: 0 }
 
 /// The vale's stage: its landscape, and nothing else (the grass's footprints none: one off the
-/// map, as the grass reads a buffer of them).
+/// map, as the grass reads a buffer of them); and the shot's weather its sky's cooked with.
 pub struct Stage {
     pub land: Landscape<ValeTiles>,
     footprints: GpuBuffer<vec4>,
+    pub skies: Skies = Skies::Fair,
 }
 
 /// The vale's stage at load: its kinds the floor's species' (`trees::kinds`), its water laid
@@ -157,7 +148,7 @@ impl Scene for Stage {
     }
 
     fn weather(self) -> Weather {
-        clouds::weather::weather()
+        day::weather_of(self.skies)
     }
 
     fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
