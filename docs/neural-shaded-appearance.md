@@ -6476,3 +6476,172 @@ and [source material](../engine/plant.wrela) apply; no imported model weights.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-surface-blocks-v1.
 Manifest SHA-256: `b8025da32e1fed8d50bc87c5e1d25d44e8098601de3eb18e0e189837d29c39cc`.
+
+## Hardware block rectangles: exact visibility, expensive fragment traversal
+
+**Decision: retire block rectangles that decode every original surface in each
+fragment.** Full-frame and corrected streamed variants preserve the source image
+exactly. Eight-row streaming reduces requested live allocation by 22.40% for the
+field path, but complete GPU cost grows 14.37×. Reducing submitted primitives
+does not establish a rendering advantage when fragment work increases this much.
+
+The initial seven-method comparison took **9.94
+minutes**. Its full-frame proxy was valid, but streamed variants had a coordinate
+defect. The corrected comparison took **12.30
+minutes**; decision **13.70 minutes**. One repair counted against
+the two-follow-up allowance; no second optimization, training or new reference.
+The clock conservatively starts at parent f973d59367f59a452b518a3d16d8a67bb364cda5,
+before design/code inspection. Solo Pop!_OS AMD throughout.
+
+### What this tests
+
+Reuse the sealed 2,048 source blocks, each containing 16 or 17 of the original
+26,560 cards and 7,392 wood triangles. Six outward-quantized bounds plus span
+metadata occupy 32,768 bytes; original surface IDs occupy 67,904 bytes. Total
+static block data is **100,672 bytes**, unchanged from the prior experiment.
+There is no bitmap or workgroup shared visibility cache.
+
+A vertex shader projects each conservative block bound into one hardware
+rectangle. Its fragment decoder reconstructs the block's original cards/wood,
+tests their snapped coverage, samples the same authored cutouts, and selects
+nearest quantized depth/source identity. One atomic minimum combines the block
+winner with other blocks. The established resolve shades that exact source hit.
+
+Thus hardware rasterizes the rectangle, while its decoder still performs
+software surface intersection. This is a test of amortizing submission through
+hardware proxies, not a claim that hardware rasterizes compact decoded internal
+surfaces. It retains all original surface IDs and source procedural geometry.
+
+The full-frame path uses the existing 256×256 R8 attachment and packed
+depth/identity buffer. The streamed path reuses a 256×32 attachment and buffer
+for each of eight output bands, shading/resolving each band before reuse.
+It retains 4×4 source samples per output pixel. All block projection/culling,
+clears, passes, intersections, wood, response and resolve are charged.
+
+Controls retain native cached source, packed source with exact response cache,
+packed source with the full field, and the unchanged explicit optical fit.
+They have identical useful authored information. There is no teacher view,
+reference-derived routing, material fitting or new visibility truth. Static
+source compilation is inherited; dynamic source edits/rebuild remain unmeasured.
+
+### Repair the streamed coordinate convention
+
+The initial fragment decoder projected card corners using its band-local Camera,
+then interpreted those coordinates as full-frame sample positions. Hardware
+rectangle placement and scratch addressing were band-local as intended; this
+mixed convention caused both initial streamed candidates to fail every gate.
+
+The single follow-up changes only decoded card corners to Camera band=0,
+rows=64 before intersection with global sample coordinates. The actual hardware
+rectangle and scratch remain band-local. Corrected field/cache outputs now match
+all eight full-frame packed-source images byte-for-byte. The initial full-frame
+path already matches. This existing end-to-end parity check isolates the repair;
+no new reference infrastructure or broad unchanged audit was needed.
+
+### Joint shaded quality, runtime and memory
+
+Same static 64×64 asset, two public views, four lights and three backgrounds,
+completed AA64 truth, exposure 0.62 display transform, LDR-FLIP at 67 pixels/degree,
+and LPIPS v0.1. Per-case gates use ≤0.25 dB PSNR loss and ≤1.05× FLIP/LPIPS,
+with the established 1e-4 ratio floor, against packed exact-cache source.
+Counts agree against native source. These are 24 cases of one asset.
+
+| Method | Shaded gates /24 | PSNR dB | FLIP | LPIPS | Worst boundary p99 px |
+|---|---:|---:|---:|---:|---:|
+| Native cached source | 24 | 40.295971 | 0.01300193 | 0.00249104 | 2.000 |
+| Packed source + exact cache | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Packed source + full field | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Frozen fitted appearance | 8 | 40.127682 | 0.01234846 | 0.00188937 | 1.414 |
+| Full-frame field proxy | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Eight-row field proxy, corrected | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Eight-row cache proxy, corrected | 24 | 40.295900 | 0.01300320 | 0.00249059 | 2.000 |
+| Eight-row field, wrong coordinates | 0 | 20.518885 | 0.18646816 | 0.27045276 | 7.000 |
+| Eight-row cache, wrong coordinates | 0 | 20.518885 | 0.18646816 | 0.27045276 | 7.000 |
+
+All **24 valid candidate RGBA captures** match packed source exactly, including
+alpha. Mean coverage MAE against AA64 is 0.0100595; worst precision/recall
+0.983065/0.994007 and worst boundary p99 2 pixels. This preserves the source's
+remaining sampling error, not the G3 motion/silhouette target. Frozen fit remains
+8/24 despite favorable aggregate scores. Wrong-coordinate results are retained
+as implementation failures and are not evidence against proxy representation.
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0/compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Sequential timing uses 60 warmup
++ 240 frames; allocation/completion uses 60 + 300. No CPU scoring overlaps GPU
+timing. Full spans include source placement/decode, hardware rectangles,
+fragment intersection/depth ordering, all wood, material evaluation, band
+updates/resolve and final composite. Frozen optical CPU sorting is included.
+Static compilation/startup are outside steady frame timing. Completion includes
+driver/browser notification, not input-to-photon latency.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | CPU p99 ms | CPU-to-completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Native cached source | 0.28536 / 0.40424 | 1.08554 / 1.09087 | 0.66330 | 5.52002 / 5.75838 |
+| Packed source + exact cache | 0.35888 / 0.46288 | 1.19083 / 1.24534 | 0.75330 | 4.82081 / 6.19727 |
+| Packed source + full field | 0.64120 / 0.80584 | 1.51303 / 1.57133 | 0.68305 | 5.26565 / 5.54102 |
+| Frozen fitted appearance | 0.06788 / 0.07184 | 0.23089 / 0.26906 | 1.01720 | 4.94484 / 5.05815 |
+| Full-frame field proxy | 7.37296 / 7.47184 | 8.27956 / 8.38152 | 0.71500 | 10.95270 / 11.41994 |
+| Eight-row field proxy, corrected | 9.21288 / 9.27796 | 10.19057 / 10.32298 | 1.95805 | 14.41578 / 14.64972 |
+| Eight-row cache proxy, corrected | 8.04348 / 8.13984 | 9.12703 / 9.21808 | 1.94805 | 13.09597 / 13.33809 |
+| Eight-row field, wrong coordinates | 8.68632 / 8.76200 | 9.68393 / 9.74232 | 1.95610 | 13.53564 / 13.69116 |
+| Eight-row cache, wrong coordinates | 7.89580 / 8.00340 | 8.88698 / 8.97295 | 1.98025 | 13.07306 / 13.54400 |
+
+The correct full-frame field proxy costs 7.37296 ms versus matching hardware
+source 0.64120 ms. Corrected banding costs 9.21288 ms; cached banding 8.04348 ms
+versus matching cache 0.35888 ms. Paced tails fail as well. These single runs
+support rejection of a large cost gap, not a paired or sustained speed claim.
+
+| Method | Engine appearance + scratch B | All requested live / peak B | DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|---:|---:|
+| Native cached source | 1,466,060 | 1,875,660 / 1,892,044 | 17,670,144 / 9,953,280 | 483,973,120 |
+| Packed source + exact cache | 633,456 | 1,043,056 / 1,059,440 | 17,670,144 / 10,051,584 | 487,308,288 |
+| Packed source + full field | 420,984 | 830,584 / 846,968 | 17,420,288 / 10,035,200 | 485,931,008 |
+| Frozen fitted appearance | 316,532 | 726,132 / 742,516 | 17,649,664 / 9,740,288 | 470,172,672 |
+| Full-frame field proxy | 521,652 | 931,252 / 947,636 | 17,690,624 / 10,231,808 | 488,358,912 |
+| Eight-row field proxy, corrected | 234,932 | 644,532 / 660,916 | 17,424,384 / 10,248,192 | 491,614,208 |
+| Eight-row cache proxy, corrected | 447,404 | 857,004 / 873,388 | 17,408,000 / 10,248,192 | 494,340,096 |
+| Eight-row field, wrong coordinates | 234,932 | 644,532 / 660,916 | 17,690,624 / 10,248,192 | 493,394,944 |
+| Eight-row cache, wrong coordinates | 447,404 | 857,004 / 873,388 | 17,424,384 / 10,248,192 | 494,553,088 |
+
+Engine appearance/scratch excludes common output; all requested live/peak includes
+blocks, visibility attachment/buffer, source inputs, response caches or field
+parameters, coverage storage, dummy/fallback resources, output and host upload/
+uniform/screen allocations. The added inactive block-buffer handle costs 4 bytes
+in packed controls; native and frozen controls do not allocate it.
+
+Full-frame proxies add 100,668 live requested bytes relative to the current
+packed field control. Eight-row visibility storage saves 286,720 bytes relative
+to full-frame proxies, leaving a net saving of 186,052 bytes: 22.40% against
+field or 17.84% against cached source. No workgroup shared scratch is declared.
+
+Actual DRM resident VRAM/GTT and browser-group PSS snapshots remain whole-client
+observations, not asset-attributed physical memory or transient physical peaks.
+Overlapping UMA pools must not be summed. No 16× residency reduction or G4
+advantage is demonstrated. The lower allocation cannot compensate for 14×/22×
+complete rendering cost.
+
+### Decision, preservation and next bet
+
+Preserve all nine variants and 72 shaded captures, profiles, allocation and
+resident observations. The failed coordinate implementation and its installer
+are archived separately. All measured variants compiled/executed; valid candidate
+parity and 24 unchanged prior-control images are checked. Restored runtime is
+byte-for-byte f973d593, with no experimental module retained. No broad suite
+is repeated for unchanged code.
+
+**Next bet:** decode a genuinely smaller set of explicit coverage/depth/material
+patches per source block and rasterize those surfaces directly. Decoding must be
+shared across pixels, with decoded storage, refresh and fallback charged. Merely
+wrapping the original surface traversal in a rectangle is ruled out by this test.
+Use an equally informed conventional decoder first; a learned residual requires
+a specific rendered error and a plausible joint budget. This result does not
+reject direct hardware drawing of reduced decoded surfaces, which remains untested.
+
+G1–G7 and frozen models are unchanged/unmet. No unseen families, footprint
+8–512 scaling, dynamic edits, motion, richness or sustained latency proof.
+Existing [metric/method citations](citations.md#neural-reconstruction-instrument)
+and [source material](../engine/plant.wrela) apply.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-hardware-proxies-v1.
+Manifest SHA-256: `80a7a1340e0a475872ae8b29a0cd6a8fa0f23f401bc2d2ebf47bd97f0396fba1`.

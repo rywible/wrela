@@ -2778,3 +2778,21 @@ First assessment 14.24 minutes, decision
 23.10 minutes. No second follow-up, training or new references.
 Retire this software rasterization architecture; restore parent runtime.
 [Full quality/runtime/memory measurements](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost).
+
+### AMD hardware block proxy retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e5; parent f973d593 plus archived variants.
+Same static 64px tree, two views × four lights × three backgrounds.
+Full-frame and corrected eight-row proxies reproduce source RGBA exactly, 24/24.
+Full-frame field GPU median 7.37296 ms / 931,252 live requested B.
+Corrected banded field 9.21288 ms / 644,532 B versus source
+0.64120 ms / 830,584 B: 22.40% fewer requested bytes, 14.37× GPU cost.
+Corrected banded cache 8.04348 ms / 857,004 B versus matched
+0.35888 ms / 1,043,056 B. Full decode/intersection/wood/order/updates/composite
+charged; actual DRM/PSS observations separate, no asset-attributed 16× claim.
+Initial band-coordinate defect and failed results preserved; repaired outputs exact.
+First corrected comparison 12.30 minutes;
+decision 13.70 minutes. One repair, no training/new references.
+Retire rectangle proxies with per-fragment source traversal; restore runtime.
+[Full quality/runtime/memory evidence](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal).

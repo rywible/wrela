@@ -18,19 +18,19 @@
 
 ## Immediate milestone
 
-[Exact surface blocks](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost)
-preserve all eight source images exactly and pass 24/24 shaded gates, but their
-software rasterization is retired after one scheduling follow-up. Balanced
-full-field blocks cost 3.914 ms / 619,968 requested live bytes versus matching
-hardware source 0.64852 ms / 830,580 bytes: 25.36% fewer bytes, 6.04× GPU cost.
-Cached blocks cost 3.71784 ms versus matched cache 0.34576 ms. Actual whole-client
-resident observations do not demonstrate 16× savings. Frozen fit remains 8/24.
-No joint G4 advantage; no training or new references; runtime restored.
+[Hardware block rectangles](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal)
+are retired: exact full-frame/corrected banded RGBA, but per-fragment original-
+surface traversal remains too expensive. Corrected eight-row field rendering
+costs 9.21288 ms / 644,532 requested live bytes versus matching conventional
+0.64120 ms / 830,584 bytes. A 22.40% allocation saving costs 14.37× GPU time.
+Cache variant costs 8.04348 ms versus 0.35888 ms. Whole-client residency does
+not establish 16× savings. Initial streamed coordinate defect preserved/repaired;
+frozen fit remains 8/24. No training or new references; runtime restored.
 
-Next retain hardware rasterization and decode compact block-level coverage,
-depth and material identity into a few local surface proxies. First test an
-equally informed conventional decoder; train only for a demonstrated rendered
-error after complete runtime and memory become plausible.
+Next decode a genuinely smaller set of explicit coverage/depth/material patches
+and rasterize those surfaces directly. Share decoding across pixels and count
+decoded storage/refresh/fallback. Hardware rectangles around original per-fragment
+traversal do not suffice. Direct drawing of reduced surfaces remains untested.
 
 ## Evidence recorded so far
 
@@ -2763,3 +2763,14 @@ match source RGBA exactly. Balanced scheduling reduces 13.25 to 3.91 ms but rema
 per-surface rasterization; restore runtime exactly. G1–G7 unchanged/unmet.
 [Joint evidence and next bet](neural-shaded-appearance.md#exact-surface-blocks-preserved-quality-excessive-software-rasterization-cost).
 Manifest: `b8025da32e1fed8d50bc87c5e1d25d44e8098601de3eb18e0e189837d29c39cc`.
+
+### Hardware block rectangles checkpoint (2026-10-28)
+
+Initial comparison 9.94 minutes; corrected comparison
+12.30 minutes; decision 13.70
+minutes. One coordinate repair, no second optimization, training or new references.
+Nine variants/72 captures preserved. Correct paths match source pixels exactly,
+but full-frame costs 7.37 ms and streamed field 9.21 ms versus source 0.64 ms.
+Retire per-fragment surface traversal; runtime restored; G1–G7 unchanged/unmet.
+[Joint evidence and next bet](neural-shaded-appearance.md#hardware-block-rectangles-exact-visibility-expensive-fragment-traversal).
+Manifest: `80a7a1340e0a475872ae8b29a0cd6a8fa0f23f401bc2d2ebf47bd97f0396fba1`.
