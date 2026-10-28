@@ -18,24 +18,25 @@
 
 ## Immediate milestone
 
-The [geometric-opacity comparison](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality)
-rejects the next small-head approach too. Equal-input/equal-byte polynomial and
-ReLU4 predictors preserve exact coverage invariance across lighting and add only
-128requested bytes, with no extra image target. But both fall from frozen8/24 to
-5/24 shaded cases and zero/12 on the view excluded from fitting. No model promoted.
+The [authored-response comparison](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs) retains
+an exact conventional alternative: compute the authored44clump field after source
+visibility, removing212,472requestedGPUbytes and matching all8RGBA images.
+Its full-frame saturated median0.608ms exceeds fastsource0.280ms; actual16x
+resident savings remain unproved. Optional FIELD_RESPONSE defaultsfalse.
 
-Complete neural GPU saturated median0.06976ms versus frozen0.06820ms; requested
-engine bytes316,676 versus source1,466,076, only4.630x and no16x actual resident
-saving. Two1200-step coverage fits, no new shaded references. One native wood
-sample mismatch was resolved before fitting; failed precheck preserved.
-First assessment327.1s, decision605.9s; no follow-up tuning was warranted.
-Prior runtime702ddab3/54aaf879 restored exactly; no new default allocations.
+Two follow-ups rejected: per-pixel reuse made every matched path slower; equal
+12,320byte polynomial/neural local codecs pass only7/24and5/24(neural4/24against
+forwardsource), despite exact geometry/coverage. No learned model promoted.
+No new shaded references; one polynomial solve perclump and2400neuralsteps.
+Retained field and frozen defaults pass image/allocation parity, format/type;
+no new default allocation, all failed code/models/results archived.
 
-Next: change local support/ordered visibility at a materially smaller payload,
-using source ownership and sampling knowledge equally for conventional and learned
-alternatives. Judge shaded images with lighting-invariant coverage as a constraint.
-Do not repeat scalar-opacity heads, coverage-only proxy optimization or full-image
-postfilters. G1–G7 remain unchanged and unmet.
+VisibilityID/depth alone is524,288requested bytes,84.9% of the exact-field path's
+remaining617,580enginebytes. Next: reduce full-frame multisample visibility
+storage while preserving source support and avoiding repeated geometry work.
+A source-aware tile-local visibility experiment must beat the stronger conventional
+controls now available. More response/material fitting does not solve this memory
+structure. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2437,3 +2438,18 @@ Prior runtime restored, all failures preserved. Next support/visibility change
 must reduce payload and be judged by shaded images with equally informed controls.
 [Report](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality).
 Manifest SHA-256: `1e31da11ddbce856e8f7ffd2a0cea0e6c134af52c70f7e2255e2c0befb1bf081`.
+
+
+### Exact authored response is retained; local codecs are rejected
+
+Full field24/24/all8RGBAexact; removes212,472requestedGPUbytes versus hierarchy.
+All-live1,027,180 vs fastsource1,875,660; saturated0.60796 vs0.28000ms.
+Reuse worsens fullfield0.79568ms. Equal12,320byte polynomial/neural codecs7/24
+and5/24againstcurrentcache(neural4/24forward), so neither promoted.
+VisibilityID/depth524,288bytes dominates84.9% of remainingenginebytes.
+Retain optional exact field, defaultsunchanged; all failures archived.
+Native retainedfield/default images+allocations unchanged,format/typepass;
+all26560codec predictions independently verified. Two followups,2400steps,
+no new shaded truth. Nextvisibility-storagearchitecture; G1–G7unmet.
+[Report](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs).
+Manifest SHA-256: `392362f94b0c798d26e7b36f9d21372973c7ef80ad4a3b65d06549caa1b573e4`.

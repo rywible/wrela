@@ -4,6 +4,9 @@ use engine::plant::{Card, Clump, Plant, card_at, limb_ring_axis, RINGS}
 use engine::noise::{direction, rand, pick}
 use std::gpu::{GlobalId, GpuBuffer, Oct32, Slots, Unorm8x4, buffer, dispatch}
 
+// Optional conventional control: evaluate the authored crown after visibility.
+// Saves per-card response storage at measured extra cost; disabled by default.
+pub const FIELD_RESPONSE: bool = false
 pub const ENABLED: bool = false
 pub const ROWS: u32 = 64
 pub const CULL: bool = false
@@ -98,6 +101,7 @@ pub fn nodes(plant: Plant, n: u32) -> GpuBuffer<vec4> {
 }
 
 pub fn response(plant: Plant, n: u32) -> GpuBuffer<vec2u> {
+    if FIELD_RESPONSE { return buffer(1) }
     var response = buffer(n)
     dispatch(cook_response.bind(plant, n, mut response), over: n)
     take response
@@ -140,10 +144,10 @@ pub fn placed(index: u32, which: u32, nodes: [vec4]) -> Card {
 
 pub fn shaded(index: u32, nodes: [vec4], response: [vec2u], position_needed: bool) -> Card {
     let which = owner(index, nodes)
-    let card = if position_needed { placed(index, which, nodes) } else {
+    let card = if position_needed || FIELD_RESPONSE { placed(index, which, nodes) } else {
         attributes(index, which, nodes)
     }
-    let r = response[index]
+    let r = if FIELD_RESPONSE { field_response(card.centre, nodes) } else { response[index] }
     Card { normal: Oct32 { bits: r.x }, depth: bitcast_f32(r.y), ..card }
 }
 
@@ -178,4 +182,29 @@ pub fn outside_wood(
     rows: u32,
 ) -> bool {
     outside(nodes[1 + u32(nodes[0].x) * 2 + which], mid, half, up, band, rows)
+}
+
+// Same clump order and stabilized exponential union as Plant::crown.
+// Uses the already-resident authored nodes, not a learned approximation.
+fn field_response(p: vec3, nodes: [vec4]) -> vec2u {
+    let k = nodes[0].w
+    var nearest = clump(0, nodes).distance(p)
+    var sum = 0.0
+    var gradient = vec3(0.0)
+    for i in 0..u32(nodes[0].x) {
+        let c = clump(i, nodes)
+        let d = c.distance(p)
+        if d < nearest {
+            let scale = exp(min(k * (d - nearest), 0.0))
+            sum *= scale
+            gradient *= scale
+            nearest = d
+        }
+        let w = exp(min(k * (nearest - d), 1.0e-4))
+        sum += w
+        gradient += c.normal(p) * w
+    }
+    let s = max(sum, 0.5)
+    let distance = nearest - log(s) / k
+    vec2u(Oct32::encode(normalize(gradient / s)).bits, bitcast_u32(max(-distance, 0.0)))
 }

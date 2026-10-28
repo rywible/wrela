@@ -3039,3 +3039,213 @@ short of the full G4 family/scale/lighting/motion suite. G1–G7 unchanged and u
 
 Evidence on Pop!_OS: build/neural-evidence/g4-geometric-coverage-v1.
 Manifest SHA-256: `1e31da11ddbce856e8f7ffd2a0cea0e6c134af52c70f7e2255e2c0befb1bf081`.
+
+
+## Authored response after visibility: exact reconstruction beats the tested codecs
+
+**Decision: retain exact authored response as an optional conventional control;
+retire owner-only response, per-pixel reuse and the tested local codecs for G4.**
+No learned model is promoted. The full authored field reproduces every measured
+source-cache RGBA value exactly while removing 212,472 requested GPU bytes from
+the hierarchy path. It costs 0.608ms saturated median versus 0.326ms with cached
+response and 0.280ms for the fastest stored-source control.
+
+This exposes the next architecture constraint: full-frame visibility IDs and
+depth consume 524,288 bytes, 84.9% of the exact-field path's remaining 617,580
+requested engine representation/scratch bytes. A smaller response model does
+not address that dominant allocation. Physical residency reduction is not
+established by these requested-byte figures.
+
+Solo Pop!_OS block began 2026-10-28T00:39:35.019278+00:00. Initial four-way comparison
+completed 2026-10-28T00:41:17.212246+00:00 (102.2s).
+Decision 2026-10-28T00:55:25.068812+00:00 (950.0s), within two hours.
+Exactly two follow-up experiments. No new shaded references. One polynomial
+solve per clump and 2,400 neural fitting steps followed the observed owner-only
+shaded failure; the frozen best optical payload remains unchanged.
+
+### Exact source support and a fair conventional alternative
+
+The [source hierarchy](../studio/appearance/runtime/source_hierarchy.wrela)
+already reconstructs the exact 26,560 source cards from 44 authored clumps,
+source ownership/ranges, deterministic sampling and seeds. Its response cache
+stores Oct32 normal plus float32 depth per card: 212,480 bytes.
+
+Those values come from the same authored [Plant::crown](../engine/plant.wrela)
+field. The new optional path evaluates that field only after visibility identifies
+a source surface. It uses the existing node positions, radii, squash and blend,
+preserving clump order and the stabilized exponential union. It then applies the
+same Oct32 packing and downstream material shading. The response cache becomes
+an 8-byte inactive buffer. Exact card geometry, leaf masks, wood and sixteen-sample
+visibility remain unchanged.
+
+The initial owner-only control uses just the owning clump's normal and depth.
+It keeps exact silhouettes but falls to30.008dB and0/24quality cases. The failure
+identifies missing interactions between clumps as a real shaded-quality problem;
+it is not evidence to tune coverage or material averages blindly.
+
+All alternatives receive the same useful authored source, ownership, sampling,
+shading and visibility information. The conventional path is allowed to exploit
+the fields fully. The fastest comparator remains the existing compact coverage
+cache with stored source cards; the exact hierarchy is another memory/runtime
+control, not an artificially weakened baseline.
+
+### Two targeted experiments
+
+First, reuse an unresolved leaf's shaded result when its surface ID repeats
+among a pixel's sixteen samples. A small private list holds up to16IDs and16RGBA
+values; sample accumulation order remains unchanged. Wood and resolved leaf
+tissue are not reused because they vary with sample position.
+
+Apply the same optimization to stored-source, cached-hierarchy and full-field
+paths. Every image remains exact, but saturated medians worsen from0.280 to0.347ms,
+0.326 to0.385ms and0.608 to0.796ms respectively. The source declares320private bytes
+per output invocation; actual register use/spill is not separately attributable.
+Reuse is rejected on the measured complete costs, without asserting a hardware
+cause.
+
+Second, compile the full source response into owner-conditioned local functions.
+Both see normalized owner-local position, use the same analytic owner normal/depth
+as a base, and fit the same residual labels from all26,560canonical source cards.
+No camera, light or reference image is a runtime input; no rendered-view score
+selects weights. Both have140half parameters per clump,6,160total,12,320bytes:
+
+- Conventional degree4 polynomial:35monomials times4residual channels, fitted by
+  per-clump least squares with rcond1e-5 and then packed tofloat16.
+- Neural function:3inputs,17ReLU hidden units,4outputs;17inputvec4s,
+  17outputvec4s and1biasvec4. Fixed2,400Adamsteps with half-quantized forward
+  values and straight-through gradients, balanced64samples per clump/step,
+  deterministic seed9413, learning rate0.004decaying to0.0004.
+
+The first three residual channels correct the owner normal before normalization
+and Oct32 packing; the fourth corrects depth in owner-radius units, clamped
+nonnegative. Training labels are intrinsic source normal/depth, justified here
+by the measured owner-only30dB failure. They are a fitting proxy; native shaded
+quality is the acceptance test. The same canonical source labels are available
+to both functions and the exact conventional method.
+
+Polynomial source-residual MSE is0.00440468, neural0.00471357. Neither preserves
+enough rendered quality:7/24 and5/24 against the current cache. The neural model
+passes only4/24 against the archived forward-source comparator. Model storage
+alone is17.25x smaller than the per-card response cache, but that is not G4's
+whole-residency compression and the quality gate fails.
+
+### Rendered quality and silhouettes
+
+Reuse the existing two views, four analytic lights and three backgrounds at64x64,
+AA64shaded truth, exposure0.62, sRGB, LDR FLIP67pixels/degree and AlexNet LPIPSv0.1.
+Sources/preprocessing remain recorded in [citations](citations.md).
+Per-case tolerances stay PSNR loss<=0.25dB and FLIP/LPIPS<=1.05x, denominator floor1e-4.
+
+| Candidate | Mean PSNR dB | FLIP | LPIPS | Cases versus current source cache /24 |
+| --- | ---: | ---: | ---: | ---: |
+| Stored source/cache | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Source hierarchy + response cache | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Full authored field | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Owner clump only | 30.007693 | 0.09083346 | 0.02299403 | 0 |
+| Stored source + reuse | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Hierarchy cache + reuse | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Full field + reuse | 40.295971 | 0.01300193 | 0.00249104 | 24 |
+| Local degree4 polynomial | 40.092004 | 0.01350756 | 0.00270152 | 7 |
+| Local ReLU17 network | 39.988011 | 0.01377769 | 0.00263178 | 5 |
+
+All72RGBA captures have exactly the same coverage. Mean coverage MAE0.01005954,
+softIoU0.959469, mean boundaryp99=1.707pixels, worst2pixels. Exact field and three
+reuse variants join the two cached controls in48byte-identical RGBA captures.
+Those six paths pass24/24against all three conventional comparators.
+Eight current cached-control images also match previous evidence byte for byte.
+
+The two codecs' GPU residuals match independent NumPy/Torch evaluation on every
+canonical card: maximum error1.595e-6 polynomial and1.103e-6 neural. Their failures
+are not a weight-layout or shader translation error. This is asset-specific
+compression, not unseen-asset or fullG4 validation.
+
+### Complete runtime and actual memory
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent124dd389 plus archived sources.
+All runs sequential,60warmup+240measured frames.
+
+GPU spans include source reconstruction/fetch, coverage lookup, indexed wood,
+ID/depth visibility, field/codec evaluation or response fetch, material shading,
+resolve and final compositing. CPU includes view/light updates, source setup,
+uploads and command recording. Stable source order and depth testing replace
+optical sorting. Initialization is excluded from steady timing and included in
+requested allocation peaks; dynamic edits/rebuilds remain untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to last GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Stored source/cache | 1.088/1.093 | 0.280/0.385 | 0.683 | 4.515/4.686 |
+| Source hierarchy + response cache | 1.176/1.232 | 0.326/0.443 | 0.725 | 4.228/5.183 |
+| Full authored field | 1.561/1.654 | 0.608/0.638 | 0.669 | 4.666/4.799 |
+| Owner clump only | 1.210/1.307 | 0.314/0.595 | 0.718 | 4.605/4.770 |
+| Stored source + reuse | 1.122/1.160 | 0.347/0.490 | 0.552 | 4.455/4.635 |
+| Hierarchy cache + reuse | 1.029/1.199 | 0.385/0.650 | 0.575 | 4.610/4.940 |
+| Full field + reuse | 1.343/1.489 | 0.796/0.859 | 0.606 | 5.330/6.180 |
+| Local degree4 polynomial | 1.536/1.593 | 0.608/0.745 | 0.641 | 5.466/5.691 |
+| Local ReLU17 network | 1.409/1.464 | 0.506/0.556 | 0.711 | 4.600/4.723 |
+
+Single per-variant runs do not establish paired speedups. Completion includes
+browser/driver notification, not photon latency. Timings refer to the archived
+measured sources; the retained simplified exact-field option is separately checked
+for native image/allocation parity, without claiming a newly measured timing.
+
+| Candidate | Engine persistent representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Stored source/cache | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/9,936,896 | 485,477,376 |
+| Source hierarchy + response cache | 830,052 | 1,239,652/1,256,036 | 17,403,904/9,953,280 | 488,523,776 |
+| Full authored field | 617,580 | 1,027,180/1,043,564 | 17,670,144/9,936,896 | 488,359,936 |
+| Owner clump only | 617,580 | 1,027,180/1,043,564 | 17,670,144/10,035,200 | 485,856,256 |
+| Stored source + reuse | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/9,936,896 | 486,809,600 |
+| Hierarchy cache + reuse | 830,052 | 1,239,652/1,256,036 | 17,670,144/10,035,200 | 489,681,920 |
+| Full field + reuse | 617,580 | 1,027,180/1,043,564 | 17,670,144/9,953,280 | 486,452,224 |
+| Local degree4 polynomial | 629,892 | 1,039,492/1,055,876 | 17,670,144/9,953,280 | 487,328,768 |
+| Local ReLU17 network | 629,892 | 1,039,492/1,055,876 | 17,686,528/9,936,896 | 488,655,872 |
+
+Engine bytes exclude the same409,600common output/upload/uniform/screen bytes;
+all-live includes them. Source geometry, ordering/index data, wood, cache/fallback,
+field nodes, codec weights and all visibility targets are included. Reuse has no
+new persistent buffer, but its declared320private bytes per invocation are reported
+separately; no register/spill-size claim.
+
+Full field reduces all requested live bytes45.24% versus the fast source cache,
+while costing117.13% more saturated GPU time. Physical whole-client DRM/PSS
+snapshots do not demonstrate a16x residency reduction. They are not per-asset
+physical allocation or transient peaks; do not sum UMA pools. Compiled shaders,
+driver caches and private spills are not separately attributable.
+
+The16sample visibility ID/depth targets alone consume524,288requested bytes.
+They account for84.9% of full-field engine bytes. Even removing every remaining
+response coefficient would barely change this allocation total. This is a
+requested-allocation diagnosis, not a proof about physical page compression.
+
+### Retained control, failures and next architecture bet
+
+Retain only FIELD_RESPONSE=false by default in source_hierarchy: when explicitly
+enabled with the source hierarchy, evaluate the exact authored crown after
+visibility. The owning-clump approximation, reuse arrays and both codecs are
+archived and removed. No neural model is promoted; no G4 win is claimed.
+
+The simplified retained field produces eight RGBA images and native allocation
+counts identical to the measured full-field path. The frozen default's eight
+images and allocations remain identical to prior evidence. Format/type checks
+pass; no full suite or redundant source-geometry/metric audit. Default adds zero
+allocation bytes and the frozen payload/G1–G7 file hashes are unchanged.
+
+All models, failed results, weights, fits, shader sources, builds, timings and
+actual memory snapshots are preserved. An early decision consistency check assumed
+neural counts matched across all controls; it stopped before mutation and is
+preserved. The corrected report distinguishes4/24forward from5/24cache/packed.
+
+The next architecture-level question is visibility storage: reduce or eliminate
+the full-frame multisample ID/depth images while preserving source support and
+avoiding the repeated geometry work that already defeated band reuse. Source-aware
+tile-local visibility is a candidate, not a demonstrated solution. It must be
+measured against these stronger field-aware conventional controls. More response
+or material fitting cannot address the dominant current allocation.
+
+One asset,64px,two known views/four lights does not establish G4's family, scale,
+motion or human gates. G1–G7 remain unchanged and unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-source-response-v1.
+Manifest SHA-256: `392362f94b0c798d26e7b36f9d21372973c7ef80ad4a3b65d06549caa1b573e4`.

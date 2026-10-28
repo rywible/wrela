@@ -2404,3 +2404,35 @@ shaded images with lighting invariants and equally informed conventional control
 G1–G7 unchanged/unmet.
 [Full report](neural-shaded-appearance.md#geometric-opacity-predictors-invariant-silhouettes-do-not-recover-shaded-quality).
 Evidence build/neural-evidence/g4-geometric-coverage-v1 on Pop!_OS.
+
+
+### 2026-10-28 — Authored response removes a cache; visibility dominates memory
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent124dd389 plus archived sources; solo/sequential,64px,60warmup+240measured.
+Initial comparison102.2s,
+decision950.0s; exactly two targeted experiments.
+No new shaded references; polynomial solves and2400neuralsteps only after
+owner-only actual shaded failure identified missing clump interactions.
+
+Full authored field after visibility:24/24, all8RGBA byte-identical to sourcecache;
+212,472fewer requestedGPUbytes than exact-response hierarchy. Full-field all-live
+1,027,180bytes vs fastsource1,875,660(45.24% less), saturated median0.60796ms vs
+0.28000(117.13% more). Paced95/99=1.561/1.654ms vs1.088/1.093ms.
+Physical savings unproved. Per-pixel reuse worsens full field to0.79568ms.
+
+Matched12,320byte degree4polynomial/ReLU17 codecs pass7/24and5/24againstcurrent
+cache(neural4/24againstforwardsource); cost0.60844/0.50616ms saturated.
+Neither wins. Both source labels/inputs/bytes identical; no rendered selection.
+All9variants72captures have exact samecoverage;6variants48RGBA exact.
+All26560GPUcodec outputs agree withNumPy/Torch within1.595e-6.
+
+Retain exact authored field as optional conventional control; retire owner-only,
+reuse and codecs. Retained field/default8images and native memory each match
+prior results; format/typepass, no new default allocation/full-suiteclaim.
+VisibilityID/depth524,288bytes is84.9% of remaining617,580enginebytes:
+next architecture question is visibility storage, not another response model.
+G1–G7 unchanged/unmet.
+[Full report](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs).
+Evidence build/neural-evidence/g4-source-response-v1 on Pop!_OS.
