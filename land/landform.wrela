@@ -216,7 +216,7 @@ pub fn evolve(
 /// How many times a step lets its too-steep slopes fail, and the least depth a filled pit holds
 /// to be a lake (m), not the fill's own rise.
 const FAILS: u32 = 2
-const LAKE: f32 = 0.25
+pub const LAKE: f32 = 0.25
 
 /// Slopes steeper than their rock stands at fail over `years` (threshold hillslopes, as thermal
 /// erosion does): each cell over its steepest lower neighbour by more than its rock's `standing`
@@ -284,7 +284,7 @@ pub fn collapse(
 
 /// The area that drains through each cell (m²): its own, and all that reaches it, passed down
 /// from the highest cell (the last the flood reached) to the lowest.
-fn gather(g: Grid, order: [u32], down: [u32], area: mut Vec<f32>) {
+pub fn gather(g: Grid, order: [u32], down: [u32], area: mut Vec<f32>) {
     let own = g.cell * g.cell
     for c in 0..g.cells() {
         area[c] = own

@@ -135,26 +135,24 @@ const BATCH: u32 = 64
 pub fn heights(o: Options, d: drive::Build) -> Result<Vec<f32>, ToolError> {
     let step = o.span / f32(o.size)
     let corner = o.at - vec2(o.span * 0.5)
-    var out: Vec<f32> = Vec::with_capacity(o.size * o.size)
     var calls: Vec<Step> = Vec::new()
     for j in 0..o.size {
         for c in 0..o.size / ROW {
             // A texel's middle.
             let x = corner.x + (f32(c * ROW) + 0.5) * step
             let z = corner.y + (f32(j) + 0.5) * step
-            var a: Vec<Scalar> = Vec::new()
-            a.push(Scalar::F32(x))
-            a.push(Scalar::F32(z))
-            a.push(Scalar::F32(step))
-            calls.push(Step::Call(String::from("test_heights"), take a))
-            if calls.len() == BATCH || (j + 1 == o.size && c + 1 == o.size / ROW) {
-                for row in called(d, take calls, "the heights")? {
-                    for h in row {
-                        out.push(f32(h))
-                    }
-                }
-                calls = Vec::new()
-            }
+            calls.push(
+                Step::Call(
+                    String::from("test_heights"),
+                    Vec::from([Scalar::F32(x), Scalar::F32(z), Scalar::F32(step)]),
+                ),
+            )
+        }
+    }
+    var out: Vec<f32> = Vec::with_capacity(o.size * o.size)
+    for row in batched(d, take calls, "the heights")? {
+        for h in row {
+            out.push(f32(h))
         }
     }
     Ok(out)
@@ -304,17 +302,11 @@ fn path(o: Options, ws: str, root: str) -> Result<(), ToolError> {
             timeout: 600.0,
         ).wait()?,
     )?
-    var points: Vec<Vec<f64>> = Vec::new()
     var calls: Vec<Step> = Vec::new()
     for i in 0..o.frames {
-        calls.push(Step::Call(String::from("test_path_at"), Vec::from([Scalar::I32(i32(i))])))
-        if calls.len() == BATCH || i + 1 == o.frames {
-            for p in called(d, take calls, "the path")? {
-                points.push(p.clone())
-            }
-            calls = Vec::new()
-        }
+        calls.push(call("test_path_at", [i]))
     }
+    let points = batched(d, take calls, "the path")?
     let _ = drive::close(d).wait()
     var s = String::from(
         f"{{\"scene\": \"{o.scene}\", \"fps\": 60, \"frames\": {o.frames}, \"points\": [",
@@ -366,10 +358,8 @@ fn call(name: str, given: [u32]) -> Step {
     Step::Call(String::from(name), take a)
 }
 
-/// How many shore points round each mere, and how many points a `test_course_points` call gives
-/// (the game's `COURSE_ROW`).
+/// How many shore points round each mere.
 const SHORE: u32 = 96
-const COURSE_ROW: u32 = 16
 
 /// `xs` as a JSON array of numbers, to the millimetre.
 fn numbers(xs: [f64]) -> String {
@@ -385,7 +375,9 @@ fn numbers(xs: [f64]) -> String {
 fn water(o: Options, ws: str, root: str) -> Result<(), ToolError> {
     let d = driven(o.pkg.as_str(), ws, root)?
     let count = called(d, Vec::from([call("test_water_count", [])]), "the water's count")?
-    let (slots, courses) = (u32(count[0][0]), u32(count[0][1]))
+    // How many meres the game has room for, how many courses, and how many points a
+    // `test_course_points` call gives.
+    let (slots, courses, row) = (u32(count[0][0]), u32(count[0][1]), u32(count[0][2]))
     var s = String::from(
         f"{{\"package\": \"{o.pkg}\", \"axes\": \"metres: x and z along the ground, y up, as the height and path exports give them\", \"meres\": [",
     )
@@ -426,11 +418,11 @@ fn water(o: Options, ws: str, root: str) -> Result<(), ToolError> {
         var from = 0
         while from < n {
             rows.push(call("test_course_points", [c, from]))
-            from += COURSE_ROW
+            from += row
         }
         var points: Vec<vec4> = Vec::new()
         for r in batched(d, take rows, "a course's points")? {
-            for k in 0..COURSE_ROW {
+            for k in 0..row {
                 if points.len() < n {
                     let at = k * 4
                     points.push(vec4(f32(r[at]), f32(r[at + 1]), f32(r[at + 2]), f32(r[at + 3])))

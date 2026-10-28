@@ -158,7 +158,7 @@ pub fn verdict_of(j: Judgement, still: u32) -> i32 {
 
 /// One pair's tally: how many judges prefer the still, rate the pair equal, prefer the reference;
 /// the judges' median (+1, 0, -1 each); the rubric's mean for the still and the reference, row by
-/// row; each judge's why; and each judge's sentence on each row (`notes[row]`, a line a judge).
+/// row; and each judge's sentence on each row (`notes[row]`, a line a judge).
 pub struct PairTally: Clone {
     pub pair: u32,
     pub still: u32,
@@ -167,7 +167,6 @@ pub struct PairTally: Clone {
     pub median: f32,
     pub still_means: [f32; 5],
     pub reference_means: [f32; 5],
-    pub whys: Vec<String>,
     pub notes: Vec<Vec<String>> = Vec::new(),
 }
 
@@ -253,7 +252,6 @@ pub fn tally(still: [u32], original: [u32], judges: [Judge], most: u32) -> Tally
             median: 0.0,
             still_means: [0.0; 5],
             reference_means: [0.0; 5],
-            whys: Vec::new(),
             notes: Vec::from_fn(5, |k| Vec::new()),
         }
         var marks: Vec<i32> = Vec::new()
@@ -272,7 +270,6 @@ pub fn tally(still: [u32], original: [u32], judges: [Judge], most: u32) -> Tally
                     pt.still_means[k] += s[k] / f32(JUDGES)
                     pt.reference_means[k] += r[k] / f32(JUDGES)
                 }
-                pt.whys.push(String::from(f"{j.name.as_str()}: {g.why.as_str()}"))
                 for k in 0..min(g.notes.len(), 5) {
                     pt.notes[k].push(String::from(f"{j.name.as_str()}: {g.notes[k].as_str()}"))
                 }

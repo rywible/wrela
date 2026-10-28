@@ -7,7 +7,7 @@ use engine::cull::Hzb
 use engine::distance::Solids
 use engine::fog::FogField
 use engine::frame::{Cooks, Effects, Scene, Targets}
-use engine::grass::{Blooms, GrassLook}
+use engine::grass::Blooms
 use engine::light::Light
 use engine::shot::Skies
 use engine::lit::Lighting
@@ -30,11 +30,6 @@ use land::stage::{
 use landscape::{GROUND, height_at}
 use std::gpu::{GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Sampler, Texture, buffer_of}
 use std::io::Pending
-
-/// The wind at `time` (**proposed**: the floor's).
-pub fn wind(time: f32) -> Wind {
-    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
-}
 
 /// The routes the vale's history wore (its herd's trail), for its ground's fields.
 @fuel(2 ** 32)
@@ -130,21 +125,10 @@ pub fn stage() -> Stage {
     }
 }
 
-/// The grass's look (the floor's).
-const GRASS_LOOK = GrassLook {
-    tip_young: vec3(0.095, 0.145, 0.06),
-    tip_dry: vec3(0.20, 0.185, 0.09),
-    through: vec3(0.08, 0.12, 0.045),
-    fern: vec3(0.045, 0.085, 0.035),
-    bracken: vec3(0.075, 0.11, 0.045),
-}
-
 impl Scene for Stage {
     /// The wind's waves cross the world: keyed to it, as the render origin moves.
     fn wind(self, cam: Camera, time: f32) -> Wind {
-        Wind { origin: cam.keyed(), strength: if self.land.still { 0.0 } else {
-            wind(time).strength
-        }, ..wind(time) }
+        land::stage::scene_wind(self.land, cam, time)
     }
 
     fn weather(self) -> Weather {
@@ -198,7 +182,7 @@ impl Scene for Stage {
     /// and the tiles round the eye.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
         occlude(mut self.land, c.eye, c.origin)
-        let _ = cook_wood(mut self.land, mut c, linear)
+        cook_wood(mut self.land, mut c, linear)
         stream(mut self.land, mut c, mut clipmap, c.eye)
     }
 
@@ -308,7 +292,7 @@ impl Scene for Stage {
 
     /// The vegetation pass: the grass and the wood.
     fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
-        self.land.grass.shade(pass, lt, wind, GRASS_LOOK, Blooms {})
+        self.land.grass.shade(pass, lt, wind, land::stage::GRASS_LOOK, Blooms {})
         if let Some(w) = self.land.wood {
             w.shade(pass, lt, wind, ids)
         }

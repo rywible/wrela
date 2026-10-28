@@ -3,7 +3,7 @@
 
 use panel::{key_json, manifest_hash, pairs_json, panel}
 use references::vale::{VALE, VisualReference}
-use rights::{Use, eligible, permits}
+use rights::{eligible, permits}
 use std::string::String
 use tally::{A, B, EQUAL, Judge, Judgement, calibrated, ranked_losses, tally}
 
@@ -158,12 +158,10 @@ fn an_equal_that_isnt_close_prefers_the_higher_scored() {
 @test
 fn unknown_permissions_refuse_every_use() {
     for licence in ["unknown", "All rights reserved", ""] {
-        for u in [Use::LocalCopy, Use::ShowAgent, Use::Transform, Use::Publish] {
-            assert(!permits(licence, u), f"{licence} permits a use")
-        }
+        assert(!permits(licence), f"{licence} permits a use")
     }
     for licence in ["CC0", "CC BY 4.0", "CC BY-SA 2.0", "Public domain"] {
-        assert(permits(licence, Use::ShowAgent) && permits(licence, Use::LocalCopy), licence)
+        assert(permits(licence), licence)
     }
 }
 

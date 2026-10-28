@@ -15,6 +15,7 @@ use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
 use kit::rejector_net::REJECTOR_NET
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
+use land::stage::{CARDS_TO, fields_clipmap}
 use land::stream::tile_distance
 use tower::door::Exit
 use engine::grass::Contact
@@ -28,9 +29,9 @@ use history::{BAKED, OBSTACLES}
 use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use platform::presentation::Link
 use stage::{
-    BARE, CARDS_TO, DOOR, FLOOR, GROWN, GROWN_LAND, SPECIMENS, SPECIMEN_LAND, Stage, System, VIEWS,
-    air_for, air_of, bare_at, fields_clipmap, grown_at, height_at, level_at, look_of, look_view,
-    of_world, origin_of, probe_grid, shot_count, source_of, stage, sun_light,
+    BARE, DOOR, FLOOR, GROWN, GROWN_LAND, SPECIMENS, SPECIMEN_LAND, Stage, System, VIEWS, air_for,
+    air_of, bare_at, grown_at, height_at, level_at, look_of, look_view, of_world, origin_of,
+    probe_grid, shot_count, source_of, stage, sun_light,
 }
 use std::time::phase
 use std::collections::replace
@@ -418,7 +419,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         height_at(w_at + vec2(0.0, 0.3)) - height_at(w_at - vec2(0.0, 0.3)),
     ) /
         0.6
-    let gust = stage::wind(time)
+    let gust = land::stage::wind(time)
     let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.stage.land.still { 0.0 } else {
         1.5 * gust.strength
     })
@@ -957,29 +958,34 @@ pub struct PathPoint: Copy {
 // The water, for `wrela tool export -- water`: the map's meres and the courses the water lays
 // (`history::COURSES`), in the world's metres.
 
-/// How many meres the map has room for (one of radius 0 is none) and how many courses the water
-/// lays.
+/// How many meres the map has room for (one of radius 0 is none), how many courses the water
+/// lays, and how many of a course's points `test_course_points` gives a call.
 pub struct WaterCount: Copy {
     pub meres: u32,
     pub courses: u32,
+    pub row: u32,
 }
 
 @testing
 pub fn test_water_count() -> WaterCount {
-    WaterCount { meres: map::map().water.meres.len(), courses: history::COURSES.courses.len() }
+    WaterCount {
+        meres: world::MAP.water.meres.len(),
+        courses: history::COURSES.courses.len(),
+        row: COURSE_ROW,
+    }
 }
 
 /// Mere `i`: its middle (x, z), its radius and its water's level.
 @testing
 pub fn test_mere(i: u32) -> vec4 {
-    map::map().water.meres[i]
+    world::MAP.water.meres[i]
 }
 
 /// Mere `i`'s shore toward the `k`th of `n` bearings round it (x, z): the first point out from
 /// its middle, a quarter metre at a time, where the ground stands above its water.
 @testing
 pub fn test_shore(i: u32, k: u32, n: u32) -> vec2 {
-    let m = map::map().water.meres[i]
+    let m = world::MAP.water.meres[i]
     let a = std::math::TAU * f32(k) / f32(n)
     let toward = vec2(cos(a), sin(a))
     var r = 0.0

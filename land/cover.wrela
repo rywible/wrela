@@ -6,6 +6,16 @@
 use engine::noise::{fbm2_seen, noise2, noise2_seen}
 use engine::terrain::Cover
 
+/// The wood seen from far off, past the streamed fields (`fields.x < 0`): its canopy's greens
+/// over `c`, all but its rock (`rock`, 0 to 1), as a sample `w` metres across sees them.
+pub fn far_wood(c: Cover, at: vec3, w: f32, rock: f32) -> Cover {
+    var c = c
+    let tone = fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
+    let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
+    c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - rock)))
+    c
+}
+
 /// The wood's floor over the history's fields (#54 §9, `land::bake::tile_fields`: their light,
 /// wear, wet and thorn), on a cover `c` as a sample `w` metres across sees it: where the canopy
 /// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where

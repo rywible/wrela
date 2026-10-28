@@ -16,7 +16,7 @@ use engine::cull::in_frustum
 use engine::distance::Capsule
 use engine::fog::{FogField, FogSphere, HeightFog}
 use engine::frame::{Cooks, Effects, Targets, fullscreen}
-use engine::grass::{Contact, Grass}
+use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
 use engine::memory::{Share, Usage}
 use engine::particles::{Particle, SOFT, SPARK}
@@ -131,7 +131,6 @@ pub struct Landscape<T: Tiles> {
     pub grass: Grass,
     pub water_verts: GpuBuffer<WaterVert>,
     pub water_tris: GpuBuffer<u32>,
-    pub water_count: u32,
     /// The water's tiles (`engine::water::tiled`: `water_tris` in their order), and their draws:
     /// the frame's visible ones', one multi-draw.
     pub water_tiles: Vec<WaterTile>,
@@ -181,7 +180,6 @@ pub fn landscape<T: Tiles>(
         grass: Grass::new(),
         water_verts: buffer_of(mesh.verts.clone(), at_least: 1),
         water_tris: buffer_of(water_tris, at_least: 1),
-        water_count: mesh.tris.len(),
         water_args: buffer(max(water_tiles.len(), 1)),
         water_tiles,
     }
@@ -223,7 +221,6 @@ pub fn restream<T: Tiles>(s: mut Landscape<T>, tiles: T, clipmap: mut Clipmap, m
     let (tris, water_tiles) = tiled(mesh)
     s.water_verts = buffer_of(mesh.verts.clone(), at_least: 1)
     s.water_tris = buffer_of(tris, at_least: 1)
-    s.water_count = mesh.tris.len()
     s.water_tiles = take water_tiles
     s.water_args = buffer(max(s.water_tiles.len(), 1))
 }
@@ -292,6 +289,28 @@ pub fn shares<T: Tiles>(s: Landscape<T>) -> Vec<Share> {
         },
     )
     out
+}
+
+/// The wind at `time` (**proposed**: the floor's, and the vale's).
+pub fn wind(time: f32) -> Wind {
+    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+}
+
+/// The wind a landscape's scene draws with (`engine::frame::Scene::wind`): `wind`'s, its waves
+/// keyed to the world (crossing it as the render origin moves), and none while it's held still.
+pub fn scene_wind<T: Tiles>(s: Landscape<T>, cam: Camera, time: f32) -> Wind {
+    Wind { origin: cam.keyed(), strength: if s.still { 0.0 } else {
+        wind(time).strength
+    }, ..wind(time) }
+}
+
+/// The grass's look (the floor's, and the vale's).
+pub const GRASS_LOOK = GrassLook {
+    tip_young: vec3(0.095, 0.145, 0.06),
+    tip_dry: vec3(0.20, 0.185, 0.09),
+    through: vec3(0.08, 0.12, 0.045),
+    fern: vec3(0.045, 0.085, 0.035),
+    bracken: vec3(0.075, 0.11, 0.045),
 }
 
 // ---- the tiles ----------------------------------------------------------------------------------
@@ -801,8 +820,9 @@ pub fn stream<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, clipmap: mut Clipmap,
                 continue
             }
             let t = cooked.tile
-            // A wild tile's far layer, for when it's beyond `WANT`.
-            if !cooked.far.is_empty() && !has_far(s.far_layer, t) {
+            // A wild tile's far layer, for when it's beyond `WANT`; kept though empty when it's all
+            // that was asked for (a tile where nothing stands), so it isn't asked for again.
+            if (k.far_only || !cooked.far.is_empty()) && !has_far(s.far_layer, t) {
                 s.far_layer.push(
                     FarTile {
                         tile: t,
@@ -1025,7 +1045,7 @@ pub fn stream<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, clipmap: mut Clipmap,
                 if !needs_far && far {
                     w.drop(f.tile, far: true)
                 }
-                if needs_far && !far && w.has_room() {
+                if needs_far && !far && w.has_room() && !f.fine.is_empty() {
                     // Hold the chosen distant representation until its replacement. Switching
                     // all of a tile's trees at a distance threshold changed their positions,
                     // species and sizes in one frame.
@@ -1180,11 +1200,11 @@ pub fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
 }
 
 /// The load's first links: the forest's kinds, as many a frame as the planner allows; the wood
-/// once they're all cooked, its far kinds `far_kinds`. Whether the wood was made this frame (a
+/// once they're all cooked, its far kinds `far_kinds`; the frame it was made in is `wood_at` (a
 /// program may read through it then: the floor's great tree's net).
-pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) -> bool {
+pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) {
     if s.wood.is_some() {
-        return false
+        return
     }
     while s.kinds.len() < s.plants.len() && c.planner.may(Work::Kind) {
         let k = s.kinds.len()
@@ -1192,7 +1212,7 @@ pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) -
         s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear))
     }
     if s.kinds.len() < s.plants.len() {
-        return false
+        return
     }
     let kinds = replace(mut s.kinds, Vec::new())
     let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
@@ -1216,7 +1236,6 @@ pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) -
     s.wood = Some(take w)
     s.wood_at = Some(c.frames)
     print(f"the wood: {s.plants.len()} kinds cooked at frame {c.frames}")
-    true
 }
 
 /// How the probes trace a landscape, lit by `light`, over `grid` (`engine::frame::Scene::trace`).

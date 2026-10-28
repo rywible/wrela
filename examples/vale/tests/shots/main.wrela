@@ -2,7 +2,7 @@
 // and eight development shots, each at least 80 m from its class's evaluation shot; each class's
 // own checks; and the walk, 1,200 frames long, passing within 20 m of at least six shots' eyes.
 
-use engine::shot::Skies
+use engine::shot::{Skies, place}
 use std::math::PI
 use vale::landscape::height_at
 use vale::lookbook::{EVALUATION, SHOTS}
@@ -10,13 +10,9 @@ use vale::lookbook::{EVALUATION, SHOTS}
 /// The development shots' classes (D1–D8), by the evaluation shots' numbers from 1.
 const DEVELOPMENT_CLASSES = [1, 2, 3, 4, 6, 8, 9, 12]
 
-/// A shot's eye and what it looks at, the world's.
+/// A shot's eye and what it looks at, the world's, as it starts.
 fn world(k: u32) -> (vec3, vec3) {
-    let s = SHOTS[k]
-    (
-        vec3(s.eye.x, height_at(s.eye.xz) + s.eye.y, s.eye.z),
-        vec3(s.at.x, height_at(s.at.xz) + s.at.y, s.at.z),
-    )
+    place(SHOTS[k], 0.0, height_at)
 }
 
 @test

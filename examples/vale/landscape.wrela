@@ -11,7 +11,7 @@
 use engine::noise::fbm2
 use land::grow::{Grid, NONE, Stream}
 use land::landform::{
-    Basins, Landscape, Relief, Shaping, Strength, basins, channels, drainage, evolve,
+    Basins, LAKE, Landscape, Relief, Shaping, Strength, basins, channels, drainage, evolve, gather,
 }
 use engine::terrain::{Cover, Terrain}
 use land::soil::{Soil, SoilKind, soil}
@@ -22,15 +22,16 @@ use land::soil::{Soil, SoilKind, soil}
 pub const LO = vec2(-512.0)
 pub const HI = vec2(512.0)
 
-/// The grid it's made on: 4 m cells, as the history's preview grain.
-pub const GRID = Grid { lo: LO, nx: 256, nz: 256, cell: 4.0 }
-pub const CELLS: u32 = 65536
+/// The grid it's made on: `N` × `N` cells of 4 m, as the history's preview grain.
+pub const N: u32 = 256
+pub const GRID = Grid { lo: LO, nx: N, nz: N, cell: 4.0 }
+pub const CELLS: u32 = N * N
 
 /// How long the valley is (m), its mouth's and its head's z, and how wide its one outlet is (m,
 /// either side of the axis): the base level its water leaves by.
-pub const LENGTH: f32 = 1024.0
-pub const MOUTH_Z: f32 = -512.0
-pub const HEAD_Z: f32 = 512.0
+pub const LENGTH: f32 = HI.y - LO.y
+pub const MOUTH_Z: f32 = LO.y
+pub const HEAD_Z: f32 = HI.y
 const OUTLET: f32 = 12.0
 
 /// Where the hard band crosses the valley (z: a third of its length up from the mouth), how thick
@@ -354,21 +355,10 @@ fn routed(l: take Landscape, h: [f32]) -> Landscape {
         out.lakes[c] = if d.filled[c] - h[c] > LAKE { d.filled[c] - h[c] } else { 0.0 }
         out.heights[c] = d.filled[c]
         out.down[c] = if out.base[c] { NONE } else { d.down[c] }
-        out.area[c] = g.cell * g.cell
     }
-    var k = d.order.len()
-    while k > 0 {
-        k -= 1
-        let c = d.order[k]
-        if out.down[c] != NONE {
-            out.area[out.down[c]] += out.area[c]
-        }
-    }
+    gather(g, d.order, out.down, mut out.area)
     out
 }
-
-/// The least depth a filled pit holds to be a lake (m), as `land::landform` counts one.
-const LAKE: f32 = 0.25
 
 /// Cell `c`'s soil (`land::soil::soil`): from the curvature and slope of the land there, at the
 /// soil's spans; how much of it is the band's bare grit on a face; and how wet it is (`wet`).
@@ -427,8 +417,8 @@ pub struct Ground: Copy + GpuData {
     pub soil: [u32; SOIL_WORDS],
 }
 
-/// The words its soil takes.
-pub const SOIL_WORDS: u32 = 8192
+/// The words its soil takes: four bits a cell.
+pub const SOIL_WORDS: u32 = CELLS / 8
 
 /// The vale's ground (`Ground`).
 @fuel(2 ** 32)
@@ -445,8 +435,12 @@ fn ground_of(v: Vale) -> Ground {
 impl Ground {
     /// The soil's kind at `p` (the cell's it's in, clamped to the square), as `SoilKind`'s `u32`.
     pub fn soil_at(self, p: vec2) -> u32 {
-        let ij = clamp(vec2i(floor((p - LO) / 4.0)), vec2i(0), vec2i(255))
-        let c = u32(ij.y) * 256 + u32(ij.x)
+        let ij = clamp(
+            vec2i(floor((p - LO) / GRID.cell)),
+            vec2i(0),
+            vec2i(i32(GRID.nx) - 1, i32(GRID.nz) - 1),
+        )
+        let c = u32(ij.y) * GRID.nx + u32(ij.x)
         (self.soil[c / 8] >> (4 * (c % 8))) & 15
     }
 }
@@ -514,18 +508,18 @@ impl Ground {
             mix(1.0, 0.35, smoothstep(0.7, 0.86, n.y))
         } else { 0.0 }
         let rock = max(face, bare)
-        let albedo = mix(SOIL_ALBEDO[kind], rock_albedo(at, n, w), vec3(rock))
-        var c = Cover {
+        // (The rock's colour only where it shows: it's most of the cover's noise.)
+        let albedo = if rock > 0.0 {
+            mix(SOIL_ALBEDO[kind], rock_albedo(at, n, w), vec3(rock))
+        } else { SOIL_ALBEDO[kind] }
+        let c = Cover {
             albedo,
             grass: SOIL_GRASS[kind] * (1.0 - rock),
             deep: SOIL_DEEP[kind],
             materials: vec4(0.0, 1.0 - rock, rock, 0.0),
         }
         if fields.x < 0.0 {
-            let tone = engine::noise::fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
-            let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
-            c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - rock)))
-            return c
+            return land::cover::far_wood(c, at, w, rock: rock)
         }
         land::cover::wood_floor(
             c,

@@ -48,9 +48,8 @@ pub struct Vale {
     held: Option<(vec3, vec3)>,
     /// Whether the vale's ready: playable, its tiles round the eye in.
     ready: bool,
-    /// The hour and the weather the frame is lit in (`day`).
+    /// The hour the frame is lit at (`day`; its weather is the stage's, `Stage::skies`).
     hour: f32,
-    skies: Skies,
     /// How many frames the walk has run (none: it hasn't begun; W begins it, and it steps once the
     /// vale's playable).
     walked: Option<u32>,
@@ -69,18 +68,17 @@ fn lit(hour: f32, skies: Skies, eye: f32) -> (engine::air::Air, engine::light::L
 /// The frame lit at `hour` in `skies`: its air and light (the frame draws its shadows and its sky
 /// again as the sun moves), and its sky's weather cooked again when the weather changes.
 fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
-    if hour == s.hour && skies == s.skies {
+    if hour == s.hour && skies == s.stage.skies {
         return
     }
     let (air, light) = lit(hour, skies, eye)
     s.frame.air = air
     s.frame.light = light
-    if skies != s.skies {
+    if skies != s.stage.skies {
         s.stage.skies = skies
         s.frame.changed(Change::Weather)
     }
     s.hour = hour
-    s.skies = skies
 }
 
 pub fn init() -> Vale {
@@ -103,7 +101,6 @@ pub fn init() -> Vale {
         held: None,
         ready: false,
         hour: WALK_HOUR,
-        skies: WALK_SKIES,
         walked: None,
     }
 }

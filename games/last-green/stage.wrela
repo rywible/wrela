@@ -18,7 +18,7 @@ use engine::distance::{Shape, Solids, rigid_inverse}
 use engine::fog::FogField
 use engine::particles::Emits
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
-use engine::grass::{Blooms, GrassLook}
+use engine::grass::Blooms
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
 use engine::paint::{Exposure, Look}
@@ -42,8 +42,9 @@ use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
 use ground::GROUND
 use land::stage::{
-    Arrived, Landscape, Tiles, far_requested, cook_wood, draw_water, landscape,
-    loaded_probe_occluders, occlude, solid_capsules, stream, water_draws,
+    Arrived, FAR_IN_FLIGHT, FAR_REACH, IN_FLIGHT, Landscape, PROBE_SPACING, PROBE_TREES, SLOTS,
+    Tiles, WANT, WILD_FAR, far_requested, cook_wood, draw_water, landscape, loaded_probe_occluders,
+    occlude, solid_capsules, stream, trace_of, water_draws,
 }
 use std::collections::Flags
 use std::gpu::{
@@ -51,18 +52,9 @@ use std::gpu::{
     buffer_of, dispatch, draw, label,
 }
 use std::io::{Pending, print}
-/// The landscape's numbers the floor's code and its tests read where they did.
-pub use land::stage::{
-    CAPTURE_IN_FLIGHT, CARDS_TO, DROP, FAR_FINE, FAR_IN_FLIGHT, FAR_PER_FRAME, FAR_REACH,
-    FIELD_BLOCKS, IMPOSTORS_TO, IN_FLIGHT, OCCLUDED_NEAR, PROBE_COLS, PROBE_SPACING, PROBE_TREES,
-    SLOTS, WANT, WILD_FAR, fields_clipmap, trace_of,
-}
 
 /// Toward the sun: the clearing's (low, 24°).
 pub const SUN = vec3(0.900, 0.407, -0.159)
-
-/// The scale the floor's levels of detail are in (`land::stage::SCALE`).
-pub const SCALE: f32 = land::stage::SCALE
 
 /// The door back down to the stair: behind the gate, where a player comes in facing away from
 /// it; its two posts stand either side of the way through (a stand-in for its look).
@@ -224,9 +216,7 @@ pub fn stage() -> Stage {
 impl Scene for Stage {
     /// The wind's waves cross the world: keyed to it, as the render origin moves.
     fn wind(self, cam: Camera, time: f32) -> Wind {
-        Wind { origin: cam.keyed(), strength: if self.land.still { 0.0 } else {
-            wind(time).strength
-        }, ..wind(time) }
+        land::stage::scene_wind(self.land, cam, time)
     }
 
     fn weather(self) -> Weather {
@@ -242,7 +232,7 @@ impl Scene for Stage {
     }
 
     /// The occluders the stage's job gathered round a place near `at` (`gather_occluders`): none
-    /// until one has, for a place within `OCCLUDED_NEAR` of it.
+    /// until one has, for a place within `land::stage::OCCLUDED_NEAR` of it.
     /// The falls' spray and foam (`spray`), near the eye, in the floor's views.
     fn emit(mut self, e: mut Emits) {
         if of_world(self.view) {
@@ -557,13 +547,7 @@ impl Scene for Stage {
                 pass,
                 lt,
                 wind,
-                GrassLook {
-                    tip_young: vec3(0.095, 0.145, 0.06),
-                    tip_dry: vec3(0.20, 0.185, 0.09),
-                    through: vec3(0.08, 0.12, 0.045),
-                    fern: vec3(0.045, 0.085, 0.035),
-                    bracken: vec3(0.075, 0.11, 0.045),
-                },
+                land::stage::GRASS_LOOK,
                 Blooms {},
             )
         }
@@ -709,10 +693,7 @@ impl Scene for Stage {
         for p in self.banks.prototypes {
             banks += p.bytes()
         }
-        var out = match self.land.wood {
-            Some(w) => w.shares(),
-            None => Vec::new(),
-        }
+        var out = land::stage::shares(self.land)
         out.push(Share { name: "built", bytes: built, budget: engine::memory::TOTAL })
         // The casts' meshes (the fawn's and the wolf's), against the realizer's budget
         // (`engine::memory::evict_after` reads it).
@@ -725,13 +706,6 @@ impl Scene for Stage {
         )
         out.push(Share { name: "rocks", bytes: rocks, budget: engine::memory::TOTAL })
         out.push(Share { name: "banks", bytes: banks, budget: engine::memory::TOTAL })
-        out.push(
-            Share {
-                name: "leaves' atlas",
-                bytes: engine::memory::texels(self.land.atlas.width(), self.land.atlas.height(), 4),
-                budget: engine::memory::TOTAL,
-            },
-        )
         out
     }
 
@@ -934,11 +908,6 @@ pub const GROWN_MIST_HEIGHT: f32 = 0.045
 
 pub fn sun_light() -> Light {
     sunlight(air_of())
-}
-
-/// The wind at `time`.
-pub fn wind(time: f32) -> Wind {
-    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), the egg's place's ring of
@@ -1265,7 +1234,9 @@ fn item_of(at: mat4, seed: u32) -> Item {
 /// | the probes' first bake | the built things, the prototypes, the cascades whole, the air and dome |
 /// | playable | the probes, the frame round the eye |
 pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
-    if cook_wood(mut s.land, mut c, linear) && s.neural {
+    cook_wood(mut s.land, mut c, linear)
+    // The wood cooked this frame (`wood_at`): the great tree read through its net.
+    if s.land.wood_at == Some(c.frames) && s.neural {
         match mut s.land.wood {
             Some(w) => w.read_through(
                 trees::kinds::GREAT,

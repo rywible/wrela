@@ -23,7 +23,7 @@
 // key and writes `tally.json` and `tally.md`, the table for docs/bench.md: every attempt kept, the
 // rejected judges named.
 
-use panel::{EVALUATION, page_html, pairs_json, key_json, panel, with_controls}
+use panel::{page_html, pairs_json, key_json, panel, with_controls}
 use std::io::print
 use std::json::{TOP, parse}
 use std::string::String
@@ -173,7 +173,7 @@ fn laid_out(o: Options) -> Result<(), ToolError> {
         o.controls.clone()
     }
     let img = image::decode(
-        Data::Blob(blob_of(chunked(read_file(original.as_str(), original.as_str())?))?),
+        Data::Blob(files::read_blob(original.as_str()).wait()?),
         timeout: 120.0,
     ).wait()?
     let w = img.width

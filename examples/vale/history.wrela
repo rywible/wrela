@@ -16,6 +16,7 @@ use land::place::{
 use land::soil::SoilKind
 use landscape::{CELLS, GRID, GROUND, HI, LO, VALE}
 use std::io::{Shipped, ship}
+use std::math::PI
 
 /// The history's present: the year it ends (the floor's, so its trees' ages read alike).
 pub const PRESENT: i32 = 900
@@ -73,7 +74,7 @@ pub fn mere() -> vec4 {
         }
     }
     let at = sum / f32(max(n, 1))
-    vec4(at.x, at.y, sqrt(f32(n) * g.cell * g.cell / 3.14159265), v.lakes.level[v.mere])
+    vec4(at.x, at.y, sqrt(f32(n) * g.cell * g.cell / PI), v.lakes.level[v.mere])
 }
 
 /// Where the herd drinks: the mere's shore nearest the meadow.
@@ -165,7 +166,7 @@ pub fn vale_map() -> Map {
         routes,
         water: land::place::Water { meres: [mere(), vec4(0.0)] },
         events,
-        wind: vec2(0.75, -0.66),
+        wind: GALE,
         kept: Vec::new(),
         regions,
         herd: Herd {

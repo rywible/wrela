@@ -108,6 +108,24 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
 - **Status:** open: partly fixed in 0.10.0 (plan three's §A4). Cut down to 38 lines (the compiler's `struct_base_revealed_accept` conformance test, a struct generic over a return-position trait type updated from a function's result), whose cause was `lower_ty` naming an IR struct by the type it was asked for: a type now lowers as the type it reveals, and that program builds. The floor's own update built on 0.10.0 too (B0, 2026-10-28: the same 175 pipelines and shipped files as without it, G-pixels within the floor's noise), until the floor's tree kinds moved to `content/trees` (§B1.1): then `wrela check games/last-green` stops with "the CPU module's IR is malformed: fn0 `init_0`: v136 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`". So a type is still lowered unrevealed somewhere that depends on the order things are lowered in. The floor keeps setting the field after; for 0.10.1.
 
+### A driven export can't return a value of varying length
+
+- **Needed:** `wrela tool export -- water` (docs/plan-world-class-3.md §B7) takes a game's water whole: its meres' shores and its courses, each a list of points of its own length.
+- **What happens:** `std::tool::drive`'s `Step::Call` returns its export's results as `Ran.results`, a `Vec<Scalar>` flattened from a fixed-size value, so an export can't return a list, a string or bytes.
+- **Found:** 2026-10-28, writing the export's `water`.
+- **Evidence:** `std::tool::drive::Ran`; the floor's `test_course_points` returns a `CourseRow { p: [vec4; COURSE_ROW] }`.
+- **Meanwhile:** the floor pages its water out in fixed rows (`test_water_count`, `test_mere`, `test_shore`, `test_course`, `test_course_points`), the row's size given by the game (`WaterCount::row`), and the tool batches the calls.
+- **Status:** open: a `Call` that returns text or bytes (the game's water as one JSON).
+
+### A declared tool's roots stay inside the workspace
+
+- **Needed:** `studio/compare` (§B4) reads the references from `$WRELA_REFERENCE_DIR`, outside the repository (docs/citations.md's private-reference rule).
+- **What happens:** a tool declared in `wrela.toml` is granted roots only inside the workspace, so `wrela tool compare` can't be given the references' directory.
+- **Found:** 2026-10-28, writing the compare tool.
+- **Evidence:** the declared tool's `--read refs=…` outside the workspace is refused.
+- **Meanwhile:** the tool runs as a package with the directory granted on the command line: `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- …` (docs/lookdev.md).
+- **Status:** open: a declared tool's grant of a directory outside the workspace, named on the command line.
+
 ## Fixed
 
 ### A texture can't be a field's data
