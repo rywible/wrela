@@ -2,10 +2,10 @@
 // their judgements tallied (plan three's §B4, D38). It doesn't judge.
 //
 // ```text
-// wrela tool studio/compare --read ws=. --write ws=. --read refs=$WRELA_REFERENCE_DIR -- \
+// wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- \
 //     <out> --a <stills-dir> [--set evaluation|development] [--controls <still>] [--seed n] \
 //     [--refs-dir <path>]
-// wrela tool studio/compare --read ws=. --write ws=. -- <out> --tally
+// wrela tool studio/compare --write ws=. -- <out> --tally
 // ```
 //
 // The references are the vale's (`references::vale::VALE`), each read from the references'
@@ -33,9 +33,9 @@ use std::tool::files
 use std::tool::files::rooted
 use std::tool::image
 use tally::{A, B, Judge, ranked_losses, read_judge, tally}
-use toolkit::whole::{blob_of, data_bytes, joined, read_file, write_file, write_png}
+use toolkit::whole::{blob_of, chunked, joined, read_blob, read_file, write_file, write_png}
 
-pub const USAGE: Text = "usage: wrela tool studio/compare --read ws=. --write ws=. [--read refs=<dir>] -- <out> (--a <stills-dir> [--set evaluation|development] [--controls <still>] [--seed n] [--refs-dir <path>] | --tally)"
+pub const USAGE: Text = "usage: wrela tool studio/compare --write ws=. [--read refs=<dir>] -- <out> (--a <stills-dir> [--set evaluation|development] [--controls <still>] [--seed n] [--refs-dir <path>] | --tally)"
 
 /// The command line: where it writes, the stills' directory, the set, the calibration still, the
 /// seed, the references' directory as a page's links show it, and whether it tallies.
@@ -155,6 +155,15 @@ fn laid_out(o: Options) -> Result<(), ToolError> {
             stills.push(e.name.clone())
         }
     }
+    // The frozen hashes (§B5): a panel is of the shots and references the baseline judged.
+    let (manifest, shots) = (panel::manifest_hash(refs), panel::shots_hash())
+    if manifest.as_str() != panel::FROZEN_MANIFEST || shots.as_str() != panel::FROZEN_SHOTS {
+        return Err(
+            ToolError::new(
+                f"the references' manifest ({manifest.as_str()}) or the shots ({shots.as_str()}) aren't the baseline's: a changed reference or shot makes a new baseline, recorded first",
+            ),
+        )
+    }
     let p = panel(o.set.as_str(), refs, stills, shown(o.stills.as_str()).as_str(), o.seed).map_err(
         |w| ToolError::new(w.as_str()),
     )?
@@ -164,17 +173,23 @@ fn laid_out(o: Options) -> Result<(), ToolError> {
         o.controls.clone()
     }
     let img = image::decode(
-        Data::Bytes(read_file(original.as_str(), original.as_str())?),
+        Data::Blob(blob_of(chunked(read_file(original.as_str(), original.as_str())?))?),
         timeout: 120.0,
     ).wait()?
     let w = img.width
     let h = img.height
-    let px = joined(data_bytes(img.rgba.clone())?)
+    // The pixels read, the image's blob kept for its resize below.
+    let px = joined(
+        match img.rgba.clone() {
+            Data::Blob(b) => read_blob(b)?,
+            Data::Bytes(v) => Vec::from([take v]),
+        },
+    )
     let blurred = blur3(px, w, h)
     let _ = files::make_dirs(f"{o.out.as_str()}/controls").wait()
     let blurred_path = f"{o.out.as_str()}/controls/blurred.png"
     write_png(
-        image::Image { width: w, height: h, rgba: Data::Blob(blob_of(Vec::from([take blurred]))?) },
+        image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take blurred))?) },
         blurred_path.as_str(),
     )?
     let small = image::resize(
@@ -345,6 +360,14 @@ fn tally_md(t: tally::Tally, key: std::json::Doc) -> String {
     )
     for (row, lost) in ranked_losses(t) {
         out.push_str(f"- {row.as_str()}: {lost:.2}\n")
+    }
+    out.push_str("\nEach pair's worst row, and its judges' sentences on it:\n\n")
+    for p in t.pairs {
+        let w = tally::worst_row(p)
+        out.push_str(f"- Pair {p.pair}, {tally::ROWS[w]}:\n")
+        for n in p.notes[w] {
+            out.push_str(f"  - {n.as_str()}\n")
+        }
     }
     out.push_str(
         f"\nJudges: {t.used.len()} used; rejected by the calibration: {t.rejected.len()}.\n",

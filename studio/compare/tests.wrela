@@ -23,7 +23,16 @@ fn judge(name: str, prefer: [u32], controls: [u32]) -> Judge {
         let (a, b) = if prefer[k] == A { (HIGH, LOW) } else if prefer[k] == B { (LOW, HIGH) } else {
             ([2.0; 5], [2.0; 5])
         }
-        j.judgements.push(Judgement { pair: k + 1, a, b, prefer: prefer[k], why: String::from("") })
+        j.judgements.push(
+            Judgement {
+                pair: k + 1,
+                a,
+                b,
+                prefer: prefer[k],
+                why: String::from(""),
+                notes: Vec::new(),
+            },
+        )
     }
     j
 }
@@ -212,4 +221,17 @@ fn the_frozen_manifest_hash_follows_every_reference() {
     changed[4].sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     assert(manifest_hash(changed) != frozen, "a changed copy")
     assert(manifest_hash(VALE) == frozen && frozen.len() == 64, "the same manifest, the same hash")
+}
+
+/// The references and the shots are the baseline's (§B5's frozen hashes).
+@test
+fn the_references_and_shots_are_the_baselines() {
+    assert(
+        manifest_hash(VALE).as_str() == panel::FROZEN_MANIFEST,
+        "the references changed since the baseline",
+    )
+    assert(
+        panel::shots_hash().as_str() == panel::FROZEN_SHOTS,
+        "the shots changed since the baseline",
+    )
 }

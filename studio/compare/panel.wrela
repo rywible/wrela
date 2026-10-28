@@ -48,6 +48,11 @@ pub struct Panel: Clone {
     pub controls: Vec<Control>,
 }
 
+/// The hashes frozen at the baseline review (plan three's §B5, docs/bench.md "Public visual
+/// references"): every later panel asserts them; a changed reference or shot makes a new baseline.
+pub const FROZEN_MANIFEST: Text = "825cf5a0ca9400cfd61ee133f0ea739ff81bd6701e341164d4b91873ca93f40a"
+pub const FROZEN_SHOTS: Text = "922566c1df111e6c40d02f93fd398eeddab31bb15cbeaef6ffa01a014e8381f9"
+
 /// The review's one mode: attributed, the credits shown (plan three's §B4).
 pub const ATTRIBUTED: Text = "attributed"
 

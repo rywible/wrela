@@ -980,6 +980,189 @@ the volume (96 m round the eye) goes on as open air.
   surface cache in place of the 0.3 albedo, the leaves' density in the rays' transmittance, and
   the cascades traced at a lower rate (a quarter of the directions a frame).
 
+## Public visual references
+
+The vale's look against freely licensed photographs and footage of its real subjects
+(docs/plan-world-class-3.md §0.5 G-reference, §B5; the review: docs/lookdev.md, "The reference
+review"). The thresholds are internal quality targets, not statistical evidence of engine
+equivalence.
+
+### 2026-10-28: the baseline (B5), today's renderer, toolchain 0.10.0
+
+The vale as B1 left it, every switch on, its twelve evaluation shots at 1920×1080
+(`build/vale-b5/stills`, kept and never regenerated) against `references::vale::VALE`'s twelve
+evaluation references. Eight agent judges in fresh contexts, each given the rubric, the pairs and
+the references' credits and conditions; none rejected by the calibration (a still against its 3×3
+blur and its quarter-resolution copy).
+
+- **Mode:** attributed (each reference's credit, licence, source and conditions shown beside it).
+- **The shots' hash** (SHA-256 over `lookbook.wrela`'s `SHOTS` as JSON):
+  `922566c1df111e6c40d02f93fd398eeddab31bb15cbeaef6ffa01a014e8381f9`.
+- **The references' manifest hash:** `825cf5a0ca9400cfd61ee133f0ea739ff81bd6701e341164d4b91873ca93f40a`.
+  Both are frozen from here (`studio/compare`'s `FROZEN_SHOTS`, `FROZEN_MANIFEST`): every later panel
+  asserts them.
+- **Order:** seed 5 (`build/vale-b5/key.json`); every judge's file in `build/vale-b5/judges/`, the tally
+  in `build/vale-b5/tally.json`.
+- **Commands:** `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR --
+  build/vale-b5 --a build/vale-b5/stills --set evaluation --seed 5`, the eight judges, then
+  `wrela tool studio/compare --write ws=. -- build/vale-b5 --tally`.
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 1.00, 0.38 | 2.12, 3.00, 2.75, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 2.88, 2.25, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.88, 2.00, 2.00, 0.88 | 2.12, 2.88, 2.75, 2.38, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.12 | 2.00, 3.00, 2.38, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.50, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.62, 1.25, 1.88, 2.00, 0.62 | 2.00, 3.00, 2.88, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.25, 1.75, 1.00 | 2.62, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 1.00, 0.00 | 2.62, 2.50, 2.00, 2.12, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.88, 2.75, 3.00 |
+
+**Verdict: fails** (expected). Overall: 0 of 96 judgements prefer the vale or rate the pair equal
+(rule (a): 50 %); every pair is lost 8 to 0 (rule (b): no worse than 6 to 2); no pair is won or equal
+by the judges' median (rule (c): 6 of 12). Hill to climb: pairs won or equal, 0 → 6 of 12 at §H.
+
+**The ranked losses** (the reference's mean less the vale's, summed over the twelve pairs): the
+baseline loss record, from which Part G chooses its work (§G0).
+
+| Row | Lost |
+|---|---|
+| artifacts | 28.12 |
+| colour | 16.12 |
+| value | 15.00 |
+| depth | 13.25 |
+| light | 12.50 |
+
+Each pair's worst row, and its judges' sentences on it:
+
+- Pair 1, artifacts:
+  - j1: The photograph shows none, while the render shows faceted cylinders, stretched and brick-patterned bark, a hard-edged transparent water polygon and grass ghosting through the water.
+  - j2: a shows none; b has stretched, smeared bark, faceted cylinders, a transparent water plane slicing through the log with a hard edge, and a hollow ring hanging off the log end.
+  - j3: A is clean; b shows stretched, smeared textures on the stump end, faceted cylinders, tiling bark and a hard-edged translucent water polygon under the log.
+  - j4: The photograph shows no artifacts; the render shows faceted cylinders, stretched and blocky bark texture, hard polygonal edges where logs meet the water and a translucent green grass ghost.
+  - j5: A shows no artifacts, while b has faceted log geometry, stretched bark textures, hard polygonal water cut-outs and translucent sheets under the log.
+  - j6: None seen in the photograph; the render shows faceted log geometry, stretched bark textures and hard polygonal water edges cutting through the ground.
+  - j7: a shows nothing beyond normal photographic softness, while b shows faceted low-poly log ends, stretched and smeared bark texture, and a hard-edged water polygon cutting through the logs.
+  - j8: A shows nothing beyond photographic noise; b shows heavily faceted log geometry, badly stretched and smeared bark texture, and a hard-edged translucent water slab clipping through the log.
+- Pair 2, artifacts:
+  - j1: The render shows dark leaf cards scattered as visible quads, logs crossing without contact, a blurred smudge mid-frame and a translucent strip at the bottom, while the photograph shows only mild JPEG softness.
+  - j2: a shows logs floating and crossing in the air, scattered leaf-card confetti, a translucent smudge mid-frame and stippled foliage; b shows none.
+  - j3: A shows floating leaf cards, logs hovering at odd angles, dithered trunks and a smeared patch in the middle; b shows nothing beyond mild compression.
+  - j4: The render shows dithered shadow edges, a dark smudge mid-frame and noisy floating leaf cards; the photograph shows no artifacts beyond minor compression.
+  - j5: A has scattered leaf sprites, stippled dithering in the shadows, flat untextured trunks and floating logs, while b is clean apart from a slightly clipped sky.
+  - j6: The render shows scattered floating leaf cards, logs crossing in mid-air, smeared ground texture and a translucent sheet at bottom right; none seen in the photograph.
+  - j7: a shows dark, noisy leaf-card litter, dithered checker patterns in the shadowed trunks and floating poles, while b shows none.
+  - j8: A shows stippled leaf-card scatter, dithered canopy edges, sticks clipping into the slope and a faint smeared ghost near the centre; b shows no rendering artifacts.
+- Pair 3, artifacts:
+  - j1: The render shows a repeated stamped dot pattern on the ground, brick-patterned bark, spiky faceted log ends and a floating white trunk base, while the photograph shows none.
+  - j2: a has a dotted grid pattern in the ground shadows, tiled brick-like bark, a white stump floating on the slope, and stepped log edges; b shows none.
+  - j3: A shows a tiled bark pattern on the near trunk, stretched log textures, spiky stub branches and a white stump floating mid-slope; b is clean.
+  - j4: The render shows stippled dither patches on the ground, a blocky tiled bark texture and spiky log stubs; the photograph shows none.
+  - j5: A has stippled shadow patterns, a floating white stump base, spiky low-poly log ends and blocky bark tiling, while b shows none.
+  - j6: The render has a white stump floating mid-air, stretched bark, cone-like branch stubs and dotted shadow patterns; none seen in the photograph.
+  - j7: a shows a repeating brick-like bark pattern on the near trunk, dithered dots in the ground shadows, spiky log ends and a floating white stump base, while b shows none.
+  - j8: A shows a trunk base hanging in the air at the upper middle, repeated stipple decals on the ground, blocky stretched bark on the near trunk and spiky faceted log stubs; b shows none.
+- Pair 4, artifacts:
+  - j1: The photograph shows none, while the render shows tiled arrow-shaped decals, black squiggle lines and streaky, blocky shadow texels.
+  - j2: a shows none; b has repeated triangle decals at the top right, wiggly black crack lines drawn on the surface, and smeared, streaky shadow bands.
+  - j3: A is clean; b shows blocky, stretched shadow-map dapple, repeated arrowhead-shaped decals and wiggly dark crack lines that read as tiling.
+  - j4: The photograph shows none; the render shows triangular decal shapes, streaky smeared shadow bands and thin crack lines that read as overlays.
+  - j5: A is clean, while b shows arrow-shaped decals, drawn squiggle lines and streaky, stretched shadow-map smears.
+  - j6: None seen in the photograph; the render shows arrow-shaped decals, thin squiggly line marks and streaked shadow-map patterns.
+  - j7: a is clean, while b shows repeated arrow-like triangular decals, drawn-looking wavy contour lines and smeared shadow streaks.
+  - j8: A shows nothing; b shows dark triangular decal marks down the right side, smeared and streaked shadow aliasing, and drawn-looking squiggle lines over the surface.
+- Pair 5, light:
+  - j1: The photograph's side light from the left reads on the trunks and dapples the path with natural falloff, while the render's overcast is soft but flat, with a uniform ground and shadowless trunks.
+  - j2: a has dappled sun from the upper left, picking out trunks and striping the path (it is not actually overcast); b is flat overcast with no direction and little occlusion under the canopy.
+  - j3: A's side light picks out trunk after trunk with soft falloff into shade; b's diffuse cloud light leaves a large ground plane with almost no modelling.
+  - j4: The photograph's dappled sun from upper left models every trunk and the path; the render's overcast light is even but lacks occlusion under the canopy and on the ground.
+  - j5: In a, sun shafts through the canopy streak the trunks and path with believable falloff, while b is flat, diffuse light with almost no modelling on the ground or the trunks.
+  - j6: The photograph's light slants down the trunks and pools on the path with clear falloff; the render's flat cloud light gives no direction and no contact shading where trees meet ground.
+  - j7: In a light falls from upper left onto the trunk sides and dapples the path, while in b the overcast light is flat and there is no occlusion where trees meet the ground.
+  - j8: A (despite its overcast file name it is sunlit) shows sun shafts striking trunk sides from the upper left with clear falloff into shade; b's cloud light is shapeless, with almost no modelling on the ground or trunks.
+- Pair 6, artifacts:
+  - j1: The photograph shows none beyond faint noise, while the render shows brick-patterned log bark, blobby clouds, a flat plain to the horizon and an odd pale patch mid-right.
+  - j2: a shows only minor noise; b has a brick-tiled log texture, a translucent patch near the horizon at mid-right, and clone-stamped puffy clouds.
+  - j3: A is clean; b shows a brick-like tiling bark pattern on the near log, a stray pinkish rectangular patch mid-right and blobby, repeated cloud shapes.
+  - j4: The photograph shows none; the render shows blocky tiled bark on the logs, blobby repeated cloud puffs and a blurred low-detail distant plain.
+  - j5: A is clean, while b has brick-like tiling on the log, low-poly branch spikes, blobby hard-edged clouds and a stray pale patch mid-frame.
+  - j6: None seen in the photograph; the render shows a pinkish ghost blob mid-frame, brick-patterned bark on the log and a flat, untextured far plain.
+  - j7: a is clean, while b shows puffy flat-bottomed blob clouds, brick-tiled bark on the foreground log, outline strokes and a stray pink patch among the trees.
+  - j8: A shows nothing; b shows brick-pattern stretched bark on the near log, a pale smeared patch in the mid forest, a tiled-looking flat far plain and lumpy blob-shaped clouds.
+- Pair 7, artifacts:
+  - j1: The render shows thousands of floating dark leaf cards, a faceted spiky log, a translucent strip and floating trunk bases, while the photograph shows none.
+  - j2: a has leaf cards scattered like floating confetti, a translucent ribbon across the ground, blocky log texture, and no animal on the trail; b shows none.
+  - j3: A shows thousands of floating leaf cards, a spiky log with stretched texture and odd trench geometry; b is clean.
+  - j4: The render shows black-fringed leaf cards scattered like confetti, a faceted log with stretched texture, stippled dither and unlit trunks; the photograph shows none.
+  - j5: A has black-edged leaf sprites, a low-poly log with stretched textures, unshaded pale trunks and a seam line across the path, while b is clean.
+  - j6: The render shows floating leaf cards, a translucent strip across the trail, logs hanging in the air and stretched textures on a faceted log; none seen in the photograph.
+  - j7: a shows confetti-like black leaf cards, a smeared low-poly spiked log and hard-edged strips in the ground, while b shows none.
+  - j8: A shows hard dark-edged leaf cards hovering over the ground, a faceted foreground log with stretched texture and a translucent strip with hard edges along the trail; b shows none.
+- Pair 8, artifacts:
+  - j1: The render shows a smeared floor texture, a log passing a trunk without contact, floating grass sprigs and brick-patterned bark, while the photograph shows none.
+  - j2: a has stippled foliage edges, orange branch stubs, smeared ground texture and stray grass blades, and no grazing animal is visible; b shows none.
+  - j3: A shows a log hovering over the ground, tiling bark, blobby foliage and floating grass sprites; b is clean.
+  - j4: The render shows clumpy foliage silhouettes, an unshaded orange trunk, smeared near-field ground texture and floating grass blades; the photograph shows none.
+  - j5: A has dithered, stippled foliage clumps, repetitive bark tiling and floating grass sprouts, while b is clean.
+  - j6: The render shows tiled stretched bark, a log floating behind a trunk and blotchy foliage cards; none seen in the photograph.
+  - j7: a shows blobby painted leaf sprites and repetitive bark with no obvious tiling, while b shows none.
+  - j8: A shows blobby dithered foliage, blocky bark texture and stray floating grass blades; b shows none.
+- Pair 9, artifacts:
+  - j1: The photograph shows none, while the render shows black ink outlines around trunks, faceted spiky log ends and hard-edged leaf clumps.
+  - j2: a shows none; b has dark ink-like outlines around every trunk and branch, a blue sliver leaking at the right edge, and spiky star-shaped log ends.
+  - j3: A is clean; b shows hard dark outline strokes around trunks, blocky foliage edges, tiling bark on logs and a spiky stub branch.
+  - j4: The photograph shows none; the render shows dark outlines around trunk silhouettes, a blue edge on a far trunk and spiky log stubs.
+  - j5: A is clean, while b has dark outlines around trunks, low-poly log spikes, flat foliage cards and a blue sliver at the right edge.
+  - j6: None seen in the photograph; the render draws dark outlines on trunks that stay sharp through the fog, shows a stray blue line at right and blocky leaf clusters.
+  - j7: a is clean, while b shows black outline strokes on trunks and hills, blocky leaf clumps, tiled log bark and spiky log ends.
+  - j8: A shows nothing; b shows dark outline halos around trunks and branches, faceted spiky logs, blocky foliage and a stray blue line near the right edge.
+- Pair 10, artifacts:
+  - j1: The render shows blocky low-resolution shadow-map texels, stretched wall textures, a waterfall that is a translucent quad and floating grass blades, while the photograph shows none.
+  - j2: a has pixel-blocky shadow maps across both cliffs, stretched wall textures, a waterfall that is a translucent cyan quad, and crack lines; b shows none.
+  - j3: A shows heavily pixelated shadow maps, stretched wall textures, a flat translucent quad for water and floating grass blades; b is clean apart from mild phone sharpening.
+  - j4: The render shows heavily pixelated shadow maps, streaked wall textures, a flat translucent waterfall slab and floating grass; the photograph shows none.
+  - j5: A has blocky shadow-map aliasing, stretched wall textures, a flat translucent waterfall quad and floating grass, while b is clean apart from mild phone sharpening.
+  - j6: The render has severely pixelated shadow maps, stretched wall textures and a translucent waterfall sheet; none seen in the photograph.
+  - j7: a shows heavily pixelated shadow-map dither, stretched texture on the walls, a flat translucent quad for the waterfall and floating grass blades, while b is clean.
+  - j8: A shows severely aliased, blocky shadow-map pixels on both walls, stretched wall textures and a waterfall rendered as a flat translucent slab; b shows none.
+- Pair 11, artifacts:
+  - j1: The photograph shows none, while the render shows heavily stretched, smeared bark texture with banded faceting.
+  - j2: a shows none; b is a magnified, blurry, tiling bark texture of vertical bars on a faceted cylinder.
+  - j3: A is clean; b shows a heavily magnified, blurred, streaked texture, a faceted silhouette and visible seams.
+  - j4: The photograph shows none; the render shows a blurred, magnified, stretched bark texture and a faceted silhouette.
+  - j5: A is clean, while b shows a magnified, blurry bark texture, visible polygon facets and seams, and stretched UVs.
+  - j6: None seen in the photograph; the render shows blurred, stretched bark texture, visible banding and faceting.
+  - j7: a is clean, while b shows heavily magnified, smeared and stretched bark texture and visible horizontal polygon seams.
+  - j8: A shows nothing; b shows magnified, blurred, stretched bark texture with smeared vertical slabs and a faceted silhouette.
+- Pair 12, artifacts:
+  - j1: The render shows brick-patterned bark, dithered, blotchy leaf edges, dark outlines on branches and spiky stubs at the bottom, while the photograph shows none.
+  - j2: a has brick-patterned tiled bark, a dark outline along the trunk, dithered pixel-cluster foliage edges and stiff snag branches; b shows none.
+  - j3: A shows a repeating brick-like bark texture, dark outline strokes on branches and splotchy foliage cards; b is clean.
+  - j4: The render shows a blocky tiled bark texture, dark outlines on the trunk silhouette, ragged pixelated foliage edges and spiky branch stubs; the photograph shows none.
+  - j5: A has brick-like bark tiling, dithered foliage edges, black outlines and crude stick branches at the bottom, while b is clean.
+  - j6: The render shows brick-like tiled bark, dark outlines and blotchy leaf clusters; none seen in the photograph.
+  - j7: a shows a repeating brick-pattern bark texture, hard-edged blotchy leaf sprites and outline strokes, while b is clean.
+  - j8: A shows brick-like stretched bark, dark outlines on branches, dithered blotchy foliage and stray stick shapes at the bottom; b shows none.
+
+The references (each credited in docs/citations.md):
+
+- `vale-e01-floor`: https://commons.wikimedia.org/wiki/File:Beech_and_ferns_in_Gullmarsskogen.jpg
+- `vale-e02-canopy`: https://commons.wikimedia.org/wiki/File:Blacklick_Woods_-_Sunlight_through_American_beech_1.jpg
+- `vale-e03-trunk`: https://commons.wikimedia.org/wiki/File:Senden,_Venner_Moor_--_2013_--_2345.jpg
+- `vale-e04-water`: https://commons.wikimedia.org/wiki/File:A_waterfall_on_the_stream_at_Oerddwr_-_geograph.org.uk_-_7747358.jpg
+- `vale-e05-rock`: https://commons.wikimedia.org/wiki/File:Cross-bedded_quartzose_sandstone_(Dundee_Sandstone,_Middle_Pennsylvanian;_cliffs_along_Walnut_Creek_Bottom_Road,_west_of_Dundee,_Ohio,_USA)_3_(23232718273).jpg
+- `vale-e06-meadow`: https://commons.wikimedia.org/wiki/File:Wildflower_meadow,_Heartwood_Forest_(28861233370).jpg
+- `vale-e07-mist`: https://commons.wikimedia.org/wiki/File:D%C3%BClmen,_Umland,_Sonnenaufgang_--_2012_--_8069.jpg
+- `vale-e08-vista`: https://commons.wikimedia.org/wiki/File:Sun_Set_over_Phewa_Lake.jpg
+- `vale-e09-deer`: https://commons.wikimedia.org/wiki/File:Hind_(228949475).jpeg
+- `vale-e10-walking`: https://commons.wikimedia.org/wiki/File:Samiec_sarny.jpg
+- `vale-e11-deadwood`: https://commons.wikimedia.org/wiki/File:Bracket_fungi_on_fallen_log_Border_Track_Lamington_National_Park_Queensland_IMGP2516.jpg
+- `vale-e12-overcast`: https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-155854.jpg
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
