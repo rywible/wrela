@@ -73,7 +73,7 @@ fn nothing_grows_into_the_head_room() {
 /// crowns reach over its edge), no meadow grass or flowers grow where the history's canopy is
 /// closed (the light at the ground under `ground::CLOSED`); off a path's earth, a stream's bed
 /// and rock, the wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow there in
-/// colonies with leaf litter between them (`ground::woodland_cover`); and the beech wood's floor
+/// colonies with leaf litter between them (`land::cover::woodland_cover`); and the beech wood's floor
 /// is closed over most of it.
 @test
 @fuel(2 ** 39)

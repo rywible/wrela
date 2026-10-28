@@ -78,7 +78,7 @@ impl Grown {
     /// talus old scree and its rock that isn't a face (gentler than 0.86 of level: the crests'),
     /// grown over (`SCREE_GROWN`: moss on its stones, soil between them, which the wood's litter
     /// covers), grass where its soil shows, and over the forest's fields
-    /// (`fields`) the wood's floor (`ground::wood_floor`). Where no tile's fields are
+    /// (`fields`) the wood's floor (`land::cover::wood_floor`). Where no tile's fields are
     /// (`fields.x` below 0: past the trees streamed in), the wood seen from far off: its canopy's
     /// greens over all but its rock.
     fn covered(self, at: vec3, n: vec3, fields: vec4, w: f32) -> Cover {
@@ -96,7 +96,16 @@ impl Grown {
             c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - hard)))
             return c
         }
-        var floor = ground::wood_floor(c, at, n, fields, w, trodden: fields.y, rim: 0.0)
+        var floor = land::cover::wood_floor(
+            c,
+            at,
+            n,
+            fields,
+            w,
+            trodden: fields.y,
+            rim: 0.0,
+            rock_albedo: ground::rock_albedo,
+        )
         // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
         // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left
         // alone for ages; the floor's own, in colonies with litter between, read as bare ground
@@ -407,7 +416,7 @@ const OUTSIDE_WET: f32 = 0.3
 
 /// The wettest ground short of a stream's bed: its wetness (`geology::wetness`, 1 on every flat
 /// valley floor) is scaled to this, under what the wood's floor reads as a bed (from 0.9,
-/// `ground::wood_floor`); the history marks its streams' beds itself.
+/// `land::cover::wood_floor`); the history marks its streams' beds itself.
 const WETTEST: f32 = 0.88
 
 /// The grown land's history at `grain`.
