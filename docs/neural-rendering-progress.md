@@ -18,22 +18,26 @@
 
 ## Immediate milestone
 
-The [source work-list comparison](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy)
-preserves all72RGBA comparisons and removes most redundant geometry submissions,
-but still rejects band reuse for G4 on this AMD path. After batching and wider
-bands, the fastest reconstructed candidate costs0.511ms saturated median versus
-0.278ms cached control, using986,124requested live bytes versus1,875,712.
-Physical savings remain unproved. Same routing is measured on stored cards too.
+The [rendered-error and joint-correction comparison](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction)
+requires a representation change. A perceptually trained CNN improves numeric
+passes from frozen8/24 to14/24; a conventional linear filter reaches13/24 with
+fewer parameters and lower measured cost. Both pass only5/12 on the view excluded
+from fitting. Lighting also incorrectly changes their predicted coverage.
 
-Retire the experimental work-list/band paths; exact prior runtime54aaf879 restored.
-All sources, failed results, costs and actual memory observations are archived.
-No training/new shaded truth. Frozen explicit fit remains unchanged,8/24cases.
+The final CNN requests384,420engine representation/scratch bytes versus
+1,466,092source control, only3.814x; actual resident savings are unproved.
+Complete saturated GPU median is0.161ms versus linear0.103ms and frozen0.068ms.
+Retire joint RGBA post-correction, preserve every failed source/model/result, and
+restore prior runtime4e07e0c1/54aaf879 byte-for-byte. No default allocation change.
+First executable comparison799.3s; decision1558.9s; two targeted experiments,
+3,600 rendered-loss steps, no material-moment fitting or new shaded truth.
 
-Next: use existing shaded captures to separate opacity from straight-radiance
-errors through diagnostic substitutions. Then choose a joint visibility/radiance
-residual only if it corrects actual rendered failures, against an equally informed
-conventional residual codec at the same byte budget. No material-moment fitting
-based on proxy error. G1–G7 remain unchanged and unmet.
+Next architecture bet: geometry/visibility-only coverage separated from conditional
+visible-surface radiance inside a compact representation. Use Wrela's source
+ownership, view and sampling footprint for equally informed conventional and learned
+candidates at the same byte budget. First change only coverage with radiance frozen;
+require lighting invariance, rendered quality and complete AMD runtime/residency.
+G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2403,3 +2407,20 @@ G1–G7 unchanged/unmet.
 [Report](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy).
 Evidence build/neural-evidence/g4-source-worklist-v1 on Pop!_OS.
 Manifest SHA-256: `b90b9266a472ff3f19480f5b53d273514f487940e521a49bfdb38fb47034801c`.
+
+
+### Rendered residuals require a representation change
+
+Oracle attribution diagnoses both coverage and conditional foreground radiance.
+Final perceptual CNN14/24 vs frozen8/24 and conventional linear13/24; both
+CNN/firstlinear5/12 on evaluation view. Lighting changes CNN coverage by0.066285.
+CNN complete paced GPU95/99=0.672/0.674ms, saturated median0.161ms;
+linear0.406/0.407ms and0.103ms. Requested engine bytes384,420 vs source1,466,092,
+only3.814x, actual physical savings unproved. Retire joint RGBA correction;
+all four correctors archived, prior runtime restored with no default changes.
+32native/Torch outputs agree within5.96e-8;8frozen+8cache prior captures unchanged.
+Exactly two targeted experiments,3,600 rendered-loss steps,no new references.
+Next: separate light-invariant geometry coverage from conditional radiance inside
+the representation, with equal-input/equal-byte conventional controls.
+[Report](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction).
+Manifest SHA-256: `b303fcfb330ca9eca5b5284a304d37edaa712e93c70fecd8f4e1b87003f1f988`.

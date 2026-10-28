@@ -228,3 +228,11 @@ by [Ang Cao and Justin Johnson, HexPlane: A Fast Representation for Dynamic Scen
 CVPR 2023, pp. 130–141](https://openaccess.thecvf.com/content/CVPR2023/html/Cao_HexPlane_A_Fast_Representation_for_Dynamic_Scenes_CVPR_2023_paper.html).
 Our light-field coordinates differ from their space-time volume; this is not a
 reproduction. No code, weights, assets or performance claims are imported.
+
+
+The bounded [joint RGBA residual experiment](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction)
+also uses the already cited frozen AlexNet LPIPS v0.1 evaluator as a differentiable
+training loss. Only the small residual models are fitted to Wrela's existing
+shaded source captures; the LPIPS weights remain frozen and outside the repository.
+The unsuccessful residual models and sources are preserved as local experiment
+evidence, not shipped runtime assets.

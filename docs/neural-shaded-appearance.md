@@ -2664,3 +2664,210 @@ G1–G7 remain unchanged and unmet.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-source-worklist-v1.
 Manifest SHA-256: `b90b9266a472ff3f19480f5b53d273514f487940e521a49bfdb38fb47034801c`.
+
+
+## Rendered-error attribution: change representation, retire joint RGBA correction
+
+**Decision: change the representation; retire generic joint RGBA post-correction
+as the G4 path.** The perceptually trained CNN improves rendered quality from
+8/24 to 14/24 passing numeric cases against each of three practical conventional
+controls. A simpler linear filter reaches 13/24 with fewer parameters and lower
+measured cost. Both reach only 5/12 on the view excluded from fitting. Neither
+meets G4, and no production model is promoted.
+
+The final CNN adds 67,856 requested GPU bytes over the frozen path, including a
+65,536-byte full-image output. Requested representation/scratch compression against
+the fast source control is only 3.814x; actual physical residency observations do
+not establish a saving. Lighting alone changes predicted coverage by as much as
+0.066285, despite unchanged geometry. A generic filter over shaded RGBA spends
+memory while entangling shape and lighting.
+
+Solo Pop!_OS block started 2026-10-27 23:48:05 UTC. Existing-capture diagnosis
+completed in 130.1s; the first four-way
+executable AMD comparison in 799.3s.
+Decision at 2026-10-28T00:14:03.930647+00:00 (1558.9s elapsed),
+within the two-hour deadline. Exactly two targeted experiments, 3,600 optimizer
+steps on rendered losses, zero material-moment steps and zero new shaded references.
+The 1,897-primitive frozen payload is unchanged. It is an explicit fitted optical
+representation, not an MLP.
+
+### Attribution establishes the rendered problem
+
+Use existing premultiplied RGBA: foreground radiance P, coverage A, straight
+foreground radiance C=P/A where A>0 and zero otherwise. Substitute either reference
+coverage, keeping candidate C, or reference C, keeping candidate A. Apply the same
+substitutions to the source control. These are **unattainable oracle diagnostics**,
+not executable compressed candidates or rendering wins.
+
+| Frozen diagnostic | Mean PSNR dB | Mean FLIP | Mean LPIPS | Cases passing versus source control |
+| --- | ---: | ---: | ---: | ---: |
+| Original | 40.127682 | 0.01234846 | 0.00188937 | 8/24 |
+| Reference coverage | 45.763468 | 0.00967838 | 0.00107183 | 19/24 |
+| Reference straight radiance | 42.849701 | 0.00847229 | 0.00096022 | 23/24 |
+
+Perfect coverage improves aggregate error more, but five perceptual failures
+remain on the second view. Perfect straight radiance leaves one numeric failure.
+Straight radiance includes which surfaces are visible and their mixture; it is
+not just a material parameter. Neither result justifies more material-moment fitting.
+
+The attribution also records missing/extra support, opaque/interior/boundary
+regions and an exact symmetric linear-light decomposition:
+coverage error times mean foreground/background contrast, plus mean coverage
+times straight-radiance error. Its squared cross term can cancel, so these are
+not independent percentages of error. Zero-coverage support prevents reconstructing
+a candidate's missing foreground colour. Original scores reproduce archived values;
+no repeated reference-convergence audit.
+
+### Two targeted experiments and fair inputs
+
+First, fit a conventional 5x5 linear residual (404 parameters, 1,616 weight bytes)
+and a two-layer 3x3 ReLU CNN with eight hidden channels (588 parameters, 2,352 bytes).
+Both see exactly the same premultiplied RGBA and 5x5 effective neighborhood, with
+the same existing source truth, training view, lights, backgrounds and augmentations.
+There is no privileged view ID, light index, depth, normal or source annotation
+available only to the CNN. These are equal-input/receptive-field controls, **not
+equal-parameter-count models**; the linear method uses less storage.
+
+Train on view0 and all four lights for 1,200 steps per model. Loss is displayed
+RGB MSE over the three established backgrounds plus 0.1 coverage MSE. Select
+checkpoints by unaugmented training-view loss only. View1 never selects weights,
+but it is a previously examined public view, not a sealed G4 holdout.
+
+Both add 0.1 times their predicted residual, clamp A to [0,1] and premultiplied
+RGB to [0,4A], and output zero outside positive input 5x5 coverage support.
+D4 rotations/reflections apply jointly to inputs and truth. Torch deterministic
+CPU fitting uses two threads on Pop!_OS; all rendering measurements use AMD.
+
+The first CNN improves mean pixel error but worsens LPIPS relative to the linear
+filter, passing 10/24 versus 13/24. The second and final experiment continues both
+for 600 steps with an added 0.05 AlexNet LPIPS loss. It keeps capacity, inputs and
+training/evaluation split fixed. This raises CNN passes to 14/24; the linear
+method stays at 13/24, with one fewer pass on view1. No third tuning trial.
+
+Metric implementations and rights are recorded in [citations](citations.md).
+The LPIPS network remains frozen while gradients update only the correctors.
+Each curve, selected checkpoint, weights, CPU prediction and executable source
+is preserved. This is supervision on rendered errors, not proxy material moments.
+
+### Executable rendered quality, including silhouettes
+
+Reuse completed AA64 truth at 64x64: two views, four lights, three backgrounds,
+exposure 0.62, sRGB, LDR FLIP at 67 pixels/degree and AlexNet LPIPS v0.1.
+Passes require all three numeric G4 tolerances on each case: PSNR loss <=0.25dB,
+FLIP and LPIPS <=1.05x with the established 1e-4 denominator floor.
+
+| Candidate | Mean PSNR dB | FLIP | LPIPS | Cases /24 | Training view /12 | Evaluation view /12 | Coverage MAE | Worst boundary p99 pixels |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 40.295971 | 0.01300193 | 0.00249104 | 24 | 12 | 12 | 0.01005954 | 2.000 |
+| Frozen explicit fit | 40.127682 | 0.01234846 | 0.00188937 | 8 | 5 | 3 | 0.00883219 | 1.414 |
+| Linear 5x5 | 40.498732 | 0.01202139 | 0.00193091 | 13 | 8 | 5 | 0.00865870 | 1.414 |
+| CNN, 8 hidden channels | 40.562141 | 0.01215715 | 0.00211275 | 10 | 7 | 3 | 0.00853288 | 1.414 |
+| Linear + perceptual loss | 40.459173 | 0.01268073 | 0.00166777 | 13 | 9 | 4 | 0.00864951 | 1.414 |
+| CNN + perceptual loss | 40.530325 | 0.01234041 | 0.00174393 | 14 | 9 | 5 | 0.00857529 | 1.414 |
+
+The same counts hold against archived forward-source and packed-mask controls.
+The source-cache control shares authored fields, shading, wood and useful source
+information; it is the fastest practical source control found in the preceding
+comparisons. The narrower frozen representation cannot claim a fair G4 win from
+aggregate means while ten cases fail. The retained source hierarchy is another
+conventional memory/runtime tradeoff; comparing against it would not recover 16x.
+
+All 32 native GPU corrector outputs match independent Torch predictions within
+5.96046448e-8, with finite bounded RGBA. The eight new frozen captures and eight
+new cached-control captures match prior images byte for byte.
+
+Coverage should be lighting-invariant in this fixture. Frozen and conventional
+controls satisfy that exactly. Across the four lights, maximum per-pixel coverage
+change on view1 is 0.02029 for the first linear filter, 0.06175 for the first CNN,
+0.02438 for the perceptual linear filter and 0.06628 for the perceptual CNN.
+The latter crosses the 0.5 silhouette threshold at six pixels on view1; perceptual
+linear crosses at twelve. This is a geometry/lighting invariant violation, not
+a measured temporal trail or a complete G3 test.
+
+### Complete cost and memory
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent4e07e0c1 plus archived sources.
+Sequential measurements, 60 warmup and 240 measured frames.
+
+Frozen/corrected paths include primitive decoding, four-sample optical visibility,
+indexed wood, resolve, correction when enabled and final compositing. Their CPU
+cost includes sorting all 1,897 primitives every frame, uploading order, view/light
+updates and command recording. The conventional path includes compact coverage
+cache lookup, source cards, indexed wood, sixteen-sample ID/depth visibility,
+deferred shading, resolve and compositing; stable source order/depth testing
+replace optical sorting. Initialization is outside steady timing and included
+in requested allocation peaks. Dynamic geometry edits/rebuilds remain untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to last GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 1.042/1.086 | 0.277/0.404 | 0.639 | 4.255/4.492 |
+| Frozen explicit fit | 0.074/0.269 | 0.068/0.074 | 0.887 | 4.756/5.003 |
+| Linear 5x5 | 0.406/0.407 | 0.103/0.124 | 1.042 | 3.905/4.075 |
+| CNN, 8 hidden channels | 0.675/0.676 | 0.161/0.225 | 1.004 | 4.835/5.079 |
+| Linear + perceptual loss | 0.406/0.407 | 0.103/0.110 | 1.003 | 4.735/4.914 |
+| CNN + perceptual loss | 0.672/0.674 | 0.161/0.211 | 0.941 | 4.901/5.073 |
+
+The final CNN's observed saturated median is 1.565x the first linear filter's,
+and 2.366x frozen. These single sequential runs establish costs, not a paired
+speedup claim or an explanation of paced/saturated differences. The completion
+observer includes browser/driver notification; it is not photon latency. No extra
+timing rounds can rescue the already failed quality and memory gates.
+
+| Candidate | Engine persistent representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Source coverage-cache control | 1,466,092 | 1,875,692/1,892,076 | 17,686,528/9,838,592 | 485,860,352 |
+| Frozen explicit fit | 316,564 | 726,164/742,548 | 17,367,040/9,740,288 | 477,589,504 |
+| Linear 5x5 | 383,684 | 793,284/809,668 | 17,326,080/9,838,592 | 481,532,928 |
+| CNN, 8 hidden channels | 384,420 | 794,020/810,404 | 17,395,712/9,854,976 | 479,940,608 |
+| Linear + perceptual loss | 383,684 | 793,284/809,668 | 17,641,472/9,838,592 | 481,367,040 |
+| CNN + perceptual loss | 384,420 | 794,020/810,404 | 17,375,232/9,838,592 | 480,997,376 |
+
+The engine column excludes the same 409,600 common output/upload/uniform/screen
+bytes; all-live includes them. Representation, ordering, wood, caches, fallback
+and correction buffers are counted. Inactive experimental controls add 32 bytes
+over the prior runtime. Linear correction adds 67,120 bytes over this frozen
+control; CNN adds 67,856. Both include a new 65,536-byte full RGBA target.
+
+The fused CNN recomputes hidden neighborhoods instead of allocating a hidden
+feature image. It declares no workgroup shared array. Private spills, compiled
+shader caches and driver allocation granularity are not separately attributable.
+DRM/PSS are actual whole-client residency snapshots, not per-asset physical
+allocations or transient physical peaks. Do not sum UMA pools. No 16x physical
+residency reduction is demonstrated, even before considering missing quality.
+
+Inherited scorer prose incorrectly described all paths as sixteen-sample/no-sort/
+untrained. Corrected descriptions distinguish the measured paths; original JSONs
+are preserved, numerical values unchanged. Legacy comparisons against the weaker
+BC fixture are labeled separately. Decisions use quality-vs-controls.json and the
+current source cache, not the weaker legacy comparator.
+
+### Next architecture-level bet and preserved failures
+
+Separate geometry/visibility coverage from conditional visible-surface radiance
+inside the compact representation. Coverage must depend on geometry, view and
+sampling footprint, not illumination. Wrela can expose source ownership, projected
+footprints and normal/visibility information to both a conventional codec and a
+learned alternative. Do not spend a full extra image on post-correction.
+
+The shortest next experiment changes only the coverage representation, freezes
+radiance, and uses existing rendered coverage truth. Compare conventional and
+learned candidates with the same useful geometric inputs and byte budget; require
+lighting invariance and complete AMD cost/memory accounting. Only a measured
+rendered failure should justify a subsequent radiance change. No new reference
+infrastructure or material-moment training is warranted by this block.
+
+All four failed correctors, the unchanged frozen model, exact measured sources,
+weights, logs, builds, curves, raw captures and allocation/residency observations
+are archived. Experimental modules are removed from the active runtime, whose
+tracked files are byte-identical to parent4e07e0c1 and retained runtime54aaf879.
+Reuse the latter's established default checks; no redundant capture or full-suite
+claim, and no new default allocation.
+
+This one-asset/static64px fixture does not establish unseen-family, 8-512px scale,
+continuous-motion, human or whole-engine performance. G1–G7 remain unchanged
+and unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-rendered-error-attribution-v1.
+Manifest SHA-256: `b303fcfb330ca9eca5b5284a304d37edaa712e93c70fecd8f4e1b87003f1f988`.

@@ -2338,3 +2338,36 @@ Next diagnostic: separate opacity and radiance errors in existing shaded capture
 before choosing joint visibility/radiance residuals at a matched conventional byte budget.
 [Complete evidence](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy).
 Evidence build/neural-evidence/g4-source-worklist-v1 on Pop!_OS.
+
+
+### 2026-10-28 — Rendered residuals improve averages but fail G4
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent4e07e0c1 plus archived sources. Solo/sequential,64px,60warmup+240measured.
+First executable comparison 799.3s;
+decision 1558.9s; exactly two targeted experiments.
+3,600 rendered-loss steps; no material-moment fitting or new shaded truth.
+
+Oracle substitutions identify joint coverage/radiance problems, not runtime wins.
+Final perceptual CNN passes14/24 versus frozen8/24 and conventional linear13/24;
+CNN and first linear both5/12 on view excluded from fitting. Final CNN means
+40.530325dB/0.01234041FLIP/0.00174393LPIPS; worst boundary p99=1.414pixels.
+Lighting alone changes CNN coverage by0.066285, despite fixed geometry.
+
+Complete paced GPU95/99: CNN0.672/0.674ms, linear0.406/0.407ms,
+source cache1.042/1.086ms, frozen0.074/0.269ms. Saturated medians:
+0.16116/0.103/0.27652/0.06812ms respectively. Single runs, no paired-speedup claim.
+CNN requested engine representation/scratch384,420bytes versus1,466,092source
+cache and316,564frozen; all-live794,020/1,875,692/726,164. Only3.814x requested
+engine compression, no demonstrated16x actual resident saving. New full-image
+correction scratch65,536bytes plusweights is included. DRM/PSS snapshots recorded.
+
+Decision: change representation; retire joint RGBA post-correction. Separate
+geometry-only coverage from conditional visible-surface radiance, using equally
+informed conventional and learned controls. Preserve failed models, weights and
+sources; restore exact prior runtime.32GPU/Torch outputs agree within5.96e-8;
+prior8frozen+8cache captures unchanged. Reuse default checks, no redundant suite.
+G1–G7 unchanged/unmet.
+[Full report](neural-shaded-appearance.md#rendered-error-attribution-change-representation-retire-joint-rgba-correction).
+Evidence build/neural-evidence/g4-rendered-error-attribution-v1 on Pop!_OS.
