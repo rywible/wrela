@@ -18,25 +18,19 @@
 
 ## Immediate milestone
 
-The [fused source-visibility experiment](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails) is retired.
-Source binning removes the full-frame sample image. Initial analytic rasterization
-passes only 20/24; snapping both coverage and interpolation to the measured AMD
-subpixel grid recovers all 24 cases and sixteen exact packed-control images.
+The [clump visibility experiment](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information) is retired.
+Exact coverage survives, but sharing depth/material representatives fails every
+shaded quality case. Four layers recover some quality while losing the memory
+saving; complete GPU cost also exceeds the conventional control. The preceding
+compact neural coverage decoder was likewise dominated by an informed source
+program. Frozen optical remains unchanged and fails the G4 quality gate.
 
-The repaired full-field path still costs 1.49664 ms saturated versus 0.64160 ms
-for packed hardware visibility. Requested live allocations fall only 7.80%:
-765,816 versus 830,580 bytes. Physical 16x savings remain unproved. Local visibility
-and shading dominate cost; worklists themselves are valid and avoid whole-source
-scans per tile. One quality-repair follow-up; no second memory-only trial is justified.
-
-All runtime files are restored exactly to verified parent 9487c46b; failed sources,
-measurements and the corrected stable-list diagnostic are preserved. No training,
-new references, default allocations or redundant runtime checks.
-
-Next: keep hardware visibility and test source-conditioned footprint integration
-that reduces shaded-sample demand. Conventional integration receives the same source
-coverage/depth features. Do not repeat generic postfilters, scalar-opacity heads,
-small response caches or material-moment fitting. G1–G7 remain unchanged and unmet.
+Next test source-guided sample placement under G1's unchanged full-stack colour
+budget, preserving exact surface ownership and causal observations. Begin with an
+informed conventional adaptive sampler/reconstructor on existing clips/references;
+count every guide query, selection, shading, history and reconstruction step.
+Do not repeat fixed-sample raw-kernel training or material-moment fitting without
+a new rendered-error justification. All G1–G7 remain active, unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2608,3 +2602,22 @@ that reduce visibility scratch and per-card work, with exact fallback counted.
 Start conventional; justify any learned residual with rendered error and cost.
 [Full comparison](neural-shaded-appearance.md#compact-learned-coverage-retire-per-fragment-decoding).
 Manifest SHA-256: `d023e3286fbde983839e28a1ae35bae98847ab3e1dd31ed1fa5d3700e37754eb`.
+
+### Shared-representative clump visibility is retired
+
+Both variants preserve exact 16-sample coverage and silhouettes but fail all
+24 shaded cases. One layer: 33.757 dB, 0.82956 ms, 656,844 live requested bytes.
+Four layers: 37.033 dB, 0.86428 ms, 919,908 bytes. Compact source: 40.296 dB,
+0.63828 ms, 830,596 bytes, 24/24 cases. Sharing representatives changes 84–85%
+of covered sample identities; four layers still change 73%. No joint advantage.
+
+First assessment 1.40 minutes; decision
+7.20 minutes. One follow-up, no training/new references.
+40 rendered captures, 24 winner probes, 262,144 exact coverage bits; failed
+results preserved, default runtime restored. G1–G7 unchanged/unmet.
+
+Next: source-guided sample placement under G1's unchanged full-stack budget,
+preserving exact surface ownership; conventional adaptive control first, with
+equal source inputs and all query/selection/shading/history/reconstruction cost.
+[Full decision and evidence](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information).
+Manifest SHA-256: `ade37d69564e890e972d7b3f2c01efbb7560ade6192c7c048dbeb656194a68bb`.

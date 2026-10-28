@@ -2582,3 +2582,14 @@ Paced GPU tails, silhouettes and actual whole-client DRM/PSS also recorded.
 No joint advantage; retire after one frozen-weight optimization. First comparison
 5.52 minutes; decision 16.40 minutes. Runtime restored; failed results preserved.
 [Complete quality, runtime and memory evidence](neural-shaded-appearance.md#compact-learned-coverage-retire-per-fragment-decoding).
+
+### AMD clump visibility retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e5; parent 63d67522 plus archived variants.
+One layer: 0/24 shaded cases, 0.82956 ms complete GPU, 656,844 live requested bytes.
+Four layers: 0/24, 0.86428 ms, 919,908 bytes. Compact source: 24/24, 0.63828 ms,
+830,596 bytes. Coverage exact in both candidates, selected materials incorrect.
+Rebuild every frame included; actual DRM/PSS snapshots recorded. Retire after one
+follow-up; no training/new references. Failed results preserved, runtime restored.
+[Full quality, cost and memory evidence](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information).

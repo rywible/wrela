@@ -5007,3 +5007,159 @@ benchmark of their full method; no external shaders, weights or assets were copi
 
 Evidence: build/neural-evidence/g4-coverage-decoder-v1 on Pop!_OS.
 Manifest SHA-256: `d023e3286fbde983839e28a1ae35bae98847ab3e1dd31ed1fa5d3700e37754eb`.
+
+## Clump visibility tiles: exact silhouettes, insufficient surface information
+
+**Decision: retire shared-representative clump tiles.** One layer saves 20.92% of
+requested live resources but fails all 24 shaded quality cases and is slower than
+the compact source control. One four-layer follow-up improves quality but still
+fails every case, while using more memory than that control. Exact coverage alone
+does not preserve which material each sample sees. No neural rendering advantage.
+
+First complete comparison: 1.40 minutes.
+Decision: 7.20 minutes, at 2026-10-28T05:31:16.341795+00:00, inside two
+hours. One targeted follow-up, no second sweep, training or new shaded reference.
+Frozen model and all G1–G7 thresholds remain unchanged.
+
+### Representation and fair source inputs
+
+The previous decoder experiment showed that 4KB of coverage data cannot remove
+the much larger visibility working set. This test changes visibility storage.
+For each projected clump/output pixel/depth bin, store a 32-bit nearest
+depth/source-ID word plus a 16-bit coverage mask in a 32-bit atomic word.
+All original source cutouts generate the mask. The representative's depth/material
+is shared across the set samples; this is deliberately approximate.
+
+Each of 44 clumps gets a conservative square footprint derived from its radius,
+squash and maximum source-card extent. The combined clump footprints occupy
+6,865 output-pixel cells. Wood gets a separate 4,096-cell full-screen group.
+One layer therefore needs 10,961×8 = 87,688 bytes. Four layers need 350,752 bytes.
+The 45-entry GPU layout is 720 bytes; the R8 raster target remains 65,536 bytes.
+The ordinary packed control retains its 262,144-byte per-sample winner buffer
+and a 16-byte unused layout allocation in this experiment.
+
+Fragments atomically OR their sample bit and minimize the depth/source-ID word.
+Resolve considers each overlapping clump and depth bin, chooses the smallest
+representative key for each set sample, then uses the unchanged source shading
+function. Four layers partition a clump's conservative depth interval; wood uses
+four bins over the full view depth. There is no depth-peeling claim or exact
+per-sample material claim.
+
+Every frame rebuilds these records, including after camera changes. All 26,560
+source cards and 7,392 expanded wood triangles are still generated. This first
+test isolates the representation's quality and working set; it does not yet
+reduce primitive generation. There is no omitted warm-view cache or reference
+image at runtime. Native, compact source and clump methods receive identical
+geometry, masks, authored material fields and sampling information.
+
+### Rendered quality and source ownership
+
+| Method | Numeric cases passed | PSNR dB | FLIP | LPIPS | Coverage MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native source cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 |
+| Compact source cache + field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 |
+| Frozen optical primitives | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Clump tiles, one layer | 0/24 | 33.757220 | 0.05640548 | 0.00996691 | 0.01005954 |
+| Clump tiles, four layers | 0/24 | 37.033281 | 0.02593381 | 0.00555881 | 0.01005954 |
+
+The unchanged numeric gate requires PSNR loss≤0.25 dB and FLIP/LPIPS≤1.05×,
+with the 1e-4 floor. Counts agree against all four informed native/compact/
+hierarchy source controls. These are partial numeric checks, not full G4 passes.
+
+Both candidates reproduce every rendered alpha value and all 16 coverage bits
+per pixel in both views. Worst silhouette boundary p99 stays 2 pixels, worst
+half-coverage precision 0.983065 and recall 0.994007, equal to the source controls.
+All ten method/view coverage sequences are light-independent.
+
+Despite that exact coverage, one layer chooses a different source surface at
+85.35% and 84.08% of covered samples. Four layers reduce this only to 73.41% and
+73.28%. Wood-to-leaf plus leaf-to-wood mistakes fall from 35 to 11 across both
+views. Four layers raise mean PSNR by 3.276 dB, yet remain 3.263 dB below compact
+source; mean FLIP and LPIPS are about 2.0× and 2.23× its errors.
+Source normal/depth/material evaluation is unchanged; the selected source
+representatives, not the silhouette mask, lose the necessary information.
+
+Scoring reuses AA64 shaded references for one static 64px tree, two public views,
+four analytic lights and three backgrounds. Exposure 0.62, ACES→sRGB, LDR FLIP
+67 ppd and AlexNet LPIPS v0.1 remain fixed. Flat bark and limited lighting remain
+fixture limitations. No unseen-family, temporal, scale or full G4 result.
+
+### Complete AMD runtime and memory
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent 63d67522 plus exact archived
+variant sources. Sequential 64×64 runs, 60 warm-up and 240 measured frames.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | CPU start to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 0.27508/0.49476 | 1.0780/1.0870 | 0.7072 | 4.5706/4.6836 |
+| Compact source cache + field | 0.63828/0.66940 | 1.5021/1.5533 | 0.6130 | 4.5903/4.7911 |
+| Frozen optical primitives | 0.06804/0.07244 | 0.2727/0.2798 | 0.9881 | 4.7705/5.0157 |
+| Clump tiles, one layer | 0.82956/0.84028 | 1.7138/1.7561 | 0.6930 | 5.6150/5.7205 |
+| Clump tiles, four layers | 0.86428/0.87868 | 1.7147/1.7848 | 0.7441 | 4.4905/4.7015 |
+
+Costs include source placement, coverage lookup, record clearing/building,
+visibility resolution, all wood, exact authored field/shading, output resolve,
+CPU camera/light updates, uploads and composite. Source paths require no optical
+sort; frozen optical includes its CPU sort and indexed wood. Both clump variants
+use three draws and upload 1,552 bytes/frame. Initialization is outside steady
+timing; initial allocation peaks are recorded. Dynamic source edits are unmeasured.
+
+Both candidates exceed the 1.1× paced GPU p95/p99 allowance against compact
+source. Whole completion includes browser/driver notification and can vary
+independently of GPU time; the four-layer completion result is not proof of a
+rendering win. Single-run small differences are not repeatable speedup claims.
+
+| Method | Engine + scratch bytes | All requested live/peak bytes | DRM VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 1,466,060 | 1,875,660/1,892,044 | 17,403,904/9,936,896 | 490,451,968 |
+| Compact source cache + field | 420,996 | 830,596/846,980 | 17,403,904/9,936,896 | 492,132,352 |
+| Frozen optical primitives | 316,532 | 726,132/742,516 | 17,301,504/9,838,592 | 478,434,304 |
+| Clump tiles, one layer | 247,244 | 656,844/673,228 | 17,403,904/10,051,584 | 497,509,376 |
+| Clump tiles, four layers | 510,308 | 919,908/936,292 | 17,682,432/9,936,896 | 498,064,384 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals add
+409,600 bytes of output/screen/upload/uniform resources. Exact leaf cache,
+source parameters and tissue fallback, field nodes, wood, layout, visibility
+scratch and dummy resources are counted. No hidden predecoded images or model
+weights. Four layers erase the one-layer memory saving: 919,908 versus 830,596
+requested live bytes, a 10.75% increase.
+
+DRM VRAM/GTT and PSS are actual whole-client resident snapshots, including wider
+driver/browser state. They are not physical transient peaks or asset-attributed
+appearance memory; overlapping UMA pools must not be summed. They establish no
+16× quality-matched physical residency saving. The 16-byte dummy layout difference
+from the previous compact control is explicit, not a performance improvement.
+
+### Verification, retirement and the next bet
+
+40 rendered captures, 24 winner-probe captures and 262,144 candidate coverage bits
+were checked. All 24 original control RGBA captures match prior sealed evidence.
+All 16 candidate alpha captures match the compact source control. The probe
+records every sample's selected source ID and preserves the ownership failures.
+Source field, coverage and shading function bodies are unchanged, so established
+checks are reused. No broad suite or reference audit was repeated.
+
+Both failed tile variants, complete rebuild costs, source snapshots and raw
+physical observations are preserved. Runtime is restored byte-for-byte to
+63d67522; the experimental module is archived and removed. A second bin sweep is
+not justified: four layers already cost more memory and runtime without passing
+one quality case. This result rejects shared representatives, not every possible
+layered visibility representation.
+
+Next learning bet: **source-guided sample placement with exact surface identity**
+under G1's unchanged full-stack colour-sample budget. First compare an informed
+conventional adaptive sampler/reconstructor on the existing reconstruction clips.
+Count field queries, sample selection, shading, history and reconstruction. Any
+learned routing gets the same causal fields/visibility/footprints. The earlier
+fixed-sample raw-kernel models remain rejected; another fit of them is not the
+proposed experiment. G4 remains unmet, and no G1 success follows from this pivot.
+
+Coverage-mask prior art:
+[Loren Carpenter, The A-buffer, an Antialiased Hidden Surface Method (1984)](https://www.cs.cmu.edu/afs/cs/academic/class/15869-f11/www/readings/carpenter84_abuffer.pdf).
+Our fixed-bin clump representation, atomic packing and renderer are original;
+this is not a reproduction of the paper's full fragment-list algorithm.
+
+Evidence: build/neural-evidence/g4-clump-visibility-v1 on Pop!_OS.
+Manifest SHA-256: `ade37d69564e890e972d7b3f2c01efbb7560ade6192c7c048dbeb656194a68bb`.
