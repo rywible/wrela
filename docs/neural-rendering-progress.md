@@ -18,19 +18,19 @@
 
 ## Immediate milestone
 
-[Source coverage and per-surface radiance](neural-coverage-radiance.md) is retained
-as explicit conventional `raw-factor` baseline. Four existing public clips at4x:
-FLIP .24324→.17218, opaque temporal MAE .026315→.014824; complete AMD GPU median
-18.49432→15.95700ms after final integration, with identical requested allocation.
-One targeted same-surface fallback follow-up; no training or new references.
-All G1–G7 remain active/unmet; this is not a G4 or neural-model success.
+[Exact surface visibility with compact materials](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup)
+is retired after one follow-up. Frozen and conventional aggregate material each
+pass4/24 shaded cases despite exact source coverage. Restoring authored normals
+and depth raises both to21/24, but adds memory and provides no useful runtime
+saving. All payloads, failed results and actual physical observations are preserved.
+No new training or shaded references; G1–G7 remain active and unmet.
 
-Next transfer the coverage/radiance separation to the existing shaded G4
-references. Preserve source visibility and per-surface identity while testing a
-source-coordinate radiance hierarchy against the equally informed conventional
-renderer. Charge wood, visibility, sorting, updates, decode, compositing and
-resident scratch/fallback. Keep frozen appearance models and reference methods;
-do not fit material moments unless rendered errors justify it.
+Next test sparse evaluation of the authored normal/depth field at exact visible
+source points. Use source-derived geometric bounds to reject negligible smooth-
+union contributions, comparing a conventional implementation with the exact
+field on existing shaded references. Preserve coverage and surface identity;
+count all wood, visibility, decoding, updates, compositing and resident storage.
+Consider a learned residual only after rendered error and complete cost justify it.
 
 ## Evidence recorded so far
 
@@ -2665,3 +2665,13 @@ representation remains unqualified. Final outputs/frozen controls/cuts verified;
 failures and actual DRM/PSS snapshots preserved. No goal thresholds changed.
 [Quality, memory, runtime, limitations and replay](neural-coverage-radiance.md).
 Evidence manifest: `1376a43a3faef8f1e258cb31ae9aa68547e1aea8b776b134d774e420072a2bc5`.
+
+### Exact visibility and compact surface material checkpoint (2026-10-28)
+
+First full comparison1.75minutes; decision8.09minutes. One follow-up restores
+source normal/depth, raising4/24 to21/24 numeric cases. Full compact material
+costs0.35120ms/914,044liveB vs compact source0.63812ms/830,580B, but fails20cases.
+Colour-only0.64276ms/898,868B still fails3cases and paced cost. Retire both;
+restore appearance runtime exactly to83a2f998, retaining reconstruction work.
+[Full comparison](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup).
+Evidence manifest: `f82d5df92e0f8a760aa4c4ae136c38cff8b72bd4999b168d0f6980fd96f1d402`.

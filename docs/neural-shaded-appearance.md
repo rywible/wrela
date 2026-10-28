@@ -5163,3 +5163,186 @@ this is not a reproduction of the paper's full fragment-list algorithm.
 
 Evidence: build/neural-evidence/g4-clump-visibility-v1 on Pop!_OS.
 Manifest SHA-256: `ade37d69564e890e972d7b3f2c01efbb7560ade6192c7c048dbeb656194a68bb`.
+
+## Exact surface visibility with compact materials: retire aggregate response lookup
+
+**Decision: retire source-ID-assigned aggregate materials and colour-only variants
+for G4.** Exact coverage does not rescue the frozen compact material means: both
+frozen and conventional material versions pass only4/24 numeric quality cases.
+Restoring authored normals and depth raises both to21/24, but adds memory without
+a useful runtime saving. This identifies directional/depth approximation as a
+major rendered-error source; it establishes no neural or joint rendering win.
+
+First complete comparison: 1.75 minutes. Decision:
+8.09 minutes, 2026-10-28T15:15:15.903252+00:00, within two hours. One
+targeted follow-up; no second sweep, training, material-moment fitting or new
+shaded reference. Frozen payload and G1–G7 remain unchanged. Runtime is restored
+to parent83a2f998, preserving the separate conventional reconstruction improvement.
+
+### Consequential question and equal source information
+
+[The analytic reconstruction experiment](neural-coverage-radiance.md) showed a
+benefit from separating geometric coverage and per-surface colour. This test
+asks whether that separation transfers to the completed shaded G4 fixture.
+The previous clump representation changed which source surface was shaded;
+this experiment preserves every original per-sample winner and changes only
+the material returned for that exact source ID.
+
+The 26,560 source cards retain their original assignment to1,897 aggregates.
+A packed uint16 lookup costs53,120 bytes. Each aggregate stores seven unchanged
+half values from its source payload: square-root albedo RGB, raw normal XYZ and
+normalized crown depth, padded to eight half values. Material data costs30,352
+bytes; the combined83,472-byte buffer replaces an unused8-byte response buffer.
+It is a derived material-only representation; the106,232-byte frozen optical
+payload remains immutable and is not uploaded redundantly into these variants.
+Optical geometry, opacity and centre-depth order do not supply visibility here.
+
+The existing packed source renderer supplies exact cutouts and surface identities,
+with its established quantized-depth ordering. Resolve decodes the assigned
+material, normalizes its normal and applies production leaf lighting. Wood still
+uses its original surface identity, barycentric normal and shading. Every frame
+rebuilds visibility from all source cards and wood; no cached reference image,
+view-specific colour table or privileged target input is present.
+
+The optimized/frozen and conventional source aggregates receive the same
+assignment, decoder, source geometry, masks and light information. Native and
+compact source controls retain exact authored materials and source code. Their
+source information is never withheld to make a learned path look stronger.
+
+### One follow-up isolates material direction from colour
+
+Both full-material candidates preserve all source alpha images yet pass only4/24
+quality cases. The sole follow-up restores the source's exact authored normal
+and crown depth while retaining compact aggregate albedo. It uses the same ID
+lookup and three half colour values padded to four per aggregate:15,176 bytes,
+or68,296 bytes including mapping. It still computes the existing authored field
+at each visible leaf point; the complete field cost is included.
+
+This is an executable rendered ablation, not a material-moment proxy. Both
+versions rise to21/24 cases, with mean PSNR near40.25dB. The remaining three
+failures are LPIPS: view0/light2/background1 and view1/light1/backgrounds0/1.
+The frozen colour ratios are1.1644,1.0664 and1.1446 against compact source;
+conventional colour ratios are1.1098,1.0558 and1.1400. PSNR and FLIP pass these
+three cases, but the unchanged joint gate does not. No threshold is relaxed.
+
+### Shaded quality and silhouettes
+
+| Method | Numeric cases passed | PSNR dB | FLIP | LPIPS | Coverage MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native source cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 |
+| Compact source cache + field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 |
+| Frozen optical primitives | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 |
+| Frozen material, exact visibility | 4/24 | 39.508957 | 0.01448606 | 0.00294633 | 0.01005954 |
+| Conventional material, exact visibility | 4/24 | 39.478501 | 0.01511584 | 0.00290911 | 0.01005954 |
+| Frozen colour + source normal/depth | 21/24 | 40.245822 | 0.01311839 | 0.00251255 | 0.01005954 |
+| Conventional colour + source normal/depth | 21/24 | 40.252457 | 0.01313300 | 0.00248102 | 0.01005954 |
+
+Counts above compare against compact source; the existing native and hierarchy
+source controls are also recorded case by case. The numeric gate requires PSNR
+loss≤0.25dB and FLIP/LPIPS≤1.05× with the1e-4 floor. These are partial G4 checks,
+not a full G4 pass. Scoring reuses AA64 references for one static64px tree,
+two public views, four lights and three backgrounds, with exposure0.62,
+ACES→sRGB, FLIP67ppd and calibrated AlexNet LPIPS v0.1 unchanged.
+
+All32 candidate RGBA captures have alpha byte-identical to compact source.
+Worst silhouette boundary p99 remains2 pixels, worst half-coverage precision
+0.983065 and recall0.994007. Coverage is light-independent in all14 method/view
+sequences. Exact visibility relative to the conventional AA4 control is not
+exact coverage relative to the AA64 reference, nor a G3 guarantee.
+
+Full frozen material loses0.787dB mean PSNR against compact source, despite
+preserving its coverage. Restoring normal/depth recovers0.737dB. Aggregate
+response loses information associated with the visible source surface; the
+problem is not fixed by replacing approximate optical visibility alone.
+
+### Complete AMD runtime and resident observations
+
+RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0/compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. Parent83a2f998 plus archived
+variants. Sequential64×64 GPU runs,60 warm-up and240 measured frames; no
+concurrent scoring or training. Separate paced completion/memory observations
+use300 frames and discard60.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | CPU start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 0.27572/0.45436 | 1.0824/1.0903 | 0.6991 | 4.3601/4.6354 |
+| Compact source cache + field | 0.63812/0.65076 | 1.4983/1.5433 | 0.7605 | 4.4902/4.5823 |
+| Frozen optical primitives | 0.06832/0.07992 | 0.2717/0.2753 | 0.9780 | 4.5601/4.7588 |
+| Frozen material, exact visibility | 0.35120/0.45452 | 1.1841/1.2209 | 0.6472 | 4.6033/4.7679 |
+| Conventional material, exact visibility | 0.35392/0.55800 | 1.2207/1.2830 | 0.7481 | 4.1353/4.3082 |
+| Frozen colour + source normal/depth | 0.64276/0.69164 | 1.7551/1.8712 | 0.6881 | 5.5906/5.7453 |
+| Conventional colour + source normal/depth | 0.64304/0.71160 | 1.5291/1.5651 | 0.6411 | 4.7004/4.8469 |
+
+Full compact material bypasses repeated authored normal/depth queries and is
+faster than the compact field control: frozen0.35120 vs0.63812ms median. It is
+still slower than native cached source at0.27572ms and fails20 quality cases.
+Colour-only must compute the field again and costs0.64276/0.64304ms, essentially
+the compact control's saturated cost, with worse paced tails. Frozen colour's
+paced p95/p99 is1.7551/1.8712ms versus1.4983/1.5433ms; it also misses the1.1×
+allowance. Small single-run differences are not repeatable speedup claims.
+
+Source placement, coverage/cache lookup, clearing and building visibility,
+material mapping/decoding, field queries, all wood, lighting, uploads, camera/light
+updates, resolve and display composite are included. Source paths require no
+optical sort; frozen optical includes its existing sort and indexed wood. No
+sort is omitted merely because a different visibility architecture removes it.
+Initialization is outside steady timing and inside requested allocation peaks;
+dynamic source edits, motion and20-minute G6 stability remain unmeasured.
+
+| Method | Engine + scratch B | All requested live/peak B | DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/10,035,200 | 483,796,992 |
+| Compact source cache + field | 420,980 | 830,580/846,964 | 17,670,144/10,035,200 | 487,320,576 |
+| Frozen optical primitives | 316,532 | 726,132/742,516 | 17,317,888/9,854,976 | 472,735,744 |
+| Frozen material, exact visibility | 504,444 | 914,044/930,428 | 17,403,904/9,936,896 | 485,702,656 |
+| Conventional material, exact visibility | 504,444 | 914,044/930,428 | 17,670,144/9,936,896 | 485,275,648 |
+| Frozen colour + source normal/depth | 489,268 | 898,868/915,252 | 17,670,144/9,953,280 | 486,359,040 |
+| Conventional colour + source normal/depth | 489,268 | 898,868/915,252 | 17,670,144/9,936,896 | 487,880,704 |
+
+Engine totals exclude the common65,536-byte output. All-requested totals include
+409,600 bytes of output/screen/upload/uniform resources, all visibility scratch,
+source masks, field nodes, wood, lookup records, caches and fallback resources.
+Full material needs914,044 live bytes vs830,580 for compact source; colour-only
+still needs898,868. Mapping overhead is paid in full, not hidden in a model-size
+claim. Native cached source is a faster/larger-memory comparison, not a baseline
+that was denied source knowledge.
+
+DRM and PSS are actual whole-client resident snapshots, not physical transient
+peaks or asset-attributed appearance residency; UMA pools may overlap and must
+not be summed. There is no16× quality-matched physical memory reduction. Extra
+attribution infrastructure cannot rescue candidates that already fail quality
+and add known appearance lookup storage.
+
+### Focused verification, retirement and next bet
+
+All24 original control RGBA captures match previous sealed evidence exactly.
+All32 candidate alpha captures match compact source. Source coverage, surface-ID,
+wood and resolve functions are unchanged except the explicit material branch;
+the authored field response is byte-identical. Independent CPU bit decoding
+checks all26,560 ID mappings and every stored material channel against the
+unchanged frozen/conventional half payloads. Established reference and renderer
+checks are reused; no new reference machinery or broad unchanged suite.
+
+A copied scoring-script description still referred to the earlier clump method;
+it was corrected before sealing, with the old text retained in
+`metadata-correction.json`. No raw image, metric, allocation or timing changed.
+All failed variants, payloads, rendered captures, exact sources and physical
+observations are preserved. Restored runtime files match parent83a2f998 byte for
+byte. The previously retained reconstruction baseline is unaffected.
+
+**Next architecture bet: sparse evaluation of the authored directional field at
+exact visible source points.** Source geometry can bound negligible contributions
+to the smooth union that produces normals and crown depth. Test a conservative
+conventional pruning method against the exact field using the same completed
+shaded references and full costs. Preserve surface identity and coverage. Only
+consider a learned residual if that rendered comparison exposes a worthwhile
+remaining error/cost problem; another material-mean fit is not justified here.
+
+Existing sampling, source-field and evaluator citations remain in the
+[citation register](citations.md#neural-reconstruction-instrument). This lookup
+and ablation use original Wrela code and existing source assignments; no external
+implementation, weights or assets were added. G1–G7 remain active and unmet.
+
+Evidence: `build/neural-evidence/g4-surface-material-v1` on Pop!_OS.
+Manifest SHA-256: `f82d5df92e0f8a760aa4c4ae136c38cff8b72bd4999b168d0f6980fd96f1d402`.

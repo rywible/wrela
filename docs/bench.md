@@ -2639,3 +2639,16 @@ Live/peak 89,493,784/97,788,184B unchanged. Physical DRM/PSS and
 CPU/completion recorded separately. No16x compression, shadedG4, general3D,
 sealed validation or sustainedG6 claim. One follow-up; no training/newreferences.
 [Full quality, boundary errors, costs and failures](neural-coverage-radiance.md).
+
+### AMD exact visibility with compact material lookup (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent83a2f998 plus archived variants.
+Existing64px tree,2views×4lights×3backgrounds; AA64references unchanged.
+Frozen/conventional full material under exact source visibility pass4/24;
+source-normal/depth follow-up raisesboth to21/24. Fullfrozen GPU.35120ms,
+914,044liveB vs compactsource.63812ms/830,580B andnative.27572ms/1,875,660B.
+Colour-only.64276ms/898,868B stillfails3cases andpacedcost. No16x quality-matched
+memory or neuralwin. All56captures,24exactpriorcontrols,32exactcandidatealpha,
+complete CPU/GPU/completion,DRM/PSS andfailedvariants preserved. Runtime restored.
+[Decision and full measurements](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup).
