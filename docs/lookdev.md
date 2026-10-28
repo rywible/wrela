@@ -61,4 +61,29 @@ Five rows, each scored 0 to 3 per shot, before and after, and a preference betwe
 | depth | overlap, scale cues and atmosphere separate near from far |
 | artifacts | no aliasing, flicker, leaks, popping or tiling is seen |
 
-A separate agent judges, in a context of its own: shown each pair in an order it isn't told, it scores both stills, writes one sentence per row and says which it prefers. With `WRELA_HERO_DIR` naming Ryan's private hero set (docs/citations.md), it views those first. It's calibrated once per step on the detail-removal pair: if it prefers the degraded still, its scores don't count for that step. The scores, the preferences and the order key go in the PR; Ryan's verdict is final.
+A separate agent judges, in a context of its own: shown each pair in an order it isn't told, it scores both stills, writes one sentence per row and says which it prefers. With `WRELA_HERO_DIR` naming the private hero set (docs/citations.md), it views those first; that set is held to the same eligibility as the public references (docs/plan-world-class-3.md §B3.1): 23 public-domain paintings (CC0) and 52 Studio Ghibli stills under the rights holder's published invitation, which Ryan accepted on 2026-10-28. No other image in it is ineligible. It's calibrated once per step on the detail-removal pair: if it prefers the degraded still, its scores don't count for that step. The scores, the preferences and the order key go in the PR. Agents alone judge (docs/plan-world-class-3.md D38): their tally is the verdict.
+
+## The reference review
+
+The vale's look is judged against freely licensed photographs and footage of its real subjects (`references/vale.wrela`, docs/citations.md): G-reference (docs/plan-world-class-3.md §0.5, §B4). `studio/compare` lays out the comparisons and tallies the judgements; it doesn't judge.
+
+```bash
+wrela tool studio/compare --read ws=. --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/vale-b5 --a build/vale-b5/stills --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+```
+
+```bash
+wrela tool studio/compare --read ws=. --write ws=. -- build/vale-b5 --tally
+```
+
+The references stay outside the repository, so the tool runs as a package with their directory granted (`refs`): a workspace's declared tool's roots stay inside the workspace.
+
+- **The mode** is attributed: each reference's credit, licence, source and the conditions its page discloses are shown beside it, so the judge knows which image is the photograph. The order of the pairs and of each pair's sides comes from a seed. No claim of independence follows from the random order or from fresh contexts.
+- **The rubric** is the five rows above, 0 to 3 for each image. The judge allows for different scenes and source conditions, and judges the relevant visual quality. "Equal" means both images are within one point on every row: a judge who says equal of images further apart is read as preferring the one scored higher.
+- **Rights-aware access.** A reference stands in a panel only if its licence permits a local copy, an agent judge's view and a display's resizing: public domain, CC0, CC BY or CC BY-SA with its notice. Anything else is link-only and refused, and the tool never fetches. Each copy is checked against its SHA-256 in the manifest, and a missing or changed copy is refused. The judges read `pairs.json`; `key.json` (which image is the vale's) is kept from them; the review page (`index.html`) stays under `build/`.
+- **Calibration** uses two pairs made only from the vale's own stills: an original against its 3×3 blur, and against its quarter-resolution copy brought back to its size. A judge that prefers a worse copy is rejected and replaced; every attempt is kept.
+- **The tally** (`--tally`) needs eight valid judges who judged every pair; a missing or unviewable judgement leaves it incomplete, never shrinking the denominator. Three rules, all required:
+  - overall: at least 50 % of the judgements prefer the vale or rate the pair equal;
+  - per pair: no pair is lost worse than 6 to 2;
+  - majority: at least 6 of 12 pairs are won or equal by the judges' median (4 of 8 on the development panel).
+  It writes `tally.json` and `tally.md` (each pair's preferences and rubric means, the rules, the verdict, the rubric's rows ranked by how much the vale lost them) for docs/bench.md's "Public visual references". Changing the references changes the manifest's hash, and the tally refuses a panel whose hash isn't the references' now: a changed source makes a new baseline.
+- **The judges** are eight agents in fresh contexts. Each is given the rubric, the pairs' images (its own access to the files), their credits and conditions, and nothing of what the implementer expects. Each writes `judges/<name>.json`.

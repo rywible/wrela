@@ -1,0 +1,317 @@
+// A panel: a program's stills paired with the references for their shots, in a random order, each
+// pair's sides in a random order, with what its judges must see beside each reference (its credit,
+// its licence, its source and what its page discloses), the hashes that freeze the references and
+// the shots, and the review's mode. Its key (which side is the program's) is written apart.
+
+use references::vale::VisualReference
+use rights::eligible
+use std::hash::sha256::sha256
+use std::string::String
+
+/// One comparison: its number in the panel (from 1), the shot (its name and class) and the
+/// reference for it, the program's still (a path in the workspace) and the reference's copy (a
+/// path under the references' directory), whether the still is image A, and what's shown beside
+/// the reference.
+pub struct Pair: Clone {
+    pub number: u32,
+    pub shot: String,
+    pub class: u32,
+    pub reference: String,
+    pub still: String,
+    pub photo: String,
+    pub still_first: bool,
+    pub credit: String,
+    pub licence: String,
+    pub source: String,
+    pub conditions: String,
+}
+
+/// A calibration pair: one of the program's stills against a worse copy of itself (its 3×3 blur,
+/// or its quarter-resolution copy), sides in a random order; a valid judge prefers the original.
+pub struct Control: Clone {
+    pub name: String,
+    pub original: String,
+    pub worse: String,
+    pub original_first: bool,
+}
+
+/// A panel: its set (`evaluation` or `development`), its mode (`attributed`: credits shown), the
+/// seed its order came from, the hashes of the references' manifest and of the shots, its pairs and
+/// its calibration pairs.
+pub struct Panel: Clone {
+    pub set: String,
+    pub mode: String,
+    pub seed: u32,
+    pub manifest: String,
+    pub shots: String,
+    pub pairs: Vec<Pair>,
+    pub controls: Vec<Control>,
+}
+
+/// The review's one mode: attributed, the credits shown (plan three's §B4).
+pub const ATTRIBUTED: Text = "attributed"
+
+/// How many evaluation shots a lookbook has before its development shots.
+pub const EVALUATION: u32 = 12
+
+/// `bytes`' SHA-256, in hex.
+pub fn hex_sha256(bytes: [u8]) -> String {
+    let h = sha256(bytes)
+    var out = String::new()
+    let digits = "0123456789abcdef"
+    for b in h {
+        out.push_byte(digits.byte(u32(b) >> 4))
+        out.push_byte(digits.byte(u32(b) & 15))
+    }
+    out
+}
+
+/// `s` as a JSON text: its quotes, backslashes and newlines escaped, the rest as it is.
+pub fn quoted(s: str) -> String {
+    var out = String::from("\"")
+    var from = 0
+    for k in 0..s.len() {
+        let b = s.byte(k)
+        if b == 34 || b == 92 || b == 10 {
+            out.push_str(s.slice(from, k))
+            out.push_str(if b == 34 { "\\\"" } else if b == 92 { "\\\\" } else { "\\n" })
+            from = k + 1
+        }
+    }
+    out.push_str(s.slice(from, s.len()))
+    out.push_str("\"")
+    out
+}
+
+/// The references' manifest as the hash reads it: each one's id, set, class, local file, hash,
+/// licence and source, a line each.
+pub fn manifest_text(refs: [VisualReference]) -> String {
+    var out = String::new()
+    for r in refs {
+        out.push_str(
+            f"{r.id}\t{r.set}\t{r.shot_class}\t{r.local_file}\t{r.sha256}\t{r.licence}\t{r.source_page}\n",
+        )
+    }
+    out
+}
+
+/// The hash that freezes the references (plan three's §B5).
+pub fn manifest_hash(refs: [VisualReference]) -> String {
+    hex_sha256(manifest_text(refs).as_bytes())
+}
+
+/// The hash that freezes the vale's shots: SHA-256 over `lookbook.wrela`'s `SHOTS` as JSON, each
+/// shot's name, eye, aim, hour and weather (§B1.4).
+pub fn shots_hash() -> String {
+    var out = String::from("[")
+    let shots = vale::lookbook::SHOTS
+    for k in 0..shots.len() {
+        let s = shots[k]
+        if k > 0 {
+            out.push_str(",")
+        }
+        out.push_str(
+            f"{{\"name\":{quoted(s.name).as_str()},\"eye\":[{s.eye.x},{s.eye.y},{s.eye.z}],\"at\":[{s.at.x},{s.at.y},{s.at.z}],\"time\":{s.time},\"weather\":{u32(s.weather)}}}",
+        )
+    }
+    out.push_str("]")
+    hex_sha256(out.as_bytes())
+}
+
+/// A small generator of the panel's order: the next of `state`, and a number in 0..n.
+fn next(state: mut u32, n: u32) -> u32 {
+    // A linear congruential step, mod 2^32 (Numerical Recipes' constants).
+    state = u32((u64(state) * 1664525 + 1013904223) & 0xffffffff)
+    (state >> 8) % n
+}
+
+/// The panel of `set`'s references in `refs` against the stills `stills` (the lookbook's files,
+/// named `NN-...` by their shot's number from 0), from `dir` (a path in the workspace), its order
+/// from `seed`. A reference that isn't eligible, or whose shot has no still, is an error.
+pub fn panel(
+    set: str,
+    refs: [VisualReference],
+    stills: [String],
+    dir: str,
+    seed: u32,
+) -> Result<Panel, String> {
+    var pairs: Vec<Pair> = Vec::new()
+    var dev = 0
+    for r in refs {
+        if r.set != set {
+            continue
+        }
+        if let Some(why) = eligible(r) {
+            return Err(take why)
+        }
+        let index = if set == "development" { EVALUATION + dev } else { r.shot_class - 1 }
+        dev += 1
+        let prefix = f"{index / 10}{index % 10}-"
+        var still: Option<String> = None
+        for s in stills {
+            if s.as_str().starts_with(prefix.as_str()) {
+                still = Some(s.clone())
+            }
+        }
+        let Some(file) = still else {
+            return Err(
+                String::from(
+                    f"{r.id}: shot {index} has no still in {dir} (its file starts {prefix})",
+                ),
+            )
+        }
+        pairs.push(
+            Pair {
+                number: 0,
+                shot: String::from(file.as_str().slice(3, file.len() - 4)),
+                class: r.shot_class,
+                reference: String::from(r.id),
+                still: String::from(f"{dir}/{file.as_str()}"),
+                photo: String::from(r.local_file),
+                still_first: true,
+                credit: String::from(f"{r.title}, by {r.creator}"),
+                licence: String::from(f"{r.licence} ({r.licence_url})"),
+                source: String::from(r.source_page),
+                conditions: String::from(
+                    f"{r.kind}; taken {r.date_taken}; processing: {r.processing}; {r.size.x}×{r.size.y} pixels",
+                ),
+            },
+        )
+    }
+    if pairs.is_empty() {
+        return Err(String::from(f"no references in the set {set}"))
+    }
+    // Fisher–Yates, then each pair's sides.
+    var state = seed
+    var k = pairs.len()
+    while k > 1 {
+        let j = next(mut state, k)
+        k -= 1
+        let a = pairs[k].clone()
+        pairs[k] = pairs[j].clone()
+        pairs[j] = take a
+    }
+    for i in 0..pairs.len() {
+        pairs[i].number = i + 1
+        pairs[i].still_first = next(mut state, 2) == 0
+    }
+    Ok(
+        Panel {
+            set: String::from(set),
+            mode: String::from(ATTRIBUTED),
+            seed,
+            manifest: manifest_hash(refs),
+            shots: shots_hash(),
+            pairs,
+            controls: Vec::new(),
+        },
+    )
+}
+
+/// The panel's two calibration pairs from the still `original` (its blur `blurred` and its
+/// quarter-resolution copy `quarter`), their sides in an order from its seed.
+pub fn with_controls(p: take Panel, original: str, blurred: str, quarter: str) -> Panel {
+    var out = take p
+    var state = out.seed * 7 + 3
+    let names = [String::from("blurred"), String::from("quarter")]
+    let worse = [String::from(blurred), String::from(quarter)]
+    for k in 0..2 {
+        out.controls.push(
+            Control {
+                name: names[k].clone(),
+                original: String::from(original),
+                worse: worse[k].clone(),
+                original_first: next(mut state, 2) == 0,
+            },
+        )
+    }
+    out
+}
+
+/// The panel as its judges read it (`pairs.json`): its hashes and mode, each pair's images A and B
+/// (`root` says where a path is: `ws`, the workspace, or `refs`, the references' directory), and
+/// beside the reference its credit, licence, source and conditions; and each calibration pair's.
+/// It doesn't say which image is the program's: the key does (`key_json`).
+pub fn pairs_json(p: Panel) -> String {
+    var out = String::from(
+        f"{{\"set\":{quoted(p.set.as_str()).as_str()},\"mode\":{quoted(p.mode.as_str()).as_str()},\"manifest\":{quoted(p.manifest.as_str()).as_str()},\"shots\":{quoted(p.shots.as_str()).as_str()},\"pairs\":[",
+    )
+    for i in 0..p.pairs.len() {
+        borrow q = p.pairs[i]
+        let still = f"{{\"root\":\"ws\",\"path\":{quoted(q.still.as_str()).as_str()}}}"
+        let photo = f"{{\"root\":\"refs\",\"path\":{quoted(q.photo.as_str()).as_str()},\"credit\":{quoted(q.credit.as_str()).as_str()},\"licence\":{quoted(q.licence.as_str()).as_str()},\"source\":{quoted(q.source.as_str()).as_str()},\"conditions\":{quoted(q.conditions.as_str()).as_str()}}}"
+        let (a, b) = if q.still_first { (take still, take photo) } else { (take photo, take still) }
+        if i > 0 {
+            out.push_str(",")
+        }
+        out.push_str(f"{{\"pair\":{q.number},\"a\":{a.as_str()},\"b\":{b.as_str()}}}")
+    }
+    out.push_str("],\"controls\":[")
+    for i in 0..p.controls.len() {
+        borrow c = p.controls[i]
+        let (a, b) = if c.original_first { (c.original.clone(), c.worse.clone()) } else {
+            (c.worse.clone(), c.original.clone())
+        }
+        if i > 0 {
+            out.push_str(",")
+        }
+        out.push_str(
+            f"{{\"control\":{i + 1},\"a\":{{\"root\":\"ws\",\"path\":{quoted(a.as_str()).as_str()}}},\"b\":{{\"root\":\"ws\",\"path\":{quoted(b.as_str()).as_str()}}}}}",
+        )
+    }
+    out.push_str("]}\n")
+    out
+}
+
+/// The panel's key (`key.json`): its hashes and seed, each pair's shot, reference and which image
+/// is the program's still, and which image of each calibration pair is the original.
+pub fn key_json(p: Panel) -> String {
+    var out = String::from(
+        f"{{\"set\":{quoted(p.set.as_str()).as_str()},\"manifest\":{quoted(p.manifest.as_str()).as_str()},\"shots\":{quoted(p.shots.as_str()).as_str()},\"seed\":{p.seed},\"pairs\":[",
+    )
+    for i in 0..p.pairs.len() {
+        borrow q = p.pairs[i]
+        if i > 0 {
+            out.push_str(",")
+        }
+        let side = if q.still_first { "a" } else { "b" }
+        out.push_str(
+            f"{{\"pair\":{q.number},\"shot\":{quoted(q.shot.as_str()).as_str()},\"class\":{q.class},\"reference\":{quoted(q.reference.as_str()).as_str()},\"still\":\"{side}\"}}",
+        )
+    }
+    out.push_str("],\"controls\":[")
+    for i in 0..p.controls.len() {
+        borrow c = p.controls[i]
+        if i > 0 {
+            out.push_str(",")
+        }
+        let side = if c.original_first { "a" } else { "b" }
+        out.push_str(
+            f"{{\"control\":{i + 1},\"name\":{quoted(c.name.as_str()).as_str()},\"original\":\"{side}\"}}",
+        )
+    }
+    out.push_str("]}\n")
+    out
+}
+
+/// The review page (`index.html`): each pair's two images side by side at their own aspect, the
+/// reference's credit, licence and source beside it; `refs` the references' directory as a file
+/// URL's path. Private: it's written under `build/`, never published.
+pub fn page_html(p: Panel, refs: str) -> String {
+    var out = String::from(
+        "<!doctype html><meta charset=utf-8><title>Reference review</title><style>body{font:14px system-ui;margin:16px}figure{display:inline-block;width:48%;margin:0 1% 24px 0;vertical-align:top}img{width:100%;height:auto}</style>",
+    )
+    out.push_str(
+        f"<h1>Reference review: {p.set.as_str()}</h1><p>Mode: {p.mode.as_str()}. Manifest {p.manifest.as_str()}; shots {p.shots.as_str()}.</p>",
+    )
+    for q in p.pairs {
+        out.push_str(f"<h2>Pair {q.number}</h2>")
+        let (sa, pa) = if q.still_first { ("A", "B") } else { ("B", "A") }
+        let still = f"<figure><img src=\"../../{q.still.as_str()}\"><figcaption>Image {sa}</figcaption></figure>"
+        let photo = f"<figure><img src=\"file://{refs}/{q.photo.as_str()}\"><figcaption>Image {pa}: {q.credit.as_str()}, {q.licence.as_str()}, <a href=\"{q.source.as_str()}\">source</a>; {q.conditions.as_str()}</figcaption></figure>"
+        let (a, b) = if q.still_first { (take still, take photo) } else { (take photo, take still) }
+        out.push_str(a.as_str())
+        out.push_str(b.as_str())
+    }
+    out
+}

@@ -1,0 +1,45 @@
+// What a reference's licence lets the review do with it (plan three's §B3.1): a copy kept outside
+// the repository, shown to an agent judge with its credit, resized for display, published. Only a
+// work whose permission covers a local copy and an agent judge's view is eligible; anything
+// unknown is link-only, which the review refuses, and never fetches.
+
+use references::vale::VisualReference
+
+/// What the review does with a reference.
+pub enum Use: Copy + Eq + Fieldless {
+    /// A copy kept outside the repository.
+    LocalCopy,
+    /// Shown to an agent judge (an upload to the judging service), its credit beside it.
+    ShowAgent,
+    /// Resized or cropped for display, the change noted with its credit.
+    Transform,
+    /// Reproduced in a public report.
+    Publish,
+}
+
+/// Whether `licence` (as a reference's page states it) permits `u`: a public-domain or CC0 work
+/// everything; a CC BY or CC BY-SA work everything with its credit and notice (publishing too, the
+/// notice shown); anything else (unknown, all rights reserved, a silent page) nothing: link-only.
+pub fn permits(licence: str, u: Use) -> bool {
+    let free = licence.starts_with("CC0") || licence.starts_with("Public domain")
+    let attributed = licence.starts_with("CC BY")
+    free || attributed
+}
+
+/// Whether reference `r` may stand in a panel: its permission covers a local copy, an agent
+/// judge's view and a display's resizing, and it has a local copy and a hash. Why not, if not.
+pub fn eligible(r: VisualReference) -> Option<String> {
+    for u in [Use::LocalCopy, Use::ShowAgent, Use::Transform] {
+        if !permits(r.licence, u) {
+            return Some(
+                String::from(
+                    f"{r.id}: its licence ({r.licence}) doesn't permit what a review does: link-only, refused",
+                ),
+            )
+        }
+    }
+    if r.local_file.len() == 0 || r.sha256.len() != 64 {
+        return Some(String::from(f"{r.id}: no local copy and hash: link-only, refused"))
+    }
+    None
+}
