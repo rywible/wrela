@@ -2968,3 +2968,21 @@ Solo Pop!_OS AMD RADV RENOIR, Wrela 0.9.0/de9b81e. Ten26,560-card layouts over o
 Cutoff 4 and regional 2 fail1/60 and 5/60 rows. First follow-up cutoff 5 passes all 60 plus36 legacy rows (90 distinct); silhouettes match the compact exact control. Five paired complete GPU runs show9.63% saving versus full-field (geometric 95%CI9.564–9.735%). It remains65.1% slower than compact caching, at 2.290× lower requested allocations. Second follow-up owner table is byte-exact and 6.04% faster than exact cache but rejected for80+MB resident VRAM growth in all three variants. Removing its GPU-cooked implementation restores18,042,880 B resident VRAM,10,297,344 B GTT and 1,640,780 B requested live. Exact driver allocation cause is unproved. DRM/PSS are whole-client observations; do notsum UMA pools.
 
 First assessment 23.19 minutes; exactly two optimizations, zero training. Frozen models and G1–G7 unchanged/unmet. Decision: change representation toward source-compiled response residuals; retain cutoff 5 as a bounded diagnostic. [Full quality, pacedGPU/CPU completion, resident observations and evidence](neural-source-population.md).
+
+## Material-statistic packing fails the joint G4 gate (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR, Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 26,560-card layouts, complete 320×128 frames; equal source information, visibility, wood, cutouts and completed shaded references. First assessment 27.14 minutes, decision 37.77 minutes, two follow-ups, zero training/new references.
+
+| Method | Quality passes / 60 | Saturated GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: | ---: |
+| Native exact cards | 60 | 2.56868 / 2.60796 | 10,327,756 / 10,491,596 | 26,533,888 / 10,100,736 |
+| Exact normal/attenuation cache | 60 | 3.27896 / 3.32620 | 3,758,188 / 3,922,028 | 17,768,448 / 10,035,200 |
+| 32 bits: 12+12 normal, 8 attenuation | 59 | 3.29120 / 3.32296 | 2,695,788 / 4,820,644 | 26,427,392 / 10,297,344 |
+| 32 bits: 12+12+8, chunked construction | 59 | 3.28712 / 3.33744 | 2,695,788 / 2,859,628 | 18,034,688 / 10,231,808 |
+
+
+Uniform 16-bit formats pass only 3/60 and 0/60. Precision reallocation improves 32-bit 56/60 to 59/60, still failing LPIPS. Bounded construction preserves 160 parent images and fixes a resident penalty; it does not produce a quality-passing renderer. Full cache replacement plus rendering costs 4.50912 ms native / 5.01492 exact / 6.78132 chunked exact / 7.11080 chunked compact. Requested peaks: 18,826,996 / 5,883,044 / 5,948,580 / 3,856,532 B. Observed resident VRAM: 26,443,776 / 34,652,160 / 34,902,016 / 26,259,456 B.
+
+Complete frames include placement/decoding, depth ordering, visibility, wood, updates, copies and composite. Static cooking is excluded steady timing and measured through replacement with old caches still live. This measures invalidation cost, not edited-source correctness. GPU results are descriptive 240-frame runs after 60 warmups. Paced tails, completion, PSS and startup observations are in the report; whole-client UMA pools must not be summed.
+
+Retire uniform per-card packing; all engine/studio code restored. 720 captures and failures preserved; G1–G7/frozen models unchanged. Next bet: source-certified adaptive shading with exact coverage and sensitive-material fallback. [Full comparison and evidence](neural-response-statistics.md).

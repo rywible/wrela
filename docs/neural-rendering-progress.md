@@ -2899,3 +2899,11 @@ The ten-layout AMD experiment completed its first assessment in23.19 minutes and
 The shared exact owner table gains 6.04% GPU time but adds roughly83MB actual resident VRAM despite only26.6 KB additional requested buffers. It is rejected and removed; restoring the no-owner code returns resident VRAM to 18.043 MB. All failed outputs and binaries are preserved.
 
 Decision: change the G4 representation toward source-compiled response residuals and cheap decode; retain cutoff 5 only as a measured memory/runtime diagnostic. Same source information and shared wood/cutouts/scratch for all controls. This tests distinct leaf layouts over one crown field, not 10× density or unseen families. [Full joint results and limits](neural-source-population.md). Evidence manifest: `38eb09675763f99ed58c6c3136f127a3f0f6000bbb259cefeea51d3374a9a3e3`. G1–G7 and frozen models remain unchanged/unmet.
+
+## 2026-10-28: Uniform response packing is retired for G4
+
+The [joint AMD comparison](neural-response-statistics.md) assessed viability in 27.14 minutes and decided in 37.77, with exactly two follow-ups and no training/new references. Exact attenuation caching preserves all 80 source-control images. Uniform 16-bit formats pass 3/60 and 0/60; the best 32-bit format passes 59/60 after precision reallocation, still failing LPIPS.
+
+Bounded construction removes an 8.39 MB observed resident penalty and lowers requested peak to 2.860 MB. It preserves the quality failure and costs 3.287 ms versus native cards' 2.569 ms. Its 28.27% requested-live saving against the smaller exact cache gives no demonstrated steady physical-residency advantage. Full replacement plus rendering costs 7.111 ms versus 5.015 ms exact response / 4.509 ms native.
+
+Retire uniform per-card packing; all engine/studio files restored exactly, 720 captures and all failed builds preserved. Next bet: source-certified adaptive shading with exact visibility and sensitive-material fallback. Untested; no G4 win. G1–G7 and frozen models unchanged/unmet. Manifest: `66085f3d8ca1fcb849a789cd530da1296327245a087bfbd580e91746d918c733`.
