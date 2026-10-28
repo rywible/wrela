@@ -2498,3 +2498,16 @@ experiment, training or new references. Runtime restored byte-for-byte; establis
 checks reused. Frozenbest and G1–G7unchanged, failures preserved.
 [Report](neural-shaded-appearance.md#source-conditioned-sample-integration-retires-response-sharing).
 Manifest SHA-256: `9e02d51108488857cfcbdf479e5d0bbbe531bcced23587dfc8250f755d1689cb`.
+
+### Exact source-space visibility hierarchy is retired
+
+Source-only133,424byte hierarchy replaces327,680byte sample visibility.
+Allfourspatialvariants24/24againstfourcontrols,32RGBAexactpackedcontrol,
+all48coverageexact. Fullfield requestedlive636,324 versus830,580bytes;
+16xphysicalresidencyunproved. Initial GPU59.44/67.35ms; one tight-footprint
+follow-up gives28.37/36.72ms, still versus fastnative0.279/packedfield0.644ms.
+Retire exact per-pixel traversal; next integrate source-conditioned distant
+aggregate nodes with equal-input conventional controls and counted fallback.
+No second tuning,training,newtruth or runtime promotion; restored code exact.
+[Report](neural-shaded-appearance.md#source-space-visibility-hierarchy-exact-quality-unacceptable-cost).
+Manifest SHA-256: `3892d286404bddb7f0026e599d284946a5e0274747e162c5b1283011028481d9`.

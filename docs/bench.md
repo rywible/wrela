@@ -2500,3 +2500,14 @@ All candidate requestedlive830,580bytes unchanged; physical DRM/PSS snapshots
 do not establish an appearance-memory reduction. One follow-up,0training/newrefs;
 retired all new runtime. G4unmet. Completed references and existing checks reused.
 See [full quality/cost/memory evidence](neural-shaded-appearance.md#source-conditioned-sample-integration-retires-response-sharing).
+
+### AMD exact spatial hierarchy retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compilerde9b81e5, parenta26bc0d7 plus archived sources.
+Six64pxvariants: all24/24quality,32hierarchyRGBAexactpackedcontrol,48coverageexact.
+Compactfullfield live636,324requestedbytes versuspacked830,580; physical16xunproved.
+Tight-footprint GPUmedian36.71596ms/pace95/99=37.12236/37.16383ms versuspacked
+0.64360ms/1.49463/1.54513ms. Fastnative0.27908ms. One follow-up roughlyhalves
+initial traversal cost but fails decisively. Retire;0training/newrefs;runtime restored.
+[Complete cost, quality and memory evidence](neural-shaded-appearance.md#source-space-visibility-hierarchy-exact-quality-unacceptable-cost).

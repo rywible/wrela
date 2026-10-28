@@ -3783,3 +3783,154 @@ checks.json, exact per-variant sources/builds/captures, physical memory snapshot
 retired-experiment-source.tar.gz, restored-source.tar.gz, external-scripts.tar.gz
 and replay.md. Full failed results remain available. Manifest SHA-256:
 `9e02d51108488857cfcbdf479e5d0bbbe531bcced23587dfc8250f755d1689cb`.
+
+## Source-space visibility hierarchy: exact quality, unacceptable cost
+
+**Decision: retire exact per-pixel source-hierarchy traversal for this G4 path.**
+All four hierarchy variants reproduce the packed control's eight shaded images
+byte-for-byte. The tighter full-field path reduces all requested live allocation
+from 830,580 to 636,324 bytes (23.39%), but takes 36.71596 ms versus 0.64360 ms
+for packed hardware visibility, a 57.05x GPU cost. Fast stored source is 0.27908 ms.
+No usable rendering, neural or G4 advantage is established.
+
+Solo Pop!_OS block: start 2026-10-28T02:33:26.941009+00:00; initial comparison complete
+2026-10-28T02:37:25.145193+00:00 (238.2 seconds);
+decision 2026-10-28T02:43:05.598430+00:00 (578.7 seconds).
+One targeted follow-up, no second optimization, no training or new shaded references.
+Frozen best and G1–G7 are unchanged.
+
+### Source-only hierarchy replaces the sample image
+
+This uses the standard bounding-volume hierarchy principle: partition primitives
+and skip a subtree when its bound misses the query, as described in
+[PBRT, fourth edition, section 7.3](https://pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies).
+The quantized encoding and compute fixture are our own implementation; no code was copied.
+
+All 26,560 source cards and 7,392 wood triangles occur exactly once. A stable
+equal-count split on the longest centroid axis produces 4,095 nodes with at most
+32 surfaces per leaf. Each 16-byte node stores six outward-quantized u16 bounds
+and either an escape index or a packed source-list span. Original source IDs
+occupy 67,904 bytes as u16 entries. Total GPU hierarchy/list allocation is 133,424
+bytes, replacing the 327,680-byte packed sample visibility target.
+
+Bounds come from the existing canonical source geometry exports, not rendered
+references or camera labels. Cards use conservative spheres enclosing their
+view-facing square for every direction; wood uses its exact exported triangle
+bounds. Compilation verifies every decoded bound encloses its source primitives
+and every source ID occurs once. Source-only Python compilation takes 0.306 seconds.
+This is declared offline static asset preparation; dynamic geometry changes would
+require rebuild/refit, which is neither implemented nor timed here.
+
+Each output pixel traverses the hierarchy without a traversal stack. Projected
+node bounds reject subtrees; selected source geometry is reconstructed and tested
+at the same sixteen sample positions. The shader reuses the already verified
+snapped triangle setup and packed depth16/source-ID16 ordering. Sixteen private
+words hold nearest surfaces, which are shaded from the original source and resolved
+directly into the output. No full-frame sample target, per-frame worklist, optical
+sorting or shared-memory allocation is introduced.
+
+Stored-source and procedural/full-field variants isolate the response-storage
+tradeoff. Current fast native stored source and packed full field are measured
+controls, with the established forward-source and packed-mask controls also scored.
+Every method receives the same source geometry, masks, fields, sampling and shading
+knowledge. The candidate receives no privileged image information.
+
+### One targeted follow-up preserves quality but fails runtime
+
+Initial stored-source/full-field hierarchy paths cost 59.44008/67.34752 ms.
+The follow-up rejects non-overlapping card footprints before reconstructing their
+triangles, then clips each triangle's sample loop to its projected bounds inside
+the pixel. Conservative bounds and ordering are unchanged. This lowers costs to
+28.37012/36.71596 ms with identical images and allocations. The remaining gap is
+decisive; no second traversal or memory-only tweak is justified.
+
+All six variants pass 24/24 numeric shaded cases against each of four controls,
+using unchanged PSNR loss <=0.25 dB and FLIP/LPIPS increase <=5% with ratio floor1e-4.
+All 32 hierarchy RGBA captures equal the current packed control exactly.
+All 48 coverage images equal the native source control. Both current controls'
+sixteen images also equal their previous captures.
+
+Packed/hierarchy mean PSNR is40.295900 dB, FLIP0.01300320 and LPIPS0.00249059;
+native source is40.295971/0.01300193/0.00249104. Coverage MAE against truth is
+0.01005954, worst boundary p99 is2pixels, worst half-coverage precision/recall
+0.983065/0.994007. Exact control agreement is not perfect reference fidelity
+and does not establish motion/G3 performance.
+
+The completed AA64 shaded references remain the only image truth: one64pxasset,
+two public views, four lights, three backgrounds, exposure0.62/ACES/sRGB, LDR FLIP
+at67pixels/degree and AlexNet LPIPSv0.1. Existing metric machinery is reused.
+
+### Complete runtime and resident-memory observations
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent a26bc0d7 plus exact archived
+sources. Sequential runs,60warmup/240measured frames at64x64.
+
+GPU spans include hierarchy decoding/traversal, all candidate geometry reconstruction,
+sample coverage and ordering, leaf-mask lookup, wood, source/field shading, resolve
+and final composite. CPU includes view/light/source setup, uploads and commands.
+There is no omitted optical sort; nearest-depth selection replaces it and is timed.
+Static initialization is outside steady runtime but inside allocation peaks.
+No source-edit cost or10x-richness scaling result is claimed.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1.080/1.088 | 0.279/0.445 | 0.840 | 3.901/4.119 |
+| Packed full field | 1.495/1.545 | 0.644/0.899 | 0.703 | 4.825/5.029 |
+| Hierarchy, stored source | 59.746/59.781 | 59.440/59.745 | 0.523 | 166.037/166.305 |
+| Hierarchy, full field | 68.112/68.160 | 67.348/68.116 | 0.593 | 187.422/187.855 |
+| Tight footprint, stored source | 28.605/28.630 | 28.370/28.611 | 0.511 | 83.711/84.072 |
+| Tight footprint, full field | 37.122/37.164 | 36.716/37.098 | 0.527 | 105.628/105.943 |
+
+CPU-to-completion includes all frame submissions plus browser/driver notification,
+with no observer waits. It is not input-to-photon. The large completion times remain
+in the evidence. Saturated, paced and completion measurements are distinct; no
+repeatable small speedup or hardware-cause claim is inferred from these single runs.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1,466,060 | 1,875,660/1,892,044 | 17,358,848/9,838,592 | 499,712,000 |
+| Packed full field | 420,980 | 830,580/846,964 | 17,686,528/9,936,896 | 507,788,288 |
+| Hierarchy, stored source | 1,075,204 | 1,484,804/1,501,188 | 17,661,952/10,149,888 | 496,492,544 |
+| Hierarchy, full field | 226,724 | 636,324/652,708 | 17,661,952/10,149,888 | 497,936,384 |
+| Tight footprint, stored source | 1,075,204 | 1,484,804/1,501,188 | 17,399,808/10,149,888 | 497,460,224 |
+| Tight footprint, full field | 226,724 | 636,324/652,708 | 17,395,712/10,149,888 | 494,904,320 |
+
+Engine totals exclude the common65,536-byte output. All-requested totals include
+output, upload/uniform/screen resources, complete source/response/coverage caches,
+hierarchy/list, wood, scratch and dummy/fallback data. The common difference is
+409,600bytes. No hidden full-source fallback supplies the compact path's output.
+Its sixteen private words are64declared scalar bytes per invocation, not an
+attributed physical resident allocation; registers/spills and shader caches are
+compiler/driver controlled. Raw host GPU/WASM and native counts are archived.
+
+DRM resident VRAM/GTT and browser-group PSS are physical whole-client snapshots,
+not asset-specific residency or transient physical peaks. Do not sum overlapping
+UMA pools. These observations do not prove16x appearance-memory reduction.
+Even requested engine bytes are226,724 versus fast source1,466,060, only6.47x;
+all-requested live bytes are636,324 versus1,875,660.
+
+### Preserve the failure and change where the hierarchy stops
+
+The next hypothesis is source-conditioned aggregate integration at distant hierarchy
+nodes, preserving angular coverage/depth distributions and material mixtures before
+lighting. A useful distant renderer must avoid visiting every original leaf; merely
+compressing its acceleration structure is insufficient here. Equally informed
+conventional adaptive aggregates are the first controls. Exact source visibility
+is a measured fallback whose storage and update cost must count. This is not a
+return to the rejected fixed two-slab, scalar-opacity or generic RGBA corrections.
+Any neural fit must address a demonstrated rendered error.
+
+No new runtime is retained. All experimental source and the new data module are
+archived; tracked runtime files are restored byte-for-byte to a26bc0d7. Established
+default/packed checks are reused for that unchanged code, with no broad-suite rerun.
+The initial nine-storage-buffer compile failure is preserved; combining node and
+ID data into one buffer resolves the eight-buffer stage limit without changing
+the algorithm or total bytes. All failed runtime/cost results remain available.
+
+Evidence: build/neural-evidence/g4-spatial-visibility-v1 on Pop!_OS. Includes the
+source-only hierarchy payload and input hashes, plan/decision, all six exact
+sources/builds/captures, quality comparisons, timings, allocation/DRM/PSS records,
+checks, retired/restored source archives, scripts and replay instructions.
+Manifest SHA-256: `3892d286404bddb7f0026e599d284946a5e0274747e162c5b1283011028481d9`.
