@@ -2482,3 +2482,19 @@ Next: source-conditioned integration with fewer shaded samples, keeping hardware
 visibility and equally informed conventional estimators.
 [Report](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails).
 Manifest SHA-256: `373bbe2f9d059a8d249c59b05fd7218198046345c1f1bb8cfcbc16693358bae9`.
+
+### Source-conditioned response sharing is retired
+
+Centroid4/8 pass1/24 despite saturated GPU0.44052/0.51460ms versus exactfield0.638ms.
+One targeted follow-up selects actual visible source positions: source4 passes4/24;
+source8 passes16/24 currentcontrols,15/24 forwardcontrol at0.629ms, with worse
+paced tails. Fast stored source remains0.28140ms. All48coverage images match.
+All sharing variants retain830,580requestedlivebytes; no physical-memory or G4 win.
+
+Change representation: retire this sharing path; next replace per-sample visibility
+storage with lighting-independent hierarchical coverage/depth and source-conditioned
+radiance, with equally informed conventional sparse encodings. No second tuning
+experiment, training or new references. Runtime restored byte-for-byte; established
+checks reused. Frozenbest and G1–G7unchanged, failures preserved.
+[Report](neural-shaded-appearance.md#source-conditioned-sample-integration-retires-response-sharing).
+Manifest SHA-256: `9e02d51108488857cfcbdf479e5d0bbbe531bcced23587dfc8250f755d1689cb`.

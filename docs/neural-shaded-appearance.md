@@ -3609,3 +3609,177 @@ must decide before more fitting. G1–G7 remain unchanged and unmet.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-fused-source-v1.
 Manifest SHA-256: `373bbe2f9d059a8d249c59b05fd7218198046345c1f1bb8cfcbc16693358bae9`.
+
+## Source-conditioned sample integration retires response sharing
+
+**Decision: change the representation for G4; retire this per-pixel response-sharing
+approach.** Four or eight subgroup centroids reduce measured complete GPU cost,
+but both pass only 1/24 shaded cases. Selecting actual visible source points
+recovers much of the quality: eight points pass 16/24 against current controls,
+15/24 against the earlier forward source renderer. Its saturated GPU span is
+0.629 ms versus 0.638 ms for the exact field, with higher paced p95/p99. The fast
+stored-source renderer is still 0.281 ms. All sharing variants use the exact
+field path's 830,580 requested live bytes. No neural or G4 advantage is demonstrated.
+
+The solo AMD block began 2026-10-28T02:13:12.593302+00:00; initial comparison finished
+2026-10-28T02:14:57.361443+00:00 (104.8 seconds).
+Decision was recorded 2026-10-28T02:19:31.159025+00:00 (378.6 seconds).
+One targeted follow-up was enough to reject this route. The second was deliberately
+unused. Zero training steps or new shaded references; the frozen best and G1–G7
+remain unchanged.
+
+### Consequential question and fair controls
+
+The [existing source renderer](../studio/appearance/runtime/source_control.wrela)
+can evaluate the [44-clump authored field](../studio/appearance/runtime/source_hierarchy.wrela)
+after exact sample visibility, removing a per-card normal/depth cache. That path
+spends extra time evaluating the field independently at visible leaf positions.
+This experiment asks whether source knowledge can share those evaluations.
+
+Every variant receives the same 26,560 cards, 7,392 wood triangles, procedural
+positions and ownership, compact coverage cache, authored field and material laws.
+The fastest practical stored-source renderer and the smaller packed full-field
+renderer are both measured again. Established forward and packed-mask source
+controls also participate in the quality comparison. No baseline loses useful
+information that a learned method could receive. No model is fitted here.
+
+The first candidates divide each pixel's 4x4 visible samples into either four
+2x2 groups or eight 2x1 groups. For each group with visible leaves, they average
+those leaves' source positions and evaluate the exact authored field once there.
+Its normal/depth are shared by that group's leaves. Each leaf still gets its
+own tint, age-dependent albedo and full light response; every wood sample keeps
+its exact original shade. Hardware visibility and coverage remain unchanged.
+
+The demonstrated failure is shaded colour, not silhouette coverage. Averaging
+positions from different surfaces moves the field query away from the actual
+visible samples. Four centroids produce 36.516 dB mean PSNR; eight produce
+38.202 dB versus the exact control's 40.296 dB.
+
+The single follow-up uses actual visible source positions. It starts with the
+first leaf sample, repeatedly selects the point with greatest distance to the
+already selected points, and assigns each sample the normal/depth from its
+nearest selected point. Four and eight representatives test whether avoiding
+off-surface centroids resolves the error. Empty samples and wood do not enter
+the selection; repeated positions need no additional field evaluation. Exact
+per-leaf material/shading and all visibility still remain intact.
+
+### Shaded quality, including silhouettes
+
+| Candidate | Mean PSNR dB | Mean FLIP | Mean LPIPS | Passing cases vs current / forward source |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 40.295971 | 0.01300193 | 0.00249104 | 24/24 / 24/24 |
+| Packed full field | 40.295900 | 0.01300320 | 0.00249059 | 24/24 / 24/24 |
+| Four subgroup centroids | 36.516277 | 0.02512044 | 0.00856789 | 1/24 / 1/24 |
+| Eight subgroup centroids | 38.202202 | 0.01939662 | 0.00479312 | 1/24 / 1/24 |
+| Four selected source points | 39.386349 | 0.01488396 | 0.00319210 | 4/24 / 4/24 |
+| Eight selected source points | 40.208915 | 0.01316430 | 0.00256060 | 16/24 / 15/24 |
+
+All thresholds are unchanged: per-case PSNR loss <=0.25 dB and FLIP/LPIPS increase
+<=5%, denominator floor 1e-4. Eight-point sharing fails eight current-control cases;
+its worst LPIPS ratio is 1.2061, despite only 0.087 dB loss in mean PSNR.
+The earlier forward control rejects one additional case. A good mean is insufficient.
+
+All 48 captured coverage images are byte-identical to the native source control.
+Coverage MAE against the completed shaded truth is 0.01005954; worst boundary p99
+is 2 pixels, worst precision/recall at half coverage 0.983065/0.994007, and worst
+soft IoU 0.954098. Exact control agreement does not mean perfect silhouettes.
+Both current controls' eight RGBA captures match their previous verified captures.
+
+The existing 64x64 AA64 shaded references, two known views, four lights and three
+backgrounds are reused. Established exposure 0.62/ACES/sRGB preprocessing, LDR FLIP
+at 67 pixels per degree and AlexNet LPIPS v0.1 remain unchanged. These are public
+diagnostics of one static asset, not the unseen-family/scale/motion G4 evaluation.
+
+### Complete AMD runtime and actual memory observations
+
+AMD RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Pop!_OS; Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 4a99ffb6 plus each archived measured source. Each sequential run has
+60 warmup and 240 measured frames at 64x64.
+
+GPU spans include source reconstruction/fetch, compact coverage, native or packed
+hardware visibility, representative selection, authored-field evaluation, per-leaf
+and wood shading, resolve and final compositing. Packed visibility includes its
+clear and atomic minimum pass. There is no optical sort in these conventional
+paths; nearest-surface depth selection is timed. CPU measurements include source,
+view and light setup, uploads and command submission. Static source initialization
+is outside steady-state timing; requested allocation peaks include it. Dynamic
+source edits are not measured and no update-cost claim is inferred.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1.084/1.087 | 0.281/0.398 | 0.704 | 4.376/4.638 |
+| Packed full field | 1.482/1.550 | 0.638/0.650 | 0.724 | 5.480/5.646 |
+| Four subgroup centroids | 1.319/1.356 | 0.441/0.606 | 0.710 | 4.635/4.873 |
+| Eight subgroup centroids | 1.345/1.387 | 0.515/0.627 | 0.638 | 4.670/4.796 |
+| Four selected source points | 1.421/1.457 | 0.521/0.645 | 0.618 | 6.210/6.656 |
+| Eight selected source points | 1.587/1.634 | 0.629/0.664 | 0.680 | 4.351/4.521 |
+
+The separate completion observation starts at the CPU frame call and ends at the
+last GPU submission's completion notification, including browser/driver delivery.
+It adds no waits and is not input-to-photon latency. Saturated, paced GPU and
+notification timings are different measurements; these single sequential runs
+do not establish a repeatable 1.4% speedup for source8. Its paced GPU tails are
+1.587/1.634 ms versus the exact field's 1.482/1.550 ms and the fast source's
+1.084/1.087 ms. There is no useful measured quality/cost frontier improvement.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1,466,060 | 1,875,660/1,892,044 | 17,403,904/9,936,896 | 490,512,384 |
+| Packed full field | 420,980 | 830,580/846,964 | 17,408,000/9,953,280 | 492,191,744 |
+| Four subgroup centroids | 420,980 | 830,580/846,964 | 17,670,144/9,936,896 | 492,530,688 |
+| Eight subgroup centroids | 420,980 | 830,580/846,964 | 17,670,144/10,035,200 | 492,017,664 |
+| Four selected source points | 420,980 | 830,580/846,964 | 17,674,240/9,953,280 | 493,546,496 |
+| Eight selected source points | 420,980 | 830,580/846,964 | 17,670,144/10,035,200 | 492,481,536 |
+
+Engine bytes exclude only the common 65,536-byte output. All-requested bytes
+include the output, upload/uniform/screen resources, caches, wood, scratch and
+dummy/fallback buffers, with 409,600 common bytes retained in those totals.
+The candidate adds no persistent or shared GPU buffer. The selected-point path
+uses private arrays of sixteen keys, positions, distances and response codes;
+compiler registers/spills and driver shader caches are not separately attributable.
+
+DRM resident VRAM/GTT and browser-group proportional set size are actual
+whole-client snapshots, not asset-specific residency or physical transient peaks.
+Do not add UMA pools or call requested resource bytes physical residency.
+The small physical differences above do not prove an appearance-memory reduction.
+Raw native resource counts, host GPU/WASM memory and all allocation observations
+are preserved per variant.
+
+The shared-response path retains 420,980 requested engine bytes, only a 3.48x
+reduction against the fast source's 1,466,060, and offers no reduction against the
+exact packed field. The 327,680-byte packed sample visibility allocation alone
+exceeds the 91,629-byte budget implied by a 16x reduction from that fast-source
+requested-byte total. Even free response evaluation cannot satisfy this local
+necessary storage condition, much less demonstrate 16x actual residency.
+
+### Retirement, verification and the next architecture bet
+
+Do not spend a second experiment on more representatives or a learned residual
+for this path. Eight selected points already approach the full field's runtime
+and still fail quality; their selection has not reduced persistent memory.
+Training to repair the remaining pixels would not remove the visibility-storage
+floor. This decision retires the tested algorithms, not a claim that every possible
+sampling or field-sharing scheme is impossible.
+
+The next bet is a lighting-independent hierarchical coverage/depth representation
+coupled to source-conditioned radiance. It must replace fixed per-sample visibility
+storage, not just shade that storage more cheaply. Conventional sparse encodings
+receive the same fields, source IDs, visibility and sampling knowledge. Any neural
+fit must target a demonstrated rendered error and be judged on the same complete
+quality/memory/runtime comparison. Generic RGBA postfilters and scalar-opacity
+corrections already rejected above are not the proposed return path.
+
+All experimental runtime changes are archived and restored byte-for-byte to
+4a99ffb6. No candidate is enabled or promoted. Six executable AMD native/browser
+builds provide 48 finite valid captures and full cost/memory evidence. Existing
+metric checks are reused; restored unchanged code reuses the previous default and
+packed-control checks. No redundant broad suite. Initial setup filename and
+formatting failures are preserved with the experimental sources and logs.
+
+Evidence: build/neural-evidence/g4-sample-integration-v1, including plan.json,
+decision.json, quality-vs-controls.json, image-parity.json, measurement-summary.json,
+checks.json, exact per-variant sources/builds/captures, physical memory snapshots,
+retired-experiment-source.tar.gz, restored-source.tar.gz, external-scripts.tar.gz
+and replay.md. Full failed results remain available. Manifest SHA-256:
+`9e02d51108488857cfcbdf479e5d0bbbe531bcced23587dfc8250f755d1689cb`.

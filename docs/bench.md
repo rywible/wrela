@@ -2487,3 +2487,16 @@ Preserve failed quality results and the corrected stable-list readback diagnosti
 G1–G7 unchanged and unmet.
 [Full report](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails).
 Evidence build/neural-evidence/g4-fused-source-v1 on Pop!_OS.
+
+### AMD source-conditioned sample integration (2026-10-28)
+
+On RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compilerde9b81e5, parent4a99ffb6 plus archived sources:
+centroid4/8 cost0.44052/0.51460ms saturated GPU but pass only1/24 shaded cases.
+Selecting actual source points8 passes16/24 current/15/24 forward at0.629ms,
+versus exactfield0.638ms and fastsource0.28140ms; all48coverage images exact.
+Source8 paced GPU95/99=1.58658/1.63398ms versus exactfield1.48228/1.55041.
+All candidate requestedlive830,580bytes unchanged; physical DRM/PSS snapshots
+do not establish an appearance-memory reduction. One follow-up,0training/newrefs;
+retired all new runtime. G4unmet. Completed references and existing checks reused.
+See [full quality/cost/memory evidence](neural-shaded-appearance.md#source-conditioned-sample-integration-retires-response-sharing).
