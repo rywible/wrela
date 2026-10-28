@@ -1,0 +1,15 @@
+// The vale's lookbook: its shots (`engine::shot`), which `wrela tool lookbook --package
+// examples/vale` renders settled and records in motion, and which a player chooses as any shot
+// (L, the number, Enter). Heights are above the ground under each point.
+
+use engine::shot::Shot
+
+pub const SHOTS = [
+    // The vale's middle, up the valley.
+    Shot {
+        name: "the middle",
+        eye: vec3(0.0, 1.7, 0.0),
+        at: vec3(0.0, 4.0, 60.0),
+        moves: vec2(0.0, 2.0),
+    },
+]

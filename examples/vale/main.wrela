@@ -1,4 +1,138 @@
-// The vale (plan three's §B1): a grown valley drawn by the engine's frame. Its land is
-// landscape.wrela's.
+// The vale (plan three's §B1): a grown valley drawn by the engine's frame, with no game sim. Its
+// land (landscape.wrela), its water (water.wrela) and its wood's history (history.wrela) are made
+// when it's built; what it draws is its stage (stage.wrela), streamed round the eye. The camera
+// is held on the lookbook's shots (L, the shot's number, Enter; Escape lets it go), or walks the
+// vale's walk (walk.wrela), or stands where a test holds it.
 
-pub fn frame(time: f32, width: u32, height: u32) {}
+use engine::frame::{Aim, Frame, Quality, ShadowQuality, Shared}
+use engine::shadow::Cascade
+use engine::shot::{Shots, place}
+use engine::view::first_camera
+use land::stage::{fields_clipmap, probe_grid}
+use landscape::height_at
+use stage::{Stage, TILES, air_of, stage, sun_light}
+use std::input::{Event, events}
+use std::io::print
+
+/// The far static cascade: over the whole vale (the near follows the eye: the frame's defaults).
+const FAR_CASCADE = Cascade {
+    centre: vec3(0.0, 80.0, 0.0),
+    span: 1400.0,
+    reach: 1600.0,
+    side: 2048,
+}
+
+/// How the vale is drawn: the engine's defaults (the floor's: every switch on), and its far
+/// cascade.
+fn quality() -> Quality {
+    Quality { shadows: ShadowQuality { far: FAR_CASCADE } }
+}
+
+/// The field of view the walk and a held camera see with (radians).
+const FOVY: f32 = 0.82
+
+/// Where the eye starts, before the walk or a shot: the vale's middle, 1.7 m over the ground,
+/// looking up the valley.
+pub fn start_eye() -> vec3 {
+    vec3(0.0, height_at(vec2(0.0)) + 1.7, 0.0)
+}
+
+pub struct Vale {
+    /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
+    /// draws (stage.wrela).
+    frame: Frame<Shared>,
+    stage: Stage,
+    /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
+    shots: Shots,
+    /// The camera a test holds (eye, what it looks at), if one does.
+    held: Option<(vec3, vec3)>,
+    /// Whether the vale's ready: playable, its tiles round the eye in.
+    ready: bool,
+}
+
+pub fn init() -> Vale {
+    let eye = start_eye()
+    let at = eye + vec3(0.0, 0.0, 1.0)
+    let f: Frame<Shared> = Frame::new(
+        quality(),
+        sun_light(),
+        air_of(),
+        fields_clipmap(),
+        first_camera(eye, at, FOVY, width: 960, height: 540),
+        probe_grid(eye.xz, vec2(0.0), TILES),
+        eye.xz,
+    )
+    Vale { frame: f, stage: stage(), shots: Shots {}, held: None, ready: false }
+}
+
+/// The keys: L, a number and Enter hold the camera on a lookbook shot, and Escape lets it go;
+/// the frame's own (its views, its lookdev instrument) otherwise.
+fn keys(s: mut Vale, time: f32) {
+    for e in events() {
+        if let Event::KeyDown { key, .. } = e {
+            let chose = s.shots.key(key, lookbook::SHOTS.len(), time)
+            if chose.chosen {
+                s.frame.arrive()
+            }
+            if !chose.taken {
+                let _ = s.frame.key(key)
+            }
+        }
+    }
+}
+
+pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
+    keys(mut s, time)
+    // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
+    let time = s.frame.held_time(time)
+    s.shots.clock(time, covered: s.frame.ready.arriving)
+    let (eye, at, fovy) = match (s.held, s.shots.held) {
+        (Some(h), _) => (h.0, h.1, FOVY),
+        (None, Some(i)) => {
+            let sh = lookbook::SHOTS[i]
+            let (e, a) = place(sh, s.shots.since(time), height_at)
+            (e, a, sh.fovy)
+        },
+        (None, None) => {
+            let eye = start_eye()
+            (eye, eye + vec3(0.0, 0.0, 1.0), FOVY)
+        },
+    }
+    let aim = Aim { eye, at, fovy, moving_at: eye }
+    let _ = s.frame.begin(mut s.stage, aim, time, width, height)
+    s.frame.draw(mut s.stage, aim)
+    if !s.ready && s.frame.ready.playable_at.is_some() {
+        s.ready = true
+        print(f"vale ready at frame {s.frame.frames}")
+    }
+}
+
+// ---- for tests -----------------------------------------------------------------------------------
+
+/// The camera held at `eye`, looking at `at`.
+@testing
+pub fn test_hold(s: mut Vale, eye: vec3, at: vec3) {
+    s.held = Some((eye, at))
+}
+
+/// How many trees the wood holds of the tiles that have come (each tile's own instances).
+pub fn loaded(s: Vale) -> u32 {
+    var n = 0
+    for a in s.stage.land.own {
+        n += a.placed.len()
+    }
+    n
+}
+
+/// The vale's first frames from its middle: its wood made and its tiles round the eye in, more
+/// than a thousand trees of them placed, and playable within the frames.
+@test(frames: 400, gpu: true)
+fn the_vale_draws_its_forest_from_its_history(s: Vale) {
+    let n = loaded(s)
+    let Some(playable) = s.frame.ready.playable_at else { panic("playable within 400 frames") }
+    let Some(wood) = s.stage.land.wood_at else { panic("the wood within 400 frames") }
+    print(
+        f"the vale: {s.stage.land.own.len()} tiles, {n} trees loaded; the wood at frame {wood}, playable at frame {playable}",
+    )
+    assert(n > 1000, f"{n} trees loaded")
+}

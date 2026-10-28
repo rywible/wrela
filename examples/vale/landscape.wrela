@@ -13,7 +13,8 @@ use land::grow::{Grid, NONE, Stream}
 use land::landform::{
     Basins, Landscape, Relief, Shaping, Strength, basins, channels, drainage, evolve,
 }
-use land::soil::{SoilKind, soil}
+use engine::terrain::{Cover, Terrain}
+use land::soil::{Soil, SoilKind, soil}
 
 // ---- the square ---------------------------------------------------------------------------------
 
@@ -129,9 +130,9 @@ pub fn made() -> Landscape {
 pub const STREAM: f32 = 2.0e4
 
 /// The vale's land as it was made: its making (`Landscape`), its relief over level ground (the
-/// terrain's), its lakes, its streams (each as cells down their receivers, the main stream's
+/// terrain's: the mere's bed under its water), its lakes, its streams (each as cells down their receivers, the main stream's
 /// first), its main stream's course from the head to the mouth (`main`), its fall, its mere, how
-/// wet each cell's ground is (`wetness`), and each cell's soil kind.
+/// wet each cell's ground is (`wetness`), and each cell's soil kind and its depth (m).
 pub struct Vale: Clone {
     pub made: Landscape,
     pub relief: Relief<CELLS>,
@@ -142,6 +143,7 @@ pub struct Vale: Clone {
     pub mere: u32,
     pub wet: Vec<f32>,
     pub soil: Vec<SoilKind>,
+    pub depth: Vec<f32>,
 }
 
 /// Where the main stream falls most sharply: the cells at its lip and its foot, along its course
@@ -167,11 +169,14 @@ fn vale() -> Vale {
     let main = main_stream(l)
     let fall = fall_of(l, main)
     let mere = mere_of(l, lakes, main, fall)
-    let flat: Vec<f32> = Vec::filled(CELLS, 0.0)
-    let relief: Relief<CELLS> = Relief::of(l, flat)
+    // The terrain's relief is the land under the mere (its bed: `made` holds the mere's surface,
+    // the depth in `lakes`), so the water lies over the bed at its level.
+    let relief: Relief<CELLS> = Relief::of(l, l.lakes)
     let wet: Vec<f32> = Vec::from_fn(g.cells(), |c| wetness(l, relief, c, plain[c]))
-    let soil: Vec<SoilKind> = Vec::from_fn(g.cells(), |c| soil_kind(l, relief, c, wet[c]))
-    Vale { made: l, relief, lakes, channels: chans, main, fall, mere, wet, soil }
+    let soils: Vec<Soil> = Vec::from_fn(g.cells(), |c| soil_of(l, relief, c, wet[c]))
+    let soil: Vec<SoilKind> = Vec::from_fn(g.cells(), |c| soils[c].kind)
+    let depth: Vec<f32> = Vec::from_fn(g.cells(), |c| soils[c].depth)
+    Vale { made: l, relief, lakes, channels: chans, main, fall, mere, wet, soil, depth }
 }
 
 /// The main stream: from the outlet up, at each cell the neighbour draining most into it, to the
@@ -365,9 +370,9 @@ fn routed(l: take Landscape, h: [f32]) -> Landscape {
 /// The least depth a filled pit holds to be a lake (m), as `land::landform` counts one.
 const LAKE: f32 = 0.25
 
-/// Cell `c`'s soil kind (`land::soil::soil`): the curvature and slope of the land there, at the
+/// Cell `c`'s soil (`land::soil::soil`): from the curvature and slope of the land there, at the
 /// soil's spans; how much of it is the band's bare grit on a face; and how wet it is (`wet`).
-fn soil_kind(l: Landscape, r: Relief<CELLS>, c: u32, wet: f32) -> SoilKind {
+fn soil_of(l: Landscape, r: Relief<CELLS>, c: u32, wet: f32) -> Soil {
     let g = l.grid
     let p = g.centre(c)
     let h0 = r.rise_at(p)
@@ -385,7 +390,7 @@ fn soil_kind(l: Landscape, r: Relief<CELLS>, c: u32, wet: f32) -> SoilKind {
         }
     }
     let rock = if in_band(p) && slope > 0.9 { 1.0 } else { 0.0 }
-    soil(lap: lap, slope: slope, rock: rock, wet: wet).kind
+    soil(lap: lap, slope: slope, rock: rock, wet: wet)
 }
 
 /// A stream's point at cell `c` of `v` as `land::grow` and `land::water` read it (x, z, width,
@@ -459,5 +464,101 @@ impl engine::terrain::Ground for Ground {
     /// Bare rock (no soil, where no tree stands): 1, else 0.
     fn rock(self, p: vec2) -> f32 {
         if self.soil_at(p) == u32(SoilKind::Rock) { 1.0 } else { 0.0 }
+    }
+}
+
+// ---- the ground, as the terrain draws it ---------------------------------------------------------
+
+/// Each soil kind's ground where it shows (linear albedo), in `SoilKind`'s order: bare rock (the
+/// rock's own, `rock_albedo`), a thin stony soil, the brown loam, the darker colluvium, the
+/// alluvium, the grey gley, the peat.
+const SOIL_ALBEDO = [
+    vec3(0.0),
+    vec3(0.105, 0.09, 0.07),
+    vec3(0.085, 0.062, 0.042),
+    vec3(0.07, 0.05, 0.034),
+    vec3(0.065, 0.052, 0.036),
+    vec3(0.06, 0.062, 0.05),
+    vec3(0.03, 0.024, 0.018),
+]
+
+/// How much meadow each soil kind holds in the open (`Cover::grass`), and how deep a green it is.
+const SOIL_GRASS = [0.0, 0.55, 1.0, 1.0, 1.0, 0.9, 0.6]
+const SOIL_DEEP = [0.0, 0.0, 0.1, 0.2, 0.35, 0.6, 0.8]
+
+/// The rock where it shows, at `at` (normal `n`) as a sample `w` metres across sees it: the band's
+/// grit warm and grey in its beds (a metre or so each, lighter and darker), the shale dark, both
+/// mottled, its weathered surface brownish.
+pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
+    let mottle = engine::noise::fbm2_seen(at.xz * 0.35 + vec2(at.y * 0.2, 3.0), 3, w * 0.35)
+    if in_band(at.xz) {
+        let bed = 0.5 + 0.5 * sin(at.y * 5.3 + 2.0 * engine::noise::noise2(at.xz * 0.05))
+        mix(vec3(0.20, 0.18, 0.15), vec3(0.30, 0.27, 0.22), vec3(0.6 * bed + 0.4 * mottle))
+    } else {
+        mix(vec3(0.05, 0.048, 0.045), vec3(0.095, 0.088, 0.078), vec3(mottle))
+    }
+}
+
+impl Ground {
+    /// Its cover at `at` (normal `n`), the history's fields there (`fields`: -1 past the tiles
+    /// streamed in), as a sample `w` metres across sees it: its soil's ground and meadow, the rock
+    /// showing where it's bare or steep; then the wood's floor over the fields
+    /// (`land::cover::wood_floor`), or past them the wood seen from far off, its canopy's greens
+    /// over all but its rock.
+    fn covered(self, at: vec3, n: vec3, fields: vec4, w: f32) -> Cover {
+        let kind = self.soil_at(at.xz)
+        // Rock shows on faces; where it's bare but gentle (the crests'), moss and soil lie between
+        // its stones, as on the floor's grown land (`SCREE_GROWN`).
+        let face = smoothstep(0.62, 0.45, n.y)
+        let bare = if kind == u32(SoilKind::Rock) {
+            mix(1.0, 0.35, smoothstep(0.7, 0.86, n.y))
+        } else { 0.0 }
+        let rock = max(face, bare)
+        let albedo = mix(SOIL_ALBEDO[kind], rock_albedo(at, n, w), vec3(rock))
+        var c = Cover {
+            albedo,
+            grass: SOIL_GRASS[kind] * (1.0 - rock),
+            deep: SOIL_DEEP[kind],
+            materials: vec4(0.0, 1.0 - rock, rock, 0.0),
+        }
+        if fields.x < 0.0 {
+            let tone = engine::noise::fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
+            let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
+            c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - rock)))
+            return c
+        }
+        land::cover::wood_floor(
+            c,
+            at,
+            n,
+            fields,
+            w,
+            trodden: fields.y,
+            rim: 0.0,
+            rock_albedo: rock_albedo,
+        )
+    }
+}
+
+impl Terrain for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.relief.rise_at(vec2(x, z))
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        self.covered(at, n, vec4(-1.0), 0.0)
+    }
+
+    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
+        self.covered(at, n, fields, 0.0)
+    }
+
+    fn cover_seen(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        self.covered(at, n, fields, footprint)
+    }
+
+    /// Its steepest: the band's faces (rise over run).
+    fn steepest(self) -> f32 {
+        12.0
     }
 }

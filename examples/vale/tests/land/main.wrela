@@ -151,3 +151,34 @@ fn the_water_is_laid_where_the_land_put_it() {
     print(f"the water: {w.courses.len()} courses, the mere {w.mere.len()} cells at {w.mere_level} m, {m.verts.len()} vertices, {m.tris.len() / 3} triangles")
     assert(m.tris.len() > 3000, f"the water's mesh has {m.tris.len() / 3} triangles")
 }
+
+/// The history: a wood over the vale's land (over 100 living trees a hectare), the oldest over two
+/// centuries; none in the mere, none over 2 m in the middle of the meadow the herd grazes.
+@test
+fn the_history_grows_a_wood_over_the_land() {
+    let d = vale::history::decisions()
+    var living = 0
+    var kinds = [0; 8]
+    var oldest = 0
+    var wet = 0
+    var meadow = 0
+    let m = vale::history::meadow()
+    for t in d.trees {
+        if t.state == land::grow::State::Alive {
+            living += 1
+            kinds[min(t.kind, 7)] += 1
+            oldest = max(oldest, vale::history::PRESENT - t.born)
+            if VALE.lakes.of[vale::landscape::GRID.cell_at(t.at)] != NONE {
+                wet += 1
+            }
+            if length(t.at - m.at) < m.radius * 0.6 && t.tall > 2.0 {
+                meadow += 1
+            }
+        }
+    }
+    print(f"the history: {d.trees.len()} trees, {living} living (oak {kinds[0]}, beech {kinds[1]}, birch {kinds[2]}, hawthorn {kinds[3]}, blackthorn {kinds[4]}, pine {kinds[5]}, alder {kinds[6]}), the oldest {oldest} years; {wet} in the mere, {meadow} over 2 m in the meadow's middle")
+    assert(living > 10000, f"{living} living trees")
+    assert(oldest > 200, f"the oldest tree is {oldest} years")
+    assert(wet == 0, f"{wet} trees stand in the mere")
+    assert(meadow == 0, f"{meadow} trees stand in the meadow's middle")
+}

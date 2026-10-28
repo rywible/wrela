@@ -941,7 +941,6 @@ pub fn wind(time: f32) -> Wind {
     Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
 }
 
-/// A tile being fetched: which, from which source (`source_of`), and its request.
 /// The built things to realize: the floor's (`blockouts::built`), the egg's place's ring of
 /// stones out in the wildwood, and the crags' rock (`Land::crag_beds`).
 pub fn to_build() -> Vec<blockouts::Built> {
