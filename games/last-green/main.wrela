@@ -224,10 +224,10 @@ fn restream(s: mut Floor, source: u32) {
 /// The render origin moved to tile `to`: everything drawn moves with render space, keeping what
 /// it cooked (the frame's and the stage's: `Frame::recentre`).
 fn recentre(s: mut Floor, to: vec2i) {
-    if to == s.stage.origin {
+    if to == s.stage.land.origin {
         return
     }
-    s.stage.origin = to
+    s.stage.land.origin = to
     let o = vec2(to) * land::place::TILE
     s.frame.recentre(mut s.stage, vec3(o.x, 0.0, o.y))
     print(f"the render origin moved to tile {to.x}, {to.y}")
@@ -277,10 +277,10 @@ fn keys(s: mut Floor, time: f32) {
                 _ => None,
             }
             if key == Key::F6 {
-                s.stage.water_look = (s.stage.water_look + 1) % engine::water::LOOKS.len()
+                s.stage.land.water_look = (s.stage.land.water_look + 1) % engine::water::LOOKS.len()
             }
             if key == Key::B {
-                s.stage.fog_on = !s.stage.fog_on
+                s.stage.land.fog_on = !s.stage.land.fog_on
             }
             // F7 stills and V plain rendering (no look, to tell the look's work from the
             // scene's): the frame's own keys.
@@ -297,7 +297,7 @@ fn keys(s: mut Floor, time: f32) {
                 // again; and the grown view's trees, fields, far layer and water are its own.
                 s.frame.changed(Change::Casters)
                 let source = source_of(s.stage.view)
-                if source != s.stage.source {
+                if source != s.stage.land.tiles.source {
                     restream(mut s, source)
                 }
             }
@@ -367,8 +367,8 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(h) => land::place::tile_of(h.0.xz),
         None => pa.at.tile,
     }
-    let from = vec2(near_tile - s.stage.origin) * land::place::TILE
-    let before = s.stage.origin
+    let from = vec2(near_tile - s.stage.land.origin) * land::place::TILE
+    let before = s.stage.land.origin
     let o_was = origin_of(s.stage)
     if max(abs(from.x), abs(from.y)) > RECENTRE {
         let k = f32(RECENTRE_STEP)
@@ -378,14 +378,14 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let o = origin_of(s.stage)
     let o2 = o.xz
     // The player's feet in render space, exact however far it is (`Place::from_tile`).
-    let feet2 = pa.at.from_tile(s.stage.origin) + pa.at.to(pb.at) * b.alpha
+    let feet2 = pa.at.from_tile(s.stage.land.origin) + pa.at.to(pb.at) * b.alpha
     let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
     // Stepping into the door goes back down to the stair; the stair is got ready while nothing
     // of the floor's own streaming waits.
     s.exit.update(
-        allowed: s.stage.fetching.is_empty() &&
-            s.stage.cooking.is_empty() &&
-            s.stage.wood.is_some(),
+        allowed: s.stage.land.fetching.is_empty() &&
+            s.stage.land.cooking.is_empty() &&
+            s.stage.land.wood.is_some(),
     )
     if s.exit.stepped_in(feet2 + o2) {
         let _ = s.exit.leave(feet2 + o2)
@@ -408,7 +408,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // there, in the wind.
     s.dt = clamp(time - s.stepped, 0.0, 0.1)
     s.stepped = time
-    let moved = s.stage.origin != before
+    let moved = s.stage.land.origin != before
     if moved {
         s.climber.carry(o_was - o)
     }
@@ -419,7 +419,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     ) /
         0.6
     let gust = stage::wind(time)
-    let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.stage.still { 0.0 } else {
+    let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.stage.land.still { 0.0 } else {
         1.5 * gust.strength
     })
     // In the fight (in play), its pose, its swings and its blink are the fight's climber's; out
@@ -504,7 +504,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     // The cloak bends contacting stems round its hem and along its train; it never clears or
     // lowers the grass roots.
-    s.stage.grass.contact = match s.climber.train_end() {
+    s.stage.land.grass.contact = match s.climber.train_end() {
         Some(end) if !gone => Contact { at: vec4(stood, HEM_RADIUS), tail: vec4(end, TRAIN_REACH) },
         _ => Contact {},
     }
@@ -585,19 +585,19 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // A click names what's under it: a tree's kind and history, or the ground's cover and fields.
     if let Some(px) = replace(mut s.clicked, None) {
         let size = vec2(f32(width), f32(height))
-        if s.stage.source == SPECIMEN_LAND {
-            print(provenance::click(s.stage.grounds, cam, px, size, level_at))
-        } else if s.stage.source == GROWN_LAND {
-            print(provenance::click(s.stage.grounds, cam, px, size, grown_at))
+        if s.stage.land.tiles.source == SPECIMEN_LAND {
+            print(provenance::click(s.stage.land.grounds, cam, px, size, level_at))
+        } else if s.stage.land.tiles.source == GROWN_LAND {
+            print(provenance::click(s.stage.land.grounds, cam, px, size, grown_at))
         } else {
-            print(provenance::click(s.stage.grounds, cam, px, size, height_at))
+            print(provenance::click(s.stage.land.grounds, cam, px, size, height_at))
         }
     }
     let wind = engine::frame::Scene::wind(s.stage, cam, time)
     // Where the eye is in the world, for what's kept by tiles.
     let eye_w = eye + o
     // ---- The floor's sound (sound.wrela): the ears at the eye, the steps at the feet, in the world.
-    let heard_at = sound::moment(eye_w, cam.forward.xz, feet + o, s.stage.grounds, wind, time)
+    let heard_at = sound::moment(eye_w, cam.forward.xz, feet + o, s.stage.land.grounds, wind, time)
     sound::frame(mut s.hearing, heard_at)
     // The fight's sounds, while it's on (in play).
     let bout = b.b.fight
@@ -614,7 +614,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let (clear_to, clear_r) = if s.shots.held.is_some() { (eye + cam.forward * 3.0, 3.2) } else {
         (feet + vec3(0.0, s.framing.target, 0.0), 1.1)
     }
-    match mut s.stage.wood {
+    match mut s.stage.land.wood {
         Some(w) => w.clear = vec4(clear_to, clear_r),
         None => {},
     }
@@ -629,20 +629,20 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => {},
     }
     if !s.ready &&
-        s.stage.wood.is_some() &&
-        s.stage.fetching.is_empty() &&
-        s.stage.arrived.is_empty() &&
+        s.stage.land.wood.is_some() &&
+        s.stage.land.fetching.is_empty() &&
+        s.stage.land.arrived.is_empty() &&
         s.frame.sky.done() {
         s.ready = true
         print(f"the floor ready at frame {s.frame.frames - 1}")
     }
-    let loaded = match s.stage.wood {
+    let loaded = match s.stage.land.wood {
         Some(w) => w.loaded(),
         None => 0,
     }
     if (s.frame.frames - 1) % 60 == 0 {
         print(
-            f"frame {s.frame.frames - 1}: the player at {feet.x + o.x:.1}, {feet.z + o.z:.1}; {s.stage.tiles_in} tiles come, {loaded} instances loaded",
+            f"frame {s.frame.frames - 1}: the player at {feet.x + o.x:.1}, {feet.z + o.z:.1}; {s.stage.land.tiles_in} tiles come, {loaded} instances loaded",
         )
         if (s.frame.frames - 1) % 600 == 0 {
             print(costs_said(s.frame.cooks.planner))
@@ -720,7 +720,7 @@ fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
 
 /// Prints each tile within `CARDS_TO` of the eye whose own trees aren't placed: late (once).
 fn late_tiles(s: mut Floor, eye: vec2) {
-    let Some(w) = s.stage.wood else { return }
+    let Some(w) = s.stage.land.wood else { return }
     let at = land::place::tile_of(eye)
     for j in (at.y - 1)..(at.y + 2) {
         for i in (at.x - 1)..(at.x + 2) {
@@ -771,7 +771,7 @@ pub fn test_leave(s: mut Floor, x: f32, z: f32) -> f32 {
 /// The air's fog, mists and canopy haze on (`on` 1) or off.
 @testing
 pub fn test_fog(s: mut Floor, on: u32) {
-    s.stage.fog_on = on != 0
+    s.stage.land.fog_on = on != 0
 }
 
 /// Frames drawn as plain rendering (`on` 1: the scene at the output's size, no jitter, no
@@ -788,13 +788,13 @@ pub fn lookdev(s: mut Floor, blend: f32, thin: f32) {
     if blend > 0.0 {
         s.frame.ghost(blend)
     }
-    s.stage.grass.thin = thin
+    s.stage.land.grass.thin = thin
 }
 
 /// The wind blowing (`on` 1) or still.
 @testing
 pub fn test_wind(s: mut Floor, on: u32) {
-    s.stage.still = on == 0
+    s.stage.land.still = on == 0
     s.frame.debug.still = on == 0
 }
 
@@ -971,8 +971,8 @@ pub fn test_settled(s: Floor) -> f32 {
 /// Whether the floor's ready: its kinds cooked and the tiles round the player in and placed.
 @testing
 pub fn test_ready(s: Floor) -> f32 {
-    let placed = s.stage.wood.is_some() &&
-        s.stage.tiles_in > 0 &&
+    let placed = s.stage.land.wood.is_some() &&
+        s.stage.land.tiles_in > 0 &&
         !engine::frame::Scene::loading(s.stage)
     if placed { 1.0 } else { 0.0 }
 }
@@ -982,11 +982,11 @@ pub fn test_ready(s: Floor) -> f32 {
 @testing
 pub fn test_crown(s: Floor, i: u32) -> vec4 {
     var k = 0
-    for a in s.stage.own {
+    for a in s.stage.land.own {
         for p in a.placed {
             if p.kind < trees::kinds::KINDS && p.kind != trees::kinds::GREAT {
                 if k == i {
-                    let top = s.stage.plants[p.kind].top() * p.at.scale
+                    let top = s.stage.land.plants[p.kind].top() * p.at.scale
                     return vec4(p.at.at + vec3(0.0, top * 0.5, 0.0), top)
                 }
                 k += 1
@@ -1007,7 +1007,7 @@ fn the_first_frames_run(s: Floor) {
 /// eight frames or more (`FAR_PER_FRAME` a frame), and the floor is playable soon after.
 @test(frames: 400, gpu: true, hold: [("files/floor/far.bin", 200)])
 fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
-    let (Some(built), Some(wood)) = (s.stage.first_built_at, s.stage.wood_at) else {
+    let (Some(built), Some(wood)) = (s.stage.first_built_at, s.stage.land.wood_at) else {
         panic("the wood and the built things came")
     }
     assert(
@@ -1016,11 +1016,14 @@ fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
     )
     let Some(playable) = s.frame.ready.playable_at else { panic("playable within 400 frames") }
     print(
-        f"built from frame {built}, the wood at {wood}, playable at frame {playable}, the far layer over {s.stage.far_frames} frames",
+        f"built from frame {built}, the wood at {wood}, playable at frame {playable}, the far layer over {s.stage.land.far_frames} frames",
     )
     print(costs_said(s.frame.cooks.planner))
     // The far layer's 65 tiles, `FAR_PER_FRAME` a frame.
-    assert(s.stage.far_frames >= 8, f"the far layer landed over {s.stage.far_frames} frames")
+    assert(
+        s.stage.land.far_frames >= 8,
+        f"the far layer landed over {s.stage.land.far_frames} frames",
+    )
     assert(playable <= PLAYABLE_HELD, f"playable at frame {playable}")
 }
 
