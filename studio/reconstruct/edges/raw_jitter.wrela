@@ -1,0 +1,9 @@
+// Fixed source-decoder control: prepare the existing16 jitter phases once per resize.
+// Learned/indexed paths retain their previous evaluation; this stores no appearance data.
+use engine::view::jitter_of
+use std::gpu::{GlobalId, Slots}
+
+@compute(16)
+pub fn prepare(out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < 16 { out[id] = vec4(jitter_of(id.x), 0.0, 0.0) }
+}

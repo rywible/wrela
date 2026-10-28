@@ -18,20 +18,19 @@
 
 ## Immediate milestone
 
-[Source-guided scattered sampling](neural-adaptive-sampling.md) is retired:
-aggregate spatial/temporal quality regresses, complete GPU time rises and memory
-is unchanged. G4's compact optical model remains frozen and fails its quality
-gate; exact coverage with shared material/depth representatives also failed.
-There is no new neural rendering advantage.
+[The fixed-slot persistent surface cache](neural-surface-cache.md) is retired.
+It reduces history-search cost but loses too many observations, particularly at
+2x/3x. Four slots recover most 4x quality at a memory cost. Shared preparation of
+the sixteen jitter phases is retained in the fixed conventional source decoder:
+measured 21.96008→18.49648 ms with byte-identical output and 240 added bytes.
+This component improvement still fails G6 and establishes no neural advantage.
 
-Next test a bounded persistent cache in surface coordinates with the regular
-sampler fixed. Insert only new raw observations and reconstruct from small local
-support; retain exact positions, surface identity and age. Charge collisions,
-expiry, visibility, insertion and fallback. Compare the conventional version on
-existing clips/references before any learned routing. This changes state
-organization, unlike the previous index that rebuilt all sixteen frames in
-current output coordinates. Do not repeat fixed-sample kernel or material-moment
-fits. All G1–G7 remain active, unchanged and unmet.
+Next change reconstruction representation: separate source-derived geometric
+coverage from per-surface radiance. Test the equally informed conventional
+factorization first, charging coverage queries and radiance-history work under
+the unchanged colour-sample budget. Reuse existing clips/references. Do not
+refit kernel or material moments without a rendered-error justification.
+Frozen appearance models remain unchanged; all G1–G7 remain active and unmet.
 
 ## Evidence recorded so far
 
@@ -2638,3 +2637,21 @@ G1–G7 unchanged and unmet. Next: regular samples in a bounded persistent surfa
 coordinate cache, charging insertion/expiry/collisions/visibility/fallback before
 considering learned routing. [Full evidence](neural-adaptive-sampling.md).
 Manifest SHA-256: `0647b783a3aa74993eaef0a3d50b3ad2170b6270340535bc8fbf9ebb041e6855`.
+
+### Persistent fixed-slot cache retired; shared jitter retained
+
+First comparison 7.47 minutes; decision
+30.86 minutes; exactly two follow-ups, no training/reference
+expansion. Two slots save runtime/memory but worsen 4x FLIP10.2% and temporal68.2%.
+Four slots recover most4xquality; with sharedjitter they cost14.83664ms and
+114,761,532livebytes versus informedregular18.49892ms/89,493,804bytes, while
+2xFLIP worsens37.28%. No joint architecture or neural win; cache retired.
+
+Retain shared jitter only in fixed, non-indexed source control. All1024pairedRGBA
+frames exact; independentcache-state audits andcut/freshnegatives pass. Final
+retained runtime18.49648ms,89,493,784livebytes; +240bytes, no new ordinary-renderer
+allocation. All1152finalfixed/frozen image/reference/mask files match prior.
+G1–G7 unchanged/unmet. Next: separate geometric coverage and per-surface radiance,
+with equal information and complete costs before another learned residual.
+[Full comparison](neural-surface-cache.md).
+Manifest SHA-256: `474d249e9b36b99fc35a0d353f93697214222189bb4a3d5a4d1a139369a2d094`.

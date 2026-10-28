@@ -2608,3 +2608,20 @@ First assessment 7.95 minutes; decision 20.46 minutes. No follow-up, training or
 reference expansion. Retire both scattered paths; preserve all failed results and
 restore exact prior runtime. G1–G7 unchanged/unmet.
 [Complete comparison and limitations](neural-adaptive-sampling.md).
+
+### AMD persistent surface cache and retained jitter preparation (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compilerde9b81e5; parentb3332131 plus exact archived sources.
+Four192x10832-frameclips at1x-4x;1080p4xcase1runtime. Two-slotcache14.46528ms,
+81,391,420livebytes but4xFLIP+10.2%,temporal+68.2%. Four-slot+table14.83664ms,
+114,761,532bytes vsregular+table18.49892ms/89,493,804bytes;2xFLIP+37.28%.
+Retirecache aftertwofollowups; no training/newreference method orcases.
+
+Retain shared jitter preparation in fixed non-indexed source decoder only.
+FinalGPUmedian/p95=18.49648/18.80460ms vsoriginal21.96008/22.28536;
+live/peak=89,493,784/97,788,184B,240netaddedbytes,no ordinary-rendererallocation.
+All1024pairedRGBA and1152finalfixed/frozenimage/reference/mask files exact.
+Whole-clientDRM/PSS andcompleteCPU/completionrecorded;singlecomparisons,not
+sustainedG6or16xappearance-memoryclaims. Goals unchanged/unmet.
+[Full quality, costs, failures and verification](neural-surface-cache.md).

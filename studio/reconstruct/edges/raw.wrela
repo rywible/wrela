@@ -137,6 +137,8 @@ pub fn reconstruct_source(
     shape: vec4,
     kernel: [vec4],
     trained: u32,
+    jitter_table: [vec4],
+    prepared: u32,
 ) -> vec4 {
     let d = f32(divisor)
     let size = packed_stride(width, height)
@@ -154,7 +156,9 @@ pub fn reconstruct_source(
         for age in 0..HISTORY {
             if age < count {
                 let frame = tick - age
-                let jitter = jitter_of(frame)
+                let jitter = if prepared > 0 { jitter_table[frame % HISTORY].xy } else {
+                    jitter_of(frame)
+                }
                 let (lo, hi) = sample_bounds(
                     p.position.xy,
                     velocity,

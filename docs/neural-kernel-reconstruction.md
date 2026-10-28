@@ -224,3 +224,19 @@ but remains manual specialization of a two-layer analytic fixture. It does
 not imply equivalent reuse across arbitrary motion, deforming surfaces,
 lighting or production scenes. Both frozen models remain rejected on quality;
 the explicit switch defaults off.
+
+## Shared jitter phases in the fixed source control
+
+The fixed, non-indexed `raw-source` decoder now prepares the sixteen existing
+Halton jitter phases once on resize in `edges/raw_jitter.wrela`, using the GPU
+implementation of `jitter_of`. It reuses the inactive model-context buffer for
+16 vec4 rows, adding 240 bytes only to this path. The source gather reads a row
+instead of recalculating Halton loops for every age/output pixel. Sampling,
+visibility, filtering and colour remain unchanged. Learned/indexed paths keep
+their previous evaluation, and ordinary rendering gains no new allocation.
+
+All512fixed-control frames in the four-case comparison are byte-identical.
+Finalcleanup also reproduces fixed and both frozenlearned controls exactly;
+complete1080pGPU21.96008→18.49648ms is an observed component improvement,
+not G6 certification. The associated fixed-slot surfacecache was retired for
+quality/memory tradeoffs. [Complete comparison](neural-surface-cache.md).

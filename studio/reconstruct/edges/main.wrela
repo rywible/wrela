@@ -231,6 +231,12 @@ fn resize(s: mut State, width: u32, height: u32) {
     s.spreads = writable_texture(width: w, height: h)
     if s.raw_source {
         s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
+        if !s.raw_indexed && !s.raw_trained {
+            // Reuse the inactive model-context buffer. Fixed geometry needs only16phases.
+            s.raw_prepared = buffer(16)
+            label("raw jitter prepare")
+            dispatch(raw_jitter::prepare.bind(mut s.raw_prepared), over: 16)
+        }
     } else if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
     if s.raw_indexed {
         let grid = raw_index::grid_size(width, height)
@@ -529,6 +535,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 vec4(f.period, f.width, f.offset, f.speed),
                 if s.raw_specialized { s.raw_prepared.items() } else { s.raw_kernel.items() },
                 if !s.raw_trained { 0 } else if s.raw_specialized { 2 } else { 1 },
+                s.raw_prepared.items(),
+                if s.raw_trained { 0 } else { 1 },
             ),
         )
     } else if s.raw_enabled {
