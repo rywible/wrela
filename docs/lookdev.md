@@ -68,11 +68,11 @@ A separate agent judges, in a context of its own: shown each pair in an order it
 The vale's look is judged against freely licensed photographs and footage of its real subjects (`references/vale.wrela`, docs/citations.md): G-reference (docs/plan-world-class-3.md §0.5, §B4). `studio/compare` lays out the comparisons and tallies the judgements; it doesn't judge.
 
 ```bash
-wrela tool studio/compare --read ws=. --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/vale-b5 --a build/vale-b5/stills --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/vale-b5 --a build/vale-b5/stills --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
 ```
 
 ```bash
-wrela tool studio/compare --read ws=. --write ws=. -- build/vale-b5 --tally
+wrela tool studio/compare --write ws=. -- build/vale-b5 --tally
 ```
 
 The references stay outside the repository, so the tool runs as a package with their directory granted (`refs`): a workspace's declared tool's roots stay inside the workspace.
