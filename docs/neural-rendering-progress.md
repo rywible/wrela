@@ -2868,3 +2868,26 @@ Eight retained captures match prior measurements; other runtime files restored.
 G1–G7 and frozen models unchanged. Failures preserved.
 [Full measurements and decision](neural-shaded-appearance.md#broader-views-overturn-the-aggressive-cutoff).
 Manifest: `ebc652b8bc4874596b5ace82fb68b8c7a57ba57e2469b65fe2f953da277bf1f8`.
+
+
+### Source-compiled far-field checkpoint (2026-10-28)
+
+First assessment9.71min; decision30.68min. Two targeted follow-ups, no training;
+four justified existing-CLI reference captures for two demonstrated uncertainties.
+Compact quadratic and eight-region linear log aggregates both pass36AA64rows
+against all exact source controls. Compact screen192/192; regional192vscache
+and191vsnative, with the sole borderline native case passingAA32andAA64.
+All288candidate alpha captures match source;144retainedRGBA/resource files exact.
+
+Paired median completeGPU savings17.93%/26.55% vsfullfield; geometric18.03%/26.58%,
+conditional95%intervals17.61–18.46%/26.34–26.80%. Tables7,392/22,880B;
+allrequestedlive837,964/853,452B versus exactcache1,043,052B.
+Cache remains faster:0.35248ms vs0.49672/0.44004ms. Whole-clientDRM/PSS and
+completion costs retained; no16×physicalresident proof.
+Continue source-compiled near/far diagnostic options; defaults unchanged.
+Reject aggressive global approximations. Invalid regional layout and metric-helper
+failures preserved. Next bet: share compiled summaries across instances and choose
+caches by measured benefit, validated across families, footprints and multiasset load.
+G1–G7 and frozen models unchanged.
+[Complete comparison and limitations](neural-shaded-appearance.md#source-compiled-far-fields-recover-quality-and-useful-gpu-savings).
+Manifest: `0e9177f7ac4cb92e13d2ca5c4de56e4a7b9b5407bf574279d0b2ee92128d1ec8`.

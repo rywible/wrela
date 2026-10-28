@@ -2928,3 +2928,27 @@ reference captures. First assessment12.61min; decision18.09min.
 Change representation for G4; retain stricter cutoff6 diagnostic. Earlier21.53%
 cutoff4speed result remains true on its two views but fails broader quality.
 [Full measurements and limitations](neural-shaded-appearance.md#broader-views-overturn-the-aggressive-cutoff).
+
+
+### AMD source-compiled far-field aggregates (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent2e32bb90 plus archived variants.
+Same64px tree;36AA64 shaded comparisons,192additional-viewAA8screen rows.
+Compact cutoff4quadratic and cutoff2eight-region linearlog both36/36AA64 against
+native/compactcache/fullfield controls. Regional191/192nativeAA8screen; the sole
+borderline case passesAA32/AA64. Compact192/192. All288candidatealpha images exact.
+FullGPUmedian compact/regional/cache/fullfield0.49672/0.44004/0.35248/0.60264ms.
+Five-pair median savings vsfullfield17.93%/26.55%; geometric18.03%/26.58%,
+conditional95%pairedbootstrap17.61–18.46%/26.34–26.80%. CPU inconclusive.
+Tables7,392/22,880B vs212,480Bexactresponsecache; totalrequestedlive
+837,964/853,452B vs1,043,052Bcache; peaks854,348/869,836B.
+Actualcompact/regional DRM VRAM17,694,720/17,678,336B,
+GTT9,953,280/10,035,200B, PSS489,110,528/490,124,288B, whole-client observations.
+All geometry,decode,cutouts,visibility,wood,near/aggregate/cache,shade,frameupdates
+andcomposite counted. Staticcook excludedsteadytime butstorage/peak charged;
+dynamic sourceedit rebuild unmeasured. No16×physicalresident/worldleadership claim.
+First assessment9.71min; decision30.68min. Two follow-ups, no training,
+four justified reference captures; one layout repair and one helper fix preserved.
+Retain both conventional diagnostic recipes; defaults unchanged.
+[Full measurements and limitations](neural-shaded-appearance.md#source-compiled-far-fields-recover-quality-and-useful-gpu-savings).

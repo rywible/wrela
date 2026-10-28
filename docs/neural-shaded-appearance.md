@@ -7297,3 +7297,190 @@ Original Wrela experiment; established metric
 [citations](citations.md#neural-reconstruction-instrument) apply.
 Evidence on Pop!_OS: build/neural-evidence/g4-source-bounds-views-v1.
 Manifest SHA-256: `ebc652b8bc4874596b5ace82fb68b8c7a57ba57e2469b65fe2f953da277bf1f8`.
+
+
+## Source-compiled far fields recover quality and useful GPU savings
+
+**Decision: continue this conventional near/far representation as an opt-in
+diagnostic.** Keep nearby source terms exact and compile distant contributions
+into a small regional table. Retain two measured choices: a compact quadratic
+with more quality margin, and a faster, larger collection of linear log-space
+regions. Reject the two aggressive global approximations. G1–G7 remain
+unchanged and unmet; no neural training or production-default promotion occurs.
+
+The compact and faster choices reduce paired median complete GPU time by
+**17.93% and 26.55%** versus full uncached field evaluation. Both pass all
+36 high-sample shaded comparisons against native source, compact exact cache
+and full field. Exact cache is still faster and larger. The total resident
+observations do not prove a 16× G4 advantage.
+
+First joint assessment: 9.71 minutes. Decision: 30.68 minutes. Exactly two
+targeted optimization follow-ups, one implementation repair and one metric
+helper repair; all failed runs are preserved. Work ran solo on Pop!_OS AMD.
+
+### Wrela's source supplies the representation
+
+The authored program places every leaf inside a known spawning clump. The
+existing conservative distance bound selects nearby contributions; the source
+provides the exact sum of distant weights and weighted normals at any point.
+The new [compiler and evaluator](../studio/appearance/runtime/source_hierarchy.wrela)
+use that information directly:
+
+- For cutoff 4, retain 8–26 of 44 nearby clumps, averaging 16.43 per owner.
+  Centered source evaluations at a normalized step of 0.25 construct ten
+  four-component quadratic coefficients per owner. They approximate the
+  distant weighted-normal vector and scalar weight *before* normalization.
+  The complete mask/coefficient table occupies **7,392 B**.
+- For cutoff 2, retain 6–16 clumps, averaging 9.34 per owner. Eight regions per
+  spawning clump each store four linear coefficients. The scalar is represented
+  as log(total distant weight); the vector is the mean weighted normal, with
+  its magnitude preserved. Reconstruct the scalar with an exponential and
+  multiply it back into the vector. A shared near mask plus all regional
+  coefficients occupies **22,880 B**.
+
+These are source samples and finite differences, not image labels, regression
+fitting or trained neural weights. GPU initialization cooks the tables from the
+same authored program available to every control. No material-moment training
+resumes. All 26,560 leaf cards, 7,392 wood triangles, source cutouts and visibility
+remain. Lights and views do not select coefficients or access reference images.
+
+The source proves which terms are distant; it does not prove that a polynomial
+has negligible shading error. Rendered measurements decide which approximations
+survive. The source's weighted normals are used as authored; they are not silently
+replaced by derivatives of a different distance function.
+
+### Rendered quality and the bounded follow-ups
+
+Reuse the original two-view/four-light AA64 references and the previous block's
+two refined view/light pairs. The broader screen uses the already completed
+16 validation views, four lights and three backgrounds at AA8. These are public
+development examples, not a sealed unseen-family evaluation.
+
+Initial cutoff-4 quadratic passes all 30 existing AA64 comparisons and 192
+screen comparisons. Aggressive cutoff-2 quadratic fails two existing AA64
+comparisons, despite a small mean error. Follow-up 1 changes only to log-weight
+factorization with the same near work and ten coefficients. It fixes those
+30 comparisons but still fails four screening rows in two other view/light
+pairs. That specific uncertainty justifies four existing-CLI captures:
+AA32 and AA64 for view133/light1 and view144/light2. No new reference framework
+is built. Both pairs pass the established radiance/coverage convergence checks.
+After adding these six background comparisons, both global cutoff-2 variants
+fail five of 36 AA64 rows.
+
+Follow-up 2 uses eight smaller linear log regions at the same cutoff. Its first
+execution had a layout bug: allocation/cooking used one region while evaluation
+indexed eight. That run is invalid architecture evidence and remains under
+failures/regions8-layout, including code, images, profiles and the unexpectedly
+small allocation. Correcting the stride is a repair of the same experiment,
+not a third optimization; the repaired table has the predicted 22,880 B.
+
+| Method | AA64 passes vs exact cache | AA8 screen passes vs exact cache | AA64 mean PSNR dB | FLIP | LPIPS |
+|---|---:|---:|---:|---:|---:|
+| Native cached source | 36/36 | 192/192 | 40.07255 | 0.01328999 | 0.00213919 |
+| Compact exact cache | 36/36 | 192/192 | 40.07250 | 0.01329082 | 0.00213897 |
+| Compact full field | 36/36 | 192/192 | 40.07250 | 0.01329082 | 0.00213897 |
+| Dropped tail, cutoff 4 | 29/36 | 178/192 | 40.01192 | 0.01341587 | 0.00215999 |
+| Raw quadratic, cutoff 4 | 36/36 | 192/192 | 40.07248 | 0.01329182 | 0.00213840 |
+| Raw quadratic, cutoff 2 | 31/36 | 188/192 | 40.05771 | 0.01330974 | 0.00215258 |
+| Log quadratic, cutoff 2 | 31/36 | 188/192 | 40.05533 | 0.01332900 | 0.00215750 |
+| Eight linear log regions, cutoff 2 | 36/36 | 192/192 | 40.05996 | 0.01329967 | 0.00214355 |
+
+The compact candidate passes every screen row against all three exact controls.
+The regional candidate passes 192/192 against compact cache/full field and
+191/192 against native stored source. The sole native-screen failure is
+view133/light1/background2 (LPIPS ratio1.050563), which already has refined
+references: it passes both AA32 and AA64. Its worst AA64 ratio against native
+is1.040719. Compact's worst AA64 ratio is1.011407. Thresholds stay unchanged:
+PSNR loss≤0.25 dB and FLIP/LPIPS ratios≤1.05 with1e-4 denominator floors.
+
+All 288 valid candidate alpha captures exactly match source visibility.
+Source silhouettes still have their own coverage/boundary error; detailed
+AA8 and AA64 silhouette rows remain in every assessment. The remaining
+validation views are screening results, not fully converged qualifications.
+The repaired regional method's piecewise boundaries and dynamic source edits
+have not been validated under animation.
+
+### Complete runtime, storage and actual residency
+
+RADV RENOIR PCI1002:164c / Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5, parent2e32bb90 plus archived variants.
+All profiles measure the complete64px tree over240frames after60warmup,
+cycling16views and four lights. GPU timing and CPU scoring run sequentially.
+
+| Method | Complete GPU median / p95 ms | Paced GPU p95 / p99 ms | Requested live / peak B |
+|---|---:|---:|---:|
+| Native cached source | 0.28352 / 0.43296 | 1.11242 / 1.11825 | 1,875,660 / 1,892,044 |
+| Compact exact cache | 0.35248 / 0.45512 | 1.44085 / 1.47051 | 1,043,052 / 1,059,436 |
+| Compact full field | 0.60264 / 0.65360 | 1.48871 / 1.55769 | 830,580 / 846,964 |
+| Dropped tail, cutoff 4 | 0.49140 / 0.65384 | 1.34144 / 1.39789 | 830,924 / 847,308 |
+| Raw quadratic, cutoff 4 | 0.49672 / 0.55552 | 0.53993 / 1.35527 | 837,964 / 854,348 |
+| Raw quadratic, cutoff 2 | 0.45504 / 0.59656 | 1.31898 / 1.35286 | 837,964 / 854,348 |
+| Log quadratic, cutoff 2 | 0.44164 / 0.61612 | 1.32715 / 1.37947 | 837,964 / 854,348 |
+| Eight linear log regions, cutoff 2 | 0.44004 / 0.61728 | 1.32051 / 1.35034 | 853,452 / 869,836 |
+
+Five alternating pairs per retained candidate against the archived full-field
+build show median savings17.93% and26.55%. Geometric-mean savings are18.03% and
+26.58%, with conditional95% paired-bootstrap intervals17.61–18.46% and
+26.34–26.80%. Each interval enumerates3,125resamples of five paired log ratios;
+individual frames are not independent runs. CPU changes are inconclusive.
+Complete builds, source snapshots and per-run samples are preserved.
+
+Costs include source geometry/decoding, cutouts, visibility and depth ordering,
+wood, exact near terms, aggregate decoding or cache lookup, shading, frame
+updates and final composite. Startup table cooking is outside steady-frame
+timing; its data and allocation peaks are charged. Dynamic source-edit rebuild
+time is unmeasured. These figures do not establish 1080p/4K game performance.
+
+| Method | Actual observed DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|
+| Native cached source | 17,670,144 / 9,936,896 | 484,870,144 |
+| Compact exact cache | 17,670,144 / 10,035,200 | 490,073,088 |
+| Compact full field | 17,670,144 / 10,035,200 | 485,902,336 |
+| Dropped tail, cutoff 4 | 17,412,096 / 10,035,200 | 487,073,792 |
+| Raw quadratic, cutoff 4 | 17,694,720 / 9,953,280 | 489,110,528 |
+| Raw quadratic, cutoff 2 | 17,694,720 / 9,953,280 | 489,187,328 |
+| Log quadratic, cutoff 2 | 17,412,096 / 9,953,280 | 490,208,256 |
+| Eight linear log regions, cutoff 2 | 17,678,336 / 10,035,200 | 490,124,288 |
+
+Requested totals include complete scratch, caches, fallback/inactive allocations,
+output and host upload/uniform rings. Compact and regional tables add7,384 B
+and22,872 B over the inactive8 B full-field response buffer. They save205,088 B
+and189,600 B of total requested storage versus exact cache, whose response
+buffer is212,480 B. A response-only compression ratio must not be presented
+as G4's complete resident ratio.
+
+Observed DRM/PSS values cover whole clients, not per-asset physical pages.
+Private shader spills and driver caches are not separately attributable, and
+UMA pools must not be summed. There is no demonstrated16× physical saving.
+The observer also records CPU-start-to-final-GPU-completion; compact p95/p99
+is4.87061/5.32247ms, regional4.38137/4.60596ms and exactcache4.52028/4.63501ms.
+These include completion notification overhead and are not input-to-photon.
+Single paced/tail observations do not replace paired median evidence.
+
+### Retained code and next architecture bet
+
+MODE0 and FIELD_RESPONSE=false stay default. The existing dropped-tail cutoff
+remains6; a separate TAIL_CUTOFF makes the opt-in compiled recipe explicit.
+The two retained recipes are documented in
+[source_bounds.wrela](../studio/appearance/runtime/source_bounds.wrela).
+Other runtime files, including the normal camera loop, are restored. Final
+code matches144 measured RGBA captures and144 native resource-count files
+exactly. Existing format/type checks pass. No unchanged bound-test or reference
+machinery audit was repeated. A metric helper's module-name shadowing failure
+was preserved and fixed before its borderline confirmation was accepted.
+
+**Next architecture bet:** compile shared field summaries across instances,
+and select exact caches only where their measured speed benefit warrants the
+resident cost. Test this on additional plant families, footprints and multiasset
+workloads, where source compilation, cache storage and update costs scale.
+Approximate a measured residual only when the conventional source-derived
+representation cannot handle it.
+
+This is an evidence-backed conventional rendering tradeoff, not world leadership.
+G4's complete resident target and unseen-content requirements, G3 motion and
+sustained G6 remain unproven. The frozen optical and reconstruction models are
+unchanged. Original Wrela implementation; established metric
+[citations](citations.md#neural-reconstruction-instrument) apply.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-source-tail-v1.
+Manifest SHA-256: `0e9177f7ac4cb92e13d2ca5c4de56e4a7b9b5407bf574279d0b2ee92128d1ec8`.

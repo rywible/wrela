@@ -1,7 +1,14 @@
-// Opt-in source-domain field evaluation for this diagnostic family.
+// Opt-in conventional source-field diagnostic; existing defaults remain unchanged.
 // 0: original stabilized field; 1: finite-range direct exponentials;
-// 2: direct exponentials with conservative owner-region influence masks.
-// Cutoffs 4 and 5 fail broader shaded checks. Cutoff 6 passes the recorded
-// screen and two refined cases, but is not an exact field or a G4 promotion.
+// 2: drop far terms (cutoffs 4/5 fail broader shaded checks; 6 remains diagnostic);
+// 3: exact nearby terms plus a source-compiled regional far-field aggregate.
+// Validated recipes for mode 3 on the recorded public fixture:
+// compact: cutoff 4, degree 2, log false, regions 1;
+// faster/larger: cutoff 2, degree 1, log true, regions 8.
+// These checks do not establish unseen-family quality or G4 completion.
 pub const MODE: u32 = 0
 pub const CUTOFF: f32 = 6.0
+pub const TAIL_CUTOFF: f32 = 4.0
+pub const TAIL_DEGREE: u32 = 2
+pub const TAIL_LOG: bool = false
+pub const TAIL_REGIONS: u32 = 1
