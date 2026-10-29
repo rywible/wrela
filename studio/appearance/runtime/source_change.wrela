@@ -1,0 +1,159 @@
+// Same source-compiled update controls for changing edit targets.
+// MODE0 stale negative, MODE1 full raw update, MODE2 retired target-rebuild control,
+// MODE3 immutable f32 base, MODE4 native-only 12-byte base.
+use engine::plant::{Card, Clump, Plant}
+use std::gpu::{GlobalId, GpuBuffer, Oct32, Slots, buffer, dispatch}
+
+pub const MODE: u32 = 1
+
+pub fn contribution(c: Clump, blend: f32, p: vec3) -> vec4 {
+    let w = exp(-blend * c.distance(p))
+    vec4(c.normal(p) * w, w)
+}
+
+pub fn full(plant: Plant, p: vec3) -> vec4 {
+    var sum = vec4(0.0)
+    for i in 0..plant.clumps.len() { sum += contribution(plant.clumps[i], plant.blend, p) }
+    sum
+}
+
+@compute(64)
+fn move_nodes(plant: Plant, nodes: mut Slots<vec4>, id: GlobalId) {
+    if id.x > 0 && id.x < 1 + 2 * plant.clumps.len() && id.x % 2 == 1 {
+        let c = plant.clumps[(id.x - 1) / 2]
+        nodes[id] = vec4(c.centre, c.radius)
+    }
+}
+
+pub fn nodes(plant: Plant, nodes: mut GpuBuffer<vec4>) {
+    dispatch(move_nodes.bind(plant, mut nodes), over: 1 + 2 * plant.clumps.len())
+}
+
+@compute(64)
+fn cook(plant: Plant, n: u32, nodes: [vec4], phase: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    let index = id.x % n
+    let which = source_hierarchy::owner(index, nodes)
+    var sum = vec4(0.0)
+    if MODE >= 3 {
+        let card = source_hierarchy::placed(index, which, nodes, id.x / n)
+        let k = card.seed
+        let dir = engine::noise::direction(engine::noise::rand(k, 3), engine::noise::rand(k, 4))
+        let centre = plant.clumps[which].point(dir, 0.72 + 0.28 * sqrt(engine::noise::rand(k, 5)))
+        // Reconstruct the authored query exactly; subtracting a current offset would round twice.
+        sum = full(plant, centre)
+    } else if !great_tree::edit_set::moved(which, phase) {
+        let card = source_hierarchy::placed(index, which, nodes, id.x / n)
+        for i in 0..plant.clumps.len() {
+            if !great_tree::edit_set::moved(i, phase) {
+                sum += contribution(plant.clumps[i], plant.blend, card.centre)
+            }
+        }
+    }
+    out[id] = sum
+}
+
+pub fn cache(plant: Plant, n: u32, nodes: GpuBuffer<vec4>) -> GpuBuffer<vec4> {
+    var out = buffer(n * source_population::LAYOUTS)
+    refill(plant, n, nodes, 0, mut out)
+    take out
+}
+
+pub fn refill(plant: Plant, n: u32, nodes: GpuBuffer<vec4>, phase: u32, out: mut GpuBuffer<vec4>) {
+    dispatch(
+        cook.bind(plant, n, nodes.items(), phase, mut out),
+        over: n * source_population::LAYOUTS,
+    )
+}
+
+fn updated(plant: Plant, n: u32, nodes: [vec4], cache: [vec4], phase: u32, at: u32) -> Card {
+    let index = at % n
+    let which = source_hierarchy::owner(index, nodes)
+    let card = source_hierarchy::placed(index, which, nodes, at / n)
+    var value = vec4(0.0)
+    if MODE == 1 || great_tree::edit_set::moved(which, phase) {
+        value = full(plant, card.centre)
+    } else {
+        value = cache[at]
+        for slot in 0..3 {
+            if great_tree::edit_set::active(slot, phase) {
+                let i = great_tree::edit_set::INDICES[slot]
+                let c = plant.clumps[i]
+                let current = contribution(c, plant.blend, card.centre)
+                if MODE >= 3 {
+                    let base = Clump { centre: c.centre - great_tree::edit_set::DELTAS[slot], ..c }
+                    value += current - contribution(base, plant.blend, card.centre)
+                } else {
+                    value += current
+                }
+            }
+        }
+    }
+    let sum = max(value.w, 0.5)
+    Card {
+        normal: Oct32::encode(normalize(value.xyz / sum)),
+        depth: max(log(sum) / plant.blend, 0.0),
+        ..card,
+    }
+}
+
+@compute(64)
+fn update_cards(
+    plant: Plant,
+    n: u32,
+    nodes: [vec4],
+    cache: [vec4],
+    phase: u32,
+    out: mut Slots<Card>,
+    id: GlobalId,
+) {
+    if id.x < n * source_population::LAYOUTS {
+        out[id] = updated(plant, n, nodes, cache, phase, id.x)
+    }
+}
+
+@compute(64)
+fn update_response(
+    plant: Plant,
+    n: u32,
+    nodes: [vec4],
+    cache: [vec4],
+    phase: u32,
+    out: mut Slots<vec2u>,
+    id: GlobalId,
+) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    let card = updated(plant, n, nodes, cache, phase, id.x)
+    out[id] = vec2u(card.normal.bits, bitcast_u32(card.depth))
+}
+
+pub fn cards(
+    plant: Plant,
+    n: u32,
+    nodes: GpuBuffer<vec4>,
+    cache: GpuBuffer<vec4>,
+    phase: u32,
+    out: mut GpuBuffer<Card>,
+) {
+    dispatch(
+        update_cards.bind(plant, n, nodes.items(), cache.items(), phase, mut out),
+        over: n * source_population::LAYOUTS,
+    )
+}
+
+pub fn response(
+    plant: Plant,
+    n: u32,
+    nodes: GpuBuffer<vec4>,
+    cache: GpuBuffer<vec4>,
+    phase: u32,
+    out: mut GpuBuffer<vec2u>,
+) {
+    dispatch(
+        update_response.bind(plant, n, nodes.items(), cache.items(), phase, mut out),
+        over: n * source_population::LAYOUTS,
+    )
+}
+
+// Charge the one-time base preparation on every transition as an unamortized diagnostic.
+pub const PREPARE_EACH: bool = false

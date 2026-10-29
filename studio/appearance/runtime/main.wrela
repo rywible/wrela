@@ -631,6 +631,7 @@ fn composite_tiles(pixel: FragCoord, source: [u32]) -> vec4 {
 pub struct State {
     layout: u32,
     edit_phase: u32,
+    change_phase: u32,
     population: Option<GpuBuffer<vec4>>,
     sample_pixels: Option<GpuBuffer<u32>>,
     source: source_control::Source,
@@ -739,6 +740,7 @@ pub fn init() -> State {
     var s = State {
         layout: 0,
         edit_phase: 0,
+        change_phase: 0,
         population: None,
         sample_pixels: if config::MODE == 10 && config::AA == 4 && sample_lanes::LANES == 16 {
             Some(buffer(4096 * 4))
@@ -837,6 +839,10 @@ pub fn configure(s: mut State, view: u32, illumination: u32) {
     assert(view < 146 && illumination < 4)
     s.view = view
     s.illumination = illumination
+    if great_tree::edit_set::ENABLED {
+        source_control::apply_change(mut s.source, great_tree::edit_set::CAPTURE_PHASE)
+        s.change_phase = great_tree::edit_set::CAPTURE_PHASE
+    }
     edit_phase(mut s, illumination % 2)
 }
 
@@ -1188,6 +1194,46 @@ pub fn publish(s: mut State) -> u32 {
     64 * 64 * 16
 }
 
+// Batch capture selects state/layout at runtime, leaving timed frame scheduling untouched.
+pub fn capture_limits(s: State) -> (u32, u32) {
+    (if config::MODE == 10 && great_tree::edit_set::ENABLED { great_tree::edit_set::PHASES } else {
+        1
+    }, source_population::LAYOUTS)
+}
+
+pub fn configure_capture(
+    s: mut State,
+    view: u32,
+    illumination: u32,
+    layout: u32,
+    phase: u32,
+    history: u32,
+) {
+    assert(view < 146 && illumination < 4 && layout < source_population::LAYOUTS && history <= 128)
+    s.view = view
+    s.illumination = illumination
+    s.layout = layout
+    if config::MODE == 10 && great_tree::edit_set::ENABLED {
+        assert(phase < great_tree::edit_set::PHASES)
+        for step in 0..history {
+            source_control::apply_change(
+                mut s.source,
+                (step * 3 + 1) % great_tree::edit_set::PHASES,
+            )
+        }
+        source_control::apply_change(mut s.source, phase)
+        s.change_phase = phase
+    } else {
+        assert(phase == 0 && history == 0)
+        edit_phase(mut s, illumination % 2)
+    }
+}
+
+pub fn publish_capture(s: mut State) -> u32 {
+    render(mut s)
+    64 * 64 * 16
+}
+
 pub fn resident(s: State) -> (u32, u32, u32, u32) {
     let m = memory()
     (u32(m.buffers), u32(m.textures), u32(m.peak_buffers), u32(m.peak_textures))
@@ -1213,6 +1259,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // Alternating reference views forces the candidate's sorting and updates every frame.
     s.view = s.step % 2
     s.illumination = (s.step / 2) % 4
+    if great_tree::edit_set::ENABLED { change_phase(mut s, s.step % great_tree::edit_set::PHASES) }
     edit_phase(mut s, s.illumination % 2)
     if source_population::LAYOUTS > 1 {
         for layout in 0..source_population::LAYOUTS {
@@ -1242,6 +1289,15 @@ fn edit_phase(s: mut State, phase: u32) {
         label("source edit")
         source_control::apply_edit(mut s.source, phase)
         s.edit_phase = phase
+        label("complete appearance")
+    }
+}
+
+fn change_phase(s: mut State, phase: u32) {
+    if config::MODE == 10 && s.change_phase != phase {
+        label("source edit")
+        source_control::apply_change(mut s.source, phase)
+        s.change_phase = phase
         label("complete appearance")
     }
 }

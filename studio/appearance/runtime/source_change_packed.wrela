@@ -1,0 +1,91 @@
+// Immutable source sums: retain fullprecision weight/magnitude, quantize only direction.
+use engine::plant::{Card, Clump, Plant}
+use std::gpu::{GlobalId, GpuBuffer, Oct32, Slots, buffer, dispatch}
+
+pub struct Snapshot: Copy + GpuData {
+    direction: Oct32,
+    magnitude: f32,
+    weight: f32,
+}
+
+@compute(64)
+fn cook(plant: Plant, n: u32, nodes: [vec4], out: mut Slots<Snapshot>, id: GlobalId) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    let index = id.x % n
+    let which = source_hierarchy::owner(index, nodes)
+    let card = source_hierarchy::placed(index, which, nodes, id.x / n)
+    let k = card.seed
+    let dir = engine::noise::direction(engine::noise::rand(k, 3), engine::noise::rand(k, 4))
+    let centre = plant.clumps[which].point(dir, 0.72 + 0.28 * sqrt(engine::noise::rand(k, 5)))
+    let sum = source_change::full(plant, centre)
+    let magnitude = length(sum.xyz)
+    let direction = if magnitude > 0.0 { sum.xyz / magnitude } else { vec3(0.0, 1.0, 0.0) }
+    out[id] = Snapshot { direction: Oct32::encode(direction), magnitude, weight: sum.w }
+}
+
+pub fn cache(plant: Plant, n: u32, nodes: GpuBuffer<vec4>) -> GpuBuffer<Snapshot> {
+    var out = buffer(n * source_population::LAYOUTS)
+    refill(plant, n, nodes, mut out)
+    take out
+}
+
+pub fn refill(plant: Plant, n: u32, nodes: GpuBuffer<vec4>, out: mut GpuBuffer<Snapshot>) {
+    dispatch(cook.bind(plant, n, nodes.items(), mut out), over: n * source_population::LAYOUTS)
+}
+
+fn updated(plant: Plant, n: u32, nodes: [vec4], cache: [Snapshot], phase: u32, at: u32) -> Card {
+    let index = at % n
+    let which = source_hierarchy::owner(index, nodes)
+    let card = source_hierarchy::placed(index, which, nodes, at / n)
+    var value = vec4(0.0)
+    if great_tree::edit_set::moved(which, phase) {
+        value = source_change::full(plant, card.centre)
+    } else {
+        let base_value = cache[at]
+        value = vec4(base_value.direction.decode() * base_value.magnitude, base_value.weight)
+        for slot in 0..3 {
+            if great_tree::edit_set::active(slot, phase) {
+                let i = great_tree::edit_set::INDICES[slot]
+                let c = plant.clumps[i]
+                let base = Clump { centre: c.centre - great_tree::edit_set::DELTAS[slot], ..c }
+                value += source_change::contribution(c, plant.blend, card.centre) -
+                    source_change::contribution(base, plant.blend, card.centre)
+            }
+        }
+    }
+    let sum = max(value.w, 0.5)
+    Card {
+        normal: Oct32::encode(normalize(value.xyz / sum)),
+        depth: max(log(sum) / plant.blend, 0.0),
+        ..card,
+    }
+}
+
+@compute(64)
+fn update_cards(
+    plant: Plant,
+    n: u32,
+    nodes: [vec4],
+    cache: [Snapshot],
+    phase: u32,
+    out: mut Slots<Card>,
+    id: GlobalId,
+) {
+    if id.x < n * source_population::LAYOUTS {
+        out[id] = updated(plant, n, nodes, cache, phase, id.x)
+    }
+}
+
+pub fn cards(
+    plant: Plant,
+    n: u32,
+    nodes: GpuBuffer<vec4>,
+    cache: GpuBuffer<Snapshot>,
+    phase: u32,
+    out: mut GpuBuffer<Card>,
+) {
+    dispatch(
+        update_cards.bind(plant, n, nodes.items(), cache.items(), phase, mut out),
+        over: n * source_population::LAYOUTS,
+    )
+}

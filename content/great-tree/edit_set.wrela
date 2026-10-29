@@ -1,0 +1,43 @@
+// Bounded authored-base snapshots for changing and simultaneous source edits.
+use engine::plant::Plant
+
+pub const ENABLED: bool = false
+pub const CAPTURE_PHASE: u32 = 0
+pub const PHASES: u32 = 5
+pub const INDICES: [u32; 3] = [0, 3, 7]
+pub const DELTAS: [vec3; 3] = [vec3(1.0, -0.6, 0.5), vec3(-0.7, -0.4, 0.8), vec3(0.5, -0.8, -0.6)]
+
+pub fn active(slot: u32, phase: u32) -> bool {
+    phase == 4 || phase == slot + 1
+}
+
+pub fn moved(which: u32, phase: u32) -> bool {
+    for slot in 0..3 {
+        if INDICES[slot] == which && active(slot, phase) { return true }
+    }
+    false
+}
+
+pub fn tree(phase: u32) -> Plant {
+    assert(phase < PHASES)
+    var p = tree::great_tree()
+    if ENABLED {
+        for slot in 0..3 {
+            if active(slot, phase) {
+                let which = INDICES[slot]
+                let c = p.clumps[which]
+                p.clumps[which] = engine::plant::Clump { centre: c.centre + DELTAS[slot], ..c }
+            }
+        }
+    }
+    take p
+}
+
+pub fn validate() {
+    let a = tree(0)
+    for phase in 1..PHASES {
+        let b = tree(phase)
+        assert(a.cards() == b.cards() && a.top() == b.top() && a.reach() == b.reach())
+        assert(a.clumps.len() == b.clumps.len() && a.limbs.len() == b.limbs.len())
+    }
+}

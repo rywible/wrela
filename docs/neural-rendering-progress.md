@@ -2940,3 +2940,17 @@ All valid methods pass 90/90 shaded rows with unchanged coverage; stale negative
 Preparation plus update/render costs 3.46548 ms native half and 3.82876 ms compact f32, so one-off changes favor full recomputation. Added requested storage is 2,124,800 / 4,249,600 B. Compact half is retired: fresh resident VRAM 26,386,432 B versus compact f32's 22,052,864 B despite smaller requested buffers.
 
 Continue source-derived statistics for repeated localized edits; retain full-update fallback and keep edits opt-in. Next test changing edit targets/query positions with preparation/invalidation charged and equal conventional inputs. No G4 16× residency, independent G3, unseen-family or density qualification. G1–G7/frozen models unchanged. Manifest: `c1bd9136294e1c43d86400bff808c89e0bb27045dfc442a214a0cd344a4fb4ed`.
+
+## 2026-10-28: Changing targets retain a conventional win; batch the experiment loop
+
+[Changing and simultaneous source edits](neural-changing-edits.md) reach joint assessment in 33.13 minutes and decision in 63.31, after two candidate followups. Immutable authored-base sums avoid per-target cache rebuilds. Native Oct12 costs 2.21216 ms; compact f32 2.60140 ms; fastest full updater 2.93024 ms.
+
+- Native immutable Oct12 versus Native full raw update: **24.342% lower complete GPU time**, geometric paired-log 95% interval **23.766–24.576%**; CPU result inconclusive.
+- Compact immutable f32 versus Native full raw update: **11.575% lower complete GPU time**, geometric paired-log 95% interval **11.337–11.672%**; CPU result inconclusive.
+- Compact immutable f32 versus Compact full raw update: **24.977% lower complete GPU time**, geometric paired-log 95% interval **24.910–25.186%**; CPU result inconclusive.
+
+All valid methods pass 90/90 rendered rows with identical coverage; stale negative fails all 72 edited rows. Preparation+update+render costs 3.28980 / 3.65432 ms, so one-off edits favor full recomputation. Compact Oct12 is retired: fresh VRAM 26,386,432 B versus f32 22,249,472 B despite its smaller requested buffer. Keep native Oct12, compact f32 and full fallback, opt-in. No G4 16× or general G3 qualification.
+
+A new single-build batch command captures the same 32 images/resources in 3.877 s versus 30.573 s across eight legacy builds (7.89× observed workflow improvement). Full batches capture 400 images in roughly six seconds. This is not a rendering win. 352 archive matches, 80 history matches and eight default image/resource matches pass.
+
+Next block: controlled capacity increase for the fast 1,260-weight input-resolution neural encoder, preserving causal inputs/output representation initially, held-out motion/reveal/cut quality, full AMD cost and memory. Reuse previous neural failures; old models immutable. Alternate bounded neural and G4/source-aware blocks. Next G4 bet is compressed source-bounded base-field evaluation, not indefinite per-card tuning. Same two-hour assessment/two-followup discipline; one quiet queue. G1–G7 unchanged/unmet. Manifest: `6046addafe6c0e8f799e68fbd4509290255df0373ae9ac04030d72cab67f245d`.

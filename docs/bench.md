@@ -3055,3 +3055,31 @@ All valid methods pass 90/90 rendered rows; silhouette coverage is unchanged. St
 Whole frames include updates, placement, depth visibility, wood, shading, scratch and compositing. Requested live/peak includes all observed resources; DRM/PSS is whole-client residency, not per-asset attribution or physical peak. Do not sum UMA pools. Compact half's smaller buffer produces higher actual VRAM than f32 (fresh 26,386,432 versus 22,052,864 B); retire it.
 
 Continue native half and compact f32 invariant caches as opt-in paths plus fair full recomputation. 960 captures, 20 necessary edited reference cases, 48 retained/drift/default checks; failed source preserved. Goals/frozen models unchanged; no G4/world-leading claim. [Joint quality, complete cost, preparation, actual memory and evidence](neural-source-edits.md).
+
+## Changing and simultaneous source edits; batched capture workflow (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR, Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 26,560-card layouts, 320×128 complete frames. Five source states: base, three individual translations, all three. A 40-frame phase/view/light cycle; 240 frames after 60 warmup, one worker. Equal source/ownership/edit/visibility inputs for controls. First assessment 33.13 minutes, decision 63.31, two candidate followups, no training.
+
+| Method | GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: |
+| Native full raw update | 2.93024 / 2.98128 | 10,394,700 / 10,558,540 | 26,300,416 / 10,199,040 |
+| Compact full raw update | 3.47028 / 3.50928 | 3,823,724 / 3,987,564 | 18,259,968 / 10,297,344 |
+| Direct source field | 3.11240 / 3.14348 | 1,698,932 / 1,862,772 | 17,784,832 / 10,199,040 |
+| Native target-specific rebuild | 3.56492 / 3.64740 | 14,644,300 / 14,808,140 | 30,756,864 / 10,133,504 |
+| Compact target-specific rebuild | 3.90148 / 3.94776 | 8,073,324 / 8,237,164 | 22,253,568 / 10,297,344 |
+| Stale native (invalid) | 1.86212 / 1.98672 | 10,394,700 / 10,558,540 | 26,476,544 / 10,035,200 |
+| Native immutable f32 | 2.25176 / 2.30528 | 14,644,300 / 14,808,140 | 30,560,256 / 10,035,200 |
+| Compact immutable f32 | 2.60140 / 2.72984 | 8,073,324 / 8,237,164 | 22,249,472 / 10,199,040 |
+| Native immutable Oct12 | 2.21216 / 2.30952 | 13,581,900 / 13,745,740 | 26,763,264 / 10,035,200 |
+| Compact immutable Oct12 (retired) | 2.59712 / 2.74012 | 7,010,924 / 7,174,764 | 26,189,824 / 10,199,040 |
+
+
+- Native immutable Oct12 versus Native full raw update: **24.342% lower complete GPU time**, geometric paired-log 95% interval **23.766–24.576%**; CPU result inconclusive.
+- Compact immutable f32 versus Native full raw update: **11.575% lower complete GPU time**, geometric paired-log 95% interval **11.337–11.672%**; CPU result inconclusive.
+- Compact immutable f32 versus Compact full raw update: **24.977% lower complete GPU time**, geometric paired-log 95% interval **24.910–25.186%**; CPU result inconclusive.
+
+Valid methods pass 90/90 shaded rows with unchanged alpha; stale negative fails 72 edited rows. All updates, visibility, depth ordering, decoding, wood, scratch and composition included. Initial preparation is separate: native Oct12 3.28980 ms, compact f32 3.65432 ms including update/full frame, so full recomputation wins one-off edits. Requested bytes include caches/fallback; physical DRM/PSS is whole-client snapshot, not per-asset or peak. Do not sum UMA pools. Compact Oct12 retired for higher actual VRAM; native Oct12/compact f32 retained opt-in.
+
+Matched 32 captures: 30.573 s/eight legacy builds versus 3.877 s/one batch, 7.89× local workflow improvement with exact images/resources. Full 400-image batches take 6.071/6.381 s. This is not a rendering speedup. 352 retained archive comparisons, 80 history comparisons and eight default comparisons pass. Initial raw paced GPU files for compared controls were overwritten by the comparison tool; initial aggregate reports and complete pair samples remain. Use isolated baseline copies for future comparisons.
+
+1,760 original captures, 21 necessary new edited reference cases plus nine reused; failed results preserved. Next neural block isolates encoder capacity before changing input/output representation. G1–G7/frozen models unchanged. [Joint evidence, bounds and replay](neural-changing-edits.md).

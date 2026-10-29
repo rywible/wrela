@@ -155,6 +155,11 @@ struct SourceConfig: Copy {
     geometry: bool = false,
     response: bool = false,
     runtime: bool = false,
+    runtime_batch: bool = false,
+    phases: u32 = 1,
+    layouts: u32 = 1,
+    second_view: u32 = 1,
+    history: u32 = 0,
     joint: bool = false,
     shaded: bool = false,
     illumination: u32 = 0,
@@ -409,6 +414,50 @@ fn runtime_word(values: [Scalar], i: u32) -> u32 {
     }
 }
 
+fn capture_runtime_frame(
+    b: drive::Build,
+    directory: str,
+    view: u32,
+    light: u32,
+    entry: str,
+) -> Result<(), ToolError> {
+    let saw = untrapped(
+        "runtime render",
+        drive::steps(
+            b,
+            [Step::Call(String::from(entry), Vec::new())],
+            timeout: 600.0,
+        ).wait()?,
+    )?
+    if runtime_word(saw.ran[0].results, 0) != 65536 {
+        return Err(ToolError::new("wrong runtime bytes"))
+    }
+    let ids = untrapped("runtime buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    var read = untrapped(
+        "runtime pixels",
+        drive::steps(
+            b,
+            [Step::ReadBuffer(buffers[buffers.len() - 1])],
+            timeout: 600.0,
+        ).wait()?,
+    )?
+    let bytes = joined(data_bytes(read.bytes.remove(0))?)
+    if bytes.len() != 65536 { return Err(ToolError::new("wrong runtime read size")) }
+    write_file(f"{directory}/runtime-v{view}-l{light}.f32", chunked(take bytes))?
+    let got = untrapped(
+        "resident",
+        drive::steps(b, [Step::Call(String::from("resident"), Vec::new())]).wait()?,
+    )?
+    borrow values = got.ran[0].results
+    let text = f"buffers={runtime_word(values, 0)}\ntextures={runtime_word(values, 1)}\npeak_buffers={runtime_word(values, 2)}\npeak_textures={runtime_word(values, 3)}\n"
+    let _ = files::write(
+        f"{directory}/runtime-v{view}-l{light}.memory.txt",
+        text.as_bytes(),
+    ).wait()?
+    Ok(())
+}
+
 fn capture_runtime(
     b: drive::Build,
     directory: str,
@@ -430,42 +479,63 @@ fn capture_runtime(
                     ],
                 ).wait()?,
             )?
-            let saw = untrapped(
-                "runtime render",
-                drive::steps(
-                    b,
-                    [Step::Call(String::from("publish"), Vec::new())],
-                    timeout: 600.0,
-                ).wait()?,
-            )?
-            if runtime_word(saw.ran[0].results, 0) != 65536 {
-                return Err(ToolError::new("wrong runtime bytes"))
-            }
-            let ids = untrapped("runtime buffers", drive::steps(b, [Step::Buffers]).wait()?)?
-            borrow buffers = ids.buffers[0]
-            var read = untrapped(
-                "runtime pixels",
-                drive::steps(
-                    b,
-                    [Step::ReadBuffer(buffers[buffers.len() - 1])],
-                    timeout: 600.0,
-                ).wait()?,
-            )?
-            let bytes = joined(data_bytes(read.bytes.remove(0))?)
-            if bytes.len() != 65536 { return Err(ToolError::new("wrong runtime read size")) }
-            write_file(f"{directory}/runtime-v{view}-l{light}.f32", chunked(take bytes))?
-            let got = untrapped(
-                "resident",
-                drive::steps(b, [Step::Call(String::from("resident"), Vec::new())]).wait()?,
-            )?
-            borrow values = got.ran[0].results
-            let text = f"buffers={runtime_word(values, 0)}\ntextures={runtime_word(values, 1)}\npeak_buffers={runtime_word(values, 2)}\npeak_textures={runtime_word(values, 3)}\n"
-            let _ = files::write(
-                f"{directory}/runtime-v{view}-l{light}.memory.txt",
-                text.as_bytes(),
-            ).wait()?
+            capture_runtime_frame(b, directory, view, light, "publish")?
         }
     }
+    Ok(())
+}
+
+fn capture_runtime_batch(
+    b: drive::Build,
+    directory: str,
+    c: SourceConfig,
+) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let limits = untrapped(
+        "capture limits",
+        drive::steps(b, [
+            Step::Call(String::from("capture_limits"), Vec::new()),
+        ]).wait()?,
+    )?
+    if c.phases > runtime_word(limits.ran[0].results, 0) ||
+        c.layouts > runtime_word(limits.ran[0].results, 1) {
+        return Err(ToolError::new("batch exceeds this build's source states or layouts"))
+    }
+    for phase in 0..c.phases {
+        for layout in 0..c.layouts {
+            let destination = f"{directory}/phase{phase}/layout{layout}"
+            for which in 0..2 {
+                let view = if which == 0 { c.first } else { c.second_view }
+                for light in 0..4 {
+                    let _ = untrapped(
+                        "batch configuration",
+                        drive::steps(
+                            b,
+                            [
+                                Step::Call(
+                                    String::from("configure_capture"),
+                                    Vec::from(
+                                        [
+                                            Scalar::I32(i32(view)),
+                                            Scalar::I32(i32(light)),
+                                            Scalar::I32(i32(layout)),
+                                            Scalar::I32(i32(phase)),
+                                            Scalar::I32(i32(c.history)),
+                                        ],
+                                    ),
+                                ),
+                            ],
+                            timeout: 600.0,
+                        ).wait()?,
+                    )?
+                    capture_runtime_frame(b, destination.as_str(), view, light, "publish_capture")?
+                }
+            }
+        }
+    }
+    let metadata = f"builds=1\ninitializations=1\nphases={c.phases}\nlayouts={c.layouts}\nviews={c.first},{c.second_view}\nlights=0,1,2,3\nhistory_updates_per_capture={c.history}\n"
+    let _ = files::write(f"{directory}/batch.txt", metadata.as_bytes()).wait()?
+    print(f"appearance: exported {c.phases * c.layouts * 8} runtime captures from one build")
     Ok(())
 }
 
@@ -512,7 +582,9 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.workers = 1
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
-    let result = if source.runtime {
+    let result = if source.runtime_batch {
+        capture_runtime_batch(b, directory.as_str(), source)
+    } else if source.runtime {
         capture_runtime(b, directory.as_str(), source.first, source.count)
     } else if source.shaded {
         capture_shaded(b, directory.as_str(), seed, source)
@@ -538,7 +610,35 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() > 0 && (given[0].as_str() == "runtime" || given[0].as_str() == "joint-runtime") {
+    if given.len() > 0 && given[0].as_str() == "runtime-batch" {
+        if given.len() != 5 && given.len() != 6 {
+            print("usage: appearance runtime-batch PHASES LAYOUTS VIEW_A VIEW_B [HISTORY]")
+            return 2
+        }
+        let Some(phases) = given[1].as_str().parse_u32() else { return 2 }
+        let Some(layouts) = given[2].as_str().parse_u32() else { return 2 }
+        let Some(first) = given[3].as_str().parse_u32() else { return 2 }
+        let Some(second) = given[4].as_str().parse_u32() else { return 2 }
+        if phases == 0 ||
+            phases > 16 ||
+            layouts == 0 ||
+            layouts > 10 ||
+            first >= 146 ||
+            second >= 146 ||
+            first == second { return 2 }
+        source.runtime = true
+        source.runtime_batch = true
+        source.phases = phases
+        source.layouts = layouts
+        source.first = first
+        source.second_view = second
+        if given.len() == 6 {
+            let Some(history) = given[5].as_str().parse_u32() else { return 2 }
+            if history > 128 { return 2 }
+            source.history = history
+        }
+    } else if given.len() > 0 &&
+        (given[0].as_str() == "runtime" || given[0].as_str() == "joint-runtime") {
         source.runtime = true
         source.joint = given[0].as_str() == "joint-runtime"
         source.first = 0
