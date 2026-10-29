@@ -134,7 +134,7 @@ are unchanged.
 
 [The focused GPU test](../engine/tests/leaf-support/main.wrela) evaluates
 **2,097,152 queries** over 16 patterns, six footprint sizes, slanted footprints,
-clamped pattern edges and cell-boundary perturbations. It uses the production 8-leaf
+clamped pattern edges and cell-boundary perturbations. It uses the 8-leaf
 source, a rebuilt 3-leaf source, synthetic sparse/border coverage and a full source.
 All **876,837 certificates** are valid: zero omitted nonzero samples. Inflating each
 source bound by just one texel yields **33,887 detectable errors** through the same
@@ -165,3 +165,7 @@ replaying; do not overwrite sealed evidence.
 
 Manifest SHA-256: `d42480953bab68f5713b42df5c05c608c73868bb58724faa4a54212187f928fb`.
 Inherited benchmark edits remain unstaged.
+
+Annotation correction: clearing uses six leaves per source pattern. The prior focused
+GPU guard used eight-leaf and three-leaf sources; those were adversarial source
+variants, not the production leaf count. Its raw results and sealed evidence are unchanged.

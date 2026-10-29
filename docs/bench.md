@@ -3562,3 +3562,20 @@ zero false certificates; intentionally false table detected. No broad G3/G4/G6 c
 Retain guarded packed support for explicitly fixed standard-size atlases.
 First joint29.16min, exactly two optimization followups.
 [Complete cost, memory, quality and limitations](neural-vegetation-support.md).
+
+
+## 2026-10-29 — leaf coverage prefilter, rejected isotropic representation
+
+AMD RADV RENOIR1002:164c/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Full clearing 1080p 2×, one worker, 600 warmup/60 measured; single-run full GPU medians
+baseline 25.01468, integrated 24.02292, count-control 25.05988, matched 24.07140 ms.
+Requested live: 405332792, 405682296, 405332792, 405682296 bytes.
+Observed DRM VRAM: 552017920, 552038400, 551993344, 552038400 bytes.
+All mips, scratch, original fallback and update costs counted. Physical snapshots
+are whole-client, not peaks or per-asset; UMA pools are not additive.
+Fixed shaded references: initial 2× quality fails; final 3× LPIPS rises 7.8%,
+despite 4× PSNR+2.96 dB. Equal-source count-control has seven exact HDR buffers.
+First joint 19.81 min; change representation after exactly two followups.
+Restore parent 7e7b854a. No retained runtime win or G1–G7 pass.
+[Full quality, timing tails, residency and limitations](neural-leaf-prefilter.md).

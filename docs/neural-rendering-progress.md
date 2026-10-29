@@ -3328,3 +3328,20 @@ fixed-atlas lifetime contract. No training/reference expansion or G1–G7 pass.
 Next: source-derived prefiltered coverage for minified cards, with original fallback
 at uncertain silhouettes and an equally informed conventional control.
 Manifest `d42480953bab68f5713b42df5c05c608c73868bb58724faa4a54212187f928fb`. Inherited benchmark edits remain unstaged.
+
+
+## 2026-10-29 — change the leaf prefilter representation
+
+[Source prefiltering](neural-leaf-prefilter.md) completes its first joint assessment
+in 19.81 minutes and decides at 30.24 minutes after two followups.
+Single-run full GPU: baseline 25.01468 ms, integrated 24.02292 ms,
+equally informed count-control 25.05988 ms, matched 24.07140 ms.
+Mips add 349,504 live bytes; all startup/scratch/fallback/residency costs recorded.
+Initial integration fails 2× FLIP/PSNR. Derived filter width repairs 2× but 3× LPIPS
+rises 7.8%, above 5%, despite better FLIP/PSNR. Final 4× gains 2.96 dB PSNR.
+All failures recur on the three unchanged shaded references; own candidate
+references are not substituted for truth. No new runtime win is retained.
+Restore exact parent 7e7b854a. Next preserve directional footprint and sampling phase.
+No training/reference expansion; G1–G7 unchanged/unmet. Prior test-source count
+annotation corrected (eight/three were guard variants; production uses six).
+Manifest `b312f7e524727a6fdb54719da03f93deb5c972832fedc2f3789e2b56c63f6ec3`. Inherited benchmark edits remain unstaged.
