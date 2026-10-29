@@ -115,6 +115,33 @@ impl Driven {
         Ok(joined(data_bytes(take screen.rgba)?))
     }
 
+    /// Frames until one is shown: a shot begins with an arrival, its frames black until the light
+    /// round its eye is drawn, which waits on the helpers' jobs and the fetches, so on a busy
+    /// machine it takes more frames than `SETTLE_FRAMES` (a play still taken black was 7 dB).
+    fn shown(mut self) -> Result<(), ToolError> {
+        var waited = 0
+        while waited < ARRIVAL_FRAMES {
+            // The screen as it is, no frame drawn for it: a shot shown already runs as before.
+            let seen = drive::steps(self.b, [Step::Capture], timeout: 600.0).wait()?
+            var saw = untrapped(f"frame {self.frame}", take seen)?
+            let screen = saw.captures.remove(0)
+            let f = joined(data_bytes(take screen.rgba)?)
+            var lit = false
+            for i in 0..f.len() / 4 {
+                if f[4 * i] > 0 || f[4 * i + 1] > 0 || f[4 * i + 2] > 0 {
+                    lit = true
+                    break
+                }
+            }
+            if lit {
+                return Ok(())
+            }
+            let _ = self.run(SETTLE)?
+            waited += SETTLE
+        }
+        Err(ToolError::new(f"the shot wasn't shown within {ARRIVAL_FRAMES} frames"))
+    }
+
     /// Frames until one prints `said` (`REFERENCE`, `PLAY`).
     pub fn until(mut self, said: str) -> Result<(), ToolError> {
         for _ in 0..ARRIVAL_FRAMES {
@@ -189,6 +216,7 @@ fn shot(
         d.control(Control { blend: 0.0, thin: c.thin })?
     }
     let _ = d.run(SETTLE_FRAMES + 1)?
+    d.shown()?
     // Time frozen and the eye held; the still view settled; the play still, and the frames after
     // it for flicker and still_pop (and the blurred ones' flicker, for the blur control).
     d.press(Key::F10)
