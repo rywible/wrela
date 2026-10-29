@@ -631,6 +631,7 @@ fn composite_tiles(pixel: FragCoord, source: [u32]) -> vec4 {
 pub struct State {
     layout: u32,
     population: Option<GpuBuffer<vec4>>,
+    sample_pixels: Option<GpuBuffer<u32>>,
     source: source_control::Source,
     view: u32,
     illumination: u32,
@@ -737,6 +738,9 @@ pub fn init() -> State {
     var s = State {
         layout: 0,
         population: None,
+        sample_pixels: if config::MODE == 10 && config::AA == 4 && sample_lanes::LANES == 16 {
+            Some(buffer(4096 * 4))
+        } else { None },
         source: source_control::init(config::MODE == 3 || config::MODE == 10),
         view: 0,
         illumination: 0,
@@ -961,6 +965,7 @@ pub fn render(s: mut State) {
                         s.aa,
                         source_camera,
                         c.illumination,
+                        mut s.sample_pixels,
                         mut s.out,
                     )
                 },
@@ -980,6 +985,7 @@ pub fn render(s: mut State) {
                         s.aa,
                         source_camera,
                         c.illumination,
+                        mut s.sample_pixels,
                         mut s.out,
                     )
                 },
@@ -1196,6 +1202,11 @@ fn composite_population(at: FragCoord, pixels: [vec4]) -> vec4 {
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if config::MODE == 10 && sample_lanes::REFRESH {
+        label("response refresh")
+        source_control::rebuild_response(mut s.source)
+    }
+
     // Alternating reference views forces the candidate's sorting and updates every frame.
     s.view = s.step % 2
     s.illumination = (s.step / 2) % 4

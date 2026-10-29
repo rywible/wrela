@@ -1,0 +1,6 @@
+// Exact AA4 source-sample shading. 1 selects the serial diagnostic control.
+// Other AA counts use the original resolve. Shared storage is 1 KiB at 16 lanes.
+pub const LANES: u32 = 16
+pub const SAMPLES: u32 = 16 / LANES
+pub const SHARED: u32 = 1024 / LANES
+pub const REFRESH: bool = false

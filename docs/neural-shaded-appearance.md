@@ -7498,3 +7498,11 @@ The [joint AMD comparison](neural-response-statistics.md) assessed viability in 
 Bounded construction removes an 8.39 MB observed resident penalty and lowers requested peak to 2.860 MB. It preserves the quality failure and costs 3.287 ms versus native cards' 2.569 ms. Its 28.27% requested-live saving against the smaller exact cache gives no demonstrated steady physical-residency advantage. Full replacement plus rendering costs 7.111 ms versus 5.015 ms exact response / 4.509 ms native.
 
 Retire uniform per-card packing; all engine/studio files restored exactly, 720 captures and all failed builds preserved. Next bet: source-certified adaptive shading with exact visibility and sensitive-material fallback. Untested; no G4 win. G1–G7 and frozen models unchanged/unmet. Manifest: `66085f3d8ca1fcb849a789cd530da1296327245a087bfbd580e91746d918c733`.
+
+## 2026-10-28: Exact sample lanes improve the conventional baseline
+
+The [AMD lane experiment](neural-sample-lanes.md) reduces complete GPU time by 29.62% for native cached cards and 27.74% for the compact exact cache in five alternating pairs. Geometric 95% intervals are 28.623–29.831% and 27.696–27.867%; CPU improvement is inconclusive. All 640 candidate images are byte-identical to their controls, and all 60 scored comparisons pass. The retained path adds 64 KiB global staging and 1 KiB workgroup storage; observed residency remains near the baseline.
+
+Full cache replacement plus rendering also improves: 4.503→3.743 ms native, 5.009→4.117 ms compact. Initial assessment 16.82 minutes, architecture decision 26.43 minutes, exactly two follow-ups. Shared same-leaf duplicate suppression is retired because it slows both methods despite exact images. Its failed results and the larger staging variants remain archived.
+
+Continue the exact sixteen-lane AA4 executor, with serial fallback for other AA counts. Thirty-two retained AA4 checks, eight AA2 fallback pairs and eight frozen-default pairs preserve images and resource counts. No training/new references; engine/reconstruction code and frozen default fixture unchanged. Next: remeasure source-field/residual representations against these upgraded conventional caches. No neural, 16× memory, temporal or world-leading claim; G1–G7 unchanged/unmet. Manifest: `26d712d7066dccb7081b66a8654fdb4511717a0589d8ed90bc1261d8f4a226c6`.

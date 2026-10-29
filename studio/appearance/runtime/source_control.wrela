@@ -1,5 +1,6 @@
 // Conventional source controls: raster shading and deferred shading from sample IDs.
 // Both use authored geometry, masks and material laws; measured differences are recorded.
+use std::gpu::{Shared, LocalId, WorkgroupId, barrier}
 use engine::impostor::{BAKED, Bake, BakeVertex}
 use engine::plant::{
     Card, Plant, LIMB_VERTICES, card_at, limb_point, limb_corner, card_scale, card_tint, card_turn,
@@ -40,13 +41,14 @@ pub fn render_packed(
     aa: u32,
     c: Camera,
     illumination: u32,
+    pixels: mut Option<GpuBuffer<u32>>,
     out: mut GpuBuffer<vec4>,
 ) {
     prepare_packed(mut packed.words)
     let p = std::gpu::begin_pass(mut packed.target, clear: vec4(0.0))
     draw_packed(s, p, c, aa, mut packed.words)
     p.end()
-    finish_identity(s, ids, packed.words, aa, c, illumination, mut out)
+    finish_identity(s, ids, packed.words, aa, c, illumination, mut pixels, mut out)
 }
 
 pub struct Camera: Copy + GpuData {
@@ -419,6 +421,19 @@ pub fn init(active: bool) -> Source {
         tile_slots,
         hierarchy_nodes,
         hierarchy_response,
+    }
+}
+
+// Full cache replacement for the opt-in update-cost diagnostic.
+pub fn rebuild_response(s: mut Source) {
+    let plant = great_tree()
+    let n = plant.cards()
+    if source_hierarchy::ENABLED {
+        s.hierarchy_response = source_hierarchy::response(plant, n)
+    } else {
+        var cards = buffer(n * source_population::LAYOUTS)
+        dispatch(cook_population.bind(plant, n, mut cards), over: n * source_population::LAYOUTS)
+        s.cards = take cards
     }
 }
 
@@ -950,6 +965,83 @@ fn resolve_identity(
     out[id] = sum / f32(aa * aa)
 }
 
+// Four pixels per workgroup; each of their sixteen samples keeps its exact material shade.
+// The bounds check is uniform across the group so every active lane reaches the barrier.
+@compute(64)
+fn shade_fused(
+    ids: Texture<R32Uint>,
+    packed: [u32],
+    card_count: u32,
+    aa: u32,
+    b: Bake,
+    c: Camera,
+    illumination: u32,
+    cards: [Card],
+    nodes: [vec4],
+    response: [vec2u],
+    wood: [Tube<4>],
+    parameters: [u32],
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+    out: mut Atomics<u32>,
+    values: mut Shared<vec4, sample_lanes::SHARED>,
+    group: WorkgroupId,
+    lid: LocalId,
+) {
+    let group_pixel = group.x * (64 / sample_lanes::LANES)
+    if group_pixel >= 4096 || group_pixel / 64 < c.band || group_pixel / 64 >= c.band + c.rows {
+        return
+    }
+    let pixel = group_pixel + lid.x / sample_lanes::LANES
+    let base = vec2u(pixel % 64, pixel / 64) * aa
+    let chunk = values.chunk(lid)
+    for k in 0..sample_lanes::SAMPLES {
+        let sample = k * sample_lanes::LANES + lid.x % sample_lanes::LANES
+        let at = base + vec2u(sample % aa, sample / aa)
+        let colour = identity_value(
+            if PACKED_VISIBILITY {
+                unpack_identity(packed[at.y * 64 * aa + at.x], card_count)
+            } else { ids.load(at.x, at.y - c.band * aa) },
+            at,
+            aa,
+            b,
+            c,
+            illumination,
+            cards,
+            nodes,
+            response,
+            wood,
+            parameters,
+            atlas,
+            filter,
+        )
+        values.write(chunk, k, colour)
+    }
+    barrier(mut values)
+    if lid.x % sample_lanes::LANES == 0 {
+        // Match the serial y-major sample sum. Only this leader writes its pixel.
+        var sum = vec4(0.0)
+        for sample in 0..16 {
+            sum += values.get(
+                (sample / sample_lanes::LANES) * 64 + lid.x + sample % sample_lanes::LANES,
+            )
+        }
+        let colour = sum / 16.0
+        for channel in 0..4 { out.store(pixel * 4 + channel, bitcast_u32(colour[channel])) }
+    }
+}
+
+@compute(64)
+fn gather_fused(pixels: [u32], c: Camera, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= 4096 || id.x / 64 < c.band || id.x / 64 >= c.band + c.rows { return }
+    out[id] = vec4(
+        bitcast_f32(pixels[id.x * 4]),
+        bitcast_f32(pixels[id.x * 4 + 1]),
+        bitcast_f32(pixels[id.x * 4 + 2]),
+        bitcast_f32(pixels[id.x * 4 + 3]),
+    )
+}
+
 pub fn finish_identity(
     s: Source,
     ids: Texture<R32Uint>,
@@ -957,26 +1049,60 @@ pub fn finish_identity(
     aa: u32,
     c: Camera,
     illumination: u32,
+    pixels: mut Option<GpuBuffer<u32>>,
     out: mut GpuBuffer<vec4>,
 ) {
-    dispatch(
-        resolve_identity.bind(
-            ids,
-            packed.items(),
-            great_tree().cards(),
-            aa,
-            source_bake(),
-            c,
-            illumination,
-            s.cards.items(),
-            s.hierarchy_nodes.items(),
-            s.hierarchy_response.items(),
-            s.wood.items(),
-            s.parameters.items(),
-            s.atlas,
-            s.filter,
-            mut out,
-        ),
-        over: 4096,
-    )
+    assert(sample_lanes::LANES == 1 || sample_lanes::LANES == 16)
+    std::gpu::label("sample shading")
+    if sample_lanes::LANES == 16 && aa == 4 {
+        match mut pixels {
+            Some(cache) => {
+                dispatch(
+                    shade_fused.bind(
+                        ids,
+                        packed.items(),
+                        great_tree().cards(),
+                        aa,
+                        source_bake(),
+                        c,
+                        illumination,
+                        s.cards.items(),
+                        s.hierarchy_nodes.items(),
+                        s.hierarchy_response.items(),
+                        s.wood.items(),
+                        s.parameters.items(),
+                        s.atlas,
+                        s.filter,
+                        mut cache,
+                    ),
+                    groups: 4096 * sample_lanes::LANES / 64,
+                )
+                std::gpu::label("sample gather")
+                dispatch(gather_fused.bind(cache.items(), c, mut out), over: 4096)
+            },
+            None => panic("parallel pixel cache missing"),
+        }
+    } else {
+        dispatch(
+            resolve_identity.bind(
+                ids,
+                packed.items(),
+                great_tree().cards(),
+                aa,
+                source_bake(),
+                c,
+                illumination,
+                s.cards.items(),
+                s.hierarchy_nodes.items(),
+                s.hierarchy_response.items(),
+                s.wood.items(),
+                s.parameters.items(),
+                s.atlas,
+                s.filter,
+                mut out,
+            ),
+            over: 4096,
+        )
+    }
+    std::gpu::label("complete appearance")
 }

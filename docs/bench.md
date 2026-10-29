@@ -2986,3 +2986,23 @@ Uniform 16-bit formats pass only 3/60 and 0/60. Precision reallocation improves 
 Complete frames include placement/decoding, depth ordering, visibility, wood, updates, copies and composite. Static cooking is excluded steady timing and measured through replacement with old caches still live. This measures invalidation cost, not edited-source correctness. GPU results are descriptive 240-frame runs after 60 warmups. Paced tails, completion, PSS and startup observations are in the report; whole-client UMA pools must not be summed.
 
 Retire uniform per-card packing; all engine/studio code restored. 720 captures and failures preserved; G1–G7/frozen models unchanged. Next bet: source-certified adaptive shading with exact coverage and sensitive-material fallback. [Full comparison and evidence](neural-response-statistics.md).
+
+## Exact sample lanes: faster conventional rendering at unchanged quality (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR; Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 26,560-card layouts over one crown, 320×128 complete frames. Same visibility, source, wood and material; existing converged references, no training/new truth. First assessment 16.82 minutes; decision 26.43 minutes; two follow-ups.
+
+| Method | Saturated GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: |
+| Native serial | 2.56848 / 2.60780 | 10,327,756 / 10,491,596 | 26,271,744 / 9,936,896 |
+| Native, sixteen lanes / 64 KiB staging | 1.82084 / 1.88512 | 10,393,292 / 10,557,132 | 26,480,640 / 10,199,040 |
+| Native, shared duplicate suppression (retired) | 1.97984 / 2.03584 | 10,393,292 / 10,557,132 | 26,542,080 / 9,936,896 |
+| Compact exact cache, serial | 3.29456 / 3.33116 | 3,758,188 / 3,922,028 | 18,038,784 / 10,199,040 |
+| Compact, sixteen lanes / 64 KiB staging | 2.37780 / 2.40796 | 3,823,724 / 3,987,564 | 17,776,640 / 10,100,736 |
+| Compact, shared duplicate suppression (retired) | 2.55376 / 2.58196 | 3,823,724 / 3,987,564 | 18,235,392 / 10,100,736 |
+
+
+Five alternating pairs: native 29.6196% lower complete GPU time (geometric 95% CI 28.6226–29.8305%); compact 27.7395% (27.6959–27.8667%). CPU results inconclusive. Full replacement plus rendering improves 4.50252→3.74344 ms native and 5.00860→4.11744 ms compact; old caches remain live during construction. All 640 candidate RGBA images match their controls; all 60 scored comparisons pass. Large staging and duplicate suppression are retired, with failures retained.
+
+Whole-frame cost includes placement/decoding, visibility/depth ordering, wood, shading, scratch, updates, copies and compositing. Requested live/peak counts every observed resource; whole-client DRM/PSS observations are not per-asset attribution or physical peaks and UMA pools must not be summed. Retained fresh residency: native VRAM/GTT 26,542,080/10,199,040 B; compact 17,780,736/10,199,040 B. The winner adds 65,536 B global and 1,024 B workgroup storage.
+
+Continue AA4 sixteen-lane shading; AA2 and frozen-default image/resource checks are exact. G1–G7/frozen models unchanged, no 16× memory or world-leading claim. [Full quality, paired samples, paced tails, refresh, residency and evidence](neural-sample-lanes.md).
