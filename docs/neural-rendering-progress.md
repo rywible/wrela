@@ -3412,3 +3412,18 @@ regression. One follow-up, no training. Runtime restored to d707a30a; all failed
 captures and cost data retained. Next bet: stream each kind's bake into final storage,
 with the same construction policy for BC and source IDs. G1–G7 remain unmet.
 [Full decision](neural-source-wood-records.md).
+
+
+## 2026-10-29 — Streamed construction retained
+
+[Streamed bake](neural-streamed-bake.md): reuse one bake and one source-ID raster
+while installing each kind immediately. Exact BC and source IDs receive the same
+construction policy. Requested startup peaks fall 578.01→475.02 MB and
+578.01→460.16 MB; edit peaks 611.00→499.60 MB and 600.75→479.49 MB.
+Sampled DRM VRAM peaks also fall, but browser PSS is mixed with ~4.5–4.6 GB startup
+transients. No total physical-memory or speedup claim; steady storage is unchanged.
+38 pooled outputs and 12,582,912 final source IDs are exact; all 36 shaded checks
+pass, with native coverage unchanged against the existing quality controls.
+First joint assessment 18.37 minutes, one follow-up,
+zero training. Next bet: demand-driven source view tiles with a fixed cache budget
+and equally informed conventional controls. G1–G7 remain unchanged and unmet.

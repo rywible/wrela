@@ -21,9 +21,9 @@ use engine::sky::Weather
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::temporal::seen_box
 use engine::terrain::{Clipmap, Terrain, Texel}
-use engine::vegetation::{Kind, kind, nothing}
+use engine::vegetation::nothing
 use engine::view::{BEHIND, Camera, NEAREST}
-use engine::wood::Wood
+use engine::wood::{Wood, PoolCook}
 use rocks::{BOULDERS, boulder, footprints}
 use scene::{Ground, MEADOW}
 use std::collections::{Flags, replace}
@@ -87,7 +87,7 @@ pub fn on(off: Flags<System>, system: System) -> bool {
 /// (a test's view), the scene's scale and the light (for a test's view).
 pub struct Stage {
     pub woods: Woods,
-    pub kinds: Vec<Kind>,
+    cooking: Option<PoolCook>,
     atlas: Texture<Rgba8>,
     pub wood: Option<Wood>,
     pub stones: Vec<Realized>,
@@ -107,7 +107,7 @@ pub struct Stage {
 pub fn stage(walker: Walker, light: Light) -> Stage {
     Stage {
         woods: woods(),
-        kinds: Vec::new(),
+        cooking: None,
         atlas: engine::plant::leaf_atlas(6),
         wood: None,
         stones: Vec::new(),
@@ -147,25 +147,26 @@ impl Stage {
     pub fn remake_woods(mut self, linear: Sampler) {
         self.woods = woods()
         let Some(w) = replace(mut self.wood, None) else { return }
-        var kinds: Vec<Kind> = Vec::new()
+        let no_far: Vec<u32> = Vec::new()
+        var cooked = PoolCook::new(
+            self.woods.plants,
+            take no_far,
+            compress: std::gpu::features().bc,
+        )
         for k in 0..KINDS {
-            kinds.push(kind(self.woods.plants[k], seed: k + 1, atlas: w.atlas, s: linear))
+            cooked.add(self.woods.plants[k], seed: k + 1, atlas: w.atlas, s: linear)
         }
-        self.wood = Some(self.made(take kinds, take w.atlas))
+        self.wood = Some(self.made(take cooked, take w.atlas))
     }
 
-    /// A wood of `kinds` (cooked with `atlas`), the woods' instances loaded into its one tile.
-    fn made(self, kinds: take Vec<Kind>, atlas: take Texture<Rgba8>) -> Wood {
-        let no_far: Vec<u32> = Vec::new()
-        var w = Wood::new(
-            take kinds,
-            take no_far,
+    /// Finish the pooled kinds and load the woods' instances into their one tile.
+    fn made(self, cooked: take PoolCook, atlas: take Texture<Rgba8>) -> Wood {
+        var w = Wood::cooked(
+            take cooked,
             take atlas,
             slots: 1,
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
-            // Compressed where the device has BC (`engine::wood::Impostors`).
-            compress: std::gpu::features().bc,
             // This atlas stays fixed; remake_woods reconstructs the Wood after source edits.
             fixed_leaf_atlas: true,
         )
@@ -240,18 +241,37 @@ impl Scene for Stage {
             st.settle()
         }
         if self.wood.is_none() {
-            for _ in 0..KINDS_PER_FRAME {
-                let k = self.kinds.len()
-                if k < KINDS && c.planner.may(Work::Kind) {
-                    self.kinds.push(
-                        kind(self.woods.plants[k], seed: k + 1, atlas: self.atlas, s: linear),
-                    )
-                }
+            if self.cooking.is_none() {
+                let no_far: Vec<u32> = Vec::new()
+                self.cooking = Some(
+                    PoolCook::new(
+                        self.woods.plants,
+                        take no_far,
+                        compress: std::gpu::features().bc,
+                    ),
+                )
             }
-            if self.kinds.len() == KINDS {
-                let kinds = replace(mut self.kinds, Vec::new())
+            let ready = match mut self.cooking {
+                Some(cooked) => {
+                    for _ in 0..KINDS_PER_FRAME {
+                        let k = cooked.len()
+                        if k < KINDS && c.planner.may(Work::Kind) {
+                            cooked.add(
+                                self.woods.plants[k],
+                                seed: k + 1,
+                                atlas: self.atlas,
+                                s: linear,
+                            )
+                        }
+                    }
+                    cooked.len() == KINDS
+                },
+                None => false,
+            }
+            if ready {
+                let cooked = replace(mut self.cooking, None).unwrap()
                 let atlas = replace(mut self.atlas, texture::<Rgba8>(width: 1, height: 1))
-                self.wood = Some(self.made(take kinds, take atlas))
+                self.wood = Some(self.made(take cooked, take atlas))
             }
         }
         match mut self.wood {

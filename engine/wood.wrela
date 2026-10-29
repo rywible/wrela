@@ -740,23 +740,20 @@ fn into_layer(
     }
 }
 
-/// `kinds` pooled (`Pool`), for `far_kinds` too (each its own kind's, but for its index), their
-/// impostors compressed if `compress` (`Impostors`). Each kind's own impostor textures and
-/// volumes are copied into the pool's (encoded on the GPU, `compress`) and let go.
-fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
-    let n = max(kinds.len(), 1)
-    var cards = 0
-    var orders = 0
-    var limbs = 0
-    for k in kinds {
-        cards += k.card_count
-        orders += CORNERS * k.card_count
-        limbs += k.limb_count
-    }
+// Common storage for both an existing collection of kinds and an incremental build.
+fn empty_pool(
+    count: u32,
+    far_count: u32,
+    cards: u32,
+    orders: u32,
+    limbs: u32,
+    compress: bool,
+) -> Pool {
+    let n = max(count, 1)
     let views = impostor::VIEWS * impostor::VIEWS
     let side = impostor::VOXELS
-    var p = Pool {
-        kinds: buffer(max(kinds.len() + far_kinds.len(), 1)),
+    Pool {
+        kinds: buffer(max(count + far_count, 1)),
         cards: buffer(max(cards, 1)),
         orders: buffer(max(orders, 1)),
         limbs: buffer(max(limbs, 1)),
@@ -765,46 +762,74 @@ fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
         grid: texture3d::<Rgba16Float>(side, side, side * n),
         grid_depth: texture3d::<Rgba16Float>(side, side, side * n),
     }
+}
+
+fn install_kind(p: mut Pool, k: mut Kind, i: u32, at: vec3u) -> KindDesc {
+    let views = impostor::VIEWS * impostor::VIEWS
+    let side = impostor::VOXELS
+    let c = k.card_count
+    let l = k.limb_count
+    let desc = KindDesc {
+        bake: k.impostor.bake,
+        card_first: at.x,
+        card_count: c,
+        order_first: at.y,
+        limb_first: at.z,
+        limb_count: l,
+        bounds_first: i * views,
+        layer: i,
+        slab: i,
+    }
+    if c > 0 {
+        copy(
+            from: k.cards.span(start: 0, count: c),
+            to: p.cards.span_mut(start: at.x, count: c),
+        )
+        copy(
+            from: k.orders.span(start: 0, count: CORNERS * c),
+            to: p.orders.span_mut(start: at.y, count: CORNERS * c),
+        )
+    }
+    if l > 0 {
+        copy(
+            from: k.limbs.span(start: 0, count: l),
+            to: p.limbs.span_mut(start: at.z, count: l),
+        )
+    }
+    copy(
+        from: k.impostor.bounds.span(start: 0, count: views),
+        to: p.bounds.span_mut(start: i * views, count: views),
+    )
+    dispatch(
+        slab_of.bind(from: k.volume.grid, slab: i, out: mut p.grid),
+        groups: (side / 4, side / 4, side * (i + 1) / 4),
+    )
+    dispatch(
+        slab_of.bind(from: k.volume.grid_depth, slab: i, out: mut p.grid_depth),
+        groups: (side / 4, side / 4, side * (i + 1) / 4),
+    )
+    // The pool holds them now (a host releases a texture after the work recorded before).
+    k.impostor.colour = texture::<Rgba8>(width: 1, height: 1)
+    k.impostor.normal = texture::<Rgba16Float>(width: 1, height: 1)
+    k.volume.grid = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+    k.volume.grid_depth = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+    desc
+}
+
+fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
+    var cards = 0
+    var orders = 0
+    var limbs = 0
+    for k in kinds {
+        cards += k.card_count
+        orders += CORNERS * k.card_count
+        limbs += k.limb_count
+    }
+    var p = empty_pool(kinds.len(), far_kinds.len(), cards, orders, limbs, compress)
     var descs: Vec<KindDesc> = Vec::new()
     var at = vec3u(0)
-    // The words an encoding writes before they're copied into a layer: a texel's at most.
     var scratch: GpuBuffer<u32> = buffer(impostor::ATLAS * impostor::ATLAS)
     for i in 0..kinds.len() {
-        let c = kinds[i].card_count
-        let l = kinds[i].limb_count
-        descs.push(
-            KindDesc {
-                bake: kinds[i].impostor.bake,
-                card_first: at.x,
-                card_count: c,
-                order_first: at.y,
-                limb_first: at.z,
-                limb_count: l,
-                bounds_first: i * views,
-                layer: i,
-                slab: i,
-            },
-        )
-        if c > 0 {
-            copy(
-                from: kinds[i].cards.span(start: 0, count: c),
-                to: p.cards.span_mut(start: at.x, count: c),
-            )
-            copy(
-                from: kinds[i].orders.span(start: 0, count: CORNERS * c),
-                to: p.orders.span_mut(start: at.y, count: CORNERS * c),
-            )
-        }
-        if l > 0 {
-            copy(
-                from: kinds[i].limbs.span(start: 0, count: l),
-                to: p.limbs.span_mut(start: at.z, count: l),
-            )
-        }
-        copy(
-            from: kinds[i].impostor.bounds.span(start: 0, count: views),
-            to: p.bounds.span_mut(start: i * views, count: views),
-        )
         into_layer(
             mut p.impostors,
             mut scratch,
@@ -812,28 +837,108 @@ fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
             kinds[i].impostor.normal,
             i,
         )
-        dispatch(
-            slab_of.bind(from: kinds[i].volume.grid, slab: i, out: mut p.grid),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
-        )
-        dispatch(
-            slab_of.bind(from: kinds[i].volume.grid_depth, slab: i, out: mut p.grid_depth),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
-        )
-        // The pool holds them now (a host releases a texture after the work recorded before).
-        kinds[i].impostor.colour = texture::<Rgba8>(width: 1, height: 1)
-        kinds[i].impostor.normal = texture::<Rgba16Float>(width: 1, height: 1)
-        kinds[i].volume.grid = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
-        kinds[i].volume.grid_depth = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
-        at += vec3u(c, CORNERS * c, l)
+        let desc = install_kind(mut p, mut kinds[i], i, at)
+        at += vec3u(desc.card_count, CORNERS * desc.card_count, desc.limb_count)
+        descs.push(desc)
     }
-    for f in far_kinds {
-        descs.push(descs[f])
-    }
-    if descs.len() > 0 {
-        write(mut p.kinds, 0, descs)
-    }
+    for f in far_kinds { descs.push(descs[f]) }
+    if descs.len() > 0 { write(mut p.kinds, 0, descs) }
     p
+}
+
+/// Builds each kind into pooled storage immediately; no per-kind colour/normal atlases remain.
+pub struct PoolCook {
+    expected: u32,
+    kinds: Vec<Kind>,
+    far_kinds: Vec<u32>,
+    descs: Vec<KindDesc>,
+    pool: Pool,
+    at: vec3u,
+    bake: impostor::BakeScratch,
+    scratch: GpuBuffer<u32>,
+}
+
+impl PoolCook {
+    /// Reserve the source capacities, then add every kind before passing this to Wood::cooked.
+    /// Each add encodes the shared bake before the next one overwrites it.
+    pub fn new(
+        plants: [plant::Plant],
+        far_kinds: take Vec<u32>,
+        compress: bool = false,
+    ) -> PoolCook {
+        var cards = 0
+        var limbs = 0
+        for p in plants {
+            cards += p.cards()
+            limbs += p.limbs.len()
+        }
+        let pool = empty_pool(
+            plants.len(),
+            far_kinds.len(),
+            cards,
+            CORNERS * cards,
+            limbs,
+            compress,
+        )
+        PoolCook {
+            expected: plants.len(),
+            kinds: Vec::new(),
+            far_kinds,
+            descs: Vec::new(),
+            pool,
+            at: vec3u(0),
+            bake: impostor::BakeScratch::new(),
+            scratch: buffer(impostor::ATLAS * impostor::ATLAS),
+        }
+    }
+    pub fn len(self) -> u32 {
+        self.kinds.len()
+    }
+    pub fn add(mut self, plant: plant::Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) {
+        let i = self.kinds.len()
+        assert(i < self.expected, "too many pooled kinds")
+        let source = vegetation::source(plant, seed)
+        let b = impostor::bake_settings(plant)
+        let bounds = self.bake.render(
+            b,
+            source.cards,
+            source.card_count,
+            source.limbs,
+            source.limb_count,
+            atlas,
+            s,
+        )
+        let volume = impostor::cook(b, source.cards, source.card_count, atlas, s)
+        let image = impostor::Impostor {
+            colour: texture::<Rgba8>(width: 1, height: 1),
+            normal: texture::<Rgba16Float>(width: 1, height: 1),
+            bake: b,
+            bounds,
+        }
+        var k = take source.finish(take image, take volume)
+        assert(
+            self.at.x + k.card_count <= self.pool.cards.len() &&
+                self.at.y + CORNERS * k.card_count <= self.pool.orders.len() &&
+                self.at.z + k.limb_count <= self.pool.limbs.len(),
+            "pooled source counts changed",
+        )
+        into_layer(mut self.pool.impostors, mut self.scratch, self.bake.colour, self.bake.normal, i)
+        let desc = install_kind(mut self.pool, mut k, i, self.at)
+        self.at += vec3u(desc.card_count, CORNERS * desc.card_count, desc.limb_count)
+        self.descs.push(desc)
+        self.kinds.push(take k)
+    }
+    fn finish(take self) -> (Vec<Kind>, Vec<u32>, Pool) {
+        assert(self.kinds.len() == self.expected, "incomplete pooled kinds")
+        var descs = take self.descs
+        var pool = take self.pool
+        for f in self.far_kinds {
+            assert(f < self.expected)
+            descs.push(descs[f])
+        }
+        if descs.len() > 0 { write(mut pool.kinds, 0, descs) }
+        (take self.kinds, take self.far_kinds, take pool)
+    }
 }
 
 /// A wood: its kinds and their leaves' atlas, the instances loaded (in slots, a tile each, and
@@ -916,6 +1021,50 @@ impl Wood {
     ) -> Wood {
         var kinds = take kinds
         let pool = pool_of(mut kinds, far_kinds, compress)
+        Wood::with_pool(
+            take kinds,
+            take far_kinds,
+            take atlas,
+            take pool,
+            slots,
+            cards_to,
+            impostors_to,
+            fixed_leaf_atlas,
+        )
+    }
+
+    /// Finish the ordered pooled build. Rendering and page-compaction policies are unchanged.
+    pub fn cooked(
+        cooked: take PoolCook,
+        atlas: take Texture<Rgba8>,
+        slots: u32,
+        cards_to: f32,
+        impostors_to: f32,
+        fixed_leaf_atlas: bool = false,
+    ) -> Wood {
+        let (kinds, far_kinds, pool) = take cooked.finish()
+        Wood::with_pool(
+            take kinds,
+            take far_kinds,
+            take atlas,
+            take pool,
+            slots,
+            cards_to,
+            impostors_to,
+            fixed_leaf_atlas,
+        )
+    }
+
+    fn with_pool(
+        kinds: take Vec<Kind>,
+        far_kinds: take Vec<u32>,
+        atlas: take Texture<Rgba8>,
+        pool: take Pool,
+        slots: u32,
+        cards_to: f32,
+        impostors_to: f32,
+        fixed_leaf_atlas: bool,
+    ) -> Wood {
         var outlines: GpuBuffer<vec2> = buffer(plant::LEAF_PATTERNS * plant::OUTLINE)
         dispatch(
             cook_outlines.bind(atlas, mut outlines),

@@ -7,7 +7,7 @@ use std::gpu::{
 }
 use std::io::Pending
 use vegetation::Kind
-use impostor::source_ids
+use impostor::SourceScratch
 
 pub struct Packed { pub data: GpuBuffer<u32> }
 
@@ -113,6 +113,7 @@ impl Build {
         var raw: GpuBuffer<u32> = buffer(prefix * 45)
         var totals: GpuBuffer<u32> = buffer(2)
         let s = sampler()
+        var source = SourceScratch::new()
         for kind in 0..kinds.len() {
             borrow k = kinds[kind]
             assert(
@@ -120,7 +121,7 @@ impl Build {
                 "source identity exceeds16bits",
             )
             label("source identity raster")
-            let ids = source_ids(
+            source.render(
                 k.impostor.bake,
                 k.cards,
                 k.card_count,
@@ -130,9 +131,21 @@ impl Build {
                 s,
             )
             label("source identity encode")
-            dispatch(encode.bind(ids, kind, prefix, out: mut raw, totals: mut totals), over: 16384)
+            dispatch(
+                encode.bind(
+                    ids: source.ids,
+                    kind: kind,
+                    prefix: prefix,
+                    out: mut raw,
+                    totals: mut totals,
+                ),
+                over: 16384,
+            )
             label("source identity verify")
-            dispatch(verify.bind(ids, kind, data: raw, totals: mut totals), over: 1048576)
+            dispatch(
+                verify.bind(ids: source.ids, kind: kind, data: raw, totals: mut totals),
+                over: 1048576,
+            )
         }
         let pending = read(totals.items())
         Build { raw, prefix, pending }

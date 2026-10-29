@@ -51,8 +51,18 @@ pub struct Kind {
     pub volume: Cooked,
 }
 
-/// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
-pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+/// Source geometry before its appearance is baked or installed into a pool.
+pub struct Source {
+    pub plant: Plant,
+    pub cards: GpuBuffer<Card>,
+    pub card_count: u32,
+    pub orders: GpuBuffer<u32>,
+    pub limbs: GpuBuffer<Tube<4>>,
+    pub limb_count: u32,
+}
+
+/// Generates the authored cards, ordering and limbs for one deterministic individual.
+pub fn source(plant: Plant, seed: u32) -> Source {
     // A plant with no leaves (a snag, a log) has no cards: its limbs alone are drawn.
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(max(n, 1))
@@ -66,20 +76,32 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind 
         list.push(plant.limbs[i])
     }
     let limbs = buffer_of(list, at_least: 1)
-    let impostor = bake(plant, cards, n, limbs, limb_count, atlas, s)
-    let volume = cook(impostor.bake, cards, n, atlas, s)
-    Kind {
-        plant,
-        cards,
-        card_count: n,
-        orders,
-        limbs,
-        limb_count,
-        top: plant.top(),
-        reach: plant.reach(),
-        impostor,
-        volume,
+    Source { plant, cards, card_count: n, orders, limbs, limb_count }
+}
+
+impl Source {
+    pub fn finish(take self, impostor: take Impostor, volume: take Cooked) -> Kind {
+        Kind {
+            plant: self.plant,
+            cards: take self.cards,
+            card_count: self.card_count,
+            orders: take self.orders,
+            limbs: take self.limbs,
+            limb_count: self.limb_count,
+            top: self.plant.top(),
+            reach: self.plant.reach(),
+            impostor,
+            volume,
+        }
     }
+}
+
+/// Cooks a standalone kind; pooled builders may instead install a source immediately.
+pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+    let made = source(plant, seed)
+    let impostor = bake(plant, made.cards, made.card_count, made.limbs, made.limb_count, atlas, s)
+    let volume = cook(impostor.bake, made.cards, made.card_count, atlas, s)
+    take made.finish(take impostor, take volume)
 }
 
 /// An instance of a kind in the world.

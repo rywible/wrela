@@ -3670,3 +3670,21 @@ silhouette metrics. The first candidate's 785,526,924B startup peak is repaired 
 the existing 578,009,512B by shared scratch; no baseline peak win. Edit peak also rises.
 Retire the extension, restore all runtime changes, preserve failures. One follow-up,
 zero training; G1–G7 unchanged/unmet. [Evidence and decision](neural-source-wood-records.md).
+
+
+## Streamed pooled appearance construction (2026-10-29)
+
+Pop!_OS, AMD RADV RENOIR / Ryzen 5 5500U, Mesa 26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0, parent7f4e756c. 1080p clearing, internal2×, one worker; solo GPU queue.
+Both exact BC and source-ID controls gain immediate per-kind pooling and bounded
+scratch. Startup requested peaks 578.01→475.02 MB / 578.01→460.16 MB;
+real source-edit peaks 611.00→499.60 MB / 600.75→479.49 MB.
+Fresh sampled DRM VRAM startup 724.72→617.62 MB / 724.71→607.31 MB;
+edit-run maxima 837.50→660.81 MB / 822.09→637.06 MB. Browser PSS is mixed:
+no total physical-memory claim. Steady representation storage unchanged.
+Fresh balanced full GPU medians remain ~25 ms; all startup/update passes,
+CPU calls and browser intervals recorded. No speedup claim.
+All38 pooled outputs and12,582,912 source IDs exact;24 stress+12 native shaded
+checks pass; static coverage remains within the established control, not G3.
+One follow-up, no training; G1–G7 unmet. Sources, builds, failed attempts, captures,
+memory sampling limits and complete cost: [streamed bake report](neural-streamed-bake.md).
