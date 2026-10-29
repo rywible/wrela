@@ -1,0 +1,208 @@
+// The vale's land as its making left it (plan three's §B1.2): one main stream from the head to the
+// mouth, connected; a fall at least 4 m tall over at most 6 m of its course, where the hard band
+// crosses it; a mere above the fall, its level over the fall's lip; and alluvium on the valley
+// floor, thin soil on the crests.
+
+use land::grow::NONE
+use land::soil::SoilKind
+use std::io::print
+use vale::landscape::{BAND_HALF, BAND_Z, FALL_RUN, HEAD_Z, MOUTH_Z, VALE}
+
+/// The main stream is one path down its cells' receivers, from a cell within 64 m of the head to
+/// the outlet at the mouth; each cell's next is its receiver, and every cell drains more than a
+/// stream's area below its first few.
+@test
+fn the_stream_runs_from_the_head_to_the_mouth() {
+    borrow v = VALE
+    let g = v.made.grid
+    borrow main = v.main
+    assert(main.len() > 100, f"the main stream has {main.len()} cells")
+    let head = g.centre(main[0])
+    let mouth = g.centre(main[main.len() - 1])
+    assert(head.y > HEAD_Z - 64.0, f"the main stream starts at z = {head.y}, short of the head")
+    assert(mouth.y < MOUTH_Z + 8.0, f"the main stream ends at z = {mouth.y}, short of the mouth")
+    assert(v.made.base[main[main.len() - 1]], "the main stream ends at the outlet")
+    for k in 0..main.len() - 1 {
+        assert(
+            v.made.down[main[k]] == main[k + 1],
+            f"cell {k} of the main stream doesn't drain to the next",
+        )
+    }
+    print(
+        f"the main stream: {main.len()} cells from ({head.x}, {head.y}) to ({mouth.x}, {mouth.y})",
+    )
+}
+
+/// The fall: where the stream crosses the hard band it drops at least 4 m over at most 6 m of its
+/// course.
+@test
+fn the_stream_falls_where_the_band_crosses_it() {
+    borrow v = VALE
+    let g = v.made.grid
+    let f = v.fall
+    let lip = g.centre(v.main[f.lip])
+    print(f"the fall: {f.drop} m over {f.run} m at ({lip.x}, {lip.y})")
+    assert(f.drop >= 4.0, f"the fall drops {f.drop} m")
+    assert(f.run <= FALL_RUN, f"the fall runs {f.run} m")
+    assert(
+        abs(lip.y - BAND_Z) <= BAND_HALF + 12.0,
+        f"the fall's lip is at z = {lip.y}, off the band",
+    )
+}
+
+/// The mere: a lake the main stream runs through above the fall, its level over the fall's lip.
+@test
+fn a_mere_stands_above_the_fall() {
+    borrow v = VALE
+    assert(v.mere != NONE, "no lake above the fall")
+    let level = v.lakes.level[v.mere]
+    let lip = v.made.heights[v.main[v.fall.lip]]
+    var cells = 0
+    for c in 0..v.lakes.of.len() {
+        if v.lakes.of[c] == v.mere {
+            cells += 1
+        }
+    }
+    print(
+        f"the mere: level {level} m over {cells} cells ({f32(cells) * 16.0 / 1.0e4} ha); the fall's lip {lip} m",
+    )
+    assert(level > lip, f"the mere's level {level} is under the fall's lip {lip}")
+    assert(cells >= 20, f"the mere holds {cells} cells")
+}
+
+/// The soil: alluvium on the valley floor (the land within 40 m of the main stream, outside the
+/// mere: its bed's own cells are the wettest, gley and peat), thin soil on the crests (the cells
+/// near the square's sides that little drains into).
+@test
+fn alluvium_on_the_floor_and_thin_soil_on_the_crests() {
+    borrow v = VALE
+    let g = v.made.grid
+    var near: Vec<bool> = Vec::filled(g.cells(), value: false)
+    let r = 10
+    for c in v.main {
+        let (i, j) = (i32(c % g.nx), i32(c / g.nx))
+        for dj in -r..r + 1 {
+            for di in -r..r + 1 {
+                let (x, z) = (i + di, j + dj)
+                if x >= 0 &&
+                    z >= 0 &&
+                    x < i32(g.nx) &&
+                    z < i32(g.nz) &&
+                    di * di + dj * dj <= r * r {
+                    near[u32(z) * g.nx + u32(x)] = true
+                }
+            }
+        }
+    }
+    var floor = 0
+    var floor_alluvium = 0
+    var crest = 0
+    var crest_thin = 0
+    var counts = [0; SoilKind]
+    for c in 0..g.cells() {
+        counts[v.soil[c]] += 1
+        let p = g.centre(c)
+        if near[c] && v.lakes.of[c] == NONE {
+            floor += 1
+            if v.soil[c] == SoilKind::Alluvium {
+                floor_alluvium += 1
+            }
+        }
+        if abs(p.x) > 400.0 && v.made.area[c] < 64.0 {
+            crest += 1
+            if v.soil[c] == SoilKind::Thin {
+                crest_thin += 1
+            }
+        }
+    }
+    print(
+        f"soil kinds (rock, thin, loam, colluvium, alluvium, gley, peat): {counts[0]} {counts[1]} {counts[2]} {counts[3]} {counts[4]} {counts[5]} {counts[6]}",
+    )
+    print(
+        f"the floor: {floor_alluvium} of {floor} alluvium; the crests: {crest_thin} of {crest} thin",
+    )
+    assert(floor_alluvium >= 20, f"{floor_alluvium} cells of alluvium on the valley floor")
+    assert(crest_thin >= 100, f"{crest_thin} cells of thin soil on the crests")
+}
+
+/// The land's relief: its valley floor's and its crests' heights down its length (for its design
+/// doc), between 200 and 450 m from its lowest to its highest.
+@test
+fn the_land_has_its_relief() {
+    borrow v = VALE
+    let g = v.made.grid
+    var hi = -1.0e9
+    var lo = 1.0e9
+    for c in 0..g.cells() {
+        hi = max(hi, v.made.heights[c])
+        lo = min(lo, v.made.heights[c])
+    }
+    for z in [-500.0, -300.0, -171.0, -100.0, 0.0, 200.0, 400.0, 500.0] {
+        var floor = 1.0e9
+        var crest = -1.0e9
+        for i in 0..256 {
+            let x = -510.0 + 4.0 * f32(i)
+            let h = vale::landscape::height_at(vec2(x, z))
+            floor = min(floor, h)
+            crest = max(crest, h)
+        }
+        print(f"z {z}: floor {floor} m, crest {crest} m")
+    }
+    print(f"heights {lo} to {hi} m")
+    assert(hi - lo > 200.0 && hi - lo < 450.0, f"the land's relief is {hi - lo} m")
+}
+
+/// The water: the main stream laid in three courses, the middle one its fall, the three holding
+/// each of its cells (the fall's a cell past each end); the mere a sheet over its cells at its level; mists at the fall; and the mesh
+/// laid over the ground.
+@test
+fn the_water_is_laid_where_the_land_put_it() {
+    borrow w = vale::water::WATERS
+    assert(w.courses.len() >= 3, f"{w.courses.len()} courses")
+    assert(
+        !w.courses[0].falls && w.courses[1].falls && !w.courses[2].falls,
+        "the fall is the main stream's middle course",
+    )
+    let along = w.courses[0].points.len() + w.courses[1].points.len() + w.courses[2].points.len()
+    assert(along == VALE.main.len() + 4, f"the main stream's courses hold {along} points")
+    assert(w.mere.len() > 0 && w.mere_level == VALE.lakes.level[VALE.mere], "the mere's sheet")
+    assert(vale::water::MISTS.len() >= 2, f"{vale::water::MISTS.len()} mists at the fall")
+    let m = vale::water::mesh()
+    print(
+        f"the water: {w.courses.len()} courses, the mere {w.mere.len()} cells at {w.mere_level} m, {m.verts.len()} vertices, {m.tris.len() / 3} triangles",
+    )
+    assert(m.tris.len() > 3000, f"the water's mesh has {m.tris.len() / 3} triangles")
+}
+
+/// The history: a wood over the vale's land (over 100 living trees a hectare), the oldest over two
+/// centuries; none in the mere, none over 2 m in the middle of the meadow the herd grazes.
+@test
+fn the_history_grows_a_wood_over_the_land() {
+    let d = vale::history::decisions()
+    var living = 0
+    var kinds = [0; 8]
+    var oldest = 0
+    var wet = 0
+    var meadow = 0
+    let m = vale::history::meadow()
+    for t in d.trees {
+        if t.state == land::grow::State::Alive {
+            living += 1
+            kinds[min(t.kind, 7)] += 1
+            oldest = max(oldest, vale::history::PRESENT - t.born)
+            if VALE.lakes.of[vale::landscape::GRID.cell_at(t.at)] != NONE {
+                wet += 1
+            }
+            if length(t.at - m.at) < m.radius * 0.6 && t.tall > 2.0 {
+                meadow += 1
+            }
+        }
+    }
+    print(
+        f"the history: {d.trees.len()} trees, {living} living (oak {kinds[0]}, beech {kinds[1]}, birch {kinds[2]}, hawthorn {kinds[3]}, blackthorn {kinds[4]}, pine {kinds[5]}, alder {kinds[6]}), the oldest {oldest} years; {wet} in the mere, {meadow} over 2 m in the meadow's middle",
+    )
+    assert(living > 10000, f"{living} living trees")
+    assert(oldest > 200, f"the oldest tree is {oldest} years")
+    assert(wet == 0, f"{wet} trees stand in the mere")
+    assert(meadow == 0, f"{meadow} trees stand in the meadow's middle")
+}

@@ -99,14 +99,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** a plain function taking what the closure would have captured (`rock_look(height(at), water, seed)`).
 - **Status:** open.
 
-### A texture can't be a field's data
-
-- **Needed:** the cascades' march (§B14.4) generic over `std::field::Surface`, the distance volume one such field.
-- **What happens:** `Surface` needs `Copy + GpuData`, and a `Texture3d` is neither; a `borrow` field can't be part of an ordinary struct (E0519).
-- **Found:** 2026-10-26, writing `engine/cascades.wrela`.
-- **Meanwhile:** the march is generic over analytic fields (its tests); the volume's march repeats its steps over `distance::distance_at`.
-- **Status:** open.
-
 ### A struct update of the floor's stage is malformed IR
 
 - **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: quality().neural, ..stage() }`.
@@ -114,7 +106,35 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Found:** 2026-10-26, adding `Quality::neural` (B14.2c).
 - **Evidence:** `wrela build games/last-green` with that line in `games/last-green/main.wrela`'s `init` (the stage holds the floor's creatures' generic bodies).
 - **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
-- **Status:** open: not yet cut down to a small program.
+- **Status:** open: partly fixed in 0.10.0 (plan three's §A4). Cut down to 38 lines (the compiler's `struct_base_revealed_accept` conformance test, a struct generic over a return-position trait type updated from a function's result), whose cause was `lower_ty` naming an IR struct by the type it was asked for: a type now lowers as the type it reveals, and that program builds. The floor's own update built on 0.10.0 too (B0, 2026-10-28: the same 175 pipelines and shipped files as without it, G-pixels within the floor's noise), until the floor's tree kinds moved to `content/trees` (§B1.1): then `wrela check games/last-green` stops with "the CPU module's IR is malformed: fn0 `init_0`: v136 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`". So a type is still lowered unrevealed somewhere that depends on the order things are lowered in. The floor keeps setting the field after; for 0.10.1.
+
+### A driven export can't return a value of varying length
+
+- **Needed:** `wrela tool export -- water` (docs/plan-world-class-3.md §B7) takes a game's water whole: its meres' shores and its courses, each a list of points of its own length.
+- **What happens:** `std::tool::drive`'s `Step::Call` returns its export's results as `Ran.results`, a `Vec<Scalar>` flattened from a fixed-size value, so an export can't return a list, a string or bytes.
+- **Found:** 2026-10-28, writing the export's `water`.
+- **Evidence:** `std::tool::drive::Ran`; the floor's `test_course_points` returns a `CourseRow { p: [vec4; COURSE_ROW] }`.
+- **Meanwhile:** the floor pages its water out in fixed rows (`test_water_count`, `test_mere`, `test_shore`, `test_course`, `test_course_points`), the row's size given by the game (`WaterCount::row`), and the tool batches the calls.
+- **Status:** open: a `Call` that returns text or bytes (the game's water as one JSON).
+
+### A declared tool's roots stay inside the workspace
+
+- **Needed:** `studio/compare` (§B4) reads the references from `$WRELA_REFERENCE_DIR`, outside the repository (docs/citations.md's private-reference rule).
+- **What happens:** a tool declared in `wrela.toml` is granted roots only inside the workspace, so `wrela tool compare` can't be given the references' directory.
+- **Found:** 2026-10-28, writing the compare tool.
+- **Evidence:** the declared tool's `--read refs=…` outside the workspace is refused.
+- **Meanwhile:** the tool runs as a package with the directory granted on the command line: `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- …` (docs/lookdev.md).
+- **Status:** open: a declared tool's grant of a directory outside the workspace, named on the command line.
+
+## Fixed
+
+### A texture can't be a field's data
+
+- **Needed:** the cascades' march (§B14.4) generic over `std::field::Surface`, the distance volume one such field.
+- **What happens:** `Surface` needs `Copy + GpuData`, and a `Texture3d` is neither; a `borrow` field can't be part of an ordinary struct (E0519).
+- **Found:** 2026-10-26, writing `engine/cascades.wrela`.
+- **Meanwhile:** the march is generic over analytic fields (its tests); the volume's march repeats its steps over `distance::distance_at`.
+- **Status:** fixed in 0.10.0 (rywible/wrela-compiler, plan three's §A3): `std::gpu::Texture3dHandle<F>` is a 3D texture's handle as `Copy + GpuData` data (`t.to_handle()`), and `std::field::Sampled3d` is a `Surface` over an `R32Float` texture's texels (trilinear, with its own gradient). An entry point that takes a value holding one in a struct's fields binds the texture beside it, so `march<S: Surface>` takes a cooked field as it takes an analytic one. Limits: GPU code builds such a value only as a struct literal, a closure can't capture one, and a handle in a tuple, an array or an enum is E0602.
 
 ### A package's const cache can outlive what it was computed from
 
@@ -123,9 +143,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Found:** 2026-10-26, in the final `wrela suite` of plan-world-class-2's Part B.
 - **Evidence:** `wrela test studio/tool the_server_serves_chrome` before and after `rm -rf studio/tool/build`, on commit cab08093.
 - **Meanwhile:** clear a package's `build/` when a test fails here and passes in a clean checkout.
-- **Status:** open: not yet cut down (which entry was stale, and why its key matched).
-
-## Fixed
+- **Status:** fixed in 0.10.0 (plan three's §A5): a constant's key is now its module's WASM (the initializer and all it reaches, with the constants it reads), its fuel, the build's options, the bytes of each file it embeds, the result type's schema and the toolchain's version, and the cache is `build/consts/<version>`, so another version's entries are never read. `wrela build --report consts` says which constants were computed and which cached.
 
 ### A loop body's last call leaked its temporaries
 

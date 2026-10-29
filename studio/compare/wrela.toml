@@ -1,0 +1,10 @@
+# The review tool (`wrela tool studio/compare`): a program's stills against public references,
+# laid out as pairs for agent judges, and their judgements tallied (main.wrela says how). It lays
+# out comparisons and tallies judgements; it doesn't judge.
+[package]
+name = "compare_tool"
+
+[dependencies]
+references = { workspace = true }
+toolkit = { workspace = true }
+vale = { workspace = true }

@@ -1,0 +1,228 @@
+// The ground under a history's wood: what covers a landscape's ground where its history's fields
+// are (`bake::tile_fields`: light, wear, wet and thorn), the floor's and the vale's alike. Its
+// meadow where the canopy opens, its litter, moss and the wood's floor's plants where it closes,
+// its trails, its streams' beds and banks.
+
+use engine::noise::{fbm2_seen, noise2, noise2_seen}
+use engine::terrain::Cover
+
+/// The wood seen from far off, past the streamed fields (`fields.x < 0`): its canopy's greens
+/// over `c`, all but its rock (`rock`, 0 to 1), as a sample `w` metres across sees them.
+pub fn far_wood(c: Cover, at: vec3, w: f32, rock: f32) -> Cover {
+    var c = c
+    let tone = fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
+    let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
+    c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - rock)))
+    c
+}
+
+/// The wood's floor over the history's fields (#54 §9, `land::bake::tile_fields`: their light,
+/// wear, wet and thorn), on a cover `c` as a sample `w` metres across sees it: where the canopy
+/// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where
+/// trails wear it (`trodden`), bare earth and worn grass; darker where it's wet, and a stream's
+/// bed and banks under its water (its gravel's stones the land's rock, `rock_albedo` at a point, its
+/// normal and a sample's width); and where a cut's dry lip is (`rim`), bare soil.
+pub fn wood_floor(
+    c: Cover,
+    at: vec3,
+    n: vec3,
+    fields: vec4,
+    w: f32,
+    trodden: f32,
+    rim: f32,
+    rock_albedo: fn(vec3, vec3, f32) -> vec3,
+) -> Cover {
+    var c = c
+    let xz = at.xz
+    let (light, wet, thorn) = (fields.x, fields.z, fields.w)
+    // Canopy light and a shared colony boundary own both live blades and their backing
+    // colour. Between woodland colonies the surface is litter, not a green carpet.
+    let rock = c.materials.z
+    let habitat = woodland_cover(xz, light, soil: 1.0 - rock, footprint: w)
+    let open = habitat.x
+    // Litter in drifts a few metres across and in patches under them: dark and damp in the
+    // hollows, dry and coppery where it's heaped (one even brown read as paint: round 5).
+    let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21) * 0.65 +
+        noise2_seen(xz * 0.9 + vec2(-3.0, 2.0), w * 0.9) * 0.35
+    // Umber, not orange: the heaped leaves' copper in sun read as bare orange earth (pass 1:
+    // the ring).
+    let litter = mix(
+        vec3(0.05, 0.037, 0.025),
+        vec3(0.13, 0.085, 0.05),
+        vec3(smoothstep(0.2, 0.85, leaves)),
+    )
+    let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
+        (1.0 - open)
+    var floor = mix(litter, vec3(0.042, 0.06, 0.035), vec3(mossy * 0.5))
+    // Under thorn, darker and bare.
+    floor = floor * (1.0 - 0.3 * thorn)
+    // Canopy litter covers soil, not the exposed face of the ravine's bedrock.
+    c.albedo = mix(floor, c.albedo, vec3(max(open, rock)))
+    // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
+    c.grass *= habitat.y
+    c.flowers *= habitat.y
+    // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
+    // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
+    // round it in the wood (a path shows from 20 m: #55 AC10).
+    let bare = smoothstep(0.5, 0.8, trodden)
+    let short = smoothstep(0.1, 0.45, trodden)
+    let earth = mix(
+        vec3(0.21, 0.16, 0.105),
+        vec3(0.27, 0.21, 0.14),
+        vec3(noise2_seen(xz * 0.7, w * 0.7)),
+    )
+    c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
+    c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
+    c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)
+    c.flowers *= 1.0 - short
+    c.tall *= 1.0 - max(bare, short * 0.8)
+    // Wet ground darker, its grass a deeper green.
+    let soaked = smoothstep(0.6, 0.95, wet)
+    c.albedo *= 1.0 - 0.35 * soaked
+    c.deep = max(c.deep, soaked)
+    // What the ground is made of where it shows: litter under the canopy (moss in its
+    // patches), soil in the open and on the paths, the rock where it crops out; the habitat
+    // the wood's floor's plants follow (`grass::species_of`).
+    let shaded = (1.0 - open) * (1.0 - bare)
+    c.materials = vec4(
+        shaded * (1.0 - mossy * 0.5) * (1.0 - rock),
+        (1.0 - shaded) * (1.0 - rock),
+        rock,
+        shaded * mossy * 0.5 * (1.0 - rock),
+    )
+    c.flora = vec4(c.flora.x, wet, light, trodden)
+    // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
+    // it with litter visible between their colonies, ferns in patches in deep shade, bracken where light comes through
+    // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
+    // the grass takes over.
+    let fern = smoothstep(0.45, 0.62, fbm2_seen(xz * 0.09 + vec2(13.0, 7.0), 3, w * 0.09)) *
+        (1.0 - smoothstep(0.2, 0.6, light))
+    let bracken = smoothstep(
+        0.48,
+        0.66,
+        fbm2_seen(xz * 0.045 + vec2(-21.0, 4.0), 3, w * 0.045),
+    ) *
+        smoothstep(0.12, 0.4, light)
+    let herbs = 0.22
+    // Broad colonies have real litter gaps, including in the sparse meadow layer.
+    // Frond kinds vary within these rooted patches rather than filling every gap.
+    c.under = vec4(
+        habitat.z *
+            (0.10 + 0.48 * max(fern, bracken)) *
+            (1.0 - bare) *
+            (1.0 - 0.3 * thorn) *
+            (1.0 - 0.25 * soaked),
+        fern,
+        bracken,
+        herbs,
+    )
+    // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
+    // The bed's field is 2 m a texel, read between texels: the bed reaches out to where it's
+    // read halfway to the bank's wet (else grass stood in the water between its texels).
+    // Its banks are mud and rush, the grass thinning toward the water.
+    let stones = noise2_seen(xz * 1.7, w * 1.7)
+    let bed = smoothstep(0.9, 0.985, wet)
+    // Exposed gravel continues onto the bank. Patchy gravel leaves damp pockets for
+    // rushes rather than a straight strip of meadow grass against the water.
+    let bank = smoothstep(0.72, 0.92, wet) * (0.55 + 0.45 * stones)
+    let gentle = smoothstep(0.68, 0.9, n.y)
+    let bank_colony = smoothstep(0.4, 0.7, noise2_seen(xz * 0.18 + vec2(9.0, 2.0), w * 0.18))
+    c.materials = mix(c.materials, vec4(0.0, 0.8, 0.2, 0.0), vec4(0.65 * rim))
+    c.albedo = mix(
+        c.albedo,
+        mix(vec3(0.06, 0.05, 0.038), vec3(0.1, 0.085, 0.064), vec3(leaves)),
+        vec3(0.65 * rim),
+    )
+    c.under.x = max(c.under.x, 0.12 * rim * gentle * bank_colony * (1.0 - bare))
+    let gravel = max(bed, bank)
+    // Deposited fine sediment on low shelves, exposed wet rock on the cut bank.
+    let mineral = mix(mix(1.0, 0.55 + 0.3 * stones, gentle), 0.85, bed)
+    c.materials = mix(c.materials, vec4(0.0, 1.0 - mineral, mineral, 0.0), vec4(gravel))
+    // Wet open banks need an understory slot too, so the habitat can place rushes
+    // where ordinary meadow grass has thinned. The submerged bed removes these below.
+    c.under.x = max(c.under.x, 0.7 * bank * gentle * bank_colony * (1.0 - bare))
+    c.under.w = max(c.under.w, bank * gentle * bank_colony)
+    if gravel > 0.0 {
+        c.albedo = mix(
+            c.albedo,
+            mix(
+                rock_albedo(at, n, w) * 0.62,
+                mix(vec3(0.075, 0.065, 0.045), vec3(0.16, 0.15, 0.12), vec3(stones)),
+                vec3(gentle),
+            ),
+            vec3(gravel),
+        )
+    }
+    // No blade stands in the water: the grass is gone a texel's half before the bed shows
+    // (between a stream's texel, 1, and its bank's, 0.98 at most).
+    c.grass *= (1.0 - smoothstep(0.93, 0.97, wet)) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
+    c.flowers *= 1.0 - bed
+    c.tall *= 1.0 - bed
+    c.under *= 1.0 - bed
+    // Every habitat obeys the supporting surface, including closed-canopy fern slots.
+    // A sediment pocket may hold roots; sheer faces and bare mineral slabs cannot.
+    let growth = smoothstep(0.55, 0.85, n.y) * (1.0 - smoothstep(0.82, 0.98, c.materials.z))
+    c.grass *= growth
+    c.flowers *= growth
+    c.under.x *= growth
+    c
+}
+
+/// Live ground cover, meadow density and woodland density. One broad resource patch
+/// controls both plant layers; fully lit meadow joins up, while shade keeps connected litter
+/// openings. Soil support removes both layers from exposed mineral before bank pockets form.
+pub fn woodland_cover(p: vec2, light: f32, soil: f32, footprint: f32) -> vec3 {
+    let patch = colony_coverage(noise2(p * 0.07 + vec2(6.0, -19.0)), footprint)
+    let canopy = smoothstep(0.62, 0.9, light)
+    let meadow = smoothstep(0.86, 0.98, light)
+    let rooted = mix(patch, 1.0, meadow) * saturate(soil)
+    vec3(
+        canopy * rooted,
+        canopy * canopy * rooted,
+        (1.0 - canopy) * patch * smoothstep(0.03, 0.12, light) * saturate(soil),
+    )
+}
+
+/// Filter plant coverage, not its input noise. Symmetric thresholds over symmetric value
+/// noise have mean 0.5; the 0.55 density cap makes its distant coverage exactly 0.275.
+/// Averaging the noise first would put every distant sample below the colony threshold.
+pub fn colony_coverage(value: f32, footprint: f32) -> f32 {
+    let near = 0.55 * smoothstep(0.42, 0.58, value)
+    mix(near, 0.275, smoothstep(0.25, 0.75, footprint * 0.07))
+}
+
+@test
+fn colony_filter_preserves_mean_coverage_across_footprints() {
+    var close = 0.0
+    for j in 0..64 {
+        for i in 0..64 {
+            let p = vec2(f32(i) * 10.371, f32(j) * 11.719) + vec2(6.0, -19.0)
+            close += colony_coverage(noise2(p), footprint: 0.25)
+        }
+    }
+    close /= 4096.0
+    for footprint in [0.25, 2.0, 5.0, 8.0, 16.0, 64.0] {
+        var coverage = 0.0
+        for j in 0..64 {
+            for i in 0..64 {
+                let p = vec2(f32(i) * 10.371, f32(j) * 11.719) + vec2(6.0, -19.0)
+                coverage += colony_coverage(noise2(p), footprint)
+            }
+        }
+        coverage /= 4096.0
+        assert(
+            abs(coverage - close) < 0.02,
+            "filtered colonies changed their population's mean coverage",
+        )
+        for i in 0..101 {
+            let value = f32(i) / 100.0
+            let paired = colony_coverage(value, footprint) + colony_coverage(1.0 - value, footprint)
+            assert(abs(paired - 0.55) < 1.0e-5, "filter biased symmetric noise toward bare ground")
+        }
+    }
+    assert(colony_coverage(value: 0.0, footprint: 0.25) == 0.0, "near litter gaps disappeared")
+    assert(
+        abs(colony_coverage(value: 0.0, footprint: 64.0) - 0.275) < 1.0e-6,
+        "distant litter gaps did not average with colonies",
+    )
+}

@@ -1,0 +1,416 @@
+// The review tool: a program's stills against public references, laid out for agent judges, and
+// their judgements tallied (plan three's §B4, D38). It doesn't judge.
+//
+// ```text
+// wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- \
+//     <out> --a <stills-dir> [--set evaluation|development] [--controls <still>] [--seed n] \
+//     [--refs-dir <path>]
+// wrela tool studio/compare --write ws=. -- <out> --tally
+// ```
+//
+// The references are the vale's (`references::vale::VALE`), each read from the references'
+// directory (outside the workspace, so the tool runs as a package with that directory granted
+// as `refs`; a declared tool's roots stay inside the workspace) and checked against its hash; a
+// missing or changed copy, or one whose licence doesn't permit a review's uses (link-only), is
+// refused, and nothing is fetched. The panel writes into `<out>` (a path in the workspace):
+// - `pairs.json`, what the judges read: each pair's images A and B, the reference's credit,
+//   licence, source and conditions beside it, the two calibration pairs;
+// - `key.json`, which image of each pair is the still, kept from the judges;
+// - `index.html`, the review page (private: `<out>` is under build/, never published);
+// - `controls/`, the calibration pairs' images, each under a neutral name (the key says which is
+//   which): a still (`--controls`, the first still by default) against its 3×3 blur, and against its
+//   quarter-resolution copy brought back to its size.
+// Each judge writes `<out>/judges/<name>.json` (`tally::read_judge`). `--tally` reads them with the
+// key and writes `tally.json` and `tally.md`, the table for docs/bench.md: every attempt kept, the
+// rejected judges named.
+
+use panel::{neutral, page_html, pairs_json, key_json, panel, with_controls}
+use std::io::print
+use std::json::{TOP, parse}
+use std::string::String
+use std::tool::{ToolError, args}
+use std::tool::blob::Data
+use std::tool::files
+use std::tool::files::rooted
+use std::tool::image
+use tally::{A, B, Judge, ranked_losses, read_judge, tally}
+use toolkit::whole::{blob_of, chunked, joined, read_blob, read_file, write_file, write_png}
+
+pub const USAGE: Text = "usage: wrela tool studio/compare --write ws=. [--read refs=<dir>] -- <out> (--a <stills-dir> [--set evaluation|development] [--controls <still>] [--seed n] [--refs-dir <path>] | --tally)"
+
+/// The command line: where it writes, the stills' directory, the set, the calibration still, the
+/// seed, the references' directory as a page's links show it, and whether it tallies.
+pub struct Options: Clone {
+    pub out: String,
+    pub stills: String,
+    pub set: String,
+    pub controls: String,
+    pub seed: u32,
+    pub refs_dir: String,
+    pub tally: bool,
+}
+
+pub fn parse_args(given: [String]) -> Result<Options, String> {
+    var o = Options {
+        out: String::new(),
+        stills: String::new(),
+        set: String::from("evaluation"),
+        controls: String::new(),
+        seed: 1,
+        refs_dir: String::from("~/wrela-references"),
+        tally: false,
+    }
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        let value = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
+        if a == "--tally" {
+            o.tally = true
+        } else if a == "--a" || a == "--controls" {
+            let Some(path) = rooted("ws", value.as_str()) else {
+                return Err(String::from(f"{a} takes a path in the workspace"))
+            }
+            if a == "--a" { o.stills = take path } else { o.controls = take path }
+            k += 1
+        } else if a == "--set" {
+            if value != "evaluation" && value != "development" {
+                return Err(String::from("--set takes evaluation or development"))
+            }
+            o.set = take value
+            k += 1
+        } else if a == "--seed" {
+            let Some(n) = value.as_str().parse_u32() else {
+                return Err(String::from("--seed takes a number"))
+            }
+            o.seed = n
+            k += 1
+        } else if a == "--refs-dir" {
+            o.refs_dir = take value
+            k += 1
+        } else if o.out.is_empty() {
+            let Some(path) = rooted("ws", a) else {
+                return Err(String::from(f"{a} isn't a path in the workspace"))
+            }
+            o.out = take path
+        } else {
+            return Err(String::from(f"what's {a}?"))
+        }
+        k += 1
+    }
+    if o.out.is_empty() || (!o.tally && o.stills.is_empty()) {
+        return Err(String::from(USAGE))
+    }
+    Ok(o)
+}
+
+pub fn tool() -> u32 {
+    let o = match parse_args(args()) {
+        Ok(o) => take o,
+        Err(why) => {
+            print(why.as_str())
+            return 2
+        },
+    }
+    let done = if o.tally { tallied(o) } else { laid_out(o) }
+    match done {
+        Ok(_) => 0,
+        Err(e) => {
+            print(f"compare: {e.message()}")
+            1
+        },
+    }
+}
+
+/// `path` without its root (`ws/` or `refs/`).
+fn shown(path: str) -> String {
+    let at = path.find("/").unwrap_or(0)
+    String::from(path.slice(at + 1, path.len()))
+}
+
+/// `rgba` with one pixel in each 97 its red's lowest bit flipped, where `seed` says: an original's
+/// copy in a calibration pair, the same to the eye, its bytes and its pixels another file's than
+/// the still's (a judge comparing files can't find the original by its match).
+fn marked(rgba: [u8], seed: u32) -> Vec<u8> {
+    var out = Vec::from(rgba)
+    // (In 64 bits, kept to 32: a 32-bit product overflows, which traps.)
+    var state = (u64(seed) * 2654435761 + 1) % 4294967296
+    let pixels = rgba.len() / 4
+    for _ in 0..pixels / 97 {
+        state = (state * 1664525 + 1013904223) % 4294967296
+        let p = u32((state >> 8) % u64(pixels))
+        out[p * 4] ^= 1
+    }
+    out
+}
+
+/// The panel laid out: each reference checked (its copy's hash), the pairs, the key, the page and
+/// the calibration pairs written.
+fn laid_out(o: Options) -> Result<(), ToolError> {
+    let refs = references::vale::VALE
+    for r in refs {
+        if r.set != o.set.as_str() {
+            continue
+        }
+        let path = f"refs/{r.local_file}"
+        let bytes = read_file(path.as_str(), r.local_file).map_err(
+            |e| ToolError::new(
+                f"{r.id}: its copy can't be read ({e.message()}): unavailable, refused",
+            ),
+        )?
+        let h = panel::hex_sha256(bytes)
+        if h.as_str() != r.sha256 {
+            return Err(
+                ToolError::new(
+                    f"{r.id}: its copy's hash is {h.as_str()}, not the manifest's {r.sha256}: refused",
+                ),
+            )
+        }
+    }
+    var stills: Vec<String> = Vec::new()
+    for e in files::list(o.stills.as_str()).wait()? {
+        if e.name.as_str().ends_with(".png") {
+            stills.push(e.name.clone())
+        }
+    }
+    // The frozen hashes (§B5): a panel is of the shots and references the baseline judged.
+    let (manifest, shots) = (panel::manifest_hash(refs), panel::shots_hash())
+    if manifest.as_str() != panel::FROZEN_MANIFEST || shots.as_str() != panel::FROZEN_SHOTS {
+        return Err(
+            ToolError::new(
+                f"the references' manifest ({manifest.as_str()}) or the shots ({shots.as_str()}) aren't the baseline's: a changed reference or shot makes a new baseline, recorded first",
+            ),
+        )
+    }
+    let p = panel(o.set.as_str(), refs, stills, shown(o.stills.as_str()).as_str(), o.seed).map_err(
+        |w| ToolError::new(w.as_str()),
+    )?
+    // The calibration pairs: a still (the first, unless `--controls` names one), its 3×3 blur and
+    // its quarter-resolution copy.
+    let original = if o.controls.is_empty() { f"ws/{p.pairs[0].still.as_str()}" } else {
+        o.controls.clone()
+    }
+    let img = image::decode(
+        Data::Blob(files::read_blob(original.as_str()).wait()?),
+        timeout: 120.0,
+    ).wait()?
+    let w = img.width
+    let h = img.height
+    // The pixels read, the image's blob kept for its resize below.
+    let px = joined(
+        match img.rgba.clone() {
+            Data::Blob(b) => read_blob(b)?,
+            Data::Bytes(v) => Vec::from([take v]),
+        },
+    )
+    // The blur `BLUR_PASSES` times over: one 3×3 pass at 1080p is lost when a judge is shown the
+    // image smaller (an agent's view of it), as five of ten honest judges found it.
+    var blurred = blur3(px, w, h)
+    for _ in 1..BLUR_PASSES {
+        blurred = blur3(blurred, w, h)
+    }
+    let _ = files::make_dirs(f"{o.out.as_str()}/controls").wait()
+    // Each image of each pair under a neutral name (`neutral`): the original's own path would
+    // say which it is. Which is which is the key's alone.
+    let at = |k: u32, what: str| String::from(
+        f"{o.out.as_str()}/controls/{neutral(o.seed, k, what).as_str()}.png",
+    )
+    let worse = [at(0, "worse"), at(1, "worse")]
+    let originals = [at(0, "original"), at(1, "original")]
+    for k in 0..2 {
+        write_png(
+            image::Image {
+                width: w,
+                height: h,
+                rgba: Data::Blob(blob_of(chunked(marked(px, o.seed * 2 + k)))?),
+            },
+            originals[k].as_str(),
+        )?
+    }
+    write_png(
+        image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take blurred))?) },
+        worse[0].as_str(),
+    )?
+    let small = image::resize(
+        img.clone(),
+        image::Size { width: max(w / 4, 1), height: max(h / 4, 1) },
+        timeout: 120.0,
+    ).wait()?
+    let back = image::resize(small, image::Size { width: w, height: h }, timeout: 120.0).wait()?
+    write_png(take back, worse[1].as_str())?
+    let p = with_controls(
+        take p,
+        [shown(originals[0].as_str()), shown(originals[1].as_str())],
+        [shown(worse[0].as_str()), shown(worse[1].as_str())],
+    )
+    write_file(f"{o.out.as_str()}/pairs.json", Vec::from([Vec::from(pairs_json(p).as_bytes())]))?
+    write_file(f"{o.out.as_str()}/key.json", Vec::from([Vec::from(key_json(p).as_bytes())]))?
+    write_file(
+        f"{o.out.as_str()}/index.html",
+        Vec::from([Vec::from(page_html(p, o.refs_dir.as_str()).as_bytes())]),
+    )?
+    let _ = files::make_dirs(f"{o.out.as_str()}/judges").wait()
+    print(
+        f"compare: {p.pairs.len()} pairs and {p.controls.len()} calibration pairs in {shown(o.out.as_str()).as_str()} (manifest {p.manifest.as_str()}, shots {p.shots.as_str()})",
+    )
+    Ok(())
+}
+
+/// `px` (RGBA8, `w` × `h`) under a 3×3 box blur, its edges clamped; alpha kept.
+/// How many times the calibration's blur passes over its still: eight 3×3 passes, about a
+/// Gaussian of 2.3 px (plan three's §B4 names one pass: a deviation, docs/lookdev.md).
+const BLUR_PASSES: u32 = 8
+
+pub fn blur3(px: [u8], w: u32, h: u32) -> Vec<u8> {
+    var out: Vec<u8> = Vec::filled(px.len(), u8(0))
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                var sum = 0
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let xx = u32(clamp(i32(x) + i32(dx) - 1, 0, i32(w) - 1))
+                        let yy = u32(clamp(i32(y) + i32(dy) - 1, 0, i32(h) - 1))
+                        sum += u32(px[(yy * w + xx) * 4 + c])
+                    }
+                }
+                out[(y * w + x) * 4 + c] = u8((sum + 4) / 9)
+            }
+            out[(y * w + x) * 4 + 3] = px[(y * w + x) * 4 + 3]
+        }
+    }
+    out
+}
+
+/// The judges' judgements tallied with the key: `tally.json` and `tally.md`.
+fn tallied(o: Options) -> Result<(), ToolError> {
+    let out = o.out.as_str()
+    let Some(key_text) = String::from_utf8(read_file(f"{out}/key.json", "key.json")?) else {
+        return Err(ToolError::new("key.json isn't text"))
+    }
+    let Some(key) = parse(key_text.as_str()) else {
+        return Err(ToolError::new("key.json isn't JSON"))
+    }
+    let manifest = key.text(key.get(TOP, "manifest").unwrap_or(0)).unwrap_or(String::new())
+    let frozen = panel::manifest_hash(references::vale::VALE)
+    if manifest != frozen {
+        return Err(
+            ToolError::new(
+                f"the panel's manifest {manifest.as_str()} isn't the references' now ({frozen.as_str()}): a changed reference makes a new baseline, not a tally",
+            ),
+        )
+    }
+    let set = key.text(key.get(TOP, "set").unwrap_or(0)).unwrap_or(String::new())
+    var still: Vec<u32> = Vec::new()
+    if let Some(ps) = key.get(TOP, "pairs") {
+        for i in 0..key.count(ps) {
+            let p = key.at(ps, i).unwrap_or(0)
+            let side = key.text(key.get(p, "still").unwrap_or(0)).unwrap_or(String::new())
+            still.push(if side == "a" { A } else { B })
+        }
+    }
+    var original: Vec<u32> = Vec::new()
+    if let Some(cs) = key.get(TOP, "controls") {
+        for i in 0..key.count(cs) {
+            let c = key.at(cs, i).unwrap_or(0)
+            let side = key.text(key.get(c, "original").unwrap_or(0)).unwrap_or(String::new())
+            original.push(if side == "a" { A } else { B })
+        }
+    }
+    var judges: Vec<Judge> = Vec::new()
+    for e in files::list(f"{out}/judges").wait()? {
+        if !e.name.as_str().ends_with(".json") {
+            continue
+        }
+        let Some(text) = String::from_utf8(
+            read_file(f"{out}/judges/{e.name.as_str()}", e.name.as_str())?,
+        ) else {
+            return Err(ToolError::new(f"judges/{e.name.as_str()} isn't text"))
+        }
+        match read_judge(text.as_str()) {
+            Ok(j) => judges.push(take j),
+            Err(why) => return Err(ToolError::new(f"judges/{e.name.as_str()}: {why.as_str()}")),
+        }
+    }
+    let most = if set == "development" { 4 } else { 6 }
+    let t = tally(still, original, judges, most)
+    write_file(
+        f"{out}/tally.json",
+        Vec::from([Vec::from(tally_json(t, manifest.as_str()).as_bytes())]),
+    )?
+    let md = tally_md(t, key)
+    write_file(f"{out}/tally.md", Vec::from([Vec::from(md.as_bytes())]))?
+    print(md.as_str())
+    Ok(())
+}
+
+/// The tally as JSON.
+fn tally_json(t: tally::Tally, manifest: str) -> String {
+    var out = String::from(
+        f"{{\"manifest\":{panel::quoted(manifest).as_str()},\"complete\":{t.complete},\"why\":{panel::quoted(t.why.as_str()).as_str()},\"share\":{t.share},\"overall\":{t.overall},\"per_pair\":{t.per_pair},\"majority\":{t.majority},\"majority_ok\":{t.majority_ok},\"passed\":{t.passed},\"used\":[",
+    )
+    for i in 0..t.used.len() {
+        if i > 0 { out.push_str(",") }
+        out.push_str(panel::quoted(t.used[i].as_str()).as_str())
+    }
+    out.push_str("],\"rejected\":[")
+    for i in 0..t.rejected.len() {
+        if i > 0 { out.push_str(",") }
+        out.push_str(panel::quoted(t.rejected[i].as_str()).as_str())
+    }
+    out.push_str("],\"pairs\":[")
+    for i in 0..t.pairs.len() {
+        borrow p = t.pairs[i]
+        if i > 0 { out.push_str(",") }
+        out.push_str(
+            f"{{\"pair\":{p.pair},\"still\":{p.still},\"equal\":{p.equal},\"reference\":{p.reference},\"median\":{p.median},\"still_means\":[{p.still_means[0]},{p.still_means[1]},{p.still_means[2]},{p.still_means[3]},{p.still_means[4]}],\"reference_means\":[{p.reference_means[0]},{p.reference_means[1]},{p.reference_means[2]},{p.reference_means[3]},{p.reference_means[4]}]}}",
+        )
+    }
+    out.push_str("]}\n")
+    out
+}
+
+/// The tally as a Markdown table for docs/bench.md: each pair's shot, reference, preferences and
+/// rubric means, the rules and the verdict, the ranked losses.
+fn tally_md(t: tally::Tally, key: std::json::Doc) -> String {
+    if !t.complete {
+        return String::from(f"Incomplete: {t.why.as_str()}.\n")
+    }
+    var out = String::from(
+        "| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |\n|---|---|---|---|---|---|---|\n",
+    )
+    let ps = key.get(TOP, "pairs").unwrap_or(0)
+    for p in t.pairs {
+        let k = key.at(ps, p.pair - 1).unwrap_or(0)
+        let shot = key.text(key.get(k, "shot").unwrap_or(0)).unwrap_or(String::new())
+        let reference = key.text(key.get(k, "reference").unwrap_or(0)).unwrap_or(String::new())
+        let m = |v: [f32; 5]| -> String {
+            String::from(f"{v[0]:.2}, {v[1]:.2}, {v[2]:.2}, {v[3]:.2}, {v[4]:.2}")
+        }
+        out.push_str(
+            f"| {p.pair} | {shot.as_str()} | {reference.as_str()} | {p.still} / {p.equal} / {p.reference} | {p.median} | {m(p.still_means).as_str()} | {m(p.reference_means).as_str()} |\n",
+        )
+    }
+    let word = |ok: bool| -> Text { if ok { "holds" } else { "fails" } }
+    let worst = if t.per_pair { "no pair lost worse than 6 to 2" } else {
+        "a pair lost worse than 6 to 2"
+    }
+    let verdict = if t.passed { "Passes" } else { "Fails" }
+    out.push_str(
+        f"\nOverall: {t.share * 100.0:.1} % prefer the still or rate the pair equal ({word(t.overall)}: 50 %); per pair: {worst}; majority: {t.majority} pairs won or equal ({word(t.majority_ok)}). **{verdict}.**\n\nRanked losses (the reference's mean less the still's, summed over the pairs):\n\n",
+    )
+    for (row, lost) in ranked_losses(t) {
+        out.push_str(f"- {row.as_str()}: {lost:.2}\n")
+    }
+    out.push_str("\nEach pair's worst row, and its judges' sentences on it:\n\n")
+    for p in t.pairs {
+        let w = tally::worst_row(p)
+        out.push_str(f"- Pair {p.pair}, {tally::ROWS[w]}:\n")
+        for n in p.notes[w] {
+            out.push_str(f"  - {n.as_str()}\n")
+        }
+    }
+    out.push_str(
+        f"\nJudges: {t.used.len()} used; rejected by the calibration: {t.rejected.len()}.\n",
+    )
+    out
+}

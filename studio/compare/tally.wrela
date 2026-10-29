@@ -1,0 +1,373 @@
+// A panel's judgements tallied (plan three's §0.5, G-reference): each judge's scores (0 to 3 for
+// light, colour, value, depth and artifacts, each image), its preference and its sentence; a judge
+// that prefers a worse copy of a still to the original in a calibration pair is rejected (every
+// attempt kept). Eight valid judges must have judged every pair, or the tally is incomplete: a
+// missing judgement never shrinks the denominator. Three rules, all required:
+// (a) overall: of every judgement, at least half prefer the program's still or rate the pair
+//     equal (both within one rubric point on every row);
+// (b) per pair: no pair is lost worse than 6 judges to 2;
+// (c) majority: at least `most` pairs (6 of 12; 4 of 8 for the development panel) are won or
+//     equal by the judges' median.
+
+use std::json::{Doc, TOP, parse}
+use std::string::String
+
+/// A judge's scores of one image: light, colour, value, depth, artifacts (0 to 3).
+pub const ROWS = ["light", "colour", "value", "depth", "artifacts"]
+
+/// One judgement of a pair: its number, each image's scores (`ROWS`' order), the image preferred
+/// (`A`, `B` or `EQUAL`), why, and a sentence on each row (`notes`, `ROWS`' order).
+pub struct Judgement: Clone {
+    pub pair: u32,
+    pub a: [f32; 5],
+    pub b: [f32; 5],
+    pub prefer: u32,
+    pub why: String,
+    pub notes: Vec<String> = Vec::new(),
+}
+
+pub const A: u32 = 0
+pub const B: u32 = 1
+pub const EQUAL: u32 = 2
+
+/// A judge's file: its name, its judgements, and its preference in each calibration pair.
+pub struct Judge: Clone {
+    pub name: String,
+    pub judgements: Vec<Judgement>,
+    pub controls: Vec<u32>,
+}
+
+/// A side's letter as a judge writes it, as `A`, `B` or `EQUAL`, if it's one.
+fn side_of(s: str) -> Option<u32> {
+    if s == "a" || s == "A" {
+        Some(A)
+    } else if s == "b" || s == "B" {
+        Some(B)
+    } else if s == "equal" || s == "EQUAL" {
+        Some(EQUAL)
+    } else {
+        None
+    }
+}
+
+/// A judge's file read (`judges/<name>.json`):
+/// `{"judge": name, "pairs": [{"pair": n, "a": {light, colour, value, depth, artifacts}, "b":
+/// {...}, "prefer": "a"|"b"|"equal", "notes": {light: text, ...}, "why": text}], "controls":
+/// [{"control": n, "prefer": ...}]}`.
+pub fn read_judge(text: str) -> Result<Judge, String> {
+    let Some(d) = parse(text) else { return Err(String::from("not JSON")) }
+    let name = match d.get(TOP, "judge") {
+        Some(n) => d.text(n).unwrap_or(String::from("?")),
+        None => String::from("?"),
+    }
+    var judge = Judge { name, judgements: Vec::new(), controls: Vec::new() }
+    let Some(pairs) = d.get(TOP, "pairs") else { return Err(String::from("no pairs")) }
+    for i in 0..d.count(pairs) {
+        let Some(p) = d.at(pairs, i) else { continue }
+        let number = match d.get(p, "pair") {
+            Some(n) => u32(d.num(n).unwrap_or(0.0)),
+            None => 0,
+        }
+        let scores = |side: str| -> Option<[f32; 5]> {
+            let s = d.get(p, side)?
+            var out = [0.0; 5]
+            for k in 0..5 {
+                let v = d.num(d.get(s, ROWS[k])?)?
+                if v < 0.0 || v > 3.0 {
+                    return None
+                }
+                out[k] = f32(v)
+            }
+            Some(out)
+        }
+        let (Some(a), Some(b)) = (scores("a"), scores("b")) else {
+            return Err(
+                String::from(f"pair {number}: its scores aren't five numbers 0 to 3 each side"),
+            )
+        }
+        let prefer = match d.get(p, "prefer") {
+            Some(n) => side_of(d.text(n).unwrap_or(String::new()).as_str()),
+            None => None,
+        }
+        let Some(prefer) = prefer else {
+            return Err(String::from(f"pair {number}: prefer isn't a, b or equal"))
+        }
+        if prefer == EQUAL && !close(a, b) && total(a) == total(b) {
+            return Err(
+                String::from(
+                    f"pair {number}: equal, but a row is more than a point apart and the totals tie: say which",
+                ),
+            )
+        }
+        let why = match d.get(p, "why") {
+            Some(n) => d.text(n).unwrap_or(String::new()),
+            None => String::new(),
+        }
+        var notes: Vec<String> = Vec::new()
+        for k in 0..5 {
+            let note = match d.get(p, "notes") {
+                Some(ns) => match d.get(ns, ROWS[k]) {
+                    Some(n) => d.text(n).unwrap_or(String::new()),
+                    None => String::new(),
+                },
+                None => String::new(),
+            }
+            notes.push(take note)
+        }
+        judge.judgements.push(Judgement { pair: number, a, b, prefer, why, notes })
+    }
+    // Each calibration pair's answer at its id's place (`control`, from 1): an answer whose id is
+    // missing, repeated or unknown is refused, not read in its order.
+    if let Some(cs) = d.get(TOP, "controls") {
+        let n = d.count(cs)
+        judge.controls = Vec::filled(n, value: UNANSWERED)
+        for i in 0..n {
+            let Some(c) = d.at(cs, i) else { continue }
+            let id = match d.get(c, "control") {
+                Some(v) => u32(d.num(v).unwrap_or(0.0)),
+                None => 0,
+            }
+            if id < 1 || id > n || judge.controls[id - 1] != UNANSWERED {
+                return Err(String::from(f"control {id}: missing, repeated or unknown"))
+            }
+            let prefer = match d.get(c, "prefer") {
+                Some(v) => side_of(d.text(v).unwrap_or(String::new()).as_str()),
+                None => None,
+            }
+            judge.controls[id - 1] = prefer.unwrap_or(EQUAL)
+        }
+    }
+    Ok(judge)
+}
+
+/// A calibration pair a judge's file doesn't answer.
+const UNANSWERED: u32 = 99
+
+/// Whether `j` passes the calibration: in each control pair it prefers the original (`original`,
+/// each pair's original's side).
+pub fn calibrated(j: Judge, original: [u32]) -> bool {
+    // Its answers are the panel's pairs', no more (an unknown id) and no fewer.
+    if j.controls.len() != original.len() {
+        return false
+    }
+    for k in 0..original.len() {
+        if j.controls[k] != original[k] {
+            return false
+        }
+    }
+    true
+}
+
+/// Whether two images' scores are within one point on every row.
+fn close(a: [f32; 5], b: [f32; 5]) -> bool {
+    var out = true
+    for k in 0..5 {
+        out = out && abs(a[k] - b[k]) <= 1.0
+    }
+    out
+}
+
+/// An image's scores summed.
+fn total(s: [f32; 5]) -> f32 {
+    var out = 0.0
+    for k in 0..5 {
+        out += s[k]
+    }
+    out
+}
+
+/// What a judgement says of the program's still (`still`, its side): +1 it's preferred, 0 the pair
+/// is equal (the judge says so and both images are within one point on every row: a judge who says
+/// equal of images further apart prefers the one scored higher in all; `read_judge` refuses one
+/// whose totals tie), -1 the reference is preferred.
+pub fn verdict_of(j: Judgement, still: u32) -> i32 {
+    var prefer = j.prefer
+    if prefer == EQUAL && !close(j.a, j.b) {
+        // (Totals tied, it says nothing: `read_judge` refuses it, and it never counts for the
+        // still.)
+        if total(j.a) == total(j.b) {
+            return -1
+        }
+        prefer = if total(j.a) > total(j.b) { A } else { B }
+    }
+    if prefer == EQUAL { 0 } else if prefer == still { 1 } else { -1 }
+}
+
+/// One pair's tally: how many judges prefer the still, rate the pair equal, prefer the reference;
+/// the judges' median (+1, 0, -1 each); the rubric's mean for the still and the reference, row by
+/// row; and each judge's sentence on each row (`notes[row]`, a line a judge).
+pub struct PairTally: Clone {
+    pub pair: u32,
+    pub still: u32,
+    pub equal: u32,
+    pub reference: u32,
+    pub median: f32,
+    pub still_means: [f32; 5],
+    pub reference_means: [f32; 5],
+    pub notes: Vec<Vec<String>> = Vec::new(),
+}
+
+/// A panel's tally: whether it's complete (eight valid judges, every pair judged by each), the
+/// judges used and those rejected, each pair's tally, the overall share for the still, the three
+/// rules and the verdict.
+pub struct Tally: Clone {
+    pub complete: bool,
+    pub why: String,
+    pub used: Vec<String>,
+    pub rejected: Vec<String>,
+    pub pairs: Vec<PairTally>,
+    pub share: f32,
+    pub overall: bool,
+    pub per_pair: bool,
+    pub majority: u32,
+    pub majority_ok: bool,
+    pub passed: bool,
+}
+
+/// How many valid judges a panel takes, and how many pairs a judge may lose a pair by at worst.
+pub const JUDGES: u32 = 8
+pub const WORST_LOSS: u32 = 6
+
+/// The tally of `judges` over a panel whose pairs' stills are on the sides `still` (`A` or `B`, by
+/// pair number from 1) and whose calibration pairs' originals are on the sides `original`, `most`
+/// pairs won or equal its majority's rule (6 of 12, 4 of 8).
+pub fn tally(still: [u32], original: [u32], judges: [Judge], most: u32) -> Tally {
+    var t = Tally {
+        complete: false,
+        why: String::new(),
+        used: Vec::new(),
+        rejected: Vec::new(),
+        pairs: Vec::new(),
+        share: 0.0,
+        overall: false,
+        per_pair: false,
+        majority: 0,
+        majority_ok: false,
+        passed: false,
+    }
+    // Each judge once, by a name of its own: a copy of one judge's file is no second judge.
+    for k in 0..judges.len() {
+        let name = judges[k].name.as_str()
+        var again = name.is_empty() || name == "?"
+        for q in 0..k {
+            again = again || judges[q].name.as_str() == name
+        }
+        if again {
+            t.why = String::from(
+                f"a judge's name ({name}) is missing or repeated: each judge's file is its own",
+            )
+            return t
+        }
+    }
+    var valid: Vec<Judge> = Vec::new()
+    for j in judges {
+        if !calibrated(j, original) {
+            t.rejected.push(j.name.clone())
+            continue
+        }
+        // Every pair judged, once.
+        var seen: Vec<bool> = Vec::filled(still.len(), value: false)
+        for g in j.judgements {
+            if g.pair >= 1 && g.pair <= still.len() {
+                seen[g.pair - 1] = true
+            }
+        }
+        var all = true
+        for s in seen {
+            all = all && s
+        }
+        if !all {
+            t.why = String::from(
+                f"{j.name.as_str()} didn't judge every pair: an unavailable or unjudged pair is no judgement, and the tally is incomplete",
+            )
+            return t
+        }
+        if valid.len() < JUDGES {
+            t.used.push(j.name.clone())
+            valid.push(j.clone())
+        }
+    }
+    if valid.len() < JUDGES {
+        t.why = String::from(f"{valid.len()} valid judges of {JUDGES}")
+        return t
+    }
+    t.complete = true
+    var favour = 0
+    var lost_worst = 0
+    for p in 0..still.len() {
+        var pt = PairTally {
+            pair: p + 1,
+            still: 0,
+            equal: 0,
+            reference: 0,
+            median: 0.0,
+            still_means: [0.0; 5],
+            reference_means: [0.0; 5],
+            notes: Vec::from_fn(5, |k| Vec::new()),
+        }
+        var marks: Vec<i32> = Vec::new()
+        for j in valid {
+            for g in j.judgements {
+                if g.pair != p + 1 {
+                    continue
+                }
+                let v = verdict_of(g, still[p])
+                marks.push(v)
+                if v > 0 { pt.still += 1 } else if v == 0 { pt.equal += 1 } else {
+                    pt.reference += 1
+                }
+                let (s, r) = if still[p] == A { (g.a, g.b) } else { (g.b, g.a) }
+                for k in 0..5 {
+                    pt.still_means[k] += s[k] / f32(JUDGES)
+                    pt.reference_means[k] += r[k] / f32(JUDGES)
+                }
+                for k in 0..min(g.notes.len(), 5) {
+                    pt.notes[k].push(String::from(f"{j.name.as_str()}: {g.notes[k].as_str()}"))
+                }
+                break
+            }
+        }
+        marks.sort_by(|a, b| a < b)
+        let n = marks.len()
+        pt.median = 0.5 * f32(marks[(n - 1) / 2] + marks[n / 2])
+        favour += pt.still + pt.equal
+        lost_worst = max(lost_worst, pt.reference)
+        if pt.median >= 0.0 {
+            t.majority += 1
+        }
+        t.pairs.push(take pt)
+    }
+    t.share = f32(favour) / f32(JUDGES * still.len())
+    t.overall = t.share >= 0.5
+    t.per_pair = lost_worst <= WORST_LOSS
+    t.majority_ok = t.majority >= most
+    t.passed = t.overall && t.per_pair && t.majority_ok
+    t
+}
+
+/// The rubric's rows ranked by how much the still lost them, summed over the pairs (the reference's
+/// mean less the still's): the baseline loss record (§B5), most lost first.
+pub fn ranked_losses(t: Tally) -> Vec<(String, f32)> {
+    var out: Vec<(String, f32)> = Vec::new()
+    for k in 0..5 {
+        var lost = 0.0
+        for p in t.pairs {
+            lost += p.reference_means[k] - p.still_means[k]
+        }
+        out.push((String::from(ROWS[k]), lost))
+    }
+    out.sort_by(|a, b| a.1 > b.1)
+    out
+}
+
+/// Pair `p`'s worst row: the one the still lost by most (the reference's mean less the still's).
+pub fn worst_row(p: PairTally) -> u32 {
+    var worst = 0
+    for k in 1..5 {
+        if p.reference_means[k] - p.still_means[k] > p.reference_means[worst] -
+                p.still_means[worst] {
+            worst = k
+        }
+    }
+    worst
+}

@@ -1,0 +1,59 @@
+// The vale's walk: a camera path through six of the lookbook's places (the deadwood's, the meadow's,
+// the creature's two, the old tree's and the fall's), 1,200 frames long, a step a frame once it's
+// begun (W), so the bench's run (`studio/bench`, the scene `vale-walk`) repeats it exactly. The eye
+// goes 2 m over the ground, looking 15 m ahead along its way.
+
+use landscape::height_at
+
+/// The walk's frames.
+pub const FRAMES: u32 = 1200
+
+/// Its way, on the plane: the points it passes through, in order (**proposed**): from the fallen
+/// beech's place down the trail to the meadow, round its edge, and up to the old oak's and the
+/// canopy shot's places, 340 m in all.
+pub const WAY = [
+    vec2(-123.0, -38.0),
+    vec2(-60.0, -25.0),
+    vec2(-10.0, -12.0),
+    vec2(-20.0, 26.0),
+    vec2(24.0, 42.0),
+    vec2(70.0, 25.0),
+    vec2(114.0, -6.0),
+    vec2(96.0, -22.0),
+]
+
+/// How high the eye goes over the ground, and how far ahead it looks (m).
+const EYE: f32 = 2.0
+const AHEAD: f32 = 15.0
+
+/// The point `t` (0 to 1) of the way along it: Catmull-Rom through its points, each span alike.
+pub fn along(t: f32) -> vec2 {
+    let n = WAY.len()
+    let f = clamp(t, 0.0, 1.0) * f32(n - 1)
+    let k = min(u32(floor(f)), n - 2)
+    let u = f - f32(k)
+    let p0 = WAY[if k == 0 { 0 } else { k - 1 }]
+    let p1 = WAY[k]
+    let p2 = WAY[k + 1]
+    let p3 = WAY[min(k + 2, n - 1)]
+    let u2 = u * u
+    let u3 = u2 * u
+    0.5 *
+        (2.0 * p1 +
+            (p2 - p0) * u +
+            (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u2 +
+            (3.0 * p1 - p0 - 3.0 * p2 + p3) * u3)
+}
+
+/// Where the eye is and what it looks at, `frame` frames into the walk.
+pub fn at(frame: u32) -> (vec3, vec3) {
+    let t = f32(min(frame, FRAMES)) / f32(FRAMES)
+    let p = along(t)
+    var ahead = along(min(t + 0.01, 1.0))
+    if length(ahead - p) < 1.0e-3 {
+        ahead = p + (p - along(t - 0.01))
+    }
+    let dir = normalize(ahead - p)
+    let q = p + dir * AHEAD
+    (vec3(p.x, height_at(p) + EYE, p.y), vec3(q.x, height_at(q) + 1.5, q.y))
+}

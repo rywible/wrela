@@ -27,7 +27,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 | `wrela query <pkg> "callers F"`                                           | Call graph, types, impls, effects, borrows, instantiations: `callers`, `callees`, `type file:line:col`, `fields`, `impls`, `effects`, `borrows file:line`, `instantiations`, `search <signature>` |
 | `wrela primer [area]`                                                     | The language's rules by area (`mem`, `gpu`, `eff`, `trait`, ...)                                                                                                                                  |
 | `wrela explain E0513`                                                     | What an error code means, with a program that has it and the same program fixed                                                                                                                   |
-| `wrela pipelines <pkg>`                                                   | Each GPU entry point, its instantiations and where CPU code reaches it; a site under a runtime condition is marked `(under a condition)`                                                          |
+| `wrela pipelines <pkg>`                                                   | Each GPU entry point, its instantiations and where CPU code reaches it; a site under a runtime condition is marked `(under a condition)`; `--json` gives each render pipeline's `attachment_bytes`; `--set` as `build`'s |
 | `wrela refactor <pkg> rename\|move\|add-param\|change-mode ... --dry-run` | A checked edit across the package, as a diff first                                                                                                                                                |
 | `wrela refactor <pkg> extract-const\|inline\|extract-fn ... --dry-run`    | Extract a constant (`file:line:col NAME`) or lines into a function (`file:first-last name`), or inline a function; each refuses where what the code computes would change                         |
 | `wrela fix <pkg> [--dry-run]`                                             | The compiler's suggested fixes, applied (`--dry-run` shows the diff)                                                                                                                              |
@@ -39,7 +39,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.8.1/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.10.0/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```
@@ -74,6 +74,8 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - `wrela precision <pkg> <module>::<fn> --box lo..hi,lo..hi,...` says, operation by operation, where a half-float twin of a function of a point would be safe: it walks the function's interval as an `f32` rounds and as a half float rounds, over each `--box` (several are a sampled domain), and gives each operation `safe`, `watch` or `unsafe` (by its extra width beside its magnitude, `--tol`, 1e-3 by default; past 65504, or an integer past 2048, by range), and the first that isn't safe. It's advice: a twin written where it says `safe` is proven by measuring it.
 - `wrela build --relaxed-simd` (release only) writes `game.relaxed.wasm` beside `game.wasm`: the code only `frame` reaches fuses its vector multiply-adds. Chrome loads it, Safari the standard one; `wrela-host --relaxed` and `wrela profile --relaxed-simd` run it natively. Both modules run the same ticks (`--compare-ticks`).
 - `wrela build <pkg> --report data` lists the twenty largest constants by their laid-out size, with each one's share of zero bytes, and the data section's total: a large constant read only at load is better shipped as a file (`std::io::Shipped`).
+- `wrela build <pkg> --report consts [--json]` lists each constant the build computes: its value's bytes, the fuel computing it used, this build's seconds on it, and whether it was computed or read from the cache. The cache is `<pkg>/build/consts/<version>`; its key is the constant's code, its fuel, the build's options, the bytes of each file it embeds and the toolchain's version, so another toolchain's entries are never read (0.10.0).
+- `wrela build <pkg> --set NAME=VALUE` (repeatable) builds with another value for a `pub const` of the program's `main.wrela`: a number, `true`/`false`, a quoted text, or a variant's name for a constant of a fieldless enum (`--set TIER=Medium` is `Tier::Medium`). Its uses fold with the value (a length it gives, an `if NAME`, a `match NAME`), and the manifest records the sets. `wrela pipelines`, `wrela same` and `std::tool::toolchain`'s `BuildOptions::set` take it; `wrela same` says two builds whose sets differ differ (0.10.0).
 - `WRELA_FEATURES=none` (or a comma list to keep) hides optional GPU features from a program on the native host, and `wrela test` passes the same mask to Chrome.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
@@ -131,7 +133,8 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - **A dependency's `main.wrela` is an ordinary module** (`pkg::main::x`), but its `pub fn`s are still exports in its own build.
 - **Overlapping `mut` arguments are refused** (E0513). Keep the parts a call changes in sibling fields: `frame.draw(mut s.scene, aim)` beside `s.frame`.
 - **A place of a non-`Copy` type isn't copied by `let`.** Write `borrow x = place` to read it, `mut x = place` to change it, or `take` to move it. A `.clone()` that is only read is W0010: borrow it instead.
-- **A draw behind a runtime `if` is still a pipeline in the build**, and `wrela pipelines` counts it, marked `(under a condition)`. Leave a stage out by the program's structure.
+- **A draw behind a runtime `if` is still a pipeline in the build**, and `wrela pipelines` counts it, marked `(under a condition)`. Leave a stage out by the program's structure, or by a constant: what only an `if` on a `false` constant reaches isn't built, and a `match` on a constant that holds a fieldless variant builds only the arm it takes (0.10.0), so a tier or a style is a `pub const` of an enum that `--set` chooses.
+- **An entry point's `const` argument may be an associated constant** (`blur.bind(taps: S::TAPS)` under `S: Taps`): each instantiation's value is a pipeline of its own, its `false` switches' code left out of its shader. The constant's initializer must fold: literals, constants, other associated constants, arithmetic, comparisons, `!`, `&&`, `||` and `if` (E0603 otherwise).
 - **`package` is a keyword**, so it can't name a variable. The keywords, reserved ones too, are in `spec/lexical.md`.
 - **A tool test builds its fixtures through overrides.** When a package gains a dependency, the tests that write its manifest or list its overrides need it too.
 - **A test of code runs as a constant does:** no GPU, no clock, no randomness. One that reaches no `assert` and no panic can't fail (W0011).

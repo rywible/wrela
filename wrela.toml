@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.9.0"
+toolchain = "0.10.0"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -20,6 +20,8 @@ members = [
     "examples/herd/tests/layers",
     "examples/herd/tests/raycasts",
     "examples/herd/tests/realize",
+    "examples/vale/tests/land",
+    "examples/vale/tests/shots",
     "games/*",
     "games/capybara/scores",
     "games/capybara/route",
@@ -45,6 +47,7 @@ members = [
     "studio/courselens/glue",
     "studio/audio",
     "studio/bench",
+    "studio/compare",
     "studio/passes",
     "studio/export",
     "studio/fit",
@@ -92,7 +95,9 @@ allow = [
     "docs/plan-world-class-2.md",
     "docs/plan-world-class-3.md",
     "docs/lookdev.md",
+    "docs/devices.md",
     "games/*/design.md",
+    "examples/vale/design.md",
     ".gitignore",
     ".github/workflows/deploy.yml",
 ]

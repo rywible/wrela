@@ -1,0 +1,383 @@
+// What the vale draws, casts and cooks (`engine::frame::Scene`): its landscape (`land::stage`),
+// and nothing else. Its ground (`landscape::Ground`), its wood streamed a tile at a time round
+// the eye from its bake (`history::BAKED`), the far layer to the horizon, the grass, the water
+// and the fall's mist and spray.
+
+use engine::character::{Cast, PartOf, cast}
+use engine::cook::Work
+use engine::cull::Hzb
+use engine::distance::Solids
+use engine::fog::FogField
+use engine::frame::{Cooks, Effects, Scene, Targets}
+use engine::grass::Blooms
+use engine::light::Light
+use engine::shot::Skies
+use engine::lit::Lighting
+use engine::memory::{Share, Usage}
+use engine::particles::Emits
+use engine::plant::{Plant, Wind}
+use engine::probes::{Occluder, ProbeGrid, Trace}
+use engine::shadow::Shadows
+use engine::sky::Weather
+use engine::terrain::{Clipmap, Texel}
+use engine::vegetation::Placed
+use engine::view::Camera
+use fawn::character::{FawnLook, Grown, REALIZED, SLICES, at_rest, grown}
+use fawn::creature::Coat
+use history::{BAKED, PRESENT, tiles_hi, tiles_lo}
+use land::bake::{Decisions, Far, WEAR_N, WET_N}
+use land::grow::Tree
+use land::stage::{
+    Landscape, Tiles, cook_wood, draw_water, landscape, occlude, probe_grid, solid_capsules, stream,
+    trace_of,
+}
+use landscape::{GROUND, height_at}
+use std::gpu::{GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Sampler, Texture, buffer_of}
+use std::io::Pending
+
+/// The routes the vale's history wore (its herd's trail), for its ground's fields.
+@fuel(2 ** 32)
+const ROUTES: Vec<land::place::Route> = history::vale_map().routes
+
+/// What the vale is drawn from: its bake, every tile of its square; a tile past it is grown where
+/// it's wanted, as an empty one (nothing stands past the square), so what waits on the tiles round
+/// the eye (its readiness, the probes' occluders) doesn't wait on one that would never come.
+pub struct ValeTiles: Copy + Eq {
+    pub bake: u32,
+}
+
+impl Tiles for ValeTiles {
+    fn fetch(self, name: str) -> Option<Pending<u8>> {
+        match BAKED.find(name) {
+            Some(f) => Some(BAKED.fetch(f)),
+            None => None,
+        }
+    }
+
+    fn baked(self) -> (vec2i, vec2i) {
+        (tiles_lo(), tiles_hi())
+    }
+
+    fn wild(self, t: vec2i) -> bool {
+        let (lo, hi) = (tiles_lo(), tiles_hi())
+        t.x < lo.x || t.y < lo.y || t.x > hi.x || t.y > hi.y
+    }
+
+    /// A tile past the bake: nothing stands there.
+    fn grow(self, t: vec2i, own: take Vec<Tree>) -> Decisions {
+        Decisions {
+            tile: t,
+            trees: Vec::new(),
+            wear: Vec::filled(WEAR_N * WEAR_N, 0.0),
+            wet: Vec::filled(WET_N * WET_N, 0.0),
+            water: Vec::new(),
+        }
+    }
+
+    fn fields(self, d: Decisions, others: [Tree]) -> Vec<u8> {
+        land::bake::tile_fields(d, others, trees::species::ancient(), ROUTES, PRESENT)
+    }
+
+    fn placed(self, trees: [Tree]) -> Vec<Placed> {
+        trees::kinds::placed(trees, height_at, PRESENT)
+    }
+
+    fn far_placed(self, f: Far, t: vec2i, step: u32) -> Vec<Placed> {
+        trees::kinds::far_placed(f, t, height_at, step)
+    }
+
+    fn occluders_into(
+        self,
+        placed: [Placed],
+        plants: [Plant],
+        d: vec3,
+        lo: vec2,
+        hi: vec2,
+        out: mut Vec<Occluder>,
+    ) {
+        trees::kinds::occluders_into(placed, plants, d, lo, hi, mut out)
+    }
+
+    fn height_at(self, p: vec2) -> f32 {
+        height_at(p)
+    }
+}
+
+/// The vale's one source.
+pub const TILES = ValeTiles { bake: 0 }
+
+/// The vale's stage: its landscape and its creature (the fawn, drawn where a shot casts it: its
+/// grown grazer is Part F's); the grass's footprints none (one off the map, as the grass reads a
+/// buffer of them); and the shot's weather its sky's cooked with.
+pub struct Stage {
+    pub land: Landscape<ValeTiles>,
+    pub fawn: Cast<Coat, Grown, FawnLook>,
+    footprints: GpuBuffer<vec4>,
+    pub skies: Skies = Skies::Fair,
+}
+
+/// The vale's stage at load: its kinds the floor's species' (`trees::kinds`), its water laid
+/// (`water::mesh`), its tiles cooked from the first frame round the eye.
+pub fn stage() -> Stage {
+    Stage {
+        land: landscape(
+            TILES,
+            trees::kinds::plants(),
+            trees::kinds::far_kinds(),
+            water::mesh(),
+            vec2i(0),
+        ),
+        fawn: cast(grown(), FawnLook {}, REALIZED, SLICES),
+        footprints: buffer_of([vec4(1.0e9, 1.0e9, 0.0, 0.0)], at_least: 1),
+    }
+}
+
+impl Scene for Stage {
+    /// The wind's waves cross the world: keyed to it, as the render origin moves.
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        land::stage::scene_wind(self.land, cam, time)
+    }
+
+    fn weather(self) -> Weather {
+        day::weather_of(self.skies)
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        trace_of(light, grid)
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        probe_grid(at, origin.xz, TILES)
+    }
+
+    fn emit(mut self, e: mut Emits) {
+        land::stage::emit(mut self.land, water::MISTS, mut e)
+    }
+
+    /// The air: a height fog, and a sphere of mist at the fall.
+    fn fog(self, origin: vec3) -> Option<FogField> {
+        land::stage::fog(self.land, water::MISTS, origin)
+    }
+
+    /// What's solid: the trunks, limbs and stones the probes' occluders hold.
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        if self.land.solids_v == since {
+            return None
+        }
+        Some(
+            Solids {
+                capsules: solid_capsules(self.land, origin),
+                shapes: Vec::new(),
+                version: self.land.solids_v,
+            },
+        )
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        land::stage::occluders(self.land, at, origin)
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        height_at(world)
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(GROUND, eye, again)
+    }
+
+    /// The load's steps: the probes' occluders gathered round the eye, the kinds and the wood,
+    /// the tiles round the eye, and a slice of the fawn's mesh once it's wanted.
+    fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        occlude(mut self.land, c.eye, c.origin)
+        cook_wood(mut self.land, mut c, linear)
+        stream(mut self.land, mut c, mut clipmap, c.eye)
+        if self.fawn.realizing() && c.planner.may(Work::Realize) {
+            self.fawn.realize()
+        }
+    }
+
+    fn streamed(self, eye: vec2) -> bool {
+        land::stage::streamed(self.land, eye)
+    }
+
+    /// Loading while the landscape is, or while the fawn's wanted (a shot casts it) and its mesh
+    /// isn't realized: a shot's arrival waits for it.
+    fn loading(self) -> bool {
+        land::stage::loading(self.land) || self.fawn.realizing()
+    }
+
+    /// The far cascade waits for all that casts into it at load: the far layer and the wood.
+    fn casters_ready(self, far: bool) -> bool {
+        !far ||
+            (self.land.far_fetch.is_none() &&
+                self.land.far_pending.is_empty() &&
+                self.land.wood.is_some())
+    }
+
+    /// The trees standing in a strip's part of the square (and a shadow's reach past it), chosen
+    /// on the GPU.
+    fn choose_casters(mut self, cam: Camera, lo: vec2, hi: vec2) {
+        match mut self.land.wood {
+            Some(w) => w.select_shadow(cam, lo, hi),
+            None => {},
+        }
+    }
+
+    /// The static casters: the trees.
+    fn cast<P: RenderPass>(
+        self,
+        pass: P,
+        view: mat4,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        first: bool,
+    ) {
+        if let Some(w) = self.land.wood {
+            w.shadow(pass, view, sh, wind, s)
+        }
+    }
+
+    /// The grass placed round the eye, and the wood's lists.
+    fn choose(
+        mut self,
+        lt: Lighting,
+        texels: GpuSpan<Texel>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+    ) {
+        self.land.eye = lt.cam.eye + lt.cam.origin
+        self.land.grass.place(
+            lt.cam,
+            lt.light,
+            lt.grid,
+            lt.levels,
+            texels,
+            lt.probes,
+            lt.clouds,
+            lt.cloud,
+            lt.s,
+            lt.grounds,
+            stones: self.footprints.items(),
+            pyramid: pyramid,
+            hzb: hzb,
+        )
+        match mut self.land.wood {
+            Some(w) => w.select(lt.cam, pyramid, hzb),
+            None => {},
+        }
+    }
+
+    fn reveals(self) -> bool {
+        self.land.wood.is_some()
+    }
+
+    fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
+        match mut self.land.wood {
+            Some(w) => w.reveal(pyramid, hzb),
+            None => {},
+        }
+    }
+
+    fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if let Some(w) = self.land.wood {
+            w.late_prepass(pass, cam, wind, s)
+        }
+    }
+
+    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        if let Some(w) = self.land.wood {
+            w.late_shade(pass, lt, wind, ids)
+        }
+    }
+
+    /// The depth prepass: the near crowns' cards, the grass, and the far crowns' quads.
+    fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if let Some(w) = self.land.wood {
+            w.prepass_cards(pass, cam, wind, s)
+        }
+        self.land.grass.prepass(pass, cam, wind)
+        if let Some(w) = self.land.wood {
+            w.prepass_far(pass, cam, wind, s)
+        }
+    }
+
+    /// The vegetation pass: the grass and the wood.
+    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        self.land.grass.shade(pass, lt, wind, land::stage::GRASS_LOOK, Blooms {})
+        if let Some(w) = self.land.wood {
+            w.shade(pass, lt, wind, ids)
+        }
+    }
+
+    /// The moving map: the fawn.
+    fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
+        self.fawn.shadow(pass, view)
+    }
+
+    fn casts_moving(self) -> bool {
+        self.fawn.on && self.fawn.shadowed
+    }
+
+    /// The fawn.
+    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+        self.fawn.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+    }
+
+    fn has_effects(self) -> bool {
+        true
+    }
+
+    /// The water over a copy of the scene under it.
+    fn effects(mut self, t: mut Targets, fx: Effects) {
+        draw_water(mut self.land, mut t, fx)
+    }
+
+    /// The fawn's motion (its palette against its last), and the near grass's sway, the wind's,
+    /// against last frame's.
+    fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
+        self.fawn.motion(pass, cam)
+        let last = match self.land.last_wind {
+            Some(w) => w,
+            None => wind,
+        }
+        self.land.grass.motion(
+            pass,
+            cam,
+            wind,
+            last_wind: last,
+            last_contact: self.land.last_contact,
+        )
+        self.land.last_wind = Some(wind)
+        self.land.last_contact = self.land.grass.contact
+    }
+
+    /// The landscape's shares, and the fawn's mesh against the realizer's budget, as the floor's.
+    fn shares(self) -> Vec<Share> {
+        var out = land::stage::shares(self.land)
+        out.push(
+            Share {
+                name: "realizer",
+                bytes: self.fawn.bytes(),
+                budget: engine::memory::REALIZER,
+            },
+        )
+        out
+    }
+
+    /// Over its budget, the wood gives back its choosings' room sooner (`Wood::pressed`).
+    fn pressed(mut self, usage: Usage) {
+        match mut self.land.wood {
+            Some(w) => w.pressed(usage),
+            None => {},
+        }
+    }
+
+    /// Render space moved by `d`: the wood's instances move with it.
+    fn shift(mut self, d: vec3) {
+        match mut self.land.wood {
+            Some(w) => w.shift(d),
+            None => {},
+        }
+    }
+}

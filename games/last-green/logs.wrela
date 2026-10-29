@@ -109,7 +109,7 @@ pub fn obstacles(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Obstacle> {
     var all: Vec<Obstacle> = Vec::new()
     for t in trees {
         if t.state == State::Log {
-            let log = trees::fallen_placement(t, height)
+            let log = trees::kinds::fallen_placement(t, height, map::PRESENT)
             for o in shapes(log, height) {
                 all.push(o)
             }
@@ -122,7 +122,7 @@ pub fn obstacles(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Obstacle> {
 /// intervals keeps every centreline bend; subdivision bounds footprint and height variation.
 pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
     var all: Vec<Obstacle> = Vec::new()
-    let limbs = trees::fallen_limbs(log)
+    let limbs = trees::kinds::fallen_limbs(log)
     assert(limbs.len() <= MOST_LIMBS, "fallen wood exceeded its limb bound")
     var sampled = sample_ground(log, limbs)
     var segments = 0
@@ -186,7 +186,7 @@ pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
 fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
     var reachable = 0
     var blocked = 0
-    for kind in [trees::LOG_SHORT, trees::LOG_LONG] {
+    for kind in [trees::kinds::LOG_SHORT, trees::kinds::LOG_LONG] {
         for pitch in [-0.4, 0.0, 0.4] {
             var inst = engine::plant::NO_INSTANCE
             inst.scale = 1.8
@@ -198,7 +198,7 @@ fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
             let records = shapes(placed, height)
             assert(records.len() > 6 && records.len() <= MOST, "missing wood or unbounded records")
             let packed = land::footing::Obstacles::of(records, vec2(-64.0), vec2(64.0))
-            for limb in trees::fallen_limbs(placed) {
+            for limb in trees::kinds::fallen_limbs(placed) {
                 for i in 0..25 {
                     let (axis, _, radius) = limb_axis(limb, f32(i) / 24.0)
                     if axis.y + radius - height(axis.xz) <= 0.02 {
@@ -234,7 +234,7 @@ fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
 fn a_low_rendered_log_is_crossed_with_continuous_lift() {
     var inst = engine::plant::NO_INSTANCE
     inst.scale = 1.0
-    let placed = Placed { kind: trees::LOG_SHORT, at: inst }
+    let placed = Placed { kind: trees::kinds::LOG_SHORT, at: inst }
     let records = shapes(placed, |p: vec2| 0.0)
     let o = land::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
     var at = vec2(-3.0, 6.0)
@@ -264,7 +264,7 @@ fn a_low_rendered_log_is_crossed_with_continuous_lift() {
 @test
 fn log_terrain_samples_are_shared_and_bounded_at_the_largest_scale() {
     var most = 0
-    for kind in [trees::LOG_SHORT, trees::LOG_LONG] {
+    for kind in [trees::kinds::LOG_SHORT, trees::kinds::LOG_LONG] {
         for pitch in [-0.6, 0.0, 0.6] {
             var inst = engine::plant::NO_INSTANCE
             inst.scale = 1.8
@@ -294,8 +294,8 @@ fn log_terrain_samples_are_shared_and_bounded_at_the_largest_scale() {
 fn an_off_lattice_hollow_keeps_exact_clearance_under_the_rendered_log() {
     var inst = engine::plant::NO_INSTANCE
     inst.scale = 1.0
-    let log = Placed { kind: trees::LOG_SHORT, at: inst }
-    let limbs = trees::fallen_limbs(log)
+    let log = Placed { kind: trees::kinds::LOG_SHORT, at: inst }
+    let limbs = trees::kinds::fallen_limbs(log)
     let sampled = sample_ground(log, limbs)
     let trunk = limbs[0]
     var centre = vec2(0.0)
@@ -352,7 +352,7 @@ fn high_rendered_logs_stop_sampling_after_their_height_overflows() {
     inst.scale = 1.8
     inst.at = vec3(0.0, 20.0, 0.0)
     var calls = 0
-    let records = shapes(Placed { kind: trees::LOG_LONG, at: inst }, |p: vec2| {
+    let records = shapes(Placed { kind: trees::kinds::LOG_LONG, at: inst }, |p: vec2| {
         calls += 1
         0.0
     })

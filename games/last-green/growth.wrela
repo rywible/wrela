@@ -78,7 +78,7 @@ impl Grown {
     /// talus old scree and its rock that isn't a face (gentler than 0.86 of level: the crests'),
     /// grown over (`SCREE_GROWN`: moss on its stones, soil between them, which the wood's litter
     /// covers), grass where its soil shows, and over the forest's fields
-    /// (`fields`) the wood's floor (`ground::wood_floor`). Where no tile's fields are
+    /// (`fields`) the wood's floor (`land::cover::wood_floor`). Where no tile's fields are
     /// (`fields.x` below 0: past the trees streamed in), the wood seen from far off: its canopy's
     /// greens over all but its rock.
     fn covered(self, at: vec3, n: vec3, fields: vec4, w: f32) -> Cover {
@@ -91,12 +91,18 @@ impl Grown {
         c.albedo = mix(c.albedo, vec3(0.06, 0.07, 0.05), vec3(scree))
         c.grass = 1.0 - c.materials.z
         if fields.x < 0.0 {
-            let tone = fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
-            let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
-            c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - hard)))
-            return c
+            return land::cover::far_wood(c, at, w, rock: hard)
         }
-        var floor = ground::wood_floor(c, at, n, fields, w, trodden: fields.y, rim: 0.0)
+        var floor = land::cover::wood_floor(
+            c,
+            at,
+            n,
+            fields,
+            w,
+            trodden: fields.y,
+            rim: 0.0,
+            rock_albedo: ground::rock_albedo,
+        )
         // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
         // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left
         // alone for ages; the floor's own, in colonies with litter between, read as bare ground
@@ -407,7 +413,7 @@ const OUTSIDE_WET: f32 = 0.3
 
 /// The wettest ground short of a stream's bed: its wetness (`geology::wetness`, 1 on every flat
 /// valley floor) is scaled to this, under what the wood's floor reads as a bed (from 0.9,
-/// `ground::wood_floor`); the history marks its streams' beds itself.
+/// `land::cover::wood_floor`); the history marks its streams' beds itself.
 const WETTEST: f32 = 0.88
 
 /// The grown land's history at `grain`.
@@ -497,12 +503,12 @@ pub const SHOTS: Shots = shots()
 fn shots() -> Shots {
     borrow w = WORLD
     let trees = decisions().trees
-    // Each standing stem as it's drawn (`trees::as_drawn`: its girth at breast height); and what
+    // Each standing stem as it's drawn (`trees::kinds::as_drawn`: its girth at breast height); and what
     // a place's shot sees past: each stem, and each crown low enough to stand at the eye (`LOW`),
     // its reach round it.
     var stems: Vec<vec3> = Vec::new()
     var wood: Vec<vec3> = Vec::new()
-    for t in trees::as_drawn(trees) {
+    for t in trees::kinds::as_drawn(trees) {
         let stem = t.state != State::Log && t.state != State::Gone && t.tall > 1.5
         if stem {
             stems.push(vec3(t.at, t.girth))
@@ -778,13 +784,13 @@ fn shot_files() -> Vec<(String, Vec<u8>)> {
 
 // ---- tests -----------------------------------------------------------------------------------------
 
-/// No standing stem of the grown wood, as it's drawn (`trees::as_drawn`, its trunk's girth round
+/// No standing stem of the grown wood, as it's drawn (`trees::kinds::as_drawn`, its trunk's girth round
 /// it), is on a face, a rock's solid or a pond (`HARD`); and every tree is the bake's, within what
 /// its history grows over.
 @test
 fn the_wood_stands_on_no_face_rock_or_pond() {
     var standing = 0
-    for t in trees::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees) {
         assert(
             t.at.x >= LO.x && t.at.y >= LO.y && t.at.x < HI.x && t.at.y < HI.y,
             f"a tree at {t.at} past the bake",
@@ -873,7 +879,7 @@ fn the_grown_views_shots_see_past_the_stems() {
     let p = inside.eye.xz
     assert(p.x > LO.x && p.y > LO.y && p.x < HI.x && p.y < HI.y, "in the wood past its bake")
     var stems: Vec<vec3> = Vec::new()
-    for t in trees::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees) {
         if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
             stems.push(vec3(t.at, t.girth))
         }

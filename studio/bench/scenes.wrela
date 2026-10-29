@@ -14,7 +14,7 @@ pub struct Scene: Clone {
 }
 
 /// Every scene, in the order the report lists them.
-pub const SCENES: [Scene; 7] = [
+pub const SCENES: [Scene; 8] = [
     Scene {
         name: "clearing-path",
         pkg: "examples/clearing",
@@ -46,9 +46,11 @@ pub const SCENES: [Scene; 7] = [
     },
     Scene { name: "herd", pkg: "examples/herd", frames: 600, width: 1920, height: 1080 },
     Scene { name: "leapling", pkg: "games/leapling", frames: 600, width: 1920, height: 1080 },
+    Scene { name: "vale-walk", pkg: "examples/vale", frames: 1200, width: 1920, height: 1080 },
 ]
 
-/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), or none.
+/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), the vale's
+/// walk begun at frame 240 as the floor's is (the vale loads at rest, then walks), or none.
 pub fn script(name: str) -> Script {
     if name == "clearing-path" {
         return Script::frames()
@@ -72,6 +74,9 @@ pub fn script(name: str) -> Script {
             .key_down(300, Key::ShiftLeft)
             .key_up(1140, Key::ShiftLeft)
             .key_up(1140, Key::W)
+    }
+    if name == "vale-walk" {
+        return Script::frames().key_down(240, Key::W).key_up(241, Key::W)
     }
     if name == "capybara-run" || name == "capybara-run-large" {
         return Script::frames()

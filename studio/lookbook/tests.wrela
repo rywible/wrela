@@ -2,8 +2,8 @@
 // and files, and the interest check's line, on small fixtures.
 
 use shots::{
-    PROGRAM, VIEWS, WS, build_of, check_line, keys, lookbook_of, names_in, names_listed, parse_args,
-    shown_path, stem,
+    PROGRAM, VIEWS, WS, build_of, check_line, chosen, keys, lookbook_of, names_in, names_listed,
+    parse_args, shown_path, stem,
 }
 use measures::{
     sharpness, blurred, clipped, edge_width, flicker, luma, mean_of, pop, psnr, quartered, ssim,
@@ -239,4 +239,25 @@ fn the_measures_react_as_the_instrument_needs() {
         white.push(255)
     }
     assert(clipped(white) == 1.0 && clipped(reference) == 0.0)
+}
+
+/// `--shots dev` takes a lookbook's development shots alone (named `D` and their number), and
+/// `--shots evaluation` the rest; shots picked by number are taken as they're picked.
+@test
+fn dev_and_evaluation_choose_by_the_shots_names() {
+    var names: Vec<String> = Vec::new()
+    for n in ["the forest floor", "the fall", "D1 the forest floor", "D2 the fall", "Dusk"] {
+        names.push(String::from(n))
+    }
+    let Ok(dev) = parse_args(texts(["out", "--shots", "dev"])) else { panic("dev") }
+    let d = chosen(dev, names)
+    assert(d.len() == 2 && d[0] == 2 && d[1] == 3, "the development shots")
+    let Ok(eval) = parse_args(texts(["out", "--shots", "evaluation"])) else { panic("evaluation") }
+    let e = chosen(eval, names)
+    assert(e.len() == 3 && e[0] == 0 && e[1] == 1 && e[2] == 4, "the evaluation shots")
+    let Ok(all) = parse_args(texts(["out"])) else { panic("all") }
+    assert(chosen(all, names).len() == 5, "every shot")
+    let Ok(picked) = parse_args(texts(["out", "--shots", "4,0"])) else { panic("picked") }
+    let p = chosen(picked, names)
+    assert(p.len() == 2 && p[0] == 4 && p[1] == 0, "as picked")
 }

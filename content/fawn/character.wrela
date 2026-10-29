@@ -1,18 +1,19 @@
-// The fawn in the floor (#54 §9's characters in the wood: the fawn and the climber in three
-// shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn as
-// a young deer (`fawn::creature::wood_fawn`), realized over frames as the clearing realizes it,
-// once a shot that casts it is held, and drawn standing at rest where the shot puts it.
+// The fawn as a character (`engine::character::Cast`), the floor's and the vale's (#54 §9's
+// characters in the wood: the fawn and the climber in three shots, so the cel treatment is judged
+// against the wood's dark and dappled light): M5's fawn as a young deer (`creature::wood_fawn`),
+// realized over frames as the clearing realizes it, once a shot that casts it is held, and drawn
+// standing at rest where the shot puts it.
 
 use engine::creature::{Creature, MAX_BONES, Skeleton}
 use engine::look::{CreatureLook, Mesh}
 use engine::character::Look
 use engine::gait::bone_matrix
 use engine::character::placed
-use fawn::creature::{Coat, skeleton, wood_fawn}
+use creature::{Coat, skeleton, wood_fawn}
 use std::quat::Quat
 use std::transform::scale
 
-/// The fawn, as the floor keeps it while its mesh is realized (`engine::realize`).
+/// The fawn, as a stage keeps it while its mesh is realized (`engine::realize`).
 pub type Grown = Creature<Coat>
 
 /// The fawn, built.

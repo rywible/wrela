@@ -1,4 +1,4 @@
-// The floor's trees (#54 §9): what the history left, drawn. Each species is cooked as a few kinds
+// The trees (#54 §9): what a history left, drawn. Each species is cooked as a few kinds
 // (`engine::plant`, spike 17's shapes): grown in the open (crown low and wide) or in the forest
 // (crown high and narrow), young, standing dead, burnt, fallen. A tile's trees are placed as it
 // streams in: an instance of a kind for each tree the bake kept, scaled to its height, turned so
@@ -14,7 +14,6 @@ use engine::plant::{
 use std::field::Tube
 use engine::vegetation::Placed
 use great_tree::tree::{far_tree, great_tree}
-use map::PRESENT
 use species::{HABITS, Species}
 use std::math::{PI, TAU}
 
@@ -1611,8 +1610,8 @@ fn settle_log(inst: Instance, trunk: Tube<4>, height: fn(vec2) -> f32, sink: f32
 }
 
 /// The same decayed, terrain-supported fallen tree for drawing and collision.
-pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32) -> Placed {
-    let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
+pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Placed {
+    let rot = clamp(f32(present - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
     let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
     let kind = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
     var p = instance(
@@ -1651,7 +1650,7 @@ pub fn fallen_limbs(p: Placed) -> Bounded<Tube<4>, engine::plant::MAX_LIMBS> {
 
 /// The instances of a tile's trees, `height(p)` the ground's height: the great oak (the kept
 /// tree), each tree the history kept, living, standing dead or fallen.
-pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
+pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
     for t in trees {
         let y = height(t.at)
@@ -1707,7 +1706,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 ),
             )
         } else if t.state == State::Log {
-            out.push(fallen_placement(t, height))
+            out.push(fallen_placement(t, height, present))
         }
     }
     out
@@ -2295,6 +2294,8 @@ fn veterans_are_drawn_as_their_own_species() {
 /// the great oak as it's kept.
 @test
 fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
+    // A history's present year (the floor's).
+    let now: i32 = 900
     let habits = species::HABITS
     var lo = 9.0
     var hi = -9.0
@@ -2309,7 +2310,7 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
             open: true,
         )
         t.lean = vec2(1.0, 0.0)
-        let p = placed([t], |q| 0.0)
+        let p = placed([t], |q| 0.0, now)
         let off = p[0].at.yaw - atan2(1.0, 0.0)
         assert(abs(off) <= HEADING + 1.0e-4, f"a tree turned {off} from its light")
         lo = min(lo, off)
@@ -2317,12 +2318,12 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
         var log = t
         log.state = State::Log
         log.fall = vec2(0.6, 0.8)
-        log.fell = PRESENT - 5
-        let l = placed([log], |q| 0.0)
+        log.fell = now - 5
+        let l = placed([log], |q| 0.0, now)
         assert(abs(l[0].at.yaw - atan2(0.6, 0.8)) < 1.0e-4, "a log turned from the way it fell")
         var kept = t
         kept.pinned = true
-        assert(placed([kept], |q| 0.0)[0].at.yaw == 0.0, "the great oak turned")
+        assert(placed([kept], |q| 0.0, now)[0].at.yaw == 0.0, "the great oak turned")
     }
     assert(hi - lo > HEADING, f"the trees' turns span {hi - lo}: they stand alike")
 }

@@ -1,0 +1,11 @@
+# The floor's species and the kinds they're drawn as (#54 §3, §9): how each species lives, as a
+# history reads it (`species`), and its forms, grown in the open or the forest, young, dead,
+# burnt and fallen, as `engine::plant`s (`kinds`). Content any landscape grows: the Last Green's
+# floor and the vale (examples/vale) plant them.
+[package]
+name = "trees"
+
+[dependencies]
+engine = { workspace = true }
+great_tree = { workspace = true }
+land = { workspace = true }

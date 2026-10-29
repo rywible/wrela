@@ -275,7 +275,11 @@ struct Package: Clone {
 fn map_package(name: str, main: take String) -> Package {
     var texts: Vec<(String, String)> = Vec::new()
     texts.push((String::from("main.wrela"), take main))
-    Package { name: String::from(name), copied: Vec::new(), texts, content: Vec::new() }
+    // The species are content (content/trees), which the map's species.wrela re-exports.
+    var content: Vec<(String, String)> = Vec::new()
+    content.push((String::from("trees"), String::from("trees")))
+    content.push((String::from("great_tree"), String::from("great-tree")))
+    Package { name: String::from(name), copied: Vec::new(), texts, content }
 }
 
 /// The package written into `scratch/<name>`: how many tests its files declare.
@@ -352,14 +356,13 @@ fn the_worlds_geology_is_made_and_its_places_seen() {
     passes(p)
 }
 
-/// Terrain, trees and masonry use bounded fields and small seeded fixtures. Copy only their
-/// modules, so discovering their tests cannot prepare the full game's history constants.
+/// Terrain and masonry use bounded fields and small seeded fixtures (the trees' are content/trees'
+/// own tests). Copy only their modules, so discovering their tests cannot prepare the full game's
+/// history constants.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
 fn the_environments_bounded_art_and_collision_regressions_pass() {
     var p = map_package("environment-art", String::from(FRAME))
-    p.copied.push(String::from("trees.wrela"))
     p.copied.push(String::from("blockouts.wrela"))
-    p.content.push((String::from("great_tree"), String::from("great-tree")))
     passes(p)
 }
 
@@ -368,7 +371,7 @@ fn the_environments_bounded_art_and_collision_regressions_pass() {
 @test(tool, read: [("repo", "../../../..")], budget: 600)
 fn the_worlds_bounded_simulation_regressions_pass() {
     var p = map_package("world", String::from(FRAME))
-    for file in ["world.wrela", "encounter.wrela", "behaviour.wrela", "fawns.wrela"] {
+    for file in ["world.wrela", "encounter.wrela", "behaviour.wrela"] {
         p.copied.push(String::from(file))
     }
     p.texts.push((String::from("history.wrela"), joined(HISTORY)))

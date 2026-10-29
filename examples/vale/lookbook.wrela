@@ -1,0 +1,215 @@
+// The vale's lookbook (plan three's §B1.4): its twelve shots, one of each class the plan fixes, in
+// its order, and its eight development shots (D1–D8, of classes 1, 2, 3, 4, 6, 8, 9 and 12, each
+// at another place, at least 80 m from the twelve's of its class), which every fit and every
+// tuning uses (the twelve are for the reviews' record alone). `wrela tool lookbook --package
+// examples/vale` renders them settled and records them in motion; a player chooses one as any
+// shot (L, the number, Enter). Heights are above the ground under each point; each fixes its
+// hour of the vale's day and its weather (`day`). Every place is **proposed**.
+
+use engine::shot::{Shot, Skies}
+use landscape::height_at
+
+/// What looks toward the sun at `hour` from `eye` (x, height above the ground, z), `d` m away (x,
+/// height above the ground there, z): the canopy against the sun.
+pub fn toward_sun(eye: vec3, hour: f32, d: f32) -> vec3 {
+    let sun = day::sun_toward(hour)
+    let at = eye.xz + sun.xz * d
+    let y = height_at(eye.xz) + eye.y + sun.y * d
+    vec3(at.x, y - height_at(at), at.y)
+}
+
+/// How many of `SHOTS` are the twelve (the rest the development shots).
+pub const EVALUATION: u32 = 12
+
+@fuel(2 ** 30)
+pub const SHOTS: [Shot; 20] = [
+    // 1. The forest floor at noon: the eye at 1.6 m, along the ground through ferns and litter.
+    Shot {
+        name: "the forest floor",
+        eye: vec3(-153.0, 1.6, 80.0),
+        at: vec3(-122.0, 1.0, 92.0),
+        moves: vec2(1.5, 0.5),
+        time: 12.5,
+    },
+    // 2. The canopy against the sun: looking up through leaves, the sun behind them.
+    Shot {
+        name: "the canopy against the sun",
+        eye: vec3(96.0, 1.6, -24.0),
+        at: toward_sun(vec3(96.0, 1.6, -24.0), hour: 10.0, d: 20.0),
+        moves: vec2(0.6, 0.0),
+        fovy: 1.0,
+        time: 10.0,
+    },
+    // 3. An old tree's trunk at 2 m: a millennial oak's bark and buttress, its shaded side's moss.
+    Shot {
+        name: "an old oak",
+        eye: vec3(115.6, 1.5, -7.0),
+        at: vec3(115.6, 1.2, -9.8),
+        moves: vec2(0.4, 0.0),
+        time: 15.0,
+        reach: 1.0,
+    },
+    // 4. The stream and the fall at 15 m: from the floor at the mouth of the band's gorge, up the
+    // gorge to its cascade (the band rose faster than the stream cut it: a slot).
+    Shot {
+        name: "the fall",
+        eye: vec3(18.0, 1.6, -194.0),
+        at: vec3(18.5, 3.0, -179.0),
+        moves: vec2(0.5, 0.0),
+        fovy: 1.0,
+        time: 11.0,
+        reach: 6.0,
+    },
+    // 5. The rock face: the band's grit, its beds and its lichen at 4 m, its face west of the gorge.
+    Shot {
+        name: "the band's face",
+        eye: vec3(-34.0, 1.6, -190.0),
+        at: vec3(-32.5, 1.0, -184.5),
+        moves: vec2(0.4, 0.0),
+        time: 16.0,
+        reach: 2.0,
+    },
+    // 6. The meadow's edge at golden hour: grass and flowers, long shadows, the wood behind.
+    Shot {
+        name: "the meadow at evening",
+        eye: vec3(-22.0, 1.6, 28.0),
+        at: vec3(36.0, 2.0, 32.0),
+        moves: vec2(0.0, 1.0),
+        time: 18.2,
+        reach: 10.0,
+    },
+    // 7. Dawn fog in the hollow: the sun low through mist over the vale's lower floor.
+    Shot {
+        name: "dawn in the hollow",
+        eye: vec3(-24.0, 1.7, -430.0),
+        at: vec3(50.0, 4.0, -395.0),
+        moves: vec2(0.0, 1.0),
+        time: 5.6,
+        weather: Skies::Mist,
+        reach: 20.0,
+    },
+    // 8. Dusk from the crest: the vale wide, the mere catching the sky, from the east crest's
+    // windthrow (`history::EAST_GAP`).
+    Shot {
+        name: "dusk from the crest",
+        eye: vec3(336.0, 1.7, 243.0),
+        at: vec3(-30.0, 0.0, -68.0),
+        moves: vec2(0.0, 1.0),
+        fovy: 0.9,
+        time: 18.8,
+        reach: 60.0,
+    },
+    // 9. The creature grazing in dappled light at 6 m, at the meadow's eastern edge.
+    Shot {
+        name: "grazing at the edge",
+        eye: vec3(26.0, 1.4, 44.0),
+        at: vec3(32.0, 0.6, 44.0),
+        moves: vec2(0.3, 0.0),
+        cast: 0,
+        time: 14.0,
+        reach: 1.5,
+    },
+    // 10. The creature walking toward the eye at 10 m, down the deer's trail to the mere.
+    Shot {
+        name: "down the trail",
+        eye: vec3(-9.0, 1.4, -14.0),
+        at: vec3(-3.0, 0.8, -4.0),
+        moves: vec2(0.0, 0.0),
+        cast: 0,
+        time: 17.0,
+        reach: 1.5,
+    },
+    // 11. Deadwood and fungi at 1.5 m: a beech fallen 84 years ago, rotting, its fungi, its litter.
+    Shot {
+        name: "the fallen beech",
+        eye: vec3(-122.8, 0.9, -40.8),
+        at: vec3(-124.2, 0.3, -42.4),
+        moves: vec2(0.3, 0.0),
+        time: 13.0,
+        reach: 1.0,
+    },
+    // 12. The wood's interior under overcast: no sun, the probes' and the sky's light alone.
+    Shot {
+        name: "the wood under cloud",
+        eye: vec3(-250.0, 1.7, 250.0),
+        at: vec3(-220.0, 2.0, 262.0),
+        moves: vec2(1.0, 0.5),
+        time: 13.0,
+        weather: Skies::Overcast,
+        reach: 10.0,
+    },
+    // D1. The forest floor, elsewhere.
+    Shot {
+        name: "D1 the forest floor",
+        eye: vec3(203.0, 1.6, 152.0),
+        at: vec3(225.0, 1.0, 165.0),
+        moves: vec2(1.5, 0.5),
+        time: 12.5,
+    },
+    // D2. The canopy against the sun, elsewhere.
+    Shot {
+        name: "D2 the canopy against the sun",
+        eye: vec3(-300.0, 1.6, 40.0),
+        at: toward_sun(vec3(-300.0, 1.6, 40.0), hour: 10.0, d: 20.0),
+        moves: vec2(0.6, 0.0),
+        fovy: 1.0,
+        time: 10.0,
+    },
+    // D3. An old oak's trunk, another's.
+    Shot {
+        name: "D3 another old oak",
+        eye: vec3(-206.8, 1.5, -113.6),
+        at: vec3(-206.8, 1.2, -117.1),
+        moves: vec2(0.4, 0.0),
+        time: 15.0,
+        reach: 1.0,
+    },
+    // D4. The stream above the mere.
+    Shot {
+        name: "D4 the stream",
+        eye: vec3(-10.0, 1.6, 209.0),
+        at: vec3(-18.0, 0.5, 225.0),
+        moves: vec2(0.5, 0.0),
+        time: 11.0,
+        reach: 3.0,
+    },
+    // D5. The mere's far shore at golden hour.
+    Shot {
+        name: "D5 the shore at evening",
+        eye: vec3(-90.0, 1.6, -100.0),
+        at: vec3(-30.0, 1.0, -68.0),
+        moves: vec2(0.0, 1.0),
+        time: 18.2,
+        reach: 10.0,
+    },
+    // D6. The vale wide from the western crest's windthrow (`history::WEST_GAP`).
+    Shot {
+        name: "D6 the vale from the west",
+        eye: vec3(-330.0, 1.7, 48.0),
+        at: vec3(-30.0, 0.0, -68.0),
+        moves: vec2(0.0, 1.0),
+        fovy: 0.9,
+        time: 18.8,
+        reach: 60.0,
+    },
+    // D7. The creature in the wood by the mere.
+    Shot {
+        name: "D7 the creature in the wood",
+        eye: vec3(-64.4, 1.4, 58.4),
+        at: vec3(-58.4, 0.6, 58.4),
+        moves: vec2(0.3, 0.0),
+        cast: 0,
+        time: 14.0,
+        reach: 1.5,
+    },
+    // D8. The wood's interior under overcast, elsewhere.
+    Shot {
+        name: "D8 the wood under cloud",
+        eye: vec3(150.0, 1.7, 301.6),
+        at: vec3(180.0, 2.0, 312.0),
+        moves: vec2(1.0, 0.5),
+        time: 13.0,
+        weather: Skies::Overcast,
+        reach: 10.0,
+    },
+]

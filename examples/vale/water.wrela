@@ -1,0 +1,78 @@
+// The vale's water, laid over its land (`land::water`) as the floor's grown land's is: each stream
+// down its course, held so it never rises down it (`Course::held`: the land's detail rises across
+// a course its drainage traced), the main stream in three, its fall the middle one; and the mere a
+// sheet at its level over its basin. Laid when the vale is built.
+
+use land::grow::NONE
+use land::water::{Course, Sheet, lay_with, mists}
+use engine::water::WaterMesh
+use landscape::{CELLS, GRID, GROUND, VALE, Vale, point_of}
+
+/// The vale's water as the program carries it: each stream's course, and the mere's level and the
+/// cells it holds.
+pub struct Waters: Clone {
+    pub courses: Vec<Course>,
+    pub mere_level: f32,
+    pub mere: Vec<u32>,
+}
+
+@fuel(2 ** 34)
+pub const WATERS: Waters = waters_of(VALE)
+
+/// The courses: the main stream from its head to the fall's lip, the fall (from the cell above its
+/// lip to the one below its foot, falling), and on from its foot to the mouth; then each other
+/// stream, as the land's channels traced it.
+pub fn waters_of(v: Vale) -> Waters {
+    let g = v.made.grid
+    var courses: Vec<Course> = Vec::new()
+    let points = |a: u32, b: u32| -> Vec<vec4> {
+        Vec::from_fn(b - a + 1, |k| point_of(v, v.main[a + k]))
+    }
+    let last = v.main.len() - 1
+    // The fall's course from the cell above its lip to the one below its foot, so it's laid as it
+    // comes to the edge and leaves its pool.
+    let (lip, foot) = (max(v.fall.lip, 1), min(v.fall.foot, last - 1))
+    courses.push(Course { points: points(0, lip), falls: false, held: true })
+    courses.push(Course { points: points(lip - 1, foot + 1), falls: true, held: false })
+    courses.push(Course { points: points(foot, last), falls: false, held: true })
+    // The other streams: those that don't start on the main stream (its own channel's).
+    var on_main: Vec<bool> = Vec::filled(g.cells(), value: false)
+    for c in v.main {
+        on_main[c] = true
+    }
+    for course in v.channels {
+        if course.len() >= 2 && !on_main[course[0]] {
+            let pts = Vec::from_fn(course.len(), |k| point_of(v, course[k]))
+            courses.push(Course { points: pts, falls: false, held: true })
+        }
+    }
+    var mere: Vec<u32> = Vec::new()
+    if v.mere != NONE {
+        for c in 0..CELLS {
+            if v.lakes.of[c] == v.mere {
+                mere.push(c)
+            }
+        }
+    }
+    let level = if v.mere != NONE { v.lakes.level[v.mere] } else { 0.0 }
+    Waters { courses, mere_level: level, mere }
+}
+
+/// The water's mesh, laid over the vale's ground: each course a ribbon, the mere a sheet.
+pub fn mesh() -> WaterMesh {
+    let g = GRID
+    var holds: Vec<bool> = Vec::filled(CELLS, value: false)
+    for c in WATERS.mere {
+        holds[c] = true
+    }
+    var sheets: Vec<Sheet> = Vec::new()
+    sheets.push(
+        Sheet { lo: g.lo, nx: g.nx, nz: g.nz, cell: g.cell, level: WATERS.mere_level, holds },
+    )
+    let pools: Vec<vec4> = Vec::new()
+    lay_with(GROUND, land::place::Water {}, WATERS.courses, pools, sheets)
+}
+
+/// The fall's mists: spheres of spray at its foot and its steepest stretch (x, y, z, radius).
+@fuel(2 ** 30)
+pub const MISTS: Vec<vec4> = mists(GROUND, WATERS.courses)

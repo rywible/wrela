@@ -1,0 +1,222 @@
+// The floor's species (#54 §3): how each lives, as the history reads it. Spike 16's and 17's
+// seven: oak and beech, birch the pioneer, hawthorn and blackthorn at the edges, pine on thin soil,
+// alder in the wet.
+
+use land::grow::Habit
+
+/// The floor's species: each one's `u32` is its index in the history's tables, and `HABITS`
+/// has one habit for each, in this order.
+pub enum Species: Copy + Eq + Fieldless {
+    Oak,
+    Beech,
+    Birch,
+    Thorn,
+    Sloe,
+    Pine,
+    Alder,
+}
+
+/// The species' habits (`habits`), built once.
+pub const HABITS: [Habit; Species] = habits()
+
+/// Each species' habit, in `Species`' order.
+pub fn habits() -> [Habit; Species] {
+    [
+        // Oak: light-hungry, slow, long-lived and broad; jays carry its acorns to open edges.
+        Habit {
+            tallest: 21.0,
+            rate: 0.40,
+            need: 0.28,
+            lifespan: 600.0,
+            crown: 0.38,
+            shade: 0.72,
+            palatable: 0.55,
+            reach: 45.0,
+            mature: 45.0,
+            stands: 2.5,
+            rots: 4.0,
+            wet: 0.15,
+            thin: 0.0,
+            deep: 0.4,
+            beyond: 0.01,
+            windborne: false,
+            thorny: false,
+            suckers: false,
+            girth: 1.7,
+            bark: 0.85,
+            resin: 0.3,
+            roots: 0.8,
+        },
+        // Beech: shade-tolerant, tall and deep-shading, on deep soil; its nuts fall near it.
+        Habit {
+            tallest: 23.0,
+            rate: 0.36,
+            need: 0.08,
+            lifespan: 400.0,
+            crown: 0.30,
+            shade: 0.9,
+            palatable: 0.45,
+            reach: 16.0,
+            mature: 45.0,
+            stands: 0.5,
+            rots: 2.2,
+            wet: 0.0,
+            thin: 0.0,
+            deep: 0.7,
+            beyond: 0.005,
+            windborne: false,
+            thorny: false,
+            suckers: false,
+            bark: 0.1,
+            resin: 0.25,
+            roots: 0.3,
+        },
+        // Birch: the pioneer, fast, short-lived and airy; its seed goes everywhere on the wind.
+        Habit {
+            tallest: 17.0,
+            rate: 0.8,
+            need: 0.45,
+            lifespan: 100.0,
+            crown: 0.2,
+            shade: 0.5,
+            palatable: 0.7,
+            reach: 30.0,
+            mature: 12.0,
+            stands: 0.4,
+            rots: 1.2,
+            wet: 0.0,
+            thin: 0.0,
+            deep: 0.0,
+            beyond: 0.3,
+            windborne: true,
+            thorny: false,
+            suckers: false,
+            bark: 0.35,
+            resin: 0.5,
+            roots: 0.4,
+        },
+        // Hawthorn: a thorny shrub of the edges, which grazers leave alone and birds sow.
+        Habit {
+            tallest: 6.5,
+            rate: 0.25,
+            need: 0.55,
+            lifespan: 150.0,
+            crown: 0.6,
+            shade: 0.8,
+            palatable: 0.03,
+            reach: 30.0,
+            mature: 10.0,
+            stands: 1.0,
+            rots: 1.5,
+            wet: 0.0,
+            thin: 0.0,
+            deep: 0.0,
+            beyond: 0.4,
+            windborne: false,
+            thorny: true,
+            suckers: false,
+            bark: 0.2,
+            resin: 0.5,
+            roots: 0.6,
+        },
+        // Blackthorn: a thicket of the edges, which spreads by suckers into the light until the
+        // grazers stop it.
+        Habit {
+            tallest: 4.0,
+            rate: 0.3,
+            need: 0.6,
+            lifespan: 50.0,
+            crown: 0.55,
+            shade: 0.85,
+            palatable: 0.05,
+            reach: 25.0,
+            mature: 6.0,
+            stands: 0.8,
+            rots: 1.0,
+            wet: -0.6,
+            thin: 0.0,
+            deep: 0.0,
+            beyond: 0.3,
+            windborne: false,
+            thorny: true,
+            suckers: true,
+            bark: 0.15,
+            resin: 0.5,
+            roots: 0.6,
+        },
+        // Pine: light-hungry and tall, on thin dry soil where beech can't hold; its seed rides the
+        // wind.
+        Habit {
+            tallest: 24.0,
+            rate: 0.5,
+            need: 0.4,
+            lifespan: 300.0,
+            crown: 0.22,
+            shade: 0.55,
+            palatable: 0.2,
+            reach: 40.0,
+            mature: 20.0,
+            stands: 1.5,
+            rots: 2.5,
+            wet: -0.3,
+            thin: 0.6,
+            deep: 0.0,
+            beyond: 0.1,
+            windborne: true,
+            thorny: false,
+            suckers: false,
+            bark: 0.75,
+            resin: 1.0,
+            roots: 0.5,
+        },
+        // Alder: fast in wet ground, its seed carried by water.
+        Habit {
+            tallest: 18.0,
+            rate: 0.6,
+            need: 0.35,
+            lifespan: 150.0,
+            crown: 0.25,
+            shade: 0.6,
+            palatable: 0.4,
+            reach: 20.0,
+            mature: 10.0,
+            stands: 0.6,
+            rots: 1.5,
+            wet: 0.97,
+            thin: 0.0,
+            deep: 0.0,
+            beyond: 0.05,
+            windborne: false,
+            thorny: false,
+            suckers: false,
+            bark: 0.2,
+            resin: 0.15,
+            roots: 0.3,
+        },
+    ]
+}
+
+/// The species as a wood left to itself for ages grows them (the grown world, `growth`): the
+/// floor's (`habits`), larger than life (the owner, 2026-10-16): each grows taller, lives longer,
+/// and its trunk thickens further, to a girth no tree of ours reaches.
+pub fn ancient() -> [Habit; Species] {
+    var h = habits()
+    // (tallest, lifespan, greatest trunk radius, how fast its trunk thickens against the others'),
+    // a species each, in `Species`' order.
+    let ages = [
+        vec4(34.0, 1200.0, 2.4, 3.0),
+        vec4(38.0, 700.0, 1.6, 2.0),
+        vec4(24.0, 160.0, 0.5, 1.0),
+        vec4(8.5, 220.0, 0.35, 1.0),
+        vec4(4.5, 60.0, 0.12, 1.0),
+        vec4(38.0, 650.0, 1.3, 1.6),
+        vec4(26.0, 250.0, 0.9, 1.2),
+    ]
+    for k in 0..h.len() {
+        h[k].tallest = ages[k].x
+        h[k].lifespan = ages[k].y
+        h[k].girthiest = ages[k].z
+        h[k].girth = ages[k].w
+    }
+    h
+}

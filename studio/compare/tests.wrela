@@ -1,0 +1,306 @@
+// The review tool's own tests (plan three's §B4), on synthetic judgements and the vale's own
+// manifest: no outside media is read.
+
+use panel::{key_json, manifest_hash, neutral, pairs_json, panel}
+use references::vale::{VALE, VisualReference}
+use rights::{eligible, permits}
+use std::string::String
+use tally::{A, B, EQUAL, Judge, Judgement, calibrated, ranked_losses, read_judge, tally}
+
+/// Scores of an image that wins (3 on every row) and one that loses (1).
+const HIGH = [3.0, 3.0, 3.0, 3.0, 3.0]
+const LOW = [1.0, 1.0, 1.0, 1.0, 1.0]
+
+/// A judge named `name` whose judgement of pair `p` (from 1) is `prefer[p - 1]`, scoring the
+/// preferred image high and the other low (both 2 when equal); its calibration answers `controls`.
+fn judge(name: str, prefer: [u32], controls: [u32]) -> Judge {
+    var j = Judge {
+        name: String::from(name),
+        judgements: Vec::new(),
+        controls: Vec::from(controls),
+    }
+    for k in 0..prefer.len() {
+        let (a, b) = if prefer[k] == A { (HIGH, LOW) } else if prefer[k] == B { (LOW, HIGH) } else {
+            ([2.0; 5], [2.0; 5])
+        }
+        j.judgements.push(
+            Judgement {
+                pair: k + 1,
+                a,
+                b,
+                prefer: prefer[k],
+                why: String::from(""),
+                notes: Vec::new(),
+            },
+        )
+    }
+    j
+}
+
+/// Each pair's still on side A, and the calibration's originals on A then B.
+const ORIGINALS = [A, B]
+
+/// Eight judges over twelve pairs (the still on A): in the first six pairs judges 0–4 prefer the
+/// still, 5–7 the reference; in the last six, judges 0–1 the still, 2–7 the reference.
+fn panel_of_42() -> Vec<Judge> {
+    var out: Vec<Judge> = Vec::new()
+    for j in 0..8 {
+        var prefer: Vec<u32> = Vec::new()
+        for p in 0..12 {
+            let wins = if p < 6 { 5 } else { 2 }
+            prefer.push(if j < wins { A } else { B })
+        }
+        out.push(judge(f"j{j}".as_str(), prefer, ORIGINALS))
+    }
+    out
+}
+
+/// Six pairs at 5–3 for the still and six at 2–6 fail overall at 42 of 96 (under half), though no
+/// pair is lost worse than 6 to 2 and six pairs are won by the median.
+@test
+fn six_won_and_six_lost_fail_overall_at_42_of_96() {
+    let still: [u32; 12] = [A; 12]
+    let t = tally(still, ORIGINALS, panel_of_42(), 6)
+    assert(t.complete, t.why.as_str())
+    assert(abs(t.share - 42.0 / 96.0) < 1.0e-6, f"share {t.share}")
+    assert(
+        !t.overall && t.per_pair && t.majority == 6 && t.majority_ok,
+        "rules (a) fails, (b) and (c) hold",
+    )
+    assert(!t.passed, "the panel fails")
+    // The ranked losses: every row lost as much (the reference won 42 of the judgements' rows...).
+    let losses = ranked_losses(t)
+    assert(losses.len() == 5, "five rows")
+}
+
+/// A pair lost 7 to 1 fails rule (b) though the rest are won.
+@test
+fn a_pair_lost_7_to_1_fails_per_pair() {
+    var judges: Vec<Judge> = Vec::new()
+    for j in 0..8 {
+        var prefer: Vec<u32> = Vec::new()
+        for p in 0..12 {
+            prefer.push(if p == 0 { if j == 0 { A } else { B } } else { A })
+        }
+        judges.push(judge(f"j{j}".as_str(), prefer, ORIGINALS))
+    }
+    let t = tally([A; 12], ORIGINALS, judges, 6)
+    assert(t.overall && !t.per_pair && !t.passed, "rule (b)")
+}
+
+/// The development panel's eight pairs take four won or equal, not six.
+@test
+fn eight_pairs_need_four_won_or_equal() {
+    var judges: Vec<Judge> = Vec::new()
+    for j in 0..8 {
+        var prefer: Vec<u32> = Vec::new()
+        for p in 0..8 {
+            prefer.push(if p < 4 { EQUAL } else if j < 4 { A } else { B })
+        }
+        judges.push(judge(f"j{j}".as_str(), prefer, ORIGINALS))
+    }
+    let t = tally([A; 8], ORIGINALS, judges, 4)
+    assert(t.majority >= 4 && t.majority_ok && t.passed, f"{t.majority} pairs won or equal")
+    let t6 = tally([A; 8], ORIGINALS, judges, 6)
+    assert(t6.majority_ok == (t6.majority >= 6), "six of eight is another rule")
+}
+
+/// A judge that prefers a worse copy (the blur, or the quarter-resolution copy) is rejected and named;
+/// the ninth judge takes its place; eight valid judges or the tally is incomplete.
+@test
+fn a_judge_that_fails_the_calibration_is_replaced() {
+    var judges = panel_of_42()
+    judges[3].controls = Vec::from([B, B])
+    assert(!calibrated(judges[3], ORIGINALS), "it prefers the blur")
+    let short = tally([A; 12], ORIGINALS, judges, 6)
+    assert(!short.complete && short.rejected.len() == 1, short.why.as_str())
+    judges.push(judge("j8", [A; 12], ORIGINALS))
+    let t = tally([A; 12], ORIGINALS, judges, 6)
+    assert(
+        t.complete && t.rejected.len() == 1 && t.rejected[0].as_str() == "j3",
+        "j3 rejected, kept on record",
+    )
+}
+
+/// A judge missing a pair (its reference unviewable, say) makes the tally incomplete: the missing
+/// judgement doesn't shrink the denominator.
+@test
+fn an_unjudged_pair_blocks_a_complete_tally() {
+    var judges = panel_of_42()
+    let _ = judges[0].judgements.remove(5)
+    let t = tally([A; 12], ORIGINALS, judges, 6)
+    assert(!t.complete && t.why.as_str().find("every pair").is_some(), t.why.as_str())
+}
+
+/// Two identical sets, judged equal by every judge, tally as equal: the panel passes.
+@test
+fn identical_sets_tally_equal() {
+    var judges: Vec<Judge> = Vec::new()
+    for j in 0..8 {
+        judges.push(judge(f"j{j}".as_str(), [EQUAL; 12], ORIGINALS))
+    }
+    let t = tally([B; 12], ORIGINALS, judges, 6)
+    assert(t.complete && t.share == 1.0 && t.passed, "equal throughout")
+    for p in t.pairs {
+        assert(p.equal == 8 && p.median == 0.0, "each pair equal")
+    }
+}
+
+/// A judge who says equal of images further apart than a point on some row is read as preferring
+/// the one scored higher.
+@test
+fn an_equal_that_isnt_close_prefers_the_higher_scored() {
+    let g = Judgement { pair: 1, a: HIGH, b: LOW, prefer: EQUAL, why: String::from("") }
+    assert(tally::verdict_of(g, A) == 1 && tally::verdict_of(g, B) == -1, "the higher scored")
+}
+
+/// An unknown or all-rights-reserved licence permits no use (link-only); CC0 and CC BY every one.
+@test
+fn unknown_permissions_refuse_every_use() {
+    for licence in ["unknown", "All rights reserved", ""] {
+        assert(!permits(licence), f"{licence} permits a use")
+    }
+    for licence in ["CC0", "CC BY 4.0", "CC BY-SA 2.0", "Public domain"] {
+        assert(permits(licence), licence)
+    }
+    // Nor a non-commercial or no-derivatives licence, or one only like an attributed one.
+    for licence in ["CC BY-NC 4.0", "CC BY-ND 4.0", "CC BY-NC-SA 4.0", "CC BY unknown", "CC BY"] {
+        assert(!permits(licence), f"{licence} permits a use")
+    }
+}
+
+/// A judge who says equal of images more than a point apart on a row, their totals tied, says
+/// nothing: its file is refused until it says which.
+@test
+fn an_equal_whose_totals_tie_is_refused() {
+    let text = "{\"judge\": \"j\", \"pairs\": [{\"pair\": 1, \"a\": {\"light\": 3, \"colour\": 0, \"value\": 2, \"depth\": 2, \"artifacts\": 2}, \"b\": {\"light\": 0, \"colour\": 3, \"value\": 2, \"depth\": 2, \"artifacts\": 2}, \"prefer\": \"equal\"}]}"
+    match read_judge(text) {
+        Ok(_) => panic("an unresolvable equal was read"),
+        Err(why) => assert(why.as_str().find("say which").is_some(), why.as_str()),
+    }
+}
+
+/// A judge's calibration answers are read by their pairs' ids, whatever their order; a missing,
+/// repeated or unknown id is refused.
+@test
+fn controls_are_read_by_their_ids() {
+    let head = "{\"judge\": \"j\", \"pairs\": [], \"controls\": "
+    let Ok(j) = read_judge(
+        f"{head}[{{\"control\": 2, \"prefer\": \"b\"}}, {{\"control\": 1, \"prefer\": \"a\"}}]}}".as_str(),
+    ) else {
+        panic("controls in another order")
+    }
+    assert(calibrated(j, ORIGINALS), "the answers by their ids")
+    for bad in [
+        "[{\"control\": 1, \"prefer\": \"a\"}, {\"control\": 1, \"prefer\": \"b\"}]",
+        "[{\"control\": 3, \"prefer\": \"a\"}, {\"control\": 1, \"prefer\": \"b\"}]",
+        "[{\"prefer\": \"a\"}, {\"prefer\": \"b\"}]",
+    ] {
+        assert(read_judge(f"{head}{bad}}}".as_str()).is_err(), bad)
+    }
+}
+
+/// One judge's file twice (or a file without a judge's name) is no second judge: the tally is
+/// incomplete.
+@test
+fn a_judge_twice_is_no_second_judge() {
+    var judges = panel_of_42()
+    judges[1].name = String::from("j0")
+    let t = tally([A; 12], ORIGINALS, judges, 6)
+    assert(!t.complete && t.why.as_str().find("repeated").is_some(), t.why.as_str())
+}
+
+/// The calibration pairs' images are named for nothing about them: which is the original is the
+/// key's alone.
+@test
+fn the_controls_names_say_nothing() {
+    let names = [
+        neutral(seed: 5, k: 0, what: "original"),
+        neutral(seed: 5, k: 0, what: "worse"),
+        neutral(seed: 5, k: 1, what: "original"),
+    ]
+    for n in names {
+        assert(
+            n.len() == 16 && n.as_str().find("orig").is_none() && n.as_str().find("blur").is_none(),
+            n.as_str(),
+        )
+    }
+    assert(names[0] != names[1] && names[0] != names[2], "each image its own name")
+}
+
+/// A link-only reference (no local copy, or a licence that doesn't permit a review) is refused
+/// before anything is read; the panel says which.
+@test
+fn a_link_only_source_is_refused_without_a_fetch() {
+    var refs: Vec<VisualReference> = Vec::from(VALE)
+    refs[0].local_file = ""
+    assert(eligible(refs[0]).is_some(), "no copy")
+    let stills: Vec<String> = Vec::new()
+    match panel("evaluation", refs, stills, "build/none", 1) {
+        Ok(_) => panic("a link-only source made a panel"),
+        Err(why) => assert(why.as_str().find("link-only").is_some(), why.as_str()),
+    }
+    var silent: Vec<VisualReference> = Vec::from(VALE)
+    silent[1].licence = "unknown"
+    assert(eligible(silent[1]).is_some(), "an unknown licence")
+}
+
+/// The panel carries each reference's credit, licence and source to its judges, keeps which image
+/// is the still out of what they read, and its order is the seed's.
+@test
+fn credits_reach_the_judges_and_the_key_stays_apart() {
+    var stills: Vec<String> = Vec::new()
+    for k in 0..12 {
+        stills.push(String::from(f"{k / 10}{k % 10}-shot.png"))
+    }
+    let Ok(p) = panel("evaluation", VALE, stills, "build/vale-b5", 7) else { panic("a panel") }
+    assert(p.pairs.len() == 12, "twelve pairs")
+    let judged = pairs_json(p)
+    for r in VALE {
+        if r.set == "evaluation" {
+            assert(
+                judged.as_str().find(r.creator).is_some() &&
+                    judged.as_str().find(r.source_page).is_some(),
+                r.id,
+            )
+        }
+    }
+    assert(judged.as_str().find("\"still\"").is_none(), "the judges' file says which is the still")
+    assert(key_json(p).as_str().find("\"still\"").is_some(), "the key does")
+    let Ok(again) = panel("evaluation", VALE, stills, "build/vale-b5", 7) else { panic("a panel") }
+    let Ok(other) = panel("evaluation", VALE, stills, "build/vale-b5", 8) else { panic("a panel") }
+    assert(pairs_json(again) == judged, "the same seed, the same order")
+    assert(pairs_json(other) != judged, "another seed, another order")
+}
+
+/// The manifest's hash changes with any reference's copy or licence: a changed source makes a new
+/// baseline (the tally refuses a panel whose hash isn't the references' now).
+@test
+fn the_frozen_manifest_hash_follows_every_reference() {
+    let frozen = manifest_hash(VALE)
+    var changed: Vec<VisualReference> = Vec::from(VALE)
+    changed[4].sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+    assert(manifest_hash(changed) != frozen, "a changed copy")
+    // And with what a judge is shown beside a reference: its creator, its processing.
+    var credited: Vec<VisualReference> = Vec::from(VALE)
+    credited[2].creator = "someone else"
+    assert(manifest_hash(credited) != frozen, "a changed credit")
+    var processed: Vec<VisualReference> = Vec::from(VALE)
+    processed[2].processing = "HDR"
+    assert(manifest_hash(processed) != frozen, "a changed processing")
+    assert(manifest_hash(VALE) == frozen && frozen.len() == 64, "the same manifest, the same hash")
+}
+
+/// The references and the shots are the baseline's (§B5's frozen hashes).
+@test
+fn the_references_and_shots_are_the_baselines() {
+    let (m, h) = (manifest_hash(VALE), panel::shots_hash())
+    assert(
+        m.as_str() == panel::FROZEN_MANIFEST,
+        f"the references changed since the baseline: {m}",
+    )
+    assert(
+        panel::shots_hash().as_str() == panel::FROZEN_SHOTS,
+        f"the shots changed since the baseline: {h}",
+    )
+}
