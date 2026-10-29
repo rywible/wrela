@@ -3510,3 +3510,20 @@ Seven existing production HDR buffers exact across1×–4×. No new references/t
 Firstjointassessment5.54min, decision27.87min,
 exactlytwofollowups. Retain source-region specialization behind explicit source
 contract; generic default for other scenes. No G1–G7 pass or world-leading claim.
+
+
+### 2026-10-29 — camera-map arithmetic: retired
+
+AMD RADV RENOIR1002:164c, Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Full clearing1080p2×,600warmup/60frames,oneworker,fixedworkload.
+Baseline/map completeGPU median25.37972/25.54684ms,p9526.99724/27.00160ms;
+temporal4.31520/4.36144ms,CPUframecall1.795/1.795ms.
+Live405,267,256B and requestedpeak582,445,428B for both.
+Observedwhole-clientVRAM551,911,424/551,931,904B,GTT20,180,992B both,
+browserPSS815,462,400/841,116,672B; UMApoolsnotadditive,notphysicalpeaks.
+Single-run cost change is inconclusive; no speed or memory advantage claimed.
+1,536batchedanalyticframes; candidate and productionHDRglobalqualitymixed,
+4×posthoc changedregionMAE0.029111→0.033294.
+Firstjointassessment9.71min; retire with zero followups,
+runtime restored exactly. [Full evidence and limitations](neural-camera-map.md).

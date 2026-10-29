@@ -18,22 +18,18 @@
 
 ## Immediate milestone
 
-[Hardware response grids](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity)
-are retired. Exact source visibility plus11³/22³normal-depth textures passes
-0/24and2/24shaded gates; raw-gradient/signed-distance follow-up passes0/24and1/24.
-22³normal-depth GPU0.36056ms versus exactcache0.34600ms, but1.632dBloss.
-The11³payload is about20×smaller than one responsecache; complete requested
-residency improves only19.35%, and quality fails. Runtime restored.
+Retain the measured [source-region temporal specialization](neural-motion-regions.md)
+and [compact causal source records](neural-source-records.md). The latest
+[camera-map shortcut](neural-camera-map.md) is retired: no demonstrated joint
+quality/runtime/residency advantage. The complete production renderer still costs
+about25ms at1080p2× on this AMD machine. No G1–G7 gate is met.
 
-The retained [source-guided material basis](neural-coverage-radiance.md#source-material-basis-retain-guided-observations-for-the-supported-family)
-is the next useful architecture to extend: exact authored coverage plus local
-observed-radiance coefficients for spatially varying shading. First expose a
-consequential counterexample to its three-global-colour assumption and compare
-equally informed conventional coefficients. No blind fitting.
-
-G4 remains unmet; frozen optical still8/24. Direct surface thinning and uniform
-response grids do not provide the joint quality/runtime/residency result.
-G1–G7 remain unchanged/unmet.
+Next test reuse of source-derived per-frame leaf geometry between the production
+depth and shading passes. Count preparation, scratch, bandwidth and updates;
+preserve exact coverage and give conventional controls the same source information.
+This is a runtime architecture experiment, not a new compact-G4 or neural win.
+The shaded compact-representation quality gap remains open; models stay frozen
+until a specific rendered defect justifies fitting.
 
 ## Evidence recorded so far
 
@@ -3272,3 +3268,25 @@ Next: source-declared regions selecting more specialized reconstruction work whi
 preserving camera reprojection/history, not the rejected identity shortcut.
 [Evidence](neural-motion-regions.md). Manifest `3e17c376c548caa77706d95d2205ab5b1a1eeaa1fcf78396640fb2f405e950ad`.
 Inherited benchmark edits remain unstaged.
+
+
+## 2026-10-29 — retire the homogeneous camera-map shortcut
+
+[The camera-map experiment](neural-camera-map.md) completes its first full
+quality/runtime/residency assessment in 9.71 minutes
+and retires at 16.36 minutes, with zero optimization followups.
+Single-run complete GPU25.37972→25.54684ms, temporal4.31520→4.36144ms;
+requested live405,267,256B unchanged, actualDRM/PSS recorded. No demonstrated win;
+the small timing difference is not a statistically established slowdown.
+
+Two batched captures produce1,536analyticframes. Candidate scores are fresh because
+744/768frames change. Analytic and production global quality changes fit numerical
+matched-quality tolerances but are small/mixed;4×post-hoc changed-region MAE grows
+0.029111→0.033294. Existing low-reference buffers replay exactly, permitting the
+completed16k/65k/independent65k shaded-reference comparison. No G3 gate is established.
+
+Restore runtime exactly to8442e272; no training/reference expansion, G1–G7 unchanged.
+Next: source-derived per-frame leaf geometry reused across production depth and
+shading passes, charging preparation, scratch and changed-camera/wind updates.
+The measured7.8ms combined vegetation cost is not all removable geometry work.
+Manifest `a81e892f627c0e228fa50f798d9e369c8ec64d9a6c7dab308aeb86ea079c8425`. Inherited benchmark edits remain unstaged.
