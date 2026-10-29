@@ -1,0 +1,31 @@
+// Exact viscous contact substep for mass-normalized modes. The physical force
+// is -resistance * contact_velocity at a stationary contact footprint.
+// dv/dt = -R b b^T v. Its rank-one exponential leaves orthogonal motion intact
+// and contracts the contact component. It cannot add energy even as R changes.
+// This is a passive numerical primitive, not a calibrated felt/damper model:
+// pedal travel, compression, spring forces and moving-contact work remain to be
+// supplied by the instrument. It deliberately has no volume-envelope input.
+use acoustics::Mode
+use std::math::exp_f64
+
+@audio
+pub fn dissipate(modes: mut [Mode], shape: [f64], resistance: f64, dt: f64) -> f64 {
+    assert(modes.len() == shape.len() && resistance >= 0.0 && dt >= 0.0)
+    var norm = 0.0
+    var velocity = 0.0
+    for i in 0..modes.len() {
+        norm += shape[i] * shape[i]
+        velocity += shape[i] * modes[i].v
+    }
+    if norm == 0.0 || resistance == 0.0 || dt == 0.0 { return 0.0 }
+    let x = resistance * norm * dt
+    // Accurate 1-exp(-x) near zero; no vanishing weak damper through cancellation.
+    let reduction = if x < 1e-4 {
+        x * (1.0 - x * (0.5 - x * (1.0 / 6.0 - x / 24.0)))
+    } else { 1.0 - exp_f64(-x) }
+    let scale = reduction * velocity / norm
+    for i in 0..modes.len() { modes[i].v -= scale * shape[i] }
+    // Removed energy of the contact projection, expressed without subtracting
+    // large nearly equal totals. Positions and all potential energy are fixed.
+    0.5 * velocity * velocity / norm * reduction * (2.0 - reduction)
+}

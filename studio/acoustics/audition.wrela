@@ -58,7 +58,7 @@ pub fn render() -> Result<(), ToolError> {
     }
     var peak: f32 = 0.0
     for s in audio { peak = max(peak, s.abs()) }
-    assert(peak < 0.95, "diagnostic calibration clips")
+    assert(peak * 8.0 < 0.95, "diagnostic calibration clips")
     for variant in 0..5 {
         var bytes = wav::header(samples: samples, channels: 1)
         for i in 0..samples {
@@ -67,7 +67,7 @@ pub fn render() -> Result<(), ToolError> {
             if variant == 2 && i % 12000 < 2400 { x = 0.0 }
             if variant == 3 && i >= 96000 { x = 0.0 }
             if variant == 4 { x = 0.0 }
-            wav::push_u32(mut bytes, bitcast_u32(x))
+            wav::push_u32(mut bytes, bitcast_u32(x * 8.0))
         }
         let path = f"out/string-control-{variant}.wav"
         var parts: Vec<Vec<u8>> = Vec::new()
@@ -75,7 +75,7 @@ pub fn render() -> Result<(), ToolError> {
         write_file(path, take parts)?
     }
     print(
-        f"{{\"render\":\"isolated-string diagnostic\",\"rate\":48000,\"seconds\":8,\"peak\":{peak},\"gain\":0.025,\"variants\":5,\"musical_approval\":false}}",
+        f"{{\"render\":\"isolated-string diagnostic\",\"rate\":48000,\"seconds\":8,\"peak\":{peak * 8.0},\"gain\":0.2,\"variants\":5,\"musical_approval\":false}}",
     )
     Ok(())
 }

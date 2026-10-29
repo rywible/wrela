@@ -459,3 +459,417 @@ fn parked_transport_preserves_string_state_for_later_strikes() {
         assert(al == bl && ar == br)
     }
 }
+
+@test
+fn bridge_sections_match_expanded_contacts_and_keep_differential_waves() {
+    let omega = [400.0, 1300.0]
+    let loss = [0.4, 0.8]
+    let impedance = [2.0, 3.0, 1.0, 4.0]
+    var expanded = bridge(
+        omega,
+        loss,
+        [0.7, 0.3, 0.7, 0.3, 0.5, -0.4, 0.5, -0.4],
+        impedance,
+        DT,
+    ).unwrap()
+    var reduced = engine::acoustic_bridge::sections(
+        omega,
+        loss,
+        [0.7, 0.3, 0.5, -0.4],
+        [0, 0, 1, 1],
+        impedance,
+        DT,
+    ).unwrap()
+    var a = [0.0; 4]
+    var b = [0.0; 4]
+    for step in 0..512 {
+        // Opposing waves at the same section must survive even when the
+        // section's net input cancels; an average alone cannot replace them.
+        let input = if step < 24 { [0.03, -0.02, 0.01, 0.0] } else { [0.0; 4] }
+        let la = scatter(mut expanded, input, mut a)
+        let lb = engine::acoustic_bridge::scatter_sections(mut reduced, input, mut b)
+        for i in 0..4 { assert((a[i] - b[i]).abs() < 1e-13) }
+        assert((la - lb).abs() < 1e-15)
+        assert((body_energy(expanded) - body_energy(reduced.body)).abs() < 1e-15)
+        if step == 0 { assert(b[0] < -0.02 && b[1] > 0.01) }
+    }
+}
+
+@test
+fn simd_bridge_matches_reference_and_accounts_for_physical_energy() {
+    let impedance = [2.0, 3.0]
+    var reference = bridge(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25, 0.5, -0.4, 0.15, 0.2],
+        impedance,
+        DT,
+    ).unwrap()
+    var fast = engine::acoustic_bridge::narrow(reference)
+    var out_ref = [0.0, 0.0]
+    var out_fast: [f32; 2] = [0.0, 0.0]
+    var input_energy = 0.0
+    var output_energy = 0.0
+    var dissipated = 0.0
+    var error = 0.0
+    var signal = 0.0
+    for step in 0..2048 {
+        let input = [if step < 48 { 0.01 } else { 0.0 }, 0.0]
+        let _ = scatter(mut reference, input, mut out_ref)
+        dissipated += f64(
+            engine::acoustic_bridge::scatter32(
+                mut fast,
+                [f32(input[0]), f32(input[1])],
+                mut out_fast,
+            ),
+        )
+        for p in 0..2 {
+            error += (f64(out_fast[p]) - out_ref[p]) * (f64(out_fast[p]) - out_ref[p])
+            signal += out_ref[p] * out_ref[p]
+            input_energy += DT * impedance[p] * input[p] * input[p]
+            output_energy += DT * impedance[p] * f64(out_fast[p]) * f64(out_fast[p])
+        }
+        if input_energy > 0.0 {
+            let residual = engine::acoustic_bridge::energy32(fast) +
+                output_energy +
+                dissipated -
+                input_energy
+            assert(residual.abs() / input_energy < 1e-4)
+        }
+    }
+    assert((error / signal).sqrt() < 5e-5)
+}
+
+@test
+fn mixed_precision_string_body_loop_has_bounded_energy_error() {
+    var a = wave_string(
+        left_samples: 24,
+        right_samples: 168,
+        impedance: 2.0,
+        dt: DT,
+        hammer: hammer(2.0),
+    )
+    var c = wave_string(
+        left_samples: 27,
+        right_samples: 190,
+        impedance: 3.0,
+        dt: DT,
+        hammer: Hammer { x: -1.0, ..hammer(0.0) },
+    )
+    var reference = engine::acoustic_bridge::sections(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25, 0.5, -0.4, 0.15, 0.2],
+        [0, 1],
+        [2.0, 3.0],
+        DT,
+    ).unwrap()
+    var ar = a.clone()
+    var cr = c.clone()
+    var body = engine::acoustic_bridge::narrow_sections(reference)
+    var outgoing_ref = [0.0, 0.0]
+    var received_ref = 0.0
+    var received_fast = 0.0
+    var outgoing: [f32; 2] = [0.0, 0.0]
+    let initial = wave_energy(a) + wave_energy(c)
+    var dissipated = 0.0
+    for _ in 0..2048 {
+        let reference_input = [
+            engine::acoustic_waveguide::bridge_incoming(ar),
+            engine::acoustic_waveguide::bridge_incoming(cr),
+        ]
+        let _ = engine::acoustic_bridge::scatter_sections(
+            mut reference,
+            reference_input,
+            mut outgoing_ref,
+        )
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut ar, outgoing_ref[0])
+        engine::acoustic_waveguide::free_with_bridge(mut cr, outgoing_ref[1])
+        received_ref = received_ref.max(wave_energy(cr))
+        let incoming = [
+            f32(engine::acoustic_waveguide::bridge_incoming(a)),
+            f32(engine::acoustic_waveguide::bridge_incoming(c)),
+        ]
+        dissipated += f64(
+            engine::acoustic_bridge::scatter_sections32(mut body, incoming, mut outgoing),
+        )
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut a, f64(outgoing[0]))
+        engine::acoustic_waveguide::free_with_bridge(mut c, f64(outgoing[1]))
+        received_fast = received_fast.max(wave_energy(c))
+        let stored = wave_energy(a) + wave_energy(c) + engine::acoustic_bridge::energy32(body.body)
+        assert(((stored + dissipated) / initial - 1.0).abs() < 1e-4)
+    }
+    // Receiver energy oscillates as it exchanges work with the bridge. Compare
+    // its observed peak to the f64 system, rather than inventing an absolute
+    // minimum for the energy remaining at an arbitrary final sample.
+    assert(received_ref > 0.0)
+    assert((received_fast / received_ref - 1.0).abs() < 1e-3)
+    assert(dissipated > 0.0)
+}
+
+@test
+fn packed_strings_preserve_differential_motion_and_match_expanded_loop() {
+    var strings: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+    for lane in 0..4 {
+        var s = wave_string(
+            left_samples: 24,
+            right_samples: 168,
+            impedance: 2.0 + f64(lane),
+            dt: DT,
+            hammer: Hammer { x: -1.0, ..hammer(0.0) },
+        )
+        s.left[lane] = (if lane % 2 == 0 { 1.0 } else { -1.0 }) * 0.01
+        strings.push(take s)
+    }
+    var packed = engine::acoustic_waveguide::packet(strings)
+    var reference = engine::acoustic_bridge::sections(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25],
+        [0, 0, 0, 0],
+        [2.0, 3.0, 4.0, 5.0],
+        DT,
+    ).unwrap()
+    var fast = engine::acoustic_bridge::packet_sections(reference)
+    var input = [0.0; 4]
+    var output = [0.0; 4]
+    var output_fast = [vec4(0.0)]
+    let initial = engine::acoustic_waveguide::packet_energy(packed)
+    var loss = 0.0
+    var error = 0.0
+    var signal = 0.0
+    for _ in 0..2048 {
+        for lane in 0..4 {
+            input[lane] = engine::acoustic_waveguide::bridge_incoming(strings[lane])
+        }
+        let _ = engine::acoustic_bridge::scatter_sections(mut reference, input, mut output)
+        let input_fast = [engine::acoustic_waveguide::packet_incoming(packed)]
+        loss += f64(engine::acoustic_bridge::scatter_packets(mut fast, input_fast, mut output_fast))
+        for lane in 0..4 {
+            error += (f64(output_fast[0][lane]) - output[lane]) *
+                (f64(output_fast[0][lane]) - output[lane])
+            signal += output[lane] * output[lane]
+            engine::acoustic_waveguide::free_with_bridge(mut strings[lane], output[lane])
+        }
+        engine::acoustic_waveguide::free_packet_bridge(mut packed, output_fast[0])
+        let stored = engine::acoustic_waveguide::packet_energy(packed) +
+            engine::acoustic_bridge::energy32(fast.body)
+        assert(((stored + loss) / initial - 1.0).abs() < 1e-4)
+    }
+    assert((error / signal).sqrt() < 1e-4)
+}
+
+@test
+fn scattering_dispersion_is_lossless_and_has_the_independent_transfer_phase() {
+    for a in [-0.98, -0.4, 0.0, 0.6, 0.95] {
+        var section = engine::acoustic_dispersion::section(a)
+        var input_energy = 0.0
+        var output_energy = 0.0
+        var re = 0.0
+        var im = 0.0
+        let w = 0.31
+        for i in 0..4096 {
+            let input = if i == 0 { 1.0 } else { 0.0 }
+            let output = engine::acoustic_dispersion::step(mut section, input)
+            input_energy += input * input
+            output_energy += output * output
+            re += output * std::math::cos_f64(f64(i) * w)
+            im -= output * std::math::sin_f64(f64(i) * w)
+            assert((output_energy + section.state * section.state - input_energy).abs() < 1e-12)
+        }
+        let lag = engine::acoustic_dispersion::phase(a, w)
+        assert((re - std::math::cos_f64(lag)).abs() < 1e-12)
+        assert((im + std::math::sin_f64(lag)).abs() < 1e-12)
+    }
+}
+
+@test
+fn local_damper_removes_only_contact_motion_and_accounts_for_loss() {
+    let shape = [2.0, -1.0]
+    for resistance in [0.0, 1e-8, 0.1, 100.0, 1e12] {
+        var modes = [
+            mode(omega: 400.0, shape: 1.0, loss: 0.0, dt: DT),
+            mode(omega: 1300.0, shape: 1.0, loss: 0.0, dt: DT),
+        ]
+        modes[0].q = 1e-4
+        modes[1].q = -2e-5
+        modes[0].v = 0.7
+        modes[1].v = -0.2
+        let before = energy(hammer(0.0), modes)
+        let orthogonal = modes[0].v + 2.0 * modes[1].v
+        let lost = engine::acoustic_damper::dissipate(mut modes, shape, resistance, DT)
+        assert(lost >= 0.0)
+        assert((energy(hammer(0.0), modes) + lost - before).abs() < 1e-14)
+        assert((modes[0].v + 2.0 * modes[1].v - orthogonal).abs() < 1e-14)
+        assert(modes[0].q == 1e-4 && modes[1].q == -2e-5)
+        let expected = 1.6 * std::math::exp_f64(-resistance * 5.0 * DT)
+        assert((2.0 * modes[0].v - modes[1].v - expected).abs() < 1e-14)
+    }
+}
+
+@test
+fn moving_bridge_assembly_matches_direct_kinetic_and_elastic_integrals() {
+    let spec = StringSpec {
+        length: 1.0,
+        tension: 700.0,
+        density: 0.00255,
+        rigidity: 0.001,
+        strike: 0.12,
+        contact_width: 0.008,
+    }
+    let a = engine::acoustic_assembly::assemble([spec], [2], [400.0], [0.3]).unwrap()
+    let q = [0.001, -0.002, 0.003]
+    let v = [0.7, -0.2, 0.4]
+    var matrix_kinetic = 0.0
+    var matrix_elastic = 0.0
+    for i in 0..3 {
+        for j in 0..3 {
+            matrix_kinetic += 0.5 * v[i] * a.mass[i * 3 + j] * v[j]
+            matrix_elastic += 0.5 * q[i] * a.stiffness[i * 3 + j] * q[j]
+        }
+    }
+    // Independent midpoint integration of physical u, u_x and u_xx.
+    var kinetic = 0.5 * v[2] * v[2]
+    var elastic = 0.5 * 400.0 * 400.0 * q[2] * q[2]
+    let cells: u32 = 8192
+    for i in 0..cells {
+        let x = (f64(i) + 0.5) / f64(cells)
+        var velocity = x * 0.3 * v[2]
+        var slope = 0.3 * q[2]
+        var curvature = 0.0
+        for n in 1..3 {
+            let k = PI_F64 * f64(n)
+            let normalization = (2.0 / spec.density).sqrt()
+            velocity += normalization * std::math::sin_f64(k * x) * v[n - 1]
+            slope += normalization * k * std::math::cos_f64(k * x) * q[n - 1]
+            curvature -= normalization * k * k * std::math::sin_f64(k * x) * q[n - 1]
+        }
+        kinetic += 0.5 * spec.density * velocity * velocity / f64(cells)
+        elastic += 0.5 *
+            (spec.tension * slope * slope + spec.rigidity * curvature * curvature) /
+            f64(cells)
+    }
+    assert((matrix_kinetic / kinetic - 1.0).abs() < 1e-8)
+    assert((matrix_elastic / elastic - 1.0).abs() < 1e-10)
+    let modes = eigensystem(a.mass, a.stiffness, a.count).unwrap()
+    let (residual, orthogonality) = errors(modes, a.mass, a.stiffness)
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+}
+
+@test
+fn symmetric_ribs_keep_exact_matrix_symmetry_through_cancellation() {
+    let plate = plate_fixture()
+    let structure = assemble(
+        plate,
+        [
+            Rib { x: 0.8, line_mass: 0.2, bending: 60.0 },
+            Rib { x: 1.6, line_mass: 0.2, bending: 60.0 },
+        ],
+        count_x: 4,
+        count_y: 4,
+    ).unwrap()
+    for i in 0..16 {
+        for j in 0..16 {
+            assert(structure.mass[i * 16 + j] == structure.mass[j * 16 + i])
+            assert(structure.stiffness[i * 16 + j] == structure.stiffness[j * 16 + i])
+        }
+    }
+    let modes = solve(structure).unwrap()
+    let (residual, orthogonality) = errors(modes, structure.mass, structure.stiffness)
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+}
+
+@test
+fn simultaneous_contact_reduces_to_the_independent_single_hammer_update() {
+    var modes = [string_mode(spec(), 1, 0.0, DT), string_mode(spec(), 2, 0.0, DT)]
+    var single = modes
+    var h = hammer(1.5)
+    var multiple = [h]
+    let shapes = [modes[0].shape, modes[1].shape]
+    var contacts = engine::acoustics::contacts(multiple, modes, shapes, DT)
+    for _ in 0..512 {
+        let _ = contact_step(mut h, mut single, DT)
+        let b = engine::acoustics::simultaneous_step(mut contacts, mut multiple, mut modes)
+        assert(b.contact_error < 1e-10 && b.residual.abs() < 1e-12)
+        assert((h.x - multiple[0].x).abs() < 1e-12)
+        assert((h.v - multiple[0].v).abs() < 1e-10)
+        for j in 0..2 {
+            assert((modes[j].q - single[j].q).abs() < 1e-12)
+            assert((modes[j].v - single[j].v).abs() < 1e-10)
+        }
+    }
+}
+
+@test
+fn simultaneous_strikes_conserve_energy_and_ignore_solver_contact_order() {
+    var modes = [
+        mode(omega: 700.0, shape: 0.0, loss: 0.0, dt: DT),
+        mode(omega: 1900.0, shape: 0.0, loss: 0.0, dt: DT),
+    ]
+    var reversed_modes = modes
+    var hammers = [hammer(1.5), Hammer { mass: 0.007, stiffness: 4e11, x: 0.0, v: 3.0 }]
+    var reversed_hammers = [hammers[1], hammers[0]]
+    let shapes = [7.0, 2.0, 4.0, -3.0]
+    var c = engine::acoustics::contacts(hammers, modes, shapes, DT)
+    var reversed = engine::acoustics::contacts(
+        reversed_hammers,
+        reversed_modes,
+        [4.0, -3.0, 7.0, 2.0],
+        DT,
+    )
+    let initial = 0.5 * 0.01 * 1.5 * 1.5 + 0.5 * 0.007 * 3.0 * 3.0
+    for _ in 0..1024 {
+        let b = engine::acoustics::simultaneous_step(mut c, mut hammers, mut modes)
+        let _ = engine::acoustics::simultaneous_step(
+            mut reversed,
+            mut reversed_hammers,
+            mut reversed_modes,
+        )
+        assert(b.contact_error < 1e-9 && b.residual.abs() < 1e-12)
+        var actual = 0.0
+        for m in modes { actual += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+        for i in 0..2 {
+            let compression = hammers[i].x -
+                shapes[i * 2] * modes[0].q -
+                shapes[i * 2 + 1] * modes[1].q
+            let penetration = compression.max(0.0)
+            actual += 0.5 * hammers[i].mass * hammers[i].v * hammers[i].v +
+                0.25 * hammers[i].stiffness * penetration * penetration * penetration * penetration
+            assert((hammers[i].v - reversed_hammers[1 - i].v).abs() < 1e-9)
+        }
+        assert((actual / initial - 1.0).abs() < 1e-9)
+    }
+}
+
+@test
+fn one_hammer_on_three_strings_matches_the_symmetric_effective_mass_limit() {
+    var modes = [mode(omega: 700.0, shape: 0.0, loss: 0.0, dt: DT); 3]
+    var hammers = [hammer(1.5)]
+    let site = engine::acoustics::ContactSite { hammer: 0, stiffness: 1e12 / 3.0 }
+    var contacts = engine::acoustics::shared_contacts(
+        hammers,
+        modes,
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        [site; 3],
+        DT,
+    )
+    // Three identical unit modal masses moving together are one mass of 3.
+    // The combined felt stiffness is the sum of the three contact regions.
+    var equivalent = [mode(omega: 700.0, shape: 1.0 / f64(3.0).sqrt(), loss: 0.0, dt: DT)]
+    var h = hammer(1.5)
+    let initial = 0.5 * 0.01 * 1.5 * 1.5
+    for _ in 0..1024 {
+        let balance = engine::acoustics::simultaneous_step(mut contacts, mut hammers, mut modes)
+        let _ = contact_step(mut h, mut equivalent, DT)
+        assert(balance.contact_error < 1e-9)
+        assert((h.v - hammers[0].v).abs() < 1e-9)
+        var actual = 0.5 * hammers[0].mass * hammers[0].v * hammers[0].v
+        for m in modes {
+            let d = (hammers[0].x - m.q).max(0.0)
+            actual += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) +
+                0.25 * site.stiffness * d * d * d * d
+            assert((m.q - equivalent[0].q / f64(3.0).sqrt()).abs() < 1e-10)
+        }
+        assert((actual / initial - 1.0).abs() < 1e-9)
+    }
+}

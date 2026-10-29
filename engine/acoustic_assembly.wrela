@@ -1,0 +1,91 @@
+// Coupled stiff strings on a moving soundboard, for the detailed reference.
+// For string i, u(x)=sum_n phi_n(x) q_n + (x/L) * B_i b, where b contains
+// mass-normalized board coordinates. This lifting meets u(0)=0,u(L)=B_i b.
+// Integrating kinetic energy gives M_qb=sqrt(2 mu L)(-1)^(n+1)/(n pi)*B_i
+// and adds mu L/3 * B_i^T B_i to board mass. Integrating tension energy adds
+// T/L * B_i^T B_i to board stiffness. The bending lift has zero curvature.
+// These terms cause reciprocal feedback; there is no arbitrary gain from
+// string signal to board signal. Independently derived from energy integrals;
+// coupled piano physics context: Chabassier, Chaigne & Joly (2014), plan R2.
+// Assumptions: small transverse motion, pinned bending ends, one polarization,
+// static tension, finite modal truncation, no winding/tension nonlinearity.
+use acoustics::{StringSpec, angular, contact_shape}
+use std::collections::Vec
+use std::math::PI_F64
+
+pub struct Assembly {
+    pub count: u32,
+    pub strings: u32,
+    pub board_start: u32,
+    pub mass: Vec<f64>,
+    pub stiffness: Vec<f64>,
+    /// One contact covector per string, row-major over physical coordinates.
+    pub contacts: Vec<f64>,
+}
+
+pub fn assemble(
+    specs: [StringSpec],
+    retained: [u32],
+    board_omega: [f64],
+    attachments: [f64],
+) -> Option<Assembly> {
+    if specs.len() == 0 || retained.len() != specs.len() || board_omega.len() == 0 { return None }
+    if attachments.len() != specs.len() * board_omega.len() { return None }
+    var string_modes: u32 = 0
+    for n in retained {
+        if n == 0 || n > 512 { return None }
+        string_modes += n
+    }
+    let count = string_modes + board_omega.len()
+    if count > 1024 { return None }
+    var mass: Vec<f64> = Vec::filled(count * count, 0.0)
+    var stiffness: Vec<f64> = Vec::filled(count * count, 0.0)
+    var contacts: Vec<f64> = Vec::filled(specs.len() * count, 0.0)
+    for j in 0..board_omega.len() {
+        if !(board_omega[j] > 0.0) { return None }
+        let index = string_modes + j
+        mass[index * count + index] = 1.0
+        stiffness[index * count + index] = board_omega[j] * board_omega[j]
+    }
+    var offset: u32 = 0
+    for i in 0..specs.len() {
+        let spec = specs[i]
+        for j in 0..retained[i] {
+            let mode = j + 1
+            let index = offset + j
+            let omega = angular(spec, mode)
+            mass[index * count + index] = 1.0
+            stiffness[index * count + index] = omega * omega
+            contacts[i * count + index] = contact_shape(spec, mode)
+            let integral = (2.0 * spec.density * spec.length).sqrt() * (if mode % 2 == 1 {
+                1.0
+            } else { -1.0 }) / (PI_F64 * f64(mode))
+            for k in 0..board_omega.len() {
+                let cross = integral * attachments[i * board_omega.len() + k]
+                mass[index * count + string_modes + k] = cross
+                mass[(string_modes + k) * count + index] = cross
+            }
+        }
+        for j in 0..board_omega.len() {
+            let bj = attachments[i * board_omega.len() + j]
+            contacts[i * count + string_modes + j] = spec.strike * bj
+            for k in 0..board_omega.len() {
+                let product = bj * attachments[i * board_omega.len() + k]
+                let index = (string_modes + j) * count + string_modes + k
+                mass[index] += spec.density * spec.length / 3.0 * product
+                stiffness[index] += spec.tension / spec.length * product
+            }
+        }
+        offset += retained[i]
+    }
+    Some(
+        Assembly {
+            count,
+            strings: specs.len(),
+            board_start: string_modes,
+            mass,
+            stiffness,
+            contacts,
+        },
+    )
+}

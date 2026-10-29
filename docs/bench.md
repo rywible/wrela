@@ -1928,3 +1928,35 @@ reported mean 0.1842 ms, p99 0.2190 ms and worst 0.3013 ms over 750 blocks.
 That driven build has interruption checks and is comparable only to the same driven harness,
 not to the native-tool figures above. It is a migration/cost baseline, not a new piano's
 voicing target.
+
+
+### Reduced bridge and SIMD strings, second checkpoint
+
+Same ThinkPad/toolchain, AC and `powersave`; the repeat below ran after the previous model
+inference and download finished, before the next download began. Native tool only, 48 kHz,
+128 samples; 50 warmup blocks followed by 250 timed blocks for the complete prototype (750
+for the body alone). Exact sources and reports: `mechanics-2026-10-29/checkpoint-2/` under
+the evidence root above. These runs do not establish long-run browser timing or underruns.
+
+| Probe | Work | Mean ms | p99 ms | Worst ms |
+|---|---|---:|---:|---:|
+| SIMD body only | 16 structural modes, 16 ports | 0.302 | 0.322 | 0.536 |
+| SIMD strings and body | 256 ideal strings, 16 body modes, 8 rigid bridge sections | 0.853 | 0.882 | 0.893 |
+| SIMD strings and body | same, 16 sections | 0.951 | 0.966 | 0.977 |
+| SIMD strings and body | same, 32 sections | 1.147 | 1.180 | 1.188 |
+
+The four lanes retain independent string waves and share integer path lengths. Each rigid
+section conserves port work, including differential waves that cancel in its average input.
+Comparison with expanded f64 contacts checks that this grouping does not discard those waves.
+The geometric approximation of a continuous bridge by rigid sections still needs refinement.
+
+These timings exclude active hammer contact, dispersion, damping controls, radiation, room,
+output mixing and a second piano. No complete callback passes its budget on this evidence.
+An earlier run with downloads/install activity had 8-section mean 0.944/p99 1.621 ms;
+it is retained in the evidence, not silently replaced as if the timing variation did not occur.
+
+The low-cost first-order allpass dispersion search is not selected for the piano. Its bass
+fixture needs at least 36 such sections for exact target phases by a necessary phase-range
+bound; the attempted maximum of 16 missed some modal pitches by 395.9 cents. A midrange
+16-section fit reached 0.765 cents maximum error; the tested treble fits also missed a one-cent target. This is evidence against a universal cheap filter, not a perceptual verdict or a proof
+that no better waveguide approximation exists.

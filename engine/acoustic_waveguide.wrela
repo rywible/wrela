@@ -18,6 +18,7 @@ pub struct WaveString: Clone {
     pub right: Vec<f64>,
     l: u32,
     r: u32,
+    middle: u32,
 }
 
 pub fn string(
@@ -40,6 +41,7 @@ pub fn string(
         right: Vec::filled(right_samples, 0.0),
         l: 0,
         r: 0,
+        middle: right_samples / 2,
     }
 }
 
@@ -65,6 +67,8 @@ fn advance(s: mut WaveString, fixed: bool) -> f64 {
     s.right[s.r] = (if fixed { -1.0 } else { 1.0 }) * (a + increment)
     s.l += 1
     s.r += 1
+    s.middle += 1
+    if s.middle == s.right.len() { s.middle = 0 }
     if s.l == s.left.len() { s.l = 0 }
     if s.r == s.right.len() { s.r = 0 }
     s.hammer.x += s.dt * (s.hammer.v - 0.5 * s.dt * force / s.hammer.mass)
@@ -96,13 +100,13 @@ pub fn step(s: mut WaveString) -> f64 {
 @audio
 pub fn bridge_incoming(s: WaveString) -> f64 {
     assert(s.right.len() % 2 == 0)
-    s.right[(s.r + s.right.len() / 2) % s.right.len()]
+    s.right[s.middle]
 }
 
 @audio
 pub fn step_with_bridge(s: mut WaveString, returning: f64) -> f64 {
     assert(s.right.len() % 2 == 0)
-    s.right[(s.r + s.right.len() / 2) % s.right.len()] = returning
+    s.right[s.middle] = returning
     advance(mut s, fixed: false)
 }
 
@@ -119,6 +123,8 @@ fn free_transport(s: mut WaveString, fixed: bool) {
     s.compression -= s.dt * (a + b)
     s.l += 1
     s.r += 1
+    s.middle += 1
+    if s.middle == s.right.len() { s.middle = 0 }
     if s.l == s.left.len() { s.l = 0 }
     if s.r == s.right.len() { s.r = 0 }
 }
@@ -128,11 +134,87 @@ fn free_transport(s: mut WaveString, fixed: bool) {
 @audio
 pub fn free_with_bridge(s: mut WaveString, returning: f64) {
     assert(s.right.len() % 2 == 0)
-    s.right[(s.r + s.right.len() / 2) % s.right.len()] = returning
+    s.right[s.middle] = returning
     free_transport(mut s, fixed: false)
 }
 
 @audio
 pub fn free_fixed(s: mut WaveString) {
     free_transport(mut s, fixed: true)
+}
+
+/// Four parked ideal strings sharing integer path lengths. Each lane retains
+/// its own waves and displacement; this is SIMD storage, not voice averaging.
+/// Different physical tuning requires a separately verified dispersive path.
+pub struct Packet {
+    pub left: Vec<vec4>,
+    pub right: Vec<vec4>,
+    pub compression: vec4,
+    pub impedance: vec4,
+    dt: f32,
+    l: u32,
+    r: u32,
+    middle: u32,
+}
+
+pub fn packet(strings: [WaveString]) -> Packet {
+    assert(strings.len() == 4)
+    borrow first = strings[0]
+    var left: Vec<vec4> = Vec::filled(first.left.len(), vec4(0.0))
+    var right: Vec<vec4> = Vec::filled(first.right.len(), vec4(0.0))
+    var compression = vec4(0.0)
+    var impedance = vec4(0.0)
+    for lane in 0..4 {
+        borrow s = strings[lane]
+        assert(s.left.len() == first.left.len() && s.right.len() == first.right.len())
+        assert(s.l == first.l && s.r == first.r && s.middle == first.middle && s.dt == first.dt)
+        assert(s.hammer.v == 0.0 && s.compression < 0.0)
+        compression[lane] = f32(s.compression)
+        impedance[lane] = f32(s.impedance)
+        for i in 0..left.len() { left[i][lane] = f32(s.left[i]) }
+        for i in 0..right.len() { right[i][lane] = f32(s.right[i]) }
+    }
+    Packet {
+        left,
+        right,
+        compression,
+        impedance,
+        dt: f32(first.dt),
+        l: first.l,
+        r: first.r,
+        middle: first.middle,
+    }
+}
+
+@audio
+pub fn packet_incoming(p: Packet) -> vec4 {
+    p.right[p.middle]
+}
+
+@audio
+pub fn free_packet_bridge(p: mut Packet, returning: vec4) {
+    assert(p.right.len() % 2 == 0)
+    p.right[p.middle] = returning
+    let a = p.left[p.l]
+    let b = p.right[p.r]
+    p.left[p.l] = -b
+    p.right[p.r] = a
+    p.compression -= p.dt * (a + b)
+    p.l += 1
+    p.r += 1
+    p.middle += 1
+    if p.l == p.left.len() { p.l = 0 }
+    if p.r == p.right.len() { p.r = 0 }
+    if p.middle == p.right.len() { p.middle = 0 }
+}
+
+pub fn packet_energy(p: Packet) -> f64 {
+    var total = 0.0
+    for x in p.left {
+        for lane in 0..4 { total += f64(p.impedance[lane]) * f64(x[lane]) * f64(x[lane]) }
+    }
+    for x in p.right {
+        for lane in 0..4 { total += f64(p.impedance[lane]) * f64(x[lane]) * f64(x[lane]) }
+    }
+    f64(p.dt) * total
 }

@@ -15,6 +15,7 @@
 // piano string/contact context: Chabassier, Chaigne & Joly (2014), plan source R2.
 // No old piano model, recordings, measured tone tables or random excitation.
 
+use std::collections::Vec
 use std::math::{PI_F64, cos_f64, exp_f64, log_f64, sin_f64}
 
 pub struct StringSpec: Copy {
@@ -296,4 +297,209 @@ pub fn contact_shape(s: StringSpec, n: u32) -> f64 {
     let a = 0.5 * PI_F64 * f64(n) * s.contact_width / s.length
     let window = if a == 0.0 { 1.0 } else { sin_f64(a) / a }
     sin_f64(PI_F64 * f64(n) * s.strike) * window / (s.density * s.length * 0.5).sqrt()
+}
+
+/// Preallocated small-system simultaneous-contact reference. Contact sites can
+/// share a hammer, so a three-string unison retains one action mass and three
+/// distinct string/felt contacts. Geometry and felt remain fixed during a solve.
+/// Fixed coordinate solves minimize a convex force potential with a positive semidefinite linear
+/// response. The reported residual must pass; bounded work alone is not proof
+/// of convergence. This is a reference method, not the runtime choice.
+pub struct ContactSite: Copy {
+    pub hammer: u32,
+    pub stiffness: f64,
+    pub compliance: f64 = 0.0,
+    /// Fixed gap in metres between this felt region and its string.
+    pub gap: f64 = 0.0,
+}
+
+pub struct Contacts {
+    sites: Vec<ContactSite>,
+    shapes: Vec<f64>,
+    gamma: Vec<f64>,
+    masses: Vec<f64>,
+    old: Vec<f64>,
+    free: Vec<f64>,
+    forces: Vec<f64>,
+    free_q: Vec<f64>,
+    free_v: Vec<f64>,
+    force_q: Vec<f64>,
+    dt: f64,
+}
+
+/// Convenience for independent one-string hammers. Constitutive coefficients
+/// are captured at cooking; change them by recooking, not by editing Hammer.
+pub fn contacts(hammers: [Hammer], modes: [Mode], shapes: [f64], dt: f64) -> Contacts {
+    var sites: Vec<ContactSite> = Vec::new()
+    for i in 0..hammers.len() {
+        sites.push(
+            ContactSite {
+                hammer: i,
+                stiffness: hammers[i].stiffness,
+                compliance: hammers[i].compliance,
+            },
+        )
+    }
+    shared_contacts(hammers, modes, shapes, sites, dt)
+}
+
+pub fn shared_contacts(
+    hammers: [Hammer],
+    modes: [Mode],
+    shapes: [f64],
+    sites: [ContactSite],
+    dt: f64,
+) -> Contacts {
+    let ports = sites.len()
+    assert(hammers.len() > 0 && hammers.len() <= 8 && ports > 0 && ports <= 24 && modes.len() > 0)
+    assert(shapes.len() == ports * modes.len() && dt > 0.0)
+    var result = Contacts {
+        sites: Vec::new(),
+        shapes: Vec::filled(shapes.len(), 0.0),
+        gamma: Vec::filled(ports * ports, 0.0),
+        masses: Vec::filled(hammers.len(), 0.0),
+        old: Vec::filled(ports, 0.0),
+        free: Vec::filled(ports, 0.0),
+        forces: Vec::filled(ports, 0.0),
+        free_q: Vec::filled(modes.len(), 0.0),
+        free_v: Vec::filled(modes.len(), 0.0),
+        force_q: Vec::filled(modes.len(), 0.0),
+        dt,
+    }
+    for site in sites {
+        assert(site.hammer < hammers.len() && site.stiffness >= 0.0 && site.compliance >= 0.0)
+        result.sites.push(site)
+    }
+    for i in 0..hammers.len() {
+        assert(hammers[i].mass > 0.0)
+        result.masses[i] = hammers[i].mass
+    }
+    for i in 0..shapes.len() { result.shapes[i] = shapes[i] }
+    for j in 0..modes.len() {
+        assert(modes[j].dt == dt)
+        let half = sin_f64(0.5 * modes[j].omega * dt)
+        result.force_q[j] = 2.0 * half * half / (modes[j].omega * modes[j].omega)
+    }
+    for i in 0..ports {
+        for k in 0..ports {
+            var response = if sites[i].hammer == sites[k].hammer {
+                0.5 * dt * dt / hammers[sites[i].hammer].mass
+            } else { 0.0 }
+            for j in 0..modes.len() {
+                response += shapes[i * modes.len() + j] *
+                    result.force_q[j] *
+                    shapes[k * modes.len() + j]
+            }
+            result.gamma[i * ports + k] = response
+        }
+    }
+    result
+}
+
+// The existing constitutive functions read only stiffness and compliance.
+// No kinetic energy is associated with this temporary felt description.
+fn felt(site: ContactSite) -> Hammer {
+    Hammer { mass: 1.0, stiffness: site.stiffness, compliance: site.compliance, x: 0.0, v: 0.0 }
+}
+
+pub fn contact_energy(c: Contacts, hammers: [Hammer], modes: [Mode]) -> f64 {
+    var total = 0.0
+    for m in modes { total += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+    for h in hammers { total += 0.5 * h.mass * h.v * h.v }
+    for i in 0..c.sites.len() {
+        let site = c.sites[i]
+        var compression = hammers[site.hammer].x - site.gap
+        for j in 0..modes.len() { compression -= c.shapes[i * modes.len() + j] * modes[j].q }
+        total += stored_contact(felt(site), compression)
+    }
+    total
+}
+
+pub fn simultaneous_step(c: mut Contacts, hammers: mut [Hammer], modes: mut [Mode]) -> Balance {
+    let ports = c.sites.len()
+    let count = modes.len()
+    assert(hammers.len() == c.masses.len() && count == c.free_q.len())
+    for i in 0..hammers.len() {
+        assert(
+            hammers[i].mass == c.masses[i] &&
+                hammers[i].stiffness >= 0.0 &&
+                hammers[i].compliance >= 0.0,
+        )
+    }
+    let before = contact_energy(c, hammers, modes)
+    var lost = damp(mut modes)
+    for j in 0..count {
+        let m = modes[j]
+        assert(m.dt == c.dt)
+        c.free_q[j] = m.c * m.q + m.sv * m.v
+        c.free_v[j] = m.sq * m.q + m.c * m.v
+    }
+    for i in 0..ports {
+        let site = c.sites[i]
+        var old = hammers[site.hammer].x - site.gap
+        var free = old + c.dt * hammers[site.hammer].v
+        for j in 0..count {
+            old -= c.shapes[i * count + j] * modes[j].q
+            free -= c.shapes[i * count + j] * c.free_q[j]
+        }
+        c.old[i] = old
+        c.free[i] = free
+        c.forces[i] = 0.0
+    }
+    for _ in 0..48 {
+        for i in 0..ports {
+            var other = c.free[i]
+            for k in 0..ports {
+                if k != i { other -= c.gamma[i * ports + k] * c.forces[k] }
+            }
+            var lo = 0.0
+            var hi = effective_force(felt(c.sites[i]), c.old[i], other)
+            for _ in 0..48 {
+                let force = 0.5 * (lo + hi)
+                let desired = effective_force(
+                    felt(c.sites[i]),
+                    c.old[i],
+                    other - c.gamma[i * ports + i] * force,
+                )
+                if force < desired { lo = force } else { hi = force }
+            }
+            c.forces[i] = 0.5 * (lo + hi)
+        }
+        var residual = 0.0
+        for i in 0..ports {
+            var compression = c.free[i]
+            for k in 0..ports { compression -= c.gamma[i * ports + k] * c.forces[k] }
+            let desired = effective_force(felt(c.sites[i]), c.old[i], compression)
+            residual = residual.max((c.forces[i] - desired).abs() / c.forces[i].max(1.0))
+        }
+        if residual < 1e-12 { break }
+    }
+    for j in 0..count {
+        var force = 0.0
+        for i in 0..ports { force += c.shapes[i * count + j] * c.forces[i] }
+        modes[j].q = c.free_q[j] + c.force_q[j] * force
+        modes[j].v = c.free_v[j] + modes[j].sv * force
+    }
+    for h in 0..hammers.len() {
+        var force = 0.0
+        for i in 0..ports { if c.sites[i].hammer == h { force += c.forces[i] } }
+        hammers[h].x += c.dt * (hammers[h].v - 0.5 * c.dt * force / hammers[h].mass)
+        hammers[h].v -= c.dt * force / hammers[h].mass
+    }
+    var peak = 0.0
+    var error = 0.0
+    for i in 0..ports {
+        var compression = hammers[c.sites[i].hammer].x - c.sites[i].gap
+        for j in 0..count { compression -= c.shapes[i * count + j] * modes[j].q }
+        let wanted = effective_force(felt(c.sites[i]), c.old[i], compression)
+        error = error.max((c.forces[i] - wanted).abs() / c.forces[i].max(1.0))
+        peak = peak.max(c.forces[i])
+    }
+    lost += damp(mut modes)
+    Balance {
+        force: peak,
+        dissipated: lost,
+        residual: contact_energy(c, hammers, modes) + lost - before,
+        contact_error: error,
+    }
 }

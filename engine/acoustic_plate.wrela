@@ -69,12 +69,18 @@ pub fn assemble(p: Plate, ribs: [Rib], count_x: u32, count_y: u32) -> Option<Str
         for i in 0..n {
             let sx = sin_f64(PI_F64 * f64(i / count_y + 1) * rib.x / p.length)
             let ky = PI_F64 * f64(i % count_y + 1) / p.width
-            for j in 0..n {
+            for j in i..n {
                 if i % count_y != j % count_y { continue }
                 let tx = sin_f64(PI_F64 * f64(j / count_y + 1) * rib.x / p.length)
                 let integral = p.width * 0.5 * sx * tx
                 mass[i * n + j] += rib.line_mass * integral
                 stiffness[i * n + j] += rib.bending * ky * ky * ky * ky * integral
+                // The energy Hessians are symmetric by construction. Evaluate
+                // each off-diagonal integral once, then mirror it exactly;
+                // separately accumulating cancelling rib terms can otherwise
+                // manufacture apparent asymmetry near a mathematical zero.
+                mass[j * n + i] = mass[i * n + j]
+                stiffness[j * n + i] = stiffness[i * n + j]
             }
         }
     }

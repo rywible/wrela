@@ -28,7 +28,7 @@ fn symmetric(a: [f64], n: u32) -> bool {
 }
 
 pub fn eigensystem(mass: [f64], stiffness: [f64], n: u32) -> Option<Modes> {
-    if n == 0 || n > 64 || !symmetric(mass, n) || !symmetric(stiffness, n) {
+    if n == 0 || n > 1024 || !symmetric(mass, n) || !symmetric(stiffness, n) {
         return None
     }
     var l: Vec<f64> = Vec::filled(n * n, 0.0)
@@ -143,13 +143,20 @@ pub fn errors(m: Modes, mass: [f64], stiffness: [f64]) -> (f64, f64) {
     var residual = 0.0
     var reference = 0.0
     var orthogonality = 0.0
+    // Reuse M Phi for both residual and orthogonality. This keeps validation
+    // cubic as the reference grows beyond a small single-note fixture.
+    var mp: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n { mp[i * n + j] += mass[i * n + k] * m.shapes[k * n + j] }
+        }
+    }
     for j in 0..n {
         for i in 0..n {
             var kv = 0.0
-            var mv = 0.0
+            let mv = mp[i * n + j]
             for k in 0..n {
                 kv += stiffness[i * n + k] * m.shapes[k * n + j]
-                mv += mass[i * n + k] * m.shapes[k * n + j]
             }
             let delta = kv - m.squared_frequencies[j] * mv
             residual += delta * delta
@@ -158,9 +165,7 @@ pub fn errors(m: Modes, mass: [f64], stiffness: [f64]) -> (f64, f64) {
         for k in 0..n {
             var inner = 0.0
             for r in 0..n {
-                for s in 0..n {
-                    inner += m.shapes[r * n + j] * mass[r * n + s] * m.shapes[s * n + k]
-                }
+                inner += m.shapes[r * n + j] * mp[r * n + k]
             }
             let expected = if j == k { 1.0 } else { 0.0 }
             if (inner - expected).abs() > orthogonality { orthogonality = (inner - expected).abs() }

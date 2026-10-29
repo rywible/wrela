@@ -6,6 +6,16 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### Live piano input has no capture timestamp or audio-clock correlation in the inspected API
+
+- **Needed:** original-grand P4 schedules live gestures by captured event time, then measures fixed delay and jitter relative to audio sample time. A score can already carry authored sample times.
+- **What happens:** pinned 0.10.0 `std::input::Event::KeyDown` and `KeyUp` contain key/modifier/repeat state but no capture timestamp; `events` returns the events since the last read. `std::audio` exposes fixed 48 kHz/128-frame constants and an event ring, but no audio-frame/host-clock correlation in that public interface. `std::time::now` is a host clock; reading it after frame delivery cannot recover the original capture time.
+- **Found:** 2026-10-29, inspecting the actual pinned API on the ThinkPad with `wrela doc std::input::Event`, `std::audio`, `std::audio::RingWriter`, `std::audio::RingReader` and `std::time`. Exact outputs are retained under `/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/`.
+- **Needed capability:** timestamped input events plus a documented correlation between that clock and the audio sample clock, including restart/device-change behavior. Ring overflow also needs an application-visible recovery protocol: `RingWriter::push` returns false without enqueueing, so recovery cannot rely on successfully enqueueing a release into an already-full ring.
+- **Meanwhile:** no claim of capture-time live scheduling, measured input-to-audio latency or completed P4. An eventual frame-quantized adapter must be labelled; exact sample-timed score events and internal partition-invariance checks remain independent work.
+- **Status:** open capability request; no compiler modification or release in this checkpoint.
+
+
 ### A driven frame doesn't say its passes' targets or GPU times
 
 - **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.

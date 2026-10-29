@@ -529,3 +529,101 @@ contract, detailed bridge/rim equilibrium and radiation, production reduction, a
 and pedals, browser/consumer measurements, autonomous voicing, holdout and release-candidate
 integration. Existing piano consumers and Salamander attribution remain in place; this
 checkpoint does not satisfy P8's dependency-closure requirement.
+
+
+## 14. Coupled-reference checkpoint and unresolved musical gate
+
+**Status: verified mechanical building blocks, musically unqualified; implementation remains
+incomplete.** This is not the P2 three-note deliverable, a finished 88-key instrument or P8.
+All work and model inference stayed on the ThinkPad. The single implementation PR remains
+a draft; no existing piano consumer has been migrated and no release has been published.
+
+Additional implementation since checkpoint 1:
+
+- A moving-endpoint stiff-string assembly derives cross mass and added board mass/stiffness
+  from the kinetic and elastic energy integrals. Independent spatial quadrature checks those
+  matrices. A three-neighboring-string/16-board-mode surrogate reaches 976 coupled modes;
+  eigenpair residual and mass orthogonality are checked against the original matrices.
+- Simultaneous nonlinear contacts use a bounded coupled solve and report their remaining
+  equation/energy residuals. Multiple string contacts can share one hammer mass. The symmetric
+  three-string limit matches an independent effective-mass single-contact solution, and
+  reversing contact order gives the same physical trajectory within the test tolerance.
+- A local viscous damper substep removes only motion at its physical contact footprint and
+  accounts for removed energy. It is a numerical primitive, not a calibrated half-pedal model.
+- Rigid bridge sections and SIMD body/string storage retain independent waves and preserve
+  reciprocal work. Their accuracy tests compare to expanded f64 contacts. Benchmarks in
+  `docs/bench.md` still exclude important complete-instrument costs.
+- A lossless allpass scattering primitive passes independent impulse/phase/energy checks.
+  Its bounded stiffness-fit experiment fails in bass and treble; it is not selected for the
+  instrument. The next representation hypothesis is a mixed modal/dispersive design by
+  register, with contact/truncation and complete callback costs evaluated together.
+- A symmetric rib layout exposed floating-point cancellation in separately accumulated
+  off-diagonal matrix entries. Assembly now computes each integral once and mirrors it,
+  preserving exact symmetry without weakening the eigensolver's input validation.
+
+The focused set has **34 passing tests with no diagnostics**. The new coupled experiments
+are narrow engineering fixtures, not a demonstration of good sound. For one midrange strike,
+40 retained modes per string plus calculated omitted compliance at 48 kHz gives a peak-force
+error of about **0.172%** relative to 320 modes per string at 384 kHz. With three simultaneous
+0.3/1.5/4 m/s strikes, the largest contact force differs by about **1.017%**. The latter
+reference's 160-to-320 refinement changes that peak by about **0.00565%**. Coupled-system
+energy errors stay below 7e-14 relative in these runs. The three-note fixture uses neighboring
+midrange strings; it does not yet cover P2's bass/midrange-unison/treble set, all contact
+observables, repeated actions, damper transitions, or complete time/radiation refinement.
+The original isolated-string RK4 checks in section 13 remain separate evidence.
+
+Replay additions:
+
+```text
+wrela tool acoustics -- coupled
+wrela tool acoustics -- coupled-contact
+wrela tool acoustics -- simultaneous
+wrela tool acoustics -- section-cost
+wrela tool acoustics -- body32-cost
+wrela tool acoustics -- combined32-cost
+wrela tool acoustics -- packed-cost
+wrela tool acoustics -- dispersion
+```
+
+`mechanics-2026-10-29/checkpoint-2/` and `checkpoint-3/` retain sources, exact commands,
+exit status, reports and hashes. Higher-resolution solves are offline references; their
+elapsed times are not audio callback measurements. The pinned public input/audio API was
+also inspected; its live capture-time/clock-mapping gap is recorded in `docs/toolchain-gaps.md`.
+
+### Audio evaluator qualification result
+
+No musical parameter search or musical promotion has occurred. Three local candidates were
+screened, all outside the repository; none generated sound or instrument coefficients:
+
+| Candidate/configuration | Observed failure | Decision |
+|---|---|---|
+| Qwen2.5-Omni-7B, llama.cpp, verified Q8/F16 files | Exact digital silence described as a sustained metallic note | Reject |
+| Voxtral Mini 3B, llama.cpp, verified Q4/Q8 files | Four non-silent controls all described as silence | Reject |
+| Same Voxtral model, official Transformers path, original verified weights, CPU float32 | Same failure after correcting the runtime hypothesis | Reject |
+| Phi-4 multimodal, official pinned code/weights, CPU bfloat16 | Silence described as a drum; original labelled piano; inserted gaps/cutoff/clipping not identified as requested | Reject |
+
+The second screening epoch was recorded before Phi inference: its explicit music/audio
+benchmark coverage and MIT licence supplied a specific new capability hypothesis. It used
+the same frozen controls and neutral prompt and did not erase the previous failures. Music
+Flamingo and Audio Flamingo were only source-screened and excluded because their declared
+noncommercial terms do not fit the requested licensing boundary.
+
+Input audits prove the silent control is zero and the others are nonzero. The original has
+RMS 0.1116 and peak 0.5052 at the shared gain of 0.2; the clipped control has RMS 0.4649.
+The exact llama decoder independently produced nonzero samples for those inputs. This is
+preliminary evaluator screening, not BS.1770 musical comparison or a formal holdout attempt.
+The full local record, including exact audio, decoder audit, prompts, responses, runtime
+versions and downloaded-file checksums, is in `listener-qualification-2026-10-29/`.
+These outcomes do not establish that every local audio model is incapable. They establish
+that no tested path can currently justify the plan's autonomous musical promotions.
+
+### Next work and claims boundary
+
+A qualified audio-evaluation path is required before musical hill climbing or a “best sounding”
+claim. Ryan subsequently authorized an OpenAI audio-capable model to perform the review through a subagent. That review may send the diagnostic audio to OpenAI; implementation and file handling remain on the ThinkPad. The supported API path is being prepared, with credentials still required. This does not authorize unrelated off-host computation or additional services. Independently,
+the engineering still needs a feasible full string scale and static load/board/rim design,
+a selected runtime reduction, real action/pedal behavior, radiation and room, the full-key
+corpus, browser and two-piano consumer budgets, and P8 migration/holdout/soak checks.
+A new evaluator hypothesis must preserve this failed qualification history and pass a recorded
+protocol; it must not simply provide favorable comments on the same candidate. No stage's
+musical subgate or final acceptance checkbox is marked passed by this checkpoint.

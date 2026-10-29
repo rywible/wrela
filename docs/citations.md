@@ -230,3 +230,21 @@ revisions/hashes are recorded on the ThinkPad. They are installed outside this r
 neither weights nor model-generated sound are shipped. The model only produced textual
 critique, and its initial judgments were rejected after a silence-control failure. This
 experiment does not establish a musically competent evaluator.
+
+
+The second private reviewer experiment used
+[Mistral's Voxtral Mini 3B model card](https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/blob/3060fe34b35ba5d44202ce9ff3c097642914f8f3/README.md)
+(Apache-2.0 declaration), first through llama.cpp and then its documented Transformers path.
+Both configurations failed the preliminary non-silence controls. Exact source and conversion
+hashes, a rejected corrupt download, corrected integrity checks and both sets of judgments
+are retained outside the repository. None supplies sound or instrument parameters.
+
+A separate bounded evaluator screen uses
+[Microsoft's Phi-4-multimodal-instruct model card](https://huggingface.co/microsoft/Phi-4-multimodal-instruct/blob/93f923e1a7727d1c4f446756212d9d3e8fcc5d81/README.md)
+and its [MIT licence](https://huggingface.co/microsoft/Phi-4-multimodal-instruct/blob/93f923e1a7727d1c4f446756212d9d3e8fcc5d81/LICENSE).
+Its reported music/sound/speech benchmark coverage motivates screening, not presumed musical
+competence. The official runtime code and verified weights remain on the ThinkPad outside
+this repository. It generates only text. The qualification ledger is authoritative for results.
+Music Flamingo and Audio Flamingo were inspected but not installed: their official model
+cards declare NVIDIA OneWay Noncommercial terms, which do not fit the requested simple
+licensing boundary for this experiment.

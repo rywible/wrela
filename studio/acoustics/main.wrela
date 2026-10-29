@@ -209,6 +209,14 @@ fn report_plate() -> u32 {
 
 pub fn tool() -> u32 {
     let a = args()
+    if a.len() == 1 && a[0] == "simultaneous" { return coupled::simultaneous_convergence() }
+    if a.len() == 1 && a[0] == "coupled-contact" { return coupled::contact_convergence() }
+    if a.len() == 1 && a[0] == "coupled" { return coupled::report() }
+    if a.len() == 1 && a[0] == "dispersion" { return report_dispersion() }
+    if a.len() == 1 && a[0] == "packed-cost" { return report_packed_cost() }
+    if a.len() == 1 && a[0] == "combined32-cost" { return report_combined32_cost() }
+    if a.len() == 1 && a[0] == "body32-cost" { return report_body32_cost() }
+    if a.len() == 1 && a[0] == "section-cost" { return report_section_cost() }
     if a.len() == 1 && a[0] == "contact" { return report_contact() }
     if a.len() == 1 && a[0] == "plate" { return report_plate() }
     if a.len() == 1 && a[0] == "truncation" { return report_truncation() }
@@ -226,7 +234,7 @@ pub fn tool() -> u32 {
     if a.len() == 1 && a[0] == "waveguide" { return report_waveguide() }
     if a.len() == 1 && a[0] == "bridge-cost" { return report_bridge_cost() }
     print(
-        "usage: wrela tool acoustics -- contact|plate|truncation|render|cost|simd|waveguide|bridge-cost",
+        "usage: wrela tool acoustics -- contact|plate|truncation|render|cost|simd|waveguide|bridge-cost|section-cost|body32-cost|combined32-cost|packed-cost|dispersion|coupled|coupled-contact|simultaneous",
     )
     2
 }
@@ -388,6 +396,276 @@ fn report_bridge_cost() -> u32 {
         print(
             f"{{\"string_count\":{count},\"body_modes\":{body_modes},\"quantum\":128,\"rate\":48000,\"quanta\":250,\"mean_ms\":{mean},\"p99_ms\":{times[247]},\"worst_ms\":{times[249]},\"energy_witness\":{engine::acoustic_bridge::energy(body)},\"build\":\"native tool; f64 ideal waveguides and shared body; parked hammers; no dispersion or room\"}}",
         )
+    }
+    0
+}
+
+fn report_section_cost() -> u32 {
+    let count: u32 = 256
+    let body_modes: u32 = 16
+    for section_count in [8, 16, 32] {
+        var omega: Vec<f64> = Vec::new()
+        var loss: Vec<f64> = Vec::new()
+        for j in 0..body_modes {
+            omega.push(200.0 + f64(j) * 900.0)
+            loss.push(3.0)
+        }
+        var coupling: Vec<f64> = Vec::new()
+        for g in 0..section_count {
+            for j in 0..body_modes {
+                coupling.push(0.3 * std::math::sin_f64(f64(g + 1) * f64(j + 1) * 0.031))
+            }
+        }
+        let impedance: Vec<f64> = Vec::filled(count, 2.0)
+        var group: Vec<u32> = Vec::new()
+        var strings: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+        for i in 0..count {
+            group.push(i * section_count / count)
+            var s = engine::acoustic_waveguide::string(
+                left_samples: 24 + i,
+                right_samples: 168 + 8 * i,
+                impedance: 2.0,
+                dt: 1.0 / 48000.0,
+                hammer: Hammer { mass: 0.01, stiffness: 1e12, x: -1.0, v: 0.0 },
+            )
+            s.left[0] = 1e-4
+            strings.push(take s)
+        }
+        var body = engine::acoustic_bridge::sections(
+            omega,
+            loss,
+            coupling,
+            group,
+            impedance,
+            1.0 / 48000.0,
+        ).unwrap()
+        var incoming: Vec<f64> = Vec::filled(count, 0.0)
+        var outgoing: Vec<f64> = Vec::filled(count, 0.0)
+        var times: Vec<f64> = Vec::new()
+        for q in 0..300 {
+            let before = now()
+            for _ in 0..128 {
+                for i in 0..count {
+                    incoming[i] = engine::acoustic_waveguide::bridge_incoming(strings[i])
+                }
+                let _ = engine::acoustic_bridge::scatter_sections(mut body, incoming, mut outgoing)
+                for i in 0..count {
+                    engine::acoustic_waveguide::free_with_bridge(mut strings[i], outgoing[i])
+                }
+            }
+            if q >= 50 { times.push((now() - before) * 1000.0) }
+        }
+        var mean = 0.0
+        for t in times { mean += t / f64(times.len()) }
+        times.sort_by(|a, b| a < b)
+        print(
+            f"{{\"string_count\":{count},\"body_modes\":{body_modes},\"sections\":{section_count},\"quantum\":128,\"rate\":48000,\"quanta\":250,\"mean_ms\":{mean},\"p99_ms\":{times[247]},\"worst_ms\":{times[249]},\"energy_witness\":{engine::acoustic_bridge::energy(body.body)},\"build\":\"native tool; f64 ideal strings and rigid bridge sections; parked hammers; no dispersion or room\"}}",
+        )
+    }
+    0
+}
+
+fn report_body32_cost() -> u32 {
+    for ports in [8, 16, 32] {
+        let n: u32 = 16
+        var omega: Vec<f64> = Vec::new()
+        var loss: Vec<f64> = Vec::new()
+        var coupling: Vec<f64> = Vec::new()
+        for j in 0..n {
+            omega.push(200.0 + f64(j) * 900.0)
+            loss.push(3.0)
+        }
+        for p in 0..ports {
+            for j in 0..n {
+                coupling.push(0.3 * std::math::sin_f64(f64(p + 1) * f64(j + 1) * 0.031))
+            }
+        }
+        let impedance: Vec<f64> = Vec::filled(ports, 512.0 / f64(ports))
+        let reference = engine::acoustic_bridge::bridge(
+            omega,
+            loss,
+            coupling,
+            impedance,
+            1.0 / 48000.0,
+        ).unwrap()
+        var body = engine::acoustic_bridge::narrow(reference)
+        let incoming: Vec<f32> = Vec::filled(ports, 1e-4)
+        var outgoing: Vec<f32> = Vec::filled(ports, 0.0)
+        var times: Vec<f64> = Vec::new()
+        for q in 0..800 {
+            let before = now()
+            for _ in 0..128 {
+                let _ = engine::acoustic_bridge::scatter32(mut body, incoming, mut outgoing)
+            }
+            if q >= 50 { times.push((now() - before) * 1000.0) }
+        }
+        var mean = 0.0
+        for t in times { mean += t / f64(times.len()) }
+        times.sort_by(|a, b| a < b)
+        print(
+            f"{{\"body_modes\":{n},\"ports\":{ports},\"quanta\":750,\"quantum\":128,\"rate\":48000,\"mean_ms\":{mean},\"p99_ms\":{times[742]},\"worst_ms\":{times[749]},\"energy_witness\":{engine::acoustic_bridge::energy32(body)},\"build\":\"native tool; SIMD f32 shared body only; no strings or contact\"}}",
+        )
+    }
+    0
+}
+
+fn report_combined32_cost() -> u32 {
+    let count: u32 = 256
+    let body_modes: u32 = 16
+    for section_count in [8, 16, 32] {
+        var omega: Vec<f64> = Vec::new()
+        var loss: Vec<f64> = Vec::new()
+        for j in 0..body_modes {
+            omega.push(200.0 + f64(j) * 900.0)
+            loss.push(3.0)
+        }
+        var coupling: Vec<f64> = Vec::new()
+        for g in 0..section_count {
+            for j in 0..body_modes {
+                coupling.push(0.3 * std::math::sin_f64(f64(g + 1) * f64(j + 1) * 0.031))
+            }
+        }
+        let impedance: Vec<f64> = Vec::filled(count, 2.0)
+        var group: Vec<u32> = Vec::new()
+        var strings: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+        for i in 0..count {
+            group.push(i * section_count / count)
+            var s = engine::acoustic_waveguide::string(
+                left_samples: 24 + i,
+                right_samples: 168 + 8 * i,
+                impedance: 2.0,
+                dt: 1.0 / 48000.0,
+                hammer: Hammer { mass: 0.01, stiffness: 1e12, x: -1.0, v: 0.0 },
+            )
+            s.left[0] = 1e-4
+            strings.push(take s)
+        }
+        let reference = engine::acoustic_bridge::sections(
+            omega,
+            loss,
+            coupling,
+            group,
+            impedance,
+            1.0 / 48000.0,
+        ).unwrap()
+        var body = engine::acoustic_bridge::narrow_sections(reference)
+        var incoming: Vec<f32> = Vec::filled(count, 0.0)
+        var outgoing: Vec<f32> = Vec::filled(count, 0.0)
+        var times: Vec<f64> = Vec::new()
+        for q in 0..300 {
+            let before = now()
+            for _ in 0..128 {
+                for i in 0..count {
+                    incoming[i] = f32(engine::acoustic_waveguide::bridge_incoming(strings[i]))
+                }
+                let _ = engine::acoustic_bridge::scatter_sections32(
+                    mut body,
+                    incoming,
+                    mut outgoing,
+                )
+                for i in 0..count {
+                    engine::acoustic_waveguide::free_with_bridge(mut strings[i], f64(outgoing[i]))
+                }
+            }
+            if q >= 50 { times.push((now() - before) * 1000.0) }
+        }
+        var mean = 0.0
+        for t in times { mean += t / f64(times.len()) }
+        times.sort_by(|a, b| a < b)
+        print(
+            f"{{\"string_count\":{count},\"body_modes\":{body_modes},\"sections\":{section_count},\"quantum\":128,\"rate\":48000,\"quanta\":250,\"mean_ms\":{mean},\"p99_ms\":{times[247]},\"worst_ms\":{times[249]},\"energy_witness\":{engine::acoustic_bridge::energy32(body.body)},\"build\":\"native tool; f64 ideal strings and SIMD f32 bridge sections; parked hammers; no dispersion or room\"}}",
+        )
+    }
+    0
+}
+
+fn report_packed_cost() -> u32 {
+    let count: u32 = 256
+    let body_modes: u32 = 16
+    for section_count in [8, 16, 32] {
+        var omega: Vec<f64> = Vec::new()
+        var loss: Vec<f64> = Vec::new()
+        for j in 0..body_modes {
+            omega.push(200.0 + f64(j) * 900.0)
+            loss.push(3.0)
+        }
+        var coupling: Vec<f64> = Vec::new()
+        for g in 0..section_count {
+            for j in 0..body_modes {
+                coupling.push(0.3 * std::math::sin_f64(f64(g + 1) * f64(j + 1) * 0.031))
+            }
+        }
+        let impedance: Vec<f64> = Vec::filled(count, 2.0)
+        var group: Vec<u32> = Vec::new()
+        var strings: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+        for i in 0..count {
+            group.push(i * section_count / count)
+            var s = engine::acoustic_waveguide::string(
+                left_samples: 24 + i / 4,
+                right_samples: 168 + 8 * (i / 4),
+                impedance: 2.0,
+                dt: 1.0 / 48000.0,
+                hammer: Hammer { mass: 0.01, stiffness: 1e12, x: -1.0, v: 0.0 },
+            )
+            s.left[0] = 1e-4
+            strings.push(take s)
+        }
+        var packets: Vec<engine::acoustic_waveguide::Packet> = Vec::new()
+        for p in 0..count / 4 {
+            var four: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+            for lane in 0..4 { four.push(strings[p * 4 + lane].clone()) }
+            packets.push(engine::acoustic_waveguide::packet(four))
+        }
+        let reference = engine::acoustic_bridge::sections(
+            omega,
+            loss,
+            coupling,
+            group,
+            impedance,
+            1.0 / 48000.0,
+        ).unwrap()
+        var body = engine::acoustic_bridge::packet_sections(reference)
+        var incoming: Vec<vec4> = Vec::filled(count / 4, vec4(0.0))
+        var outgoing: Vec<vec4> = Vec::filled(count / 4, vec4(0.0))
+        var times: Vec<f64> = Vec::new()
+        for q in 0..300 {
+            let before = now()
+            for _ in 0..128 {
+                for i in 0..count / 4 {
+                    incoming[i] = engine::acoustic_waveguide::packet_incoming(packets[i])
+                }
+                let _ = engine::acoustic_bridge::scatter_packets(
+                    mut body,
+                    incoming,
+                    mut outgoing,
+                )
+                for i in 0..count / 4 {
+                    engine::acoustic_waveguide::free_packet_bridge(mut packets[i], outgoing[i])
+                }
+            }
+            if q >= 50 { times.push((now() - before) * 1000.0) }
+        }
+        var mean = 0.0
+        for t in times { mean += t / f64(times.len()) }
+        times.sort_by(|a, b| a < b)
+        print(
+            f"{{\"string_count\":{count},\"body_modes\":{body_modes},\"sections\":{section_count},\"quantum\":128,\"rate\":48000,\"quanta\":250,\"mean_ms\":{mean},\"p99_ms\":{times[247]},\"worst_ms\":{times[249]},\"energy_witness\":{engine::acoustic_bridge::energy32(body.body)},\"build\":\"native tool; SIMD f32 groups of four ideal strings and bridge sections; parked hammers; no dispersion or room\"}}",
+        )
+    }
+    0
+}
+
+fn report_dispersion() -> u32 {
+    for register in 0..3 {
+        let p = probe(register, 1.5)
+        let minimum = dispersion::minimum_sections(p.string, 48000.0, p.modes)
+        for stages in [2, 4, 8, 16] {
+            let start = now()
+            let fit = dispersion::fit(p.string, 48000.0, p.modes, stages)
+            print(
+                f"{{\"register\":{register},\"modes\":{p.modes},\"stages\":{stages},\"exact_phase_stage_lower_bound\":{minimum},\"delay\":{fit.delay},\"max_cents\":{fit.max_cents},\"rms_cents\":{fit.rms_cents},\"seconds\":{now() - start}}}",
+            )
+        }
     }
     0
 }
