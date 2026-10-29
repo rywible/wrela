@@ -5,6 +5,7 @@
 // vale's walk (walk.wrela), or stands where a test holds it.
 
 use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
+use engine::switches::Approved
 use engine::shadow::Cascade
 use engine::shot::{NO_CAST, Shots, Skies, place}
 use fawn::character::at_rest
@@ -41,7 +42,7 @@ pub fn start_eye() -> vec3 {
 pub struct Vale {
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Shared>,
+    frame: Frame<Shared, Approved>,
     stage: Stage,
     /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
     shots: Shots,
@@ -85,7 +86,7 @@ pub fn init() -> Vale {
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
-    let f: Frame<Shared> = Frame::new(
+    let f: Frame<Shared, Approved> = Frame::new(
         quality(),
         light,
         air,

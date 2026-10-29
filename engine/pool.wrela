@@ -8,6 +8,7 @@
 
 use cull::{Bound, BoundCull, Hzb, bound_draws, cull_bounds}
 use lit::Lighting
+use switches::Switches
 use realize::{Quad, SkinVertex}
 use std::gpu::{
     Atomics, ClipPosition, GpuSpan, Oct32, Cull, DrawIndexedArgs, Flat, FragCoord, GlobalId,
@@ -98,7 +99,7 @@ pub fn pooled_vertex(
 
 /// A pooled stone's pixel, where its item's coverage keeps it.
 @fragment
-pub fn pooled_shade(v: PooledVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
+pub fn pooled_shade<Q: Switches>(v: PooledVertex, pixel: FragCoord, lt: Lighting<Q>) -> vec4 {
     if !coverage_kept(v.coverage.value, pixel.position.xy, lt.cam.frame) {
         discard()
     }
@@ -480,7 +481,7 @@ impl Pool {
     }
 
     /// The items culled (`cull`) drawn into `pass`, lit by `lt`: one multi-draw.
-    pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting) {
+    pub fn draw<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
         let n = self.meshes.len()
         if n == 0 || self.items.is_empty() || self.stale {
             return

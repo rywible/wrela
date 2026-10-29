@@ -7,6 +7,7 @@ use engine::impostor::{
 }
 use engine::light::Light
 use engine::lit::Lighting
+use engine::switches::Approved
 use engine::plant::{Bark, Leaves}
 use engine::shadow::{Cascade, shadows}
 use engine::sky::Clouds
@@ -240,7 +241,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_volume = std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
     let no_fog = std::gpu::texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
     let no_sights: GpuBuffer<u32> = buffer(1)
-    let lt = Lighting {
+    let lt = Lighting::<Approved> {
         cam,
         light: Light {
             sun,

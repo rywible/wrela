@@ -1,8 +1,8 @@
-// Percentage-closer soft shadows in the static cascades (`engine::shadow::Soft::Pcss`): a
-// blocker's edge over a receiver, the blocker near the receiver (a quad just over a plane) and
+// Percentage-closer soft shadows in the static cascades (`engine::shadow::Shadows::soft_pcss`):
+// a blocker's edge over a receiver, the blocker near the receiver (a quad just over a plane) and
 // far above it (a quad high over it), its light read across the edge through the production
-// lookup and read back. The higher blocker's penumbra is wider; with `Pcf` both are the same few
-// texels.
+// lookup and read back. The higher blocker's penumbra is wider; with `soft_pcss` 0 both are the
+// same few texels.
 //
 // The near map's view is the identity (a point's x and y are its place on the map, its z its
 // depth): its texels left of the middle hold the blocker, high in the top half and low in the
@@ -137,8 +137,8 @@ fn penumbra(row: [f32]) -> u32 {
     if last >= first { last - first + 1 } else { 0 }
 }
 
-/// With `Pcss` a blocker 16 m over its receiver casts a wider penumbra than one 1 m over it; with
-/// `Pcf` both penumbrae are the filter's few texels.
+/// With `soft_pcss` 1 a blocker 16 m over its receiver casts a wider penumbra than one 1 m over it; with
+/// `soft_pcss` 0 both penumbrae are the filter's few texels.
 @test(frames: 8, gpu: true)
 fn a_higher_blocker_casts_a_wider_penumbra(s: State) {
     assert(s.got.len() == 2, f"{s.got.len()} reads came back")

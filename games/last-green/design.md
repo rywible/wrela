@@ -4,19 +4,19 @@ What the floor's look and its frame's work rest on, as settings Ryan can change.
 it lives; the numbers marked **proposed** are the plan's first guesses (docs/plan-world-class-2.md),
 measured in docs/bench.md, and his to set.
 
-## The frame's switches (`engine::frame::Quality`, `ProbeQuality`)
+## The frame's switches (`engine::switches::Switches`: constants of the build, the floor's `Switched` in main.wrela)
 
 | Switch | Default | What it does | Measured |
 |---|---|---|---|
-| `probes.visibility` | on | each probe weighed by what it sees of the point (B9a) | the walk's re-trace and lookups +0.28 ms; the probes +7.6 MB |
-| `distance` | on | the solids' distance volume: the probes' rays step through it, the contact shadows and the ambient occlusion read it (B9b) | a slab 0.32 ms on a sixth of the walk's frames; +10.9 MB |
+| `SIGHT` | on | each probe weighed by what it sees of the point (B9a) | the walk's re-trace and lookups +0.28 ms; the probes +7.6 MB |
+| `DISTANCE` | on | the solids' distance volume: the probes' rays step through it, the contact shadows and the ambient occlusion read it (B9b) | a slab 0.32 ms on a sixth of the walk's frames; +10.9 MB |
 | (steering, `frame::STEERED`) | on | the probes traced again where the sun and the sky changed, nearest the eye first (B9c) | the strips under the eye within 3 frames of a sun step |
-| `fog` | on | the air as froxels: fog, the canopy's haze, the falls' mist (B10) | the opening's fog 0.78 ms; +16.6 MB |
+| `FOG` | on | the air as froxels: fog, the canopy's haze, the falls' mist (B10) | the opening's fog 0.78 ms; +16.6 MB |
 | `look.output` | SDR | HDR output where the screen is HDR (B13.3, D11) | |
 | planar reflection (D15) | absent | not built (B12) | |
-| `neural` | off | the great tree's far crowns read through its net (`content/kit/great_tree_net.wrela`, B14.2) | 13.86 dB against its atlas; every kind through a net: the frame 25× (docs/bench.md, B14) |
-| `cascades` | off | radiance cascades over the solids' volume light the sky's term in place of the probes' and the occlusion (B14.4); `spacing` 8, `steps` 16 | 3.2 ms at the coarsest rung, 13.1 at the finest (asked: 2.0) |
-| `learned_resolve` | off | temporal AA's share of each frame from a small net (`content/kit/rejector_net.wrela`, B14.3) | docs/bench.md, B14 |
+| `NEURAL` (`--set`) | off | the great tree's far crowns read through its net (`content/kit/great_tree_net.wrela`, B14.2) | 13.86 dB against its atlas; every kind through a net: the frame 25× (docs/bench.md, B14) |
+| `CASCADES` | off | radiance cascades over the solids' volume light the sky's term in place of the probes' and the occlusion (B14.4); `Quality::cascades`' `spacing` 8, `steps` 16 | 3.2 ms at the coarsest rung, 13.1 at the finest (asked: 2.0) |
+| `LEARNED` (`--set`) | off | temporal AA's share of each frame from a small net (`content/kit/rejector_net.wrela`, B14.3) | docs/bench.md, B14 |
 
 ## The air (`stage::fog`, `engine::fog::FogField`)
 

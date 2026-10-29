@@ -1,8 +1,10 @@
 // The tool test: the frame fixture (engine/tests/frame, a bare scene with no effects, no
-// characters, no prepass and no motion of its own) checked through the toolchain, with the
-// engine read from the workspace, and the pipelines its build makes read from the answer.
+// characters, no prepass and no motion of its own) built through the toolchain, with the engine
+// read from the workspace, and the pipelines its build makes read from its manifest.
 
+use hosts::steps::{built, text_of}
 use std::io::print
+use std::json::{Doc, TOP, parse}
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -22,32 +24,45 @@ use std::tool::toolchain::Override
 /// `shift_seen`, B9a), the solids' distance volume (`cook_distance`, B9b), the froxel volume
 /// (`inject`, `integrate`, and the sky through it, `sky_fogged`, in place of `sky_shade`, B10),
 /// the radiance cascades (`trace`, `merge`, `resolve`, B14.4) and the resolve's findings
-/// (`found_rows`, B14.3), the last four made only when a frame's quality asks for them.
-const FRAME_PIPELINES: u32 = 64
+/// (`found_rows`, B14.3), the last four made only when a frame's quality asks for them; 58 since
+/// world-class 3's C1, each switch a constant of the program's type (`engine::switches`): the
+/// cascades' three and the half dome's `upsample` gone with their switches off, and the depth
+/// pyramid's two (`level_zero`, `farthest`) with a scene that reveals nothing.
+const FRAME_PIPELINES: u32 = 58
 
-/// The fixture's pipelines: each one's entry points, `+` between them.
+/// The text of `key` of object `n`, or empty.
+fn text_at(d: Doc, n: u32, key: str) -> String {
+    match d.get(n, key) {
+        Some(v) => match d.text(v) {
+            Some(t) => t,
+            None => String::new(),
+        },
+        None => String::new(),
+    }
+}
+
+/// The fixture's pipelines, as its build makes them (its manifest's: a check's list doesn't fold
+/// the program's constants, so it holds the branches a switch that's off leaves out): each one's
+/// entry points, `+` between them.
 fn pipelines() -> Vec<String> {
-    let overrides = [Override { name: String::from("engine"), dir: String::from("repo/engine") }]
-    let Ok(checked) = toolchain::check_with(
-        "repo/engine/tests/frame",
-        overrides,
-        300.0,
-    ).wait() else {
-        panic("the check's request")
-    }
-    for d in checked.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
+    var options = toolchain::options()
+    options.overrides = Vec::from(
+        [Override { name: String::from("engine"), dir: String::from("repo/engine") }],
+    )
+    built("repo/engine/tests/frame", "scratch/frame", options, "the fixture builds")
+    let manifest = text_of("scratch/frame/manifest.json")
+    let Some(d) = parse(manifest.as_str()) else { panic("the manifest is JSON") }
+    let Some(list) = d.get(TOP, "pipelines") else { panic("the manifest's pipelines") }
     var out: Vec<String> = Vec::new()
-    for p in checked.pipelines {
-        var names = String::new()
-        for e in p.entries {
-            if !names.is_empty() {
-                names.push_str(" + ")
-            }
-            names.push_str(e.as_str())
-        }
-        out.push(take names)
+    for k in 0..d.count(list) {
+        let Some(p) = d.at(list, k) else { continue }
+        out.push(
+            if text_at(d, p, "kind").as_str() == "render" {
+                String::from(
+                    f"{text_at(d, p, "vertex_entry").as_str()} + {text_at(d, p, "fragment_entry").as_str()}",
+                )
+            } else { text_at(d, p, "entry") },
+        )
     }
     out
 }

@@ -12,12 +12,24 @@
 use engine::cook::{Evidence, Work}
 use std::io::print
 use engine::frame::{Aim, Change, Frame, Gathered, Quality}
+use engine::switches::Switches
 use engine::air::{AIR_SLICES, hazy}
 use engine::light::{SUN_TOP, sunlight}
 use engine::probes::grid
 use engine::terrain::Clipmap
 use engine::view::first_camera
 use bare::{AHEAD, Bare, START, SUN, air_of, bare}
+
+/// The bare scene's air: froxels, or clear (`engine/tests/switches` builds it both ways, `--set
+/// FOG=false`).
+pub const FOG: bool = true
+
+/// The fixture's switches: the approved, its air as `FOG` says.
+pub struct Bared {}
+
+impl Switches for Bared {
+    const FOG: bool = FOG
+}
 
 /// Where the sun moves to, and where the eye jumps to (the world's, m).
 const LATER_SUN = vec3(0.6, 0.6, 0.53)
@@ -71,7 +83,7 @@ pub enum Step: Copy + Eq {
 }
 
 pub struct State {
-    pub frame: Frame<Gathered>,
+    pub frame: Frame<Gathered, Bared>,
     pub scene: Bare,
     pub step: Step,
     /// The frame each step began at (`Record::ran`), in `Step`'s order.
@@ -86,7 +98,7 @@ pub fn init() -> State {
     let air = air_of(SUN)
     // Not measuring until the script's last step: until then a frame's order is the same on
     // every run and in both hosts, which the tests of order read.
-    let frame: Frame<Gathered> = Frame::new(
+    let frame: Frame<Gathered, Bared> = Frame::new(
         Quality { measured: false },
         sunlight(air),
         air,

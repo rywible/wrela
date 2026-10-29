@@ -20,6 +20,7 @@ use engine::creature::{Creature, MAX_BONES}
 use engine::gait::{between, palette}
 use engine::light::{CLAY, sheen_light}
 use engine::lit::{Lighting, sun_and_gloss, through_air}
+use engine::switches::Switches
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::noise::fbm2
 use engine::probes::open_light
@@ -90,7 +91,7 @@ impl Rigid {
         )
     }
 
-    fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera) {
+    fn draw<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>, cam: Camera) {
         draw(
             pass,
             character.bind(
@@ -417,7 +418,7 @@ const GLOW = vec3(0.012, 0.004, 0.03)
 /// on its folds; its folds show only as a little more dark in their valleys. Toward the edge of
 /// its form it goes darker still, a hole in the scene, and at the very edge it gives off a thin
 /// faint violet, its own, not the sun's.
-fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
+fn coat<Q: Switches>(lt: Lighting<Q>, world: vec3, n: vec3, fold: f32) -> vec3 {
     let l = lt.light.sun
     let v = normalize(lt.cam.eye - world)
     let (sun, sky, _) = sun_and_gloss(lt, world, n, soft: 1.0)
@@ -471,7 +472,7 @@ fn licks(u: f32, around: f32, burn: f32, time: f32) -> f32 {
 /// cut from it, hard-edged; through the haze. The cloth is tagged as the climber's, the licks as
 /// a veil, so no line is drawn round each tongue.
 @fragment
-pub fn garment_shade(g: GarmentVertex, lt: Lighting) -> vec4 {
+pub fn garment_shade<Q: Switches>(g: GarmentVertex, lt: Lighting<Q>) -> vec4 {
     // The face's opening, cut from the hood as a smooth oval: through it, the hood's inside.
     if g.burns.value != 0 && g.uv.y < f32(HOOD_ROWS) && face_open(g.uv) {
         discard()
@@ -588,7 +589,7 @@ impl Drawn {
     }
 
     /// The climber drawn into the scene: its garment and its sword.
-    pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera) {
+    pub fn draw<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>, cam: Camera) {
         if !self.shown {
             return
         }

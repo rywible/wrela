@@ -1,20 +1,21 @@
 // The radiance cascades (`engine::cascades`, B14.4) on flat ground drawn through `engine::frame`
-// with `Quality::cascades` on: a hollow box (a tape of a cuboid's shell) and a wall (a cuboid
-// half a metre thick) stand off screen. Once the solids' volume is cooked, rays are marched
-// through it (`cascades::march` over the volume) at each cascade's interval: from inside the box,
-// from a metre before the wall, and up from above the ground into the open. And the light the
-// cascades leave for the shading (the occlusion's texture, `ambient::cascaded_at`'s) over the
-// ground in view is read against the sky's light there.
+// with the cascades on (`Switches::CASCADES`): a hollow box (a tape of a cuboid's shell) and a
+// wall (a cuboid half a metre thick) stand off screen. Once the solids' volume is cooked, rays
+// are marched through it (`cascades::march` over the volume) at each cascade's interval: from
+// inside the box, from a metre before the wall, and up from above the ground into the open. And
+// the light the cascades leave for the shading (the occlusion's texture,
+// `ambient::cascaded_at`'s) over the ground in view is read against the sky's light there.
 
 use engine::air::hazy
 use engine::cascades::{CASCADES, Volume, interval_of, march}
 use engine::distance::{DistanceGrid, Shape, Solids}
-use engine::frame::{Aim, CascadeQuality, Frame, Gathered, Quality, Scene}
+use engine::frame::{Aim, Frame, Gathered, Quality, Scene}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::plant::Wind
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::sky::{Gap, Weather, clouded_sky}
 use engine::stone::ShapeTape
+use engine::switches::Switches
 use engine::terrain::{Clipmap, Flat}
 use engine::view::{Camera, first_camera}
 use std::derive::tape
@@ -183,8 +184,15 @@ fn lights(
     out[id] = vec4(sum / 1024.0, 0.0)
 }
 
+/// The cascades on (the rest approved).
+pub struct Cascaded {}
+
+impl Switches for Cascaded {
+    const CASCADES: bool = true
+}
+
 pub struct State {
-    frame: Frame<Gathered>,
+    frame: Frame<Gathered, Cascaded>,
     scene: Open,
     hits: Option<Pending<u32>>,
     asked: Option<Pending<vec4>>,
@@ -195,8 +203,8 @@ pub struct State {
 
 pub fn init() -> State {
     let air = hazy(SUN, SUN_TOP, eye: EYE.y)
-    let frame: Frame<Gathered> = Frame::new(
-        Quality { measured: false, distance: true, cascades: CascadeQuality { on: true } },
+    let frame: Frame<Gathered, Cascaded> = Frame::new(
+        Quality { measured: false },
         sunlight(air),
         air,
         Clipmap::new(levels: 6, finest: 0.5),

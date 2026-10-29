@@ -404,8 +404,9 @@ fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
     var sky: Option<Pipeline> = None
     var march: Option<Pipeline> = None
     for k in 0..ps.len() {
-        // The sky through the air's froxels (`fog::sky_fogged`, B10).
-        if sky.is_none() && ps[k].fragment.as_str() == "sky_fogged" {
+        // The sky without the air's froxels (`sky::sky_shade`: the clearing's switches have no
+        // fog).
+        if sky.is_none() && ps[k].fragment.as_str() == "sky_shade" {
             sky = Some(ps[k].clone())
         }
         // A kernel's entry is its pipeline's first.

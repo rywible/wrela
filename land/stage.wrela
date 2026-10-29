@@ -16,6 +16,7 @@ use engine::cull::in_frustum
 use engine::distance::Capsule
 use engine::fog::{FogField, FogSphere, HeightFog}
 use engine::frame::{Cooks, Effects, Targets, fullscreen}
+use engine::switches::Switches
 use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
 use engine::memory::{Share, Usage}
@@ -1472,7 +1473,7 @@ pub const MIST_DENSITY: f32 = 0.12
 /// The water over a copy of the scene under it, into the scene's second target, which becomes the
 /// scene (`engine::frame::Scene::effects`). (The falls' mist and the sun's shafts are the air's:
 /// `fog`.)
-pub fn draw_water<T: Tiles>(s: mut Landscape<T>, t: mut Targets, fx: Effects) {
+pub fn draw_water<T: Tiles, Q: Switches>(s: mut Landscape<T>, t: mut Targets, fx: Effects<Q>) {
     let cam = fx.lt.cam
     let size = vec2u(t.below.width(), t.below.height())
     let (args, under) = water_draws(s.water_tiles, cam, size)

@@ -25,6 +25,7 @@ use impostor::{
     KindDesc, NO_NET, Neural, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade,
 }
 use lit::Lighting
+use switches::Switches
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
 use plant::{
@@ -876,7 +877,7 @@ pub struct Wood {
     /// while memory is over its budget (`engine::memory::shrink_after`).
     pub shrink_after: u32,
     /// A kind's impostor read through a net, and its weights (`read_through`: none unless a game
-    /// gives one, `Quality::neural`).
+    /// gives one, `switches::Switches::NEURAL`).
     neural: Neural,
     net: GpuBuffer<Half2>,
 }
@@ -1410,15 +1411,21 @@ impl Wood {
 
     /// The shading pass's draws: the cards where the prepass left their depth, the limbs, then
     /// the far instances: one multi-draw a way over every kind.
-    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    pub fn shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         self.phase_shade(pass, lt, wind, ids, late: false)
     }
 
     /// The second phase's shading (`reveal`'s), as `shade`'s.
-    pub fn late_shade<P: RenderPass>(
+    pub fn late_shade<P: RenderPass, Q: Switches>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -1426,10 +1433,10 @@ impl Wood {
     }
 
     /// A phase's shading draws (`late`: the second's).
-    fn phase_shade<P: RenderPass>(
+    fn phase_shade<P: RenderPass, Q: Switches>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q>,
         wind: Wind,
         ids: Texture<R32Uint>,
         late: bool,
@@ -1532,10 +1539,10 @@ impl Wood {
 
     /// A phase's (`ph`) impostors shaded, from the pool's colour, normals and toward-and-depth
     /// (`c`, `nm`, `d`: of whichever formats, `Impostors`).
-    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format>(
+    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format, Q: Switches>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q>,
         wind: Wind,
         ids: Texture<R32Uint>,
         ph: Phase,

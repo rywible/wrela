@@ -10,6 +10,7 @@ use engine::distance::{
     Capsule, DISTANCE_FAR, DistanceGrid, Shape, Solids, distance_at, contact_through,
 }
 use engine::frame::{Aim, Frame, Gathered, Quality, Scene}
+use engine::switches::Approved
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::plant::Wind
 use engine::probes::{Occluder, ProbeGrid, Trace, grid, trace}
@@ -199,7 +200,7 @@ fn contacts(
 }
 
 pub struct State {
-    frame: Frame<Gathered>,
+    frame: Frame<Gathered, Approved>,
     scene: Solid,
     asked: Vec<Pending<f32>>,
     traced: Vec<Pending<vec4>>,
@@ -212,8 +213,8 @@ pub struct State {
 
 pub fn init() -> State {
     let air = hazy(SUN, SUN_TOP, eye: EYE.y)
-    let frame: Frame<Gathered> = Frame::new(
-        Quality { measured: false, distance: true },
+    let frame: Frame<Gathered, Approved> = Frame::new(
+        Quality { measured: false },
         sunlight(air),
         air,
         Clipmap::new(levels: 6, finest: 0.5),

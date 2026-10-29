@@ -423,7 +423,7 @@ pub fn prefilter(
 /// frame's copy was drawn with, whether there's a copy (`on`), whether the specular probe has
 /// been baked whole (`probe`), whether sunlit surfaces march toward the sun through the copy for
 /// contact shadows (`contact`: `contact_shadow`), and whether smooth ones march it for their
-/// reflections (`reflect`: `Quality::reflections`).
+/// reflections (`reflect`: `switches::Switches::REFLECTIONS`).
 pub struct Mirror: Copy + GpuData {
     pub cam: Camera,
     pub on: u32,

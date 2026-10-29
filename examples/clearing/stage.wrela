@@ -13,6 +13,7 @@ use engine::gait::{Walker, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::light::Light
 use engine::lit::Lighting
+use engine::switches::Switches
 use engine::paint::Exposure
 use engine::plant::Wind
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
@@ -322,9 +323,9 @@ impl Scene for Stage {
         self.creature_on()
     }
 
-    fn choose(
+    fn choose<Q: Switches>(
         mut self,
-        lt: Lighting,
+        lt: Lighting<Q>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -371,7 +372,13 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn late_shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         if let Some(w) = self.wood {
             w.late_shade(pass, lt, wind, ids)
         }
@@ -395,7 +402,13 @@ impl Scene for Stage {
     }
 
     /// The vegetation: the grass and the boulders, then the trees where the prepass left them.
-    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         if on(self.off, System::Grass) {
             self.grass.shade(pass, lt, wind, GrassLook {}, Blooms {})
         }
@@ -425,7 +438,7 @@ impl Scene for Stage {
         }
     }
 
-    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+    fn characters<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
         if self.creature_on() {
             self.fawn.draw(pass, lt, lt.cam, PARTS)
         }

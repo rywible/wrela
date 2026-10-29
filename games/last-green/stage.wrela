@@ -21,6 +21,7 @@ use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::Blooms
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
+use engine::switches::Switches
 use engine::paint::{Exposure, Look}
 use land::place::TILE
 use engine::plant::{Plant, Wind}
@@ -78,7 +79,7 @@ pub struct Stage {
     /// The landscape: the floor's tiles, its wood, the far layer, the grass, the water, the
     /// probes' occluders and the air (`land::stage`), drawn from the view's source (`FloorTiles`).
     pub land: Landscape<FloorTiles>,
-    /// Whether the great tree's far crowns are read through its net (`Quality::neural`).
+    /// Whether the great tree's far crowns are read through its net (`NEURAL`, main.wrela).
     pub neural: bool = false,
     /// The frame the first built thing stood on (the load chain's order, `cook_load`).
     pub first_built_at: Option<u32> = None,
@@ -456,9 +457,9 @@ impl Scene for Stage {
     }
 
     /// The rocks the camera sees, the grass placed round the eye, and the wood's lists.
-    fn choose(
+    fn choose<Q: Switches>(
         mut self,
-        lt: Lighting,
+        lt: Lighting<Q>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -517,7 +518,13 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn late_shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         if let Some(w) = self.land.wood {
             w.late_shade(pass, lt, wind, ids)
         }
@@ -543,7 +550,13 @@ impl Scene for Stage {
 
     /// The vegetation pass: the grass, the built things in view (the floor's), the banks'
     /// stones, the wood, and a view's rock.
-    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         let off = shown(self.off, self.view)
         let world = of_world(self.view)
         let cam = lt.cam
@@ -619,7 +632,7 @@ impl Scene for Stage {
     }
 
     /// The climber, the fawn and the wolf (none in the world's views).
-    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+    fn characters<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
         if of_world(self.view) {
             return
         }
@@ -636,7 +649,7 @@ impl Scene for Stage {
 
     /// The water over a copy of the scene under it, into the scene's second target, which becomes
     /// the scene. (The falls' mist and the sun's shafts are the air's: `fog`.)
-    fn effects(mut self, t: mut Targets, fx: Effects) {
+    fn effects<Q: Switches>(mut self, t: mut Targets, fx: Effects<Q>) {
         if on(shown(self.off, self.view), System::Water) {
             draw_water(mut self.land, mut t, fx)
         }
@@ -1437,10 +1450,10 @@ pub fn meets_view(cam: Camera, at: vec3, reach: f32) -> bool {
 }
 
 /// A built thing drawn in `pass` (its colours cooked, its place its matrix).
-pub fn draw_built<P: RenderPass>(
+pub fn draw_built<P: RenderPass, Q: Switches>(
     pass: P,
     st: Realized,
-    lt: Lighting,
+    lt: Lighting<Q>,
     cam: Camera,
     coverage: vec2 = vec2(0.0, 1.0),
 ) {

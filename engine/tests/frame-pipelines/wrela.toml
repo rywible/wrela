@@ -1,6 +1,9 @@
 # The pipelines the frame makes (engine::frame): a scene with no effects of its own (the frame
 # fixture, engine/tests/frame) reaches none of an effect's pipelines, and each pipeline the frame
-# makes is one a program is meant to make. The tool test checks the fixture through the
-# toolchain, which gives its pipelines as `wrela pipelines` counts them.
+# makes is one a program is meant to make. The tool test builds the fixture through the
+# toolchain and reads its pipelines from the build's manifest, as `wrela pipelines` counts them.
 [package]
 name = "frame_pipelines"
+
+[dependencies]
+hosts = { workspace = true }

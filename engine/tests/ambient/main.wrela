@@ -5,6 +5,7 @@
 
 use engine::distance::NO_DISTANCE
 use engine::ambient::{Ambient, ao_at, build}
+use engine::switches::Approved
 use engine::view::{Camera, NEAREST, first_camera}
 use std::gpu::{
     ClipPosition, DepthTexture, GlobalId, GpuBuffer, Half2, Rgba16Float, Slots, Texture,
@@ -164,7 +165,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
         p.end()
-        let a = build(mut s.ao, s.depth, cam, NO_DISTANCE, no_volume())
+        let a = build::<Approved>(mut s.ao, s.depth, cam, NO_DISTANCE, no_volume())
         var out: GpuBuffer<f32> = buffer(POINTS.len())
         dispatch(
             probe.bind(a, s.ao, points: buffer_of(POINTS).items(), out: mut out),
@@ -186,7 +187,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
         p.end()
-        let a = build(mut ao, depth, near, NO_DISTANCE, no_volume())
+        let a = build::<Approved>(mut ao, depth, near, NO_DISTANCE, no_volume())
         var foot: GpuBuffer<f32> = buffer(1)
         dispatch(
             probe.bind(a, ao, points: buffer_of([CLOSE_FOOT]).items(), out: mut foot),

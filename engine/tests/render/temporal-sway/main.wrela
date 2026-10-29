@@ -94,9 +94,22 @@ fn resolved(
     }
     let linear = sampler()
     let p = begin_pass(mut history)
-    fullscreen(
+    draw(
         p,
-        resolve_gathered.bind(r, scene, depth, depth, motion, motion, last, linear, no_net.items()),
+        full.bind(z: 0.5),
+        resolve_gathered.bind(
+            r,
+            scene,
+            depth,
+            depth,
+            motion,
+            motion,
+            last,
+            linear,
+            no_net.items(),
+            learned: false,
+        ),
+        vertices: 3,
     )
     p.end()
 }

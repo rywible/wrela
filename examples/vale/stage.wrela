@@ -13,6 +13,7 @@ use engine::grass::Blooms
 use engine::light::Light
 use engine::shot::Skies
 use engine::lit::Lighting
+use engine::switches::Switches
 use engine::memory::{Share, Usage}
 use engine::particles::Emits
 use engine::plant::{Plant, Wind}
@@ -239,9 +240,9 @@ impl Scene for Stage {
     }
 
     /// The grass placed round the eye, and the wood's lists.
-    fn choose(
+    fn choose<Q: Switches>(
         mut self,
-        lt: Lighting,
+        lt: Lighting<Q>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -285,7 +286,13 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn late_shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         if let Some(w) = self.land.wood {
             w.late_shade(pass, lt, wind, ids)
         }
@@ -303,7 +310,13 @@ impl Scene for Stage {
     }
 
     /// The vegetation pass: the grass and the wood.
-    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn shade<P: RenderPass, Q: Switches>(
+        self,
+        pass: P,
+        lt: Lighting<Q>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         self.land.grass.shade(pass, lt, wind, land::stage::GRASS_LOOK, Blooms {})
         if let Some(w) = self.land.wood {
             w.shade(pass, lt, wind, ids)
@@ -320,7 +333,7 @@ impl Scene for Stage {
     }
 
     /// The fawn.
-    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+    fn characters<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
         self.fawn.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
     }
 
@@ -329,7 +342,7 @@ impl Scene for Stage {
     }
 
     /// The water over a copy of the scene under it.
-    fn effects(mut self, t: mut Targets, fx: Effects) {
+    fn effects<Q: Switches>(mut self, t: mut Targets, fx: Effects<Q>) {
         draw_water(mut self.land, mut t, fx)
     }
 

@@ -101,7 +101,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ### A struct update of the floor's stage is malformed IR
 
-- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: quality().neural, ..stage() }`.
+- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: NEURAL, ..stage() }`.
 - **What happens:** toolchain 0.9.0's build stops with an internal error: "the CPU module's IR is malformed: fn0 `init_0_export`: v1862 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`": the update's copied fields reach a cast of another field's type.
 - **Found:** 2026-10-26, adding `Quality::neural` (B14.2c).
 - **Evidence:** `wrela build games/last-green` with that line in `games/last-green/main.wrela`'s `init` (the stage holds the floor's creatures' generic bodies).
@@ -126,7 +126,43 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the tool runs as a package with the directory granted on the command line: `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- …` (docs/lookdev.md).
 - **Status:** open: a declared tool's grant of a directory outside the workspace, named on the command line.
 
+### An entry point's parameters that its shader never reads are still bound
+
+- **Needed:** a switch that's off binds nothing of its path (docs/plan-world-class-3.md §C1): the clearing's shading, its fog off, shouldn't bind the froxels' volume.
+- **What happens:** toolchain 0.10.0 folds a switch's code out of a shader (an associated constant, or a `bool` argument once inlined, give the same WGSL), but every parameter of the entry point stays a binding: a group's fields (`lit::Lighting`'s `fog`, `fogged`, `distance`, `volume`) are declared in the WGSL and bound by the command whether the folded shader reads them or not.
+- **Found:** 2026-10-28, C1, a scratch package: `fill<Q>(t: [u32], ...)` whose `Q::ON` false branch is the only reader of `t` still declares `var<storage> t`.
+- **Evidence:** the scratch package's two pipelines, `fill::<Yes>` and `fill::<No>`, each with three bindings; the second's code has no read of `t`.
+- **Meanwhile:** the frame binds the off paths' small stand-ins (a 1 × 1 × 1 froxel volume, the distance volume's), so the cost is the bindings alone.
+- **Status:** open: an entry point's binding that no code of its pipeline reads left out of its layout and its command.
+
+### A generic method can't take one type argument and infer the rest
+
+- **Needed:** `Scene::prepass<P: RenderPass, Q: Switches>(...)` called as `scene.prepass::<_, Q>(pass, ...)`, so the far crowns' cut prepass (`impostor::far_cut_flat`, which takes no lighting to carry `Q`) folds the neural read-through as their shading does.
+- **What happens:** toolchain 0.10.0 takes a turbofish whole or not at all: `_` is "expected a type", and a turbofish with fewer arguments is E0322.
+- **Found:** 2026-10-28, C1.
+- **Evidence:** `twice::<_, Yes>(3)` (E0100: "expected a type, found `_`") and `twice::<Yes>(3)` for `fn twice<Q: Sw, T: Copy>(t: T)` (E0322: "takes 2 generic arguments, not 1").
+- **Meanwhile:** the cut prepass reads the wood's net at run time (`Neural::on`, 0 unless a scene gives the wood one, as only the floor's `NEURAL` build does); the lit far shading folds it (`Switches::NEURAL`, through `Lighting<Q>`).
+- **Status:** open: `_` in a turbofish, inferred as an omitted argument is.
+
+### A tool's check lists the pipelines a constant's branch leaves out
+
+- **Needed:** `engine/tests/frame-pipelines` counts the frame fixture's pipelines as `wrela pipelines` and a build do.
+- **What happens:** toolchain 0.10.1's `std::tool::toolchain::check` lowers without the fold a build makes (`Mode::CHECK`, neither `emit` nor `conditions`), so its `pipelines` hold every branch's, a switch's that's off too: the fixture's 65 against its build's 58 (C1: its sky's `sky_shade`, the fogless branch, and the six the fold drops).
+- **Found:** 2026-10-28, C1.
+- **Evidence:** the test's check said 65; `wrela pipelines engine/tests/frame` and its build's manifest, 58.
+- **Meanwhile:** the test builds the fixture and reads its manifest (as `engine/tests/switches` does).
+- **Status:** open: a check's pipelines as a build makes them, or a `CheckOptions` that asks for that.
+
 ## Fixed
+
+### A branch on an associated constant stays past the CPU inliner's budget
+
+- **Needed:** each switch a compile-time constant of the program's type (docs/plan-world-class-3.md §C1, `engine::switches`): `if Q::CASCADES { ... }` with the program's `CASCADES` false builds none of the radiance cascades.
+- **What happens:** toolchain 0.10.0 makes an associated constant a function, and a branch on its call folds only once the call is inlined; the CPU's inliner stops at its budget (4,000 statements a function), so late in a long function (the frame's `draw_scene`) the call stays, and with it the branch and every pipeline behind it. Early in the same function the same constant folded.
+- **Found:** 2026-10-28, C1: the clearing (`CASCADES`, `DISTANCE` false) still listed the cascades' `trace`, `merge` and `resolve` and the distance volume's `cook_distance`; the vale and the bare fixture, whose frames are smaller, didn't.
+- **Evidence:** `wrela pipelines examples/clearing`: 117 pipelines with them; `if false` in their place, 115; `if Q::CASCADES` moved to guard the fog's call (early in the function) pruned the fog's.
+- **Meanwhile:** none needed: fixed in the toolchain.
+- **Status:** fixed in 0.10.1 ([rywible/wrela-compiler#40](https://github.com/rywible/wrela-compiler/pull/40), `compiler/lower`'s `assoc_value`): an associated constant is lowered as its value where its initializer folds, so its branch folds before inlining as a literal's does. The clearing went to 113 pipelines; the compiler's `pipelines::a_draw_behind_a_false_associated_constant_is_no_pipeline` holds it.
 
 ### A texture can't be a field's data
 

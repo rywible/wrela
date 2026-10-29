@@ -5,6 +5,7 @@
 // moves.
 
 use engine::frame::{Aim, Frame, Quality, Shared}
+use engine::switches::Approved
 use engine::probes::grid
 use engine::light::sunlight
 use engine::terrain::Clipmap
@@ -12,13 +13,13 @@ use engine::view::first_camera
 use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
 
 pub struct State {
-    frame: Frame<Shared>,
+    frame: Frame<Shared, Approved>,
     scene: Bare,
 }
 
 pub fn init() -> State {
     let air = air_of(SUN)
-    let frame: Frame<Shared> = Frame::new(
+    let frame: Frame<Shared, Approved> = Frame::new(
         Quality { measured: false, pace: false },
         sunlight(air),
         air,

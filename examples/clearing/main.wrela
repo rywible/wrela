@@ -7,6 +7,7 @@
 use creature::{SKELETON, WALKER_BODY, grown}
 use engine::air::{Air, hazy}
 use engine::frame::{Aim, Arrival, Change, Frame, Off, ProbeQuality, Quality, ShadowQuality, Shared}
+use engine::switches::Switches
 use engine::gait::{between, palette}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::paint::Metering
@@ -73,11 +74,16 @@ fn quality(scale: u32) -> Quality {
         },
         probes: ProbeQuality { moves: 1.0e9, rays: engine::probes::RAYS, again: true },
         arrival: Arrival { on: false },
-        // No fog and no solids of its own: neither the froxel volume nor the distance volume
-        // (each cost it in the frame, B16's bisect, for nothing it shows).
-        fog: false,
-        distance: false,
     }
+}
+
+/// The clearing's switches: no fog and no solids of its own, so neither the froxel volume nor
+/// the distance volume (each cost it in the frame, B16's bisect, for nothing it shows).
+pub struct Clear {}
+
+impl Switches for Clear {
+    const FOG: bool = false
+    const DISTANCE: bool = false
 }
 
 /// What a build carries across a hot reload (`std::reload`): where the camera's path is, and
@@ -159,7 +165,7 @@ fn fawn_coat() -> f32 {
 pub struct Clearing {
     /// The sim's snapshots.
     snaps: Snapshots<World>,
-    frame: Frame<Shared>,
+    frame: Frame<Shared, Clear>,
     /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
     shots: Shots,
     stage: Stage,
@@ -222,7 +228,7 @@ pub fn init() -> Clearing {
     let st = stage(w, light)
     print(f"forest: {trees::KINDS} kinds, {st.woods.placed.len()} instances")
     print(f"clouds: {clouds::weather::cloudscape().len()} cumulus")
-    var f: Frame<Shared> = Frame::new(
+    var f: Frame<Shared, Clear> = Frame::new(
         quality(stage::SCALE),
         light,
         air_of(),

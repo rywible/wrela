@@ -1,0 +1,47 @@
+// What a program's renderer holds (docs/plan-world-class-3.md §C1, D32): each of the frame's
+// switches a compile-time constant of a type the program names (`Frame<R, Q: Switches>`), so a
+// switch that's off leaves no code and no pipeline of its path. The shading reads them through
+// its lighting (`lit::Lighting<Q>`): each instantiation is its shaders' own (language.md §3.4),
+// and `if Q::FOG` folds. A function below an entry point takes one as a `bool`, which folds once
+// the shader is inlined.
+
+/// The frame's switches, each at the value the floor's look was approved with: each on draws its
+/// path, each off builds none of it. A program's type gives the ones it changes.
+pub trait Switches {
+    /// The froxels' air (`fog`: the scene's fog, mists and haze, lit by the sun and the probes).
+    const FOG: bool = true
+    /// The solids' distance volume (`distance`: the probes' rays, the contact shadows and the
+    /// ambient occlusion past the screen step through it).
+    const DISTANCE: bool = true
+    /// The probes' sights (`probes::see`): a lookup weighs each probe by what it sees of the
+    /// point, so light doesn't leak through trunks and walls; off, by nearness alone.
+    const SIGHT: bool = true
+    /// The ambient occlusion (`ambient`: what's near a surface hides some of the sky from it).
+    const AMBIENT: bool = true
+    /// Occlusion culling's two phases (`cull`: last frame's depth hides, this frame's reveals).
+    const OCCLUSION: bool = true
+    /// The screen's reflections and the specular probe (`reflect`).
+    const REFLECTIONS: bool = true
+    /// The contact shadows (`reflect::contact_shadow`, `distance::contact_through`).
+    const CONTACT: bool = true
+    /// The static shadows softened by their blockers' distance (`shadow::Shadows::soft_pcss`),
+    /// not by four fixed taps (off: docs/bench.md B6c).
+    const PCSS: bool = false
+    /// The clouds' dome marched at half its size each way (`sky::Sky::march`, D17; off:
+    /// docs/bench.md B5.4).
+    const HALVED: bool = false
+    /// The radiance cascades (B14.4, `cascades`) in place of the probes' sky and the ambient
+    /// occlusion.
+    const CASCADES: bool = false
+    /// The neural impostors' read-through (B14.2, `impostor::Neural`): a scene gives its wood
+    /// the nets (`wood::Wood::read_through`).
+    const NEURAL: bool = false
+    /// Temporal AA's learned history rejector (B14.3, `temporal::learned_share`, its net given
+    /// by `Frame::reject_by`).
+    const LEARNED: bool = false
+}
+
+/// The approved switches: every one at its default.
+pub struct Approved {}
+
+impl Switches for Approved {}

@@ -86,8 +86,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var enabled = texture::<Rgba16Float>(width: 16, height: 16)
     var disabled = texture::<Rgba16Float>(width: 16, height: 16)
     let p = begin_pass(mut fresh)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { fresh: 1, ..r },
             scene,
@@ -100,12 +101,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut enabled)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             r,
             scene,
@@ -118,12 +122,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut disabled)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { moving: vec4(0.0, 0.0, -1.0, -1.0), ..r },
             scene,
@@ -136,7 +143,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0))

@@ -11,6 +11,7 @@
 // camera isn't the point's (what moved, or what was hidden then) is taken as open.
 
 use distance::{DistanceGrid, cones}
+use switches::Switches
 use std::gpu::{
     DepthTexture, GlobalId, R32Float, Rgba16Float, Texels, Texture, Texture3d, dispatch,
     writable_texture,
@@ -115,10 +116,10 @@ impl Occlusion {
 
 /// The occlusion's texels `next` built from `depth` (the scene's opaque depth, as `cam` drew it),
 /// for the next frame, past the screen's metre through the solids' distance volume (`g`,
-/// `volume`: `distance::cones`, once it's cooked): what reads them is to be told so
-/// (`Occlusion::next_at`). (Apart from its `Occlusion`, so this frame's shading can read the
-/// last while it's built.)
-pub fn build(
+/// `volume`: `distance::cones`, once it's cooked, where the program's switches `Q` have it): what
+/// reads them is to be told so (`Occlusion::next_at`). (Apart from its `Occlusion`, so this
+/// frame's shading can read the last while it's built.)
+pub fn build<Q: Switches>(
     next: mut Texture<Rgba16Float>,
     depth: DepthTexture,
     cam: Camera,
@@ -126,7 +127,10 @@ pub fn build(
     volume: Texture3d<R32Float>,
 ) -> Ambient {
     let size = vec2u(next.width(), next.height())
-    dispatch(gtao.bind(depth, cam, size, g, volume, out: mut next), over: (size.x, size.y))
+    dispatch(
+        gtao.bind(depth, cam, size, g, volume, out: mut next, distance: Q::DISTANCE),
+        over: (size.x, size.y),
+    )
     Ambient { view_proj: cam.view_proj, eye: cam.eye, on: 1, size: vec2(size) }
 }
 
@@ -185,7 +189,8 @@ fn nearer_side(before: vec3, after: vec3, has_before: bool, has_after: bool) -> 
 }
 
 /// The occlusion's texel `id` (of `size`, half the scene's): the share of the sky its point
-/// sees (1 open), and its distance from the eye (m); where nothing was drawn, open.
+/// sees (1 open), and its distance from the eye (m); where nothing was drawn, open. Past the
+/// screen's metre, the distance volume's cones where the program has it (`distance`).
 @compute(8, 8)
 fn gtao(
     depth: DepthTexture,
@@ -194,6 +199,7 @@ fn gtao(
     g: DistanceGrid,
     volume: Texture3d<R32Float>,
     out: mut Texels<Rgba16Float>,
+    distance: const bool,
     id: GlobalId,
 ) {
     if id.x >= size.x || id.y >= size.y {
@@ -268,7 +274,10 @@ fn gtao(
         seen += np_len * 0.25 * arc
     }
     // Past the screen's metre, the solids round it (the volume's cones).
-    out.store(id, vec4(saturate(seen * 0.5) * cones(g, volume, p, n), dist, 0.0, 1.0))
+    let open = if distance { saturate(seen * 0.5) * cones(g, volume, p, n) } else {
+        saturate(seen * 0.5)
+    }
+    out.store(id, vec4(open, dist, 0.0, 1.0))
 }
 
 /// The share of the sky that reaches `world` past what's near it (1: open), from the occlusion's

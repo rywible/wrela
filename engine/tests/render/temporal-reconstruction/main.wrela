@@ -83,8 +83,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var before = texture::<Rgba16Float>(width: 16, height: 16)
     var after = texture::<Rgba16Float>(width: 16, height: 16)
     let p = begin_pass(mut aligned)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             r,
             scene,
@@ -97,12 +98,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut before)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { jitter: vec2(-0.0001), ..r },
             scene,
@@ -115,12 +119,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut after)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { jitter: vec2(0.0001), ..r },
             scene,
@@ -133,7 +140,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     var reduced = texture::<Rgba16Float>(width: 8, height: 8)
@@ -141,8 +150,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var reduced_after = texture::<Rgba16Float>(width: 8, height: 8)
     let reduced_resolve = Resolve { out: vec2(8.0), jitter: vec2(-0.5), ..r }
     let p = begin_pass(mut reduced)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             reduced_resolve,
             scene,
@@ -155,12 +165,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut reduced_before)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { jitter: vec2(-0.5001), ..reduced_resolve },
             scene,
@@ -173,12 +186,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut reduced_after)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { jitter: vec2(-0.4999), ..reduced_resolve },
             scene,
@@ -191,7 +207,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0))

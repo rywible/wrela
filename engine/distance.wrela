@@ -355,7 +355,7 @@ pub struct Distance {
     /// Whether it's been placed round an eye yet, and cooked whole once.
     placed: bool,
     pub cooked: bool,
-    /// Whether it's wanted (`frame::Quality::distance`).
+    /// Whether it's wanted (`switches::Switches::DISTANCE`).
     pub wanted: bool,
 }
 
