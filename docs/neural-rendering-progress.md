@@ -2967,3 +2967,13 @@ A conventional followup skips unused neural cells/features and retains identical
 Cold observation collisions identify a fixed-input ambiguity: 48.30% of pixels belong to identical-observation groups with differing references; conditional MSE floor 0.0090844, or 15.16% of actual cold MSE. All final grouped GPU outputs are identical; the initial cross-row numerical grouping is preserved but excluded. This is not a G1 FLIP or general temporal impossibility bound.
 
 Keep batched multi-case capture and the exact conventional bypass; 72 final retained/default images and their targets/masks pass. The next neural bet changes observations and surface/detail representation before more fitting. Alternate next to a bounded G4 compressed base-field experiment. Old models remain unchanged; G1–G7 remain unchanged and unmet. Manifest: `8d640fd5b9ea1d4ffabbc83693c36606a332be80b8821114a484299440cc8fd8`.
+
+## 2026-10-28: Retire shared mixed-field grids after a complete comparison
+
+[The source-grid experiment](neural-base-grid.md) replaces per-card sums/response caches with shared owner-local tables and exact source fallback. The complete comparison, including table preparation and the strengthened bounded-raw field baseline, takes 13.48 minutes after observed implementation start (22.48 including the explicitly estimated nine-minute inspection allowance). One candidate followup; no training or new references.
+
+Both guarded tables pass 90/90 shaded rows but accept zero / 1.320% of all authored leaf queries. They cost 3.06944 / 3.07724 ms, versus 2.24624 ms native Oct12. Table preparation plus full rendering costs 3.48252 / 5.13500 ms. Removing the finer grid's interpolation guard reaches 2.53540 ms but passes only 49/90 rows and still fails the 1.1× paced p95/p99 limit versus native.
+
+The existing bounded-raw direct field costs 3.05524 ms with 1,698,932 B requested live memory, versus 1,810,860 / 2,393,772 B for guarded grids. Physical residency is approximately 17.8 MB for all three. Grid paced tails are lower in these unpaired runs; no statistically resolved small win or dominance is claimed. No G4 resident-memory qualification.
+
+All 3,600 captures preserve alpha; 800 preparation images and 528 old baseline images are exact. Retire the grid runtime, preserve all failed results, and restore engine/content/studio byte-for-byte. Next block returns to source-visible, surface-separated neural observations with an equally informed conventional baseline. G1–G7 remain unchanged/unmet. Manifest: `140aca3467f2daf6cbe657a1fd5ad7bf8fe8fb39d0d1d888291a9c688f875e4b`.

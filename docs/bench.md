@@ -3120,3 +3120,26 @@ Fresh final retained builds:
 
 
 No quality qualification follows from preserving a blurry image. G1–G7 remain unmet. One candidate followup plus a cold-input diagnosis; no further training. All 72 final cleanup/default images are exact; formatting and type checks pass. [Complete quality, resident memory, failed results and reproducibility](neural-capacity.md).
+
+## Shared source-field grids, retired (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR, Ryzen 5 5500U; Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten-layout AA4 320×128 mosaic, five source edit states, 240 frames after 60 warmup, one worker. Quality uses 30 completed references on three backgrounds. No training/new references; one candidate followup.
+
+| Method | Saturated median / p95 ms | Paced p95 / p99 ms | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native immutable Oct12 | 2.24624 / 2.36788 | 3.04277 / 3.10952 | 13,581,900 / 13,745,740 | 26,501,120 / 10,199,040 | 512,014,336 |
+| Compact immutable f32 | 2.59420 / 2.72716 | 3.95355 / 4.05676 | 8,073,324 / 8,237,164 | 22,052,864 / 10,035,200 | 492,166,144 |
+| Direct stabilized field | 3.12112 / 3.15124 | 4.45830 / 4.57109 | 1,698,932 / 1,862,772 | 17,788,928 / 10,100,736 | 511,159,296 |
+| Direct bounded-raw field | 3.05524 / 3.09360 | 4.42856 / 4.55481 | 1,698,932 / 1,862,772 | 18,046,976 / 10,035,200 | 512,728,064 |
+| 4-cell-axis guarded grid | 3.06944 / 3.09704 | 3.97715 / 4.03246 | 1,810,860 / 1,974,700 | 17,797,120 / 10,100,736 | 492,165,120 |
+| 8-cell-axis guarded grid | 3.07724 / 3.10504 | 4.06527 / 4.22658 | 2,393,772 / 2,574,052 | 17,793,024 / 10,035,200 | 492,418,048 |
+| 8-cell-axis, guard removed | 2.53540 / 2.68880 | 3.46317 / 3.57360 | 2,393,772 / 2,574,052 | 17,793,024 / 10,199,040 | 494,153,728 |
+| 4-cell-axis, preparation each frame | 3.48252 / 3.51880 | 4.14308 / 4.25920 | 1,810,860 / 1,974,700 | 18,006,016 / 10,297,344 | 495,052,800 |
+| 8-cell-axis, preparation each frame | 5.13500 / 5.18372 | 5.88046 / 6.00398 | 2,393,772 / 2,574,052 | 18,010,112 / 10,231,808 | 496,363,520 |
+
+
+Guarded grids pass 90/90 quality rows, but accept zero / 1.320% of all authored leaf queries. The finer grid without rejection passes only 49/90, costs 12.9% more saturated GPU time than fastest native, and has paced p95/p99 ratios 1.138/1.149. Retire this representation; no new rendering win or G4 qualification. Source guards are sampled checks, not continuum bounds.
+
+All requested resources and actual whole-client DRM/PSS snapshots are included; initial preparation is separate above. No UMA summation, physical peak or appearance-only attribution. Paced grid tails are lower than direct-field tails in these unpaired runs; no small-win or dominance inference. Complete decision, including preparation and strengthened raw-field baseline, finishes 13.48 minutes after implementation start, with an explicitly estimated additional nine-minute inspection allowance.
+
+3,600 images preserve alpha; 800 preparation images and 528 prior baseline images are byte-identical. Retained renderer restored exactly; failures preserved. [Full quality, runtime, residency and replay evidence](neural-base-grid.md).
