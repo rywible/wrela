@@ -18,18 +18,18 @@
 
 ## Immediate milestone
 
-Retain the source-region temporal specialization, compact causal source records,
-packed empty-leaf certificate and the new [exact sparse appearance](neural-sparse-appearance.md)
-for the measured clearing. Exact BC page sharing cuts the impostor allocation 2.4×
-and the whole scene's requested steady bytes by22.02MB, with similar complete frame
-time. Observed GPU residency falls; total browserPSS is noisy and not a proven saving.
-The source-rebuild window adds about24.49ms GPU work. No G1–G7 gate is met.
+Keep the qualified [exact sparse appearance](neural-sparse-appearance.md), source-region
+temporal specialization, compact causal source records and packed empty-leaf certificate.
+The [shared-volume projection block](neural-appearance-projection.md) is retired: its
+8.39 MB or 4.19 MB steady savings lose visible shading detail and do not reduce startup peak.
+The original 192×108 production shot barely exposed the changed impostor shader;
+a focused same-source LOD test exposed the failure. No new rendering win or G1–G7 pass.
 
-Next test source-space appearance factorization across angular views with explicit
-coverage/depth residuals. Give the conventional low-rank/analytic decoder the same
-field inputs as any learned decoder. Establish rendered quality, full cost and
-resident memory before fitting. The current exact-block family cannot reach16×G4;
-models remain frozen and completed references remain unchanged.
+The next G4 representation must retain visible-leaf identity and its correlated
+normal, surface position and depth. Investigate visibility references into shared
+source-leaf records, charging all lookup/preparation/residency costs and giving the
+conventional decoder identical inputs. Review the prior source-ID failures first.
+Models stay frozen; do not resume material-moment fitting from this result.
 
 ## Evidence recorded so far
 
@@ -3376,3 +3376,15 @@ Observed GPU-client residency lower before/after edit; totalPSS inconsistent.
 Negative payload corruption detected; models/goals unchanged. See
 [complete comparison and limits](neural-sparse-appearance.md).
 Evidence manifest: `6b989c2026312f6e1ac745dca2038a58dd3a65a440c37328c189ec435ce41378`.
+
+## 2026-10-29: shared source-volume appearance rejected
+
+Initial projection and both targeted follow-ups fail focused native shaded quality
+against all three reference captures. The initial whole-image FLIP/LPIPS rise about 46%,
+PSNR falls 5.34 dB; exact position/depth still loses 1.85 dB. Steady allocation saves 8.39 MB
+or 4.19 MB but startup peak remains 578,009,512 bytes, full frame about 25 ms. The preliminary
+ordinary 192×108 pass was insufficient because the changed shader had little measured effect; the cause was not isolated.
+One focused reference case resolved that uncertainty without a new reference algorithm.
+All experimental runtime and fixture code restored to 660c5bef; qualified exact pages stay.
+[Full comparison and next bet](neural-appearance-projection.md).
+Evidence manifest: `a0a4f91d5be78bca64fb47020d083244fc2d17d46d01f1c17011a653b453d436`.

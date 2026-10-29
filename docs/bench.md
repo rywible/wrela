@@ -3620,3 +3620,24 @@ Physical figures are whole-client snapshots, not peaks; do not sum UMA pools.
 No established frame-time or totalphysicalmemory win. Continue bounded GPU memory
 tradeoff; G4 unmet. Exactly2followups; firstcomplete32.89min. All failed results
 preserved in sparse-appearance-v1; negative corrupted payload prevented activation.
+
+## 2026-10-29: shared source-volume appearance rejected, AMD
+
+Parent 660c5bef, Wrela 0.9.0/compilerde9b81e5, Ryzen 5500U/RADV RENOIR 1002:164c,
+Mesa 26.1.6, Chrome 154.0.8037.57.1080p/internal 2×,600warmup+60measured frames,
+same-build allocation/actualDRM/PSS snapshots. Solo, quiet GPU, no training.
+[Quality, cost, uncertainty and decision](neural-appearance-projection.md).
+
+| Method | Full GPU median / p95, ms | Requested live / peak, bytes | Observed DRM VRAM / GTT, bytes | Whole-browser PSS, bytes |
+|---|---:|---:|---:|---:|
+| Exact three-plane pages | 24.93468 / 26.51060 | 383,312,696 / 578,009,512 | 535,302,144 / 20,475,904 | 867,003,392 |
+| Shared normal, position and depth | 25.07352 / 26.71420 | 374,924,088 / 578,009,512 | 526,848,000 / 20,475,904 | 866,615,296 |
+| Exact position/depth; shared normal | 24.92244 / 26.46892 | 379,118,392 / 578,009,512 | 531,107,840 / 20,574,208 | 870,597,632 |
+| Exact normal; shared position/depth | 25.02104 / 26.73352 | 379,118,392 / 578,009,512 | 531,042,304 / 20,475,904 | 865,796,096 |
+
+Pinnedimpostor shaded stress test rejects all 3 candidates. Initial native FLIP/LPIPS
+about 46% worse, PSNR −5.34 dB; exact position/depth still −1.85 dB. The ordinary low-resolution case
+was insensitive to the change; LOD, fading and filtering contributions were not counted. One focused
+case resolves this; production quadrature is not independent transport truth.
+No physical peak, total memory, speedup or G1–G7 win claimed; UMA pools must not be summed.
+First meaningful assessment24.52min;2 follow-ups; all runtime/fixture changes restored.
