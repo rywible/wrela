@@ -43,7 +43,7 @@ use std::gpu::{
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
     card_indices, card_shadow, leaf_cut, leaf_shade, limb, limb_indices, limb_shadow, mark_of,
-    nothing, out_of_view, place_of,
+    nothing, out_of_view, place_of, leaf_cut_supported, cook_leaf_support,
 }
 use view::{Camera, NEAREST, PREPASSED}
 
@@ -835,6 +835,7 @@ pub struct Wood {
     pub far_kinds: Vec<u32>,
     pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
+    leaf_support: Option<Texture<R32Uint>>,
     /// Bark's ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
     /// sampler that repeats them.
     ridges: Texture<Rgba8>,
@@ -884,6 +885,9 @@ pub struct Wood {
 impl Wood {
     /// A wood of `kinds` (cooked with `atlas`) and far kinds (`far_kinds`: each its own kind's
     /// index), with room for `slots` tiles.
+    /// With fixed_leaf_atlas, the caller guarantees the atlas is unchanged for this Wood's
+    /// lifetime. Reconstruct the Wood after an atlas edit. Only the standard atlas size
+    /// enables the source support table; other callers keep the original coverage shader.
     pub fn new(
         kinds: take Vec<Kind>,
         far_kinds: take Vec<u32>,
@@ -892,6 +896,7 @@ impl Wood {
         cards_to: f32,
         impostors_to: f32,
         compress: bool = false,
+        fixed_leaf_atlas: bool = false,
     ) -> Wood {
         var kinds = take kinds
         let pool = pool_of(mut kinds, far_kinds, compress)
@@ -900,6 +905,18 @@ impl Wood {
             cook_outlines.bind(atlas, mut outlines),
             over: plant::LEAF_PATTERNS * plant::OUTLINE,
         )
+        let leaf_support = if fixed_leaf_atlas &&
+            atlas.width() == plant::LEAF_ATLAS &&
+            atlas.height() == plant::LEAF_ATLAS {
+            var support = writable_texture::<R32Uint>(
+                width: plant::LEAF_ATLAS / 4,
+                height: plant::LEAF_ATLAS / 4,
+            )
+            label("leaf support")
+            dispatch(cook_leaf_support.bind(atlas, out: mut support), over: support)
+            label("cook")
+            Some(take support)
+        } else { None }
         var most = 1
         var most_limbs = 1
         for k in kinds {
@@ -917,6 +934,7 @@ impl Wood {
             far_kinds,
             atlas,
             outlines,
+            leaf_support,
             ridges,
             coarse,
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
@@ -969,7 +987,11 @@ impl Wood {
             u64(p.bounds.len()) * 16 +
             2 * memory::texels(v, v, 8, d: v) * u64(self.kinds.len()) +
             u64(self.every.len()) * u64(size_of::<Instance>()) +
-            u64(self.metadata.len()) * 4
+            u64(self.metadata.len()) * 4 +
+            match self.leaf_support {
+                Some(support) => memory::texels(support.width(), support.height(), 4),
+                None => 0,
+            }
     }
 
     /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
@@ -1298,24 +1320,42 @@ impl Wood {
                 continue
             }
             let d = self.card_draw_of(way, cam, wind)
-            draw_multi(
-                pass,
-                card.bind(
-                    cam,
-                    d,
-                    kinds: self.pool.kinds,
-                    cards: self.pool.cards,
-                    instances: ph.instances.span(start: 0, count: self.seen.places),
-                    marks: ph.marks.span(start: 0, count: self.seen.places),
-                    outlines: self.outlines,
-                    orders: self.pool.orders,
-                ),
-                leaf_cut.bind(d, kinds: self.pool.kinds, atlas: self.atlas, s: s),
-                indices: self.card_triangles,
-                indirect: self.of_way(ph.cards, way),
-                count: n,
-                depth: NEAREST,
+            let vertex = card.bind(
+                cam,
+                d,
+                kinds: self.pool.kinds,
+                cards: self.pool.cards,
+                instances: ph.instances.span(start: 0, count: self.seen.places),
+                marks: ph.marks.span(start: 0, count: self.seen.places),
+                outlines: self.outlines,
+                orders: self.pool.orders,
             )
+            match self.leaf_support {
+                Some(support) => draw_multi(
+                    pass,
+                    vertex,
+                    leaf_cut_supported.bind(
+                        d,
+                        kinds: self.pool.kinds,
+                        atlas: self.atlas,
+                        s: s,
+                        support: support,
+                    ),
+                    indices: self.card_triangles,
+                    indirect: self.of_way(ph.cards, way),
+                    count: n,
+                    depth: NEAREST,
+                ),
+                None => draw_multi(
+                    pass,
+                    vertex,
+                    leaf_cut.bind(d, kinds: self.pool.kinds, atlas: self.atlas, s: s),
+                    indices: self.card_triangles,
+                    indirect: self.of_way(ph.cards, way),
+                    count: n,
+                    depth: NEAREST,
+                ),
+            }
         }
     }
 

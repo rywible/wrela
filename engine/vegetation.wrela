@@ -29,8 +29,8 @@ use std::field::Tube
 use std::math::TAU
 use std::gpu::{
     Atomics, ClipPosition, Compare, Depth, DepthTexture, DrawIndexedArgs, Flat, FragCoord,
-    GpuBuffer, GpuSpan, InstanceIndex, R32Uint, RenderPass, Rgba8, Sampler, Texture, VertexIndex,
-    buffer, buffer_of, discard, dispatch, draw, write,
+    GpuBuffer, GpuSpan, InstanceIndex, R32Float, Texels, GlobalId, R32Uint, RenderPass, Rgba8,
+    Sampler, Texture, VertexIndex, buffer, buffer_of, discard, dispatch, draw, write,
 }
 use view::{Camera, PREPASSED}
 
@@ -365,6 +365,83 @@ pub fn leaf_cut(
     0
 }
 
+@fragment
+pub fn leaf_cut_supported(
+    l: LeafVertex,
+    pixel: FragCoord,
+    d: CardDraw,
+    kinds: [KindDesc],
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+    support: Texture<R32Uint>,
+) -> u32 {
+    let per_card = if d.per_card > 0 { d.per_card } else {
+        kinds[l.kind.value].bake.leaves.per_card
+    }
+    let cover = leaf_pixel_supported(atlas, s, support, l.seed.value, l.uv, per_card)
+    let size = cell_size(l.uv, d.cell)
+    if cover <= 0.0 || !keeps_packed(l.keep.value, pixel.position.xy) {
+        discard()
+    }
+    // A pixel covered in part is kept that much of the time, by a draw that holds still on the
+    // card (hashed alpha): a fixed cut left hard, crawling edges for temporal AA, and a draw
+    // changing each frame, noise. Most of a card is empty or covered: they draw nothing.
+    if cover < 1.0 && cover < hashed_threshold_of(l.uv, l.seed.value, size) {
+        discard()
+    }
+    0
+}
+
+/// Source-only conservative distance to any nonzero coverage texel.
+/// Unscanned texels are farther than the initialized bound of eight texels.
+@compute(8, 8)
+pub fn cook_leaf_support(atlas: Texture<Rgba8>, out: mut Texels<R32Uint>, id: GlobalId) {
+    let size = vec2u(atlas.width(), atlas.height())
+    if id.x >= size.x / 4 || id.y >= size.y / 4 { return }
+    var word = 0
+    for k in 0..4 {
+        let cell = vec2u(id.x * 2 + (k & 1), id.y * 2 + (k >> 1))
+        let centre = vec2(cell * 2 + vec2u(1))
+        var nearest = 8.0
+        for y in 0..18 {
+            for x in 0..18 {
+                let at = vec2u(
+                    clamp(
+                        vec2i(cell * 2) + vec2i(i32(x) - 8, i32(y) - 8),
+                        vec2i(0),
+                        vec2i(size) - vec2i(1),
+                    ),
+                )
+                if atlas.load(at.x, at.y).r > 0.0 {
+                    let distance = abs(vec2(at) + vec2(0.5) - centre)
+                    nearest = min(nearest, max(distance.x, distance.y))
+                }
+            }
+        }
+        word |= u32(nearest * 2.0) << (k * 8)
+    }
+    out.store(id, word)
+}
+
+/// Certify all four coverage-filter samples are zero, using bounds cooked from the same
+/// unchanged 512-square leaf atlas. The centre sample and its derivatives remain mandatory.
+/// The table packs four half-texel distances in each word; the original area filter handles
+/// every point this bound cannot certify.
+pub fn leaf_area_empty(support: Texture<R32Uint>, seed: u32, uv: vec2, dx: vec2, dy: vec2) -> bool {
+    let texel = leaf_uv(seed, uv) * f32(plant::LEAF_ATLAS)
+    let cell = vec2u(floor(texel * 0.5))
+    let centre = vec2(cell) * 2.0 + vec2(1.0)
+    let offset = abs(texel - centre)
+    // Clamping in leaf_uv cannot increase this maximum offset of the four area points.
+    let footprint = (abs(dx) + abs(dy)) * (f32(LEAF_TEXELS) * 0.125)
+    let reach = max(offset.x + footprint.x, offset.y + footprint.y)
+    // A bilinear read can touch nonzero texels within one texel on either axis.
+    let word = support.load(cell.x / 2, cell.y / 2)
+    let shift = ((cell.y & 1) * 2 + (cell.x & 1)) * 8
+    let distance = f32((word >> shift) & 255) * 0.5
+    reach + 1.0001 < distance
+}
+
 /// Filter cutout coverage over the pixel before the alpha test. A centre-only sample
 /// skipped thin leaves as the camera moved, especially obvious against a bright backlight.
 /// Magnified leaves keep the sharp derivative edge; minified leaves use four area samples.
@@ -377,6 +454,37 @@ fn leaf_pixel(atlas: Texture<Rgba8>, s: Sampler, seed: u32, uv: vec2, per_card: 
     let filtered = smoothstep(0.75, 1.5, footprint)
     if filtered <= 0.0 {
         return sharp
+    }
+    var area = 0.0
+    for i in 0..4 {
+        let offset = dx * (f32(i & 1) - 0.5) * 0.5 + dy * (f32(i >> 1) - 0.5) * 0.5
+        let (coverage, leaf) = leaf_at(atlas, s, seed, uv + offset)
+        if leaf < per_card {
+            area += coverage * 0.25
+        }
+    }
+    mix(sharp, area, filtered)
+}
+
+fn leaf_pixel_supported(
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+    support: Texture<R32Uint>,
+    seed: u32,
+    uv: vec2,
+    per_card: u32,
+) -> f32 {
+    let dx = dpdx(uv)
+    let dy = dpdy(uv)
+    let (m, which) = leaf_at(atlas, s, seed, uv)
+    let sharp = leaf_cover(m) * if which < per_card { 1.0 } else { 0.0 }
+    let footprint = max(length(dx), length(dy)) * f32(LEAF_TEXELS) * 0.5
+    let filtered = smoothstep(0.75, 1.5, footprint)
+    if filtered <= 0.0 {
+        return sharp
+    }
+    if m == 0.0 && leaf_area_empty(support, seed, uv, dx, dy) {
+        return mix(sharp, 0.0, filtered)
     }
     var area = 0.0
     for i in 0..4 {

@@ -3544,3 +3544,21 @@ All21batchedHDRbuffers exact; final1080p max difference<=1byte. No G3 qualificat
 First joint17.40min; retire after exactlytwofollowups.
 No useful complete-frame win, and more memory; runtime restored to parent.
 [Full timing tails, residency and quality limits](neural-leaf-geometry.md).
+
+
+## 2026-10-29 — source-certified leaf coverage
+
+AMD RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Full clearing 1080p 2×, one worker, 600 warmup/60 measured, fixed workload.
+Five alternating pairs: complete GPU medians25.32668→
+24.89280 ms (1.71% lower); all five pairs faster.
+Final requested live405,332,792 versus405,267,256bytes.
+Observed DRM VRAM551,993,344 versus551,931,904bytes.
+All scratch/caches/fallbacks/updates included; whole-client physical snapshots are
+not physical peaks, and UMA pools are not additive. Table cook1.85252 ms.
+All 28 HDR buffers exact; final 1080p<=1byte differences. DirectGPU guard: 2,097,152 queries,
+zero false certificates; intentionally false table detected. No broad G3/G4/G6 claim.
+Retain guarded packed support for explicitly fixed standard-size atlases.
+First joint29.16min, exactly two optimization followups.
+[Complete cost, memory, quality and limitations](neural-vegetation-support.md).

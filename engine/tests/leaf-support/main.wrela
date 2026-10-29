@@ -1,0 +1,113 @@
+use engine::plant::{LEAF_ATLAS, leaf_atlas, leaf_at}
+use engine::vegetation::{cook_leaf_support, leaf_area_empty}
+use std::gpu::{
+    GlobalId, Texture, Texels, Rgba8, R32Uint, Sampler, Slots, GpuBuffer, writable_texture, buffer,
+    dispatch, read, sampler,
+}
+use std::io::{Pending, print}
+
+@compute(8, 8)
+fn synthetic(which: u32, out: mut Texels<Rgba8>, id: GlobalId) {
+    let edge = id.x % 128 == 0 || id.x % 128 == 127 || id.y % 128 == 0 || id.y % 128 == 127
+    let spike = (id.x * 13 + id.y * 31) % 97 == 0
+    let value = if which == 3 { 0.7 } else if edge || spike { 1.0 } else { 0.0 }
+    out.store(id, vec4(value, 0.0625, 0.0, 1.0))
+}
+
+@compute(8, 8)
+fn false_support(support: Texture<R32Uint>, out: mut Texels<R32Uint>, id: GlobalId) {
+    // Each byte is at most 16; adding two cannot carry and inflates every bound by one texel.
+    out.store(id, support.load(id.x, id.y) + 33686018)
+}
+
+@compute(64)
+fn inspect(
+    atlas: Texture<Rgba8>,
+    support: Texture<R32Uint>,
+    invalid: Texture<R32Uint>,
+    linear: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    var bad = 0.0
+    var certified = 0.0
+    var rejected_negative = 0.0
+    var positive = 0.0
+    for k in 0..512 {
+        let point = (id.x / 16) * 512 + k
+        let epsilon = if point < 16384 { -0.00001 } else { 0.00001 }
+        let grid = vec2(f32(point % 128), f32((point / 128) % 128))
+        let uv = if point % 3 == 0 {
+            // Local texel coordinates are even integers plus epsilon: the support-cell edges.
+            (grid * 2.0 + vec2(epsilon)) * (2.0 / 128.0) - vec2(2.0)
+        } else {
+            (grid + vec2(0.5 + epsilon)) * (2.6 / 128.0) - vec2(1.3)
+        }
+        let widths: [f32; 6] = [0.0, 0.00390625, 0.015625, 0.0625, 0.25, 0.75]
+        let wide = widths[point % 6]
+        let sign = if point % 2 == 0 { 1.0 } else { -1.0 }
+        let dx = vec2(wide * 0.75, wide * 0.25 * sign)
+        let dy = vec2(-wide * 0.125 * sign, wide * 0.5)
+        let seed = id.x % 16
+        var area = 0.0
+        for i in 0..4 {
+            let offset = dx * (f32(i & 1) - 0.5) * 0.5 + dy * (f32(i >> 1) - 0.5) * 0.5
+            let (coverage, _) = leaf_at(atlas, linear, seed, uv + offset)
+            area += coverage
+        }
+        let empty = leaf_area_empty(support, seed, uv, dx, dy)
+        let wrong = leaf_area_empty(invalid, seed, uv, dx, dy)
+        bad += if empty && area > 0.0 { 1.0 } else { 0.0 }
+        certified += if empty { 1.0 } else { 0.0 }
+        rejected_negative += if wrong && area > 0.0 { 1.0 } else { 0.0 }
+        positive += if area > 0.0 { 1.0 } else { 0.0 }
+    }
+    out[id] = vec4(bad, certified, rejected_negative, positive)
+}
+
+pub struct State { step: u32, pending: Vec<Pending<vec4>>, results: Vec<Vec<vec4>> }
+
+pub fn init() -> State {
+    State { step: 0, pending: Vec::new(), results: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.step < 4 {
+        var atlas = if s.step >= 2 {
+            writable_texture::<Rgba8>(width: LEAF_ATLAS, height: LEAF_ATLAS)
+        } else { leaf_atlas(if s.step == 1 { 3 } else { 8 }) }
+        if s.step >= 2 { dispatch(synthetic.bind(s.step, out: mut atlas), over: atlas) }
+        var support = writable_texture::<R32Uint>(width: LEAF_ATLAS / 4, height: LEAF_ATLAS / 4)
+        var invalid = writable_texture::<R32Uint>(width: LEAF_ATLAS / 4, height: LEAF_ATLAS / 4)
+        dispatch(cook_leaf_support.bind(atlas, out: mut support), over: support)
+        dispatch(false_support.bind(support, out: mut invalid), over: invalid)
+        var out: GpuBuffer<vec4> = buffer(1024)
+        dispatch(inspect.bind(atlas, support, invalid, sampler(), mut out), over: 1024)
+        s.pending.push(read(out.items()))
+        s.step += 1
+    }
+    if s.results.len() < s.pending.len() {
+        match s.pending[s.results.len()].poll() {
+            Some(Ok(v)) => s.results.push(take v),
+            _ => {},
+        }
+    }
+}
+
+@test(frames: 12, gpu: true)
+fn leaf_support_rejects_false_empty_coverage_after_filtering_and_source_changes(s: State) {
+    assert(s.results.len() == 4, "readbacks")
+    var which = 0
+    for rows in s.results {
+        assert(rows.len() == 1024)
+        var sum = vec4(0.0)
+        for r in rows { sum += r }
+        print(
+            f"LEAF_SUPPORT_GUARD {which} bad={sum.x} certified={sum.y} invalid={sum.z} positive={sum.w}",
+        )
+        assert(sum.x == 0.0, "certificate omitted a nonzero coverage sample")
+        assert(which == 3 || sum.y > 0.0, "vacuous certificate")
+        assert(sum.z > 100.0 && sum.w > 100.0, "false source certificate was not rejected")
+        which += 1
+    }
+}

@@ -166,6 +166,8 @@ impl Stage {
             impostors_to: IMPOSTORS_TO,
             // Compressed where the device has BC (`engine::wood::Impostors`).
             compress: std::gpu::features().bc,
+            // This atlas stays fixed; remake_woods reconstructs the Wood after source edits.
+            fixed_leaf_atlas: true,
         )
         w.card_px = card_px(self.scale)
         w.cell = 1.0 / f32(self.scale)

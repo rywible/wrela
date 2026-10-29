@@ -3311,3 +3311,20 @@ Next: separate card, grass and far-crown costs within the production vegetation
 workload, then test source-compiled coverage/work selection at the dominant cost.
 Aggregate7.8ms does not identify the removable work.
 Manifest `50207e59bf0c42c20c255eabc1b4fad86ca0c2dd7c96f3dd950462927b292c44`. Inherited benchmark edits remain unstaged.
+
+
+## 2026-10-29 — retain source-certified leaf coverage
+
+[Leaf coverage](neural-vegetation-support.md) completes its first joint assessment
+in29.16min and decides in57.72min after exactly two followups.
+Attribution identifies near-card depth as2.91844 ms; the diagnostic split is restored.
+Packed guarded source certificates reduce five-pair complete GPU median
+25.32668→24.89280 ms (1.71% lower).
+Added requested live65,536bytes; actual DRM/PSS and full startup/update/fallback costs recorded.
+All 28 HDR buffers exact; final 1080p changes<=1byte. GPU guard: 2,097,152 queries,
+zero false certificates; invalid table: 33,887 detectable errors.
+Generic Wood callers default to original shader/no table; clearing opts into a
+fixed-atlas lifetime contract. No training/reference expansion or G1–G7 pass.
+Next: source-derived prefiltered coverage for minified cards, with original fallback
+at uncertain silhouettes and an equally informed conventional control.
+Manifest `d42480953bab68f5713b42df5c05c608c73868bb58724faa4a54212187f928fb`. Inherited benchmark edits remain unstaged.
