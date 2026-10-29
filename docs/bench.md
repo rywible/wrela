@@ -3392,3 +3392,26 @@ First joint assessment 12.56min, retire at
 21.99min after two followups. Unpaired development evidence;
 no converged transport, changed-weather-tail, silhouette or G1–G7 qualification.
 All runtime restored to parent; failures preserved in build/neural-evidence/cloud-interval-v1.
+
+
+## 2026-10-29 — Temporal identity shortcuts, AMD, retired
+
+See [the complete temporal comparison](neural-temporal-identity.md) for source,
+runtime, quality, residency and limitations. Parent 388ca647, pinned Wrela 0.9.0
+compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23; AMD RADV RENOIR / Ryzen 5 5500U,
+Mesa 26.1.6, Chrome 154.0.8037.57. Fixed 1920×1080 clearing, one worker,
+60 measured frames after 600 warmup; separate 660-frame allocation runs.
+
+Saturated complete / temporal medians: baseline 26.14876 / 5.06712 ms;
+identity 25.93984 / 4.92956; stationary-texel 25.72540 / 4.72864;
+exact-texel 26.42412 / 5.34344. Unpaired development points, no small-speedup
+confidence claim. Initial shortcuts change up to 98/37 channel bytes.
+Exact-texel matches 768 analytic frames exactly and full clearing within one byte
+but is slower. All live requested storage 405,267,256 B; whole-client DRM/PSS,
+scratch/caches/fallbacks and transient requested peaks are preserved in evidence.
+
+First joint assessment 8.64 min, retirement
+25.56 min, exactly two followups. Four batched runs capture
+3,072 frames in 95.27 s excluding full-render measurement/scoring;
+no unbatched control or batching speedup claim. Retire all shortcuts and restore
+runtime. No training, new reference algorithm or G1–G7 qualification.

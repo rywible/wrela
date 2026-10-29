@@ -3144,3 +3144,25 @@ Next test stationary-camera reprojection specialization in the measured5.05ms
 temporal pass, with motion/deformation fallbacks and existing quality checks.
 No new fitting/reference algorithm, no G1–G7 change.
 Manifest: `c91a9fe67074f87e249a4a40d547bd3354f8051424c3c4a9a9f4052475b740f7`.
+
+
+## 2026-10-29: Retire three temporal shortcuts after batched comparisons
+
+[The temporal experiment](neural-temporal-identity.md) reaches its first joint
+assessment in 8.64 minutes and retires all three
+variants at 25.56 minutes, after two targeted followups.
+Identity/stationary-texel complete medians 25.93984/25.72540 ms versus 26.14876 ms
+baseline, but localized clearing differences reach 98/37 bytes. Mean analytic
+quality changes are tiny and mixed; these are not verified quality-preserving wins.
+
+Exact-texel preserves all 768 analytic RGBA32F frames and stays within one byte
+in the full scene, but complete median is 26.42412 ms and temporal 5.34344 ms
+versus 5.06712 ms. All methods use 405,267,256 live requested bytes; actual
+whole-client residency is recorded. No new rendering advantage.
+
+Four batched runs capture 3,072 frames in 95.27 seconds excluding
+full-scene measurement and scoring. Restore runtime exactly to parent 388ca647.
+No training, new reference algorithm or G1–G7 change. Next investigate discrete
+source/surface correspondence, first resolving the observed local image changes
+against the existing matched static-clearing reference path.
+Manifest: `0502a8e71784f0a2c4ea5baa329cda50996f0097a17b845292ea72e5aacbe290`.
