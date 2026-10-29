@@ -1,0 +1,5 @@
+// Source-declared positive illumination factors for causal colour observations.
+
+pub fn gain(event: vec3, tick: u32, captured: u32) -> f32 {
+    field::light_factor(event, tick) / field::light_factor(event, captured)
+}

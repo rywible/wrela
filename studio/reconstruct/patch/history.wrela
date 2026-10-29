@@ -29,6 +29,7 @@ fn observe(
     age: u32,
     maximum: f32,
     divisor: u32,
+    radiance_gain: f32,
 ) -> confidence::Input {
     let previous = at - geometry.xy
     let size = vec2(f32(history.width()), f32(history.height()))
@@ -40,7 +41,7 @@ fn observe(
         length(geometry.xy - old_geometry.xy) < 0.05
     let weight = share(age, maximum, valid)
     let old_color = if weight > 0.0 {
-        view(history.sample_level(linear_sampler, previous / size).rgb)
+        view(history.sample_level(linear_sampler, previous / size).rgb * radiance_gain)
     } else { vec3(0.0) }
     confidence::Input {
         current: vec4(view(current.rgb), weight),
@@ -80,7 +81,18 @@ fn sampled_input(
         previous_motion.load(x: u32(old.x), y: u32(old.y)).xy * d,
         previous_depth.load(x: u32(old.x), y: u32(old.y)),
     )
-    observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
+    observe(
+        current,
+        at,
+        geometry,
+        old_geometry,
+        history,
+        linear_sampler,
+        age,
+        maximum,
+        divisor,
+        1.0,
+    )
 }
 
 fn source_input(
@@ -104,7 +116,18 @@ fn source_input(
         if tick > 0 { tick - 1 } else { 0 },
         previous_shape,
     )
-    observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
+    observe(
+        current,
+        at,
+        geometry,
+        old_geometry,
+        history,
+        linear_sampler,
+        age,
+        maximum,
+        divisor,
+        1.0,
+    )
 }
 
 @fragment
@@ -255,6 +278,7 @@ pub fn reconstruct_source_bilinear(
     maximum: f32,
     current_shape: vec4,
     previous_shape: vec4,
+    radiance_gain: f32,
 ) -> vec4 {
     let at = p.position.xy
     let q = at / f32(divisor) + jitter_of(tick) - vec2(0.5)
@@ -276,7 +300,20 @@ pub fn reconstruct_source_bilinear(
     let color = ca.rgb * wa + cb.rgb * wb + cc.rgb * wc + cd.rgb * wd
     let current = vec4(linear(view(color)), ca.a)
     let geometry = source_geometry(at, tick, current_shape)
-    let old_geometry = source_geometry(at - geometry.xy, if tick > 0 { tick - 1 } else { 0 }, previous_shape)
-    let row = observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
+    let old_geometry = source_geometry(at - geometry.xy, if tick > 0 { tick - 1 } else {
+        0
+    }, previous_shape)
+    let row = observe(
+        current,
+        at,
+        geometry,
+        old_geometry,
+        history,
+        linear_sampler,
+        age,
+        maximum,
+        divisor,
+        radiance_gain,
+    )
     vec4(linear(mix(row.current.rgb, row.old.rgb, row.current.w)), row.context.w)
 }

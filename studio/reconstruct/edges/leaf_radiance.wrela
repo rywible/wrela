@@ -5,6 +5,10 @@ use std::gpu::FragCoord
 pub const REFERENCE_GRID: u32 = 8
 
 pub fn shade(f: field::Field, material: u32, p: vec2, tick: u32) -> vec3 {
+    at_intensity(f, material, p, tick, field::light_factor(field::light_event(f.radiance), tick))
+}
+
+pub fn at_intensity(f: field::Field, material: u32, p: vec2, tick: u32, intensity: f32) -> vec3 {
     let colour = if material == 0 { f.front } else if material == 1 { f.light } else { f.dark }
     if f.radiance < 3 {
         let c = field::radiance_terms(f, material)
@@ -15,12 +19,22 @@ pub fn shade(f: field::Field, material: u32, p: vec2, tick: u32) -> vec3 {
     let x = (p.x - if material == 0 { f.speed * f32(tick) } else { 0.0 }) * frequency
     let y = p.y * frequency
     let phase = f32(material) * 1.7 + f32(variant) * 0.31
-    let n = normalize(vec3(0.65 * sin(x + phase) + 0.2 * sin(y * 1.7),
-        0.8 + 0.45 * cos(x * 0.7 - y), 0.55 * cos(y + phase) + 0.25 * sin(x * 1.3)))
+    let n = normalize(
+        vec3(
+            0.65 * sin(x + phase) + 0.2 * sin(y * 1.7),
+            0.8 + 0.45 * cos(x * 0.7 - y),
+            0.55 * cos(y + phase) + 0.25 * sin(x * 1.3),
+        ),
+    )
     let t = f32(tick) * 0.025
     let sun = normalize(vec3(0.6 * cos(t), 0.7, 0.5 * sin(t) - 0.3))
-    let light = Light { sun, exposure: 1.0, sun_colour: vec3(3.3, 2.75, 2.05), eye: 4.0, horizon: 0.0 }
-    let intensity = if variant >= 2 && tick >= 16 { 0.35 } else { 1.0 }
+    let light = Light {
+        sun,
+        exposure: 1.0,
+        sun_colour: vec3(3.3, 2.75, 2.05),
+        eye: 4.0,
+        horizon: 0.0,
+    }
     let surface = Lit {
         albedo: vec3(0.04) + colour / (vec3(1.0) + colour) * 0.6,
         n,
@@ -61,7 +75,12 @@ pub fn reference(f: field::Field, at: vec2, tick: u32) -> vec4 {
 @fragment
 pub fn direct(p: FragCoord, f: field::Field, tick: u32) -> vec4 {
     let at = floor(p.position.xy)
-    let weights = source_bilinear::moments(at, tick, vec4(f.period, f.width, f.offset, f.speed), f.checker)
+    let weights = source_bilinear::moments(
+        at,
+        tick,
+        vec4(f.period, f.width, f.offset, f.speed),
+        f.checker,
+    )
     var rgb = vec3(0.0)
     for m in 0..3 {
         let w = weights[m]

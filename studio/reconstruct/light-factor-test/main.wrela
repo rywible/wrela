@@ -1,0 +1,63 @@
+use std::gpu::{GlobalId, Slots, GpuBuffer, buffer, dispatch, read}
+use std::io::{Pending, print}
+
+@compute(64)
+fn inspect(f0: edges::field::Field, f1: edges::field::Field, f2: edges::field::Field, f3: edges::field::Field, out: mut Slots<vec4>, id: GlobalId) {
+    var error = 0.0
+    var magnitude = 0.0
+    var changed = 0.0
+    for k in 0..1152 {
+        let i = id.x * 1152 + k
+        let material = i % 3
+        let which = (i / 3) % 4
+        let f = if which == 0 { f0 } else if which == 1 { f1 } else if which == 2 { f2 } else { f3 }
+        let tick = [0, 15, 16, 17, 31, 80][(i / 12) % 6]
+        let at = vec2(f32((i * 17) % 769) / 4.0, f32((i * 29) % 433) / 4.0)
+        let factor = edges::field::light_factor(edges::field::light_event(f.radiance), tick)
+        let actual = edges::leaf_radiance::shade(f, material, at, tick)
+        let predicted = edges::leaf_radiance::at_intensity(f, material, at, tick, 1.0) * factor
+        let delta = abs(actual - predicted)
+        error = max(error, max(delta.x, max(delta.y, delta.z)))
+        magnitude = max(magnitude, max(actual.x, max(actual.y, actual.z)))
+        if factor != 1.0 { changed += 1.0 }
+    }
+    out[id] = vec4(error, magnitude, changed, 1152.0)
+}
+
+pub struct State { started: bool, pending: Vec<Pending<vec4>>, rows: Vec<vec4> }
+
+pub fn init() -> State {
+    State { started: false, pending: Vec::new(), rows: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if !s.started {
+        var out: GpuBuffer<vec4> = buffer(64)
+        dispatch(inspect.bind(edges::field::case(74), edges::field::case(75), edges::field::case(76), edges::field::case(77), mut out), over: 64)
+        s.pending.push(read(out.items()))
+        s.started = true
+    }
+    if s.rows.len() == 0 {
+        match s.pending[0].poll() {
+            Some(Ok(v)) => s.rows = take v,
+            _ => {},
+        }
+    }
+}
+
+@test(frames: 4, gpu: true)
+fn declared_global_factor_is_linear(s: State) {
+    assert(s.rows.len() == 64, "readbacks")
+    var error = 0.0
+    var magnitude = 0.0
+    var changed = 0.0
+    var count = 0.0
+    for r in s.rows {
+        error = max(error, r.x)
+        magnitude = max(magnitude, r.y)
+        changed += r.z
+        count += r.w
+    }
+    print(f"RADIANCE_FACTOR {error} {magnitude} {changed} {count}")
+    assert(error <= 1.0e-5 && magnitude > 0.0 && changed > 0.0, "invalid global light factor")
+}

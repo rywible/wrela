@@ -3453,3 +3453,22 @@ Final3x worst-clip regression12.143%; no promotion. First assessment
 two followups. All768final frames equal isolated history. Failed unsupported
 compute scatter and binding errors preserved. Runtime restored, no training,
 new reference algorithm, production/G4 cost claim or G1–G7 pass.
+
+## 2026-10-29: source-declared radiance evolution retained; shorter history retired
+
+[Full experiment](neural-radiance-evolution.md). Solo Pop!_OS AMD RADV RENOIR,
+Wrela0.9.0/compilerde9b81e, Chrome154.0.8037.57. Six public cases,32coldframes,
+scales1–4;1080p4×case77 timing120frames/zero warmup, separate300frame actual
+DRM/PSS and all-allocation replay. Source light-factor rebasing gives raw-factor
+4×mean FLIP0.154857→0.116796, LPIPS0.186073→0.168024, PSNR21.961→23.204dB,
+temporal0.011068→0.008370; requested live92,013,084B unchanged.
+Initial complete median12.54320→12.55448ms; retained public-selector12.51164ms.
+Three alternating pairs per retained control recorded in the full report;
+no speedup or production/world-leading claim. Cheap rebasing has a native LPIPS
+regression and remains an explicit mixed-metric comparator.
+Eight-frame and fixed-footprint followups save20.736MB but lose quality/temporal
+stability; both retired. First joint assessment12.46minutes,
+decision22.60minutes, exactly2followups, no training.
+GPU scalar check73,728evaluations; maximum1.7881393e-7linear-RGB error;
+deliberately wrong factor fails. Public selector replay1,536frames exact.
+Evidence build/neural-evidence/radiance-evolution-v1. No G1–G7 pass.

@@ -3214,3 +3214,23 @@ Next test source-declared radiance factors to rebase causal observations at know
 lighting changes, equally for all baselines, without pretending one scalar handles
 direction, visibility or arbitrary material edits.
 Manifest: `c4e10affcb72a4dee70b4351a9815a41a9b6742d26cc8185d34b8389308adfa4`.
+
+## 2026-10-29 — declared light factors repair stale radiance; sixteen observations still needed
+
+Continue source-declared16-frame rebasing as an opt-in conventional control;
+retire both8-frame alternatives. Six-case4×raw FLIP0.154857→0.116796,
+LPIPS0.186073→0.168024, temporal0.011068→0.008370, live92,013,084B unchanged.
+Complete AMD case77 median12.54320→12.55448ms initially; finalselector12.51164ms,
+with three alternating pairs per retained path. Cheap control has mixed LPIPS
+behavior. Direct-source control remains smaller/faster/more accurate; no G gate.
+First complete assessment12.46minutes; decision22.60minutes.
+Exactly two memory/runtime followups fail:8-frame71.277MB/11.559ms, and fixed
+footprint71.277MB/10.798ms, both losing too much quality/temporal stability.
+No training or reference expansion. Public option defaults unchanged and excludes
+unmeasured learned paths.1,536selected-code frames and targets/masks replay exactly;
+AMD scalar guard passes73,728samples and fails its deliberate negative control.
+
+Next: retain all16radiance phases and test source-generated compact observation
+records, removing redundant12-byte geometry only if exact rounding/source-work
+and joint quality/runtime/residency support it. [Evidence](neural-radiance-evolution.md).
+Manifest `e345b435333a94d718a83de88a76cc78c7e93738faf72e4aef09387eb0309b96`. Inherited benchmark edits unstaged.

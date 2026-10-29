@@ -123,6 +123,7 @@ pub struct State {
     gate_inputs: GpuBuffer<reconstruction_patch::confidence::Input>,
     exported_gate: GpuBuffer<reconstruction_patch::confidence::Input>,
     patch_source: u32,
+    light_history: u32,
     previous_shape: vec4,
     captured_previous_shape: vec4,
     exported_source: GpuBuffer<vec4>,
@@ -203,6 +204,7 @@ pub fn init() -> State {
         gate_inputs: buffer(1),
         exported_gate: buffer(1),
         patch_source: 0,
+        light_history: 0,
         previous_shape: vec4(1.0, 0.0, 0.0, 0.0),
         captured_previous_shape: vec4(0.0),
         exported_source: buffer(1),
@@ -317,6 +319,10 @@ fn resize(s: mut State, width: u32, height: u32) {
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     resize(mut s, width, height)
     let f = case(s.shot)
+    let event = field::light_event(f.radiance)
+    let previous_tick = if s.tick > 0 { s.tick - 1 } else { 0 }
+    let gain = light_history::gain(event, s.tick, previous_tick)
+    if s.light_history == 2 && gain != 1.0 { s.reset = true }
     if s.collecting && s.cells > 0 {
         s.captured = buffer(width * height)
         dispatch(
@@ -652,10 +658,21 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
     } else if s.patch_enabled {
         if s.patch_plain {
-            fullscreen(p, reconstruction_patch::history::reconstruct_source_bilinear.bind(
-                s.scene, s.last, s.linear, s.divisor, s.tick, s.patch_frames, s.patch_history,
-                vec4(f.period, f.width, f.offset, f.speed), s.previous_shape,
-            ))
+            fullscreen(
+                p,
+                reconstruction_patch::history::reconstruct_source_bilinear.bind(
+                    s.scene,
+                    s.last,
+                    s.linear,
+                    s.divisor,
+                    s.tick,
+                    s.patch_frames,
+                    s.patch_history,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    s.previous_shape,
+                    if s.light_history == 1 { gain } else { 1.0 },
+                ),
+            )
         } else if s.patch_history > 0.0 && s.patch_source == 1 {
             fullscreen(
                 p,
@@ -732,6 +749,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     s.raw_count,
                     vec4(f.period, f.width, f.offset, f.speed),
                     s.raw_prepared.items(),
+                    if s.light_history == 1 { event } else { vec3(0.0, 1.0, 1.0) },
                 ),
             )
         } else {
@@ -1143,4 +1161,12 @@ pub fn patch_conventional(s: mut State) {
     assert(s.width == 0 && s.patch_enabled && !s.patch_trained && !s.gate_trained)
     assert(s.patch_source == 1 && s.patch_history > 0.0)
     s.patch_plain = true
+}
+
+// Conventional source-aware controls: keep, rebase by the declared factor, or reset.
+// The default stays unchanged. No model or training-input path silently receives extra data.
+pub fn illumination_history(s: mut State, mode: u32) {
+    assert(mode <= 2 && s.width == 0)
+    assert(mode == 0 || s.raw_factorized || s.patch_plain)
+    s.light_history = mode
 }

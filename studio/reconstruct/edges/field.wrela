@@ -383,8 +383,13 @@ pub fn rectangle_areas(f: Field, lo: vec2, hi: vec2, tick: u32) -> [f32; 3] {
 @test
 fn subrectangle_areas_match_dyadic_point_quadrature() {
     for index in [74, 75, 76, 77] {
-        let f = Field { front: vec3(1.0, 0.0, 0.0), light: vec3(0.0, 1.0, 0.0),
-            dark: vec3(0.0, 0.0, 1.0), radiance: 0, ..case(index) }
+        let f = Field {
+            front: vec3(1.0, 0.0, 0.0),
+            light: vec3(0.0, 1.0, 0.0),
+            dark: vec3(0.0, 0.0, 1.0),
+            radiance: 0,
+            ..case(index),
+        }
         for tick in [0, 16, 31] {
             for lo in [vec2(0.0), vec2(7.125, 3.25), vec2(191.75, 107.5)] {
                 let size = vec2(0.25, 0.5)
@@ -392,7 +397,11 @@ fn subrectangle_areas_match_dyadic_point_quadrature() {
                 var sum = vec3(0.0)
                 for y in 0..64 {
                     for x in 0..64 {
-                        sum += point(f, lo + (vec2(f32(x), f32(y)) + vec2(0.5)) * size / 64.0, tick).rgb *
+                        sum += point(
+                            f,
+                            lo + (vec2(f32(x), f32(y)) + vec2(0.5)) * size / 64.0,
+                            tick,
+                        ).rgb *
                             (size.x * size.y / 4096.0)
                     }
                 }
@@ -401,4 +410,14 @@ fn subrectangle_areas_match_dyadic_point_quadrature() {
             }
         }
     }
+}
+
+// Shared source-declared illumination event; no RGB queries or observations.
+// x: event tick, y/z: global irradiance factors before/after the event.
+pub fn light_event(radiance: u32) -> vec3 {
+    vec3(16.0, 1.0, if radiance >= 5 { 0.35 } else { 1.0 })
+}
+
+pub fn light_factor(event: vec3, tick: u32) -> f32 {
+    if f32(tick) >= event.x { event.z } else { event.y }
 }
