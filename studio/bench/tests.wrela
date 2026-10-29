@@ -6,8 +6,8 @@ use main::{
     slug_of,
 }
 use report::{
-    hitches, Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans,
-    stats, time_of,
+    hitches, Measured, Stats, compared, date_of, doc, gates, intervals, markdown, report_json,
+    spans, stats, throughput, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::tool::files
@@ -332,4 +332,77 @@ fn the_lan_bench_serves_a_site_and_reads_what_a_device_put() {
     let _ = files::remove_all(f"{dir}/results").wait()
     assert(posted(dir, 1.0).is_err(), "no device put anything")
     let _ = serve::close(started.server).wait()
+}
+
+/// A stream of 19 ms intervals (52.6 frames a second) fails the throughput gate though its p99 is
+/// under 20 ms and no interval is over 33 (§C3): the gates read starts, not only the tail.
+@test
+fn a_steady_19_ms_stream_fails_throughput_alone() {
+    var began: Vec<f64> = Vec::new()
+    for k in 0..1260 {
+        began.push(f64(k) * 19.0)
+    }
+    let t = throughput(began, 60)
+    assert(
+        t.frame_starts == 1200 && abs(t.starts_per_s - 1000.0 / 19.0) < 0.01,
+        f"{t.starts_per_s} starts/s",
+    )
+    assert(t.over_25 == 0, f"{t.over_25} over 25 ms")
+    let g = gates(began, 60)
+    assert(!g.throughput && g.p99 && g.over_33, "only the throughput gate fails")
+    // And a missed refresh among 60 a second fails the other two.
+    var hitched: Vec<f64> = Vec::new()
+    for k in 0..1260 {
+        hitched.push(f64(k) * 16.67 + if k > 700 { 20.0 } else { 0.0 })
+    }
+    let h = gates(hitched, 60)
+    assert(h.throughput && !h.over_33, "a 36.7 ms interval is over 33")
+}
+
+/// A sustained run (`--sustained 20` of hello-field) records its two minutes' GPU medians and their
+/// ratio, and its measured play run's throughput.
+@test(tool, read: [("ws", "../..")], browser: true, budget: 600)
+fn a_sustained_run_records_its_minutes_and_its_throughput() {
+    let s = Scene {
+        name: "hello-field",
+        pkg: "examples/hello-field",
+        frames: 30,
+        width: 640,
+        height: 360,
+    }
+    let Some(o) = parse_args(
+        texts(["--warmup", "10", "--no-docs", "--no-native", "--sustained", "20"]),
+    ) else {
+        panic("the options")
+    }
+    assert(o.sustained == 20, "--sustained")
+    let Ok((m, _, machine)) = measure(
+        s,
+        o,
+        salt: 2,
+        build: true,
+        ws: "ws",
+        out: "scratch",
+        kept: "scratch/kept",
+    ) else {
+        panic("the sustained bench of hello-field")
+    }
+    let Ok(bytes) = files::read("scratch/kept/hello-field/sustained.json").wait() else {
+        panic("no sustained.json")
+    }
+    let text = String::from_utf8(take bytes).unwrap_or(String::new())
+    for key in ["\"minute_1_ms\"", "\"minute_last_ms\"", "\"ratio\"", "\"throttling\""] {
+        assert(contains(text.as_str(), key), key)
+    }
+    assert(
+        m.sustained_s == 20 && m.minute_1_ms > 0.0 && m.minute_last_ms > 0.0,
+        "the two minutes' medians",
+    )
+    assert(
+        files::stat(f"{m.runs[1]}/throughput.json").wait().is_ok(),
+        "the play run's throughput.json",
+    )
+    assert(m.starts_per_s > 0.0, f"{m.starts_per_s} starts/s")
+    let table = markdown(machine.as_str(), "2026-01-01", [take m])
+    assert(contains(table.as_str(), "sustained 20 s"), "the row says it's sustained")
 }

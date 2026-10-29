@@ -16,6 +16,27 @@ percentile of 18.2 to 19.6 ms. So a count over 16.7 ms measures the timer's jitt
 the program, and a frame the program missed shows as an interval over 33 ms (a refresh skipped).
 The interval columns of one run move by a few ms from run to run (the repeats below).
 
+## Measuring
+
+**Sustained** (`wrela tool bench -- --sustained <s>`, docs/plan-world-class-3.md §C3, D39): a
+fanless machine's GPU slows as it warms, so a gate measured cold says too little. A sustained
+run opens the play run's page again and again for `s` seconds before its measured run (the walk
+from its start each time), keeps each page's GPU spans, and records in `sustained.json` the median
+span of the pages begun in the first minute and of those begun in the last (`minute_1_ms`,
+`minute_last_ms`) and their ratio; a ratio over 1.15 is marked "throttling" (the host reports no
+thermal reading, so the ratio and the time of day are the machine's state). The measured play run
+then runs with one frame in flight (test mode's `inflight=1`, where the plain run has two): the
+worker paces frame starts by a timer, records each start (`began_ms`) before drawing, and waits
+for the oldest frame's GPU work once two are pending, so a frame starts only after the one two
+before it is done on the GPU, and a cadence of starts is a lower bound on the GPU's throughput.
+`throughput.json` records how many frames started, over how long, how many a second and how many
+intervals were over 25 ms: frame starts, not presented frames (presentation isn't visible from a
+page). A row's "Sustained" cell says `sustained <s> s` with the two minutes, the ratio, the starts
+a second and the intervals over 25 ms; "no" where the run wasn't sustained. The gates read the
+measured frames: G-sustained's (§C6) are a GPU p50 under 12 ms, a paced p99 under 20 ms, no
+interval over 33 ms, and at least 59 starts a second (`report::gates`: a steady 19 ms stream,
+52.6 a second, fails on starts alone).
+
 ## 2026-10-25: the baseline, B1 (`071d717b`), on toolchain 0.6.2
 
 Apple M4 MacBook Air (macOS 26), `apple metal-3`. B1's code (the plan's §B1: before any of
@@ -1892,4 +1913,45 @@ Slowest compiles, vale-walk (cold):
 | trace_again | 34.30 | 112.0 |
 | character+character_shade | 31.12 | 94.8 |
 | trace | 30.89 | 95.6 |
+
+## 2026-10-29, apple metal-3 Apple M4
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB | Sustained |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| clearing-path | 12.39 / 13.88 / 14.16 | 14.32 / 26.00 / 28.32 | 91 / 0 | 0.48 / 1.11 | 13.94 / 20.89 | 472.85 | 4973.58 | 2962.63 | 1.3 | 1908.07 | 0.0 | 503.6 | sustained 600 s: minute 1 12.26, last 12.83 (1.05); 71.6 starts/s, 42 over 25 ms |
+
+Hitches, clearing-path: none (no frame over 33 ms).
+
+Memory at playable, clearing-path (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 352.5 |
+| targets | 67.2 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 26.5 |
+| distance | 0.0 |
+| fog | 0.0 |
+| terrain | 8.0 |
+| reflections | 4.4 |
+| lights | 0.4 |
+| wood lists | 2.9 |
+| impostors | 36.0 |
+| wood | 4.8 |
+
+Slowest compiles, clearing-path (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| skin_vertices | 1491.88 | 162.5 |
+| cook_materials | 1141.04 | 226.9 |
+| place_vertices | 1133.18 | 73.1 |
+| stone_vertex+stone_shade | 471.63 | 77.9 |
+| cull_blocks | 348.23 | 59.8 |
+| far_quad+far_shade | 65.28 | 95.3 |
+| ground+ground_shade | 55.90 | 103.7 |
+| card+leaf_shade | 31.33 | 93.6 |
+| far_quad+volume_shade | 31.03 | 98.4 |
+| bake | 30.89 | 114.6 |
 

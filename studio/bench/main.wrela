@@ -3,7 +3,7 @@
 //
 // ```text
 // wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>]
-//     [--compare <report.json>] [--no-native] [--no-docs]
+//     [--sustained <s>] [--compare <report.json>] [--no-native] [--no-docs]
 // ```
 //
 // Each scene's package (scenes.wrela) is built as it ships (optimized) into
@@ -17,6 +17,15 @@
 // 3. cold start: `salt=<n>` (no pipeline cache): ms from the page opening to its first frame
 //    and to the program's `playable` print, the pipelines' ms, and the bytes loaded;
 // 4. natively, on the native host's GPU (`std::tool::drive`): each frame call's time.
+//
+// `--sustained <s>` (docs/plan-world-class-3.md §C3) warms the machine first: before the play run
+// its page is opened again and again for `s` seconds (the walk from its start each time, with one
+// frame in flight), each page's GPU spans kept, and `sustained.json` records the median of those in
+// the first minute and in the last (`minute_1_ms`, `minute_last_ms`, their `ratio`: over 1.15 is
+// throttling); the play run that's measured then runs with one frame in flight too (test mode's
+// `inflight=1`: a frame starts only once the one two before it is done on the GPU, so a cadence of
+// starts is a lower bound on the GPU's throughput), and its `throughput.json` says how many frames
+// started, over how long, how many a second, and how many intervals were over 25 ms.
 //
 // With `--lan` the builds are served to the LAN (`serve::start(dir, lan: true)`) instead, scene by
 // scene: the tool prints each scene's four pages' URLs (their hashes with `show=1`, so a device
@@ -37,7 +46,7 @@
 
 use report::{
     Measured, compared, date_of, doc, hitches, intervals, markdown, number_at, numbers, report_json,
-    shares_of, spans, stats, time_of,
+    shares_of, spans, stats, sustained_json, throughput, throughput_json, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
@@ -54,7 +63,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -69,6 +78,8 @@ pub struct Options: Clone {
     pub lan: bool,
     /// A row typed by hand (`--row`), or empty.
     pub row: String,
+    /// How long the play run's page is paced first (`--sustained`, s), or 0.
+    pub sustained: u32 = 0,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -127,6 +138,9 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             k += 1
         } else if a == "--row" {
             o.row = value(k)?
+            k += 2
+        } else if a == "--sustained" {
+            o.sustained = value(k)?.as_str().parse_u32()?
             k += 2
         } else {
             return None
@@ -335,9 +349,11 @@ pub fn measure(
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
     let cold_hash = page_hash(min(frames, 300), w, h, o.workers, input_file.as_str())
+    // A sustained run's play has one frame in flight (§C3), the plain run's two.
+    let inflight = if o.sustained > 0 { 1 } else { 2 }
     let hashes = [
         String::from(f"{common}&timestamps=1&saturate=1&nohash=1"),
-        String::from(f"{common}&paced=1&inflight=2&nohash=1&timestamps=1"),
+        String::from(f"{common}&paced=1&inflight={inflight}&nohash=1&timestamps=1"),
         String::from(f"{cold_hash}&nohash=1&salt={salt}"),
         String::from(f"{cold_hash}&nohash=1"),
     ]
@@ -361,6 +377,40 @@ pub fn measure(
     keep_results(dir.as_str(), runs[0].as_str())?
     let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
     let machine = machine_of(dir.as_str(), o.lan)?
+    // The machine warmed: the play page again and again for `o.sustained` seconds, each page's GPU
+    // spans kept by when it began.
+    var minute_1: Vec<f64> = Vec::new()
+    var minute_last: Vec<f64> = Vec::new()
+    if o.sustained > 0 {
+        let began = now()
+        var pages: Vec<(f64, Vec<f64>)> = Vec::new()
+        while now() - began < f64(o.sustained) {
+            let at = now() - began
+            run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
+            pages.push((at, spans(json_of(f"{dir}/results/timings.json")?, 0)))
+        }
+        let last_from = f64(o.sustained) - 60.0
+        for (at, sp) in pages {
+            for x in sp {
+                if at < 60.0 {
+                    minute_1.push(x)
+                }
+                if at >= last_from {
+                    minute_last.push(x)
+                }
+            }
+        }
+        // (A run shorter than its two minutes: its last page is its last minute.)
+        if minute_last.is_empty() && !pages.is_empty() {
+            minute_last = pages[pages.len() - 1].1.clone()
+        }
+        let (m1, ml) = (stats(minute_1.clone()).p50, stats(minute_last.clone()).p50)
+        let _ = files::make_dirs(f"{kept}/{s.name}").wait()
+        write_file(
+            f"{kept}/{s.name}/sustained.json",
+            chunked(Vec::from(sustained_json(o.sustained, pages.len(), m1, ml).as_bytes())),
+        )?
+    }
     // 2. Play, each frame's labels timed (what a hitch held).
     run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
     keep_results(dir.as_str(), runs[1].as_str())?
@@ -370,6 +420,11 @@ pub fn measure(
         Some(n) => numbers(framed, n, 0),
         None => Vec::new(),
     }
+    let through = throughput(began, o.warmup)
+    write_file(
+        f"{runs[1]}/throughput.json",
+        chunked(Vec::from(throughput_json(through).as_bytes())),
+    )?
     let between = intervals(began, o.warmup)
     var over_16 = 0
     var over_33 = 0
@@ -459,6 +514,11 @@ pub fn measure(
         compiles,
         runs,
         shares,
+        sustained_s: o.sustained,
+        minute_1_ms: stats(take minute_1).p50,
+        minute_last_ms: stats(take minute_last).p50,
+        starts_per_s: through.starts_per_s,
+        over_25: through.over_25,
     }
     Ok((m, opened, machine))
 }
