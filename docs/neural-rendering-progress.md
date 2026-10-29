@@ -2915,3 +2915,13 @@ The [AMD lane experiment](neural-sample-lanes.md) reduces complete GPU time by 2
 Full cache replacement plus rendering also improves: 4.503→3.743 ms native, 5.009→4.117 ms compact. Initial assessment 16.82 minutes, architecture decision 26.43 minutes, exactly two follow-ups. Shared same-leaf duplicate suppression is retired because it slows both methods despite exact images. Its failed results and the larger staging variants remain archived.
 
 Continue the exact sixteen-lane AA4 executor, with serial fallback for other AA counts. Thirty-two retained AA4 checks, eight AA2 fallback pairs and eight frozen-default pairs preserve images and resource counts. No training/new references; engine/reconstruction code and frozen default fixture unchanged. Next: remeasure source-field/residual representations against these upgraded conventional caches. No neural, 16× memory, temporal or world-leading claim; G1–G7 unchanged/unmet. Manifest: `26d712d7066dccb7081b66a8654fdb4511717a0589d8ed90bc1261d8f4a226c6`.
+
+## 2026-10-28: Source-field lanes reject steady G4; replacement cost identifies the next question
+
+The [joint AMD comparison](neural-field-lanes.md) completes its first assessment in 15.08 minutes and decides in 28.43. Exact field costs 3.105 ms, quadratic 2.987 ms, versus native 1.804 ms and compact caching 2.376 ms. Quadratic requested live storage is 1.706 MB versus 3.824 MB compact, but observed resident VRAM remains near compact caching; no 16× physical-memory advantage.
+
+Both permitted follow-ups preserve images and lose: per-pixel sharing costs 3.285/3.155 ms; the unique visible queue costs 3.132/3.115 ms and adds 424,964 B. All 800 captures match corresponding parents, all 60 scored rows per method pass, and ten full-replacement frames remain exact. Both new implementations are removed; renderer code is restored byte-exact to 44d67436. Failures preserved.
+
+Full replacement plus rendering costs 3.111 ms exact field versus 3.739 ms native / 4.103 ms compact. Paired savings are 17.020% and 24.326%; CPU improvement inconclusive. This rebuilds unchanged source, not actual edited-source or selective-invalidation proof.
+
+Change toward persistent response caching with source-derived dependency/change bounds. Next test actual edits and fair selective conventional updates, charging metadata, fallback and refresh costs. No training/new references; G1–G7 and frozen models unchanged/unmet. Manifest: `cd936529f0af25926f3c1465f2e46395282c909105f466afec8395f9ecefc79f`.

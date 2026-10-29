@@ -3006,3 +3006,26 @@ Five alternating pairs: native 29.6196% lower complete GPU time (geometric 95% C
 Whole-frame cost includes placement/decoding, visibility/depth ordering, wood, shading, scratch, updates, copies and compositing. Requested live/peak counts every observed resource; whole-client DRM/PSS observations are not per-asset attribution or physical peaks and UMA pools must not be summed. Retained fresh residency: native VRAM/GTT 26,542,080/10,199,040 B; compact 17,780,736/10,199,040 B. The winner adds 65,536 B global and 1,024 B workgroup storage.
 
 Continue AA4 sixteen-lane shading; AA2 and frozen-default image/resource checks are exact. G1–G7/frozen models unchanged, no 16× memory or world-leading claim. [Full quality, paired samples, paced tails, refresh, residency and evidence](neural-sample-lanes.md).
+
+## Source fields with sample lanes: steady rejection, replacement-cost opportunity (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR; Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 26,560-card layouts, 320×128 complete frames; 240 frames after 60 warmup. Same source, visibility and sixteen-lane scheduler. First joint assessment 15.08 minutes, decision 28.43, exactly two follow-ups.
+
+| Method | Saturated GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: |
+| Native cards | 1.80384 / 1.83880 | 10,393,292 / 10,557,132 | 26,476,544 / 10,035,200 |
+| Compact exact cache | 2.37644 / 2.40916 | 3,823,724 / 3,987,564 | 18,235,392 / 10,100,736 |
+| Exact source field | 3.10472 / 3.13224 | 1,698,932 / 1,862,772 | 18,239,488 / 10,035,200 |
+| Cutoff-5 quadratic field | 2.98664 / 3.01860 | 1,706,316 / 1,870,156 | 17,788,928 / 10,199,040 |
+
+
+All 800 captures preserve their corresponding parents, including silhouettes; all methods pass 60/60 scored rows. Same-leaf sharing and visible queues slow complete frames despite exact images. Queue adds 424,964 B. Retire both; renderer/engine/reconstruction restored byte-exact to parent.
+
+Full response replacement plus rendering: exact field 3.11124 ms, native 3.73940 ms, compact cache 4.10316 ms. Five alternating paired comparisons:
+
+- Exact field versus native cards: **17.020% lower complete GPU time**, geometric paired-log 95% interval **16.943–17.151%**; CPU result inconclusive.
+- Exact field versus compact exact cache: **24.326% lower complete GPU time**, geometric paired-log 95% interval **24.274–24.523%**; CPU result inconclusive.
+
+This rebuilds unchanged source and omits actual edited geometry and selective invalidation. Do not generalize to ordinary editing. Complete rendering includes placement, visibility/depth, wood, shading, queue/clear, updates, copies and composite. Requested resources counted; DRM/PSS snapshots are whole-client, not per-asset or physical peak. Do not sum UMA pools.
+
+No 16× residency or G4 win. Change toward source-aware selective response-cache invalidation; test actual edits against equally informed controls. No training/new references; goals/frozen models unchanged. [Complete quality, tails, replacement, failures and evidence](neural-field-lanes.md).
