@@ -37,7 +37,9 @@
 // under "Devices" and runs nothing; `--row <file.json>` (a workspace path) adds another engine's
 // report, as rywible/wrela-others' harness writes it, under "Other engines on this machine".
 //
-// The warmup (60 frames unless `--warmup` says) isn't counted. `--frames` cuts every scene's
+// The warmup (60 frames unless `--warmup` says) isn't counted, nor are a run's frames before 60
+// after its program prints `playable` (the load's, covered: `counted_from`); a page runs
+// `LOAD_ROOM` frames more for them. `--frames` cuts every scene's
 // measured frames to that many (to try the tool). The report is written to
 // `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
 // `docs/bench.md` under a heading of its date and machine (unless `--no-docs`). `--compare`
@@ -339,6 +341,32 @@ fn prepared(s: Scene, build: bool, ws: str, out: str) -> Result<(String, String)
     Ok((take dir, take input_file))
 }
 
+/// How many frames a run's page adds for its load: the counted frames begin `AFTER_PLAYABLE`
+/// frames after it prints `playable` (`counted_from`).
+const LOAD_ROOM: u32 = 360
+const AFTER_PLAYABLE: u32 = 60
+
+/// The first frame a run in `dir` counts: `warmup`, or `AFTER_PLAYABLE` frames after the frame
+/// its program printed `playable` in, if that's later (a run that never did fails). Before it the load's frames are covered
+/// (the arrival's black: `engine::frame::Readiness`), and since C5 they draw nothing of the
+/// scene, so a player sees none of them; frame 60 of the vale's walk was one.
+fn counted_from(dir: str, warmup: u32) -> Result<u32, ToolError> {
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    let Some(pi) = framed.get(TOP, "printed_in") else {
+        return Err(ToolError::new(f"{dir}'s run has no printed lines"))
+    }
+    let printed_in = numbers(framed, pi, 0)
+    var line = 0
+    for (a, b) in log.lines() {
+        if log.as_str().slice(a, b).find("playable at frame").is_some() && line < printed_in.len() {
+            return Ok(max(warmup, u32(printed_in[line]) + AFTER_PLAYABLE))
+        }
+        line += 1
+    }
+    Err(ToolError::new(f"{dir}'s run never printed `playable`: every frame was the load's"))
+}
+
 /// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about
 /// frame 105, and the frames after don't count.
 const STARTS_FRAMES: u32 = 160
@@ -403,7 +431,8 @@ pub fn measure(
     }
     let (dir, input_file) = prepared(s, build, ws, out)?
     let input = script(s.name)
-    let frames = o.warmup + s.frames
+    // Room for the load before the counted frames (`counted_from`), so at least `s.frames` count.
+    let frames = o.warmup + s.frames + LOAD_ROOM
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
@@ -434,7 +463,9 @@ pub fn measure(
     // 1. The GPU.
     run(dir.as_str(), hashes[0].as_str(), w, h, timeout, urls, 0)?
     keep_results(dir.as_str(), runs[0].as_str())?
-    let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
+    let span = stats(
+        spans(json_of(f"{dir}/results/timings.json")?, counted_from(dir.as_str(), o.warmup)?),
+    )
     let machine = machine_of(dir.as_str(), o.lan)?
     // The machine warmed: the play page again and again for `o.sustained` seconds, each page's GPU
     // spans kept by when it began.
@@ -446,7 +477,8 @@ pub fn measure(
         while now() - began < f64(o.sustained) {
             let at = now() - began
             run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
-            pages.push((at, spans(json_of(f"{dir}/results/timings.json")?, 0)))
+            let from = counted_from(dir.as_str(), o.warmup)?
+            pages.push((at, spans(json_of(f"{dir}/results/timings.json")?, from)))
         }
         let last_from = f64(o.sustained) - 60.0
         for (at, sp) in pages {
@@ -474,17 +506,18 @@ pub fn measure(
     run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
     keep_results(dir.as_str(), runs[1].as_str())?
     let framed = json_of(f"{dir}/results/frames.json")?
-    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, o.warmup)
+    let played = counted_from(dir.as_str(), o.warmup)?
+    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, played)
     let began = match framed.get(TOP, "began_ms") {
         Some(n) => numbers(framed, n, 0),
         None => Vec::new(),
     }
-    let through = throughput(began, o.warmup)
+    let through = throughput(began, played)
     write_file(
         f"{runs[1]}/throughput.json",
         chunked(Vec::from(throughput_json(through).as_bytes())),
     )?
-    let between = intervals(began, o.warmup)
+    let between = intervals(began, played)
     var over_16 = 0
     var over_33 = 0
     for x in between {
@@ -496,7 +529,7 @@ pub fn measure(
         }
     }
     let cpu = match framed.get(TOP, "cpu_ms") {
-        Some(n) => stats(numbers(framed, n, o.warmup)),
+        Some(n) => stats(numbers(framed, n, played)),
         None => stats(Vec::new()),
     }
     let memory = json_of(f"{dir}/results/memory.json")?

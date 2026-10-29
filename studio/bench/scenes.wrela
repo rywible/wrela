@@ -49,8 +49,14 @@ pub const SCENES: [Scene; 8] = [
     Scene { name: "vale-walk", pkg: "examples/vale", frames: 1200, width: 1920, height: 1080 },
 ]
 
+/// The frame the vale's walk begins: after it's playable in a saturated run too, whose frames
+/// race its helpers' jobs and fetches (it was playable at frames 232-239 there, and at about 100
+/// paced). Begun before, the moving eye kept its near cascade from being whole, which its first
+/// probes wait for, and the run stayed covered (C6).
+pub const VALE_WALKS: u32 = 360
+
 /// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), the vale's
-/// walk begun at frame 240 as the floor's is (the vale loads at rest, then walks), or none.
+/// walk begun at `VALE_WALKS` (the vale loads at rest, then walks), or none.
 pub fn script(name: str) -> Script {
     if name == "clearing-path" {
         return Script::frames()
@@ -76,7 +82,7 @@ pub fn script(name: str) -> Script {
             .key_up(1140, Key::W)
     }
     if name == "vale-walk" {
-        return Script::frames().key_down(240, Key::W).key_up(241, Key::W)
+        return Script::frames().key_down(VALE_WALKS, Key::W).key_up(VALE_WALKS + 1, Key::W)
     }
     if name == "capybara-run" || name == "capybara-run-large" {
         return Script::frames()
