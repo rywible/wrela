@@ -3415,3 +3415,20 @@ First joint assessment 8.64 min, retirement
 3,072 frames in 95.27 s excluding full-render measurement/scoring;
 no unbatched control or batching speedup claim. Retire all shortcuts and restore
 runtime. No training, new reference algorithm or G1–G7 qualification.
+
+
+## 2026-10-29 — Temporal reference diagnosis, no new runtime win
+
+[Reference-relative results](neural-temporal-reference.md), parent d2626b66:
+three AMD native-GPU captures of fixed clearing shot0 at192×108,240warmup,
+256/1024/independent1024 phase64 samples plus four temporal scales per executable.
+They validate reuse of completed16k/65k/independent65k targets; no new reference
+algorithm. First joint assessment 12.26min; decision
+18.68min; zero tuning followups, no training.
+
+Affected analytic boundary MAE worsens5.06%/4.39% for the retired identity/texel
+shortcuts despite small global changes. Existing raw-factor MAE on that same mask
+is0.011206 versus production0.272266. This post-hoc diagnostic motivates
+source-routed expensive boundary decoding, not a new quality/runtime win.
+All cost/residency figures are explicitly reused from the preceding studies;
+no fresh timing, storage saving or G1–G7 pass is claimed. Runtime restored.

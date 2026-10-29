@@ -3166,3 +3166,27 @@ No training, new reference algorithm or G1–G7 change. Next investigate discret
 source/surface correspondence, first resolving the observed local image changes
 against the existing matched static-clearing reference path.
 Manifest: `0502a8e71784f0a2c4ea5baa329cda50996f0097a17b845292ea72e5aacbe290`.
+
+
+## 2026-10-29: Reference-relative boundaries redirect temporal architecture
+
+[The reference diagnosis](neural-temporal-reference.md) completes its first joint
+assessment in 12.26 minutes and records its decision
+at 18.68 minutes. Zero optimization followups or fitting.
+New256/1024/independent1024 references and baseline temporal outputs exactly match
+completed older captures, allowing reuse of the existing16k/65k/independent65k
+reference estimates for this fixed clearing shot.
+
+Global quality changes are tiny and mixed. Existing analytic evidence shows
+affected-boundary MAE rising0.272266→0.286048 for identity and0.302635→0.315912
+for stationary-texel. These are post-hoc region diagnostics, not acceptance gates.
+Keep all shortcuts retired; earlier runtime/residency limitations remain.
+
+On the same affected boundary mask, existing raw-factor MAE is0.011206 and cheap
+source-history0.094478. Raw-factor's earlier1080p complete cost10.80–17.89ms
+makes source-routed expensive boundary decoding the next architecture bet,
+with a cheap interior path. Route from runtime authored geometry, never target
+images or diagnostic error masks; compare the strongest same-information controls
+and count all histories, routing, updates and complete cost.
+Runtime unchanged; G1–G7/frozen models unchanged.
+Manifest: `e155ca3621d4b6d03853ee4af64dcbee4318e0f4fdc259e85ceeb90506fe8949`.
