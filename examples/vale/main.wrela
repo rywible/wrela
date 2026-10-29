@@ -5,7 +5,7 @@
 // vale's walk (walk.wrela), or stands where a test holds it.
 
 use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
-use engine::switches::Approved
+use engine::tier::{Tier, Tiered, Tiers}
 use styles::physical::Physical
 use engine::shadow::Cascade
 use engine::shot::{NO_CAST, Shots, Skies, place}
@@ -26,9 +26,20 @@ const FAR_CASCADE = Cascade {
 }
 
 /// How the vale is drawn: the engine's defaults (the floor's: every switch on), and its far
-/// cascade.
+/// cascade, as its tier draws them.
 fn quality() -> Quality {
-    Quality { shadows: ShadowQuality { far: FAR_CASCADE } }
+    TIER.quality(Quality { shadows: ShadowQuality { far: FAR_CASCADE } })
+}
+
+/// The vale's tier (`engine::tier`, D37): `wrela build examples/vale --set TIER=Medium` builds
+/// another.
+pub const TIER: Tier = Tier::Epic
+
+/// The vale's switches: its tier's (`engine::tier::Tiered`).
+pub struct ValeTier {}
+
+impl Tiers for ValeTier {
+    const TIER: Tier = TIER
 }
 
 /// The field of view the walk and a held camera see with (radians).
@@ -43,7 +54,7 @@ pub fn start_eye() -> vec3 {
 pub struct Vale {
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Shared, Approved, Physical>,
+    frame: Frame<Shared, Tiered<ValeTier>, Physical>,
     stage: Stage,
     /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
     shots: Shots,
@@ -87,7 +98,7 @@ pub fn init() -> Vale {
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
-    let f: Frame<Shared, Approved, Physical> = Frame::new(
+    let f: Frame<Shared, Tiered<ValeTier>, Physical> = Frame::new(
         quality(),
         light,
         air,

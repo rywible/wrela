@@ -65,7 +65,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -84,6 +84,9 @@ pub struct Options: Clone {
     pub sustained: u32 = 0,
     /// Starts alone (`--starts`): this many cold and warm starts a scene, or 0.
     pub starts: u32 = 0,
+    /// The tier each scene's program is built at (`--tier`: `wrela build --set TIER=<tier>`,
+    /// `engine::tier`), or empty for its own.
+    pub tier: String = String::new(),
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -148,6 +151,16 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             k += 2
         } else if a == "--starts" {
             o.starts = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--tier" {
+            let v = value(k)?
+            if !(v.as_str() == "Epic" ||
+                v.as_str() == "High" ||
+                v.as_str() == "Medium" ||
+                v.as_str() == "Low") {
+                return None
+            }
+            o.tier = take v
             k += 2
         } else {
             return None
@@ -313,15 +326,27 @@ pub fn posted(dir: str, timeout: f64) -> Result<(), ToolError> {
     }
 }
 
-/// Scene `s`'s package (in the root `ws`) built into the write root `out` unless an earlier
-/// scene's was (`build`), and its gate script written beside it: the build's directory and the
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier` (the
+/// program's own if empty) unless an earlier scene's was (`build`), and its gate script written
+/// beside it: the build's directory and the
 /// script's file there.
-fn prepared(s: Scene, build: bool, ws: str, out: str) -> Result<(String, String), ToolError> {
+fn prepared(
+    s: Scene,
+    tier: str,
+    build: bool,
+    ws: str,
+    out: str,
+) -> Result<(String, String), ToolError> {
     let dir = build_dir(out, s.pkg)
     if build {
         var options = toolchain::options()
         options.optimize = true
         options.timeout = 600.0
+        if tier.len() > 0 {
+            options.set.push(
+                toolchain::Set { name: String::from("TIER"), value: String::from(tier) },
+            )
+        }
         let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
         if !built.ok {
             for d in built.diagnostics {
@@ -343,19 +368,17 @@ fn prepared(s: Scene, build: bool, ws: str, out: str) -> Result<(String, String)
 
 /// How many frames a run's page adds for its load: the counted frames begin `AFTER_PLAYABLE`
 /// frames after it prints `playable` (`counted_from`).
-const LOAD_ROOM: u32 = 360
+const LOAD_ROOM: u32 = 900
 const AFTER_PLAYABLE: u32 = 60
 
 /// The first frame a run in `dir` counts: `warmup`, or `AFTER_PLAYABLE` frames after the frame
-/// its program printed `playable` in, if that's later (a run that never did fails). Before it the load's frames are covered
+/// its program printed `playable` in, if that's later (one that never did is said). Before it the load's frames are covered
 /// (the arrival's black: `engine::frame::Readiness`), and since C5 they draw nothing of the
 /// scene, so a player sees none of them; frame 60 of the vale's walk was one.
 fn counted_from(dir: str, warmup: u32) -> Result<u32, ToolError> {
     let framed = json_of(f"{dir}/results/frames.json")?
     let log = text_of(f"{dir}/results/log.txt")?
-    let Some(pi) = framed.get(TOP, "printed_in") else {
-        return Err(ToolError::new(f"{dir}'s run has no printed lines"))
-    }
+    let Some(pi) = framed.get(TOP, "printed_in") else { return Ok(warmup) }
     let printed_in = numbers(framed, pi, 0)
     var line = 0
     for (a, b) in log.lines() {
@@ -364,7 +387,10 @@ fn counted_from(dir: str, warmup: u32) -> Result<u32, ToolError> {
         }
         line += 1
     }
-    Err(ToolError::new(f"{dir}'s run never printed `playable`: every frame was the load's"))
+    // A program without an arrival (the hello field) prints none; one with an arrival that never
+    // ends would be counted under its cover, so it's said.
+    print(f"bench: {dir}'s run never printed `playable`: its frames are counted from {warmup}")
+    Ok(warmup)
 }
 
 /// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about
@@ -383,7 +409,7 @@ pub fn starts(
     out: str,
     kept: str,
 ) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
-    let (dir, input_file) = prepared(s, build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
     let frames = min(o.warmup + s.frames, STARTS_FRAMES)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
@@ -429,7 +455,7 @@ pub fn measure(
     for r in RUNS {
         runs.push(String::from(f"{kept}/{s.name}/{r}"))
     }
-    let (dir, input_file) = prepared(s, build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
     let input = script(s.name)
     // Room for the load before the counted frames (`counted_from`), so at least `s.frames` count.
     let frames = o.warmup + s.frames + LOAD_ROOM
@@ -586,7 +612,9 @@ pub fn measure(
         native = stats(take calls)
     }
     let m = Measured {
-        scene: String::from(s.name),
+        scene: if o.tier.is_empty() { String::from(s.name) } else {
+            String::from(f"{s.name} ({o.tier})")
+        },
         span,
         interval: stats(take between),
         over_16,

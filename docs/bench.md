@@ -2341,3 +2341,38 @@ Tried, and nothing moved (single runs unless said):
 - **G-pixels:** capybara, herd, climber-lab and the clearing 0 px differ at each step. The floor
   is within its noise, except C5a's covered skip, which puts it 0.05 pp over its noise
   (0.44–0.48 % over 2/255 against 0.10–0.40 %; its commit has why).
+
+
+## C7, the tiers (2026-10-29, toolchain 0.10.3)
+
+docs/plan-world-class-3.md §C7, D37 (**proposed**). A program names its tier, `pub const TIER:
+Tier` (`engine::tier`), and its switches follow it at build time (`Tiered`, folded by 0.10.3) and
+its quality at run time (`Tier::quality`). `wrela tool bench -- --scene vale-walk --scene
+last-green-walk --tier <tier> --sustained 120 --no-docs --no-native` on the M4 Air, each run
+counted from 60 frames after `playable`, the walks begun at frame 900.
+
+| Scene (tier) | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | GPU peak MiB | Sustained |
+|---|---|---|---|---|---|
+| last-green-walk (Epic) | 14.12 / 16.80 / 17.94 | 17.90 / 28.85 / 37.80 | 1362 / 48 | 737.1 | sustained 120 s: minute 1 14.47, last 15.80 (1.09); 54.5 starts/s, 161 over 25 ms |
+| vale-walk (Epic) | 17.57 / 22.08 / 24.19 | 23.28 / 29.06 / 34.49 | 1859 / 22 | 541.8 | sustained 120 s: minute 1 20.04, last 21.58 (1.08); 42.9 starts/s, 550 over 25 ms |
+| last-green-walk (High) | 13.60 / 16.04 / 16.78 | 17.55 / 27.70 / 36.10 | 1311 / 47 | 733.9 | sustained 120 s: minute 1 15.95, last 16.09 (1.01); 55.5 starts/s, 112 over 25 ms |
+| vale-walk (High) | 16.77 / 21.77 / 25.62 | 21.50 / 28.48 / 35.40 | 1784 / 28 | 539.7 | sustained 120 s: minute 1 18.49, last 19.05 (1.03); 45.7 starts/s, 326 over 25 ms |
+| last-green-walk (Medium) | 12.62 / 15.17 / 16.08 | 14.71 / 27.54 / 29.48 | 536 / 1 | 678.7 | sustained 120 s: minute 1 13.23, last 13.66 (1.03); 65.5 starts/s, 162 over 25 ms |
+| vale-walk (Medium) | 12.42 / 15.76 / 17.04 | 16.57 / 22.82 / 30.38 | 904 / 8 | 478.2 | sustained 120 s: minute 1 13.74, last 14.83 (1.08); 59.9 starts/s, 60 over 25 ms |
+| last-green-walk (Low) | 11.50 / 14.02 / 14.76 | 13.58 / 22.36 / 26.49 | 237 / 0 | 622.0 | sustained 120 s: minute 1 12.21, last 12.21 (1.00); 71.6 starts/s, 49 over 25 ms |
+| vale-walk (Low) | 11.48 / 14.90 / 16.53 | 16.58 / 20.38 / 27.29 | 894 / 4 | 444.2 | sustained 120 s: minute 1 13.39, last 13.91 (1.04); 60.3 starts/s, 49 over 25 ms |
+
+- **G-tier, on the M4: holds.** Each tier's GPU p50 is under the one above's on both walks:
+  the floor 14.12 > 13.60 > 12.62 > 11.50, the vale 17.57 > 16.77 > 12.42 > 11.48.
+- **Pipelines** (`wrela pipelines <pkg> --set TIER=<tier>`): the vale 108 / 106 / 104 / 100, the
+  floor 169 / 167 / 165 / 161.
+- **The settings** (**proposed**, for Ryan): `High` the contact shadows and the reflections off;
+  `Medium` the probes' sights off too, the scene at half the output, the near cascade at 1024²,
+  the probes baked with 16 rays; `Low` the fog, the distance volume and the ambient occlusion off
+  too, the far cascade at 512². The plan's `High` halved the clouds' dome: measured, it was slower
+  than `Epic` (the floor 15.86 ms, the vale 18.23), since it upsamples the whole dome after each
+  march, and no tier has it. The plan's `Low` had no far cascade; the probes' first bake and an
+  arrival wait for it whole, so it's kept, small.
+- **G-pixels at `Epic`:** the vale's and the floor's builds have the same 108 and 169 pipelines,
+  byte for byte, as before C7; capybara, herd and climber-lab 0 px differ from build/base-0.9, the
+  clearing as C6a, the floor within its noise.

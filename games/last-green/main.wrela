@@ -14,6 +14,7 @@ use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
 use engine::switches::Switches
+use engine::tier::{Tier, Tiered, Tiers}
 use styles::physical::Physical
 use kit::rejector_net::REJECTOR_NET
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
@@ -71,9 +72,21 @@ const FAR_CASCADE = Cascade {
     side: 2048,
 }
 
-/// How the floor is drawn: the engine's defaults, which are the floor's, and its far cascade.
+/// How the floor is drawn: the engine's defaults, which are the floor's, and its far cascade,
+/// as its tier draws them.
 fn quality() -> Quality {
-    Quality { shadows: ShadowQuality { far: FAR_CASCADE } }
+    TIER.quality(Quality { shadows: ShadowQuality { far: FAR_CASCADE } })
+}
+
+/// The floor's tier (`engine::tier`, D37): `wrela build games/last-green --set TIER=Medium`
+/// builds another.
+pub const TIER: Tier = Tier::Epic
+
+/// What names the floor's tier to `engine::tier::Tiered`.
+pub struct FloorTier {}
+
+impl Tiers for FloorTier {
+    const TIER: Tier = TIER
 }
 
 /// The floor's experiments, each off as its rule says (`wrela build --set NEURAL=true`): the
@@ -82,11 +95,17 @@ fn quality() -> Quality {
 pub const NEURAL: bool = false
 pub const LEARNED: bool = false
 
-/// The floor's switches (`engine::switches`): the approved, and its experiments as its
-/// constants say.
+/// The floor's switches (`engine::switches`): its tier's (`engine::tier::Tiered`), and its
+/// experiments as its constants say.
 pub struct Switched {}
 
 impl Switches for Switched {
+    const SIGHT: bool = Tiered::<FloorTier>::SIGHT
+    const CONTACT: bool = Tiered::<FloorTier>::CONTACT
+    const REFLECTIONS: bool = Tiered::<FloorTier>::REFLECTIONS
+    const FOG: bool = Tiered::<FloorTier>::FOG
+    const DISTANCE: bool = Tiered::<FloorTier>::DISTANCE
+    const AMBIENT: bool = Tiered::<FloorTier>::AMBIENT
     const NEURAL: bool = NEURAL
     const LEARNED: bool = LEARNED
 }

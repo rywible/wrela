@@ -49,14 +49,15 @@ pub const SCENES: [Scene; 8] = [
     Scene { name: "vale-walk", pkg: "examples/vale", frames: 1200, width: 1920, height: 1080 },
 ]
 
-/// The frame the vale's walk begins: after it's playable in a saturated run too, whose frames
-/// race its helpers' jobs and fetches (it was playable at frames 232-239 there, and at about 100
-/// paced). Begun before, the moving eye kept its near cascade from being whole, which its first
-/// probes wait for, and the run stayed covered (C6).
-pub const VALE_WALKS: u32 = 360
+/// The frame the walks begin (the floor's LG_WALK's from 240 in its gate's script): after it's playable in a saturated run too, whose frames
+/// race its helpers' jobs and fetches (at `Epic` it was playable at frames 232-239 there, and at
+/// about 100 paced; at `High`, whose load's frames are cheaper, natively at 269 and in Chrome not
+/// by frame 360). Begun before, the moving eye kept its near cascade from being whole, which its
+/// first probes wait for, and the run stayed covered (C6, C7).
+pub const WALKS: u32 = 900
 
-/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), the vale's
-/// walk begun at `VALE_WALKS` (the vale loads at rest, then walks), or none.
+/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK from `WALKS`,
+/// CAPY_RUN), the vale's walk begun at `WALKS` (each loads at rest, then walks), or none.
 pub fn script(name: str) -> Script {
     if name == "clearing-path" {
         return Script::frames()
@@ -76,13 +77,13 @@ pub fn script(name: str) -> Script {
     }
     if name == "last-green-walk" {
         return Script::frames()
-            .key_down(240, Key::W)
-            .key_down(300, Key::ShiftLeft)
-            .key_up(1140, Key::ShiftLeft)
-            .key_up(1140, Key::W)
+            .key_down(WALKS, Key::W)
+            .key_down(WALKS + 60, Key::ShiftLeft)
+            .key_up(WALKS + 900, Key::ShiftLeft)
+            .key_up(WALKS + 900, Key::W)
     }
     if name == "vale-walk" {
-        return Script::frames().key_down(VALE_WALKS, Key::W).key_up(VALE_WALKS + 1, Key::W)
+        return Script::frames().key_down(WALKS, Key::W).key_up(WALKS + 1, Key::W)
     }
     if name == "capybara-run" || name == "capybara-run-large" {
         return Script::frames()

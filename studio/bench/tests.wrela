@@ -9,7 +9,7 @@ use report::{
     hitches, Measured, Stats, compared, date_of, doc, gates, intervals, markdown, report_json,
     spans, stats, throughput, time_of,
 }
-use scenes::{SCENES, Scene, script}
+use scenes::{SCENES, Scene, WALKS, script}
 use std::tool::files
 use std::tool::serve
 
@@ -42,6 +42,16 @@ fn the_command_line_names_scenes_and_cuts_frames() {
 }
 
 @test
+fn a_tier_is_one_of_the_four() {
+    let Some(o) = parse_args(texts(["--tier", "Medium", "--starts", "3"])) else {
+        panic("the vale at Medium")
+    }
+    assert(o.tier.as_str() == "Medium" && o.starts == 3)
+    assert(parse_args(texts([])).unwrap().tier.is_empty(), "the program's own tier")
+    assert(parse_args(texts(["--tier", "Ultra"])).is_none(), "no such tier")
+}
+
+@test
 fn each_gated_scene_has_its_gates_script() {
     // The gates' own files' events (build/gates/CLEARING_PATH.json): H's code is 8.
     assert(
@@ -50,7 +60,7 @@ fn each_gated_scene_has_its_gates_script() {
             "{\"frame\": 400, \"type\": \"keydown\", \"code\": 8}",
         ),
     )
-    assert(contains(script("last-green-walk").as_json(), "1140"))
+    assert(contains(script("last-green-walk").as_json(), f"{WALKS + 900}"))
     assert(contains(script("capybara-run-large").as_json(), "573"))
     assert(!contains(script("herd").as_json(), "frame"))
 }
