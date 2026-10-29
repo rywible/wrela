@@ -55,13 +55,24 @@ pub struct Kind {
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
 pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+    kind_ordered(plant, seed, card_orders(plant, plant.cards(), seed), atlas, s)
+}
+
+/// `kind`, its cards' orders found already (`card_orders`, `plant::orders_of` on a helper).
+pub fn kind_ordered(
+    plant: Plant,
+    seed: u32,
+    found: take Vec<u32>,
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+) -> Kind {
     // A plant with no leaves (a snag, a log) has no cards: its limbs alone are drawn.
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(max(n, 1))
     if n > 0 {
         dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
     }
-    let orders = buffer_of(card_orders(plant, n, seed), at_least: 1)
+    let orders = buffer_of(take found, at_least: 1)
     let limb_count = plant.limbs.len()
     var list: Vec<Tube<4>> = Vec::new()
     for i in 0..limb_count {

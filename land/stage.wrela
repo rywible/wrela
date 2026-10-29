@@ -22,11 +22,11 @@ use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
 use engine::memory::{Share, Usage}
 use engine::particles::{Particle, SOFT, SPARK}
-use engine::plant::{Plant, Wind}
+use engine::plant::{Ordering, Plant, Wind, orders_of}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::reflect::copy_below
 use engine::terrain::Clipmap
-use engine::vegetation::{Kind, Placed, kind}
+use engine::vegetation::{Kind, Placed, kind_ordered}
 use engine::view::{Camera, NEAREST}
 use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
 use engine::wood::{Pooling, Wood}
@@ -115,6 +115,9 @@ pub struct Landscape<T: Tiles> {
     pub kinds: Vec<Kind>,
     /// The kinds' pool as they're cooked (`engine::wood::Pooling`), until the wood takes it.
     pub pooling: Option<Pooling> = None,
+    /// The kinds' cards' orders not cooked yet, each found on a helper (`plant::orders_of`),
+    /// in the kinds' order.
+    pub ordering: Vec<std::par::Task<Vec<u32>>>,
     pub atlas: Texture<Rgba8>,
     pub wood: Option<Wood> = None,
     pub wood_at: Option<u32> = None,
@@ -173,6 +176,7 @@ pub fn landscape<T: Tiles>(
         plants,
         far_kinds,
         kinds: Vec::new(),
+        ordering: Vec::new(),
         atlas: engine::plant::leaf_atlas(6),
         fetching: Vec::new(),
         cooking: Vec::new(),
@@ -1213,11 +1217,25 @@ pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) {
     if s.pooling.is_none() {
         // Compressed where the device has BC (`engine::wood::Impostors`).
         s.pooling = Some(Pooling::new(s.plants, compress: std::gpu::features().bc))
+        // Every kind's cards' orders found on the helpers at once, the CPU's share of a kind's
+        // cook (C5: 7-185 ms natively each), each joined as its kind is cooked.
+        for k in 0..s.plants.len() {
+            s.ordering.push(
+                std::par::spawn(Ordering { plant: s.plants[k], seed: k + 1 }, orders_of),
+            )
+        }
     }
     while s.kinds.len() < s.plants.len() && c.planner.may(Work::Kind) {
         let k = s.kinds.len()
         label("kind")
-        var cooked = kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear)
+        let found = s.ordering.remove(0).join()
+        var cooked = kind_ordered(
+            s.plants[k],
+            seed: k + 1,
+            found: take found,
+            atlas: s.atlas,
+            s: linear,
+        )
         // Into the pool now, its own impostor let go (one kind's bake at a time).
         match mut s.pooling {
             Some(p) => p.add(mut cooked),
