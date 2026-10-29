@@ -3083,3 +3083,23 @@ Retain32³; retire larger table and extra branch. Next test the same certificate
 on sunlight-density queries, with unchanged quadrature. No training, new transport
 reference, broad motion/silhouette claim or G1–G7 qualification.
 Manifest: `50aa27439f64740c2165d2bdd288555e8d59b1166b1e77bed4374711170124ab`.
+
+
+## 2026-10-29: Retire sunlight support; preserve the view-ray gain
+
+[The sunlight-reuse experiment](neural-cloud-light-support.md) reaches its first
+joint assessment in4.73minutes and retires three
+variants in14.45minutes after two followups. Complete medians
+26.71472/26.53576/26.37524ms versus26.04872baseline; cloud5.38516/5.12176/4.97780ms
+versus4.68700. All requested live405,267,256B; actual residency captured.
+Images differ by at most2bytes, no new rendering advantage.
+
+4,926,936 original light queries produce zero observed false skips, but the
+certificate rejects only14.853%overall and0.0109%of eligible near queries.
+That query population does not repay the bound cost. Preserve all failures and
+restore runtime exactly to2b6f47c4; its measured view-support gain remains.
+
+Next return to causal surface-separated reconstruction observations and a fair
+constructive conventional decoder, before further neural fitting. Unique-ID
+collision removal alone is not a rendering result. No training/new references;
+G1–G7/frozen models unchanged. Manifest: `843735e7936ad4c3283b2f7aa0bbbe23dd7a9d76732a73b18114c18d8ddfd156`.

@@ -3313,3 +3313,40 @@ Final image max difference1byte. Original-query audit:
 Sampler parity is not converged transport, semantic silhouette or broad motion
 qualification. First assessment6.45minutes; two
 optimizations rejected, all failures saved. G1–G7 unchanged/unmet.
+
+
+## 2026-10-29: sunlight reuse of shape support retired
+
+[Full report](neural-cloud-light-support.md). Parent2b6f47c4 already includes the
+retained view-ray gain. Same Pop!_OS AMD5500U/RADVRENOIR, Mesa26.1.6,
+Chrome154.0.8037.57, Wrela0.9.0/compilerde9b81e52. 1920×1080,one worker,
+60frames after600warmup, equal fixed resolution and recurring probe work.
+
+| Method | Complete GPU median / p95 ms | Cloud median / p95 ms | Paced complete p95 / p99 ms |
+|---|---:|---:|---:|
+| Retained view support | 26.04872 / 27.77300 | 4.68700 / 5.19472 | 27.65298 / 28.79247 |
+| All eight light queries | 26.71472 / 28.89400 | 5.38516 / 6.09120 | 28.45048 / 29.23467 |
+| Far six light queries | 26.53576 / 28.04832 | 5.12176 / 5.75236 | 28.38363 / 29.23905 |
+| Distant four light queries | 26.37524 / 28.09772 | 4.97780 / 5.57404 | 28.03521 / 28.90495 |
+
+| Method | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+|---|---:|---:|---:|
+| Retained view support | 405,267,256 / 585,383,112 | 551,907,328 / 20,099,072 | 802,246,656 |
+| All eight light queries | 405,267,256 / 582,445,428 | 551,907,328 / 20,180,992 | 808,064,000 |
+| Far six light queries | 405,267,256 / 582,445,428 | 551,911,424 / 20,262,912 | 798,598,144 |
+| Distant four light queries | 405,267,256 / 585,383,112 | 551,907,328 / 20,099,072 | 805,586,944 |
+
+No added cache or omitted source/fallback. DRM/PSS are whole-client snapshots,
+not per-cache physical peaks; no UMA summation. Existing construction/invalidation
+and prior measured update penalty remain. No new update qualification.
+
+Actual-query audit:4,926,936 light queries,731,785 certified empty,zero false skips.
+Eligible near rejection0.0109%, far24.109%; all-query rejection14.853%.
+Counter-only timings/images are invalid rendering evidence. Rendered candidate
+differences max2bytes, exceeding the1byte baseline replay variation; not exact
+parity, converged transport or semantic silhouette/motion qualification.
+
+Retire all8/far6/distant4 variants after two targeted followups; first joint
+assessment4.73minutes, decision14.45.
+Unpaired development evidence, no broad dominance claim. Runtime restored exactly
+to2b6f47c4. All failed results saved; G1–G7 unchanged/unmet.
