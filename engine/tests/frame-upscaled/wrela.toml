@@ -4,5 +4,6 @@
 name = "frame_upscaled"
 
 [dependencies]
+styles = { workspace = true }
 engine = { workspace = true }
 frame_transitions = { path = "../frame" }

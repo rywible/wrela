@@ -12,6 +12,7 @@
 
 use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality}
 use engine::switches::Approved
+use styles::physical::Physical
 use engine::light::sunlight
 use engine::probes::grid
 use engine::terrain::Clipmap
@@ -23,7 +24,7 @@ use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
 const JUMPED = vec3(500.0, 1.6, 0.0)
 
 pub struct State {
-    frame: Frame<Gathered, Approved>,
+    frame: Frame<Gathered, Approved, Physical>,
     scene: Bare,
     eye: vec3,
     /// The frame the eye jumped at, and the first after it that wasn't covered.
@@ -41,7 +42,7 @@ pub struct State {
 
 pub fn init() -> State {
     let air = air_of(SUN)
-    let frame: Frame<Gathered, Approved> = Frame::new(
+    let frame: Frame<Gathered, Approved, Physical> = Frame::new(
         Quality { measured: false },
         sunlight(air),
         air,

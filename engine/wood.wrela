@@ -26,6 +26,7 @@ use impostor::{
 }
 use lit::Lighting
 use switches::Switches
+use style::Style
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
 use plant::{
@@ -1411,10 +1412,10 @@ impl Wood {
 
     /// The shading pass's draws: the cards where the prepass left their depth, the limbs, then
     /// the far instances: one multi-draw a way over every kind.
-    pub fn shade<P: RenderPass, Q: Switches>(
+    pub fn shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -1422,10 +1423,10 @@ impl Wood {
     }
 
     /// The second phase's shading (`reveal`'s), as `shade`'s.
-    pub fn late_shade<P: RenderPass, Q: Switches>(
+    pub fn late_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -1433,10 +1434,10 @@ impl Wood {
     }
 
     /// A phase's shading draws (`late`: the second's).
-    fn phase_shade<P: RenderPass, Q: Switches>(
+    fn phase_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
         late: bool,
@@ -1539,10 +1540,10 @@ impl Wood {
 
     /// A phase's (`ph`) impostors shaded, from the pool's colour, normals and toward-and-depth
     /// (`c`, `nm`, `d`: of whichever formats, `Impostors`).
-    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format, Q: Switches>(
+    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
         ph: Phase,

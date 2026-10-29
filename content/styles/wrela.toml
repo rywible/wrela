@@ -1,0 +1,7 @@
+# The looks a program's frame draws with (`engine::style::Style`, docs/plan-world-class-3.md §C2
+# and Part D): each a file of this package, its parameters its `pub const`s.
+[package]
+name = "styles"
+
+[dependencies]
+engine = { workspace = true }

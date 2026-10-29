@@ -13,6 +13,7 @@ use engine::cook::{Evidence, Work}
 use std::io::print
 use engine::frame::{Aim, Change, Frame, Gathered, Quality}
 use engine::switches::Switches
+use styles::physical::Physical
 use engine::air::{AIR_SLICES, hazy}
 use engine::light::{SUN_TOP, sunlight}
 use engine::probes::grid
@@ -83,7 +84,7 @@ pub enum Step: Copy + Eq {
 }
 
 pub struct State {
-    pub frame: Frame<Gathered, Bared>,
+    pub frame: Frame<Gathered, Bared, Physical>,
     pub scene: Bare,
     pub step: Step,
     /// The frame each step began at (`Record::ran`), in `Step`'s order.
@@ -98,7 +99,7 @@ pub fn init() -> State {
     let air = air_of(SUN)
     // Not measuring until the script's last step: until then a frame's order is the same on
     // every run and in both hosts, which the tests of order read.
-    let frame: Frame<Gathered, Bared> = Frame::new(
+    let frame: Frame<Gathered, Bared, Physical> = Frame::new(
         Quality { measured: false },
         sunlight(air),
         air,

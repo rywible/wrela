@@ -15,6 +15,7 @@ use impostor::{
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use switches::Switches
+use style::Style
 use noise::{cell_size, hashed_threshold_of}
 use lod::{
     IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, unpacked, ways,
@@ -401,13 +402,13 @@ fn leaf_cover(m: f32) -> f32 {
 /// inside the crown) and the light through it, and its gloss (`impostor::leaf_light`, as its
 /// impostor and volume have them); through the haze.
 @fragment
-pub fn leaf_shade<Q: Switches>(
+pub fn leaf_shade<Q: Switches, Y: Style>(
     l: LeafVertex,
     pixel: FragCoord,
     kinds: [KindDesc],
     cards: [Card],
     instances: [Instance],
-    lt: Lighting<Q>,
+    lt: Lighting<Q, Y>,
     atlas: Texture<Rgba8>,
 ) -> vec4 {
     let leaves = kinds[l.kind.value].bake.leaves
@@ -557,10 +558,10 @@ fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
 /// mean as a pixel grows past the coarse tile's texels (`plant::bark_at`), so a far trunk doesn't
 /// sparkle.
 @fragment
-pub fn bark_shade<Q: Switches>(
+pub fn bark_shade<Q: Switches, Y: Style>(
     b: BarkVertex,
     pixel: FragCoord,
-    lt: Lighting<Q>,
+    lt: Lighting<Q, Y>,
     kinds: [KindDesc],
     ridges: Texture<Rgba8>,
     coarse: Texture<Rgba8>,

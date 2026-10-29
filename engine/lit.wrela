@@ -17,6 +17,7 @@ use probes::{ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
 use switches::Switches
+use style::Style
 use std::gpu::{
     ComparisonSampler, Cubemap, DepthTexture, GpuSpan, R32Float, Rgba16Float, Sampler, Texture,
     Texture3d,
@@ -33,8 +34,9 @@ use view::Camera
 /// frame's screen (`screen`, as `mirror` says) and the specular probe (`spec`: `reflect`), and the
 /// solids' distance volume (`distance`, `volume`: `distance`, which the contact shadows march
 /// once it's cooked); textures read through `s`, a linear sampler. `Q` is the program's switches
-/// (`switches::Switches`): a path whose switch is off is no code, and binds nothing.
-pub borrow struct Lighting<Q: Switches> {
+/// (`switches::Switches`): a path whose switch is off is no code. `Y` is its look
+/// (`style::Style`), whose `shade` sums a surface's light (`shown`).
+pub borrow struct Lighting<Q: Switches, Y: Style> {
     pub cam: Camera,
     pub light: Light,
     pub shadows: Shadows,
@@ -66,12 +68,18 @@ pub borrow struct Lighting<Q: Switches> {
 
 /// How much sun reaches `world` (0 to 1), its normal `n`: the shadow maps', `soft` texels of
 /// penumbra, times the clouds' shadow.
-pub fn sun_at<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3, soft: f32) -> f32 {
+pub fn sun_at<Q: Switches, Y: Style>(l: Lighting<Q, Y>, world: vec3, n: vec3, soft: f32) -> f32 {
     sun_through(l, world, n, soft, cloud_shadow(l.clouds, l.cloud, l.s, world))
 }
 
 /// `sun_at` through the clouds' shadow `shade`.
-fn sun_through<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
+fn sun_through<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
+    world: vec3,
+    n: vec3,
+    soft: f32,
+    shade: f32,
+) -> f32 {
     sunlit(l.shadows, world, n, l.near, l.far, l.moving, l.cmp, soft, pcss: Q::PCSS) * shade
 }
 
@@ -79,7 +87,13 @@ fn sun_through<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3, soft: f32, sha
 /// toward the sun: through the solids' distance volume once it's cooked
 /// (`distance::contact_through`), else through the last frame's screen
 /// (`reflect::contact_shadow`); a solid surface's (a grass blade's sward darkens it its own way).
-fn sun_past<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
+fn sun_past<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
+    world: vec3,
+    n: vec3,
+    soft: f32,
+    shade: f32,
+) -> f32 {
     let sun = sun_through(l, world, n, soft, shade)
     if sun <= 0.0 {
         return 0.0
@@ -104,8 +118,8 @@ fn sun_past<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3, soft: f32, shade:
 /// there, which is read once for both; and by what's near it (`ambient_at`), or the radiance
 /// cascades' where they left it (`ambient::cascaded_at`); and the local lights' on a surface
 /// facing `n` (`local_at`).
-pub fn sun_and_sky<Q: Switches>(
-    l: Lighting<Q>,
+pub fn sun_and_sky<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
     world: vec3,
     n: vec3,
     sky_n: vec3,
@@ -134,7 +148,7 @@ pub fn sun_and_sky<Q: Switches>(
 /// The sky's light that reaches `world`, the probes' being `sky`: the radiance cascades', where
 /// they left it (`ambient::cascaded_at`: it holds its own occlusion), or `sky` dimmed by what's
 /// near it (`ambient_at`). Every surface's sky term goes through here.
-pub fn sky_at<Q: Switches>(l: Lighting<Q>, world: vec3, sky: vec3) -> vec3 {
+pub fn sky_at<Q: Switches, Y: Style>(l: Lighting<Q, Y>, world: vec3, sky: vec3) -> vec3 {
     // The cascades' test stays a run-time one (`Ambient::cascades`, 0 where the switch is off):
     // folded, the GPU's compiler evaluates the occlusion's lookup a little differently, and 12 of
     // the clearing's 921,600 pixels move by 1/255 (docs/bench.md, C1).
@@ -145,20 +159,20 @@ pub fn sky_at<Q: Switches>(l: Lighting<Q>, world: vec3, sky: vec3) -> vec3 {
 }
 
 /// The local lights' light on a surface at `world` facing `n` (`lights::shed`).
-pub fn local_at<Q: Switches>(l: Lighting<Q>, world: vec3, n: vec3) -> vec3 {
+pub fn local_at<Q: Switches, Y: Style>(l: Lighting<Q, Y>, world: vec3, n: vec3) -> vec3 {
     shed(l.froxels, l.lights, l.cam, world, n)
 }
 
 /// The share of the sky's light that reaches `world` past what's near it (`ambient::ao_at`).
-pub fn ambient_at<Q: Switches>(l: Lighting<Q>, world: vec3) -> f32 {
+pub fn ambient_at<Q: Switches, Y: Style>(l: Lighting<Q, Y>, world: vec3) -> f32 {
     if Q::AMBIENT { ao_at(l.ambient, l.ao, world) } else { 1.0 }
 }
 
 /// How much sun reaches `world` (as `sun_at`), the sky light there for a surface facing `n` (as
 /// `sun_and_sky`), and the light its gloss reflects: toward its reflection of the ray from the
 /// eye (`light::Lit::reflected`).
-pub fn sun_and_gloss<Q: Switches>(
-    l: Lighting<Q>,
+pub fn sun_and_gloss<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
     world: vec3,
     n: vec3,
     soft: f32,
@@ -170,8 +184,8 @@ pub fn sun_and_gloss<Q: Switches>(
 /// is about `facing`: a leaf's, whose sky light is its crown's, and whose gloss is its side's
 /// that faces the eye. Its shadow maps are read at `shadow_at`: a leaf's, past its own mass's
 /// leaves.
-pub fn sun_sky_and_gloss<Q: Switches>(
-    l: Lighting<Q>,
+pub fn sun_sky_and_gloss<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
     world: vec3,
     n: vec3,
     sky_n: vec3,
@@ -206,8 +220,8 @@ pub fn sun_sky_and_gloss<Q: Switches>(
 /// probes' light toward its reflection (`toward`: `sun_and_gloss`'s third): for a glossy one
 /// (smoother than `reflect::GLOSSY`), the screen and the specular probe (`reflect::reflected`);
 /// for the rest, `toward`.
-pub fn reflect<Q: Switches>(
-    l: Lighting<Q>,
+pub fn reflect<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
     world: vec3,
     n: vec3,
     rough: f32,
@@ -222,7 +236,7 @@ pub fn reflect<Q: Switches>(
 }
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).
-pub fn through_air<Q: Switches>(l: Lighting<Q>, colour: vec3, world: vec3) -> vec3 {
+pub fn through_air<Q: Switches, Y: Style>(l: Lighting<Q, Y>, colour: vec3, world: vec3) -> vec3 {
     // The froxels' fog first (`fog::fog_at`): what shows of the surface, and the light in front.
     if !Q::FOG {
         return light::hazed(l.air, l.s, l.light, colour, world, l.cam.eye)
@@ -231,7 +245,8 @@ pub fn through_air<Q: Switches>(l: Lighting<Q>, colour: vec3, world: vec3) -> ve
     light::hazed(l.air, l.s, l.light, colour * f.a + f.rgb, world, l.cam.eye)
 }
 
-/// What a surface at `world` shows: lit as `lit` says (`light::world`), through the air.
-pub fn shown<Q: Switches>(l: Lighting<Q>, lit: Lit, world: vec3) -> vec3 {
-    through_air(l, light::world(l.light, lit, world, l.cam.eye), world)
+/// What a surface at `world` shows: lit as `lit` says, summed by the look (`Style::shade`), through
+/// the air.
+pub fn shown<Q: Switches, Y: Style>(l: Lighting<Q, Y>, lit: Lit, world: vec3) -> vec3 {
+    through_air(l, Y::shade(l.light, lit, world, l.cam.eye), world)
 }

@@ -22,6 +22,7 @@ use engine::grass::Blooms
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
 use engine::switches::Switches
+use engine::style::Style
 use engine::paint::{Exposure, Look}
 use land::place::TILE
 use engine::plant::{Plant, Wind}
@@ -457,9 +458,9 @@ impl Scene for Stage {
     }
 
     /// The rocks the camera sees, the grass placed round the eye, and the wood's lists.
-    fn choose<Q: Switches>(
+    fn choose<Q: Switches, Y: Style>(
         mut self,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -518,10 +519,10 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass, Q: Switches>(
+    fn late_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -550,10 +551,10 @@ impl Scene for Stage {
 
     /// The vegetation pass: the grass, the built things in view (the floor's), the banks'
     /// stones, the wood, and a view's rock.
-    fn shade<P: RenderPass, Q: Switches>(
+    fn shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -632,7 +633,7 @@ impl Scene for Stage {
     }
 
     /// The climber, the fawn and the wolf (none in the world's views).
-    fn characters<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
+    fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
         if of_world(self.view) {
             return
         }
@@ -649,7 +650,7 @@ impl Scene for Stage {
 
     /// The water over a copy of the scene under it, into the scene's second target, which becomes
     /// the scene. (The falls' mist and the sun's shafts are the air's: `fog`.)
-    fn effects<Q: Switches>(mut self, t: mut Targets, fx: Effects<Q>) {
+    fn effects<Q: Switches, Y: Style>(mut self, t: mut Targets, fx: Effects<Q, Y>) {
         if on(shown(self.off, self.view), System::Water) {
             draw_water(mut self.land, mut t, fx)
         }
@@ -1450,10 +1451,10 @@ pub fn meets_view(cam: Camera, at: vec3, reach: f32) -> bool {
 }
 
 /// A built thing drawn in `pass` (its colours cooked, its place its matrix).
-pub fn draw_built<P: RenderPass, Q: Switches>(
+pub fn draw_built<P: RenderPass, Q: Switches, Y: Style>(
     pass: P,
     st: Realized,
-    lt: Lighting<Q>,
+    lt: Lighting<Q, Y>,
     cam: Camera,
     coverage: vec2 = vec2(0.0, 1.0),
 ) {

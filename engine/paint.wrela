@@ -21,6 +21,7 @@
 // Every texture the look lays on is anchored in the world.
 
 use light::{LUMA, tone}
+use style::Style
 use noise::{hash2, noise3, octave_of}
 use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Rgba8, Sampler, SharedAtomics,
@@ -618,10 +619,11 @@ pub fn dab_map(
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
 /// texels), the bloom, the characters' lines, a little sharpening, the tone curve at the
-/// metered exposure (`meter`) and a vignette. In the debug views (`Develop`'s `view`), the clay
-/// without the dabs, the tooth, the lines and the vignette; or the silhouettes alone.
+/// metered exposure (`meter`) and a vignette: the look's lens (`Y`, `style::Style::lens`). In the
+/// debug views (`Develop`'s `view`), the clay without the dabs, the tooth, the lines and the
+/// vignette; or the silhouettes alone.
 @fragment
-pub fn develop(
+pub fn develop<Y: Style>(
     pixel: FragCoord,
     d: Develop,
     image: Texture<Rgba16Float>,
@@ -669,21 +671,7 @@ pub fn develop(
             t(0.0, 0.0) * 0.25
     }
     paint += bloom * (look.bloom / f32(BLOOM_LEVELS))
-    if d.hdr != 0 && !clay {
-        // Linear light with headroom (`hdr_tone`): no SDR curve, no display grade.
-        let uv = px / d.out - vec2(0.5)
-        return vec4(
-            hdr_tone(paint * exposure[0].value, look.peak) * (1.0 - look.vignette * dot(uv, uv)),
-            1.0,
-        )
-    }
-    var c = graded(tone(paint, exposure[0].value), lut, s, look.grade)
-    if clay {
-        return vec4(c, 1.0)
-    }
-    let uv = px / d.out - vec2(0.5)
-    c = c * (1.0 - look.vignette * dot(uv, uv))
-    vec4(c, 1.0)
+    Y::lens(paint, px, d, exposure[0], lut, s)
 }
 
 /// The terrain's material owns its paint as well as its shading. Flat exposed bedrock must

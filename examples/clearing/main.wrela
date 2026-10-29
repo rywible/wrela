@@ -8,6 +8,7 @@ use creature::{SKELETON, WALKER_BODY, grown}
 use engine::air::{Air, hazy}
 use engine::frame::{Aim, Arrival, Change, Frame, Off, ProbeQuality, Quality, ShadowQuality, Shared}
 use engine::switches::Switches
+use styles::physical::Physical
 use engine::gait::{between, palette}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::paint::Metering
@@ -165,7 +166,7 @@ fn fawn_coat() -> f32 {
 pub struct Clearing {
     /// The sim's snapshots.
     snaps: Snapshots<World>,
-    frame: Frame<Shared, Clear>,
+    frame: Frame<Shared, Clear, Physical>,
     /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
     shots: Shots,
     stage: Stage,
@@ -228,7 +229,7 @@ pub fn init() -> Clearing {
     let st = stage(w, light)
     print(f"forest: {trees::KINDS} kinds, {st.woods.placed.len()} instances")
     print(f"clouds: {clouds::weather::cloudscape().len()} cumulus")
-    var f: Frame<Shared, Clear> = Frame::new(
+    var f: Frame<Shared, Clear, Physical> = Frame::new(
         quality(stage::SCALE),
         light,
         air_of(),

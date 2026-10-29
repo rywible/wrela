@@ -16,6 +16,7 @@ use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
+use style::Style
 use realize::{Mesh, SkinVertex, Tally}
 use std::mem::size_of
 use std::gpu::{
@@ -331,7 +332,11 @@ pub fn character(
 /// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the
 /// sky light, through the haze; its tag the character's class and its part.
 @fragment
-pub fn character_shade<Q: Switches>(c: CharacterVertex, pixel: FragCoord, lt: Lighting<Q>) -> vec4 {
+pub fn character_shade<Q: Switches, Y: Style>(
+    c: CharacterVertex,
+    pixel: FragCoord,
+    lt: Lighting<Q, Y>,
+) -> vec4 {
     // Where the camera has pulled in close (a trunk behind it), the character fades: a dither,
     // turned each frame, that temporal AA settles (it filled the screen).
     let near = smoothstep(0.55, 1.25, length(c.world - lt.cam.eye))
@@ -600,10 +605,10 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
     }
 
     /// It in the scene, lit by `lt`, its parts `parts`.
-    pub fn draw<P: RenderPass, Q: Switches>(
+    pub fn draw<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         cam: Camera,
         parts: PartOf,
     ) {

@@ -13,6 +13,7 @@
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
+use style::Style
 use noise::noise2
 use reflect::reflected_on_screen
 use sky::clouded_sky
@@ -411,10 +412,10 @@ fn ripple_roughness(lost: f32, flowing: bool) -> f32 {
 
 /// The water's pixel: what's under it through it, the world reflected, the sun's glint, foam.
 @fragment
-pub fn water_shade<Q: Switches>(
+pub fn water_shade<Q: Switches, Y: Style>(
     w: WaterPoint,
     pixel: FragCoord,
-    lt: Lighting<Q>,
+    lt: Lighting<Q, Y>,
     below: Texture<Rgba16Float>,
     view: Texture<Rgba16Float>,
     dome: Texture<Rgba16Float>,

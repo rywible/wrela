@@ -14,6 +14,7 @@ use engine::light::Light
 use engine::shot::Skies
 use engine::lit::Lighting
 use engine::switches::Switches
+use engine::style::Style
 use engine::memory::{Share, Usage}
 use engine::particles::Emits
 use engine::plant::{Plant, Wind}
@@ -240,9 +241,9 @@ impl Scene for Stage {
     }
 
     /// The grass placed round the eye, and the wood's lists.
-    fn choose<Q: Switches>(
+    fn choose<Q: Switches, Y: Style>(
         mut self,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -286,10 +287,10 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass, Q: Switches>(
+    fn late_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -310,10 +311,10 @@ impl Scene for Stage {
     }
 
     /// The vegetation pass: the grass and the wood.
-    fn shade<P: RenderPass, Q: Switches>(
+    fn shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting<Q>,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -333,7 +334,7 @@ impl Scene for Stage {
     }
 
     /// The fawn.
-    fn characters<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
+    fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
         self.fawn.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
     }
 
@@ -342,7 +343,7 @@ impl Scene for Stage {
     }
 
     /// The water over a copy of the scene under it.
-    fn effects<Q: Switches>(mut self, t: mut Targets, fx: Effects<Q>) {
+    fn effects<Q: Switches, Y: Style>(mut self, t: mut Targets, fx: Effects<Q, Y>) {
         draw_water(mut self.land, mut t, fx)
     }
 

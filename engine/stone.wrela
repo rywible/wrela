@@ -13,6 +13,7 @@ use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use switches::Switches
+use style::Style
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
 use realize::{Mesh, Room, SkinVertex, Tally, realize_rigid, solid}
@@ -574,10 +575,10 @@ fn complementary_stone_meshes_cover_each_pixel_once() {
 /// A stone's pixel: its cooked normal and colour, lit by the world's light, darker where it
 /// meets the ground (`lit_stone`).
 @fragment
-pub fn stone_shade<Q: Switches>(
+pub fn stone_shade<Q: Switches, Y: Style>(
     s: StoneVertex,
     pixel: FragCoord,
-    lt: Lighting<Q>,
+    lt: Lighting<Q, Y>,
     coverage: vec2 = vec2(0.0, 1.0),
 ) -> vec4 {
     if !coverage_kept(coverage, pixel.position.xy, lt.cam.frame) {
@@ -587,7 +588,7 @@ pub fn stone_shade<Q: Switches>(
 }
 
 /// Stone `s` lit by `lt`'s light, darker where it meets the ground.
-pub fn lit_stone<Q: Switches>(s: StoneVertex, lt: Lighting<Q>) -> vec4 {
+pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> vec4 {
     let n = normalize(s.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
@@ -1243,7 +1244,7 @@ impl Rocks {
     }
 
     /// The rocks the camera sees (`cull`) drawn into `pass`, lit by `lt`, each at its level.
-    pub fn draw<P: RenderPass, Q: Switches>(self, pass: P, lt: Lighting<Q>) {
+    pub fn draw<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
         for k in 0..self.far.len() {
             for level in 0..2 {
                 let at = 2 * k + level
@@ -1281,7 +1282,12 @@ impl Rocks {
 /// shimmer; and mottled a little coarser); then lit as a stone (`lit_stone`). (Per pixel: a
 /// rock's near mesh has far more vertices than pixels it covers.)
 @fragment
-pub fn rock_shade<Q: Switches>(s: StoneVertex, lt: Lighting<Q>, origin: vec3, grain: vec4) -> vec4 {
+pub fn rock_shade<Q: Switches, Y: Style>(
+    s: StoneVertex,
+    lt: Lighting<Q, Y>,
+    origin: vec3,
+    grain: vec4,
+) -> vec4 {
     let w = s.world + origin
     let broad = noise3(w * 0.04 + vec3(3.0, 7.0, 1.0))
     let streak = noise3(vec3(w.x * 0.35, w.y * 0.025, w.z * 0.35))
