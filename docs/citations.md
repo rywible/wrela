@@ -191,3 +191,19 @@ Named in words; no image is copied from them.
 | Miro and Lucid; shadcn/ui's documentation | Interaction conventions for the board; the polish the docs aim past |
 
 The lookdev rubric's "hero" anchor is a private set of 75 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0) and 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense", Ghibli's statement of September 2020). Ryan accepted that statement on 2026-10-28 as covering private review by an agent judge (docs/plan-world-class-3.md §B3.1): it is the rights holder's own public invitation, though not a formal licence, and it covers only stills from Ghibli's own release, not reposts. An agent looks at them beside a render to judge light, colour, value and depth. Eight Nintendo store screenshots that were in it were removed on 2026-10-28: their terms allowed private study only, not showing them to an agent judge (docs/plan-world-class-3.md D38).
+
+## Original physical grand and orchestra planning
+
+The [original grand plan](plan-original-grand.md) defines an original physical instrument and
+an autonomous evaluation procedure. Its sources R1–R8 are linked and scoped in the plan's
+source register. These are planning references, not claims that the methods are implemented.
+
+| Source | Use and rights boundary |
+|---|---|
+| Fazioli, [F308](https://www.fazioli.com/pianoforti/f308/) | Artistic benchmark only; no recordings, geometry or manufacturer parameters imported. The planned instrument is Wrela's own design. |
+| Chabassier, Chaigne and Joly, [Time domain simulation of a piano (2014)](https://researchportal.ip-paris.fr/en/publications/time-domain-simulation-of-a-piano-part-1-model-description/); Bank and Sujbert, [Longitudinal String Vibrations (2004)](https://www.dafx.de/paper-archive/2004/P_089.PDF) | Published physical mechanisms inform the planned independent Wrela implementation. No source code, recording-derived tables or audio imported. |
+| Matusiak, Chatziioannou and van Walstijn, [passive bow–string friction (2025)](https://pub.mdw.ac.at/pubmdw/publication/e0518e7b-5d7d-4ff0-aaf1-83f35848189e); Scavone, [reed generators](https://compmus.ime.usp.br/sbcm/1995/papers/Gary_Scavone.html); [valved brass synthesis (2015)](https://www.pure.ed.ac.uk/ws/portalfiles/portal/21857362/DAFx_15_harrison.pdf); Edinburgh NESS, [3D percussion](https://www.ness.music.ed.ac.uk/archives/systems/3d-embeddings.html) | Research directions for later orchestra scopes. No implementations, parameters or demonstration media imported. The bow article's record states CC BY 4.0; other linked material is cited for its methods, not treated as freely licensed assets. |
+
+The existing Salamander attribution above remains accurate for the current piano. Replacing
+that default is a future implementation step, and this plan does not change its licence or
+claim that its derived tables are original.
