@@ -29,7 +29,7 @@ use engine::terrain::Clipmap
 use engine::vegetation::{Kind, Placed, kind}
 use engine::view::{Camera, NEAREST}
 use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
-use engine::wood::Wood
+use engine::wood::{Pooling, Wood}
 use grow::Tree
 use place::TILE
 use std::collections::replace
@@ -113,6 +113,8 @@ pub struct Landscape<T: Tiles> {
     pub plants: Vec<Plant>,
     pub far_kinds: Vec<u32>,
     pub kinds: Vec<Kind>,
+    /// The kinds' pool as they're cooked (`engine::wood::Pooling`), until the wood takes it.
+    pub pooling: Option<Pooling> = None,
     pub atlas: Texture<Rgba8>,
     pub wood: Option<Wood> = None,
     pub wood_at: Option<u32> = None,
@@ -1208,25 +1210,35 @@ pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) {
     if s.wood.is_some() {
         return
     }
+    if s.pooling.is_none() {
+        // Compressed where the device has BC (`engine::wood::Impostors`).
+        s.pooling = Some(Pooling::new(s.plants, compress: std::gpu::features().bc))
+    }
     while s.kinds.len() < s.plants.len() && c.planner.may(Work::Kind) {
         let k = s.kinds.len()
         label("kind")
-        s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear))
+        var cooked = kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear)
+        // Into the pool now, its own impostor let go (one kind's bake at a time).
+        match mut s.pooling {
+            Some(p) => p.add(mut cooked),
+            None => {},
+        }
+        s.kinds.push(take cooked)
     }
     if s.kinds.len() < s.plants.len() {
         return
     }
     let kinds = replace(mut s.kinds, Vec::new())
     let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
-    var w = Wood::new(
+    let Some(pooling) = replace(mut s.pooling, None) else { return }
+    var w = Wood::pooled(
         take kinds,
         s.far_kinds.clone(),
         take atlas,
+        take pooling.done(s.far_kinds),
         slots: SLOTS,
         cards_to: CARDS_TO,
         impostors_to: IMPOSTORS_TO,
-        // Compressed where the device has BC (`engine::wood::Impostors`).
-        compress: std::gpu::features().bc,
     )
     // Retain leaf detail by output size and keep large crowns as geometry farther away.
     // The whole handover stays inside the loaded near forest; cut cells use output pixels.

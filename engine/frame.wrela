@@ -1227,7 +1227,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 side: sh.far.side,
                 strips: sh.far_strips,
             ),
-            moving: depth_texture(width: sh.moving_side, height: sh.moving_side),
+            moving: depth_texture(width: 1, height: 1),
             moving_clear: false,
             cmp: comparison_sampler(),
             distance: Distance::new(Q::DISTANCE),
@@ -1783,8 +1783,14 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 moving_side: q.moving_side,
             ),
         }
-        // Nothing moving casts: the map cleared once is kept.
+        // Nothing moving casts: the map cleared once is kept, a texel of it (a cleared map reads
+        // as lit wherever it's read); what casts gets the map its side.
         let casts = scene.casts_moving()
+        let side = if casts { q.moving_side } else { 1 }
+        if self.moving.width() != side {
+            self.moving = depth_texture(width: side, height: side)
+            self.moving_clear = false
+        }
         if casts || !self.moving_clear {
             label("shadow moving")
             let mv = begin_depth_pass(mut self.moving, clear_depth: 1.0)

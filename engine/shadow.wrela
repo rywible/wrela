@@ -368,7 +368,7 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// The GPU bytes its two maps take (32-bit depth).
+    /// The GPU bytes its maps take (32-bit depth): the one in use, and the one being drawn.
     pub fn bytes(self) -> u64 {
         memory::texels(self.front.width(), self.front.height(), 4) +
             memory::texels(self.back.width(), self.back.height(), 4)
@@ -477,9 +477,13 @@ impl Kept {
     pub fn strip(mut self, sun: vec3) -> Option<Strip> {
         let Some(requested) = self.next else { return None }
         self.sun = set_sun(self.strip, self.sun, sun)
-        // A set draws what casts as its first strip is drawn (`changed`).
+        // A set draws what casts as its first strip is drawn (`changed`), into a map made for
+        // it (none is kept between sets: `drawn`).
         if self.strip == 0 {
             self.next_casters = self.casters
+            if self.back.width() != self.side {
+                self.back = depth_texture(width: self.side, height: self.side)
+            }
         }
         let sun = self.sun
         let c = if self.strip == 0 && self.ready {
@@ -506,6 +510,8 @@ impl Kept {
         self.strip += 1
         if self.strip >= self.strips {
             swap(mut self.front, mut self.back)
+            // The old map goes until the next set (`strip`): a settled cascade holds one.
+            self.back = depth_texture(width: 1, height: 1)
             self.centre = c
             self.front_sun = self.sun
             self.front_casters = self.next_casters

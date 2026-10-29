@@ -1167,15 +1167,24 @@ fn hand_over(s: mut Stage, cam: Camera) {
 /// casts, its far one doesn't), and the banks' stones (`pool_banks`); then the pool's GPU side
 /// made again for the frame's casters and culling.
 fn pool_settled(s: mut Stage) {
+    // The room the frame's meshes take, reserved at once (`Pool::reserve`).
+    var more = vec2u(0)
+    for t in s.built {
+        if poolable(t) {
+            more += Pool::takes(t.near)
+            if let Some(f) = t.far {
+                more += Pool::takes(f)
+            }
+        }
+    }
+    if !s.banks_pooled && s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+        for p in s.banks.prototypes {
+            more += Pool::takes(p)
+        }
+    }
+    s.pool.reserve(more)
     for mut t in s.built {
-        if t.pooled.is_some() || t.near.counted.is_none() {
-            continue
-        }
-        let far_ready = match t.far {
-            Some(f) => f.counted.is_some(),
-            None => true,
-        }
-        if !far_ready {
+        if !poolable(t) {
             continue
         }
         let Some(near) = s.pool.add_mesh(t.near, casts: true) else { continue }
@@ -1207,6 +1216,18 @@ fn pool_settled(s: mut Stage) {
         }
     }
     s.pool.ready()
+}
+
+/// Whether `t` is settled and not yet in the pool: its near mesh fitted, and its far one if it has
+/// one.
+fn poolable(t: Thing) -> bool {
+    if t.pooled.is_some() || t.near.counted.is_none() {
+        return false
+    }
+    match t.far {
+        Some(f) => f.counted.is_some(),
+        None => true,
+    }
 }
 
 /// The banks' prototypes put in the pool once all three are settled, with an item for each of
@@ -1252,6 +1273,11 @@ fn item_of(at: mat4, seed: u32) -> Item {
 /// | the far cascade | the far layer, the wood and the built things |
 /// | the probes' first bake | the built things, the prototypes, the cascades whole, the air and dome |
 /// | playable | the probes, the frame round the eye |
+/// The most room the built things' realizations take in a frame (a realization holds room for
+/// its whole grid until it's fitted the frame after): unbounded, the floor's load held 230 MiB of
+/// it in one frame, its GPU peak's (docs/bench.md, C4).
+const BUILT_ROOM: u64 = 64 * engine::memory::MIB
+
 pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
     cook_wood(mut s.land, mut c, linear)
     // The wood cooked this frame (`wood_at`): the great tree read through its net.
@@ -1284,8 +1310,10 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
         return
     }
     // As many a frame as the planner allows, the nearest to the eye first, so what a player
-    // sees on arriving stands in the first frames.
-    while s.to_build.len() > 0 && c.planner.may(Work::Built) {
+    // sees on arriving stands in the first frames; and no more than `BUILT_ROOM` of their
+    // realizations' room a frame (each is fitted, and its room given back, the frame after).
+    var room: u64 = 0
+    while s.to_build.len() > 0 && room < BUILT_ROOM && c.planner.may(Work::Built) {
         let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
         label("built things")
         let water = water_near(s.land.water_tiles, blockouts::place(b), origin_of(s))
@@ -1298,6 +1326,10 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             None => {},
         }
         let shape = blockouts::shape_tape(b)
+        room += near.bytes() + match far {
+            Some(f) => f.bytes(),
+            None => 0,
+        }
         s.built.push(
             Thing { near, reach: blockouts::reach(b), far, shape, band: blockouts::far_band(b) },
         )

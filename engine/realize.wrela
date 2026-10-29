@@ -1089,10 +1089,11 @@ fn room_for(vertices: u32, quads: u32) -> Room {
     Room { vertices: vertices + vertices / 4 + 1024, quads: quads + quads / 4 + 1024 }
 }
 
-/// The room a calibration realizes into: the most `grid` could hold.
-fn calibration_room(grid: Grid) -> Room {
-    Room { vertices: grid.blocks * 8, quads: grid.blocks * 8 }
-}
+/// The room a calibration realizes into: a little. A calibration reads only its counts, which
+/// count every push, kept or not (`Tally::pushed_vertices`, `pushed_quads`), and its mesh isn't
+/// drawn; room for the most its grid could hold (8 vertices and 8 quads a block) was a creature's
+/// 200 MiB for a frame at the floor's load (docs/bench.md, C4).
+const CALIBRATION_ROOM = Room { vertices: 1024, quads: 1024 }
 
 /// A level's room, as a realizer knows it: not yet, a calibration on its way
 /// (`Realizer::calibrate`), or known.
@@ -1540,10 +1541,10 @@ impl<C, F: Parts<C>> Realizer<F> {
         } else {
             record_finish(self.held[i].field, s.grid, self.falloff, mut self.slow, mut s.mesh)
             self.queue_check(i, s.level, s.mesh, s.calibration)
-            // A calibration's mesh is drawn if its instance wants the level, until it's realized
-            // again in the room the calibration finds (as `calibrate`'s).
-            if !s.calibration || self.next_level(i, force: false) == s.level {
-                self.place(i, s.level, take s.mesh, stale: s.calibration)
+            // A calibration's mesh holds only what its room did: its instance is realized again
+            // in the room it finds (as `calibrate`'s).
+            if !s.calibration {
+                self.place(i, s.level, take s.mesh, stale: false)
             }
             return
         }
@@ -1565,7 +1566,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         let best = if calibration { self.largest(level) } else { picked }
         let grid = self.grid(best, level)
         let mesh = match room {
-            None => Mesh::new(calibration_room(grid)),
+            None => Mesh::new(CALIBRATION_ROOM),
             Some(room) => self.slab(level, room),
         }
         if calibration {
@@ -1579,19 +1580,15 @@ impl<C, F: Parts<C>> Realizer<F> {
     }
 
     /// Calibrates `level`'s room: the instance with the largest grid at that level, of all
-    /// of them, is realized into room for the most its grid could hold, and its counts are read
-    /// back once. Of all, not of those waiting: a larger one realized later would overflow the
-    /// room. If it's waiting for the level,
-    /// it draws that mesh until the room is known and it's realized again.
+    /// of them, is realized (into `CALIBRATION_ROOM`: its counts are what's read) and its counts
+    /// read back once. Of all, not of those waiting: a larger one realized later would overflow
+    /// the room. Its mesh isn't drawn: it's realized again once the room is known.
     fn calibrate(mut self, level: u32, force: bool) -> f32 {
         let best = self.largest(level)
         let grid = self.grid(best, level)
-        var mesh = Mesh::new(calibration_room(grid))
+        var mesh = Mesh::new(CALIBRATION_ROOM)
         self.rooms[level] = LevelRoom::Calibrating
         self.record_into(best, level, grid, mut mesh, calibration: true)
-        if self.next_level(best, force) == level {
-            self.place(best, level, take mesh, stale: true)
-        }
         f32(grid.blocks) * self.detail.levels[level].cost_us
     }
 

@@ -227,12 +227,28 @@ impl Pool {
         self.items.len()
     }
 
+    /// The room `r`'s mesh takes in a pool (its vertices, from where a binding may start, `ALIGN`,
+    /// and its quads), once it's fitted; none before.
+    pub fn takes(r: Realized) -> vec2u {
+        match r.counted {
+            Some((v, q)) => vec2u((v + ALIGN - 1) / ALIGN * ALIGN, q),
+            None => vec2u(0),
+        }
+    }
+
+    /// Room for `more` (vertices, quads: what `takes` says of the meshes to come) beside what's
+    /// held, at once: the meshes a frame adds grow the buffers once, not once each (a growth holds
+    /// the old buffers to the frame's end, and the floor's grew from nothing in a frame).
+    pub fn reserve(mut self, more: vec2u) {
+        self.room_for(self.used_vertices + more.x, self.used_quads + more.y)
+    }
+
     /// `r`'s mesh (fitted: `Realized::settle`) copied in; its items cast shadows if `casts`. Its
     /// index, or `None` if it isn't fitted yet.
     pub fn add_mesh(mut self, r: Realized, casts: bool) -> Option<u32> {
         let (v, q) = r.counted?
-        // The next mesh's vertices start where a binding may (`ALIGN`): the room this one takes.
-        let aligned = (v + ALIGN - 1) / ALIGN * ALIGN
+        let room = Pool::takes(r)
+        let aligned = room.x
         self.room_for(self.used_vertices + aligned, self.used_quads + q)
         let first_vertex = self.used_vertices
         let first_quad = self.used_quads
@@ -341,11 +357,12 @@ impl Pool {
         self.quads = take quads
     }
 
-    /// Room for `vertices` and `quads` in the meshes' buffers: grown to twice what's asked when
-    /// they're short, what they hold copied over.
+    /// Room for `vertices` and `quads` in the meshes' buffers: grown to a quarter more than what's
+    /// asked when they're short (`reserve` asks for a frame's meshes at once), what they hold
+    /// copied over.
     fn room_for(mut self, vertices: u32, quads: u32) {
         if vertices > self.verts.len() {
-            let n = max(2 * vertices, 1024)
+            let n = max(vertices + vertices / 4, 1024)
             var verts: GpuBuffer<Point> = buffer(n)
             var colours: GpuBuffer<Unorm8x4> = buffer(n)
             var owners: GpuBuffer<u32> = buffer(n)
@@ -366,7 +383,7 @@ impl Pool {
             self.owners = take owners
         }
         if quads > self.quads.len() {
-            var q: GpuBuffer<Quad> = buffer(max(2 * quads, 1024))
+            var q: GpuBuffer<Quad> = buffer(max(quads + quads / 4, 1024))
             let used = self.used_quads
             if used > 0 {
                 copy(self.quads.span(start: 0, count: used), q.span_mut(start: 0, count: used))
