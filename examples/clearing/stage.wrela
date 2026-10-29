@@ -169,7 +169,7 @@ impl Stage {
             // This atlas stays fixed; remake_woods reconstructs the Wood after source edits.
             fixed_leaf_atlas: true,
         )
-        w.request_pages()
+        w.request_source_pages()
         w.card_px = card_px(self.scale)
         w.cell = 1.0 / f32(self.scale)
         w.write_lods()

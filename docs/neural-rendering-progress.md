@@ -3388,3 +3388,16 @@ One focused reference case resolved that uncertainty without a new reference alg
 All experimental runtime and fixture code restored to 660c5bef; qualified exact pages stay.
 [Full comparison and next bet](neural-appearance-projection.md).
 Evidence manifest: `a0a4f91d5be78bca64fb47020d083244fc2d17d46d01f1c17011a653b453d436`.
+
+
+## 2026-10-29 — Source visibility palettes retained as an opt-in
+
+Source IDs pass 24 existing stress checks and 12 normal-production 1080p comparisons.
+Impostor allocation 15.73→5.49MB (2.87x for impostors; common appearance remains resident), full GPU
+span median 24.886→25.119ms. Actual DRM VRAM is ~15.4MB lower; paired browser PSS is 1.8–16.7MB
+higher, so no total physical-memory claim. Startup peak is unchanged; source-edit
+requested peak is 10.24MB lower at ~16ms extra elapsed over 60 frames. IDs are lossless;
+322 of 86,919 wood texels have over one degree of normal discrepancy, though rendered
+gates pass. Next bet: raster-exact sparse wood records with source-card identity,
+judged by quality, total memory and runtime together. No training; two optimization
+follow-ups; G1–G7 unchanged. [Report](neural-source-identity-atlas.md).

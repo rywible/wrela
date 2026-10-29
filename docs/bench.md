@@ -3641,3 +3641,19 @@ was insensitive to the change; LOD, fading and filtering contributions were not 
 case resolves this; production quadrature is not independent transport truth.
 No physical peak, total memory, speedup or G1–G7 win claimed; UMA pools must not be summed.
 First meaningful assessment24.52min;2 follow-ups; all runtime/fixture changes restored.
+
+
+### Source visibility palettes, 2026-10-29
+
+Solo Pop!_OS AMD RADV RENOIR/5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. At 1920x1080 output/internal 2x,
+600 warmup +60 measured, source-ID palettes use 5,485,048B versus 15,728,640B
+for retained BC pages (2.87x impostors; unchanged common appearance remains resident).
+Full timestamp-span median 25.11878 versus 24.88564ms; 24 stress and 12 production 1080p checks pass.
+Requested live 383,312,696→373,069,104B, startup peak 578,009,512B unchanged.
+Observed DRM VRAM falls ~15.4MB but paired browser PSS rises 1.8–16.7MB; no total
+physical-memory or speed claim. Real source replacement adds 12.57ms GPU/15.82ms elapsed
+across 60 frames, with requested edit peak 610,996,316→600,752,724B.
+IDs verify and deliberate corruption is rejected. Retain opt-in as a GPU-memory
+tradeoff; G1–G7 unchanged/unmet. First assessment 19.88 minutes, exactly two optimization
+follow-ups, no training. [Scope, silhouettes and evidence](neural-source-identity-atlas.md).

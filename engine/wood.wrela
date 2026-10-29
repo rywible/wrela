@@ -21,11 +21,14 @@
 
 use compress::{encode_bc5, encode_bc7, halves}
 use impostor_pages::{Build as PageBuild, Checking as PageChecking, Packed as PagePacked}
+use impostor_identity::{
+    Build as IdentityBuild, Checking as IdentityChecking, Packed as IdentityPacked,
+}
 use std::io::{print, Pending}
 use cull::{Hzb, NO_HZB, occluded}
 use impostor::{
     KindDesc, NO_NET, Neural, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade,
-    page_cut_flat, page_shade,
+    page_cut_flat, page_shade, identity_cut_flat, identity_shade,
 }
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
@@ -662,6 +665,7 @@ pub enum Impostors {
     },
     Compressed { colour: TextureArray<Bc7>, normal: TextureArray<Bc5>, depth: TextureArray<Bc5> },
     Paged { data: PagePacked },
+    Source { data: IdentityPacked },
 }
 
 /// Kind `k`'s volume into slab `slab` of the volumes' atlas (`in_slab`): its voxel there, read
@@ -724,6 +728,7 @@ fn into_layer(
             copy_buffer_to_texture(from: scratch.span(start: 0, count: words), to: d.layer_mut(i))
         },
         Impostors::Paged { .. } => { assert(false, "cannot pool into a packed atlas") },
+        Impostors::Source { .. } => { assert(false, "cannot pool into source identities") },
         Impostors::Plain { colour: c, normal: nm, depth: d } => {
             copy_texture(from: colour.level(0), to: c.layer_mut(i))
             let texels = a * a
@@ -860,6 +865,9 @@ pub struct Wood {
     page_build: Option<PageBuild>,
     page_fence: Option<Pending<vec4>>,
     page_check: Option<PageChecking>,
+    source_pages: bool,
+    source_build: Option<IdentityBuild>,
+    source_check: Option<IdentityChecking>,
     /// The camera's last choosing (`select`), which `reveal`'s second phase repeats; and a
     /// pyramid of nothing, for the shadows' choosing.
     chose: Option<Choose>,
@@ -965,6 +973,9 @@ impl Wood {
             page_build: None,
             page_fence: None,
             page_check: None,
+            source_pages: false,
+            source_build: None,
+            source_check: None,
             chose: None,
             no_pyramid: writable_texture::<R32Float>(width: 1, height: 1),
             loaded_places: 0,
@@ -999,8 +1010,20 @@ impl Wood {
         }
     }
 
+    /// Opt in to source visibility palettes. Oversized sources keep the exact BC page path.
+    /// Rebuilding the Wood after source edits rebuilds its identities and releases old data.
+    pub fn request_source_pages(mut self) {
+        if self.pages_pending() { return }
+        self.source_pages = impostor_identity::fits(self.kinds)
+        self.request_pages()
+    }
+
     pub fn pages_pending(self) -> bool {
-        self.page_fence.is_some() || self.page_build.is_some() || self.page_check.is_some()
+        self.page_fence.is_some() ||
+            self.page_build.is_some() ||
+            self.page_check.is_some() ||
+            self.source_build.is_some() ||
+            self.source_check.is_some()
     }
 
     pub fn settle_pages(mut self) {
@@ -1019,10 +1042,34 @@ impl Wood {
             self.page_fence = None
             match self.pool.impostors {
                 Impostors::Compressed { colour, normal, depth } => {
-                    self.page_build = Some(PageBuild::new(colour, normal, depth))
+                    if self.source_pages {
+                        self.source_build = Some(IdentityBuild::new(self.kinds, self.atlas))
+                    } else {
+                        self.page_build = Some(PageBuild::new(colour, normal, depth))
+                    }
                 },
                 _ => {},
             }
+        }
+        let source_counted = match mut self.source_build {
+            Some(b) => b.poll(),
+            None => None,
+        }
+        if let Some(values) = source_counted {
+            let build = replace(mut self.source_build, None).unwrap()
+            assert(values.len() == 2 && values[1] == 0, "source identity verification failed")
+            print(f"SOURCE_ID_PAGES payload_words={values[0]} errors={values[1]}")
+            self.source_check = Some(take build.finish(values[0]))
+        }
+        let source_checked = match mut self.source_check {
+            Some(c) => c.poll(),
+            None => None,
+        }
+        if let Some(errors) = source_checked {
+            assert(errors == 0, "source identity fence failed")
+            let checked = replace(mut self.source_check, None).unwrap()
+            self.pool.impostors = Impostors::Source { data: take checked.packed }
+            print("SOURCE_ID_PAGES active all_source_ids_verified")
         }
         let counted = match mut self.page_build {
             Some(b) => b.poll(),
@@ -1066,6 +1113,9 @@ impl Wood {
 
     /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
     pub fn impostor_bytes(self) -> u64 {
+        if let Impostors::Source { data } = self.pool.impostors {
+            return u64(data.data.len()) * 4
+        }
         if let Impostors::Paged { data } = self.pool.impostors {
             return memory::texels(data.colour.width(), data.colour.height(), 3) +
                 u64(data.map.len()) * 4
@@ -1074,6 +1124,7 @@ impl Wood {
             Impostors::Plain { .. } => 12,
             Impostors::Compressed { .. } => 3,
             Impostors::Paged { .. } => 0,
+            Impostors::Source { .. } => 0,
         }
         memory::texels(impostor::ATLAS, impostor::ATLAS, texel, d: self.kinds.len())
     }
@@ -1481,6 +1532,28 @@ impl Wood {
                         depth: NEAREST,
                     )
                 },
+                Impostors::Source { data } => {
+                    draw_multi(
+                        pass,
+                        far_quad.bind(
+                            cam,
+                            wind,
+                            kinds: self.pool.kinds,
+                            instances: ph.instances.span(start: 0, count: self.seen.places),
+                            marks: ph.marks.span(start: 0, count: self.seen.places),
+                            bounds: self.pool.bounds,
+                            front: 0,
+                        ),
+                        identity_cut_flat.bind(
+                            kinds: self.pool.kinds,
+                            pages: data.data,
+                            cell: self.cell,
+                        ),
+                        indirect: self.of_way(ph.far, IMPOSTOR),
+                        count: n,
+                        depth: NEAREST,
+                    )
+                },
             }
         }
         if self.seen.way_has(VOLUME, n) {
@@ -1661,6 +1734,32 @@ impl Wood {
                             normal: data.normal,
                             depth: data.depth,
                             pages: data.map,
+                            grid: self.pool.grid,
+                        ),
+                        indirect: self.of_way(ph.far, IMPOSTOR),
+                        count: n,
+                        depth: impostor::SHADED,
+                    )
+                },
+                Impostors::Source { data } => {
+                    draw_multi(
+                        pass,
+                        far_quad.bind(
+                            cam,
+                            wind,
+                            kinds: self.pool.kinds,
+                            instances: ph.instances.span(start: 0, count: self.seen.places),
+                            marks: ph.marks.span(start: 0, count: self.seen.places),
+                            bounds: self.pool.bounds,
+                            front: 1,
+                        ),
+                        identity_shade.bind(
+                            lt,
+                            ids,
+                            kinds: self.pool.kinds,
+                            cards: self.pool.cards,
+                            limbs: self.pool.limbs,
+                            pages: data.data,
                             grid: self.pool.grid,
                         ),
                         indirect: self.of_way(ph.far, IMPOSTOR),
