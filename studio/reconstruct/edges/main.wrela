@@ -335,7 +335,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.source_direct {
         label("direct source radiance integration")
         let p = begin_pass(mut s.current)
-        fullscreen(p, source_bilinear::direct.bind(f, s.tick))
+        if f.radiance >= 3 {
+            fullscreen(p, leaf_radiance::direct.bind(f, s.tick))
+        } else {
+            fullscreen(p, source_bilinear::direct.bind(f, s.tick))
+        }
         p.end()
         finish(mut s, width, height)
         return

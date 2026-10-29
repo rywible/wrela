@@ -3143,3 +3143,32 @@ Guarded grids pass 90/90 quality rows, but accept zero / 1.320% of all authored 
 All requested resources and actual whole-client DRM/PSS snapshots are included; initial preparation is separate above. No UMA summation, physical peak or appearance-only attribution. Paced grid tails are lower than direct-field tails in these unpaired runs; no small-win or dominance inference. Complete decision, including preparation and strengthened raw-field baseline, finishes 13.48 minutes after implementation start, with an explicitly estimated additional nine-minute inspection allowance.
 
 3,600 images preserve alpha; 800 preparation images and 528 prior baseline images are byte-identical. Retained renderer restored exactly; failures preserved. [Full quality, runtime, residency and replay evidence](neural-base-grid.md).
+
+
+## 2026-10-28: nonlinear source lighting; uniform radiance cache retired
+
+[Complete report](neural-leaf-lighting.md). Parent421f740c; same Pop!_OS AMD5500U/
+RADVRENOIR,Mesa26.1.6,Chrome154.0.8037.57,Wrela0.9.0/compilerde9b81e52.
+120frames after60warmup, oneworker. All cache generation/current-light refresh,
+visibility/material integration, decode and composite included. This analytic
+layer fixture uses production leaf_response, but has no wood/sort/GI work and
+does not measure a complete3D foliage pass.
+
+At4×, cases74/75 saturated GPUmedian1080p/4K:
+direct2.25112/8.86216 and3.29396/13.08708ms;
+bilinear1.44356/5.65384 and1.95304/7.61416;
+cubic2.31348/9.10400 and3.32324/13.22728.
+Unpaired runs; no confidence-qualified small difference. Quality192×108,32frames,
+fourcases: direct FLIP0.00196–0.00394, bilinear0.0100–0.0948,
+cubic0.00595–0.0703. Full-resolution quality remains unqualified.
+
+Requested live1080p/4K: direct25,212,056/99,861,656B;
+both caches27,285,640/108,156,040B. Actual deduplicated DRMVRAM:
+direct60.93–69.85/185.25–218.81MB, bilinear69.80–69.87/227.13MB,
+cubic69.87/227.13MB. GTT/browserPSS, requestedpeaks and pacedGPUtails in report.
+No per-asset/physicalpeak claim; do not sum UMApools.
+
+Decision29.65minutes, after23.10-minute first assessment and one followup:
+retire both uniform caches; no new joint rendering win. Retain nonlinear diagnostic
+and source-direct control, preserve failures,264image/target/mask parity checks.
+No training, old models and G1–G7 unchanged/unmet.

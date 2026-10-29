@@ -243,3 +243,11 @@ training loss. Only the small residual models are fitted to Wrela's existing
 shaded source captures; the LPIPS weights remain frozen and outside the repository.
 The unsuccessful residual models and sources are preserved as local experiment
 evidence, not shipped runtime assets.
+
+
+The [retired surface-radiance cache](neural-leaf-lighting.md) tests tensor-product
+Catmull–Rom interpolation: [Edwin Catmull and Raphael Rom, A Class of Local
+Interpolating Splines, Computer Aided Geometric Design,1974, pp.317–326](https://doi.org/10.1016/B978-0-12-079050-0.50020-5).
+Our Wrela polynomial implementation, source sampling, boundary policy and measurements
+are our own; no implementation, asset or trained weight is imported. The failed
+decoder is archived as experiment evidence and is not shipped.

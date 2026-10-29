@@ -44,7 +44,7 @@ fn options(given: [String]) -> Option<Options> {
             let text = given[i + 1].as_str()
             for (a, b) in text.split(",") {
                 let Some(shot) = text.slice(a, b).parse_u32() else { return None }
-                if shot >= 74 || o.shots.len() >= 16 { return None }
+                if shot >= 78 || o.shots.len() >= 16 { return None }
                 for old in o.shots { if old == shot { return None } }
                 o.shots.push(shot)
             }
@@ -124,7 +124,7 @@ fn options(given: [String]) -> Option<Options> {
         i += 2
     }
     // Every scale has an integral input size. Reference count doubles per axis for convergence.
-    if o.shot >= (if o.scene == 2 { 74 } else if o.scene == 1 { 3 } else {
+    if o.shot >= (if o.scene == 2 { 78 } else if o.scene == 1 { 3 } else {
         1
     }) || o.width == 0 || o.height == 0 || o.width % 12 != 0 || o.height % 12 != 0 || o.width > 3840 || o.height > 2160 || (o.warmup < 1 && (o.scene != 2 || o.length == 1)) || o.warmup > 4096 || o.cells < 2 || o.cells > 16 {
         return None
@@ -511,10 +511,12 @@ fn run(o: Options) -> Result<(), ToolError> {
     let scene = if o.scene == 2 { "analytic/slats-checkerboard" } else if o.scene == 1 {
         "examples/clearing"
     } else { "engine/tests/frame/bare" }
-    let reference_kind = if o.scene == 2 { "exact_box_integral_of_analytic_field" } else {
+    let reference_kind = if o.scene == 2 && o.shot >= 74 {
+        "source_lighting_midpoint_with_analytic_material_areas_see_archived_grid"
+    } else if o.scene == 2 { "exact_box_integral_of_analytic_field" } else {
         "spatial_quadrature_of_production_renderer_not_unbiased_lighting_truth"
     }
-    let count = if o.scene == 2 { 1 } else {
+    let count = if o.scene == 2 && o.shot >= 74 { 64 } else if o.scene == 2 { 1 } else {
         o.cells * o.cells * 4 * if o.sampling == 1 {
             64
         } else { 1 }
@@ -550,7 +552,9 @@ fn run(o: Options) -> Result<(), ToolError> {
         "fixed_sampler_inputs"
     }
     let radiance = if o.scene == 2 && o.shot >= 72 {
-        if o.shot == 72 { "affine_spatial" } else {
+        if o.shot >= 74 { "production_leaf_response_spatial_fields" } else if o.shot == 72 {
+            "affine_spatial"
+        } else {
             "bilinear_spatial"
         }
     } else { "fixture_original" }
@@ -568,7 +572,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..73(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|raw-factor|source-basis|source-bilinear|source-direct|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32 --raw-specialize 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..77(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|raw-factor|source-basis|source-bilinear|source-direct|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32 --raw-specialize 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
         )
         return 2
     }

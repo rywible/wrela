@@ -2977,3 +2977,25 @@ Both guarded tables pass 90/90 shaded rows but accept zero / 1.320% of all autho
 The existing bounded-raw direct field costs 3.05524 ms with 1,698,932 B requested live memory, versus 1,810,860 / 2,393,772 B for guarded grids. Physical residency is approximately 17.8 MB for all three. Grid paced tails are lower in these unpaired runs; no statistically resolved small win or dominance is claimed. No G4 resident-memory qualification.
 
 All 3,600 captures preserve alpha; 800 preparation images and 528 old baseline images are exact. Retire the grid runtime, preserve all failed results, and restore engine/content/studio byte-for-byte. Next block returns to source-visible, surface-separated neural observations with an equally informed conventional baseline. G1–G7 remain unchanged/unmet. Manifest: `140aca3467f2daf6cbe657a1fd5ad7bf8fe8fb39d0d1d888291a9c688f875e4b`.
+
+
+## 2026-10-28: Nonlinear source lighting rejects a uniform radiance cache
+
+[The leaf-lighting comparison](neural-leaf-lighting.md) replaces already-solved
+constant/bilinear diagnostic radiance with actual engine leaf_response. First joint
+quality/runtime/residency assessment:23.10minutes; explicit decision:29.65minutes.
+One cubic-filter followup, no training. Initial4×4reference failure is preserved;
+8×8vs16×16 meets the predeclared convergence limits.
+
+At4×, bilinear cache FLIP is0.0100–0.0948 versus direct source0.00196–0.00394.
+It saves36–42% saturated GPUtime but adds2.07/8.29MB requested live memory at1080p/4K.
+Cubic reduces FLIP by23.7–40.6%, yet still scores0.0633–0.0703 on sharp cases and
+costs roughly direct shading. Actual DRM/PSS and shaded silhouette/temporal/reveal
+errors are included. No new joint rendering win or G4 comparison is claimed.
+
+Retire both cache paths; retain the nonlinear diagnostic/direct control.264 compared
+files, including old cases and camera cuts, are exact. Batched multi-case execution
+keeps one quiet AMD queue. Next bet: an error-budgeted source shading compiler,
+using exact integration/direct evaluation for cheap terms and bounded approximation
+only for expensive smooth residuals. G1–G7 unchanged/unmet. Manifest:
+`202f6416ca1abebcc330959b565270597a01ffdf284e3c220a15aeeeaf8e461b`.

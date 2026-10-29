@@ -20,7 +20,7 @@ pub struct Field: Copy + GpuData {
 
 // Eight unchanged legacy cases, 64 stress cases, and two spatial-radiance counterexamples.
 // This catalog is public development data, not a sealed release suite.
-pub const CASES: u32 = 74
+pub const CASES: u32 = 78
 
 fn draw(index: u32, channel: u32, count: u32) -> u32 {
     u32(rand(index + 31337, channel) * f32(count))
@@ -59,6 +59,9 @@ fn stress(index: u32) -> Field {
 /// merely learning a pixel-aligned pattern. Entire cases must be split, never random pixels.
 pub fn case(index: u32) -> Field {
     assert(index < CASES, "unknown analytic case")
+    if index >= 74 {
+        return Field { radiance: index - 71, ..stress([11, 45, 15, 23][index - 74]) }
+    }
     if index >= 72 {
         return Field { radiance: index - 71, ..stress(if index == 72 { 11 } else {
             45
@@ -113,6 +116,7 @@ fn bright(f: Field, lo: vec2, hi: vec2) -> f32 {
 /// Exact box-filtered linear RGB over a unit output pixel, with the front layer occluding
 /// the checkerboard. At most two slats intersect a pixel because every supported period > 1.
 pub fn pixel(f: Field, at: vec2, frame: u32) -> vec4 {
+    if f.radiance >= 3 { return leaf_radiance::reference(f, at, frame) }
     if f.radiance != 0 { return radiance_pixel(f, at, frame) }
     let hi = at + vec2(1.0)
     let shift = f.offset + f.speed * f32(frame)
@@ -193,7 +197,7 @@ fn stress_catalog_preserves_integral_domain_and_covers_fast_motion() {
     var right = 0
     var subpixel = 0
     var resolved = 0
-    for index in 8..CASES {
+    for index in 8..74 {
         let f = case(index)
         assert(f.period > 1.0 && f.width > 0.0 && f.width < f.period && f.checker > 0.0)
         assert(abs(f.speed) <= 32.0)
@@ -253,6 +257,9 @@ pub fn radiance_terms(f: Field, m: u32) -> [vec3; 4] {
 pub fn point(f: Field, p: vec2, frame: u32) -> vec4 {
     if f.radiance == 0 { return flat_point(f, p, frame) }
     let m = material(f, p, frame)
+    if f.radiance >= 3 {
+        return vec4(leaf_radiance::shade(f, m, p, frame), if m == 0 { GRASS } else { GROUND })
+    }
     let c = radiance_terms(f, m)
     vec4(c[0] + c[1] * p.x + c[2] * p.y + c[3] * p.x * p.y, if m == 0 { GRASS } else { GROUND })
 }
@@ -347,6 +354,50 @@ fn varying_radiance_integral_matches_point_quadrature() {
                     max(error.x, max(error.y, error.z)) < 0.0001,
                     f"radiance {index} {tick} {p}: {error}",
                 )
+            }
+        }
+    }
+}
+
+// Reference-only material areas over a subrectangle, via the existing independent pulses.
+pub fn rectangle_areas(f: Field, lo: vec2, hi: vec2, tick: u32) -> [f32; 3] {
+    let size = max(hi - lo, vec2(0.0))
+    let shift = f.offset + f.speed * f32(tick)
+    let first = floor((lo.x - shift) / f.period)
+    var front = 0.0
+    var light = bright(f, lo, hi)
+    for k in 0..2 {
+        let a = (first + f32(k)) * f.period + shift
+        let left = max(lo.x, a)
+        let right = min(hi.x, a + f.width)
+        if right > left {
+            front += (right - left) * size.y
+            light -= bright(f, vec2(left, lo.y), vec2(right, hi.y))
+        }
+    }
+    let total = size.x * size.y
+    let b = clamp(light, 0.0, total - front)
+    [front, b, max(total - front - b, 0.0)]
+}
+
+@test
+fn subrectangle_areas_match_dyadic_point_quadrature() {
+    for index in [74, 75, 76, 77] {
+        let f = Field { front: vec3(1.0, 0.0, 0.0), light: vec3(0.0, 1.0, 0.0),
+            dark: vec3(0.0, 0.0, 1.0), radiance: 0, ..case(index) }
+        for tick in [0, 16, 31] {
+            for lo in [vec2(0.0), vec2(7.125, 3.25), vec2(191.75, 107.5)] {
+                let size = vec2(0.25, 0.5)
+                let areas = rectangle_areas(f, lo, lo + size, tick)
+                var sum = vec3(0.0)
+                for y in 0..64 {
+                    for x in 0..64 {
+                        sum += point(f, lo + (vec2(f32(x), f32(y)) + vec2(0.5)) * size / 64.0, tick).rgb *
+                            (size.x * size.y / 4096.0)
+                    }
+                }
+                let error = abs(sum - vec3(areas[0], areas[1], areas[2]))
+                assert(max(error.x, max(error.y, error.z)) < 0.000001)
             }
         }
     }
