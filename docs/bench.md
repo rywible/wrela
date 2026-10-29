@@ -3657,3 +3657,16 @@ across 60 frames, with requested edit peak 610,996,316→600,752,724B.
 IDs verify and deliberate corruption is rejected. Retain opt-in as a GPU-memory
 tradeoff; G1–G7 unchanged/unmet. First assessment 19.88 minutes, exactly two optimization
 follow-ups, no training. [Scope, silhouettes and evidence](neural-source-identity-atlas.md).
+
+### Sparse wood records retired, 2026-10-29
+
+Solo Pop!_OS AMD RENOIR/5500U, same Mesa26.1.6, Chrome154.0.8037.57 and Wrela0.9.0
+as the source-ID comparison. At 1080p/internal2x, 600 warmup +60 measured, two
+fresh runs per BC/ID/wood variant show no repeatable full-GPU speed advantage.
+Exact wood records remove the bake-normal discrepancy but add 881,920B (+16.08%)
+over retained source IDs; observed VRAM +0.84–0.85MB, paired browser PSS +1.31–3.03MB.
+All36 shaded checks pass, with only tiny mixed changes versus IDs and identical
+silhouette metrics. The first candidate's 785,526,924B startup peak is repaired to
+the existing 578,009,512B by shared scratch; no baseline peak win. Edit peak also rises.
+Retire the extension, restore all runtime changes, preserve failures. One follow-up,
+zero training; G1–G7 unchanged/unmet. [Evidence and decision](neural-source-wood-records.md).

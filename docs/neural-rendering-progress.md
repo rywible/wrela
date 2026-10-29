@@ -3401,3 +3401,14 @@ requested peak is 10.24MB lower at ~16ms extra elapsed over 60 frames. IDs are l
 gates pass. Next bet: raster-exact sparse wood records with source-card identity,
 judged by quality, total memory and runtime together. No training; two optimization
 follow-ups; G1–G7 unchanged. [Report](neural-source-identity-atlas.md).
+
+### 2026-10-29 — Sparse wood records retired
+
+The source-ID wood-record experiment removed all measured bake-normal discrepancy,
+but added16.08% representation bytes, more resident memory and no repeatable complete
+runtime gain. All36 shaded checks pass; differences versus retained IDs are tiny and
+mixed, silhouettes unchanged. Shared scratch fixes only the experiment's own startup
+regression. One follow-up, no training. Runtime restored to d707a30a; all failed code,
+captures and cost data retained. Next bet: stream each kind's bake into final storage,
+with the same construction policy for BC and source IDs. G1–G7 remain unmet.
+[Full decision](neural-source-wood-records.md).
