@@ -263,3 +263,21 @@ input”. The subagent therefore supplied only an engineering/code review and nu
 audit, not a listening judgment. Its review, exact capability failure and input hashes are
 retained on the ThinkPad under `codex-audio-review-2026-10-29/`. No model generated sound.
 The unused OpenAI API preparation made no API calls and supplied no review or coefficients.
+
+
+### Original-grand Opus code review and response/loss repairs
+
+Ryan requested Claude Code with Opus 5.5 at high effort on the ThinkPad. The first run
+used Claude Code 2.1.301 and reported model claude-opus-5-5. Exact requests, frozen
+sources, responses and hashes are retained under
+/home/ryan-wible/wrela-evidence/grand/code-review-2026-10-29/.
+[The disposition](reviews/original-grand-code-2026-10-29.md) distinguishes fixes,
+estimates, hypotheses and unresolved qualification. No model heard or generated sound.
+
+The harmonic solver independently evaluates modal dynamic stiffness and the Rayleigh
+integral cited above. Frequency-selected sine functions and full-span rib blocks follow
+from the analytic plate energy integrals. Physical loss is independently derived by
+transforming a positive Rayleigh dissipation form. The string bending term explicitly
+assumes a Kelvin-Voigt constitutive law; its authored retardation time and the board's
+authored loss factor are hypotheses, not measured or fitted instrument data. No
+third-party recording, response, scale, source code or parameter table is an input.

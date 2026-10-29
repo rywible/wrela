@@ -1,5 +1,5 @@
 // Soundboard pressure diagnostic for the three-key mechanical fixture.
-// The baffle and proportional loss are declared approximations. No recorded
+// The baffle, surrogate board and material losses are declared approximations. No recorded
 // sound, room response, manufacturer geometry, or old piano coefficients.
 use grand_probe::{Fixture, fixture}
 use engine::acoustic_radiation::{Air, Patch, Point, kernel, response, kernel_response, convolve}
@@ -107,20 +107,20 @@ pub fn render() -> Result<(), ToolError> {
     let rate: u32 = 48000
     let frames = rate * 8
     let dt = 1.0 / f64(rate)
-    // Uniform mass-proportional viscous loss C = 0.7 M. This is an authored
-    // surrogate fixture, not calibrated soundboard/radiation/string damping.
-    var f = fixture(cells: 4, loss: 0.35, rate: rate)
+    // Reproduction/engineering diagnostic only. Board response has NOT passed
+    // refinement; increasing cells here does not establish an audible bandwidth.
+    var f = fixture(cells: 4, loss: 0.0, rate: rate)
+    let physical_losses = grand_probe::material_losses(f)
     let count = f.model.modes.len()
     let board_modes = f.board_basis.count
-    let owners: [u32; 5] = [0, 1, 1, 1, 2]
     var maximum_work = 0.0
     for i in 0..3 {
         maximum_work += 0.5 * f.hammers[i].mass * 1.5 * 1.5
         f.hammers[i].x = -0.05
         f.hammers[i].v = 0.0
     }
-    var displacement_bound = [0.0; 5]
-    for i in 0..5 {
+    var displacement_bound: Vec<f64> = Vec::filled(f.owners.len(), 0.0)
+    for i in 0..f.owners.len() {
         var compliance = 0.0
         for j in 0..count {
             let b = f.shapes[i * count + j] / f.model.modes[j].omega
@@ -139,8 +139,8 @@ pub fn render() -> Result<(), ToolError> {
         if t == 0 || t == rate * 2 || t == rate * 4 {
             let hammer = t / (rate * 2)
             var surface = 1e100
-            for i in 0..5 {
-                if owners[i] != hammer { continue }
+            for i in 0..f.owners.len() {
+                if f.owners[i] != hammer { continue }
                 var x = 0.0
                 for j in 0..count { x += f.shapes[i * count + j] * f.model.modes[j].q }
                 surface = surface.min(x)
@@ -153,6 +153,11 @@ pub fn render() -> Result<(), ToolError> {
             detached = false
         }
         modal_acceleration(f.contacts, f.hammers, f.model.modes, mut mechanical_acceleration)
+        engine::acoustic_losses::add_acceleration(
+            physical_losses,
+            f.model.modes,
+            mut mechanical_acceleration,
+        )
         for b in 0..board_modes {
             var a = 0.0
             for j in 0..count {
@@ -161,6 +166,12 @@ pub fn render() -> Result<(), ToolError> {
             }
             board_acceleration[t * board_modes + b] = a
         }
+        loss += engine::acoustic_losses::sweep(
+            physical_losses,
+            mut f.model.modes,
+            dt: dt * 0.5,
+            reverse: false,
+        )
         if detached {
             loss += free_step(mut f.model.modes)
             for h in 0..3 { f.hammers[h].x += f.hammers[h].v * dt }
@@ -171,11 +182,17 @@ pub fn render() -> Result<(), ToolError> {
             // This energy bound includes all later launches. It proves no
             // further contact until the next scheduled external launch.
             detached = true
-            for i in 0..5 {
-                let h = f.hammers[owners[i]]
+            for i in 0..f.owners.len() {
+                let h = f.hammers[f.owners[i]]
                 if h.v > 0.0 || h.x >= -displacement_bound[i] { detached = false }
             }
         }
+        loss += engine::acoustic_losses::sweep(
+            physical_losses,
+            mut f.model.modes,
+            dt: dt * 0.5,
+            reverse: true,
+        )
         let actual = contact_energy(f.contacts, f.hammers, f.model.modes)
         energy_error = energy_error.max(((actual + loss - work) / maximum_work).abs())
     }
@@ -185,11 +202,12 @@ pub fn render() -> Result<(), ToolError> {
     )
     let (patches, shapes) = grid(f, nx: 64, ny: 32)
     let air = Air { density: 1.2, speed: 343.0 }
+    let listeners = grand_probe::listeners()
     let left_kernel = bandlimited_kernel(
         patches,
         shapes,
         board_modes,
-        listener: Point { x: 1.1, y: 0.625, z: 1.2 },
+        listener: listeners[0],
         air: air,
         rate: rate,
     ).unwrap()
@@ -197,7 +215,7 @@ pub fn render() -> Result<(), ToolError> {
         patches,
         shapes,
         board_modes,
-        listener: Point { x: 1.3, y: 0.625, z: 1.2 },
+        listener: listeners[1],
         air: air,
         rate: rate,
     ).unwrap()
@@ -223,7 +241,7 @@ pub fn render() -> Result<(), ToolError> {
     let gain = 0.8 / peak
     stereo("out/grand-pressure-listen.wav", left, right, gain: gain, fade: true)?
     print(
-        f"{{\"render\":\"baffled-board pressure diagnostic\",\"rate\":{rate},\"seconds\":8,\"board_modes\":{board_modes},\"total_modes\":{count},\"peak_pa\":{peak},\"rms_pa\":{rms},\"presentation_gain_fs_per_pa\":{gain},\"first_delay_samples\":{left_kernel.first_delay},\"leading_support_samples\":{left_kernel.leading_support},\"output_frames\":{output_frames},\"output_seconds\":{f64(output_frames) / f64(rate)},\"elapsed_seconds\":{now() - started},\"musical_approval\":false,\"fluid_loading\":false,\"delay_interpolation\":\"kaiser64-beta8.6\"}}",
+        f"{{\"render\":\"baffled-board pressure diagnostic\",\"rate\":{rate},\"seconds\":8,\"board_modes\":{board_modes},\"total_modes\":{count},\"peak_pa\":{peak},\"rms_pa\":{rms},\"presentation_gain_fs_per_pa\":{gain},\"first_delay_samples\":{left_kernel.first_delay},\"leading_support_samples\":{left_kernel.leading_support},\"output_frames\":{output_frames},\"output_seconds\":{f64(output_frames) / f64(rate)},\"elapsed_seconds\":{now() - started},\"musical_approval\":false,\"board_response_qualified\":false,\"wood_eta\":{grand_probe::BOARD_ETA},\"steel_bending_tau_s\":{grand_probe::STRING_BENDING_TAU},\"layout_version\":2,\"scale_version\":1,\"fluid_loading\":false,\"delay_interpolation\":\"kaiser64-beta8.6\"}}",
     )
     Ok(())
 }

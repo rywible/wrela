@@ -528,3 +528,10 @@ pub fn modal_acceleration(c: Contacts, hammers: [Hammer], modes: [Mode], out: mu
         for j in 0..modes.len() { out[j] += c.shapes[i * modes.len() + j] * force }
     }
 }
+
+/// Whether these modes already apply their built-in proportional damping.
+/// Physical-coordinate loss operators use this to prevent accidental double loss.
+pub fn has_builtin_damping(modes: [Mode]) -> bool {
+    for m in modes { if m.half_damping != 1.0 { return true } }
+    false
+}

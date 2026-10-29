@@ -1960,3 +1960,24 @@ fixture needs at least 36 such sections for exact target phases by a necessary p
 bound; the attempted maximum of 16 missed some modal pitches by 395.9 cents. A midrange
 16-section fit reached 0.765 cents maximum error; the tested treble fits also missed a one-cent target. This is evidence against a universal cheap filter, not a perceptual verdict or a proof
 that no better waveguide approximation exists.
+
+
+### Original-grand force-response qualification after the rejected preview
+
+2026-10-29, same ThinkPad T480s i7-8650U, Linux 7.0.0-38, AC/powersave, pinned Wrela
+0.10.0 compiler `57e38f1c6827e39d4eb377bdd297cfb14592a11b`. Native offline tool,
+not an audio callback or browser claim. Sources and raw results:
+`/home/ryan-wible/wrela-evidence/grand/code-review-2026-10-29/repairs/`.
+
+The first `board-response` run measured 16/125/260/527/937 modes at 20 discrete
+frequencies, three drive ports, two listeners and two spatial grids. Per-basis time,
+including eigensolve, independent audit, transfers and output, was
+0.24/1.27/3.84/13.50/53.40 seconds. No speedup or real-time suitability is inferred
+from these single runs. The exact source is `repairs/response-sources.tar.gz`.
+A later pair-relative Jacobi correction has separate replay output and must not
+inherit those timing measurements.
+
+Only 79/120 sampled combinations meet both mobility and pressure magnitude changes
+below 1 dB between 527 and 937 modes. The highest retained eigenfrequency is not the
+proven bandwidth. [The review record](reviews/original-grand-code-2026-10-29.md)
+gives assumptions, absolute values and unresolved gates.

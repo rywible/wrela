@@ -1,0 +1,149 @@
+// Qualification experiment for the rejected surrogate board, not a voicing.
+// Identical geometry, damping and drive/listener positions across resolutions.
+use engine::acoustic_plate::{assemble_frequency, solve}
+use engine::acoustic_response::{driven, pressure}
+use engine::acoustic_radiation::Air
+use std::collections::Vec
+use std::math::PI_F64
+use std::io::print
+use std::time::now
+
+pub fn report() -> u32 {
+    let baseline = grand_probe::board(nx: 4, ny: 4)
+    let ribs = grand_probe::ribs()
+    let air = Air { density: 1.2, speed: 343.0 }
+    let listeners = grand_probe::listeners()
+    let ports = grand_probe::ports()
+    let eta = grand_probe::BOARD_ETA
+    // Both symmetry planes matter, including for the drive locations.
+    for p in ports {
+        assert((p[0] - baseline.plate.length * 0.5).abs() >= 0.1)
+        assert((p[1] - baseline.plate.width * 0.5).abs() >= 0.1)
+    }
+    for p in listeners {
+        assert((p.x - baseline.plate.length * 0.5).abs() >= 0.1)
+        assert((p.y - baseline.plate.width * 0.5).abs() >= 0.1)
+    }
+    var odd_x: Vec<[f64; 2]> = Vec::filled(baseline.orders.len(), [0.0; 2])
+    for i in 0..baseline.orders.len() {
+        if baseline.orders[i][0] == 2 && baseline.orders[i][1] == 1 { odd_x[i] = [1.0, 0.0] }
+    }
+    let a0 = pressure(baseline, odd_x, listeners[0], air, hz: 300.0, refinement: 2).unwrap()
+    let a1 = pressure(baseline, odd_x, listeners[1], air, hz: 300.0, refinement: 2).unwrap()
+    let odd_ratio = magnitude(a1.transfer) / magnitude(a0.transfer)
+    assert(odd_ratio > 0.5)
+    print(f"{{\"kind\":\"layout\",\"version\":2,\"odd_x_pressure_ratio\":{odd_ratio}}}")
+    let frequencies = [
+        27.5,
+        38.890873,
+        55.0,
+        77.781746,
+        110.0,
+        155.563492,
+        220.0,
+        261.625565,
+        311.126984,
+        440.0,
+        523.25113,
+        622.253967,
+        880.0,
+        1046.502261,
+        1244.507935,
+        1760.0,
+        2093.004522,
+        2349.318143,
+        2489.01587,
+        3000.0,
+    ]
+    var previous: Vec<[f64; 4]> = Vec::new()
+    var passed: u32 = 0
+    for case in 0..5 {
+        var sample: u32 = 0
+        let start = now()
+        let cutoff = if case == 0 { 0.0 } else if case == 1 { 500.0 } else if case == 2 {
+            1000.0
+        } else if case == 3 { 2000.0 } else { 3500.0 }
+        let s = if case == 0 { baseline.clone() } else {
+            assemble_frequency(baseline.plate, ribs, cutoff).unwrap()
+        }
+        let m = solve(s).unwrap()
+        let a = engine::acoustic_modes::audit(m, s.mass, s.stiffness)
+        assert(a.valid && a.maximum_relative_mode < 1e-9 && a.orthogonality < 1e-9)
+        let omitted = s.first_omitted_omega / (2.0 * PI_F64)
+        let lowest = m.squared_frequencies[0].sqrt() / (2.0 * PI_F64)
+        let largest = m.squared_frequencies[m.count - 1].sqrt() / (2.0 * PI_F64)
+        print(
+            f"{{\"kind\":\"basis\",\"case\":{case},\"bare_cutoff_hz\":{cutoff},\"modes\":{m.count},\"first_omitted_bare_basis_hz\":{omitted},\"lowest_hz\":{lowest},\"largest_retained_hz\":{largest},\"maximum_relative_mode\":{a.maximum_relative_mode},\"worst_mode\":{a.worst_mode},\"orthogonality\":{a.orthogonality}}}",
+        )
+        for port in 0..3 {
+            for hz in frequencies {
+                let d = driven(
+                    s,
+                    m,
+                    x: ports[port][0],
+                    y: ports[port][1],
+                    eta: eta,
+                    hz: hz,
+                ).unwrap()
+                assert(d.mobility[0] >= 0.0)
+                for listener in 0..2 {
+                    for refinement in [1, 2] {
+                        let h = pressure(
+                            s,
+                            d.acceleration,
+                            listeners[listener],
+                            air,
+                            hz,
+                            refinement,
+                        ).unwrap()
+                        if refinement == 2 {
+                            if case == 3 {
+                                previous.push(
+                                    [d.mobility[0], d.mobility[1], h.transfer[0], h.transfer[1]],
+                                )
+                            }
+                            if case == 4 {
+                                let old = previous[sample]
+                                let delta_re = (d.mobility[0] - old[0]).abs()
+                                let delta_im = (d.mobility[1] - old[1]).abs()
+                                let re_relative = delta_re /
+                                    d.mobility[0].abs().max(old[0].abs()).max(1e-100)
+                                let im_scaled = delta_im /
+                                    magnitude(d.mobility)
+                                        .max(magnitude([old[0], old[1]]))
+                                        .max(1e-100)
+                                let pressure_complex = magnitude(
+                                    [h.transfer[0] - old[2], h.transfer[1] - old[3]],
+                                ) /
+                                    magnitude(h.transfer)
+                                        .max(magnitude([old[2], old[3]]))
+                                        .max(1e-100)
+                                // A declared numerical target, not a perceptual score.
+                                let accepted = re_relative < 0.05 &&
+                                    im_scaled < 0.05 &&
+                                    pressure_complex < 0.05
+                                if accepted { passed += 1 }
+                                print(
+                                    f"{{\"kind\":\"sample-gate\",\"port\":{port},\"listener\":{listener},\"hz\":{hz},\"delta_re_y_si\":{delta_re},\"delta_im_y_si\":{delta_im},\"re_y_relative\":{re_relative},\"im_y_scaled\":{im_scaled},\"pressure_complex_relative\":{pressure_complex},\"tolerance\":0.05,\"passed\":{accepted}}}",
+                                )
+                            }
+                            sample += 1
+                        }
+                        print(
+                            f"{{\"kind\":\"response\",\"case\":{case},\"port\":{port},\"listener\":{listener},\"hz\":{hz},\"eta\":{eta},\"y_re\":{d.mobility[0]},\"y_im\":{d.mobility[1]},\"h_re\":{h.transfer[0]},\"h_im\":{h.transfer[1]},\"grid_x\":{h.grid_x},\"grid_y\":{h.grid_y},\"refinement\":{refinement}}}",
+                        )
+                    }
+                }
+            }
+        }
+        print(f"{{\"kind\":\"timing\",\"case\":{case},\"seconds\":{now() - start}}}")
+    }
+    print(
+        f"{{\"kind\":\"qualification-summary\",\"passed_sample_pairs\":{passed},\"sample_pairs\":{previous.len()},\"continuous_band_certified\":false}}",
+    )
+    0
+}
+
+fn magnitude(z: [f64; 2]) -> f64 {
+    (z[0] * z[0] + z[1] * z[1]).sqrt()
+}

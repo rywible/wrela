@@ -745,3 +745,25 @@ The next implementation work is a qualified pressure reference and feasible comp
 reduction, then the remaining instrument/action/room/product work in P3–P8. A usable listening
 interface is still an external dependency for autonomous musical selection; engineering
 progress cannot turn the blocked musical gate into a pass.
+
+
+## 16. Human rejection and Opus code review (2026-10-29)
+
+The audio delivered from checkpoint 4 failed its first actual human listening:
+Ryan called it “laughably bad” and “not even close.” That rejects this preview; it
+does not provide separate category scores or a formal blind holdout. Section 15
+records the earlier numerical checkpoint, including its now-retired five-string
+fixture and uniform damping.
+
+The actual Opus 5.5/high code review, findings, repair disposition, tests, transfer
+defect and remaining gates are in
+[the code-review record](reviews/original-grand-code-2026-10-29.md).
+The strongest immediate evidence is a roughly 40.45 dB treble point-force pressure
+deficit in the old 16-mode board, with resolution failures still present at 937 modes.
+These are diagnostic measurements, not a musical score.
+
+The current fixture uses original A0/C4/D7 scale parameters, separate board/string
+damping forces, off-symmetry listeners and stricter eigenvalue audits. Repaired short
+mechanical probes pass, but board construction, response convergence and musical
+gates remain open. Do not promote another preview merely because energy balances or
+unit tests pass. The ambition has not been achieved; existing consumers are unmigrated.
