@@ -162,6 +162,30 @@ impl Spread {
     }
 }
 
+/// Pop alone, as `Spread` finds it: for a run whose flicker isn't read (the dolly's), so no
+/// frame's sums are kept, only the last frame.
+pub struct Pop {
+    pub pop: f64,
+    last: Vec<f32>,
+}
+
+impl Pop {
+    pub fn new() -> Pop {
+        Pop { pop: 0.0, last: Vec::new() }
+    }
+
+    pub fn add(mut self, l: take Vec<f32>) {
+        if !self.last.is_empty() {
+            var d = 0.0
+            for i in 0..min(l.len(), self.last.len()) {
+                d += f64(abs(l[i] - self.last[i]))
+            }
+            self.pop = max(self.pop, d / f64(max(l.len(), 1)))
+        }
+        self.last = take l
+    }
+}
+
 /// Sharpness: the mean absolute luma step between neighbours (across and down) of `play`, over
 /// the reference's (lumas, `w` wide). Under 1 is softer than the reference. A blur lowers it
 /// whatever else differs, where PSNR, which also counts the noise a blur takes away, may not move.

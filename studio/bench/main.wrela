@@ -339,6 +339,10 @@ fn prepared(s: Scene, build: bool, ws: str, out: str) -> Result<(String, String)
     Ok((take dir, take input_file))
 }
 
+/// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about
+/// frame 105, and the frames after don't count.
+const STARTS_FRAMES: u32 = 160
+
 /// Scene `s`'s starts alone (`--starts`): `o.starts` cold starts (each salted afresh from `salt`,
 /// so no cache serves its pipelines) and as many warm ones, each run's results kept in `kept`;
 /// each start's `playable_ms`, cold then warm.
@@ -352,7 +356,7 @@ pub fn starts(
     kept: str,
 ) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
     let (dir, input_file) = prepared(s, build, ws, out)?
-    let frames = min(o.warmup + s.frames, 300)
+    let frames = min(o.warmup + s.frames, STARTS_FRAMES)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
     var cold: Vec<f64> = Vec::new()
@@ -364,6 +368,9 @@ pub fn starts(
             run(dir.as_str(), h.as_str(), s.width, s.height, timeout, Vec::new(), k)?
             keep_results(dir.as_str(), f"{kept}/{s.name}/{RUNS[k]}-{n + 1}")?
             let (_, first_frame_ms, _, playable_ms, _) = started(dir.as_str())?
+            if playable_ms == 0.0 {
+                return Err(ToolError::new(f"{s.name} wasn't playable within {frames} frames"))
+            }
             print(
                 f"bench: {s.name} {RUNS[k]} {n + 1}: playable {playable_ms:.0} ms, first frame {first_frame_ms:.0}",
             )

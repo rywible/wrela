@@ -18,7 +18,7 @@
 // halved in play and reference: "degraded" whatever its PSNR).
 
 use measures::{
-    Mean, Spread, blurred, clipped, edge_width, luma, psnr, quartered, sharpness, ssim, trail,
+    Mean, Pop, Spread, blurred, clipped, edge_width, luma, psnr, quartered, sharpness, ssim, trail,
 }
 use shots::{PLAY, REFERENCE, SETTLE_FRAMES, keys}
 use std::collections::replace
@@ -227,7 +227,7 @@ fn shot(
     // The dolly, unbroken, for pop.
     let _ = d.run(SETTLE)?
     d.press(Key::F11)
-    var dolly = Spread::new()
+    var dolly = Pop::new()
     for _ in 0..DOLLY_FRAMES {
         dolly.add(luma(d.screen()?))
     }
