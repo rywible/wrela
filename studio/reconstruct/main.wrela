@@ -28,6 +28,7 @@ struct Options: Clone {
     cut_at: u32 = 0,
     reset_cut: u32 = 1,
     shot: u32 = 0,
+    shots: Vec<u32> = Vec::new(),
     width: u32 = 192,
     height: u32 = 108,
     warmup: u32 = 240,
@@ -39,6 +40,18 @@ fn options(given: [String]) -> Option<Options> {
     var i = 0
     while i < given.len() {
         if i + 1 >= given.len() { return None }
+        if given[i].as_str() == "--shots" {
+            let text = given[i + 1].as_str()
+            for (a, b) in text.split(",") {
+                let Some(shot) = text.slice(a, b).parse_u32() else { return None }
+                if shot >= 74 || o.shots.len() >= 16 { return None }
+                for old in o.shots { if old == shot { return None } }
+                o.shots.push(shot)
+            }
+            if o.shots.is_empty() { return None }
+            i += 2
+            continue
+        }
         if given[i].as_str() == "--decoder" {
             o.decoder = match given[i + 1].as_str() {
                 "production" => 0,
@@ -146,6 +159,7 @@ fn options(given: [String]) -> Option<Options> {
         o.cut_at >= o.length ||
         o.reset_cut > 1 ||
         (o.length > 1 && o.scene != 2) { return None }
+    if !o.shots.is_empty() && (o.scene != 2 || o.length < 2) { return None }
     Some(o)
 }
 
@@ -425,6 +439,39 @@ fn run(o: Options) -> Result<(), ToolError> {
         return Err(ToolError::new("capture fixture did not build"))
     }
     if o.length > 1 {
+        let fixture_path = f"{directory}/fixture"
+        if !o.shots.is_empty() {
+            for shot in o.shots {
+                let output = f"{directory}/case-{shot}"
+                let spec = sequence::Spec {
+                    width: o.width,
+                    height: o.height,
+                    warmup: o.warmup,
+                    start: o.start,
+                    length: o.length,
+                    shot,
+                    cut_at: o.cut_at,
+                    reset_cut: o.reset_cut,
+                    decoder: o.decoder,
+                    raw_specialize: o.raw_specialize,
+                    training_inputs: o.training_inputs,
+                    patch_fast: o.patch_fast,
+                    patch_history: o.patch_history,
+                    patch_source: o.patch_source,
+                }
+                sequence::run(
+                    output.as_str(),
+                    spec,
+                    o.model.as_str(),
+                    o.gate_model.as_str(),
+                    o.raw_model.as_str(),
+                    fixture_path.as_str(),
+                )?
+            }
+            let text = f"builds=1\ncases={o.shots.len()}\nframes_per_case={o.length}\nscales=1,2,3,4\n"
+            let _ = files::write(f"{directory}/batch.txt", text.as_bytes()).wait()?
+            return Ok(())
+        }
         return sequence::run(
             directory.as_str(),
             sequence::Spec {
@@ -446,6 +493,7 @@ fn run(o: Options) -> Result<(), ToolError> {
             o.model.as_str(),
             o.gate_model.as_str(),
             o.raw_model.as_str(),
+            fixture_path.as_str(),
         )
     }
     let coarse = capture(o, 1, o.cells, "reference-coarse", directory.as_str())?

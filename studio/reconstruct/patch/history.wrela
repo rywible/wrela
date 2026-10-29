@@ -241,3 +241,42 @@ fn source_geometry_translation_preserves_visibility_and_motion() {
         source_geometry(front - vec2(shape.x, 0.0), 0, shape) == source_geometry(front, 0, shape),
     )
 }
+
+// Untrained control: identical bilinear colour and source-history rule, without neural cells.
+@fragment
+pub fn reconstruct_source_bilinear(
+    p: FragCoord,
+    scene: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+    current_shape: vec4,
+    previous_shape: vec4,
+) -> vec4 {
+    let at = p.position.xy
+    let q = at / f32(divisor) + jitter_of(tick) - vec2(0.5)
+    let base = floor(q)
+    let f = q - base
+    let limit = vec2(f32(scene.width() - 1), f32(scene.height() - 1))
+    let a = clamp(base, vec2(0.0), limit)
+    let b = clamp(base + vec2(1.0, 0.0), vec2(0.0), limit)
+    let c = clamp(base + vec2(0.0, 1.0), vec2(0.0), limit)
+    let d = clamp(base + vec2(1.0), vec2(0.0), limit)
+    let ca = scene.load(x: u32(a.x), y: u32(a.y))
+    let cb = scene.load(x: u32(b.x), y: u32(b.y))
+    let cc = scene.load(x: u32(c.x), y: u32(c.y))
+    let cd = scene.load(x: u32(d.x), y: u32(d.y))
+    let wa = (1.0 - f.x) * (1.0 - f.y)
+    let wb = f.x * (1.0 - f.y)
+    let wc = (1.0 - f.x) * f.y
+    let wd = f.x * f.y
+    let color = ca.rgb * wa + cb.rgb * wb + cc.rgb * wc + cd.rgb * wd
+    let current = vec4(linear(view(color)), ca.a)
+    let geometry = source_geometry(at, tick, current_shape)
+    let old_geometry = source_geometry(at - geometry.xy, if tick > 0 { tick - 1 } else { 0 }, previous_shape)
+    let row = observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
+    vec4(linear(mix(row.current.rgb, row.old.rgb, row.current.w)), row.context.w)
+}

@@ -113,6 +113,7 @@ pub struct State {
     rgb_words: u32,
     rgb_enabled: bool,
     patch_enabled: bool,
+    patch_plain: bool,
     patch_trained: bool,
     patch_fast: bool,
     patch_history: f32,
@@ -192,6 +193,7 @@ pub fn init() -> State {
         rgb_words: 0,
         rgb_enabled: false,
         patch_enabled: false,
+        patch_plain: false,
         patch_trained: false,
         patch_fast: false,
         patch_history: 0.0,
@@ -307,7 +309,7 @@ fn resize(s: mut State, width: u32, height: u32) {
     }
     s.raw_count = 0
     s.patch_frames = 0
-    if s.patch_enabled { s.patch_cells = buffer(w * h) }
+    if s.patch_enabled && !s.patch_plain { s.patch_cells = buffer(w * h) }
     s.current = texture(width, height)
     s.last = texture(width, height)
 }
@@ -488,9 +490,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: factor_queries::storage_rows(width, height),
         )
     }
-    if s.patch_enabled {
+    if s.patch_enabled && s.reset { s.patch_frames = 0 }
+    if s.patch_enabled && !s.patch_plain {
         label("patch encode")
-        if s.reset { s.patch_frames = 0 }
         dispatch(
             patch::encode.bind(
                 s.scene,
@@ -645,7 +647,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             ),
         )
     } else if s.patch_enabled {
-        if s.patch_history > 0.0 && s.patch_source == 1 {
+        if s.patch_plain {
+            fullscreen(p, reconstruction_patch::history::reconstruct_source_bilinear.bind(
+                s.scene, s.last, s.linear, s.divisor, s.tick, s.patch_frames, s.patch_history,
+                vec4(f.period, f.width, f.offset, f.speed), s.previous_shape,
+            ))
+        } else if s.patch_history > 0.0 && s.patch_source == 1 {
             fullscreen(
                 p,
                 reconstruction_patch::history::reconstruct_source.bind(
@@ -848,6 +855,7 @@ fn corrected(
 // A continuous instrument starts without consuming a frame. Its target and visibility are
 // computed only AFTER reconstruction, in separate buffers that no decoder can read.
 pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32, inputs: u32) {
+    assert(!s.patch_plain || inputs == 0)
     assert(inputs <= 1 && (inputs == 0 || s.patch_enabled || s.raw_enabled))
     resize(mut s, width, height)
     s.tick = start
@@ -935,7 +943,7 @@ pub fn publish_raw(s: mut State) -> u32 {
 }
 
 pub fn patch_begin(s: mut State, words: u32) {
-    assert(s.patch_enabled && words == (patch::MODEL.size() + 1) / 2)
+    assert(s.patch_enabled && !s.patch_plain && words == (patch::MODEL.size() + 1) / 2)
     s.patch_trained = false
     s.patch_words = 0
     s.patch_net = buffer(words)
@@ -1031,7 +1039,7 @@ pub fn publish_patch_source(s: mut State) -> u32 {
 }
 
 pub fn gate_begin(s: mut State) {
-    assert(s.patch_enabled && s.patch_history > 0.0)
+    assert(s.patch_enabled && !s.patch_plain && s.patch_history > 0.0)
     s.gate = buffer(4)
     s.gate_rows = 0
     s.gate_trained = false
@@ -1124,4 +1132,11 @@ pub fn publish_basis(s: mut State) -> u32 {
     s.exported_source = buffer(s.basis_palette.len())
     copy(from: s.basis_palette.items(), to: s.exported_source.items_mut())
     s.basis_palette.len()
+}
+
+// Select before sizing; later model uploads and training exports are rejected.
+pub fn patch_conventional(s: mut State) {
+    assert(s.width == 0 && s.patch_enabled && !s.patch_trained && !s.gate_trained)
+    assert(s.patch_source == 1 && s.patch_history > 0.0)
+    s.patch_plain = true
 }

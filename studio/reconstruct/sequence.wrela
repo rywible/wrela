@@ -67,6 +67,14 @@ fn path(
         let _ = call(b, "patch_history", Vec::from([Scalar::I32(i32(spec.patch_history))]))?
         let _ = call(b, "patch_source_geometry", Vec::from([Scalar::I32(i32(spec.patch_source))]))?
     }
+    if spec.decoder == 2 &&
+        spec.patch_source == 1 &&
+        spec.patch_history > 0 &&
+        spec.training_inputs == 0 &&
+        model.is_empty() &&
+        gate.is_empty() {
+        let _ = call(b, "patch_conventional", Vec::new())?
+    }
     let _ = call(
         b,
         "prepare_sequence",
@@ -158,6 +166,7 @@ pub fn run(
     model: str,
     gate: str,
     raw_model: str,
+    fixture: str,
 ) -> Result<(), ToolError> {
     let input_track = if spec.decoder == 8 {
         "authored_geometry_and_radiance_formula_direct_conventional"
@@ -190,7 +199,7 @@ pub fn run(
     let radiance = if spec.shot == 72 { "affine_spatial" } else if spec.shot == 73 {
         "bilinear_spatial"
     } else { "constant_per_material" }
-    let metadata = f"radiance={radiance}\nscene=analytic/slats-checkerboard\ncase_catalog=legacy8_stress64_radiance2_v2\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let metadata = f"radiance={radiance}\nscene=analytic/slats-checkerboard\ncase_catalog=legacy8_stress64_radiance2_v2\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_width={reconstruction_patch::network::MODEL.h1}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()
@@ -198,7 +207,8 @@ pub fn run(
         load.height = spec.height
         load.workers = 1
         load.timeout = 600.0
-        let b = drive::load(f"{directory}/fixture", load).wait()?.build
+        let built = if fixture.is_empty() { f"{directory}/fixture" } else { String::from(fixture) }
+        let b = drive::load(built.as_str(), load).wait()?.build
         let result = path(b, directory, spec, divisor, model, gate, raw_model)
         let closed = drive::close(b).wait()
         (take result)?

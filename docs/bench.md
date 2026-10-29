@@ -3083,3 +3083,40 @@ Valid methods pass 90/90 shaded rows with unchanged alpha; stale negative fails 
 Matched 32 captures: 30.573 s/eight legacy builds versus 3.877 s/one batch, 7.89× local workflow improvement with exact images/resources. Full 400-image batches take 6.071/6.381 s. This is not a rendering speedup. 352 retained archive comparisons, 80 history comparisons and eight default comparisons pass. Initial raw paced GPU files for compared controls were overwritten by the comparison tool; initial aggregate reports and complete pair samples remain. Use isolated baseline copies for future comparisons.
 
 1,760 original captures, 21 necessary new edited reference cases plus nine reused; failed results preserved. Next neural block isolates encoder capacity before changing input/output representation. G1–G7/frozen models unchanged. [Joint evidence, bounds and replay](neural-changing-edits.md).
+
+## Neural capacity and exact conventional source-history bypass (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR, Ryzen 5 5500U; Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Full analytic renderer at 4× reconstruction to 1080p/4K: 120 measured frames after 60 warmup, one worker. Quality: eight whole cases excluded from fitting, 32 frames at all scales at 192×108, frozen metrics/targets. Wider model: 8,076 weights versus 1,260, with the same inputs/head and 256 training updates; CPU training took 183.47 s. First joint assessment: 26.07 min; decision: 35.75 min.
+
+| Method / width | Complete GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| Wider neural / 1920 | 13.58652 / 14.14452 | 56,364,404 / 64,658,804 | 103,436,288 / 19,001,344 | 573,840,384 |
+| Wider neural / 3840 | 53.86832 / 57.10364 | 224,326,004 / 257,503,604 | 318,009,344 / 43,884,544 | 704,864,256 |
+| Frozen small neural / 1920 | 3.22668 / 3.41228 | 56,323,508 / 64,617,908 | 94,515,200 / 18,509,824 | 589,079,552 |
+| Frozen small neural / 3840 | 12.45480 / 13.02804 | 224,285,108 / 257,462,708 | 351,571,968 / 43,393,024 | 667,756,544 |
+| Original untrained source-history / 1920 | 3.15624 / 3.36560 | 56,315,920 / 64,610,320 | 94,507,008 / 18,427,904 | 543,590,400 |
+| Original untrained source-history / 3840 | 12.14584 / 12.59902 | 224,277,520 / 257,455,120 | 351,563,776 / 43,311,104 | 733,302,784 |
+| Fixed raw-source history / 1920 | 18.49556 / 18.81872 | 89,493,804 / 97,788,204 | 127,705,088 / 18,427,904 | 587,612,160 |
+| Fixed raw-source history / 3840 | 73.69632 / 75.24704 | 356,988,204 / 390,165,804 | 450,736,128 / 43,311,104 | 682,889,216 |
+| Production temporal / 1920 | 6.68184 / 6.78400 | 48,021,584 / 56,315,984 | 95,133,696 / 18,427,904 | 588,565,504 |
+| Production temporal / 3840 | 26.47468 / 26.82112 | 191,099,984 / 224,277,584 | 284,823,552 / 43,311,104 | 684,032,000 |
+| Direct conventional source-history / 1920 | 2.02632 / 2.27716 | 48,021,584 / 56,315,984 | 95,125,504 / 18,427,904 | 543,860,736 |
+| Direct conventional source-history / 3840 | 7.87388 / 8.18004 | 191,099,984 / 224,277,584 | 284,819,456 / 43,311,104 | 688,799,744 |
+
+
+Wider median 4× FLIP improves only 0.813% versus small, with two FLIP and three motion regressions. Retire this model; preserve its weights and failed shader builds. Memory includes unused fixture resources; physical DRM/PSS is a whole-client snapshot, not asset attribution or peak. Do not sum UMA pools.
+
+The conventional source-history bypass removes the unused encoder and cells without changing any of 1,024 rendered images or their targets/masks. Requested live/peak savings: 8,294,336 B at 1080p and 33,177,536 B at 4K. Five alternating pairs:
+
+- 1920 output width: **34.582% lower complete GPU time**, geometric paired-log 95% interval **34.075–35.014%**; CPU comparison inconclusive.
+- 3840 output width: **35.266% lower complete GPU time**, geometric paired-log 95% interval **35.045–35.320%**; CPU comparison faster.
+
+Fresh final retained builds:
+
+| Clean retained build | GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| 1920 | 2.09824 / 2.34388 | 48,021,584 / 56,315,984 | 95,125,504 / 18,427,904 | 543,171,584 |
+| 3840 | 7.86376 / 8.42936 | 191,099,984 / 224,277,584 | 318,382,080 / 43,311,104 | 667,675,648 |
+
+
+No quality qualification follows from preserving a blurry image. G1–G7 remain unmet. One candidate followup plus a cold-input diagnosis; no further training. All 72 final cleanup/default images are exact; formatting and type checks pass. [Complete quality, resident memory, failed results and reproducibility](neural-capacity.md).

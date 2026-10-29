@@ -2954,3 +2954,16 @@ All valid methods pass 90/90 rendered rows with identical coverage; stale negati
 A new single-build batch command captures the same 32 images/resources in 3.877 s versus 30.573 s across eight legacy builds (7.89× observed workflow improvement). Full batches capture 400 images in roughly six seconds. This is not a rendering win. 352 archive matches, 80 history matches and eight default image/resource matches pass.
 
 Next block: controlled capacity increase for the fast 1,260-weight input-resolution neural encoder, preserving causal inputs/output representation initially, held-out motion/reveal/cut quality, full AMD cost and memory. Reuse previous neural failures; old models immutable. Alternate bounded neural and G4/source-aware blocks. Next G4 bet is compressed source-bounded base-field evaluation, not indefinite per-card tuning. Same two-hour assessment/two-followup discipline; one quiet queue. G1–G7 unchanged/unmet. Manifest: `6046addafe6c0e8f799e68fbd4509290255df0373ae9ac04030d72cab67f245d`.
+
+## 2026-10-28: Capacity is insufficient; preserve a faster conventional source-history control
+
+[The controlled capacity experiment](neural-capacity.md) increases the spatial model from 1,260 to 8,076 weights with unchanged causal inputs/output head and a matched 256-update recipe. First joint assessment finishes in 26.07 minutes; decision in 35.75. At 4×, median FLIP/LPIPS changes versus small are only -0.813% / -0.882%, with motion regressions on three cases. Complete GPU time at 1080p/4K rises from 3.22668/12.45480 to 13.58652/53.86832 ms. Retire the wider model and preserve all weights/failures.
+
+A conventional followup skips unused neural cells/features and retains identical source-geometry history. All 1,024 images and targets/masks are exact. Complete initial cost: 2.02632/7.87388 ms; requested live memory: 48,021,584/191,099,984 B. The paired result:
+
+- 1920 output width: **34.582% lower complete GPU time**, geometric paired-log 95% interval **34.075–35.014%**; CPU comparison inconclusive.
+- 3840 output width: **35.266% lower complete GPU time**, geometric paired-log 95% interval **35.045–35.320%**; CPU comparison faster.
+
+Cold observation collisions identify a fixed-input ambiguity: 48.30% of pixels belong to identical-observation groups with differing references; conditional MSE floor 0.0090844, or 15.16% of actual cold MSE. All final grouped GPU outputs are identical; the initial cross-row numerical grouping is preserved but excluded. This is not a G1 FLIP or general temporal impossibility bound.
+
+Keep batched multi-case capture and the exact conventional bypass; 72 final retained/default images and their targets/masks pass. The next neural bet changes observations and surface/detail representation before more fitting. Alternate next to a bounded G4 compressed base-field experiment. Old models remain unchanged; G1–G7 remain unchanged and unmet. Manifest: `8d640fd5b9ea1d4ffabbc83693c36606a332be80b8821114a484299440cc8fd8`.
