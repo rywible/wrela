@@ -30,7 +30,7 @@ The existing code is useful infrastructure, not a blank slate.
 |---|---|---|
 | `engine/piano.wrela` | SIMD modal banks, inharmonicity, prompt/aftersound pairs, phantom partials, pedal damping, board and room | Reuse sound scheduling and proven numerical utilities where suitable; replace recording-dependent excitation and approximated coupling |
 | `engine/piano_grand.wrela` | Salamander Yamaha C5 measurements: 16 keys × 5 velocities and frequency-band tables | Replace with an original, reproducible physical instrument definition |
-| Sympathetic resonance | Two partials per key; excitation and common damping controlled by sustain-pedal lift | Make resonance depend on each string's state and damper, including held keys with the sustain pedal up |
+| Sympathetic resonance | Two partials per key in a 44-group bank, driven by the mean string signal times pedal lift; current board filtering is feed-forward | Make resonance depend on each string's state and damper, including held keys with the sustain pedal up |
 | Sounding-key management | `MAX_SOUNDING = 32`; quietest other key abruptly silenced at the cap | Preserve all 88 keys' physical state; use bounded, measured reductions instead of abrupt deletion |
 | `engine/perform.wrela`, score code | Expressive scheduled performances; sustain and soft pedal | Preserve score behavior; add required controls without making the instrument depend on a particular piece |
 | `examples/piano` | Single-note probe | Retain a probe and add physical-interaction fixtures |
@@ -55,7 +55,22 @@ The definition includes:
 - An original optional short-blow control can be explored after the three standard pedals pass. It must change action geometry/hammer motion, not merely scale volume or claim to reproduce a manufacturer's mechanism.
 - Listener/microphone position, lid opening and an independent room definition. The dry board radiation must already sound compelling.
 
-Tune unisons and stretched octaves from the simulated string scale, then voice the instrument across registers. Document chosen deviations and their listening rationale. A defect gets a physical explanation or an explicit approximation; do not bury it in an unexplained per-note EQ table.
+Before voicing, check static equilibrium: string stress, frame/bridge loads, downbearing, board deflection and rim constraints. Linearize structural modes about that equilibrium; a louder but mechanically impossible design is rejected. Tune unisons and stretched octaves using a declared weighted coincident-partial/beat-rate objective by register, then voice the instrument across registers. Document chosen deviations and their listening rationale. A defect gets a physical explanation or an explicit approximation; do not bury it in an unexplained per-note EQ table.
+
+### 3.1 Parameter provenance contract
+
+Every scalar/table has units, physical meaning, bounds and machine-checkable provenance. Generated/interpolated values inherit all input provenance and record generator/output hashes.
+
+| Class | Allowed origin |
+|---|---|
+| `constant` | Cited general physical constants, independently encoded |
+| `material` | Published material measurements with permitted use, as ranges/priors; identify conditions and uncertainty |
+| `design` | Our geometric/mechanical rule with feasibility checks |
+| `solve` | Our solver, inputs, version, refinement and output hash |
+| `voice` | Our bounded parameter choice with experiment ID |
+| `forbidden` | Recording/library fits, copied presets, named-instrument scale tables or manufacturer-specific parameter sets |
+
+Public artistic descriptions can inform the brief but cannot silently supply parameters. Bulk third-party material data still needs suitable permission; citation alone is not a redistribution licence. Unknown provenance fails cooking. Audit numerical inputs, tests, tuning objectives, generated constants and evaluation defaults, not only import paths.
 
 ## 4. Architecture: detailed reference and real-time reduction
 
@@ -74,6 +89,8 @@ Create a plain instrument description that both solvers consume. Put mechanism i
 
 These are proposed paths, not existing APIs. Add packages and allowlist entries as they become real. Keep generation tools in Wrela. Check the pinned toolchain's actual facilities before promising an eigensolver, audio telemetry API or MIDI endpoint.
 
+P0-N is a numerical prerequisite milestone before P2, with primitive checks before P1 selects a runtime representation. Start with a Rayleigh–Ritz orthotropic plate and documented equivalent-rib approximation using small dense generalized eigenproblems. Verify mass positivity, mode orthogonality, eigenpair residuals and refinement. Full finite-element, sparse eigensolver and boundary-element infrastructure are optional escalations justified by a measured error. Original domain numerical algorithms written in Wrela belong in studio/engine; missing language, std or host capabilities belong in the compiler. A missing std matrix inverse does not itself prohibit implementing numerical methods in Wrela.
+
 Use energy-conserving or dissipative discretizations with an explicit energy budget. A moving hammer, bow or boundary can supply energy; record that input rather than applying an incorrect blanket “energy always decreases” rule. Track stored energy, external work, dissipated energy and the residual.
 
 The detailed solver initially covers a few strings and a modest board, with high precision and tighter time/space resolution. Grow resolution only when convergence studies show it matters. A larger solver is not automatically ground truth: check analytic limits, independent small-system solutions and refinement before treating its output as a reference.
@@ -84,6 +101,8 @@ For the reference, resolve transverse motion, stiffness, frequency-dependent los
 
 Benchmark reduced modal and dispersive waveguide representations against that reference. Default to a modal implementation to exploit existing SIMD work, but retain it only if it meets accuracy, stability and cost gates. Do not mix two full solvers for the same degree of freedom or count their energy twice.
 
+Derive retained nonlinear forces consistently from the reduced potential and coupling law; do not add arbitrary modal forcing for tension modulation. Measure compliance lost by truncation at each contact point. Use a justified static-compliance correction or more modes, then test convergence of contact duration, peak force and hammer rebound. Initial targets on identifiable probes are <= 5% duration/peak-force error and <= 2% rebound-speed error against the converged reference. Compare a bounded dissipative or non-iterative runtime contact scheme with an independently solved reference contact problem. No particular SAV/quadratization method is mandated without checking its derivation and modified-energy interpretation.
+
 Contact must see the current string motion: a repeated strike acts on a ringing string. Solve contact without attractive felt forces, implausible penetration or unbounded iteration on the audio thread. Prefer a stable bounded solve; if it fails, report a numerical failure and preserve finite output rather than concealing it in a limiter.
 
 Use oversampling only where nonlinear contact or mode generation requires it. Include anti-alias filtering, its delay and cost. A permanently larger sample rate is not the first optimization.
@@ -91,6 +110,8 @@ Use oversampling only where nonlinear contact or mode generation requires it. In
 ### 4.3 Coupled unisons, bridge and body
 
 Connect every string to shared structural degrees of freedom. The strings drive the board; the board changes their boundary motion. Derive a reduced positive-energy model from the detailed structure, retaining the coupling needed for decay, beating and sympathetic resonance.
+
+At P2, select the actual coupling update. Prototype power-balanced low-rank bridge coupling with fixed structural factors and separately accounted dissipative damper/contact updates. Document whether it needs a solve, what changes the factors, and per-sample operations/storage. Target O(string modes + string contacts × retained board modes), not a dense all-termination solve. Demonstrate pedal/damper sweeps without stale factors; account for splitting error and stability. Alternative scattering/implicit formulations remain eligible if measured gates favor them. Before P2 exits, benchmark an 88-key-size synthetic system with varying dampers against the P6 consumer budgets.
 
 Use low-rank shared modes or another justified reduction to avoid dense all-to-all string work. Passivity must survive reduction and interpolation. A quiet unstruck string can still receive energy; its state cannot be discarded because no note-on event occurred.
 
@@ -102,15 +123,23 @@ Keep structural feedback separate from observation: moving a virtual microphone 
 
 Precompute directional radiation from our structure, then reduce it for runtime. Treat bass wavelength, body size, lid position and stereo coherence explicitly. A key's pitch alone must not determine its stereo placement.
 
-For the room, begin with a physical approximation: geometry-derived early paths and a passive late field whose decay follows room volume and boundary absorption. This is a hybrid acoustic approximation, not a full room wave solve. Compare representative rooms to a refined offline acoustic model before making accuracy claims. No downloaded room impulse responses. A convolution kernel generated by our own solver is permissible with its provenance.
+Bound P5 explicitly: Rayleigh-integral radiation from our board modes under declared baffle assumptions, simple lid reflections, shoebox image-source early paths and a passive FDN late field. Check delays, spreading, absorption and band decay against the corresponding simplified analytic models; verify each formula's assumptions and cite its primary source when implemented. Full lid diffraction and an arbitrary-room wave solver are later work, not hidden prerequisites. Make no full-room accuracy claim before an independent reference exists. Separate internal damping from radiation loss so neither is counted twice. No downloaded impulse responses; kernels generated by our solver are allowed with provenance.
 
 ### 4.5 Runtime boundaries
 
-Allocate and cook before playback; keep audio work bounded, preallocated and independent of rendering-frame timing. Use sample-timed controls where the host supports them, handle the actual host sample rate, and explicitly adapt to the pinned host's block contract. Never assume a Web Audio block duration is end-to-end latency [R8].
+Allocate and cook before playback; keep audio work bounded, preallocated and independent of rendering-frame timing. Bound event work too: define queue capacity, equal-time ordering, overflow recovery and per-callback limits. Never silently lose key-up/pedal-up; overflow must report an error and use a declared safe release path. Use sample-timed controls where the host supports them, handle the actual host sample rate, and explicitly adapt to the pinned host's block contract. Never assume a Web Audio block duration is end-to-end latency [R8].
 
-All 88 keys keep state, including retriggers and sustained tails. Quality reductions can merge or truncate demonstrably negligible modes, with smooth state transfer and error bounds. They cannot erase a held note, a perceptible tail, or an unstruck string's ability to resonate.
+All 88 keys remain represented and excitable, including retriggers and sustained tails. Negligible numerical residue need not persist forever. Cook an energy-to-output error bound for dormant modes, including future bridge excitation, and aggregate discarded error across voices. Flush to exact zero only below that bound, keep receiver coupling available, and wake before predicted output crosses it. Without a valid bound, keep modes active. Test near-threshold resonant drive and a 120-second pedal-held tail after a fortissimo cluster. Measure subnormal-state cost on the ThinkPad rather than assuming a CPU penalty or flush-to-zero behavior. Quality reductions can merge or truncate demonstrably negligible modes, with smooth state transfer and error bounds. They cannot erase a held note, a perceptible tail, or an unstruck string's ability to resonate.
 
 CPU/WASM SIMD is the default runtime path. GPU work is suitable for offline generation experiments on the ThinkPad; putting it in the real-time path requires evidence that it meets deadlines during graphics contention and a viable fallback. No GPU promise precedes those measurements.
+
+### 4.6 Gesture and clock contract
+
+Define instrument events independently of the old MIDI/Played shape: stable event/note ID, key ID, audio-sample timestamp, hammer velocity in m/s at let-off, key-down/up or displacement trajectory, release velocity, repetition/rearm depth, and sample-timed pedal breakpoints. Document normalized-control/action mappings. MIDI is an adapter: zero-velocity note-on means note-off, not silent key holding; provide an explicit silent-key gesture.
+
+Scores can schedule exact sample times immediately. Live controls need verified host-clock/audio-clock mapping, fixed declared delay D, lateness policy and jitter statistics. The current frame-ring/next-quantum path cannot claim capture-time accuracy. If capabilities are missing, record a toolchain gap and retain a labelled quantized adapter until fixed. A delay cannot reconstruct a timestamp never captured.
+
+P4 tests the internal kernel with identical absolute event streams partitioned into 64, 128 and 256 sample chunks. The pinned browser adapter may still use 128-frame blocks. Compare event times and output metrics independently of chunking; do not claim arbitrary browser quanta. Test equal-time key/pedal ordering, sustain catch, sostenuto latch/release, partial repetition, soft-pedal changes during ringing, and queue overflow.
 
 ## 5. Evidence and acceptance contract
 
@@ -126,65 +155,69 @@ Passing one never substitutes for the others. “Original” and “entirely phy
 
 ### 5.2 Fixed corpus and held-out evaluation
 
-Before tuning, generate and hash an original fixture corpus. Store the generator, seeds, exact events, control trajectories and expected causal effects. Retain recordings outside tracked source under normal build output.
+Before tuning, freeze and hash the generator, parameter distributions, score grammar and split rules in P0. Keep validation/final seeds sealed in the evaluator harness until the specified gate. Numerical and musical holdouts are separate. Generate and hash an original fixture corpus. Store the generator, seeds, exact events, control trajectories and expected causal effects. Retain recordings outside tracked source under normal build output.
 
-Cover all 88 keys and at least 12 hammer-velocity levels in coarse sweeps; include long bass decays, exposed treble, adjacent-key transitions, dense chords, rapid repetitions, trills, silent keys held against a struck harmonic relative, pedal flutter, half-pedal sweeps, late pedal catch, sostenuto, una corda, overlapping same-key events, transport reset and control discontinuities.
+Cover all 88 keys and at least 12 hammer-velocity levels in metres per second over a P0-frozen plausible interval, plus a normalized-controller-to-hammer mapping test; include long bass decays, exposed treble, adjacent-key transitions, dense chords, rapid repetitions, trills, silent keys held against a struck harmonic relative, pedal flutter, half-pedal sweeps, late pedal catch, sostenuto, una corda, overlapping same-key events, transport reset and control discontinuities.
 
 Keep three sets:
 
 - **Development:** cheap, diagnostic probes used for tuning.
-- **Validation:** different notes/velocities/gestures used for milestone promotion.
-- **Final holdout:** unseen seeds and original musical phrases generated only after freezing a candidate and acceptance rules.
+- **Validation:** different notes/velocities/gestures used for milestone promotion; return aggregate scores/pass-fail, not critique text or per-fixture diagnoses. Once inspected for debugging, retire that set to development.
+- **Final holdout:** a bounded sealed seed set drawn by the harness from ThinkPad system entropy under the frozen generator; reveal only after recording the candidate commit/protocol. A commit hash alone is gameable and not an independent seed. Persist commitments and reveal records.
 
-Hold out physical regimes and combinations, not just identical notes with different filenames. If a holdout fails and informs a repair, it becomes development evidence; create and disclose a fresh final holdout under the same rules. Keep the complete failure history. No unlimited “fresh holdout” retries until a lucky pass.
+Hold out physical regimes and combinations, not just identical notes with different filenames. If a holdout fails and informs a repair, it becomes development evidence. Allow at most two final submissions under one frozen protocol, with no selection among discarded seeds. After the second failure, freeze the champion and report failed qualification. Development can continue under a recorded new hypothesis/protocol epoch retaining the complete history; a new epoch is not another draw supporting the old success claim.
 
 Musical phrases must expose independent melody/accompaniment dynamics, legato, detached playing, bass clarity, high-register attacks and pedalled harmony. Write original test material. Historical pieces already in the repo can be supplemental with their existing attribution; no third-party performance recordings are required.
 
 ### 5.3 Initial numerical targets
 
-Freeze the measurement implementation in P0. These starting budgets are design targets to be measured, not promises that the existing toolchain already exposes them.
+Freeze definitions and metrology in P0. These are starting engineering targets, not current results.
 
 | Gate | Initial acceptance target |
 |---|---|
-| Finite bounded behavior | No NaN/Inf, solver failure or growing unforced oscillation in every adversarial fixture |
-| Silent state | Zero input from exact rest remains at rest; no unsolicited noise floor or random excitation |
-| Analytic verification | Undamped isolated-string modal frequencies within 1 cent of analytic values; measured damped decay within 2% in fixtures long enough to identify it |
-| Reference energy balance | Normalized cumulative residual no greater than 1e-6 in bounded f64 canonical fixtures; halve the step to check convergence, with denominator fixed from initial energy plus positive supplied work |
-| Runtime energy behavior | Residual/error bounded against the verified reference; starting normalized budget 1e-3 on matched canonical fixtures, with no systematic energy creation |
-| Reduced vs detailed sound | On aligned isolated-note probes, median salient-partial frequency error <= 1 cent, 95th percentile <= 3 cents; median band-energy error <= 1 dB, 95th <= 3 dB; decay-time error <= 10% |
-| Aliasing | Unexplained folded energy below -70 dB relative to the fixture peak in selected nonlinear probes against an oversampled reference |
-| Lifecycle | Reset releases voices and buffers; retrigger/pedal/quality transitions preserve continuous state without an unintended discontinuity |
+| Finite behavior | No NaN/Inf, failed contact solve or growing unforced oscillation in adversarial fixtures |
+| Rest | Exact zero from unexcited rest; no unsolicited noise/dither in the physical core |
+| Analytic modes/decay | Pinned Euler–Bernoulli stiff-string modes within 1 cent over the declared resolved band; simple identifiable exponential-loss fixtures within 2% decay-rate error |
+| E1: own discrete balance | f64 canonical fixtures: cumulative normalized residual <= 1e-6 and absolute per-step residual <= 1e-8 of local available energy; test all window sizes declared below |
+| E2: unforced stability | f32/f64: total stored energy plus accounted loss obeys the unforced bound; no systematic positive residual, unstable cooked poles or growing quiet tails |
+| E3: reference agreement | Same-definition runtime vs converged reference: total mechanical energy trajectory within 0.1 dB on salient windows, subsystem trajectories within 0.5 dB; report all mismatches |
+| Reduced sound | Identifiable salient-mode frequency error median <= 1 cent/p95 <= 3 cents; band-energy error median <= 1 dB/p95 <= 3 dB; identified decay rates within 10%, with separate beat/knee/contact reports |
+| Aliasing | Alias-isolated probe error below -70 dB relative to fixture peak using the specified oversampled comparison; other model differences reported separately |
+| Lifecycle | Reset and queue recovery release resources; retriggers, pedals, tier changes and dormancy preserve state within their declared error bounds |
 
-Salient-partial comparisons exclude bins below a fixed -60 dB relative-to-note-peak floor; report excluded energy and separate attack, sustain and tail windows. A method that drops a reference partial must count its missing energy, not remove it from the match. Compare delays with one declared alignment rule; never warp away the candidate's attack.
+**E1/E2 definitions.** Name the scheme's actual discrete energy and whether it is physical or modified. For a step, residual = change in stored energy + accounted losses - external work. Include moving controls, boundaries, contact, radiation, state projection/tier changes and any external source. Never manufacture an unexplained “work” term to cancel a residual.
 
-An accurate physical change can produce a complex waveform difference. Use causal tests, energy and spectral/time-envelope measures together; exact sample equality is required only where the host's contract actually promises it. Separate native and browser renders and disclose arithmetic differences.
+Report per-step residuals and signed/absolute sums over sliding 128-sample, 0.1-second and 1-second windows, plus the whole run. Normalize each window by energy at its start plus positive supplied work inside it, with a fixed per-fixture floor of 1e-12 times that fixture's declared maximum initial energy. Exact rest uses its separate zero test. The floor and units are fixed before candidates; cumulative historical forte strikes cannot hide later quiet-tail growth.
 
-The detailed model itself must converge across two refinements: its change in each reported acoustic metric must be less than one third of the corresponding runtime error budget before it is an admissible reference. Analytic tests are independent of this reduction comparison.
+For f64 E1, each window's absolute residual sum must stay within 1e-6 of that local denominator. For f32 E2 use a starting 1e-3 window budget, no positive residual trend under longer unforced runs, and refinement/precision comparisons. Individual subsystem energy may rise from coupling: the no-input decay rule applies to the total closed system. Test exact undamped canonical systems separately from dissipative ones. Cook-time f32 checks must preserve passive/stable operators: check poles for isolated linear filters and an energy/passivity certificate for the coupled system. Independent poles inside the unit circle are not a coupled-system proof. Bias rounding toward dissipation where justified, then recheck acoustic error.
+
+**E3 definitions.** Different schemes can conserve different discrete energies. Compare reconstructed physical observables with consistent units, not one scheme's modified-energy number against another's physical number. Use predeclared time windows and positive-energy floors; report near-zero tails with absolute/error bounds. A modified-energy method needs a refinement study relating its invariant to physical energy. E3 is a model-agreement measure, not a replacement for E1/E2.
+
+**Acoustic metrology.** Define salience from the reference, at -60 dB relative to its note peak; a candidate cannot remove a missing mode from the denominator. Report missing/extra energy, register, velocity and attack/sustain/tail separately. Use one declared onset/delay alignment, never time-warp the attack away. Global medians cannot hide a failed register or salient missing mode.
+
+For alias tests, compare a canonical nonlinear contact/mode-generation probe at runtime rate with the same equations solved at successively refined >= 4× rate and properly low-passed/downsampled. Establish high-rate convergence and time/discretization error first; use known probe fundamentals and reference difference bands to isolate foldback. Broadband attack or a different modal truncation is not automatically alias energy. If contributions cannot be separated within uncertainty, mark the alias result unresolved. Keep ordinary reduction error as a separate report.
+
+**Independent anchors.** Verify a pinned stiff string, small two-string/bridge linear system against independently assembled eigenvalues, undamped power-law contact with a rigid wall against a direct energy-integral solution, a simply supported orthotropic plate, and a baffled-piston radiation fixture. Do not assume every coupled pair has a universal closed-form two-stage decay. Check physical dimensions and unit conversions independently of shared parameter loading; use different discretizations/coupling implementations where practical.
+
+The detailed reference must change by less than one third of the runtime error budget across two successive refinements before serving as an acoustic reference. Analytic anchors and independent derivations catch shared mistakes that mesh refinement cannot. Native/browser exact sample equality is required only where promised by the host; disclose arithmetic differences.
 
 ### 5.4 Listening rubric and autonomous review
 
-Give actual audio to an available audio-capable evaluator. Fix and record the evaluator/version, rubric and presentation. Reviewing a waveform image, text description or metadata is not listening. An evaluator produces critique only; it must not generate replacement audio.
+**P0 capability gate.** Actual audio comprehension is unverified. Test an already available, authorized evaluation path with generated controls; record model/version, location, accepted format, data flow, cost basis and reproducible invocation. Do not infer capability from a text model's name or from its ability to read a WAV header. Reviewers critique only; no model generates replacement sound.
 
-Score these dimensions from 1 (broken/unconvincing) through 3 (usable with a clear defect) to 5 (convincing and musically compelling):
+If no qualified path exists, label the musical gate **blocked**, skip P7 promotion and continue independent physics/runtime work. The resulting state can be **physically verified, musically unevaluated**, never the completed piano goal. A new paid service or off-ThinkPad processing requires a concrete separate authorization; no permission request is needed merely to inspect existing capabilities. A local model is eligible only if its actual capability, licence and cost are verified.
 
-- Bass pitch clarity and depth.
-- Midrange singing sustain and separation of voices.
-- Treble brilliance without brittle ringing or clicks.
-- Soft-to-loud tonal continuity and expressive control.
-- Attack, release and repeated-note coherence.
-- Pedal/resonance realism without wash or pumping.
-- Register consistency with intentional character.
-- Spatial solidity and natural decay.
+Score 1 (broken), 3 (usable with a clear defect), and 5 (convincing/compelling) on: bass clarity/depth; midrange sustain and voice separation; treble brilliance without artifacts; dynamic/timbral continuity; attack/release/repetition; pedal/resonance; register consistency; and spatial solidity. Freeze examples of score meanings using our original neutral physical prototype and deliberately degraded versions. The old sample-derived piano is not the voicing target or fixed “3/5” anchor.
 
-Freeze dry, player-position and room comparisons separately. Use the same performance and one constant gain per whole rendered excerpt to match perceived loudness with enough headroom; do not normalize individual notes, compress the pair or erase dynamic range. Keep an unnormalized calibrated version for dynamics checks.
+Render directly from the instrument at dry, player-position and room settings; bypass game mixers and soft-clipping. Use float WAV or verified lossless 24-bit input, not the existing undithered 16-bit listening export. Preserve hashes for the exact submitted audio. Match whole musical excerpts with one constant gain each using an independently checked ITU-R BS.1770-5 implementation [R9], with true-peak headroom and no compression. Very short or gated-silent probes use a declared fixed calibration procedure; never normalize notes separately. Retain calibrated unnormalized versions for dynamics tests.
 
-Blind candidate labels and shuffle order. Include duplicated controls and an intentionally degraded anchor to check evaluator consistency. Compare a frozen champion to one challenger, retaining raw judgments and audible reasons. Do not claim a human-population preference probability from repeated calls to one model.
+**Fixed comparison batch.** For each promotion compare 24 preselected musical excerpts against the frozen champion, in both A/B orders: 48 judgments, with category coverage fixed in P0. Add 10 duplicate/order-control trials and four degraded anchors, all blinded. Require >= 9/10 consistent controls and all four known major defects recognized; otherwise void the batch and investigate evaluator reliability. One repeat is allowed only after a recorded presentation/evaluator correction; no repeating until a favorable vote.
 
-Promotion target: median >= 4/5 on every dimension over the fixed listening set, no severe defect, no repeatable regression against the champion, and either a clear recurring preference or equal quality with a measured resource improvement. Repeat ambiguous judgments in reversed order; ties keep the simpler/lower-cost champion. A lower score is a diagnostic, not an invitation to change the rubric.
+Collapse the two orders to one per-excerpt win/tie/loss; disagreement is a tie and retained as such. Promote quality only with >= 16/24 wins, <= 2/24 losses, no severe defect or repeatable category regression, and all hard gates passed. Equal-quality cost promotion requires >= 22/24 non-losses plus a predeclared measured resource improvement beyond timing noise. Ties otherwise keep the simpler/lower-cost champion. These are conservative engineering selection rules, not statistically independent human votes or a population-preference probability. Report the full paired result, not a cherry-picked p-value.
 
-If no actual audio evaluation path is available, continue the physical, runtime and provenance work independently and mark musical review pending. Do not claim that the full piano goal is complete. Ryan's manual listening is welcome but never a routine dependency.
+Absolute rubric scores are milestone checks, not the optimizer's per-parameter reward: require median >= 4/5 in every category with no severe defect. Validation returns aggregate score/pass-fail only; development returns critique. Freeze evaluator settings and label assignments, and log every challenger to make sequential selection bias visible. Final qualification uses the sealed protocol and capped submissions in §5.2.
 
-An optional later acoustic-reference comparison may use our own authorized recordings or clearly suitable public-domain material after documenting rights. It must not feed the parameter optimizer, and reference media need not ship. No commercial library or third-party recording is required to finish this original-instrument plan. Without an acoustic-reference comparison, use the claim “agent-evaluated original physical grand,” not “indistinguishable from an acoustic piano.”
+A later real-acoustic comparison may use authorized recordings, with documented rights, solely as evaluation and never as optimizer input. It is optional for this original-instrument goal. Without it, say “agent-evaluated original physical grand,” not “indistinguishable from an acoustic piano.” A local defect suite, spectra and text descriptions never substitute for actual audio review.
 
 ### 5.5 ThinkPad runtime targets
 
@@ -192,34 +225,43 @@ First inventory CPU, RAM, OS, browser, power mode, sample rate and audio backend
 
 Initial **Concert** target, with all 88 keys addressable and 88-key resonance state:
 
-- Stereo 48 kHz nominal output, with the actual supported host rate recorded; rate adaptation explicitly measured.
+- Establish 48 kHz/128-frame synthesis against the verified pin first: existing studio code hard-codes these values. Record AudioContext and device/backend rates and browser/OS resampling. Arbitrary-rate engine support is a separate capability.
 - At a 128-frame/48 kHz callback, p99 instrument-plus-spatializer compute <= 1.0 ms, p99.9 <= 1.5 ms and no callback over its 2.667 ms period in three 10-minute representative runs. At a different supported block/rate, use the same period fractions and record them.
-- Zero observed audio underruns in those runs, both alone and while a fixed representative Wrela scene runs. Report instrumentation coverage; callback timing does not prove absence of device/backend underruns.
+- Zero observed audio underruns in those runs, alone and with the capybara game/keys scenarios whose input scripts, resolution and graphics settings are frozen in P0. Record graphics frame times, AC/battery state, CPU governor, warmup and thermal state. Use AC for the primary contract and separate battery results. Report instrumentation coverage; callback timing does not prove absence of device/backend underruns.
 - Instrument-owned working memory <= 64 MiB and compressed generated instrument data <= 8 MiB. Report application/compiler overhead separately; do not omit it from total memory/download figures.
 - No playback-time allocation, blocking I/O, synchronous GPU wait or compilation. Report events-to-output timing separately from compute. Physical keyboard-to-speaker latency remains unmeasured unless a proper loopback setup is available.
-- A 30-minute final mixed-interaction soak, with bounded memory and no state leak.
+- A 30-minute final mixed-interaction soak with bounded memory and no state leak; include the 120-second near-silent tail in the timing distribution.
 
-Provide **Studio** offline quality and **Concert** real-time quality first. A later **Ensemble** tier preserves gesture/attack/pedal behavior at lower cost; it is not permission for Concert to miss its target. Change quality smoothly at safe points, never by dropping a ringing instrument.
+Provide **Studio**, **Concert**, and **Ensemble** for existing game consumers within P6/P8. All derive from the same original definition; Ensemble uses validated reductions and its own listening comparison, without relaxing Concert's target. The full capybara callback (piano plus effects) must retain its existing p99 <= 1.3 ms contract in its native test and the new browser test. The keys callback must meet the same aggregate target with both pianos, click and mixing; p99.9 <= 1.5 ms and deadline/underrun gates also apply. Share immutable cooked data, not independent dynamic states. A 1 ms solo result does not qualify two instances. If no original tier passes, that migration remains incomplete; do not retain a Salamander default silently. Change quality smoothly at safe points, never by dropping a ringing instrument.
 
 These are ambitious initial budgets. If infeasible, keep optimizing and report the precise tradeoff. A formally revised budget must appear as a dated target revision with old/new values and rationale; it cannot count as passing the original budget. Do not stall useful work just because a target is missed.
 
+### 5.6 Local defect suite and estimator calibration
+
+Before listening, check unexpected discontinuities, attack/release artifacts, velocity/neighboring-key loudness and timbre discontinuities, scale inharmonicity, beat rates, prompt/aftersound/knee behavior, aliasing and damper decay. Respect intentional register transitions; do not enforce universally monotonic brightness or two-stage decay on every note. A click detector can flag a legitimate hammer transient: compare contact/reference behavior rather than suppressing all flagged attacks. These checks reject defects; they cannot award beauty.
+
+Existing `studio/audio/measure.wrela` uses a typical-piano partial search and fixed spectral windows. Reuse infrastructure, not unverified precision. Compare eigenvalues directly where appropriate. For audio, select/cite an estimator after synthetic damped-single/doublet tests across A0–C8 and representative durations establish bias and identifiability. FFT bin width alone does not prove a frequency estimator incapable, and a high-resolution method cannot magically resolve an unidentifiable trace.
+
+Measurement uncertainty must be below one third of the relevant gate budget; target <= 0.1 cent bias on identifiable probes and <= 2% decay-rate error. Mark unresolved modes as unresolved. Report prompt/aftersound rates, relative level/knee and beat rate rather than one T60. Hold bass probes long enough to identify their rate or report a bound. Measurement uncertainty and reference convergence are separate checks.
+
 ## 6. Milestones and exit evidence
 
-Each stage leaves working code, a minimal focused regression set and an evidence record. Run cheap local checks during experiments; broaden only for changed dependencies, integration or final readiness.
+Each stage leaves working code, a minimal focused regression set and an evidence record. Track its physical, musical and runtime subgates separately. If audio evaluation is unavailable, later independent physical/runtime work may proceed with musical subgates explicitly pending; neither the stage's full acceptance nor P8 is passed. Early listening corpora use the keys and gestures implemented at that stage; the full-key corpus becomes mandatory at P3. Run cheap local checks during experiments; broaden only for changed dependencies, integration or final readiness.
 
 | Stage | Deliverable | Exit evidence |
 |---|---|---|
 | **P0: establish the experiment** | ThinkPad inventory; baseline capture; original corpus; candidate/champion harness; rights/data inventory; verify available toolchain and audio-evaluation capabilities | Reproducible baseline hashes; calibration and measurement self-tests; fixed budgets, manifests and known gaps |
+| **P0-N: numerical prerequisites** | Verified dense modal/plate tools, units and coupling prototypes; mode/contact/coupling cost model | Analytic/eigenpair checks pass; measured throughput supports the representation before P2 |
 | **P1: one struck string** | Original string and felt model; high-precision reference; bounded runtime contact; analytic and refinement checks | Physical gates pass on low/mid/high probes; audible continuous dynamic response; no sample-derived parameters |
 | **P2: a three-note instrument** | A bass note, midrange multi-string unison and treble note on one coupled board | Repeated strikes and damping pass; coupling ablation behaves as predicted; listening identifies no dominant synthetic artifact before expansion |
 | **P3: the full grand** | All 88 keys, authored scale and hammer progression, persistent string states and selective dampers | Full-key sweeps, held-key sympathetic tests, register continuity and dense sustained chords pass; no hard 32-key cap |
 | **P4: pianist control** | Continuous sustain/half-pedal, late catch, sostenuto, una corda, repeat/release behavior, timestamped live and score controls | Gesture fixtures pass in native and browser paths; no stuck notes or block-boundary-dependent control result beyond declared numerical tolerance |
 | **P5: instrument radiation and room** | Position/lid-dependent output, separate physical room approximation and common calibrated gain | Dry gate remains passed; spatial ablations, mono compatibility, no doubled body damping, and independent room review |
-| **P6: Concert runtime** | Verified reduced modes/contact/radiation, state-preserving quality changes and bounded scheduling | All ThinkPad runtime targets pass with the graphics scene; reduced/reference comparison passes on validation set |
+| **P6: runtime tiers and consumers** | Verified Concert/Ensemble reductions, state-preserving changes and bounded scheduling | Solo and aggregate budgets pass with graphics; reference/tier listening comparisons pass validation |
 | **P7: autonomous voicing** | Parameter search inside plausible design bounds, musical corpus, champion archive and defect-driven iterations | Listening targets pass without numerical or runtime regressions; repeated baseline/champion comparisons stored |
 | **P8: release candidate** | Integrate showcase and real consumers; retire old default data path; expose useful controls; documentation and provenance audit | Fresh holdout, soak, integration checks and no sample-derived production dependency; reviewable PR with all claims scoped to evidence |
 
-Dependencies: P0 -> P1 -> P2 -> P3 -> P4. Radiation experiments can begin after P2, but P5 integrates after P4. Measure cost at every stage; P6 is the final optimization gate, not the first timing measurement. Begin listening at P1 rather than waiting for P7. P7 refines the instrument through the whole loop; P8 freezes it.
+Dependencies: P0 -> P1 -> P2 -> P3 -> P4, with P0-N primitive checks before P1 chooses its representation and the full numerical/cost contract before P2. Radiation experiments can begin after P2, but P5 integrates after P4. Measure cost at every stage; P6 is the final optimization gate, not the first timing measurement. Begin listening at P1 rather than waiting for P7. P7 refines the instrument through the whole loop; P8 freezes it.
 
 Do not make a full high-resolution 3D piano simulation a prerequisite for P1. Begin with an independently verified reduced physical problem and add complexity when a specific error or missing phenomenon demands it.
 
@@ -228,9 +270,11 @@ Do not make a full high-resolution 3D piano simulation a prerequisite for P1. Be
 1. Is the pinned Wrela command installed and usable on the ThinkPad? The planning inspection did not establish that. Follow the documented install/pin process if needed; do not compile on the Mac.
 2. Can the current tool host generate matrices and perform the required bounded numerical solves? Prototype the smallest case before selecting a large eigenproblem.
 3. Does the browser host expose callback durations, underruns and sample-timed event injection? Inspect current compiler/std/host contracts; record demonstrated gaps in `docs/toolchain-gaps.md`.
-4. Can the current evaluation path consume and assess audio? Test with our generated controls and report capability honestly.
+4. Can an already available path assess actual audio within current ThinkPad-only and spending/processing permissions? Register model/version, execution location, data flow and cost basis; test generated controls. The reviewer harness is text/image oriented and studio expects human listening, so capability is unverified. Do not infer no other approved capability exists. If none qualifies, mark musical review blocked immediately and skip P7 attempts; never substitute spectrogram ratings. New paid or off-ThinkPad processing requires a concrete separate request, not an assumed exception.
 5. Which existing consumers import `GRAND` or call the piano APIs? Inventory them before migration; preserve score and interactive behavior.
-6. Does the audio host require fixed 128-frame blocks and a fixed rate? Implement against its actual contract, not a newer web specification inferred from a search result.
+6. Existing studio constants/generated worklet indicate 48 kHz/128 frames; verify the pinned source rather than assuming a newer web API.
+7. Microbenchmark native and browser SIMD throughput in resonator-samples/ms, including memory traffic. Cost modes by register, board/coupling work, oversampled contact and multiple instances before P1; update against P2 measurements. Driven-build speed is a separate relative measurement, not browser throughput.
+8. Audit timestamp mapping, per-quantum timing and continuity instrumentation; document demonstrated gaps. If available, capture a deterministic pilot at the PipeWire/Pulse sink monitor, self-test with inserted gaps, and account for clock/resampling alignment. This measures monitored software output, not the DAC/speakers. Freeze instrumentation-overhead limits and disclose coverage.
 
 For a toolchain gap, produce a minimal reproduction and a precise general capability request. Continue independent physical work while it is unresolved. If compiler implementation becomes necessary, use the ThinkPad's compiler checkout and its instructions; engine policy stays here. A missing host measurement is “unmeasured,” not zero.
 
@@ -238,7 +282,7 @@ For a toolchain gap, produce a minimal reproduction and a precise general capabi
 
 ### 7.1 Durable experiment record
 
-Implement a resumable ledger under build output and a concise durable milestone summary in this plan or a dedicated allowlisted report. Each experiment records:
+Keep the authoritative ledger at `/home/ryan-wible/wrela-evidence/grand/<campaign-id>/`, outside disposable build output, with a concise committed summary in this plan or a dedicated allowlisted report. Use atomic writes/checksums and verify recovery after clearing scratch builds. Retain champion inputs/data, promoted renders, seeds and judgments there; only reconstructible challenger caches belong under build/. Each experiment records:
 
 - ID, parent champion, source commit and dirty-diff hash, toolchain version.
 - Physical-definition hash, generated-data hash, units and provenance.
@@ -249,7 +293,7 @@ Implement a resumable ledger under build output and a concise durable milestone 
 - Listening judgments including contradictions, decision and explanation.
 - Best next experiment and any externally blocked gate.
 
-Keep candidate and champion outputs separate. A journal entry or a source constant alone is not a reproducible instrument: generation inputs, tool version and output hashes must agree. Store bulky renders as build artifacts on the ThinkPad; commit compact summaries and the code that regenerates them. Never commit someone else's reference audio.
+Keep candidate and champion outputs separate. A journal entry or a source constant alone is not a reproducible instrument: generation inputs, tool version and output hashes must agree. Store promoted evidence in the durable ThinkPad directory; commit compact summaries and regeneration code. Never commit someone else's reference audio.
 
 ### 7.2 One iteration
 
@@ -267,16 +311,18 @@ A louder result, more reverb, a brighter centroid, a longer tail or a lower spec
 
 ### 7.3 Search bounds, plateaus and stop rules
 
-- Freeze sensible parameter bounds from the authored design and cited mechanics before a search. Use continuous physical controls; add a key-specific exception only with an explicit mechanical reason.
-- A parameter batch starts with at most 24 variants and short probes. Only the best few reach the full listening set. Increase the batch only when its previous evidence justifies it.
-- After three batches without a reproducible improvement, change the hypothesis or representation. Inspect residuals and ablations; do not keep twiddling the same parameters or ask Ryan to pick a winner.
-- After a failed approach, retain the evidence, remove unused code and return to the champion. Keep only experiments with a current purpose.
-- If all relevant hard gates pass and three materially different challengers cannot improve the frozen champion on validation, freeze a release candidate and run P8. This is convergence of this search, not proof of a global optimum.
-- If a genuine external blocker prevents a gate, document it and continue independent stages. Do not hide it, replace the goal, fabricate evidence or silently declare completion.
-- A budget or rubric change is a versioned experiment-design revision with fresh validation. It never erases the historical failure.
-- Stop as complete only after P8's required evidence exists. If audio review or actual browser measurement is unavailable, report that limited completion state precisely.
+- Freeze physical search bounds before optimization. Add a key-specific exception only for an explicit mechanical reason.
+- Start each parameter batch with <= 24 variants and short probes. At most three candidates reach the fixed listening batch; log all candidates and selection decisions.
+- After three batches without reproducible improvement, change hypothesis class: solver/discretization, physical model, voicing, control or presentation. A new numeric step size alone is not a new hypothesis.
+- Bound one development job to 30 minutes, one offline reference job to two hours, and one work session to four hours, with checkpoints between jobs. A proven reference computation may be split into resumable chunks; review any escalation in the ledger before running it.
+- Cap a milestone search campaign at 12 parameter batches or 16 compute-hours, whichever comes first. On exhaustion, freeze evidence and decide whether a specific new physical/model hypothesis justifies a new recorded campaign; do not silently reset counters. Session/campaign checkpointing is not permission to schedule unattended future work.
+- If all required gates pass and three challengers from genuinely different hypothesis classes cannot improve validation, freeze the candidate and run P8. This is search convergence, not a global optimum.
+- Final qualification has at most two submissions per protocol (§5.2). A new development epoch preserves failures; no repeated fresh draws to obtain a lucky pass.
+- A rubric/budget change is dated, retains old targets/results and requires fresh validation. It never turns the historical failure into a pass.
 
-This plan grants implementation judgment, not an unbounded unattended compute job. Use bounded runs and resumable checkpoints. Scheduling future sessions or spending external compute requires its own user instruction.
+Use explicit execution outcomes: **complete** (P8 passed); **converged below target** (champion frozen, target misses and next hypothesis reported); **physically verified, musically unevaluated** (no qualified evaluator); or **blocked** (specific external dependency). These describe the implementation report, not automatic changes to an app goal's state. Convergence below target is not completion: an agent may continue a documented new campaign if there is a materially new hypothesis and authorized resources, but must not churn indefinitely on the same one. Independent stages continue during a genuine blocker.
+
+Keep the champion, remove losing code, preserve useful failure evidence and record the next action before every checkpoint. Do not ask Ryan to rank routine candidates. Ask only for an actual external permission/capability decision that cannot be resolved within the approved scope.
 
 ## 8. Product and delivery
 
@@ -289,6 +335,7 @@ Before the implementation PR:
 - Move every intended consumer to the new default and run the smallest relevant integration tests.
 - Trace the shipped dependency/data closure; confirm no Salamander tables or library-derived coefficients enter it.
 - Remove obsolete runtime defaults and dead experiments; retain historical attribution where required.
+- Audit inherited constants/tests too: old bloom/crest/knock targets, tuning, `studio/audio/model` outputs and sfizz defaults must not enter the new physical or voicing path. Old-piano captures are for migration/cost comparisons only, not acoustic optimization anchors.
 - Record source references in `docs/citations.md`, real toolchain gaps in `docs/toolchain-gaps.md`, and measured performance in `docs/bench.md`.
 - Include baseline/champion/reference comparisons, generated-data provenance, ThinkPad environment, passed/missed targets and exact replay steps.
 - Run repository-required readiness checks once at the end. Report unrelated pre-existing failures separately, without deleting another session's files or weakening checks.
@@ -323,6 +370,12 @@ Harp tuning changes must account for changing boundaries/tension and their work.
 
 Voice/choir requires vocal-fold and vocal-tract work and intelligibility controls. It is outside the initial orchestra scope.
 
+Each O-stage inherits all three verdicts. Verify family-specific canonical anchors before musical expansion: bowed-string periodic motion and a documented bow-force region; reed onset thresholds; cylinder/cone bore impedance; membrane/bar modes and cavity coupling. Verify assumptions and cite the chosen primary methods. Free-pitch families need a virtual-player intonation controller with declared pitch/gesture goals and cents-error reports that retain intended vibrato/bends.
+
+Qualify the evaluator again on instrument identity, articulation and ensemble balance. Piano ratings do not establish that competence. R5 motivates reed/bore research, not an assumed passive implementation; prove the selected update's energy behavior.
+
+One audio thread remains the baseline. Measure chamber groups before choosing O6 scheduling. If projected costs miss deadlines, compare quality reductions with explicit parallel-render/latency support as a toolchain decision. Do not presume several worklets execute concurrently or mandate parallelism before measuring alternatives.
+
 ### 9.3 A section is a group of players
 
 Model independent but coordinated gestures, instrument variation within plausible bounds, seating and directional radiation. Give players persistent identities, not fresh white-noise timing offsets every note. Distinguish a shared conductor/phrase intent from each player's bowing, breathing and small intonation variation. Use explicit seeded behavior for reproducibility.
@@ -345,19 +398,49 @@ Sources accessed 2026-10-29. They inform original code and this plan. No code, a
 - **R6 — “An algorithm for a valved brass instrument synthesis” (DAFx 2015).** [University-hosted paper](https://www.pure.ed.ac.uk/ws/portalfiles/portal/21857362/DAFx_15_harrison.pdf). Later brass excitation, bore, valves and radiation research; no implementation imported.
 - **R7 — University of Edinburgh, NESS, “3D Percussion,” including Bilbao and Webb's timpani work.** [Project description](https://www.ness.music.ed.ac.uk/archives/systems/3d-embeddings.html). Membrane/air coupling and physical percussion; no demonstration audio imported.
 - **R8 — W3C, Web Audio API.** [Specification](https://www.w3.org/TR/webaudio/). Audio rendering/timing context; implementation must still inspect the pinned Wrela host's actual contract.
+- **R9 — ITU-R BS.1770-5 (2023), loudness and true-peak measurement.** [Official recommendation](https://www.itu.int/rec/R-REC-BS.1770-5-202311-I). Independent metering implementation; a loudness score does not measure beauty.
 
 ## 11. Execution status
 
 - [x] Plan written against the ThinkPad checkout; original physical instrument and later orchestra scope distinguished.
 - [ ] P0 experiment, environment and evaluation capabilities established.
+- [ ] P0-N numerical prerequisites and cost model verified.
 - [ ] P1 single-string reference/runtime verified.
 - [ ] P2 coupled three-note instrument passed.
 - [ ] P3 all 88 keys and original physical definition passed.
 - [ ] P4 complete pianist controls passed.
 - [ ] P5 radiation and room passed.
-- [ ] P6 ThinkPad Concert runtime passed.
+- [ ] P6 ThinkPad Concert/Ensemble and aggregate consumer runtime passed.
 - [ ] P7 autonomous voicing and listening passed.
 - [ ] P8 final evidence, integration, provenance and PR ready.
 - [ ] O1–O6: later scopes, not started or authorized for implementation by this piano plan.
 
 **First implementation action:** P0. Verify the ThinkPad's pinned toolchain, audio host and evaluator; inventory current piano consumers; establish and hash the original fixture corpus before changing the sound.
+
+## 12. Opus 5.5 review and disposition — 2026-10-29
+
+Requested by Ryan, executed read-only through Claude Code CLI 2.1.301 on the ThinkPad with explicit `--model claude-opus-5-5 --effort high`. Initialization/result reported `claude-opus-5-5`; no substitute model was used. Review baseline: `e5bca960`. The reviewer inspected this plan and engine, studio and browser artifacts. The lead agent adjudicated and revised the plan; no DSP was implemented.
+
+| Finding | Disposition and amendment |
+|---|---|
+| B1: evaluator availability | Accepted capability gate/local defect suite (§5.4/§5.6). Rejected a categorical claim that no approved evaluator can exist or permission must precede discovery. New processing/spending still needs authorization. |
+| B2: consumer budgets | Accepted early throughput/cost model and required Ensemble tier, whole-game and two-piano budgets (§5.5/P0/P6/P8); no old-data fallback. |
+| B3: coupling cost | Accepted actual update/factor lifetime, varying dampers, passivity and 88-key-size benchmark (§4.3). A dense per-step solve is not presumed inevitable. |
+| B4: numerical infrastructure | Accepted P0-N/small dense plate model. Rejected the inference that original numerical Wrela code is a prohibited workaround or full sparse FEM is mandatory (§4.1). |
+| H1: energy | Accepted E1–E3, local windows, named energies and precision checks (§5.3). Individual pole checks alone do not prove coupled passivity. |
+| H2: nonlinear/contact | Accepted reduced potentials, compliance/contact gates (§4.2). No mandatory uncited SAV method; compare justified stable alternatives. |
+| H3: evaluation bias | Accepted sealed seeds/generator, limited feedback, fixed paired batch and qualification cap (§5.2/§5.4). Rejected commit-only seeds, human-population inference from one judge and a sample-derived acoustic anchor. |
+| H4: controls | Accepted gesture/clock schema, demonstrated host gaps, lateness policy and internal chunk invariance (§4.6), without demanding unsupported browser block sizes. |
+| H5: dormancy | Accepted bounded sleep/wake behavior and 120-second tail fixture (§4.5); CPU penalties must be measured. |
+| H6: metrology | Accepted eigenvalue checks, estimator calibration/identifiability and decay/beat measures (§5.6). FFT bin spacing alone does not establish estimator error. |
+| H7: provenance | Accepted typed origins and inherited constant/test/tuning/evaluator audit (§3.1/§8); old attribution stays while old work remains. |
+| M1: browser evidence | Accepted exact pin/rate, timing/continuity audit, pilot-capture scope and graphics/power/thermal conditions (§5.5/P0). |
+| M2: independent checks | Accepted units/independent derivations and analytic anchors (§5.3); no universal closed-form two-stage decay or isotropic formula applied to an orthotropic board. |
+| M3: search limits | Accepted bounded jobs/sessions/campaigns and honest below-target/unevaluated outcomes (§7.3); these are reports, not app-goal tool instructions. |
+| M4: room scope | Accepted bounded P5 approximations; arbitrary-room wave simulation is later (§4.4). |
+| M5: audio presentation | Accepted direct renders, float/24-bit audio, BS.1770 matching and separately calibrated short probes (§5.4). |
+| M6: durable ledger | Accepted evidence outside build caches and recovery verification (§7.1). |
+| M7: orchestra | Accepted family anchors, intonation, evaluator qualification and scheduling feasibility (§9.2); parallel audio is a measured option, not an assumed prerequisite. |
+| Low: sympathy, aliasing, velocities | Clarified the feed-forward bank (§2), alias-isolation procedure (§5.3) and physical velocity units (§5.2). |
+
+Full review, request and provenance manifest are retained at `/home/ryan-wible/wrela-evidence/grand/plan-review-2026-10-29/` on the ThinkPad. Review improves the execution contract; it does not establish instrument quality, runtime feasibility or evaluator availability.
