@@ -3372,3 +3372,23 @@ First complete comparison 30.91 minutes; retire at
 reference method. Runtime restored exactly; all failures retained in
 build/neural-evidence/source-chart-v1. Four batch runs capture3,072 frames in
 97.89s, excluding profiles/scoring; no unbatched speedup claim.
+
+
+## 2026-10-29 — Cloud interval hierarchy: retired
+
+See [the interval report](neural-cloud-intervals.md). Solo Pop!_OS AMD RADV
+RENOIR, Wrela0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23,
+Chrome154.0.8037.57. Parent ccd785d1 plus archived candidates. Fixed1920×1080
+clearing, one worker,60frames after600warmup; quiet GPU queue, CPU assessment after.
+
+Complete medians26.50504/26.48944/26.49236ms for16³/8³/weather-first versus
+26.10764baseline; clouds5.17724/5.11784/5.10400ms versus4.71184.
+All inspected image differences ≤1byte, no quality-matched speedup. Requested
+live adds65,536/36,864/36,864B; actual DRM/PSS and cold table creation recorded.
+Final query audit certifies22.425% of25,166,123 original samples empty with zero
+positive-density false skips; this does not imply lower GPU cost.
+
+First joint assessment 12.56min, retire at
+21.99min after two followups. Unpaired development evidence;
+no converged transport, changed-weather-tail, silhouette or G1–G7 qualification.
+All runtime restored to parent; failures preserved in build/neural-evidence/cloud-interval-v1.

@@ -3123,3 +3123,24 @@ No training, new reference method or G1–G7 change. Next test source-derived
 interval certificates on contiguous empty cloud view queries, keeping the original
 sample schedule and the retained point-support baseline.
 Manifest: `e33978e38675f190552e95e8246eb7034ac271a458af3be3a0ba5af8245a08ac`.
+
+
+## 2026-10-29: Retire coarse cloud interval certificates
+
+[The interval experiment](neural-cloud-intervals.md) completes its first joint
+comparison in 12.56 minutes and retires three
+candidates at 21.99 minutes after two followups.
+Complete medians26.50504/26.48944/26.49236ms versus26.10764baseline;
+cloud5.17724/5.11784/5.10400ms versus4.71184. Images differ by at most1byte.
+Requested live adds65,536B initially or36,864B for the coarse variants.
+
+Two actual-query audits each cover25,166,123 original points with zero observed
+false skips. Final certificates remove22.425% of scheduled samples but still cost
+more. Cold table generation and actual whole-client residency are recorded;
+changed-weather tails remain unqualified. Restore runtime exactly to parent
+ccd785d1, preserving the prior point-support win and all failed variants.
+
+Next test stationary-camera reprojection specialization in the measured5.05ms
+temporal pass, with motion/deformation fallbacks and existing quality checks.
+No new fitting/reference algorithm, no G1–G7 change.
+Manifest: `c91a9fe67074f87e249a4a40d547bd3354f8051424c3c4a9a9f4052475b740f7`.
