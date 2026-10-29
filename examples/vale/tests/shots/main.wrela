@@ -17,7 +17,10 @@ fn world(k: u32) -> (vec3, vec3) {
 
 @test
 fn twelve_shots_and_eight_for_development_each_80_m_from_its_class() {
-    assert(SHOTS.len() == 20 && EVALUATION == 12, f"{SHOTS.len()} shots, {EVALUATION} of them evaluated")
+    assert(
+        SHOTS.len() == 20 && EVALUATION == 12,
+        f"{SHOTS.len()} shots, {EVALUATION} of them evaluated",
+    )
     for d in 0..8 {
         let class = DEVELOPMENT_CLASSES[d]
         let dev = SHOTS[EVALUATION + d].eye.xz
@@ -52,7 +55,10 @@ fn the_creatures_shots_hold_it_in_frame() {
         assert(s.cast != engine::shot::NO_CAST, f"shot {k + 1} casts nobody")
         let (eye, at) = world(k)
         let half = atan(s.reach / length(at - eye))
-        assert(2.0 * half < s.fovy, f"shot {k + 1}'s creature fills {2.0 * half} of a {s.fovy} frame")
+        assert(
+            2.0 * half < s.fovy,
+            f"shot {k + 1}'s creature fills {2.0 * half} of a {s.fovy} frame",
+        )
     }
 }
 
