@@ -31,9 +31,9 @@ use plant::{
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer, Half2,
-    InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
-    TextureArray, VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard,
-    dispatch, draw, texture, texture3d,
+    InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Targets2, Texels3d, Texture,
+    Texture3d, TextureArray, VertexIndex, WithDepth, begin_pass, begin_pass2_with_depth,
+    begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture, texture3d,
 }
 use view::{Camera, LEAVES}
 
@@ -268,39 +268,26 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     (crown_n, tinted(leaf_age(b.leaves, crown_n.y), f.tint))
 }
 
-/// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
-/// coverage in alpha.
+/// The impostor's maps, drawn together: its colour (each view's leaves' and limbs' albedo, its
+/// square root, and the coverage in alpha), and its normal (in the plant's frame, folded:
+/// `oct_encode`), how far toward its view it is (from 0 at the back of the box to 1 at its
+/// front) and its depth in the crown (m, over `DEEPEST`).
 @fragment
-pub fn bake_colour(
+pub fn bake_maps(
     f: BakeVertex,
     pixel: FragCoord,
     b: Bake,
     atlas: Texture<Rgba8>,
     s: Sampler,
-) -> vec4 {
+) -> Targets2<vec4, vec4> {
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
-    let (_, albedo) = baked_leaf(f, b, atlas, s)
-    vec4(sqrt(saturate(albedo)), 1.0)
-}
-
-/// The impostor's normal (in the plant's frame, folded: `oct_encode`), how far toward its view
-/// it is (from 0 at the back of the box to 1 at its front), and its depth in the crown (m, over
-/// `DEEPEST`).
-@fragment
-pub fn bake_normal(
-    f: BakeVertex,
-    pixel: FragCoord,
-    b: Bake,
-    atlas: Texture<Rgba8>,
-    s: Sampler,
-) -> vec4 {
-    if outside_cell(pixel.position.xy, f.view.value) {
-        discard()
+    let (n, albedo) = baked_leaf(f, b, atlas, s)
+    Targets2 {
+        first: vec4(sqrt(saturate(albedo)), 1.0),
+        second: vec4(oct_of(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST)),
     }
-    let (n, _) = baked_leaf(f, b, atlas, s)
-    vec4(oct_of(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
 }
 
 /// What a wood's draws read of an instance's kind (`kind_of` names it): where its cards, their
@@ -392,40 +379,22 @@ pub fn bake(
     var depth = depth_texture(width: ATLAS, height: ATLAS)
     let views = VIEWS * VIEWS
     let level = level_cards(n, BAKED)
+    // The two maps' clears differ: each is cleared alone, then both drawn at once.
+    begin_pass(mut colour, clear: vec4(0.0)).end()
+    begin_pass(mut normal, clear: vec4(0.0, 0.0, 0.5, 0.0)).end()
     {
-        let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
-        if level > 0 {
-            draw(
-                p,
-                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-                bake_colour.bind(b, atlas, s),
-                vertices: level * 6,
-                instances: views,
-            )
-        }
-        if limb_count > 0 {
-            draw(
-                p,
-                bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
-                bake_colour.bind(b, atlas, s),
-                vertices: limb_count * LIMB_VERTICES,
-                instances: views,
-            )
-        }
-        p.end()
-    }
-    {
-        let p = begin_pass_with_depth(
+        let p = begin_pass2_with_depth(
+            mut colour,
             mut normal,
             mut depth,
-            clear: vec4(0.0, 0.0, 0.5, 0.0),
+            keep: true,
             clear_depth: 1.0,
         )
         if level > 0 {
             draw(
                 p,
                 bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-                bake_normal.bind(b, atlas, s),
+                bake_maps.bind(b, atlas, s),
                 vertices: level * 6,
                 instances: views,
             )
@@ -434,7 +403,7 @@ pub fn bake(
             draw(
                 p,
                 bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
-                bake_normal.bind(b, atlas, s),
+                bake_maps.bind(b, atlas, s),
                 vertices: limb_count * LIMB_VERTICES,
                 instances: views,
             )

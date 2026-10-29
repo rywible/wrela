@@ -63,7 +63,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -80,6 +80,8 @@ pub struct Options: Clone {
     pub row: String,
     /// How long the play run's page is paced first (`--sustained`, s), or 0.
     pub sustained: u32 = 0,
+    /// Starts alone (`--starts`): this many cold and warm starts a scene, or 0.
+    pub starts: u32 = 0,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -141,6 +143,9 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             k += 2
         } else if a == "--sustained" {
             o.sustained = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--starts" {
+            o.starts = value(k)?.as_str().parse_u32()?
             k += 2
         } else {
             return None
@@ -306,24 +311,11 @@ pub fn posted(dir: str, timeout: f64) -> Result<(), ToolError> {
     }
 }
 
-/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
-/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
-/// (ms since the epoch) and the machine.
-pub fn measure(
-    s: Scene,
-    o: Options,
-    salt: u32,
-    build: bool,
-    ws: str,
-    out: str,
-    kept: str,
-) -> Result<(Measured, f64, String), ToolError> {
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` unless an earlier
+/// scene's was (`build`), and its gate script written beside it: the build's directory and the
+/// script's file there.
+fn prepared(s: Scene, build: bool, ws: str, out: str) -> Result<(String, String), ToolError> {
     let dir = build_dir(out, s.pkg)
-    // Each run's results, kept before the next run empties them.
-    var runs: Vec<String> = Vec::new()
-    for r in RUNS {
-        runs.push(String::from(f"{kept}/{s.name}/{r}"))
-    }
     if build {
         var options = toolchain::options()
         options.optimize = true
@@ -344,6 +336,66 @@ pub fn measure(
         f"{dir}/{input_file}",
         String::from(input.as_json()).as_bytes(),
     ).wait()?
+    Ok((take dir, take input_file))
+}
+
+/// Scene `s`'s starts alone (`--starts`): `o.starts` cold starts (each salted afresh from `salt`,
+/// so no cache serves its pipelines) and as many warm ones, each run's results kept in `kept`;
+/// each start's `playable_ms`, cold then warm.
+pub fn starts(
+    s: Scene,
+    o: Options,
+    salt: u32,
+    build: bool,
+    ws: str,
+    out: str,
+    kept: str,
+) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
+    let (dir, input_file) = prepared(s, build, ws, out)?
+    let frames = min(o.warmup + s.frames, 300)
+    let timeout = f64(frames) / 60.0 * 10.0 + 240.0
+    let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
+    var cold: Vec<f64> = Vec::new()
+    var warm: Vec<f64> = Vec::new()
+    for n in 0..o.starts {
+        for k in [2, 3] {
+            let salted = if k == 2 { String::from(f"&salt={salt + n}") } else { String::new() }
+            let h = String::from(f"{hash}&nohash=1{salted}")
+            run(dir.as_str(), h.as_str(), s.width, s.height, timeout, Vec::new(), k)?
+            keep_results(dir.as_str(), f"{kept}/{s.name}/{RUNS[k]}-{n + 1}")?
+            let (_, first_frame_ms, _, playable_ms, _) = started(dir.as_str())?
+            print(
+                f"bench: {s.name} {RUNS[k]} {n + 1}: playable {playable_ms:.0} ms, first frame {first_frame_ms:.0}",
+            )
+            if k == 2 {
+                cold.push(playable_ms)
+            } else {
+                warm.push(playable_ms)
+            }
+        }
+    }
+    Ok((take cold, take warm))
+}
+
+/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
+/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
+/// (ms since the epoch) and the machine.
+pub fn measure(
+    s: Scene,
+    o: Options,
+    salt: u32,
+    build: bool,
+    ws: str,
+    out: str,
+    kept: str,
+) -> Result<(Measured, f64, String), ToolError> {
+    // Each run's results, kept before the next run empties them.
+    var runs: Vec<String> = Vec::new()
+    for r in RUNS {
+        runs.push(String::from(f"{kept}/{s.name}/{r}"))
+    }
+    let (dir, input_file) = prepared(s, build, ws, out)?
+    let input = script(s.name)
     let frames = o.warmup + s.frames
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
@@ -712,6 +764,19 @@ fn bench_md() -> String {
     }
 }
 
+/// `xs` as `(a, b, c)`, each to the ms.
+fn listed(xs: [f64]) -> String {
+    var out = String::from("(")
+    for i in 0..xs.len() {
+        if i > 0 {
+            out.push_str(", ")
+        }
+        out.push_str(f"{xs[i]:.0}")
+    }
+    out.push_str(")")
+    out
+}
+
 fn bench(o: Options) -> Result<(), ToolError> {
     if o.row.as_str().ends_with(".json") {
         let path = o.row.as_str()
@@ -748,9 +813,13 @@ fn bench(o: Options) -> Result<(), ToolError> {
     var date = String::new()
     var opened_at = 0.0
     var machine = String::new()
-    var salt = 1
     // Where the runs' results are kept: `out/<date>-<time>/<scene>/<run>/`, the bench's start.
     let now = time::utc_now().wait()?
+    // Each cold start's salt is new to this machine, not only to the browser's profile (which is
+    // thrown away): the system's own shader cache (macOS keeps one an app, keyed by a shader's
+    // source) served a salt an earlier run had used, and its cold start was a warm one: the
+    // seconds since the epoch, a thousand salts to each.
+    var salt = u32(now.seconds % 4000000) * 1000
     let at = f64(now.seconds) * 1000.0
     let kept = String::from(f"out/{date_of(at)}-{time_of(at)}")
     // The packages built so far: each once, for all the scenes that share it.
@@ -766,12 +835,23 @@ fn bench(o: Options) -> Result<(), ToolError> {
         if build {
             built.push(String::from(s.pkg))
         }
+        if o.starts > 0 {
+            let (cold, warm) = starts(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
+            salt += o.starts
+            print(
+                f"bench: {s.name} playable, median of {o.starts}: cold {stats(cold.clone()).p50:.0} ms {listed(cold)}, warm {stats(warm.clone()).p50:.0} ms {listed(warm)}",
+            )
+            continue
+        }
         let (m, opened, mach) = measure(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
         salt += 1
         date = date_of(opened)
         opened_at = opened
         machine = take mach
         all.push(take m)
+    }
+    if o.starts > 0 {
+        return Ok(())
     }
     let table = markdown(machine.as_str(), date.as_str(), all)
     print(table.as_str())

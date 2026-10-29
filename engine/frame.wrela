@@ -1863,8 +1863,17 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 self.linear,
             )
         }
-        self.draw_scene(mut scene, sh, wind)
-        self.finish(scene)
+        // Covered, the light round the eye not drawn yet: the frame cooks, and draws nothing of the
+        // scene under its cover (C5: the load's frames short, and the scene's pipelines not
+        // needed until it's lit). Temporal AA starts afresh on the first lit frame, and the
+        // exposure is metered afresh on each arriving one, so none of what's skipped is read.
+        if self.ready.arriving && self.ready.gathered == 0 {
+            let black = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+            black.present()
+        } else {
+            self.draw_scene(mut scene, sh, wind)
+            self.finish(scene)
+        }
         self.frames += 1
         self.ran += 1
     }
