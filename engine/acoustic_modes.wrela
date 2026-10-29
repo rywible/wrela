@@ -1,0 +1,170 @@
+// Small dense structural eigenproblems for the original grand.
+// Independent implementations of Cholesky whitening and cyclic Jacobi rotations.
+// Cooking only: no allocations or eigensolver work belongs in an audio callback.
+// K phi = lambda M phi, phi^T M phi = I. Invalid mass/stiffness fails explicitly.
+use std::collections::Vec
+
+pub struct Modes: Clone {
+    pub count: u32,
+    pub squared_frequencies: Vec<f64>,
+    /// Column j is mode j; rows are the original physical coordinates.
+    pub shapes: Vec<f64>,
+}
+
+fn finite(x: f64) -> bool {
+    x >= -1.7976931348623157e308 && x <= 1.7976931348623157e308
+}
+
+fn symmetric(a: [f64], n: u32) -> bool {
+    if a.len() != n * n { return false }
+    for i in 0..n {
+        for j in 0..n {
+            if !finite(a[i * n + j]) { return false }
+            let scale = 1.0 + a[i * n + j].abs() + a[j * n + i].abs()
+            if (a[i * n + j] - a[j * n + i]).abs() > 1e-13 * scale { return false }
+        }
+    }
+    true
+}
+
+pub fn eigensystem(mass: [f64], stiffness: [f64], n: u32) -> Option<Modes> {
+    if n == 0 || n > 64 || !symmetric(mass, n) || !symmetric(stiffness, n) {
+        return None
+    }
+    var l: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..i + 1 {
+            var s = mass[i * n + j]
+            for k in 0..j { s -= l[i * n + k] * l[j * n + k] }
+            if i == j {
+                if !(s > 0.0) { return None }
+                l[i * n + j] = s.sqrt()
+            } else {
+                l[i * n + j] = s / l[j * n + j]
+            }
+        }
+    }
+    // W = L^-1 by forward substitution, then C = W K W^T.
+    var w: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        for i in 0..n {
+            var s = if i == j { 1.0 } else { 0.0 }
+            for k in 0..i { s -= l[i * n + k] * w[k * n + j] }
+            w[i * n + j] = s / l[i * n + i]
+        }
+    }
+    var wk: Vec<f64> = Vec::filled(n * n, 0.0)
+    var a: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n { wk[i * n + j] += w[i * n + k] * stiffness[k * n + j] }
+        }
+    }
+    var scale = 0.0
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n { a[i * n + j] += wk[i * n + k] * w[j * n + k] }
+            if a[i * n + j].abs() > scale { scale = a[i * n + j].abs() }
+        }
+    }
+    if !(scale > 0.0 && finite(scale)) { return None }
+    var v: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n { v[i * n + i] = 1.0 }
+    var converged = false
+    for _ in 0..64 {
+        var largest = 0.0
+        for p in 0..n {
+            for q in p + 1..n {
+                let apq = a[p * n + q]
+                if apq.abs() > largest { largest = apq.abs() }
+                if apq.abs() <= 1e-14 * scale { continue }
+                let tau = (a[q * n + q] - a[p * n + p]) / (2.0 * apq)
+                let sign = if tau >= 0.0 { 1.0 } else { -1.0 }
+                let t = sign / (tau.abs() + (1.0 + tau * tau).sqrt())
+                let c = 1.0 / (1.0 + t * t).sqrt()
+                let s = t * c
+                a[p * n + p] -= t * apq
+                a[q * n + q] += t * apq
+                a[p * n + q] = 0.0
+                a[q * n + p] = 0.0
+                for k in 0..n {
+                    if k != p && k != q {
+                        let kp = a[k * n + p]
+                        let kq = a[k * n + q]
+                        a[k * n + p] = c * kp - s * kq
+                        a[p * n + k] = a[k * n + p]
+                        a[k * n + q] = s * kp + c * kq
+                        a[q * n + k] = a[k * n + q]
+                    }
+                    let vp = v[k * n + p]
+                    let vq = v[k * n + q]
+                    v[k * n + p] = c * vp - s * vq
+                    v[k * n + q] = s * vp + c * vq
+                }
+            }
+        }
+        if largest <= 1e-12 * scale {
+            converged = true
+            break
+        }
+    }
+    if !converged { return None }
+    var lambda: Vec<f64> = Vec::filled(n, 0.0)
+    var shapes: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        lambda[j] = a[j * n + j]
+        if !(lambda[j] > 0.0 && finite(lambda[j])) { return None }
+        for i in 0..n {
+            for k in 0..n { shapes[i * n + j] += w[k * n + i] * v[k * n + j] }
+        }
+    }
+    // Stable selection ordering, including repeated eigenvalues.
+    for j in 0..n {
+        var least = j
+        for k in j + 1..n { if lambda[k] < lambda[least] { least = k } }
+        if least != j {
+            let x = lambda[j]
+            lambda[j] = lambda[least]
+            lambda[least] = x
+            for i in 0..n {
+                let y = shapes[i * n + j]
+                shapes[i * n + j] = shapes[i * n + least]
+                shapes[i * n + least] = y
+            }
+        }
+    }
+    Some(Modes { count: n, squared_frequencies: lambda, shapes })
+}
+
+/// Relative Frobenius residual and maximum mass-orthogonality error.
+/// Independent of the reduction's internal diagonal/rotation state.
+pub fn errors(m: Modes, mass: [f64], stiffness: [f64]) -> (f64, f64) {
+    let n = m.count
+    var residual = 0.0
+    var reference = 0.0
+    var orthogonality = 0.0
+    for j in 0..n {
+        for i in 0..n {
+            var kv = 0.0
+            var mv = 0.0
+            for k in 0..n {
+                kv += stiffness[i * n + k] * m.shapes[k * n + j]
+                mv += mass[i * n + k] * m.shapes[k * n + j]
+            }
+            let delta = kv - m.squared_frequencies[j] * mv
+            residual += delta * delta
+            reference += kv * kv
+        }
+        for k in 0..n {
+            var inner = 0.0
+            for r in 0..n {
+                for s in 0..n {
+                    inner += m.shapes[r * n + j] * mass[r * n + s] * m.shapes[s * n + k]
+                }
+            }
+            let expected = if j == k { 1.0 } else { 0.0 }
+            if (inner - expected).abs() > orthogonality { orthogonality = (inner - expected).abs() }
+        }
+    }
+    ((residual / reference).sqrt(), orthogonality)
+}

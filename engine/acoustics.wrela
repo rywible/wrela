@@ -1,0 +1,299 @@
+// Mechanical primitives for the original grand (docs/plan-original-grand.md P1).
+// This is a double-precision reference kernel, not the production piano.
+// Coordinates are mass-normalized: energy = (v² + omega² q²)/2 in joules,
+// and a contact observes displacement sum(shape * q), in metres.
+//
+// Over one step each linear mode is solved exactly under one constant force.
+// The hammer sees the opposite force. The force is the divided difference of
+// the unilateral felt potential U(d) = stiffness * max(d, 0)^4 / 4.
+// Thus total work = -F * (d_new - d_old) = -delta U, even during rebound.
+// The scalar monotone contact equation is bracketed and bisected with fixed work.
+// Viscous losses act on velocities in two half steps, so their removed kinetic
+// energy is explicit and contact potential is unchanged by the damping step.
+//
+// The equations are independently implemented from Newton's law and work/energy;
+// piano string/contact context: Chabassier, Chaigne & Joly (2014), plan source R2.
+// No old piano model, recordings, measured tone tables or random excitation.
+
+use std::math::{PI_F64, cos_f64, exp_f64, log_f64, sin_f64}
+
+pub struct StringSpec: Copy {
+    /// SI: metres, newtons, kg/m, and N m².
+    pub length: f64,
+    pub tension: f64,
+    pub density: f64,
+    pub rigidity: f64,
+    /// Fraction along the speaking length, strictly between zero and one.
+    pub strike: f64,
+    /// Metres, uniform hammer footprint along the string; zero is point contact.
+    pub contact_width: f64 = 0.0,
+}
+
+/// A pinned stiff string's analytic angular frequency. n starts at one.
+pub fn angular(s: StringSpec, n: u32) -> f64 {
+    assert(s.length > 0.0 && s.tension > 0.0 && s.density > 0.0)
+    assert(s.rigidity >= 0.0 && n > 0)
+    let k = PI_F64 * f64(n) / s.length
+    (k * k * (s.tension + s.rigidity * k * k) / s.density).sqrt()
+}
+
+/// A modal coordinate and its exact constant-force propagator, cooked for dt.
+pub struct Mode: Copy {
+    pub q: f64,
+    pub v: f64,
+    pub omega: f64,
+    pub shape: f64,
+    c: f64,
+    sv: f64,
+    sq: f64,
+    force_q: f64,
+    force_v: f64,
+    half_damping: f64,
+    dt: f64,
+}
+
+pub fn mode(omega: f64, shape: f64, loss: f64, dt: f64) -> Mode {
+    assert(omega > 0.0 && omega * dt < PI_F64 && dt > 0.0)
+    assert(loss >= 0.0)
+    let sn = sin_f64(omega * dt)
+    let half = sin_f64(0.5 * omega * dt)
+    Mode {
+        q: 0.0,
+        v: 0.0,
+        omega,
+        shape,
+        c: cos_f64(omega * dt),
+        sv: sn / omega,
+        sq: -omega * sn,
+        // Avoid catastrophic cancellation in 1 - cos for bass modes.
+        force_q: shape * 2.0 * half * half / (omega * omega),
+        force_v: shape * sn / omega,
+        half_damping: exp_f64(-loss * dt),
+        dt,
+    }
+}
+
+pub fn string_mode(s: StringSpec, n: u32, loss: f64, dt: f64) -> Mode {
+    assert(s.strike > 0.0 && s.strike < 1.0)
+    mode(angular(s, n), contact_shape(s, n), loss, dt)
+}
+
+pub struct Hammer: Copy {
+    /// kg; N/m³ for the cubic force law.
+    pub mass: f64,
+    pub stiffness: f64,
+    /// m/N of eliminated high-mode compliance; zero for a fully resolved model.
+    pub compliance: f64 = 0.0,
+    /// metres and m/s; positive velocity moves into the strings.
+    pub x: f64,
+    pub v: f64,
+}
+
+pub struct Balance: Copy {
+    pub force: f64,
+    pub dissipated: f64,
+    pub residual: f64,
+    /// Relative residual of the scalar force equation.
+    pub contact_error: f64,
+}
+
+@audio
+pub fn positive(x: f64) -> f64 {
+    if x > 0.0 { x } else { 0.0 }
+}
+
+@audio
+pub fn potential(stiffness: f64, compression: f64) -> f64 {
+    let x = positive(compression)
+    let xx = x * x
+    0.25 * stiffness * xx * xx
+}
+
+/// Stable secant of the contact potential, including zero-crossing contact.
+@audio
+pub fn contact_force(stiffness: f64, old: f64, next: f64) -> f64 {
+    if old >= 0.0 && next >= 0.0 {
+        0.25 * stiffness * (old + next) * (old * old + next * next)
+    } else if old <= 0.0 && next <= 0.0 {
+        0.0
+    } else {
+        (potential(stiffness, next) - potential(stiffness, old)) / (next - old)
+    }
+}
+
+@audio
+pub fn displacement(modes: [Mode]) -> f64 {
+    var x = 0.0
+    for m in modes { x += m.shape * m.q }
+    x
+}
+
+@audio
+pub fn energy(h: Hammer, modes: [Mode]) -> f64 {
+    var e = 0.5 * h.mass * h.v * h.v
+    for m in modes { e += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+    e + stored_contact(h, h.x - displacement(modes))
+}
+
+@audio
+fn damp(modes: mut [Mode]) -> f64 {
+    var removed = 0.0
+    for i in 0..modes.len() {
+        let before = modes[i].v
+        let after = before * modes[i].half_damping
+        modes[i].v = after
+        removed += 0.5 * (before - after) * (before + after)
+    }
+    removed
+}
+
+/// Advances exactly dt as cooked in the modes. 48 bracket steps, no allocations.
+/// Hammer and cooked time steps are validated; no control work is
+/// inserted by this operation. The report exposes numerical error, never hides it.
+@audio
+pub fn contact_step(h: mut Hammer, modes: mut [Mode], dt: f64) -> Balance {
+    assert(h.mass > 0.0 && h.stiffness >= 0.0 && h.compliance >= 0.0 && dt > 0.0)
+    for m in modes { assert(m.dt == dt, "contact step differs from cooked mode step") }
+    let before = energy(h, modes)
+    var lost = damp(mut modes)
+    let old = h.x - displacement(modes)
+    let free_hammer = h.x + dt * h.v
+    var free_string = 0.0
+    var response = 0.5 * dt * dt / h.mass
+    for m in modes {
+        free_string += m.shape * (m.c * m.q + m.sv * m.v)
+        response += m.shape * m.force_q
+    }
+    let free = free_hammer - free_string
+    // F(d) is increasing; d(F) = free - response * F is decreasing.
+    // F=0 is below the root, and the free-motion force bounds it above.
+    var lo = 0.0
+    var hi = effective_force(h, old, free)
+    for _ in 0..48 {
+        let f = 0.5 * (lo + hi)
+        let want = effective_force(h, old, free - response * f)
+        if f < want { lo = f } else { hi = f }
+    }
+    let force = 0.5 * (lo + hi)
+    for i in 0..modes.len() {
+        let m = modes[i]
+        modes[i].q = m.c * m.q + m.sv * m.v + m.force_q * force
+        modes[i].v = m.sq * m.q + m.c * m.v + m.force_v * force
+    }
+    h.x = free_hammer - 0.5 * dt * dt * force / h.mass
+    h.v -= dt * force / h.mass
+    lost += damp(mut modes)
+    let wanted = effective_force(h, old, h.x - displacement(modes))
+    let scale = if force > 1.0 { force } else { 1.0 }
+    Balance {
+        force,
+        dissipated: lost,
+        residual: energy(h, modes) + lost - before,
+        contact_error: (force - wanted).abs() / scale,
+    }
+}
+
+/// Free modes with the same symmetric viscous split used in contact_step.
+@audio
+pub fn free_step(modes: mut [Mode]) -> f64 {
+    var lost = damp(mut modes)
+    for i in 0..modes.len() {
+        let m = modes[i]
+        modes[i].q = m.c * m.q + m.sv * m.v
+        modes[i].v = m.sq * m.q + m.c * m.v
+    }
+    lost += damp(mut modes)
+    lost
+}
+
+/// Felt compression when omitted high modes are represented by a positive,
+/// massless series compliance. z = d + compliance * stiffness * d^3.
+/// This is a quasistatic reduction, not a second copy of retained string modes.
+@audio
+pub fn felt_compression(h: Hammer, z: f64) -> f64 {
+    if z <= 0.0 { return 0.0 }
+    let a = h.compliance * h.stiffness
+    if a == 0.0 { return z }
+    let root = (3.0 * a).sqrt()
+    let arg = 1.5 * z * root
+    let asinh = if arg < 0.001 {
+        let aa = arg * arg
+        arg * (1.0 - aa / 6.0 + 3.0 * aa * aa / 40.0)
+    } else {
+        log_f64(arg + (1.0 + arg * arg).sqrt())
+    }
+    let t = asinh / 3.0
+    let sinh = if t < 0.001 {
+        let tt = t * t
+        t * (1.0 + tt / 6.0 + tt * tt / 120.0)
+    } else {
+        0.5 * (exp_f64(t) - exp_f64(-t))
+    }
+    2.0 * sinh / root
+}
+
+@audio
+pub fn stored_contact(h: Hammer, z: f64) -> f64 {
+    let d = felt_compression(h, z)
+    let f = h.stiffness * d * d * d
+    potential(h.stiffness, d) + 0.5 * h.compliance * f * f
+}
+
+@audio
+pub fn instantaneous_force(h: Hammer, z: f64) -> f64 {
+    let d = felt_compression(h, z)
+    h.stiffness * d * d * d
+}
+
+/// Divided difference of the combined felt + eliminated-mode spring energy.
+/// The polynomial form avoids cancellation when the endpoints almost agree.
+@audio
+pub fn effective_force(h: Hammer, old: f64, next: f64) -> f64 {
+    if h.compliance == 0.0 { return contact_force(h.stiffness, old, next) }
+    if old <= 0.0 && next <= 0.0 { return 0.0 }
+    if old < 0.0 || next < 0.0 {
+        return (stored_contact(h, next) - stored_contact(h, old)) / (next - old)
+    }
+    let a = felt_compression(h, old)
+    let b = felt_compression(h, next)
+    let polynomial = a * a + a * b + b * b
+    let felt_secant = 0.25 * h.stiffness * (a + b) * (a * a + b * b)
+    let spring_secant = 0.5 *
+        h.compliance *
+        h.stiffness *
+        h.stiffness *
+        (a * a * a + b * b * b) *
+        polynomial
+    (felt_secant + spring_secant) / (1.0 + h.compliance * h.stiffness * polynomial)
+}
+
+/// Remaining static point compliance above a retained modal cutoff. The width
+/// is a uniform contact footprint: sinc is its analytic sine-basis integral.
+/// The returned tail bound uses sin² <= 1, sinc² <= 4L²/(n² pi² width²),
+/// the bending-dominated omega² lower bound and the integral of n^-6.
+/// No measured or recording-derived correction enters this calculation.
+pub fn omitted_compliance(s: StringSpec, retained: u32) -> (f64, f64) {
+    assert(s.contact_width > 0.0 && s.rigidity > 0.0 && retained < 8192)
+    var compliance = 0.0
+    for n in retained + 1..8193 {
+        let shape = contact_shape(s, n)
+        let omega = angular(s, n)
+        compliance += shape * shape / (omega * omega)
+    }
+    let n: f64 = 8192.0
+    let p2 = PI_F64 * PI_F64
+    let l2 = s.length * s.length
+    let bound = 8.0 *
+        l2 *
+        l2 *
+        s.length /
+        (5.0 * s.rigidity * p2 * p2 * p2 * s.contact_width * s.contact_width * n * n * n * n * n)
+    (compliance, bound)
+}
+
+pub fn contact_shape(s: StringSpec, n: u32) -> f64 {
+    assert(s.contact_width >= 0.0 && s.contact_width < s.length)
+    let a = 0.5 * PI_F64 * f64(n) * s.contact_width / s.length
+    let window = if a == 0.0 { 1.0 } else { sin_f64(a) / a }
+    sin_f64(PI_F64 * f64(n) * s.strike) * window / (s.density * s.length * 0.5).sqrt()
+}

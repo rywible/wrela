@@ -1,0 +1,73 @@
+// SIMD cost prototype for the modal representation. No sampled excitation or
+// fitted envelopes. q stores omega * displacement in mass-normalized units,
+// so each lane's energy is (q² + v²)/2. It is not an assembled instrument.
+use std::collections::Vec
+use std::math::{cos_f64, exp_f64, sin_f64}
+
+pub struct Bank: Copy {
+    pub q: vec4,
+    pub v: vec4,
+    c: vec4,
+    s: vec4,
+    d: vec4,
+}
+
+pub fn bank(omega: vec4, loss: vec4, dt: f64) -> Bank {
+    var c = vec4(0.0)
+    var s = vec4(0.0)
+    var d = vec4(0.0)
+    for lane in 0..4 {
+        assert(omega[lane] > 0.0 && f64(omega[lane]) * dt < 3.141592653589793)
+        assert(loss[lane] >= 0.0 && dt > 0.0)
+        c[lane] = f32(cos_f64(f64(omega[lane]) * dt))
+        s[lane] = f32(sin_f64(f64(omega[lane]) * dt))
+        d[lane] = f32(exp_f64(-f64(loss[lane]) * dt))
+    }
+    Bank { q: vec4(0.0), v: vec4(0.0), c, s, d }
+}
+
+/// Sample-major order permits a shared board/contact update between samples.
+@audio
+pub fn advance(b: mut [Bank]) {
+    for i in 0..b.len() {
+        let g = b[i]
+        let half = g.v * g.d
+        b[i].q = g.c * g.q + g.s * half
+        b[i].v = (g.c * half - g.s * g.q) * g.d
+    }
+}
+
+/// Group-major free-run lower bound: no shared per-sample contact/board feedback.
+/// This is a benchmark ablation, never reported as a complete piano callback.
+@audio
+pub fn free_block(b: mut [Bank], samples: u32) {
+    for i in 0..b.len() {
+        let g = b[i]
+        var q = g.q
+        var v = g.v
+        for _ in 0..samples {
+            let half = v * g.d
+            let next = g.c * q + g.s * half
+            v = (g.c * half - g.s * q) * g.d
+            q = next
+        }
+        b[i].q = q
+        b[i].v = v
+    }
+}
+
+pub fn fixture(count: u32) -> Vec<Bank> {
+    assert(count % 4 == 0)
+    var b: Vec<Bank> = Vec::new()
+    for i in 0..count / 4 {
+        let omega = 100.0 + f32(i % 400) * 200.0
+        var g = bank(
+            vec4(omega, omega + 20.0, omega + 40.0, omega + 60.0),
+            vec4(0.1),
+            1.0 / 48000.0,
+        )
+        g.v = vec4(1e-5)
+        b.push(g)
+    }
+    b
+}

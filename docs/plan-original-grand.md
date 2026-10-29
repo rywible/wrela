@@ -1,6 +1,6 @@
 # An original Wrela grand piano, and a path to an orchestra
 
-*Execution plan, 2026-10-29. Requested by Ryan. Status: planned; no new instrument or performance result is claimed. Baseline inspected on the ThinkPad at Wrela commit `807f9c080727c3ecae29d8e6bf43d0eb4b2a7c67`, toolchain pin 0.10.0.*
+*Execution plan, 2026-10-29. Requested by Ryan. Status: implementation in progress; see section 13 for scoped evidence and unmet gates. Baseline inspected on the ThinkPad at Wrela commit `807f9c080727c3ecae29d8e6bf43d0eb4b2a7c67`, toolchain pin 0.10.0.*
 
 ## 1. The goal and the authority to act
 
@@ -444,3 +444,88 @@ Requested by Ryan, executed read-only through Claude Code CLI 2.1.301 on the Thi
 | Low: sympathy, aliasing, velocities | Clarified the feed-forward bank (§2), alias-isolation procedure (§5.3) and physical velocity units (§5.2). |
 
 Full review, request and provenance manifest are retained at `/home/ryan-wible/wrela-evidence/grand/plan-review-2026-10-29/` on the ThinkPad. Review improves the execution contract; it does not establish instrument quality, runtime feasibility or evaluator availability.
+
+## 13. Implementation evidence — mechanics checkpoint, 2026-10-29
+
+Implementation is in progress on the ThinkPad. **No P-stage is marked complete, no musical
+champion has been promoted, and no “best piano” claim is made.** The current deliverable is
+a working numerical laboratory and physical reference primitives, not the finished instrument.
+
+- Installed the pinned official Wrela 0.10.0 Linux release and verified its published archive
+  SHA-256. The compiler identifies itself as `57e38f1c6827e39d4eb377bdd297cfb14592a11b`.
+- `engine/acoustics.wrela` implements mass-normalized stiff-string modes, finite-width felt
+  contact, bounded discrete-work contact solves, explicit viscous losses and a positive
+  series compliance derived from omitted modes. The latter is a declared quasistatic
+  approximation, not fitted excitation.
+- `studio/acoustics/reference.wrela` independently integrates the instantaneous equations
+  with RK4. It does not call the runtime contact update, its propagator or its energy function.
+  The rigid-wall check also uses an independent energy integral.
+- `engine/acoustic_modes.wrela` and `acoustic_plate.wrela` supply small generalized
+  eigenproblems and a simply supported orthotropic plate with ribs. This is not yet the
+  grand's actual rim, static equilibrium or bridge geometry.
+- `acoustic_system.wrela` verifies small coupled mechanical systems. `acoustic_bridge.wrela`
+  and `acoustic_waveguide.wrela` additionally verify a shared, power-balanced termination
+  between ideal strings and structural modes. Unstruck strings receive energy; a decoupled
+  ablation does not. The waveguide has integer delays and no string dispersion yet.
+- 23 focused tests pass without diagnostics. They include independent eigenvalues,
+  reciprocity, contact work, rebound, damping, modal phase, SIMD roundoff, travelling-wave
+  energy, shared-body port work and preserved parked-string state.
+- Nine low/middle/high register × 0.3/1.5/4 m/s probes pass the current contact experiment.
+  At 48 kHz, worst peak-force error is **1.662%**, first-separation-time error **0.0664%**,
+  and post-contact return-speed error **0.00879%**, against the more resolved independent
+  reference. First separation and final return are distinct: a bass string can separate
+  while the hammer is still moving forward. The reference uses eight times the retained
+  modes and 1.536 MHz; halving its time step changed the checked observables by at most
+  0.000486%. The last modal refinement changed peak force by 0.00133%, 0.0108% and 0.600%
+  respectively. These are narrow fixture results, not full-key, damped, nonlinear-tension
+  or audible-aliasing qualification.
+- The first point-contact/truncated model failed: hard bass peak force depended strongly on
+  retained modes. Finite width, analytically calculated tail compliance and 128 retained bass
+  modes corrected the tested case. Failure reports are retained. Port-energy checks also
+  caught an incorrect factor in the first shared-bridge scattering equation; the corrected
+  expression is `F = Z (2 a - v)`, with the same observation and drive transform.
+- Representation costs are recorded in `docs/bench.md`. Both a large SIMD modal bank and the
+  complete scalar travelling-wave/body prototype miss the final budget. Their cheap
+  component-only measurements do not qualify the complete instrument. The next runtime
+  experiment is a spatially reduced bridge connection and SIMD coupling, with error
+  measured against the full reference.
+- The available tools had no qualified audio-input judge. A local Qwen2.5-Omni-7B Q8 model
+  with an F16 audio projector was installed outside the repository, using verified hashes
+  and its Apache-2.0 source licence, solely for textual evaluation. It **failed** a blinded
+  preliminary control: eight seconds of exact digital silence were described as a sustained
+  metallic sine note. Its judgments are rejected. A different local model is being screened;
+  no listening gate is passed.
+- The workspace allowlist check reports only 15 pre-existing files under the unrelated
+  untracked `runtime/fixtures/first-light/page/` tree. They were preserved. New files conform
+  to the workspace's existing Wrela-source/manifests rules.
+
+Replay from the ThinkPad checkout:
+
+```text
+wrela test engine/tests/grand --json
+wrela tool acoustics -- contact
+wrela tool acoustics -- truncation
+wrela tool acoustics -- plate
+wrela tool acoustics -- cost
+wrela tool acoustics -- simd
+wrela tool acoustics -- waveguide
+wrela tool acoustics -- bridge-cost
+wrela tool acoustics -- render
+```
+
+The last command produces an explicitly labelled **isolated-string diagnostic**, plus known
+damaged controls, in `build/acoustics/`. It observes string velocity; it is not board radiation,
+a finished piano demo, or evidence of good sound. Its five files use one fixed calibration and
+are only a preliminary evaluator screen, not the BS.1770-matched musical comparison protocol.
+
+Authoritative source archives, command results, failures, environment and checksums are under
+`/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/`; checkpoint-1 includes the
+exact source archive for its tests and numerical reports. Listener requests, exact input hashes,
+outputs and the silence audit are under
+`/home/ryan-wible/wrela-evidence/grand/listener-qualification-2026-10-29/`.
+
+Outstanding: verified musical evaluator, original full instrument definition and provenance
+contract, detailed bridge/rim equilibrium and radiation, production reduction, all-key controls
+and pedals, browser/consumer measurements, autonomous voicing, holdout and release-candidate
+integration. Existing piano consumers and Salamander attribution remain in place; this
+checkpoint does not satisfy P8's dependency-closure requirement.

@@ -1,0 +1,107 @@
+// Independent explicit ODE reference. This code does not call the contact
+// integrator, its secant potential, propagator or energy diagnostic.
+// Classical RK4 resolves q'' + omega² q = shape * F and m x'' = -F,
+// with instantaneous unilateral F=k max(x-sum(shape*q),0)^3.
+// Allocate scratch once; each step has four force evaluations and bounded work.
+use engine::acoustics::{Hammer, StringSpec}
+use std::collections::Vec
+use std::math::{PI_F64, cos_f64, sin_f64}
+
+pub struct Reference: Clone {
+    pub state: Vec<f64>,
+    pub omega2: Vec<f64>,
+    pub shape: Vec<f64>,
+    mass: f64,
+    stiffness: f64,
+    a: Vec<f64>,
+    b: Vec<f64>,
+    c: Vec<f64>,
+    d: Vec<f64>,
+    stage: Vec<f64>,
+}
+
+pub fn reference(s: StringSpec, h: Hammer, count: u32) -> Reference {
+    var omega2: Vec<f64> = Vec::new()
+    var shape: Vec<f64> = Vec::new()
+    for n in 1..count + 1 {
+        // Independent eigenvalue formula (not engine::acoustics::angular).
+        let f = f64(n) / (2.0 * s.length) * (s.tension / s.density).sqrt()
+        let inharmonicity = s.rigidity * PI_F64 * PI_F64 / (s.tension * s.length * s.length)
+        omega2.push(4.0 * PI_F64 * PI_F64 * f * f * (1.0 + inharmonicity * f64(n * n)))
+        let left = s.strike - s.contact_width / (2.0 * s.length)
+        let right = s.strike + s.contact_width / (2.0 * s.length)
+        let center = sin_f64(PI_F64 * f64(n) * s.strike)
+        let footprint = if s.contact_width == 0.0 { center } else {
+            (cos_f64(PI_F64 * f64(n) * left) - cos_f64(PI_F64 * f64(n) * right)) /
+                (PI_F64 * f64(n) * (right - left))
+        }
+        shape.push(footprint * (2.0 / (s.density * s.length)).sqrt())
+    }
+    let size = 2 * count + 2
+    var state: Vec<f64> = Vec::filled(size, 0.0)
+    state[0] = h.x
+    state[1] = h.v
+    Reference {
+        state,
+        omega2,
+        shape,
+        mass: h.mass,
+        stiffness: h.stiffness,
+        a: Vec::filled(size, 0.0),
+        b: Vec::filled(size, 0.0),
+        c: Vec::filled(size, 0.0),
+        d: Vec::filled(size, 0.0),
+        stage: Vec::filled(size, 0.0),
+    }
+}
+
+fn compression(y: [f64], shape: [f64]) -> f64 {
+    var x = y[0]
+    for j in 0..shape.len() { x -= shape[j] * y[2 + 2 * j] }
+    x
+}
+
+fn derivative(y: [f64], mass: f64, stiffness: f64, omega2: [f64], shape: [f64], out: mut [f64]) {
+    let delta = compression(y, shape)
+    let force = if delta > 0.0 { stiffness * delta * delta * delta } else { 0.0 }
+    out[0] = y[1]
+    out[1] = -force / mass
+    for j in 0..shape.len() {
+        out[2 + 2 * j] = y[3 + 2 * j]
+        out[3 + 2 * j] = -omega2[j] * y[2 + 2 * j] + shape[j] * force
+    }
+}
+
+pub fn advance(r: mut Reference, dt: f64) {
+    derivative(r.state, r.mass, r.stiffness, r.omega2, r.shape, mut r.a)
+    for i in 0..r.state.len() { r.stage[i] = r.state[i] + 0.5 * dt * r.a[i] }
+    derivative(r.stage, r.mass, r.stiffness, r.omega2, r.shape, mut r.b)
+    for i in 0..r.state.len() { r.stage[i] = r.state[i] + 0.5 * dt * r.b[i] }
+    derivative(r.stage, r.mass, r.stiffness, r.omega2, r.shape, mut r.c)
+    for i in 0..r.state.len() { r.stage[i] = r.state[i] + dt * r.c[i] }
+    derivative(r.stage, r.mass, r.stiffness, r.omega2, r.shape, mut r.d)
+    for i in 0..r.state.len() {
+        r.state[i] += dt / 6.0 * (r.a[i] + 2.0 * r.b[i] + 2.0 * r.c[i] + r.d[i])
+    }
+}
+
+pub fn compression_of(r: Reference) -> f64 {
+    compression(r.state, r.shape)
+}
+
+pub fn force_of(r: Reference) -> f64 {
+    let delta = compression_of(r)
+    if delta > 0.0 { r.stiffness * delta * delta * delta } else { 0.0 }
+}
+
+pub fn energy_of(r: Reference) -> f64 {
+    let delta = max(0.0, compression_of(r))
+    var e = 0.5 * r.mass * r.state[1] * r.state[1] +
+        0.25 * r.stiffness * delta * delta * delta * delta
+    for j in 0..r.shape.len() {
+        e += 0.5 *
+            (r.state[3 + 2 * j] * r.state[3 + 2 * j] +
+                r.omega2[j] * r.state[2 + 2 * j] * r.state[2 + 2 * j])
+    }
+    e
+}

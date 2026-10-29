@@ -1,0 +1,81 @@
+// Diagnostic audification of an isolated struck string, not acoustic radiation
+// and not a finished piano. A fixed observation point and gain for every probe.
+// These original sounds also supply a preliminary evaluator defect screen.
+use engine::acoustics::{
+    Hammer, Mode, angular, contact_step, energy, free_step, omitted_compliance, string_mode,
+}
+use main::probe
+use std::collections::Vec
+use std::math::{PI_F64, sin_f64}
+use std::io::print
+use std::tool::ToolError
+use audio_tool::wav
+use toolkit::whole::write_file
+
+pub fn render() -> Result<(), ToolError> {
+    let dt: f64 = 1.0 / 48000.0
+    let samples: u32 = 48000 * 8
+    var audio: Vec<f32> = Vec::filled(samples, 0.0)
+    for register in 0..3 {
+        let p = probe(register, 1.5)
+        let (compliance, _) = omitted_compliance(p.string, p.modes)
+        var h = Hammer { compliance, ..p.hammer }
+        var modes: Vec<Mode> = Vec::new()
+        var pickup: Vec<f64> = Vec::new()
+        var static_compliance = 0.0
+        for n in 1..p.modes + 1 {
+            let omega = angular(p.string, n)
+            // Authored viscous fixture, not measured piano decay coefficients.
+            let loss = 0.18 + 5e-9 * omega * omega
+            let m = string_mode(p.string, n, loss: loss, dt: dt)
+            static_compliance += m.shape * m.shape / (omega * omega)
+            modes.push(m)
+            pickup.push(
+                sin_f64(PI_F64 * f64(n) * 0.37) / (0.5 * p.string.density * p.string.length).sqrt(),
+            )
+        }
+        // With no future external work, Cauchy-Schwarz bounds all possible
+        // contact-point displacement by sqrt(2 E C). Once the retreating
+        // hammer lies below that lower bound, it can never touch again.
+        let bound = (2.0 * energy(h, modes) * static_compliance).sqrt()
+        var detached = false
+        let start = register * 48000 * 2
+        for i in start..samples {
+            if detached {
+                let _ = free_step(mut modes)
+            } else {
+                let _ = contact_step(mut h, mut modes, dt)
+                if h.v < 0.0 && h.x < -bound { detached = true }
+            }
+            var velocity = 0.0
+            for n in 0..modes.len() { velocity += pickup[n] * modes[n].v }
+            audio[i] += f32(0.025 * velocity)
+        }
+    }
+    // A single fixed terminal fade for a finite file, labelled as presentation.
+    for i in samples - 4800..samples {
+        audio[i] *= f32(samples - 1 - i) / 4799.0
+    }
+    var peak: f32 = 0.0
+    for s in audio { peak = max(peak, s.abs()) }
+    assert(peak < 0.95, "diagnostic calibration clips")
+    for variant in 0..5 {
+        var bytes = wav::header(samples: samples, channels: 1)
+        for i in 0..samples {
+            var x = audio[i]
+            if variant == 1 { x = clamp(x * 40.0, -0.06, 0.06) }
+            if variant == 2 && i % 12000 < 2400 { x = 0.0 }
+            if variant == 3 && i >= 96000 { x = 0.0 }
+            if variant == 4 { x = 0.0 }
+            wav::push_u32(mut bytes, bitcast_u32(x))
+        }
+        let path = f"out/string-control-{variant}.wav"
+        var parts: Vec<Vec<u8>> = Vec::new()
+        parts.push(take bytes)
+        write_file(path, take parts)?
+    }
+    print(
+        f"{{\"render\":\"isolated-string diagnostic\",\"rate\":48000,\"seconds\":8,\"peak\":{peak},\"gain\":0.025,\"variants\":5,\"musical_approval\":false}}",
+    )
+    Ok(())
+}

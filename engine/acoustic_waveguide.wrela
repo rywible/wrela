@@ -1,0 +1,138 @@
+// Ideal-string travelling-wave prototype for the representation comparison.
+// It is not yet a stiff/wound string or the piano's bridge. Each ring represents
+// the round trip from the hammer to one fixed end. Entries are velocity waves.
+// Characteristic impedance Z = sqrt(tension * density), energy Z*dt*sum(wave²).
+// Contact port v = incoming_left + incoming_right + force/(2 Z).
+// The reflected outgoing waves then gain exactly dt*force*v in energy.
+// The same discrete contact potential used by the modal oracle closes the
+// hammer/string work budget. No recording, preset or sampled attack is an input.
+use acoustics::{Hammer, effective_force, stored_contact}
+use std::collections::Vec
+
+pub struct WaveString: Clone {
+    pub hammer: Hammer,
+    pub compression: f64,
+    pub impedance: f64,
+    pub dt: f64,
+    pub left: Vec<f64>,
+    pub right: Vec<f64>,
+    l: u32,
+    r: u32,
+}
+
+pub fn string(
+    left_samples: u32,
+    right_samples: u32,
+    impedance: f64,
+    dt: f64,
+    hammer: Hammer,
+) -> WaveString {
+    assert(left_samples >= 1 && right_samples >= 1)
+    assert(left_samples + right_samples <= 32768)
+    assert(impedance > 0.0 && dt > 0.0 && hammer.mass > 0.0 && hammer.stiffness >= 0.0)
+    assert(hammer.compliance == 0.0, "the ideal waveguide carries its own full contact compliance")
+    WaveString {
+        hammer,
+        compression: hammer.x,
+        impedance,
+        dt,
+        left: Vec::filled(left_samples, 0.0),
+        right: Vec::filled(right_samples, 0.0),
+        l: 0,
+        r: 0,
+    }
+}
+
+@audio
+fn advance(s: mut WaveString, fixed: bool) -> f64 {
+    let a = s.left[s.l]
+    let b = s.right[s.r]
+    let old = s.compression
+    let free = old + s.dt * (s.hammer.v - a - b)
+    let response = 0.5 * s.dt * (s.dt / s.hammer.mass + 1.0 / s.impedance)
+    var lo = 0.0
+    var hi = effective_force(s.hammer, old, free)
+    if hi > 0.0 {
+        for _ in 0..48 {
+            let force = 0.5 * (lo + hi)
+            let want = effective_force(s.hammer, old, free - response * force)
+            if force < want { lo = force } else { hi = force }
+        }
+    }
+    let force = 0.5 * (lo + hi)
+    let increment = force / (2.0 * s.impedance)
+    s.left[s.l] = -(b + increment)
+    s.right[s.r] = (if fixed { -1.0 } else { 1.0 }) * (a + increment)
+    s.l += 1
+    s.r += 1
+    if s.l == s.left.len() { s.l = 0 }
+    if s.r == s.right.len() { s.r = 0 }
+    s.hammer.x += s.dt * (s.hammer.v - 0.5 * s.dt * force / s.hammer.mass)
+    s.hammer.v -= s.dt * force / s.hammer.mass
+    s.compression = free - response * force
+    force
+}
+
+@audio
+pub fn energy(s: WaveString) -> f64 {
+    var waves = 0.0
+    for x in s.left { waves += x * x }
+    for x in s.right { waves += x * x }
+    0.5 * s.hammer.mass * s.hammer.v * s.hammer.v +
+        s.impedance * s.dt * waves +
+        stored_contact(s.hammer, s.compression)
+}
+
+@audio
+pub fn incoming(s: WaveString) -> (f64, f64) {
+    (s.left[s.l], s.right[s.r])
+}
+
+@audio
+pub fn step(s: mut WaveString) -> f64 {
+    advance(mut s, fixed: true)
+}
+
+@audio
+pub fn bridge_incoming(s: WaveString) -> f64 {
+    assert(s.right.len() % 2 == 0)
+    s.right[(s.r + s.right.len() / 2) % s.right.len()]
+}
+
+@audio
+pub fn step_with_bridge(s: mut WaveString, returning: f64) -> f64 {
+    assert(s.right.len() % 2 == 0)
+    s.right[(s.r + s.right.len() / 2) % s.right.len()] = returning
+    advance(mut s, fixed: false)
+}
+
+/// Free transport with the hammer mechanically parked. The current string
+/// displacement is retained in compression, so rearming can account for it.
+/// Caller must keep the hammer out of contact and account for any action work.
+@audio
+fn free_transport(s: mut WaveString, fixed: bool) {
+    assert(s.hammer.v == 0.0 && s.compression < 0.0)
+    let a = s.left[s.l]
+    let b = s.right[s.r]
+    s.left[s.l] = -b
+    s.right[s.r] = if fixed { -a } else { a }
+    s.compression -= s.dt * (a + b)
+    s.l += 1
+    s.r += 1
+    if s.l == s.left.len() { s.l = 0 }
+    if s.r == s.right.len() { s.r = 0 }
+}
+
+/// Free string at a moving bridge, preserving receiver state while the hammer
+/// is parked. No resonance is removed because a key has not been struck.
+@audio
+pub fn free_with_bridge(s: mut WaveString, returning: f64) {
+    assert(s.right.len() % 2 == 0)
+    s.right[(s.r + s.right.len() / 2) % s.right.len()] = returning
+    free_transport(mut s, fixed: false)
+}
+
+@audio
+pub fn free_fixed(s: mut WaveString) {
+    free_transport(mut s, fixed: true)
+}

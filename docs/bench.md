@@ -1893,3 +1893,38 @@ Slowest compiles, vale-walk (cold):
 | character+character_shade | 31.12 | 94.8 |
 | trace | 30.89 | 95.6 |
 
+
+## Original grand: representation probes, ThinkPad, 2026-10-29
+
+Early architecture measurements from the implementation branch based on `f8d172b7`, using
+the pinned Wrela 0.10.0 native tool runner. ThinkPad T480s, i7-8650U, 22 GiB RAM, Linux
+7.0.0-38-generic; AC connected, `powersave` governor. A background model download was in
+progress. These are provisional single runs, not isolated qualification runs. No browser,
+graphics contention, device underrun, end-to-end latency or finished-instrument claim follows.
+
+All blocks have 128 samples at 48 kHz. Free-bank probes discard 50 warmup blocks and time 750;
+the complete shared-body prototype times 250 after 50 warmup blocks. State/energy witnesses
+prevent unused-result elimination. Timers surround synthesis; construction is outside them.
+
+| Probe | Work | Mean ms | p99 ms | Worst ms |
+|---|---|---:|---:|---:|
+| Scalar f64 modal reference | 8,192 free modes | 21.686 | 22.202 | 22.414 |
+| SIMD f32 modes, sample order | 8,192 free modes | 3.301 | 3.525 | 3.889 |
+| SIMD f32 modes, group order | 8,192 free modes; no shared per-sample feedback | 2.877 | 2.946 | 3.464 |
+| f64 ideal waveguides | 256 strings, parked hammers; no board or dispersion | 0.850 | 0.929 | 1.494 |
+| f64 waveguides + shared body | 256 strings, 4 body modes, parked hammers | 5.322 | 5.492 | 5.966 |
+| f64 waveguides + shared body | 256 strings, 8 body modes, parked hammers | 8.419 | 8.623 | 8.962 |
+| f64 waveguides + shared body | 256 strings, 16 body modes, parked hammers | 14.843 | 15.111 | 15.357 |
+
+Replay: `wrela tool acoustics -- cost|simd|waveguide|bridge-cost` (choose one command).
+Source and raw results are retained in
+`/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/`.
+The 0.929 ms component result does **not** pass Concert's 1 ms complete callback target:
+the shared body alone changes that conclusion. No tested representation is production-qualified.
+
+Separately, the old piano's driven single-note probe
+`wrela tool audio -- examples/piano speed --take 60,80,1 --seconds 2`
+reported mean 0.1842 ms, p99 0.2190 ms and worst 0.3013 ms over 750 blocks.
+That driven build has interruption checks and is comparable only to the same driven harness,
+not to the native-tool figures above. It is a migration/cost baseline, not a new piano's
+voicing target.

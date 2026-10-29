@@ -1,0 +1,168 @@
+// A power-balanced shared mechanical termination for travelling-wave strings.
+// Incoming/outgoing velocity waves have power Z*(a²-b²). Every attachment sees
+// the same structural mode state, so energy can return to an unstruck string.
+// Exact constant-force modal propagation uses average velocity (q'-q)/dt.
+// Eliminating F_i=Z_i (2 a_i-B_i^T vbar) leaves one pre-factored positive
+// n-mode system. Per sample: O(strings*n + n²), no iteration or allocation.
+// This is a reference coupling primitive; no acoustic radiation is implied.
+use acoustic_modes::eigensystem
+use std::collections::Vec
+use std::math::{cos_f64, exp_f64, sin_f64}
+
+pub struct BodyMode: Copy {
+    pub q: f64,
+    pub v: f64,
+    omega: f64,
+    c: f64,
+    sine: f64,
+    sv: f64,
+    dq: f64,
+    root_dq: f64,
+    half_damping: f64,
+}
+
+pub struct Bridge: Clone {
+    pub modes: Vec<BodyMode>,
+    pub coupling: Vec<f64>,
+    pub impedances: Vec<f64>,
+    gram: Vec<f64>,
+    inverse: Vec<f64>,
+    dt: f64,
+    free_q: Vec<f64>,
+    free_v: Vec<f64>,
+    average: Vec<f64>,
+    rhs: Vec<f64>,
+    y: Vec<f64>,
+}
+
+/// coupling[i*n+j] observes board mode j at string i's bridge contact.
+pub fn bridge(
+    omega: [f64],
+    loss: [f64],
+    coupling: [f64],
+    impedance: [f64],
+    dt: f64,
+) -> Option<Bridge> {
+    let n = omega.len()
+    if n == 0 || n > 64 || loss.len() != n || coupling.len() != impedance.len() * n || !(dt > 0.0) {
+        return None
+    }
+    var modes: Vec<BodyMode> = Vec::new()
+    for j in 0..n {
+        if !(omega[j] > 0.0 && omega[j] * dt < 3.141592653589793 && loss[j] >= 0.0) { return None }
+        let half = sin_f64(omega[j] * dt * 0.5)
+        let dq = 2.0 * half * half / (omega[j] * omega[j])
+        modes.push(
+            BodyMode {
+                q: 0.0,
+                v: 0.0,
+                omega: omega[j],
+                c: cos_f64(omega[j] * dt),
+                sine: sin_f64(omega[j] * dt),
+                sv: sin_f64(omega[j] * dt) / omega[j],
+                dq,
+                root_dq: dq.sqrt(),
+                half_damping: exp_f64(-loss[j] * dt),
+            },
+        )
+    }
+    var gram: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..impedance.len() {
+        if !(impedance[i] > 0.0) { return None }
+        for j in 0..n {
+            for k in 0..n {
+                gram[j * n + k] += impedance[i] * coupling[i * n + j] * coupling[i * n + k]
+            }
+        }
+    }
+    var a: Vec<f64> = Vec::filled(n * n, 0.0)
+    var identity: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        identity[j * n + j] = 1.0
+        for k in 0..n {
+            a[j * n + k] = (if j == k { 1.0 } else {
+                0.0
+            }) + 1.0 / dt * modes[j].root_dq * gram[j * n + k] * modes[k].root_dq
+        }
+    }
+    let e = eigensystem(identity, a, n)?
+    var inverse: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        for k in 0..n {
+            for p in 0..n {
+                inverse[j * n + k] += e.shapes[j * n + p] *
+                    e.shapes[k * n + p] /
+                    e.squared_frequencies[p]
+            }
+        }
+    }
+    Some(
+        Bridge {
+            modes,
+            coupling: Vec::from(coupling),
+            impedances: Vec::from(impedance),
+            gram,
+            inverse,
+            dt,
+            free_q: Vec::filled(n, 0.0),
+            free_v: Vec::filled(n, 0.0),
+            average: Vec::filled(n, 0.0),
+            rhs: Vec::filled(n, 0.0),
+            y: Vec::filled(n, 0.0),
+        },
+    )
+}
+
+/// Replaces incoming waves with reflected waves in a separate caller-owned array.
+/// Returns actual viscous energy removed from the structural modes.
+@audio
+pub fn scatter(b: mut Bridge, incoming: [f64], outgoing: mut [f64]) -> f64 {
+    let n = b.modes.len()
+    assert(incoming.len() == b.impedances.len() && outgoing.len() == incoming.len())
+    var lost = 0.0
+    for j in 0..n {
+        let m = b.modes[j]
+        let v = m.v * m.half_damping
+        lost += 0.5 * (m.v - v) * (m.v + v)
+        b.free_q[j] = m.c * m.q + m.sv * v
+        b.free_v[j] = -m.omega * m.sine * m.q + m.c * v
+        // Avoid subtracting near-equal positions in very low modes.
+        b.average[j] = (-m.omega * m.omega * m.dq * m.q + m.sv * v) / b.dt
+    }
+    for j in 0..n {
+        var force = 0.0
+        for i in 0..incoming.len() {
+            force += 2.0 * b.impedances[i] * b.coupling[i * n + j] * incoming[i]
+        }
+        for k in 0..n { force -= b.gram[j * n + k] * b.average[k] }
+        b.rhs[j] = b.modes[j].root_dq * force
+    }
+    for j in 0..n {
+        var value = 0.0
+        for k in 0..n { value += b.inverse[j * n + k] * b.rhs[k] }
+        b.y[j] = value
+    }
+    for j in 0..n {
+        let m = b.modes[j]
+        let force = b.y[j] / m.root_dq
+        let v = b.free_v[j] + m.sv * force
+        let damped = v * m.half_damping
+        b.modes[j].q = b.free_q[j] + m.root_dq * b.y[j]
+        b.modes[j].v = damped
+        b.average[j] += m.root_dq * b.y[j] / b.dt
+        lost += 0.5 * (v - damped) * (v + damped)
+    }
+    for i in 0..incoming.len() {
+        var velocity = 0.0
+        for j in 0..n { velocity += b.coupling[i * n + j] * b.average[j] }
+        outgoing[i] = velocity - incoming[i]
+    }
+    lost
+}
+
+@audio
+pub fn energy(b: Bridge) -> f64 {
+    var e = 0.0
+    for m in b.modes { e += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+    e
+}

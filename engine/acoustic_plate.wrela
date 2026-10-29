@@ -1,0 +1,98 @@
+// A deliberately small Rayleigh-Ritz plate model for P0-N.
+// A simply supported orthotropic rectangle with bonded Euler-Bernoulli ribs.
+// It is a verification/cooking primitive, not yet the grand's rim/bridge model.
+// Sine basis functions meet the support conditions exactly; all integrals here
+// are analytic. Ribs run across y, with their neutral-axis offset specified by
+// the caller. Their bending energy and added mass are both included.
+// Derived from the kinetic and bending energies; background: plan source R2.
+use acoustic_modes::{Modes, eigensystem}
+use std::collections::Vec
+use std::math::{PI_F64, sin_f64}
+
+pub struct Plate: Copy {
+    pub length: f64,
+    pub width: f64,
+    pub thickness: f64,
+    pub density: f64,
+    pub young_x: f64,
+    pub young_y: f64,
+    pub poisson_xy: f64,
+    pub shear: f64,
+}
+
+pub struct Rib: Copy {
+    pub x: f64,
+    /// kg/m and N m², including any declared parallel-axis contribution.
+    pub line_mass: f64,
+    pub bending: f64,
+}
+
+pub struct Structure: Clone {
+    pub count_x: u32,
+    pub count_y: u32,
+    pub plate: Plate,
+    pub mass: Vec<f64>,
+    pub stiffness: Vec<f64>,
+}
+
+pub fn assemble(p: Plate, ribs: [Rib], count_x: u32, count_y: u32) -> Option<Structure> {
+    let n = count_x * count_y
+    if count_x == 0 || count_y == 0 || n > 64 { return None }
+    if !(p.length > 0.0 && p.width > 0.0 && p.thickness > 0.0 && p.density > 0.0) {
+        return None
+    }
+    if !(p.young_x > 0.0 && p.young_y > 0.0 && p.shear > 0.0) { return None }
+    let nu_yx = p.poisson_xy * p.young_y / p.young_x
+    let denominator = 1.0 - p.poisson_xy * nu_yx
+    if !(denominator > 0.0) { return None }
+    let h3 = p.thickness * p.thickness * p.thickness
+    let dx = p.young_x * h3 / (12.0 * denominator)
+    let dy = p.young_y * h3 / (12.0 * denominator)
+    let dxy = p.poisson_xy * dy
+    let ds = p.shear * h3 / 12.0
+    let area_quarter = p.length * p.width * 0.25
+    var mass: Vec<f64> = Vec::filled(n * n, 0.0)
+    var stiffness: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        let kx = PI_F64 * f64(i / count_y + 1) / p.length
+        let ky = PI_F64 * f64(i % count_y + 1) / p.width
+        mass[i * n + i] = p.density * p.thickness * area_quarter
+        stiffness[i * n + i] = area_quarter *
+            (dx * kx * kx * kx * kx +
+                2.0 * (dxy + 2.0 * ds) * kx * kx * ky * ky +
+                dy * ky * ky * ky * ky)
+    }
+    for rib in ribs {
+        if !(rib.x > 0.0 && rib.x < p.length && rib.line_mass >= 0.0 && rib.bending >= 0.0) {
+            return None
+        }
+        for i in 0..n {
+            let sx = sin_f64(PI_F64 * f64(i / count_y + 1) * rib.x / p.length)
+            let ky = PI_F64 * f64(i % count_y + 1) / p.width
+            for j in 0..n {
+                if i % count_y != j % count_y { continue }
+                let tx = sin_f64(PI_F64 * f64(j / count_y + 1) * rib.x / p.length)
+                let integral = p.width * 0.5 * sx * tx
+                mass[i * n + j] += rib.line_mass * integral
+                stiffness[i * n + j] += rib.bending * ky * ky * ky * ky * integral
+            }
+        }
+    }
+    Some(Structure { count_x, count_y, plate: p, mass, stiffness })
+}
+
+pub fn solve(s: Structure) -> Option<Modes> {
+    eigensystem(s.mass, s.stiffness, s.count_x * s.count_y)
+}
+
+/// Metres per mass-normalized modal coordinate at an observation/attachment point.
+pub fn shape(s: Structure, m: Modes, index: u32, x: f64, y: f64) -> f64 {
+    assert(index < m.count && m.count == s.count_x * s.count_y)
+    var a = 0.0
+    for i in 0..m.count {
+        let sx = sin_f64(PI_F64 * f64(i / s.count_y + 1) * x / s.plate.length)
+        let sy = sin_f64(PI_F64 * f64(i % s.count_y + 1) * y / s.plate.width)
+        a += m.shapes[i * m.count + index] * sx * sy
+    }
+    a
+}
