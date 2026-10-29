@@ -3029,3 +3029,29 @@ Full response replacement plus rendering: exact field 3.11124 ms, native 3.73940
 This rebuilds unchanged source and omits actual edited geometry and selective invalidation. Do not generalize to ordinary editing. Complete rendering includes placement, visibility/depth, wood, shading, queue/clear, updates, copies and composite. Requested resources counted; DRM/PSS snapshots are whole-client, not per-asset or physical peak. Do not sum UMA pools.
 
 No 16× residency or G4 win. Change toward source-aware selective response-cache invalidation; test actual edits against equally informed controls. No training/new references; goals/frozen models unchanged. [Complete quality, tails, replacement, failures and evidence](neural-field-lanes.md).
+
+## Actual source edits: conventional source algebra and preparation tradeoff (2026-10-28)
+
+Solo Pop!_OS AMD RADV RENOIR; Wrela 0.9.0/de9b81e, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 26,560-card layouts, 320×128 complete frames, one translated clump toggled each frame. 240 frames after 60 warmup; equal source, ownership, changed-clump identity and material information for all controls. First joint assessment 23.09 minutes; decision 62.31; two candidate follow-ups, no training.
+
+| Method | GPU median / p95 ms | Requested live / peak B | Resident VRAM / GTT B |
+| --- | ---: | ---: | ---: |
+| Original native full update | 3.49828 / 3.53948 | 10,393,292 / 10,557,132 | 26,476,544 / 10,199,040 |
+| Compiled raw native full update | 2.92860 / 2.97140 | 10,394,700 / 10,558,540 | 26,300,416 / 10,035,200 |
+| Compiled raw compact full update | 3.46316 / 3.49920 | 3,823,724 / 3,987,564 | 17,793,024 / 10,133,504 |
+| Direct source field | 3.10864 / 3.14004 | 1,698,932 / 1,862,772 | 18,051,072 / 10,133,504 |
+| Native half invariant | 2.20608 / 2.31236 | 12,519,500 / 12,683,340 | 26,505,216 / 10,199,040 |
+| Compact f32 invariant | 2.59572 / 2.63144 | 8,073,324 / 8,237,164 | 22,249,472 / 10,035,200 |
+| Compact half invariant (retired) | 2.59176 / 2.62652 | 5,948,524 / 6,112,364 | 26,386,432 / 9,936,896 |
+
+
+- Compiled raw native full update versus Original native full update: **16.167% lower complete GPU time**, geometric paired-log 95% interval **16.089–16.250%**; CPU result inconclusive.
+- Native half invariant versus Compiled raw native full update: **25.403% lower complete GPU time**, geometric paired-log 95% interval **24.324–25.833%**; CPU result inconclusive.
+- Compact f32 invariant versus Compiled raw native full update: **11.669% lower complete GPU time**, geometric paired-log 95% interval **11.611–11.739%**; CPU result inconclusive.
+- Compact f32 invariant versus Compiled raw compact full update: **25.345% lower complete GPU time**, geometric paired-log 95% interval **25.220–25.404%**; CPU result inconclusive.
+
+All valid methods pass 90/90 rendered rows; silhouette coverage is unchanged. Stale negative fails all 60 edited rows. Preparation+update+render costs 3.46548 ms native half and 3.82876 ms compact f32, making full updates better for one-off edits. Repeated-edit costs exclude this initial preparation; no automatic reuse policy or arbitrary edit-target qualification.
+
+Whole frames include updates, placement, depth visibility, wood, shading, scratch and compositing. Requested live/peak includes all observed resources; DRM/PSS is whole-client residency, not per-asset attribution or physical peak. Do not sum UMA pools. Compact half's smaller buffer produces higher actual VRAM than f32 (fresh 26,386,432 versus 22,052,864 B); retire it.
+
+Continue native half and compact f32 invariant caches as opt-in paths plus fair full recomputation. 960 captures, 20 necessary edited reference cases, 48 retained/drift/default checks; failed source preserved. Goals/frozen models unchanged; no G4/world-leading claim. [Joint quality, complete cost, preparation, actual memory and evidence](neural-source-edits.md).

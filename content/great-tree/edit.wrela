@@ -1,0 +1,30 @@
+// Bounded actual-edit experiment: translate one source clump without changing its area.
+// Disabled in the ordinary authored asset; CAPTURE_PHASE selects only reference snapshots.
+use engine::plant::Plant
+
+pub const ENABLED: bool = false
+// 0 stale negative, 1 original full update, 2 source-compiled stable full update,
+// 3 f32 invariant, 4 native-only half invariant, 5 source-compiled raw full update.
+pub const MODE: u32 = 5
+pub const CAPTURE_PHASE: u32 = 0
+pub const CLUMP: u32 = 0
+pub const DELTA: vec3 = vec3(1.0, -0.6, 0.5)
+
+pub fn tree(phase: u32) -> Plant {
+    var p = tree::great_tree()
+    if ENABLED && phase > 0 {
+        let c = p.clumps[CLUMP]
+        p.clumps[CLUMP] = engine::plant::Clump { centre: c.centre + DELTA, ..c }
+    }
+    take p
+}
+
+pub fn validate() {
+    let a = tree(0)
+    let b = tree(1)
+    assert(a.cards() == b.cards() && a.top() == b.top() && a.reach() == b.reach())
+    assert(a.clumps.len() == b.clumps.len() && a.limbs.len() == b.limbs.len())
+}
+
+// Charge invariant preparation on every transition for an unamortized-cost diagnostic.
+pub const REBUILD_INVARIANT: bool = false

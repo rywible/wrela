@@ -7516,3 +7516,18 @@ Both permitted follow-ups preserve images and lose: per-pixel sharing costs 3.28
 Full replacement plus rendering costs 3.111 ms exact field versus 3.739 ms native / 4.103 ms compact. Paired savings are 17.020% and 24.326%; CPU improvement inconclusive. This rebuilds unchanged source, not actual edited-source or selective-invalidation proof.
 
 Change toward persistent response caching with source-derived dependency/change bounds. Next test actual edits and fair selective conventional updates, charging metadata, fallback and refresh costs. No training/new references; G1–G7 and frozen models unchanged/unmet. Manifest: `cd936529f0af25926f3c1465f2e46395282c909105f466afec8395f9ecefc79f`.
+
+## 2026-10-28: Actual edits favor source-algebra caching, with preparation charged
+
+The [AMD source-edit comparison](neural-source-edits.md) finishes its initial assessment in 23.09 minutes and decides after exactly two candidate optimizations in 62.31 minutes. The fair native full updater costs 2.92860 ms, beating direct field evaluation at 3.10864 ms. Native half invariant caching costs 2.20608 ms; compact f32 costs 2.59572 ms.
+
+- Compiled raw native full update versus Original native full update: **16.167% lower complete GPU time**, geometric paired-log 95% interval **16.089–16.250%**; CPU result inconclusive.
+- Native half invariant versus Compiled raw native full update: **25.403% lower complete GPU time**, geometric paired-log 95% interval **24.324–25.833%**; CPU result inconclusive.
+- Compact f32 invariant versus Compiled raw native full update: **11.669% lower complete GPU time**, geometric paired-log 95% interval **11.611–11.739%**; CPU result inconclusive.
+- Compact f32 invariant versus Compiled raw compact full update: **25.345% lower complete GPU time**, geometric paired-log 95% interval **25.220–25.404%**; CPU result inconclusive.
+
+All valid methods pass 90/90 shaded rows with unchanged coverage; stale negative fails all 60 edited rows. There are 960 captures, 20 necessary new edited reference cases, 48 retained/default/drift checks, and no training. Invariant sums are immutable; 64 versus two alternating transitions preserve images exactly after response conversion.
+
+Preparation plus update/render costs 3.46548 ms native half and 3.82876 ms compact f32, so one-off changes favor full recomputation. Added requested storage is 2,124,800 / 4,249,600 B. Compact half is retired: fresh resident VRAM 26,386,432 B versus compact f32's 22,052,864 B despite smaller requested buffers.
+
+Continue source-derived statistics for repeated localized edits; retain full-update fallback and keep edits opt-in. Next test changing edit targets/query positions with preparation/invalidation charged and equal conventional inputs. No G4 16× residency, independent G3, unseen-family or density qualification. G1–G7/frozen models unchanged. Manifest: `c1bd9136294e1c43d86400bff808c89e0bb27045dfc442a214a0cd344a4fb4ed`.

@@ -314,6 +314,8 @@ pub struct Source {
     tile_slots: GpuBuffer<u32>,
     hierarchy_nodes: GpuBuffer<vec4>,
     hierarchy_response: GpuBuffer<vec2u>,
+    edit_invariant: Option<GpuBuffer<vec4>>,
+    edit_half_invariant: Option<GpuBuffer<vec2u>>,
 }
 
 @compute(64)
@@ -327,6 +329,14 @@ pub fn card_count() -> u32 {
 }
 
 pub fn init(active: bool) -> Source {
+    if active && great_tree::edit::ENABLED {
+        great_tree::edit::validate()
+        assert(great_tree::edit::MODE <= 5)
+        assert(!source_options::PROCEDURAL && !source_options::CACHE_DISTRIBUTION)
+        assert(!source_options::CACHE_RESPONSE)
+        // Compact half has worse measured residency than compact f32; archived, not retained.
+        assert(great_tree::edit::MODE != 4 || !source_hierarchy::ENABLED)
+    }
     assert(source_population::LAYOUTS > 0 && source_population::LAYOUTS <= 10)
     assert(source_population::CAPTURE < source_population::LAYOUTS)
     assert(
@@ -347,11 +357,16 @@ pub fn init(active: bool) -> Source {
             tile_slots: buffer(1),
             hierarchy_nodes: buffer(1),
             hierarchy_response: buffer(1),
+            edit_invariant: None,
+            edit_half_invariant: None,
         }
     }
     assert(!source_options::CACHE_RESPONSE || source_options::CACHE_DISTRIBUTION)
     let plant = great_tree()
     let n = plant.cards()
+    if great_tree::edit::ENABLED && great_tree::edit::MODE == 5 {
+        source_delta::validate_raw(plant)
+    }
     var cards = buffer(1)
     if !source_options::PROCEDURAL && !source_hierarchy::ENABLED {
         cards = buffer(n * source_population::LAYOUTS)
@@ -366,11 +381,17 @@ pub fn init(active: bool) -> Source {
     }
     var hierarchy_nodes = buffer(1)
     var hierarchy_response = buffer(1)
-    if source_hierarchy::ENABLED {
+    if source_hierarchy::ENABLED || (great_tree::edit::ENABLED && great_tree::edit::MODE >= 2) {
         assert(!source_options::PROCEDURAL && !source_options::CACHE_DISTRIBUTION)
         hierarchy_nodes = source_hierarchy::nodes(plant, n)
-        hierarchy_response = source_hierarchy::response(plant, n)
+        if source_hierarchy::ENABLED { hierarchy_response = source_hierarchy::response(plant, n) }
     }
+    let edit_invariant = if great_tree::edit::ENABLED && great_tree::edit::MODE == 3 {
+        Some(source_delta::invariant(plant, n, hierarchy_nodes))
+    } else { None }
+    let edit_half_invariant = if great_tree::edit::ENABLED && great_tree::edit::MODE == 4 {
+        Some(source_delta_half::invariant(plant, n, hierarchy_nodes))
+    } else { None }
     var pages = buffer(1)
     var tile_slots = buffer(1)
     var parameters = buffer(1)
@@ -421,6 +442,8 @@ pub fn init(active: bool) -> Source {
         tile_slots,
         hierarchy_nodes,
         hierarchy_response,
+        edit_invariant,
+        edit_half_invariant,
     }
 }
 
@@ -1105,4 +1128,82 @@ pub fn finish_identity(
         )
     }
     std::gpu::label("complete appearance")
+}
+
+// A real source transition; existing buffers remain allocated.
+pub fn apply_edit(s: mut Source, phase: u32) {
+    if great_tree::edit::MODE == 0 { return }
+    let plant = great_tree::edit::tree(phase)
+    let n = plant.cards()
+    if source_hierarchy::ENABLED || great_tree::edit::MODE >= 2 {
+        source_hierarchy::edit_node(plant, mut s.hierarchy_nodes)
+    }
+    if source_hierarchy::ENABLED && source_hierarchy::FIELD_RESPONSE { return }
+    if great_tree::edit::MODE == 4 {
+        match mut s.edit_half_invariant {
+            Some(invariant) => {
+                if great_tree::edit::REBUILD_INVARIANT {
+                    std::gpu::label("invariant preparation")
+                    source_delta_half::refill(plant, n, s.hierarchy_nodes, mut invariant)
+                    std::gpu::label("source edit")
+                }
+                source_delta_half::cards(plant, n, s.hierarchy_nodes, invariant, mut s.cards)
+            },
+            None => panic("half invariant cache missing"),
+        }
+        return
+    }
+    if great_tree::edit::MODE >= 2 {
+        match mut s.edit_invariant {
+            Some(invariant) => {
+                if great_tree::edit::REBUILD_INVARIANT {
+                    std::gpu::label("invariant preparation")
+                    source_delta::refill(plant, n, s.hierarchy_nodes, mut invariant)
+                    std::gpu::label("source edit")
+                }
+                if source_hierarchy::ENABLED {
+                    source_delta::response(
+                        plant,
+                        n,
+                        s.hierarchy_nodes,
+                        invariant,
+                        mut s.hierarchy_response,
+                    )
+                } else {
+                    source_delta::cards(
+                        plant,
+                        n,
+                        s.hierarchy_nodes,
+                        invariant,
+                        mut s.cards,
+                    )
+                }
+            },
+            None => {
+                assert(great_tree::edit::MODE == 2 || great_tree::edit::MODE == 5)
+                // The full updater never reads invariant data; reuse the existing binding.
+                if source_hierarchy::ENABLED {
+                    source_delta::response(
+                        plant,
+                        n,
+                        s.hierarchy_nodes,
+                        s.hierarchy_nodes,
+                        mut s.hierarchy_response,
+                    )
+                } else {
+                    source_delta::cards(
+                        plant,
+                        n,
+                        s.hierarchy_nodes,
+                        s.hierarchy_nodes,
+                        mut s.cards,
+                    )
+                }
+            },
+        }
+    } else if source_hierarchy::ENABLED {
+        source_hierarchy::update_response(plant, n, mut s.hierarchy_response)
+    } else {
+        dispatch(cook_population.bind(plant, n, mut s.cards), over: n * source_population::LAYOUTS)
+    }
 }

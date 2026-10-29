@@ -630,6 +630,7 @@ fn composite_tiles(pixel: FragCoord, source: [u32]) -> vec4 {
 
 pub struct State {
     layout: u32,
+    edit_phase: u32,
     population: Option<GpuBuffer<vec4>>,
     sample_pixels: Option<GpuBuffer<u32>>,
     source: source_control::Source,
@@ -737,6 +738,7 @@ pub fn init() -> State {
     let aa = config::AA
     var s = State {
         layout: 0,
+        edit_phase: 0,
         population: None,
         sample_pixels: if config::MODE == 10 && config::AA == 4 && sample_lanes::LANES == 16 {
             Some(buffer(4096 * 4))
@@ -835,6 +837,7 @@ pub fn configure(s: mut State, view: u32, illumination: u32) {
     assert(view < 146 && illumination < 4)
     s.view = view
     s.illumination = illumination
+    edit_phase(mut s, illumination % 2)
 }
 
 // Preserve all four visibility samples while reusing one low-resolution target pair.
@@ -1210,6 +1213,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // Alternating reference views forces the candidate's sorting and updates every frame.
     s.view = s.step % 2
     s.illumination = (s.step / 2) % 4
+    edit_phase(mut s, s.illumination % 2)
     if source_population::LAYOUTS > 1 {
         for layout in 0..source_population::LAYOUTS {
             s.layout = layout
@@ -1231,4 +1235,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     screen.present()
     s.step += 1
+}
+
+fn edit_phase(s: mut State, phase: u32) {
+    if config::MODE == 10 && great_tree::edit::ENABLED && s.edit_phase != phase {
+        label("source edit")
+        source_control::apply_edit(mut s.source, phase)
+        s.edit_phase = phase
+        label("complete appearance")
+    }
 }

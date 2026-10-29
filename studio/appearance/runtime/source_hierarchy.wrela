@@ -457,3 +457,19 @@ fn source_region_lower_bound_encloses_supported_points() {
         }
     }
 }
+
+// The edit preserves radii, squash, owner ranges and all source bounds.
+@compute(64)
+fn move_node(which: u32, value: vec4, nodes: mut Slots<vec4>, id: GlobalId) {
+    if id.x == 1 + which * 2 { nodes[id] = value }
+}
+
+pub fn edit_node(plant: Plant, nodes: mut GpuBuffer<vec4>) {
+    let which = great_tree::edit::CLUMP
+    let c = plant.clumps[which]
+    dispatch(move_node.bind(which, vec4(c.centre, c.radius), mut nodes), over: 2 + which * 2)
+}
+
+pub fn update_response(plant: Plant, n: u32, response: mut GpuBuffer<vec2u>) {
+    dispatch(cook_response.bind(plant, n, mut response), over: n * source_population::LAYOUTS)
+}

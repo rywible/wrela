@@ -1,0 +1,96 @@
+// Half-precision variant of the same immutable source-sum update. Rendered quality is measured.
+// Source-algebra update for one translated clump. No history integration.
+// Unchanged owners retain fixed positions, so their other clump contributions are invariant.
+use engine::plant::{Card, Plant}
+use std::gpu::{GlobalId, GpuBuffer, Half2, Oct32, Slots, buffer, dispatch}
+
+fn contribution(plant: Plant, which: u32, p: vec3) -> vec4 {
+    let c = plant.clumps[which]
+    let w = exp(-plant.blend * c.distance(p))
+    vec4(c.normal(p) * w, w)
+}
+
+@compute(64)
+fn cook(plant: Plant, n: u32, nodes: [vec4], out: mut Slots<vec2u>, id: GlobalId) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    let index = id.x % n
+    let which = source_hierarchy::owner(index, nodes)
+    var sum = vec4(0.0)
+    if which != great_tree::edit::CLUMP {
+        let card = source_hierarchy::placed(index, which, nodes, id.x / n)
+        for i in 0..plant.clumps.len() {
+            if i != great_tree::edit::CLUMP { sum += contribution(plant, i, card.centre) }
+        }
+    }
+    out[id] = vec2u(Half2::encode(sum.xy).bits, Half2::encode(sum.zw).bits)
+}
+
+pub fn invariant(plant: Plant, n: u32, nodes: GpuBuffer<vec4>) -> GpuBuffer<vec2u> {
+    for i in 0..plant.clumps.len() {
+        let c = plant.clumps[i]
+        assert(
+            c.radius > 0.0 &&
+                c.squash > 0.0 &&
+                plant.blend > 0.0 &&
+                plant.blend * c.radius * max(c.squash, 1.0) < 20.0,
+        )
+    }
+    var bound = 0.0
+    for i in 0..plant.clumps.len() {
+        let c = plant.clumps[i]
+        bound += exp(plant.blend * c.radius * max(c.squash, 1.0))
+    }
+    assert(bound < 60000.0)
+    var out = buffer(n * source_population::LAYOUTS)
+    dispatch(cook.bind(plant, n, nodes.items(), mut out), over: n * source_population::LAYOUTS)
+    take out
+}
+
+fn updated(plant: Plant, n: u32, nodes: [vec4], invariant: [vec2u], at: u32) -> Card {
+    let index = at % n
+    let which = source_hierarchy::owner(index, nodes)
+    let card = source_hierarchy::placed(index, which, nodes, at / n)
+    if great_tree::edit::MODE == 2 || which == great_tree::edit::CLUMP {
+        let (d, g) = plant.crown(card.centre)
+        return Card { normal: Oct32::encode(normalize(g)), depth: max(-d, 0.0), ..card }
+    }
+    let raw = invariant[at]
+    let decoded = vec4(Half2 { bits: raw.x }.decode(), Half2 { bits: raw.y }.decode())
+    let v = decoded + contribution(plant, great_tree::edit::CLUMP, card.centre)
+    let sum = max(v.w, 0.5)
+    Card {
+        normal: Oct32::encode(normalize(v.xyz / sum)),
+        depth: max(log(sum) / plant.blend, 0.0),
+        ..card,
+    }
+}
+
+@compute(64)
+fn update_cards(
+    plant: Plant,
+    n: u32,
+    nodes: [vec4],
+    invariant: [vec2u],
+    out: mut Slots<Card>,
+    id: GlobalId,
+) {
+    if id.x >= n * source_population::LAYOUTS { return }
+    out[id] = updated(plant, n, nodes, invariant, id.x)
+}
+
+pub fn cards(
+    plant: Plant,
+    n: u32,
+    nodes: GpuBuffer<vec4>,
+    invariant: GpuBuffer<vec2u>,
+    out: mut GpuBuffer<Card>,
+) {
+    dispatch(
+        update_cards.bind(plant, n, nodes.items(), invariant.items(), mut out),
+        over: n * source_population::LAYOUTS,
+    )
+}
+
+pub fn refill(plant: Plant, n: u32, nodes: GpuBuffer<vec4>, out: mut GpuBuffer<vec2u>) {
+    dispatch(cook.bind(plant, n, nodes.items(), mut out), over: n * source_population::LAYOUTS)
+}
