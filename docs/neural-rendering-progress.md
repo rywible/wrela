@@ -18,17 +18,18 @@
 
 ## Immediate milestone
 
-Retain the measured [source-region temporal specialization](neural-motion-regions.md)
-and [compact causal source records](neural-source-records.md). Both the camera-map
-shortcut and the latest [shared leaf geometry](neural-leaf-geometry.md) are retired:
-no demonstrated joint quality/runtime/residency advantage. The complete production
-renderer still costs about25ms at1080p2× on this AMD machine. No G1–G7 gate is met.
+Retain the source-region temporal specialization, compact causal source records,
+packed empty-leaf certificate and the new [exact sparse appearance](neural-sparse-appearance.md)
+for the measured clearing. Exact BC page sharing cuts the impostor allocation 2.4×
+and the whole scene's requested steady bytes by22.02MB, with similar complete frame
+time. Observed GPU residency falls; total browserPSS is noisy and not a proven saving.
+The source-rebuild window adds about24.49ms GPU work. No G1–G7 gate is met.
 
-Next separate card, grass and far-crown costs, then test source-compiled coverage
-and work selection for the dominant vegetation work. Do not treat aggregate labels
-or preparation progress as a rendering gain. All useful source information remains
-available to conventional controls. The compact-G4 shaded-quality gap is still
-open; models stay frozen until a specific rendered defect justifies fitting.
+Next test source-space appearance factorization across angular views with explicit
+coverage/depth residuals. Give the conventional low-rank/analytic decoder the same
+field inputs as any learned decoder. Establish rendered quality, full cost and
+resident memory before fitting. The current exact-block family cannot reach16×G4;
+models remain frozen and completed references remain unchanged.
 
 ## Evidence recorded so far
 
@@ -3361,3 +3362,17 @@ No new representation-memory or G4 pass. G1–G7 unchanged/unmet; models frozen.
 Next measure the compression ceiling for exact source-derived sparse appearance
 pages, preserving mixed boundary samples and using an equally informed sparse control.
 Manifest `5b158891b49e944c75a28683f27324b34824397729bc74c330c45f460db8a695`. Inherited benchmark edits remain unstaged.
+
+## 2026-10-29: exact sparse production appearance
+
+Continue the fenced conventional page path for the measured clearing; change
+representation for the16×G4 research direction. First complete assessment 32.89
+minutes; exactly two followups. Impostors37,748,736→15,728,640bytes; whole-scene
+requested405,332,792→383,312,696bytes, peak582,510,964→578,009,512bytes.
+Full GPU24.95216→25.00236ms: no speedup claim. Four scored HDR outputs exact,
+but sparse1080p differences are preserved. Source-edited60frame GPU window
+2,310.276→2,334.768ms; requested peak633,016,412→610,996,316bytes.
+Observed GPU-client residency lower before/after edit; totalPSS inconsistent.
+Negative payload corruption detected; models/goals unchanged. See
+[complete comparison and limits](neural-sparse-appearance.md).
+Evidence manifest: `6b989c2026312f6e1ac745dca2038a58dd3a65a440c37328c189ec435ce41378`.

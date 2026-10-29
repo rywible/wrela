@@ -20,9 +20,12 @@
 // its square, drawn whole.
 
 use compress::{encode_bc5, encode_bc7, halves}
+use impostor_pages::{Build as PageBuild, Checking as PageChecking, Packed as PagePacked}
+use std::io::{print, Pending}
 use cull::{Hzb, NO_HZB, occluded}
 use impostor::{
     KindDesc, NO_NET, Neural, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade,
+    page_cut_flat, page_shade,
 }
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
@@ -38,7 +41,7 @@ use std::gpu::{
     GpuBuffer, GpuSpan, Half2, R32Float, Rg16Float, copy_buffer_to_texture, R32Uint, RenderPass,
     Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray, buffer,
     buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture, texture3d,
-    texture_array, writable_texture, write,
+    texture_array, writable_texture, write, read,
 }
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
@@ -658,6 +661,7 @@ pub enum Impostors {
         depth: TextureArray<Rg16Float>,
     },
     Compressed { colour: TextureArray<Bc7>, normal: TextureArray<Bc5>, depth: TextureArray<Bc5> },
+    Paged { data: PagePacked },
 }
 
 /// Kind `k`'s volume into slab `slab` of the volumes' atlas (`in_slab`): its voxel there, read
@@ -719,6 +723,7 @@ fn into_layer(
             )
             copy_buffer_to_texture(from: scratch.span(start: 0, count: words), to: d.layer_mut(i))
         },
+        Impostors::Paged { .. } => { assert(false, "cannot pool into a packed atlas") },
         Impostors::Plain { colour: c, normal: nm, depth: d } => {
             copy_texture(from: colour.level(0), to: c.layer_mut(i))
             let texels = a * a
@@ -852,6 +857,9 @@ pub struct Wood {
     pub slots: Vec<Slot>,
     /// The kinds pooled for the draws.
     pub pool: Pool,
+    page_build: Option<PageBuild>,
+    page_fence: Option<Pending<vec4>>,
+    page_check: Option<PageChecking>,
     /// The camera's last choosing (`select`), which `reveal`'s second phase repeats; and a
     /// pyramid of nothing, for the shadows' choosing.
     chose: Option<Choose>,
@@ -954,6 +962,9 @@ impl Wood {
                 },
             ),
             pool,
+            page_build: None,
+            page_fence: None,
+            page_check: None,
             chose: None,
             no_pyramid: writable_texture::<R32Float>(width: 1, height: 1),
             loaded_places: 0,
@@ -976,6 +987,65 @@ impl Wood {
         w
     }
 
+    /// Request exact block deduplication; ordinary arrays remain until every block is verified.
+    pub fn request_pages(mut self) {
+        if self.pages_pending() { return }
+        match self.pool.impostors {
+            Impostors::Compressed { .. } => {
+                // The source bake's temporary textures must retire before allocating hash scratch.
+                self.page_fence = Some(read(self.pool.bounds.span(start: 0, count: 1)))
+            },
+            _ => {},
+        }
+    }
+
+    pub fn pages_pending(self) -> bool {
+        self.page_fence.is_some() || self.page_build.is_some() || self.page_check.is_some()
+    }
+
+    pub fn settle_pages(mut self) {
+        let source_done = match mut self.page_fence {
+            Some(f) => match f.poll() {
+                Some(Ok(_)) => true,
+                Some(Err(_)) => {
+                    assert(false, "appearance source fence failed")
+                    false
+                },
+                None => false,
+            },
+            None => false,
+        }
+        if source_done {
+            self.page_fence = None
+            match self.pool.impostors {
+                Impostors::Compressed { colour, normal, depth } => {
+                    self.page_build = Some(PageBuild::new(colour, normal, depth))
+                },
+                _ => {},
+            }
+        }
+        let counted = match mut self.page_build {
+            Some(b) => b.poll(),
+            None => None,
+        }
+        if let Some(values) = counted {
+            let build = replace(mut self.page_build, None).unwrap()
+            assert(values.len() == 2 && values[1] == 0, "appearance page hash overflow")
+            print(f"APPEARANCE_PAGES unique={values[0]} hash_errors={values[1]}")
+            self.page_check = Some(take build.finish(values[0]))
+        }
+        let checked = match mut self.page_check {
+            Some(c) => c.poll(),
+            None => None,
+        }
+        if let Some(errors) = checked {
+            assert(errors == 0, "appearance page word verification failed")
+            let checked = replace(mut self.page_check, None).unwrap()
+            self.pool.impostors = Impostors::Paged { data: take checked.packed }
+            print("APPEARANCE_PAGES active all_block_words_verified")
+        }
+    }
+
     /// The GPU bytes its pooled kinds take but their impostors (`impostor_bytes`): their cards,
     /// card orders, limbs, impostor bounds and volumes, and every instance loaded.
     pub fn pool_bytes(self) -> u64 {
@@ -996,9 +1066,14 @@ impl Wood {
 
     /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
     pub fn impostor_bytes(self) -> u64 {
+        if let Impostors::Paged { data } = self.pool.impostors {
+            return memory::texels(data.colour.width(), data.colour.height(), 3) +
+                u64(data.map.len()) * 4
+        }
         let texel = match self.pool.impostors {
             Impostors::Plain { .. } => 12,
             Impostors::Compressed { .. } => 3,
+            Impostors::Paged { .. } => 0,
         }
         memory::texels(impostor::ATLAS, impostor::ATLAS, texel, d: self.kinds.len())
     }
@@ -1382,6 +1457,30 @@ impl Wood {
                 Impostors::Compressed { colour: c, .. } => {
                     self.impostors_prepass(pass, cam, wind, s, ph, c)
                 },
+                Impostors::Paged { data } => {
+                    draw_multi(
+                        pass,
+                        far_quad.bind(
+                            cam,
+                            wind,
+                            kinds: self.pool.kinds,
+                            instances: ph.instances.span(start: 0, count: self.seen.places),
+                            marks: ph.marks.span(start: 0, count: self.seen.places),
+                            bounds: self.pool.bounds,
+                            front: 0,
+                        ),
+                        page_cut_flat.bind(
+                            kinds: self.pool.kinds,
+                            colour: data.colour,
+                            pages: data.map,
+                            s: s,
+                            cell: self.cell,
+                        ),
+                        indirect: self.of_way(ph.far, IMPOSTOR),
+                        count: n,
+                        depth: NEAREST,
+                    )
+                },
             }
         }
         if self.seen.way_has(VOLUME, n) {
@@ -1541,6 +1640,33 @@ impl Wood {
                 },
                 Impostors::Compressed { colour: c, normal: nm, depth: d } => {
                     self.impostors_shade(pass, lt, wind, ids, ph, c, nm, d)
+                },
+                Impostors::Paged { data } => {
+                    draw_multi(
+                        pass,
+                        far_quad.bind(
+                            cam,
+                            wind,
+                            kinds: self.pool.kinds,
+                            instances: ph.instances.span(start: 0, count: self.seen.places),
+                            marks: ph.marks.span(start: 0, count: self.seen.places),
+                            bounds: self.pool.bounds,
+                            front: 1,
+                        ),
+                        page_shade.bind(
+                            lt,
+                            ids,
+                            kinds: self.pool.kinds,
+                            colour: data.colour,
+                            normal: data.normal,
+                            depth: data.depth,
+                            pages: data.map,
+                            grid: self.pool.grid,
+                        ),
+                        indirect: self.of_way(ph.far, IMPOSTOR),
+                        count: n,
+                        depth: impostor::SHADED,
+                    )
                 },
             }
         }

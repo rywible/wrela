@@ -3596,3 +3596,27 @@ All variants retain 405,332,792 requested live bytes and 582,510,964 peak bytes.
 Actual whole-client DRM/GTT/PSS, complete update/preparation/composition and startup
 costs recorded. Decision: retire; retained constant variant: False.
 No neural, G3 or G4 pass. See [full evidence and limits](neural-leaf-phases.md).
+
+## 2026-10-29: exact sparse production appearance, AMD
+
+Parent2072092d; toolchain0.9.0/compilerde9b81e5, RADV RENOIR1002:164c/Ryzen5500U,
+Mesa26.1.6/Chrome154.0.8037.57. Solo quiet GPU;1080p/internal2×,600warmup+60measured
+frames, same-build actual-allocation/DRM/PSS replay. Ordinary BC7+BC5+BC5 control,
+same fields/geometry/volumes and retained near-leaf support. No training.
+[Full protocol, quality and limitations](neural-sparse-appearance.md).
+
+| Method | Full GPU median/p95 ms | Requested live/peak bytes | Observed DRM VRAM/GTT bytes | Whole-browser PSS bytes |
+|---|---:|---:|---:|---:|
+| BC control |24.95216/26.55196|405332792/582510964|551952384/20180992|841558016|
+| First GPU pages |24.94336/26.6148|383312696/631486896|535240704/20475904|873338880|
+| Retained fenced pages |25.00236/26.73144|383312696/578009512|535302144/20492288|797790208|
+
+Impostor allocation37,748,736→15,728,640B (2.4×); all4 scored HDR outputs exact.
+1080p differs at five pixels by>2byte levels,max9; no universal pixel identity.
+Source-rebuild60frame GPU sum2310.27607→2334.76789ms; elapsed2499.07003→2526.66521ms.
+Afteredit requestedlive433085868→411065772B,peak633016412→610996316B;
+DRMVRAM585494528→577044480B,GTT20525056→20901888B,PSS857817088→869979136B.
+Physical figures are whole-client snapshots, not peaks; do not sum UMA pools.
+No established frame-time or totalphysicalmemory win. Continue bounded GPU memory
+tradeoff; G4 unmet. Exactly2followups; firstcomplete32.89min. All failed results
+preserved in sparse-appearance-v1; negative corrupted payload prevented activation.

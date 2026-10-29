@@ -1285,3 +1285,139 @@ fn two_sided_leaf_clusters_keep_sky_light_on_their_undersides() {
         )
     }
 }
+
+// A virtual 4x4 block address into the exact BC palette. Normal/depth taps share
+// this lookup, and colour uses hardware interpolation when its taps stay in one block.
+fn page_coord(at: vec2u, layer: u32, pages: [u32]) -> vec2u {
+    let page = pages[(layer * 256 + at.y / 4) * 256 + at.x / 4]
+    vec2u((page & 255) * 4 + (at.x & 3), (page >> 8) * 4 + (at.y & 3))
+}
+
+fn page_colour<C: Format + Filtered>(
+    colour: TextureArray<C>,
+    pages: [u32],
+    layer: u32,
+    s: Sampler,
+    at: vec2,
+    cell: u32,
+) -> vec4 {
+    let base = vec2(f32(cell % VIEWS), f32(cell / VIEWS)) / f32(VIEWS)
+    let end = base + vec2(1.0 / f32(VIEWS))
+    if at.x < base.x || at.y < base.y || at.x >= end.x || at.y >= end.y { return vec4(0.0) }
+    let lo = vec2u(cell % VIEWS, cell / VIEWS) * CELL
+    let hi = lo + vec2u(CELL - 1)
+    let g = clamp(at * f32(ATLAS) - vec2(0.5), vec2(lo), vec2(hi))
+    let i = vec2u(floor(g))
+    let t = g - vec2(i)
+    let j = min(i + vec2u(1), hi)
+    if i.x / 4 == j.x / 4 && i.y / 4 == j.y / 4 {
+        let p = page_coord(i, layer, pages)
+        let uv = (vec2(p) + t + vec2(0.5)) / vec2(f32(colour.width()), f32(colour.height()))
+        return C::rgba(colour.sample_level(s, uv, 0))
+    }
+    let p00 = page_coord(i, layer, pages)
+    let p10 = page_coord(vec2u(j.x, i.y), layer, pages)
+    let p01 = page_coord(vec2u(i.x, j.y), layer, pages)
+    let p11 = page_coord(j, layer, pages)
+    let a = C::rgba(colour.load(p00.x, p00.y, 0))
+    let b = C::rgba(colour.load(p10.x, p10.y, 0))
+    let c = C::rgba(colour.load(p01.x, p01.y, 0))
+    let d = C::rgba(colour.load(p11.x, p11.y, 0))
+    mix(mix(a, b, t.x), mix(c, d, t.x), t.y)
+}
+
+fn page_normal<C: Format, N: Format>(
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
+    pages: [u32],
+    layer: u32,
+    uv: vec2,
+    cell: u32,
+) -> (vec3, vec2) {
+    let lo = vec2u(cell % VIEWS, cell / VIEWS) * CELL
+    let hi = lo + vec2u(CELL - 1)
+    let g = clamp(uv * f32(ATLAS) - vec2(0.5), vec2(lo), vec2(hi))
+    let i = floor(g)
+    let t = g - i
+    var n = vec3(0.0)
+    var zw = vec2(0.0)
+    var coverage = 0.0
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let w = (if dx == 0 { 1.0 - t.x } else { t.x }) * (if dy == 0 { 1.0 - t.y } else {
+                t.y
+            })
+            let at = clamp(vec2u(i + vec2(f32(dx), f32(dy))), lo, hi)
+            let p = page_coord(at, layer, pages)
+            let covered = w * C::rgba(colour.load(p.x, p.y, 0)).a
+            let nxy = N::rgba(normal.load(p.x, p.y, 0)).xy * 2.0 - vec2(1.0)
+            n += oct_decode(nxy) * covered
+            zw += N::rgba(depth.load(p.x, p.y, 0)).xy * covered
+            coverage += covered
+        }
+    }
+    if coverage <= 1.0e-5 { return (vec3(0.0, 1.0, 0.0), vec2(0.5, 0.0)) }
+    (n / coverage, zw / coverage)
+}
+
+@fragment
+pub fn page_cut_flat<C: Format + Filtered>(
+    f: FarVertex,
+    pixel: FragCoord,
+    kinds: [KindDesc],
+    colour: TextureArray<C>,
+    pages: [u32],
+    s: Sampler,
+    cell: f32,
+) -> u32 {
+    let size = cell_size(f.uv, cell)
+    if !keeps_packed(f.keep.value, pixel.position.xy) { discard() }
+    let (at, view) = view_at(f, view_of(f, pixel.position.xy))
+    let c = page_colour(colour, pages, kinds[f.kind.value].layer, s, at, view).a
+    cut_dithered(f, c, size)
+    f.id.value
+}
+
+@fragment
+pub fn page_shade<C: Format + Filtered, N: Format>(
+    f: FarVertex,
+    pixel: FragCoord,
+    lt: Lighting,
+    ids: Texture<R32Uint>,
+    kinds: [KindDesc],
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
+    pages: [u32],
+    grid: Texture3d<Rgba16Float>,
+) -> vec4 {
+    if id_at(ids, pixel) != f.id.value { discard() }
+    let kd = kinds[f.kind.value]
+    let b = kd.bake
+    let k = view_of(f, pixel.position.xy)
+    let (uv, view) = view_at(f, k)
+    let c = page_colour(colour, pages, kd.layer, lt.s, uv, view)
+    let (pn, zw) = page_normal(colour, normal, depth, pages, kd.layer, uv, view)
+    let own = c.rgb / max(c.a, 1.0e-3)
+    let leaf = Seen {
+        coverage: c.a,
+        albedo: own * own,
+        normal: normalize(pn + vec3(0.0, 1.0e-4, 0.0)),
+        depth: zw.y * DEEPEST,
+        toward: zw.x * 2.0 - 1.0,
+    }
+    let n = world_normal(f, leaf.normal)
+    let at = leaf_place(f, lt.cam, b, leaf.toward)
+    let out = leaf_light(
+        lt,
+        at,
+        n,
+        sky_n: volume_normal(f, b, grid, kd.slab, lt.s, at, otherwise: n),
+        depth: leaf.depth * f.yaw_scale.value.y,
+        albedo: tinted(leaf.albedo, f.tint),
+        through: b.leaves.through,
+        leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
+    )
+    vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed())))
+}

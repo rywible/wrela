@@ -169,6 +169,7 @@ impl Stage {
             // This atlas stays fixed; remake_woods reconstructs the Wood after source edits.
             fixed_leaf_atlas: true,
         )
+        w.request_pages()
         w.card_px = card_px(self.scale)
         w.cell = 1.0 / f32(self.scale)
         w.write_lods()
@@ -253,6 +254,10 @@ impl Scene for Stage {
                 self.wood = Some(self.made(take kinds, take atlas))
             }
         }
+        match mut self.wood {
+            Some(w) => w.settle_pages(),
+            None => {},
+        }
         if self.stones.len() < BOULDERS && c.planner.may(Work::Built) {
             self.stones.push(boulder(self.stones.len()))
         }
@@ -262,7 +267,10 @@ impl Scene for Stage {
     }
 
     fn streamed(self, eye: vec2) -> bool {
-        self.wood.is_some() && self.stones.len() == BOULDERS
+        self.wood.is_some() && self.stones.len() == BOULDERS && match self.wood {
+            Some(w) => !w.pages_pending(),
+            None => false,
+        }
     }
 
     fn casters_complete(self) -> bool {

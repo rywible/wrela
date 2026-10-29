@@ -1,0 +1,203 @@
+// Exact deduplication of the existing BC7/BC5 blocks. Cooking and its verification
+// are paid once per source replacement; the original atlas remains live until verified.
+use std::gpu::{
+    Atomics, Bc5, Bc7, GlobalId, GpuBuffer, Slots, TextureArray, buffer, copy_texture_to_buffer,
+    copy_buffer_to_texture, dispatch, label, read, texture_array,
+}
+use std::io::Pending
+
+pub struct Packed {
+    pub colour: TextureArray<Bc7>,
+    pub normal: TextureArray<Bc5>,
+    pub depth: TextureArray<Bc5>,
+    pub map: GpuBuffer<u32>,
+}
+
+@compute(64)
+fn source_words(source: [u32], kind: u32, channel: u32, raw: mut Atomics<u32>, id: GlobalId) {
+    for j in 0..4 {
+        raw.store(((kind * 65536 + id.x) * 12) + channel * 4 + j, source[id.x * 4 + j])
+    }
+}
+
+@compute(64)
+fn owners(
+    raw: [u32],
+    mask: u32,
+    table: mut Atomics<u32>,
+    out: mut Slots<u32>,
+    count: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    var hash: u32 = 2166136261
+    for j in 0..12 { hash = (hash ^ raw[id.x * 12 + j]) * 16777619 }
+    hash ^= hash >> 16
+    var slot = hash & mask
+    for _ in 0..128 {
+        var owner = table.load(slot)
+        if owner == 0 {
+            owner = table.compare_exchange(slot, 0, id.x + 1)
+            if owner == 0 { owner = id.x + 1 }
+        }
+        var same = true
+        for j in 0..12 {
+            if raw[(owner - 1) * 12 + j] != raw[id.x * 12 + j] { same = false }
+        }
+        if same {
+            out[id] = owner
+            return
+        }
+        slot = (slot + 1) & mask
+    }
+    count.add(i: 1, value: 1)
+    out[id] = 0
+}
+
+@compute(64)
+fn number_owners(table: [u32], ids: mut Atomics<u32>, count: mut Atomics<u32>, id: GlobalId) {
+    let owner = table[id.x]
+    if owner > 0 { ids.store(owner - 1, count.add(i: 0, value: 1)) }
+}
+
+@compute(64)
+fn remap(owners: [u32], ids: [u32], out: mut Slots<u32>, id: GlobalId) {
+    out[id] = ids[owners[id.x] - 1]
+}
+
+@compute(64)
+fn palette(
+    raw: [u32],
+    owners: [u32],
+    ids: [u32],
+    channel: u32,
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if owners[id.x] != id.x + 1 { return }
+    let page = ids[id.x]
+    for j in 0..4 { out.store(page * 4 + j, raw[id.x * 12 + channel * 4 + j]) }
+}
+
+@compute(64)
+fn verify(
+    raw: [u32],
+    map: [u32],
+    words: [u32],
+    channel: u32,
+    errors: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let page = map[id.x]
+    for j in 0..4 {
+        if raw[id.x * 12 + channel * 4 + j] != words[page * 4 + j] { errors.add(i: 0, value: 1) }
+    }
+}
+
+pub struct Build {
+    raw: GpuBuffer<u32>,
+    owners: GpuBuffer<u32>,
+    ids: GpuBuffer<u32>,
+    count: u32,
+    pending: Pending<u32>,
+}
+
+pub struct Checking {
+    pub packed: Packed,
+    pending: Pending<u32>,
+}
+
+impl Build {
+    pub fn new(
+        colour: TextureArray<Bc7>,
+        normal: TextureArray<Bc5>,
+        depth: TextureArray<Bc5>,
+    ) -> Build {
+        let count = colour.layers() * 65536
+        assert(count > 0)
+        var capacity = 1
+        while capacity < count * 2 { capacity *= 2 }
+        var raw: GpuBuffer<u32> = buffer(count * 12)
+        var source: GpuBuffer<u32> = buffer(65536 * 4)
+        label("appearance page source")
+        for kind in 0..colour.layers() {
+            copy_texture_to_buffer(from: colour.layer(kind), to: mut source)
+            dispatch(source_words.bind(source, kind, channel: 0, raw: mut raw), over: 65536)
+            copy_texture_to_buffer(from: normal.layer(kind), to: mut source)
+            dispatch(source_words.bind(source, kind, channel: 1, raw: mut raw), over: 65536)
+            copy_texture_to_buffer(from: depth.layer(kind), to: mut source)
+            dispatch(source_words.bind(source, kind, channel: 2, raw: mut raw), over: 65536)
+        }
+        var table: GpuBuffer<u32> = buffer(capacity)
+        var chosen: GpuBuffer<u32> = buffer(count)
+        var ids: GpuBuffer<u32> = buffer(count)
+        var totals: GpuBuffer<u32> = buffer(2)
+        label("appearance page hash")
+        dispatch(
+            owners.bind(
+                raw,
+                mask: capacity - 1,
+                table: mut table,
+                out: mut chosen,
+                count: mut totals,
+            ),
+            over: count,
+        )
+        label("appearance page number")
+        dispatch(number_owners.bind(table, mut ids, count: mut totals), over: capacity)
+        let pending = read(totals.items())
+        Build { raw, owners: chosen, ids, count, pending }
+    }
+
+    pub fn poll(mut self) -> Option<Vec<u32>> {
+        match self.pending.poll() {
+            Some(Ok(values)) => Some(take values),
+            Some(Err(_)) => {
+                assert(false, "appearance page count readback failed")
+                None
+            },
+            None => None,
+        }
+    }
+
+    pub fn finish(take self, unique: u32) -> Checking {
+        let rows = (unique + 255) / 256
+        var height = 4
+        while height < rows * 4 { height *= 2 }
+        var colour = texture_array::<Bc7>(width: 1024, height: height, layers: 1)
+        var normal = texture_array::<Bc5>(width: 1024, height: height, layers: 1)
+        var depth = texture_array::<Bc5>(width: 1024, height: height, layers: 1)
+        var map: GpuBuffer<u32> = buffer(self.count)
+        var words: GpuBuffer<u32> = buffer(1024 * height / 4)
+        var errors: GpuBuffer<u32> = buffer(1)
+        label("appearance page upload")
+        dispatch(remap.bind(self.owners, self.ids, out: mut map), over: self.count)
+        for channel in 0..3 {
+            dispatch(
+                palette.bind(self.raw, self.owners, self.ids, channel, out: mut words),
+                over: self.count,
+            )
+            dispatch(verify.bind(self.raw, map, words, channel, mut errors), over: self.count)
+            if channel == 0 {
+                copy_buffer_to_texture(from: words.items(), to: colour.layer_mut(0))
+            } else if channel == 1 {
+                copy_buffer_to_texture(from: words.items(), to: normal.layer_mut(0))
+            } else {
+                copy_buffer_to_texture(from: words.items(), to: depth.layer_mut(0))
+            }
+        }
+        Checking { packed: Packed { colour, normal, depth, map }, pending: read(errors.items()) }
+    }
+}
+
+impl Checking {
+    pub fn poll(mut self) -> Option<u32> {
+        match self.pending.poll() {
+            Some(Ok(values)) => Some(values[0]),
+            Some(Err(_)) => {
+                assert(false, "appearance page verification readback failed")
+                None
+            },
+            None => None,
+        }
+    }
+}
