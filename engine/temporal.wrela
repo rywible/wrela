@@ -42,6 +42,9 @@ pub struct Resolve: Copy + GpuData {
     /// corners in output pixels: `seen_box` of the moving things' bounds; empty for none):
     /// where last frame's motion is checked for what moved off a pixel.
     pub moving: vec4,
+    /// Source guarantee: moving encloses every nonzero motion texel, including deformation.
+    /// Default false; the rectangle is expanded for the sampling footprint.
+    pub motion_bounded: u32 = 0,
     /// How many frames the camera has held still before this one (`held`; 0 when it moved):
     /// a settled view's history gathers more frames (`SETTLED`).
     pub settled: f32 = 0.0,
@@ -239,6 +242,63 @@ pub fn resolve(
     blended(f, r, scene, net)
 }
 
+@fragment
+pub fn resolve_static_motion(
+    pixel: FragCoord,
+    r: Resolve,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    last_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+    s: Sampler,
+    net: [Half2],
+) -> vec4 {
+    let px = pixel.position.xy
+    let near = nearest(r, px)
+    let hood = means.load(x: u32(near.x), y: u32(near.y))
+    let spread = spreads.load(x: u32(near.x), y: u32(near.y))
+    let f = found(
+        px,
+        r,
+        scene,
+        depth,
+        last_depth,
+        motion,
+        last_motion,
+        history,
+        hood,
+        spread,
+        s,
+        motion_zero: true,
+    )
+    blended(f, r, scene, net)
+}
+
+// Integer output rectangles partition the target without changing sample coordinates.
+@vertex
+pub fn motion_rectangle(
+    v: std::gpu::VertexIndex,
+    area: vec4,
+    size: vec2,
+) -> std::gpu::ClipPosition {
+    let corners = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+    ]
+    let p = mix(area.xy, area.zw, corners[v.index])
+    std::gpu::ClipPosition {
+        position: vec4(2.0 * p.x / size.x - 1.0, 1.0 - 2.0 * p.y / size.y, 0.5, 1.0),
+    }
+}
+
 /// `resolve` for a scene drawn at the output's size, which finds its nearest sample's
 /// neighbourhood itself: each output pixel has its own, so a pass that stored them all would
 /// write and read them back for nothing (36% of the resolve's time at 1280 × 720 on a Radeon
@@ -301,6 +361,7 @@ fn found(
     hood: vec4,
     spread: vec4,
     s: Sampler,
+    motion_zero: bool = false,
 ) -> Found {
     let cam = r.cam
     let in_size = cam.screen
@@ -364,7 +425,9 @@ fn found(
             sum += c * w
             weight += w
             // And all but the moving ones' (see `current`).
-            let m = motion.load(x: u32(p.x), y: u32(p.y))
+            let m = if motion_zero { vec4(0.0) } else {
+                motion.load(x: u32(p.x), y: u32(p.y))
+            }
             let moves = m.z > 0.5
             let still = if moves { 0.0 } else { w }
             sum_else += c * still

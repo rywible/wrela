@@ -3493,3 +3493,20 @@ Actual-input geometry guard5,667,840records exact; deliberate wrong motion fails
 First jointassessment7.13min, decision34.13min,
 exactlytwofollowups. Retain masks+8Brecords; retire naivecompact/tag-only.
 No training, new reference algorithm, full production/G4 claim or G1–G7 pass.
+
+## 2026-10-29 — source-selected temporal regions, production AMD
+
+[Full evidence](neural-motion-regions.md), parent3b37241f, Wrela0.9.0/compilerde9b81e,
+AMD RADV RENOIR/Mesa26.1.6/Chrome154.0.8037.57. Full clearing1080p2×,
+60frames after600warmup, oneworker; separate660frame allocation/DRM/PSS replay.
+Initial full/temporal medians: baseline26.07804/5.04136ms; shared-motion26.32804/5.35796;
+source-bound branch26.57744/5.58956; source-region specialization25.43100/4.30072.
+Five alternating pairs give fullGPU26.09468→25.34972ms,
+2.85%lower; individual changes/CPU/pacedtails in report. Requestedlive
+405,267,256B unchanged; actual residency captured, no memory-saving claim.
+All768frames per candidate exact to baseline; selected productionframe exact.
+Focused GPU fixture161,280pixel comparisons exact, deliberately false bound fails.
+Seven existing production HDR buffers exact across1×–4×. No new references/training.
+Firstjointassessment5.54min, decision27.87min,
+exactlytwofollowups. Retain source-region specialization behind explicit source
+contract; generic default for other scenes. No G1–G7 pass or world-leading claim.

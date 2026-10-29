@@ -623,6 +623,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         jitter,
         last_jitter: jitter_of(if s.tick == 0 { 0 } else { s.tick - 1 }),
         moving: vec4(0.0, 0.0, f32(width), f32(height)),
+        motion_bounded: 1,
         settled: f32(s.tick),
     }
     if !s.patch_enabled && ((s.collecting && s.collect_rows) || s.rgb_enabled) {

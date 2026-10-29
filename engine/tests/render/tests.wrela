@@ -601,3 +601,20 @@ fn impostor_samples_stay_in_their_cells_and_filter_only_covered_surfaces() {
     print(f"Chrome against the native host: mean {mean}/255, max {most}/255")
     assert(mean <= 0.5, f"mean difference {mean} over 0.5")
 }
+
+@test(tool, read: [("repo", "../../..")], budget: 120)
+fn temporal_motion_regions_match_generic_and_reject_a_false_source_bound() {
+    let groups = Vec::from_fn(28, |i| Vec::from([f32(i)]))
+    let shots = screens("temporal-motion-regions", width: 96, height: 60, groups: groups)
+    assert(shots.len() == 28, "all motion-region cases were captured")
+    var negative = u32(0)
+    for shot in shots {
+        for y in 0..60 {
+            for x in 0..96 {
+                assert(shot.at(x, y, 0) == 0, "source region changed a resolved pixel")
+                negative += u32(shot.at(x, y, 1) > 0)
+            }
+        }
+    }
+    assert(negative > 100, "invalid source bound did not fail the negative control")
+}

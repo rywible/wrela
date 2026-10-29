@@ -1,0 +1,102 @@
+// Same actual textures through generic and source-bounded Shared resolvers.
+// RGB records exact positive mismatch, deliberately invalid-bound mismatch, and zero.
+use engine::frame::{Resolver, Shared, fullscreen, full}
+use engine::temporal::Resolve
+use engine::view::{first_camera, jitter_of}
+use std::gpu::{Compare, Depth, FragCoord, Rgba16Float, Texture, WithDepth,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, depth_texture, draw,
+    sampler, texture, GpuBuffer, Half2, buffer}
+
+fn inside(p: vec2, box: vec4) -> bool {
+    p.x >= box.x && p.y >= box.y && p.x < box.z && p.y < box.w
+}
+
+@fragment
+fn colours(p: FragCoord, box: vec4, divisor: f32, jitter: vec2, tag: f32) -> WithDepth<vec4> {
+    let at = (p.position.xy - jitter) * divisor
+    let foreground = inside(at, box)
+    let checker = if (u32(max(at.x, 0.0)) / 3 + u32(max(at.y, 0.0)) / 5) % 2 == 0 { 0.08 } else { 0.7 }
+    WithDepth { color: if foreground { vec4(0.6, 0.13, 0.03, tag) } else {
+        vec4(checker, checker * 0.8, checker * 0.6, 64.0)
+    }, depth: if foreground { 0.5 } else { 0.25 } }
+}
+
+@fragment
+fn vectors(p: FragCoord, box: vec4, divisor: f32, jitter: vec2, kind: f32) -> vec4 {
+    if inside((p.position.xy - jitter) * divisor, box) {
+        vec4(3.0 / divisor, -1.0 / divisor, kind, 1.0)
+    } else { vec4(0.0) }
+}
+
+@fragment
+fn history(p: FragCoord, box: vec4, tag: f32) -> vec4 {
+    let foreground = inside(p.position.xy, box - vec4(3.0, -1.0, 3.0, -1.0))
+    if foreground { vec4(0.55, 0.1, 0.03, tag) } else {
+        vec4(vec3(if (u32(p.position.x) / 3 + u32(p.position.y) / 5) % 2 == 0 { 0.04 } else { 0.65 }), 64.0)
+    }
+}
+
+@fragment
+fn errors(p: FragCoord, baseline: Texture<Rgba16Float>, candidate: Texture<Rgba16Float>,
+          negative: Texture<Rgba16Float>) -> vec4 {
+    let at = vec2u(p.position.xy)
+    let a = baseline.load(at.x, at.y)
+    let b = candidate.load(at.x, at.y)
+    let c = negative.load(at.x, at.y)
+    vec4(if a != b { 1.0 } else { 0.0 }, if a != c { 1.0 } else { 0.0 }, 0.0, 1.0)
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {
+    let index = u32(time)
+    let divisor = index % 4 + 1
+    let case = index / 4
+    let w = 96 / divisor
+    let h = 60 / divisor
+    let box = if case == 0 { vec4(20.0, 14.0, 38.0, 39.0) } else if case == 1 {
+        vec4(-8.0, -4.0, 18.0, 19.0)
+    } else if case == 2 { vec4(83.0, 47.0, 110.0, 72.0) } else if case == 3 {
+        vec4(-1.0, -1.0, 97.0, 61.0)
+    } else if case == 4 { vec4(130.0, 15.0, 150.0, 40.0) } else if case == 5 {
+        vec4(0.0, 0.0, -1.0, -1.0)
+    } else { vec4(42.25, 7.75, 43.25, 51.25) }
+    let jitter = jitter_of(index + 3)
+    let kind = if case % 2 == 0 { 1.0 } else { 0.5 }
+    let tag = if kind == 1.0 { 320.0 } else { 128.0 }
+    var scene = texture::<Rgba16Float>(width: w, height: h)
+    var depth = depth_texture(width: w, height: h)
+    let p = begin_pass_with_depth(mut scene, mut depth)
+    draw(p, full.bind(z: 0.5), colours.bind(box, f32(divisor), jitter, tag), vertices: 3,
+        depth: Depth { compare: Compare::Always, write: true })
+    p.end()
+    var motion = texture::<Rgba16Float>(width: w, height: h)
+    let p = begin_pass(mut motion)
+    fullscreen(p, vectors.bind(box, f32(divisor), jitter, kind))
+    p.end()
+    var old_motion = texture::<Rgba16Float>(width: w, height: h)
+    let p = begin_pass(mut old_motion, clear: vec4(0.0))
+    p.end()
+    var old = texture::<Rgba16Float>(width: 96, height: 60)
+    let p = begin_pass(mut old)
+    fullscreen(p, history.bind(box, tag))
+    p.end()
+    let cam = first_camera(vec3(0.0), vec3(0.0, 0.0, -1.0), 1.0, width: w, height: h).unjittered()
+    let r = Resolve { cam, out: vec2(96.0, 60.0), blend: 0.12, fresh: 0,
+        jitter, last_jitter: jitter_of(index + 2), moving: box, settled: 20.0 }
+    let net: GpuBuffer<Half2> = buffer(1)
+    let s = sampler()
+    var ordinary = Shared::made()
+    var specialized = Shared::made()
+    ordinary.resize(w, h)
+    specialized.resize(w, h)
+    var baseline = texture::<Rgba16Float>(width: 96, height: 60)
+    var candidate = texture::<Rgba16Float>(width: 96, height: 60)
+    var negative = texture::<Rgba16Float>(width: 96, height: 60)
+    ordinary.resolve(mut baseline, r, scene, depth, depth, motion, old_motion, old, s, net.items())
+    specialized.resolve(mut candidate, Resolve { motion_bounded: 1, ..r },
+        scene, depth, depth, motion, old_motion, old, s, net.items())
+    specialized.resolve(mut negative, Resolve { motion_bounded: 1, moving: vec4(0.0, 0.0, -1.0, -1.0), ..r },
+        scene, depth, depth, motion, old_motion, old, s, net.items())
+    let screen = begin_screen_pass(clear: vec4(0.0))
+    fullscreen(screen, errors.bind(baseline, candidate, negative))
+    screen.present()
+}

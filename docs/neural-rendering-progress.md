@@ -3254,3 +3254,21 @@ Next: source-compiled shared reconstruction over coherent surface tiles, with
 bounded scratch and production visibility; no hidden extra sourceRGB.
 [Evidence](neural-source-records.md). Manifest `dac261d373a8672d6d12045413b1f7a2462e37628b88ab180d1e2ee17c6e7eef`.
 Inherited benchmark edits remain unstaged.
+
+## 2026-10-29 — source knowledge selects a faster production temporal shader
+
+Continue source-region specialization; retire shared9tap motion certificates and
+dynamic source-bound branches. Same source knowledge pays when it selects a shader
+before drawing: full-clearing pairedGPU26.09468→25.34972ms
+(2.85%lower), initial temporal5.04136→4.30072ms, live405,267,256B unchanged.
+All analytical frames and selected full-production frame exact; dynamic branch has
+one changed byte comparable to its replay variation. Focused28case GPU test,
+161,280pixel comparisons exact plus failing deliberate false bound. Seven completed
+production HDR buffers replay exactly. Firstassessment5.54min;
+decision27.87min after exactlytwofollowups.
+Source contract defaults false; clearing declares its sole motion writer and bound.
+No training/reference expansion, frozen artifacts/G1–G7 unchanged. Still~25msfullframe.
+Next: source-declared regions selecting more specialized reconstruction work while
+preserving camera reprojection/history, not the rejected identity shortcut.
+[Evidence](neural-motion-regions.md). Manifest `3e17c376c548caa77706d95d2205ab5b1a1eeaa1fcf78396640fb2f405e950ad`.
+Inherited benchmark edits remain unstaged.

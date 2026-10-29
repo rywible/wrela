@@ -266,6 +266,12 @@ pub trait Scene {
         vec4(0.0, 0.0, out)
     }
 
+    /// Whether moves_in encloses EVERY nonzero texel written by motion, including
+    /// deformation. Leave false unless the source can guarantee this at all poses.
+    fn motion_bounded(self) -> bool {
+        false
+    }
+
     /// Whether the frame is shown another way than the look (a test's view), by `show_instead`.
     fn shows_instead(self) -> bool {
         false
@@ -587,22 +593,81 @@ impl Resolver for Shared {
     ) {
         dispatch(neighbourhoods.bind(scene, mut self.means, mut self.spreads), over: scene)
         let p = begin_pass(mut into)
-        fullscreen(
-            p,
-            resolve.bind(
-                r,
-                scene,
-                depth,
-                last_depth,
-                motion,
-                last_motion,
-                last_history,
-                self.means,
-                self.spreads,
-                s,
-                net,
-            ),
-        )
+        if r.motion_bounded != 0 {
+            let margin = vec2(2.0) * r.out / r.cam.screen
+            let empty = r.moving.z < r.moving.x || r.moving.w < r.moving.y
+            let lo = if empty { vec2(0.0) } else {
+                clamp(floor(r.moving.xy - margin), vec2(0.0), r.out)
+            }
+            let hi = if empty { vec2(0.0) } else {
+                clamp(ceil(r.moving.zw + margin), vec2(0.0), r.out)
+            }
+            let regions = [
+                vec4(0.0, 0.0, r.out.x, lo.y),
+                vec4(0.0, hi.y, r.out.x, r.out.y),
+                vec4(0.0, lo.y, lo.x, hi.y),
+                vec4(hi.x, lo.y, r.out.x, hi.y),
+            ]
+            for area in regions {
+                if area.z > area.x && area.w > area.y {
+                    draw(
+                        p,
+                        temporal::motion_rectangle.bind(area, r.out),
+                        temporal::resolve_static_motion.bind(
+                            r,
+                            scene,
+                            depth,
+                            last_depth,
+                            motion,
+                            last_motion,
+                            last_history,
+                            self.means,
+                            self.spreads,
+                            s,
+                            net,
+                        ),
+                        vertices: 6,
+                    )
+                }
+            }
+            if hi.x > lo.x && hi.y > lo.y {
+                draw(
+                    p,
+                    temporal::motion_rectangle.bind(vec4(lo, hi), r.out),
+                    resolve.bind(
+                        r,
+                        scene,
+                        depth,
+                        last_depth,
+                        motion,
+                        last_motion,
+                        last_history,
+                        self.means,
+                        self.spreads,
+                        s,
+                        net,
+                    ),
+                    vertices: 6,
+                )
+            }
+        } else {
+            fullscreen(
+                p,
+                resolve.bind(
+                    r,
+                    scene,
+                    depth,
+                    last_depth,
+                    motion,
+                    last_motion,
+                    last_history,
+                    self.means,
+                    self.spreads,
+                    s,
+                    net,
+                ),
+            )
+        }
         p.end()
     }
 }
@@ -2856,6 +2921,7 @@ impl<R: Resolver> Frame<R> {
             jitter: jitter_of(cam.frame, cam.grid != 0, cells: max(cam.grid, 1)),
             last_jitter: jitter_of(max(cam.frame, 1) - 1, cam.grid != 0, cells: max(cam.grid, 1)),
             moving: scene.moves_in(cam, out),
+            motion_bounded: u32(scene.motion_bounded()),
             settled: if again { 0.0 } else { f32(self.settled) },
             learned: if self.quality.learned_resolve && self.rejects { 1 } else { 0 },
         }

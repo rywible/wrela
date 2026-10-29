@@ -448,6 +448,12 @@ impl Scene for Stage {
         }
     }
 
+    // The creature is this scene's only motion-target writer. Its posed bounds,
+    // including previous pose and slack below, enclose every nonzero motion texel.
+    fn motion_bounded(self) -> bool {
+        true
+    }
+
     /// Where what moves can be on the output, now or last frame: the creature's box as the
     /// camera sees it each time (its mesh's at rest, posed, 15 cm wider for what its pose reaches
     /// past that and for where it was last frame), a few pixels wider.
