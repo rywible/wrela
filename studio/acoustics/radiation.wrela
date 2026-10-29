@@ -1,0 +1,229 @@
+// Soundboard pressure diagnostic for the three-key mechanical fixture.
+// The baffle and proportional loss are declared approximations. No recorded
+// sound, room response, manufacturer geometry, or old piano coefficients.
+use grand_probe::{Fixture, fixture}
+use engine::acoustic_radiation::{Air, Patch, Point, kernel, response, kernel_response, convolve}
+use engine::acoustic_radiation::bandlimited_kernel
+use engine::acoustic_plate::shape
+use engine::acoustics::{contact_energy, simultaneous_step, free_step, modal_acceleration}
+use std::collections::Vec
+use std::io::print
+use std::time::now
+use std::tool::ToolError
+use audio_tool::wav
+use toolkit::whole::write_file
+
+fn grid(f: Fixture, nx: u32, ny: u32) -> (Vec<Patch>, Vec<f64>) {
+    let p = f.board.plate
+    var patches: Vec<Patch> = Vec::new()
+    var shapes: Vec<f64> = Vec::new()
+    for x in 0..nx {
+        for y in 0..ny {
+            let px = p.length * (f64(x) + 0.5) / f64(nx)
+            let py = p.width * (f64(y) + 0.5) / f64(ny)
+            patches.push(Patch { x: px, y: py, area: p.length * p.width / f64(nx * ny) })
+            for j in 0..f.board_basis.count {
+                shapes.push(shape(f.board, f.board_basis, j, x: px, y: py))
+            }
+        }
+    }
+    (take patches, take shapes)
+}
+
+pub fn report() -> u32 {
+    let f = fixture(cells: 4, loss: 0.0, rate: 48000)
+    let air = Air { density: 1.2, speed: 343.0 }
+    for listener_y in [0.625, 0.4] {
+        let listener = Point { x: 1.1, y: listener_y, z: 1.2 }
+        for cells in [16, 32, 64, 128] {
+            let (patches, shapes) = grid(f, nx: cells, ny: cells / 2)
+            let k48 = kernel(
+                patches,
+                shapes,
+                f.board_basis.count,
+                listener,
+                air,
+                rate: 48000,
+            ).unwrap()
+            let k192 = kernel(
+                patches,
+                shapes,
+                f.board_basis.count,
+                listener,
+                air,
+                rate: 192000,
+            ).unwrap()
+            let better48 = bandlimited_kernel(
+                patches,
+                shapes,
+                f.board_basis.count,
+                listener,
+                air,
+                rate: 48000,
+            ).unwrap()
+            for mode in [0, 3, 15] {
+                var selected: Vec<f64> = Vec::new()
+                for i in 0..patches.len() { selected.push(shapes[i * f.board_basis.count + mode]) }
+                for hz in [300.0, 1200.0, 5000.0] {
+                    let omega = 2.0 * std::math::PI_F64 * hz
+                    let exact = response(patches, selected, listener, air, omega).unwrap()
+                    let at48 = kernel_response(k48, mode, omega)
+                    let at192 = kernel_response(k192, mode, omega)
+                    let better = kernel_response(better48, mode, omega)
+                    let better_error = ((better[0] - exact[0]) * (better[0] - exact[0]) +
+                        (better[1] - exact[1]) * (better[1] - exact[1])).sqrt()
+                    let amplitude = (exact[0] * exact[0] + exact[1] * exact[1]).sqrt()
+                    let e48 = ((at48[0] - exact[0]) * (at48[0] - exact[0]) +
+                        (at48[1] - exact[1]) * (at48[1] - exact[1])).sqrt()
+                    let e192 = ((at192[0] - exact[0]) * (at192[0] - exact[0]) +
+                        (at192[1] - exact[1]) * (at192[1] - exact[1])).sqrt()
+                    print(
+                        f"{{\"listener_y\":{listener_y},\"grid_x\":{cells},\"mode\":{mode},\"hz\":{hz},\"real_pa_per_acceleration\":{exact[0]},\"imag_pa_per_acceleration\":{exact[1]},\"amplitude\":{amplitude},\"delay_error48_absolute\":{e48},\"delay_error192_absolute\":{e192},\"sinc64_error48_absolute\":{better_error}}}",
+                    )
+                }
+            }
+        }
+    }
+    0
+}
+
+fn stereo(path: str, left: [f64], right: [f64], gain: f64, fade: bool) -> Result<(), ToolError> {
+    let frames = max(left.len(), right.len())
+    var bytes = wav::header(samples: frames * 2, channels: 2)
+    for i in 0..frames {
+        let ending = if fade && i >= frames - 4800 { f64(frames - 1 - i) / 4799.0 } else { 1.0 }
+        let l = if i < left.len() { left[i] } else { 0.0 }
+        let r = if i < right.len() { right[i] } else { 0.0 }
+        wav::push_u32(mut bytes, bitcast_u32(f32(l * gain * ending)))
+        wav::push_u32(mut bytes, bitcast_u32(f32(r * gain * ending)))
+    }
+    var parts: Vec<Vec<u8>> = Vec::new()
+    parts.push(take bytes)
+    write_file(path, take parts)
+}
+
+pub fn render() -> Result<(), ToolError> {
+    let started = now()
+    let rate: u32 = 48000
+    let frames = rate * 8
+    let dt = 1.0 / f64(rate)
+    // Uniform mass-proportional viscous loss C = 0.7 M. This is an authored
+    // surrogate fixture, not calibrated soundboard/radiation/string damping.
+    var f = fixture(cells: 4, loss: 0.35, rate: rate)
+    let count = f.model.modes.len()
+    let board_modes = f.board_basis.count
+    let owners: [u32; 5] = [0, 1, 1, 1, 2]
+    var maximum_work = 0.0
+    for i in 0..3 {
+        maximum_work += 0.5 * f.hammers[i].mass * 1.5 * 1.5
+        f.hammers[i].x = -0.05
+        f.hammers[i].v = 0.0
+    }
+    var displacement_bound = [0.0; 5]
+    for i in 0..5 {
+        var compliance = 0.0
+        for j in 0..count {
+            let b = f.shapes[i * count + j] / f.model.modes[j].omega
+            compliance += b * b
+        }
+        displacement_bound[i] = (2.0 * maximum_work * compliance).sqrt()
+    }
+    var mechanical_acceleration: Vec<f64> = Vec::filled(count, 0.0)
+    var board_acceleration: Vec<f64> = Vec::filled(frames * board_modes, 0.0)
+    var detached = true
+    var work = 0.0
+    var loss = 0.0
+    var energy_error = 0.0
+    var contact_error = 0.0
+    for t in 0..frames {
+        if t == 0 || t == rate * 2 || t == rate * 4 {
+            let hammer = t / (rate * 2)
+            var surface = 1e100
+            for i in 0..5 {
+                if owners[i] != hammer { continue }
+                var x = 0.0
+                for j in 0..count { x += f.shapes[i * count + j] * f.model.modes[j].q }
+                surface = surface.min(x)
+            }
+            // Launch at first geometric contact, without overlapping any
+            // other region of the same hammer. The only input is its kinetic work.
+            f.hammers[hammer].x = surface
+            f.hammers[hammer].v = 1.5
+            work += 0.5 * f.hammers[hammer].mass * 1.5 * 1.5
+            detached = false
+        }
+        modal_acceleration(f.contacts, f.hammers, f.model.modes, mut mechanical_acceleration)
+        for b in 0..board_modes {
+            var a = 0.0
+            for j in 0..count {
+                a += f.model.basis.shapes[(f.board_start + b) * count + j] *
+                    mechanical_acceleration[j]
+            }
+            board_acceleration[t * board_modes + b] = a
+        }
+        if detached {
+            loss += free_step(mut f.model.modes)
+            for h in 0..3 { f.hammers[h].x += f.hammers[h].v * dt }
+        } else {
+            let balance = simultaneous_step(mut f.contacts, mut f.hammers, mut f.model.modes)
+            contact_error = contact_error.max(balance.contact_error)
+            loss += balance.dissipated
+            // This energy bound includes all later launches. It proves no
+            // further contact until the next scheduled external launch.
+            detached = true
+            for i in 0..5 {
+                let h = f.hammers[owners[i]]
+                if h.v > 0.0 || h.x >= -displacement_bound[i] { detached = false }
+            }
+        }
+        let actual = contact_energy(f.contacts, f.hammers, f.model.modes)
+        energy_error = energy_error.max(((actual + loss - work) / maximum_work).abs())
+    }
+    assert(energy_error < 1e-8 && contact_error < 1e-8)
+    print(
+        f"{{\"stage\":\"three-key mechanics\",\"seconds\":{now() - started},\"energy_error\":{energy_error},\"contact_error\":{contact_error},\"work_j\":{work},\"viscous_loss_j\":{loss}}}",
+    )
+    let (patches, shapes) = grid(f, nx: 64, ny: 32)
+    let air = Air { density: 1.2, speed: 343.0 }
+    let left_kernel = bandlimited_kernel(
+        patches,
+        shapes,
+        board_modes,
+        listener: Point { x: 1.1, y: 0.625, z: 1.2 },
+        air: air,
+        rate: rate,
+    ).unwrap()
+    let right_kernel = bandlimited_kernel(
+        patches,
+        shapes,
+        board_modes,
+        listener: Point { x: 1.3, y: 0.625, z: 1.2 },
+        air: air,
+        rate: rate,
+    ).unwrap()
+    let left = convolve(left_kernel, board_acceleration)
+    let right = convolve(right_kernel, board_acceleration)
+    var peak = 0.0
+    var square = 0.0
+    for x in left {
+        peak = peak.max(x.abs())
+        square += x * x
+    }
+    for x in right {
+        peak = peak.max(x.abs())
+        square += x * x
+    }
+    let output_frames = max(left.len(), right.len())
+    let rms = (square / f64(2 * output_frames)).sqrt()
+    assert(peak > 0.0 && peak < 1e6)
+    // Unwindowed physical-pressure evidence, including propagation tail.
+    stereo("out/grand-pressure-pa.wav", left, right, gain: 1.0, fade: false)?
+    // One explicit presentation gain for the entire clip; no per-note leveling.
+    // Retain raw Pa above so this presentation choice cannot hide dynamics.
+    let gain = 0.8 / peak
+    stereo("out/grand-pressure-listen.wav", left, right, gain: gain, fade: true)?
+    print(
+        f"{{\"render\":\"baffled-board pressure diagnostic\",\"rate\":{rate},\"seconds\":8,\"board_modes\":{board_modes},\"total_modes\":{count},\"peak_pa\":{peak},\"rms_pa\":{rms},\"presentation_gain_fs_per_pa\":{gain},\"first_delay_samples\":{left_kernel.first_delay},\"leading_support_samples\":{left_kernel.leading_support},\"output_frames\":{output_frames},\"output_seconds\":{f64(output_frames) / f64(rate)},\"elapsed_seconds\":{now() - started},\"musical_approval\":false,\"fluid_loading\":false,\"delay_interpolation\":\"kaiser64-beta8.6\"}}",
+    )
+    Ok(())
+}

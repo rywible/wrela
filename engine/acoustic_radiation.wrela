@@ -1,0 +1,243 @@
+// Retarded Rayleigh integral: pressure from a prescribed planar surface.
+// Infinite rigid baffle, linear homogeneous air, listener in the upper half-space.
+// p(t) = rho/(2*pi) integral_S acceleration(x,t-R/c)/R dS.
+// This observer does not apply fluid loading or remove mechanical energy.
+// It is an offline reference/cooker, not the final piano radiation model.
+// Equation context: Jim Woodhouse, Euphonics 4.3.2; see docs/citations.md.
+// Windowed-sinc reconstruction context: J. O. Smith, SASP, Kaiser Window.
+use std::collections::Vec
+use std::math::{PI_F64, cos_f64, sin_f64}
+
+pub struct Point: Copy {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+pub struct Patch: Copy {
+    pub x: f64,
+    pub y: f64,
+    pub area: f64,
+}
+
+pub struct Air: Copy {
+    pub density: f64,
+    pub speed: f64,
+}
+
+pub struct Kernel: Clone {
+    pub modes: u32,
+    pub taps: u32,
+    pub rate: u32,
+    /// True geometric shortest path, in samples. See leading_support for
+    /// the interpolation support that can precede this arrival.
+    pub first_delay: f64,
+    /// Interpolation support can precede true arrival by this many samples.
+    pub leading_support: u32 = 1,
+    /// Mode-major pressure weights; input is modal acceleration in SI units.
+    pub weights: Vec<f64>,
+}
+
+fn bounded(x: f64) -> bool {
+    x.abs() < 1e100
+}
+
+fn valid(patches: [Patch], listener: Point, air: Air) -> bool {
+    if patches.len() == 0 || patches.len() > 65536 { return false }
+    if !(bounded(listener.x) &&
+        bounded(listener.y) &&
+        listener.z >= 1e-6 &&
+        bounded(listener.z) &&
+        air.density > 0.0 &&
+        air.density <= 100.0 &&
+        air.speed >= 1.0 &&
+        air.speed <= 10000.0) { return false }
+    for p in patches {
+        if !(bounded(p.x) && bounded(p.y) && p.area > 0.0 && bounded(p.area)) {
+            return false
+        }
+    }
+    true
+}
+
+fn distance(p: Patch, listener: Point) -> f64 {
+    let dx = listener.x - p.x
+    let dy = listener.y - p.y
+    (dx * dx + dy * dy + listener.z * listener.z).sqrt()
+}
+
+/// Exact propagation phase for this spatial quadrature; no sampled delay.
+/// Shape is surface displacement per modal coordinate at each patch.
+/// Returns real/imaginary pressure per unit harmonic modal acceleration,
+/// with time convention exp(i*omega*t). The spatial quadrature still needs refinement.
+pub fn response(
+    patches: [Patch],
+    shape: [f64],
+    listener: Point,
+    air: Air,
+    omega: f64,
+) -> Option<[f64; 2]> {
+    if !valid(patches, listener, air) ||
+        shape.len() != patches.len() ||
+        !(omega >= 0.0 && omega < 1e9) { return None }
+    var result = [0.0; 2]
+    for i in 0..patches.len() {
+        if !bounded(shape[i]) { return None }
+        let r = distance(patches[i], listener)
+        let phase = omega * r / air.speed
+        let weight = air.density * patches[i].area * shape[i] / (2.0 * PI_F64 * r)
+        result[0] += weight * cos_f64(phase)
+        result[1] -= weight * sin_f64(phase)
+    }
+    Some(result)
+}
+
+/// Cook a mode-major finite impulse response with linear fractional delays.
+/// Shapes are patch-major. Values are calculated from geometry, never recordings.
+/// Limits bound offline allocation (8 MiB of coefficients) and are not a
+/// real-time contract. Delay interpolation error must be measured in-band.
+fn cook_kernel(
+    patches: [Patch],
+    shapes: [f64],
+    modes: u32,
+    listener: Point,
+    air: Air,
+    rate: u32,
+    bandlimited: bool,
+) -> Option<Kernel> {
+    if !valid(patches, listener, air) ||
+        modes == 0 ||
+        modes > 1024 ||
+        shapes.len() != patches.len() * modes ||
+        rate < 8000 ||
+        rate > 768000 {
+        return None
+    }
+    var longest = 0.0
+    var shortest = 1e100
+    for p in patches {
+        let delay = distance(p, listener) * f64(rate) / air.speed
+        if !(delay < 16382.0) { return None }
+        longest = longest.max(delay)
+        shortest = shortest.min(delay)
+    }
+    if bandlimited && shortest < 32.0 { return None }
+    let taps = u32(longest) + (if bandlimited { 33 } else { 2 })
+    if taps * modes > 1048576 { return None }
+    var weights: Vec<f64> = Vec::filled(taps * modes, 0.0)
+    for i in 0..patches.len() {
+        let r = distance(patches[i], listener)
+        let delay = r * f64(rate) / air.speed
+        let first = u32(delay)
+        let fraction = delay - f64(first)
+        let factor = air.density * patches[i].area / (2.0 * PI_F64 * r)
+        var interpolation = [0.0; 64]
+        let points: u32 = if bandlimited { 64 } else { 2 }
+        let begin = if bandlimited { first - 31 } else { first }
+        if bandlimited {
+            var sum = 0.0
+            for tap in 0..64 {
+                let offset = f64(begin + tap) - delay
+                let argument = PI_F64 * offset
+                let sinc = if argument.abs() < 1e-12 { 1.0 } else { sin_f64(argument) / argument }
+                let x = offset / 32.0
+                let window = if x.abs() < 1.0 {
+                    bessel_i0(8.6 * (1.0 - x * x).sqrt()) / bessel_i0(8.6)
+                } else { 0.0 }
+                interpolation[tap] = sinc * window
+                sum += interpolation[tap]
+            }
+            // Preserve the exactly known zero-frequency response. This is a
+            // numerical interpolation normalization, not an acoustic gain fit.
+            for tap in 0..64 { interpolation[tap] /= sum }
+        } else {
+            interpolation[0] = 1.0 - fraction
+            interpolation[1] = fraction
+        }
+        for m in 0..modes {
+            let shape = shapes[i * modes + m]
+            if !bounded(shape) { return None }
+            let weight = factor * shape
+            for tap in 0..points {
+                weights[m * taps + begin + tap] += weight * interpolation[tap]
+            }
+        }
+    }
+    Some(Kernel { modes, taps, rate, first_delay: shortest, leading_support: if bandlimited {
+        32
+    } else { 1 }, weights })
+}
+
+/// Evaluate the actual sampled kernel, including its interpolation error.
+pub fn kernel_response(k: Kernel, mode: u32, omega: f64) -> [f64; 2] {
+    assert(mode < k.modes && omega >= 0.0 && omega < PI_F64 * f64(k.rate))
+    var result = [0.0; 2]
+    for i in 0..k.taps {
+        let phase = omega * f64(i) / f64(k.rate)
+        result[0] += k.weights[mode * k.taps + i] * cos_f64(phase)
+        result[1] -= k.weights[mode * k.taps + i] * sin_f64(phase)
+    }
+    result
+}
+
+/// Direct offline convolution. Acceleration is frame-major; the returned
+/// pressure includes the entire propagation tail. No limiter, gain, window,
+/// or hidden truncation. Intentionally simple reference, not a callback path.
+pub fn convolve(k: Kernel, acceleration: [f64]) -> Vec<f64> {
+    assert(acceleration.len() % k.modes == 0)
+    let frames = acceleration.len() / k.modes
+    if frames == 0 { return Vec::new() }
+    var output: Vec<f64> = Vec::filled(frames + k.taps - 1, 0.0)
+    for t in 0..output.len() {
+        let first = if t >= frames { t - frames + 1 } else { 0 }
+        let last = min(t + 1, k.taps)
+        var p = 0.0
+        for m in 0..k.modes {
+            for lag in first..last {
+                p += k.weights[m * k.taps + lag] * acceleration[(t - lag) * k.modes + m]
+            }
+        }
+        output[t] = p
+    }
+    output
+}
+
+/// Linear fractional-delay baseline retained for reproducible error comparisons.
+pub fn kernel(
+    patches: [Patch],
+    shapes: [f64],
+    modes: u32,
+    listener: Point,
+    air: Air,
+    rate: u32,
+) -> Option<Kernel> {
+    cook_kernel(patches, shapes, modes, listener, air, rate, bandlimited: false)
+}
+
+/// 64-point Kaiser-windowed sinc reconstruction, beta 8.6, normalized at DC.
+/// Assumes band-limited sampled acceleration. It cannot restore aliased contact
+/// energy or fix insufficient spatial quadrature. Requires at least 32 samples
+/// of physical propagation delay so the finite filter needs no future input.
+/// The finite band's front can precede exact geometric arrival by 32 samples.
+pub fn bandlimited_kernel(
+    patches: [Patch],
+    shapes: [f64],
+    modes: u32,
+    listener: Point,
+    air: Air,
+    rate: u32,
+) -> Option<Kernel> {
+    cook_kernel(patches, shapes, modes, listener, air, rate, bandlimited: true)
+}
+
+fn bessel_i0(x: f64) -> f64 {
+    // Defining power series, bounded here to |x| <= 8.6 at cooking.
+    assert(x.abs() <= 8.6)
+    var sum = 1.0
+    var term = 1.0
+    for k in 1..33 {
+        term *= (x * x * 0.25) / f64(k * k)
+        sum += term
+    }
+    sum
+}

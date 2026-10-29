@@ -1,0 +1,138 @@
+// Original 88-key scale proposal. Every numeric choice below is an authored
+// design constraint/nominal material assumption, not a manufacturer's scale,
+// measured alloy characterization, recording fit, or accepted voicing.
+// Winding supplies mass but no bending rigidity (freely slipping winding
+// approximation). Bonded winding, terminations and longitudinal motion need
+// separate reference models before this scale is acoustically qualified.
+use acoustics::{StringSpec, angular}
+use std::math::{PI_F64, exp_f64, log_f64}
+
+pub const VERSION: u32 = 1
+
+pub struct Material: Copy {
+    /// kg/m³, Pa. These are model inputs, not certified supplier properties.
+    pub density: f64,
+    pub young: f64,
+    /// An authored design ceiling, not a measured breaking/yield stress.
+    pub stress_ceiling: f64,
+}
+
+pub struct Scale: Copy {
+    pub core: Material,
+    pub winding_density: f64,
+    pub maximum_length: f64,
+    pub middle_length: f64,
+    pub wound_tension: f64,
+}
+
+pub struct Key: Copy {
+    pub midi: u32,
+    pub strings: u32,
+    pub core_radius: f64,
+    /// Mass-equivalent outer radius. A real helix construction is not implied.
+    pub winding_radius: f64,
+    pub winding_line_mass: f64,
+    pub core_stress: f64,
+    pub target_hz: f64,
+    pub string: StringSpec,
+    pub hammer_mass: f64,
+    pub felt_stiffness: f64,
+}
+
+/// Baseline geometry/material hypothesis. Altering these is a documented
+/// physical design experiment, never a table fitted to a reference recording.
+pub fn proposal() -> Scale {
+    Scale {
+        core: Material { density: 7850.0, young: 200e9, stress_ceiling: 1.4e9 },
+        winding_density: 8960.0,
+        maximum_length: 2.65,
+        middle_length: 0.72,
+        wound_tension: 750.0,
+    }
+}
+
+pub fn key(s: Scale, index: u32) -> Option<Key> {
+    if index >= 88 ||
+        !(s.core.density > 0.0 &&
+            s.core.density < 1e6 &&
+            s.core.young > 0.0 &&
+            s.core.young < 1e13 &&
+            s.core.stress_ceiling > 0.0 &&
+            s.core.stress_ceiling < 1e12 &&
+            s.winding_density > 0.0 &&
+            s.winding_density < 1e6 &&
+            s.maximum_length > 0.0 &&
+            s.maximum_length < 100.0 &&
+            s.middle_length > 0.0 &&
+            s.middle_length < s.maximum_length &&
+            s.wound_tension > 0.0 &&
+            s.wound_tension < 1e6) { return None }
+    let midi = index + 21
+    let semitone = log_f64(2.0) / 12.0
+    let hz = 440.0 * exp_f64((f64(midi) - 69.0) * semitone)
+    let ideal = s.middle_length * exp_f64((60.0 - f64(midi)) * semitone)
+    // Smooth saturation of speaking length: preserves the short-string limit
+    // without making all low bass strings exactly the same length.
+    let r = ideal / s.maximum_length
+    let length = ideal / (1.0 + r * r * r * r).sqrt().sqrt()
+    let core_radius = if midi <= 45 {
+        0.00055 - 0.00010 * f64(midi - 21) / 24.0
+    } else {
+        0.00045 - 0.00020 * f64(midi - 45) / 63.0
+    }
+    let area = PI_F64 * core_radius * core_radius
+    let rigidity = s.core.young *
+        PI_F64 *
+        core_radius *
+        core_radius *
+        core_radius *
+        core_radius /
+        4.0
+    let core_line_mass = s.core.density * area
+    let bending_tension = rigidity * PI_F64 * PI_F64 / (length * length)
+    let wave_speed = 2.0 * length * hz
+    let required_mass = (s.wound_tension + bending_tension) / (wave_speed * wave_speed)
+    let winding_line_mass = if midi <= 45 { (required_mass - core_line_mass).max(0.0) } else { 0.0 }
+    let line_mass = core_line_mass + winding_line_mass
+    // Exact inversion of the pinned stiff-string fundamental, including EI.
+    let tension = line_mass * wave_speed * wave_speed - bending_tension
+    let core_stress = tension / area
+    if !(tension > 0.0 && core_stress <= s.core.stress_ceiling) { return None }
+    let winding_radius = (core_radius * core_radius +
+        winding_line_mass / (PI_F64 * s.winding_density)).sqrt()
+    let register = f64(index) / 87.0
+    let width = 0.010 - 0.005 * register
+    if width >= length { return None }
+    Some(
+        Key {
+            midi,
+            strings: if midi < 30 { 1 } else if midi <= 45 { 2 } else { 3 },
+            core_radius,
+            winding_radius,
+            winding_line_mass,
+            core_stress,
+            target_hz: hz,
+            string: StringSpec {
+                length,
+                tension,
+                density: line_mass,
+                rigidity,
+                strike: 0.11 + 0.02 * register,
+                contact_width: width,
+            },
+            hammer_mass: 0.012 - 0.007 * register,
+            // Total felt force coefficient, divided between contacted strings by
+            // the shared-hammer model. Cubic exponent is still a surrogate.
+            felt_stiffness: 3e11 * exp_f64(log_f64(10.0) * register),
+        },
+    )
+}
+
+/// Number of analytic modes strictly below an offline comparison bandwidth.
+/// This is a cost inventory; it does not certify an acoustically safe cutoff.
+pub fn modes_below(k: Key, bandwidth_hz: f64) -> u32 {
+    assert(bandwidth_hz > 0.0 && bandwidth_hz <= 96000.0)
+    var n: u32 = 0
+    while n < 8192 && angular(k.string, n + 1) < 2.0 * PI_F64 * bandwidth_hz { n += 1 }
+    n
+}

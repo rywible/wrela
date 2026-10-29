@@ -248,3 +248,18 @@ this repository. It generates only text. The qualification ledger is authoritati
 Music Flamingo and Audio Flamingo were inspected but not installed: their official model
 cards declare NVIDIA OneWay Noncommercial terms, which do not fit the requested simple
 licensing boundary for this experiment.
+
+
+### Original-grand radiation and Codex review
+
+| Source | Independent implementation and boundary |
+|---|---|
+| Jim Woodhouse, [Euphonics §4.3.2, The Rayleigh integral and the baffled piston](https://euphonics.org/4-3-2-the-rayleigh-integral-and-the-baffled-piston/) (consulted 2026-10-29) | Mathematical context for the linear half-space Green function in `engine/acoustic_radiation.wrela`. Our code integrates prescribed surface acceleration with geometric propagation delay; the axial-piston and far-field checks are independently derived. The page's prose/illustrations carry CC BY-NC-SA terms; none are copied, embedded, adapted as assets, or shipped. Only the mathematical method is used. No recording or impulse response is imported. |
+| Julius O. Smith III, [Spectral Audio Signal Processing: Kaiser Window](https://ccrma.stanford.edu/~jos/sasp/Kaiser_Window.html) (2011 book; consulted 2026-10-29) | Mathematical context for an independently written 64-point windowed-sinc delay reconstruction. Its coefficients are generated from delay geometry with beta 8.6, then checked against exact propagation phase. No source code, prose, image, audio or coefficient table is copied. This numerical interpolation does not generate excitation or fit a recorded instrument. |
+
+Ryan requested a Codex subagent for review after declining an API-key route. The native audio
+capability probe explicitly returned “audio content omitted because you do not support audio
+input”. The subagent therefore supplied only an engineering/code review and numerical file
+audit, not a listening judgment. Its review, exact capability failure and input hashes are
+retained on the ThinkPad under `codex-audio-review-2026-10-29/`. No model generated sound.
+The unused OpenAI API preparation made no API calls and supplied no review or coefficients.

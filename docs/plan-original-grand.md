@@ -620,10 +620,128 @@ that no tested path can currently justify the plan's autonomous musical promotio
 ### Next work and claims boundary
 
 A qualified audio-evaluation path is required before musical hill climbing or a “best sounding”
-claim. Ryan subsequently authorized an OpenAI audio-capable model to perform the review through a subagent. That review may send the diagnostic audio to OpenAI; implementation and file handling remain on the ThinkPad. The supported API path is being prepared, with credentials still required. This does not authorize unrelated off-host computation or additional services. Independently,
+claim. Ryan subsequently authorized an OpenAI audio-capable model to perform the review through a subagent. That review may send the diagnostic audio to OpenAI; implementation and file handling remain on the ThinkPad. An API client was prepared but never called. Ryan then specified Codex without an API key; the resulting native-input capability check and engineering-only review are recorded in section 15. This does not authorize unrelated off-host computation or additional services. Independently,
 the engineering still needs a feasible full string scale and static load/board/rim design,
 a selected runtime reduction, real action/pedal behavior, radiation and room, the full-key
 corpus, browser and two-piano consumer budgets, and P8 migration/holdout/soak checks.
 A new evaluator hypothesis must preserve this failed qualification history and pass a recorded
 protocol; it must not simply provide favorable comments on the same candidate. No stage's
 musical subgate or final acceptance checkbox is marked passed by this checkpoint.
+
+
+## 15. Original scale, three-key pressure render and Codex review
+
+**Status: physically checked reference work; implementation incomplete and musically
+unevaluated.** No stage, listening promotion, browser qualification or final holdout is passed
+by this checkpoint. The new 88-key scale is a design proposal; the runnable sound fixture still
+has three keys. Existing piano consumers have not migrated.
+
+### Original scale proposal
+
+`engine/grand_design.wrela` derives all 88 pitches from an authored scale with 230 speaking
+strings. Lengths saturate smoothly below 2.65 m; plain/wound construction, core radii and
+hammer/contact dimensions are explicit. Tension is solved from the pinned stiff-string
+fundamental including bending stiffness. Winding adds mass under a freely slipping winding
+approximation; its radius is mass-equivalent, not a claim of a fully designed helix.
+
+Version 1 sums to **112,502.84 N of string tension** and **1.4868 kg of speaking string mass**.
+Its maximum calculated core stress is **1.17893 GPa** against an **authored 1.4 GPa ceiling**.
+Density, modulus and that ceiling are nominal model assumptions, not certified material
+properties. These calculations do not establish frame strength, static board/downbearing
+equilibrium, winding/end-condition fidelity, manufacturing feasibility, loaded tuning or
+musical quality. The proposal still needs those checks and a spatial layout.
+
+The complete string inventory contains 5,367 / 9,788 / 16,446 analytic modes below
+5 / 10 / 20 kHz respectively. This is a workload inventory, not a perceptual cutoff or
+measured callback cost. No all-key runtime representation is selected from these counts.
+
+### Actual three-key coupled mechanics and radiation
+
+`grand-probe` now combines a bass string, three slightly different midrange unison strings
+under one shared hammer, and a treble string on the same board. Across 16/36/64 board bases,
+the 20 ms 48 kHz fixture reports energy error below 4.3e-15 and contact-equation residual
+below 1e-12. This extends the earlier neighboring-midrange fixture; it does not replace its
+separate high-resolution contact evidence. Small changes in peak force across board bases
+are not proof of convergence of the full radiated waveform.
+
+The first pressure renderer propagates the board acceleration to two listener positions with
+the Rayleigh integral. Its assumptions are explicit: a prescribed planar board in an infinite
+rigid baffle, homogeneous linear air, no fluid back-reaction, no lid and no room. It does not
+subtract radiation energy from the mechanics or count an unimplemented radiation loss twice.
+Nominal air density is 1.2 kg/m³ and sound speed is 343 m/s. Structural loss in this diagnostic
+is an authored mass-proportional viscous term, C = 0.7 M, not a calibrated piano decay model.
+
+Independent tests cover the exact axial circular-piston integral, far-field area/symmetry,
+propagation delay/refinement, signed-mode convolution and its full tail. The reconstruction
+of board acceleration is checked against physical-coordinate masses with a shared hammer,
+nonzero contact gaps and omitted compliance; the expected contact forces are prescribed
+independently of the solver. The focused set now has **42 tests**. One combined run hit an intermittent pinned-compiler
+optimizer panic before producing results; the unchanged source passed on an immediate retry.
+The failure and retry are preserved, with the unresolved compiler defect in
+`docs/toolchain-gaps.md`; no compiler-reliability claim is made.
+
+The eight-second diagnostic launches bass, unison and treble at 0/2/4 s with 1.5 m/s hammer
+velocity. It retains a raw float WAV in pascals and a separate listening file with one
+whole-clip gain and an explicitly labelled 100 ms terminal fade. The first render's peak is
+0.6008 Pa and stereo RMS 0.1025 Pa. Neither normalization nor that fade is part of the physical
+model. The numerical audit finds finite, unclipped samples and confirms the declared
+presentation transform. This is not a perceived-quality result.
+
+Spatial and delay errors remain recorded. At the off-symmetry listener, changing the grid from
+64×32 to 128×64 changes the checked nonzero transfer amplitudes/phases by up to about 0.478%
+in complex relative error. Linear fractional-delay interpolation at 48 kHz contributes up to
+about 4.152% complex error in the checked 5 kHz transfers; at 192 kHz that checked maximum is
+about 0.229%. These are different error sources. There is no full-band convergence, aliasing
+or complete pressure-reference qualification yet, and this direct offline convolution has no
+runtime qualification.
+
+A recorded numerical correction retains that linear baseline and adds 64-point Kaiser-windowed
+sinc delay reconstruction. At the **128×64 grid, y=0.4 listener, modes 0/3/15 and 5 kHz**, the
+largest checked complex delay error falls from **4.1519% to 0.0017925%**. At the renderer's
+**64×32 grid** the corresponding maxima are **4.2807% and 0.0016946%**. These comparisons
+hold spatial quadrature fixed and isolate delay interpolation; they are not perceptual scores.
+Separate single-patch tests check three fractional delays at frequencies through 20 kHz against
+exact phase, with relative error below 0.02% in those tests.
+
+The refined filter requires at least 32 samples of geometric delay, so its support never reads
+future input. Its band-limited front can precede geometric arrival by 32 samples; output metadata
+now records that support and the actual frames/duration including the propagation tail. It does
+not restore aliased acceleration, validate the spatial grid above the checked band or include
+fluid loading. The initial linear-pressure files and the new corrected files are retained
+separately. Global cumulative launch-work balance in the diagnostic is not a substitute for the
+plan's required local energy windows.
+
+### Codex review disposition
+
+Ryan selected Codex and has no API key. The subagent attempted to deliver a complete,
+newly blinded WAV as native audio content. The interface returned exactly:
+
+> audio content omitted because you do not support audio input
+
+It stopped the listening attempt without classifying the clip from metadata or remembered
+control identities. The subsequent review was explicitly engineering-only. It demonstrated
+no consequential functional error under the declared approximations, verified the
+pressure-file/presentation arithmetic, requested the missing Woodhouse citation, and
+recommended a shared-contact/compliance acceleration check. The citation and that targeted
+check are now added. A focused follow-up review of the sinc correction found its support and
+normalization consistent, and requested clearer support/duration metadata and grid-qualified
+error claims; those reporting corrections are applied. This satisfies the available Codex engineering review; **actual sound
+comprehension remains unavailable through this interface**, so no musical verdict exists.
+No API calls, credential requests beyond the superseded route, or OAuth reuse followed.
+
+Replay:
+
+```text
+wrela test engine/tests/grand --json
+wrela tool acoustics -- scale
+wrela tool acoustics -- grand-probe
+wrela tool acoustics -- radiation
+wrela tool acoustics -- grand-render
+```
+
+Pressure/scale sources, raw results, exact commands and hashes are retained in
+`mechanics-2026-10-29/checkpoint-4/`.
+The next implementation work is a qualified pressure reference and feasible complete runtime
+reduction, then the remaining instrument/action/room/product work in P3–P8. A usable listening
+interface is still an external dependency for autonomous musical selection; engineering
+progress cannot turn the blocked musical gate into a pass.

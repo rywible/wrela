@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### Grand tests triggered an intermittent Cranelift optimizer panic
+
+- **Needed:** a reliable combined run of the original-grand numerical tests on pinned Wrela 0.10.0.
+- **What happens:** `wrela test engine/tests/grand --json` once exited 101 before producing JSON, with `cranelift-codegen-0.136.4/src/egraph/mod.rs:347:14`, `Option::unwrap()` on `None`. The same source immediately produced 42 passing tests with `RUST_BACKTRACE=1`; this is not evidence that setting that variable fixes the compiler.
+- **Found:** 2026-10-29 on the ThinkPad, compiler `57e38f1c6827e39d4eb377bdd297cfb14592a11b`, during the final mechanics checkpoint.
+- **Evidence:** exact source delta archive, first failing stdout/stderr and exit status, plus the successful retry report in `/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/checkpoint-4/attempt-1-compiler-failure/`.
+- **Meanwhile:** preserve the failure and every retry; do not weaken assertions, change the pin, silently retry to claim reliability, or label the compiler issue repaired. Numerical reports from successful runs remain individually attributable.
+- **Status:** open intermittent compiler defect; no minimized reproducer or root cause established.
+
 ### Live piano input has no capture timestamp or audio-clock correlation in the inspected API
 
 - **Needed:** original-grand P4 schedules live gestures by captured event time, then measures fixed delay and jitter relative to audio sample time. A score can already carry authored sample times.

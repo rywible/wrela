@@ -1,0 +1,149 @@
+// P2 mechanical fixture: one bass string, a three-string midrange unison with
+// one shared hammer, and one treble string. No instrument/radiation/listening
+// approval is implied. Geometry/material numbers remain authored surrogates.
+use engine::acoustics::{
+    Hammer, StringSpec, ContactSite, shared_contacts, simultaneous_step, contact_energy,
+    omitted_compliance, force_at, Contacts,
+}
+use engine::acoustic_plate::{Plate, Rib, assemble, solve, shape}
+use engine::acoustic_modes::errors
+use engine::acoustic_system::cook
+use main::probe
+use std::collections::Vec
+use std::io::print
+use std::time::now
+
+pub struct Fixture {
+    pub model: engine::acoustic_system::Coupled,
+    pub board: engine::acoustic_plate::Structure,
+    pub board_basis: engine::acoustic_modes::Modes,
+    pub board_start: u32,
+    pub contacts: Contacts,
+    pub hammers: [Hammer; 3],
+    pub shapes: Vec<f64>,
+    pub residual: f64,
+    pub orthogonality: f64,
+}
+
+pub fn fixture(cells: u32, loss: f64, rate: u32) -> Fixture {
+    let dt = 1.0 / f64(rate)
+    let bass = probe(0, 0.3)
+    let middle = probe(1, 1.5)
+    let treble = probe(2, 4.0)
+    let specs = [
+        bass.string,
+        StringSpec { length: middle.string.length * 0.9998, ..middle.string },
+        middle.string,
+        StringSpec { length: middle.string.length * 1.0002, ..middle.string },
+        treble.string,
+    ]
+    let retained = [128, 40, 40, 40, 6]
+    let owners: [u32; 5] = [0, 1, 1, 1, 2]
+    let p = Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+    let board = assemble(
+        p,
+        [
+            Rib { x: 0.8, line_mass: 0.2, bending: 60.0 },
+            Rib { x: 1.6, line_mass: 0.2, bending: 60.0 },
+        ],
+        count_x: cells,
+        count_y: cells,
+    ).unwrap()
+    let basis = solve(board).unwrap()
+    var omega: Vec<f64> = Vec::new()
+    for w in basis.squared_frequencies { omega.push(w.sqrt()) }
+    var attach: Vec<f64> = Vec::new()
+    for site in 0..5 {
+        let x = if site == 0 { 0.6 } else if site == 4 { 2.0 } else { 1.15 }
+        let y = 0.4 + 0.06 * f64(site)
+        for j in 0..basis.count { attach.push(shape(board, basis, j, x: x, y: y)) }
+    }
+    let system = engine::acoustic_assembly::assemble(specs, retained, omega, attach).unwrap()
+    var source: Vec<f64> = Vec::filled(system.count, 0.0)
+    var observer: Vec<f64> = Vec::filled(system.count, 0.0)
+    for i in 0..system.count { source[i] = system.contacts[i] }
+    for j in 0..basis.count {
+        observer[system.board_start + j] = shape(board, basis, j, x: 1.2, y: 0.625)
+    }
+    let model = cook(system.mass, system.stiffness, source, observer, loss, dt).unwrap()
+    let (residual, orthogonality) = errors(model.basis, system.mass, system.stiffness)
+    assert(residual < 1e-9 && orthogonality < 1e-9)
+    var contact_shapes: Vec<f64> = Vec::filled(5 * system.count, 0.0)
+    for site in 0..5 {
+        for j in 0..system.count {
+            for k in 0..system.count {
+                contact_shapes[site * system.count + j] += system.contacts[site * system.count +
+                    k] *
+                    model.basis.shapes[k * system.count + j]
+            }
+        }
+    }
+    let hammers: [Hammer; 3] = [bass.hammer, middle.hammer, treble.hammer]
+    var sites: Vec<ContactSite> = Vec::new()
+    for i in 0..5 {
+        let (compliance, _) = omitted_compliance(specs[i], retained[i])
+        sites.push(
+            ContactSite {
+                hammer: owners[i],
+                compliance,
+                stiffness: hammers[owners[i]].stiffness / (if owners[i] == 1 { 3.0 } else {
+                    1.0
+                }),
+            },
+        )
+    }
+    let contacts = shared_contacts(hammers, model.modes, contact_shapes, sites, dt)
+
+    Fixture {
+        model: model,
+        board: board,
+        board_basis: basis,
+        board_start: system.board_start,
+        contacts: contacts,
+        hammers,
+        shapes: contact_shapes,
+        residual,
+        orthogonality,
+    }
+}
+
+pub fn report() -> u32 {
+    let owners: [u32; 5] = [0, 1, 1, 1, 2]
+    for cells in [4, 6, 8] {
+        let start = now()
+        var f = fixture(cells, loss: 0.0, rate: 48000)
+        let initial = contact_energy(f.contacts, f.hammers, f.model.modes)
+        var peak = [0.0; 3]
+        var energy_error = 0.0
+        var solve_error = 0.0
+        var board_motion = 0.0
+        for _ in 0..960 {
+            let balance = simultaneous_step(mut f.contacts, mut f.hammers, mut f.model.modes)
+            solve_error = solve_error.max(balance.contact_error)
+            energy_error = energy_error.max(
+                (contact_energy(f.contacts, f.hammers, f.model.modes) / initial - 1.0).abs(),
+            )
+            var forces = [0.0; 3]
+            for i in 0..5 { forces[owners[i]] += force_at(f.contacts, i) }
+            for i in 0..3 { peak[i] = peak[i].max(forces[i]) }
+            board_motion = board_motion.max(
+                engine::acoustic_system::observed_displacement(f.model).abs(),
+            )
+        }
+        assert(solve_error < 1e-8 && energy_error < 1e-8)
+        for i in 0..3 { assert(peak[i] > 0.0) }
+        print(
+            f"{{\"board_basis\":{f.board_basis.count},\"total_modes\":{f.model.modes.len()},\"rate\":48000,\"strings\":5,\"hammers\":3,\"matrix_residual\":{f.residual},\"orthogonality\":{f.orthogonality},\"energy_error\":{energy_error},\"contact_error\":{solve_error},\"bass_peak_n\":{peak[0]},\"unison_total_peak_n\":{peak[1]},\"treble_peak_n\":{peak[2]},\"bass_return_m_s\":{f.hammers[0].v},\"unison_return_m_s\":{f.hammers[1].v},\"treble_return_m_s\":{f.hammers[2].v},\"board_peak_m\":{board_motion},\"elapsed_seconds\":{now() - start}}}",
+        )
+    }
+    0
+}

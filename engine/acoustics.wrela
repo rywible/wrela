@@ -503,3 +503,28 @@ pub fn simultaneous_step(c: mut Contacts, hammers: mut [Hammer], modes: mut [Mod
         contact_error: error,
     }
 }
+
+/// Average compressive force at a site during the most recently solved step.
+pub fn force_at(c: Contacts, site: u32) -> f64 {
+    c.forces[site]
+}
+
+/// Continuous equation acceleration reconstructed at the current reference
+/// state (not an average contact force over the last numerical step).
+/// The integrator still needs rate refinement before this becomes a reference
+/// for high-frequency radiated sound or alias measurements.
+pub fn modal_acceleration(c: Contacts, hammers: [Hammer], modes: [Mode], out: mut [f64]) {
+    assert(out.len() == modes.len() && hammers.len() == c.masses.len())
+    for j in 0..modes.len() {
+        let m = modes[j]
+        out[j] = -m.omega * m.omega * m.q + (2.0 * log_f64(m.half_damping) / m.dt) * m.v
+    }
+    for i in 0..c.sites.len() {
+        let site = c.sites[i]
+        var compression = hammers[site.hammer].x - site.gap
+        for j in 0..modes.len() { compression -= c.shapes[i * modes.len() + j] * modes[j].q }
+        let penetration = felt_compression(felt(site), compression)
+        let force = site.stiffness * penetration * penetration * penetration
+        for j in 0..modes.len() { out[j] += c.shapes[i * modes.len() + j] * force }
+    }
+}

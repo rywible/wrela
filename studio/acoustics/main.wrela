@@ -209,6 +209,9 @@ fn report_plate() -> u32 {
 
 pub fn tool() -> u32 {
     let a = args()
+    if a.len() == 1 && a[0] == "scale" { return scale::report() }
+    if a.len() == 1 && a[0] == "radiation" { return radiation::report() }
+    if a.len() == 1 && a[0] == "grand-probe" { return grand_probe::report() }
     if a.len() == 1 && a[0] == "simultaneous" { return coupled::simultaneous_convergence() }
     if a.len() == 1 && a[0] == "coupled-contact" { return coupled::contact_convergence() }
     if a.len() == 1 && a[0] == "coupled" { return coupled::report() }
@@ -220,6 +223,15 @@ pub fn tool() -> u32 {
     if a.len() == 1 && a[0] == "contact" { return report_contact() }
     if a.len() == 1 && a[0] == "plate" { return report_plate() }
     if a.len() == 1 && a[0] == "truncation" { return report_truncation() }
+    if a.len() == 1 && a[0] == "grand-render" {
+        match radiation::render() {
+            Ok(()) => return 0,
+            Err(e) => {
+                print(e.message())
+                return 1
+            },
+        }
+    }
     if a.len() == 1 && a[0] == "render" {
         match audition::render() {
             Ok(()) => return 0,
@@ -234,7 +246,7 @@ pub fn tool() -> u32 {
     if a.len() == 1 && a[0] == "waveguide" { return report_waveguide() }
     if a.len() == 1 && a[0] == "bridge-cost" { return report_bridge_cost() }
     print(
-        "usage: wrela tool acoustics -- contact|plate|truncation|render|cost|simd|waveguide|bridge-cost|section-cost|body32-cost|combined32-cost|packed-cost|dispersion|coupled|coupled-contact|simultaneous",
+        "usage: wrela tool acoustics -- contact|plate|truncation|render|cost|simd|waveguide|bridge-cost|section-cost|body32-cost|combined32-cost|packed-cost|dispersion|coupled|coupled-contact|simultaneous|grand-probe|radiation|grand-render|scale",
     )
     2
 }
