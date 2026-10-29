@@ -1,0 +1,144 @@
+use engine::sky::{
+    BASE, TOP, SHAPE_SIDE, SHAPE_SPAN, DETAIL_SIDE, SHAPE_BOUND_SIDE, cook_shape_support, field_in,
+    shape_support_empty,
+}
+use std::gpu::{
+    Address, GlobalId, Texture3d, Texels3d, Rgba16Float, Sampler, Slots, GpuBuffer, texture3d,
+    buffer, dispatch, read, sampler,
+}
+use std::io::{Pending, print}
+
+@compute(4, 4, 4)
+fn source(which: u32, out: mut Texels3d<Rgba16Float>, id: GlobalId) {
+    if which == 3 {
+        out.store(id, vec4(1.0, 1.0, 0.0, 1.0))
+        return
+    }
+    let spike = (id.x + 3 * id.y + 7 * id.z) % 97 == which
+    let empty = (id.x / 8 + id.y / 8 + id.z / 8 + which) % 4 == 0
+    let r = if spike { 1.0 } else if empty { 0.0 } else {
+        f32((id.x * 7 + id.y * 11 + id.z * 13 + which * 17) % 257) / 256.0
+    }
+    let g = f32((id.x * 3 + id.y * 5 + id.z * 19 + which * 23) % 251) / 250.0
+    out.store(id, vec4(r, g, 0.0, 1.0))
+}
+
+fn inspect_shape_support(
+    w: vec4,
+    q: vec3,
+    h: f32,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
+    rep: Sampler,
+    support: Texture3d<Rgba16Float>,
+) -> vec4 {
+    let at = min(vec3u(fract(q / SHAPE_SPAN) * f32(SHAPE_BOUND_SIDE)), vec3u(SHAPE_BOUND_SIDE - 1))
+    let bounds = support.load(at.x, at.y, at.z)
+    let sampled = shape.sample_level(rep, q / SHAPE_SPAN)
+    let excess = max(sampled.r - bounds.r, max(bounds.g - sampled.g, sampled.g - bounds.b))
+    let value = field_in(w, q, h, shape, detail, rep, detailed: true)
+    let empty = shape_support_empty(w, q, h, support)
+    vec4(excess, if empty && value > 0.0 { 1.0 } else { 0.0 }, if empty { 1.0 } else {
+        0.0
+    }, if value > 0.0 { 1.0 } else { 0.0 })
+}
+
+@compute(64)
+fn inspect(
+    which: u32,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
+    support: Texture3d<Rgba16Float>,
+    rep: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    var excess = -1.0e30
+    var bad = 0.0
+    var empty = 0.0
+    var positive = 0.0
+    for k in 0..512 {
+        let seed = id.x * 512 + k
+        let cell = vec3(
+            f32(i32(seed % 257) - 128),
+            f32(i32(seed % 193) - 96),
+            f32(i32(seed % 383) - 191),
+        )
+        let near = if seed % 3 == 0 { -0.00001 } else if seed % 3 == 1 { 0.00001 } else { 0.5 }
+        let q = (cell + vec3(near)) * (SHAPE_SPAN / f32(SHAPE_BOUND_SIDE))
+        let h = if which == 3 { 4016.5 } else { -100.0 + f32((seed * 17) % 4501) }
+        let sampled_weather = vec4(
+            f32((seed * 29 + which) % 257) / 256.0,
+            f32((seed * 31 + which * 17) % 251) / 250.0,
+            f32((seed * 37 + which * 19) % 241) / 300.0,
+            0.0,
+        )
+        let w = if which == 3 { vec4(1.0) } else { sampled_weather }
+        let r = inspect_shape_support(w, q, h, shape, detail, rep, support)
+        excess = max(excess, r.x)
+        bad += r.y
+        empty += r.z
+        positive += r.w
+    }
+    out[id] = vec4(excess, bad, empty, positive)
+}
+
+pub struct State { step: u32, pending: Vec<Pending<vec4>>, results: Vec<Vec<vec4>> }
+
+pub fn init() -> State {
+    State { step: 0, pending: Vec::new(), results: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.step < 4 {
+        var shape = texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE)
+        var detail = texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE)
+        var support = texture3d::<Rgba16Float>(SHAPE_BOUND_SIDE, SHAPE_BOUND_SIDE, SHAPE_BOUND_SIDE)
+        dispatch(source.bind(s.step, out: mut shape), over: shape)
+        dispatch(source.bind(s.step + 7, out: mut detail), over: detail)
+        dispatch(cook_shape_support.bind(shape, out: mut support), over: support)
+        var out: GpuBuffer<vec4> = buffer(64)
+        dispatch(
+            inspect.bind(
+                s.step,
+                shape,
+                detail,
+                support,
+                sampler(address: Address::Repeat),
+                mut out,
+            ),
+            over: 64,
+        )
+        s.pending.push(read(out.items()))
+        s.step += 1
+    }
+    if s.results.len() < s.pending.len() {
+        match s.pending[s.results.len()].poll() {
+            Some(Ok(v)) => s.results.push(take v),
+            _ => {},
+        }
+    }
+}
+
+@test(frames: 10, gpu: true)
+fn shape_support_covers_filter_halos_wraps_and_edits(s: State) {
+    assert(s.results.len() == 4, "readbacks")
+    var which = 0
+    for rows in s.results {
+        assert(rows.len() == 64)
+        var excess = -1.0e30
+        var empty = 0.0
+        var positive = 0.0
+        var bad = 0.0
+        for r in rows {
+            excess = max(excess, r.x)
+            bad += r.y
+            empty += r.z
+            positive += r.w
+        }
+        print(f"SUPPORT_GUARD {excess} {bad} {empty} {positive}")
+        assert(excess <= 1.0e-6 && bad == 0.0, "invalid shape support")
+        assert(positive > 0.0 && (which == 3 || empty > 0.0), "vacuous support test")
+        which += 1
+    }
+}

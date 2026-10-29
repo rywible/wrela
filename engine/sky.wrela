@@ -370,7 +370,7 @@ fn field(
 /// cover, rounded off toward its clouds' tops and flat at the base, eroded by the shape noise,
 /// and (with `detailed`) the detail noise: wisps at the base, billows at the top. `rep` samples
 /// tiled.
-fn field_in(
+pub fn field_in(
     w: vec4,
     q: vec3,
     h: f32,
@@ -439,6 +439,7 @@ fn march(
     jitter: f32,
     weather: Texture<Rgba16Float>,
     shape: Texture3d<Rgba16Float>,
+    support: Texture3d<Rgba16Float>,
     detail: Texture3d<Rgba16Float>,
     trans: Texture<Rgba16Float>,
     view: Texture<Rgba16Float>,
@@ -519,7 +520,7 @@ fn march(
             let p = c.eye + dir * t
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
             let w = weather_at(weather, rep, q)
-            let dens = field_in(w, q, h, shape, detail, rep, detailed: true)
+            let dens = bounded_view_field(w, q, h, shape, detail, rep, support)
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
                 // missed this skin and made the whole cloud a soft, evenly shaded patch.
@@ -593,6 +594,7 @@ pub fn march_dome(
     dome: Texture<Rgba16Float>,
     weather: Texture<Rgba16Float>,
     shape: Texture3d<Rgba16Float>,
+    support: Texture3d<Rgba16Float>,
     detail: Texture3d<Rgba16Float>,
     trans: Texture<Rgba16Float>,
     view: Texture<Rgba16Float>,
@@ -632,6 +634,7 @@ pub fn march_dome(
         jitter,
         weather,
         shape,
+        support,
         detail,
         trans,
         view,
@@ -785,6 +788,73 @@ pub fn sky_shade(
     vec4(c.rgb, c.a * 0.99)
 }
 
+/// Bounds of all trilinear shape samples in a source-space cell, including its halo.
+pub const SHAPE_BOUND_BLOCK: u32 = 4
+pub const SHAPE_BOUND_SIDE: u32 = SHAPE_SIDE / SHAPE_BOUND_BLOCK
+
+@compute(4, 4, 4)
+pub fn cook_shape_support(
+    shape: Texture3d<Rgba16Float>,
+    out: mut Texels3d<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= SHAPE_BOUND_SIDE || id.y >= SHAPE_BOUND_SIDE || id.z >= SHAPE_BOUND_SIDE { return }
+    var high_r = 0.0
+    var low_g = 1.0
+    var high_g = 0.0
+    for z in 0..SHAPE_BOUND_BLOCK + 2 {
+        for y in 0..SHAPE_BOUND_BLOCK + 2 {
+            for x in 0..SHAPE_BOUND_BLOCK + 2 {
+                let at = (vec3u(id.x, id.y, id.z) * SHAPE_BOUND_BLOCK +
+                    vec3u(x, y, z) +
+                    vec3u(SHAPE_SIDE - 1)) %
+                    vec3u(SHAPE_SIDE)
+                let v = shape.load(at.x, at.y, at.z)
+                high_r = max(high_r, v.r)
+                low_g = min(low_g, v.g)
+                high_g = max(high_g, v.g)
+            }
+        }
+    }
+    out.store(id, vec4(high_r, low_g, high_g, 0.0))
+}
+
+/// A conservative upper bound on the height profile, evaluated with current weather.
+/// The original point query is retained whenever the bound cannot certify zero.
+pub fn shape_support_empty(w: vec4, q: vec3, h: f32, support: Texture3d<Rgba16Float>) -> bool {
+    let uv = fract(q / SHAPE_SPAN)
+    let at = min(vec3u(uv * f32(SHAPE_BOUND_SIDE)), vec3u(SHAPE_BOUND_SIDE - 1))
+    let v = support.load(at.x, at.y, at.z)
+    let lo = cloud_bounds(w, v.g)
+    let hi = cloud_bounds(w, v.b)
+    // The evaluator clamps thickness to one metre, even when a custom weather
+    // base lies above the capped top. Include that support in the upper bound.
+    if h < lo.x - 0.001 || h > max(hi.y, hi.x + 1.0) + 0.001 { return true }
+    let hf_lo = max(0.0, (h - hi.x) / max(hi.y - lo.x, 1.0) - 0.0001)
+    let hf_hi = min(1.0, (h - lo.x) / max(lo.y - hi.x, 1.0) + 0.0001)
+    var profile = 1.0
+    if hf_hi < 0.12 {
+        profile = smoothstep(0.0, 0.12, max(hf_hi, 0.0))
+    } else {
+        if hf_lo > 0.48 { profile = smoothstep(1.0, 0.48, min(hf_lo, 1.0)) }
+    }
+    v.r + w.r * profile < 0.9999
+}
+
+fn bounded_view_field(
+    w: vec4,
+    q: vec3,
+    h: f32,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
+    rep: Sampler,
+    support: Texture3d<Rgba16Float>,
+) -> f32 {
+    if h <= 0.0 || h >= w.g * (TOP - BASE) * 1.08 || w.r <= 0.001 { return 0.0 }
+    if shape_support_empty(w, q, h, support) { return 0.0 }
+    field_in(w, q, h, shape, detail, rep, detailed: true)
+}
+
 // ---- the clouds on the GPU ----------------------------------------------------------------------
 
 /// The clouds' textures: the noises, the weather map, the shadow map and the dome; the frame's
@@ -802,6 +872,8 @@ pub struct Sky {
     pub half: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
+    support: Texture3d<Rgba16Float>,
+    support_ready: bool,
 }
 
 /// The clouds' textures, uncooked (`halved`: the march half the dome's size, `Sky::halved`).
@@ -818,6 +890,8 @@ pub fn new_sky(halved: bool = false) -> Sky {
         },
         marched: buffer(if halved { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
+        support: texture3d::<Rgba16Float>(SHAPE_BOUND_SIDE, SHAPE_BOUND_SIDE, SHAPE_BOUND_SIDE),
+        support_ready: false,
     }
 }
 
@@ -831,11 +905,13 @@ impl Sky {
             memory::texels(SHADOW_SIDE, SHADOW_SIDE, 8) +
             memory::texels(SKY_W, SKY_H, 8) +
             memory::texels(self.half.width(), self.half.height(), 8) +
-            u64(self.marched.len()) * u64(size_of::<vec4>())
+            u64(self.marched.len()) * u64(size_of::<vec4>()) +
+            memory::texels(SHAPE_BOUND_SIDE, SHAPE_BOUND_SIDE, 8, d: SHAPE_BOUND_SIDE)
     }
 
     /// Slice `k` of the noises (`NOISE_SLICES`): a slab of the shape noise, or the detail noise.
     pub fn cook_noise_slice(mut self, k: u32) {
+        self.support_ready = false
         label("clouds noise")
         if k + 1 < NOISE_SLICES {
             let (from, to) = (k * SHAPE_SLAB, (k + 1) * SHAPE_SLAB)
@@ -922,6 +998,11 @@ impl Sky {
         forward: vec3,
         view: f32,
     ) -> Clouds {
+        if !self.support_ready {
+            label("cloud shape support")
+            dispatch(cook_shape_support.bind(self.shape, out: mut self.support), over: self.support)
+            self.support_ready = true
+        }
         let c = Clouds {
             eye,
             phase: self.frames % PHASES,
@@ -945,6 +1026,7 @@ impl Sky {
                 marching,
                 self.weather,
                 self.shape,
+                self.support,
                 self.detail,
                 tables.transmittance,
                 tables.view,

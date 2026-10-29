@@ -3272,3 +3272,44 @@ GPU bound tests and negative controls preserved; runtime restored toparent.
 Subsequent counter runs are not timing/quality results: they replace colour.
 They identify46.413%of fine queries rejected at shape thresholding and no work-unit
 advantage for simple compaction. No new rendering win; G1–G7 unchanged/unmet.
+
+
+## 2026-10-29: source-support cloud acceleration retained
+
+[Full report](neural-cloud-support.md). Parent e42f2d16; Pop!_OS AMD5500U /
+RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57, Wrela0.9.0/compiler de9b81e52.
+1920×1080, one worker,60frames after600warmup, equal fixed resolution/probe work.
+
+Final corrected executable, three alternating pairs: complete GPU medians
+27.74020 → 26.15880ms,
+paired saving 5.70% (three-pair log-bootstrap95%
+interval 5.37–5.93%);
+cloud medians 6.25456 → 4.73592ms.
+Earlier five-pair prototype kept separate. No population/presentation claim.
+
+| Method | Final paced complete p50 / p95 / p99 ms | Cloud p50 / p95 / p99 ms |
+|---|---:|---:|
+| baseline | 27.84158 / 29.61088 / 30.41396 | 6.36486 / 7.18129 / 7.46191 |
+| candidate | 26.28088 / 27.82283 / 28.59330 | 4.81578 / 5.22001 / 5.60141 |
+
+256KiB added, all source/fallbacks retained. Explicit-update validation residency:
+
+| Run | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+|---|---:|---:|---:|
+| baseline-update | 405,005,112 / 582,183,284 | 551,976,960 / 20,180,992 | 804,996,096 |
+| support-32-update | 405,267,256 / 582,445,428 | 551,997,440 / 20,262,912 | 852,608,000 |
+
+DRM/PSS are whole-client snapshots, not per-cache physical peaks; no UMA summation.
+Cold table generation2.58444ms; supported same-value noise recook at frame620:
+
+| Method | Complete update frame ms | Noise generation ms | Support rebuild ms | Cloud ms |
+|---|---:|---:|---:|---:|
+| baseline-update | 34.08588 | 6.86492 | 0.00000 | 5.70904 |
+| support-32-update | 34.96984 | 6.88524 | 1.99020 | 4.51772 |
+
+Final image max difference1byte. Original-query audit:
+25,166,123queries,11,867,986certified empty,zero false rejection. Changed-bound test:
+131,072queries; thin-column failure preserved/repaired; reject-all control fails.
+Sampler parity is not converged transport, semantic silhouette or broad motion
+qualification. First assessment6.45minutes; two
+optimizations rejected, all failures saved. G1–G7 unchanged/unmet.

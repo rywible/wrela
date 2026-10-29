@@ -3063,3 +3063,23 @@ Simple compaction increases estimated query-group work; no speedup is inferred.
 Next preflight local shape-noise support bounds before another integration,
 requiring measured selectivity and complete cost. No training/new transport
 references; frozen models/goals unchanged. Manifest: `7b3b13e06de6e2d00c03272d76bf140dcb4f1662ea5d62b37cf84a2529af0281`.
+
+
+## 2026-10-29: Source support produces a measured cloud rendering win
+
+[The shape-support experiment](neural-cloud-support.md) retains a 256 KiB bound
+with original density, lighting, textures and fallbacks. It certifies 47.159% of
+25.166 million original view queries empty without an observed false rejection.
+First joint assessment 6.45 minutes; two followups
+rejected, architecture choice 14.32 minutes.
+
+Final corrected code: **5.70% lower complete GPU
+time**, **24.28% lower cloud time**, three paired
+runs at1920×1080. Image differences at most one byte. Requested live adds262,144B;
+complete residency and explicit noise-rebuild cost reported. A thin-column failure
+is preserved and corrected;131,072 changed-bound queries pass, reject-all fails.
+
+Retain32³; retire larger table and extra branch. Next test the same certificate
+on sunlight-density queries, with unchanged quadrature. No training, new transport
+reference, broad motion/silhouette claim or G1–G7 qualification.
+Manifest: `50aa27439f64740c2165d2bdd288555e8d59b1166b1e77bed4374711170124ab`.
