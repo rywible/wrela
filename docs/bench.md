@@ -3238,3 +3238,37 @@ residency. Actual DRM/PSS are snapshots, not physical peaks; do not sum UMA pool
 Dynamic refresh frames remain unqualified. Unpaired nominal savings are not a win.
 Initial joint assessment15.69minutes, retirement22.58minutes. Runtime restored to
 parent; all failed sources/results preserved. G1–G7 unchanged/unmet.
+
+
+## 2026-10-29: cloud weather bounds retired
+
+[Full report](neural-cloud-bounds.md). Parent60e2fbec; solo Pop!_OS AMD5500U/
+RADVRENOIR,Mesa26.1.6,Chrome154.0.8037.57,Wrela0.9.0/compilerde9b81e52.
+1920×1080,oneworker,60frames after600warmup, equal fixed resolution/probe work.
+All scene rendering and row-mask preparation included.
+
+| Method | Complete GPU median / p95 ms | Cloud median / p95 ms | Paced complete p95 / p99 ms |
+|---|---:|---:|---:|
+| Unchanged source | 27.67216 / 29.44744 | 6.22624 / 7.07352 | 29.47345 / 30.31655 |
+| Single-level intervals | 27.76088 / 29.46692 | 6.24152 / 7.03040 | 29.50551 / 30.37371 |
+| Weather hierarchy | 27.92436 / 29.55908 | 6.39500 / 7.11812 | 29.71243 / 30.72155 |
+| Shared row masks | 28.00516 / 29.62692 | 6.52288 / 7.25752 | 29.67519 / 30.70949 |
+
+| Method | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+|---|---:|---:|---:|
+| Unchanged source | 405,005,112 / 585,120,968 | 551,976,960 / 20,180,992 | 805,894,144 |
+| Single-level intervals | 405,037,880 / 582,216,052 | 551,927,808 / 20,099,072 | 805,415,936 |
+| Weather hierarchy | 405,701,432 / 585,817,288 | 551,968,768 / 20,099,072 | 849,928,192 |
+| Shared row masks | 405,742,392 / 582,920,564 | 551,989,248 / 20,099,072 | 834,298,880 |
+
+Images are exact for hierarchy/rows, one channel byte differs by1 for single-level,
+within observed replay variation. Cold bound generation0.49644/0.48336/0.48896ms
+is measured separately; actual changing-weather refresh frames are unqualified.
+Requested bytes count all scratch/caches/fallbacks; DRM/PSS are whole-scene snapshots,
+not physical peaks. No UMA summation or small unpaired dominance claim.
+
+Initial assessment11.85minutes, retire all three in35.79minutes after two followups.
+GPU bound tests and negative controls preserved; runtime restored toparent.
+Subsequent counter runs are not timing/quality results: they replace colour.
+They identify46.413%of fine queries rejected at shape thresholding and no work-unit
+advantage for simple compaction. No new rendering win; G1–G7 unchanged/unmet.

@@ -3043,3 +3043,23 @@ to91c97c8d. No training/new transport reference. Next test source-derived bounds
 that skip provably empty cloud samples while preserving density/lighting.
 No new rendering win or G1–G7 qualification; frozen goals/models unchanged.
 Manifest: `db21fabf7e17197019355ad0f3d0121bfab3b1bd0a0b9bb7657a1765c80e49c0`.
+
+
+## 2026-10-29: Exact weather bounds fail cost; workload points to shape support
+
+[The weather-bound experiment](neural-cloud-bounds.md) reaches first joint assessment
+in11.85minutes and retires all three variants in35.79minutes after two followups.
+Cloud GPU median6.24152/6.39500/6.52288ms versus6.22624baseline; complete frame
+27.76088/27.92436/28.00516ms versus27.67216. Requested additions32,768/696,320/
+737,280B; actual residency and preparation included. Images exact or within one byte.
+
+Interval and row GPU tests pass across weather edits, wrapping and both dome scales;
+deliberately bad bounds/masks fail. Runtime restored exactly to60e2fbec, failures
+preserved. No new joint rendering win or G1–G7 qualification.
+
+Two bounded workload diagnostics agree exactly on counts. Only2.447%of view queries
+have nonzero density;46.413%terminate at shape thresholding,36.932%at weather tests.
+Simple compaction increases estimated query-group work; no speedup is inferred.
+Next preflight local shape-noise support bounds before another integration,
+requiring measured selectivity and complete cost. No training/new transport
+references; frozen models/goals unchanged. Manifest: `7b3b13e06de6e2d00c03272d76bf140dcb4f1662ea5d62b37cf84a2529af0281`.
