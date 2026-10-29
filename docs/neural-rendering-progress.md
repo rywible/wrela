@@ -3190,3 +3190,27 @@ images or diagnostic error masks; compare the strongest same-information control
 and count all histories, routing, updates and complete cost.
 Runtime unchanged; G1–G7/frozen models unchanged.
 Manifest: `e155ca3621d4b6d03853ee4af64dcbee4318e0f4fdc259e85ceeb90506fe8949`.
+
+
+## 2026-10-29: Retire source-routed boundary decoding
+
+[The routed decoder](neural-source-routed.md) reaches its first joint assessment
+in 12.26 minutes and retires at
+38.23 minutes after two followups. Initial branching costs
+11.04/18.02ms versus full raw-factor10.79/17.91, while whole-clip errors can grow.
+
+Independent cheap history reduces regressions but adds16,588,800B. Source-generated
+boundary draws preserve all768isolated-history frames exactly and lower measured
+complete cost to9.69/7.68ms; requested live108,601,884B. A compact compute attempt
+was rejected by the GlobalId write rule before execution and is preserved.
+
+At4x final mean FLIP0.306529 versus cheap0.319201, full raw-factor0.170361 and
+direct source0.001711. Final3x worst-clip FLIP still regresses12.143%; direct source
+is faster and smaller on these supported fixtures. No new rendering win.
+Six batched captures,4608frames,12profile/residency pairs. Restore runtime exactly
+to parent1d9e3cbc. No fitting/new references; G1–G7 unchanged.
+
+Next test source-declared radiance factors to rebase causal observations at known
+lighting changes, equally for all baselines, without pretending one scalar handles
+direction, visibility or arbitrary material edits.
+Manifest: `c4e10affcb72a4dee70b4351a9815a41a9b6742d26cc8185d34b8389308adfa4`.

@@ -3432,3 +3432,24 @@ is0.011206 versus production0.272266. This post-hoc diagnostic motivates
 source-routed expensive boundary decoding, not a new quality/runtime win.
 All cost/residency figures are explicitly reused from the preceding studies;
 no fresh timing, storage saving or G1–G7 pass is claimed. Runtime restored.
+
+
+## 2026-10-29 — Source-routed boundaries, AMD, retired
+
+[Full routed-decoder evidence](neural-source-routed.md), parent1d9e3cbc, pinned
+Wrela0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23, AMD RADV RENOIR,
+Mesa26.1.6, Chrome154.0.8037.57. Complete1080p4x analytic fixtures, one worker,
+120frames after60warmup; separate300frame requested/DRM/PSS capture per build.
+
+Complete saturated medians flat/nonlinear leaf: cheap2.004/1.852ms;
+raw-factor10.791/17.912; direct1.783/2.260; initial hybrid11.041/18.024;
+isolated-history11.536/18.382; source-boundary draws9.686/7.682.
+Final requested live108,601,884B versus raw92,013,084 and cheap48,021,584.
+Actual residency and separate paced tails are preserved; unpaired points.
+
+Final4x FLIP0.306529 versus cheap0.319201, raw0.170361 and direct0.001711.
+Final3x worst-clip regression12.143%; no promotion. First assessment
+12.26min, retirement38.23min,
+two followups. All768final frames equal isolated history. Failed unsupported
+compute scatter and binding errors preserved. Runtime restored, no training,
+new reference algorithm, production/G4 cost claim or G1–G7 pass.
