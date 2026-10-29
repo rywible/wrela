@@ -3172,3 +3172,38 @@ Decision29.65minutes, after23.10-minute first assessment and one followup:
 retire both uniform caches; no new joint rendering win. Retain nonlinear diagnostic
 and source-direct control, preserve failures,264image/target/mask parity checks.
 No training, old models and G1–G7 unchanged/unmet.
+
+
+## 2026-10-29: source terrain ceilings retired after production measurement
+
+[Full report and preserved failures](neural-probe-ceilings.md). Parent61c534f4;
+solo Pop!_OS Ryzen5 5500U, AMD RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e52. One worker, 1920×1080, 60 frames after600warmup.
+Fixed equal probe work and resolution; all clearing rendering, preparation,
+caches, fallbacks and composition included. No training or independent transport truth.
+
+| Method | Complete GPU median / p95 ms | Probe median / p95 ms | Paced complete p95 / p99 ms |
+|---|---:|---:|---:|
+| Unchanged baseline | 27.66524 / 29.55736 | 1.80284 / 3.00688 | 29.44713 / 30.42032 |
+| Per-ray global ceiling | 27.97544 / 29.57108 | 1.86372 / 3.00028 | 29.52476 / 30.11182 |
+| Cached global ceiling | 27.71396 / 29.42020 | 1.85272 / 3.02020 | 29.45787 / 30.24935 |
+| Per-column local ceiling | 27.69688 / 29.44572 | 1.88600 / 2.93348 | 29.62742 / 30.14961 |
+
+| Method | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+|---|---:|---:|---:|
+| Unchanged baseline | 405,005,112 / 582,183,284 | 551,976,960 / 20,180,992 | 808,082,432 |
+| Per-ray global ceiling | 405,005,112 / 585,120,968 | 551,936,000 / 20,099,072 | 813,744,128 |
+| Cached global ceiling | 405,005,116 / 585,120,972 | 551,936,000 / 20,099,072 | 853,451,776 |
+| Per-column local ceiling | 405,010,232 / 582,188,404 | 552,001,536 / 19,902,464 | 803,638,272 |
+
+All 60 measured frames update probes. Default adaptive runs had zero updates after
+the initial bake and cannot support a GI speedup claim. Final local image is exact;
+initial/cached each differ by one byte by one unit, also seen in independent repeat
+variability. Alpha exact. Initial flat/hilly fixtures preserve 1,296 lighting words
+and all RGBA bytes per variant, but nominal 2–6% probe gains do not transfer.
+
+Requested allocations include scratch/caches/fallbacks; actual DRM/PSS snapshots
+follow660pacedframes, not physical peaks/per-asset memory. Do not sum UMA pools.
+Unpaired small tail/cold differences do not establish dominance. First joint
+assessment23.16minutes, decision51.65minutes, exactlytwofollowups: retire all
+candidates and restore runtime byte-exact to parent. G1–G7 unchanged/unmet.

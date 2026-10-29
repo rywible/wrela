@@ -2999,3 +2999,26 @@ keeps one quiet AMD queue. Next bet: an error-budgeted source shading compiler,
 using exact integration/direct evaluation for cheap terms and bounded approximation
 only for expensive smooth residuals. G1–G7 unchanged/unmet. Manifest:
 `202f6416ca1abebcc330959b565270597a01ffdf284e3c220a15aeeeaf8e461b`.
+
+
+## 2026-10-29: Terrain ceilings fail the full clearing comparison
+
+[The source-bound probe experiment](neural-probe-ceilings.md) reaches its first
+joint quality/runtime/residency assessment in 23.16 minutes and decides in 51.65.
+The initial global bound and two followups preserve inspected shaded output, but
+none improves the production workload. Probe median is 1.80284 ms baseline versus
+1.86372/1.85272/1.88600 ms; complete frame is 27.66524 versus
+27.97544/27.71396/27.69688 ms. Requested live memory is 405,005,112 B baseline,
+unchanged / +4 / +5,120 B for the candidates; actual DRM/PSS is recorded.
+
+The initial flat/hilly fixtures show nominal 2–6% probe gains with exact images and
+1,296 exact lighting words per variant, but these gains do not transfer. Default
+clearing dispatches no recurring probe updates after its bake; a corrected equal-work
+comparison schedules all 60 measured updates and removes the misleading speedup.
+
+Retire all three candidates, preserve failures and restore tracked runtime exactly
+to 61c534f4. Three changed-representation GPU tests pass; no repeat of unchanged
+engine tests. No training or new transport references. Next measure expensive
+irradiance/visibility/shadow terms inside volumetric scattering before selecting
+a source-radiance cache or learned residual. G1–G7/frozen models unchanged, no
+new rendering win or goal qualification. Manifest: `56cd426ca9e904e1547b0fe10faaffa8b22a650f8fcbc43ec13494671605b4e7`.
