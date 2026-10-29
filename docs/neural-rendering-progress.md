@@ -3103,3 +3103,23 @@ Next return to causal surface-separated reconstruction observations and a fair
 constructive conventional decoder, before further neural fitting. Unique-ID
 collision removal alone is not a rendering result. No training/new references;
 G1–G7/frozen models unchanged. Manifest: `843735e7936ad4c3283b2f7aa0bbbe23dd7a9d76732a73b18114c18d8ddfd156`.
+
+
+## 2026-10-29: Retire dense causal source-coordinate radiance charts
+
+[The chart experiment](neural-source-chart.md) finishes its first joint comparison
+in 30.91 minutes and retires the candidate at
+33.13 minutes, with zero tuning followups. Four batched
+captures produce 3,072 frames; all methods share exact references and visibility.
+
+At 4x, chart FLIP 0.213524 versus raw-factor 0.170361, temporal
+0.032675 versus 0.013622, requested live 114,549,584 versus 92,013,116 bytes.
+Chart complete GPU 4.97408 ms flat / 4.68804 ms nonlinear leaf; direct source
+1.79612 / 2.25320 ms with 25,212,072 requested live bytes and far better quality.
+Actual residency and complete tails recorded. No new rendering advantage.
+
+Restore runtime exactly to parent a829ee61 and preserve the failed candidate.
+No training, new reference method or G1–G7 change. Next test source-derived
+interval certificates on contiguous empty cloud view queries, keeping the original
+sample schedule and the retained point-support baseline.
+Manifest: `e33978e38675f190552e95e8246eb7034ac271a458af3be3a0ba5af8245a08ac`.

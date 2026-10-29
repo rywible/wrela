@@ -3350,3 +3350,25 @@ Retire all8/far6/distant4 variants after two targeted followups; first joint
 assessment4.73minutes, decision14.45.
 Unpaired development evidence, no broad dominance claim. Runtime restored exactly
 to2b6f47c4. All failed results saved; G1–G7 unchanged/unmet.
+
+
+## 2026-10-29 — Dense source-coordinate radiance charts: retired
+
+See [the source-chart report](neural-source-chart.md). Solo Pop!_OS AMD RADV
+RENOIR, Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23,
+Chrome 154.0.8037.57, parent a829ee61 plus archived candidate. Six existing
+192x108 clips, 32 frames, four scales; 1080p/4x profiles on flat and nonlinear
+leaf cases, 120 frames after 60 warm-up. One quiet GPU queue; scoring afterward.
+
+Chart: 4x mean FLIP 0.213524, temporal 0.032675, requested live 114,549,584B.
+Raw-factor: 0.170361 / 0.013622 / 92,013,116B. Complete medians chart
+4.97408/4.68804ms versus raw 10.79672/17.88788ms on cases1/74.
+Direct source costs1.79612/2.25320ms, 25,212,072B requested live, and is more
+accurate. Physical residency, tails, cold/reveal/boundary errors and source-input
+differences are reported. Unpaired development points, not production/G4 gates.
+
+First complete comparison 30.91 minutes; retire at
+33.13 minutes with zero followups. No training or new
+reference method. Runtime restored exactly; all failures retained in
+build/neural-evidence/source-chart-v1. Four batch runs capture3,072 frames in
+97.89s, excluding profiles/scoring; no unbatched speedup claim.
