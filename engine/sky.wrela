@@ -926,18 +926,7 @@ impl Sky {
         forward: vec3,
         view: f32,
     ) -> Clouds {
-        let c = Clouds {
-            eye,
-            phase: self.frames % PHASES,
-            sun: light.sun,
-            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
-            drift,
-            seed: if still { 0 } else { self.frames / PHASES },
-            forward,
-            sight: cos(min(view + TURN + TILE_RADIUS, PI)),
-            round: self.frames / PHASES,
-            scale: if Q::HALVED { 2 } else { 1 },
-        }
+        let c = self.clouds::<Q>(light, eye, drift, still, forward, view)
         label("clouds")
         let scale = c.scale
         borrow marching = if Q::HALVED { self.half } else { self.dome }
@@ -977,6 +966,33 @@ impl Sky {
         }
         self.frames += 1
         c
+    }
+
+    /// The clouds as the dome's next march sees them (`march`): from the eye at `eye`, the field
+    /// drifted `drift`, the eye looking along `forward` with its view's corners `view` (radians)
+    /// from it. A frame that doesn't march reads these (the drift the ground's cloud shadows
+    /// follow), and the dome as it is.
+    pub fn clouds<Q: Switches>(
+        self,
+        light: Light,
+        eye: vec3,
+        drift: vec2,
+        still: bool,
+        forward: vec3,
+        view: f32,
+    ) -> Clouds {
+        Clouds {
+            eye,
+            phase: self.frames % PHASES,
+            sun: light.sun,
+            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
+            drift,
+            seed: if still { 0 } else { self.frames / PHASES },
+            forward,
+            sight: cos(min(view + TURN + TILE_RADIUS, PI)),
+            round: self.frames / PHASES,
+            scale: if Q::HALVED { 2 } else { 1 },
+        }
     }
 
     /// Whether every texel of the dome has been marched.

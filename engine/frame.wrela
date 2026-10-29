@@ -742,6 +742,9 @@ pub const LEAST_SCALE: f32 = 0.5
 /// (which a frame that draws one doesn't bake) keep their turns (`Frame::static_strips`).
 const PROBE_TURN: u32 = 4
 
+/// A whole dome is marched every this many frames (`cook_sky`).
+const SKY_EVERY: u32 = 2
+
 /// How often the frame reads the program's GPU memory against its budget (`Frame::usage`).
 const MEMORY_EVERY: u32 = 30
 
@@ -2235,18 +2238,32 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             self.cloud_shadow.cooked(shadow_key)
         }
         // A dome that's whole is marched again only while the probes' steps aren't waiting on
-        // the budget: the first full frame needs them, and the dome's light is already there.
+        // the budget (the first full frame needs them, and the dome's light is already there),
+        // and every other frame: its clouds drift a few metres a second, and a round of it (64
+        // frames) holds them (C6: the march was 4-6 ms of the walks' frames).
         let yield_to_probes = self.probes_waited && self.sky.done()
-        if fresh && !yield_to_probes && self.cooks.planner.may(Work::SkyPhase) {
+        let resting = self.sky.done() && !self.debug.still && self.ran % SKY_EVERY != 0
+        // The field's drift, less the render origin (`Clouds::drift`).
+        let drift = self.cloud_wind * wind.time - self.cam.keyed().xz
+        if fresh && !yield_to_probes && !resting && self.cooks.planner.may(Work::SkyPhase) {
             self.clouds = self.sky.march::<Q>(
                 self.sky_key.0,
                 self.sky_light(),
                 self.tables,
                 eye,
-                // The field's drift, less the render origin (`Clouds::drift`).
-                drift: self.cloud_wind * wind.time - self.cam.keyed().xz,
+                drift: drift,
                 rep: self.repeat,
                 s: self.linear,
+                still: self.debug.still,
+                forward: self.cam.forward,
+                view: self.cam.corner_angle(),
+            )
+        } else if self.sky.done() {
+            // Not marched: the frame's clouds where they are now, the dome as it was.
+            self.clouds = self.sky.clouds::<Q>(
+                self.sky_light(),
+                eye,
+                drift: drift,
                 still: self.debug.still,
                 forward: self.cam.forward,
                 view: self.cam.corner_angle(),
