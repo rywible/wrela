@@ -3207,3 +3207,34 @@ follow660pacedframes, not physical peaks/per-asset memory. Do not sum UMA pools.
 Unpaired small tail/cold differences do not establish dominance. First joint
 assessment23.16minutes, decision51.65minutes, exactlytwofollowups: retire all
 candidates and restore runtime byte-exact to parent. G1–G7 unchanged/unmet.
+
+
+## 2026-10-29: cloud far-sunlight cache retired
+
+[Complete report](neural-cloud-cache.md). Parent91c97c8d. Solo Pop!_OS Ryzen5 5500U,
+AMD RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57, Wrela0.9.0/compilerde9b81e52.
+One worker, 1920×1080,60frames after600warmup. Fixed equal resolution/work,
+all rendering retained. One lattice-resolution followup; no training.
+
+| Method | Complete GPU median / p95 ms | Clouds median / p95 ms | Paced complete p95 / p99 ms |
+|---|---:|---:|---:|
+| Original source march | 27.71420 / 29.40692 | 6.23936 / 6.93252 | 29.62749 / 30.19913 |
+| 128×64×128 far cache | 27.06012 / 28.84800 | 5.52452 / 6.30872 | 28.88872 / 29.74425 |
+| 256×128×256 far cache | 27.18664 / 28.86080 | 5.67980 / 6.46024 | 28.65976 / 29.55769 |
+
+| Method | Requested live / peak B | Resident VRAM / GTT B | Browser PSS B |
+|---|---:|---:|---:|
+| Original source march | 405,005,112 / 582,183,284 | 552,005,632 / 20,262,912 | 801,325,056 |
+| 128×64×128 far cache | 413,393,720 / 590,571,892 | 560,386,048 / 20,180,992 | 809,989,120 |
+| 256×128×256 far cache | 472,113,976 / 649,292,148 | 619,085,824 / 20,180,992 | 803,874,816 |
+
+Coarse/fine keep two near sunlight samples exact but interpolate the six farther
+terms from a source-coordinate cache. They fail the existing2/255 image guard on
+7.02%/4.36%of pixels, maximum63/57. Contrast-band errors and repeat variability are
+reported. This is sampler comparison, not an independently converged transport test.
+
+Observed cache generation4.48328/23.19544ms, extra8/64MiB requested and physical
+residency. Actual DRM/PSS are snapshots, not physical peaks; do not sum UMA pools.
+Dynamic refresh frames remain unqualified. Unpaired nominal savings are not a win.
+Initial joint assessment15.69minutes, retirement22.58minutes. Runtime restored to
+parent; all failed sources/results preserved. G1–G7 unchanged/unmet.

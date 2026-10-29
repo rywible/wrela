@@ -3022,3 +3022,24 @@ engine tests. No training or new transport references. Next measure expensive
 irradiance/visibility/shadow terms inside volumetric scattering before selecting
 a source-radiance cache or learned residual. G1–G7/frozen models unchanged, no
 new rendering win or goal qualification. Manifest: `56cd426ca9e904e1547b0fe10faaffa8b22a650f8fcbc43ec13494671605b4e7`.
+
+
+## 2026-10-29: Cloud optical-depth caching loses quality, even with 64 MiB
+
+[The cloud source experiment](neural-cloud-cache.md) first confirms the proposed
+leaf-bounce lookup is disabled in the clearing, then targets its largest measured
+stage. Removing sunlight-density queries reduces cloud GPU median6.23936→4.40660ms,
+but visibly breaks shading; it is only a cost diagnostic.
+
+The source-coordinate cache keeps two near light samples exact and reuses the far
+six across wind updates. Its8MiB version costs27.06012ms complete versus27.71420ms
+baseline, but7.02%of pixels exceed2/255 error, maximum63. Doubling all dimensions
+uses64MiB, costs27.18664ms and still fails on4.36%, maximum57. Cache generation
+costs4.48328/23.19544ms; actual residency includes the full added allocation.
+
+First joint assessment15.69minutes; retire both caches in22.58minutes after one
+followup. All source and failed results preserved, tracked runtime restored exactly
+to91c97c8d. No training/new transport reference. Next test source-derived bounds
+that skip provably empty cloud samples while preserving density/lighting.
+No new rendering win or G1–G7 qualification; frozen goals/models unchanged.
+Manifest: `db21fabf7e17197019355ad0f3d0121bfab3b1bd0a0b9bb7657a1765c80e49c0`.
