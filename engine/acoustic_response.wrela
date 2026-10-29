@@ -1,0 +1,126 @@
+// Frequency-domain qualification of the prescribed plate: no time integration.
+// exp(i omega t), modal viscous coefficient eta * omega_j in mass-normalized
+// coordinates. Eta is an authored material hypothesis, not measured wood loss.
+// Pressure uses the same Rayleigh integral assumptions as acoustic_radiation.
+use acoustic_plate::{Structure, shape}
+use acoustic_modes::Modes
+use acoustic_radiation::{Point, Air}
+use std::collections::Vec
+use std::math::{PI_F64, sin_f64, cos_f64}
+
+pub struct Driven {
+    /// Point velocity / point force, (m/s)/N, real and imaginary parts.
+    pub mobility: [f64; 2],
+    /// Bare sine-coordinate acceleration / force, (m/s²)/N.
+    pub acceleration: Vec<[f64; 2]>,
+}
+
+pub struct Pressure: Copy {
+    /// Pa/N at the listener.
+    pub transfer: [f64; 2],
+    pub grid_x: u32,
+    pub grid_y: u32,
+}
+
+pub fn driven(s: Structure, m: Modes, x: f64, y: f64, eta: f64, hz: f64) -> Option<Driven> {
+    if m.count != s.orders.len() ||
+        !(x >= 0.0 &&
+            x <= s.plate.length &&
+            y >= 0.0 &&
+            y <= s.plate.width &&
+            eta > 0.0 &&
+            eta <= 1.0 &&
+            hz >= 0.0 &&
+            hz <= 100000.0) { return None }
+    let omega = 2.0 * PI_F64 * hz
+    var mobility = [0.0; 2]
+    var acceleration: Vec<[f64; 2]> = Vec::filled(m.count, [0.0; 2])
+    for j in 0..m.count {
+        let b = shape(s, m, j, x, y)
+        let lambda = m.squared_frequencies[j]
+        let re = lambda - omega * omega
+        let im = eta * lambda.sqrt() * omega
+        let denominator = re * re + im * im
+        if !(denominator > 0.0) { return None }
+        let qr = b * re / denominator
+        let qi = -b * im / denominator
+        mobility[0] -= omega * b * qi
+        mobility[1] += omega * b * qr
+        for i in 0..m.count {
+            let factor = -omega * omega * m.shapes[i * m.count + j]
+            acceleration[i][0] += factor * qr
+            acceleration[i][1] += factor * qi
+        }
+    }
+    Some(Driven { mobility, acceleration })
+}
+
+/// Midpoint quadrature, resolving BOTH structural half-waves and acoustic
+/// wavelengths with >= 6 points. Refinement is explicit; this minimum is a
+/// starting grid, never an accuracy claim. Transform modes before quadrature.
+pub fn pressure(
+    s: Structure,
+    acceleration: [[f64; 2]],
+    listener: Point,
+    air: Air,
+    hz: f64,
+    refinement: u32,
+) -> Option<Pressure> {
+    if acceleration.len() != s.orders.len() ||
+        !(listener.x.abs() < 1000.0 &&
+            listener.y.abs() < 1000.0 &&
+            listener.z >= 0.001 &&
+            listener.z < 1000.0 &&
+            air.density > 0.0 &&
+            air.density < 100.0 &&
+            air.speed > 0.0 &&
+            air.speed < 10000.0 &&
+            hz >= 0.0 &&
+            hz <= 100000.0) ||
+        refinement == 0 ||
+        refinement > 8 { return None }
+    let nx = (6 * s.count_x).max(u32(6.0 * hz * s.plate.length / air.speed) + 1) * refinement
+    let ny = (6 * s.count_y).max(u32(6.0 * hz * s.plate.width / air.speed) + 1) * refinement
+    if nx > 4096 || ny > 4096 || nx * ny > 1048576 { return None }
+    let dx = s.plate.length / f64(nx)
+    let dy = s.plate.width / f64(ny)
+    let omega = 2.0 * PI_F64 * hz
+    var sy: Vec<f64> = Vec::filled(ny * s.count_y, 0.0)
+    for iy in 0..ny {
+        let y = (f64(iy) + 0.5) * dy
+        for k in 0..s.count_y {
+            sy[iy * s.count_y + k] = sin_f64(PI_F64 * f64(k + 1) * y / s.plate.width)
+        }
+    }
+    var result = [0.0; 2]
+    var collapsed: Vec<[f64; 2]> = Vec::filled(s.count_y, [0.0; 2])
+    for ix in 0..nx {
+        let x = (f64(ix) + 0.5) * dx
+        for k in 0..s.count_y { collapsed[k] = [0.0; 2] }
+        for i in 0..s.orders.len() {
+            let sx = sin_f64(PI_F64 * f64(s.orders[i][0]) * x / s.plate.length)
+            let k = s.orders[i][1] - 1
+            collapsed[k][0] += sx * acceleration[i][0]
+            collapsed[k][1] += sx * acceleration[i][1]
+        }
+        for iy in 0..ny {
+            let y = (f64(iy) + 0.5) * dy
+            var ar = 0.0
+            var ai = 0.0
+            for k in 0..s.count_y {
+                ar += sy[iy * s.count_y + k] * collapsed[k][0]
+                ai += sy[iy * s.count_y + k] * collapsed[k][1]
+            }
+            let distance = ((listener.x - x) * (listener.x - x) +
+                (listener.y - y) * (listener.y - y) +
+                listener.z * listener.z).sqrt()
+            let phase = omega * distance / air.speed
+            let scale = air.density * dx * dy / (2.0 * PI_F64 * distance)
+            let cr = cos_f64(phase)
+            let ci = -sin_f64(phase)
+            result[0] += scale * (ar * cr - ai * ci)
+            result[1] += scale * (ar * ci + ai * cr)
+        }
+    }
+    Some(Pressure { transfer: result, grid_x: nx, grid_y: ny })
+}

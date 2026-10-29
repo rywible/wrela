@@ -1,0 +1,85 @@
+// Physical-coordinate viscous dissipation under a mass-normalized modal map.
+// Each row psi is a physical coordinate: C_global = sum c psi psi^T.
+// A forward half-sweep before mechanics and reverse half-sweep after mechanics
+// form a symmetric splitting. Each rank-one substep accounts for exact loss.
+// This reference allocates only during cooking, not during its sweeps.
+use acoustics::{Mode, StringSpec}
+use acoustic_modes::Modes
+use std::collections::Vec
+use std::math::PI_F64
+
+pub struct Losses {
+    pub rows: Vec<Vec<f64>>,
+    pub coefficients: Vec<f64>,
+    pub modes: u32,
+}
+
+pub fn cook(basis: Modes, coefficients: [f64]) -> Option<Losses> {
+    let n = basis.count
+    if n == 0 || n > 1024 || basis.shapes.len() != n * n || coefficients.len() != n { return None }
+    var rows: Vec<Vec<f64>> = Vec::new()
+    var kept: Vec<f64> = Vec::new()
+    for i in 0..n {
+        let c = coefficients[i]
+        if !(c >= 0.0 && c < 1e100) { return None }
+        if c == 0.0 { continue }
+        var row: Vec<f64> = Vec::new()
+        for j in 0..n {
+            let x = basis.shapes[i * n + j]
+            if !(x.abs() < 1e100) { return None }
+            row.push(x)
+        }
+        rows.push(take row)
+        kept.push(c)
+    }
+    Some(Losses { rows, coefficients: kept, modes: n })
+}
+
+/// Caller supplies dt/2, forward before mechanics and reverse afterwards.
+pub fn sweep(losses: Losses, modes: mut [Mode], dt: f64, reverse: bool) -> f64 {
+    assert(modes.len() == losses.modes && dt >= 0.0)
+    var removed = 0.0
+    for k in 0..losses.rows.len() {
+        let i = if reverse { losses.rows.len() - 1 - k } else { k }
+        borrow row = losses.rows[i]
+        removed += acoustic_damper::dissipate(mut modes, row, losses.coefficients[i], dt)
+    }
+    removed
+}
+
+/// Add the SAME instantaneous damping force to an already computed acceleration.
+/// Global modal mass is identity; no extra mass inverse or observer gain.
+pub fn add_acceleration(losses: Losses, modes: [Mode], acceleration: mut [f64]) {
+    assert(modes.len() == losses.modes && acceleration.len() == modes.len())
+    for i in 0..losses.rows.len() {
+        borrow row = losses.rows[i]
+        var velocity = 0.0
+        for j in 0..modes.len() { velocity += row[j] * modes[j].v }
+        let force = -losses.coefficients[i] * velocity
+        for j in 0..modes.len() { acceleration[j] += row[j] * force }
+    }
+}
+
+/// Kelvin-Voigt bending law EI * (curvature + tau * curvature_rate).
+/// Pinned mass-normalized sine coordinate: c_n = tau EI (n*pi/L)^4 / mu.
+/// The linear bridge lift has zero curvature, hence no bending-loss cross term.
+/// Tau is an authored material retardation time, NOT a fitted envelope. Air
+/// drag, winding slip and termination loss are absent from this primitive.
+pub fn string_bending(spec: StringSpec, order: u32, tau: f64) -> f64 {
+    assert(
+        order > 0 &&
+            spec.length > 0.0 &&
+            spec.density > 0.0 &&
+            spec.rigidity >= 0.0 &&
+            tau >= 0.0 &&
+            tau < 1.0,
+    )
+    let k = PI_F64 * f64(order) / spec.length
+    tau * spec.rigidity * k * k * k * k / spec.density
+}
+
+/// Viscous modal equivalent of a specified board loss factor at that mode.
+pub fn board_mode(omega: f64, eta: f64) -> f64 {
+    assert(omega > 0.0 && eta >= 0.0 && eta <= 1.0)
+    eta * omega
+}

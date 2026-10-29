@@ -1,0 +1,28 @@
+use engine::grand_design::{proposal, key, modes_below}
+use std::io::print
+
+pub fn report() -> u32 {
+    let s = proposal()
+    var total_strings: u32 = 0
+    var load = 0.0
+    var speaking_mass = 0.0
+    var maximum_stress = 0.0
+    var modal_count = [0; 3]
+    for index in 0..88 {
+        let k = key(s, index).unwrap()
+        total_strings += k.strings
+        load += k.string.tension * f64(k.strings)
+        speaking_mass += k.string.density * k.string.length * f64(k.strings)
+        maximum_stress = maximum_stress.max(k.core_stress)
+        for b in 0..3 {
+            modal_count[b] += k.strings * modes_below(k, [5000.0, 10000.0, 20000.0][b])
+        }
+        print(
+            f"{{\"key\":{index},\"midi\":{k.midi},\"strings\":{k.strings},\"hz\":{k.target_hz},\"length_m\":{k.string.length},\"tension_n\":{k.string.tension},\"core_radius_m\":{k.core_radius},\"mass_equivalent_winding_radius_m\":{k.winding_radius},\"line_mass_kg_m\":{k.string.density},\"rigidity_nm2\":{k.string.rigidity},\"core_stress_pa\":{k.core_stress}}}",
+        )
+    }
+    print(
+        f"{{\"design_version\":1,\"keys\":88,\"strings\":{total_strings},\"sum_string_tension_n\":{load},\"speaking_string_mass_kg\":{speaking_mass},\"max_core_stress_pa\":{maximum_stress},\"assumed_stress_ceiling_pa\":{s.core.stress_ceiling},\"modes_below_5khz\":{modal_count[0]},\"modes_below_10khz\":{modal_count[1]},\"modes_below_20khz\":{modal_count[2]},\"structural_qualification\":false,\"musical_qualification\":false}}",
+    )
+    0
+}

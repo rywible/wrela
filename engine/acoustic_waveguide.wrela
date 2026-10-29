@@ -1,0 +1,220 @@
+// Ideal-string travelling-wave prototype for the representation comparison.
+// It is not yet a stiff/wound string or the piano's bridge. Each ring represents
+// the round trip from the hammer to one fixed end. Entries are velocity waves.
+// Characteristic impedance Z = sqrt(tension * density), energy Z*dt*sum(wave²).
+// Contact port v = incoming_left + incoming_right + force/(2 Z).
+// The reflected outgoing waves then gain exactly dt*force*v in energy.
+// The same discrete contact potential used by the modal oracle closes the
+// hammer/string work budget. No recording, preset or sampled attack is an input.
+use acoustics::{Hammer, effective_force, stored_contact}
+use std::collections::Vec
+
+pub struct WaveString: Clone {
+    pub hammer: Hammer,
+    pub compression: f64,
+    pub impedance: f64,
+    pub dt: f64,
+    pub left: Vec<f64>,
+    pub right: Vec<f64>,
+    l: u32,
+    r: u32,
+    middle: u32,
+}
+
+pub fn string(
+    left_samples: u32,
+    right_samples: u32,
+    impedance: f64,
+    dt: f64,
+    hammer: Hammer,
+) -> WaveString {
+    assert(left_samples >= 1 && right_samples >= 1)
+    assert(left_samples + right_samples <= 32768)
+    assert(impedance > 0.0 && dt > 0.0 && hammer.mass > 0.0 && hammer.stiffness >= 0.0)
+    assert(hammer.compliance == 0.0, "the ideal waveguide carries its own full contact compliance")
+    WaveString {
+        hammer,
+        compression: hammer.x,
+        impedance,
+        dt,
+        left: Vec::filled(left_samples, 0.0),
+        right: Vec::filled(right_samples, 0.0),
+        l: 0,
+        r: 0,
+        middle: right_samples / 2,
+    }
+}
+
+@audio
+fn advance(s: mut WaveString, fixed: bool) -> f64 {
+    let a = s.left[s.l]
+    let b = s.right[s.r]
+    let old = s.compression
+    let free = old + s.dt * (s.hammer.v - a - b)
+    let response = 0.5 * s.dt * (s.dt / s.hammer.mass + 1.0 / s.impedance)
+    var lo = 0.0
+    var hi = effective_force(s.hammer, old, free)
+    if hi > 0.0 {
+        for _ in 0..48 {
+            let force = 0.5 * (lo + hi)
+            let want = effective_force(s.hammer, old, free - response * force)
+            if force < want { lo = force } else { hi = force }
+        }
+    }
+    let force = 0.5 * (lo + hi)
+    let increment = force / (2.0 * s.impedance)
+    s.left[s.l] = -(b + increment)
+    s.right[s.r] = (if fixed { -1.0 } else { 1.0 }) * (a + increment)
+    s.l += 1
+    s.r += 1
+    s.middle += 1
+    if s.middle == s.right.len() { s.middle = 0 }
+    if s.l == s.left.len() { s.l = 0 }
+    if s.r == s.right.len() { s.r = 0 }
+    s.hammer.x += s.dt * (s.hammer.v - 0.5 * s.dt * force / s.hammer.mass)
+    s.hammer.v -= s.dt * force / s.hammer.mass
+    s.compression = free - response * force
+    force
+}
+
+@audio
+pub fn energy(s: WaveString) -> f64 {
+    var waves = 0.0
+    for x in s.left { waves += x * x }
+    for x in s.right { waves += x * x }
+    0.5 * s.hammer.mass * s.hammer.v * s.hammer.v +
+        s.impedance * s.dt * waves +
+        stored_contact(s.hammer, s.compression)
+}
+
+@audio
+pub fn incoming(s: WaveString) -> (f64, f64) {
+    (s.left[s.l], s.right[s.r])
+}
+
+@audio
+pub fn step(s: mut WaveString) -> f64 {
+    advance(mut s, fixed: true)
+}
+
+@audio
+pub fn bridge_incoming(s: WaveString) -> f64 {
+    assert(s.right.len() % 2 == 0)
+    s.right[s.middle]
+}
+
+@audio
+pub fn step_with_bridge(s: mut WaveString, returning: f64) -> f64 {
+    assert(s.right.len() % 2 == 0)
+    s.right[s.middle] = returning
+    advance(mut s, fixed: false)
+}
+
+/// Free transport with the hammer mechanically parked. The current string
+/// displacement is retained in compression, so rearming can account for it.
+/// Caller must keep the hammer out of contact and account for any action work.
+@audio
+fn free_transport(s: mut WaveString, fixed: bool) {
+    assert(s.hammer.v == 0.0 && s.compression < 0.0)
+    let a = s.left[s.l]
+    let b = s.right[s.r]
+    s.left[s.l] = -b
+    s.right[s.r] = if fixed { -a } else { a }
+    s.compression -= s.dt * (a + b)
+    s.l += 1
+    s.r += 1
+    s.middle += 1
+    if s.middle == s.right.len() { s.middle = 0 }
+    if s.l == s.left.len() { s.l = 0 }
+    if s.r == s.right.len() { s.r = 0 }
+}
+
+/// Free string at a moving bridge, preserving receiver state while the hammer
+/// is parked. No resonance is removed because a key has not been struck.
+@audio
+pub fn free_with_bridge(s: mut WaveString, returning: f64) {
+    assert(s.right.len() % 2 == 0)
+    s.right[s.middle] = returning
+    free_transport(mut s, fixed: false)
+}
+
+@audio
+pub fn free_fixed(s: mut WaveString) {
+    free_transport(mut s, fixed: true)
+}
+
+/// Four parked ideal strings sharing integer path lengths. Each lane retains
+/// its own waves and displacement; this is SIMD storage, not voice averaging.
+/// Different physical tuning requires a separately verified dispersive path.
+pub struct Packet {
+    pub left: Vec<vec4>,
+    pub right: Vec<vec4>,
+    pub compression: vec4,
+    pub impedance: vec4,
+    dt: f32,
+    l: u32,
+    r: u32,
+    middle: u32,
+}
+
+pub fn packet(strings: [WaveString]) -> Packet {
+    assert(strings.len() == 4)
+    borrow first = strings[0]
+    var left: Vec<vec4> = Vec::filled(first.left.len(), vec4(0.0))
+    var right: Vec<vec4> = Vec::filled(first.right.len(), vec4(0.0))
+    var compression = vec4(0.0)
+    var impedance = vec4(0.0)
+    for lane in 0..4 {
+        borrow s = strings[lane]
+        assert(s.left.len() == first.left.len() && s.right.len() == first.right.len())
+        assert(s.l == first.l && s.r == first.r && s.middle == first.middle && s.dt == first.dt)
+        assert(s.hammer.v == 0.0 && s.compression < 0.0)
+        compression[lane] = f32(s.compression)
+        impedance[lane] = f32(s.impedance)
+        for i in 0..left.len() { left[i][lane] = f32(s.left[i]) }
+        for i in 0..right.len() { right[i][lane] = f32(s.right[i]) }
+    }
+    Packet {
+        left,
+        right,
+        compression,
+        impedance,
+        dt: f32(first.dt),
+        l: first.l,
+        r: first.r,
+        middle: first.middle,
+    }
+}
+
+@audio
+pub fn packet_incoming(p: Packet) -> vec4 {
+    p.right[p.middle]
+}
+
+@audio
+pub fn free_packet_bridge(p: mut Packet, returning: vec4) {
+    assert(p.right.len() % 2 == 0)
+    p.right[p.middle] = returning
+    let a = p.left[p.l]
+    let b = p.right[p.r]
+    p.left[p.l] = -b
+    p.right[p.r] = a
+    p.compression -= p.dt * (a + b)
+    p.l += 1
+    p.r += 1
+    p.middle += 1
+    if p.l == p.left.len() { p.l = 0 }
+    if p.r == p.right.len() { p.r = 0 }
+    if p.middle == p.right.len() { p.middle = 0 }
+}
+
+pub fn packet_energy(p: Packet) -> f64 {
+    var total = 0.0
+    for x in p.left {
+        for lane in 0..4 { total += f64(p.impedance[lane]) * f64(x[lane]) * f64(x[lane]) }
+    }
+    for x in p.right {
+        for lane in 0..4 { total += f64(p.impedance[lane]) * f64(x[lane]) * f64(x[lane]) }
+    }
+    f64(p.dt) * total
+}

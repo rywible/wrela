@@ -1,0 +1,60 @@
+// Assemble a passive linear mechanical system and a nonlinear hammer contact.
+// This exact small-system reduction is the coupled-reference oracle, not a
+// scalable solution for all of a grand's string modes.
+use acoustic_modes::{Modes, eigensystem}
+use acoustics::{Mode, mode}
+use std::collections::Vec
+
+pub struct Coupled: Clone {
+    pub basis: Modes,
+    pub modes: Vec<Mode>,
+    pub output: Vec<f64>,
+}
+
+/// K and M are physical coordinate matrices, force acts through contact,
+// and output observes displacement. Same transform for source and receiver
+/// preserves reciprocity and mechanical work.
+pub fn cook(
+    mass: [f64],
+    stiffness: [f64],
+    contact: [f64],
+    output: [f64],
+    loss: f64,
+    dt: f64,
+) -> Option<Coupled> {
+    let n = contact.len()
+    if n != output.len() || !(loss >= 0.0 && dt > 0.0) { return None }
+    let basis = eigensystem(mass, stiffness, n)?
+    var modes: Vec<Mode> = Vec::new()
+    var observed: Vec<f64> = Vec::new()
+    for j in 0..n {
+        var drive = 0.0
+        var observe = 0.0
+        for i in 0..n {
+            drive += contact[i] * basis.shapes[i * n + j]
+            observe += output[i] * basis.shapes[i * n + j]
+        }
+        let omega = basis.squared_frequencies[j].sqrt()
+        if omega * dt >= 3.141592653589793 { return None }
+        modes.push(mode(omega, shape: drive, loss: loss, dt: dt))
+        observed.push(observe)
+    }
+    Some(Coupled { basis, modes, output: observed })
+}
+
+@audio
+pub fn observed_displacement(c: Coupled) -> f64 {
+    var x = 0.0
+    for j in 0..c.modes.len() { x += c.output[j] * c.modes[j].q }
+    x
+}
+
+/// Frequency-domain displacement per unit force, excluding the poles.
+// This is an analytic transfer of the cooked system, not a measured spectrum.
+pub fn receptance(c: Coupled, omega: f64) -> f64 {
+    var x = 0.0
+    for j in 0..c.modes.len() {
+        x += c.output[j] * c.modes[j].shape / (c.basis.squared_frequencies[j] - omega * omega)
+    }
+    x
+}

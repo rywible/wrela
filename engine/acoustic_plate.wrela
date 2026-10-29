@@ -1,0 +1,233 @@
+// Rayleigh-Ritz simply supported orthotropic plate with parallel full-span ribs.
+// Verification/cooking primitive; not yet a grand's rim/bridge model.
+// Analytic energy integrals, independently implemented; context: plan source R2.
+use acoustic_modes::{Modes, eigensystem}
+use std::collections::Vec
+use std::math::{PI_F64, sin_f64}
+
+pub struct Plate: Copy {
+    pub length: f64,
+    pub width: f64,
+    pub thickness: f64,
+    pub density: f64,
+    pub young_x: f64,
+    pub young_y: f64,
+    pub poisson_xy: f64,
+    pub shear: f64,
+}
+
+pub struct Rib: Copy {
+    pub x: f64,
+    /// kg/m and N m², including any declared parallel-axis contribution.
+    pub line_mass: f64,
+    pub bending: f64,
+}
+
+pub struct Structure: Clone {
+    /// Largest retained positive sine order along each axis.
+    pub count_x: u32,
+    pub count_y: u32,
+    pub orders: Vec<[u32; 2]>,
+    /// Smallest excluded UNRIBBED basis frequency, rad/s. This describes the
+    /// index set, not a proven bandwidth of the ribbed response.
+    pub first_omitted_omega: f64,
+    pub plate: Plate,
+    pub mass: Vec<f64>,
+    pub stiffness: Vec<f64>,
+}
+
+/// Dx, Dy, Dxy, Ds in N m.
+pub fn rigidity(p: Plate) -> Option<[f64; 4]> {
+    if !(p.length > 0.0 &&
+        p.length < 100.0 &&
+        p.width > 0.0 &&
+        p.width < 100.0 &&
+        p.thickness > 0.0 &&
+        p.thickness < 1.0 &&
+        p.density > 0.0 &&
+        p.density < 1e6 &&
+        p.young_x > 0.0 &&
+        p.young_x < 1e13 &&
+        p.young_y > 0.0 &&
+        p.young_y < 1e13 &&
+        p.shear > 0.0 &&
+        p.shear < 1e13 &&
+        p.poisson_xy.abs() < 1.0) { return None }
+    let denominator = 1.0 - p.poisson_xy * p.poisson_xy * p.young_y / p.young_x
+    if !(denominator > 0.0) { return None }
+    let h3 = p.thickness * p.thickness * p.thickness
+    let dx = p.young_x * h3 / (12.0 * denominator)
+    let dy = p.young_y * h3 / (12.0 * denominator)
+    let dxy = p.poisson_xy * dy
+    let ds = p.shear * h3 / 12.0
+    if !(dxy + 2.0 * ds > 0.0) { return None }
+    Some([dx, dy, dxy, ds])
+}
+
+fn omega2(p: Plate, d: [f64; 4], x: u32, y: u32) -> f64 {
+    let kx = PI_F64 * f64(x) / p.length
+    let ky = PI_F64 * f64(y) / p.width
+    (d[0] * kx * kx * kx * kx +
+        2.0 * (d[2] + 2.0 * d[3]) * kx * kx * ky * ky +
+        d[1] * ky * ky * ky * ky) /
+        (p.density * p.thickness)
+}
+
+pub fn assemble(p: Plate, ribs: [Rib], count_x: u32, count_y: u32) -> Option<Structure> {
+    if count_x == 0 || count_y == 0 || count_x > 64 || count_y > 64 || count_x * count_y > 1024 {
+        return None
+    }
+    let d = rigidity(p)?
+    var orders: Vec<[u32; 2]> = Vec::new()
+    for x in 1..count_x + 1 { for y in 1..count_y + 1 { orders.push([x, y]) } }
+    let omitted = omega2(p, d, count_x + 1, y: 1).min(omega2(p, d, x: 1, y: count_y + 1)).sqrt()
+    assemble_orders(p, ribs, orders, omitted)
+}
+
+/// Complete positive sine index set below the specified bare-plate cutoff.
+/// Limits fail explicitly; no silent truncation to fit the implementation cap.
+pub fn assemble_frequency(p: Plate, ribs: [Rib], cutoff_hz: f64) -> Option<Structure> {
+    if !(cutoff_hz > 0.0 && cutoff_hz <= 100000.0) { return None }
+    let d = rigidity(p)?
+    let limit = 2.0 * PI_F64 * cutoff_hz
+    var omitted2 = omega2(p, d, x: 65, y: 1).min(omega2(p, d, x: 1, y: 65))
+    if omitted2 < limit * limit { return None }
+    var orders: Vec<[u32; 2]> = Vec::new()
+    for x in 1..65 {
+        for y in 1..65 {
+            let w2 = omega2(p, d, x, y)
+            if w2 < limit * limit {
+                if orders.len() == 1024 { return None }
+                orders.push([x, y])
+            } else { omitted2 = omitted2.min(w2) }
+        }
+    }
+    if orders.len() == 0 { return None }
+    assemble_orders(p, ribs, orders, omitted2.sqrt())
+}
+
+fn assemble_orders(p: Plate, ribs: [Rib], orders: [[u32; 2]], omitted: f64) -> Option<Structure> {
+    let d = rigidity(p)?
+    let n = orders.len()
+    let area_quarter = p.length * p.width * 0.25
+    var count_x: u32 = 0
+    var count_y: u32 = 0
+    var mass: Vec<f64> = Vec::filled(n * n, 0.0)
+    var stiffness: Vec<f64> = Vec::filled(n * n, 0.0)
+    var copied_orders: Vec<[u32; 2]> = Vec::new()
+    for i in 0..n {
+        let order = orders[i]
+        copied_orders.push(order)
+        count_x = count_x.max(order[0])
+        count_y = count_y.max(order[1])
+        mass[i * n + i] = p.density * p.thickness * area_quarter
+        stiffness[i * n + i] = mass[i * n + i] * omega2(p, d, order[0], order[1])
+    }
+    for rib in ribs {
+        if !(rib.x > 0.0 &&
+            rib.x < p.length &&
+            rib.line_mass >= 0.0 &&
+            rib.line_mass < 1e6 &&
+            rib.bending >= 0.0 &&
+            rib.bending < 1e12) { return None }
+        for i in 0..n {
+            let sx = sin_f64(PI_F64 * f64(orders[i][0]) * rib.x / p.length)
+            let ky = PI_F64 * f64(orders[i][1]) / p.width
+            for j in i..n {
+                if orders[i][1] != orders[j][1] { continue }
+                let tx = sin_f64(PI_F64 * f64(orders[j][0]) * rib.x / p.length)
+                let integral = p.width * 0.5 * sx * tx
+                mass[i * n + j] += rib.line_mass * integral
+                stiffness[i * n + j] += rib.bending * ky * ky * ky * ky * integral
+                mass[j * n + i] = mass[i * n + j]
+                stiffness[j * n + i] = stiffness[i * n + j]
+            }
+        }
+    }
+    Some(
+        Structure {
+            count_x,
+            count_y,
+            orders: copied_orders,
+            first_omitted_omega: omitted,
+            plate: p,
+            mass,
+            stiffness,
+        },
+    )
+}
+
+pub fn solve(s: Structure) -> Option<Modes> {
+    if s.orders.len() <= 64 { eigensystem(s.mass, s.stiffness, s.orders.len()) } else {
+        solve_separable(s)
+    }
+}
+
+/// Metres per mass-normalized modal coordinate at an attachment/observation point.
+pub fn shape(s: Structure, m: Modes, index: u32, x: f64, y: f64) -> f64 {
+    assert(index < m.count && m.count == s.orders.len())
+    var a = 0.0
+    for i in 0..m.count {
+        let sx = sin_f64(PI_F64 * f64(s.orders[i][0]) * x / s.plate.length)
+        let sy = sin_f64(PI_F64 * f64(s.orders[i][1]) * y / s.plate.width)
+        a += m.shapes[i * m.count + index] * sx * sy
+    }
+    a
+}
+
+/// Full-span y ribs preserve transverse sine order. Solve the exact, possibly
+/// ragged blocks, then merge eigenpairs. Reject nonseparable matrices.
+pub fn solve_separable(s: Structure) -> Option<Modes> {
+    let n = s.orders.len()
+    if n == 0 ||
+        n > 1024 ||
+        s.count_y == 0 ||
+        s.count_y > 64 ||
+        s.mass.len() != n * n ||
+        s.stiffness.len() != n * n { return None }
+    for i in 0..n {
+        for j in 0..n {
+            if s.orders[i][1] != s.orders[j][1] &&
+                (s.mass[i * n + j] != 0.0 || s.stiffness[i * n + j] != 0.0) { return None }
+        }
+    }
+    var eigenvalues: Vec<f64> = Vec::filled(n, 0.0)
+    var shapes: Vec<f64> = Vec::filled(n * n, 0.0)
+    var start: u32 = 0
+    for y in 1..s.count_y + 1 {
+        var rows: Vec<u32> = Vec::new()
+        for i in 0..n { if s.orders[i][1] == y { rows.push(i) } }
+        let size = rows.len()
+        if size == 0 { continue }
+        var mass: Vec<f64> = Vec::filled(size * size, 0.0)
+        var stiffness: Vec<f64> = Vec::filled(size * size, 0.0)
+        for i in 0..size {
+            for j in 0..size {
+                mass[i * size + j] = s.mass[rows[i] * n + rows[j]]
+                stiffness[i * size + j] = s.stiffness[rows[i] * n + rows[j]]
+            }
+        }
+        let block = eigensystem(mass, stiffness, size)?
+        for j in 0..size {
+            eigenvalues[start + j] = block.squared_frequencies[j]
+            for i in 0..size { shapes[rows[i] * n + start + j] = block.shapes[i * size + j] }
+        }
+        start += size
+    }
+    if start != n { return None }
+    for i in 0..n {
+        var least = i
+        for j in i + 1..n { if eigenvalues[j] < eigenvalues[least] { least = j } }
+        if least != i {
+            let x = eigenvalues[i]
+            eigenvalues[i] = eigenvalues[least]
+            eigenvalues[least] = x
+            for row in 0..n {
+                let a = shapes[row * n + i]
+                shapes[row * n + i] = shapes[row * n + least]
+                shapes[row * n + least] = a
+            }
+        }
+    }
+    Some(Modes { count: n, squared_frequencies: eigenvalues, shapes })
+}

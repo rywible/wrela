@@ -1,0 +1,241 @@
+// Small dense structural eigenproblems for the original grand.
+// Independent implementations of Cholesky whitening and cyclic Jacobi rotations.
+// Cooking only: no allocations or eigensolver work belongs in an audio callback.
+// K phi = lambda M phi, phi^T M phi = I. Invalid mass/stiffness fails explicitly.
+use std::collections::Vec
+
+pub struct Modes: Clone {
+    pub count: u32,
+    pub squared_frequencies: Vec<f64>,
+    /// Column j is mode j; rows are the original physical coordinates.
+    pub shapes: Vec<f64>,
+}
+
+fn finite(x: f64) -> bool {
+    x >= -1.7976931348623157e308 && x <= 1.7976931348623157e308
+}
+
+fn symmetric(a: [f64], n: u32) -> bool {
+    if a.len() != n * n { return false }
+    for i in 0..n {
+        for j in 0..n {
+            if !finite(a[i * n + j]) { return false }
+            let scale = 1.0 + a[i * n + j].abs() + a[j * n + i].abs()
+            if (a[i * n + j] - a[j * n + i]).abs() > 1e-13 * scale { return false }
+        }
+    }
+    true
+}
+
+pub fn eigensystem(mass: [f64], stiffness: [f64], n: u32) -> Option<Modes> {
+    if n == 0 || n > 1024 || !symmetric(mass, n) || !symmetric(stiffness, n) {
+        return None
+    }
+    var l: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..i + 1 {
+            var s = mass[i * n + j]
+            for k in 0..j { s -= l[i * n + k] * l[j * n + k] }
+            if i == j {
+                if !(s > 0.0) { return None }
+                l[i * n + j] = s.sqrt()
+            } else {
+                l[i * n + j] = s / l[j * n + j]
+            }
+        }
+    }
+    // W = L^-1 by forward substitution, then C = W K W^T.
+    var w: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        for i in 0..n {
+            var s = if i == j { 1.0 } else { 0.0 }
+            for k in 0..i { s -= l[i * n + k] * w[k * n + j] }
+            w[i * n + j] = s / l[i * n + i]
+        }
+    }
+    var wk: Vec<f64> = Vec::filled(n * n, 0.0)
+    var a: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n { wk[i * n + j] += w[i * n + k] * stiffness[k * n + j] }
+        }
+    }
+    var scale = 0.0
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n { a[i * n + j] += wk[i * n + k] * w[j * n + k] }
+            if a[i * n + j].abs() > scale { scale = a[i * n + j].abs() }
+        }
+    }
+    if !(scale > 0.0 && finite(scale)) { return None }
+    var v: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n { v[i * n + i] = 1.0 }
+    var converged = false
+    for _ in 0..64 {
+        var rotated = false
+        for p in 0..n {
+            for q in p + 1..n {
+                let apq = a[p * n + q]
+                // A global top-frequency tolerance hides low-mode residuals.
+                // Scale each rotation by its two diagonal energies instead.
+                let pair_scale = a[p * n + p].abs().sqrt() * a[q * n + q].abs().sqrt()
+                if apq.abs() <= 1e-15 * pair_scale { continue }
+                rotated = true
+                let tau = (a[q * n + q] - a[p * n + p]) / (2.0 * apq)
+                let sign = if tau >= 0.0 { 1.0 } else { -1.0 }
+                let t = sign / (tau.abs() + (1.0 + tau * tau).sqrt())
+                let c = 1.0 / (1.0 + t * t).sqrt()
+                let s = t * c
+                a[p * n + p] -= t * apq
+                a[q * n + q] += t * apq
+                a[p * n + q] = 0.0
+                a[q * n + p] = 0.0
+                for k in 0..n {
+                    if k != p && k != q {
+                        let kp = a[k * n + p]
+                        let kq = a[k * n + q]
+                        a[k * n + p] = c * kp - s * kq
+                        a[p * n + k] = a[k * n + p]
+                        a[k * n + q] = s * kp + c * kq
+                        a[q * n + k] = a[k * n + q]
+                    }
+                    let vp = v[k * n + p]
+                    let vq = v[k * n + q]
+                    v[k * n + p] = c * vp - s * vq
+                    v[k * n + q] = s * vp + c * vq
+                }
+            }
+        }
+        if !rotated {
+            converged = true
+            break
+        }
+    }
+    if !converged { return None }
+    var lambda: Vec<f64> = Vec::filled(n, 0.0)
+    var shapes: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        lambda[j] = a[j * n + j]
+        if !(lambda[j] > 0.0 && finite(lambda[j])) { return None }
+        for i in 0..n {
+            for k in 0..n { shapes[i * n + j] += w[k * n + i] * v[k * n + j] }
+        }
+    }
+    // Stable selection ordering, including repeated eigenvalues.
+    for j in 0..n {
+        var least = j
+        for k in j + 1..n { if lambda[k] < lambda[least] { least = k } }
+        if least != j {
+            let x = lambda[j]
+            lambda[j] = lambda[least]
+            lambda[least] = x
+            for i in 0..n {
+                let y = shapes[i * n + j]
+                shapes[i * n + j] = shapes[i * n + least]
+                shapes[i * n + least] = y
+            }
+        }
+    }
+    Some(Modes { count: n, squared_frequencies: lambda, shapes })
+}
+
+/// Relative Frobenius residual and maximum mass-orthogonality error.
+/// Independent of the reduction's internal diagonal/rotation state.
+pub struct Audit: Copy {
+    pub valid: bool,
+    pub relative_frobenius: f64,
+    /// max_j ||K phi_j - lambda_j M phi_j|| / (lambda_j ||M phi_j||).
+    pub maximum_relative_mode: f64,
+    pub worst_mode: u32,
+    pub orthogonality: f64,
+}
+
+pub fn errors(m: Modes, mass: [f64], stiffness: [f64]) -> (f64, f64) {
+    let a = audit(m, mass, stiffness)
+    (a.relative_frobenius, a.orthogonality)
+}
+
+fn invalid_audit() -> Audit {
+    Audit {
+        valid: false,
+        relative_frobenius: 1e100,
+        maximum_relative_mode: 1e100,
+        worst_mode: 0,
+        orthogonality: 1e100,
+    }
+}
+
+pub fn audit(m: Modes, mass: [f64], stiffness: [f64]) -> Audit {
+    let n = m.count
+    if n == 0 ||
+        n > 1024 ||
+        m.shapes.len() != n * n ||
+        m.squared_frequencies.len() != n ||
+        !symmetric(mass, n) ||
+        !symmetric(stiffness, n) { return invalid_audit() }
+    for x in m.shapes { if !finite(x) { return invalid_audit() } }
+    for x in m.squared_frequencies { if !(x > 0.0 && finite(x)) { return invalid_audit() } }
+    var residual = 0.0
+    var reference = 0.0
+    var orthogonality = 0.0
+    var maximum_relative_mode = 0.0
+    var worst_mode: u32 = 0
+    // Reuse M Phi for both residual and orthogonality. This keeps validation
+    // cubic as the reference grows beyond a small single-note fixture.
+    var mp: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n {
+                mp[i * n + j] += mass[i * n + k] * m.shapes[k * n + j]
+                if !finite(mp[i * n + j]) { return invalid_audit() }
+            }
+        }
+    }
+    for j in 0..n {
+        var mode_residual = 0.0
+        var mode_mass = 0.0
+        for i in 0..n {
+            var kv = 0.0
+            let mv = mp[i * n + j]
+            for k in 0..n {
+                kv += stiffness[i * n + k] * m.shapes[k * n + j]
+                if !finite(kv) { return invalid_audit() }
+            }
+            let delta = kv - m.squared_frequencies[j] * mv
+            if !finite(delta) { return invalid_audit() }
+            residual += delta * delta
+            reference += kv * kv
+            mode_residual += delta * delta
+            mode_mass += mv * mv
+        }
+        if !(mode_mass > 0.0 && finite(mode_mass) && finite(mode_residual)) {
+            return invalid_audit()
+        }
+        let relative_mode = (mode_residual / mode_mass).sqrt() / m.squared_frequencies[j]
+        if !finite(relative_mode) { return invalid_audit() }
+        if relative_mode > maximum_relative_mode {
+            maximum_relative_mode = relative_mode
+            worst_mode = j
+        }
+        for k in 0..n {
+            var inner = 0.0
+            for r in 0..n {
+                inner += m.shapes[r * n + j] * mp[r * n + k]
+                if !finite(inner) { return invalid_audit() }
+            }
+            if !finite(inner) { return invalid_audit() }
+            let expected = if j == k { 1.0 } else { 0.0 }
+            if (inner - expected).abs() > orthogonality { orthogonality = (inner - expected).abs() }
+        }
+    }
+    if !(reference > 0.0 && finite(reference) && finite(residual)) { return invalid_audit() }
+    let relative_frobenius = (residual / reference).sqrt()
+    if !finite(relative_frobenius) { return invalid_audit() }
+    Audit {
+        valid: true,
+        relative_frobenius: (residual / reference).sqrt(),
+        maximum_relative_mode,
+        worst_mode,
+        orthogonality,
+    }
+}

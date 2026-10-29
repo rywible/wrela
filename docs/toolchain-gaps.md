@@ -6,6 +6,25 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### Grand tests triggered an intermittent Cranelift optimizer panic
+
+- **Needed:** a reliable combined run of the original-grand numerical tests on pinned Wrela 0.10.0.
+- **What happens:** `wrela test engine/tests/grand --json` once exited 101 before producing JSON, with `cranelift-codegen-0.136.4/src/egraph/mod.rs:347:14`, `Option::unwrap()` on `None`. The same source immediately produced 42 passing tests with `RUST_BACKTRACE=1`; this is not evidence that setting that variable fixes the compiler.
+- **Found:** 2026-10-29 on the ThinkPad, compiler `57e38f1c6827e39d4eb377bdd297cfb14592a11b`, during the final mechanics checkpoint.
+- **Evidence:** exact source delta archive, first failing stdout/stderr and exit status, plus the successful retry report in `/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/checkpoint-4/attempt-1-compiler-failure/`.
+- **Meanwhile:** preserve the failure and every retry; do not weaken assertions, change the pin, silently retry to claim reliability, or label the compiler issue repaired. Numerical reports from successful runs remain individually attributable.
+- **Status:** open intermittent compiler defect; no minimized reproducer or root cause established.
+
+### Live piano input has no capture timestamp or audio-clock correlation in the inspected API
+
+- **Needed:** original-grand P4 schedules live gestures by captured event time, then measures fixed delay and jitter relative to audio sample time. A score can already carry authored sample times.
+- **What happens:** pinned 0.10.0 `std::input::Event::KeyDown` and `KeyUp` contain key/modifier/repeat state but no capture timestamp; `events` returns the events since the last read. `std::audio` exposes fixed 48 kHz/128-frame constants and an event ring, but no audio-frame/host-clock correlation in that public interface. `std::time::now` is a host clock; reading it after frame delivery cannot recover the original capture time.
+- **Found:** 2026-10-29, inspecting the actual pinned API on the ThinkPad with `wrela doc std::input::Event`, `std::audio`, `std::audio::RingWriter`, `std::audio::RingReader` and `std::time`. Exact outputs are retained under `/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/`.
+- **Needed capability:** timestamped input events plus a documented correlation between that clock and the audio sample clock, including restart/device-change behavior. Ring overflow also needs an application-visible recovery protocol: `RingWriter::push` returns false without enqueueing, so recovery cannot rely on successfully enqueueing a release into an already-full ring.
+- **Meanwhile:** no claim of capture-time live scheduling, measured input-to-audio latency or completed P4. An eventual frame-quantized adapter must be labelled; exact sample-timed score events and internal partition-invariance checks remain independent work.
+- **Status:** open capability request; no compiler modification or release in this checkpoint.
+
+
 ### A driven frame doesn't say its passes' targets or GPU times
 
 - **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.

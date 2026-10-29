@@ -1,0 +1,129 @@
+// Offline bounded phase-fitting experiment, not an instrument definition.
+// Targets are generated only by the authored stiff-string PDE.
+use engine::acoustics::{StringSpec, angular}
+use engine::acoustic_dispersion::phase
+use std::collections::Vec
+use std::math::{PI_F64, TAU_F64, log2_f64}
+
+pub struct Fit {
+    pub delay: u32,
+    pub coefficients: Vec<f64>,
+    pub max_cents: f64,
+    pub rms_cents: f64,
+}
+
+fn cost(delay: u32, a: [f64], targets: [f64]) -> f64 {
+    var total = 0.0
+    for i in 0..targets.len() {
+        var actual = f64(delay) * targets[i]
+        for c in a { actual += phase(c, targets[i]) }
+        let desired = TAU_F64 * f64(i + 1)
+        let e = (actual - desired) / desired
+        total += e * e
+    }
+    total / f64(targets.len())
+}
+
+fn frequency(delay: u32, a: [f64], mode: u32) -> f64 {
+    var lo = 0.0
+    var hi = PI_F64 * (1.0 - 1e-12)
+    for _ in 0..64 {
+        let mid = 0.5 * (lo + hi)
+        var lag = f64(delay) * mid
+        for c in a { lag += phase(c, mid) }
+        if lag < TAU_F64 * f64(mode) { lo = mid } else { hi = mid }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Bounded representation experiment. Optimizes phase at known physical modal
+/// frequencies and then independently root-solves every resulting resonance.
+/// This is not yet a selected piano representation or a contact approximation.
+pub fn fit(spec: StringSpec, rate: f64, modes: u32, stages: u32) -> Fit {
+    assert(modes > 0 && stages > 0 && stages <= 32)
+    var targets: Vec<f64> = Vec::new()
+    for n in 1..modes + 1 {
+        let w = angular(spec, n) / rate
+        assert(w < PI_F64 * 0.9)
+        targets.push(w)
+    }
+    let last = targets[targets.len() - 1]
+    let high = u32(TAU_F64 * f64(modes) / last)
+    let low = u32(((TAU_F64 * f64(modes) - f64(stages) * PI_F64) / last).max(1.0))
+    let dc = 2.0 * spec.length * (spec.density / spec.tension).sqrt() * rate
+    var best_cost = 1e30
+    var best_delay = high
+    var best: Vec<f64> = Vec::filled(stages, 0.0)
+    // Explore integer-delay choices on a fixed grid, then refine the best
+    // neighborhood. Every coefficient stays strictly inside the stable range.
+    for pass in 0..2 {
+        let center = best_delay
+        let span = (high - low).max(1)
+        let stride = (span / 12).max(1)
+        let first = if pass == 0 { low } else {
+            (if center > stride { center - stride } else {
+                0
+            }).max(low)
+        }
+        let end = if pass == 0 { high } else { (center + stride).min(high) }
+        let jump = if pass == 0 { stride } else { 1 }
+        var delay = first
+        while delay <= end {
+            let tau = ((dc - f64(delay)) / f64(stages)).max(0.001)
+            var a: Vec<f64> = Vec::filled(stages, (1.0 - tau) / (1.0 + tau))
+            var score = cost(delay, a, targets)
+            for sweep in 0..60 {
+                let size = 0.25 * std::math::pow_f64(0.5, f64(sweep / 3))
+                for j in 0..stages {
+                    let old = a[j]
+                    var chosen = old
+                    for sign in [-1.0, 1.0] {
+                        a[j] = (old + sign * size).max(-0.99999).min(0.99999)
+                        let candidate = cost(delay, a, targets)
+                        if candidate < score {
+                            score = candidate
+                            chosen = a[j]
+                        }
+                    }
+                    a[j] = chosen
+                }
+            }
+            if score < best_cost {
+                best_cost = score
+                best_delay = delay
+                best = a.clone()
+            }
+            if end - delay < jump { break }
+            delay += jump
+        }
+    }
+    var peak = 0.0
+    var squares = 0.0
+    for i in 0..targets.len() {
+        let actual = frequency(best_delay, best, i + 1)
+        let cents = 1200.0 * log2_f64(actual / targets[i])
+        peak = peak.max(cents.abs())
+        squares += cents * cents
+    }
+    Fit {
+        delay: best_delay,
+        coefficients: best,
+        max_cents: peak,
+        rms_cents: (squares / f64(targets.len())).sqrt(),
+    }
+}
+
+/// Necessary stage count for exact matching of the requested modal phases.
+/// Every stable real first-order allpass has phase lag between zero and pi.
+/// This is a lower bound, not a promise that this many sections suffice.
+pub fn minimum_sections(spec: StringSpec, rate: f64, modes: u32) -> u32 {
+    var delay = 1e30
+    for n in 1..modes + 1 { delay = delay.min(TAU_F64 * f64(n) * rate / angular(spec, n)) }
+    let integer = f64(u32(delay))
+    var stages = 0.0
+    for n in 1..modes + 1 {
+        stages = stages.max((TAU_F64 * f64(n) - integer * angular(spec, n) / rate) / PI_F64)
+    }
+    let whole = u32(stages)
+    whole + if f64(whole) < stages { 1 } else { 0 }
+}

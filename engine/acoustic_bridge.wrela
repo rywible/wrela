@@ -1,0 +1,454 @@
+// A power-balanced shared mechanical termination for travelling-wave strings.
+// Incoming/outgoing velocity waves have power Z*(a²-b²). Every attachment sees
+// the same structural mode state, so energy can return to an unstruck string.
+// Exact constant-force modal propagation uses average velocity (q'-q)/dt.
+// Eliminating F_i=Z_i (2 a_i-B_i^T vbar) leaves one pre-factored positive
+// n-mode system. Per sample: O(strings*n + n²), no iteration or allocation.
+// This is a reference coupling primitive; no acoustic radiation is implied.
+use acoustic_modes::eigensystem
+use std::collections::Vec
+use std::math::{cos_f64, exp_f64, sin_f64}
+
+pub struct BodyMode: Copy {
+    pub q: f64,
+    pub v: f64,
+    omega: f64,
+    c: f64,
+    sine: f64,
+    sv: f64,
+    dq: f64,
+    root_dq: f64,
+    half_damping: f64,
+}
+
+pub struct Bridge: Clone {
+    pub modes: Vec<BodyMode>,
+    pub coupling: Vec<f64>,
+    pub impedances: Vec<f64>,
+    gram: Vec<f64>,
+    inverse: Vec<f64>,
+    dt: f64,
+    free_q: Vec<f64>,
+    free_v: Vec<f64>,
+    average: Vec<f64>,
+    rhs: Vec<f64>,
+    y: Vec<f64>,
+}
+
+/// coupling[i*n+j] observes board mode j at string i's bridge contact.
+pub fn bridge(
+    omega: [f64],
+    loss: [f64],
+    coupling: [f64],
+    impedance: [f64],
+    dt: f64,
+) -> Option<Bridge> {
+    let n = omega.len()
+    if n == 0 || n > 64 || loss.len() != n || coupling.len() != impedance.len() * n || !(dt > 0.0) {
+        return None
+    }
+    var modes: Vec<BodyMode> = Vec::new()
+    for j in 0..n {
+        if !(omega[j] > 0.0 && omega[j] * dt < 3.141592653589793 && loss[j] >= 0.0) { return None }
+        let half = sin_f64(omega[j] * dt * 0.5)
+        let dq = 2.0 * half * half / (omega[j] * omega[j])
+        modes.push(
+            BodyMode {
+                q: 0.0,
+                v: 0.0,
+                omega: omega[j],
+                c: cos_f64(omega[j] * dt),
+                sine: sin_f64(omega[j] * dt),
+                sv: sin_f64(omega[j] * dt) / omega[j],
+                dq,
+                root_dq: dq.sqrt(),
+                half_damping: exp_f64(-loss[j] * dt),
+            },
+        )
+    }
+    var gram: Vec<f64> = Vec::filled(n * n, 0.0)
+    for i in 0..impedance.len() {
+        if !(impedance[i] > 0.0) { return None }
+        for j in 0..n {
+            for k in 0..n {
+                gram[j * n + k] += impedance[i] * coupling[i * n + j] * coupling[i * n + k]
+            }
+        }
+    }
+    var a: Vec<f64> = Vec::filled(n * n, 0.0)
+    var identity: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        identity[j * n + j] = 1.0
+        for k in 0..n {
+            a[j * n + k] = (if j == k { 1.0 } else {
+                0.0
+            }) + 1.0 / dt * modes[j].root_dq * gram[j * n + k] * modes[k].root_dq
+        }
+    }
+    let e = eigensystem(identity, a, n)?
+    var inverse: Vec<f64> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        for k in 0..n {
+            for p in 0..n {
+                inverse[j * n + k] += e.shapes[j * n + p] *
+                    e.shapes[k * n + p] /
+                    e.squared_frequencies[p]
+            }
+        }
+    }
+    Some(
+        Bridge {
+            modes,
+            coupling: Vec::from(coupling),
+            impedances: Vec::from(impedance),
+            gram,
+            inverse,
+            dt,
+            free_q: Vec::filled(n, 0.0),
+            free_v: Vec::filled(n, 0.0),
+            average: Vec::filled(n, 0.0),
+            rhs: Vec::filled(n, 0.0),
+            y: Vec::filled(n, 0.0),
+        },
+    )
+}
+
+/// Replaces incoming waves with reflected waves in a separate caller-owned array.
+/// Returns actual viscous energy removed from the structural modes.
+@audio
+pub fn scatter(b: mut Bridge, incoming: [f64], outgoing: mut [f64]) -> f64 {
+    let n = b.modes.len()
+    assert(incoming.len() == b.impedances.len() && outgoing.len() == incoming.len())
+    var lost = 0.0
+    for j in 0..n {
+        let m = b.modes[j]
+        let v = m.v * m.half_damping
+        lost += 0.5 * (m.v - v) * (m.v + v)
+        b.free_q[j] = m.c * m.q + m.sv * v
+        b.free_v[j] = -m.omega * m.sine * m.q + m.c * v
+        // Avoid subtracting near-equal positions in very low modes.
+        b.average[j] = (-m.omega * m.omega * m.dq * m.q + m.sv * v) / b.dt
+    }
+    for j in 0..n {
+        var force = 0.0
+        for i in 0..incoming.len() {
+            force += 2.0 * b.impedances[i] * b.coupling[i * n + j] * incoming[i]
+        }
+        for k in 0..n { force -= b.gram[j * n + k] * b.average[k] }
+        b.rhs[j] = b.modes[j].root_dq * force
+    }
+    for j in 0..n {
+        var value = 0.0
+        for k in 0..n { value += b.inverse[j * n + k] * b.rhs[k] }
+        b.y[j] = value
+    }
+    for j in 0..n {
+        let m = b.modes[j]
+        let force = b.y[j] / m.root_dq
+        let v = b.free_v[j] + m.sv * force
+        let damped = v * m.half_damping
+        b.modes[j].q = b.free_q[j] + m.root_dq * b.y[j]
+        b.modes[j].v = damped
+        b.average[j] += m.root_dq * b.y[j] / b.dt
+        lost += 0.5 * (v - damped) * (v + damped)
+    }
+    for i in 0..incoming.len() {
+        var velocity = 0.0
+        for j in 0..n { velocity += b.coupling[i * n + j] * b.average[j] }
+        outgoing[i] = velocity - incoming[i]
+    }
+    lost
+}
+
+@audio
+pub fn energy(b: Bridge) -> f64 {
+    var e = 0.0
+    for m in b.modes { e += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+    e
+}
+
+/// Several strings can attach to the same rigid bridge section. Their
+/// impedance-weighted incident mean is the only component that drives that
+/// section; the differential waves reflect with opposite sign. This grouping
+/// is exactly power preserving for the stated geometry, not voice stealing.
+/// Accuracy of replacing a continuous bridge by sections is a separate gate.
+pub struct Sections: Clone {
+    pub body: Bridge,
+    group: Vec<u32>,
+    impedance: Vec<f64>,
+    incoming: Vec<f64>,
+    outgoing: Vec<f64>,
+}
+
+pub fn sections(
+    omega: [f64],
+    loss: [f64],
+    coupling: [f64],
+    group: [u32],
+    impedance: [f64],
+    dt: f64,
+) -> Option<Sections> {
+    if omega.len() == 0 || coupling.len() % omega.len() != 0 || group.len() != impedance.len() {
+        return None
+    }
+    let count = coupling.len() / omega.len()
+    var total: Vec<f64> = Vec::filled(count, 0.0)
+    for i in 0..group.len() {
+        if group[i] >= count || !(impedance[i] > 0.0) { return None }
+        total[group[i]] += impedance[i]
+    }
+    let body = bridge(omega, loss, coupling, total, dt)?
+    Some(
+        Sections {
+            body,
+            group: Vec::from(group),
+            impedance: Vec::from(impedance),
+            incoming: Vec::filled(count, 0.0),
+            outgoing: Vec::filled(count, 0.0),
+        },
+    )
+}
+
+@audio
+pub fn scatter_sections(s: mut Sections, incoming: [f64], outgoing: mut [f64]) -> f64 {
+    assert(incoming.len() == s.group.len() && outgoing.len() == incoming.len())
+    for g in 0..s.incoming.len() { s.incoming[g] = 0.0 }
+    for i in 0..incoming.len() {
+        s.incoming[s.group[i]] += s.impedance[i] * incoming[i]
+    }
+    for g in 0..s.incoming.len() { s.incoming[g] /= s.body.impedances[g] }
+    let lost = scatter(mut s.body, s.incoming, mut s.outgoing)
+    for i in 0..incoming.len() {
+        let g = s.group[i]
+        outgoing[i] = s.incoming[g] + s.outgoing[g] - incoming[i]
+    }
+    lost
+}
+
+/// SIMD rendering reduction of an already validated reference bridge. The
+/// small fixed solve is folded into source/feedback matrices at cooking time.
+/// Four physical board modes per vector; coupling still uses average velocity.
+pub struct Bridge32: Clone {
+    pub q: Vec<vec4>,
+    pub v: Vec<vec4>,
+    omega: Vec<vec4>,
+    c: Vec<vec4>,
+    sv: Vec<vec4>,
+    sq: Vec<vec4>,
+    aq: Vec<vec4>,
+    av: Vec<vec4>,
+    root: Vec<vec4>,
+    force_v: Vec<vec4>,
+    damping: Vec<vec4>,
+    coupling: Vec<vec4>,
+    drive: Vec<vec4>,
+    feedback: Vec<vec4>,
+    free_q: Vec<vec4>,
+    free_v: Vec<vec4>,
+    average: Vec<vec4>,
+    y: Vec<vec4>,
+    ports: u32,
+    inverse_dt: f32,
+}
+
+pub fn narrow(b: Bridge) -> Bridge32 {
+    let n = b.modes.len()
+    assert(n % 4 == 0)
+    let groups = n / 4
+    let ports = b.impedances.len()
+    var out = Bridge32 {
+        q: Vec::filled(groups, vec4(0.0)),
+        v: Vec::filled(groups, vec4(0.0)),
+        omega: Vec::filled(groups, vec4(0.0)),
+        c: Vec::filled(groups, vec4(0.0)),
+        sv: Vec::filled(groups, vec4(0.0)),
+        sq: Vec::filled(groups, vec4(0.0)),
+        aq: Vec::filled(groups, vec4(0.0)),
+        av: Vec::filled(groups, vec4(0.0)),
+        root: Vec::filled(groups, vec4(0.0)),
+        force_v: Vec::filled(groups, vec4(0.0)),
+        damping: Vec::filled(groups, vec4(0.0)),
+        coupling: Vec::filled(ports * groups, vec4(0.0)),
+        drive: Vec::filled(ports * groups, vec4(0.0)),
+        feedback: Vec::filled(n * groups, vec4(0.0)),
+        free_q: Vec::filled(groups, vec4(0.0)),
+        free_v: Vec::filled(groups, vec4(0.0)),
+        average: Vec::filled(groups, vec4(0.0)),
+        y: Vec::filled(groups, vec4(0.0)),
+        ports,
+        inverse_dt: f32(1.0 / b.dt),
+    }
+    for j in 0..n {
+        let g = j / 4
+        let lane = j % 4
+        let m = b.modes[j]
+        out.q[g][lane] = f32(m.q)
+        out.v[g][lane] = f32(m.v)
+        out.omega[g][lane] = f32(m.omega)
+        out.c[g][lane] = f32(m.c)
+        out.sv[g][lane] = f32(m.sv)
+        out.sq[g][lane] = f32(-m.omega * m.sine)
+        out.aq[g][lane] = f32(-m.omega * m.omega * m.dq / b.dt)
+        out.av[g][lane] = f32(m.sv / b.dt)
+        out.root[g][lane] = f32(m.root_dq)
+        out.force_v[g][lane] = f32(m.sv / m.root_dq)
+        out.damping[g][lane] = f32(m.half_damping)
+        for p in 0..ports {
+            out.coupling[p * groups + g][lane] = f32(b.coupling[p * n + j])
+            var drive = 0.0
+            for k in 0..n {
+                drive += b.inverse[j * n + k] *
+                    b.modes[k].root_dq *
+                    2.0 *
+                    b.impedances[p] *
+                    b.coupling[p * n + k]
+            }
+            out.drive[p * groups + g][lane] = f32(drive)
+        }
+        for k in 0..n {
+            var coefficient = 0.0
+            for l in 0..n {
+                coefficient -= b.inverse[j * n + l] * b.modes[l].root_dq * b.gram[l * n + k]
+            }
+            out.feedback[k * groups + g][lane] = f32(coefficient)
+        }
+    }
+    out
+}
+
+@audio
+pub fn scatter32(b: mut Bridge32, incoming: [f32], outgoing: mut [f32]) -> f32 {
+    assert(incoming.len() == b.ports && outgoing.len() == b.ports)
+    let groups = b.q.len()
+    var lost: f32 = 0.0
+    for g in 0..groups {
+        let v = b.v[g] * b.damping[g]
+        lost += 0.5 * dot(b.v[g] - v, b.v[g] + v)
+        b.free_q[g] = b.c[g] * b.q[g] + b.sv[g] * v
+        b.free_v[g] = b.sq[g] * b.q[g] + b.c[g] * v
+        b.average[g] = b.aq[g] * b.q[g] + b.av[g] * v
+    }
+    for g in 0..groups {
+        var y = vec4(0.0)
+        for p in 0..b.ports { y += b.drive[p * groups + g] * incoming[p] }
+        for k in 0..groups * 4 { y += b.feedback[k * groups + g] * b.average[k / 4][k % 4] }
+        b.y[g] = y
+    }
+    for g in 0..groups {
+        let v = b.free_v[g] + b.force_v[g] * b.y[g]
+        let damped = v * b.damping[g]
+        lost += 0.5 * dot(v - damped, v + damped)
+        b.q[g] = b.free_q[g] + b.root[g] * b.y[g]
+        b.v[g] = damped
+        b.average[g] += b.root[g] * b.y[g] * b.inverse_dt
+    }
+    for p in 0..b.ports {
+        var velocity: f32 = 0.0
+        for g in 0..groups { velocity += dot(b.coupling[p * groups + g], b.average[g]) }
+        outgoing[p] = velocity - incoming[p]
+    }
+    lost
+}
+
+/// Observable energy, evaluated in f64 rather than reusing the f32 update.
+pub fn energy32(b: Bridge32) -> f64 {
+    var e = 0.0
+    for g in 0..b.q.len() {
+        for lane in 0..4 {
+            let q = f64(b.q[g][lane])
+            let v = f64(b.v[g][lane])
+            let w = f64(b.omega[g][lane])
+            e += 0.5 * (v * v + w * w * q * q)
+        }
+    }
+    e
+}
+
+pub struct Sections32: Clone {
+    pub body: Bridge32,
+    group: Vec<u32>,
+    impedance: Vec<f32>,
+    inverse_total: Vec<f32>,
+    incoming: Vec<f32>,
+    outgoing: Vec<f32>,
+}
+
+pub fn narrow_sections(s: Sections) -> Sections32 {
+    var impedance: Vec<f32> = Vec::new()
+    var inverse_total: Vec<f32> = Vec::new()
+    for z in s.impedance { impedance.push(f32(z)) }
+    for z in s.body.impedances { inverse_total.push(f32(1.0 / z)) }
+    let count = s.body.impedances.len()
+    Sections32 {
+        body: narrow(s.body),
+        group: s.group.clone(),
+        impedance,
+        inverse_total,
+        incoming: Vec::filled(count, 0.0),
+        outgoing: Vec::filled(count, 0.0),
+    }
+}
+
+@audio
+pub fn scatter_sections32(s: mut Sections32, incoming: [f32], outgoing: mut [f32]) -> f32 {
+    assert(incoming.len() == s.group.len() && outgoing.len() == incoming.len())
+    for g in 0..s.incoming.len() { s.incoming[g] = 0.0 }
+    for i in 0..incoming.len() { s.incoming[s.group[i]] += s.impedance[i] * incoming[i] }
+    for g in 0..s.incoming.len() { s.incoming[g] *= s.inverse_total[g] }
+    let lost = scatter32(mut s.body, s.incoming, mut s.outgoing)
+    for i in 0..incoming.len() {
+        let g = s.group[i]
+        outgoing[i] = s.incoming[g] + s.outgoing[g] - incoming[i]
+    }
+    lost
+}
+
+/// SIMD aggregation for co-located groups of four strings. Differential waves
+/// remain in the outgoing lanes; only the net force enters the rigid section.
+pub struct PacketSections {
+    pub body: Bridge32,
+    group: Vec<u32>,
+    impedance: Vec<vec4>,
+    inverse_total: Vec<f32>,
+    incoming: Vec<f32>,
+    outgoing: Vec<f32>,
+}
+
+pub fn packet_sections(s: Sections) -> PacketSections {
+    assert(s.group.len() % 4 == 0)
+    var group: Vec<u32> = Vec::new()
+    var impedance: Vec<vec4> = Vec::new()
+    for packet in 0..s.group.len() / 4 {
+        let g = s.group[packet * 4]
+        var z = vec4(0.0)
+        for lane in 0..4 {
+            assert(s.group[packet * 4 + lane] == g)
+            z[lane] = f32(s.impedance[packet * 4 + lane])
+        }
+        group.push(g)
+        impedance.push(z)
+    }
+    var inverse_total: Vec<f32> = Vec::new()
+    for z in s.body.impedances { inverse_total.push(f32(1.0 / z)) }
+    let count = s.body.impedances.len()
+    PacketSections {
+        body: narrow(s.body),
+        group,
+        impedance,
+        inverse_total,
+        incoming: Vec::filled(count, 0.0),
+        outgoing: Vec::filled(count, 0.0),
+    }
+}
+
+@audio
+pub fn scatter_packets(s: mut PacketSections, incoming: [vec4], outgoing: mut [vec4]) -> f32 {
+    assert(incoming.len() == s.group.len() && outgoing.len() == incoming.len())
+    for g in 0..s.incoming.len() { s.incoming[g] = 0.0 }
+    for i in 0..incoming.len() { s.incoming[s.group[i]] += dot(s.impedance[i], incoming[i]) }
+    for g in 0..s.incoming.len() { s.incoming[g] *= s.inverse_total[g] }
+    let lost = scatter32(mut s.body, s.incoming, mut s.outgoing)
+    for g in 0..s.incoming.len() { s.outgoing[g] += s.incoming[g] }
+    for i in 0..incoming.len() { outgoing[i] = vec4(s.outgoing[s.group[i]]) - incoming[i] }
+    lost
+}

@@ -1,0 +1,1616 @@
+use engine::acoustic_radiation::{Air, Patch, Point, kernel, kernel_response, response}
+use std::collections::Vec
+use std::math::sin_f64
+// Independent mechanical checks for the new, original physical grand.
+use engine::acoustics::{
+    Hammer, StringSpec, angular, contact_force, contact_step, displacement, energy, free_step, mode,
+    potential, string_mode,
+}
+use std::math::{PI_F64, TAU_F64, cos_f64}
+
+const DT: f64 = 1.0 / 48000.0
+
+fn hammer(v: f64) -> Hammer {
+    Hammer { mass: 0.01, stiffness: 1e12, x: 0.0, v }
+}
+
+fn spec() -> StringSpec {
+    StringSpec { length: 1.0, tension: 700.0, density: 0.01, rigidity: 0.02, strike: 0.125 }
+}
+
+@test
+fn pinned_string_matches_independent_wave_formula() {
+    let s = spec()
+    let f0 = 0.5 * (s.tension / s.density).sqrt() / s.length
+    let b = PI_F64 * PI_F64 * s.rigidity / (s.tension * s.length * s.length)
+    for n in 1..21 {
+        let expected = TAU_F64 * f64(n) * f0 * (1.0 + b * f64(n * n)).sqrt()
+        assert((angular(s, n) / expected - 1.0).abs() < 1e-12)
+    }
+}
+
+@test
+fn contact_secant_accounts_for_crossings_and_rebound() {
+    let points = [-0.002, -0.0001, 0.0, 0.0001, 0.001]
+    for a in points {
+        for b in points {
+            let force = contact_force(1e12, a, b)
+            assert(force >= 0.0)
+            let work = force * (b - a)
+            let delta = potential(1e12, b) - potential(1e12, a)
+            assert((work - delta).abs() < 1e-10)
+        }
+    }
+}
+
+@test
+fn unforced_mode_matches_exact_frequency_and_energy() {
+    let w = TAU_F64 * 1703.25
+    var modes = [mode(omega: w, shape: 1.0, loss: 0.0, dt: DT)]
+    modes[0].q = 0.0001
+    let h = Hammer { x: -1.0, ..hammer(0.0) }
+    let before = energy(h, modes)
+    for _ in 0..2048 { let _ = free_step(mut modes) }
+    let expected = 0.0001 * cos_f64(w * DT * 2048.0)
+    assert((modes[0].q - expected).abs() < 1e-12)
+    assert((energy(h, modes) / before - 1.0).abs() < 1e-10)
+}
+
+@test
+fn hammer_rebounds_from_a_rigid_wall_without_energy_creation() {
+    // Zero coupling gives a rigid contact surface, independent of the mode.
+    var modes = [mode(omega: 100.0, shape: 0.0, loss: 0.0, dt: DT)]
+    var h = hammer(2.0)
+    let before = energy(h, modes)
+    var peak = 0.0
+    var largest_error = 0.0
+    for _ in 0..256 {
+        let r = contact_step(mut h, mut modes, DT)
+        if r.force > peak { peak = r.force }
+        if r.contact_error > largest_error { largest_error = r.contact_error }
+        assert(r.force >= 0.0)
+        assert(r.residual.abs() / before < 1e-9)
+    }
+    assert(peak > 1.0)
+    assert(h.x < 0.0 && h.v < -1.999999)
+    assert((energy(h, modes) / before - 1.0).abs() < 1e-8)
+    assert(largest_error < 1e-10)
+}
+
+@test
+fn moving_strings_exchange_work_with_the_hammer() {
+    var modes = [string_mode(spec(), 1, 0.0, DT), string_mode(spec(), 2, 0.0, DT)]
+    modes[0].v = 0.015
+    var h = hammer(1.0)
+    let before = energy(h, modes)
+    var moved = false
+    for _ in 0..256 {
+        let r = contact_step(mut h, mut modes, DT)
+        assert(r.residual.abs() / before < 1e-9)
+        if displacement(modes).abs() > 1e-7 { moved = true }
+    }
+    assert(moved)
+    assert((energy(h, modes) / before - 1.0).abs() < 1e-8)
+}
+
+@test
+fn viscous_loss_is_positive_and_exactly_accounted() {
+    var modes = [string_mode(spec(), 1, 4.0, DT), string_mode(spec(), 2, 9.0, DT)]
+    var h = hammer(2.0)
+    let initial = energy(h, modes)
+    var lost = 0.0
+    for _ in 0..256 {
+        let before = energy(h, modes)
+        let r = contact_step(mut h, mut modes, DT)
+        lost += r.dissipated
+        assert(r.dissipated >= 0.0)
+        assert(energy(h, modes) <= before + initial * 1e-10)
+        assert(r.residual.abs() / initial < 1e-9)
+    }
+    assert(lost > 0.0)
+    assert(((energy(h, modes) + lost) / initial - 1.0).abs() < 1e-8)
+}
+
+@test
+fn rest_stays_exactly_silent() {
+    var modes = [string_mode(spec(), 1, 1.0, DT)]
+    var h = hammer(0.0)
+    for _ in 0..16 {
+        let r = contact_step(mut h, mut modes, DT)
+        assert(r.force == 0.0 && r.residual == 0.0)
+    }
+    assert(energy(h, modes) == 0.0)
+}
+
+use engine::acoustic_modes::{eigensystem, errors}
+
+@test
+fn generalized_modes_match_independent_two_mass_solution() {
+    // M=[[2,1],[1,2]], K=[[6,-2],[-2,6]]. Symmetric and antisymmetric
+    // vectors have lambda 4/3 and 8. This exercises non-diagonal whitening.
+    let mass = [2.0, 1.0, 1.0, 2.0]
+    let stiffness = [6.0, -2.0, -2.0, 6.0]
+    let m = eigensystem(mass, stiffness, 2).unwrap()
+    assert((m.squared_frequencies[0] - 4.0 / 3.0).abs() < 1e-12)
+    assert((m.squared_frequencies[1] - 8.0).abs() < 1e-12)
+    let (residual, orthogonality) = errors(m, mass, stiffness)
+    assert(residual < 1e-12 && orthogonality < 1e-12)
+}
+
+@test
+fn invalid_structure_is_rejected_without_regularization() {
+    assert(eigensystem([1.0, 2.0, 2.0, 1.0], [2.0, 0.0, 0.0, 2.0], 2).is_none())
+    assert(eigensystem([1.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, -2.0], 2).is_none())
+    assert(eigensystem([1.0, 0.0, 0.0, 1.0], [2.0, 1.0, 0.0, 2.0], 2).is_none())
+}
+
+use engine::acoustic_plate::{Plate, Rib, assemble, solve}
+
+fn plate_fixture() -> Plate {
+    // Authored homogeneous surrogate, not an asserted measurement of wood.
+    Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+}
+
+@test
+fn bare_isotropic_plate_matches_navier_frequency() {
+    let p = Plate { young_y: 10e9, shear: 10e9 / 2.6, ..plate_fixture() }
+    let s = assemble(p, [], count_x: 1, count_y: 1).unwrap()
+    let m = solve(s).unwrap()
+    let d = p.young_x *
+        p.thickness *
+        p.thickness *
+        p.thickness /
+        (12.0 * (1.0 - p.poisson_xy * p.poisson_xy))
+    let expected = PI_F64 *
+        PI_F64 *
+        (d / (p.density * p.thickness)).sqrt() *
+        (1.0 / (p.length * p.length) + 1.0 / (p.width * p.width))
+    assert((m.squared_frequencies[0].sqrt() / expected - 1.0).abs() < 1e-12)
+}
+
+@test
+fn ribbed_orthotropic_plate_modes_satisfy_original_matrices() {
+    let ribs = [
+        Rib { x: 0.65, line_mass: 0.07, bending: 35.0 },
+        Rib { x: 1.63, line_mass: 0.11, bending: 47.0 },
+    ]
+    let s = assemble(plate_fixture(), ribs, count_x: 4, count_y: 3).unwrap()
+    let m = solve(s).unwrap()
+    let (residual, orthogonality) = errors(m, s.mass, s.stiffness)
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+}
+
+@test
+fn ribs_add_mass_as_well_as_stiffness() {
+    let bare = assemble(plate_fixture(), [], count_x: 1, count_y: 1).unwrap()
+    let loaded = assemble(
+        plate_fixture(),
+        [Rib { x: 1.2, line_mass: 1.0, bending: 0.0 }],
+        count_x: 1,
+        count_y: 1,
+    ).unwrap()
+    let stiff = assemble(
+        plate_fixture(),
+        [Rib { x: 1.2, line_mass: 0.0, bending: 1000.0 }],
+        count_x: 1,
+        count_y: 1,
+    ).unwrap()
+    assert(
+        solve(loaded).unwrap().squared_frequencies[0] < solve(bare).unwrap().squared_frequencies[0],
+    )
+    assert(
+        solve(stiff).unwrap().squared_frequencies[0] > solve(bare).unwrap().squared_frequencies[0],
+    )
+}
+
+use engine::acoustics::{effective_force, felt_compression, omitted_compliance, stored_contact}
+
+@test
+fn series_compliance_energy_and_constraint_are_consistent() {
+    let h = Hammer { compliance: 0.00003, ..hammer(1.0) }
+    for a in [-0.002, 0.0, 1e-9, 0.0001, 0.004] {
+        let d = felt_compression(h, a)
+        if a > 0.0 {
+            assert(((d + h.compliance * h.stiffness * d * d * d) / a - 1.0).abs() < 1e-10)
+        }
+        for b in [-0.002, 0.0, 1e-9, 0.0001, 0.004] {
+            let work = effective_force(h, a, b) * (b - a)
+            assert((work - stored_contact(h, b) + stored_contact(h, a)).abs() < 1e-10)
+        }
+    }
+}
+
+@test
+fn compliant_contact_conserves_physical_reduced_energy() {
+    var modes = [
+        string_mode(spec(), 1, loss: 0.0, dt: DT),
+        string_mode(spec(), 2, loss: 0.0, dt: DT),
+    ]
+    var h = Hammer { compliance: 0.00002, ..hammer(3.0) }
+    let before = energy(h, modes)
+    for _ in 0..256 {
+        let r = contact_step(mut h, mut modes, DT)
+        assert(r.residual.abs() / before < 1e-9)
+    }
+    assert((energy(h, modes) / before - 1.0).abs() < 1e-8)
+}
+
+@test
+fn rigid_wall_peak_and_duration_match_independent_energy_integral() {
+    let h0 = hammer(2.0)
+    let maximum = (2.0 * h0.mass * h0.v * h0.v / h0.stiffness).sqrt().sqrt()
+    let exact_peak = h0.stiffness * maximum * maximum * maximum
+    // Smooth substitution u=1-z² removes the turning-point singularity in
+    // integral_0^1 du/sqrt(1-u^4). Composite Simpson with 256 panels.
+    var integral: f64 = 0.0
+    for i in 0..257 {
+        let z = f64(i) / 256.0
+        let zz = z * z
+        let value = 2.0 / (4.0 - 6.0 * zz + 4.0 * zz * zz - zz * zz * zz).sqrt()
+        let weight = if i == 0 || i == 256 { 1.0 } else if i % 2 == 0 { 2.0 } else { 4.0 }
+        integral += weight * value / 768.0
+    }
+    let exact_duration = 2.0 * maximum / h0.v * integral
+    var modes = [mode(omega: 100.0, shape: 0.0, loss: 0.0, dt: DT)]
+    var h = h0
+    var duration = 0.0
+    var peak = 0.0
+    for i in 0..256 {
+        let old = h.x
+        let _ = contact_step(mut h, mut modes, DT)
+        peak = max(peak, h.stiffness * max(0.0, h.x) * max(0.0, h.x) * max(0.0, h.x))
+        if old > 0.0 && h.x <= 0.0 && duration == 0.0 {
+            duration = (f64(i) + old / (old - h.x)) * DT
+        }
+    }
+    assert((peak / exact_peak - 1.0).abs() < 0.01)
+    assert((duration / exact_duration - 1.0).abs() < 0.01)
+}
+
+use engine::acoustic_system::{cook, observed_displacement, receptance}
+
+@test
+fn coupled_string_body_reference_is_reciprocal_and_matches_dynamic_stiffness() {
+    let mass = [0.01, 0.0, 0.0, 0.4]
+    let stiffness = [13000.0, -3000.0, -3000.0, 35000.0]
+    let c = cook(mass, stiffness, [1.0, 0.0], [0.0, 1.0], loss: 0.0, dt: DT).unwrap()
+    let reversed = cook(mass, stiffness, [0.0, 1.0], [1.0, 0.0], loss: 0.0, dt: DT).unwrap()
+    for omega in [0.0, 100.0, 300.0, 800.0] {
+        let det = (13000.0 - 0.01 * omega * omega) * (35000.0 - 0.4 * omega * omega) - 9e6
+        let exact = 3000.0 / det
+        assert((receptance(c, omega) / exact - 1.0).abs() < 1e-12)
+        assert((receptance(reversed, omega) / exact - 1.0).abs() < 1e-12)
+    }
+}
+
+@test
+fn hammer_excites_coupled_body_but_not_decoupled_ablation() {
+    let mass = [0.01, 0.0, 0.0, 0.4]
+    var c = cook(
+        mass,
+        [13000.0, -3000.0, -3000.0, 35000.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        loss: 0.0,
+        dt: DT,
+    ).unwrap()
+    var ablation = cook(
+        mass,
+        [10000.0, 0.0, 0.0, 32000.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        loss: 0.0,
+        dt: DT,
+    ).unwrap()
+    var h = hammer(1.0)
+    var ah = hammer(1.0)
+    let before = energy(h, c.modes)
+    var peak = 0.0
+    for _ in 0..512 {
+        let _ = contact_step(mut h, mut c.modes, DT)
+        let _ = contact_step(mut ah, mut ablation.modes, DT)
+        peak = max(peak, observed_displacement(c).abs())
+        assert(observed_displacement(ablation) == 0.0)
+        assert((energy(h, c.modes) / before - 1.0).abs() < 1e-9)
+    }
+    assert(peak > 1e-6)
+}
+
+use engine::acoustic_bank::{advance as advance_bank, bank, free_block}
+
+@test
+fn simd_bank_preserves_phase_and_independent_chunking_with_bounded_roundoff() {
+    var a = [bank(vec4(100.0, 1000.0, 10000.0, 70000.0), vec4(0.0), DT)]
+    a[0].q = vec4(1.0)
+    var b = a
+    for _ in 0..2048 { advance_bank(mut a) }
+    for _ in 0..16 { free_block(mut b, 128) }
+    for lane in 0..4 {
+        assert(a[0].q[lane] == b[0].q[lane] && a[0].v[lane] == b[0].v[lane])
+        let omega = [100.0, 1000.0, 10000.0, 70000.0][lane]
+        assert((f64(a[0].q[lane]) - cos_f64(f64(omega) * DT * 2048.0)).abs() < 1e-4)
+        let e = a[0].q[lane] * a[0].q[lane] + a[0].v[lane] * a[0].v[lane]
+        assert((e - 1.0).abs() < 1e-4)
+    }
+}
+
+use engine::acoustic_waveguide::{energy as wave_energy, step as wave_step, string as wave_string}
+
+@test
+fn ideal_waveguide_contact_is_passive_in_physical_wave_energy() {
+    var s = wave_string(
+        left_samples: 24,
+        right_samples: 168,
+        impedance: 2.0,
+        dt: DT,
+        hammer: hammer(2.0),
+    )
+    let initial = wave_energy(s)
+    for _ in 0..1024 {
+        let f = wave_step(mut s)
+        assert(f >= 0.0)
+        assert((wave_energy(s) / initial - 1.0).abs() < 1e-10)
+    }
+    assert(s.hammer.v < 0.0)
+}
+
+@test
+fn ideal_string_returns_exactly_after_its_analytic_round_trip() {
+    var s = wave_string(
+        left_samples: 17,
+        right_samples: 83,
+        impedance: 2.0,
+        dt: DT,
+        hammer: Hammer { x: -100.0, ..hammer(0.0) },
+    )
+    s.left[0] = 0.125
+    let before = wave_energy(s)
+    for _ in 0..100 {
+        assert(wave_step(mut s) == 0.0)
+        assert(wave_energy(s) == before)
+    }
+    let (a, b) = engine::acoustic_waveguide::incoming(s)
+    assert(a == 0.125 && b == 0.0)
+    var occupied = 0
+    for x in s.left { if x != 0.0 { occupied += 1 } }
+    for x in s.right { if x != 0.0 { occupied += 1 } }
+    assert(occupied == 1)
+}
+
+use engine::acoustic_bridge::{bridge, energy as body_energy, scatter}
+
+@test
+fn shared_bridge_balances_port_work_and_viscous_loss() {
+    var b = bridge([400.0, 1300.0], [0.4, 0.8], [0.7, 0.3, 0.5, -0.4], [2.0, 3.0], DT).unwrap()
+    var outgoing = [0.0, 0.0]
+    var received = false
+    for step in 0..512 {
+        let incoming = [if step < 48 { 0.01 } else { 0.0 }, 0.0]
+        let before = body_energy(b)
+        let lost = scatter(mut b, incoming, mut outgoing)
+        let input = DT * (2.0 * incoming[0] * incoming[0] + 3.0 * incoming[1] * incoming[1])
+        let output = DT * (2.0 * outgoing[0] * outgoing[0] + 3.0 * outgoing[1] * outgoing[1])
+        assert(lost >= 0.0)
+        assert((body_energy(b) + output + lost - before - input).abs() < 1e-15)
+        if outgoing[1].abs() > 1e-7 { received = true }
+    }
+    assert(received)
+}
+
+@test
+fn two_strings_exchange_energy_through_a_shared_body_without_creating_it() {
+    var a = wave_string(
+        left_samples: 24,
+        right_samples: 168,
+        impedance: 2.0,
+        dt: DT,
+        hammer: hammer(2.0),
+    )
+    var c = wave_string(
+        left_samples: 27,
+        right_samples: 190,
+        impedance: 3.0,
+        dt: DT,
+        hammer: Hammer { x: -1.0, ..hammer(0.0) },
+    )
+    var b = bridge([400.0, 1300.0], [0.0, 0.0], [0.7, 0.3, 0.5, -0.4], [2.0, 3.0], DT).unwrap()
+    var outgoing = [0.0, 0.0]
+    let before = wave_energy(a) + wave_energy(c) + body_energy(b)
+    var received = false
+    for _ in 0..1024 {
+        let incoming = [
+            engine::acoustic_waveguide::bridge_incoming(a),
+            engine::acoustic_waveguide::bridge_incoming(c),
+        ]
+        let lost = scatter(mut b, incoming, mut outgoing)
+        assert(lost == 0.0)
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut a, outgoing[0])
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut c, outgoing[1])
+        assert(((wave_energy(a) + wave_energy(c) + body_energy(b)) / before - 1.0).abs() < 1e-9)
+        if wave_energy(c) > 1e-8 { received = true }
+    }
+    assert(received)
+}
+
+@test
+fn parked_transport_preserves_string_state_for_later_strikes() {
+    var a = wave_string(
+        left_samples: 24,
+        right_samples: 168,
+        impedance: 2.0,
+        dt: DT,
+        hammer: Hammer { x: -1.0, ..hammer(0.0) },
+    )
+    a.left[0] = 0.002
+    var b = a.clone()
+    for _ in 0..1024 {
+        let _ = wave_step(mut a)
+        engine::acoustic_waveguide::free_fixed(mut b)
+        assert((a.compression - b.compression).abs() < 1e-14)
+        assert(wave_energy(a) == wave_energy(b))
+        let (al, ar) = engine::acoustic_waveguide::incoming(a)
+        let (bl, br) = engine::acoustic_waveguide::incoming(b)
+        assert(al == bl && ar == br)
+    }
+}
+
+@test
+fn bridge_sections_match_expanded_contacts_and_keep_differential_waves() {
+    let omega = [400.0, 1300.0]
+    let loss = [0.4, 0.8]
+    let impedance = [2.0, 3.0, 1.0, 4.0]
+    var expanded = bridge(
+        omega,
+        loss,
+        [0.7, 0.3, 0.7, 0.3, 0.5, -0.4, 0.5, -0.4],
+        impedance,
+        DT,
+    ).unwrap()
+    var reduced = engine::acoustic_bridge::sections(
+        omega,
+        loss,
+        [0.7, 0.3, 0.5, -0.4],
+        [0, 0, 1, 1],
+        impedance,
+        DT,
+    ).unwrap()
+    var a = [0.0; 4]
+    var b = [0.0; 4]
+    for step in 0..512 {
+        // Opposing waves at the same section must survive even when the
+        // section's net input cancels; an average alone cannot replace them.
+        let input = if step < 24 { [0.03, -0.02, 0.01, 0.0] } else { [0.0; 4] }
+        let la = scatter(mut expanded, input, mut a)
+        let lb = engine::acoustic_bridge::scatter_sections(mut reduced, input, mut b)
+        for i in 0..4 { assert((a[i] - b[i]).abs() < 1e-13) }
+        assert((la - lb).abs() < 1e-15)
+        assert((body_energy(expanded) - body_energy(reduced.body)).abs() < 1e-15)
+        if step == 0 { assert(b[0] < -0.02 && b[1] > 0.01) }
+    }
+}
+
+@test
+fn simd_bridge_matches_reference_and_accounts_for_physical_energy() {
+    let impedance = [2.0, 3.0]
+    var reference = bridge(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25, 0.5, -0.4, 0.15, 0.2],
+        impedance,
+        DT,
+    ).unwrap()
+    var fast = engine::acoustic_bridge::narrow(reference)
+    var out_ref = [0.0, 0.0]
+    var out_fast: [f32; 2] = [0.0, 0.0]
+    var input_energy = 0.0
+    var output_energy = 0.0
+    var dissipated = 0.0
+    var error = 0.0
+    var signal = 0.0
+    for step in 0..2048 {
+        let input = [if step < 48 { 0.01 } else { 0.0 }, 0.0]
+        let _ = scatter(mut reference, input, mut out_ref)
+        dissipated += f64(
+            engine::acoustic_bridge::scatter32(
+                mut fast,
+                [f32(input[0]), f32(input[1])],
+                mut out_fast,
+            ),
+        )
+        for p in 0..2 {
+            error += (f64(out_fast[p]) - out_ref[p]) * (f64(out_fast[p]) - out_ref[p])
+            signal += out_ref[p] * out_ref[p]
+            input_energy += DT * impedance[p] * input[p] * input[p]
+            output_energy += DT * impedance[p] * f64(out_fast[p]) * f64(out_fast[p])
+        }
+        if input_energy > 0.0 {
+            let residual = engine::acoustic_bridge::energy32(fast) +
+                output_energy +
+                dissipated -
+                input_energy
+            assert(residual.abs() / input_energy < 1e-4)
+        }
+    }
+    assert((error / signal).sqrt() < 5e-5)
+}
+
+@test
+fn mixed_precision_string_body_loop_has_bounded_energy_error() {
+    var a = wave_string(
+        left_samples: 24,
+        right_samples: 168,
+        impedance: 2.0,
+        dt: DT,
+        hammer: hammer(2.0),
+    )
+    var c = wave_string(
+        left_samples: 27,
+        right_samples: 190,
+        impedance: 3.0,
+        dt: DT,
+        hammer: Hammer { x: -1.0, ..hammer(0.0) },
+    )
+    var reference = engine::acoustic_bridge::sections(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25, 0.5, -0.4, 0.15, 0.2],
+        [0, 1],
+        [2.0, 3.0],
+        DT,
+    ).unwrap()
+    var ar = a.clone()
+    var cr = c.clone()
+    var body = engine::acoustic_bridge::narrow_sections(reference)
+    var outgoing_ref = [0.0, 0.0]
+    var received_ref = 0.0
+    var received_fast = 0.0
+    var outgoing: [f32; 2] = [0.0, 0.0]
+    let initial = wave_energy(a) + wave_energy(c)
+    var dissipated = 0.0
+    for _ in 0..2048 {
+        let reference_input = [
+            engine::acoustic_waveguide::bridge_incoming(ar),
+            engine::acoustic_waveguide::bridge_incoming(cr),
+        ]
+        let _ = engine::acoustic_bridge::scatter_sections(
+            mut reference,
+            reference_input,
+            mut outgoing_ref,
+        )
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut ar, outgoing_ref[0])
+        engine::acoustic_waveguide::free_with_bridge(mut cr, outgoing_ref[1])
+        received_ref = received_ref.max(wave_energy(cr))
+        let incoming = [
+            f32(engine::acoustic_waveguide::bridge_incoming(a)),
+            f32(engine::acoustic_waveguide::bridge_incoming(c)),
+        ]
+        dissipated += f64(
+            engine::acoustic_bridge::scatter_sections32(mut body, incoming, mut outgoing),
+        )
+        let _ = engine::acoustic_waveguide::step_with_bridge(mut a, f64(outgoing[0]))
+        engine::acoustic_waveguide::free_with_bridge(mut c, f64(outgoing[1]))
+        received_fast = received_fast.max(wave_energy(c))
+        let stored = wave_energy(a) + wave_energy(c) + engine::acoustic_bridge::energy32(body.body)
+        assert(((stored + dissipated) / initial - 1.0).abs() < 1e-4)
+    }
+    // Receiver energy oscillates as it exchanges work with the bridge. Compare
+    // its observed peak to the f64 system, rather than inventing an absolute
+    // minimum for the energy remaining at an arbitrary final sample.
+    assert(received_ref > 0.0)
+    assert((received_fast / received_ref - 1.0).abs() < 1e-3)
+    assert(dissipated > 0.0)
+}
+
+@test
+fn packed_strings_preserve_differential_motion_and_match_expanded_loop() {
+    var strings: Vec<engine::acoustic_waveguide::WaveString> = Vec::new()
+    for lane in 0..4 {
+        var s = wave_string(
+            left_samples: 24,
+            right_samples: 168,
+            impedance: 2.0 + f64(lane),
+            dt: DT,
+            hammer: Hammer { x: -1.0, ..hammer(0.0) },
+        )
+        s.left[lane] = (if lane % 2 == 0 { 1.0 } else { -1.0 }) * 0.01
+        strings.push(take s)
+    }
+    var packed = engine::acoustic_waveguide::packet(strings)
+    var reference = engine::acoustic_bridge::sections(
+        [400.0, 700.0, 1300.0, 3000.0],
+        [0.4, 0.8, 0.6, 0.5],
+        [0.7, 0.3, -0.1, 0.25],
+        [0, 0, 0, 0],
+        [2.0, 3.0, 4.0, 5.0],
+        DT,
+    ).unwrap()
+    var fast = engine::acoustic_bridge::packet_sections(reference)
+    var input = [0.0; 4]
+    var output = [0.0; 4]
+    var output_fast = [vec4(0.0)]
+    let initial = engine::acoustic_waveguide::packet_energy(packed)
+    var loss = 0.0
+    var error = 0.0
+    var signal = 0.0
+    for _ in 0..2048 {
+        for lane in 0..4 {
+            input[lane] = engine::acoustic_waveguide::bridge_incoming(strings[lane])
+        }
+        let _ = engine::acoustic_bridge::scatter_sections(mut reference, input, mut output)
+        let input_fast = [engine::acoustic_waveguide::packet_incoming(packed)]
+        loss += f64(engine::acoustic_bridge::scatter_packets(mut fast, input_fast, mut output_fast))
+        for lane in 0..4 {
+            error += (f64(output_fast[0][lane]) - output[lane]) *
+                (f64(output_fast[0][lane]) - output[lane])
+            signal += output[lane] * output[lane]
+            engine::acoustic_waveguide::free_with_bridge(mut strings[lane], output[lane])
+        }
+        engine::acoustic_waveguide::free_packet_bridge(mut packed, output_fast[0])
+        let stored = engine::acoustic_waveguide::packet_energy(packed) +
+            engine::acoustic_bridge::energy32(fast.body)
+        assert(((stored + loss) / initial - 1.0).abs() < 1e-4)
+    }
+    assert((error / signal).sqrt() < 1e-4)
+}
+
+@test
+fn scattering_dispersion_is_lossless_and_has_the_independent_transfer_phase() {
+    for a in [-0.98, -0.4, 0.0, 0.6, 0.95] {
+        var section = engine::acoustic_dispersion::section(a)
+        var input_energy = 0.0
+        var output_energy = 0.0
+        var re = 0.0
+        var im = 0.0
+        let w = 0.31
+        for i in 0..4096 {
+            let input = if i == 0 { 1.0 } else { 0.0 }
+            let output = engine::acoustic_dispersion::step(mut section, input)
+            input_energy += input * input
+            output_energy += output * output
+            re += output * std::math::cos_f64(f64(i) * w)
+            im -= output * std::math::sin_f64(f64(i) * w)
+            assert((output_energy + section.state * section.state - input_energy).abs() < 1e-12)
+        }
+        let lag = engine::acoustic_dispersion::phase(a, w)
+        assert((re - std::math::cos_f64(lag)).abs() < 1e-12)
+        assert((im + std::math::sin_f64(lag)).abs() < 1e-12)
+    }
+}
+
+@test
+fn local_damper_removes_only_contact_motion_and_accounts_for_loss() {
+    let shape = [2.0, -1.0]
+    for resistance in [0.0, 1e-8, 0.1, 100.0, 1e12] {
+        var modes = [
+            mode(omega: 400.0, shape: 1.0, loss: 0.0, dt: DT),
+            mode(omega: 1300.0, shape: 1.0, loss: 0.0, dt: DT),
+        ]
+        modes[0].q = 1e-4
+        modes[1].q = -2e-5
+        modes[0].v = 0.7
+        modes[1].v = -0.2
+        let before = energy(hammer(0.0), modes)
+        let orthogonal = modes[0].v + 2.0 * modes[1].v
+        let lost = engine::acoustic_damper::dissipate(mut modes, shape, resistance, DT)
+        assert(lost >= 0.0)
+        assert((energy(hammer(0.0), modes) + lost - before).abs() < 1e-14)
+        assert((modes[0].v + 2.0 * modes[1].v - orthogonal).abs() < 1e-14)
+        assert(modes[0].q == 1e-4 && modes[1].q == -2e-5)
+        let expected = 1.6 * std::math::exp_f64(-resistance * 5.0 * DT)
+        assert((2.0 * modes[0].v - modes[1].v - expected).abs() < 1e-14)
+    }
+}
+
+@test
+fn moving_bridge_assembly_matches_direct_kinetic_and_elastic_integrals() {
+    let spec = StringSpec {
+        length: 1.0,
+        tension: 700.0,
+        density: 0.00255,
+        rigidity: 0.001,
+        strike: 0.12,
+        contact_width: 0.008,
+    }
+    let a = engine::acoustic_assembly::assemble([spec], [2], [400.0], [0.3]).unwrap()
+    let q = [0.001, -0.002, 0.003]
+    let v = [0.7, -0.2, 0.4]
+    var matrix_kinetic = 0.0
+    var matrix_elastic = 0.0
+    for i in 0..3 {
+        for j in 0..3 {
+            matrix_kinetic += 0.5 * v[i] * a.mass[i * 3 + j] * v[j]
+            matrix_elastic += 0.5 * q[i] * a.stiffness[i * 3 + j] * q[j]
+        }
+    }
+    // Independent midpoint integration of physical u, u_x and u_xx.
+    var kinetic = 0.5 * v[2] * v[2]
+    var elastic = 0.5 * 400.0 * 400.0 * q[2] * q[2]
+    let cells: u32 = 8192
+    for i in 0..cells {
+        let x = (f64(i) + 0.5) / f64(cells)
+        var velocity = x * 0.3 * v[2]
+        var slope = 0.3 * q[2]
+        var curvature = 0.0
+        for n in 1..3 {
+            let k = PI_F64 * f64(n)
+            let normalization = (2.0 / spec.density).sqrt()
+            velocity += normalization * std::math::sin_f64(k * x) * v[n - 1]
+            slope += normalization * k * std::math::cos_f64(k * x) * q[n - 1]
+            curvature -= normalization * k * k * std::math::sin_f64(k * x) * q[n - 1]
+        }
+        kinetic += 0.5 * spec.density * velocity * velocity / f64(cells)
+        elastic += 0.5 *
+            (spec.tension * slope * slope + spec.rigidity * curvature * curvature) /
+            f64(cells)
+    }
+    assert((matrix_kinetic / kinetic - 1.0).abs() < 1e-8)
+    assert((matrix_elastic / elastic - 1.0).abs() < 1e-10)
+    let modes = eigensystem(a.mass, a.stiffness, a.count).unwrap()
+    let (residual, orthogonality) = errors(modes, a.mass, a.stiffness)
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+}
+
+@test
+fn symmetric_ribs_keep_exact_matrix_symmetry_through_cancellation() {
+    let plate = plate_fixture()
+    let structure = assemble(
+        plate,
+        [
+            Rib { x: 0.8, line_mass: 0.2, bending: 60.0 },
+            Rib { x: 1.6, line_mass: 0.2, bending: 60.0 },
+        ],
+        count_x: 4,
+        count_y: 4,
+    ).unwrap()
+    for i in 0..16 {
+        for j in 0..16 {
+            assert(structure.mass[i * 16 + j] == structure.mass[j * 16 + i])
+            assert(structure.stiffness[i * 16 + j] == structure.stiffness[j * 16 + i])
+        }
+    }
+    let modes = solve(structure).unwrap()
+    let (residual, orthogonality) = errors(modes, structure.mass, structure.stiffness)
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+}
+
+@test
+fn simultaneous_contact_reduces_to_the_independent_single_hammer_update() {
+    var modes = [string_mode(spec(), 1, 0.0, DT), string_mode(spec(), 2, 0.0, DT)]
+    var single = modes
+    var h = hammer(1.5)
+    var multiple = [h]
+    let shapes = [modes[0].shape, modes[1].shape]
+    var contacts = engine::acoustics::contacts(multiple, modes, shapes, DT)
+    for _ in 0..512 {
+        let _ = contact_step(mut h, mut single, DT)
+        let b = engine::acoustics::simultaneous_step(mut contacts, mut multiple, mut modes)
+        assert(b.contact_error < 1e-10 && b.residual.abs() < 1e-12)
+        assert((h.x - multiple[0].x).abs() < 1e-12)
+        assert((h.v - multiple[0].v).abs() < 1e-10)
+        for j in 0..2 {
+            assert((modes[j].q - single[j].q).abs() < 1e-12)
+            assert((modes[j].v - single[j].v).abs() < 1e-10)
+        }
+    }
+}
+
+@test
+fn simultaneous_strikes_conserve_energy_and_ignore_solver_contact_order() {
+    var modes = [
+        mode(omega: 700.0, shape: 0.0, loss: 0.0, dt: DT),
+        mode(omega: 1900.0, shape: 0.0, loss: 0.0, dt: DT),
+    ]
+    var reversed_modes = modes
+    var hammers = [hammer(1.5), Hammer { mass: 0.007, stiffness: 4e11, x: 0.0, v: 3.0 }]
+    var reversed_hammers = [hammers[1], hammers[0]]
+    let shapes = [7.0, 2.0, 4.0, -3.0]
+    var c = engine::acoustics::contacts(hammers, modes, shapes, DT)
+    var reversed = engine::acoustics::contacts(
+        reversed_hammers,
+        reversed_modes,
+        [4.0, -3.0, 7.0, 2.0],
+        DT,
+    )
+    let initial = 0.5 * 0.01 * 1.5 * 1.5 + 0.5 * 0.007 * 3.0 * 3.0
+    for _ in 0..1024 {
+        let b = engine::acoustics::simultaneous_step(mut c, mut hammers, mut modes)
+        let _ = engine::acoustics::simultaneous_step(
+            mut reversed,
+            mut reversed_hammers,
+            mut reversed_modes,
+        )
+        assert(b.contact_error < 1e-9 && b.residual.abs() < 1e-12)
+        var actual = 0.0
+        for m in modes { actual += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) }
+        for i in 0..2 {
+            let compression = hammers[i].x -
+                shapes[i * 2] * modes[0].q -
+                shapes[i * 2 + 1] * modes[1].q
+            let penetration = compression.max(0.0)
+            actual += 0.5 * hammers[i].mass * hammers[i].v * hammers[i].v +
+                0.25 * hammers[i].stiffness * penetration * penetration * penetration * penetration
+            assert((hammers[i].v - reversed_hammers[1 - i].v).abs() < 1e-9)
+        }
+        assert((actual / initial - 1.0).abs() < 1e-9)
+    }
+}
+
+@test
+fn one_hammer_on_three_strings_matches_the_symmetric_effective_mass_limit() {
+    var modes = [mode(omega: 700.0, shape: 0.0, loss: 0.0, dt: DT); 3]
+    var hammers = [hammer(1.5)]
+    let site = engine::acoustics::ContactSite { hammer: 0, stiffness: 1e12 / 3.0 }
+    var contacts = engine::acoustics::shared_contacts(
+        hammers,
+        modes,
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        [site; 3],
+        DT,
+    )
+    // Three identical unit modal masses moving together are one mass of 3.
+    // The combined felt stiffness is the sum of the three contact regions.
+    var equivalent = [mode(omega: 700.0, shape: 1.0 / f64(3.0).sqrt(), loss: 0.0, dt: DT)]
+    var h = hammer(1.5)
+    let initial = 0.5 * 0.01 * 1.5 * 1.5
+    for _ in 0..1024 {
+        let balance = engine::acoustics::simultaneous_step(mut contacts, mut hammers, mut modes)
+        let _ = contact_step(mut h, mut equivalent, DT)
+        assert(balance.contact_error < 1e-9)
+        assert((h.v - hammers[0].v).abs() < 1e-9)
+        var actual = 0.5 * hammers[0].mass * hammers[0].v * hammers[0].v
+        for m in modes {
+            let d = (hammers[0].x - m.q).max(0.0)
+            actual += 0.5 * (m.v * m.v + m.omega * m.omega * m.q * m.q) +
+                0.25 * site.stiffness * d * d * d * d
+            assert((m.q - equivalent[0].q / f64(3.0).sqrt()).abs() < 1e-10)
+        }
+        assert((actual / initial - 1.0).abs() < 1e-9)
+    }
+}
+
+@test
+fn radiation_matches_an_independent_axial_piston_integral() {
+    let air = Air { density: 1.2, speed: 343.0 }
+    let observer = Point { x: 0.0, y: 0.0, z: 0.4 }
+    let radius = 0.3
+    let farthest = (observer.z * observer.z + radius * radius).sqrt()
+    let dc = air.density * (farthest - observer.z)
+    for hz in [100.0, 1200.0, 4000.0] {
+        let omega = 2.0 * PI_F64 * hz
+        // Integrating each circular annulus analytically gives this endpoint
+        // formula, independent of the point-patch summation and delay code.
+        let a = omega * observer.z / air.speed
+        let b = omega * farthest / air.speed
+        let factor = air.density * air.speed / omega
+        let expected = [factor * (sin_f64(b) - sin_f64(a)), factor * (cos_f64(b) - cos_f64(a))]
+        var previous = 1.0
+        for rings in [64, 128, 256] {
+            var patches: Vec<Patch> = Vec::new()
+            let shape: Vec<f64> = Vec::filled(rings, 1.0)
+            for j in 0..rings {
+                // Equal-area annuli: the angle is immaterial on the axis.
+                patches.push(
+                    Patch {
+                        x: radius * ((f64(j) + 0.5) / f64(rings)).sqrt(),
+                        y: 0.0,
+                        area: PI_F64 * radius * radius / f64(rings),
+                    },
+                )
+            }
+            let actual = response(patches, shape, observer, air, omega).unwrap()
+            let dx = actual[0] - expected[0]
+            let dy = actual[1] - expected[1]
+            let error = (dx * dx + dy * dy).sqrt() / dc
+            assert(error < previous * 0.27)
+            previous = error
+            if rings == 256 { assert(error < 1e-5) }
+        }
+    }
+}
+
+@test
+fn radiation_delay_is_causal_preserves_dc_and_refines_in_time() {
+    let air = Air { density: 1.2, speed: 343.0 }
+    let patches = [Patch { x: 0.0, y: 0.0, area: 0.1 }]
+    let listener = Point { x: 0.0, y: 0.0, z: 1.0 }
+    let omega = 2.0 * PI_F64 * 4000.0
+    let exact = response(patches, [1.0], listener, air, omega).unwrap()
+    let dc = air.density * 0.1 / (2.0 * PI_F64)
+    var previous = 1.0
+    for rate in [48000, 96000, 192000, 384000] {
+        let k = kernel(
+            patches,
+            [1.0, -2.0],
+            modes: 2,
+            listener: listener,
+            air: air,
+            rate: rate,
+        ).unwrap()
+        for i in 0..u32(k.first_delay) { assert(k.weights[i] == 0.0) }
+        let zero = kernel_response(k, mode: 0, omega: 0.0)
+        assert((zero[0] / dc - 1.0).abs() < 1e-12)
+        let actual = kernel_response(k, mode: 0, omega: omega)
+        let opposite = kernel_response(k, mode: 1, omega: omega)
+        assert((actual[0] * 2.0 + opposite[0]).abs() < 1e-15)
+        assert((actual[1] * 2.0 + opposite[1]).abs() < 1e-15)
+        let dx = actual[0] - exact[0]
+        let dy = actual[1] - exact[1]
+        let error = (dx * dx + dy * dy).sqrt() / dc
+        assert(error < previous)
+        previous = error
+        if rate == 384000 { assert(error < 0.0006) }
+    }
+    assert(
+        kernel(
+            patches,
+            [1.0],
+            modes: 1,
+            listener: Point { z: 0.0, ..listener },
+            air: air,
+            rate: 48000,
+        ).is_none(),
+    )
+    assert(
+        kernel(
+            patches,
+            [1.0],
+            modes: 1,
+            listener: Point { z: 10000.0, ..listener },
+            air: air,
+            rate: 48000,
+        ).is_none(),
+    )
+}
+
+@test
+fn radiation_convolution_retains_delays_signed_modes_and_the_full_tail() {
+    let k = engine::acoustic_radiation::Kernel {
+        modes: 2,
+        taps: 4,
+        rate: 48000,
+        first_delay: 1.0,
+        weights: Vec::from([0.0, 2.0, 1.0, 0.0, 0.0, 0.0, -1.0, 3.0]),
+    }
+    // Two separated impulses in different modes: a hand-computed convolution.
+    let result = engine::acoustic_radiation::convolve(k, [1.0, 0.0, 0.0, 2.0, 0.0, 0.0])
+    let expected = [0.0, 2.0, 1.0, -2.0, 6.0, 0.0]
+    assert(result.len() == expected.len())
+    for i in 0..expected.len() { assert(result[i] == expected[i]) }
+}
+
+@test
+fn reconstructed_acceleration_uses_instantaneous_contact_and_viscous_force() {
+    var modes = [mode(omega: 700.0, shape: 0.0, loss: 0.3, dt: DT)]
+    modes[0].q = 1e-5
+    modes[0].v = 0.1
+    let hammers = [Hammer { x: 0.0002, ..hammer(1.5) }]
+    let contacts = engine::acoustics::contacts(hammers, modes, [2.0], DT)
+    var acceleration = [0.0]
+    engine::acoustics::modal_acceleration(contacts, hammers, modes, mut acceleration)
+    let penetration = 0.0002 - 2.0 * 1e-5
+    let expected = -700.0 * 700.0 * 1e-5 -
+        0.6 * 0.1 +
+        2.0 * 1e12 * penetration * penetration * penetration
+    assert((acceleration[0] - expected).abs() < 1e-10)
+}
+
+@test
+fn radiation_far_field_preserves_surface_area_and_antisymmetric_cancellation() {
+    let air = Air { density: 1.2, speed: 343.0 }
+    let listener = Point { x: 0.5, y: 0.5, z: 10000.0 }
+    var patches: Vec<Patch> = Vec::new()
+    var odd: Vec<f64> = Vec::new()
+    var even: Vec<f64> = Vec::new()
+    for x in 0..128 {
+        for y in 0..128 {
+            let px = (f64(x) + 0.5) / 128.0
+            let py = (f64(y) + 0.5) / 128.0
+            patches.push(Patch { x: px, y: py, area: 1.0 / 16384.0 })
+            odd.push(sin_f64(PI_F64 * px) * sin_f64(PI_F64 * py))
+            even.push(sin_f64(2.0 * PI_F64 * px) * sin_f64(PI_F64 * py))
+        }
+    }
+    // Static Green-function limit: the first sine shape integrates to 4/pi².
+    // The antisymmetric shape has zero radiation at a symmetry-plane observer.
+    let a = response(patches, odd, listener, air, omega: 0.0).unwrap()
+    let b = response(patches, even, listener, air, omega: 0.0).unwrap()
+    let expected = air.density * 4.0 / (2.0 * PI_F64 * PI_F64 * PI_F64 * listener.z)
+    assert((a[0] / expected - 1.0).abs() < 6e-5)
+    assert(b[0].abs() < expected * 1e-12 && b[1] == 0.0)
+}
+
+@test
+fn original_scale_covers_88_keys_with_positive_geometry_and_declared_load_bounds() {
+    let design = engine::grand_design::proposal()
+    var strings: u32 = 0
+    var previous_length = 1e100
+    var previous_pitch = 0.0
+    for index in 0..88 {
+        let k = engine::grand_design::key(design, index).unwrap()
+        let f = angular(k.string, 1) / (2.0 * PI_F64)
+        assert((f / k.target_hz - 1.0).abs() < 1e-12)
+        assert(k.string.length < previous_length && f > previous_pitch)
+        assert(k.string.tension > 0.0 && k.core_stress < design.core.stress_ceiling)
+        assert(k.winding_radius >= k.core_radius && k.winding_line_mass >= 0.0)
+        let independent_mass = PI_F64 * design.core.density * k.core_radius * k.core_radius +
+            PI_F64 *
+                design.winding_density *
+                (k.winding_radius * k.winding_radius - k.core_radius * k.core_radius)
+        assert((independent_mass / k.string.density - 1.0).abs() < 1e-12)
+        if k.midi > 45 { assert(k.winding_line_mass == 0.0) }
+        if k.midi == 69 { assert((f - 440.0).abs() < 1e-9) }
+        previous_length = k.string.length
+        previous_pitch = f
+        strings += k.strings
+    }
+    assert(strings == 230)
+    assert(engine::grand_design::key(design, index: 88).is_none())
+    let impossible = engine::grand_design::Scale {
+        core: engine::grand_design::Material { stress_ceiling: 1.0, ..design.core },
+        ..design,
+    }
+    assert(engine::grand_design::key(impossible, index: 0).is_none())
+}
+
+@test
+fn reconstructed_acceleration_matches_physical_mass_with_shared_felt_gaps_and_compliance() {
+    let masses = [2.0, 3.0]
+    let inv = [1.0 / f64(2.0).sqrt(), 1.0 / f64(3.0).sqrt()]
+    var modes = [
+        mode(omega: 700.0, shape: 0.0, loss: 0.2, dt: DT),
+        mode(omega: 1900.0, shape: 0.0, loss: 0.2, dt: DT),
+    ]
+    modes[0].q = 1e-5
+    modes[1].q = -2e-5
+    modes[0].v = 0.1
+    modes[1].v = -0.03
+    let displacement = [modes[0].q * inv[0], modes[1].q * inv[1]]
+    let physical_shapes = [2.0, 3.0, -1.0, 4.0, 7.0, -8.0]
+    let hammers = [Hammer { x: 0.0005, ..hammer(1.5) }]
+    // Prescribe actual felt penetrations, hence exact forces, then add the
+    // eliminated compliance's displacement. No tested root solver computes
+    // the expected forces. The third contact is separated by a large gap.
+    let felt_penetration = [0.0002, 0.0001]
+    let known_force = [8.0, 1.0, 0.0]
+    let compliance = [1e-6, 2e-6]
+    var sites: Vec<engine::acoustics::ContactSite> = Vec::new()
+    var modal_shapes: Vec<f64> = Vec::new()
+    for i in 0..3 {
+        let surface = physical_shapes[2 * i] * displacement[0] +
+            physical_shapes[2 * i + 1] * displacement[1]
+        let gap = if i < 2 {
+            hammers[0].x - surface - felt_penetration[i] - compliance[i] * known_force[i]
+        } else { 0.1 }
+        sites.push(
+            engine::acoustics::ContactSite {
+                hammer: 0,
+                stiffness: 1e12,
+                gap,
+                compliance: if i < 2 { compliance[i] } else { 0.0 },
+            },
+        )
+        for j in 0..2 { modal_shapes.push(physical_shapes[2 * i + j] * inv[j]) }
+    }
+    let c = engine::acoustics::shared_contacts(hammers, modes, modal_shapes, sites, DT)
+    var acceleration = [0.0; 2]
+    engine::acoustics::modal_acceleration(c, hammers, modes, mut acceleration)
+    for j in 0..2 {
+        var force = 0.0
+        for i in 0..3 { force += physical_shapes[2 * i + j] * known_force[i] }
+        let expected = force / masses[j] -
+            modes[j].omega * modes[j].omega * displacement[j] -
+            0.4 * modes[j].v * inv[j]
+        assert((acceleration[j] * inv[j] - expected).abs() < 1e-9)
+    }
+}
+
+@test
+fn bandlimited_radiation_delay_matches_exact_phase_through_twenty_kilohertz() {
+    let air = Air { density: 1.2, speed: 343.0 }
+    let patches = [Patch { x: 0.0, y: 0.0, area: 0.1 }]
+    let dc = air.density * 0.1 / (2.0 * PI_F64)
+    // Different fractional phases ensure the filter is not checked only at
+    // an accidentally exact integer delay.
+    for z in [1.0, 1.001, 1.003] {
+        let listener = Point { x: 0.0, y: 0.0, z }
+        let k = engine::acoustic_radiation::bandlimited_kernel(
+            patches,
+            [1.0],
+            modes: 1,
+            listener: listener,
+            air: air,
+            rate: 48000,
+        ).unwrap()
+        assert(k.leading_support == 32)
+        for i in 0..u32(k.first_delay) - 31 { assert(k.weights[i] == 0.0) }
+        for hz in [0.0, 300.0, 1200.0, 5000.0, 10000.0, 15000.0, 20000.0] {
+            let omega = 2.0 * PI_F64 * hz
+            let exact = response(patches, [1.0], listener, air, omega).unwrap()
+            let actual = kernel_response(k, mode: 0, omega: omega)
+            let dx = actual[0] - exact[0]
+            let dy = actual[1] - exact[1]
+            let error = (dx * dx + dy * dy).sqrt() / (dc / z)
+            assert(error < 0.0002)
+        }
+    }
+    assert(
+        engine::acoustic_radiation::bandlimited_kernel(
+            patches,
+            [1.0],
+            modes: 1,
+            listener: Point { x: 0.0, y: 0.0, z: 0.001 },
+            air: air,
+            rate: 48000,
+        ).is_none(),
+    )
+}
+
+@test
+fn high_resolution_plate_blocks_match_dense_modes_and_reject_cross_order_coupling() {
+    let p = engine::acoustic_plate::Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+    let ribs = [
+        engine::acoustic_plate::Rib { x: 0.8, line_mass: 0.2, bending: 60.0 },
+        engine::acoustic_plate::Rib { x: 1.6, line_mass: 0.2, bending: 60.0 },
+    ]
+    var small = engine::acoustic_plate::assemble(p, ribs, count_x: 8, count_y: 8).unwrap()
+    let dense = engine::acoustic_plate::solve(small).unwrap()
+    let blocks = engine::acoustic_plate::solve_separable(small).unwrap()
+    for i in 0..dense.count {
+        assert((blocks.squared_frequencies[i] / dense.squared_frequencies[i] - 1.0).abs() < 1e-10)
+    }
+    let larger = engine::acoustic_plate::assemble(p, ribs, count_x: 12, count_y: 12).unwrap()
+    let refined = engine::acoustic_plate::solve(larger).unwrap()
+    assert(refined.count == 144)
+    let (residual, orthogonality) = engine::acoustic_modes::errors(
+        refined,
+        larger.mass,
+        larger.stiffness,
+    )
+    assert(residual < 1e-10 && orthogonality < 1e-10)
+    small.stiffness[1] = 0.01
+    small.stiffness[64] = 0.01
+    assert(engine::acoustic_plate::solve_separable(small).is_none())
+}
+
+@test
+fn per_mode_audit_detects_error_hidden_by_high_frequency_modes() {
+    let m = engine::acoustic_modes::Modes {
+        count: 2,
+        squared_frequencies: Vec::from([4.0, 1e12]),
+        shapes: Vec::from([1.0, 0.0, 0.0, 1.0]),
+    }
+    let a = engine::acoustic_modes::audit(m, [1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1e12])
+    assert(a.relative_frobenius < 4e-12)
+    assert((a.maximum_relative_mode - 0.75).abs() < 1e-14)
+    assert(a.worst_mode == 0 && a.orthogonality == 0.0)
+}
+
+@test
+fn frequency_selected_plate_matches_analytic_spectrum_and_ragged_dense_solution() {
+    let p = engine::acoustic_plate::Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+    let empty: [engine::acoustic_plate::Rib; 0] = []
+    let cutoff = 200.0
+    let bare = engine::acoustic_plate::assemble_frequency(p, empty, cutoff).unwrap()
+    let exact = engine::acoustic_plate::solve_separable(bare).unwrap()
+    assert(bare.first_omitted_omega >= 2.0 * PI_F64 * cutoff)
+    assert(bare.orders.len() < bare.count_x * bare.count_y)
+    for w2 in exact.squared_frequencies { assert(w2.sqrt() < 2.0 * PI_F64 * cutoff) }
+    let box = engine::acoustic_plate::assemble(p, empty, count_x: 12, count_y: 12).unwrap()
+    let all = engine::acoustic_plate::solve_separable(box).unwrap()
+    var below: u32 = 0
+    for w2 in all.squared_frequencies {
+        if w2.sqrt() < 2.0 * PI_F64 * cutoff {
+            assert((w2 / exact.squared_frequencies[below] - 1.0).abs() < 1e-12)
+            below += 1
+        }
+    }
+    assert(below == exact.count)
+    let ribbed = engine::acoustic_plate::assemble_frequency(
+        p,
+        [engine::acoustic_plate::Rib { x: 0.83, line_mass: 0.2, bending: 60.0 }],
+        cutoff_hz: 150.0,
+    ).unwrap()
+    let blocks = engine::acoustic_plate::solve_separable(ribbed).unwrap()
+    let dense = engine::acoustic_modes::eigensystem(
+        ribbed.mass,
+        ribbed.stiffness,
+        blocks.count,
+    ).unwrap()
+    for j in 0..blocks.count {
+        assert((blocks.squared_frequencies[j] / dense.squared_frequencies[j] - 1.0).abs() < 1e-9)
+    }
+    let a = engine::acoustic_modes::audit(blocks, ribbed.mass, ribbed.stiffness)
+    assert(a.maximum_relative_mode < 1e-9 && a.orthogonality < 1e-10)
+    assert(engine::acoustic_plate::assemble_frequency(p, empty, cutoff_hz: 100000.0).is_none())
+}
+
+@test
+fn force_response_matches_single_oscillator_and_retains_off_axis_even_modes() {
+    let p = engine::acoustic_plate::Plate {
+        length: 1.0,
+        width: 0.7,
+        thickness: 0.01,
+        density: 500.0,
+        young_x: 8e9,
+        young_y: 1e9,
+        poisson_xy: 0.25,
+        shear: 0.6e9,
+    }
+    let empty: [engine::acoustic_plate::Rib; 0] = []
+    let s = engine::acoustic_plate::assemble(p, empty, count_x: 1, count_y: 1).unwrap()
+    let m = engine::acoustic_plate::solve(s).unwrap()
+    let hz = m.squared_frequencies[0].sqrt() / (2.0 * PI_F64)
+    let d = engine::acoustic_response::driven(s, m, x: 0.5, y: 0.35, eta: 0.02, hz: hz).unwrap()
+    let modal_mass = p.density * p.thickness * p.length * p.width / 4.0
+    let damping = 0.02 * 2.0 * PI_F64 * hz * modal_mass
+    assert((d.mobility[0] * damping - 1.0).abs() < 1e-12)
+    assert(d.mobility[1].abs() < 1e-12)
+    assert((d.acceleration[0][1] / (2.0 * PI_F64 * hz / damping) - 1.0).abs() < 1e-12)
+    let pair = engine::acoustic_plate::assemble(p, empty, count_x: 1, count_y: 2).unwrap()
+    let air = Air { density: 1.2, speed: 343.0 }
+    let centre = engine::acoustic_response::pressure(
+        pair,
+        [[0.0, 0.0], [1.0, 0.0]],
+        listener: Point { x: 0.5, y: 0.35, z: 1.0 },
+        air: air,
+        hz: 250.0,
+        refinement: 2,
+    ).unwrap()
+    let side = engine::acoustic_response::pressure(
+        pair,
+        [[0.0, 0.0], [1.0, 0.0]],
+        listener: Point { x: 0.43, y: 0.13, z: 1.0 },
+        air: air,
+        hz: 250.0,
+        refinement: 2,
+    ).unwrap()
+    let fine = engine::acoustic_response::pressure(
+        pair,
+        [[0.0, 0.0], [1.0, 0.0]],
+        listener: Point { x: 0.43, y: 0.13, z: 1.0 },
+        air: air,
+        hz: 250.0,
+        refinement: 4,
+    ).unwrap()
+    assert(centre.transfer[0].abs() + centre.transfer[1].abs() < 1e-14)
+    assert(side.transfer[0].abs() + side.transfer[1].abs() > 0.001)
+    for k in 0..2 { assert((side.transfer[k] - fine.transfer[k]).abs() < 0.0001) }
+    assert(fine.grid_x == 2 * side.grid_x && fine.grid_y == 2 * side.grid_y)
+}
+
+@test
+fn per_mode_audit_fails_closed_on_invalid_and_overflowing_inputs() {
+    let zero = engine::acoustic_modes::Modes {
+        count: 1,
+        squared_frequencies: Vec::from([0.0]),
+        shapes: Vec::from([1.0]),
+    }
+    let bad = engine::acoustic_modes::audit(zero, [1.0], [0.0])
+    assert(!bad.valid && bad.maximum_relative_mode > 1e90)
+    let huge = engine::acoustic_modes::Modes {
+        count: 1,
+        squared_frequencies: Vec::from([1.0]),
+        shapes: Vec::from([1e200]),
+    }
+    let overflow = engine::acoustic_modes::audit(huge, [1e200], [1e200])
+    assert(!overflow.valid && overflow.maximum_relative_mode > 1e90)
+}
+
+@test
+fn forced_plate_pressure_matches_the_independently_verified_rayleigh_observer() {
+    let p = engine::acoustic_plate::Plate {
+        length: 1.0,
+        width: 0.7,
+        thickness: 0.01,
+        density: 500.0,
+        young_x: 8e9,
+        young_y: 1e9,
+        poisson_xy: 0.25,
+        shear: 0.6e9,
+    }
+    let empty: [engine::acoustic_plate::Rib; 0] = []
+    let s = engine::acoustic_plate::assemble(p, empty, count_x: 1, count_y: 1).unwrap()
+    let m = engine::acoustic_plate::solve(s).unwrap()
+    let hz = m.squared_frequencies[0].sqrt() / (2.0 * PI_F64) * 1.37
+    let omega = 2.0 * PI_F64 * hz
+    let air = Air { density: 1.2, speed: 343.0 }
+    let listener = Point { x: 0.43, y: 0.13, z: 1.0 }
+    let d = engine::acoustic_response::driven(s, m, x: 0.5, y: 0.35, eta: 0.02, hz: hz).unwrap()
+    let measured = engine::acoustic_response::pressure(
+        s,
+        d.acceleration,
+        listener,
+        air,
+        hz,
+        refinement: 2,
+    ).unwrap()
+    var patches: Vec<Patch> = Vec::new()
+    var shapes: Vec<f64> = Vec::new()
+    for ix in 0..measured.grid_x {
+        for iy in 0..measured.grid_y {
+            let x = (f64(ix) + 0.5) * p.length / f64(measured.grid_x)
+            let y = (f64(iy) + 0.5) * p.width / f64(measured.grid_y)
+            patches.push(
+                Patch { x, y, area: p.length * p.width / f64(measured.grid_x * measured.grid_y) },
+            )
+            shapes.push(sin_f64(PI_F64 * x / p.length) * sin_f64(PI_F64 * y / p.width))
+        }
+    }
+    let observer = response(patches, shapes, listener, air, omega).unwrap()
+    // Analytic one physical oscillator, independent of driven()'s modal map.
+    let mass = p.density * p.thickness * p.length * p.width / 4.0
+    let real = mass * (m.squared_frequencies[0] - omega * omega)
+    let imag = mass * 0.02 * m.squared_frequencies[0].sqrt() * omega
+    let ar = -omega * omega * real / (real * real + imag * imag)
+    let ai = omega * omega * imag / (real * real + imag * imag)
+    let expected = [observer[0] * ar - observer[1] * ai, observer[0] * ai + observer[1] * ar]
+    for k in 0..2 { assert((measured.transfer[k] - expected[k]).abs() < 1e-12) }
+}
+
+fn two_row_loss_error(steps: u32) -> f64 {
+    let basis = engine::acoustic_modes::Modes {
+        count: 2,
+        squared_frequencies: Vec::from([1.0, 1.0]),
+        shapes: Vec::from([1.0, 0.0, 1.0, 1.0]),
+    }
+    let losses = engine::acoustic_losses::cook(basis, [2.0, 3.0]).unwrap()
+    var modes = [mode(omega: 1.0, shape: 0.0, loss: 0.0, dt: DT); 2]
+    modes[0].v = 0.7
+    modes[1].v = -0.4
+    var acceleration = [0.0; 2]
+    engine::acoustic_losses::add_acceleration(losses, modes, mut acceleration)
+    assert((acceleration[0] + 2.3).abs() < 1e-14)
+    assert((acceleration[1] + 0.9).abs() < 1e-14)
+    let start = 0.5 * (0.7 * 0.7 + 0.4 * 0.4)
+    var removed = 0.0
+    let duration = 0.3
+    let half = duration / (2.0 * f64(steps))
+    for _ in 0..steps {
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: half, reverse: false)
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: half, reverse: true)
+    }
+    let end = 0.5 * (modes[0].v * modes[0].v + modes[1].v * modes[1].v)
+    assert(removed >= 0.0 && (end + removed - start).abs() < 1e-13)
+    // Independent exact exponential of C=[[5,3],[3,3]], eigenvalues 4±sqrt(10).
+    let lo = 4.0 - f64(10.0).sqrt()
+    let hi = 4.0 + f64(10.0).sqrt()
+    let el = std::math::exp_f64(-lo * duration)
+    let eh = std::math::exp_f64(-hi * duration)
+    let a = (el - eh) / (lo - hi)
+    let b = (-hi * el + lo * eh) / (lo - hi)
+    let expected = [a * 2.3 + b * 0.7, a * 0.9 - b * 0.4]
+    ((modes[0].v - expected[0]) * (modes[0].v - expected[0]) +
+        (modes[1].v - expected[1]) * (modes[1].v - expected[1])).sqrt()
+}
+
+@test
+fn physical_losses_are_passive_and_converge_for_nonorthogonal_coordinates() {
+    let coarse = two_row_loss_error(steps: 30)
+    let fine = two_row_loss_error(steps: 60)
+    assert(fine < coarse * 0.27 && fine < 1e-5)
+    let s = spec()
+    assert(
+        (engine::acoustic_losses::string_bending(s, order: 2, tau: 1e-7) /
+            engine::acoustic_losses::string_bending(s, order: 1, tau: 1e-7) -
+            16.0).abs() <
+            1e-12,
+    )
+}
+
+@test
+fn isolated_physical_loss_matches_damped_oscillator_decay_and_work() {
+    let basis = engine::acoustic_modes::Modes {
+        count: 1,
+        squared_frequencies: Vec::from([10000.0]),
+        shapes: Vec::from([1.0]),
+    }
+    let c = engine::acoustic_losses::board_mode(omega: 100.0, eta: 0.02)
+    let losses = engine::acoustic_losses::cook(basis, [c]).unwrap()
+    let dt = 0.0001
+    var modes = [mode(omega: 100.0, shape: 0.0, loss: 0.0, dt: dt)]
+    modes[0].v = 1.0
+    var removed = 0.0
+    for _ in 0..1000 {
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: dt * 0.5, reverse: false)
+        removed += free_step(mut modes)
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: dt * 0.5, reverse: true)
+    }
+    let wd = (10000.0 - c * c * 0.25).sqrt()
+    let decay = std::math::exp_f64(-c * 0.5 * 0.1)
+    let q = decay * sin_f64(wd * 0.1) / wd
+    let v = decay * (cos_f64(wd * 0.1) - c * 0.5 / wd * sin_f64(wd * 0.1))
+    assert((modes[0].q - q).abs() < 1e-8 && (modes[0].v - v).abs() < 1e-6)
+    let final_energy = 0.5 * (modes[0].v * modes[0].v + 10000.0 * modes[0].q * modes[0].q)
+    assert((final_energy + removed - 0.5).abs() < 1e-11)
+}
+
+@test
+fn generalized_solver_resolves_low_modes_in_a_wide_frequency_range() {
+    let mass = [1.0, 0.0, 0.0, 1.0]
+    let stiffness = [1.0, 0.001, 0.001, 1e12]
+    let m = engine::acoustic_modes::eigensystem(mass, stiffness, n: 2).unwrap()
+    let audit = engine::acoustic_modes::audit(m, mass, stiffness)
+    assert(audit.valid && audit.maximum_relative_mode < 1e-12)
+    assert((m.squared_frequencies[0] - 1.0).abs() < 1e-12)
+}
+
+@test
+fn ragged_ribbed_pressure_matches_direct_modal_shapes_at_every_patch() {
+    let p = engine::acoustic_plate::Plate {
+        length: 1.0,
+        width: 0.7,
+        thickness: 0.01,
+        density: 500.0,
+        young_x: 8e9,
+        young_y: 1e9,
+        poisson_xy: 0.25,
+        shear: 0.6e9,
+    }
+    let s = engine::acoustic_plate::assemble_frequency(
+        p,
+        [engine::acoustic_plate::Rib { x: 0.31, line_mass: 0.2, bending: 60.0 }],
+        cutoff_hz: 100.0,
+    ).unwrap()
+    let m = engine::acoustic_plate::solve_separable(s).unwrap()
+    assert(s.count_x >= 2 && s.count_y >= 2 && s.orders.len() < s.count_x * s.count_y)
+    var modal: Vec<[f64; 2]> = Vec::new()
+    for j in 0..m.count { modal.push([0.2 * f64(j + 1), if j % 2 == 0 { 0.3 } else { -0.4 }]) }
+    var bare: Vec<[f64; 2]> = Vec::filled(m.count, [0.0; 2])
+    for i in 0..m.count {
+        for j in 0..m.count {
+            for k in 0..2 {
+                bare[i][k] += m.shapes[i * m.count + j] * modal[j][k]
+            }
+        }
+    }
+    let listener = Point { x: 0.43, y: 0.13, z: 1.0 }
+    let air = Air { density: 1.2, speed: 343.0 }
+    let hz = 123.0
+    let actual = engine::acoustic_response::pressure(
+        s,
+        bare,
+        listener,
+        air,
+        hz,
+        refinement: 2,
+    ).unwrap()
+    var patches: Vec<Patch> = Vec::new()
+    var real: Vec<f64> = Vec::new()
+    var imag: Vec<f64> = Vec::new()
+    for ix in 0..actual.grid_x {
+        for iy in 0..actual.grid_y {
+            let x = (f64(ix) + 0.5) * p.length / f64(actual.grid_x)
+            let y = (f64(iy) + 0.5) * p.width / f64(actual.grid_y)
+            patches.push(
+                Patch { x, y, area: p.length * p.width / f64(actual.grid_x * actual.grid_y) },
+            )
+            var ar = 0.0
+            var ai = 0.0
+            for j in 0..m.count {
+                let value = engine::acoustic_plate::shape(s, m, j, x, y)
+                ar += value * modal[j][0]
+                ai += value * modal[j][1]
+            }
+            real.push(ar)
+            imag.push(ai)
+        }
+    }
+    let re = response(patches, real, listener, air, omega: 2.0 * PI_F64 * hz).unwrap()
+    let im = response(patches, imag, listener, air, omega: 2.0 * PI_F64 * hz).unwrap()
+    assert((actual.transfer[0] - (re[0] - im[1])).abs() < 1e-12)
+    assert((actual.transfer[1] - (re[1] + im[0])).abs() < 1e-12)
+}
+
+fn multiply_six(a: [f64], b: [f64]) -> Vec<f64> {
+    var c: Vec<f64> = Vec::filled(36, 0.0)
+    for i in 0..6 {
+        for j in 0..6 {
+            for k in 0..6 {
+                c[i * 6 + j] += a[i * 6 + k] * b[k * 6 + j]
+            }
+        }
+    }
+    take c
+}
+
+fn stiff_loss_error(steps: u32) -> f64 {
+    let omega = [5.0, 60.0, 130.0]
+    let duration = 0.2
+    let dt = duration / f64(steps)
+    let initial = [0.2, -0.1, 0.3, 0.4, 0.2, -0.15]
+    // Independent first-order matrix in energy coordinates z=(omega*q, v).
+    // C is formed analytically from the declared three physical covectors.
+    let c = [2.45, 1.9, 0.6, 1.9, 5.4, 3.6, 0.6, 3.6, 8.8]
+    var a: Vec<f64> = Vec::filled(36, 0.0)
+    for i in 0..3 {
+        a[i * 6 + i + 3] = omega[i]
+        a[(i + 3) * 6 + i] = -omega[i]
+        for j in 0..3 { a[(i + 3) * 6 + j + 3] = -c[i * 3 + j] }
+    }
+    // A small-argument Taylor exponential, followed by eight squarings.
+    // This reference shares neither splitting nor rank-one exponentials.
+    var exact: Vec<f64> = Vec::filled(36, 0.0)
+    var term: Vec<f64> = Vec::filled(36, 0.0)
+    for i in 0..6 {
+        exact[i * 6 + i] = 1.0
+        term[i * 6 + i] = 1.0
+    }
+    for k in 1..31 {
+        term = multiply_six(term, a)
+        for i in 0..36 {
+            term[i] *= duration / (256.0 * f64(k))
+            exact[i] += term[i]
+        }
+    }
+    for _ in 0..8 { exact = multiply_six(exact, exact) }
+    var expected = [0.0; 6]
+    for i in 0..6 { for j in 0..6 { expected[i] += exact[i * 6 + j] * initial[j] } }
+    let basis = engine::acoustic_modes::Modes {
+        count: 3,
+        squared_frequencies: Vec::from([25.0, 3600.0, 16900.0]),
+        shapes: Vec::from([1.0, 0.2, 0.0, 0.3, 1.0, 0.4, 0.0, 0.2, 1.0]),
+    }
+    let losses = engine::acoustic_losses::cook(basis, [2.0, 5.0, 8.0]).unwrap()
+    var modes: Vec<engine::acoustics::Mode> = Vec::new()
+    for i in 0..3 {
+        var m = mode(omega[i], shape: 0.0, loss: 0.0, dt: dt)
+        m.q = initial[i] / omega[i]
+        m.v = initial[i + 3]
+        modes.push(m)
+    }
+    var removed = 0.0
+    for _ in 0..steps {
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: dt * 0.5, reverse: false)
+        removed += free_step(mut modes)
+        removed += engine::acoustic_losses::sweep(losses, mut modes, dt: dt * 0.5, reverse: true)
+    }
+    var error = 0.0
+    var start = 0.0
+    var end = 0.0
+    for z in initial { start += 0.5 * z * z }
+    for i in 0..3 {
+        let q = omega[i] * modes[i].q
+        let v = modes[i].v
+        error += (q - expected[i]) * (q - expected[i]) +
+            (v - expected[i + 3]) * (v - expected[i + 3])
+        end += 0.5 * (q * q + v * v)
+    }
+    assert(removed > 0.0 && (end + removed - start).abs() < 1e-12)
+    error.sqrt()
+}
+
+@test
+fn nonorthogonal_losses_with_stiffness_converge_to_full_state_exponential() {
+    // Coarse omega*dt are exactly 0.05, 0.6 and 1.3.
+    let coarse = stiff_loss_error(steps: 20)
+    let medium = stiff_loss_error(steps: 40)
+    let fine = stiff_loss_error(steps: 80)
+    assert(medium < 0.30 * coarse && fine < 0.27 * medium && fine < 0.001)
+}

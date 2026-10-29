@@ -1,0 +1,31 @@
+// Original lossless scattering realization of a first-order allpass:
+// [out, next_state] = [[a,b],[b,-a]] [input,state], b=sqrt(1-a²).
+// The matrix is orthogonal, so out²+next_state²=input²+state².
+// Its transfer is (a+z^-1)/(1+a*z^-1). These states therefore have a
+// physical wave-energy interpretation, unlike an unexplained phase filter.
+// Fitting is only to the authored stiff-string PDE, never a recording.
+use std::math::{atan_f64, cos_f64, sin_f64, PI_F64}
+
+pub struct Section: Copy {
+    pub state: f64 = 0.0,
+    a: f64,
+    b: f64,
+}
+
+pub fn section(a: f64) -> Section {
+    assert(a.abs() < 1.0)
+    Section { a, b: (1.0 - a * a).sqrt() }
+}
+
+@audio
+pub fn step(s: mut Section, input: f64) -> f64 {
+    let output = s.a * input + s.b * s.state
+    s.state = s.b * input - s.a * s.state
+    output
+}
+
+/// Positive phase lag on 0..pi, with no branch unwrapping ambiguity.
+pub fn phase(a: f64, omega: f64) -> f64 {
+    assert(a.abs() < 1.0 && omega >= 0.0 && omega < PI_F64)
+    2.0 * atan_f64((1.0 - a) / (1.0 + a) * sin_f64(omega * 0.5) / cos_f64(omega * 0.5))
+}

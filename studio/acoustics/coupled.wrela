@@ -1,0 +1,184 @@
+// Three neighboring stiff strings on one ribbed orthotropic plate. This is an
+// offline reference experiment with authored surrogate fixtures, not a full
+// original grand or an acoustic/musical approval. One string is struck; the
+// other two can respond through their moving bridge attachments.
+use engine::acoustics::{Hammer, contact_step, energy}
+use engine::acoustic_plate::{Plate, Rib, assemble, solve, shape}
+use engine::acoustic_modes::errors
+use engine::acoustic_system::cook
+use main::probe
+use std::collections::Vec
+use std::io::print
+use std::time::now
+
+struct Run: Copy {
+    retained: u32,
+    rate: u32,
+    corrected: bool,
+    coupled: bool,
+    multiple: bool = false,
+}
+
+pub fn report() -> u32 {
+    var runs: Vec<Run> = Vec::new()
+    for retained in [12, 24, 48] {
+        for coupled in [false, true] {
+            runs.push(Run { retained, rate: 96000, corrected: false, coupled })
+        }
+    }
+    run_cases(runs)
+}
+
+pub fn contact_convergence() -> u32 {
+    var runs: Vec<Run> = Vec::new()
+    for retained in [40, 80, 160, 320] {
+        runs.push(Run { retained, rate: 384000, corrected: false, coupled: true })
+    }
+    runs.push(Run { retained: 40, rate: 48000, corrected: true, coupled: true })
+    runs.push(Run { retained: 40, rate: 96000, corrected: true, coupled: true })
+    run_cases(runs)
+}
+
+pub fn simultaneous_convergence() -> u32 {
+    run_cases(
+        [
+            Run { retained: 80, rate: 384000, corrected: false, coupled: true, multiple: true },
+            Run { retained: 160, rate: 384000, corrected: false, coupled: true, multiple: true },
+            Run { retained: 320, rate: 384000, corrected: false, coupled: true, multiple: true },
+            Run { retained: 40, rate: 48000, corrected: true, coupled: true, multiple: true },
+        ],
+    )
+}
+
+fn run_cases(runs: [Run]) -> u32 {
+    let p = Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+    let board = assemble(
+        p,
+        [
+            Rib { x: 0.8, line_mass: 0.2, bending: 60.0 },
+            Rib { x: 1.6, line_mass: 0.2, bending: 60.0 },
+        ],
+        count_x: 4,
+        count_y: 4,
+    )
+    assert(board.is_some(), "plate assembly")
+    let board = take board.unwrap()
+    let basis = solve(board)
+    assert(basis.is_some(), "plate modes")
+    let basis = take basis.unwrap()
+    var omega: Vec<f64> = Vec::new()
+    for w in basis.squared_frequencies { omega.push(w.sqrt()) }
+    var attachments: Vec<f64> = Vec::new()
+    for key in 0..3 {
+        for j in 0..basis.count {
+            attachments.push(shape(board, basis, j, x: 1.15, y: 0.5 + 0.05 * f64(key)))
+        }
+    }
+    let original = probe(1, 1.5)
+    let specs = [
+        original.string,
+        engine::acoustics::StringSpec { length: 0.944, ..original.string },
+        engine::acoustics::StringSpec { length: 0.891, ..original.string },
+    ]
+    for run in runs {
+        let retained = run.retained
+        let coupled = run.coupled
+        let dt = 1.0 / f64(run.rate)
+        let start = now()
+        var attach = attachments.clone()
+        if !coupled { for i in 0..attach.len() { attach[i] = 0.0 } }
+        let system = engine::acoustic_assembly::assemble(
+            specs,
+            [retained; 3],
+            omega,
+            attach,
+        )
+        assert(system.is_some(), "string assembly")
+        let system = take system.unwrap()
+        var contact: Vec<f64> = Vec::filled(system.count, 0.0)
+        var observer: Vec<f64> = Vec::filled(system.count, 0.0)
+        for i in 0..system.count { contact[i] = system.contacts[i] }
+        for j in 0..basis.count {
+            observer[system.board_start + j] = shape(board, basis, j, x: 1.2, y: 0.625)
+        }
+        let cooked = cook(system.mass, system.stiffness, contact, observer, 0.0, dt)
+        assert(cooked.is_some(), f"coupled modes: retained={retained}, coupled={coupled}")
+        var model = take cooked.unwrap()
+        let (residual, orthogonality) = errors(model.basis, system.mass, system.stiffness)
+        assert(residual < 1e-9 && orthogonality < 1e-9)
+        var hammer: Hammer = original.hammer
+        if run.corrected {
+            // Eliminating fixed-end sine coordinates adds this same static
+            // contact compliance: their stiffness block is diagonal and
+            // has no cross term with the linear bridge lifting function.
+            let (compliance, _) = engine::acoustics::omitted_compliance(specs[0], retained)
+            hammer.compliance = compliance
+        }
+        var hammers = [original.hammer; 3]
+        hammers[0].v = 0.3
+        hammers[1].v = 1.5
+        hammers[2].v = 4.0
+        if run.corrected {
+            for i in 0..3 {
+                let (compliance, _) = engine::acoustics::omitted_compliance(specs[i], retained)
+                hammers[i].compliance = compliance
+            }
+        }
+        var contact_shapes: Vec<f64> = Vec::filled(3 * system.count, 0.0)
+        for i in 0..3 {
+            for j in 0..system.count {
+                for k in 0..system.count {
+                    contact_shapes[i * system.count + j] += system.contacts[i * system.count + k] *
+                        model.basis.shapes[k * system.count + j]
+                }
+            }
+        }
+        var contacts = engine::acoustics::contacts(hammers, model.modes, contact_shapes, dt)
+        let initial = if run.multiple {
+            engine::acoustics::contact_energy(contacts, hammers, model.modes)
+        } else { energy(hammer, model.modes) }
+        var error = 0.0
+        var peak_force = 0.0
+        var board_motion = 0.0
+        var receiver_motion = 0.0
+        for _ in 0..run.rate / 50 {
+            let balance = if run.multiple {
+                engine::acoustics::simultaneous_step(mut contacts, mut hammers, mut model.modes)
+            } else { contact_step(mut hammer, mut model.modes, dt) }
+            assert(balance.contact_error < 1e-8)
+            peak_force = peak_force.max(balance.force)
+            let stored = if run.multiple {
+                engine::acoustics::contact_energy(contacts, hammers, model.modes)
+            } else { energy(hammer, model.modes) }
+            error = error.max((stored / initial - 1.0).abs())
+            board_motion = board_motion.max(
+                engine::acoustic_system::observed_displacement(model).abs(),
+            )
+            // Observe string 2's relative first sine coordinate, excluding
+            // the board's lifting displacement. Zero in the ablation.
+            var receiver = 0.0
+            for j in 0..system.count {
+                receiver += model.basis.shapes[retained * system.count + j] * model.modes[j].q
+            }
+            receiver_motion = receiver_motion.max(receiver.abs())
+        }
+        assert(error < 1e-8)
+        if coupled { assert(board_motion > 0.0 && receiver_motion > 0.0) } else {
+            assert(board_motion == 0.0 && receiver_motion == 0.0)
+        }
+        let returned = if run.multiple { hammers[0].v } else { hammer.v }
+        print(
+            f"{{\"multiple_strikes\":{run.multiple},\"rate\":{run.rate},\"static_compliance_correction\":{run.corrected},\"retained_per_string\":{retained},\"total_modes\":{system.count},\"coupled\":{coupled},\"matrix_residual\":{residual},\"orthogonality\":{orthogonality},\"energy_error\":{error},\"peak_force_n\":{peak_force},\"return_velocity_m_s\":{returned},\"board_peak_m\":{board_motion},\"receiver_coordinate_peak\":{receiver_motion},\"elapsed_seconds\":{now() - start}}}",
+        )
+    }
+    0
+}

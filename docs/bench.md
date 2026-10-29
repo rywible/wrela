@@ -1893,3 +1893,91 @@ Slowest compiles, vale-walk (cold):
 | character+character_shade | 31.12 | 94.8 |
 | trace | 30.89 | 95.6 |
 
+
+## Original grand: representation probes, ThinkPad, 2026-10-29
+
+Early architecture measurements from the implementation branch based on `f8d172b7`, using
+the pinned Wrela 0.10.0 native tool runner. ThinkPad T480s, i7-8650U, 22 GiB RAM, Linux
+7.0.0-38-generic; AC connected, `powersave` governor. A background model download was in
+progress. These are provisional single runs, not isolated qualification runs. No browser,
+graphics contention, device underrun, end-to-end latency or finished-instrument claim follows.
+
+All blocks have 128 samples at 48 kHz. Free-bank probes discard 50 warmup blocks and time 750;
+the complete shared-body prototype times 250 after 50 warmup blocks. State/energy witnesses
+prevent unused-result elimination. Timers surround synthesis; construction is outside them.
+
+| Probe | Work | Mean ms | p99 ms | Worst ms |
+|---|---|---:|---:|---:|
+| Scalar f64 modal reference | 8,192 free modes | 21.686 | 22.202 | 22.414 |
+| SIMD f32 modes, sample order | 8,192 free modes | 3.301 | 3.525 | 3.889 |
+| SIMD f32 modes, group order | 8,192 free modes; no shared per-sample feedback | 2.877 | 2.946 | 3.464 |
+| f64 ideal waveguides | 256 strings, parked hammers; no board or dispersion | 0.850 | 0.929 | 1.494 |
+| f64 waveguides + shared body | 256 strings, 4 body modes, parked hammers | 5.322 | 5.492 | 5.966 |
+| f64 waveguides + shared body | 256 strings, 8 body modes, parked hammers | 8.419 | 8.623 | 8.962 |
+| f64 waveguides + shared body | 256 strings, 16 body modes, parked hammers | 14.843 | 15.111 | 15.357 |
+
+Replay: `wrela tool acoustics -- cost|simd|waveguide|bridge-cost` (choose one command).
+Source and raw results are retained in
+`/home/ryan-wible/wrela-evidence/grand/mechanics-2026-10-29/`.
+The 0.929 ms component result does **not** pass Concert's 1 ms complete callback target:
+the shared body alone changes that conclusion. No tested representation is production-qualified.
+
+Separately, the old piano's driven single-note probe
+`wrela tool audio -- examples/piano speed --take 60,80,1 --seconds 2`
+reported mean 0.1842 ms, p99 0.2190 ms and worst 0.3013 ms over 750 blocks.
+That driven build has interruption checks and is comparable only to the same driven harness,
+not to the native-tool figures above. It is a migration/cost baseline, not a new piano's
+voicing target.
+
+
+### Reduced bridge and SIMD strings, second checkpoint
+
+Same ThinkPad/toolchain, AC and `powersave`; the repeat below ran after the previous model
+inference and download finished, before the next download began. Native tool only, 48 kHz,
+128 samples; 50 warmup blocks followed by 250 timed blocks for the complete prototype (750
+for the body alone). Exact sources and reports: `mechanics-2026-10-29/checkpoint-2/` under
+the evidence root above. These runs do not establish long-run browser timing or underruns.
+
+| Probe | Work | Mean ms | p99 ms | Worst ms |
+|---|---|---:|---:|---:|
+| SIMD body only | 16 structural modes, 16 ports | 0.302 | 0.322 | 0.536 |
+| SIMD strings and body | 256 ideal strings, 16 body modes, 8 rigid bridge sections | 0.853 | 0.882 | 0.893 |
+| SIMD strings and body | same, 16 sections | 0.951 | 0.966 | 0.977 |
+| SIMD strings and body | same, 32 sections | 1.147 | 1.180 | 1.188 |
+
+The four lanes retain independent string waves and share integer path lengths. Each rigid
+section conserves port work, including differential waves that cancel in its average input.
+Comparison with expanded f64 contacts checks that this grouping does not discard those waves.
+The geometric approximation of a continuous bridge by rigid sections still needs refinement.
+
+These timings exclude active hammer contact, dispersion, damping controls, radiation, room,
+output mixing and a second piano. No complete callback passes its budget on this evidence.
+An earlier run with downloads/install activity had 8-section mean 0.944/p99 1.621 ms;
+it is retained in the evidence, not silently replaced as if the timing variation did not occur.
+
+The low-cost first-order allpass dispersion search is not selected for the piano. Its bass
+fixture needs at least 36 such sections for exact target phases by a necessary phase-range
+bound; the attempted maximum of 16 missed some modal pitches by 395.9 cents. A midrange
+16-section fit reached 0.765 cents maximum error; the tested treble fits also missed a one-cent target. This is evidence against a universal cheap filter, not a perceptual verdict or a proof
+that no better waveguide approximation exists.
+
+
+### Original-grand force-response qualification after the rejected preview
+
+2026-10-29, same ThinkPad T480s i7-8650U, Linux 7.0.0-38, AC/powersave, pinned Wrela
+0.10.0 compiler `57e38f1c6827e39d4eb377bdd297cfb14592a11b`. Native offline tool,
+not an audio callback or browser claim. Sources and raw results:
+`/home/ryan-wible/wrela-evidence/grand/code-review-2026-10-29/repairs/`.
+
+The first `board-response` run measured 16/125/260/527/937 modes at 20 discrete
+frequencies, three drive ports, two listeners and two spatial grids. Per-basis time,
+including eigensolve, independent audit, transfers and output, was
+0.24/1.27/3.84/13.50/53.40 seconds. No speedup or real-time suitability is inferred
+from these single runs. The exact source is `repairs/response-sources.tar.gz`.
+A later pair-relative Jacobi correction has separate replay output and must not
+inherit those timing measurements.
+
+Only 79/120 sampled combinations meet both mobility and pressure magnitude changes
+below 1 dB between 527 and 937 modes. The highest retained eigenfrequency is not the
+proven bandwidth. [The review record](reviews/original-grand-code-2026-10-29.md)
+gives assumptions, absolute values and unresolved gates.

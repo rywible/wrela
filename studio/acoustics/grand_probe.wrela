@@ -1,0 +1,281 @@
+// P2 mechanical fixture using keys from the original authored scale.
+// One A0 string, three C4 strings and three D7 strings, with shared hammers.
+// The surrogate board remains unqualified; this is not a listening approval.
+use engine::acoustics::{
+    Hammer, StringSpec, ContactSite, shared_contacts, simultaneous_step, contact_energy,
+    omitted_compliance, force_at, Contacts,
+}
+use engine::acoustic_plate::{Plate, Rib, assemble, solve, shape}
+use engine::acoustic_system::cook
+use std::collections::Vec
+use std::io::print
+use std::time::now
+
+pub const BOARD_ETA: f64 = 0.02
+pub const STRING_BENDING_TAU: f64 = 1e-7
+
+pub fn ribs() -> [Rib; 2] {
+    [Rib { x: 0.8, line_mass: 0.2, bending: 60.0 }, Rib { x: 1.6, line_mass: 0.2, bending: 60.0 }]
+}
+
+pub fn ports() -> [[f64; 2]; 3] {
+    [[0.6, 0.4], [1.02, 0.48], [2.0, 0.82]]
+}
+
+/// Two spatial probes, 43 cm apart, not a binaural head model.
+pub fn listeners() -> [engine::acoustic_radiation::Point; 2] {
+    [
+        engine::acoustic_radiation::Point { x: 1.04, y: 0.37, z: 1.2 },
+        engine::acoustic_radiation::Point { x: 1.47, y: 0.37, z: 1.2 },
+    ]
+}
+
+pub struct Fixture {
+    pub model: engine::acoustic_system::Coupled,
+    pub board: engine::acoustic_plate::Structure,
+    pub board_basis: engine::acoustic_modes::Modes,
+    pub board_start: u32,
+    pub contacts: Contacts,
+    pub hammers: [Hammer; 3],
+    pub shapes: Vec<f64>,
+    pub specs: Vec<StringSpec>,
+    pub retained: Vec<u32>,
+    pub owners: Vec<u32>,
+    pub residual: f64,
+    pub orthogonality: f64,
+}
+
+pub fn fixture(cells: u32, loss: f64, rate: u32) -> Fixture {
+    fixture_rect(cells, cells, loss, rate)
+}
+
+pub fn fixture_rect(nx: u32, ny: u32, loss: f64, rate: u32) -> Fixture {
+    let dt = 1.0 / f64(rate)
+    let scale = engine::grand_design::proposal()
+    let keys = [
+        engine::grand_design::key(scale, index: 0).unwrap(),
+        engine::grand_design::key(scale, index: 39).unwrap(),
+        engine::grand_design::key(scale, index: 77).unwrap(),
+    ]
+    var specs: Vec<StringSpec> = Vec::new()
+    var retained: Vec<u32> = Vec::new()
+    var owners: Vec<u32> = Vec::new()
+    var lateral: Vec<f64> = Vec::new()
+    var hammers = [Hammer { mass: 1.0, stiffness: 1.0, x: 0.0, v: 0.0 }; 3]
+    let velocities = [0.3, 1.5, 4.0]
+    for owner in 0..3 {
+        let k = keys[owner]
+        hammers[owner] = Hammer {
+            mass: k.hammer_mass,
+            stiffness: k.felt_stiffness,
+            x: 0.0,
+            v: velocities[owner],
+        }
+        for wire in 0..k.strings {
+            let offset = f64(wire) - 0.5 * f64(k.strings - 1)
+            specs.push(StringSpec { length: k.string.length * (1.0 + 0.0002 * offset), ..k.string })
+            retained.push(engine::grand_design::modes_below(k, bandwidth_hz: 10000.0))
+            owners.push(owner)
+            // Tiny authored y offsets are not a designed bridge layout;
+            // unison frequency splitting is primarily the speaking-length offset.
+            lateral.push(0.001 * offset)
+        }
+    }
+    let board = board(nx, ny)
+    let basis = solve(board).unwrap()
+    var omega: Vec<f64> = Vec::new()
+    for w in basis.squared_frequencies { omega.push(w.sqrt()) }
+    var attach: Vec<f64> = Vec::new()
+    let locations = ports()
+    for site in 0..specs.len() {
+        let owner = owners[site]
+        let x = locations[owner][0]
+        let y = locations[owner][1] + lateral[site]
+        for j in 0..basis.count { attach.push(shape(board, basis, j, x: x, y: y)) }
+    }
+    let system = engine::acoustic_assembly::assemble(specs, retained, omega, attach).unwrap()
+    var source: Vec<f64> = Vec::filled(system.count, 0.0)
+    var observer: Vec<f64> = Vec::filled(system.count, 0.0)
+    // Single-port helpers on model deliberately address the A0 diagnostic port.
+    // Every multi-hammer operation MUST use contacts/shapes below instead.
+    for i in 0..system.count { source[i] = system.contacts[i] }
+    for j in 0..basis.count {
+        observer[system.board_start + j] = shape(board, basis, j, x: 1.04, y: 0.37)
+    }
+    let model = cook(system.mass, system.stiffness, source, observer, loss, dt).unwrap()
+    let audit = engine::acoustic_modes::audit(model.basis, system.mass, system.stiffness)
+    let residual = audit.maximum_relative_mode
+    let orthogonality = audit.orthogonality
+    print(
+        f"{{\"kind\":\"fixture-eigen-audit\",\"valid\":{audit.valid},\"modes\":{model.basis.count},\"maximum_relative_mode\":{residual},\"worst_mode\":{audit.worst_mode},\"orthogonality\":{orthogonality}}}",
+    )
+    assert(residual < 1e-9 && orthogonality < 1e-9)
+    var contact_shapes: Vec<f64> = Vec::filled(specs.len() * system.count, 0.0)
+    for site in 0..specs.len() {
+        for j in 0..system.count {
+            for k in 0..system.count {
+                contact_shapes[site * system.count + j] += system.contacts[site * system.count +
+                    k] *
+                    model.basis.shapes[k * system.count + j]
+            }
+        }
+    }
+    var sites: Vec<ContactSite> = Vec::new()
+    for i in 0..specs.len() {
+        let (compliance, _) = omitted_compliance(specs[i], retained[i])
+        sites.push(
+            ContactSite {
+                hammer: owners[i],
+                compliance,
+                stiffness: hammers[owners[i]].stiffness / f64(keys[owners[i]].strings),
+            },
+        )
+    }
+    let contacts = shared_contacts(hammers, model.modes, contact_shapes, sites, dt)
+
+    Fixture {
+        model: model,
+        board: board,
+        board_basis: basis,
+        board_start: system.board_start,
+        contacts: contacts,
+        hammers,
+        shapes: contact_shapes,
+        specs,
+        retained,
+        owners,
+        residual,
+        orthogonality,
+    }
+}
+
+pub fn report() -> u32 {
+    for cells in [4, 6, 8] {
+        let start = now()
+        var f = fixture(cells, loss: 0.0, rate: 48000)
+        let initial = contact_energy(f.contacts, f.hammers, f.model.modes)
+        var peak = [0.0; 3]
+        var energy_error = 0.0
+        var solve_error = 0.0
+        var board_motion = 0.0
+        for _ in 0..960 {
+            let balance = simultaneous_step(mut f.contacts, mut f.hammers, mut f.model.modes)
+            solve_error = solve_error.max(balance.contact_error)
+            energy_error = energy_error.max(
+                (contact_energy(f.contacts, f.hammers, f.model.modes) / initial - 1.0).abs(),
+            )
+            var forces = [0.0; 3]
+            for i in 0..f.owners.len() { forces[f.owners[i]] += force_at(f.contacts, i) }
+            for i in 0..3 { peak[i] = peak[i].max(forces[i]) }
+            board_motion = board_motion.max(
+                engine::acoustic_system::observed_displacement(f.model).abs(),
+            )
+        }
+        assert(solve_error < 1e-8 && energy_error < 1e-8)
+        for i in 0..3 { assert(peak[i] > 0.0) }
+        print(
+            f"{{\"board_basis\":{f.board_basis.count},\"total_modes\":{f.model.modes.len()},\"rate\":48000,\"strings\":{f.specs.len()},\"hammers\":3,\"matrix_residual\":{f.residual},\"orthogonality\":{f.orthogonality},\"energy_error\":{energy_error},\"contact_error\":{solve_error},\"bass_peak_n\":{peak[0]},\"unison_total_peak_n\":{peak[1]},\"treble_peak_n\":{peak[2]},\"bass_return_m_s\":{f.hammers[0].v},\"unison_return_m_s\":{f.hammers[1].v},\"treble_return_m_s\":{f.hammers[2].v},\"board_peak_m\":{board_motion},\"elapsed_seconds\":{now() - start}}}",
+        )
+    }
+    0
+}
+
+pub fn bandwidth_report() -> u32 {
+    for cells in [4, 8, 12, 16, 24, 32] {
+        let started = now()
+        let structure = board(cells, cells)
+        let basis = solve(structure).unwrap()
+        let minimum = basis.squared_frequencies[0].sqrt() / (2.0 * std::math::PI_F64)
+        let maximum = basis.squared_frequencies[basis.count - 1].sqrt() / (2.0 * std::math::PI_F64)
+        let omitted = structure.first_omitted_omega / (2.0 * std::math::PI_F64)
+        print(
+            f"{{\"board_modes\":{basis.count},\"min_hz\":{minimum},\"largest_retained_hz\":{maximum},\"first_omitted_bare_basis_hz\":{omitted},\"seconds\":{now() - started}}}",
+        )
+    }
+    0
+}
+
+pub fn board(nx: u32, ny: u32) -> engine::acoustic_plate::Structure {
+    let p = Plate {
+        length: 2.4,
+        width: 1.25,
+        thickness: 0.008,
+        density: 430.0,
+        young_x: 10e9,
+        young_y: 0.7e9,
+        poisson_xy: 0.3,
+        shear: 0.65e9,
+    }
+    assemble(
+        p,
+        ribs(),
+        count_x: nx,
+        count_y: ny,
+    ).unwrap()
+}
+
+/// Authored material hypotheses, separated from geometric/numerical probes.
+/// Uniform modal damping must be zero when using these physical losses alone.
+pub fn material_losses(f: Fixture) -> engine::acoustic_losses::Losses {
+    assert(!engine::acoustics::has_builtin_damping(f.model.modes))
+    var coefficients: Vec<f64> = Vec::new()
+    for i in 0..f.specs.len() {
+        for j in 1..f.retained[i] + 1 {
+            coefficients.push(
+                engine::acoustic_losses::string_bending(f.specs[i], j, tau: STRING_BENDING_TAU),
+            )
+        }
+    }
+    for w2 in f.board_basis.squared_frequencies {
+        coefficients.push(engine::acoustic_losses::board_mode(w2.sqrt(), eta: BOARD_ETA))
+    }
+    engine::acoustic_losses::cook(f.model.basis, coefficients).unwrap()
+}
+
+pub fn loss_report() -> u32 {
+    for rate in [48000, 96000] {
+        var f = fixture(cells: 4, loss: 0.0, rate: rate)
+        let losses = material_losses(f)
+        let dt = 1.0 / f64(rate)
+        let initial = contact_energy(f.contacts, f.hammers, f.model.modes)
+        var removed = 0.0
+        var error = 0.0
+        var contact_error = 0.0
+        var acceleration: Vec<f64> = Vec::filled(f.model.modes.len(), 0.0)
+        var peak_acceleration = 0.0
+        for _ in 0..rate / 50 {
+            engine::acoustics::modal_acceleration(
+                f.contacts,
+                f.hammers,
+                f.model.modes,
+                mut acceleration,
+            )
+            engine::acoustic_losses::add_acceleration(losses, f.model.modes, mut acceleration)
+            for a in acceleration { peak_acceleration = peak_acceleration.max(a.abs()) }
+            removed += engine::acoustic_losses::sweep(
+                losses,
+                mut f.model.modes,
+                dt: dt * 0.5,
+                reverse: false,
+            )
+            let step = simultaneous_step(mut f.contacts, mut f.hammers, mut f.model.modes)
+            removed += step.dissipated
+            contact_error = contact_error.max(step.contact_error)
+            removed += engine::acoustic_losses::sweep(
+                losses,
+                mut f.model.modes,
+                dt: dt * 0.5,
+                reverse: true,
+            )
+            error = error.max(
+                ((contact_energy(f.contacts, f.hammers, f.model.modes) + removed) / initial -
+                    1.0).abs(),
+            )
+        }
+        assert(error < 1e-8 && removed > 0.0 && contact_error < 1e-8)
+        print(
+            f"{{\"fixture\":\"authored-scale-A0-C4-D7\",\"rate\":{rate},\"strings\":{f.specs.len()},\"modes\":{f.model.modes.len()},\"board_modes\":{f.board_basis.count},\"wood_eta\":{BOARD_ETA},\"steel_bending_tau_s\":{STRING_BENDING_TAU},\"layout_version\":2,\"air_drag\":false,\"energy_error\":{error},\"contact_error\":{contact_error},\"removed_j\":{removed},\"maximum_relative_mode\":{f.residual},\"peak_modal_acceleration\":{peak_acceleration},\"bass_return_m_s\":{f.hammers[0].v},\"middle_return_m_s\":{f.hammers[1].v},\"treble_return_m_s\":{f.hammers[2].v}}}",
+        )
+    }
+    0
+}

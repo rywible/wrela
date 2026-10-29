@@ -46,6 +46,7 @@ members = [
     "studio/courselens",
     "studio/courselens/glue",
     "studio/audio",
+    "studio/acoustics",
     "studio/bench",
     "studio/compare",
     "studio/passes",
@@ -94,6 +95,7 @@ allow = [
     "docs/world-class-next.md",
     "docs/plan-world-class-2.md",
     "docs/plan-world-class-3.md",
+    "docs/plan-original-grand.md",
     "docs/lookdev.md",
     "docs/devices.md",
     "games/*/design.md",
@@ -235,3 +237,9 @@ net = ["wrela.dev", "docs.wrela.dev", "leapling.wrela.dev", "last-green.wrela.de
 run = ["npx"]
 secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 timeout = 3600
+
+# Original physical-instrument reference and reduction experiments.
+[tools.acoustics]
+package = "studio/acoustics"
+write = ["out=build/acoustics"]
+timeout = 1800
