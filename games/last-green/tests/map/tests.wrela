@@ -371,7 +371,7 @@ fn the_environments_bounded_art_and_collision_regressions_pass() {
 @test(tool, read: [("repo", "../../../..")], budget: 600)
 fn the_worlds_bounded_simulation_regressions_pass() {
     var p = map_package("world", String::from(FRAME))
-    for file in ["world.wrela", "encounter.wrela", "behaviour.wrela", "fawns.wrela"] {
+    for file in ["world.wrela", "encounter.wrela", "behaviour.wrela"] {
         p.copied.push(String::from(file))
     }
     p.texts.push((String::from("history.wrela"), joined(HISTORY)))
