@@ -24,15 +24,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `--input` names one of the bench's scenes (`last-green-walk` is `LG_WALK`), whose script `studio/bench/scenes.wrela` holds.
 - **Status:** open: `Script::from_json(text) -> Option<Script>`.
 
-### A warm page doesn't time its pipelines
-
-- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
-- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
-- **Found:** 2026-10-26, adding the warm run.
-- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
-- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
-- **Status:** open: write `pipelines.json` on every run, its `each` only when salted.
-
 ### A fragment can't say its depth only grows
 
 - **Needed:** the early depth test kept on for a fragment that writes its own depth only further away (or only nearer) than its triangle's: the impostors' leaves and the soft raster's merge (docs/plan-world-class-2.md §A11, §B5.6), which turn early-Z off for their draws today.
@@ -153,7 +144,25 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the test builds the fixture and reads its manifest (as `engine/tests/switches` does).
 - **Status:** open: a check's pipelines as a build makes them, or a `CheckOptions` that asks for that.
 
+### A cold start's pipelines compile at the GPU process's own pace
+
+- **Needed:** a cold start (no pipeline in any cache) under 5 s (docs/plan-world-class-3.md §C5): the pipelines the load needs built before it needs them.
+- **What happens:** the browser compiles a few pipelines at a time in its GPU process (Chrome on Metal: 17 small ones asked for at once all finished together, 1.5 s later), whatever the host asks. Neither the order the host asks in (largest first, smallest first, both ends, the order the program first uses them) nor how many it asks for at once moves the vale's cold start much below 6.6 s: it needs 48 pipelines before playable, 7.5 s of compiling built one at a time. WebGPU has no way to ship compiled pipelines or to say which matter first.
+- **Found:** 2026-10-29, C5 (test mode's `starts.json`, 0.10.2).
+- **Evidence:** `wrela tool bench -- --scene vale-walk --starts 3`, cold, playable ms: 8029 with every tier-0 pipeline asked for at once, 6691 six at a time (0.10.2). Single runs: smallest first 6066, alternating ends 6601, in a native run's first-use order 6653.
+- **Meanwhile:** fewer and smaller pipelines before playable: the covered frames don't draw the scene (C5a), and C1's switches leave a program's unused paths out.
+- **Status:** open: nothing in the toolchain can fix the browser's pace. What's left is the program's: smaller shaders on the load's path (the floor's creature-field realizer, 160–230 KiB of WGSL with its dual-number gradients; the terrain's `cook_level`, 140–166 KiB).
+
 ## Fixed
+
+### A warm page doesn't time its pipelines
+
+- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
+- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
+- **Found:** 2026-10-26, adding the warm run.
+- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
+- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
+- **Status:** fixed in 0.10.2 for what a start waits for ([rywible/wrela-compiler#41](https://github.com/rywible/wrela-compiler/pull/41)): every run writes `results/starts.json`, with when each pipeline was built and each time a command waited for one. `pipelines.json` is still a salted run's.
 
 ### A branch on an associated constant stays past the CPU inliner's budget
 

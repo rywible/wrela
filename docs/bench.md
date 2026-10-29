@@ -2288,3 +2288,56 @@ Slowest compiles, last-green-walk (cold):
 | cull_blocks | 56.95 | 114.6 |
 | cook_level | 50.06 | 166.0 |
 
+
+## C5, cold and warm starts (2026-10-29, toolchain 0.10.2)
+
+docs/plan-world-class-3.md §C5. Every number here is from `wrela tool bench -- --scene vale-walk
+--scene last-green-walk --starts 3` (M4 Air, nothing else running): `playable_ms`, the median of
+three, with the runs in parentheses.
+
+**Every cold start in this file before this section had the system's shader cache warm.**
+Chrome's profile is thrown away each run, but macOS keeps a shader cache an app, keyed by a
+shader's source. The bench salted its cold runs 1, 2, 3, ... every time, so a salt an earlier
+run had used was served from that cache. The vale's cold start was 4.7–5.3 s in the full bench,
+and 8.4–9.1 s with salts no run had used. The salt is now new to the machine each run.
+
+| Step | vale cold | vale warm | floor cold | floor warm |
+|---|---|---|---|---|
+| now (salts new to the machine) | 8722 (9103, 8722, 8663) | 4013 (4013, 3990, 4033) | (salts 1–3, served) | 7321 (7321, 7398, 6725) |
+| C5a: the covered frames cook alone; the impostor's maps in one pass | 8397 | 2762 | 13538 | 6585 |
+| C5b: the kinds' cards' orders on the helpers | 8029 (7945, 8029, 8116) | 2177 (2127, 2185, 2177) | 13631 (13631, 12966, 13970) | 6509 (6509, 6990, 6055) |
+| C5c: toolchain 0.10.2, six pipelines at a time | **6691** (6691, 6935, 6447) | **2209** (2191, 2249, 2209) | **13331** (13331, 13029, 13517) | **5379** (5413, 5308, 5379) |
+
+Tried, and nothing moved (single runs unless said):
+
+- The floor's fawn and wolf realized once its static casters are in (their creature field's
+  pipelines are what its frames 0 and 1 waited on): floor 13433 / 5490, three runs.
+- Smallest first: floor 12200 / 6516, vale 6066 / 2153.
+- Both ends in turn: floor 12729 / 5310, vale 6601 / 2234.
+- Two at a time: floor 12196 / 6847, vale 5660 / 2159.
+- Twelve at a time: floor 13112 / 4990, vale 7573 / 2201.
+- The order a native run first uses the pipelines (a `first-use.json` shipped with the build, a
+  0.11.0 kept only as a development build): floor 13474 / 5616, vale 6653 / 2240.
+- The plan's levers 2, 4 and 5 hold already. The tiles arrive when the program asks for them
+  (the vale's first at 5.1 s) and streaming isn't the last gate (natively the vale is streamed
+  by frame 9; its far cascade finishes at frame 79 and its probes later). The floor's frame 0
+  CPU is 55–86 ms in all. A release serves `/releases/*` immutable for a year, so a warm start
+  fetches nothing.
+
+- **G-warm, the vale: met.** 2209 ms, under 3,000.
+- **G-cold, the vale: Blocked at 6691 ms** (gate 5,000). The start compiles at the GPU process's
+  pace (docs/toolchain-gaps.md, "A cold start's pipelines compile at the GPU process's own
+  pace"): the vale needs 48 of its 108 pipelines before playable, 7.5 s of compiling built one
+  at a time, and its frame 0's 17 finish together 1.5 s after they're asked for. Next: smaller
+  shaders on the load's path.
+- **G-warm, the floor: Blocked at 5379 ms** (gate 3,000). It's load-bound now: its frames 3–102
+  take 3.1 s (its built things' realizations, then its cascades and probes), after 1.5 s of
+  frames 0–12. Next: its built things realized into the room their surface crosses, not their
+  grid (C4's carry, C6), and fewer frames for its cascades and probes.
+- **G-cold, the floor: Blocked at 13331 ms.** It's compile-bound as the vale is, with 119
+  pipelines used in its first 300 frames. The largest are the fawn's and the wolf's
+  creature-field realizer (160–230 KiB of WGSL, with dual-number gradients) and the terrain's
+  `cook_level` (140–166 KiB). Next: those shaders made smaller, which moves pixels (Parts D–E).
+- **G-pixels:** capybara, herd, climber-lab and the clearing 0 px differ at each step. The floor
+  is within its noise, except C5a's covered skip, which puts it 0.05 pp over its noise
+  (0.44–0.48 % over 2/255 against 0.10–0.40 %; its commit has why).

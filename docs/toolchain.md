@@ -120,6 +120,8 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 
 ## Benching another device
 
+`wrela tool bench -- --starts <n> [--scene <name>]...` runs each scene's cold and warm starts alone, `n` of each, and prints each `playable_ms` and their medians (docs/plan-world-class-3.md §C5's three runs). A cold start's salt is new to the machine (the seconds since the epoch, a thousand to each): macOS keeps a shader cache an app, keyed by a shader's source, across Chrome's thrown-away profiles, and the salts 1, 2, 3, ... that the bench used before C5 were served from it, so its cold numbers before 2026-10-29 are starts with that cache warm. Each run's `results/starts.json` (0.10.2) says when each pipeline was built and each command that waited for one: what a start waited for.
+
 `wrela tool bench -- --lan [--scene <name>]...` measures the scenes on a device on this machine's network instead of here. It builds each scene, serves it to the LAN, and prints its four pages' URLs (gpu, play, cold, warm, each with `show=1`); a person opens them on the device in that order, each once the one before has finished, and the warm one twice (the tool says when). The device puts each run's results back, and the report names it by its adapter and its browser's user agent, under `docs/bench.md`'s "Devices". The native run is skipped: it would be this machine's.
 
 1. The device and this machine on one network; note the device's OS, its browser and its version.
