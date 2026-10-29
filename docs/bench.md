@@ -3472,3 +3472,24 @@ decision22.60minutes, exactly2followups, no training.
 GPU scalar check73,728evaluations; maximum1.7881393e-7linear-RGB error;
 deliberately wrong factor fails. Public selector replay1,536frames exact.
 Evidence build/neural-evidence/radiance-evolution-v1. No G1–G7 pass.
+
+## 2026-10-29 — compact source records and shared class queries retained
+
+[Full evidence](neural-source-records.md). Solo AMD RADV RENOIR, Mesa26.1.6,
+Chrome154.0.8037.57, Wrela0.9.0/compilerde9b81e. Complete1080p4×,
+120coldframes/oneworker; separate300frame allocation/DRM/PSS replay.
+Final case77 generic/full-mask/compact-mask medians
+12.66036/9.96280/9.62540ms.
+Full and compact controls receive identical shared class masks and source metadata.
+Compact requestedlive 67,134,000B, saving24,883,188B
+versus full-mask. Four alternating three-pair experiments separate query and
+storage gains; actual residency and paced tails are in the report.
+
+6,144experimental frames exactly preserve prior shaded outputs/targets/masks.
+4×raw FLIP0.116796, LPIPS0.168024 unchanged.
+Selected-code replay1,152frames:768normal exact; full cut exact; compact cut has
+nine colour-component differences in3frames, max0.000244141; freshly scored.
+Actual-input geometry guard5,667,840records exact; deliberate wrong motion fails.
+First jointassessment7.13min, decision34.13min,
+exactlytwofollowups. Retain masks+8Brecords; retire naivecompact/tag-only.
+No training, new reference algorithm, full production/G4 claim or G1–G7 pass.

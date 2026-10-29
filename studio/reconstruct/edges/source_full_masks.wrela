@@ -1,0 +1,180 @@
+// Fixture-only conventional factorization. Geometry-only coverage; observed RGB only.
+use engine::view::jitter_of
+use std::gpu::FragCoord
+use raw::{HISTORY, packed_stride}
+use raw::PackedSample
+
+fn colour(row: PackedSample) -> vec4 {
+    vec4(row.color0.decode(), row.color1.decode())
+}
+
+// Intersect this output pixel with the authored periodic slats. No reference data or
+// material inputs. This analytic fixture has period>1, so at most two slats intersect.
+pub fn coverage(left: f32, tick: u32, shape: vec4) -> f32 {
+    let shift = shape.z + shape.w * f32(tick)
+    let first = floor((left - shift) / shape.x)
+    var area = 0.0
+    for k in 0..2 {
+        let start = (first + f32(k)) * shape.x + shift
+        area += max(min(left + 1.0, start + shape.y) - max(left, start), 0.0)
+    }
+    clamp(area, 0.0, 1.0)
+}
+
+// Only invoked when this surface has no tent support. Search newest observations
+// first; choose the closest compatible observation in that frame's 3x3 neighbourhood.
+fn fill(
+    at: vec2,
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    jitter_table: [vec4],
+    light_event: vec3,
+    source_motion: f32,
+    fallback: vec3,
+    layer: u32,
+) -> vec3 {
+    let d = f32(divisor)
+    let size = packed_stride(width, height)
+    for age in 0..HISTORY {
+        if age >= count { break }
+        let frame = tick - age
+        let jitter = jitter_table[frame % HISTORY].xy
+        let bx = jitter_table[factor_queries::column(u32(at.x), layer, age, width * divisor)]
+        let by = jitter_table[factor_queries::row(
+            u32(at.y),
+            age,
+            width * divisor,
+            height * divisor,
+        )]
+        let lo = vec2i(i32(bx.z), i32(by.z))
+        let hi = vec2i(i32(bx.w), i32(by.w))
+        var distance = 1.0e30
+        var closest = fallback
+        for y in lo.y..(hi.y + 1) {
+            for x in lo.x..(hi.x + 1) {
+                let sample = colour(
+                    samples[(frame % HISTORY) * size + u32(y) * width + u32(x)],
+                )
+                if (sample.a == engine::view::GRASS) != (layer == 1) { continue }
+                let point = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d + vec2(if layer == 1 {
+                    source_motion
+                } else { 0.0 }, 0.0) * f32(age)
+                let delta = point - at
+                let next = dot(delta, delta)
+                if next < distance {
+                    distance = next
+                    closest = max(sample.rgb, vec3(0.0)) *
+                        light_history::gain(light_event, tick, frame)
+                }
+            }
+        }
+        if distance < 1.0e30 { return closest }
+    }
+    fallback
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    jitter_table: [vec4],
+    light_event: vec3,
+    source_motion: f32,
+) -> vec4 {
+    let d = f32(divisor)
+    let size = packed_stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let current = colour(
+        samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)],
+    )
+    let front = coverage(p.position.x - 0.5, tick, shape)
+    var result = vec3(0.0)
+    for layer in 0..2 {
+        let area = if layer == 1 { front } else { 1.0 - front }
+        if area <= 0.0 { continue }
+        // Equivalent to every observation failing the original motion predicate.
+        if layer == 1 && abs(source_motion - shape.w) >= 0.05 {
+            result += area * max(current.rgb, vec3(0.0))
+            continue
+        }
+        var sum = vec3(0.0)
+        var total = 0.0
+
+        let offset = factor_queries::rows(width * divisor, height * divisor)
+        let x = jitter_table[offset +
+            factor_queries::column(u32(p.position.x), layer, 0, width * divisor)].w
+        let y = jitter_table[offset +
+            factor_queries::row(u32(p.position.y), 0, width * divisor, height * divisor)].w
+        var active = u32(x) & u32(y)
+
+        while active != 0 {
+            let age = active.trailing_zeros()
+            active &= active - 1
+            let frame = tick - age
+
+            let bx = jitter_table[factor_queries::column(
+                u32(p.position.x),
+                layer,
+                age,
+                width * divisor,
+            )]
+            let by = jitter_table[factor_queries::row(
+                u32(p.position.y),
+                age,
+                width * divisor,
+                height * divisor,
+            )]
+            let lo = vec2i(i32(bx.x), i32(by.x))
+            let hi = vec2i(i32(bx.y), i32(by.y))
+
+            let offset = factor_queries::rows(width * divisor, height * divisor)
+            let wx = jitter_table[offset +
+                factor_queries::column(u32(p.position.x), layer, age, width * divisor)]
+            let wy = jitter_table[offset +
+                factor_queries::row(u32(p.position.y), age, width * divisor, height * divisor)]
+            for y in lo.y..(hi.y + 1) {
+                for x in lo.x..(hi.x + 1) {
+                    let w = wx[u32(x - lo.x)] * wy[u32(y - lo.y)]
+                    if w <= 0.0 { continue }
+                    let sample = colour(
+                        samples[(frame % HISTORY) * size + u32(y) * width + u32(x)],
+                    )
+                    // Nonzero shared horizontal weights certify this observed class.
+                    sum += max(sample.rgb, vec3(0.0)) *
+                        light_history::gain(light_event, tick, frame) *
+                        w
+                    total += w
+                }
+            }
+        }
+        let fallback = max(current.rgb, vec3(0.0))
+        result += area * if total > 1.0e-5 { sum / total } else {
+            fill(
+                p.position.xy,
+                samples,
+                width,
+                height,
+                divisor,
+                tick,
+                count,
+                jitter_table,
+                light_event,
+                source_motion,
+                fallback,
+                layer,
+            )
+        }
+    }
+    vec4(result, current.a)
+}

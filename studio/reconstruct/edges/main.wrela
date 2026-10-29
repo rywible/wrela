@@ -124,6 +124,7 @@ pub struct State {
     exported_gate: GpuBuffer<reconstruction_patch::confidence::Input>,
     patch_source: u32,
     light_history: u32,
+    record_layout: u32,
     previous_shape: vec4,
     captured_previous_shape: vec4,
     exported_source: GpuBuffer<vec4>,
@@ -155,6 +156,8 @@ pub struct State {
     raw_kernel_rows: u32,
     raw_count: u32,
     raw_history: GpuBuffer<raw::Sample>,
+    source_colours: GpuBuffer<source_records::Colour>,
+    source_classes: GpuBuffer<u32>,
     raw_packed: GpuBuffer<raw::PackedSample>,
     exported_raw: GpuBuffer<raw::Sample>,
     samples: GpuBuffer<ReconstructionSample>,
@@ -205,6 +208,7 @@ pub fn init() -> State {
         exported_gate: buffer(1),
         patch_source: 0,
         light_history: 0,
+        record_layout: 0,
         previous_shape: vec4(1.0, 0.0, 0.0, 0.0),
         captured_previous_shape: vec4(0.0),
         exported_source: buffer(1),
@@ -236,6 +240,8 @@ pub fn init() -> State {
         raw_kernel_rows: 0,
         raw_count: 0,
         raw_history: buffer(1),
+        source_colours: buffer(1),
+        source_classes: buffer(1),
         raw_packed: buffer(1),
         exported_raw: buffer(1),
         samples: buffer(1),
@@ -288,7 +294,11 @@ fn resize(s: mut State, width: u32, height: u32) {
     s.means = writable_texture(width: w, height: h)
     s.spreads = writable_texture(width: w, height: h)
     if s.raw_source {
-        s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
+        if s.record_layout == 2 && s.raw_factorized {
+            s.source_colours = buffer(raw::packed_stride(w, h) * raw::HISTORY)
+        } else {
+            s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
+        }
         if !s.raw_indexed && !s.raw_trained {
             // Fixed source filtering shares jitter phases. Factorized filtering also
             // rebuilds source-derived axis support after those first sixteen rows.
@@ -304,7 +314,12 @@ fn resize(s: mut State, width: u32, height: u32) {
         s.raw_heads = buffer(grid.x * grid.y)
         s.raw_links = buffer(w * h * raw::HISTORY)
     }
-    if s.raw_factorized { s.raw_kernel = buffer(16) }
+    if s.raw_factorized {
+        s.raw_kernel = buffer(16)
+        if s.record_layout > 0 {
+            s.source_classes = buffer(source_records::class_stride(w) * raw::HISTORY)
+        }
+    }
     if s.source_basis {
         if !s.bilinear_basis { s.basis_choices = buffer(source_basis::groups(w, h) * 3) }
         s.basis_palette = buffer(if s.bilinear_basis { 12 } else { 3 })
@@ -443,7 +458,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         if s.reset { s.raw_count = 0 }
         s.raw_count = min(s.raw_count + 1, raw::HISTORY)
         label("raw retain")
-        if s.raw_source {
+        if s.record_layout == 2 && s.raw_factorized {
+            dispatch(
+                source_records::retain.bind(
+                    s.scene,
+                    s.source_colours.span_mut(
+                        (s.tick % raw::HISTORY) * raw::packed_stride(w, h),
+                        w * h,
+                    ),
+                ),
+                over: w * h,
+            )
+        } else if s.raw_source {
             dispatch(
                 raw::retain_packed.bind(
                     s.scene,
@@ -470,35 +496,81 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             )
         }
     }
-    if s.raw_factorized {
-        label("factor surface motion")
+    if s.record_layout > 0 && s.raw_factorized {
+        label("source class masks")
+        let groups = source_records::class_groups(w)
         dispatch(
-            factor_surface_motion::prepare.bind(
-                s.raw_packed.items(),
-                w,
-                h,
-                s.tick,
-                s.raw_count,
-                mut s.raw_kernel,
+            source_records::retain_classes.bind(
+                s.scene,
+                s.source_classes.span_mut(
+                    (s.tick % raw::HISTORY) * source_records::class_stride(w),
+                    groups,
+                ),
             ),
-            over: 16,
+            over: groups,
         )
     }
     if s.raw_factorized {
+        label("factor surface motion")
+        if s.record_layout == 2 {
+            dispatch(
+                source_records::surface_motion.bind(
+                    s.source_colours.items(),
+                    w,
+                    h,
+                    s.tick,
+                    s.raw_count,
+                    source_records::motion_x(f.speed, w, width, s.divisor),
+                    mut s.raw_kernel,
+                ),
+                over: 16,
+            )
+        } else {
+            dispatch(
+                factor_surface_motion::prepare.bind(
+                    s.raw_packed.items(),
+                    w,
+                    h,
+                    s.tick,
+                    s.raw_count,
+                    mut s.raw_kernel,
+                ),
+                over: 16,
+            )
+        }
+    }
+    if s.raw_factorized {
         label("factor query tables")
-        dispatch(
-            factor_queries::prepare.bind(
-                width,
-                height,
-                s.divisor,
-                s.tick,
-                s.raw_count,
-                vec4(f.period, f.width, f.offset, f.speed),
-                s.raw_kernel.items(),
-                s.raw_prepared.span_mut(16, factor_queries::storage_rows(width, height)),
-            ),
-            over: factor_queries::storage_rows(width, height),
-        )
+        if s.record_layout > 0 {
+            dispatch(
+                source_class_queries::prepare.bind(
+                    width,
+                    height,
+                    s.divisor,
+                    s.tick,
+                    s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    s.raw_kernel.items(),
+                    s.source_classes.items(),
+                    s.raw_prepared.span_mut(16, factor_queries::storage_rows(width, height)),
+                ),
+                over: factor_queries::storage_rows(width, height),
+            )
+        } else {
+            dispatch(
+                factor_queries::prepare.bind(
+                    width,
+                    height,
+                    s.divisor,
+                    s.tick,
+                    s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    s.raw_kernel.items(),
+                    s.raw_prepared.span_mut(16, factor_queries::storage_rows(width, height)),
+                ),
+                over: factor_queries::storage_rows(width, height),
+            )
+        }
     }
     if s.patch_enabled && s.reset { s.patch_frames = 0 }
     if s.patch_enabled && !s.patch_plain {
@@ -737,7 +809,23 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             ),
         )
     } else if s.raw_source {
-        if s.raw_factorized {
+        if s.record_layout > 0 {
+            if s.record_layout == 2 {
+                fullscreen(p, source_records_masks::reconstruct.bind(
+                    s.source_colours.items(), w, h, s.divisor, s.tick, s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed), s.raw_prepared.items(),
+                    if s.light_history == 1 { event } else { vec3(0.0, 1.0, 1.0) },
+                    source_records::motion_x(f.speed, w, width, s.divisor),
+                ))
+            } else {
+                fullscreen(p, source_full_masks::reconstruct.bind(
+                    s.raw_packed.items(), w, h, s.divisor, s.tick, s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed), s.raw_prepared.items(),
+                    if s.light_history == 1 { event } else { vec3(0.0, 1.0, 1.0) },
+                    source_records::motion_x(f.speed, w, width, s.divisor),
+                ))
+            }
+        } else if s.raw_factorized {
             fullscreen(
                 p,
                 coverage_radiance::reconstruct.bind(
@@ -886,6 +974,7 @@ pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32, input
 
 pub fn cut(s: mut State, shot: u32, reset: u32) {
     assert(!s.collecting && shot < field::CASES && reset <= 1)
+    assert(s.record_layout == 0 || reset == 1, "source records require a history reset at cuts")
     s.shot = shot
     if reset == 1 { s.reset = true }
 }
@@ -947,6 +1036,7 @@ pub fn decoder(s: mut State, mode: u32) {
 
 /// Observation only, after capture. Its RGBA tags and motion/depth are not display pixels.
 pub fn publish_raw(s: mut State) -> u32 {
+    assert(s.record_layout != 2, "compact source records have no generic raw export")
     assert(s.raw_enabled && s.cells == 0 && !s.collecting && s.captured_count == 1)
     if s.raw_source {
         let (w, h) = (s.scene.width(), s.scene.height())
@@ -1169,4 +1259,14 @@ pub fn illumination_history(s: mut State, mode: u32) {
     assert(mode <= 2 && s.width == 0)
     assert(mode == 0 || s.raw_factorized || s.patch_plain)
     s.light_history = mode
+}
+
+
+// Source-specialized controls: 0 = generic 20B, 1 = shared masks 20B, 2 = masks 8B.
+// All source cases here have two row-invariant geometric classes and constant velocity
+// within a history window. Source cuts use the existing mandatory history reset.
+pub fn source_record_layout(s: mut State, mode: u32) {
+    assert(mode <= 2 && s.width == 0)
+    assert(mode == 0 || s.raw_factorized)
+    s.record_layout = mode
 }

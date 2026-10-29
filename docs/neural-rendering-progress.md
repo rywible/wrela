@@ -3234,3 +3234,23 @@ Next: retain all16radiance phases and test source-generated compact observation
 records, removing redundant12-byte geometry only if exact rounding/source-work
 and joint quality/runtime/residency support it. [Evidence](neural-radiance-evolution.md).
 Manifest `e345b435333a94d718a83de88a76cc78c7e93738faf72e4aef09387eb0309b96`. Inherited benchmark edits unstaged.
+
+## 2026-10-29 — source records and shared visibility queries
+
+Continue8B colour/tag records plus shared observed-class query filtering, retaining
+all16phases; keep equally informed20B full-mask control. Initial memory-only
+variant was slower. Exactlytwofollowups isolate predicate and shared-mask gains.
+Finalcase77 completeAMD generic/full-mask/compact
+12.66036/9.96280/9.62540ms;
+compactlive67,134,000B, saves24,883,188B.
+Four3-pair comparisons and actualDRM/PSS are preserved.
+6,144originalframes exact and192qualityrows reused after exact target/mask checks.
+1,152public-selectorframes: normal outputs exact, compactcut differs in9colour
+components across3frames(max0.000244141), bothcutclips freshlyscored.
+5,667,840actual geometryrecords exact; deliberatelywrongmotion fails.
+Initialassessment7.13min, decision34.13min;
+no training/newreferences, G1–G7unchanged. Defaultdecoder unchanged.
+Next: source-compiled shared reconstruction over coherent surface tiles, with
+bounded scratch and production visibility; no hidden extra sourceRGB.
+[Evidence](neural-source-records.md). Manifest `dac261d373a8672d6d12045413b1f7a2462e37628b88ab180d1e2ee17c6e7eef`.
+Inherited benchmark edits remain unstaged.

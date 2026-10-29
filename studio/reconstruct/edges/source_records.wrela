@@ -1,0 +1,91 @@
+// Source-specialized observation storage. The source field has two immutable
+// geometric classes per causal window; a declared cut resets that window.
+// Keep all16 colour phases. No reference pixel or extra source RGB enters decoding.
+use engine::view::GRASS
+use raw::{Sample, HISTORY, packed_stride}
+use std::gpu::{Half2, GlobalId, Slots, Texture, Rgba16Float}
+
+
+pub struct Colour: Copy + GpuData {
+    pub rg: Half2,
+    pub ba: Half2,
+}
+
+// Exactly the render-target motion rounding, followed by output-pixel conversion.
+// Called on the CPU for geometry bindings; all calls and binding work are timed.
+pub fn motion_x(speed: f32, input_width: u32, output_width: u32, divisor: u32) -> f32 {
+    Half2::encode(vec2(speed * (f32(input_width) / f32(output_width)), 0.0)).decode().x *
+        f32(divisor)
+}
+
+pub fn unpack(row: Colour, motion: f32) -> Sample {
+    let color = vec4(row.rg.decode(), row.ba.decode())
+    let front = color.a == GRASS
+    Sample { color, geometry: vec4(if front { motion } else { 0.0 }, 0.0, if front { 0.5 } else {
+        0.25
+    }, 0.0) }
+}
+
+@compute(64)
+pub fn retain(scene: Texture<Rgba16Float>, out: mut Slots<Colour>, id: GlobalId) {
+    if id.x < scene.width() * scene.height() {
+        let color = scene.load(id.x % scene.width(), id.x / scene.width())
+        out[id] = Colour { rg: Half2::encode(color.xy), ba: Half2::encode(color.zw) }
+    }
+}
+
+@compute(16)
+pub fn surface_motion(
+    samples: [Colour],
+    width: u32,
+    height: u32,
+    tick: u32,
+    count: u32,
+    motion_x: f32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= HISTORY { return }
+    if id.x >= count {
+        out[id] = vec4(0.0)
+        return
+    }
+    let start = ((tick - id.x) % HISTORY) * packed_stride(width, height)
+    var flags = u32(0)
+    var motion = 0.0
+    for x in 0..width {
+        let sample = unpack(samples[start + x], motion_x)
+        if sample.geometry.z == 0.5 {
+            flags |= 2
+            motion = sample.geometry.x
+        }
+        if sample.geometry.z == 0.25 { flags |= 1 }
+        if flags == 3 { break }
+    }
+    out[id] = vec4(motion, f32(flags), 0.0, 0.0)
+}
+
+pub fn colour(row: Colour) -> vec4 {
+    vec4(row.rg.decode(), row.ba.decode())
+}
+
+pub fn class_groups(width: u32) -> u32 {
+    (width + 31) / 32
+}
+
+pub fn class_stride(width: u32) -> u32 {
+    (class_groups(width) + 63) / 64 * 64
+}
+
+// This source's vertical slats have row-invariant observed class.
+// Store actual scene tags, not analytically re-evaluated coverage.
+@compute(64)
+pub fn retain_classes(scene: Texture<Rgba16Float>, out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= class_groups(scene.width()) { return }
+    var bits = u32(0)
+    for n in 0..32 {
+        let x = id.x * 32 + n
+        if x < scene.width() && scene.load(x, 0).a == GRASS { bits |= u32(1) << n }
+    }
+    out[id] = bits
+}

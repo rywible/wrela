@@ -23,6 +23,7 @@ pub struct Spec: Copy {
     pub patch_history: u32,
     pub patch_source: u32,
     pub light_history: u32,
+    pub source_records: u32,
 }
 
 fn save(
@@ -77,6 +78,7 @@ fn path(
         let _ = call(b, "patch_conventional", Vec::new())?
     }
     let _ = call(b, "illumination_history", Vec::from([Scalar::I32(i32(spec.light_history))]))?
+    let _ = call(b, "source_record_layout", Vec::from([Scalar::I32(i32(spec.source_records))]))?
     let _ = call(
         b,
         "prepare_sequence",
@@ -170,7 +172,9 @@ pub fn run(
     raw_model: str,
     fixture: str,
 ) -> Result<(), ToolError> {
-    let input_track = if spec.light_history > 0 {
+    let input_track = if spec.source_records > 0 {
+        "source_geometry_row_invariance_and_observed_class_masks"
+    } else if spec.light_history > 0 {
         "source_geometry_and_declared_positive_illumination_event"
     } else if spec.decoder == 8 {
         "authored_geometry_and_radiance_formula_direct_conventional"
@@ -186,7 +190,9 @@ pub fn run(
     let raw_index_layout = if spec.decoder == 4 {
         "u32_heads_bin2_pad8_then_links_age_major_low_resolution_pixels_node_plus_one_zero_null"
     } else { "unused" }
-    let raw_storage = if spec.decoder == 8 {
+    let raw_storage = if spec.source_records == 2 {
+        "8_byte_half_rgba_tag_constant_source_geometry_16_phases"
+    } else if spec.decoder == 8 {
         "none_source_formula_integration"
     } else if spec.decoder == 7 {
         "twelve_current_observed_bilinear_rgb_rows"
@@ -208,7 +214,7 @@ pub fn run(
     let reference = if spec.shot >= 74 {
         "source_lighting_midpoint_with_analytic_material_areas_see_archived_grid"
     } else { "analytic_pixel_integral_after_reconstruction_never_decoder_input" }
-    let metadata = f"radiance={radiance}\nscene=analytic/slats-checkerboard\ncase_catalog=legacy8_stress64_radiance2_leaf4_v3\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_width={reconstruction_patch::network::MODEL.h1}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\nlight_history={spec.light_history}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference={reference}\ntrack=development_continuous_clip_not_sealed_test\n"
+    let metadata = f"radiance={radiance}\nscene=analytic/slats-checkerboard\ncase_catalog=legacy8_stress64_radiance2_leaf4_v3\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_width={reconstruction_patch::network::MODEL.h1}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\nlight_history={spec.light_history}\nsource_records={spec.source_records}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference={reference}\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()
