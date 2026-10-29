@@ -3579,3 +3579,20 @@ despite 4× PSNR+2.96 dB. Equal-source count-control has seven exact HDR buffers
 First joint 19.81 min; change representation after exactly two followups.
 Restore parent 7e7b854a. No retained runtime win or G1–G7 pass.
 [Full quality, timing tails, residency and limitations](neural-leaf-prefilter.md).
+
+
+## 2026-10-29 — leaf phase reduction and source constant-region proof
+
+Parent 9bc0239e93def0f0307b614f9202c3bd5cdb2d18; AMD RADV RENOIR 1002:164c / Ryzen 5 5500U,
+Mesa 26.1.6, Chrome 154.0.8037.57, Wrela 0.9.0/de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+1920×1080 clearing, production 2× reconstruction; one worker, 600 warmup/60 measured
+frames. Phased/fixed pair single-run full GPU: 24.46324/24.56072 ms versus 24.99248;
+native LPIPS +16.2%/+10.9% on fixed shaded references, rejected.
+Exact constant-region variant single run 24.82260 ms;
+five alternating pairs 24.98448 →
+24.83992 ms (0.579% ratio-of-medians lower;
+inconclusive). All four reconstruction outputs exact, six of seven total HDR buffers exact; focused GPU guard.
+All variants retain 405,332,792 requested live bytes and 582,510,964 peak bytes.
+Actual whole-client DRM/GTT/PSS, complete update/preparation/composition and startup
+costs recorded. Decision: retire; retained constant variant: False.
+No neural, G3 or G4 pass. See [full evidence and limits](neural-leaf-phases.md).

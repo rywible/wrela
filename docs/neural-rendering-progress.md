@@ -3345,3 +3345,19 @@ Restore exact parent 7e7b854a. Next preserve directional footprint and sampling 
 No training/reference expansion; G1–G7 unchanged/unmet. Prior test-source count
 annotation corrected (eight/three were guard variants; production uses six).
 Manifest `b312f7e524727a6fdb54719da03f93deb5c972832fedc2f3789e2b56c63f6ec3`. Inherited benchmark edits remain unstaged.
+
+
+## 2026-10-29 — leaf phases and exact constant regions
+
+[Leaf coverage experiment](neural-leaf-phases.md): retire.
+Initial joint assessment 16.95 minutes, decision 46.52
+minutes, exactly two optimization followups. Phased/fixed two-sample variants fail
+native LPIPS by 16.2%/10.9%. Constant-region certificates preserve all four reconstruction outputs exactly; six of seven total HDR
+buffers are exact. Requested allocation is unchanged. Five alternating full-frame pairs:
+24.98448 → 24.83992 ms
+(0.579% ratio-of-medians reduction; inconclusive).
+Focused GPU guard and all physical residency/cost observations preserved.
+No new representation-memory or G4 pass. G1–G7 unchanged/unmet; models frozen.
+Next measure the compression ceiling for exact source-derived sparse appearance
+pages, preserving mixed boundary samples and using an equally informed sparse control.
+Manifest `5b158891b49e944c75a28683f27324b34824397729bc74c330c45f460db8a695`. Inherited benchmark edits remain unstaged.
