@@ -3527,3 +3527,20 @@ Single-run cost change is inconclusive; no speed or memory advantage claimed.
 4×posthoc changedregionMAE0.029111→0.033294.
 Firstjointassessment9.71min; retire with zero followups,
 runtime restored exactly. [Full evidence and limitations](neural-camera-map.md).
+
+
+### 2026-10-29 — shared leaf geometry: retired
+
+AMD RADV RENOIR1002:164c / Ryzen5 5500U / Mesa26.1.6 / Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Full clearing1080p2×, one worker,600warmup/60measured, fixed workload.
+Baseline/shared/specialized/compact complete GPU medians:
+25.37440, 25.35220, 25.38672, 25.43744ms.
+Live requested bytes: 405267256, 422046520, 422051400, 413662760.
+Actual DRM VRAM bytes: 552001536, 568799232, 568762368, 560455680.
+All scratch, fallback records, prefix/argument and per-frame updates counted.
+Whole-client physical snapshots are not physical peaks; UMA pools are not additive.
+All21batchedHDRbuffers exact; final1080p max difference<=1byte. No G3 qualification.
+First joint17.40min; retire after exactlytwofollowups.
+No useful complete-frame win, and more memory; runtime restored to parent.
+[Full timing tails, residency and quality limits](neural-leaf-geometry.md).

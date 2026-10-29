@@ -19,17 +19,16 @@
 ## Immediate milestone
 
 Retain the measured [source-region temporal specialization](neural-motion-regions.md)
-and [compact causal source records](neural-source-records.md). The latest
-[camera-map shortcut](neural-camera-map.md) is retired: no demonstrated joint
-quality/runtime/residency advantage. The complete production renderer still costs
-about25ms at1080p2× on this AMD machine. No G1–G7 gate is met.
+and [compact causal source records](neural-source-records.md). Both the camera-map
+shortcut and the latest [shared leaf geometry](neural-leaf-geometry.md) are retired:
+no demonstrated joint quality/runtime/residency advantage. The complete production
+renderer still costs about25ms at1080p2× on this AMD machine. No G1–G7 gate is met.
 
-Next test reuse of source-derived per-frame leaf geometry between the production
-depth and shading passes. Count preparation, scratch, bandwidth and updates;
-preserve exact coverage and give conventional controls the same source information.
-This is a runtime architecture experiment, not a new compact-G4 or neural win.
-The shaded compact-representation quality gap remains open; models stay frozen
-until a specific rendered defect justifies fitting.
+Next separate card, grass and far-crown costs, then test source-compiled coverage
+and work selection for the dominant vegetation work. Do not treat aggregate labels
+or preparation progress as a rendering gain. All useful source information remains
+available to conventional controls. The compact-G4 shaded-quality gap is still
+open; models stay frozen until a specific rendered defect justifies fitting.
 
 ## Evidence recorded so far
 
@@ -3290,3 +3289,25 @@ Next: source-derived per-frame leaf geometry reused across production depth and
 shading passes, charging preparation, scratch and changed-camera/wind updates.
 The measured7.8ms combined vegetation cost is not all removable geometry work.
 Manifest `a81e892f627c0e228fa50f798d9e369c8ec64d9a6c7dab308aeb86ea079c8425`. Inherited benchmark edits remain unstaged.
+
+
+## 2026-10-29 — retire shared leaf geometry after two followups
+
+[Shared geometry](neural-leaf-geometry.md) reaches its first full assessment in
+17.40 minutes and retires at 33.30 minutes.
+Full GPU medians: baseline25.37440ms, shared25.35220ms,
+specialized25.38672ms, compact25.43744ms.
+Preparation consumes the shading saving; no useful complete-frame advantage.
+Shared/specialized add about16.8MB; compact adds about8.4MB. Actual residency,
+all preparation, scratch, fallback and update costs are included.
+
+All21candidate HDR/reference-check buffers match the completed baseline exactly.
+The measured1080p frames differ by at most one byte; no broad dynamic/G3 claim.
+Firstfollowup separates prepared/overflow draws; second halves record storage.
+No training/reference expansion. Runtime restored exactly to parent e16e414e.
+G1–G7 remain unchanged/unmet.
+
+Next: separate card, grass and far-crown costs within the production vegetation
+workload, then test source-compiled coverage/work selection at the dominant cost.
+Aggregate7.8ms does not identify the removable work.
+Manifest `50207e59bf0c42c20c255eabc1b4fad86ca0c2dd7c96f3dd950462927b292c44`. Inherited benchmark edits remain unstaged.
