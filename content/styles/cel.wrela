@@ -1,0 +1,367 @@
+// The cel look (docs/plan-world-class-3.md §D4): what an artist draws so a thing reads simply and
+// well. Light the form, texture the surface: the sun through a ramp of a few bands on the form's
+// normal (`NORMAL` 1), the sky flat, one placed highlight where a class has one. A palette, not an
+// albedo: each class's few tones, chosen by the albedo's luma, its hue pulled toward the class's
+// key. Lines where an artist puts them: the silhouettes (`marks::LINES`) and creases where the
+// form folds sharply and far enough (`marks::CREASES`, from the form's curvature: DeCarlo et
+// al.'s suggestive contours and Judd et al.'s apparent ridges are the references; the engine's
+// curvature is its form's, theirs estimated). Flatten what the eye can't resolve (`FLAT`), and
+// temporal AA holds a flat tone flat (`FLAT_CLIP`). Every constant here is **proposed**.
+
+use engine::light::{LUMA, Light, Lit}
+use engine::marks
+use engine::marks::MarkSample
+use engine::paint::{Develop, Exposure}
+use engine::style
+use engine::style::{Fittable, Knob, Style, knob}
+use engine::substance
+use engine::substance::{Substance, Written}
+use physical::Physical
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The sun's bands, and how soft each step between them is (of the cosine).
+pub const BANDS: u32 = 3
+pub const TERMINATOR: f32 = 0.2
+/// How many times softer a crown's ramp is than a solid's.
+pub const LEAF_SOFT: f32 = 3.0
+/// Where a class with a highlight shows it: its reflection's cosine to the sun over this.
+pub const HIGHLIGHT: f32 = 0.9
+/// How many tones a class's palette has, and how far a tone's hue is pulled to its class's key.
+pub const PALETTE_N: u32 = 4
+pub const HUE_PULL: f32 = 0.3
+/// A crease: where the form's larger curvature times a pixel's footprint is over `CREASE`, as far
+/// as `CREASE_PX` output pixels along its ridge or more (a shorter one isn't drawn), as dark as
+/// `LINE_DARK` at 5 m and a third of it by 60 m.
+pub const CREASE: f32 = 0.35
+pub const CREASE_PX: f32 = 12.0
+pub const LINE_DARK: f32 = 0.55
+/// The luma range across a pixel under which the albedo is flattened to its mean.
+pub const FLAT: f32 = 0.12
+/// How much of the way between two tones the palette's step between them takes: all of it, a
+/// smooth step (a hard one flickered where a jittered sample's luma crossed it).
+pub const TONE_STEP: f32 = 1.0
+
+/// Each class's (`engine::style::GROUND` …) palette, darkest to lightest, linear.
+pub const PALETTE: [[vec3; 4]; 9] = [
+    // The ground: dark soil to light earth.
+    [
+        vec3(0.060, 0.050, 0.035),
+        vec3(0.130, 0.110, 0.070),
+        vec3(0.220, 0.190, 0.120),
+        vec3(0.340, 0.300, 0.200),
+    ],
+    // Leaves.
+    [
+        vec3(0.030, 0.060, 0.020),
+        vec3(0.070, 0.130, 0.040),
+        vec3(0.130, 0.220, 0.070),
+        vec3(0.220, 0.330, 0.110),
+    ],
+    // Bark.
+    [
+        vec3(0.040, 0.035, 0.030),
+        vec3(0.090, 0.075, 0.060),
+        vec3(0.160, 0.140, 0.110),
+        vec3(0.260, 0.230, 0.190),
+    ],
+    // Grass.
+    [
+        vec3(0.050, 0.090, 0.020),
+        vec3(0.100, 0.170, 0.040),
+        vec3(0.180, 0.280, 0.070),
+        vec3(0.300, 0.400, 0.120),
+    ],
+    // Flowers.
+    [
+        vec3(0.200, 0.150, 0.200),
+        vec3(0.450, 0.350, 0.450),
+        vec3(0.700, 0.600, 0.300),
+        vec3(0.900, 0.850, 0.700),
+    ],
+    // Water.
+    [
+        vec3(0.020, 0.040, 0.050),
+        vec3(0.050, 0.090, 0.110),
+        vec3(0.100, 0.170, 0.200),
+        vec3(0.200, 0.300, 0.330),
+    ],
+    // Stone.
+    [
+        vec3(0.070, 0.070, 0.070),
+        vec3(0.150, 0.150, 0.140),
+        vec3(0.260, 0.250, 0.230),
+        vec3(0.400, 0.390, 0.360),
+    ],
+    // Characters and creatures.
+    [
+        vec3(0.060, 0.040, 0.030),
+        vec3(0.150, 0.100, 0.070),
+        vec3(0.300, 0.220, 0.150),
+        vec3(0.500, 0.400, 0.300),
+    ],
+    // The sky (it isn't paletted: its own colour).
+    [vec3(0.250), vec3(0.500), vec3(0.750), vec3(1.000)],
+]
+
+/// Each class's key colour, which its tones' hue is pulled toward.
+pub const KEYS: [vec3; 9] = [
+    vec3(0.250, 0.200, 0.120),
+    vec3(0.100, 0.200, 0.050),
+    vec3(0.140, 0.110, 0.080),
+    vec3(0.160, 0.260, 0.060),
+    vec3(0.600, 0.500, 0.400),
+    vec3(0.060, 0.120, 0.140),
+    vec3(0.250, 0.240, 0.220),
+    vec3(0.300, 0.220, 0.150),
+    vec3(1.000),
+]
+
+/// The cel look (`engine::style::Style`), and the same look whose fittable constants are a fit's
+/// candidate's (`CelFitting`: `wrela tool fit --style cel`'s one build).
+pub struct Cel {}
+
+pub struct CelFitting {}
+
+/// The constants a fit may move (`engine::style::Knob`), in `knob`'s order, and their ranges
+/// (`PALETTE_N` taken as a number of tones, a fraction of one part of its step): the look's hand,
+/// its ramp, its tones and its colour. (Not `LEAF_SOFT` nor `TONE_STEP`, which hold its coherence
+/// bars: a fit that moved them could break them.)
+pub const FITTABLE: [Fittable; 3] = [
+    Fittable { name: "TERMINATOR", lo: 0.05, hi: 0.6 },
+    Fittable { name: "PALETTE_N", lo: 2.0, hi: 4.0 },
+    Fittable { name: "HUE_PULL", lo: 0.0, hi: 0.6 },
+]
+
+/// The look's own values of `FITTABLE`.
+const AT: [f32; 8] = [TERMINATOR, 4.0, HUE_PULL, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+impl Knob for Cel {
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+impl Knob for CelFitting {
+    const FIT: bool = true
+
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+/// The sun's share through the ramp: `x` (the cosine to the sun times what reaches it, 0 to 1) in
+/// `BANDS` tones, 0 to 1, each step `TERMINATOR` wide, at `(k / BANDS)²` (for three bands 0.11 and
+/// 0.44: a low sun's light still lands in a lit band, and only shade in the darkest).
+pub fn ramp(x: f32, soft: f32 = TERMINATOR) -> f32 {
+    var r = 0.0
+    for k in 1..BANDS {
+        let t = (f32(k) / f32(BANDS)) * (f32(k) / f32(BANDS))
+        r += smoothstep(t - 0.5 * soft, t + 0.5 * soft, x)
+    }
+    r / f32(BANDS - 1)
+}
+
+/// Whether a class shows a placed highlight (the water's, a wet stone's).
+fn glossy(class: u32, wet: f32) -> bool {
+    class == style::WATER || (class == style::STONE && wet > 0.5)
+}
+
+/// The sun through the ramp, on the form's normal (`lit.n`); the sky flat on the albedo; the
+/// light through a leaf as one band, toward the sun; and one placed highlight band where the
+/// class has one. (`K`'s constants: `engine::style::Knob`.)
+pub fn shade_of<K: Knob>(
+    light: Light,
+    lit: Lit,
+    s: Substance,
+    class: u32,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    let albedo = if light.clay != 0 { vec3(0.5) } else { lit.albedo }
+    let l = light.sun
+    let v = normalize(eye - world)
+    // A crown's mass through a ramp twice as soft (`LEAF_SOFT`): its leaves' sun wavers as
+    // they shade one another, and a solid's steps on it flickered.
+    let terminator = knob::<K>(light, 0)
+    let soft = if class == style::LEAVES { LEAF_SOFT * terminator } else { terminator }
+    let sun = ramp(saturate(dot(lit.n, l)) * lit.sun, soft: soft)
+    var c = albedo * (light.sun_colour * sun + lit.sky)
+    if class == style::LEAVES {
+        let toward = smoothstep(0.45, 0.55, max(dot(-v, l), 0.0) * lit.sun)
+        c += lit.through * light.sun_colour * toward
+    }
+    if glossy(class, s.history.z) {
+        let r = lit.n * (2.0 * dot(lit.n, v)) - v
+        c += light.sun_colour * (0.6 * lit.sun * step(HIGHLIGHT, dot(r, l)))
+    }
+    c
+}
+
+/// A leaf's: as any crown's.
+pub fn shade_leaf_of<K: Knob>(
+    light: Light,
+    lit: Lit,
+    facing: vec3,
+    s: Substance,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    shade_of::<K>(light, lit, s, style::LEAVES, world, eye)
+}
+
+/// The albedo as one of its class's tones, the nearest it in luma, its hue pulled toward the
+/// class's key; a leaf warmer for the light it's had, anything darker for how wet it is, bark
+/// greyer for its age.
+pub fn palette_of<K: Knob>(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+    if class == style::SKY {
+        return albedo
+    }
+    let c = min(class, style::CLASSES - 1)
+    let l = dot(albedo, LUMA)
+    // The tone nearest in luma, stepping to the next over `TONE_STEP` of the way between
+    // them (a hard step flickers where a jittered sample's luma crosses it).
+    // (`PALETTE_N` tones of the table's four: a fraction of one, part of its step.)
+    let n = knob::<K>(light, 1)
+    var tone = PALETTE[c][0]
+    for k in 1..4 {
+        let lo = dot(PALETTE[c][k - 1], LUMA)
+        let hi = dot(PALETTE[c][k], LUMA)
+        let mid = 0.5 * (lo + hi)
+        let w = 0.5 * TONE_STEP * (hi - lo)
+        let on = saturate(n - f32(k))
+        tone = mix(tone, PALETTE[c][k], vec3(smoothstep(mid - w, mid + w, l) * on))
+    }
+    let key = KEYS[c]
+    var out = mix(
+        tone,
+        key * (dot(tone, LUMA) / max(dot(key, LUMA), 1.0e-4)),
+        vec3(knob::<K>(light, 2)),
+    )
+    if class == style::LEAVES {
+        out = out * mix(vec3(1.0), vec3(1.08, 1.0, 0.85), vec3(0.5 * history.y))
+    }
+    out = out * (1.0 - 0.3 * history.z)
+    if class == style::BARK {
+        out = mix(out, vec3(dot(out, LUMA)), vec3(0.5 * history.x))
+    }
+    out
+}
+
+/// A crease (`marks::CREASES`), on solid forms (the ground, bark, stone, a character): as dark
+/// as `LINE_DARK` where its curve per pixel is 1.5 times `CREASE` and its extent `CREASE_PX`,
+/// fading in from 0.6 and 0.3 of them (soft, so a crease near either doesn't flicker), and to a
+/// third by 60 m.
+pub fn mark_of(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+    // On solid forms: a crown's, the grass's and the water's form is no fold of theirs.
+    let solid = m.class == style::GROUND ||
+        m.class == style::BARK ||
+        m.class == style::STONE ||
+        m.class == style::CREATURE
+    if m.kind != marks::CREASES || !solid {
+        return 0.0
+    }
+    let curve = smoothstep(CREASE * 0.6, CREASE * 1.5, m.offset.x)
+    let long = smoothstep(CREASE_PX * 0.3, CREASE_PX, m.size_px)
+    let near = mix(1.0, 1.0 / 3.0, smoothstep(5.0, 60.0, m.distance))
+    LINE_DARK * curve * long * near
+}
+
+impl Style for Cel {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::CREASES
+    /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
+    /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
+    /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)
+    const FLAT_CLIP: f32 = 0.0
+    const FLAT: f32 = FLAT
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        shade_of::<Cel>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        shade_leaf_of::<Cel>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        palette_of::<Cel>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        mark_of(m, s, depth_px)
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+impl Style for CelFitting {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::CREASES
+    /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
+    /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
+    /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)
+    const FLAT_CLIP: f32 = 0.0
+    const FLAT: f32 = FLAT
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        shade_of::<CelFitting>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        shade_leaf_of::<CelFitting>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        palette_of::<CelFitting>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        mark_of(m, s, depth_px)
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
