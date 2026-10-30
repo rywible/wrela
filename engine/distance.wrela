@@ -391,6 +391,8 @@ pub struct Distance {
     pub grid: DistanceGrid,
     pub volume: Texture3d<R32Float>,
     columns: GpuBuffer<vec2>,
+    // CPU source classification for each physical z slab, rebuilt with the bins.
+    shape_slabs: [u32; DISTANCE_SLABS],
     capsules: GpuBuffer<Capsule>,
     shapes: GpuBuffer<Shape>,
     bins: GpuBuffer<vec2u>,
@@ -416,6 +418,7 @@ impl Distance {
                 texture3d::<R32Float>(width: 1, height: 1, depth: 1)
             },
             columns: buffer(if wanted { d.x * d.z } else { 1 }),
+            shape_slabs: [0; DISTANCE_SLABS],
             capsules: buffer(1),
             shapes: buffer(1),
             bins: buffer(BINS.x * BINS.y * BINS.z),
@@ -537,9 +540,23 @@ impl Distance {
                 k | SHAPE_BIT,
             )
         }
+        self.shape_slabs = [0; DISTANCE_SLABS]
         var heads: Vec<vec2u> = Vec::with_capacity(n)
         var flat: Vec<u32> = Vec::new()
         for l in lists {
+            var shape = 0
+            for k in l {
+                if (k & SHAPE_BIT) != 0 { shape = SHAPE_BIT }
+            }
+            if shape != 0 {
+                let bin_z = i32(heads.len() / (BINS.x * BINS.y))
+                let lo = self.grid.origin.z + bin_z * i32(BIN)
+                let depth = i32(DISTANCE_DIMS.z)
+                for dz in 0..BIN {
+                    let physical = ((lo + i32(dz)) % depth + depth) % depth
+                    self.shape_slabs[u32(physical) / (DISTANCE_DIMS.z / DISTANCE_SLABS)] = 1
+                }
+            }
             heads.push(vec2u(flat.len(), l.len()))
             for k in l {
                 flat.push(k)
@@ -572,7 +589,7 @@ impl Distance {
             over: d.x * (first + depth),
         )
         label("distance")
-        if self.solids.shapes.is_empty() {
+        if self.shape_slabs[self.next] == 0 {
             dispatch(
                 cook_capsule_distance.bind(
                     self.grid,

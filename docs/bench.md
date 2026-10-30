@@ -3741,3 +3741,16 @@ tests pass; 26,247,168 same-frame field values are bit-exact. First assessment
 29.52min; one optimization followup, zero training.
 G1–G7 unchanged/unmet. Complete costs, memory, failures and scope:
 [distance specialization](neural-distance-specialization.md).
+
+## 2026-10-30: source-selected distance update slabs on AMD
+
+Retain exact direct slab-level selection; retire finer per-bin GPU routing.
+Controlled Last Green, 1920×1080, unchanged scale 0.667, RADV RENOIR/Ryzen 5 5500U,
+Chrome 154, Wrela 0.9.0: four balanced 660-frame pairs reduce complete GPU spans
+18.16–19.79% overall and 39.48–42.37% over the 180-frame movement window.
+Same shaders, 32 logical CPU bytes of source flags, no new GPU resources.
+End PSS rises 4.95–168.90 MB; no physical-memory win. Shape-update hitches and
+approximately 42 ms settled frames remain. All 28 paired images within 2/255,
+48,070,656 field values bit-exact, five GPU tests pass.
+First assessment 31.88 min; one optimization, no training.
+G1–G7 unchanged/unmet. [Complete evidence and failures](neural-distance-slabs.md).
