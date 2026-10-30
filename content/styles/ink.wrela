@@ -6,8 +6,8 @@
 // threshold is crossed, so a tone is a count of layers, and a layer's lines hold on the surface as
 // it nears or recedes: `engine::marks`' lattices), its direction taken in 15° steps; the
 // silhouettes and creases as the cel look's, thicker. Leaves, grass and flowers take a wash, not
-// lines (`washed`: lines finer than their cards alias), and the ink is a grey (`INK_DARK`), not a
-// black. Its coherence is Blocked: it misses the physical look's flicker bars (docs/bench.md).
+// lines (`washed`: lines finer than their cards alias), as the characters do (they move through
+// the lattice's lines), and the ink is a grey (`INK_DARK`), not a black. Its coherence is Blocked: it misses the physical look's flicker bars (docs/bench.md).
 // Where the light is nought the image stays black, not paper: the marks pass darkens the image by
 // a look's marks (`marks::marks_on`), so the hatching's paper is the light divided back out, and
 // there's none to divide.
@@ -138,8 +138,12 @@ impl Style for Ink {
             // hatching's layers would be (`WASH` of each), not its lines: a leaf card's or a
             // blade's pixel is a different leaf's from frame to frame as it aliases, and its
             // lines came and went with it.
-            let thin = m.class == style::LEAVES || m.class == style::GRASS ||
-                m.class == style::FLOWER
+            // A character takes the wash too: its hatching's lines would be the world's lattice's,
+            // and it moves through them.
+            let thin = m.class == style::LEAVES ||
+                m.class == style::GRASS ||
+                m.class == style::FLOWER ||
+                m.class == style::CREATURE
             let ink = INK_DARK * if thin { washed(m) } else { hatched(m) }
             return 1.0 - dot(PAPER, LUMA) * (1.0 - ink) / light
         }

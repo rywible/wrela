@@ -128,7 +128,8 @@ pub fn palette_of<K: Knob>(light: Light, class: u32, history: vec4, albedo: vec3
 /// `STROKE_WIDE` of its length across, its edge a pixel wide every way round; lighter or darker
 /// by up to `STROKE_VARY` by its seed.
 pub fn mark_of(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
-    if m.kind != marks::STROKES {
+    // None on a character: a stroke is on the world's lattice, and a character moves through it.
+    if m.kind != marks::STROKES || m.class == style::CREATURE {
         return 0.0
     }
     let half_along = 0.5 * mix(DAB_LONG, 1.0, s.flat)

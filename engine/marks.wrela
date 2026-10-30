@@ -12,8 +12,9 @@
 // the jittered frame's depth and form it's read from. (Drawn after it, at the output's size, each
 // frame's jittered depth moved a mark's anchor on a slope: a hatched look's still flickered at
 // 50,000 ×10⁻⁶, docs/bench.md.) The lines go over them (a look that turns the image to its
-// paper would turn a line under it to paper), and a lattice's marks keep off the characters,
-// which move and would slide under them: theirs are the lines and their creases.
+// paper would turn a line under it to paper). A lattice is the world's, so a look's mark on a
+// character (`style::CREATURE`, which moves) reads nothing of it (`place`, `offset`, `seed`): it
+// would slide under them.
 //
 // The physical look's marks are its own: the characters' lines (`lines`, before temporal AA, so
 // it anti-aliases them as it does a silhouette) and its brush dabs and paper's tooth (`dab_map`,
@@ -576,16 +577,15 @@ pub fn marks_on<Y: Style>(
             foot,
         )
     }
-    // A lattice's marks are the world's, so a moving character would slide under them: it takes
-    // the lines and its creases alone.
-    let still_class = class != style::CREATURE
-    if (Y::MARKS & STROKES) != 0 && still_class {
+    if (Y::MARKS & STROKES) != 0 {
         dark += darkness::<Y>(STROKES, at, n, dir, foot_c, s, distance, class, lit)
     }
-    if (Y::MARKS & HATCH) != 0 && still_class {
+    if (Y::MARKS & HATCH) != 0 {
         dark += darkness::<Y>(HATCH, at, n, dir, foot_c, s, distance, class, lit)
     }
-    vec4(here.rgb * (1.0 - dark), here.a)
+    // No darker than black: a look's marks summed (a crease over the ink look's densest hatching)
+    // can come to more than the pixel's light.
+    vec4(here.rgb * max(1.0 - dark, 0.0), here.a)
 }
 
 /// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
