@@ -1132,3 +1132,59 @@ fn a_whole_game_counts_each_levels_clock_on_through_the_next_level_and_ends_at_a
     assert(l.world.course == course::SAVANNA && !l.game.on, "chosen on the map: no run")
     assert(l.game.done == 0, "and never done")
 }
+
+/// The items list page `page` has, what its focus may be: none for a page without a list (the
+/// title, the controls, the runs), whose focus is the menu's item it came from.
+fn items_of(page: u32) -> Option<u32> {
+    if page == MENU {
+        Some(MENU_ITEMS)
+    } else if page == OPTIONS {
+        Some(OPTION_ITEMS)
+    } else if page == MAP { Some(LEVELS) } else { None }
+}
+
+@test
+fn random_presses_in_the_menus_keep_a_valid_focus_and_esc_always_gets_back_to_play() {
+    let keys = [
+        Key::Up,
+        Key::Down,
+        Key::Left,
+        Key::Right,
+        Key::Enter,
+        Key::Escape,
+        Key::Space,
+        Key::Backspace,
+        Key::P,
+        Key::R,
+        Key::Z,
+    ]
+    var rng = engine::rng::Rng::new(engine::rng::seed(17))
+    for round in 0..40 {
+        var w = world(HOME)
+        for _ in 0..60 {
+            let pick = u32(rng.range(lo: 0.0, hi: f64(keys.len()) + 0.999))
+            if pick < keys.len() {
+                tick_with(mut w, [down(keys[pick])])
+                tick_with(mut w, [up(keys[pick])])
+            } else {
+                // A press on some node of the page shown, or of another.
+                let item = u32(rng.range(lo: 0.0, hi: 9.999))
+                let page = u32(rng.range(lo: 0.0, hi: 5.999))
+                tick_with(mut w, [assist(node(w.chosen, page, item), Assist::Activate)])
+            }
+            if w.paused {
+                if let Some(n) = items_of(w.page) {
+                    assert(w.focus < n, f"round {round}: focus {w.focus} on page {w.page}")
+                }
+            }
+            assert(w.course < COURSES, "a course")
+        }
+        var presses = 0
+        while w.paused && presses < 4 {
+            tick_with(mut w, [down(Key::Escape)])
+            tick_with(mut w, [up(Key::Escape)])
+            presses += 1
+        }
+        assert(!w.paused, f"round {round}: still paused on page {w.page} after Esc four times")
+    }
+}
