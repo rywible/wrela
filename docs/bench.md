@@ -3829,3 +3829,14 @@ source inputs, complete rendering/update cost, all requested/actual sampled
 memory. No training, new references or G1–G7 changes.
 [Full result and next visibility-resolve bet](neural-impostor-contours.md).
 Evidence: build/neural-evidence/impostor-contours-v1 on Pop!_OS.
+
+
+### Production impostor visibility resolve: retired (2026-10-30)
+
+[Joint AMD experiment](neural-impostor-visibility-resolve.md): six 660-frame runs,
+42 route captures, same-source tagged control and fullscreen material resolve.
+All36 completed-reference shaded checks pass, but total GPU changes −0.27%/+0.83%,
+movement regresses 1.17–1.47%, live requested memory rises 14,745,600 B and observed
+final DRM VRAM rises 15,757,312/24,735,744 B. Retire both prototype paths; runtime
+unchanged. First complete assessment 46.50minutes; zero
+optimization followups, zero training, all failures preserved. No G4/G1–G7 win.
