@@ -241,6 +241,18 @@ fn the_measures_react_as_the_instrument_needs() {
     }
     assert(trail(lighter, rl, w) == 0.0, f"a lighter image trails {trail(lighter, rl, w)}")
     assert(trail(ghost_lighter, rl, w) >= 4.0)
+    // A broad ghost, its lag over half the row (so the row's median): still a trail, 70 pixels.
+    let (bw, bh) = (100, 4)
+    var settled_rows: Vec<f32> = Vec::new()
+    var lagging: Vec<f32> = Vec::new()
+    for _ in 0..bh {
+        for x in 0..bw {
+            settled_rows.push(if x >= 10 { 0.2 } else { 0.0 })
+            lagging.push(if x >= 80 { 0.2 } else { 0.0 })
+        }
+    }
+    let broad = trail(lagging, settled_rows, bw)
+    assert(broad >= 69.0, f"a broad ghost trails {broad} px")
     // The edge stays sharp in a mean of jittered frames of it.
     let mean = mean_of([reference.clone(), reference.clone()])
     assert(edge_width(luma(mean), w) <= edge_width(rl, w) + 1)

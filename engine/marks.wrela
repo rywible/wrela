@@ -11,7 +11,9 @@
 // a mark anchored to a surface is as its texture is, and temporal AA anti-aliases it and settles
 // the jittered frame's depth and form it's read from. (Drawn after it, at the output's size, each
 // frame's jittered depth moved a mark's anchor on a slope: a hatched look's still flickered at
-// 50,000 ×10⁻⁶, docs/bench.md.)
+// 50,000 ×10⁻⁶, docs/bench.md.) The lines go over them (a look that turns the image to its
+// paper would turn a line under it to paper), and a lattice's marks keep off the characters,
+// which move and would slide under them: theirs are the lines and their creases.
 //
 // The physical look's marks are its own: the characters' lines (`lines`, before temporal AA, so
 // it anti-aliases them as it does a silhouette) and its brush dabs and paper's tooth (`dab_map`,
@@ -113,12 +115,17 @@ fn on_lattice(kind: u32, at: vec3, n: vec3, dir: vec3, level: i32, size_px: f32)
             let centre = g +
                 vec2(0.25) +
                 0.5 * vec2(hash2(x, y + level * 31), hash2(y + 71, x + 13 - level * 5))
-            // The centre back on the surface's plane, in the world.
+            // The centre back on the surface's tangent plane, in the world: the lattice plane's
+            // two coordinates, and the third that keeps it across `n` (the plane is `n`'s
+            // strongest axis, so that one is at least 1/√3; with it 0, a stroke on a surface
+            // oblique to its lattice's plane was measured short across the slope, so drawn long).
             let d2 = (q - centre) * cell
-            let d = if plane == 0 { vec3(0.0, d2.y, d2.x) } else if plane == 1 {
-                vec3(d2.x, 0.0, d2.y)
+            let d = if plane == 0 {
+                vec3(-(n.y * d2.y + n.z * d2.x) / n.x, d2.y, d2.x)
+            } else if plane == 1 {
+                vec3(d2.x, -(n.x * d2.x + n.z * d2.y) / n.y, d2.y)
             } else {
-                vec3(d2.x, d2.y, 0.0)
+                vec3(d2.x, d2.y, -(n.x * d2.x + n.y * d2.y) / n.z)
             }
             let off = vec2(dot(d, along), dot(d, across)) / cell
             let r = dot(off, off)
@@ -569,10 +576,13 @@ pub fn marks_on<Y: Style>(
             foot,
         )
     }
-    if (Y::MARKS & STROKES) != 0 {
+    // A lattice's marks are the world's, so a moving character would slide under them: it takes
+    // the lines and its creases alone.
+    let still_class = class != style::CREATURE
+    if (Y::MARKS & STROKES) != 0 && still_class {
         dark += darkness::<Y>(STROKES, at, n, dir, foot_c, s, distance, class, lit)
     }
-    if (Y::MARKS & HATCH) != 0 {
+    if (Y::MARKS & HATCH) != 0 && still_class {
         dark += darkness::<Y>(HATCH, at, n, dir, foot_c, s, distance, class, lit)
     }
     vec4(here.rgb * (1.0 - dark), here.a)

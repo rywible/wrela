@@ -50,6 +50,10 @@ pub const FAST_SAMPLES: u32 = 32
 pub const FAST_DOLLY: u32 = 150
 pub const FAST_STOP_SETTLE: u32 = 60
 
+/// What a shot whose screen stayed black fails with (`Driven::shown`): the one failure
+/// `measure` loads a shot again for.
+pub const NOT_SHOWN: Text = "wasn't shown within"
+
 /// The most frames a reference or play may take to be drawn round the eye again.
 pub const ARRIVAL_FRAMES: u32 = 1200
 
@@ -142,7 +146,7 @@ impl Driven {
             let _ = self.run(step)?
             waited += step
         }
-        Err(ToolError::new(f"the shot wasn't shown within {ARRIVAL_FRAMES} frames"))
+        Err(ToolError::new(f"the shot {NOT_SHOWN} {ARRIVAL_FRAMES} frames"))
     }
 
     /// Frames until one prints `said` (`REFERENCE`, `PLAY`).
@@ -207,8 +211,9 @@ pub fn measure(
     fast: bool = false,
     psnr_too: bool = false,
 ) -> Result<Measured, ToolError> {
-    // A shot that fails (its screen black past `ARRIVAL_FRAMES`, a frame the page took too long
-    // for) is loaded once more: a fresh page, so the first run's state is gone.
+    // A shot never shown (its screen black past `ARRIVAL_FRAMES`: a far place streaming in) is
+    // loaded once more on a fresh page, said in the run's output; any other failure (a trap, a
+    // page's error) is the run's.
     var tries = 0
     loop {
         var options = drive::gpu()
@@ -222,12 +227,14 @@ pub fn measure(
         }
         let _ = drive::close(b).wait()
         tries += 1
-        if tries == 2 || measured.is_ok() {
+        let not_shown = match measured {
+            Err(e) => e.message().find(NOT_SHOWN).is_some(),
+            Ok(_) => false,
+        }
+        if tries == 2 || !not_shown {
             return take measured
         }
-        if let Err(e) = measured {
-            print(f"lookbook: shot {i}: {e.message()}; loading it again")
-        }
+        print(f"lookbook: shot {i} {NOT_SHOWN} {ARRIVAL_FRAMES} frames; loading it again")
     }
 }
 

@@ -36,6 +36,25 @@ fn g_style_reads_each_looks_adding_commit() {
     assert(seen == 3)
 }
 
+/// A rename names both ends: a look moved into content/styles is an adding, and an engine file at
+/// either end of a rename in the same commit is the engine's change.
+@test
+fn g_style_reads_renames() {
+    let log = "commit:c2\nR100\tcontent/styles/helper.wrela\tengine/helper.wrela\nA\tcontent/styles/wash.wrela\ncommit:c1\nR095\tcontent/old/flat.wrela\tcontent/styles/flat.wrela\n"
+    var seen = 0
+    for a in added_in(log) {
+        if a.file.as_str() == "wash.wrela" {
+            assert(a.commit.as_str() == "c2" && !holds(a.clone()), "wash: the move into engine/")
+            seen += 1
+        }
+        if a.file.as_str() == "flat.wrela" {
+            assert(a.commit.as_str() == "c1" && holds(a.clone()), "flat: renamed in alone")
+            seen += 1
+        }
+    }
+    assert(seen == 2, f"{seen} of the two looks")
+}
+
 /// G-style on this branch's history as the tool recorded it (`wrela tool styles -- --record`,
 /// `history.log`: a tool test runs no real program): every look under content/styles holds it.
 @test(tool, read: [("repo", "../..")])

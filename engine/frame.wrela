@@ -3064,28 +3064,9 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         }
         self.settled = if !held(cam) { 0 } else if again { 1 } else { self.settled + 1 }
         let instead = scene.shows_instead()
-        // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
-        // debug views of form).
-        // (Where the look draws them: `style::Style::MARKS`.)
-        if (Y::MARKS & marks::LINES) != 0 {
-            if !self.debug.plain && self.debug.view == 0 && !instead {
-                label("lines")
-                // The look's lines' darkness and width, where it sets them.
-                var look = self.look
-                if Y::LINE_DARK >= 0.0 {
-                    look.line_dark = Y::LINE_DARK
-                }
-                if Y::LINE_PX >= 0.0 {
-                    look.line_px = Y::LINE_PX
-                }
-                let d = Develop { cam, look, out, view: 0 }
-                let lp = begin_pass(mut self.targets.scene_b)
-                fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
-                lp.end()
-                swap(mut self.targets.scene, mut self.targets.scene_b)
-            }
-        }
-        // The look's other marks, so on the scene's own samples (`marks::marks_on`).
+        // The look's marks, on the scene's own samples (`marks::marks_on`), before the lines: a
+        // look that turns the image to its paper (the ink look's hatching) would turn a line
+        // drawn under it back to paper too.
         if (Y::MARKS & marks::DRAWN) != 0 {
             if !self.debug.plain && self.debug.view == 0 && !instead {
                 label("marks")
@@ -3103,6 +3084,27 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                     ),
                 )
                 cp.end()
+                swap(mut self.targets.scene, mut self.targets.scene_b)
+            }
+        }
+        // The lines over the marks, on the scene's own samples, so temporal AA anti-aliases them
+        // (none in the debug views of form).
+        // (Where the look draws them: `style::Style::MARKS`.)
+        if (Y::MARKS & marks::LINES) != 0 {
+            if !self.debug.plain && self.debug.view == 0 && !instead {
+                label("lines")
+                // The look's lines' darkness and width, where it sets them.
+                var look = self.look
+                if Y::LINE_DARK >= 0.0 {
+                    look.line_dark = Y::LINE_DARK
+                }
+                if Y::LINE_PX >= 0.0 {
+                    look.line_px = Y::LINE_PX
+                }
+                let d = Develop { cam, look, out, view: 0 }
+                let lp = begin_pass(mut self.targets.scene_b)
+                fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
+                lp.end()
                 swap(mut self.targets.scene, mut self.targets.scene_b)
             }
         }

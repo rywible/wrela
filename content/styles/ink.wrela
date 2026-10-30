@@ -8,6 +8,9 @@
 // silhouettes and creases as the cel look's, thicker. Leaves, grass and flowers take a wash, not
 // lines (`washed`: lines finer than their cards alias), and the ink is a grey (`INK_DARK`), not a
 // black. Its coherence is Blocked: it misses the physical look's flicker bars (docs/bench.md).
+// Where the light is nought the image stays black, not paper: the marks pass darkens the image by
+// a look's marks (`marks::marks_on`), so the hatching's paper is the light divided back out, and
+// there's none to divide.
 // Every constant here is **proposed**.
 
 use engine::light::{LUMA, Light, Lit}

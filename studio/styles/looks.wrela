@@ -38,8 +38,8 @@ pub struct Added: Clone {
 }
 
 /// From `git log --format=commit:%H --name-status -- content/styles engine` (newest first): each
-/// file under content/styles/ that a commit added, with that commit (its oldest adding) and the
-/// paths under `engine/` it changed.
+/// file under content/styles/ that a commit added (or made by a rename or a copy), with that
+/// commit (its oldest adding) and the paths under `engine/` it changed (a rename's either end).
 pub fn added_in(log: str) -> Vec<Added> {
     var out: Vec<Added> = Vec::new()
     var commit = String::new()
@@ -71,11 +71,21 @@ pub fn added_in(log: str) -> Vec<Added> {
         }
         let Some(tab) = l.find("\t") else { continue }
         let status = l.slice(0, tab)
-        let path = l.slice(tab + 1, l.len())
+        let rest = l.slice(tab + 1, l.len())
+        // A rename or a copy (`R100`, `C75`) names its source and its destination: an engine
+        // file at either end is the engine's change, and a look's file it makes is an adding.
+        let moved = status.starts_with("R") || status.starts_with("C")
+        let t = if moved { rest.find("\t").unwrap_or(rest.len()) } else { rest.len() }
+        let from = rest.slice(0, t)
+        let start = if t < rest.len() { t + 1 } else { 0 }
+        let path = rest.slice(start, rest.len())
         if path.starts_with("engine/") {
             engine.push(String::from(path))
+        } else if from.starts_with("engine/") {
+            engine.push(String::from(from))
         }
-        if status == "A" && path.starts_with("content/styles/") && path.ends_with(".wrela") {
+        let adds_look = status == "A" || moved
+        if adds_look && path.starts_with("content/styles/") && path.ends_with(".wrela") {
             adds.push(String::from(path.slice(15, path.len())))
         }
     }

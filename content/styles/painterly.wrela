@@ -1,11 +1,12 @@
 // The painterly look (docs/plan-world-class-3.md §D5): light as it falls on the form's normal
-// (`NORMAL` 1), its sky's own direction halved (a painter's simpler ambient); a palette of more
-// tones than the cel look's, its hue pulled less; the physical look's dabs and paper's tooth
-// (`marks::DABS`), and strokes along the form (`marks::STROKES`): along its principal curvature's
-// direction where it has one (round a ball where it curves alike every way), long where its tone is
-// flat and short dabs where it's detailed, each a little lighter or darker than the paint under it
-// by its seed; and the physical look's lines. Temporal AA and the albedo are the physical look's
-// (no `FLAT_CLIP` or `FLAT`: content/styles/README.md says why). Every constant here is **proposed**.
+// (`NORMAL` 1), its sky's light half greyed (a painter's simpler, less coloured ambient); a palette
+// of more tones than the cel look's, its hue pulled less; the physical look's dabs and paper's
+// tooth (`marks::DABS`), and strokes along the form (`marks::STROKES`): along its principal
+// curvature's direction where it has one (round a ball where it curves alike every way), long where
+// its tone is flat and short dabs where it's detailed, each a little lighter or darker than the
+// paint under it by its seed; and the physical look's lines. Temporal AA and the albedo are the
+// physical look's (no `FLAT_CLIP` or `FLAT`: content/styles/README.md says why). Every constant
+// here is **proposed**.
 
 use cel::{KEYS, PALETTE}
 use engine::light::{LUMA, Light, Lit}
@@ -25,7 +26,9 @@ use std::gpu::{Rgba8, Sampler, Texture3d}
 pub const PALETTE_N: u32 = 8
 pub const HUE_PULL: f32 = 0.15
 /// How much of the way between two tones the palette's step between them takes (round the
-/// middle), and how far the sky's light is taken toward its mean (a painter's simpler ambient).
+/// middle), and how far the sky's light is taken toward its own grey, its luma (a painter's
+/// simpler, less coloured ambient; not the plan's directional part halved, which the light's
+/// terms don't carry apart).
 pub const STEP_SOFT: f32 = 0.5
 pub const SKY_SIMPLE: f32 = 0.5
 /// A stroke's length (output pixels) where the tone is flat, and how much lighter or darker than
@@ -69,7 +72,7 @@ impl Knob for PainterlyFitting {
     }
 }
 
-/// The light simplified: the sky's light taken `SKY_SIMPLE` of the way to its mean.
+/// The light simplified: the sky's light taken `SKY_SIMPLE` of the way to its own grey.
 fn simple<K: Knob>(light: Light, lit: Lit) -> Lit {
     Lit { sky: mix(lit.sky, vec3(dot(lit.sky, LUMA)), vec3(knob::<K>(light, 2))), ..lit }
 }

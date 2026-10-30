@@ -111,12 +111,27 @@ fn check(program: str) -> Result<bool, ToolError> {
             print(f"styles: {look}: builds, {pipelines_in(manifest.as_str())} pipelines")
         }
     }
-    for a in added_in(git(LOG_ARGS)?.as_str()) {
+    let added = added_in(git(LOG_ARGS)?.as_str())
+    for a in added.clone() {
         if not_look(a.file.as_str()) {
             continue
         }
         print(g_style_line(a.clone()).as_str())
         ok = ok && holds(a)
+    }
+    // Every look's file has its adding commit in the history: one that hasn't (not committed, or
+    // its history cut) is held to nothing, so it fails.
+    for (file, _, _) in looks()? {
+        var found = false
+        for a in added.clone() {
+            if a.file.as_str() == file.as_str() {
+                found = true
+            }
+        }
+        if !found {
+            print(f"G-style: {file} has no adding commit in the history, fails")
+            ok = false
+        }
     }
     Ok(ok)
 }

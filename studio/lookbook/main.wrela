@@ -265,11 +265,15 @@ pub fn measures_in(text: str) -> Vec<(String, f64, f64, f64)> {
 }
 
 /// The shots of `ran` (this run's `quality.json` text) held to the bars of the run in `dir`: a
-/// table printed and `bars.json` written into `out`. Whether every shot held them.
+/// table printed and `bars.json` written into `out`. Whether every shot held them (a shot the
+/// baseline lacks misses; no measures either side is an error).
 fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
     let at = String::from(f"{WS}/{dir}/quality.json")
     let base = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
     let bases = measures_in(base.as_str())
+    if bases.is_empty() || measures_in(ran).is_empty() {
+        return Err(ToolError::new(f"no measures to hold: {at} or this run's quality.json"))
+    }
     print("| Shot | flicker ×10⁻⁶ (bar) | pop (bar) | trail px (bar) | |\n|---|---|---|---|---|")
     var lines: Vec<String> = Vec::new()
     var all = true
@@ -281,7 +285,8 @@ fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
             }
         }
         let Some(b) = found else {
-            print(f"| {shot} | (no baseline) | | | |")
+            print(f"| {shot} | (no baseline) | | | misses |")
+            all = false
             continue
         }
         let (bf, bp, bt) = bars(b)
@@ -301,6 +306,16 @@ fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
     Ok(all)
 }
 
+/// Every shot held its bars, said; or a miss, failing the tool (its table and `bars.json` say
+/// which).
+fn held_or_missed(all: bool) -> Result<(), ToolError> {
+    if all {
+        print("every shot holds its bars")
+        return Ok(())
+    }
+    Err(ToolError::new("a shot misses its bars (bars.json)"))
+}
+
 /// `--held`: the run already in `o.out` held to `--bars`, nothing measured.
 fn held(o: Options) -> Result<(), ToolError> {
     if o.bars.is_empty() {
@@ -309,9 +324,7 @@ fn held(o: Options) -> Result<(), ToolError> {
     let out = o.out.as_str()
     let at = String::from(f"{out}/quality.json")
     let ran = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
-    let ok = barred(ran.as_str(), o.bars.as_str(), out)?
-    print(if ok { "every shot holds its bars" } else { "a shot misses its bars (bars.json)" })
-    Ok(())
+    held_or_missed(barred(ran.as_str(), o.bars.as_str(), out)?)
 }
 
 /// Makes the stills, then the clips, as `o` says.
@@ -443,8 +456,7 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     let listed = json_list(entries)
     write_file(f"{out}/quality.json", Vec::from([Vec::from(listed.as_bytes())]))?
     if !o.bars.is_empty() {
-        let held = barred(listed.as_str(), o.bars.as_str(), out)?
-        print(if held { "every shot holds its bars" } else { "a shot misses its bars (bars.json)" })
+        held_or_missed(barred(listed.as_str(), o.bars.as_str(), out)?)?
     }
     if !o.controls {
         return Ok(())
