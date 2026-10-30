@@ -2437,6 +2437,12 @@ of its shading pass. The prepass and the shading pass each draw every card.
     instance and place on the card; at most the shading pass's 4.8 ms of card draws). That
     changes the cards Part E grows, so it's taken with Part E's wood.
   - Then the floor's froxels, and the look, temporal AA and the bloom at the output's size.
+- **C1's G-profile, the clearing (carried here): Blocked at 11.52 ms** GPU p50 (gate 10.2; C1's
+  12.68). `wrela tool bench -- --scene clearing-path --sustained 600 --no-docs` on 030a0cea:
+  span 11.52 / 14.40 / 14.91, interval 14.52 / 25.75 / 30.77, 0 over 33, minute 1 11.56, minute
+  10 13.42 (1.16, throttling). C6a's cadence took the clouds' march (9.34 ms serial at C1) to
+  every other frame; what's left is its vegetation's two passes (5.88 and 5.45 serial at C1),
+  the same lever as the vale's.
 - **The hitch table: not empty** (Blocked as above). Every hitch is a GPU frame overrun, and the
   levers are the passes above.
 
