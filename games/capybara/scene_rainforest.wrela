@@ -1,14 +1,686 @@
-// What's behind The Rainforest House's course: a placeholder of rolling hills in the habitat's colour, a layer
-// for each of the backdrop's four (scenery.wrela), until the habitat's own are drawn.
+// What's behind The Rainforest House's course, painted as the Wetlands' backdrop is
+// (scenery.wrela): the third habitat on the zoo's loop (design.md, "A map of the zoo"). The level is
+// inside a great glasshouse, a humid jungle under iron and glass; through its panes the Savanna's
+// acacias show behind and the Aviary's dome ahead.
+//
+// - The far hills (0.06): soft green hills, the Savanna's acacias and the Aviary's dome, misted by
+//   the glass they're seen through.
+// - The glasshouse (0.2): its far side, arched bays of panes on slender iron ribs, the jungle's
+//   canopy and palms under them. The panes are a pale tint only partly covering, so what's beyond
+//   shows through them, misty.
+// - The residents (0.42): rainforest trees on buttress roots, along the visitors' path with its iron
+//   rail: two sloths hanging under a branch (one slowly blinking), a toucan, a golden lion tamarins'
+//   family, red-eyed tree frogs on broad leaves, a waterfall over mossy rocks in its mist.
+// - The undergrowth (0.68): monstera and banana leaves, ferns, and vines hanging from above.
+//
+// The light comes through the canopy in dapples (`dappled`). Each layer works out only the shapes
+// in the cells round its point, and none above its tallest or below its ground.
 
-use scenery::{PARALLAX, View, fbm, on_layer, paint, pixel_on}
+use engine::noise::{hash2, noise2}
+use ink::grain
+use scenery::{MIST, PARALLAX, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
 pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let parallax = PARALLAX[k]
-    let q = on_layer(pixel, v, parallax)
-    let px = pixel_on(v, parallax)
-    let ground = 1.0 + 2.5 * fbm(vec2(q.x * 0.05 + f32(k) * 7.0, 1.0), 2) - f32(k) * 0.6
-    paint(g, gs, q.y - ground, vec3(0.36, 0.6, 0.38), q, px, haze: f32(k) * 0.2, line: 0.8)
+    if k == 0 { undergrowth(pixel, v, g, gs) } else if k == 1 {
+        residents(pixel, v, g, gs)
+    } else if k == 2 {
+        glasshouse(pixel, v, g, gs)
+    } else { far_hills(pixel, v, g, gs) }
+}
+
+/// `c` dappled at `q` (m): soft-edged patches of the light that comes down through the canopy,
+/// `amount` of it.
+fn dappled(c: vec3, q: vec2, amount: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
+    let n = grain(g, gs, q * 0.32 + vec2(5.0, 13.0)).y
+    blend(c, c * vec3(1.1, 1.12, 0.96) + vec3(0.07, 0.07, 0.02), smoothstep(0.55, 0.6, n) * amount)
+}
+
+/// `front` over `back`, neither premultiplied.
+fn over(front: vec4, back: vec4) -> vec4 {
+    let w = front.w + back.w * (1.0 - front.w)
+    if w <= 0.0 {
+        return vec4(0.0)
+    }
+    vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / w, w)
+}
+
+// ---- the far hills, through the glass ------------------------------------------------------------
+
+/// Where the Aviary's dome stands on the far layer: ahead, coming into view as the level goes on.
+const DOME_AT = vec2(30.0, 6.0)
+
+/// The nearer hills' line at `x`, the Savanna's acacias and the Aviary on them.
+fn far_foot(x: f32) -> f32 {
+    4.6 + 1.6 * fbm(vec2(x * 0.06, 8.0), 2)
+}
+
+fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[3])
+    let px = pixel_on(v, PARALLAX[3])
+    if q.y > 10.0 {
+        return vec4(0.0)
+    }
+    let ridge = 6.0 + 3.0 * fbm(vec2(q.x * 0.028, 5.0), 2)
+    let near = far_foot(q.x)
+    var best = (q.y - ridge, vec3(0.64, 0.78, 0.72))
+    let front = q.y - near
+    if front < q.y - ridge {
+        best = (front, vec3(0.5, 0.7, 0.52))
+    }
+    // The Savanna's acacias, behind: flat crowns on thin trunks along the near hills.
+    if q.x < 8.0 && q.x > -30.0 && q.y < near + 2.2 {
+        let i = floor(q.x / 3.2)
+        let x = (i + 0.5) * 3.2 + (hash2(i32(i), 91) - 0.5) * 1.2
+        if hash2(i32(i), 92) < 0.6 {
+            let base = vec2(x, far_foot(x) - 0.1)
+            let h = 1.1 + 0.5 * hash2(i32(i), 93)
+            let tree = min(
+                capsule(q, base, base + vec2(0.05, h), 0.04),
+                ellipse(q - base - vec2(0.05, h), vec2(0.8, 0.14)),
+            )
+            best = atop(best, (tree, vec3(0.5, 0.58, 0.38)))
+        }
+    }
+    // The Aviary's dome, ahead: glass on a frame of ribs and rings.
+    let l = q - DOME_AT
+    let dome = min(max(length(l) - 2.8, -l.y), capsule(l, vec2(0.0, 2.6), vec2(0.0, 3.3), 0.08))
+    if dome < 0.1 {
+        let rib = abs(fract(atan2(l.y, l.x) / 0.3927) - 0.5) * 0.3927 * length(l)
+        let ring = abs(fract(length(l) / 0.9) - 0.5) * 0.9
+        let glass = if min(rib, ring) < 0.07 { vec3(0.48, 0.56, 0.6) } else {
+            vec3(0.86, 0.93, 0.95)
+        }
+        best = atop(best, (dome, glass))
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.25, line: 0.6)
+}
+
+// ---- the glasshouse: its far side, and the canopy under it ---------------------------------------
+
+/// The glasshouse's bays (m on its layer), and the height of the eaves their arches spring from.
+const BAY: f32 = 7.0
+const EAVES: f32 = 7.2
+
+/// The canopy's ground at `x`.
+fn canopy_ground(x: f32) -> f32 {
+    0.3 + 0.4 * sin(x * 0.09) + 0.3 * noise2(vec2(x * 0.07, 6.0))
+}
+
+/// A palm at `base`, `h` m tall: a leaning, curved trunk and a head of drooping fronds.
+fn palm(q: vec2, base: vec2, h: f32, lean: f32) -> (f32, f32) {
+    let l = q - base
+    let top = vec2(lean * h, h)
+    let bend = vec2(lean * h * 0.3, h * 0.55)
+    let trunk = min(
+        cone(l, vec2(0.0), bend, ra: 0.13, rb: 0.1),
+        cone(l, bend, top, ra: 0.1, rb: 0.08),
+    )
+    var fronds = 1.0e3
+    for k in 0..6 {
+        let a = 0.25 + f32(k) * 0.53
+        let dir = vec2(cos(a), sin(a))
+        let side = if dir.x > 0.0 { 1.0 } else { -1.0 }
+        var f = turn(l - top, a)
+        f.y += side * 0.32 * f.x * f.x
+        let leaf = max(abs(f.y) - 0.16 * saturate(f.x * 1.6) * saturate(1.9 - f.x), -f.x)
+        fronds = min(fronds, max(leaf, f.x - 1.9))
+    }
+    (min(trunk, fronds), if fronds < trunk { 1.0 } else { 0.0 })
+}
+
+fn glasshouse(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[2])
+    let px = pixel_on(v, PARALLAX[2])
+    let ground = canopy_ground(q.x)
+    let leaf = vec3(0.47, 0.66, 0.55)
+    if q.y < ground - 0.3 {
+        return under(g, gs, leaf * 0.9, q, ground, 0.35)
+    }
+    // The bay's arch, springing from the eaves on slender columns.
+    let bx = q.x - (floor(q.x / BAY) + 0.5) * BAY
+    let arch = length(vec2(bx, max(q.y - EAVES, 0.0))) - BAY * 0.5
+    let roof = max(arch, max(q.y - EAVES - BAY * 0.5 - 0.2, 0.0))
+    if roof > px * 2.0 {
+        return vec4(0.0)
+    }
+    // The canopy under the glass: a back row of crowns, higher and paler, and a front row, each
+    // crown its own size and height in its cell, a few cells bare; now and then a palm over them.
+    var best = (q.y - ground - 0.4, leaf)
+    if q.y < ground + 7.2 {
+        // Each row a mass of lumps run together, shaded round the nearest lump.
+        for row in 0..2 {
+            let span = 3.6 - f32(row) * 0.9
+            let cell = floor(q.x / span)
+            var mass = q.y - ground - 2.0 + f32(row) * 1.2
+            var nearest = 1.0e3
+            var c = vec2(0.0)
+            var r = 1.0
+            for k in -1..2 {
+                let i = cell + f32(k)
+                let seed = i32(i) * 2 + row
+                let size = 1.0 + 1.0 * hash2(seed, 52)
+                let at = vec2(
+                    (i + 0.3 + 0.4 * hash2(seed, 54)) * span,
+                    canopy_ground(i * span) +
+                        2.8 -
+                        f32(row) * 1.4 +
+                        1.5 * hash2(seed, 51) -
+                        size * 0.4,
+                )
+                let lump = length(q - at) -
+                    size +
+                    0.07 * abs(sin(atan2(q.y - at.y, q.x - at.x) * 8.0 + f32(seed)))
+                if lump < nearest {
+                    nearest = lump
+                    c = at
+                    r = size
+                }
+                mass = smin(mass, lump, 0.4)
+            }
+            let lit = if row == 0 { vec3(0.52, 0.7, 0.58) } else { vec3(0.42, 0.63, 0.5) }
+            best = atop(best, (mass, crowned(lit, lit * vec3(0.85, 0.9, 0.96), q, c, r)))
+        }
+        let grove = floor(q.x / 13.0)
+        for k in -1..2 {
+            let i = grove + f32(k)
+            let x = (i + 0.3 + 0.4 * hash2(i32(i), 54)) * 13.0
+            if hash2(i32(i), 55) < 0.6 && abs(q.x - x) < 4.0 {
+                let (p, fronds) = palm(
+                    q,
+                    vec2(x, canopy_ground(x)),
+                    5.2 + 1.2 * hash2(i32(i), 56),
+                    (hash2(i32(i), 57) - 0.5) * 0.3,
+                )
+                let colour = if fronds > 0.5 { vec3(0.5, 0.68, 0.5) } else {
+                    vec3(0.62, 0.56, 0.48)
+                }
+                best = nearer(best, (p, colour))
+            }
+        }
+    }
+    // The far side's iron, behind the plants: a column between bays, the arch's rib and the eaves'
+    // girder; and the glazing bars, the slenderest, inked only by their colour.
+    let (plants, leafy) = best
+    let column = abs(abs(bx) - BAY * 0.5) - 0.09
+    let rib = abs(arch + 0.1) - 0.08
+    let girder = abs(q.y - EAVES) - 0.1
+    let iron = max(max(min(min(column, rib), girder), roof), px - plants)
+    let (d, albedo) = if iron < plants { (iron, vec3(0.36, 0.46, 0.46)) } else {
+        (plants, dappled(leafy, q, 0.6, g, gs))
+    }
+    let front = paint(g, gs, d, albedo, q, px, haze: 0.36, line: 0.7)
+    if front.w >= 1.0 {
+        return front
+    }
+    let mullion = abs(fract(q.x / (BAY / 4.0)) - 0.5) * (BAY / 4.0)
+    let transom = abs(fract(q.y / 1.4) - 0.5) * 1.4
+    let bar = saturate(1.6 - min(mullion, transom) / px)
+    // A pane: a pale, cool tint, the light catching some in a white stroke.
+    let pane = vec2(floor(q.x / (BAY / 4.0)), floor(q.y / 1.4))
+    let shine = hash2(i32(pane.x), i32(pane.y) + 300) < 0.22 &&
+        abs(fract(q.x / (BAY / 4.0)) * 1.2 + fract(q.y / 1.4) - 1.1) < 0.06
+    // Misted with the warm damp, the more the lower.
+    let damp = 0.3 + 0.28 * smoothstep(EAVES + 2.0, ground + 2.0, q.y)
+    let tint = if shine { vec4(0.97, 0.99, 0.97, 0.6) } else { vec4(0.85, 0.91, 0.87, damp) }
+    let glass = vec4(
+        blend(tint.xyz, vec3(0.42, 0.52, 0.52), bar),
+        (tint.w + (0.85 - tint.w) * bar) * saturate(0.5 - roof / px),
+    )
+    over(front, glass)
+}
+
+// ---- the residents, along the visitors' path ------------------------------------------------------
+
+/// The path's ground at `x`.
+fn path_ground(x: f32) -> f32 {
+    -0.6 + 0.3 * sin(x * 0.1) + 0.2 * noise2(vec2(x * 0.3, 2.0))
+}
+
+/// A rainforest tree at `foot`, its crown at `h` m: a straight trunk flaring into buttress roots,
+/// and a broad, flat-topped crown of lumps. Its distance, and 1 where it's crown.
+fn jungle_tree(q: vec2, foot: vec2, h: f32, seed: f32) -> (f32, f32) {
+    let l = q - foot
+    var trunk = cone(l, vec2(0.0), vec2(0.0, h), ra: 0.32, rb: 0.2)
+    trunk = smin(trunk, cone(l, vec2(-1.0, 0.0), vec2(-0.1, 1.4), ra: 0.05, rb: 0.2), 0.3)
+    trunk = smin(trunk, cone(l, vec2(0.9, 0.0), vec2(0.1, 1.2), ra: 0.05, rb: 0.2), 0.3)
+    trunk = min(trunk, capsule(l, vec2(0.0, h * 0.8), vec2(1.0, h * 0.95), 0.08))
+    var crown = 1.0e3
+    for k in 0..5 {
+        let a = f32(k) * 1.26 + seed * 5.0
+        let at = vec2(cos(a) * 1.4, h + 0.4 + sin(a) * 0.6)
+        crown = smin(crown, length(l - at) - (0.9 + 0.25 * sin(a * 3.1 + seed * 9.0)), 0.35)
+    }
+    crown += 0.05 * abs(sin(atan2(l.y - h, l.x) * 11.0 + seed * 20.0))
+    (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
+}
+
+/// `top` laid on `base`, each a distance and a colour: inside it, `top`; outside, the nearer.
+fn atop(base: (f32, vec3), top: (f32, vec3)) -> (f32, vec3) {
+    let (db, _) = base
+    let (dt, _) = top
+    if dt < 0.0 || dt < db { top } else { base }
+}
+
+/// A sloth hanging by its claws under a branch at `l` = 0 (`l` from where its middle hangs), facing
+/// +x, `blink` from 0 (its eyes open) to 1 (shut): a shaggy body, its pale face masked dark
+/// through the eyes, as if smiling. Twice a real one's size, to read from the path.
+fn sloth(l0: vec2, blink: f32) -> (f32, vec3) {
+    let s = 1.9
+    let l = l0 / s
+    var d = ellipse(turn(l - vec2(0.0, -0.4), 0.08), vec2(0.4, 0.24))
+    for x in [-0.32, -0.18, 0.2, 0.32] {
+        d = smin(d, capsule(l, vec2(x * 0.8, -0.35), vec2(x * 1.1, -0.02), 0.06), 0.05)
+    }
+    d = smin(d, length(l - vec2(0.44, -0.47)) - 0.2, 0.06)
+    var best = (d * s, vec3(0.64, 0.56, 0.44))
+    let f = l - vec2(0.48, -0.5)
+    best = atop(best, (ellipse(f, vec2(0.14, 0.12)) * s, vec3(0.93, 0.87, 0.75)))
+    for (x, a) in [(-0.055, 0.4), (0.065, -0.4)] {
+        let e = f - vec2(x, 0.02)
+        best = atop(best, (ellipse(turn(e, a), vec2(0.065, 0.032)) * s, vec3(0.42, 0.31, 0.22)))
+        let eye = if blink < 0.5 { length(e) - 0.024 } else {
+            max(abs(e.y + 0.004) - 0.008, abs(e.x) - 0.03)
+        }
+        best = atop(best, (eye * s, if blink < 0.5 { vec3(0.1, 0.07, 0.05) } else {
+            vec3(0.62, 0.5, 0.38)
+        }))
+    }
+    atop(best, (ellipse(f - vec2(0.0, -0.055), vec2(0.03, 0.02)) * s, vec3(0.2, 0.14, 0.1)))
+}
+
+/// A branch from `a` to `b`, tapering, `r` thick at `a`.
+fn branch(q: vec2, a: vec2, b: vec2, r: f32) -> f32 {
+    cone(q, a, b, ra: r, rb: r * 0.45)
+}
+
+/// A tree of the residents' (`seed` picks its crown) at `foot`, its crown at `h` m, shaded away
+/// from the sun.
+fn resident_tree(q: vec2, foot: vec2, h: f32, seed: f32) -> (f32, vec3) {
+    let (tree, leaves) = jungle_tree(q, foot, h, seed)
+    let lit = blend(vec3(0.34, 0.58, 0.42), vec3(0.42, 0.64, 0.4), fract(seed * 7.3))
+    (tree, if leaves > 0.5 {
+        crowned(lit, lit * vec3(0.82, 0.87, 0.95), q, foot + vec2(0.0, h + 0.4), 1.9)
+    } else {
+        vec3(0.52, 0.43, 0.35)
+    })
+}
+
+/// Two sloths under a branch from their tree; one blinks, slowly, now and then (`t`).
+fn sloths(q: vec2, t: f32) -> (f32, vec3) {
+    var best = resident_tree(q, vec2(-3.0, -0.1), h: 6.6, seed: 0.3)
+    best = nearer(best, (branch(q, vec2(-2.9, 3.4), vec2(2.8, 3.9), 0.16), vec3(0.52, 0.43, 0.35)))
+    let phase = fract(t / 7.0) * 7.0
+    let blink = smoothstep(0.0, 0.5, phase) * smoothstep(1.8, 1.3, phase)
+    best = nearer(best, sloth(q - vec2(-0.9, 3.55), 0.0))
+    nearer(best, sloth((q - vec2(1.5, 3.77)) * vec2(-1.0, 1.0), blink))
+}
+
+/// A toucan perched (`l` from its feet), facing +x: black, a pale yellow bib, a blue ring round its
+/// eye, and its great orange bill tipped dark. Twice a real one's size.
+fn toucan(l0: vec2) -> (f32, vec3) {
+    let s = 2.0
+    let l = l0 / s
+    let black = vec3(0.17, 0.16, 0.18)
+    var d = ellipse(turn(l - vec2(-0.02, 0.36), -0.35), vec2(0.15, 0.27))
+    d = min(d, capsule(l, vec2(-0.12, 0.18), vec2(-0.2, -0.24), 0.06))
+    d = smin(d, length(l - vec2(0.06, 0.66)) - 0.13, 0.06)
+    var best = (d * s, black)
+    best = atop(best, (ellipse(l - vec2(0.11, 0.54), vec2(0.08, 0.12)) * s, vec3(1.0, 0.9, 0.5)))
+    let bill = ellipse(turn(l - vec2(0.33, 0.66), -0.25), vec2(0.24, 0.075))
+    best = atop(best, (bill * s, if l.x > 0.5 { vec3(0.22, 0.16, 0.14) } else {
+        vec3(0.99, 0.62, 0.22)
+    }))
+    best = atop(best, ((length(l - vec2(0.06, 0.7)) - 0.04) * s, vec3(0.5, 0.76, 0.92)))
+    best = atop(best, ((length(l - vec2(0.065, 0.7)) - 0.017) * s, black))
+    atop(best, (ellipse(l - vec2(-0.09, 0.12), vec2(0.06, 0.04)) * s, vec3(0.88, 0.3, 0.24)))
+}
+
+/// The toucan on a branch of its tree, a bromeliad in the fork.
+fn toucan_tree(q: vec2) -> (f32, vec3) {
+    let bark = vec3(0.52, 0.43, 0.35)
+    var best = resident_tree(q, vec2(2.4, -0.1), h: 7.0, seed: 0.7)
+    best = nearer(best, (branch(q, vec2(2.3, 2.6), vec2(-1.6, 3.2), 0.13), bark))
+    let r = q - vec2(2.0, 2.75)
+    var rosette = 1.0e3
+    for a in [0.5, 1.2, 1.9, 2.6] {
+        rosette = min(rosette, cone(r, vec2(0.0), vec2(cos(a), sin(a)) * 0.55, ra: 0.09, rb: 0.01))
+    }
+    best = nearer(best, (rosette, if length(r) > 0.38 { vec3(0.86, 0.36, 0.3) } else {
+        vec3(0.42, 0.64, 0.38)
+    }))
+    nearer(best, toucan(q - vec2(-0.6, 3.04)))
+}
+
+/// A golden lion tamarin sitting (`l` from its seat), facing +x, `s` its size: golden orange, a
+/// lion's mane round a small dark face, a long tail hanging (swinging at `t`).
+fn tamarin(l0: vec2, s: f32, t: f32) -> (f32, vec3) {
+    let l = l0 / s
+    let swing = 0.08 * sin(t * 0.8 + s * 3.0)
+    var d = ellipse(turn(l - vec2(-0.02, 0.15), 0.3), vec2(0.12, 0.16))
+    d = min(d, capsule(l, vec2(0.05, 0.12), vec2(0.1, 0.0), 0.03))
+    d = min(d, capsule(l, vec2(-0.1, 0.06), vec2(-0.15 + swing * 0.4, -0.35), 0.024))
+    d = min(d, capsule(l, vec2(-0.15 + swing * 0.4, -0.35), vec2(-0.1 + swing, -0.7), 0.024))
+    var best = (d * s, vec3(0.95, 0.58, 0.2))
+    // The mane, swept back from the face; the face, bare and dark, looking out to the side.
+    let m = l - vec2(0.04, 0.35)
+    let mane = ellipse(turn(m, -0.3), vec2(0.15, 0.12)) - 0.01 * sin(atan2(m.y, m.x) * 14.0)
+    best = nearer(best, (mane * s, vec3(0.99, 0.72, 0.3)))
+    let face = ellipse(turn(m - vec2(0.1, -0.015), 0.3), vec2(0.05, 0.065))
+    best = atop(best, (face * s, vec3(0.38, 0.24, 0.2)))
+    atop(best, ((length(m - vec2(0.115, 0.01)) - 0.013) * s, vec3(0.98, 0.9, 0.8)))
+}
+
+/// A tamarin family on a branch: two grown-ups and a little one between them.
+fn tamarins(q: vec2, t: f32) -> (f32, vec3) {
+    var best = resident_tree(q, vec2(-2.6, -0.1), h: 6.2, seed: 0.5)
+    best = nearer(best, (branch(q, vec2(-2.5, 2.8), vec2(2.6, 3.1), 0.14), vec3(0.52, 0.43, 0.35)))
+    best = nearer(best, tamarin(q - vec2(-1.1, 2.97), 2.4, t))
+    best = nearer(best, tamarin((q - vec2(0.25, 3.03)) * vec2(-1.0, 1.0), 1.5, t))
+    nearer(best, tamarin((q - vec2(1.35, 3.07)) * vec2(-1.0, 1.0), 2.4, t))
+}
+
+/// A red-eyed tree frog sitting (`l` from its seat), facing +x: green, its feet orange and its eye
+/// red. Four times a real one's size.
+fn frog(l0: vec2) -> (f32, vec3) {
+    let s = 4.0
+    let l = l0 / s
+    var d = ellipse(turn(l - vec2(0.0, 0.04), 0.2), vec2(0.07, 0.04))
+    d = smin(d, length(l - vec2(0.06, 0.07)) - 0.03, 0.02)
+    var best = (d * s, vec3(0.46, 0.78, 0.3))
+    best = nearer(
+        best,
+        (ellipse(l - vec2(-0.03, 0.012), vec2(0.04, 0.016)) * s, vec3(0.98, 0.56, 0.2)),
+    )
+    best = atop(best, ((length(l - vec2(0.065, 0.09)) - 0.019) * s, vec3(0.9, 0.18, 0.16)))
+    atop(best, ((length(l - vec2(0.069, 0.09)) - 0.007) * s, vec3(0.1, 0.07, 0.06)))
+}
+
+/// A broad leaf on its stalk from `foot`, its blade's middle at `at`, `s` m long, pointing at `a`
+/// (rad): its distance.
+fn broad_leaf(q: vec2, foot: vec2, at: vec2, a: f32, s: f32) -> f32 {
+    let blade = ellipse(turn(q - at, a), vec2(s * 0.5, s * 0.2))
+    min(capsule(q, foot, at, 0.03), blade)
+}
+
+/// Tree frogs on a stand of broad leaves, a heliconia's red bracts hanging among them.
+fn frogs(q: vec2) -> (f32, vec3) {
+    let green = vec3(0.36, 0.62, 0.4)
+    var d = 1.0e3
+    for (x, h, a) in [(-1.2, 1.4, 0.35), (0.2, 2.0, -0.25), (1.5, 1.2, 0.3), (-0.4, 0.9, 2.8)] {
+        d = min(d, broad_leaf(q, vec2(0.0, -0.1), vec2(x, h), a, 1.5))
+    }
+    var best = (d, green)
+    let stem = capsule(q, vec2(0.6, -0.1), vec2(0.9, 2.6), 0.03)
+    best = nearer(best, (stem, vec3(0.42, 0.6, 0.36)))
+    for k in 0..4 {
+        let y = 2.5 - f32(k) * 0.32
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 }
+        let bract = ellipse(turn(q - vec2(0.9 + side * 0.13, y), side * 0.6), vec2(0.16, 0.06))
+        best = nearer(best, (bract, if q.y > y + 0.02 { vec3(0.95, 0.85, 0.3) } else {
+            vec3(0.9, 0.28, 0.22)
+        }))
+    }
+    best = atop(best, frog(q - vec2(-1.1, 1.74)))
+    atop(best, frog((q - vec2(1.65, 1.54)) * vec2(-1.0, 1.0)))
+}
+
+/// A waterfall over mossy rocks into a pool, mist rising off its foot; its water falling at `t`.
+fn waterfall(q: vec2, t: f32) -> (f32, vec3) {
+    let rocks = outcrop(q)
+    // Moss on the rocks' tops: where the rock ends within a hand's breadth above.
+    let moss = outcrop(q + vec2(0.0, 0.3)) > 0.0
+    var best = (rocks, if moss { vec3(0.44, 0.66, 0.42) } else { vec3(0.6, 0.63, 0.6) })
+    best = atop(best, (ellipse(q - vec2(0.2, 0.0), vec2(2.9, 0.3)), vec3(0.57, 0.8, 0.78)))
+    // The fall: from the lip between the rocks to the pool, its streaks running down.
+    let drop = 3.7 - q.y
+    let fx = q.x - 0.15 + 0.05 * drop
+    let fall = max(abs(fx) - 0.3 - 0.05 * drop, max(-drop, -q.y))
+    if fall < 0.1 {
+        // Its streaks: long, thin, white dashes running down.
+        let column = floor(fx / 0.14)
+        let across = abs(fract(fx / 0.14) - 0.5)
+        let streak = fract(q.y * 0.3 + t * 1.2 + hash2(i32(column), 71))
+        let water = if across < 0.16 && streak < 0.55 { vec3(0.98, 1.0, 1.0) } else {
+            vec3(0.72, 0.89, 0.93)
+        }
+        best = atop(best, (fall, water))
+    }
+    // The mist at its foot: puffs, cream-white, rising and drifting.
+    var mist = 1.0e3
+    for k in 0..4 {
+        let fk = f32(k)
+        let rise = fract(t * 0.12 + fk * 0.25)
+        let c = vec2(0.15 + (fk - 1.5) * 0.7 + 0.3 * sin(t * 0.3 + fk), 0.3 + rise * 1.6)
+        mist = smin(mist, length(q - c) - 0.6 * (1.0 - rise * 0.5), 0.3)
+    }
+    atop(best, (mist, vec3(0.95, 0.97, 0.96)))
+}
+
+/// The waterfall's rocks, a notch at their top for its lip.
+fn outcrop(q: vec2) -> f32 {
+    var rocks = 1.0e3
+    for (x, y, rx, ry) in [
+        (-1.7, 1.2, 1.4, 1.7),
+        (1.7, 1.3, 1.4, 2.0),
+        (-0.6, 2.9, 0.9, 0.8),
+        (0.9, 3.1, 0.8, 0.6),
+    ] {
+        rocks = smin(rocks, ellipse(q - vec2(x, y), vec2(rx, ry)), 0.3)
+    }
+    rocks
+}
+
+/// How far apart the residents are (m on their layer).
+const SIGHTS: f32 = 24.0
+
+fn residents(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[1])
+    let px = pixel_on(v, PARALLAX[1])
+    let ground = path_ground(q.x)
+    let moss = vec3(0.42, 0.62, 0.42)
+    if q.y > ground + 9.0 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, moss, q, ground, 0.15)
+    }
+    var best = (q.y - ground, moss)
+    let cell = floor(q.x / SIGHTS)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let centre = (i + 0.5) * SIGHTS
+        let base = vec2(centre, path_ground(centre))
+        if abs(q.x - centre) < 4.6 {
+            let local = q - base
+            // Each in its turn, so all five show along a level.
+            let kind = (i32(i) % 5 + 5) % 5
+            let sight = if kind == 0 {
+                sloths(local, v.time)
+            } else if kind == 1 {
+                toucan_tree(local)
+            } else if kind == 2 {
+                tamarins(local, v.time)
+            } else if kind == 3 {
+                waterfall(local, v.time)
+            } else { frogs(local) }
+            best = nearer(best, sight)
+        }
+        // A tree between the sights, now and then.
+        let x = i * SIGHTS
+        let h = hash2(i32(i), 41)
+        if h < 0.55 && abs(q.x - x) < 3.0 {
+            best = nearer(best, resident_tree(q, vec2(x, path_ground(x) - 0.2), 5.6 + 2.0 * h, h))
+        }
+    }
+    // The visitors' path's rail, in front of them all: green iron posts with round tops, a rail
+    // along them. What's behind it is cut away round it.
+    let fy = q.y - ground
+    let post_x = q.x - (floor(q.x / 2.4) + 0.5) * 2.4
+    let post = min(
+        max(rbox(vec2(post_x, fy - 0.42), vec2(0.045, 0.42), 0.02), -fy),
+        length(vec2(post_x, fy - 0.9)) - 0.07,
+    )
+    let rail = min(post, abs(fy - 0.78) - 0.035)
+    let (behind, colour) = best
+    let cut = max(behind, px - rail)
+    let (d, albedo) = if rail < cut { (rail, vec3(0.3, 0.45, 0.4)) } else {
+        (cut, dappled(colour, q, 0.7, g, gs))
+    }
+    paint(g, gs, d, albedo, q, px, haze: 0.2, line: 1.0)
+}
+
+// ---- the undergrowth, nearest --------------------------------------------------------------------
+
+fn near_ground(x: f32) -> f32 {
+    -1.7 + 0.25 * sin(x * 0.15) + 0.2 * noise2(vec2(x * 0.45, 5.0))
+}
+
+/// A monstera leaf, its blade's base at `at` and pointing at `a` (rad), `s` m long: a heart cut
+/// with the splits that run in from its edge. Its distance.
+fn monstera(q: vec2, at: vec2, a: f32, s: f32) -> f32 {
+    let l = turn(q - at, a) / s
+    var blade = ellipse(l - vec2(0.5, 0.0), vec2(0.52, 0.36))
+    blade = max(blade, -(length(l - vec2(-0.05, 0.0)) - 0.12))
+    let u = l.x - 0.5 * abs(l.y)
+    // Wedges, widening to the edge.
+    let wide = 0.012 + 0.09 * saturate((abs(l.y) - 0.12) / 0.26)
+    let slit = max(abs(fract(u / 0.28 + 0.4) - 0.5) * 0.28 - wide, 0.12 - abs(l.y))
+    max(blade, -max(slit, max(0.15 - l.x, l.x - 0.8))) * s
+}
+
+/// A banana leaf from `top`, pointing at `a` (rad), `s` m long: long, arching down, torn across
+/// here and there. Its distance.
+fn banana_leaf(q: vec2, top: vec2, a: f32, s: f32, seed: f32) -> f32 {
+    let droop = if cos(a) > 0.0 { 1.0 } else { -1.0 }
+    var l = turn(q - top, a)
+    l.y += droop * 0.18 * l.x * l.x / s
+    let blade = ellipse(l - vec2(s * 0.5, 0.0), vec2(s * 0.5, s * 0.13))
+    // A tear in a few of its 0.4 m stretches, from one edge or the other.
+    let stretch = floor(l.x / 0.4)
+    let torn = hash2(i32(stretch), i32(seed * 100.0)) < 0.3
+    let edge = if fract(stretch * 0.5) < 0.25 { l.y } else { -l.y }
+    let tear = max(abs(fract(l.x / 0.4) - 0.5) * 0.4 - 0.012, 0.03 - edge)
+    if torn && l.x > 0.5 { max(blade, -tear) } else { blade }
+}
+
+/// A fern's frond from `foot`, pointing at `a` (rad), `s` m long: arching, its leaflets a comb.
+fn frond(q: vec2, foot: vec2, a: f32, s: f32) -> f32 {
+    let droop = if cos(a) > 0.0 { 1.0 } else { -1.0 }
+    var l = turn(q - foot, a)
+    l.y += droop * 0.35 * l.x * l.x / s
+    let t = saturate(l.x / s)
+    let w = 0.2 * (1.0 - t) * (0.5 + 0.5 * abs(sin(l.x * 18.0)))
+    max(abs(l.y) - w - 0.015, max(-l.x, l.x - s))
+}
+
+/// The undergrowth at the path's edge: monsteras, bananas and ferns, swaying a little in the warm
+/// air (`time`), and vines hanging from the canopy above.
+fn undergrowth(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[0])
+    let px = pixel_on(v, PARALLAX[0])
+    let ground = near_ground(q.x)
+    let soil = vec3(0.34, 0.54, 0.36)
+    if q.y < ground + 0.1 {
+        return under(g, gs, soil, q, ground + 0.3, 0.1)
+    }
+    let up = q.y - ground
+    let sway = 0.06 * sin(v.time * 0.7 + q.x * 0.3)
+    var best = (up - 0.3, soil)
+    // The vines, from out of sight above down to their tips, leaves in pairs along them.
+    let vine_cell = floor(q.x / 5.5)
+    let vh = hash2(i32(vine_cell), 81)
+    let tip = ground + 2.8 + 2.4 * hash2(i32(vine_cell), 82)
+    if vh < 0.4 && q.y > tip - 0.3 {
+        let hang = q.y - tip
+        let x = (vine_cell + 0.5) * 5.5 +
+            (vh - 0.2) * 4.0 +
+            0.08 * sin(q.y * 1.3 + vh * 20.0) +
+            0.12 * sin(v.time * 0.5 + vh * 9.0) / (1.0 + hang * 0.3)
+        let vine = max(abs(q.x - x) - 0.03, tip - q.y)
+        best = nearer(best, (vine, vec3(0.38, 0.52, 0.32)))
+        let row = floor((q.y - tip) / 0.5)
+        let side = if i32(row) % 2 == 0 { 1.0 } else { -1.0 }
+        let leaf = ellipse(
+            turn(q - vec2(x + side * 0.13, tip + (row + 0.5) * 0.5), side * 0.5 - 0.3),
+            vec2(0.13, 0.065),
+        )
+        best = nearer(best, (max(leaf, tip - 0.1 - q.y), vec3(0.42, 0.62, 0.36)))
+    }
+    if up < 6.2 {
+        let cell = floor(q.x / 3.2)
+        for k in -1..2 {
+            let i = cell + f32(k)
+            let h = hash2(i32(i), 61)
+            let x0 = (i + 0.3 + 0.4 * hash2(i32(i), 62)) * 3.2
+            let foot = vec2(x0, near_ground(x0))
+            if abs(q.x - x0) < 3.4 {
+                let kind = i32(hash2(i32(i), 63) * 6.0)
+                if kind < 2 {
+                    // A monstera: three leaves on long stalks.
+                    var d = 1.0e3
+                    var stalks = 1.0e3
+                    for j in 0..3 {
+                        let b = 1.05 + 0.5 * f32(j) + 0.2 * h
+                        let at = foot + vec2(cos(b), sin(b)) * (1.8 + 0.6 * h) + vec2(sway, 0.0)
+                        let a = if cos(b) > 0.0 { b - 1.3 } else { b + 1.3 }
+                        stalks = min(stalks, capsule(q, foot, at, 0.03))
+                        d = min(d, monstera(q, at, a, 1.3 + 0.3 * h))
+                    }
+                    best = nearer(best, (stalks, vec3(0.4, 0.58, 0.34)))
+                    best = nearer(
+                        best,
+                        (
+                            d,
+                            crowned(
+                                vec3(0.32, 0.6, 0.42),
+                                vec3(0.25, 0.49, 0.4),
+                                q,
+                                foot + vec2(0.0, 2.2),
+                                1.2,
+                            ),
+                        ),
+                    )
+                } else if kind < 3 {
+                    // A banana: its stem and four long leaves arching from its top.
+                    let top = foot + vec2(sway * 0.5, 2.6 + 0.6 * h)
+                    best = nearer(
+                        best,
+                        (cone(q, foot, top, ra: 0.13, rb: 0.09), vec3(
+                            0.5,
+                            0.62,
+                            0.38,
+                        )),
+                    )
+                    var d = 1.0e3
+                    for a in [0.45, 1.25, 2.0, 2.75] {
+                        d = min(d, banana_leaf(q, top, a + sway, 2.4 + 0.4 * h, h + a))
+                    }
+                    best = nearer(
+                        best,
+                        (d, crowned(
+                            vec3(0.5, 0.7, 0.36),
+                            vec3(0.4, 0.6, 0.36),
+                            q,
+                            top,
+                            1.4,
+                        )),
+                    )
+                } else if kind < 5 {
+                    // A fern: a fountain of fronds.
+                    var d = 1.0e3
+                    for a in [0.35, 0.8, 1.3, 1.85, 2.35, 2.8] {
+                        d = min(d, frond(q, foot, a + sway, 1.4 + 0.4 * h))
+                    }
+                    best = nearer(best, (d, blend(vec3(0.36, 0.6, 0.38), vec3(0.44, 0.66, 0.4), h)))
+                }
+            }
+        }
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, dappled(albedo, q, 0.45, g, gs), q, px, haze: 0.1, line: 1.2)
 }
