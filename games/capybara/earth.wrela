@@ -135,7 +135,7 @@ pub fn grass_mesh(c: Course) -> Vec<vec4> {
 /// The profile's first x and its spacing (m), and how many samples it has.
 pub const FROM: f32 = -40.0
 pub const STEP: f32 = 0.25
-pub const SAMPLES: u32 = 1800
+pub const SAMPLES: u32 = 2400
 
 /// The top of the solid ground at `x` among `outlines` (each a solid's points): the highest point
 /// where a side crosses the vertical through `x`, or far below where none does.

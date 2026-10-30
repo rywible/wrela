@@ -3,11 +3,21 @@
 // person's limits (design.md, "The agent loop"). The replays (replay.wrela's `tool_assisted`),
 // the route tool and the levels' checks read them from here.
 
-use course::{HOME, LEVELS, WETLANDS}
+use course::{AVIARY, FARM, FOOD_COURT, HOME, LEVELS, POLAR, RAINFOREST, REPTILES, SAVANNA, WETLANDS}
 use pad::Hold
 
 /// The levels' keys, by number: what the route tool takes and names their runs' files by.
-pub const KEYS: [Text; LEVELS] = ["home", "wetlands"]
+pub const KEYS: [Text; LEVELS] = [
+    "home",
+    "wetlands",
+    "savanna",
+    "rainforest",
+    "aviary",
+    "reptiles",
+    "polar",
+    "farm",
+    "food_court",
+]
 
 /// A level's searched runs: any% and 100%, tool-assisted, then human-possible.
 pub struct Searched: Clone {
@@ -32,6 +42,55 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_wetlands::FULL),
             human_any: Vec::from(routes_wetlands::HUMAN_ANY),
             human_full: Vec::from(routes_wetlands::HUMAN_FULL),
+        }
+    } else if c == SAVANNA {
+        Searched {
+            any: Vec::from(routes_savanna::ANY),
+            full: Vec::from(routes_savanna::FULL),
+            human_any: Vec::from(routes_savanna::HUMAN_ANY),
+            human_full: Vec::from(routes_savanna::HUMAN_FULL),
+        }
+    } else if c == RAINFOREST {
+        Searched {
+            any: Vec::from(routes_rainforest::ANY),
+            full: Vec::from(routes_rainforest::FULL),
+            human_any: Vec::from(routes_rainforest::HUMAN_ANY),
+            human_full: Vec::from(routes_rainforest::HUMAN_FULL),
+        }
+    } else if c == AVIARY {
+        Searched {
+            any: Vec::from(routes_aviary::ANY),
+            full: Vec::from(routes_aviary::FULL),
+            human_any: Vec::from(routes_aviary::HUMAN_ANY),
+            human_full: Vec::from(routes_aviary::HUMAN_FULL),
+        }
+    } else if c == REPTILES {
+        Searched {
+            any: Vec::from(routes_reptiles::ANY),
+            full: Vec::from(routes_reptiles::FULL),
+            human_any: Vec::from(routes_reptiles::HUMAN_ANY),
+            human_full: Vec::from(routes_reptiles::HUMAN_FULL),
+        }
+    } else if c == POLAR {
+        Searched {
+            any: Vec::from(routes_polar::ANY),
+            full: Vec::from(routes_polar::FULL),
+            human_any: Vec::from(routes_polar::HUMAN_ANY),
+            human_full: Vec::from(routes_polar::HUMAN_FULL),
+        }
+    } else if c == FARM {
+        Searched {
+            any: Vec::from(routes_farm::ANY),
+            full: Vec::from(routes_farm::FULL),
+            human_any: Vec::from(routes_farm::HUMAN_ANY),
+            human_full: Vec::from(routes_farm::HUMAN_FULL),
+        }
+    } else if c == FOOD_COURT {
+        Searched {
+            any: Vec::from(routes_food_court::ANY),
+            full: Vec::from(routes_food_court::FULL),
+            human_any: Vec::from(routes_food_court::HUMAN_ANY),
+            human_full: Vec::from(routes_food_court::HUMAN_FULL),
         }
     } else {
         Searched {

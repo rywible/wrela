@@ -1,7 +1,7 @@
 // Input scripts for running the lab without a person, as the native host and `wrela trace` take
 // them (`wrela script games/capybara scripts::RUN -o run.json`).
 
-use course::{HOME, LEVELS, WETLANDS}
+use course::{AVIARY, FARM, FOOD_COURT, HOME, LEVELS, POLAR, RAINFOREST, REPTILES, SAVANNA, WETLANDS}
 use pad::{DOWN, Hold, JUMP, LEFT, PRESS, RIGHT, UP}
 use std::input::{Key, Script}
 
@@ -153,3 +153,15 @@ pub const GHOST: Script = Script::frames()
     .key_down(21, Key::Escape)
     .key_up(22, Key::Escape)
     .key_down(24, Key::D)
+
+/// Each level's searched human-possible any% run (searched.wrela), as `LEVEL`, for stills and
+/// clips of the level: none until the level is searched.
+pub const HOME_RUN: Script = script_of(HOME, routes_home::HUMAN_ANY)
+pub const WETLANDS_RUN: Script = script_of(WETLANDS, routes_wetlands::HUMAN_ANY)
+pub const SAVANNA_RUN: Script = script_of(SAVANNA, routes_savanna::HUMAN_ANY)
+pub const RAINFOREST_RUN: Script = script_of(RAINFOREST, routes_rainforest::HUMAN_ANY)
+pub const AVIARY_RUN: Script = script_of(AVIARY, routes_aviary::HUMAN_ANY)
+pub const REPTILES_RUN: Script = script_of(REPTILES, routes_reptiles::HUMAN_ANY)
+pub const POLAR_RUN: Script = script_of(POLAR, routes_polar::HUMAN_ANY)
+pub const FARM_RUN: Script = script_of(FARM, routes_farm::HUMAN_ANY)
+pub const FOOD_COURT_RUN: Script = script_of(FOOD_COURT, routes_food_court::HUMAN_ANY)

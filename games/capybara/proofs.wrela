@@ -1194,7 +1194,7 @@ const RINK: Course = Course::new(
             corner(vec2(202.0, -20.0)),
         ],
     )
-    .icy_from(50.0, 110.0)
+    .icy_from(lo: 50.0, hi: 110.0)
     .draft(vec2(120.0, 0.0), vec2(124.0, 14.0))
 
 /// A body at the running speed at `x` on the rink, then let go: how far it goes before it stops.

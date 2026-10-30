@@ -1,0 +1,36 @@
+// The Reptile House: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+
+use course::Course
+use ground::corner
+use signs::Sign
+
+/// Its name, as its title says it.
+pub const NAME: Text = "The Reptile House"
+
+/// The course: a placeholder.
+pub const COURSE: Course = built()
+
+pub fn built() -> Course {
+    Course::new(
+        start: vec2(2.0, 0.35),
+        goal_lo: vec2(30.0, 0.0),
+        goal_hi: vec2(32.0, 5.0),
+        floor: -12.0,
+    )
+        .solid(
+            [
+                corner(vec2(-6.0, -20.0)),
+                corner(vec2(-6.0, 10.0)),
+                corner(vec2(-4.0, 10.0)),
+                corner(vec2(-4.0, 0.0)),
+                corner(vec2(36.0, 0.0)),
+                corner(vec2(36.0, 14.0)),
+                corner(vec2(38.0, 14.0)),
+                corner(vec2(38.0, -20.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 36.0))
+}
+
+/// Its signs: none yet.
+pub const SIGNS: [Sign; 0] = []

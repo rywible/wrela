@@ -14,7 +14,7 @@ use sprites::{SIGN, Sprite}
 use ui::draw::{DrawList, Rect}
 use ui::glyphs::Device
 use ui::text::{Face, Fonts}
-use course::{HOME, WETLANDS}
+use course::{AVIARY, FARM, FOOD_COURT, HOME, POLAR, RAINFOREST, REPTILES, SAVANNA, WETLANDS}
 use world::Snap
 
 /// The moves a sign teaches, a bit each.
@@ -46,6 +46,20 @@ pub fn signs(c: u32) -> Vec<Sign> {
         Vec::from(home::SIGNS)
     } else if c == WETLANDS {
         Vec::from(wetlands::SIGNS)
+    } else if c == SAVANNA {
+        Vec::from(savanna::SIGNS)
+    } else if c == RAINFOREST {
+        Vec::from(rainforest::SIGNS)
+    } else if c == AVIARY {
+        Vec::from(aviary::SIGNS)
+    } else if c == REPTILES {
+        Vec::from(reptiles::SIGNS)
+    } else if c == POLAR {
+        Vec::from(polar::SIGNS)
+    } else if c == FARM {
+        Vec::from(farm::SIGNS)
+    } else if c == FOOD_COURT {
+        Vec::from(food_court::SIGNS)
     } else {
         Vec::new()
     }

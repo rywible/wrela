@@ -455,29 +455,96 @@ impl Course {
 /// capybaras' own enclosure (design.md, "A map of the zoo").
 pub const HOME: u32 = 0
 pub const WETLANDS: u32 = 1
+pub const SAVANNA: u32 = 2
+pub const RAINFOREST: u32 = 3
+pub const AVIARY: u32 = 4
+pub const REPTILES: u32 = 5
+pub const POLAR: u32 = 6
+pub const FARM: u32 = 7
+pub const FOOD_COURT: u32 = 8
 
 /// How many levels there are. The courses are the levels, then the movement lab, which only a
 /// developer's build opens (main.wrela's `DEV`).
-pub const LEVELS: u32 = 2
+pub const LEVELS: u32 = 9
 pub const LAB_COURSE: u32 = LEVELS
 pub const COURSES: u32 = LEVELS + 1
 
 /// Course `i`: a level, or the lab.
 pub fn course(i: u32) -> borrow Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == HOME { home::COURSE } else if i == WETLANDS { wetlands::COURSE } else { LAB }
+    if i == HOME {
+        home::COURSE
+    } else if i == WETLANDS {
+        wetlands::COURSE
+    } else if i == SAVANNA {
+        savanna::COURSE
+    } else if i == RAINFOREST {
+        rainforest::COURSE
+    } else if i == AVIARY {
+        aviary::COURSE
+    } else if i == REPTILES {
+        reptiles::COURSE
+    } else if i == POLAR {
+        polar::COURSE
+    } else if i == FARM {
+        farm::COURSE
+    } else if i == FOOD_COURT {
+        food_court::COURSE
+    } else {
+        LAB
+    }
 }
 
 /// Course `i` made again as its literals say now: the course lens's (lens.wrela), whose drags
 /// change them in a lifted build. The game reads the constants, made once in the build.
 pub fn made(i: u32) -> Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == HOME { home::built() } else if i == WETLANDS { wetlands::built() } else { lab() }
+    if i == HOME {
+        home::built()
+    } else if i == WETLANDS {
+        wetlands::built()
+    } else if i == SAVANNA {
+        savanna::built()
+    } else if i == RAINFOREST {
+        rainforest::built()
+    } else if i == AVIARY {
+        aviary::built()
+    } else if i == REPTILES {
+        reptiles::built()
+    } else if i == POLAR {
+        polar::built()
+    } else if i == FARM {
+        farm::built()
+    } else if i == FOOD_COURT {
+        food_court::built()
+    } else {
+        lab()
+    }
 }
 
 /// Course `i`'s name, as its title says it.
 pub fn name(i: u32) -> Text {
-    if i == HOME { home::NAME } else if i == WETLANDS { wetlands::NAME } else { "The lab" }
+    if i == HOME {
+        home::NAME
+    } else if i == WETLANDS {
+        wetlands::NAME
+    } else if i == SAVANNA {
+        savanna::NAME
+    } else if i == RAINFOREST {
+        rainforest::NAME
+    } else if i == AVIARY {
+        aviary::NAME
+    } else if i == REPTILES {
+        reptiles::NAME
+    } else if i == POLAR {
+        polar::NAME
+    } else if i == FARM {
+        farm::NAME
+    } else if i == FOOD_COURT {
+        food_court::NAME
+    } else {
+        "The lab"
+    }
 }
 
 /// The movement lab: from the left, a runway with two one-way ledges above it (2 m and 3.5 m
