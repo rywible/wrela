@@ -34,8 +34,7 @@ use fog::{FogField, FogVolume, sky_fogged}
 use light::Light
 use lit::Lighting
 use paint::{
-    BLOOM_LEVELS, Develop, Exposure, Look, Metering, bloom_down, bloom_up, dab_map, develop,
-    identity, lines, meter,
+    BLOOM_LEVELS, Develop, Exposure, Look, Metering, bloom_down, bloom_up, develop, identity, meter,
 }
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Steer, Trace, band}
@@ -44,6 +43,7 @@ use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use switches::Switches
 use marks
+use marks::{dab_map, lines}
 use style::Style
 use substance
 use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
@@ -361,6 +361,11 @@ pub struct Targets {
     pub shape: Texture<Rg32Uint>,
     pub cause: Texture<R32Uint>,
     pub tone: Texture<R32Uint>,
+    /// Temporal AA's image with the look's marks on it, at the output's size (`marks::marked`),
+    /// where the look draws any the marks pass draws (`marks::DRAWN`), else a texel: swapped into
+    /// the history's place for `paint::develop`, and back (the history stays unmarked, for the
+    /// next frame).
+    pub marked: Texture<Rgba16Float>,
 }
 
 /// Targets of a texel each, before the first frame sizes them.
@@ -384,14 +389,24 @@ fn no_targets() -> Targets {
         shape: writable_texture::<Rg32Uint>(width: 1, height: 1),
         cause: texture::<R32Uint>(width: 1, height: 1),
         tone: texture::<R32Uint>(width: 1, height: 1),
+        marked: texture::<Rgba16Float>(width: 1, height: 1),
     }
 }
 
 /// Targets for an output of `width` × `height`, the scene's `w` × `h` (`effects`: whether the
 /// scene draws over itself, whose targets every frame has now: the dabs share the water's), with
 /// the substance's at the scene's size if `substance`.
-fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool, substance: bool) -> Targets {
+fn targets_for(
+    width: u32,
+    height: u32,
+    w: u32,
+    h: u32,
+    effects: bool,
+    substance: bool,
+    marked: bool,
+) -> Targets {
     let (sw, sh) = if substance { (w, h) } else { (1, 1) }
+    let (mw, mh) = if marked { (width, height) } else { (1, 1) }
     Targets {
         scene: texture::<Rgba16Float>(width: w, height: h),
         scene_b: texture::<Rgba16Float>(width: w, height: h),
@@ -411,6 +426,7 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool, substance
         shape: writable_texture::<Rg32Uint>(width: (sw + 1) / 2, height: (sh + 1) / 2),
         cause: texture::<R32Uint>(width: sw, height: sh),
         tone: texture::<R32Uint>(width: sw, height: sh),
+        marked: texture::<Rgba16Float>(width: mw, height: mh),
     }
 }
 
@@ -429,7 +445,8 @@ impl Targets {
             h(self.bloom_2) +
             h(self.bloom_3) +
             h(self.bloom_4)
-        let substance = memory::texels(self.form.width(), self.form.height(), 8) +
+        let substance = memory::texels(self.marked.width(), self.marked.height(), 8) +
+            memory::texels(self.form.width(), self.form.height(), 8) +
             memory::texels(self.shape.width(), self.shape.height(), 8) +
             memory::texels(self.cause.width(), self.cause.height(), 4) * 2
         n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3 + substance
@@ -1734,6 +1751,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 h,
                 scene.has_effects(),
                 substance: Y::SUBSTANCE != 0,
+                marked: (Y::MARKS & marks::DRAWN) != 0,
             )
             self.pyramid = Pyramid::new(width: w, height: h)
             self.ambient = Occlusion::new(width: w, height: h)
@@ -3141,6 +3159,25 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         }
         let hdr = self.look.output == 1 && std::gpu::screen_is().hdr
         let d = Develop { cam, look: self.look, out, view: self.debug.view, hdr: u32(hdr) }
+        // The look's marks on temporal AA's image, at the output's size (`marks::marked`), where
+        // it draws any: what the develop takes in its place.
+        if (Y::MARKS & marks::DRAWN) != 0 {
+            label("marks")
+            let mp = begin_pass(mut self.targets.marked)
+            fullscreen(
+                mp,
+                marks::marked::<Y>.bind(
+                    d,
+                    image: self.targets.history,
+                    depth: self.targets.depth,
+                    form: self.targets.form,
+                    shape: self.targets.shape,
+                    cause: self.targets.cause,
+                    tone: self.targets.tone,
+                ),
+            )
+            mp.end()
+        }
         // The dabs into the texture the water's copy held (done with by now).
         let dp = begin_pass(mut self.targets.below)
         fullscreen(
@@ -3208,6 +3245,11 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             bloom_add(mut self.targets.bloom_2, self.targets.bloom_3, s)
         }
         phase("present")
+        // The develop takes the marked image in the history's place, and the history comes back
+        // after it, unmarked, for the next frame.
+        if (Y::MARKS & marks::DRAWN) != 0 {
+            swap(mut self.targets.history, mut self.targets.marked)
+        }
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         fullscreen(
             screen,
@@ -3226,6 +3268,9 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         )
         scene.overlay(screen, out)
         screen.present()
+        if (Y::MARKS & marks::DRAWN) != 0 {
+            swap(mut self.targets.history, mut self.targets.marked)
+        }
     }
 }
 

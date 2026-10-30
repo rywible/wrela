@@ -39,22 +39,29 @@
 // `--quality` measures each shot instead, as the lookdev instrument (quality.wrela,
 // docs/lookdev.md): play against a frozen-time reference, its flicker, pop and trail, into
 // `quality.json`; `--controls` adds the instrument's negative controls (`controls.json`).
+//
+// `--look <type>` builds the package in that look first (`wrela build --set LOOK=<type>`, into
+// build/looks), and measures or renders that build. `--bars <dir>` holds each shot measured to the
+// bars of the run in `<dir>` (its `quality.json`, the physical look's): flicker and pop at most
+// 1.5 times its, trail at most its plus a pixel (docs/lookdev.md, "Judging a style"), printed and
+// written as `bars.json`.
 
 use shots::{
-    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, chosen,
-    keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
+    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, WS, build_of, check_line,
+    chosen, keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
 use quality::{
     CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, measure, measured_json, row,
 }
 use std::input::Script
 use std::io::print
-use std::json::Doc
+use std::json::{Doc, TOP, parse}
 use std::tool::{Task, ToolError, args, spawn}
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::files
 use std::tool::image
+use std::tool::toolchain
 use toolkit::driven::untrapped
 use toolkit::page::run_page
 use toolkit::whole::{copy_file, read_file, write_file, write_png}
@@ -127,10 +134,99 @@ pub fn clip(build: str, keys: Script, webm: str, workers: u32) -> Result<(), Too
     copy_file(f"{build}/results/clip.webm", webm)
 }
 
+/// `program` built in look `look` (`--set LOOK=<look>`) into build/looks: the build's directory.
+fn built_in(program: str, look: str) -> Result<String, ToolError> {
+    let parts = look.split("::")
+    let (a, b) = parts[parts.len() - 1]
+    let names = program.split("/")
+    let (pa, pb) = names[names.len() - 1]
+    let out = String::from(f"{WS}/build/looks/{program.slice(pa, pb)}-{look.slice(a, b)}")
+    var options = toolchain::options()
+    options.timeout = 900.0
+    options.set.push(toolchain::Set { name: String::from("LOOK"), value: String::from(look) })
+    print(f"building {program} in {look} into {out}")
+    let made = toolchain::build(program, out.as_str(), options).wait()?
+    if !made.ok {
+        for d in made.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{program} didn't build in {look}"))
+    }
+    Ok(out)
+}
+
+/// Whether a look's measures hold the bars of the physical look's (`flicker`, `pop`, `trail`):
+/// flicker and pop at most 1.5 times its, trail at most its plus a pixel (docs/lookdev.md,
+/// **proposed**).
+pub fn holds(flicker: f64, pop: f64, trail: f64, base: (f64, f64, f64)) -> (bool, bool, bool) {
+    let (bf, bp, bt) = base
+    (flicker <= 1.5 * bf, pop <= 1.5 * bp, trail <= bt + 1.0)
+}
+
+/// Each shot's flicker, pop and trail in a run's `quality.json` text (`text`): (shot, the three).
+pub fn measures_in(text: str) -> Vec<(String, f64, f64, f64)> {
+    var out: Vec<(String, f64, f64, f64)> = Vec::new()
+    let Some(d) = parse(text) else { return out }
+    for k in 0..d.count(TOP) {
+        let Some(e) = d.at(TOP, k) else { continue }
+        let num = |key: str| match d.get(e, key) {
+            Some(v) => d.num(v).unwrap_or(0.0),
+            None => 0.0,
+        }
+        let shot = match d.get(e, "shot") {
+            Some(v) => d.text(v).unwrap_or(String::new()),
+            None => String::new(),
+        }
+        out.push((take shot, num("flicker"), num("pop"), num("trail")))
+    }
+    out
+}
+
+/// The shots of `ran` (this run's `quality.json` text) held to the bars of the run in `dir`: a
+/// table printed and `bars.json` written into `out`. Whether every shot held them.
+fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
+    let at = String::from(f"{WS}/{dir}/quality.json")
+    let base = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    let bases = measures_in(base.as_str())
+    print("| Shot | flicker ×10⁻⁶ (bar) | pop (bar) | trail px (bar) | |\n|---|---|---|---|---|")
+    var lines: Vec<String> = Vec::new()
+    var all = true
+    for (shot, f, p, t) in measures_in(ran) {
+        var found: Option<(f64, f64, f64)> = None
+        for (bs, bf, bp, bt) in bases {
+            if bs.as_str() == shot.as_str() {
+                found = Some((bf, bp, bt))
+            }
+        }
+        let Some(b) = found else {
+            print(f"| {shot} | (no baseline) | | | |")
+            continue
+        }
+        let (bf, bp, bt) = b
+        let (hf, hp, ht) = holds(f, p, t, b)
+        let ok = hf && hp && ht
+        all = all && ok
+        print(
+            f"| {shot} | {f * 1.0e6:.2} ({bf * 1.5e6:.2}) | {p:.4} ({bp * 1.5:.4}) | {t:.0} ({bt + 1.0:.0}) | {if ok { "holds" } else { "misses" }} |",
+        )
+        lines.push(
+            String::from(
+                f"{{\"shot\": \"{shot}\", \"flicker\": {f}, \"flicker_bar\": {bf * 1.5}, \"pop\": {p}, \"pop_bar\": {bp * 1.5}, \"trail\": {t}, \"trail_bar\": {bt + 1.0}, \"holds\": {ok}}}",
+            ),
+        )
+    }
+    write_file(f"{out}/bars.json", Vec::from([Vec::from(json_list(lines).as_bytes())]))?
+    Ok(all)
+}
+
 /// Makes the stills, then the clips, as `o` says.
 pub fn lookbook(o: Options) -> Result<(), ToolError> {
     let (view, presses, listed) = VIEWS[o.view]
-    let build = build_of(o.program.as_str())
+    let build = if o.look.is_empty() { build_of(o.program.as_str()) } else {
+        built_in(o.program.as_str(), o.look.as_str())?
+    }
     let names_at = if listed.is_empty() {
         lookbook_of(o.program.as_str())
     } else {
@@ -229,7 +325,12 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
         entries.push(measured_json(stem(i, shots[i].as_str()).as_str(), m.clone(), "measured"))
         ran.push((i, take m))
     }
-    write_file(f"{out}/quality.json", Vec::from([Vec::from(json_list(entries).as_bytes())]))?
+    let listed = json_list(entries)
+    write_file(f"{out}/quality.json", Vec::from([Vec::from(listed.as_bytes())]))?
+    if !o.bars.is_empty() {
+        let held = barred(listed.as_str(), o.bars.as_str(), out)?
+        print(if held { "every shot holds its bars" } else { "a shot misses its bars (bars.json)" })
+    }
     if !o.controls {
         return Ok(())
     }

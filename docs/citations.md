@@ -152,6 +152,8 @@ Each is our own Wrela code written from the published idea. No code was copied.
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | `ui::ttf` | How TrueType's tables are read, and their fallbacks |
 | Lucide's settings-2 icon (ISC) | `console/` | Recreated from its 24-unit geometry |
 | [Tailwind CSS's zinc palette](https://tailwindcss.com/docs/colors) (MIT) | `docsite/` | The docs' neutral greys |
+| Z. H. Cigolle, S. Donow, D. Evangelakos, M. Mara, M. McGuire and Q. Meyer, ["A Survey of Efficient Representations for Independent Unit Vectors"](https://jcgt.org/published/0003/02/01/) (*JCGT* 2014) | `engine::substance` | The substance's normals and principal direction in octahedral coordinates |
+| P. Bénard, A. Bousseau and J. Thollot, ["State-of-the-Art Report on Temporal Coherence for Stylized Animations"](https://doi.org/10.1111/j.1467-8659.2011.02075.x) (*Computer Graphics Forum* 2011) | `engine::marks` | Marks anchored in 3D and sized in 2D, faded across a lattice's levels: the compromise between the shower door and sliding it recommends |
 
 ## Read for principles
 

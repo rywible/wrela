@@ -1,0 +1,11 @@
+# The marks (engine::marks, docs/plan-world-class-3.md §D7a): a mark stays on its surface point
+# under a dolly, keeps its size in pixels, and fades between its lattices across an octave of
+# distance (CPU tests of `marks::sample` and a fixture look's marks); and the marks pass draws on
+# the hardware GPU (a tool test: the frame fixture, engine/tests/frame, in a look that draws dots).
+[package]
+name = "marks_tests"
+
+[dependencies]
+engine = { workspace = true }
+styles = { workspace = true }
+hosts = { workspace = true }

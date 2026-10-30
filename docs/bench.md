@@ -2518,3 +2518,23 @@ sample). Again, interleaved:
 - **The whole substance (`Every`): about 1.1 ms** over the physical look.
 - `wrela pipelines engine/tests/frame --json [--set LOOK=styles::fixtures::Every]`: the ground's
   shading's `attachment_bytes` 8 for `Physical` (the most of its 58 pipelines 8), 24 for `Every`.
+
+## D7a, the marks (2026-10-30, toolchain 0.11.0)
+
+docs/plan-world-class-3.md §D7a. The physical look's coherence on the eight development shots,
+the baseline the looks' bars are relative to (`wrela tool lookbook -- build/d7a/physical --package
+examples/vale --quality --shots dev`, 1920 × 1080, M4 Air, D7a's code):
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px | bar: flicker ×10⁻⁶ / pop / trail |
+|---|---|---|---|---|---|
+| 12-D1-the-forest-floor | 20.55 | 48.11 | 0.0244 | 77 | 72.17 / 0.0366 / 78 |
+| 13-D2-the-canopy-against-the-sun | 45.78 | 0.37 | 0.0012 | 3 | 0.56 / 0.0018 / 4 |
+| 14-D3-another-old-oak | 23.56 | 137.85 | 0.1044 | 28 | 206.78 / 0.1566 / 29 |
+| 15-D4-the-stream | 20.49 | 31.47 | 0.0093 | 22 | 47.21 / 0.0140 / 23 |
+| 16-D5-the-shore-at-evening | 25.24 | 118.44 | 0.0072 | 4 | 177.66 / 0.0108 / 5 |
+| 17-D6-the-vale-from-the-west | 36.70 | 14.93 | 0.0035 | 2 | 22.40 / 0.0053 / 3 |
+| 18-D7-the-creature-in-the-wood | 23.48 | 16.94 | 0.0309 | 13 | 25.41 / 0.0464 / 14 |
+| 19-D8-the-wood-under-cloud | 27.98 | 36.44 | 0.0235 | 5 | 54.66 / 0.0353 / 6 |
+
+The bars (**proposed**): flicker and pop 1.5 times the physical look's, trail its plus a pixel
+(`lookbook --bars`, `main::holds`).

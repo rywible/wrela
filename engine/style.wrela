@@ -54,10 +54,16 @@ pub trait Style {
     /// wetness, stress), and albedo `albedo` becomes in this look, before light.
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3
 
-    /// How dark a mark `m` makes a pixel (0: not at all), its substance `s`, at a depth whose
-    /// pixel is `depth_px` metres across: none by default.
+    /// How dark a mark `m` makes a pixel (0: not at all; below 0 it lightens), its substance `s`,
+    /// at a depth whose output pixel is `depth_px` metres across: none by default.
     fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
         0.0
+    }
+
+    /// How many output pixels across a mark of kind `kind` (`marks`' bits) is: the spacing of its
+    /// lattice (`marks::sample`).
+    fn mark_px(kind: u32) -> f32 {
+        12.0
     }
 
     /// The lens: the output pixel `px`, painted (`paint`: its dabs, bloom and sharpening in), as

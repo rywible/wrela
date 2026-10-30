@@ -3,9 +3,11 @@
 // of them (`Every`) or one channel's (`Formed`, `Caused`, `Toned`), so a channel's cost is a build
 // of the vale with it against the physical one (`wrela build examples/vale --set
 // LOOK=styles::fixtures::Every`); and one the trait's test draws a sphere's normals with
-// (`Normals`). `wrela tool styles` leaves them out (D10).
+// (`Normals`), and one the marks' tests draw dots with (`Dotted`). `wrela tool styles` leaves them
+// out (D10).
 
 use engine::marks
+use engine::marks::MarkSample
 use engine::light::{Light, Lit}
 use engine::paint::{Develop, Exposure}
 use engine::style::Style
@@ -216,5 +218,63 @@ impl Style for Normals {
         s: Sampler,
     ) -> vec4 {
         vec4(paint, 1.0)
+    }
+}
+
+/// A look for the marks' own tests (engine/tests/marks): physical light, its substance written,
+/// and round dots `DOT_PX` output pixels apart as its marks (`marks::DABS`), each a soft disc half
+/// its spacing across, a pixel's edge.
+pub struct Dotted {}
+
+/// The dots' spacing (output pixels).
+pub const DOT_PX: f32 = 12.0
+
+impl Style for Dotted {
+    const SUBSTANCE: u32 = substance::ALL
+    const MARKS: u32 = marks::LINES | marks::DABS
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Physical::shade_leaf(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    /// A soft disc a quarter of its cell in radius, its edge a pixel wide.
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        let r = length(m.offset) * m.size_px
+        0.5 * (1.0 - smoothstep(m.size_px * 0.25 - 0.5, m.size_px * 0.25 + 0.5, r))
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        DOT_PX
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
     }
 }

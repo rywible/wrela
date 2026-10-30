@@ -87,3 +87,19 @@ The references stay outside the repository, so the tool runs as a package with t
   - majority: at least 6 of 12 pairs are won or equal by the judges' median (4 of 8 on the development panel).
   It writes `tally.json` and `tally.md` (each pair's preferences and rubric means, the rules, the verdict, the rubric's rows ranked by how much the vale lost them) for docs/bench.md's "Public visual references". Changing a reference (any field of its record: what a judge is shown, its rights, its copy) or a shot (any field: its framing too) changes the manifest's or the shots' hash, and the tool refuses a panel whose hashes aren't the frozen ones: a changed source or shot makes a new baseline.
 - **The judges** are eight agents in fresh contexts. Each is given the rubric, the pairs' images (its own access to the files), their credits and conditions, and nothing of what the implementer expects, and is told to judge by viewing alone (no checksums, bytes or pixel arithmetic). Each writes `judges/<name>.json`.
+
+## Judging a style
+
+A look other than the physical one (docs/plan-world-class-3.md Part D, `content/styles`) has no
+"before" to be preferred to. Its G-look is (1) its twelve stills; (2) and (3) the instrument's
+measures against the look's own reference (F12 at the look's own settings), which say
+convergence and coherence, not taste; (4) the blind judge on the rubric without a pair, and,
+where the look was fitted to a set of paintings (`wrela tool fit --style`), the pair (still,
+painting) on one added row, *style* (3 is "the same hand").
+
+**Coherence** (§D7): a look's marks are anchored in 3D and sized in 2D (`engine::marks`), and the
+instrument measures what that leaves on the screen. `wrela tool lookbook -- <out> --package
+examples/vale --quality --shots dev --look <type> --bars <physical-run>` builds the vale in the
+look, measures the eight development shots' strips, and holds each to the physical look's bars
+(**proposed**): flicker and pop at most 1.5 times the physical look's on the same shot, trail at
+most its plus a pixel. The physical baseline is in docs/bench.md ("D7a, the marks").
