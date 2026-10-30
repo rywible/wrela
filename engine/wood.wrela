@@ -1873,7 +1873,7 @@ impl Wood {
                             instances: ph.instances.span(start: 0, count: self.seen.places),
                             marks: ph.marks.span(start: 0, count: self.seen.places),
                             bounds: self.pool.bounds,
-                            front: 1,
+                            front: 0,
                         ),
                         page_shade.bind(
                             lt,
@@ -1887,7 +1887,7 @@ impl Wood {
                         ),
                         indirect: self.of_way(ph.far, IMPOSTOR),
                         count: n,
-                        depth: impostor::SHADED,
+                        depth: PREPASSED,
                     )
                 },
                 Impostors::Source { data } => {
@@ -1900,7 +1900,7 @@ impl Wood {
                             instances: ph.instances.span(start: 0, count: self.seen.places),
                             marks: ph.marks.span(start: 0, count: self.seen.places),
                             bounds: self.pool.bounds,
-                            front: 1,
+                            front: 0,
                         ),
                         identity_shade.bind(
                             lt,
@@ -1913,7 +1913,7 @@ impl Wood {
                         ),
                         indirect: self.of_way(ph.far, IMPOSTOR),
                         count: n,
-                        depth: impostor::SHADED,
+                        depth: PREPASSED,
                     )
                 },
             }
@@ -1946,6 +1946,8 @@ impl Wood {
 
     /// A phase's (`ph`) impostors shaded, from the pool's colour, normals and toward-and-depth
     /// (`c`, `nm`, `d`: of whichever formats, `Impostors`).
+    /// Flat impostors use the prepass's exact depth to reject uncovered and hidden pixels
+    /// early; keep the winning-ID check for coincident surfaces.
     fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format>(
         self,
         pass: P,
@@ -1968,7 +1970,7 @@ impl Wood {
                 instances: ph.instances.span(start: 0, count: self.seen.places),
                 marks: ph.marks.span(start: 0, count: self.seen.places),
                 bounds: self.pool.bounds,
-                front: 1,
+                front: 0,
             ),
             far_shade.bind(
                 lt,
@@ -1983,7 +1985,7 @@ impl Wood {
             ),
             indirect: self.of_way(ph.far, IMPOSTOR),
             count: n,
-            depth: impostor::SHADED,
+            depth: PREPASSED,
         )
     }
 

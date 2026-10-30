@@ -554,9 +554,9 @@ pub struct FarVertex: Copy {
 /// the wind as its cards would be at each corner's height (`plant::sway`), so it leans and moves
 /// as they do; its kind's box and views' bounds from `kinds` (one draw draws every kind's
 /// instances of a way). Its id is its place in the frame's instances plus 1. For
-/// the shading pass (`front`), the quad is moved toward the eye to the front of the plant's box
-/// (along the eye's rays, so it covers the same pixels and its points are the same): a depth
-/// test there leaves what's in front of the plant, early.
+/// surfaces with fragment-written depth, the shading quad moves toward the eye to the front
+/// of the plant's box, along the eye's rays. Flat impostors use front 0 in both passes and
+/// shade only at the exact prepassed depth.
 @vertex
 pub fn far_quad(
     v: VertexIndex,

@@ -3768,3 +3768,17 @@ bit-exact, five GPU tests and deliberate empty-program failure verified.
 First matched assessment 18.58 min; two followups,
 zero training. G1–G7 unchanged/unmet.
 [Evidence, memory tradeoffs and preserved failures](neural-distance-capacity.md).
+
+## Exact-depth impostor shading — 2026-10-30
+
+Pop!_OS AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23, parent 264bfb08.
+Four source-matched 660-frame LastGreen pairs, 1920×1080 output, unchanged 0.667
+internal scale; both orders, one quiet GPU queue. CompleteGPU totals−5.40–6.09%;
+settled p50 about 42.1→36.6–36.8 ms, vegetation shading8.95→3.43 ms.
+All 36 established shaded checks pass; localized paired image max62/255.
+Raw leaf-coverage precision 99.999303%, recall 100.000000%,
+boundary p99 0.000000 px. No new buffers or training.
+Resident changes vary; no physical-memory saving or G1–G7 completion.
+Both followups retired. [Full evidence and limits](neural-impostor-depth-reuse.md).
+Evidence: build/neural-evidence/foliage-shared-work-v1 on Pop!_OS.
