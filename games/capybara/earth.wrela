@@ -438,7 +438,7 @@ pub fn grass(b: Blade, f: Field, ice: [vec4]) -> Over {
     let pal = palette(u32(f.habitat + 0.5))
     var fill = blend(pal.grass, pal.grass_tip, tip)
     fill = wash(fill, b.world)
-    var o = inked(fill, d, q, px * 1.4, px, vec3(0.2, 0.33, 0.15))
+    var o = inked(fill, d, q, px * 1.4, px, pal.grass * 0.42)
     if daisy < px * 2.0 {
         let centre = daisy + 0.03
         let white = blend(vec3(1.0, 0.97, 0.9), vec3(1.0, 0.8, 0.3), smoothstep(px, -px, centre))
