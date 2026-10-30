@@ -2376,3 +2376,92 @@ counted from 60 frames after `playable`, the walks begun at frame 900.
 - **G-pixels at `Epic`:** the vale's and the floor's builds have the same 108 and 169 pipelines,
   byte for byte, as before C7; capybara, herd and climber-lab 0 px differ from build/base-0.9, the
   clearing as C6a, the floor within its noise.
+
+## C6, the sustained frame (2026-10-29, toolchain 0.10.3)
+
+docs/plan-world-class-3.md §C6. The runs are `wrela tool bench -- --scene vale-walk --scene
+last-green-walk ...` on the M4 Air, Epic. Each run is counted from 60 frames after `playable`
+(earlier tables counted the load's covered frames: the vale's GPU span in them was a covered
+scene's). The walks begin at frame 900.
+
+| Step | vale GPU p50 / interval p99 / over 33 | floor GPU p50 / interval p99 / over 33 |
+|---|---|---|
+| the baseline, counted after playable (a1aaf9f4) | 18.56 / 35.91 / 29 | 14.68 / 24.26 / 1 |
+| C6a: a whole dome marched every other frame | 15.34 / 36.84 / 21 | 12.88 / 25.79 / 1 |
+| **sustained 600 s** (`--sustained 600`), Epic | **18.02** / 32.17 / 9 (minute 1 20.24, minute 10 20.92) | **14.01** / 38.38 / 42 (minute 1 15.92, minute 10 16.36) |
+
+The fanless M4 Air runs 15-20 % slower after its first minutes: the plain runs are the cool
+machine's, and the sustained row is what the gate reads.
+
+Levers, each measured:
+
+- **Kept: the clouds' march every other frame** (C6a, G-look (3) within each shot's run-to-run
+  spread).
+- **Dropped: the probes traced again on the dome's resting frames.** The floor's
+  `15-the-wildwood` lost 1.48 dB.
+- **Not taken: the fog's inject at half its cadence.** Its froxels follow the camera each frame.
+- **Dropped: the cards' range 160 → 120 m** (`Wood::cards_limit`), vegetation −2.0 ms serial (to
+  90 m, −3.2), and **the leaves' coverage from two area samples, not four** (`leaf_pixel`), the
+  prepass −1.3 ms. Each raised a G-look (3) measure that a still can't show a judge
+  (development shots at 720p: `12-D1`'s trail 65 → 72 and 77 px, `18-D7`'s flicker 18.6 → 21.1
+  and 20.8, reproducible).
+- **The hitches.** The vale's are booked to `bloom` at 18-26 ms, but in a paced run a frame's
+  bloom pass holds the wait for the screen; alone, bloom is 1.6 ms. They are frames whose GPU
+  time overran.
+
+Where a walk's frame goes, each pass alone (`wrela profile <pkg> --chrome --serial --size
+1920x1080 --warmup 960 --frames 300`), ms a frame:
+
+| Pass | vale | floor |
+|---|---|---|
+| vegetation (shading) | 9.63 | 7.68 |
+| vegetation prepass | 9.21 | 6.19 |
+| fog | 2.77 | 6.51 |
+| temporal | 3.31 | 4.28 |
+| look | 3.11 | 4.44 |
+| terrain | 2.93 | 4.00 |
+| bloom | 2.05 | 2.68 |
+
+The vale's cards are 7.5 ms of its prepass, about 4 of it their leaves' coverage test, and 4.8
+of its shading pass. The prepass and the shading pass each draw every card.
+
+- **G-sustained: Blocked.**
+  - The vale is at 18.02 ms GPU p50 against 12, interval p99 32.17 against 20, 9 frames over
+    33 against 0.
+  - The floor is at 14.01, 38.38 and 42.
+  - Next: the cards shaded from the prepass, not drawn twice (a target of each pixel's card,
+    instance and place on the card; at most the shading pass's 4.8 ms of card draws). That
+    changes the cards Part E grows, so it's taken with Part E's wood.
+  - Then the floor's froxels, and the look, temporal AA and the bloom at the output's size.
+- **The hitch table: not empty** (Blocked as above). Every hitch is a GPU frame overrun, and the
+  levers are the passes above.
+
+## Whether D27 holds
+
+docs/plan-world-class-3.md §0.1, D27 (**proposed**). The table has a row per gate per scene per
+device, each cell "holds", "misses by ..." or "blocked: ...". Part C started it with the M4's
+performance rows; Part H finishes it. The M4 Air numbers are Chrome at 1080p, Epic,
+toolchain 0.10.3: the frame from C6's 600 s sustained run, memory from the same run's GPU peak,
+and the starts from C5's three-run medians (salts new to the machine).
+
+| Gate | Scene | M4 Air | Note |
+|---|---|---|---|
+| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.02 ms (18.02) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). |
+| | floor | misses by 2.01 ms (14.01) | Its fog is 6.5 ms serial, beside the cards. |
+| Paced p99 < 20 ms | vale | misses by 12.17 ms (32.17) | The same frames' overruns. |
+| | floor | misses by 18.38 ms (38.38) | |
+| 0 of 1,200 paced frames over 33 ms | vale | misses by 9 | |
+| | floor | misses by 42 | |
+| 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.7 a second; 58.8 needed) | |
+| | floor | misses (54.6 a second) | |
+| GPU memory < 512 MiB | vale | misses by 29.5 MiB (541.5 peak) | It held 478.8 at playable. Its walk now runs 1,260 frames (C4's 1,020, under 512 at 508.2), and the probes baked round the moving eye are what grows. |
+| | floor | misses by 224.9 MiB (736.9) | Its built things' realizations (C4). |
+| Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). |
+| | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. |
+| Warm start < 3 s | vale | **holds** (2.21) | |
+| | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. |
+| Lower tiers measured, each under the one above | vale, floor | **holds** (C7) | Epic > High > Medium > Low on both. |
+| Other devices | all | blocked: deferred to a later plan (D37) | |
+| Fidelity (G-reference) | vale | pending: Part G's review | |
+| Grown plants and creatures (G-grown) | vale | pending: Parts E and F | |
+| Four styles, no change to `engine/` | vale | pending: Part D | |
