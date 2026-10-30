@@ -882,3 +882,8 @@ fn the_searched_runs_finish_in_their_times_without_a_death() {
     assert(human_full.finished == 1957 && human_full.deaths == 0)
     assert(human_full.snacks == every)
 }
+
+/// Where each move is first needed (m): how far a search gets with it forbidden (the run and jump,
+/// the double jump, a splash, the slide, swimming; 1e9 for one never needed). `wrela tool route --
+/// --level <key> --needs` measures them.
+pub const NEEDS: [f32; 5] = [1.0e9, 1.0e9, 1.0e9, 1.0e9, 1.0e9]

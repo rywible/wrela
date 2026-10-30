@@ -25,6 +25,8 @@ pub struct Searched: Clone {
     pub full: Vec<Hold>,
     pub human_any: Vec<Hold>,
     pub human_full: Vec<Hold>,
+    /// Where each move is first needed (m), by its bit's place (routes_<key>.wrela's `NEEDS`).
+    pub needs: [f32; 5],
 }
 
 /// Level `c`'s searched runs (empty for a course with none: the lab, or a level not yet searched).
@@ -35,6 +37,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_home::FULL),
             human_any: Vec::from(routes_home::HUMAN_ANY),
             human_full: Vec::from(routes_home::HUMAN_FULL),
+            needs: routes_home::NEEDS,
         }
     } else if c == WETLANDS {
         Searched {
@@ -42,6 +45,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_wetlands::FULL),
             human_any: Vec::from(routes_wetlands::HUMAN_ANY),
             human_full: Vec::from(routes_wetlands::HUMAN_FULL),
+            needs: routes_wetlands::NEEDS,
         }
     } else if c == SAVANNA {
         Searched {
@@ -49,6 +53,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_savanna::FULL),
             human_any: Vec::from(routes_savanna::HUMAN_ANY),
             human_full: Vec::from(routes_savanna::HUMAN_FULL),
+            needs: routes_savanna::NEEDS,
         }
     } else if c == RAINFOREST {
         Searched {
@@ -56,6 +61,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_rainforest::FULL),
             human_any: Vec::from(routes_rainforest::HUMAN_ANY),
             human_full: Vec::from(routes_rainforest::HUMAN_FULL),
+            needs: routes_rainforest::NEEDS,
         }
     } else if c == AVIARY {
         Searched {
@@ -63,6 +69,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_aviary::FULL),
             human_any: Vec::from(routes_aviary::HUMAN_ANY),
             human_full: Vec::from(routes_aviary::HUMAN_FULL),
+            needs: routes_aviary::NEEDS,
         }
     } else if c == REPTILES {
         Searched {
@@ -70,6 +77,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_reptiles::FULL),
             human_any: Vec::from(routes_reptiles::HUMAN_ANY),
             human_full: Vec::from(routes_reptiles::HUMAN_FULL),
+            needs: routes_reptiles::NEEDS,
         }
     } else if c == POLAR {
         Searched {
@@ -77,6 +85,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_polar::FULL),
             human_any: Vec::from(routes_polar::HUMAN_ANY),
             human_full: Vec::from(routes_polar::HUMAN_FULL),
+            needs: routes_polar::NEEDS,
         }
     } else if c == FARM {
         Searched {
@@ -84,6 +93,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_farm::FULL),
             human_any: Vec::from(routes_farm::HUMAN_ANY),
             human_full: Vec::from(routes_farm::HUMAN_FULL),
+            needs: routes_farm::NEEDS,
         }
     } else if c == FOOD_COURT {
         Searched {
@@ -91,6 +101,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::from(routes_food_court::FULL),
             human_any: Vec::from(routes_food_court::HUMAN_ANY),
             human_full: Vec::from(routes_food_court::HUMAN_FULL),
+            needs: routes_food_court::NEEDS,
         }
     } else {
         Searched {
@@ -98,6 +109,7 @@ pub fn searched(c: u32) -> Searched {
             full: Vec::new(),
             human_any: Vec::new(),
             human_full: Vec::new(),
+            needs: [1.0e9; 5],
         }
     }
 }

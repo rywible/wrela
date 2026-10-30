@@ -163,6 +163,11 @@ fn the_command_line_takes_the_level_the_seconds_and_the_human_mode() {
         parse_args([s("--human"), s("--seconds"), s("9"), level.clone(), home.clone()]) ==
             Some(Ask { level: HOME, seconds: 9, human: true }),
     )
+    assert(
+        parse_args([level.clone(), home.clone(), s("--needs")]) ==
+            Some(Ask { level: HOME, seconds: SECONDS, human: false, needs: true }),
+    )
+    assert(parse_args([level.clone(), home.clone(), s("--needs"), s("--human")]).is_none())
     assert(parse_args([]).is_none(), "no level")
     assert(parse_args([level.clone(), s("moon")]).is_none(), "no such level")
     assert(parse_args([s("60")]).is_none() && parse_args([s("--human"), s("--human")]).is_none())

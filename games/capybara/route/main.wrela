@@ -5,7 +5,9 @@
 // wrela tool route -- --level <key> [--human] [--seconds S]
 // ```
 //
-// The key is the level's (searched.wrela's `KEYS`: home, wetlands...).
+// The key is the level's (searched.wrela's `KEYS`: home, wetlands...). With `--needs` it searches
+// no runs: for each move, it searches the level with that move forbidden and writes how far it
+// got (`NEEDS`: where the move is first needed), keeping the runs the file holds.
 //
 // Without `--human` it improves the tool-assisted runs (`ANY` and `FULL`); with it, the human
 // runs (`HUMAN_ANY` and `HUMAN_FULL`), which keep to a human's limits and are forgiving
@@ -26,14 +28,14 @@ use capybara::course::{course, name}
 use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, holds_of}
 use capybara::searched::{KEYS, level_of, searched}
 use capybara::world::{step, world}
-use search::{Settings, played, search, to_goal}
+use search::{Goal, Settings, played, search, to_goal}
 use slack::{EARLY, LATE, LONGER, RECOVER, Slack, WHOLE, finishes, forgiving, moved, pads_of, slack}
 use std::io::print
 use std::time::{now, since}
 use std::tool::args
 use std::tool::files::write
 
-pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human] [--seconds S]"
+pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human | --needs] [--seconds S]"
 
 /// The seconds each category is searched unless `--seconds` gives another.
 pub const SECONDS: u32 = 300
@@ -64,6 +66,8 @@ pub struct Ask: Copy + Eq {
     pub level: u32,
     pub seconds: u32,
     pub human: bool,
+    /// Measure where each move is first needed, and search no runs.
+    pub needs: bool = false,
 }
 
 /// No level asked for yet.
@@ -75,8 +79,10 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
     var k = 0
     while k < given.len() {
         let a = given[k].as_str()
-        if a == "--human" && !ask.human {
+        if a == "--human" && !ask.human && !ask.needs {
             ask.human = true
+        } else if a == "--needs" && !ask.needs && !ask.human {
+            ask.needs = true
         } else if a == "--level" && k + 1 < given.len() && ask.level == NO_LEVEL {
             ask.level = level_of(given[k + 1].as_str())?
             k += 1
@@ -339,6 +345,11 @@ fn constant(text: mut String, name: str, r: Route) {
     text.push_str("]\n")
 }
 
+/// `x` as a literal for routes_<key>.wrela: to the centimetre, or 1e9 for never.
+fn literal(x: f32) -> String {
+    if x >= 1.0e8 { String::from("1.0e9") } else { f"{x:.2}" }
+}
+
 /// The name of level `key`'s course number in course.wrela: the key in capitals (`food_court`,
 /// `FOOD_COURT`).
 pub fn constant_of(key: str) -> String {
@@ -352,7 +363,7 @@ pub fn constant_of(key: str) -> String {
 
 /// routes_<key>.wrela with level `key`'s runs `routes`, named `level`: any% and 100%,
 /// tool-assisted, then with the human limits.
-pub fn routes_text(key: str, level: str, routes: [Route; 4]) -> String {
+pub fn routes_text(key: str, level: str, routes: [Route; 4], needs: [f32; 5]) -> String {
     var text = f"// The route search's fastest runs of {level} (design.md, \"The agent loop\"): any% and\n// 100%, tool-assisted, and the same human-possible: each input has slack, and a slip of a tick\n// or two is recoverable within a second (route/slack.wrela; route/tests.wrela checks them for\n// it). No person has played them. `wrela tool route -- --level {key}` searches for better ones\n// and writes this file again, with the tests' times; run it again when a change to the movement\n// or the course moves them.\n\n"
     let c = constant_of(key)
     var bits = 0
@@ -391,6 +402,9 @@ pub fn routes_text(key: str, level: str, routes: [Route; 4]) -> String {
         routes[1].time,
         routes[2].time,
         routes[3].time,
+    )
+    text.push_str(
+        f"\n/// Where each move is first needed (m): how far a search gets with it forbidden (the run and jump,\n/// the double jump, a splash, the slide, swimming; 1e9 for one never needed). `wrela tool route --\n/// --level {key} --needs` measures them.\npub const NEEDS: [f32; 5] = [{literal(needs[0])}, {literal(needs[1])}, {literal(needs[2])}, {literal(needs[3])}, {literal(needs[4])}]\n",
     )
     text.push_str(
         f"\n@test\nfn the_searched_runs_of_{key}_finish_in_their_times_without_a_death() {{\n    let every = course({c}).every_snack()\n    let any = play({c}, ANY)\n    let full = play({c}, FULL)\n    assert(any.finished == {any} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full} && full.deaths == 0 && full.snacks == every)\n    let human_any = play({c}, HUMAN_ANY)\n    let human_full = play({c}, HUMAN_FULL)\n    assert(human_any.finished == {human_any} && human_any.deaths == 0)\n    assert(human_full.finished == {human_full} && human_full.deaths == 0)\n    assert(human_full.snacks == every)\n}}\n",
@@ -452,6 +466,23 @@ pub fn tool() -> u32 {
     let file = f"routes_{key}.wrela"
     let runs = searched(level)
     let all = course(level).every_snack()
+    let named = name(level)
+    let first = f"{named} from start to goal (any%)"
+    let every = f"{named} with every snack (100%)"
+    if ask.needs {
+        if runs.any.is_empty() || runs.human_any.is_empty() {
+            print(f"route: search {key}'s runs first")
+            return 1
+        }
+        let needs = needs_of(level, f32(ask.seconds))
+        let routes = [
+            route(level, kept(level, runs.any, 0, human: false), first.as_str(), 0, human: false),
+            route(level, kept(level, runs.full, all, human: false), every.as_str(), all, human: false),
+            route(level, kept(level, runs.human_any, 0, human: true), first.as_str(), 0, human: true),
+            route(level, kept(level, runs.human_full, all, human: true), every.as_str(), all, human: true),
+        ]
+        return write_routes(key, named, file, routes, needs)
+    }
     let (any_run, full_run) = if ask.human {
         (runs.human_any.clone(), runs.human_full.clone())
     } else {
@@ -474,9 +505,6 @@ pub fn tool() -> u32 {
             f"route: a human run has fewer than {slack::FIRM}% of its changes firm within a second",
         )
     }
-    let named = name(level)
-    let first = f"{named} from start to goal (any%)"
-    let every = f"{named} with every snack (100%)"
     // The other mode's runs stay as the file holds them, while they still finish. A level
     // searched for the first time has none: its tool-assisted runs stand in for its human ones
     // until `--human` finds them.
@@ -509,7 +537,34 @@ pub fn tool() -> u32 {
         route(level, human_any, first.as_str(), 0, human: true),
         route(level, human_full, every.as_str(), all, human: true),
     ]
-    let text = routes_text(key, named, routes)
+    write_routes(key, named, file, routes, runs.needs)
+}
+
+/// The moves whose first need `--needs` measures, by their bit's place: the double jump, a splash,
+/// the slide, swimming. (The run and jump is needed from the start.)
+const MEASURED: [u32; 4] = [1, 2, 3, 4]
+
+/// Where each move is first needed on `level`: for each measured move, how far a search with it
+/// forbidden lives, over up to `seconds` each; 1e9 for one it finishes without, and for the run
+/// and jump.
+fn needs_of(level: u32, seconds: f32) -> [f32; 5] {
+    var out = [1.0e9; 5]
+    for b in MEASURED {
+        let start = now()
+        let goal = Goal { until: 1.0e9, snacks: 0, forbid: 1 << b }
+        var s = search(world(level), 0, goal, TRIES[0])
+        while !s.stopped && since(start) < seconds {
+            s.layer()
+        }
+        out[b] = if s.found.is_some() { 1.0e9 } else { s.far }
+        print(f"needs: move {1 << b} at {out[b]} m ({s.states} states, {since(start)} s)")
+    }
+    out
+}
+
+/// Writes routes_<key>.wrela: the runs `routes`, and `needs`.
+fn write_routes(key: str, named: str, file: str, routes: [Route; 4], needs: [f32; 5]) -> u32 {
+    let text = routes_text(key, named, routes, needs)
     match write(f"game/{file}", text.as_bytes()).wait() {
         Ok(_) => {
             print(f"route: wrote games/capybara/{file}")
