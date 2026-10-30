@@ -13,8 +13,9 @@
 // - No jumps into the unknown: a deadly gap's far side is on the screen when the run leaves the
 //   ground to cross it, and a foe the run comes near is on it from a reaction time away at the
 //   wet speed: the distance, not the run's own time, which a fast run makes too short to see.
-// - Short retries: the checkpoints are close together on the human run, and coming back to one
-//   is safe: standing still there, nothing hurts.
+// - Short retries: the checkpoints are close together, timed at the running speed (a fast run
+//   bunny-hops far faster than a player learning the level runs: the polar agent found 30 to
+//   42 m/s), and coming back to one is safe: standing still there, nothing hurts.
 // - Random play breaks no rule: seeded random inputs never end a tick inside the ground, past the
 //   course's ends or with a number that isn't finite, and the same inputs give the same world.
 // - Measured difficulty: how far each input of the human run can come early or late and the run
@@ -266,21 +267,20 @@ pub fn unseen(c: u32, run: [Hold]) -> Vec<String> {
     out
 }
 
-/// The longest stretch of the human any% run of level `c` between checkpoints (and from the
-/// start, and to the goal), in seconds.
+/// The longest stretch of level `c` between checkpoints (and from the start, and to the goal),
+/// in seconds at the running speed: what a death there costs a player who runs it.
 pub fn longest_retry(c: u32) -> f32 {
-    let snaps = traced(c, searched(c).human_any)
-    var last = 0
-    var longest = 0
-    var reached = 0
-    for t in 0..snaps.len() {
-        if snaps[t].checkpoint > reached || t + 1 == snaps.len() {
-            reached = snaps[t].checkpoint
-            longest = max(longest, t - last)
-            last = t
-        }
+    borrow at = course(c)
+    var xs: Vec<f32> = Vec::from([at.start.x])
+    for p in at.checkpoints {
+        xs.push(p.x)
     }
-    f32(longest) / f32(HZ)
+    xs.push(at.goal_lo.x)
+    var longest = 0.0
+    for i in 1..xs.len() {
+        longest = max(longest, abs(xs[i] - xs[i - 1]))
+    }
+    longest / FEEL.speed
 }
 
 /// The checkpoints of level `c` where standing still after coming back is hurt or falls, by
