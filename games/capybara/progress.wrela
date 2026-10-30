@@ -1,0 +1,304 @@
+// The player's progress: the save the console keeps under their profile (platform::session),
+// which the session program (session/) lists, backs up, exports and imports. For each course its
+// best any% time and the most snacks one run found (the levels' map shows them), the best
+// whole-game time, and the player's runs (replay.wrela's `Board`: their ghosts and the runs they
+// watch). The game stores it as it changes, so a closed tab loses nothing; the session program
+// files what it finds at `SAVE` under the profile that played.
+//
+// A course's record is kept apart from its runs: a change to play starts a new board (`BOARD`)
+// and drops the runs, but not what the player has finished.
+
+use course::{COURSES, HOME, LEVELS, WETLANDS, course}
+use feel::HZ
+use replay::{
+    BOARD, Board, MOST_RUNS, MOST_TICKS, Replay, YOU, board, checked, length, tool_assisted,
+}
+use std::serialize::{LoadError, Serialize, load, save}
+
+/// Where the game keeps its progress, in its own storage.
+pub const SAVE: Text = "capybara/save"
+
+/// The progress's version.
+const VERSION: u32 = 1
+
+/// How many snacks each course has, counted as the game is built, so the session program, which
+/// reads the progress, needn't carry the courses.
+const SNACKS: [u32; COURSES] = snack_counts()
+
+fn snack_counts() -> [u32; COURSES] {
+    var out = [0; COURSES]
+    for c in 0..COURSES {
+        out[c] = course(c).snacks.len()
+    }
+    out
+}
+
+/// Course `c`'s snacks, a bit each.
+fn every_snack(c: u32) -> u32 {
+    if SNACKS[c] >= 32 { 0xffffffff } else { (1 << SNACKS[c]) - 1 }
+}
+
+/// A course's record: its best any% time (ticks, 0 for none) and the snacks of the run that found
+/// the most (a bit each).
+pub struct Record: Copy + Eq + Serialize {
+    pub best: u32 = 0,
+    pub found: u32 = 0,
+}
+
+pub struct Progress: Clone + Serialize {
+    pub version: u32,
+    /// A record a course (`COURSES`, the lab's last).
+    pub records: Vec<Record>,
+    /// The best whole-game time (ticks: world.wrela's `Game`), or 0 without one.
+    pub game: u32,
+    pub runs: Board,
+}
+
+/// Progress with nothing finished.
+pub fn fresh() -> Progress {
+    Progress {
+        version: VERSION,
+        records: Vec::filled(COURSES, Record {}),
+        game: 0,
+        runs: board(),
+    }
+}
+
+impl Progress {
+    /// Course `c` reached its goal in `ticks`, finding `snacks`: its record kept if better.
+    /// Whether it changed.
+    pub fn finished(mut self, c: u32, ticks: u32, snacks: u32) -> bool {
+        let was = self.records[c]
+        var r = was
+        if r.best == 0 || ticks < r.best {
+            r.best = ticks
+        }
+        let all = every_snack(c)
+        if (snacks & all).count_ones() > r.found.count_ones() {
+            r.found = snacks & all
+        }
+        self.records[c] = r
+        r != was
+    }
+
+    /// A whole game played through in `ticks`: kept if it's the best. Whether it was.
+    pub fn whole_game(mut self, ticks: u32) -> bool {
+        if ticks == 0 || (self.game != 0 && ticks >= self.game) {
+            return false
+        }
+        self.game = ticks
+        true
+    }
+
+    /// How many levels are finished.
+    pub fn levels_done(self) -> u32 {
+        var n = 0
+        for c in 0..LEVELS {
+            if self.records[c].best > 0 {
+                n += 1
+            }
+        }
+        n
+    }
+}
+
+/// The progress stored as `bytes`, if it's progress this game could have made: of this version,
+/// a record a course with a time no longer than a run is kept and only that course's snacks, and
+/// runs that are the player's, of a course, and as long as their pads say. The runs aren't played
+/// here, so the console's save list reads a save at once; the game plays each as it loads them
+/// (replay.wrela's `checked`). Runs of another version of play are dropped, and the rest kept.
+pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
+    let loaded: Result<Progress, LoadError> = load(take bytes)
+    let Ok(p) = loaded else { return None }
+    if p.version != VERSION || p.records.len() != COURSES || p.game > LEVELS * MOST_TICKS {
+        return None
+    }
+    for c in 0..COURSES {
+        let r = p.records[c]
+        if r.best > MOST_TICKS || (r.found & !every_snack(c)) != 0 {
+            return None
+        }
+    }
+    var out = p.clone()
+    if p.runs.version != BOARD {
+        out.runs = board()
+        return Some(out)
+    }
+    if p.runs.runs.len() > MOST_RUNS {
+        return None
+    }
+    for r in p.runs.runs {
+        if r.who != YOU || r.course >= COURSES || r.ticks == 0 || length(r) != Some(r.ticks) {
+            return None
+        }
+    }
+    Some(out)
+}
+
+/// The progress that loaded (`stored`, none for nothing stored or what isn't progress), its runs
+/// played to check them (replay.wrela's `checked`), with what was played before it loaded
+/// (`mine`) kept too.
+pub fn merged(stored: Option<Progress>, mine: Progress) -> Progress {
+    var out = match stored {
+        Some(p) => p.clone(),
+        None => fresh(),
+    }
+    out.runs = checked(out.runs)
+    for r in mine.runs.runs {
+        let _ = out.runs.add(r.clone())
+    }
+    for c in 0..COURSES {
+        let r = mine.records[c]
+        if r.best > 0 {
+            let _ = out.finished(c, ticks: r.best, snacks: r.found)
+        }
+    }
+    let _ = out.whole_game(mine.game)
+    out
+}
+
+/// `p` as bytes, to store.
+pub fn encode(p: Progress) -> Vec<u8> {
+    save(p)
+}
+
+/// A time as minutes, seconds and hundredths: 24:05.31.
+pub fn clock_text(ticks: u32) -> String {
+    let hundredths = ticks * 100 / HZ
+    let s = hundredths / 100
+    let secs = s % 60
+    let tail = hundredths % 100
+    let pad = if secs < 10 { "0" } else { "" }
+    let tail_pad = if tail < 10 { "0" } else { "" }
+    f"{s / 60}:{pad}{secs}.{tail_pad}{tail}"
+}
+
+/// One line for the console's save list: the levels finished, the snacks found, and the best
+/// whole game.
+pub fn describe(p: Progress) -> String {
+    let done = p.levels_done()
+    if done == 0 {
+        return String::from("A new day at the zoo")
+    }
+    var found = 0
+    var snacks = 0
+    for c in 0..LEVELS {
+        found += p.records[c].found.count_ones()
+        snacks += SNACKS[c]
+    }
+    var line = String::from(f"{done} of {LEVELS} levels, {found} of {snacks} snacks")
+    if p.game > 0 {
+        let t = clock_text(p.game)
+        line.push_str(f", the whole zoo in {t}".as_str())
+    }
+    line
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_record_keeps_the_best_time_and_the_most_snacks_one_run_found() {
+    var p = fresh()
+    assert(p.finished(HOME, ticks: 9000, snacks: 0b11), "the first finish")
+    assert(!p.finished(HOME, ticks: 9500, snacks: 0b01), "slower, with fewer snacks")
+    assert(p.finished(HOME, ticks: 9500, snacks: 0b1110), "more snacks in one run")
+    assert(p.records[HOME] == Record { best: 9000, found: 0b1110 }, "the best of each")
+    assert(p.finished(HOME, ticks: 8000, snacks: 0), "faster")
+    assert(p.records[HOME].best == 8000 && p.records[HOME].found == 0b1110)
+    assert(p.levels_done() == 1)
+    assert(p.whole_game(200000) && !p.whole_game(210000) && p.whole_game(190000))
+    assert(p.game == 190000)
+}
+
+@test
+fn progress_is_stored_and_read_back_and_nonsense_is_refused() {
+    var p = fresh()
+    let _ = p.finished(WETLANDS, ticks: 12000, snacks: 1)
+    let _ = p.whole_game(400000)
+    var mine: Replay = tool_assisted(HOME)[0].clone()
+    mine.who = YOU
+    let _ = p.runs.add(mine.clone())
+    let Some(back) = read(encode(p)) else {
+        assert(false, "stored progress reads back")
+        return
+    }
+    assert(back.records == p.records && back.game == 400000 && back.runs.runs.len() == 1)
+    assert(read(Vec::new()).is_none(), "nothing")
+    assert(read(Vec::filled(12, 255)).is_none(), "noise")
+    var other = p.clone()
+    other.version = VERSION + 1
+    assert(read(encode(other)).is_none(), "another version")
+    var short = p.clone()
+    let _ = short.records.pop()
+    assert(read(encode(short)).is_none(), "a course's record missing")
+    var snacks = p.clone()
+    snacks.records[HOME].found = 0xffffffff
+    assert(read(encode(snacks)).is_none(), "snacks the level hasn't")
+    var slow = p.clone()
+    slow.records[HOME].best = MOST_TICKS + 1
+    assert(read(encode(slow)).is_none(), "a time longer than a run is kept")
+    var theirs = p.clone()
+    theirs.runs.runs[0].who = YOU + 1
+    assert(read(encode(theirs)).is_none(), "a run that isn't the player's")
+    var padded = p.clone()
+    padded.runs.runs[0].ticks += 1
+    assert(read(encode(padded)).is_none(), "a run longer than its pads")
+}
+
+@test
+fn a_change_to_play_drops_the_runs_and_keeps_what_was_finished() {
+    var p = fresh()
+    let _ = p.finished(HOME, ticks: 9000, snacks: 1)
+    var mine: Replay = tool_assisted(HOME)[0].clone()
+    mine.who = YOU
+    let _ = p.runs.add(take mine)
+    p.runs.version = BOARD + 1
+    let Some(back) = read(encode(p)) else {
+        assert(false, "an old board's progress reads")
+        return
+    }
+    assert(back.runs.runs.is_empty() && back.runs.version == BOARD)
+    assert(back.records[HOME].best == 9000)
+}
+
+@test
+fn the_save_list_says_how_far_the_player_got() {
+    var p = fresh()
+    assert(describe(p) == "A new day at the zoo")
+    let _ = p.finished(HOME, ticks: 9000, snacks: 0b11)
+    let _ = p.finished(WETLANDS, ticks: 9000, snacks: 0b1)
+    var snacks = 0
+    for c in 0..LEVELS {
+        snacks += course(c).snacks.len()
+    }
+    let want = f"2 of {LEVELS} levels, 3 of {snacks} snacks"
+    assert(describe(p) == want, describe(p))
+    let _ = p.whole_game(HZ * (24 * 60 + 5) + HZ / 4)
+    assert(describe(p) == f"{want}, the whole zoo in 24:05.25", describe(p))
+}
+
+@test
+fn what_was_played_before_the_stored_progress_loaded_is_kept_with_it() {
+    var stored = fresh()
+    let _ = stored.finished(HOME, ticks: 9000, snacks: 0b1)
+    let _ = stored.whole_game(400000)
+    var doctored: Replay = tool_assisted(HOME)[0].clone()
+    doctored.who = YOU
+    doctored.ticks -= 60
+    stored.runs.runs.push(take doctored)
+    var mine = fresh()
+    let _ = mine.finished(HOME, ticks: 9500, snacks: 0b11)
+    let _ = mine.finished(WETLANDS, ticks: 12000, snacks: 0)
+    var run: Replay = tool_assisted(WETLANDS)[0].clone()
+    run.who = YOU
+    let _ = mine.runs.add(take run)
+    let out = merged(Some(take stored), mine.clone())
+    assert(out.records[HOME] == Record { best: 9000, found: 0b11 }, "the best of both")
+    assert(out.records[WETLANDS].best == 12000 && out.game == 400000)
+    assert(
+        out.runs.runs.len() == 1 && out.runs.runs[0].course == WETLANDS,
+        "a doctored run dropped",
+    )
+    let none = merged(None, mine.clone())
+    assert(none.records == mine.records && none.runs.runs.len() == 1, "nothing stored")
+}

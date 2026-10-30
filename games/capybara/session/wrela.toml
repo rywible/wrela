@@ -1,0 +1,8 @@
+# The capybara game's session program: the console's save list, backups and imports, before the
+# game itself is loaded.
+[package]
+name = "capybara_session"
+
+[dependencies]
+capybara = { workspace = true }
+platform = { workspace = true }
