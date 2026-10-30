@@ -69,6 +69,111 @@ pub struct Measured: Clone {
     /// The program's GPU memory at `playable`, as it printed it (`memory shares:`): what's held,
     /// then each share, bytes.
     pub shares: Vec<(String, f64)> = Vec::new(),
+    /// The sustained run (`--sustained`), where there was one: how long the walk was paced before
+    /// the measured frames (s), and the GPU's median span over the first minute of that and over
+    /// its last (ms: their ratio over `THROTTLING` says the machine throttled).
+    pub sustained_s: u32 = 0,
+    pub minute_1_ms: f64 = 0.0,
+    pub minute_last_ms: f64 = 0.0,
+    /// The measured play run's throughput (`throughput`): its frame starts a second, and its
+    /// intervals over 25 ms.
+    pub starts_per_s: f64 = 0.0,
+    pub over_25: u32 = 0,
+}
+
+/// The ratio of the last minute's GPU median to the first's past which a sustained run says the
+/// machine throttled.
+pub const THROTTLING: f64 = 1.15
+
+/// A sustained run's last minute's GPU median over its first's (0 with no first minute).
+pub fn ratio(minute_1_ms: f64, minute_last_ms: f64) -> f64 {
+    if minute_1_ms > 0.0 { minute_last_ms / minute_1_ms } else { 0.0 }
+}
+
+/// Whether a sustained run's minutes say the machine throttled.
+pub fn throttled(minute_1_ms: f64, minute_last_ms: f64) -> bool {
+    ratio(minute_1_ms, minute_last_ms) > THROTTLING
+}
+
+/// A paced run's throughput, from its frames' starts (`began_ms`, the warm-up's left out): how
+/// many starts, the time they took (the last less the first, and one mean interval more, so a
+/// run of n starts spans n intervals), the starts a second, and the intervals over 25 ms. With one
+/// frame in flight a frame starts only once the one two before is done on the GPU, so a cadence
+/// of starts is a lower bound on the GPU's throughput (presentation itself isn't seen from a
+/// page: these are frame starts, not frames presented).
+pub struct Throughput: Copy {
+    pub frame_starts: u32,
+    pub elapsed_ms: f64,
+    pub starts_per_s: f64,
+    pub over_25: u32,
+}
+
+pub fn throughput(began: [f64], warmup: u32) -> Throughput {
+    let n = if began.len() > warmup { began.len() - warmup } else { 0 }
+    if n < 2 {
+        return Throughput { frame_starts: n, elapsed_ms: 0.0, starts_per_s: 0.0, over_25: 0 }
+    }
+    let first = began[warmup]
+    let last = began[began.len() - 1]
+    let mean = (last - first) / f64(n - 1)
+    let elapsed = last - first + mean
+    var over_25 = 0
+    for x in intervals(Vec::from(began), warmup) {
+        if x > 25.0 {
+            over_25 += 1
+        }
+    }
+    Throughput {
+        frame_starts: n,
+        elapsed_ms: elapsed,
+        starts_per_s: f64(n) * 1000.0 / elapsed,
+        over_25,
+    }
+}
+
+/// The sustained frame's gates (docs/plan-world-class-3.md §C6, G-sustained), on a paced run's
+/// intervals: its starts keep 60 a second (at least `STARTS_FLOOR`), its p99 is under
+/// `P99_CEILING`, and no interval is over 33 ms.
+pub struct Gates: Copy {
+    pub throughput: bool,
+    pub p99: bool,
+    pub over_33: bool,
+}
+
+pub const STARTS_FLOOR: f64 = 59.0
+pub const P99_CEILING: f64 = 20.0
+
+/// The gates of a run whose frames started at `began` (the warm-up's `warmup` left out).
+pub fn gates(began: [f64], warmup: u32) -> Gates {
+    let t = throughput(began, warmup)
+    let between = intervals(Vec::from(began), warmup)
+    var over_33 = 0
+    for x in between {
+        if x > 33.3 {
+            over_33 += 1
+        }
+    }
+    Gates {
+        throughput: t.starts_per_s >= STARTS_FLOOR,
+        p99: stats(take between).p99 < P99_CEILING,
+        over_33: over_33 == 0,
+    }
+}
+
+/// A sustained run's record (`sustained.json`): how long it paced the walk, how many pages that
+/// took, the two minutes' GPU medians, their ratio and whether that's throttling.
+pub fn sustained_json(seconds: u32, pages: u32, minute_1_ms: f64, minute_last_ms: f64) -> String {
+    let ratio = ratio(minute_1_ms, minute_last_ms)
+    String::from(
+        f"{{\"seconds\": {seconds}, \"pages\": {pages}, \"minute_1_ms\": {minute_1_ms}, \"minute_last_ms\": {minute_last_ms}, \"ratio\": {ratio}, \"throttling\": {throttled(minute_1_ms, minute_last_ms)}}}\n",
+    )
+}
+
+/// A play run's throughput record (`throughput.json`): frame starts, not presented frames.
+pub fn throughput_json(t: Throughput) -> String {
+    String::from(
+        f"{{\"frame_starts\": {t.frame_starts}, \"elapsed_ms\": {t.elapsed_ms}, \"starts_per_s\": {t.starts_per_s}, \"over_25\": {t.over_25}}}\n",
+    )
 }
 
 /// A `memory shares: held <bytes>, <name> <bytes>, ...` line's shares (a name may hold spaces:
@@ -240,10 +345,11 @@ pub fn spans(timings: Doc, warmup: u32) -> Vec<f64> {
     out
 }
 
-/// The intervals between paced frames' beginnings, from frame `warmup` on.
+/// The intervals between paced frames' beginnings, each ending at a frame after `warmup` (as
+/// `hitches` and `throughput` count them: each between two counted frames).
 pub fn intervals(began: Vec<f64>, warmup: u32) -> Vec<f64> {
     var out = Vec::new()
-    for k in max(warmup, 1)..began.len() {
+    for k in (warmup + 1)..began.len() {
         out.push(began[k] - began[k - 1])
     }
     out
@@ -256,7 +362,7 @@ fn stats_json(s: Stats) -> String {
 /// `m` as JSON.
 pub fn measured_json(m: Measured) -> String {
     var s = String::from(
-        f"{{\"scene\": \"{m.scene}\", \"span\": {stats_json(m.span)}, \"interval\": {stats_json(m.interval)}, \"over_16\": {m.over_16}, \"over_33\": {m.over_33}, \"cpu\": {stats_json(m.cpu)}, \"native\": {stats_json(m.native)}, \"first_frame_ms\": {m.first_frame_ms}, \"playable_ms\": {m.playable_ms}, \"pipelines_ms\": {m.pipelines_ms}, \"loaded_bytes\": {m.loaded_bytes}, \"gpu_bytes\": {m.gpu_bytes}, \"gpu_peak\": {m.gpu_peak}, \"warm_playable_ms\": {m.warm_playable_ms}, \"warm_pipelines_ms\": {m.warm_pipelines_ms}, \"warm_loaded_bytes\": {m.warm_loaded_bytes}",
+        f"{{\"scene\": \"{m.scene}\", \"span\": {stats_json(m.span)}, \"interval\": {stats_json(m.interval)}, \"over_16\": {m.over_16}, \"over_33\": {m.over_33}, \"cpu\": {stats_json(m.cpu)}, \"native\": {stats_json(m.native)}, \"first_frame_ms\": {m.first_frame_ms}, \"playable_ms\": {m.playable_ms}, \"pipelines_ms\": {m.pipelines_ms}, \"loaded_bytes\": {m.loaded_bytes}, \"gpu_bytes\": {m.gpu_bytes}, \"gpu_peak\": {m.gpu_peak}, \"warm_playable_ms\": {m.warm_playable_ms}, \"warm_pipelines_ms\": {m.warm_pipelines_ms}, \"warm_loaded_bytes\": {m.warm_loaded_bytes}, \"sustained_s\": {m.sustained_s}, \"minute_1_ms\": {m.minute_1_ms}, \"minute_last_ms\": {m.minute_last_ms}, \"starts_per_s\": {m.starts_per_s}, \"over_25\": {m.over_25}",
     )
     var unattributed = 0
     s.push_str(", \"hitches\": [")
@@ -315,16 +421,30 @@ fn mib(bytes: f64) -> String {
     String::from(f"{bytes / 1048576.0:.1}")
 }
 
+/// A row's sustained cell: `sustained 600 s`, its minutes' GPU medians and their ratio (and
+/// "throttling" past `THROTTLING`), the measured run's starts a second and intervals over 25 ms;
+/// or "no" where the run wasn't sustained.
+fn sustained_cell(m: Measured) -> String {
+    if m.sustained_s == 0 {
+        return String::from("no")
+    }
+    let ratio = ratio(m.minute_1_ms, m.minute_last_ms)
+    let throttling = if throttled(m.minute_1_ms, m.minute_last_ms) { ", throttling" } else { "" }
+    String::from(
+        f"sustained {m.sustained_s} s: minute 1 {ms(m.minute_1_ms)}, last {ms(m.minute_last_ms)} ({ratio:.2}{throttling}); {m.starts_per_s:.1} starts/s, {m.over_25} over 25 ms",
+    )
+}
+
 /// The report as Markdown: a heading for the machine and the date, then a row a scene.
 pub fn markdown(machine: str, date: str, all: [Measured]) -> String {
     var s = String::from(f"## {date}, {machine}\n\n")
     s.push_str(
-        "| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |\n",
+        "| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB | Sustained |\n",
     )
-    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
     for m in all {
         s.push_str(
-            f"| {m.scene} | {ms(m.span.p50)} / {ms(m.span.p95)} / {ms(m.span.p99)} | {ms(m.interval.p50)} / {ms(m.interval.p95)} / {ms(m.interval.p99)} | {m.over_16} / {m.over_33} | {ms(m.cpu.p50)} / {ms(m.cpu.p95)} | {ms(m.native.p50)} / {ms(m.native.p95)} | {ms(m.first_frame_ms)} | {ms(m.playable_ms)} | {ms(m.pipelines_ms)} | {mib(m.loaded_bytes)} | {ms(m.warm_playable_ms)} | {mib(m.warm_loaded_bytes)} | {mib(m.gpu_peak)} |\n",
+            f"| {m.scene} | {ms(m.span.p50)} / {ms(m.span.p95)} / {ms(m.span.p99)} | {ms(m.interval.p50)} / {ms(m.interval.p95)} / {ms(m.interval.p99)} | {m.over_16} / {m.over_33} | {ms(m.cpu.p50)} / {ms(m.cpu.p95)} | {ms(m.native.p50)} / {ms(m.native.p95)} | {ms(m.first_frame_ms)} | {ms(m.playable_ms)} | {ms(m.pipelines_ms)} | {mib(m.loaded_bytes)} | {ms(m.warm_playable_ms)} | {mib(m.warm_loaded_bytes)} | {mib(m.gpu_peak)} | {sustained_cell(m)} |\n",
         )
     }
     s.push_str("\n")

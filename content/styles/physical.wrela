@@ -1,0 +1,52 @@
+// The physical look: light as it falls, through the lens as the frame's look says (`paint::Look`).
+// Today's image: the other looks are changes of it, a slot at a time.
+
+use engine::light::{Light, Lit, tone}
+use engine::paint::{Develop, Exposure, graded, hdr_tone}
+use engine::style::Style
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The physical look (`engine::style::Style`): every constant 0.
+pub struct Physical {}
+
+impl Style for Physical {
+    /// The light's sum (`light::world`): the matte light and the gloss.
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+        engine::light::world(light, lit, world, eye)
+    }
+
+    /// The albedo as it is.
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    /// HDR output with headroom where the screen shows it (`paint::hdr_tone`, no grade);
+    /// otherwise the tone curve at the exposure and the look's grade; then, but in the clay view,
+    /// the vignette.
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        let look = d.look
+        let clay = d.view == 1
+        if d.hdr != 0 && !clay {
+            // Linear light with headroom (`hdr_tone`): no SDR curve, no display grade.
+            let uv = px / d.out - vec2(0.5)
+            return vec4(
+                hdr_tone(paint * e.value, look.peak) * (1.0 - look.vignette * dot(uv, uv)),
+                1.0,
+            )
+        }
+        var c = graded(tone(paint, e.value), lut, s, look.grade)
+        if clay {
+            return vec4(c, 1.0)
+        }
+        let uv = px / d.out - vec2(0.5)
+        c = c * (1.0 - look.vignette * dot(uv, uv))
+        vec4(c, 1.0)
+    }
+}

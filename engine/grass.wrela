@@ -22,6 +22,8 @@
 
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
+use switches::Switches
+use style::Style
 use noise::{hash2, hash2u, rand}
 use plant::{Wind, sway}
 use probes::{ProbeGrid, sky_light_near}
@@ -1744,11 +1746,11 @@ pub fn blade_cut(v: BladeVertex, blades: [Blade]) -> u32 {
 /// A blade's pixel, where the prepass left its depth: lit mostly by its ground's normal, so the meadow shades as one soft
 /// surface that the blades break up; darker at the root; the light through it.
 @fragment
-pub fn blade_shade(
+pub fn blade_shade<Q: Switches, Y: Style>(
     v: BladeVertex,
     pixel: FragCoord,
     blades: [Blade],
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     look: GrassLook,
     species: [Species],
 ) -> vec4 {
@@ -1862,7 +1864,11 @@ pub fn flower_cut(b: BloomVertex) -> u32 {
 
 /// A flower's pixel, where the prepass left its depth.
 @fragment
-pub fn flower_shade(b: BloomVertex, lt: Lighting, blooms: Blooms) -> vec4 {
+pub fn flower_shade<Q: Switches, Y: Style>(
+    b: BloomVertex,
+    lt: Lighting<Q, Y>,
+    blooms: Blooms,
+) -> vec4 {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
     let colour = blooms.kinds[min(kind, 3)]
@@ -1952,10 +1958,10 @@ impl Grass {
     }
 
     /// The blades' and flowers' shading draws, at the depth the prepass left.
-    pub fn shade<P: RenderPass>(
+    pub fn shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         look: GrassLook,
         blooms: Blooms,

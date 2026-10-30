@@ -1,0 +1,43 @@
+// The look a program's frame draws with (docs/plan-world-class-3.md §C2, D2): a type the program
+// names (`Frame<R, Q, Y: Style>`), whose slots the frame calls where a surface's light is summed
+// (`lit::shown`: `shade`) and where the image goes to the screen (`paint::develop`: `lens`). Part
+// D gives the slots the substance they read and the styles that fill them; here each has the
+// physical look's body (`styles::physical::Physical`), and the constants are 0.
+
+use light::{Light, Lit}
+use paint::{Develop, Exposure}
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// A look: its constants say what the frame makes for it, its functions what it does with it.
+pub trait Style {
+    /// Which substance targets the frame writes (D1's mask: form, cause, tone); 0: none.
+    const SUBSTANCE: u32 = 0
+    /// Which normal lights the form: 0 the fine (the shading's own), 1 the form's, 2 the coarse.
+    const NORMAL: u32 = 0
+    /// Which marks are drawn (D7's bits: lines, creases, dabs, strokes, hatch); 0: the frame's
+    /// own, as before the marks.
+    const MARKS: u32 = 0
+    /// How hard temporal AA clips where the substance says the tone is flat (0: as the physical
+    /// look; 1: the neighbourhood's box shrunk to its centre's tone).
+    const FLAT_CLIP: f32 = 0.0
+
+    /// The light a surface at `world`, lit as `lit` says (its albedo, normal and the light that
+    /// reaches it) under `light`, shows the eye at `eye`.
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3
+
+    /// The colour a material of class `class` (`view`'s), its history `history` (D1's cause: age,
+    /// light, wetness, stress), and albedo `albedo` becomes in this look, before light.
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3
+
+    /// The lens: the output pixel `px`, painted (`paint`: its dabs, bloom and sharpening in), as
+    /// the screen shows it, at exposure `e`, `d` saying the output, the view and the look's
+    /// numbers, `lut` the grading table (read through `s`).
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4
+}

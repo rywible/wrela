@@ -4,6 +4,8 @@
 
 use engine::cook::Budget
 use engine::frame::{Aim, Frame, Gathered, Quality}
+use engine::switches::Approved
+use styles::physical::Physical
 use engine::probes::grid
 use engine::light::sunlight
 use engine::terrain::Clipmap
@@ -11,14 +13,14 @@ use engine::view::first_camera
 use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
 
 pub struct State {
-    frame: Frame<Gathered>,
+    frame: Frame<Gathered, Approved, Physical>,
     scene: Bare,
 }
 
 pub fn init() -> State {
     let air = air_of(SUN)
     let small = Budget { playing_us: 1000.0, loading_us: 1000.0 }
-    let frame: Frame<Gathered> = Frame::new(
+    let frame: Frame<Gathered, Approved, Physical> = Frame::new(
         Quality { budget: small, measured: false },
         sunlight(air),
         air,

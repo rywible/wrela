@@ -49,7 +49,7 @@ pub struct Resolve: Copy + GpuData {
     /// instrument's ghost control alone (`Frame::ghost`).
     pub unclipped: u32 = 0,
     /// Whether this frame's share comes from the learned rejector (`learned_share`, B14.3:
-    /// `Quality::learned_resolve`, its net `REJECTOR`), not from the heuristics.
+    /// `switches::Switches::LEARNED`, its net `REJECTOR`), not from the heuristics.
     pub learned: u32 = 0,
 }
 
@@ -214,7 +214,8 @@ fn nearest(r: Resolve, px: vec2) -> vec2i {
 /// history reprojected and clipped. Its alpha is the nearest sample's tag. `motion` is this
 /// frame's motion target and `last_motion` the frame before's (`motion_of`); `means` and
 /// `spreads` are the scene's neighbourhoods (`neighbourhoods`), for a scene drawn below the
-/// output's size.
+/// output's size. `learned` is the program's switch (`switches::Switches::LEARNED`): off, its
+/// shader has no rejector.
 @fragment
 pub fn resolve(
     pixel: FragCoord,
@@ -229,13 +230,14 @@ pub fn resolve(
     spreads: Texture<Rgba16Float>,
     s: Sampler,
     net: [Half2],
+    learned: const bool,
 ) -> vec4 {
     let px = pixel.position.xy
     let near = nearest(r, px)
     let hood = means.load(x: u32(near.x), y: u32(near.y))
     let spread = spreads.load(x: u32(near.x), y: u32(near.y))
     let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
-    blended(f, r, scene, net)
+    blended(f, r, scene, net, learned)
 }
 
 /// `resolve` for a scene drawn at the output's size, which finds its nearest sample's
@@ -255,11 +257,12 @@ pub fn resolve_gathered(
     history: Texture<Rgba16Float>,
     s: Sampler,
     net: [Half2],
+    learned: const bool,
 ) -> vec4 {
     let px = pixel.position.xy
     let (hood, spread) = neighbourhood(scene, nearest(r, px))
     let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
-    blended(f, r, scene, net)
+    blended(f, r, scene, net, learned)
 }
 
 /// What a resolve finds at an output pixel before it blends (`blended`): this frame's samples
@@ -551,10 +554,11 @@ fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]
 }
 
 /// What `f` found blended: the clipped history and this frame's by this frame's share (the
-/// heuristics', or the learned rejector's under `Resolve::learned`, capped as a settled view's
-/// is), brought back from tamed; its alpha the nearest sample's tag.
-fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]) -> vec4 {
-    let a = if f.forced != 0 { 1.0 } else if r.learned != 0 {
+/// heuristics', or the learned rejector's under `Resolve::learned` where the program has it,
+/// `learned`, capped as a settled view's is), brought back from tamed; its alpha the nearest
+/// sample's tag.
+fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2], learned: bool) -> vec4 {
+    let a = if f.forced != 0 { 1.0 } else if learned && r.learned != 0 {
         min(learned_share(f, r, scene, net), f.settle)
     } else { f.a }
     vec4(untamed(max(mix(f.clipped, f.current, vec3(a)), vec3(0.0))), f.tag)

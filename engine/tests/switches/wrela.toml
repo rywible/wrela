@@ -1,0 +1,9 @@
+# A program's switches as constants (engine::switches, D32): the frame fixture (engine/tests/frame,
+# a bare scene) built with its fog on and off holds no pipeline of the froxels off, and its
+# shading's shaders are smaller. The tool test builds the fixture through the toolchain (`--set`)
+# and reads each build's manifest and WGSL.
+[package]
+name = "switches"
+
+[dependencies]
+hosts = { workspace = true }

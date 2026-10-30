@@ -28,6 +28,7 @@ use std::gpu::{
     Texture3d, buffer, buffer_of, dispatch, label, texture3d, writable_texture,
 }
 use std::math::{PI, TAU}
+use switches::Switches
 use view::Camera
 
 /// The cloud layer: its base and the tallest clouds' tops (m above the world's y = 0).
@@ -64,9 +65,10 @@ pub const TILES_W: u32 = SKY_W / TILE
 pub const PHASES: u32 = 32
 pub const PHASE_TEXELS: u32 = (TILES_W * (SKY_H / TILE) / PHASES) * TILE * TILE
 
-/// A march at half the dome's size each way (`Sky::halved`, D17: off, docs/bench.md B5.4): a
-/// ray for every four of its texels, kept in a dome of its own (`Sky::half`, its tiles
-/// `HALF_TILE` a side, the dome's tiles' halves) and put in the dome bilinearly (`upsample`).
+/// A march at half the dome's size each way (`switches::Switches::HALVED`, D17: off,
+/// docs/bench.md B5.4): a ray for every four of its texels, kept in a dome of its own
+/// (`Sky::half`, its tiles `HALF_TILE` a side, the dome's tiles' halves) and put in the dome
+/// bilinearly (`upsample`).
 pub const HALF_W: u32 = SKY_W / 2
 pub const HALF_H: u32 = SKY_H / 2
 pub const HALF_TILE: u32 = TILE / 2
@@ -130,7 +132,8 @@ pub struct Clouds: Copy + GpuData {
     pub drift: vec2,
     pub sight: f32 = -2.0,
     pub round: u32 = 0,
-    /// The march's texels a side of a dome texel: 1, or 2 for the half dome (`Sky::halved`).
+    /// The march's texels a side of a dome texel: 1, or 2 for the half dome
+    /// (`switches::Switches::HALVED`).
     pub scale: u32 = 1,
 }
 
@@ -796,27 +799,26 @@ pub struct Sky {
     pub weather: Texture<Rgba16Float>,
     pub shadow: Texture<Rgba16Float>,
     pub dome: Texture<Rgba16Float>,
-    /// Whether the march is half the dome's size (`HALF_W`; D17); its own dome then (a texel
-    /// otherwise); and its texels marched this frame.
-    pub halved: bool,
+    /// The half dome a halved march is put in (`HALF_W`, D17: `switches::Switches::HALVED`; a
+    /// texel otherwise), and its texels marched this frame.
     pub half: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
 }
 
-/// The clouds' textures, uncooked (`halved`: the march half the dome's size, `Sky::halved`).
-pub fn new_sky(halved: bool = false) -> Sky {
+/// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
+/// half the dome's size).
+pub fn new_sky<Q: Switches>() -> Sky {
     Sky {
         shape: texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
         detail: texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
         weather: writable_texture::<Rgba16Float>(width: WEATHER_SIDE, height: WEATHER_SIDE),
         shadow: writable_texture::<Rgba16Float>(width: SHADOW_SIDE, height: SHADOW_SIDE),
         dome: writable_texture::<Rgba16Float>(width: SKY_W, height: SKY_H),
-        halved,
-        half: if halved { writable_texture::<Rgba16Float>(width: HALF_W, height: HALF_H) } else {
+        half: if Q::HALVED { writable_texture::<Rgba16Float>(width: HALF_W, height: HALF_H) } else {
             writable_texture::<Rgba16Float>(width: 1, height: 1)
         },
-        marched: buffer(if halved { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
+        marched: buffer(if Q::HALVED { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
     }
 }
@@ -911,7 +913,7 @@ impl Sky {
     /// round to round (a test's frames alike once the dome is whole). The eye looks along
     /// `forward`, its view's corners `view` (radians) from it: tiles out of sight rest
     /// (`RESTING`).
-    pub fn march(
+    pub fn march<Q: Switches>(
         mut self,
         air: Air,
         light: Light,
@@ -924,21 +926,10 @@ impl Sky {
         forward: vec3,
         view: f32,
     ) -> Clouds {
-        let c = Clouds {
-            eye,
-            phase: self.frames % PHASES,
-            sun: light.sun,
-            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
-            drift,
-            seed: if still { 0 } else { self.frames / PHASES },
-            forward,
-            sight: cos(min(view + TURN + TILE_RADIUS, PI)),
-            round: self.frames / PHASES,
-            scale: if self.halved { 2 } else { 1 },
-        }
+        let c = self.clouds::<Q>(light, eye, drift, still, forward, view)
         label("clouds")
         let scale = c.scale
-        borrow marching = if self.halved { self.half } else { self.dome }
+        borrow marching = if Q::HALVED { self.half } else { self.dome }
         dispatch(
             march_dome.bind(
                 c,
@@ -958,7 +949,7 @@ impl Sky {
             over: PHASE_TEXELS / (scale * scale),
         )
         let groups = ((SKY_W / scale + 7) / 8, (SKY_H / scale + 7) / 8, 1)
-        if self.halved {
+        if Q::HALVED {
             dispatch(
                 scatter.bind(c, marched: self.marched.items(), out: mut self.half),
                 groups: groups,
@@ -975,6 +966,33 @@ impl Sky {
         }
         self.frames += 1
         c
+    }
+
+    /// The clouds as the dome's next march sees them (`march`): from the eye at `eye`, the field
+    /// drifted `drift`, the eye looking along `forward` with its view's corners `view` (radians)
+    /// from it. A frame that doesn't march reads these (the drift the ground's cloud shadows
+    /// follow), and the dome as it is.
+    pub fn clouds<Q: Switches>(
+        self,
+        light: Light,
+        eye: vec3,
+        drift: vec2,
+        still: bool,
+        forward: vec3,
+        view: f32,
+    ) -> Clouds {
+        Clouds {
+            eye,
+            phase: self.frames % PHASES,
+            sun: light.sun,
+            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
+            drift,
+            seed: if still { 0 } else { self.frames / PHASES },
+            forward,
+            sight: cos(min(view + TURN + TILE_RADIUS, PI)),
+            round: self.frames / PHASES,
+            scale: if Q::HALVED { 2 } else { 1 },
+        }
     }
 
     /// Whether every texel of the dome has been marched.

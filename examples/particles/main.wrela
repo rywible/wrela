@@ -5,6 +5,8 @@
 
 use engine::air::{Air, hazy}
 use engine::frame::{Aim, Frame, Quality, Scene, Shared}
+use engine::switches::Approved
+use styles::physical::Physical
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::particles::{Emits, Particle, SOFT, SPARK}
 use engine::plant::Wind
@@ -100,7 +102,7 @@ impl Scene for Dust {
 }
 
 pub struct State {
-    frame: Frame<Shared>,
+    frame: Frame<Shared, Approved, Physical>,
     scene: Dust,
 }
 

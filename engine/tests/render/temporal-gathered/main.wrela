@@ -76,8 +76,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var shared = texture::<Rgba16Float>(width: SIDE, height: SIDE)
     var gathered = texture::<Rgba16Float>(width: SIDE, height: SIDE)
     let p = begin_pass(mut shared)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             r,
             scene,
@@ -90,13 +91,28 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut gathered)
-    fullscreen(
+    draw(
         p,
-        resolve_gathered.bind(r, scene, depth, depth, motion, motion, history, s, no_net.items()),
+        full.bind(z: 0.5),
+        resolve_gathered.bind(
+            r,
+            scene,
+            depth,
+            depth,
+            motion,
+            motion,
+            history,
+            s,
+            no_net.items(),
+            learned: false,
+        ),
+        vertices: 3,
     )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0))

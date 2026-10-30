@@ -31,6 +31,7 @@ use std::gpu::{
     texture3d, writable_texture, write,
 }
 use std::math::PI
+use switches::Switches
 use distance::{DistanceGrid, NO_DISTANCE, distance_at, distance_normal}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::Camera
@@ -119,7 +120,7 @@ pub struct ProbeGrid: Copy + GpuData {
     pub volume_dims: vec3u,
     pub extinction: f32,
     /// Whether a lookup weighs each probe by what it can see of the point (its sight, B9a: 1), or
-    /// by nearness alone (0: `ProbeQuality::visibility` off).
+    /// by nearness alone (0: `switches::Switches::SIGHT` off).
     pub visibility: u32 = 1,
 }
 
@@ -1021,15 +1022,19 @@ pub fn sky_sh(
     seen: [u32],
     world: vec3,
     n: vec3 = vec3(0.0),
+    sighted: bool = true,
 ) -> Held {
     // Outside the grid, its height above the ground isn't read (`held_at`).
-    held_at(grid, maps, s, seen, world.xz, world.y - ground_under(grid, grounds, world.xz), n: n)
+    let above = world.y - ground_under(grid, grounds, world.xz)
+    held_at(grid, maps, s, seen, world.xz, above, n: n, sighted: sighted)
 }
 
 /// The light round the point over `xz`, `above` metres above the ground, as a probe there
 /// would hold it (`sky_sh`, given its height above the ground). With the grid's `visibility`,
 /// each probe weighed by what it sees of the point too (its sight, from `seen`), the point
-/// facing `n` (a surface's normal; none, 0, for a point in the air).
+/// facing `n` (a surface's normal; none, 0, for a point in the air). `sighted` false leaves the
+/// sights out whatever the grid says: a program whose switches have none
+/// (`switches::Switches::SIGHT`), its shading's lookups no code of them.
 pub fn held_at(
     grid: ProbeGrid,
     maps: Texture<Rgba16Float>,
@@ -1038,6 +1043,7 @@ pub fn held_at(
     xz: vec2,
     above: f32,
     n: vec3 = vec3(0.0),
+    sighted: bool = true,
 ) -> Held {
     let g = (xz - grid.corner) / grid.spacing
     let last = f32(max(grid.cols, 2) - 1)
@@ -1055,7 +1061,7 @@ pub fn held_at(
     let c = floor(g)
     var f = g - c
     var weight = 1.0
-    if grid.visibility != 0 {
+    if sighted && grid.visibility != 0 {
         let upper = fk >= 0.5
         let (fs, w) = sighted_cell(
             grid,
@@ -1181,11 +1187,12 @@ pub fn sky_light(
     world: vec3,
     n: vec3,
     sun: f32,
+    sighted: bool = true,
 ) -> vec3 {
     if light.sky_test == 1 {
         return vec3(dot(light.sky_sh, sh_basis(n)))
     }
-    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n)
+    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n, sighted: sighted)
     probe_light(h.sky, n) + probe_light(h.sun, n) * sun
 }
 
@@ -1202,11 +1209,12 @@ pub fn sky_lights(
     n: vec3,
     r: vec3,
     sun: f32,
+    sighted: bool = true,
 ) -> (vec3, vec3) {
     if light.sky_test == 1 {
         return (vec3(dot(light.sky_sh, sh_basis(n))), vec3(0.0))
     }
-    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n)
+    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n, sighted: sighted)
     let light_at = |d: vec3| probe_light(h.sky, d) + probe_light(h.sun, d) * sun
     // A test of the sky light alone (`Light::sky_test` 2): no gloss of it.
     let gloss = if light.sky_test == 2 { vec3(0.0) } else { light_at(r) }
@@ -1532,8 +1540,14 @@ impl Baked {
     /// (its grid moved `d` spacings, its volume as many voxels; its vertical as it was): the
     /// columns both hold and the voxels both hold copied, the rest to bake and to cook from
     /// `occluders` (those of the new band are enough, `band`: an occluder the kept voxels hold
-    /// already is cooked into them again by its max).
-    pub fn shifted(old: take Baked, from: Baked, d: vec2i, occluders: [Occluder]) -> Baked {
+    /// already is cooked into them again by its max). The sights too, where the program's
+    /// switches `Q` have them (`Switches::SIGHT`).
+    pub fn shifted<Q: Switches>(
+        old: take Baked,
+        from: Baked,
+        d: vec2i,
+        occluders: [Occluder],
+    ) -> Baked {
         let g = from.grid
         let step = g.spacing / g.voxel
         var b = Baked::renew(take old, g, occluders)
@@ -1554,15 +1568,17 @@ impl Baked {
             ),
             groups: (n + 63) / 64,
         )
-        dispatch(
-            shift_seen.bind(
-                cols: g.cols,
-                d: d,
-                seen: from.seen.span(start: 0, count: n * VIS_TEXELS),
-                out: b.seen.span_mut(start: 0, count: n * VIS_TEXELS),
-            ),
-            over: n * VIS_TEXELS,
-        )
+        if Q::SIGHT {
+            dispatch(
+                shift_seen.bind(
+                    cols: g.cols,
+                    d: d,
+                    seen: from.seen.span(start: 0, count: n * VIS_TEXELS),
+                    out: b.seen.span_mut(start: 0, count: n * VIS_TEXELS),
+                ),
+                over: n * VIS_TEXELS,
+            )
+        }
         let s = i32(round(step))
         if b.volume.len() < g.voxels() {
             b.volume = buffer(g.voxels())
@@ -1690,8 +1706,9 @@ impl Baked {
     /// The next strip of columns baked, or once every column is, baked again (`AGAIN_COLUMNS`,
     /// and mapped): their probes traced through the volume, the ground's bounce lit through
     /// `sh`'s maps, the sky from the air's table (`view`) and the clouds' dome (`dome`), each
-    /// read through `s`, a linear sampler.
-    pub fn bake_strip(
+    /// read through `s`, a linear sampler. The probes' sights where the program's switches `Q`
+    /// have them (`Switches::SIGHT`).
+    pub fn bake_strip<Q: Switches>(
         mut self,
         t: Trace,
         sh: Shadows,
@@ -1755,7 +1772,9 @@ impl Baked {
                 ),
                 groups: (n * LAYERS + 63) / 64,
             )
-            self.see(strip, n * LAYERS)
+            if Q::SIGHT {
+                self.see(strip, n * LAYERS)
+            }
             self.baked += n
             if self.done() {
                 self.hits = buffer(AGAIN_COLUMNS * LAYERS * AGAIN_RAYS)
@@ -1806,7 +1825,9 @@ impl Baked {
             ),
             groups: (count * AGAIN_RAYS + 63) / 64,
         )
-        self.see(strip, count)
+        if Q::SIGHT {
+            self.see(strip, count)
+        }
         let at = self.again * LAYERS
         dispatch(
             gather.bind(

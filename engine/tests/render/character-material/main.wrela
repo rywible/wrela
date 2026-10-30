@@ -4,6 +4,9 @@ use engine::character::{Material, PartOf, character, character_shade, cook_mater
 use engine::creature::{PartMask, Skeleton, creature}
 use engine::light::Light
 use engine::lit::Lighting
+use engine::switches::{Approved, Switches}
+use styles::physical::Physical
+use engine::style::Style
 use engine::realize::{SkinVertex, Tally}
 use engine::character::{ByChannels, Shaded}
 use std::field::{Blend, sphere}
@@ -50,13 +53,13 @@ fn environment(out: mut Texels<Rgba16Float>, enabled: bool, p: GlobalId) {
     } else { vec4(0.0) })
 }
 
-fn rendered(
+fn rendered<Q: Switches, Y: Style>(
     verts: GpuBuffer<SkinVertex>,
     materials: GpuBuffer<Material>,
     palettes: GpuBuffer<mat4>,
     args: GpuBuffer<DrawArgs>,
     index: u32,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
 ) -> Texture<Rgba16Float> {
     var out = texture::<Rgba16Float>(width: 17, height: 17)
     let p = begin_pass(mut out, clear: vec4(0.0))
@@ -188,7 +191,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_fog = std::gpu::texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
     // No sights: the probes' lookups weigh by nearness alone where they're read.
     let grounds_seen: GpuBuffer<u32> = buffer(1)
-    let lt = Lighting {
+    let lt = Lighting::<Approved, Physical> {
         cam,
         light: Light { sun, sun_colour: if env { vec3(0.0) } else {
             vec3(0.2)

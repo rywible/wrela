@@ -1,6 +1,6 @@
 // The probes' sight (`engine::probes::Seen`, B9a) on a scene of walls, drawn through
 // `engine::frame` on the GPU until its probes are baked: the sky light read at points beside
-// the walls with each probe weighed by what it sees (`ProbeQuality::visibility`) and without.
+// the walls with each probe weighed by what it sees (`ProbeGrid::visibility`) and without.
 //
 // The walls are solid capsules (the probes' occluders), on flat ground, in a grid of columns 4 m
 // apart at multiples of 4:
@@ -17,6 +17,8 @@
 
 use engine::air::hazy
 use engine::frame::{Aim, Frame, Gathered, ProbeQuality, Quality, Scene}
+use engine::switches::Approved
+use styles::physical::Physical
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::plant::Wind
 use engine::probes::{Occluder, ProbeGrid, Trace, grid, sky_light}
@@ -164,7 +166,7 @@ fn lights(
 }
 
 pub struct State {
-    frame: Frame<Gathered>,
+    frame: Frame<Gathered, Approved, Physical>,
     scene: Walls,
     asked: Vec<Pending<vec4>>,
     pub seen: Vec<vec4>,
@@ -175,7 +177,7 @@ pub struct State {
 
 pub fn init() -> State {
     let air = hazy(SUN, SUN_TOP, eye: EYE.y)
-    let frame: Frame<Gathered> = Frame::new(
+    let frame: Frame<Gathered, Approved, Physical> = Frame::new(
         Quality { measured: false, probes: ProbeQuality { rays: 128 } },
         sunlight(air),
         air,

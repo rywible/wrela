@@ -14,6 +14,8 @@ use impostor::{
 }
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
+use switches::Switches
+use style::Style
 use noise::{cell_size, hashed_threshold_of}
 use lod::{
     IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, unpacked, ways,
@@ -53,13 +55,24 @@ pub struct Kind {
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
 pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+    kind_ordered(plant, seed, card_orders(plant, plant.cards(), seed), atlas, s)
+}
+
+/// `kind`, its cards' orders found already (`card_orders`, `plant::orders_of` on a helper).
+pub fn kind_ordered(
+    plant: Plant,
+    seed: u32,
+    found: take Vec<u32>,
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+) -> Kind {
     // A plant with no leaves (a snag, a log) has no cards: its limbs alone are drawn.
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(max(n, 1))
     if n > 0 {
         dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
     }
-    let orders = buffer_of(card_orders(plant, n, seed), at_least: 1)
+    let orders = buffer_of(take found, at_least: 1)
     let limb_count = plant.limbs.len()
     var list: Vec<Tube<4>> = Vec::new()
     for i in 0..limb_count {
@@ -400,13 +413,13 @@ fn leaf_cover(m: f32) -> f32 {
 /// inside the crown) and the light through it, and its gloss (`impostor::leaf_light`, as its
 /// impostor and volume have them); through the haze.
 @fragment
-pub fn leaf_shade(
+pub fn leaf_shade<Q: Switches, Y: Style>(
     l: LeafVertex,
     pixel: FragCoord,
     kinds: [KindDesc],
     cards: [Card],
     instances: [Instance],
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     atlas: Texture<Rgba8>,
 ) -> vec4 {
     let leaves = kinds[l.kind.value].bake.leaves
@@ -556,10 +569,10 @@ fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
 /// mean as a pixel grows past the coarse tile's texels (`plant::bark_at`), so a far trunk doesn't
 /// sparkle.
 @fragment
-pub fn bark_shade(
+pub fn bark_shade<Q: Switches, Y: Style>(
     b: BarkVertex,
     pixel: FragCoord,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     kinds: [KindDesc],
     ridges: Texture<Rgba8>,
     coarse: Texture<Rgba8>,

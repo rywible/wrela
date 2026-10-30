@@ -1,0 +1,84 @@
+// The tiers (docs/plan-world-class-3.md §C7, D37, **proposed**): how much of the frame a device
+// gets. A program names its tier as `pub const TIER: Tier`, which `wrela build --set
+// TIER=Medium` overrides; its switches follow it at build time (`Tiered`: each an associated
+// constant that folds, toolchain 0.10.3), so a tier's paths that are off build no pipeline, and
+// its quality follows it at run time (`Tier::quality`).
+
+use frame::Quality
+use switches::Switches
+
+/// A device's tier: `Epic` the look as approved; each lower one gives up more of it for time.
+pub enum Tier: Copy + Eq + Fieldless {
+    Epic,
+    High,
+    Medium,
+    Low,
+}
+
+/// What names a program's tier, on its switches' type: `impl Tiers for Mine { const TIER: Tier =
+/// TIER }` (its `pub const TIER` read through it), beside the `impl Switches for Mine` that says
+/// any switch it sets itself (its experiments, a switch its look has off).
+pub trait Tiers: Switches {
+    const TIER: Tier = Tier::Epic
+}
+
+/// The switches of `T`'s tier (**proposed**): `T`'s own, each that a tier turns off off from it on.
+/// `Epic`: `T`'s. `High`: the contact shadows and the reflections off. `Medium`: `High`'s, with the
+/// probes' sights off. `Low`: `Medium`'s, with the fog, the distance volume and the ambient
+/// occlusion off. None halves the clouds' dome (the plan had `High` do it): it marches a quarter
+/// of the texels and upsamples the whole dome after, which since the dome's marched every other
+/// frame (C6a) costs more than it saves (the walks at `High` with it, after two minutes' warming:
+/// the floor 15.86 ms against `Epic`'s 14.12, the vale 18.23 against 17.57).
+pub struct Tiered<T: Tiers> {}
+
+impl<T: Tiers> Switches for Tiered<T> {
+    const CONTACT: bool = T::CONTACT && T::TIER == Tier::Epic
+    const REFLECTIONS: bool = T::REFLECTIONS && T::TIER == Tier::Epic
+    const SIGHT: bool = T::SIGHT && (T::TIER == Tier::Epic || T::TIER == Tier::High)
+    const FOG: bool = T::FOG && T::TIER != Tier::Low
+    const DISTANCE: bool = T::DISTANCE && T::TIER != Tier::Low
+    const AMBIENT: bool = T::AMBIENT && T::TIER != Tier::Low
+    const OCCLUSION: bool = T::OCCLUSION
+    const PCSS: bool = T::PCSS
+    const HALVED: bool = T::HALVED
+    const CASCADES: bool = T::CASCADES
+    const NEURAL: bool = T::NEURAL
+    const LEARNED: bool = T::LEARNED
+}
+
+impl Tier {
+    /// `q`, a program's quality at `Epic`, as this tier draws it (**proposed**). `Epic` and
+    /// `High`: as it is (the scene at 0.667 of the output, the near cascade at 2048²). `Medium`:
+    /// the scene at half the output, the near cascade at 1024², the probes baked with 16 rays.
+    /// `Low`: `Medium`'s, and the far cascade at 512² (the plan's "no far cascade": the probes'
+    /// first bake and an arrival wait for it whole, so it's kept, small).
+    pub fn quality(self, q: Quality) -> Quality {
+        if self == Tier::Epic || self == Tier::High {
+            return q
+        }
+        var out = q
+        out.scale = 0.5
+        out.shadows.near.side = 1024
+        out.probes.rays = 16
+        if self == Tier::Low {
+            out.shadows.far.side = 512
+        }
+        out
+    }
+}
+
+/// Each tier's quality is no more than the one above's, and `Epic`'s is the program's own.
+@test
+fn each_tier_draws_no_more_than_the_one_above() {
+    let q = Quality {}
+    let tiers = [Tier::Epic, Tier::High, Tier::Medium, Tier::Low]
+    assert(Tier::Epic.quality(q).scale == q.scale, "Epic changed the program's quality")
+    for k in 1..4 {
+        let (a, b) = (tiers[k - 1].quality(q), tiers[k].quality(q))
+        assert(b.scale <= a.scale && b.probes.rays <= a.probes.rays, f"tier {k} draws more")
+        assert(
+            b.shadows.near.side <= a.shadows.near.side && b.shadows.far.side <= a.shadows.far.side,
+            f"tier {k}'s cascades are larger",
+        )
+    }
+}

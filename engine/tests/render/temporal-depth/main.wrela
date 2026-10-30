@@ -89,8 +89,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var rejected = texture::<Rgba16Float>(width: 32, height: 40)
     var kept = texture::<Rgba16Float>(width: 32, height: 40)
     let p = begin_pass(mut fresh)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             Resolve { fresh: 1, ..r },
             scene,
@@ -103,12 +104,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut rejected)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             r,
             scene,
@@ -121,12 +125,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let p = begin_pass(mut kept)
-    fullscreen(
+    draw(
         p,
+        full.bind(z: 0.5),
         resolve.bind(
             r,
             scene,
@@ -139,7 +146,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
             spreads,
             s,
             no_net.items(),
+            learned: false,
         ),
+        vertices: 3,
     )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0))

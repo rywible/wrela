@@ -20,6 +20,8 @@ use neural::{Model, eval_gpu, half_at}
 use probes::{oct_dir, oct_of}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
+use switches::Switches
+use style::Style
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
@@ -29,9 +31,9 @@ use plant::{
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer, Half2,
-    InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
-    TextureArray, VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard,
-    dispatch, draw, texture, texture3d,
+    InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Targets2, Texels3d, Texture,
+    Texture3d, TextureArray, VertexIndex, WithDepth, begin_pass, begin_pass2_with_depth, buffer,
+    depth_texture, discard, dispatch, draw, texture, texture3d,
 }
 use view::{Camera, LEAVES}
 
@@ -78,8 +80,8 @@ const AGAINST_SUN: f32 = 0.35
 /// light and the light through it (`through`, its leaves'); through the haze. Its gloss is its
 /// side's that faces the eye (a leaf has two), as rough as a leaf `leaf` metres wide is there
 /// (`leaf_rough`).
-pub fn leaf_light(
-    lt: Lighting,
+pub fn leaf_light<Q: Switches, Y: Style>(
+    lt: Lighting<Q, Y>,
     at: vec3,
     n: vec3,
     sky_n: vec3,
@@ -266,39 +268,26 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     (crown_n, tinted(leaf_age(b.leaves, crown_n.y), f.tint))
 }
 
-/// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
-/// coverage in alpha.
+/// The impostor's maps, drawn together: its colour (each view's leaves' and limbs' albedo, its
+/// square root, and the coverage in alpha), and its normal (in the plant's frame, folded:
+/// `oct_encode`), how far toward its view it is (from 0 at the back of the box to 1 at its
+/// front) and its depth in the crown (m, over `DEEPEST`).
 @fragment
-pub fn bake_colour(
+pub fn bake_maps(
     f: BakeVertex,
     pixel: FragCoord,
     b: Bake,
     atlas: Texture<Rgba8>,
     s: Sampler,
-) -> vec4 {
+) -> Targets2<vec4, vec4> {
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
-    let (_, albedo) = baked_leaf(f, b, atlas, s)
-    vec4(sqrt(saturate(albedo)), 1.0)
-}
-
-/// The impostor's normal (in the plant's frame, folded: `oct_encode`), how far toward its view
-/// it is (from 0 at the back of the box to 1 at its front), and its depth in the crown (m, over
-/// `DEEPEST`).
-@fragment
-pub fn bake_normal(
-    f: BakeVertex,
-    pixel: FragCoord,
-    b: Bake,
-    atlas: Texture<Rgba8>,
-    s: Sampler,
-) -> vec4 {
-    if outside_cell(pixel.position.xy, f.view.value) {
-        discard()
+    let (n, albedo) = baked_leaf(f, b, atlas, s)
+    Targets2 {
+        first: vec4(sqrt(saturate(albedo)), 1.0),
+        second: vec4(oct_of(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST)),
     }
-    let (n, _) = baked_leaf(f, b, atlas, s)
-    vec4(oct_of(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
 }
 
 /// What a wood's draws read of an instance's kind (`kind_of` names it): where its cards, their
@@ -390,40 +379,22 @@ pub fn bake(
     var depth = depth_texture(width: ATLAS, height: ATLAS)
     let views = VIEWS * VIEWS
     let level = level_cards(n, BAKED)
+    // The two maps' clears differ: each is cleared alone, then both drawn at once.
+    begin_pass(mut colour, clear: vec4(0.0)).end()
+    begin_pass(mut normal, clear: vec4(0.0, 0.0, 0.5, 0.0)).end()
     {
-        let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
-        if level > 0 {
-            draw(
-                p,
-                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-                bake_colour.bind(b, atlas, s),
-                vertices: level * 6,
-                instances: views,
-            )
-        }
-        if limb_count > 0 {
-            draw(
-                p,
-                bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
-                bake_colour.bind(b, atlas, s),
-                vertices: limb_count * LIMB_VERTICES,
-                instances: views,
-            )
-        }
-        p.end()
-    }
-    {
-        let p = begin_pass_with_depth(
+        let p = begin_pass2_with_depth(
+            mut colour,
             mut normal,
             mut depth,
-            clear: vec4(0.0, 0.0, 0.5, 0.0),
+            keep: true,
             clear_depth: 1.0,
         )
         if level > 0 {
             draw(
                 p,
                 bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-                bake_normal.bind(b, atlas, s),
+                bake_maps.bind(b, atlas, s),
                 vertices: level * 6,
                 instances: views,
             )
@@ -432,7 +403,7 @@ pub fn bake(
             draw(
                 p,
                 bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
-                bake_normal.bind(b, atlas, s),
+                bake_maps.bind(b, atlas, s),
                 vertices: limb_count * LIMB_VERTICES,
                 instances: views,
             )
@@ -582,9 +553,9 @@ fn cell_uv(cell: vec2u, q: vec3) -> vec2 {
     (vec2(cell) + (vec2(dot(q, right), dot(q, up)) * 0.5 + vec2(0.5))) / f32(VIEWS)
 }
 
-/// A kind's impostor as a net (§B14.2, `Quality::neural`): its model, its grid's side over
-/// `texel_uv` (0: none) and features a cell (stored after the net's weights), and the layer of the
-/// kind it stands for; `on` 0 reads every kind's atlas.
+/// A kind's impostor as a net (§B14.2, `switches::Switches::NEURAL`): its model, its grid's side
+/// over `texel_uv` (0: none) and features a cell (stored after the net's weights), and the layer
+/// of the kind it stands for; `on` 0 reads every kind's atlas.
 pub struct Neural: Copy + GpuData {
     pub model: Model,
     pub grid: u32 = 0,
@@ -916,12 +887,13 @@ fn world_normal(f: FarVertex, n: vec3) -> vec3 {
 
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
 /// (`seen`), lit as a leaf is, where the leaf is. The sky light is for the crown's normal there,
-/// as a card's is: its kind's volume holds it (`grid`).
+/// as a card's is: its kind's volume holds it (`grid`). Read through the net (`nn`) only where
+/// the program's switches have it (`Switches::NEURAL`).
 @fragment
-pub fn far_shade<C: Format + Filtered, N: Format>(
+pub fn far_shade<C: Format + Filtered, N: Format, Q: Switches, Y: Style>(
     f: FarVertex,
     pixel: FragCoord,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     ids: Texture<R32Uint>,
     kinds: [KindDesc],
     colour: TextureArray<C>,
@@ -937,7 +909,7 @@ pub fn far_shade<C: Format + Filtered, N: Format>(
     let kd = kinds[f.kind.value]
     let b = kd.bake
     let k = view_of(f, pixel.position.xy)
-    let leaf = if through_net(nn, kd.layer) { net_seen(nn, net, f, k) } else {
+    let leaf = if Q::NEURAL && through_net(nn, kd.layer) { net_seen(nn, net, f, k) } else {
         seen(f, k, colour, normal, depth, kd.layer, lt.s)
     }
     let n = world_normal(f, leaf.normal)
@@ -1165,10 +1137,10 @@ fn volume_place(f: FarVertex, b: Bake, q: vec3) -> vec3 {
 /// A very far instance's pixel: its leaves as the cards' are lit (`vegetation::leaf_shade`): the
 /// mean normal the ray met, their depth in the crown, where they are.
 @fragment
-pub fn volume_shade(
+pub fn volume_shade<Q: Switches, Y: Style>(
     f: FarVertex,
     pixel: FragCoord,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     ids: Texture<R32Uint>,
     kinds: [KindDesc],
     grid: Texture3d<Rgba16Float>,

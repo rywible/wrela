@@ -6,6 +6,7 @@
 use engine::air::hazy
 use engine::light::{SUN_TOP, sunlight}
 use engine::probes::{Baked, LAYERS, Occluder, Probe, ProbeGrid, band, density_at, grid, held_at}
+use engine::switches::Approved
 use std::gpu::{
     GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture, Texture3d, buffer, dispatch, read,
     sampler, texture, write,
@@ -144,7 +145,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         read_shift(mut s, from, 6)
         let spare = Baked::new(probes(), [])
         let near = band([TRUNK], from.grid, SHIFT)
-        var b = Baked::shifted(take spare, from, SHIFT, near)
+        var b = Baked::shifted::<Approved>(take spare, from, SHIFT, near)
         b.cook()
         s.fresh = b.fresh()
         b.baked = b.grid.cols * b.grid.cols

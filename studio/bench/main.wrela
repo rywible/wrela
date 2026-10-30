@@ -3,7 +3,7 @@
 //
 // ```text
 // wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>]
-//     [--compare <report.json>] [--no-native] [--no-docs]
+//     [--sustained <s>] [--compare <report.json>] [--no-native] [--no-docs]
 // ```
 //
 // Each scene's package (scenes.wrela) is built as it ships (optimized) into
@@ -18,6 +18,15 @@
 //    and to the program's `playable` print, the pipelines' ms, and the bytes loaded;
 // 4. natively, on the native host's GPU (`std::tool::drive`): each frame call's time.
 //
+// `--sustained <s>` (docs/plan-world-class-3.md §C3) warms the machine first: before the play run
+// its page is opened again and again for `s` seconds (the walk from its start each time, with one
+// frame in flight), each page's GPU spans kept, and `sustained.json` records the median of those in
+// the first minute and in the last (`minute_1_ms`, `minute_last_ms`, their `ratio`: over 1.15 is
+// throttling); the play run that's measured then runs with one frame in flight too (test mode's
+// `inflight=1`: a frame starts only once the one two before it is done on the GPU, so a cadence of
+// starts is a lower bound on the GPU's throughput), and its `throughput.json` says how many frames
+// started, over how long, how many a second, and how many intervals were over 25 ms.
+//
 // With `--lan` the builds are served to the LAN (`serve::start(dir, lan: true)`) instead, scene by
 // scene: the tool prints each scene's four pages' URLs (their hashes with `show=1`, so a device
 // that can't put its results shows them), waits for each run's results to be put into the
@@ -28,7 +37,9 @@
 // under "Devices" and runs nothing; `--row <file.json>` (a workspace path) adds another engine's
 // report, as rywible/wrela-others' harness writes it, under "Other engines on this machine".
 //
-// The warmup (60 frames unless `--warmup` says) isn't counted. `--frames` cuts every scene's
+// The warmup (60 frames unless `--warmup` says) isn't counted, nor are a walk's frames before
+// its start (`Scene::walks`), nor a run's before 60 after its program prints `playable` (the
+// load's, covered: `counted_from`). `--frames` cuts every scene's
 // measured frames to that many (to try the tool). The report is written to
 // `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
 // `docs/bench.md` under a heading of its date and machine (unless `--no-docs`). `--compare`
@@ -37,7 +48,7 @@
 
 use report::{
     Measured, compared, date_of, doc, hitches, intervals, markdown, number_at, numbers, report_json,
-    shares_of, spans, stats, time_of,
+    shares_of, spans, stats, sustained_json, throughput, throughput_json, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
@@ -54,7 +65,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -69,6 +80,13 @@ pub struct Options: Clone {
     pub lan: bool,
     /// A row typed by hand (`--row`), or empty.
     pub row: String,
+    /// How long the play run's page is paced first (`--sustained`, s), or 0.
+    pub sustained: u32 = 0,
+    /// Starts alone (`--starts`): this many cold and warm starts a scene, or 0.
+    pub starts: u32 = 0,
+    /// The tier each scene's program is built at (`--tier`: `wrela build --set TIER=<tier>`,
+    /// `engine::tier`), or empty for its own.
+    pub tier: String = String::new(),
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -128,8 +146,34 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         } else if a == "--row" {
             o.row = value(k)?
             k += 2
+        } else if a == "--sustained" {
+            o.sustained = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--starts" {
+            o.starts = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--tier" {
+            let v = value(k)?
+            if !(v.as_str() == "Epic" ||
+                v.as_str() == "High" ||
+                v.as_str() == "Medium" ||
+                v.as_str() == "Low") {
+                return None
+            }
+            o.tier = take v
+            k += 2
         } else {
             return None
+        }
+    }
+    // A tier is set on a program that names one (`Scene::tiered`).
+    if !o.tier.is_empty() {
+        for n in o.scenes {
+            for s in SCENES {
+                if s.name == n.as_str() && !s.tiered {
+                    return None
+                }
+            }
         }
     }
     Some(o)
@@ -145,7 +189,8 @@ pub fn chosen(o: Options) -> Vec<Scene> {
                 wanted = true
             }
         }
-        if wanted {
+        // A tier is a program's that names one (`Scene::tiered`).
+        if wanted && (o.tier.is_empty() || s.tiered) {
             var c = s.clone()
             if o.frames > 0 {
                 c.frames = o.frames
@@ -292,28 +337,27 @@ pub fn posted(dir: str, timeout: f64) -> Result<(), ToolError> {
     }
 }
 
-/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
-/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
-/// (ms since the epoch) and the machine.
-pub fn measure(
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier` (the
+/// program's own if empty) unless an earlier scene's was (`build`), and its gate script written
+/// beside it: the build's directory and the
+/// script's file there.
+fn prepared(
     s: Scene,
-    o: Options,
-    salt: u32,
+    tier: str,
     build: bool,
     ws: str,
     out: str,
-    kept: str,
-) -> Result<(Measured, f64, String), ToolError> {
+) -> Result<(String, String), ToolError> {
     let dir = build_dir(out, s.pkg)
-    // Each run's results, kept before the next run empties them.
-    var runs: Vec<String> = Vec::new()
-    for r in RUNS {
-        runs.push(String::from(f"{kept}/{s.name}/{r}"))
-    }
     if build {
         var options = toolchain::options()
         options.optimize = true
         options.timeout = 600.0
+        if tier.len() > 0 {
+            options.set.push(
+                toolchain::Set { name: String::from("TIER"), value: String::from(tier) },
+            )
+        }
         let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
         if !built.ok {
             for d in built.diagnostics {
@@ -330,14 +374,135 @@ pub fn measure(
         f"{dir}/{input_file}",
         String::from(input.as_json()).as_bytes(),
     ).wait()?
-    let frames = o.warmup + s.frames
+    Ok((take dir, take input_file))
+}
+
+/// A run's counted frames begin this many frames after it prints `playable`, if that's after the
+/// warmup and its walk's start (`counted_from`).
+const AFTER_PLAYABLE: u32 = 60
+
+/// The frame a run's program printed `playable` in, from its `frames.json` and its log; none if
+/// it never did.
+pub fn playable_frame(framed: Doc, log: str) -> Option<u32> {
+    let pi = framed.get(TOP, "printed_in")?
+    let printed_in = numbers(framed, pi, 0)
+    var line = 0
+    for (a, b) in log.lines() {
+        if line < printed_in.len() && log.slice(a, b).find("playable at frame").is_some() {
+            return Some(u32(printed_in[line]))
+        }
+        line += 1
+    }
+    None
+}
+
+/// The first frame a run counts, from its `frames.json` and its log: `from` (the warmup, or its
+/// walk's start if later), or `AFTER_PLAYABLE` frames after the frame its program printed
+/// `playable` in, if that's later. Before it the load's frames are covered (the arrival's black:
+/// `engine::frame::Readiness`), and since C5 they draw nothing of the scene. A program that
+/// `arrives` and never printed `playable` stayed covered: its frames aren't a scene's, and that's
+/// the failure; one without an arrival (the herd, the hello field) counts from `from`.
+pub fn counted(framed: Doc, log: str, from: u32, arrives: bool) -> Result<u32, String> {
+    match playable_frame(framed, log) {
+        Some(f) => Ok(max(from, f + AFTER_PLAYABLE)),
+        None => if arrives {
+            Err(String::from("it never printed `playable`: every frame was the arrival's cover"))
+        } else {
+            Ok(from)
+        },
+    }
+}
+
+/// `counted` for the run in `dir`, scene `s`'s.
+fn counted_from(dir: str, from: u32, s: Scene) -> Result<u32, ToolError> {
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    counted(framed, log.as_str(), from, s.arrives).map_err(|e| ToolError::new(f"{s.name}: {e}"))
+}
+
+/// How many frames past a walk's start an arriving scene's page runs, so its counted frames are
+/// all there should it be playable late (`counted`); a run counting fewer fails.
+const READY_ROOM: u32 = 300
+
+/// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about frame
+/// 105 at `Epic`, and later at a cheaper tier, whose covered frames are quicker (the vale at
+/// `High` natively at 269); the frames after don't count.
+const STARTS_FRAMES: u32 = 400
+
+/// Scene `s`'s starts alone (`--starts`): `o.starts` cold starts (each salted afresh from `salt`,
+/// so no cache serves its pipelines) and as many warm ones, each run's results kept in `kept`;
+/// each start's `playable_ms`, cold then warm.
+pub fn starts(
+    s: Scene,
+    o: Options,
+    salt: u32,
+    build: bool,
+    ws: str,
+    out: str,
+    kept: str,
+) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
+    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
+    let frames = min(o.warmup + s.frames, STARTS_FRAMES)
+    let timeout = f64(frames) / 60.0 * 10.0 + 240.0
+    let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
+    var cold: Vec<f64> = Vec::new()
+    var warm: Vec<f64> = Vec::new()
+    for n in 0..o.starts {
+        for k in [2, 3] {
+            let salted = if k == 2 { String::from(f"&salt={salt + n}") } else { String::new() }
+            let h = String::from(f"{hash}&nohash=1{salted}")
+            run(dir.as_str(), h.as_str(), s.width, s.height, timeout, Vec::new(), k)?
+            keep_results(dir.as_str(), f"{kept}/{s.name}/{RUNS[k]}-{n + 1}")?
+            let (_, first_frame_ms, _, printed_ms, _) = started(dir.as_str())?
+            // A program without an arrival is playable at its first frame.
+            let playable_ms = if s.arrives { printed_ms } else { first_frame_ms }
+            if playable_ms == 0.0 {
+                return Err(ToolError::new(f"{s.name} wasn't playable within {frames} frames"))
+            }
+            print(
+                f"bench: {s.name} {RUNS[k]} {n + 1}: playable {playable_ms:.0} ms, first frame {first_frame_ms:.0}",
+            )
+            if k == 2 {
+                cold.push(playable_ms)
+            } else {
+                warm.push(playable_ms)
+            }
+        }
+    }
+    Ok((take cold, take warm))
+}
+
+/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
+/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
+/// (ms since the epoch) and the machine.
+pub fn measure(
+    s: Scene,
+    o: Options,
+    salt: u32,
+    build: bool,
+    ws: str,
+    out: str,
+    kept: str,
+) -> Result<(Measured, f64, String), ToolError> {
+    // Each run's results, kept before the next run empties them.
+    var runs: Vec<String> = Vec::new()
+    for r in RUNS {
+        runs.push(String::from(f"{kept}/{s.name}/{r}"))
+    }
+    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
+    let input = script(s.name)
+    // A walk's frames count from its start (`Scene::walks`), after its load.
+    let from = max(o.warmup, s.walks)
+    let frames = from + s.frames + if s.arrives { READY_ROOM } else { 0 }
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
     let cold_hash = page_hash(min(frames, 300), w, h, o.workers, input_file.as_str())
+    // A sustained run's play has one frame in flight (§C3), the plain run's two.
+    let inflight = if o.sustained > 0 { 1 } else { 2 }
     let hashes = [
         String::from(f"{common}&timestamps=1&saturate=1&nohash=1"),
-        String::from(f"{common}&paced=1&inflight=2&nohash=1&timestamps=1"),
+        String::from(f"{common}&paced=1&inflight={inflight}&nohash=1&timestamps=1"),
         String::from(f"{cold_hash}&nohash=1&salt={salt}"),
         String::from(f"{cold_hash}&nohash=1"),
     ]
@@ -359,18 +524,75 @@ pub fn measure(
     // 1. The GPU.
     run(dir.as_str(), hashes[0].as_str(), w, h, timeout, urls, 0)?
     keep_results(dir.as_str(), runs[0].as_str())?
-    let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
+    let span = stats(
+        spans(json_of(f"{dir}/results/timings.json")?, counted_from(dir.as_str(), from, s)?),
+    )
     let machine = machine_of(dir.as_str(), o.lan)?
+    // The machine warmed: the play page again and again for `o.sustained` seconds, each page's GPU
+    // spans kept by when it began.
+    var minute_1: Vec<f64> = Vec::new()
+    var minute_last: Vec<f64> = Vec::new()
+    var m1 = 0.0
+    var ml = 0.0
+    if o.sustained > 0 {
+        let began = now()
+        var pages: Vec<(f64, Vec<f64>)> = Vec::new()
+        while now() - began < f64(o.sustained) {
+            let at = now() - began
+            run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
+            let counted = counted_from(dir.as_str(), from, s)?
+            pages.push((at, spans(json_of(f"{dir}/results/timings.json")?, counted)))
+        }
+        let last_from = f64(o.sustained) - 60.0
+        for (at, sp) in pages {
+            for x in sp {
+                if at < 60.0 {
+                    minute_1.push(x)
+                }
+                if at >= last_from {
+                    minute_last.push(x)
+                }
+            }
+        }
+        // (A run shorter than its two minutes: its last page is its last minute.)
+        if minute_last.is_empty() && !pages.is_empty() {
+            minute_last = pages[pages.len() - 1].1.clone()
+        }
+        m1 = stats(take minute_1).p50
+        ml = stats(take minute_last).p50
+        let _ = files::make_dirs(f"{kept}/{s.name}").wait()
+        write_file(
+            f"{kept}/{s.name}/sustained.json",
+            chunked(Vec::from(sustained_json(o.sustained, pages.len(), m1, ml).as_bytes())),
+        )?
+    }
     // 2. Play, each frame's labels timed (what a hitch held).
     run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
     keep_results(dir.as_str(), runs[1].as_str())?
     let framed = json_of(f"{dir}/results/frames.json")?
-    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, o.warmup)
+    let played = counted_from(dir.as_str(), from, s)?
+    let framed_count = match framed.get(TOP, "began_ms") {
+        Some(n) => framed.count(n),
+        None => 0,
+    }
+    if framed_count < played + s.frames {
+        return Err(
+            ToolError::new(
+                f"{s.name}: {framed_count - min(played, framed_count)} frames counted, not {s.frames}: it was playable late",
+            ),
+        )
+    }
+    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, played)
     let began = match framed.get(TOP, "began_ms") {
         Some(n) => numbers(framed, n, 0),
         None => Vec::new(),
     }
-    let between = intervals(began, o.warmup)
+    let through = throughput(began, played)
+    write_file(
+        f"{runs[1]}/throughput.json",
+        chunked(Vec::from(throughput_json(through).as_bytes())),
+    )?
+    let between = intervals(began, played)
     var over_16 = 0
     var over_33 = 0
     for x in between {
@@ -382,7 +604,7 @@ pub fn measure(
         }
     }
     let cpu = match framed.get(TOP, "cpu_ms") {
-        Some(n) => stats(numbers(framed, n, o.warmup)),
+        Some(n) => stats(numbers(framed, n, played)),
         None => stats(Vec::new()),
     }
     let memory = json_of(f"{dir}/results/memory.json")?
@@ -431,7 +653,7 @@ pub fn measure(
         var calls = Vec::new()
         if seen.ran.len() > 0 {
             let spans = seen.ran[0].spans.len()
-            for k in o.warmup..spans {
+            for k in from..spans {
                 let span = seen.ran[0].spans[k]
                 calls.push((span.end - span.start) * 1000.0)
             }
@@ -439,7 +661,9 @@ pub fn measure(
         native = stats(take calls)
     }
     let m = Measured {
-        scene: String::from(s.name),
+        scene: if o.tier.is_empty() { String::from(s.name) } else {
+            String::from(f"{s.name} ({o.tier})")
+        },
         span,
         interval: stats(take between),
         over_16,
@@ -459,6 +683,11 @@ pub fn measure(
         compiles,
         runs,
         shares,
+        sustained_s: o.sustained,
+        minute_1_ms: m1,
+        minute_last_ms: ml,
+        starts_per_s: through.starts_per_s,
+        over_25: through.over_25,
     }
     Ok((m, opened, machine))
 }
@@ -487,19 +716,13 @@ fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolErr
             shares = shares_of(log.as_str().slice(a, b))
         }
     }
-    if let (Some(pi), Some(bi)) = (framed.get(TOP, "printed_in"), framed.get(TOP, "began_ms")) {
-        let printed_in = numbers(framed, pi, 0)
+    if let (Some(f), Some(bi)) = (
+        playable_frame(framed, log.as_str()),
+        framed.get(TOP, "began_ms"),
+    ) {
         let began = numbers(framed, bi, 0)
-        var line = 0
-        for (a, b) in log.lines() {
-            let l = log.as_str().slice(a, b)
-            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
-                let f = u32(printed_in[line])
-                if f < began.len() {
-                    playable_ms = began[f] - opened
-                }
-            }
-            line += 1
+        if f < began.len() {
+            playable_ms = began[f] - opened
         }
     }
     Ok((opened, first_frame_ms, loaded_bytes, playable_ms, take shares))
@@ -652,6 +875,19 @@ fn bench_md() -> String {
     }
 }
 
+/// `xs` as `(a, b, c)`, each to the ms.
+fn listed(xs: [f64]) -> String {
+    var out = String::from("(")
+    for i in 0..xs.len() {
+        if i > 0 {
+            out.push_str(", ")
+        }
+        out.push_str(f"{xs[i]:.0}")
+    }
+    out.push_str(")")
+    out
+}
+
 fn bench(o: Options) -> Result<(), ToolError> {
     if o.row.as_str().ends_with(".json") {
         let path = o.row.as_str()
@@ -688,9 +924,13 @@ fn bench(o: Options) -> Result<(), ToolError> {
     var date = String::new()
     var opened_at = 0.0
     var machine = String::new()
-    var salt = 1
     // Where the runs' results are kept: `out/<date>-<time>/<scene>/<run>/`, the bench's start.
     let now = time::utc_now().wait()?
+    // Each cold start's salt is new to this machine, not only to the browser's profile (which is
+    // thrown away): the system's own shader cache (macOS keeps one an app, keyed by a shader's
+    // source) served a salt an earlier run had used, and its cold start was a warm one: the
+    // seconds since the epoch, a thousand salts to each.
+    var salt = u32(now.seconds % 4000000) * 1000
     let at = f64(now.seconds) * 1000.0
     let kept = String::from(f"out/{date_of(at)}-{time_of(at)}")
     // The packages built so far: each once, for all the scenes that share it.
@@ -706,12 +946,23 @@ fn bench(o: Options) -> Result<(), ToolError> {
         if build {
             built.push(String::from(s.pkg))
         }
+        if o.starts > 0 {
+            let (cold, warm) = starts(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
+            salt += o.starts
+            print(
+                f"bench: {s.name} playable, median of {o.starts}: cold {stats(cold.clone()).p50:.0} ms {listed(cold)}, warm {stats(warm.clone()).p50:.0} ms {listed(warm)}",
+            )
+            continue
+        }
         let (m, opened, mach) = measure(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
         salt += 1
         date = date_of(opened)
         opened_at = opened
         machine = take mach
         all.push(take m)
+    }
+    if o.starts > 0 {
+        return Ok(())
     }
     let table = markdown(machine.as_str(), date.as_str(), all)
     print(table.as_str())

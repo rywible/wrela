@@ -63,11 +63,17 @@ fn found(d: Driven) -> Result<Vec<f32>, ToolError> {
 
 /// The floor built with its testing exports and driven at `WIDTH` × `HEIGHT`, its shot `SHOT`
 /// chosen and settled, time frozen (F10) and the eye dollying along its look (F11): the
-/// rejector's run's and its check's start.
-fn drive_floor() -> Result<Driven, ToolError> {
-    let dir = "out/fixtures/rejector"
+/// rejector's run's and, `learned` (the floor's `LEARNED` switch set, so temporal AA's share is
+/// its net's), its check's start.
+fn drive_floor(learned: bool) -> Result<Driven, ToolError> {
+    let dir = if learned { "out/fixtures/rejector-learned" } else { "out/fixtures/rejector" }
     var options = toolchain::options()
     options.testing = true
+    if learned {
+        options.set.push(
+            toolchain::Set { name: String::from("LEARNED"), value: String::from("true") },
+        )
+    }
     options.optimize = true
     options.timeout = 600.0
     let b = toolchain::build("ws/games/last-green", dir, options).wait()?
@@ -202,7 +208,7 @@ fn trained(rows: [f32], to: u32, steps: u32) -> Vec<f32> {
 /// `out` names a file.
 pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String), ToolError> {
     let started = std::time::now()
-    var d = drive_floor()?
+    var d = drive_floor(false)?
     var rows: Vec<f32> = Vec::new()
     for k in 0..frames {
         let _ = d.run(GAP)?
@@ -271,8 +277,8 @@ pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String),
 }
 
 /// The learned rejector's shader against its CPU evaluation (§B14.3d): the floor built with its
-/// net (`content/kit/rejector_net.wrela`, its half floats read back from the source), the learned
-/// share turned on, and at 1,000 pixels of a dollied frame the share the shader found
+/// net (`content/kit/rejector_net.wrela`, its half floats read back from the source) and its
+/// `LEARNED` switch set, and at 1,000 pixels of a dollied frame the share the shader found
 /// (`FoundRow`'s last float) against the CPU's of the same inputs: its worst difference, an
 /// error if no pixel was checked, a share wasn't finite or the worst is over 1/255. The floor
 /// builds with the game's compiled net, so `source` is that net's.
@@ -288,8 +294,7 @@ pub fn check(source: str) -> Result<f32, ToolError> {
         halves_read.push(std::gpu::Half2 { bits })
     }
     let w = engine::neural::unhalves(halves_read, REJECTOR.size())
-    var d = drive_floor()?
-    call(d, "test_learned", Vec::from([Scalar::I32(1)]))?
+    var d = drive_floor(true)?
     let _ = d.run(GAP)?
     call(
         d,

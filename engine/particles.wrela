@@ -24,6 +24,8 @@
 //   particles; a pixel they mostly cover takes the veils' tag (`view::VEIL`).
 
 use lit::{Lighting, sun_and_sky}
+use switches::Switches
+use style::Style
 use plant::Wind
 use std::collections::swap
 use std::gpu::{
@@ -440,7 +442,7 @@ impl Particles {
 
     /// Each live particle lit by `lt`, into the list drawn, in their sorted order
     /// (`light_particle`), once a frame.
-    pub fn light(mut self, lt: Lighting) {
+    pub fn light<Q: Switches, Y: Style>(mut self, lt: Lighting<Q, Y>) {
         dispatch(
             light_particle.bind(
                 lt,
@@ -540,8 +542,8 @@ pub struct Drawn: Copy + GpuData {
 /// its own light), into the list drawn at its place: the draw reads its instances in order, each
 /// once, from one small buffer.
 @compute(256)
-fn light_particle(
-    lt: Lighting,
+fn light_particle<Q: Switches, Y: Style>(
+    lt: Lighting<Q, Y>,
     parts: [Particle],
     order: [u32],
     count: [u32],

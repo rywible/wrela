@@ -31,22 +31,16 @@ pub struct Shadows: Copy + GpuData {
     pub far_texel: f32,
     pub texel_uv: vec3,
     pub moving_texel: f32,
-    /// Whether the static maps' penumbra follows the blockers' distance (`Soft::Pcss`: 1), the
-    /// sun's angular size it widens with (radians), and each static map's depth span (m: its
-    /// depth's 0 to 1, `sun_view`'s 1 to twice its reach).
+    /// How the static shadows are softened: four fixed taps a texel or so apart (0), or a
+    /// penumbra as wide as the sun's size makes it at the blockers' distance (1, the program's
+    /// `switches::Switches::PCSS`: Fernando, Percentage-Closer Soft Shadows, SIGGRAPH 2005
+    /// sketch: an 8-tap blocker search, then a 12-tap filter that wide); the sun's angular size
+    /// it widens with (radians), and each static map's depth span (m: its depth's 0 to 1,
+    /// `sun_view`'s 1 to twice its reach).
     pub soft_pcss: u32 = 0,
     pub sun_size: f32 = 0.00925,
     pub near_depth: f32 = 499.0,
     pub far_depth: f32 = 5199.0,
-}
-
-/// How the static shadows are softened: four fixed taps a texel or so apart (`Pcf`), or a
-/// penumbra as wide as the sun's size makes it at the blockers' distance (`Pcss`: Fernando,
-/// Percentage-Closer Soft Shadows, SIGGRAPH 2005 sketch): an 8-tap blocker search, then a 12-tap
-/// filter that wide.
-pub enum Soft: Copy + Eq + Fieldless {
-    Pcf,
-    Pcss,
 }
 
 /// Points on the unit disc, evenly spread (a Vogel spiral: the golden angle round, the square
@@ -180,7 +174,7 @@ fn lookup(
 
 /// How lit `p` is in one static map (`view`'s, one of its texels `texel_uv` of its uv and
 /// `texel` metres, its depth's 0 to 1 `depth` metres), its penumbra as wide as the sun (`size`
-/// radians) makes it at the blockers' distance (`Soft::Pcss`): the blockers within `SEARCH`
+/// radians) makes it at the blockers' distance (`Shadows::soft_pcss`): the blockers within `SEARCH`
 /// texels found (8 taps), their mean depth, and a filter of 12 taps that wide (1 to `WIDEST`
 /// texels); biased `bias` in depth.
 fn soft_lookup(
@@ -231,7 +225,7 @@ fn soft_lookup(
 
 /// How lit `world` is by the sun (0 to 1), its normal `n`: the static cascades (the near one
 /// where it holds the point, else the far) and the moving map, the darker of the two; `soft`
-/// texels of penumbra.
+/// texels of penumbra (`pcss` as `statically_sunlit`'s).
 pub fn sunlit(
     sh: Shadows,
     world: vec3,
@@ -241,8 +235,9 @@ pub fn sunlit(
     moving: DepthTexture,
     s: ComparisonSampler,
     soft: f32,
+    pcss: bool = true,
 ) -> f32 {
-    let lit = statically_sunlit(sh, world, n, near, far, s, soft)
+    let lit = statically_sunlit(sh, world, n, near, far, s, soft, pcss: pcss)
     let (m, _) = lookup(
         sh.moving,
         moving,
@@ -257,7 +252,8 @@ pub fn sunlit(
 
 /// How lit `world` is by the sun through the static cascades alone (`sunlit` without the moving
 /// map): for light kept over many frames, such as the probes', which a moving shadow mustn't
-/// mark.
+/// mark. `pcss` false leaves the soft shadows out whatever `sh` says: a program whose switches have
+/// none (`switches::Switches::PCSS`), its shading no code of it.
 pub fn statically_sunlit(
     sh: Shadows,
     world: vec3,
@@ -266,9 +262,10 @@ pub fn statically_sunlit(
     far: DepthTexture,
     s: ComparisonSampler,
     soft: f32,
+    pcss: bool = true,
 ) -> f32 {
     let at = world + n * (sh.near_texel * 1.2)
-    let (a, inside) = if sh.soft_pcss != 0 {
+    let (a, inside) = if pcss && sh.soft_pcss != 0 {
         soft_lookup(
             sh.near,
             near,
@@ -371,7 +368,7 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// The GPU bytes its two maps take (32-bit depth).
+    /// The GPU bytes its maps take (32-bit depth): the one in use, and the one being drawn.
     pub fn bytes(self) -> u64 {
         memory::texels(self.front.width(), self.front.height(), 4) +
             memory::texels(self.back.width(), self.back.height(), 4)
@@ -480,9 +477,13 @@ impl Kept {
     pub fn strip(mut self, sun: vec3) -> Option<Strip> {
         let Some(requested) = self.next else { return None }
         self.sun = set_sun(self.strip, self.sun, sun)
-        // A set draws what casts as its first strip is drawn (`changed`).
+        // A set draws what casts as its first strip is drawn (`changed`), into a map made for
+        // it (none is kept between sets: `drawn`).
         if self.strip == 0 {
             self.next_casters = self.casters
+            if self.back.width() != self.side {
+                self.back = depth_texture(width: self.side, height: self.side)
+            }
         }
         let sun = self.sun
         let c = if self.strip == 0 && self.ready {
@@ -509,6 +510,8 @@ impl Kept {
         self.strip += 1
         if self.strip >= self.strips {
             swap(mut self.front, mut self.back)
+            // The old map goes until the next set (`strip`): a settled cascade holds one.
+            self.back = depth_texture(width: 1, height: 1)
             self.centre = c
             self.front_sun = self.sun
             self.front_casters = self.next_casters

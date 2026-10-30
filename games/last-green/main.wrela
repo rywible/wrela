@@ -13,6 +13,9 @@ use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
+use engine::switches::Switches
+use engine::tier::{Tier, Tiered, Tiers}
+use styles::physical::Physical
 use kit::rejector_net::REJECTOR_NET
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
 use land::stage::{CARDS_TO, fields_clipmap}
@@ -69,10 +72,34 @@ const FAR_CASCADE = Cascade {
     side: 2048,
 }
 
-/// How the floor is drawn: the engine's defaults, which are the floor's, and its far cascade.
+/// How the floor is drawn: the engine's defaults, which are the floor's, and its far cascade,
+/// as its tier draws them.
 fn quality() -> Quality {
-    Quality { shadows: ShadowQuality { far: FAR_CASCADE } }
+    TIER.quality(Quality { shadows: ShadowQuality { far: FAR_CASCADE } })
 }
+
+/// The floor's tier (`engine::tier`, D37): `wrela build games/last-green --set TIER=Medium`
+/// builds another.
+pub const TIER: Tier = Tier::Epic
+
+/// The floor's switches (`engine::tier::Tiered`): its experiments as its constants say, and its
+/// tier's.
+pub struct FloorTier {}
+
+impl Switches for FloorTier {
+    const NEURAL: bool = NEURAL
+    const LEARNED: bool = LEARNED
+}
+
+impl Tiers for FloorTier {
+    const TIER: Tier = TIER
+}
+
+/// The floor's experiments, each off as its rule says (`wrela build --set NEURAL=true`): the
+/// great tree's far crowns read through its net (B14.2), and temporal AA's share from the learned
+/// rejector (B14.3, `studio/fit/rejector`'s check builds with it).
+pub const NEURAL: bool = false
+pub const LEARNED: bool = false
 
 pub struct Floor {
     console: Link,
@@ -81,7 +108,7 @@ pub struct Floor {
     snaps: Snapshots<World>,
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Shared>,
+    frame: Frame<Shared, Tiered<FloorTier>, Physical>,
     stage: Stage,
     /// Whether the floor's ready (its kinds cooked, the tiles round the player in and placed).
     ready: bool,
@@ -150,7 +177,7 @@ pub fn init() -> Floor {
     print(f"the floor: {BAKED.len()} files baked, {OBSTACLES.len()} obstacles")
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
     var staged = stage()
-    staged.neural = quality().neural
+    staged.neural = NEURAL
     var floor = Floor {
         console: Link::new(),
         exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
@@ -198,8 +225,8 @@ pub fn init() -> Floor {
         hearing: sound::start(),
         fight_heard,
     }
-    // The learned history rejector's net, read under `Quality::learned_resolve` (B14.3).
-    if quality().learned_resolve {
+    // The learned history rejector's net, read under `LEARNED` (B14.3).
+    if LEARNED {
         floor.frame.reject_by(REJECTOR_NET)
     }
     floor
@@ -849,16 +876,6 @@ pub fn test_found_ask(s: mut Floor, n: u32, seed: u32, width: u32, height: u32) 
         pixels.push(min(vec2u(u * vec2(f32(width), f32(height))), vec2u(width - 1, height - 1)))
     }
     s.frame.ask_found(pixels)
-}
-
-/// Temporal AA's share of this frame from the learned rejector (`Quality::learned_resolve`, its
-/// net the floor's: `REJECTOR_NET`), or from the heuristics (§B14.3d's check).
-@testing
-pub fn test_learned(s: mut Floor, on: u32) {
-    s.frame.reject_by(REJECTOR_NET)
-    var q = s.frame.quality()
-    q.learned_resolve = on != 0
-    s.frame.requality(q)
 }
 
 /// What the resolve found the last frame at the pixels `test_found_ask` asked for, copied into

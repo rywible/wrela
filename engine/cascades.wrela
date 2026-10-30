@@ -31,6 +31,8 @@
 use ambient::{Ambient, facing_at, point_at}
 use distance::{DistanceGrid, distance_at, distance_normal}
 use lit::{Lighting, sun_at}
+use switches::Switches
+use style::Style
 use probes::{oct_dir, sky_light}
 use sky::{cloud_shadow, clouded_sky}
 use std::gpu::{
@@ -212,11 +214,22 @@ fn direction(dirs: u32, d: vec2u, frame: u32) -> vec3 {
 
 /// The light leaving the solid a ray met at `p`: an albedo of `BOUNCE_ALBEDO` under the sun (the
 /// shadow maps' and the clouds') and the probes' sky.
-fn met_light(lt: Lighting, p: vec3) -> vec3 {
+fn met_light<Q: Switches, Y: Style>(lt: Lighting<Q, Y>, p: vec3) -> vec3 {
     let n = distance_normal(lt.distance, lt.volume, p)
     let shade = cloud_shadow(lt.clouds, lt.cloud, lt.s, p)
     let sun = sun_at(lt, p, n, 1.0) * max(dot(n, lt.light.sun), 0.0)
-    let sky = sky_light(lt.grid, lt.probes, lt.s, lt.grounds, lt.seen, lt.light, p, n, shade)
+    let sky = sky_light(
+        lt.grid,
+        lt.probes,
+        lt.s,
+        lt.grounds,
+        lt.seen,
+        lt.light,
+        p,
+        n,
+        shade,
+        sighted: Q::SIGHT,
+    )
     BOUNCE_ALBEDO * (lt.light.sun_colour * sun + sky)
 }
 
@@ -224,11 +237,11 @@ fn met_light(lt: Lighting, p: vec3) -> vec3 {
 /// solids (`march`): the light of what it met and 0, or none and 1; c3's that met nothing, the
 /// clouded sky (`view`, `dome`) and 1. A probe on the sky holds none and 1.
 @compute(8, 8)
-pub fn trace(
+pub fn trace<Q: Switches, Y: Style>(
     lv: Level,
     cam: Camera,
     depth: DepthTexture,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     view: Texture<Rgba16Float>,
     dome: Texture<Rgba16Float>,
     out: mut Texels<Rgba16Float>,
@@ -437,12 +450,12 @@ impl Cascades {
     /// The cascades from `depth` (this frame's, as `cam` drew it): traced and merged from c3
     /// down, and resolved into `next` (the ambient's texture, half the scene each way), which the
     /// next frame's shading reads as the `Ambient` returned says.
-    pub fn build(
+    pub fn build<Q: Switches, Y: Style>(
         mut self,
         next: mut Texture<Rgba16Float>,
         depth: DepthTexture,
         cam: Camera,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         view: Texture<Rgba16Float>,
         dome: Texture<Rgba16Float>,
     ) -> Ambient {

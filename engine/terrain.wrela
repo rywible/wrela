@@ -19,6 +19,8 @@
 // T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
 use std::mem::size_of
+use switches::Switches
+use style::Style
 use light::Lit
 use sim::Hit
 use noise::{hash2, noise2_wrapped, wrapped}
@@ -1265,9 +1267,9 @@ pub fn below<T: Terrain>(terrain: T, at: vec3) -> Hit {
 /// The ground's pixel: the clipmap's normal and cover at its point, lit by the sun through the
 /// shadows and the clouds' shadows, and by the probes' sky light; through the haze.
 @fragment
-pub fn ground_shade(
+pub fn ground_shade<Q: Switches, Y: Style>(
     g: GroundVertex,
-    lt: lit::Lighting,
+    lt: lit::Lighting<Q, Y>,
     texels: [Texel],
     litter: Texture<Rgba8>,
     soil: Texture<Rgba8>,

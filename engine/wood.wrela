@@ -25,10 +25,13 @@ use impostor::{
     KindDesc, NO_NET, Neural, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade,
 }
 use lit::Lighting
+use switches::Switches
+use style::Style
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
 use plant::{
-    CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Wind, cook_outlines, level_cards,
+    CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Plant, Wind, cook_outlines,
+    level_cards,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -730,100 +733,151 @@ fn into_layer(
     }
 }
 
-/// `kinds` pooled (`Pool`), for `far_kinds` too (each its own kind's, but for its index), their
-/// impostors compressed if `compress` (`Impostors`). Each kind's own impostor textures and
-/// volumes are copied into the pool's (encoded on the GPU, `compress`) and let go.
-fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
-    let n = max(kinds.len(), 1)
-    var cards = 0
-    var orders = 0
-    var limbs = 0
-    for k in kinds {
-        cards += k.card_count
-        orders += CORNERS * k.card_count
-        limbs += k.limb_count
+/// A pool's views a kind (its impostor's bounds), and its volume's voxels a side.
+const VIEWS: u32 = impostor::VIEWS * impostor::VIEWS
+const SIDE: u32 = impostor::VOXELS
+
+/// A pool filled a kind at a time as the kinds are cooked (`add`), so each kind's own impostor
+/// textures go as soon as it's in, not all of them waiting for the last: the floor's 26 kinds'
+/// plain bakes (an `Rgba8` colour and an `Rgba16Float` normal, 12 MiB a kind) were most of its
+/// load's peak (docs/bench.md, C4).
+pub struct Pooling {
+    pool: Pool,
+    descs: Vec<KindDesc>,
+    at: vec3u,
+    /// The words an encoding writes before they're copied into a layer: a texel's at most.
+    scratch: GpuBuffer<u32>,
+}
+
+impl Pooling {
+    /// Room for kinds of `plants` (their cards and limbs as `vegetation::kind` cooks them), their
+    /// impostors compressed if `compress` (`Impostors`).
+    pub fn new(plants: [Plant], compress: bool) -> Pooling {
+        var cards = 0
+        var limbs = 0
+        for p in plants {
+            cards += p.cards()
+            limbs += p.limbs.len()
+        }
+        Pooling::room(plants.len(), cards, limbs, compress)
     }
-    let views = impostor::VIEWS * impostor::VIEWS
-    let side = impostor::VOXELS
-    var p = Pool {
-        kinds: buffer(max(kinds.len() + far_kinds.len(), 1)),
-        cards: buffer(max(cards, 1)),
-        orders: buffer(max(orders, 1)),
-        limbs: buffer(max(limbs, 1)),
-        bounds: buffer(n * views),
-        impostors: impostors_of(n, compress),
-        grid: texture3d::<Rgba16Float>(side, side, side * n),
-        grid_depth: texture3d::<Rgba16Float>(side, side, side * n),
+
+    /// Room for `kinds` kinds of `cards` cards and `limbs` limbs in all.
+    fn room(kinds: u32, cards: u32, limbs: u32, compress: bool) -> Pooling {
+        let n = max(kinds, 1)
+        Pooling {
+            pool: Pool {
+                // Its kinds' descriptions, the far kinds' with them, are written by `done`.
+                kinds: buffer(1),
+                cards: buffer(max(cards, 1)),
+                orders: buffer(max(CORNERS * cards, 1)),
+                limbs: buffer(max(limbs, 1)),
+                bounds: buffer(n * VIEWS),
+                impostors: impostors_of(n, compress),
+                grid: texture3d::<Rgba16Float>(SIDE, SIDE, SIDE * n),
+                grid_depth: texture3d::<Rgba16Float>(SIDE, SIDE, SIDE * n),
+            },
+            descs: Vec::new(),
+            at: vec3u(0),
+            scratch: buffer(impostor::ATLAS * impostor::ATLAS),
+        }
     }
-    var descs: Vec<KindDesc> = Vec::new()
-    var at = vec3u(0)
-    // The words an encoding writes before they're copied into a layer: a texel's at most.
-    var scratch: GpuBuffer<u32> = buffer(impostor::ATLAS * impostor::ATLAS)
-    for i in 0..kinds.len() {
-        let c = kinds[i].card_count
-        let l = kinds[i].limb_count
-        descs.push(
+
+    /// `k`, the next kind, into the pool: its cards, orders, limbs and bounds copied, its impostor
+    /// encoded into its layer (`into_layer`) and its volume into its slab, and its own textures
+    /// let go.
+    pub fn add(mut self, k: mut Kind) {
+        let i = self.descs.len()
+        let c = k.card_count
+        let l = k.limb_count
+        let at = self.at
+        self.descs.push(
             KindDesc {
-                bake: kinds[i].impostor.bake,
+                bake: k.impostor.bake,
                 card_first: at.x,
                 card_count: c,
                 order_first: at.y,
                 limb_first: at.z,
                 limb_count: l,
-                bounds_first: i * views,
+                bounds_first: i * VIEWS,
                 layer: i,
                 slab: i,
             },
         )
         if c > 0 {
             copy(
-                from: kinds[i].cards.span(start: 0, count: c),
-                to: p.cards.span_mut(start: at.x, count: c),
+                from: k.cards.span(start: 0, count: c),
+                to: self.pool.cards.span_mut(start: at.x, count: c),
             )
             copy(
-                from: kinds[i].orders.span(start: 0, count: CORNERS * c),
-                to: p.orders.span_mut(start: at.y, count: CORNERS * c),
+                from: k.orders.span(start: 0, count: CORNERS * c),
+                to: self.pool.orders.span_mut(start: at.y, count: CORNERS * c),
             )
         }
         if l > 0 {
             copy(
-                from: kinds[i].limbs.span(start: 0, count: l),
-                to: p.limbs.span_mut(start: at.z, count: l),
+                from: k.limbs.span(start: 0, count: l),
+                to: self.pool.limbs.span_mut(start: at.z, count: l),
             )
         }
         copy(
-            from: kinds[i].impostor.bounds.span(start: 0, count: views),
-            to: p.bounds.span_mut(start: i * views, count: views),
+            from: k.impostor.bounds.span(start: 0, count: VIEWS),
+            to: self.pool.bounds.span_mut(start: i * VIEWS, count: VIEWS),
         )
         into_layer(
-            mut p.impostors,
-            mut scratch,
-            kinds[i].impostor.colour,
-            kinds[i].impostor.normal,
+            mut self.pool.impostors,
+            mut self.scratch,
+            k.impostor.colour,
+            k.impostor.normal,
             i,
         )
         dispatch(
-            slab_of.bind(from: kinds[i].volume.grid, slab: i, out: mut p.grid),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
+            slab_of.bind(from: k.volume.grid, slab: i, out: mut self.pool.grid),
+            groups: (SIDE / 4, SIDE / 4, SIDE * (i + 1) / 4),
         )
         dispatch(
-            slab_of.bind(from: kinds[i].volume.grid_depth, slab: i, out: mut p.grid_depth),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
+            slab_of.bind(from: k.volume.grid_depth, slab: i, out: mut self.pool.grid_depth),
+            groups: (SIDE / 4, SIDE / 4, SIDE * (i + 1) / 4),
         )
-        // The pool holds them now (a host releases a texture after the work recorded before).
-        kinds[i].impostor.colour = texture::<Rgba8>(width: 1, height: 1)
-        kinds[i].impostor.normal = texture::<Rgba16Float>(width: 1, height: 1)
-        kinds[i].volume.grid = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
-        kinds[i].volume.grid_depth = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
-        at += vec3u(c, CORNERS * c, l)
+        // The pool holds them now (a host releases a buffer or a texture after the work recorded
+        // before): what's left of the kind is its plant and its counts.
+        k.cards = buffer(1)
+        k.orders = buffer(1)
+        k.limbs = buffer(1)
+        k.impostor.bounds = buffer(1)
+        k.impostor.colour = texture::<Rgba8>(width: 1, height: 1)
+        k.impostor.normal = texture::<Rgba16Float>(width: 1, height: 1)
+        k.volume.grid = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+        k.volume.grid_depth = texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+        self.at += vec3u(c, CORNERS * c, l)
     }
-    for f in far_kinds {
-        descs.push(descs[f])
+
+    /// The pool of the kinds added, for `far_kinds` too (each its own kind's, but for its index).
+    pub fn done(take self, far_kinds: [u32]) -> Pool {
+        var p = take self.pool
+        var descs = take self.descs
+        for f in far_kinds {
+            descs.push(descs[f])
+        }
+        p.kinds = buffer_of(descs, at_least: 1)
+        p
     }
-    if descs.len() > 0 {
-        write(mut p.kinds, 0, descs)
+}
+
+/// `kinds` pooled (`Pool`, through `Pooling`), for `far_kinds` too, their impostors compressed if
+/// `compress` (`Impostors`).
+fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
+    var cards = 0
+    var limbs = 0
+    for k in kinds {
+        cards += k.card_count
+        limbs += k.limb_count
     }
-    p
+    var p = Pooling::room(kinds.len(), cards, limbs, compress)
+    for mut k in kinds {
+        p.add(mut k)
+    }
+    take p.done(far_kinds)
 }
 
 /// A wood: its kinds and their leaves' atlas, the instances loaded (in slots, a tile each, and
@@ -876,7 +930,7 @@ pub struct Wood {
     /// while memory is over its budget (`engine::memory::shrink_after`).
     pub shrink_after: u32,
     /// A kind's impostor read through a net, and its weights (`read_through`: none unless a game
-    /// gives one, `Quality::neural`).
+    /// gives one, `switches::Switches::NEURAL`).
     neural: Neural,
     net: GpuBuffer<Half2>,
 }
@@ -895,6 +949,28 @@ impl Wood {
     ) -> Wood {
         var kinds = take kinds
         let pool = pool_of(mut kinds, far_kinds, compress)
+        Wood::pooled(
+            take kinds,
+            take far_kinds,
+            take atlas,
+            take pool,
+            slots,
+            cards_to,
+            impostors_to,
+        )
+    }
+
+    /// `new`'s wood, its kinds already pooled (`Pooling`, as they were cooked).
+    pub fn pooled(
+        kinds: take Vec<Kind>,
+        far_kinds: take Vec<u32>,
+        atlas: take Texture<Rgba8>,
+        pool: take Pool,
+        slots: u32,
+        cards_to: f32,
+        impostors_to: f32,
+    ) -> Wood {
+        let kinds = take kinds
         var outlines: GpuBuffer<vec2> = buffer(plant::LEAF_PATTERNS * plant::OUTLINE)
         dispatch(
             cook_outlines.bind(atlas, mut outlines),
@@ -1410,15 +1486,21 @@ impl Wood {
 
     /// The shading pass's draws: the cards where the prepass left their depth, the limbs, then
     /// the far instances: one multi-draw a way over every kind.
-    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    pub fn shade<P: RenderPass, Q: Switches, Y: Style>(
+        self,
+        pass: P,
+        lt: Lighting<Q, Y>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         self.phase_shade(pass, lt, wind, ids, late: false)
     }
 
     /// The second phase's shading (`reveal`'s), as `shade`'s.
-    pub fn late_shade<P: RenderPass>(
+    pub fn late_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
     ) {
@@ -1426,10 +1508,10 @@ impl Wood {
     }
 
     /// A phase's shading draws (`late`: the second's).
-    fn phase_shade<P: RenderPass>(
+    fn phase_shade<P: RenderPass, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
         late: bool,
@@ -1532,10 +1614,10 @@ impl Wood {
 
     /// A phase's (`ph`) impostors shaded, from the pool's colour, normals and toward-and-depth
     /// (`c`, `nm`, `d`: of whichever formats, `Impostors`).
-    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format>(
+    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format, Q: Switches, Y: Style>(
         self,
         pass: P,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         wind: Wind,
         ids: Texture<R32Uint>,
         ph: Phase,

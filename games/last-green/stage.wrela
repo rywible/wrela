@@ -21,6 +21,8 @@ use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::Blooms
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
+use engine::switches::Switches
+use engine::style::Style
 use engine::paint::{Exposure, Look}
 use land::place::TILE
 use engine::plant::{Plant, Wind}
@@ -78,7 +80,7 @@ pub struct Stage {
     /// The landscape: the floor's tiles, its wood, the far layer, the grass, the water, the
     /// probes' occluders and the air (`land::stage`), drawn from the view's source (`FloorTiles`).
     pub land: Landscape<FloorTiles>,
-    /// Whether the great tree's far crowns are read through its net (`Quality::neural`).
+    /// Whether the great tree's far crowns are read through its net (`NEURAL`, main.wrela).
     pub neural: bool = false,
     /// The frame the first built thing stood on (the load chain's order, `cook_load`).
     pub first_built_at: Option<u32> = None,
@@ -456,9 +458,9 @@ impl Scene for Stage {
     }
 
     /// The rocks the camera sees, the grass placed round the eye, and the wood's lists.
-    fn choose(
+    fn choose<Q: Switches, Y: Style>(
         mut self,
-        lt: Lighting,
+        lt: Lighting<Q, Y>,
         texels: GpuSpan<Texel>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -517,7 +519,13 @@ impl Scene for Stage {
         }
     }
 
-    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn late_shade<P: RenderPass, Q: Switches, Y: Style>(
+        self,
+        pass: P,
+        lt: Lighting<Q, Y>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         if let Some(w) = self.land.wood {
             w.late_shade(pass, lt, wind, ids)
         }
@@ -543,7 +551,13 @@ impl Scene for Stage {
 
     /// The vegetation pass: the grass, the built things in view (the floor's), the banks'
     /// stones, the wood, and a view's rock.
-    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+    fn shade<P: RenderPass, Q: Switches, Y: Style>(
+        self,
+        pass: P,
+        lt: Lighting<Q, Y>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
         let off = shown(self.off, self.view)
         let world = of_world(self.view)
         let cam = lt.cam
@@ -619,7 +633,7 @@ impl Scene for Stage {
     }
 
     /// The climber, the fawn and the wolf (none in the world's views).
-    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+    fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
         if of_world(self.view) {
             return
         }
@@ -636,7 +650,7 @@ impl Scene for Stage {
 
     /// The water over a copy of the scene under it, into the scene's second target, which becomes
     /// the scene. (The falls' mist and the sun's shafts are the air's: `fog`.)
-    fn effects(mut self, t: mut Targets, fx: Effects) {
+    fn effects<Q: Switches, Y: Style>(mut self, t: mut Targets, fx: Effects<Q, Y>) {
         if on(shown(self.off, self.view), System::Water) {
             draw_water(mut self.land, mut t, fx)
         }
@@ -1153,15 +1167,24 @@ fn hand_over(s: mut Stage, cam: Camera) {
 /// casts, its far one doesn't), and the banks' stones (`pool_banks`); then the pool's GPU side
 /// made again for the frame's casters and culling.
 fn pool_settled(s: mut Stage) {
+    // The room the frame's meshes take, reserved at once (`Pool::reserve`).
+    var more = vec2u(0)
+    for t in s.built {
+        if poolable(t) {
+            more += Pool::takes(t.near)
+            if let Some(f) = t.far {
+                more += Pool::takes(f)
+            }
+        }
+    }
+    if !s.banks_pooled && s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+        for p in s.banks.prototypes {
+            more += Pool::takes(p)
+        }
+    }
+    s.pool.reserve(more)
     for mut t in s.built {
-        if t.pooled.is_some() || t.near.counted.is_none() {
-            continue
-        }
-        let far_ready = match t.far {
-            Some(f) => f.counted.is_some(),
-            None => true,
-        }
-        if !far_ready {
+        if !poolable(t) {
             continue
         }
         let Some(near) = s.pool.add_mesh(t.near, casts: true) else { continue }
@@ -1193,6 +1216,18 @@ fn pool_settled(s: mut Stage) {
         }
     }
     s.pool.ready()
+}
+
+/// Whether `t` is settled and not yet in the pool: its near mesh fitted, and its far one if it has
+/// one.
+fn poolable(t: Thing) -> bool {
+    if t.pooled.is_some() || t.near.counted.is_none() {
+        return false
+    }
+    match t.far {
+        Some(f) => f.counted.is_some(),
+        None => true,
+    }
 }
 
 /// The banks' prototypes put in the pool once all three are settled, with an item for each of
@@ -1238,6 +1273,11 @@ fn item_of(at: mat4, seed: u32) -> Item {
 /// | the far cascade | the far layer, the wood and the built things |
 /// | the probes' first bake | the built things, the prototypes, the cascades whole, the air and dome |
 /// | playable | the probes, the frame round the eye |
+/// The most room the built things' realizations take in a frame (a realization holds room for
+/// its whole grid until it's fitted the frame after): unbounded, the floor's load held 230 MiB of
+/// it in one frame, its GPU peak's (docs/bench.md, C4).
+const BUILT_ROOM: u64 = 64 * engine::memory::MIB
+
 pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
     cook_wood(mut s.land, mut c, linear)
     // The wood cooked this frame (`wood_at`): the great tree read through its net.
@@ -1270,8 +1310,10 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
         return
     }
     // As many a frame as the planner allows, the nearest to the eye first, so what a player
-    // sees on arriving stands in the first frames.
-    while s.to_build.len() > 0 && c.planner.may(Work::Built) {
+    // sees on arriving stands in the first frames; and no more than `BUILT_ROOM` of their
+    // realizations' room a frame (each is fitted, and its room given back, the frame after).
+    var room: u64 = 0
+    while s.to_build.len() > 0 && room < BUILT_ROOM && c.planner.may(Work::Built) {
         let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
         label("built things")
         let water = water_near(s.land.water_tiles, blockouts::place(b), origin_of(s))
@@ -1284,6 +1326,10 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             None => {},
         }
         let shape = blockouts::shape_tape(b)
+        room += near.bytes() + match far {
+            Some(f) => f.bytes(),
+            None => 0,
+        }
         s.built.push(
             Thing { near, reach: blockouts::reach(b), far, shape, band: blockouts::far_band(b) },
         )
@@ -1437,10 +1483,10 @@ pub fn meets_view(cam: Camera, at: vec3, reach: f32) -> bool {
 }
 
 /// A built thing drawn in `pass` (its colours cooked, its place its matrix).
-pub fn draw_built<P: RenderPass>(
+pub fn draw_built<P: RenderPass, Q: Switches, Y: Style>(
     pass: P,
     st: Realized,
-    lt: Lighting,
+    lt: Lighting<Q, Y>,
     cam: Camera,
     coverage: vec2 = vec2(0.0, 1.0),
 ) {

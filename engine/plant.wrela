@@ -464,10 +464,22 @@ pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
 /// each share's run where it was (a level draws the first of them). A cut fragment behind the
 /// depth already written is dropped before it's cut, so the prepass draws a crown's cards so.
 /// Found once, at load, from where each card is (`card_place`).
+/// A plant's cards' orders to find (`card_orders`), its seed and its count (`Plant::cards`).
+pub struct Ordering: Copy {
+    pub plant: Plant,
+    pub seed: u32,
+}
+
+/// `o`'s cards' orders: a helper's task (`std::par::spawn`) while the kinds before it cook.
+pub fn orders_of(o: take Ordering) -> Vec<u32> {
+    card_orders(o.plant, o.plant.cards(), o.seed)
+}
+
 pub fn card_orders(plant: Plant, n: u32, seed: u32) -> Vec<u32> {
-    var centres: Vec<vec3> = Vec::new()
+    let areas = clump_areas(plant)
+    var centres: Vec<vec3> = Vec::with_capacity(n)
     for c in 0..n {
-        let (_, p, _) = card_place(plant, n, seed, c)
+        let (_, p, _) = placed_card(plant, areas, n, seed, c)
         centres.push(p)
     }
     var out: Vec<u32> = Vec::new()
@@ -501,21 +513,59 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
     // The clump whose share of the total area holds `f`.
     var total = 0.0
     for i in 0..plant.clumps.len() {
-        let r = plant.clumps[i].radius
-        total += r * r * plant.clumps[i].area_share()
+        total += clump_area(plant.clumps[i])
     }
     var at = f * total
     var which = plant.clumps.len() - 1
     for i in 0..plant.clumps.len() {
-        let r = plant.clumps[i].radius
-        let a = r * r * plant.clumps[i].area_share()
+        let a = clump_area(plant.clumps[i])
         if at < a {
             which = i
             break
         }
         at -= a
     }
-    let c = plant.clumps[which]
+    card_in(plant.clumps[which], which, seed, id)
+}
+
+/// A clump's share of its plant's leaf area (`card_place`'s weight).
+fn clump_area(c: Clump) -> f32 {
+    c.radius * c.radius * c.area_share()
+}
+
+/// Each of `plant`'s clumps' areas (`clump_area`), and last their sum: what `card_place` finds
+/// for each card, found once for all of them on the CPU.
+fn clump_areas(plant: Plant) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(plant.clumps.len() + 1)
+    var total = 0.0
+    for i in 0..plant.clumps.len() {
+        let a = clump_area(plant.clumps[i])
+        out.push(a)
+        total += a
+    }
+    out.push(total)
+    out
+}
+
+/// `card_place` with its plant's areas found already (`clump_areas`): the same card.
+fn placed_card(plant: Plant, areas: [f32], n: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
+    let range = share_range(id, n)
+    let f = (f32(id - range.x) + 0.5) / f32(range.y - range.x)
+    let clumps = areas.len() - 1
+    var at = f * areas[clumps]
+    var which = clumps - 1
+    for i in 0..clumps {
+        if at < areas[i] {
+            which = i
+            break
+        }
+        at -= areas[i]
+    }
+    card_in(plant.clumps[which], which, seed, id)
+}
+
+/// Card `id`'s place on `c`, its plant's clump `which` (cooked by `seed`), and its draws' seed.
+fn card_in(c: Clump, which: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
     let k = seed.wrapping_mul(7919) ^ id.wrapping_mul(2654435761)
     let dir = direction(rand(k, 3), rand(k, 4))
     (which, c.point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), k)
@@ -525,9 +575,10 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
 /// the CPU: for tests of what a camera's near plane meets.
 pub fn card_centres(plant: Plant, seed: u32) -> Vec<vec4> {
     let n = plant.cards()
+    let areas = clump_areas(plant)
     var out: Vec<vec4> = Vec::with_capacity(n)
     for c in 0..n {
-        let (_, p, k) = card_place(plant, n, seed, c)
+        let (_, p, k) = placed_card(plant, areas, n, seed, c)
         out.push(vec4(p, plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)))
     }
     out
@@ -1755,5 +1806,22 @@ fn barks_tile_wraps_each_way() {
             assert(abs(f(vec2(0.0, a)) - f(vec2(1.0, a))) < 1.0e-3, "the tile's sides don't meet")
             assert(abs(f(vec2(a, 0.0)) - f(vec2(a, 1.0))) < 1.0e-3, "the tile's ends don't meet")
         }
+    }
+}
+
+/// The CPU's placement, its areas found once (`placed_card`), puts each card where `card_place`
+/// (the GPU's) does: the orders sort the cards `cook_cards` places.
+@test
+fn a_card_placed_with_its_areas_found_once_is_where_card_place_puts_it() {
+    var p = plant(Leaves {}, Bark {})
+    p.clump(vec3(0.0, 2.0, 0.0), radius: 1.5)
+    p.cushion(vec3(1.0, 3.0, 0.5), radius: 0.8, squash: 0.6)
+    p.cushion(vec3(-0.7, 2.6, -0.4), radius: 1.1, squash: 1.3)
+    let n = p.cards()
+    let areas = clump_areas(p)
+    for id in 0..n {
+        let (a, pa, ka) = card_place(p, n, 7, id)
+        let (b, pb, kb) = placed_card(p, areas, n, 7, id)
+        assert(a == b && pa == pb && ka == kb, f"card {id} of {n} moved")
     }
 }

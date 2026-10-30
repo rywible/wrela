@@ -24,15 +24,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `--input` names one of the bench's scenes (`last-green-walk` is `LG_WALK`), whose script `studio/bench/scenes.wrela` holds.
 - **Status:** open: `Script::from_json(text) -> Option<Script>`.
 
-### A warm page doesn't time its pipelines
-
-- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
-- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
-- **Found:** 2026-10-26, adding the warm run.
-- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
-- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
-- **Status:** open: write `pipelines.json` on every run, its `each` only when salted.
-
 ### A fragment can't say its depth only grows
 
 - **Needed:** the early depth test kept on for a fragment that writes its own depth only further away (or only nearer) than its triangle's: the impostors' leaves and the soft raster's merge (docs/plan-world-class-2.md §A11, §B5.6), which turn early-Z off for their draws today.
@@ -101,7 +92,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ### A struct update of the floor's stage is malformed IR
 
-- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: quality().neural, ..stage() }`.
+- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: NEURAL, ..stage() }`.
 - **What happens:** toolchain 0.9.0's build stops with an internal error: "the CPU module's IR is malformed: fn0 `init_0_export`: v1862 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`": the update's copied fields reach a cast of another field's type.
 - **Found:** 2026-10-26, adding `Quality::neural` (B14.2c).
 - **Evidence:** `wrela build games/last-green` with that line in `games/last-green/main.wrela`'s `init` (the stage holds the floor's creatures' generic bodies).
@@ -126,7 +117,61 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the tool runs as a package with the directory granted on the command line: `wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- …` (docs/lookdev.md).
 - **Status:** open: a declared tool's grant of a directory outside the workspace, named on the command line.
 
+### An entry point's parameters that its shader never reads are still bound
+
+- **Needed:** a switch that's off binds nothing of its path (docs/plan-world-class-3.md §C1): the clearing's shading, its fog off, shouldn't bind the froxels' volume.
+- **What happens:** toolchain 0.10.0 folds a switch's code out of a shader (an associated constant, or a `bool` argument once inlined, give the same WGSL), but every parameter of the entry point stays a binding: a group's fields (`lit::Lighting`'s `fog`, `fogged`, `distance`, `volume`) are declared in the WGSL and bound by the command whether the folded shader reads them or not.
+- **Found:** 2026-10-28, C1, a scratch package: `fill<Q>(t: [u32], ...)` whose `Q::ON` false branch is the only reader of `t` still declares `var<storage> t`.
+- **Evidence:** the scratch package's two pipelines, `fill::<Yes>` and `fill::<No>`, each with three bindings; the second's code has no read of `t`.
+- **Meanwhile:** the frame binds the off paths' small stand-ins (a 1 × 1 × 1 froxel volume, the distance volume's), so the cost is the bindings alone.
+- **Status:** open: an entry point's binding that no code of its pipeline reads left out of its layout and its command.
+
+### A generic method can't take one type argument and infer the rest
+
+- **Needed:** `Scene::prepass<P: RenderPass, Q: Switches>(...)` called as `scene.prepass::<_, Q>(pass, ...)`, so the far crowns' cut prepass (`impostor::far_cut_flat`, which takes no lighting to carry `Q`) folds the neural read-through as their shading does.
+- **What happens:** toolchain 0.10.0 takes a turbofish whole or not at all: `_` is "expected a type", and a turbofish with fewer arguments is E0322.
+- **Found:** 2026-10-28, C1.
+- **Evidence:** `twice::<_, Yes>(3)` (E0100: "expected a type, found `_`") and `twice::<Yes>(3)` for `fn twice<Q: Sw, T: Copy>(t: T)` (E0322: "takes 2 generic arguments, not 1").
+- **Meanwhile:** the cut prepass reads the wood's net at run time (`Neural::on`, 0 unless a scene gives the wood one, as only the floor's `NEURAL` build does); the lit far shading folds it (`Switches::NEURAL`, through `Lighting<Q>`).
+- **Status:** open: `_` in a turbofish, inferred as an omitted argument is.
+
+### A tool's check lists the pipelines a constant's branch leaves out
+
+- **Needed:** `engine/tests/frame-pipelines` counts the frame fixture's pipelines as `wrela pipelines` and a build do.
+- **What happens:** toolchain 0.10.1's `std::tool::toolchain::check` lowers without the fold a build makes (`Mode::CHECK`, neither `emit` nor `conditions`), so its `pipelines` hold every branch's, a switch's that's off too: the fixture's 65 against its build's 58 (C1: its sky's `sky_shade`, the fogless branch, and the six the fold drops).
+- **Found:** 2026-10-28, C1.
+- **Evidence:** the test's check said 65; `wrela pipelines engine/tests/frame` and its build's manifest, 58.
+- **Meanwhile:** the test builds the fixture and reads its manifest (as `engine/tests/switches` does).
+- **Status:** open: a check's pipelines as a build makes them, or a `CheckOptions` that asks for that.
+
+### A cold start's pipelines compile at the GPU process's own pace
+
+- **Needed:** a cold start (no pipeline in any cache) under 5 s (docs/plan-world-class-3.md §C5): the pipelines the load needs built before it needs them.
+- **What happens:** the browser compiles a few pipelines at a time in its GPU process (Chrome on Metal: 17 small ones asked for at once all finished together, 1.5 s later), whatever the host asks. Neither the order the host asks in (largest first, smallest first, both ends, the order the program first uses them) nor how many it asks for at once moves the vale's cold start much below 6.6 s: it needs 48 pipelines before playable, 7.5 s of compiling built one at a time. WebGPU has no way to ship compiled pipelines or to say which matter first.
+- **Found:** 2026-10-29, C5 (test mode's `starts.json`, 0.10.2).
+- **Evidence:** `wrela tool bench -- --scene vale-walk --starts 3`, cold, playable ms: 8029 with every tier-0 pipeline asked for at once, 6691 six at a time (0.10.2). Single runs: smallest first 6066, alternating ends 6601, in a native run's first-use order 6653.
+- **Meanwhile:** fewer and smaller pipelines before playable: the covered frames don't draw the scene (C5a), and C1's switches leave a program's unused paths out.
+- **Status:** open: nothing in the toolchain can fix the browser's pace. What's left is the program's: smaller shaders on the load's path (the floor's creature-field realizer, 160–230 KiB of WGSL with its dual-number gradients; the terrain's `cook_level`, 140–166 KiB).
+
 ## Fixed
+
+### A warm page doesn't time its pipelines
+
+- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
+- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
+- **Found:** 2026-10-26, adding the warm run.
+- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
+- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
+- **Status:** fixed in 0.10.2 for what a start waits for ([rywible/wrela-compiler#41](https://github.com/rywible/wrela-compiler/pull/41)): every run writes `results/starts.json`, with when each pipeline was built and each time a command waited for one. `pipelines.json` is still a salted run's.
+
+### A branch on an associated constant stays past the CPU inliner's budget
+
+- **Needed:** each switch a compile-time constant of the program's type (docs/plan-world-class-3.md §C1, `engine::switches`): `if Q::CASCADES { ... }` with the program's `CASCADES` false builds none of the radiance cascades.
+- **What happens:** toolchain 0.10.0 makes an associated constant a function, and a branch on its call folds only once the call is inlined; the CPU's inliner stops at its budget (4,000 statements a function), so late in a long function (the frame's `draw_scene`) the call stays, and with it the branch and every pipeline behind it. Early in the same function the same constant folded.
+- **Found:** 2026-10-28, C1: the clearing (`CASCADES`, `DISTANCE` false) still listed the cascades' `trace`, `merge` and `resolve` and the distance volume's `cook_distance`; the vale and the bare fixture, whose frames are smaller, didn't.
+- **Evidence:** `wrela pipelines examples/clearing`: 117 pipelines with them; `if false` in their place, 115; `if Q::CASCADES` moved to guard the fog's call (early in the function) pruned the fog's.
+- **Meanwhile:** none needed: fixed in the toolchain.
+- **Status:** fixed in 0.10.1 ([rywible/wrela-compiler#40](https://github.com/rywible/wrela-compiler/pull/40), `compiler/lower`'s `assoc_value`): an associated constant is lowered as its value where its initializer folds, so its branch folds before inlining as a literal's does. The clearing went to 113 pipelines; the compiler's `pipelines::a_draw_behind_a_false_associated_constant_is_no_pipeline` holds it.
 
 ### A texture can't be a field's data
 
