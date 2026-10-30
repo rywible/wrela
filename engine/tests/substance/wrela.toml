@@ -1,0 +1,12 @@
+# The substance a look reads after the shading pass (engine::substance, docs/plan-world-class-3.md
+# §D1): its packing round-trips, a field's form and curvature, the physical look's sum of the
+# light as the light's own, a tree's history, and every look's targets within WebGPU's 32 bytes a
+# sample (a tool test: the frame fixture, engine/tests/frame, built in each look).
+[package]
+name = "substance_tests"
+
+[dependencies]
+engine = { workspace = true }
+styles = { workspace = true }
+trees = { workspace = true }
+hosts = { workspace = true }

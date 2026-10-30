@@ -2474,4 +2474,391 @@ and the starts from C5's three-run medians (salts new to the machine).
 | Other devices | all | blocked: deferred to a later plan (D37) | |
 | Fidelity (G-reference) | vale | pending: Part G's review | |
 | Grown plants and creatures (G-grown) | vale | pending: Parts E and F | |
-| Four styles, no change to `engine/` | vale | pending: Part D | |
+| Four styles, no change to `engine/` | vale | **holds** (D10) | `wrela tool styles -- --check`: `Cel`, `Painterly`, `Ink` and the two fitted looks each added in a commit that changes no engine file; `Physical` the engine's own. Coherence: `Cel` holds its 60 bars, `Painterly` 59, `Ink` Blocked ("D4–D7b"). | |
+
+## The hypotheses (docs/plan-world-class-3.md §7)
+
+Each ships only if its own gate says it pays; each gets its outcome here when it's decided (§H3).
+
+| ID | Hypothesis | Decided at | Outcome |
+|---|---|---|---|
+| H1 | Specialization alone (C1) recovers at least 2 ms of the clearing's GPU frame and 3 ms of the floor's | C1, C6 | not held: compiling the switches out moved nothing (the clearing 12.39 → 12.68 ms GPU p50; its fog and distance volume were off at run time already: "C1, every switch a constant") |
+| H2 | Most of the visual-review gain comes from the grown floor (E3–E5), not from lighting | E8's panel against D11's | pending |
+| H3 | Mark coherence (D7) is the hardest problem in Part D and the bars will be held by `Cel` and `Ink` before `Painterly` | D7's table | half held: mark coherence was the hardest problem (Ink is Blocked on it), but `Painterly` holds 59 of 60 bars and `Ink` none of its flicker bars ("D4–D7b, the looks' coherence") |
+| H4 | The learned style beats hand-tuned `Painterly` on flicker and pop at equal preference | D9 | withdrawn (D41): the learned style is deferred until Ryan rules on docs/citations.md's rule |
+| H5 | Growth is byte-identical across devices on the CPU without fixed-point arithmetic | E7's hashes | pending |
+| H6 | Motion, not rendering, decides the creature shots (9, 10) | F10's panel against E8's | pending |
+| H7 | Bounce colour (G1) moves the "light" row more than any other single item | G1's panel | pending |
+| H8 | The vale needs no more than three of Part G's items to reach G-reference | G's tallies | pending |
+
+## D1, the substance (2026-10-30, toolchain 0.11.0)
+
+docs/plan-world-class-3.md §D1. What the substance costs the vale's walk, in the measuring looks
+(`content/styles/fixtures.wrela`: physical light, the substance written; `Every` all of it,
+`Formed` the form's, `Caused` the cause's, `Toned` the tone's).
+
+Sustained (`wrela tool bench -- --scene vale-walk [--look styles::fixtures::<look>] --sustained
+300 --no-docs --no-native`, back to back, M4 Air), GPU span p50 / interval p99 / over 33 ms:
+`Physical` 17.03 / 28.77 / 3 and 16.70 / 30.32 / 12 first; `Every` 18.34 / 32.99 / 14; `Formed`
+19.84 / 32.85 / 10; `Caused` 19.07 / 32.29 / 11; `Toned` 19.15 / 32.50 / 9; `Physical` again 18.90
+/ 31.69 / 5. The machine warmed 2 ms across them, more than any channel costs, so each look's
+passes were timed alone too (`wrela profile examples/vale --chrome --serial --size 1920x1080
+--warmup 960 --frames 300`, the vale's `LOOK` pointed at each), ms a frame:
+
+| Pass | Physical | Every | Formed | Caused | Toned |
+|---|---|---|---|---|---|
+| vegetation | 9.48 | 10.75 | 11.07 | 10.03 | 10.42 |
+| vegetation prepass | 9.36 | 8.85 | 9.23 | 9.36 | 9.89 |
+| terrain | 4.60 | 5.33 | 5.45 | 4.88 | 4.93 |
+| water | 4.41 | 4.68 | 4.79 | 4.64 | 4.88 |
+| temporal (no substance) | 3.32 | 3.19 | 3.32 | 3.40 | 3.60 |
+
+With the passes that write none as the control (they drift up to 8 %), writing the five targets
+cost 0.2–0.8 ms and the form about 2.8 ms, most of it its shape found in every fragment
+(`dpdx` of its point and its form's normal). That's over the plan's 1.0 ms, so its lever was
+taken: **the shape at half the scene's size**, found after the passes from the form's target
+and the depth (`substance::shaped`), which leaves the shading passes four targets (24 bytes a
+sample). Again, interleaved:
+
+| Pass | Physical | Formed | Every | Physical |
+|---|---|---|---|---|
+| vegetation | 9.70 | 9.57 | 9.95 | 9.71 |
+| terrain | 4.58 | 4.93 | 5.13 | 4.73 |
+| water | 4.49 | 4.47 | 4.62 | 4.52 |
+| shape | | 0.26 | 0.24 | |
+| temporal (no substance) | 3.54 | 3.16 | 3.36 | 3.39 |
+
+- **The form: about 0.4 ms** (the shape's 0.26, and the ground's coarser normals' 0.3), under the
+  plan's 1.0. D4 measures it again with `Cel`'s mask.
+- **The whole substance (`Every`): about 1.1 ms** over the physical look.
+- `wrela pipelines engine/tests/frame --json [--set LOOK=styles::fixtures::Every]`: the ground's
+  shading's `attachment_bytes` 8 for `Physical` (the most of its 58 pipelines 8), 24 for `Every`.
+
+## D7a, the marks (2026-10-30, toolchain 0.11.0)
+
+docs/plan-world-class-3.md §D7a. The physical look's coherence on the eight development shots,
+the baseline the looks' bars are relative to (`wrela tool lookbook -- build/d7a/physical --package
+examples/vale --quality --shots dev`, 1920 × 1080, M4 Air, D7a's code):
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px | bar: flicker ×10⁻⁶ / pop / trail |
+|---|---|---|---|---|---|
+| 12-D1-the-forest-floor | 20.55 | 48.11 | 0.0244 | 77 | 72.17 / 0.0366 / 78 |
+| 13-D2-the-canopy-against-the-sun | 45.78 | 0.37 | 0.0012 | 3 | 0.56 / 0.0018 / 4 |
+| 14-D3-another-old-oak | 23.56 | 137.85 | 0.1044 | 28 | 206.78 / 0.1566 / 29 |
+| 15-D4-the-stream | 20.49 | 31.47 | 0.0093 | 22 | 47.21 / 0.0140 / 23 |
+| 16-D5-the-shore-at-evening | 25.24 | 118.44 | 0.0072 | 4 | 177.66 / 0.0108 / 5 |
+| 17-D6-the-vale-from-the-west | 36.70 | 14.93 | 0.0035 | 2 | 22.40 / 0.0053 / 3 |
+| 18-D7-the-creature-in-the-wood | 23.48 | 16.94 | 0.0309 | 13 | 25.41 / 0.0464 / 14 |
+| 19-D8-the-wood-under-cloud | 27.98 | 36.44 | 0.0235 | 5 | 54.66 / 0.0353 / 6 |
+
+The bars (**proposed**): flicker and pop 1.5 times the physical look's, trail its plus a pixel
+(`lookbook --bars`, `main::holds`).
+
+The record above is superseded as the bars' baseline by the fast instrument's (below): the
+looks are held to the physical look's fast run, which measures over shorter windows.
+
+## D4–D7b, the looks' coherence (2026-10-30, toolchain 0.11.1)
+
+docs/plan-world-class-3.md §D4–D7b. Each look on all twenty shots on the fast instrument
+(docs/lookdev.md, "The fast run": 960 × 540, the still's flicker over 32 frames, pop over a
+150-frame dolly, trail where it ends), held to the physical look's: flicker and pop at most 1.5
+times its, trail at most its plus a pixel. Each measure is the median of three runs, but where a
+shot's first run decided it (`--near 0.2`: a measure a fifth over its bar, or every one a fifth
+under; docs/lookdev.md, "A record measures only what can decide it"). M4 Air, nothing else
+running, the steady planner (`cook::Planner::steady`) while time is frozen; measured after Part
+D's council and review (marks before the lines, on the surface's tangent plane, a look's lattice
+marks off its characters; the trail's row threshold capped at 0.08).
+
+```sh
+wrela tool lookbook -- build/record/physical --package examples/vale --fast --runs 3   # 561 s
+wrela tool lookbook -- build/record/cel --package examples/vale --fast --runs 3 --look styles::cel::Cel --bars build/record/physical   # 597 s
+wrela tool lookbook -- build/record/painterly --package examples/vale --fast --runs 3 --near 0.2 --look styles::painterly::Painterly --bars build/record/physical   # 554 s, 1 shots once
+wrela tool lookbook -- build/record/ink --package examples/vale --fast --runs 3 --look styles::ink::Ink --bars build/record/physical   # 534 s
+```
+
+Flicker ×10⁻⁶ / pop / trail px; ✗ a miss of its bar.
+
+| Shot | Physical (the bars' base) | Cel | Painterly | Ink |
+|---|---|---|---|---|
+| 00-the-forest-floor | 20.97 / 0.0122 / 2 | 21.93 / 0.0091 / 3 | 21.18 / 0.0099 / 2 | 286.52 ✗ / 0.0368 ✗ / 2 |
+| 01-the-canopy-against-the-sun | 6.65 / 0.0113 / 3 | 7.58 / 0.0075 / 3 | 6.88 / 0.0089 / 3 | 95.99 ✗ / 0.0417 ✗ / 4 |
+| 02-an-old-oak | 1.09 / 0.1112 / 4 | 1.46 / 0.1085 / 4 | 1.15 / 0.1089 / 4 | 111.49 ✗ / 0.1602 / 4 |
+| 03-the-fall | 11.82 / 0.0062 / 5 | 12.29 / 0.0062 / 4 | 11.48 / 0.0063 / 4 | 220.68 ✗ / 0.0465 ✗ / 3 |
+| 04-the-bands-face | 1.07 / 0.0124 / 3 | 1.34 / 0.0122 / 3 | 1.20 / 0.0109 / 3 | 242.34 ✗ / 0.0303 ✗ / 2 |
+| 05-the-meadow-at-evening | 58.29 / 0.0064 / 2 | 39.25 / 0.0054 / 2 | 60.77 / 0.0065 / 2 | 398.24 ✗ / 0.0154 ✗ / 3 |
+| 06-dawn-in-the-hollow | 11.29 / 0.0038 / 3 | 11.00 / 0.0033 / 3 | 11.31 / 0.0036 / 3 | 198.03 ✗ / 0.0168 ✗ / 3 |
+| 07-dusk-from-the-crest | 9.52 / 0.0021 / 2 | 6.05 / 0.0015 / 2 | 9.24 / 0.0021 / 2 | 640.77 ✗ / 0.0193 ✗ / 3 |
+| 08-grazing-at-the-edge | 18.45 / 0.0044 / 2 | 20.60 / 0.0032 / 2 | 16.88 / 0.0035 / 3 | 245.53 ✗ / 0.0150 ✗ / 3 |
+| 09-down-the-trail | 54.80 / 0.0069 / 3 | 50.53 / 0.0063 / 3 | 60.69 / 0.0070 / 3 | 404.53 ✗ / 0.0241 ✗ / 2 |
+| 10-the-fallen-beech | 44.54 / 0.0101 / 5 | 57.52 / 0.0101 / 5 | 45.35 / 0.0107 / 5 | 453.29 ✗ / 0.1037 ✗ / 4 |
+| 11-the-wood-under-cloud | 93.32 / 0.0076 / 2 | 104.56 / 0.0078 / 2 | 90.69 / 0.0073 / 2 | 326.70 ✗ / 0.0190 ✗ / 3 |
+| 12-D1-the-forest-floor | 19.05 / 0.0079 / 2 | 15.74 / 0.0071 / 3 | 19.17 / 0.0079 / 2 | 197.93 ✗ / 0.0231 ✗ / 2 |
+| 13-D2-the-canopy-against-the-sun | 0.27 / 0.0007 / 2 | 0.37 / 0.0006 / 2 | 0.36 / 0.0007 / 2 | 20.54 ✗ / 0.0031 ✗ / 6 ✗ |
+| 14-D3-another-old-oak | 6.39 / 0.0363 / 27 | 4.74 / 0.0151 / 0 | 6.91 / 0.0298 / 30 ✗ | 159.09 ✗ / 0.1105 ✗ / 3 |
+| 15-D4-the-stream | 9.59 / 0.0073 / 3 | 10.25 / 0.0060 / 3 | 9.48 / 0.0065 / 3 | 234.63 ✗ / 0.0355 ✗ / 2 |
+| 16-D5-the-shore-at-evening | 32.58 / 0.0053 / 2 | 19.13 / 0.0044 / 2 | 35.22 / 0.0053 / 2 | 466.92 ✗ / 0.0214 ✗ / 3 |
+| 17-D6-the-vale-from-the-west | 15.69 / 0.0029 / 2 | 11.70 / 0.0024 / 2 | 15.38 / 0.0028 / 2 | 1235.03 ✗ / 0.0204 ✗ / 3 |
+| 18-D7-the-creature-in-the-wood | 16.66 / 0.0119 / 3 | 14.87 / 0.0072 / 3 | 14.35 / 0.0090 / 3 | 203.28 ✗ / 0.0185 ✗ / 4 |
+| 19-D8-the-wood-under-cloud | 31.11 / 0.0186 / 2 | 36.50 / 0.0130 / 2 | 30.63 / 0.0168 / 2 | 339.01 ✗ / 0.0434 ✗ / 3 |
+
+- **Cel holds all 60 bars**, after two changes from the plan's constants: `FLAT_CLIP` 0 and
+  `TERMINATOR` 0.2 (content/styles/README.md; the plan's 0.08, softened to 0.3 on the earlier
+  instrument, missed an old oak's flicker at 0.3 on this one, 3.04 against a bar of 1.63).
+- **Painterly holds 19 of 20 shots** (59 of 60 bars). It missed all twenty with the
+  plan's constants; it holds after `FLAT_CLIP` 0, `FLAT` 0, the program's line darkness for the
+  plan's faint 0.25, `STROKE_VARY` 0.04 and `SKY_SIMPLE` 0.7 (the canopy against the sun's
+  flicker sat on its bar at 0.5 after the council's fixes: 0.42 against 0.41). Its miss is
+  another old oak's trail, 30 against 28 (the physical look's 27). That trail rests on one row: on
+  this shot only row 533 has a step of 0.1 in luma (a small dark thing at the frame's corner,
+  under soft bark), so the median is that row's run (docs/lookdev.md, "A trail can rest on one
+  row"). The form's normal (`NORMAL` 1) is what lengthens it: the fine normal gives 28, the coarse
+  30; the stroke variation (0 or 0.02), the strokes themselves, and `FLAT_CLIP` 0.1 or 0.2 leave
+  it at 30. The form's normal is the look, so the miss stands.
+- **Ink: Blocked.** It misses every flicker bar, by 2.3 to 151 times its bar (median
+  10), 19 of 20 pop bars, and holds 19 of 20 trails. Moving every mark before
+  temporal AA (`marks::marks_on`) took its flicker down about 70 times, evaluating the lattice at
+  the pixel's unjittered centre (`marks::centred`) about 1.5 times, and a wash in place of lines
+  on leaves, grass and flowers about twice; a grey ink and a soft line edge about 1.1. Spacing
+  (12 and 14 px), the light alone, the layers' thresholds, a coarser lattice and either sign of
+  the centring moved nothing. What's left is the hatching's lines themselves: a line a pixel wide
+  over a surface that moves under a sub-pixel jitter each frame. Its judge sees the same as moiré.
+
+PSNR of each look's play against its own frozen-time reference (`--fast --psnr`, one run, dB;
+the painterly and ink looks' after the fixes, the physical and cel looks' before them, which
+changed neither's image but in rounding):
+
+| Shot | Physical | Cel | Painterly | Ink |
+|---|---|---|---|---|
+| 00-the-forest-floor | 22.26 | 21.01 | 22.34 | 17.81 |
+| 01-the-canopy-against-the-sun | 25.53 | 25.84 | 25.73 | 20.03 |
+| 02-an-old-oak | 30.86 | 36.27 | 34.94 | 18.28 |
+| 03-the-fall | 26.62 | 23.73 | 26.57 | 17.93 |
+| 04-the-bands-face | 24.49 | 23.24 | 24.87 | 17.87 |
+| 05-the-meadow-at-evening | 25.30 | 24.72 | 25.27 | 18.36 |
+| 06-dawn-in-the-hollow | 28.73 | 28.65 | 28.70 | 19.06 |
+| 07-dusk-from-the-crest | 36.58 | 37.05 | 36.52 | 18.46 |
+| 08-grazing-at-the-edge | 24.34 | 25.23 | 25.10 | 20.18 |
+| 09-down-the-trail | 26.16 | 26.35 | 26.10 | 17.22 |
+| 10-the-fallen-beech | 27.32 | 25.61 | 27.45 | 16.21 |
+| 11-the-wood-under-cloud | 29.41 | 29.19 | 29.53 | 19.20 |
+| 12-D1-the-forest-floor | 20.83 | 19.52 | 20.70 | 17.83 |
+| 13-D2-the-canopy-against-the-sun | 43.69 | 43.99 | 44.16 | 28.98 |
+| 14-D3-another-old-oak | 28.01 | 29.54 | 29.38 | 17.41 |
+| 15-D4-the-stream | 20.76 | 18.68 | 20.70 | 17.38 |
+| 16-D5-the-shore-at-evening | 27.20 | 27.17 | 27.29 | 16.88 |
+| 17-D6-the-vale-from-the-west | 35.54 | 35.95 | 35.51 | 18.93 |
+| 18-D7-the-creature-in-the-wood | 23.52 | 24.23 | 23.66 | 20.69 |
+| 19-D8-the-wood-under-cloud | 26.07 | 27.16 | 26.93 | 17.58 |
+
+### The looks' judges (D4–D6)
+
+One agent judge per look, in a fresh context, views its twelve evaluation stills at 1920 × 1080
+(`wrela tool lookbook -- build/stills/<look> --package examples/vale --stills --shots evaluation
+--look styles::<module>::<Type>`) under neutral names, after a calibration pair (a physical still
+against its quarter-resolution copy, neutral names): every judge preferred the full still. Each
+scores the five rubric rows 0–3 and the *style* row against six of the look's reference set
+(§D8's, the Met's CC0 works under `$WRELA_REFERENCE_DIR/styles/<look>`; Ink has none:
+"unfitted"). Means over the twelve:
+
+| Look | Light | Colour | Value | Depth | Artifacts | Style |
+|---|---|---|---|---|---|---|
+| Cel | 1.67 | 1.58 | 1.67 | 1.50 | 1.00 | 0.67 |
+| Painterly | 1.75 | 1.67 | 1.67 | 1.50 | 1.08 | 0.67 |
+| Ink | 0.75 | 1.00 | 1.08 | 1.08 | 0.00 | unfitted |
+
+- The judges' files are in `build/judges-d/`. The painterly and ink looks were judged again
+  after the council's fixes (their images changed); the cel look's judge saw its stills before
+  them (its marks only multiply, so the order of its passes changed its image by rounding).
+- The first two judges (cel's and painterly's) were handed the wood under cloud's still black
+  (docs/lookdev.md, "A still waits for its shot"); their scores were discarded and fresh judges
+  given the remade stills.
+- Both style judges say the look reads as a game render more than in its set's manner: the cel
+  look's flat tones and outlines "gesture toward illustration", the dawn in the hollow its
+  closest still to a cel look; the painterly look's foliage dabs nod to painting while its bark
+  marks read as stamped texture.
+- The ink judge sees moiré over every surface at 1080p: the 6-pixel hatching aliasing on a
+  still, the cause of its flicker (Blocked).
+
+## D11, the second panel (2026-10-30, toolchain 0.11.1)
+
+docs/plan-world-class-3.md §D11. The vale's twelve evaluation stills (above) against the
+references, B5's panel exactly: its seed (5), its prompt, eight agent judges in fresh contexts
+for each look, the shots' and manifest's hashes asserted (`88c877da…`, `b78df49e…`).
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/d11/<look> --a build/stills/<look> --set evaluation --seed 5
+wrela tool studio/compare --write ws=. -- build/d11/<look> --tally
+```
+
+- **The physical control holds**: all eight judges passed both calibration pairs; every pair 0 /
+  0 / 8, B5's tally pair for pair (within two preferences per pair: within none). Its rows'
+  losses (artifacts 26.62, colour 16.25, value 14.12, depth 12.50, light 9.50) are B5's (26.75,
+  15.88, 14.38, 13.62, 12.50) within 1.2 on four rows; light's is 3 less, the fallen beech and the
+  bands' face each 0.5 higher on light than at B5 (1.38 → 1.88).
+- **The cel panel** (a record, not a gate): eight judges passed calibration; every pair 0 / 0 /
+  8. Its losses: artifacts 23.12, colour 15.62, value 13.62, depth 12.75, light 8.12, each at or
+  under the physical look's. Seven judges wrote the *style* sentence on every pair (c6 none): the
+  dawn in the hollow is every one's clearest cel read ("clean dark outlines round the trunks and
+  logs, flat fills and haze in soft bands"); the tallies are `build/d11/*/tally.md`. Both panels'
+  stills predate Part D's council and review: neither look's image changed but in rounding (the
+  cel look's marks only multiply, so drawing them before the lines is the same image).
+
+## D8, the fits (2026-10-30, toolchain 0.11.1)
+
+docs/plan-world-class-3.md §D8. Each look fitted on D5 (the shore at evening, a development
+shot) to its set of fourteen CC0 works from the Met's Open Access (docs/citations.md, "The fit's
+reference sets"): `cel` Hiroshige's and Hokusai's landscape prints, `painterly` Sisley, Pissarro,
+Daubigny and Corot. 200 evaluations of CMA-ES from seed 1 (196 run: λ 7; a draw past a range's
+end reflected into it), each still 480 px wide after 120 frames settled; the score is the RMS of
+the still's statistics' z-scores against the set's (lower is nearer).
+
+```sh
+wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style cel --package examples/vale --shot D5 --reference-set refs/cel --out content/styles/cel_fitted.wrela
+wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style painterly --package examples/vale --shot D5 --reference-set refs/painterly --out content/styles/painterly_fitted.wrela
+```
+
+`Cel`:
+
+```text
+fit: the look's own constants score 4.4904 (TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.3000)
+fit: 20 evaluations, the best 4.4903 at TERMINATOR 0.1917, PALETTE_N 3.7932, HUE_PULL 0.2963
+fit: 40 evaluations, the best 4.4243 at TERMINATOR 0.1906, PALETTE_N 3.9824, HUE_PULL 0.1077
+fit: 60 evaluations, the best 4.4243 at TERMINATOR 0.1906, PALETTE_N 3.9824, HUE_PULL 0.1077
+fit: 80 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 100 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 120 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 140 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 160 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 180 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: held out, shot D1: the look's own 3.3950, fitted 3.3510
+fit: held out, shot D3: the look's own 4.6330, fitted 4.6279
+```
+
+`Painterly`:
+
+```text
+fit: the look's own constants score 1.3811 (PALETTE_N 8.0000, HUE_PULL 0.1500, SKY_SIMPLE 0.7000)
+fit: 20 evaluations, the best 1.3602 at PALETTE_N 10.2619, HUE_PULL 0.2675, SKY_SIMPLE 0.5440
+fit: 40 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 60 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 80 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 100 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 120 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 140 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 160 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 180 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: held out, shot D1: the look's own 0.9581, fitted 0.9705
+fit: held out, shot D3: the look's own 1.5890, fitted 1.6265
+```
+
+**Each range stops where the look holds its bars.** Fitted first over the plan's ranges, the cel
+look's ramp went to 0.589 (4.49 → 3.94 on D5, D1 3.39 → 3.27, D3 4.50 → 3.83) and an old oak's
+flicker missed its bar, 5.77 ×10⁻⁶ against 1.64 (0.3 had missed it too); the painterly look's
+sky went to 0.046 simplified and the canopy against the sun's flicker missed, 0.45 against 0.42.
+Capping its tones at 8 instead left the sky at 0.015 and missed by more (0.56); with the rest as
+fitted, the sky at 0.5 holds it (0.36), while the hue pull at the look's own 0.15 gives 0.44 and
+the tones at 8 give 0.54. So `TERMINATOR` is at most 0.2 and `SKY_SIMPLE` at least 0.5.
+
+- **The cel fit** takes the ramp to its cap, four tones and hardly any hue pull: a print's
+  broad, unpulled flats. A little nearer its set on D5 and on both held-out shots; most of what
+  the uncapped fit gained was its softer ramp.
+- **The painterly fit** takes more tones and a harder hue pull, its sky near its floor. A little
+  nearer on D5 and farther on the held-out shots: it fits D5, not the set's manner.
+
+**Their G-look**: coherence as the looks' (`--fast --runs 3 --near 0.2 --bars
+build/record/physical` for the fitted painterly look, every run for the fitted cel), flicker
+×10⁻⁶ / pop / trail px:
+
+| Shot | CelFitted | PainterlyFitted |
+|---|---|---|
+| 00-the-forest-floor | 21.44 / 0.0090 / 3 | 21.64 / 0.0098 / 2 |
+| 01-the-canopy-against-the-sun | 7.07 / 0.0074 / 3 | 7.09 / 0.0089 / 3 |
+| 02-an-old-oak | 1.48 / 0.1074 / 4 | 1.50 / 0.1088 / 4 |
+| 03-the-fall | 12.23 / 0.0062 / 4 | 11.78 / 0.0063 / 5 |
+| 04-the-bands-face | 1.31 / 0.0092 / 3 | 1.20 / 0.0080 / 3 |
+| 05-the-meadow-at-evening | 41.60 / 0.0053 / 2 | 62.45 / 0.0064 / 2 |
+| 06-dawn-in-the-hollow | 10.94 / 0.0038 / 3 | 11.38 / 0.0036 / 3 |
+| 07-dusk-from-the-crest | 5.79 / 0.0014 / 2 | 9.18 / 0.0021 / 2 |
+| 08-grazing-at-the-edge | 20.33 / 0.0032 / 2 | 17.03 / 0.0035 / 2 |
+| 09-down-the-trail | 50.99 / 0.0063 / 3 | 62.02 / 0.0070 / 3 |
+| 10-the-fallen-beech | 57.30 / 0.0098 / 5 | 71.54 ✗ / 0.0079 / 5 |
+| 11-the-wood-under-cloud | 102.45 / 0.0079 / 2 | 90.95 / 0.0073 / 2 |
+| 12-D1-the-forest-floor | 15.33 / 0.0073 / 3 | 19.42 / 0.0077 / 2 |
+| 13-D2-the-canopy-against-the-sun | 0.36 / 0.0006 / 2 | 0.37 / 0.0007 / 2 |
+| 14-D3-another-old-oak | 4.56 / 0.0148 / 0 | 6.21 / 0.0294 / 30 ✗ |
+| 15-D4-the-stream | 9.88 / 0.0060 / 3 | 9.56 / 0.0063 / 3 |
+| 16-D5-the-shore-at-evening | 19.11 / 0.0047 / 2 | 33.31 / 0.0054 / 2 |
+| 17-D6-the-vale-from-the-west | 11.55 / 0.0024 / 2 | 15.36 / 0.0028 / 2 |
+| 18-D7-the-creature-in-the-wood | 14.66 / 0.0072 / 3 | 14.58 / 0.0092 / 3 |
+| 19-D8-the-wood-under-cloud | 38.66 / 0.0124 / 2 | 30.49 / 0.0163 / 2 |
+
+- `CelFitted` holds 20 of 20 shots.
+- `PainterlyFitted` holds 18 of 20: the painterly look's own miss (another old oak's
+  trail), and the fallen beech's flicker, 71.54 against 66.82, where two of its three runs fell
+  in the shot's late state. That shot's still sometimes sees something arrive in its 32 frames
+  (its still's pop 0.008 against 0.002; the physical look's own runs read 73.59, 44.48, 44.54):
+  run five times, the fitted look's reads 45.31, 46.61, 45.31, 84.15, 46.39, a median of 46.39,
+  holding (`build/record/painterly_fitted-shot10-runs5`). The record keeps the median of three.
+- Their judges (as D4–D6's: light, colour, value, depth, artifacts, style against the set):
+  `CelFitted` 1.67, 1.58, 1.67, 1.58, 0.92, 0.58; `PainterlyFitted` 1.75, 1.75, 1.58, 1.58, 1.00, 0.75.
+
+## D4, the cel look's cost (2026-10-30, toolchain 0.11.1)
+
+docs/plan-world-class-3.md §D4 (5): the flattening's and the creases' cost. Each look's passes
+timed alone (`wrela profile examples/vale --serial --size 1920x1080 --warmup 960 --frames 300`,
+native, M4 Air, back to back, the vale's `LOOK` pointed at `styles::physical::Physical`,
+`styles::cel::Cel` and `styles::fixtures::Unflattened`, the cel look with `FLAT` 0), ms a
+frame, median:
+
+| Pass | Physical | Cel | Cel unflattened |
+|---|---|---|---|
+| vegetation prepass | 8.866 | 8.763 | 8.845 |
+| vegetation | 3.659 | 3.683 | 3.680 |
+| terrain | 1.753 | 2.041 | 2.036 |
+| water | 1.833 | 1.837 | 1.844 |
+| temporal | 1.404 | 1.388 | 1.390 |
+| marks (creases) | | 0.722 | 0.723 |
+| shape | | 0.092 | 0.093 |
+| sky | 0.103 | 0.216 | 0.218 |
+| look (the dabs' map, the metering) | 1.103 | 0.054 | 0.055 |
+| every pass | 22.407 | 22.481 | 22.555 |
+
+- **The flattening: nothing measurable.** The cel look with it and without differ by under
+  0.01 ms on every pass that flattens (terrain, vegetation), inside the passes' run-to-run spread.
+- **The creases: 0.72 ms**, the marks pass (where every mark is drawn now, before temporal AA),
+  and the shape the substance finds them from 0.09. Together under the plan's 1.0 ms.
+- **Sustained** (`wrela tool bench -- --scene vale-walk --look styles::<module>::<Type> --sustained
+  300 --no-docs --no-native`, back to back: physical, cel, physical; GPU span p50 / interval p99
+  / over 33 ms): 19.34 / 30.79 / 2, **18.57 / 30.97 / 1**, 18.88 / 30.78 / 3. The cel look sits
+  inside the physical look's own spread (0.46 ms between its two runs), as the per-pass sums say.
+- The cel look's frame is within 0.1 ms of the physical look's: its substance (terrain +0.29,
+  the sky's +0.11) and its marks (0.81) are paid for by the dabs it doesn't draw (`marks::DABS`,
+  the physical look's paper: their map is 1.05 ms of the "look" span).
+
+## D10, G-style (2026-10-30, toolchain 0.11.1)
+
+docs/plan-world-class-3.md §D10. `wrela tool styles -- --check` (13.5 s, the builds cached):
+
+```text
+styles: styles::cel::Cel: builds, 109 pipelines
+styles: styles::cel_fitted::CelFitted: builds, 109 pipelines
+styles: styles::ink::Ink: builds, 109 pipelines
+styles: styles::painterly::Painterly: builds, 110 pipelines
+styles: styles::painterly_fitted::PainterlyFitted: builds, 110 pipelines
+styles: styles::physical::Physical: builds, 109 pipelines
+G-style: cel_fitted.wrela added in ee285c32: no engine file changed, holds
+G-style: painterly_fitted.wrela added in ee285c32: no engine file changed, holds
+G-style: ink.wrela added in 7269c195: no engine file changed, holds
+G-style: painterly.wrela added in 525ef4c9: no engine file changed, holds
+G-style: cel.wrela added in ca931cda: no engine file changed, holds
+G-style: physical.wrela added in caa7c376: the engine's own look
+```
+
+The history is recorded in `studio/styles/history.log` (`--record`), which the tool's test reads:
+3 passed. The page (`--page build/styles-page --run physical=build/record/physical --run
+cel=build/record/cel ...`, every look's fast record) is linked from Part D's PR.
+
+The released toolchain 0.11.1 (the workspace ran a local copy of its build until now) builds the
+vale identically: all 335 of its shaders, wasm and manifest files' SHA-256 the same.

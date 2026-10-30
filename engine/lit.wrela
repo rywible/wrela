@@ -18,6 +18,7 @@ use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
 use switches::Switches
 use style::Style
+use substance::Substance
 use std::gpu::{
     ComparisonSampler, Cubemap, DepthTexture, GpuSpan, R32Float, Rgba16Float, Sampler, Texture,
     Texture3d,
@@ -245,8 +246,14 @@ pub fn through_air<Q: Switches, Y: Style>(l: Lighting<Q, Y>, colour: vec3, world
     light::hazed(l.air, l.s, l.light, colour * f.a + f.rgb, world, l.cam.eye)
 }
 
-/// What a surface at `world` shows: lit as `lit` says, summed by the look (`Style::shade`), through
-/// the air.
-pub fn shown<Q: Switches, Y: Style>(l: Lighting<Q, Y>, lit: Lit, world: vec3) -> vec3 {
-    through_air(l, Y::shade(l.light, lit, world, l.cam.eye), world)
+/// What a surface at `world` of class `class` (`style::GROUND` …) shows: lit as `lit` says,
+/// summed by the look (`Style::shade`, given its substance `s`), through the air.
+pub fn shown<Q: Switches, Y: Style>(
+    l: Lighting<Q, Y>,
+    lit: Lit,
+    world: vec3,
+    s: Substance,
+    class: u32,
+) -> vec3 {
+    through_air(l, Y::shade(l.light, lit, s, class, world, l.cam.eye), world)
 }

@@ -65,7 +65,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--look <type>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -87,6 +87,9 @@ pub struct Options: Clone {
     /// The tier each scene's program is built at (`--tier`: `wrela build --set TIER=<tier>`,
     /// `engine::tier`), or empty for its own.
     pub tier: String = String::new(),
+    /// The look each scene's program is built in (`--look`: `wrela build --set LOOK=<type>`,
+    /// `engine::style`, such as `styles::fixtures::Every`), or empty for its own.
+    pub look: String = String::new(),
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -162,8 +165,21 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             }
             o.tier = take v
             k += 2
+        } else if a == "--look" {
+            o.look = value(k)?
+            k += 2
         } else {
             return None
+        }
+    }
+    // A look is set on a program that names one (`Scene::looked`).
+    if !o.look.is_empty() {
+        for n in o.scenes {
+            for s in SCENES {
+                if s.name == n.as_str() && !s.looked {
+                    return None
+                }
+            }
         }
     }
     // A tier is set on a program that names one (`Scene::tiered`).
@@ -190,7 +206,7 @@ pub fn chosen(o: Options) -> Vec<Scene> {
             }
         }
         // A tier is a program's that names one (`Scene::tiered`).
-        if wanted && (o.tier.is_empty() || s.tiered) {
+        if wanted && (o.tier.is_empty() || s.tiered) && (o.look.is_empty() || s.looked) {
             var c = s.clone()
             if o.frames > 0 {
                 c.frames = o.frames
@@ -337,13 +353,33 @@ pub fn posted(dir: str, timeout: f64) -> Result<(), ToolError> {
     }
 }
 
-/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier` (the
-/// program's own if empty) unless an earlier scene's was (`build`), and its gate script written
-/// beside it: the build's directory and the
-/// script's file there.
+/// A scene's row's name: `name`, then its tier and its look's type's last name where they're set
+/// (`vale-walk (Medium, Every)`).
+pub fn labelled(name: str, tier: str, look: str) -> String {
+    let parts = look.split("::")
+    let short = if parts.is_empty() { String::from(look) } else {
+        let (a, b) = parts[parts.len() - 1]
+        String::from(look.slice(a, b))
+    }
+    if tier.len() > 0 && look.len() > 0 {
+        return f"{name} ({tier}, {short})"
+    }
+    if tier.len() > 0 {
+        return f"{name} ({tier})"
+    }
+    if look.len() > 0 {
+        return f"{name} ({short})"
+    }
+    String::from(name)
+}
+
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier` and in
+/// `look` (each the program's own if empty) unless an earlier scene's was (`build`), and its gate
+/// script written beside it: the build's directory and the script's file there.
 fn prepared(
     s: Scene,
     tier: str,
+    look: str,
     build: bool,
     ws: str,
     out: str,
@@ -356,6 +392,11 @@ fn prepared(
         if tier.len() > 0 {
             options.set.push(
                 toolchain::Set { name: String::from("TIER"), value: String::from(tier) },
+            )
+        }
+        if look.len() > 0 {
+            options.set.push(
+                toolchain::Set { name: String::from("LOOK"), value: String::from(look) },
             )
         }
         let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
@@ -441,7 +482,7 @@ pub fn starts(
     out: str,
     kept: str,
 ) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
-    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), build, ws, out)?
     let frames = min(o.warmup + s.frames, STARTS_FRAMES)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
@@ -489,7 +530,7 @@ pub fn measure(
     for r in RUNS {
         runs.push(String::from(f"{kept}/{s.name}/{r}"))
     }
-    let (dir, input_file) = prepared(s, o.tier.as_str(), build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), build, ws, out)?
     let input = script(s.name)
     // A walk's frames count from its start (`Scene::walks`), after its load.
     let from = max(o.warmup, s.walks)
@@ -661,9 +702,7 @@ pub fn measure(
         native = stats(take calls)
     }
     let m = Measured {
-        scene: if o.tier.is_empty() { String::from(s.name) } else {
-            String::from(f"{s.name} ({o.tier})")
-        },
+        scene: labelled(s.name, o.tier.as_str(), o.look.as_str()),
         span,
         interval: stats(take between),
         over_16,

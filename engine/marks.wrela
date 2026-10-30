@@ -1,0 +1,737 @@
+// The marks a look draws (docs/plan-world-class-3.md §D7a): lines, creases, dabs, strokes and
+// hatching, each a kind a look's `style::Style::MARKS` names. A mark is a sample of a field in the
+// thing's own domain (the world's, keyed to it: `view::Camera::keyed`), sized in screen space: at a
+// pixel, the marks that cover it come from a lattice whose spacing is the mark's size in pixels
+// times the pixel's footprint, a lattice a power of two finer or coarser each octave of distance,
+// two blended across the octave (`sample`). Bénard, Bousseau and Thollot's survey of temporally
+// coherent stylization names the two failures, the shower door (marks fixed to the screen) and
+// sliding (marks fixed to nothing); this is the compromise it recommends: anchored in 3D, sized in
+// 2D, faded across levels. A look's `style::Style::mark` says how dark a mark makes a pixel; the
+// marks pass draws them on the scene's samples before temporal AA, as the lines are (`marks_on`):
+// a mark anchored to a surface is as its texture is, and temporal AA anti-aliases it and settles
+// the jittered frame's depth and form it's read from. (Drawn after it, at the output's size, each
+// frame's jittered depth moved a mark's anchor on a slope: a hatched look's still flickered at
+// 50,000 ×10⁻⁶, docs/bench.md.) The lines go over them (a look that turns the image to its
+// paper would turn a line under it to paper). A lattice is the world's, so a look's mark on a
+// character (`style::CREATURE`, which moves) reads nothing of it (`place`, `offset`, `seed`): it
+// would slide under them.
+//
+// The physical look's marks are its own: the characters' lines (`lines`, before temporal AA, so
+// it anti-aliases them as it does a silhouette) and its brush dabs and paper's tooth (`dab_map`,
+// read by `paint::develop`), as they were.
+
+use light::LUMA
+use noise::{hash2, hash3, noise3, octave_of}
+use paint::{Develop, Look}
+use std::gpu::{DepthTexture, FragCoord, R32Uint, Rg32Uint, Rgba16Float, Texture}
+use style
+use style::Style
+use substance
+use substance::{Substance, unpack_form, unpack_shape, unpack_tone}
+use terrain::{Levels, Texel, ground_at, level_at, materials_at}
+use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, WATER, class_of}
+
+/// The kinds of mark (`style::Style::MARKS`' bits): the lines round the characters (`lines`),
+/// creases where the form folds, the painter's dabs and paper's tooth (`dab_map`, as
+/// `paint::Look` sets them), strokes along the form, hatching.
+pub const LINES: u32 = 1
+pub const CREASES: u32 = 2
+pub const DABS: u32 = 4
+pub const STROKES: u32 = 8
+pub const HATCH: u32 = 16
+
+/// The kinds the marks pass draws (`marks_on`): the lines and the dabs have passes of their own.
+pub const DRAWN: u32 = CREASES | STROKES | HATCH
+
+/// A mark at a pixel: its kind (one of the bits), its seed, the point it's anchored to in its
+/// thing's domain (`at`: its cell's centre), the direction it runs (`dir`, in the surface: the
+/// form's principal direction where a look asks for it), its size in pixels (its lattice's cell's,
+/// from half the look's `style::Style::mark_px` to twice it: `sample`), where the pixel lies from
+/// its centre (`offset`: along `dir` and across it, in the mark's size), the pixel's place on its
+/// lattice's plane (`place`, in cells, unbroken from cell to cell: for marks that run on, as
+/// hatching does) and `dir`'s angle there (`turn`, radians, from the plane's first axis), the
+/// point's distance from the eye, its class, and the image's light there. A crease's (`creased`)
+/// has no lattice: its size is its extent along its ridge, its offset its curve per pixel (`|k1|` ×
+/// the pixel's footprint) and the share of that its ridge keeps.
+pub struct MarkSample: Copy {
+    pub kind: u32 = 0,
+    pub seed: u32 = 0,
+    pub at: vec3 = vec3(0.0),
+    pub dir: vec3 = vec3(1.0, 0.0, 0.0),
+    pub size_px: f32 = 0.0,
+    pub offset: vec2 = vec2(0.0),
+    pub place: vec2 = vec2(0.0),
+    pub turn: f32 = 0.0,
+    /// How far the pixel's point is from the eye (m), and what it's made of (`style::GROUND` …).
+    pub distance: f32 = 0.0,
+    pub class: u32 = 0,
+    /// The light of temporal AA's image there before any mark (its luma): what a look's hatching
+    /// reads its tone from.
+    pub lit: f32 = 0.0,
+}
+
+/// A pixel's marks: the nearest of the finer octave's lattice (`fine`) and of the coarser one's
+/// (`coarse`), and how much of the coarser it takes (`f`, 0 to 1 across the octave).
+pub struct Sampled: Copy {
+    pub fine: MarkSample,
+    pub coarse: MarkSample,
+    pub f: f32,
+}
+
+/// The lattice level (an integer: its cells `2^level` m) and the share of the next one up, for
+/// marks `size_px` pixels across where a pixel is `footprint` metres.
+pub fn level_of(footprint: f32, size_px: f32) -> (i32, f32) {
+    let l = log2(max(footprint * size_px, 1.0e-6))
+    let k = floor(l)
+    (i32(k), l - k)
+}
+
+/// The mark of lattice level `level` nearest `at` (a point of a surface whose normal is `n`,
+/// marks running along `dir` there): the plane across `n` cut into cells `2^level` m wide, each
+/// holding one mark at a point hashed in it; of the four cells round `at`, the one whose mark is
+/// nearest in the mark's own measure (`offset`'s length).
+fn on_lattice(kind: u32, at: vec3, n: vec3, dir: vec3, level: i32, size_px: f32) -> MarkSample {
+    let cell = exp2(f32(level))
+    // The plane's axes: `dir` in it, and across it; the lattice in the world's coordinates on
+    // the plane nearest it (its normal's strongest axis), so a turn of the normal doesn't slide it.
+    let a = abs(n)
+    let plane = if a.x >= a.y && a.x >= a.z { 0 } else if a.y >= a.z { 1 } else { 2 }
+    let q = (if plane == 0 { at.zy } else if plane == 1 { at.xz } else { at.xy }) / cell
+    let along = normalize(dir - n * dot(dir, n) + vec3(1.0e-6, 0.0, 0.0))
+    let across = cross(n, along)
+    let c = floor(q - vec2(0.5))
+    // The pixel's place on the lattice's plane, and `dir`'s angle there. (Its place along `dir`
+    // and across it in the world, `at`'s projections, turned with the form's direction: a point
+    // 100 m off swept a cell of hatching across it as the direction turned 0.03°, and a ball
+    // about the world's origin had none, its points along its normals.)
+    let a2 = if plane == 0 { along.zy } else if plane == 1 { along.xz } else { along.xy }
+    let turn = atan2(a2.y, a2.x)
+    var best = MarkSample { kind, size_px, place: q, turn }
+    var nearest = 1.0e9
+    for j in 0..2 {
+        for i in 0..2 {
+            let g = c + vec2(f32(i), f32(j))
+            let (x, y) = (i32(g.x), i32(g.y))
+            let seed = u32(hash3(x, y, level * 7 + i32(plane)) * 4294967040.0)
+            let centre = g +
+                vec2(0.25) +
+                0.5 * vec2(hash2(x, y + level * 31), hash2(y + 71, x + 13 - level * 5))
+            // The centre back on the surface's tangent plane, in the world: the lattice plane's
+            // two coordinates, and the third that keeps it across `n` (the plane is `n`'s
+            // strongest axis, so that one is at least 1/√3; with it 0, a stroke on a surface
+            // oblique to its lattice's plane was measured short across the slope, so drawn long).
+            let d2 = (q - centre) * cell
+            let d = if plane == 0 {
+                vec3(-(n.y * d2.y + n.z * d2.x) / n.x, d2.y, d2.x)
+            } else if plane == 1 {
+                vec3(d2.x, -(n.x * d2.x + n.z * d2.y) / n.y, d2.y)
+            } else {
+                vec3(d2.x, d2.y, -(n.x * d2.x + n.y * d2.y) / n.z)
+            }
+            let off = vec2(dot(d, along), dot(d, across)) / cell
+            let r = dot(off, off)
+            if r < nearest {
+                nearest = r
+                best = MarkSample {
+                    kind,
+                    seed,
+                    at: at - d,
+                    dir: along,
+                    size_px,
+                    offset: off,
+                    place: q,
+                    turn,
+                }
+            }
+        }
+    }
+    best
+}
+
+/// The marks of kind `kind` at `at` (a surface point, its normal `n`, marks along `dir`), each
+/// `size_px` pixels across where a pixel is `footprint` metres: the two octaves' lattices round
+/// that size (each sample's `size_px` its own cell's in pixels: the finer's at most `size_px`, the
+/// coarser's at least), and the coarser one's share. Each octave's lattice is its own (its level in
+/// its seeds), so the coarser lattice of one octave is the finer one of the next: a mark doesn't
+/// change as the eye crosses an octave, it fades from one lattice to the other across it.
+pub fn sample(kind: u32, at: vec3, n: vec3, dir: vec3, footprint: f32, size_px: f32) -> Sampled {
+    let (k, f) = level_of(footprint, size_px)
+    Sampled {
+        fine: on_lattice(kind, at, n, dir, k, exp2(f32(k)) / footprint),
+        coarse: on_lattice(kind, at, n, dir, k + 1, exp2(f32(k + 1)) / footprint),
+        f,
+    }
+}
+
+/// The look's class (`style::GROUND` …) of a scene tag (`view::class_of`'s).
+pub fn class_of_tag(tag: f32) -> u32 {
+    let c = class_of(tag)
+    if c == class_of(GROUND) {
+        return style::GROUND
+    }
+    if c == class_of(LEAVES) {
+        return style::LEAVES
+    }
+    if c == class_of(BARK) {
+        return style::BARK
+    }
+    if c == class_of(GRASS) {
+        return style::GRASS
+    }
+    if c == class_of(FLOWER) {
+        return style::FLOWER
+    }
+    if c == class_of(WATER) {
+        return style::WATER
+    }
+    if c == class_of(ROCK) {
+        return style::STONE
+    }
+    if c == class_of(CREATURE) {
+        return style::CREATURE
+    }
+    style::SKY
+}
+
+/// How dark `Y`'s marks of kind `kind` make a pixel whose surface point is `at` (normal `n`, its
+/// form's principal direction `dir`), an output pixel `foot` metres across there, its substance
+/// `s`: its two octaves' marks (`sample`), each as `Y` draws it (`style::Style::mark`), blended.
+pub fn darkness<Y: Style>(
+    kind: u32,
+    at: vec3,
+    n: vec3,
+    dir: vec3,
+    foot: f32,
+    s: Substance,
+    distance: f32 = 0.0,
+    class: u32 = 0,
+    lit: f32 = 0.0,
+) -> f32 {
+    let m = sample(kind, at, n, dir, foot, Y::mark_px(kind))
+    let fine = MarkSample { distance, class, lit, ..m.fine }
+    let coarse = MarkSample { distance, class, lit, ..m.coarse }
+    mix(Y::mark(fine, s, foot), Y::mark(coarse, s, foot), m.f)
+}
+
+/// The most texels each way along a ridge a crease's extent is counted over (`creased`), and the
+/// least curve per pixel it's counted for (under it, no look draws a crease).
+const RIDGE_STEPS: u32 = 12
+const MIN_CURVE: f32 = 0.1
+
+/// A crease at the scene pixel `p` (`MarkSample` of kind `CREASES`): its curve per pixel (`|k1|`
+/// times the output pixel's footprint `foot`, from the half-size `shape` target), and its extent
+/// in output pixels along its ridge (across `k1`'s direction `dir`, on the screen through `cam`):
+/// the texels each way, up to `RIDGE_STEPS`, whose curve per pixel (the strongest of each and its
+/// four neighbours) holds at least half the pixel's; none where its curve is under `MIN_CURVE`. A
+/// look's `mark` draws it where its curve and its extent are enough.
+fn creased(
+    cam: Camera,
+    shape: Texture<Rg32Uint>,
+    p: vec2u,
+    world: vec3,
+    n: vec3,
+    dir: vec3,
+    k1: f32,
+    foot: f32,
+    per_out: f32,
+    distance: f32,
+    class: u32,
+) -> MarkSample {
+    // Its curve between the four half-size texels round the pixel (a jittered frame's sample
+    // shifts under it; the nearest texel's flips at a ridge's edge).
+    let lim = vec2(f32(shape.width() - 1), f32(shape.height() - 1))
+    let h = clamp(vec2(p) * 0.5 - vec2(0.25), vec2(0.0), lim)
+    let b = floor(h)
+    let t = h - b
+    let k_at = |dx: f32, dy: f32| {
+        let q = clamp(b + vec2(dx, dy), vec2(0.0), lim)
+        let (_, k, _) = unpack_shape(shape.load(x: u32(q.x), y: u32(q.y)))
+        abs(k)
+    }
+    let k_mid = mix(
+        mix(k_at(0.0, 0.0), k_at(1.0, 0.0), t.x),
+        mix(k_at(0.0, 1.0), k_at(1.0, 1.0), t.x),
+        t.y,
+    )
+    let curve = max(k_mid, 0.0) * foot
+    if curve < MIN_CURVE {
+        return MarkSample {
+            kind: CREASES,
+            at: world,
+            dir,
+            offset: vec2(curve, 0.0),
+            distance,
+            class,
+        }
+    }
+    let ridge = normalize(cross(n, dir) + vec3(1.0e-6, 0.0, 0.0))
+    // The ridge on the screen, a half-size texel a step.
+    let ahead = cam.pixel(world + ridge * foot * per_out) - cam.pixel(world)
+    let step = ahead / max(length(ahead), 1.0e-6) * 2.0
+    var run = 0
+    for side in 0..2 {
+        let sign = if side == 0 { 1.0 } else { -1.0 }
+        var k = 1
+        var on = true
+        while on && k <= RIDGE_STEPS {
+            // The texel the step lands in and its four neighbours, the strongest: a ridge a texel
+            // wide, running across the texels, isn't lost between them.
+            let q = clamp((vec2(p) + step * sign * f32(k)) * 0.5, vec2(0.0), lim)
+            var kq = 0.0
+            for j in 0..5 {
+                let o = if j == 0 { vec2(0.0) } else if j == 1 { vec2(1.0, 0.0) } else if j == 2 {
+                    vec2(-1.0, 0.0)
+                } else if j == 3 { vec2(0.0, 1.0) } else { vec2(0.0, -1.0) }
+                let t = clamp(q + o, vec2(0.0), lim)
+                let (_, kt, _) = unpack_shape(shape.load(x: u32(t.x), y: u32(t.y)))
+                kq = max(kq, abs(kt))
+            }
+            on = kq * foot >= 0.5 * curve
+            if on {
+                run += 1
+            }
+            k += 1
+        }
+    }
+    MarkSample {
+        kind: CREASES,
+        at: world,
+        dir,
+        size_px: f32(run * 2 + 1) / per_out,
+        offset: vec2(curve, f32(run) / f32(2 * RIDGE_STEPS)),
+        distance,
+        class,
+    }
+}
+
+// ---- the physical look's marks ----------------------------------------------------------------
+
+/// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells
+/// nearest it (a stroke reaches less than a cell from its centre's cell), in [-1, 1].
+fn strokes(q: vec2) -> f32 {
+    let c = floor(q - vec2(0.5))
+    var best = 0.0
+    var value = 0.0
+    for j in 0..2 {
+        for i in 0..2 {
+            let cell = c + vec2(f32(i), f32(j))
+            let (x, y) = (i32(cell.x), i32(cell.y))
+            let centre = cell + vec2(0.25, 0.25) + 0.5 * vec2(hash2(x, y), hash2(y + 71, x + 13))
+            let a = 0.5 + 0.6 * (hash2(x + 5, y + 9) - 0.5)
+            let dir = vec2(cos(a), sin(a))
+            let d = q - centre
+            let along = dot(d, dir) / 0.62
+            let across = dot(d, vec2(-dir.y, dir.x)) / 0.3
+            let cover = 1.0 - (along * along + across * across)
+            // Its edge about two output pixels wide, which a map at half the output's size
+            // holds.
+            let w = smoothstep(0.0, 0.6, cover) * (0.5 + hash2(x + 3, y + 1))
+            if w > best {
+                best = w
+                value = hash2(x + 31, y + 17) * 2.0 - 1.0
+            }
+        }
+    }
+    value * smoothstep(0.0, 0.4, best)
+}
+
+/// Where the world planes' dabs start (a constant, as the coarser size's own offset is). It moves
+/// where the ground's dabs fall behind a far crown's edge, and so the levels test's difference
+/// between a far crown's levels at 1000 m (3.6 to 4.2/255 as this moves, against a limit of 4.0).
+const PHASE = vec2(3.0, 1.0)
+
+/// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
+/// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
+/// power of two apart, blended by distance, so the dabs keep their size on
+/// screen and stay on the surface. They lie on the world's planes across the normal's strongest
+/// axes (the ground's on its plane, a wall's on its own), blended where two are near alike, so
+/// they don't follow the surface's curvature: anchored to a frame turned with the normal, a
+/// small turn moved them by metres where the world's coordinates are hundreds (a contour-like
+/// marbling on the far hills and crags).
+pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
+    let (s0, f) = octave_of(max(footprint * px, 1.0e-4))
+    let a = abs(n)
+    let w8 = a * a * a * a * a * a * a * a
+    let w = w8 / max(w8.x + w8.y + w8.z, 1.0e-6)
+    var v = 0.0
+    for axis in 0..3 {
+        if w[axis] > 0.02 {
+            let q = if axis == 0 { world.zy } else if axis == 1 { world.xz } else { world.xy }
+            v += w[axis] *
+                mix(strokes(q / s0 + PHASE), strokes(q / (2.0 * s0) + vec2(20.0, 6.0)), f)
+        }
+    }
+    v
+}
+
+/// Brush dabs anchored to directions (the sky's: `dir` a unit vector, a pixel's angle its
+/// `footprint`), on the plane across the direction: a direction's frame turns with it, but its
+/// coordinates are under 1, so a turn moves them little.
+pub fn sky_dabs(dir: vec3, footprint: f32, px: f32) -> f32 {
+    let (s0, f) = octave_of(max(footprint * px, 1.0e-4))
+    let n = -dir
+    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
+    let t2 = cross(n, t1)
+    let q = vec2(dot(dir, t1), dot(dir, t2) + dot(dir, n) * 0.5)
+    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+}
+
+/// The paper's tooth at `world`, `footprint` metres a pixel: a fine grain, a few pixels across
+/// wherever it's seen, anchored on the surface (two octaves blended by distance), about 0.
+fn tooth(world: vec3, footprint: f32) -> f32 {
+    let (s0, f) = octave_of(max(footprint * 2.5, 1.0e-4))
+    mix(noise3(world / s0), noise3(world / (2.0 * s0) + vec3(9.0, 3.0, 5.0)), f) - 0.5
+}
+
+/// How much of a character's line the scene pixel at `p` is (on the character's own pixels, so
+/// the line is a darker shade of its colour): where a neighbour `line_px` output pixels away is
+/// well behind it (its silhouette), or is another of its parts a little behind it (where a part
+/// passes in front of another). Its depth is read only on a character's pixels.
+fn scene_line(
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+) -> f32 {
+    if class_of(here_tag) != class_of(CREATURE) {
+        return world_line(d, scene, depth, p, here_tag)
+    }
+    let r = d.look.line_px * d.cam.screen.y / d.out.y
+    let near = d.cam.distance_of(depth.load(x: u32(p.x), y: u32(p.y)))
+    // Not where it stands in front of itself: a character's own folds are its shading's.
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: false)
+}
+
+/// How much of a line the scene pixel at `p` is (its tag `here_tag`, `near` metres away), from
+/// its four neighbours `r` scene pixels away: where one is well behind it (a silhouette), and
+/// where one of its kind with another tag is a little behind it (a leg against the body, a stone
+/// against a stone). A neighbour of its kind well behind it counts only with `kin_behind`.
+fn outline(
+    cam: Camera,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+    near: f32,
+    r: f32,
+    kin_behind: bool,
+) -> f32 {
+    let lim = cam.screen - vec2(1.0)
+    var line = 0.0
+    for k in 0..4 {
+        let a = f32(k) * 1.5707964 + 0.4
+        let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), lim)
+        let zq = depth.load(x: u32(q.x), y: u32(q.y))
+        let there = if zq <= 0.0 { 1.0e9 } else { cam.distance_of(zq) }
+        let other = scene.load(x: u32(q.x), y: u32(q.y)).a
+        let kin = class_of(other) == class_of(here_tag)
+        let gap = (there - near) / near
+        let behind = if kin_behind || !kin { smoothstep(0.03, 0.12, gap) } else { 0.0 }
+        let apart = if kin && abs(other - here_tag) > 0.5 { smoothstep(0.004, 0.02, gap) } else {
+            0.0
+        }
+        line = max(line, max(behind, apart * 0.8))
+    }
+    line
+}
+
+/// How much of the world's line the scene pixel at `p` is (one line: the same
+/// line as the characters', a darker shade of the colour under it). On solid forms only: rock,
+/// what's built, trunks and the ground's near crests; none on grass, flowers, water or crowns,
+/// where a line round each blade or leaf is noise. Where a neighbour a line's width away is well
+/// behind it (a silhouette), or is another one of its kind a little behind it (a stone against
+/// a stone). The width falls with distance (`line_px` times 1.6 at 3 m, one output pixel by
+/// 20 m), and the line fades out by 120 m (the ground's by 40 m, at half weight): near forms are
+/// drawn, far ones are left to their light.
+fn world_line(
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+) -> f32 {
+    let class = class_of(here_tag)
+    let ground = class == class_of(GROUND)
+    if class != class_of(ROCK) && class != class_of(BARK) && !ground {
+        return 0.0
+    }
+    let z = depth.load(x: u32(p.x), y: u32(p.y))
+    if z <= 0.0 {
+        return 0.0
+    }
+    let near = d.cam.distance_of(z)
+    let far = if ground { 40.0 } else { 120.0 }
+    let fade = (1.0 - smoothstep(far * 0.4, far, near)) * (if ground { 0.5 } else { 1.0 })
+    if fade <= 0.0 {
+        return 0.0
+    }
+    let width = clamp(d.look.line_px * sqrt(8.0 / near), 1.0, 2.5)
+    let r = width * d.cam.screen.y / d.out.y
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: true) * fade
+}
+
+/// The scene with its lines drawn, at the scene's resolution and before temporal AA: the scene
+/// is jittered each frame, so temporal AA anti-aliases a line as it does a silhouette, and a
+/// settled view's line is as clean as its geometry. Its alpha (the tag) is kept. The lines'
+/// darkening is the display's `line_dark`, in linear light.
+@fragment
+pub fn lines(
+    pixel: FragCoord,
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+) -> vec4 {
+    let p = pixel.position.xy
+    let here = scene.load(x: u32(p.x), y: u32(p.y))
+    let l = scene_line(d, scene, depth, p, here.a)
+    vec4(here.rgb * mix(1.0, pow(d.look.line_dark, 2.2), l), here.a)
+}
+
+/// The world point at scene pixel `p`'s own centre, unjittered, and its depth: the jittered frame's
+/// depth there carried back to the centre along its gradient (the gentler of its two neighbours'
+/// differences each way, so an edge's other side isn't taken). A surface's depth (reversed, as
+/// `1/distance`) is linear on the screen across a plane, so on one this is exact: a mark is
+/// evaluated at the same point of it every frame, whatever the jitter (evaluated at the jittered
+/// sample, a hatch line's black and white came and went with it under temporal AA). `z` is the
+/// depth at `p`, which the caller has loaded.
+fn centred(cam: Camera, depth: DepthTexture, p: vec2u, z: f32) -> (vec3, f32) {
+    let size = vec2u(cam.screen) - vec2u(1)
+    let at = |dx: i32, dy: i32| {
+        let q = vec2u(clamp(vec2i(p) + vec2i(dx, dy), vec2i(0), vec2i(size)))
+        depth.load(x: q.x, y: q.y)
+    }
+    let gentler = |lo: f32, hi: f32| {
+        let (a, b) = (if lo > 0.0 { z - lo } else { 1.0e9 }, if hi > 0.0 { hi - z } else { 1.0e9 })
+        let g = if abs(a) < abs(b) { a } else { b }
+        if abs(g) > 1.0e8 { 0.0 } else { g }
+    }
+    let grad = vec2(gentler(at(-1, 0), at(1, 0)), gentler(at(0, -1), at(0, 1)))
+    let j = vec2(cam.jitter.x * cam.screen.x * 0.5, -cam.jitter.y * cam.screen.y * 0.5)
+    let zc = max(z + dot(j, grad), 1.0e-9)
+    (cam.unjittered().world_at(vec2(p) + vec2(0.5), zc), zc)
+}
+
+/// The scene with the look's marks drawn (those of `DRAWN` it names: `style::Style::MARKS`), at
+/// the scene's resolution and before temporal AA, as the lines are: each pixel's point (from the
+/// jittered frame's depth, keyed to the world), its substance (`form`, the half-size `shape`,
+/// `cause`, `tone`: `substance`), and each kind's darkness from the look (`style::Style::mark`),
+/// summed, darkening it (or, below 0, lightening it). A crease is a fold of the geometry, read from
+/// the frame's form and shape (`creased`); a stroke or a hatch line is on the surface's lattice
+/// (`darkness`). Temporal AA settles them as it does a silhouette or a texture. (Creases drawn
+/// after it, on each frame's own jittered shape, came and went from frame to frame where a ridge
+/// was near a look's least curve.) Its alpha (the tag) is kept. The sky has none.
+@fragment
+pub fn marks_on<Y: Style>(
+    pixel: FragCoord,
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    form: Texture<Rg32Uint>,
+    shape: Texture<Rg32Uint>,
+    cause: Texture<R32Uint>,
+    tone: Texture<R32Uint>,
+) -> vec4 {
+    let px = pixel.position.xy
+    let p = vec2u(px)
+    let here = scene.load(x: p.x, y: p.y)
+    let z = depth.load(x: p.x, y: p.y)
+    if z <= 0.0 {
+        return here
+    }
+    let cam = d.cam
+    let world = cam.world_at(px, z)
+    let per_out = cam.screen.y / d.out.y
+    let distance = cam.distance_of(z)
+    let foot = cam.footprint(distance) * per_out
+    let (n, coarse) = unpack_form(form.load(x: p.x, y: p.y))
+    let h = vec2u(p.x / 2, p.y / 2)
+    let (dir, k1, k2) = unpack_shape(
+        shape.load(x: min(h.x, shape.width() - 1), y: min(h.y, shape.height() - 1)),
+    )
+    let (albedo, flat) = unpack_tone(tone.load(x: p.x, y: p.y))
+    let s = Substance {
+        n_form: n,
+        n_coarse: coarse,
+        dir,
+        k1,
+        k2,
+        history: substance::unpack_cause(cause.load(x: p.x, y: p.y)),
+        tone: albedo,
+        flat,
+    }
+    let class = class_of_tag(here.a)
+    let lit = dot(here.rgb, LUMA)
+    // The lattice's marks at the pixel's own centre (`centred`).
+    let (still, zc) = centred(cam, depth, p, z)
+    let at = still + cam.keyed()
+    let foot_c = cam.footprint(cam.distance_of(zc)) * per_out
+    var dark = 0.0
+    if (Y::MARKS & CREASES) != 0 {
+        dark += Y::mark(
+            MarkSample {
+                lit,
+                ..creased(cam, shape, p, world, n, dir, k1, foot, per_out, distance, class),
+            },
+            s,
+            foot,
+        )
+    }
+    if (Y::MARKS & STROKES) != 0 {
+        dark += darkness::<Y>(STROKES, at, n, dir, foot_c, s, distance, class, lit)
+    }
+    if (Y::MARKS & HATCH) != 0 {
+        dark += darkness::<Y>(HATCH, at, n, dir, foot_c, s, distance, class, lit)
+    }
+    // No darker than black: a look's marks summed (a crease over the ink look's densest hatching)
+    // can come to more than the pixel's light.
+    vec4(here.rgb * max(1.0 - dark, 0.0), here.a)
+}
+
+/// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
+/// them there): its surface from its depth and its neighbours' (its world point and
+/// normal, as the jittered sample saw it), or its sky direction; each the amount it moves the
+/// paint, for the output's pass to read between texels. Their sizes are in the output's
+/// pixels (`out` its size), whatever the scene's. The ground and what grows on it take the
+/// terrain's plane (the clipmap's normal), which the depth's neighbours give only roughly
+/// through the grass.
+@fragment
+pub fn dab_map(
+    pixel: FragCoord,
+    cam: Camera,
+    look: Look,
+    out: vec2,
+    levels: Levels,
+    texels: [Texel],
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+) -> vec4 {
+    // The scene's pixel, at its unjittered centre: each texel holds the dab of the same point
+    // of a surface from frame to frame, and the output reads it at the same place (`develop`).
+    // (Read at a place the jitter shifted each frame, between texels sampled at shifted points,
+    // the dabs' sharp edges flickered.)
+    let px = pixel.position.xy
+    let size = vec2u(cam.screen) - vec2u(1)
+    let p = min(vec2u(px), size)
+    // An output pixel's share of a scene pixel.
+    let per_out = cam.screen.y / out.y
+    let still = cam.unjittered()
+    let class = class_of(scene.load(x: p.x, y: p.y).a)
+    let z = depth.load(x: p.x, y: p.y)
+    if class == 0 || z <= 0.0 {
+        // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
+        let ray = still.ray(px)
+        let footprint = 2.0 * cam.tan_half / cam.screen.y
+        let dab = sky_dabs(ray, footprint, look.dab_px * 1.6 * per_out)
+        return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
+    }
+    // The surface at the pixel's own (unjittered) point, not at the jittered sample the scene
+    // took near it: the depth between the samples round that point (reversed depth is linear
+    // on screen across a plane, so bilinear is exact there). So a dab stays where it is on a
+    // surface from frame to frame, as temporal AA's image does. Across an edge (the four depths
+    // over 2% apart), the nearest sample itself.
+    let jp = vec2(cam.jitter.x * cam.screen.x, -cam.jitter.y * cam.screen.y) * 0.5
+    let f = px - vec2(0.5) + jp
+    let b = floor(f)
+    let t = f - b
+    let at = |dx: f32, dy: f32| {
+        let q = clamp(b + vec2(dx, dy), vec2(0.0), vec2(size))
+        depth.load(x: u32(q.x), y: u32(q.y))
+    }
+    let (d00, d10, d01, d11) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0))
+    let lo = min(min(d00, d10), min(d01, d11))
+    let hi = max(max(d00, d10), max(d01, d11))
+    var world = cam.world_at(vec2(p) + vec2(0.5), z)
+    var zz = z
+    if lo > 0.0 && hi - lo <= 0.02 * hi {
+        zz = mix(mix(d00, d10, t.x), mix(d01, d11, t.x), t.y)
+        world = still.world_at(px, zz)
+    }
+    let dist = cam.distance_of(zz)
+    let footprint = cam.footprint(dist)
+    let qx = vec2u(min(p.x + 1, size.x), p.y)
+    let qy = vec2u(p.x, min(p.y + 1, size.y))
+    let wx = cam.world_at(vec2(qx) + vec2(0.5), max(depth.load(x: qx.x, y: qx.y), 1.0e-9))
+    let wy = cam.world_at(vec2(qy) + vec2(0.5), max(depth.load(x: qy.x, y: qy.y), 1.0e-9))
+    var n = normalize(cross(wy - world, wx - world) + vec3(0.0, 1.0e-6, 0.0))
+    if dot(n, cam.eye - world) < 0.0 {
+        n = -n
+    }
+    if class == class_of(GROUND) || class == class_of(GRASS) || class == class_of(FLOWER) {
+        let (ground_n, _, ground_y) = ground_at(levels, texels, world.xz)
+        n = ground_n
+        // Grass and flowers are painted on the ground they grow from: where the texel's
+        // unjittered ray meets the terrain's plane there, which the blades' jittered samples
+        // don't move.
+        if class != class_of(GROUND) {
+            let ground = vec3(world.x, ground_y, world.z)
+            let ray = still.ray(px)
+            let across = dot(ray, n)
+            if abs(across) > 0.05 {
+                world = cam.eye + ray * (dot(ground - cam.eye, n) / across)
+            }
+        }
+    }
+    // Broad things take stronger dabs: the far ground; characters half.
+    let broad = smoothstep(30.0, 250.0, dist)
+    var strength = mix(look.dabs_near, look.dabs_far, broad)
+    // The far ground's dabs softer: on the world's planes they lie flat on a slope or a rock
+    // face, and at full strength read as dots (the crag, the plateau's lip, the fall's cliff).
+    if class == class_of(GROUND) {
+        strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
+    }
+    // No dabs and no tooth on rock, stone and bark, near or far: clean, solid form, not a
+    // painted surface (carved light and one line), and on a rock face the dabs read
+    // as dark ovals. A steep slope of the ground is a rock face.
+    var grain = 1.0
+    if class == class_of(ROCK) || class == class_of(BARK) {
+        grain = 0.0
+    } else if class == class_of(GROUND) {
+        let material = materials_at(levels, texels, level_at(levels, world.xz), world.xz)
+        grain = ground_grain(n.y, material)
+    }
+    strength *= grain
+    if class == class_of(CREATURE) {
+        strength *= 0.5
+    }
+    // A pixel's footprint on the surface, across the slope it's seen at (a surface seen edge on
+    // spreads a pixel along it): so a dab is as wide on screen one way as the other, never a
+    // streak thinner than a pixel.
+    let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
+    // Anchored to the world, not render space: they stay put when the render origin moves.
+    let keyed = world + cam.keyed()
+    // No dabs on crowns. On the world's planes a crown's levels of detail, at different depths
+    // along the same line, moved the dabs between them (4.4/255 at 1000 m in the levels test);
+    // on a plane across the line of sight, which takes the pixel's depth, the leaf cards' depths
+    // differ pixel to pixel, so each pixel took another stroke: vertical streaks over the near
+    // canopy (08, 18).
+    let dab = if class == class_of(LEAVES) { 0.0 } else {
+        dabs(keyed, n, footprint / facing, look.dab_px * per_out)
+    }
+    // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
+    // the output's size, so the map holds it at either.
+    vec4(strength * dab, grain * look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
+}
+
+/// The terrain's material owns its paint as well as its shading. Flat exposed bedrock must
+/// remain as clean as a vertical rock face; blended edges retain only their soil share.
+fn ground_grain(up: f32, material: vec4) -> f32 {
+    let rock = saturate(material.z / max(dot(material, vec4(1.0)), 1.0e-5))
+    smoothstep(0.55, 0.85, up) * (1.0 - rock)
+}
+
+@test
+fn terrain_rock_rejects_paint_on_flat_and_sloping_surfaces() {
+    for up in [0.0, 0.6, 0.9, 1.0] {
+        assert(ground_grain(up, vec4(0.0, 0.0, 1.0, 0.0)) == 0.0, "bedrock took paint")
+    }
+    assert(ground_grain(up: 1.0, material: vec4(0.0, 1.0, 0.0, 0.0)) == 1.0, "flat soil lost paint")
+    assert(
+        abs(ground_grain(up: 1.0, material: vec4(0.0, 1.0, 3.0, 0.0)) - 0.25) < 1.0e-5,
+        "mixed ownership ignored normalized weights",
+    )
+    assert(
+        ground_grain(up: 0.4, material: vec4(0.0, 1.0, 0.0, 0.0)) == 0.0,
+        "steep soil took ovals",
+    )
+}

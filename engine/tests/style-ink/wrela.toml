@@ -1,0 +1,13 @@
+# The ink look (content/styles/ink.wrela, docs/plan-world-class-3.md §D6): a sphere lit from the
+# side takes no layer of hatching at its lit pole and all three at its dark limb, each layer
+# coming in where the density crosses its threshold (on the hardware GPU: the fixture, scenes/, a
+# package of its own, not a workspace member, built and drawn through `std::tool::drive`); and a
+# hatch line stays on its surface point under a 1 m dolly (a CPU test of the look's layers on the
+# mark lattice).
+[package]
+name = "style_ink_tests"
+
+[dependencies]
+engine = { workspace = true }
+styles = { workspace = true }
+hosts = { workspace = true }

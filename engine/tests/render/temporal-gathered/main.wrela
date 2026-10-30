@@ -8,6 +8,7 @@ use engine::frame::full
 use engine::temporal::{Resolve, neighbourhoods, resolve, resolve_gathered}
 use engine::view::first_camera
 use std::gpu::{
+    R32Uint,
     Compare, Depth, FragCoord, Rgba16Float, Texture, WithDepth, begin_pass, begin_pass_with_depth,
     begin_screen_pass, depth_texture, dispatch, draw, sampler, texture, writable_texture, GpuBuffer,
     Half2, buffer,
@@ -36,6 +37,7 @@ fn show(p: FragCoord, shared: Texture<Rgba16Float>, gathered: Texture<Rgba16Floa
 pub fn frame(time: f32, width: u32, height: u32) {
     let no_net: GpuBuffer<Half2> = buffer(1)
     var scene = texture::<Rgba16Float>(width: SIDE, height: SIDE)
+    let tone = texture::<R32Uint>(width: 1, height: 1)
     var depth = depth_texture(width: SIDE, height: SIDE)
     let p = begin_pass_with_depth(mut scene, mut depth)
     draw(
@@ -89,6 +91,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
             history,
             means,
             spreads,
+            tone,
             s,
             no_net.items(),
             learned: false,
@@ -108,6 +111,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
             motion,
             motion,
             history,
+            tone,
             s,
             no_net.items(),
             learned: false,

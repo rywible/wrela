@@ -16,7 +16,9 @@ use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
-use style::Style
+use style
+use style::{Style, substance_of}
+use substance
 use realize::{Mesh, SkinVertex, Tally}
 use std::mem::size_of
 use std::gpu::{
@@ -336,7 +338,7 @@ pub fn character_shade<Q: Switches, Y: Style>(
     c: CharacterVertex,
     pixel: FragCoord,
     lt: Lighting<Q, Y>,
-) -> vec4 {
+) -> Y::Out {
     // Where the camera has pulled in close (a trunk behind it), the character fades: a dither,
     // turned each frame, that temporal AA settles (it filled the screen).
     let near = smoothstep(0.55, 1.25, length(c.world - lt.cam.eye))
@@ -353,7 +355,7 @@ pub fn character_shade<Q: Switches, Y: Style>(
     let n = normalize(c.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, c.world, n, soft: 1.0)
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
-    let albedo = clay_or(lt.light, c.albedo)
+    let albedo = clay_or(lt.light, Y::palette(lt.light, style::CREATURE, vec4(0.0), c.albedo))
     let metallic = if lt.light.clay != 0 { 0.0 } else { saturate(c.metallic) }
     let diffuse = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye) * (1.0 - metallic)
     // A bevel narrower than a pixel contains several normals. Broaden only its specular
@@ -370,7 +372,12 @@ pub fn character_shade<Q: Switches, Y: Style>(
         normalize(lt.cam.eye - c.world),
     )
     let colour = diffuse + specular
-    vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
+    // A character's form is its mesh's (its surface realized from its fields), its own coarse
+    // form; it has no history.
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else { substance_of::<Y>(n, n, vec4(0.0), albedo) }
+    Y::written(vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63)), s)
 }
 
 /// The cel treatment of a character's point (`albedo` its colour, `n` its normal, `sun` how much

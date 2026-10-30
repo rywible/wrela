@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.10.3"
+toolchain = "0.11.1"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -54,6 +54,7 @@ members = [
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
+    "studio/styles",
     "studio/motion",
     "studio/round",
     "studio/serve",
@@ -98,6 +99,8 @@ allow = [
     "docs/devices.md",
     "games/*/design.md",
     "examples/vale/design.md",
+    "content/styles/README.md",
+    "studio/styles/history.log",
     ".gitignore",
     ".github/workflows/deploy.yml",
 ]
@@ -186,6 +189,13 @@ write = ["ws=.", "out=build/export"]
 [tools.fit]
 package = "studio/fit"
 write = ["ws=.", "out=build/fit"]
+
+# The styles tool (studio/styles): each look under content/styles built into the vale, the
+# G-style check on the history (`git log`), and the four looks' page.
+[tools.styles]
+package = "studio/styles"
+write = ["ws=."]
+run = ["git"]
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

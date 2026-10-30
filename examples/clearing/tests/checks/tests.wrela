@@ -386,15 +386,21 @@ fn a_crowns_levels_light_their_leaves_by_one_light_with_gloss() {
     let g = calls()
     for f in ["leaf_shade", "far_shade", "volume_shade"] {
         let reached = g.closure(ps_path(f).as_str())
-        for want in [
-            "engine::impostor::leaf_light",
-            "engine::impostor::leaf_rough",
-            "engine::light::gloss",
-        ] {
+        for want in ["engine::impostor::leaf_light", "engine::impostor::leaf_rough"] {
             assert(holds(reached, want), f"{f} doesn't call {want}")
         }
     }
+    // The gloss is the look's (`Style::shade_leaf`, which `leaf_light` calls through the frame's
+    // look, a call the source's graph can't follow to one look): the clearing's, the physical.
+    let look = walked([String::from(LEAF_LIGHT)])
+    assert(
+        holds(look.closure(LEAF_LIGHT), "engine::light::gloss"),
+        "the look's leaf light has no gloss",
+    )
 }
+
+/// The clearing's look's leaf light (`styles::physical::Physical`, `engine::style::Style`).
+const LEAF_LIGHT: Text = "styles::physical::Physical::shade_leaf"
 
 /// AC6: the sky's pass reads the clouds' dome and marches nothing (its WGSL, with the functions
 /// it calls, has no loop), where the dome's kernel marches.

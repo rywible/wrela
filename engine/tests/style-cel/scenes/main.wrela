@@ -1,0 +1,278 @@
+// The cel look's panels (engine/tests/style-cel), one a build (`--set PANEL=<n>`), 256 × 256: 0, a
+// sphere lit from the side through the look's `shade` and `lens`; 1, a cylinder with bark's relief,
+// lit by the normal the look lights by (`style::lit_normal`); 2, a cube drawn into a depth and a
+// form target, its shape found (`substance::shaped`) and its creases drawn as the frame draws them
+// (`marks::marks_on`) over white; 3, a plane 60 m off with a 1 cm bump, the same way; 4, a plane
+// 5 m off with a 1 mm checker (`std::derive::filtered` over the pixel), flattened as the look
+// flattens (`style::flattened`), then paletted, lit and lensed.
+
+use engine::frame::full
+use engine::light::{Light, Lit}
+use engine::marks::marks_on
+use engine::paint::{Develop, Exposure, Look}
+use engine::style
+use engine::style::{Style, flattened, lit_normal}
+use engine::substance
+use engine::substance::{pack_form, shaped}
+use engine::view::{Camera, NEAREST, ROCK, first_camera}
+use std::derive::filtered
+use std::gpu::{
+    DepthTexture, FragCoord, R32Uint, Rg32Uint, Rgba16Float, Rgba8, Sampler, Targets2, Texture,
+    Texture3d, WithDepth, begin_pass, begin_pass2_with_depth, begin_screen_pass, depth_texture,
+    dispatch, draw, sampler, texture, texture3d, writable_texture,
+}
+use styles::cel::Cel
+
+/// Which panel this build draws.
+pub const PANEL: u32 = 0
+/// The screen's side (pixels).
+pub const SIDE: u32 = 256
+/// The light the lit panels have: from the side, a little toward the eye.
+pub const SUN: vec3 = vec3(0.9759, 0.0, 0.2182)
+
+/// The targets the crease panels draw into, and the lens's table and sampler.
+pub struct State {
+    image: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    form: Texture<Rg32Uint>,
+    shape: Texture<Rg32Uint>,
+    cause: Texture<R32Uint>,
+    tone: Texture<R32Uint>,
+    lut: Texture3d<Rgba8>,
+    s: Sampler,
+}
+
+pub fn init() -> State {
+    State {
+        image: texture::<Rgba16Float>(width: SIDE, height: SIDE),
+        depth: depth_texture(width: SIDE, height: SIDE),
+        form: texture::<Rg32Uint>(width: SIDE, height: SIDE),
+        shape: writable_texture::<Rg32Uint>(width: SIDE / 2, height: SIDE / 2),
+        cause: texture::<R32Uint>(width: 1, height: 1),
+        tone: texture::<R32Uint>(width: 1, height: 1),
+        lut: texture3d::<Rgba8>(width: 1, height: 1, depth: 1),
+        s: sampler(),
+    }
+}
+
+/// The panels' camera, for the crease panels: the cube from 5 m, or the plane from 60 m.
+fn eye_of(panel: u32) -> Camera {
+    if panel == 2 {
+        return first_camera(vec3(2.6, 2.2, 3.4), vec3(0.0), 0.8, SIDE, SIDE)
+    }
+    first_camera(vec3(0.0, 30.0, 52.0), vec3(0.0), 0.8, SIDE, SIDE)
+}
+
+/// The panels' light: `SUN`.
+fn panel_light() -> Light {
+    Light { sun: SUN, exposure: 1.0, sun_colour: vec3(1.0), eye: 1.0, horizon: 0.0 }
+}
+
+/// The lit colour of a surface whose albedo is `albedo`, lit by `n` from `SUN`, through the look.
+fn lit(
+    n: vec3,
+    albedo: vec3,
+    at: vec3,
+    px: vec2,
+    d: Develop,
+    e: Exposure,
+    lut: Texture3d<Rgba8>,
+    s: Sampler,
+) -> vec4 {
+    let light = panel_light()
+    let l = Lit { albedo, n, sun: 1.0, sky: vec3(0.05), through: vec3(0.0) }
+    let c = Cel::shade(light, l, substance::NONE, style::STONE, at, at + vec3(0.0, 0.0, 4.0))
+    Cel::lens(c, px, d, e, lut, s)
+}
+
+/// Panel 0: the sphere, lit from the side through the look.
+@fragment
+fn sphere_panel(
+    pixel: FragCoord,
+    d: Develop,
+    e: Exposure,
+    lut: Texture3d<Rgba8>,
+    s: Sampler,
+) -> vec4 {
+    let uv = (pixel.position.xy / f32(SIDE) * 2.0 - vec2(1.0)) * vec2(1.0, -1.0)
+    let r2 = dot(uv, uv)
+    if r2 >= 0.64 {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    let n = normalize(vec3(uv, sqrt(0.64 - r2)))
+    lit(n, vec3(0.5), n, pixel.position.xy, d, e, lut, s)
+}
+
+/// Panel 1: a cylinder 0.6 across about y, its bark's ridges round it (2 mm deep on a 0.6 m trunk,
+/// 40 a turn: their slope tips the normal ±0.4 rad), lit by the normal the look lights by.
+@fragment
+fn cylinder_panel(
+    pixel: FragCoord,
+    d: Develop,
+    e: Exposure,
+    lut: Texture3d<Rgba8>,
+    s: Sampler,
+) -> vec4 {
+    let uv = (pixel.position.xy / f32(SIDE) * 2.0 - vec2(1.0)) * vec2(1.0, -1.0)
+    if abs(uv.x) >= 0.6 {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    let form = vec3(uv.x / 0.6, 0.0, sqrt(1.0 - uv.x * uv.x / 0.36))
+    let a = atan2(form.x, form.z)
+    let tangent = vec3(form.z, 0.0, -form.x)
+    let fine = normalize(form + tangent * (0.4 * sin(a * 40.0)))
+    let n = lit_normal::<Cel>(fine, form, form)
+    lit(n, vec3(0.5), form, pixel.position.xy, d, e, lut, s)
+}
+
+/// Panel 4: 1 mm squares on a plane 5 m off, the screen 2 m across there, each pixel's albedo the
+/// checker over its footprint (`filtered`), flattened as the look flattens, then paletted and lit;
+/// its alpha whether it was flattened.
+@fragment
+fn checker_panel(
+    pixel: FragCoord,
+    d: Develop,
+    e: Exposure,
+    lut: Texture3d<Rgba8>,
+    s: Sampler,
+) -> vec4 {
+    let q = (pixel.position.xy / f32(SIDE) * 2.0 - vec2(1.0)) * vec2(1.0, -1.0)
+    let fine = filtered(|p: vec2| checker(p), q, fwidth(q))
+    let (albedo, flat) = flattened::<Cel>(vec3(fine), vec3(0.5))
+    let paletted = Cel::palette(panel_light(), style::STONE, vec4(0.0), albedo * 0.5)
+    let c = lit(vec3(0.0, 0.0, 1.0), paletted, vec3(q, 0.0), pixel.position.xy, d, e, lut, s)
+    vec4(c.rgb, flat)
+}
+
+/// A checker of 1 mm squares: 1 on one, 0 on the other; the exclusive or of a stripe each way,
+/// so `filtered` averages it exactly (a product of patterns along different components does:
+/// language.md §14).
+fn checker(p: vec2) -> f32 {
+    let a = step(0.5, fract(p.x * 500.0))
+    let b = step(0.5, fract(p.y * 500.0))
+    a + b - 2.0 * a * b
+}
+
+/// The crease panels' surface at a pixel through `cam`: the cube (half a metre on a side), or the
+/// plane with its 1 cm bump; white, its form's normal, and its depth.
+@fragment
+fn surface(pixel: FragCoord, cam: Camera, which: u32) -> WithDepth<Targets2<vec4, vec2u>> {
+    let ray = cam.ray(pixel.position.xy)
+    var t = 0.0
+    var hit = false
+    var n = vec3(0.0, 1.0, 0.0)
+    if which == 2 {
+        for _k in 0..96 {
+            let p = cam.eye + ray * t
+            let q = abs(p) - vec3(0.5)
+            let d = length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+            if d < 1.0e-4 {
+                hit = true
+                let a = abs(p)
+                n = if a.x >= a.y && a.x >= a.z { vec3(sign(p.x), 0.0, 0.0) } else if a.y >= a.z {
+                    vec3(0.0, sign(p.y), 0.0)
+                } else { vec3(0.0, 0.0, sign(p.z)) }
+            }
+            if !hit {
+                t += d
+            }
+        }
+    } else {
+        t = -cam.eye.y / ray.y
+        hit = t > 0.0
+        let p = cam.eye + ray * t
+        let r = length(p.xz)
+        if r < 0.01 {
+            n = normalize(vec3(p.x, sqrt(0.0001 - r * r), p.z))
+        }
+    }
+    if !hit {
+        return WithDepth {
+            color: Targets2 { first: vec4(1.0), second: pack_form(n, n) },
+            depth: 0.0,
+        }
+    }
+    let p = cam.eye + ray * t
+    let depth = cam.near / max(dot(p - cam.eye, cam.forward), 1.0e-6)
+    // Tagged as rock: the look creases solid forms alone.
+    WithDepth { color: Targets2 { first: vec4(vec3(1.0), ROCK), second: pack_form(n, n) }, depth }
+}
+
+pub fn frame(state: mut State, time: f32, width: u32, height: u32) {
+    let e = Exposure { value: 1.0, metered: 1.0, mean: 0.18 }
+    if PANEL == 2 || PANEL == 3 {
+        let cam = eye_of(PANEL)
+        let p = begin_pass2_with_depth(
+            mut state.image,
+            mut state.form,
+            mut state.depth,
+            clear: vec4(1.0),
+            clear_depth: 0.0,
+        )
+        draw(
+            p,
+            full.bind(z: 0.5),
+            surface.bind(cam, which: PANEL),
+            vertices: 3,
+            depth: NEAREST,
+        )
+        p.end()
+        dispatch(
+            shaped.bind(
+                form: state.form,
+                depth: state.depth,
+                cam: cam,
+                size: vec2u(SIDE),
+                out: mut state.shape,
+            ),
+            over: (SIDE / 2, SIDE / 2),
+        )
+        let d = Develop { cam, look: Look {}, out: vec2(f32(SIDE)) }
+        let screen = begin_screen_pass(clear: vec4(0.0))
+        draw(
+            screen,
+            full.bind(z: 0.5),
+            marks_on::<Cel>.bind(
+                d,
+                scene: state.image,
+                depth: state.depth,
+                form: state.form,
+                shape: state.shape,
+                cause: state.cause,
+                tone: state.tone,
+            ),
+            vertices: 3,
+        )
+        screen.present()
+        return
+    }
+    let d = Develop {
+        cam: first_camera(vec3(0.0, 0.0, 4.0), vec3(0.0), 0.8, SIDE, SIDE),
+        look: Look {},
+        out: vec2(f32(SIDE)),
+    }
+    let screen = begin_screen_pass(clear: vec4(0.0))
+    if PANEL == 0 {
+        draw(
+            screen,
+            full.bind(z: 0.5),
+            sphere_panel.bind(d, e, lut: state.lut, s: state.s),
+            vertices: 3,
+        )
+    } else if PANEL == 1 {
+        draw(
+            screen,
+            full.bind(z: 0.5),
+            cylinder_panel.bind(d, e, lut: state.lut, s: state.s),
+            vertices: 3,
+        )
+    } else {
+        draw(
+            screen,
+            full.bind(z: 0.5),
+            checker_panel.bind(d, e, lut: state.lut, s: state.s),
+            vertices: 3,
+        )
+    }
+    screen.present()
+}

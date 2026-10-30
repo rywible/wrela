@@ -104,7 +104,7 @@ pub fn pooled_shade<Q: Switches, Y: Style>(
     v: PooledVertex,
     pixel: FragCoord,
     lt: Lighting<Q, Y>,
-) -> vec4 {
+) -> Y::Out {
     if !coverage_kept(v.coverage.value, pixel.position.xy, lt.cam.frame) {
         discard()
     }
