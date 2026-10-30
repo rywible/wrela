@@ -8,17 +8,19 @@
 //   lawn, a feeding station with lorikeets (and yuzus on its tray), a rope bridge between two
 //   platforms; flowering shrubs between; a flock of finches drifting high up, and feathers that the
 //   rising air carries up.
-// - The dome's wall (0.2): its kerb, its white iron columns and arches, and the fine netting over
-//   everything behind them; through it, the Rainforest House's glasshouse behind (where the course
-//   starts) and the Reptile House's low stone roof ahead.
+// - The dome's wall (0.2): its kerb with shrubs at its foot, its slender pale columns and arches,
+//   and the fine netting over everything behind them; through it, the Rainforest House's
+//   glasshouse behind (where the course starts) and the Reptile House's low stone roof ahead.
 // - The far hills (0.06): pale ranges and a tree line, seen through the netting.
 //
-// The netting is a suggestion: a diamond mesh, thin and faint, showing in patches, painted only
-// partly over what's behind it, so the far hills and the sky show through.
+// The dome is held back: its frame pale, slender and misted, its netting a very faint diamond
+// mesh in patches, so the updrafts' pale streaks over the course read against it.
 
 use engine::noise::{hash2, noise2}
-use ink::INK
-use scenery::{Scene, MIST, PARALLAX, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under}
+use scenery::{
+    DOME_FRAME, DOME_GLASS, MIST, Scene, PARALLAX, View, crowned, fbm, nearer, on_layer, over,
+    paint, pixel_on, round_tree, under,
+}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
@@ -34,13 +36,6 @@ impl Scene for Aviary {
             residents(q, px, v.time, g, gs)
         } else if k == 2 { dome_wall(q, px, g, gs) } else { far_hills(q, px, g, gs) }
     }
-}
-
-/// `front` (not premultiplied: colour and coverage) laid over `back`.
-fn over(back: vec4, front: vec4) -> vec4 {
-    let a = front.w + back.w * (1.0 - front.w)
-    let c = (front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / max(a, 1.0e-4)
-    vec4(c, a)
 }
 
 // ---- the birds -------------------------------------------------------------------------------
@@ -298,7 +293,7 @@ fn layered(
     if f > px * 2.0 {
         return o
     }
-    over(o, paint(g, gs, f, c, q, px, haze, line: line * 0.85))
+    over(paint(g, gs, f, c, q, px, haze, line: line * 0.85), o)
 }
 
 // ---- the residents ---------------------------------------------------------------------------
@@ -370,7 +365,7 @@ fn finches(q: vec2, at: vec2, t: f32, dir: f32) -> (f32, vec3) {
     let f = q - at
     let cell = floor(f / 0.8)
     let h = hash2(i32(cell.x) + 40, i32(cell.y) + 40)
-    if h > 0.4 || abs(f.x) > 2.4 || abs(f.y) > 1.2 {
+    if h > 0.28 || abs(f.x) > 2.4 || abs(f.y) > 1.2 {
         return (1.0e3, vec3(0.0))
     }
     let bob = vec2(0.08 * sin(t * 0.7 + h * 30.0), 0.06 * sin(t * 1.3 + h * 50.0))
@@ -380,7 +375,7 @@ fn finches(q: vec2, at: vec2, t: f32, dir: f32) -> (f32, vec3) {
     d = min(d, length(l - vec2(0.1, 0.04)) - 0.055)
     d = min(d, cone(l, vec2(-0.08, 0.0), vec2(-0.2, -0.02), ra: 0.04, rb: 0.015))
     let wing = cone(l, vec2(0.0, 0.02), vec2(-0.08, 0.16 * flap), ra: 0.045, rb: 0.02)
-    let body = if h < 0.25 { vec3(0.66, 0.6, 0.56) } else { vec3(0.98, 0.82, 0.36) }
+    let body = if h < 0.18 { vec3(0.7, 0.66, 0.62) } else { vec3(0.92, 0.82, 0.54) }
     let c = if length(l - vec2(0.155, 0.035)) < 0.035 { vec3(0.98, 0.5, 0.28) } else { body }
     nearer((d, c), (wing, body * 0.85))
 }
@@ -499,7 +494,7 @@ fn residents(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> 
     // Finches, a flock in some stretches of 31 m, drifting about high up.
     {
         let i = floor((q.x + 9.0) / 31.0)
-        if hash2(i32(i), 93) < 0.7 {
+        if hash2(i32(i), 93) < 0.45 {
             let phase = t * 0.11 + i * 2.0
             let at = vec2(
                 (i + 0.5) * 31.0 - 9.0 + 4.0 * sin(phase),
@@ -515,7 +510,7 @@ fn residents(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> 
     {
         let i = floor(q.x / 9.0)
         let h = hash2(i32(i), 95)
-        if h < 0.5 {
+        if h < 0.3 {
             let life = fract(t * 0.05 + h * 7.0)
             let y = lawn_ground(i * 9.0) + 0.5 + life * 7.0
             let at = vec2((i + 0.5) * 9.0 + 0.6 * sin(t * 0.8 + i), y)
@@ -530,9 +525,9 @@ fn residents(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> 
                     rb: 0.01,
                 )
                 let quill = min(vane, capsule(l, vec2(-0.3, -0.01) * s, vec2(-0.1, 0.0) * s, 0.012))
-                let c = if h < 0.2 {
+                let c = if h < 0.12 {
                     vec3(0.88, 0.25, 0.2)
-                } else if h < 0.35 { vec3(0.26, 0.5, 0.84) } else { vec3(0.98, 0.8, 0.3) }
+                } else if h < 0.2 { vec3(0.26, 0.5, 0.84) } else { vec3(0.98, 0.8, 0.3) }
                 birds = nearer(birds, (quill, c))
             }
         }
@@ -569,15 +564,15 @@ fn glasshouse(l: vec2) -> (f32, vec3) {
     )
     let finial = capsule(l, vec2(0.0, 7.9), vec2(0.0, 8.6), 0.05)
     let d = min(min(wing, middle), finial)
-    let bars = min(abs(fract(l.x / 0.7) - 0.5) * 0.7, abs(fract(l.y / 0.8) - 0.5) * 0.8)
+    let bars = min(abs(fract(l.x / 1.1) - 0.5) * 1.1, abs(fract(l.y / 1.2) - 0.5) * 1.2)
     let eave = abs(l.y - 3.2) < 0.06 || abs(l.y - 6.0) < 0.06 && abs(l.x) < 2.6
     let palms = l.y < 2.4 + 1.6 * noise2(vec2(l.x * 0.7, 3.0)) && middle > 0.0 ||
         l.y < 4.6 + 1.4 * noise2(vec2(l.x * 0.9, 5.0))
     let c = if l.y < 0.8 {
         vec3(0.84, 0.64, 0.54)
-    } else if bars < 0.045 || eave || finial < 0.0 {
-        vec3(0.96, 0.96, 0.94)
-    } else if palms { vec3(0.6, 0.78, 0.6) } else { vec3(0.8, 0.92, 0.9) }
+    } else if bars < 0.03 || eave || finial < 0.0 {
+        vec3(0.9, 0.94, 0.92)
+    } else if palms { vec3(0.58, 0.76, 0.58) } else { vec3(0.76, 0.88, 0.86) }
     (d, c)
 }
 
@@ -619,54 +614,46 @@ fn reptile_house(l: vec2) -> (f32, vec3) {
     (d, c)
 }
 
-/// A tree outside the dome (`l` from its foot), `h` m tall: a trunk and a round crown.
-fn outside_tree(l: vec2, h: f32, wobble: f32) -> (f32, f32) {
-    let trunk = cone(l, vec2(0.0), vec2(0.0, h * 0.7), ra: 0.18, rb: 0.1)
-    let crown = smin(
-        ellipse(l - vec2(0.0, h * 0.72), vec2(1.3, 1.1) * h / 4.2),
-        length(l - vec2(0.5, h * 0.88)) - 0.9 * h / 4.2,
-        0.3,
-    ) +
-        wobble
-    (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
-}
-
-/// The netting at `q`: how much of the pixel its thin diamond mesh covers, faint and in patches.
+/// The netting at `q`: how much of the pixel its thin diamond mesh covers, very faint and in
+/// patches.
 fn netting(q: vec2, px: f32) -> f32 {
     let s = 0.55
     let u = abs(fract((q.x + q.y) / s) - 0.5)
     let w = abs(fract((q.x - q.y) / s) - 0.5)
     let line = (0.5 - max(u, w)) * s * 0.7071
-    let cover = saturate(1.0 - line / (px * 0.8))
-    let patch = 0.15 + 0.85 * smoothstep(0.35, 0.8, noise2(q * 0.09 + vec2(3.0, 1.0)))
-    cover * patch * 0.24
+    let cover = saturate(1.0 - line / (px * 0.7))
+    let patch = 0.1 + 0.9 * smoothstep(0.4, 0.85, noise2(q * 0.09 + vec2(3.0, 1.0)))
+    cover * patch * 0.1
 }
 
-/// The dome's frame at `q`: its white iron columns, the arches between them, the ring girder
-/// over them with a ring in each spandrel, and the ribs going on up.
+/// The dome's frame at `q`, seen from inside: slender pale columns, the arches between them, the
+/// ring girder over them with a ring in each spandrel, and the ribs going on up.
 fn frame(q: vec2) -> f32 {
     let i = floor(q.x / BAY)
     let col_x = q.x - floor(q.x / BAY + 0.5) * BAY
     let up = q.y - KERB
-    var d = max(abs(col_x) - 0.09, -up)
-    d = min(d, rbox(vec2(col_x, up - 0.2), vec2(0.2, 0.2), 0.03))
-    d = min(d, rbox(vec2(col_x, q.y - SPRING), vec2(0.18, 0.07), 0.02))
-    let mid = (i + 0.5) * BAY
-    let arch = vec2(q.x - mid, q.y - SPRING)
+    var d = max(abs(col_x) - 0.05, -up)
+    d = min(d, rbox(vec2(col_x, up - 0.2), vec2(0.16, 0.2), 0.03))
+    d = min(d, rbox(vec2(col_x, q.y - SPRING), vec2(0.13, 0.05), 0.02))
+    let arch = vec2(q.x - (i + 0.5) * BAY, q.y - SPRING)
     if arch.y > 0.0 {
-        d = min(d, abs(length(arch) - BAY * 0.5) - 0.07)
+        d = min(d, abs(length(arch) - BAY * 0.5) - 0.04)
     }
-    d = min(d, abs(q.y - GIRDER) - 0.07)
-    d = min(d, abs(q.y - GIRDER * 1.7) - 0.06)
-    d = min(d, abs(length(vec2(col_x, q.y - 8.6)) - 0.8) - 0.04)
-    d
+    d = min(d, abs(q.y - GIRDER) - 0.04)
+    d = min(d, abs(q.y - GIRDER * 1.7) - 0.035)
+    min(d, abs(length(vec2(col_x, q.y - 8.6)) - 0.8) - 0.025)
 }
 
-/// The dome's wall: its kerb and frame, the netting, and through it the Rainforest House behind,
-/// the Reptile House ahead and trees between.
+/// The lawn inside the dome's wall at `x` (m).
+fn dome_ground(x: f32) -> f32 {
+    0.05 + 0.3 * noise2(vec2(x * 0.15, 4.0))
+}
+
+/// The dome's wall: its kerb, shrubs at its foot, its frame and netting, and through it the
+/// Rainforest House behind, the Reptile House ahead and trees between.
 fn dome_wall(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let lawn = vec3(0.68, 0.84, 0.52)
-    let ground = 0.05 + 0.3 * noise2(vec2(q.x * 0.15, 4.0))
+    let ground = dome_ground(q.x)
     if q.y < ground - 0.3 {
         return under(g, gs, lawn, q, ground, 0.4)
     }
@@ -685,22 +672,16 @@ fn dome_wall(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
             // A tree in some stretches of 9 m, never out of its own.
             {
                 let i = floor(q.x / 9.0)
-                let wobble = 0.08 * (noise2(q * 2.5) - 0.5)
                 let x = (i + 0.3 + 0.4 * hash2(i32(i), 41)) * 9.0
                 let h = hash2(i32(i), 42)
-                let clear = abs(x - GLASSHOUSE) > 9.0 && x < REPTILE_HOUSE - 3.0
-                if h < 0.55 && clear && abs(q.x - x) < 2.2 {
-                    let tall = 3.4 + 2.2 * h
-                    let (tree, leaves) = outside_tree(q - vec2(x, KERB - 0.3), tall, wobble)
+                let clear = abs(x - GLASSHOUSE) > 10.0 && x < REPTILE_HOUSE - 4.0
+                if h < 0.55 && clear && abs(q.x - x) < 2.9 {
+                    let foot = vec2(x, KERB - 0.3)
+                    let tall = 3.2 + 1.8 * h
+                    let (tree, leaves) = round_tree(q, foot, tall, h)
                     let c = if leaves > 0.5 {
                         let lit = vec3(0.5, 0.7, 0.44)
-                        crowned(
-                            lit,
-                            lit * vec3(0.86, 0.9, 0.95),
-                            q,
-                            vec2(x, KERB + tall * 0.7),
-                            1.4,
-                        )
+                        crowned(lit, lit * vec3(0.86, 0.9, 0.95), q, foot + vec2(0.0, tall), 1.6)
                     } else { vec3(0.6, 0.48, 0.38) }
                     beyond = nearer(beyond, (tree, c))
                 }
@@ -708,20 +689,38 @@ fn dome_wall(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
         }
         let (b, bc) = beyond
         o = paint(g, gs, b, bc, q, px, haze: 0.5, line: 0.6)
-        o = over(o, vec4(blend(INK, MIST, 0.45), netting(q, px)))
+        o = over(vec4(blend(DOME_FRAME, MIST, 0.3), netting(q, px)), o)
+        // The frame: pale, slender and misted, so the updrafts' streaks read in front of it.
+        let iron = blend(vec3(0.97, 0.96, 0.93), DOME_GLASS, 0.35)
+        o = over(paint(g, gs, frame(q), iron, q, px, haze: 0.5, line: 0.5), o)
     }
-    // In front: the kerb the netting rises from (pale stone with a coping), the frame on it, the
-    // lawn before it.
+    // In front: the kerb the dome rises from (pale stone with a coping), the lawn before it.
     let row = abs(fract(q.x / 1.6) - 0.5) * 1.6
     let c = if kerb > -0.12 { vec3(0.94, 0.9, 0.82) } else if row < 0.03 {
         vec3(0.74, 0.68, 0.6)
     } else { stone }
-    var front = nearer((kerb, c), (frame(q), vec3(0.96, 0.95, 0.91)))
+    var front = (kerb, c)
     if q.y < ground + 0.1 {
         front = (q.y - ground, lawn)
     }
+    // A shrub at the kerb's foot in some stretches of 10 m, breaking its long line.
+    if q.y < KERB + 2.2 {
+        let i = floor(q.x / 10.0)
+        let h = hash2(i32(i), 43)
+        let x = (i + 0.5 + 0.6 * (hash2(i32(i), 44) - 0.5)) * 10.0
+        let s = 0.85 + 0.55 * hash2(i32(i), 45)
+        if h < 0.45 && abs(q.x - x) < 1.4 * s + 0.1 {
+            let at = vec2(x, dome_ground(x) + 0.75 * s)
+            let d = shrub(q, at, s, 0.05 * (noise2(q * 3.0) - 0.5))
+            let (fd0, _) = front
+            if d < fd0 {
+                let lit = vec3(0.48, 0.7, 0.42)
+                front = (d, crowned(lit, lit * vec3(0.84, 0.88, 0.94), q, at, s))
+            }
+        }
+    }
     let (d, albedo) = front
-    over(o, paint(g, gs, d, albedo, q, px, haze: 0.34, line: 0.7))
+    over(paint(g, gs, d, albedo, q, px, haze: 0.34, line: 0.7), o)
 }
 
 // ---- the far hills ---------------------------------------------------------------------------
