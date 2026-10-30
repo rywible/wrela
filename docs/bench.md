@@ -3912,3 +3912,23 @@ complete reference assessment 40.69 min, decision
 41.24 min. Retire runtime changes after one follow-up.
 No training/reference expansion; G1–G7 unchanged and unmet. Next bet:
 source-certified visibility/correspondence that avoids reconstruction work.
+
+
+## 2026-10-30 — early opaque terrain visibility retired, Pop!_OS AMD
+
+[Full report](neural-opaque-visibility.md). Parent d345ba1bdb3e35fa5a6606b8dd6394b1a102d733,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23, Ryzen 5 5500U /
+RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57. Sixteen 660-frame runs / 112 batched captures.
+Full early ground shading raises GPU 3.30–3.37%. Outer-ring depth follow-up
+has mixed route +0.30/−1.20%, settled +0.80–1.06%. Final merged-pass follow-up
+has route −0.157–0.199%, movement +0.012–0.120%, settled +0.915–1.693%.
+Its post-startup changes are +30.04/−2.70 ms; requested live unchanged,
+end VRAM +16.43–24.63 MB, end PSS +7.44/137.49 MB. Retire this joint tradeoff.
+Two primary and two cross-candidate source-arrival mismatches excluded/preserved.
+Fresh current-parent captures against unchanged completed references:
+36/36 final shaded checks pass; boundary diagnostics retained.
+First joint route assessment 9.88 min,
+first complete current-parent shaded assessment 38.21 min,
+decision 52.93 min after two optimizations.
+No training; G1–G7 unchanged/unmet. Next: source-shaped near-leaf coverage
+geometry gated by footprint, with all geometry/update costs charged.

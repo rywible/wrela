@@ -193,3 +193,22 @@ Provenance: the existing Wrela resolver and pinned public Half2/Shared APIs and
 lowered WGSL, preserved in the bundle. No third-party code, assets or model
 weights were introduced. The [benchmark charter](neural-rendering-goals.md)
 remains the authority for claims.
+
+
+## Current-parent control clarification
+
+The shaded table above uses the older saved focused/native control captures.
+The subsequent [opaque-visibility block](neural-opaque-visibility.md) refreshed the
+actual parent against the same completed references after identifying that age gap.
+The engine/example/studio/game sources are unchanged between this experiment's
+parent and that refresh's parent; the verification command is recorded.
+
+Recomparing these frozen tiled outputs against the refreshed parent yields
+**36/36 passing checks**: FLIP ratios
+0.984980–0.999564, LPIPS ratios
+0.997491–1.002649, and PSNR deltas
++0.000471 to +0.007298 dB.
+Use these values for current-parent quality comparisons. The runtime/residency
+measurements and retirement decision are unchanged. The original sealed bundle
+is preserved; the supplement is previous-temporal-current-control.json in the
+opaque-visibility evidence bundle.
