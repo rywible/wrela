@@ -2561,114 +2561,123 @@ looks are held to the physical look's fast run, which measures over shorter wind
 
 docs/plan-world-class-3.md §D4–D7b. Each look on all twenty shots on the fast instrument
 (docs/lookdev.md, "The fast run": 960 × 540, the still's flicker over 32 frames, pop over a
-150-frame dolly, trail where it ends), each measure the median of three runs, held to the
-physical look's: flicker and pop at most 1.5 times its, trail at most its plus a pixel. M4 Air,
-nothing else running, the steady planner (`cook::Planner::steady`) while time is frozen.
+150-frame dolly, trail where it ends), held to the physical look's: flicker and pop at most 1.5
+times its, trail at most its plus a pixel. Each measure is the median of three runs, but where a
+shot's first run decided it (`--near 0.2`: a measure a fifth over its bar, or every one a fifth
+under; docs/lookdev.md, "A record measures only what can decide it"). M4 Air, nothing else
+running, the steady planner (`cook::Planner::steady`) while time is frozen; measured after Part
+D's council and review (marks before the lines, on the surface's tangent plane, a look's lattice
+marks off its characters; the trail's row threshold capped at 0.08).
 
 ```sh
 wrela tool lookbook -- build/record/physical --package examples/vale --fast --runs 3   # 561 s
-wrela tool lookbook -- build/record/cel --package examples/vale --fast --runs 3 --look styles::cel::Cel   # 582 s
-wrela tool lookbook -- build/record/painterly --package examples/vale --fast --runs 3 --look styles::painterly::Painterly   # 592 s
-wrela tool lookbook -- build/record/ink --package examples/vale --fast --runs 3 --look styles::ink::Ink   # 579 s
-wrela tool lookbook -- build/record/<look> --held --bars build/record/physical
+wrela tool lookbook -- build/record/cel --package examples/vale --fast --runs 3 --look styles::cel::Cel --bars build/record/physical   # 597 s
+wrela tool lookbook -- build/record/painterly --package examples/vale --fast --runs 3 --near 0.2 --look styles::painterly::Painterly --bars build/record/physical   # 554 s, 1 shots once
+wrela tool lookbook -- build/record/ink --package examples/vale --fast --runs 3 --look styles::ink::Ink --bars build/record/physical   # 534 s
 ```
 
 Flicker ×10⁻⁶ / pop / trail px; ✗ a miss of its bar.
 
 | Shot | Physical (the bars' base) | Cel | Painterly | Ink |
 |---|---|---|---|---|
-| 00-the-forest-floor | 21.19 / 0.0121 / 2 | 22.00 / 0.0091 / 3 | 21.64 / 0.0099 / 2 | 296.92 ✗ / 0.0374 ✗ / 2 |
-| 01-the-canopy-against-the-sun | 6.65 / 0.0113 / 3 | 7.63 / 0.0074 / 3 | 7.24 / 0.0088 / 3 | 98.56 ✗ / 0.0419 ✗ / 4 |
-| 02-an-old-oak | 1.09 / 0.1111 / 4 | 1.46 / 0.1085 / 5 | 1.10 / 0.1089 / 4 | 111.17 ✗ / 0.1601 / 2 |
-| 03-the-fall | 11.79 / 0.0062 / 5 | 12.30 / 0.0062 / 4 | 11.46 / 0.0064 / 5 | 220.21 ✗ / 0.0465 ✗ / 2 |
-| 04-the-bands-face | 1.07 / 0.0124 / 4 | 1.34 / 0.0128 / 3 | 1.17 / 0.0109 / 3 | 244.70 ✗ / 0.0304 ✗ / 2 |
-| 05-the-meadow-at-evening | 58.29 / 0.0064 / 2 | 40.44 / 0.0054 / 2 | 59.17 / 0.0065 / 2 | 400.19 ✗ / 0.0156 ✗ / 2 |
-| 06-dawn-in-the-hollow | 11.16 / 0.0036 / 3 | 10.95 / 0.0034 / 3 | 11.35 / 0.0036 / 3 | 208.96 ✗ / 0.0167 ✗ / 3 |
-| 07-dusk-from-the-crest | 9.29 / 0.0021 / 2 | 5.90 / 0.0015 / 2 | 9.37 / 0.0021 / 2 | 662.05 ✗ / 0.0194 ✗ / 3 |
-| 08-grazing-at-the-edge | 18.29 / 0.0044 / 3 | 20.62 / 0.0032 / 2 | 16.92 / 0.0035 / 2 | 254.43 ✗ / 0.0151 ✗ / 3 |
-| 09-down-the-trail | 54.75 / 0.0069 / 3 | 50.53 / 0.0063 / 3 | 60.82 / 0.0070 / 3 | 407.71 ✗ / 0.0242 ✗ / 2 |
-| 10-the-fallen-beech | 44.54 / 0.0102 / 5 | 57.32 / 0.0099 / 5 | 45.15 / 0.0106 / 5 | 459.12 ✗ / 0.1033 ✗ / 2 |
-| 11-the-wood-under-cloud | 92.40 / 0.0076 / 2 | 105.89 / 0.0081 / 2 | 88.19 / 0.0073 / 2 | 337.53 ✗ / 0.0192 ✗ / 3 |
-| 12-D1-the-forest-floor | 19.31 / 0.0078 / 2 | 15.84 / 0.0072 / 3 | 19.55 / 0.0078 / 2 | 206.49 ✗ / 0.0231 ✗ / 2 |
-| 13-D2-the-canopy-against-the-sun | 0.28 / 0.0007 / 2 | 0.37 / 0.0006 / 2 | 0.41 / 0.0007 / 2 | 22.07 ✗ / 0.0030 ✗ / 7 ✗ |
-| 14-D3-another-old-oak | 6.39 / 0.0364 / 27 | 4.74 / 0.0151 / 0 | 6.19 / 0.0298 / 30 ✗ | 159.62 ✗ / 0.1105 ✗ / 2 |
-| 15-D4-the-stream | 9.65 / 0.0073 / 3 | 10.22 / 0.0060 / 3 | 9.44 / 0.0063 / 3 | 237.21 ✗ / 0.0352 ✗ / 2 |
-| 16-D5-the-shore-at-evening | 31.38 / 0.0053 / 2 | 18.90 / 0.0046 / 2 | 33.65 / 0.0051 / 2 | 480.04 ✗ / 0.0215 ✗ / 2 |
-| 17-D6-the-vale-from-the-west | 15.71 / 0.0028 / 2 | 11.72 / 0.0024 / 2 | 15.44 / 0.0029 / 2 | 1258.81 ✗ / 0.0206 ✗ / 3 |
-| 18-D7-the-creature-in-the-wood | 16.66 / 0.0119 / 3 | 14.83 / 0.0073 / 3 | 14.25 / 0.0091 / 3 | 207.81 ✗ / 0.0187 ✗ / 4 |
-| 19-D8-the-wood-under-cloud | 30.87 / 0.0184 / 2 | 36.28 / 0.0123 / 2 | 30.49 / 0.0167 / 2 | 351.15 ✗ / 0.0436 ✗ / 2 |
+| 00-the-forest-floor | 20.97 / 0.0122 / 2 | 21.93 / 0.0091 / 3 | 21.18 / 0.0099 / 2 | 286.52 ✗ / 0.0368 ✗ / 2 |
+| 01-the-canopy-against-the-sun | 6.65 / 0.0113 / 3 | 7.58 / 0.0075 / 3 | 6.88 / 0.0089 / 3 | 95.99 ✗ / 0.0417 ✗ / 4 |
+| 02-an-old-oak | 1.09 / 0.1112 / 4 | 1.46 / 0.1085 / 4 | 1.15 / 0.1089 / 4 | 111.49 ✗ / 0.1602 / 4 |
+| 03-the-fall | 11.82 / 0.0062 / 5 | 12.29 / 0.0062 / 4 | 11.48 / 0.0063 / 4 | 220.68 ✗ / 0.0465 ✗ / 3 |
+| 04-the-bands-face | 1.07 / 0.0124 / 3 | 1.34 / 0.0122 / 3 | 1.20 / 0.0109 / 3 | 242.34 ✗ / 0.0303 ✗ / 2 |
+| 05-the-meadow-at-evening | 58.29 / 0.0064 / 2 | 39.25 / 0.0054 / 2 | 60.77 / 0.0065 / 2 | 398.24 ✗ / 0.0154 ✗ / 3 |
+| 06-dawn-in-the-hollow | 11.29 / 0.0038 / 3 | 11.00 / 0.0033 / 3 | 11.31 / 0.0036 / 3 | 198.03 ✗ / 0.0168 ✗ / 3 |
+| 07-dusk-from-the-crest | 9.52 / 0.0021 / 2 | 6.05 / 0.0015 / 2 | 9.24 / 0.0021 / 2 | 640.77 ✗ / 0.0193 ✗ / 3 |
+| 08-grazing-at-the-edge | 18.45 / 0.0044 / 2 | 20.60 / 0.0032 / 2 | 16.88 / 0.0035 / 3 | 245.53 ✗ / 0.0150 ✗ / 3 |
+| 09-down-the-trail | 54.80 / 0.0069 / 3 | 50.53 / 0.0063 / 3 | 60.69 / 0.0070 / 3 | 404.53 ✗ / 0.0241 ✗ / 2 |
+| 10-the-fallen-beech | 44.54 / 0.0101 / 5 | 57.52 / 0.0101 / 5 | 45.35 / 0.0107 / 5 | 453.29 ✗ / 0.1037 ✗ / 4 |
+| 11-the-wood-under-cloud | 93.32 / 0.0076 / 2 | 104.56 / 0.0078 / 2 | 90.69 / 0.0073 / 2 | 326.70 ✗ / 0.0190 ✗ / 3 |
+| 12-D1-the-forest-floor | 19.05 / 0.0079 / 2 | 15.74 / 0.0071 / 3 | 19.17 / 0.0079 / 2 | 197.93 ✗ / 0.0231 ✗ / 2 |
+| 13-D2-the-canopy-against-the-sun | 0.27 / 0.0007 / 2 | 0.37 / 0.0006 / 2 | 0.36 / 0.0007 / 2 | 20.54 ✗ / 0.0031 ✗ / 6 ✗ |
+| 14-D3-another-old-oak | 6.39 / 0.0363 / 27 | 4.74 / 0.0151 / 0 | 6.91 / 0.0298 / 30 ✗ | 159.09 ✗ / 0.1105 ✗ / 3 |
+| 15-D4-the-stream | 9.59 / 0.0073 / 3 | 10.25 / 0.0060 / 3 | 9.48 / 0.0065 / 3 | 234.63 ✗ / 0.0355 ✗ / 2 |
+| 16-D5-the-shore-at-evening | 32.58 / 0.0053 / 2 | 19.13 / 0.0044 / 2 | 35.22 / 0.0053 / 2 | 466.92 ✗ / 0.0214 ✗ / 3 |
+| 17-D6-the-vale-from-the-west | 15.69 / 0.0029 / 2 | 11.70 / 0.0024 / 2 | 15.38 / 0.0028 / 2 | 1235.03 ✗ / 0.0204 ✗ / 3 |
+| 18-D7-the-creature-in-the-wood | 16.66 / 0.0119 / 3 | 14.87 / 0.0072 / 3 | 14.35 / 0.0090 / 3 | 203.28 ✗ / 0.0185 ✗ / 4 |
+| 19-D8-the-wood-under-cloud | 31.11 / 0.0186 / 2 | 36.50 / 0.0130 / 2 | 30.63 / 0.0168 / 2 | 339.01 ✗ / 0.0434 ✗ / 3 |
 
-- **Cel holds all 60 bars**, after one change from the plan's constants: `TERMINATOR` 0.2 (the
-  plan's 0.3 missed an old oak's flicker, 3.04 against a bar of 1.63; a softer one was worse).
-  Its closest margin is the fallen beech's flicker, 57.32 against 66.82.
-- **Painterly holds 59 of 60.** It missed all twenty with the plan's constants; it holds after
-  four changes, each found on the fast loop (content/styles/README.md): no `FLAT_CLIP`, no
-  `FLAT`, the program's line darkness for the plan's faint 0.25, and `STROKE_VARY` 0.04. Its miss
-  is another old oak's trail, 30 against 28 (three runs, 30 each; the physical look's 27, 27,
-  29). That trail rests on one row: on this shot only row 533 has a step of 0.1 in luma (a small
-  dark thing at the frame's corner, under soft bark), so the median is that row's run. The form's
-  normal (`NORMAL` 1) is what lengthens it: the fine normal gives 28, the coarse 30; the stroke
-  variation (0 or 0.02), the strokes themselves, and `FLAT_CLIP` 0.1 or 0.2 leave it at 30. The
-  form's normal is the look, so the miss stands.
-- **Ink: Blocked.** It misses every flicker bar, by 2.4 to 153 times its bar (median 10; the
-  bands' face 245 against 1.6), 19 of 20 pop bars, and holds 19 of 20 trails. Moving every mark before temporal
-  AA (`marks::marks_on`) took its flicker down about 70 times, evaluating the lattice at the
-  pixel's unjittered centre (`marks::centred`) about 1.5 times, and a wash in place of lines on
-  leaves, grass and flowers about twice; a grey ink and a soft line edge about 1.1. Spacing (12
-  and 14 px), the light alone, the layers' thresholds, a coarser lattice and either sign of the
-  centring moved nothing. What's left is the hatching's lines themselves: a line a pixel wide
-  over a surface that moves under a sub-pixel jitter each frame.
+- **Cel holds all 60 bars**, after two changes from the plan's constants: `FLAT_CLIP` 0 and
+  `TERMINATOR` 0.2 (content/styles/README.md; the plan's 0.08, softened to 0.3 on the earlier
+  instrument, missed an old oak's flicker at 0.3 on this one, 3.04 against a bar of 1.63).
+- **Painterly holds 19 of 20 shots** (59 of 60 bars). It missed all twenty with the
+  plan's constants; it holds after `FLAT_CLIP` 0, `FLAT` 0, the program's line darkness for the
+  plan's faint 0.25, `STROKE_VARY` 0.04 and `SKY_SIMPLE` 0.7 (the canopy against the sun's
+  flicker sat on its bar at 0.5 after the council's fixes: 0.42 against 0.41). Its miss is
+  another old oak's trail, 30 against 28 (the physical look's 27). That trail rests on one row: on
+  this shot only row 533 has a step of 0.1 in luma (a small dark thing at the frame's corner,
+  under soft bark), so the median is that row's run (docs/lookdev.md, "A trail can rest on one
+  row"). The form's normal (`NORMAL` 1) is what lengthens it: the fine normal gives 28, the coarse
+  30; the stroke variation (0 or 0.02), the strokes themselves, and `FLAT_CLIP` 0.1 or 0.2 leave
+  it at 30. The form's normal is the look, so the miss stands.
+- **Ink: Blocked.** It misses every flicker bar, by 2.3 to 151 times its bar (median
+  10), 19 of 20 pop bars, and holds 19 of 20 trails. Moving every mark before
+  temporal AA (`marks::marks_on`) took its flicker down about 70 times, evaluating the lattice at
+  the pixel's unjittered centre (`marks::centred`) about 1.5 times, and a wash in place of lines
+  on leaves, grass and flowers about twice; a grey ink and a soft line edge about 1.1. Spacing
+  (12 and 14 px), the light alone, the layers' thresholds, a coarser lattice and either sign of
+  the centring moved nothing. What's left is the hatching's lines themselves: a line a pixel wide
+  over a surface that moves under a sub-pixel jitter each frame. Its judge sees the same as moiré.
 
-PSNR of each look's play against its own frozen-time reference (`--fast --psnr`, one run, dB):
+PSNR of each look's play against its own frozen-time reference (`--fast --psnr`, one run, dB;
+the painterly and ink looks' after the fixes, the physical and cel looks' before them, which
+changed neither's image but in rounding):
 
 | Shot | Physical | Cel | Painterly | Ink |
 |---|---|---|---|---|
-| 00-the-forest-floor | 22.26 | 21.01 | 22.32 | 17.80 |
-| 01-the-canopy-against-the-sun | 25.53 | 25.84 | 25.73 | 20.04 |
-| 02-an-old-oak | 30.86 | 36.27 | 35.12 | 18.27 |
-| 03-the-fall | 26.62 | 23.73 | 26.61 | 17.93 |
-| 04-the-bands-face | 24.49 | 23.24 | 24.46 | 17.90 |
-| 05-the-meadow-at-evening | 25.30 | 24.72 | 25.29 | 18.36 |
-| 06-dawn-in-the-hollow | 28.73 | 28.65 | 28.74 | 19.03 |
-| 07-dusk-from-the-crest | 36.58 | 37.05 | 36.54 | 18.50 |
-| 08-grazing-at-the-edge | 24.34 | 25.23 | 25.12 | 20.11 |
-| 09-down-the-trail | 26.16 | 26.35 | 26.10 | 17.21 |
-| 10-the-fallen-beech | 27.32 | 25.61 | 27.46 | 16.26 |
-| 11-the-wood-under-cloud | 29.41 | 29.19 | 29.49 | 19.18 |
-| 12-D1-the-forest-floor | 20.83 | 19.52 | 20.71 | 17.84 |
-| 13-D2-the-canopy-against-the-sun | 43.69 | 43.99 | 44.04 | 28.80 |
-| 14-D3-another-old-oak | 28.01 | 29.54 | 29.92 | 17.42 |
-| 15-D4-the-stream | 20.76 | 18.68 | 20.68 | 17.40 |
-| 16-D5-the-shore-at-evening | 27.20 | 27.17 | 27.32 | 16.86 |
-| 17-D6-the-vale-from-the-west | 35.54 | 35.95 | 35.52 | 18.87 |
-| 18-D7-the-creature-in-the-wood | 23.52 | 24.23 | 23.66 | 20.64 |
-| 19-D8-the-wood-under-cloud | 26.07 | 27.16 | 26.88 | 17.57 |
+| 00-the-forest-floor | 22.26 | 21.01 | 22.34 | 17.81 |
+| 01-the-canopy-against-the-sun | 25.53 | 25.84 | 25.73 | 20.03 |
+| 02-an-old-oak | 30.86 | 36.27 | 34.94 | 18.28 |
+| 03-the-fall | 26.62 | 23.73 | 26.57 | 17.93 |
+| 04-the-bands-face | 24.49 | 23.24 | 24.87 | 17.87 |
+| 05-the-meadow-at-evening | 25.30 | 24.72 | 25.27 | 18.36 |
+| 06-dawn-in-the-hollow | 28.73 | 28.65 | 28.70 | 19.06 |
+| 07-dusk-from-the-crest | 36.58 | 37.05 | 36.52 | 18.46 |
+| 08-grazing-at-the-edge | 24.34 | 25.23 | 25.10 | 20.18 |
+| 09-down-the-trail | 26.16 | 26.35 | 26.10 | 17.22 |
+| 10-the-fallen-beech | 27.32 | 25.61 | 27.45 | 16.21 |
+| 11-the-wood-under-cloud | 29.41 | 29.19 | 29.53 | 19.20 |
+| 12-D1-the-forest-floor | 20.83 | 19.52 | 20.70 | 17.83 |
+| 13-D2-the-canopy-against-the-sun | 43.69 | 43.99 | 44.16 | 28.98 |
+| 14-D3-another-old-oak | 28.01 | 29.54 | 29.38 | 17.41 |
+| 15-D4-the-stream | 20.76 | 18.68 | 20.70 | 17.38 |
+| 16-D5-the-shore-at-evening | 27.20 | 27.17 | 27.29 | 16.88 |
+| 17-D6-the-vale-from-the-west | 35.54 | 35.95 | 35.51 | 18.93 |
+| 18-D7-the-creature-in-the-wood | 23.52 | 24.23 | 23.66 | 20.69 |
+| 19-D8-the-wood-under-cloud | 26.07 | 27.16 | 26.93 | 17.58 |
 
 ### The looks' judges (D4–D6)
 
 One agent judge per look, in a fresh context, views its twelve evaluation stills at 1920 × 1080
 (`wrela tool lookbook -- build/stills/<look> --package examples/vale --stills --shots evaluation
 --look styles::<module>::<Type>`) under neutral names, after a calibration pair (a physical still
-against its quarter-resolution copy, neutral names): all three preferred the full still. Each
+against its quarter-resolution copy, neutral names): every judge preferred the full still. Each
 scores the five rubric rows 0–3 and the *style* row against six of the look's reference set
 (§D8's, the Met's CC0 works under `$WRELA_REFERENCE_DIR/styles/<look>`; Ink has none:
-"unfitted"). Means over the twelve (light, colour, value, depth, artifacts, style):
+"unfitted"). Means over the twelve:
 
 | Look | Light | Colour | Value | Depth | Artifacts | Style |
 |---|---|---|---|---|---|---|
-| Cel | 1.67 | 1.58 | 1.67 | 1.5 | 1.0 | 0.67 |
-| Painterly | 1.75 | 1.58 | 1.75 | 1.5 | 0.83 | 0.67 |
-| Ink | 0.75 | 0.83 | 0.92 | 0.83 | 0.0 | unfitted |
+| Cel | 1.67 | 1.58 | 1.67 | 1.50 | 1.00 | 0.67 |
+| Painterly | 1.75 | 1.67 | 1.67 | 1.50 | 1.08 | 0.67 |
+| Ink | 0.75 | 1.00 | 1.08 | 1.08 | 0.00 | unfitted |
 
-- The first two judges (Cel's and Painterly's) were handed the wood under cloud's still black
+- The judges' files are in `build/judges-d/`. The painterly and ink looks were judged again
+  after the council's fixes (their images changed); the cel look's judge saw its stills before
+  them (its marks only multiply, so the order of its passes changed its image by rounding).
+- The first two judges (cel's and painterly's) were handed the wood under cloud's still black
   (docs/lookdev.md, "A still waits for its shot"); their scores were discarded and fresh judges
-  given the remade stills. Their files: `build/judges-d/`.
-- Both style judges say the look reads as a game render more than in its set's manner: the Cel
-  look's flat tones and outlines "gesture toward illustration", and the dawn in the hollow is
-  its closest still to a cel look ("clean ink outlines"); the Painterly look's foliage dabs "nod to
-  painting" but its bark marks read as stamped texture. Both score the style row 0.67.
-- The Ink judge sees moiré over every surface and no hatching lines at 1080p: the 6-pixel
-  hatching aliasing on a still, the same cause as its flicker (Blocked).
+  given the remade stills.
+- Both style judges say the look reads as a game render more than in its set's manner: the cel
+  look's flat tones and outlines "gesture toward illustration", the dawn in the hollow its
+  closest still to a cel look; the painterly look's foliage dabs nod to painting while its bark
+  marks read as stamped texture.
+- The ink judge sees moiré over every surface at 1080p: the 6-pixel hatching aliasing on a
+  still, the cause of its flicker (Blocked).
 
 ## D11, the second panel (2026-10-30, toolchain 0.11.1)
 
@@ -2690,106 +2699,110 @@ wrela tool studio/compare --write ws=. -- build/d11/<look> --tally
   8. Its losses: artifacts 23.12, colour 15.62, value 13.62, depth 12.75, light 8.12, each at or
   under the physical look's. Seven judges wrote the *style* sentence on every pair (c6 none): the
   dawn in the hollow is every one's clearest cel read ("clean dark outlines round the trunks and
-  logs, flat fills and haze in soft bands"); the tallies are `build/d11/*/tally.md`.
+  logs, flat fills and haze in soft bands"); the tallies are `build/d11/*/tally.md`. Both panels'
+  stills predate Part D's council and review: neither look's image changed but in rounding (the
+  cel look's marks only multiply, so drawing them before the lines is the same image).
 
 ## D8, the fits (2026-10-30, toolchain 0.11.1)
 
 docs/plan-world-class-3.md §D8. Each look fitted on D5 (the shore at evening, a development
 shot) to its set of fourteen CC0 works from the Met's Open Access (docs/citations.md, "The fit's
 reference sets"): `cel` Hiroshige's and Hokusai's landscape prints, `painterly` Sisley, Pissarro,
-Daubigny and Corot. 200 evaluations of CMA-ES from seed 1 (196 run: λ 7), each still 480 px
-wide after 120 frames settled; the score is the RMS of the still's statistics' z-scores against
-the set's (lower is nearer).
+Daubigny and Corot. 200 evaluations of CMA-ES from seed 1 (196 run: λ 7; a draw past a range's
+end reflected into it), each still 480 px wide after 120 frames settled; the score is the RMS of
+the still's statistics' z-scores against the set's (lower is nearer).
 
 ```sh
-wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style cel --package examples/vale --shot D5 --reference-set refs/cel --out content/styles/cel_fitted.wrela   # 367 s
-wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style painterly --package examples/vale --shot D5 --reference-set refs/painterly --out content/styles/painterly_fitted.wrela   # 411 s
+wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style cel --package examples/vale --shot D5 --reference-set refs/cel --out content/styles/cel_fitted.wrela
+wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style painterly --package examples/vale --shot D5 --reference-set refs/painterly --out content/styles/painterly_fitted.wrela
 ```
 
 `Cel`:
 
 ```text
-fit: the look's own constants score 4.4903 (TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.3000)
-fit: 20 evaluations, the best 4.4542 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.1591
-fit: 40 evaluations, the best 4.4053 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0198
-fit: 60 evaluations, the best 4.4053 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0198
-fit: 80 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: 100 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: 120 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: 140 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: 160 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: 180 evaluations, the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: the best 4.4016 at TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065
-fit: held out, shot D1: the look's own 3.3930, fitted 3.3529
-fit: held out, shot D3: the look's own 4.4936, fitted 4.4479
+fit: the look's own constants score 4.4904 (TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.3000)
+fit: 20 evaluations, the best 4.4903 at TERMINATOR 0.1917, PALETTE_N 3.7932, HUE_PULL 0.2963
+fit: 40 evaluations, the best 4.4243 at TERMINATOR 0.1906, PALETTE_N 3.9824, HUE_PULL 0.1077
+fit: 60 evaluations, the best 4.4243 at TERMINATOR 0.1906, PALETTE_N 3.9824, HUE_PULL 0.1077
+fit: 80 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 100 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 120 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 140 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 160 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: 180 evaluations, the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: the best 4.4089 at TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571
+fit: held out, shot D1: the look's own 3.3950, fitted 3.3510
+fit: held out, shot D3: the look's own 4.6330, fitted 4.6279
 ```
 
 `Painterly`:
 
 ```text
-fit: the look's own constants score 1.3733 (PALETTE_N 8.0000, HUE_PULL 0.1500, SKY_SIMPLE 0.5000)
-fit: 20 evaluations, the best 1.3450 at PALETTE_N 8.7829, HUE_PULL 0.1561, SKY_SIMPLE 0.5000
-fit: 40 evaluations, the best 1.3266 at PALETTE_N 10.9221, HUE_PULL 0.1958, SKY_SIMPLE 0.5000
-fit: 60 evaluations, the best 1.3266 at PALETTE_N 10.9221, HUE_PULL 0.1958, SKY_SIMPLE 0.5000
-fit: 80 evaluations, the best 1.3266 at PALETTE_N 10.9221, HUE_PULL 0.1958, SKY_SIMPLE 0.5000
-fit: 100 evaluations, the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: 120 evaluations, the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: 140 evaluations, the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: 160 evaluations, the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: 180 evaluations, the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: the best 1.3252 at PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000
-fit: held out, shot D1: the look's own 0.9564, fitted 0.9845
-fit: held out, shot D3: the look's own 1.5867, fitted 1.6720
+fit: the look's own constants score 1.3811 (PALETTE_N 8.0000, HUE_PULL 0.1500, SKY_SIMPLE 0.7000)
+fit: 20 evaluations, the best 1.3602 at PALETTE_N 10.2619, HUE_PULL 0.2675, SKY_SIMPLE 0.5440
+fit: 40 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 60 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 80 evaluations, the best 1.3321 at PALETTE_N 11.7733, HUE_PULL 0.3158, SKY_SIMPLE 0.5067
+fit: 100 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 120 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 140 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 160 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: 180 evaluations, the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: the best 1.3313 at PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499
+fit: held out, shot D1: the look's own 0.9581, fitted 0.9705
+fit: held out, shot D3: the look's own 1.5890, fitted 1.6265
 ```
 
 **Each range stops where the look holds its bars.** Fitted first over the plan's ranges, the cel
 look's ramp went to 0.589 (4.49 → 3.94 on D5, D1 3.39 → 3.27, D3 4.50 → 3.83) and an old oak's
 flicker missed its bar, 5.77 ×10⁻⁶ against 1.64 (0.3 had missed it too); the painterly look's
-sky went to 0.046 simplified (and its tones to 12, its hue pull 0.42) and the canopy against the
-sun's flicker missed, 0.45 against 0.42. Capping its tones at 8 instead left the sky at 0.015 and
-missed by more (0.56); with the rest as fitted, the sky at 0.5 holds it (0.36), while the hue pull
-at the look's own 0.15 gives 0.44 and the tones at 8 give 0.54. So `TERMINATOR` is at most 0.2 and `SKY_SIMPLE` at
-least 0.5 (content/styles/README.md), and the fits above are over those ranges.
+sky went to 0.046 simplified and the canopy against the sun's flicker missed, 0.45 against 0.42.
+Capping its tones at 8 instead left the sky at 0.015 and missed by more (0.56); with the rest as
+fitted, the sky at 0.5 holds it (0.36), while the hue pull at the look's own 0.15 gives 0.44 and
+the tones at 8 give 0.54. So `TERMINATOR` is at most 0.2 and `SKY_SIMPLE` at least 0.5.
 
-- **The cel fit** takes the ramp to its cap (0.2), four tones and no hue pull: a print's broad,
-  unpulled flats. A little nearer its set on D5 (4.49 → 4.40) and on both held-out shots (D1
-  3.39 → 3.35, D3 4.49 → 4.45); most of what the uncapped fit gained was its softer ramp.
-- **The painterly fit** takes the most tones (12), a harder hue pull (0.36) and the sky at its
-  floor (0.5). A little nearer on D5 (1.37 → 1.33) and farther on the held-out shots (D1 0.956 →
-  0.985, D3 1.587 → 1.672): it fits D5, not the set's manner. (The look's own score on D5 was
-  1.362 in the first fit and 1.373 here: a frozen still is not quite the same from one build of
-  the fitting variant to the next.)
+- **The cel fit** takes the ramp to its cap, four tones and hardly any hue pull: a print's
+  broad, unpulled flats. A little nearer its set on D5 and on both held-out shots; most of what
+  the uncapped fit gained was its softer ramp.
+- **The painterly fit** takes more tones and a harder hue pull, its sky near its floor. A little
+  nearer on D5 and farther on the held-out shots: it fits D5, not the set's manner.
 
-**Their G-look**: coherence on the fast instrument, median of three, held to the physical look's
-bars (`wrela tool lookbook -- build/record/<module> --package examples/vale --fast --runs 3 --look
-styles::<module>::<Type> --bars build/record/physical`), flicker ×10⁻⁶ / pop / trail px:
+**Their G-look**: coherence as the looks' (`--fast --runs 3 --near 0.2 --bars
+build/record/physical` for the fitted painterly look, every run for the fitted cel), flicker
+×10⁻⁶ / pop / trail px:
 
 | Shot | CelFitted | PainterlyFitted |
 |---|---|---|
-| 00-the-forest-floor | 21.48 / 0.0091 / 3 | 22.06 / 0.0099 / 2 |
-| 01-the-canopy-against-the-sun | 7.30 / 0.0075 / 3 | 7.30 / 0.0088 / 3 |
-| 02-an-old-oak | 1.55 / 0.1084 / 5 | 1.15 / 0.1088 / 4 |
-| 03-the-fall | 12.21 / 0.0062 / 4 | 11.77 / 0.0062 / 5 |
-| 04-the-bands-face | 1.33 / 0.0125 / 3 | 1.23 / 0.0109 / 3 |
-| 05-the-meadow-at-evening | 40.06 / 0.0055 / 2 | 60.16 / 0.0064 / 2 |
-| 06-dawn-in-the-hollow | 10.75 / 0.0035 / 3 | 11.17 / 0.0037 / 3 |
-| 07-dusk-from-the-crest | 5.98 / 0.0015 / 2 | 9.13 / 0.0021 / 2 |
-| 08-grazing-at-the-edge | 20.34 / 0.0032 / 2 | 17.39 / 0.0036 / 2 |
-| 09-down-the-trail | 51.20 / 0.0063 / 3 | 62.15 / 0.0070 / 3 |
-| 10-the-fallen-beech | 57.25 / 0.0097 / 5 | 45.37 / 0.0104 / 5 |
-| 11-the-wood-under-cloud | 106.11 / 0.0079 / 2 | 90.89 / 0.0074 / 2 |
-| 12-D1-the-forest-floor | 15.43 / 0.0072 / 2 | 19.78 / 0.0077 / 2 |
-| 13-D2-the-canopy-against-the-sun | 0.33 / 0.0006 / 2 | 0.36 / 0.0007 / 2 |
-| 14-D3-another-old-oak | 4.55 / 0.0154 / 0 | 7.47 / 0.0294 / 30 ✗ |
-| 15-D4-the-stream | 9.71 / 0.0060 / 3 | 9.93 / 0.0063 / 4 |
-| 16-D5-the-shore-at-evening | 19.06 / 0.0047 / 2 | 34.15 / 0.0053 / 2 |
-| 17-D6-the-vale-from-the-west | 11.85 / 0.0024 / 2 | 15.06 / 0.0028 / 2 |
-| 18-D7-the-creature-in-the-wood | 14.63 / 0.0073 / 3 | 14.77 / 0.0092 / 3 |
-| 19-D8-the-wood-under-cloud | 38.15 / 0.0123 / 2 | 31.08 / 0.0167 / 2 |
+| 00-the-forest-floor | 21.44 / 0.0090 / 3 | 21.64 / 0.0098 / 2 |
+| 01-the-canopy-against-the-sun | 7.07 / 0.0074 / 3 | 7.09 / 0.0089 / 3 |
+| 02-an-old-oak | 1.48 / 0.1074 / 4 | 1.50 / 0.1088 / 4 |
+| 03-the-fall | 12.23 / 0.0062 / 4 | 11.78 / 0.0063 / 5 |
+| 04-the-bands-face | 1.31 / 0.0092 / 3 | 1.20 / 0.0080 / 3 |
+| 05-the-meadow-at-evening | 41.60 / 0.0053 / 2 | 62.45 / 0.0064 / 2 |
+| 06-dawn-in-the-hollow | 10.94 / 0.0038 / 3 | 11.38 / 0.0036 / 3 |
+| 07-dusk-from-the-crest | 5.79 / 0.0014 / 2 | 9.18 / 0.0021 / 2 |
+| 08-grazing-at-the-edge | 20.33 / 0.0032 / 2 | 17.03 / 0.0035 / 2 |
+| 09-down-the-trail | 50.99 / 0.0063 / 3 | 62.02 / 0.0070 / 3 |
+| 10-the-fallen-beech | 57.30 / 0.0098 / 5 | 71.54 ✗ / 0.0079 / 5 |
+| 11-the-wood-under-cloud | 102.45 / 0.0079 / 2 | 90.95 / 0.0073 / 2 |
+| 12-D1-the-forest-floor | 15.33 / 0.0073 / 3 | 19.42 / 0.0077 / 2 |
+| 13-D2-the-canopy-against-the-sun | 0.36 / 0.0006 / 2 | 0.37 / 0.0007 / 2 |
+| 14-D3-another-old-oak | 4.56 / 0.0148 / 0 | 6.21 / 0.0294 / 30 ✗ |
+| 15-D4-the-stream | 9.88 / 0.0060 / 3 | 9.56 / 0.0063 / 3 |
+| 16-D5-the-shore-at-evening | 19.11 / 0.0047 / 2 | 33.31 / 0.0054 / 2 |
+| 17-D6-the-vale-from-the-west | 11.55 / 0.0024 / 2 | 15.36 / 0.0028 / 2 |
+| 18-D7-the-creature-in-the-wood | 14.66 / 0.0072 / 3 | 14.58 / 0.0092 / 3 |
+| 19-D8-the-wood-under-cloud | 38.66 / 0.0124 / 2 | 30.49 / 0.0163 / 2 |
 
-`CelFitted` holds all 60; `PainterlyFitted` 59, its miss the painterly look's own (another old
-oak's trail, one row). Their judges (as D4–D6's: light, colour, value, depth, artifacts, style
-against the set): `CelFitted` 1.67, 1.58, 1.42, 1.58, 1.00, 0.58; `PainterlyFitted` 1.58, 1.58, 1.50, 1.42, 0.67, 0.67.
+- `CelFitted` holds 20 of 20 shots.
+- `PainterlyFitted` holds 18 of 20: the painterly look's own miss (another old oak's
+  trail), and the fallen beech's flicker, 71.54 against 66.82, where two of its three runs fell
+  in the shot's late state. That shot's still sometimes sees something arrive in its 32 frames
+  (its still's pop 0.008 against 0.002; the physical look's own runs read 73.59, 44.48, 44.54):
+  run five times, the fitted look's reads 45.31, 46.61, 45.31, 84.15, 46.39, a median of 46.39,
+  holding (`build/record/painterly_fitted-shot10-runs5`). The record keeps the median of three.
+- Their judges (as D4–D6's: light, colour, value, depth, artifacts, style against the set):
+  `CelFitted` 1.67, 1.58, 1.67, 1.58, 0.92, 0.58; `PainterlyFitted` 1.75, 1.75, 1.58, 1.58, 1.00, 0.75.
 
 ## D4, the cel look's cost (2026-10-30, toolchain 0.11.1)
 
