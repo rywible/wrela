@@ -1,7 +1,7 @@
 // The style fit (style.wrela, fitting.wrela): the search and the statistics on the CPU; and
 // the fit on the style panel (fixtures/style), built and drawn on the hardware GPU.
 
-use fitting::{Aim, Fittee, fittee, search}
+use fitting::{Aim, fittee, search}
 use hosts::steps::built
 use lookbook_tool::quality::Driven
 use std::input::Script

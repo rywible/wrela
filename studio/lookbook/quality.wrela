@@ -42,11 +42,10 @@ pub const SAMPLES: u32 = 64
 pub const DOLLY_FRAMES: u32 = 600
 pub const STOPS: u32 = 4
 
-/// The fast run's (`--fast`, docs/lookdev.md): no reference, so no PSNR; how often it looks for
-/// the shot shown; frames before the still (held, then settled); the still's frames for flicker;
-/// the dolly's for pop; and the frames the trail's stop settles, where the dolly ends.
+/// The fast run's (`--fast`, docs/lookdev.md; it settles `SETTLE` frames as the full run does):
+/// how often it looks for the shot shown; the still's frames for flicker; the dolly's for pop; and
+/// the frames the trail's stop settles, where the dolly ends.
 pub const FAST_POLL: u32 = 30
-pub const FAST_SETTLE: u32 = 240
 pub const FAST_SAMPLES: u32 = 32
 pub const FAST_DOLLY: u32 = 150
 pub const FAST_STOP_SETTLE: u32 = 60
@@ -234,8 +233,9 @@ pub fn measure(
 
 /// Shot `i`'s fast run (`--fast`): its coherence alone. Shown, then time frozen and the eye held
 /// (the shot holds its first pose until its move), settled; the still's flicker over
-/// `FAST_SAMPLES` frames; the dolly's pop over its first `FAST_DOLLY` frames; and its trail at
-/// `FAST_STOPS` stops along them. Its play still is written beside `stills`.
+/// `FAST_SAMPLES` frames; with `psnr_too`, the reference there and the play still against it; the
+/// dolly's pop over its first `FAST_DOLLY` frames; and its trail where they end, paused and
+/// settled `FAST_STOP_SETTLE` frames. Its play still is written beside `stills`.
 fn fast_shot(
     d: mut Driven,
     stills: str,
@@ -248,7 +248,7 @@ fn fast_shot(
     d.shown(step: FAST_POLL)?
     d.press(Key::F10)
     d.press(Key::F11)
-    let _ = d.run(FAST_SETTLE)?
+    let _ = d.run(SETTLE)?
     let play = d.screen()?
     var still = Spread::new()
     for _ in 0..FAST_SAMPLES {
@@ -269,7 +269,7 @@ fn fast_shot(
         )
         shown_stills.push(("reference", take reference))
         // Play's caches made again after the reference, and settled, before the dolly.
-        let _ = d.run(FAST_SETTLE)?
+        let _ = d.run(SETTLE)?
     }
     for (name, rgba) in shown_stills {
         let img = image::Image {

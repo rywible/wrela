@@ -55,7 +55,7 @@ use shots::{
     chosen, keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
 use quality::{
-    ARRIVAL_FRAMES, CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, lit, measure,
+    CONTROL_SHOT, Control, DETAIL_SHOT, Driven, FAST_POLL, HEADER, json_list, judged, lit, measure,
     measured_json, row,
 }
 use std::input::Script
@@ -95,9 +95,6 @@ fn screen_of(b: drive::Build) -> Result<(u32, u32, Vec<u8>), ToolError> {
     Ok((screen.width, screen.height, joined(data_bytes(take screen.rgba)?)))
 }
 
-/// How many frames a still not yet shown runs between looks.
-const SHOWN_POLL: u32 = 30
-
 /// `s`'s still, rendered and written: the frame `SETTLE_FRAMES` in (or, for a shot black then,
 /// `SETTLE_FRAMES` after it shows), or with `capture` the frame that prints `STILL`. The PNG's
 /// path.
@@ -132,23 +129,17 @@ pub fn still(s: take Still) -> Result<String, ToolError> {
     }
     var shown = screen_of(b)?
     // A shot whose content hasn't arrived by then (black: a far place streams in) is run on until
-    // it shows, then settled as long again; a shot shown in time is the frame it always was.
-    var waited = 0
-    while !s.capture && !lit(shown.2) {
-        if waited >= ARRIVAL_FRAMES {
+    // it shows (`Driven::shown`), then settled as long again; a shot shown in time is the frame it
+    // always was.
+    if !s.capture && !lit(shown.2) {
+        var d = Driven { b, script: s.keys.clone(), frame: 0, width: s.width }
+        if let Err(e) = d.shown(step: FAST_POLL) {
             let _ = drive::close(b).wait()
-            return Err(ToolError::new(f"the shot wasn't shown within {ARRIVAL_FRAMES} more frames"))
+            return Err(take e)
         }
-        let more = [Step::Frames(SHOWN_POLL, s.keys.clone())]
-        let _ = untrapped("the frames", drive::steps(b, more, timeout: 600.0).wait()?)?
-        waited += SHOWN_POLL
+        print(f"lookbook: {s.png} shown {d.frame} frames late; settled {SETTLE_FRAMES} more")
+        let _ = d.run(SETTLE_FRAMES)?
         shown = screen_of(b)?
-        if lit(shown.2) {
-            print(f"lookbook: {s.png} shown {waited} frames late; settled {SETTLE_FRAMES} more")
-            let settle = [Step::Frames(SETTLE_FRAMES, s.keys.clone())]
-            let _ = untrapped("the frames", drive::steps(b, settle, timeout: 600.0).wait()?)?
-            shown = screen_of(b)?
-        }
     }
     let _ = drive::close(b).wait()
     let (width, height, rgba) = take shown
@@ -217,11 +208,18 @@ fn built_in(program: str, look: str) -> Result<String, ToolError> {
     let names = program.split("/")
     let (pa, pb) = names[names.len() - 1]
     let out = String::from(f"{WS}/build/looks/{program.slice(pa, pb)}-{look.slice(a, b)}")
+    print(f"building {program} in {look} into {out}")
+    build_in(program, look, out.as_str())?
+    Ok(out)
+}
+
+/// `program` built into `out` in look `look` (`wrela build --set LOOK=<look>`, the
+/// `engine::style` the program names), its errors printed if it doesn't build.
+pub fn build_in(program: str, look: str, out: str) -> Result<(), ToolError> {
     var options = toolchain::options()
     options.timeout = 600.0
     options.set.push(toolchain::Set { name: String::from("LOOK"), value: String::from(look) })
-    print(f"building {program} in {look} into {out}")
-    let made = toolchain::build(program, out.as_str(), options).wait()?
+    let made = toolchain::build(program, out, options).wait()?
     if !made.ok {
         for d in made.diagnostics {
             if d.error {
@@ -230,15 +228,21 @@ fn built_in(program: str, look: str) -> Result<String, ToolError> {
         }
         return Err(ToolError::new(f"{program} didn't build in {look}"))
     }
-    Ok(out)
+    Ok(())
 }
 
-/// Whether a look's measures hold the bars of the physical look's (`flicker`, `pop`, `trail`):
+/// The bars a run is held to from the physical look's measures (`base`: flicker, pop, trail):
 /// flicker and pop at most 1.5 times its, trail at most its plus a pixel (docs/lookdev.md,
 /// **proposed**).
-pub fn holds(flicker: f64, pop: f64, trail: f64, base: (f64, f64, f64)) -> (bool, bool, bool) {
+pub fn bars(base: (f64, f64, f64)) -> (f64, f64, f64) {
     let (bf, bp, bt) = base
-    (flicker <= 1.5 * bf, pop <= 1.5 * bp, trail <= bt + 1.0)
+    (1.5 * bf, 1.5 * bp, bt + 1.0)
+}
+
+/// Whether a look's measures (`flicker`, `pop`, `trail`) hold the bars from `base` (`bars`).
+pub fn holds(flicker: f64, pop: f64, trail: f64, base: (f64, f64, f64)) -> (bool, bool, bool) {
+    let (mf, mp, mt) = bars(base)
+    (flicker <= mf, pop <= mp, trail <= mt)
 }
 
 /// Each shot's flicker, pop and trail in a run's `quality.json` text (`text`): (shot, the three).
@@ -280,16 +284,16 @@ fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
             print(f"| {shot} | (no baseline) | | | |")
             continue
         }
-        let (bf, bp, bt) = b
+        let (bf, bp, bt) = bars(b)
         let (hf, hp, ht) = holds(f, p, t, b)
         let ok = hf && hp && ht
         all = all && ok
         print(
-            f"| {shot} | {f * 1.0e6:.2} ({bf * 1.5e6:.2}) | {p:.4} ({bp * 1.5:.4}) | {t:.0} ({bt + 1.0:.0}) | {if ok { "holds" } else { "misses" }} |",
+            f"| {shot} | {f * 1.0e6:.2} ({bf * 1.0e6:.2}) | {p:.4} ({bp:.4}) | {t:.0} ({bt:.0}) | {if ok { "holds" } else { "misses" }} |",
         )
         lines.push(
             String::from(
-                f"{{\"shot\": \"{shot}\", \"flicker\": {f}, \"flicker_bar\": {bf * 1.5}, \"pop\": {p}, \"pop_bar\": {bp * 1.5}, \"trail\": {t}, \"trail_bar\": {bt + 1.0}, \"holds\": {ok}}}",
+                f"{{\"shot\": \"{shot}\", \"flicker\": {f}, \"flicker_bar\": {bf}, \"pop\": {p}, \"pop_bar\": {bp}, \"trail\": {t}, \"trail_bar\": {bt}, \"holds\": {ok}}}",
             ),
         )
     }

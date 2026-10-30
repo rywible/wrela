@@ -5,7 +5,7 @@
 // taken and scored (style.wrela). The search's best is written as a style of its own
 // (`<Look>Fitted`, its constants the best's), and scored on held-out shots the search never saw.
 
-use engine::style::{Fittable, Knob}
+use engine::style::Fittable
 use lookbook_tool::quality::{Driven, SETTLE}
 use lookbook_tool::shots::{SETTLE_FRAMES, keys, lookbook_of, names_in}
 use std::input::Key
@@ -16,7 +16,6 @@ use std::tool::drive
 use std::tool::drive::{Scalar, Step}
 use std::tool::files
 use std::tool::image
-use std::tool::toolchain
 use style::{Cma, SIDE, Stats, Target, against, distance, stats, target_of}
 use styles::cel
 use styles::cel::Cel
@@ -133,23 +132,6 @@ pub fn set_target(dir: str) -> Result<(Target, u32), ToolError> {
         return Err(ToolError::new(f"{dir} has {set.len()} images: a set is two or more"))
     }
     Ok((target_of(set), set.len()))
-}
-
-/// `program` built in `look` (a fitting variant) into `out`.
-pub fn build_in(program: str, look: str, out: str) -> Result<(), ToolError> {
-    var options = toolchain::options()
-    options.timeout = 600.0
-    options.set.push(toolchain::Set { name: String::from("LOOK"), value: String::from(look) })
-    let made = toolchain::build(program, out, options).wait()?
-    if !made.ok {
-        for d in made.diagnostics {
-            if d.error {
-                print(d.rendered.as_str())
-            }
-        }
-        return Err(ToolError::new(f"{program} didn't build in {look}"))
-    }
-    Ok(())
 }
 
 /// The shot of `program`'s lookbook named `shot` (its number, or the start of its name: `D5`).

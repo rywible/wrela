@@ -15,6 +15,7 @@
 // | `cause` | `R32Uint` | 4 | its history: age, light, wetness, stress, a byte each |
 // | `tone` | `R32Uint` | 4 | its albedo before light as three sRGB bytes, and whether it's flat |
 
+use light
 use std::derive::gradient
 use std::field::Surface
 use std::gpu::{DepthTexture, GlobalId, Half2, Rg32Uint, Targets4, Texels, Texture, Unorm8x4}
@@ -148,13 +149,9 @@ pub fn unpack_tone(w: u32) -> (vec3, f32) {
     (linear(v.xyz), v.w)
 }
 
-/// Linear light in [0, 1] as sRGB's curve stores it, and back.
+/// Linear light in [0, 1] as sRGB's curve stores it (`light::srgb`), and back.
 fn srgb(c: vec3) -> vec3 {
-    vec3(srgb1(c.x), srgb1(c.y), srgb1(c.z))
-}
-
-fn srgb1(x: f32) -> f32 {
-    if x <= 0.0031308 { 12.92 * x } else { 1.055 * pow(x, 1.0 / 2.4) - 0.055 }
+    vec3(light::srgb(c.x), light::srgb(c.y), light::srgb(c.z))
 }
 
 fn linear(c: vec3) -> vec3 {

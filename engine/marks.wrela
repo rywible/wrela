@@ -17,6 +17,7 @@
 // it anti-aliases them as it does a silhouette) and its brush dabs and paper's tooth (`dab_map`,
 // read by `paint::develop`), as they were.
 
+use light::LUMA
 use noise::{hash2, hash3, noise3, octave_of}
 use paint::{Develop, Look}
 use std::gpu::{DepthTexture, FragCoord, R32Uint, Rg32Uint, Rgba16Float, Texture}
@@ -484,10 +485,10 @@ pub fn lines(
 /// differences each way, so an edge's other side isn't taken). A surface's depth (reversed, as
 /// `1/distance`) is linear on the screen across a plane, so on one this is exact: a mark is
 /// evaluated at the same point of it every frame, whatever the jitter (evaluated at the jittered
-/// sample, a hatch line's black and white came and went with it under temporal AA).
-fn centred(cam: Camera, depth: DepthTexture, p: vec2u) -> (vec3, f32) {
+/// sample, a hatch line's black and white came and went with it under temporal AA). `z` is the
+/// depth at `p`, which the caller has loaded.
+fn centred(cam: Camera, depth: DepthTexture, p: vec2u, z: f32) -> (vec3, f32) {
     let size = vec2u(cam.screen) - vec2u(1)
-    let z = depth.load(x: p.x, y: p.y)
     let at = |dx: i32, dy: i32| {
         let q = vec2u(clamp(vec2i(p) + vec2i(dx, dy), vec2i(0), vec2i(size)))
         depth.load(x: q.x, y: q.y)
@@ -552,9 +553,9 @@ pub fn marks_on<Y: Style>(
         flat,
     }
     let class = class_of_tag(here.a)
-    let lit = dot(here.rgb, vec3(0.2126, 0.7152, 0.0722))
+    let lit = dot(here.rgb, LUMA)
     // The lattice's marks at the pixel's own centre (`centred`).
-    let (still, zc) = centred(cam, depth, p)
+    let (still, zc) = centred(cam, depth, p, z)
     let at = still + cam.keyed()
     let foot_c = cam.footprint(cam.distance_of(zc)) * per_out
     var dark = 0.0

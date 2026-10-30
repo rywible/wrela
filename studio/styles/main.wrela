@@ -17,14 +17,13 @@
 // and trail and whether it holds the bars, as `<out>/index.html` and its stills.
 
 use looks::{Added, NOT_LOOKS, added_in, holds, looks_in}
-use lookbook_tool::main::{holds as holds_bars, measures_in}
+use lookbook_tool::main::{build_in, holds as holds_bars, measures_in}
 use std::io::print
 use std::tool::{ToolError, args}
 use std::tool::blob::Data
 use std::tool::files
 use std::tool::image
 use std::tool::run
-use std::tool::toolchain
 use toolkit::whole::{chunked, data_bytes, joined, read_file, write_file}
 
 pub const USAGE: Text = "usage: wrela tool styles -- --check [--package <dir>] | --record | --page <out> --run <look>=<lookbook run dir> ..."
@@ -102,11 +101,7 @@ fn check(program: str) -> Result<bool, ToolError> {
         for k in kinds {
             let look = f"styles::{module}::{k}"
             let out = f"{WS}/build/styles/{program.slice(pa, pb)}-{k}"
-            var options = toolchain::options()
-            options.timeout = 600.0
-            options.set.push(toolchain::Set { name: String::from("LOOK"), value: look.clone() })
-            let made = toolchain::build(f"{WS}/{program}", out.as_str(), options).wait()?
-            if !made.ok {
+            if build_in(f"{WS}/{program}", look.as_str(), out.as_str()).is_err() {
                 print(f"styles: {look} ({file}) doesn't build")
                 ok = false
                 continue

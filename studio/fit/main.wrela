@@ -210,7 +210,7 @@ fn fit_style(o: StyleOptions) -> Result<(), ToolError> {
     let look = f"styles::{f.module}::{f.base}Fitting"
     let build = f"out/style-{f.module}"
     print(f"fit: building {o.program} in {look}")
-    fitting::build_in(o.program.as_str(), look.as_str(), build.as_str())?
+    lookbook_tool::main::build_in(o.program.as_str(), look.as_str(), build.as_str())?
     let (aim, what) = if o.set.is_empty() {
         let (px, w) = fitting::read_image(o.reference.as_str())?
         (fitting::Aim::One(take px, w), String::from(f"the reference {o.reference}"))

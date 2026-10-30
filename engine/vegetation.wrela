@@ -17,7 +17,6 @@ use lit::{Lighting, shown, sun_and_sky}
 use switches::Switches
 use style
 use style::{Style, flattened, lit_normal, substance_of}
-use substance
 use noise::{cell_size, hashed_threshold_of}
 use lod::{
     IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, unpacked, ways,

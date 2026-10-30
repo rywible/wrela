@@ -5,7 +5,7 @@
 // summed (`lit::shown`: `shade`), where its marks are drawn (`mark`), and where the image goes to
 // the screen (`paint::develop`: `lens`). A look is a file of `content/styles` (its README).
 
-use light::{Light, Lit}
+use light::{LUMA, Light, Lit}
 use marks::MarkSample
 use paint::{Develop, Exposure}
 use std::gpu::{Rgba8, Sampler, Texture3d}
@@ -148,7 +148,7 @@ pub fn flattened<Y: Style>(fine: vec3, mean: vec3) -> (vec3, f32) {
     if Y::FLAT <= 0.0 {
         return (fine, 0.0)
     }
-    let range = fwidth(dot(fine, vec3(0.2126, 0.7152, 0.0722)))
+    let range = fwidth(dot(fine, LUMA))
     // Fading from a quarter of `FLAT` to twice it, so a pixel whose range wavers about it (as a
     // jittered frame's samples move) doesn't flicker between the two.
     let flat = 1.0 - smoothstep(0.25 * Y::FLAT, 2.0 * Y::FLAT, range)
