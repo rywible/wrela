@@ -345,10 +345,11 @@ pub fn spans(timings: Doc, warmup: u32) -> Vec<f64> {
     out
 }
 
-/// The intervals between paced frames' beginnings, from frame `warmup` on.
+/// The intervals between paced frames' beginnings, each ending at a frame after `warmup` (as
+/// `hitches` and `throughput` count them: each between two counted frames).
 pub fn intervals(began: Vec<f64>, warmup: u32) -> Vec<f64> {
     var out = Vec::new()
-    for k in max(warmup, 1)..began.len() {
+    for k in (warmup + 1)..began.len() {
         out.push(began[k] - began[k - 1])
     }
     out

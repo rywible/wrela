@@ -5,6 +5,7 @@
 // vale's walk (walk.wrela), or stands where a test holds it.
 
 use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
+use engine::switches::Switches
 use engine::tier::{Tier, Tiered, Tiers}
 use styles::physical::Physical
 use engine::shadow::Cascade
@@ -35,8 +36,10 @@ fn quality() -> Quality {
 /// another.
 pub const TIER: Tier = Tier::Epic
 
-/// The vale's switches: its tier's (`engine::tier::Tiered`).
+/// The vale's switches: its tier's (`engine::tier::Tiered`), each else at its approved value.
 pub struct ValeTier {}
+
+impl Switches for ValeTier {}
 
 impl Tiers for ValeTier {
     const TIER: Tier = TIER

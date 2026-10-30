@@ -82,14 +82,17 @@ fn quality() -> Quality {
 /// builds another.
 pub const TIER: Tier = Tier::Epic
 
-/// The floor's switches (`engine::tier::Tiered`): its tier's, and its experiments as its
-/// constants say.
+/// The floor's switches (`engine::tier::Tiered`): its experiments as its constants say, and its
+/// tier's.
 pub struct FloorTier {}
+
+impl Switches for FloorTier {
+    const NEURAL: bool = NEURAL
+    const LEARNED: bool = LEARNED
+}
 
 impl Tiers for FloorTier {
     const TIER: Tier = TIER
-    const NEURAL: bool = NEURAL
-    const LEARNED: bool = LEARNED
 }
 
 /// The floor's experiments, each off as its rule says (`wrela build --set NEURAL=true`): the

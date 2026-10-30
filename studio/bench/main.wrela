@@ -166,6 +166,16 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             return None
         }
     }
+    // A tier is set on a program that names one (`Scene::tiered`).
+    if !o.tier.is_empty() {
+        for n in o.scenes {
+            for s in SCENES {
+                if s.name == n.as_str() && !s.tiered {
+                    return None
+                }
+            }
+        }
+    }
     Some(o)
 }
 
@@ -179,7 +189,8 @@ pub fn chosen(o: Options) -> Vec<Scene> {
                 wanted = true
             }
         }
-        if wanted {
+        // A tier is a program's that names one (`Scene::tiered`).
+        if wanted && (o.tier.is_empty() || s.tiered) {
             var c = s.clone()
             if o.frames > 0 {
                 c.frames = o.frames
@@ -385,29 +396,38 @@ pub fn playable_frame(framed: Doc, log: str) -> Option<u32> {
     None
 }
 
-/// The first frame a run in `dir` counts: `from` (the warmup, or its walk's start if later), or
-/// `AFTER_PLAYABLE` frames after the frame its program printed `playable` in, if that's later.
-/// Before it the load's frames are covered (the arrival's black: `engine::frame::Readiness`),
-/// and since C5 they draw nothing of the scene; a run that never printed `playable` (a program
-/// without an arrival, the hello field; or one whose arrival never ended) is counted from
-/// `from`, and that's said.
-fn counted_from(dir: str, from: u32) -> Result<u32, ToolError> {
-    let framed = json_of(f"{dir}/results/frames.json")?
-    let log = text_of(f"{dir}/results/log.txt")?
-    match playable_frame(framed, log.as_str()) {
+/// The first frame a run counts, from its `frames.json` and its log: `from` (the warmup, or its
+/// walk's start if later), or `AFTER_PLAYABLE` frames after the frame its program printed
+/// `playable` in, if that's later. Before it the load's frames are covered (the arrival's black:
+/// `engine::frame::Readiness`), and since C5 they draw nothing of the scene. A program that
+/// `arrives` and never printed `playable` stayed covered: its frames aren't a scene's, and that's
+/// the failure; one without an arrival (the herd, the hello field) counts from `from`.
+pub fn counted(framed: Doc, log: str, from: u32, arrives: bool) -> Result<u32, String> {
+    match playable_frame(framed, log) {
         Some(f) => Ok(max(from, f + AFTER_PLAYABLE)),
-        None => {
-            print(
-                f"bench: {dir}'s run never printed `playable`: its frames are counted from {from}",
-            )
+        None => if arrives {
+            Err(String::from("it never printed `playable`: every frame was the arrival's cover"))
+        } else {
             Ok(from)
         },
     }
 }
 
-/// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about
-/// frame 105, and the frames after don't count.
-const STARTS_FRAMES: u32 = 160
+/// `counted` for the run in `dir`, scene `s`'s.
+fn counted_from(dir: str, from: u32, s: Scene) -> Result<u32, ToolError> {
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    counted(framed, log.as_str(), from, s.arrives).map_err(|e| ToolError::new(f"{s.name}: {e}"))
+}
+
+/// How many frames past a walk's start an arriving scene's page runs, so its counted frames are
+/// all there should it be playable late (`counted`); a run counting fewer fails.
+const READY_ROOM: u32 = 300
+
+/// A start's page alone (`--starts`) runs this many frames: the scenes are playable by about frame
+/// 105 at `Epic`, and later at a cheaper tier, whose covered frames are quicker (the vale at
+/// `High` natively at 269); the frames after don't count.
+const STARTS_FRAMES: u32 = 400
 
 /// Scene `s`'s starts alone (`--starts`): `o.starts` cold starts (each salted afresh from `salt`,
 /// so no cache serves its pipelines) and as many warm ones, each run's results kept in `kept`;
@@ -433,7 +453,9 @@ pub fn starts(
             let h = String::from(f"{hash}&nohash=1{salted}")
             run(dir.as_str(), h.as_str(), s.width, s.height, timeout, Vec::new(), k)?
             keep_results(dir.as_str(), f"{kept}/{s.name}/{RUNS[k]}-{n + 1}")?
-            let (_, first_frame_ms, _, playable_ms, _) = started(dir.as_str())?
+            let (_, first_frame_ms, _, printed_ms, _) = started(dir.as_str())?
+            // A program without an arrival is playable at its first frame.
+            let playable_ms = if s.arrives { printed_ms } else { first_frame_ms }
             if playable_ms == 0.0 {
                 return Err(ToolError::new(f"{s.name} wasn't playable within {frames} frames"))
             }
@@ -471,7 +493,7 @@ pub fn measure(
     let input = script(s.name)
     // A walk's frames count from its start (`Scene::walks`), after its load.
     let from = max(o.warmup, s.walks)
-    let frames = from + s.frames
+    let frames = from + s.frames + if s.arrives { READY_ROOM } else { 0 }
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
@@ -503,7 +525,7 @@ pub fn measure(
     run(dir.as_str(), hashes[0].as_str(), w, h, timeout, urls, 0)?
     keep_results(dir.as_str(), runs[0].as_str())?
     let span = stats(
-        spans(json_of(f"{dir}/results/timings.json")?, counted_from(dir.as_str(), from)?),
+        spans(json_of(f"{dir}/results/timings.json")?, counted_from(dir.as_str(), from, s)?),
     )
     let machine = machine_of(dir.as_str(), o.lan)?
     // The machine warmed: the play page again and again for `o.sustained` seconds, each page's GPU
@@ -518,7 +540,7 @@ pub fn measure(
         while now() - began < f64(o.sustained) {
             let at = now() - began
             run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
-            let counted = counted_from(dir.as_str(), from)?
+            let counted = counted_from(dir.as_str(), from, s)?
             pages.push((at, spans(json_of(f"{dir}/results/timings.json")?, counted)))
         }
         let last_from = f64(o.sustained) - 60.0
@@ -548,7 +570,18 @@ pub fn measure(
     run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
     keep_results(dir.as_str(), runs[1].as_str())?
     let framed = json_of(f"{dir}/results/frames.json")?
-    let played = counted_from(dir.as_str(), from)?
+    let played = counted_from(dir.as_str(), from, s)?
+    let framed_count = match framed.get(TOP, "began_ms") {
+        Some(n) => framed.count(n),
+        None => 0,
+    }
+    if framed_count < played + s.frames {
+        return Err(
+            ToolError::new(
+                f"{s.name}: {framed_count - min(played, framed_count)} frames counted, not {s.frames}: it was playable late",
+            ),
+        )
+    }
     let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, played)
     let began = match framed.get(TOP, "began_ms") {
         Some(n) => numbers(framed, n, 0),
@@ -620,7 +653,7 @@ pub fn measure(
         var calls = Vec::new()
         if seen.ran.len() > 0 {
             let spans = seen.ran[0].spans.len()
-            for k in o.warmup..spans {
+            for k in from..spans {
                 let span = seen.ran[0].spans[k]
                 calls.push((span.end - span.start) * 1000.0)
             }

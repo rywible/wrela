@@ -15,31 +15,33 @@ pub enum Tier: Copy + Eq + Fieldless {
     Low,
 }
 
-/// What names a program's tier: `impl Tiers for Mine { const TIER: Tier = TIER }`, its
-/// `pub const TIER` read through it; and its experiments, which no tier sets (each off unless the
-/// program's constant says, as `switches::Switches` has them).
-pub trait Tiers {
+/// What names a program's tier, on its switches' type: `impl Tiers for Mine { const TIER: Tier =
+/// TIER }` (its `pub const TIER` read through it), beside the `impl Switches for Mine` that says
+/// any switch it sets itself (its experiments, a switch its look has off).
+pub trait Tiers: Switches {
     const TIER: Tier = Tier::Epic
-    const NEURAL: bool = false
-    const LEARNED: bool = false
 }
 
-/// The switches of `T`'s tier (**proposed**). `Epic`: the approved ones, each at its default
-/// (`switches::Approved`). `High`: the contact shadows and the reflections off. `Medium`:
-/// `High`'s, with the probes' sights off. `Low`: `Medium`'s, with the fog, the distance volume
-/// and the ambient occlusion off. None halves the clouds' dome (the plan had `High` do it): it
-/// marches a quarter of the texels and upsamples the whole dome after, which since the dome's
-/// marched every other frame (C6a) costs more than it saves (the walks at `High` with it, after
-/// two minutes' warming: the floor 15.86 ms against `Epic`'s 14.12, the vale 18.23 against 17.57).
+/// The switches of `T`'s tier (**proposed**): `T`'s own, each that a tier turns off off from it on.
+/// `Epic`: `T`'s. `High`: the contact shadows and the reflections off. `Medium`: `High`'s, with the
+/// probes' sights off. `Low`: `Medium`'s, with the fog, the distance volume and the ambient
+/// occlusion off. None halves the clouds' dome (the plan had `High` do it): it marches a quarter
+/// of the texels and upsamples the whole dome after, which since the dome's marched every other
+/// frame (C6a) costs more than it saves (the walks at `High` with it, after two minutes' warming:
+/// the floor 15.86 ms against `Epic`'s 14.12, the vale 18.23 against 17.57).
 pub struct Tiered<T: Tiers> {}
 
 impl<T: Tiers> Switches for Tiered<T> {
-    const CONTACT: bool = T::TIER == Tier::Epic
-    const REFLECTIONS: bool = T::TIER == Tier::Epic
-    const SIGHT: bool = T::TIER == Tier::Epic || T::TIER == Tier::High
-    const FOG: bool = T::TIER != Tier::Low
-    const DISTANCE: bool = T::TIER != Tier::Low
-    const AMBIENT: bool = T::TIER != Tier::Low
+    const CONTACT: bool = T::CONTACT && T::TIER == Tier::Epic
+    const REFLECTIONS: bool = T::REFLECTIONS && T::TIER == Tier::Epic
+    const SIGHT: bool = T::SIGHT && (T::TIER == Tier::Epic || T::TIER == Tier::High)
+    const FOG: bool = T::FOG && T::TIER != Tier::Low
+    const DISTANCE: bool = T::DISTANCE && T::TIER != Tier::Low
+    const AMBIENT: bool = T::AMBIENT && T::TIER != Tier::Low
+    const OCCLUSION: bool = T::OCCLUSION
+    const PCSS: bool = T::PCSS
+    const HALVED: bool = T::HALVED
+    const CASCADES: bool = T::CASCADES
     const NEURAL: bool = T::NEURAL
     const LEARNED: bool = T::LEARNED
 }

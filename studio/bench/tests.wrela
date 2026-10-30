@@ -2,8 +2,8 @@
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
 use main::{
-    by_hand, chosen, into_devices, lan_url, machine_in, measure, other_rows, parse_args, posted,
-    slug_of,
+    by_hand, chosen, counted, into_devices, lan_url, machine_in, measure, other_rows, parse_args,
+    playable_frame, posted, slug_of,
 }
 use report::{
     hitches, Measured, Stats, compared, date_of, doc, gates, intervals, markdown, report_json,
@@ -49,6 +49,31 @@ fn a_tier_is_one_of_the_four() {
     assert(o.tier.as_str() == "Medium" && o.starts == 3)
     assert(parse_args(texts([])).unwrap().tier.is_empty(), "the program's own tier")
     assert(parse_args(texts(["--tier", "Ultra"])).is_none(), "no such tier")
+    assert(parse_args(texts(["--tier", "Low", "--scene", "herd"])).is_none(), "the herd has none")
+    // Every scene, at a tier: those whose programs name one.
+    let tiered = chosen(parse_args(texts(["--tier", "Low"])).unwrap())
+    assert(tiered.len() == 3, f"{tiered.len()} scenes at a tier")
+    for s in tiered {
+        assert(s.tiered, f"{s.name} has no tier")
+    }
+}
+
+@test
+fn a_runs_counted_frames_begin_after_its_load_and_its_walks_start() {
+    let Ok(framed) = doc("{\"printed_in\": [0, 1, 95], \"began_ms\": []}", "frames.json") else {
+        panic("frames")
+    }
+    let log = "the wood: 26 kinds cooked at frame 1\nmemory\nplayable at frame 95\n"
+    // Playable at 95: its frames count from 155, or from its walk's start if that's later.
+    assert(playable_frame(framed, log) == Some(95))
+    assert(counted(framed, log, 60, arrives: true) == Ok(155))
+    assert(counted(framed, log, 900, arrives: true) == Ok(900))
+    // Never playable: an arriving program's frames were its cover; another's count as they come.
+    let Ok(never) = doc("{\"printed_in\": [0], \"began_ms\": []}", "frames.json") else {
+        panic("frames")
+    }
+    assert(counted(never, "hello\n", 60, arrives: true).is_err())
+    assert(counted(never, "hello\n", 60, arrives: false) == Ok(60))
 }
 
 @test
@@ -88,8 +113,9 @@ fn a_frames_gpu_span_is_its_first_start_to_its_last_end_whatever_the_origin() {
     }
     let s = spans(d, 1)
     assert(s.len() == 1 && s[0] == 3.5)
+    // The intervals between counted frames (from frame 1): the one ending at frame 1 isn't.
     let between = intervals(Vec::from([0.0, 16.0, 33.0, 50.0]), 1)
-    assert(between.len() == 3 && between[1] == 17.0)
+    assert(between.len() == 2 && between[0] == 17.0)
 }
 
 @test
