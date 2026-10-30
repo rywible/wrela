@@ -20,6 +20,7 @@
 // - Within a level, a cell's blade is kept while its rank among its siblings is under the
 //   density the distance asks, and it shrinks away as it is dropped, so nothing pops.
 
+use growth::{Grown, Provenance, Site}
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use switches::Switches
@@ -494,6 +495,18 @@ pub struct Species: Copy + GpuData {
     pub blooms: f32,
     /// How much it likes worn, trodden ground (0: it's worn away there).
     pub worn: f32 = 0.0,
+    /// Its genome's hash (`growth::genome_hash`) where a growth program makes its shape (§E3), or
+    /// 0: authored (`species_provenance`).
+    pub genome: u32 = 0,
+}
+
+/// Species `i`'s provenance (`SPECIES`): its genome's growth, or authored where it has none.
+pub fn species_provenance(i: u32) -> Provenance {
+    let g = SPECIES[i].genome
+    if g == 0 {
+        return Provenance::Authored
+    }
+    Provenance::Grown(Grown { genome: g, site: Site {}, seed: 0 })
 }
 
 /// The wood's floor's species (0 is none: the generic herb). Ferns and bracken are kinds of their
