@@ -12,7 +12,7 @@ A step that changes the image on purpose is judged four ways, all required: the 
 - **F11** holds the eye where the game aimed it; pressed again it dollies the held eye along its look at 0.5 m/s (`DOLLY` a frame), and a third time lets it go. The **backquote** pauses the dolly where it is, and resumes it.
 - **F12** draws **the reference**: `Quality::reference()`, every knob at its most (the scene at the output's size, unpaced, the cascades at 4096² drawn whole, probes of 128 rays), temporal AA's history off and the jitter on an 8×8 grid, so the mean of 64 of its frames is a 64-sample supersample. F12 again puts play back. Either way the frame waits for its caches (an arrival), then prints `reference at frame N` or `play at frame N`.
 
-A shot's run: chosen as a player chooses it and settled for 5 s; time frozen and the eye held; 64 frames to settle the still view, then **play**'s still (the frame as a player sees it), and 64 more frames; the reference there; play again, and a 10 s dolly; then the eye back at the dolly's start, and the dolly again, paused at each quarter: the moving frame there, play settled there for 64 frames, and the reference there. From those, per shot, into `quality.json`, with the play still and the reference beside it as PNGs:
+A shot's run: chosen as a player chooses it and settled for 5 s; time frozen (at 60 s) and the eye held; 240 frames to settle the still view, then **play**'s still (the frame as a player sees it), and 64 more frames; the reference there; play again, and a 10 s dolly; then the eye back at the dolly's start, and the dolly again, paused at each quarter: the moving frame there, play settled there for 64 frames, and the reference there. From those, per shot, into `quality.json`, with the play still and the reference beside it as PNGs:
 
 | Measure | What it is | Better |
 |---|---|---|
@@ -22,7 +22,7 @@ A shot's run: chosen as a player chooses it and settled for 5 s; time frozen and
 | flicker | the mean over pixels of luma's variance over the 64 frames after the play still, the camera still | lower |
 | pop | the largest mean absolute luma difference between two frames in a row of the dolly | lower |
 | still_pop | the same over the 64 still frames: pop's comparator, in pop's units | lower |
-| trail | at the dolly's four stops, the median over rows of how many pixels from the sharpest edge of play settled there the moving frame's luma differs from it by more than 2/255 without a break; the most of the four | lower |
+| trail | at the dolly's four stops, the median over rows of how many pixels from the sharpest edge of play settled there the moving frame's luma differs from it without a break, by more than 2/255 and than twice the row's median difference; the most of the four | lower |
 | lag PSNR | at each stop, the moving frame against play settled there (in `quality.json`, with `stops_psnr`, the moving frame against the reference there) | higher |
 | clipped | the share of the play still's pixels at 1.0 in any channel | lower |
 
@@ -99,7 +99,60 @@ painting) on one added row, *style* (3 is "the same hand").
 
 **Coherence** (§D7): a look's marks are anchored in 3D and sized in 2D (`engine::marks`), and the
 instrument measures what that leaves on the screen. `wrela tool lookbook -- <out> --package
-examples/vale --quality --shots dev --look <type> --bars <physical-run>` builds the vale in the
-look, measures the eight development shots' strips, and holds each to the physical look's bars
+examples/vale --fast --shots dev --look <type> --bars <physical-run>` builds the vale in the
+look, measures the eight development shots' strips (`--fast`: below), and holds each to the physical look's bars
 (**proposed**): flicker and pop at most 1.5 times the physical look's on the same shot, trail at
 most its plus a pixel. The physical baseline is in docs/bench.md ("D7a, the marks").
+
+**The same in every run** (2026-10-30): F10 and F12 freeze the frame's time at 60 s
+(`engine::frame`'s `FROZEN_AT`), and a still view settles 240 frames before it's measured
+(`quality::SETTLE`). Frozen at the frame's own time, and settled 64 frames, a shot's measures
+varied from run to run by up to a fifth, and some fell into one of two states (dawn in the
+hollow's flicker 29 or 48 ×10⁻⁶): the wind and water were frozen wherever that run's load had got
+to, and loading work finished during the measured frames on some runs and not others. Now four
+runs of that shot in two sessions read the same, to the digit, and two runs of all twenty
+shots in two sessions read the same pop on every shot and the same flicker on thirteen; the
+flicker of seven still differs from run to run (06, 07, 09, 11, 14, 18 and 19: another old oak's
+4.7 or 41.4 ×10⁻⁶). So a look is held to the bars on those seven by each look's median of three
+runs (`--runs 3 --shots ...`). Every number before is the earlier instrument's.
+
+**The fast run** (2026-10-30, `--fast`): coherence alone, a shot in about 10 s and the twenty in
+about 3.5 minutes (the full run took about 3 minutes a shot). 960 × 540; the shot looked for
+every 30 frames until it's shown, then time frozen and the eye held and 240 frames settled; the
+still's flicker over 32 frames; the dolly's pop over its first 150; and the trail where the dolly
+ends, paused and settled 60 frames. No reference, so no PSNR, unless `--psnr` takes one at the
+still (and settles again before the dolly). A frame costs about 12 ms at that size, and the GPU
+is the limit (two runs at once took longer than one after the other), so frames are what a run
+saves. Its numbers are its own: a look is held to the physical look's fast run. While the
+instrument holds the frame's time (F10, F12) the cook planner plans from the code's record of
+each kind's cost, not the device's timings (`engine::cook::Planner::steady`): planned from the
+host's timings, a cost near a rung of its ladder took one rung on one run and the next on
+another, and a shot's held frames did different work. With it, a run of the development shots
+repeats within 3 % (twelve of sixteen exact), and the twenty within 2 % but for a few shots up
+to 13 % (the fall, the meadow at evening) and a trail's pixel; so a record is each look's median
+of three (`--runs 3`), and hill-climbing takes single runs. The settle can't be shorter: at 120
+frames, the shore at evening's flicker read 31.6 or 37.0 ×10⁻⁶.
+
+**A trail is behind an edge** (2026-10-30): a pixel is off the settled frame by more than 2/255
+*and* by more than twice its row's median difference. At the fall's last stop the whole sky is
+lighter moving than settled, 2.5% in the physical look and 3% in the cel (the settled view's
+history is the mean of its frames, the moving one's a clipped running blend, and the sky's samples
+are noisy), and a row whose sharpest edge was the horizon ran on across it to the row's end: the
+physical look's median 6 px held because just under half its rows were such rows, and the cel's
+flat ground made it just over half, 527 px. The sky's lag is the engine's, both looks', and the
+lag PSNR still shows it; it is no trail. The physical bars were measured again with this.
+
+**A still waits for its shot** (2026-10-30). The wood under cloud is at (−250, 250), far from
+where the vale starts, and its content streams in: at B5 it had arrived by the still's frame 301;
+on 2026-10-30 it was black there in every look (it showed 90 to 330 frames later, by the clock's
+pace), and two agent judges were handed a black still before it was caught. `--stills` now looks
+again every 30 frames until the shot shows and settles `SETTLE_FRAMES` more (printing how late);
+a shot shown by frame 301 is the frame it always was (the old oak's still byte-identical). A shot
+whose measures fail (`quality::measure`) is loaded once more on a fresh page.
+
+**A trail can rest on one row.** Only rows with a step of 0.1 in luma count, and a soft frame has
+few: on another old oak's fast run the dolly ends on bark, and one row qualifies (row 533, at a
+small dark thing in the corner), so the shot's trail is that row's run, 27 to 29 px in the
+physical look from one run to the next. A look's trail there moves with whatever shades that
+corner (Painterly's 30: docs/bench.md, "D4–D7b"). The bar isn't widened after the fact; a later
+instrument should count its rows and say when too few qualify.

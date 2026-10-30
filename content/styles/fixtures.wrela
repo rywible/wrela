@@ -3,8 +3,8 @@
 // of them (`Every`) or one channel's (`Formed`, `Caused`, `Toned`), so a channel's cost is a build
 // of the vale with it against the physical one (`wrela build examples/vale --set
 // LOOK=styles::fixtures::Every`); and one the trait's test draws a sphere's normals with
-// (`Normals`), and one the marks' tests draw dots with (`Dotted`). `wrela tool styles` leaves them
-// out (D10).
+// (`Normals`), one the marks' tests draw dots with (`Dotted`), and the cel look unflattened for
+// the flattening's cost (`Unflattened`). `wrela tool styles` leaves them out (D10).
 
 use engine::marks
 use engine::marks::MarkSample
@@ -12,6 +12,7 @@ use engine::light::{Light, Lit}
 use engine::paint::{Develop, Exposure}
 use engine::style::Style
 use engine::substance
+use cel::Cel
 use engine::substance::{Substance, Written}
 use physical::Physical
 use std::gpu::{Rgba8, Sampler, Texture3d}
@@ -276,5 +277,57 @@ impl Style for Dotted {
         s: Sampler,
     ) -> vec4 {
         Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+/// The cel look without its flattening (`FLAT` 0, `engine::style::flattened` folded away), for
+/// measuring the flattening's cost: a build of the vale in it against one in `cel::Cel`.
+pub struct Unflattened {}
+
+impl Style for Unflattened {
+    const SUBSTANCE: u32 = Cel::SUBSTANCE
+    const NORMAL: u32 = Cel::NORMAL
+    const MARKS: u32 = Cel::MARKS
+    const FLAT_CLIP: f32 = Cel::FLAT_CLIP
+    const FLAT: f32 = 0.0
+    const LINE_DARK: f32 = Cel::LINE_DARK
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        Cel::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Cel::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Cel::shade_leaf(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        Cel::palette(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        Cel::mark(m, s, depth_px)
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Cel::lens(paint, px, d, e, lut, s)
     }
 }

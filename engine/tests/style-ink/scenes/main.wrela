@@ -1,0 +1,69 @@
+// The ink look's panel (engine/tests/style-ink), 256 × 256: a sphere a metre round from 4 m, lit
+// from the side through the look's `shade` (`SUN`, the sky `SKY`), and at each of its pixels which
+// of the hatching's three layers inks it (`styles::ink::layer` on the mark lattice,
+// `marks::sample`): red the first, green the second, blue the third; white off the sphere.
+
+use engine::frame::full
+use engine::light::{LUMA, Light, Lit}
+use engine::marks
+use engine::style
+use engine::substance
+use engine::substance::tangents
+use engine::view::{Camera, first_camera}
+use std::gpu::{FragCoord, begin_screen_pass, draw}
+use styles::ink::{HATCH_PX, Ink, layer}
+use engine::style::Style
+
+/// The screen's side (pixels).
+pub const SIDE: u32 = 256
+/// The light: from the side, a little toward the eye; and the sky's.
+pub const SUN: vec3 = vec3(0.9759, 0.0, 0.2182)
+pub const SKY: vec3 = vec3(0.5)
+
+pub struct State {}
+
+pub fn init() -> State {
+    State {}
+}
+
+/// The panel's camera.
+fn eye() -> Camera {
+    first_camera(vec3(0.0, 0.0, 4.0), vec3(0.0), 0.8, SIDE, SIDE)
+}
+
+/// The sphere's point and normal at a pixel through `cam`, if it's on it.
+fn on_sphere(cam: Camera, px: vec2) -> Option<(vec3, vec3)> {
+    let ray = cam.ray(px)
+    let b = dot(cam.eye, ray)
+    let h = b * b - (dot(cam.eye, cam.eye) - 1.0)
+    if h <= 0.0 {
+        return None
+    }
+    let p = cam.eye + ray * (-b - sqrt(h))
+    Some((p, normalize(p)))
+}
+
+/// The look's light at a normal of the sphere (grey, 0 to 1).
+fn light_at(n: vec3, p: vec3) -> f32 {
+    let light = Light { sun: SUN, exposure: 1.0, sun_colour: vec3(1.0), eye: 1.0, horizon: 0.0 }
+    let l = Lit { albedo: vec3(0.25), n, sun: 1.0, sky: SKY, through: vec3(0.0) }
+    dot(Ink::shade(light, l, substance::NONE, style::STONE, p, vec3(0.0, 0.0, 4.0)), LUMA)
+}
+
+@fragment
+fn layers(pixel: FragCoord, cam: Camera) -> vec4 {
+    let Some((p, n)) = on_sphere(cam, pixel.position.xy) else { return vec4(1.0) }
+    let (dir, _) = tangents(n)
+    let foot = cam.footprint(dot(p - cam.eye, cam.forward))
+    let m = marks::MarkSample {
+        lit: light_at(n, p),
+        ..marks::sample(marks::HATCH, p, n, dir, foot, HATCH_PX).fine,
+    }
+    vec4(step(0.5, layer(m, 0)), step(0.5, layer(m, 1)), step(0.5, layer(m, 2)), 1.0)
+}
+
+pub fn frame(state: mut State, time: f32, width: u32, height: u32) {
+    let screen = begin_screen_pass(clear: vec4(0.0))
+    draw(screen, full.bind(z: 0.5), layers.bind(cam: eye()), vertices: 3)
+    screen.present()
+}
