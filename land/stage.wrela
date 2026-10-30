@@ -17,6 +17,7 @@ use engine::distance::Capsule
 use engine::fog::{FogField, FogSphere, HeightFog}
 use engine::frame::{Cooks, Effects, Targets, fullscreen}
 use engine::switches::Switches
+use engine::style
 use engine::style::Style
 use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
@@ -1525,24 +1526,20 @@ pub fn draw_water<T: Tiles, Q: Switches, Y: Style>(
     if !args.is_empty() {
         let n = args.len()
         write(mut s.water_args, 0, take args)
-        // Into the substance's targets too, where the look reads them (`engine::substance`).
-        if Y::SUBSTANCE != 0 {
-            let wp = begin_pass4_with_depth(
-                mut t.scene,
-                mut t.form,
-                mut t.cause,
-                mut t.tone,
-                mut t.depth,
-                keep: true,
-                keep_depth: true,
-            )
-            water_into(wp, s, t.below, fx, n)
-            wp.end()
-        } else {
-            let wp = begin_pass_with_depth(mut t.scene, mut t.depth, keep: true, keep_depth: true)
-            water_into(wp, s, t.below, fx, n)
-            wp.end()
-        }
+        // Into the substance's targets too, where the look reads them (`engine::style::Shaded`).
+        let wp = style::opened::<Y::Out>(
+            mut t.scene,
+            mut t.form,
+            mut t.cause,
+            mut t.tone,
+            mut t.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
+            keep: true,
+            keep_depth: true,
+            join: false,
+        )
+        water_into(wp, s, t.below, fx, n)
+        style::closed::<Y::Out>(wp)
     }
 }
 

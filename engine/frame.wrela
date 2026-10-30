@@ -2724,81 +2724,50 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         // The shading passes write the scene's colour, and the substance's three beside it where
         // the look reads them (`substance`, `style::Style::SUBSTANCE`): its fragments' `Out`.
         label("vegetation")
-        if Y::SUBSTANCE != 0 {
-            let veg = begin_pass4_with_depth(
-                mut self.targets.scene,
-                mut self.targets.form,
-                mut self.targets.cause,
-                mut self.targets.tone,
-                mut self.targets.depth,
-                clear: vec4(0.0),
-                keep_depth: true,
-            )
-            scene.shade(veg, lt, wind, self.targets.ids)
-            veg.end()
-        } else {
-            let veg = begin_pass_with_depth(
-                mut self.targets.scene,
-                mut self.targets.depth,
-                clear: vec4(0.0),
-                keep_depth: true,
-            )
-            scene.shade(veg, lt, wind, self.targets.ids)
-            veg.end()
-        }
+        let veg = style::opened::<Y::Out>(
+            mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
+            mut self.targets.depth,
+            clear: vec4(0.0),
+            keep: false,
+            keep_depth: true,
+            join: false,
+        )
+        scene.shade(veg, lt, wind, self.targets.ids)
+        style::closed::<Y::Out>(veg)
         let terrain = self.on(Off::Terrain)
         label("terrain")
-        if Y::SUBSTANCE != 0 {
-            let ter = begin_pass4_with_depth(
-                mut self.targets.scene,
-                mut self.targets.form,
-                mut self.targets.cause,
-                mut self.targets.tone,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-            )
-            if terrain {
-                ground_into(ter, cam, lt, texels, self.clipmap)
-            }
-            ter.end()
-        } else {
-            let ter = begin_pass_with_depth(
-                mut self.targets.scene,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-            )
-            if terrain {
-                ground_into(ter, cam, lt, texels, self.clipmap)
-            }
-            ter.end()
+        let ter = style::opened::<Y::Out>(
+            mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
+            mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
+            keep: true,
+            keep_depth: true,
+            join: false,
+        )
+        if terrain {
+            ground_into(ter, cam, lt, texels, self.clipmap)
         }
+        style::closed::<Y::Out>(ter)
         label("creature")
-        if Y::SUBSTANCE != 0 {
-            let cr = begin_pass4_with_depth(
-                mut self.targets.scene,
-                mut self.targets.form,
-                mut self.targets.cause,
-                mut self.targets.tone,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-                join: true,
-            )
-            scene.characters(cr, lt)
-            cr.end()
-        } else {
-            let cr = begin_pass_with_depth(
-                mut self.targets.scene,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-                join: true,
-            )
-            scene.characters(cr, lt)
-            cr.end()
-        }
+        let cr = style::opened::<Y::Out>(
+            mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
+            mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
+            keep: true,
+            keep_depth: true,
+            join: true,
+        )
+        scene.characters(cr, lt)
+        style::closed::<Y::Out>(cr)
         // The second phase (`cull`): this frame's pyramid from the opaque passes' depth, what the
         // first phase left out tested against it, and what it reveals drawn now.
         let late = Q::OCCLUSION && scene.reveals()
@@ -2815,62 +2784,40 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             )
             scene.late_prepass(lp, cam, wind, self.linear)
             lp.end()
-            if Y::SUBSTANCE != 0 {
-                let ls = begin_pass4_with_depth(
-                    mut self.targets.scene,
-                    mut self.targets.form,
-                    mut self.targets.cause,
-                    mut self.targets.tone,
-                    mut self.targets.depth,
-                    keep: true,
-                    keep_depth: true,
-                )
-                scene.late_shade(ls, lt, wind, self.targets.ids)
-                ls.end()
-            } else {
-                let ls = begin_pass_with_depth(
-                    mut self.targets.scene,
-                    mut self.targets.depth,
-                    keep: true,
-                    keep_depth: true,
-                )
-                scene.late_shade(ls, lt, wind, self.targets.ids)
-                ls.end()
-            }
+            let ls = style::opened::<Y::Out>(
+                mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
+                mut self.targets.depth,
+                clear: vec4(0.0, 0.0, 0.0, 1.0),
+                keep: true,
+                keep_depth: true,
+                join: false,
+            )
+            scene.late_shade(ls, lt, wind, self.targets.ids)
+            style::closed::<Y::Out>(ls)
         } else {
             self.pyramid.at.on = 0
         }
         // The sky joins the pass before it (the creature pass, or the late shading), where nothing
         // was drawn (its depth doesn't change).
         label("sky")
-        if Y::SUBSTANCE != 0 {
-            let sky = begin_pass4_with_depth(
-                mut self.targets.scene,
-                mut self.targets.form,
-                mut self.targets.cause,
-                mut self.targets.tone,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-                join: true,
-            )
-            if !scene.sky_instead(sky) {
-                sky_into(sky, lt, self.tables.view, self.sky.dome)
-            }
-            sky.end()
-        } else {
-            let sky = begin_pass_with_depth(
-                mut self.targets.scene,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-                join: true,
-            )
-            if !scene.sky_instead(sky) {
-                sky_into(sky, lt, self.tables.view, self.sky.dome)
-            }
-            sky.end()
+        let sky = style::opened::<Y::Out>(
+            mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
+            mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
+            keep: true,
+            keep_depth: true,
+            join: true,
+        )
+        if !scene.sky_instead(sky) {
+            sky_into(sky, lt, self.tables.view, self.sky.dome)
         }
+        style::closed::<Y::Out>(sky)
         // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was),
         // for the next frame's shading (its slices still in plain rendering, which has no history
         // to gather them); or the radiance cascades' light, in its place.
@@ -3067,7 +3014,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         // The look's marks, on the scene's own samples (`marks::marks_on`), before the lines: a
         // look that turns the image to its paper (the ink look's hatching) would turn a line
         // drawn under it back to paper too.
-        if (Y::MARKS & marks::DRAWN) != 0 {
+        if Y::DRAWS {
             if !self.debug.plain && self.debug.view == 0 && !instead {
                 label("marks")
                 let cp = begin_pass(mut self.targets.scene_b)
