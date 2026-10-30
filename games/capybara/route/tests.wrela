@@ -6,9 +6,10 @@ use capybara::body::Mode
 use capybara::pad::{Hold, JUMP, PRESS, Pad, RIGHT, holds_of, pad_of}
 use capybara::proofs::LAB_RUN
 use capybara::course::course
-use capybara::routes::{HUMAN_ANY, HUMAN_FULL}
-use capybara::world::{LAB, LEVEL, World, play, step, world}
-use main::{Ask, SECONDS, parse_args}
+use capybara::routes_wetlands::{HUMAN_ANY, HUMAN_FULL}
+use capybara::world::{LAB, World, play, step, world}
+use capybara::course::{HOME, WETLANDS}
+use main::{Ask, SECONDS, constant_of, parse_args}
 use search::{ACTIONS, Goal, Settings, firsts, played, run_through, to_goal}
 use slack::{FIRM, LATE, RECOVER, WHOLE, finishes, forgiving, human, pads_of, slack}
 use std::hash::state_hash
@@ -80,22 +81,22 @@ fn a_snack_the_segment_needs_is_found() {
     // The level's first snack, on the ledge 3.2 m up that only a double jump reaches.
     let past = Goal { until: 16.0, snacks: 0 }
     let fetch = Goal { until: 16.0, snacks: 1 }
-    let Some(quick) = run_through(world(LEVEL), past, Settings { beam: 50 }).found else {
+    let Some(quick) = run_through(world(WETLANDS), past, Settings { beam: 50 }).found else {
         panic("no run past the ledge")
     }
-    let Some(snack) = run_through(world(LEVEL), fetch, Settings { beam: 50 }).found else {
+    let Some(snack) = run_through(world(WETLANDS), fetch, Settings { beam: 50 }).found else {
         panic("no run by the snack")
     }
     print(f"past the first ledge: {quick.end.ticks} ticks, by its snack {snack.end.ticks}")
-    assert(snack.end.snacks & 1 != 0 && played(world(LEVEL), snack.pads) == snack.end)
+    assert(snack.end.snacks & 1 != 0 && played(world(WETLANDS), snack.pads) == snack.end)
 }
 
 @test
 fn a_search_stops_at_its_tick_bound_or_when_every_state_dies() {
-    let bounded = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 60 })
+    let bounded = run_through(world(WETLANDS), STRETCH, Settings { beam: 20, ticks: 60 })
     assert(bounded.stopped && bounded.found.is_none() && bounded.ticks() == 60)
     // Falling into the first pit, too deep to come out: every state dies, and none is kept.
-    var falling = world(LEVEL)
+    var falling = world(WETLANDS)
     falling.body.at = vec2(29.5, -9.0)
     falling.body.vel = vec2(0.0, -20.0)
     falling.body.mode = Mode::Air
@@ -105,20 +106,20 @@ fn a_search_stops_at_its_tick_bound_or_when_every_state_dies() {
 
 @test
 fn a_search_never_goes_past_its_tick_bound_mid_layer() {
-    let none = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 0 })
+    let none = run_through(world(WETLANDS), STRETCH, Settings { beam: 20, ticks: 0 })
     assert(none.stopped && none.states == 0 && none.ticks() == 0, "no ticks, no layer")
-    let odd = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 61 })
+    let odd = run_through(world(WETLANDS), STRETCH, Settings { beam: 20, ticks: 61 })
     assert(odd.stopped && odd.ticks() == 61, f"{odd.ticks()} ticks")
     // Past the first ledge with a tick less than it takes, in layers of 6: nothing found (it
     // would be found on the bound's layer, past the bound), or something as fast.
     let past = Goal { until: 16.0, snacks: 0 }
-    let Some(quick) = run_through(world(LEVEL), past, Settings { beam: 50 }).found else {
+    let Some(quick) = run_through(world(WETLANDS), past, Settings { beam: 50 }).found else {
         panic("no run past the ledge")
     }
     let bound = quick.end.ticks - 1
-    let tight = run_through(world(LEVEL), past, Settings { beam: 50, ticks: bound })
+    let tight = run_through(world(WETLANDS), past, Settings { beam: 50, ticks: bound })
     if let Some(f) = tight.found {
-        assert(f.pads.len() <= bound && played(world(LEVEL), f.pads) == f.end, f"{f.pads.len()}")
+        assert(f.pads.len() <= bound && played(world(WETLANDS), f.pads) == f.end, f"{f.pads.len()}")
     }
 }
 
@@ -146,14 +147,31 @@ fn pads_are_held_in_the_longest_stretches_that_give_them_back() {
 }
 
 @test
-fn the_command_line_takes_the_seconds_and_the_human_mode() {
+fn the_command_line_takes_the_level_the_seconds_and_the_human_mode() {
     let s = |x: Text| String::from(x)
-    assert(parse_args([]) == Some(Ask { seconds: SECONDS, human: false }))
-    assert(parse_args([s("--seconds"), s("60")]) == Some(Ask { seconds: 60, human: false }))
+    let (level, home) = (s("--level"), s("home"))
+    assert(parse_args([level.clone(), home.clone()]) == Some(Ask {
+        level: HOME,
+        seconds: SECONDS,
+        human: false,
+    }))
     assert(
-        parse_args([s("--human"), s("--seconds"), s("9")]) == Some(Ask { seconds: 9, human: true }),
+        parse_args([s("--seconds"), s("60"), level.clone(), s("wetlands")]) ==
+            Some(Ask { level: WETLANDS, seconds: 60, human: false }),
     )
+    assert(
+        parse_args([s("--human"), s("--seconds"), s("9"), level.clone(), home.clone()]) ==
+            Some(Ask { level: HOME, seconds: 9, human: true }),
+    )
+    assert(parse_args([]).is_none(), "no level")
+    assert(parse_args([level.clone(), s("moon")]).is_none(), "no such level")
     assert(parse_args([s("60")]).is_none() && parse_args([s("--human"), s("--human")]).is_none())
+}
+
+@test
+fn a_levels_course_constant_is_its_key_in_capitals() {
+    assert(constant_of("home") == String::from("HOME"))
+    assert(constant_of("food_court") == String::from("FOOD_COURT"))
 }
 
 @test
@@ -231,17 +249,17 @@ fn a_change_is_firm_within_a_second_only_if_two_ticks_either_way_live_through_it
 /// Whether the human run `run`, which finds `snacks`, finishes, keeps to the limits and is
 /// forgiving.
 fn humanly(run: [Hold], snacks: u32) -> bool {
-    let pads = pads_of(LEVEL, run)
-    let s = slack(LEVEL, pads, to_goal(snacks), RECOVER)
+    let pads = pads_of(WETLANDS, run)
+    let s = slack(WETLANDS, pads, to_goal(snacks), RECOVER)
     print(
         f"a human route: {pads.len()} ticks, {s.firm} of {s.changes} changes firm within a second",
     )
-    finishes(play(LEVEL, run), snacks) && human(pads) && forgiving(s)
+    finishes(play(WETLANDS, run), snacks) && human(pads) && forgiving(s)
 }
 
 @test
 fn the_human_routes_keep_to_the_limits_and_are_forgiving() {
-    let every = course(LEVEL).every_snack()
+    let every = course(WETLANDS).every_snack()
     assert(humanly(HUMAN_ANY, 0), f"any%: at least {FIRM}% of its changes firm within a second")
     assert(
         humanly(HUMAN_FULL, every),

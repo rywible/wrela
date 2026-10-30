@@ -130,11 +130,6 @@ pub fn grass_mesh(c: Course) -> Vec<vec4> {
     out
 }
 
-pub const LAB_EARTH: Vec<vec4> = earth_mesh(course::LAB)
-pub const LEVEL_EARTH: Vec<vec4> = earth_mesh(course::LEVEL)
-pub const LAB_GRASS: Vec<vec4> = grass_mesh(course::LAB)
-pub const LEVEL_GRASS: Vec<vec4> = grass_mesh(course::LEVEL)
-
 // ---- the ground's top, sampled ----------------------------------------------------------------
 
 /// The profile's first x and its spacing (m), and how many samples it has.
@@ -178,9 +173,6 @@ pub fn profile(c: Course) -> Vec<f32> {
     }
     out
 }
-
-pub const LAB_TOPS: Vec<f32> = profile(course::LAB)
-pub const LEVEL_TOPS: Vec<f32> = profile(course::LEVEL)
 
 /// The profile's top at `x`, between its samples.
 pub fn top_at(tops: [f32], x: f32) -> f32 {

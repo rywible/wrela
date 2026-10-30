@@ -8,13 +8,15 @@
 // A board belongs to one version of play (`BOARD`): a change to the sim or the courses that
 // changes how a run plays starts a new one, and the runs of the old one are dropped.
 
-use course::{COURSES, course}
+use course::{COURSES, LEVELS, course}
+use searched::searched
 use feel::HZ
 use pad::{Hold, pad_of}
 use proofs::LAB_RUN
 use std::collections::Vec
 use std::serialize::{LoadError, Serialize, load, save}
-use world::{LAB, LEVEL, Snap, World, step, world}
+use world::{LAB, Snap, World, step, world}
+use course::WETLANDS
 
 /// The version of play the runs are for: 3 since a kick off the bottom of water waits the kicks'
 /// cooldown.
@@ -212,16 +214,19 @@ pub fn bytes(b: Board) -> Vec<u8> {
     save(b)
 }
 
-/// The tool-assisted runs of course `c`, as replays: the level's any% and 100% from the route
-/// search (routes.wrela), its fastest and then its human-possible ones, and the lab's autopilot
-/// recording (proofs.wrela).
+/// The tool-assisted runs of course `c`, as replays: a level's any% and 100% from the route
+/// search (searched.wrela), its fastest and then its human-possible ones (none for a level not
+/// searched yet), and the lab's autopilot recording (proofs.wrela).
 pub fn tool_assisted(c: u32) -> Vec<Replay> {
     var out: Vec<Replay> = Vec::new()
-    if c == LEVEL {
-        out.push(recorded(LEVEL, routes::ANY, AUTOPILOT))
-        out.push(recorded(LEVEL, routes::FULL, AUTOPILOT))
-        out.push(recorded(LEVEL, routes::HUMAN_ANY, HUMAN))
-        out.push(recorded(LEVEL, routes::HUMAN_FULL, HUMAN))
+    if c < LEVELS {
+        let s = searched(c)
+        if s.any.len() > 0 {
+            out.push(recorded(c, s.any, AUTOPILOT))
+            out.push(recorded(c, s.full, AUTOPILOT))
+            out.push(recorded(c, s.human_any, HUMAN))
+            out.push(recorded(c, s.human_full, HUMAN))
+        }
     } else if c == LAB {
         out.push(recorded(LAB, LAB_RUN, AUTOPILOT))
     }
@@ -323,7 +328,7 @@ fn claimed(c: u32, ticks: u32, snacks: u32) -> Replay {
 
 @test
 fn the_autopilots_runs_verify_and_a_doctored_one_does_not() {
-    for c in [LAB, LEVEL] {
+    for c in [LAB, WETLANDS] {
         for r in tool_assisted(c) {
             assert(verify(r), f"course {c}: {r.ticks} ticks")
             var faster = r.clone()
@@ -334,25 +339,25 @@ fn the_autopilots_runs_verify_and_a_doctored_one_does_not() {
             assert(!verify(more), "a run claiming a snack it didn't find")
         }
     }
-    let full = tool_assisted(LEVEL)[1].clone()
+    let full = tool_assisted(WETLANDS)[1].clone()
     assert(counts(full, FULL) && counts(full, ANY))
-    assert(!counts(tool_assisted(LEVEL)[0], FULL), "the any% run misses snacks")
+    assert(!counts(tool_assisted(WETLANDS)[0], FULL), "the any% run misses snacks")
 }
 
 @test
 fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
     var b = board()
-    let all = course(LEVEL).every_snack()
+    let all = course(WETLANDS).every_snack()
     // Seven any% runs, slowest first, then a slow 100% run.
     for k in 0..7 {
-        let _ = b.add(claimed(LEVEL, ticks: 4000 - k * 10, snacks: 0))
+        let _ = b.add(claimed(WETLANDS, ticks: 4000 - k * 10, snacks: 0))
     }
-    assert(b.add(claimed(LEVEL, ticks: 5000, snacks: all)), "the only 100% run is kept")
-    assert(!b.add(claimed(LEVEL, ticks: 4100, snacks: 0)), "a slow any% run isn't")
-    let any = b.ranked(LEVEL, ANY)
+    assert(b.add(claimed(WETLANDS, ticks: 5000, snacks: all)), "the only 100% run is kept")
+    assert(!b.add(claimed(WETLANDS, ticks: 4100, snacks: 0)), "a slow any% run isn't")
+    let any = b.ranked(WETLANDS, ANY)
     assert(any.len() == KEPT)
     assert(any[0].ticks == 3940 && any[KEPT - 1].ticks == 3980, f"{any[0].ticks}")
-    let full = b.ranked(LEVEL, FULL)
+    let full = b.ranked(WETLANDS, FULL)
     assert(full.len() == 1 && full[0].ticks == 5000)
     assert(b.ranked(LAB, ANY).len() == 0)
 }
@@ -360,7 +365,7 @@ fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
 @test
 fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
     var b = board()
-    let any = tool_assisted(LEVEL)[0].clone()
+    let any = tool_assisted(WETLANDS)[0].clone()
     var mine = any.clone()
     mine.who = YOU
     let _ = b.add(mine.clone())
@@ -469,10 +474,10 @@ fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again()
 
 @test
 fn a_runs_splits_are_the_ticks_it_first_reached_each_checkpoint() {
-    let r = tool_assisted(LEVEL)[0].clone()
+    let r = tool_assisted(WETLANDS)[0].clone()
     let poses = trail(r)
     let at = splits(poses)
-    assert(at.len() == course(LEVEL).checkpoints.len(), f"{at.len()} splits")
+    assert(at.len() == course(WETLANDS).checkpoints.len(), f"{at.len()} splits")
     for i in 0..at.len() {
         assert(poses[at[i]].checkpoint == i + 1 && poses[at[i] - 1].checkpoint <= i, f"split {i}")
         if i > 0 {

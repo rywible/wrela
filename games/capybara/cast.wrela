@@ -786,7 +786,8 @@ use pad::{Hold, Pad, pad_of}
 use proofs::LEVEL_FULL
 use replay::tool_assisted
 use watch::watch
-use world::{LEVEL, NO_TALLY, Tally, World, present, step, step_counted, world}
+use world::{NO_TALLY, Tally, World, present, step, step_counted, world}
+use course::WETLANDS
 
 /// One tick of `w` on `pad`, counted in `t` and reacted to: the kinds of cue it sent, as bits.
 fn heard(w: mut World, t: mut Tally, k: mut Cast, c: Course, pad: Pad) -> u32 {
@@ -806,8 +807,8 @@ fn heard(w: mut World, t: mut Tally, k: mut Cast, c: Course, pad: Pad) -> u32 {
 @test
 fn the_level_played_through_sends_every_cue_and_ends_in_fireworks() {
     // The 100% run, reacted to every tick, then six seconds at the goal.
-    borrow c = course(LEVEL)
-    var w = world(LEVEL)
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
     var t = NO_TALLY
     var k = cast(c)
     var bits = 0
@@ -848,8 +849,8 @@ fn counts(t: Tally) -> [u32; 4] {
 /// `run` on the level, its frames seeing every `every`th tick from tick `phase`: the cues of each
 /// kind (`tally_cues`) they send, and what the run's ticks counted.
 fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
-    borrow c = course(LEVEL)
-    var w = world(LEVEL)
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
     var t = NO_TALLY
     var k = cast(c, from: Some(present(w)))
     var n = [0; 4]
@@ -873,10 +874,10 @@ fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
 fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
     // The level's fastest 100% run lands on a jump pressed before landing: on the ground for one
     // tick, which a frame at 60 a second (every second tick of 120) sees only half the time.
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     var one_tick = 0
     var on = 0
-    for h in routes::FULL {
+    for h in routes_wetlands::FULL {
         for i in 0..h.ticks {
             step(mut w, pad_of(h, i))
             if w.body.grounded() {
@@ -890,7 +891,7 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
         }
     }
     assert(one_tick > 0, "the run has a landing that lasts a tick")
-    let (every_tick, t) = framed_cues(routes::FULL, every: 1, phase: 0)
+    let (every_tick, t) = framed_cues(routes_wetlands::FULL, every: 1, phase: 0)
     let m = counts(t)
     assert(
         every_tick == m,
@@ -898,7 +899,7 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
     )
     assert(t.landings > one_tick && t.jumps > 0 && t.doubles > 0, f"{t.landings} landings")
     for phase in [0, 1] {
-        let (framed, _) = framed_cues(routes::FULL, every: 2, phase: phase)
+        let (framed, _) = framed_cues(routes_wetlands::FULL, every: 2, phase: phase)
         assert(framed == every_tick, f"every second tick from {phase}: {framed[0]} landings")
     }
 }
@@ -907,8 +908,8 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
 fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     // Frames at 60 a second, four times as fast: eight ticks a frame, through the run and the
     // fireworks after it.
-    borrow c = course(LEVEL)
-    let r = tool_assisted(LEVEL)[1].clone()
+    borrow c = course(WETLANDS)
+    let r = tool_assisted(WETLANDS)[1].clone()
     let (played, _) = framed_cues(r.holds, every: 1, phase: 0)
     var v = watch(r.clone())
     v.speed = 4
@@ -928,7 +929,7 @@ fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
 
 /// The capybara's sprite in snapshot `s` of the level, drawn by a new cast.
 fn capybara_sprite(s: Snap) -> Sprite {
-    borrow c = course(LEVEL)
+    borrow c = course(WETLANDS)
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
     let k = cast(c, from: Some(s))
@@ -955,12 +956,12 @@ fn capybara_sprite(s: Snap) -> Sprite {
 @test
 fn the_capybara_is_tinted_by_the_water_on_a_lakebed_and_not_on_dry_ground() {
     // On dry ground at the start: no water over it.
-    let dry = capybara_sprite(present(world(LEVEL)))
+    let dry = capybara_sprite(present(world(WETLANDS)))
     assert(dry.surface < -1.0e3, f"a surface of {dry.surface} on dry ground")
     // The 100% run walks the lake's floor to the snack under the deep caiman: its middle is a
     // radius above the floor, so a point a reach below it is in the ground, not the water.
-    borrow c = course(LEVEL)
-    var w = world(LEVEL)
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
     var on_floor = 0
     for h in LEVEL_FULL {
         for i in 0..h.ticks {
@@ -984,8 +985,8 @@ fn the_capybara_is_tinted_by_the_water_on_a_lakebed_and_not_on_dry_ground() {
 fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
     // The voice hisses for a slide in a cast before (Tab to the other course mid-slide): the new
     // cast's first frame, standing, asks for none.
-    borrow c = course(LEVEL)
-    let s = present(world(LEVEL))
+    borrow c = course(WETLANDS)
+    let s = present(world(WETLANDS))
     var k = cast(c, from: Some(s))
     react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
     var slide = -1.0
@@ -1005,8 +1006,8 @@ fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
 @test
 fn a_seek_into_a_death_isnt_heard_as_a_hurt() {
     // Halfway through dying after a frame that wasn't: hurt, played on to it; not, seeked to it.
-    borrow c = course(LEVEL)
-    let before = present(world(LEVEL))
+    borrow c = course(WETLANDS)
+    let before = present(world(WETLANDS))
     var dying = before
     dying.dying = DYING / 2
     var seeked = dying

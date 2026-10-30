@@ -133,11 +133,11 @@ impl Watch {
 // ---- tests -------------------------------------------------------------------------------------
 
 use replay::{played, tool_assisted}
-use world::LEVEL
+use course::WETLANDS
 
 @test
 fn a_watched_run_plays_to_its_goal_at_any_speed_and_stops_after_it() {
-    let r = tool_assisted(LEVEL)[0].clone()
+    let r = tool_assisted(WETLANDS)[0].clone()
     let ticks = r.ticks
     var w = watch(r.clone())
     w.speed = 4
@@ -153,7 +153,7 @@ fn a_watched_run_plays_to_its_goal_at_any_speed_and_stops_after_it() {
 
 @test
 fn seeking_lands_where_playing_does() {
-    let r = tool_assisted(LEVEL)[1].clone()
+    let r = tool_assisted(WETLANDS)[1].clone()
     var w = watch(r.clone())
     w.seek(1500)
     let there = played(r, 1500)

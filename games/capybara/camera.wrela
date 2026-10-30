@@ -162,7 +162,8 @@ use course::course
 use feel::STEP
 use pad::{Hold, pad_of}
 use proofs::{LAB_RUN, LEVEL_ANY, LEVEL_FULL}
-use world::{LAB, LEVEL, present, step, world}
+use world::{LAB, present, step, world}
+use course::WETLANDS
 
 /// Whether the camera keeps the capybara in view, a metre and a half inside a 16:9 screen's
 /// edges, through `run` on course `at`.
@@ -203,8 +204,8 @@ fn the_play_area_shows_the_same_width_at_any_shape() {
 @test
 fn the_camera_keeps_the_capybara_in_view_through_the_lab_and_the_level() {
     assert(keeps_in_view(LAB, LAB_RUN), "the lab")
-    assert(keeps_in_view(LEVEL, LEVEL_ANY), "the level, any%")
-    assert(keeps_in_view(LEVEL, LEVEL_FULL), "the level, 100%")
+    assert(keeps_in_view(WETLANDS, LEVEL_ANY), "the level, any%")
+    assert(keeps_in_view(WETLANDS, LEVEL_FULL), "the level, 100%")
 }
 
 @test
@@ -227,9 +228,9 @@ fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
     // From rest, speeding up and running for two seconds on the level's flat runway (its goose
     // gone): the capybara stays exactly where it was on the screen. A full jump there doesn't move
     // the camera at all.
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     w.foes = [foes::NONE; foes::MAX_FOES]
-    var c = camera(course(LEVEL).start)
+    var c = camera(course(WETLANDS).start)
     let off = w.body.at - c.at
     for _ in 0..240 {
         step(mut w, pad::Pad { bits: pad::RIGHT })
@@ -249,8 +250,8 @@ fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
 fn the_camera_starts_again_at_a_cut_and_only_at_one() {
     // Ten metres on and three up, in the air, between two frames: followed on, the camera keeps
     // the height it had; at a cut (a new attempt, a checkpoint), it starts again on the capybara.
-    let start = course(LEVEL).start
-    var s = present(world(LEVEL))
+    let start = course(WETLANDS).start
+    var s = present(world(WETLANDS))
     s.at = start + vec2(10.0, 3.0)
     s.mode = u32(Mode::Air)
     var on = camera(start)
@@ -276,7 +277,7 @@ pub fn framed(c: Camera, half: vec2, ends: vec2) -> vec2 {
 
 @test
 fn the_view_stops_at_the_courses_ends() {
-    borrow c = course(LEVEL)
+    borrow c = course(WETLANDS)
     let half = half_view(16.0 / 9.0)
     let at_start = framed(camera(c.start), half, c.ends)
     assert(abs(at_start.x - half.x - c.ends.x) < 1.0e-4, "the screen's left edge is the left end")

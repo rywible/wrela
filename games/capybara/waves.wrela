@@ -178,9 +178,6 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
     out
 }
 
-pub const LAB_WATER: Vec<vec4> = water_mesh(course::LAB)
-pub const LEVEL_WATER: Vec<vec4> = water_mesh(course::LEVEL)
-
 // ---- the shader ---------------------------------------------------------------------------------
 
 /// What the water's shader is told: the camera's matrix, the view's middle and half-size (m), a

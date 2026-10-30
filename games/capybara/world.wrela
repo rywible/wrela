@@ -25,10 +25,11 @@
 // a finished attempt is a replay, and what happened, counted tick by tick for the frames (`Tally`).
 
 use body::{Body, Mode, RADIUS, bounce, spawn}
-use course::{COURSES, Course, course}
+use course::{COURSES, Course, HOME, LAB_COURSE, LEVELS, WETLANDS, course}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use feel::{FEEL, STEP}
+use main::DEV
 use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
 use engine::menu::{Nav, Stick, moved}
 use pad::{Controls, Hold, JUMP, NO_RUN, Pad, Run, pad_of}
@@ -36,9 +37,8 @@ use std::hash::StateHash
 use std::input::{Assist, Event, Key, Mods, PadButton}
 use std::serialize::Serialize
 
-/// The courses: the movement lab and the first level.
-pub const LAB: u32 = 0
-pub const LEVEL: u32 = 1
+/// The movement lab's course number (course.wrela's `LAB_COURSE`).
+pub const LAB: u32 = LAB_COURSE
 
 /// Ticks between being hurt or falling out and coming back (1.1 s): the clock runs through them.
 pub const DYING: u32 = 132
@@ -48,20 +48,26 @@ const SPAWN_GRACE: u32 = 60
 const YUZU_GRACE: u32 = 120
 
 /// The pages the pause shows (`World::page`): the level's title, which the game opens on; the
-/// pause's menu; and the pages the menu opens.
+/// pause's menu; and the pages the menu opens: the runs, the options, the controls and the levels
+/// (the zoo's map, its focus on a level).
 pub const TITLE: u32 = 0
 pub const MENU: u32 = 1
 pub const RUNS: u32 = 2
 pub const OPTIONS: u32 = 3
 pub const CONTROLS: u32 = 4
+pub const MAP: u32 = 5
 
 /// The menu's items, top to bottom.
 pub const RESUME: u32 = 0
 pub const RESTART: u32 = 1
-pub const SEE_RUNS: u32 = 2
-pub const SEE_OPTIONS: u32 = 3
-pub const SEE_CONTROLS: u32 = 4
-pub const MENU_ITEMS: u32 = 5
+pub const SEE_MAP: u32 = 2
+pub const SEE_RUNS: u32 = 3
+pub const SEE_OPTIONS: u32 = 4
+pub const SEE_CONTROLS: u32 = 5
+pub const MENU_ITEMS: u32 = 6
+
+/// Ticks after the goal before its card shows, and a choice there plays the next level (1.6 s).
+pub const CARD: u32 = 192
 
 /// The options' items, top to bottom: the three the frames keep (`World::turns`), and back.
 pub const MUSIC: u32 = 0
@@ -97,8 +103,10 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub controls: Controls,
     /// The attempt's clock: the level's ticks run, the first counted as 1.
     pub ticks: u32,
-    /// The clock on the tick the capybara reached the goal; 0 until it has.
+    /// The clock on the tick the capybara reached the goal; 0 until it has. And the ticks since,
+    /// up to `CARD`.
     pub finished: u32,
+    pub after: u32,
     /// The snacks found and the yuzus taken this attempt, a bit each, and whether it wears one.
     pub snacks: u32,
     pub yuzus: u32,
@@ -149,6 +157,7 @@ pub fn world(c: u32) -> World {
         controls: Controls {},
         ticks: 0,
         finished: 0,
+        after: 0,
         snacks: 0,
         yuzus: 0,
         yuzu: false,
@@ -195,6 +204,8 @@ pub fn step(w: mut World, pad: Pad) {
     borrow c = course(w.course)
     if w.finished == 0 {
         w.ticks += 1
+    } else {
+        w.after = min(w.after + 1, CARD)
     }
     if w.dying > 0 {
         // Dying: the foes go on; the capybara stays, then comes back.
@@ -263,6 +274,11 @@ pub fn step(w: mut World, pad: Pad) {
     }
 }
 
+/// The level after course `c`, if there is one.
+pub fn next(c: u32) -> Option<u32> {
+    if c + 1 < LEVELS { Some(c + 1) } else { None }
+}
+
 /// A new attempt at course `c` in place of `w`, playing at once, keeping the controls as they're
 /// held and what the menus keep.
 fn restart(w: mut World, c: u32) {
@@ -310,6 +326,9 @@ fn choose(w: mut World, item: u32) {
         w.paused = false
     } else if item == RESTART {
         restart(mut w, w.course)
+    } else if item == SEE_MAP {
+        w.page = MAP
+        w.focus = if w.course < LEVELS { w.course } else { 0 }
     } else if item == SEE_RUNS {
         w.page = RUNS
     } else if item == SEE_OPTIONS {
@@ -345,7 +364,7 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
             if !repeat && key == Key::R {
                 restart(mut w, w.course)
                 return
-            } else if !repeat && key == Key::Tab {
+            } else if DEV && !repeat && key == Key::Tab {
                 restart(mut w, (w.course + 1) % COURSES)
                 return
             }
@@ -410,6 +429,25 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
         if back_out || pressed.is_some() || nav == Some(Nav::Choose) {
             back(mut w, SEE_CONTROLS)
         }
+    } else if w.page == MAP {
+        // The levels round the zoo: left and right (or up and down) step along them.
+        if let Some(item) = pressed {
+            if item < LEVELS {
+                w.chosen += 1
+                restart(mut w, item)
+            }
+        } else if back_out {
+            back(mut w, SEE_MAP)
+        } else if nav == Some(Nav::Choose) {
+            w.chosen += 1
+            restart(mut w, w.focus)
+        } else if nav == Some(Nav::Left) {
+            w.focus = moved(Nav::Up, focus: w.focus, count: LEVELS)
+        } else if nav == Some(Nav::Right) {
+            w.focus = moved(Nav::Down, focus: w.focus, count: LEVELS)
+        } else if let Some(n) = nav {
+            w.focus = moved(n, focus: w.focus, count: LEVELS)
+        }
     } else if w.page == RUNS {
         // The runs' keys are the frames'; only backing out is the sim's.
         if back_out || pressed.is_some() {
@@ -438,10 +476,14 @@ fn ticked(w: mut World, records: [Event]) -> Option<Pad> {
         } else if nav == Some(Nav::Pause) {
             pause(mut w)
             held = true
+        } else if nav == Some(Nav::Choose) && w.after >= CARD && next(w.course).is_some() {
+            // At the goal's card: on to the next level, the press not also a jump there.
+            restart(mut w, next(w.course).expect("a next level"))
+            held = true
         } else if let Event::KeyDown { key, repeat, .. } = e {
             if !repeat && key == Key::R {
                 restart(mut w, w.course)
-            } else if !repeat && key == Key::Tab {
+            } else if DEV && !repeat && key == Key::Tab {
                 restart(mut w, (w.course + 1) % COURSES)
             }
         } else if let Event::PadButton { pad, button, pressed, .. } = e {
@@ -741,7 +783,7 @@ fn started(c: u32) -> World {
 
 @test
 fn the_game_opens_paused_on_its_title_and_stands_still_its_clock_too() {
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     let at = w.body.at
     for _ in 0..30 {
         tick_with(mut w, [down(Key::D)])
@@ -751,7 +793,7 @@ fn the_game_opens_paused_on_its_title_and_stands_still_its_clock_too() {
 
 @test
 fn the_title_plays_from_the_next_tick_and_esc_pauses_on_the_menu() {
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     tick_with(mut w, [down(Key::Enter), down(Key::D)])
     assert(!w.paused && w.ticks == 0, "the tick that leaves the title doesn't step")
     tick_with(mut w, [up(Key::Enter)])
@@ -771,7 +813,7 @@ fn the_title_plays_from_the_next_tick_and_esc_pauses_on_the_menu() {
 @test
 fn the_press_that_plays_isnt_also_a_jump() {
     for key in [Key::Space, Key::Z] {
-        var w = world(LEVEL)
+        var w = world(WETLANDS)
         tick_with(mut w, [down(key)])
         assert(!w.paused, "a jump's key plays")
         for _ in 0..30 {
@@ -779,14 +821,14 @@ fn the_press_that_plays_isnt_also_a_jump() {
         }
         assert(w.body.grounded(), "and the capybara didn't jump")
     }
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     tick_with(mut w, [press(PadButton::South)])
     assert(!w.paused, "and so does a controller's A")
 }
 
 @test
 fn esc_on_the_title_opens_the_menu_before_playing() {
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
     assert(w.paused && w.page == MENU && w.ticks == 0)
     tick_with(mut w, [down(Key::Escape)])
@@ -795,7 +837,7 @@ fn esc_on_the_title_opens_the_menu_before_playing() {
 
 @test
 fn a_restart_plays_at_once() {
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     tick_with(mut w, [down(Key::R)])
     tick_with(mut w, [up(Key::R)])
     assert(!w.paused && w.ticks == 1 && w.attempt == 1)
@@ -803,7 +845,7 @@ fn a_restart_plays_at_once() {
 
 @test
 fn the_menu_moves_its_focus_and_chooses_a_restart() {
-    var w = started(LEVEL)
+    var w = started(WETLANDS)
     for _ in 0..60 {
         tick_with(mut w, [down(Key::D)])
     }
@@ -822,7 +864,7 @@ fn the_menu_moves_its_focus_and_chooses_a_restart() {
 
 @test
 fn a_controller_and_its_stick_work_the_menu() {
-    var w = started(LEVEL)
+    var w = started(WETLANDS)
     tick_with(mut w, [press(PadButton::Start)])
     assert(w.paused && w.page == MENU)
     let stick = |v: f32| Event::PadAxis { pad: 0, axis: std::input::PadAxis::LeftY, value: v }
@@ -830,6 +872,7 @@ fn a_controller_and_its_stick_work_the_menu() {
     tick_with(mut w, [stick(1.0)])
     assert(w.focus == RESTART, "a push moves once")
     tick_with(mut w, [stick(0.0), press(PadButton::Down)])
+    tick_with(mut w, [press(PadButton::Down)])
     tick_with(mut w, [press(PadButton::Down)])
     assert(w.focus == SEE_OPTIONS)
     tick_with(mut w, [press(PadButton::South)])
@@ -842,7 +885,7 @@ fn a_controller_and_its_stick_work_the_menu() {
 
 @test
 fn the_options_count_their_steps_for_the_frames() {
-    var w = started(LEVEL)
+    var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
     choose(mut w, SEE_OPTIONS)
     tick_with(mut w, [down(Key::Enter)])
@@ -860,7 +903,7 @@ fn the_options_count_their_steps_for_the_frames() {
 
 @test
 fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
-    var w = started(LEVEL)
+    var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
     let options = node(w.chosen, MENU, SEE_OPTIONS)
     tick_with(mut w, [assist(node(w.chosen, OPTIONS, MUSIC), Assist::Activate)])
@@ -876,7 +919,7 @@ fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
 
 @test
 fn on_the_runs_only_backing_out_is_the_sims() {
-    var w = started(LEVEL)
+    var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
     choose(mut w, SEE_RUNS)
     for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::Up, Key::Down] {
@@ -884,7 +927,7 @@ fn on_the_runs_only_backing_out_is_the_sims() {
         tick_with(mut w, [up(key)])
     }
     assert(
-        w.paused && w.page == RUNS && w.attempt == 0 && w.course == LEVEL,
+        w.paused && w.page == RUNS && w.attempt == 0 && w.course == WETLANDS,
         "the keys are the frames'",
     )
     tick_with(mut w, [down(Key::Backspace)])
@@ -896,7 +939,7 @@ fn on_the_runs_only_backing_out_is_the_sims() {
 
 @test
 fn the_ticker_counts_a_comeback_and_a_restart_as_cuts() {
-    var l = live(LEVEL)
+    var l = live(WETLANDS)
     l.world.paused = false
     // The last tick of dying: it comes back.
     l.world.dying = 1
@@ -906,4 +949,51 @@ fn the_ticker_counts_a_comeback_and_a_restart_as_cuts() {
     tick_live(mut l, TickInput { tick: 1, dt: STEP, records: r, answers: Vec::new() })
     assert(l.world.attempt == 1 && l.tally.cuts == 2, "and so is a restart")
     assert(present_live(l).tally == l.tally, "the frames see it")
+}
+
+@test
+fn the_levels_map_moves_along_the_levels_and_plays_the_one_chosen() {
+    var w = started(HOME)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_MAP)
+    assert(w.page == MAP && w.focus == HOME, "the map opens on the level being played")
+    tick_with(mut w, [down(Key::Left)])
+    assert(w.focus == LEVELS - 1, "left from the first goes round to the last")
+    tick_with(mut w, [down(Key::Right)])
+    tick_with(mut w, [down(Key::Right)])
+    assert(w.focus == WETLANDS, "right steps along the loop")
+    tick_with(mut w, [down(Key::Escape)])
+    assert(w.page == MENU && w.focus == SEE_MAP, "Esc backs out to the menu")
+    choose(mut w, SEE_MAP)
+    tick_with(mut w, [down(Key::Right)])
+    let attempt = w.attempt
+    tick_with(mut w, [down(Key::Enter)])
+    assert(w.course == WETLANDS && !w.paused && w.attempt == attempt + 1, "a new attempt there")
+    assert(w.ticks == 0, "the press that chose it didn't step")
+    // A press on a level's node plays it, by its number.
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_MAP)
+    tick_with(mut w, [assist(node(w.chosen, MAP, HOME), Assist::Activate)])
+    assert(w.course == HOME && !w.paused)
+}
+
+@test
+fn at_the_goals_card_a_choice_plays_the_next_level_and_not_before() {
+    var w = started(HOME)
+    w.finished = w.ticks
+    let attempt = w.attempt
+    // Before the card shows, Enter does nothing.
+    tick_with(mut w, [down(Key::Enter)])
+    tick_with(mut w, [up(Key::Enter)])
+    assert(w.course == HOME && w.attempt == attempt, "too soon")
+    while w.after < CARD {
+        tick_with(mut w, [])
+    }
+    tick_with(mut w, [down(Key::Space)])
+    assert(w.course == WETLANDS && w.attempt == attempt + 1 && !w.paused, "the next level")
+    for _ in 0..30 {
+        tick_with(mut w, [])
+    }
+    assert(w.body.grounded(), "and the press that chose it wasn't a jump")
+    assert(next(LEVELS - 1).is_none() && next(LAB).is_none(), "nothing after the last, or the lab")
 }

@@ -1,13 +1,15 @@
-// The route tool (`wrela tool route`): the route search's fastest any% and 100% runs of the
-// capybara game's first level, written as the game's routes.wrela, with its tests.
+// The route tool (`wrela tool route`): the route search's fastest any% and 100% runs of a level
+// of the capybara game, written as the game's routes_<key>.wrela, with its tests.
 //
 // ```text
-// wrela tool route -- [--human] [--seconds S]
+// wrela tool route -- --level <key> [--human] [--seconds S]
 // ```
+//
+// The key is the level's (searched.wrela's `KEYS`: home, wetlands...).
 //
 // Without `--human` it improves the tool-assisted runs (`ANY` and `FULL`); with it, the human
 // runs (`HUMAN_ANY` and `HUMAN_FULL`), which keep to a human's limits and are forgiving
-// (slack.wrela). For each category it starts from the run routes.wrela holds, if that still
+// (slack.wrela). For each category it starts from the run routes_<key>.wrela holds, if that still
 // finishes as its category asks (the sim may have changed since), and spends up to `S` seconds
 // (300 unless given) improving it. A round takes one of the settings in turn and searches
 // (search.wrela) from each of the run's segment entries, the latest first: the tick the run
@@ -16,14 +18,14 @@
 // the level, so a faster end can't leave the next segment worse off; the run it finds takes the
 // best's place from the entry on if it costs less: its time, and for a human run `FRAGILE` ticks
 // more for each change that isn't firm past the 5% a forgiving run may have. Without a run to start from, the first round searches
-// from the start alone. It writes routes.wrela again if a run is better, keeping the other mode's
+// from the start alone. It writes routes_<key>.wrela again if a run is better, keeping the other mode's
 // while they still finish: a human run stands for a tool-assisted one that doesn't, and while a
 // human run doesn't, it writes nothing until `--human` has found new ones.
 
-use capybara::course::course
+use capybara::course::{course, name}
 use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, holds_of}
-use capybara::routes::{ANY, FULL, HUMAN_ANY, HUMAN_FULL}
-use capybara::world::{LEVEL, step, world}
+use capybara::searched::{KEYS, level_of, searched}
+use capybara::world::{step, world}
 use search::{Settings, played, search, to_goal}
 use slack::{EARLY, LATE, LONGER, RECOVER, Slack, WHOLE, finishes, forgiving, moved, pads_of, slack}
 use std::io::print
@@ -31,13 +33,11 @@ use std::time::{now, since}
 use std::tool::args
 use std::tool::files::write
 
-pub const USAGE: Text = "usage: wrela tool route -- [--human] [--seconds S]"
+pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human] [--seconds S]"
 
 /// The seconds each category is searched unless `--seconds` gives another.
 pub const SECONDS: u32 = 300
 
-/// Where the runs are written, in the `game` root (games/capybara).
-const ROUTES: Text = "game/routes.wrela"
 
 /// The settings a round takes, in turn: the search's landscape is rough, so each finds other
 /// runs, and a run one misses another may find.
@@ -58,20 +58,28 @@ pub const FRAGILE: u32 = 30
 /// How many of a human run's first changes that aren't firm a round searches before.
 const MENDS: u32 = 3
 
-/// What the command line asks: the seconds for each category, and whether for the human runs.
+/// What the command line asks: the level, the seconds for each category, and whether for the
+/// human runs.
 pub struct Ask: Copy + Eq {
+    pub level: u32,
     pub seconds: u32,
     pub human: bool,
 }
 
-/// What the command line gives, or `None` for a usage error.
+/// No level asked for yet.
+const NO_LEVEL: u32 = 0xffffffff
+
+/// What the command line gives, or `None` for a usage error (no level is one).
 pub fn parse_args(given: [String]) -> Option<Ask> {
-    var ask = Ask { seconds: SECONDS, human: false }
+    var ask = Ask { level: NO_LEVEL, seconds: SECONDS, human: false }
     var k = 0
     while k < given.len() {
         let a = given[k].as_str()
         if a == "--human" && !ask.human {
             ask.human = true
+        } else if a == "--level" && k + 1 < given.len() && ask.level == NO_LEVEL {
+            ask.level = level_of(given[k + 1].as_str())?
+            k += 1
         } else if a == "--seconds" && k + 1 < given.len() {
             ask.seconds = given[k + 1].as_str().parse_u32()?
             k += 1
@@ -80,15 +88,15 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
         }
         k += 1
     }
-    Some(ask)
+    if ask.level == NO_LEVEL { None } else { Some(ask) }
 }
 
 /// The ticks on which the run of `pads` first reaches each checkpoint's x: a fast run may pass
 /// over a flag, so a segment begins where the run passes it, touched or not.
-fn checkpoints(pads: [u32]) -> Vec<u32> {
-    borrow c = course(LEVEL)
+fn checkpoints(level: u32, pads: [u32]) -> Vec<u32> {
+    borrow c = course(level)
     var at: Vec<u32> = Vec::new()
-    var w = world(LEVEL)
+    var w = world(level)
     var next = 0
     for i in 0..pads.len() {
         step(mut w, Pad { bits: pads[i] })
@@ -126,8 +134,8 @@ fn none() -> Best {
 }
 
 /// A round's entries into the run `best`, the latest first, each once, the level's start last.
-fn entries(best: Best, human: bool) -> Vec<u32> {
-    var at = checkpoints(best.pads)
+fn entries(level: u32, best: Best, human: bool) -> Vec<u32> {
+    var at = checkpoints(level, best.pads)
     if human {
         for i in 0..min(best.slack.fragile.len(), MENDS) {
             let f = best.slack.fragile[i]
@@ -165,23 +173,26 @@ fn cost(b: Best, human: bool) -> u32 {
 
 /// `pads` as a category's best, if they finish as it asks (and, for a human run, keep to the
 /// limits).
-fn best_of(pads: take Vec<u32>, snacks: u32, human: bool) -> Option<Best> {
-    let w = played(world(LEVEL), pads)
+fn best_of(level: u32, pads: take Vec<u32>, snacks: u32, human: bool) -> Option<Best> {
+    let w = played(world(level), pads)
     if !finishes(w, snacks) || (human && !slack::human(pads)) {
         return None
     }
     var b = none()
     b.time = w.finished
     if human {
-        b.slack = slack(LEVEL, pads, to_goal(snacks), RECOVER)
+        b.slack = slack(level, pads, to_goal(snacks), RECOVER)
     }
     b.pads = take pads
     Some(b)
 }
 
-/// A run routes.wrela holds, as its category's best.
-fn kept(run: [Hold], snacks: u32, human: bool) -> Best {
-    match best_of(pads_of(LEVEL, run), snacks, human) {
+/// A run routes_<key>.wrela holds, as its category's best (none for no run).
+fn kept(level: u32, run: [Hold], snacks: u32, human: bool) -> Best {
+    if run.is_empty() {
+        return none()
+    }
+    match best_of(level, pads_of(level, run), snacks, human) {
         Some(b) => b,
         None => none(),
     }
@@ -199,7 +210,7 @@ fn told(b: Best, human: bool) -> String {
 /// The human run `b` with its changes that aren't firm moved to where they are: one that misses
 /// only shifts late moves 1 or 2 ticks earlier, one that misses only shifts early moves later.
 /// Each move stays if the run then costs less; it stops by `start` + `seconds`.
-fn steadied(b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
+fn steadied(level: u32, b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
     var best = take b
     var from = 0
     loop {
@@ -217,7 +228,7 @@ fn steadied(b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
         }
         let ways: [i32; 2] = if missed & EARLY == 0 { [-1, -2] } else { [1, 2] }
         for by in ways {
-            let Some(c) = best_of(moved(best.pads, at, by), snacks, human: true) else {
+            let Some(c) = best_of(level, moved(best.pads, at, by), snacks, human: true) else {
                 continue
             }
             if cost(c, human: true) < cost(best, human: true) {
@@ -231,14 +242,21 @@ fn steadied(b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
 
 /// The best run of the category whose runs find `snacks`, from `from` on, after up to `seconds`
 /// of search.
-fn improve(name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -> Best {
+fn improve(
+    level: u32,
+    name: str,
+    from: take Best,
+    snacks: u32,
+    human: bool,
+    seconds: f32,
+) -> Best {
     let start = now()
     var best = take from
     print(f"{name}: from {told(best, human)}")
     var round = 0
     while since(start) < seconds {
         let settings = Settings { human, ..TRIES[round % TRIES.len()] }
-        let from = if best.time == 0 { Vec::from([0]) } else { entries(best, human) }
+        let from = if best.time == 0 { Vec::from([0]) } else { entries(level, best, human) }
         for e in from {
             if since(start) >= seconds {
                 break
@@ -248,7 +266,7 @@ fn improve(name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -
                 prefix.push(best.pads[i])
             }
             let last = if e > 0 { prefix[e - 1] & !PRESS } else { 0 }
-            let entry = played(world(LEVEL), prefix)
+            let entry = played(world(level), prefix)
             let limit = if best.time == 0 { settings.ticks } else { cost(best, human) - e - 1 }
             let begun = now()
             var s = search(entry, last, to_goal(snacks), Settings { ticks: limit, ..settings })
@@ -263,7 +281,7 @@ fn improve(name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -
             for p in f.pads {
                 prefix.push(p)
             }
-            let Some(b) = best_of(take prefix, snacks, human) else {
+            let Some(b) = best_of(level, take prefix, snacks, human) else {
                 print(f"  round {round} from tick {e}: a run that doesn't count ({took})")
                 continue
             }
@@ -275,7 +293,7 @@ fn improve(name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -
             }
         }
         if human && best.time > 0 {
-            best = steadied(take best, snacks, start, seconds)
+            best = steadied(level, take best, snacks, start, seconds)
             print(f"  round {round} steadied: {told(best, human)}")
         }
         round += 1
@@ -300,7 +318,7 @@ fn bits_text(bits: u32) -> String {
     out
 }
 
-/// A run for routes.wrela: its holds, its time, and its doc comment.
+/// A run for a routes_<key>.wrela: its holds, its time, and its doc comment.
 pub struct Route: Clone {
     pub run: Vec<Hold>,
     pub time: u32,
@@ -321,11 +339,22 @@ fn constant(text: mut String, name: str, r: Route) {
     text.push_str("]\n")
 }
 
-/// routes.wrela with the runs `routes`: any% and 100%, tool-assisted, then with the human limits.
-pub fn routes_text(routes: [Route; 4]) -> String {
-    var text = String::from(
-        "// The route search's fastest runs of the first level (design.md, \"The agent loop\"): any% and\n// 100%, tool-assisted, and the same human-possible: each input has slack, and a slip of a tick\n// or two is recoverable within a second (route/slack.wrela; route/tests.wrela checks them for\n// it). No person has played them. `wrela tool route` searches for better ones and writes this\n// file again, with the tests' times; run it again when a change to the movement moves them.\n\n",
-    )
+/// The name of level `key`'s course number in course.wrela: the key in capitals (`food_court`,
+/// `FOOD_COURT`).
+pub fn constant_of(key: str) -> String {
+    var out = String::new()
+    for i in 0..key.len() {
+        let b = key.byte(i)
+        out.push_byte(if b >= 97 && b <= 122 { b - 32 } else { b })
+    }
+    out
+}
+
+/// routes_<key>.wrela with level `key`'s runs `routes`, named `level`: any% and 100%,
+/// tool-assisted, then with the human limits.
+pub fn routes_text(key: str, level: str, routes: [Route; 4]) -> String {
+    var text = f"// The route search's fastest runs of {level} (design.md, \"The agent loop\"): any% and\n// 100%, tool-assisted, and the same human-possible: each input has slack, and a slip of a tick\n// or two is recoverable within a second (route/slack.wrela; route/tests.wrela checks them for\n// it). No person has played them. `wrela tool route -- --level {key}` searches for better ones\n// and writes this file again, with the tests' times; run it again when a change to the movement\n// or the course moves them.\n\n"
+    let c = constant_of(key)
     var bits = 0
     for r in routes {
         for h in r.run {
@@ -344,14 +373,14 @@ pub fn routes_text(routes: [Route; 4]) -> String {
         }
     }
     names.push("hold")
-    text.push_str("use course::course\nuse pad::{")
+    text.push_str(f"use course::{{{c}, course}}\nuse pad::{{")
     for i in 0..names.len() {
         if i > 0 {
             text.push_str(", ")
         }
         text.push_str(names[i])
     }
-    text.push_str("}\nuse world::{LEVEL, play}\n")
+    text.push_str("}\nuse world::play\n")
     let consts: [Text; 4] = ["ANY", "FULL", "HUMAN_ANY", "HUMAN_FULL"]
     for i in 0..4 {
         text.push_str("\n")
@@ -364,13 +393,13 @@ pub fn routes_text(routes: [Route; 4]) -> String {
         routes[3].time,
     )
     text.push_str(
-        f"\n@test\nfn the_searched_runs_finish_in_their_times_without_a_death() {{\n    let every = course(LEVEL).every_snack()\n    let any = play(LEVEL, ANY)\n    let full = play(LEVEL, FULL)\n    assert(any.finished == {any} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full} && full.deaths == 0 && full.snacks == every)\n    let human_any = play(LEVEL, HUMAN_ANY)\n    let human_full = play(LEVEL, HUMAN_FULL)\n    assert(human_any.finished == {human_any} && human_any.deaths == 0)\n    assert(human_full.finished == {human_full} && human_full.deaths == 0)\n    assert(human_full.snacks == every)\n}}\n",
+        f"\n@test\nfn the_searched_runs_of_{key}_finish_in_their_times_without_a_death() {{\n    let every = course({c}).every_snack()\n    let any = play({c}, ANY)\n    let full = play({c}, FULL)\n    assert(any.finished == {any} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full} && full.deaths == 0 && full.snacks == every)\n    let human_any = play({c}, HUMAN_ANY)\n    let human_full = play({c}, HUMAN_FULL)\n    assert(human_any.finished == {human_any} && human_any.deaths == 0)\n    assert(human_full.finished == {human_full} && human_full.deaths == 0)\n    assert(human_full.snacks == every)\n}}\n",
     )
     text
 }
 
 /// The other mode's run of a category to write beside this mode's `mine` (`human`: this mode's
-/// are the human runs): `other` as routes.wrela holds it (`kept`), if it still finishes. A human
+/// are the human runs): `other` as routes_<key>.wrela holds it (`kept`), if it still finishes. A human
 /// run is a tool-assisted one too, so `mine` stands for a tool-assisted run that no longer
 /// finishes; none for a human run that no longer finishes, which must be searched again first.
 fn standing(other: take Best, mine: Best, human: bool) -> Option<Best> {
@@ -400,11 +429,11 @@ fn a_run_that_no_longer_finishes_isnt_written() {
     )
 }
 
-/// A category's run for routes.wrela: its best, with its doc comment.
-fn route(b: Best, what: str, snacks: u32, human: bool) -> Route {
+/// A category's run for routes_<key>.wrela: its best, with its doc comment.
+fn route(level: u32, b: Best, what: str, snacks: u32, human: bool) -> Route {
     let doc = if human {
-        let longer = slack(LEVEL, b.pads, to_goal(snacks), LONGER)
-        let whole = slack(LEVEL, b.pads, to_goal(snacks), WHOLE)
+        let longer = slack(level, b.pads, to_goal(snacks), LONGER)
+        let whole = slack(level, b.pads, to_goal(snacks), WHOLE)
         let n = b.slack.changes
         f"/// {what}, human-possible, in {b.time} ticks.\n/// Every stretch of buttons is held 3 ticks or more, and jump is pressed only after it was let\n/// go. Of its {n} changes of buttons, each moved 1 or 2 ticks early or late, {b.slack.firm} live\n/// through the second after, {longer.firm} through two seconds, and {whole.firm} through the whole\n/// run with every later button as it was. Human-possible means each input has slack and a slip\n/// is recoverable within a second, not that a person was tested on it.\n"
     } else {
@@ -418,22 +447,26 @@ pub fn tool() -> u32 {
         print(USAGE)
         return 2
     }
+    let level = ask.level
+    let key = KEYS[level]
+    let file = f"routes_{key}.wrela"
+    let runs = searched(level)
+    let all = course(level).every_snack()
     let (any_run, full_run) = if ask.human {
-        (Vec::from(HUMAN_ANY), Vec::from(HUMAN_FULL))
+        (runs.human_any.clone(), runs.human_full.clone())
     } else {
-        (Vec::from(ANY), Vec::from(FULL))
+        (runs.any.clone(), runs.full.clone())
     }
-    let all = course(LEVEL).every_snack()
-    let was_any = kept(any_run, 0, ask.human)
-    let was_full = kept(full_run, all, ask.human)
-    let any = improve("any%", was_any.clone(), 0, ask.human, f32(ask.seconds))
-    let full = improve("100%", was_full.clone(), all, ask.human, f32(ask.seconds))
+    let was_any = kept(level, any_run, 0, ask.human)
+    let was_full = kept(level, full_run, all, ask.human)
+    let any = improve(level, "any%", was_any.clone(), 0, ask.human, f32(ask.seconds))
+    let full = improve(level, "100%", was_full.clone(), all, ask.human, f32(ask.seconds))
     if any.time == 0 || full.time == 0 {
         print("route: no run of each category to write")
         return 1
     }
     if any.pads == was_any.pads && full.pads == was_full.pads {
-        print("route: no better run; routes.wrela stays")
+        print(f"route: no better run; {file} stays")
         return 0
     }
     if ask.human && (!forgiving(any.slack) || !forgiving(full.slack)) {
@@ -441,20 +474,27 @@ pub fn tool() -> u32 {
             f"route: a human run has fewer than {slack::FIRM}% of its changes firm within a second",
         )
     }
-    let first = "The first level from start to goal (any%)"
-    let every = "The first level with every snack (100%)"
-    // The other mode's runs stay as routes.wrela holds them, while they still finish.
+    let named = name(level)
+    let first = f"{named} from start to goal (any%)"
+    let every = f"{named} with every snack (100%)"
+    // The other mode's runs stay as the file holds them, while they still finish. A level
+    // searched for the first time has none: its tool-assisted runs stand in for its human ones
+    // until `--human` finds them.
     let (other_any, other_full) = if ask.human {
-        (kept(ANY, 0, human: false), kept(FULL, all, human: false))
+        (kept(level, runs.any, 0, human: false), kept(level, runs.full, all, human: false))
     } else {
-        (kept(HUMAN_ANY, 0, human: true), kept(HUMAN_FULL, all, human: true))
+        (
+            kept(level, runs.human_any, 0, human: true),
+            kept(level, runs.human_full, all, human: true),
+        )
     }
     let again = "route: the human runs no longer finish: search them first (--human)"
-    let Some(stays_any) = standing(take other_any, any, ask.human) else {
+    let fresh = runs.human_any.is_empty()
+    let Some(stays_any) = standing(take other_any, any, ask.human || fresh) else {
         print(again)
         return 1
     }
-    let Some(stays_full) = standing(take other_full, full, ask.human) else {
+    let Some(stays_full) = standing(take other_full, full, ask.human || fresh) else {
         print(again)
         return 1
     }
@@ -464,15 +504,15 @@ pub fn tool() -> u32 {
         (take any, take full, take stays_any, take stays_full)
     }
     let routes = [
-        route(assisted_any, first, 0, human: false),
-        route(assisted_full, every, all, human: false),
-        route(human_any, first, 0, human: true),
-        route(human_full, every, all, human: true),
+        route(level, assisted_any, first.as_str(), 0, human: false),
+        route(level, assisted_full, every.as_str(), all, human: false),
+        route(level, human_any, first.as_str(), 0, human: true),
+        route(level, human_full, every.as_str(), all, human: true),
     ]
-    let text = routes_text(routes)
-    match write(ROUTES, text.as_bytes()).wait() {
+    let text = routes_text(key, named, routes)
+    match write(f"game/{file}", text.as_bytes()).wait() {
         Ok(_) => {
-            print("route: wrote games/capybara/routes.wrela")
+            print(f"route: wrote games/capybara/{file}")
             0
         },
         Err(e) => {

@@ -13,6 +13,7 @@ use feel::HZ
 use ink::INK
 use settings::{Settings, ghost_name}
 use std::input::PadButton
+use std::math::TAU
 use std::semantics::{Node, Role}
 use ui::draw::{DrawList, Rect}
 use ui::glyphs::{
@@ -393,7 +394,7 @@ pub fn title(
 // ---- lists: the menu and the options -----------------------------------------------------------
 
 /// The menu's labels, top to bottom (world.wrela's `RESUME`...).
-pub const MENU_LABELS: [Text; 5] = ["Resume", "Restart", "Runs", "Options", "Controls"]
+pub const MENU_LABELS: [Text; 6] = ["Resume", "Restart", "Levels", "Runs", "Options", "Controls"]
 
 /// The options' labels (world.wrela's `MUSIC`...).
 pub const OPTION_LABELS: [Text; 4] = ["Music", "Clock", "Ghost", "Back"]
@@ -405,7 +406,7 @@ const BETWEEN: f32 = 3.0
 /// A list page's shape, in units: its card's width, its items, and the room under them for a
 /// note (the options say what the focused one does).
 fn shape(page: u32) -> (f32, u32, f32) {
-    if page == OPTIONS { (56.0, 4, 9.0) } else { (40.0, 5, 0.0) }
+    if page == OPTIONS { (56.0, 4, 9.0) } else { (40.0, 6, 0.0) }
 }
 
 /// Whether `screen` is wide enough for the facts beside the menu.
@@ -705,11 +706,136 @@ pub fn controls(list: mut DrawList, fonts: Fonts, screen: vec2, device: Device, 
     )
 }
 
+// ---- the levels' map -----------------------------------------------------------------------
+
+/// The zoo's lake on the map, in the middle of the habitats' loop.
+const LAKE = vec4(0.62, 0.8, 0.88, 1.0)
+/// A finished level's stop: the leaf green of the book.
+const DONE_STOP = vec4(0.62, 0.8, 0.5, 1.0)
+
+/// A level on the map: its name, whether the player has finished it, the snacks they've found of
+/// its snacks, and their best time (ticks; 0 without one).
+pub struct Stop: Copy {
+    pub name: Text,
+    pub done: bool,
+    pub found: u32,
+    pub snacks: u32,
+    pub best: u32,
+}
+
+/// Where the levels' map is on `screen`: its card, and a stop for each of `count` levels, round
+/// the zoo's lake as the habitats lie round it (design.md, "A map of the zoo"): the first at the
+/// bottom left, on round the loop the way the seagull leads.
+pub fn map_rects(screen: vec2, count: u32) -> (Rect, Vec<Rect>) {
+    let u = unit(screen)
+    let w = min(u * 96.0, screen.x - u * 4.0)
+    let h = u * 72.0
+    let r = Rect::new((screen.x - w) * 0.5, (screen.y - h) * 0.5 - u * 3.0, w, h)
+    let centre = vec2(r.x + w * 0.5, r.y + u * 30.0)
+    let radii = vec2(w * 0.5 - u * 9.0, u * 19.0)
+    let size = u * 7.0
+    var stops: Vec<Rect> = Vec::new()
+    for i in 0..count {
+        // From the bottom left, clockwise on the screen.
+        let a = 2.2 + TAU * f32(i) / f32(count)
+        let p = centre + vec2(cos(a), sin(a)) * radii
+        stops.push(Rect::new(p.x - size * 0.5, p.y - size * 0.5, size, size))
+    }
+    (r, stops)
+}
+
+/// The levels' map: the zoo's lake, the path round it, and a stop for each level, numbered, green
+/// once finished, the one with the focus washed in yuzu and the one under the pointer paler; under
+/// it the focused level's name, its snacks found and the best time.
+pub fn map(
+    list: mut DrawList,
+    fonts: Fonts,
+    screen: vec2,
+    stops: [Stop],
+    focus: u32,
+    hover: Option<u32>,
+) {
+    let u = unit(screen)
+    let (r, rects) = map_rects(screen, stops.len())
+    card(mut list, r, u)
+    let _ = say(
+        mut list,
+        fonts,
+        Face::Sans,
+        "A day at the zoo",
+        u * 3.0,
+        vec2(r.x + u * 3.4, r.y + u * 3.6),
+        SOFT,
+    )
+    // The lake, and the path from stop to stop round it.
+    let centre = vec2(r.x + r.w * 0.5, r.y + u * 30.0)
+    let lake = vec2(r.w * 0.5 - u * 22.0, u * 10.0)
+    list.ellipse(Rect::spanning(centre - lake, centre + lake), LAKE)
+    list.ellipse(Rect::spanning(centre - lake, centre + lake), SOFT, width: u * 0.3)
+    for i in 0..rects.len() {
+        let a = rects[i].center()
+        let b = rects[(i + 1) % rects.len()].center()
+        if i + 1 < rects.len() {
+            list.line(a, b, SOFT, width: u * 0.4)
+        }
+    }
+    let size = u * 3.6
+    let line = fonts.font(Face::Sans).line_height(size)
+    for i in 0..rects.len() {
+        let stop = rects[i]
+        let fill = if i == focus { YUZU } else if hover == Some(i) { LIT } else if stops[i].done {
+            DONE_STOP
+        } else { CARD }
+        list.ellipse(stop, fill)
+        list.ellipse(stop, INKED, width: u * 0.4)
+        let n = f"{i + 1}"
+        centred(
+            mut list,
+            fonts,
+            Face::Sans,
+            n.as_str(),
+            size,
+            stop.x + stop.w * 0.5,
+            stop.y + (stop.h - line) * 0.5,
+            INKED,
+        )
+    }
+    // The focused level: its name, its snacks, its best time.
+    if focus < stops.len() {
+        let f = stops[focus]
+        let x = r.x + r.w * 0.5
+        let y = r.y + u * 54.0
+        centred(mut list, fonts, Face::Sans, f.name, u * 4.4, x, y, INKED)
+        let cw = f32(f.snacks) * u * 3.6
+        let best = if f.best > 0 {
+            let b = seconds(f.best)
+            f"Best {b}"
+        } else { String::from("Not finished yet") }
+        let bw = width_of(fonts, Face::Sans, best.as_str(), u * 2.8)
+        let total = cw + u * 4.0 + bw
+        var at = x - total * 0.5
+        for k in 0..f.snacks {
+            carrot(mut list, vec2(at + f32(k) * u * 3.6, y + u * 6.6), u * 4.4, found: k < f.found)
+        }
+        at += cw + u * 4.0
+        let _ = say(
+            mut list,
+            fonts,
+            Face::Sans,
+            best.as_str(),
+            u * 2.8,
+            vec2(at, y + u * 7.4),
+            if f.best > 0 { GOLD } else { SOFT },
+        )
+    }
+}
+
 // ---- the goal ----------------------------------------------------------------------------------
 
 /// The card at the goal: the seagull has taken the snack again. The course's name, the time,
 /// whether it's the player's best (`before`: their best before this run, 0 without one), the
-/// snacks found, the deaths, and how to play again or open the menu; `alpha` of it.
+/// snacks found, the deaths, and how to go on to the next level (with `more`), play again or open
+/// the menu; `alpha` of it.
 pub fn goal_card(
     list: mut DrawList,
     fonts: Fonts,
@@ -718,6 +844,7 @@ pub fn goal_card(
     before: u32,
     device: Device,
     alpha: f32,
+    more: bool,
 ) {
     let u = unit(screen)
     let w = min(screen.x - u * 6.0, u * 80.0)
@@ -793,10 +920,16 @@ pub fn goal_card(
         vec2(at, r.y + u * 28.4),
         faded(SOFT, alpha),
     )
+    var choices: Vec<Prompt> = Vec::new()
+    if more {
+        choices.push(Prompt { act: Act::Choose, say: "Next level" })
+    }
+    choices.push(Prompt { act: Act::Restart, say: "Play again" })
+    choices.push(Prompt { act: Act::Pause, say: "Menu" })
     let _ = prompts(
         mut list,
         fonts,
-        [Prompt { act: Act::Restart, say: "Play again" }, Prompt { act: Act::Pause, say: "Menu" }],
+        choices,
         device,
         vec2(x, r.bottom() - u * 5.0),
         u * 4.0,
@@ -901,8 +1034,8 @@ fn times_read_as_seconds_to_the_hundredth_and_splits_are_signed() {
 fn a_list_s_items_are_on_its_card_one_under_another() {
     let screen = vec2(1280.0, 720.0)
     let (r, items) = list_rects(screen, MENU)
-    assert(items.len() == 5)
-    for i in 0..5 {
+    assert(items.len() == MENU_LABELS.len())
+    for i in 0..items.len() {
         assert(r.encloses(items[i]), f"item {i} on the card")
         if i > 0 {
             assert(items[i].y >= items[i - 1].bottom(), "under the one before")
@@ -916,7 +1049,10 @@ fn a_list_s_items_are_on_its_card_one_under_another() {
 fn a_page_s_tree_names_its_items_by_their_nodes() {
     let (_, rects) = list_rects(vec2(1280.0, 720.0), MENU)
     let nodes = tree(7, world::MENU, "Paused", MENU_LABELS, rects)
-    assert(nodes.len() == 6 && std::semantics::problem(nodes).is_none(), "a tree a host takes")
+    assert(
+        nodes.len() == MENU_LABELS.len() + 1 && std::semantics::problem(nodes).is_none(),
+        "a tree a host takes",
+    )
     assert(nodes[2].id == node(7, world::MENU, 1) && nodes[2].label.as_str() == "Restart")
     assert(nodes[2].parent == nodes[0].id && nodes[2].rect.z > 0.0)
     assert(nodes[2].role == Role::MenuItem, "a menu item, which a pointer presses")

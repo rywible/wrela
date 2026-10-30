@@ -14,7 +14,8 @@ use sprites::{SIGN, Sprite}
 use ui::draw::{DrawList, Rect}
 use ui::glyphs::Device
 use ui::text::{Face, Fonts}
-use world::{LEVEL, Snap}
+use course::{HOME, WETLANDS}
+use world::Snap
 
 /// The moves a sign teaches, a bit each.
 pub const RUN_AND_JUMP: u32 = 1
@@ -39,60 +40,15 @@ pub struct Sign: Copy {
     pub teaches: u32,
 }
 
-/// The first level's signs, left to right: run and jump at the start, the double jump under the
-/// first ledge it reaches, water's speed before the first puddle, the slide on the deck before the
-/// big slide, and swimming before the lake.
-const LEVEL_SIGNS: [Sign; 5] = [
-    Sign {
-        at: vec2(4.0, 0.0),
-        heading: "Run and jump",
-        first: Act::Run,
-        second: Act::Jump,
-        prompts: 2,
-        line: "",
-        teaches: RUN_AND_JUMP,
-    },
-    Sign {
-        at: vec2(8.0, 0.0),
-        heading: "Double jump",
-        first: Act::Jump,
-        second: Act::Jump,
-        prompts: 2,
-        line: "Again in the air",
-        teaches: DOUBLE_JUMP,
-    },
-    Sign {
-        at: vec2(32.4, 0.0),
-        heading: "Water is speed",
-        first: Act::Run,
-        second: Act::Run,
-        prompts: 0,
-        line: "A splash makes you faster",
-        teaches: SPLASH,
-    },
-    Sign {
-        at: vec2(92.5, 3.0),
-        heading: "Slide down slopes",
-        first: Act::Slide,
-        second: Act::Slide,
-        prompts: 1,
-        line: "Hold it while you run",
-        teaches: SLIDE,
-    },
-    Sign {
-        at: vec2(156.3, -4.0),
-        heading: "Swim fast",
-        first: Act::Jump,
-        second: Act::Swim,
-        prompts: 2,
-        line: "Up and down in turn: the dolphin kick",
-        teaches: SWIM,
-    },
-]
-
-/// Course `c`'s signs: the level's; the lab has none.
+/// Course `c`'s signs: its level's; the lab has none.
 pub fn signs(c: u32) -> Vec<Sign> {
-    if c == LEVEL { Vec::from(LEVEL_SIGNS) } else { Vec::new() }
+    if c == HOME {
+        Vec::from(home::SIGNS)
+    } else if c == WETLANDS {
+        Vec::from(wetlands::SIGNS)
+    } else {
+        Vec::new()
+    }
 }
 
 /// The moves snapshot `s` shows made: a jump, a double jump, a splash, a slide, a kick.
@@ -195,7 +151,7 @@ pub fn sign_words(
 
 @test
 fn each_of_the_levels_moves_has_a_sign_left_to_right_and_none_in_the_lab() {
-    let all = signs(LEVEL)
+    let all = signs(WETLANDS)
     var taught = 0
     for i in 0..all.len() {
         taught = taught | all[i].teaches
@@ -216,9 +172,9 @@ fn a_signs_board_stands_clear_of_the_capybara_running_under_it() {
 @test
 fn playing_the_level_through_makes_every_move_a_sign_teaches() {
     var seen = 0
-    var l = world::live(LEVEL)
+    var l = world::live(WETLANDS)
     l.world.paused = false
-    for h in routes::HUMAN_FULL {
+    for h in routes_wetlands::HUMAN_FULL {
         for i in 0..h.ticks {
             world::step_counted(mut l.world, mut l.tally, pad::pad_of(h, i))
             seen = seen | learned(world::present_live(l))

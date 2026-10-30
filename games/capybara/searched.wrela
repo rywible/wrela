@@ -1,0 +1,54 @@
+// The route search's runs of each level (`wrela tool route -- --level <key>` writes them as
+// routes_<key>.wrela, with their tests): any% and 100%, tool-assisted, and the same within a
+// person's limits (design.md, "The agent loop"). The replays (replay.wrela's `tool_assisted`),
+// the route tool and the levels' checks read them from here.
+
+use course::{HOME, LEVELS, WETLANDS}
+use pad::Hold
+
+/// The levels' keys, by number: what the route tool takes and names their runs' files by.
+pub const KEYS: [Text; LEVELS] = ["home", "wetlands"]
+
+/// A level's searched runs: any% and 100%, tool-assisted, then human-possible.
+pub struct Searched: Clone {
+    pub any: Vec<Hold>,
+    pub full: Vec<Hold>,
+    pub human_any: Vec<Hold>,
+    pub human_full: Vec<Hold>,
+}
+
+/// Level `c`'s searched runs (empty for a course with none: the lab, or a level not yet searched).
+pub fn searched(c: u32) -> Searched {
+    if c == HOME {
+        Searched {
+            any: Vec::from(routes_home::ANY),
+            full: Vec::from(routes_home::FULL),
+            human_any: Vec::from(routes_home::HUMAN_ANY),
+            human_full: Vec::from(routes_home::HUMAN_FULL),
+        }
+    } else if c == WETLANDS {
+        Searched {
+            any: Vec::from(routes_wetlands::ANY),
+            full: Vec::from(routes_wetlands::FULL),
+            human_any: Vec::from(routes_wetlands::HUMAN_ANY),
+            human_full: Vec::from(routes_wetlands::HUMAN_FULL),
+        }
+    } else {
+        Searched {
+            any: Vec::new(),
+            full: Vec::new(),
+            human_any: Vec::new(),
+            human_full: Vec::new(),
+        }
+    }
+}
+
+/// The level whose key is `key`, if one is.
+pub fn level_of(key: str) -> Option<u32> {
+    for i in 0..LEVELS {
+        if KEYS[i] == key {
+            return Some(i)
+        }
+    }
+    None
+}
