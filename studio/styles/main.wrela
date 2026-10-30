@@ -45,6 +45,10 @@ const LOG_ARGS: [Text; 6] = [
 /// The evaluation shots a page shows (the first twelve of the vale's lookbook).
 const SHOTS: u32 = 12
 
+/// A page's head and opening: its tokens (light, and dark where the viewer asks), its type, and
+/// the table's frame (which scrolls on its own at a phone's width).
+const PAGE_HEAD: Text = "<!doctype html>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n<title>The vale's looks</title>\n<meta name=\"claude:viewport-fit-sides\" content=\"cover\">\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono&display=swap\">\n<style>\n/* One wide table: a row a shot, a column a look; each cell its still and its three measures. */\n:root{--bg:#f6f5f1;--fg:#1d211c;--muted:#5c6459;--rule:#d9d8cf;--hold:#2f6b3a;--miss:#a8322b;--display:'Fraunces',Georgia,serif;--body:'IBM Plex Sans',system-ui,sans-serif;--mono:'IBM Plex Mono',ui-monospace,monospace}\n@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){--bg:#141713;--fg:#e4e6df;--muted:#9aa394;--rule:#30352e;--hold:#7cc48a;--miss:#f08a80;color-scheme:dark}}\n:root[data-theme=\"dark\"]{--bg:#141713;--fg:#e4e6df;--muted:#9aa394;--rule:#30352e;--hold:#7cc48a;--miss:#f08a80;color-scheme:dark}\nbody{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--body);padding-block:24px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}\nh1{font:600 2rem/1.15 var(--display);margin:0 0 8px;text-wrap:balance}\np{max-width:65ch;color:var(--muted);margin:0 0 20px}\n.frame{overflow-x:auto}\ntable{border-collapse:collapse}\nth{font:500 .75rem var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px;border-bottom:1px solid var(--rule)}\ntd{padding:8px;vertical-align:top;border-bottom:1px solid var(--rule)}\ntd:first-child{font-weight:500;max-width:9rem}\nimg{width:280px;max-width:100%;display:block;margin-bottom:6px}\nspan{font:.8rem/1.4 var(--mono);font-variant-numeric:tabular-nums}\n.hold{color:var(--hold)}.miss{color:var(--miss)}\n</style>\n<h1>The vale's looks</h1>\n<p>The vale's twelve evaluation shots through each look (docs/plan-world-class-3.md §D10), each still with its flicker (×10⁻⁶), pop and trail (px) on the fast instrument, and whether it holds the physical look's bars: flicker and pop at most 1.5 times its, trail at most a pixel more.</p>\n<div class=\"frame\"><table>\n<tr><th>Shot</th>"
+
 /// The width a page's still is brought to.
 const PAGE_WIDTH: u32 = 640
 
@@ -152,9 +156,7 @@ fn page(out: str, runs: [(String, String)]) -> Result<(), ToolError> {
             .unwrap_or(String::new())
         measures.push(measures_in(text.as_str()))
     }
-    var html = String::from(
-        "<!doctype html>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>The four looks</title>\n<style>body{margin:16px;font:14px system-ui;background:#111;color:#ddd}table{border-collapse:collapse}td,th{padding:6px;vertical-align:top}img{width:320px;display:block}.miss{color:#f88}.hold{color:#8c8}</style>\n<h1>The four looks</h1>\n<p>The vale's twelve evaluation shots through each look (docs/plan-world-class-3.md §D10), each still with its flicker (×10⁻⁶), pop and trail (px), and whether it holds the physical look's bars (flicker and pop at most 1.5 times, trail at most a pixel more).</p>\n<table>\n<tr><th>Shot</th>",
-    )
+    var html = String::from(PAGE_HEAD)
     for (look, _) in runs {
         html.push_str(f"<th>{look}</th>")
     }
@@ -186,7 +188,7 @@ fn page(out: str, runs: [(String, String)]) -> Result<(), ToolError> {
         }
         html.push_str("</tr>\n")
     }
-    html.push_str("</table>\n")
+    html.push_str("</table></div>\n")
     write_file(f"{WS}/{out}/index.html", chunked(Vec::from(html.as_bytes())))?
     print(f"styles: the page to {out}/index.html")
     Ok(())
