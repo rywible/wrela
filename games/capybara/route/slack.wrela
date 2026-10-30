@@ -126,12 +126,18 @@ fn held_at(held: [u32], t: u32, at: u32, by: i32) -> u32 {
     }
 }
 
-/// The run of `pads` with its change at tick `at` moved `by` ticks, as pads.
-pub fn moved(pads: [u32], at: u32, by: i32) -> Vec<u32> {
+/// The buttons held each tick of the run of `pads`: their presses left out.
+fn held_of(pads: [u32]) -> Vec<u32> {
     var held: Vec<u32> = Vec::with_capacity(pads.len())
     for p in pads {
         held.push(p & !PRESS)
     }
+    held
+}
+
+/// The run of `pads` with its change at tick `at` moved `by` ticks, as pads.
+pub fn moved(pads: [u32], at: u32, by: i32) -> Vec<u32> {
+    let held = held_of(pads)
     var out: Vec<u32> = Vec::with_capacity(pads.len())
     var last = 0
     for t in 0..held.len() {
@@ -174,10 +180,7 @@ fn shifted(s: mut Shift, held: [u32], goal: Goal) {
 /// human limits: its changes firm `within` ticks (or over the whole run, `WHOLE`). A change in the
 /// first 2 ticks can't be moved early, so it isn't counted.
 pub fn slack(c: u32, pads: [u32], goal: Goal, within: u32) -> Slack {
-    var held: Vec<u32> = Vec::with_capacity(pads.len())
-    for p in pads {
-        held.push(p & !PRESS)
-    }
+    let held = held_of(pads)
     var shifts: Vec<Shift> = Vec::new()
     var w = world(c)
     var last = 0
@@ -223,10 +226,7 @@ pub fn forgiving(s: Slack) -> bool {
 /// change, the most ticks up to `most`. A change before tick `most` + 1 can't be moved that far
 /// early, so it isn't counted. A wider window is an easier input: the time a player has to press.
 pub fn windows(c: u32, pads: [u32], goal: Goal, within: u32, most: u32) -> Vec<u32> {
-    var held: Vec<u32> = Vec::with_capacity(pads.len())
-    for p in pads {
-        held.push(p & !PRESS)
-    }
+    let held = held_of(pads)
     var states: Vec<World> = Vec::with_capacity(held.len())
     var w = world(c)
     var last = 0

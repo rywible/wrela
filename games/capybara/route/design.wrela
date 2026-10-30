@@ -30,7 +30,7 @@
 
 use capybara::body::RADIUS
 use capybara::body::Mode
-use capybara::camera::{camera, follow, framed, half_view}
+use capybara::camera::{PLAY_ASPECT, camera, follow, framed, half_view}
 use capybara::cast::grounded
 use capybara::course::{Course, HOME, LEVELS, course}
 use capybara::earth::solids
@@ -120,7 +120,7 @@ pub fn gaps(c: Course) -> Vec<vec2> {
 /// the tech stays), so this asks it of the course, not of a run.
 pub fn blind_gaps(c: u32) -> Vec<String> {
     borrow at = course(c)
-    let view = half_view(16.0 / 9.0)
+    let view = half_view(PLAY_ASPECT)
     var out: Vec<String> = Vec::new()
     for g in gaps(at) {
         let near = at.ground_at(g.x - 0.3, 1.0e4).unwrap_or(0.0)
@@ -250,7 +250,7 @@ pub fn first_foes(c: u32) -> Vec<String> {
 pub fn unseen(c: u32, run: [Hold]) -> Vec<String> {
     borrow at = course(c)
     let snaps = traced(c, run)
-    let view = half_view(16.0 / 9.0)
+    let view = half_view(PLAY_ASPECT)
     var cam = camera(at.start)
     var eyes: Vec<vec2> = Vec::new()
     for s in snaps {
@@ -343,9 +343,9 @@ const PLAYED: [u32; 9] = [
     0,
 ]
 
-/// `ticks` of random play on level `c` from `seed`, held a few ticks to most of a second at a
-/// time: the world after, or the first rule it broke, in words.
-pub fn random_play(c: u32, from: u32, ticks: u32) -> Result<World, String> {
+/// `ticks` of random play on level `c` from seed `from`, held a few ticks to most of a second at a
+/// time: the world after, or the first rule it broke, in words. Without `rules` it only plays.
+pub fn random_play(c: u32, from: u32, ticks: u32, rules: bool = true) -> Result<World, String> {
     borrow at = course(c)
     let outlines = solids(at)
     var rng = Rng::new(seed(from))
@@ -353,12 +353,15 @@ pub fn random_play(c: u32, from: u32, ticks: u32) -> Result<World, String> {
     var last = 0
     var t = 0
     while t < ticks {
-        let held = PLAYED[u32(rng.range(lo: 0.0, hi: 8.999))]
+        let held = PLAYED[min(u32(rng.range(lo: 0.0, hi: f64(PLAYED.len()))), PLAYED.len() - 1)]
         let n = u32(rng.range(lo: 3.0, hi: 60.0))
         for _ in 0..n {
             step(mut w, Pad { bits: pressed(held, last) })
             last = held
             t += 1
+            if !rules {
+                continue
+            }
             let b = w.body
             if !(b.at.x == b.at.x && b.at.y == b.at.y && b.vel.x == b.vel.x && b.vel.y == b.vel.y) {
                 return Err(f"a number that isn't one at tick {t}")
@@ -513,20 +516,15 @@ fn none_of(problems: [String], what: str) {
 }
 
 @test
-fn every_level_is_searched_and_its_runs_finish_without_a_death() {
+fn every_level_is_searched() {
+    // Each level's runs finish in their times without a death: its routes' own test plays them.
     for c in 0..LEVELS {
         let s = searched(c)
-        let all = course(c).every_snack()
-        for (run, snacks) in [
-            (take s.any, 0),
-            (take s.full, all),
-            (take s.human_any, 0),
-            (take s.human_full, all),
-        ] {
-            assert(run.len() > 0, f"level {c} isn't searched: wrela tool route -- --level <key>")
-            let w = capybara::world::play(c, run)
-            assert(w.finished > 0 && w.deaths == 0 && w.snacks & snacks == snacks, f"level {c}")
-        }
+        let found = !s.any.is_empty() && !s.full.is_empty() && !s.human_any.is_empty()
+        assert(
+            found && !s.human_full.is_empty(),
+            f"level {c} isn't searched: wrela tool route -- --level <key>",
+        )
     }
 }
 
@@ -568,7 +566,7 @@ fn random_play_breaks_no_rule_and_plays_the_same_again() {
         for s in 0..4 {
             match random_play(c, s * 7919 + c, 2400) {
                 Ok(w) => {
-                    let Ok(again) = random_play(c, s * 7919 + c, 2400) else {
+                    let Ok(again) = random_play(c, s * 7919 + c, 2400, rules: false) else {
                         panic("it played before")
                     }
                     assert(state_hash(w) == state_hash(again), f"level {c}, seed {s}: not the same")

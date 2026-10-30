@@ -29,88 +29,90 @@ pub struct Searched: Clone {
     pub needs: [f32; 5],
 }
 
-/// Level `c`'s searched runs (empty for a course with none: the lab, or a level not yet searched).
+/// Level `c`'s searched runs (none for the lab).
 pub fn searched(c: u32) -> Searched {
-    if c == HOME {
-        Searched {
-            any: Vec::from(routes_home::ANY),
-            full: Vec::from(routes_home::FULL),
-            human_any: Vec::from(routes_home::HUMAN_ANY),
-            human_full: Vec::from(routes_home::HUMAN_FULL),
-            needs: routes_home::NEEDS,
-        }
-    } else if c == WETLANDS {
-        Searched {
-            any: Vec::from(routes_wetlands::ANY),
-            full: Vec::from(routes_wetlands::FULL),
-            human_any: Vec::from(routes_wetlands::HUMAN_ANY),
-            human_full: Vec::from(routes_wetlands::HUMAN_FULL),
-            needs: routes_wetlands::NEEDS,
-        }
-    } else if c == SAVANNA {
-        Searched {
-            any: Vec::from(routes_savanna::ANY),
-            full: Vec::from(routes_savanna::FULL),
-            human_any: Vec::from(routes_savanna::HUMAN_ANY),
-            human_full: Vec::from(routes_savanna::HUMAN_FULL),
-            needs: routes_savanna::NEEDS,
-        }
-    } else if c == RAINFOREST {
-        Searched {
-            any: Vec::from(routes_rainforest::ANY),
-            full: Vec::from(routes_rainforest::FULL),
-            human_any: Vec::from(routes_rainforest::HUMAN_ANY),
-            human_full: Vec::from(routes_rainforest::HUMAN_FULL),
-            needs: routes_rainforest::NEEDS,
-        }
-    } else if c == AVIARY {
-        Searched {
-            any: Vec::from(routes_aviary::ANY),
-            full: Vec::from(routes_aviary::FULL),
-            human_any: Vec::from(routes_aviary::HUMAN_ANY),
-            human_full: Vec::from(routes_aviary::HUMAN_FULL),
-            needs: routes_aviary::NEEDS,
-        }
-    } else if c == REPTILES {
-        Searched {
-            any: Vec::from(routes_reptiles::ANY),
-            full: Vec::from(routes_reptiles::FULL),
-            human_any: Vec::from(routes_reptiles::HUMAN_ANY),
-            human_full: Vec::from(routes_reptiles::HUMAN_FULL),
-            needs: routes_reptiles::NEEDS,
-        }
-    } else if c == POLAR {
-        Searched {
-            any: Vec::from(routes_polar::ANY),
-            full: Vec::from(routes_polar::FULL),
-            human_any: Vec::from(routes_polar::HUMAN_ANY),
-            human_full: Vec::from(routes_polar::HUMAN_FULL),
-            needs: routes_polar::NEEDS,
-        }
-    } else if c == FARM {
-        Searched {
-            any: Vec::from(routes_farm::ANY),
-            full: Vec::from(routes_farm::FULL),
-            human_any: Vec::from(routes_farm::HUMAN_ANY),
-            human_full: Vec::from(routes_farm::HUMAN_FULL),
-            needs: routes_farm::NEEDS,
-        }
-    } else if c == FOOD_COURT {
-        Searched {
-            any: Vec::from(routes_food_court::ANY),
-            full: Vec::from(routes_food_court::FULL),
-            human_any: Vec::from(routes_food_court::HUMAN_ANY),
-            human_full: Vec::from(routes_food_court::HUMAN_FULL),
-            needs: routes_food_court::NEEDS,
-        }
-    } else {
-        Searched {
-            any: Vec::new(),
-            full: Vec::new(),
-            human_any: Vec::new(),
-            human_full: Vec::new(),
-            needs: [1.0e9; 5],
-        }
+    match c {
+        HOME => of(
+            routes_home::ANY,
+            routes_home::FULL,
+            routes_home::HUMAN_ANY,
+            routes_home::HUMAN_FULL,
+            routes_home::NEEDS,
+        ),
+        WETLANDS => of(
+            routes_wetlands::ANY,
+            routes_wetlands::FULL,
+            routes_wetlands::HUMAN_ANY,
+            routes_wetlands::HUMAN_FULL,
+            routes_wetlands::NEEDS,
+        ),
+        SAVANNA => of(
+            routes_savanna::ANY,
+            routes_savanna::FULL,
+            routes_savanna::HUMAN_ANY,
+            routes_savanna::HUMAN_FULL,
+            routes_savanna::NEEDS,
+        ),
+        RAINFOREST => of(
+            routes_rainforest::ANY,
+            routes_rainforest::FULL,
+            routes_rainforest::HUMAN_ANY,
+            routes_rainforest::HUMAN_FULL,
+            routes_rainforest::NEEDS,
+        ),
+        AVIARY => of(
+            routes_aviary::ANY,
+            routes_aviary::FULL,
+            routes_aviary::HUMAN_ANY,
+            routes_aviary::HUMAN_FULL,
+            routes_aviary::NEEDS,
+        ),
+        REPTILES => of(
+            routes_reptiles::ANY,
+            routes_reptiles::FULL,
+            routes_reptiles::HUMAN_ANY,
+            routes_reptiles::HUMAN_FULL,
+            routes_reptiles::NEEDS,
+        ),
+        POLAR => of(
+            routes_polar::ANY,
+            routes_polar::FULL,
+            routes_polar::HUMAN_ANY,
+            routes_polar::HUMAN_FULL,
+            routes_polar::NEEDS,
+        ),
+        FARM => of(
+            routes_farm::ANY,
+            routes_farm::FULL,
+            routes_farm::HUMAN_ANY,
+            routes_farm::HUMAN_FULL,
+            routes_farm::NEEDS,
+        ),
+        FOOD_COURT => of(
+            routes_food_court::ANY,
+            routes_food_court::FULL,
+            routes_food_court::HUMAN_ANY,
+            routes_food_court::HUMAN_FULL,
+            routes_food_court::NEEDS,
+        ),
+        _ => of([], [], [], [], [1.0e9; 5]),
+    }
+}
+
+/// A level's searched runs, from its routes' constants.
+fn of(
+    any: [Hold],
+    full: [Hold],
+    human_any: [Hold],
+    human_full: [Hold],
+    needs: [f32; 5],
+) -> Searched {
+    Searched {
+        any: Vec::from(any),
+        full: Vec::from(full),
+        human_any: Vec::from(human_any),
+        human_full: Vec::from(human_full),
+        needs,
     }
 }
 

@@ -475,30 +475,13 @@ pub fn tool() -> u32 {
             return 1
         }
         let needs = needs_of(level, f32(ask.seconds))
-        let routes = [
-            route(level, kept(level, runs.any, 0, human: false), first.as_str(), 0, human: false),
-            route(
-                level,
-                kept(level, runs.full, all, human: false),
-                every.as_str(),
-                all,
-                human: false,
-            ),
-            route(
-                level,
-                kept(level, runs.human_any, 0, human: true),
-                first.as_str(),
-                0,
-                human: true,
-            ),
-            route(
-                level,
-                kept(level, runs.human_full, all, human: true),
-                every.as_str(),
-                all,
-                human: true,
-            ),
+        let bests = [
+            kept(level, runs.any, 0, human: false),
+            kept(level, runs.full, all, human: false),
+            kept(level, runs.human_any, 0, human: true),
+            kept(level, runs.human_full, all, human: true),
         ]
+        let routes = routes_of(level, bests, first.as_str(), every.as_str(), all)
         return write_routes(key, named, file, routes, needs)
     }
     let (any_run, full_run) = if ask.human {
@@ -549,13 +532,20 @@ pub fn tool() -> u32 {
     } else {
         (take any, take full, take stays_any, take stays_full)
     }
-    let routes = [
-        route(level, assisted_any, first.as_str(), 0, human: false),
-        route(level, assisted_full, every.as_str(), all, human: false),
-        route(level, human_any, first.as_str(), 0, human: true),
-        route(level, human_full, every.as_str(), all, human: true),
-    ]
+    let bests = [take assisted_any, take assisted_full, take human_any, take human_full]
+    let routes = routes_of(level, bests, first.as_str(), every.as_str(), all)
     write_routes(key, named, file, routes, runs.needs)
+}
+
+/// The four runs of `bests` (any% and 100%, tool-assisted, then human) as routes, named `first`
+/// and `every`.
+fn routes_of(level: u32, bests: [Best; 4], first: str, every: str, all: u32) -> [Route; 4] {
+    [
+        route(level, bests[0], first, 0, human: false),
+        route(level, bests[1], every, all, human: false),
+        route(level, bests[2], first, 0, human: true),
+        route(level, bests[3], every, all, human: true),
+    ]
 }
 
 /// The moves whose first need `--needs` measures, by their bit's place: the double jump, a splash,

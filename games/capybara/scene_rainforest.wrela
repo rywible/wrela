@@ -18,18 +18,22 @@
 
 use engine::noise::{hash2, noise2}
 use ink::grain
-use scenery::{MIST, PARALLAX, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under}
+use scenery::{Scene, MIST, PARALLAX, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
-pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    if k == 0 { undergrowth(pixel, v, g, gs) } else if k == 1 {
-        residents(pixel, v, g, gs)
-    } else if k == 2 {
-        glasshouse(pixel, v, g, gs)
-    } else { far_hills(pixel, v, g, gs) }
+pub struct Rainforest {}
+
+impl Scene for Rainforest {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        if k == 0 { undergrowth(pixel, v, g, gs) } else if k == 1 {
+            residents(pixel, v, g, gs)
+        } else if k == 2 {
+            glasshouse(pixel, v, g, gs)
+        } else { far_hills(pixel, v, g, gs) }
+    }
 }
 
 /// `c` dappled at `q` (m): soft-edged patches of the light that comes down through the canopy,

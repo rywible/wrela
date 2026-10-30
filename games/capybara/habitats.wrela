@@ -4,7 +4,7 @@
 // habitat is its course's number; the lab looks as the Wetlands do. The backdrop's layers for
 // each habitat are its own modules (scenery.wrela dispatches to them).
 
-use course::{AVIARY, FARM, FOOD_COURT, POLAR, RAINFOREST, REPTILES, SAVANNA}
+use course::{AVIARY, FARM, FOOD_COURT, HOME, LEVELS, POLAR, RAINFOREST, REPTILES, SAVANNA}
 
 /// A habitat's ground and water colours.
 pub struct Palette: Copy {
@@ -38,127 +38,147 @@ const WETLANDS: Palette = Palette {
     water_mid: vec3(0.3, 0.55, 0.7),
 }
 
+/// The habitat course `c` is drawn in: its own; the capybaras' home's and the lab's are the
+/// Wetlands', which share its backdrop's strips and its colours.
+pub fn habitat_of(c: u32) -> u32 {
+    if c == HOME || c >= LEVELS { course::WETLANDS } else { c }
+}
+
 /// Habitat `h`'s palette.
 pub fn palette(h: u32) -> Palette {
-    if h == SAVANNA {
-        // Red earth under dry, golden grass; a muddy waterhole.
-        Palette {
-            soil: vec3(0.84, 0.54, 0.36),
-            soil_band: vec3(0.78, 0.47, 0.31),
-            soil_deep: vec3(0.56, 0.32, 0.25),
-            turf: vec3(0.88, 0.78, 0.44),
-            turf_under: vec3(0.74, 0.63, 0.33),
-            grass: vec3(0.72, 0.62, 0.3),
-            grass_tip: vec3(0.93, 0.84, 0.5),
-            shallows: vec3(0.56, 0.68, 0.62),
-            depths: vec3(0.32, 0.4, 0.42),
-            water_top: vec3(0.69, 0.78, 0.73),
-            water_mid: vec3(0.46, 0.57, 0.54),
-        }
-    } else if h == RAINFOREST {
-        // Dark loam under deep green moss; a green river.
-        Palette {
-            soil: vec3(0.58, 0.43, 0.32),
-            soil_band: vec3(0.5, 0.36, 0.27),
-            soil_deep: vec3(0.33, 0.25, 0.21),
-            turf: vec3(0.4, 0.66, 0.34),
-            turf_under: vec3(0.27, 0.5, 0.27),
-            grass: vec3(0.28, 0.56, 0.3),
-            grass_tip: vec3(0.5, 0.78, 0.38),
-            shallows: vec3(0.38, 0.66, 0.6),
-            depths: vec3(0.16, 0.36, 0.38),
-            water_top: vec3(0.57, 0.76, 0.72),
-            water_mid: vec3(0.29, 0.54, 0.51),
-        }
-    } else if h == AVIARY {
-        // Pale sand and short green lawn under the netting; a clear blue pond.
-        Palette {
-            soil: vec3(0.9, 0.8, 0.62),
-            soil_band: vec3(0.85, 0.74, 0.56),
-            soil_deep: vec3(0.66, 0.54, 0.42),
-            turf: vec3(0.66, 0.84, 0.46),
-            turf_under: vec3(0.5, 0.7, 0.36),
-            grass: vec3(0.52, 0.74, 0.38),
-            grass_tip: vec3(0.78, 0.9, 0.52),
-            shallows: vec3(0.46, 0.74, 0.86),
-            depths: vec3(0.22, 0.42, 0.62),
-            water_top: vec3(0.62, 0.82, 0.9),
-            water_mid: vec3(0.36, 0.61, 0.76),
-        }
-    } else if h == REPTILES {
-        // Warm sandstone under moss; warm, green pools.
-        Palette {
-            soil: vec3(0.88, 0.72, 0.52),
-            soil_band: vec3(0.82, 0.64, 0.45),
-            soil_deep: vec3(0.6, 0.44, 0.34),
-            turf: vec3(0.56, 0.72, 0.4),
-            turf_under: vec3(0.43, 0.58, 0.32),
-            grass: vec3(0.46, 0.64, 0.34),
-            grass_tip: vec3(0.7, 0.82, 0.46),
-            shallows: vec3(0.44, 0.72, 0.62),
-            depths: vec3(0.18, 0.42, 0.4),
-            water_top: vec3(0.61, 0.8, 0.73),
-            water_mid: vec3(0.34, 0.6, 0.53),
-        }
-    } else if h == POLAR {
-        // Blue-grey rock under snow, frosted tufts; a cold, dark sea.
-        Palette {
-            soil: vec3(0.72, 0.76, 0.82),
-            soil_band: vec3(0.64, 0.68, 0.76),
-            soil_deep: vec3(0.42, 0.46, 0.56),
-            turf: vec3(0.98, 0.99, 1.0),
-            turf_under: vec3(0.84, 0.9, 0.97),
-            grass: vec3(0.72, 0.8, 0.82),
-            grass_tip: vec3(0.95, 0.97, 0.98),
-            shallows: vec3(0.42, 0.62, 0.74),
-            depths: vec3(0.14, 0.26, 0.42),
-            water_top: vec3(0.59, 0.73, 0.82),
-            water_mid: vec3(0.31, 0.48, 0.61),
-        }
-    } else if h == FARM {
-        // Brown earth under bright pasture; a duck pond.
-        Palette {
-            soil: vec3(0.76, 0.58, 0.4),
-            soil_band: vec3(0.7, 0.52, 0.36),
-            soil_deep: vec3(0.5, 0.36, 0.28),
-            turf: vec3(0.58, 0.84, 0.38),
-            turf_under: vec3(0.44, 0.7, 0.3),
-            grass: vec3(0.46, 0.74, 0.32),
-            grass_tip: vec3(0.72, 0.92, 0.44),
-            shallows: vec3(0.48, 0.72, 0.7),
-            depths: vec3(0.24, 0.42, 0.46),
-            water_top: vec3(0.64, 0.8, 0.79),
-            water_mid: vec3(0.38, 0.6, 0.6),
-        }
-    } else if h == FOOD_COURT {
-        // Paving slabs under a pale kerb, tufts in the planters; a fountain's bright water.
-        Palette {
-            soil: vec3(0.86, 0.83, 0.78),
-            soil_band: vec3(0.8, 0.77, 0.72),
-            soil_deep: vec3(0.62, 0.6, 0.58),
-            turf: vec3(0.93, 0.9, 0.84),
-            turf_under: vec3(0.8, 0.76, 0.7),
-            grass: vec3(0.5, 0.72, 0.36),
-            grass_tip: vec3(0.74, 0.88, 0.48),
-            shallows: vec3(0.5, 0.78, 0.88),
-            depths: vec3(0.26, 0.48, 0.68),
-            water_top: vec3(0.65, 0.85, 0.92),
-            water_mid: vec3(0.4, 0.66, 0.8),
-        }
-    } else { WETLANDS }
+    match h {
+        SAVANNA => {
+            // Red earth under dry, golden grass; a muddy waterhole.
+            Palette {
+                soil: vec3(0.84, 0.54, 0.36),
+                soil_band: vec3(0.78, 0.47, 0.31),
+                soil_deep: vec3(0.56, 0.32, 0.25),
+                turf: vec3(0.88, 0.78, 0.44),
+                turf_under: vec3(0.74, 0.63, 0.33),
+                grass: vec3(0.72, 0.62, 0.3),
+                grass_tip: vec3(0.93, 0.84, 0.5),
+                shallows: vec3(0.56, 0.68, 0.62),
+                depths: vec3(0.32, 0.4, 0.42),
+                water_top: vec3(0.69, 0.78, 0.73),
+                water_mid: vec3(0.46, 0.57, 0.54),
+            }
+        },
+        RAINFOREST => {
+            // Dark loam under deep green moss; a green river.
+            Palette {
+                soil: vec3(0.58, 0.43, 0.32),
+                soil_band: vec3(0.5, 0.36, 0.27),
+                soil_deep: vec3(0.33, 0.25, 0.21),
+                turf: vec3(0.4, 0.66, 0.34),
+                turf_under: vec3(0.27, 0.5, 0.27),
+                grass: vec3(0.28, 0.56, 0.3),
+                grass_tip: vec3(0.5, 0.78, 0.38),
+                shallows: vec3(0.38, 0.66, 0.6),
+                depths: vec3(0.16, 0.36, 0.38),
+                water_top: vec3(0.57, 0.76, 0.72),
+                water_mid: vec3(0.29, 0.54, 0.51),
+            }
+        },
+        AVIARY => {
+            // Pale sand and short green lawn under the netting; a clear blue pond.
+            Palette {
+                soil: vec3(0.9, 0.8, 0.62),
+                soil_band: vec3(0.85, 0.74, 0.56),
+                soil_deep: vec3(0.66, 0.54, 0.42),
+                turf: vec3(0.66, 0.84, 0.46),
+                turf_under: vec3(0.5, 0.7, 0.36),
+                grass: vec3(0.52, 0.74, 0.38),
+                grass_tip: vec3(0.78, 0.9, 0.52),
+                shallows: vec3(0.46, 0.74, 0.86),
+                depths: vec3(0.22, 0.42, 0.62),
+                water_top: vec3(0.62, 0.82, 0.9),
+                water_mid: vec3(0.36, 0.61, 0.76),
+            }
+        },
+        REPTILES => {
+            // Warm sandstone under moss; warm, green pools.
+            Palette {
+                soil: vec3(0.88, 0.72, 0.52),
+                soil_band: vec3(0.82, 0.64, 0.45),
+                soil_deep: vec3(0.6, 0.44, 0.34),
+                turf: vec3(0.56, 0.72, 0.4),
+                turf_under: vec3(0.43, 0.58, 0.32),
+                grass: vec3(0.46, 0.64, 0.34),
+                grass_tip: vec3(0.7, 0.82, 0.46),
+                shallows: vec3(0.44, 0.72, 0.62),
+                depths: vec3(0.18, 0.42, 0.4),
+                water_top: vec3(0.61, 0.8, 0.73),
+                water_mid: vec3(0.34, 0.6, 0.53),
+            }
+        },
+        POLAR => {
+            // Blue-grey rock under snow, frosted tufts; a cold, dark sea.
+            Palette {
+                soil: vec3(0.72, 0.76, 0.82),
+                soil_band: vec3(0.64, 0.68, 0.76),
+                soil_deep: vec3(0.42, 0.46, 0.56),
+                turf: vec3(0.98, 0.99, 1.0),
+                turf_under: vec3(0.84, 0.9, 0.97),
+                grass: vec3(0.72, 0.8, 0.82),
+                grass_tip: vec3(0.95, 0.97, 0.98),
+                shallows: vec3(0.42, 0.62, 0.74),
+                depths: vec3(0.14, 0.26, 0.42),
+                water_top: vec3(0.59, 0.73, 0.82),
+                water_mid: vec3(0.31, 0.48, 0.61),
+            }
+        },
+        FARM => {
+            // Brown earth under bright pasture; a duck pond.
+            Palette {
+                soil: vec3(0.76, 0.58, 0.4),
+                soil_band: vec3(0.7, 0.52, 0.36),
+                soil_deep: vec3(0.5, 0.36, 0.28),
+                turf: vec3(0.58, 0.84, 0.38),
+                turf_under: vec3(0.44, 0.7, 0.3),
+                grass: vec3(0.46, 0.74, 0.32),
+                grass_tip: vec3(0.72, 0.92, 0.44),
+                shallows: vec3(0.48, 0.72, 0.7),
+                depths: vec3(0.24, 0.42, 0.46),
+                water_top: vec3(0.64, 0.8, 0.79),
+                water_mid: vec3(0.38, 0.6, 0.6),
+            }
+        },
+        FOOD_COURT => {
+            // Paving slabs under a pale kerb, tufts in the planters; a fountain's bright water.
+            Palette {
+                soil: vec3(0.86, 0.83, 0.78),
+                soil_band: vec3(0.8, 0.77, 0.72),
+                soil_deep: vec3(0.62, 0.6, 0.58),
+                turf: vec3(0.93, 0.9, 0.84),
+                turf_under: vec3(0.8, 0.76, 0.7),
+                grass: vec3(0.5, 0.72, 0.36),
+                grass_tip: vec3(0.74, 0.88, 0.48),
+                shallows: vec3(0.5, 0.78, 0.88),
+                depths: vec3(0.26, 0.48, 0.68),
+                water_top: vec3(0.65, 0.85, 0.92),
+                water_mid: vec3(0.4, 0.66, 0.8),
+            }
+        },
+        _ => WETLANDS,
+    }
 }
 
 /// Habitat `h`'s sky: its colour at the horizon and high up. The Wetlands' warm cream to blue
 /// for most; the Savanna's warmer, the Polar Coast's cold and pale, the Food Court's golden: the
 /// finale's late afternoon.
 pub fn sky_of(h: u32) -> (vec3, vec3) {
-    if h == SAVANNA {
-        (vec3(0.99, 0.88, 0.7), vec3(0.6, 0.77, 0.88))
-    } else if h == POLAR {
-        (vec3(0.9, 0.94, 0.97), vec3(0.56, 0.73, 0.88))
-    } else if h == FOOD_COURT {
-        (vec3(1.0, 0.84, 0.62), vec3(0.62, 0.72, 0.86))
-    } else { (vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89)) }
+    match h {
+        SAVANNA => {
+            (vec3(0.99, 0.88, 0.7), vec3(0.6, 0.77, 0.88))
+        },
+        POLAR => {
+            (vec3(0.9, 0.94, 0.97), vec3(0.56, 0.73, 0.88))
+        },
+        FOOD_COURT => {
+            (vec3(1.0, 0.84, 0.62), vec3(0.62, 0.72, 0.86))
+        },
+        _ => (vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89)),
+    }
 }
 
 /// Ice: its glaze over the ground, and the white of its sheen.

@@ -15,7 +15,8 @@ use pad::{Hold, pad_of}
 use proofs::LAB_RUN
 use std::collections::Vec
 use std::serialize::{LoadError, Serialize, load, save}
-use world::{LAB, Snap, World, step, world}
+use world::{Snap, World, step, world}
+use course::LAB_COURSE
 use course::WETLANDS
 
 /// The version of play the runs are for: 3 since a kick off the bottom of water waits the kicks'
@@ -227,8 +228,8 @@ pub fn tool_assisted(c: u32) -> Vec<Replay> {
             out.push(recorded(c, s.human_any, HUMAN))
             out.push(recorded(c, s.human_full, HUMAN))
         }
-    } else if c == LAB {
-        out.push(recorded(LAB, LAB_RUN, AUTOPILOT))
+    } else if c == LAB_COURSE {
+        out.push(recorded(LAB_COURSE, LAB_RUN, AUTOPILOT))
     }
     out
 }
@@ -328,7 +329,7 @@ fn claimed(c: u32, ticks: u32, snacks: u32) -> Replay {
 
 @test
 fn the_autopilots_runs_verify_and_a_doctored_one_does_not() {
-    for c in [LAB, WETLANDS] {
+    for c in [LAB_COURSE, WETLANDS] {
         for r in tool_assisted(c) {
             assert(verify(r), f"course {c}: {r.ticks} ticks")
             var faster = r.clone()
@@ -359,7 +360,7 @@ fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
     assert(any[0].ticks == 3940 && any[KEPT - 1].ticks == 3980, f"{any[0].ticks}")
     let full = b.ranked(WETLANDS, FULL)
     assert(full.len() == 1 && full[0].ticks == 5000)
-    assert(b.ranked(LAB, ANY).len() == 0)
+    assert(b.ranked(LAB_COURSE, ANY).len() == 0)
 }
 
 @test
@@ -383,17 +384,17 @@ fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
 
 @test
 fn a_stored_run_of_no_ticks_too_many_or_too_long_isnt_played() {
-    assert(!verify(claimed(LAB, ticks: 0, snacks: 0)), "an empty run")
-    var over = claimed(LAB, ticks: 1, snacks: 0)
+    assert(!verify(claimed(LAB_COURSE, ticks: 0, snacks: 0)), "an empty run")
+    var over = claimed(LAB_COURSE, ticks: 1, snacks: 0)
     over.holds = Vec::from([hold(bits: 0, ticks: 0xffffffff), hold(bits: 0, ticks: 1)])
     assert(!verify(over), "holds whose ticks overflow")
-    var long = claimed(LAB, ticks: MOST_TICKS + 1, snacks: 0)
+    var long = claimed(LAB_COURSE, ticks: MOST_TICKS + 1, snacks: 0)
     long.holds = Vec::from([hold(bits: 0, ticks: MOST_TICKS), hold(bits: 0, ticks: 1)])
     assert(!verify(long), "a run past the longest kept")
     var b = board()
-    b.runs.push(claimed(LAB, ticks: 0, snacks: 0))
+    b.runs.push(claimed(LAB_COURSE, ticks: 0, snacks: 0))
     assert(read(bytes(b)).runs.len() == 0, "an empty run isn't read")
-    var mine = tool_assisted(LAB)[0].clone()
+    var mine = tool_assisted(LAB_COURSE)[0].clone()
     mine.who = YOU
     var many = board()
     for _ in 0..MOST_RUNS + 1 {
@@ -434,7 +435,7 @@ fn keys(from: u32, to: u32) -> Vec<Event> {
 @test
 fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again() {
     // The lab's run, played as key presses through the ticker's step, from the pause it opens on.
-    var l = live(LAB)
+    var l = live(LAB_COURSE)
     var tick = 0
     let go = Vec::from([Event::KeyDown { key: Key::Enter, repeat: false, mods: Mods {} }])
     tick_live(mut l, TickInput { tick, dt: STEP, records: go, answers: Vec::new() })

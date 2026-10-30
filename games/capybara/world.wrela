@@ -37,9 +37,6 @@ use std::hash::StateHash
 use std::input::{Assist, Event, Key, Mods, PadButton}
 use std::serialize::Serialize
 
-/// The movement lab's course number (course.wrela's `LAB_COURSE`).
-pub const LAB: u32 = LAB_COURSE
-
 /// Ticks between being hurt or falling out and coming back (1.1 s): the clock runs through them.
 pub const DYING: u32 = 132
 
@@ -842,11 +839,12 @@ pub fn play(c: u32, run: [Hold]) -> World {
 
 /// One tick of `w` with these events, as the ticker runs it.
 fn tick_with(w: mut World, records: [Event]) {
-    var events: Vec<Event> = Vec::new()
-    for e in records {
-        events.push(e)
-    }
-    tick(mut w, TickInput { tick: w.ticks, dt: STEP, records: events, answers: Vec::new() })
+    tick(mut w, input_of(w.ticks, records))
+}
+
+/// A tick's input with these events, as the ticker gives it.
+fn input_of<W: Asks>(tick: u32, records: [Event]) -> TickInput<W> {
+    TickInput { tick, dt: STEP, records: Vec::from(records), answers: Vec::new() }
 }
 
 fn down(key: Key) -> Event {
@@ -867,11 +865,7 @@ fn assist(n: u32, action: Assist) -> Event {
 
 /// One tick of `l` with these events, as the ticker runs it.
 fn live_tick(l: mut Live, records: [Event]) {
-    var events: Vec<Event> = Vec::new()
-    for e in records {
-        events.push(e)
-    }
-    tick_live(mut l, TickInput { tick: 0, dt: STEP, records: events, answers: Vec::new() })
+    tick_live(mut l, input_of(0, records))
 }
 
 /// `w` playing, from its title.
@@ -1096,7 +1090,10 @@ fn at_the_goals_card_a_choice_plays_the_next_level_and_not_before() {
         tick_with(mut w, [])
     }
     assert(w.body.grounded(), "and the press that chose it wasn't a jump")
-    assert(next(LEVELS - 1).is_none() && next(LAB).is_none(), "nothing after the last, or the lab")
+    assert(
+        next(LEVELS - 1).is_none() && next(LAB_COURSE).is_none(),
+        "nothing after the last, or the lab",
+    )
 }
 
 @test

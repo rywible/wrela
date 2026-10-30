@@ -18,18 +18,22 @@
 
 use engine::noise::{hash2, noise2}
 use ink::{INK, inked, pooled, washed}
-use scenery::{PARALLAX, View, crowned, fbm, on_layer, pixel_on}
+use scenery::{Scene, PARALLAX, View, crowned, fbm, on_layer, pixel_on}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
-pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    if k == 0 { grass(pixel, v, g, gs) } else if k == 1 {
-        residents(pixel, v, g, gs)
-    } else if k == 2 {
-        next_door(pixel, v, g, gs)
-    } else { far_hills(pixel, v, g, gs) }
+pub struct Savanna {}
+
+impl Scene for Savanna {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        if k == 0 { grass(pixel, v, g, gs) } else if k == 1 {
+            residents(pixel, v, g, gs)
+        } else if k == 2 {
+            next_door(pixel, v, g, gs)
+        } else { far_hills(pixel, v, g, gs) }
+    }
 }
 
 // ---- painting --------------------------------------------------------------------------------

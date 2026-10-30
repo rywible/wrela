@@ -227,8 +227,8 @@ pub struct Field: Copy + GpuData {
     /// snap every tuft aside in a frame or two (Ryan, 2026-10-22: landing made the ground "shake in
     /// a glitchy way").
     pub presence: f32 = 1.0,
-    /// The habitat drawn (habitats.wrela's `palette`): the course's number.
-    pub habitat: f32 = 0.0,
+    /// The habitat drawn (habitats.wrela's `habitat_of`).
+    pub habitat: u32 = 0,
 }
 
 /// Whether `x` is on one of the course's icy stretches (`ice`: each from its left to its right).
@@ -319,7 +319,7 @@ pub fn earth(
 ) -> vec4 {
     let p = e.world
     let bed = top_at(tops, p.x)
-    let pal = palette(u32(f.habitat + 0.5))
+    let pal = palette(f.habitat)
     var c = earth_colour(e, f, bed, pal, g, gs)
     if on_ice(ice, p.x) {
         // A glaze of ice over the top, a streak of sheen in it, inked where it meets the soil.
@@ -453,7 +453,7 @@ pub fn grass(b: Blade, f: Field) -> Over {
             daisy = min(daisy, length(q - head) - 0.05)
         }
     }
-    let pal = palette(u32(f.habitat + 0.5))
+    let pal = palette(f.habitat)
     var fill = blend(pal.grass, pal.grass_tip, tip)
     fill = wash(fill, b.world)
     var o = inked(fill, d, q, px * 1.4, px, pal.grass * 0.42)

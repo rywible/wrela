@@ -472,26 +472,17 @@ pub const COURSES: u32 = LEVELS + 1
 /// Course `i`: a level, or the lab.
 pub fn course(i: u32) -> borrow Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == HOME {
-        home::COURSE
-    } else if i == WETLANDS {
-        wetlands::COURSE
-    } else if i == SAVANNA {
-        savanna::COURSE
-    } else if i == RAINFOREST {
-        rainforest::COURSE
-    } else if i == AVIARY {
-        aviary::COURSE
-    } else if i == REPTILES {
-        reptiles::COURSE
-    } else if i == POLAR {
-        polar::COURSE
-    } else if i == FARM {
-        farm::COURSE
-    } else if i == FOOD_COURT {
-        food_court::COURSE
-    } else {
-        LAB
+    match i {
+        HOME => home::COURSE,
+        WETLANDS => wetlands::COURSE,
+        SAVANNA => savanna::COURSE,
+        RAINFOREST => rainforest::COURSE,
+        AVIARY => aviary::COURSE,
+        REPTILES => reptiles::COURSE,
+        POLAR => polar::COURSE,
+        FARM => farm::COURSE,
+        FOOD_COURT => food_court::COURSE,
+        _ => LAB,
     }
 }
 
@@ -499,51 +490,33 @@ pub fn course(i: u32) -> borrow Course {
 /// change them in a lifted build. The game reads the constants, made once in the build.
 pub fn made(i: u32) -> Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == HOME {
-        home::built()
-    } else if i == WETLANDS {
-        wetlands::built()
-    } else if i == SAVANNA {
-        savanna::built()
-    } else if i == RAINFOREST {
-        rainforest::built()
-    } else if i == AVIARY {
-        aviary::built()
-    } else if i == REPTILES {
-        reptiles::built()
-    } else if i == POLAR {
-        polar::built()
-    } else if i == FARM {
-        farm::built()
-    } else if i == FOOD_COURT {
-        food_court::built()
-    } else {
-        lab()
+    match i {
+        HOME => home::built(),
+        WETLANDS => wetlands::built(),
+        SAVANNA => savanna::built(),
+        RAINFOREST => rainforest::built(),
+        AVIARY => aviary::built(),
+        REPTILES => reptiles::built(),
+        POLAR => polar::built(),
+        FARM => farm::built(),
+        FOOD_COURT => food_court::built(),
+        _ => lab(),
     }
 }
 
 /// Course `i`'s name, as its title says it.
 pub fn name(i: u32) -> Text {
-    if i == HOME {
-        home::NAME
-    } else if i == WETLANDS {
-        wetlands::NAME
-    } else if i == SAVANNA {
-        savanna::NAME
-    } else if i == RAINFOREST {
-        rainforest::NAME
-    } else if i == AVIARY {
-        aviary::NAME
-    } else if i == REPTILES {
-        reptiles::NAME
-    } else if i == POLAR {
-        polar::NAME
-    } else if i == FARM {
-        farm::NAME
-    } else if i == FOOD_COURT {
-        food_court::NAME
-    } else {
-        "The lab"
+    match i {
+        HOME => home::NAME,
+        WETLANDS => wetlands::NAME,
+        SAVANNA => savanna::NAME,
+        RAINFOREST => rainforest::NAME,
+        AVIARY => aviary::NAME,
+        REPTILES => reptiles::NAME,
+        POLAR => polar::NAME,
+        FARM => farm::NAME,
+        FOOD_COURT => food_court::NAME,
+        _ => "The lab",
     }
 }
 

@@ -31,11 +31,12 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
+use habitats::habitat_of
 use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
 use camera::{Camera, camera, follow, framed, half_view, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
-use course::{COURSES, Course, HOME, LEVELS, WETLANDS, course}
+use course::{Course, HOME, LEVELS, WETLANDS, course}
 use earth::{Field, earth, earth_mesh, earth_vertex, grass, grass_mesh, grass_vertex, profiles}
 use engine::frame::full
 use engine::present::Snapshots
@@ -74,10 +75,9 @@ use watch::{SPEEDS, Watch, watch}
 use ui::glyphs::{Device, device_of}
 use ui::text::{Face, Fonts}
 use waves::{Pond, water, water_mesh, water_vertex}
-use world::{CONTROLS, LAB, MAP, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
+use world::{CONTROLS, MAP, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
 use engine::menu::{Nav, Stick}
 
-/// The most sprites drawn: the cast's and the particles'.
 /// A developer's build (`wrela build games/capybara --set DEV=true`): Tab plays the next course,
 /// the movement lab among them. A player's build has neither.
 pub const DEV: bool = false
@@ -85,6 +85,7 @@ pub const DEV: bool = false
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
 
+/// The most sprites drawn: the cast's and the particles'.
 const SPRITES: u32 = 1024
 
 /// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
@@ -219,10 +220,12 @@ pub struct Lab {
     saving: Option<Pending<u8>>,
     storing: Storing,
     kept: u32,
-    /// The tool-assisted runs of the course shown (made as it's shown: each is the sim playing the
-    /// run, and all nine levels' delayed the first frame), the board shown (`PLAYERS` or
-    /// `ASSISTED`), and the run with the focus on it: its category's column and its row.
+    /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
+    /// asks: each is the sim playing the run, and making them delayed the first frame and each
+    /// change of level), the board shown (`PLAYERS` or `ASSISTED`), and the run with the focus on
+    /// it: its category's column and its row.
     assisted: Vec<Replay>,
+    assisted_of: Option<u32>,
     board: u32,
     column: u32,
     row: u32,
@@ -304,7 +307,8 @@ pub fn init() -> Lab {
         saving: None,
         storing: Storing {},
         kept: 0xffffffff,
-        assisted: tool_assisted(FIRST),
+        assisted: Vec::new(),
+        assisted_of: None,
         board: PLAYERS,
         column: ANY,
         row: 0,
@@ -452,7 +456,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.heights = buffer_of(s.cast.waves.heights, at_least: 8)
         if snap.course != s.shown {
             s.ground = ground_of(c)
-            s.assisted = tool_assisted(snap.course)
         }
         s.shown = snap.course
         s.watched = watching
@@ -523,7 +526,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         scene_size,
     )
     s.signs.upload(s.sign_list)
-    let habitat = f32(snap.course)
+    let habitat = habitat_of(snap.course)
     let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time, habitat }
     // How much the capybara slides and is on the ground, eased, for the grass.
     let mode = Mode::from_u32(snap.mode)
@@ -1226,6 +1229,14 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     assisted(s, c, category)
 }
 
+/// Course `c`'s tool-assisted runs made, if they aren't.
+fn made_assisted(s: mut Lab, c: u32) {
+    if s.assisted_of != Some(c) {
+        s.assisted = tool_assisted(c)
+        s.assisted_of = Some(c)
+    }
+}
+
 /// The tool-assisted runs of course `c` made for `category`, fastest first.
 fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     var out: Vec<Replay> = Vec::new()
@@ -1275,6 +1286,9 @@ fn follow_ghost(s: mut Lab, c: u32) {
         return
     }
     s.trail_of = key
+    if s.settings.ghost == AUTOPILOT_GHOST || s.settings.ghost == HUMAN_GHOST {
+        made_assisted(mut s, c)
+    }
     s.trail = match ghost_run(s, c) {
         Some(r) => trail(r),
         None => Vec::new(),
@@ -1319,6 +1333,7 @@ fn back_rect(screen: vec2) -> Rect {
 /// click on it) watches it. Watching: Space or A pauses and plays, left and right seek, up and down
 /// change the speed, and R or X starts it again.
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
+    made_assisted(mut s, c)
     let nav = s.nav.nav(e)
     var watched = false
     match mut s.watching {
@@ -1414,6 +1429,7 @@ fn open_watch(s: mut Lab, r: take Replay) {
 /// made each and its time, the one with the focus washed in yuzu; a back button; and how to use
 /// them.
 fn runs_card(s: mut Lab, c: u32, screen: vec2) {
+    made_assisted(mut s, c)
     let (r, size) = runs_frame(screen)
     let u = unit(screen)
     let gold = vec4(0.62, 0.42, 0.08, 1.0)

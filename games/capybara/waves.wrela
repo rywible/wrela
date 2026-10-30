@@ -186,8 +186,8 @@ pub struct Pond: Copy + GpuData {
     pub half: vec2,
     pub px: f32,
     pub time: f32,
-    /// The habitat drawn: the course's number (habitats.wrela's `palette`).
-    pub habitat: f32 = 0.0,
+    /// The habitat drawn (habitats.wrela's `habitat_of`).
+    pub habitat: u32 = 0,
     pub pad: f32 = 0.0,
 }
 
@@ -264,7 +264,7 @@ pub fn water(
     let size = vec2(f32(below.width()), f32(below.height()))
     let behind = below.sample_level(s, pixel.position.xy / size + wobble / (f.half * 2.0)).rgb
     // The habitat's water (habitats.wrela): from its surface's colour down to its depths.
-    let pal = palette(u32(f.habitat + 0.5))
+    let pal = palette(f.habitat)
     let teal = blend(pal.water_top, pal.water_mid, smoothstep(0.0, 3.0, depth))
     let tint = blend(teal, pal.depths, smoothstep(3.0, 9.0, depth))
     var c = blend(behind, wash(tint, p), saturate(0.5 + depth * 0.09))

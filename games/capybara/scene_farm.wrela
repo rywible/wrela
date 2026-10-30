@@ -16,19 +16,23 @@
 
 use engine::noise::{hash2, noise2}
 use scenery::{
-    BAMBOO, FAR, MIST, PATH, SAVANNA, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under,
+    Scene, NEAREST, FAR, NEAR, MIDDLE, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under,
 }
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
-pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    if k == 0 { fence_row(pixel, v, g, gs) } else if k == 1 {
-        farm(pixel, v, g, gs)
-    } else if k == 2 {
-        over_the_hedge(pixel, v, g, gs)
-    } else { pasture(pixel, v, g, gs) }
+pub struct Farm {}
+
+impl Scene for Farm {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        if k == 0 { fence_row(pixel, v, g, gs) } else if k == 1 {
+            farm(pixel, v, g, gs)
+        } else if k == 2 {
+            over_the_hedge(pixel, v, g, gs)
+        } else { pasture(pixel, v, g, gs) }
+    }
 }
 
 /// The shape in front over the one behind: what's behind is cut where the front is, so a line
@@ -273,8 +277,8 @@ fn food_court(q: vec2, ground: f32) -> (f32, vec3) {
 }
 
 fn over_the_hedge(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let q = on_layer(pixel, v, SAVANNA)
-    let px = pixel_on(v, SAVANNA)
+    let q = on_layer(pixel, v, MIDDLE)
+    let px = pixel_on(v, MIDDLE)
     let ground = beyond_ground(q.x)
     if q.y > ground + 4.8 {
         return vec4(0.0)
@@ -574,8 +578,8 @@ const PENS: f32 = 22.0
 const KINDS: i32 = 7
 
 fn farm(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let q = on_layer(pixel, v, PATH)
-    let px = pixel_on(v, PATH)
+    let q = on_layer(pixel, v, NEAR)
+    let px = pixel_on(v, NEAR)
     let ground = farm_ground(q.x)
     let pasture = vec3(0.58, 0.8, 0.42)
     if q.y > ground + 6.6 {
@@ -747,8 +751,8 @@ fn wheelbarrow(l: vec2) -> (f32, vec3) {
 const BY_FENCE: f32 = 9.0
 
 fn fence_row(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let q = on_layer(pixel, v, BAMBOO)
-    let px = pixel_on(v, BAMBOO)
+    let q = on_layer(pixel, v, NEAREST)
+    let px = pixel_on(v, NEAREST)
     let ground = near_ground(q.x)
     let grass = vec3(0.5, 0.74, 0.34)
     if q.y > ground + 4.2 {

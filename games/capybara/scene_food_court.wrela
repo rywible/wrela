@@ -19,7 +19,7 @@
 
 use engine::noise::{hash2, noise2}
 use ink::{INK, inked, pooled, washed}
-use scenery::{PARALLAX, View, crowned, fbm, nearer, on_layer, pixel_on}
+use scenery::{Scene, PARALLAX, View, crowned, fbm, nearer, on_layer, pixel_on}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
@@ -31,14 +31,18 @@ const GOLD = vec3(0.97, 0.85, 0.66)
 const WARM = vec3(1.02, 0.99, 0.93)
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
-pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let q = on_layer(pixel, v, PARALLAX[k])
-    let px = pixel_on(v, PARALLAX[k])
-    if k == 0 { cafe(q, px, v.time, g, gs) } else if k == 1 {
-        stalls(q, px, v.time, g, gs)
-    } else if k == 2 {
-        beyond(q, px, v.time, g, gs)
-    } else { skyline(q, px, g, gs) }
+pub struct FoodCourt {}
+
+impl Scene for FoodCourt {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        let q = on_layer(pixel, v, PARALLAX[k])
+        let px = pixel_on(v, PARALLAX[k])
+        if k == 0 { cafe(q, px, v.time, g, gs) } else if k == 1 {
+            stalls(q, px, v.time, g, gs)
+        } else if k == 2 {
+            beyond(q, px, v.time, g, gs)
+        } else { skyline(q, px, g, gs) }
+    }
 }
 
 // ---- painting ----------------------------------------------------------------------------------

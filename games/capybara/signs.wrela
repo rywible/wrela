@@ -42,26 +42,17 @@ pub struct Sign: Copy {
 
 /// Course `c`'s signs: its level's; the lab has none.
 pub fn signs(c: u32) -> Vec<Sign> {
-    if c == HOME {
-        Vec::from(home::SIGNS)
-    } else if c == WETLANDS {
-        Vec::from(wetlands::SIGNS)
-    } else if c == SAVANNA {
-        Vec::from(savanna::SIGNS)
-    } else if c == RAINFOREST {
-        Vec::from(rainforest::SIGNS)
-    } else if c == AVIARY {
-        Vec::from(aviary::SIGNS)
-    } else if c == REPTILES {
-        Vec::from(reptiles::SIGNS)
-    } else if c == POLAR {
-        Vec::from(polar::SIGNS)
-    } else if c == FARM {
-        Vec::from(farm::SIGNS)
-    } else if c == FOOD_COURT {
-        Vec::from(food_court::SIGNS)
-    } else {
-        Vec::new()
+    match c {
+        HOME => Vec::from(home::SIGNS),
+        WETLANDS => Vec::from(wetlands::SIGNS),
+        SAVANNA => Vec::from(savanna::SIGNS),
+        RAINFOREST => Vec::from(rainforest::SIGNS),
+        AVIARY => Vec::from(aviary::SIGNS),
+        REPTILES => Vec::from(reptiles::SIGNS),
+        POLAR => Vec::from(polar::SIGNS),
+        FARM => Vec::from(farm::SIGNS),
+        FOOD_COURT => Vec::from(food_court::SIGNS),
+        _ => Vec::new(),
     }
 }
 
@@ -174,7 +165,7 @@ fn each_of_the_levels_moves_has_a_sign_left_to_right_and_none_in_the_lab() {
         }
     }
     assert(taught == RUN_AND_JUMP | DOUBLE_JUMP | SPLASH | SLIDE | SWIM)
-    assert(signs(world::LAB).len() == 0)
+    assert(signs(course::LAB_COURSE).len() == 0)
 }
 
 @test
