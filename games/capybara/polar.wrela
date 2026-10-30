@@ -1,20 +1,39 @@
-// The Polar Coast: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+// The Polar Coast: the seventh level, a harder one than the Reptile House, built round ice. Ice has
+// little grip, so stops and turns slide on and slides run on: it is met alone on the penguins'
+// beach, then on the glacier's slopes and over pits, then beside the cold sea. The seagull's crew
+// is met here too, a gull alone on the shelf first, then over the ice.
 
 use course::Course
+use foes::Kind
 use ground::corner
+use screens::Act
 use signs::Sign
 
 /// Its name, as its title says it.
 pub const NAME: Text = "The Polar Coast"
 
-/// The course: a placeholder.
+/// The course: five sections, a checkpoint after each of the first four.
+///
+/// 1. The penguins' beach (0 to 60 m): flat ice and nothing else, a sign before it; a snack high
+///    over it; steps up to the glacier's top.
+/// 2. The glacier (60 to 148 m): an icy slope down into a hollow and up to a lip over a 12 m pit; a
+///    slide off the lip flies it, past a snack high over its middle, and a ledge in it is the slow
+///    way. Icy mesas over pits past it, where a stop slides on to the edge; a snack on a short icy
+///    ledge low in the second pit, and a double jump out.
+/// 3. The ice shelf (148 to 240 m): the first gull, alone over plain ground; then two gulls over
+///    flat ice, and one over an icy mesa between pits.
+/// 4. The cold sea (240 to 312 m): an icy shore down into the sea, three icy floes in it and a gull
+///    over the middle one, a snack on the sea's floor under it, and a wall 3.5 m out of the water.
+/// 5. The bears' rocks (312 to 392 m): up a rock, down an icy slope into a hollow and up to a lip
+///    over a 6 m pit; a gull over the icy run past it, a snack high over that gull, which a bounce
+///    off it or a slide-jump off the lip reaches; and up to the goal.
 pub const COURSE: Course = built()
 
 pub fn built() -> Course {
     Course::new(
         start: vec2(2.0, 0.35),
-        goal_lo: vec2(30.0, 0.0),
-        goal_hi: vec2(32.0, 5.0),
+        goal_lo: vec2(384.0, 2.0),
+        goal_hi: vec2(386.0, 7.0),
         floor: -12.0,
     )
         .solid(
@@ -22,15 +41,133 @@ pub fn built() -> Course {
                 corner(vec2(-6.0, -20.0)),
                 corner(vec2(-6.0, 10.0)),
                 corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0)),
-                corner(vec2(36.0, 0.0)),
-                corner(vec2(36.0, 14.0)),
-                corner(vec2(38.0, 14.0)),
-                corner(vec2(38.0, -20.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The penguins' beach, then the steps up to the glacier's top.
+                corner(vec2(54.0, 0.0)),
+                corner(vec2(54.0, 1.5)),
+                corner(vec2(59.0, 1.5)),
+                corner(vec2(59.0, 3.0)),
+                // 2. The glacier: down into the hollow, up to the lip.
+                corner(vec2(68.0, 3.0), 2.0),
+                corner(vec2(82.0, -5.0), 6.0),
+                corner(vec2(90.0, -5.0), 5.0),
+                corner(vec2(96.0, -2.0)),
+                // The big pit, and the icy mesas past it.
+                corner(vec2(96.0, -16.0)),
+                corner(vec2(108.0, -16.0)),
+                corner(vec2(108.0, -3.0)),
+                corner(vec2(118.0, -3.0)),
+                corner(vec2(118.0, -16.0)),
+                corner(vec2(122.0, -16.0)),
+                corner(vec2(122.0, -3.0)),
+                corner(vec2(130.0, -3.0)),
+                corner(vec2(130.0, -16.0)),
+                corner(vec2(136.0, -16.0)),
+                corner(vec2(136.0, -3.0)),
+                corner(vec2(142.0, -3.0), 2.0),
+                corner(vec2(148.0, 0.0), 2.0),
+                // 3. The ice shelf: the first gull's ground, then the ice, a mesa between pits.
+                corner(vec2(214.0, 0.0)),
+                corner(vec2(214.0, -16.0)),
+                corner(vec2(219.0, -16.0)),
+                corner(vec2(219.0, 0.0)),
+                corner(vec2(229.0, 0.0)),
+                corner(vec2(229.0, -16.0)),
+                corner(vec2(234.0, -16.0)),
+                corner(vec2(234.0, 0.0)),
+                // 4. The cold sea: down the shore into it, its floor, and its far wall.
+                corner(vec2(250.0, 0.0), 2.0),
+                corner(vec2(257.0, -7.0), 5.0),
+                corner(vec2(310.0, -7.0), 2.0),
+                corner(vec2(312.0, 2.5)),
+                // 5. The bears' rocks: up, down an icy slope to the pit, the icy run, the goal.
+                corner(vec2(318.0, 2.5), 2.0),
+                corner(vec2(324.0, 5.0), 2.0),
+                corner(vec2(328.0, 5.0), 3.0),
+                corner(vec2(338.0, -1.0), 4.0),
+                corner(vec2(344.0, -1.0), 4.0),
+                corner(vec2(350.0, 1.5)),
+                // The last pit, the icy run past it, and up to the goal.
+                corner(vec2(350.0, -16.0)),
+                corner(vec2(356.0, -16.0)),
+                corner(vec2(356.0, 0.0)),
+                corner(vec2(370.0, 0.0), 2.0),
+                corner(vec2(376.0, 2.0), 2.0),
+                // The goal's deck and the wall at the end.
+                corner(vec2(392.0, 2.0)),
+                corner(vec2(392.0, 14.0)),
+                corner(vec2(394.0, 14.0)),
+                corner(vec2(394.0, -20.0)),
             ],
         )
-        .ended(vec2(-4.0, 36.0))
+        // The floes.
+        .solid(
+            [
+                corner(vec2(262.0, -3.0)),
+                corner(vec2(262.0, -0.5), 0.3),
+                corner(vec2(267.0, -0.5), 0.3),
+                corner(vec2(267.0, -3.0)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(276.0, -3.0)),
+                corner(vec2(276.0, -0.5), 0.3),
+                corner(vec2(281.0, -0.5), 0.3),
+                corner(vec2(281.0, -3.0)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(290.0, -3.0)),
+                corner(vec2(290.0, -0.5), 0.3),
+                corner(vec2(295.0, -0.5), 0.3),
+                corner(vec2(295.0, -3.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 392.0))
+        // The slow way over the big pit, and the snack's ledge low in the second pit.
+        .ledge([corner(vec2(100.5, -3.5)), corner(vec2(103.5, -3.5))])
+        .ledge([corner(vec2(131.75, -6.0)), corner(vec2(134.25, -6.0))])
+        .icy_from(lo: 14.0, hi: 50.0)
+        .icy_from(lo: 66.0, hi: 96.0)
+        .icy_from(lo: 108.0, hi: 142.0)
+        .icy_from(lo: 180.0, hi: 234.0)
+        .icy_from(lo: 244.0, hi: 254.0)
+        .icy_from(lo: 262.0, hi: 267.0)
+        .icy_from(lo: 276.0, hi: 281.0)
+        .icy_from(lo: 290.0, hi: 295.0)
+        .icy_from(lo: 326.0, hi: 350.0)
+        .icy_from(lo: 356.0, hi: 370.0)
+        .water(vec2(250.0, -7.0), vec2(313.0, -1.0))
+        .foe(Kind::Gull, vec2(165.0, 4.2), 4.0)
+        .foe(Kind::Gull, vec2(192.0, 4.2), 4.0)
+        .foe(Kind::Gull, vec2(205.0, 4.2), 4.0)
+        .foe(Kind::Gull, vec2(224.0, 4.2), 3.0)
+        .foe(Kind::Gull, vec2(278.5, 3.7), 5.0)
+        .foe(Kind::Gull, vec2(363.0, 4.2), 3.0)
+        .snack(vec2(32.0, 4.6))
+        .snack(vec2(102.0, 5.5))
+        .snack(vec2(133.0, -5.4))
+        .snack(vec2(278.5, -6.4))
+        .snack(vec2(363.0, 8.8))
+        .yuzu(vec2(176.0, 0.6))
+        .yuzu(vec2(318.0, 3.1))
+        .checkpoint(vec2(62.0, 3.0))
+        .checkpoint(vec2(152.0, 0.0))
+        .checkpoint(vec2(240.0, 0.0))
+        .checkpoint(vec2(316.0, 2.5))
 }
 
-/// Its signs: none yet.
-pub const SIGNS: [Sign; 0] = []
+/// Its signs: ice's, on the beach before the first ice.
+pub const SIGNS: [Sign; 1] = [
+    Sign {
+        at: vec2(8.0, 0.0),
+        heading: "Ice is slippery",
+        first: Act::Run,
+        second: Act::Run,
+        prompts: 0,
+        line: "Stops and turns slide on",
+        teaches: 0,
+    },
+]
