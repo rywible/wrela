@@ -202,6 +202,9 @@ pub struct State {
     frame: Frame<Gathered>,
     scene: Solid,
     asked: Vec<Pending<f32>>,
+    capsule_asked: Vec<Pending<f32>>,
+    capsule_before: Vec<f32>,
+    capsule_after: Vec<f32>,
     traced: Vec<Pending<vec4>>,
     pub got: Vec<f32>,
     pub contact: Vec<f32>,
@@ -232,6 +235,9 @@ pub fn init() -> State {
             },
         },
         asked: Vec::new(),
+        capsule_asked: Vec::new(),
+        capsule_before: Vec::new(),
+        capsule_after: Vec::new(),
         traced: Vec::new(),
         got: Vec::new(),
         contact: Vec::new(),
@@ -295,6 +301,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.cooked_at == 0 && s.frame.distance.cooked && s.frame.probes.done() {
         s.cooked_at = s.frame.ran
         ask(mut s)
+        ask_capsules(mut s)
     }
     if s.asked.len() == 2 && s.got.is_empty() {
         match s.asked[0].poll() {
@@ -305,6 +312,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.asked.len() == 2 && s.contact.is_empty() {
         match s.asked[1].poll() {
             Some(Ok(v)) => s.contact = take v,
+            _ => {},
+        }
+    }
+    if s.capsule_asked.len() == 2 && s.capsule_before.is_empty() {
+        match s.capsule_asked[0].poll() {
+            Some(Ok(v)) => s.capsule_before = take v,
+            _ => {},
+        }
+    }
+    if s.capsule_asked.len() == 2 && s.capsule_after.is_empty() {
+        match s.capsule_asked[1].poll() {
+            Some(Ok(v)) => s.capsule_after = take v,
             _ => {},
         }
     }
@@ -373,4 +392,44 @@ fn a_contact_shadow_at_the_screens_edge_is_the_one_in_its_middle(s: State) {
     print(f"the edge's contact {s.contact[0]:.3}, the middle's {s.contact[1]:.3}")
     assert(s.contact[1] < 0.5, f"the middle's post casts none: {s.contact[1]}")
     assert(abs(s.contact[0] - s.contact[1]) < 1.0e-3, "the edge's differs")
+}
+
+// Exercise the source specialization with actual capsules, then a changed source version.
+// The existing fixture separately exercises shape tapes, probe rays and contact shadows.
+fn ask_capsules(s: mut State) {
+    borrow f = s.frame
+    let o = f.origin
+    var volume = engine::distance::Distance::new(true)
+    for version in 1..3 {
+        let radius = RADIUS + f32(version - 1)
+        let capsules = Vec::from(
+            [Capsule { a: SPHERE - o, b: SPHERE - o, radius }],
+        )
+        volume.follow(EYE - o, Some(Solids { capsules, version }))
+        for _ in 0..engine::distance::DISTANCE_SLABS {
+            volume.cook(f.clipmap.levels(), f.clipmap.texels())
+        }
+        var out: GpuBuffer<f32> = buffer(2 * ROUND)
+        dispatch(distances.bind(volume.read(), volume.volume, o, out: mut out), over: 2 * ROUND)
+        s.capsule_asked.push(read(out.items()))
+    }
+}
+
+@test(frames: 200, gpu: true)
+fn capsules_without_tapes_keep_their_distance_after_a_source_edit(s: State) {
+    assert(s.capsule_before.len() == 2 * ROUND && s.capsule_after.len() == 2 * ROUND)
+    var before = 0.0
+    var after = 0.0
+    var changed = false
+    for i in 0..ROUND {
+        let p = round_point(i, SPHERE, RADIUS)
+        before = max(before, abs(s.capsule_before[i] - truth(p, length(p - SPHERE) - RADIUS)))
+        after = max(after, abs(s.capsule_after[i] - truth(p, length(p - SPHERE) - RADIUS - 1.0)))
+        changed = changed || abs(s.capsule_before[i] - s.capsule_after[i]) > 0.5
+    }
+    assert(
+        before <= 0.25 && after <= 0.25,
+        f"capsule source edit: {before} m before, {after} m after",
+    )
+    assert(changed, "the changed source radius did not reach the specialized volume")
 }

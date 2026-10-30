@@ -3726,3 +3726,18 @@ Conventional motion controls identify distance updates at~70% of total GPU cost
 on the60-frame pan. Next bet: preserve field-region validity across interrupted
 updates, then measure correctness and complete cost.
 [Quality, memory, runtime, failures and decision](neural-source-demand-runtime.md).
+
+## 2026-10-30: exact distance-source specialization on AMD
+
+Retain the no-shape-tape specialized distance kernel and shared terrain columns.
+On RADV RENOIR/Ryzen 5 5500U, Chrome 154, Wrela 0.9.0, 1080p clearing with internal 2×,
+four balanced BC/source-ID motion pairs reduce complete 60-frame pan GPU cost
+3.24 to 3.28× versus the original
+general kernel. An equally source-informed direct-ground specialization receives
+most of this win; shared columns add 0.73 to 0.82%.
+The 294,912 B requested scratch and measured PSS changes are charged; no total
+physical-memory saving is claimed. All 36 established shaded gates and five GPU
+tests pass; 26,247,168 same-frame field values are bit-exact. First assessment
+29.52min; one optimization followup, zero training.
+G1–G7 unchanged/unmet. Complete costs, memory, failures and scope:
+[distance specialization](neural-distance-specialization.md).

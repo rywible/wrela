@@ -265,6 +265,29 @@ fn to_capsule(c: Capsule, p: vec3) -> f32 {
     length(p - c.a - ab * t) - c.radius
 }
 
+/// Terrain is a function of horizontal position. Evaluate it once for each column
+/// of the physical slab, before its vertical voxels reuse the same f32 values.
+@compute(64)
+fn cook_ground_columns(
+    g: DistanceGrid,
+    first: u32,
+    levels: Levels,
+    texels: [Texel],
+    out: mut std::gpu::Slots<vec2>,
+    id: GlobalId,
+) {
+    let x = id.x % g.dims.x
+    let z = id.x / g.dims.x
+    if z < first || z >= g.dims.z { return }
+    let t = vec2i(i32(x), i32(z))
+    let d = vec2i(i32(g.dims.x), i32(g.dims.z))
+    let origin = g.origin.xz
+    let w = origin + (((t - origin) % d) + d) % d
+    let xz = (vec2(w) + vec2(0.5)) * g.voxel
+    let (normal, _, _) = ground_at(levels, texels, xz)
+    out[id] = vec2(normal.y, height_at(levels, texels, xz))
+}
+
 /// A slab of the volume cooked: its texels from z `first` (a dispatch reaches them from z 0, and
 /// those before return), but those it `kept`, the distance to the ground and to the solids its bin lists
 /// (`bins`: each bin's first entry in `list` and how many), at most `DISTANCE_FAR`.
@@ -277,8 +300,7 @@ pub fn cook_distance(
     list: [u32],
     capsules: [Capsule],
     shapes: [Shape],
-    levels: Levels,
-    texels: [Texel],
+    columns: [vec2],
     out: mut Texels3d<R32Float>,
     id: GlobalId,
 ) {
@@ -293,8 +315,8 @@ pub fn cook_distance(
     }
     let p = (vec3(w) + vec3(0.5)) * g.voxel
     // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
-    let (n, _, _) = ground_at(levels, texels, p.xz)
-    var dist = min((p.y - height_at(levels, texels, p.xz)) * n.y, DISTANCE_FAR)
+    let ground = columns[id.z * g.dims.x + id.x]
+    var dist = min((p.y - ground.y) * ground.x, DISTANCE_FAR)
     let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
     let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
     for i in 0..entry.y {
@@ -308,6 +330,41 @@ pub fn cook_distance(
                 dist = min(dist, interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz))
             }
         }
+    }
+    out.store(id, dist)
+}
+
+/// Exact specialization when the source has no shape tapes; capsules still participate.
+@compute(64)
+fn cook_capsule_distance(
+    g: DistanceGrid,
+    first: u32,
+    kept: Kept,
+    bins: [vec2u],
+    list: [u32],
+    capsules: [Capsule],
+    columns: [vec2],
+    out: mut Texels3d<R32Float>,
+    id: GlobalId,
+) {
+    if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
+        return
+    }
+    let t = vec3i(id.xyz())
+    let d = vec3i(g.dims)
+    let w = g.origin + (((t - g.origin) % d) + d) % d
+    if inside_box(w, kept.lo, kept.hi) {
+        return
+    }
+    let p = (vec3(w) + vec3(0.5)) * g.voxel
+    // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
+    let ground = columns[id.z * g.dims.x + id.x]
+    var dist = min((p.y - ground.y) * ground.x, DISTANCE_FAR)
+    let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
+    let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
+    for i in 0..entry.y {
+        let k = list[entry.x + i]
+        dist = min(dist, to_capsule(capsules[k], p))
     }
     out.store(id, dist)
 }
@@ -333,6 +390,7 @@ fn bin_into(lists: mut Vec<Vec<u32>>, corner: vec3, lo: vec3, hi: vec3, k: u32) 
 pub struct Distance {
     pub grid: DistanceGrid,
     pub volume: Texture3d<R32Float>,
+    columns: GpuBuffer<vec2>,
     capsules: GpuBuffer<Capsule>,
     shapes: GpuBuffer<Shape>,
     bins: GpuBuffer<vec2u>,
@@ -357,6 +415,7 @@ impl Distance {
             volume: if wanted { texture3d::<R32Float>(d.x, d.y, d.z) } else {
                 texture3d::<R32Float>(width: 1, height: 1, depth: 1)
             },
+            columns: buffer(if wanted { d.x * d.z } else { 1 }),
             capsules: buffer(1),
             shapes: buffer(1),
             bins: buffer(BINS.x * BINS.y * BINS.z),
@@ -377,7 +436,8 @@ impl Distance {
             u64(self.capsules.len()) * u64(size_of::<Capsule>()) +
             u64(self.shapes.len()) * u64(size_of::<Shape>()) +
             u64(self.bins.len()) * 8 +
-            u64(self.list.len()) * 4
+            u64(self.list.len()) * 4 +
+            u64(self.columns.len()) * 8
     }
 
     /// The grid as shading reads it: off until it's cooked whole once (and while it's not
@@ -500,21 +560,48 @@ impl Distance {
         let d = DISTANCE_DIMS
         let depth = d.z / DISTANCE_SLABS
         let first = self.next * depth
+        label("distance ground columns")
         dispatch(
-            cook_distance.bind(
+            cook_ground_columns.bind(
                 self.grid,
-                first: first,
-                kept: self.kept,
-                bins: self.bins.items(),
-                list: self.list.items(),
-                capsules: self.capsules.items(),
-                shapes: self.shapes.items(),
-                levels: levels,
-                texels: texels,
-                out: mut self.volume,
+                first,
+                levels,
+                texels,
+                out: mut self.columns,
             ),
-            over: (d.x, d.y, first + depth),
+            over: d.x * (first + depth),
         )
+        label("distance")
+        if self.solids.shapes.is_empty() {
+            dispatch(
+                cook_capsule_distance.bind(
+                    self.grid,
+                    first: first,
+                    kept: self.kept,
+                    bins: self.bins.items(),
+                    list: self.list.items(),
+                    capsules: self.capsules.items(),
+                    columns: self.columns.items(),
+                    out: mut self.volume,
+                ),
+                over: (d.x, d.y, first + depth),
+            )
+        } else {
+            dispatch(
+                cook_distance.bind(
+                    self.grid,
+                    first: first,
+                    kept: self.kept,
+                    bins: self.bins.items(),
+                    list: self.list.items(),
+                    capsules: self.capsules.items(),
+                    shapes: self.shapes.items(),
+                    columns: self.columns.items(),
+                    out: mut self.volume,
+                ),
+                over: (d.x, d.y, first + depth),
+            )
+        }
         self.next += 1
         self.left -= 1
         if self.left == 0 {
