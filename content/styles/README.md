@@ -109,8 +109,9 @@ The search builds the program once, in the look's fitting variant (`<Look>Fittin
 constants are the light's: `engine::style::Knob`), and sets each candidate through its `fit`
 export. Each range stops where the look still holds its coherence bars: fitted without that, the
 cel look's ramp went to 0.589 and an old oak's flicker missed its bar (5.77 ×10⁻⁶ against 1.64),
-and the painterly look's tones to 12 and the canopy against the sun's missed (0.45 against 0.42);
-so `TERMINATOR` is at most 0.2 and the painterly `PALETTE_N` at most 8 (docs/bench.md, "D8").
+and the painterly look's sky to 0.015 simplified and the canopy against the sun's missed (0.56
+against 0.42; 0.5 holds it); so `TERMINATOR` is at most 0.2 and `SKY_SIMPLE` at least 0.5
+(docs/bench.md, "D8").
 
 ## The fixtures
 

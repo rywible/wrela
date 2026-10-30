@@ -1,0 +1,76 @@
+// The cel look fitted to the 14 images of refs/cel on shot D5 (196 evaluations of CMA-ES from seed 1): its score 4.490 → 4.402; held out (the look's own → fitted): D1 3.393 → 3.353; D3 4.494 → 4.448; 2026-10-30.
+// Written by `wrela tool fit --style cel` (studio/fit): don't edit by hand.
+
+use cel
+use cel::Cel
+use engine::light::{Light, Lit}
+use engine::marks::MarkSample
+use engine::paint::{Develop, Exposure}
+use engine::style::{Knob, Style}
+use engine::substance::{Substance, Written}
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The fitted values of `cel::FITTABLE`: TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065.
+const AT: [f32; 8] = [0.2, 4, 0.0065078125, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+/// The cel look with its fitted constants (`engine::style::Style`).
+pub struct CelFitted {}
+
+impl Knob for CelFitted {
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+impl Style for CelFitted {
+    const SUBSTANCE: u32 = Cel::SUBSTANCE
+    const NORMAL: u32 = Cel::NORMAL
+    const MARKS: u32 = Cel::MARKS
+    const FLAT_CLIP: f32 = Cel::FLAT_CLIP
+    const FLAT: f32 = Cel::FLAT
+    const LINE_DARK: f32 = Cel::LINE_DARK
+    const LINE_PX: f32 = Cel::LINE_PX
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        Cel::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        cel::shade_of::<CelFitted>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        cel::shade_leaf_of::<CelFitted>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        cel::palette_of::<CelFitted>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        Cel::mark(m, s, depth_px)
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        Cel::mark_px(kind)
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Cel::lens(paint, px, d, e, lut, s)
+    }
+}

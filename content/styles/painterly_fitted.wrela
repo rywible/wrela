@@ -1,0 +1,76 @@
+// The painterly look fitted to the 14 images of refs/painterly on shot D5 (196 evaluations of CMA-ES from seed 1): its score 1.373 → 1.325; held out (the look's own → fitted): D1 0.956 → 0.984; D3 1.587 → 1.672; 2026-10-30.
+// Written by `wrela tool fit --style painterly` (studio/fit): don't edit by hand.
+
+use painterly
+use painterly::Painterly
+use engine::light::{Light, Lit}
+use engine::marks::MarkSample
+use engine::paint::{Develop, Exposure}
+use engine::style::{Knob, Style}
+use engine::substance::{Substance, Written}
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The fitted values of `painterly::FITTABLE`: PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000.
+const AT: [f32; 8] = [12, 0.3614442, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+/// The painterly look with its fitted constants (`engine::style::Style`).
+pub struct PainterlyFitted {}
+
+impl Knob for PainterlyFitted {
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+impl Style for PainterlyFitted {
+    const SUBSTANCE: u32 = Painterly::SUBSTANCE
+    const NORMAL: u32 = Painterly::NORMAL
+    const MARKS: u32 = Painterly::MARKS
+    const FLAT_CLIP: f32 = Painterly::FLAT_CLIP
+    const FLAT: f32 = Painterly::FLAT
+    const LINE_DARK: f32 = Painterly::LINE_DARK
+    const LINE_PX: f32 = Painterly::LINE_PX
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        Painterly::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        painterly::shade_of::<PainterlyFitted>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        painterly::shade_leaf_of::<PainterlyFitted>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        painterly::palette_of::<PainterlyFitted>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        Painterly::mark(m, s, depth_px)
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        Painterly::mark_px(kind)
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Painterly::lens(paint, px, d, e, lut, s)
+    }
+}

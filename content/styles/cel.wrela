@@ -125,9 +125,10 @@ pub struct CelFitting {}
 /// The constants a fit may move (`engine::style::Knob`), in `knob`'s order, and their ranges
 /// (`PALETTE_N` taken as a number of tones, a fraction of one part of its step): the look's hand,
 /// its ramp, its tones and its colour. (Not `LEAF_SOFT` nor `TONE_STEP`, which hold its coherence
-/// bars: a fit that moved them could break them.)
+/// bars: a fit that moved them could break them.) The ramp no softer than 0.2: fitted to the
+/// prints at 0.589, an old oak's flicker missed its bar (5.77 ×10⁻⁶ against 1.64), as 0.3 did.
 pub const FITTABLE: [Fittable; 3] = [
-    Fittable { name: "TERMINATOR", lo: 0.05, hi: 0.6 },
+    Fittable { name: "TERMINATOR", lo: 0.05, hi: 0.2 },
     Fittable { name: "PALETTE_N", lo: 2.0, hi: 4.0 },
     Fittable { name: "HUE_PULL", lo: 0.0, hi: 0.6 },
 ]

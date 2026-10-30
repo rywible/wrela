@@ -43,11 +43,13 @@ pub struct Painterly {}
 pub struct PainterlyFitting {}
 
 /// The constants a fit may move (`engine::style::Knob`), in `knob`'s order, and their ranges: the
-/// look's tones, its colour and its light. (Not `STEP_SOFT`, which holds its coherence bars.)
+/// look's tones, its colour and its light. (Not `STEP_SOFT`, which holds its coherence bars.) The
+/// sky's light at least half simplified: fitted to 0.015, the canopy against the sun's flicker
+/// missed its bar (0.56 ×10⁻⁶ against 0.42), and 0.5 with the rest as fitted holds it (0.36).
 pub const FITTABLE: [Fittable; 3] = [
     Fittable { name: "PALETTE_N", lo: 3.0, hi: 12.0 },
     Fittable { name: "HUE_PULL", lo: 0.0, hi: 0.5 },
-    Fittable { name: "SKY_SIMPLE", lo: 0.0, hi: 1.0 },
+    Fittable { name: "SKY_SIMPLE", lo: 0.5, hi: 1.0 },
 ]
 
 /// The look's own values of `FITTABLE`.
