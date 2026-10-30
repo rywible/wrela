@@ -237,18 +237,25 @@ fn sky(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
 
 // ---- the far hills ---------------------------------------------------------------------------
 
-/// The Aviary's dome, the one thing of the zoo that shows from everywhere: glass on a frame of
-/// ribs and rings, a half disc of radius `r` standing on its base at `l` = 0. Its distance (m),
-/// and its colour there: the frame's grey or the glass's pale blue. Every habitat's far layer
-/// draws it so, at its own place and size.
+/// The Aviary's dome's frame and glass.
+pub const DOME_FRAME = vec3(0.55, 0.62, 0.66)
+pub const DOME_GLASS = vec3(0.82, 0.9, 0.93)
+
+/// The Aviary's dome, the one thing of the zoo that shows from everywhere: glass on a frame, a
+/// half disc of radius `r` standing on its base at `l` = 0, seen from the side, so its ribs are
+/// meridians (curves that meet at its top: never spokes from its middle, which a tree line hiding
+/// its foot made into a Ferris wheel) and its rings are level. Its distance (m), and its colour
+/// there: `DOME_FRAME` or `DOME_GLASS`. Every habitat's far layer draws it so, at its own place
+/// and size.
 pub fn dome(l: vec2, r: f32) -> (f32, vec3) {
     let d = max(length(l) - r, -l.y)
-    let rib = abs(fract(atan2(l.y, l.x) / 0.3927) - 0.5) * 0.3927 * length(l)
-    let ring = abs(fract(length(l) / (r / 3.0)) - 0.5) * (r / 3.0)
-    let glass = if min(rib, ring) < r * 0.02 { vec3(0.55, 0.62, 0.66) } else {
-        vec3(0.82, 0.9, 0.93)
-    }
-    (d, glass)
+    let w = sqrt(max(r * r - l.y * l.y, 1.0e-4))
+    let lon = asin(clamp(l.x / w, -1.0, 1.0))
+    let step = 0.3927
+    let rib = abs(fract(lon / step + 0.5) - 0.5) * step * w * cos(lon)
+    let lat = asin(clamp(l.y / r, 0.0, 1.0))
+    let ring = abs(fract(lat / step) - 0.5) * step * r
+    (d, if min(rib, ring) < r * 0.02 { DOME_FRAME } else { DOME_GLASS })
 }
 
 fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {

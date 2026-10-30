@@ -16,8 +16,10 @@
 // darkens into blue shade below its ground.
 
 use engine::noise::{hash2, noise2}
-use ink::{INK, inked, pooled, washed}
-use scenery::{Scene, PARALLAX, View, crowned, fbm, nearer, on_layer, pixel_on}
+use ink::{INK, washed}
+use scenery::{
+    Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, over, paint, pixel_on, under,
+}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
@@ -47,40 +49,8 @@ const ICE = vec3(0.74, 0.88, 0.97)
 const SEA = vec3(0.3, 0.5, 0.67)
 const SEA_PALE = vec3(0.6, 0.76, 0.87)
 
-/// A shape painted (scenery's `paint`, into `FROST`): its wash, pooled at the edge, faded by
-/// `haze` into the mist, and inked with a line `line` px wide.
-fn painted(
-    g: Texture<Rgba16Float>,
-    gs: Sampler,
-    d: f32,
-    albedo: vec3,
-    q: vec2,
-    px: f32,
-    haze: f32,
-    line: f32,
-) -> vec4 {
-    if d > max(line * px * 0.65, px * 0.4) + px {
-        return vec4(0.0)
-    }
-    let c = blend(pooled(washed(albedo, q, g, gs), d, 0.12), FROST, haze)
-    inked(c, d, q, line * px, px, blend(INK, FROST, min(haze * 1.7, 0.9)))
-}
-
-/// What a layer is under its ground: snow washed and darkening downwards into blue shade.
-fn below(g: Texture<Rgba16Float>, gs: Sampler, q: vec2, ground: f32, haze: f32) -> vec4 {
-    let deep = smoothstep(0.0, 6.0, ground - q.y)
-    let c = blend(washed(SNOW_SHADE, q, g, gs), vec3(0.32, 0.4, 0.56), deep * 0.8)
-    vec4(blend(c, FROST, haze * (1.0 - deep)), 1.0)
-}
-
-/// `front` over `back`, neither premultiplied.
-fn over(front: vec4, back: vec4) -> vec4 {
-    let a = front.w + back.w * (1.0 - front.w)
-    if a <= 0.0 {
-        return vec4(0.0)
-    }
-    vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / a, a)
-}
+/// The shade a layer's snow darkens into below its ground.
+const SHADE = vec3(0.32, 0.4, 0.56)
 
 /// `c` with an ink seam about a pixel (`px` m) wide where `d` (m) crosses 0: a line inside a
 /// shape, between two of its washes.
@@ -109,23 +79,37 @@ fn grown(o: (f32, vec3), s: f32) -> (f32, vec3) {
     (d * s, c)
 }
 
-/// Snow `up` m above its ground (below 0 under it): white, its face cooler under the lip.
-fn snowy(up: f32) -> vec3 {
-    blend(SNOW_SHADE, SNOW, smoothstep(-0.3, -0.04, up))
+/// The near layers' snow below its sunlit lip: a cool blue wash, deeper on the nearest layer,
+/// so that the course's white snow and ice stay the brightest things on the screen.
+const COAST_SNOW = vec3(0.62, 0.71, 0.86)
+const DRIFT_SNOW = vec3(0.55, 0.63, 0.79)
+
+/// Snow `up` m above its ground (below 0 under it): white along its lip in the sun, its face
+/// under the lip the cooler wash `face`.
+fn snowy(up: f32, face: vec3) -> vec3 {
+    blend(face, SNOW, smoothstep(-0.3, -0.04, up))
 }
 
 // ---- the far cliffs --------------------------------------------------------------------------
+
+/// The ice cliffs' tabular mass in the 18 m about `x` (m): where it starts and ends (m).
+fn cliff_mass(x: f32) -> (f32, f32) {
+    let i = floor(x / 18.0)
+    ((i + 0.05 + 0.25 * hash2(i32(i), 93)) * 18.0, (i + 0.6 + 0.35 * hash2(i32(i), 94)) * 18.0)
+}
 
 /// The ice cliffs' top at `x` (m): a tabular mass of ice in each 18 m, its top flat and gently
 /// stepped, its sides sheer, and a low shelf of sea ice in the gaps between.
 fn cliff_top(x: f32) -> f32 {
     let i = floor(x / 18.0)
-    let a = (i + 0.05 + 0.25 * hash2(i32(i), 93)) * 18.0
-    let b = (i + 0.6 + 0.35 * hash2(i32(i), 94)) * 18.0
+    let (a, b) = cliff_mass(x)
     let tall = 1.6 + 2.6 * hash2(i32(i), 95) + 0.5 * fbm(vec2(x * 0.08, 2.0), 2)
     let mass = smoothstep(a, a + 0.5, x) * (1.0 - smoothstep(b - 0.5, b, x))
     1.0 + 0.1 * noise2(vec2(x * 0.6, 8.0)) + tall * mass
 }
+
+/// Where the Aviary's dome stands on the far layer (m): behind, over the ice shelf.
+const AVIARY_AT: f32 = -14.0
 
 fn cliffs(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let q = on_layer(pixel, v, PARALLAX[3])
@@ -140,17 +124,26 @@ fn cliffs(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> ve
     let d = (q.y - top) / sqrt(1.0 + slope * slope)
     // The pale winter haze over the cliffs, thinning upwards.
     let haze = vec4(vec3(0.9, 0.94, 0.98), 0.45 * (1.0 - smoothstep(1.0, 8.5, q.y)))
+    // The Aviary's dome, the one thing of the zoo that shows from everywhere, on the shelf.
+    let (dome_d, glass) = dome(q - vec2(AVIARY_AT, 1.2), 2.4)
+    if dome_d < 0.0 || dome_d < d {
+        return over(paint(g, gs, dome_d, glass, q, px, haze: 0.5, line: 0.6, mist: FROST), haze)
+    }
     if d > px * 2.0 {
         return haze
     }
-    // Blue-white ice, bluer lower down, streaked by crevasses, with snow on the top.
+    // Blue-white ice, bluer lower down, streaked by crevasses, with snow on the top; a cooler
+    // wash down the sheer face at a mass's start, turned from the sun.
     let streak = abs(fract(q.x * 0.31 + 0.6 * noise2(vec2(q.x * 0.4, q.y * 0.5))) - 0.5)
     var c = blend(vec3(0.88, 0.93, 0.98), vec3(0.72, 0.83, 0.94), smoothstep(0.0, 3.0, top - q.y))
     c = blend(c, vec3(0.64, 0.77, 0.91), smoothstep(0.06, 0.02, streak) * 0.45)
+    let (a, _) = cliff_mass(q.x)
+    let face = smoothstep(a + 1.9, a + 1.5, q.x + 0.3 * noise2(q * 0.8)) * step(a, q.x)
+    c = blend(c, vec3(0.56, 0.7, 0.88), face * 0.85)
     if q.y > top - 0.2 - 0.1 * noise2(vec2(q.x * 1.3, 4.0)) {
         c = SNOW
     }
-    over(painted(g, gs, d, c, q, px, haze: 0.5, line: 0.6), haze)
+    over(paint(g, gs, d, c, q, px, haze: 0.5, line: 0.6, mist: FROST), haze)
 }
 
 // ---- the sea pool, and the zoo beyond its far shore ------------------------------------------
@@ -158,9 +151,16 @@ fn cliffs(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> ve
 /// The pool's surface on its layer (m).
 const WATER_LINE: f32 = 0.2
 
-/// The far shore's top at `x` (m): a low, rocky bank.
+/// The far shore's top at `x` (m): low, rocky headlands with the open sea between them, out to
+/// the ice shelf; unbroken under the zoo's buildings, which stand over it.
 fn far_shore(x: f32) -> f32 {
-    WATER_LINE + 0.45 + 1.0 * fbm(vec2(x * 0.09, 6.0), 2) + 0.12 * abs(sin(x * 1.7))
+    let bank = 0.45 + 1.0 * fbm(vec2(x * 0.09, 6.0), 2) + 0.12 * abs(sin(x * 1.7))
+    let near_zoo = min(abs(x - REPTILES_AT), abs(x - BARN_AT))
+    let land = max(
+        smoothstep(0.4, 0.52, noise2(vec2(x * 0.06, 3.0))),
+        smoothstep(8.0, 6.0, near_zoo),
+    )
+    WATER_LINE - 0.3 + (bank + 0.3) * land
 }
 
 /// The open water at `q`: deep blue near, paler towards the far shore, with pale ripples.
@@ -259,7 +259,7 @@ fn sea(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
     if surface < -px * 3.0 {
         return vec4(blend(washed(water(q), q, g, gs), FROST, 0.4), 1.0)
     }
-    var c = painted(g, gs, surface, water(q), q, px, haze: 0.4, line: 0.8)
+    var c = paint(g, gs, surface, water(q), q, px, haze: 0.4, line: 0.8, mist: FROST)
     // An iceberg now and then, afloat.
     let cell = floor(q.x / 11.0)
     let h = hash2(i32(cell), 91)
@@ -274,19 +274,25 @@ fn sea(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
         let roof = max(dot(peak, vec2(-0.45, 0.89)), dot(peak, vec2(0.77, 0.64)))
         let berg = max(max(rbox(l - vec2(0.0, tall * 0.5), vec2(w, tall * 0.5), 0.12), roof), -l.y)
         let ice = crowned(SNOW, ICE, l, vec2(0.0, 0.6), w)
-        c = over(c, painted(g, gs, berg, ice, q, px, haze: 0.4, line: 0.8))
+        c = over(c, paint(g, gs, berg, ice, q, px, haze: 0.4, line: 0.8, mist: FROST))
     }
     if c.w > 0.999 {
         return c
     }
-    // The far shore: blue-grey rock, its top under snow.
+    // The far shore: blue-grey rock, its top under snow, and a cooler wash on the faces turned
+    // from the sun (those rising towards it).
     let top = far_shore(q.x)
-    let crack = abs(fract(q.x * 0.6 + 0.6 * noise2(q * 1.5)) - 0.5)
-    var rock = blend(ROCK, ROCK_SHADE, smoothstep(0.1, 0.0, crack) * 0.8)
-    if q.y > top - 0.22 - 0.12 * noise2(vec2(q.x * 2.0, 1.0)) {
-        rock = SNOW
+    if q.y - top > px * 2.0 && abs(q.x - REPTILES_AT) > 5.7 && abs(q.x - BARN_AT) > 3.8 {
+        return c
     }
-    c = over(c, painted(g, gs, q.y - top, rock, q, px, haze: 0.42, line: 0.8))
+    let rise = (far_shore(q.x + 0.2) - far_shore(q.x - 0.2)) / 0.4
+    let away = smoothstep(0.15, 0.6, rise)
+    let crack = abs(fract(q.x * 0.6 + 0.6 * noise2(q * 1.5)) - 0.5)
+    var rock = blend(ROCK, ROCK_SHADE, max(smoothstep(0.1, 0.0, crack) * 0.8, away * 0.7))
+    if q.y > top - 0.22 - 0.12 * noise2(vec2(q.x * 2.0, 1.0)) {
+        rock = blend(SNOW, SNOW_SHADE, away)
+    }
+    c = over(c, paint(g, gs, q.y - top, rock, q, px, haze: 0.42, line: 0.8, mist: FROST))
     if c.w > 0.999 {
         return c
     }
@@ -297,7 +303,7 @@ fn sea(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
         barn(q - vec2(BARN_AT, WATER_LINE))
     } else { (1.0e3, SNOW) }
     let (d, albedo) = building
-    over(c, painted(g, gs, d, albedo, q, px, haze: 0.42, line: 0.8))
+    over(c, paint(g, gs, d, albedo, q, px, haze: 0.42, line: 0.8, mist: FROST))
 }
 
 // ---- the coast and its residents --------------------------------------------------------------
@@ -611,10 +617,10 @@ fn coast(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         return vec4(0.0)
     }
     if q.y < ground - 0.3 {
-        return below(g, gs, q, ground, 0.16)
+        return under(g, gs, COAST_SNOW, q, ground, 0.16, mist: FROST, shade: SHADE)
     }
     let up = q.y - ground
-    var best = (up, snowy(up))
+    var best = (up, snowy(up, COAST_SNOW))
     // A boulder at a stretch's end, now and then.
     let end = floor(q.x / SIGHTS + 0.5)
     let h = hash2(i32(end), 41)
@@ -643,7 +649,7 @@ fn coast(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         best = before(sight, best, px)
     }
     let (d, albedo) = best
-    painted(g, gs, d, albedo, q, px, haze: 0.16, line: 1.0)
+    paint(g, gs, d, albedo, q, px, haze: 0.16, line: 1.0, mist: FROST)
 }
 
 // ---- the shore, nearest ----------------------------------------------------------------------
@@ -700,7 +706,7 @@ fn shore(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         return vec4(0.0)
     }
     if q.y < ground - 0.3 {
-        return below(g, gs, q, ground, 0.08)
+        return under(g, gs, DRIFT_SNOW, q, ground, 0.08, mist: FROST, shade: SHADE)
     }
     let up = q.y - ground
     var best = (1.0e3, SNOW)
@@ -712,7 +718,7 @@ fn shore(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         let dir = if hash2(i32(cell), 76) < 0.5 { -1.0 } else { 1.0 }
         best = crag((q - vec2(x, drifts(x) - 0.3)) * vec2(dir, 1.0), 2.9 + 2.0 * h, h, px)
     }
-    best = before((up, snowy(up)), best, px)
+    best = before((up, snowy(up, DRIFT_SNOW)), best, px)
     // Frosted grass: a tuft of three blades now and then, white at the tips, leaning in the wind.
     let i = floor(q.x / 1.7)
     if up < 1.1 && hash2(i32(i), 72) < 0.35 {
@@ -731,5 +737,5 @@ fn shore(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         best = before((blades, frost), best, px)
     }
     let (d, albedo) = best
-    painted(g, gs, d, albedo, q, px, haze: 0.08, line: 1.2)
+    paint(g, gs, d, albedo, q, px, haze: 0.08, line: 1.2, mist: FROST)
 }
