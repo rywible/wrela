@@ -3893,3 +3893,22 @@ tests pass; forcing an unknown graph through direct execution fails by 4 m.
 One source-buffer-cache follow-up retired: slower, with a 21/255 matched image
 failure. First complete assessment 40.07 min; decision 49.998 min.
 No training or new reference family; G1–G7 unchanged and unmet.
+
+
+## 2026-10-30 — fused temporal tiles retired, Pop!_OS AMD
+
+[Full report](neural-temporal-tiles.md). Parent 54bdc66264c0888a907c1312e7c121669f6de1b3,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23, Ryzen 5 5500U /
+RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57. Ten 660-frame runs / 70 captures,
+prebuilt candidates and quiet serial GPU queues; all source records matched.
+Fused statistics/resolve raises complete GPU time 7.20–8.33%; one shorter
+half-conversion follow-up still raises it 4.01–4.67%. Requested live −14,745,584 B;
+follow-up end VRAM −15.77 to −16.03 MB, end PSS +8.89 / −2.40 MB. No stable
+whole-process memory win. Completed shaded checks 36/36 pass;
+strict same-input equality fails 113,979/165,676 pixels; paired RGB max22/255.
+Shaded boundary-band diagnostics and coverage limitations are retained.
+First joint route assessment 20.11 min,
+complete reference assessment 40.69 min, decision
+41.24 min. Retire runtime changes after one follow-up.
+No training/reference expansion; G1–G7 unchanged and unmet. Next bet:
+source-certified visibility/correspondence that avoids reconstruction work.
