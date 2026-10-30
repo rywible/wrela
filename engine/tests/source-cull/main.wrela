@@ -1,0 +1,153 @@
+// Source-bound occlusion against independent synthetic walls and openings.
+// Also exercise the actual wind field against the analytic envelope's bound.
+
+use engine::cull::{Hzb, Pyramid}
+use engine::plant::{Wind, sway}
+use engine::view::{Camera, first_camera}
+use engine::wood::quad_hidden
+use std::gpu::{GlobalId, GpuBuffer, R32Float, Slots, Texture, buffer, buffer_of, dispatch, read}
+use std::io::Pending
+
+pub struct Query: Copy + GpuData { pub points: [vec3; 8] }
+
+@compute(1)
+fn probe(pyramid: Texture<R32Float>, h: Hzb, queries: [Query], out: mut Slots<u32>, id: GlobalId) {
+    out[id] = if quad_hidden(pyramid, h, queries[id.x].points) { 1 } else { 0 }
+}
+
+@compute(64)
+fn wind_probe(out: mut Slots<f32>, id: GlobalId) {
+    let k = f32(id.x)
+    let height = f32(id.x % 97) * 0.7
+    let wind = Wind {
+        time: k * 1.713,
+        dir: vec2(sin(k), cos(k)) * f32(id.x % 3),
+        strength: if id.x % 2 == 0 { 0.9 } else { -0.9 },
+        origin: vec3(13.0, 0.0, -29.0),
+    }
+    let at = vec3(k * 1.37 - 600.0, height, 300.0 - k * 0.93)
+    let bound = 2.13 * length(wind.dir) * abs(wind.strength) * height * height / (1.0 + height) +
+        1.0e-4
+    out[id] = length(sway(wind, at, height)) / bound
+}
+
+pub struct State {
+    started: bool,
+    pending: Vec<Pending<u32>>,
+    expected: Vec<u32>,
+    answers: Vec<u32>,
+    wind: Option<Pending<f32>>,
+    wind_ratios: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State {
+        started: false,
+        pending: Vec::new(),
+        expected: Vec::new(),
+        answers: Vec::new(),
+        wind: None,
+        wind_ratios: Vec::new(),
+    }
+}
+
+fn camera(w: u32, h: u32) -> Camera {
+    first_camera(vec3(0.0), vec3(0.0, 0.0, 1.0), 1.0, width: w, height: h).unjittered()
+}
+
+fn point(cam: Camera, pixel: vec2, z: f32) -> vec3 {
+    let xy = vec2(pixel.x / cam.screen.x * 2.0 - 1.0, 1.0 - pixel.y / cam.screen.y * 2.0)
+    (cam.forward +
+        cam.right * (xy.x * cam.aspect * cam.tan_half) +
+        cam.up * (xy.y * cam.tan_half)) *
+        z
+}
+
+fn rectangle(cam: Camera, low: vec2, high: vec2, z: f32) -> [vec3; 8] {
+    let a = point(cam, low, z)
+    let b = point(cam, vec2(high.x, low.y), z)
+    let c = point(cam, high, z)
+    let d = point(cam, vec2(low.x, high.y), z)
+    [a, b, c, d, a, b, c, d]
+}
+
+fn case(
+    s: mut State,
+    cam: Camera,
+    texels: [f32],
+    points: [vec3; 8],
+    expected: u32,
+    enabled: bool = true,
+) {
+    var p = Pyramid::new(u32(cam.screen.x), u32(cam.screen.y))
+    p.build_from(texels, cam)
+    let h = Hzb { on: if enabled { 1 } else { 0 }, ..p.at }
+    var out: GpuBuffer<u32> = buffer(1)
+    let q = buffer_of([Query { points }])
+    dispatch(probe.bind(p.depth, h, q, out: mut out), groups: 1)
+    s.pending.push(read(out.items()))
+    s.expected.push(expected)
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if !s.started {
+        s.started = true
+        let cam = camera(w: 64, h: 64)
+        let wall = Vec::filled(64 * 64, cam.near / 10.0)
+        let behind = rectangle(cam, vec2(21.0), vec2(25.0), 20.0)
+        case(mut s, cam, wall, behind, 1)
+        case(mut s, cam, wall, rectangle(cam, vec2(21.0), vec2(25.0), 5.0), 0)
+        var tilted = behind
+        tilted[0] = point(cam, vec2(21.0), 5.0)
+        case(mut s, cam, wall, tilted, 0)
+        var near = behind
+        near[0] = point(cam, vec2(21.0), cam.near * 0.5)
+        case(mut s, cam, wall, near, 0)
+        case(mut s, cam, wall, rectangle(cam, vec2(200.0), vec2(204.0), 20.0), 0)
+        case(mut s, cam, wall, behind, 0, enabled: false)
+        var opening = Vec::filled(64 * 64, cam.near / 10.0)
+        opening[23 * 64 + 23] = 0.0
+        case(mut s, cam, opening, behind, 0)
+        // The coarse cell includes this opening, but the refined source rectangle does not.
+        var outside = Vec::filled(64 * 64, cam.near / 10.0)
+        outside[23 * 64 + 29] = 0.0
+        case(mut s, cam, outside, behind, 1)
+        let odd_cam = camera(w: 65, h: 37)
+        var odd = Vec::filled(65 * 37, odd_cam.near / 10.0)
+        odd[65 * 37 - 1] = 0.0
+        case(mut s, odd_cam, odd, rectangle(odd_cam, vec2(62.0, 34.0), vec2(65.0, 37.0), 20.0), 0)
+        var wind: GpuBuffer<f32> = buffer(1024)
+        dispatch(wind_probe.bind(out: mut wind), over: 1024)
+        s.wind = Some(read(wind.items()))
+    }
+    while s.answers.len() < s.pending.len() {
+        let k = s.answers.len()
+        match s.pending[k].poll() {
+            Some(Ok(v)) => s.answers.push(v[0]),
+            _ => return,
+        }
+    }
+    match mut s.wind {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => s.wind_ratios = take v,
+            _ => {},
+        },
+        None => {},
+    }
+}
+
+@test(frames: 8, gpu: true)
+fn source_bounds_preserve_openings_and_enclose_wind(s: State) {
+    assert(s.answers.len() == 9, "occlusion cases did not return")
+    for i in 0..s.answers.len() {
+        assert(
+            s.answers[i] == s.expected[i],
+            f"source-bound visibility case {i}: got {s.answers[i]}, expected {s.expected[i]}",
+        )
+    }
+    assert(s.wind_ratios.len() == 1024, "wind bound samples did not return")
+    for i in 0..s.wind_ratios.len() {
+        let r = s.wind_ratios[i]
+        assert(r >= 0.0 && r <= 1.0, f"wind sample {i} escaped the conservative envelope: {r}")
+    }
+}

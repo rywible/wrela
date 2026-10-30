@@ -3840,3 +3840,20 @@ movement regresses 1.17–1.47%, live requested memory rises 14,745,600 B and ob
 final DRM VRAM rises 15,757,312/24,735,744 B. Retire both prototype paths; runtime
 unchanged. First complete assessment 46.50minutes; zero
 optimization followups, zero training, all failures preserved. No G4/G1–G7 win.
+
+## 2026-10-30 — source-bound two-phase occlusion, Pop!_OS AMD
+
+[Joint evidence and limits](neural-impostor-source-cull.md). Parent 1ef44ec6b86f800bdc837591a527a42ab21fd992,
+Ryzen 5 5500U / RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57, Wrela 0.9.0.
+Retain the analytic wind envelope plus finer HZB query on the experimental branch:
+complete route GPU **−1.77 to −2.76%**, movement GPU **−2.60 to −3.40%** in two
+matched pairs; browser elapsed −577 to −687 ms; all 36 shaded checks pass.
+Requested live **+137,280 B**; final DRM VRAM **+98,304 / −8,372,224 B** and
+PSS **+4,634,624 / −14,729,216 B**, so no physical-memory win vs parent.
+CPU movement p95 worsens **138.998→156.491 / 139.613→145.285 ms**.
+Settled GPU p50 remains about 36.56 ms. Nineteen 660-frame runs / 133 route PNGs,
+nine matched of twelve primary comparisons; three source mismatches excluded
+and preserved. First joint assessment 30.17 min,
+two optimization followups, no training or G1–G7 completion. UMA pools overlap.
+Next required control: original spheres with the finer query alone, to test
+whether source metadata is worth its cost. No source-specific causal claim yet.

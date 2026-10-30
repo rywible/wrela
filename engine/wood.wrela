@@ -97,6 +97,130 @@ pub struct Choose: Copy + GpuData {
     pub lists: u32,
     pub late_at: u32,
     pub hzb: Hzb,
+    pub source_bounds: u32 = 0,
+    pub wind: Wind = Wind { time: 0.0, dir: vec2(0.0), strength: 0.0 },
+}
+
+/// Four headers followed by all 256 source-view rectangles, per kind.
+const CULL_WORDS: u32 = 4 + impostor::VIEWS * impostor::VIEWS
+
+@compute(64)
+fn pack_cull_sources(
+    lods: [Lod],
+    kinds: [KindDesc],
+    bounds: [vec4],
+    n: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= n * CULL_WORDS { return }
+    let k = id.x / CULL_WORDS
+    let lane = id.x % CULL_WORDS
+    let l = lods[k]
+    let d = kinds[k]
+    out[id] = match lane {
+        0 => vec4(l.cards_to, l.cards_limit, l.impostor_px, l.impostors_to),
+        1 => vec4(l.leaf, l.top, l.reach, l.card_px),
+        2 => vec4(l.cell, d.bake.mid),
+        3 => vec4(d.bake.half, 0.0, 0.0, 0.0),
+        _ => bounds[d.bounds_first + lane - 4],
+    }
+}
+
+fn cull_lod(data: [vec4], k: u32) -> Lod {
+    let a = data[k * CULL_WORDS]
+    let b = data[k * CULL_WORDS + 1]
+    let c = data[k * CULL_WORDS + 2]
+    Lod {
+        cards_to: a.x,
+        cards_limit: a.y,
+        impostor_px: a.z,
+        impostors_to: a.w,
+        leaf: b.x,
+        top: b.y,
+        reach: b.z,
+        card_px: b.w,
+        cell: c.x,
+    }
+}
+
+/// Whether a source draw envelope is hidden by the depth pyramid. All eight
+/// world-space corners must enclose the draw. Near-plane crossings remain visible;
+/// outward pixel/depth margins and a bounded finer query preserve openings.
+pub fn quad_hidden(pyramid: Texture<R32Float>, h: Hzb, points: [vec3; 8]) -> bool {
+    if h.on == 0 { return false }
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    var nearest = 0.0
+    for p in points {
+        if dot(p - h.eye, h.forward) <= h.near { return false }
+        let q = h.view_proj * vec4(p, 1.0)
+        if q.w <= 1.0e-4 { return false }
+        let px = vec2(q.x / q.w * 0.5 + 0.5, 0.5 - q.y / q.w * 0.5) * h.size
+        lo = min(lo, px)
+        hi = max(hi, px)
+        nearest = max(nearest, q.z / q.w)
+    }
+    lo = max(lo - vec2(1.0), vec2(0.0))
+    hi = min(hi + vec2(1.0), h.size - vec2(1.0))
+    if hi.x < lo.x || hi.y < lo.y { return false }
+    let span = max(hi.x - lo.x, hi.y - lo.y)
+    let level = min(u32(ceil(log2(max(span, 1.0)))), h.levels - 1)
+    let size = vec2u(max(u32(h.size.x) >> level, 1), max(u32(h.size.y) >> level, 1))
+    let a = min(vec2u(lo) >> vec2u(level), size - vec2u(1))
+    let b = min(vec2u(hi) >> vec2u(level), size - vec2u(1))
+    var farthest = 1.0
+    for y in a.y..(b.y + 1) {
+        for x in a.x..(b.x + 1) { farthest = min(farthest, pyramid.load(x: x, y: y, level: level)) }
+    }
+    let test_depth = nearest + abs(nearest) * 1.0e-5 + 1.0e-7
+    if test_depth < farthest { return true }
+    let fine = level - min(level, 2)
+    if fine == level { return false }
+    // Coarse texels can include empty background outside this source rectangle.
+    // Two levels finer stay conservative, with at most a 9x9 rectangle; leave
+    // immediately when an intersecting cell does not certify full occlusion.
+    let fine_size = vec2u(max(u32(h.size.x) >> fine, 1), max(u32(h.size.y) >> fine, 1))
+    let low = min(vec2u(lo) >> vec2u(fine), fine_size - vec2u(1))
+    let high = min(vec2u(hi) >> vec2u(fine), fine_size - vec2u(1))
+    for y in low.y..(high.y + 1) {
+        for x in low.x..(high.x + 1) {
+            if pyramid.load(x: x, y: y, level: fine) <= test_depth { return false }
+        }
+    }
+    true
+}
+
+fn hidden_source(
+    c: Choose,
+    inst: Instance,
+    l: Lod,
+    k: u32,
+    visibility: f32,
+    data: [vec4],
+    pyramid: Texture<R32Float>,
+) -> bool {
+    if c.hzb.on == 0 { return false }
+    let b = bound_of(inst, l.top, l.reach)
+    if occluded(pyramid, c.hzb, b.xyz, b.w) { return true }
+    let (level, distant) = place_of(l, c.cam, inst)
+    let faint = 1.0 - (1.0 - distant) * visibility
+    let (drawn, lower, upper) = ways(level, faint)
+    if c.source_bounds == 0 || !drawn || lower != IMPOSTOR || upper != IMPOSTOR {
+        return occluded(pyramid, c.hzb, b.xyz, b.w)
+    }
+    let mid = data[k * CULL_WORDS + 2].yzw
+    let half = data[k * CULL_WORDS + 3].x
+    let points = impostor::occlusion_quad(
+        c.cam,
+        c.wind,
+        inst,
+        mid,
+        half,
+        data,
+        first: k * CULL_WORDS + 4,
+    )
+    quad_hidden(pyramid, c.hzb, points)
 }
 
 /// The place of the `k`th loaded instance: the loaded slots' instances are runs, each a slot's
@@ -129,7 +253,7 @@ pub fn choose(
     c: Choose,
     every: [Instance],
     metadata: [u32],
-    lods: [Lod],
+    lods: [vec4],
     lists: [List],
     pyramid: Texture<R32Float>,
     counts: mut Atomics<u32>,
@@ -158,14 +282,14 @@ pub fn choose(
         }
         return
     }
-    let l = lods[k]
+    let l = cull_lod(lods, k)
     if out_of_view(inst, c.cam, l.top, l.reach, c.corner) {
         return
     }
     // Hidden behind what last frame drew (its pyramid): left for the second phase (`reveal`),
     // which tests it against this frame's.
-    let b = bound_of(inst, l.top, l.reach)
-    if occluded(pyramid, c.hzb, b.xyz, b.w) {
+    let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
+    if hidden_source(c, inst, l, k, visibility, lods, pyramid) {
         let j = counts.add(c.lists, 1)
         counts.store(c.lists + 1 + j, i)
         return
@@ -194,7 +318,7 @@ pub fn reveal(
     c: Choose,
     every: [Instance],
     metadata: [u32],
-    lods: [Lod],
+    lods: [vec4],
     lists: [List],
     pyramid: Texture<R32Float>,
     counts: mut Atomics<u32>,
@@ -208,9 +332,9 @@ pub fn reveal(
     let i = counts.load(c.lists + 1 + id.x)
     let k = metadata[i]
     let inst = every[i]
-    let l = lods[k]
-    let b = bound_of(inst, l.top, l.reach)
-    if occluded(pyramid, c.hzb, b.xyz, b.w) {
+    let l = cull_lod(lods, k)
+    let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
+    if hidden_source(c, inst, l, k, visibility, lods, pyramid) {
         return
     }
     chosen_into(
@@ -545,7 +669,7 @@ impl Chosen {
         c: Choose,
         every: GpuBuffer<Instance>,
         metadata: GpuBuffer<u32>,
-        lods: GpuBuffer<Lod>,
+        lods: GpuBuffer<vec4>,
         pyramid: Texture<R32Float>,
         after: u32 = SHRINK_AFTER,
     ) {
@@ -590,7 +714,7 @@ impl Chosen {
         c: Choose,
         every: GpuBuffer<Instance>,
         metadata: GpuBuffer<u32>,
-        lods: GpuBuffer<Lod>,
+        lods: GpuBuffer<vec4>,
         pyramid: Texture<R32Float>,
     ) {
         let c = Choose { lists: self.lists.len(), late_at: self.late_at(), ..c }
@@ -959,6 +1083,7 @@ pub struct Wood {
     card_triangles: GpuBuffer<u32>,
     limb_triangles: GpuBuffer<u32>,
     lods: GpuBuffer<Lod>,
+    occlusion_data: GpuBuffer<vec4>,
     every: GpuBuffer<Instance>,
     /// One kind per instance, then one f32 bit pattern per slot for its visible share, then
     /// the loaded runs (two words each: `instance_of`). Sharing a binding leaves room for lifted
@@ -1106,6 +1231,7 @@ impl Wood {
             card_triangles: buffer_of(card_indices(most)),
             limb_triangles: buffer_of(limb_indices(most_limbs)),
             lods: buffer(max(n, 1)),
+            occlusion_data: buffer(max(n, 1) * CULL_WORDS),
             every: buffer(slots * SLOT),
             metadata,
             slots: Vec::from_fn(
@@ -1253,6 +1379,7 @@ impl Wood {
             u64(p.bounds.len()) * 16 +
             2 * memory::texels(v, v, 8, d: v) * u64(self.kinds.len()) +
             u64(self.every.len()) * u64(size_of::<Instance>()) +
+            u64(self.occlusion_data.len()) * 16 +
             u64(self.metadata.len()) * 4 +
             match self.leaf_support {
                 Some(support) => memory::texels(support.width(), support.height(), 4),
@@ -1346,6 +1473,17 @@ impl Wood {
         }
         if l.len() > 0 {
             write(mut self.lods, 0, l)
+            label("impostor cull source pack")
+            dispatch(
+                pack_cull_sources.bind(
+                    self.lods,
+                    self.pool.kinds,
+                    self.pool.bounds,
+                    n: l.len(),
+                    out: mut self.occlusion_data,
+                ),
+                over: l.len() * CULL_WORDS,
+            )
         }
     }
 
@@ -1498,7 +1636,13 @@ impl Wood {
     }
 
     /// This frame's lists for `cam`, chosen on the GPU.
-    pub fn select(mut self, cam: Camera, pyramid: Texture<R32Float>, hzb: Hzb) {
+    pub fn select(
+        mut self,
+        cam: Camera,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+        wind: Option<Wind> = None,
+    ) {
         self.lay_out()
         let corner = cam.corner_angle()
         let c = Choose {
@@ -1513,8 +1657,13 @@ impl Wood {
             lists: 0,
             late_at: 0,
             hzb,
+            source_bounds: if wind.is_some() { 1 } else { 0 },
+            wind: match wind {
+                Some(w) => w,
+                None => Wind { time: 0.0, dir: vec2(0.0), strength: 0.0 },
+            },
         }
-        self.seen.run(c, self.every, self.metadata, self.lods, pyramid, self.shrink_after)
+        self.seen.run(c, self.every, self.metadata, self.occlusion_data, pyramid, self.shrink_after)
         self.chose = Some(c)
     }
 
@@ -1538,7 +1687,7 @@ impl Wood {
             c,
             self.every,
             self.metadata,
-            self.lods,
+            self.occlusion_data,
             self.no_pyramid,
             self.shrink_after,
         )
@@ -1549,7 +1698,13 @@ impl Wood {
     /// `hzb`), chosen into the second phase's lists for `late_prepass` and `late_shade`.
     pub fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
         if let Some(c) = self.chose {
-            self.seen.reveal(Choose { hzb, ..c }, self.every, self.metadata, self.lods, pyramid)
+            self.seen.reveal(
+                Choose { hzb, ..c },
+                self.every,
+                self.metadata,
+                self.occlusion_data,
+                pyramid,
+            )
         }
     }
 
