@@ -1,0 +1,10 @@
+# The fit tool's style panel (studio/fit, docs/plan-world-class-3.md §D8): six balls, each a class
+# with an albedo running dark to light across it, lit from the side through a fitting look's
+# slots (`LOOK`, `--set LOOK=styles::cel::CelFitting`), whose candidate constants the `fit` export
+# sets: what the fit's tests score a search on, a render a call and two frames.
+[package]
+name = "fit_style_panel"
+
+[dependencies]
+engine = { workspace = true }
+styles = { workspace = true }
