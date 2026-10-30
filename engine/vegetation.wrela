@@ -8,6 +8,7 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
+use growth::Provenance
 use impostor::{
     Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
     volume_cut, volume_shade, which_crown,
@@ -52,6 +53,8 @@ pub struct Kind {
     /// Its impostor, baked from its cards and limbs, and its volume, cooked from its crown.
     pub impostor: Impostor,
     pub volume: Cooked,
+    /// What its plant came from (`growth::Provenance`): authored, until it's grown (§E1).
+    pub provenance: Provenance = Provenance::Authored,
 }
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.

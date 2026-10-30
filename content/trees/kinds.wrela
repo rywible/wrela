@@ -6,6 +6,7 @@
 
 use land::grow::{Cause, State, Tree, rotate}
 use land::interest::Drawn
+use engine::growth::Provenance
 use engine::noise::{direction, hash2u, noise2, pick, rand}
 use engine::plant::{
     Bark, Instance, Leaves, Plant, RINGS, SIDES, bend, limb_axis, limb_at_height, limb_corner,
@@ -54,6 +55,12 @@ pub const SNAG_FORKED: u32 = 23
 pub const OAK_ANCIENT: u32 = 24
 pub const BEECH_ANCIENT: u32 = 25
 pub const KINDS: u32 = 26
+
+/// Kind `k`'s provenance (`engine::growth::Provenance`): each is a hand's shape (`kind_plant`)
+/// until it's grown from its species' genome (§E1).
+pub fn provenance(k: u32) -> Provenance {
+    Provenance::Authored
+}
 
 /// Each kind's height as it's built (m): an instance is scaled to its tree's.
 const BUILT = [

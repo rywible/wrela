@@ -1,0 +1,138 @@
+// An organism's development (docs/plan-world-class-3.md §E0): what shape a plant has, grown from a
+// genome and its site's history, where `land::grow` is the forest's history (what stands where).
+// The principle every step holds: every visible thing has a cause the record can name. A drawn
+// thing's `Provenance` says which it has: `Grown` (its genome, its site, its seed and the growth's
+// version, so the growth can be run again and give the same thing) or `Authored` (a hand's shape,
+// counted until none is left: `engine/tests/growth-provenance`).
+//
+// Growth runs on the CPU alone, stepped in a fixed order from `Rng` (D33: byte-identical on every
+// device): no `std::rng`, no GPU.
+
+use std::field::hash_u32
+
+/// The growth's version: a change to any growth program that changes what it grows bumps it, so a
+/// cached growth keyed by it is grown again (§E7).
+pub const VERSION: u32 = 1
+
+/// Where an organism grew, as its growth reads it: its light (0 to 1, the open sky's 1), the
+/// ground's wetness (0 to 1), the slope (radians), its exposure to the wind (0 to 1), the shade
+/// above it (0 to 1: a closed canopy's 1) and its age (years, or seasons for a fern or a grass).
+pub struct Site: Copy + GpuData {
+    pub light: f32 = 1.0,
+    pub wetness: f32 = 0.5,
+    pub slope: f32 = 0.0,
+    pub wind: f32 = 0.0,
+    pub shade_above: f32 = 0.0,
+    pub age: f32 = 0.0,
+}
+
+/// A grown thing's cause: its genome (`genome_hash` of the genome's values), its site, its seed
+/// and the growth's `VERSION`.
+pub struct Grown: Copy + GpuData {
+    pub genome: u32,
+    pub site: Site,
+    pub seed: u32,
+    pub version: u32 = VERSION,
+}
+
+/// What a drawn thing came from: grown (its cause), or a hand's shape.
+pub enum Provenance {
+    Grown(Grown),
+    Authored,
+}
+
+impl Provenance {
+    /// Whether it was authored (`engine/tests/growth-provenance` counts these).
+    pub fn authored(self) -> bool {
+        match self {
+            Provenance::Authored => true,
+            Provenance::Grown(_) => false,
+        }
+    }
+}
+
+/// A genome's values folded to one word: its identity in a `Grown` and a cache's key.
+pub fn genome_hash(values: [f32]) -> u32 {
+    var h = 2166136261
+    for v in values {
+        h = hash_u32(h ^ bitcast_u32(v))
+    }
+    h
+}
+
+/// A site folded to one word (`Rng::of`).
+pub fn site_hash(s: Site) -> u32 {
+    genome_hash([s.light, s.wetness, s.slope, s.wind, s.shade_above, s.age])
+}
+
+/// The growth's random stream: seeded by a grown thing's cause and stepped in the order the
+/// growth asks, so the same cause grows the same thing on every device.
+pub struct Rng: Copy {
+    state: u32,
+    drawn: u32,
+}
+
+impl Rng {
+    /// The stream of `g`: its genome, its site and its seed.
+    pub fn of(g: Grown) -> Rng {
+        Rng {
+            state: hash_u32(g.genome ^ hash_u32(site_hash(g.site) ^ hash_u32(g.seed ^ g.version))),
+            drawn: 0,
+        }
+    }
+
+    /// The next word.
+    pub fn next(mut self) -> u32 {
+        self.drawn += 1
+        hash_u32(self.state ^ self.drawn.wrapping_mul(2654435761))
+    }
+
+    /// The next draw in [0, 1) (its top 24 bits).
+    pub fn unit(mut self) -> f32 {
+        f32(self.next() >> 8) * (1.0 / 16777216.0)
+    }
+
+    /// The next draw in [lo, hi).
+    pub fn between(mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.unit()
+    }
+}
+
+/// The ground's small causes' fields (§E4), each with what it comes from today: the moss on the
+/// ground and the logs, the lichen on the rocks, the litter's layer, the fungi. Authored until E4
+/// grows them.
+pub const FIELDS: [Text; 4] = ["moss", "lichen", "litter", "fungi"]
+
+/// Field `i`'s provenance (`FIELDS`).
+pub fn field_provenance(i: u32) -> Provenance {
+    Provenance::Authored
+}
+
+@test
+fn the_same_cause_draws_the_same_stream_and_another_cause_another() {
+    let g = Grown { genome: 7, site: Site { light: 0.6, age: 80.0 }, seed: 3 }
+    var a = Rng::of(g)
+    var b = Rng::of(g)
+    var c = Rng::of(Grown { seed: 4, ..g })
+    var same = true
+    var differs = false
+    for _ in 0..64 {
+        let (x, y, z) = (a.next(), b.next(), c.next())
+        same = same && x == y
+        differs = differs || x != z
+    }
+    assert(same, "one cause, two streams")
+    assert(differs, "another seed, another stream")
+    var r = Rng::of(g)
+    for _ in 0..1000 {
+        let u = r.unit()
+        assert(u >= 0.0 && u < 1.0, f"a unit draw {u}")
+    }
+}
+
+@test
+fn a_genome_hash_tells_its_values_apart() {
+    assert(genome_hash([1.0, 2.0]) == genome_hash([1.0, 2.0]))
+    assert(genome_hash([1.0, 2.0]) != genome_hash([2.0, 1.0]))
+    assert(genome_hash([1.0, 2.0]) != genome_hash([1.0, 2.0001]))
+}
