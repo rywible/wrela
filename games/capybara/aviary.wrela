@@ -29,8 +29,9 @@ pub const NAME: Text = "The Aviary"
 ///    pigeon flying across it; two columns side by side over a pit with a floor (falling in costs
 ///    only time), a pigeon between them, up to a higher tower; then the netting under the roof,
 ///    one-way ledges, a pigeon over the first gap and one over the last, a snack above that.
-///    Under the netting, the cage's floor: two geese, a snack by the first, and a column against a
-///    feeding post back up to the netting.
+///    Under the netting, the cage's floor, 8.5 m down: no foes (dropped onto from above, they
+///    couldn't be seen in time), a snack, and a column against a feeding post back up to the
+///    netting.
 /// 4. The keepers' gallery (212 to 312 m): an updraft up a taller wall to the gallery, a long
 ///    ramp down to a lip over a pit with a floor and an updraft out against its far wall (a held
 ///    slide-jump clears it, past a snack high over it), a goose, and a last pit with two narrow
@@ -138,14 +139,12 @@ pub fn built() -> Course {
         .foe(Kind::Pigeon, vec2(143.25, 7.0), 2.5)
         .foe(Kind::Pigeon, vec2(154.75, 10.0), 2.5)
         .foe(Kind::Pigeon, vec2(167.0, 14.2), 1.5)
-        .foe(Kind::Goose, vec2(172.0, 4.45), 3.0)
         .foe(Kind::Pigeon, vec2(193.5, 14.0), 2.5)
-        .foe(Kind::Goose, vec2(199.0, 4.45), 3.0)
         .foe(Kind::Goose, vec2(271.0, 1.95), 2.5)
         .foe(Kind::Pigeon, vec2(283.5, 5.5), 2.0)
         .snack(vec2(16.25, 10.4))
         .snack(vec2(54.0, -1.2))
-        .snack(vec2(172.0, 4.6))
+        .snack(vec2(176.5, 4.6))
         .snack(vec2(193.5, 16.0))
         .snack(vec2(260.5, 8.6))
         .yuzu(vec2(130.0, 4.6))
