@@ -133,6 +133,14 @@ to 13 % (the fall, the meadow at evening) and a trail's pixel; so a record is ea
 of three (`--runs 3`), and hill-climbing takes single runs. The settle can't be shorter: at 120
 frames, the shore at evening's flicker read 31.6 or 37.0 ×10⁻⁶.
 
+**A record measures only what can decide it** (2026-10-30). With `--bars`, `--near 0.2` takes a
+shot's other runs only where its first comes within a fifth of a bar (either side; a trail within
+a pixel): a shot far from every bar is decided by one run, its spread (2 %, 13 % at most) no
+matter which way it falls. And a fast run keeps each trail's two frames (`-moving.png`,
+`-settled.png`, about 1 MB each), so a change to the trail's measure is `--retrail` on the run's
+directory, every shot's trail measured again from them (the median of its runs'), nothing drawn.
+A change to an engine or a look still needs its looks drawn again, but only those it can move.
+
 **A trail is behind an edge** (2026-10-30): a pixel is off the settled frame by more than 2/255
 *and* by more than twice its row's median difference. At the fall's last stop the whole sky is
 lighter moving than settled, 2.5% in the physical look and 3% in the cel (the settled view's

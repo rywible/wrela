@@ -226,6 +226,14 @@ pub struct Options: Clone {
     /// How many times each shot is measured (`--runs`), its measures each the median of them: a
     /// shot's flicker differs by up to a fifth from one run to the next (docs/lookdev.md).
     pub runs: u32 = 1,
+    /// With `--bars` and `--runs`, the share of a bar a shot's first run must come within for its
+    /// other runs to be taken (`--near`, as 0.2): a shot far from every bar is measured once, its
+    /// run-to-run spread (2 %, 13 % at most: docs/lookdev.md) no matter to which side it falls.
+    /// 0 takes every run of every shot.
+    pub near: f32 = 0.0,
+    /// The run already in the output directory's trails measured again from the frames it kept
+    /// (`--retrail`: each shot's `-moving.png` and `-settled.png`), nothing drawn.
+    pub retrail: bool = false,
     /// The fast run's measures alone (`--fast`: `quality::fast_shot`), at 960 × 540 unless `--size`
     /// says otherwise: no reference, the windows short.
     pub fast: bool = false,
@@ -317,6 +325,14 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             }
             o.runs = max(n, 1)
             k += 1
+        } else if a == "--near" && !value.is_empty() {
+            let Some(f) = value.parse_f32() else {
+                return Err(String::from("--near takes a share of a bar, as 0.2"))
+            }
+            o.near = max(f, 0.0)
+            k += 1
+        } else if a == "--retrail" {
+            o.retrail = true
         } else if a == "--bars" && !value.is_empty() {
             o.bars = String::from(value)
             k += 1
@@ -387,6 +403,9 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
     if o.fast && !sized {
         o.width = 960
         o.height = 540
+    }
+    if o.near > 0.0 && o.bars.is_empty() {
+        return Err(String::from("--near takes --bars: the bars a shot's first run is near"))
     }
     let Some(path) = take out else { return Err(String::from(USAGE)) }
     o.out = take path

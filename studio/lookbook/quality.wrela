@@ -242,7 +242,8 @@ pub fn measure(
 /// (the shot holds its first pose until its move), settled; the still's flicker over
 /// `FAST_SAMPLES` frames; with `psnr_too`, the reference there and the play still against it; the
 /// dolly's pop over its first `FAST_DOLLY` frames; and its trail where they end, paused and
-/// settled `FAST_STOP_SETTLE` frames. Its play still is written beside `stills`.
+/// settled `FAST_STOP_SETTLE` frames. Its play still, and the trail's two frames (`-moving`,
+/// `-settled`), are written beside `stills`.
 fn fast_shot(
     d: mut Driven,
     stills: str,
@@ -289,14 +290,27 @@ fn fast_shot(
     // The dolly, unbroken, for pop.
     d.press(Key::F11)
     var dolly = Pop::new()
+    var last_rgba: Vec<u8> = Vec::new()
     for _ in 0..FAST_DOLLY {
-        dolly.add(luma(d.screen()?))
+        let f = d.screen()?
+        last_rgba = f.clone()
+        dolly.add(luma(f))
     }
     // Paused where the dolly ended, and settled: the moving frame against play settled there.
     let moving = dolly.last.clone()
     d.press(Key::Backquote)
     let _ = d.run(FAST_STOP_SETTLE)?
-    let settled = luma(d.screen()?)
+    let settled_rgba = d.screen()?
+    let settled = luma(settled_rgba.clone())
+    // The two frames kept, so the trail can be measured again without drawing (`--retrail`).
+    for (name, rgba) in [("moving", take last_rgba), ("settled", take settled_rgba)] {
+        let img = image::Image {
+            width: w,
+            height,
+            rgba: Data::Blob(blob_of(chunked(rgba.clone()))?),
+        }
+        write_png(take img, f"{stills}-{name}.png")?
+    }
     let most_trail = trail(moving.clone(), settled.clone(), w)
     let lag_psnr = Vec::from([psnr(moving, settled)])
     Ok(
