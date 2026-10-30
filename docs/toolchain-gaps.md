@@ -116,6 +116,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
 - **Status:** open: not yet cut down to a small program.
 
+### No filtered single-channel half-float 3D texture
+
+- **Needed:** store the foliage volume's scalar depth without three unused channels, while retaining hardware trilinear filtering.
+- **What happens:** pinned toolchain 0.9.0 defines Texture3d<F: Storage>. R16Float implements Format, Filtered and Target, but not Storage. TexelTarget buffer uploads cover 2D levels and array layers, not Texture3d. R32Float is Storage but does not support filtering in the pinned API.
+- **Found:** 2026-10-30, [view-demand and sparse-volume experiment](neural-view-demand-volumes.md).
+- **Evidence:** saved output of wrela doc for Texture3d, R16Float, R32Float, TexelTarget and copy_buffer_to_texture under build/neural-evidence/view-demand-cache-v1/format-feasibility.
+- **Meanwhile:** keep the measured existing dense volume path; the tested manual-filtering sparse retrofit is retired. A hypothetical R16 depth control would use 1,658,880 bytes for the two volumes, but was not executed.
+- **Status:** open: sampled-only 3D formats plus an upload/copy route. No claim that WebGPU itself forbids a sampled R16Float 3D texture.
+
 ## Fixed
 
 ### A loop body's last call leaked its temporaries

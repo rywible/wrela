@@ -3688,3 +3688,22 @@ All38 pooled outputs and12,582,912 source IDs exact;24 stress+12 native shaded
 checks pass; static coverage remains within the established control, not G3.
 One follow-up, no training; G1–G7 unmet. Sources, builds, failed attempts, captures,
 memory sampling limits and complete cost: [streamed bake report](neural-streamed-bake.md).
+
+
+### View demand and sparse volumes retired, 2026-10-30 UTC
+
+Solo Pop!_OS AMD RENOIR/5500U, Mesa26.1.6, Chrome154.0.8037.57, Wrela0.9.0
+/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. First actual joint assessment
+40.38min; exactly two targeted followups; no training.
+The executable sparse-volume path uses 292,740B versus 2,654,208B dense (9.07x
+for volumes only); all 24 stress and 12 native source-ID shaded checks pass,
+with unchanged measured static coverage. Final scheduling reduces requested
+steady allocations by 2,361,452B but startup requested peaks are unchanged
+apart from 4B; sampled GPU residency has no meaningful advantage, and fresh
+paired end PSS is reported including regressions. Complete 1080p/internal2x
+GPU/CPU/browser timing includes startup, source edits and all rendering.
+Retire the retrofit; restore runtime to fec85d60. The 15-pose demand census
+is an optimistic storage estimate, not an implemented cache or rendering win.
+Next bet: direct source construction into bounded reusable storage for both
+BC and source-ID controls. G1–G7 unchanged/unmet.
+[Joint measurements, constraints and preserved failures](neural-view-demand-volumes.md).
