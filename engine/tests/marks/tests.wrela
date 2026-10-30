@@ -38,8 +38,8 @@ fn a_mark_keeps_its_surface_point_under_a_dolly() {
             let (a, b) = (eye_at(p, d0), eye_at(p, d0 - 1.0))
             let fa = a.footprint(d0)
             let fb = b.footprint(d0 - 1.0)
-            let sa = sample(marks::DABS, p, UP, ALONG, fa, DOT_PX)
-            let sb = sample(marks::DABS, p, UP, ALONG, fb, DOT_PX)
+            let sa = sample(marks::STROKES, p, UP, ALONG, fa, DOT_PX)
+            let sb = sample(marks::STROKES, p, UP, ALONG, fb, DOT_PX)
             let (ka, _) = marks::level_of(fa, DOT_PX)
             let (kb, _) = marks::level_of(fb, DOT_PX)
             // The lattice both have: the same level's, or the nearer eye's coarser one.
@@ -90,7 +90,7 @@ fn marks_blend_across_an_octave() {
         var last = -1.0
         for t in 0..140 {
             let foot = 0.002 * pow(1.01, f32(t))
-            let dark = darkness::<Dotted>(marks::DABS, p, UP, ALONG, foot, substance::NONE)
+            let dark = darkness::<Dotted>(marks::STROKES, p, UP, ALONG, foot, substance::NONE)
             most = max(most, dark)
             if last >= 0.0 {
                 worst = max(worst, abs(dark - last))

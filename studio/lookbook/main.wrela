@@ -40,23 +40,29 @@
 // docs/lookdev.md): play against a frozen-time reference, its flicker, pop and trail, into
 // `quality.json`; `--controls` adds the instrument's negative controls (`controls.json`).
 //
+// `--runs <n>` measures each shot n times, each measure the median of them (a shot's flicker
+// differs by up to a fifth from one run to the next).
+//
 // `--look <type>` builds the package in that look first (`wrela build --set LOOK=<type>`, into
 // build/looks), and measures or renders that build. `--bars <dir>` holds each shot measured to the
 // bars of the run in `<dir>` (its `quality.json`, the physical look's): flicker and pop at most
 // 1.5 times its, trail at most its plus a pixel (docs/lookdev.md, "Judging a style"), printed and
-// written as `bars.json`.
+// written as `bars.json`; with `--held`, the run already in the output directory is held to them,
+// nothing measured.
 
 use shots::{
     CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, WS, build_of, check_line,
     chosen, keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
 use quality::{
-    CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, measure, measured_json, row,
+    ARRIVAL_FRAMES, CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, lit, measure,
+    measured_json, row,
 }
 use std::input::Script
 use std::io::print
 use std::json::{Doc, TOP, parse}
 use std::tool::{Task, ToolError, args, spawn}
+use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::files
@@ -64,7 +70,9 @@ use std::tool::image
 use std::tool::toolchain
 use toolkit::driven::untrapped
 use toolkit::page::run_page
-use toolkit::whole::{copy_file, read_file, write_file, write_png}
+use toolkit::whole::{
+    blob_of, chunked, copy_file, data_bytes, joined, read_file, write_file, write_png,
+}
 
 /// How long a page's clip may take, in seconds.
 const CLIP_TIMEOUT: f64 = 600.0
@@ -80,8 +88,19 @@ pub struct Still: Clone {
     pub capture: bool,
 }
 
-/// `s`'s still, rendered and written: the frame `SETTLE_FRAMES` in, or with `capture` the frame
-/// that prints `STILL`. The PNG's path.
+/// The screen as it is (no frame drawn for it): its width, height and RGBA.
+fn screen_of(b: drive::Build) -> Result<(u32, u32, Vec<u8>), ToolError> {
+    var seen = drive::steps(b, [Step::Capture], timeout: 600.0).wait()?
+    let screen = seen.captures.remove(0)
+    Ok((screen.width, screen.height, joined(data_bytes(take screen.rgba)?)))
+}
+
+/// How many frames a still not yet shown runs between looks.
+const SHOWN_POLL: u32 = 30
+
+/// `s`'s still, rendered and written: the frame `SETTLE_FRAMES` in (or, for a shot black then,
+/// `SETTLE_FRAMES` after it shows), or with `capture` the frame that prints `STILL`. The PNG's
+/// path.
 pub fn still(s: take Still) -> Result<String, ToolError> {
     var options = drive::gpu()
     options.width = s.width
@@ -111,10 +130,29 @@ pub fn still(s: take Still) -> Result<String, ToolError> {
         let frames = [Step::Frames(SETTLE_FRAMES + 1, s.keys.clone())]
         let _ = untrapped("the frames", drive::steps(b, frames, timeout: 600.0).wait()?)?
     }
-    var seen = drive::steps(b, [Step::Capture], timeout: 600.0).wait()?
+    var shown = screen_of(b)?
+    // A shot whose content hasn't arrived by then (black: a far place streams in) is run on until
+    // it shows, then settled as long again; a shot shown in time is the frame it always was.
+    var waited = 0
+    while !s.capture && !lit(shown.2) {
+        if waited >= ARRIVAL_FRAMES {
+            let _ = drive::close(b).wait()
+            return Err(ToolError::new(f"the shot wasn't shown within {ARRIVAL_FRAMES} more frames"))
+        }
+        let more = [Step::Frames(SHOWN_POLL, s.keys.clone())]
+        let _ = untrapped("the frames", drive::steps(b, more, timeout: 600.0).wait()?)?
+        waited += SHOWN_POLL
+        shown = screen_of(b)?
+        if lit(shown.2) {
+            print(f"lookbook: {s.png} shown {waited} frames late; settled {SETTLE_FRAMES} more")
+            let settle = [Step::Frames(SETTLE_FRAMES, s.keys.clone())]
+            let _ = untrapped("the frames", drive::steps(b, settle, timeout: 600.0).wait()?)?
+            shown = screen_of(b)?
+        }
+    }
     let _ = drive::close(b).wait()
-    let screen = seen.captures.remove(0)
-    let img = image::Image { width: screen.width, height: screen.height, rgba: take screen.rgba }
+    let (width, height, rgba) = take shown
+    let img = image::Image { width, height, rgba: Data::Blob(blob_of(chunked(take rgba))?) }
     write_png(take img, s.png.as_str())?
     Ok(take s.png)
 }
@@ -134,6 +172,44 @@ pub fn clip(build: str, keys: Script, webm: str, workers: u32) -> Result<(), Too
     copy_file(f"{build}/results/clip.webm", webm)
 }
 
+/// The median of `v`.
+fn median(v: take Vec<f64>) -> f64 {
+    var w = take v
+    w.sort_by(|a: f64, b: f64| a < b)
+    w[w.len() / 2]
+}
+
+/// The median of each of `runs`' flicker, pop, still pop, trail, PSNR, SSIM and sharpness (the
+/// first run's for the rest).
+pub fn medians(runs: Vec<quality::Measured>) -> quality::Measured {
+    var psnr: Vec<f64> = Vec::new()
+    var ssim: Vec<f64> = Vec::new()
+    var sharpness: Vec<f64> = Vec::new()
+    var flicker: Vec<f64> = Vec::new()
+    var pop: Vec<f64> = Vec::new()
+    var still_pop: Vec<f64> = Vec::new()
+    var trail: Vec<f64> = Vec::new()
+    for m in runs {
+        psnr.push(m.psnr)
+        ssim.push(m.ssim)
+        sharpness.push(m.sharpness)
+        flicker.push(m.flicker)
+        pop.push(m.pop)
+        still_pop.push(m.still_pop)
+        trail.push(m.trail)
+    }
+    quality::Measured {
+        psnr: median(take psnr),
+        ssim: median(take ssim),
+        sharpness: median(take sharpness),
+        flicker: median(take flicker),
+        pop: median(take pop),
+        still_pop: median(take still_pop),
+        trail: median(take trail),
+        ..runs[0].clone(),
+    }
+}
+
 /// `program` built in look `look` (`--set LOOK=<look>`) into build/looks: the build's directory.
 fn built_in(program: str, look: str) -> Result<String, ToolError> {
     let parts = look.split("::")
@@ -142,7 +218,7 @@ fn built_in(program: str, look: str) -> Result<String, ToolError> {
     let (pa, pb) = names[names.len() - 1]
     let out = String::from(f"{WS}/build/looks/{program.slice(pa, pb)}-{look.slice(a, b)}")
     var options = toolchain::options()
-    options.timeout = 900.0
+    options.timeout = 600.0
     options.set.push(toolchain::Set { name: String::from("LOOK"), value: String::from(look) })
     print(f"building {program} in {look} into {out}")
     let made = toolchain::build(program, out.as_str(), options).wait()?
@@ -221,8 +297,24 @@ fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
     Ok(all)
 }
 
+/// `--held`: the run already in `o.out` held to `--bars`, nothing measured.
+fn held(o: Options) -> Result<(), ToolError> {
+    if o.bars.is_empty() {
+        return Err(ToolError::new("--held takes --bars <dir>"))
+    }
+    let out = o.out.as_str()
+    let at = String::from(f"{out}/quality.json")
+    let ran = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    let ok = barred(ran.as_str(), o.bars.as_str(), out)?
+    print(if ok { "every shot holds its bars" } else { "a shot misses its bars (bars.json)" })
+    Ok(())
+}
+
 /// Makes the stills, then the clips, as `o` says.
 pub fn lookbook(o: Options) -> Result<(), ToolError> {
+    if o.held {
+        return held(o)
+    }
     let (view, presses, listed) = VIEWS[o.view]
     let build = if o.look.is_empty() { build_of(o.program.as_str()) } else {
         built_in(o.program.as_str(), o.look.as_str())?
@@ -313,7 +405,18 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     // if `blurs`, changed as `c` says.
     let run = |i: u32, what: str, blurs: bool, c: Control| -> Result<quality::Measured, ToolError> {
         let name = stem(i, shots[i].as_str())
-        let m = measure(f"{out}/{name}{what}", build, i, presses, o.width, o.height, blurs, c)?
+        let m = measure(
+            f"{out}/{name}{what}",
+            build,
+            i,
+            presses,
+            o.width,
+            o.height,
+            blurs,
+            c,
+            fast: o.fast,
+            psnr_too: o.psnr,
+        )?
         print(row(f"{name}{what}", m.clone()).as_str())
         Ok(take m)
     }
@@ -321,7 +424,15 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     var entries: Vec<String> = Vec::new()
     var ran: Vec<(u32, quality::Measured)> = Vec::new()
     for i in picks {
-        let m = run(i, "", o.controls && i == CONTROL_SHOT, Control {})?
+        var m = run(i, "", o.controls && i == CONTROL_SHOT, Control {})?
+        if o.runs > 1 {
+            var more: Vec<quality::Measured> = Vec::from([m.clone()])
+            for r in 1..o.runs {
+                more.push(run(i, f"-run{r + 1}", false, Control {})?)
+            }
+            m = medians(more)
+            print(row(f"{stem(i, shots[i].as_str())} (median of {o.runs})", m.clone()).as_str())
+        }
         entries.push(measured_json(stem(i, shots[i].as_str()).as_str(), m.clone(), "measured"))
         ran.push((i, take m))
     }

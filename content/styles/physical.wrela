@@ -18,9 +18,9 @@ impl Style for Physical {
     const SUBSTANCE: u32 = 0
     /// Lit by the fine normal, the shading's own.
     const NORMAL: u32 = 0
-    /// The characters' lines (`paint::lines`): part of today's look. (Its dabs and the paper's
-    /// tooth are the lens's: `paint::develop`'s, until the marks take them, D5.)
-    const MARKS: u32 = marks::LINES
+    /// The characters' lines (`marks::lines`) and the brush dabs and the paper's tooth
+    /// (`marks::dab_map`): part of today's look.
+    const MARKS: u32 = marks::LINES | marks::DABS
     /// Temporal AA as it is.
     const FLAT_CLIP: f32 = 0.0
 
@@ -50,7 +50,7 @@ impl Style for Physical {
     }
 
     /// The albedo as it is.
-    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
         albedo
     }
 

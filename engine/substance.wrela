@@ -1,11 +1,11 @@
 // What a look reads of a pixel after the shading pass (docs/plan-world-class-3.md §D1): its form,
 // its cause and its tone, in three targets beside the scene's, 24 attachment bytes in all (WebGPU's
 // `maxColorAttachmentBytesPerSample` is 32, as the ABI costs a target); and its form's shape, at
-// half the scene's size, found after the passes from the form and the depth (`shaped`). The light that
-// reaches it isn't stored: a look's `shade` runs in the shading pass and takes it as values
-// (`light::Lit`). A look names the targets it reads (`style::Style::SUBSTANCE`); a look that
-// reads none, as the physical one doesn't, has a pass of the scene's target alone
-// (`style::Style::Out`), so the frame and its shaders are as they were.
+// half the scene's size, found after the passes from the form and the depth (`shaped`). The light
+// that reaches it isn't stored: a look's `shade` runs in the shading pass and takes it as values
+// (`light::Lit`). A look names the targets it reads (`style::Style::SUBSTANCE`); a look that reads
+// none, as the physical one doesn't, has a pass of the scene's target alone (`style::Style::Out`),
+// so the frame and its shaders are as they were.
 //
 // | Target | Format | Bytes | Holds |
 // |---|---|---|---|
@@ -179,6 +179,10 @@ pub struct Shape: Copy {
 /// The flat surface's.
 pub const FLAT = Shape { dir: vec3(1.0, 0.0, 0.0), k1: 0.0, k2: 0.0 }
 
+/// How near alike (of the larger) a surface's two curvatures are where it's taken to curve alike
+/// every way: its principal direction then is `tangents`' first, not its curvatures' (`principal`).
+pub const UMBILIC: f32 = 0.2
+
 /// Two directions in the plane normal to `n`, at right angles.
 pub fn tangents(n: vec3) -> (vec3, vec3) {
     let a = if abs(n.y) < 0.9 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
@@ -194,6 +198,11 @@ fn principal(a: f32, b: f32, d: f32, t1: vec3, t2: vec3) -> Shape {
     let (hi, lo) = (mid + r, mid - r)
     let k1 = if abs(hi) >= abs(lo) { hi } else { lo }
     let k2 = if abs(hi) >= abs(lo) { lo } else { hi }
+    // Where it curves about alike every way (a sphere, a plane: `UMBILIC`), its principal direction
+    // is the noise in its curvatures': `t1` (round the world's up: a ball's latitude) instead.
+    if abs(k1 - k2) <= UMBILIC * max(abs(k1), 1.0e-6) || abs(k1) < 1.0e-6 {
+        return Shape { dir: t1, k1, k2 }
+    }
     // `k1`'s eigenvector: (b, k1 - a), or (k1 - d, b), whichever is the longer.
     let e1 = vec2(b, k1 - a)
     let e2 = vec2(k1 - d, b)

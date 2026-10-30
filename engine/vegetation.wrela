@@ -16,7 +16,7 @@ use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use switches::Switches
 use style
-use style::{Style, lit_normal, substance_of}
+use style::{Style, flattened, lit_normal, substance_of}
 use substance
 use noise::{cell_size, hashed_threshold_of}
 use lod::{
@@ -439,11 +439,12 @@ pub fn leaf_shade<Q: Switches, Y: Style>(
     let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
     let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
     let history = inst.history.decode()
-    let albedo = Y::palette(
-        style::LEAVES,
-        history,
-        tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)) * fold,
-    )
+    let tint = tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card))
+    // (Not flattened, `style::flattened`: a leaf's fold and tissue changed its range across the
+    // pixel from frame to frame as its cards alias, and the flattening flickered with it: the wood
+    // under cloud's flicker 51.9 → 56.6 ×10⁻⁶ in the cel look, past its bar of 54.7.)
+    let flat = 0.0
+    let albedo = Y::palette(lt.light, style::LEAVES, history, tint * fold)
     // A leaf's form is its crown's (`crown_n`, as it's lit), and its coarse form the crown's
     // mass round its middle.
     let s = substance_of::<Y>(
@@ -451,6 +452,7 @@ pub fn leaf_shade<Q: Switches, Y: Style>(
         normalize(world - inst.place(kinds[l.kind.value].bake.mid)),
         history,
         albedo,
+        flat,
     )
     let c = leaf_light(
         lt,
@@ -628,10 +630,16 @@ pub fn bark_shade<Q: Switches, Y: Style>(
         vec2(dot(slope, dpdx(uv)), dot(slope, dpdy(uv))),
     )
     let history = std::gpu::Unorm8x4 { bits: b.history.value }.decode()
+    // Its ridges' tone, flattened where the look says it can't be told (`style::flattened`): their
+    // mean the bark's middle tone (found before the discard, which `fwidth` can't follow).
+    let (smooth_tone, flat) = flattened::<Y>(
+        vec3(mix(0.55, bark.tone(t), fine)),
+        vec3(0.55),
+    )
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
-    let tone = mix(0.55, bark.tone(t), fine)
+    let tone = smooth_tone.x
     var albedo = mix(bark.dark, bark.light, vec3(tone))
     albedo = mix(albedo, bark.foot.xyz * (0.45 + 1.1 * mix(0.5, foot_tone, fine)), vec3(foot))
     // Darker down its furrows and cracks, as their depth hides them from the light: as much as
@@ -644,13 +652,13 @@ pub fn bark_shade<Q: Switches, Y: Style>(
         bark.lichen.xyz,
         vec3(bark.lichen.w * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
     )
-    let a = Y::palette(style::BARK, history, mix(albedo, bark.moss, vec3(b.moss)))
+    let a = Y::palette(lt.light, style::BARK, history, mix(albedo, bark.moss, vec3(b.moss)))
     let ln = lit_normal::<Y>(n, smooth_n, smooth_n)
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, ln, sky_n: ln, soft: 1.5)
     let lit = Lit { albedo: a, n: ln, sun, sky, through: vec3(0.0) }
     // A limb's form is its round without its bark's relief (`smooth_n`), its own coarse form.
-    let s = substance_of::<Y>(smooth_n, smooth_n, history, a)
+    let s = substance_of::<Y>(smooth_n, smooth_n, history, a, flat)
     let c = shown(lt, lit, b.world, s, style::BARK)
     Y::written(vec4(c, view::BARK), s)
 }

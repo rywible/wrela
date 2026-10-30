@@ -1,0 +1,60 @@
+// The styles tool: the looks a file declares, and G-style on a log and on this branch's history.
+
+use looks::{added_in, holds, looks_in}
+use std::io::print
+use toolkit::whole::read_file
+
+/// A file's looks are its `impl Style for` types, a fit's variant aside.
+@test
+fn a_files_looks_are_its_styles() {
+    let src = "pub struct Cel {}\nimpl Knob for Cel {}\nimpl Style for Cel {\n}\nimpl Style for CelFitting {\n}\n"
+    let l = looks_in(src)
+    assert(l.len() == 1 && l[0].as_str() == "Cel")
+}
+
+/// A look added alone holds G-style; one added with an engine change doesn't; the engine's own
+/// look is held to none; the oldest commit adding a file is its adding.
+@test
+fn g_style_reads_each_looks_adding_commit() {
+    let log = "commit:c3\nM\tengine/frame.wrela\nA\tcontent/styles/ink.wrela\ncommit:c2\nA\tcontent/styles/cel.wrela\ncommit:c1\nA\tcontent/styles/physical.wrela\nM\tengine/style.wrela\nA\tcontent/styles/ink.wrela\n"
+    let added = added_in(log)
+    var seen = 0
+    for a in added {
+        if a.file.as_str() == "cel.wrela" {
+            assert(a.commit.as_str() == "c2" && holds(a.clone()))
+            seen += 1
+        }
+        if a.file.as_str() == "ink.wrela" {
+            assert(a.commit.as_str() == "c1" && !holds(a.clone()))
+            seen += 1
+        }
+        if a.file.as_str() == "physical.wrela" {
+            assert(holds(a.clone()))
+            seen += 1
+        }
+    }
+    assert(seen == 3)
+}
+
+/// G-style on this branch's history as the tool recorded it (`wrela tool styles -- --record`,
+/// `history.log`: a tool test runs no real program): every look under content/styles holds it.
+@test(tool, read: [("repo", "../..")])
+fn g_style_holds_on_this_branchs_history() {
+    let Ok(bytes) = read_file("repo/studio/styles/history.log", "history.log") else {
+        panic("studio/styles/history.log: record it with `wrela tool styles -- --record`")
+    }
+    let log = String::from_utf8(take bytes).unwrap_or(String::new())
+    var looks = 0
+    for a in added_in(log.as_str()) {
+        if a.file.as_str() == "fixtures.wrela" {
+            continue
+        }
+        print(f"{a.file}: added in {a.commit}, the engine's files it changed: {a.engine.len()}")
+        assert(
+            holds(a.clone()),
+            f"{a.file}'s commit {a.commit} changed {a.engine.len()} engine files",
+        )
+        looks += 1
+    }
+    assert(looks >= 4, f"only {looks} looks")
+}

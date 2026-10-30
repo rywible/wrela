@@ -22,6 +22,15 @@ pub trait Style {
     /// How hard temporal AA clips where the substance says the tone is flat (0: as the physical
     /// look; 1: the neighbourhood's box shrunk to its centre's tone).
     const FLAT_CLIP: f32 = 0.0
+    /// Where a surface's albedo varies across a pixel by less than this in luma, its mean takes
+    /// its place (`flattened`): what the eye can't resolve, flattened (0: never).
+    const FLAT: f32 = 0.0
+    /// How dark the lines round the characters and solid forms are (`marks::LINES`): under 0, the
+    /// program's own (`paint::Look::line_dark`).
+    const LINE_DARK: f32 = -1.0
+    /// How wide those lines are (output pixels, `paint::Look::line_px`): under 0, the program's
+    /// own.
+    const LINE_PX: f32 = -1.0
 
     /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
     /// that reads no substance after the pass, or that and the substance's three
@@ -52,7 +61,7 @@ pub trait Style {
 
     /// The colour a material of class `class`, its history `history` (D1's cause: age, light,
     /// wetness, stress), and albedo `albedo` becomes in this look, before light.
-    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3
 
     /// How dark a mark `m` makes a pixel (0: not at all; below 0 it lightens), its substance `s`,
     /// at a depth whose output pixel is `depth_px` metres across: none by default.
@@ -105,16 +114,58 @@ pub fn lit_normal<Y: Style>(fine: vec3, form: vec3, coarse: vec3) -> vec3 {
     fine
 }
 
+/// A look's constants a fit may move (`wrela tool fit --style`, docs/plan-world-class-3.md §D8),
+/// up to eight, in the order the look lists them (its `FITTABLE`): `at`'s (each a `const` of the
+/// look's), or, where the look is fitting (`FIT`: the fit's one build), the light's
+/// (`light::Light::fit`, the candidate's). A look reads each through `knob`, which folds to
+/// `at`'s where it isn't fitting.
+pub trait Knob {
+    const FIT: bool = false
+
+    fn at(i: u32) -> f32
+}
+
+/// Constant `i` of look `K` (`Knob`).
+pub fn knob<K: Knob>(light: Light, i: u32) -> f32 {
+    if K::FIT {
+        return light.fit[i / 4][i % 4]
+    }
+    K::at(i)
+}
+
+/// A constant a fit may move: its name, as the look's file writes it, and its range.
+pub struct Fittable: Copy {
+    pub name: Text,
+    pub lo: f32,
+    pub hi: f32,
+}
+
+/// A surface's albedo in look `Y` (`Style::FLAT`), and how flat it is: its `mean` (the material
+/// without its detail finer than the pixel) where its `fine` albedo varies across the pixel by less
+/// than a quarter of `FLAT` in luma (`fwidth`), `fine` where by more than twice it, and between
+/// them between. Called in a fragment shader's uniform control flow.
+pub fn flattened<Y: Style>(fine: vec3, mean: vec3) -> (vec3, f32) {
+    if Y::FLAT <= 0.0 {
+        return (fine, 0.0)
+    }
+    let range = fwidth(dot(fine, vec3(0.2126, 0.7152, 0.0722)))
+    // Fading from a quarter of `FLAT` to twice it, so a pixel whose range wavers about it (as a
+    // jittered frame's samples move) doesn't flicker between the two.
+    let flat = 1.0 - smoothstep(0.25 * Y::FLAT, 2.0 * Y::FLAT, range)
+    (mix(fine, mean, vec3(flat)), flat)
+}
+
 /// A fragment's substance as far as `Y` reads it (`Style::SUBSTANCE`): a surface whose form's
 /// normal is `n_form` and coarse normal `n_coarse`, its history `history` and its albedo before
-/// light `tone`. Nothing for a look that reads none, so the physical look's shaders are as they
-/// were; and each channel only if it's read, so what makes the others is no code. (The form's
-/// shape is found after the passes: `substance::shaped`.)
+/// light `tone` (`flat` where `flattened` made it). Nothing for a look that reads none, so the
+/// physical look's shaders are as they were; and each channel only if it's read, so what makes the
+/// others is no code. (The form's shape is found after the passes: `substance::shaped`.)
 pub fn substance_of<Y: Style>(
     n_form: vec3,
     n_coarse: vec3,
     history: vec4,
     tone: vec3,
+    flat: f32 = 0.0,
 ) -> Substance {
     if Y::SUBSTANCE == 0 {
         return substance::NONE
@@ -125,6 +176,7 @@ pub fn substance_of<Y: Style>(
     }
     if (Y::SUBSTANCE & substance::TONE) != 0 {
         s.tone = tone
+        s.flat = flat
     }
     if (Y::SUBSTANCE & substance::FORM) != 0 {
         s.n_form = n_form

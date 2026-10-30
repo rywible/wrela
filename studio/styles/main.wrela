@@ -1,0 +1,271 @@
+// The styles tool (docs/plan-world-class-3.md §D10): the looks under content/styles.
+//
+// ```text
+// wrela tool styles -- --check [--package examples/vale]
+// wrela tool styles -- --record
+// wrela tool styles -- --page <out> --run <look>=<lookbook run> ...
+// ```
+//
+// `--check` builds the package in each look a file under content/styles declares (but the
+// fixtures, and a fit's variants: looks.wrela), and counts each build's pipelines; then G-style:
+// `git log` for the commit that added each look's file, and the engine's files that commit
+// changed, which must be none (but for the engine's own look, `looks::ENGINE_OWN`). `--record`
+// writes that log as `studio/styles/history.log`, which the tool's test reads (a tool test runs
+// no real program, so the branch's history is the recorded one). `--page <out>` lays the twelve
+// evaluation shots out through each look's lookbook run (`--run physical=build/d4/physical-all2`,
+// the first the physical look's, whose measures are the bars), each still with its flicker, pop
+// and trail and whether it holds the bars, as `<out>/index.html` and its stills.
+
+use looks::{Added, NOT_LOOKS, added_in, holds, looks_in}
+use lookbook_tool::main::{holds as holds_bars, measures_in}
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::blob::Data
+use std::tool::files
+use std::tool::image
+use std::tool::run
+use std::tool::toolchain
+use toolkit::whole::{chunked, data_bytes, joined, read_file, write_file}
+
+pub const USAGE: Text = "usage: wrela tool styles -- --check [--package <dir>] | --record | --page <out> --run <look>=<lookbook run dir> ..."
+
+/// The workspace's root, as the tool's write root names it.
+const WS: Text = "ws"
+
+/// The log G-style reads.
+const LOG_ARGS: [Text; 6] = [
+    "log",
+    "--format=commit:%H",
+    "--name-status",
+    "--",
+    "content/styles",
+    "engine",
+]
+
+/// The evaluation shots a page shows (the first twelve of the vale's lookbook).
+const SHOTS: u32 = 12
+
+/// The width a page's still is brought to.
+const PAGE_WIDTH: u32 = 640
+
+/// `git` run in the workspace with `a`: its output.
+fn git(a: [Text]) -> Result<String, ToolError> {
+    var c = run::command("git", WS)
+    for x in a {
+        c.args.push(String::from(x))
+    }
+    c.timeout = 120.0
+    let ran = run::run(c).wait()?
+    let out = String::from_utf8(joined(data_bytes(take ran.stdout)?)).unwrap_or(String::new())
+    if ran.status != 0 {
+        return Err(ToolError::new(f"git {a[0]} failed ({ran.status})"))
+    }
+    Ok(out)
+}
+
+/// The looks' files under content/styles: (file, module, its looks).
+fn looks() -> Result<Vec<(String, String, Vec<String>)>, ToolError> {
+    var out: Vec<(String, String, Vec<String>)> = Vec::new()
+    for e in files::list(f"{WS}/content/styles").wait()? {
+        let n = e.name.as_str()
+        if !n.ends_with(".wrela") || not_look(n) {
+            continue
+        }
+        let src = String::from_utf8(read_file(f"{WS}/content/styles/{n}", n)?).unwrap_or(
+            String::new(),
+        )
+        out.push((String::from(n), String::from(n.slice(0, n.len() - 6)), looks_in(src.as_str())))
+    }
+    Ok(out)
+}
+
+/// Whether a file is one of `NOT_LOOKS`.
+fn not_look(name: str) -> bool {
+    for n in NOT_LOOKS {
+        if n == name {
+            return true
+        }
+    }
+    false
+}
+
+/// `--check`: each look built and its pipelines counted; G-style on the history.
+fn check(program: str) -> Result<bool, ToolError> {
+    var ok = true
+    let names = program.split("/")
+    let (pa, pb) = names[names.len() - 1]
+    for (file, module, kinds) in looks()? {
+        for k in kinds {
+            let look = f"styles::{module}::{k}"
+            let out = f"{WS}/build/styles/{program.slice(pa, pb)}-{k}"
+            var options = toolchain::options()
+            options.timeout = 600.0
+            options.set.push(toolchain::Set { name: String::from("LOOK"), value: look.clone() })
+            let made = toolchain::build(f"{WS}/{program}", out.as_str(), options).wait()?
+            if !made.ok {
+                print(f"styles: {look} ({file}) doesn't build")
+                ok = false
+                continue
+            }
+            let manifest = String::from_utf8(read_file(f"{out}/manifest.json", "manifest.json")?)
+                .unwrap_or(String::new())
+            print(f"styles: {look}: builds, {pipelines_in(manifest.as_str())} pipelines")
+        }
+    }
+    for a in added_in(git(LOG_ARGS)?.as_str()) {
+        if not_look(a.file.as_str()) {
+            continue
+        }
+        print(g_style_line(a.clone()).as_str())
+        ok = ok && holds(a)
+    }
+    Ok(ok)
+}
+
+/// A look's G-style, as a line.
+fn g_style_line(a: Added) -> String {
+    let short = a.commit.as_str().slice(0, min(8, a.commit.len()))
+    if holds(a.clone()) && !a.engine.is_empty() {
+        return String::from(f"G-style: {a.file} added in {short}: the engine's own look")
+    }
+    if holds(a.clone()) {
+        return String::from(f"G-style: {a.file} added in {short}: no engine file changed, holds")
+    }
+    String::from(
+        f"G-style: {a.file} added in {short}: {a.engine.len()} engine files changed, fails",
+    )
+}
+
+/// The pipelines a build's manifest lists.
+fn pipelines_in(manifest: str) -> u32 {
+    let Some(d) = std::json::parse(manifest) else { return 0 }
+    let Some(p) = d.get(std::json::TOP, "pipelines") else { return 0 }
+    d.count(p)
+}
+
+/// `--page`: the twelve shots through each run, side by side.
+fn page(out: str, runs: [(String, String)]) -> Result<(), ToolError> {
+    let _ = files::make_dirs(f"{WS}/{out}").wait()?
+    var measures: Vec<Vec<(String, f64, f64, f64)>> = Vec::new()
+    for (_, dir) in runs {
+        let text = String::from_utf8(read_file(f"{WS}/{dir}/quality.json", "quality.json")?)
+            .unwrap_or(String::new())
+        measures.push(measures_in(text.as_str()))
+    }
+    var html = String::from(
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>The four looks</title>\n<style>body{margin:16px;font:14px system-ui;background:#111;color:#ddd}table{border-collapse:collapse}td,th{padding:6px;vertical-align:top}img{width:320px;display:block}.miss{color:#f88}.hold{color:#8c8}</style>\n<h1>The four looks</h1>\n<p>The vale's twelve evaluation shots through each look (docs/plan-world-class-3.md §D10), each still with its flicker (×10⁻⁶), pop and trail (px), and whether it holds the physical look's bars (flicker and pop at most 1.5 times, trail at most a pixel more).</p>\n<table>\n<tr><th>Shot</th>",
+    )
+    for (look, _) in runs {
+        html.push_str(f"<th>{look}</th>")
+    }
+    html.push_str("</tr>\n")
+    for s in 0..min(SHOTS, measures[0].len()) {
+        let (shot, _, _, _) = measures[0][s].clone()
+        html.push_str(f"<tr><td>{shot}</td>")
+        for r in 0..runs.len() {
+            let (look, dir) = runs[r].clone()
+            var m: Option<(String, f64, f64, f64)> = None
+            for x in measures[r].clone() {
+                let (name, _, _, _) = x.clone()
+                if name.as_str() == shot.as_str() {
+                    m = Some(x.clone())
+                }
+            }
+            let still = f"{shot}-{look}.webp"
+            shrink_to_webp(f"{WS}/{dir}/{shot}-play.png", f"{WS}/{out}/{still}")?
+            html.push_str(f"<td><img src=\"{still}\" alt=\"{shot} in {look}\">")
+            if let Some((_, fl, po, tr)) = m {
+                let (_, bf, bp, bt) = measures[0][s].clone()
+                let (a, b, c) = holds_bars(fl, po, tr, (bf, bp, bt))
+                let class = if r == 0 || (a && b && c) { "hold" } else { "miss" }
+                html.push_str(
+                    f"<span class=\"{class}\">flicker {fl * 1.0e6:.2}, pop {po:.4}, trail {tr:.0}</span>",
+                )
+            }
+            html.push_str("</td>")
+        }
+        html.push_str("</tr>\n")
+    }
+    html.push_str("</table>\n")
+    write_file(f"{WS}/{out}/index.html", chunked(Vec::from(html.as_bytes())))?
+    print(f"styles: the page to {out}/index.html")
+    Ok(())
+}
+
+/// A PNG brought to `PAGE_WIDTH` wide and written as a WebP.
+fn shrink_to_webp(from: str, to: str) -> Result<(), ToolError> {
+    let b = files::read_blob(from).wait()?
+    let img = image::decode(Data::Blob(b)).wait()?
+    let size = image::fit(
+        image::Size { width: img.width, height: img.height },
+        image::Size { width: PAGE_WIDTH, height: PAGE_WIDTH },
+    )
+    let small = image::resize(take img, size).wait()?
+    let webp = image::encode_webp(take small, 82.0, 4).wait()?
+    write_file(to, data_bytes(take webp)?)
+}
+
+pub fn tool() -> u32 {
+    let given = args()
+    if given.len() == 0 {
+        print(USAGE)
+        return 2
+    }
+    let what = given[0].as_str()
+    let done = if what == "--check" {
+        let program = if given.len() == 3 && given[1].as_str() == "--package" {
+            given[2].clone()
+        } else {
+            String::from("examples/vale")
+        }
+        match check(program.as_str()) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ToolError::new("a look doesn't build, or fails G-style")),
+            Err(e) => Err(take e),
+        }
+    } else if what == "--record" {
+        match git(LOG_ARGS) {
+            Ok(log) => {
+                let r = write_file(
+                    f"{WS}/studio/styles/history.log",
+                    chunked(Vec::from(log.as_bytes())),
+                )
+                print("styles: the history to studio/styles/history.log")
+                take r
+            },
+            Err(e) => Err(take e),
+        }
+    } else if what == "--page" && given.len() >= 4 {
+        var runs: Vec<(String, String)> = Vec::new()
+        var k = 2
+        var bad = false
+        while k + 1 < given.len() {
+            let v = given[k + 1].as_str()
+            if given[k].as_str() != "--run" {
+                bad = true
+                break
+            }
+            let Some(eq) = v.find("=") else {
+                bad = true
+                break
+            }
+            runs.push((String::from(v.slice(0, eq)), String::from(v.slice(eq + 1, v.len()))))
+            k += 2
+        }
+        if bad || k != given.len() || runs.len() == 0 {
+            print(USAGE)
+            return 2
+        }
+        page(given[1].as_str(), runs)
+    } else {
+        print(USAGE)
+        return 2
+    }
+    match done {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"styles: {e.message()}")
+            1
+        },
+    }
+}

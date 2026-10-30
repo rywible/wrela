@@ -171,6 +171,12 @@ pub struct Planner {
     filling: bool,
     /// The frames whose optional work the budget cut short, since the planner was made.
     pub cut: u32,
+    /// Whether it plans with the code's record of each kind's cost (`costs()`) instead of what
+    /// this device measured: while the lookdev instrument holds the frame's time (F10, F12), so
+    /// every run's held frames do the same work (planned from what the host timed, a step's cost
+    /// near a rung of the ladder took one rung on one run and the next on another, and a shot's
+    /// flicker differed from run to run: docs/lookdev.md).
+    pub steady: bool = false,
 }
 
 impl Planner {
@@ -197,7 +203,7 @@ impl Planner {
     pub fn begin(mut self, levels: u32, playable: bool, near_ready: bool, filling: bool) {
         self.ran = [0; WORKS]
         self.ran[Work::TerrainLevel.index()] = levels
-        self.mandatory = f32(levels) * self.costs[Work::TerrainLevel.index()].us
+        self.mandatory = f32(levels) * self.planned(Work::TerrainLevel)
         self.spent_optional = 0.0
         self.first_optional = 0.0
         self.optional = false
@@ -221,7 +227,7 @@ impl Planner {
         }
         if !self.filling {
             let limit = self.limit()
-            let cost = self.costs[w.index()].us
+            let cost = self.planned(w)
             if self.optional && self.spent() + cost > limit {
                 self.cut += 1
                 return false
@@ -254,7 +260,7 @@ impl Planner {
     /// tables, the clouds' noise and weather), counted.
     pub fn note(mut self, w: Work) {
         self.ran[w.index()] += 1
-        self.mandatory += self.costs[w.index()].us
+        self.mandatory += self.planned(w)
     }
 
     /// Whether the moving-cache rules let a step of `w` run now (the budget aside): nothing is
@@ -319,6 +325,14 @@ impl Planner {
     /// What a step of each kind costs, in `Work`'s order (`costs()`'s).
     pub fn costs(self) -> [Cost; WORKS] {
         self.costs
+    }
+
+    /// The cost a step of `w` is planned at (`steady`).
+    fn planned(self, w: Work) -> f32 {
+        if self.steady {
+            return costs()[w.index()].us
+        }
+        self.costs[w.index()].us
     }
 
     /// A step of `w` measured on this device at `us` microseconds of GPU time: the first

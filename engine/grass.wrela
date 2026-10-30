@@ -1779,7 +1779,7 @@ pub fn blade_shade<Q: Switches, Y: Style>(
     } else if kind > 0.1 { under_colour(look, kind, t, colour.x, colour.y) } else {
         grass_colour(look, t, colour.x, colour.y, colour.z)
     }
-    let albedo = Y::palette(style::GRASS, history, picked)
+    let albedo = Y::palette(lt.light, style::GRASS, history, picked)
     // A blade's form is its sward's: the ground it grows from. (A blade has no history of its
     // own: its cause is empty.)
     let ln = lit_normal::<Y>(n, ground, ground)
@@ -1881,6 +1881,7 @@ pub fn flower_shade<Q: Switches, Y: Style>(
     let kind = b.kind.value
     let colour = blooms.kinds[min(kind, 3)]
     let albedo = Y::palette(
+        lt.light,
         style::FLOWER,
         vec4(0.0),
         mix(

@@ -21,7 +21,7 @@
 use std::mem::size_of
 use switches::Switches
 use style
-use style::{Style, lit_normal, substance_of}
+use style::{Style, flattened, lit_normal, substance_of}
 use substance
 use light::Lit
 use sim::Hit
@@ -1339,7 +1339,10 @@ pub fn ground_shade<Q: Switches, Y: Style>(
         )
     }
     let history = ground_history(lt.levels, texels, level, g.world.xz)
-    let albedo = Y::palette(style::GROUND, history, coarse * detail)
+    // Its detail flattened where the look says it can't be told (`style::flattened`): its mean
+    // is the cover's albedo, the detail's multiplier about 1.
+    let (fine, flat) = flattened::<Y>(coarse * detail, coarse)
+    let albedo = Y::palette(lt.light, style::GROUND, history, fine)
     let ln = lit_normal::<Y>(n, nf, nc)
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
@@ -1347,7 +1350,7 @@ pub fn ground_shade<Q: Switches, Y: Style>(
     // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
     let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, ln, soft: 2.0)
     let l = Lit { albedo, n: ln, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
-    let s = substance_of::<Y>(nf, nc, history, albedo)
+    let s = substance_of::<Y>(nf, nc, history, albedo, flat)
     let c = lit::shown(lt, l, g.world, s, style::GROUND)
     Y::written(vec4(c, view::GROUND), s)
 }

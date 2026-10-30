@@ -5,6 +5,7 @@
 // vale's walk (walk.wrela), or stands where a test holds it.
 
 use engine::frame::{Aim, Change, Frame, Quality, ShadowQuality, Shared}
+use engine::light::Light
 use engine::switches::Switches
 use engine::tier::{Tier, Tiered, Tiers}
 use styles
@@ -72,6 +73,8 @@ pub struct Vale {
     ready: bool,
     /// The hour the frame is lit at (`day`; its weather is the stage's, `Stage::skies`).
     hour: f32,
+    /// A fitting look's candidate constants (`fit`), carried in the light.
+    fit: [vec4; 2],
     /// How many frames the walk has run (none: it hasn't begun; W begins it).
     walked: Option<u32>,
 }
@@ -94,7 +97,7 @@ fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
     }
     let (air, light) = lit(hour, skies, eye)
     s.frame.air = air
-    s.frame.light = light
+    s.frame.light = Light { fit: s.fit, ..light }
     if skies != s.stage.skies {
         s.stage.skies = skies
         s.frame.changed(Change::Weather)
@@ -122,6 +125,7 @@ pub fn init() -> Vale {
         held: None,
         ready: false,
         hour: WALK_HOUR,
+        fit: [vec4(0.0), vec4(0.0)],
         walked: None,
     }
 }
@@ -201,6 +205,13 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
 // ---- for tests -----------------------------------------------------------------------------------
 
 /// The camera held at `eye`, looking at `at`.
+/// A fitting look's candidate constants (`wrela tool fit --style`: `engine::style::Knob`), from
+/// the next frame: the light carries them to the look's slots.
+pub fn fit(s: mut Vale, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32) {
+    s.fit = [vec4(a, b, c, d), vec4(e, f, g, h)]
+    s.frame.light = Light { fit: s.fit, ..s.frame.light }
+}
+
 @testing
 pub fn test_hold(s: mut Vale, eye: vec3, at: vec3) {
     s.held = Some((eye, at))

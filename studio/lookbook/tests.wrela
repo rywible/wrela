@@ -5,7 +5,8 @@ use shots::{
     PROGRAM, VIEWS, WS, build_of, check_line, chosen, keys, lookbook_of, names_in, names_listed,
     parse_args, shown_path, stem,
 }
-use main::{holds, measures_in}
+use main::{holds, measures_in, medians}
+use quality::Measured
 use measures::{
     sharpness, blurred, clipped, edge_width, flicker, luma, mean_of, pop, psnr, quartered, ssim,
     trail,
@@ -231,6 +232,15 @@ fn the_measures_react_as_the_instrument_needs() {
     // A history dragging 6 pixels behind the edge is a 6-pixel trail; the reference has none.
     let ghost = luma(scene_image(w, h, 38))
     assert(trail(rl, rl, w) == 0.0 && trail(ghost, rl, w) >= 4.0)
+    // A whole image 4/255 lighter is no trail; the ghost on it still is.
+    var lighter = Vec::new()
+    var ghost_lighter = Vec::new()
+    for i in 0..rl.len() {
+        lighter.push(rl[i] + 4.0 / 255.0)
+        ghost_lighter.push(ghost[i] + 4.0 / 255.0)
+    }
+    assert(trail(lighter, rl, w) == 0.0, f"a lighter image trails {trail(lighter, rl, w)}")
+    assert(trail(ghost_lighter, rl, w) >= 4.0)
     // The edge stays sharp in a mean of jittered frames of it.
     let mean = mean_of([reference.clone(), reference.clone()])
     assert(edge_width(luma(mean), w) <= edge_width(rl, w) + 1)
@@ -268,13 +278,51 @@ fn dev_and_evaluation_choose_by_the_shots_names() {
 @test
 fn a_look_holds_its_bars_against_the_physical_look() {
     let base = (20.0e-6, 0.01, 4.0)
-    assert(holds(29.0e-6, 0.015, 5.0, base) == (true, true, true), "at the bars")
-    assert(holds(31.0e-6, 0.01, 4.0, base) == (false, true, true), "flicker past 1.5 times")
-    assert(holds(20.0e-6, 0.016, 4.0, base) == (true, false, true), "pop past 1.5 times")
-    assert(holds(20.0e-6, 0.01, 5.5, base) == (true, true, false), "trail past a pixel more")
+    assert(
+        holds(flicker: 29.0e-6, pop: 0.015, trail: 5.0, base: base) == (true, true, true),
+        "at the bars",
+    )
+    assert(
+        holds(flicker: 31.0e-6, pop: 0.01, trail: 4.0, base: base) == (false, true, true),
+        "flicker past 1.5 times",
+    )
+    assert(
+        holds(flicker: 20.0e-6, pop: 0.016, trail: 4.0, base: base) == (true, false, true),
+        "pop past 1.5 times",
+    )
+    assert(
+        holds(flicker: 20.0e-6, pop: 0.01, trail: 5.5, base: base) == (true, true, false),
+        "trail past a pixel more",
+    )
     let text = "[\n  {\"shot\": \"12-D1-the-forest-floor\", \"flicker\": 0.0000483, \"pop\": 0.0233, \"trail\": 65.0},\n  {\"shot\": \"13-D2\", \"flicker\": 0.0000003, \"pop\": 0.001, \"trail\": 2.0}\n]\n"
     let m = measures_in(text)
     assert(m.len() == 2, f"{m.len()} shots read")
     let (shot, f, p, t) = m[0].clone()
     assert(shot.as_str() == "12-D1-the-forest-floor" && f == 0.0000483 && p == 0.0233 && t == 65.0)
+}
+
+/// Several runs' measures are each the median of the runs'.
+@test
+fn several_runs_take_each_measures_median() {
+    let m = |f: f64, p: f64| Measured {
+        psnr: 20.0,
+        ssim: 0.5,
+        sharpness: 1.0,
+        flicker: f,
+        pop: p,
+        still_pop: 0.0,
+        trail: 3.0,
+        clipped: 0.0,
+        edge_reference: 0,
+        edge_play: 0,
+        blurred_psnr: 0.0,
+        blurred_ssim: 0.0,
+        blurred_sharpness: 0.0,
+        blurred_flicker: 0.0,
+        quarter_psnr: 0.0,
+        stops_psnr: Vec::new(),
+        lag_psnr: Vec::new(),
+    }
+    let got = medians(Vec::from([m(68.0e-6, 0.03), m(47.0e-6, 0.01), m(52.0e-6, 0.02)]))
+    assert(got.flicker == 52.0e-6 && got.pop == 0.02, f"medians {got.flicker}, {got.pop}")
 }

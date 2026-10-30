@@ -1,0 +1,9 @@
+# The styles tool (`wrela tool styles`, docs/plan-world-class-3.md §D10): each look under
+# content/styles built into the vale and its pipelines counted, the G-style check (a look's own
+# commit changes nothing of the engine), and the four looks' page (main.wrela says how).
+[package]
+name = "styles_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+lookbook_tool = { workspace = true }

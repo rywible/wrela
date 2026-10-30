@@ -595,7 +595,7 @@ pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> Y
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let albedo = Y::palette(style::STONE, vec4(0.0), s.albedo)
+    let albedo = Y::palette(lt.light, style::STONE, vec4(0.0), s.albedo)
     let lit = Lit {
         albedo,
         n,

@@ -924,7 +924,7 @@ pub fn far_shade<C: Format + Filtered, N: Format, Q: Switches, Y: Style>(
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let crown_n = volume_normal(f, b, grid, kd.slab, lt.s, at, otherwise: n)
     let history = Unorm8x4 { bits: f.history.value }.decode()
-    let albedo = Y::palette(style::LEAVES, history, tinted(leaf.albedo, f.tint))
+    let albedo = Y::palette(lt.light, style::LEAVES, history, tinted(leaf.albedo, f.tint))
     // Its form is its crown's mass where its leaf is (`volume_normal`), as a card's is, and its
     // coarse form the crown round its middle.
     let s = substance_of::<Y>(crown_n, normalize(at - f.centre), history, albedo)
@@ -1170,7 +1170,12 @@ pub fn volume_shade<Q: Switches, Y: Style>(
     let crown_n = world_normal(f, met.normal)
     let at = volume_place(f, b, met.at)
     let history = Unorm8x4 { bits: f.history.value }.decode()
-    let albedo = Y::palette(style::LEAVES, history, tinted(leaf_age(b.leaves, crown_n.y), f.tint))
+    let albedo = Y::palette(
+        lt.light,
+        style::LEAVES,
+        history,
+        tinted(leaf_age(b.leaves, crown_n.y), f.tint),
+    )
     let s = substance_of::<Y>(crown_n, normalize(at - f.centre), history, albedo)
     // Lit where its leaves are, not on the quad (which lies in its own shadow); aged by the
     // normal the ray met (in the plant's frame: its y is the crown's).

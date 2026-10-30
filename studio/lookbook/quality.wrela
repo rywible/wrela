@@ -5,7 +5,7 @@
 // temporal AA's history off, the jitter on an 8 × 8 grid), whose mean of 64 frames is a
 // 64-sample supersample. The measures are `measures.wrela`'s, on luma.
 //
-// A shot's run: chosen, settled `SETTLE_FRAMES`; time frozen and the eye held; 64 frames to
+// A shot's run: chosen, settled `SETTLE_FRAMES`; time frozen and the eye held; `SETTLE` frames to
 // settle the still view, the play still, and 64 more for flicker and still_pop; the reference
 // and PSNR, SSIM and the edges' widths against it; play again, and a 600-frame dolly for pop;
 // the eye back at the start, and the dolly again, stopped at each quarter for a reference there
@@ -22,6 +22,7 @@ use measures::{
 }
 use shots::{PLAY, REFERENCE, SETTLE_FRAMES, keys}
 use std::collections::replace
+use std::io::print
 use std::input::{Key, Script}
 use std::tool::ToolError
 use std::tool::drive
@@ -31,13 +32,24 @@ use std::tool::image
 use std::tool::blob::Data
 use toolkit::whole::{blob_of, chunked, data_bytes, joined, write_png}
 
-/// Frames a view settles for before it's measured, and the frames of each measure's run.
-pub const SETTLE: u32 = 64
+/// Frames a view settles for before it's measured (240: settled 64, loading work finished during
+/// the measured frames on some runs and not others, docs/lookdev.md), and the frames of each
+/// measure's run.
+pub const SETTLE: u32 = 240
 pub const SAMPLES: u32 = 64
 
 /// The dolly's frames (10 s at 60 a second) and its stops for the trail: each quarter.
 pub const DOLLY_FRAMES: u32 = 600
 pub const STOPS: u32 = 4
+
+/// The fast run's (`--fast`, docs/lookdev.md): no reference, so no PSNR; how often it looks for
+/// the shot shown; frames before the still (held, then settled); the still's frames for flicker;
+/// the dolly's for pop; and the frames the trail's stop settles, where the dolly ends.
+pub const FAST_POLL: u32 = 30
+pub const FAST_SETTLE: u32 = 240
+pub const FAST_SAMPLES: u32 = 32
+pub const FAST_DOLLY: u32 = 150
+pub const FAST_STOP_SETTLE: u32 = 60
 
 /// The most frames a reference or play may take to be drawn round the eye again.
 pub const ARRIVAL_FRAMES: u32 = 1200
@@ -106,7 +118,7 @@ impl Driven {
     }
 
     /// The next frame, and its screen (RGBA8).
-    fn screen(mut self) -> Result<Vec<u8>, ToolError> {
+    pub fn screen(mut self) -> Result<Vec<u8>, ToolError> {
         let steps = [Step::Frames(1, self.script.clone()), Step::Capture]
         let seen = drive::steps(self.b, steps, timeout: 600.0).wait()?
         self.frame += 1
@@ -118,26 +130,18 @@ impl Driven {
     /// Frames until one is shown: a shot begins with an arrival, its frames black until the light
     /// round its eye is drawn, which waits on the helpers' jobs and the fetches, so on a busy
     /// machine it takes more frames than `SETTLE_FRAMES` (a play still taken black was 7 dB).
-    fn shown(mut self) -> Result<(), ToolError> {
+    pub fn shown(mut self, step: u32 = SETTLE) -> Result<(), ToolError> {
         var waited = 0
         while waited < ARRIVAL_FRAMES {
             // The screen as it is, no frame drawn for it: a shot shown already runs as before.
             let seen = drive::steps(self.b, [Step::Capture], timeout: 600.0).wait()?
             var saw = untrapped(f"frame {self.frame}", take seen)?
             let screen = saw.captures.remove(0)
-            let f = joined(data_bytes(take screen.rgba)?)
-            var lit = false
-            for i in 0..f.len() / 4 {
-                if f[4 * i] > 0 || f[4 * i + 1] > 0 || f[4 * i + 2] > 0 {
-                    lit = true
-                    break
-                }
-            }
-            if lit {
+            if lit(joined(data_bytes(take screen.rgba)?)) {
                 return Ok(())
             }
-            let _ = self.run(SETTLE)?
-            waited += SETTLE
+            let _ = self.run(step)?
+            waited += step
         }
         Err(ToolError::new(f"the shot wasn't shown within {ARRIVAL_FRAMES} frames"))
     }
@@ -179,6 +183,16 @@ impl Driven {
     }
 }
 
+/// Whether a frame (RGBA) shows anything: a shot not yet shown is black.
+pub fn lit(rgba: [u8]) -> bool {
+    for i in 0..rgba.len() / 4 {
+        if rgba[4 * i] > 0 || rgba[4 * i + 1] > 0 || rgba[4 * i + 2] > 0 {
+            return true
+        }
+    }
+    false
+}
+
 /// Shot `i`'s measures (drawn with `presses` of F8), from the build in `build` at `width` ×
 /// `height`; with `controls`, the blurred play's too; `c` as a control asks. Its play still and
 /// its reference are written beside `stills` (`<stills>-play.png`, `<stills>-reference.png`).
@@ -191,16 +205,114 @@ pub fn measure(
     height: u32,
     controls: bool,
     c: Control,
+    fast: bool = false,
+    psnr_too: bool = false,
 ) -> Result<Measured, ToolError> {
-    var options = drive::gpu()
-    options.width = width
-    options.height = height
-    options.timeout = 600.0
-    let b = drive::load(build, options).wait()?.build
-    var d = Driven { b, script: keys(i, presses, capture: false), frame: 0, width }
-    let measured = shot(mut d, stills, height, controls, c)
-    let _ = drive::close(b).wait()
-    measured
+    // A shot that fails (its screen black past `ARRIVAL_FRAMES`, a frame the page took too long
+    // for) is loaded once more: a fresh page, so the first run's state is gone.
+    var tries = 0
+    loop {
+        var options = drive::gpu()
+        options.width = width
+        options.height = height
+        options.timeout = 600.0
+        let b = drive::load(build, options).wait()?.build
+        var d = Driven { b, script: keys(i, presses, capture: false), frame: 0, width }
+        let measured = if fast { fast_shot(mut d, stills, height, psnr_too) } else {
+            shot(mut d, stills, height, controls, c)
+        }
+        let _ = drive::close(b).wait()
+        tries += 1
+        if tries == 2 || measured.is_ok() {
+            return take measured
+        }
+        if let Err(e) = measured {
+            print(f"lookbook: shot {i}: {e.message()}; loading it again")
+        }
+    }
+}
+
+/// Shot `i`'s fast run (`--fast`): its coherence alone. Shown, then time frozen and the eye held
+/// (the shot holds its first pose until its move), settled; the still's flicker over
+/// `FAST_SAMPLES` frames; the dolly's pop over its first `FAST_DOLLY` frames; and its trail at
+/// `FAST_STOPS` stops along them. Its play still is written beside `stills`.
+fn fast_shot(
+    d: mut Driven,
+    stills: str,
+    height: u32,
+    psnr_too: bool,
+) -> Result<Measured, ToolError> {
+    let w = d.width
+    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = d.run(FAST_POLL)?
+    d.shown(step: FAST_POLL)?
+    d.press(Key::F10)
+    d.press(Key::F11)
+    let _ = d.run(FAST_SETTLE)?
+    let play = d.screen()?
+    var still = Spread::new()
+    for _ in 0..FAST_SAMPLES {
+        still.add(luma(d.screen()?))
+    }
+    // With `psnr_too`, the reference here (`reference`) and the play still against it.
+    var against = (0.0, 0.0, 0.0, 0, 0)
+    var shown_stills = Vec::from([("play", play.clone())])
+    if psnr_too {
+        let reference = d.reference()?
+        let (pl, rl) = (luma(play.clone()), luma(reference.clone()))
+        against = (
+            psnr(pl.clone(), rl.clone()),
+            ssim(pl.clone(), rl.clone(), w),
+            sharpness(pl.clone(), rl.clone(), w),
+            edge_width(rl, w),
+            edge_width(pl, w),
+        )
+        shown_stills.push(("reference", take reference))
+        // Play's caches made again after the reference, and settled, before the dolly.
+        let _ = d.run(FAST_SETTLE)?
+    }
+    for (name, rgba) in shown_stills {
+        let img = image::Image {
+            width: w,
+            height,
+            rgba: Data::Blob(blob_of(chunked(rgba.clone()))?),
+        }
+        write_png(take img, f"{stills}-{name}.png")?
+    }
+    // The dolly, unbroken, for pop.
+    d.press(Key::F11)
+    var dolly = Pop::new()
+    for _ in 0..FAST_DOLLY {
+        dolly.add(luma(d.screen()?))
+    }
+    // Paused where the dolly ended, and settled: the moving frame against play settled there.
+    let moving = dolly.last.clone()
+    d.press(Key::Backquote)
+    let _ = d.run(FAST_STOP_SETTLE)?
+    let settled = luma(d.screen()?)
+    let most_trail = trail(moving.clone(), settled.clone(), w)
+    let lag_psnr = Vec::from([psnr(moving, settled)])
+    Ok(
+        Measured {
+            psnr: against.0,
+            sharpness: against.2,
+            ssim: against.1,
+            flicker: still.flicker(),
+            pop: dolly.pop,
+            still_pop: still.steps.pop,
+            trail: most_trail,
+            clipped: clipped(play),
+            edge_reference: against.3,
+            edge_play: against.4,
+            blurred_psnr: 0.0,
+            blurred_ssim: 0.0,
+            blurred_sharpness: 0.0,
+            blurred_flicker: 0.0,
+            quarter_psnr: 0.0,
+            stops_psnr: Vec::new(),
+            lag_psnr,
+        },
+    )
 }
 
 fn shot(
