@@ -31,7 +31,7 @@ pub const HUE_PULL: f32 = 0.15
 /// simpler, less coloured ambient; not the plan's directional part halved, which the light's
 /// terms don't carry apart).
 pub const STEP_SOFT: f32 = 0.5
-pub const SKY_SIMPLE: f32 = 0.5
+pub const SKY_SIMPLE: f32 = 0.7
 /// A stroke's length (output pixels) where the tone is flat, and how much lighter or darker than
 /// the paint under it a stroke is at most (in luma, by its seed).
 pub const STROKE_PX: f32 = 24.0

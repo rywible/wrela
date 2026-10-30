@@ -1,4 +1,4 @@
-// The painterly look fitted to the 14 images of refs/painterly on shot D5 (196 evaluations of CMA-ES from seed 1): its score 1.373 → 1.325; held out (the look's own → fitted): D1 0.956 → 0.984; D3 1.587 → 1.672; 2026-10-30.
+// The painterly look fitted to the 14 images of refs/painterly on shot D5 (196 evaluations of CMA-ES from seed 1): its score 1.381 → 1.331; held out (the look's own → fitted): D1 0.958 → 0.971; D3 1.589 → 1.627; 2026-10-30.
 // Written by `wrela tool fit --style painterly` (studio/fit): don't edit by hand.
 
 use painterly
@@ -10,8 +10,8 @@ use engine::style::{Knob, Style}
 use engine::substance::{Substance, Written}
 use std::gpu::{Rgba8, Sampler, Texture3d}
 
-/// The fitted values of `painterly::FITTABLE`: PALETTE_N 12.0000, HUE_PULL 0.3614, SKY_SIMPLE 0.5000.
-const AT: [f32; 8] = [12, 0.3614442, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]
+/// The fitted values of `painterly::FITTABLE`: PALETTE_N 10.5453, HUE_PULL 0.2753, SKY_SIMPLE 0.5499.
+const AT: [f32; 8] = [10.545256, 0.27525017, 0.5499254, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 /// The painterly look with its fitted constants (`engine::style::Style`).
 pub struct PainterlyFitted {}

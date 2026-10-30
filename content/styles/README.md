@@ -62,7 +62,7 @@ the passes read the probes once, for the normal they light by).
 | `PALETTE_N` | 8 | a class's tones, between its darkest and lightest of `cel::PALETTE` |
 | `HUE_PULL` | 0.15 | how far a tone's hue is pulled to its class's key |
 | `STEP_SOFT` | 0.5 | how much of the way between two tones the palette's step takes, round the middle |
-| `SKY_SIMPLE` | 0.5 | how far the sky's light is taken toward its own grey, its luma (a painter's simpler, less coloured ambient; the plan asked for "the sky's directional part halved", which `Lit`'s sky term doesn't carry apart from its mean) |
+| `SKY_SIMPLE` | 0.7 | how far the sky's light is taken toward its own grey, its luma (a painter's simpler, less coloured ambient; the plan asked for "the sky's directional part halved", which `Lit`'s sky term doesn't carry apart from its mean); 0.7, not the plan's 0.5: the canopy against the sun's flicker sat on its bar at 0.5, 0.42 against 0.41 ×10⁻⁶, and 0.7 gives 0.36) |
 | `STROKE_PX` | 24 | a stroke's lattice spacing (output pixels): its length where the tone is flat |
 | `DAB_LONG` | 0.35 | a stroke's length where the tone is detailed, of `STROKE_PX`: with `FLAT` 0 every stroke's (8 px) |
 | `STROKE_WIDE` | 0.3 | a stroke's width over its length |

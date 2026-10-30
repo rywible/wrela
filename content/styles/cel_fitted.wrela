@@ -1,4 +1,4 @@
-// The cel look fitted to the 14 images of refs/cel on shot D5 (196 evaluations of CMA-ES from seed 1): its score 4.490 → 4.402; held out (the look's own → fitted): D1 3.393 → 3.353; D3 4.494 → 4.448; 2026-10-30.
+// The cel look fitted to the 14 images of refs/cel on shot D5 (196 evaluations of CMA-ES from seed 1): its score 4.490 → 4.409; held out (the look's own → fitted): D1 3.395 → 3.351; D3 4.633 → 4.628; 2026-10-30.
 // Written by `wrela tool fit --style cel` (studio/fit): don't edit by hand.
 
 use cel
@@ -10,8 +10,8 @@ use engine::style::{Knob, Style}
 use engine::substance::{Substance, Written}
 use std::gpu::{Rgba8, Sampler, Texture3d}
 
-/// The fitted values of `cel::FITTABLE`: TERMINATOR 0.2000, PALETTE_N 4.0000, HUE_PULL 0.0065.
-const AT: [f32; 8] = [0.2, 4, 0.0065078125, 0.0, 0.0, 0.0, 0.0, 0.0]
+/// The fitted values of `cel::FITTABLE`: TERMINATOR 0.1998, PALETTE_N 3.9205, HUE_PULL 0.0571.
+const AT: [f32; 8] = [0.19981049, 3.920473, 0.057069656, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 /// The cel look with its fitted constants (`engine::style::Style`).
 pub struct CelFitted {}
