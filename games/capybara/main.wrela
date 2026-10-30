@@ -36,7 +36,7 @@ use body::{Mode, RADIUS}
 use camera::{Camera, camera, follow, framed, half_view, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
 use course::{COURSES, Course, HOME, LEVELS, WETLANDS, course}
-use earth::{Field, earth, earth_mesh, earth_vertex, grass, grass_mesh, grass_vertex, profile}
+use earth::{Field, earth, earth_mesh, earth_vertex, grass, grass_mesh, grass_vertex, profiles}
 use engine::frame::full
 use engine::present::Snapshots
 use engine::run::run
@@ -108,6 +108,7 @@ struct Ground {
     grass: GpuBuffer<vec4>,
     water: GpuBuffer<vec4>,
     tops: GpuBuffer<f32>,
+    floors: GpuBuffer<f32>,
     ice: GpuBuffer<vec4>,
     earth_n: u32,
     grass_n: u32,
@@ -116,6 +117,7 @@ struct Ground {
 
 /// Course `c`'s meshes.
 fn ground_of(c: Course) -> Ground {
+    let (tops, floors) = profiles(c)
     let earth = earth_mesh(c)
     let grass = grass_mesh(c)
     let water = water_mesh(c)
@@ -126,7 +128,8 @@ fn ground_of(c: Course) -> Ground {
         earth: buffer_of(earth, at_least: 2),
         grass: buffer_of(grass, at_least: 2),
         water: buffer_of(water, at_least: 3),
-        tops: buffer_of(profile(c)),
+        tops: buffer_of(tops),
+        floors: buffer_of(floors),
         ice: buffer_of(ice_of(c), at_least: 1),
     }
 }
@@ -550,7 +553,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         full.bind(z: 0.0),
         scenery::backdrop.bind(
             v: view,
-            tops: s.ground.tops.items(),
+            tops: s.ground.floors.items(),
             drawn: s.strips.drawn(),
             marsh: s.strips.strips[0],
             wetlands: s.strips.strips[1],
@@ -578,7 +581,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         scene,
         grass_vertex.bind(verts: s.ground.grass.items(), f: field),
-        grass.bind(f: field, ice: s.ground.ice.items()),
+        grass.bind(f: field),
         vertices: s.ground.grass_n,
     )
     draw(

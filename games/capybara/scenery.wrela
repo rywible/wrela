@@ -952,7 +952,7 @@ fn cached(k: u32, strip: Texture<Rgba8>, at: vec2, pixel: FragCoord, v: View, s:
 
 /// The backdrop: the layers from their strips (`Strips`), nearest first, each read only while
 /// what's nearer hasn't covered the pixel, then the sky; and none where the course's ground
-/// (`tops`, its top) covers it.
+/// (`tops`: the top of the ground that goes on down) covers it.
 @fragment
 pub fn backdrop(
     pixel: FragCoord,

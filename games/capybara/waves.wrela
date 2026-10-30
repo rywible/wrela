@@ -11,7 +11,7 @@
 
 use habitats::palette
 use course::Course
-use earth::{ground_top, solids}
+use earth::{ground_tops, solids}
 use ink::{inked, wash}
 use shapes::blend
 use engine::noise::{hash2, noise2}
@@ -150,7 +150,8 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
         var floor: Vec<vec2> = Vec::new()
         var x = w.lo.x
         while x <= w.hi.x {
-            let y = ground_top(outlines, x)
+            // The bed: the ground that goes on down, under any floe in the water.
+            let y = ground_tops(outlines, x).y
             if y < surface - 1.0e-3 {
                 floor.push(vec2(x, max(y, w.lo.y) - 0.05))
             }

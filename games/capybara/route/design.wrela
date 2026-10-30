@@ -33,7 +33,7 @@ use capybara::body::Mode
 use capybara::camera::{camera, follow, framed, half_view}
 use capybara::cast::grounded
 use capybara::course::{Course, HOME, LEVELS, course}
-use capybara::earth::{profile, solids, top_at}
+use capybara::earth::solids
 use capybara::feel::{FEEL, HZ, STEP}
 use capybara::foes::{Kind, half}
 use capybara::pad::{DOWN, Hold, JUMP, LEFT, Pad, RIGHT, UP, pad_of}

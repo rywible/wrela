@@ -98,7 +98,7 @@ pub fn earth_mesh(c: Course) -> Vec<vec4> {
 
 /// The grass: a band above each walkable side of each solid, from a little below the side to
 /// `GRASS_TALL` above it, each vertex its point and its height above the side (m), then the side's
-/// outward normal. Three vertices a triangle.
+/// outward normal. Three vertices a triangle. None on the icy stretches.
 pub fn grass_mesh(c: Course) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for k in 0..c.chains.len() - 1 {
@@ -111,7 +111,8 @@ pub fn grass_mesh(c: Course) -> Vec<vec4> {
         for i in 0..n {
             let (a, b) = (points[i], points[(i + 1) % n])
             let side = normalize(left(b - a))
-            if side.y < WALKABLE {
+            // None on ice.
+            if side.y < WALKABLE || c.icy(0.5 * (a.x + b.x)) {
                 continue
             }
             let (up, down) = (side * GRASS_TALL, side * GRASS_ROOT)
@@ -138,27 +139,32 @@ pub const FROM: f32 = -40.0
 pub const STEP: f32 = 0.25
 pub const SAMPLES: u32 = 2400
 
-/// The top of the solid ground at `x` among `outlines` (each a solid's points): the top of the
-/// lowest solid span the vertical through `x` crosses, the ground that goes on down, or far below
-/// where none does. A floating block over it (a canopy's platform, a floe) isn't it: what's under
-/// the block is air, which the backdrop shows (the rainforest's showed black when this was the
-/// highest crossing).
-pub fn ground_top(outlines: [Vec<vec2>], x: f32) -> f32 {
-    var ys: Vec<f32> = Vec::new()
+/// The ground at `x` among `outlines` (each a solid's points): the top of the highest solid there
+/// (`.0`: what the earth's shading is measured down from, a floating block's own top over it), and
+/// the top of the lowest solid span, the ground that goes on down (`.1`: under a floating block,
+/// a canopy's platform or a floe, is air, which the backdrop shows); each far below where no side
+/// crosses the vertical through `x`.
+pub fn ground_tops(outlines: [Vec<vec2>], x: f32) -> vec2 {
+    var highest = -1.0e3
+    var lowest = 1.0e9
+    var second = 1.0e9
     for points in outlines {
         let n = points.len()
         for i in 0..n {
             let (a, b) = (points[i], points[(i + 1) % n])
             if (a.x <= x && x < b.x) || (b.x <= x && x < a.x) {
-                ys.push(a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x))
+                let y = a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x)
+                highest = max(highest, y)
+                if y < lowest {
+                    second = lowest
+                    lowest = y
+                } else if y < second {
+                    second = y
+                }
             }
         }
     }
-    if ys.len() < 2 {
-        return -1.0e3
-    }
-    ys.sort_by(|p, q| p < q)
-    ys[1]
+    vec2(highest, if second < 1.0e8 { second } else { -1.0e3 })
 }
 
 /// Each solid's outline (not the ledges').
@@ -172,14 +178,19 @@ pub fn solids(c: Course) -> Vec<Vec<vec2>> {
     out
 }
 
-/// The top of the course's solid ground every `STEP` m from `FROM`.
-pub fn profile(c: Course) -> Vec<f32> {
+/// The course's ground every `STEP` m from `FROM` (`ground_tops`): the top of its highest solid
+/// (what the earth's shading measures down from), and the top of the ground that goes on down
+/// (what the backdrop is hidden under).
+pub fn profiles(c: Course) -> (Vec<f32>, Vec<f32>) {
     let outlines = solids(c)
-    var out: Vec<f32> = Vec::new()
+    var tops: Vec<f32> = Vec::new()
+    var floors: Vec<f32> = Vec::new()
     for i in 0..SAMPLES {
-        out.push(ground_top(outlines, FROM + f32(i) * STEP))
+        let t = ground_tops(outlines, FROM + f32(i) * STEP)
+        tops.push(t.x)
+        floors.push(t.y)
     }
-    out
+    (tops, floors)
 }
 
 /// The profile's top at `x`, between its samples.
@@ -310,7 +321,7 @@ pub fn earth(
     let bed = top_at(tops, p.x)
     let pal = palette(u32(f.habitat + 0.5))
     var c = earth_colour(e, f, bed, pal, g, gs)
-    if on_ice(ice, p.x) && e.material.value != PLANK {
+    if on_ice(ice, p.x) {
         // A glaze of ice over the top, a streak of sheen in it, inked where it meets the soil.
         let depth = bed - p.y
         let glaze = 0.35 + 0.1 * sin(p.x * 1.7)
@@ -402,13 +413,13 @@ const TUFT: f32 = 0.24
 
 /// The grass along a walkable top: a scalloped lawn edge and tufts of three pointed blades
 /// rising from it, now and then a daisy, all one inked shape. The tufts lean in the wind, away
-/// from the capybara as it passes, and lie down where it slides. None grows on ice (`ice`).
+/// from the capybara as it passes, and lie down where it slides.
 @fragment
-pub fn grass(b: Blade, f: Field, ice: [vec4]) -> Over {
+pub fn grass(b: Blade, f: Field) -> Over {
     let x = b.world.x
     let h = b.height
     let px = f.px
-    if h < -GRASS_ROOT * 0.5 || on_ice(ice, x) {
+    if h < -GRASS_ROOT * 0.5 {
         discard()
     }
     let q = vec2(x, h)
@@ -459,10 +470,10 @@ pub fn grass(b: Blade, f: Field, ice: [vec4]) -> Over {
 }
 
 @test
-fn the_grounds_top_is_the_ground_that_goes_on_down_not_a_block_over_it() {
+fn a_floating_block_is_its_own_top_and_the_ground_under_it_goes_on_down() {
     let ground = Vec::from([vec2(0.0, -20.0), vec2(0.0, 0.0), vec2(10.0, 0.0), vec2(10.0, -20.0)])
     let block = Vec::from([vec2(4.0, 5.0), vec2(4.0, 6.0), vec2(6.0, 6.0), vec2(6.0, 5.0)])
     let outlines = [take ground, take block]
-    assert(ground_top(outlines, 5.0) == 0.0, "under the block, the ground below it")
-    assert(ground_top(outlines, 2.0) == 0.0 && ground_top(outlines, 12.0) < -100.0)
+    assert(ground_tops(outlines, 5.0) == vec2(6.0, 0.0), "the block's top; under it, the ground")
+    assert(ground_tops(outlines, 2.0) == vec2(0.0) && ground_tops(outlines, 12.0).y < -100.0)
 }
