@@ -84,6 +84,13 @@ use engine::menu::{Nav, Stick}
 /// the movement lab among them. A player's build has neither.
 pub const DEV: bool = false
 
+/// A build for still pictures (`wrela build games/capybara --set HERO=true`): the console's hero
+/// and the game's cover. The view is `HERO_ZOOM` times nearer, with the capybara in its right
+/// third, and nothing is drawn over the scene (the snacks' count, the title, the clock, the
+/// menus).
+pub const HERO: bool = false
+const HERO_ZOOM: f32 = 2.6
+
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
 
@@ -476,8 +483,12 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         }
     }
     let aspect = screen.x / max(screen.y, 1.0)
-    let half = half_view(aspect)
-    let eye = framed(s.camera, half, c.ends)
+    var half = half_view(aspect)
+    var eye = framed(s.camera, half, c.ends)
+    if HERO {
+        half = half / HERO_ZOOM
+        eye = snap.at + vec2(-half.x * 0.45, half.y * 0.2)
+    }
     react(mut s.cast, snap, c, dt, eye, half)
     // What happened, to the voice.
     match mut s.voice {
@@ -492,7 +503,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // Where the snacks' count is, on the plane of play: found carrots fly there. It shows while
     // playing.
     let hud_at = eye + vec2(-half.x + 1.1, half.y - 0.85)
-    let count = snap.paused == 0 && !watching
+    let count = snap.paused == 0 && !watching && !HERO
     let view_proj = flat_camera(eye, half)
     let px = 2.0 * half.y / f32(rh)
     s.back.clear()
@@ -929,6 +940,9 @@ fn hovered(s: Lab, screen: vec2, page: u32) -> Option<u32> {
 /// drawn on the plane of play, in ink: cast.wrela.)
 fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     s.list.clear(screen)
+    if HERO {
+        return
+    }
     let u = unit(screen)
     let d = s.device
     if s.watching.is_some() {

@@ -80,17 +80,43 @@ const INTRO = score("intro", meter(beats: 4, unit: 4))
         ],
     )
 
+/// The theme's melody and its bass, which the console's home plays too, softly, on its own bell
+/// (`theme.txt`, which route/design.wrela's `the_consoles_theme_is_the_games` holds to these).
+pub const THEME_MELODY: [Text; 4] = [
+    "d5/8 !mf c5 g4/4 e5/2 | d5/8 c5 g4/4 r/4 b4/4 !accent ~ |",
+    "b4/4 d5/8 c5 g4/2 | f5/4. f5/8 e5/4 d5/4 !accent ~ |",
+    "d5/2 r/8 g4/8 g#4 a4 | c5/8 b4 g4/4 e4/2 |",
+    "f4/8 e4 d4/4 a4/4 b4/4 | c5/2. r/4 |",
+]
+pub const THEME_BASS: [Text; 4] = [
+    "c2/4 r/8 c2/8 g2/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
+    "d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 d2/4 r/4 |",
+    "e2/4 r/8 e2/8 b1/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
+    "d2/4 r/8 a1/8 g1/4 r/4 | c2/4 r/8 c2/8 g2/4 r/4 |",
+]
+
+/// The theme as the console reads it (`theme.txt`): the tempo, then the melody and the bass, a
+/// line each.
+pub fn theme_text() -> String {
+    var out = String::from(f"{u32(TEMPO)}\n")
+    for voice in [THEME_MELODY, THEME_BASS] {
+        for i in 0..voice.len() {
+            if i > 0 {
+                out.push_str(" ")
+            }
+            out.push_str(voice[i])
+        }
+        out.push_str("\n")
+    }
+    out
+}
+
 /// The theme: Ryan's four bars as he played them (D, C, G and a held E; D, C, G and a B tied over;
 /// D, C, G a beat late; F, F, E, D), and the answer, which slides up into the A7 and comes home.
 const THEME = score("theme", meter(beats: 4, unit: 4))
     .voice(
         "melody",
-        [
-            "d5/8 !mf c5 g4/4 e5/2 | d5/8 c5 g4/4 r/4 b4/4 !accent ~ |",
-            "b4/4 d5/8 c5 g4/2 | f5/4. f5/8 e5/4 d5/4 !accent ~ |",
-            "d5/2 r/8 g4/8 g#4 a4 | c5/8 b4 g4/4 e4/2 |",
-            "f4/8 e4 d4/4 a4/4 b4/4 | c5/2. r/4 |",
-        ],
+        THEME_MELODY,
     )
     .voice(
         "chords",
@@ -107,12 +133,7 @@ const THEME = score("theme", meter(beats: 4, unit: 4))
     )
     .voice(
         "bass",
-        [
-            "c2/4 r/8 c2/8 g2/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
-            "d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 d2/4 r/4 |",
-            "e2/4 r/8 e2/8 b1/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
-            "d2/4 r/8 a1/8 g1/4 r/4 | c2/4 r/8 c2/8 g2/4 r/4 |",
-        ],
+        THEME_BASS,
     )
     .voice("shimmer", ["r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/2 r/4 d7/16 b6 g6 e6 |"])
 

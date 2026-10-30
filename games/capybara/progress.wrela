@@ -186,10 +186,10 @@ pub fn describe(p: Progress) -> String {
         found += p.records[c].found.count_ones()
         snacks += SNACKS[c]
     }
-    var line = String::from(f"{done} of {LEVELS} levels, {found} of {snacks} snacks")
+    var line = String::from(f"{done} of {LEVELS} levels · {found} of {snacks} snacks")
     if p.game > 0 {
         let t = clock_text(p.game)
-        line.push_str(f", the whole zoo in {t}".as_str())
+        line.push_str(f" · the whole zoo in {t}".as_str())
     }
     line
 }
@@ -271,10 +271,10 @@ fn the_save_list_says_how_far_the_player_got() {
     for c in 0..LEVELS {
         snacks += course(c).snacks.len()
     }
-    let want = f"2 of {LEVELS} levels, 3 of {snacks} snacks"
+    let want = f"2 of {LEVELS} levels · 3 of {snacks} snacks"
     assert(describe(p) == want, describe(p))
     let _ = p.whole_game(HZ * (24 * 60 + 5) + HZ / 4)
-    assert(describe(p) == f"{want}, the whole zoo in 24:05.25", describe(p))
+    assert(describe(p) == f"{want} · the whole zoo in 24:05.25", describe(p))
 }
 
 @test
