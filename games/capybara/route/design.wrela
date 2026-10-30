@@ -412,7 +412,7 @@ pub fn report() -> String {
         let time = |run: [Hold]| f32(capybara::world::play(c, run).finished) / f32(HZ)
         let (any, full) = (time(s.any), time(s.full))
         let (human_any, human_full) = (time(s.human_any), time(s.human_full))
-        let w = level_windows(c)
+        let w = level_windows(c, MOST)
         var narrow = 0
         for x in w {
             if x <= 2 {
@@ -453,10 +453,25 @@ pub fn median(xs: [u32]) -> u32 {
     sorted[sorted.len() / 2]
 }
 
-/// The timing windows of level `c`'s human any% run (`slack::windows`, within a second).
-pub fn level_windows(c: u32) -> Vec<u32> {
+/// The timing windows of level `c`'s human any% run (`slack::windows`, within a second), each
+/// measured up to `most` ticks either way.
+pub fn level_windows(c: u32, most: u32) -> Vec<u32> {
     let pads = pads_of(c, searched(c).human_any)
-    windows(c, pads, to_goal(0), RECOVER, MOST)
+    windows(c, pads, to_goal(0), RECOVER, most)
+}
+
+/// Level `c`'s windows against the rules (measured only as far as they ask, `FIRST_WINDOW`
+/// ticks: a test's fuel runs out measuring every level to `MOST`): every input of the first level
+/// has `FIRST_WINDOW` ticks' room, and any level's median `ANY_WINDOW`.
+fn windows_hold(c: u32) {
+    let w = level_windows(c, FIRST_WINDOW)
+    let m = median(w)
+    assert(m >= ANY_WINDOW, f"level {c}: a median window of {m} ticks")
+    if c == HOME {
+        for x in w {
+            assert(x >= FIRST_WINDOW, f"the first level has an input with {x} ticks' room")
+        }
+    }
 }
 
 // ---- tests -------------------------------------------------------------------------------------
@@ -557,17 +572,48 @@ fn random_play_finds_the_ground_it_should() {
 }
 
 @test
-fn the_first_levels_inputs_all_have_room_and_every_levels_mostly_do() {
-    for c in 0..LEVELS {
-        let w = level_windows(c)
-        let m = median(w)
-        assert(m >= ANY_WINDOW, f"level {c}: a median window of {m} ticks")
-        if c == HOME {
-            for x in w {
-                assert(x >= FIRST_WINDOW, f"the first level has an input with {x} ticks' room")
-            }
-        }
-    }
+fn the_timing_windows_of_home_hold() {
+    windows_hold(capybara::course::HOME)
+}
+
+@test
+fn the_timing_windows_of_wetlands_hold() {
+    windows_hold(capybara::course::WETLANDS)
+}
+
+@test
+fn the_timing_windows_of_savanna_hold() {
+    windows_hold(capybara::course::SAVANNA)
+}
+
+@test
+fn the_timing_windows_of_rainforest_hold() {
+    windows_hold(capybara::course::RAINFOREST)
+}
+
+@test
+fn the_timing_windows_of_aviary_hold() {
+    windows_hold(capybara::course::AVIARY)
+}
+
+@test
+fn the_timing_windows_of_reptiles_hold() {
+    windows_hold(capybara::course::REPTILES)
+}
+
+@test
+fn the_timing_windows_of_polar_hold() {
+    windows_hold(capybara::course::POLAR)
+}
+
+@test
+fn the_timing_windows_of_farm_hold() {
+    windows_hold(capybara::course::FARM)
+}
+
+@test
+fn the_timing_windows_of_food_court_hold() {
+    windows_hold(capybara::course::FOOD_COURT)
 }
 
 @test
