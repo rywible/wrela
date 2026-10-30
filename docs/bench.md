@@ -3797,3 +3797,18 @@ Existing references reused; no training or G1–G7 change. All runtime prototype
 retired; retained exact-depth billboards unchanged.
 [Full result and next architecture bet](neural-impostor-coverage-tiles.md).
 Evidence: build/neural-evidence/impostor-coverage-tiles-v1 on Pop!_OS.
+
+## Retired global impostor ordering — 2026-10-30
+
+Pop!_OS AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent 0d87387a.
+Global near-first radix16: total GPU +1.57–2.06%, requested live +1,642,500B.
+One targeted followup, bucket8: +0.88–2.46%, requested live +1,314,372B.
+Initial complete joint assessment 22.81min: 36/36 existing shaded checks pass,
+raw leaf coverage precision 99.999303%, recall 100%, boundary p99=0 px.
+Five fresh 660-frame pairs; four source-matched, one mismatch preserved/excluded.
+Seven route views/run; identical source inputs; full sorting/updates/compositing and
+all requested/actual sampled memory. No training; models and G1–G7 unchanged.
+Both prototypes retired; production runtime unchanged. No rendering or memory win.
+[Full result and next contour-geometry bet](neural-impostor-global-order.md).
+Evidence: build/neural-evidence/impostor-global-order-v1 on Pop!_OS.
