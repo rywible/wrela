@@ -19,8 +19,8 @@ use sound::{
 use feel::{FEEL, HZ}
 use replay::Pose
 use sprites::{
-    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL, SHADOW,
-    SPARK, Sprite, YUZU,
+    CAIMAN, CAPYBARA, CARROT, DRAFT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL,
+    SHADOW, SPARK, Sprite, YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -505,6 +505,20 @@ pub fn sprites(
         if f.z > 0.0 && kind != 3 {
             shadow(mut back, c, f.xy, if kind == 1 || kind >= 5 { 0.4 } else { 0.3 })
         }
+    }
+    // The updrafts' rising air.
+    for d in c.drafts {
+        back.push(
+            Sprite {
+                pose: vec4(0.0),
+                more: vec4(0.0),
+                at: (d.lo + d.hi) * 0.5,
+                half: (d.hi - d.lo) * 0.5,
+                angle: 0.0,
+                facing: 1.0,
+                kind: DRAFT,
+            },
+        )
     }
     // The checkpoints' flags and the goal's, the seagull on top with the snack it stole.
     for i in 0..c.checkpoints.len() {

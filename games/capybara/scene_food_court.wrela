@@ -1,0 +1,14 @@
+// What's behind The Food Court's course: a placeholder of rolling hills in the habitat's colour, a layer
+// for each of the backdrop's four (scenery.wrela), until the habitat's own are drawn.
+
+use scenery::{PARALLAX, View, fbm, on_layer, paint, pixel_on}
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+
+/// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
+pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let parallax = PARALLAX[k]
+    let q = on_layer(pixel, v, parallax)
+    let px = pixel_on(v, parallax)
+    let ground = 1.0 + 2.5 * fbm(vec2(q.x * 0.05 + f32(k) * 7.0, 1.0), 2) - f32(k) * 0.6
+    paint(g, gs, q.y - ground, vec3(0.9, 0.78, 0.66), q, px, haze: f32(k) * 0.2, line: 0.8)
+}

@@ -12,6 +12,7 @@
 // a wind that gusts along the ground, away from the capybara as it passes, and lying down where
 // it slides.
 
+use habitats::{ICE, Palette, SHEEN, palette}
 use course::{Course, WALKABLE}
 use engine::noise::{hash2, noise2}
 use ground::{left, outline, triangulate}
@@ -208,6 +209,18 @@ pub struct Field: Copy + GpuData {
     /// snap every tuft aside in a frame or two (Ryan, 2026-10-22: landing made the ground "shake in
     /// a glitchy way").
     pub presence: f32 = 1.0,
+    /// The habitat drawn (habitats.wrela's `palette`): the course's number.
+    pub habitat: f32 = 0.0,
+}
+
+/// Whether `x` is on one of the course's icy stretches (`ice`: each from its left to its right).
+fn on_ice(ice: [vec4], x: f32) -> bool {
+    for i in 0..ice.len() {
+        if x >= ice[i].x && x <= ice[i].y {
+            return true
+        }
+    }
+    false
 }
 
 pub struct Earthel: Copy {
@@ -254,10 +267,10 @@ fn pebble(p: vec2, px: f32) -> vec4 {
 /// The soil at `p`, `depth` m below the top of the ground: washes of ochre in wavering bands,
 /// darker and redder the deeper, roots inked near the top, pebbles, and the turf's shadow under
 /// its lip.
-fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
+fn soil(p: vec2, depth: f32, px: f32, pal: Palette, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
     let band = grain(g, gs, vec2(p.x * 0.08, p.y * 0.7 + grain(g, gs, p * 0.3).z * 1.2)).w
-    var c = blend(vec3(0.86, 0.68, 0.46), vec3(0.8, 0.6, 0.42), smoothstep(0.45, 0.55, band))
-    c = blend(c, vec3(0.6, 0.42, 0.33), smoothstep(0.5, 7.0, depth) * 0.7)
+    var c = blend(pal.soil, pal.soil_band, smoothstep(0.45, 0.55, band))
+    c = blend(c, pal.soil_deep, smoothstep(0.5, 7.0, depth) * 0.7)
     c = washed(c, p, g, gs)
     // A painted shadow under the turf's lip.
     c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
@@ -271,8 +284,9 @@ fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> v
     blend(c, stone.xyz, stone.w)
 }
 
-/// The earth: soil, turf, a cliff's rim, or a ledge's planks, each a wash, inked along the
-/// ground's edge. Ground under a pool's surface (`pools`: each one's left edge, first column,
+/// The earth: soil, turf, a cliff's rim, or a ledge's planks, each a wash in the habitat's colours
+/// (habitats.wrela), inked along the ground's edge; on the icy stretches (`ice`), a glaze of ice
+/// over the top. Ground under a pool's surface (`pools`: each one's left edge, first column,
 /// columns and surface) takes the water's blue, deeper the further down, so the bed of a lake
 /// looks under water.
 @fragment
@@ -281,12 +295,25 @@ pub fn earth(
     f: Field,
     tops: [f32],
     pools: [vec4],
+    ice: [vec4],
     g: Texture<Rgba16Float>,
     gs: Sampler,
 ) -> vec4 {
     let p = e.world
     let bed = top_at(tops, p.x)
-    let c = earth_colour(e, f, bed, g, gs)
+    let pal = palette(u32(f.habitat + 0.5))
+    var c = earth_colour(e, f, bed, pal, g, gs)
+    if on_ice(ice, p.x) && e.material.value != PLANK {
+        // A glaze of ice over the top, a streak of sheen in it, inked where it meets the soil.
+        let depth = bed - p.y
+        let glaze = 0.35 + 0.1 * sin(p.x * 1.7)
+        if depth < glaze {
+            let streak = smoothstep(0.92, 1.0, sin(p.x * 3.0 + p.y * 9.0)) * 0.6
+            let ice_c = blend(washed(ICE, p, g, gs), SHEEN, streak + smoothstep(0.12, 0.0, depth))
+            let o = inked(ice_c, depth - glaze, p, f.px * 1.6, f.px, INK)
+            c = vec4(blend(c.xyz, o.xyz, o.w), 1.0)
+        }
+    }
     var under = 0.0
     var tint = 0.0
     for i in 0..pools.len() {
@@ -301,12 +328,19 @@ pub fn earth(
     if tint <= 0.0 {
         return c
     }
-    let water = blend(vec3(0.42, 0.7, 0.78), vec3(0.2, 0.36, 0.55), smoothstep(0.0, 9.0, under))
+    let water = blend(pal.shallows, pal.depths, smoothstep(0.0, 9.0, under))
     vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05) * tint), 1.0)
 }
 
 /// The earth's own colour, under no water: `top` is the top of the ground above it (m).
-fn earth_colour(e: Earthel, f: Field, top: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+fn earth_colour(
+    e: Earthel,
+    f: Field,
+    top: f32,
+    pal: Palette,
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
     let p = e.world
     let px = f.px
     let m = e.material.value
@@ -322,7 +356,7 @@ fn earth_colour(e: Earthel, f: Field, top: f32, g: Texture<Rgba16Float>, gs: Sam
         let joint = inked(c, max(-across, seam), p, px * 1.6, px, INK)
         return vec4(joint.xyz, 1.0)
     }
-    let below = soil(p, depth, px, g, gs)
+    let below = soil(p, depth, px, pal, g, gs)
     if m == SOIL {
         return vec4(below, 1.0)
     }
@@ -330,7 +364,7 @@ fn earth_colour(e: Earthel, f: Field, top: f32, g: Texture<Rgba16Float>, gs: Sam
     if m == TURF {
         // The turf: green, lighter at the top, its bottom edge scalloped and inked.
         let edge = TURF_DEPTH * (0.55 + 0.22 * abs(sin(p.x * 6.0 + noise2(vec2(p.x, 0.0)) * 2.0)))
-        let green = blend(vec3(0.62, 0.8, 0.4), vec3(0.47, 0.67, 0.33), saturate(across / edge))
+        let green = blend(pal.turf, pal.turf_under, saturate(across / edge))
         let turf = inked(washed(green, p, g, gs), across - edge, p, px * 1.8, px, INK)
         return vec4(blend(below, turf.xyz, turf.w), 1.0)
     }
@@ -361,13 +395,13 @@ const TUFT: f32 = 0.24
 
 /// The grass along a walkable top: a scalloped lawn edge and tufts of three pointed blades
 /// rising from it, now and then a daisy, all one inked shape. The tufts lean in the wind, away
-/// from the capybara as it passes, and lie down where it slides.
+/// from the capybara as it passes, and lie down where it slides. None grows on ice (`ice`).
 @fragment
-pub fn grass(b: Blade, f: Field) -> Over {
+pub fn grass(b: Blade, f: Field, ice: [vec4]) -> Over {
     let x = b.world.x
     let h = b.height
     let px = f.px
-    if h < -GRASS_ROOT * 0.5 {
+    if h < -GRASS_ROOT * 0.5 || on_ice(ice, x) {
         discard()
     }
     let q = vec2(x, h)
@@ -401,7 +435,8 @@ pub fn grass(b: Blade, f: Field) -> Over {
             daisy = min(daisy, length(q - head) - 0.05)
         }
     }
-    var fill = blend(vec3(0.5, 0.72, 0.34), vec3(0.74, 0.88, 0.48), tip)
+    let pal = palette(u32(f.habitat + 0.5))
+    var fill = blend(pal.grass, pal.grass_tip, tip)
     fill = wash(fill, b.world)
     var o = inked(fill, d, q, px * 1.4, px, vec3(0.2, 0.33, 0.15))
     if daisy < px * 2.0 {

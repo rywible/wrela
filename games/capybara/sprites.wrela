@@ -44,6 +44,8 @@ pub const SIGN: f32 = 21.0
 pub const GULL: f32 = 22.0
 /// A Komodo dragon.
 pub const KOMODO: f32 = 23.0
+/// An updraft: its box's rising air.
+pub const DRAFT: f32 = 24.0
 
 /// A sprite. `pose` and `more` by kind:
 /// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
@@ -668,6 +670,24 @@ fn komodo(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     c
 }
 
+// ---- the air ---------------------------------------------------------------------------------
+
+/// An updraft's rising air over its box (`half`): wavering streaks of pale wash, inked lightly,
+/// climbing at the speed it lifts, fading out at its top and bottom so it reads as air, not a
+/// thing.
+fn draft(q: vec2, s: Sprite, px: f32, time: f32) -> vec4 {
+    let spacing = 0.8
+    let col = floor(q.x / spacing + 0.5)
+    let seed = fract(sin(col * 12.9898) * 43758.5453)
+    let x = col * spacing + 0.18 * sin(q.y * 1.4 - time * 3.0 + seed * 6.0)
+    let rise = fract((q.y - time * (4.0 + 2.0 * seed)) / 1.8 + seed)
+    let d = max(abs(q.x - x) - 0.03, (abs(rise - 0.3) - 0.28) * 1.8)
+    let edges = smoothstep(s.half.y, s.half.y - 1.2, abs(q.y)) *
+        smoothstep(s.half.x, s.half.x - 0.3, abs(q.x))
+    let o = inked(vec3(0.97, 0.98, 0.96), d, q, px * 1.2, px, vec3(0.62, 0.7, 0.76))
+    vec4(o.xyz, o.w * 0.55 * edges)
+}
+
 // ---- things ----------------------------------------------------------------------------------
 
 /// A carrot: orange, tapering, ringed with grooves, its leaves up; glowing a little.
@@ -981,6 +1001,8 @@ pub fn sprite(v: QuadPoint, sprites: [Sprite], st: Stage) -> Over {
         seagull(q, s, st.px, carrot: false)
     } else if s.kind == KOMODO {
         komodo(q, s, st.px)
+    } else if s.kind == DRAFT {
+        draft(q, s, st.px, st.time)
     } else if s.kind == CARROT {
         // Pale, a carrot still to find in the snacks' count: washed to the paper, see-through.
         let c = carrot(q, s, st.px)

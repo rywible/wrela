@@ -108,6 +108,7 @@ struct Ground {
     grass: GpuBuffer<vec4>,
     water: GpuBuffer<vec4>,
     tops: GpuBuffer<f32>,
+    ice: GpuBuffer<vec4>,
     earth_n: u32,
     grass_n: u32,
     water_n: u32,
@@ -126,7 +127,17 @@ fn ground_of(c: Course) -> Ground {
         grass: buffer_of(grass, at_least: 2),
         water: buffer_of(water, at_least: 3),
         tops: buffer_of(profile(c)),
+        ice: buffer_of(ice_of(c), at_least: 1),
     }
+}
+
+/// Course `c`'s icy stretches, for the ground's shaders: each from its left to its right.
+fn ice_of(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in c.ice {
+        out.push(vec4(i, 0.0, 0.0))
+    }
+    out
 }
 
 pub struct Lab {
@@ -506,7 +517,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         scene_size,
     )
     s.signs.upload(s.sign_list)
-    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
+    let habitat = f32(snap.course)
+    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time, habitat }
     // How much the capybara slides and is on the ground, eased, for the grass.
     let mode = Mode::from_u32(snap.mode)
     let on = grounded(mode)
@@ -521,6 +533,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         time,
         sliding: s.sliding,
         presence: s.presence,
+        habitat,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
@@ -553,6 +566,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             f: field,
             tops: s.ground.tops.items(),
             pools: s.pools.items(),
+            ice: s.ground.ice.items(),
             g: s.grain,
             gs: s.repeat,
         ),
@@ -561,7 +575,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         scene,
         grass_vertex.bind(verts: s.ground.grass.items(), f: field),
-        grass.bind(f: field),
+        grass.bind(f: field, ice: s.ground.ice.items()),
         vertices: s.ground.grass_n,
     )
     draw(
@@ -580,7 +594,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.sheet.copy_below(s.linear, s.wet)
     label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
-    let pond = Pond { view_proj, centre: eye, half, px, time }
+    let pond = Pond { view_proj, centre: eye, half, px, time, habitat }
     draw(
         wet,
         water_vertex.bind(verts: s.ground.water.items(), f: pond),
