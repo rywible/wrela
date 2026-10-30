@@ -27,6 +27,7 @@
 // `REFRESH`, one strip a frame), so most frames read four textures where they'd work out four
 // layers' shapes. The sky is still worked out each frame (its clouds drift).
 
+use habitats::sky_of
 use earth::surely_ground_below
 use engine::noise::{hash2, noise2}
 use ink::{INK, SUN, inked, paper, pooled, washed}
@@ -178,7 +179,8 @@ fn sky(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
     let up = 1.0 - uv.y + v.centre.y * 0.004
     let p = on_layer(pixel, v, 0.03)
     let px = pixel_on(v, 0.03)
-    var c = blend(vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89), smoothstep(0.28, 0.95, up))
+    let (horizon, zenith) = sky_of(u32(v.habitat + 0.5))
+    var c = blend(horizon, zenith, smoothstep(0.28, 0.95, up))
     c = washed(c, p * 0.25, g, gs)
     let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
     let rings = smoothstep(0.16, 0.08, d) * 0.25

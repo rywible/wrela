@@ -148,6 +148,19 @@ pub fn palette(h: u32) -> Palette {
     } else { WETLANDS }
 }
 
+/// Habitat `h`'s sky: its colour at the horizon and high up. The Wetlands' warm cream to blue
+/// for most; the Savanna's warmer, the Polar Coast's cold and pale, the Food Court's golden: the
+/// finale's late afternoon.
+pub fn sky_of(h: u32) -> (vec3, vec3) {
+    if h == SAVANNA {
+        (vec3(0.99, 0.88, 0.7), vec3(0.6, 0.77, 0.88))
+    } else if h == POLAR {
+        (vec3(0.9, 0.94, 0.97), vec3(0.56, 0.73, 0.88))
+    } else if h == FOOD_COURT {
+        (vec3(1.0, 0.84, 0.62), vec3(0.62, 0.72, 0.86))
+    } else { (vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89)) }
+}
+
 /// Ice: its glaze over the ground, and the white of its sheen.
 pub const ICE = vec3(0.78, 0.9, 0.97)
 pub const SHEEN = vec3(0.97, 0.99, 1.0)
