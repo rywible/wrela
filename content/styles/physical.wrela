@@ -1,5 +1,6 @@
-// The physical look: light as it falls, through the lens as the frame's look says (`paint::Look`).
-// Today's image: the other looks are changes of it, a slot at a time.
+// The physical look (docs/plan-world-class-3.md §D3): light as it falls, through the lens as the
+// frame's look says (`paint::Look`). Today's image, to the pixel: the other looks are changes of
+// it, a slot at a time (README.md).
 
 use engine::marks
 use engine::light::{Light, Lit, tone}
@@ -8,12 +9,20 @@ use engine::style::Style
 use engine::substance::Substance
 use std::gpu::{Rgba8, Sampler, Texture3d}
 
-/// The physical look (`engine::style::Style`): every constant 0.
+/// The physical look (`engine::style::Style`): no substance, lit by the fine normal, the
+/// characters' lines its marks, temporal AA as it is.
 pub struct Physical {}
 
 impl Style for Physical {
-    /// The characters' lines (`paint::lines`): part of today's look.
+    /// No substance after the shading: nothing reads it.
+    const SUBSTANCE: u32 = 0
+    /// Lit by the fine normal, the shading's own.
+    const NORMAL: u32 = 0
+    /// The characters' lines (`paint::lines`): part of today's look. (Its dabs and the paper's
+    /// tooth are the lens's: `paint::develop`'s, until the marks take them, D5.)
     const MARKS: u32 = marks::LINES
+    /// Temporal AA as it is.
+    const FLAT_CLIP: f32 = 0.0
 
     /// The scene's colour alone: it reads no substance.
     type Out = vec4
