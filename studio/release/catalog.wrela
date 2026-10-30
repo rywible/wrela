@@ -51,7 +51,9 @@ pub struct Catalog: Clone {
     pub games: Vec<Game>,
 }
 
-/// The production release, wrela.dev.
+/// The production release, wrela.dev: the capybara game alone, the first flagship game. Leapling
+/// and The Last Green were beta tests and stay in the workspace, out of the release (Ryan,
+/// 2026-10-30).
 pub const CATALOG: Catalog = Catalog {
     console: Console {
         dir: "console",
@@ -69,34 +71,18 @@ pub const CATALOG: Catalog = Catalog {
     games: Vec::from(
         [
             Game {
-                id: "leapling",
-                title: "Leapling",
-                worker: "wrela-leapling",
-                domain: "leapling.wrela.dev",
+                id: "capybara",
+                title: "Capybara",
+                worker: "wrela-capybara",
+                domain: "capybara.wrela.dev",
                 session: "session",
                 builds: Vec::from(
                     [
-                        Build { name: "session", dir: "games/leapling/session" },
-                        Build { name: "leapling", dir: "games/leapling" },
+                        Build { name: "session", dir: "games/capybara/session" },
+                        Build { name: "capybara", dir: "games/capybara" },
                     ],
                 ),
-                cover: "games/leapling/cover.png",
-            },
-            Game {
-                id: "last-green",
-                title: "The Last Green",
-                worker: "wrela-last-green",
-                domain: "last-green.wrela.dev",
-                session: "session",
-                builds: Vec::from(
-                    [
-                        Build { name: "session", dir: "games/last-green/session" },
-                        Build { name: "last-green", dir: "games/last-green" },
-                        Build { name: "stair", dir: "games/last-green/stair" },
-                        Build { name: "test-floor", dir: "games/last-green/test-floor" },
-                    ],
-                ),
-                cover: "games/last-green/cover.png",
+                cover: "games/capybara/cover.png",
             },
         ],
     ),
