@@ -1,0 +1,147 @@
+// The messages between the console and its server, on one connection to the server's `accounts`
+// room (language.md §19.3). The console sends a `Request`, numbered by its own count (`ask`), and
+// the server answers each with a `Reply` of the same number; an upload is answered twice, when it
+// is queued and when it is verified. Both are `Serialize`d; one frame each way is at most 64 KiB, so
+// a large answer (an export) comes in parts.
+//
+// A connection says `Hello` first, with the session's token if the console has one: the server
+// binds the connection to that session, and every later request on it is that session's. A request
+// that changes the account carries the session's CSRF token as well (`csrf`), and the server checks
+// it against the session's. What reaches a room is only what a page of an allowed origin sent
+// (`wrela-serve --origin`), or a client that isn't a browser, which has no session to ride on: so the
+// CSRF token is a second check, not the only one (docs/toolchain-gaps.md, "A server sees no HTTP
+// request").
+
+use std::serialize::Serialize
+
+/// The room the console's connection joins.
+pub const ROOM: Text = "accounts"
+
+/// The ceremonies a challenge is for.
+pub const REGISTER: u32 = 0
+pub const SIGN_IN: u32 = 1
+pub const ADD_PASSKEY: u32 = 2
+
+/// The categories a board ranks (as a game's verifier names them): any% and 100%.
+pub const ANY: u32 = 0
+pub const FULL: u32 = 1
+/// The course number of a whole game's board: the sum of an account's best time on every course.
+pub const WHOLE: u32 = 4294967295
+
+/// The most bytes of a replay an upload carries, so a request fits a frame.
+pub const MOST_REPLAY: u32 = 49152
+/// The most bytes of text an export part carries.
+pub const EXPORT_PART: u32 = 49152
+/// The most entries a board's page holds.
+pub const BOARD_PAGE: u32 = 20
+
+pub enum Request: Clone + Serialize {
+    /// The connection's session, if the console has one (`session` empty if not).
+    Hello { session: Vec<u8> },
+    /// A challenge for `ceremony` (REGISTER, SIGN_IN, ADD_PASSKEY).
+    Begin { ceremony: u32, csrf: Vec<u8> },
+    /// A new account's first passkey, over the REGISTER challenge.
+    Register { id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
+    /// A sign-in with a passkey, over the SIGN_IN challenge.
+    SignIn {
+        id: Vec<u8>,
+        client_data: Vec<u8>,
+        authenticator_data: Vec<u8>,
+        signature: Vec<u8>,
+        user: Vec<u8>,
+    },
+    /// A sign-in with a recovery code, as typed.
+    Recover { code: String },
+    /// Draws the name again, or keeps it.
+    Reroll { csrf: Vec<u8> },
+    Keep { csrf: Vec<u8> },
+    /// Another passkey, over the ADD_PASSKEY challenge.
+    AddPasskey { csrf: Vec<u8>, id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
+    RemovePasskey { csrf: Vec<u8>, id: Vec<u8> },
+    Passkeys,
+    /// New recovery codes in place of the old.
+    NewCodes { csrf: Vec<u8> },
+    Sessions,
+    /// Ends a session by its public ID, or this one.
+    Revoke { csrf: Vec<u8>, session: Vec<u8> },
+    SignOut { csrf: Vec<u8> },
+    /// A token for `game`, which can only submit runs.
+    Token { game: String },
+    /// Everything kept of the account, as JSON.
+    Export,
+    /// Deletes the account and everything kept of it.
+    Delete { csrf: Vec<u8> },
+    /// A run for `game`'s board, as its replay's bytes, with a game's token.
+    Upload { token: Vec<u8>, game: String, replay: Vec<u8> },
+    /// A page of a board: `course` (or WHOLE) and `category`, from place `from` (0 the fastest).
+    Board { game: String, course: u32, category: u32, from: u32 },
+    /// A run's replay, to watch.
+    Watch { run: u64 },
+}
+
+/// A request and its number.
+pub struct Up: Clone + Serialize {
+    pub ask: u32,
+    pub request: Request,
+}
+
+/// What the console may show of an account.
+pub struct Me: Clone + Serialize {
+    pub signed_in: bool,
+    pub name: String,
+    pub fixed: bool,
+    pub rerolls: u32,
+    /// Signed in with a recovery code: a passkey must be added before anything else.
+    pub must_add_passkey: bool,
+}
+
+pub struct PasskeyView: Clone + Serialize {
+    pub id: Vec<u8>,
+    pub created: u64,
+    pub used: u64,
+}
+
+pub struct SessionView: Clone + Serialize {
+    pub id: Vec<u8>,
+    pub created: u64,
+    pub seen: u64,
+    pub this: bool,
+}
+
+/// A place on a board.
+pub struct Place: Clone + Serialize {
+    pub place: u32,
+    pub name: String,
+    pub ticks: u32,
+    /// The run to watch (0 for a whole game's place, which is several runs).
+    pub run: u64,
+}
+
+pub enum Reply: Clone + Serialize {
+    /// The connection's account, after `Hello` or a change.
+    Welcome { me: Me },
+    Challenge { ceremony: u32, challenge: Vec<u8>, handle: Vec<u8>, exclude: Vec<Vec<u8>> },
+    /// A session begun: its token and CSRF token, for the console to keep, and with a new
+    /// account its recovery codes, shown once.
+    Session { session: Vec<u8>, csrf: Vec<u8>, me: Me, codes: Vec<String> },
+    Codes { codes: Vec<String> },
+    Passkeys { passkeys: Vec<PasskeyView> },
+    Sessions { sessions: Vec<SessionView> },
+    Token { token: Vec<u8>, expires_in: u32 },
+    /// A part of an export: the next part follows until `last`.
+    Export { text: String, last: bool },
+    Done,
+    /// An upload is queued: the run's number; a `Verified` or a `Rejected` follows.
+    Queued { run: u64 },
+    Verified { run: u64, ticks: u32, place: u32 },
+    Rejected { why: String },
+    Board { places: Vec<Place>, total: u32 },
+    Run { run: u64, game: String, replay: Vec<u8> },
+    /// The request isn't one the server takes now: why, said for a person.
+    Refused { why: String },
+}
+
+pub struct Down: Clone + Serialize {
+    pub ask: u32,
+    pub reply: Reply,
+}
