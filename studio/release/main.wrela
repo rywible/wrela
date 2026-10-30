@@ -15,9 +15,12 @@
 // - **The console** in its Worker's directory, with the MIT licence and the font licences of its
 //   package and every package it depends on (manifest.wrela), and each game's cover: its PNG
 //   fitted within 960×540 with Lanczos and encoded as WebP at quality 90, method 6, named by its
-//   bytes' SHA-256 (`cover-<16 hex>.webp`). The console reads them with `catalog.tsv` (a line a
-//   game: its id, title, session's address, cover and the cover's size) and fetches each game's
-//   runtime, WASM and shaders ahead of time from `prefetch-<id>.txt`.
+//   bytes' SHA-256 (`cover-<16 hex>.webp`); and, for a game that names them, its hero (fitted
+//   within 1920×1080, `hero-<16 hex>.webp`), its title art (within 1200×480, with its alpha,
+//   `title-<16 hex>.webp`) and its theme (`theme-<16 hex>.txt`, as it is). The console reads them
+//   with `catalog.tsv` (a line a game: its id, title, session's address, each image's file and
+//   size, its tagline and its theme's file) and fetches each game's runtime, WASM and shaders
+//   ahead of time from `prefetch-<id>.txt`.
 // - **The docs**: the docs' program, the reference docs `wrela doc --export` writes of std and
 //   the docs' packages beside it (a file of the export can't take the place of one of the
 //   program's), and each page of the export as plain HTML (pages.wrela).
@@ -38,9 +41,9 @@ use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_f
 use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
 use site::{
-    CACHE_RULES, Report, Top, archive_script, card, catalog_json, catalog_line, docs_headers,
-    docs_page, docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all,
-    with_storage, wrangler_config,
+    CACHE_RULES, Report, Shipped, Top, archive_script, card, catalog_json, catalog_line,
+    docs_headers, docs_page, docs_redirects, fetch_order, headers, prefetch_list, release_json,
+    replace_all, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use std::io::print
@@ -65,6 +68,9 @@ pub const REPOSITORY: Text = "https://github.com/rywible/wrela"
 /// A cover's box and its WebP's quality and method: a 960×540 cover is 30 to 110 KB, not 2 MB
 /// of pixels.
 pub const COVER_BOX: Size = Size { width: 960, height: 540 }
+/// A hero's box, behind a 1080p screen, and a title art's.
+pub const HERO_BOX: Size = Size { width: 1920, height: 1080 }
+pub const LOGO_BOX: Size = Size { width: 1200, height: 480 }
 pub const COVER_QUALITY: f64 = 90.0
 pub const COVER_METHOD: u8 = 6
 
@@ -336,18 +342,51 @@ fn release(revision: str) -> Result<String, ToolError> {
     for font in FONTS {
         projects[1].tree.put(last_part(font), Source::File(rooted(font)))
     }
-    // The covers, each made by a task of its own.
-    var art_paths: Vec<String> = Vec::new()
+    // The games' images, each made by a task of its own: each game's cover, and its hero and
+    // title art if it names them.
+    var jobs: Vec<(String, Size)> = Vec::new()
     for g in c.games {
-        art_paths.push(rooted(g.cover))
+        jobs.push((rooted(g.cover), COVER_BOX))
+        if !g.hero.is_empty() {
+            jobs.push((rooted(g.hero), HERO_BOX))
+        }
+        if !g.logo.is_empty() {
+            jobs.push((rooted(g.logo), LOGO_BOX))
+        }
     }
-    var made = all(take art_paths, cover)
-    var covers: Vec<(String, u32, u32)> = Vec::new()
-    for _ in 0..c.games.len() {
+    var made = all(take jobs, cover)
+    let shipped = |prefix: Text| -> Result<Shipped, ToolError> {
         let (art, width, height) = made.remove(0)?
-        let name = String::from(f"cover-{hex_sha(art).as_str().slice(from: 0, to: 16)}.webp")
+        let name = String::from(f"{prefix}-{hex_sha(art).as_str().slice(from: 0, to: 16)}.webp")
         projects[0].tree.put_bytes(name.as_str(), art)
-        covers.push((take name, width, height))
+        Ok(Shipped { name, width, height })
+    }
+    var covers: Vec<(Shipped, Shipped, Shipped)> = Vec::new()
+    for g in c.games {
+        let none = Shipped { name: String::new(), width: 0, height: 0 }
+        let front = shipped("cover")?
+        let hero = if g.hero.is_empty() { none.clone() } else { shipped("hero")? }
+        let logo = if g.logo.is_empty() { none.clone() } else { shipped("title")? }
+        covers.push((take front, take hero, take logo))
+    }
+    // The themes, as they are.
+    var theme_paths: Vec<String> = Vec::new()
+    for g in c.games {
+        if !g.theme.is_empty() {
+            theme_paths.push(rooted(g.theme))
+        }
+    }
+    var theme_bytes = read_files(theme_paths)?
+    var themes: Vec<String> = Vec::new()
+    for g in c.games {
+        if g.theme.is_empty() {
+            themes.push(String::new())
+            continue
+        }
+        let bytes = theme_bytes.remove(0)
+        let name = String::from(f"theme-{hex_sha(bytes).as_str().slice(from: 0, to: 16)}.txt")
+        projects[0].tree.put_bytes(name.as_str(), bytes)
+        themes.push(take name)
     }
     // A game's headers and its redirect to the console.
     let parent_origin = origin_of(c.console.domain)
@@ -409,8 +448,9 @@ fn release(revision: str) -> Result<String, ToolError> {
     // The console's catalog and prefetch lists, and the headers and redirects that name them.
     var catalog_text = String::new()
     for g in 0..c.games.len() {
-        let (name, width, height) = covers[g]
-        catalog_text.push_str(catalog_line(c.games[g], r, name.as_str(), width, height).as_str())
+        let (front, hero, logo) = covers[g]
+        let line = catalog_line(c.games[g], r, front, hero, logo, themes[g].as_str())
+        catalog_text.push_str(line.as_str())
         catalog_text.push_str("\n")
     }
     projects[0].tree.put_bytes("catalog.tsv", catalog_text.as_bytes())
@@ -445,7 +485,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     // Each Worker's release, under `releases/<id>/`, from its entry page.
     var cover_name = String::new()
     if !covers.is_empty() {
-        cover_name = covers[0].0.clone()
+        cover_name = covers[0].0.name.clone()
     }
     var has: Vec<String> = Vec::new()
     for e in projects[1].tree.entries {
@@ -663,12 +703,13 @@ pub fn pages_of(bytes: take Vec<u8>) -> Result<Vec<Page>, String> {
     Ok(out)
 }
 
-/// A game's cover, from its PNG at `path` (a root path): fitted within `COVER_BOX` with Lanczos,
+/// A game's image, from its PNG at `path` (a root path): fitted within `within` with Lanczos,
 /// encoded as WebP, and its size.
-fn cover(path: take String) -> Result<(Vec<u8>, u32, u32), ToolError> {
+fn cover(job: take (String, Size)) -> Result<(Vec<u8>, u32, u32), ToolError> {
+    let (path, within) = job
     // Decoded, resized if it doesn't fit, and encoded, each blob given back after.
     var blobs: Vec<Blob> = Vec::new()
-    let made = encoded(path.as_str(), mut blobs)
+    let made = encoded(path.as_str(), within, mut blobs)
     release_blobs(blobs)
     let (art, width, height) = (take made).map_err(
         |e| ToolError::new(f"{path.as_str()}: {e.message()}"),
@@ -676,16 +717,16 @@ fn cover(path: take String) -> Result<(Vec<u8>, u32, u32), ToolError> {
     Ok((data_bytes(take art)?, width, height))
 }
 
-/// The PNG at `path` as `cover` makes it, and its size: the WebP's data, which `blobs` doesn't
-/// hold, and each blob made for it before in `blobs`.
-fn encoded(path: str, blobs: mut Vec<Blob>) -> Result<(Data, u32, u32), ToolError> {
+/// The PNG at `path` as `cover` makes it within `within`, and its size: the WebP's data, which
+/// `blobs` doesn't hold, and each blob made for it before in `blobs`.
+fn encoded(path: str, within: Size, blobs: mut Vec<Blob>) -> Result<(Data, u32, u32), ToolError> {
     let file = files::read_blob(path).wait()?
     blobs.push(file)
     var img = image::decode(Data::Blob(file), timeout: LONGEST).wait()?
     if let Data::Blob(b) = img.rgba {
         blobs.push(b)
     }
-    let to = image::fit(img.size(), COVER_BOX)
+    let to = image::fit(img.size(), within)
     if to != img.size() {
         img = image::resize(img, to, timeout: LONGEST).wait()?
         if let Data::Blob(b) = img.rgba {

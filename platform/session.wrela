@@ -39,8 +39,14 @@ pub trait Game {
     /// made. Only the game interprets its saves.
     fn body(self, bytes: Vec<u8>) -> Option<Vec<u8>>
 
-    /// A save's line in the console's save list.
+    /// A save's line in the console's save list, and of its progress under the game's title.
     fn description(self, body: Vec<u8>) -> String
+
+    /// Where the save `body` resumes, as the console's Continue names it: a level, a chapter.
+    /// Empty, the console says only Continue.
+    fn place(self, body: Vec<u8>) -> String {
+        String::new()
+    }
 
     /// The build that continues the save `body`, if the game chooses one; otherwise the session
     /// keeps the build it had.
@@ -149,6 +155,7 @@ pub fn summary(game: Game, file: SaveFile, slot: str) -> SaveInfo {
             "Imported save"
         } else { "Previous game" }),
         description: game.description(file.body),
+        place: game.place(file.body),
         saved: file.saved,
     }
 }

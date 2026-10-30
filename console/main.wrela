@@ -4,11 +4,9 @@ use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
 }
-use paint::{
-    Edges, Emblem, Ink, Pool, Stage, block_corner, block_edge, block_face, block_line, emblem,
-    mark_ink, pool, quad, stage,
-}
-use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
+use paint::{Backdrop, Emblem, Ink, Picture, Stage, backdrop, emblem, mark_ink, picture, quad, stage}
+use room::{MARGIN, artifact_spot, camera}
+use theme::{Cue, Theme}
 use tesseract::{
     Artifact, EDGES, FACES, PANE_WORDS, STRUT_WORDS, artifact, corners, shapes, tile_grid, tiles,
 }
@@ -18,9 +16,10 @@ use brand::manrope::MANROPE
 use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{
-    GpuBuffer, Rgba8, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
-    buffer_of, draw, sampler, texture, write,
+    GpuBuffer, RenderPass, Rgba8, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass,
+    buffer, buffer_of, draw, sampler, texture, write,
 }
+use std::audio::RingWriter
 use std::input::{Button, Event, Key, PadAxis, PadButton, events}
 use std::io::{Pending, fetch, load as read_file, store}
 use std::serialize::{LoadError, Serialize, load, save}
@@ -47,11 +46,19 @@ const LABEL: f32 = 15.0
 const SANS_CAP: f32 = 0.72
 // The mark's cap height in the header, in logical pixels.
 const HEADER_CAP: f32 = 15.0
+// The home's primary button's label, in pixels; the tagline's and the progress line's.
+const CALL: f32 = 16.0
+const TAGLINE: f32 = 19.0
+const PROGRESS: f32 = 15.0
+// The title art's box at most, in logical pixels.
+const LOGO_WIDE: f32 = 600.0
+const LOGO_TALL: f32 = 240.0
 // The room and its artifact are traced at the screen's size divided by a whole number, to
 // about this many pixels: at least one sample a CSS pixel on a 2x display.
 const TRACED_PIXELS: f32 = 1600000.0
-// While only the tesseract's slow turn and the camera's breath move, the screen is drawn this
-// many times a second; when nothing moves, not at all. Anything else that changes draws at once.
+// While only the tesseract's slow turn and the camera's breath move (the opening), the screen is
+// drawn this many times a second; when nothing moves (the home, settled), not at all. Anything
+// else that changes draws at once.
 const IDLE_HZ: f32 = 30.0
 // The most times a second the tesseract is traced again: the opening's, close to the eye, and
 // the room's, far off and dim.
@@ -66,8 +73,13 @@ const STRAIN_FRAMES: u32 = 90
 const COARSEST: u32 = 3
 // A dropped request or connection is tried again after this pause, without a word.
 const RETRY_SECONDS: f32 = 3.0
-// Glyphs in the display face; the body face carries sentences.
+// Glyphs in the display face; the body face carries sentences. A game's name is its own title
+// art, or set in the body face: the display face is the console's.
 const DISPLAY = Face::Mono
+// Where the home's music setting is kept: a byte, 0 off.
+const MUSIC: Text = "console/music"
+// Seconds the theme's voice takes to fall quiet before it takes another game's theme.
+const QUIET_SECONDS: f32 = 1.6
 
 pub struct Profile: Clone + Serialize {
     version: u32,
@@ -107,13 +119,15 @@ enum Step: Copy + Eq {
 enum Action: Copy + Eq {
     Games,
     Settings,
-    Continue,
+    // The chosen game's call to action: continue its latest save, or begin.
+    Play,
     NewGame,
     Load,
     Export,
     Import,
     SaveProfile,
     Name,
+    Music,
     Game { index: u32 },
     Save { index: u32 },
     Page { first: u32 },
@@ -136,14 +150,40 @@ enum Move: Copy + Eq { Left, Right, Up, Down }
 // Which hints the footer shows: the last input device used.
 enum Input: Copy + Eq { Keys, Pad, Pointer }
 
-struct Cover {
+// A picture of the catalog's, as it arrives: a cover, a hero or a title art.
+struct Fetched {
     image: Option<Texture<Rgba8>>,
-    // The colour its art lends the room's light.
+    // A cover's, a few pixels across, which blurred stands for its game's hero until it comes.
+    small: Option<Texture<Rgba8>>,
+    // The colour the art lends the home's light.
     tint: vec3,
     // The compressed art, fetched, then decoded by the host (`host::decode_image`).
     load: Option<Pending<u8>>,
     decode: Option<Pending<u8>>,
     requested: bool,
+}
+
+fn fetched() -> Fetched {
+    Fetched {
+        image: None,
+        small: None,
+        tint: vec3(1.0),
+        load: None,
+        decode: None,
+        requested: false,
+    }
+}
+
+// A picture to draw over the backdrop this frame, in device pixels: whose art (a cover, or the
+// title art), the game, where, how opaque and how bright.
+enum Art: Copy + Eq { Cover, Logo }
+
+struct Drawn: Copy {
+    kind: Art,
+    index: u32,
+    rect: Rect,
+    alpha: f32,
+    bright: f32,
 }
 
 pub struct Console {
@@ -168,13 +208,21 @@ pub struct Console {
     // inked for (a size of 0: none).
     inks: Vec<Texture<Rgba8>>,
     inked: Vec<vec4>,
-    covers: Vec<Cover>,
-    placed: Vec<Placed>,
+    covers: Vec<Fetched>,
+    heroes: Vec<Fetched>,
+    logos: Vec<Fetched>,
+    // The pictures laid out this frame, drawn over the backdrop.
+    drawn: Vec<Drawn>,
+    // How far the chosen game's hero and title art have come in over what stands for them.
+    hero_in: f32,
+    logo_in: f32,
+    // Each tile's light (0 to 1) as the selection and the pointer move, and how far the shelf
+    // has slid to keep the selection in view (logical pixels).
+    tiles_lit: Vec<f32>,
+    shelf: f32,
     // The save last chosen in the Load sheet: what Export writes.
     marked: u32,
-    // Each game's eased place in the row (`room::row_place`).
-    slots: Vec<f32>,
-    // The camera's drift toward the pointer.
+    // The camera's drift toward the pointer, which the hero follows a little.
     sway: vec2,
     reveal: f32,
     sheet: f32,
@@ -243,8 +291,21 @@ pub struct Console {
     prefetch_game: u32,
     prefetch_list: Option<Pending<u8>>,
     prefetching: Option<Pending<u8>>,
-    // The room's light: the colour of the selected game's art, and how far it takes it.
+    // The home's light: the colour of the selected game's art, and how far it takes it.
     tint: vec4,
+    // The theme's voice, the selection's theme as it's fetched and read, which game's theme the
+    // voice holds, the level last asked of it and when it was asked to fall quiet; and the music
+    // setting, as it's read and written.
+    voice: RingWriter<Cue>,
+    theme_of: Option<u32>,
+    theme_load: Option<Pending<u8>>,
+    theme: Option<Theme>,
+    theme_sent: Option<u32>,
+    voice_level: f32,
+    quiet_at: f32,
+    music: bool,
+    music_load: Option<Pending<u8>>,
+    music_write: Option<Pending<u8>>,
     // The page's icons, asked for once.
     icons: Vec<Pending<u8>>,
     retry_at: f32,
@@ -300,9 +361,14 @@ pub fn init() -> Console {
         inks: Vec::from_fn(2, |_| texture::<Rgba8>(width: 1, height: 1)),
         inked: Vec::filled(2, value: vec4(0.0)),
         covers: Vec::new(),
-        placed: Vec::new(),
+        heroes: Vec::new(),
+        logos: Vec::new(),
+        drawn: Vec::new(),
+        hero_in: 0.0,
+        logo_in: 0.0,
+        tiles_lit: Vec::new(),
+        shelf: 0.0,
         marked: 0,
-        slots: Vec::new(),
         sway: vec2(0.0),
         reveal: 0.0,
         sheet: 0.0,
@@ -342,7 +408,7 @@ pub fn init() -> Console {
         pixel_ratio: 1.0,
         reduced: false,
         intro_until: OPENING_SECONDS,
-        focus: Action::Game { index: 0 },
+        focus: Action::Play,
         controls: Vec::new(),
         shown: Vec::new(),
         activate: None,
@@ -367,6 +433,16 @@ pub fn init() -> Console {
         prefetch_list: None,
         prefetching: None,
         tint: vec4(1.0, 1.0, 1.0, 0.0),
+        voice: theme::start(),
+        theme_of: None,
+        theme_load: None,
+        theme: None,
+        theme_sent: None,
+        voice_level: 0.0,
+        quiet_at: -100.0,
+        music: true,
+        music_load: Some(read_file(MUSIC)),
+        music_write: None,
         icons: page_icons(),
         retry_at: 0.0,
         zoom: 1.0,
@@ -619,7 +695,7 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     Err(String::from("The game library could not be read."))
 }
 
-// Albums within reach of the selection hold textures and requests: enough for a full row.
+// Covers within reach of the selection hold textures and requests: enough for the shelf.
 const COVER_REACH: u32 = 6
 
 // The colour a cover's art lends the light: its colourful, bright parts averaged, at full
@@ -639,6 +715,84 @@ fn palette(bytes: Vec<u8>, width: u32, height: u32) -> vec3 {
     }
     let top = max(sum.x, max(sum.y, sum.z))
     if top <= 0.0 { vec3(1.0) } else { sum / top }
+}
+
+// Fetches and decodes `art` into `f` while it's `wanted`, and lets go of it when it isn't: whether
+// it changed what shows. Art with no path is never fetched.
+fn arrive(f: mut Fetched, art: catalog::Art, wanted: bool) -> bool {
+    if !wanted || art.path.is_empty() {
+        let had = f.image.is_some()
+        f.image = None
+        f.small = None
+        f.load = None
+        f.decode = None
+        f.requested = false
+        return had
+    }
+    if !f.requested {
+        f.load = Some(fetch(art.path))
+        f.requested = true
+    }
+    if let Some(result) = poll(mut f.load) {
+        if let Ok(bytes) = result {
+            f.decode = Some(host::decode_image(bytes, art.width, art.height))
+        }
+    }
+    let Some(result) = poll(mut f.decode) else { return false }
+    if let Ok(bytes) = result {
+        // The host decodes only art of the size the catalog says.
+        if bytes.len() == art.width * art.height * 4 {
+            f.tint = palette(bytes, art.width, art.height)
+            let (w, h) = small_size(art.width, art.height)
+            var small = texture::<Rgba8>(width: w, height: h)
+            small.write(
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+                bytes: shrunk(bytes, art.width, art.height),
+            )
+            f.small = Some(take small)
+            var image = texture::<Rgba8>(width: art.width, height: art.height)
+            image.write(x: 0, y: 0, width: art.width, height: art.height, bytes: bytes)
+            f.image = Some(take image)
+        }
+    }
+    true
+}
+
+// A small copy's size: 48 pixels across, its height keeping the aspect.
+fn small_size(width: u32, height: u32) -> (u32, u32) {
+    let w = min(width, 48)
+    (w, max(u32(round(f32(height) * f32(w) / f32(width))), 1))
+}
+
+// `bytes`' RGBA pixels, `width` × `height`, as their small copy (`small_size`): each pixel the
+// mean of the box of pixels it covers.
+fn shrunk(bytes: [u8], width: u32, height: u32) -> Vec<u8> {
+    let (w, h) = small_size(width, height)
+    var out: Vec<u8> = Vec::new()
+    for y in 0..h {
+        for x in 0..w {
+            let (x0, x1) = (x * width / w, max((x + 1) * width / w, x * width / w + 1))
+            let (y0, y1) = (y * height / h, max((y + 1) * height / h, y * height / h + 1))
+            var sum = vec4(0.0)
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let i = (yy * width + xx) * 4
+                    sum += vec4(
+                        f32(bytes[i]),
+                        f32(bytes[i + 1]),
+                        f32(bytes[i + 2]),
+                        f32(bytes[i + 3]),
+                    )
+                }
+            }
+            let mean = sum / f32((x1 - x0) * (y1 - y0))
+            for c in [mean.x, mean.y, mean.z, mean.w] { out.push(u8(round(c))) }
+        }
+    }
+    out
 }
 
 fn near_cover(index: u32, selected: u32) -> bool {
@@ -684,15 +838,9 @@ fn update(s: mut Console) {
                     s.cards = cards.clone()
                     s.prefetched = Vec::filled(cards.len(), value: false)
                     for _ in 0..cards.len() {
-                        s.covers.push(
-                            Cover {
-                                image: None,
-                                tint: vec3(1.0),
-                                load: None,
-                                decode: None,
-                                requested: false,
-                            },
-                        )
+                        s.covers.push(fetched())
+                        s.heroes.push(fetched())
+                        s.logos.push(fetched())
                     }
                     s.need_open = true
                 },
@@ -707,40 +855,19 @@ fn update(s: mut Console) {
         for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
         open_selected(mut s)
     }
-    // Only albums near the selection hold textures or requests.
-    for i in 0..s.covers.len() {
-        let visible = near_cover(i, s.selected)
-        if !visible {
-            s.covers[i].image = None
-            s.covers[i].load = None
-            s.covers[i].decode = None
-            s.covers[i].requested = false
-            continue
-        }
-        if !s.covers[i].requested {
-            s.covers[i].load = Some(fetch(s.cards[i].cover))
-            s.covers[i].requested = true
-        }
-        if let Some(result) = poll(mut s.covers[i].load) {
-            if let Ok(bytes) = result {
-                let card = s.cards[i].clone()
-                s.covers[i].decode = Some(host::decode_image(bytes, card.width, card.height))
-            }
-        }
-        if let Some(result) = poll(mut s.covers[i].decode) {
-            s.dirty = true
-            if let Ok(bytes) = result {
-                let card = s.cards[i].clone()
-                // The host decodes only art of the size the catalog says.
-                if bytes.len() == card.width * card.height * 4 {
-                    s.covers[i].tint = palette(bytes, card.width, card.height)
-                    var image = texture::<Rgba8>(width: card.width, height: card.height)
-                    image.write(x: 0, y: 0, width: card.width, height: card.height, bytes: bytes)
-                    s.covers[i].image = Some(take image)
-                }
-            }
-        }
+    // Only covers near the selection hold textures or requests, and only the chosen game's hero
+    // and title art (and the one easing out's).
+    for i in 0..s.cards.len() {
+        let card = s.cards[i].clone()
+        let chosen = i == s.selected || i == s.title_shown
+        if arrive(mut s.covers[i], card.cover, near_cover(i, s.selected)) { s.dirty = true }
+        if arrive(mut s.heroes[i], card.hero, chosen) { s.dirty = true }
+        if arrive(mut s.logos[i], card.logo, chosen) { s.dirty = true }
     }
+    if let Some(Ok(bytes)) = poll(mut s.music_load) {
+        s.music = bytes.is_empty() || bytes[0] != 0
+    }
+    let _ = poll(mut s.music_write)
     if let Some(result) = poll(mut s.profile_write) {
         if result.is_err() {
             s.dirty = true
@@ -778,7 +905,7 @@ fn update(s: mut Console) {
 fn open_pane(s: mut Console, pane: Pane) {
     s.pane = pane
     s.focus = match pane {
-        Pane::Games => Action::Game { index: s.selected },
+        Pane::Games => Action::Play,
         Pane::Saves => if s.saves.is_empty() { Action::Import } else { Action::Save { index: 0 } },
         Pane::Settings => Action::Name,
     }
@@ -790,12 +917,15 @@ fn play(s: mut Console, intent: PlayIntent) {
     fulfill_play(mut s)
 }
 
-// The selected title's actions: Continue, New and Load once there are saves; only New before.
+// The selected title's actions: Play (which continues once there are saves), then New game and
+// Load once there are saves.
 fn actions(has_saves: bool) -> Vec<Action> {
     var out: Vec<Action> = Vec::new()
-    if has_saves { out.push(Action::Continue) }
-    out.push(Action::NewGame)
-    if has_saves { out.push(Action::Load) }
+    out.push(Action::Play)
+    if has_saves {
+        out.push(Action::NewGame)
+        out.push(Action::Load)
+    }
     out
 }
 
@@ -808,6 +938,10 @@ fn act(s: mut Console, action: Action) {
             open_pane(mut s, pane)
         },
         Action::Name => {},
+        Action::Music => {
+            s.music = !s.music
+            s.music_write = Some(store(MUSIC, [u8(if s.music { 1 } else { 0 })]))
+        },
         Action::SaveProfile => {
             if s.profile.name.trim().is_empty() {
                 s.message = String::from("Enter a name for this profile.")
@@ -818,9 +952,9 @@ fn act(s: mut Console, action: Action) {
             s.message = String::from("Profile saved.")
         },
         Action::Game { index } => {
-            // The selected album's own action is to play it: continue, or begin.
+            // The selected game's own action is to play it: continue, or begin.
             if index == s.selected {
-                act(mut s, if s.saves.is_empty() { Action::NewGame } else { Action::Continue })
+                act(mut s, Action::Play)
                 return
             }
             if !browsing(s.step) { return }
@@ -843,8 +977,8 @@ fn act(s: mut Console, action: Action) {
             s.picked = index
             play(mut s, PlayIntent::Selected)
         },
-        // Continue plays the most recent save; with none there is only a new game.
-        Action::Continue => {
+        // Play continues the most recent save; with none it begins.
+        Action::Play => {
             if s.saves.is_empty() {
                 play(mut s, PlayIntent::NewGame)
                 return
@@ -944,17 +1078,18 @@ fn under(controls: [Control], at: vec2) -> Option<Action> {
 
 fn navigate(s: mut Console, to: Move) {
     let Some(next) = neighbour(s.shown, s.focus, to) else { return }
-    s.focus = next
-    // Moving along the album row selects the album, as a console does.
-    match next {
-        Action::Game { index } => if index != s.selected { act(mut s, next) },
-        _ => {},
+    let on_shelf = match s.focus {
+        Action::Game { .. } => true,
+        _ => false,
     }
-    if s.pane == Pane::Games {
-        match next {
-            Action::Game { .. } => s.focus = Action::Game { index: s.selected },
-            _ => {},
-        }
+    match next {
+        Action::Game { index } => {
+            // Coming onto the shelf lands on the chosen game; moving along it chooses, as a
+            // console does.
+            if on_shelf && index != s.selected { act(mut s, next) }
+            s.focus = Action::Game { index: s.selected }
+        },
+        _ => s.focus = next,
     }
 }
 
@@ -1039,6 +1174,7 @@ fn button_width(s: Console, label: str) -> f32 {
 // A button: the primary one solid, the rest quiet behind a hairline. Under the pointer it
 // eases a shade toward the light (`glow`); with keys or a pad the focus ring marks it.
 fn button(s: mut Console, action: Action, r: Rect, row: u32, label: str, primary: bool = false) {
+    let size = if primary { CALL } else { LABEL }
     let _ = control(mut s, action, r, row, Kind::Button)
     let hover = if s.input == Input::Pointer { glow(s, action) } else { 0.0 }
     if primary {
@@ -1048,8 +1184,8 @@ fn button(s: mut Console, action: Action, r: Rect, row: u32, label: str, primary
         ring(mut s, r, BORDER, RADIUS)
     }
     let c = r.center()
-    let y = line_top(s, Face::Sans, LABEL, c.y)
-    centered(mut s, label, LABEL, c.x, y, if primary { DARK } else { INK }, Face::Sans)
+    let y = line_top(s, Face::Sans, size, c.y)
+    centered(mut s, label, size, c.x, y, if primary { DARK } else { INK }, Face::Sans)
 }
 
 // The title showing, and how far it has eased in, `dt` seconds on with `selected` chosen: one
@@ -1121,9 +1257,14 @@ fn keycap(s: mut Console, at: vec2, cap: str, label: str) -> f32 {
 fn footer(s: mut Console, w: f32, h: f32, margin: f32) {
     if s.input == Input::Pointer || w < 560.0 { return }
     let (select, back) = if s.input == Input::Pad { ("A", "B") } else { ("Enter", "Esc") }
-    let hints = if s.pane == Pane::Games {
-        [(select, "Select"), ("< >", "Browse"), (back, "Back")]
-    } else { [(select, "Select"), ("^ v", "Move"), (back, "Close")] }
+    var hints: Vec<(Text, Text)> = Vec::new()
+    hints.push((select, "Select"))
+    if s.pane != Pane::Games {
+        hints.push(("^ v", "Move"))
+        hints.push((back, "Close"))
+    } else if s.cards.len() > 1 {
+        hints.push(("v", "Games"))
+    }
     var total = -24.0
     for hint in hints {
         total += key_width(s, hint.0) + 8.0 + width_of(s, hint.1, 13.0, Face::Sans) + 24.0
@@ -1146,71 +1287,55 @@ fn empty_library_message(message: str) -> String {
     if message.is_empty() { String::from("Loading games") } else { message.to_string() }
 }
 
-struct Placed: Copy {
-    index: u32,
-    card: room::Card,
-    art: bool,
-}
-
-fn action_label(a: Action, opening: bool) -> String {
+// A button's label: Play's says where it continues (`SaveInfo::place`), once there's a save.
+fn action_label(a: Action, opening: bool, continuing: Option<SaveInfo>) -> String {
     if opening { return String::from("Opening") }
-    String::from(match a {
-        Action::Continue => "Continue",
-        Action::NewGame => "New",
-        Action::Load => "Load",
-        _ => "",
-    })
+    match a {
+        Action::Play => match continuing {
+            Some(save) => if save.place.is_empty() { String::from("Continue") } else {
+                f"Continue: {save.place}"
+            },
+            None => String::from("Play"),
+        },
+        Action::NewGame => String::from("New game"),
+        Action::Load => String::from("Load"),
+        _ => String::new(),
+    }
 }
 
-// The library: cards in the room (drawn by the GPU) in a row along the bottom, and above the
-// selection, from its left edge, its title, its state and its actions.
-fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f32) {
-    let row = row(rest)
+// The title art's box for a screen `w` wide with `margin`s: as wide as a third of it, but never
+// so small a phone loses it, nor wider than it has room for.
+fn logo_box(w: f32, h: f32, margin: f32) -> vec2 {
+    vec2(min(min(w - margin * 2.0, max(w * 0.34, 300.0)), LOGO_WIDE), min(h * 0.3, LOGO_TALL))
+}
+
+// `size` fitted within `room`, keeping its aspect.
+fn fit_within(size: vec2, room: vec2) -> vec2 {
+    size * min(room.x / size.x, room.y / size.y)
+}
+
+// The shelf's tiles' height, for a screen `h` tall.
+fn tile_height(h: f32) -> f32 {
+    clamp(h * 0.12, 56.0, 120.0)
+}
+
+// How far the shelf slides so that tile `selected` of tiles `width` wide and `gap` apart, from the
+// margin, ends within the screen.
+fn shelf_offset(selected: u32, width: f32, gap: f32, w: f32, margin: f32) -> f32 {
+    max(0.0, margin + f32(selected + 1) * (width + gap) - gap - (w - margin))
+}
+
+// The home: the chosen game owns the screen. Its hero fills it behind everything (drawn by the
+// GPU, `backdrop`); at the left, from the bottom up, its actions, its progress, its tagline and its
+// title art. With more than one game, a shelf of covers along the bottom chooses among them; with
+// one, a quiet line says more are coming.
+fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     if s.cards.is_empty() {
         let label = empty_library_message(s.message)
         centered(mut s, label, 15.0, w * 0.5, h * 0.5, MUTED, Face::Sans)
         return
     }
-    var slot = Rect::new(margin, h * 0.7, w: 0.0, h: 0.0)
-    for i in 0..s.cards.len() {
-        if s.slots[i] > 12.0 { continue }
-        let art = s.covers[i].image.is_some()
-        let target = f32(row_place(i, s.selected, s.cards.len()))
-        // Under the pointer, a block's edges brighten, eased in; keys and pads move the
-        // selection itself, so it needs no mark of its own.
-        let pointing = s.input == Input::Pointer
-        let hover = if pointing { glow(s, Action::Game { index: i }) } else { 0.0 }
-        let card = place(place: s.slots[i], target: target, hover: hover, has_art: art, row: row)
-        let b = bounds(cam, card) / s.zoom
-        let r = Rect::new(b.x, b.y, b.z, b.w)
-        s.placed.push(Placed { index: i, card, art })
-        if i == s.selected { slot = r }
-        if !art {
-            // No art: the title, set on the card.
-            let title = s.cards[i].title.clone()
-            let size = fitted(s, title, clamp(r.w * 0.05, 9.0, 20.0), r.w * 0.8, DISPLAY)
-            let shade = card.look.x * card.look.z
-            text(
-                mut s,
-                title,
-                size,
-                vec2(r.x + r.w * 0.08, r.bottom() - r.h * 0.12 - size),
-                vec4(INK.xyz, shade),
-                DISPLAY,
-            )
-        }
-    }
-    // Nearer albums overlap farther ones, so they take the pointer first: the control pushed
-    // last wins. Albums fading out at the left show but take no focus.
-    for k in depth_order(s.placed) {
-        let placed = s.placed[k]
-        if placed.card.look.z > 0.5 {
-            let b = bounds(cam, placed.card) / s.zoom
-            let r = Rect::new(b.x, b.y, b.z, b.w)
-            let _ = control(mut s, Action::Game { index: placed.index }, r, 2, Kind::Tile)
-        }
-    }
-    // Choosing another game, its title and state ease out, and the new ones ease in, rising.
+    // Choosing another game, what it shows eases out, and the new game's eases in, rising.
     let (shown, eased) = title_step(s.title_shown, s.title_in, s.selected, s.dt)
     s.title_shown = shown
     s.title_in = eased
@@ -1222,67 +1347,134 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
     let fade = smoothstep(0.0, 1.0, s.title_in)
     let lift = (1.0 - fade) * 8.0
     let card = s.cards[s.title_shown].clone()
-    let continuing = !s.saves.is_empty()
-    // The title and actions hold still at the margin, above where the selection rests, while
-    // blocks tumble beneath them.
-    // Laid out for the camera at rest, so its drift toward the pointer doesn't move them.
-    let still = place(place: 0.0, target: 0.0, hover: 0.0, has_art: true, row: row)
-    let resting = bounds(rest, still) / s.zoom
-    slot = Rect::new(margin, resting.y, resting.z, resting.w)
-    let x = slot.x
-    let room = min(w - x - margin, 820.0)
-    // From the row up: the actions, the state, the title.
-    let top = slot.y - 30.0 - 40.0 - 14.0
-    let picked = if continuing { s.saves[0].clone() } else {
-        SaveInfo { slot: String::new(), label: String::new(), description: String::new(), saved: 0 }
+    let many = s.cards.len() > 1
+    let tile_h = tile_height(h)
+    let shelf_top = h - 56.0 - tile_h
+    if many { shelf(mut s, w, margin, shelf_top, tile_h) } else {
+        // One game: no shelf, only a quiet line where it would be.
+        let middle = h - 35.0
+        text(
+            mut s,
+            "More games soon",
+            13.0,
+            vec2(margin, line_top(s, Face::Sans, 13.0, middle)),
+            MUTED,
+        )
     }
+    // From the bottom up: the actions, the progress, the tagline, the title art.
+    let top = if many { shelf_top - 40.0 - 44.0 } else { min(h * 0.74, h - 92.0 - 44.0) }
+    let room = min(w - margin * 2.0, 760.0)
+    let continuing = if s.saves.is_empty() { None } else { Some(s.saves[0].clone()) }
     let state = status(s)
-    let meta = if !state.is_empty() { state.clone() } else if continuing {
-        if picked.description.is_empty() { picked.label.clone() } else {
-            f"{picked.label}  ·  {picked.description}"
+    let progress = if !state.is_empty() { state.clone() } else {
+        match continuing {
+            Some(save) => save.description.clone(),
+            None => String::new(),
         }
-    } else { String::from("Not started") }
-    let meta_size = fitted(s, meta, 15.0, room, Face::Sans)
-    let meta_middle = top - 26.0
-    let tone = if s.message.is_empty() { MUTED } else { WARN }
-    text(
-        mut s,
-        meta,
-        meta_size,
-        vec2(x, line_top(s, Face::Sans, meta_size, meta_middle) + lift),
-        vec4(tone.xyz, tone.w * fade),
-    )
-    let title_size = fitted(s, card.title, 48.0, room, DISPLAY)
-    let title_middle = meta_middle -
-        meta_size * SANS_CAP * 0.5 -
-        20.0 -
-        title_size * facet::CAP * 0.5
-    text(
-        mut s,
-        card.title,
-        title_size,
-        vec2(x, line_top(s, DISPLAY, title_size, title_middle) + lift),
-        vec4(INK.xyz, fade),
-        DISPLAY,
-    )
-    // The actions in a line, the first the main one.
-    let acts = actions(continuing)
-    var at = x
+    }
+    var above = top
+    if !progress.is_empty() {
+        let size = fitted(s, progress, PROGRESS, room, Face::Sans)
+        let middle = top - 28.0
+        let tone = if s.message.is_empty() { vec4(INK.xyz, 0.72) } else { WARN }
+        let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
+        text(mut s, progress, size, at, vec4(tone.xyz, tone.w * fade))
+        above = middle - size * SANS_CAP * 0.5
+    }
+    if !card.tagline.is_empty() {
+        let size = fitted(s, card.tagline, TAGLINE, room, Face::Sans)
+        let middle = above - (if above == top { 30.0 } else { 17.0 }) - size * SANS_CAP * 0.5
+        let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
+        text(mut s, card.tagline, size, at, vec4(INK.xyz, 0.94 * fade))
+        above = middle - size * SANS_CAP * 0.5
+    }
+    // The title art, standing on what's below it; until it comes, the title in its place.
+    let bottom = above - 26.0
+    let room_for = logo_box(w, h, margin)
+    let logo = s.cards[s.title_shown].logo.clone()
+    let has_logo = s.logos[s.title_shown].image.is_some()
+    if has_logo {
+        let size = fit_within(vec2(f32(logo.width), f32(logo.height)), room_for)
+        let r = Rect::new(margin, bottom - size.y + lift, size.x, size.y)
+        let alpha = fade * s.logo_in * s.reveal
+        s.drawn.push(Drawn { kind: Art::Logo, index: s.title_shown, rect: r, alpha, bright: 1.0 })
+    }
+    if s.logo_in < 1.0 {
+        let size = fitted(s, card.title, 56.0, room_for.x, Face::Sans)
+        let middle = bottom - size * SANS_CAP * 0.5
+        let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
+        text(mut s, card.title, size, at, vec4(INK.xyz, fade * (1.0 - s.logo_in)))
+    }
+    // The actions in a line, the first the call to action.
+    let acts = actions(continuing.is_some())
+    var at = margin
     for i in 0..acts.len() {
         let a = acts[i]
-        let label = action_label(a, s.play_intent.is_some() && i == 0)
-        let width = button_width(s, label)
-        button(mut s, a, Rect::new(at, top, width, 40.0), 1, label, primary: i == 0)
-        at += width + 10.0
+        let label = action_label(a, s.play_intent.is_some() && i == 0, continuing)
+        let primary = i == 0
+        let size = if primary { CALL } else { LABEL }
+        let width = max(button_width(s, label), width_of(s, label, size, Face::Sans) + 44.0)
+        let r = Rect::new(at, top, if primary { max(width, 132.0) } else { width }, 44.0)
+        button(mut s, a, r, 1, label, primary: primary)
+        at = r.right() + 10.0
     }
     if !s.message.is_empty() {
         button(
             mut s,
             Action::Retry,
-            Rect::new(at, top, button_width(s, "Try again"), 40.0),
+            Rect::new(at, top, button_width(s, "Try again"), 44.0),
             1,
             "Try again",
         )
+    }
+}
+
+// The shelf: each game's cover on a flat tile along the bottom, in the catalog's order, the
+// chosen one lit and ringed, the rest dimmed; it slides to keep the chosen one in view.
+fn shelf(s: mut Console, w: f32, margin: f32, top: f32, tile_h: f32) {
+    let width = tile_h * 16.0 / 9.0
+    let gap = 14.0
+    let k = if s.reduced { 1.0 } else { 1.0 - exp(-s.dt * 12.0) }
+    let offset = shelf_offset(s.selected, width, gap, w, margin)
+    s.shelf = mix(s.shelf, offset, k)
+    if abs(s.shelf - offset) > 0.05 { s.settled = false }
+    if s.tiles_lit.len() != s.cards.len() { s.tiles_lit = Vec::filled(s.cards.len(), 0.0) }
+    for i in 0..s.cards.len() {
+        let r = Rect::new(margin + f32(i) * (width + gap) - s.shelf, top, width, tile_h)
+        if r.right() < 0.0 || r.x > w { continue }
+        let chosen = i == s.selected
+        let lit = if chosen { 1.0 } else if s.input == Input::Pointer {
+            glow(s, Action::Game { index: i }) * 0.5
+        } else { 0.0 }
+        s.tiles_lit[i] = mix(s.tiles_lit[i], lit, k)
+        if abs(s.tiles_lit[i] - lit) > 0.002 { s.settled = false }
+        let _ = control(mut s, Action::Game { index: i }, r, 2, Kind::Tile)
+        let bright = mix(0.55, 1.0, s.tiles_lit[i])
+        if s.covers[i].image.is_some() {
+            s.drawn.push(Drawn { kind: Art::Cover, index: i, rect: r, alpha: s.reveal, bright })
+        } else {
+            // No cover yet: its title on a quiet tile.
+            rect(mut s, r, vec4(SECONDARY.xyz, 0.85), 6.0)
+            let title = s.cards[i].title.clone()
+            let size = fitted(s, title, 13.0, r.w - 20.0, Face::Sans)
+            let middle = r.center().y
+            centered(
+                mut s,
+                title,
+                size,
+                r.center().x,
+                line_top(s, Face::Sans, size, middle),
+                vec4(INK.xyz, bright),
+                Face::Sans,
+            )
+        }
+        if chosen {
+            let focused = s.input != Input::Pointer && s.focus == Action::Game { index: i }
+            let alpha = if focused { 0.95 } else { 0.6 }
+            ring(mut s, r.shrink(-4.0), vec4(1.0, 1.0, 1.0, alpha), radius: 9.0, width: 2.0)
+        } else {
+            ring(mut s, r, BORDER, 6.0)
+        }
     }
 }
 
@@ -1392,8 +1584,12 @@ fn settings(s: mut Console, w: f32, h: f32) {
         "Save",
         primary: true,
     )
+    // The home's music: the chosen game's theme, softly.
+    text(mut s, "Music on the home screen", 13.0, vec2(x, 266.0), MUTED)
+    let label = if s.music { "On" } else { "Off" }
+    button(mut s, Action::Music, Rect::new(x, y: 290.0, w: 120.0, h: 38.0), 3, label)
     let state = status(s)
-    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, 252.0), MUTED) }
+    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, 348.0), MUTED) }
 }
 
 // The focus ring, with keys or a pad: a ring just outside the focused button, sliding from one
@@ -1554,18 +1750,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     prefetch_games(mut s)
     s.reveal = phase.library
     let ease = |rate: f32| -> f32 { if motion { 1.0 - exp(-dt * rate) } else { 1.0 } }
-    // Each game eases to its place in the row: slow enough to see the chosen block tumble
-    // forward and the one it leaves tumble back. Until the library shows, they stand there.
-    let count = s.cards.len()
-    if s.slots.len() != count { s.slots = Vec::filled(count, 0.0) }
     // Whether all that eases before drawing has come to rest.
     var eased = s.glow >= 1.0 || s.glowing.is_none()
-    for i in 0..count {
-        let target = f32(row_place(i, s.selected, count))
-        s.slots[i] = if phase.library == 0.0 { target } else { mix(s.slots[i], target, ease(5.0)) }
-        if abs(s.slots[i] - target) > 0.0005 { eased = false }
-    }
-    // Focus on the album row follows the selection, wherever the selection came from.
+    // Focus on the shelf follows the selection, wherever the selection came from.
     match s.focus {
         Action::Game { index } => if index != s.selected {
             s.focus = Action::Game { index: s.selected }
@@ -1575,35 +1762,55 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let sheet = if s.pane == Pane::Games { 0.0 } else { 1.0 }
     s.sheet = mix(s.sheet, sheet, ease(14.0))
     if abs(s.sheet - sheet) > 0.001 { eased = false }
-    // The camera leans a little toward the pointer, and breathes when nothing moves it. It
-    // holds still through the opening's title, and takes up its lean in the dark after it.
+    // The camera leans a little toward the pointer, and breathes in the opening. It holds still
+    // through the opening's title, and takes up its lean in the dark after it. On the home, the
+    // hero drifts with the lean alone, so a still pointer leaves a still screen.
     let toward = match s.pointer {
         Some(p) => vec2(p.x / w * 2.0 - 1.0, p.y / h * 2.0 - 1.0),
         None => vec2(0.0),
     }
     let breath = vec2(sin(s.presentation * 0.21), sin(s.presentation * 0.13) * 0.6) * 0.3
-    let lean = if motion { toward * 0.7 + breath } else { vec2(0.0) }
+    let room_shows = !phase.settled || s.cards.is_empty()
+    let lean = if !motion { vec2(0.0) } else if room_shows { toward * 0.7 + breath } else {
+        toward * 0.7
+    }
     s.sway = if intro && !phase.settled { vec2(0.0) } else if intro && phase.library == 0.0 {
         lean
     } else {
         mix(s.sway, lean, ease(2.0))
     }
-    // The room's light takes the colour of the selected game's art as the library comes up,
-    // and eases to the next as the selection changes. The opening stays white.
-    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
-        vec4(s.covers[s.selected].tint, phase.library)
-    } else { vec4(s.tint.xyz, 0.0) }
+    if length(s.sway - lean) > 0.001 { eased = false }
+    // The home's light takes the colour of the chosen game's hero (or its cover) as the home
+    // comes up, and eases to the next as the selection changes.
+    let art_tint = if s.cards.is_empty() { None } else if s.heroes[s.selected].image.is_some() {
+        Some(s.heroes[s.selected].tint)
+    } else if s.covers[s.selected].image.is_some() { Some(s.covers[s.selected].tint) } else { None }
+    let wanted = match art_tint {
+        Some(t) => vec4(t, phase.library),
+        None => vec4(s.tint.xyz, 0.0),
+    }
     s.tint = if s.tint.w == 0.0 { vec4(wanted.xyz, 0.0) } else { s.tint }
     s.tint = mix(s.tint, wanted, ease(2.5))
+    if length(s.tint - wanted) > 0.002 { eased = false }
+    // The chosen game's hero and title art come in over what stands for them as they arrive.
+    if !s.cards.is_empty() {
+        let hero = if s.heroes[s.title_shown].image.is_some() { 1.0 } else { 0.0 }
+        let logo = if s.logos[s.title_shown].image.is_some() { 1.0 } else { 0.0 }
+        s.hero_in = if hero == 0.0 { 0.0 } else { mix(s.hero_in, 1.0, ease(4.0)) }
+        s.logo_in = if logo == 0.0 { 0.0 } else { mix(s.logo_in, 1.0, ease(6.0)) }
+        if abs(s.hero_in - hero) > 0.002 || abs(s.logo_in - logo) > 0.002 { eased = false }
+    }
+    drive_theme(mut s, phase.library)
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
-    // the slow turn and the camera's breath at the idle rate. The canvas keeps the last frame.
+    // the opening's slow turn and the camera's breath at the idle rate. The canvas keeps the last
+    // frame, so a settled home draws nothing.
     let busy = s.dirty || !s.settled || !eased || intro || (width, height) != s.drawn_size
     let editing = s.pane == Pane::Settings && s.focus == Action::Name
     let since = match s.drawn_at {
         Some(at) => Some(time - at),
         None => None,
     }
-    if !due(since, busy, moving: motion || editing || s.behind) { return }
+    if !due(since, busy, moving: (motion && room_shows) || editing || s.behind) { return }
     s.dirty = false
     s.settled = true
     s.drawn_at = Some(time)
@@ -1613,19 +1820,18 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.drawn_presentation = s.presentation
     let screen = vec2(f32(width), f32(height))
     let cam = camera(screen, s.sway)
-    // The layout is fitted to the camera at rest, so the sway moves the cards against the
-    // far artifact.
+    // The artifact's place is fitted to the camera at rest, so the sway moves it a little.
     let rest = camera(screen, vec2(0.0))
     let margin = w * MARGIN
     s.draw.clear(screen)
     s.controls.clear()
-    s.placed.clear()
+    s.drawn.clear()
     if s.pane != Pane::Games { s.sheet_pane = s.pane }
     if phase.library > 0.0 {
         let games = s.pane == Pane::Games
         if games { focus_ring(mut s) }
         header(mut s, w, margin)
-        library(mut s, w, h, cam, rest, margin)
+        library(mut s, w, h, margin)
         if games { footer(mut s, w, h, margin) }
         // A sheet takes the controls; the library behind it only shows. A closing sheet
         // only shows too.
@@ -1650,59 +1856,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.cursor = Some(host::cursor(if over { "pointer" } else { "default" }))
     }
     s.renderer.upload(s.draw)
-    // The artifact, where the opening or the room has it, traced for the room's camera.
-    let place = artifact_place(phase, artifact_spot(rest))
-    let (coarser, rays) = trace_plan(s.coarser)
-    let size = traced_size(width, height, TRACED_PIXELS, coarser)
-    let grid = tile_grid(width: size.0, height: size.1)
-    if s.room.width() != size.0 || s.room.height() != size.1 {
-        s.room = texture(width: size.0, height: size.1)
-        s.tiles = buffer(grid.0 * grid.1)
-        s.traced = None
-    }
-    let target = vec2(f32(size.0), f32(size.1))
-    let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
-    let look = Artifact {
-        screen: target,
-        lens: cam.screen.z,
-        eye: cam.eye,
-        target: cam.target,
-        place,
-        // The tesseract at rest in the opening is still: no light or ripple moves on it. Without
-        // motion, nothing moves on it at all.
-        time: if motion { clock_at(s.presentation, opening: intro) } else { 7.0 },
-        // Dimmer in the library, as far off as it stands, so the games come first.
-        light: if phase.settled { 0.72 } else { 1.0 },
-        // A tint that takes the light nowhere: its colour changes nothing.
-        tint: if s.tint.w > 0.0 { s.tint } else { vec4(0.0) },
-        rays,
-        columns: grid.0,
-    }
-    // Traced again only when it would look different, and at most at its rate: the room keeps
-    // the last tracing meanwhile.
-    let changed = match s.traced {
-        Some((t, l)) => t != turn || !same_look(l, look),
-        None => true,
-    }
-    let hz = if phase.settled { ROOM_TRACE_HZ } else { OPENING_TRACE_HZ }
-    s.behind = changed && s.traced.is_some() && time - s.traced_at < 1.0 / hz - SLACK
-    if changed && !s.behind {
-        let verts = corners(turn, place.xyz, place.w)
-        let shapes = shapes(verts, place.w)
-        write(mut s.struts, 0, shapes.struts)
-        write(mut s.panes, 0, shapes.panes)
-        write(mut s.tiles, 0, tiles(look, verts, shapes.struts, shapes.panes))
-        let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
-        draw(
-            space,
-            quad.bind(target, rect: vec4(0.0, 0.0, target)),
-            artifact.bind(struts: s.struts, panes: s.panes, tiles: s.tiles, look: look),
-            vertices: 6,
-        )
-        space.end()
-        s.traced = Some((turn, look))
-        s.traced_at = time
-    }
+    // The artifact, where the opening or the room has it, traced for the room's camera: only
+    // while the room shows, the opening's or, with no game to show yet, the home's.
+    if room_shows { trace_room(mut s, phase, cam, rest, width, height, time, motion, intro) }
     // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
     // up, then going down into the dark with it; small in the header with the library.
     let marks = [
@@ -1727,73 +1883,66 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(
-        pass,
-        quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        stage.bind(
-            room: s.room,
-            linear: s.linear,
-            camera: cam,
-            look: Stage { reveal: stage_light(phase) },
-        ),
-        vertices: 6,
-    )
-    if phase.library > 0.0 {
-        // The selection stands in a pool of its cover's light, as it settles.
-        for placed in s.placed {
-            if placed.index != s.selected { continue }
-            let b = bounds(cam, placed.card)
-            let foot = vec2(b.x + b.z * 0.5, b.y + b.w)
-            let radii = vec2(b.z * 0.85, b.w * 0.32)
-            let strength = 0.32 * placed.card.look.w * placed.card.look.w * phase.library
-            draw(
-                pass,
-                quad.bind(screen, rect: vec4(foot - radii * 1.6, radii * 3.2)),
-                pool.bind(
-                    look: Pool { ellipse: vec4(foot, radii), color: vec4(s.tint.xyz, strength) },
-                ),
-                vertices: 6,
-            )
+    if room_shows {
+        draw(
+            pass,
+            quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
+            stage.bind(
+                room: s.room,
+                linear: s.linear,
+                camera: cam,
+                look: Stage { reveal: stage_light(phase) },
+            ),
+            vertices: 6,
+        )
+    } else {
+        // The chosen game's hero, or what stands for it, darkened behind the text.
+        let i = s.title_shown
+        let fade = smoothstep(0.0, 1.0, s.title_in)
+        let aspect = screen.x / screen.y
+        let many = s.cards.len() > 1
+        let hero_size = if s.heroes[i].image.is_some() {
+            vec2(f32(s.cards[i].hero.width), f32(s.cards[i].hero.height))
+        } else { vec2(0.0) }
+        let cover = s.cards[i].cover.clone()
+        let thumb = if s.covers[i].small.is_some() {
+            let (w, h) = small_size(cover.width, cover.height)
+            vec2(f32(w), f32(h))
+        } else { vec2(0.0) }
+        let look = Backdrop {
+            sizes: vec4(hero_size, thumb),
+            look: vec4(
+                s.hero_in,
+                phase.library * mix(0.4, 1.0, fade),
+                -s.sway * 10.0 * s.zoom,
+            ),
+            tint: vec4(s.tint.xyz, s.tint.w),
+            screen: vec4(
+                screen,
+                if aspect >= 1.2 { 0.62 } else { 1.2 },
+                if many || aspect < 1.2 { 0.62 } else { 0.5 },
+            ),
         }
-        for k in depth_order(s.placed) {
-            let placed = s.placed[k]
-            let card = room::Card {
-                look: vec4(
-                    placed.card.look.x * phase.library,
-                    placed.card.look.y,
-                    placed.card.look.z * phase.library,
-                    placed.card.look.w,
-                ),
-                ..placed.card,
-            }
-            var drawn = false
-            if placed.art {
-                if let Some(t) = s.covers[placed.index].image {
-                    draw(
-                        pass,
-                        block_corner.bind(camera: cam, card: card),
-                        block_face.bind(art: t, linear: s.linear, card: card, has_art: 1.0),
-                        vertices: 36,
-                    )
-                    drawn = true
+        if let Some(hero) = s.heroes[i].image {
+            if let Some(cover) = s.covers[i].small {
+                lay_backdrop(pass, screen, hero, cover, s.linear, look)
+            } else { lay_backdrop(pass, screen, hero, s.blank, s.linear, look) }
+        } else if let Some(cover) = s.covers[i].small {
+            lay_backdrop(pass, screen, s.blank, cover, s.linear, look)
+        } else { lay_backdrop(pass, screen, s.blank, s.blank, s.linear, look) }
+        // The title art and the covers on the shelf over it.
+        for d in s.drawn {
+            let r = snapped(d.rect, s.zoom)
+            let rect = vec4(r.x, r.y, r.w, r.h)
+            let radius = if d.kind == Art::Cover { 6.0 * s.zoom } else { 0.0 }
+            let look = Picture { rect, look: vec4(d.alpha, radius, d.bright, 0.0) }
+            if d.kind == Art::Cover {
+                if let Some(t) = s.covers[d.index].image {
+                    lay_picture(pass, screen, t, s.linear, look)
                 }
+            } else if let Some(t) = s.logos[d.index].image {
+                lay_picture(pass, screen, t, s.linear, look)
             }
-            if !drawn {
-                draw(
-                    pass,
-                    block_corner.bind(camera: cam, card: card),
-                    block_face.bind(art: s.blank, linear: s.linear, card: card, has_art: 0.0),
-                    vertices: 36,
-                )
-            }
-            // Its edges over it: one CSS pixel wide, on any screen.
-            let edges = Edges { width: max(s.pixel_ratio, 1.0) }
-            draw(
-                pass,
-                block_edge.bind(camera: cam, card: card, look: edges),
-                block_line.bind(card: card, look: edges),
-                vertices: 72,
-            )
         }
     }
     for k in 0..2 {
@@ -1824,6 +1973,141 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     if s.clicked.is_some() { s.pressed = None }
+}
+
+fn lay_backdrop<P: RenderPass>(
+    pass: P,
+    screen: vec2,
+    hero: Texture<Rgba8>,
+    cover: Texture<Rgba8>,
+    linear: Sampler,
+    look: Backdrop,
+) {
+    draw(
+        pass,
+        quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
+        backdrop.bind(hero: hero, cover: cover, linear: linear, look: look),
+        vertices: 6,
+    )
+}
+
+fn lay_picture<P: RenderPass>(
+    pass: P,
+    screen: vec2,
+    image: Texture<Rgba8>,
+    linear: Sampler,
+    look: Picture,
+) {
+    draw(
+        pass,
+        quad.bind(screen, rect: look.rect),
+        picture.bind(image: image, linear: linear, look: look),
+        vertices: 6,
+    )
+}
+
+// Traces the artifact into the room's layer, where the opening (or the room, with no game to
+// show) has it, if it would look different from the last tracing and its rate allows.
+fn trace_room(
+    s: mut Console,
+    phase: opening::Moment,
+    cam: room::Camera,
+    rest: room::Camera,
+    width: u32,
+    height: u32,
+    time: f32,
+    motion: bool,
+    intro: bool,
+) {
+    let place = artifact_place(phase, artifact_spot(rest))
+    let (coarser, rays) = trace_plan(s.coarser)
+    let size = traced_size(width, height, TRACED_PIXELS, coarser)
+    let grid = tile_grid(width: size.0, height: size.1)
+    if s.room.width() != size.0 || s.room.height() != size.1 {
+        s.room = texture(width: size.0, height: size.1)
+        s.tiles = buffer(grid.0 * grid.1)
+        s.traced = None
+    }
+    let target = vec2(f32(size.0), f32(size.1))
+    let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
+    let look = Artifact {
+        screen: target,
+        lens: cam.screen.z,
+        eye: cam.eye,
+        target: cam.target,
+        place,
+        // The tesseract at rest in the opening is still: no light or ripple moves on it. Without
+        // motion, nothing moves on it at all.
+        time: if motion { clock_at(s.presentation, opening: intro) } else { 7.0 },
+        // Dimmer in the room, as far off as it stands.
+        light: if phase.settled { 0.72 } else { 1.0 },
+        // A tint that takes the light nowhere: its colour changes nothing.
+        tint: vec4(0.0),
+        rays,
+        columns: grid.0,
+    }
+    // Traced again only when it would look different, and at most at its rate: the room keeps
+    // the last tracing meanwhile.
+    let changed = match s.traced {
+        Some((t, l)) => t != turn || !same_look(l, look),
+        None => true,
+    }
+    let hz = if phase.settled { ROOM_TRACE_HZ } else { OPENING_TRACE_HZ }
+    s.behind = changed && s.traced.is_some() && time - s.traced_at < 1.0 / hz - SLACK
+    if changed && !s.behind {
+        let verts = corners(turn, place.xyz, place.w)
+        let shapes = shapes(verts, place.w)
+        write(mut s.struts, 0, shapes.struts)
+        write(mut s.panes, 0, shapes.panes)
+        write(mut s.tiles, 0, tiles(look, verts, shapes.struts, shapes.panes))
+        let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(
+            space,
+            quad.bind(target, rect: vec4(0.0, 0.0, target)),
+            artifact.bind(struts: s.struts, panes: s.panes, tiles: s.tiles, look: look),
+            vertices: 6,
+        )
+        space.end()
+        s.traced = Some((turn, look))
+        s.traced_at = time
+    }
+}
+
+// Plays the chosen game's theme softly while the home shows it: fetched and read once it's
+// chosen, given to the voice once the voice has fallen quiet from the last game's, and its level
+// eased up or down. Quiet while a game opens or plays, with the music setting off, or with no
+// theme.
+fn drive_theme(s: mut Console, library: f32) {
+    if s.cards.is_empty() { return }
+    let chosen = s.selected
+    if s.theme_of != Some(chosen) {
+        s.theme_of = Some(chosen)
+        s.theme = None
+        borrow path = s.cards[chosen].theme
+        s.theme_load = if path.is_empty() { None } else { Some(fetch(path)) }
+    }
+    if let Some(Ok(bytes)) = poll(mut s.theme_load) {
+        if let Some(text) = String::from_utf8(bytes.clone()) { s.theme = theme::read(text) }
+    }
+    let wanted = if s.music && library >= 1.0 && browsing(s.step) && s.closing.is_none() {
+        1.0
+    } else { 0.0 }
+    if s.theme_sent != Some(chosen) && s.theme.is_some() {
+        if s.voice_level > 0.0 {
+            if theme::level(mut s.voice, 0.0) {
+                s.voice_level = 0.0
+                s.quiet_at = s.presentation
+            }
+        } else if s.presentation - s.quiet_at >= QUIET_SECONDS {
+            let Some(t) = s.theme else { return }
+            if theme::send(mut s.voice, t) { s.theme_sent = Some(chosen) }
+        }
+    }
+    let level = if s.theme_sent == Some(chosen) { wanted } else { 0.0 }
+    if level != s.voice_level && theme::level(mut s.voice, level) {
+        if level == 0.0 { s.quiet_at = s.presentation }
+        s.voice_level = level
+    }
 }
 
 // Where mark `at` (its centre and pixels per em, logical) is on a screen at `zoom`: its centre
@@ -1959,18 +2243,6 @@ fn same_look(a: Artifact, b: Artifact) -> bool {
         a.rays == b.rays
 }
 
-// The placed cards' order from farthest to nearest.
-fn depth_order(placed: [Placed]) -> Vec<u32> {
-    var order: Vec<u32> = Vec::new()
-    for i in 0..placed.len() { order.push(i) }
-    for i in 0..order.len() {
-        for j in i + 1..order.len() {
-            if placed[order[j]].card.centre.z < placed[order[i]].card.centre.z { order.swap(i, j) }
-        }
-    }
-    order
-}
-
 @test
 fn cover_requests_stay_within_reach_of_the_selection() {
     for selected in 0..20 {
@@ -1982,17 +2254,33 @@ fn cover_requests_stay_within_reach_of_the_selection() {
 }
 
 @test
-fn a_title_offers_new_alone_until_it_has_saves() {
+fn a_title_offers_play_alone_until_it_has_saves_and_continue_names_where() {
     let fresh = actions(has_saves: false)
-    assert(fresh.len() == 1 && fresh[0] == Action::NewGame)
+    assert(fresh.len() == 1 && fresh[0] == Action::Play)
+    assert(action_label(Action::Play, opening: false, continuing: None) == "Play")
     let played = actions(has_saves: true)
     assert(played.len() == 3)
     assert(
-        played[0] == Action::Continue && played[1] == Action::NewGame && played[2] == Action::Load,
+        played[0] == Action::Play && played[1] == Action::NewGame && played[2] == Action::Load,
     )
+    let save = |place: Text| SaveInfo {
+        slot: String::from("continue"),
+        label: String::from("Continue"),
+        description: String::from("3 of 9 levels"),
+        place: String::from(place),
+        saved: 0,
+    }
+    let continuing = |place: Text| action_label(
+        Action::Play,
+        opening: false,
+        continuing: Some(save(place)),
+    )
+    assert(continuing("The Wetlands") == "Continue: The Wetlands")
+    assert(continuing("") == "Continue", "no place, no colon")
+    assert(action_label(Action::Play, opening: true, continuing: None) == "Opening")
     assert(
-        action_label(Action::NewGame, opening: false) == "New" &&
-            action_label(Action::Load, opening: false) == "Load",
+        action_label(Action::NewGame, opening: false, continuing: None) == "New game" &&
+            action_label(Action::Load, opening: false, continuing: None) == "Load",
     )
 }
 
@@ -2030,22 +2318,22 @@ fn focus_moves_across_rows_and_along_them() {
     let controls = [
         row(Action::Settings, 900.0, 0),
         row(Action::Game { index: 0 }, 50.0, 1),
-        row(Action::Continue, 50.0, 2),
+        row(Action::Play, 50.0, 2),
         row(Action::Load, 200.0, 2),
     ]
-    assert(neighbour(controls, Action::Continue, Move::Right) == Some(Action::Load))
+    assert(neighbour(controls, Action::Play, Move::Right) == Some(Action::Load))
     assert(neighbour(controls, Action::Load, Move::Right).is_none())
-    assert(neighbour(controls, Action::Continue, Move::Up) == Some(Action::Game { index: 0 }))
+    assert(neighbour(controls, Action::Play, Move::Up) == Some(Action::Game { index: 0 }))
     assert(neighbour(controls, Action::Game { index: 0 }, Move::Up) == Some(Action::Settings))
-    assert(neighbour(controls, Action::Continue, Move::Down).is_none())
+    assert(neighbour(controls, Action::Play, Move::Down).is_none())
     assert(neighbour(controls, Action::Retry, Move::Down) == Some(Action::Settings))
-    // From an album far to the right, down still reaches the main action first.
+    // From a tile far to the right, down still reaches the main action first.
     let wide = [
         row(Action::Game { index: 4 }, 900.0, 1),
-        row(Action::Continue, 50.0, 2),
+        row(Action::Play, 50.0, 2),
         row(Action::Retry, 400.0, 2),
     ]
-    assert(neighbour(wide, Action::Game { index: 4 }, Move::Down) == Some(Action::Continue))
+    assert(neighbour(wide, Action::Game { index: 4 }, Move::Down) == Some(Action::Play))
 }
 
 @test
@@ -2063,12 +2351,14 @@ fn a_queued_play_uses_the_current_save_or_explicit_new_game() {
             slot: String::from("continue"),
             label: String::new(),
             description: String::new(),
+            place: String::new(),
             saved: 0,
         },
         SaveInfo {
             slot: String::from("imported"),
             label: String::new(),
             description: String::new(),
+            place: String::new(),
             saved: 0,
         },
     ]
@@ -2107,7 +2397,7 @@ fn an_invalid_utf8_catalog_finishes_with_an_error() {
 
 @test
 fn every_valid_game_key_has_a_downloadable_export_name() {
-    let cards = parse("-first\tFirst\turl\timage\t1\t1").unwrap()
+    let cards = parse("-first\tFirst\turl\timage\t1\t1\t\t0\t0\t\t0\t0\t\t").unwrap()
     let plan = export_plan(cards[0].id, "player-1", "continue")
     assert(valid_key(plan.game))
     let name = export_name(plan)
@@ -2219,6 +2509,23 @@ fn a_reload_starts_at_the_library_and_a_visit_plays_the_opening() {
     assert(host::read_environment(reload).reloaded)
     let short = host::read_environment([u8(1), u8(0), u8(0), u8(0), u8(0)])
     assert(!short.reloaded, "a host that doesn't say: a visit")
+}
+
+@test
+fn a_small_copy_keeps_the_aspect_and_averages_its_boxes() {
+    assert(small_size(width: 960, height: 540) == (48, 27))
+    assert(small_size(width: 20, height: 10) == (20, 10))
+    // Two by one: a black pixel and a white one, and of a 96 × 2 of halves, each box's mean.
+    var halves: Vec<u8> = Vec::new()
+    for _ in 0..2 {
+        for x in 0..96 {
+            let v = if x < 48 { 0 } else { 200 }
+            for c in [v, v, v, 255] { halves.push(u8(c)) }
+        }
+    }
+    let small = shrunk(halves, width: 96, height: 2)
+    assert(small.len() == 48 * 1 * 4)
+    assert(small[0] == 0 && small[47 * 4] == 200 && small[3] == 255)
 }
 
 @test

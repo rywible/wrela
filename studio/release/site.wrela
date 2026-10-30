@@ -493,6 +493,10 @@ pub fn catalog_json(c: Catalog) -> Json {
         game.push(member("session", text(g.session)))
         game.push(member("builds", Json::Obj(take builds)))
         game.push(member("cover", text(g.cover)))
+        game.push(member("hero", text(g.hero)))
+        game.push(member("logo", text(g.logo)))
+        game.push(member("tagline", text(g.tagline)))
+        game.push(member("theme", text(g.theme)))
         games.push(Json::Obj(take game))
     }
     var top: Vec<(String, Json)> = Vec::new()
@@ -502,13 +506,32 @@ pub fn catalog_json(c: Catalog) -> Json {
     Json::Obj(take top)
 }
 
-/// A game's line of the console's catalog: its id, title, session's address, cover file and the
-/// cover's size, between tabs.
-pub fn catalog_line(game: Game, release: str, cover: str, width: u32, height: u32) -> String {
+/// An image the release made for the console: its file's name and its size. No name: none.
+pub struct Shipped: Clone {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A game's line of the console's catalog, between tabs: its id, title and session's address;
+/// its cover's, hero's and title art's files and sizes; its tagline; and its theme's file.
+pub fn catalog_line(
+    game: Game,
+    release: str,
+    cover: Shipped,
+    hero: Shipped,
+    logo: Shipped,
+    theme: str,
+) -> String {
     let o = origin_of(game.domain)
-    String::from(
-        f"{game.id}\t{game.title}\t{o.as_str()}/releases/{release}/{game.session}/\t{cover}\t{width}\t{height}",
+    var line = String::from(
+        f"{game.id}\t{game.title}\t{o.as_str()}/releases/{release}/{game.session}/",
     )
+    for art in [cover.clone(), hero.clone(), logo.clone()] {
+        line.push_str(f"\t{art.name.as_str()}\t{art.width}\t{art.height}")
+    }
+    line.push_str(f"\t{game.tagline}\t{theme}")
+    line
 }
 
 /// The builds of `game` in the order the console fetches them: the session first, then the

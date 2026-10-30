@@ -1,6 +1,6 @@
-// The console's GPU work: the void around the traced artifact, the games' blocks in
-// perspective, and the flat mark.
-use room::{Camera, Card, corner, project, turned}
+// The console's GPU work: the void around the traced artifact in the opening, the chosen game's
+// hero behind the home, its title art and the games' covers, and the flat mark.
+use room::Camera
 use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Rgba16Float, Sampler, Texture, VertexIndex}
 use brand::facet::{CAP, MARK_HALF, MarkRun, mark_distance}
 
@@ -53,184 +53,101 @@ pub fn stage(
     vec4(tone(seen.xyz * 1.6) * look.reveal, 1.0)
 }
 
-pub struct BlockVertex {
-    pub position: ClipPosition,
-    // Across its face from 0 to 1 (v down), and the face's width and height (world units).
-    pub uv: vec2,
-    pub extent: vec2,
-    // The face: 0 to 3 the sides, from the front round to the right; 4 the top, 5 the bottom.
-    pub face: f32,
-    pub normal: vec3,
+// The home behind the text: the chosen game's hero, filling the screen, darkened behind the text
+// by a soft gradient in its own colour. Until its hero comes, its cover blurred in its place, and
+// before that its colour: never an empty dark.
+pub struct Backdrop: Copy + GpuData {
+    // The hero's size and the cover's small copy's, in pixels: 0 while it isn't there.
+    pub sizes: vec4,
+    // How far the hero has come in over what stands in for it, how lit it all is, and how far
+    // the picture has drifted, in pixels.
+    pub look: vec4,
+    // The game's colour, and how much of the gradient's dark takes it.
+    pub tint: vec4,
+    // The screen's size, how far across the text's side darkens (a fraction of the width), and
+    // how high the dark along the bottom reaches (a fraction of the height).
+    pub screen: vec4,
 }
 
-// A block's 36 corners: two triangles a face. A face turned away from the eye collapses, so
-// the faces drawn never overlap: a block is convex.
-@vertex
-pub fn block_corner(v: VertexIndex, camera: Camera, card: Card) -> BlockVertex {
-    let corners = [
-        vec2(0.0, 0.0),
-        vec2(1.0, 0.0),
-        vec2(0.0, 1.0),
-        vec2(0.0, 1.0),
-        vec2(1.0, 0.0),
-        vec2(1.0, 1.0),
-    ]
-    // Each face's outward normal, the way across it and the way up it.
-    let normals = [
-        vec3(0.0, 0.0, 1.0),
-        vec3(1.0, 0.0, 0.0),
-        vec3(0.0, 0.0, -1.0),
-        vec3(-1.0, 0.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, -1.0, 0.0),
-    ]
-    let acrosses = [
-        vec3(1.0, 0.0, 0.0),
-        vec3(0.0, 0.0, -1.0),
-        vec3(-1.0, 0.0, 0.0),
-        vec3(0.0, 0.0, 1.0),
-        vec3(1.0, 0.0, 0.0),
-        vec3(1.0, 0.0, 0.0),
-    ]
-    let ups = [
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, 0.0, -1.0),
-        vec3(0.0, 0.0, 1.0),
-    ]
-    let face = v.index / 6
-    let uv = corners[v.index % 6]
-    let (n, across, up) = (normals[face], acrosses[face], ups[face])
-    let normal = turned(card, n)
-    let facing = dot(normal, camera.eye.xyz - corner(card, n * 0.5)) > 0.0
-    let s = project(camera, corner(card, n * 0.5 + across * (uv.x - 0.5) + up * (0.5 - uv.y)))
-    let ndc = vec2(s.x / camera.screen.x * 2.0 - 1.0, 1.0 - s.y / camera.screen.y * 2.0)
-    // Clip w is the depth, so the art is interpolated in perspective.
-    let position = if facing { vec4(ndc * s.z, 0.5, s.z) } else { vec4(2.0, 2.0, 2.0, 1.0) }
-    BlockVertex {
-        position: ClipPosition { position },
-        uv,
-        extent: vec2(length(across * card.size.xyz), length(up * card.size.xyz)),
-        face: f32(face),
-        normal,
-    }
+// The pixel of an image of `size` that fills the screen (cropping its overflow, centred) at
+// screen pixel `p`, a little larger than the screen so a drift of `drift` pixels never shows an
+// edge; as a fraction of the image.
+fn filling(p: vec2, screen: vec2, size: vec2, drift: vec2) -> vec2 {
+    let scale = max(screen.x / size.x, screen.y / size.y) * 1.03
+    ((p - drift - screen * 0.5) / scale + size * 0.5) / size
 }
 
-// A game's block: its cover on its sides, the middle of it as wide as each face allows, so the
-// chosen block's front shows all of it; the top and bottom dark. Lit from above and in front.
-// Its edges are drawn over it (`block_edge`).
+// A cheap hash of a pixel, 0 to 1, to dither the gradient's long, smooth ramps.
+fn grain(p: vec2) -> f32 {
+    fract(sin(dot(floor(p), vec2(12.9898, 78.233))) * 43758.547)
+}
+
 @fragment
-pub fn block_face(
-    v: BlockVertex,
-    art: Texture<Rgba8>,
+pub fn backdrop(
+    v: Vertex,
+    hero: Texture<Rgba8>,
+    cover: Texture<Rgba8>,
     linear: Sampler,
-    card: Card,
-    has_art: f32,
-) -> Over {
-    let face = u32(v.face + 0.5)
-    let shown = min(v.extent.x / v.extent.y * 0.5625, 1.0)
-    let sampled = art.sample_level(linear, vec2(0.5 + (v.uv.x - 0.5) * shown, v.uv.y), 0.0).xyz
-    let cover = mix(vec3(0.11, 0.11, 0.12), sampled, has_art)
-    let surface = if face < 4 { cover } else { vec3(0.05, 0.05, 0.055) }
-    let light = normalize(vec3(-0.35, 0.6, 0.75))
-    var shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), light))
-    // The chosen block's front (its back, after its half turn) shows its cover as it is.
-    if face == 0 || face == 2 { shade = mix(shade, 1.0, card.look.w) }
-    Over { color: vec4(surface * shade * card.look.x, card.look.z) }
-}
-
-// How a block's edges are drawn: their width in pixels.
-pub struct Edges: Copy + GpuData {
-    pub width: f32,
-}
-
-pub struct EdgeVertex {
-    pub position: ClipPosition,
-    // The pixel, and the edge's two ends on the screen.
-    pub pixel: vec2,
-    pub ends: vec4,
-}
-
-// A block's twelve edges, six corners each: a quad round each edge's line on the screen,
-// wide enough for the line and the pixel that smooths it. An edge shows where either face it
-// joins is turned toward the eye; behind the block, it collapses.
-@vertex
-pub fn block_edge(v: VertexIndex, camera: Camera, card: Card, look: Edges) -> EdgeVertex {
-    let e = v.index / 6
-    let k = v.index % 6
-    let along = e / 4
-    let s1 = if (e % 4) % 2 == 0 { -0.5 } else { 0.5 }
-    let s2 = if (e % 4) / 2 == 0 { -0.5 } else { 0.5 }
-    // The edge runs along one axis; the faces it joins face along the other two.
-    var a = vec3(-0.5, s1, s2)
-    var b = vec3(0.5, s1, s2)
-    var m1 = vec3(0.0, s1 * 2.0, 0.0)
-    var m2 = vec3(0.0, 0.0, s2 * 2.0)
-    if along == 1 {
-        a = vec3(s1, -0.5, s2)
-        b = vec3(s1, 0.5, s2)
-        m1 = vec3(s1 * 2.0, 0.0, 0.0)
-        m2 = vec3(0.0, 0.0, s2 * 2.0)
-    } else if along == 2 {
-        a = vec3(s1, s2, -0.5)
-        b = vec3(s1, s2, 0.5)
-        m1 = vec3(s1 * 2.0, 0.0, 0.0)
-        m2 = vec3(0.0, s2 * 2.0, 0.0)
+    look: Backdrop,
+) -> vec4 {
+    let screen = look.screen.xy
+    let p = v.pixel
+    let drift = look.look.zw
+    // What stands in for the hero: its colour, lit from above, and over it, once it's here, the
+    // cover's small copy, blurred over a disc of 13 taps and dimmed, so it reads as colour and
+    // shape, not as a picture. Before any art, a near black, which takes the art's colour as it
+    // comes.
+    let colour = mix(vec3(0.16), look.tint.xyz, look.tint.w)
+    var stand = colour * mix(0.42, 0.18, p.y / screen.y)
+    if look.sizes.z > 0.0 {
+        let at = filling(p, screen, look.sizes.zw, drift * 0.6)
+        let reach = vec2(1.6 / look.sizes.z, 1.6 / look.sizes.w)
+        var sum = cover.sample_level(linear, at, 0.0).xyz
+        for k in 0..12 {
+            let a = f32(k) * 2.3999632
+            let r = sqrt((f32(k) + 0.5) / 12.0)
+            sum += cover.sample_level(linear, at + vec2(cos(a), sin(a)) * reach * r, 0.0).xyz
+        }
+        stand = sum / 13.0 * 0.78
     }
-    let eye = camera.eye.xyz
-    let shows = dot(turned(card, m1), eye - corner(card, m1 * 0.5)) > 0.0 ||
-        dot(turned(card, m2), eye - corner(card, m2 * 0.5)) > 0.0
-    let p0 = project(camera, corner(card, a)).xy
-    let p1 = project(camera, corner(card, b)).xy
-    let span = p1 - p0
-    let length_ = length(span)
-    let dir = if length_ > 0.0001 { span / length_ } else { vec2(1.0, 0.0) }
-    let side = vec2(-dir.y, dir.x)
-    let half = look.width * 0.5 + 1.0
-    let corners = [
-        vec2(0.0, -1.0),
-        vec2(1.0, -1.0),
-        vec2(0.0, 1.0),
-        vec2(0.0, 1.0),
-        vec2(1.0, -1.0),
-        vec2(1.0, 1.0),
-    ]
-    let c = corners[k]
-    let pixel = mix(p0 - dir * half, p1 + dir * half, c.x) + side * half * c.y
-    let ndc = vec2(pixel.x / camera.screen.x * 2.0 - 1.0, 1.0 - pixel.y / camera.screen.y * 2.0)
-    let position = if shows { vec4(ndc, 0.5, 1.0) } else { vec4(2.0, 2.0, 2.0, 1.0) }
-    EdgeVertex { position: ClipPosition { position }, pixel, ends: vec4(p0, p1) }
+    var color = stand
+    if look.sizes.x > 0.0 {
+        let at = filling(p, screen, look.sizes.xy, drift)
+        color = mix(stand, hero.sample_level(linear, at, 0.0).xyz, look.look.x)
+    }
+    // The dark behind the text: across from the left, up from the bottom, and a little under the
+    // header, each a soft ramp, together as layers of shade over each other.
+    let x = p.x / screen.x
+    let y = p.y / screen.y
+    let across = 1.0 - smoothstep(0.0, look.screen.z, x)
+    let side = 0.86 * across * across * (3.0 - 2.0 * across)
+    let low = 0.78 * smoothstep(1.0 - look.screen.w, 1.0, y)
+    let high = 0.4 * (1.0 - smoothstep(0.0, 0.14, y))
+    let shade = 1.0 - (1.0 - side) * (1.0 - low) * (1.0 - high)
+    let dark = look.tint.xyz * 0.05 * look.tint.w
+    let shaded = mix(color, dark, shade) * look.look.y
+    vec4(shaded + vec3((grain(p) - 0.5) / 255.0), 1.0)
 }
 
-// A block's edge: a silver line `width` pixels wide, its sides smoothed over a pixel, as the
-// artifact's struts; brighter under the pointer.
-@fragment
-pub fn block_line(v: EdgeVertex, card: Card, look: Edges) -> Over {
-    let a = v.ends.xy
-    let b = v.ends.zw
-    let span = b - a
-    let t = saturate(dot(v.pixel - a, span) / max(dot(span, span), 0.0001))
-    let d = length(v.pixel - (a + span * t))
-    let coverage = saturate(look.width * 0.5 + 0.5 - d)
-    let silver = mix(vec3(0.78, 0.79, 0.82), vec3(1.0), card.look.y)
-    let strength = mix(0.6, 1.0, card.look.y)
-    Over { color: vec4(silver, coverage * strength * card.look.z) }
-}
-
-// The light the selection stands in: an ellipse on the floor beneath it, in its cover's colour.
-pub struct Pool: Copy + GpuData {
-    // Its centre and its radii, in pixels; its colour and how strong it is.
-    pub ellipse: vec4,
-    pub color: vec4,
+// A picture in a rectangle: a game's title art, or its cover on a tile.
+pub struct Picture: Copy + GpuData {
+    // Where it's drawn, in pixels: its corner and size.
+    pub rect: vec4,
+    // How opaque it is, the radius of its corners in pixels, and how bright.
+    pub look: vec4,
 }
 
 @fragment
-pub fn pool(v: Vertex, look: Pool) -> Over {
-    let d = length((v.pixel - look.ellipse.xy) / look.ellipse.zw)
-    let light = exp(-d * d * 2.5) * look.color.w
-    Over { color: vec4(look.color.xyz, light) }
+pub fn picture(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Picture) -> Over {
+    let size = look.rect.zw
+    let uv = (v.pixel - look.rect.xy) / size
+    let seen = image.sample_level(linear, uv, 0.0)
+    // Its corners rounded, their edges smoothed over a pixel.
+    let radius = look.look.y
+    let q = abs(v.pixel - look.rect.xy - size * 0.5) - (size * 0.5 - vec2(radius))
+    let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius
+    let inside = saturate(0.5 - d)
+    Over { color: vec4(seen.xyz * look.look.z, seen.w * inside * look.look.x) }
 }
 
 // The mark's ink: how much of each pixel the mark covers, drawn once a size into a layer

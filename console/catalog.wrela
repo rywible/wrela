@@ -2,59 +2,105 @@
 use platform::protocol::valid_key
 use std::io::path_problem
 
+// An image the release shipped beside the catalog: its path and its size, which the host decodes
+// it to (`host::decode_image`). A path left empty: none.
+pub struct Art: Clone {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+// A game: its id, title and session's address; its cover, on its tile; its hero, the art behind
+// the home screen when it's chosen; its title art, in place of its title; a line that sells it;
+// and its theme, a melody the home plays softly while it's chosen (`theme`), each optional but
+// the cover.
 pub struct Card: Clone {
     pub id: String,
     pub title: String,
     pub session: String,
-    pub cover: String,
-    pub width: u32,
-    pub height: u32,
+    pub cover: Art,
+    pub hero: Art,
+    pub logo: Art,
+    pub tagline: String,
+    pub theme: String,
+}
+
+// The columns of a line, between tabs: id, title, session, the cover's path, width and height,
+// the hero's, the title art's, the tagline and the theme's path.
+const COLUMNS: u32 = 14
+// The longest tagline, in bytes.
+const TAGLINE: u32 = 200
+
+fn art(path: String, width: Option<u32>, height: Option<u32>, optional: bool) -> Option<Art> {
+    let (Some(width), Some(height)) = (width, height) else { return None }
+    if path.is_empty() && optional && width == 0 && height == 0 {
+        return Some(Art { path: path.clone(), width, height })
+    }
+    if path_problem(path).is_some() || width == 0 || height == 0 || width > 2048 || height > 2048 {
+        return None
+    }
+    Some(Art { path: path.clone(), width, height })
 }
 
 pub fn parse(text: str) -> Option<Vec<Card>> {
     var cards: Vec<Card> = Vec::new()
     for line in text.lines() {
-        borrow row = text.slice(line.0, line.1).trim()
-        if row.is_empty() { continue }
+        // Not trimmed: the columns at its end may be empty.
+        borrow raw = text.slice(line.0, line.1)
+        if raw.trim().is_empty() { continue }
+        borrow row = if raw.ends_with("\r") { raw.slice(0, raw.len() - 1) } else { raw }
         let columns = row.split("\t")
-        if columns.len() != 6 { return None }
+        if columns.len() != COLUMNS { return None }
         let part = |i: u32| row.slice(columns[i].0, columns[i].1).to_string()
-        let Some(width) = part(4).parse_u32() else { return None }
-        let Some(height) = part(5).parse_u32() else { return None }
-        let (id, title, session, cover) = (part(0), part(1), part(2), part(3))
+        let number = |i: u32| row.slice(columns[i].0, columns[i].1).parse_u32()
+        let Some(cover) = art(part(3), number(4), number(5), optional: false) else { return None }
+        let Some(hero) = art(part(6), number(7), number(8), optional: true) else { return None }
+        let Some(logo) = art(part(9), number(10), number(11), optional: true) else { return None }
+        let (id, title, session, tagline, theme) = (part(0), part(1), part(2), part(12), part(13))
         if !valid_key(id) ||
             title.is_empty() ||
             session.is_empty() ||
-            path_problem(cover).is_some() ||
-            width == 0 ||
-            height == 0 ||
-            width > 2048 ||
-            height > 2048 { return None }
+            tagline.len() > TAGLINE ||
+            (!theme.is_empty() && path_problem(theme).is_some()) { return None }
         for c in cards { if c.id == id { return None } }
-        cards.push(Card { id, title, session, cover, width, height })
+        cards.push(Card { id, title, session, cover, hero, logo, tagline, theme })
     }
     if cards.is_empty() { None } else { Some(cards) }
 }
 
+// A catalog line with only a cover, for the tests.
+fn line(id: str, cover: str, width: str) -> String {
+    f"{id}\tTitle\turl\t{cover}\t{width}\t1\t\t0\t0\t\t0\t0\t\t"
+}
+
 @test
 fn a_catalog_can_hold_unrelated_games_without_changing_the_console() {
-    let text = "first\tFirst title\thttps://first.example/session/\ta.rgba\t320\t180\nsecond\tSecond title\thttps://second.example/session/\tb.rgba\t640\t360\n"
+    let text = "first\tFirst title\thttps://first.example/session/\ta.webp\t320\t180\thero-a.webp\t1920\t1080\ttitle-a.webp\t800\t240\tA line that sells it\ttheme-a.txt\nsecond\tSecond title\thttps://second.example/session/\tb.webp\t640\t360\t\t0\t0\t\t0\t0\t\t\n"
     let Some(cards) = parse(text) else {
         assert(false, "valid catalog")
         return
     }
     assert(cards.len() == 2 && cards[1].title == "Second title")
-    assert(parse("first\tFirst\turl\timage\t0\t1").is_none())
+    assert(cards[0].hero.width == 1920 && cards[0].logo.path == "title-a.webp")
+    assert(cards[0].tagline == "A line that sells it" && cards[0].theme == "theme-a.txt")
+    assert(cards[1].hero.path.is_empty() && cards[1].logo.path.is_empty())
+    assert(cards[1].tagline.is_empty() && cards[1].theme.is_empty())
+    assert(parse(line("first", "image", "0")).is_none(), "a cover is needed")
     assert(parse("bad\trow").is_none())
-    assert(parse("same\tFirst\turl\timage\t1\t1\nsame\tSecond\turl\timage\t1\t1").is_none())
+    assert(parse(f"{line("same", "a", "1")}\n{line("same", "b", "1")}").is_none())
+    assert(
+        parse("first\tFirst\turl\ta\t1\t1\thero\t0\t0\t\t0\t0\t\t").is_none(),
+        "a hero needs its size",
+    )
+    assert(parse("first\tFirst\turl\ta\t1\t1\t\t5\t5\t\t0\t0\t\t").is_none(), "a size needs art")
 }
 
 @test
-fn catalog_covers_are_valid_relative_fetch_paths() {
-    for cover in [
+fn catalog_art_is_at_valid_relative_fetch_paths() {
+    for path in [
         "",
-        "/cover.rgba",
-        "https://host/cover.rgba",
+        "/cover.webp",
+        "https://host/cover.webp",
         "a\\b",
         "a?b",
         "a#b",
@@ -64,9 +110,15 @@ fn catalog_covers_are_valid_relative_fetch_paths() {
         "a/./b",
         "a/../b",
     ] {
-        assert(parse(f"first\tFirst\turl\t{cover}\t1\t1").is_none(), f"invalid cover: `{cover}`")
+        assert(parse(line("first", path, "1")).is_none(), f"invalid cover: `{path}`")
+        if !path.is_empty() {
+            let hero = f"first\tFirst\turl\ta\t1\t1\t{path}\t1\t1\t\t0\t0\t\t"
+            assert(parse(hero).is_none(), f"invalid hero: `{path}`")
+            let theme = f"first\tFirst\turl\ta\t1\t1\t\t0\t0\t\t0\t0\t\t{path}"
+            assert(parse(theme).is_none(), f"invalid theme: `{path}`")
+        }
     }
-    for cover in ["cover.rgba", "files/cover 1.rgba", "files/cover%23.rgba", "files/%2f.rgba"] {
-        assert(parse(f"first\tFirst\turl\t{cover}\t1\t1").is_some(), cover)
+    for path in ["cover.webp", "files/cover 1.webp", "files/cover%23.webp", "files/%2f.webp"] {
+        assert(parse(line("first", path, "1")).is_some(), path)
     }
 }
