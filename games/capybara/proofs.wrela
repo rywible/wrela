@@ -6,8 +6,11 @@
 // contract tests check the rules of design.md's contracts one at a time.
 
 use body::{Body, Mode, RADIUS, spawn}
-use course::{LAB, LAB_COURSE}
-use feel::{FEEL, STEP}
+use course::{Course, LAB, LAB_COURSE}
+use foes::{Kind, RIDE, SWOOP, Spawn, Touch, dive, foe, step_foe, touch}
+use ground::corner
+use std::math::TAU
+use feel::{FEEL, HZ, STEP}
 use pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
 use std::hash::state_hash
 use std::io::print
@@ -1167,4 +1170,131 @@ fn a_slide_from_a_run_on_the_flat_ends_soon_and_a_fast_one_keeps_its_speed() {
         step(mut w, Pad { bits: RIGHT | DOWN })
     }
     assert(w.body.speed > 20.0 - 2.5 * 0.25 - 1.0e-3, "a fast slide keeps its speed")
+}
+
+// ---- ice, updrafts and the later foes ----------------------------------------------------------
+
+/// A flat test course 200 m long: ordinary ground to 50 m, ice from 50 to 110 m, an updraft over
+/// 120 to 124 m.
+const RINK: Course = Course::new(
+    start: vec2(2.0, 0.35),
+    goal_lo: vec2(190.0, 0.0),
+    goal_hi: vec2(192.0, 5.0),
+    floor: -10.0,
+)
+    .solid(
+        [
+            corner(vec2(-6.0, -20.0)),
+            corner(vec2(-6.0, 10.0)),
+            corner(vec2(-4.0, 10.0)),
+            corner(vec2(-4.0, 0.0)),
+            corner(vec2(200.0, 0.0)),
+            corner(vec2(200.0, 10.0)),
+            corner(vec2(202.0, 10.0)),
+            corner(vec2(202.0, -20.0)),
+        ],
+    )
+    .icy_from(50.0, 110.0)
+    .draft(vec2(120.0, 0.0), vec2(124.0, 14.0))
+
+/// A body at the running speed at `x` on the rink, then let go: how far it goes before it stops.
+fn stopping(x: f32) -> f32 {
+    var b = spawn(vec2(x, RADIUS))
+    b.speed = FEEL.speed
+    b.vel = vec2(FEEL.speed, 0.0)
+    body::step(mut b, Pad { bits: RIGHT }, RINK, FEEL)
+    let from = b.at.x
+    for _ in 0..1200 {
+        body::step(mut b, Pad { bits: 0 }, RINK, FEEL)
+    }
+    b.at.x - from
+}
+
+/// Ticks from rest at `x` on the rink to the running speed.
+fn speeding_up(x: f32) -> u32 {
+    var b = spawn(vec2(x, RADIUS))
+    var t = 0
+    while b.speed < FEEL.speed && t < 1200 {
+        body::step(mut b, Pad { bits: RIGHT }, RINK, FEEL)
+        t += 1
+    }
+    t
+}
+
+@test
+fn ice_has_little_grip_so_stops_and_starts_take_longer() {
+    let (dry, icy) = (stopping(10.0), stopping(60.0))
+    print(f"stopping from a run: {dry:.2} m on the ground, {icy:.2} m on ice")
+    assert(icy > 4.0 * dry && icy < 20.0, "ice slides on, but stops")
+    let (dry_t, icy_t) = (speeding_up(10.0), speeding_up(60.0))
+    assert(icy_t > 3 * dry_t, f"speeding up: {dry_t} ticks on the ground, {icy_t} on ice")
+    // Turning round on ice: still going the old way a while after the stick is turned.
+    var b = spawn(vec2(80.0, RADIUS))
+    b.speed = FEEL.speed
+    b.vel = vec2(FEEL.speed, 0.0)
+    for _ in 0..30 {
+        body::step(mut b, Pad { bits: LEFT }, RINK, FEEL)
+    }
+    assert(b.speed > 0.0, "a quarter second after turning, still sliding right")
+}
+
+@test
+fn an_updraft_lifts_a_falling_capybara_and_lets_it_fall_past_it() {
+    var b = spawn(vec2(122.0, 6.0))
+    b.mode = Mode::Air
+    b.vel = vec2(0.0, -10.0)
+    var lowest = b.at.y
+    for _ in 0..90 {
+        body::step(mut b, Pad { bits: 0 }, RINK, FEEL)
+        lowest = min(lowest, b.at.y)
+    }
+    assert(6.0 - lowest < 1.0, f"it sank {6.0 - lowest} m before it rose")
+    assert(b.vel.y > 0.0 && b.vel.y <= FEEL.draft_speed, f"lifted at {b.vel.y} m/s")
+    assert(b.at.y > 6.0, "and higher than it came in")
+    // Out of the draft's side, it falls as ever.
+    var out = spawn(vec2(126.0, 6.0))
+    out.mode = Mode::Air
+    for _ in 0..30 {
+        body::step(mut out, Pad { bits: 0 }, RINK, FEEL)
+    }
+    assert(out.vel.y < -10.0, "beside it, it falls")
+    // On the ground in it: no lift; the ground holds it.
+    var on = spawn(vec2(122.0, RADIUS))
+    for _ in 0..30 {
+        body::step(mut on, Pad { bits: 0 }, RINK, FEEL)
+    }
+    assert(on.mode == Mode::Walk && abs(on.at.y - RADIUS) < 1.0e-4, "standing in it")
+}
+
+@test
+fn a_gull_glides_then_swoops_to_the_ground_and_up_and_is_stomped_from_above() {
+    assert(dive(0.0) == 0.0 && dive(TAU * 0.5) == 0.0, "gliding")
+    assert(abs(dive(TAU * 0.8) - SWOOP) < 1.0e-3, "the swoop's bottom")
+    var g = foe(Spawn { kind: Kind::Gull, at: vec2(60.0, 4.2), range: 6.0 })
+    var lowest = 4.2
+    for _ in 0..HZ * 3 {
+        step_foe(mut g, RINK)
+        lowest = min(lowest, g.at.y)
+    }
+    assert(abs(lowest - (4.2 - SWOOP)) < 0.05, f"down to {lowest} m")
+    assert(abs(g.at.y - 4.2) < 1.0e-3 || g.at.y < 4.2, "and back up")
+    let top = g.at + vec2(0.0, 0.3 + RADIUS - 0.1)
+    assert(touch(g, top, vec2(0.0, -3.0), RADIUS, 0.0) == Touch::Stomp, "from above")
+    assert(touch(g, g.at - vec2(0.6, 0.0), vec2(9.0, 0.0), RADIUS, 0.0) == Touch::Hurt)
+}
+
+@test
+fn a_komodo_dragon_is_stomped_or_hurts_and_the_ride_is_climbed_on() {
+    let k = foe(Spawn { kind: Kind::Komodo, at: vec2(30.0, 0.4), range: 2.0 })
+    assert(touch(k, vec2(30.0, 1.1), vec2(0.0, -4.0), RADIUS, 0.0) == Touch::Stomp)
+    assert(touch(k, vec2(28.7, 0.35), vec2(9.0, 0.0), RADIUS, 0.0) == Touch::Hurt)
+    let r = foe(Spawn { kind: Kind::Ride, at: vec2(30.0, 0.4), range: 2.0 })
+    assert(touch(r, vec2(28.7, 0.35), vec2(9.0, 0.0), RADIUS, 0.0) == Touch::Ride)
+    // Ridden, it runs on along the ground at the ride's speed.
+    var on = r
+    on.ridden = true
+    for _ in 0..HZ {
+        step_foe(mut on, RINK)
+    }
+    assert(abs(on.at.x - (30.0 + RIDE)) < 0.05 && abs(on.at.y - 0.4) < 1.0e-4, f"at {on.at}")
 }

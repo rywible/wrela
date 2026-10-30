@@ -165,6 +165,7 @@ These taught what natural forms and good renderers do. Nothing was copied, and n
 | USDA NRCS stream restoration guide (2012) and Stream Visual Assessment Protocol 2 (2009) | Pools, riffles, bars and uneven banks |
 | WMO International Cloud Atlas and NOAA's glossary on cumulus; A. Schneider, [Nubis](https://www.guerrilla-games.com/read/nubis-authoring-real-time-volumetric-cloudscapes-with-the-decima-engine) (SIGGRAPH 2017) | Flat grey bases and lit relief; density profiles apart from edge erosion |
 | US National Park Service on weathering and monuments | How rock splits and masonry weathers |
+| Koichi Hayashida (Nintendo), interviewed by Christian Nutt: [The Structure of Fun: Learning from Super Mario 3D Land's Director](https://www.gamedeveloper.com/design/the-structure-of-fun-learning-from-i-super-mario-3d-land-i-s-director) (Gamasutra, 13 April 2012), and the four steps it is known for (introduce, develop, twist, conclude: kishōtenketsu) | A level introduces a thing alone before it combines it with others: the capybara game's checks (games/capybara/route/design.wrela) that a lesson has nothing else to manage and that a new foe comes alone |
 
 ## Programs the tools run
 

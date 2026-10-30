@@ -1,21 +1,28 @@
 // The things to dodge or stomp (design.md, "Rules"): geese that waddle along the ground, pigeons
-// that fly a bobbing patrol, and caimans that patrol under water. Each patrols back and forth
-// within its range of where it starts, deterministically, a tick at a time.
+// that fly a bobbing patrol, caimans that patrol under water, the seagull's crew (gulls that
+// glide high and swoop down to the ground and up again), and Komodo dragons, which waddle as geese
+// do. Each patrols back and forth within its range of where it starts, deterministically, a tick
+// at a time. One Komodo dragon is the zoo's sweetest (`Ride`): touched, it gives the capybara a
+// ride, running on along the ground until the ground ends (world.wrela).
 //
-// Touching one: from above while falling is a stomp (a goose or a pigeon is knocked out, a
-// caiman's snout only bounces), sliding into a goose bowls it over, and anything else hurts.
+// Touching one: from above while falling is a stomp (a goose, a pigeon, a gull or a Komodo dragon
+// is knocked out, a caiman's snout only bounces), sliding into a goose bowls it over, touching the
+// ride climbs on, and anything else hurts.
 
 use course::Course
 use engine::sim::SimState
 use feel::STEP
 use std::hash::StateHash
-use std::math::TAU
+use std::math::{PI, TAU}
 use std::serialize::Serialize
 
 pub enum Kind: Copy + Eq + StateHash + Serialize + SimState + Fieldless {
     Goose,
     Pigeon,
     Caiman,
+    Gull,
+    Komodo,
+    Ride,
 }
 
 /// Where a foe starts and how far either side of it it patrols (m), as a course places it.
@@ -41,6 +48,8 @@ pub struct Foe: Copy + Eq + StateHash + Serialize + SimState {
     pub alive: bool,
     /// Ticks since it was knocked out (it tumbles away), or until a bounced caiman can hurt again.
     pub since: u32,
+    /// A ride with the capybara on it: it runs on (`RIDE`).
+    pub ridden: bool = false,
 }
 
 /// The foe that a course's spawn starts.
@@ -75,6 +84,9 @@ pub fn half(k: Kind) -> vec2 {
         Kind::Goose => vec2(0.4, 0.45),
         Kind::Pigeon => vec2(0.35, 0.25),
         Kind::Caiman => vec2(1.0, 0.3),
+        Kind::Gull => vec2(0.45, 0.3),
+        Kind::Komodo => vec2(1.0, 0.4),
+        Kind::Ride => vec2(1.0, 0.4),
     }
 }
 
@@ -84,7 +96,27 @@ fn pace(k: Kind) -> f32 {
         Kind::Goose => 2.5,
         Kind::Pigeon => 3.0,
         Kind::Caiman => 3.5,
+        Kind::Gull => 4.5,
+        Kind::Komodo => 1.2,
+        Kind::Ride => 1.2,
     }
+}
+
+/// How fast a ride runs with the capybara on it (m/s).
+pub const RIDE: f32 = 13.0
+
+/// A gull's swoop: how far down it dives (m), how long a glide and a swoop last together (s),
+/// and the share of it the swoop takes.
+pub const SWOOP: f32 = 3.6
+const SWOOP_S: f32 = 2.4
+const SWOOP_SHARE: f32 = 0.4
+
+/// How far below its glide a gull is at `phase` (rad) of its swoop's cycle (m): gliding, then down
+/// and up again in an arch.
+pub fn dive(phase: f32) -> f32 {
+    let u = phase / TAU
+    let start = 1.0 - SWOOP_SHARE
+    if u < start { 0.0 } else { SWOOP * sin(PI * (u - start) / SWOOP_SHARE) }
 }
 
 /// A pigeon's bob: how far up and down (m), and how often (Hz).
@@ -100,10 +132,20 @@ pub fn step_foe(f: mut Foe, c: Course) {
         return
     }
     f.since = if f.since > 0 { f.since - 1 } else { 0 }
+    if f.ridden {
+        // Running on with the capybara, along the ground, until the ground ends.
+        let x = f.at.x + RIDE * STEP
+        match c.ground_at(x, f.at.y) {
+            Some(y) => f.at = vec2(x, y + half(f.kind).y),
+            None => {},
+        }
+        f.dir = 1.0
+        return
+    }
     let x = f.at.x + f.dir * pace(f.kind) * STEP
     let turn = abs(x - f.home.x) > f.range
     match f.kind {
-        Kind::Goose => {
+        Kind::Goose | Kind::Komodo | Kind::Ride => {
             match c.ground_at(x, f.at.y) {
                 Some(y) => {
                     if turn {
@@ -123,6 +165,11 @@ pub fn step_foe(f: mut Foe, c: Course) {
         Kind::Caiman => {
             if turn { f.dir = -f.dir } else { f.at.x = x }
         },
+        Kind::Gull => {
+            if turn { f.dir = -f.dir } else { f.at.x = x }
+            f.phase = (f.phase + TAU * STEP / SWOOP_S) % TAU
+            f.at.y = f.home.y - dive(f.phase)
+        },
     }
 }
 
@@ -133,6 +180,8 @@ pub enum Touch: Copy + Eq {
     Stomp,
     /// Sliding into a goose: it's bowled over, and the slide goes on.
     Bowl,
+    /// Touching the ride: the capybara climbs on.
+    Ride,
     Hurt,
 }
 
@@ -149,6 +198,9 @@ pub fn touch(f: Foe, at: vec2, vel: vec2, r: f32, slide: f32) -> Touch {
     let nearest = clamp(at, f.at - h, f.at + h)
     if distance(at, nearest) >= r {
         return Touch::None
+    }
+    if f.kind == Kind::Ride {
+        return Touch::Ride
     }
     let top = f.at.y + h.y
     if vel.y <= 0.0 && at.y - r >= top - FROM_ABOVE {

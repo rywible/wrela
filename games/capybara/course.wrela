@@ -140,6 +140,11 @@ pub struct Course: Clone {
     pub snacks: Vec<vec2>,
     pub yuzus: Vec<vec2>,
     pub checkpoints: Vec<vec2>,
+    /// The icy stretches of ground, each from its left to its right (m): ground whose contact is
+    /// in one has little grip (feel.wrela's `on_ice`).
+    pub ice: Vec<vec2> = Vec::new(),
+    /// The updrafts: boxes in which the air lifts the capybara (feel.wrela's `draft`).
+    pub drafts: Vec<Water> = Vec::new(),
 }
 
 /// A circle's contact with the ground: the piece, its nearest point, the unit normal from that
@@ -202,6 +207,20 @@ impl Course {
     pub fn ended(take self, ends: vec2) -> Course {
         var c = take self
         c.ends = ends
+        c
+    }
+
+    /// With the ground from `lo` to `hi` (m) icy.
+    pub fn icy_from(take self, lo: f32, hi: f32) -> Course {
+        var c = take self
+        c.ice.push(vec2(lo, hi))
+        c
+    }
+
+    /// With an updraft in the box from `lo` to `hi`.
+    pub fn draft(take self, lo: vec2, hi: vec2) -> Course {
+        var c = take self
+        c.drafts.push(Water { lo, hi })
         c
     }
 
@@ -390,6 +409,26 @@ impl Course {
             }
         }
         None
+    }
+
+    /// Whether the ground at `x` is icy.
+    pub fn icy(self, x: f32) -> bool {
+        for i in self.ice {
+            if x >= i.x && x <= i.y {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Whether `p` is in an updraft.
+    pub fn lifted(self, p: vec2) -> bool {
+        for d in self.drafts {
+            if d.holds(p) {
+                return true
+            }
+        }
+        false
     }
 
     /// Whether a circle of radius `r` at `p` touches any water: a puddle wets the capybara's feet.

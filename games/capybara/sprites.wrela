@@ -40,6 +40,10 @@ pub const KUSUDAMA: f32 = 19.0
 pub const GHOST: f32 = 20.0
 /// A zoo's sign (signs.wrela).
 pub const SIGN: f32 = 21.0
+/// One of the seagull's crew: the seagull flying, without the carrot.
+pub const GULL: f32 = 22.0
+/// A Komodo dragon.
+pub const KOMODO: f32 = 23.0
 
 /// A sprite. `pose` and `more` by kind:
 /// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
@@ -421,7 +425,7 @@ fn pigeon(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
 /// The seagull that stole the snack: white, its grey wings tipped black, a yellow beak with its
 /// red spot and the carrot in it, a sly brow. Perched, its wings are folded; flying (`pose.y`),
 /// they beat.
-fn seagull(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
+fn seagull(q: vec2, s: Sprite, screen_px: f32, carrot: bool) -> vec4 {
     let big = 1.15
     let p = q / big
     let px = screen_px / big
@@ -472,6 +476,9 @@ fn seagull(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     c = mark(c, length(p - vec2(0.42, 0.093)) - 0.012, vec3(0.9, 0.2, 0.15), px)
     c = eye(c, p, vec2(0.27, 0.16), 0.016, px)
     c = mark(c, capsule(p, vec2(0.235, 0.19), vec2(0.3, 0.2), 0.008), vec3(0.1, 0.06, 0.05), px)
+    if !carrot {
+        return c
+    }
     // The stolen carrot in its beak.
     c = layer(
         c,
@@ -576,6 +583,89 @@ fn caiman(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     )
     c = mark(c, length(p - vec2(0.79, 0.16)) - 0.038, vec3(1.0, 0.85, 0.3), px)
     mark(c, ellipse(p - vec2(0.795, 0.16), vec2(0.008, 0.03)), vec3(0.05), px)
+}
+
+// ---- the Komodo dragon ------------------------------------------------------------------------
+
+/// A Komodo dragon standing on the ground (its feet at -0.4): heavy and dusky, speckled, a long
+/// tail swinging at `pose.x`, four thick legs walking, a forked tongue flicking out by `pose.y`;
+/// the zoo's sweetest, so a kind eye, and the ride (`pose.z`) blushes and smiles.
+fn komodo(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
+    let p = q
+    let px = screen_px
+    let beat = s.pose.x
+    let flick = s.pose.y
+    let ride = s.pose.z
+    let dusk = vec3(0.56, 0.5, 0.42)
+    var c = vec4(0.0)
+    let leg = |l: vec2, x: f32, swing: f32| {
+        let hip = vec2(x, -0.08)
+        let foot = vec2(x + swing, -0.36)
+        min(capsule(l, hip, foot, 0.08), ellipse(l - foot - vec2(0.06, -0.01), vec2(0.1, 0.035)))
+    }
+    // The far legs, in shade.
+    for x in [-0.42, 0.45] {
+        c = layer(c, |l: vec2| leg(l, x + 0.05, 0.1 * sin(beat + x)), p, flat(dusk * 0.7), px)
+    }
+    // The tongue, behind the snout.
+    if flick > 0.02 {
+        let root = vec2(1.08, 0.04)
+        let tip = root + vec2(0.28 * flick, -0.02)
+        c = layer(
+            c,
+            |l: vec2| min(
+                capsule(l, root, tip, 0.012),
+                min(
+                    capsule(l, tip, tip + vec2(0.06, 0.03) * flick, 0.01),
+                    capsule(l, tip, tip + vec2(0.06, -0.03) * flick, 0.01),
+                ),
+            ),
+            p,
+            flat(vec3(0.85, 0.3, 0.3)),
+            px,
+        )
+    }
+    let tail = |x: f32| 0.08 * sin(beat - x * 2.0) * smoothstep(-0.6, -1.9, x)
+    let body = |l: vec2| {
+        var d = ellipse(l - vec2(0.0, 0.02), vec2(0.72, 0.21))
+        d = smin(
+            d,
+            cone(l, vec2(-0.6, tail(-0.6)), vec2(-1.9, -0.28 + tail(-1.9)), ra: 0.16, rb: 0.025),
+            0.12,
+        )
+        d = smin(d, ellipse(l - vec2(0.72, 0.1), vec2(0.2, 0.13)), 0.1)
+        smin(d, cone(l, vec2(0.78, 0.12), vec2(1.1, 0.05), ra: 0.12, rb: 0.06), 0.06)
+    }
+    if body(p) < px {
+        let (d, g, _) = value_gradient_with(|l: vec2| (body(l), 0.0), p)
+        let belly = smoothstep(-0.05, -0.16, p.y)
+        let speck = smoothstep(0.82, 0.9, sin(p.x * 31.0) * sin(p.y * 47.0 + p.x * 9.0)) * 0.18
+        let albedo = blend(dusk * (1.0 - speck), vec3(0.78, 0.72, 0.6), belly * 0.8)
+        c = over(c, shade(d, g, p, flat(albedo), px))
+    }
+    for x in [-0.36, 0.38] {
+        c = layer(c, |l: vec2| leg(l, x, 0.1 * sin(beat + x + 3.1)), p, flat(dusk * 0.92), px)
+    }
+    // A kind eye, a nostril, a mouth line; the ride's blush and smile.
+    c = eye(c, p, vec2(0.86, 0.17), 0.035, px)
+    c = mark(c, length(p - vec2(1.06, 0.09)) - 0.012, vec3(0.2, 0.17, 0.13), px)
+    let smile = 0.02 * ride
+    c = mark(
+        c,
+        capsule(p, vec2(0.84, 0.03 + smile), vec2(1.08, 0.03), 0.008),
+        vec3(0.25, 0.2, 0.15),
+        px,
+    )
+    if ride > 0.5 {
+        c = over(
+            c,
+            vec4(
+                vec3(0.95, 0.55, 0.55),
+                0.45 * saturate(-ellipse(p - vec2(0.8, 0.08), vec2(0.06, 0.035)) / px),
+            ),
+        )
+    }
+    c
 }
 
 // ---- things ----------------------------------------------------------------------------------
@@ -886,7 +976,11 @@ pub fn sprite(v: QuadPoint, sprites: [Sprite], st: Stage) -> Over {
     } else if s.kind == CAIMAN {
         caiman(q, s, st.px)
     } else if s.kind == SEAGULL {
-        seagull(q, s, st.px)
+        seagull(q, s, st.px, carrot: true)
+    } else if s.kind == GULL {
+        seagull(q, s, st.px, carrot: false)
+    } else if s.kind == KOMODO {
+        komodo(q, s, st.px)
     } else if s.kind == CARROT {
         // Pale, a carrot still to find in the snacks' count: washed to the paper, see-through.
         let c = carrot(q, s, st.px)

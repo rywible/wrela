@@ -30,7 +30,7 @@ use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use feel::{FEEL, STEP}
 use main::DEV
-use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
+use foes::{Foe, MAX_FOES, NONE, RIDE, Touch, foe, half, knock, step_foe, touch}
 use engine::menu::{Nav, Stick, moved}
 use pad::{Controls, Hold, JUMP, NO_RUN, Pad, Run, pad_of}
 use std::hash::StateHash
@@ -115,6 +115,8 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub checkpoint: u32,
     /// Ticks it can't be hurt.
     pub grace: u32,
+    /// On a ride (foes.wrela's `Ride`): its foe's number + 1; 0 on its own feet.
+    pub riding: u32,
     /// Times it was sent back to a checkpoint: hurt, or fallen out.
     pub deaths: u32,
     /// Ticks left until it comes back, while it's dying (0 otherwise), and whether it fell out
@@ -163,6 +165,7 @@ pub fn world(c: u32) -> World {
         yuzu: false,
         checkpoint: 0,
         grace: 0,
+        riding: 0,
         deaths: 0,
         dying: 0,
         fell: false,
@@ -195,6 +198,17 @@ fn come_back(w: mut World, c: Course) {
     w.foes = foes_of(c)
     w.yuzu = false
     w.grace = SPAWN_GRACE
+    w.riding = 0
+}
+
+/// Course `c`'s world just come back to its checkpoint `i` (0 its first flag), playing: as a
+/// death leaves it, the foes as they started.
+pub fn back_at(c: u32, i: u32) -> World {
+    var w = world(c)
+    w.paused = false
+    w.checkpoint = i + 1
+    come_back(mut w, course(c))
+    w
 }
 
 /// One tick of the level from `pad`: the capybara, its foes and what touching them does, then
@@ -218,7 +232,11 @@ pub fn step(w: mut World, pad: Pad) {
         }
         return
     }
-    body::step(mut w.body, pad, c, FEEL)
+    if w.riding > 0 {
+        ride(mut w, pad, c)
+    } else {
+        body::step(mut w.body, pad, c, FEEL)
+    }
     for i in 0..c.foes.len() {
         step_foe(mut w.foes[i], c)
     }
@@ -226,6 +244,9 @@ pub fn step(w: mut World, pad: Pad) {
     let slide = if w.body.mode == Mode::Slide { w.body.speed } else { 0.0 }
     var hurt = false
     for i in 0..c.foes.len() {
+        if w.riding > 0 {
+            break
+        }
         match touch(w.foes[i], w.body.at, w.body.vel, RADIUS, slide) {
             Touch::Stomp => {
                 knock(mut w.foes[i])
@@ -233,6 +254,12 @@ pub fn step(w: mut World, pad: Pad) {
                 bounce(mut w.body, pad.held(JUMP), FEEL, under)
             },
             Touch::Bowl => knock(mut w.foes[i]),
+            Touch::Ride => {
+                if w.body.mode != Mode::Swim {
+                    w.riding = i + 1
+                    w.foes[i].ridden = true
+                }
+            },
             Touch::Hurt => hurt = true,
             Touch::None => {},
         }
@@ -277,6 +304,27 @@ pub fn step(w: mut World, pad: Pad) {
 /// The level after course `c`, if there is one.
 pub fn next(c: u32) -> Option<u32> {
     if c + 1 < LEVELS { Some(c + 1) } else { None }
+}
+
+/// A tick on a ride: the capybara sits on its back as it runs on, until a jump press leaps off,
+/// as off a stomp with jump held, its double jump back.
+fn ride(w: mut World, pad: Pad, c: Course) {
+    let i = w.riding - 1
+    let f = w.foes[i]
+    if pad.pressed() {
+        // Off: the ride wanders back home.
+        w.riding = 0
+        w.foes[i].ridden = false
+        bounce(mut w.body, held: true, f: FEEL, under: false)
+        w.body.vel.x = RIDE
+        return
+    }
+    w.body.at = f.at + vec2(0.0, half(f.kind).y + RADIUS)
+    w.body.vel = vec2(RIDE, 0.0)
+    w.body.speed = RIDE
+    w.body.facing = 1.0
+    w.body.mode = Mode::Walk
+    w.body.ground = vec2(0.0, 1.0)
 }
 
 /// A new attempt at course `c` in place of `w`, playing at once, keeping the controls as they're
