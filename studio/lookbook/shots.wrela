@@ -226,10 +226,10 @@ pub struct Options: Clone {
     /// How many times each shot is measured (`--runs`), its measures each the median of them: a
     /// shot's flicker differs by up to a fifth from one run to the next (docs/lookdev.md).
     pub runs: u32 = 1,
-    /// With `--bars` and `--runs`, the share of a bar a shot's first run must come within for its
-    /// other runs to be taken (`--near`, as 0.2): a shot far from every bar is measured once, its
-    /// run-to-run spread (2 %, 13 % at most: docs/lookdev.md) no matter to which side it falls.
-    /// 0 takes every run of every shot.
+    /// With `--bars` and `--runs`, the share of a bar that decides a shot from its first run
+    /// (`--near`, as 0.2: `main::near_bars`): a measure that far over its bar, or all that far
+    /// under, and its run-to-run spread (2 %, 13 % at most: docs/lookdev.md) can't change it. 0
+    /// takes every run of every shot.
     pub near: f32 = 0.0,
     /// The run already in the output directory's trails measured again from the frames it kept
     /// (`--retrail`: each shot's `-moving.png` and `-settled.png`), nothing drawn.

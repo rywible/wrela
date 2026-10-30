@@ -134,9 +134,10 @@ of three (`--runs 3`), and hill-climbing takes single runs. The settle can't be 
 frames, the shore at evening's flicker read 31.6 or 37.0 ×10⁻⁶.
 
 **A record measures only what can decide it** (2026-10-30). With `--bars`, `--near 0.2` takes a
-shot's other runs only where its first comes within a fifth of a bar (either side; a trail within
-a pixel): a shot far from every bar is decided by one run, its spread (2 %, 13 % at most) no
-matter which way it falls. And a fast run keeps each trail's two frames (`-moving.png`,
+shot's other runs only where its first leaves it undecided: a measure more than a fifth over its
+bar is a miss, every one more than a fifth under is a hold (a trail by a fifth or a pixel), and a
+run's spread (2 %, 13 % at most) can't change either. On the records, one run decided 13 to 20 of
+each look's twenty shots, each as its median of three did. And a fast run keeps each trail's two frames (`-moving.png`,
 `-settled.png`, about 1 MB each), so a change to the trail's measure is `--retrail` on the run's
 directory, every shot's trail measured again from them (the median of its runs'), nothing drawn.
 A change to an engine or a look still needs its looks drawn again, but only those it can move.

@@ -319,15 +319,22 @@ fn base_of(bases: [(String, f64, f64, f64)], name: str) -> Option<(f64, f64, f64
     None
 }
 
-/// Whether a shot's measures (`m`: flicker, pop, trail) are within `near` of a bar from `base`
-/// (`bars`) either side, so its other runs decide it: a trail within a pixel of its bar too, and a
-/// shot the baseline lacks always.
+/// Whether a shot's first run (`m`: flicker, pop, trail) leaves it undecided against the bars
+/// from `base` (`bars`), so its other runs decide it: decided where a measure is more than `near`
+/// of its bar over it (a miss, whatever the others), or every one more than `near` under (a hold);
+/// a trail, in whole pixels, by `near` of its bar or a pixel. A shot the baseline lacks never is.
+/// (On the cel, painterly, ink and fitted cel looks' records, a first run decided 13, 15, 20 and
+/// 13 of the 20 shots, each as its median of three did.)
 pub fn near_bars(m: (f64, f64, f64), base: Option<(f64, f64, f64)>, near: f32) -> bool {
     let Some(b) = base else { return true }
     let (mf, mp, mt) = bars(b)
     let (f, p, t) = m
     let n = f64(near)
-    abs(f - mf) <= n * mf || abs(p - mp) <= n * mp || abs(t - mt) <= max(n * mt, 1.0)
+    // (Less a hair: `near` is an f32's 0.2, a little over it as an f64.)
+    let tw = max(n * mt, 1.0) - 1.0e-6
+    let over = f > mf * (1.0 + n) || p > mp * (1.0 + n) || t >= mt + tw
+    let under = f < mf * (1.0 - n) && p < mp * (1.0 - n) && t <= mt - tw
+    !(over || under)
 }
 
 /// Every shot held its bars, said; or a miss, failing the tool (its table and `bars.json` say

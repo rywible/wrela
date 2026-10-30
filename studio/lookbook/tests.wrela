@@ -285,8 +285,8 @@ fn dev_and_evaluation_choose_by_the_shots_names() {
     assert(p.len() == 2 && p[0] == 4 && p[1] == 0, "as picked")
 }
 
-/// A shot's other runs are taken only when its first is near a bar (`--near`): within the share
-/// either side, a trail within a pixel, or a shot the baseline lacks.
+/// A shot's other runs are taken only when its first leaves it undecided (`--near`): no measure
+/// far over its bar, and not every one far under; a shot the baseline lacks always.
 @test
 fn a_shot_near_a_bar_is_run_again_and_one_far_from_every_bar_isnt() {
     // Its bars: flicker 30e-6, pop 0.015, trail 5.
@@ -295,8 +295,9 @@ fn a_shot_near_a_bar_is_run_again_and_one_far_from_every_bar_isnt() {
     assert(near_bars((27.0e-6, 0.005, 2.0), base, 0.2), "flicker within a fifth under its bar")
     assert(near_bars((33.0e-6, 0.005, 2.0), base, 0.2), "flicker within a fifth over it")
     assert(near_bars((10.0e-6, 0.0135, 2.0), base, 0.2), "pop near")
-    assert(near_bars((10.0e-6, 0.005, 4.2), base, 0.2), "trail within a pixel")
-    assert(!near_bars((60.0e-6, 0.005, 2.0), base, 0.2), "far over a bar is decided too")
+    assert(near_bars((10.0e-6, 0.005, 5.0), base, 0.2), "trail on its bar")
+    assert(!near_bars((10.0e-6, 0.005, 4.0), base, 0.2), "trail a pixel under: decided")
+    assert(!near_bars((60.0e-6, 0.0135, 5.0), base, 0.2), "far over one bar: a miss, decided")
     assert(near_bars((10.0e-6, 0.005, 2.0), None, 0.2), "no baseline: always")
 }
 
