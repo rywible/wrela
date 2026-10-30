@@ -82,6 +82,14 @@ fn compact_shape<const N: u32>(s: Shape) -> CompactShape<N> {
     }
 }
 
+/// The checked source program plus the original transform and sphere.
+struct DirectShape: Copy + GpuData {
+    program: direct_fields::Program,
+    to_local: mat4,
+    centre: vec3,
+    radius: f32,
+}
+
 /// What a scene says is solid (`frame::Scene::solids`), and its version: the volume is cooked
 /// again when it changes.
 pub struct Solids: Clone {
@@ -355,6 +363,53 @@ pub fn cook_distance(
     out.store(id, dist)
 }
 
+// Source graphs execute directly; original tapes remain the unknown-graph fallback.
+@compute(64)
+fn cook_direct_distance(
+    g: DistanceGrid,
+    first: u32,
+    kept: Kept,
+    bins: [vec2u],
+    list: [u32],
+    capsules: [Capsule],
+    shapes: [DirectShape],
+    columns: [vec2],
+    out: mut Texels3d<R32Float>,
+    id: GlobalId,
+) {
+    if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
+        return
+    }
+    let t = vec3i(id.xyz())
+    let d = vec3i(g.dims)
+    let w = g.origin + (((t - g.origin) % d) + d) % d
+    if inside_box(w, kept.lo, kept.hi) {
+        return
+    }
+    let p = (vec3(w) + vec3(0.5)) * g.voxel
+    // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
+    let ground = columns[id.z * g.dims.x + id.x]
+    var dist = min((p.y - ground.y) * ground.x, DISTANCE_FAR)
+    let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
+    let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
+    for i in 0..entry.y {
+        let k = list[entry.x + i]
+        if k & SHAPE_BIT == 0 {
+            dist = min(dist, to_capsule(capsules[k], p))
+        } else {
+            let s = shapes[k & !SHAPE_BIT]
+            // Its sphere first: a tape is read only where it could be nearer.
+            if length(p - s.centre) - s.radius < dist {
+                dist = min(
+                    dist,
+                    direct_fields::evaluate(s.program, (s.to_local * vec4(p, 1.0)).xyz),
+                )
+            }
+        }
+    }
+    out.store(id, dist)
+}
+
 /// Exact specialization when the source has no shape tapes; capsules still participate.
 @compute(64)
 fn cook_capsule_distance(
@@ -500,6 +555,9 @@ pub struct Distance {
     columns: GpuBuffer<vec2>,
     // Maximum source program length per physical z slab; zero means no shape entries.
     shape_slabs: [u32; DISTANCE_SLABS],
+    // Direct execution only when every shape listed by the slab has a checked layout.
+    direct_slabs: [bool; DISTANCE_SLABS],
+    direct_shapes: GpuBuffer<DirectShape>,
     capsules: GpuBuffer<Capsule>,
     shapes: GpuBuffer<Shape>,
     shapes256: GpuBuffer<CompactShape<256>>,
@@ -528,6 +586,8 @@ impl Distance {
             },
             columns: buffer(if wanted { d.x * d.z } else { 1 }),
             shape_slabs: [0; DISTANCE_SLABS],
+            direct_slabs: [false; DISTANCE_SLABS],
+            direct_shapes: buffer(1),
             capsules: buffer(1),
             shapes: buffer(1),
             shapes256: buffer(1),
@@ -548,6 +608,7 @@ impl Distance {
     pub fn bytes(self) -> u64 {
         memory::texels(self.volume.width(), self.volume.height(), 4, d: self.volume.depth()) +
             u64(self.capsules.len()) * u64(size_of::<Capsule>()) +
+            u64(self.direct_shapes.len()) * u64(size_of::<DirectShape>()) +
             u64(self.shapes.len()) * u64(size_of::<Shape>()) +
             u64(self.shapes256.len()) * u64(size_of::<CompactShape<256>>()) +
             u64(self.shapes384.len()) * u64(size_of::<CompactShape<384>>()) +
@@ -653,13 +714,27 @@ impl Distance {
                 k | SHAPE_BIT,
             )
         }
+        var direct: Vec<DirectShape> = Vec::with_capacity(self.solids.shapes.len())
+        for s in self.solids.shapes {
+            direct.push(
+                DirectShape {
+                    program: direct_fields::compile(s.tape),
+                    to_local: s.to_local,
+                    centre: s.centre,
+                    radius: s.radius,
+                },
+            )
+        }
+        self.direct_slabs = [true; DISTANCE_SLABS]
         self.shape_slabs = [0; DISTANCE_SLABS]
         var heads: Vec<vec2u> = Vec::with_capacity(n)
         var flat: Vec<u32> = Vec::new()
         for l in lists {
             var shape = 0
+            var complete = true
             for k in l {
                 if (k & SHAPE_BIT) != 0 {
+                    complete = complete && direct[k & !SHAPE_BIT].program.id != 0
                     shape = max(shape, max(1, self.solids.shapes[k & !SHAPE_BIT].tape.len()))
                 }
             }
@@ -671,6 +746,7 @@ impl Distance {
                     let physical = ((lo + i32(dz)) % depth + depth) % depth
                     let slab = u32(physical) / (DISTANCE_DIMS.z / DISTANCE_SLABS)
                     self.shape_slabs[slab] = max(self.shape_slabs[slab], shape)
+                    self.direct_slabs[slab] = self.direct_slabs[slab] && complete
                 }
             }
             heads.push(vec2u(flat.len(), l.len()))
@@ -681,6 +757,7 @@ impl Distance {
         write(mut self.bins, 0, heads)
         self.list = buffer_of(flat, at_least: 1)
         self.capsules = buffer_of(self.solids.capsules, at_least: 1)
+        self.direct_shapes = buffer_of(direct, at_least: 1)
         self.shapes = buffer_of(self.solids.shapes, at_least: 1)
         var small: Vec<CompactShape<256>> = Vec::with_capacity(self.solids.shapes.len())
         var medium: Vec<CompactShape<384>> = Vec::with_capacity(self.solids.shapes.len())
@@ -723,6 +800,21 @@ impl Distance {
                     list: self.list.items(),
                     capsules: self.capsules.items(),
                     columns: self.columns.items(),
+                    out: mut self.volume,
+                ),
+                over: (d.x, d.y, first + depth),
+            )
+        } else if self.direct_slabs[self.next] {
+            dispatch(
+                cook_direct_distance.bind(
+                    self.grid,
+                    first,
+                    self.kept,
+                    self.bins.items(),
+                    self.list.items(),
+                    self.capsules.items(),
+                    self.direct_shapes.items(),
+                    self.columns.items(),
                     out: mut self.volume,
                 ),
                 over: (d.x, d.y, first + depth),

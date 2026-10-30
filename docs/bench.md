@@ -3873,3 +3873,23 @@ latency/physical-memory win or source-specific causal advantage is claimed.
 with shared controls. First joint assessment 23.54 min,
 zero optimization followups, no training, no G1–G7 completion. Next larger bet:
 direct compiled source-field families against the compact tape interpreter.
+
+
+## 2026-10-30: checked native source fields on Pop!_OS AMD
+
+[Full report](neural-direct-fields.md). Parent d1cabd7648ca6dd54156a03c49ef2a7a3d6a74c6,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23,
+Ryzen 5 5500U / RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57.
+1920×1080, scale 0.667, held-world 660-frame route, serial quiet AMD queue,
+seven captures/run. Four source-matched comparisons reduce complete GPU spans
+5.74–7.71%, distance work 33.2–33.8×, and movement worst GPU frames
+127.74–134.27 → 44.38–54.54 ms. Two comparisons against an optimized conventional
+control also improve 5.67–7.63%; one candidate run is shared. Requested live
++210,112 B; all fallbacks retained. End PSS +1.08–137.44 MB against original
+controls, physical pools mixed, no memory-saving claim. All selected paired
+images within 1/255; 15/47,775,744 field values differ by at most 2^-22 with no
+sign changes. Strict bitwise test failed and is preserved. Five distance GPU
+tests pass; forcing an unknown graph through direct execution fails by 4 m.
+One source-buffer-cache follow-up retired: slower, with a 21/255 matched image
+failure. First complete assessment 40.07 min; decision 49.998 min.
+No training or new reference family; G1–G7 unchanged and unmet.
