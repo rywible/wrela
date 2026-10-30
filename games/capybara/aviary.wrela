@@ -1,20 +1,47 @@
-// The Aviary: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+// The Aviary: the fifth level, in the zoo's walk-through bird house, a tall cage of netting over
+// perches and feeding towers. Its new thing is the air: updrafts, boxes of rising air that lift
+// the capybara while it's off the ground (feel.wrela's `draft`), up to the running speed. It
+// meets one alone over safe ground, under a wall too tall to jump, then rides them over pits too
+// wide to jump, then up tall columns that pigeons fly across, to the netting under the roof.
 
 use course::Course
+use foes::Kind
 use ground::corner
+use screens::Act
 use signs::Sign
 
 /// Its name, as its title says it.
 pub const NAME: Text = "The Aviary"
 
-/// The course: a placeholder.
+/// The course: four sections, a checkpoint after each of the first three and one before the
+/// last pit. An updraft that must be ridden up rises against a wall, so the wall stops the
+/// capybara over the rising air.
+///
+/// 1. The doors (0 to 46 m): a sign, then one updraft alone over flat ground at the foot of the
+///    keepers' wall, 6.5 m tall: too tall to jump, so the rising air climbs it. A snack high
+///    over the updraft, for a double jump at its top. A ramp down from the wall's walkway.
+/// 2. The flight cages (46 to 126 m): three pits too wide to jump, with updrafts in them. The
+///    first's air fills the far half of the pit, against its far wall, and catches a fall: a
+///    snack hangs in the pit's near half for those who trust it. The second's air stops below
+///    its far side. The third is two updrafts with a perch between them to land on. A goose on
+///    the ground between.
+/// 3. The great flight cage (126 to 212 m): a tall column of air against a feeding tower, a
+///    pigeon flying across it; two columns side by side over a pit with a floor (falling in costs
+///    only time), a pigeon between them, up to a higher tower; then the netting under the roof,
+///    one-way ledges, a pigeon over the first gap and one over the last, a snack above that.
+///    Under the netting, the cage's floor: two geese, a snack by the first, and a column against a
+///    feeding post back up to the netting.
+/// 4. The keepers' gallery (212 to 312 m): an updraft up a taller wall to the gallery, a long
+///    ramp down to a lip over a pit with a floor and an updraft out against its far wall (a held
+///    slide-jump clears it, past a snack high over it), a goose, and a last pit with two narrow
+///    updrafts under a pigeon, then the goal's deck.
 pub const COURSE: Course = built()
 
 pub fn built() -> Course {
     Course::new(
         start: vec2(2.0, 0.35),
-        goal_lo: vec2(30.0, 0.0),
-        goal_hi: vec2(32.0, 5.0),
+        goal_lo: vec2(304.0, 3.5),
+        goal_hi: vec2(306.0, 8.5),
         floor: -12.0,
     )
         .solid(
@@ -22,15 +49,122 @@ pub fn built() -> Course {
                 corner(vec2(-6.0, -20.0)),
                 corner(vec2(-6.0, 10.0)),
                 corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0)),
-                corner(vec2(36.0, 0.0)),
-                corner(vec2(36.0, 14.0)),
-                corner(vec2(38.0, 14.0)),
-                corner(vec2(38.0, -20.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The doors: the floor to the keepers' wall, its walkway, the ramp down.
+                corner(vec2(18.5, 0.0)),
+                corner(vec2(18.5, 6.5)),
+                corner(vec2(28.0, 6.5), 2.0),
+                corner(vec2(40.0, 0.0), 3.0),
+                // 2. The flight cages: the first pit, a step up, the second, the third with its
+                // perch.
+                corner(vec2(52.0, 0.0)),
+                corner(vec2(52.0, -16.0)),
+                corner(vec2(62.5, -16.0)),
+                corner(vec2(62.5, 2.0)),
+                corner(vec2(74.0, 2.0)),
+                corner(vec2(74.0, -16.0)),
+                corner(vec2(84.5, -16.0)),
+                corner(vec2(84.5, 4.0)),
+                corner(vec2(100.0, 4.0)),
+                corner(vec2(100.0, -16.0)),
+                corner(vec2(109.0, -16.0)),
+                corner(vec2(109.0, 4.0)),
+                corner(vec2(112.0, 4.0)),
+                corner(vec2(112.0, -16.0)),
+                corner(vec2(120.0, -16.0)),
+                corner(vec2(120.0, 4.0)),
+                // 3. The great flight cage: the column's pit, the first feeding tower, the two
+                // columns' pit, the second tower, and the cage's floor under the netting.
+                corner(vec2(136.0, 4.0)),
+                corner(vec2(136.0, -16.0)),
+                corner(vec2(145.5, -16.0)),
+                corner(vec2(145.5, 9.5)),
+                corner(vec2(149.0, 9.5)),
+                corner(vec2(149.0, -8.0)),
+                corner(vec2(159.0, -8.0)),
+                corner(vec2(159.0, 12.5)),
+                corner(vec2(165.0, 12.5)),
+                corner(vec2(165.0, 4.0)),
+                // The feeding post the column from the floor rises against.
+                corner(vec2(181.0, 4.0)),
+                corner(vec2(181.0, 12.5)),
+                corner(vec2(183.0, 12.5)),
+                corner(vec2(183.0, 4.0)),
+                // 4. The keepers' gallery: its wall, the ramp down, the lip, the pit.
+                corner(vec2(220.5, 4.0)),
+                corner(vec2(220.5, 11.5)),
+                corner(vec2(227.0, 11.5), 2.0),
+                corner(vec2(243.0, 0.0), 5.0),
+                corner(vec2(249.0, 0.0), 4.0),
+                corner(vec2(253.0, 2.5)),
+                corner(vec2(253.0, -8.0)),
+                corner(vec2(264.0, -8.0)),
+                corner(vec2(264.0, 1.5)),
+                // The last pit.
+                corner(vec2(278.0, 1.5)),
+                corner(vec2(278.0, -16.0)),
+                corner(vec2(288.5, -16.0)),
+                corner(vec2(288.5, 3.5)),
+                // The goal's deck and the wall at the end.
+                corner(vec2(312.0, 3.5)),
+                corner(vec2(312.0, 18.0)),
+                corner(vec2(314.0, 18.0)),
+                corner(vec2(314.0, -20.0)),
             ],
         )
-        .ended(vec2(-4.0, 36.0))
+        .ended(vec2(-4.0, 312.0))
+        // The netting under the roof.
+        .ledge([corner(vec2(169.0, 12.5)), corner(vec2(176.0, 12.5))])
+        .ledge([corner(vec2(183.0, 12.5)), corner(vec2(190.0, 12.5))])
+        .ledge([corner(vec2(196.0, 12.5)), corner(vec2(203.0, 12.5))])
+        // 1. The first updraft, alone.
+        .draft(vec2(14.0, 0.0), vec2(18.5, 8.0))
+        // 2. The flight cages' updrafts.
+        .draft(vec2(55.0, -16.0), vec2(62.5, 3.0))
+        .draft(vec2(78.5, -16.0), vec2(81.5, 2.5))
+        .draft(vec2(104.5, -16.0), vec2(107.0, 2.75))
+        .draft(vec2(114.0, -16.0), vec2(116.5, 2.75))
+        // 3. The columns, and the one up from the cage's floor to the netting.
+        .draft(vec2(141.0, -16.0), vec2(145.5, 11.0))
+        .draft(vec2(151.0, -8.0), vec2(153.5, 8.0))
+        .draft(vec2(156.5, -8.0), vec2(159.0, 14.0))
+        .draft(vec2(178.0, 4.0), vec2(181.0, 13.5))
+        // 4. Up the gallery's wall, in the pit past the lip, and the last pit's two.
+        .draft(vec2(216.5, 4.0), vec2(220.5, 13.0))
+        .draft(vec2(260.5, -8.0), vec2(264.0, 3.0))
+        .draft(vec2(280.5, -16.0), vec2(282.5, 0.5))
+        .draft(vec2(284.5, -16.0), vec2(286.5, 2.5))
+        .foe(Kind::Goose, vec2(92.0, 4.45), 3.0)
+        .foe(Kind::Pigeon, vec2(143.25, 7.0), 2.5)
+        .foe(Kind::Pigeon, vec2(154.75, 10.0), 2.5)
+        .foe(Kind::Pigeon, vec2(167.0, 14.2), 1.5)
+        .foe(Kind::Goose, vec2(172.0, 4.45), 3.0)
+        .foe(Kind::Pigeon, vec2(193.5, 14.0), 2.5)
+        .foe(Kind::Goose, vec2(199.0, 4.45), 3.0)
+        .foe(Kind::Goose, vec2(271.0, 1.95), 2.5)
+        .foe(Kind::Pigeon, vec2(283.5, 5.5), 2.0)
+        .snack(vec2(16.25, 10.4))
+        .snack(vec2(54.0, -1.2))
+        .snack(vec2(172.0, 4.6))
+        .snack(vec2(193.5, 16.0))
+        .snack(vec2(260.5, 8.6))
+        .yuzu(vec2(130.0, 4.6))
+        .checkpoint(vec2(46.0, 0.0))
+        .checkpoint(vec2(126.0, 4.0))
+        .checkpoint(vec2(210.0, 4.0))
+        .checkpoint(vec2(276.0, 1.5))
 }
 
-/// Its signs: none yet.
-pub const SIGNS: [Sign; 0] = []
+/// Its signs: the updraft's, before the first one. It teaches no move of the five (`teaches` 0),
+/// so it shows no prompt, only its line.
+pub const SIGNS: [Sign; 1] = [
+    Sign {
+        at: vec2(9.0, 0.0),
+        heading: "Updrafts lift you",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 0,
+        line: "Jump into the rising air",
+        teaches: 0,
+    },
+]
