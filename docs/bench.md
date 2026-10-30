@@ -3782,3 +3782,18 @@ boundary p99 0.000000 px. No new buffers or training.
 Resident changes vary; no physical-memory saving or G1–G7 completion.
 Both followups retired. [Full evidence and limits](neural-impostor-depth-reuse.md).
 Evidence: build/neural-evidence/foliage-shared-work-v1 on Pop!_OS.
+
+## Retired coverage-tiled impostors — 2026-10-30
+
+Pop!_OS AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent 3708b775.
+Three 4×4 coverage-geometry variants, exactly two followups. Initial matched
+GPU cost +23.21%; mask reuse +13.09–13.58%; prepared corners +5.40–5.61%.
+Final requested live GPU allocation +55,339,168 B; observed VRAM +63.48–71.48 MB.
+Final shaded checks: 36/36 pass, but runtime and memory lose jointly.
+Six fresh 660-frame 1920×1080 pairs, one early source mismatch preserved/excluded;
+same 0.667 scale, full updates/compositing, both orders, quiet serial GPU queue.
+Existing references reused; no training or G1–G7 change. All runtime prototypes
+retired; retained exact-depth billboards unchanged.
+[Full result and next architecture bet](neural-impostor-coverage-tiles.md).
+Evidence: build/neural-evidence/impostor-coverage-tiles-v1 on Pop!_OS.
