@@ -2141,7 +2141,7 @@ M4 Air (plain runs), peak / end MiB:
 |---|---|---|
 | before C4 (C1's runs) | 781.8 / 538.0 | 876.4 / 658.4 |
 | the wood's kinds pooled as they're cooked (`wood::Pooling`) | 557.9 / 538.0 | 891.0 / 659.0 |
-| the realizer calibrates in `CALIBRATION_ROOM` | 557.9 / 538.0 | 866.5 / 659.0 |
+| the realizer calibrates in `CALIBRATION_ROOM` (**reverted** in review: it undercounted the quads of a mesh past that room; the rows below include it) | 557.9 / 538.0 | 866.5 / 659.0 |
 | `Pool::reserve`: a frame's built meshes grow the pool once, by a quarter | (none built) | 857.4 / 658.4 |
 | the floor's built realizations at most 64 MiB of room a frame (`BUILT_ROOM`) | | (48 MiB: 733.5, playable 18.4 s; 96: 806.1, 9.5 s) |
 | a static cascade's second map only while a set is drawn (`shadow::Kept`) | 525.9 / 522.0 | 754.0 / 629.8 |
@@ -2353,17 +2353,21 @@ counted from 60 frames after `playable`, the walks begun at frame 900.
 
 | Scene (tier) | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | GPU peak MiB | Sustained |
 |---|---|---|---|---|---|
-| last-green-walk (Epic) | 14.12 / 16.80 / 17.94 | 17.90 / 28.85 / 37.80 | 1362 / 48 | 737.1 | sustained 120 s: minute 1 14.47, last 15.80 (1.09); 54.5 starts/s, 161 over 25 ms |
-| vale-walk (Epic) | 17.57 / 22.08 / 24.19 | 23.28 / 29.06 / 34.49 | 1859 / 22 | 541.8 | sustained 120 s: minute 1 20.04, last 21.58 (1.08); 42.9 starts/s, 550 over 25 ms |
-| last-green-walk (High) | 13.60 / 16.04 / 16.78 | 17.55 / 27.70 / 36.10 | 1311 / 47 | 733.9 | sustained 120 s: minute 1 15.95, last 16.09 (1.01); 55.5 starts/s, 112 over 25 ms |
-| vale-walk (High) | 16.77 / 21.77 / 25.62 | 21.50 / 28.48 / 35.40 | 1784 / 28 | 539.7 | sustained 120 s: minute 1 18.49, last 19.05 (1.03); 45.7 starts/s, 326 over 25 ms |
-| last-green-walk (Medium) | 12.62 / 15.17 / 16.08 | 14.71 / 27.54 / 29.48 | 536 / 1 | 678.7 | sustained 120 s: minute 1 13.23, last 13.66 (1.03); 65.5 starts/s, 162 over 25 ms |
-| vale-walk (Medium) | 12.42 / 15.76 / 17.04 | 16.57 / 22.82 / 30.38 | 904 / 8 | 478.2 | sustained 120 s: minute 1 13.74, last 14.83 (1.08); 59.9 starts/s, 60 over 25 ms |
-| last-green-walk (Low) | 11.50 / 14.02 / 14.76 | 13.58 / 22.36 / 26.49 | 237 / 0 | 622.0 | sustained 120 s: minute 1 12.21, last 12.21 (1.00); 71.6 starts/s, 49 over 25 ms |
-| vale-walk (Low) | 11.48 / 14.90 / 16.53 | 16.58 / 20.38 / 27.29 | 894 / 4 | 444.2 | sustained 120 s: minute 1 13.39, last 13.91 (1.04); 60.3 starts/s, 49 over 25 ms |
+| last-green-walk (Epic) | 15.54 / 19.52 / 20.91 | 17.21 / 29.92 / 36.38 | 855 / 25 | 752.0 | sustained 120 s: minute 1 15.65, last 15.72 (1.00); 56.9 starts/s, 133 over 25 ms |
+| vale-walk (Epic) | 18.58 / 23.09 / 25.00 | 23.61 / 29.13 / 31.61 | 1457 / 8 | 541.5 | sustained 120 s: minute 1 21.14, last 20.97 (0.99); 42.6 starts/s, 510 over 25 ms |
+| last-green-walk (High) | 15.09 / 18.18 / 19.63 | 16.78 / 29.61 / 34.36 | 769 / 18 | 728.8 | sustained 120 s: minute 1 15.66, last 15.36 (0.98); 58.3 starts/s, 133 over 25 ms |
+| vale-walk (High) | 17.31 / 21.53 / 23.54 | 21.93 / 27.36 / 30.08 | 1380 / 7 | 541.5 | sustained 120 s: minute 1 19.17, last 19.31 (1.01); 45.9 starts/s, 264 over 25 ms |
+| last-green-walk (Medium) | 12.46 / 14.97 / 16.22 | 14.16 / 26.40 / 29.79 | 234 / 0 | 675.0 | sustained 120 s: minute 1 13.22, last 13.20 (1.00); 68.6 starts/s, 86 over 25 ms |
+| vale-walk (Medium) | 12.86 / 16.27 / 17.44 | 18.22 / 23.43 / 27.59 | 1059 / 6 | 485.0 | sustained 120 s: minute 1 14.45, last 14.96 (1.04); 54.5 starts/s, 37 over 25 ms |
+| last-green-walk (Low) | 11.30 / 13.79 / 14.86 | 14.08 / 17.73 / 27.03 | 229 / 0 | 621.4 | sustained 120 s: minute 1 12.00, last 11.92 (0.99); 70.1 starts/s, 23 over 25 ms |
+| vale-walk (Low) | 11.87 / 15.29 / 16.86 | 16.68 / 20.09 / 26.41 | 717 / 6 | 446.1 | sustained 120 s: minute 1 13.32, last 13.52 (1.01); 59.5 starts/s, 18 over 25 ms |
+
+These are the final code's (d72db31a), run one tier after another straight after C6's 600 s run,
+so the machine was warm throughout: the floor's Epic row is 1.5 ms over the 600 s run's p50.
 
 - **G-tier, on the M4: holds.** Each tier's GPU p50 is under the one above's on both walks:
-  the floor 14.12 > 13.60 > 12.62 > 11.50, the vale 17.57 > 16.77 > 12.42 > 11.48.
+  the floor 15.54 > 15.09 > 12.46 > 11.30, the vale 18.58 > 17.31 > 12.86 > 11.87. Their
+  GPU peaks fall the same way, but for the vale's Epic and High (541.5 each).
 - **Pipelines** (`wrela pipelines <pkg> --set TIER=<tier>`): the vale 108 / 106 / 104 / 100, the
   floor 169 / 167 / 165 / 161.
 - **The settings** (**proposed**, for Ryan): `High` the contact shadows and the reflections off;
@@ -2388,7 +2392,7 @@ scene's). The walks begin at frame 900.
 |---|---|---|
 | the baseline, counted after playable (a1aaf9f4) | 18.56 / 35.91 / 29 | 14.68 / 24.26 / 1 |
 | C6a: a whole dome marched every other frame | 15.34 / 36.84 / 21 | 12.88 / 25.79 / 1 |
-| **sustained 600 s** (`--sustained 600`), Epic | **18.02** / 32.17 / 9 (minute 1 20.24, minute 10 20.92) | **14.01** / 38.38 / 42 (minute 1 15.92, minute 10 16.36) |
+| **sustained 600 s** (`--sustained 600`), Epic, the final code (d72db31a) | **18.37** / 31.48 / 6 (minute 1 20.51, minute 10 20.65) | **13.34** / 35.45 / 27 (minute 1 13.45, minute 10 15.12) |
 
 The fanless M4 Air runs 15-20 % slower after its first minutes: the plain runs are the cool
 machine's, and the sustained row is what the gate reads.
@@ -2426,9 +2430,9 @@ The vale's cards are 7.5 ms of its prepass, about 4 of it their leaves' coverage
 of its shading pass. The prepass and the shading pass each draw every card.
 
 - **G-sustained: Blocked.**
-  - The vale is at 18.02 ms GPU p50 against 12, interval p99 32.17 against 20, 9 frames over
+  - The vale is at 18.37 ms GPU p50 against 12, interval p99 31.48 against 20, 6 frames over
     33 against 0.
-  - The floor is at 14.01, 38.38 and 42.
+  - The floor is at 13.34, 35.45 and 27.
   - Next: the cards shaded from the prepass, not drawn twice (a target of each pixel's card,
     instance and place on the card; at most the shading pass's 4.8 ms of card draws). That
     changes the cards Part E grows, so it's taken with Part E's wood.
@@ -2446,16 +2450,16 @@ and the starts from C5's three-run medians (salts new to the machine).
 
 | Gate | Scene | M4 Air | Note |
 |---|---|---|---|
-| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.02 ms (18.02) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). |
-| | floor | misses by 2.01 ms (14.01) | Its fog is 6.5 ms serial, beside the cards. |
-| Paced p99 < 20 ms | vale | misses by 12.17 ms (32.17) | The same frames' overruns. |
-| | floor | misses by 18.38 ms (38.38) | |
-| 0 of 1,200 paced frames over 33 ms | vale | misses by 9 | |
-| | floor | misses by 42 | |
-| 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.7 a second; 58.8 needed) | |
-| | floor | misses (54.6 a second) | |
-| GPU memory < 512 MiB | vale | misses by 29.5 MiB (541.5 peak) | It held 478.8 at playable. Its walk now runs 1,260 frames (C4's 1,020, under 512 at 508.2), and the probes baked round the moving eye are what grows. |
-| | floor | misses by 224.9 MiB (736.9) | Its built things' realizations (C4). |
+| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.37 ms (18.37) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). |
+| | floor | misses by 1.34 ms (13.34) | Its fog is 6.5 ms serial, beside the cards. |
+| Paced p99 < 20 ms | vale | misses by 11.48 ms (31.48) | The same frames' overruns. |
+| | floor | misses by 15.45 ms (35.45) | |
+| 0 of 1,200 paced frames over 33 ms | vale | misses by 6 | |
+| | floor | misses by 27 | |
+| 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.9 a second; 58.8 needed) | |
+| | floor | holds, by 0.02 a second (58.84) | Within run-to-run noise: the 120 s Epic run after it begun 56.9. |
+| GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | It held 478.8 at playable. Its walk now runs 1,260 frames (C4's 1,020, under 512 at 508.2), and the probes baked round the moving eye are what grows. |
+| | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). C4's calibration lever, which took ~24.5 MiB off, was reverted in review: its count missed quads past the room it calibrated in. |
 | Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). |
 | | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. |
 | Warm start < 3 s | vale | **holds** (2.21) | |
