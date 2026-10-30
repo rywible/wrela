@@ -1,14 +1,974 @@
-// What's behind The Food Court's course: a placeholder of rolling hills in the habitat's colour, a layer
-// for each of the backdrop's four (scenery.wrela), until the habitat's own are drawn.
+// What's behind the Food Court's course (design.md, "A map of the zoo"): the eighth and last stop
+// on the loop round the zoo's lake, the seagull's last "castle", where the capybara at last gets
+// its snack. It is the end of the afternoon: the light is golden, so the far layers fade into a
+// warm haze (`GOLD`), not the Wetlands' cool mist, and the festive things are out.
+//
+// - The café, nearest (0.68): tables under striped umbrellas, a bistro chair to either side (a
+//   sparrow at the crumbs, or a balloon tied to a chair, now and then), potted bay trees and
+//   geraniums, and a bench with a bin beside it (now and then a seagull head down in it).
+// - The stalls (0.42): an ice-cream stand, a fruit stall, a pretzel cart and a carrot-juice stand
+//   under a big carrot (a nod to the capybara's snack), the seagull's crew perched on top eyeing
+//   the food; lamp posts between, with bunting and paper lanterns strung from one to the next.
+// - Beyond (0.2): behind, the Petting Farm's red barn, its silo, fence and two sheep; ahead, the
+//   zoo's lake, ducklings on it, and across it the Capybara Wetlands where the loop began: reeds,
+//   trees, flamingos, the boardwalk and the capybaras' steaming hot spring.
+// - Far (0.06): hills and a tree line, the Rainforest House's glasshouse and the Aviary's dome.
+//
+// Shapes are laid out in cells along each layer, so a pixel works out only its own cell's (or a
+// neighbour's) few, as scenery.wrela's layers do.
 
-use scenery::{PARALLAX, View, fbm, on_layer, paint, pixel_on}
+use engine::noise::{hash2, noise2}
+use ink::{INK, inked, pooled, washed}
+use scenery::{PARALLAX, View, crowned, fbm, nearer, on_layer, pixel_on}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+
+/// The haze the far layers fade into: the late afternoon's warm gold.
+const GOLD = vec3(0.97, 0.85, 0.66)
+
+/// The late afternoon's tint on every wash: a little warmer, a little less blue.
+const WARM = vec3(1.02, 0.99, 0.93)
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
 pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let parallax = PARALLAX[k]
-    let q = on_layer(pixel, v, parallax)
-    let px = pixel_on(v, parallax)
-    let ground = 1.0 + 2.5 * fbm(vec2(q.x * 0.05 + f32(k) * 7.0, 1.0), 2) - f32(k) * 0.6
-    paint(g, gs, q.y - ground, vec3(0.9, 0.78, 0.66), q, px, haze: f32(k) * 0.2, line: 0.8)
+    let q = on_layer(pixel, v, PARALLAX[k])
+    let px = pixel_on(v, PARALLAX[k])
+    if k == 0 { cafe(q, px, v.time, g, gs) } else if k == 1 {
+        stalls(q, px, v.time, g, gs)
+    } else if k == 2 {
+        beyond(q, px, v.time, g, gs)
+    } else { skyline(q, px, g, gs) }
+}
+
+// ---- painting ----------------------------------------------------------------------------------
+
+/// A shape painted as scenery's `paint` does, but hazed into `GOLD`: its wash, pooled at the edge,
+/// faded by `haze`, and inked with a line `line` px wide.
+fn painted(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    d: f32,
+    albedo: vec3,
+    q: vec2,
+    px: f32,
+    haze: f32,
+    line: f32,
+) -> vec4 {
+    if d > max(line * px * 0.65, px * 0.4) + px {
+        return vec4(0.0)
+    }
+    // The late sun warms every wash a little.
+    let c = blend(pooled(washed(albedo * WARM, q, g, gs), d, 0.12), GOLD, haze)
+    inked(c, d, q, line * px, px, blend(INK, GOLD, min(haze * 1.7, 0.9)))
+}
+
+/// Below a layer's ground (`ground`): its fill, darkening downwards into a cool shade.
+fn below(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    albedo: vec3,
+    q: vec2,
+    ground: f32,
+    haze: f32,
+) -> vec4 {
+    let deep = smoothstep(0.0, 6.0, ground - q.y)
+    let c = blend(washed(albedo, q, g, gs), vec3(0.4, 0.38, 0.44), deep * 0.8)
+    vec4(blend(c, GOLD, haze * (1.0 - deep)), 1.0)
+}
+
+/// `front` over `back`, neither premultiplied.
+fn over(front: vec4, back: vec4) -> vec4 {
+    let a = front.w + back.w * (1.0 - front.w)
+    if a <= 0.0 {
+        return vec4(0.0)
+    }
+    vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / a, a)
+}
+
+/// `top` laid over `base`, each a distance and a colour: their union, `top`'s colour where it
+/// covers, and its edge inked where it crosses `base` (a wing on a body, an awning on a stall).
+fn atop(base: (f32, vec3), top: (f32, vec3)) -> (f32, vec3) {
+    let (db, cb) = base
+    let (dt, ct) = top
+    (min(max(db, -abs(dt)), dt), if dt < 0.0 { ct } else { cb })
+}
+
+/// Cream, the stripes' other colour.
+const CREAM = vec3(0.99, 0.95, 0.88)
+
+/// One of the bunting's five colours, by `n` (0 to 1): yuzu, coral, leaf, sky and pink.
+fn festive(n: f32) -> vec3 {
+    let i = i32(n * 5.0)
+    if i == 0 { vec3(0.98, 0.8, 0.3) } else if i == 1 {
+        vec3(0.95, 0.47, 0.4)
+    } else if i == 2 {
+        vec3(0.55, 0.78, 0.42)
+    } else if i == 3 { vec3(0.47, 0.7, 0.9) } else { vec3(0.96, 0.62, 0.74) }
+}
+
+/// A striped canopy seen side on, `l` from its apex: a shallow dome `w` m to either side and `h`
+/// tall, in six gores of `a` and `b` that meet at the top, its hem scalloped, one to a gore.
+fn canopy(l: vec2, w: f32, h: f32, a: vec3, b: vec3) -> (f32, vec3) {
+    let c = l + vec2(0.0, h)
+    let gore = w / 3.0
+    let hem = -(c.y + 0.08 + 0.08 * abs(cos(c.x * 3.1416 / gore)))
+    let across = c.x / (w * (1.0 - 0.7 * saturate(c.y / h))) * 3.0
+    (max(ellipse(c, vec2(w, h)), hem), if fract((across + 0.5) * 0.5) < 0.5 { a } else { b })
+}
+
+/// A stall's awning seen from the front, `l` from its top's middle: `w` m to either side at its
+/// hem, `h` deep and flaring out a little, in nine stripes of `a` and `b`, a scallop to each.
+fn awning(l: vec2, w: f32, h: f32, a: vec3, b: vec3) -> (f32, vec3) {
+    let flare = w - 0.12 * (1.0 + l.y / h)
+    let k = l.x / (w / 4.5) + 0.5
+    let f = 2.0 * fract(k) - 1.0
+    let scallop = 0.1 * sqrt(max(1.0 - f * f, 0.0))
+    let d = max(abs(l.x) - flare, max(l.y, -(l.y + h + scallop)))
+    (d, if fract(k * 0.5) < 0.5 { a } else { b })
+}
+
+/// A herring gull perched (`l` from its feet), facing +x, head down to eye the food (`t` bobs it):
+/// white, a grey back with black wingtips, a yellow bill, pink-orange legs.
+fn gull(l: vec2, t: f32) -> (f32, vec3) {
+    let bob = 0.03 * sin(t * 2.3)
+    let body = ellipse(turn(l - vec2(0.0, 0.3), 0.1), vec2(0.34, 0.16))
+    let head = length(l - vec2(0.3, 0.42 + bob)) - 0.12
+    var best = (smin(body, head, 0.06), vec3(0.98, 0.97, 0.94))
+    let legs = min(
+        capsule(l, vec2(-0.05, 0.17), vec2(-0.06, 0.0), 0.02),
+        capsule(l, vec2(0.06, 0.17), vec2(0.07, 0.0), 0.02),
+    )
+    best = nearer(best, (legs, vec3(0.95, 0.62, 0.48)))
+    let wing = ellipse(turn(l - vec2(-0.12, 0.33), 0.18), vec2(0.32, 0.1))
+    best = atop(
+        best,
+        (wing, if l.x < -0.32 { vec3(0.22, 0.22, 0.25) } else { vec3(0.66, 0.7, 0.76) }),
+    )
+    let bill = cone(l, vec2(0.38, 0.42 + bob), vec2(0.55, 0.37 + bob), ra: 0.04, rb: 0.015)
+    best = nearer(best, (bill, vec3(0.98, 0.82, 0.3)))
+    let (d, c) = best
+    (d, if length(l - vec2(0.34, 0.46 + bob)) < 0.024 { INK } else { c })
+}
+
+// ---- the café, nearest -------------------------------------------------------------------------
+
+/// The plaza's paving on the café's layer.
+const CAFE_GROUND: f32 = -0.45
+
+/// How far apart the café's things are (m on its layer).
+const TABLES: f32 = 10.0
+
+fn cafe(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let ground = CAFE_GROUND
+    let paving = vec3(0.9, 0.83, 0.72)
+    if q.y > ground + 3.6 {
+        return vec4(0.0)
+    }
+    if q.y < ground {
+        return below(g, gs, paving, q, ground + 0.15, 0.06)
+    }
+    var best = (q.y - (ground + 0.15), paving)
+    let cell = floor(q.x / TABLES)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let x = (i + 0.35 + 0.3 * hash2(i32(i), 92)) * TABLES
+        if abs(q.x - x) < 2.1 {
+            let l = vec2(q.x - x, q.y - ground)
+            let h = hash2(i32(i), 91)
+            if h < 0.45 {
+                best = nearer(best, table(l, i, t))
+            } else if h < 0.68 {
+                best = nearer(best, planter(l, i))
+            } else if h < 0.88 {
+                best = nearer(best, bench(l, i, t))
+            }
+        }
+    }
+    let (d, albedo) = best
+    painted(g, gs, d, albedo, q, px, haze: 0.06, line: 1.2)
+}
+
+/// Café table `i` (`l` from its foot) under a striped umbrella, a bistro chair to either side;
+/// now and then a sparrow at the crumbs, or a balloon tied to a chair, bobbing (`t`).
+fn table(l: vec2, i: f32, t: f32) -> (f32, vec3) {
+    var d = rbox(l - vec2(0.0, 0.76), vec2(0.5, 0.035), 0.02)
+    d = min(d, capsule(l, vec2(0.0, 0.05), vec2(0.0, 0.74), 0.035))
+    d = min(d, rbox(l - vec2(0.0, 0.03), vec2(0.24, 0.025), 0.02))
+    for s in [-1.0, 1.0] {
+        let c = vec2(l.x * s, l.y)
+        d = min(d, rbox(c - vec2(0.85, 0.46), vec2(0.22, 0.03), 0.015))
+        d = min(d, capsule(c, vec2(0.68, 0.44), vec2(0.66, 0.0), 0.022))
+        d = min(d, capsule(c, vec2(1.02, 0.44), vec2(1.05, 0.0), 0.022))
+        d = min(d, capsule(c, vec2(1.02, 0.46), vec2(1.1, 1.0), 0.025))
+    }
+    var best = (d, vec3(0.3, 0.44, 0.4))
+    best = nearer(best, (capsule(l, vec2(0.0, 0.78), vec2(0.0, 2.66), 0.028), CREAM))
+    let scheme = hash2(i32(i), 93)
+    let colour = if scheme < 0.34 { vec3(0.94, 0.45, 0.4) } else if scheme < 0.67 {
+        vec3(0.38, 0.68, 0.7)
+    } else { vec3(0.97, 0.76, 0.3) }
+    best = atop(best, canopy(l - vec2(0.0, 2.7), w: 1.35, h: 0.5, a: colour, b: CREAM))
+    best = nearer(best, (length(l - vec2(0.0, 2.75)) - 0.05, CREAM))
+    if hash2(i32(i), 94) < 0.4 {
+        // A sparrow on the table, after the crumbs.
+        let s = l - vec2(0.24, 0.8)
+        let peck = 0.02 * max(sin(t * 5.0 + i), 0.0)
+        var bird = ellipse(turn(s - vec2(0.0, 0.08), 0.15), vec2(0.1, 0.065))
+        bird = smin(bird, length(s - vec2(0.08, 0.13 - peck)) - 0.045, 0.02)
+        bird = min(bird, cone(s, vec2(-0.08, 0.08), vec2(-0.17, 0.12), ra: 0.03, rb: 0.012))
+        let beak = cone(s, vec2(0.12, 0.13 - peck), vec2(0.16, 0.12 - peck), ra: 0.014, rb: 0.004)
+        best = nearer(best, nearer((bird, vec3(0.66, 0.48, 0.34)), (beak, INK)))
+    }
+    if hash2(i32(i), 95) < 0.3 {
+        // A balloon tied to the chair's back.
+        let sway = 0.08 * sin(t * 1.3 + i)
+        let at = vec2(1.65 + sway, 3.05)
+        let string = capsule(l, vec2(1.1, 1.0), at - vec2(0.0, 0.32), 0.008)
+        let balloon = min(
+            ellipse(l - at, vec2(0.24, 0.3)),
+            cone(l, at - vec2(0.0, 0.26), at - vec2(0.0, 0.34), ra: 0.02, rb: 0.05),
+        )
+        best = nearer(best, (string, vec3(0.6, 0.55, 0.5)))
+        best = nearer(best, (balloon, festive(hash2(i32(i), 96))))
+    }
+    best
+}
+
+/// A terracotta planter (`l` from its foot): a clipped bay tree on a stem, or geraniums in flower.
+fn planter(l: vec2, i: f32) -> (f32, vec3) {
+    let taper = 1.0 - 0.18 * saturate((0.62 - l.y) / 0.62)
+    var pot = rbox(vec2(l.x / taper, l.y - 0.31), vec2(0.36, 0.31), 0.04)
+    pot = min(pot, rbox(l - vec2(0.0, 0.64), vec2(0.44, 0.06), 0.03))
+    var best = (pot, vec3(0.86, 0.52, 0.38))
+    if hash2(i32(i), 97) < 0.5 {
+        best = nearer(
+            best,
+            (capsule(l, vec2(0.0, 0.7), vec2(0.0, 1.5), 0.04), vec3(0.55, 0.42, 0.3)),
+        )
+        let ball = length(l - vec2(0.0, 1.95)) -
+            0.55 +
+            0.035 * abs(sin(atan2(l.y - 1.95, l.x) * 11.0))
+        let leaf = crowned(vec3(0.46, 0.68, 0.32), vec3(0.34, 0.5, 0.38), l, vec2(0.0, 1.95), 0.55)
+        best = nearer(best, (ball, leaf))
+    } else {
+        var bush = 1.0e3
+        for c in [vec3(-0.3, 0.95, 0.32), vec3(0.0, 1.15, 0.4), vec3(0.32, 0.92, 0.3)] {
+            bush = smin(bush, length(l - c.xy) - c.z, 0.12)
+        }
+        bush += 0.03 * abs(sin(atan2(l.y - 1.0, l.x) * 13.0))
+        let leaf = crowned(vec3(0.44, 0.66, 0.34), vec3(0.32, 0.48, 0.38), l, vec2(0.0, 1.05), 0.5)
+        // The flowers: a few small dabs of red, one to a cell where its hash says.
+        let cell = floor(l / 0.16)
+        let dab = length(fract(l / 0.16) - vec2(0.5)) < 0.36 &&
+            hash2(i32(cell.x) + i32(i) * 13, i32(cell.y) + 57) < 0.3
+        best = nearer(best, (bush, if dab { vec3(0.95, 0.34, 0.42) } else { leaf }))
+    }
+    best
+}
+
+/// A park bench (`l` from its middle) and a bin beside it; now and then a seagull is head down
+/// in the bin, only its tail and its kicking feet (`t`) showing.
+fn bench(l: vec2, i: f32, t: f32) -> (f32, vec3) {
+    var slats = rbox(l - vec2(0.0, 0.47), vec2(0.9, 0.04), 0.02)
+    slats = min(slats, rbox(l - vec2(0.0, 0.72), vec2(0.9, 0.05), 0.02))
+    slats = min(slats, rbox(l - vec2(0.0, 0.88), vec2(0.9, 0.05), 0.02))
+    var legs = 1.0e3
+    for s in [-0.72, 0.72] {
+        legs = min(legs, capsule(l, vec2(s, 0.0), vec2(s, 0.95), 0.04))
+        legs = min(legs, capsule(l, vec2(s - 0.14 * sign(s), 0.0), vec2(s, 0.45), 0.035))
+    }
+    var best = atop((legs, vec3(0.3, 0.32, 0.32)), (slats, vec3(0.78, 0.55, 0.34)))
+    let bin = min(
+        rbox(l - vec2(1.45, 0.42), vec2(0.24, 0.42), 0.05),
+        ellipse(l - vec2(1.45, 0.86), vec2(0.28, 0.08)),
+    )
+    best = nearer(best, (bin, vec3(0.36, 0.56, 0.44)))
+    if hash2(i32(i), 98) < 0.5 {
+        // Its back half up out of the bin: a white body, a grey wing tipped black, feet kicking.
+        let kick = 0.05 * sin(t * 9.0)
+        let feet = min(
+            capsule(l, vec2(1.38, 1.05), vec2(1.28 + kick, 1.3), 0.02),
+            capsule(l, vec2(1.52, 1.05), vec2(1.62 - kick, 1.28), 0.02),
+        )
+        let body = ellipse(turn(l - vec2(1.45, 0.98), 1.3), vec2(0.28, 0.14))
+        let wing = ellipse(turn(l - vec2(1.5, 1.1), 1.2), vec2(0.16, 0.06))
+        let tip = if l.y > 1.2 { vec3(0.22, 0.22, 0.25) } else { vec3(0.66, 0.7, 0.76) }
+        best = nearer(best, (feet, vec3(0.95, 0.62, 0.48)))
+        best = atop(best, (body, vec3(0.98, 0.97, 0.94)))
+        best = atop(best, (wing, tip))
+    }
+    best
+}
+
+// ---- the stalls --------------------------------------------------------------------------------
+
+/// The stalls' paving on their layer.
+const STALLS_GROUND: f32 = -0.6
+
+/// How far apart the stalls are, and their lamp posts between them (m on their layer).
+const STALLS: f32 = 12.0
+
+fn stalls(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let ground = STALLS_GROUND
+    let paving = vec3(0.88, 0.81, 0.7)
+    if q.y > ground + 5.9 {
+        return vec4(0.0)
+    }
+    if q.y < ground {
+        return below(g, gs, paving, q, ground + 0.2, 0.16)
+    }
+    var best = (q.y - (ground + 0.2), paving)
+    // Each stall stands in the middle of its span, less than half a span wide: only this span's.
+    let cell = floor(q.x / STALLS)
+    let l = vec2(q.x - (cell + 0.5) * STALLS, q.y - ground)
+    if abs(l.x) < 2.6 && l.y < 4.5 {
+        best = nearer(best, stall(l, cell, t))
+    }
+    let post = q.x - floor(q.x / STALLS + 0.5) * STALLS
+    if abs(post) < 0.4 {
+        best = nearer(best, lamp(vec2(post, l.y)))
+    }
+    if l.y > 3.9 {
+        best = nearer(best, strung(q.x - cell * STALLS, l.y, cell, t))
+    }
+    let (d, albedo) = best
+    painted(g, gs, d, albedo, q, px, haze: 0.16, line: 1.0)
+}
+
+/// Stall `i` (`l` from its foot's middle), one of four in turn: the ice-cream stand, the fruit
+/// stall, the pretzel cart and the carrot-juice stand; and on most, the seagull's crew perched on
+/// top, one or two, eyeing the food (`t` bobs their heads).
+fn stall(l: vec2, i: f32, t: f32) -> (f32, vec3) {
+    let kind = ((i32(i) % 4) + 4) % 4
+    var best = if kind == 2 { cart(l) } else { kiosk(l, kind) }
+    let perch = if kind == 2 { 3.08 } else { 2.95 }
+    let crew = hash2(i32(i), 41)
+    if crew < 0.65 && l.y > perch - 0.05 {
+        best = nearer(best, gull((l - vec2(1.05, perch)) * vec2(-1.0, 1.0), t + i))
+        if crew < 0.3 {
+            best = nearer(best, gull(l - vec2(-1.0, perch), t * 1.2 + i + 2.0))
+        }
+    }
+    best
+}
+
+/// A kiosk (`l` from its foot's middle) of `kind`: 0 the ice-cream stand, 1 the fruit stall, 3
+/// the carrot-juice stand. A counter, its dark inside, posts, a striped awning, its goods on the
+/// counter and its sign on top.
+fn kiosk(l: vec2, kind: i32) -> (f32, vec3) {
+    let (base, stripe) = if kind == 0 {
+        (vec3(0.98, 0.84, 0.84), vec3(0.94, 0.52, 0.6))
+    } else if kind == 1 {
+        (vec3(0.76, 0.57, 0.38), vec3(0.46, 0.7, 0.42))
+    } else { (vec3(0.99, 0.74, 0.44), vec3(0.97, 0.55, 0.26)) }
+    var best = (rbox(l - vec2(0.0, 1.75), vec2(1.45, 0.7), 0.02), vec3(0.44, 0.32, 0.3))
+    let posts = min(
+        capsule(l, vec2(-1.52, 1.0), vec2(-1.52, 2.5), 0.05),
+        capsule(l, vec2(1.52, 1.0), vec2(1.52, 2.5), 0.05),
+    )
+    best = nearer(best, (posts, CREAM))
+    best = atop(best, (rbox(l - vec2(0.0, 0.55), vec2(1.65, 0.55), 0.04), base))
+    if l.y > 1.0 && l.y < 2.0 {
+        best = atop(best, goods(l, kind))
+    }
+    best = atop(best, awning(l - vec2(0.0, 2.95), w: 1.8, h: 0.55, a: stripe, b: CREAM))
+    if l.y > 2.9 {
+        best = nearer(best, board(l, kind))
+    }
+    best
+}
+
+/// A kiosk's goods on its counter (`l` from its foot's middle): tubs of ice cream, crates of
+/// fruit with bananas hung up, or glasses of carrot juice and a basket of carrots.
+fn goods(l: vec2, kind: i32) -> (f32, vec3) {
+    if kind == 0 {
+        let slot = clamp(floor(l.x / 0.6 + 0.5), -1.0, 2.0)
+        let x = slot * 0.6 - 0.3
+        let tub = min(
+            rbox(l - vec2(x, 1.2), vec2(0.22, 0.1), 0.02),
+            ellipse(l - vec2(x, 1.3), vec2(0.2, 0.09)),
+        )
+        let flavour = if slot < -0.5 { vec3(0.72, 0.92, 0.78) } else if slot < 0.5 {
+            vec3(0.98, 0.72, 0.78)
+        } else if slot < 1.5 { vec3(0.99, 0.94, 0.78) } else { vec3(0.6, 0.42, 0.32) }
+        return (tub, flavour)
+    }
+    if kind == 1 {
+        let slot = clamp(floor(l.x / 1.0 + 0.5), -1.0, 1.0)
+        let x = slot * 1.0
+        let heap = max(ellipse(l - vec2(x, 1.1), vec2(0.44, 0.3)), 1.1 - l.y)
+        let r = vec2(l.x / 0.19, (l.y - 1.1) / 0.17)
+        let row = floor(r.y)
+        let f = vec2(fract(r.x + row * 0.5) - 0.5, fract(r.y) - 0.5) * vec2(0.19, 0.17)
+        let fruit = max(heap, length(f) - 0.085)
+        let colour = if slot < -0.5 { vec3(0.98, 0.6, 0.22) } else if slot < 0.5 {
+            vec3(0.88, 0.3, 0.26)
+        } else { vec3(0.62, 0.8, 0.3) }
+        let crate = rbox(l - vec2(x, 1.08), vec2(0.42, 0.08), 0.02)
+        let best = nearer((fruit, colour), (crate, vec3(0.7, 0.52, 0.34)))
+        var bananas = 1.0e3
+        for k in 0..3 {
+            let b = vec2(1.1 + f32(k) * 0.07, 2.3)
+            bananas = min(
+                bananas,
+                cone(l, b, b + vec2(0.1 - f32(k) * 0.05, -0.35), ra: 0.035, rb: 0.03),
+            )
+        }
+        return nearer(best, (bananas, vec3(0.98, 0.85, 0.34)))
+    }
+    let slot = clamp(floor(l.x / 0.45 + 0.5), -3.0, 0.0)
+    let x = slot * 0.45
+    let glass = rbox(l - vec2(x, 1.27), vec2(0.09, 0.16), 0.02)
+    let juice = if l.y > 1.38 { vec3(0.99, 0.82, 0.55) } else { vec3(0.99, 0.6, 0.22) }
+    let straw = capsule(l, vec2(x + 0.02, 1.3), vec2(x + 0.1, 1.6), 0.015)
+    var best = nearer((glass, juice), (straw, vec3(0.5, 0.74, 0.4)))
+    let basket = rbox(l - vec2(1.0, 1.18), vec2(0.32, 0.12), 0.04)
+    best = nearer(best, (basket, vec3(0.8, 0.62, 0.38)))
+    for k in 0..3 {
+        let x = 0.82 + f32(k) * 0.18
+        let carrot = cone(l, vec2(x, 1.24), vec2(x - 0.03, 1.5), ra: 0.03, rb: 0.055)
+        let top = capsule(l, vec2(x - 0.03, 1.5), vec2(x - 0.06 + f32(k) * 0.03, 1.66), 0.02)
+        best = nearer(best, (carrot, vec3(0.98, 0.58, 0.22)))
+        best = nearer(best, (top, vec3(0.45, 0.7, 0.32)))
+    }
+    best
+}
+
+/// A kiosk's sign on its awning (`l` from its foot's middle): a big cone of two scoops and a
+/// cherry, a slice of watermelon, or the big carrot.
+fn board(l: vec2, kind: i32) -> (f32, vec3) {
+    if kind == 0 {
+        let wafer = cone(l, vec2(0.0, 3.0), vec2(0.0, 3.6), ra: 0.04, rb: 0.28)
+        let hatch = min(abs(fract((l.x + l.y) * 6.0) - 0.5), abs(fract((l.y - l.x) * 6.0) - 0.5))
+        var best = (wafer, if hatch < 0.1 { vec3(0.72, 0.5, 0.3) } else { vec3(0.92, 0.72, 0.44) })
+        best = atop(best, (length(l - vec2(0.0, 3.75)) - 0.3, vec3(0.72, 0.92, 0.78)))
+        best = atop(best, (length(l - vec2(0.03, 4.04)) - 0.24, vec3(0.98, 0.7, 0.78)))
+        best = nearer(best, (length(l - vec2(0.08, 4.32)) - 0.07, vec3(0.88, 0.2, 0.24)))
+        return best
+    }
+    if kind == 1 {
+        let r = length(l - vec2(0.0, 3.0))
+        let slice = max(r - 0.62, 3.0 - l.y)
+        let seed = ellipse(
+            vec2(fract(l.x / 0.18) - 0.5, fract((l.y - 3.0) / 0.16) - 0.5) * vec2(0.18, 0.16),
+            vec2(0.025, 0.04),
+        )
+        let flesh = if seed < 0.0 && r < 0.4 && l.y > 3.08 { INK } else {
+            vec3(0.96, 0.4, 0.42)
+        }
+        let colour = if r > 0.52 { vec3(0.36, 0.62, 0.34) } else if r > 0.47 { CREAM } else {
+            flesh
+        }
+        return (slice, colour)
+    }
+    // The big carrot, on two posts: orange, ridged across, its leaves fanned out.
+    let tip = vec2(-1.0, 3.25)
+    let top = vec2(0.8, 3.82)
+    let carrot = cone(l, tip, top, ra: 0.05, rb: 0.36)
+    let along = dot(l - tip, normalize(top - tip))
+    let ridge = abs(fract(along * 3.2) - 0.5) < 0.06 && carrot < -0.06
+    var best = (carrot, if ridge { vec3(0.86, 0.44, 0.18) } else { vec3(0.99, 0.6, 0.24) })
+    var leaves = 1.0e3
+    for a in [0.55, 1.0, 1.45] {
+        let dir = vec2(cos(a), sin(a))
+        leaves = min(leaves, ellipse(turn(l - top - dir * 0.34, a), vec2(0.32, 0.09)))
+    }
+    best = nearer(best, (leaves, vec3(0.45, 0.7, 0.32)))
+    let posts = min(
+        capsule(l, vec2(-0.5, 2.95), vec2(-0.5, 3.4), 0.04),
+        capsule(l, vec2(0.4, 2.95), vec2(0.4, 3.62), 0.04),
+    )
+    nearer(best, (posts, CREAM))
+}
+
+/// The pretzel cart (`l` from its foot's middle): a blue cart on two spoked wheels with a big
+/// pretzel painted on, a glass case of pretzels, and a striped umbrella over it.
+fn cart(l: vec2) -> (f32, vec3) {
+    let body = rbox(l - vec2(0.0, 0.95), vec2(1.1, 0.45), 0.08)
+    var best = (body, vec3(0.38, 0.54, 0.76))
+    best = atop(best, (pretzel((l - vec2(0.0, 0.95)) / 0.8) * 0.8, vec3(0.74, 0.46, 0.26)))
+    let case = rbox(l - vec2(0.0, 1.62), vec2(0.9, 0.22), 0.03)
+    best = nearer(best, (case, vec3(0.86, 0.92, 0.9)))
+    let small = (vec2(fract(l.x / 0.45 + 0.5) - 0.5, 0.0) * 0.45 + vec2(0.0, l.y - 1.6)) / 0.32
+    if abs(l.x) < 0.8 {
+        best = atop(best, (pretzel(small) * 0.32, vec3(0.74, 0.46, 0.26)))
+    }
+    for s in [-0.7, 0.7] {
+        let w = l - vec2(s, 0.36)
+        var wheel = abs(length(w) - 0.3) - 0.05
+        wheel = min(wheel, max(min(abs(w.x), abs(w.y)) - 0.02, length(w) - 0.3))
+        best = nearer(best, (wheel, vec3(0.3, 0.3, 0.32)))
+    }
+    best = nearer(best, (capsule(l, vec2(1.08, 1.2), vec2(1.55, 1.45), 0.03), vec3(0.3, 0.3, 0.32)))
+    best = nearer(best, (capsule(l, vec2(0.0, 1.84), vec2(0.0, 2.98), 0.03), CREAM))
+    atop(
+        best,
+        canopy(
+            l - vec2(0.0, 3.05),
+            w: 1.6,
+            h: 0.55,
+            a: vec3(0.95, 0.42, 0.36),
+            b: vec3(0.98, 0.84, 0.36),
+        ),
+    )
+}
+
+/// A pretzel's distance (`p` from its middle, 1 about its width): a loop, its ends crossed in the
+/// middle and folded back to its foot.
+fn pretzel(p: vec2) -> f32 {
+    let ring = abs(ellipse(p, vec2(0.46, 0.36))) - 0.07
+    let arms = min(
+        capsule(p, vec2(-0.3, -0.24), vec2(0.18, 0.12), 0.06),
+        capsule(p, vec2(0.3, -0.24), vec2(-0.18, 0.12), 0.06),
+    )
+    min(ring, arms)
+}
+
+/// A lamp post (`l` from its foot): an iron post with arms for the strings, a lantern on top.
+fn lamp(l: vec2) -> (f32, vec3) {
+    var d = capsule(l, vec2(0.0), vec2(0.0, 5.32), 0.06)
+    d = min(d, rbox(l - vec2(0.0, 0.18), vec2(0.13, 0.18), 0.03))
+    d = min(d, capsule(l, vec2(-0.25, 5.25), vec2(0.25, 5.25), 0.03))
+    d = min(d, rbox(l - vec2(0.0, 5.74), vec2(0.18, 0.04), 0.02))
+    let glass = rbox(l - vec2(0.0, 5.52), vec2(0.12, 0.17), 0.04)
+    atop((d, vec3(0.28, 0.4, 0.36)), (glass, vec3(1.0, 0.88, 0.56)))
+}
+
+/// What's strung between the lamp posts of span `i`, `x` m along it from its left post and `y` m
+/// up: bunting in one span, round paper lanterns in the next, sagging on their string.
+fn strung(x: f32, y: f32, i: f32, t: f32) -> (f32, vec3) {
+    let s = x / STALLS
+    let string = abs(y - (5.25 - 1.6 * s * (1.0 - s))) - 0.012
+    var best = (string, vec3(0.52, 0.42, 0.36))
+    if ((i32(i) % 2) + 2) % 2 == 0 {
+        let j = floor(x / 0.6)
+        let sc = (j + 0.5) * 0.6 / STALLS
+        let top = 5.25 - 1.6 * sc * (1.0 - sc)
+        let f = vec2(x - (j + 0.5) * 0.6 - 0.05 * sin(t * 3.0 + j) * (top - y), y - top)
+        let flag = max(f.y, (abs(f.x) * 0.4 - (f.y + 0.4) * 0.21) / 0.452)
+        best = nearer(best, (flag, festive(hash2(i32(i) * 31 + i32(j), 43))))
+    } else {
+        let j = floor(x / 1.5)
+        let sc = (j + 0.5) * 1.5 / STALLS
+        let top = 5.25 - 1.6 * sc * (1.0 - sc)
+        let l = vec2(x - (j + 0.5) * 1.5 - 0.03 * sin(t * 1.7 + j * 2.0), y - (top - 0.42))
+        let body = ellipse(l, vec2(0.2, 0.22))
+        let bits = min(
+            min(
+                capsule(l, vec2(0.0, 0.42), vec2(0.0, 0.2), 0.01),
+                capsule(l, vec2(0.0, -0.22), vec2(0.0, -0.36), 0.015),
+            ),
+            rbox(vec2(l.x, abs(l.y) - 0.21), vec2(0.09, 0.03), 0.01),
+        )
+        let paper = if hash2(i32(i) * 7 + i32(j), 44) < 0.5 { vec3(0.94, 0.4, 0.32) } else {
+            vec3(0.98, 0.76, 0.34)
+        }
+        let rib = abs(fract(l.y / 0.09) - 0.5) > 0.4
+        best = nearer(best, (body, if rib { paper * 0.86 } else { paper }))
+        best = nearer(best, (bits, vec3(0.3, 0.26, 0.24)))
+    }
+    best
+}
+
+// ---- beyond: the Petting Farm behind, the lake and the Wetlands across it ahead ----------------
+
+/// The near bank's top (the lakeside promenade), and the lake's far edge.
+const BANK: f32 = -0.4
+const LAKE: f32 = 1.0
+
+/// The land beyond at `x` (m): the farm's meadow behind, then, across the lake, the Wetlands' shore.
+fn land(x: f32) -> f32 {
+    let meadow = 1.45 + 0.2 * sin(x * 0.13) + 0.15 * noise2(vec2(x * 0.1, 5.0))
+    let shore = 1.15 + 0.1 * noise2(vec2(x * 0.2, 6.0))
+    meadow + (shore - meadow) * smoothstep(6.0, 18.0, x)
+}
+
+/// How far apart the Wetlands' sights across the lake are (m on its layer).
+const ACROSS: f32 = 11.0
+
+fn beyond(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    if q.y > 7.0 {
+        return vec4(0.0)
+    }
+    let promenade = vec3(0.88, 0.8, 0.68)
+    if q.y < BANK - 0.2 {
+        return below(g, gs, promenade, q, BANK, 0.4)
+    }
+    // The promenade along the lake, and its railing, in front.
+    let rx = q.x - floor(q.x / 1.6 + 0.5) * 1.6
+    let fy = q.y - BANK
+    let rail = min(
+        max(rbox(vec2(rx, fy - 0.3), vec2(0.04, 0.3), 0.02), -fy),
+        min(abs(fy - 0.55) - 0.025, abs(fy - 0.3) - 0.02),
+    )
+    let near = nearer((fy, promenade), (rail, vec3(0.3, 0.4, 0.36)))
+    let (dn, cn) = near
+    var c = painted(g, gs, dn, cn, q, px, haze: 0.35, line: 0.8)
+    if c.w > 0.999 {
+        return c
+    }
+    // The lake: its left shore running back from the promenade, glints of the low sun and ripples
+    // on it, and now and then a duck and her ducklings.
+    let slope = 0.13
+    let shore = (q.y - BANK - (q.x - 2.0) * slope) / sqrt(1.0 + slope * slope)
+    let water = max(q.y - LAKE, shore)
+    if water < px * 2.0 {
+        let back = saturate((q.y - BANK) / (LAKE - BANK))
+        var wc = blend(vec3(0.42, 0.68, 0.78), vec3(0.88, 0.88, 0.76), back * back)
+        let rows = vec2(q.x / 1.7 + hash2(i32(floor(q.y / 0.16)), 51) * 7.0 - t * 0.05, q.y / 0.16)
+        let cell = floor(rows)
+        let r = fract(rows) - vec2(0.5)
+        let n = hash2(i32(cell.x), i32(cell.y) + 300)
+        if n < 0.55 && abs(r.y) < 0.12 && abs(r.x) < 0.15 + 0.25 * n {
+            wc = if n < 0.25 { vec3(1.0, 0.94, 0.74) } else { wc * 0.86 }
+        }
+        var lake = (water, wc)
+        let brood = floor(q.x / 24.0)
+        let bx = (brood + 0.5) * 24.0
+        if hash2(i32(brood), 52) < 0.6 && q.x - bx > -2.0 && q.x - bx < 0.8 && bx > 14.0 {
+            let y = BANK + 0.55
+            let bob = 0.02 * sin(t * 2.0 + q.x * 3.0)
+            lake = atop(lake, duck(q - vec2(bx, y + bob), 1.0, vec3(0.72, 0.58, 0.42)))
+            for k in 0..3 {
+                let at = vec2(bx - 0.6 - f32(k) * 0.4, y + bob)
+                lake = atop(lake, duck(q - at, 0.5, vec3(0.99, 0.86, 0.42)))
+            }
+        }
+        let (dw, cw) = lake
+        c = over(c, painted(g, gs, dw, cw, q, px, haze: 0.38, line: 0.7))
+        if c.w > 0.999 {
+            return c
+        }
+    }
+    // The land beyond: the farm behind, the Wetlands across the lake.
+    let ground = land(q.x)
+    var best = (q.y - ground, vec3(0.64, 0.76, 0.42))
+    if q.x < 14.0 {
+        best = farm(q, ground, best)
+    } else {
+        best = wetlands(q, ground, t, best)
+    }
+    // Two trees where the farm's meadow runs down to the lake.
+    for x in [9.6, 12.2] {
+        if abs(q.x - x) < 2.6 {
+            let foot = vec2(x, land(x) - 0.2)
+            let tall = 2.6 + (x - 9.6) * 0.3
+            let (tree, leaves) = round_tree(q, foot, tall, x * 0.1)
+            let colour = if leaves > 0.5 {
+                crowned(
+                    vec3(0.5, 0.7, 0.34),
+                    vec3(0.4, 0.56, 0.4),
+                    q,
+                    foot + vec2(0.0, tall),
+                    1.6,
+                )
+            } else { vec3(0.58, 0.42, 0.28) }
+            best = nearer(best, (tree, colour))
+        }
+    }
+    let (d, albedo) = best
+    over(c, painted(g, gs, d, albedo, q, px, haze: 0.42, line: 0.8))
+}
+
+/// A duck on the water, `l` from her middle at the waterline and `s` her size, facing +x: a body
+/// cut off at the water, a round head, an orange bill.
+fn duck(l: vec2, s: f32, colour: vec3) -> (f32, vec3) {
+    let p = l / s
+    var d = max(ellipse(p - vec2(0.0, 0.04), vec2(0.3, 0.14)), -p.y)
+    d = smin(d, length(p - vec2(0.2, 0.26)) - 0.1, 0.05)
+    d = min(d, cone(p, vec2(-0.2, 0.08), vec2(-0.36, 0.18), ra: 0.06, rb: 0.02))
+    let bill = cone(p, vec2(0.28, 0.25), vec2(0.4, 0.22), ra: 0.04, rb: 0.025)
+    let (bd, bc) = nearer((d * s, colour), (bill * s, vec3(0.98, 0.6, 0.26)))
+    (bd, if length(p - vec2(0.23, 0.29)) < 0.025 { INK } else { bc })
+}
+
+/// The Petting Farm (`q` on its layer, `ground` the meadow's top there), over `best`: its red barn,
+/// its silo, its fence, and two sheep grazing behind it.
+fn farm(q: vec2, ground: f32, best: (f32, vec3)) -> (f32, vec3) {
+    var b = best
+    if q.y < 6.8 && abs(q.x + 7.0) < 3.0 {
+        b = nearer(b, barn(q - vec2(-7.0, land(-7.0) - 0.15)))
+    }
+    if abs(q.x + 11.8) < 1.0 {
+        b = nearer(b, silo(q - vec2(-11.8, land(-11.8) - 0.15)))
+    }
+    for x in [1.4, 2.8] {
+        if abs(q.x - x) < 0.9 {
+            let facing = if x < 2.0 { 1.0 } else { -1.0 }
+            let (d, c) = sheep((q - vec2(x, land(x) - 0.3)) / 1.3 * vec2(facing, 1.0))
+            b = nearer(b, (d * 1.3, c))
+        }
+    }
+    if q.x > -17.0 && q.x < 5.0 {
+        let fy = q.y - (ground - 0.35)
+        let fx = q.x - floor(q.x / 1.1 + 0.5) * 1.1
+        let fence = min(
+            max(abs(fx) - 0.05, abs(fy - 0.33) - 0.33),
+            max(min(abs(fy - 0.5) - 0.035, abs(fy - 0.24) - 0.035), abs(fx) - 0.6),
+        )
+        b = nearer(b, (fence, vec3(0.97, 0.94, 0.88)))
+    }
+    b
+}
+
+/// The Petting Farm's red barn (`l` from its foot's middle): a gambrel roof, the big door crossed
+/// in white, the hayloft's door open on the hay, and a rooster on its weathervane.
+fn barn(l: vec2) -> (f32, vec3) {
+    let red = vec3(0.8, 0.33, 0.27)
+    let white = vec3(0.97, 0.94, 0.88)
+    let walls = rbox(l - vec2(0.0, 1.45), vec2(2.6, 1.45), 0.04)
+    let low = max(max(2.85 - l.y, l.y - 4.0), (abs(l.x) - (2.85 - (l.y - 2.85) * 0.75)) * 0.8)
+    let high = max(4.0 - l.y, (abs(l.x) - 1.99 * (4.95 - l.y) / 0.95) * 0.43)
+    var best = atop((walls, red), (min(low, high), vec3(0.44, 0.32, 0.32)))
+    let door = l - vec2(0.0, 0.95)
+    let dd = rbox(door, vec2(0.85, 0.95), 0.02)
+    let cross = min(abs(door.x * 0.95 - door.y * 0.85), abs(door.x * 0.95 + door.y * 0.85)) / 1.275
+    let trim = -dd < 0.09 || cross < 0.06 || abs(door.x) < 0.035
+    best = atop(best, (dd, if trim { white } else { red * 0.88 }))
+    let loft = rbox(l - vec2(0.0, 3.3), vec2(0.42, 0.4), 0.02)
+    let inside = if l.y < 3.12 { vec3(0.94, 0.8, 0.42) } else { vec3(0.32, 0.24, 0.22) }
+    best = atop(best, (loft, if -loft < 0.08 { white } else { inside }))
+    let vane = min(
+        capsule(l, vec2(0.0, 4.9), vec2(0.0, 5.55), 0.025),
+        capsule(l, vec2(-0.3, 5.4), vec2(0.3, 5.4), 0.02),
+    )
+    var rooster = ellipse(l - vec2(0.0, 5.66), vec2(0.17, 0.1))
+    rooster = min(rooster, length(l - vec2(0.15, 5.8)) - 0.06)
+    rooster = min(rooster, ellipse(turn(l - vec2(-0.16, 5.76), 0.8), vec2(0.12, 0.05)))
+    nearer(best, (min(vane, rooster), vec3(0.3, 0.28, 0.28)))
+}
+
+/// The farm's silo (`l` from its foot's middle): a banded grey drum under a red dome.
+fn silo(l: vec2) -> (f32, vec3) {
+    let body = rbox(l - vec2(0.0, 2.5), vec2(0.8, 2.5), 0.03)
+    let band = abs(fract(l.y / 0.7) - 0.5) > 0.44
+    let dome = max(length(l - vec2(0.0, 4.98)) - 0.82, 4.98 - l.y)
+    nearer(
+        (body, if band { vec3(0.6, 0.62, 0.66) } else { vec3(0.76, 0.78, 0.8) }),
+        (dome, vec3(0.7, 0.36, 0.3)),
+    )
+}
+
+/// A sheep grazing (`l` from its feet), facing +x: a fluffy cream fleece, a dark face down in the
+/// grass.
+fn sheep(l: vec2) -> (f32, vec3) {
+    var fleece = 1.0e3
+    for c in [
+        vec3(-0.25, 0.5, 0.2),
+        vec3(0.0, 0.56, 0.24),
+        vec3(0.24, 0.5, 0.2),
+        vec3(0.0, 0.42, 0.24),
+    ] {
+        fleece = min(fleece, length(l - c.xy) - c.z)
+    }
+    var face = ellipse(turn(l - vec2(0.42, 0.34), -0.9), vec2(0.15, 0.08))
+    face = min(face, ellipse(l - vec2(0.34, 0.46), vec2(0.08, 0.04)))
+    var legs = min(
+        capsule(l, vec2(-0.2, 0.3), vec2(-0.2, 0.0), 0.035),
+        capsule(l, vec2(0.2, 0.3), vec2(0.2, 0.0), 0.035),
+    )
+    legs = min(legs, face)
+    atop((legs, vec3(0.28, 0.24, 0.24)), (fleece, vec3(0.98, 0.95, 0.88)))
+}
+
+/// The Capybara Wetlands across the lake (`q` on its layer, `ground` its shore there), over
+/// `best`: the boardwalk, and in each stretch a tree, reeds, flamingos, or the capybaras' hot
+/// spring.
+fn wetlands(q: vec2, ground: f32, t: f32, best: (f32, vec3)) -> (f32, vec3) {
+    var b = best
+    if q.x > 17.0 {
+        let fy = q.y - ground - 0.2
+        let px = q.x - floor(q.x / 1.4 + 0.5) * 1.4
+        let walk = min(abs(fy) - 0.05, max(abs(px) - 0.04, abs(fy - 0.25) - 0.3))
+        let rope = abs(fy - 0.45 + 0.15 * (0.25 - pow(fract(q.x / 1.4 + 0.5) - 0.5, 2.0))) - 0.015
+        b = nearer(b, (min(walk, rope), vec3(0.74, 0.56, 0.38)))
+    }
+    let i = floor(q.x / ACROSS)
+    let x = (i + 0.5) * ACROSS
+    if x < 18.0 || abs(q.x - x) > 3.2 || q.y > ground + 3.8 {
+        return b
+    }
+    let foot = vec2(x, land(x) + 0.05)
+    let l = q - foot
+    if ((i32(i) % 5) + 5) % 5 == 2 {
+        let (d, c) = hot_spring(l / 0.85, t)
+        return nearer(b, (d * 0.85, c))
+    }
+    let h = hash2(i32(i), 53)
+    if h < 0.4 {
+        let tall = 2.4 + 0.6 * hash2(i32(i), 54)
+        let (tree, leaves) = round_tree(q, foot - vec2(0.0, 0.2), tall, h)
+        let colour = if leaves > 0.5 {
+            crowned(vec3(0.46, 0.7, 0.36), vec3(0.38, 0.56, 0.42), q, foot + vec2(0.0, tall), 1.6)
+        } else { vec3(0.58, 0.42, 0.28) }
+        return nearer(b, (tree, colour))
+    }
+    if h < 0.7 {
+        var reeds = 1.0e3
+        for k in 0..7 {
+            let s = f32(k) - 3.0
+            let tall = 0.9 + 0.5 * hash2(i32(i) * 9 + k, 55)
+            reeds = min(reeds, cone(l, vec2(s * 0.18, 0.0), vec2(s * 0.3, tall), ra: 0.06, rb: 0.0))
+        }
+        let heads = min(
+            capsule(l, vec2(-0.35, 1.25), vec2(-0.37, 1.5), 0.05),
+            capsule(l, vec2(0.4, 1.15), vec2(0.43, 1.4), 0.05),
+        )
+        return nearer(nearer(b, (reeds, vec3(0.5, 0.68, 0.36))), (heads, vec3(0.52, 0.36, 0.24)))
+    }
+    let dir = if hash2(i32(i), 56) < 0.5 { -1.0 } else { 1.0 }
+    for at in [-1.0, 0.1, 1.1] {
+        let (d, c) = flamingo((l - vec2(at, 0.0)) * vec2(dir, 1.0) / 0.55)
+        b = nearer(b, (d * 0.55, c))
+    }
+    b
+}
+
+/// A round tree at `base`, `h` m tall (scenery.wrela's): a trunk and a crown of lumps, scalloped
+/// at its edge. Its distance, and 1 where it's crown.
+fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
+    let q = p - base
+    let trunk = min(
+        cone(q, vec2(0.0), vec2(0.05, h * 0.7), ra: 0.2, rb: 0.12),
+        capsule(q, vec2(0.0, h * 0.45), vec2(0.6, h * 0.7), 0.07),
+    )
+    var crown = 1.0e3
+    for k in 0..5 {
+        let a = f32(k) * 1.3 + seed * 6.0
+        let at = vec2(0.0, h) + vec2(cos(a) * 1.1, sin(a) * 0.6)
+        crown = smin(crown, length(q - at) - (1.0 + 0.3 * sin(a * 2.7)), 0.3)
+    }
+    crown += 0.06 * abs(sin(atan2(q.y - h, q.x) * 9.0 + seed * 20.0))
+    (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
+}
+
+/// The capybaras' hot spring (scenery.wrela's, where the loop began): a pool in a ring of stones,
+/// steam curling up, three capybaras soaking with their eyes shut, yuzus bobbing between them.
+fn hot_spring(q: vec2, t: f32) -> (f32, vec3) {
+    var best = (ellipse(q - vec2(0.0, 0.08), vec2(2.7, 0.3)), vec3(0.62, 0.86, 0.84))
+    for k in 0..9 {
+        let x = -2.8 + f32(k) * 0.7
+        let stone = ellipse(q - vec2(x, 0.12 + 0.08 * sin(f32(k) * 2.3)), vec2(0.3, 0.18))
+        if abs(x) > 2.2 {
+            best = nearer(best, (stone, vec3(0.74, 0.72, 0.68)))
+        }
+    }
+    for (x, dir) in [(-1.5, 1.0), (0.05, -1.0), (1.55, 1.0)] {
+        let l = (q - vec2(x, 0.42)) * vec2(dir, 1.0) / 1.7
+        let head = smin(
+            rbox(turn(l, -0.08), vec2(0.26, 0.17), 0.11),
+            length(l - vec2(-0.12, 0.2)) - 0.05,
+            0.03,
+        ) *
+            1.7
+        let shut = capsule(l, vec2(0.0, 0.07), vec2(0.07, 0.065), 0.012) < 0.0
+        best = nearer(best, (head, if shut { vec3(0.3, 0.2, 0.14) } else {
+            vec3(0.84, 0.62, 0.42)
+        }))
+    }
+    for x in [-0.75, 0.82] {
+        best = nearer(
+            best,
+            (length(q - vec2(x, 0.32 + 0.03 * sin(t * 1.5 + x))) - 0.16, vec3(1.0, 0.84, 0.25)),
+        )
+    }
+    for x in [-1.8, -0.4, 1.0, 2.1] {
+        let up = q.y - 0.7
+        if up > 0.0 && up < 1.3 {
+            let curl = abs(q.x - x - 0.12 * sin(q.y * 5.0 - t * 1.6 + x)) - 0.05 * (1.0 - up / 1.3)
+            best = nearer(best, (curl, vec3(0.98, 0.97, 0.94)))
+        }
+    }
+    best
+}
+
+/// A Chilean flamingo standing on one leg (scenery.wrela's; `l` from its foot), facing +x.
+fn flamingo(l: vec2) -> (f32, vec3) {
+    var d = capsule(l, vec2(0.0), vec2(0.0, 1.25), 0.03)
+    d = min(d, capsule(l, vec2(0.0, 0.85), vec2(-0.2, 1.0), 0.03))
+    d = min(d, capsule(l, vec2(-0.2, 1.0), vec2(0.0, 1.15), 0.03))
+    d = min(d, ellipse(turn(l - vec2(0.0, 1.45), 0.15), vec2(0.38, 0.2)))
+    d = min(d, capsule(l, vec2(0.25, 1.5), vec2(0.42, 1.95), 0.045))
+    d = min(d, capsule(l, vec2(0.42, 1.95), vec2(0.28, 2.35), 0.045))
+    d = min(d, length(l - vec2(0.33, 2.42)) - 0.09)
+    let beak = cone(l, vec2(0.4, 2.42), vec2(0.55, 2.27), ra: 0.045, rb: 0.018)
+    let tip = if l.x > 0.49 { vec3(0.2, 0.15, 0.15) } else { vec3(0.98, 0.9, 0.85) }
+    nearer((d, vec3(0.98, 0.58, 0.64)), (beak, tip))
+}
+
+// ---- the skyline, far --------------------------------------------------------------------------
+
+/// Where the Rainforest House and the Aviary's dome stand on the skyline (m on its layer).
+const GLASSHOUSE_AT = vec2(16.0, 0.9)
+const DOME_AT = vec2(44.0, 1.2)
+
+fn skyline(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    if q.y > 7.0 {
+        return vec4(0.0)
+    }
+    // Front to back: the tree line, the two houses standing in it, the hills behind.
+    let trees = 1.0 +
+        0.8 * fbm(vec2(q.x * 0.12, 9.0), 2) +
+        0.3 * abs(sin(q.x * 2.1)) * noise2(vec2(q.x * 0.5, 2.0))
+    var c = painted(g, gs, q.y - trees, vec3(0.5, 0.66, 0.58), q, px, haze: 0.4, line: 0.6)
+    if c.w > 0.999 {
+        return c
+    }
+    let gl = (q - GLASSHOUSE_AT) / 1.3
+    if abs(gl.x) < 4.6 && gl.y < 3.4 {
+        let (house, glass) = glasshouse(gl)
+        c = over(c, painted(g, gs, house * 1.3, glass, q, px, haze: 0.36, line: 0.6))
+    }
+    // The Aviary's dome: glass on a frame of meridians and rings, on a low drum.
+    let dl = q - DOME_AT
+    if abs(dl.x) < 2.6 && dl.y < 2.9 {
+        let up = max(dl.y - 0.3, 0.0)
+        let half = sqrt(max(5.76 - up * up, 0.01))
+        let meridian = abs(fract(dl.x / half * 4.0 + 0.5) - 0.5) * half / 4.0
+        let ring = abs(fract(up / 0.6) - 0.5) * 0.6
+        let glass = if min(meridian, ring) < 0.05 { vec3(0.5, 0.56, 0.6) } else {
+            vec3(0.74, 0.86, 0.9)
+        }
+        let dome = min(
+            max(length(dl - vec2(0.0, 0.3)) - 2.4, 0.3 - dl.y),
+            min(
+                rbox(dl - vec2(0.0, 0.15), vec2(2.4, 0.15), 0.0),
+                capsule(dl, vec2(0.0, 2.6), vec2(0.0, 2.9), 0.05),
+            ),
+        )
+        c = over(c, painted(g, gs, dome, glass, q, px, haze: 0.36, line: 0.6))
+    }
+    if c.w > 0.999 {
+        return c
+    }
+    let ridge = 1.3 + 4.6 * smoothstep(0.3, 0.72, fbm(vec2(q.x * 0.045 + 11.0, 3.0), 3))
+    over(c, painted(g, gs, q.y - ridge, vec3(0.6, 0.64, 0.84), q, px, haze: 0.46, line: 0.5))
+}
+
+/// The Rainforest House (`l` from its foot's middle), a Victorian palm house: a tall domed
+/// pavilion with a cupola, a long vaulted wing to either side, all glass on a white frame, and the
+/// palms showing green through it. Its distance and colour.
+fn glasshouse(l: vec2) -> (f32, vec3) {
+    let middle = min(
+        rbox(l - vec2(0.0, 0.7), vec2(1.3, 0.7), 0.02),
+        max(ellipse(l - vec2(0.0, 1.4), vec2(1.3, 1.3)), 1.4 - l.y),
+    )
+    let cupola = min(
+        rbox(l - vec2(0.0, 2.85), vec2(0.2, 0.18), 0.02),
+        length(l - vec2(0.0, 3.03)) - 0.2,
+    )
+    let w = vec2(abs(l.x) - 2.8, l.y)
+    let wings = min(
+        rbox(w - vec2(0.0, 0.45), vec2(1.5, 0.45), 0.02),
+        max(ellipse(w - vec2(0.0, 0.9), vec2(1.5, 0.55)), 0.9 - w.y),
+    )
+    let d = min(min(middle, cupola), wings)
+    let frame = abs(fract(l.x / 0.32) - 0.5) * 0.32 < 0.03 ||
+        abs(fract(l.y / 0.36) - 0.5) * 0.36 < 0.03
+    let palms = noise2(l * 2.2) > 0.55 && l.y < 1.8
+    let colour = if frame { vec3(0.97, 0.96, 0.92) } else if palms { vec3(0.56, 0.74, 0.56) } else {
+        vec3(0.8, 0.9, 0.86)
+    }
+    (d, colour)
 }
