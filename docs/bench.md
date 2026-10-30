@@ -3754,3 +3754,17 @@ approximately 42 ms settled frames remain. All 28 paired images within 2/255,
 48,070,656 field values bit-exact, five GPU tests pass.
 First assessment 31.88 min; one optimization, no training.
 G1–G7 unchanged/unmet. [Complete evidence and failures](neural-distance-slabs.md).
+
+## 2026-10-30: source-sized shape interpreters on AMD
+
+Retain exact 256/384/512 capacity selection; retire spatial pruning and active
+program compaction. Controlled Last Green, 1920×1080, scale 0.667, RADV RENOIR/
+Ryzen 5 5500U, Chrome 154, Wrela 0.9.0: three clean source-matched pairs reduce
+complete GPU spans 4.22–4.67% and movement spans 14.34–15.20%. Worst movement
+frames fall from 223–226 ms to 133–135 ms; settled frames remain about 42 ms.
+Requested live memory increases 1,672,320 bytes; no physical-memory saving claim.
+All 21 paired images within 1/255, 47,775,744 field values
+bit-exact, five GPU tests and deliberate empty-program failure verified.
+First matched assessment 18.58 min; two followups,
+zero training. G1–G7 unchanged/unmet.
+[Evidence, memory tradeoffs and preserved failures](neural-distance-capacity.md).

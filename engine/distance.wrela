@@ -61,6 +61,27 @@ pub struct Shape: Copy + GpuData {
     pub radius: f32,
 }
 
+/// An exact copy of a source shape in a smaller interpreter capacity.
+/// A slab selects this only when every listed source program fits.
+struct CompactShape<const N: u32>: Copy + GpuData {
+    tape: std::stage::Taped<N, 256>,
+    to_local: mat4,
+    centre: vec3,
+    radius: f32,
+}
+
+fn compact_shape<const N: u32>(s: Shape) -> CompactShape<N> {
+    CompactShape {
+        tape: match s.tape.resized::<N, 256>() {
+            Some(t) => t,
+            None => std::stage::Taped::new(),
+        },
+        to_local: s.to_local,
+        centre: s.centre,
+        radius: s.radius,
+    }
+}
+
 /// What a scene says is solid (`frame::Scene::solids`), and its version: the volume is cooked
 /// again when it changes.
 pub struct Solids: Clone {
@@ -369,6 +390,92 @@ fn cook_capsule_distance(
     out.store(id, dist)
 }
 
+@compute(64)
+fn cook_distance_256(
+    g: DistanceGrid,
+    first: u32,
+    kept: Kept,
+    bins: [vec2u],
+    list: [u32],
+    capsules: [Capsule],
+    shapes: [CompactShape<256>],
+    columns: [vec2],
+    out: mut Texels3d<R32Float>,
+    id: GlobalId,
+) {
+    if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
+        return
+    }
+    let t = vec3i(id.xyz())
+    let d = vec3i(g.dims)
+    let w = g.origin + (((t - g.origin) % d) + d) % d
+    if inside_box(w, kept.lo, kept.hi) {
+        return
+    }
+    let p = (vec3(w) + vec3(0.5)) * g.voxel
+    // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
+    let ground = columns[id.z * g.dims.x + id.x]
+    var dist = min((p.y - ground.y) * ground.x, DISTANCE_FAR)
+    let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
+    let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
+    for i in 0..entry.y {
+        let k = list[entry.x + i]
+        if k & SHAPE_BIT == 0 {
+            dist = min(dist, to_capsule(capsules[k], p))
+        } else {
+            let s = shapes[k & !SHAPE_BIT]
+            // Its sphere first: a tape is read only where it could be nearer.
+            if length(p - s.centre) - s.radius < dist {
+                dist = min(dist, interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz))
+            }
+        }
+    }
+    out.store(id, dist)
+}
+
+@compute(64)
+fn cook_distance_384(
+    g: DistanceGrid,
+    first: u32,
+    kept: Kept,
+    bins: [vec2u],
+    list: [u32],
+    capsules: [Capsule],
+    shapes: [CompactShape<384>],
+    columns: [vec2],
+    out: mut Texels3d<R32Float>,
+    id: GlobalId,
+) {
+    if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
+        return
+    }
+    let t = vec3i(id.xyz())
+    let d = vec3i(g.dims)
+    let w = g.origin + (((t - g.origin) % d) + d) % d
+    if inside_box(w, kept.lo, kept.hi) {
+        return
+    }
+    let p = (vec3(w) + vec3(0.5)) * g.voxel
+    // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
+    let ground = columns[id.z * g.dims.x + id.x]
+    var dist = min((p.y - ground.y) * ground.x, DISTANCE_FAR)
+    let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
+    let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
+    for i in 0..entry.y {
+        let k = list[entry.x + i]
+        if k & SHAPE_BIT == 0 {
+            dist = min(dist, to_capsule(capsules[k], p))
+        } else {
+            let s = shapes[k & !SHAPE_BIT]
+            // Its sphere first: a tape is read only where it could be nearer.
+            if length(p - s.centre) - s.radius < dist {
+                dist = min(dist, interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz))
+            }
+        }
+    }
+    out.store(id, dist)
+}
+
 /// Entry `k` added to the lists of the bins (`BINS`, from `corner`) that come within
 /// `DISTANCE_FAR` of the box from `lo` to `hi`.
 fn bin_into(lists: mut Vec<Vec<u32>>, corner: vec3, lo: vec3, hi: vec3, k: u32) {
@@ -391,10 +498,12 @@ pub struct Distance {
     pub grid: DistanceGrid,
     pub volume: Texture3d<R32Float>,
     columns: GpuBuffer<vec2>,
-    // CPU source classification for each physical z slab, rebuilt with the bins.
+    // Maximum source program length per physical z slab; zero means no shape entries.
     shape_slabs: [u32; DISTANCE_SLABS],
     capsules: GpuBuffer<Capsule>,
     shapes: GpuBuffer<Shape>,
+    shapes256: GpuBuffer<CompactShape<256>>,
+    shapes384: GpuBuffer<CompactShape<384>>,
     bins: GpuBuffer<vec2u>,
     list: GpuBuffer<u32>,
     solids: Solids,
@@ -421,6 +530,8 @@ impl Distance {
             shape_slabs: [0; DISTANCE_SLABS],
             capsules: buffer(1),
             shapes: buffer(1),
+            shapes256: buffer(1),
+            shapes384: buffer(1),
             bins: buffer(BINS.x * BINS.y * BINS.z),
             list: buffer(1),
             solids: Solids {},
@@ -438,6 +549,8 @@ impl Distance {
         memory::texels(self.volume.width(), self.volume.height(), 4, d: self.volume.depth()) +
             u64(self.capsules.len()) * u64(size_of::<Capsule>()) +
             u64(self.shapes.len()) * u64(size_of::<Shape>()) +
+            u64(self.shapes256.len()) * u64(size_of::<CompactShape<256>>()) +
+            u64(self.shapes384.len()) * u64(size_of::<CompactShape<384>>()) +
             u64(self.bins.len()) * 8 +
             u64(self.list.len()) * 4 +
             u64(self.columns.len()) * 8
@@ -546,7 +659,9 @@ impl Distance {
         for l in lists {
             var shape = 0
             for k in l {
-                if (k & SHAPE_BIT) != 0 { shape = SHAPE_BIT }
+                if (k & SHAPE_BIT) != 0 {
+                    shape = max(shape, max(1, self.solids.shapes[k & !SHAPE_BIT].tape.len()))
+                }
             }
             if shape != 0 {
                 let bin_z = i32(heads.len() / (BINS.x * BINS.y))
@@ -554,7 +669,8 @@ impl Distance {
                 let depth = i32(DISTANCE_DIMS.z)
                 for dz in 0..BIN {
                     let physical = ((lo + i32(dz)) % depth + depth) % depth
-                    self.shape_slabs[u32(physical) / (DISTANCE_DIMS.z / DISTANCE_SLABS)] = 1
+                    let slab = u32(physical) / (DISTANCE_DIMS.z / DISTANCE_SLABS)
+                    self.shape_slabs[slab] = max(self.shape_slabs[slab], shape)
                 }
             }
             heads.push(vec2u(flat.len(), l.len()))
@@ -566,6 +682,14 @@ impl Distance {
         self.list = buffer_of(flat, at_least: 1)
         self.capsules = buffer_of(self.solids.capsules, at_least: 1)
         self.shapes = buffer_of(self.solids.shapes, at_least: 1)
+        var small: Vec<CompactShape<256>> = Vec::with_capacity(self.solids.shapes.len())
+        var medium: Vec<CompactShape<384>> = Vec::with_capacity(self.solids.shapes.len())
+        for s in self.solids.shapes {
+            small.push(compact_shape::<256>(s))
+            medium.push(compact_shape::<384>(s))
+        }
+        self.shapes256 = buffer_of(small, at_least: 1)
+        self.shapes384 = buffer_of(medium, at_least: 1)
     }
 
     /// The next slab cooked (`Work::Distance`), its ground from the clipmap's `levels`.
@@ -598,6 +722,36 @@ impl Distance {
                     bins: self.bins.items(),
                     list: self.list.items(),
                     capsules: self.capsules.items(),
+                    columns: self.columns.items(),
+                    out: mut self.volume,
+                ),
+                over: (d.x, d.y, first + depth),
+            )
+        } else if self.shape_slabs[self.next] <= 256 {
+            dispatch(
+                cook_distance_256.bind(
+                    self.grid,
+                    first: first,
+                    kept: self.kept,
+                    bins: self.bins.items(),
+                    list: self.list.items(),
+                    capsules: self.capsules.items(),
+                    shapes: self.shapes256.items(),
+                    columns: self.columns.items(),
+                    out: mut self.volume,
+                ),
+                over: (d.x, d.y, first + depth),
+            )
+        } else if self.shape_slabs[self.next] <= 384 {
+            dispatch(
+                cook_distance_384.bind(
+                    self.grid,
+                    first: first,
+                    kept: self.kept,
+                    bins: self.bins.items(),
+                    list: self.list.items(),
+                    capsules: self.capsules.items(),
+                    shapes: self.shapes384.items(),
                     columns: self.columns.items(),
                     out: mut self.volume,
                 ),
