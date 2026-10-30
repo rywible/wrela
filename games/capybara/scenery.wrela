@@ -27,6 +27,7 @@
 // `REFRESH`, one strip a frame), so most frames read four textures where they'd work out four
 // layers' shapes. The sky is still worked out each frame (its clouds drift).
 
+use habitats::sky_of
 use earth::surely_ground_below
 use engine::noise::{hash2, noise2}
 use ink::{INK, SUN, inked, paper, pooled, washed}
@@ -44,7 +45,8 @@ pub struct View: Copy + GpuData {
     pub half: vec2,
     pub screen: vec2,
     pub time: f32,
-    pub pad: f32 = 0.0,
+    /// The habitat drawn: the course's number (habitats.wrela).
+    pub habitat: f32 = 0.0,
 }
 
 /// The layers' fractions of the camera's motion.
@@ -54,28 +56,28 @@ pub const PATH: f32 = 0.42
 pub const BAMBOO: f32 = 0.68
 
 /// The mist the far layers fade into.
-const MIST = vec3(0.83, 0.88, 0.87)
+pub const MIST = vec3(0.83, 0.88, 0.87)
 
 /// How much smaller a layer is drawn, for its parallax.
-fn zoom(parallax: f32) -> f32 {
+pub fn zoom(parallax: f32) -> f32 {
     0.45 + 0.55 * parallax
 }
 
 /// The point a pixel shows on a layer that moves by `parallax` of the camera's motion.
-fn on_layer(pixel: FragCoord, v: View, parallax: f32) -> vec2 {
+pub fn on_layer(pixel: FragCoord, v: View, parallax: f32) -> vec2 {
     let uv = pixel.position.xy / v.screen
     let offset = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * v.half
     (v.centre * parallax + offset) / zoom(parallax)
 }
 
 /// A pixel's size on a layer (m).
-fn pixel_on(v: View, parallax: f32) -> f32 {
+pub fn pixel_on(v: View, parallax: f32) -> f32 {
     2.0 * v.half.y / v.screen.y / zoom(parallax)
 }
 
 /// A layer's shape painted: its wash, pooled at the edge, faded by `haze` into the mist, and
 /// inked with a line `line` px wide.
-fn paint(
+pub fn paint(
     g: Texture<Rgba16Float>,
     gs: Sampler,
     d: f32,
@@ -97,7 +99,7 @@ fn paint(
 }
 
 /// What a layer is under its ground: its fill washed and darkening downwards into shade.
-fn under(
+pub fn under(
     g: Texture<Rgba16Float>,
     gs: Sampler,
     albedo: vec3,
@@ -111,7 +113,7 @@ fn under(
 }
 
 /// Fractal value noise: `octaves` of `noise2`, each twice as fine and half as strong, in 0 to 1.
-fn fbm(p: vec2, octaves: u32) -> f32 {
+pub fn fbm(p: vec2, octaves: u32) -> f32 {
     var sum = 0.0
     var weight = 0.5
     var q = p
@@ -129,7 +131,7 @@ fn fbm(p: vec2, octaves: u32) -> f32 {
 
 /// A crown's colour at `q`: its wash, and a darker one on the side away from the sun (`centre`
 /// its middle, `r` its size), with a soft painted edge between.
-fn crowned(lit: vec3, shade: vec3, q: vec2, centre: vec2, r: f32) -> vec3 {
+pub fn crowned(lit: vec3, shade: vec3, q: vec2, centre: vec2, r: f32) -> vec3 {
     let away = dot(q - centre, SUN) / r + 0.15 * noise2(q * 3.0)
     blend(shade, lit, smoothstep(-0.35, -0.15, away))
 }
@@ -142,7 +144,7 @@ const SUN_AT = vec2(0.8, 0.17)
 
 /// A puffed cloud in its cell, at `q` on the cloud's layer: lumps on a flat bottom. Its
 /// distance, and the height of its bottom.
-fn cloud(q: vec2, time: f32) -> (f32, f32) {
+pub fn cloud(q: vec2, time: f32) -> (f32, f32) {
     let x = q.x - time * 0.05
     let cell = floor(x / 16.0)
     var d = 1.0e3
@@ -177,7 +179,8 @@ fn sky(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
     let up = 1.0 - uv.y + v.centre.y * 0.004
     let p = on_layer(pixel, v, 0.03)
     let px = pixel_on(v, 0.03)
-    var c = blend(vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89), smoothstep(0.28, 0.95, up))
+    let (horizon, zenith) = sky_of(u32(v.habitat + 0.5))
+    var c = blend(horizon, zenith, smoothstep(0.28, 0.95, up))
     c = washed(c, p * 0.25, g, gs)
     let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
     let rings = smoothstep(0.16, 0.08, d) * 0.25
@@ -376,7 +379,7 @@ fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
 }
 
 /// The nearer of two shapes, each a distance and a colour.
-fn nearer(a: (f32, vec3), b: (f32, vec3)) -> (f32, vec3) {
+pub fn nearer(a: (f32, vec3), b: (f32, vec3)) -> (f32, vec3) {
     let (da, _) = a
     let (db, _) = b
     if db < da { b } else { a }
@@ -662,14 +665,88 @@ fn under_of(front: vec4, back: vec4) -> vec4 {
     front + back * left
 }
 
-/// Layer `k` (0 the marsh, nearest, to 3 the far hills) at `pixel`, premultiplied.
-fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let o = if k == 0 { bamboo(pixel, v, g, gs) } else if k == 1 {
+/// A habitat's backdrop: its layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not
+/// premultiplied. Each habitat's strips are drawn by a pipeline of its own (`strip_layer`), so a
+/// pipeline holds one habitat's shapes: a pipeline is at most 256 KiB, and the eight habitats'
+/// together are far more.
+pub trait Scene {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4
+}
+
+/// The habitats' scenes: the Wetlands' (the capybaras' home's too, and the lab's) here, each other
+/// habitat's from its own module (scene_savanna.wrela...).
+pub struct Wetlands {}
+
+pub struct Savanna {}
+
+pub struct Rainforest {}
+
+pub struct Aviary {}
+
+pub struct Reptiles {}
+
+pub struct Polar {}
+
+pub struct Farm {}
+
+pub struct FoodCourt {}
+
+impl Scene for Wetlands {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        wetlands_layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Savanna {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_savanna::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Rainforest {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_rainforest::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Aviary {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_aviary::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Reptiles {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_reptiles::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Polar {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_polar::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for Farm {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_farm::layer(k, pixel, v, g, gs)
+    }
+}
+
+impl Scene for FoodCourt {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        scene_food_court::layer(k, pixel, v, g, gs)
+    }
+}
+
+/// The Wetlands' layer `k`: the marsh, the wetlands' residents, the Savanna next door, the far
+/// hills.
+fn wetlands_layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    if k == 0 { bamboo(pixel, v, g, gs) } else if k == 1 {
         path(pixel, v, g, gs)
     } else if k == 2 {
         savanna(pixel, v, g, gs)
     } else { far_hills(pixel, v, g, gs) }
-    vec4(o.xyz * o.w, o.w)
 }
 
 /// The layers' fractions of the camera's motion, nearest first (`layer`'s order).
@@ -700,6 +777,8 @@ pub struct Strips {
     pub screen: vec2,
     pub half: vec2,
     pub ready: [bool; 4],
+    /// The habitat the strips were drawn for.
+    pub habitat: f32,
 }
 
 /// No strips drawn yet.
@@ -716,14 +795,74 @@ pub fn strips() -> Strips {
         screen: vec2(0.0),
         half: vec2(0.0),
         ready: [false; 4],
+        habitat: -1.0,
     }
 }
 
-/// A strip's pixel: layer `k` as the view `v` (the strip's: `MARGIN` times the screen's) shows
-/// it, premultiplied.
+/// A strip's pixel: habitat `S`'s layer `k` as the view `v` (the strip's: `MARGIN` times the
+/// screen's) shows it, premultiplied.
 @fragment
-fn strip_layer(pixel: FragCoord, v: View, k: u32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    layer(k, pixel, v, g, gs)
+fn strip_layer<S: Scene>(
+    pixel: FragCoord,
+    v: View,
+    k: u32,
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
+    let o = S::layer(k, pixel, v, g, gs)
+    vec4(o.xyz * o.w, o.w)
+}
+
+/// Strip `k` of the view `v`'s habitat drawn in `p`, by the habitat's own pipeline.
+fn draw_scene<P: RenderPass>(p: P, k: u32, v: View, g: Texture<Rgba16Float>, gs: Sampler) {
+    let h = u32(v.habitat + 0.5)
+    if h == course::SAVANNA {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<Savanna>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    } else if h == course::RAINFOREST {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<Rainforest>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    } else if h == course::AVIARY {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<Aviary>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    } else if h == course::REPTILES {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<Reptiles>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    } else if h == course::POLAR {
+        draw(p, full.bind(z: 0.0), strip_layer::<Polar>.bind(v: v, k: k, g: g, gs: gs), vertices: 3)
+    } else if h == course::FARM {
+        draw(p, full.bind(z: 0.0), strip_layer::<Farm>.bind(v: v, k: k, g: g, gs: gs), vertices: 3)
+    } else if h == course::FOOD_COURT {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<FoodCourt>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    } else {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            strip_layer::<Wetlands>.bind(v: v, k: k, g: g, gs: gs),
+            vertices: 3,
+        )
+    }
 }
 
 impl Strips {
@@ -732,7 +871,7 @@ impl Strips {
     /// moving parts are due, is due; the most due of them drawn (one a frame), and any the
     /// camera has carried past three quarters of its margin drawn whatever else is.
     pub fn update(mut self, v: View, g: Texture<Rgba16Float>, gs: Sampler) {
-        if v.screen != self.screen || v.half != self.half {
+        if v.screen != self.screen || v.half != self.half || v.habitat != self.habitat {
             let size = vec2u(ceil(v.screen * MARGIN))
             for k in 0..4 {
                 self.strips[k] = texture::<Rgba8>(width: size.x, height: size.y)
@@ -740,6 +879,7 @@ impl Strips {
             }
             self.screen = v.screen
             self.half = v.half
+            self.habitat = v.habitat
         }
         let room = (MARGIN - vec2(1.0)) * v.half
         var most = 0.0
@@ -772,6 +912,7 @@ impl Strips {
             half: v.half * MARGIN,
             screen: v.screen * MARGIN,
             time: v.time,
+            habitat: v.habitat,
         }
         let p = begin_pass(mut self.strips[k], clear: vec4(0.0), keep: !whole)
         if !whole {
@@ -783,7 +924,7 @@ impl Strips {
             let b = vec2u(clamp(hi * sv.screen + vec2(2.0), vec2(0.0), sv.screen))
             p.scissor(x: a.x, y: a.y, width: max(b.x - a.x, 1), height: max(b.y - a.y, 1))
         }
-        draw(p, full.bind(z: 0.0), strip_layer.bind(v: sv, k: k, g: g, gs: gs), vertices: 3)
+        draw_scene(p, k, sv, g, gs)
         p.end()
         self.at[k] = from
         self.when[k] = v.time
@@ -797,22 +938,14 @@ impl Strips {
 }
 
 /// Layer `k` at `pixel` from its strip (`strip`, drawn from the camera at `at`), filtered by `s`;
-/// worked out itself where the strip doesn't reach (it's drawn again before it can).
-fn cached(
-    k: u32,
-    strip: Texture<Rgba8>,
-    at: vec2,
-    pixel: FragCoord,
-    v: View,
-    s: Sampler,
-    g: Texture<Rgba16Float>,
-    gs: Sampler,
-) -> vec4 {
+/// nothing where the strip doesn't reach, which it never fails to: a strip is drawn again whole
+/// once the camera has carried the view three quarters of the way to its edge (`Strips::update`).
+fn cached(k: u32, strip: Texture<Rgba8>, at: vec2, pixel: FragCoord, v: View, s: Sampler) -> vec4 {
     let uv = pixel.position.xy / v.screen
     let off = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * v.half + (v.centre - at) * PARALLAX[k]
     let q = off / (v.half * MARGIN)
     if abs(q.x) > 1.0 || abs(q.y) > 1.0 {
-        return layer(k, pixel, v, g, gs)
+        return vec4(0.0)
     }
     strip.sample_level(s, vec2(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5))
 }
@@ -838,15 +971,15 @@ pub fn backdrop(
     if w.y < surely_ground_below(tops, w.x) - 0.05 {
         discard()
     }
-    var c = cached(0, marsh, drawn.at0, pixel, v, s, g, gs)
+    var c = cached(0, marsh, drawn.at0, pixel, v, s)
     if c.w < 0.999 {
-        c = under_of(c, cached(1, wetlands, drawn.at1, pixel, v, s, g, gs))
+        c = under_of(c, cached(1, wetlands, drawn.at1, pixel, v, s))
     }
     if c.w < 0.999 {
-        c = under_of(c, cached(2, savanna_strip, drawn.at2, pixel, v, s, g, gs))
+        c = under_of(c, cached(2, savanna_strip, drawn.at2, pixel, v, s))
     }
     if c.w < 0.999 {
-        c = under_of(c, cached(3, hills, drawn.at3, pixel, v, s, g, gs))
+        c = under_of(c, cached(3, hills, drawn.at3, pixel, v, s))
     }
     if c.w < 0.999 {
         let k = sky(pixel, v, g, gs)

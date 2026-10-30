@@ -7,7 +7,7 @@
 // The capybara squashes and stretches on a spring: low as it lands, tall as it jumps.
 
 use body::{Mode, RADIUS}
-use course::Course
+use course::{Course, LEVELS}
 use dust::{
     Dust, EARTH_DUST, between, bubbles, burst, clippings, confetti, dust, dust_sprites, feathers,
     puff, spark_trail, sparkles, splash, step_dust, streak,
@@ -19,8 +19,8 @@ use sound::{
 use feel::{FEEL, HZ}
 use replay::Pose
 use sprites::{
-    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL, SHADOW,
-    SPARK, Sprite, YUZU,
+    CAIMAN, CAPYBARA, CARROT, DRAFT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL,
+    SHADOW, SPARK, Sprite, YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -310,7 +310,20 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     }
     // Wet on land: it drips.
     k.back += dt
+    let won_before = k.won
     k.won = if s.finished > 0 { k.won + dt } else { 0.0 }
+    // The last level's ending: the seagull drops the carrot, and the capybara eats it, a crunch a
+    // bite, with confetti at the last (`ending`).
+    if ending(s) {
+        for bite in BITES {
+            if won_before < bite && k.won >= bite {
+                k.cues.push(Cue { kind: CRUNCH, pan: 0.0 })
+            }
+        }
+        if won_before < BITES[2] && k.won >= BITES[2] {
+            confetti(mut k.dust, s.at + vec2(0.6 * s.facing, 0.3), carry: vec2(0.0, 2.0), n: 40)
+        }
+    }
     k.drips -= dt
     if !wet_now && s.wet > 0 && k.drips <= 0.0 {
         let x = between(mut k.dust, vec2(-0.3, 0.3))
@@ -395,6 +408,16 @@ fn under(k: Cast, c: Course, at: vec2) -> f32 {
 
 /// How far from its middle a sprite reaches into water (m), for its tint.
 const REACH: f32 = 0.6
+
+/// When the dropped carrot reaches the capybara at the last goal (s after it), and its bites.
+const DROP: f32 = 0.8
+const BITES: [f32; 3] = [1.0, 1.4, 1.8]
+
+/// Whether snapshot `s` is of the last level, whose goal is the ending: the capybara gets its
+/// snack (Ryan, 2026-10-30).
+pub fn ending(s: Snap) -> bool {
+    s.course < LEVELS && world::next(s.course).is_none()
+}
 
 /// The middle of the goal's floor (m): where the kusudama stands.
 fn goal_at(c: Course) -> vec2 {
@@ -506,6 +529,20 @@ pub fn sprites(
             shadow(mut back, c, f.xy, if kind == 1 || kind >= 5 { 0.4 } else { 0.3 })
         }
     }
+    // The updrafts' rising air.
+    for d in c.drafts {
+        back.push(
+            Sprite {
+                pose: vec4(0.0),
+                more: vec4(0.0),
+                at: (d.lo + d.hi) * 0.5,
+                half: (d.hi - d.lo) * 0.5,
+                angle: 0.0,
+                facing: 1.0,
+                kind: DRAFT,
+            },
+        )
+    }
     // The checkpoints' flags and the goal's, the seagull on top with the snack it stole.
     for i in 0..c.checkpoints.len() {
         back.push(Sprite {
@@ -531,15 +568,44 @@ pub fn sprites(
     })
     let pole = base + vec2(1.1, 0.0)
     let gone = if s.finished > 0 { k.won } else { 0.0 }
-    back.push(Sprite {
-        pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
-        more: vec4(0.0),
-        at: pole + vec2(0.0, 4.95) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
-        half: vec2(0.85, 0.6),
-        angle: if s.finished > 0 { 0.2 } else { 0.0 },
-        facing: if s.finished > 0 { 1.0 } else { -1.0 },
-        kind: SEAGULL,
-    })
+    let last = ending(s)
+    if last && s.finished > 0 {
+        // The ending: the carrot falls from the seagull's beak to the capybara, and is eaten a
+        // bite at a time.
+        let beak = pole + vec2(0.55, 4.95)
+        let mouth = s.at + vec2(0.55 * s.facing, 0.25)
+        let t = saturate(k.won / DROP)
+        let fall = beak + (mouth - beak) * t + vec2(0.0, 1.2 * sin(t * PI))
+        var left = 1.0
+        for bite in BITES {
+            if k.won >= bite {
+                left -= 0.3
+            }
+        }
+        if left > 0.15 {
+            front.push(Sprite {
+                pose: vec4(1.0),
+                more: vec4(0.0),
+                at: if t < 1.0 { fall } else { mouth },
+                half: vec2(0.3, 0.35) * left,
+                angle: if t < 1.0 { t * 6.0 } else { 1.4 * s.facing },
+                facing: 1.0,
+                kind: CARROT,
+            })
+        }
+    }
+    back.push(
+        Sprite {
+            pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
+            more: vec4(0.0),
+            at: pole + vec2(0.0, 4.95) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
+            half: vec2(0.85, 0.6),
+            angle: if s.finished > 0 { 0.2 } else { 0.0 },
+            facing: if s.finished > 0 { 1.0 } else { -1.0 },
+            // At the last goal it flies off without the carrot: it dropped it.
+            kind: if last && s.finished > 0 { GULL } else { SEAGULL },
+        },
+    )
     // The snacks and yuzus still to find, bobbing and turning a little.
     let bob = vec2(0.0, 0.08 * sin(time * 3.0))
     for i in 0..c.snacks.len() {
@@ -1027,5 +1093,30 @@ fn a_seek_into_a_death_isnt_heard_as_a_hurt() {
             hurt = hurt || cue.kind == HURT
         }
         assert(hurt == hurts, f"a cut: {s.tally.cuts}")
+    }
+}
+
+@test
+fn at_the_last_goal_the_capybara_eats_its_snack_and_nowhere_else() {
+    // Snapshots at the goal of the last level and of the Wetlands, two and a half seconds on: the
+    // last's ending crunches three bites; the Wetlands' seagull keeps the carrot.
+    for (level, bites) in [(course::FOOD_COURT, 3), (WETLANDS, 0)] {
+        borrow c = course(level)
+        var s = present(world(level))
+        s.finished = 100
+        s.ticks = 100
+        var k = cast(c, from: Some(s))
+        var crunches = 0
+        for _ in 0..150 {
+            react(mut k, s, c, 1.0 / 60.0, s.at, half_view(16.0 / 9.0))
+            for cue in k.cues {
+                if cue.kind == CRUNCH {
+                    crunches += 1
+                }
+            }
+            k.cues.clear()
+        }
+        assert(crunches == bites, f"level {level}: {crunches} bites")
+        assert(ending(s) == (bites > 0), "the ending is the last level's")
     }
 }

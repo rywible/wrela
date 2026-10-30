@@ -1,0 +1,729 @@
+// What's behind The Savanna's course, painted as the Wetlands' is (scenery.wrela, in ink.wrela's
+// picture-book hand): the second habitat on the zoo's loop (design.md, "A map of the zoo"), on a
+// warm afternoon. Its near layers are the Savanna; the next, what shows over its back wall: the
+// Capybara Wetlands behind (towards the level's start) and the Rainforest House ahead; the far
+// one, the plains' hills and the Aviary's dome.
+//
+// - The far hills (0.06): long golden hills, a line of flat-topped acacias, the Aviary's dome.
+// - Next door (0.2): the Savanna's rammed-earth back wall, thatched; over it the wetlands' papyrus,
+//   a round tree and the hot spring's steam behind, then the Rainforest House's glasshouse among
+//   palms and tall trees ahead.
+// - The Savanna (0.42): giraffes browsing an acacia, zebras grazing, ostriches, and a lion asleep
+//   on a kopje, one in each stretch along the viewing path's rail; a baobab now and then.
+// - The grass (0.68): tufts of dry golden grass, nearest; now and then a termite mound with a
+//   meerkat on watch, and a fallen log with a tortoise beside it.
+//
+// The far layers fade into a warm afternoon haze (`HAZE`) where the Wetlands' fade into a cool
+// mist. Where one shape lies over another, its edge is inked too (`Pick`, `over`).
+
+use engine::noise::{hash2, noise2}
+use ink::{INK, inked, pooled, washed}
+use scenery::{PARALLAX, View, crowned, fbm, on_layer, pixel_on}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+
+/// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
+pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    if k == 0 { grass(pixel, v, g, gs) } else if k == 1 {
+        residents(pixel, v, g, gs)
+    } else if k == 2 {
+        next_door(pixel, v, g, gs)
+    } else { far_hills(pixel, v, g, gs) }
+}
+
+// ---- painting --------------------------------------------------------------------------------
+
+/// The warm afternoon haze the far layers fade into: the sky's cream at the horizon.
+const HAZE = vec3(0.96, 0.89, 0.75)
+
+/// The warm shade a layer darkens into below its ground.
+const SHADE = vec3(0.45, 0.32, 0.26)
+
+/// A layer's shapes at a point: the distance (m, below 0 inside), the colour there, and how far
+/// the point is from an edge inside them, where one shape lies over another (inked too).
+struct Pick: Copy {
+    d: f32,
+    colour: vec3,
+    edge: f32,
+}
+
+/// A shape `d` its distance, of colour `colour`.
+fn pick(d: f32, colour: vec3) -> Pick {
+    Pick { d: d, colour: colour, edge: 1.0e3 }
+}
+
+/// `front` laid over `back`: where it's inside it shows, and its edge is inked over what's behind.
+fn over(back: Pick, front: Pick) -> Pick {
+    let d = min(back.d, front.d)
+    if front.d < 0.0 {
+        let edge = if back.d < 0.0 { min(front.edge, -front.d) } else { front.edge }
+        Pick { d: d, colour: front.colour, edge: edge }
+    } else if back.d < 0.0 {
+        Pick { d: d, colour: back.colour, edge: min(back.edge, front.d) }
+    } else if front.d < back.d {
+        pick(d, front.colour)
+    } else { pick(d, back.colour) }
+}
+
+/// `p`, a shape worked out `s` times smaller, at its size.
+fn scaled(p: Pick, s: f32) -> Pick {
+    Pick { d: p.d * s, colour: p.colour, edge: p.edge * s }
+}
+
+/// The point `a` towards `b` by `t` (0 to 1).
+fn towards(a: vec2, b: vec2, t: f32) -> vec2 {
+    a + (b - a) * t
+}
+
+/// The shapes painted (scenery.wrela's `paint`): the wash, pooled at the edge, faded by `haze`
+/// into the afternoon's haze, inked round with a line `line` px wide, and finer where one shape
+/// lies over another.
+fn paint(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    p: Pick,
+    q: vec2,
+    px: f32,
+    haze: f32,
+    line: f32,
+) -> vec4 {
+    if p.d > max(line * px * 0.65, px * 0.4) + px {
+        return vec4(0.0)
+    }
+    var c = pooled(washed(p.colour, q, g, gs), p.d, 0.12)
+    c = blend(c, HAZE, haze)
+    let ink = blend(INK, HAZE, min(haze * 1.7, 0.9))
+    let o = inked(c, p.d, q, line * px, px, ink)
+    let inner = inked(o.xyz, p.edge, q, line * px * 0.75, px, ink)
+    vec4(inner.xyz, o.w)
+}
+
+/// What a layer is under its ground: its fill washed and darkening downwards into warm shade.
+fn under(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    albedo: vec3,
+    q: vec2,
+    ground: f32,
+    haze: f32,
+) -> vec4 {
+    let deep = smoothstep(0.0, 6.0, ground - q.y)
+    let c = blend(washed(albedo, q, g, gs), SHADE, deep * 0.8)
+    vec4(blend(c, HAZE, haze * (1.0 - deep)), 1.0)
+}
+
+// ---- the far hills ---------------------------------------------------------------------------
+
+/// The plains' height on the far layer at `x` (m).
+fn plain(x: f32) -> f32 {
+    0.9 + 0.9 * fbm(vec2(x * 0.04, 11.0), 2)
+}
+
+/// Long golden hills, a farther range paler behind them, a line of flat-topped acacias along
+/// their tops, and the Aviary's glass dome, which shows from everywhere in the zoo.
+fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[3])
+    let px = pixel_on(v, PARALLAX[3])
+    if q.y > 6.0 {
+        return vec4(0.0)
+    }
+    let ground = plain(q.x)
+    var near = pick(q.y - ground, vec3(0.92, 0.77, 0.44))
+    if q.y > ground - 0.2 && q.y < ground + 1.0 {
+        let cell = floor(q.x / 2.5)
+        for k in -1..2 {
+            let i = cell + f32(k)
+            let h = hash2(i32(i), 91)
+            if h < 0.45 {
+                let x = (i + 0.2 + 0.6 * hash2(i32(i), 92)) * 2.5
+                let base = plain(x)
+                let s = 0.9 + 0.8 * h
+                let crown = ellipse(q - vec2(x, base + 0.62 * s), vec2(0.5 * s, 0.11 * s + 0.05))
+                let trunk = capsule(q, vec2(x, base - 0.1), vec2(x, base + 0.6 * s), 0.03)
+                near = over(near, pick(min(crown, trunk), vec3(0.62, 0.66, 0.42)))
+            }
+        }
+    }
+    // The Aviary's dome on the skyline, ahead: glass on a frame.
+    let l = q - vec2(24.0, 1.5)
+    let dome = max(length(l) - 2.4, 1.5 - q.y)
+    if dome < px * 2.0 {
+        let rib = abs(fract(atan2(l.y, l.x) / 0.3927) - 0.5) * 0.3927 * length(l)
+        let ring = abs(fract(length(l) / 0.8) - 0.5) * 0.8
+        let glass = if min(rib, ring) < 0.05 { vec3(0.6, 0.64, 0.64) } else {
+            vec3(0.86, 0.9, 0.9)
+        }
+        near = over(pick(dome, glass), near)
+    }
+    let front = paint(g, gs, near, q, px, haze: 0.45, line: 0.6)
+    if front.w > 0.999 {
+        return front
+    }
+    let ridge = 2.0 + 2.4 * fbm(vec2(q.x * 0.025, 5.0), 2)
+    let back = paint(g, gs, pick(q.y - ridge, vec3(0.86, 0.76, 0.62)), q, px, haze: 0.66, line: 0.5)
+    let a = front.w + back.w * (1.0 - front.w)
+    if a <= 0.0 {
+        return vec4(0.0)
+    }
+    vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / a, a)
+}
+
+// ---- next door: over the Savanna's back wall ----------------------------------------------------
+
+/// The ground at the Savanna's back wall at `x` (m).
+fn yard_ground(x: f32) -> f32 {
+    0.4 + 0.5 * sin(x * 0.06) + 0.4 * noise2(vec2(x * 0.05, 4.0))
+}
+
+/// Where the wetlands, behind, end along the wall, and where the Rainforest House's grounds,
+/// ahead, begin (m on the layer).
+const BEHIND: f32 = 8.0
+const AHEAD: f32 = 17.0
+
+/// Where the Rainforest House's glasshouse stands, and how far along the layer it shows again.
+const GLASSHOUSE: f32 = 36.0
+const GLASSHOUSE_EVERY: f32 = 100.0
+
+fn next_door(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[2])
+    let px = pixel_on(v, PARALLAX[2])
+    let ground = yard_ground(q.x)
+    if q.y > ground + 8.0 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, vec3(0.9, 0.78, 0.48), q, ground, 0.42)
+    }
+    // Well below the wall's top only the wall shows: what's behind it isn't worked out.
+    let wall = q.y - (ground + 0.7)
+    if wall < -px * 3.0 - 0.2 {
+        return paint(g, gs, back_wall(q, wall), q, px, haze: 0.42, line: 0.8)
+    }
+    var best = pick(1.0e3, vec3(0.0))
+    if q.x < BEHIND {
+        best = wetlands(q, v.time)
+    } else if q.x > AHEAD {
+        best = rainforest(q)
+    }
+    best = over(best, back_wall(q, wall))
+    paint(g, gs, best, q, px, haze: 0.42, line: 0.8)
+}
+
+/// The Savanna's back wall, `wall` m above its top (below 0 on it): rammed earth in courses,
+/// each its own tone, and a thatch of dry grass along its top.
+fn back_wall(q: vec2, wall: f32) -> Pick {
+    let row = floor(q.y / 0.25)
+    var earth = blend(vec3(0.92, 0.76, 0.56), vec3(0.88, 0.7, 0.52), hash2(i32(row), 41))
+    if abs(fract(q.y / 0.25 + 0.1 * noise2(vec2(q.x * 0.7, row))) - 0.5) > 0.44 {
+        earth = earth * 0.93
+    }
+    let ragged = 0.05 * abs(sin(q.x * 9.0 + 2.0 * noise2(vec2(q.x * 2.0, 3.0))))
+    let thatch = max(wall - 0.06, -(wall + 0.18 + ragged))
+    over(pick(wall, earth), pick(thatch, vec3(0.86, 0.74, 0.46)))
+}
+
+/// A round tree at `base`, `h` m tall (scenery.wrela's): a trunk and a crown of lumps,
+/// scalloped at its edge, in the Wetlands' greens.
+fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> Pick {
+    let q = p - base
+    let trunk = min(
+        cone(q, vec2(0.0), vec2(0.05, h * 0.7), ra: 0.2, rb: 0.12),
+        capsule(q, vec2(0.0, h * 0.45), vec2(0.6, h * 0.7), 0.07),
+    )
+    var crown = 1.0e3
+    for k in 0..5 {
+        let a = f32(k) * 1.3 + seed * 6.0
+        let at = vec2(0.0, h) + vec2(cos(a) * 1.1, sin(a) * 0.6)
+        crown = smin(crown, length(q - at) - (1.0 + 0.3 * sin(a * 2.7)), 0.3)
+    }
+    crown += 0.06 * abs(sin(atan2(q.y - h, q.x) * 9.0 + seed * 20.0))
+    let leaves = crowned(vec3(0.46, 0.7, 0.36), vec3(0.4, 0.6, 0.38), q, vec2(0.0, h), 1.6)
+    over(pick(trunk, vec3(0.58, 0.42, 0.28)), pick(crown, leaves))
+}
+
+/// The Capybara Wetlands behind, over the wall: stands of cattails, a round tree, and the hot
+/// spring's steam curling up (`t`, the time).
+fn wetlands(q: vec2, t: f32) -> Pick {
+    let ground = yard_ground(q.x) + 0.4
+    var m = pick(1.0e3, vec3(0.0))
+    if abs(q.x + 7.0) < 3.0 {
+        m = round_tree(q, vec2(-7.0, ground), h: 4.0, seed: 0.3)
+    }
+    let clump = floor(q.x / 1.8)
+    for k in -1..2 {
+        let i = clump + f32(k)
+        let h = hash2(i32(i), 51)
+        let x0 = (i + 0.5) * 1.8
+        if x0 < BEHIND - 1.0 && h < 0.7 && q.y < ground + 2.8 {
+            for s in 0..3 {
+                let x = x0 + (f32(s) - 1.0) * 0.25
+                let top = vec2(
+                    x + (f32(s) - 1.0) * 0.12,
+                    ground + 1.6 + 0.8 * hash2(i32(i) * 3 + s, 52),
+                )
+                let stalk = capsule(q, vec2(x, ground - 0.4), top + vec2(0.0, 0.25), 0.035)
+                m = over(m, pick(stalk, vec3(0.5, 0.68, 0.36)))
+                m = over(
+                    m,
+                    pick(capsule(q, top - vec2(0.0, 0.3), top, 0.08), vec3(0.52, 0.36, 0.24)),
+                )
+            }
+        }
+    }
+    let up = q.y - ground
+    if up > 0.0 && up < 3.0 && abs(q.x - 1.6) < 1.8 {
+        for x in [0.6, 1.7, 2.7] {
+            let curl = abs(q.x - x - 0.22 * sin(q.y * 2.2 - t * 1.2 + x)) - 0.1 * (1.0 - up / 3.0)
+            m = over(m, pick(curl, vec3(0.99, 0.98, 0.95)))
+        }
+    }
+    m
+}
+
+/// A rainforest tree (`l` from its foot), its crown's middle `h` m up: a pale trunk, and a deep
+/// green crown of lumps, round and full.
+fn jungle_tree(l: vec2, h: f32, seed: f32) -> Pick {
+    let trunk = cone(l, vec2(0.0, -0.2), vec2(0.1, h), ra: 0.3, rb: 0.14)
+    var crown = 1.0e3
+    for k in 0..4 {
+        let a = f32(k) * 1.7 + seed * 6.0
+        let at = vec2(0.0, h) + vec2(cos(a) * 0.9, sin(a) * 0.5)
+        crown = smin(crown, length(l - at) - (1.15 + 0.25 * sin(a * 2.3)), 0.35)
+    }
+    crown += 0.06 * abs(sin(atan2(l.y - h, l.x) * 8.0 + seed * 20.0))
+    let lit = blend(vec3(0.27, 0.5, 0.34), vec3(0.35, 0.57, 0.3), seed)
+    let leaves = crowned(lit, vec3(0.26, 0.44, 0.42), l, vec2(0.0, h), 1.6)
+    over(pick(trunk, vec3(0.76, 0.7, 0.6)), pick(crown, leaves))
+}
+
+/// A palm (`l` from its foot), `h` m tall: a leaning ringed trunk, and fronds arching and
+/// drooping from its top.
+fn palm(l: vec2, h: f32, seed: f32) -> Pick {
+    let lean = (seed - 0.5) * 1.2
+    let top = vec2(lean, h)
+    let trunk = cone(l, vec2(0.0), top, ra: 0.16, rb: 0.1)
+    var fronds = 1.0e3
+    if length(l - top) < 2.6 {
+        for k in 0..6 {
+            let a = (f32(k) - 2.5) * 0.55 + seed
+            let mid = top + vec2(sin(a) * 1.1, 0.5 * cos(a) + 0.1)
+            let tip = mid + vec2(sin(a) * 0.9, -0.7)
+            fronds = min(fronds, cone(l, top, mid, ra: 0.06, rb: 0.13))
+            fronds = min(fronds, cone(l, mid, tip, ra: 0.13, rb: 0.02))
+        }
+        fronds += 0.03 * abs(sin(length(l - top) * 16.0))
+    }
+    over(pick(trunk, vec3(0.66, 0.56, 0.44)), pick(fronds, vec3(0.42, 0.64, 0.34)))
+}
+
+/// The Rainforest House: a Victorian glasshouse, long round-shouldered wings either side of a
+/// taller middle with a lantern on its roof, its white frame over glass misted green by the
+/// plants inside (`l` from its foot's middle).
+fn glasshouse(l: vec2) -> Pick {
+    let frame = vec3(0.97, 0.96, 0.92)
+    let leafy = l.y < 1.6 + 0.6 * noise2(vec2(l.x * 1.2, 3.0))
+    let glass = if leafy { vec3(0.6, 0.78, 0.58) } else { vec3(0.84, 0.93, 0.92) }
+    let bars = min(abs(fract(l.x / 0.5) - 0.5) * 0.5, abs(fract(l.y / 0.8) - 0.5) * 0.8)
+    let pane = if bars < 0.045 { frame } else { glass }
+    var m = pick(rbox(l - vec2(0.0, 1.2), vec2(6.4, 1.2), 1.0), pane)
+    m = over(m, pick(rbox(l - vec2(0.0, 2.0), vec2(2.4, 2.0), 1.3), pane))
+    m = over(m, pick(rbox(l - vec2(0.0, 4.2), vec2(0.9, 0.5), 0.4), pane))
+    over(m, pick(capsule(l, vec2(0.0, 4.6), vec2(0.0, 5.2), 0.07), frame))
+}
+
+/// The Rainforest House's grounds ahead, over the wall: tall trees and palms, and the glasshouse
+/// among them.
+fn rainforest(q: vec2) -> Pick {
+    var m = pick(1.0e3, vec3(0.0))
+    let cell = floor(q.x / 3.6)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let n = i32(i)
+        let x = (i + 0.2 + 0.6 * hash2(n, 52)) * 3.6
+        let h = hash2(n, 53)
+        if x > AHEAD + 1.0 && h < 0.9 && abs(q.x - x) < 2.8 {
+            let foot = vec2(x, yard_ground(x) - 0.3)
+            let tree = if h < 0.18 { palm(q - foot, 4.5 + 4.0 * h, hash2(n, 54)) } else {
+                let tall = if hash2(n, 55) < 0.15 { 1.2 } else { 0.0 }
+                jungle_tree(q - foot, 1.5 + 0.9 * h + tall, hash2(n, 54))
+            }
+            m = over(m, tree)
+        }
+    }
+    let at = floor((q.x - GLASSHOUSE) / GLASSHOUSE_EVERY + 0.5) * GLASSHOUSE_EVERY + GLASSHOUSE
+    if at >= GLASSHOUSE && abs(q.x - at) < 4.4 && q.y < yard_ground(at) + 4.0 {
+        let foot = vec2(at, yard_ground(at) + 0.3)
+        m = over(m, scaled(glasshouse((q - foot) / 0.65), 0.65))
+    }
+    m
+}
+
+// ---- the Savanna's residents, along the viewing path ------------------------------------------
+
+/// The path's ground at `x` (m).
+fn path_ground(x: f32) -> f32 {
+    -0.6 + 0.3 * sin(x * 0.09) + 0.2 * noise2(vec2(x * 0.3, 1.0))
+}
+
+/// How far apart the Savanna's sights are (m on its layer).
+const STRETCH: f32 = 22.0
+
+/// An acacia (`l` from its foot), `h` m tall: a thin trunk forking, and a flat, ragged crown,
+/// shaded on the side away from the sun.
+fn acacia(l: vec2, h: f32, seed: f32) -> Pick {
+    let fork = vec2(0.15, h * 0.55)
+    var trunk = cone(l, vec2(0.0), fork, ra: 0.14, rb: 0.09)
+    trunk = min(trunk, capsule(l, fork, vec2(-0.9, h * 0.9), 0.07))
+    trunk = min(trunk, capsule(l, fork, vec2(1.1, h * 0.92), 0.07))
+    let c = l - vec2(0.1, h)
+    let ragged = 0.2 * noise2(vec2(c.x * 2.2 + seed * 10.0, 1.0)) - 0.06
+    let crown = min(
+        ellipse(c, vec2(2.6, 0.42 + ragged)),
+        ellipse(c - vec2(-1.3, -0.18), vec2(1.1, 0.28)),
+    )
+    let leaves = crowned(vec3(0.58, 0.68, 0.38), vec3(0.48, 0.58, 0.4), l, vec2(0.1, h), 2.0)
+    over(pick(trunk, vec3(0.5, 0.38, 0.3)), pick(crown, leaves))
+}
+
+/// A giraffe (`l` from its feet), facing +x, its neck stretched up to browse (`t`, the time,
+/// sways it): patched, its lower legs pale, its ossicones and tail tufted dark.
+fn giraffe(l: vec2, t: f32) -> Pick {
+    var d = ellipse(l - vec2(0.0, 2.15), vec2(0.85, 0.42))
+    for x in [-0.6, -0.45, 0.45, 0.6] {
+        d = min(d, cone(l, vec2(x, 2.0), vec2(x + 0.04, 0.0), ra: 0.08, rb: 0.05))
+    }
+    let head = vec2(1.3 + 0.12 * sin(t * 0.6), 4.1)
+    d = smin(d, cone(l, vec2(0.6, 2.3), head - vec2(0.15, 0.1), ra: 0.2, rb: 0.11), 0.15)
+    d = min(d, ellipse(turn(l - head - vec2(0.15, 0.0), 0.2), vec2(0.3, 0.13)))
+    d = min(d, capsule(l, head + vec2(-0.05, 0.1), head + vec2(-0.1, 0.32), 0.035))
+    d = min(d, capsule(l, vec2(-0.8, 2.2), vec2(-1.0, 1.4), 0.03))
+    let patch = abs(fract(l * vec2(4.0, 4.5) + vec2(noise2(l * 6.0) * 0.4)) - vec2(0.5))
+    let dark = smoothstep(0.44, 0.39, max(patch.x, patch.y))
+    var coat = blend(vec3(0.97, 0.85, 0.58), vec3(0.78, 0.5, 0.28), dark)
+    if l.y < 1.0 {
+        coat = vec3(0.96, 0.9, 0.74)
+    }
+    var m = pick(d, coat)
+    let tuft = vec3(0.34, 0.22, 0.16)
+    m = over(m, pick(ellipse(l - vec2(-1.02, 1.32), vec2(0.06, 0.13)), tuft))
+    m = over(m, pick(length(l - head - vec2(-0.1, 0.34)) - 0.05, tuft))
+    over(m, pick(length(l - head - vec2(0.12, 0.06)) - 0.035, INK))
+}
+
+/// Giraffes browsing an acacia (`l` from the ground under the sight's middle): the mother, her
+/// neck stretched up into its crown, and her calf at her side (`dir`, the way they face).
+fn giraffes(l: vec2, dir: f32, t: f32) -> Pick {
+    let tree = acacia(l - vec2(1.6 * dir, 0.0), 5.2, dir)
+    let mother = scaled(
+        giraffe((l - vec2(-0.7 * dir, 0.0)) * vec2(dir / 1.12, 1.0 / 1.12), t),
+        1.12,
+    )
+    let calf = scaled(
+        giraffe((l - vec2(-3.0 * dir, 0.0)) * vec2(dir / 0.6, 1.0 / 0.6), t + 2.0),
+        0.6,
+    )
+    over(over(tree, calf), mother)
+}
+
+/// A plains zebra (`l` from its feet), facing +x, `graze` 1 with its head down to the grass and
+/// 0 with it up (nodding with `t`): striped across its legs, upright on its body, round its neck;
+/// a dark mane, muzzle and tail tuft.
+fn zebra(l: vec2, graze: f32, t: f32) -> Pick {
+    let down = saturate(graze + 0.1 * sin(t * 0.8))
+    var d = ellipse(l - vec2(0.0, 1.0), vec2(0.72, 0.34))
+    for x in [-0.5, -0.36, 0.38, 0.52] {
+        d = smin(d, cone(l, vec2(x, 0.95), vec2(x, 0.0), ra: 0.08, rb: 0.045), 0.06)
+    }
+    let withers = vec2(0.5, 1.08)
+    let poll = towards(vec2(0.98, 1.72), vec2(1.02, 0.72), down)
+    let muzzle = towards(vec2(1.3, 1.36), vec2(1.14, 0.14), down)
+    d = smin(d, cone(l, withers, poll, ra: 0.24, rb: 0.12), 0.1)
+    d = smin(d, cone(l, poll, muzzle, ra: 0.13, rb: 0.08), 0.05)
+    d = min(d, capsule(l, poll, poll + vec2(-0.14, 0.2), 0.04))
+    d = min(d, capsule(l, vec2(-0.68, 1.15), vec2(-0.8, 0.62), 0.025))
+    let neck = normalize(poll - withers)
+    let u = if l.y < 0.7 { l.y * 1.3 } else if l.x > 0.45 { dot(l, neck) } else {
+        l.x + 0.1 * sin(l.y * 6.0)
+    }
+    let ink = vec3(0.22, 0.2, 0.2)
+    let stripe = fract(u * 5.5 + 0.15 * noise2(l * 3.0)) < 0.45
+    var m = pick(d, if stripe { ink } else { vec3(0.97, 0.95, 0.9) })
+    let crest = vec2(-neck.y, neck.x) * 0.2
+    m = over(m, pick(capsule(l, withers + crest + neck * 0.1, poll + crest * 0.5, 0.045), ink))
+    m = over(m, pick(length(l - muzzle) - 0.09, ink))
+    over(m, pick(ellipse(l - vec2(-0.82, 0.56), vec2(0.04, 0.1)), ink))
+}
+
+/// Zebras grazing: two adults and a foal (`l` from the ground under the sight's middle).
+fn zebras(l: vec2, dir: f32, t: f32) -> Pick {
+    var m = zebra((l - vec2(-2.3, 0.0)) * vec2(dir, 1.0), 1.0, t)
+    m = over(
+        m,
+        scaled(zebra((l - vec2(1.8, 0.0)) * vec2(-dir / 1.05, 1.0 / 1.05), 0.0, t + 3.0), 1.05),
+    )
+    over(m, scaled(zebra((l - vec2(-0.6, 0.0)) * vec2(dir / 0.62, 1.0 / 0.62), 0.6, t + 1.0), 0.62))
+}
+
+/// An ostrich (`l` from its feet), facing +x: black with white plumes if `male`, else brown-grey;
+/// long bare legs and neck; pecking at the ground by `peck` (with `t`).
+fn ostrich(l: vec2, male: bool, peck: f32, t: f32) -> Pick {
+    let feathers = if male { vec3(0.26, 0.23, 0.22) } else { vec3(0.64, 0.57, 0.49) }
+    let plume = if male { vec3(0.97, 0.95, 0.9) } else { vec3(0.86, 0.82, 0.75) }
+    let skin = if male { vec3(0.92, 0.72, 0.66) } else { vec3(0.82, 0.76, 0.7) }
+    let down = peck * smoothstep(-0.3, 0.6, sin(t * 1.4))
+    let head = towards(vec2(0.58, 2.45), vec2(0.98, 0.22), down)
+    var bare = cone(l, vec2(-0.1, 1.2), vec2(-0.04, 0.62), ra: 0.1, rb: 0.04)
+    bare = min(bare, capsule(l, vec2(-0.04, 0.62), vec2(0.0, 0.0), 0.03))
+    bare = min(bare, cone(l, vec2(0.14, 1.2), vec2(0.24, 0.64), ra: 0.1, rb: 0.04))
+    bare = min(bare, capsule(l, vec2(0.24, 0.64), vec2(0.2, 0.0), 0.03))
+    bare = min(bare, cone(l, vec2(0.36, 1.5), head, ra: 0.08, rb: 0.05))
+    bare = smin(bare, ellipse(l - head, vec2(0.12, 0.09)), 0.03)
+    let beak = normalize(towards(vec2(1.0, -0.12), vec2(0.4, -1.0), down))
+    bare = min(bare, cone(l, head + beak * 0.06, head + beak * 0.24, ra: 0.045, rb: 0.015))
+    var m = pick(bare, skin)
+    m = over(m, pick(ellipse(turn(l - vec2(0.0, 1.38), -0.12), vec2(0.56, 0.36)), feathers))
+    m = over(m, pick(ellipse(turn(l - vec2(-0.55, 1.5), 0.6), vec2(0.3, 0.2)), plume))
+    m = over(m, pick(ellipse(turn(l - vec2(-0.12, 1.2), -0.1), vec2(0.3, 0.09)), plume))
+    over(m, pick(length(l - head - vec2(0.03, 0.025)) - 0.026, INK))
+}
+
+/// Ostriches: a cock, and two hens, one pecking (`l` from the ground under the sight's middle).
+fn ostriches(l: vec2, dir: f32, t: f32) -> Pick {
+    var m = ostrich((l - vec2(-2.0, 0.0)) * vec2(dir, 1.0), male: true, peck: 0.0, t: t)
+    m = over(m, ostrich((l - vec2(0.2, 0.0)) * vec2(dir, 1.0), male: false, peck: 1.0, t: t))
+    over(m, ostrich((l - vec2(2.3, 0.0)) * vec2(-dir, 1.0), male: false, peck: 0.0, t: t + 2.0))
+}
+
+/// A lion asleep (`l` from under his middle), facing +x: lying along, his chin on his paws, his
+/// eyes shut, breathing slowly (`t`), his tail hanging down, its tuft swinging.
+fn lion(l: vec2, t: f32) -> Pick {
+    let tawny = vec3(0.9, 0.7, 0.44)
+    let breath = 1.0 + 0.05 * sin(t * 1.3)
+    var body = ellipse((l - vec2(-0.1, 0.3)) * vec2(1.0, 1.0 / breath), vec2(0.95, 0.3))
+    body = smin(body, ellipse(l - vec2(-0.72, 0.34), vec2(0.36, 0.32)), 0.1)
+    let swing = 0.08 * sin(t * 0.7)
+    body = min(body, capsule(l, vec2(-0.95, 0.25), vec2(-1.3, 0.05), 0.04))
+    body = min(body, capsule(l, vec2(-1.3, 0.05), vec2(-1.36 + swing, -0.45), 0.035))
+    var m = pick(body, tawny)
+    let dark = vec3(0.5, 0.3, 0.18)
+    m = over(m, pick(ellipse(l - vec2(-1.36 + swing, -0.52), vec2(0.07, 0.11)), dark))
+    let a = atan2(l.y - 0.42, l.x - 0.72)
+    let mane = ellipse(l - vec2(0.72, 0.42), vec2(0.42, 0.4)) + 0.04 * abs(sin(a * 7.0))
+    m = over(m, pick(mane, vec3(0.68, 0.42, 0.24)))
+    m = over(m, pick(length(l - vec2(0.84, 0.6)) - 0.07, tawny))
+    let face = smin(
+        ellipse(l - vec2(0.98, 0.32), vec2(0.24, 0.2)),
+        ellipse(l - vec2(1.17, 0.25), vec2(0.13, 0.1)),
+        0.05,
+    )
+    m = over(m, pick(face, vec3(0.94, 0.78, 0.54)))
+    // Shut, his eye a little curve; his nose; his paws in front, under his chin.
+    m = over(m, pick(max(abs(length(l - vec2(1.0, 0.42)) - 0.055) - 0.011, l.y - 0.41), INK))
+    m = over(m, pick(ellipse(l - vec2(1.29, 0.29), vec2(0.04, 0.03)), vec3(0.42, 0.25, 0.22)))
+    over(m, pick(capsule(l, vec2(0.6, 0.07), vec2(1.32, 0.06), 0.075), tawny))
+}
+
+/// A kopje, a heap of round granite boulders, and a lion asleep on top (`l` from the ground under
+/// the sight's middle).
+fn kopje(l: vec2, dir: f32, t: f32) -> Pick {
+    var m = boulder(l, vec2(-1.6, 0.25), vec2(1.0, 0.65))
+    m = over(m, boulder(l, vec2(1.5, 0.2), vec2(0.8, 0.5)))
+    m = over(m, boulder(l, vec2(0.0, 0.45), vec2(1.7, 0.95)))
+    over(m, scaled(lion((l - vec2(0.0, 1.33)) * vec2(dir / 1.45, 1.0 / 1.45), t), 1.45))
+}
+
+/// A round granite boulder at `at`, `r` its half-size, shaded on the side away from the sun.
+fn boulder(l: vec2, at: vec2, r: vec2) -> Pick {
+    let granite = crowned(
+        vec3(0.84, 0.7, 0.56),
+        vec3(0.7, 0.6, 0.56),
+        l,
+        at + vec2(0.0, 0.2),
+        r.x * 0.7,
+    )
+    pick(ellipse(l - at, r), granite)
+}
+
+/// A baobab (`l` from its foot): a fat bottle of a trunk, stubby branches, and a few tufts of
+/// leaves at their ends.
+fn baobab(l: vec2, seed: f32) -> Pick {
+    var wood = cone(l, vec2(0.0), vec2(0.0, 2.6), ra: 0.85, rb: 0.5)
+    var leaves = 1.0e3
+    for k in 0..5 {
+        let a = (f32(k) - 2.0) * 0.45 + (seed - 0.5) * 0.3
+        let tip = vec2(sin(a) * 1.5, 2.6 + cos(a) * 1.0)
+        wood = smin(wood, cone(l, vec2(sin(a) * 0.3, 2.4), tip, ra: 0.16, rb: 0.06), 0.12)
+        leaves = min(leaves, ellipse(l - tip - vec2(0.0, 0.12), vec2(0.36, 0.17)))
+    }
+    leaves += 0.04 * abs(sin(l.x * 13.0))
+    let bark = crowned(vec3(0.8, 0.68, 0.56), vec3(0.66, 0.58, 0.56), l, vec2(0.0, 1.6), 0.9)
+    let green = crowned(vec3(0.6, 0.7, 0.4), vec3(0.5, 0.6, 0.42), l, vec2(0.0, 3.4), 1.5)
+    over(pick(wood, bark), pick(leaves, green))
+}
+
+/// The Savanna's residents along the viewing path, one sight in each stretch, in turn: giraffes at
+/// an acacia, zebras, ostriches, a lion on his kopje; a baobab at a stretch's start now and then;
+/// and the path's post-and-rail fence in front.
+fn residents(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[1])
+    let px = pixel_on(v, PARALLAX[1])
+    let ground = path_ground(q.x)
+    let turf = vec3(0.9, 0.8, 0.5)
+    if q.y > ground + 6.4 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, turf, q, ground, 0.16)
+    }
+    var best = pick(q.y - ground, turf)
+    let cell = floor(q.x / STRETCH)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let n = i32(i)
+        let x = i * STRETCH
+        if hash2(n, 31) < 0.45 && abs(q.x - x) < 2.6 && q.y < ground + 4.4 {
+            best = over(best, baobab(q - vec2(x, path_ground(x) - 0.2), hash2(n, 32)))
+        }
+        let centre = (i + 0.5) * STRETCH
+        if abs(q.x - centre) < 5.0 {
+            let l = q - vec2(centre, path_ground(centre) - 0.1)
+            let dir = if hash2(n, 38) < 0.5 { -1.0 } else { 1.0 }
+            let kind = (n % 4 + 4) % 4
+            let sight = if kind == 0 { giraffes(l, dir, v.time) } else if kind == 1 {
+                zebras(l, dir, v.time)
+            } else if kind == 2 { ostriches(l, dir, v.time) } else { kopje(l, dir, v.time) }
+            best = over(best, sight)
+        }
+    }
+    // The fence: posts, and two rails along them.
+    let fy = q.y - ground
+    let post_x = q.x - (floor(q.x / 2.8) + 0.5) * 2.8
+    let post = max(rbox(vec2(post_x, fy - 0.45), vec2(0.07, 0.62), 0.03), -fy - 0.3)
+    let wood = vec3(0.74, 0.56, 0.38)
+    best = over(best, pick(post, wood))
+    best = over(best, pick(min(abs(fy - 0.95) - 0.05, abs(fy - 0.5) - 0.04), wood))
+    paint(g, gs, best, q, px, haze: 0.2, line: 1.0)
+}
+
+// ---- the grass, nearest ---------------------------------------------------------------------
+
+fn near_ground(x: f32) -> f32 {
+    -0.85 + 0.2 * sin(x * 0.13) + 0.2 * noise2(vec2(x * 0.5, 7.0))
+}
+
+/// A meerkat on watch (`l` from its feet), standing up on its hind legs, its paws held in front,
+/// looking one way and then the other (`t`).
+fn meerkat(l: vec2, t: f32) -> Pick {
+    let look = if sin(t * 0.5) > 0.0 { 1.0 } else { -1.0 }
+    var d = ellipse(l - vec2(0.0, 0.22), vec2(0.085, 0.2))
+    d = smin(d, capsule(l, vec2(-0.04, 0.08), vec2(-0.16, -0.02), 0.03), 0.03)
+    let f = (l - vec2(0.01, 0.45)) * vec2(look, 1.0)
+    let head = smin(
+        ellipse(f, vec2(0.065, 0.055)),
+        cone(f, vec2(0.0), vec2(0.1, -0.015), ra: 0.04, rb: 0.015),
+        0.02,
+    )
+    d = smin(d, head, 0.03)
+    d = min(d, capsule(l, vec2(0.05 * look, 0.33), vec2(0.08 * look, 0.27), 0.018))
+    let m = pick(d, vec3(0.86, 0.72, 0.52))
+    over(m, pick(length(f - vec2(0.02, 0.01)) - 0.02, vec3(0.28, 0.2, 0.15)))
+}
+
+/// A termite mound (`l` from its foot): a tall spire of red earth and its lower turrets; on top,
+/// if `watch`, a meerkat on watch.
+fn termites(l: vec2, t: f32, watch: bool) -> Pick {
+    var d = cone(l, vec2(0.0, -0.3), vec2(0.12, 2.9), ra: 0.85, rb: 0.16)
+    d = smin(d, cone(l, vec2(-0.55, -0.3), vec2(-0.62, 1.7), ra: 0.5, rb: 0.13), 0.25)
+    d = smin(d, cone(l, vec2(0.6, -0.3), vec2(0.78, 1.05), ra: 0.42, rb: 0.12), 0.25)
+    d += 0.04 * noise2(l * 5.0)
+    let earth = crowned(vec3(0.86, 0.54, 0.38), vec3(0.7, 0.46, 0.4), l, vec2(0.0, 1.3), 0.9)
+    let m = pick(d, earth)
+    if watch { over(m, scaled(meerkat((l - vec2(0.12, 3.02)) / 1.3, t), 1.3)) } else { m }
+}
+
+/// A leopard tortoise (`l` from its feet), facing +x: a high domed shell, spotted, its head out
+/// and nodding (`t`).
+fn tortoise(l: vec2, t: f32) -> Pick {
+    let nod = 0.02 * sin(t * 1.3)
+    var body = ellipse(l - vec2(0.38, 0.17 + nod), vec2(0.1, 0.075))
+    body = smin(body, capsule(l, vec2(0.22, 0.12), vec2(0.33, 0.16 + nod), 0.05), 0.03)
+    for x in [-0.22, 0.2] {
+        body = min(body, rbox(l - vec2(x, 0.06), vec2(0.06, 0.07), 0.03))
+    }
+    var m = pick(body, vec3(0.76, 0.66, 0.52))
+    let shell = max(ellipse(l - vec2(0.0, 0.1), vec2(0.36, 0.3)), 0.1 - l.y)
+    let spot = if noise2(l * 11.0) > 0.62 { vec3(0.44, 0.32, 0.22) } else { vec3(0.92, 0.8, 0.52) }
+    m = over(m, pick(shell, spot))
+    over(m, pick(length(l - vec2(0.42, 0.2 + nod)) - 0.018, INK))
+}
+
+/// A fallen log (`l` from the ground under its middle): weathered grey bark streaked along it, a
+/// broken branch, its cut end's rings; and a tortoise beside it.
+fn fallen_log(l: vec2, t: f32) -> Pick {
+    var bark = max(capsule(l, vec2(-1.7, 0.38), vec2(1.5, 0.44), 0.38), l.x - 1.5)
+    bark = min(bark, capsule(l, vec2(-0.5, 0.65), vec2(-0.15, 1.2), 0.08))
+    bark = min(bark, capsule(l, vec2(-0.15, 1.2), vec2(0.05, 1.36), 0.05))
+    let streak = abs(fract(l.y * 6.0 + 0.4 * noise2(l * vec2(1.5, 4.0))) - 0.5)
+    let grey = if streak < 0.08 { vec3(0.52, 0.44, 0.38) } else { vec3(0.68, 0.6, 0.52) }
+    var m = pick(bark, grey)
+    let end = l - vec2(1.5, 0.44)
+    let rings = abs(fract(length(end * vec2(2.4, 1.0)) / 0.09) - 0.5)
+    let wood = if rings < 0.12 { vec3(0.74, 0.58, 0.42) } else { vec3(0.92, 0.8, 0.6) }
+    m = over(m, pick(ellipse(end, vec2(0.15, 0.37)), wood))
+    over(m, tortoise(l - vec2(2.3, 0.0), t))
+}
+
+/// Dry golden grass at the path's edge, nearest: tufts of long blades with seed heads, leaning
+/// in the wind (`time`); now and then a termite mound, and a fallen log.
+fn grass(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[0])
+    let px = pixel_on(v, PARALLAX[0])
+    let ground = near_ground(q.x)
+    let gold = vec3(0.88, 0.76, 0.42)
+    if q.y > ground + 3.9 {
+        return vec4(0.0)
+    }
+    if q.y < ground + 0.1 {
+        return under(g, gs, gold * 0.92, q, ground + 0.3, 0.1)
+    }
+    let up = q.y - ground
+    var best = pick(up - 0.3, gold)
+    // A termite mound, in some 26 m stretches; a log, in some 34 m ones.
+    let mounds = floor(q.x / 26.0)
+    let mi = i32(mounds)
+    let mx = (mounds + 0.25 + 0.5 * hash2(mi, 71)) * 26.0
+    if hash2(mi, 70) < 0.45 && abs(q.x - mx) < 1.5 {
+        let foot = vec2(mx, near_ground(mx) + 0.1)
+        best = over(best, termites(q - foot, v.time, hash2(mi, 72) < 0.6))
+    }
+    let logs = floor((q.x + 11.0) / 34.0)
+    let li = i32(logs)
+    let lx = (logs + 0.3 + 0.4 * hash2(li, 74)) * 34.0 - 11.0
+    if hash2(li, 73) < 0.4 && abs(q.x - lx) < 2.8 && up < 1.8 {
+        best = over(best, fallen_log(q - vec2(lx, near_ground(lx) + 0.15), v.time))
+    }
+    // Tufts of grass, in front of everything: some 1.1 m apart.
+    if up < 2.0 {
+        let sway = 0.12 * sin(v.time * 0.9 + q.x * 0.4)
+        let tuft = floor(q.x / 1.1)
+        for k in -1..2 {
+            let i = tuft + f32(k)
+            let h = hash2(i32(i), 61)
+            if h < 0.7 {
+                let x0 = (i + 0.3 + 0.4 * hash2(i32(i), 63)) * 1.1
+                var d = 1.0e3
+                for b in 0..5 {
+                    let s = f32(b) - 2.0
+                    let tall = (0.5 + 1.4 * h) * (1.0 - abs(s) * 0.18 + 0.1 * sin(s * 5.0 + i))
+                    let foot = vec2(x0 + s * 0.05, ground + 0.2)
+                    let tip = vec2(x0 + s * 0.24 + sway * tall, ground + 0.25 + tall)
+                    d = min(d, cone(q, foot, tip, ra: 0.045, rb: 0.0))
+                }
+                let straw = blend(vec3(0.84, 0.7, 0.36), vec3(0.94, 0.84, 0.52), hash2(i32(i), 62))
+                best = over(best, pick(d, straw))
+            }
+        }
+    }
+    paint(g, gs, best, q, px, haze: 0.1, line: 1.2)
+}

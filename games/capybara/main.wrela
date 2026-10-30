@@ -56,7 +56,7 @@ use std::gpu::{
 }
 use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
-use std::io::{Pending, load, store}
+use std::io::{Pending, load, print, store}
 use replay::{
     ANY, AUTOPILOT, Board, FULL, HUMAN, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
     replay, splits, tool_assisted, trail, verify,
@@ -108,6 +108,7 @@ struct Ground {
     grass: GpuBuffer<vec4>,
     water: GpuBuffer<vec4>,
     tops: GpuBuffer<f32>,
+    ice: GpuBuffer<vec4>,
     earth_n: u32,
     grass_n: u32,
     water_n: u32,
@@ -126,7 +127,17 @@ fn ground_of(c: Course) -> Ground {
         grass: buffer_of(grass, at_least: 2),
         water: buffer_of(water, at_least: 3),
         tops: buffer_of(profile(c)),
+        ice: buffer_of(ice_of(c), at_least: 1),
     }
+}
+
+/// Course `c`'s icy stretches, for the ground's shaders: each from its left to its right.
+fn ice_of(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in c.ice {
+        out.push(vec4(i, 0.0, 0.0))
+    }
+    out
 }
 
 pub struct Lab {
@@ -166,6 +177,10 @@ pub struct Lab {
     /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
     /// frames' time (s), smoothed, for it.
     readout: bool,
+    /// The frames drawn, and the first whose page was whole (its backdrop's strips drawn and its
+    /// text's glyphs in), once it has been: when the game was playable (`playable`).
+    frames: u32,
+    playable_at: Option<u32>,
     /// How much the capybara is on the ground and slides, eased (earth.wrela's `Field`).
     presence: f32,
     sliding: f32,
@@ -268,6 +283,8 @@ pub fn init() -> Lab {
         turns: None,
         device: Device::Keys,
         readout: false,
+        frames: 0,
+        playable_at: None,
         presence: 1.0,
         sliding: 0.0,
         frame_time: 0.0,
@@ -506,7 +523,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         scene_size,
     )
     s.signs.upload(s.sign_list)
-    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
+    let habitat = f32(snap.course)
+    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time, habitat }
     // How much the capybara slides and is on the ground, eased, for the grass.
     let mode = Mode::from_u32(snap.mode)
     let on = grounded(mode)
@@ -521,6 +539,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         time,
         sliding: s.sliding,
         presence: s.presence,
+        habitat,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
@@ -553,6 +572,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             f: field,
             tops: s.ground.tops.items(),
             pools: s.pools.items(),
+            ice: s.ground.ice.items(),
             g: s.grain,
             gs: s.repeat,
         ),
@@ -561,7 +581,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         scene,
         grass_vertex.bind(verts: s.ground.grass.items(), f: field),
-        grass.bind(f: field),
+        grass.bind(f: field, ice: s.ground.ice.items()),
         vertices: s.ground.grass_n,
     )
     draw(
@@ -580,7 +600,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.sheet.copy_below(s.linear, s.wet)
     label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
-    let pond = Pond { view_proj, centre: eye, half, px, time }
+    let pond = Pond { view_proj, centre: eye, half, px, time, habitat }
     draw(
         wet,
         water_vertex.bind(verts: s.ground.water.items(), f: pond),
@@ -626,6 +646,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     s.renderer.draw(out, screen)
     out.present()
+    playable(mut s)
     publish(mut s, snap, play)
 }
 
@@ -751,6 +772,11 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
             None => {},
         }
     }
+    // A whole game played through: its time, the best kept.
+    if live.game > 0 && (s.settings.best_game == 0 || live.game < s.settings.best_game) {
+        s.settings.best_game = live.game
+        s.storing_settings.unsaved = true
+    }
     let made = learned(live)
     if made & !s.settings.learned != 0 {
         s.settings.learned = s.settings.learned | made
@@ -778,6 +804,16 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
         s.finish_age += dt
     } else {
         s.finish_age = 0.0
+    }
+}
+
+/// The frame counted, and the first whole one said, as engine::frame says it, for the bench's
+/// cold and warm starts (docs/bench.md): its backdrop's strips drawn and its text's glyphs in.
+fn playable(s: mut Lab) {
+    s.frames += 1
+    if s.playable_at.is_none() && s.strips.ready == [true; 4] && !s.renderer.waiting() {
+        s.playable_at = Some(s.frames)
+        print(f"playable at frame {s.frames}")
     }
 }
 
@@ -999,6 +1035,9 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             d,
             alpha,
             more: more,
+            ending: cast::ending(snap),
+            game: snap.game,
+            best_game: s.settings.best_game,
         )
     }
     if s.readout {
@@ -1601,6 +1640,8 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     let n = s.snaps.newest()
     assert(n.ticks >= 358, "the ticker runs two ticks a frame")
     assert(n.snap.course == HOME && n.snap.paused == 0, "the first level, playing")
+    let Some(at) = s.playable_at else { panic("never playable") }
+    assert(at <= 10, f"playable at frame {at}")
     // Its clock is three ticks behind the ticks run: frame 0's two stood on the title the game
     // opens on, and the tick of the script's Enter (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")

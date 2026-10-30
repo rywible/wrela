@@ -35,11 +35,10 @@ use std::time::{now, since}
 use std::tool::args
 use std::tool::files::write
 
-pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human | --needs] [--seconds S]"
+pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human | --needs] [--seconds S] | --report"
 
 /// The seconds each category is searched unless `--seconds` gives another.
 pub const SECONDS: u32 = 300
-
 
 /// The settings a round takes, in turn: the search's landscape is rough, so each finds other
 /// runs, and a run one misses another may find.
@@ -68,6 +67,8 @@ pub struct Ask: Copy + Eq {
     pub human: bool,
     /// Measure where each move is first needed, and search no runs.
     pub needs: bool = false,
+    /// Print every level's numbers (design.wrela's `report`), and search nothing.
+    pub report: bool = false,
 }
 
 /// No level asked for yet.
@@ -83,6 +84,8 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
             ask.human = true
         } else if a == "--needs" && !ask.needs && !ask.human {
             ask.needs = true
+        } else if a == "--report" && given.len() == 1 {
+            ask.report = true
         } else if a == "--level" && k + 1 < given.len() && ask.level == NO_LEVEL {
             ask.level = level_of(given[k + 1].as_str())?
             k += 1
@@ -94,7 +97,7 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
         }
         k += 1
     }
-    if ask.level == NO_LEVEL { None } else { Some(ask) }
+    if ask.level == NO_LEVEL && !ask.report { None } else { Some(ask) }
 }
 
 /// The ticks on which the run of `pads` first reaches each checkpoint's x: a fast run may pass
@@ -248,14 +251,7 @@ fn steadied(level: u32, b: take Best, snacks: u32, start: f64, seconds: f32) -> 
 
 /// The best run of the category whose runs find `snacks`, from `from` on, after up to `seconds`
 /// of search.
-fn improve(
-    level: u32,
-    name: str,
-    from: take Best,
-    snacks: u32,
-    human: bool,
-    seconds: f32,
-) -> Best {
+fn improve(level: u32, name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -> Best {
     let start = now()
     var best = take from
     print(f"{name}: from {told(best, human)}")
@@ -461,6 +457,10 @@ pub fn tool() -> u32 {
         print(USAGE)
         return 2
     }
+    if ask.report {
+        print(design::report())
+        return 0
+    }
     let level = ask.level
     let key = KEYS[level]
     let file = f"routes_{key}.wrela"
@@ -477,9 +477,27 @@ pub fn tool() -> u32 {
         let needs = needs_of(level, f32(ask.seconds))
         let routes = [
             route(level, kept(level, runs.any, 0, human: false), first.as_str(), 0, human: false),
-            route(level, kept(level, runs.full, all, human: false), every.as_str(), all, human: false),
-            route(level, kept(level, runs.human_any, 0, human: true), first.as_str(), 0, human: true),
-            route(level, kept(level, runs.human_full, all, human: true), every.as_str(), all, human: true),
+            route(
+                level,
+                kept(level, runs.full, all, human: false),
+                every.as_str(),
+                all,
+                human: false,
+            ),
+            route(
+                level,
+                kept(level, runs.human_any, 0, human: true),
+                first.as_str(),
+                0,
+                human: true,
+            ),
+            route(
+                level,
+                kept(level, runs.human_full, all, human: true),
+                every.as_str(),
+                all,
+                human: true,
+            ),
         ]
         return write_routes(key, named, file, routes, needs)
     }
