@@ -116,13 +116,13 @@ pub struct Spread {
     pub n: u32,
     pub sum: Vec<f64>,
     pub sq: Vec<f64>,
-    pub last: Vec<f32>,
-    pub pop: f64,
+    /// The largest step between two frames in a row (`Pop`).
+    pub steps: Pop,
 }
 
 impl Spread {
     pub fn new() -> Spread {
-        Spread { n: 0, sum: Vec::new(), sq: Vec::new(), last: Vec::new(), pop: 0.0 }
+        Spread { n: 0, sum: Vec::new(), sq: Vec::new(), steps: Pop::new() }
     }
 
     pub fn add(mut self, l: [f32]) {
@@ -131,19 +131,13 @@ impl Spread {
                 self.sum.push(0.0)
                 self.sq.push(0.0)
             }
-        } else {
-            var d = 0.0
-            for i in 0..min(l.len(), self.last.len()) {
-                d += f64(abs(l[i] - self.last[i]))
-            }
-            self.pop = max(self.pop, d / f64(max(l.len(), 1)))
         }
         for i in 0..min(l.len(), self.sum.len()) {
             let x = f64(l[i])
             self.sum[i] += x
             self.sq[i] += x * x
         }
-        self.last = Vec::from(l)
+        self.steps.add(Vec::from(l))
         self.n += 1
     }
 
@@ -162,8 +156,8 @@ impl Spread {
     }
 }
 
-/// Pop alone, as `Spread` finds it: for a run whose flicker isn't read (the dolly's), so no
-/// frame's sums are kept, only the last frame.
+/// Pop: the largest mean absolute luma difference between two frames in a row, keeping only the
+/// last frame (the dolly's, whose flicker isn't read; `Spread` keeps one for its frames).
 pub struct Pop {
     pub pop: f64,
     last: Vec<f32>,
@@ -222,7 +216,7 @@ pub fn pop(frames: [Vec<f32>]) -> f64 {
     for f in frames {
         s.add(f)
     }
-    s.pop
+    s.steps.pop
 }
 
 /// The share of `rgba`'s pixels at 255 in any channel.

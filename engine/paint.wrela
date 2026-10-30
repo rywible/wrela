@@ -20,7 +20,7 @@
 //
 // Every texture the look lays on is anchored in the world.
 
-use light::{LUMA, tone}
+use light::LUMA
 use style::Style
 use noise::{hash2, noise3, octave_of}
 use std::gpu::{

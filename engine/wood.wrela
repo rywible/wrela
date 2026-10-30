@@ -733,6 +733,10 @@ fn into_layer(
     }
 }
 
+/// A pool's views a kind (its impostor's bounds), and its volume's voxels a side.
+const VIEWS: u32 = impostor::VIEWS * impostor::VIEWS
+const SIDE: u32 = impostor::VOXELS
+
 /// A pool filled a kind at a time as the kinds are cooked (`add`), so each kind's own impostor
 /// textures go as soon as it's in, not all of them waiting for the last: the floor's 26 kinds'
 /// plain bakes (an `Rgba8` colour and an `Rgba16Float` normal, 12 MiB a kind) were most of its
@@ -756,8 +760,6 @@ impl Pooling {
             cards += p.cards()
             limbs += p.limbs.len()
         }
-        let views = impostor::VIEWS * impostor::VIEWS
-        let side = impostor::VOXELS
         Pooling {
             pool: Pool {
                 // Its kinds' descriptions, the far kinds' with them, are written by `done`.
@@ -765,10 +767,10 @@ impl Pooling {
                 cards: buffer(max(cards, 1)),
                 orders: buffer(max(CORNERS * cards, 1)),
                 limbs: buffer(max(limbs, 1)),
-                bounds: buffer(n * views),
+                bounds: buffer(n * VIEWS),
                 impostors: impostors_of(n, compress),
-                grid: texture3d::<Rgba16Float>(side, side, side * n),
-                grid_depth: texture3d::<Rgba16Float>(side, side, side * n),
+                grid: texture3d::<Rgba16Float>(SIDE, SIDE, SIDE * n),
+                grid_depth: texture3d::<Rgba16Float>(SIDE, SIDE, SIDE * n),
             },
             descs: Vec::new(),
             at: vec3u(0),
@@ -781,8 +783,6 @@ impl Pooling {
     /// let go.
     pub fn add(mut self, k: mut Kind) {
         let i = self.descs.len()
-        let views = impostor::VIEWS * impostor::VIEWS
-        let side = impostor::VOXELS
         let c = k.card_count
         let l = k.limb_count
         let at = self.at
@@ -794,7 +794,7 @@ impl Pooling {
                 order_first: at.y,
                 limb_first: at.z,
                 limb_count: l,
-                bounds_first: i * views,
+                bounds_first: i * VIEWS,
                 layer: i,
                 slab: i,
             },
@@ -816,8 +816,8 @@ impl Pooling {
             )
         }
         copy(
-            from: k.impostor.bounds.span(start: 0, count: views),
-            to: self.pool.bounds.span_mut(start: i * views, count: views),
+            from: k.impostor.bounds.span(start: 0, count: VIEWS),
+            to: self.pool.bounds.span_mut(start: i * VIEWS, count: VIEWS),
         )
         into_layer(
             mut self.pool.impostors,
@@ -828,11 +828,11 @@ impl Pooling {
         )
         dispatch(
             slab_of.bind(from: k.volume.grid, slab: i, out: mut self.pool.grid),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
+            groups: (SIDE / 4, SIDE / 4, SIDE * (i + 1) / 4),
         )
         dispatch(
             slab_of.bind(from: k.volume.grid_depth, slab: i, out: mut self.pool.grid_depth),
-            groups: (side / 4, side / 4, side * (i + 1) / 4),
+            groups: (SIDE / 4, SIDE / 4, SIDE * (i + 1) / 4),
         )
         // The pool holds them now (a host releases a buffer or a texture after the work recorded
         // before): what's left of the kind is its plant and its counts.

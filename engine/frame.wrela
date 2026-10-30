@@ -2700,36 +2700,38 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             keep_depth: true,
             join: true,
         )
-        if scene.sky_instead(sky) {} else if Q::FOG {
-            draw(
-                sky,
-                full.bind(z: 0.0),
-                sky_fogged.bind(
-                    cam,
-                    self.light,
-                    view: self.tables.view,
-                    dome: self.sky.dome,
-                    s: self.linear,
-                    fog: self.fog.grid,
-                    fogged: self.fog.lit,
-                ),
-                vertices: 3,
-                depth: BEHIND,
-            )
-        } else {
-            draw(
-                sky,
-                full.bind(z: 0.0),
-                sky_shade.bind(
-                    cam,
-                    self.light,
-                    view: self.tables.view,
-                    dome: self.sky.dome,
-                    s: self.linear,
-                ),
-                vertices: 3,
-                depth: BEHIND,
-            )
+        if !scene.sky_instead(sky) {
+            if Q::FOG {
+                draw(
+                    sky,
+                    full.bind(z: 0.0),
+                    sky_fogged.bind(
+                        cam,
+                        self.light,
+                        view: self.tables.view,
+                        dome: self.sky.dome,
+                        s: self.linear,
+                        fog: self.fog.grid,
+                        fogged: self.fog.lit,
+                    ),
+                    vertices: 3,
+                    depth: BEHIND,
+                )
+            } else {
+                draw(
+                    sky,
+                    full.bind(z: 0.0),
+                    sky_shade.bind(
+                        cam,
+                        self.light,
+                        view: self.tables.view,
+                        dome: self.sky.dome,
+                        s: self.linear,
+                    ),
+                    vertices: 3,
+                    depth: BEHIND,
+                )
+            }
         }
         sky.end()
         // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was),

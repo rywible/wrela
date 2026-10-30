@@ -82,11 +82,14 @@ fn quality() -> Quality {
 /// builds another.
 pub const TIER: Tier = Tier::Epic
 
-/// What names the floor's tier to `engine::tier::Tiered`.
+/// The floor's switches (`engine::tier::Tiered`): its tier's, and its experiments as its
+/// constants say.
 pub struct FloorTier {}
 
 impl Tiers for FloorTier {
     const TIER: Tier = TIER
+    const NEURAL: bool = NEURAL
+    const LEARNED: bool = LEARNED
 }
 
 /// The floor's experiments, each off as its rule says (`wrela build --set NEURAL=true`): the
@@ -95,21 +98,6 @@ impl Tiers for FloorTier {
 pub const NEURAL: bool = false
 pub const LEARNED: bool = false
 
-/// The floor's switches (`engine::switches`): its tier's (`engine::tier::Tiered`), and its
-/// experiments as its constants say.
-pub struct Switched {}
-
-impl Switches for Switched {
-    const SIGHT: bool = Tiered::<FloorTier>::SIGHT
-    const CONTACT: bool = Tiered::<FloorTier>::CONTACT
-    const REFLECTIONS: bool = Tiered::<FloorTier>::REFLECTIONS
-    const FOG: bool = Tiered::<FloorTier>::FOG
-    const DISTANCE: bool = Tiered::<FloorTier>::DISTANCE
-    const AMBIENT: bool = Tiered::<FloorTier>::AMBIENT
-    const NEURAL: bool = NEURAL
-    const LEARNED: bool = LEARNED
-}
-
 pub struct Floor {
     console: Link,
     /// The way back down to the stair, and the tower's journey.
@@ -117,7 +105,7 @@ pub struct Floor {
     snaps: Snapshots<World>,
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Shared, Switched, Physical>,
+    frame: Frame<Shared, Tiered<FloorTier>, Physical>,
     stage: Stage,
     /// Whether the floor's ready (its kinds cooked, the tiles round the player in and placed).
     ready: bool,

@@ -4,7 +4,7 @@ What the floor's look and its frame's work rest on, as settings Ryan can change.
 it lives; the numbers marked **proposed** are the plan's first guesses (docs/plan-world-class-2.md),
 measured in docs/bench.md, and his to set.
 
-## The frame's switches (`engine::switches::Switches`: constants of the build, the floor's `Switched` in main.wrela)
+## The frame's switches (`engine::switches::Switches`: constants of the build, the floor's `Tiered<FloorTier>` in main.wrela)
 
 | Switch | Default | What it does | Measured |
 |---|---|---|---|

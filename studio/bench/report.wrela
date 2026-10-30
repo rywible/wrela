@@ -85,9 +85,14 @@ pub struct Measured: Clone {
 /// machine throttled.
 pub const THROTTLING: f64 = 1.15
 
+/// A sustained run's last minute's GPU median over its first's (0 with no first minute).
+pub fn ratio(minute_1_ms: f64, minute_last_ms: f64) -> f64 {
+    if minute_1_ms > 0.0 { minute_last_ms / minute_1_ms } else { 0.0 }
+}
+
 /// Whether a sustained run's minutes say the machine throttled.
 pub fn throttled(minute_1_ms: f64, minute_last_ms: f64) -> bool {
-    minute_1_ms > 0.0 && minute_last_ms / minute_1_ms > THROTTLING
+    ratio(minute_1_ms, minute_last_ms) > THROTTLING
 }
 
 /// A paced run's throughput, from its frames' starts (`began_ms`, the warm-up's left out): how
@@ -113,8 +118,8 @@ pub fn throughput(began: [f64], warmup: u32) -> Throughput {
     let mean = (last - first) / f64(n - 1)
     let elapsed = last - first + mean
     var over_25 = 0
-    for k in (warmup + 1)..began.len() {
-        if began[k] - began[k - 1] > 25.0 {
+    for x in intervals(Vec::from(began), warmup) {
+        if x > 25.0 {
             over_25 += 1
         }
     }
@@ -158,7 +163,7 @@ pub fn gates(began: [f64], warmup: u32) -> Gates {
 /// A sustained run's record (`sustained.json`): how long it paced the walk, how many pages that
 /// took, the two minutes' GPU medians, their ratio and whether that's throttling.
 pub fn sustained_json(seconds: u32, pages: u32, minute_1_ms: f64, minute_last_ms: f64) -> String {
-    let ratio = if minute_1_ms > 0.0 { minute_last_ms / minute_1_ms } else { 0.0 }
+    let ratio = ratio(minute_1_ms, minute_last_ms)
     String::from(
         f"{{\"seconds\": {seconds}, \"pages\": {pages}, \"minute_1_ms\": {minute_1_ms}, \"minute_last_ms\": {minute_last_ms}, \"ratio\": {ratio}, \"throttling\": {throttled(minute_1_ms, minute_last_ms)}}}\n",
     )
@@ -422,7 +427,7 @@ fn sustained_cell(m: Measured) -> String {
     if m.sustained_s == 0 {
         return String::from("no")
     }
-    let ratio = if m.minute_1_ms > 0.0 { m.minute_last_ms / m.minute_1_ms } else { 0.0 }
+    let ratio = ratio(m.minute_1_ms, m.minute_last_ms)
     let throttling = if throttled(m.minute_1_ms, m.minute_last_ms) { ", throttling" } else { "" }
     String::from(
         f"sustained {m.sustained_s} s: minute 1 {ms(m.minute_1_ms)}, last {ms(m.minute_last_ms)} ({ratio:.2}{throttling}); {m.starts_per_s:.1} starts/s, {m.over_25} over 25 ms",

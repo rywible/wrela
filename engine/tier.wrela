@@ -16,9 +16,12 @@ pub enum Tier: Copy + Eq + Fieldless {
 }
 
 /// What names a program's tier: `impl Tiers for Mine { const TIER: Tier = TIER }`, its
-/// `pub const TIER` read through it.
+/// `pub const TIER` read through it; and its experiments, which no tier sets (each off unless the
+/// program's constant says, as `switches::Switches` has them).
 pub trait Tiers {
     const TIER: Tier = Tier::Epic
+    const NEURAL: bool = false
+    const LEARNED: bool = false
 }
 
 /// The switches of `T`'s tier (**proposed**). `Epic`: the approved ones, each at its default
@@ -37,6 +40,8 @@ impl<T: Tiers> Switches for Tiered<T> {
     const FOG: bool = T::TIER != Tier::Low
     const DISTANCE: bool = T::TIER != Tier::Low
     const AMBIENT: bool = T::TIER != Tier::Low
+    const NEURAL: bool = T::NEURAL
+    const LEARNED: bool = T::LEARNED
 }
 
 impl Tier {

@@ -4,13 +4,15 @@
 use std::input::{Key, Script}
 
 /// A scene: its name, its package (`pkg`) (from the workspace), the frames it measures after the
-/// warmup, and its size.
+/// warmup, its size, and the frame its walk begins (`WALKS`: its counted frames begin there), or
+/// 0 for none.
 pub struct Scene: Clone {
     pub name: Text,
     pub pkg: Text,
     pub frames: u32,
     pub width: u32,
     pub height: u32,
+    pub walks: u32 = 0,
 }
 
 /// Every scene, in the order the report lists them.
@@ -35,6 +37,7 @@ pub const SCENES: [Scene; 8] = [
         frames: 1200,
         width: 1920,
         height: 1080,
+        walks: WALKS,
     },
     Scene { name: "capybara-run", pkg: "games/capybara", frames: 600, width: 1920, height: 1080 },
     Scene {
@@ -46,7 +49,14 @@ pub const SCENES: [Scene; 8] = [
     },
     Scene { name: "herd", pkg: "examples/herd", frames: 600, width: 1920, height: 1080 },
     Scene { name: "leapling", pkg: "games/leapling", frames: 600, width: 1920, height: 1080 },
-    Scene { name: "vale-walk", pkg: "examples/vale", frames: 1200, width: 1920, height: 1080 },
+    Scene {
+        name: "vale-walk",
+        pkg: "examples/vale",
+        frames: 1200,
+        width: 1920,
+        height: 1080,
+        walks: WALKS,
+    },
 ]
 
 /// The frame the walks begin (the floor's LG_WALK's from 240 in its gate's script): after it's playable in a saturated run too, whose frames

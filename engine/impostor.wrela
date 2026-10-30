@@ -32,8 +32,7 @@ use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer, Half2,
     InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Targets2, Texels3d, Texture,
-    Texture3d, TextureArray, VertexIndex, WithDepth, begin_pass, begin_pass2_with_depth,
-    begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture, texture3d,
+    Texture3d, TextureArray, VertexIndex, WithDepth, begin_pass, begin_pass2_with_depth, buffer, depth_texture, discard, dispatch, draw, texture, texture3d,
 }
 use view::{Camera, LEAVES}
 

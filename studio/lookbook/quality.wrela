@@ -295,7 +295,7 @@ fn shot(
             ssim: ssim(pl, rl, w),
             flicker: still.flicker(),
             pop: dolly.pop,
-            still_pop: still.pop,
+            still_pop: still.steps.pop,
             trail: most_trail,
             clipped: clipped(play),
             edge_reference: edge_width(rl, w),
