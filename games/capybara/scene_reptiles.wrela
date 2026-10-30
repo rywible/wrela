@@ -1,14 +1,715 @@
-// What's behind The Reptile House's course: a placeholder of rolling hills in the habitat's colour, a layer
-// for each of the backdrop's four (scenery.wrela), until the habitat's own are drawn.
+// What's behind The Reptile House's course (scenery.wrela draws the sky and passes each layer
+// here): a warm house of sandstone and glass, painted as the Wetlands' backdrop is. The house is
+// the fifth habitat on the zoo's loop, so beyond its garden wall the Aviary's dome stands behind
+// (to the left, where the level starts) and the Polar Coast's icy rocks ahead.
+//
+// - The desert garden (0.68), nearest: warm sandstone boulders, agaves, prickly pears and a
+//   saguaro now and then, on sand.
+// - The house's residents (0.42), behind a sandstone kerb: tortoises plodding (the big one with a
+//   flower in its mouth), an iguana basking under a heat lamp in its terrarium, a chameleon on a
+//   branch in its own (slowly changing colour), the Komodo dragon asleep with its chin on a warm
+//   rock, sliders basking on a log in a warm pool (the smallest on another's back); a date palm
+//   between, now and then.
+// - Over the garden wall (0.2): the Aviary's glass dome behind, date palms, then the Polar
+//   Coast's icy rocks ahead, with a penguin or two on them.
+// - The far hills (0.06): warm, hazy desert mesas, under a far ridge that turns to icy peaks
+//   ahead.
 
-use scenery::{PARALLAX, View, fbm, on_layer, paint, pixel_on}
+use engine::noise::{hash2, noise2}
+use scenery::{PARALLAX, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
 pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let parallax = PARALLAX[k]
-    let q = on_layer(pixel, v, parallax)
-    let px = pixel_on(v, parallax)
-    let ground = 1.0 + 2.5 * fbm(vec2(q.x * 0.05 + f32(k) * 7.0, 1.0), 2) - f32(k) * 0.6
-    paint(g, gs, q.y - ground, vec3(0.78, 0.66, 0.46), q, px, haze: f32(k) * 0.2, line: 0.8)
+    if k == 0 { garden(pixel, v, g, gs) } else if k == 1 {
+        house(pixel, v, g, gs)
+    } else if k == 2 {
+        beyond(pixel, v, g, gs)
+    } else { far_hills(pixel, v, g, gs) }
+}
+
+// ---- shared ----------------------------------------------------------------------------------
+
+/// Warm sand.
+const SAND = vec3(0.92, 0.8, 0.58)
+
+/// `front` over `back`: the front shape wherever it covers (its edge inked inside the back's),
+/// else the nearer of the two.
+fn over(back: (f32, vec3), front: (f32, vec3)) -> (f32, vec3) {
+    let (df, _) = front
+    if df < 0.0 { front } else { nearer(back, front) }
+}
+
+/// Sandstone at `q`: a warm wash, darker on the side away from the sun (`centre` its middle, `r`
+/// its size), its beds a little darker in bands.
+fn sandstone(q: vec2, centre: vec2, r: f32) -> vec3 {
+    let c = crowned(vec3(0.95, 0.79, 0.62), vec3(0.82, 0.64, 0.56), q, centre, r)
+    let bed = fract(q.y * 1.6 + 0.4 * noise2(q * vec2(0.6, 2.0)))
+    if bed < 0.12 { c * 0.9 } else { c }
+}
+
+/// A sandstone dais under an open pen, `w` m wide each side of its middle (`l` from it).
+fn dais(l: vec2, w: f32) -> (f32, vec3) {
+    let top = l.y > 0.36
+    (rbox(l - vec2(0.0, 0.22), vec2(w, 0.24), 0.06), if top { vec3(0.94, 0.8, 0.58) } else {
+        sandstone(l, vec2(0.0, 0.5), w)
+    })
+}
+
+/// A date palm at `foot`, `h` m tall: a ringed trunk leaning a little and a crown of drooping
+/// fronds, dates under it. Its distance and colour.
+fn date_palm(q: vec2, foot: vec2, h: f32, seed: f32) -> (f32, vec3) {
+    let l = q - foot
+    let top = vec2(0.3 * (seed - 0.5), h)
+    let trunk = cone(l, vec2(0.0), top, ra: 0.2, rb: 0.13)
+    let ring = if fract(l.y * 4.0) < 0.22 { 0.86 } else { 1.0 }
+    var best = (trunk, vec3(0.7, 0.54, 0.38) * ring)
+    best = over(best, (length(l - top - vec2(0.12, -0.28)) - 0.17, vec3(0.88, 0.52, 0.26)))
+    var fronds = 1.0e3
+    for k in 0..6 {
+        let a = (f32(k) - 2.5) * 0.56 + (seed - 0.5) * 0.3
+        let mid = top + vec2(sin(a), cos(a)) * 1.0
+        let tip = top + vec2(sin(a) * 2.0, cos(a) * 1.4 - 0.9 * abs(sin(a)) - 0.3)
+        fronds = min(
+            fronds,
+            min(cone(l, top, mid, ra: 0.05, rb: 0.17), cone(l, mid, tip, ra: 0.17, rb: 0.02)),
+        )
+    }
+    let leaf = crowned(vec3(0.58, 0.68, 0.4), vec3(0.48, 0.58, 0.38), l, top, 1.6)
+    over(best, (fronds, leaf))
+}
+
+// ---- the desert garden, nearest --------------------------------------------------------------
+
+fn near_ground(x: f32) -> f32 {
+    -1.7 + 0.25 * sin(x * 0.13) + 0.2 * noise2(vec2(x * 0.5, 3.0))
+}
+
+/// The desert garden at the walk's edge, nearest: sandstone boulders, agaves, prickly pears with
+/// their fruit, and a saguaro now and then, on sand. (Each kind is worked out only up to the
+/// height it can reach.)
+fn garden(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[0])
+    let px = pixel_on(v, PARALLAX[0])
+    let ground = near_ground(q.x)
+    if q.y > ground + 4.8 {
+        return vec4(0.0)
+    }
+    if q.y < ground + 0.1 {
+        return under(g, gs, SAND * 0.94, q, ground + 0.3, 0.14)
+    }
+    let up = q.y - ground
+    var best = (up - 0.3, SAND)
+    // (Each kind is worked out only up to the height it can reach, and each cell's in a
+    // function of its own, so the loops' copies stay calls.)
+    let pile = floor(q.x / 7.0)
+    for k in -1..select(if_false: -1, if_true: 2, cond: up < 3.4) {
+        best = over(best, boulders(q, pile + f32(k)))
+    }
+    let rosette = floor(q.x / 3.2)
+    for k in -1..select(if_false: -1, if_true: 2, cond: up < 2.7) {
+        best = nearer(best, agave(q, rosette + f32(k), ground))
+    }
+    let stand = floor(q.x / 7.0)
+    for k in -1..select(if_false: -1, if_true: 2, cond: up < 2.8) {
+        best = over(best, prickly_pear(q, stand + f32(k)))
+    }
+    let column = floor(q.x / 16.0)
+    for k in -1..select(if_false: -1, if_true: 2, cond: up < 4.7) {
+        best = over(best, saguaro(q, column + f32(k)))
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.12, line: 1.2)
+}
+
+/// Nothing: no shape.
+const NONE: (f32, vec3) = (1.0e3, vec3(0.0))
+
+/// Boulders in their 7 m cell `i`, now and then: two rounded, bedded stones leaning together.
+fn boulders(q: vec2, i: f32) -> (f32, vec3) {
+    let h = hash2(i32(i), 71)
+    let x = (i + 0.25 + 0.5 * hash2(i32(i), 72)) * 7.0
+    if h >= 0.35 || abs(q.x - x) > 3.4 {
+        return NONE
+    }
+    let s = 0.9 + 1.4 * h
+    let b = vec2(x, near_ground(x))
+    let big = rbox(turn(q - b - vec2(0.0, 0.8 * s), 0.12), vec2(1.1 * s, 0.75 * s), 0.4 * s)
+    let small = rbox(turn(q - b - vec2(1.3 * s, 0.4 * s), -0.2), vec2(0.6, 0.45) * s, 0.25 * s)
+    (smin(big, small, 0.12), sandstone(q, b + vec2(0.3, 1.0) * s, 1.3 * s))
+}
+
+/// An agave in its 3.2 m cell `i`, now and then: a rosette of five pointed, blue-green leaves.
+fn agave(q: vec2, i: f32, ground: f32) -> (f32, vec3) {
+    let h = hash2(i32(i), 73)
+    if h >= 0.4 {
+        return NONE
+    }
+    let x0 = (i + 0.5) * 3.2
+    let leaf = blend(vec3(0.56, 0.7, 0.6), vec3(0.66, 0.76, 0.56), h / 0.4)
+    var best = NONE
+    for s in 0..5 {
+        let a = (f32(s) - 2.0) * 0.36
+        let long = (1.8 + 0.8 * h) * (1.0 - abs(f32(s) - 2.0) * 0.14)
+        let tip = vec2(x0 + sin(a) * long, ground + cos(a) * long)
+        let d = cone(q, vec2(x0 + sin(a) * 0.15, ground + 0.1), tip, ra: 0.13, rb: 0.0)
+        best = nearer(best, (d, if s % 2 == 0 { leaf } else { leaf * 0.92 }))
+    }
+    best
+}
+
+/// A prickly pear in its 7 m cell `i`, now and then: a stack of round pads, dotted with spines,
+/// magenta fruit on the top ones' rims.
+fn prickly_pear(q: vec2, i: f32) -> (f32, vec3) {
+    let h = hash2(i32(i), 74)
+    let x = (i + 0.3 + 0.4 * hash2(i32(i), 75)) * 7.0
+    if h >= 0.35 || abs(q.x - x) > 1.4 {
+        return NONE
+    }
+    let l = q - vec2(x, near_ground(x))
+    let pad0 = ellipse(turn(l - vec2(0.0, 0.6), 0.1), vec2(0.42, 0.6))
+    let pad1 = ellipse(turn(l - vec2(-0.4, 1.45), 0.45), vec2(0.34, 0.48))
+    let pad2 = ellipse(turn(l - vec2(0.42, 1.35), -0.4), vec2(0.32, 0.45))
+    let pad3 = ellipse(turn(l - vec2(-0.55, 2.2), 0.2), vec2(0.24, 0.34))
+    let pads = min(min(pad0, pad1), min(pad2, pad3))
+    let dots = fract(l * 3.6 + vec2(0.3, 0.1)) - vec2(0.5)
+    let pad = if length(dots) < 0.08 { vec3(0.44, 0.56, 0.34) } else {
+        crowned(vec3(0.58, 0.72, 0.42), vec3(0.48, 0.62, 0.4), l, vec2(0.0, 1.4), 1.0)
+    }
+    var best = (pads, pad)
+    for f in [vec2(-0.62, 2.55), vec2(-0.36, 2.52), vec2(0.62, 1.78)] {
+        best = over(best, (ellipse(l - f, vec2(0.08, 0.1)), vec3(0.86, 0.36, 0.5)))
+    }
+    best
+}
+
+/// A saguaro in its 16 m cell `i`, now and then: a ribbed column with two arms raised, now and
+/// then a flower on top.
+fn saguaro(q: vec2, i: f32) -> (f32, vec3) {
+    let h = hash2(i32(i), 76)
+    let x = (i + 0.3 + 0.4 * hash2(i32(i), 77)) * 16.0
+    if h >= 0.35 || abs(q.x - x) > 1.6 {
+        return NONE
+    }
+    let l = q - vec2(x, near_ground(x))
+    let tall = 3.4 + 2.0 * h
+    var d = capsule(l, vec2(0.0, -0.3), vec2(0.0, tall), 0.34)
+    d = min(d, capsule(l, vec2(0.0, tall * 0.42), vec2(-0.8, tall * 0.42), 0.22))
+    d = min(d, capsule(l, vec2(-0.8, tall * 0.42), vec2(-0.8, tall * 0.72), 0.22))
+    d = min(d, capsule(l, vec2(0.0, tall * 0.55), vec2(0.7, tall * 0.55), 0.2))
+    d = min(d, capsule(l, vec2(0.7, tall * 0.55), vec2(0.7, tall * 0.8), 0.2))
+    let rib = abs(fract(l.x * 5.0 + 0.5) - 0.5) < 0.1
+    let skin = crowned(
+        vec3(0.52, 0.68, 0.46),
+        vec3(0.42, 0.56, 0.44),
+        l,
+        vec2(0.0, tall * 0.6),
+        0.6,
+    )
+    let best = (d, if rib { skin * 0.88 } else { skin })
+    if h >= 0.2 {
+        return best
+    }
+    over(best, (ellipse(l - vec2(0.0, tall + 0.38), vec2(0.16, 0.1)), vec3(0.98, 0.9, 0.86)))
+}
+
+// ---- the house's residents -------------------------------------------------------------------
+
+/// The walk's ground on the residents' layer at `x` (m).
+fn walk_ground(x: f32) -> f32 {
+    -0.1 + 0.25 * sin(x * 0.09) + 0.15 * noise2(vec2(x * 0.3, 2.0))
+}
+
+/// A glass terrarium `w` m wide each side of its middle and `h` m tall over its sandstone plinth
+/// (`l` from the middle of its foot): a wood frame, faintly green glass with two streaks of light
+/// across it, and sand inside.
+fn terrarium(l: vec2, w: f32, h: f32) -> (f32, vec3) {
+    let middle = l - vec2(0.0, 0.3 + h * 0.5)
+    let glass = rbox(middle, vec2(w, h * 0.5), 0.04)
+    let frame = rbox(middle, vec2(w + 0.12, h * 0.5 + 0.12), 0.06)
+    let streak = l.x + l.y * 0.7 + w * 0.35
+    let shine = abs(streak - h * 0.6) < 0.16 || abs(streak - h * 0.6 - 0.42) < 0.06
+    let pane = if l.y < 0.6 { SAND } else if shine { vec3(0.95, 0.97, 0.92) } else {
+        vec3(0.82, 0.9, 0.82)
+    }
+    var best = (frame, vec3(0.56, 0.4, 0.3))
+    best = over(best, (glass, pane))
+    over(best, (rbox(l - vec2(0.0, 0.12), vec2(w + 0.3, 0.14), 0.04), vec3(0.88, 0.7, 0.5)))
+}
+
+/// A tortoise (`l` from its feet, `s` its size), facing +x, plodding at `t`: a high-domed shell of
+/// scutes over a pale rim, stubby legs stepping, its head nodding out. `flower`, with a pink one in
+/// its mouth.
+fn tortoise(l0: vec2, s: f32, t: f32, flower: bool) -> (f32, vec3) {
+    let l = l0 / s
+    let skin = vec3(0.68, 0.6, 0.46)
+    let step = sin(t * 2.2)
+    var legs = 1.0e3
+    for (x, phase) in [(-0.45, 0.0), (0.45, 3.14)] {
+        let lift = max(sin(t * 2.2 + phase), 0.0) * 0.05
+        legs = min(legs, rbox(l - vec2(x + step * 0.03, 0.22 + lift), vec2(0.12, 0.2), 0.08))
+    }
+    let nod = 0.03 * step
+    let neck = capsule(l, vec2(0.55, 0.38), vec2(0.88, 0.52 + nod), 0.11)
+    let head = ellipse(l - vec2(1.0, 0.55 + nod), vec2(0.2, 0.14))
+    var best = (min(min(legs, neck), head) * s, skin)
+    let eye = length(l - vec2(1.06, 0.6 + nod)) < 0.03
+    if eye && head < 0.0 {
+        best = (head * s, vec3(0.2, 0.15, 0.12))
+    }
+    let shell_at = l - vec2(0.0, 0.42)
+    let shell = max(ellipse(shell_at, vec2(0.78, 0.58)), -shell_at.y - 0.05)
+    // Scutes: a ring of plates round the dome's crown, cut by spokes, each plate a lighter
+    // middle; a pale rim along the shell's foot.
+    let u = shell_at / vec2(0.78, 0.58)
+    let ring = length(u - vec2(0.0, 0.1))
+    let spoke = abs(fract(atan2(u.y - 0.1, u.x) / 0.55 + 0.5) - 0.5)
+    let seam = abs(ring - 0.62) < 0.035 ||
+        spoke < 0.06 && ring > 0.3 ||
+        ring < 0.3 && abs(u.x) < 0.02
+    let shell_c = if shell_at.y < 0.09 { vec3(0.86, 0.74, 0.5) } else if seam {
+        vec3(0.5, 0.4, 0.28)
+    } else { crowned(vec3(0.74, 0.6, 0.38), vec3(0.62, 0.5, 0.34), shell_at, vec2(0.0, 0.2), 0.7) }
+    best = over(best, (shell * s, shell_c))
+    if flower {
+        let m = vec2(1.2, 0.5 + nod)
+        best = over(
+            best,
+            (
+                capsule(l, m - vec2(0.02, 0.0), m + vec2(0.16, 0.2), 0.022) * s,
+                vec3(0.4, 0.62, 0.32),
+            ),
+        )
+        let bloom = l - m - vec2(0.2, 0.28)
+        let petals = length(bloom) - 0.12 - 0.035 * cos(atan2(bloom.y, bloom.x) * 5.0)
+        let heart = length(bloom) < 0.045
+        best = over(best, (petals * s, if heart { vec3(1.0, 0.84, 0.3) } else {
+            vec3(0.98, 0.6, 0.7)
+        }))
+    }
+    best
+}
+
+/// Two tortoises plodding on their dais, the big one with a flower in its mouth.
+fn tortoises(q: vec2, t: f32) -> (f32, vec3) {
+    let l = q - vec2(0.0, 0.45)
+    var best = dais(q, 3.2)
+    best = over(best, tortoise(l - vec2(-1.6, 0.0), 1.0, t * 0.9 + 1.0, flower: false))
+    over(best, tortoise(l - vec2(0.7, 0.0), 1.35, t, flower: true))
+}
+
+/// The green iguana basking on a warm slab under a heat lamp, in its terrarium: a long body with a
+/// crest of spines, a dewlap, a banded tail; the lamp's warmth washing over it.
+fn iguana(l: vec2, t: f32) -> (f32, vec3) {
+    let (w, h) = (2.6, 2.7)
+    var best = terrarium(l, w, h)
+    let slab = rbox(l - vec2(0.0, 0.62), vec2(1.5, 0.2), 0.12)
+    best = over(best, (slab, sandstone(l, vec2(0.0, 0.9), 1.5)))
+    let b = l - vec2(0.15, 0.82)
+    let green = vec3(0.5, 0.7, 0.4)
+    let breathe = 0.012 * sin(t * 1.3)
+    var body = ellipse(b - vec2(0.0, 0.2), vec2(0.62, 0.17 + breathe))
+    for x in [-0.42, 0.38] {
+        body = smin(body, capsule(b, vec2(x, 0.15), vec2(x + 0.14, 0.02), 0.06), 0.04)
+    }
+    body = smin(body, ellipse(turn(b - vec2(0.75, 0.3), 0.12), vec2(0.25, 0.14)), 0.08)
+    let dewlap = ellipse(b - vec2(0.72, 0.15), vec2(0.1, 0.12))
+    let tail = cone(b, vec2(-0.5, 0.15), vec2(-2.1, 0.03), ra: 0.12, rb: 0.025)
+    let band = fract(b.x * 3.0) < 0.35 && b.x < -0.55
+    best = over(best, (tail, if band { vec3(0.38, 0.5, 0.3) } else { green }))
+    let spine = abs(fract(b.x * 9.0) - 0.5) * 0.11 - 0.035
+    let crest = max(max(b.y - 0.43 - spine, 0.33 - b.y), abs(b.x - 0.1) - 0.5)
+    best = over(best, (min(crest, body), green))
+    best = over(best, (dewlap, vec3(0.62, 0.74, 0.44)))
+    if length(b - vec2(0.85, 0.36)) < 0.035 {
+        best = (min(body, -0.01), vec3(0.2, 0.15, 0.12))
+    }
+    // The heat lamp, hung from the frame's top: its cord, its copper shade, its bulb.
+    let bulb = vec2(0.4, h - 0.45)
+    best = over(
+        best,
+        (capsule(l, vec2(0.4, h + 0.3), bulb + vec2(0.0, 0.2), 0.015), vec3(0.3, 0.24, 0.2)),
+    )
+    let shade = max(cone(l, bulb + vec2(0.0, 0.28), bulb, ra: 0.05, rb: 0.24), bulb.y - l.y)
+    best = over(best, (shade, vec3(0.74, 0.46, 0.3)))
+    best = over(best, (length(l - bulb) - 0.09, vec3(1.0, 0.88, 0.5)))
+    // Its warmth: a soft, golden wash in a cone below it.
+    let r = l - bulb
+    let glow = smoothstep(0.12, -0.12, abs(r.x) + r.y * 0.7) * saturate(1.0 + r.y / 2.4)
+    let (d, c) = best
+    (d, blend(c, vec3(1.0, 0.86, 0.5), glow * 0.35))
+}
+
+/// A veiled chameleon on a branch, in its terrarium: a casque on its head, a turret of an eye, its
+/// tail curled; its colour slowly turning between leaf green and turquoise at `t`.
+fn chameleon(l: vec2, t: f32) -> (f32, vec3) {
+    let (w, h) = (1.9, 3.0)
+    var best = terrarium(l, w, h)
+    var branch = capsule(l, vec2(-1.3, 0.5), vec2(0.0, 1.55), 0.07)
+    branch = min(branch, capsule(l, vec2(0.0, 1.55), vec2(1.5, 1.8), 0.05))
+    branch = min(branch, capsule(l, vec2(-0.6, 1.0), vec2(-0.9, 1.9), 0.04))
+    best = over(best, (branch, vec3(0.62, 0.46, 0.32)))
+    for f in [vec2(-0.75, 2.05), vec2(-1.0, 1.95), vec2(0.6, 1.75)] {
+        best = over(best, (ellipse(turn(l - f, 0.6), vec2(0.13, 0.06)), vec3(0.56, 0.72, 0.42)))
+    }
+    let b = (l - vec2(0.45, 1.66)) / 1.35
+    let mood = 0.5 + 0.5 * sin(t * 0.35)
+    let skin = blend(vec3(0.5, 0.74, 0.4), vec3(0.4, 0.74, 0.7), mood)
+    var body = ellipse(turn(b - vec2(0.0, 0.3), -0.15), vec2(0.38, 0.25))
+    body = smin(body, ellipse(b - vec2(0.38, 0.38), vec2(0.17, 0.15)), 0.06)
+    // The casque, a crest rising back from the head.
+    body = smin(body, cone(b, vec2(0.36, 0.45), vec2(0.24, 0.66), ra: 0.1, rb: 0.03), 0.04)
+    for x in [-0.22, 0.2] {
+        body = min(body, capsule(b, vec2(x, 0.2), vec2(x + 0.05, 0.02), 0.045))
+    }
+    let tail = min(
+        capsule(b, vec2(-0.3, 0.22), vec2(-0.45, 0.02), 0.05),
+        max(abs(length(b - vec2(-0.45, -0.12)) - 0.12) - 0.035, b.x + 0.45),
+    )
+    let stripe = abs(b.y - 0.28 - 0.06 * sin(b.x * 14.0)) < 0.025 && body < 0.0
+    best = over(best, (min(body, tail) * 1.35, if stripe { skin * 1.12 } else { skin }))
+    let eye = length(b - vec2(0.42, 0.42)) - 0.07
+    best = over(best, (eye * 1.35, if eye < -0.035 { vec3(0.2, 0.15, 0.12) } else { skin * 1.08 }))
+    best
+}
+
+/// The Komodo dragon, the zoo's sweetest, asleep on its dais with its chin on a warm rock: a long, low body
+/// breathing slowly, its eye shut and smiling, and three z's drifting up from it.
+fn komodo(q: vec2, t: f32) -> (f32, vec3) {
+    var best = dais(q, 3.4)
+    let l = q - vec2(0.0, 0.45)
+    let rock = ellipse(l - vec2(1.75, 0.08), vec2(0.6, 0.2))
+    best = over(best, (rock, sandstone(l, vec2(1.75, 0.3), 0.6)))
+    let breathe = 0.025 * sin(t * 1.1)
+    var body = ellipse(l - vec2(0.0, 0.36), vec2(1.3, 0.32 + breathe))
+    body = smin(body, cone(l, vec2(-1.0, 0.3), vec2(-2.7, 0.06), ra: 0.26, rb: 0.05), 0.15)
+    body = min(body, capsule(l, vec2(-2.7, 0.06), vec2(-3.05, 0.2), 0.04))
+    body = smin(body, ellipse(turn(l - vec2(1.5, 0.38), -0.1), vec2(0.52, 0.18)), 0.15)
+    for (a, b) in [(vec2(0.75, 0.25), vec2(1.05, 0.04)), (vec2(-0.75, 0.25), vec2(-0.42, 0.04))] {
+        body = smin(body, capsule(l, a, b, 0.1), 0.05)
+    }
+    let speckle = noise2(l * 9.0) > 0.72
+    let skin = crowned(vec3(0.62, 0.56, 0.42), vec3(0.5, 0.47, 0.4), l, vec2(0.0, 0.6), 1.2)
+    let e = l - vec2(1.6, 0.47)
+    let lid = abs(length(e) - 0.07) < 0.016 && e.y < 0.0
+    let mouth = capsule(l, vec2(1.42, 0.3), vec2(1.95, 0.29), 0.012) < 0.0 ||
+        abs(length(l - vec2(1.42, 0.37)) - 0.07) < 0.012 && l.x < 1.42 && l.y < 0.37
+    let colour = if lid || mouth { vec3(0.3, 0.22, 0.18) } else if speckle { skin * 0.88 } else {
+        skin
+    }
+    best = over(best, (body, colour))
+    // Zzz: three z's, each bigger, bobbing up off its head.
+    var z = 1.0e3
+    for k in 0..3 {
+        let fk = f32(k)
+        let c = vec2(1.95 + 0.32 * fk, 0.95 + 0.42 * fk + 0.06 * sin(t * 0.9 + fk))
+        let s = 0.07 + 0.035 * fk
+        let r = s * 0.25
+        z = min(z, capsule(l, c + vec2(-s, s), c + vec2(s, s), r))
+        z = min(z, capsule(l, c + vec2(s, s), c + vec2(-s, -s), r))
+        z = min(z, capsule(l, c + vec2(-s, -s), c + vec2(s, -s), r))
+    }
+    over(best, (z, vec3(0.46, 0.36, 0.3)))
+}
+
+/// A red-eared slider (`l` from under its shell, `s` its size), facing +x, basking: its neck
+/// stretched out to the warmth, yellow-striped, a red patch behind its eye.
+fn slider(l0: vec2, s: f32) -> (f32, vec3) {
+    let l = l0 / s
+    let neck = capsule(l, vec2(0.25, 0.1), vec2(0.5, 0.28), 0.07)
+    let head = ellipse(l - vec2(0.56, 0.3), vec2(0.13, 0.08))
+    let skin = if abs(fract((l.x - l.y) * 12.0) - 0.5) < 0.15 { vec3(0.86, 0.8, 0.4) } else {
+        vec3(0.48, 0.54, 0.36)
+    }
+    let ear = length(l - vec2(0.5, 0.31)) < 0.04
+    var best = (min(neck, head) * s, if ear { vec3(0.86, 0.34, 0.26) } else { skin })
+    best = over(best, (capsule(l, vec2(-0.18, 0.02), vec2(-0.12, -0.08), 0.05) * s, skin))
+    let shell = max(ellipse(l - vec2(0.0, 0.05), vec2(0.38, 0.26)), -l.y + 0.02)
+    let shell_c = crowned(vec3(0.5, 0.56, 0.34), vec3(0.42, 0.48, 0.32), l, vec2(0.0, 0.2), 0.4)
+    over(best, (shell * s, if l.y < 0.07 { vec3(0.82, 0.76, 0.42) } else { shell_c }))
+}
+
+/// The sliders' warm pool: green water in a sandstone basin, a log lying across it, three sliders
+/// basking on it, the smallest on another's back.
+fn turtles(l: vec2) -> (f32, vec3) {
+    let rim = l.y > 0.62
+    var best = (rbox(l - vec2(0.0, 0.36), vec2(3.0, 0.38), 0.08), if rim {
+        vec3(0.94, 0.8, 0.58)
+    } else { sandstone(l, vec2(0.0, 0.6), 3.0) })
+    let ripple = abs(fract(l.x * 0.9 + 0.3) - 0.5) < 0.12 && l.y > 0.86
+    best = over(best, (rbox(l - vec2(0.0, 0.84), vec2(2.75, 0.08), 0.04), if ripple {
+        vec3(0.66, 0.86, 0.78)
+    } else { vec3(0.46, 0.76, 0.66) }))
+    let log = capsule(l, vec2(-1.6, 0.86), vec2(1.1, 1.06), 0.17)
+    let end = length(l - vec2(1.1, 1.06)) < 0.1 && l.x > 1.05
+    best = over(best, (log, if end { vec3(0.84, 0.66, 0.44) } else { vec3(0.6, 0.44, 0.32) }))
+    best = over(best, slider(l - vec2(-1.0, 1.06), 1.0))
+    best = over(best, slider(l - vec2(0.15, 1.18), 1.15))
+    best = over(best, slider(l - vec2(0.1, 1.51), 0.6))
+    best
+}
+
+/// How far apart the residents are (m on their layer).
+const RESIDENTS: f32 = 22.0
+
+/// How much bigger the residents are drawn than their shapes' own sizes, so they read from the
+/// course.
+const SIGHT_SIZE: f32 = 1.3
+
+/// The house's residents along the walk, behind its sandstone kerb, a date palm between them now
+/// and then.
+fn house(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[1])
+    let px = pixel_on(v, PARALLAX[1])
+    let ground = walk_ground(q.x)
+    if q.y > ground + 7.3 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, SAND, q, ground, 0.2)
+    }
+    var best = (q.y - ground, SAND)
+    let cell = floor(q.x / RESIDENTS)
+    for k in -1..2 {
+        best = over(best, residents(q, cell + f32(k), ground, v.time))
+    }
+    // The kerb the visitors walk behind: sandstone blocks, a coping along their top.
+    let fy = q.y - ground
+    let kerb = abs(fy - 0.02) - 0.13
+    let joint = abs(fract(q.x / 1.4) - 0.5) * 1.4 < 0.03
+    let block = if fy > 0.08 { vec3(0.9, 0.76, 0.56) } else if joint {
+        vec3(0.72, 0.56, 0.42)
+    } else { vec3(0.88, 0.7, 0.5) }
+    best = over(best, (kerb, block))
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.2, line: 1.0)
+}
+
+/// The residents of stretch `i` of the walk at `t`, `ground` the walk's height at `q`; and a date
+/// palm at its start, now and then.
+fn residents(q: vec2, i: f32, ground: f32, t: f32) -> (f32, vec3) {
+    var best = NONE
+    let centre = (i + 0.5) * RESIDENTS
+    if abs(q.x - centre) < 4.7 && q.y < ground + 5.5 {
+        let base = vec2(centre, walk_ground(centre) - 0.1)
+        let dir = if hash2(i32(i), 48) < 0.5 { -1.0 } else { 1.0 }
+        let local = (q - base) * vec2(dir, 1.0) / SIGHT_SIZE
+        // Each in turn, so a stretch of the walk shows them all.
+        let kind = (i32(i) % 5 + 5) % 5
+        let (d, c) = if kind == 0 { tortoises(local, t) } else if kind == 1 {
+            iguana(local, t)
+        } else if kind == 2 { komodo(local, t) } else if kind == 3 {
+            chameleon(local, t)
+        } else { turtles(local) }
+        best = (d * SIGHT_SIZE, c)
+    }
+    let x = i * RESIDENTS
+    let h = hash2(i32(i), 41)
+    if h < 0.6 && abs(q.x - x) < 3.0 {
+        best = over(best, date_palm(q, vec2(x, walk_ground(x) - 0.2), 4.4 + 1.6 * h, h / 0.6))
+    }
+    best
+}
+
+// ---- over the garden wall: the Aviary behind, the Polar Coast ahead --------------------------
+
+fn beyond_ground(x: f32) -> f32 {
+    0.4 + 0.5 * sin(x * 0.07) + 0.4 * noise2(vec2(x * 0.05, 5.0))
+}
+
+/// How far into the Polar Coast the layer is at `x`: 0 behind, 1 ahead.
+fn polar(x: f32) -> f32 {
+    smoothstep(40.0, 90.0, x)
+}
+
+/// An icy crag at `x` (its cell's middle) on `ground`, `tall` m tall and `w` m wide each side,
+/// its peak `peak` m off its middle: faceted slopes, lit on the sun's side, shaded blue on the
+/// other, a crack down from the peak. Its distance and colour.
+fn ice_crag(q: vec2, x: f32, ground: f32, tall: f32, w: f32, peak: f32) -> (f32, vec3) {
+    let l = q - vec2(x, ground)
+    let slope = tall / w * 0.55
+    let facet = 0.3 * abs(fract(l.x * 0.6 + peak) - 0.5)
+    let top = min(tall - abs(l.x - peak) * slope, tall - 0.3) - facet
+    let d = max((l.y - top) / sqrt(1.0 + slope * slope), abs(l.x) - w)
+    let crack = abs(l.x - peak + (tall - l.y) * 0.3) < 0.05
+    let lit = l.x > peak + 0.1 * sin(l.y * 3.0)
+    let c = if crack { vec3(0.62, 0.74, 0.86) } else if lit { vec3(0.93, 0.97, 0.99) } else {
+        vec3(0.72, 0.83, 0.92)
+    }
+    (d, c)
+}
+
+/// A penguin (`l` from its feet), facing +x: a black back and head, a white front, an orange beak.
+fn penguin(l: vec2) -> (f32, vec3) {
+    let body = smin(
+        ellipse(l - vec2(0.0, 0.32), vec2(0.2, 0.32)),
+        length(l - vec2(0.03, 0.66)) - 0.13,
+        0.08,
+    )
+    let front = ellipse(l - vec2(0.07, 0.3), vec2(0.13, 0.26)) < 0.0
+    var best = (body, if front { vec3(0.97, 0.95, 0.9) } else { vec3(0.22, 0.22, 0.26) })
+    best = over(
+        best,
+        (cone(l, vec2(0.12, 0.68), vec2(0.28, 0.64), ra: 0.04, rb: 0.01), vec3(0.95, 0.6, 0.25)),
+    )
+    over(best, (ellipse(l - vec2(0.03, 0.02), vec2(0.12, 0.04)), vec3(0.95, 0.6, 0.25)))
+}
+
+/// What shows over the house's garden wall: the Aviary's glass dome and its trees behind, date
+/// palms, then the Polar Coast's icy rocks, a penguin or two on them, ahead.
+fn beyond(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[2])
+    let px = pixel_on(v, PARALLAX[2])
+    let ground = beyond_ground(q.x)
+    if q.y > ground + 7.6 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, vec3(0.86, 0.72, 0.56), q, ground, 0.4)
+    }
+    // Well below the wall's top, only the wall shows: what's behind it isn't worked out.
+    let wall = wall_at(q, ground)
+    var best = (wall, garden_wall(q, ground))
+    if wall > -px * 3.0 {
+        let ahead = polar(q.x)
+        var over_wall = (q.y - ground, blend(vec3(0.88, 0.78, 0.56), vec3(0.9, 0.94, 0.95), ahead))
+        over_wall = over(over_wall, aviary(q))
+        let grove = floor(q.x / 9.0)
+        for k in -1..2 {
+            over_wall = over(over_wall, palm_beyond(q, grove + f32(k)))
+        }
+        if ahead > 0.0 {
+            let cell = floor(q.x / 3.5)
+            for k in -1..2 {
+                over_wall = over(over_wall, crag(q, cell + f32(k)))
+            }
+        }
+        let (d, _) = over_wall
+        if wall > 0.0 && d < wall {
+            best = over_wall
+        }
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.4, line: 0.8)
+}
+
+/// The Aviary next door, behind: its glass dome on a frame of ribs and rings, round trees at its
+/// foot.
+fn aviary(q: vec2) -> (f32, vec3) {
+    let dome_at = vec2(-10.0, 0.6)
+    let l = q - dome_at
+    if abs(l.x) > 9.0 {
+        return NONE
+    }
+    let dome = max(length(l) - 6.5, -l.y)
+    let rib = abs(fract(atan2(l.y, l.x) / 0.2618) - 0.5) * 0.2618 * length(l)
+    let ring = abs(fract(length(l) / 1.3) - 0.5) * 1.3
+    let glass = if min(rib, ring) < 0.06 { vec3(0.56, 0.62, 0.62) } else {
+        crowned(vec3(0.86, 0.93, 0.94), vec3(0.76, 0.85, 0.88), l, vec2(0.0, 3.0), 4.0)
+    }
+    var best = (dome, glass)
+    for (x, r) in [(-6.5, 2.0), (-4.2, 1.5), (5.6, 1.8), (7.6, 1.3)] {
+        let c = vec2(x, beyond_ground(dome_at.x + x) - dome_at.y + r * 0.9)
+        let crown = length(l - c) - r + 0.08 * abs(sin(atan2(l.y - c.y, l.x - c.x) * 7.0 + x))
+        best = over(best, (crown, crowned(vec3(0.46, 0.66, 0.4), vec3(0.4, 0.56, 0.4), l, c, r)))
+    }
+    best
+}
+
+/// A date palm over the wall in its 9 m cell `i`, now and then; fewer towards the coast.
+fn palm_beyond(q: vec2, i: f32) -> (f32, vec3) {
+    let h = hash2(i32(i), 51)
+    let x = (i + 0.3 + 0.4 * hash2(i32(i), 52)) * 9.0
+    if h >= 0.5 * (1.0 - polar(x)) || abs(q.x - x) > 2.6 || x < 0.0 {
+        return NONE
+    }
+    date_palm(q, vec2(x, beyond_ground(x)), 3.6 + 2.0 * h, h * 2.0)
+}
+
+/// The coast's icy crag in its 3.5 m cell `i`, taller further on; a penguin on its peak now and
+/// then.
+fn crag(q: vec2, i: f32) -> (f32, vec3) {
+    let x = (i + 0.5) * 3.5
+    let h = hash2(i32(i), 53)
+    let tall = (1.6 + 3.0 * h) * polar(x)
+    if tall < 0.3 {
+        return NONE
+    }
+    let w = 1.5 + 0.7 * hash2(i32(i), 55)
+    let peak = (h - 0.5) * w * 0.8
+    let foot = vec2(x, beyond_ground(x) - 0.3)
+    let best = ice_crag(q, foot.x, foot.y, tall, w, peak)
+    if hash2(i32(i), 54) >= 0.2 || tall < 2.2 {
+        return best
+    }
+    let dir = if h < 0.5 { 1.0 } else { -1.0 }
+    over(best, penguin((q - foot - vec2(peak, tall - 0.42)) * vec2(dir, 1.0)))
+}
+
+/// How far above the house's garden wall `q` is (below 0 on it), the ground at `ground`: its top
+/// 1 m up, and a pilaster every 12 m standing a little proud of it.
+fn wall_at(q: vec2, ground: f32) -> f32 {
+    let top = q.y - (ground + 1.0)
+    let off = abs(q.x - (floor(q.x / 12.0) + 0.5) * 12.0)
+    min(top, max(top - 0.45, off - 0.6))
+}
+
+/// The house's garden wall's colour at `q`, the ground at `ground`: sandstone blocks under a
+/// terracotta coping, on the pilasters too.
+fn garden_wall(q: vec2, ground: f32) -> vec3 {
+    let row = floor(q.y / 0.45)
+    let block = abs(fract(q.x / 1.5 + row * 0.5) - 0.5) * 1.5
+    let joint = min(block, abs(fract(q.y / 0.45) - 0.5) * 0.45)
+    let up = q.y - ground
+    if up > 0.86 && up < 1.0 || up > 1.31 { vec3(0.82, 0.5, 0.36) } else if joint > 0.03 {
+        vec3(0.92, 0.74, 0.54)
+    } else { vec3(0.74, 0.56, 0.42) }
+}
+
+// ---- the far hills ---------------------------------------------------------------------------
+
+/// Warm, hazy desert mesas, flat-topped with banded faces, under a far pale ridge; ahead, the
+/// ridge rises into the Polar Coast's icy peaks and the mesas give way.
+fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[3])
+    let px = pixel_on(v, PARALLAX[3])
+    if q.y > 8.0 {
+        return vec4(0.0)
+    }
+    let ice = smoothstep(25.0, 60.0, q.x)
+    let soft = 2.0 + 3.0 * fbm(vec2(q.x * 0.04, 3.0), 2)
+    let peaks = 2.0 + 5.0 * (1.0 - abs(fbm(vec2(q.x * 0.07, 6.0), 2) * 2.0 - 1.0))
+    let ridge = soft + (peaks - soft) * ice
+    // Mesas, one in a cell now and then: a flat top on cliffs over a skirt of scree, on low
+    // rolling hills; the cliff that faces away from the sun shaded.
+    var b = q.y - 0.8 - 0.6 * fbm(vec2(q.x * 0.2, 4.0), 2)
+    var away = false
+    let cell = floor(q.x / 20.0)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let x = (i + 0.3 + 0.4 * hash2(i32(i), 91)) * 20.0
+        if hash2(i32(i), 92) < 0.7 * (1.0 - ice) {
+            let w = 2.5 + 3.5 * hash2(i32(i), 93)
+            let dx = q.x - x
+            let cliff = abs(dx) - w + (q.y - 1.0) * 0.15
+            let block = max(q.y - 2.8 - 1.6 * hash2(i32(i), 94), cliff)
+            let scree = (q.y - 0.9 - 1.0 * smoothstep(w + 2.4, w - 0.2, abs(dx))) * 0.7
+            let d = min(block, scree)
+            if d < b {
+                b = d
+                away = block < scree && dx < 1.2 - w
+            }
+        }
+    }
+    let a = q.y - ridge
+    if b < 0.0 || b < a {
+        let band = if fract(q.y * 1.6) < 0.12 && b < -0.1 { 0.93 } else { 1.0 }
+        let rock = if away { vec3(0.78, 0.56, 0.46) } else { vec3(0.9, 0.66, 0.46) }
+        paint(g, gs, b, rock * band, q, px, haze: 0.38, line: 0.6)
+    } else {
+        let snow = blend(vec3(0.9, 0.76, 0.7), vec3(0.88, 0.93, 0.97), ice)
+        paint(g, gs, a, snow, q, px, haze: 0.6, line: 0.6)
+    }
 }
