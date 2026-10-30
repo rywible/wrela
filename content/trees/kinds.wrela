@@ -1687,6 +1687,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Place
                     tint: tint,
                 )
                 p.at.thick = thickness(t, k)
+                p.at.history = history(t, present)
                 out.push(p)
             }
         } else if t.state == State::Snag {
@@ -1710,6 +1711,17 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Place
         }
     }
     out
+}
+
+/// A living tree's history (`engine::substance::history_of`, as its instance holds it): its age
+/// as a share of its species' lifespan in the year `present`, its crown's light and its vigour.
+/// Its ground's wetness isn't in its record: 0 (the ground's own is the ground's,
+/// `engine::terrain`).
+fn history(t: Tree, present: i32) -> std::gpu::Unorm8x4 {
+    let h = HABITS[t.kind]
+    std::gpu::Unorm8x4::encode(
+        engine::substance::history_of(f32(present - t.born), h.lifespan, t.light, 0.0, t.vigour),
+    )
 }
 
 /// Each kind's plant.

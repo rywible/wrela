@@ -20,7 +20,8 @@
 
 use std::mem::size_of
 use switches::Switches
-use style::Style
+use style::{Style, substance_of}
+use substance
 use light::Lit
 use sim::Hit
 use noise::{hash2, noise2_wrapped, wrapped}
@@ -1093,6 +1094,29 @@ fn ground_from(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec3
     (normalize(n), c.rgb * c.rgb, h)
 }
 
+/// The ground's normal at `xz` with what's finer than `scale` metres left out: the first level
+/// from `from` whose cells are at least that wide (the coarsest if none is), between its texels.
+fn normal_at_scale(levels: Levels, texels: [Texel], from: u32, xz: vec2, scale: f32) -> vec3 {
+    var l = from
+    while l + 1 < levels.count && levels.at[l].z < scale {
+        l += 1
+    }
+    let (n, _, _) = level_cover(levels, texels, l, xz)
+    normalize(n)
+}
+
+/// The ground's history at `xz` (`substance::Substance::history`), from the habitat level `l`
+/// holds there (`Cover::flora`): no age, its light, its wetness, and its wear as its stress.
+fn ground_history(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> vec4 {
+    let (at, f) = level_cell(levels, l, xz)
+    let flora = mix(
+        mix(texels[at.x].flora.decode(), texels[at.y].flora.decode(), vec4(f.x)),
+        mix(texels[at.z].flora.decode(), texels[at.w].flora.decode(), vec4(f.x)),
+        vec4(f.y),
+    )
+    vec4(0.0, flora.z, flora.y, flora.w)
+}
+
 /// Level `l`'s normal, cover and height at `xz`, between its texels (bilinear).
 fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4, f32) {
     let (at, f) = level_cell(levels, l, xz)
@@ -1276,7 +1300,7 @@ pub fn ground_shade<Q: Switches, Y: Style>(
     rock: Texture<Rgba8>,
     moss: Texture<Rgba8>,
     ds: Sampler,
-) -> vec4 {
+) -> Y::Out {
     // The level it's drawn from, found once for its cover and its materials.
     let level = level_at(lt.levels, g.world.xz)
     let (n, coarse, _) = ground_from(lt.levels, texels, level, g.world.xz)
@@ -1313,7 +1337,19 @@ pub fn ground_shade<Q: Switches, Y: Style>(
     let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, n, soft: 2.0)
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
     let c = lit::shown(lt, l, g.world)
-    vec4(c, view::GROUND)
+    let colour = vec4(c, view::GROUND)
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else {
+        let sc = substance::scales(foot)
+        substance_of::<Y>(
+            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.x),
+            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.y),
+            ground_history(lt.levels, texels, level, g.world.xz),
+            albedo,
+        )
+    }
+    Y::written(colour, s)
 }
 
 // ---- the ground's detail -------------------------------------------------------------------

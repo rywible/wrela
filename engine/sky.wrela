@@ -20,6 +20,7 @@
 // half a texel at 5 km) while a tile waits its turn.
 
 use std::mem::size_of
+use style::Style
 use air::{ALTITUDE, Air, BOTTOM, Tables, aerial_uvw, irradiance, radius_of, transmittance}
 use light::{Light, sky, sun_disc}
 use noise::{fbm2, hash3, wrapped}
@@ -776,16 +777,16 @@ pub fn clouded_sky(
 /// The sky's pixel: where nothing else was drawn, the sky and its clouds. Its tag is 0 (the
 /// sky's class), with the clouds' cover below 1 (`view::class_of` reads 0).
 @fragment
-pub fn sky_shade(
+pub fn sky_shade<Y: Style>(
     pixel: FragCoord,
     cam: Camera,
     light: Light,
     view: Texture<Rgba16Float>,
     dome: Texture<Rgba16Float>,
     s: Sampler,
-) -> vec4 {
+) -> Y::Out {
     let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), dome, s)
-    vec4(c.rgb, c.a * 0.99)
+    Y::written(vec4(c.rgb, c.a * 0.99), substance::NONE)
 }
 
 // ---- the clouds on the GPU ----------------------------------------------------------------------

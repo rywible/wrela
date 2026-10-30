@@ -13,7 +13,8 @@ use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use switches::Switches
-use style::Style
+use style::{Style, substance_of}
+use substance
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
 use realize::{Mesh, Room, SkinVertex, Tally, realize_rigid, solid}
@@ -580,7 +581,7 @@ pub fn stone_shade<Q: Switches, Y: Style>(
     pixel: FragCoord,
     lt: Lighting<Q, Y>,
     coverage: vec2 = vec2(0.0, 1.0),
-) -> vec4 {
+) -> Y::Out {
     if !coverage_kept(coverage, pixel.position.xy, lt.cam.frame) {
         discard()
     }
@@ -588,7 +589,7 @@ pub fn stone_shade<Q: Switches, Y: Style>(
 }
 
 /// Stone `s` lit by `lt`'s light, darker where it meets the ground.
-pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> vec4 {
+pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> Y::Out {
     let n = normalize(s.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
@@ -604,7 +605,12 @@ pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> v
         glint: 1.0,
     }
     let c = shown(lt, lit, s.world)
-    vec4(c, ROCK + f32(s.seed.value % 63))
+    // A stone's form is its mesh's (realized from its field), its own coarse form; it has no
+    // history.
+    let sub = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else { substance_of::<Y>(n, n, vec4(0.0), s.albedo) }
+    Y::written(vec4(c, ROCK + f32(s.seed.value % 63)), sub)
 }
 
 // ---- bedrock: a bed of rock as a solid ------------------------------------------------------------
@@ -1287,7 +1293,7 @@ pub fn rock_shade<Q: Switches, Y: Style>(
     lt: Lighting<Q, Y>,
     origin: vec3,
     grain: vec4,
-) -> vec4 {
+) -> Y::Out {
     let w = s.world + origin
     let broad = noise3(w * 0.04 + vec3(3.0, 7.0, 1.0))
     let streak = noise3(vec3(w.x * 0.35, w.y * 0.025, w.z * 0.35))

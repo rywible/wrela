@@ -34,8 +34,9 @@ use grow::Tree
 use place::TILE
 use std::collections::replace
 use std::gpu::{
-    DrawArgs, GpuBuffer, Rgba8, Sampler, Texture, begin_pass, begin_pass_with_depth, buffer,
-    buffer_of, draw_multi, label, texture, write,
+    DrawArgs, GpuBuffer, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_pass,
+    begin_pass4_with_depth, begin_pass_with_depth, buffer, buffer_of, draw_multi, label, texture,
+    write,
 }
 use std::io::{Pending, print}
 use stream::{near_tile_radius, tile_distance, tile_radius}
@@ -1524,21 +1525,47 @@ pub fn draw_water<T: Tiles, Q: Switches, Y: Style>(
     if !args.is_empty() {
         let n = args.len()
         write(mut s.water_args, 0, take args)
-        let wp = begin_pass_with_depth(mut t.scene, mut t.depth, keep: true, keep_depth: true)
-        draw_multi(
-            wp,
-            water_vertex.bind(verts: s.water_verts.items(), tris: s.water_tris.items(), cam: cam),
-            water_shade.bind(
-                fx.lt,
-                below: t.below,
-                view: fx.view,
-                dome: fx.dome,
-                look: LOOKS[s.water_look],
-            ),
-            indirect: s.water_args.items(),
-            count: n,
-            depth: NEAREST,
-        )
-        wp.end()
+        // Into the substance's targets too, where the look reads them (`engine::substance`).
+        if Y::SUBSTANCE != 0 {
+            let wp = begin_pass4_with_depth(
+                mut t.scene,
+                mut t.form,
+                mut t.cause,
+                mut t.tone,
+                mut t.depth,
+                keep: true,
+                keep_depth: true,
+            )
+            water_into(wp, s, t.below, fx, n)
+            wp.end()
+        } else {
+            let wp = begin_pass_with_depth(mut t.scene, mut t.depth, keep: true, keep_depth: true)
+            water_into(wp, s, t.below, fx, n)
+            wp.end()
+        }
     }
+}
+
+/// The water's `n` draws (`water_args`) into `p`, over `below`, the scene under it.
+fn water_into<P: RenderPass, T: Tiles, Q: Switches, Y: Style>(
+    p: P,
+    s: Landscape<T>,
+    below: Texture<Rgba16Float>,
+    fx: Effects<Q, Y>,
+    n: u32,
+) {
+    draw_multi(
+        p,
+        water_vertex.bind(verts: s.water_verts.items(), tris: s.water_tris.items(), cam: fx.lt.cam),
+        water_shade.bind(
+            fx.lt,
+            below: below,
+            view: fx.view,
+            dome: fx.dome,
+            look: LOOKS[s.water_look],
+        ),
+        indirect: s.water_args.items(),
+        count: n,
+        depth: NEAREST,
+    )
 }

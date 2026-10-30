@@ -4,12 +4,20 @@
 use engine::light::{Light, Lit, tone}
 use engine::paint::{Develop, Exposure, graded, hdr_tone}
 use engine::style::Style
+use engine::substance::Substance
 use std::gpu::{Rgba8, Sampler, Texture3d}
 
 /// The physical look (`engine::style::Style`): every constant 0.
 pub struct Physical {}
 
 impl Style for Physical {
+    /// The scene's colour alone: it reads no substance.
+    type Out = vec4
+
+    fn written(colour: vec4, s: Substance) -> vec4 {
+        colour
+    }
+
     /// The light's sum (`light::world`): the matte light and the gloss.
     fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
         engine::light::world(light, lit, world, eye)

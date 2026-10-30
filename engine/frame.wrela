@@ -44,6 +44,7 @@ use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use switches::Switches
 use style::Style
+use substance
 use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
 use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
@@ -53,10 +54,11 @@ use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, Blend, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, Half2, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass,
-    Texture, Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
-    begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler, depth_texture,
-    dispatch, draw, draw_multi, label, memory, sampler, texture, timed, writable_texture, copy,
+    GpuSpan, Half2, R32Float, R32Uint, R8, RenderPass, Rg32Uint, Rgba16Float, Rgba8, Sampler,
+    ScreenPass, Texture, Texture3d, VertexIndex, begin_depth_pass, begin_pass,
+    begin_pass2_with_depth, begin_pass4_with_depth, begin_pass_with_depth, begin_screen_pass,
+    buffer, buffer_of, comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, memory,
+    sampler, texture, timed, writable_texture, copy,
 }
 use std::io::{Pending, print}
 use std::time::phase
@@ -351,6 +353,13 @@ pub struct Targets {
     pub bloom_2: Texture<Rgba16Float>,
     pub bloom_3: Texture<Rgba16Float>,
     pub bloom_4: Texture<Rgba16Float>,
+    /// The substance a look reads after the shading passes (`substance`): the scene's size where
+    /// its look reads it (`style::Style::SUBSTANCE`), the shape half that (`substance::shaped`),
+    /// else a texel each.
+    pub form: Texture<Rg32Uint>,
+    pub shape: Texture<Rg32Uint>,
+    pub cause: Texture<R32Uint>,
+    pub tone: Texture<R32Uint>,
 }
 
 /// Targets of a texel each, before the first frame sizes them.
@@ -370,12 +379,18 @@ fn no_targets() -> Targets {
         bloom_2: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_3: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_4: texture::<Rgba16Float>(width: 1, height: 1),
+        form: texture::<Rg32Uint>(width: 1, height: 1),
+        shape: writable_texture::<Rg32Uint>(width: 1, height: 1),
+        cause: texture::<R32Uint>(width: 1, height: 1),
+        tone: texture::<R32Uint>(width: 1, height: 1),
     }
 }
 
 /// Targets for an output of `width` × `height`, the scene's `w` × `h` (`effects`: whether the
-/// scene draws over itself, whose targets every frame has now: the dabs share the water's).
-fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Targets {
+/// scene draws over itself, whose targets every frame has now: the dabs share the water's), with
+/// the substance's at the scene's size if `substance`.
+fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool, substance: bool) -> Targets {
+    let (sw, sh) = if substance { (w, h) } else { (1, 1) }
     Targets {
         scene: texture::<Rgba16Float>(width: w, height: h),
         scene_b: texture::<Rgba16Float>(width: w, height: h),
@@ -391,6 +406,10 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
         bloom_2: bloom_of(width, height, level: 2),
         bloom_3: bloom_of(width, height, level: 3),
         bloom_4: bloom_of(width, height, level: 4),
+        form: texture::<Rg32Uint>(width: sw, height: sh),
+        shape: writable_texture::<Rg32Uint>(width: (sw + 1) / 2, height: (sh + 1) / 2),
+        cause: texture::<R32Uint>(width: sw, height: sh),
+        tone: texture::<R32Uint>(width: sw, height: sh),
     }
 }
 
@@ -409,7 +428,73 @@ impl Targets {
             h(self.bloom_2) +
             h(self.bloom_3) +
             h(self.bloom_4)
-        n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3
+        let substance = memory::texels(self.form.width(), self.form.height(), 8) +
+            memory::texels(self.shape.width(), self.shape.height(), 8) +
+            memory::texels(self.cause.width(), self.cause.height(), 4) * 2
+        n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3 + substance
+    }
+}
+
+/// The ground's sides into `p` (the terrain pass), as the clipmap chose them (`cull`).
+fn ground_into<P: RenderPass, Q: Switches, Y: Style>(
+    p: P,
+    cam: Camera,
+    lt: Lighting<Q, Y>,
+    texels: GpuSpan<Texel>,
+    clipmap: Clipmap,
+) {
+    draw_multi(
+        p,
+        ground.bind(cam, lt.levels, texels),
+        ground_shade.bind(
+            lt,
+            texels,
+            litter: clipmap.details.litter,
+            soil: clipmap.details.soil,
+            rock: clipmap.details.rock,
+            moss: clipmap.details.moss,
+            ds: clipmap.details.s,
+        ),
+        indices: clipmap.indices(),
+        indirect: clipmap.sides_args(),
+        count: lt.levels.count * SIDES,
+        depth: NEAREST,
+    )
+}
+
+/// The sky's pixels into `p`, where nothing was drawn: through the froxels' air if `Q::FOG`
+/// (`fog::sky_fogged`), else as it is (`sky::sky_shade`), `view` the sky's table and `dome` its
+/// clouds.
+fn sky_into<P: RenderPass, Q: Switches, Y: Style>(
+    p: P,
+    lt: Lighting<Q, Y>,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+) {
+    if Q::FOG {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            sky_fogged::<Y>.bind(
+                lt.cam,
+                lt.light,
+                view,
+                dome,
+                s: lt.s,
+                fog: lt.fog,
+                fogged: lt.fogged,
+            ),
+            vertices: 3,
+            depth: BEHIND,
+        )
+    } else {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            sky_shade::<Y>.bind(lt.cam, lt.light, view, dome, s: lt.s),
+            vertices: 3,
+            depth: BEHIND,
+        )
     }
 }
 
@@ -1635,7 +1720,14 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         let scale = if self.debug.plain || !scaled { 1.0 } else { self.quality.scale * paced }
         let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
-            self.targets = targets_for(width, height, w, h, scene.has_effects())
+            self.targets = targets_for(
+                width,
+                height,
+                w,
+                h,
+                scene.has_effects(),
+                substance: Y::SUBSTANCE != 0,
+            )
             self.pyramid = Pyramid::new(width: w, height: h)
             self.ambient = Occlusion::new(width: w, height: h)
             let cq = self.quality.cascades
@@ -2616,53 +2708,84 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         scene.prepass(pre, cam, wind, self.linear)
         pre.end()
         scene.after_prepass(mut self.targets, cam, wind, self.linear)
+        // The shading passes write the scene's colour, and the substance's three beside it where
+        // the look reads them (`substance`, `style::Style::SUBSTANCE`): its fragments' `Out`.
         label("vegetation")
-        let veg = begin_pass_with_depth(
-            mut self.targets.scene,
-            mut self.targets.depth,
-            clear: vec4(0.0),
-            keep_depth: true,
-        )
-        scene.shade(veg, lt, wind, self.targets.ids)
-        veg.end()
+        if Y::SUBSTANCE != 0 {
+            let veg = begin_pass4_with_depth(
+                mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
+                mut self.targets.depth,
+                clear: vec4(0.0),
+                keep_depth: true,
+            )
+            scene.shade(veg, lt, wind, self.targets.ids)
+            veg.end()
+        } else {
+            let veg = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                clear: vec4(0.0),
+                keep_depth: true,
+            )
+            scene.shade(veg, lt, wind, self.targets.ids)
+            veg.end()
+        }
         let terrain = self.on(Off::Terrain)
         label("terrain")
-        let ter = begin_pass_with_depth(
-            mut self.targets.scene,
-            mut self.targets.depth,
-            keep: true,
-            keep_depth: true,
-        )
-        if terrain {
-            draw_multi(
-                ter,
-                ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(
-                    lt,
-                    texels,
-                    litter: self.clipmap.details.litter,
-                    soil: self.clipmap.details.soil,
-                    rock: self.clipmap.details.rock,
-                    moss: self.clipmap.details.moss,
-                    ds: self.clipmap.details.s,
-                ),
-                indices: self.clipmap.indices(),
-                indirect: self.clipmap.sides_args(),
-                count: lt.levels.count * SIDES,
-                depth: NEAREST,
+        if Y::SUBSTANCE != 0 {
+            let ter = begin_pass4_with_depth(
+                mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
             )
+            if terrain {
+                ground_into(ter, cam, lt, texels, self.clipmap)
+            }
+            ter.end()
+        } else {
+            let ter = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+            )
+            if terrain {
+                ground_into(ter, cam, lt, texels, self.clipmap)
+            }
+            ter.end()
         }
-        ter.end()
         label("creature")
-        let cr = begin_pass_with_depth(
-            mut self.targets.scene,
-            mut self.targets.depth,
-            keep: true,
-            keep_depth: true,
-            join: true,
-        )
-        scene.characters(cr, lt)
-        cr.end()
+        if Y::SUBSTANCE != 0 {
+            let cr = begin_pass4_with_depth(
+                mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+                join: true,
+            )
+            scene.characters(cr, lt)
+            cr.end()
+        } else {
+            let cr = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+                join: true,
+            )
+            scene.characters(cr, lt)
+            cr.end()
+        }
         // The second phase (`cull`): this frame's pyramid from the opaque passes' depth, what the
         // first phase left out tested against it, and what it reveals drawn now.
         let late = Q::OCCLUSION && scene.reveals()
@@ -2679,61 +2802,62 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             )
             scene.late_prepass(lp, cam, wind, self.linear)
             lp.end()
-            let ls = begin_pass_with_depth(
-                mut self.targets.scene,
-                mut self.targets.depth,
-                keep: true,
-                keep_depth: true,
-            )
-            scene.late_shade(ls, lt, wind, self.targets.ids)
-            ls.end()
+            if Y::SUBSTANCE != 0 {
+                let ls = begin_pass4_with_depth(
+                    mut self.targets.scene,
+                    mut self.targets.form,
+                    mut self.targets.cause,
+                    mut self.targets.tone,
+                    mut self.targets.depth,
+                    keep: true,
+                    keep_depth: true,
+                )
+                scene.late_shade(ls, lt, wind, self.targets.ids)
+                ls.end()
+            } else {
+                let ls = begin_pass_with_depth(
+                    mut self.targets.scene,
+                    mut self.targets.depth,
+                    keep: true,
+                    keep_depth: true,
+                )
+                scene.late_shade(ls, lt, wind, self.targets.ids)
+                ls.end()
+            }
         } else {
             self.pyramid.at.on = 0
         }
         // The sky joins the pass before it (the creature pass, or the late shading), where nothing
         // was drawn (its depth doesn't change).
         label("sky")
-        let sky = begin_pass_with_depth(
-            mut self.targets.scene,
-            mut self.targets.depth,
-            keep: true,
-            keep_depth: true,
-            join: true,
-        )
-        if !scene.sky_instead(sky) {
-            if Q::FOG {
-                draw(
-                    sky,
-                    full.bind(z: 0.0),
-                    sky_fogged.bind(
-                        cam,
-                        self.light,
-                        view: self.tables.view,
-                        dome: self.sky.dome,
-                        s: self.linear,
-                        fog: self.fog.grid,
-                        fogged: self.fog.lit,
-                    ),
-                    vertices: 3,
-                    depth: BEHIND,
-                )
-            } else {
-                draw(
-                    sky,
-                    full.bind(z: 0.0),
-                    sky_shade.bind(
-                        cam,
-                        self.light,
-                        view: self.tables.view,
-                        dome: self.sky.dome,
-                        s: self.linear,
-                    ),
-                    vertices: 3,
-                    depth: BEHIND,
-                )
+        if Y::SUBSTANCE != 0 {
+            let sky = begin_pass4_with_depth(
+                mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+                join: true,
+            )
+            if !scene.sky_instead(sky) {
+                sky_into(sky, lt, self.tables.view, self.sky.dome)
             }
+            sky.end()
+        } else {
+            let sky = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+                join: true,
+            )
+            if !scene.sky_instead(sky) {
+                sky_into(sky, lt, self.tables.view, self.sky.dome)
+            }
+            sky.end()
         }
-        sky.end()
         // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was),
         // for the next frame's shading (its slices still in plain rendering, which has no history
         // to gather them); or the radiance cascades' light, in its place.
@@ -2773,6 +2897,21 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             time: self.time,
         }
         scene.effects(mut self.targets, fx)
+        // The form's shape, from the form and the depth the passes left (`substance::shaped`).
+        if (Y::SUBSTANCE & substance::FORM) != 0 {
+            label("shape")
+            let size = vec2u(self.targets.depth.width(), self.targets.depth.height())
+            dispatch(
+                substance::shaped.bind(
+                    form: self.targets.form,
+                    depth: self.targets.depth,
+                    cam: cam,
+                    size: size,
+                    out: mut self.targets.shape,
+                ),
+                over: ((size.x + 1) / 2, (size.y + 1) / 2),
+            )
+        }
         // The see-through matter, over the scene drawn so far (`particles`): the particles the
         // scene emits moved and sorted; dithered veils into the scene; or the veils (weighted)
         // and the particles into their targets, and laid over the scene.

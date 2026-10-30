@@ -1,0 +1,270 @@
+// The substance (engine::substance, docs/plan-world-class-3.md §D1): CPU tests of its packing, a
+// field's form and shape, the physical look's light and a tree's history; and a tool test that
+// builds the frame fixture (engine/tests/frame) in each look and reads its pipelines' target bytes.
+
+use engine::light::{Light, Lit, world}
+use engine::noise::rand
+use engine::style::Style
+use engine::substance
+use engine::substance::{field_shape, history_of, screen_shape}
+use hosts::steps::{built, text_of}
+use std::derive::gradient
+use std::field::{Surface, sphere}
+use std::io::print
+use std::json::{Doc, TOP, parse}
+use std::tool::toolchain
+use std::tool::toolchain::{Override, Set}
+use styles::physical::Physical
+use trees::species::{HABITS, Species}
+
+/// A unit vector from two numbers in [0, 1).
+fn unit(a: f32, b: f32) -> vec3 {
+    let z = 2.0 * a - 1.0
+    let r = sqrt(max(1.0 - z * z, 0.0))
+    let t = 6.2831853 * b
+    vec3(r * cos(t), r * sin(t), z)
+}
+
+/// The angle between two unit vectors, in degrees.
+fn degrees(a: vec3, b: vec3) -> f32 {
+    acos(clamp(dot(a, b), -1.0, 1.0)) * 57.29578
+}
+
+/// Each target's packing gives back what it packed, within its precision: the form's normals
+/// (16-bit octahedral: under 0.05°), the direction (8-bit: under 1.5°), the curvatures (half
+/// floats: 2⁻¹¹ relatively), the history's bytes and the tone's (sRGB bytes: within 1/255 of the
+/// curve's value).
+@test
+fn each_channel_round_trips_within_its_precision() {
+    var worst_form = 0.0
+    var worst_dir = 0.0
+    for k in 0..1000 {
+        let a = unit(rand(k, 1), rand(k, 2))
+        let b = unit(rand(k, 3), rand(k, 4))
+        let (fa, fb) = substance::unpack_form(substance::pack_form(a, b))
+        worst_form = max(worst_form, max(degrees(a, fa), degrees(b, fb)))
+        let k1 = (rand(k, 5) - 0.5) * 40.0
+        let k2 = (rand(k, 6) - 0.5) * 4.0
+        let (d, g1, g2) = substance::unpack_shape(substance::pack_shape(a, k1, k2))
+        worst_dir = max(worst_dir, degrees(a, d))
+        assert(abs(g1 - k1) <= abs(k1) * 0.001 + 1.0e-6, f"k1 {k1} came back {g1}")
+        assert(abs(g2 - k2) <= abs(k2) * 0.001 + 1.0e-6, f"k2 {k2} came back {g2}")
+        let h = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(k, 10))
+        let hb = substance::unpack_cause(substance::pack_cause(h))
+        assert(length(hb - h) < 0.5 / 255.0 * 2.0 + 1.0e-6, f"history {h} came back {hb}")
+        let c = vec3(rand(k, 11), rand(k, 12), rand(k, 13))
+        let (cb, flat) = substance::unpack_tone(substance::pack_tone(c, 1.0))
+        let ok = abs(cb.x - c.x) < 0.01 && abs(cb.y - c.y) < 0.01 && abs(cb.z - c.z) < 0.01
+        assert(ok && flat == 1.0, f"tone {c} came back {cb}, flat {flat}")
+    }
+    print(f"the form's normals within {worst_form}°, the direction within {worst_dir}°")
+    assert(worst_form < 0.05, f"a form's normal off by {worst_form}°")
+    assert(worst_dir < 1.5, f"a direction off by {worst_dir}°")
+}
+
+/// A sphere of radius `R` and its bumps: `AMP` high, `WAVE` metres across.
+const R: f32 = 2.0
+const AMP: f32 = 0.002
+const WAVE: f32 = 0.05
+
+/// The bumpy sphere at scale `s` (its field's `at_scale`): its bumps where they're wider than `s`,
+/// none where they're finer.
+fn bumpy(p: vec3, s: f32) -> f32 {
+    let bumps = if WAVE > s {
+        AMP * sin(p.x * 6.2831853 / WAVE) * sin(p.y * 6.2831853 / WAVE)
+    } else {
+        0.0
+    }
+    length(p) - R + bumps
+}
+
+/// A cylinder round y of radius `r`, as a surface.
+struct Cylinder: Copy + GpuData {
+    r: f32,
+}
+
+impl Surface for Cylinder {
+    fn distance(self, p: vec3) -> f32 {
+        length(p.xz) - self.r
+    }
+}
+
+/// A sphere's form normal is its fine one (it has no detail to leave out); a bumpy sphere's form
+/// (at a scale coarser than its bumps) is within 2° of the smooth sphere's, though its fine normal
+/// isn't; and the form's curvatures are the sphere's 1/r within 5 %, from the field's nested
+/// gradients and from the change of its normal across a pixel.
+@test
+fn a_spheres_form_and_shape_are_its_own() {
+    var worst_bump = 0.0
+    var worst_fine = 0.0
+    for k in 0..200 {
+        let p = unit(rand(k, 21), rand(k, 22)) * R
+        let smooth = normalize(gradient(|q: vec3| length(q) - R, p))
+        assert(degrees(smooth, normalize(p)) < 1.0e-3, "the sphere's form normal is its own")
+        let fine = normalize(gradient(|q: vec3| bumpy(q, 0.0), p))
+        let form = normalize(gradient(|q: vec3| bumpy(q, 0.4), p))
+        worst_bump = max(worst_bump, degrees(form, smooth))
+        worst_fine = max(worst_fine, degrees(fine, smooth))
+        let sh = field_shape(sphere(R), p)
+        assert(
+            abs(sh.k1 * R - 1.0) < 0.05 && abs(sh.k2 * R - 1.0) < 0.05,
+            f"the field's k {sh.k1}, {sh.k2}",
+        )
+        // A pixel's change across a sphere: its point moves `dx`, `dy` in the surface, its normal
+        // by those over r.
+        let (t1, t2) = substance::tangents(normalize(p))
+        let dx = t1 * 0.01 + t2 * 0.003
+        let dy = t2 * 0.012 - t1 * 0.002
+        let ss = screen_shape(normalize(p), dx, dy, dx / R, dy / R)
+        assert(
+            abs(ss.k1 * R - 1.0) < 0.05 && abs(ss.k2 * R - 1.0) < 0.05,
+            f"the screen's k {ss.k1}, {ss.k2}",
+        )
+    }
+    print(
+        f"the bumpy sphere's form within {worst_bump}° of the smooth one's; its fine normal {worst_fine}°",
+    )
+    assert(worst_bump < 2.0, f"the form is {worst_bump}° off")
+    assert(worst_fine > 2.0, "the bumps don't show in the fine normal")
+}
+
+/// A cylinder's curvatures: 1/r round it, none along it, `k1`'s direction round it.
+@test
+fn a_cylinders_shape_is_round_one_way() {
+    let r = 0.5
+    let p = vec3(r, 0.3, 0.0)
+    let sh = field_shape(Cylinder { r }, p)
+    assert(abs(sh.k1 * r - 1.0) < 0.05 && abs(sh.k2) < 0.05, f"k {sh.k1}, {sh.k2}")
+    assert(abs(sh.dir.y) < 0.05, f"k1's direction {sh.dir} isn't round it")
+}
+
+/// The physical look's light (`Physical::shade`) is the light's own sum (`light::world`) to the
+/// bit, on 1,000 random surfaces: the terms a look's `shade` takes are summed as before.
+@test
+fn the_physical_looks_light_is_the_lights_own_sum() {
+    for k in 0..1000 {
+        let light = Light {
+            sun: unit(rand(k, 31), rand(k, 32)),
+            exposure: 1.0,
+            sun_colour: vec3(rand(k, 33), rand(k, 34), rand(k, 35)) * 4.0,
+            eye: 1.0,
+            horizon: 0.0,
+        }
+        let lit = Lit {
+            albedo: vec3(rand(k, 36), rand(k, 37), rand(k, 38)),
+            n: unit(rand(k, 39), rand(k, 40)),
+            sun: rand(k, 41),
+            sky: vec3(rand(k, 42), rand(k, 43), rand(k, 44)),
+            through: vec3(rand(k, 45)) * 0.2,
+            rough: rand(k, 46),
+            metallic: if rand(k, 47) > 0.8 { 1.0 } else { 0.0 },
+            reflected: vec3(rand(k, 48)),
+            glint: rand(k, 49),
+            sheen: if rand(k, 50) > 0.7 { rand(k, 51) } else { 0.0 },
+        }
+        let at = vec3(rand(k, 52), rand(k, 53), rand(k, 54)) * 10.0
+        let eye = at + unit(rand(k, 55), rand(k, 56)) * 5.0
+        let a = Physical::shade(light, lit, at, eye)
+        let b = world(light, lit, at, eye)
+        assert(
+            bitcast_u32(a.x) == bitcast_u32(b.x) &&
+                bitcast_u32(a.y) == bitcast_u32(b.y) &&
+                bitcast_u32(a.z) == bitcast_u32(b.z),
+            f"surface {k}: {a} against {b}",
+        )
+    }
+}
+
+/// A 200-year-old oak's history reads its age as its share of an oak's lifespan, within a byte.
+@test
+fn an_old_oaks_history_reads_its_age() {
+    let life = HABITS[Species::Oak].lifespan
+    let h = std::gpu::Unorm8x4::encode(
+        history_of(200.0, life, light: 0.6, wet: 0.1, vigour: 0.8),
+    ).decode()
+    print(
+        f"a 200-year oak of a {life}-year species: age {h.x}, light {h.y}, wet {h.z}, stress {h.w}",
+    )
+    assert(abs(h.x - 200.0 / life) < 1.0 / 255.0, f"its age reads {h.x}")
+    assert(abs(h.w - 0.2) < 1.0 / 255.0, f"its stress reads {h.w}")
+}
+
+// ---- every look's targets --------------------------------------------------------------------
+
+/// The looks whose targets are checked: the physical one, and the measuring fixtures'.
+const LOOKS: [Text; 2] = ["styles::physical::Physical", "styles::fixtures::Every"]
+
+/// The text of `key` of object `n`, or empty.
+fn text_at(d: Doc, n: u32, key: str) -> String {
+    match d.get(n, key) {
+        Some(v) => match d.text(v) {
+            Some(t) => t,
+            None => String::new(),
+        },
+        None => String::new(),
+    }
+}
+
+/// A colour target's bytes a sample as WebGPU costs it (its render-target cost, not its texel's
+/// size: `rgba8unorm` costs 8), for the formats the frame draws into.
+fn target_cost(format: str) -> u32 {
+    match format {
+        "rgba16float" | "rg32uint" | "rgba8unorm" | "rg32float" => 8,
+        "r32uint" | "r32float" | "rg16float" => 4,
+        "r16float" | "rg8unorm" => 2,
+        "r8unorm" => 1,
+        "rgba32float" => 16,
+        _ => panic(f"a target of {format}, whose cost the test doesn't know"),
+    }
+}
+
+/// The frame fixture built in look `look`: its render pipelines' most attachment bytes, and the
+/// shading pass's (the ground's), from its manifest's targets.
+fn attachment_bytes(look: str, out: str) -> (u32, u32) {
+    var options = toolchain::options()
+    options.overrides = Vec::from(
+        [
+            Override { name: String::from("engine"), dir: String::from("repo/engine") },
+            Override { name: String::from("styles"), dir: String::from("repo/content/styles") },
+        ],
+    )
+    options.set = Vec::from([Set { name: String::from("LOOK"), value: String::from(look) }])
+    built("repo/engine/tests/frame", out, options, "the fixture builds")
+    let manifest = text_of(f"{out}/manifest.json")
+    let Some(d) = parse(manifest.as_str()) else { panic("the manifest is JSON") }
+    let Some(list) = d.get(TOP, "pipelines") else { panic("the manifest's pipelines") }
+    var most = 0
+    var ground = 0
+    for k in 0..d.count(list) {
+        let Some(p) = d.at(list, k) else { continue }
+        if text_at(d, p, "kind").as_str() != "render" {
+            continue
+        }
+        let Some(ts) = d.get(p, "targets") else { continue }
+        let Some(t) = d.at(ts, 0) else { continue }
+        let Some(colours) = d.get(t, "colors") else { continue }
+        var n = 0
+        for c in 0..d.count(colours) {
+            let Some(f) = d.at(colours, c) else { continue }
+            n += target_cost(d.text(f).unwrap_or(String::new()).as_str())
+        }
+        most = max(most, n)
+        if text_at(d, p, "fragment_entry").as_str() == "ground_shade" {
+            ground = n
+        }
+    }
+    (most, ground)
+}
+
+/// Every look's shading writes at most 32 attachment bytes a sample (WebGPU's
+/// `maxColorAttachmentBytesPerSample`): the physical look's the scene's 8, the full mask's 24 (the
+/// shape is found after the passes, `substance::shaped`).
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn every_looks_targets_fit_in_32_bytes() {
+    for k in 0..LOOKS.len() {
+        let (most, ground) = attachment_bytes(LOOKS[k], f"scratch/look{k}")
+        print(f"{LOOKS[k]}: the ground's shading {ground} attachment bytes, the most {most}")
+        assert(most <= 32, f"{LOOKS[k]} writes {most} bytes a sample")
+        assert(ground == (if k == 0 { 8 } else { 24 }), f"{LOOKS[k]}'s shading writes {ground}")
+    }
+}

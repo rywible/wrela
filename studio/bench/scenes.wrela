@@ -6,8 +6,9 @@ use std::input::{Key, Script}
 /// A scene: its name, its package (`pkg`) (from the workspace), the frames it measures after the
 /// warmup, its size, the frame its walk begins (`WALKS`: its counted frames begin there) or 0 for
 /// none, whether its program arrives (`engine::frame::Frame`'s cover, ended by `playable at
-/// frame`: its frames before aren't counted, and a start is timed to it), and whether its program
-/// names a tier (`pub const TIER`, which `--tier` sets).
+/// frame`: its frames before aren't counted, and a start is timed to it), whether its program
+/// names a tier (`pub const TIER`, which `--tier` sets), and whether it names a look (`pub type
+/// LOOK`, which `--look` sets: `engine::style`).
 pub struct Scene: Clone {
     pub name: Text,
     pub pkg: Text,
@@ -17,6 +18,7 @@ pub struct Scene: Clone {
     pub walks: u32 = 0,
     pub arrives: bool = false,
     pub tiered: bool = false,
+    pub looked: bool = false,
 }
 
 /// Every scene, in the order the report lists them.
@@ -67,6 +69,7 @@ pub const SCENES: [Scene; 8] = [
         walks: WALKS,
         arrives: true,
         tiered: true,
+        looked: true,
     },
 ]
 

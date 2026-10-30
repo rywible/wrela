@@ -23,7 +23,8 @@
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use switches::Switches
-use style::Style
+use style::{Style, substance_of}
+use substance
 use noise::{hash2, hash2u, rand}
 use plant::{Wind, sway}
 use probes::{ProbeGrid, sky_light_near}
@@ -1753,7 +1754,7 @@ pub fn blade_shade<Q: Switches, Y: Style>(
     lt: Lighting<Q, Y>,
     look: GrassLook,
     species: [Species],
-) -> vec4 {
+) -> Y::Out {
     let b = blades[v.which.value]
     let colour = b.colour.decode()
     let kind = colour.w
@@ -1796,7 +1797,12 @@ pub fn blade_shade<Q: Switches, Y: Style>(
             light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.9),
     }
     let c = shown(lt, lit, world)
-    vec4(c, view::GRASS)
+    // A blade's form is its sward's: the ground it grows from. (A blade has no history of its
+    // own: its cause is empty.)
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else { substance_of::<Y>(ground, ground, vec4(0.0), albedo) }
+    Y::written(vec4(c, view::GRASS), s)
 }
 
 /// What a flower's vertex passes on.
@@ -1868,7 +1874,7 @@ pub fn flower_shade<Q: Switches, Y: Style>(
     b: BloomVertex,
     lt: Lighting<Q, Y>,
     blooms: Blooms,
-) -> vec4 {
+) -> Y::Out {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
     let colour = blooms.kinds[min(kind, 3)]
@@ -1890,7 +1896,13 @@ pub fn flower_shade<Q: Switches, Y: Style>(
         reflected: reflected * 0.9,
     }
     let c = shown(lt, lit, b.world)
-    vec4(c, view::FLOWER)
+    // A flower head's form is the meadow's, facing up.
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else {
+        substance_of::<Y>(vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0), vec4(0.0), albedo)
+    }
+    Y::written(vec4(c, view::FLOWER), s)
 }
 
 impl Grass {

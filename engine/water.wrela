@@ -13,7 +13,8 @@
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
-use style::Style
+use style::{Style, substance_of}
+use substance
 use noise::noise2
 use reflect::reflected_on_screen
 use sky::clouded_sky
@@ -420,7 +421,7 @@ pub fn water_shade<Q: Switches, Y: Style>(
     view: Texture<Rgba16Float>,
     dome: Texture<Rgba16Float>,
     look: WaterLook,
-) -> vec4 {
+) -> Y::Out {
     let cam = lt.cam
     let t = cam.time
     let flowing = w.kind > 0.5
@@ -441,6 +442,18 @@ pub fn water_shade<Q: Switches, Y: Style>(
         vec3(down.x, FALL_LEAN, down.y)
     } else { vec3(0.0, 1.0, 0.0) }
     let n = normalize(face + vec3(-slope.x, 0.0, -slope.y))
+    // Its form is its face without its ripples, and it's wet through; found before the clay
+    // view's early return, which its derivatives can't follow.
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else {
+        substance_of::<Y>(
+            normalize(face),
+            normalize(face),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            look.deep,
+        )
+    }
     let v = normalize(cam.eye - w.world)
     let distance = dot(w.world - cam.eye, cam.forward)
     // Under it: the scene through it, bent by its ripples where that's still under the water.
@@ -464,7 +477,7 @@ pub fn water_shade<Q: Switches, Y: Style>(
     if lt.light.clay != 0 {
         let wrap = max((dot(n, lt.light.sun) + 0.15) / 1.15, 0.0)
         let c = CLAY * (lt.light.sun_colour * (wrap * sun) + sky)
-        return vec4(through_air(lt, c, w.world), WATER)
+        return Y::written(vec4(through_air(lt, c, w.world), WATER), s)
     }
     let deep = look.deep * (sky + vec3(sun) * lt.light.sun_colour * 0.25)
     let seen = under.rgb * through + deep * (vec3(1.0) - through)
@@ -526,7 +539,7 @@ pub fn water_shade<Q: Switches, Y: Style>(
         let out = smoothstep(1.0, 1.0 + MARGIN, w.bank)
         c = under.rgb * mix(0.45, 1.0, out) + reflected * (0.08 * fresnel * (1.0 - out))
     }
-    vec4(through_air(lt, c, w.world), WATER)
+    Y::written(vec4(through_air(lt, c, w.world), WATER), s)
 }
 
 /// How far a fall's sheet leans back from upright (its face's rise for each unit out).

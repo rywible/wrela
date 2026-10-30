@@ -2475,3 +2475,46 @@ and the starts from C5's three-run medians (salts new to the machine).
 | Fidelity (G-reference) | vale | pending: Part G's review | |
 | Grown plants and creatures (G-grown) | vale | pending: Parts E and F | |
 | Four styles, no change to `engine/` | vale | pending: Part D | |
+
+## D1, the substance (2026-10-30, toolchain 0.11.0)
+
+docs/plan-world-class-3.md §D1. What the substance costs the vale's walk, in the measuring looks
+(`content/styles/fixtures.wrela`: physical light, the substance written; `Every` all of it,
+`Formed` the form's, `Caused` the cause's, `Toned` the tone's).
+
+Sustained (`wrela tool bench -- --scene vale-walk [--look styles::fixtures::<look>] --sustained
+300 --no-docs --no-native`, back to back, M4 Air), GPU span p50 / interval p99 / over 33 ms:
+`Physical` 17.03 / 28.77 / 3 and 16.70 / 30.32 / 12 first; `Every` 18.34 / 32.99 / 14; `Formed`
+19.84 / 32.85 / 10; `Caused` 19.07 / 32.29 / 11; `Toned` 19.15 / 32.50 / 9; `Physical` again 18.90
+/ 31.69 / 5. The machine warmed 2 ms across them, more than any channel costs, so each look's
+passes were timed alone too (`wrela profile examples/vale --chrome --serial --size 1920x1080
+--warmup 960 --frames 300`, the vale's `LOOK` pointed at each), ms a frame:
+
+| Pass | Physical | Every | Formed | Caused | Toned |
+|---|---|---|---|---|---|
+| vegetation | 9.48 | 10.75 | 11.07 | 10.03 | 10.42 |
+| vegetation prepass | 9.36 | 8.85 | 9.23 | 9.36 | 9.89 |
+| terrain | 4.60 | 5.33 | 5.45 | 4.88 | 4.93 |
+| water | 4.41 | 4.68 | 4.79 | 4.64 | 4.88 |
+| temporal (no substance) | 3.32 | 3.19 | 3.32 | 3.40 | 3.60 |
+
+With the passes that write none as the control (they drift up to 8 %), writing the five targets
+cost 0.2–0.8 ms and the form about 2.8 ms, most of it its shape found in every fragment
+(`dpdx` of its point and its form's normal). That's over the plan's 1.0 ms, so its lever was
+taken: **the shape at half the scene's size**, found after the passes from the form's target
+and the depth (`substance::shaped`), which leaves the shading passes four targets (24 bytes a
+sample). Again, interleaved:
+
+| Pass | Physical | Formed | Every | Physical |
+|---|---|---|---|---|
+| vegetation | 9.70 | 9.57 | 9.95 | 9.71 |
+| terrain | 4.58 | 4.93 | 5.13 | 4.73 |
+| water | 4.49 | 4.47 | 4.62 | 4.52 |
+| shape | | 0.26 | 0.24 | |
+| temporal (no substance) | 3.54 | 3.16 | 3.36 | 3.39 |
+
+- **The form: about 0.4 ms** (the shape's 0.26, and the ground's coarser normals' 0.3), under the
+  plan's 1.0. D4 measures it again with `Cel`'s mask.
+- **The whole substance (`Every`): about 1.1 ms** over the physical look.
+- `wrela pipelines engine/tests/frame --json [--set LOOK=styles::fixtures::Every]`: the ground's
+  shading's `attachment_bytes` 8 for `Physical` (the most of its 58 pipelines 8), 24 for `Every`.

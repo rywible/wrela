@@ -7,6 +7,7 @@
 use light::{Light, Lit}
 use paint::{Develop, Exposure}
 use std::gpu::{Rgba8, Sampler, Texture3d}
+use substance::Substance
 
 /// A look: its constants say what the frame makes for it, its functions what it does with it.
 pub trait Style {
@@ -20,6 +21,14 @@ pub trait Style {
     /// How hard temporal AA clips where the substance says the tone is flat (0: as the physical
     /// look; 1: the neighbourhood's box shrunk to its centre's tone).
     const FLAT_CLIP: f32 = 0.0
+
+    /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
+    /// that reads no substance after the pass, or that and the substance's three
+    /// (`substance::Written`).
+    type Out: Copy
+
+    /// A fragment's `Out`: its colour (the lit colour and its tag) and its substance.
+    fn written(colour: vec4, s: Substance) -> Self::Out
 
     /// The light a surface at `world`, lit as `lit` says (its albedo, normal and the light that
     /// reaches it) under `light`, shows the eye at `eye`.
@@ -40,4 +49,32 @@ pub trait Style {
         lut: Texture3d<Rgba8>,
         s: Sampler,
     ) -> vec4
+}
+
+/// A fragment's substance as far as `Y` reads it (`Style::SUBSTANCE`): a surface whose form's
+/// normal is `n_form` and coarse normal `n_coarse`, its history `history` and its albedo before
+/// light `tone`. Nothing for a look that reads none, so the physical look's shaders are as they
+/// were; and each channel only if it's read, so what makes the others is no code. (The form's
+/// shape is found after the passes: `substance::shaped`.)
+pub fn substance_of<Y: Style>(
+    n_form: vec3,
+    n_coarse: vec3,
+    history: vec4,
+    tone: vec3,
+) -> Substance {
+    if Y::SUBSTANCE == 0 {
+        return substance::NONE
+    }
+    var s = substance::NONE
+    if (Y::SUBSTANCE & substance::CAUSE) != 0 {
+        s.history = history
+    }
+    if (Y::SUBSTANCE & substance::TONE) != 0 {
+        s.tone = tone
+    }
+    if (Y::SUBSTANCE & substance::FORM) != 0 {
+        s.n_form = n_form
+        s.n_coarse = n_coarse
+    }
+    s
 }

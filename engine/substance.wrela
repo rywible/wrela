@@ -1,0 +1,313 @@
+// What a look reads of a pixel after the shading pass (docs/plan-world-class-3.md §D1): its form,
+// its cause and its tone, in three targets beside the scene's, 24 attachment bytes in all (WebGPU's
+// `maxColorAttachmentBytesPerSample` is 32, as the ABI costs a target); and its form's shape, at
+// half the scene's size, found after the passes from the form and the depth (`shaped`). The light that
+// reaches it isn't stored: a look's `shade` runs in the shading pass and takes it as values
+// (`light::Lit`). A look names the targets it reads (`style::Style::SUBSTANCE`); a look that
+// reads none, as the physical one doesn't, has a pass of the scene's target alone
+// (`style::Style::Out`), so the frame and its shaders are as they were.
+//
+// | Target | Format | Bytes | Holds |
+// |---|---|---|---|
+// | `scene` | `Rgba16Float` | 8 | the lit colour and the tag |
+// | `form` | `Rg32Uint` | 8 | the form's normal and the coarse one, each two 16-bit octahedral halves |
+// | `shape` | `Rg32Uint`, half size | | the principal direction (8-bit octahedral), the curvatures as half floats |
+// | `cause` | `R32Uint` | 4 | its history: age, light, wetness, stress, a byte each |
+// | `tone` | `R32Uint` | 4 | its albedo before light as three sRGB bytes, and whether it's flat |
+
+use std::derive::gradient
+use std::field::Surface
+use std::gpu::{DepthTexture, GlobalId, Half2, Rg32Uint, Targets4, Texels, Texture, Unorm8x4}
+use view::Camera
+
+/// The targets a look reads (`style::Style::SUBSTANCE`'s bits): the form's (`form`, and `shape`
+/// from it), the cause's and the tone's.
+pub const FORM: u32 = 1
+pub const CAUSE: u32 = 2
+pub const TONE: u32 = 4
+pub const ALL: u32 = FORM | CAUSE | TONE
+
+/// A pixel's substance: its form's normal (the surface with the detail finer than about eight
+/// pixels left out) and its coarse normal (finer than about 64), the form's principal curvatures
+/// `k1` (the larger in size) and `k2` and `k1`'s direction `dir` (in the surface, in the world);
+/// its history (age as a share of its kind's life, the light it has had, how wet it is, how
+/// stressed); its albedo before light (`tone`), and `flat`, 1 where a look flattened it (D4).
+pub struct Substance: Copy {
+    pub n_form: vec3 = vec3(0.0, 1.0, 0.0),
+    pub n_coarse: vec3 = vec3(0.0, 1.0, 0.0),
+    pub dir: vec3 = vec3(1.0, 0.0, 0.0),
+    pub k1: f32 = 0.0,
+    pub k2: f32 = 0.0,
+    pub history: vec4 = vec4(0.0),
+    pub tone: vec3 = vec3(0.0),
+    pub flat: f32 = 0.0,
+}
+
+/// What the sky has: nothing's form, no history.
+pub const NONE = Substance {}
+
+/// A shading pass's four colours, as a look that reads its substance writes them (`written`):
+/// the scene's, the form's, the cause's and the tone's. The shape isn't among them: it's found
+/// after the passes, at half the scene's size, from the form's target and the depth (`shaped`).
+pub type Written = Targets4<vec4, vec2u, u32, u32>
+
+/// `colour` and `s` as the four targets.
+pub fn written(colour: vec4, s: Substance) -> Written {
+    Targets4 {
+        first: colour,
+        second: pack_form(s.n_form, s.n_coarse),
+        third: pack_cause(s.history),
+        fourth: pack_tone(s.tone, s.flat),
+    }
+}
+
+/// The form's and coarse scales at a pixel `foot` metres across (`view::Camera::footprint`): the
+/// detail finer than these is left out of the form's normal and the coarse one.
+pub fn scales(foot: f32) -> vec2 {
+    vec2(8.0, 64.0) * foot
+}
+
+// ---- packing --------------------------------------------------------------------------------
+
+/// A unit vector's octahedral coordinates, each in [-1, 1] (Cigolle et al., "A Survey of
+/// Efficient Representations for Independent Unit Vectors", JCGT 2014).
+pub fn octahedral(n: vec3) -> vec2 {
+    let p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z))
+    if n.z >= 0.0 {
+        return p
+    }
+    (vec2(1.0) - abs(p.yx)) * vec2(if p.x >= 0.0 { 1.0 } else { -1.0 }, if p.y >= 0.0 { 1.0 } else {
+        -1.0
+    })
+}
+
+/// The unit vector at octahedral coordinates `e` (`octahedral`'s inverse).
+pub fn from_octahedral(e: vec2) -> vec3 {
+    var n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y))
+    let t = saturate(-n.z)
+    n.x += if n.x >= 0.0 { -t } else { t }
+    n.y += if n.y >= 0.0 { -t } else { t }
+    normalize(n)
+}
+
+/// `e`'s two coordinates (in [-1, 1]) in `bits` bits each, the first low.
+fn snorm2(e: vec2, bits: u32) -> u32 {
+    let top = f32((1 << (bits - 1)) - 1)
+    let q = vec2i(round(clamp(e, vec2(-1.0), vec2(1.0)) * top)) + vec2i(i32(top))
+    u32(q.x) | (u32(q.y) << bits)
+}
+
+/// `snorm2`'s inverse.
+fn from_snorm2(w: u32, bits: u32) -> vec2 {
+    let top = f32((1 << (bits - 1)) - 1)
+    let mask = (1 << bits) - 1
+    (vec2(f32(w & mask), f32((w >> bits) & mask)) - vec2(top)) / top
+}
+
+/// The form's target: each normal in a word, 16-bit octahedral halves (within 0.05°).
+pub fn pack_form(n_form: vec3, n_coarse: vec3) -> vec2u {
+    vec2u(snorm2(octahedral(n_form), 16), snorm2(octahedral(n_coarse), 16))
+}
+
+/// `pack_form`'s inverse: (form, coarse).
+pub fn unpack_form(w: vec2u) -> (vec3, vec3) {
+    (from_octahedral(from_snorm2(w.x, 16)), from_octahedral(from_snorm2(w.y, 16)))
+}
+
+/// The shape's target: word 0 the direction (8-bit octahedral) low and `k1` (a half float's
+/// bits) high, word 1 `k2` low, the high half spare.
+pub fn pack_shape(dir: vec3, k1: f32, k2: f32) -> vec2u {
+    let h = Half2::encode(vec2(k1, k2)).bits
+    vec2u(snorm2(octahedral(dir), 8) | (h << 16), h >> 16)
+}
+
+/// `pack_shape`'s inverse: (direction, k1, k2).
+pub fn unpack_shape(w: vec2u) -> (vec3, f32, f32) {
+    let k = Half2 { bits: (w.x >> 16) | ((w.y & 65535) << 16) }.decode()
+    (from_octahedral(from_snorm2(w.x & 65535, 8)), k.x, k.y)
+}
+
+/// The cause's target: the history's four in [0, 1], a byte each.
+pub fn pack_cause(history: vec4) -> u32 {
+    Unorm8x4::encode(history).bits
+}
+
+/// `pack_cause`'s inverse.
+pub fn unpack_cause(w: u32) -> vec4 {
+    Unorm8x4 { bits: w }.decode()
+}
+
+/// The tone's target: the albedo as three sRGB bytes (in [0, 1]), and `flat`'s byte.
+pub fn pack_tone(albedo: vec3, flat: f32) -> u32 {
+    Unorm8x4::encode(vec4(srgb(saturate(albedo)), flat)).bits
+}
+
+/// `pack_tone`'s inverse: (albedo, flat).
+pub fn unpack_tone(w: u32) -> (vec3, f32) {
+    let v = Unorm8x4 { bits: w }.decode()
+    (linear(v.xyz), v.w)
+}
+
+/// Linear light in [0, 1] as sRGB's curve stores it, and back.
+fn srgb(c: vec3) -> vec3 {
+    vec3(srgb1(c.x), srgb1(c.y), srgb1(c.z))
+}
+
+fn srgb1(x: f32) -> f32 {
+    if x <= 0.0031308 { 12.92 * x } else { 1.055 * pow(x, 1.0 / 2.4) - 0.055 }
+}
+
+fn linear(c: vec3) -> vec3 {
+    vec3(linear1(c.x), linear1(c.y), linear1(c.z))
+}
+
+fn linear1(x: f32) -> f32 {
+    if x <= 0.04045 { x / 12.92 } else { pow((x + 0.055) / 1.055, 2.4) }
+}
+
+// ---- the form's shape -----------------------------------------------------------------------
+
+/// A surface's principal curvatures at a point: `k1` the larger in size, `k2` the other, `dir`
+/// `k1`'s direction in the surface. Positive where the surface curves away from its normal (a
+/// sphere's outside: 1/r).
+pub struct Shape: Copy {
+    pub dir: vec3,
+    pub k1: f32,
+    pub k2: f32,
+}
+
+/// The flat surface's.
+pub const FLAT = Shape { dir: vec3(1.0, 0.0, 0.0), k1: 0.0, k2: 0.0 }
+
+/// Two directions in the plane normal to `n`, at right angles.
+pub fn tangents(n: vec3) -> (vec3, vec3) {
+    let a = if abs(n.y) < 0.9 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
+    let t = normalize(cross(a, n))
+    (t, cross(n, t))
+}
+
+/// The principal curvatures of a symmetric shape operator `[[a, b], [b, d]]` in the tangents
+/// `t1`, `t2`.
+fn principal(a: f32, b: f32, d: f32, t1: vec3, t2: vec3) -> Shape {
+    let mid = 0.5 * (a + d)
+    let r = sqrt(0.25 * (a - d) * (a - d) + b * b)
+    let (hi, lo) = (mid + r, mid - r)
+    let k1 = if abs(hi) >= abs(lo) { hi } else { lo }
+    let k2 = if abs(hi) >= abs(lo) { lo } else { hi }
+    // `k1`'s eigenvector: (b, k1 - a), or (k1 - d, b), whichever is the longer.
+    let e1 = vec2(b, k1 - a)
+    let e2 = vec2(k1 - d, b)
+    let e = if dot(e1, e1) >= dot(e2, e2) { e1 } else { e2 }
+    if dot(e, e) < 1.0e-20 {
+        return Shape { dir: t1, k1, k2 }
+    }
+    let u = normalize(e)
+    Shape { dir: normalize(t1 * u.x + t2 * u.y), k1, k2 }
+}
+
+/// The shape of a distance field's level set at `p`: from its Hessian, a `gradient` of each of
+/// its `gradient`'s components (language.md §14: they nest), projected into the tangent plane
+/// and divided by the gradient's length. The engine's curvature is exact, where screen-space
+/// estimates (DeCarlo et al.'s suggestive contours, Judd et al.'s apparent ridges) estimate it.
+pub fn field_shape<F: Surface>(f: F, p: vec3) -> Shape {
+    let g = f.gradient(p)
+    let hx = gradient(|q: vec3| f.gradient(q).x, p)
+    let hy = gradient(|q: vec3| f.gradient(q).y, p)
+    let hz = gradient(|q: vec3| f.gradient(q).z, p)
+    let len = max(length(g), 1.0e-12)
+    let n = g / len
+    let (t1, t2) = tangents(n)
+    // tᵢᵀ H tⱼ, H's rows hx, hy, hz.
+    let h1 = vec3(dot(hx, t1), dot(hy, t1), dot(hz, t1))
+    let h2 = vec3(dot(hx, t2), dot(hy, t2), dot(hz, t2))
+    principal(dot(t1, h1) / len, 0.5 * (dot(t2, h1) + dot(t1, h2)) / len, dot(t2, h2) / len, t1, t2)
+}
+
+/// The shape at a point from how its point changes between it and two neighbours (`dp_x`,
+/// `dp_y`) and how its form's normal `n` does (`dn_x`, `dn_y`): the shape operator that maps the
+/// one to the other (dn = S dp, in the tangent plane), made symmetric. For what's drawn as meshes
+/// and cards, whose field the shading pass hasn't got (`shaped`).
+pub fn screen_shape(n: vec3, dp_x: vec3, dp_y: vec3, dn_x: vec3, dn_y: vec3) -> Shape {
+    let (t1, t2) = tangents(n)
+    // P = [dp_x dp_y] and N = [dn_x dn_y] in the tangents; S = N P⁻¹.
+    let p = mat2(vec2(dot(t1, dp_x), dot(t2, dp_x)), vec2(dot(t1, dp_y), dot(t2, dp_y)))
+    let q = mat2(vec2(dot(t1, dn_x), dot(t2, dn_x)), vec2(dot(t1, dn_y), dot(t2, dn_y)))
+    let det = p[0].x * p[1].y - p[1].x * p[0].y
+    if abs(det) < 1.0e-14 {
+        return Shape { dir: t1, k1: 0.0, k2: 0.0 }
+    }
+    let inv = mat2(vec2(p[1].y, -p[0].y), vec2(-p[1].x, p[0].x)) * (1.0 / det)
+    let s = q * inv
+    principal(s[0].x, 0.5 * (s[1].x + s[0].y), s[1].y, t1, t2)
+}
+
+// ---- the cause ------------------------------------------------------------------------------
+
+/// A tree's history in [0, 1] each (`Substance::history`): its age as a share of its kind's
+/// lifespan, the light its crown has had, how wet the ground is at its foot, and its stress (the
+/// growth it didn't make: 1 less its vigour).
+pub fn history_of(age: f32, lifespan: f32, light: f32, wet: f32, vigour: f32) -> vec4 {
+    saturate(vec4(age / max(lifespan, 1.0), light, wet, 1.0 - vigour))
+}
+
+/// The scene's pixel `q`'s point (its depth `d`) through `cam`.
+fn point_at(cam: Camera, q: vec2u, d: f32) -> vec3 {
+    cam.world_at(vec2(f32(q.x) + 0.5, f32(q.y) + 0.5), d)
+}
+
+/// The shape (`pack_shape`) at half the scene's size (`size`), from the form's target and the
+/// depth: at texel `id`, the scene's pixel `2 id` and a neighbour a pixel each way, along x and
+/// along y, whichever of the two either side is the nearer in depth (so an edge between two things
+/// doesn't count as the curve of either), their points (`Camera::world_at`) and their form's
+/// normals through `screen_shape`. The sky, and a pixel without a neighbour on its surface, are
+/// flat.
+@compute(8, 8)
+pub fn shaped(
+    form: Texture<Rg32Uint>,
+    depth: DepthTexture,
+    cam: Camera,
+    size: vec2u,
+    out: mut Texels<Rg32Uint>,
+    id: GlobalId,
+) {
+    let half = (size + vec2u(1)) / 2
+    if id.x >= half.x || id.y >= half.y {
+        return
+    }
+    let p = vec2u(min(id.x * 2, size.x - 1), min(id.y * 2, size.y - 1))
+    let d = depth.load(x: p.x, y: p.y)
+    if d <= 0.0 {
+        out.store(id, pack_shape(FLAT.dir, k1: 0.0, k2: 0.0))
+        return
+    }
+    let at = point_at(cam, p, d)
+    let (n, _) = unpack_form(form.load(x: p.x, y: p.y))
+    // Along x, then along y: the side whose depth is the nearer this pixel's.
+    let lx = vec2u(max(p.x, 1) - 1, p.y)
+    let rx = vec2u(min(p.x + 1, size.x - 1), p.y)
+    let uy = vec2u(p.x, max(p.y, 1) - 1)
+    let dy = vec2u(p.x, min(p.y + 1, size.y - 1))
+    let (dl, dr) = (depth.load(x: lx.x, y: lx.y), depth.load(x: rx.x, y: rx.y))
+    let (du, dd) = (depth.load(x: uy.x, y: uy.y), depth.load(x: dy.x, y: dy.y))
+    let right = abs(dr - d) <= abs(dl - d)
+    let down = abs(dd - d) <= abs(du - d)
+    let qx = if right { rx } else { lx }
+    let qy = if down { dy } else { uy }
+    let (dqx, dqy) = (if right { dr } else { dl }, if down { dd } else { du })
+    if dqx <= 0.0 || dqy <= 0.0 || qx == p || qy == p {
+        out.store(id, pack_shape(FLAT.dir, k1: 0.0, k2: 0.0))
+        return
+    }
+    let sx = if right { 1.0 } else { -1.0 }
+    let sy = if down { 1.0 } else { -1.0 }
+    let (nx, _) = unpack_form(form.load(x: qx.x, y: qx.y))
+    let (ny, _) = unpack_form(form.load(x: qy.x, y: qy.y))
+    let shape = screen_shape(
+        n,
+        (point_at(cam, qx, dqx) - at) * sx,
+        (point_at(cam, qy, dqy) - at) * sy,
+        (nx - n) * sx,
+        (ny - n) * sy,
+    )
+    out.store(id, pack_shape(shape.dir, shape.k1, shape.k2))
+}

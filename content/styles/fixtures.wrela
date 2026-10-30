@@ -1,0 +1,137 @@
+// Looks for measuring and testing the substance (docs/plan-world-class-3.md §D1), not looks a
+// program ships: each lights as the physical look does and writes the substance's targets, all
+// of them (`Every`) or one channel's (`Formed`, `Caused`, `Toned`), so a channel's cost is a build
+// of the vale with it against the physical one (`wrela build examples/vale --set
+// LOOK=styles::fixtures::Every`). `wrela tool styles` leaves them out (D10).
+
+use engine::light::{Light, Lit}
+use engine::paint::{Develop, Exposure}
+use engine::style::Style
+use engine::substance
+use engine::substance::{Substance, Written}
+use physical::Physical
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// Every substance target written: the form's, the cause's and the tone's.
+pub struct Every {}
+
+/// The form's alone (its normals and its shape), the other targets written empty.
+pub struct Formed {}
+
+/// The cause's alone.
+pub struct Caused {}
+
+/// The tone's alone.
+pub struct Toned {}
+
+impl Style for Every {
+    const SUBSTANCE: u32 = substance::ALL
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, world, eye)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+impl Style for Formed {
+    const SUBSTANCE: u32 = substance::FORM
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, world, eye)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+impl Style for Caused {
+    const SUBSTANCE: u32 = substance::CAUSE
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, world, eye)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+impl Style for Toned {
+    const SUBSTANCE: u32 = substance::TONE
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, world, eye)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}

@@ -15,7 +15,8 @@ use impostor::{
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use switches::Switches
-use style::Style
+use style::{Style, substance_of}
+use substance
 use noise::{cell_size, hashed_threshold_of}
 use lod::{
     IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, unpacked, ways,
@@ -421,7 +422,7 @@ pub fn leaf_shade<Q: Switches, Y: Style>(
     instances: [Instance],
     lt: Lighting<Q, Y>,
     atlas: Texture<Rgba8>,
-) -> vec4 {
+) -> Y::Out {
     let leaves = kinds[l.kind.value].bake.leaves
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
@@ -436,17 +437,31 @@ pub fn leaf_shade<Q: Switches, Y: Style>(
     let tissue = atlas.sample_level(lt.s, leaf_uv(card.seed, l.uv)).ba
     let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
     let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
+    let albedo = tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)) * fold
     let c = leaf_light(
         lt,
         world,
         crown_n,
         sky_n: crown_n,
         depth: card.depth * inst.scale,
-        albedo: tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)) * fold,
+        albedo: albedo,
         through: leaves.through * transmission,
         leaf: leaves.leaf_width() * inst.scale,
     )
-    vec4(c, view::LEAVES + f32(l.instance.value >> 24))
+    let colour = vec4(c, view::LEAVES + f32(l.instance.value >> 24))
+    // A leaf's form is its crown's (`crown_n`, as it's lit), and its coarse form the crown's
+    // mass round its middle.
+    let s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else {
+        substance_of::<Y>(
+            crown_n,
+            normalize(world - inst.place(kinds[l.kind.value].bake.mid)),
+            inst.history.decode(),
+            albedo,
+        )
+    }
+    Y::written(colour, s)
 }
 
 // ---- limbs -------------------------------------------------------------------------------------
@@ -465,6 +480,8 @@ pub struct BarkVertex: Copy {
     pub keep: Flat<u32>,
     /// The kind it's of (`kind_of`).
     pub kind: Flat<u32>,
+    /// Its instance's history (`plant::Instance::history`).
+    pub history: Flat<u32>,
 }
 
 /// `n` limbs' triangles: each limb's points (`limb_corner`).
@@ -518,6 +535,7 @@ pub fn limb(
         moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
         keep: Flat { value: marks[i.index].x },
         kind: Flat { value: kind_of(inst) },
+        history: Flat { value: inst.history.bits },
     }
 }
 
@@ -577,7 +595,7 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     ridges: Texture<Rgba8>,
     coarse: Texture<Rgba8>,
     rs: Sampler,
-) -> vec4 {
+) -> Y::Out {
     let bark = kinds[b.kind.value].bake.bark
     // Derivatives run before the coverage discard, so every lane has a surface and height.
     let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
@@ -607,6 +625,18 @@ pub fn bark_shade<Q: Switches, Y: Style>(
         dpdy(b.world),
         vec2(dot(slope, dpdx(uv)), dot(slope, dpdy(uv))),
     )
+    // A limb's form is its round without its bark's relief (`smooth_n`), its own coarse form;
+    // its shape found before the discard, which its derivatives can't follow.
+    var s = if Y::SUBSTANCE == 0 {
+        substance::NONE
+    } else {
+        substance_of::<Y>(
+            smooth_n,
+            smooth_n,
+            std::gpu::Unorm8x4 { bits: b.history.value }.decode(),
+            vec3(0.0),
+        )
+    }
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
@@ -628,7 +658,10 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = shown(lt, lit, b.world)
-    vec4(c, view::BARK)
+    if (Y::SUBSTANCE & substance::TONE) != 0 {
+        s.tone = a
+    }
+    Y::written(vec4(c, view::BARK), s)
 }
 
 @test
