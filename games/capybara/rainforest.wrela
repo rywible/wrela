@@ -1,36 +1,189 @@
-// The Rainforest House: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+// The Rainforest House: the fourth level, a warm glasshouse of tall trees round a river. It is
+// the climbing level: no new move and no new foe, but the moves the capybara knows asked for
+// upwards, branch over branch, then along a walkway high in the canopy over drops that are
+// deadly, and down a waterfall to the goal.
 
 use course::Course
+use foes::Kind
 use ground::corner
 use signs::Sign
 
 /// Its name, as its title says it.
 pub const NAME: Text = "The Rainforest House"
 
-/// The course: a placeholder.
+/// The course: six sections, a checkpoint at the start of the river, the strangler fig, the
+/// canopy walkway and the waterfall.
+///
+/// 1. The misting hall (0 to 46 m): two rain puddles, each before a shallow ditch that its speed
+///    jumps; a goose past the second.
+/// 2. The kapok tree (46 to 82 m): its buttress roots as steps, a branch, and its trunk 4 m up to
+///    its first fork; a snack high over the fork; a ramp down to the river.
+/// 3. The river (82 to 137 m): water 38 m across and 7 m deep, a caiman at mid-depth and one by
+///    the bed guarding a snack. The far bank stands 5.5 m above the water: out by a breach onto
+///    a branch over the water, then a double jump.
+/// 4. The strangler fig (137 to 161 m): a goose on the bank, then two branches stacked up the
+///    fig's trunk, a pigeon by each, and the trunk's top 3 m above the upper branch, which a
+///    double jump reaches.
+/// 5. The canopy walkway (161 to 249 m), 12 m up over drops to below the floor: a rope bridge of
+///    two planks under a pigeon; three tree tops with gaps of 11.5 m between them, each with a
+///    bromeliad's pool on it to keep the capybara wet, whose speed (and a double jump) crosses
+///    the gaps; a pigeon in the second gap, a snack high over it; a snack hanging in the next
+///    drop; a goose on the next tree top.
+/// 6. The waterfall (249 to 320 m): a long slope down the falls' rocks to a pool and a low lip
+///    over a 10 m gorge. A slide-jump flies high over it, past a snack; the pool's speed jumps
+///    it; a branch in the gorge is the slow way. A goose on the landing, then the goal against
+///    the end wall, so a run that comes in fast and high still finds it.
 pub const COURSE: Course = built()
 
 pub fn built() -> Course {
     Course::new(
         start: vec2(2.0, 0.35),
-        goal_lo: vec2(30.0, 0.0),
-        goal_hi: vec2(32.0, 5.0),
+        goal_lo: vec2(316.0, 2.5),
+        goal_hi: vec2(318.2, 16.0),
         floor: -12.0,
     )
         .solid(
             [
                 corner(vec2(-6.0, -20.0)),
-                corner(vec2(-6.0, 10.0)),
-                corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0)),
-                corner(vec2(36.0, 0.0)),
-                corner(vec2(36.0, 14.0)),
-                corner(vec2(38.0, 14.0)),
-                corner(vec2(38.0, -20.0)),
+                corner(vec2(-6.0, 12.0)),
+                corner(vec2(-4.0, 12.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The misting hall: a puddle, a ditch, a puddle, a wider ditch.
+                corner(vec2(9.0, 0.0), 1.5),
+                corner(vec2(10.5, -0.3), 1.5),
+                corner(vec2(13.5, -0.3), 1.5),
+                corner(vec2(15.0, 0.0), 1.5),
+                corner(vec2(18.0, 0.0)),
+                corner(vec2(18.0, -1.2)),
+                corner(vec2(24.0, -1.2)),
+                corner(vec2(24.0, 0.0)),
+                corner(vec2(26.0, 0.0), 1.5),
+                corner(vec2(27.5, -0.3), 1.5),
+                corner(vec2(30.5, -0.3), 1.5),
+                corner(vec2(32.0, 0.0), 1.5),
+                corner(vec2(35.0, 0.0)),
+                corner(vec2(35.0, -1.2)),
+                corner(vec2(43.0, -1.2)),
+                corner(vec2(43.0, 0.0)),
+                // 2. The kapok's buttress roots, its trunk, its fork, and the ramp down.
+                corner(vec2(50.0, 0.0)),
+                corner(vec2(50.0, 1.5)),
+                corner(vec2(53.0, 1.5)),
+                corner(vec2(53.0, 3.0)),
+                corner(vec2(60.0, 3.0)),
+                corner(vec2(60.0, 7.0)),
+                corner(vec2(69.0, 7.0), 2.0),
+                corner(vec2(80.0, 0.0), 3.0),
+                // 3. The river: a steep bank down, its bed, and the far bank's wall.
+                corner(vec2(88.0, 0.0), 2.0),
+                corner(vec2(93.0, -8.0), 5.0),
+                corner(vec2(122.0, -8.0), 2.5),
+                corner(vec2(124.5, 4.5)),
+                // 4. The bank's top, under the strangler fig, and the fig's trunk.
+                corner(vec2(155.0, 4.5)),
+                corner(vec2(155.0, 12.3)),
+                // 5. The canopy walkway: the bridge's drop, then three tree tops with pools.
+                corner(vec2(161.0, 12.3)),
+                corner(vec2(161.0, -16.0)),
+                corner(vec2(181.0, -16.0)),
+                corner(vec2(181.0, 12.3)),
+                corner(vec2(182.0, 12.3), 1.5),
+                corner(vec2(183.5, 12.0), 1.5),
+                corner(vec2(186.0, 12.0), 1.5),
+                corner(vec2(187.5, 12.3), 1.5),
+                corner(vec2(188.0, 12.3)),
+                corner(vec2(188.0, -16.0)),
+                corner(vec2(199.5, -16.0)),
+                corner(vec2(199.5, 12.3)),
+                corner(vec2(200.0, 12.3), 1.5),
+                corner(vec2(201.5, 12.0), 1.5),
+                corner(vec2(203.5, 12.0), 1.5),
+                corner(vec2(205.0, 12.3), 1.5),
+                corner(vec2(205.5, 12.3)),
+                corner(vec2(205.5, -16.0)),
+                corner(vec2(217.0, -16.0)),
+                corner(vec2(217.0, 12.3)),
+                corner(vec2(217.5, 12.3), 1.2),
+                corner(vec2(218.7, 12.0), 1.2),
+                corner(vec2(220.3, 12.0), 1.2),
+                corner(vec2(221.5, 12.3), 1.2),
+                corner(vec2(222.0, 12.3)),
+                corner(vec2(222.0, -16.0)),
+                corner(vec2(228.0, -16.0)),
+                corner(vec2(228.0, 11.0)),
+                corner(vec2(235.0, 11.0)),
+                corner(vec2(235.0, -16.0)),
+                corner(vec2(240.0, -16.0)),
+                corner(vec2(240.0, 11.0)),
+                // 6. The waterfall: down its rocks to the pool, up to the lip, the gorge.
+                corner(vec2(249.0, 11.0), 3.0),
+                corner(vec2(273.0, -1.0), 6.0),
+                corner(vec2(280.0, -1.0), 4.0),
+                corner(vec2(287.0, 1.0)),
+                corner(vec2(287.0, -16.0)),
+                corner(vec2(297.0, -16.0)),
+                corner(vec2(297.0, 0.0)),
+                // The goal's deck and the wall at the end.
+                corner(vec2(309.0, 0.0)),
+                corner(vec2(309.0, 2.5)),
+                corner(vec2(318.5, 2.5)),
+                corner(vec2(318.5, 30.0)),
+                corner(vec2(320.5, 30.0)),
+                corner(vec2(320.5, -20.0)),
             ],
         )
-        .ended(vec2(-4.0, 36.0))
+        .ended(vec2(-4.0, 318.5))
+        // The rope bridge's planks.
+        .solid(
+            [
+                corner(vec2(165.0, 11.5)),
+                corner(vec2(165.0, 12.3)),
+                corner(vec2(169.0, 12.3)),
+                corner(vec2(169.0, 11.5)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(173.0, 11.5)),
+                corner(vec2(173.0, 12.3)),
+                corner(vec2(177.0, 12.3)),
+                corner(vec2(177.0, 11.5)),
+            ],
+        )
+        // The branches: the kapok's, the one over the river, the fig's two, and the gorge's.
+        .ledge([corner(vec2(55.5, 5.0)), corner(vec2(60.0, 5.0))])
+        .ledge([corner(vec2(119.0, 0.8)), corner(vec2(123.7, 0.8))])
+        .ledge([corner(vec2(150.0, 7.0)), corner(vec2(155.0, 7.0))])
+        .ledge([corner(vec2(151.5, 9.3)), corner(vec2(155.0, 9.3))])
+        .ledge([corner(vec2(291.0, -2.5)), corner(vec2(293.5, -2.5))])
+        .water(vec2(9.0, -0.3), vec2(15.0, -0.05))
+        .water(vec2(26.0, -0.3), vec2(32.0, -0.05))
+        .water(vec2(87.0, -8.0), vec2(125.0, -1.0))
+        .water(vec2(182.0, 12.0), vec2(187.5, 12.25))
+        .water(vec2(200.0, 12.0), vec2(205.0, 12.25))
+        .water(vec2(217.5, 12.0), vec2(221.5, 12.25))
+        .water(vec2(272.0, -1.0), vec2(281.0, -0.75))
+        .foe(Kind::Goose, vec2(47.5, 0.45), 1.5)
+        .foe(Kind::Caiman, vec2(100.0, -3.5), 6.0)
+        .foe(Kind::Caiman, vec2(111.0, -6.2), 4.5)
+        .foe(Kind::Pigeon, vec2(147.5, 8.2), 1.5)
+        .foe(Kind::Goose, vec2(144.0, 4.95), 3.0)
+        .foe(Kind::Pigeon, vec2(150.0, 11.4), 1.5)
+        .foe(Kind::Pigeon, vec2(175.0, 14.4), 3.0)
+        .foe(Kind::Pigeon, vec2(211.2, 14.0), 2.0)
+        .foe(Kind::Goose, vec2(232.0, 11.45), 1.5)
+        .foe(Kind::Goose, vec2(303.0, 0.45), 2.0)
+        .snack(vec2(64.5, 12.2))
+        .snack(vec2(112.0, -7.4))
+        .snack(vec2(211.2, 16.6))
+        .snack(vec2(223.6, 11.3))
+        .snack(vec2(295.5, 7.8))
+        .yuzu(vec2(131.0, 5.1))
+        .checkpoint(vec2(84.0, 0.0))
+        .checkpoint(vec2(129.0, 4.5))
+        .checkpoint(vec2(158.0, 12.3))
+        .checkpoint(vec2(245.0, 11.0))
 }
 
-/// Its signs: none yet.
+/// Its signs: none. It asks for no move the levels before it don't teach.
 pub const SIGNS: [Sign; 0] = []
