@@ -1,6 +1,6 @@
 // The styles tool: the looks a file declares, and G-style on a log and on this branch's history.
 
-use looks::{added_in, holds, looks_in}
+use looks::{added_in, combined, holds, looks_in}
 use std::io::print
 use std::tool::files
 use toolkit::whole::read_file
@@ -54,6 +54,25 @@ fn g_style_reads_renames() {
         }
     }
     assert(seen == 2, f"{seen} of the two looks")
+}
+
+/// The recorded history's adding commit for a look wins over the live log's (a squash merge's),
+/// and the live log fills in a look the record lacks.
+@test
+fn the_recorded_history_wins_over_a_squash() {
+    let recorded = added_in("commit:b1\nA\tcontent/styles/cel.wrela\n")
+    let live = added_in(
+        "commit:s1\nM\tengine/frame.wrela\nA\tcontent/styles/cel.wrela\nA\tcontent/styles/wash.wrela\n",
+    )
+    let all = combined(recorded, live)
+    assert(all.len() == 2, f"{all.len()} looks")
+    for a in all {
+        if a.file.as_str() == "cel.wrela" {
+            assert(a.commit.as_str() == "b1" && holds(a.clone()), "cel: the branch's commit")
+        } else {
+            assert(a.commit.as_str() == "s1" && !holds(a.clone()), "wash: the live squash")
+        }
+    }
 }
 
 /// G-style on this branch's history as the tool recorded it (`wrela tool styles -- --record`,

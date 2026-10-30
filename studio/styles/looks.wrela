@@ -92,6 +92,25 @@ pub fn added_in(log: str) -> Vec<Added> {
     out
 }
 
+/// Each look's adding commit, from the branch's recorded history first (`recorded`:
+/// `history.log`, its commits as they were before a squash merge folded them into one) and the
+/// live history (`live`) for a look the record lacks.
+pub fn combined(recorded: [Added], live: [Added]) -> Vec<Added> {
+    var out = Vec::from(recorded)
+    for a in live {
+        var have = false
+        for r in recorded {
+            if r.file.as_str() == a.file.as_str() {
+                have = true
+            }
+        }
+        if !have {
+            out.push(a.clone())
+        }
+    }
+    out
+}
+
 /// Whether a look's file holds G-style: its adding commit changed nothing under `engine/` (the
 /// engine's own look aside).
 pub fn holds(a: Added) -> bool {

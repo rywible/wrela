@@ -9,14 +9,16 @@
 // `--check` builds the package in each look a file under content/styles declares (but the
 // fixtures, and a fit's variants: looks.wrela), and counts each build's pipelines; then G-style:
 // `git log` for the commit that added each look's file, and the engine's files that commit
-// changed, which must be none (but for the engine's own look, `looks::ENGINE_OWN`). `--record`
-// writes that log as `studio/styles/history.log`, which the tool's test reads (a tool test runs
-// no real program, so the branch's history is the recorded one). `--page <out>` lays the twelve
+// changed, which must be none (but for the engine's own look, `looks::ENGINE_OWN`), each look's
+// commit read first from `studio/styles/history.log` and the live log for one it lacks. `--record`
+// writes that log, on a look's branch before its PR is squashed (the only merge the repository
+// takes, which folds the look's commit into one with the branch's engine changes); the tool's test
+// reads it too (a tool test runs no real program). `--page <out>` lays the twelve
 // evaluation shots out through each look's lookbook run (`--run physical=build/d4/physical-all2`,
 // the first the physical look's, whose measures are the bars), each still with its flicker, pop
 // and trail and whether it holds the bars, as `<out>/index.html` and its stills.
 
-use looks::{Added, NOT_LOOKS, added_in, holds, looks_in}
+use looks::{Added, NOT_LOOKS, added_in, combined, holds, looks_in}
 use lookbook_tool::main::{build_in, holds as holds_bars, measures_in}
 use std::io::print
 use std::tool::{ToolError, args}
@@ -111,7 +113,14 @@ fn check(program: str) -> Result<bool, ToolError> {
             print(f"styles: {look}: builds, {pipelines_in(manifest.as_str())} pipelines")
         }
     }
-    let added = added_in(git(LOG_ARGS)?.as_str())
+    // The branch's recorded history first: a squash merge (the only merge the repository takes)
+    // folds a look's adding commit into one with its branch's engine changes, so on main the live
+    // log's adding commit is that one; the branch's commits stay on GitHub under its PR.
+    let recorded = match read_file(f"{WS}/studio/styles/history.log", "history.log") {
+        Ok(bytes) => added_in(String::from_utf8(take bytes).unwrap_or(String::new()).as_str()),
+        Err(_) => Vec::new(),
+    }
+    let added = combined(recorded, added_in(git(LOG_ARGS)?.as_str()))
     for a in added.clone() {
         if not_look(a.file.as_str()) {
             continue
