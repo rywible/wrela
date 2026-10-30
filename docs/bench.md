@@ -3707,3 +3707,22 @@ is an optimistic storage estimate, not an implemented cache or rendering win.
 Next bet: direct source construction into bounded reusable storage for both
 BC and source-ID controls. G1–G7 unchanged/unmet.
 [Joint measurements, constraints and preserved failures](neural-view-demand-volumes.md).
+
+
+### Direct source demand cache retired, 2026-10-30 UTC
+
+Solo Pop!_OS AMD RENOIR/5500U, Mesa26.1.6, Chrome154.0.8037.57, Wrela0.9.0
+/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. First joint assessment
+40.91min; exactly two followups, zero training.
+Initial small-raster quality failure is preserved; original-coordinate rendering
+passes24 stress+12 native source-ID checks, worst PSNR loss0.221716dB.
+All15 first-visible-frame demand poses have no missing selected routes.
+Final idle scratch release lowers cold/edit GPU peaks, but source-ID steady
+requested savings are only229,764B, with extra browser residency and motion work.
+24 fresh forward/reverse normal/edit/motion comparisons include complete GPU,
+CPU and browser costs; sampled DRM/PSS and allocation peaks are separate.
+Retire the cache and restore runtime to e5a56797; no G1–G7 win.
+Conventional motion controls identify distance updates at~70% of total GPU cost
+on the60-frame pan. Next bet: preserve field-region validity across interrupted
+updates, then measure correctness and complete cost.
+[Quality, memory, runtime, failures and decision](neural-source-demand-runtime.md).
