@@ -1,0 +1,237 @@
+// The painterly look (docs/plan-world-class-3.md §D5): light as it falls on the form's normal
+// (`NORMAL` 1), its sky's own direction halved (a painter's simpler ambient); a palette of more
+// tones than the cel look's, its hue pulled less; the physical look's dabs and paper's tooth
+// (`marks::DABS`), and strokes along the form (`marks::STROKES`): along its principal curvature's
+// direction where it has one (round a ball where it curves alike every way), long where its tone is
+// flat and short dabs where it's detailed, each a little lighter or darker than the paint under it
+// by its seed; and the physical look's lines. Temporal AA and the albedo are the physical look's
+// (no `FLAT_CLIP` or `FLAT`: content/styles/README.md says why). Every constant here is **proposed**.
+
+use cel::{KEYS, PALETTE}
+use engine::light::{LUMA, Light, Lit}
+use engine::marks
+use engine::marks::MarkSample
+use engine::noise::rand
+use engine::paint::{Develop, Exposure}
+use engine::style
+use engine::style::{Fittable, Knob, Style, knob}
+use engine::substance
+use engine::substance::{Substance, Written}
+use physical::Physical
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// A class's tones (between its darkest and lightest in `cel::PALETTE`), and how far a tone's hue
+/// is pulled to its class's key.
+pub const PALETTE_N: u32 = 8
+pub const HUE_PULL: f32 = 0.15
+/// How much of the way between two tones the palette's step between them takes (round the
+/// middle), and how far the sky's light is taken toward its mean (a painter's simpler ambient).
+pub const STEP_SOFT: f32 = 0.5
+pub const SKY_SIMPLE: f32 = 0.5
+/// A stroke's length (output pixels) where the tone is flat, and how much lighter or darker than
+/// the paint under it a stroke is at most (in luma, by its seed).
+pub const STROKE_PX: f32 = 24.0
+pub const STROKE_VARY: f32 = 0.04
+/// A stroke's width over its length, and its length where the tone is detailed (of `STROKE_PX`).
+pub const STROKE_WIDE: f32 = 0.3
+pub const DAB_LONG: f32 = 0.35
+
+/// The painterly look (`engine::style::Style`), and the same look whose fittable constants are a
+/// fit's candidate's (`PainterlyFitting`: `wrela tool fit --style painterly`'s one build).
+pub struct Painterly {}
+
+pub struct PainterlyFitting {}
+
+/// The constants a fit may move (`engine::style::Knob`), in `knob`'s order, and their ranges: the
+/// look's tones, its colour and its light. (Not `STEP_SOFT`, which holds its coherence bars.)
+pub const FITTABLE: [Fittable; 3] = [
+    Fittable { name: "PALETTE_N", lo: 3.0, hi: 12.0 },
+    Fittable { name: "HUE_PULL", lo: 0.0, hi: 0.5 },
+    Fittable { name: "SKY_SIMPLE", lo: 0.0, hi: 1.0 },
+]
+
+/// The look's own values of `FITTABLE`.
+const AT: [f32; 8] = [8.0, HUE_PULL, SKY_SIMPLE, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+impl Knob for Painterly {
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+impl Knob for PainterlyFitting {
+    const FIT: bool = true
+
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+/// The light simplified: the sky's light taken `SKY_SIMPLE` of the way to its mean.
+fn simple<K: Knob>(light: Light, lit: Lit) -> Lit {
+    Lit { sky: mix(lit.sky, vec3(dot(lit.sky, LUMA)), vec3(knob::<K>(light, 2))), ..lit }
+}
+
+/// The physical look's light on the form's normal, its sky's light simplified (`simple`).
+pub fn shade_of<K: Knob>(
+    light: Light,
+    lit: Lit,
+    s: Substance,
+    class: u32,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    Physical::shade(light, simple::<K>(light, lit), s, class, world, eye)
+}
+
+/// A leaf's, likewise.
+pub fn shade_leaf_of<K: Knob>(
+    light: Light,
+    lit: Lit,
+    facing: vec3,
+    s: Substance,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    Physical::shade_leaf(light, simple::<K>(light, lit), facing, s, world, eye)
+}
+
+/// The albedo's luma among `PALETTE_N` tones between its class's darkest and lightest (each
+/// step `STEP_SOFT` of the way between two, round the middle), its own hue kept but pulled
+/// `HUE_PULL` toward the class's key.
+pub fn palette_of<K: Knob>(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+    if class == style::SKY {
+        return albedo
+    }
+    let c = min(class, style::CLASSES - 1)
+    let lo = dot(PALETTE[c][0], LUMA)
+    let hi = dot(PALETTE[c][3], LUMA)
+    let l = dot(albedo, LUMA)
+    let steps = knob::<K>(light, 0) - 1.0
+    let soft = 0.5 * STEP_SOFT
+    let t = clamp((l - lo) / max(hi - lo, 1.0e-4), 0.0, 1.0) * steps
+    let k = floor(t)
+    let stepped = (k + smoothstep(0.5 - soft, 0.5 + soft, t - k)) / steps
+    let target = mix(lo, hi, stepped)
+    let hue = albedo / max(l, 1.0e-4)
+    let key = KEYS[c] / max(dot(KEYS[c], LUMA), 1.0e-4)
+    mix(hue, key, vec3(knob::<K>(light, 1))) * target
+}
+
+/// A stroke (`marks::STROKES`): an ellipse along its direction, its cell long where the tone is
+/// flat (`STROKE_PX`, the lattice's spacing) and `DAB_LONG` of that where it's detailed,
+/// `STROKE_WIDE` of its length across, its edge a pixel wide every way round; lighter or darker
+/// by up to `STROKE_VARY` by its seed.
+pub fn mark_of(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+    if m.kind != marks::STROKES {
+        return 0.0
+    }
+    let half_along = 0.5 * mix(DAB_LONG, 1.0, s.flat)
+    let half_across = half_along * STROKE_WIDE
+    let e = vec2(m.offset.x / half_along, m.offset.y / half_across)
+    let r = max(length(e), 1.0e-4)
+    // How far the edge (r = 1) is, in pixels: r's change across a pixel (a cell's
+    // `size_px`th) is its gradient over the offset by that.
+    let per_px = length(vec2(e.x / half_along, e.y / half_across)) / r / max(m.size_px, 1.0)
+    let cover = 1.0 - smoothstep(-0.5, 0.5, (r - 1.0) / max(per_px, 1.0e-4))
+    let vary = rand(m.seed, 7) * 2.0 - 1.0
+    -STROKE_VARY * vary * cover
+}
+
+impl Style for Painterly {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::DABS | marks::STROKES
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        shade_of::<Painterly>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        shade_leaf_of::<Painterly>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        palette_of::<Painterly>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        mark_of(m, s, depth_px)
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        STROKE_PX
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+impl Style for PainterlyFitting {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::DABS | marks::STROKES
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        shade_of::<PainterlyFitting>(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        shade_leaf_of::<PainterlyFitting>(light, lit, facing, s, world, eye)
+    }
+
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        palette_of::<PainterlyFitting>(light, class, history, albedo)
+    }
+
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        mark_of(m, s, depth_px)
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        STROKE_PX
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        Physical::lens(paint, px, d, e, lut, s)
+    }
+}
