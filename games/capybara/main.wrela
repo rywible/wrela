@@ -1030,6 +1030,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             d,
             alpha,
             more: more,
+            ending: cast::ending(snap),
         )
     }
     if s.readout {
