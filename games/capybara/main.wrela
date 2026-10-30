@@ -56,7 +56,7 @@ use std::gpu::{
 }
 use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
-use std::io::{Pending, load, store}
+use std::io::{Pending, load, print, store}
 use replay::{
     ANY, AUTOPILOT, Board, FULL, HUMAN, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
     replay, splits, tool_assisted, trail, verify,
@@ -177,6 +177,10 @@ pub struct Lab {
     /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
     /// frames' time (s), smoothed, for it.
     readout: bool,
+    /// The frames drawn, and the first whose page was whole (its backdrop's strips drawn and its
+    /// text's glyphs in), once it has been: when the game was playable (`playable`).
+    frames: u32,
+    playable_at: Option<u32>,
     /// How much the capybara is on the ground and slides, eased (earth.wrela's `Field`).
     presence: f32,
     sliding: f32,
@@ -279,6 +283,8 @@ pub fn init() -> Lab {
         turns: None,
         device: Device::Keys,
         readout: false,
+        frames: 0,
+        playable_at: None,
         presence: 1.0,
         sliding: 0.0,
         frame_time: 0.0,
@@ -640,6 +646,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     s.renderer.draw(out, screen)
     out.present()
+    playable(mut s)
     publish(mut s, snap, play)
 }
 
@@ -792,6 +799,16 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
         s.finish_age += dt
     } else {
         s.finish_age = 0.0
+    }
+}
+
+/// The frame counted, and the first whole one said, as engine::frame says it, for the bench's
+/// cold and warm starts (docs/bench.md): its backdrop's strips drawn and its text's glyphs in.
+fn playable(s: mut Lab) {
+    s.frames += 1
+    if s.playable_at.is_none() && s.strips.ready == [true; 4] && !s.renderer.waiting() {
+        s.playable_at = Some(s.frames)
+        print(f"playable at frame {s.frames}")
     }
 }
 
@@ -1615,6 +1632,8 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     let n = s.snaps.newest()
     assert(n.ticks >= 358, "the ticker runs two ticks a frame")
     assert(n.snap.course == HOME && n.snap.paused == 0, "the first level, playing")
+    let Some(at) = s.playable_at else { panic("never playable") }
+    assert(at <= 10, f"playable at frame {at}")
     // Its clock is three ticks behind the ticks run: frame 0's two stood on the title the game
     // opens on, and the tick of the script's Enter (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
