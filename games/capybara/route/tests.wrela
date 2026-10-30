@@ -150,11 +150,14 @@ fn pads_are_held_in_the_longest_stretches_that_give_them_back() {
 fn the_command_line_takes_the_level_the_seconds_and_the_human_mode() {
     let s = |x: Text| String::from(x)
     let (level, home) = (s("--level"), s("home"))
-    assert(parse_args([level.clone(), home.clone()]) == Some(Ask {
-        level: HOME,
-        seconds: SECONDS,
-        human: false,
-    }))
+    assert(
+        parse_args([level.clone(), home.clone()]) ==
+            Some(Ask {
+                level: HOME,
+                seconds: SECONDS,
+                human: false,
+            }),
+    )
     assert(
         parse_args([s("--seconds"), s("60"), level.clone(), s("wetlands")]) ==
             Some(Ask { level: WETLANDS, seconds: 60, human: false }),

@@ -18,9 +18,14 @@
 // - Random play breaks no rule: seeded random inputs never end a tick inside the ground, past the
 //   course's ends or with a number that isn't finite, and the same inputs give the same world.
 // - Measured difficulty: how far each input of the human run can come early or late and the run
-//   still live (`slack::windows`); the first level's must be wide.
+//   still live (`slack::windows`). Most inputs of any level have room (a run held through a long
+//   stretch); a level's difficulty is in its tight ones, so the first level may have none within
+//   `FIRST_WINDOW` ticks and every level must have a median of `ANY_WINDOW` or more.
 //
-// `wrela tool route -- --report` prints each level's numbers (report.wrela).
+// - Pacing: the human run never stands waiting more than 2 s (for a foe to pass, say).
+//
+// `wrela tool route -- --report` prints each level's numbers (`report`), for Ryan to read beside
+// playing it.
 
 use capybara::body::RADIUS
 use capybara::camera::{camera, follow, framed, half_view}
@@ -48,10 +53,10 @@ pub const ALONE: f32 = 6.0
 pub const RETRY: f32 = 25.0
 pub const FIRST_RETRY: f32 = 15.0
 
-/// The most a timing window is measured to (ticks either way), and the narrowest the first
-/// level's median may be, and any level's.
+/// The most a timing window is measured to (ticks either way), the narrowest any input of the
+/// first level may be, and the narrowest any level's median may be.
 pub const MOST: u32 = 8
-pub const FIRST_WINDOW: u32 = 4
+pub const FIRST_WINDOW: u32 = 3
 pub const ANY_WINDOW: u32 = 2
 
 /// A run on a level, tick by tick: each tick's snapshot after it, its tally counted.
@@ -144,7 +149,9 @@ pub fn lessons(c: u32) -> Vec<String> {
         for f in at.foes {
             let reach = f.range + half(f.kind).x
             if near(from, to, f.at.x - reach, f.at.x + reach, 1.0) {
-                out.push(f"a foe at {f.at.x:.1} m patrols the lesson of move {bit} ({from:.1} to {to:.1} m)")
+                out.push(
+                    f"a foe at {f.at.x:.1} m patrols the lesson of move {bit} ({from:.1} to {to:.1} m)",
+                )
             }
         }
         for g in deadly {
@@ -355,6 +362,87 @@ pub fn random_play(c: u32, from: u32, ticks: u32) -> Result<World, String> {
     Ok(w)
 }
 
+/// How the human any% run of a level moves: the share of its ticks at the running speed or more,
+/// its longest stretch slower than half of it (s), and its longest wait, standing (s).
+pub struct Pace: Copy {
+    pub at_speed: f32,
+    pub slowest: f32,
+    pub waiting: f32,
+}
+
+/// The longest wait the human run may make (s).
+pub const WAIT: f32 = 2.0
+
+/// Level `c`'s pace.
+pub fn pace(c: u32) -> Pace {
+    let snaps = traced(c, searched(c).human_any)
+    var fast = 0
+    var slow = 0
+    var wait = 0
+    var slowest = 0
+    var waiting = 0
+    for s in snaps {
+        let v = length(s.vel)
+        if v >= FEEL.speed * 0.95 {
+            fast += 1
+        }
+        slow = if v < FEEL.speed * 0.5 { slow + 1 } else { 0 }
+        wait = if v < 0.5 && s.finished == 0 && s.dying == 0 { wait + 1 } else { 0 }
+        slowest = max(slowest, slow)
+        waiting = max(waiting, wait)
+    }
+    Pace {
+        at_speed: f32(fast) / f32(max(snaps.len(), 1)),
+        slowest: f32(slowest) / f32(HZ),
+        waiting: f32(waiting) / f32(HZ),
+    }
+}
+
+/// Every level's numbers, a few lines each, in words: its searched times, where it needs each
+/// move, its timing windows, its pace and its longest retry.
+pub fn report() -> String {
+    var out = String::new()
+    for c in 0..LEVELS {
+        let s = searched(c)
+        let name = capybara::course::name(c)
+        if s.any.is_empty() {
+            out.push_str(f"{name}: not searched\n")
+            continue
+        }
+        let time = |run: [Hold]| f32(capybara::world::play(c, run).finished) / f32(HZ)
+        let (any, full) = (time(s.any), time(s.full))
+        let (human_any, human_full) = (time(s.human_any), time(s.human_full))
+        let w = level_windows(c)
+        var narrow = 0
+        for x in w {
+            if x <= 2 {
+                narrow += 1
+            }
+        }
+        let p = pace(c)
+        let retry = longest_retry(c)
+        out.push_str(f"{name}\n")
+        out.push_str(
+            f"  times: any% {any:.2} s, 100% {full:.2} s; within a person's limits {human_any:.2} s, {human_full:.2} s\n",
+        )
+        let need = |x: f32| if x > 1.0e8 { String::from("never") } else { f"at {x:.0} m" }
+        let (d, wa, sl, sw) = (
+            need(s.needs[1]),
+            need(s.needs[2]),
+            need(s.needs[3]),
+            need(s.needs[4]),
+        )
+        out.push_str(f"  needs: double jump {d}, water {wa}, slide {sl}, swimming {sw}\n")
+        out.push_str(
+            f"  timing windows: median {median(w)} ticks either way; {narrow} of {w.len()} inputs within 2 (the tight ones)\n",
+        )
+        out.push_str(
+            f"  pace: {p.at_speed * 100.0:.0}% at speed, slowest stretch {p.slowest:.1} s, longest wait {p.waiting:.1} s; longest retry {retry:.1} s\n",
+        )
+    }
+    out
+}
+
 /// The median of `xs` (0 for none).
 pub fn median(xs: [u32]) -> u32 {
     if xs.is_empty() {
@@ -469,11 +557,24 @@ fn random_play_finds_the_ground_it_should() {
 }
 
 @test
-fn the_first_levels_inputs_have_wide_windows_and_every_levels_have_some() {
+fn the_first_levels_inputs_all_have_room_and_every_levels_mostly_do() {
     for c in 0..LEVELS {
-        let m = median(level_windows(c))
-        let least = if c == HOME { FIRST_WINDOW } else { ANY_WINDOW }
-        assert(m >= least, f"level {c}: a median window of {m} ticks")
+        let w = level_windows(c)
+        let m = median(w)
+        assert(m >= ANY_WINDOW, f"level {c}: a median window of {m} ticks")
+        if c == HOME {
+            for x in w {
+                assert(x >= FIRST_WINDOW, f"the first level has an input with {x} ticks' room")
+            }
+        }
+    }
+}
+
+@test
+fn the_human_run_never_waits_long() {
+    for c in 0..LEVELS {
+        let p = pace(c)
+        assert(p.waiting <= WAIT, f"level {c}: a wait of {p.waiting:.1} s")
     }
 }
 
@@ -483,4 +584,3 @@ fn a_gap_is_where_falling_is_falling_out() {
     assert(g.len() == 1, f"{g.len()} gaps")
     assert(abs(g[0].x - 200.0) < 0.5 && abs(g[0].y - 203.0) < 0.5, f"{g[0]}")
 }
-
