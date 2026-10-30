@@ -226,6 +226,14 @@ pub struct Cma: Clone {
     pub xs: Vec<Vec<f32>>,
 }
 
+/// `x` reflected into [0, 1] at its ends (a draw past an end lands as far inside it): the
+/// candidates a search scores and learns from are the same, and none piles on an end (clamped,
+/// every draw past an end was the end, and the search's spread there collapsed onto it).
+fn mirrored(x: f32) -> f32 {
+    let t = abs(x) - 2.0 * floor(abs(x) * 0.5)
+    if t > 1.0 { 2.0 - t } else { t }
+}
+
 /// A standard normal draw: the `k`th of `seed`'s (Box-Muller).
 fn normal(seed: u32, k: u32) -> f32 {
     let u1 = max(f32(rand(seed, 2 * k)), 1.0e-9)
@@ -322,7 +330,7 @@ impl Cma {
                 for j in 0..n {
                     s += self.b[i * n + j] * self.d[j] * z[j]
                 }
-                x.push(clamp(self.mean[i] + self.sigma * s, 0.0, 1.0))
+                x.push(mirrored(self.mean[i] + self.sigma * s))
             }
             self.zs.push(take z)
             self.xs.push(take x)

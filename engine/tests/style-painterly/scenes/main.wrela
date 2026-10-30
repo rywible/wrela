@@ -104,7 +104,9 @@ fn direction(
     vec4(within, away, 1.0, 1.0)
 }
 
-/// Panel 1 at a pixel: the plane (z = 0) grey, its strokes on it along x, its tone flat.
+/// Panel 1 at a pixel: the plane (z = 0) grey, its strokes on it along x, its tone flat (`flat`
+/// 1, set here: the look's own `FLAT` 0 flattens nothing, so this is a long stroke's measure of
+/// `mark_of`, not what a program's shot draws).
 @fragment
 fn plane(pixel: FragCoord, cam: Camera) -> vec4 {
     let ray = cam.ray(pixel.position.xy)

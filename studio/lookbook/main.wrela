@@ -455,11 +455,10 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     }
     let listed = json_list(entries)
     write_file(f"{out}/quality.json", Vec::from([Vec::from(listed.as_bytes())]))?
-    if !o.bars.is_empty() {
-        held_or_missed(barred(listed.as_str(), o.bars.as_str(), out)?)?
-    }
+    // Held to the bars (but failing the tool after the controls, so a miss still writes them).
+    let held = if o.bars.is_empty() { true } else { barred(listed.as_str(), o.bars.as_str(), out)? }
     if !o.controls {
-        return Ok(())
+        return held_or_missed(held)
     }
     // The plain runs the controls compare with: the table's, or their own.
     let plain = match ran_of(ran, CONTROL_SHOT) {
@@ -505,7 +504,7 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     if !all {
         return Err(ToolError::new("a negative control failed (controls.json)"))
     }
-    Ok(())
+    held_or_missed(held)
 }
 
 /// Shot `i`'s measures in `ran`, if it was measured.

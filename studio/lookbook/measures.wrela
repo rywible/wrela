@@ -232,9 +232,10 @@ pub fn clipped(rgba: [u8]) -> f64 {
     f64(at) / f64(max(n, 1))
 }
 
-/// The most the row's median difference raises the trail's threshold (twice it, in luma): over
-/// a sky's 2.5–3% offset (0.02 or so), under any lag worth a trail.
-pub const ROW_CAP: f32 = 0.06
+/// The most the row's median difference raises the trail's threshold (twice it, in luma): over a
+/// bright sky's 2.5–3% offset (twice it 0.06 at most), under an edge's lag (a trail's row has a
+/// step of 0.1 or more, `trail`).
+pub const ROW_CAP: f32 = 0.08
 
 /// Trail: in each row (`w` wide), from the sharpest edge of `reference` (its largest step across
 /// one pixel), how many pixels on either side `play` differs from it without a break, by more

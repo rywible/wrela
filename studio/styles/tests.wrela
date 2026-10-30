@@ -2,6 +2,7 @@
 
 use looks::{added_in, holds, looks_in}
 use std::io::print
+use std::tool::files
 use toolkit::whole::read_file
 
 /// A file's looks are its `impl Style for` types, a fit's variant aside.
@@ -56,7 +57,8 @@ fn g_style_reads_renames() {
 }
 
 /// G-style on this branch's history as the tool recorded it (`wrela tool styles -- --record`,
-/// `history.log`: a tool test runs no real program): every look under content/styles holds it.
+/// `history.log`: a tool test runs no real program): every look under content/styles has its
+/// adding commit there, and holds it.
 @test(tool, read: [("repo", "../..")])
 fn g_style_holds_on_this_branchs_history() {
     let Ok(bytes) = read_file("repo/studio/styles/history.log", "history.log") else {
@@ -76,4 +78,22 @@ fn g_style_holds_on_this_branchs_history() {
         looks += 1
     }
     assert(looks >= 4, f"only {looks} looks")
+    // And every look's file under content/styles has its adding commit there.
+    let added = added_in(log.as_str())
+    let Ok(entries) = files::list("repo/content/styles").wait() else {
+        panic("content/styles: not listed")
+    }
+    for e in entries {
+        let name = e.name.as_str()
+        if !name.ends_with(".wrela") || name == "fixtures.wrela" {
+            continue
+        }
+        var found = false
+        for a in added.clone() {
+            if a.file.as_str() == name {
+                found = true
+            }
+        }
+        assert(found, f"{name} has no adding commit in history.log")
+    }
 }

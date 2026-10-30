@@ -3,10 +3,11 @@
 // of more tones than the cel look's, its hue pulled less; the physical look's dabs and paper's
 // tooth (`marks::DABS`), and strokes along the form (`marks::STROKES`): along its principal
 // curvature's direction where it has one (round a ball where it curves alike every way), long where
-// its tone is flat and short dabs where it's detailed, each a little lighter or darker than the
-// paint under it by its seed; and the physical look's lines. Temporal AA and the albedo are the
-// physical look's (no `FLAT_CLIP` or `FLAT`: content/styles/README.md says why). Every constant
-// here is **proposed**.
+// its tone is flat and short dabs where it's detailed (with no flattening, `FLAT` 0, nothing reads
+// as flat, so in a program every stroke is a dab: content/styles/README.md), each a little lighter
+// or darker than the paint under it by its seed; and the physical look's lines. Temporal AA and the
+// albedo are the physical look's (no `FLAT_CLIP` or `FLAT`: content/styles/README.md says why).
+// Every constant here is **proposed**.
 
 use cel::{KEYS, PALETTE}
 use engine::light::{LUMA, Light, Lit}
