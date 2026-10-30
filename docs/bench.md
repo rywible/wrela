@@ -3812,3 +3812,20 @@ all requested/actual sampled memory. No training; models and G1–G7 unchanged.
 Both prototypes retired; production runtime unchanged. No rendering or memory win.
 [Full result and next contour-geometry bet](neural-impostor-global-order.md).
 Evidence: build/neural-evidence/impostor-global-order-v1 on Pop!_OS.
+
+## Retired impostor contours and corner caches — 2026-10-30
+
+Pop!_OS AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent 082bdebf.
+Initial source-derived two-corner contours pass 36/36 shaded checks but cost
+1.03–2.65% more total GPU than indexed quads. First complete assessment
+27.86 min. Followup 1 caches corners: matched total GPU +0.26%,
++13,551,288 requested live bytes. Followup 2 removes contours: GPU -0.29–0.51%,
++10,500,224 live bytes and +10.03–27.28 MB observed VRAM, mixed browser elapsed.
+Retire these tradeoffs; no production renderer change or physical-memory win.
+16 fresh 660-frame runs, 112 captures; two source mismatches preserved/excluded,
+seven primary matched comparisons with initial controls shared. Same useful
+source inputs, complete rendering/update cost, all requested/actual sampled
+memory. No training, new references or G1–G7 changes.
+[Full result and next visibility-resolve bet](neural-impostor-contours.md).
+Evidence: build/neural-evidence/impostor-contours-v1 on Pop!_OS.
