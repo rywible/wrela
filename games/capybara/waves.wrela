@@ -23,9 +23,6 @@ use std::gpu::{
 /// A column's width (m).
 pub const COLUMN: f32 = 0.1
 
-/// The most columns of all a course's pools.
-pub const COLUMNS: u32 = 1024
-
 /// How fast a wave runs (m/s), how fast a column springs back to rest (1/s²), and how fast its
 /// motion dies away (1/s).
 const SPEED: f32 = 3.2
@@ -53,7 +50,6 @@ pub fn waves(c: Course) -> Waves {
         pools.push(vec4(w.lo.x, f32(n), f32(count), w.surface()))
         n += count
     }
-    assert(n <= COLUMNS, "the course's pools fit the columns")
     var heights: Vec<f32> = Vec::new()
     for _ in 0..n {
         heights.push(0.0)

@@ -73,7 +73,7 @@ use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
 use ui::glyphs::{Device, device_of}
 use ui::text::{Face, Fonts}
-use waves::{COLUMNS, Pond, water, water_mesh, water_vertex}
+use waves::{Pond, water, water_mesh, water_vertex}
 use world::{CONTROLS, LAB, MAP, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
 use engine::menu::{Nav, Stick}
 
@@ -263,7 +263,7 @@ pub fn init() -> Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
         ground: ground_of(course(FIRST)),
         pools: buffer_of(shown.waves.pools, at_least: 8),
-        heights: buffer(COLUMNS),
+        heights: buffer_of(shown.waves.heights, at_least: 8),
         sprites: buffer(SPRITES),
         shown: FIRST,
         cast: shown,
@@ -451,6 +451,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.camera = camera(snap.at)
         s.cast = cast(c, from: opening)
         s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
+        s.heights = buffer_of(s.cast.waves.heights, at_least: 8)
         if snap.course != s.shown {
             s.ground = ground_of(c)
         }

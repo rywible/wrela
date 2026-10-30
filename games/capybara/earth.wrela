@@ -138,20 +138,27 @@ pub const FROM: f32 = -40.0
 pub const STEP: f32 = 0.25
 pub const SAMPLES: u32 = 2400
 
-/// The top of the solid ground at `x` among `outlines` (each a solid's points): the highest point
-/// where a side crosses the vertical through `x`, or far below where none does.
+/// The top of the solid ground at `x` among `outlines` (each a solid's points): the top of the
+/// lowest solid span the vertical through `x` crosses, the ground that goes on down, or far below
+/// where none does. A floating block over it (a canopy's platform, a floe) isn't it: what's under
+/// the block is air, which the backdrop shows (the rainforest's showed black when this was the
+/// highest crossing).
 pub fn ground_top(outlines: [Vec<vec2>], x: f32) -> f32 {
-    var top = -1.0e3
+    var ys: Vec<f32> = Vec::new()
     for points in outlines {
         let n = points.len()
         for i in 0..n {
             let (a, b) = (points[i], points[(i + 1) % n])
             if (a.x <= x && x < b.x) || (b.x <= x && x < a.x) {
-                top = max(top, a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x))
+                ys.push(a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x))
             }
         }
     }
-    top
+    if ys.len() < 2 {
+        return -1.0e3
+    }
+    ys.sort_by(|p, q| p < q)
+    ys[1]
 }
 
 /// Each solid's outline (not the ledges').
@@ -449,4 +456,13 @@ pub fn grass(b: Blade, f: Field, ice: [vec4]) -> Over {
         discard()
     }
     Over { color: o }
+}
+
+@test
+fn the_grounds_top_is_the_ground_that_goes_on_down_not_a_block_over_it() {
+    let ground = Vec::from([vec2(0.0, -20.0), vec2(0.0, 0.0), vec2(10.0, 0.0), vec2(10.0, -20.0)])
+    let block = Vec::from([vec2(4.0, 5.0), vec2(4.0, 6.0), vec2(6.0, 6.0), vec2(6.0, 5.0)])
+    let outlines = [take ground, take block]
+    assert(ground_top(outlines, 5.0) == 0.0, "under the block, the ground below it")
+    assert(ground_top(outlines, 2.0) == 0.0 && ground_top(outlines, 12.0) < -100.0)
 }

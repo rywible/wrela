@@ -10,8 +10,8 @@
 //   the first foe of each kind in the game patrols with no foe of another kind and no deadly fall
 //   near it. Nintendo's levels introduce a thing alone, then develop and twist it (Koichi
 //   Hayashida on Super Mario 3D Land's levels: docs/citations.md).
-// - No jumps into the unknown: a deadly gap's far side is on the screen when the run leaves the
-//   ground to cross it, and a foe the run comes near is on it from a reaction time away at the
+// - No jumps into the unknown: standing at a deadly gap's edge, its far side is on the screen; and
+//   a foe the run comes near is on it from a reaction time away at the
 //   wet speed: the distance, not the run's own time, which a fast run makes too short to see.
 // - Short retries: the checkpoints are close together, timed at the running speed (a fast run
 //   bunny-hops far faster than a player learning the level runs: the polar agent found 30 to
@@ -29,7 +29,9 @@
 // playing it.
 
 use capybara::body::RADIUS
+use capybara::body::Mode
 use capybara::camera::{camera, follow, framed, half_view}
+use capybara::cast::grounded
 use capybara::course::{Course, HOME, LEVELS, course}
 use capybara::earth::{profile, solids, top_at}
 use capybara::feel::{FEEL, HZ, STEP}
@@ -78,15 +80,22 @@ pub fn traced(c: u32, run: [Hold]) -> Vec<Snap> {
     out
 }
 
-/// Course `c`'s deadly gaps: each stretch (left, right, m) where the ground's top is below the
-/// course's floor, so falling there is falling out.
+/// Whether falling at `x` on course `c` is falling out: no ground there (a block, a ledge, the
+/// ground itself) stands above its floor.
+fn deadly_at(c: Course, x: f32) -> bool {
+    match c.ground_at(x, 1.0e4) {
+        Some(y) => y < c.floor,
+        None => true,
+    }
+}
+
+/// Course `c`'s deadly gaps: each stretch (left, right, m) where falling is falling out.
 pub fn gaps(c: Course) -> Vec<vec2> {
-    let tops = profile(c)
     var out: Vec<vec2> = Vec::new()
     var from: Option<f32> = None
     var x = c.ends.x
     while x <= c.ends.y {
-        let deadly = top_at(tops, x) < c.floor
+        let deadly = deadly_at(c, x)
         match from {
             Some(a) => {
                 if !deadly {
@@ -101,6 +110,29 @@ pub fn gaps(c: Course) -> Vec<vec2> {
             },
         }
         x += 0.25
+    }
+    out
+}
+
+/// The problems with level `c`'s deadly gaps, in words: one whose far side isn't on the 16:9
+/// screen of a player standing at its near edge, facing it, or is above or below the screen
+/// there. A leap of faith; the searched runs' bunny hops fly blind by choice (Ryan, 2026-10-30:
+/// the tech stays), so this asks it of the course, not of a run.
+pub fn blind_gaps(c: u32) -> Vec<String> {
+    borrow at = course(c)
+    let view = half_view(16.0 / 9.0)
+    var out: Vec<String> = Vec::new()
+    for g in gaps(at) {
+        let near = at.ground_at(g.x - 0.3, 1.0e4).unwrap_or(0.0)
+        let far = at.ground_at(g.y + 0.3, 1.0e4).unwrap_or(0.0)
+        // The camera on a capybara standing at the edge, facing the gap, framed as the game does.
+        let eye = framed(camera(vec2(g.x - 0.3, near + RADIUS)), view, at.ends)
+        let off = vec2(g.y + 0.3, far) - eye
+        if off.x > view.x || abs(off.y) > view.y {
+            out.push(
+                f"the far side of the gap at {g.x:.1} m ({g.y:.1} m, {far - near:.1} m up) is off the screen from its edge",
+            )
+        }
     }
     out
 }
@@ -210,8 +242,7 @@ pub fn first_foes(c: u32) -> Vec<String> {
     out
 }
 
-/// The problems with what the run of `run` on level `c` sees coming, in words: a deadly gap whose
-/// far side wasn't on the 16:9 screen as the run left the ground to cross it, or a foe the run
+/// The problems with what the run of `run` on level `c` sees coming, in words: a foe the run
 /// comes within a metre of that wasn't on it once it was nearer than `REACT` at the wet speed
 /// (5.4 m). (A gap's far side `REACT` before the
 /// jump is more than a fast run can see: at the Wetlands' big slide, 6 m before its lip, the
@@ -229,25 +260,6 @@ pub fn unseen(c: u32, run: [Hold]) -> Vec<String> {
     let reach = REACT * FEEL.wet_speed
     let shows = |t: u32, p: vec2| abs(p.x - eyes[t].x) < view.x && abs(p.y - eyes[t].y) < view.y
     var out: Vec<String> = Vec::new()
-    // Each deadly gap the run flies over: on its last tick on the ground before, its far side was
-    // on the screen.
-    let tops = profile(at)
-    for g in gaps(at) {
-        var ground = 0
-        for t in 0..snaps.len() {
-            let s = snaps[t]
-            if s.ground != vec2(0.0) {
-                ground = t
-            }
-            if s.at.x > g.x && s.at.x < g.y {
-                let far = vec2(g.y + 0.5, top_at(tops, g.y + 0.5))
-                if !shows(ground, far) {
-                    out.push(f"the far side of the gap at {g.x:.1} m wasn't seen before the jump")
-                }
-                break
-            }
-        }
-    }
     // Each foe the run comes near: on the screen from a reaction time away.
     for i in 0..at.foes.len() {
         for t in 0..snaps.len() {
@@ -529,7 +541,12 @@ fn the_first_foe_of_each_kind_comes_alone() {
 }
 
 @test
-fn no_jump_or_foe_comes_before_the_screen_shows_it() {
+fn every_deadly_gaps_far_side_shows_from_its_edge() {
+    none_of(every(blind_gaps), "leaps of faith")
+}
+
+@test
+fn no_foe_comes_before_the_screen_shows_it() {
     none_of(every(|c: u32| unseen(c, searched(c).human_any)), "met unseen, any%")
     none_of(every(|c: u32| unseen(c, searched(c).human_full)), "met unseen, 100%")
 }

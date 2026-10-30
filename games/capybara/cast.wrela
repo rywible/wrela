@@ -1120,3 +1120,18 @@ fn at_the_last_goal_the_capybara_eats_its_snack_and_nowhere_else() {
         assert(ending(s) == (bites > 0), "the ending is the last level's")
     }
 }
+
+@test
+fn every_course_can_be_shown_its_pools_waves_and_all() {
+    // A course is shown by a new cast: its pools' waves sized to it, whatever its water (the
+    // Reptile House's 151 m of it outgrew a fixed budget of columns).
+    for c in 0..course::COURSES {
+        borrow at = course(c)
+        let k = cast(at, from: Some(present(world(c))))
+        var columns = 0
+        for w in at.waters {
+            columns += u32(ceil((w.hi.x - w.lo.x) / waves::COLUMN)) + 1
+        }
+        assert(k.waves.heights.len() == columns, f"course {c}: {k.waves.heights.len()} columns")
+    }
+}
