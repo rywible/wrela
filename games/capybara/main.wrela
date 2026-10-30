@@ -216,8 +216,9 @@ pub struct Lab {
     saving: Option<Pending<u8>>,
     storing: Storing,
     kept: u32,
-    /// The tool-assisted runs of every course, the board shown (`PLAYERS` or `ASSISTED`), and the
-    /// run with the focus on it: its category's column and its row.
+    /// The tool-assisted runs of the course shown (made as it's shown: each is the sim playing the
+    /// run, and all nine levels' delayed the first frame), the board shown (`PLAYERS` or
+    /// `ASSISTED`), and the run with the focus on it: its category's column and its row.
     assisted: Vec<Replay>,
     board: u32,
     column: u32,
@@ -250,12 +251,6 @@ pub struct Lab {
 
 pub fn init() -> Lab {
     let latest = run(live(FIRST), hz: HZ, step: tick_live, present: present_live)
-    var assisted: Vec<Replay> = Vec::new()
-    for c in 0..COURSES {
-        for r in tool_assisted(c) {
-            assisted.push(r.clone())
-        }
-    }
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     let shown = cast(course(FIRST))
@@ -306,7 +301,7 @@ pub fn init() -> Lab {
         saving: None,
         storing: Storing {},
         kept: 0xffffffff,
-        assisted,
+        assisted: tool_assisted(FIRST),
         board: PLAYERS,
         column: ANY,
         row: 0,
@@ -454,6 +449,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.heights = buffer_of(s.cast.waves.heights, at_least: 8)
         if snap.course != s.shown {
             s.ground = ground_of(c)
+            s.assisted = tool_assisted(snap.course)
         }
         s.shown = snap.course
         s.watched = watching
