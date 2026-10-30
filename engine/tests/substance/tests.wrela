@@ -164,7 +164,7 @@ fn the_physical_looks_light_is_the_lights_own_sum() {
         }
         let at = vec3(rand(k, 52), rand(k, 53), rand(k, 54)) * 10.0
         let eye = at + unit(rand(k, 55), rand(k, 56)) * 5.0
-        let a = Physical::shade(light, lit, at, eye)
+        let a = Physical::shade(light, lit, substance::NONE, engine::style::GROUND, at, eye)
         let b = world(light, lit, at, eye)
         assert(
             bitcast_u32(a.x) == bitcast_u32(b.x) &&

@@ -1,10 +1,12 @@
-// The look a program's frame draws with (docs/plan-world-class-3.md §C2, D2): a type the program
-// names (`Frame<R, Q, Y: Style>`), whose slots the frame calls where a surface's light is summed
-// (`lit::shown`: `shade`) and where the image goes to the screen (`paint::develop`: `lens`). Part
-// D gives the slots the substance they read and the styles that fill them; here each has the
-// physical look's body (`styles::physical::Physical`), and the constants are 0.
+// The look a program's frame draws with (docs/plan-world-class-3.md §C2, §D2): a type the program
+// names (`Frame<R, Q, Y: Style>`, a program's `pub type LOOK`), whose constants say what the frame
+// makes for it (its substance, the normal it lights, its marks, its temporal AA on flat tones) and
+// whose slots the frame calls: where a surface's albedo is chosen (`palette`), where its light is
+// summed (`lit::shown`: `shade`), where its marks are drawn (`mark`), and where the image goes to
+// the screen (`paint::develop`: `lens`). A look is a file of `content/styles` (its README).
 
 use light::{Light, Lit}
+use marks::MarkSample
 use paint::{Develop, Exposure}
 use std::gpu::{Rgba8, Sampler, Texture3d}
 use substance::Substance
@@ -15,8 +17,7 @@ pub trait Style {
     const SUBSTANCE: u32 = 0
     /// Which normal lights the form: 0 the fine (the shading's own), 1 the form's, 2 the coarse.
     const NORMAL: u32 = 0
-    /// Which marks are drawn (D7's bits: lines, creases, dabs, strokes, hatch); 0: the frame's
-    /// own, as before the marks.
+    /// Which marks are drawn (`marks`' bits: lines, creases, dabs, strokes, hatch); 0: none.
     const MARKS: u32 = 0
     /// How hard temporal AA clips where the substance says the tone is flat (0: as the physical
     /// look; 1: the neighbourhood's box shrunk to its centre's tone).
@@ -30,13 +31,34 @@ pub trait Style {
     /// A fragment's `Out`: its colour (the lit colour and its tag) and its substance.
     fn written(colour: vec4, s: Substance) -> Self::Out
 
-    /// The light a surface at `world`, lit as `lit` says (its albedo, normal and the light that
-    /// reaches it) under `light`, shows the eye at `eye`.
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3
+    /// The light a surface at `world` of class `class` (`GROUND` …: what it's made of), lit as
+    /// `lit` says (its albedo, the normal it's lit by, `NORMAL`'s, and the light that reaches it:
+    /// the transport terms, as values) under `light`, shows the eye at `eye`; `s` is its substance,
+    /// as far as the look reads it.
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3
 
-    /// The colour a material of class `class` (`view`'s), its history `history` (D1's cause: age,
-    /// light, wetness, stress), and albedo `albedo` becomes in this look, before light.
+    /// A leaf's light (`style::LEAVES`): `shade`'s, but its gloss is on its side that faces the
+    /// eye (`facing`), where its crown's normal (`lit.n`) lights the rest of it.
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Self::shade(light, lit, s, LEAVES, world, eye)
+    }
+
+    /// The colour a material of class `class`, its history `history` (D1's cause: age, light,
+    /// wetness, stress), and albedo `albedo` becomes in this look, before light.
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3
+
+    /// How dark a mark `m` makes a pixel (0: not at all), its substance `s`, at a depth whose
+    /// pixel is `depth_px` metres across: none by default.
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        0.0
+    }
 
     /// The lens: the output pixel `px`, painted (`paint`: its dabs, bloom and sharpening in), as
     /// the screen shows it, at exposure `e`, `d` saying the output, the view and the look's
@@ -49,6 +71,32 @@ pub trait Style {
         lut: Texture3d<Rgba8>,
         s: Sampler,
     ) -> vec4
+}
+
+/// What a surface is made of, as `Style::shade` and `Style::palette` are told (each shading pass's
+/// own): the ground, leaves, bark, grass, flowers, water, stone, a character or creature, and the
+/// sky.
+pub const GROUND: u32 = 0
+pub const LEAVES: u32 = 1
+pub const BARK: u32 = 2
+pub const GRASS: u32 = 3
+pub const FLOWER: u32 = 4
+pub const WATER: u32 = 5
+pub const STONE: u32 = 6
+pub const CREATURE: u32 = 7
+pub const SKY: u32 = 8
+pub const CLASSES: u32 = 9
+
+/// The normal a surface is lit by in look `Y` (`Style::NORMAL`): its fine one (the shading's own),
+/// its form's, or its coarse one.
+pub fn lit_normal<Y: Style>(fine: vec3, form: vec3, coarse: vec3) -> vec3 {
+    if Y::NORMAL == 1 {
+        return form
+    }
+    if Y::NORMAL == 2 {
+        return coarse
+    }
+    fine
 }
 
 /// A fragment's substance as far as `Y` reads it (`Style::SUBSTANCE`): a surface whose form's

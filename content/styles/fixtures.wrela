@@ -2,8 +2,10 @@
 // program ships: each lights as the physical look does and writes the substance's targets, all
 // of them (`Every`) or one channel's (`Formed`, `Caused`, `Toned`), so a channel's cost is a build
 // of the vale with it against the physical one (`wrela build examples/vale --set
-// LOOK=styles::fixtures::Every`). `wrela tool styles` leaves them out (D10).
+// LOOK=styles::fixtures::Every`); and one the trait's test draws a sphere's normals with
+// (`Normals`). `wrela tool styles` leaves them out (D10).
 
+use engine::marks
 use engine::light::{Light, Lit}
 use engine::paint::{Develop, Exposure}
 use engine::style::Style
@@ -25,6 +27,7 @@ pub struct Caused {}
 pub struct Toned {}
 
 impl Style for Every {
+    const MARKS: u32 = marks::LINES
     const SUBSTANCE: u32 = substance::ALL
     type Out = Written
 
@@ -32,8 +35,19 @@ impl Style for Every {
         substance::written(colour, s)
     }
 
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
-        Physical::shade(light, lit, world, eye)
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Physical::shade_leaf(light, lit, facing, s, world, eye)
     }
 
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
@@ -53,6 +67,7 @@ impl Style for Every {
 }
 
 impl Style for Formed {
+    const MARKS: u32 = marks::LINES
     const SUBSTANCE: u32 = substance::FORM
     type Out = Written
 
@@ -60,8 +75,19 @@ impl Style for Formed {
         substance::written(colour, s)
     }
 
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
-        Physical::shade(light, lit, world, eye)
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Physical::shade_leaf(light, lit, facing, s, world, eye)
     }
 
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
@@ -81,6 +107,7 @@ impl Style for Formed {
 }
 
 impl Style for Caused {
+    const MARKS: u32 = marks::LINES
     const SUBSTANCE: u32 = substance::CAUSE
     type Out = Written
 
@@ -88,8 +115,19 @@ impl Style for Caused {
         substance::written(colour, s)
     }
 
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
-        Physical::shade(light, lit, world, eye)
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Physical::shade_leaf(light, lit, facing, s, world, eye)
     }
 
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
@@ -109,6 +147,7 @@ impl Style for Caused {
 }
 
 impl Style for Toned {
+    const MARKS: u32 = marks::LINES
     const SUBSTANCE: u32 = substance::TONE
     type Out = Written
 
@@ -116,8 +155,19 @@ impl Style for Toned {
         substance::written(colour, s)
     }
 
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
-        Physical::shade(light, lit, world, eye)
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        Physical::shade(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Physical::shade_leaf(light, lit, facing, s, world, eye)
     }
 
     fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
@@ -133,5 +183,38 @@ impl Style for Toned {
         s: Sampler,
     ) -> vec4 {
         Physical::lens(paint, px, d, e, lut, s)
+    }
+}
+
+/// A look for the trait's own test (engine/tests/style): it lights by the form's normal
+/// (`NORMAL` 1), draws no marks, and shows the normal it's lit by as a colour (`n · 0.5 + 0.5`),
+/// through a lens that leaves it as it is.
+pub struct Normals {}
+
+impl Style for Normals {
+    const NORMAL: u32 = 1
+    type Out = vec4
+
+    fn written(colour: vec4, s: Substance) -> vec4 {
+        colour
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        lit.n * 0.5 + vec3(0.5)
+    }
+
+    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+        albedo
+    }
+
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        vec4(paint, 1.0)
     }
 }

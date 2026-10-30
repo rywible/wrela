@@ -1,0 +1,10 @@
+# The look's slots (engine::style, docs/plan-world-class-3.md §D2), on the hardware GPU: a look
+# whose `shade` shows the normal it's lit by draws a bumpy sphere's form (its fixture, sphere/, a
+# package of its own, not a workspace member); and a look that draws no marks builds no pass of
+# them (the frame fixture, engine/tests/frame, built in it). The tool tests build each through
+# `std::tool::toolchain`, draw the sphere through `std::tool::drive` and read its screen.
+[package]
+name = "style_tests"
+
+[dependencies]
+hosts = { workspace = true }

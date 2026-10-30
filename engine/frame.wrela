@@ -43,6 +43,7 @@ use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use switches::Switches
+use marks
 use style::Style
 use substance
 use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
@@ -594,7 +595,8 @@ pub trait Resolver {
     fn resize(mut self, w: u32, h: u32)
 
     /// The history `into` resolved from the last (`t.last_history`) with this frame's scene, the
-    /// learned rejector's where the program's switches `Q` have it.
+    /// learned rejector's where the program's switches `Q` have it, held flat where the look says
+    /// and the substance's `tone` is flat (`Resolve::flat_clip`).
     fn resolve<Q: Switches>(
         mut self,
         into: mut Texture<Rgba16Float>,
@@ -605,6 +607,7 @@ pub trait Resolver {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     )
@@ -635,6 +638,7 @@ impl Resolver for Gathered {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     ) {
@@ -650,6 +654,7 @@ impl Resolver for Gathered {
                 motion,
                 last_motion,
                 last_history,
+                tone,
                 s,
                 net,
                 learned: Q::LEARNED,
@@ -690,6 +695,7 @@ impl Resolver for Shared {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     ) {
@@ -708,6 +714,7 @@ impl Resolver for Shared {
                 last_history,
                 self.means,
                 self.spreads,
+                tone,
                 s,
                 net,
                 learned: Q::LEARNED,
@@ -3047,18 +3054,22 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             moving: scene.moves_in(cam, out),
             settled: if again { 0.0 } else { f32(self.settled) },
             learned: if Q::LEARNED && self.rejects { 1 } else { 0 },
+            flat_clip: Y::FLAT_CLIP,
         }
         self.settled = if !held(cam) { 0 } else if again { 1 } else { self.settled + 1 }
         let instead = scene.shows_instead()
         // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
         // debug views of form).
-        if !self.debug.plain && self.debug.view == 0 && !instead {
-            label("lines")
-            let d = Develop { cam, look: self.look, out, view: 0 }
-            let lp = begin_pass(mut self.targets.scene_b)
-            fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
-            lp.end()
-            swap(mut self.targets.scene, mut self.targets.scene_b)
+        // (Where the look draws them: `style::Style::MARKS`.)
+        if (Y::MARKS & marks::LINES) != 0 {
+            if !self.debug.plain && self.debug.view == 0 && !instead {
+                label("lines")
+                let d = Develop { cam, look: self.look, out, view: 0 }
+                let lp = begin_pass(mut self.targets.scene_b)
+                fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
+                lp.end()
+                swap(mut self.targets.scene, mut self.targets.scene_b)
+            }
         }
         label("temporal")
         swap(mut self.targets.history, mut self.targets.last_history)
@@ -3071,6 +3082,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             self.targets.motion,
             self.targets.last_motion,
             self.targets.last_history,
+            self.targets.tone,
             self.linear,
             self.rejector.items(),
         )

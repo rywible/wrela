@@ -1,6 +1,7 @@
 // The physical look: light as it falls, through the lens as the frame's look says (`paint::Look`).
 // Today's image: the other looks are changes of it, a slot at a time.
 
+use engine::marks
 use engine::light::{Light, Lit, tone}
 use engine::paint::{Develop, Exposure, graded, hdr_tone}
 use engine::style::Style
@@ -11,6 +12,9 @@ use std::gpu::{Rgba8, Sampler, Texture3d}
 pub struct Physical {}
 
 impl Style for Physical {
+    /// The characters' lines (`paint::lines`): part of today's look.
+    const MARKS: u32 = marks::LINES
+
     /// The scene's colour alone: it reads no substance.
     type Out = vec4
 
@@ -19,8 +23,21 @@ impl Style for Physical {
     }
 
     /// The light's sum (`light::world`): the matte light and the gloss.
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
         engine::light::world(light, lit, world, eye)
+    }
+
+    /// A leaf's matte light, and its gloss on its side that faces the eye.
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        engine::light::matte(light, lit, world, eye) +
+            engine::light::gloss(light, Lit { n: facing, ..lit }, normalize(eye - world))
     }
 
     /// The albedo as it is.

@@ -21,8 +21,10 @@ use probes::{oct_dir, oct_of}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
 use switches::Switches
-use style::{Style, substance_of}
+use style
+use style::{Style, lit_normal, substance_of}
 use substance
+use substance::Substance
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
@@ -90,6 +92,7 @@ pub fn leaf_light<Q: Switches, Y: Style>(
     albedo: vec3,
     through: vec3,
     leaf: f32,
+    s: Substance,
 ) -> vec3 {
     // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
     // tops went murk.
@@ -121,14 +124,15 @@ pub fn leaf_light<Q: Switches, Y: Style>(
         through: through * (0.4 + 0.6 * ao) * (1.0 + against),
     }
     let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
+    // Its gloss on its side that faces the eye (`facing`), summed by the look
+    // (`Style::shade_leaf`).
     let glossy = Lit {
-        n: facing,
         rough,
         glint: 1.0,
         reflected: reflected * inside * gloss_occlusion(inside, dot(facing, v), rough),
         ..lit,
     }
-    through_air(lt, matte(lt.light, lit, at, lt.cam.eye) + gloss(lt.light, glossy, v), at)
+    through_air(lt, Y::shade_leaf(lt.light, glossy, facing, s, at, lt.cam.eye), at)
 }
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
@@ -919,31 +923,23 @@ pub fn far_shade<C: Format + Filtered, N: Format, Q: Switches, Y: Style>(
     let n = world_normal(f, leaf.normal)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let crown_n = volume_normal(f, b, grid, kd.slab, lt.s, at, otherwise: n)
-    let albedo = tinted(leaf.albedo, f.tint)
+    let history = Unorm8x4 { bits: f.history.value }.decode()
+    let albedo = Y::palette(style::LEAVES, history, tinted(leaf.albedo, f.tint))
+    // Its form is its crown's mass where its leaf is (`volume_normal`), as a card's is, and its
+    // coarse form the crown round its middle.
+    let s = substance_of::<Y>(crown_n, normalize(at - f.centre), history, albedo)
     let out = leaf_light(
         lt,
         at,
-        n,
+        lit_normal::<Y>(n, crown_n, crown_n),
         sky_n: crown_n,
         depth: leaf.depth * f.yaw_scale.value.y,
         albedo: albedo,
         through: b.leaves.through,
         leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
+        s: s,
     )
-    let colour = vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed())))
-    // Its form is its crown's mass where its leaf is (`volume_normal`), as a card's is, and its
-    // coarse form the crown round its middle.
-    let s = if Y::SUBSTANCE == 0 {
-        substance::NONE
-    } else {
-        substance_of::<Y>(
-            crown_n,
-            normalize(at - f.centre),
-            Unorm8x4 { bits: f.history.value }.decode(),
-            albedo,
-        )
-    }
-    Y::written(colour, s)
+    Y::written(vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed()))), s)
 }
 
 // ---- volumes ------------------------------------------------------------------------------------
@@ -1173,7 +1169,9 @@ pub fn volume_shade<Q: Switches, Y: Style>(
     let met = march_volume(f, lt.cam, b, grid, grid_depth, kd.slab, lt.s)
     let crown_n = world_normal(f, met.normal)
     let at = volume_place(f, b, met.at)
-    let albedo = tinted(leaf_age(b.leaves, crown_n.y), f.tint)
+    let history = Unorm8x4 { bits: f.history.value }.decode()
+    let albedo = Y::palette(style::LEAVES, history, tinted(leaf_age(b.leaves, crown_n.y), f.tint))
+    let s = substance_of::<Y>(crown_n, normalize(at - f.centre), history, albedo)
     // Lit where its leaves are, not on the quad (which lies in its own shadow); aged by the
     // normal the ray met (in the plant's frame: its y is the crown's).
     let out = leaf_light(
@@ -1185,19 +1183,9 @@ pub fn volume_shade<Q: Switches, Y: Style>(
         albedo: albedo,
         through: b.leaves.through,
         leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
+        s: s,
     )
-    let colour = vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed())))
-    let s = if Y::SUBSTANCE == 0 {
-        substance::NONE
-    } else {
-        substance_of::<Y>(
-            crown_n,
-            normalize(at - f.centre),
-            Unorm8x4 { bits: f.history.value }.decode(),
-            albedo,
-        )
-    }
-    Y::written(colour, s)
+    Y::written(vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed()))), s)
 }
 
 /// A kind's volume, cooked: its voxels and their depths, in two 3D textures.

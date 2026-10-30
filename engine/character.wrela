@@ -16,6 +16,7 @@ use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
+use style
 use style::{Style, substance_of}
 use substance
 use realize::{Mesh, SkinVertex, Tally}
@@ -354,7 +355,7 @@ pub fn character_shade<Q: Switches, Y: Style>(
     let n = normalize(c.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, c.world, n, soft: 1.0)
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
-    let albedo = clay_or(lt.light, c.albedo)
+    let albedo = clay_or(lt.light, Y::palette(style::CREATURE, vec4(0.0), c.albedo))
     let metallic = if lt.light.clay != 0 { 0.0 } else { saturate(c.metallic) }
     let diffuse = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye) * (1.0 - metallic)
     // A bevel narrower than a pixel contains several normals. Broaden only its specular

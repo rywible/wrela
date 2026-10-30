@@ -20,7 +20,8 @@
 
 use std::mem::size_of
 use switches::Switches
-use style::{Style, substance_of}
+use style
+use style::{Style, lit_normal, substance_of}
 use substance
 use light::Lit
 use sim::Hit
@@ -1329,27 +1330,26 @@ pub fn ground_shade<Q: Switches, Y: Style>(
         weighted_detail(soil, ds, wp.xz, DETAIL_SIZES[1], foot, w.y) +
         rocky +
         weighted_detail(moss, ds, wp.xz, DETAIL_SIZES[3], foot, w.w)
-    let albedo = coarse * detail
+    // The form's normals (`substance::scales`), where the look reads them or lights by them.
+    let (nf, nc) = if Y::SUBSTANCE == 0 && Y::NORMAL == 0 { (n, n) } else {
+        let sc = substance::scales(foot)
+        (
+            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.x),
+            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.y),
+        )
+    }
+    let history = ground_history(lt.levels, texels, level, g.world.xz)
+    let albedo = Y::palette(style::GROUND, history, coarse * detail)
+    let ln = lit_normal::<Y>(n, nf, nc)
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
     // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
     // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
-    let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, n, soft: 2.0)
-    let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
-    let c = lit::shown(lt, l, g.world)
-    let colour = vec4(c, view::GROUND)
-    let s = if Y::SUBSTANCE == 0 {
-        substance::NONE
-    } else {
-        let sc = substance::scales(foot)
-        substance_of::<Y>(
-            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.x),
-            normal_at_scale(lt.levels, texels, level, g.world.xz, sc.y),
-            ground_history(lt.levels, texels, level, g.world.xz),
-            albedo,
-        )
-    }
-    Y::written(colour, s)
+    let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, ln, soft: 2.0)
+    let l = Lit { albedo, n: ln, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
+    let s = substance_of::<Y>(nf, nc, history, albedo)
+    let c = lit::shown(lt, l, g.world, s, style::GROUND)
+    Y::written(vec4(c, view::GROUND), s)
 }
 
 // ---- the ground's detail -------------------------------------------------------------------

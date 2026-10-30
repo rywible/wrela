@@ -1,0 +1,24 @@
+// The marks a look draws (docs/plan-world-class-3.md §D2, §D7): the lines round the characters,
+// creases, dabs, strokes and hatching, each a kind a look's `style::Style::MARKS` names. A mark is
+// a sample of a field in the thing's own domain, sized in screen space (`MarkSample`); a look's
+// `style::Style::mark` says how dark it is at a pixel.
+
+/// The kinds of mark (`style::Style::MARKS`' bits): the lines round the characters (`paint::lines`
+/// today), creases where the form folds, the painter's dabs, strokes along the form, hatching.
+pub const LINES: u32 = 1
+pub const CREASES: u32 = 2
+pub const DABS: u32 = 4
+pub const STROKES: u32 = 8
+pub const HATCH: u32 = 16
+
+/// A mark at a pixel: its kind (one of the bits), its seed, the point it's anchored to in its
+/// thing's domain (`at`), the direction it runs (`dir`: the form's principal direction where a
+/// look asks for it), its size in pixels, and where the pixel lies along it (`phase`, 0 to 1).
+pub struct MarkSample: Copy {
+    pub kind: u32 = 0,
+    pub seed: u32 = 0,
+    pub at: vec3 = vec3(0.0),
+    pub dir: vec3 = vec3(1.0, 0.0, 0.0),
+    pub size_px: f32 = 0.0,
+    pub phase: f32 = 0.0,
+}

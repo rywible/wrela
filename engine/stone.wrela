@@ -13,6 +13,7 @@ use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use switches::Switches
+use style
 use style::{Style, substance_of}
 use substance
 use look::Mesh as Tolerance
@@ -594,8 +595,9 @@ pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> Y
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
+    let albedo = Y::palette(style::STONE, vec4(0.0), s.albedo)
     let lit = Lit {
-        albedo: s.albedo,
+        albedo,
         n,
         sun,
         sky: sky * low,
@@ -604,12 +606,10 @@ pub fn lit_stone<Q: Switches, Y: Style>(s: StoneVertex, lt: Lighting<Q, Y>) -> Y
         reflected: reflected * low,
         glint: 1.0,
     }
-    let c = shown(lt, lit, s.world)
     // A stone's form is its mesh's (realized from its field), its own coarse form; it has no
     // history.
-    let sub = if Y::SUBSTANCE == 0 {
-        substance::NONE
-    } else { substance_of::<Y>(n, n, vec4(0.0), s.albedo) }
+    let sub = substance_of::<Y>(n, n, vec4(0.0), albedo)
+    let c = shown(lt, lit, s.world, sub, style::STONE)
     Y::written(vec4(c, ROCK + f32(s.seed.value % 63)), sub)
 }
 

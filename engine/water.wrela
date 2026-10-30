@@ -13,6 +13,7 @@
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
+use style
 use style::{Style, substance_of}
 use substance
 use noise::noise2
@@ -479,7 +480,8 @@ pub fn water_shade<Q: Switches, Y: Style>(
         let c = CLAY * (lt.light.sun_colour * (wrap * sun) + sky)
         return Y::written(vec4(through_air(lt, c, w.world), WATER), s)
     }
-    let deep = look.deep * (sky + vec3(sun) * lt.light.sun_colour * 0.25)
+    let deep = Y::palette(style::WATER, vec4(0.0, 0.0, 1.0, 0.0), look.deep) *
+        (sky + vec3(sun) * lt.light.sun_colour * 0.25)
     let seen = under.rgb * through + deep * (vec3(1.0) - through)
     // The world reflected: from the screen where it's on it; else from the probes, and the sky
     // with its clouds where the probe sees the sky's light that way.
