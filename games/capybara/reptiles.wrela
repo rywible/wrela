@@ -1,20 +1,56 @@
-// The Reptile House: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+// The Reptile House: the sixth level, in the zoo's house of warm water and basking lizards. Its new
+// thing is the Komodo dragon, the zoo's fiercest-looking animal and its sweetest: stomped on like
+// a goose, it bites only from the side. It meets one alone on flat ground, then on a step and past
+// pits; then the water, harder than before: warm pools with a caiman in a passage under an island,
+// flooded tanks whose walls only a swim under passes, and a breach out to a high deck; then the
+// keepers' wall, which stops whatever speed the water gave, and the basking lawn, Komodos on flat
+// ground to the goal. Over the lawn runs the keepers' catwalk, where one Komodo basks: touched,
+// it gives the capybara a ride along the catwalk to the goal (design.md, "Rules"). A plank over
+// the wall's top, a snack on it, leads up to it.
 
 use course::Course
+use foes::Kind
 use ground::corner
+use screens::Act
 use signs::Sign
 
 /// Its name, as its title says it.
 pub const NAME: Text = "The Reptile House"
 
-/// The course: a placeholder.
+/// The course: four sections, a checkpoint after each of the first three.
+///
+/// 1. The Komodo yard (0 to 64 m): a sign, then a Komodo dragon alone on flat ground; one on a
+///    step; a 4 m pit, a snack inside it for a run off its edge and a double jump out; a Komodo on
+///    the landing; a 5 m pit.
+/// 2. The warm pools (64 to 158 m): a pool with a caiman at mid-depth and a plank high over it,
+///    a snack on the plank for a breach and a double jump; out up its far bank; a second pool
+///    with an island, a Komodo on it and a caiman in the passage under it, a snack on the
+///    passage's floor; its far wall stands 3.5 m above the water, so out is a breach and a double
+///    jump, onto a deck.
+/// 3. The flooded tanks (158 to 246 m): one long body of water under three tank walls, 9.5 m tall,
+///    each passed by a swim under it: each wall's foot leans in, so a swim into it slides down and
+///    under. Dolphin-kick lines between them; a caiman in the first passage, one near the surface
+///    of the third tank and one deep in the fourth, a snack high over the fourth for a breach and
+///    a double jump at its top; out by a breach onto a deck 3.5 m above the water.
+/// 4. The basking lawn (246 to 390 m): the keepers' wall, 5.5 m over the deck, which every run
+///    meets face on and climbs by a plank on its face, so none carries the water's speed
+///    past it; on top, a plank high over the lawn, a snack on it, for a double jump; then the lawn,
+///    flat to the goal with no slope, corner or puddle to speed a run past the running speed, and
+///    Komodos on it: one alone, a pair whose patrols cross, one with a long patrol, a row of three,
+///    and one before the goal.
+///
+/// The keepers' catwalk runs from above the high plank (253 m) to the end wall, 8 m over the lawn,
+/// out of reach of every jump but the one from the plank. On it, the basking Komodo
+/// (`Kind::Ride`) runs on with the capybara at 13 m/s, faster than the running speed, over the
+/// lawn and through the goal (its box reaches up to the catwalk), until it stops at the end wall:
+/// the shortcut. No deadly fall lies under it.
 pub const COURSE: Course = built()
 
 pub fn built() -> Course {
     Course::new(
         start: vec2(2.0, 0.35),
-        goal_lo: vec2(30.0, 0.0),
-        goal_hi: vec2(32.0, 5.0),
+        goal_lo: vec2(380.0, 9.0),
+        goal_hi: vec2(382.0, 18.5),
         floor: -12.0,
     )
         .solid(
@@ -22,15 +58,166 @@ pub fn built() -> Course {
                 corner(vec2(-6.0, -20.0)),
                 corner(vec2(-6.0, 10.0)),
                 corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0)),
-                corner(vec2(36.0, 0.0)),
-                corner(vec2(36.0, 14.0)),
-                corner(vec2(38.0, 14.0)),
-                corner(vec2(38.0, -20.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The Komodo yard: the flat, the step, the first pit, the landing, the second.
+                corner(vec2(30.0, 0.0)),
+                corner(vec2(30.0, 1.5)),
+                corner(vec2(42.0, 1.5)),
+                corner(vec2(42.0, -16.0)),
+                corner(vec2(46.0, -16.0)),
+                corner(vec2(46.0, 1.0)),
+                corner(vec2(56.0, 1.0)),
+                corner(vec2(56.0, -16.0)),
+                corner(vec2(61.0, -16.0)),
+                corner(vec2(61.0, 0.0)),
+                // 2. The warm pools: down the first pool's bank and up its far bank.
+                corner(vec2(68.0, 0.0), 2.0),
+                corner(vec2(74.0, -5.5), 3.0),
+                corner(vec2(86.0, -5.5), 2.0),
+                corner(vec2(92.0, 1.0)),
+                // The second pool, and its far wall up to the deck.
+                corner(vec2(105.0, 1.0)),
+                corner(vec2(105.0, -7.5)),
+                corner(vec2(144.0, -7.5)),
+                corner(vec2(144.0, 3.0)),
+                // 3. The deck, then the flooded tanks' floor and their far wall.
+                corner(vec2(158.0, 3.0)),
+                corner(vec2(158.0, -8.0), 1.5),
+                corner(vec2(246.0, -8.0), 1.5),
+                corner(vec2(246.0, 3.5)),
+                // 4. The deck, the keepers' wall, and the basking lawn on top, flat to the wall at the end.
+                corner(vec2(252.0, 3.5)),
+                corner(vec2(252.0, 9.0)),
+                corner(vec2(390.0, 9.0)),
+                corner(vec2(390.0, 22.0)),
+                corner(vec2(392.0, 22.0)),
+                corner(vec2(392.0, -20.0)),
             ],
         )
-        .ended(vec2(-4.0, 36.0))
+        // The island in the second pool, and the three tank walls.
+        .solid(
+            [
+                corner(vec2(116.0, 1.0), 0.5),
+                corner(vec2(128.0, 1.0), 0.5),
+                corner(vec2(128.0, -3.5)),
+                corner(vec2(116.0, -3.5)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(173.0, 9.5)),
+                corner(vec2(179.0, 9.5)),
+                corner(vec2(179.0, 0.0)),
+                corner(vec2(177.0, -2.5)),
+                corner(vec2(175.0, -2.5)),
+                corner(vec2(173.0, 0.0)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(193.0, 9.5)),
+                corner(vec2(201.0, 9.5)),
+                corner(vec2(201.0, 0.0)),
+                corner(vec2(198.0, -3.5)),
+                corner(vec2(196.0, -3.5)),
+                corner(vec2(193.0, 0.0)),
+            ],
+        )
+        .solid(
+            [
+                corner(vec2(217.0, 9.5)),
+                corner(vec2(223.0, 9.5)),
+                corner(vec2(223.0, 0.0)),
+                corner(vec2(221.0, -2.5)),
+                corner(vec2(219.0, -2.5)),
+                corner(vec2(217.0, 0.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 390.0))
+        // The plank over the first pool, the planks on the keepers' wall and over the lawn, and
+        // the keepers' catwalk.
+        .ledge([corner(vec2(82.0, 3.2)), corner(vec2(85.0, 3.2))])
+        .ledge([corner(vec2(248.5, 6.2)), corner(vec2(252.0, 6.2))])
+        .ledge([corner(vec2(253.0, 13.5)), corner(vec2(256.0, 13.5))])
+        .ledge([corner(vec2(253.0, 17.0)), corner(vec2(390.0, 17.0))])
+        .water(vec2(68.0, -5.5), vec2(92.0, -0.5))
+        .water(vec2(105.0, -7.5), vec2(144.0, -0.5))
+        .water(vec2(158.0, -8.0), vec2(246.0, 0.0))
+        .foe(Kind::Komodo, vec2(20.0, 0.4), 3.0)
+        .foe(Kind::Komodo, vec2(36.0, 1.9), 2.5)
+        .foe(Kind::Komodo, vec2(51.0, 1.4), 2.5)
+        .foe(Kind::Caiman, vec2(81.0, -3.0), 5.0)
+        .foe(Kind::Komodo, vec2(122.0, 1.4), 3.0)
+        .foe(Kind::Caiman, vec2(122.0, -5.5), 6.0)
+        .foe(Kind::Caiman, vec2(175.0, -5.75), 5.0)
+        .foe(Kind::Caiman, vec2(210.0, -2.0), 5.0)
+        .foe(Kind::Caiman, vec2(236.0, -6.0), 6.0)
+        .foe(Kind::Ride, vec2(262.0, 17.4), 1.5)
+        .foe(Kind::Komodo, vec2(280.0, 9.4), 2.5)
+        .foe(Kind::Komodo, vec2(292.0, 9.4), 3.0)
+        .foe(Kind::Komodo, vec2(300.0, 9.4), 3.0)
+        .foe(Kind::Komodo, vec2(316.0, 9.4), 4.0)
+        .foe(Kind::Komodo, vec2(330.0, 9.4), 2.0)
+        .foe(Kind::Komodo, vec2(336.0, 9.4), 2.0)
+        .foe(Kind::Komodo, vec2(342.0, 9.4), 2.0)
+        .foe(Kind::Komodo, vec2(358.0, 9.4), 3.0)
+        .snack(vec2(44.0, 0.2))
+        .snack(vec2(83.5, 3.9))
+        .snack(vec2(122.0, -7.0))
+        .snack(vec2(240.0, 4.8))
+        .snack(vec2(254.5, 14.2))
+        .yuzu(vec2(66.0, 0.6))
+        .yuzu(vec2(256.0, 9.6))
+        .checkpoint(vec2(63.0, 0.0))
+        .checkpoint(vec2(148.0, 3.0))
+        .checkpoint(vec2(249.0, 3.5))
 }
 
-/// Its signs: none yet.
-pub const SIGNS: [Sign; 0] = []
+/// Its signs, left to right: the Komodo dragons before the first, and on the catwalk, the basking
+/// spot before the ride.
+pub const SIGNS: [Sign; 2] = [
+    Sign {
+        at: vec2(6.0, 0.0),
+        heading: "Komodo dragons",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 0,
+        line: "Hop on their backs, not their sides",
+        teaches: 0,
+    },
+    Sign {
+        at: vec2(257.0, 17.0),
+        heading: "Basking spot",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 0,
+        line: "Our sweetest Komodo. Say hello!",
+        teaches: 0,
+    },
+]
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn the_basking_komodo_carries_a_capybara_that_touches_it_to_the_goal() {
+    // Set down on the catwalk short of the ride, running right: it climbs on, rides over the
+    // basking lawn and through the goal, unhurt, at the ride's speed, and stops at the end wall.
+    var w = world::world(course::REPTILES)
+    w.body = body::spawn(vec2(258.0, 17.0 + body::RADIUS))
+    var rode = false
+    for _ in 0..30 * feel::HZ {
+        if w.finished > 0 {
+            break
+        }
+        world::step(mut w, pad::Pad { bits: pad::RIGHT })
+        rode = rode || w.riding > 0
+    }
+    assert(rode, "it never climbed on")
+    assert(w.finished > 0 && w.deaths == 0, f"at {w.body.at}")
+    let most = (382.0 - 258.0) / foes::RIDE + 1.0
+    assert(f32(w.finished) < most * f32(feel::HZ), f"{w.finished} ticks: not carried")
+    for _ in 0..2 * feel::HZ {
+        world::step(mut w, pad::Pad { bits: pad::RIGHT })
+    }
+    assert(w.riding > 0 && abs(w.body.at.x - 390.0) < 0.2, f"stopped at {w.body.at}")
+}
