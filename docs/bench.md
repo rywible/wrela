@@ -3857,3 +3857,19 @@ and preserved. First joint assessment 30.17 min,
 two optimization followups, no training or G1–G7 completion. UMA pools overlap.
 Next required control: original spheres with the finer query alone, to test
 whether source metadata is worth its cost. No source-specific causal claim yet.
+
+## 2026-10-30 — refined spheres supersede source envelopes, Pop!_OS AMD
+
+[Full comparison and limits](neural-sphere-refinement.md). Parent 82cbaf583e9b26659b932bcdd4913426eac312f1,
+Ryzen 5 5500U / RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57, Wrela 0.9.0.
+Change back to original sphere bounds with optional finer HZB queries.
+Normal-route total GPU versus source envelope **-0.097% to +0.252%**
+across 4 matched pairs; requested live **−137,280 B**, all **36 shaded checks pass**.
+Against original coarse spheres, 1 matched normal-route pairs show
+**-1.398%** total GPU change.
+Physical residency and CPU/browser tails are mixed across views; no general
+latency/physical-memory win or source-specific causal advantage is claimed.
+21 runs / 147 batched captures; 13 matched and 8 excluded comparisons
+with shared controls. First joint assessment 23.54 min,
+zero optimization followups, no training, no G1–G7 completion. Next larger bet:
+direct compiled source-field families against the compact tape interpreter.

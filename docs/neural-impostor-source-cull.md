@@ -1,5 +1,9 @@
 # Source-bound two-phase visibility: retain the wind envelope, challenge its attribution
 
+Superseded on the experimental branch by [refined spheres](neural-sphere-refinement.md):
+the later ablation removes this source table and wind envelope while preserving
+closely matched measured route cost. The results below describe this historical block.
+
 2026-10-30. **Decision: continue this composite architecture on the experimental
 branch**, retaining the analytic wind envelope and finer depth-pyramid query.
 On two matched AMD runs, complete GPU time falls **1.77–2.76%**, movement GPU time

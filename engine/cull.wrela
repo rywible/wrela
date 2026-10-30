@@ -170,7 +170,17 @@ fn farthest(step: mut MipStep<R32Float>, id: GlobalId) {
 /// (`h` what it was built from): its nearest point's depth less than the farthest depth over the
 /// pixels its box covers, read where they're at most 2 × 2 texels. Not hidden if the pyramid is
 /// off, or the sphere reaches the near plane or behind it.
-pub fn occluded(pyramid: Texture<R32Float>, h: Hzb, centre: vec3, radius: f32) -> bool {
+/// When refine is true and the coarse test fails, query the same rectangle two
+/// levels finer. An opening outside that rectangle need not keep this sphere
+/// visible. The finer test keeps outward pixel and depth margins; its first
+/// non-occluding cell stops the query. Other callers keep the coarse path.
+pub fn occluded(
+    pyramid: Texture<R32Float>,
+    h: Hzb,
+    centre: vec3,
+    radius: f32,
+    refine: bool = false,
+) -> bool {
     if h.on == 0 {
         return false
     }
@@ -213,7 +223,21 @@ pub fn occluded(pyramid: Texture<R32Float>, h: Hzb, centre: vec3, radius: f32) -
             farthest = min(farthest, pyramid.load(x: x, y: y, level: level))
         }
     }
-    h.near / ahead < farthest
+    let nearest = h.near / ahead
+    if nearest < farthest { return true }
+    if !refine { return false }
+    let fine = level - min(level, 2)
+    if fine == level { return false }
+    let fine_size = vec2u(max(u32(h.size.x) >> fine, 1), max(u32(h.size.y) >> fine, 1))
+    let low = min(vec2u(lo) >> vec2u(fine), fine_size - vec2u(1))
+    let high = min(vec2u(hi) >> vec2u(fine), fine_size - vec2u(1))
+    let test_depth = nearest + abs(nearest) * 1.0e-5 + 1.0e-7
+    for y in low.y..(high.y + 1) {
+        for x in low.x..(high.x + 1) {
+            if pyramid.load(x: x, y: y, level: fine) <= test_depth { return false }
+        }
+    }
+    true
 }
 
 // ---- one bounds list ----------------------------------------------------------------------------

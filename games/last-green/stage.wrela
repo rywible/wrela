@@ -587,10 +587,9 @@ impl Scene for Stage {
             pyramid: pyramid,
             hzb: hzb,
         )
-        let source_wind = self.wind(lt.cam, lt.cam.time)
         if on(shown(self.off, self.view), System::Trees) {
             match mut self.wood {
-                Some(w) => w.select(lt.cam, pyramid, hzb, wind: Some(source_wind)),
+                Some(w) => w.select(lt.cam, pyramid, hzb),
                 None => {},
             }
         }
