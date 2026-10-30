@@ -3932,3 +3932,20 @@ first complete current-parent shaded assessment 38.21 min,
 decision 52.93 min after two optimizations.
 No training; G1–G7 unchanged/unmet. Next: source-shaped near-leaf coverage
 geometry gated by footprint, with all geometry/update costs charged.
+
+
+## 2026-10-30 — near-card source partitions retired, Pop!_OS AMD
+
+[Report](neural-card-partitions.md). Parent 0d6fb49ce1131f5556c51080e3e70f180f408c06;
+Ryzen5 5500U / RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+12660-frame runs/84batched images. Initial all16pattern border
+fallback diagnosed and preserved. One corrected-clamp follow-up; confirmation
+uses unchanged binaries. pair5 GPU+0.524%, movement+0.923%, settled+0.589%; pair6 GPU+1.600%, movement+0.764%, settled+0.414%. Requestedlive+1,707,008B; actual VRAM/GTT/PSS
+and startup/scratch/fallback costs reported. Corrected shaded checks
+36/36; close-up gate coverage
+is not assumed. Two padded quads submit more area at64px for all16patterns.
+Retire; first joint route22.87min,
+first corrected shaded assessment51.25min,
+decision58.74min. No training or new truth.
+G1–G7 unchanged/unmet. Next: source-derived transient-attachment lifetimes.
