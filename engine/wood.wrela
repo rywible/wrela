@@ -753,13 +753,18 @@ impl Pooling {
     /// Room for kinds of `plants` (their cards and limbs as `vegetation::kind` cooks them), their
     /// impostors compressed if `compress` (`Impostors`).
     pub fn new(plants: [Plant], compress: bool) -> Pooling {
-        let n = max(plants.len(), 1)
         var cards = 0
         var limbs = 0
         for p in plants {
             cards += p.cards()
             limbs += p.limbs.len()
         }
+        Pooling::room(plants.len(), cards, limbs, compress)
+    }
+
+    /// Room for `kinds` kinds of `cards` cards and `limbs` limbs in all.
+    fn room(kinds: u32, cards: u32, limbs: u32, compress: bool) -> Pooling {
+        let n = max(kinds, 1)
         Pooling {
             pool: Pool {
                 // Its kinds' descriptions, the far kinds' with them, are written by `done`.
@@ -862,11 +867,13 @@ impl Pooling {
 /// `kinds` pooled (`Pool`, through `Pooling`), for `far_kinds` too, their impostors compressed if
 /// `compress` (`Impostors`).
 fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
-    var plants: Vec<Plant> = Vec::new()
+    var cards = 0
+    var limbs = 0
     for k in kinds {
-        plants.push(k.plant)
+        cards += k.card_count
+        limbs += k.limb_count
     }
-    var p = Pooling::new(plants, compress)
+    var p = Pooling::room(kinds.len(), cards, limbs, compress)
     for mut k in kinds {
         p.add(mut k)
     }
