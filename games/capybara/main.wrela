@@ -772,6 +772,11 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
             None => {},
         }
     }
+    // A whole game played through: its time, the best kept.
+    if live.game > 0 && (s.settings.best_game == 0 || live.game < s.settings.best_game) {
+        s.settings.best_game = live.game
+        s.storing_settings.unsaved = true
+    }
     let made = learned(live)
     if made & !s.settings.learned != 0 {
         s.settings.learned = s.settings.learned | made
@@ -1031,6 +1036,8 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             alpha,
             more: more,
             ending: cast::ending(snap),
+            game: snap.game,
+            best_game: s.settings.best_game,
         )
     }
     if s.readout {

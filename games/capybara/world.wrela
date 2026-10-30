@@ -621,17 +621,57 @@ pub fn step_counted(w: mut World, t: mut Tally, pad: Pad) {
     t.count(before, w)
 }
 
-/// What the ticker steps: the world, its attempt's run as it's played, and what happened, kept
-/// apart from the world so that searches and tests step a small value.
+/// A whole-game run (design.md, "Timing": the levels in order in one sitting, its time the sum of
+/// its levels' times, restarts and deaths included, menus and pauses not): whether one is on, its
+/// ticks so far, and its time once the last level's goal is reached (0 before). One begins with
+/// each attempt at the first level; going on to the next level from a goal's card keeps it on,
+/// a restart too; any other way to another level ends it.
+pub struct Game: Copy + Eq + StateHash + Serialize + SimState + Plain {
+    pub on: bool,
+    pub ticks: u32,
+    pub done: u32,
+}
+
+/// What the ticker steps: the world, its attempt's run as it's played, what happened, and the
+/// whole-game run, kept apart from the world so that searches and tests step a small value.
 pub struct Live: Copy + Eq + StateHash + Serialize + SimState {
     pub world: World,
     pub run: Run,
     pub tally: Tally,
+    pub game: Game,
 }
 
 /// A new game at course `c`.
 pub fn live(c: u32) -> Live {
-    Live { world: world(c), run: NO_RUN, tally: NO_TALLY }
+    Live {
+        world: world(c),
+        run: NO_RUN,
+        tally: NO_TALLY,
+        game: Game { on: c == HOME, ticks: 0, done: 0 },
+    }
+}
+
+/// The whole-game run `g` after a tick from `before` to `after`.
+fn game_after(g: mut Game, before: World, after: World) {
+    let moved = after.attempt != before.attempt || after.course != before.course
+    if moved {
+        let onward = before.finished > 0 && next(before.course) == Some(after.course)
+        if onward {
+            // On to the next level from the goal's card: the run goes on.
+        } else if after.course == HOME {
+            g = Game { on: true, ticks: 0, done: 0 }
+        } else if after.course != before.course {
+            g.on = false
+        }
+        return
+    }
+    // The level's clock ran: so does the game's.
+    if g.on && g.done == 0 && after.ticks > before.ticks {
+        g.ticks += 1
+        if after.finished > 0 && next(after.course).is_none() {
+            g.done = g.ticks
+        }
+    }
 }
 
 /// One tick of `l`, as `tick`, recording each pad the world steps with until it reaches the goal:
@@ -642,6 +682,7 @@ pub fn tick_live(l: mut Live, input: TickInput<Live>) {
     var done = before.finished > 0
     let pad = ticked(mut l.world, input.records)
     l.tally.count(before, l.world)
+    game_after(mut l.game, before, l.world)
     if l.world.attempt != before.attempt || l.world.course != before.course {
         l.run = NO_RUN
         done = false
@@ -659,6 +700,7 @@ pub fn present_live(l: Live) -> Snap {
     var s = present(l.world)
     s.run = l.run
     s.tally = l.tally
+    s.game = l.game.done
     s
 }
 
@@ -735,6 +777,8 @@ pub struct Snap: Copy + Plain {
     pub run: Run = NO_RUN,
     /// What happened, counted (`present_live`, or a watched run's), or nothing.
     pub tally: Tally = NO_TALLY,
+    /// The whole-game run's time, once the last goal is reached in one (`Game::done`), or 0.
+    pub game: u32 = 0,
 }
 
 @deterministic
@@ -819,6 +863,15 @@ fn press(b: PadButton) -> Event {
 
 fn assist(n: u32, action: Assist) -> Event {
     Event::Assist { node: n, action }
+}
+
+/// One tick of `l` with these events, as the ticker runs it.
+fn live_tick(l: mut Live, records: [Event]) {
+    var events: Vec<Event> = Vec::new()
+    for e in records {
+        events.push(e)
+    }
+    tick_live(mut l, TickInput { tick: 0, dt: STEP, records: events, answers: Vec::new() })
 }
 
 /// `w` playing, from its title.
@@ -1044,4 +1097,38 @@ fn at_the_goals_card_a_choice_plays_the_next_level_and_not_before() {
     }
     assert(w.body.grounded(), "and the press that chose it wasn't a jump")
     assert(next(LEVELS - 1).is_none() && next(LAB).is_none(), "nothing after the last, or the lab")
+}
+
+@test
+fn a_whole_game_counts_each_levels_clock_on_through_the_next_level_and_ends_at_another() {
+    var l = live(HOME)
+    live_tick(mut l, [down(Key::Enter)])
+    live_tick(mut l, [up(Key::Enter)])
+    for _ in 0..50 {
+        live_tick(mut l, [])
+    }
+    assert(l.game.on && l.game.ticks == l.world.ticks, f"{l.game.ticks} of {l.world.ticks}")
+    // At the goal (as if reached), its clock stops and so does the game's; on to the next level.
+    l.world.finished = l.world.ticks
+    while l.world.after < CARD {
+        live_tick(mut l, [])
+    }
+    let at_goal = l.game.ticks
+    assert(at_goal == l.world.ticks, "the goal's wait isn't counted")
+    live_tick(mut l, [down(Key::Enter)])
+    assert(l.world.course == WETLANDS && l.game.on, "on to the next level, the run on")
+    for _ in 0..30 {
+        live_tick(mut l, [])
+    }
+    assert(l.game.ticks == at_goal + l.world.ticks, "the next level's clock adds on")
+    // A restart is part of the run; the map to another level ends it.
+    live_tick(mut l, [down(Key::R)])
+    assert(l.game.on && l.world.attempt == 2, "a restart keeps it on")
+    live_tick(mut l, [up(Key::R)])
+    live_tick(mut l, [down(Key::Escape)])
+    choose(mut l.world, SEE_MAP)
+    live_tick(mut l, [down(Key::Right)])
+    live_tick(mut l, [down(Key::Enter)])
+    assert(l.world.course == course::SAVANNA && !l.game.on, "chosen on the map: no run")
+    assert(l.game.done == 0, "and never done")
 }

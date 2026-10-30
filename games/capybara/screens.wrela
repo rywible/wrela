@@ -846,6 +846,8 @@ pub fn goal_card(
     alpha: f32,
     more: bool,
     ending: bool = false,
+    game: u32 = 0,
+    best_game: u32 = 0,
 ) {
     let u = unit(screen)
     let w = min(screen.x - u * 6.0, u * 80.0)
@@ -923,6 +925,24 @@ pub fn goal_card(
         vec2(at, r.y + u * 28.4),
         faded(SOFT, alpha),
     )
+    // A whole game played through, at the ending: its time, and the best.
+    if game > 0 {
+        let t = seconds(game)
+        let b = seconds(best_game)
+        let line = if game <= best_game { f"The whole zoo in {t}: your best!" } else {
+            f"The whole zoo in {t} (best {b})"
+        }
+        centred(
+            mut list,
+            fonts,
+            Face::Sans,
+            line.as_str(),
+            u * 2.8,
+            x,
+            r.y + u * 32.6,
+            faded(GOLD, alpha),
+        )
+    }
     var choices: Vec<Prompt> = Vec::new()
     if more {
         choices.push(Prompt { act: Act::Choose, say: "Next level" })
