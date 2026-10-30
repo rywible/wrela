@@ -1,20 +1,43 @@
-// The Food Court: a level not yet laid out. A placeholder course, a flat run to the goal, until it is.
+// The Food Court: the last level, the seagull's last "castle", where the capybara at last gets
+// its snack. The hardest level, and a fair one: everything the game has taught, in turn and then
+// together (the ice-cream stand's frozen floor, the kitchen vents' updrafts, a fountain to swim,
+// tables and stalls to climb, slopes to slide), under the seagull's crew, with pigeons and geese.
+// Each new pairing comes in steps, each deadly gap's far side shows before the jump, and the
+// checkpoints are close. Its goal's deck is wider than the other levels', for the ending.
 
 use course::Course
+use foes::Kind
 use ground::corner
+use screens::Act
 use signs::Sign
 
 /// Its name, as its title says it.
 pub const NAME: Text = "The Food Court"
 
-/// The course: a placeholder.
+/// The course: five sections, a checkpoint after each of the first four.
+///
+/// 1. The picnic tables (0 to 76 m): table tops (one-way) over a goose, a pigeon, a snack high
+///    over the second table; a 5 m pit; the noodle stall's steps; a gull over open ground.
+/// 2. The ice-cream stand (76 to 152 m): a frozen floor. A slope down onto it, a goose on it to
+///    bowl over sliding, a steep ramp up to a lip over a 7 m pit (a slide-jump flies high over
+///    it), a long icy landing, then the freezers' icy tops between two pits under a gull, a snack
+///    just inside the first pit's edge for a run off it and a double jump out.
+/// 3. The kitchen vents (152 to 236 m): a vent in a pit up to the counter's shelf, a snack low
+///    by the pit's near wall for a drop into the draft; a vent in a wider pit under a gull up to
+///    a high deck; a slope down and a pit under a pigeon.
+/// 4. The fountain (236 to 276 m): a pool 24 m across and 5.6 m deep under two gulls, its jet an
+///    updraft from the surface with a snack at its top; out by a breach and a double jump.
+/// 5. The seagull's table (276 to 400 m): the stalls' roofs up to an icy awning, a long slide down
+///    past a goose to a lip over a 10 m pit, a slide-jump over it or a vent's draft up; a deck
+///    under two gulls with the seagull's table on it, a snack high over it for a stomp's bounce
+///    and a double jump; a pit under a pigeon, and the goal's wide deck.
 pub const COURSE: Course = built()
 
 pub fn built() -> Course {
     Course::new(
         start: vec2(2.0, 0.35),
-        goal_lo: vec2(30.0, 0.0),
-        goal_hi: vec2(32.0, 5.0),
+        goal_lo: vec2(390.0, 3.0),
+        goal_hi: vec2(392.0, 8.0),
         floor: -12.0,
     )
         .solid(
@@ -22,15 +45,146 @@ pub fn built() -> Course {
                 corner(vec2(-6.0, -20.0)),
                 corner(vec2(-6.0, 10.0)),
                 corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0)),
-                corner(vec2(36.0, 0.0)),
-                corner(vec2(36.0, 14.0)),
-                corner(vec2(38.0, 14.0)),
-                corner(vec2(38.0, -20.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The picnic tables, then the first pit.
+                corner(vec2(32.0, 0.0)),
+                corner(vec2(32.0, -16.0)),
+                corner(vec2(37.0, -16.0)),
+                corner(vec2(37.0, 0.0)),
+                // The noodle stall's steps and counter.
+                corner(vec2(44.0, 0.0)),
+                corner(vec2(44.0, 1.5)),
+                corner(vec2(48.0, 1.5)),
+                corner(vec2(48.0, 3.0)),
+                corner(vec2(56.0, 3.0)),
+                corner(vec2(56.0, 0.0)),
+                // 2. The ice-cream stand's step, its slope down onto the frozen floor, the ramp up
+                // to the lip.
+                corner(vec2(80.0, 0.0)),
+                corner(vec2(80.0, 2.0)),
+                corner(vec2(85.0, 2.0), 2.0),
+                corner(vec2(95.0, -3.0), 4.0),
+                corner(vec2(102.0, -3.0), 3.0),
+                corner(vec2(106.0, -2.4), 2.0),
+                corner(vec2(109.0, -0.4)),
+                // The pit, the landing, and the freezers between two pits.
+                corner(vec2(109.0, -16.0)),
+                corner(vec2(116.0, -16.0)),
+                corner(vec2(116.0, -1.5)),
+                corner(vec2(131.0, -1.5)),
+                corner(vec2(131.0, -16.0)),
+                corner(vec2(136.0, -16.0)),
+                corner(vec2(136.0, -0.8)),
+                corner(vec2(141.0, -0.8)),
+                corner(vec2(141.0, -16.0)),
+                corner(vec2(146.0, -16.0)),
+                corner(vec2(146.0, 0.0)),
+                // 3. The first vent's pit and the counter's shelf past it.
+                corner(vec2(160.0, 0.0)),
+                corner(vec2(160.0, -16.0)),
+                corner(vec2(168.0, -16.0)),
+                corner(vec2(168.0, 5.5)),
+                // The second vent's pit, the high deck, the slope down, the pigeon's pit.
+                corner(vec2(178.0, 5.5)),
+                corner(vec2(178.0, -16.0)),
+                corner(vec2(187.0, -16.0)),
+                corner(vec2(187.0, 7.0)),
+                corner(vec2(196.0, 7.0), 3.0),
+                corner(vec2(210.0, 0.0), 3.0),
+                corner(vec2(226.0, 0.0)),
+                corner(vec2(226.0, -16.0)),
+                corner(vec2(232.0, -16.0)),
+                corner(vec2(232.0, 0.0)),
+                // 4. The fountain: its rim, its basin and its far wall up to the deck.
+                corner(vec2(242.0, 0.0)),
+                corner(vec2(242.0, 0.8)),
+                corner(vec2(243.5, 0.8)),
+                corner(vec2(244.5, -6.0), 1.5),
+                corner(vec2(267.5, -6.0), 1.5),
+                corner(vec2(268.5, 3.5)),
+                // 5. The stalls' roofs up to the awning, the icy slide down, the ramp to the lip.
+                corner(vec2(284.0, 3.5)),
+                corner(vec2(284.0, 5.5)),
+                corner(vec2(288.0, 5.5)),
+                corner(vec2(288.0, 7.5)),
+                corner(vec2(296.0, 7.5), 2.0),
+                corner(vec2(316.0, -2.5), 5.0),
+                corner(vec2(322.0, -2.5), 4.0),
+                corner(vec2(328.0, 0.0)),
+                // The last pit, the gulls' deck, the pigeon's pit, the goal's deck and the end
+                // wall.
+                corner(vec2(328.0, -16.0)),
+                corner(vec2(338.0, -16.0)),
+                corner(vec2(338.0, 4.0)),
+                corner(vec2(356.0, 4.0)),
+                corner(vec2(356.0, -16.0)),
+                corner(vec2(362.0, -16.0)),
+                corner(vec2(362.0, 3.0)),
+                corner(vec2(400.0, 3.0)),
+                corner(vec2(400.0, 16.0)),
+                corner(vec2(402.0, 16.0)),
+                corner(vec2(402.0, -20.0)),
             ],
         )
-        .ended(vec2(-4.0, 36.0))
+        .ended(vec2(-4.0, 400.0))
+        // The picnic tables' tops.
+        .ledge([corner(vec2(12.0, 1.6)), corner(vec2(16.0, 1.6))])
+        .ledge([corner(vec2(20.0, 1.6)), corner(vec2(24.0, 1.6))])
+        // The seagull's own table, on the deck under its crew.
+        .ledge([corner(vec2(343.5, 6.0)), corner(vec2(347.5, 6.0))])
+        .icy_from(lo: 84.0, hi: 142.0)
+        .icy_from(lo: 296.0, hi: 328.5)
+        // The kitchen vents, the fountain's jet and the last pit's vent.
+        .draft(vec2(161.0, -16.0), vec2(167.0, 6.5))
+        .draft(vec2(180.0, -16.0), vec2(185.5, 9.5))
+        .draft(vec2(254.5, -0.4), vec2(257.5, 8.5))
+        .draft(vec2(332.5, -16.0), vec2(336.5, 6.0))
+        .water(vec2(243.5, -6.0), vec2(268.5, -0.4))
+        .foe(Kind::Goose, vec2(18.0, 0.45), 3.5)
+        .foe(Kind::Pigeon, vec2(27.0, 4.0), 2.5)
+        .foe(Kind::Gull, vec2(64.0, 4.3), 4.0)
+        .foe(Kind::Goose, vec2(100.0, -2.55), 2.5)
+        .foe(Kind::Gull, vec2(138.5, 3.5), 2.5)
+        .foe(Kind::Gull, vec2(181.5, 13.5), 1.0)
+        .foe(Kind::Pigeon, vec2(229.0, 4.6), 2.0)
+        .foe(Kind::Gull, vec2(250.0, 3.6), 3.0)
+        .foe(Kind::Gull, vec2(262.0, 3.6), 3.0)
+        .foe(Kind::Goose, vec2(319.0, -2.05), 2.5)
+        .foe(Kind::Gull, vec2(345.5, 8.0), 0.5)
+        .foe(Kind::Gull, vec2(351.0, 8.0), 3.0)
+        .foe(Kind::Pigeon, vec2(359.0, 5.0), 1.5)
+        .snack(vec2(22.0, 6.2))
+        .snack(vec2(132.0, -1.9))
+        .snack(vec2(160.8, -1.5))
+        .snack(vec2(256.0, 9.9))
+        .snack(vec2(345.5, 12.6))
+        .yuzu(vec2(149.0, 0.6))
+        .yuzu(vec2(280.0, 4.1))
+        .checkpoint(vec2(76.0, 0.0))
+        .checkpoint(vec2(152.0, 0.0))
+        .checkpoint(vec2(236.0, 0.0))
+        .checkpoint(vec2(276.0, 3.5))
 }
 
-/// Its signs: none yet.
-pub const SIGNS: [Sign; 0] = []
+/// Its signs: the frozen floor and the vents, each before the stretch it names. Every move was
+/// taught before this level.
+pub const SIGNS: [Sign; 2] = [
+    Sign {
+        at: vec2(82.5, 2.0),
+        heading: "Frozen floor",
+        first: Act::Slide,
+        second: Act::Slide,
+        prompts: 0,
+        line: "Slides run on; stops take longer",
+        teaches: 0,
+    },
+    Sign {
+        at: vec2(156.0, 0.0),
+        heading: "Kitchen vents",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 0,
+        line: "Jump into the hot air: it lifts you",
+        teaches: 0,
+    },
+]
