@@ -152,6 +152,16 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Evidence:** `wrela tool bench -- --scene vale-walk --starts 3`, cold, playable ms: 8029 with every tier-0 pipeline asked for at once, 6691 six at a time (0.10.2). Single runs: smallest first 6066, alternating ends 6601, in a native run's first-use order 6653.
 - **Meanwhile:** fewer and smaller pipelines before playable: the covered frames don't draw the scene (C5a), and C1's switches leave a program's unused paths out.
 - **Status:** open: nothing in the toolchain can fix the browser's pace. What's left is the program's: smaller shaders on the load's path (the floor's creature-field realizer, 160–230 KiB of WGSL with its dual-number gradients; the terrain's `cook_level`, 140–166 KiB).
+- **More evidence (2026-10-30, the capybara game's nine habitats):** each habitat's backdrop strips are a pipeline of their own (a pipeline is at most 256 KiB, and the eight together are far more), so the game went from 10 pipelines to 17, of which a level's first frame needs 9. Cold, in headless Chrome on Linux (`wrela tool bench -- --scene capybara-run --starts 3`, `starts.json`): every pipeline built by 3,036 to 3,051 ms against `main`'s 1,829 to 1,845 ms, and the first frame waits for its sprite pipeline, built last both times. Warm, every pipeline by 75 to 80 ms. The seven strips no first frame needs are compiled before the one it does.
+- **Needed too:** a way for a program to say which pipelines can wait (built after its first frame, or when first drawn): the capybara's other habitats' strips are drawn only when the player goes to another level. Not tried among the orders above.
+
+### A program's `playable` comes before its first frame is on the screen
+
+- **Needed:** the bench's cold `playable` time to be when a player can see and play: the frame on the screen.
+- **What happens:** a program prints `playable` from its frame's CPU code; the host then waits for the frame's pipelines before it submits the frame. On a cold start the capybara prints it at 317 ms (median of 3) while its first frame waits for its sprite pipeline until about 3,000 ms (`starts.json`). Warm, the two agree.
+- **Found:** 2026-10-30, measuring the capybara game's start.
+- **Meanwhile:** read a cold start's `starts.json` with its `playable` time: the frame is on the screen once every pipeline its `waits` name is built.
+- **Status:** open.
 
 ## Fixed
 
