@@ -1,14 +1,789 @@
-// What's behind The Petting Farm's course: a placeholder of rolling hills in the habitat's colour, a layer
-// for each of the backdrop's four (scenery.wrela), until the habitat's own are drawn.
+// What's behind The Petting Farm's course, painted as the Wetlands' backdrop is (scenery.wrela):
+// the farm nearest, and what the zoo's map puts beyond it (design.md, "A map of the zoo"): the
+// Polar Coast's icy rocks behind, the Food Court's awnings and umbrellas ahead, and green
+// pasture hills with a windmill far off.
+//
+// - The pasture hills (0.06): a blue range, fields in a patchwork over rolling hills, trees on
+//   their tops, and a windmill.
+// - Over the hedge (0.2): the zoo's hedge, and over it the Polar Coast's icy rocks (a penguin on a
+//   peak now and then) where the level starts, and the Food Court's stalls under striped awnings
+//   and its umbrellas towards its end.
+// - The farm (0.42): its red barn, a fan turning in its loft; hens and chicks by their coop; goats
+//   on a climbing frame; a pig in the mud; sheep; ducklings in a line behind their mother on the
+//   duck pond; a donkey; apple trees between.
+// - The fence (0.68): the farm's wooden fence, nearest, sunflowers looking over it, hay bales (a
+//   cat asleep on some), and a wheelbarrow heaped with carrots.
 
-use scenery::{PARALLAX, View, fbm, on_layer, paint, pixel_on}
+use engine::noise::{hash2, noise2}
+use scenery::{
+    BAMBOO, FAR, MIST, PATH, SAVANNA, View, crowned, fbm, nearer, on_layer, paint, pixel_on, under,
+}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
 pub fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
-    let parallax = PARALLAX[k]
-    let q = on_layer(pixel, v, parallax)
-    let px = pixel_on(v, parallax)
-    let ground = 1.0 + 2.5 * fbm(vec2(q.x * 0.05 + f32(k) * 7.0, 1.0), 2) - f32(k) * 0.6
-    paint(g, gs, q.y - ground, vec3(0.62, 0.8, 0.44), q, px, haze: f32(k) * 0.2, line: 0.8)
+    if k == 0 { fence_row(pixel, v, g, gs) } else if k == 1 {
+        farm(pixel, v, g, gs)
+    } else if k == 2 {
+        over_the_hedge(pixel, v, g, gs)
+    } else { pasture(pixel, v, g, gs) }
+}
+
+/// The shape in front over the one behind: what's behind is cut where the front is, so a line
+/// inks where they meet.
+fn over(front: (f32, vec3), back: (f32, vec3)) -> (f32, vec3) {
+    let (df, _) = front
+    let (db, cb) = back
+    nearer(front, (max(db, -df), cb))
+}
+
+/// A shape drawn `k` times its size: its distance, worked out at the point divided by `k`, back in
+/// metres.
+fn scaled(shape: (f32, vec3), k: f32) -> (f32, vec3) {
+    let (d, c) = shape
+    (d * k, c)
+}
+
+/// The distance outside a line through `a`, `n` its outward normal (not unit).
+fn plane(p: vec2, a: vec2, n: vec2) -> f32 {
+    dot(p - a, normalize(n))
+}
+
+/// A round tree at `base`, `h` m tall: a trunk and a crown of lumps, scalloped at its edge.
+/// Its distance, and 1 where it's crown. (scenery.wrela's.)
+fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
+    let q = p - base
+    let trunk = min(
+        cone(q, vec2(0.0), vec2(0.05, h * 0.7), ra: 0.2, rb: 0.12),
+        capsule(q, vec2(0.0, h * 0.45), vec2(0.6, h * 0.7), 0.07),
+    )
+    var crown = 1.0e3
+    for k in 0..5 {
+        let a = f32(k) * 1.3 + seed * 6.0
+        let at = vec2(0.0, h) + vec2(cos(a) * 1.1, sin(a) * 0.6)
+        crown = smin(crown, length(q - at) - (1.0 + 0.3 * sin(a * 2.7)), 0.3)
+    }
+    crown += 0.06 * abs(sin(atan2(q.y - h, q.x) * 9.0 + seed * 20.0))
+    (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
+}
+
+// ---- the pasture hills, far ----------------------------------------------------------------
+
+/// The pasture's hills' tops at `x` (m): long, soft rolls.
+fn rolls(x: f32) -> f32 {
+    1.4 + 1.2 * (0.5 + 0.5 * sin(x * 0.09 + 1.0)) + 0.7 * fbm(vec2(x * 0.05, 5.0), 2)
+}
+
+/// The windmills' spacing (m on the far layer), and where the first stands.
+const MILLS: f32 = 80.0
+const MILL_AT: f32 = 14.0
+
+/// A windmill (`l` from its foot): a white tower narrowing up, a dark cap, and four lattice sails,
+/// still.
+fn windmill(l: vec2) -> (f32, vec3) {
+    let tower = max(max(abs(l.x) - (0.6 - 0.16 * l.y / 2.8), -l.y), l.y - 2.8)
+    var best = (tower, vec3(0.97, 0.94, 0.86))
+    best = over((rbox(l - vec2(0.0, 0.3), vec2(0.14, 0.3), 0.1), vec3(0.5, 0.36, 0.28)), best)
+    best = over(
+        (max(ellipse(l - vec2(0.0, 2.75), vec2(0.58, 0.45)), 2.7 - l.y), vec3(0.6, 0.38, 0.32)),
+        best,
+    )
+    let hub = vec2(0.0, 2.95)
+    for k in 0..4 {
+        let r = turn(l - hub, 0.4 + f32(k) * 1.5708)
+        let arm = capsule(r, vec2(0.0), vec2(2.1, 0.0), 0.04)
+        let sail = rbox(r - vec2(1.25, 0.16), vec2(0.8, 0.15), 0.02)
+        let lattice = min(abs(fract(r.x / 0.27) - 0.5) * 0.27, abs(r.y - 0.16))
+        let cloth = if lattice < 0.025 { vec3(0.62, 0.5, 0.42) } else { vec3(0.96, 0.92, 0.84) }
+        best = over((min(arm, sail), if sail < arm { cloth } else { vec3(0.55, 0.42, 0.34) }), best)
+    }
+    over((length(l - hub) - 0.1, vec3(0.45, 0.34, 0.28)), best)
+}
+
+fn pasture(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, FAR)
+    let px = pixel_on(v, FAR)
+    if q.y > 8.4 {
+        return vec4(0.0)
+    }
+    // The blue range behind, mistier than the hills.
+    let range = 2.6 + 3.2 * fbm(vec2(q.x * 0.025, 3.0), 2)
+    var best = (q.y - range, vec3(0.6, 0.72, 0.82))
+    // The hills: fields in a patchwork, lines of hedge between them.
+    let hill = rolls(q.x)
+    let a = q.y - hill
+    if a < px * 2.0 {
+        let row = (hill - q.y) / 0.55
+        let col = q.x / 4.6 + floor(row) * 0.37
+        let h = hash2(i32(floor(col)), i32(floor(row)) + 40)
+        var c = blend(vec3(0.6, 0.8, 0.42), vec3(0.7, 0.84, 0.46), h)
+        if h > 0.82 {
+            c = vec3(0.9, 0.84, 0.52)
+        }
+        let edge = min((0.5 - abs(fract(row) - 0.5)) * 0.55, (0.5 - abs(fract(col) - 0.5)) * 4.6)
+        if edge < px * 0.8 && a < -px * 2.0 {
+            c = vec3(0.44, 0.6, 0.38)
+        }
+        best = over((a, c), best)
+    }
+    // Trees along the hills' tops, now and then.
+    let cell = floor(q.x / 3.5)
+    let tx = (cell + 0.5) * 3.5
+    if hash2(i32(cell), 91) < 0.35 && abs(q.x - tx) < 0.6 {
+        let foot = vec2(tx, rolls(tx) - 0.1)
+        let crown = length(q - foot - vec2(0.0, 0.62)) - 0.38
+        let trunk = capsule(q, foot, foot + vec2(0.0, 0.4), 0.06)
+        let lit = vec3(0.42, 0.62, 0.38)
+        let c = if crown < trunk {
+            crowned(lit, vec3(0.36, 0.54, 0.4), q, foot + vec2(0.0, 0.62), 0.38)
+        } else { vec3(0.5, 0.4, 0.32) }
+        best = over((min(crown, trunk), c), best)
+    }
+    // The windmill, one on the hills in each stretch.
+    let mill_x = MILL_AT + floor((q.x - MILL_AT) / MILLS + 0.5) * MILLS
+    if abs(q.x - mill_x) < 2.5 {
+        best = over(windmill(q - vec2(mill_x, rolls(mill_x) - 0.15)), best)
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.48, line: 0.6)
+}
+
+// ---- over the hedge: the Polar Coast behind, the Food Court ahead --------------------------
+
+/// The ground beyond the farm at `x` (m).
+fn beyond_ground(x: f32) -> f32 {
+    0.4 + 0.5 * sin(x * 0.07) + 0.4 * noise2(vec2(x * 0.05, 4.0))
+}
+
+/// Where the Polar Coast's rocks end and the Food Court's stalls start (m on the layer): the
+/// level's start shows the first, its end the second.
+const POLAR_ENDS: f32 = 46.0
+const FOOD_STARTS: f32 = 68.0
+
+/// The icy rocks' spacing (m): a peak or a dip at each.
+const FACETS: f32 = 1.6
+
+/// The icy rocks' height at facet `n`.
+fn peak(n: f32, ground: f32) -> f32 {
+    let fade = smoothstep(POLAR_ENDS, POLAR_ENDS - 10.0, n * FACETS)
+    ground +
+        0.9 +
+        fade * (0.3 + 0.7 * noise2(vec2(n * 0.35, 6.0))) * (0.5 + 2.2 * hash2(i32(n), 71))
+}
+
+/// A penguin (`l` from its feet), facing +x: black back, white front, an orange beak.
+fn penguin(l: vec2) -> (f32, vec3) {
+    let body = ellipse(l - vec2(0.0, 0.3), vec2(0.17, 0.3))
+    let head = length(l - vec2(0.03, 0.62)) - 0.12
+    let d = smin(body, head, 0.06)
+    let front = ellipse(l - vec2(0.06, 0.28), vec2(0.11, 0.24)) < 0.0
+    let c = if front { vec3(0.97, 0.96, 0.93) } else { vec3(0.22, 0.24, 0.3) }
+    let beak = cone(l, vec2(0.12, 0.63), vec2(0.25, 0.6), ra: 0.035, rb: 0.0)
+    nearer((d, c), (beak, vec3(0.96, 0.6, 0.25)))
+}
+
+/// The Polar Coast's icy rocks at `q`: faceted, white on the side to the sun and a cool blue on
+/// the side away; a penguin on a peak, now and then.
+fn icy_rocks(q: vec2, ground: f32) -> (f32, vec3) {
+    let n = floor(q.x / FACETS)
+    let (h0, h1) = (peak(n, ground), peak(n + 1.0, ground))
+    let slope = (h1 - h0) / FACETS
+    let top = h0 + (h1 - h0) * fract(q.x / FACETS)
+    let d = (q.y - top) / sqrt(1.0 + slope * slope)
+    // Each facet faces the sun when it falls away to the right.
+    var c = if slope > 0.0 { vec3(0.62, 0.74, 0.88) } else { vec3(0.9, 0.95, 0.99) }
+    // Snow on the tops, and the rock showing blue-grey at the foot.
+    if d > -0.22 {
+        c = vec3(0.98, 0.99, 1.0)
+    } else if q.y < ground + 1.2 + 0.2 * sin(q.x * 3.0) {
+        c = blend(c, vec3(0.56, 0.62, 0.74), 0.6)
+    }
+    var best = (d, c)
+    let m = floor(q.x / FACETS + 0.5)
+    let hm = peak(m, ground)
+    if hash2(i32(m), 73) < 0.35 && hm > peak(m - 1.0, ground) && hm > peak(m + 1.0, ground) {
+        let dir = if hash2(i32(m), 74) < 0.5 { -1.0 } else { 1.0 }
+        best = nearer(best, penguin((q - vec2(m * FACETS, hm - 0.04)) * vec2(dir, 1.0)))
+    }
+    best
+}
+
+/// A colour for a stall's or an umbrella's stripes.
+fn stripe_colour(h: f32) -> vec3 {
+    if h < 0.25 { vec3(0.9, 0.38, 0.36) } else if h < 0.5 {
+        vec3(0.98, 0.78, 0.3)
+    } else if h < 0.75 { vec3(0.38, 0.7, 0.72) } else { vec3(0.95, 0.56, 0.66) }
+}
+
+/// A food stall (`l` from its foot): a cream kiosk with a serving window, under a striped awning
+/// with a scalloped edge; an ice cream on its roof when `cone`.
+fn stall(l: vec2, stripe: vec3, cone_on: bool) -> (f32, vec3) {
+    var best = (rbox(l - vec2(0.0, 0.85), vec2(1.1, 0.85), 0.04), vec3(0.96, 0.9, 0.78))
+    best = over((rbox(l - vec2(0.0, 1.05), vec2(0.75, 0.32), 0.03), vec3(0.42, 0.32, 0.3)), best)
+    best = over((rbox(l - vec2(0.0, 0.66), vec2(0.85, 0.07), 0.02), vec3(0.8, 0.62, 0.44)), best)
+    let u = fract(l.x / 0.3) * 2.0 - 1.0
+    let scallop = 1.42 - 0.09 * sqrt(saturate(1.0 - u * u))
+    let awning = max(rbox(l - vec2(0.0, 1.75), vec2(1.3, 0.3), 0.02), scallop - l.y)
+    let white = fract(l.x / 0.6 + 0.25) < 0.5
+    best = over((awning, if white { vec3(0.98, 0.96, 0.9) } else { stripe }), best)
+    best = over((rbox(l - vec2(0.0, 2.1), vec2(1.2, 0.07), 0.03), vec3(0.86, 0.8, 0.7)), best)
+    if cone_on {
+        let wafer = cone(l, vec2(0.0, 2.2), vec2(0.0, 2.75), ra: 0.03, rb: 0.2)
+        best = over((wafer, vec3(0.9, 0.7, 0.42)), best)
+        best = over((length(l - vec2(0.0, 2.9)) - 0.25, vec3(0.98, 0.72, 0.78)), best)
+    }
+    best
+}
+
+/// An umbrella over a table (`l` from the pole's foot): a canopy of striped panels fanning from
+/// its top, scalloped at its edge.
+fn umbrella(l: vec2, stripe: vec3) -> (f32, vec3) {
+    var best = (capsule(l, vec2(0.0), vec2(0.0, 2.0), 0.035), vec3(0.85, 0.82, 0.76))
+    let table = min(
+        rbox(l - vec2(0.0, 0.72), vec2(0.5, 0.04), 0.02),
+        capsule(l, vec2(0.0), vec2(0.0, 0.7), 0.04),
+    )
+    best = nearer(best, (table, vec3(0.92, 0.88, 0.8)))
+    let u = fract(l.x / 0.4) * 2.0 - 1.0
+    let rim = 1.6 - 0.07 * sqrt(saturate(1.0 - u * u))
+    let canopy = max(ellipse(l - vec2(0.0, 1.6), vec2(1.15, 0.6)), rim - l.y)
+    let panel = fract(atan2(l.x, 2.3 - l.y) / 0.32) < 0.5
+    best = over((canopy, if panel { vec3(0.98, 0.96, 0.9) } else { stripe }), best)
+    best
+}
+
+/// The Food Court's stalls and umbrellas at `q`, in cells along the layer.
+fn food_court(q: vec2, ground: f32) -> (f32, vec3) {
+    let cell = floor(q.x / 6.5)
+    let x = (cell + 0.3 + 0.4 * hash2(i32(cell), 51)) * 6.5
+    let kind = hash2(i32(cell), 52)
+    let stripe = stripe_colour(hash2(i32(cell), 53))
+    let base = vec2(x, beyond_ground(x) + 0.5)
+    if x < FOOD_STARTS || abs(q.x - x) > 2.4 || kind > 0.85 {
+        return (1.0e3, stripe)
+    }
+    if kind < 0.45 {
+        stall(q - base, stripe, hash2(i32(cell), 54) < 0.4)
+    } else {
+        let a = umbrella(q - base - vec2(-0.7, 0.0), stripe)
+        nearer(a, umbrella(q - base - vec2(1.0, -0.1), stripe_colour(hash2(i32(cell), 55))))
+    }
+}
+
+fn over_the_hedge(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, SAVANNA)
+    let px = pixel_on(v, SAVANNA)
+    let ground = beyond_ground(q.x)
+    if q.y > ground + 4.8 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, vec3(0.62, 0.78, 0.48), q, ground, 0.45)
+    }
+    // The hedge: a row of rounded lumps. Well below its top, only it shows.
+    let u = fract(q.x / 1.1) * 2.0 - 1.0
+    let hedge = q.y - (ground + 0.8 + 0.2 * sqrt(saturate(1.0 - u * u)))
+    let leaves = blend(vec3(0.42, 0.62, 0.38), vec3(0.5, 0.68, 0.4), noise2(q * 1.3))
+    if hedge < -px * 3.0 {
+        return paint(g, gs, hedge, leaves, q, px, haze: 0.45, line: 0.8)
+    }
+    var best = (1.0e3, leaves)
+    if q.x < POLAR_ENDS + FACETS {
+        best = icy_rocks(q, ground)
+    } else {
+        best = food_court(q, ground)
+        // Between the two, a tree or two over the hedge.
+        let cell = floor(q.x / 9.0)
+        let tx = (cell + 0.5) * 9.0
+        if tx < FOOD_STARTS + 4.0 && hash2(i32(cell), 57) < 0.5 && abs(q.x - tx) < 2.8 {
+            let foot = vec2(tx, beyond_ground(tx))
+            let (tree, crown) = round_tree(q, foot, 2.6, hash2(i32(cell), 56))
+            let c = if crown > 0.5 {
+                crowned(vec3(0.5, 0.7, 0.38), vec3(0.42, 0.6, 0.4), q, foot + vec2(0.0, 2.6), 1.4)
+            } else { vec3(0.56, 0.42, 0.3) }
+            best = nearer(best, (tree, c))
+        }
+    }
+    let (d, albedo) = over((hedge, leaves), best)
+    paint(g, gs, d, albedo, q, px, haze: 0.45, line: 0.8)
+}
+
+// ---- the farm: its residents, the barn, apple trees ----------------------------------------
+
+/// The farm's ground at `x` (m).
+fn farm_ground(x: f32) -> f32 {
+    -0.2 + 0.3 * sin(x * 0.1) + 0.2 * noise2(vec2(x * 0.3, 2.0))
+}
+
+/// The red barn (`l` from its foot's middle): walls under a gambrel roof, white trim, a crossed
+/// double door, and a fan turning in the round window of its loft (`t`, the time).
+fn barn(l: vec2, t: f32) -> (f32, vec3) {
+    let a = vec2(abs(l.x), l.y)
+    let steep = plane(a, vec2(2.8, 3.0), vec2(1.5, 0.9))
+    let shallow = plane(a, vec2(1.9, 4.5), vec2(0.7, 1.9))
+    let roofline = max(steep, shallow)
+    var best = (max(max(a.x - 2.8, -l.y), roofline), vec3(0.82, 0.34, 0.3))
+    let roof = max(max(roofline - 0.16, 2.95 - l.y), -(roofline + 0.42))
+    best = over((roof, vec3(0.46, 0.4, 0.4)), best)
+    // The doors: a white frame, crossed.
+    let door = rbox(l - vec2(0.0, 1.15), vec2(1.05, 1.15), 0.02)
+    var trim = abs(door) - 0.07
+    trim = min(trim, capsule(a, vec2(0.0, 0.0), vec2(1.05, 2.3), 0.06))
+    trim = min(trim, capsule(a, vec2(0.0, 2.3), vec2(1.05, 0.0), 0.06))
+    trim = min(trim, capsule(l, vec2(0.0, 0.0), vec2(0.0, 2.3), 0.05))
+    best = over((trim, vec3(0.97, 0.94, 0.86)), best)
+    // The loft's round window, and the fan in it.
+    let f = l - vec2(0.0, 3.75)
+    let r = length(f)
+    best = over((r - 0.55, vec3(0.3, 0.24, 0.23)), best)
+    let spin = atan2(f.y, f.x) - t * 2.5
+    let blade = abs((fract(spin / 1.5708) - 0.5) * 1.5708 * r) - (0.04 + 0.2 * r)
+    let fan = min(max(blade, r - 0.44), r - 0.08)
+    best = over((fan, vec3(0.8, 0.82, 0.8)), best)
+    best = over((abs(r - 0.55) - 0.07, vec3(0.97, 0.94, 0.86)), best)
+    best
+}
+
+/// A hen (`l` from its feet), facing +x, its head down when `peck`: a round body, a tail up, a red
+/// comb, a yellow beak.
+fn hen(l: vec2, brown: bool, peck: f32) -> (f32, vec3) {
+    let feather = if brown { vec3(0.8, 0.52, 0.32) } else { vec3(0.98, 0.96, 0.92) }
+    var d = ellipse(turn(l - vec2(0.0, 0.42), 0.15), vec2(0.33, 0.25))
+    d = smin(d, ellipse(turn(l - vec2(-0.28, 0.58), 0.9), vec2(0.17, 0.09)), 0.06)
+    let head = vec2(0.26 + 0.1 * peck, 0.72 - 0.3 * peck)
+    d = smin(d, length(l - head) - 0.11, 0.1)
+    var best = (d, feather)
+    let red = vec3(0.88, 0.3, 0.28)
+    best = over((length(l - head - vec2(-0.02, 0.11)) - 0.06, red), best)
+    best = nearer(
+        best,
+        (
+            cone(l, head + vec2(0.08, 0.0), head + vec2(0.19, -0.03), ra: 0.04, rb: 0.0),
+            vec3(0.96, 0.76, 0.3),
+        ),
+    )
+    let legs = min(
+        capsule(l, vec2(-0.04, 0.2), vec2(-0.05, 0.0), 0.02),
+        capsule(l, vec2(0.08, 0.2), vec2(0.1, 0.0), 0.02),
+    )
+    nearer(best, (legs, vec3(0.95, 0.66, 0.3)))
+}
+
+/// A chick (`l` from its feet), facing +x: a yellow puff with a beak.
+fn chick(l: vec2) -> (f32, vec3) {
+    let d = smin(length(l - vec2(0.0, 0.13)) - 0.13, length(l - vec2(0.1, 0.27)) - 0.085, 0.05)
+    let beak = cone(l, vec2(0.17, 0.27), vec2(0.24, 0.26), ra: 0.025, rb: 0.0)
+    nearer((d, vec3(1.0, 0.86, 0.38)), (beak, vec3(0.95, 0.6, 0.25)))
+}
+
+/// The hens and their chicks by their coop: a little house on legs with a ramp to its door.
+fn hens(q: vec2) -> (f32, vec3) {
+    let c = (q - vec2(-2.6, 0.0)) / 1.3
+    let wood = vec3(0.86, 0.64, 0.42)
+    var coop = (rbox(c - vec2(0.0, 1.0), vec2(0.75, 0.45), 0.04), wood)
+    let roof = max(plane(vec2(abs(c.x), c.y), vec2(0.0, 2.0), vec2(0.6, 1.0)), 1.42 - c.y)
+    coop = over((roof, vec3(0.82, 0.36, 0.3)), coop)
+    coop = over((rbox(c - vec2(0.25, 0.85), vec2(0.17, 0.24), 0.08), vec3(0.32, 0.24, 0.22)), coop)
+    let legs = min(
+        capsule(c, vec2(-0.6, 0.6), vec2(-0.6, 0.0), 0.05),
+        capsule(c, vec2(0.6, 0.6), vec2(0.6, 0.0), 0.05),
+    )
+    coop = nearer(coop, (legs, wood))
+    coop = nearer(coop, (capsule(c, vec2(0.4, 0.58), vec2(1.3, 0.02), 0.05), wood))
+    let s = 1.6
+    var best = scaled(coop, 1.3)
+    best = nearer(best, scaled(hen(q / s, brown: true, peck: 0.0), s))
+    best = nearer(
+        best,
+        scaled(hen((q - vec2(2.3, 0.0)) * vec2(-1.0, 1.0) / s, brown: false, peck: 1.0), s),
+    )
+    for (x, dir) in [(0.75, 1.0), (1.15, 1.0), (1.5, -1.0)] {
+        best = nearer(best, scaled(chick((q - vec2(x, 0.0)) * vec2(dir, 1.0) / s), s))
+    }
+    best
+}
+
+/// A goat (`l` from its feet), facing +x: a boxy body on thin legs, its head low with a beard,
+/// horns swept back.
+fn goat(l: vec2, coat: vec3) -> (f32, vec3) {
+    var d = rbox(l - vec2(0.0, 0.72), vec2(0.42, 0.2), 0.16)
+    for x in [-0.32, -0.2, 0.22, 0.34] {
+        d = min(d, capsule(l, vec2(x, 0.62), vec2(x, 0.0), 0.045))
+    }
+    d = smin(d, cone(l, vec2(0.3, 0.82), vec2(0.52, 1.12), ra: 0.13, rb: 0.1), 0.06)
+    d = smin(d, ellipse(turn(l - vec2(0.62, 1.08), -0.6), vec2(0.21, 0.1)), 0.05)
+    d = min(d, cone(l, vec2(0.74, 0.98), vec2(0.76, 0.84), ra: 0.035, rb: 0.005))
+    d = min(d, capsule(l, vec2(-0.4, 0.86), vec2(-0.48, 1.0), 0.03))
+    d = min(d, ellipse(turn(l - vec2(0.44, 1.14), 0.4), vec2(0.12, 0.04)))
+    let horn = cone(l, vec2(0.54, 1.22), vec2(0.36, 1.42), ra: 0.04, rb: 0.015)
+    nearer((d, coat), (horn, vec3(0.5, 0.44, 0.4)))
+}
+
+/// The goats on their climbing frame: a deck on posts, a ramp up to it, a goat on top, one on the
+/// ramp and a kid below.
+fn goats(q: vec2) -> (f32, vec3) {
+    let wood = vec3(0.76, 0.58, 0.4)
+    var frame = rbox(q - vec2(0.9, 1.75), vec2(0.95, 0.09), 0.03)
+    frame = min(frame, capsule(q, vec2(0.15, 1.7), vec2(0.15, 0.0), 0.07))
+    frame = min(frame, capsule(q, vec2(1.65, 1.7), vec2(1.65, 0.0), 0.07))
+    frame = min(frame, capsule(q, vec2(0.15, 0.25), vec2(1.65, 1.6), 0.05))
+    let ramp = capsule(q, vec2(-2.6, 0.05), vec2(0.0, 1.72), 0.07)
+    let along = turn(q - vec2(-1.3, 0.88), 0.57)
+    let rung = rbox(along - vec2(0.0, 0.08), vec2(1.4, 0.06), 0.01)
+    let slats = max(abs(fract(along.x / 0.32) - 0.5) * 0.32 - 0.03, rung)
+    var best = (min(frame, min(ramp, slats)), wood)
+    best = over(goat((q - vec2(0.85, 1.84)) * vec2(-1.0, 1.0), vec3(0.97, 0.95, 0.9)), best)
+    best = over(goat(turn(q - vec2(-1.25, 0.95), 0.57), vec3(0.62, 0.46, 0.34)), best)
+    best = nearer(best, scaled(goat((q - vec2(2.6, 0.0)) / 0.65, vec3(0.9, 0.84, 0.74)), 0.65))
+    best
+}
+
+/// A pig (`l` from its middle on the ground), facing +x, sitting happily: round and pink, a snout,
+/// a floppy ear, a curly tail, splashed with mud.
+fn pig(l: vec2) -> (f32, vec3) {
+    let pink = vec3(0.97, 0.72, 0.7)
+    var d = ellipse(l - vec2(0.0, 0.5), vec2(0.78, 0.48))
+    d = smin(d, length(l - vec2(0.62, 0.68)) - 0.33, 0.12)
+    d = min(d, abs(length(l - vec2(-0.86, 0.62)) - 0.07) - 0.022)
+    let muddy = noise2(l * 3.0) > 0.62 && l.y < 0.55
+    var best = (d, if muddy { vec3(0.6, 0.46, 0.36) } else { pink })
+    best = over((ellipse(l - vec2(0.95, 0.62), vec2(0.09, 0.13)), vec3(0.93, 0.56, 0.58)), best)
+    best = over(
+        (cone(l, vec2(0.56, 0.9), vec2(0.78, 1.0), ra: 0.11, rb: 0.03), vec3(0.94, 0.62, 0.62)),
+        best,
+    )
+    best = over((capsule(l, vec2(0.66, 0.74), vec2(0.74, 0.76), 0.015), vec3(0.3, 0.2, 0.18)), best)
+    best
+}
+
+/// The pig in its mud: a wallow, the pig sat in it, a piglet beside.
+fn pigs(q: vec2) -> (f32, vec3) {
+    let mud = (ellipse(q - vec2(0.0, 0.04), vec2(2.4, 0.24)), vec3(0.56, 0.43, 0.33))
+    let both = nearer(
+        pig(q - vec2(-0.3, 0.0)),
+        scaled(pig((q - vec2(1.5, 0.0)) * vec2(-1.0, 1.0) / 0.55), 0.55),
+    )
+    over(mud, both)
+}
+
+/// A sheep (`l` from its feet), facing +x: a cloud of wool, a dark face and legs, grazing when
+/// `graze`.
+fn sheep(q: vec2, l: vec2, graze: f32) -> (f32, vec3) {
+    let dark = vec3(0.28, 0.24, 0.24)
+    let w = l - vec2(0.0, 0.78)
+    let wool = ellipse(w, vec2(0.62, 0.4)) - 0.05 * abs(sin(atan2(w.y, w.x) * 7.0))
+    var legs = 1.0e3
+    for x in [-0.32, -0.18, 0.24, 0.36] {
+        legs = min(legs, capsule(l, vec2(x, 0.5), vec2(x, 0.0), 0.045))
+    }
+    let head = vec2(0.66, 0.92 - 0.42 * graze)
+    let face = min(
+        ellipse(turn(l - head, -0.5 - 0.5 * graze), vec2(0.22, 0.13)),
+        ellipse(turn(l - head - vec2(-0.12, 0.05), 0.3), vec2(0.13, 0.04)),
+    )
+    // Its wool cooler underneath, away from the sun.
+    let fleece = blend(
+        vec3(0.86, 0.87, 0.9),
+        vec3(0.99, 0.97, 0.92),
+        smoothstep(-0.3, 0.0, w.y + 0.1 * noise2(q * 3.0)),
+    )
+    var best = nearer((legs, dark), (wool, fleece))
+    best = over((face, dark), best)
+    over((length(l - head - vec2(-0.08, 0.13)) - 0.09, fleece), best)
+}
+
+/// Two sheep and a lamb.
+fn flock(q: vec2) -> (f32, vec3) {
+    var best = sheep(q, q - vec2(-1.6, 0.0), 1.0)
+    best = nearer(best, sheep(q, (q - vec2(1.4, 0.0)) * vec2(-1.0, 1.0), 0.0))
+    nearer(best, scaled(sheep(q, (q - vec2(-0.1, 0.0)) / 0.6, 0.0), 0.6))
+}
+
+/// A white duck (`l` from its waterline), facing +x.
+fn duck(l: vec2) -> (f32, vec3) {
+    var d = ellipse(l - vec2(0.0, 0.12), vec2(0.42, 0.2))
+    d = smin(d, cone(l, vec2(-0.3, 0.16), vec2(-0.52, 0.34), ra: 0.1, rb: 0.02), 0.06)
+    d = smin(d, capsule(l, vec2(0.24, 0.2), vec2(0.3, 0.5), 0.09), 0.06)
+    d = smin(d, length(l - vec2(0.31, 0.56)) - 0.13, 0.04)
+    let bill = rbox(l - vec2(0.48, 0.53), vec2(0.1, 0.035), 0.03)
+    nearer((max(d, -l.y), vec3(0.98, 0.97, 0.93)), (bill, vec3(0.97, 0.62, 0.28)))
+}
+
+/// A duckling (`l` from its waterline), facing +x.
+fn duckling(l: vec2) -> (f32, vec3) {
+    let d = smin(
+        ellipse(l - vec2(0.0, 0.06), vec2(0.15, 0.1)),
+        length(l - vec2(0.1, 0.2)) - 0.08,
+        0.04,
+    )
+    let bill = rbox(l - vec2(0.2, 0.19), vec2(0.045, 0.02), 0.015)
+    nearer((max(d, -l.y), vec3(1.0, 0.86, 0.4)), (bill, vec3(0.95, 0.6, 0.28)))
+}
+
+/// The duck pond: its water, the mother duck and her ducklings in a line behind her, bobbing
+/// (`t`), and a few reeds at its end.
+fn duck_pond(q: vec2, t: f32) -> (f32, vec3) {
+    var best = (ellipse(q - vec2(0.0, 0.02), vec2(3.4, 0.26)), vec3(0.62, 0.8, 0.8))
+    let bob = 0.02 * sin(t * 2.0)
+    best = over(scaled(duck((q - vec2(1.2, 0.1 + bob)) / 1.4), 1.4), best)
+    for k in 0..4 {
+        let x = 0.4 - f32(k) * 0.65
+        let b = 0.02 * sin(t * 2.6 + f32(k) * 1.3)
+        best = over(scaled(duckling((q - vec2(x, 0.12 + b)) / 1.4), 1.4), best)
+    }
+    for (x, h) in [(2.7, 1.2), (2.95, 1.5), (3.15, 1.0)] {
+        let reed = capsule(q, vec2(x, 0.0), vec2(x + 0.05, h), 0.025)
+        let head = capsule(q, vec2(x + 0.04, h - 0.3), vec2(x + 0.05, h - 0.05), 0.055)
+        best = nearer(best, (reed, vec3(0.48, 0.66, 0.34)))
+        best = nearer(best, (head, vec3(0.5, 0.34, 0.22)))
+    }
+    best
+}
+
+/// A donkey (`l` from its feet), facing +x: grey-brown, a pale muzzle and belly, long ears, a dark
+/// mane and a tufted tail.
+fn donkey(l: vec2) -> (f32, vec3) {
+    let coat = vec3(0.64, 0.58, 0.54)
+    var d = ellipse(l - vec2(0.0, 1.0), vec2(0.78, 0.38))
+    for x in [-0.52, -0.36, 0.4, 0.56] {
+        d = smin(d, rbox(l - vec2(x, 0.4), vec2(0.06, 0.42), 0.05), 0.06)
+    }
+    d = smin(d, cone(l, vec2(0.55, 1.1), vec2(0.88, 1.55), ra: 0.22, rb: 0.15), 0.1)
+    let head = ellipse(turn(l - vec2(1.04, 1.44), -0.75), vec2(0.34, 0.15))
+    d = smin(d, head, 0.06)
+    var best = (d, coat)
+    let muzzle = ellipse(turn(l - vec2(1.22, 1.24), -0.75), vec2(0.14, 0.13))
+    best = over((max(muzzle, d), vec3(0.88, 0.85, 0.8)), best)
+    let ears = min(
+        ellipse(turn(l - vec2(0.84, 1.88), 0.2), vec2(0.06, 0.25)),
+        ellipse(turn(l - vec2(0.94, 1.86), -0.15), vec2(0.06, 0.24)),
+    )
+    best = over((ears, coat), best)
+    best = over((capsule(l, vec2(0.6, 1.36), vec2(0.86, 1.72), 0.05), vec3(0.34, 0.3, 0.28)), best)
+    let tail = min(
+        capsule(l, vec2(-0.74, 1.12), vec2(-0.86, 0.66), 0.03),
+        ellipse(l - vec2(-0.87, 0.58), vec2(0.06, 0.12)),
+    )
+    nearer(best, (tail, vec3(0.34, 0.3, 0.28)))
+}
+
+/// How far apart the farm's sights are (m on its layer), and how many kinds there are.
+const PENS: f32 = 22.0
+const KINDS: i32 = 7
+
+fn farm(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PATH)
+    let px = pixel_on(v, PATH)
+    let ground = farm_ground(q.x)
+    let pasture = vec3(0.58, 0.8, 0.42)
+    if q.y > ground + 6.6 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, pasture, q, ground, 0.15)
+    }
+    var best = (q.y - ground, pasture)
+    // The sights, one in each pen, in turn: the barn, the hens, the goats, the pig, the sheep, the
+    // ducks and the donkey.
+    let cell = floor(q.x / PENS)
+    let centre = (cell + 0.5) * PENS
+    if abs(q.x - centre) < 3.6 && q.y < ground + 5.6 {
+        let base = vec2(centre, farm_ground(centre) - 0.1)
+        let local = q - base
+        let kind = ((i32(cell) % KINDS) + KINDS) % KINDS
+        let sight = if kind == 0 {
+            barn(local, v.time)
+        } else if kind == 1 {
+            hens(local)
+        } else if kind == 2 {
+            goats(local)
+        } else if kind == 3 {
+            pigs(local)
+        } else if kind == 4 {
+            flock(local)
+        } else if kind == 5 {
+            duck_pond(local, v.time)
+        } else { donkey(local) }
+        best = nearer(best, sight)
+    }
+    // Apple trees between the pens, now and then.
+    for i in [cell, cell + 1.0] {
+        let x = i * PENS
+        let h = hash2(i32(i), 31)
+        if h < 0.7 && abs(q.x - x) < 3.0 {
+            let foot = vec2(x, farm_ground(x) - 0.2)
+            let tall = 3.4 + 1.6 * h
+            let (tree, leaves) = round_tree(q, foot, tall, h)
+            var colour = vec3(0.58, 0.42, 0.28)
+            if leaves > 0.5 {
+                colour = crowned(
+                    vec3(0.44, 0.7, 0.34),
+                    vec3(0.38, 0.6, 0.36),
+                    q,
+                    foot + vec2(0.0, tall),
+                    1.6,
+                )
+                let c = floor(q * 2.4)
+                let at = (c +
+                    vec2(0.3) +
+                    0.4 * vec2(hash2(i32(c.x), i32(c.y)), hash2(i32(c.y), i32(c.x) + 7))) /
+                    2.4
+                if hash2(i32(c.x) + 3, i32(c.y)) < 0.3 && length(q - at) < 0.09 && tree < -0.12 {
+                    colour = vec3(0.9, 0.3, 0.26)
+                }
+            }
+            best = nearer(best, (tree, colour))
+        }
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.22, line: 1.0)
+}
+
+// ---- the fence, nearest --------------------------------------------------------------------
+
+/// The ground nearest at `x` (m).
+fn near_ground(x: f32) -> f32 {
+    -1.0 + 0.2 * sin(x * 0.13) + 0.15 * noise2(vec2(x * 0.4, 5.0))
+}
+
+/// The farm's wooden fence (`fy` m above the ground at `x`): rough posts every 2.5 m, and two rails
+/// between them, each span a little askew.
+fn fence(x: f32, fy: f32) -> (f32, vec3) {
+    let n = floor(x / 2.5 + 0.5)
+    let top = 1.3 + 0.15 * hash2(i32(n), 41)
+    let px = x - n * 2.5 + 0.03 * (fy - top * 0.5) * (hash2(i32(n), 42) - 0.5)
+    let post = rbox(vec2(px, fy - top * 0.5 + 0.1), vec2(0.09, top * 0.5 + 0.1), 0.05)
+    let s = floor(x / 2.5)
+    let t = fract(x / 2.5) * 2.0 - 1.0
+    let low = abs(fy - 0.45 - 0.08 * (hash2(i32(s), 43) - 0.5) * t) - 0.065
+    let high = abs(fy - 1.0 - 0.08 * (hash2(i32(s), 44) - 0.5) * t) - 0.065
+    over((post, vec3(0.66, 0.5, 0.36)), (min(low, high), vec3(0.78, 0.62, 0.43)))
+}
+
+/// A sunflower `h` m tall from `foot`, its head swayed `sway` m: a stalk, two leaves, and its
+/// head turned to the sun, yellow petals round a brown disc.
+fn sunflower(q: vec2, foot: vec2, h: f32, sway: f32) -> (f32, vec3) {
+    let top = foot + vec2(sway, h)
+    var stalk = capsule(q, foot, top, 0.045)
+    for (y, side) in [(0.42, 1.0), (0.66, -1.0)] {
+        let at = foot + vec2(sway * y + side * 0.26, h * y)
+        stalk = min(stalk, ellipse(turn(q - at, side * 0.5), vec2(0.28, 0.1)))
+    }
+    let l = turn(q - top, -0.25) * vec2(1.2, 1.0)
+    let petals = (length(l) - (0.36 + 0.06 * cos(atan2(l.y, l.x) * 13.0))) / 1.2
+    let disc = (length(l - vec2(0.03, 0.0)) - 0.18) / 1.2
+    let head = over((disc, vec3(0.48, 0.32, 0.2)), (petals, vec3(0.99, 0.8, 0.28)))
+    over(head, (stalk, vec3(0.44, 0.64, 0.3)))
+}
+
+/// A round bale of hay at `c`, end on: straw rolled in a spiral.
+fn bale(q: vec2, c: vec2, r: f32) -> (f32, vec3) {
+    let l = q - c
+    let d = length(l) - r
+    let s = fract(length(l) / 0.16 - atan2(l.y, l.x) / 6.2832)
+    (d, if s < 0.2 && d < -0.06 { vec3(0.84, 0.66, 0.34) } else { vec3(0.96, 0.82, 0.48) })
+}
+
+/// A cat curled up asleep (`l` from where it lies), its head to -x.
+fn cat(l: vec2) -> (f32, vec3) {
+    var d = ellipse(l - vec2(0.05, 0.13), vec2(0.3, 0.14))
+    d = smin(d, length(l - vec2(-0.24, 0.15)) - 0.12, 0.05)
+    d = min(d, cone(l, vec2(-0.3, 0.2), vec2(-0.34, 0.33), ra: 0.05, rb: 0.0))
+    d = min(d, cone(l, vec2(-0.18, 0.22), vec2(-0.16, 0.34), ra: 0.05, rb: 0.0))
+    let tail = capsule(l, vec2(0.3, 0.06), vec2(-0.12, 0.02), 0.035)
+    let stripes = abs(fract(l.x / 0.12) - 0.5) < 0.12 && l.y > 0.14 && l.x > -0.1
+    let ginger = if stripes { vec3(0.84, 0.48, 0.26) } else { vec3(0.95, 0.64, 0.36) }
+    over((tail, vec3(0.95, 0.64, 0.36)), (d, ginger))
+}
+
+/// Round bales stacked two and one, a cat asleep on top when `cat_on`.
+fn bales(q: vec2, cat_on: bool) -> (f32, vec3) {
+    let r = 0.55
+    var best = nearer(bale(q, vec2(-0.57, r), r), bale(q, vec2(0.57, r), r))
+    best = over(bale(q, vec2(0.0, r + 0.93), r), best)
+    if cat_on {
+        best = over(cat(q - vec2(0.05, r + 0.93 + r - 0.06)), best)
+    }
+    best
+}
+
+/// A wheelbarrow (`l` from under its wheel's axle, back towards -x) heaped with carrots.
+fn wheelbarrow(l: vec2) -> (f32, vec3) {
+    let tray = max(
+        max(plane(l, vec2(0.0, 0.85), vec2(0.0, 1.0)), plane(l, vec2(0.0, 0.42), vec2(0.0, -1.0))),
+        max(
+            plane(l, vec2(0.62, 0.85), vec2(1.0, 0.45)),
+            plane(l, vec2(-0.72, 0.85), vec2(-1.0, 0.6)),
+        ),
+    )
+    let iron = vec3(0.4, 0.38, 0.38)
+    var frame = capsule(l, vec2(-0.15, 0.48), vec2(-1.3, 0.72), 0.035)
+    frame = min(frame, capsule(l, vec2(-0.45, 0.45), vec2(-0.5, 0.0), 0.035))
+    frame = min(frame, capsule(l, vec2(0.5, 0.25), vec2(0.15, 0.45), 0.03))
+    var carrots = (1.0e3, vec3(0.95, 0.55, 0.22))
+    for (x, a) in [(-0.45, 0.5), (-0.15, -0.3), (0.12, 0.25), (0.38, -0.5)] {
+        let shoulder = vec2(x, 1.0 + 0.04 * a)
+        let tip = shoulder + vec2(sin(a) * 0.4, -0.4)
+        carrots = nearer(
+            carrots,
+            (cone(l, shoulder, tip, ra: 0.075, rb: 0.012), vec3(0.95, 0.55, 0.22)),
+        )
+        let tops = min(
+            capsule(l, shoulder, shoulder + vec2(-0.08 - 0.1 * a, 0.22), 0.025),
+            capsule(l, shoulder, shoulder + vec2(0.06 - 0.1 * a, 0.2), 0.025),
+        )
+        carrots = nearer(carrots, (tops, vec3(0.45, 0.7, 0.32)))
+    }
+    var best = over((tray, vec3(0.42, 0.64, 0.62)), carrots)
+    best = nearer(best, (frame, iron))
+    let wheel = length(l - vec2(0.5, 0.25)) - 0.25
+    best = over((wheel, iron), best)
+    over((length(l - vec2(0.5, 0.25)) - 0.07, vec3(0.75, 0.72, 0.68)), best)
+}
+
+/// How far apart the things by the fence are (m on its layer).
+const BY_FENCE: f32 = 9.0
+
+fn fence_row(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, BAMBOO)
+    let px = pixel_on(v, BAMBOO)
+    let ground = near_ground(q.x)
+    let grass = vec3(0.5, 0.74, 0.34)
+    if q.y > ground + 4.2 {
+        return vec4(0.0)
+    }
+    if q.y < ground + 0.1 {
+        return under(g, gs, grass * 0.9, q, ground + 0.3, 0.12)
+    }
+    let up = q.y - ground
+    var best = (up - 0.3, grass)
+    if up < 1.6 {
+        best = over(fence(q.x, up), best)
+    }
+    // One thing by the fence in each stretch, or none: sunflowers behind it, hay bales or a
+    // wheelbarrow in front.
+    let cell = floor(q.x / BY_FENCE)
+    let h = hash2(i32(cell), 45)
+    let x0 = (cell + 0.3 + 0.4 * hash2(i32(cell), 46)) * BY_FENCE
+    let foot = vec2(x0, near_ground(x0))
+    if h < 0.25 && abs(q.x - x0) < 1.4 {
+        var flowers = (1.0e3, grass)
+        for (dx, tall) in [(-0.6, 2.4), (0.05, 3.0), (0.6, 2.1)] {
+            let x = x0 + dx
+            let sway = 0.08 * sin(v.time * 0.9 + x * 0.4)
+            flowers = nearer(
+                flowers,
+                sunflower(q, vec2(x, near_ground(x) - 0.1), tall * (0.9 + 0.2 * h), sway),
+            )
+        }
+        best = over(best, flowers)
+    } else if h < 0.45 && abs(q.x - x0) < 1.3 {
+        best = over(bales(q - foot + vec2(0.0, 0.08), hash2(i32(cell), 47) < 0.35), best)
+    } else if h < 0.65 && abs(q.x - x0) < 1.5 {
+        best = over(wheelbarrow(q - foot + vec2(0.0, 0.05)), best)
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.12, line: 1.2)
 }
