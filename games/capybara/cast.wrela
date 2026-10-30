@@ -380,9 +380,11 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     step_dust(mut k.dust, dt, |p: vec2| surface_at(k.waves, p.x))
 }
 
-/// The water's surface over `at` (m), if it's in the water or partly, else far below.
+/// The water's surface over `at` (m), if a sprite there reaches into the water (its middle within
+/// `REACH` of it, above or below), else far below. A capybara on a lakebed is in the water: a
+/// point a reach below its middle is in the ground.
 fn under(k: Cast, c: Course, at: vec2) -> f32 {
-    if c.water_at(at - vec2(0.0, 0.6)).is_none() {
+    if !c.touches_water(at, REACH) {
         return -1.0e4
     }
     match surface_at(k.waves, at.x) {
@@ -390,6 +392,9 @@ fn under(k: Cast, c: Course, at: vec2) -> f32 {
         None => -1.0e4,
     }
 }
+
+/// How far from its middle a sprite reaches into water (m), for its tint.
+const REACH: f32 = 0.6
 
 /// The middle of the goal's floor (m): where the kusudama stands.
 fn goal_at(c: Course) -> vec2 {
@@ -919,6 +924,60 @@ fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     assert(n == counts(v.tally), f"{n[0]} landings heard of {v.tally.landings}")
     assert(n[0] >= played[0] && n[1] == played[1], "the run's own, and any after its goal")
     assert(v.tally.cuts == 0, "no cut in a run without a death")
+}
+
+/// The capybara's sprite in snapshot `s` of the level, drawn by a new cast.
+fn capybara_sprite(s: Snap) -> Sprite {
+    borrow c = course(LEVEL)
+    var back: Vec<Sprite> = Vec::new()
+    var front: Vec<Sprite> = Vec::new()
+    let k = cast(c, from: Some(s))
+    sprites(
+        k,
+        s,
+        c,
+        time: 0.0,
+        lag: 0.0,
+        hud: vec2(0.0),
+        count: false,
+        back: mut back,
+        front: mut front,
+    )
+    for f in front {
+        if f.kind == CAPYBARA {
+            return f
+        }
+    }
+    assert(false, "no capybara drawn")
+    front[0]
+}
+
+@test
+fn the_capybara_is_tinted_by_the_water_on_a_lakebed_and_not_on_dry_ground() {
+    // On dry ground at the start: no water over it.
+    let dry = capybara_sprite(present(world(LEVEL)))
+    assert(dry.surface < -1.0e3, f"a surface of {dry.surface} on dry ground")
+    // The 100% run walks the lake's floor to the snack under the deep caiman: its middle is a
+    // radius above the floor, so a point a reach below it is in the ground, not the water.
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    var on_floor = 0
+    for h in LEVEL_FULL {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            let s = present(w)
+            let deep = match c.water_at(s.at) {
+                Some(i) => s.at.y < c.waters[i].surface() - 2.0,
+                None => false,
+            }
+            if w.body.grounded() && deep {
+                on_floor += 1
+                let f = capybara_sprite(s)
+                assert(f.surface > s.at.y + 2.0, f"a surface of {f.surface} over {s.at.y}")
+            }
+        }
+    }
+    assert(on_floor > 30, f"{on_floor} ticks on the lake's floor")
 }
 
 @test

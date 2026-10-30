@@ -66,6 +66,10 @@ fn keys_of(s: take Script, run: [Hold], first: u32) -> Script {
 /// 3500 --input level.json`.
 pub const LEVEL: Script = script_of(proofs::LEVEL_ANY)
 
+/// The level's recorded 100% run (`proofs::LEVEL_FULL`), as `LEVEL`: it dives under the lake's
+/// deep caiman to the snack on its floor.
+pub const LEVEL_FULL: Script = script_of(proofs::LEVEL_FULL)
+
 /// The lab's recorded run (`proofs::LAB_RUN`), after Tab switches to the lab: at 120 frames a
 /// second, as `LEVEL`.
 pub const LAB: Script = keys_of(
