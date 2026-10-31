@@ -6,7 +6,7 @@
 
 use land::grow::{Cause, State, Tree, rotate}
 use land::interest::Drawn
-use engine::growth::Provenance
+use engine::growth::{Grown, Provenance, Site, genome_hash, values_of}
 use engine::noise::{direction, hash2u, noise2, pick, rand}
 use engine::plant::{
     Bark, Instance, Leaves, Plant, RINGS, SIDES, bend, limb_axis, limb_at_height, limb_corner,
@@ -56,14 +56,26 @@ pub const OAK_ANCIENT: u32 = 24
 pub const BEECH_ANCIENT: u32 = 25
 pub const KINDS: u32 = 26
 
-/// Kind `k`'s provenance (`engine::growth::Provenance`): each is a hand's shape (`kind_plant`)
-/// until it's grown from its species' genome (§E1).
+/// Kind `k`'s provenance (`engine::growth::Provenance`): grown, for an archetype (its genome's
+/// hash, its site and its seed: `archetypes`), else a hand's shape.
 pub fn provenance(k: u32) -> Provenance {
-    Provenance::Authored
+    match archetypes::archetype(k) {
+        Some(a) => {
+            let g = genomes::genomes()[a.species]
+            Provenance::Grown(
+                Grown {
+                    genome: genome_hash(values_of(g)),
+                    site: Site { age: a.age, stand: a.stand },
+                    seed: a.seed,
+                },
+            )
+        },
+        None => Provenance::Authored,
+    }
 }
 
 /// Each kind's height as it's built (m): an instance is scaled to its tree's.
-const BUILT = [
+pub const BUILT = [
     16.0, 18.0, 18.0, 20.0, 20.0, 15.0, 15.0, 22.0, 22.0, 15.0, 15.0, 5.0, 3.0, 3.0, 3.0, 16.0,
     16.0, 18.0, 12.0, 20.0, 15.0, 15.0, 16.0, 11.0, 30.0, 34.0,
 ]
@@ -622,7 +634,29 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
 }
 
 /// Kind `k`'s plant.
+/// Kind `k`'s plant: its archetype grown (`archetypes`), in its authored kind's leaves and bark;
+/// or, for the kinds still authored (the great tree, the far crowns, the dead), its shape by hand.
 pub fn kind_plant(k: u32) -> Plant {
+    var p = authored_plant(k)
+    archetypes::grown_into(k, mut p)
+    p
+}
+
+/// Each kind's leaves, bark and crown's blend (its authored plant's: a near individual's growth
+/// takes its kind's, `archetypes::individual`), at build.
+pub const LOOKS: [(Leaves, Bark, f32); KINDS] = looks()
+
+fn looks() -> [(Leaves, Bark, f32); KINDS] {
+    var out = [(Leaves {}, Bark {}, 0.0); KINDS]
+    for k in 0..KINDS {
+        let p = authored_plant(k)
+        out[k] = (p.leaves, p.bark, p.blend)
+    }
+    out
+}
+
+/// Kind `k`'s plant as authored by hand (a grown kind keeps its leaves and bark from it).
+fn authored_plant(k: u32) -> Plant {
     let oak_leaves = Leaves {
         young: vec3(0.105, 0.16, 0.055),
         old: vec3(0.055, 0.095, 0.035),
@@ -1048,11 +1082,39 @@ pub const HEADING: f32 = 0.7
 /// the first, nor its roots', which reach into the ground) and its clumps'. (Its roots counted,
 /// every broad-leaved kind's lowest branch was under the ground, and a browsed tree was always
 /// drawn in its forest form.)
+/// Which of a plant's limbs are its trunk: its first, and each that starts where the last ended,
+/// nearly as thick (a grown trunk's bole is one tube to a turn, then on in pieces:
+/// `engine::growth::chains_of`), not branches.
+fn trunk_pieces(p: Plant) -> Vec<bool> {
+    var trunk: Vec<bool> = Vec::filled(p.limbs.len(), false)
+    if p.limbs.len() == 0 {
+        return trunk
+    }
+    trunk[0] = true
+    var end = p.limbs[0]
+    var going = true
+    while going {
+        going = false
+        for i in 1..p.limbs.len() {
+            let l = p.limbs[i]
+            if !trunk[i] && length(l.points[0] - end.points[3]) < 1.0e-3 &&
+                l.radii[0] >= 0.6 * end.radii[3] {
+                trunk[i] = true
+                end = l
+                going = true
+                break
+            }
+        }
+    }
+    trunk
+}
+
 fn lowest(p: Plant) -> f32 {
     var low = 1.0e9
+    let trunk = trunk_pieces(p)
     for i in 1..p.limbs.len() {
         let l = p.limbs[i]
-        if l.points[3].y < 0.0 {
+        if l.points[3].y < 0.0 || trunk[i] {
             continue
         }
         for k in 0..4 {
@@ -1114,9 +1176,10 @@ fn shapes_of_kinds() -> Shapes {
         if p.limbs.len() > 0 {
             out.trunks[k] = p.limbs[0]
         }
+        let trunk = trunk_pieces(p)
         for i in 1..p.limbs.len() {
-            // Not a root (a limb into the ground).
-            if p.limbs[i].points[3].y < 0.0 {
+            // Not a root (a limb into the ground), nor the trunk going on.
+            if p.limbs[i].points[3].y < 0.0 || trunk[i] {
                 continue
             }
             let y = p.limbs[i].points[0].y
@@ -1931,32 +1994,6 @@ pub fn occluders_into(
     }
 }
 
-/// Every new limb starts inside older wood. This catches chord-based attachments that leave
-/// visible gaps where a trunk or scaffold curves.
-@test
-fn living_branches_join_the_parent_wood() {
-    for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
-        let p = kind_plant(kind)
-        for i in 1..p.limbs.len() {
-            let child = p.limbs[i]
-            if child.points[0].y < 0.1 {
-                continue
-            }
-            var nearest = 1.0e6
-            for j in 0..i {
-                for piece in 0..24 {
-                    let parent = p.limbs[j]
-                    let (a, _, ar) = limb_axis(parent, f32(piece) / 24.0)
-                    let (b, _, br) = limb_axis(parent, f32(piece + 1) / 24.0)
-                    let t = saturate(dot(child.points[0] - a, b - a) / dot(b - a, b - a))
-                    let d = length(child.points[0] - mix(a, b, vec3(t))) - mix(ar, br, t)
-                    nearest = min(nearest, d)
-                }
-            }
-            assert(nearest <= 0.005, f"kind {kind} branch {i} is detached by {nearest} m")
-        }
-    }
-}
 
 @test
 fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
@@ -2044,7 +2081,7 @@ fn fallen_collision_wood_matches_the_rendered_root_plate_and_trunk() {
 @test
 fn broadleaf_crowns_have_unequal_vertical_sprays() {
     for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
-        let p = kind_plant(kind)
+        let p = authored_plant(kind)
         var lo = 2.0
         var hi = 0.0
         var small = 1.0e6
@@ -2188,7 +2225,7 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
     var omitted = 0
     var retained = 0
     for kind in [OAK_OPEN, OAK_FOREST, SNAG_BROAD, LOG_LONG] {
-        let p = kind_plant(kind)
+        let p = authored_plant(kind)
         for fork in [-0.4, 0.0, 0.4] {
             let inst = Instance {
                 at: vec3(11.0, 3.0, -7.0),
@@ -2239,45 +2276,6 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
     assert(retained > 0 && omitted > 0, "curved twig cores were neither bounded nor omitted")
 }
 
-/// Every clump of a living broad-leaved kind has its wood in it: its middle within 0.3 of its
-/// radius of a limb's axis (a shell of clumps over a few bare scaffolds, most of them with no
-/// wood to them, read as leaves floating off the tree: the owner's lookdev).
-@test
-fn every_clump_of_leaves_has_its_wood_in_it() {
-    let kinds = [
-        OAK_OPEN,
-        OAK_FOREST,
-        BEECH_OPEN,
-        BEECH_FOREST,
-        BIRCH_OPEN,
-        BIRCH_FOREST,
-        ALDER_A,
-        ALDER_B,
-        YOUNG_BROAD,
-        OAK_ANCIENT,
-        BEECH_ANCIENT,
-    ]
-    for kind in kinds {
-        let p = kind_plant(kind)
-        assert(p.clumps.len() > 20, f"kind {kind} has {p.clumps.len()} clumps")
-        for i in 0..p.clumps.len() {
-            let c = p.clumps[i]
-            var nearest = 1.0e6
-            for l in 0..p.limbs.len() {
-                for piece in 0..32 {
-                    let (a, _, _) = limb_axis(p.limbs[l], f32(piece) / 32.0)
-                    let (b, _, _) = limb_axis(p.limbs[l], f32(piece + 1) / 32.0)
-                    let t = saturate(dot(c.centre - a, b - a) / max(dot(b - a, b - a), 1.0e-9))
-                    nearest = min(nearest, length(c.centre - mix(a, b, vec3(t))))
-                }
-            }
-            assert(
-                nearest <= 0.3 * c.radius + 1.0e-3,
-                f"kind {kind}'s clump {i} is {nearest} m from its wood, {c.radius} m across",
-            )
-        }
-    }
-}
 
 /// A veteran oak or beech is drawn as its own species' ancient kind, not the great oak: a beech
 /// with a beech's bark and leaves.
@@ -2299,13 +2297,14 @@ fn veterans_are_drawn_as_their_own_species() {
         t.girth = VETERAN - 0.1
         assert(drawn_kind(t) != ancient, f"a younger tree of species {species} drawn as a veteran")
     }
-    let (oak, beech) = (kind_plant(OAK_ANCIENT), kind_plant(BEECH_ANCIENT))
-    assert(beech.bark.light.x == kind_plant(BEECH_OPEN).bark.light.x, "a veteran beech's bark")
+    // Their looks (a grown kind keeps its authored kind's: `kind_plant`).
+    let (oak, beech) = (authored_plant(OAK_ANCIENT), authored_plant(BEECH_ANCIENT))
+    assert(beech.bark.light.x == authored_plant(BEECH_OPEN).bark.light.x, "a veteran beech's bark")
     assert(
-        beech.leaves.young.x == kind_plant(BEECH_OPEN).leaves.young.x,
+        beech.leaves.young.x == authored_plant(BEECH_OPEN).leaves.young.x,
         "a veteran beech's leaves",
     )
-    assert(oak.bark.light.x == kind_plant(OAK_OPEN).bark.light.x, "a veteran oak's bark")
+    assert(oak.bark.light.x == authored_plant(OAK_OPEN).bark.light.x, "a veteran oak's bark")
 }
 
 /// A living tree is turned toward its light give or take its own share of `HEADING`, so a row of

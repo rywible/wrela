@@ -169,6 +169,20 @@ impl Tiles for FloorTiles {
     fn height_at(self, p: vec2) -> f32 {
         land_at(self.source, p)
     }
+
+    // The floor draws no near individuals yet (§E1.3 is the vale's; the floor's GPU memory is
+    // over its budget already: docs/bench.md).
+    fn near(self) -> u32 {
+        0
+    }
+
+    fn grows(self, k: u32) -> bool {
+        false
+    }
+
+    fn individual(self, t: land::grow::Tree, k: u32) -> Option<engine::growth::Grow> {
+        None
+    }
 }
 
 /// A built thing realized: its mesh, its reach (how far round its place it stands), and its

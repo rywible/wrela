@@ -22,6 +22,7 @@ use engine::probes::{Occluder, ProbeGrid, Trace}
 use engine::shadow::Shadows
 use engine::sky::Weather
 use engine::terrain::{Clipmap, Texel}
+use engine::growth::Grow
 use engine::vegetation::Placed
 use engine::view::Camera
 use fawn::character::{FawnLook, Grown, REALIZED, SLICES, at_rest, grown}
@@ -103,7 +104,23 @@ impl Tiles for ValeTiles {
     fn height_at(self, p: vec2) -> f32 {
         height_at(p)
     }
+
+    fn near(self) -> u32 {
+        NEAR_N
+    }
+
+    fn grows(self, k: u32) -> bool {
+        trees::archetypes::grows(k)
+    }
+
+    fn individual(self, t: Tree, k: u32) -> Option<Grow> {
+        trees::archetypes::individual(t, k, PRESENT)
+    }
 }
+
+/// How many of the vale's trees near the eye are drawn as themselves (§E1.3: **proposed**, the
+/// memory and the first ring's growth to decide).
+pub const NEAR_N: u32 = 24
 
 /// The vale's one source.
 pub const TILES = ValeTiles { bake: 0 }

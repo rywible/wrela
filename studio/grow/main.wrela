@@ -1,9 +1,10 @@
 // The grow tool (docs/plan-world-class-3.md §E1.5): trees grown as specimens.
 //
 // ```text
-// wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>]
+// wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>]
 //     [--seed <n>] --out <dir>
 // wrela tool grow -- --specimens <dir>
+// wrela tool grow -- --kinds <dir>
 // ```
 //
 // A specimen is a species' tree grown from its genome (content/trees/genomes.wrela) at a site
@@ -16,13 +17,15 @@
 // milliseconds the growth and the conversion took on this machine (an optimized build).
 // `--specimens <dir>` writes each species at ages 10, 40, 100 and 200, in each light, a
 // specimen a directory (`<species>-<age>-<light>`), and `<dir>/index.html`, a page of them.
+// `--kinds <dir>` draws each of the trees' kinds (`trees::kinds::kind_plant`: the archetypes
+// grown at build, the rest authored) side on, `<dir>/<k>.png`, with a page.
 
-use specimens::{AGES, Ask, LIGHTS, NAMES, Specimen, index_of, page, specimen, write}
+use specimens::{AGES, Ask, LIGHTS, NAMES, Specimen, index_of, kinds_page, page, specimen, write}
 use std::io::print
 use std::tool::{ToolError, args}
 use toolkit::whole::{chunked, write_file}
 
-pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--seed <n>] --out <dir> | --specimens <dir>"
+pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>] [--seed <n>] --out <dir> | --specimens <dir> | --kinds <dir>"
 
 /// A number argument after `flag`, if given.
 fn number_after(given: [String], flag: str) -> Option<f32> {
@@ -50,7 +53,7 @@ fn run(given: [String]) -> Result<(), ToolError> {
         for k in 0..NAMES.len() {
             for age in AGES {
                 for light in 0..LIGHTS.len() {
-                    let s = specimen(Ask { species: k, age, light, wind: 0.0, seed: 1 })
+                    let s = specimen(Ask { species: k, age, light, wind: 0.0, stand: 0.0, seed: 1 })
                     let name = String::from(f"{NAMES[k]}-{u32(age)}-{LIGHTS[light]}")
                     print(
                         f"grow: {name}: {s.nodes} nodes, {s.limbs} of {s.chains} limbs, {s.height} m, IoU {s.iou}, grown in {s.grow_ms} ms, converted in {s.convert_ms} ms",
@@ -62,6 +65,9 @@ fn run(given: [String]) -> Result<(), ToolError> {
             }
         }
         return write_file(f"{dir}/index.html", chunked(Vec::from(page(done).as_bytes())))
+    }
+    if let Some(dir) = text_after(given, "--kinds") {
+        return kinds_page(dir.as_str())
     }
     let Some(species) = text_after(given, "--species") else {
         return Err(ToolError::new(USAGE))
@@ -80,8 +86,9 @@ fn run(given: [String]) -> Result<(), ToolError> {
         return Err(ToolError::new(USAGE))
     }
     let wind = clamp(number_after(given, "--wind").unwrap_or(0.0), 0.0, 1.0)
+    let stand = clamp(number_after(given, "--stand").unwrap_or(0.0), 0.0, 1.0)
     let seed = u32(number_after(given, "--seed").unwrap_or(1.0))
-    let s = specimen(Ask { species: k, age, light, wind, seed })
+    let s = specimen(Ask { species: k, age, light, wind, stand, seed })
     print(f"grow: {s.json}")
     write(take s, out.as_str())
 }

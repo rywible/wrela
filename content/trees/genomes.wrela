@@ -47,7 +47,8 @@ pub fn genomes() -> [Genome; Species] {
             rate: h[Species::Oak].rate,
             crown: h[Species::Oak].crown,
         },
-        // Beech: shade-tolerant (it keeps shaded limbs long), two-ranked, a moderate leader.
+        // Beech: shade-tolerant (it keeps shaded limbs long), two-ranked, a moderate leader; its bole
+        // slenderer than an oak's (a higher pipe exponent: thinner for its leaves).
         Genome {
             apical: 0.35,
             branching: 45.0,
@@ -59,7 +60,7 @@ pub fn genomes() -> [Genome; Species] {
             gravitropism: 0.15,
             shed_light: 0.08,
             shed_years: 8.0,
-            pipe: 2.1,
+            pipe: 2.3,
             bark: 0.0003,
             cracks: 0.15,
             leaf_sun: 0.08,

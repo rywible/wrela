@@ -1,0 +1,228 @@
+// The trees grown (docs/plan-world-class-3.md §E1.3): each living kind (`kinds`) an archetype, its
+// species' tree grown from its genome (`genomes`, `engine::growth::grow_graph`) at its class's
+// median site (an age class, and the open or a stand), at build; then scaled to the kind's built
+// height, so an instance is placed as before. The plants are kept as bytes (`GROWN`: each
+// limb's points and radii and each clump as half floats), a constant of the build, read back by
+// `kinds::kind_plant` into its kind's leaves and bark.
+//
+// The plan's archetypes are 70 (seven species × five age classes × open and under). The memory
+// gate decides their count (§E1.3: the vale's GPU peak, 539.8 MiB on `main`, is already over its
+// 512), so the living kinds' number holds: each kind's form (its species, open or forest, young or
+// ancient) is one archetype grown, where it was a shape authored by hand. The great tree, the far
+// crowns and the dead (snags, logs: §E4's) stay authored.
+
+use engine::growth::{Grow, GrowthEvent, Site, convert, grow_graph, scale}
+use land::grow::{NO_EVENT, Tree, events_of, light_at}
+use engine::plant::{Bark, Clump, Leaves, MAX_CLUMPS, MAX_LIMBS, Plant}
+use genomes::genomes
+use kinds::{
+    ALDER_A, ALDER_B, BEECH_ANCIENT, BEECH_FOREST, BEECH_OPEN, BIRCH_FOREST, BIRCH_OPEN, BUILT,
+    HAWTHORN, KINDS, OAK_ANCIENT, OAK_FOREST, OAK_OPEN, PINE_FOREST, PINE_OPEN, SLOE, YOUNG_BROAD,
+    YOUNG_PINE,
+}
+use species::{HABITS, Species}
+use std::field::Tube
+use std::gpu::Half2
+
+/// An archetype: its species, the age it's grown to (years), the stand round it (`Site::stand`:
+/// 0 the open) and its seed.
+pub struct Archetype: Copy {
+    pub species: u32,
+    pub age: f32,
+    pub stand: f32,
+    pub seed: u32,
+}
+
+/// Kind `k`'s archetype, if it's grown (**proposed** ages: a mature tree at about a quarter of
+/// its species' life, an ancient at two thirds, the young at 20 years in the open; a forest's
+/// stand 0.9, the birch's 0.6 and the pine's 0.75, whose crowns a closer stand left a tuft).
+pub fn archetype(k: u32) -> Option<Archetype> {
+    let (species, age, stand) = if k == OAK_OPEN {
+        (Species::Oak, 150.0, 0.0)
+    } else if k == OAK_FOREST {
+        (Species::Oak, 150.0, 1.0)
+    } else if k == OAK_ANCIENT {
+        (Species::Oak, 400.0, 0.0)
+    } else if k == BEECH_OPEN {
+        (Species::Beech, 120.0, 0.0)
+    } else if k == BEECH_FOREST {
+        (Species::Beech, 120.0, 1.0)
+    } else if k == BEECH_ANCIENT {
+        (Species::Beech, 260.0, 0.0)
+    } else if k == BIRCH_OPEN {
+        (Species::Birch, 50.0, 0.0)
+    } else if k == BIRCH_FOREST {
+        (Species::Birch, 50.0, 0.6)
+    } else if k == PINE_OPEN {
+        (Species::Pine, 100.0, 0.0)
+    } else if k == PINE_FOREST {
+        (Species::Pine, 100.0, 0.75)
+    } else if k == ALDER_A {
+        (Species::Alder, 60.0, 0.0)
+    } else if k == ALDER_B {
+        (Species::Alder, 60.0, 0.6)
+    } else if k == HAWTHORN {
+        (Species::Thorn, 40.0, 0.0)
+    } else if k == SLOE {
+        (Species::Sloe, 25.0, 0.0)
+    } else if k == YOUNG_BROAD {
+        (Species::Beech, 20.0, 0.0)
+    } else if k == YOUNG_PINE {
+        (Species::Pine, 20.0, 0.0)
+    } else {
+        return None
+    }
+    Some(Archetype { species: u32(species), age, stand, seed: 101 + k })
+}
+
+/// Kind `k`'s archetype grown (`look` its leaves and bark) and scaled to its built height
+/// (`BUILT`): at build only (a veteran's growth takes seconds).
+pub fn grown(k: u32, a: Archetype) -> Plant {
+    let g = genomes()[a.species]
+    let t = grow_graph(g, Site { age: a.age, stand: a.stand }, [], vec2(0.0), [], a.seed)
+    var p = engine::plant::plant(Leaves {}, Bark {})
+    let _ = convert(t, g, mut p)
+    let s = BUILT[k] / max(p.top(), 1.0e-3)
+    scale(mut p, s)
+    p
+}
+
+/// The grown kinds' plants as bytes, one after another in the kinds' order (a kind not grown
+/// none): `grown_into`'s.
+@fuel(2 ** 44)
+pub const GROWN: Vec<u8> = grown_bytes()
+
+fn grown_bytes() -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    for k in 0..KINDS {
+        if let Some(a) = archetype(k) {
+            put(mut out, grown(k, a))
+        }
+    }
+    out
+}
+
+/// Its words, little-endian.
+fn put_u32(out: mut Vec<u8>, x: u32) {
+    for i in 0..4 {
+        out.push(u8((x >> (8 * i)) & 255))
+    }
+}
+
+fn get_u32(b: [u8], at: u32) -> u32 {
+    u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
+}
+
+/// Two values as half floats, a word.
+fn put_pair(out: mut Vec<u8>, a: f32, b: f32) {
+    put_u32(mut out, Half2::encode(vec2(a, b)).bits)
+}
+
+fn get_pair(b: [u8], at: u32) -> vec2 {
+    Half2 { bits: get_u32(b, at) }.decode()
+}
+
+/// A plant's geometry: its limbs' and clumps' counts (a word), each limb's twelve coordinates and
+/// four radii (eight words), each clump's centre, radius and squash (three words).
+fn put(out: mut Vec<u8>, p: Plant) {
+    put_u32(mut out, p.limbs.len() | (p.clumps.len() << 16))
+    for i in 0..p.limbs.len() {
+        let l = p.limbs[i]
+        let (a, b, c, d) = (l.points[0], l.points[1], l.points[2], l.points[3])
+        put_pair(mut out, a.x, a.y)
+        put_pair(mut out, a.z, b.x)
+        put_pair(mut out, b.y, b.z)
+        put_pair(mut out, c.x, c.y)
+        put_pair(mut out, c.z, d.x)
+        put_pair(mut out, d.y, d.z)
+        put_pair(mut out, l.radii[0], l.radii[1])
+        put_pair(mut out, l.radii[2], l.radii[3])
+    }
+    for i in 0..p.clumps.len() {
+        let c = p.clumps[i]
+        put_pair(mut out, c.centre.x, c.centre.y)
+        put_pair(mut out, c.centre.z, c.radius)
+        put_pair(mut out, c.squash, 0.0)
+    }
+}
+
+/// Kind `k`'s grown geometry from `GROWN` into `p` (its limbs and clumps replaced, its leaves
+/// and bark kept), if `k` is grown (in place: a plant is 130 KB, and a debug build's stack holds
+/// few).
+pub fn grown_into(k: u32, p: mut Plant) {
+    if archetype(k).is_none() {
+        return
+    }
+    var at = 0
+    for j in 0..k {
+        if archetype(j).is_some() {
+            let counts = get_u32(GROWN, at)
+            at += 4 + 32 * (counts & 65535) + 12 * (counts >> 16)
+        }
+    }
+    let counts = get_u32(GROWN, at)
+    let (limbs, clumps) = (min(counts & 65535, MAX_LIMBS), min(counts >> 16, MAX_CLUMPS))
+    at += 4
+    p.limbs.clear()
+    p.clumps.clear()
+    for _ in 0..limbs {
+        let w = |i: u32| get_pair(GROWN, at + 4 * i)
+        let (p0, p1, p2, p3, p4, p5, r0, r1) = (w(0), w(1), w(2), w(3), w(4), w(5), w(6), w(7))
+        p.tube(
+            [vec3(p0.x, p0.y, p1.x), vec3(p1.y, p2.x, p2.y), vec3(p3.x, p3.y, p4.x), vec3(p4.y, p5.x, p5.y)],
+            [r0.x, r0.y, r1.x, r1.y],
+        )
+        at += 32
+    }
+    for _ in 0..clumps {
+        let (c0, c1, c2) = (get_pair(GROWN, at), get_pair(GROWN, at + 4), get_pair(GROWN, at + 8))
+        p.cushion(vec3(c0.x, c0.y, c1.x), c1.y, c2.x)
+        at += 12
+    }
+}
+
+/// Whether kind `k` is grown (an archetype), so a tree drawn as it can be a near individual.
+pub fn grows(k: u32) -> bool {
+    archetype(k).is_some()
+}
+
+/// Tree `t` (drawn as kind `k`) as a near individual's growth (§E1.3), if its kind is grown: its
+/// species' genome, its age at `present`, its light each year and its events from its own history
+/// (`land::grow::light_at`, `events_of`: no neighbour's record read), its own seed, its kind's
+/// leaves and bark, its kind's stand and height (so it's placed as its archetype is).
+pub fn individual(t: Tree, k: u32, present: i32) -> Option<Grow> {
+    let a = archetype(k)?
+    let species = min(t.kind, u32(Species::Alder))
+    let h = HABITS[species]
+    let age = max(f32(present - t.born), 1.0)
+    var light: Vec<f32> = Vec::new()
+    for y in 0..u32(ceil(age)) {
+        let (l, _) = light_at(t, h, f32(y))
+        light.push(l)
+    }
+    var events: Vec<GrowthEvent> = Vec::new()
+    for e in events_of(t) {
+        if e.kind != NO_EVENT {
+            events.push(
+                GrowthEvent {
+                    age: f32(i32(e.year) - t.born),
+                    kind: u32(e.kind),
+                    strength: f32(e.strength) / 255.0,
+                },
+            )
+        }
+    }
+    Some(
+        Grow {
+            genome: genomes()[species],
+            site: Site { age, stand: a.stand },
+            light,
+            events,
+            seed: t.seed,
+            leaves: kinds::LOOKS[k].0,
+            bark: kinds::LOOKS[k].1,
+            blend: kinds::LOOKS[k].2,
+            height: BUILT[k],
+        },
+    )
+}
