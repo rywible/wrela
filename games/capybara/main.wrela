@@ -1664,6 +1664,10 @@ fn back_rect(screen: vec2) -> Rect {
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
     made_assisted(mut s, c)
     let nav = s.nav.nav(e)
+    if let Event::Text { .. } = e {
+        // The F that opened the search, typed before the search shows: not typed into it.
+        s.skip_text = false
+    }
     if finds(e) {
         // The sim opens the search; the F that did isn't typed into it.
         s.skip_text = true
@@ -1868,6 +1872,8 @@ fn find(s: mut Lab, e: Event, screen: vec2, time: f32) {
             }
         },
         Event::KeyDown { key, repeat, .. } => {
+            // Another key: the opener's character has come, or never will.
+            s.skip_text = false
             if key == Key::Backspace {
                 changed = s.search.erase()
             } else if key == Key::Up && s.search.part > 0 {
