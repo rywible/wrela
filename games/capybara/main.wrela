@@ -1006,9 +1006,10 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
                 time: time,
             )
         } else if page == MENU {
-            // The course's world board, asked for while the menu shows (when the console is
-            // there): the facts say the player's place, and the leaderboard opens on it.
-            online::want(mut s.online, snap.course, ANY)
+            // The course's world board, asked for while the menu shows, only for a player who
+            // is signed in, so play stays offline otherwise (design.md, "Online play"): the facts
+            // say the player's place, and the leaderboard opens on it.
+            if s.online.account.signed_in { online::want(mut s.online, snap.course, ANY) }
             let hover = hovered(s, screen, MENU)
             screens::list(
                 mut s.list,
