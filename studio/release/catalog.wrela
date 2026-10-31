@@ -74,7 +74,7 @@ pub const CATALOG: Catalog = Catalog {
         dir: "console",
         worker: "wrela-console",
         domain: "wrela.dev",
-        description: "Games made in Wrela, a language and engine for games that run in the browser.",
+        description: "Games that run in your browser, built with the Wrela language and engine.",
         api: "wrela-console-api",
         zone: "wrela.dev",
         // The server ran in the console's Worker until 2026-10-31, when its first deploy here
@@ -85,7 +85,7 @@ pub const CATALOG: Catalog = Catalog {
         dir: "docsite",
         worker: "wrela-docs",
         domain: "docs.wrela.dev",
-        description: "The reference for Wrela: the language, its standard library, the engine, ui and platform packages, and the studio's tool.",
+        description: "The Wrela reference. It covers the language, its standard library, the engine, the ui and platform packages, and the studio's tool.",
         packages: Vec::from(["engine", "land", "ui", "platform", "studio/tool"]),
     },
     games: Vec::from(
@@ -105,7 +105,7 @@ pub const CATALOG: Catalog = Catalog {
                 cover: "games/capybara/cover.png",
                 hero: "games/capybara/hero.png",
                 logo: "",
-                tagline: "A day at the zoo: nine habitats to run, swim and slide through.",
+                tagline: "Run, swim and slide through nine habitats at the zoo.",
                 theme: "games/capybara/theme.txt",
             },
         ],

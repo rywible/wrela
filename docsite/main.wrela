@@ -686,9 +686,13 @@ fn answers(s: mut Docs) {
                         s.missed = take why
                     }
                 },
-                Err(e) => s.trouble = f"The index couldn't be read: {e.as_str()}",
+                Err(
+                    e,
+                ) => s.trouble = f"Can't read the docs' index ({e.as_str()}). Reload to try again.",
             },
-            Err(e) => s.trouble = f"The index couldn't be fetched: {e.message()}",
+            Err(
+                e,
+            ) => s.trouble = f"Can't load the docs' index ({e.message()}). Check your connection and reload.",
         }
     }
     if let Some(Ok(bytes)) = poll(mut s.address) {
@@ -719,7 +723,7 @@ fn answers(s: mut Docs) {
                     s.pages.push((path.clone(), blocks.clone(), text.clone()))
                     if s.route.page == path { show(mut s, path.as_str(), take blocks, take text) }
                 },
-                None => s.trouble = f"{path.as_str()} isn't UTF-8",
+                None => s.trouble = f"Can't read {path.as_str()}. It isn't UTF-8.",
             },
             Err(e) => if s.route.page == path {
                 // A page that isn't there, as after a page moved: what may be it, and search.
@@ -947,7 +951,7 @@ fn front_blocks(index: Index) -> Vec<Block> {
             ),
         },
     )
-    let field = f"## A field, drawn live\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§14](spec/language/14-derived-interpretations.md)). Below, a tesseract at rest, the console's artifact made of a few such fields, is drawn from this code as you change it; [a complete program](spec/language/22-a-complete-program.md) draws a field with a shader of its own.\n\n```wrela\n{live::tesseract().as_str()}```\n\n## Browse the docs\n"
+    let field = f"## A field, drawn live\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§14](spec/language/14-derived-interpretations.md)). Below is a tesseract at rest, the console's artifact, made of a few such fields. It's drawn from this code and changes as you edit it. [A complete program](spec/language/22-a-complete-program.md) draws a field with a shader of its own.\n\n```wrela\n{live::tesseract().as_str()}```\n\n## Browse the docs\n"
     var parsed = parse(field.as_str())
     out.append(mut parsed)
     for g in groups_in(index) {
@@ -995,7 +999,7 @@ fn group_summary(index: Index, g: str) -> String {
     }
     if g == "land" {
         return String::from(
-            "A landscape round a player: its map, landforms, growth, water, footing and streaming.",
+            "The landscape around a player, with its map, landforms, growth, water, footing and streaming.",
         )
     }
     if g == "ui" {
@@ -1003,12 +1007,12 @@ fn group_summary(index: Index, g: str) -> String {
     }
     if g == "platform" {
         return String::from(
-            "What the host gives a program: its address, the network and how it's shown.",
+            "What the host gives a program, like its address, the network and how it's shown.",
         )
     }
     if g == "studio_tool" {
         return String::from(
-            "The lens on a subject: `wrela tool studio`, its actions, its server and its headless runs.",
+            "`wrela tool studio`, the lens on a subject, with its actions, its server and its headless runs.",
         )
     }
     var names: Vec<String> = Vec::new()
@@ -1032,7 +1036,7 @@ fn front(index: Index) -> String {
         "- [`llms.txt`](llms.txt) lists every page with its summary and says how to read them. [`spec/llms-full.txt`](spec/llms-full.txt) holds the whole language in one file, and each package has a file of its own.\n",
     )
     md.push_str(
-        "- Each page is Markdown at its own address, such as `std/io.md`, and its Copy page button puts it on the clipboard. `index.json` lists every item with its signature and source line.\n",
+        "- Each page is Markdown at its own address, such as `std/io.md`. Its Copy page button puts it on the clipboard. `index.json` lists every item with its signature and source line.\n",
     )
     if !index.repository.is_empty() {
         let install = if index.toolchain_repository.is_empty() {
@@ -1041,7 +1045,7 @@ fn front(index: Index) -> String {
             f"install `wrela` from [a toolchain release]({index.toolchain_repository.as_str()}/releases)"
         }
         md.push_str(
-            f"- To run a program: {install.as_str()}; then, in a clone of [the repository]({index.repository.as_str()}), `wrela run examples/hello-field` serves that program to your browser. `wrela` runs the toolchain release the repository pins.\n",
+            f"- To run a program, {install.as_str()}. Then, in a clone of [the repository]({index.repository.as_str()}), `wrela run examples/hello-field` serves it to your browser. `wrela` runs the toolchain release the repository pins.\n",
         )
     }
     for g in groups_in(index) {
@@ -1072,7 +1076,7 @@ fn front(index: Index) -> String {
 /// to search. Its links are relative to `path`.
 fn missing(index: Index, path: str, why: str) -> String {
     let p = path.slice(from: 0, to: if path.ends_with(".md") { path.len() - 3 } else { path.len() })
-    var md = f"# No page here\n\n`{p}` couldn't be opened ({why}).\n\n"
+    var md = f"# No page here\n\nCan't open `{p}` ({why}).\n\n"
     // Up from the page's directory to the docs' root.
     var up = String::new()
     for i in 0..p.len() {
@@ -1096,7 +1100,7 @@ fn missing(index: Index, path: str, why: str) -> String {
         hits = index.search(longest.as_str(), 8)
     }
     if hits.is_empty() {
-        md.push_str("Press `/` and search for what you're looking for.\n")
+        md.push_str("Press `/` to search.\n")
         return md
     }
     // Pages of the missing page's own group (`spec`, `std`) first: it moved most likely there.
@@ -1106,7 +1110,7 @@ fn missing(index: Index, path: str, why: str) -> String {
             !page_of(index, b).as_str().starts_with(group.as_str()),
     )
     md.push_str(
-        "A page that moved may be one of these. Or press `/` and search for what you're looking for.\n\n## Pages that may be it\n\n",
+        "If the page moved, it may be one of these. You can also press `/` to search.\n\n## Close matches\n\n",
     )
     for h in hits {
         let (title, under) = result_text(index, h)
@@ -4927,7 +4931,7 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
     for i in 0..buttons.len() {
         let (r, what) = buttons[i].clone()
         let label = if what.as_str() == "menu" { "Pages" } else if what.as_str() == "home" {
-            "Wrela docs: the front page"
+            "Wrela docs home"
         } else { "Wrela on GitHub" }
         let href = if what.as_str() == "github" { s.index.repository.clone() } else if what
             .as_str() ==
@@ -5280,7 +5284,7 @@ fn a_missing_page_lists_what_may_be_it() {
     let page = md.as_str()
     assert(
         page.starts_with(
-            "# No page here\n\n`std/old/arena` couldn't be opened (HTTP 404).\n\nA page",
+            "# No page here\n\nCan't open `std/old/arena` (HTTP 404).\n\nIf the page",
         ),
         page,
     )
@@ -5316,7 +5320,7 @@ fn a_missing_page_lists_what_may_be_it() {
         none
             .as_str()
             .ends_with(
-                "couldn't be opened (HTTP 404).\n\nPress `/` and search for what you're looking for.\n",
+                "Can't open `spec/zzz` (HTTP 404).\n\nPress `/` to search.\n",
             ),
         none.as_str(),
     )

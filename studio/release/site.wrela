@@ -253,7 +253,7 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     body.push(String::from(f"<p>{text}</p>"))
     body.push(
         String::from(
-            "<p>These pages are a Wrela program that draws with WebGPU. Here they are as plain pages, for a browser that can't run it.</p>",
+            "<p>These docs are a Wrela program that draws with WebGPU. If your browser can't run it, here they are as plain pages.</p>",
         ),
     )
     for g in groups {
@@ -297,7 +297,7 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     body.push(String::from("</ul>"))
     body.push(
         String::from(
-            f"<p>An address of these docs names its page after <code>#</code>, and a heading on it after <code>:</code>. <code>{home}/#std/arena:arena-insert</code> is the heading <code>arena-insert</code> of <a href=\"{home}/std/arena.md\">{home}/std/arena.md</a>.</p>",
+            f"<p>In an address, the page's name comes after <code>#</code> and a heading's after <code>:</code>. So <code>{home}/#std/arena:arena-insert</code> is the heading <code>arena-insert</code> on <a href=\"{home}/std/arena.md\">{home}/std/arena.md</a>.</p>",
         ),
     )
     body.push(String::from("</main>"))
@@ -403,7 +403,7 @@ pub fn ico(pngs: [(Vec<u8>, u32)]) -> Vec<u8> {
 
 /// What every Worker answers a request no file matches with (`404.html`, with a 404): a short page
 /// in the docs' colours, which leads to the start.
-pub const NOT_FOUND: Text = "<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Not found</title>\n<style>body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; background: #09090B; color: #E4E4E7; } @media (prefers-color-scheme: light) { body { background: #FFFFFF; color: #18181B; } } a { color: inherit; }</style>\n<main>\n<h1>Not here</h1>\n<p>Nothing is at this address. <a href=\"/\">Go to the start</a>.</p>\n</main>\n"
+pub const NOT_FOUND: Text = "<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Page not found</title>\n<style>body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; background: #09090B; color: #E4E4E7; } @media (prefers-color-scheme: light) { body { background: #FFFFFF; color: #18181B; } } a { color: inherit; }</style>\n<main>\n<h1>Page not found</h1>\n<p>There's nothing at this address. <a href=\"/\">Go to the home page</a>.</p>\n</main>\n"
 
 /// A Worker's Wrangler configuration: its directory as its assets, on its custom domain only, and
 /// no script. A request no file matches gets its `404.html` with a 404 (`404-page`). Cloudflare bills a request only when it runs a Worker's script, and a Worker that
