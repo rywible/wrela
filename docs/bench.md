@@ -9,9 +9,10 @@ timestamped), the intervals between paced frames as a player sees them (and how 
 included), a cold start (first frame, the program's `playable` print, the pipelines' build,
 the bytes loaded) and the GPU memory at its most. 1920×1080 (the capybara also 2940×1912), 60
 warmup frames; Chrome is headless Chrome stable (155.0.8059.86) driven by `std::tool::browser`.
-The playable time is when the frame the program printed `playable` in was submitted
-(`frames.json`'s `submitted_ms`) from toolchain 0.12.0; rows on earlier toolchains took that
-frame's start (`began_ms`), which comes before its pipelines let it be drawn.
+From toolchain 0.12.0 a frame shows when it's submitted: the first frame and the playable time
+(the frame the program printed `playable` in) are their frames' submissions (`submitted_ms`);
+rows on earlier toolchains took the frames' starts (`began_ms`), which come before their
+pipelines let them be drawn. The intervals and throughput stay on starts, which a timer paces.
 
 **Reading the intervals.** Headless Chrome's paced frames jitter round the display's 16.67 ms: the
 leapling, whose GPU frame is 2.1 ms, has 226 to 302 of its 600 intervals over 16.7 ms and a 99th
