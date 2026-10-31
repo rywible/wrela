@@ -80,6 +80,9 @@ pub struct Leaves: Copy + GpuData {
     pub cover: f32 = 1.7,
     pub through: vec3 = vec3(0.11, 0.16, 0.02),
     pub per_card: u32 = 6,
+    /// The share of its instance's history (`Instance::history`'s x) past which its cards show (0:
+    /// always): a fallen tree's bracket fungi, past its rot (§E4).
+    pub after: f32 = 0.0,
 }
 
 impl Leaves {
@@ -100,6 +103,9 @@ pub struct Bark: Copy + GpuData {
     pub light: vec3 = vec3(0.30, 0.25, 0.19),
     pub bands: f32 = 0.0,
     pub moss: vec3 = vec3(0.07, 0.085, 0.04),
+    /// Whether it's dead wood (1) whose bark falls away by its instance's rot (its history's x,
+    /// `growth::bare_share`), or living (0).
+    pub rots: f32 = 0.0,
     pub grain: vec3 = vec3(1.0, 0.0, 0.0),
     /// Another bark low on its trunk (rgb: its colour, its fissures the ridges'; w: how high it
     /// reaches, m of the plant as it's built; 0 none): a pine's grey plates under its orange, a

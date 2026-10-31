@@ -607,10 +607,20 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
         dark: vec3(0.11, 0.09, 0.07),
         light: vec3(0.30, 0.26, 0.20),
         moss: vec3(0.07, 0.11, 0.03),
+        rots: 1.0,
         grain: vec3(0.6, 0.2, 0.2),
     }
-    // No leaves: its trunk and its root plate alone.
-    var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
+    // Its leaves its bracket fungi's (§E4: cream and brown shelves, shown past their rot), its
+    // shape grown (`archetypes::laid`); by hand, its trunk and its root plate alone.
+    let brackets = Leaves {
+        young: vec3(0.42, 0.33, 0.2),
+        old: vec3(0.16, 0.09, 0.05),
+        through: vec3(0.1, 0.06, 0.03),
+        size: 0.12,
+        cover: 1.4,
+        after: engine::growth::BRACKETS_FROM,
+    }
+    var p = plant(leaves: brackets, bark: bark)
     let bow = pick(s, 1, lo: -0.6, hi: 0.6)
     // Its foot closed by a short piece swelling from a stub (a tube's start is open: its rim
     // showed as a white ring: round 5). The far end is a short break: closing a final
@@ -1681,7 +1691,11 @@ fn settle_log(inst: Instance, trunk: Tube<4>, height: fn(vec2) -> f32, sink: f32
 
 /// The same decayed, terrain-supported fallen tree for drawing and collision.
 pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Placed {
-    let rot = clamp(f32(present - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
+    let rot = engine::growth::rot_of(
+        f32(present - t.fell),
+        HABITS[min(t.kind, u32(Species::Alder))].rots,
+        t.tall,
+    )
     let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
     let kind = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
     var p = instance(
@@ -1698,6 +1712,9 @@ pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Place
     )
     p.at.scale = clamp(len / BUILT[kind], 0.25, 1.8)
     p.at = settle_log(p.at, TRUNKS[kind], height, 0.3 * rot * t.girth)
+    // Its rot in its history (its bark's loss and its brackets read it: `Bark::rots`,
+    // `Leaves::after`), on damp ground under the canopy's light.
+    p.at.history = std::gpu::Unorm8x4::encode(vec4(rot, 0.3, 0.6, 1.0))
     p
 }
 

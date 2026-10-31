@@ -89,8 +89,9 @@ pub trait Tiles: Copy + Eq {
     /// How many trees near the eye it draws as individuals (§E1.3: `near_trees`): 0 for none.
     fn near(self) -> u32
 
-    /// Whether a tree drawn as kind `k` can be a near individual (its kind is grown).
-    fn grows(self, k: u32) -> bool
+    /// Whether tree `t`, drawn as kind `k`, can be a near individual (its kind grown, its age one
+    /// grown so).
+    fn grows(self, t: Tree, k: u32) -> bool
 
     /// Tree `t`, drawn as kind `k`, as a near individual's growth (its own history's light and
     /// events), if its kind is grown.
@@ -1406,7 +1407,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
                     continue
                 }
                 for t in g.trees {
-                    if length(t.at - at) < 1.0e-2 && s.tiles.grows(p.kind) {
+                    if length(t.at - at) < 1.0e-2 && s.tiles.grows(t, p.kind) {
                         chosen.push((tile, j, p.kind, t))
                         break
                     }

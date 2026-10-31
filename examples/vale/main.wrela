@@ -266,3 +266,46 @@ fn the_trees_near_the_eye_are_their_own(s: Vale) {
     print(f"the vale: {drawn} of {s.stage.land.near.len()} near trees drawn as themselves")
     assert(drawn >= 8, f"{drawn} near trees drawn as themselves")
 }
+
+/// The floor's small causes placed on the vale (docs/plan-world-class-3.md §E4), counted over its
+/// tiles as they've come: its fallen trees and their brackets and lost bark (by each one's rot), the
+/// litter's mean depth and the share of its ground in moss's causes (by its fields' light and
+/// wetness), and its trees old enough to carry lichen. Printed for its design.md's "What is grown".
+@test(frames: 400, gpu: true)
+fn the_vales_small_causes_are_placed(s: Vale) {
+    var logs = 0
+    var brackets = 0
+    var bare = 0.0
+    var lichened = 0
+    for a in s.stage.land.own {
+        for p in a.placed {
+            let h = p.at.history.decode()
+            if p.kind == trees::kinds::LOG_SHORT || p.kind == trees::kinds::LOG_LONG {
+                logs += 1
+                brackets += engine::growth::fungi_on(h.x, 12.0 * p.at.scale, u32(abs(p.at.at.x * 7.0 + p.at.at.z * 13.0))).len()
+                bare += engine::growth::bare_share(h.x)
+            } else if engine::growth::lichen_of(h) > 0.5 {
+                lichened += 1
+            }
+        }
+    }
+    var litter = 0.0
+    var mossy = 0
+    var cells = 0
+    for g in s.stage.land.grounds {
+        let n = g.fields.len() / 4
+        for i in 0..n {
+            let light = f32(g.fields[4 * i]) / 255.0
+            let wet = f32(g.fields[4 * i + 2]) / 255.0
+            litter += engine::growth::litter_at(1.0 - light, land::cover::LITTER_SEASON)
+            if wet > 0.4 && light < 0.5 {
+                mossy += 1
+            }
+            cells += 1
+        }
+    }
+    print(
+        f"the vale's small causes: {logs} fallen trees, {brackets} brackets, {bare / f32(max(logs, 1))} of their bark gone; litter {litter / f32(max(cells, 1))} deep; {f32(mossy) / f32(max(cells, 1))} of the ground in moss's causes; {lichened} trees old enough for lichen",
+    )
+    assert(logs > 0 && cells > 0, "no fallen tree, or no ground")
+}
