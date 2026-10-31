@@ -1943,6 +1943,9 @@ pub fn occluders(
     out
 }
 
+/// The limbs of a tree that occlude the probes (a hand's kind held at most 48).
+const OCCLUDER_LIMBS: u32 = 48
+
 /// `occluders`'s, of trees placed in the world moved by `d` (into render space), added to `out`:
 /// a tree outside the square is skipped before anything of it is read, and its kind's plant is
 /// read where it is (a copy a tree cost the Last Green's walk 40 ms a probe replacement).
@@ -1983,7 +1986,10 @@ pub fn occluders_into(
                 }
             }
         }
-        for l in plant.limbs {
+        // Its thickest limbs (a grown kind's are in order of their section: its twigs, thousands,
+        // stop no light the probes see; drawn as capsules they held the probes' bake for ever).
+        for i in 0..min(plant.limbs.len(), OCCLUDER_LIMBS) {
+            let l = plant.limbs[i]
             for k in 0..3 {
                 let (a, b, radius) = inner_wood_capsule(l, k, at)
                 if radius > 0.0 {
@@ -2345,3 +2351,4 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
     }
     assert(hi - lo > HEADING, f"the trees' turns span {hi - lo}: they stand alike")
 }
+

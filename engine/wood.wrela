@@ -31,7 +31,7 @@ use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
 use plant::{
     CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Plant, Wind, cook_outlines,
-    level_cards,
+    level_cards, level_limbs,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -501,7 +501,7 @@ impl Chosen {
                 first += (n + 31) / 32 * 32
                 let near = how < CARD_LEVELS
                 let cards = if near { level_cards(counts[k].x, how) } else { 0 }
-                let limbs = if near { counts[k].y } else { 0 }
+                let limbs = if near { level_limbs(counts[k].y, how) } else { 0 }
                 let d = |indices: u32| DrawIndexedArgs {
                     indices,
                     instances: 0,
