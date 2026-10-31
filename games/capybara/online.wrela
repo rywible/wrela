@@ -22,6 +22,7 @@ use platform::wire::{Found, Place, WHOLE}
 use replay::{ANY, FULL, Replay, YOU, counts}
 use std::hash::sha256::sha256
 use std::host
+use platform::session::answer_of
 use std::io::{Pending, load, store}
 use std::serialize::{LoadError, Serialize, save}
 
@@ -98,16 +99,12 @@ pub struct Online {
     /// where it's known.
     known: Vec<(u32, u32, u32)>,
     statuses: Vec<(Vec<u8>, String)>,
+    /// The posted runs' fingerprints, and the runs waiting to be posted (one a course for any% and
+    /// one for 100%), each as stored and read (`Stored`).
     uploaded: Vec<Vec<u8>>,
-    loading: Option<Pending<u8>>,
-    saving: Option<Pending<u8>>,
-    unsaved: bool,
-    /// The runs waiting to be posted, one a course for any% and one for 100%, as stored and read.
+    uploads: Stored,
     waiting: Vec<Replay>,
-    loading_waiting: Option<Pending<u8>>,
-    saving_waiting: Option<Pending<u8>>,
-    waiting_read: bool,
-    waiting_unsaved: bool,
+    waits: Stored,
     /// A post of a waiting run under way, and when the next may be tried (s).
     posting: bool,
     again_at: f32,
@@ -120,9 +117,40 @@ pub struct Online {
     query: Vec<String>,
     found: Vec<Found>,
     found_note: String,
-    /// Whether the console has been asked to remind the account of its recovery codes.
-    reminded: bool,
     time: f32,
+}
+
+/// One of the game's stores of its online state: its load and its store under way, whether what
+/// was stored has been read (a store before it would lose it), and whether it changed since it
+/// was last stored.
+struct Stored {
+    loading: Option<Pending<u8>>,
+    saving: Option<Pending<u8>>,
+    read: bool,
+    unsaved: bool,
+}
+
+fn stored() -> Stored {
+    Stored { loading: None, saving: None, read: false, unsaved: false }
+}
+
+impl Stored {
+    /// What was stored, once its load answers: its bytes, or none if nothing was (or it failed).
+    fn loaded(mut self) -> Option<Vec<u8>> {
+        let Some(result) = answer_of(mut self.loading) else { return None }
+        self.read = true
+        take result.ok()
+    }
+
+    /// Whether to store it now: it changed, what was stored is read, and no store is under way.
+    fn due(mut self) -> bool {
+        let _ = answer_of(mut self.saving)
+        let due = self.unsaved && self.read && self.saving.is_none()
+        if due {
+            self.unsaved = false
+        }
+        due
+    }
 }
 
 pub fn online() -> Online {
@@ -141,14 +169,9 @@ pub fn online() -> Online {
         known: Vec::new(),
         statuses: Vec::new(),
         uploaded: Vec::new(),
-        loading: None,
-        saving: None,
-        unsaved: false,
+        uploads: stored(),
         waiting: Vec::new(),
-        loading_waiting: None,
-        saving_waiting: None,
-        waiting_read: false,
-        waiting_unsaved: false,
+        waits: stored(),
         posting: false,
         again_at: 0.0,
         held: Vec::new(),
@@ -157,21 +180,8 @@ pub fn online() -> Online {
         query: Vec::new(),
         found: Vec::new(),
         found_note: String::new(),
-        reminded: false,
         time: 0.0,
     }
-}
-
-fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut p {
-        Some(q) => answer = q.poll(),
-        None => {},
-    }
-    if answer.is_some() {
-        p = None
-    }
-    answer
 }
 
 /// A replay's fingerprint: the SHA-256 of its bytes, as the server names it too.
@@ -186,42 +196,33 @@ pub fn update(o: mut Online, time: f32) {
     if !o.started {
         o.started = true
         o.incoming = Some(host::receive())
-        o.loading = Some(load(UPLOADED))
-        o.loading_waiting = Some(load(WAITING))
+        o.uploads.loading = Some(load(UPLOADED))
+        o.waits.loading = Some(load(WAITING))
     }
-    if let Some(result) = poll(mut o.loading) {
-        if let Ok(bytes) = result {
-            let r: Result<Uploaded, LoadError> = std::serialize::load(bytes.clone())
-            if let Ok(u) = r {
-                for h in u.hashes {
-                    mark_uploaded(mut o, h.clone())
-                }
+    if let Some(bytes) = o.uploads.loaded() {
+        let r: Result<Uploaded, LoadError> = std::serialize::load(take bytes)
+        if let Ok(u) = r {
+            for h in u.hashes {
+                mark_uploaded(mut o, h.clone())
             }
         }
     }
-    if let Some(result) = poll(mut o.loading_waiting) {
-        o.waiting_read = true
-        if let Ok(bytes) = result {
-            let r: Result<Waiting, LoadError> = std::serialize::load(bytes.clone())
-            if let Ok(w) = r {
-                for run in w.runs {
-                    wait(mut o, run.clone())
-                }
+    if let Some(bytes) = o.waits.loaded() {
+        let r: Result<Waiting, LoadError> = std::serialize::load(take bytes)
+        if let Ok(w) = r {
+            for run in w.runs {
+                wait(mut o, run.clone())
             }
         }
     }
-    let _ = poll(mut o.saving)
-    if o.unsaved && o.saving.is_none() {
-        o.unsaved = false
-        o.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
+    if o.uploads.due() {
+        o.uploads.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
     }
-    let _ = poll(mut o.saving_waiting)
-    if o.waiting_unsaved && o.waiting_read && o.saving_waiting.is_none() {
-        o.waiting_unsaved = false
-        o.saving_waiting = Some(store(WAITING, save(Waiting { runs: o.waiting.clone() })))
+    if o.waits.due() {
+        o.waits.saving = Some(store(WAITING, save(Waiting { runs: o.waiting.clone() })))
     }
-    let _ = poll(mut o.replying)
-    if let Some(result) = poll(mut o.incoming) {
+    let _ = answer_of(mut o.replying)
+    if let Some(result) = answer_of(mut o.incoming) {
         match result {
             Ok(bytes) => {
                 if let Some(call) = host::read_call(bytes) {
@@ -265,8 +266,9 @@ fn set_status(o: mut Online, hash: Vec<u8>, status: String) {
     o.statuses.push((hash.clone(), status.clone()))
 }
 
-fn posted(o: Online, hash: Vec<u8>) -> bool {
-    for h in o.uploaded {
+/// Whether `hash` is among `hashes`.
+fn has_hash(hashes: [Vec<u8>], hash: Vec<u8>) -> bool {
+    for h in hashes {
         if h == hash {
             return true
         }
@@ -274,12 +276,17 @@ fn posted(o: Online, hash: Vec<u8>) -> bool {
     false
 }
 
+/// Whether the run whose fingerprint is `hash` has been posted.
+fn posted(o: Online, hash: Vec<u8>) -> bool {
+    has_hash(o.uploaded, hash)
+}
+
 fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
     if posted(o, hash) {
         return
     }
     o.uploaded.push(hash.clone())
-    o.unsaved = true
+    o.uploads.unsaved = true
 }
 
 // ---- asking ------------------------------------------------------------------------------------
@@ -399,31 +406,22 @@ pub fn beats(o: Online, r: Replay) -> bool {
 
 /// Run `r` among the waiting: one a course for any% and one for 100%, the faster kept.
 fn wait(o: mut Online, r: Replay) {
-    let full = counts(r, FULL)
-    var i = 0
-    while i < o.waiting.len() {
-        if o.waiting[i].course == r.course && counts(o.waiting[i], FULL) == full {
-            if o.waiting[i].ticks <= r.ticks {
-                return
-            }
-            let _ = o.waiting.remove(i)
-        } else {
-            i += 1
+    let (course, full) = (r.course, counts(r, FULL))
+    for w in o.waiting {
+        if w.course == course && counts(w, FULL) == full && w.ticks <= r.ticks {
+            return
         }
     }
+    o.waiting.retain(|w| w.course != course || counts(w, FULL) != full)
     o.waiting.push(r.clone())
-    o.waiting_unsaved = true
+    o.waits.unsaved = true
 }
 
 fn unwait(o: mut Online, hash: Vec<u8>) {
-    var i = 0
-    while i < o.waiting.len() {
-        if fingerprint(o.waiting[i]) == hash {
-            let _ = o.waiting.remove(i)
-            o.waiting_unsaved = true
-        } else {
-            i += 1
-        }
+    let before = o.waiting.len()
+    o.waiting.retain(|w| fingerprint(w) != hash)
+    if o.waiting.len() != before {
+        o.waits.unsaved = true
     }
 }
 
@@ -534,10 +532,9 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     for i in 0..o.boards.len() {
                         o.boards[i].at = o.time - STALE
                     }
-                    // After the account's first post, once: its recovery codes, if they're still
-                    // to be saved.
-                    if o.account.save_codes && !o.reminded {
-                        o.reminded = true
+                    // After the account's first post: its recovery codes, if they're still to be
+                    // saved (the console reminds it once a load).
+                    if o.account.save_codes {
                         let _ = ask(mut o, Ask::SaveCodes, Asked::SaveCodes, By::Background)
                     }
                 },
@@ -577,7 +574,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 Answer::Rejected { why } => (Vec::new(), 0, why.clone()),
                 _ => (Vec::new(), 0, String::new()),
             }
-            drop_board(mut o, course, category)
+            o.boards.retain(|b| b.course != course || b.category != category)
             o.boards.push(Shown { course, category, places, total, at: o.time, note })
             rows_came(mut o, course, category)
         },
@@ -590,14 +587,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     }
                 }
                 learn(mut o, course, category, mine)
-                var i = 0
-                while i < o.slices.len() {
-                    if o.slices[i].course == course && o.slices[i].category == category {
-                        let _ = o.slices.remove(i)
-                    } else {
-                        i += 1
-                    }
-                }
+                o.slices.retain(|b| b.course != course || b.category != category)
                 o.slices.push(
                     Shown {
                         course,
@@ -651,17 +641,6 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
     }
 }
 
-fn drop_board(o: mut Online, course: u32, category: u32) {
-    var i = 0
-    while i < o.boards.len() {
-        if o.boards[i].course == course && o.boards[i].category == category {
-            let _ = o.boards.remove(i)
-        } else {
-            i += 1
-        }
-    }
-}
-
 /// `n` as a place: 1st, 2nd, 3rd, 4th...
 pub fn ordinal(n: u32) -> String {
     let tail = if n % 100 >= 11 && n % 100 <= 13 { "th" } else if n % 10 == 1 { "st" } else if n %
@@ -674,10 +653,43 @@ pub fn ordinal(n: u32) -> String {
 
 // ---- boards ------------------------------------------------------------------------------------
 
+/// Which of `shown` is board (`course`, `category`), if one is.
+fn board_of(shown: [Shown], course: u32, category: u32) -> Option<u32> {
+    for i in 0..shown.len() {
+        if shown[i].course == course && shown[i].category == category {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// The first place that `is` picks on a board of `shown` for course `course` (of `category`, or
+/// of either with none): which board, and which of its places.
+fn picked(
+    shown: [Shown],
+    course: u32,
+    category: Option<u32>,
+    is: fn(Place) -> bool,
+) -> Option<(u32, u32)> {
+    for b in 0..shown.len() {
+        borrow board = shown[b]
+        if board.course != course || (category.is_some() && category != Some(board.category)) {
+            continue
+        }
+        for i in 0..board.places.len() {
+            if is(board.places[i]) {
+                return Some((b, i))
+            }
+        }
+    }
+    None
+}
+
 /// Asks for board (`course`, or `WHOLE`, and `category`) for `by`, if it isn't shown or is stale.
 pub fn want(o: mut Online, course: u32, category: u32, by: By) {
-    for b in o.boards {
-        if b.course == course && b.category == category && o.time - b.at < STALE {
+    let shown = board_of(o.boards, course, category)
+    if let Some(i) = shown {
+        if o.time - o.boards[i].at < STALE {
             return
         }
     }
@@ -686,13 +698,7 @@ pub fn want(o: mut Online, course: u32, category: u32, by: By) {
         return
     }
     // Shown as loading until it comes; a board asked again keeps its places meanwhile.
-    var found = false
-    for b in o.boards {
-        if b.course == course && b.category == category {
-            found = true
-        }
-    }
-    if !found {
+    if shown.is_none() {
         o.boards.push(
             Shown {
                 course,
@@ -709,10 +715,8 @@ pub fn want(o: mut Online, course: u32, category: u32, by: By) {
 /// Asks for board (`course`, `category`) once, for a ghost (in the background): if it has never
 /// been shown.
 pub fn want_once(o: mut Online, course: u32, category: u32) {
-    for b in o.boards {
-        if b.course == course && b.category == category {
-            return
-        }
+    if board_of(o.boards, course, category).is_some() {
+        return
     }
     want(mut o, course, category, By::Background)
 }
@@ -722,12 +726,10 @@ pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
     if !o.linked {
         return (Vec::new(), String::from("Open the game from wrela.dev to see the world's runs."))
     }
-    for b in o.boards {
-        if b.course == course && b.category == category {
-            return (b.places.clone(), b.note.clone())
-        }
+    match board_of(o.boards, course, category) {
+        Some(i) => (o.boards[i].places.clone(), o.boards[i].note.clone()),
+        None => (Vec::new(), String::from("Loading the world's runs…")),
     }
-    (Vec::new(), String::from("Loading the world's runs…"))
 }
 
 /// The signed-in account's place on board (`course`, `category`) as last given, by its page or the
@@ -736,34 +738,23 @@ pub fn my_place(o: Online, course: u32, category: u32) -> u32 {
     if !o.account.signed_in || o.account.name.is_empty() {
         return 0
     }
-    for b in o.boards {
-        if b.course == course && b.category == category {
-            for p in b.places {
-                if p.name == o.account.name && p.place > 0 {
-                    return p.place
-                }
-            }
-        }
+    borrow name = o.account.name
+    let mine = |p: Place| p.place > 0 && p.name == name
+    if let Some((b, i)) = picked(o.boards, course, Some(category), mine) {
+        return o.boards[b].places[i].place
     }
-    for b in o.slices {
-        if b.course == course && b.category == category && b.total > 0 {
-            return b.total
-        }
+    match picked(o.slices, course, Some(category), mine) {
+        Some((b, i)) => o.slices[b].places[i].place,
+        None => 0,
     }
-    0
 }
 
 /// A board's rows came: the replays of those shown are fetched, and of the three places above the
 /// account's, from the board's page or, past it, from the slice around its place.
 fn rows_came(o: mut Online, course: u32, category: u32) {
-    var places: Vec<Place> = Vec::new()
-    var total = 0
-    for b in o.boards {
-        if b.course == course && b.category == category {
-            places = b.places.clone()
-            total = b.total
-        }
-    }
+    let Some(shown) = board_of(o.boards, course, category) else { return }
+    let places = o.boards[shown].places.clone()
+    let total = o.boards[shown].total
     for i in 0..min(places.len(), SHOWN) {
         fetch(mut o, places[i].replay.clone())
     }
@@ -906,48 +897,28 @@ pub fn ghost_hash(o: Online, course: u32, record: bool) -> Option<Vec<u8>> {
         }
         max(mine, 2) - 1
     }
-    match replay_at(o.boards, course, target) {
-        Some(h) => Some(take h),
-        None => replay_at(o.slices, course, target),
+    let at = |p: Place| p.place == target && !p.replay.is_empty()
+    if let Some((b, i)) = picked(o.boards, course, Some(ANY), at) {
+        return Some(o.boards[b].places[i].replay.clone())
     }
-}
-
-/// The hash of the replay at place `target` of course `course`'s any% board, among `shown`.
-fn replay_at(shown: [Shown], course: u32, target: u32) -> Option<Vec<u8>> {
-    for b in shown {
-        if b.course == course && b.category == ANY {
-            for p in b.places {
-                if p.place == target && !p.replay.is_empty() {
-                    return Some(p.replay.clone())
-                }
-            }
-        }
+    match picked(o.slices, course, Some(ANY), at) {
+        Some((b, i)) => Some(o.slices[b].places[i].replay.clone()),
+        None => None,
     }
-    None
 }
 
 /// The place and name of the run whose replay's hash is `hash`, on a board or a slice of course
 /// `course` shown: for the ghost's name.
 pub fn whose(o: Online, course: u32, hash: Vec<u8>) -> Option<(String, u32)> {
-    for b in o.boards {
-        if b.course == course {
-            for p in b.places {
-                if p.replay == hash {
-                    return Some((p.name.clone(), p.place))
-                }
-            }
-        }
+    let run = |p: Place| p.replay == hash
+    if let Some((b, i)) = picked(o.boards, course, None, run) {
+        borrow p = o.boards[b].places[i]
+        return Some((p.name.clone(), p.place))
     }
-    for b in o.slices {
-        if b.course == course {
-            for p in b.places {
-                if p.replay == hash {
-                    return Some((p.name.clone(), p.place))
-                }
-            }
-        }
+    match picked(o.slices, course, None, run) {
+        Some((b, i)) => Some((o.slices[b].places[i].name.clone(), o.slices[b].places[i].place)),
+        None => None,
     }
-    None
 }
 
 // ---- searching names ---------------------------------------------------------------------------
@@ -1229,7 +1200,7 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     finished(mut o, mine(990))
     finished(mut o, mine(995))
     assert(o.waiting.len() == 1 && o.waiting[0].ticks == 990, "the faster waits, stored")
-    assert(o.waiting_unsaved && o.asks.is_empty() && o.fetches.is_empty(), "nothing asked offline")
+    assert(o.waits.unsaved && o.asks.is_empty() && o.fetches.is_empty(), "nothing asked offline")
     pump(mut o)
     assert(o.asks.is_empty() && o.fetches.is_empty(), "not linked")
     // Linked, the setting on: the account's place first, then the post.
