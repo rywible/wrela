@@ -70,7 +70,7 @@ use screens::{
     option_values, seconds, start_rect, title, tree, unit,
 }
 use settings::{AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, SETTINGS, Settings, decode, encode, turned}
-use signs::{learned, sign_words}
+use signs::{Card, learned, sign_card, sign_words}
 use std::host
 use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
@@ -205,10 +205,11 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The signs' words, drawn into the scene behind the cast (signs.wrela), with the one
-    /// renderer's atlas.
+    /// The signs' words, drawn into the scene over the water and behind the cast (signs.wrela),
+    /// with the one renderer's atlas; and the card that keeps the sign in reach on the screen.
     signs: Uploaded,
     sign_list: DrawList,
+    sign_card: Card,
     /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
     /// from frame to frame, so no frame makes them).
     back: Vec<Sprite>,
@@ -316,6 +317,7 @@ pub fn init() -> Lab {
         list: DrawList::new(),
         signs: Uploaded::new(),
         sign_list: DrawList::new(),
+        sign_card: Card {},
         back: Vec::with_capacity(SPRITES),
         front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
@@ -507,6 +509,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         framed(s.camera, half, c.ends)
     }
     react(mut s.cast, snap, c, dt, eye, half)
+    if snap.paused == 0 && !watching {
+        s.sign_card.next(snap.course, s.settings.learned, snap.at, eye, half, dt)
+    }
     // What happened, to the voice.
     match mut s.voice {
         Some(v) => {
@@ -628,7 +633,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: behind,
     )
-    s.renderer.draw_uploaded(scene, s.signs, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
     label("water copy")
@@ -650,6 +654,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         ),
         vertices: s.ground.water_n,
     )
+    // The signs' words over the water, so it never bends them, and behind the cast.
+    s.renderer.draw_uploaded(wet, s.signs, scene_size)
     let ahead = Stage { first: behind, ..stage }
     draw(
         wet,
@@ -1063,10 +1069,15 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
         }
         return
     }
-    // The title, fading as the first attempt begins.
+    // The title, fading as the first attempt begins, and as it goes, the card of the sign in
+    // reach (signs.wrela).
     let since = f32(snap.ticks) / f32(HZ)
-    if snap.attempt == 0 && since < 2.4 {
-        let alpha = 1.0 - smoothstep(0.6, 2.4, since)
+    let titled = if snap.attempt == 0 { 1.0 - smoothstep(0.6, 2.4, since) } else { 0.0 }
+    if snap.finished == 0 {
+        sign_card(mut s.list, s.fonts, s.sign_card, d, screen, s.sign_card.alpha() * (1.0 - titled))
+    }
+    if titled > 0.0 {
+        let alpha = titled
         title(
             mut s.list,
             s.fonts,
