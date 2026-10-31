@@ -213,7 +213,11 @@ hand). Part E fills it.
 | Moss | grown: a reaction-diffusion's patches on the ground, the logs and the trunks by wetness and light (6 % of the vale's ground in its causes) |
 | Lichen | grown: a diffusion-limited growth's crusts on the rocks' open faces, and on old bark by age (4,278 trees old enough) |
 | Litter | grown: its depth by the canopy over it and the season (0.50 deep on average over the vale's tiles) |
+| The fallen trees' root plates | authored: the hand's roots on a grown trunk (12 short roots, blunt-ended: **proposed**) |
 | The ground's cover | authored (rules over grown fields: `land::cover`) |
 | The rock's look | authored (its lichen grown) |
 | The sky and the clouds | authored (the floor's) |
 | The creature | none yet (Part F) |
+
+Every plant instance the vale draws is grown (G-grown: 0 of 26,922 authored, E8). The kinds list
+it shares with the floor still holds the floor's great tree and two far kinds no program places.

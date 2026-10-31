@@ -1371,6 +1371,62 @@ The references (each credited in docs/citations.md):
 - `vale-e11-deadwood`: https://commons.wikimedia.org/wiki/File:Bracket_fungi_on_fallen_log_Border_Track_Lamington_National_Park_Queensland_IMGP2516.jpg
 - `vale-e12-overcast`: https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-155854.jpg
 
+### 2026-10-31: the third panel (E8), the grown vale, toolchain 0.13.0
+
+docs/plan-world-class-3.md §E8: the vale with Part E's grown world (every plant grown: G-grown 0 of
+26,922 instances authored), its twelve evaluation stills at 1920×1080 (`build/stills-e8`, from
+`wrela tool lookbook -- build/stills-e8 --package examples/vale --stills --size 1920x1080 0 … 11`
+on Linux pop-os, Radeon "Lucienne": B5's and D11's were the M4's) against the same references
+(fetched again here from their manifest's URLs, each checked against its SHA-256: 21 of 21),
+B5's seed (5), eight agent judges in fresh contexts, each given the rubric, the pairs and the
+references' credits and conditions and told to judge by viewing alone; all eight passed both
+calibration pairs. The hashes asserted: shots `88c877da…`, manifest `b78df49e…`.
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/e8-panel --a build/stills-e8 --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/e8-panel --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.88, 1.12, 0.00 | 2.25, 3.00, 2.75, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.00, 2.75, 2.88, 2.50, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.75, 1.00, 1.50, 0.12, 0.00 | 1.88, 2.88, 2.38, 1.88, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 2.88, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 2.00, 1.75, 0.00 | 2.00, 3.00, 3.00, 2.12, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 1.75, 1.00 | 2.75, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.75, 0.00 | 2.00, 2.88, 2.00, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.38, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.38, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.12, 2.00, 1.00 | 3.00, 3.00, 2.50, 2.25, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: a pair lost worse than 6 to 2; majority: 0 pairs won or equal (fails). **Fails.**
+
+Ranked losses (the reference's mean less the still's, summed over the pairs):
+
+- artifacts: 29.12
+- colour: 16.50
+- depth: 13.25
+- value: 12.25
+- light: 8.75
+
+| Panel | Pairs won or equal | Share of 96 | artifacts | colour | value | depth | light |
+|---|---|---|---|---|---|---|---|
+| B5 (the baseline) | 0 of 12 | 0 % | 26.75 | 15.88 | 14.38 | 13.62 | 12.50 |
+| D11 (physical) | 0 of 12 | 0 % | 26.62 | 16.25 | 14.12 | 12.50 | 9.50 |
+| **E8 (the grown vale)** | **0 of 12** | **0 %** | **29.12** | **16.50** | **12.25** | **13.25** | **8.75** |
+
+**H2** ("most of the visual-review gain comes from the grown floor, not from lighting"): no gain
+to attribute. Every pair is still lost 0 / 0 / 8; the rows moved by at most 2.5 (artifacts up
+2.5, value down 1.9, the rest within 0.8). The judges' sentences name what decides the pairs, and
+the grown plants are only part of it: the bark close up (stretched, smeared, tiled "brick"
+relief: pairs 3, 11, 12), the shadows' dithered, blocky dapple (2, 4, 10), stamped arrow-shaped
+marks and squiggles on the rock face (4), the fallen trees' root plates (1, 3), untextured grey
+pole trunks far off, and leaf cards scattered like confetti on the soil (2). Every judge's file is
+in `build/e8-panel/judges/`.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
@@ -3328,3 +3384,47 @@ same words, so the same pixels. `cook_level` is 47,122 bytes.
 Still 1.3 s behind `main` cold and 0.5 s warm: frame 1 cooks the 26 kinds with 164 ms more CPU
 (the grown kinds' limbs), and the load's other frames are about 10 ms longer each. Warm, the first
 ring comes from the page's storage in Chrome (6 trees in 494 ms; cold, 948).
+
+## E8, the vale regrown (2026-10-31, toolchain 0.13.0)
+
+Linux pop-os (Radeon "Lucienne"), not the M4 Air.
+
+**G-grown.** `vale_land_tests::every_plant_the_vale_draws_is_grown`: 26,922 instances (living,
+standing dead and fallen), 0 authored; the far layer's kinds, the floor's 33 species and the
+ground's 4 fields all grown. The shared kinds list keeps 3 authored kinds the vale never places
+(the floor's great tree, two unused far kinds).
+
+**The growth of the vale's region:** the archetypes at build, `GROWN` (21 kinds: 16 living, 2
+fallen, 5 standing dead; 508,414 bytes), **19.7 s** of the build here (`wrela build examples/vale
+--report consts` from an empty cache: 436 G of fuel; the moss's patches 0.46 s, the lichen's
+0.02 s); the first ring at load, **848 / 841 ms** natively and **1,198 ms** in Chrome (E7's runs,
+8 helpers; 151 / 494 ms from the page's storage). The M4's to re-measure.
+
+**G-look** (the twelve against `main`'s record made here, `build/record/physical` in a worktree of
+006223f8; both through the lookbook's fast run at 960×540; `build/vale-e8b`): the measures, main /
+E8:
+
+| Shot | flicker | pop | still_pop | trail |
+|---|---|---|---|---|
+| 00 the forest floor | 2.36e-5 / 1.93e-5 | 0.0123 / **0.0180** | 0.00134 / 0.00103 | 2 / 3 |
+| 01 the canopy against the sun | 7.06e-6 / 4.12e-6 | 0.0112 / **0.0389** | 0.00092 / 0.00058 | 3 / 4 |
+| 02 an old oak | 1.27e-6 / **2.02e-6** | 0.1113 / 0.0561 | 0.00019 / 0.00023 | 4 / 3 |
+| 03 the fall | 1.17e-5 / 1.04e-5 | 0.0069 / 0.0055 | 0.00061 / 0.00052 | 4 / 5 |
+| 04 the band's face | 1.08e-6 / 8.45e-7 | 0.0093 / 0.0065 | 0.00024 / 0.00020 | 3 / 3 |
+| 05 the meadow at evening | 5.91e-5 / 4.59e-5 | 0.0063 / 0.0055 | 0.00322 / 0.00253 | 2 / 2 |
+| 06 dawn in the hollow | 1.19e-5 / 5.91e-6 | 0.0037 / 0.0037 | 0.00157 / 0.00084 | 3 / 3 |
+| 07 dusk from the crest | 9.67e-6 / 9.37e-6 | 0.0020 / 0.0019 | 0.00124 / 0.00119 | 2 / 2 |
+| 08 grazing at the edge | 1.91e-5 / **2.97e-5** | 0.0044 / 0.0046 | 0.00106 / 0.00112 | 2 / 3 |
+| 09 down the trail | 5.27e-5 / 3.60e-5 | 0.0069 / 0.0060 | 0.00234 / 0.00200 | 3 / 3 |
+| 10 the fallen beech | 4.51e-5 / 2.93e-5 | 0.0105 / **0.0199** | 0.00143 / 0.00132 | 5 / 4 |
+| 11 the wood under cloud | 9.16e-5 / 8.25e-5 | 0.0075 / 0.0076 | 0.00443 / 0.00423 | 2 / 2 |
+
+The judge (blind, fresh context, calibrated each round on an 8-pass blur and a quarter-resolution
+copy, which it rejected): round 1, E8 preferred on 4 shots (1, 7, 10, 11), main on 6, equal 2;
+round 2, after the round's fixes (the turn limit and set point, leaves along the last years'
+shoots, the root plate), E8 on 4 (1, 5, 10, 11), main on 7, equal 1 (7). The pops on shots 1 and
+10 are the camera's motion over high-contrast near surfaces (the lookbook now keeps a dolly's
+worst pair of frames: a grown trunk's deeper cracks, the root plate filling the frame), and the
+judge preferred E8 there in both rounds: named deliberate. **Blocked:** shot 0's pop and the
+flicker on shots 2 and 8, where the judge preferred main; next lever, the near bark's relief
+contrast at a dolly's range (the panel's judges fault the bark too).
