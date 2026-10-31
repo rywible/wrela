@@ -59,10 +59,13 @@ pub const MAP: u32 = 5
 /// The leaderboard's search for a name, over the runs' page: the keys type, so only a few close it.
 pub const FIND: u32 = 6
 
-/// The runs' page's nodes, which the frames publish: back, the search, and a race (watching).
+/// The runs' page's nodes, which the frames publish: back, a race (watching), the board of the
+/// search (its tab), and on it its parts' boxes, the title's first (`RUNS_PART + part`). A press
+/// on the search's tab or one of its boxes opens the search.
 pub const RUNS_BACK: u32 = 0
-pub const RUNS_FIND: u32 = 1
-pub const RUNS_RACE: u32 = 2
+pub const RUNS_RACE: u32 = 1
+pub const RUNS_SEARCH: u32 = 2
+pub const RUNS_PART: u32 = 3
 
 /// The menu's items, in the order a player meets them: the essentials first, Resume and Restart,
 /// then the leaderboard (the runs' page) and the levels, a column; under it Options and Controls
@@ -445,10 +448,12 @@ pub fn races(e: Event) -> bool {
     }
 }
 
-/// Whether event `e` opens the search on the runs' page: F, or a controller's West (X).
+/// Whether event `e` opens the search on the runs' page: F as it comes up (so the character it
+/// types, in whatever layout, came while the runs were shown, and isn't typed into the search),
+/// or a controller's West (X).
 pub fn finds(e: Event) -> bool {
     match e {
-        Event::KeyDown { key, repeat, .. } => key == Key::F && !repeat,
+        Event::KeyUp { key, .. } => key == Key::F,
         Event::PadButton { pad, button, pressed, .. } => {
             pad == 0 && pressed && button == PadButton::West
         },
@@ -581,7 +586,7 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
         // The runs' keys are the frames'; only backing out, the search and a race are the sim's.
         if races(e) || pressed == Some(RUNS_RACE) {
             race(mut w)
-        } else if finds(e) || pressed == Some(RUNS_FIND) {
+        } else if finds(e) || pressed == Some(RUNS_SEARCH) || pressed.unwrap_or(0) >= RUNS_PART {
             w.chosen += 1
             w.page = FIND
         } else if back_out || pressed.is_some() {
@@ -1181,6 +1186,8 @@ fn on_the_runs_f_opens_the_search_whose_typing_is_the_frames_and_r_races() {
     tick_with(mut w, [down(Key::Escape)])
     choose(mut w, SEE_BOARD)
     tick_with(mut w, [down(Key::F)])
+    assert(w.page == RUNS, "not while F is down: what it types comes first")
+    tick_with(mut w, [up(Key::F)])
     assert(w.page == FIND, "the search")
     // Typing a name, Backspace and P (which back out and pause elsewhere) and R stay in it.
     for key in [Key::P, Key::R, Key::Backspace, Key::Space, Key::Z, Key::Tab, Key::Down] {
@@ -1205,6 +1212,25 @@ fn on_the_runs_f_opens_the_search_whose_typing_is_the_frames_and_r_races() {
     choose(mut w, SEE_BOARD)
     tick_with(mut w, [assist(node(w.chosen, RUNS, RUNS_RACE), Assist::Activate)])
     assert(w.page == TITLE, "the race's node too")
+}
+
+@test
+fn choosing_the_searchs_tab_or_one_of_its_boxes_opens_it() {
+    for item in [RUNS_SEARCH, RUNS_PART, RUNS_PART + 1, RUNS_PART + 2] {
+        var w = started(WETLANDS)
+        tick_with(mut w, [down(Key::Escape)])
+        choose(mut w, SEE_BOARD)
+        tick_with(mut w, [assist(node(w.chosen, RUNS, item), Assist::Activate)])
+        assert(w.paused && w.page == FIND, f"node {item}")
+        // Pressing the tab while typing searches, back on the runs.
+        tick_with(mut w, [assist(node(w.chosen, FIND, 0), Assist::Activate)])
+        assert(w.page == RUNS, f"node {item}: back")
+    }
+    var w = started(WETLANDS)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [assist(node(w.chosen, RUNS, RUNS_BACK), Assist::Activate)])
+    assert(w.page == MENU, "back is back")
 }
 
 @test

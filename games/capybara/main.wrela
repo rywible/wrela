@@ -86,8 +86,8 @@ use ui::glyphs::{Device, device_of}
 use ui::text::{Face, Fonts}
 use waves::{Pond, water, water_mesh, water_vertex}
 use world::{
-    CONTROLS, FIND, MAP, MENU, OPTIONS, RUNS, RUNS_FIND, RUNS_RACE, Snap, TITLE, finds, leaves_find,
-    live, present_live, races, tick_live,
+    CONTROLS, FIND, MAP, MENU, OPTIONS, RUNS, RUNS_BACK, RUNS_PART, RUNS_RACE, RUNS_SEARCH, Snap,
+    TITLE, finds, leaves_find, live, present_live, races, tick_live,
 }
 use search::Search
 use online::By
@@ -301,11 +301,11 @@ pub struct Lab {
     watch_name: String,
     watch_place: u32,
     /// The search for a name (search.wrela), whether it changed since it was last asked for and
-    /// when, and whether the next character typed is the F that opened it.
+    /// when, and whether the F that opens it is down (what it types isn't typed into it).
     search: Search,
     search_changed: bool,
     search_at: f32,
-    skip_text: bool,
+    opener: bool,
     /// The run raced (R on the leaderboard) and whose it is: the ghost on its course until another
     /// ghost is chosen; and a world's run to race whose replay is on its way (its hash, whose).
     race: Option<(Replay, String)>,
@@ -400,7 +400,7 @@ pub fn init() -> Lab {
         search: search::search(),
         search_changed: false,
         search_at: 0.0,
-        skip_text: false,
+        opener: false,
         race: None,
         race_wanted: None,
         ghost_hash: Vec::new(),
@@ -1137,16 +1137,28 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             let (_, back) = controls_rects(screen)
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS {
-            // Back and the search on the board; Race while a run is watched (world.wrela's
-            // `RUNS_BACK`, `RUNS_FIND`, `RUNS_RACE`).
+            // Back and the search's tab on the board, and its parts' boxes while it's shown; Race
+            // while a run is watched (world.wrela's `RUNS_BACK`, `RUNS_RACE`, `RUNS_SEARCH`,
+            // `RUNS_PART`). A press on the tab or a box opens the search.
             let none = Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0)
-            let watching = s.watching.is_some()
-            let rects = if watching { Vec::from([none, none, race_rect(screen)]) } else {
-                Vec::from([back_rect(screen), find_rect(screen), none])
+            var rects = Vec::from([none, none, none, none, none, none])
+            if s.watching.is_some() {
+                rects[RUNS_RACE] = race_rect(screen)
+            } else {
+                rects[RUNS_BACK] = back_rect(screen)
+                rects[RUNS_SEARCH] = board_rect(screen, online::SEARCH)
+                if s.board == online::SEARCH {
+                    for p in 0..search::PARTS {
+                        rects[RUNS_PART + p] = part_rect(screen, p)
+                    }
+                }
             }
-            parts = Some(("Leaderboard", Vec::from(["Back", "Search names", "Race"]), take rects))
+            let labels = Vec::from(["Back", "Race", "Search names", "Title", "Name", "Epithet"])
+            parts = Some(("Leaderboard", take labels, take rects))
         } else if page == FIND {
-            parts = Some(("Search names", Vec::from(["Search"]), Vec::from([find_rect(screen)])))
+            // Its tab again searches, back on the board.
+            let tab = board_rect(screen, online::SEARCH)
+            parts = Some(("Search names", Vec::from(["Search"]), Vec::from([tab])))
         } else if page == MAP {
             let (_, rects) = map_rects(screen, LEVELS)
             var names: Vec<Text> = Vec::new()
@@ -1742,12 +1754,6 @@ fn part_rect(screen: vec2, part: u32) -> Rect {
     Rect::new(x, r.y + size * 5.4, widths[part], size * 1.9)
 }
 
-/// Where the runs card's search button is: at its top right.
-fn find_rect(screen: vec2) -> Rect {
-    let (r, size) = runs_frame(screen)
-    Rect::new(r.right() - size * 9.6, r.y + size * 0.9, size * 8.4, size * 1.7)
-}
-
 /// Where row `i` of a category's list is on the runs card.
 fn row_rect(screen: vec2, category: u32, i: u32) -> Rect {
     let (r, size) = runs_frame(screen)
@@ -1771,14 +1777,28 @@ fn back_rect(screen: vec2) -> Rect {
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
     made_assisted(mut s, c)
     let nav = s.nav.nav(e)
-    if let Event::Text { .. } = e {
-        // The F that opened the search, typed before the search shows: not typed into it.
-        s.skip_text = false
+    // F opens the search as it comes up (world.wrela's `finds`); while it's down, what it types
+    // isn't typed into the search, whatever the keyboard's layout.
+    if let Event::KeyDown { key, repeat, .. } = e {
+        if key == Key::F && !repeat {
+            s.opener = true
+        }
     }
     if finds(e) {
-        // The sim opens the search; the F that did isn't typed into it.
-        s.skip_text = true
+        s.opener = false
         return
+    }
+    // A press on the search's tab or one of its boxes: the sim opens it, on that part.
+    if pressed_node(s, e, RUNS_SEARCH) {
+        s.board = online::SEARCH
+        return
+    }
+    for p in 0..search::PARTS {
+        if pressed_node(s, e, RUNS_PART + p) {
+            s.board = online::SEARCH
+            s.search.to(p)
+            return
+        }
     }
     if races(e) || pressed_node(s, e, RUNS_RACE) {
         race_focused(mut s, c)
@@ -1972,15 +1992,19 @@ fn find(s: mut Lab, e: Event, screen: vec2, time: f32) {
     var changed = false
     match e {
         Event::Text { char } => {
-            let opener = s.skip_text && (char == 70 || char == 102)
-            s.skip_text = false
-            if !opener {
+            // What the F that opened the search typed, if it came after: not typed into it.
+            if !s.opener {
                 changed = s.search.typed(char)
             }
         },
+        Event::KeyUp { key, .. } => {
+            if key == Key::F {
+                s.opener = false
+            }
+        },
         Event::KeyDown { key, repeat, .. } => {
-            // Another key: the opener's character has come, or never will.
-            s.skip_text = false
+            // Another key: what it types is the player's.
+            s.opener = false
             if key == Key::Backspace {
                 changed = s.search.erase()
             } else if key == Key::Up && s.search.part > 0 {
@@ -2198,8 +2222,8 @@ fn wrap_note(fonts: Fonts, s: str, size: f32, width: f32) -> Vec<String> {
 /// The leaderboard, over the paused page: the boards (the world's first, then its search, the
 /// player's own and the tool-assisted, as filters of it, and the whole game), each category's runs,
 /// fastest first, who made each and its time, the one with the focus washed in yuzu; the search's
-/// line on its board (`finding`: typed in, with its part's completions); a search button and a back
-/// button; and how to use them.
+/// line on its board (`finding`: typed in, with its part's completions; choosing its tab or a box
+/// opens it, as F does); a back button; and how to use them.
 fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
     made_assisted(mut s, c)
     let (r, size) = runs_frame(screen)
@@ -2217,18 +2241,6 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
         size * 1.05,
         vec2(r.x + size * 1.2, r.y + size * 1.1),
         SOFT,
-    )
-    let find = find_rect(screen)
-    let lit_find = finding || pointing && find.contains(s.pointer)
-    s.list.rect(find, if lit_find { yuzu } else { lit }, radius: size * 0.8)
-    let fw = s.fonts.font(Face::Sans).measure("Search names", size * 0.9)
-    let _ = s.list.text(
-        s.fonts,
-        Face::Sans,
-        "Search names",
-        size * 0.9,
-        vec2(find.x + (find.w - fw) * 0.5, find.y + size * 0.35),
-        INKED,
     )
     // The boards' names: the one shown filled in, the other lit under the pointer.
     for b in 0..online::BOARDS {
