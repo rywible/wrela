@@ -1,0 +1,315 @@
+// Trees grown (docs/plan-world-class-3.md §E1.2), each measured from its grown graph and plant, on
+// the CPU. They're tool tests so they run compiled (a plain test's fuel runs out on a 100-year
+// tree); a tool test's prints aren't shown, so what each measured is in its assertion's message.
+
+use engine::growth::{
+    Converted, FALL, GALE, Genome, GrowthEvent, KNOT, SHOOT, Site, TreeGraph, genome_hash,
+    grow_graph, into_plant,
+}
+use engine::plant::{Bark, Leaves, Plant}
+use std::time::now
+use trees::genomes::genomes
+use trees::species::Species
+
+/// The first-order laterals off a tree's leader (`t`'s main axis from its root): each one's foot
+/// height, its span (its foot to its farthest tip) and the height its highest tip reaches.
+fn laterals(t: TreeGraph) -> Vec<(f32, f32, f32)> {
+    let n = t.nodes.len()
+    var axis: Vec<bool> = Vec::filled(n, false)
+    var root: Vec<i32> = Vec::filled(n, -1)
+    axis[0] = true
+    for i in 1..n {
+        let nd = t.nodes[i]
+        let p = u32(max(nd.parent, 0))
+        axis[i] = axis[p] && nd.main && nd.alive
+        // Which first-order lateral it's in: its own, if it starts one off the leader.
+        root[i] = if axis[i] { -1 } else if axis[p] { i32(i) } else { root[p] }
+    }
+    var span: Vec<f32> = Vec::filled(n, 0.0)
+    var top: Vec<f32> = Vec::filled(n, 0.0)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if root[i] >= 0 && nd.alive {
+            let r = u32(root[i])
+            let foot = t.nodes[u32(t.nodes[r].parent)].tip
+            span[r] = max(span[r], length(nd.tip - foot))
+            top[r] = max(top[r], nd.tip.y)
+        }
+    }
+    var out: Vec<(f32, f32, f32)> = Vec::new()
+    for i in 1..n {
+        if root[i] == i32(i) && t.nodes[i].alive {
+            out.push((t.nodes[u32(t.nodes[i].parent)].tip.y, span[i], top[i]))
+        }
+    }
+    out
+}
+
+/// How many limbs carry a tree's crown above `above` (a share of its height): its live nodes over
+/// it, grouped by the branch each passes through at `through` (the last of its line no higher),
+/// a group of three nodes or more a limb. An excurrent tree's crown all passes through its trunk;
+/// a decurrent one's through several limbs.
+fn limbs_through(t: TreeGraph, through: f32, above: f32) -> u32 {
+    let n = t.nodes.len()
+    let (lo, hi) = (through * t.height, above * t.height)
+    // Each node's branch at `lo`: its own if its parent is no higher than `lo` and it is, else its
+    // parent's.
+    var at: Vec<i32> = Vec::filled(n, -1)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        let p = u32(max(nd.parent, 0))
+        at[i] = if nd.tip.y > lo && t.nodes[p].tip.y <= lo { i32(i) } else { at[p] }
+    }
+    var count: Vec<u32> = Vec::filled(n, 0)
+    for i in 1..n {
+        if t.nodes[i].alive && t.nodes[i].tip.y > hi && at[i] >= 0 {
+            count[u32(at[i])] += 1
+        }
+    }
+    var limbs = 0
+    for c in count {
+        if c >= 3 {
+            limbs += 1
+        }
+    }
+    limbs
+}
+
+/// The height the leader (the main axis) reaches.
+fn leader_top(t: TreeGraph) -> f32 {
+    var axis: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    axis[0] = true
+    var top = 0.0
+    for i in 1..t.nodes.len() {
+        let nd = t.nodes[i]
+        axis[i] = axis[u32(max(nd.parent, 0))] && nd.main && nd.alive
+        if axis[i] {
+            top = max(top, nd.tip.y)
+        }
+    }
+    top
+}
+
+/// The live shoot tips (a live shoot no live shoot continues).
+fn tips(t: TreeGraph) -> Vec<vec3> {
+    var continued: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    for nd in t.nodes {
+        if nd.alive && nd.main && nd.parent >= 0 {
+            continued[u32(nd.parent)] = true
+        }
+    }
+    var out: Vec<vec3> = Vec::new()
+    for i in 0..t.nodes.len() {
+        let nd = t.nodes[i]
+        if nd.alive && nd.kind == SHOOT && !continued[i] {
+            out.push(nd.tip)
+        }
+    }
+    out
+}
+
+fn grown(
+    g: Genome,
+    site: Site,
+    light: [f32],
+    lean: vec2,
+    events: [GrowthEvent],
+    seed: u32,
+) -> TreeGraph {
+    grow_graph(g, site, light, lean, events, seed)
+}
+
+/// 1. A pine in the open grows one leader: it reaches 90 % of the height, and no first-order
+/// lateral spans over 60 % of it (a pine's top laterals stand high but are short); an oak grows a
+/// decurrent crown: at least three limbs carry its crown over 60 % of its height (its nodes there
+/// passing through at least three branches at half its height: `limbs_through`).
+@test(tool, budget: 600)
+fn a_pine_grows_one_leader_and_an_oak_a_decurrent_crown() {
+    let gs = genomes()
+    let pine = grown(gs[Species::Pine], Site { age: 100.0 }, [], vec2(0.0), [], 1)
+    let ph = pine.height
+    var long = 0
+    for (_, s, _) in laterals(pine) {
+        if s > 0.6 * ph {
+            long += 1
+        }
+    }
+    assert(leader_top(pine) >= 0.9 * ph, f"the pine's leader reaches {leader_top(pine)} of {ph} m")
+    assert(long == 0, f"{long} of the pine's laterals span over 60 % of its {ph} m")
+    let oak = grown(gs[Species::Oak], Site { age: 100.0 }, [], vec2(0.0), [], 1)
+    let oh = oak.height
+    let rivals = limbs_through(oak, 0.5, 0.6)
+    assert(rivals >= 3, f"the oak has {rivals} limbs reaching over 60 % of its {oh} m")
+}
+
+/// 2. A tree with its light from the east (a gap there, a neighbour to its west: the record's lean
+/// east) has its crown's centroid at least 0.2 × its reach east of its trunk.
+@test(tool, budget: 600)
+fn a_crown_leans_into_its_gap() {
+    let g = genomes()[Species::Oak]
+    let t = grown(g, Site { age: 80.0 }, [], vec2(2.0, 0.0), [], 1)
+    let ts = tips(t)
+    var mid = vec3(0.0)
+    var lo = 1.0e9
+    var hi = -1.0e9
+    for p in ts {
+        mid += p
+        lo = min(lo, p.x)
+        hi = max(hi, p.x)
+    }
+    mid /= f32(max(ts.len(), 1))
+    let reach = 0.5 * (hi - lo)
+    assert(mid.x >= 0.2 * reach, f"the crown's centroid {mid.x} m east, its reach {reach} m")
+}
+
+/// 3. A tree at exposure 0.8 is at least 20 % shorter and 20 % thicker at its foot than the same
+/// genome at exposure 0.
+@test(tool, budget: 600)
+fn the_wind_makes_a_tree_short_and_thick() {
+    let g = genomes()[Species::Oak]
+    let calm = grown(g, Site { age: 80.0, wind: 0.0 }, [], vec2(0.0), [], 1)
+    let blown = grown(g, Site { age: 80.0, wind: 0.8 }, [], vec2(0.0), [], 1)
+    assert(
+        blown.height <= 0.8 * calm.height,
+        f"exposed {blown.height} m against {calm.height} m in the calm",
+    )
+    assert(
+        blown.nodes[0].radius >= 1.2 * calm.nodes[0].radius,
+        f"exposed foot {blown.nodes[0].radius} m against {calm.nodes[0].radius} m",
+    )
+}
+
+/// 4. An 80-year oak under a closed canopy from its 20th year (its light 0.1 from then) has no live
+/// limb below 0.4 of its height; the same in the open has limbs below 0.2.
+@test(tool, budget: 600)
+fn a_shaded_oak_sheds_its_low_limbs() {
+    let g = genomes()[Species::Oak]
+    let shaded = Vec::from_fn(80, |y| if y < 20 { 1.0 } else { 0.1 })
+    let under = grown(g, Site { age: 80.0, shade_above: 0.9 }, shaded, vec2(0.0), [], 1)
+    let open = grown(g, Site { age: 80.0 }, [], vec2(0.0), [], 1)
+    var low_under = 0
+    for p in tips(under) {
+        if p.y < 0.4 * under.height {
+            low_under += 1
+        }
+    }
+    var low_open = 0
+    for p in tips(open) {
+        if p.y < 0.2 * open.height {
+            low_open += 1
+        }
+    }
+    assert(
+        low_under == 0,
+        f"{low_under} live shoots under 0.4 of the shaded oak's {under.height} m",
+    )
+    assert(low_open > 0, f"no live shoot under 0.2 of the open oak's {open.height} m")
+}
+
+/// 5. A gale at year 40 breaks the leader and leaves a fork: two limbs reaching over 70 % of the
+/// height from one break.
+@test(tool, budget: 600)
+fn a_gale_leaves_a_fork() {
+    let g = genomes()[Species::Oak]
+    let gale = [GrowthEvent { age: 40.0, kind: GALE, strength: 0.9 }]
+    let t = grown(g, Site { age: 100.0 }, [], vec2(0.0), gale, 1)
+    let high = limbs_through(t, 0.55, 0.7)
+    assert(high >= 2, f"{high} limbs reach over 70 % of {t.height} m after the gale")
+}
+
+/// A plant's every float folded to a word.
+fn plant_hash(p: Plant) -> u32 {
+    var v: Vec<f32> = Vec::new()
+    for k in 0..p.limbs.len() {
+        let l = p.limbs[k]
+        for j in 0..4 {
+            v.push(l.points[j].x)
+            v.push(l.points[j].y)
+            v.push(l.points[j].z)
+            v.push(l.radii[j])
+        }
+    }
+    for k in 0..p.clumps.len() {
+        let c = p.clumps[k]
+        v.push(c.centre.x)
+        v.push(c.centre.y)
+        v.push(c.centre.z)
+        v.push(c.radius)
+    }
+    genome_hash(v)
+}
+
+/// 6. The same genome, site, events and seed grown twice give the same plant (a hash of its every
+/// float); another seed gives another.
+@test(tool, budget: 600)
+fn the_same_cause_grows_the_same_tree() {
+    let g = genomes()[Species::Birch]
+    let s = Site { age: 60.0 }
+    let (a, _) = into_plant(grown(g, s, [], vec2(0.0), [], 3), g, Leaves {}, Bark {})
+    let (b, _) = into_plant(grown(g, s, [], vec2(0.0), [], 3), g, Leaves {}, Bark {})
+    let (c, _) = into_plant(grown(g, s, [], vec2(0.0), [], 4), g, Leaves {}, Bark {})
+    assert(plant_hash(a) == plant_hash(b), "one cause, two plants")
+    assert(plant_hash(a) != plant_hash(c), "another seed, the same plant")
+}
+
+/// 7. A 100-year oak's growth, timed. Tests build as debug builds (every loop one iteration at a
+/// time, NaN checks), so the plan's 50 ms (a release build's, **estimated**) is measured and
+/// recorded by `wrela tool grow` (docs/bench.md, "E1"); here a bound that catches a regression.
+@test(tool, budget: 600)
+fn a_hundred_year_oak_grows_in_its_time() {
+    let g = genomes()[Species::Oak]
+    let began = now()
+    let t = grown(g, Site { age: 100.0 }, [], vec2(0.0), [], 1)
+    let took = (now() - began) * 1000.0
+    assert(t.nodes.len() > 100, f"a 100-year oak of {t.nodes.len()} nodes")
+    assert(took < 2000.0, f"a 100-year oak grew in {took} ms (a debug build)")
+}
+
+/// 8. The conversion's woody IoU and the crown's volume within 5 % of its leaves' for each species
+/// at 40 and 100 years in the open and at a forest's edge (half the open's light), and nothing
+/// dropped silently (`Plant::tube` and `cushion` assert in a debug build; the limbs past
+/// `MAX_LIMBS` are the thinnest, drawn by the crown's clumps).
+///
+/// The plan's IoU is 0.97: **Blocked** at `MAX_LIMBS` 2048. Every chain kept, the conversion
+/// reaches 0.995 or more for every species at 100 years; the cap is what costs it (a 100-year
+/// hawthorn's 5,563 chains, 0.87 at 2,048; an oak's 3,338, 0.91), and a `Plant` of 4,096 limbs
+/// overflows the constants that hold one (`trees::kinds`' `SHAPES`, docs/toolchain-gaps.md). The
+/// test holds the floor measured (docs/bench.md "E1.2").
+@test(tool, budget: 600)
+fn every_specimen_converts_whole() {
+    let gs = genomes()
+    var worst = 1.0
+    var worst_volume = 0.0
+    var volume_at = String::new()
+    var at = String::new()
+    var most = 0
+    var most_at = String::new()
+    for k in 0..7 {
+        let g = gs[k]
+        for age in [40.0, 100.0] {
+            for under in [false, true] {
+                let light = if under { Vec::filled(u32(age), 0.5) } else { Vec::new() }
+                let t = grown(g, Site { age }, light, vec2(0.0), [], 1)
+                let (_, c) = into_plant(t, g, Leaves {}, Bark {})
+                if c.iou < worst {
+                    worst = c.iou
+                    at = String::from(
+                        f"species {k} at {age} ({if under { "edge" } else { "open" }}): {c.limbs} of {c.chains} chains",
+                    )
+                }
+                if abs(c.volume - 1.0) > worst_volume {
+                    worst_volume = abs(c.volume - 1.0)
+                    volume_at = String::from(
+                        f"species {k} at {age} ({if under { "edge" } else { "open" }}): {t.nodes.len()} nodes, {c.clumps} clumps",
+                    )
+                }
+                if c.chains > most {
+                    most = c.chains
+                    most_at = String::from(f"species {k} at {age}")
+                }
+            }
+        }
+    }
+    assert(worst >= 0.86, f"the worst woody IoU {worst}: {at}; the most chains {most} ({most_at})")
+    assert(worst_volume <= 0.05, f"a crown's volume {worst_volume} off its leaves': {volume_at}")
+}

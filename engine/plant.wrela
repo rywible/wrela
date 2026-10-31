@@ -19,6 +19,7 @@
 // volumes stand in farther away (`vegetation`, `impostor`). The wind (`Wind`, `sway`) moves
 // every instance.
 
+use std::mem::debug_build
 use noise::{direction, hash2, pick, rand}
 use std::field::{Surface, PartName, Tube, unnamed}
 use std::gpu::{
@@ -127,7 +128,7 @@ impl Bark {
 
 /// The most limbs and clumps a plant has (a crown of fine clumps over its whole shell takes over
 /// a hundred, and the branches that carry them out to it over thirty).
-pub const MAX_LIMBS: u32 = 48
+pub const MAX_LIMBS: u32 = 2048
 pub const MAX_CLUMPS: u32 = 128
 
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
@@ -165,6 +166,10 @@ impl Plant {
     /// A limb through four points, its radius at each given: a trunk that flares at its root
     /// and tapers in one tube, with no seam where two tubes cross.
     pub fn tube(mut self, points: [vec3; 4], radii: [f32; 4]) {
+        // A limb past `MAX_LIMBS` is a fault a debug build names (§E1.2: none dropped silently).
+        if debug_build() {
+            assert(!self.limbs.is_full(), f"a plant's limbs past {MAX_LIMBS}")
+        }
         if !self.limbs.is_full() {
             self.limbs.push(Tube { points, radii })
         }
@@ -230,6 +235,9 @@ impl Plant {
 
     /// A clump of leaves at `at`, `radius` across and `squash` as tall (`Clump`).
     pub fn cushion(mut self, at: vec3, radius: f32, squash: f32) {
+        if debug_build() {
+            assert(!self.clumps.is_full(), f"a plant's clumps past {MAX_CLUMPS}")
+        }
         if !self.clumps.is_full() {
             self.clumps.push(Clump { centre: at, radius, squash })
         }
