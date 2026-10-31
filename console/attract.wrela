@@ -1,16 +1,20 @@
 // The chosen game playing itself behind the home (attract mode; the look is proposed until Ryan
 // sees it): once the home has rested on a game for `REST` seconds, browsing its shelf with
-// nothing over it, the console opens the game's attract build (the catalog's `attract`) in a
-// surface of its own, waits for it to say it's ready (`host::wait_ready`), shows it behind the
-// console (`host::underlay`), and fades the hero out over it in about `FADE_IN` seconds: the
-// backdrop (paint.wrela) draws the hero with less alpha, keeping the text's dark gradient, so the
-// game shows through where the hero was. The program behind is muted and hears no input.
+// nothing over it, the console opens the game where it plays itself (the catalog's `attract`: a
+// build of the game and its fragment, `capybara/#attract`) in a surface of its own, waits for it
+// to say it's ready (`host::wait_ready`), shows it behind the console (`host::underlay`), and
+// fades the hero out over it in about `FADE_IN` seconds: the backdrop (paint.wrela) draws the hero
+// with less alpha, keeping the text's dark gradient, so the game shows through where the hero
+// was. The program behind is muted and hears no input.
 //
-// It closes when the selection changes or a sheet or the account's panel covers the home (the
-// hero fading back in first, over `FADE_OUT` seconds), and at once when a game starts or shows,
-// or the host strains (main.wrela's `strained`). A host that declines (the native host opens no
-// surfaces) or a build that fails turns it off for the page's load, and the home is as it was:
-// the hero, a still.
+// A sheet or the account's panel over the home, or reduced motion, hides it (the hero fading back
+// in first, over `FADE_OUT` seconds, then `underlay(id, on: false)`), and it's shown again, faded
+// in, once they go: a reopen would load its WASM and compile its shaders again. It closes when the
+// selection moves to another game (the hero fading back in first), and at once when a game starts
+// or shows, or the host strains (main.wrela's `strained`). A host that declines (the native host
+// opens no surfaces) or a build that fails turns it off for the page's load, and the home is as
+// it was: the hero, a still.
+use platform::session::answer_of
 use std::host
 use std::io::Pending
 
@@ -22,9 +26,10 @@ pub const FADE_OUT: f32 = 0.3
 /// The most surfaces a host keeps open at a time (`host::open`): the session's count too.
 pub const SURFACES: u32 = 4
 
-/// Where the attract build is: none open; opening; waiting for its first frame; being shown
-/// behind the console; shown.
-pub enum Step: Copy + Eq { Idle, Open, Ready, Underlay, Under }
+/// Where the attract build is: none open; opening; opening, no longer wanted (closed once its
+/// surface's id comes); waiting for its first frame; being shown behind the console; shown; being
+/// hidden; open and hidden, to show again.
+pub enum Step: Copy + Eq { Idle, Open, Abandoned, Ready, Underlay, Under, Hiding, Hidden }
 
 pub struct Attract {
     pub step: Step,
@@ -35,8 +40,6 @@ pub struct Attract {
     surface: Option<u32>,
     pending: Option<Pending<u8>>,
     closing: Option<Pending<u8>>,
-    /// The build opening is no longer wanted: it's closed once its surface's id comes.
-    stale: bool,
     /// How far the hero has faded out over the game (0 to 1).
     pub shown: f32,
     /// The host declined or a build failed: no attract for this page's load.
@@ -52,7 +55,6 @@ pub fn new() -> Attract {
         surface: None,
         pending: None,
         closing: None,
-        stale: false,
         shown: 0.0,
         off: false,
     }
@@ -92,11 +94,23 @@ pub fn opens(a: Attract, h: Home) -> bool {
         h.surfaces + 1 <= SURFACES
 }
 
-/// Whether the build open goes: the selection moved, or it's no longer wanted; and whether at
-/// once, with no fade (a game starts or shows, or the host strains).
+/// Whether the build open closes: another game is chosen (or one with no attract build), a game
+/// starts or shows, or the host strains; and whether at once, with no fade (all but the first). A
+/// build opening is abandoned at once.
 pub fn leaves(a: Attract, h: Home) -> (bool, bool) {
-    let leave = a.step != Step::Idle && (h.selected != a.game || !wanted(h))
-    (leave, leave && (h.playing || h.strained))
+    let open = a.step != Step::Idle && a.step != Step::Abandoned
+    let urgent = h.playing || h.strained
+    let leave = open && (h.selected != a.game || !h.address || urgent)
+    (leave, leave && (urgent || a.step == Step::Open))
+}
+
+/// What the build open, which stays open, is turned to: shown again once it's hidden and wanted
+/// (`Some(true)`), hidden once it's shown, not wanted (a sheet or the account's panel over the
+/// home, or reduced motion) and the hero back in (`Some(false)`), or neither.
+pub fn turned(a: Attract, h: Home) -> Option<bool> {
+    if a.step == Step::Hidden && wanted(h) {
+        Some(true)
+    } else if a.step == Step::Under && !wanted(h) && a.shown == 0.0 { Some(false) } else { None }
 }
 
 /// The fade's next value, `dt` seconds on, toward `target`.
@@ -117,27 +131,18 @@ pub fn rest(a: mut Attract, h: Home, dt: f32) {
     }
 }
 
-fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut pending {
-        Some(p) => answer = p.poll(),
-        None => {},
-    }
-    if answer.is_some() { pending = None }
-    answer
-}
-
-/// Closes the build open, if its surface is: none waits on it.
+/// Closes the build open, if its surface is: none waits on it. One still opening is closed once
+/// its id comes.
 fn shut(a: mut Attract) {
-    match a.surface {
-        Some(id) => a.closing = Some(host::close(id)),
-        // Still opening: closed once its id comes.
-        None => a.stale = a.step == Step::Open,
-    }
-    if a.step != Step::Open { a.pending = None }
-    a.surface = None
-    a.step = if a.stale { Step::Open } else { Step::Idle }
     a.shown = 0.0
+    if a.step == Step::Open {
+        a.step = Step::Abandoned
+        return
+    }
+    if let Some(id) = a.surface { a.closing = Some(host::close(id)) }
+    a.surface = None
+    a.pending = None
+    a.step = Step::Idle
 }
 
 /// A request failed: the host can't, or the build can't start. No more this page's load.
@@ -146,7 +151,6 @@ fn give_up(a: mut Attract) {
     if let Some(id) = a.surface { a.closing = Some(host::close(id)) }
     a.surface = None
     a.pending = None
-    a.stale = false
     a.step = Step::Idle
     a.shown = 0.0
 }
@@ -156,16 +160,13 @@ fn give_up(a: mut Attract) {
 /// moved, or the canvas changed how it's composited (shown behind, or no longer).
 pub fn update(a: mut Attract, h: Home, address: str, dt: f32) -> bool {
     var draw = false
-    if poll(mut a.closing).is_some() { draw = true }
+    if answer_of(mut a.closing).is_some() { draw = true }
     rest(mut a, h, dt)
-    if let Some(result) = poll(mut a.pending) {
+    if let Some(result) = answer_of(mut a.pending) {
         match result {
             Err(_) => {
                 // An open no longer wanted that failed has nothing to close.
-                if a.stale {
-                    a.stale = false
-                    a.step = Step::Idle
-                } else { give_up(mut a) }
+                if a.step == Step::Abandoned { a.step = Step::Idle } else { give_up(mut a) }
                 draw = true
             },
             Ok(bytes) => match a.step {
@@ -174,23 +175,24 @@ pub fn update(a: mut Attract, h: Home, address: str, dt: f32) -> bool {
                         give_up(mut a)
                         return true
                     }
-                    if a.stale {
-                        a.stale = false
-                        a.step = Step::Idle
+                    a.surface = Some(id)
+                    a.pending = Some(host::wait_ready(id))
+                    a.step = Step::Ready
+                },
+                Step::Abandoned => {
+                    if let Some(id) = host::read_surface(bytes) {
                         a.closing = Some(host::close(id))
-                    } else {
-                        a.surface = Some(id)
-                        a.pending = Some(host::wait_ready(id))
-                        a.step = Step::Ready
                     }
+                    a.step = Step::Idle
                 },
-                Step::Ready => {
-                    let Some(id) = a.surface else { return draw }
-                    a.pending = Some(host::underlay(id, on: true))
-                    a.step = Step::Underlay
-                },
+                // Ready: shown below, if it's wanted.
+                Step::Ready => a.step = Step::Hidden,
                 Step::Underlay => {
                     a.step = Step::Under
+                    draw = true
+                },
+                Step::Hiding => {
+                    a.step = Step::Hidden
                     draw = true
                 },
                 _ => {},
@@ -199,20 +201,41 @@ pub fn update(a: mut Attract, h: Home, address: str, dt: f32) -> bool {
     }
     let (leave, at_once) = leaves(a, h)
     if leave && (at_once || a.step != Step::Under || a.shown == 0.0) {
-        if a.step == Step::Under || a.step == Step::Underlay { draw = true }
+        if a.step == Step::Under || a.step == Step::Underlay || a.step == Step::Hiding {
+            draw = true
+        }
         shut(mut a)
+    }
+    if !leave {
+        if let Some(id) = a.surface {
+            match turned(a, h) {
+                Some(true) => {
+                    a.pending = Some(host::underlay(id, on: true))
+                    a.step = Step::Underlay
+                },
+                Some(false) => {
+                    a.pending = Some(host::underlay(id, on: false))
+                    a.step = Step::Hiding
+                },
+                None => {},
+            }
+        }
     }
     if opens(a, h) && !address.is_empty() {
         a.game = h.selected
         a.pending = Some(host::open(address))
         a.step = Step::Open
     }
-    let target = if a.step == Step::Under && !leave { 1.0 } else { 0.0 }
+    let target = if a.step == Step::Under && !leave && wanted(h) { 1.0 } else { 0.0 }
     let before = a.shown
     a.shown = faded(a.shown, target, dt)
     // While the canvas changes how it's composited, it's drawn each frame: the host's change
     // clears it.
-    draw || a.shown != before || a.step == Step::Underlay || a.closing.is_some()
+    draw ||
+        a.shown != before ||
+        a.step == Step::Underlay ||
+        a.step == Step::Hiding ||
+        a.closing.is_some()
 }
 
 // ---- tests -------------------------------------------------------------------------------------
@@ -272,7 +295,7 @@ fn the_rest_starts_again_when_the_selection_moves_or_the_home_is_covered() {
 }
 
 @test
-fn the_build_shown_closes_as_the_home_changes_fading_first_unless_a_game_starts() {
+fn the_build_shown_closes_when_the_game_changes_fading_first_unless_a_game_starts() {
     var a = new()
     let h = home()
     a.step = Step::Under
@@ -280,11 +303,43 @@ fn the_build_shown_closes_as_the_home_changes_fading_first_unless_a_game_starts(
     a.shown = 1.0
     assert(leaves(a, h) == (false, false))
     assert(leaves(a, Home { selected: 1, ..h }) == (true, false), "another game: fades first")
-    assert(leaves(a, Home { resting: false, ..h }) == (true, false), "a sheet: fades first")
+    assert(leaves(a, Home { address: false, ..h }) == (true, false), "one with none")
     assert(leaves(a, Home { playing: true, ..h }) == (true, true), "a game starts: at once")
     assert(leaves(a, Home { strained: true, ..h }) == (true, true), "a strained host: at once")
+    for (what, covered) in [
+        ("a sheet", Home { resting: false, ..h }),
+        ("reduced motion", Home { motion: false, ..h }),
+    ] {
+        assert(leaves(a, covered) == (false, false), what)
+    }
+    a.step = Step::Hidden
+    assert(leaves(a, Home { selected: 1, ..h }) == (true, false), "hidden, another game")
+    a.step = Step::Open
+    assert(leaves(a, Home { selected: 1, ..h }) == (true, true), "opening: abandoned at once")
     a.step = Step::Idle
     assert(leaves(a, Home { playing: true, ..h }) == (false, false), "nothing open")
+    a.step = Step::Abandoned
+    assert(leaves(a, Home { playing: true, ..h }) == (false, false), "already abandoned")
+}
+
+@test
+fn a_cover_hides_the_build_once_the_hero_is_back_and_shows_it_again_after() {
+    var a = new()
+    let h = home()
+    a.step = Step::Under
+    a.shown = 1.0
+    let sheet = Home { resting: false, ..h }
+    assert(turned(a, sheet).is_none(), "the hero fades back in first")
+    a.shown = 0.0
+    assert(turned(a, sheet) == Some(false), "then it's hidden, still open")
+    assert(turned(a, h).is_none(), "shown and wanted: as it is")
+    a.step = Step::Hidden
+    assert(turned(a, sheet).is_none(), "hidden while covered")
+    assert(turned(a, h) == Some(true), "shown again once the sheet goes, without reopening")
+    assert(turned(a, Home { motion: false, ..h }).is_none(), "not under reduced motion")
+    // Ready, it's shown only when wanted.
+    a.step = Step::Ready
+    assert(turned(a, h).is_none())
 }
 
 @test

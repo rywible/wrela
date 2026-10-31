@@ -191,10 +191,15 @@ Test: the console's tests (the attract program opened, shown under, closed on pl
 capybara's (`#attract` plays the human line and loops). If the toolchain's release isn't out
 when the rest is ready, this step waits for a pull request of its own.
 
-As built (toolchain 0.16.0): the attract start is a build of its own, the capybara's package with
-`ATTRACT` set (the release's `attract`), not `capybara/#attract`, because 0.16.0's browser host
-opens no program at an address with a fragment (docs/toolchain-gaps.md). The look is proposed
-until Ryan sees it.
+As built (toolchain 0.17.0): the attract start is the play build opened at `capybara/#attract`
+(the catalog's `capybara#attract`); the game starts neutral and decides once, when its address
+answers, whether it plays itself (games/capybara/attract.wrela's `role_of`). Under 0.16.0 it was a
+build of its own with `ATTRACT` set, since that host opened no program at an address with a
+fragment (docs/toolchain-gaps.md, fixed by 0.17.0). The console hides the game behind a sheet or
+the account's panel and shows it again, closing it only when the game changes, a game starts or
+shows, or the host strains. The native host has no address to give, so the attract tool test
+calls the export `play_itself` (docs/toolchain-gaps.md, "A driven build can't be given an
+address"). The look is proposed until Ryan sees it.
 
 ### Step 10. Copy
 
