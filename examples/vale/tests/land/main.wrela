@@ -6,7 +6,8 @@
 use land::grow::NONE
 use land::soil::SoilKind
 use std::io::print
-use vale::landscape::{BAND_HALF, BAND_Z, FALL_RUN, HEAD_Z, MOUTH_Z, VALE}
+use engine::terrain::Terrain
+use vale::landscape::{BAND_HALF, BAND_Z, FALL_RUN, GROUND, HEAD_Z, MOUTH_Z, VALE}
 
 /// The main stream is one path down its cells' receivers, from a cell within 64 m of the head to
 /// the outlet at the mouth; each cell's next is its receiver, and every cell drains more than a
@@ -205,4 +206,58 @@ fn the_history_grows_a_wood_over_the_land() {
     assert(oldest > 200, f"the oldest tree is {oldest} years")
     assert(wet == 0, f"{wet} trees stand in the mere")
     assert(meadow == 0, f"{meadow} trees stand in the meadow's middle")
+}
+
+/// The ground reads its soil (plan three's §E5): on the valley floor, alluvium's colour and
+/// roughness; on the crests, thin soil's roughness with its stones showing (between a twentieth
+/// and its `THIN_STONES` of its ground, over the crests' thin cells), the two reading apart; and
+/// soaked ground smoother than dry. Each from the cover the clipmap cooks (`Terrain::cover_with`,
+/// what the GPU's texels hold), in the open, so the wood's litter doesn't cover it.
+@test
+fn the_ground_reads_its_soil() {
+    borrow v = VALE
+    let g = v.made.grid
+    let up = vec3(0.0, 1.0, 0.0)
+    let at = |p: vec2| vec3(p.x, vale::landscape::height_at(p), p.y)
+    let dry = vec4(1.0, 0.0, 0.5, 0.0)
+    var floor = -1
+    var stones = 0.0
+    var thin = 0
+    var crest_albedo = vec3(0.0)
+    for c in 0..g.cells() {
+        let p = g.centre(c)
+        if floor < 0 && v.soil[c] == SoilKind::Alluvium && v.lakes.of[c] == NONE {
+            floor = i32(c)
+        }
+        if abs(p.x) > 400.0 && v.made.area[c] < 64.0 && v.soil[c] == SoilKind::Thin {
+            let cv = GROUND.cover_with(at(p), up, dry)
+            let rough = vale::landscape::SOIL_ROUGH[u32(SoilKind::Thin)]
+            assert(abs(cv.rough - rough) < 1.0e-4, f"a crest's roughness {cv.rough}, not {rough}")
+            stones += cv.materials.z
+            crest_albedo += cv.albedo
+            thin += 1
+        }
+    }
+    assert(floor >= 0 && thin > 0, "no alluvium on the floor, or no thin soil on the crests")
+    let fc = GROUND.cover_with(at(g.centre(u32(floor))), up, dry)
+    let alluvium = vale::landscape::SOIL_ALBEDO[u32(SoilKind::Alluvium)]
+    assert(length(fc.albedo - alluvium) < 1.0e-3, f"the floor's ground {fc.albedo}, not alluvium's {alluvium}")
+    let ar = vale::landscape::SOIL_ROUGH[u32(SoilKind::Alluvium)]
+    assert(abs(fc.rough - ar) < 1.0e-4, f"the floor's roughness {fc.rough}, not alluvium's {ar}")
+    let shown = stones / f32(thin)
+    assert(
+        shown > 0.05 && shown <= vale::landscape::THIN_STONES,
+        f"the crests' stones show over {shown} of their ground",
+    )
+    let lum = |c: vec3| dot(c, vec3(0.2126, 0.7152, 0.0722))
+    let crest = crest_albedo / f32(thin)
+    assert(
+        abs(lum(crest) - lum(fc.albedo)) > 0.1 * lum(fc.albedo),
+        f"the crests' ground {crest} reads as the floor's {fc.albedo}",
+    )
+    let soaked = GROUND.cover_with(at(g.centre(u32(floor))), up, vec4(1.0, 0.0, 1.0, 0.0))
+    assert(soaked.rough < 0.8 * fc.rough, f"soaked ground's roughness {soaked.rough}, dry {fc.rough}")
+    print(
+        f"the ground: the floor's {fc.albedo} (roughness {fc.rough}), the crests' {crest} ({thin} cells, stones over {shown}); soaked {soaked.rough}",
+    )
 }
