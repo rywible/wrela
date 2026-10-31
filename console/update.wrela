@@ -5,6 +5,7 @@
 // shown, nothing being saved or signed in, and nothing touched for `IDLE` seconds. The page's
 // storage stays, and a reload starts at the library (`decide_opening`).
 use std::http
+use platform::session::answer_of
 use std::io::{Pending, fetch}
 use std::json::{Kind, TOP, parse}
 
@@ -92,26 +93,16 @@ pub fn due(newer: bool, safe: bool, now: f32, active_at: f32) -> bool {
     newer && safe && now - active_at >= IDLE
 }
 
-fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut pending {
-        Some(p) => answer = p.poll(),
-        None => {},
-    }
-    if answer.is_some() { pending = None }
-    answer
-}
-
 /// Each frame, at `now` (seconds of the console's presentation): reads what came, asks which
 /// release is live when it's time, and reloads once it's `due`. The console's own release is read
 /// once; an answer that isn't one asks again at the next turn. The host's answer to the reload is
 /// read and dropped: a host that declines (the native one, or a console in another's surface)
 /// leaves it where it is, and it doesn't ask again.
 pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
-    if let Some(Ok(bytes)) = poll(mut u.own_load) {
+    if let Some(Ok(bytes)) = answer_of(mut u.own_load) {
         u.own = release_of(bytes)
     }
-    if let Some(result) = poll(mut u.live_load) {
+    if let Some(result) = answer_of(mut u.live_load) {
         if let Ok(answer) = result {
             if let Some(r) = http::response(answer) {
                 if r.status == 200 {
@@ -122,7 +113,7 @@ pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
             }
         }
     }
-    let _ = poll(mut u.reload)
+    let _ = answer_of(mut u.reload)
     if u.own.is_none() || u.asked {
         return
     }

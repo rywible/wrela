@@ -53,14 +53,15 @@ use account::{
     GameToken, HANDLE_BYTES, HOUR, MINUTE, MOST_PASSKEYS, OF_AGREED, OF_BEST, OF_CODE, OF_HOUR,
     OF_PASSKEY, OF_POSTING, OF_REPLAY, OF_RUN, OF_SESSION, OF_TOKEN, Passkey, Posting, REROLLS,
     Recovery, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE, account_key, agreement_key,
-    ceremonies, ceremony_key, code, code_hash, code_key, hashed, hex, indexed, name_key,
-    passkey_key, posted_key, posting_key, public_id, session_key, token_key, u32_at, u64_at,
-    under_account, with_bytes, CEREMONY_BYTES,
+    ceremonies, ceremony_key, code, code_hash, code_key, hashed, indexed, name_key, passkey_key,
+    posted_key, posting_key, public_id, session_key, token_key, u32_at, u64_at, under_account,
+    with_bytes, CEREMONY_BYTES,
 }
 use names::{Matching, Name, draw}
 use std::collections::replace
 use std::crypto::{Signature, verified}
 use std::fmt::json_text
+use std::hash::sha256::hex
 use std::serialize::{LoadError, Serialize, load, save}
 use std::store::{append_u32, append_u64, entries, past, value}
 use std::webauthn::{Credential, Expected, assertion, base64url, registration}
@@ -1142,10 +1143,9 @@ impl<G: Game> Engine<G> {
         match p {
             Some(p) => Reply::Posting {
                 agreed: p.version == self.versions.posting,
-                at: p.at,
                 best_runs: p.best_runs,
             },
-            None => Reply::Posting { agreed: false, at: 0, best_runs: false },
+            None => Reply::Posting { agreed: false, best_runs: false },
         }
     }
 
@@ -1811,15 +1811,7 @@ impl<G: Game> Engine<G> {
                     indexed(a.id, OF_PASSKEY, cred.id),
                     PasskeyView { id: cred.id.clone(), created: self.now, used: self.now },
                 )
-                self.put(
-                    agreement_key(a.id),
-                    Agreement {
-                        terms: j.agreed.terms,
-                        privacy: j.agreed.privacy,
-                        of_age: j.agreed.of_age,
-                        at: self.now,
-                    },
-                )
+                self.put(agreement_key(a.id), Agreement { agreed: j.agreed, at: self.now })
                 let codes = self.write_codes(
                     a.id,
                     part(answer, TOKEN_BYTES + CSRF_BYTES, CODES * CODE_BYTES),
@@ -3482,7 +3474,7 @@ fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
         out.push_str("{\"agreed\":")
         match read::<Agreement>(value) {
             Some(g) => out.push_str(
-                f"{{\"terms\":{g.terms},\"privacy\":{g.privacy},\"thirteen_or_older\":{g.of_age},\"at\":{g.at}}}",
+                f"{{\"terms\":{g.agreed.terms},\"privacy\":{g.agreed.privacy},\"thirteen_or_older\":{g.agreed.of_age},\"at\":{g.at}}}",
             ),
             None => out.push_str("null"),
         }

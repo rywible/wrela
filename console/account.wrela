@@ -23,6 +23,7 @@
 
 use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
+use platform::session::answer_of
 use platform::wire::{
     ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
     SIGN_IN, SessionView, public, replay_path,
@@ -173,9 +174,8 @@ pub struct Accounts {
     /// The page a legal page goes back to, and the control whose request is under way.
     back: Page,
     doing: Option<Act>,
-    /// Posting, as the server last said: whether it's known (and asked), whether the account has
-    /// agreed to what posting makes public, and whether it posts its best runs.
-    posting_known: bool,
+    /// Posting, as the server last said: whether it was asked, whether the account has agreed to
+    /// what posting makes public, and whether it posts its best runs.
     posting_asked: bool,
     may_post: bool,
     post_best: bool,
@@ -234,7 +234,6 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         of_age: false,
         back: Page::Choose,
         doing: None,
-        posting_known: false,
         posting_asked: false,
         may_post: false,
         post_best: false,
@@ -242,18 +241,6 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         consent_for_game: false,
         reminded: false,
     }
-}
-
-fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut p {
-        Some(q) => answer = q.poll(),
-        None => {},
-    }
-    if answer.is_some() {
-        p = None
-    }
-    answer
 }
 
 // ---- the server ------------------------------------------------------------------------------
@@ -279,7 +266,6 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
 
 fn signed_out(a: mut Accounts) {
     a.csrf.clear()
-    a.posting_known = false
     a.posting_asked = false
     a.may_post = false
     a.post_best = false
@@ -449,8 +435,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             a.page = Page::Codes
             give_game_account(mut a)
         },
-        Reply::Posting { agreed, best_runs, .. } => {
-            a.posting_known = true
+        Reply::Posting { agreed, best_runs } => {
             a.may_post = agreed
             a.post_best = best_runs
             if purpose == Purpose::Consent {
@@ -458,7 +443,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
                 if a.consent_for_game {
                     // The game asked: its answer, and back to it.
                     a.consent_for_game = false
-                    answer_game(mut a, Answer::Posting { agreed, best_runs })
+                    answer_game(mut a, Answer::Done)
                     a.open = false
                 } else {
                     open_page(mut a, Page::Account)
@@ -642,16 +627,7 @@ fn game_replied(a: mut Accounts, reply: Reply) {
             Answer::Board { course, category, places: places.clone(), total }
         },
         Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
-        Reply::Around { places, at } => {
-            let (course, category) = match a.game {
-                Some(g) => match g.answer {
-                    Answer::Around { course, category, .. } => (course, category),
-                    _ => (0, 0),
-                },
-                None => (0, 0),
-            }
-            Answer::Around { course, category, places: places.clone(), at }
-        },
+        Reply::Around { places, at } => Answer::Around { places: places.clone(), at },
         Reply::Names { found } => Answer::Names { found: found.clone() },
         _ => Answer::Offline {
             why: String::from("The boards sent something the console can't read."),
@@ -680,16 +656,18 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
     // The console's own pages: the codes need no server, and the first post's screen waits on the
     // player.
     if let Ask::SaveCodes = ask {
-        let shown = remind_codes(mut a)
-        answer_game(mut a, Answer::Opened { shown })
+        let _ = remind_codes(mut a)
+        answer_game(mut a, Answer::Done)
         return
     }
+    // Unless the account already agreed; if the console can't post at all, that's said below, as
+    // for any ask it can't carry.
     if let Ask::Consent = ask {
-        if a.may_post && answer_now(a.me, a.online, a.connected, Ask::Consent).is_none() {
-            answer_game(mut a, Answer::Posting { agreed: true, best_runs: a.post_best })
-            return
-        }
         if answer_now(a.me, a.online, a.connected, Ask::Consent).is_none() {
+            if a.may_post {
+                answer_game(mut a, Answer::Done)
+                return
+            }
             match mut a.game {
                 Some(l) => l.asking = true,
                 None => {},
@@ -729,17 +707,11 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
         },
         Ask::Watch { run } => Request::Watch { run },
         Ask::Replay { hash } => Request::Replay { hash: hash.clone() },
-        Ask::Around { course, category, name } => {
-            match mut a.game {
-                Some(l) => l.answer = Answer::Around {
-                    course,
-                    category,
-                    places: Vec::new(),
-                    at: 0,
-                },
-                None => {},
-            }
-            Request::Around { game: g.id.clone(), course, category, name: name.clone() }
+        Ask::Around { course, category, name } => Request::Around {
+            game: g.id.clone(),
+            course,
+            category,
+            name: name.clone(),
         },
         Ask::Names { title, noun, epithet } => Request::Names {
             game: g.id.clone(),
@@ -816,7 +788,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     }
     // What the account chose of posting, once it's signed in.
     let whole = a.me.signed_in && !a.me.must_add_passkey
-    if a.online && a.connected && whole && !a.posting_known && !a.posting_asked {
+    if a.online && a.connected && whole && !a.posting_asked {
         a.posting_asked = true
         request(mut a, Request::Posting, Purpose::Other)
     }
@@ -830,7 +802,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
             None => i += 1,
         }
     }
-    if let Some(result) = poll(mut a.passkey) {
+    if let Some(result) = answer_of(mut a.passkey) {
         a.dirty = true
         a.busy = false
         match result {
@@ -871,13 +843,13 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
             ),
         }
     }
-    let _ = poll(mut a.export_file)
+    let _ = answer_of(mut a.export_file)
     // The game's reply to the console's call: its next ask.
     var asked: Option<Vec<u8>> = None
     var gone = false
     match mut a.game {
         Some(g) => {
-            match poll(mut g.call) {
+            match answer_of(mut g.call) {
                 Some(Ok(bytes)) => asked = Some(take bytes),
                 Some(Err(_)) => gone = true,
                 None => {},
@@ -895,7 +867,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
         send_game(mut a)
     }
     for i in 0..a.licences.len() {
-        if let Some(result) = poll(mut a.licences[i]) {
+        if let Some(result) = answer_of(mut a.licences[i]) {
             a.dirty = true
             a.licence_text[i] = match result {
                 Ok(bytes) => String::from_utf8(bytes.clone()).unwrap_or(String::new()),
@@ -999,7 +971,7 @@ fn asks_consent_first(a: Accounts) -> bool {
 fn not_now(a: mut Accounts) {
     if a.consent_for_game {
         a.consent_for_game = false
-        answer_game(mut a, Answer::Posting { agreed: false, best_runs: a.post_best })
+        answer_game(mut a, Answer::Done)
     }
 }
 
@@ -1819,7 +1791,7 @@ pub fn draw(
             write(mut d, fonts, "Passkeys", 13.0, vec2(x, y), MUTED, zoom)
             y += 24.0
             for i in 0..min(a.passkeys.len(), 6) {
-                let label = f"Passkey {i + 1} ({platform::account::hex(short(a.passkeys[i].id))})"
+                let label = f"Passkey {i + 1} ({std::hash::sha256::hex(short(a.passkeys[i].id))})"
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
                 button(
                     mut a,
@@ -1847,9 +1819,9 @@ pub fn draw(
             for i in 0..min(a.sessions.len(), 5) {
                 let s = a.sessions[i].clone()
                 let label = if s.this {
-                    f"This console ({platform::account::hex(short(s.id))})"
+                    f"This console ({std::hash::sha256::hex(short(s.id))})"
                 } else {
-                    f"Session {platform::account::hex(short(s.id))}"
+                    f"Session {std::hash::sha256::hex(short(s.id))}"
                 }
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
                 if !s.this {

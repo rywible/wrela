@@ -11,7 +11,7 @@
 
 use capybara::boards::Capybara
 use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, Versions, engine}
-use platform::wire::{ACCOUNTS, PUBLIC, REPLAYS, Request as Asking}
+use platform::wire::{ACCOUNTS, PUBLIC, REPLAYS, Request as Asking, replay_hash}
 use std::crypto
 use std::http::{Request, Response, bytes, request, respond, session_cookie, text}
 use std::input::{Event, events, payload}
@@ -109,7 +109,10 @@ fn http(s: mut Server, r: Request) {
     } else if path == PUBLIC && (method == "GET" || method == "HEAD") {
         query_bytes(r.query.as_str())
     } else if path.starts_with(REPLAYS) && (method == "GET" || method == "HEAD") {
-        replay_request(path.slice(REPLAYS.len(), path.len()))
+        match replay_hash(path) {
+            Some(hash) => Some(save(Asking::Replay { hash })),
+            None => None,
+        }
     } else {
         None
     }
@@ -146,27 +149,6 @@ fn query_bytes(query: str) -> Option<Vec<u8>> {
         return None
     }
     unbase64url(query.slice(2, query.len()))
-}
-
-/// The request for the replay whose hash is `hex`, 64 hexadecimal digits in lower case: none for
-/// anything else, which is not found.
-fn replay_request(hex: str) -> Option<Vec<u8>> {
-    if hex.len() != 64 {
-        return None
-    }
-    var hash: Vec<u8> = Vec::with_capacity(32)
-    for i in 0..32 {
-        let hi = digit(hex.byte(2 * i))?
-        let lo = digit(hex.byte(2 * i + 1))?
-        hash.push((hi << 4) | lo)
-    }
-    Some(save(Asking::Replay { hash }))
-}
-
-fn digit(c: u8) -> Option<u8> {
-    if c >= 48 && c <= 57 {
-        Some(c - 48)
-    } else if c >= 97 && c <= 102 { Some(c - 87) } else { None }
 }
 
 /// The bytes of base64url text without padding (RFC 4648 §5), or none if it isn't that.
@@ -214,10 +196,13 @@ fn base64url_reads_back() {
 fn a_replays_path_is_its_hash() {
     let hash: Vec<u8> = Vec::from([171; 32])
     let path = platform::wire::replay_path(hash)
-    let Some(body) = replay_request(path.as_str().slice(REPLAYS.len(), path.len())) else {
-        panic("a replay's path")
-    }
-    assert(body == save(Asking::Replay { hash: hash.clone() }))
+    assert(replay_hash(path.as_str()) == Some(hash.clone()), "a replay's path")
     let upper = "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
-    assert(replay_request(upper).is_none() && replay_request("abab").is_none(), "not a hash")
+    for wrong in [
+        String::from(f"{REPLAYS}{upper}"),
+        String::from(f"{REPLAYS}abab"),
+        String::from(f"/api/public/REPLAY/{std::hash::sha256::hex(hash)}"),
+    ] {
+        assert(replay_hash(wrong.as_str()).is_none(), wrong.as_str())
+    }
 }

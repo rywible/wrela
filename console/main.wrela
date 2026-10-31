@@ -15,6 +15,7 @@ use brand::facet::MarkRun
 use brand::manrope::MANROPE
 use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
+use platform::session::answer_of
 use std::gpu::{
     Blend, GpuBuffer, RenderPass, Rgba8, Rgba16Float, Sampler, Texture, begin_pass,
     begin_screen_pass, buffer, buffer_of, draw, mip_levels, sampler, texture, write,
@@ -477,16 +478,6 @@ pub fn init() -> Console {
     }
 }
 
-fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut pending {
-        Some(p) => answer = p.poll(),
-        None => {},
-    }
-    if answer.is_some() { pending = None }
-    answer
-}
-
 fn call(s: mut Console, request: Request, step: Step) {
     let Some(id) = s.handle else { return }
     let bytes = save(request)
@@ -752,12 +743,12 @@ fn arrive(f: mut Fetched, art: Art, wanted: bool, role: Role) -> bool {
         f.load = Some(fetch(art.path))
         f.requested = true
     }
-    if let Some(result) = poll(mut f.load) {
+    if let Some(result) = answer_of(mut f.load) {
         if let Ok(bytes) = result {
             f.decode = Some(host::decode_image(bytes, art.width, art.height))
         }
     }
-    let Some(result) = poll(mut f.decode) else { return false }
+    let Some(result) = answer_of(mut f.decode) else { return false }
     if let Ok(bytes) = result {
         // The host decodes only art of the size the catalog says.
         if bytes.len() == art.width * art.height * 4 {
@@ -846,13 +837,13 @@ fn near_cover(index: u32, selected: u32) -> bool {
 }
 
 fn update(s: mut Console) {
-    if let Some(Ok(bytes)) = poll(mut s.address) {
+    if let Some(Ok(bytes)) = answer_of(mut s.address) {
         // The answer to the replacement is empty, so this happens once.
         if let Some(kept) = without_fragment(bytes) {
             s.address = Some(host::replace_address(kept.as_str()))
         }
     }
-    if let Some(result) = poll(mut s.environment) {
+    if let Some(result) = answer_of(mut s.environment) {
         s.dirty = true
         s.reloaded = Some(false)
         if let Ok(bytes) = result {
@@ -862,7 +853,7 @@ fn update(s: mut Console) {
             if let Some(ratio) = env.pixel_ratio { s.pixel_ratio = clamp(ratio, 0.5, 4.0) }
         }
     }
-    if let Some(result) = poll(mut s.profile_load) {
+    if let Some(result) = answer_of(mut s.profile_load) {
         s.dirty = true
         s.profile_ready = true
         if let Ok(bytes) = result {
@@ -874,7 +865,7 @@ fn update(s: mut Console) {
             }
         }
     }
-    if let Some(result) = poll(mut s.catalog_load) {
+    if let Some(result) = answer_of(mut s.catalog_load) {
         s.dirty = true
         match result {
             Ok(bytes) => match catalog_result(bytes) {
@@ -910,17 +901,17 @@ fn update(s: mut Console) {
         if arrive(mut s.heroes[i], card.hero, chosen, Role::Hero) { s.dirty = true }
         if arrive(mut s.logos[i], card.logo, chosen, Role::Title) { s.dirty = true }
     }
-    if let Some(Ok(bytes)) = poll(mut s.music_load) {
+    if let Some(Ok(bytes)) = answer_of(mut s.music_load) {
         s.music = bytes.is_empty() || bytes[0] != 0
     }
-    let _ = poll(mut s.music_write)
-    if let Some(result) = poll(mut s.profile_write) {
+    let _ = answer_of(mut s.music_write)
+    if let Some(result) = answer_of(mut s.profile_write) {
         if result.is_err() {
             s.dirty = true
             s.message = String::from("Can't save your profile on this device.")
         }
     }
-    if let Some(result) = poll(mut s.pending) {
+    if let Some(result) = answer_of(mut s.pending) {
         s.dirty = true
         match result {
             Ok(bytes) => answer(mut s, bytes.clone()),
@@ -930,7 +921,7 @@ fn update(s: mut Console) {
             } else { quietly_retry(mut s) },
         }
     }
-    if poll(mut s.closing).is_some() {
+    if answer_of(mut s.closing).is_some() {
         s.dirty = true
         account::game_closed(mut s.account)
         // A game that was starting or playing has closed; a session closed only to change the
@@ -945,7 +936,7 @@ fn update(s: mut Console) {
         s.retry_at = 0.0
         s.need_open = true
     }
-    let _ = poll(mut s.cursor)
+    let _ = answer_of(mut s.cursor)
     fulfill_play(mut s)
     if account::update(mut s.account, s.presentation) { s.dirty = true }
     update::update(mut s.update, s.presentation, safe_to_reload(s), s.active_at)
@@ -2210,7 +2201,7 @@ fn drive_theme(s: mut Console, library: f32) {
         borrow path = s.cards[chosen].theme
         s.theme_load = if path.is_empty() { None } else { Some(fetch(path)) }
     }
-    if let Some(Ok(bytes)) = poll(mut s.theme_load) {
+    if let Some(Ok(bytes)) = answer_of(mut s.theme_load) {
         if let Some(text) = String::from_utf8(bytes.clone()) { s.theme = theme::read(text) }
     }
     let wanted = if s.music && library >= 1.0 && browsing(s.step) && s.closing.is_none() {
@@ -2272,8 +2263,8 @@ fn ink(s: mut Console, k: u32, at: vec3) {
 // browsed, not while a game starts. Each game's list is beside the catalog
 // (studio/release/site.wrela's `prefetch_list`).
 fn prefetch_games(s: mut Console) {
-    if let Some(_) = poll(mut s.prefetching) { s.prefetched[s.prefetch_game] = true }
-    if let Some(result) = poll(mut s.prefetch_list) {
+    if let Some(_) = answer_of(mut s.prefetching) { s.prefetched[s.prefetch_game] = true }
+    if let Some(result) = answer_of(mut s.prefetch_list) {
         match result {
             Ok(bytes) => s.prefetching = Some(host::prefetch(bytes)),
             Err(_) => s.prefetched[s.prefetch_game] = true,

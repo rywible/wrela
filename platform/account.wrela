@@ -12,10 +12,11 @@
 // random (std::crypto::random) and given once, so a copy of the store opens no account.
 
 use names::Name
-use std::hash::sha256::sha256
+use std::hash::sha256::{hex, sha256}
 use std::serialize::Serialize
 use std::store::{append_u32, append_u64}
 use std::webauthn::Credential
+use wire::Agreed
 
 /// How the relying party is shown in a person's passkey list.
 pub const RP_NAME: Text = "wrela"
@@ -98,12 +99,10 @@ pub struct Recovery: Clone + Serialize {
 }
 
 /// What an account agreed to when it was made (`a/<id>/g`): the Terms' and the Privacy Policy's
-/// versions, that its player is 13 or older, and when. A record of its own beside the account's, so
-/// accounts made before it was asked still read.
+/// versions and that its player is 13 or older, and when. A record of its own beside the account's,
+/// so accounts made before it was asked still read.
 pub struct Agreement: Clone + Serialize {
-    pub terms: u32,
-    pub privacy: u32,
-    pub of_age: bool,
+    pub agreed: Agreed,
     pub at: u64,
 }
 
@@ -265,15 +264,25 @@ pub fn u32_at(bytes: [u8], at: u32) -> u32 {
     x
 }
 
-/// `n` in hexadecimal.
-pub fn hex(bytes: [u8]) -> String {
-    let digits = "0123456789abcdef"
-    var out = String::new()
-    for b in bytes {
-        out.push_byte(digits.byte(u32(b >> 4)))
-        out.push_byte(digits.byte(u32(b & 15)))
+/// The bytes that `text` writes in hexadecimal, two lowercase digits a byte (as
+/// `std::hash::sha256::hex` writes them): none for anything else.
+pub fn unhex(text: str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 {
+        return None
     }
-    out
+    var out: Vec<u8> = Vec::with_capacity(text.len() / 2)
+    for i in 0..text.len() / 2 {
+        let hi = digit(text.byte(2 * i))?
+        let lo = digit(text.byte(2 * i + 1))?
+        out.push((hi << 4) | lo)
+    }
+    Some(out)
+}
+
+fn digit(c: u8) -> Option<u8> {
+    if c >= 48 && c <= 57 {
+        Some(c - 48)
+    } else if c >= 97 && c <= 102 { Some(c - 87) } else { None }
 }
 
 // ---- recovery codes ----------------------------------------------------------------------------
@@ -398,4 +407,8 @@ fn an_accounts_records_sort_under_it_and_numbers_sort_as_numbers() {
     assert(public_id(hashed([1, 2, 3])).len() == 8)
     assert(u64_at(account_key(258), 2) == 258)
     assert(hex([0, 171, 255]) == String::from("00abff"))
+    assert(unhex("00abff") == Some(Vec::from([0, 171, 255])) && unhex("") == Some(Vec::new()))
+    for bad in ["0", "00AB", "0g", "a b "] {
+        assert(unhex(bad).is_none(), bad)
+    }
 }

@@ -418,14 +418,8 @@ fn part(b: [u8], at: u32, n: u32) -> Vec<u8> {
 // ---- passkeys as an authenticator makes them --------------------------------------------------------
 
 fn unhex(s: str) -> Vec<u8> {
-    var out: Vec<u8> = Vec::new()
-    let digit = |c: u8| -> u8 { if c >= 97 { c - 87 } else { c - 48 } }
-    var i = 0
-    while i + 1 < s.len() {
-        out.push(digit(s.byte(i)) * 16 + digit(s.byte(i + 1)))
-        i += 2
-    }
-    out
+    let Some(bytes) = account::unhex(s) else { panic("hexadecimal") }
+    bytes
 }
 
 fn bytes_of(s: str) -> Vec<u8> {
@@ -1402,7 +1396,7 @@ fn an_account_is_made_only_with_the_current_agreement_and_keeps_it() {
     let Some(v) = record(h, account::OF_AGREED) else { panic("the agreement kept") }
     let g: Result<account::Agreement, LoadError> = load(take v)
     let Ok(g) = g else { panic("an agreement") }
-    assert(g.terms == 3 && g.privacy == 4 && g.of_age && g.at > made_at, f"{g.at}")
+    assert(g.agreed == AGREED && g.at > made_at, f"{g.at}")
     // A sign-in agrees to nothing again.
     h.good.push(Vec::from([4]))
     assert(session_of(sign_in(mut e, mut h, 2, 5, s.handle, 1, [4])).is_some())
@@ -1463,14 +1457,17 @@ fn a_post_needs_consent_and_the_best_runs_setting_is_kept() {
     let Reply::Posting { agreed: true, best_runs: true, .. } = rs[0].clone() else {
         panic("agreed")
     }
-    let Reply::Posting { agreed, at: when, best_runs } = h.say(
+    let Reply::Posting { agreed, best_runs } = h.say(
         mut e,
         1,
         Request::Posting,
     )[0].clone() else {
         panic("posting")
     }
-    assert(agreed && best_runs && when >= at && when > 0, "kept, with when")
+    let Some(v) = record(h, account::OF_POSTING) else { panic("the choice kept") }
+    let p: Result<account::Posting, LoadError> = load(take v)
+    let Ok(p) = p else { panic("a choice") }
+    assert(agreed && best_runs && p.at >= at && p.version == 5, "kept, with when")
     let Reply::Verified { .. } = h.say(mut e, 1, up(11))[0].clone() else { panic("posted") }
     // Off again: the consent stays.
     let rs = h.say(mut e, 1, Request::BestRuns { csrf: s.csrf.clone(), on: false })
@@ -1512,7 +1509,7 @@ fn a_replay_is_read_by_its_hash_and_kept_for_a_year() {
     let Reply::Run { run: by_hash, replay, .. } = a.reply else { panic("the replay") }
     assert(by_hash == run && replay == good, "the run it names")
     assert(a.public == server::REPLAY_AGE && a.immutable, f"{a.public}")
-    assert(wire::replay_path(hash).as_str().ends_with(account::hex(hash).as_str()))
+    assert(wire::replay_hash(wire::replay_path(hash).as_str()) == Some(hash.clone()))
     // A hash nothing has, or one that isn't a hash, is refused, and that isn't kept.
     for wrong in [Vec::filled(32, u8(0)), Vec::from([1, 2, 3])] {
         let a = h.read_whole(mut e, 2, Request::Replay { hash: wrong.clone() })

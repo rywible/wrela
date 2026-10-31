@@ -10,6 +10,7 @@
 // compares with the session's: a second check behind the cookie's `SameSite=Strict` and the
 // host's refusal of another site's `Origin`.
 
+use std::hash::sha256::hex
 use std::serialize::Serialize
 
 /// Where the console sends its requests: a `POST` with the request as its body, or a `GET` of a
@@ -204,9 +205,9 @@ pub enum Reply: Clone + Serialize {
     Rejected { why: String },
     Board { places: Vec<Place>, total: u32 },
     Run { run: u64, game: String, replay: Vec<u8> },
-    /// Whether the account agreed to the current version of what posting makes public, and when,
-    /// and whether it posts its best runs.
-    Posting { agreed: bool, at: u64, best_runs: bool },
+    /// Whether the account agreed to the current version of what posting makes public, and whether
+    /// it posts its best runs.
+    Posting { agreed: bool, best_runs: bool },
     /// A slice of a board: the places around an account's, which is place `at` (0: past the first
     /// `MOST_PLACE`).
     Around { places: Vec<Place>, at: u32 },
@@ -218,6 +219,15 @@ pub enum Reply: Clone + Serialize {
 /// The path of the replay whose SHA-256 is `hash`: `REPLAYS` and the hash in hexadecimal.
 pub fn replay_path(hash: [u8]) -> String {
     var out = String::from(REPLAYS)
-    out.push_str(account::hex(hash).as_str())
+    out.push_str(hex(hash).as_str())
     out
+}
+
+/// The SHA-256 a replay's path names (`replay_path`'s): none unless it is `REPLAYS` and 64
+/// lowercase hexadecimal digits.
+pub fn replay_hash(path: str) -> Option<Vec<u8>> {
+    if !path.starts_with(REPLAYS) || path.len() != REPLAYS.len() + 64 {
+        return None
+    }
+    account::unhex(path.slice(REPLAYS.len(), path.len()))
 }

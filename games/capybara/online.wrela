@@ -498,10 +498,9 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             }
         },
         Asked::Consent { run } => match answer {
-            Answer::Posting { agreed, best_runs } => {
-                o.account.may_post = agreed
-                o.account.post_best = best_runs
-                if agreed {
+            // The console's call carries the account as the player left it.
+            Answer::Done => {
+                if o.account.may_post {
                     post(mut o, run)
                 } else {
                     set_status(mut o, fingerprint(run), String::from("Not posted"))
@@ -528,7 +527,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             rows_came(mut o, course, category)
         },
         Asked::Around { course, category } => match answer {
-            Answer::Around { places, at, .. } => {
+            Answer::Around { places, at } => {
                 var mine = 0
                 for p in places {
                     if p.name == o.account.name {
@@ -1151,9 +1150,11 @@ fn a_post_asks_for_the_consoles_consent_until_the_account_agrees() {
     assert(o.asks.len() == 1, "one ask")
     let (ask, asked) = o.asks.remove(0)
     let Ask::Consent = ask else { panic("the console's screen first, never the upload") }
-    answered(mut o, asked.clone(), Answer::Posting { agreed: false, best_runs: false })
+    answered(mut o, asked.clone(), Answer::Done)
     assert(o.asks.is_empty() && status(o, r) == String::from("Not posted"), "not now")
-    answered(mut o, asked, Answer::Posting { agreed: true, best_runs: true })
+    o.account.may_post = true
+    o.account.post_best = true
+    answered(mut o, asked, Answer::Done)
     assert(o.account.may_post && o.account.post_best, "agreed")
     let (ask, _) = o.asks.remove(0)
     let Ask::Upload { .. } = ask else { panic("then the upload") }
@@ -1232,7 +1233,7 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     answered(
         mut o,
         asked,
-        Answer::Around { course: WETLANDS, category: ANY, places: Vec::new(), at: 0 },
+        Answer::Around { places: Vec::new(), at: 0 },
     )
     pump(mut o)
     let Some((Ask::Upload { replay, .. }, _)) = o.asks.pop() else { panic("posted") }
@@ -1248,7 +1249,7 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     answered(
         mut slower,
         asked,
-        Answer::Around { course: WETLANDS, category: ANY, places: at, at: 4 },
+        Answer::Around { places: at, at: 4 },
     )
     pump(mut slower)
     assert(slower.asks.is_empty() && slower.waiting.is_empty(), "the account's place is faster")

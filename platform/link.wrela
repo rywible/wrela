@@ -44,11 +44,12 @@ pub enum Ask: Clone + Serialize {
     /// The names whose title, noun and epithet start with these (an empty part matches any).
     Names { title: String, noun: String, epithet: String },
     /// Before the account's first post: the console shows what posting makes public, with Post and
-    /// Not now, and answers `Posting` once the player chooses (at once if the account already
-    /// agreed).
+    /// Not now, and answers `Done` once the player chooses (at once if the account already
+    /// agreed). The account that call carries says what was chosen: `may_post` once agreed, and
+    /// `post_best`.
     Consent,
     /// The console shows the account's recovery codes to save, if they still are and it hasn't
-    /// since it opened: answered by `Opened`.
+    /// since it opened: answered by `Done`.
     SaveCodes,
 }
 
@@ -66,13 +67,11 @@ pub enum Answer: Clone + Serialize {
     Run { run: u64, replay: Vec<u8> },
     /// A slice of a board: the places around the name asked for, which is place `at` (0: past the
     /// first thousand).
-    Around { course: u32, category: u32, places: Vec<Place>, at: u32 },
+    Around { places: Vec<Place>, at: u32 },
     Names { found: Vec<Found> },
-    /// What the player chose on the console's screen of what posting makes public: to post (and so
-    /// agreed), or not now; and whether the account now posts its best runs.
-    Posting { agreed: bool, best_runs: bool },
-    /// Whether the console showed the page asked for.
-    Opened { shown: bool },
+    /// The console's own page asked for (`Consent`, `SaveCodes`) is done with: what it changed is
+    /// in the call's account.
+    Done,
     /// The console couldn't ask: offline, or signed out, said for a person.
     Offline { why: String },
 }
