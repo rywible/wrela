@@ -239,8 +239,7 @@ timeout = 5400
 # what it fetches of kept releases the bucket lacks, into the release, reads the live site (the
 # catalog's domains, studio/release/catalog.wrela) and main's head on GitHub, and runs Wrangler
 # through `npx`, to fill the bucket and deploy, with Cloudflare's secrets, which only Wrangler
-# gets. It deploys the console's server to Fly.io with `flyctl` (studio/release/server.wrela),
-# which alone gets `FLY_API_TOKEN`.
+# gets.
 [tools.deploy]
 package = "studio/deploy"
 write = ["release=build/release"]

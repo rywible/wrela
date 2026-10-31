@@ -2936,5 +2936,5 @@ real P-256 passkey and uploads two of the route search's human-possible runs as 
 
 So about 12 µs a tick, network round trips included: 1,000 ticks a call is about 12 ms here.
 `PLAY_TICKS` is 400 (about 5 ms here), for a server core several times slower, since a call past
-its deadline loses the room's instance and the run starts again. Not yet measured on a Fly.io
-machine.
+its deadline loses the room's instance and the run starts again. Not yet measured on the host it
+will run on (Cloudflare; docs/toolchain-gaps.md, "A server runs only on `wrela-serve`").

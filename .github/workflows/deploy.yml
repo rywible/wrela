@@ -4,8 +4,7 @@
 # that the workspace pins (`toolchain` in wrela.toml), downloaded from rywible/wrela-compiler's
 # GitHub release and checked against its SHA256SUMS; the release has its own Binaryen `wasm-opt`.
 # It only ships: every check stays local (`wrela suite`). Its credentials are the `production`
-# environment's, which only main can use; the deploy tool gives Cloudflare's to Wrangler alone, and
-# Fly.io's to `flyctl` alone, which deploys the console's server (studio/release/server.wrela).
+# environment's, which only main can use; the deploy tool gives them to Wrangler alone.
 name: Deploy
 
 on:
@@ -52,9 +51,6 @@ jobs:
         with:
           node-version: "22"
 
-      # For the console's server, which the deploy tool deploys to Fly.io with `flyctl`.
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
       - name: Build the release
         run: |
           wrela toolchain
@@ -63,5 +59,4 @@ jobs:
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: wrela tool deploy -- --require-main-head

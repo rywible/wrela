@@ -385,7 +385,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Needed:** the account's session in a `__Host-` cookie (HttpOnly, Secure, SameSite), and each request that changes something checked for its Origin and a CSRF token (design.md, "Passkeys only, our own server").
 - **What happens:** a server program sees only its rooms' messages (`Event::Message`), over WebTransport. It is never given a request's headers, can't set a cookie, and isn't told a connection's Origin: `wrela-serve --origin` refuses browsers of other origins before a room hears of them, and admits a client with no Origin (not a browser).
 - **Meanwhile:** the session's token and its CSRF token are kept in the console's storage (its origin's alone, so a game on its own origin can't read them), and the token is the connection's first message (`Hello`). There is no ambient credential for another site to ride on, which is what a CSRF token guards against, and `--origin https://wrela.dev` keeps other pages' browsers out; every request that changes the account still carries the session's CSRF token, compared in constant time (platform/server.wrela). The server never learns an IP address, which the Privacy Policy relies on.
-- **Status:** open: a room told a connection's Origin, or an HTTP surface beside the rooms.
+- **Status:** open. Ryan chose (2026-10-31) plain HTTP requests for sign-in and the boards, served on Cloudflare under wrela.dev itself, so the session is a first-party `__Host-` cookie and Cloudflare's per-path rules apply ("A server runs only on `wrela-serve`", below).
 
 ### A server has no wall clock
 
@@ -394,12 +394,13 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the server keeps its own clock in its store (platform/server.wrela, `clock_key`): read at its first call and counted on from the host's time, written every 10 s. It never goes back, but stands still while the server is down, so an expiry is late by the server's downtime.
 - **Status:** open: the time of day as a server's service.
 
-### `wrela-serve` can't choose its address
+### A server runs only on `wrela-serve`
 
-- **Needed:** the console's server on Fly.io, which delivers UDP only to the `fly-global-services` address; a wildcard bind receives it but replies from the wrong source, which Fly drops (https://fly.io/docs/networking/udp-and-tcp/).
-- **What happens:** a production `wrela-serve` binds every interface (runtime/serve, `IpBindConfig::InAddrAnyDual`), with no option for one address.
-- **Meanwhile:** the release's image relays UDP from `fly-global-services:443` to `wrela-serve` on the loopback with socat (studio/release/server.wrela). Not yet run on Fly.
-- **Status:** open: `wrela-serve --bind ADDR`.
+- **Needed:** the console's server on Cloudflare, Workers and Durable Objects (Ryan, 2026-10-31): Cloudflare's protection (floods, firewall rules, rate limits, bot checks, no server address to attack), one vendor with the website, and a server build is wasm, which a Durable Object runs. Sign-in and the boards as plain HTTP requests under wrela.dev (a request in, a response with its cookie out, `std::store` behind it); WebSockets later, for live play.
+- **What happens:** a server build runs only on the native `wrela-serve`, and only over WebTransport (language.md §19.3). Cloudflare's proxy can't carry WebTransport: it has no HTTP/3 to an origin (https://developers.cloudflare.com/speed/optimization/protocol/http3/), and its UDP proxy, Spectrum, is an Enterprise add-on (https://developers.cloudflare.com/spectrum/protocols-per-plan/).
+- **Found:** 2026-10-31, choosing where the console's server runs; it was set up on Fly.io first, with a UDP relay for `wrela-serve`'s wildcard bind, and taken down unused.
+- **Meanwhile:** the release leaves the console's server build out, and the console is built with `ONLINE = false`: its chip opens the health warning and the legal pages, and a game hears that the world's boards open soon. The server runs locally on `wrela-serve` (docs/toolchain.md, "The console's server").
+- **Status:** open: a Cloudflare host for a server build, with HTTP requests, then WebSockets.
 
 ### `wrela-serve` keeps a room's printed lines to itself
 

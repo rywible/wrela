@@ -121,6 +121,7 @@ struct GameLink {
 
 pub struct Accounts {
     rp_id: String,
+    online: bool,
     connected: bool,
     opening: bool,
     retry_at: f32,
@@ -162,10 +163,12 @@ pub struct Accounts {
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It reads its session and opens
-/// its connection on the first update.
-pub fn new(rp_id: str) -> Accounts {
+/// its connection on the first update, if the console has a server (`online`): without one, its chip
+/// opens only the health warning and the legal pages, and a game hears the boards aren't open.
+pub fn new(rp_id: str, online: bool) -> Accounts {
     Accounts {
         rp_id: rp_id.to_string(),
+        online,
         connected: false,
         opening: false,
         retry_at: 0.0,
@@ -565,7 +568,7 @@ fn game_replied(a: mut Accounts, reply: Reply) {
 fn game_asked(a: mut Accounts, bytes: [u8]) {
     let Some(g) = shown_game(a) else { return }
     let Some(ask) = from_game(bytes) else { return }
-    if let Some(ans) = answer_now(a.me, a.connected, ask) {
+    if let Some(ans) = answer_now(a.me, a.online, a.connected, ask) {
         match mut a.game {
             Some(l) => l.answer = take ans,
             None => {},
@@ -600,9 +603,16 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
     let _ = request(mut a, r, Purpose::Game)
 }
 
-/// The answer to a game's `ask` that the console gives at once, without the server: offline, or
-/// an upload while signed out.
-fn answer_now(me: Me, connected: bool, ask: Ask) -> Option<Answer> {
+/// The answer to a game's `ask` that the console gives at once, without the server: no server yet,
+/// offline, or an upload while signed out.
+fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer> {
+    if !online {
+        return Some(
+            Answer::Offline {
+                why: String::from("The world's boards open soon. Your runs stay saved here."),
+            },
+        )
+    }
     if !connected {
         return Some(
             Answer::Offline {
@@ -643,7 +653,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
             }
         }
     }
-    if a.loaded && !a.connected && !a.opening && time >= a.retry_at {
+    if a.online && a.loaded && !a.connected && !a.opening && time >= a.retry_at {
         net::open(CONN, ROOM)
         a.opening = true
     }
@@ -754,6 +764,10 @@ fn act(a: mut Accounts, x: Act) {
     match x {
         Act::Chip => {
             a.open = true
+            if !a.online {
+                act(mut a, Act::Legal { page: legal::HEALTH })
+                return
+            }
             let page = if !a.me.signed_in { Page::Choose } else if !a.me.fixed {
                 Page::Knighting
             } else { Page::Account }
@@ -845,6 +859,10 @@ fn act(a: mut Accounts, x: Act) {
             let _ = request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::SignOut)
         },
         Act::Back => {
+            if !a.online {
+                a.open = false
+                return
+            }
             let page = if a.me.signed_in && a.page != Page::Account {
                 Page::Account
             } else if a.me.signed_in {
@@ -1172,7 +1190,9 @@ pub fn draw(
 ) {
     a.controls.clear()
     // The chip, left of the settings button.
-    let chip_label = if a.me.signed_in { a.me.name.clone() } else { String::from("Sign in") }
+    let chip_label = if !a.online { String::from("Health and legal") } else if a.me.signed_in {
+        a.me.name.clone()
+    } else { String::from("Sign in") }
     let cw = min(
         measure(fonts, chip_label.as_str(), 14.0 * zoom, Face::Sans) / zoom + 28.0,
         w * 0.4,
@@ -1440,7 +1460,7 @@ pub fn draw(
                     py += 30.0
                 } else if p.as_str().starts_with("- ") {
                     // A point: a dot, as the fonts hold no bullet.
-                    d.ellipse(z(Rect::new(x + 3.0, py + BODY * 0.55, 5.0, 5.0), zoom), MUTED)
+                    d.ellipse(z(Rect::new(x + 3.0, py + BODY * 0.55, w: 5.0, h: 5.0), zoom), MUTED)
                     py += paragraph(
                         mut d,
                         fonts,
@@ -1572,24 +1592,49 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
         must_add_passkey: false,
     }
     let up = Ask::Upload { token: Vec::from([5; 32]), replay: Vec::from([1]) }
-    let Some(Answer::Offline { .. }) = answer_now(me, connected: false, ask: up.clone()) else {
+    let Some(Answer::Offline { .. }) = answer_now(
+        me,
+        online: true,
+        connected: false,
+        ask: up.clone(),
+    ) else {
         panic("offline")
     }
-    assert(answer_now(me, connected: true, ask: up.clone()).is_none(), "carried to the server")
+    assert(
+        answer_now(me, online: true, connected: true, ask: up.clone()).is_none(),
+        "carried to the server",
+    )
     var out = me.clone()
     out.signed_in = false
-    let Some(Answer::Offline { .. }) = answer_now(out, connected: true, ask: up.clone()) else {
+    let Some(Answer::Offline { .. }) = answer_now(
+        out,
+        online: true,
+        connected: true,
+        ask: up.clone(),
+    ) else {
         panic("signed out")
     }
     var unknighted = me.clone()
     unknighted.fixed = false
-    assert(answer_now(unknighted, connected: true, ask: up.clone()).is_some(), "not knighted yet")
+    assert(
+        answer_now(unknighted, online: true, connected: true, ask: up.clone()).is_some(),
+        "not knighted yet",
+    )
     assert(
         answer_now(
             out,
+            online: true,
             connected: true,
             ask: Ask::Board { course: 0, category: 0, from: 0 },
         ).is_none(),
         "anyone may look at a board",
     )
+    let Some(Answer::Offline { .. }) = answer_now(
+        me,
+        online: false,
+        connected: true,
+        ask: Ask::Board { course: 0, category: 0, from: 0 },
+    ) else {
+        panic("no server yet")
+    }
 }

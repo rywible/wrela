@@ -55,10 +55,10 @@ wrela run games/capybara                               # serve it to a browser
 
 ## The console's server
 
-The console's program has a server build (`server/game.wasm`): accounts and the games' boards (platform/server.wrela, console/server). Its passkeys are for `wrela.dev` from `https://wrela.dev` (`RP_ID` and `ORIGIN` in console/main.wrela). To run it on this machine:
+The console's program has a server build (`server/game.wasm`): accounts and the games' boards (platform/server.wrela, console/server). Its passkeys are for `wrela.dev` from `https://wrela.dev` (`RP_ID` and `ORIGIN` in console/main.wrela). It has no host in production yet (docs/toolchain-gaps.md, "A server runs only on `wrela-serve`"), so the console is built with `ONLINE = false`. To run it on this machine:
 
 ```bash
-wrela build console -o build/cons --set 'RP_ID="localhost"' --set 'ORIGIN="http://localhost:8080"'
+wrela build console -o build/cons --set ONLINE=true --set 'RP_ID="localhost"' --set 'ORIGIN="http://localhost:8080"'
 wrela-serve build/cons --dev --data build/cons-data      # writes build/cons/net.json; binds [::1] only
 ```
 

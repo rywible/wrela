@@ -464,7 +464,7 @@ pub fn init() -> Console {
         coarser: 0,
         counted: 0,
         spent: 0.0,
-        account: account::new(RP_ID),
+        account: account::new(RP_ID, ONLINE),
     }
 }
 
@@ -2632,6 +2632,9 @@ fn another_game_is_chosen_while_saves_are_read_but_not_while_one_starts() {
 // console's server").
 pub const RP_ID: Text = "wrela.dev"
 pub const ORIGIN: Text = "https://wrela.dev"
+/// Whether the console has a server to sign in to (`console/server`): not yet, until the toolchain
+/// can run it on Cloudflare (docs/toolchain-gaps.md). A local run sets it (`--set ONLINE=true`).
+pub const ONLINE: bool = false
 
 pub fn serve_init() -> console_server::serve::Server {
     console_server::serve::init(RP_ID, ORIGIN)

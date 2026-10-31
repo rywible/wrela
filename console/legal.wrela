@@ -81,7 +81,7 @@ pub const TERMS_TEXT: [Text; 42] = [
     "This page is a draft for a lawyer's review and is not yet in force.",
 ]
 
-pub const PRIVACY_TEXT: [Text; 58] = [
+pub const PRIVACY_TEXT: [Text; 57] = [
     "Last changed 30 October 2026.",
     "# In short",
     "wrela.dev is free. It shows no ads, sells nothing, and never sells or rents anything about you to anyone.",
@@ -103,7 +103,7 @@ pub const PRIVACY_TEXT: [Text; 58] = [
     "- No chat, messages or other free text.",
     "- No photos, voice or video.",
     "- No location.",
-    "- No IP addresses. Our server program is never told your IP address. The software that carries the connection holds it in memory only while you are connected, and its logs don't write it. Fly.io and Cloudflare (below) see it, as any host must, to deliver the connection.",
+    "- No IP addresses. Our server program is never told your IP address. The software that carries the connection holds it in memory only while you are connected, and its logs don't write it. Cloudflare (below) sees it, as any host must, to deliver the connection.",
     "- No third-party analytics, advertising, tracking pixels or social buttons.",
     "# What we use identifiers for",
     "The account number, the account handle, the passkey's credential ID and the session and game tokens are persistent identifiers. We use them only to:",
@@ -123,8 +123,7 @@ pub const PRIVACY_TEXT: [Text; 58] = [
     "- using an identifier for anything beyond the list above;",
     "- keeping IP addresses.",
     "# Who helps us run it",
-    "- Fly.io runs our server and stores its records, with a backup copy in a storage bucket. It sees the IP address of each connection.",
-    "- Cloudflare serves the website's files. It sees the IP address of each visit, as any web host does.",
+    "- Cloudflare serves the website and runs our server, and stores its records and their backups. It sees the IP address of each visit and connection, as any web host does.",
     "- GitHub holds the source code. It never receives account data.",
     "Each acts on our behalf, and none of them gets your account's records to use for itself.",
     "# How long we keep it",
@@ -212,7 +211,7 @@ fn the_pages_are_drafts_and_promise_what_the_server_does() {
     assert(account_life_days() == 90 && privacy.as_str().find("90 days").is_some())
     assert(privacy.as_str().find("an hour").is_some())
     assert(
-        privacy.as_str().find("Fly.io").is_some() && privacy.as_str().find("Cloudflare").is_some(),
+        privacy.as_str().find("Cloudflare").is_some() && privacy.as_str().find("Fly.io").is_none(),
     )
     assert(privacy.as_str().find("No IP addresses").is_some())
     assert(privacy.as_str().find("sells nothing").is_some(), "free, no ads, sells nothing")

@@ -258,14 +258,12 @@ fn release(revision: str) -> Result<String, ToolError> {
         .wait()
         .map_err(|e| ToolError::new(f"the docs' export: {e.message()}"))?
     print(f"exported {n} files of the docs to {corpus.as_str()}")
-    // The builds' files, in their projects. The console's server build (`server/`) isn't the
-    // Worker's: it goes to Fly.io (server.wrela), and the console finds it by its `net.json`.
-    var server_files: Vec<String> = Vec::new()
+    // The builds' files, in their projects. The console's server build (`server/`) isn't served:
+    // it waits for a host on Cloudflare (docs/toolchain-gaps.md), and the console runs without it.
     var at = 0
     for k in 0..2 {
         for f in outputs[at] {
             if k == 0 && f.as_str().starts_with("server/") {
-                server_files.push(f.clone())
                 continue
             }
             if !is_marker(f.as_str()) {
@@ -276,9 +274,6 @@ fn release(revision: str) -> Result<String, ToolError> {
             }
         }
         at += 1
-    }
-    if !server_files.is_empty() {
-        projects[0].tree.put_bytes("net.json", server::net_json().as_bytes())
     }
     for g in 0..c.games.len() {
         let k = 2 + g
@@ -618,28 +613,6 @@ fn release(revision: str) -> Result<String, ToolError> {
     var report_file = report.clone()
     report_file.push_str("\n")
     writes.push((String::from(f"{OUT}/release.json"), Vec::from(report_file.as_bytes())))
-    // The console's server, for Fly.io, from the toolchain the workspace pins.
-    if !server_files.is_empty() {
-        var manifest = read_files(Vec::from([rooted("wrela.toml")]))?
-        let Some(text) = String::from_utf8(replace(mut manifest[0], Vec::new())) else {
-            return Err(ToolError::new("wrela.toml isn't UTF-8"))
-        }
-        let Some(toolchain) = server::pinned(text.as_str()) else {
-            return Err(ToolError::new("wrela.toml pins no toolchain for the server"))
-        }
-        for f in server_files {
-            copies.push(
-                (
-                    String::from(f"{plan[0].out.as_str()}/{f.as_str()}"),
-                    String::from(f"{OUT}/fly/{f.as_str()}"),
-                ),
-            )
-        }
-        for (name, body) in server::fly_files(toolchain.as_str()) {
-            writes.push((String::from(f"{OUT}/fly/{name.as_str()}"), Vec::from(body.as_bytes())))
-        }
-        print(f"the console's server, for Fly.io ({server::APP}, {server::HOST}): {OUT}/fly")
-    }
     copy_files(copies)?
     write_files(take writes)?
     // The stage, emptied.
