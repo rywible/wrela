@@ -3,7 +3,7 @@
 // card, the docs page's head and text, and the storage namespace each bootstrap names.
 
 use catalog::{Catalog, Console, Docs, Game, origin_of}
-use json::{Json, compact, indented, member, text}
+use json::{Json, compact, indented, member, member_of, member_of_obj, text}
 use pages::{Page, escape, group_of, groups, stem}
 
 /// The Workers runtime each release's Workers run on.
@@ -470,16 +470,8 @@ pub fn wrangler_config(worker: str, domain: str, release: str, server: [(String,
     // Explicit routes: a navigation to a kept release's page runs the script too, and the server's
     // paths.
     var first = Vec::from([text("/releases/*"), text(f"!/releases/{release}/*")])
-    for (k, v) in server {
-        if k.as_str() != "assets" {
-            continue
-        }
-        let Json::Obj(given) = v else { continue }
-        for (name, routes) in given {
-            if name.as_str() != "run_worker_first" {
-                continue
-            }
-            let Json::List(rs) = routes else { continue }
+    if let Some(assets) = member_of(server, "assets") {
+        if let Some(Json::List(rs)) = member_of_obj(assets, "run_worker_first") {
             for r in rs {
                 first.push(r.clone())
             }

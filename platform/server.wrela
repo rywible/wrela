@@ -44,7 +44,7 @@ use account::{
     OF_SEEN, OF_SESSION, OF_TOKEN, Passkey, REROLLS, Recovery, SESSION_LIFE, Session, TOKEN_BYTES,
     TOKEN_LIFE, account_key, ceremonies, ceremony_key, code, code_hash, code_key, hashed, hex,
     indexed, name_key, passkey_key, public_id, session_key, token_key, u32_at, u64_at,
-    under_account, CEREMONY_BYTES,
+    under_account, with_bytes, CEREMONY_BYTES,
 }
 use names::{Name, draw}
 use std::collections::replace
@@ -55,7 +55,7 @@ use std::store::{append_u32, append_u64, entries, past, value}
 use std::webauthn::{Credential, Expected, assertion, base64url, registration}
 use wire::{
     ADD_PASSKEY, ANY, BOARD_PAGE, EXPORT_PART, FULL, MOST_REPLAY, Me, PasskeyView, Place, REGISTER,
-    Reply, Request, SIGN_IN, SessionView, WHOLE,
+    Reply, Request, SIGN_IN, SessionView, WHOLE, public,
 }
 
 // ---- what a game gives the server ----------------------------------------------------------------
@@ -104,8 +104,12 @@ pub trait Game {
 
 /// Runs an account may upload an hour.
 pub const RUNS_AN_HOUR: u32 = 10
-/// Runs waiting to be verified, past which an upload is refused.
+/// Runs waiting to be verified, and their ticks, past which an upload is refused. An upload's
+/// request is answered once its run is verified, and the host gives a request 30 s: the queue's
+/// ticks bound that wait (about 20 µs a tick on Cloudflare's runtime here, docs/bench.md, so about
+/// 10 s), and are more than two of the longest runs a game takes.
 pub const MOST_QUEUED: u32 = 32
+pub const QUEUE_TICKS: u32 = 500000
 /// Ticks of a run played a call. The capybara's sim took about 12 µs a tick on wrela-serve
 /// (docs/bench.md, "The console's server"), so this is about 5 ms a call: the server's other
 /// requests wait no longer than that behind a run, and a call stays far inside Workers Paid's CPU
@@ -121,6 +125,8 @@ pub const RUN_AGE: u32 = 86400
 /// The ceremonies and names used lately, which a read made before their call's writes committed
 /// wouldn't see as used.
 pub const MOST_RECENT: u32 = 64
+/// An account's runs read for an export at a time.
+pub const EXPORT_RUNS: u32 = 64
 /// Expired ceremonies cleared as a new one begins.
 pub const PRUNED: u32 = 16
 /// The most places a run's place is counted to.
@@ -325,8 +331,7 @@ struct Ceremony: Clone + Serialize {
 /// A request, and the session its cookie is for.
 struct Conn: Clone {
     conn: u32,
-    /// Whether its request came, whether it was answered, and whether it may be cached.
-    asked: bool,
+    /// Whether it was answered, and whether its answer may be cached.
     answered: bool,
     public: bool,
     /// The session's token's hash: empty when signed out.
@@ -335,13 +340,11 @@ struct Conn: Clone {
     csrf: Vec<u8>,
     fresh_until: u64,
     recovery: bool,
-    /// The session's account, as the console may show it.
-    me: Option<Me>,
     /// Its ceremony cookie's value, and the cookies its response sets.
     ceremony: Vec<u8>,
     cookies: Vec<Cookie>,
-    /// The request, while its session cookie is read.
-    pending: Option<Request>,
+    /// The run its upload waits for (0: none; a run's number never is).
+    run: u64,
 }
 
 /// What a job waits for.
@@ -384,6 +387,7 @@ enum Step: Copy + Eq {
     QueueAccount,
     ExportAccount,
     ExportScan,
+    ExportRuns,
     ExportRun,
     DeleteAccount,
     DeleteScan,
@@ -454,11 +458,9 @@ pub struct Engine<G: Game> {
     call: u64,
     queue_written: u64,
     /// Names written and ceremonies used lately, which a read made before their call committed
-    /// wouldn't see.
+    /// wouldn't see (docs/toolchain-gaps.md, "A call's reads don't see its writes").
     recent_names: Vec<Vec<u8>>,
     spent: Vec<Vec<u8>>,
-    /// The requests waiting for their uploads' runs to be verified: each request and its run.
-    uploads: Vec<(u32, u64)>,
     verifying: Option<Verifying<G::Run>>,
     /// Whether the last call asked for nothing: then nothing would call it again, so a run being
     /// played asks the host for a byte to be called at once.
@@ -483,7 +485,6 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
         queue_written: 0,
         recent_names: Vec::new(),
         spent: Vec::new(),
-        uploads: Vec::new(),
         verifying: None,
         nudge: None,
     }
@@ -574,7 +575,7 @@ impl<G: Game> Engine<G> {
         self.verify_some()
         var left: Vec<u32> = Vec::new()
         for c in self.conns {
-            if c.asked && !c.answered && !self.busy(c.conn) {
+            if !c.answered && !self.busy(c) {
                 left.push(c.conn)
             }
         }
@@ -583,81 +584,50 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Request `conn` opened.
-    pub fn opened(mut self, conn: u32) {
+    /// Request `conn` closed (answered, or its client went): its jobs finish their writes, and an
+    /// upload it waited for is verified all the same.
+    pub fn closed(mut self, conn: u32) {
+        self.conns.retain(|c| c.conn != conn)
+    }
+
+    /// Request `conn`'s request: read its session from its cookie, if it has one, then do it.
+    pub fn http(mut self, conn: u32, asked: Asked) {
         self.closed(conn)
         self.conns.push(
             Conn {
                 conn,
-                asked: false,
                 answered: false,
-                public: false,
+                public: asked.public,
                 session: Vec::new(),
                 account: 0,
                 csrf: Vec::new(),
                 fresh_until: 0,
                 recovery: false,
-                me: None,
-                ceremony: Vec::new(),
+                ceremony: asked.ceremony.clone(),
                 cookies: Vec::new(),
-                pending: None,
+                run: 0,
             },
         )
-    }
-
-    /// Request `conn` closed (answered, or its client went): its jobs finish their writes, and an
-    /// upload it waited for is verified all the same.
-    pub fn closed(mut self, conn: u32) {
-        var i = 0
-        while i < self.conns.len() {
-            if self.conns[i].conn == conn {
-                let _ = self.conns.remove(i)
-            } else {
-                i += 1
-            }
-        }
-        self.closed_upload(conn)
-    }
-
-    /// Request `conn`'s request: read its session from its cookie, if it has one, then do it.
-    pub fn http(mut self, conn: u32, asked: Asked) {
-        if self.conn_index(conn).is_none() {
-            self.opened(conn)
-        }
-        let Some(i) = self.conn_index(conn) else { return }
         self.now = max(self.now, asked.time)
-        self.conns[i].asked = true
-        self.conns[i].public = asked.public
-        self.conns[i].ceremony = asked.ceremony.clone()
-        let request: Option<Request> = read(asked.body)
-        let Some(request) = request else {
+        let parsed: Option<Request> = read(asked.body)
+        let Some(request) = take parsed else {
             self.refuse(conn, "That request isn't one we read.")
             return
         }
-        let public = match request {
-            Request::Board { .. } | Request::Watch { .. } => true,
-            _ => false,
-        }
-        if asked.public && !public {
+        if asked.public && !public(request) {
             self.refuse(conn, "That request changes things: it can't be a GET.")
             return
         }
         // The public reads and an upload (by a game's token) are no session's.
-        let sessionless = public || match request {
-            Request::Upload { .. } => true,
-            _ => false,
-        }
-        if sessionless || asked.session.is_empty() {
-            self.request(conn, request)
+        if sessionless(request) || asked.session.is_empty() {
+            self.request(conn, take request)
             return
         }
+        var job = blank_job(conn, take request)
         if asked.session.len() != TOKEN_BYTES {
-            self.session_gone(conn)
-            self.request(conn, request)
+            self.no_session(take job)
             return
         }
-        self.conns[i].pending = Some(request.clone())
-        var job = blank_job(conn, Request::Me)
         job.hash = hashed(asked.session)
         let k = session_key(job.hash)
         self.get(take k, Step::HelloSession, take job)
@@ -696,14 +666,7 @@ impl<G: Game> Engine<G> {
 
     /// What the server asks of its host, since the last time.
     pub fn commands(mut self) -> Vec<Command> {
-        let out = self.out.clone()
-        self.out.clear()
-        out
-    }
-
-    /// The server's clock now, in milliseconds.
-    pub fn clock_now(self) -> u64 {
-        self.now
+        replace(mut self.out, Vec::new())
     }
 
     // ---- helpers ------------------------------------------------------------------------------
@@ -722,16 +685,14 @@ impl<G: Game> Engine<G> {
         None
     }
 
-    /// Whether request `conn` still has work under way: a job, its session being read, or an upload
-    /// being verified.
-    fn busy(self, conn: u32) -> bool {
-        for j in self.jobs {
-            if j.conn == conn {
-                return true
-            }
+    /// Whether request `c` still has work under way: a job (its session being read among them), or
+    /// an upload being verified.
+    fn busy(self, c: Conn) -> bool {
+        if c.run != 0 {
+            return true
         }
-        for (c, _) in self.uploads {
-            if c == conn {
+        for j in self.jobs {
+            if j.conn == c.conn {
                 return true
             }
         }
@@ -760,44 +721,26 @@ impl<G: Game> Engine<G> {
         self.reply(conn, Reply::Refused { why: String::from(why) })
     }
 
-    /// Answers request `conn` with its session's account (or nobody) and CSRF token.
-    fn welcome(mut self, conn: u32) {
-        let (me, csrf) = match self.conn_index(conn) {
-            Some(i) => (self.conns[i].me.clone().unwrap_or(nobody()), self.conns[i].csrf.clone()),
-            None => (nobody(), Vec::new()),
+    /// Answers request `conn` with its account as `me`, and its session's CSRF token.
+    fn welcome(mut self, conn: u32, me: take Me) {
+        let csrf = match self.conn_index(conn) {
+            Some(i) => self.conns[i].csrf.clone(),
+            None => Vec::new(),
         }
         self.reply(conn, Reply::Welcome { me, csrf })
-    }
-
-    /// Request `conn`'s account is now `me`.
-    fn set_me(mut self, conn: u32, me: take Me) {
-        if let Some(i) = self.conn_index(conn) {
-            self.conns[i].me = Some(take me)
-        }
     }
 
     /// Answers the request that waits for run `run`, if one still does.
     fn tell(mut self, run: u64, reply: take Reply) {
         var waiting: Option<u32> = None
-        for (c, r) in self.uploads {
-            if r == run {
-                waiting = Some(c)
+        for i in 0..self.conns.len() {
+            if self.conns[i].run == run {
+                self.conns[i].run = 0
+                waiting = Some(self.conns[i].conn)
             }
         }
         let Some(conn) = waiting else { return }
-        self.closed_upload(conn)
         self.reply(conn, take reply)
-    }
-
-    fn closed_upload(mut self, conn: u32) {
-        var i = 0
-        while i < self.uploads.len() {
-            if self.uploads[i].0 == conn {
-                let _ = self.uploads.remove(i)
-            } else {
-                i += 1
-            }
-        }
     }
 
     /// Sets cookie `name` on request `conn`'s response (`value` empty and `max_age` 0 clear it).
@@ -811,13 +754,10 @@ impl<G: Game> Engine<G> {
         self.cookie(conn, SESSION, Vec::new(), 0)
     }
 
-    /// Request `conn`'s session is read: its request goes on.
-    fn hello_done(mut self, conn: u32) {
-        let Some(i) = self.conn_index(conn) else { return }
-        let pending = replace(mut self.conns[i].pending, None)
-        if let Some(r) = pending {
-            self.request(conn, r)
-        }
+    /// `job`'s session cookie is for no session: cleared, and its request goes on signed out.
+    fn no_session(mut self, job: take Job) {
+        self.session_gone(job.conn)
+        self.request(job.conn, job.request.clone())
     }
 
     fn get(mut self, key: take Vec<u8>, step: Step, job: take Job) {
@@ -907,11 +847,16 @@ impl<G: Game> Engine<G> {
         Some(c)
     }
 
-    /// Takes the ceremony of `kind` that request `conn`'s cookie names, then goes on with `job`
-    /// (`CeremonyTaken`); refused if it has none, or one that has expired or was used. It is used up
-    /// whatever comes of it: deleted, and its cookie cleared.
-    fn take_ceremony(mut self, conn: u32, kind: u32, job: take Job) {
+    /// Takes the ceremony that request `conn`'s cookie names, of the kind `job`'s request finishes,
+    /// then goes on with `job` (`CeremonyTaken`); refused if it has none, or one that has expired
+    /// or was used. It is used up whatever comes of it: deleted, and its cookie cleared.
+    fn take_ceremony(mut self, conn: u32, job: take Job) {
         var j = take job
+        let kind = match j.request {
+            Request::Register { .. } => REGISTER,
+            Request::SignIn { .. } => SIGN_IN,
+            _ => ADD_PASSKEY,
+        }
         let Some(i) = self.conn_index(conn) else { return }
         let v = self.conns[i].ceremony.clone()
         if v.len() != 8 + CEREMONY_BYTES {
@@ -970,7 +915,6 @@ impl<G: Game> Engine<G> {
                 self.conns[i].account = 0
                 self.conns[i].csrf = Vec::new()
                 self.conns[i].recovery = false
-                self.conns[i].me = None
             }
         }
     }
@@ -1024,8 +968,8 @@ impl<G: Game> Engine<G> {
     fn request(mut self, conn: u32, request: Request) {
         var job = blank_job(conn, request.clone())
         match request {
-            // The session was read from its cookie (`http`): this is what it found.
-            Request::Me => self.welcome(conn),
+            // A session's `Me` is answered as its cookie is read (`HelloAccount`): this one has none.
+            Request::Me => self.welcome(conn, nobody()),
             Request::Begin { ceremony, csrf } => {
                 if ceremony == REGISTER && self.is_signed_in(conn) {
                     self.refuse(conn, "Sign out first to make another account.")
@@ -1035,10 +979,7 @@ impl<G: Game> Engine<G> {
                     // The challenge and the browser's token; a new account's handle, number and
                     // name come with them.
                     job.n = ceremony
-                    let n = if ceremony == REGISTER {
-                        CHALLENGE_BYTES + CEREMONY_BYTES + HANDLE_BYTES + 16
-                    } else { CHALLENGE_BYTES + CEREMONY_BYTES }
-                    self.random(n, Step::BeginRandom, take job)
+                    self.random(begin_bytes(ceremony), Step::BeginRandom, take job)
                 } else if ceremony == ADD_PASSKEY {
                     let Some(c) = self.fresh(conn, csrf, recovery: true) else { return }
                     job.n = ceremony
@@ -1053,13 +994,7 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That isn't a ceremony.")
                 }
             },
-            Request::Register { .. } | Request::SignIn { .. } => {
-                let kind = match request {
-                    Request::Register { .. } => REGISTER,
-                    _ => SIGN_IN,
-                }
-                self.take_ceremony(conn, kind, take job)
-            },
+            Request::Register { .. } | Request::SignIn { .. } => self.take_ceremony(conn, take job),
             Request::Recover { code } => {
                 recent(mut self.tries, self.now, MINUTE)
                 if self.tries.len() >= ALL_TRIES {
@@ -1093,7 +1028,7 @@ impl<G: Game> Engine<G> {
                 let Some(c) = self.fresh(conn, csrf, recovery: true) else { return }
                 job.id = c.account
                 job.hash = c.session.clone()
-                self.take_ceremony(conn, ADD_PASSKEY, take job)
+                self.take_ceremony(conn, take job)
             },
             Request::RemovePasskey { csrf, id } => {
                 let Some(c) = self.fresh(conn, csrf, recovery: false) else { return }
@@ -1143,7 +1078,7 @@ impl<G: Game> Engine<G> {
                 self.delete(indexed(c.account, OF_SESSION, c.session))
                 self.unbind(c.account, c.session.clone())
                 self.session_gone(conn)
-                self.welcome(conn)
+                self.welcome(conn, nobody())
             },
             Request::Token { game } => {
                 let Some(c) = self.signed_in(conn, None, recovery: false) else { return }
@@ -1153,10 +1088,10 @@ impl<G: Game> Engine<G> {
                 }
                 self.get(account_key(c.account), Step::TokenAccount, take job)
             },
-            Request::Export { part } => {
+            Request::Export { after } => {
                 let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
                 job.id = c.account
-                job.category = part
+                job.message = after.clone()
                 self.get(account_key(c.account), Step::ExportAccount, take job)
             },
             Request::Delete { csrf } => {
@@ -1218,15 +1153,13 @@ impl<G: Game> Engine<G> {
             Step::HelloSession => {
                 let s: Option<Session> = got(answer)
                 let Some(s) = s else {
-                    self.session_gone(conn)
-                    self.hello_done(conn)
+                    self.no_session(take j)
                     return
                 }
                 if s.created + SESSION_LIFE < self.now {
                     self.delete(session_key(j.hash))
                     self.delete(indexed(s.account, OF_SESSION, j.hash))
-                    self.session_gone(conn)
-                    self.hello_done(conn)
+                    self.no_session(take j)
                     return
                 }
                 j.session = Some(s.clone())
@@ -1236,32 +1169,18 @@ impl<G: Game> Engine<G> {
                 let a: Option<Account> = got(answer)
                 let Some(s) = j.session.clone() else { return }
                 let Some(a) = a else {
-                    self.session_gone(conn)
-                    self.hello_done(conn)
+                    self.no_session(take j)
                     return
                 }
                 if a.deleting {
-                    self.session_gone(conn)
-                    self.hello_done(conn)
+                    self.no_session(take j)
                     return
                 }
-                var seen = s.clone()
-                seen.seen = self.now
-                // A session resumed when the console starts is no longer fresh: freshness is a
-                // sign-in's. It is written then, or when it was last seen an hour ago, not with
-                // every request.
-                let resumed = match self.conn_index(conn) {
-                    Some(i) => match self.conns[i].pending {
-                        Some(Request::Me) => true,
-                        _ => false,
-                    },
-                    None => false,
-                }
-                if resumed {
-                    seen.fresh_until = 0
-                }
-                if resumed || s.seen + HOUR < self.now {
-                    self.put(session_key(j.hash), seen.clone())
+                // When it was last seen, written at most once an hour, not with every request.
+                if s.seen + HOUR < self.now {
+                    var seen = s.clone()
+                    seen.seen = self.now
+                    self.put(session_key(j.hash), take seen)
                     self.put(
                         indexed(a.id, OF_SESSION, j.hash),
                         SessionView {
@@ -1272,14 +1191,14 @@ impl<G: Game> Engine<G> {
                         },
                     )
                 }
-                self.bind(conn, j.hash.clone(), seen.clone())
-                if let Some(i) = self.conn_index(conn) {
-                    self.conns[i].me = Some(me_of(a, s.recovery))
+                self.bind(conn, j.hash.clone(), s.clone())
+                match j.request {
+                    Request::Me => self.welcome(conn, me_of(a, s.recovery)),
+                    _ => self.request(conn, j.request.clone()),
                 }
-                self.hello_done(conn)
             },
             Step::BeginRandom => {
-                if answer.len() < CHALLENGE_BYTES + CEREMONY_BYTES {
+                if answer.len() < begin_bytes(j.n) {
                     self.refuse(conn, "The server couldn't start that. Try again.")
                     return
                 }
@@ -1299,10 +1218,6 @@ impl<G: Game> Engine<G> {
                     c.account = j.id
                 }
                 if j.n == REGISTER {
-                    if answer.len() < at + HANDLE_BYTES + 16 {
-                        self.refuse(conn, "The server couldn't start that. Try again.")
-                        return
-                    }
                     c.handle = part(answer, at, HANDLE_BYTES)
                     c.account = u64_at(answer, at + HANDLE_BYTES)
                     c.seed = u64_at(answer, at + HANDLE_BYTES + 8)
@@ -1311,9 +1226,7 @@ impl<G: Game> Engine<G> {
                 // Kept under the token's hash; the browser keeps the token, and when it expires.
                 var held: Vec<u8> = Vec::new()
                 append_u64(mut held, c.expires)
-                for b in token {
-                    held.push(b)
-                }
+                with_bytes(mut held, token)
                 self.put(ceremony_key(c.expires, hashed(token)), c.clone())
                 self.cookie(conn, CEREMONY, take held, u32(CHALLENGE_LIFE / 1000))
                 self.reply(
@@ -1341,48 +1254,47 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, expired(j.n))
                     return
                 }
-                match j.request.clone() {
-                    Request::Register { id, client_data, attestation } => {
-                        match registration(
-                            id,
-                            client_data,
-                            attestation,
-                            self.expected(c.challenge.clone()),
-                        ) {
-                            Ok(cred) => {
-                                j.credential = Some(cred.clone())
-                                j.id = c.account
-                                j.seed = c.seed
-                                j.hash = c.handle.clone()
-                                self.get(passkey_key(cred.id), Step::RegisterCredential, take j)
-                            },
-                            Err(why) => self.refuse(conn, why),
-                        }
-                    },
+                // A passkey added: begun by this account, in a session of its.
+                if j.n == ADD_PASSKEY && c.account != j.id {
+                    self.refuse(conn, expired(j.n))
+                    return
+                }
+                let (id, client_data, attestation) = match j.request.clone() {
                     Request::SignIn { id, .. } => {
                         j.message = c.challenge.clone()
                         self.get(passkey_key(id), Step::SignInCredential, take j)
+                        return
                     },
-                    Request::AddPasskey { id, client_data, attestation, .. } => {
-                        // Begun by this account, in a session of its.
-                        if c.account != j.id {
-                            self.refuse(conn, expired(j.n))
-                            return
-                        }
-                        match registration(
-                            id,
-                            client_data,
-                            attestation,
-                            self.expected(c.challenge.clone()),
-                        ) {
-                            Ok(cred) => {
-                                j.credential = Some(cred.clone())
-                                self.get(passkey_key(cred.id), Step::AddCredential, take j)
-                            },
-                            Err(why) => self.refuse(conn, why),
+                    Request::Register { id, client_data, attestation } => (
+                        take id,
+                        take client_data,
+                        take attestation,
+                    ),
+                    Request::AddPasskey { id, client_data, attestation, .. } => (
+                        take id,
+                        take client_data,
+                        take attestation,
+                    ),
+                    _ => return,
+                }
+                match registration(
+                    id,
+                    client_data,
+                    attestation,
+                    self.expected(c.challenge.clone()),
+                ) {
+                    Ok(cred) => {
+                        j.credential = Some(cred.clone())
+                        if j.n == REGISTER {
+                            j.id = c.account
+                            j.seed = c.seed
+                            j.hash = c.handle.clone()
+                            self.get(passkey_key(cred.id), Step::RegisterCredential, take j)
+                        } else {
+                            self.get(passkey_key(cred.id), Step::AddCredential, take j)
                         }
                     },
-                    _ => {},
+                    Err(why) => self.refuse(conn, why),
                 }
             },
             Step::BeginAddScan => {
@@ -1400,7 +1312,7 @@ impl<G: Game> Engine<G> {
                 let a: Option<Account> = got(answer)
                 let Some(a) = a else { return }
                 j.hash = a.handle.clone()
-                self.random(CHALLENGE_BYTES + CEREMONY_BYTES, Step::BeginRandom, take j)
+                self.random(begin_bytes(ADD_PASSKEY), Step::BeginRandom, take j)
             },
             Step::RegisterCredential => {
                 if value(answer).is_some() {
@@ -1633,8 +1545,7 @@ impl<G: Game> Engine<G> {
                         var kept = a.clone()
                         kept.fixed = true
                         self.put(account_key(a.id), kept.clone())
-                        self.set_me(conn, me_of(kept, recovery: false))
-                        self.welcome(conn)
+                        self.welcome(conn, me_of(kept, recovery: false))
                     },
                     _ => {
                         if a.rerolls == 0 {
@@ -1768,7 +1679,7 @@ impl<G: Game> Engine<G> {
                 if j.step == Step::RevokeScan && !self.is_signed_in(conn) {
                     // This session itself.
                     self.session_gone(conn)
-                    self.welcome(conn)
+                    self.welcome(conn, nobody())
                     return
                 }
                 self.reply(conn, Reply::Sessions { sessions: list })
@@ -1787,10 +1698,11 @@ impl<G: Game> Engine<G> {
                     },
                     // A passkey added: the account as it is now.
                     _ => {
-                        if let Some(i) = self.conn_index(conn) {
-                            self.conns[i].me = Some(me_of(a, self.conns[i].recovery))
+                        let recovery = match self.conn_index(conn) {
+                            Some(i) => self.conns[i].recovery,
+                            None => false,
                         }
-                        self.welcome(conn)
+                        self.welcome(conn, me_of(a, recovery))
                     },
                 }
             },
@@ -1827,11 +1739,26 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Token { token, expires_in: u32(TOKEN_LIFE / 1000) })
             },
             Step::ExportAccount => {
+                // Where the last part ended: nowhere (the start), after a record, or after a
+                // replay, each by its key (`export_part`).
                 let a: Option<Account> = got(answer)
                 let Some(a) = a else { return }
-                j.text = export_head(a)
-                j.keys.clear()
-                self.scan(under_account(j.id), 512, Step::ExportScan, take j)
+                let after = j.message.clone()
+                if after.is_empty() {
+                    j.text = export_head(a)
+                    self.scan(under_account(j.id), 512, Step::ExportScan, take j)
+                } else if after[0] == 0 {
+                    self.scan_after(
+                        part(after, 1, after.len() - 1),
+                        under_account(j.id),
+                        Step::ExportScan,
+                        take j,
+                    )
+                } else {
+                    j.n = 1
+                    let runs = indexed(j.id, OF_RUN, [])
+                    self.scan_after(part(after, 1, after.len() - 1), runs, Step::ExportRuns, take j)
+                }
             },
             Step::ExportScan => {
                 let Some(es) = entries(answer) else { return }
@@ -1843,36 +1770,51 @@ impl<G: Game> Engine<G> {
                     let of = e.key[prefix.len()]
                     let rest = part(e.key, prefix.len() + 1, e.key.len() - prefix.len() - 1)
                     export_entry(mut j.text, of, rest, e.value)
-                    if of == OF_RUN && rest.len() == 8 {
-                        j.keys.push(run_key(u64_at(rest, 0)))
-                    }
-                    if self.export_flush(mut j, last: false) {
+                    if j.text.len() >= EXPORT_PART {
+                        self.export_part(take j, 0, e.key.clone())
                         return
                     }
                 }
                 if es.len() == 512 {
                     borrow last = es[es.len() - 1].key
-                    var from = last.clone()
-                    from.push(0)
-                    let to = past(prefix).unwrap_or(Vec::new())
-                    self.scan_range(take from, take to, 512, Step::ExportScan, take j)
+                    self.scan_after(last.clone(), prefix, Step::ExportScan, take j)
                     return
                 }
                 j.text.push_str("],\"replays\":[")
+                j.n = 0
+                self.scan(indexed(j.id, OF_RUN, []), EXPORT_RUNS, Step::ExportRuns, take j)
+            },
+            Step::ExportRuns => {
+                // A batch of the account's runs, by their index keys, each read in turn.
+                let Some(es) = entries(answer) else { return }
+                j.keys.clear()
+                j.views.clear()
+                let skip = indexed(j.id, OF_RUN, []).len()
+                for e in es {
+                    if e.key.len() == skip + 8 {
+                        j.keys.push(run_key(u64_at(e.key, skip)))
+                        j.views.push(e.key.clone())
+                    }
+                }
+                // Another batch follows a full one.
+                j.tries = if es.len() == EXPORT_RUNS { 1 } else { 0 }
                 self.export_next_run(take j)
             },
             Step::ExportRun => {
                 let r: Option<Run> = got(answer)
+                let at = j.views.remove(0)
                 if let Some(r) = r {
                     if j.n > 0 {
                         j.text.push_str(",")
                     }
                     j.n += 1
                     j.text.push_str(f"{{\"run\":\"{r.id}\",\"replay\":\"{base64url(r.replay)}\"}}")
-                    if self.export_flush(mut j, last: false) {
-                        return
-                    }
                 }
+                if j.text.len() >= EXPORT_PART {
+                    self.export_part(take j, 1, take at)
+                    return
+                }
+                j.hash = take at
                 self.export_next_run(take j)
             },
             Step::DeleteAccount => {
@@ -2009,7 +1951,14 @@ impl<G: Game> Engine<G> {
             },
             Step::UploadQueue => {
                 let Some(es) = entries(answer) else { return }
-                if es.len() >= MOST_QUEUED {
+                // `tries` is the run's claimed ticks.
+                var ticks = u64(j.tries)
+                for e in es {
+                    if let Some(q) = read::<Queued>(e.value) {
+                        ticks += u64(q.ticks)
+                    }
+                }
+                if es.len() >= MOST_QUEUED || ticks > u64(QUEUE_TICKS) {
                     self.reply(
                         conn,
                         Reply::Rejected {
@@ -2047,7 +1996,9 @@ impl<G: Game> Engine<G> {
                 self.queue_waiting = true
                 self.queue_written = self.call
                 // Answered when its run is.
-                self.uploads.push((conn, id))
+                if let Some(i) = self.conn_index(conn) {
+                    self.conns[i].run = id
+                }
             },
             Step::BoardScan => {
                 let Some(es) = entries(answer) else { return }
@@ -2113,34 +2064,41 @@ impl<G: Game> Engine<G> {
         self.put_bytes(name_key(n), save(a.id))
         remember(mut self.recent_names, name_key(n))
         self.put(account_key(a.id), b.clone())
-        self.set_me(j.conn, me_of(b, recovery: false))
-        self.welcome(j.conn)
+        self.welcome(j.conn, me_of(b, recovery: false))
     }
 
-    /// Ends an export's part once it is long enough, or `last`: the part asked for (`category`) is
-    /// the answer, and the export stops there (true); one before it is let go, and counted (`tries`).
-    fn export_flush(mut self, job: mut Job, last: bool) -> bool {
-        if job.text.len() < EXPORT_PART && !last {
-            return false
-        }
-        if job.tries == job.category || last {
-            self.reply(job.conn, Reply::Export { text: job.text.clone(), last })
-            return true
-        }
-        job.tries += 1
-        job.text = String::new()
-        false
+    /// Answers with an export's part, which ended after the key `key` of its records (`phase` 0)
+    /// or of its runs' index (1): the console asks for the next from there.
+    fn export_part(mut self, job: take Job, phase: u8, key: take Vec<u8>) {
+        var next = Vec::from([phase])
+        with_bytes(mut next, key)
+        self.reply(job.conn, Reply::Export { text: job.text.clone(), next, last: false })
     }
 
+    /// Reads the next run of the batch, or the next batch after a full one, or ends the export.
     fn export_next_run(mut self, job: take Job) {
         var j = take job
-        if j.keys.is_empty() {
-            j.text.push_str("]}")
-            let _ = self.export_flush(mut j, last: true)
+        if !j.keys.is_empty() {
+            let k = j.keys.remove(0)
+            self.get(take k, Step::ExportRun, take j)
             return
         }
-        let k = j.keys.remove(0)
-        self.get(take k, Step::ExportRun, take j)
+        if j.tries == 1 {
+            let runs = indexed(j.id, OF_RUN, [])
+            self.scan_after(j.hash.clone(), runs, Step::ExportRuns, take j)
+            return
+        }
+        j.text.push_str("]}")
+        self.reply(j.conn, Reply::Export { text: j.text.clone(), next: Vec::new(), last: true })
+    }
+
+    /// Scans on from just after `key`, within `prefix`, a page at a time.
+    fn scan_after(mut self, key: take Vec<u8>, prefix: Vec<u8>, step: Step, job: take Job) {
+        var from = take key
+        from.push(0)
+        let to = past(prefix).unwrap_or(Vec::new())
+        let limit = if step == Step::ExportRuns { EXPORT_RUNS } else { 512 }
+        self.scan_range(take from, take to, limit, step, take job)
     }
 
     // ---- verification -------------------------------------------------------------------------
@@ -2182,8 +2140,8 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Asks the host for a byte, so that it calls again at once (a room is called when something
-    /// happens, and an answer is something).
+    /// Asks the host for a byte, so that it calls again at once (the host calls while answers
+    /// arrive).
     fn nudge_next(mut self) {
         if self.nudge.is_none() {
             let t = self.next_ticket()
@@ -2373,7 +2331,7 @@ impl<G: Game> Engine<G> {
 /// Whether `key` is among the keys used lately.
 fn lately(keys: [Vec<u8>], key: [u8]) -> bool {
     for k in keys {
-        if k == Vec::from(key) {
+        if same_bytes(k, key) {
             return true
         }
     }
@@ -2386,6 +2344,21 @@ fn remember(keys: mut Vec<Vec<u8>>, key: take Vec<u8>) {
         let _ = keys.remove(0)
     }
     keys.push(take key)
+}
+
+/// Whether `r` is no session's: a public read, or an upload, which a game's token makes.
+fn sessionless(r: Request) -> bool {
+    match r {
+        Request::Upload { .. } => true,
+        _ => public(r),
+    }
+}
+
+/// The random bytes a ceremony of `kind` begins with: its challenge and its browser's token, and for
+/// a new account, its handle, number and name's seed.
+fn begin_bytes(kind: u32) -> u32 {
+    let n = CHALLENGE_BYTES + CEREMONY_BYTES
+    if kind == REGISTER { n + HANDLE_BYTES + 16 } else { n }
 }
 
 /// Why a ceremony of `kind` can't be finished: it has expired, or was used.

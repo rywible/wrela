@@ -46,6 +46,24 @@ pub fn from_doc(doc: std::json::Doc, n: u32) -> Option<Json> {
     }
 }
 
+/// Member `key` of an object's members, if it has one.
+pub fn member_of(members: [(String, Json)], key: str) -> Option<Json> {
+    for (k, v) in members {
+        if k.as_str() == key {
+            return Some(v.clone())
+        }
+    }
+    None
+}
+
+/// Member `key` of `j`, if it's an object that has one.
+pub fn member_of_obj(j: Json, key: str) -> Option<Json> {
+    match j {
+        Json::Obj(members) => member_of(members, key),
+        _ => None,
+    }
+}
+
 /// A text value.
 pub fn text(s: str) -> Json {
     Json::Text(String::from(s))

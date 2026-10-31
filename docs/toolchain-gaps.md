@@ -402,6 +402,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the release left the console's server build out, and the console was built with `ONLINE = false`.
 - **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46): a server build also writes `server/cloudflare.js` (a Durable Object that runs it beside its SQLite store, and the Worker's router, `api`) and `server/cloudflare.json` (its Wrangler members). The release puts them in the console's Worker (studio/release/site.wrela), on Workers Paid: Free's 10 ms of CPU a Durable Object invocation is too little to verify a run, since the host runs calls for up to 250 ms before it hands on to the object's alarm (Ryan chose Paid, 2026-10-31). WebSocket rooms came in 0.14.0, which the console doesn't use yet.
 
+### A call's reads don't see its writes
+
+- **Needed:** a single-use key taken once, and a unique key claimed once, by the console's server: a passkey ceremony's challenge (used once, even by two requests in one call), an account's name (no two accounts with one), and the verification queue read after an upload writes it.
+- **What happens:** `std::store`'s reads are answered on the next call, from the store as it was before the call's writes, which commit when the call returns (language.md §19.4; toolchain 0.13.0's Cloudflare host does the same). So two requests in one call both read a challenge before either's delete commits, and a read made in the call that wrote a key misses it.
+- **Found:** 2026-10-31, moving the console's server to HTTP, where a challenge moved from a connection's memory to the store.
+- **Meanwhile:** the engine remembers what it used or wrote lately and checks it before trusting a read (platform/server.wrela: `spent` for challenges, `recent_names` for names, `queue_written` for the queue). Each new key of the kind needs its own list.
+- **Status:** open: an atomic take (`store::take(key)`: read and delete in one) and claim (`store::put_new(key, value) -> bool`), which one Durable Object or one SQLite file can do in a statement, or a call's reads answered after its writes commit.
+
 ### `wrela-serve` keeps a room's printed lines to itself
 
 - **Needed:** debugging the console's server on a real `wrela-serve` (the end-to-end check in docs/bench.md, "The console's server"). On the Cloudflare host, `WRELA_PRINT=1` sends them to the Worker's log.

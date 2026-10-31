@@ -68,8 +68,9 @@ pub enum Request: Clone + Serialize {
     SignOut { csrf: Vec<u8> },
     /// A token for `game`, which can only submit runs.
     Token { game: String },
-    /// Everything kept of the account, as JSON: part `part` of it, from 0.
-    Export { part: u32 },
+    /// Everything kept of the account, as JSON, a part at a time: from the start (`after` empty),
+    /// or from where the last part's `next` says.
+    Export { after: Vec<u8> },
     /// Deletes the account and everything kept of it.
     Delete { csrf: Vec<u8> },
     /// A run for `game`'s board, as its replay's bytes, with a game's token. It is answered once
@@ -79,6 +80,15 @@ pub enum Request: Clone + Serialize {
     Board { game: String, course: u32, category: u32, from: u32 },
     /// A run's replay, to watch.
     Watch { run: u64 },
+}
+
+/// Whether `r` is a public read, sent by `GET` to `PUBLIC`: the same answer for everyone, so a
+/// cache may keep it. Anything else goes by `POST` to `ACCOUNTS`.
+pub fn public(r: Request) -> bool {
+    match r {
+        Request::Board { .. } | Request::Watch { .. } => true,
+        _ => false,
+    }
 }
 
 /// What the console may show of an account.
@@ -124,8 +134,9 @@ pub enum Reply: Clone + Serialize {
     Passkeys { passkeys: Vec<PasskeyView> },
     Sessions { sessions: Vec<SessionView> },
     Token { token: Vec<u8>, expires_in: u32 },
-    /// A part of an export: ask for the next until `last`.
-    Export { text: String, last: bool },
+    /// A part of an export: ask for the next, from `next`, until `last`. Each part ends after a
+    /// whole record, so the parts joined are the JSON.
+    Export { text: String, next: Vec<u8>, last: bool },
     Done,
     Verified { run: u64, ticks: u32, place: u32 },
     Rejected { why: String },

@@ -17,6 +17,7 @@ use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
 use platform::wire::{
     ACCOUNTS, ADD_PASSKEY, Me, PUBLIC, PasskeyView, REGISTER, Reply, Request, SIGN_IN, SessionView,
+    public,
 }
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
@@ -83,17 +84,11 @@ enum Act: Copy + Eq {
     Legal { page: u32 },
 }
 
-/// What a request to the server was for.
+/// What a request to the server was for, where its reply is read differently: anything else is
+/// `Other`.
 enum Purpose: Copy + Eq {
-    Hello,
-    Begin,
-    Ceremony,
-    Recover,
+    Other,
     Name,
-    Passkeys,
-    Codes,
-    Sessions,
-    SignOut,
     Token,
     Export,
     Delete,
@@ -121,9 +116,8 @@ pub struct Accounts {
     retry_at: f32,
     /// The requests under way, and what each was for.
     waiting: Vec<(Pending<u8>, Purpose)>,
-    /// The session's CSRF token, as the server last gave it, and the export's next part.
+    /// The session's CSRF token, as the server last gave it.
     csrf: Vec<u8>,
-    export_part: u32,
     pub me: Me,
     passkey: Option<Pending<u8>>,
     ceremony: u32,
@@ -164,7 +158,6 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         retry_at: 0.0,
         waiting: Vec::new(),
         csrf: Vec::new(),
-        export_part: 0,
         me: Me {
             signed_in: false,
             name: String::new(),
@@ -218,11 +211,7 @@ fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>>
 /// Sends `request`, for `purpose`: a public read (a board, a run) by `GET`, so a cache may answer it,
 /// and anything else by `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
-    let public = match request {
-        Request::Board { .. } | Request::Watch { .. } => true,
-        _ => false,
-    }
-    let asked = if public {
+    let asked = if public(request) {
         let q = base64url(save(request))
         std::http::fetch("GET", String::from(f"{PUBLIC}?q={q}").as_str(), [], [])
     } else {
@@ -253,40 +242,30 @@ fn signed_out(a: mut Accounts) {
 /// A request's answer: its reply, or, if the server couldn't be reached or refused it before it
 /// was read (a limit, the host's refusal), a refusal said for a person.
 fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::IoError>) {
-    let unreachable = "The server can't be reached just now. Try again in a moment."
-    let reply = match result {
-        Ok(bytes) => match response(bytes) {
-            Some(r) => {
-                if r.status == 200 {
-                    let read: Result<Reply, LoadError> = load(r.body.clone())
-                    match read {
-                        Ok(reply) => Some(reply.clone()),
-                        Err(_) => None,
-                    }
-                } else if r.status == 429 {
-                    a.connected = true
-                    replied(
-                        mut a,
-                        purpose,
-                        Reply::Refused {
-                            why: String::from("Too many tries. Wait a minute, then try again."),
-                        },
-                    )
-                    return
-                } else { None }
-            },
-            None => None,
-        },
+    let r = match result {
+        Ok(bytes) => response(bytes),
         Err(_) => None,
     }
-    let Some(reply) = reply else {
-        a.connected = false
-        a.retry_at = a.time + RETRY
-        replied(mut a, purpose, Reply::Refused { why: String::from(unreachable) })
-        return
+    if let Some(r) = r {
+        if r.status == 429 {
+            let why = String::from("Too many tries. Wait a minute, then try again.")
+            a.connected = true
+            replied(mut a, purpose, Reply::Refused { why })
+            return
+        }
+        if r.status == 200 {
+            let read: Result<Reply, LoadError> = load(r.body.clone())
+            if let Ok(reply) = read {
+                a.connected = true
+                replied(mut a, purpose, reply.clone())
+                return
+            }
+        }
     }
-    a.connected = true
-    replied(mut a, purpose, reply)
+    a.connected = false
+    a.retry_at = a.time + RETRY
+    let why = String::from("The server can't be reached just now. Try again in a moment.")
+    replied(mut a, purpose, Reply::Refused { why })
 }
 
 /// The server's reply to a request for `purpose`.
@@ -399,7 +378,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Passkeys { passkeys } => a.passkeys = passkeys.clone(),
         Reply::Sessions { sessions } => a.sessions = sessions.clone(),
-        Reply::Export { text, last } => {
+        Reply::Export { text, next, last } => {
             a.export.push_str(text.as_str())
             if last {
                 let bytes = Vec::from(a.export.as_bytes())
@@ -407,8 +386,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
                 a.export.clear()
                 a.message = String::from("Your data is downloading as wrela-account.json.")
             } else {
-                a.export_part += 1
-                request(mut a, Request::Export { part: a.export_part }, Purpose::Export)
+                request(mut a, Request::Export { after: next.clone() }, Purpose::Export)
             }
         },
         Reply::Done => {
@@ -649,7 +627,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     a.time = time
     // Whose session the cookie is, asked first, and again while the server can't be reached.
     if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
-        request(mut a, Request::Me, Purpose::Hello)
+        request(mut a, Request::Me, Purpose::Other)
     }
     var i = 0
     while i < a.waiting.len() {
@@ -675,7 +653,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                             signature: u.signature.clone(),
                             user: u.user.clone(),
                         }
-                        request(mut a, r, Purpose::Ceremony)
+                        request(mut a, r, Purpose::Other)
                         a.busy = true
                     }
                 } else if let Some(p) = read_new_passkey(bytes) {
@@ -693,7 +671,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                             attestation: p.attestation.clone(),
                         }
                     }
-                    request(mut a, r, Purpose::Ceremony)
+                    request(mut a, r, Purpose::Other)
                     a.busy = true
                 }
             },
@@ -757,8 +735,8 @@ fn open_page(a: mut Accounts, page: Page) {
     a.scroll = 0.0
     a.dirty = true
     if page == Page::Manage && a.me.signed_in {
-        request(mut a, Request::Passkeys, Purpose::Passkeys)
-        request(mut a, Request::Sessions, Purpose::Sessions)
+        request(mut a, Request::Passkeys, Purpose::Other)
+        request(mut a, Request::Sessions, Purpose::Other)
     }
 }
 
@@ -786,7 +764,7 @@ fn act(a: mut Accounts, x: Act) {
             request(
                 mut a,
                 Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() },
-                Purpose::Begin,
+                Purpose::Other,
             )
             a.busy = true
         },
@@ -794,7 +772,7 @@ fn act(a: mut Accounts, x: Act) {
             request(
                 mut a,
                 Request::Begin { ceremony: REGISTER, csrf: Vec::new() },
-                Purpose::Begin,
+                Purpose::Other,
             )
             a.busy = true
         },
@@ -803,7 +781,7 @@ fn act(a: mut Accounts, x: Act) {
             open_page(mut a, Page::Recover)
         },
         Act::SubmitCode => {
-            request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Recover)
+            request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Other)
             a.busy = true
         },
         Act::Keep => {
@@ -821,7 +799,7 @@ fn act(a: mut Accounts, x: Act) {
             request(
                 mut a,
                 Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone() },
-                Purpose::Begin,
+                Purpose::Other,
             )
             a.busy = true
         },
@@ -831,7 +809,7 @@ fn act(a: mut Accounts, x: Act) {
                 request(
                     mut a,
                     Request::RemovePasskey { csrf: a.csrf.clone(), id },
-                    Purpose::Passkeys,
+                    Purpose::Other,
                 )
             }
         },
@@ -841,17 +819,16 @@ fn act(a: mut Accounts, x: Act) {
                 request(
                     mut a,
                     Request::Revoke { csrf: a.csrf.clone(), session: id },
-                    Purpose::Sessions,
+                    Purpose::Other,
                 )
             }
         },
         Act::NewCodes => {
-            request(mut a, Request::NewCodes { csrf: a.csrf.clone() }, Purpose::Codes)
+            request(mut a, Request::NewCodes { csrf: a.csrf.clone() }, Purpose::Other)
         },
         Act::Export => {
             a.export.clear()
-            a.export_part = 0
-            request(mut a, Request::Export { part: 0 }, Purpose::Export)
+            request(mut a, Request::Export { after: Vec::new() }, Purpose::Export)
             a.message = String::from("Gathering your data...")
         },
         Act::Delete => open_page(mut a, Page::Delete),
@@ -860,7 +837,7 @@ fn act(a: mut Accounts, x: Act) {
             a.busy = true
         },
         Act::SignOut => {
-            request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::SignOut)
+            request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::Other)
         },
         Act::Back => {
             if !a.online {

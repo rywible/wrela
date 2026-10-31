@@ -103,7 +103,8 @@ fn prefix(p: Text) -> Vec<u8> {
     Vec::from(String::from(p).as_bytes())
 }
 
-fn with_bytes(key: mut Vec<u8>, bytes: [u8]) {
+/// Appends `bytes` to `key`.
+pub fn with_bytes(key: mut Vec<u8>, bytes: [u8]) {
     for b in bytes {
         key.push(b)
     }

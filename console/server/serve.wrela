@@ -57,13 +57,8 @@ pub fn serve(s: mut Server, time: f32) {
                 let Some(r) = request(conn, bytes) else { continue }
                 http(mut s, r)
             },
-            Event::Connection { conn, open, .. } => {
-                if open {
-                    s.engine.opened(conn)
-                } else {
-                    s.engine.closed(conn)
-                }
-            },
+            // A request opens with its message; its close is the engine's to hear.
+            Event::Connection { conn, open: false, .. } => s.engine.closed(conn),
             _ => {},
         }
     }
@@ -109,7 +104,7 @@ fn http(s: mut Server, r: Request) {
     } else {
         None
     }
-    let Some(body) = body else {
+    let Some(body) = take body else {
         let status = if path == ACCOUNTS || path == PUBLIC { 405 } else { 404 }
         respond(r.conn, text(status, "Not here."))
         return
@@ -121,7 +116,7 @@ fn http(s: mut Server, r: Request) {
             public: method != "POST",
             session: cookie_bytes(r, SESSION),
             ceremony: cookie_bytes(r, CEREMONY),
-            body: body.clone(),
+            body,
         },
     )
 }

@@ -207,7 +207,6 @@ impl Host {
             e.closed(c)
         }
         for (c, asked) in requests {
-            e.opened(c)
             e.http(c, asked.clone())
         }
         e.end()
@@ -307,14 +306,7 @@ impl Host {
 
     /// Browser `browser` keeps cookie `name` as `value` (none if empty), as a `Set-Cookie` says.
     fn keep(mut self, browser: u32, name: str, value: [u8]) {
-        var i = 0
-        while i < self.jar.len() {
-            if self.jar[i].browser == browser && self.jar[i].name.as_str() == name {
-                let _ = self.jar.remove(i)
-            } else {
-                i += 1
-            }
-        }
+        self.jar.retain(|k| k.browser != browser || k.name.as_str() != name)
         if !value.is_empty() {
             self.jar.push(Kept { browser, name: String::from(name), value: Vec::from(value) })
         }
@@ -332,14 +324,21 @@ impl Host {
         }
     }
 
-    /// Browser `browser` sends `requests` in one call: each one's answer, its cookies kept.
-    fn together(mut self, e: mut Engine<Toy>, browser: u32, requests: [Request]) -> Vec<Answered> {
+    /// Browser `browser` sends `requests` in one call, as `POST`s (or `GET`s if `public`): each
+    /// one's answer, its cookies kept.
+    fn together(
+        mut self,
+        e: mut Engine<Toy>,
+        browser: u32,
+        requests: [Request],
+        public: bool = false,
+    ) -> Vec<Answered> {
         var given: Vec<(u32, Asked)> = Vec::new()
         var conns: Vec<u32> = Vec::new()
         for r in requests {
             self.next_conn += 1
             conns.push(self.next_conn)
-            given.push((self.next_conn, self.asked(browser, r.clone(), public: false)))
+            given.push((self.next_conn, self.asked(browser, r.clone(), public)))
         }
         self.answered.clear()
         self.call(mut e, given)
@@ -369,18 +368,8 @@ impl Host {
 
     /// Browser `browser` reads `request` by a `GET`: its answer, and how long it may be cached.
     fn read(mut self, e: mut Engine<Toy>, browser: u32, request: Request) -> (Reply, u32) {
-        self.next_conn += 1
-        let c = self.next_conn
-        let asked = self.asked(browser, request, public: true)
-        self.answered.clear()
-        self.call(mut e, [(c, take asked)])
-        self.settle(mut e)
-        for a in self.answered {
-            if a.conn == c {
-                return (a.reply.clone(), a.public)
-            }
-        }
-        panic("every request is answered")
+        let a = self.together(mut e, browser, [request.clone()], public: true)
+        (a[0].reply.clone(), a[0].public)
     }
 
     /// The keys that start with `prefix`.
@@ -984,6 +973,10 @@ fn uploads_are_bounded() {
     let Reply::Rejected { .. } = rs[0].clone() else { panic("past the most bytes") }
     let rs = h.say(mut e, 1, up(toy(5, claimed: 3, moves: 3, m: 2)))
     let Reply::Rejected { .. } = rs[0].clone() else { panic("not one of the game's") }
+    // A run whose ticks would make the queue longer than an upload may wait.
+    let rs = h.say(mut e, 1, up(toy(0, claimed: server::QUEUE_TICKS + 1, moves: 3, m: 2)))
+    let Reply::Rejected { why } = rs[0].clone() else { panic("past the queue's ticks") }
+    assert(why.as_str().find("busy").is_some(), why.as_str())
     for k in 0..server::RUNS_AN_HOUR {
         let rs = h.say(mut e, 1, up(toy(0, 10 + k, 10 + k, 2)))
         let Reply::Verified { .. } = rs[0].clone() else { panic("within the hour's") }
@@ -1074,37 +1067,43 @@ fn an_account_deleted_leaves_nothing_and_its_export_holds_what_was_kept() {
     var e = take both.0
     var h = take both.1
     let (s, token) = uploader(mut e, mut h, 1, 5)
-    let _ = h.say(
-        mut e,
-        1,
-        Request::Upload {
-            token: token.clone(),
-            game: String::from("toy"),
-            replay: toy(0, claimed: 10, moves: 10, m: 2),
-        },
-    )
-    // Asked part by part until the last.
-    var text = String::new()
-    var part = 0
-    var last = false
-    while !last && part < 8 {
-        let Reply::Export { text: t, last: l } = h.say(
+    // Five runs of 47,000 moves: their replays, as base64, are more than one part of the export.
+    for k in 0..5 {
+        let rs = h.say(
             mut e,
             1,
-            Request::Export { part },
+            Request::Upload {
+                token: token.clone(),
+                game: String::from("toy"),
+                replay: toy(0, claimed: 47000 + k, moves: 47000 + k, m: 2),
+            },
+        )
+        let Reply::Verified { .. } = rs[0].clone() else { panic("verified") }
+    }
+    // Asked part by part, each from where the last ended, until the last.
+    var text = String::new()
+    var after: Vec<u8> = Vec::new()
+    var parts = 0
+    var last = false
+    while !last && parts < 8 {
+        let Reply::Export { text: t, next, last: l } = h.say(
+            mut e,
+            1,
+            Request::Export { after: after.clone() },
         )[0].clone() else { panic("a part") }
         text.push_str(t.as_str())
+        after = next.clone()
         last = l
-        part += 1
+        parts += 1
     }
-    assert(last, "the export ends")
+    assert(last && parts >= 2, f"the export ends, in {parts} parts")
     let Some(doc) = std::json::parse(text.as_str()) else { panic(text.as_str()) }
     let Some(acct) = doc.get(std::json::TOP, "account") else { panic("an account") }
     let Some(n) = doc.get(acct, "name") else { panic("a name") }
     assert(doc.text(n) == Some(s.name.clone()))
-    assert(
-        text.as_str().find("\"replay\":").is_some() && text.as_str().find("\"passkey\":").is_some(),
-    )
+    let Some(replays) = doc.get(std::json::TOP, "replays") else { panic("replays") }
+    assert(doc.count(replays) == 5, "every replay, once")
+    assert(text.as_str().find("\"passkey\":").is_some())
     // More records than one page of the deletion's scans (256): a token each.
     for _ in 0..270 {
         let _ = h.say(mut e, 1, Request::Token { game: String::from("toy") })
