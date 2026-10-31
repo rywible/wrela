@@ -291,7 +291,7 @@ pub fn grow_traced(
         // The free space round each bud: each marker the envelope holds now, in a bud's cone and
         // reach, counted for the nearest such bud (its terminal, or its dormant lateral).
         let space = Space::fresh(
-            Envelope::at(g, site, year + 1.0, lean),
+            Envelope::at(g, site, year + 1.0, lean, t.height),
             t.nodes,
             KILL * g.internode,
             0.5 * reach,
@@ -406,12 +406,24 @@ pub fn grow_traced(
         }
         // The buds that grow this year: the strongest `BUDS_MAX` by share.
         var buds: Vec<(f32, u32, bool)> = Vec::new()
+        var short: Vec<(f32, u32, bool)> = Vec::new()
         for i in 0..n {
-            if bud_v[i] >= BUD_NEEDS {
-                buds.push((bud_v[i], i, true))
+            for terminal in [true, false] {
+                let v = if terminal { bud_v[i] } else { lat_v[i] }
+                if v >= BUD_NEEDS {
+                    buds.push((v, i, terminal))
+                } else if v > 0.0 {
+                    short.push((v, i, terminal))
+                }
             }
-            if lat_v[i] >= BUD_NEEDS {
-                buds.push((lat_v[i], i, false))
+        }
+        // A tree whose resource, split evenly, leaves too few buds their `BUD_NEEDS` (one in shade)
+        // still grows its strongest: as many as `SLOW` of its resource buys, at least one.
+        let slow = max(u32(SLOW * flow[0] / BUD_NEEDS), if flow[0] > 0.0 { 1 } else { 0 })
+        if buds.len() < slow {
+            short.sort_by(|a: (f32, u32, bool), b: (f32, u32, bool)| a.0 > b.0 || (a.0 == b.0 && a.1 < b.1))
+            for k in 0..min(slow - buds.len(), short.len()) {
+                buds.push(short[k])
             }
         }
         if buds.len() > BUDS_MAX {
@@ -602,6 +614,10 @@ fn perceived(nodes: [Node], continued: [bool], space: Space, reach: f32) -> Vec<
     owner
 }
 
+/// The share of a tree's resource that grows its strongest buds when too few reach `BUD_NEEDS`
+/// (**proposed**: a tree in shade grows, slowly).
+const SLOW: f32 = 0.25
+
 /// How many times its shed years a branch may go without growing before it's shed (`shed`).
 const IDLE_YEARS: f32 = 3.0
 
@@ -745,10 +761,15 @@ struct Envelope {
 }
 
 impl Envelope {
-    fn at(g: Genome, site: Site, age: f32, lean: vec2) -> Envelope {
-        let top = g.tallest *
-            (1.0 - exp(-max(age, 0.5) * g.rate / g.tallest)) *
-            (1.0 - g.wind_shorten * site.wind)
+    fn at(g: Genome, site: Site, age: f32, lean: vec2, height: f32) -> Envelope {
+        // No higher than the tree reaches now and a bud's reach (`PERCEIVE` shoots) over it: a tree
+        // held back (by shade) has the space within its reach, not where an open-grown one of its
+        // age would be.
+        let top = min(
+            g.tallest * (1.0 - exp(-max(age, 0.5) * g.rate / g.tallest)) *
+                (1.0 - g.wind_shorten * site.wind),
+            height + PERCEIVE * g.internode,
+        )
         Envelope { base: 0.1 * top, top, radius: g.crown * top + 0.3, lean, apical: g.apical }
     }
 

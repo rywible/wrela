@@ -2934,13 +2934,23 @@ a bud's least resource 0.5 → 1 (a 100-year oak's chains 4,011 → 3,158; 1.2 s
 leader, 1.5 the shrubs); `MAX_LIMBS` 512 → 2,048 (4,096 overflows the constants that hold a
 `Plant`: docs/toolchain-gaps.md). The test holds 0.86.
 
-**At half the open's light** the beech, the most shade-tolerant of the seven, hardly grows (38
-nodes at 100 years) and the two thorns stay seedlings: the bud's threshold doesn't carry a
-species' shade tolerance. Tying it to `shed_light` (6.25 × it, from 0.5 to 1) gave the beech 3
-nodes at a quarter's light and the oak's chains back up 30 %: dropped. A branch that doesn't
-grow is shed after `IDLE_YEARS` × `shed_years` only while it's also dim (under twice
-`shed_light`): before, an oak at half light grew 651 nodes by 40 years and collapsed to its seed
-by 100.
+**In shade** (the specimen page, `wrela tool grow -- --specimens out/specimens`): a tree whose
+resource, split by the Borchert-Honda rule, left no bud its least resource never grew again (an
+oak at half the open's light stopped at 80 nodes at 20 years, its 47 buds each given about 0.9 of
+the 1 they need); now such a tree grows its strongest buds, as many as a quarter of its resource
+buys (`SLOW`), at least one. A branch that doesn't grow is shed after `IDLE_YEARS` ×
+`shed_years` only while it's also dim (under twice `shed_light`): before, an oak at half light
+grew 651 nodes by 40 years and collapsed to its seed by 100. Tried and dropped: a bud short of
+its need shooting with chance its share squared (the hawthorn's chains 5,563 → 8,647), cubed
+(7,521), or for terminal buds only (the pine's leader lost); the threshold scaled by `shed_light`
+(the beech 3 nodes at a quarter's light).
+
+Under a quarter of the open's light, at 100 years: the birch 338 nodes, the pine 20, the alder
+703, the beech 15, the oak, the hawthorn and the blackthorn 3 (a pole). **A species' shade
+tolerance isn't in the genome**: the beech, the most tolerant, does worse than the birch, a
+pioneer, because the shade's outcome follows apical control (an oak's leader dies a year in ten
+past its youth, and a slow tree can't replace it). Recorded for E6's fits (a `tolerance` to
+scale the bud's need and the shedding is the lever).
 
 **Cost** (`wrela tool grow -- --species oak --age 100 --out out/oak-100`, the tool's optimized
 build on the M4 Air, nothing else running): a 100-year oak (5,799 nodes) grew in **727 ms** at
