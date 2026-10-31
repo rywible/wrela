@@ -415,6 +415,8 @@ pub fn height_at(p: vec2) -> f32 {
 pub struct Ground: Copy + GpuData {
     pub relief: Relief<CELLS>,
     pub soil: [u32; SOIL_WORDS],
+    /// The moss's patches (`engine::growth::MOSS`), read where the ground is cooked.
+    pub moss: [u32; engine::growth::MOSS_WORDS],
 }
 
 /// The words its soil takes: four bits a cell.
@@ -432,7 +434,7 @@ fn ground_of(v: Vale) -> Ground {
         let kind = if v.mere != NONE && v.lakes.of[c] == v.mere { BED } else { u32(v.soil[c]) }
         soil[c / 8] |= kind << (4 * (c % 8))
     }
-    Ground { relief: v.relief, soil }
+    Ground { relief: v.relief, soil, moss: engine::growth::MOSS }
 }
 
 /// The ground's kind under the mere's water, past `SoilKind`'s: its bed.
@@ -533,7 +535,8 @@ impl Ground {
             mix(1.0, 0.35, smoothstep(0.7, 0.86, n.y))
         } else if kind == u32(SoilKind::Thin) {
             // A thin soil's stones showing between its grass, in patches a few metres across.
-            THIN_STONES * smoothstep(0.4, 0.7, engine::noise::noise2(at.xz * 0.3 + vec2(11.0, -5.0)))
+            THIN_STONES *
+                smoothstep(0.4, 0.7, engine::noise::noise2(at.xz * 0.3 + vec2(11.0, -5.0)))
         } else { 0.0 }
         let rock = max(face, bare)
         // (The rock's colour only where it shows: it's most of the cover's noise.)
@@ -559,6 +562,7 @@ impl Ground {
             trodden: fields.y,
             rim: 0.0,
             rock_albedo: rock_albedo,
+            moss: land::cover::moss_at(self.moss, at.xz),
         )
         // The history's wetness on whatever covers it; nothing of the wood's floor grows on the
         // mere's bed: its water covers it.

@@ -16,6 +16,18 @@ pub fn far_wood(c: Cover, at: vec3, w: f32, rock: f32) -> Cover {
     c
 }
 
+/// The moss's patches at `xz`, its wet class's and its dry one's (`growth::moss_tile` at the
+/// floor's cell of 25 cm), from `moss`, a terrain's own copy of `growth::MOSS`: a terrain is
+/// bound as a pass's data, so its words are read there, not copied into each texel's invocation
+/// (docs/bench.md "E7").
+pub fn moss_at(moss: [u32; engine::growth::MOSS_WORDS], xz: vec2) -> vec2 {
+    let byte = |class: u32| {
+        let at = engine::growth::moss_cell(class, xz * 4.0)
+        f32((moss[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+    }
+    vec2(byte(0), byte(1))
+}
+
 /// The season the floor's litter lies in (0 to 1 from spring: `growth::litter_at`): late summer's.
 pub const LITTER_SEASON: f32 = 0.65
 
@@ -24,7 +36,8 @@ pub const LITTER_SEASON: f32 = 0.65
 /// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where
 /// trails wear it (`trodden`), bare earth and worn grass; darker where it's wet, and a stream's
 /// bed and banks under its water (its gravel's stones the land's rock, `rock_albedo` at a point, its
-/// normal and a sample's width); and where a cut's dry lip is (`rim`), bare soil.
+/// normal and a sample's width); and where a cut's dry lip is (`rim`), bare soil. `moss` is each
+/// moss class's patch at the point (`moss_at`, from the terrain's own copy of `growth::MOSS`).
 pub fn wood_floor(
     c: Cover,
     at: vec3,
@@ -34,6 +47,7 @@ pub fn wood_floor(
     trodden: f32,
     rim: f32,
     rock_albedo: fn(vec3, vec3, f32) -> vec3,
+    moss: vec2,
 ) -> Cover {
     var c = c
     let xz = at.xz
@@ -59,13 +73,9 @@ pub fn wood_floor(
     let deep = engine::growth::litter_at(1.0 - light, LITTER_SEASON)
     let litter = mix(vec3(0.09, 0.07, 0.05), litter, vec3(smoothstep(0.1, 0.6, deep)))
     // Moss where it's damp under the canopy, in its reaction-diffusion's patches (a cell 25 cm,
-    // the wet's crowded or the dry's scattered: `growth::moss_tile`; past a cell's width, its
-    // mean).
-    let patches = mix(
-        engine::growth::moss_tile(if wet > 0.5 { 0 } else { 1 }, xz * 4.0),
-        0.3,
-        smoothstep(0.1, 0.5, w),
-    )
+    // the wet's crowded or the dry's scattered: `moss`, each class's at the point, `moss_at`;
+    // past a cell's width, its mean).
+    let patches = mix(if wet > 0.5 { moss.x } else { moss.y }, 0.3, smoothstep(0.1, 0.5, w))
     let mossy = smoothstep(0.3, 0.6, patches) * smoothstep(0.25, 0.7, wet + 0.3) * (1.0 - open)
     var floor = mix(litter, vec3(0.042, 0.06, 0.035), vec3(mossy * 0.5))
     // Under thorn, darker and bare.

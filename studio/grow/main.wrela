@@ -7,6 +7,7 @@
 // wrela tool grow -- --kinds <dir>
 // wrela tool grow -- --fit <silhouette.png> --species <s> --out <dir> [--evaluations <n>] [--seed <n>]
 // wrela tool grow -- --goal <goal.toml> --out <dir>
+// wrela tool grow -- --hash --package <pkg>
 // ```
 //
 // A specimen is a species' tree grown from its genome (content/trees/genomes.wrela) at a site
@@ -26,8 +27,11 @@
 // evaluations, its trajectory printed every 20; it writes the best's `grown.json` (with its IoU,
 // evaluations and trajectory), `side.png`, and both masks compared (`fitted.png`, `target.png`).
 // `--goal` grows a structured goal (goal.wrela says its format) and checks what it can measure:
-// its height within 10 %, its crown toward its light, a lightning scar; it writes the specimen
-// with the checks in its `grown.json`, and fails if a check does.
+// its height within 10 %, its crown toward its light, a fork from a gale, a lightning scar; it
+// writes the specimen with the checks in its `grown.json`, and fails if a check does.
+// `--hash --package <pkg>` builds a program that grows (the vale) and runs it twice natively and
+// once in Chrome, printing each run's `grown:` lines (its archetypes' hash, its first ring's
+// trees, time and hash: hash.wrela) and failing unless they're the same (§E7's determinism).
 
 use engine::growth::into_plant
 use engine::growth::side_view
@@ -42,7 +46,7 @@ use std::io::print
 use std::tool::{ToolError, args}
 use toolkit::whole::{chunked, write_file}
 
-pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>] [--seed <n>] --out <dir> | --specimens <dir> | --kinds <dir> | --fit <silhouette.png> --species <s> --out <dir> [--evaluations <n>] [--seed <n>] | --goal <goal.toml> --out <dir>"
+pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>] [--seed <n>] --out <dir> | --specimens <dir> | --kinds <dir> | --fit <silhouette.png> --species <s> --out <dir> [--evaluations <n>] [--seed <n>] | --goal <goal.toml> --out <dir> | --hash --package <pkg>"
 
 /// A number argument after `flag`, if given.
 fn number_after(given: [String], flag: str) -> Option<f32> {
@@ -65,6 +69,10 @@ fn text_after(given: [String], flag: str) -> Option<String> {
 }
 
 fn run(given: [String]) -> Result<(), ToolError> {
+    if given.len() > 0 && given[0].as_str() == "--hash" {
+        let Some(pkg) = text_after(given, "--package") else { return Err(ToolError::new(USAGE)) }
+        return hash::hashes("ws", "out", pkg.as_str())
+    }
     if let Some(dir) = text_after(given, "--specimens") {
         var done: Vec<(String, Specimen)> = Vec::new()
         for k in 0..NAMES.len() {
@@ -173,7 +181,12 @@ fn fitted(given: [String], path: str) -> Result<(), ToolError> {
     let g = genome_of(f.best)
     let t = engine::growth::grow_graph(
         g,
-        engine::growth::Site { age: f.best.age, light: f.best.light, wind: f.best.wind, slope: f.best.slope },
+        engine::growth::Site {
+            age: f.best.age,
+            light: f.best.light,
+            wind: f.best.wind,
+            slope: f.best.slope,
+        },
         if f.best.light >= 1.0 { Vec::new() } else {
             Vec::filled(u32(ceil(f.best.age)), f.best.light)
         },
@@ -183,7 +196,10 @@ fn fitted(given: [String], path: str) -> Result<(), ToolError> {
     )
     let (p, _) = into_plant(t, g, Leaves {}, Bark {})
     let (w, h, px) = side_view(p, 1024)
-    write_png(image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) }, f"{out}/side.png")
+    write_png(
+        image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) },
+        f"{out}/side.png",
+    )
 }
 
 pub fn tool() -> u32 {

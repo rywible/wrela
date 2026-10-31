@@ -3221,3 +3221,110 @@ failed): an 80-year oak's crown centroid over its reach, seeds 1–8, was 0.10�
 passed by luck); a bud's light now rises on the gap's side of its trunk (`GAP_SIDE`, 0.4,
 **proposed**: the neighbour shades its half of the crown), 0.22–0.32. E1.2's eleven tests pass
 (`wrela test engine/tests/growth-trees`: 11 passed).
+
+## E7, the growth's cache and determinism (2026-10-31, toolchain 0.13.0)
+
+Linux pop-os (AMD Ryzen, Radeon "Lucienne" integrated, RADV, 12 threads; Chrome stable headless
+through `std::tool::browser`); **not the M4 Air**. The plan's budgets are the M4's: the first
+ring's 1,000 ms, G-cold and G-warm need re-measuring there.
+
+**The archetypes are grown at build.** `content/trees/archetypes.wrela`'s `GROWN` is a constant
+(`@fuel(2 ** 44)`) the build computes; `wrela build examples/vale` reports it among its
+constants ("constants: N computed, M from the cache"), and the vale holds the 16 archetypes' shapes
+as 502,640 bytes. Nothing of them grows at load.
+
+**The page's cache.** A near tree's shape is kept in the program's storage under
+`grown/<key>` (`growth::grow_key`: the growth's `VERSION`, the genome's values, the site, the
+light a year and the events its history's record gives, the seed and the height it's drawn at),
+read before it grows and written after (`land::stage::near_trees`). Natively, the first ring
+from empty storage then again from its kept shapes: 961 ms (6 grown) → 151 ms (6 from the
+storage), the same hash. `engine/tests/growth-trees`' `a_kept_shape_comes_back_and_its_key_names_every_input`:
+a shape round-trips through its bytes, the same growth grown twice hashes the same, a gale moved a
+year changes the key (a miss) and the tree.
+
+**The first ring.** It was wrongly ready early: `near_ready` counted only the near trees whose
+growths had begun, and two began at a time, so the first run's ring was 3 trees and a second's 2.
+The stage now keeps the ring as chosen (the `FIRST_N` nearest candidates within `FIRST_RING`), and
+while it isn't drawn all of it starts at once. Time from its first choosing to its last tree drawn
+(`grown: the first ring, ...`, printed by the stage):
+
+| Step | Native (8 helpers) | Chrome (8 helpers) |
+|---|---|---|
+| ring of 3 (the early-ready bug) | 835 ms | |
+| ring of 6, two growths at a time | 1,831 ms | |
+| all six at once | 961, 866 ms | 1,777 ms (1 helper: test mode's default) |
+| the near trees' conversion not measured (`shape_of(.., measured: false)`) | 831, 838 ms | 1,215 ms |
+| the growth 40 % cheaper (below) | 848, 841 ms | **1,198 ms** |
+
+Its trees here are 16 to 92 years old. Natively they're all grown by 300 ms of the 845, but a load
+frame of 450 ms (the main thread waiting on the tiles' work behind them on the helpers) comes
+between, and their cards are cooked after it: the ring's time is now the load's frames more than the
+growth. The vale's test `the_first_ring_grows_before_the_vale_is_ready` asserts the ring of six is
+drawn within its frames and prints its time (1,353 ms there: a frame test's host runs few helpers,
+so its growths queue, and a frame test takes no helper count); the budget is the `--hash` runs',
+with a played page's helpers. In Chrome here it's 1,198 ms: **to re-measure on the M4** (whose CPU
+grew a 100-year oak in 364 ms against this machine's 699).
+
+**The growth's cost** (a 100-year oak, 5,856 nodes, timed phase by phase in a throwaway tool
+test's build; that build is slower than the tool's optimized one):
+
+| Lever | Total | Shade | Space | Perceive | Light |
+|---|---|---|---|---|---|
+| before | 881 ms | 216 | 217 | 340 | 58 |
+| the shade's 3 × 3 tent as two [1 2 1] passes | 713 | 60 | 218 | 325 | 58 |
+| the envelope's square without `pow` | 688 | 60 | 191 | 327 | 59 |
+| the markers' kill inline, no closure | 659 | 60 | 165 | 325 | 58 |
+| a marker's own cell first, cells farther than the best skipped, no root | 539 | 61 | 168 | 201 | 58 |
+| the markers' angles by a rotation, not a cosine and sine each | **526** | 62 | 153 | 199 | 60 |
+| (the buds' grid at half the reach) | 764 | 61 | 167 | 428 | 59 |
+| (the kill's cells pruned by their distance) | 570 | 61 | 194 | 203 | 60 |
+
+The last two were slower and are not kept. The `wrela tool grow -- --species oak --age 100`
+optimized build: 699 ms before.
+
+**Determinism** (`wrela tool grow -- --hash --package examples/vale`: two native runs from empty
+storage and one in Chrome, 8 helpers each; each run's `grown:` lines):
+
+```
+native 1 (the first ring in 848 ms):
+  grown: the archetypes, 502640 bytes; their hash 0658a73d2350ec65
+  grown: the first ring, 6 trees (0 from the storage); their shapes' hash 133b5d9534de9303
+native 2 (the first ring in 841 ms):
+  grown: the archetypes, 502640 bytes; their hash 0658a73d2350ec65
+  grown: the first ring, 6 trees (0 from the storage); their shapes' hash 133b5d9534de9303
+Chrome (the first ring in 1198 ms):
+  grown: the archetypes, 502640 bytes; their hash 0658a73d2350ec65
+  grown: the first ring, 6 trees (0 from the storage); their shapes' hash 133b5d9534de9303
+grow: the hashes are the same in every run
+```
+
+Identical on this machine's native host and its Chrome (H5 holds here); every earlier growth in
+this section hashed the same across hosts too. The M4's Chrome is the plan's third run: **to
+re-measure on the M4.**
+
+**G-cold and G-warm** (`wrela tool bench -- --scene vale-walk --starts 3 --size 960x540 --frames
+60 --no-docs`, playable ms, the median of three; this machine, so each step against `main`
+006223f8 measured the same way, the same bench tool in both). This GPU loses its device on the
+vale at 1920×1080 (`VK_ERROR_DEVICE_LOST` once playable) and draws it at about 1.3 frames a second
+in Chrome at 960×540, so the bench gained `--size` and the runs are cut to 120 frames; the numbers
+compare runs here and are not the gates' (the M4's, **to re-measure there**: C5 recorded G-cold
+Blocked at 6,691 ms and G-warm met at 2,209 before Part E):
+
+| Build | Cold | Warm |
+|---|---|---|
+| `main` | 9,633 (9,633, 9,606, 9,842) | 6,190 (6,190, 6,016, 6,192) |
+| Part E as it came to E7 | 14,143 (14,143, 13,987, 14,271) | 8,222 (8,222, 8,261, 8,157) |
+| a kind's impostor baked from its coarsest level's limbs (`plant::level_limbs`, a sixteenth: a grown kind's 2,048 limbs were each a draw in all 256 of its views) | 12,253 (12,108, 12,253, 12,329) | 6,815 (6,428, 6,983, 6,815) |
+| the moss's patches read from bound data, not a constant table in the shader (below) | **10,937** (10,937, 10,817, 11,148) | **6,701** (6,839, 6,701, 6,503) |
+
+The moss's patches (`growth::MOSS`, E4's reaction-diffusion, 2,048 words) were a constant the
+ground's cook and the limbs' vertex shader indexed; the WGSL copied the whole table into a local
+array in each invocation (a texel's, a vertex's), and the clipmap's `cook_level`, which frame 0
+waits on, took 1,899 ms to compile against `main`'s 635 (72,649 bytes of WGSL against 45,025). Now
+the terrain carries its own copy (`Ground::moss`, read in its inlined methods, as its soil is:
+`land::cover::moss_at`) and the wood binds one for the limbs (`Wood::moss`, `moss_tile_in`); the
+same words, so the same pixels. `cook_level` is 47,122 bytes.
+
+Still 1.3 s behind `main` cold and 0.5 s warm: frame 1 cooks the 26 kinds with 164 ms more CPU
+(the grown kinds' limbs), and the load's other frames are about 10 ms longer each. Warm, the first
+ring comes from the page's storage in Chrome (6 trees in 494 ms; cold, 948).

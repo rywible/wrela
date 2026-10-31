@@ -10,6 +10,7 @@
 
 use plant::{Bark, Clump, Leaves, MAX_CLUMPS, MAX_LIMBS, Plant, limb_axis, plant}
 use std::field::{Tube, hash_u32}
+use std::hash::{Hasher, canonical_bits}
 use std::math::PI
 
 /// The growth's version: a change to any growth program that changes what it grows bumps it, so a
@@ -558,6 +559,11 @@ pub fn grow_traced(
     (t, trace)
 }
 
+/// How far `q` is from the cell `[from, from + cell)` along one axis (0 inside it).
+fn gap(q: f32, from: f32, cell: f32) -> f32 {
+    max(max(from - q, q - (from + cell)), 0.0)
+}
+
 /// Each marker's bud (`i × 2` a node's terminal, `+ 1` its dormant lateral; -1 none): of the buds
 /// that perceive it (within `reach`, in their cone), the nearest, the lower index on a tie (as if
 /// each bud claimed its markers in turn). Each free marker looks for its buds on a grid of them
@@ -635,24 +641,45 @@ fn perceived(nodes: [Node], continued: [bool], space: Space, reach: f32) -> Vec<
             continue
         }
         let (a, z) = (clamp(a, vec3(0.0), top), clamp(z, vec3(0.0), top))
-        var best = 1.0e9
+        var best = reach2
         var who = -1
-        for y in u32(a.y)..(u32(z.y) + 1) {
-            for zz in u32(a.z)..(u32(z.z) + 1) {
-                for x in u32(a.x)..(u32(z.x) + 1) {
-                    let c = (y * nz + zz) * nx + x
-                    for o in starts[c]..starts[c + 1] {
-                        let b = order[o]
-                        let v = q - at[b]
-                        let l2 = dot(v, v)
-                        if l2 > reach2 || l2 <= 1.0e-8 {
+        // Its own cell first, then each round it no nearer than the best found (its nearest
+        // point's distance): the same bud as every cell's, sooner.
+        let own = clamp((q - lo) / cell, vec3(0.0), top)
+        let (ox, oy, oz) = (u32(own.x), u32(own.y), u32(own.z))
+        for pass in 0..2 {
+            for y in u32(a.y)..(u32(z.y) + 1) {
+                for zz in u32(a.z)..(u32(z.z) + 1) {
+                    for x in u32(a.x)..(u32(z.x) + 1) {
+                        let mine = x == ox && y == oy && zz == oz
+                        if (pass == 0) != mine {
                             continue
                         }
-                        let l = sqrt(l2)
-                        let id = i32(ids[b])
-                        if dot(v, dirs[b]) >= CONE * l && (l < best || (l == best && id < who)) {
-                            best = l
-                            who = id
+                        let near = vec3(
+                            gap(q.x, lo.x + f32(x) * cell, cell),
+                            gap(q.y, lo.y + f32(y) * cell, cell),
+                            gap(q.z, lo.z + f32(zz) * cell, cell),
+                        )
+                        if dot(near, near) > best {
+                            continue
+                        }
+                        let c = (y * nz + zz) * nx + x
+                        for o in starts[c]..starts[c + 1] {
+                            let b = order[o]
+                            let v = q - at[b]
+                            let l2 = dot(v, v)
+                            if l2 <= 1.0e-8 || l2 > best {
+                                continue
+                            }
+                            // In its cone (`CONE`, squared: no root), the nearest, the lower id on a tie.
+                            let id = i32(ids[b])
+                            let along = dot(v, dirs[b])
+                            if along >= 0.0 &&
+                                along * along >= CONE * CONE * l2 &&
+                                (l2 < best || who < 0 || id < who) {
+                                best = l2
+                                who = id
+                            }
                         }
                     }
                 }
@@ -755,6 +782,29 @@ fn compact(t: mut TreeGraph) {
         kept.push(Node { parent: if nd.parent >= 0 { to[u32(nd.parent)] } else { -1 }, ..nd })
     }
     t.nodes = take kept
+}
+
+/// A grown tree dead and standing (§E4's standing dead, §E8): its trunk and limbs broken off
+/// above `broke` (m), and every piece thinner than `shed` (m: the twigs and small branches that
+/// rot and fall first, more the longer it's stood) gone with what grows from it; its leaves go
+/// with its life (a dead tip bears none: its plant's clumps are cleared after it's converted).
+pub fn die(t: mut TreeGraph, broke: f32, shed: f32) {
+    let n = t.nodes.len()
+    var gone: Vec<bool> = Vec::filled(n, false)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        let p = u32(max(nd.parent, 0))
+        gone[i] = gone[p] || !nd.alive || nd.tip.y > broke || nd.radius < shed
+    }
+    var top = 0.0
+    for i in 0..n {
+        if gone[i] {
+            t.nodes[i].alive = false
+        } else {
+            top = max(top, t.nodes[i].tip.y)
+        }
+    }
+    t.height = top
 }
 
 /// How many limbs carry a tree's crown above `above` (a share of its height): its live nodes over
@@ -866,8 +916,9 @@ fn lateral_of(dir: vec3, round: f32, angle: f32) -> vec3 {
 /// its cone, nearer it than any other bud. A bud with no free space round it doesn't grow, so the
 /// crown fills its space and stops: what bounds a tree's growth, where its light alone doesn't.
 struct Space {
-    /// Each marker's place in the envelope (height's share, radius's share, angle).
-    unit: Vec<vec3>,
+    /// Each marker's place in the envelope (height's share, radius's share, and its angle's
+    /// cosine and sine).
+    unit: Vec<vec4>,
     points: Vec<vec3>,
     free: Vec<bool>,
     lo: vec3,
@@ -919,17 +970,18 @@ impl Envelope {
 
     /// The radius at height share `u` (0 its foot, 1 its top).
     fn radius_at(self, u: f32) -> f32 {
-        let dome = sqrt(max(1.0 - pow((u - 0.45) / 0.55, 2.0), 0.0))
+        let h = (u - 0.45) / 0.55
+        let dome = sqrt(max(1.0 - h * h, 0.0))
         let cone = pow(1.0 - u, 0.9) * min(u / 0.08 + 0.2, 1.0)
         self.radius * mix(dome, cone, self.apical)
     }
 
     /// A marker's place (`Space::unit`) in it.
-    fn place(self, unit: vec3) -> vec3 {
+    fn place(self, unit: vec4) -> vec3 {
         let y = self.base + unit.x * (self.top - self.base)
         let r = self.radius_at(unit.x) * unit.y
         let mid = self.lean * unit.x
-        vec3(mid.x + r * cos(unit.z), y, mid.y + r * sin(unit.z))
+        vec3(mid.x + r * unit.z, y, mid.y + r * unit.w)
     }
 }
 
@@ -941,20 +993,28 @@ impl Space {
         var s = Space::of(mut rng)
         s.place(e, cell)
         // The nodes on the same grid, and each point near one taken.
-        var taken: Vec<u32> = Vec::new()
         let kill2 = kill * kill
+        let top = vec3(f32(s.nx - 1), f32(s.ny - 1), f32(s.nz - 1))
         for nd in nodes {
-            if nd.alive {
-                s.near(nd.tip, kill, |k| {
-                    let v = s.points[k] - nd.tip
-                    if dot(v, v) <= kill2 {
-                        taken.push(k)
-                    }
-                })
+            if !nd.alive {
+                continue
             }
-        }
-        for k in taken {
-            s.free[k] = false
+            let a = clamp((nd.tip - vec3(kill) - s.lo) / s.cell, vec3(0.0), top)
+            let b = clamp((nd.tip + vec3(kill) - s.lo) / s.cell, vec3(0.0), top)
+            for y in u32(a.y)..(u32(b.y) + 1) {
+                for z in u32(a.z)..(u32(b.z) + 1) {
+                    let row = (y * s.nz + z) * s.nx
+                    for c in (row + u32(a.x))..(row + u32(b.x) + 1) {
+                        for o in s.starts[c]..s.starts[c + 1] {
+                            let k = s.order[o]
+                            let v = s.points[k] - nd.tip
+                            if dot(v, v) <= kill2 {
+                                s.free[k] = false
+                            }
+                        }
+                    }
+                }
+            }
         }
         // The cells' runs of the free markers alone (a bud perceives only those: in a grown
         // crown most are taken), each run in its order.
@@ -979,12 +1039,16 @@ impl Space {
     /// the space is spread evenly, with no clumps and gaps of white noise for the crown to grow
     /// into one year and not another: a tree's shape is its genome's and site's, its seed's less.
     fn of(rng: mut Rng) -> Space {
-        var unit: Vec<vec3> = Vec::with_capacity(MARKERS)
+        var unit: Vec<vec4> = Vec::with_capacity(MARKERS)
         let offset = vec3(rng.unit(), rng.unit(), rng.unit())
         let step = vec3(0.8191725, 0.6710436, 0.5497005)
+        // The angles turn by the same step each marker: their cosines and sines by a rotation.
+        let turn = vec2(cos(2.0 * PI * step.z), sin(2.0 * PI * step.z))
+        var at = vec2(cos(2.0 * PI * offset.z), sin(2.0 * PI * offset.z))
         for k in 0..MARKERS {
-            let q = fract(offset + step * f32(k + 1))
-            unit.push(vec3(q.x, sqrt(q.y), 2.0 * PI * q.z))
+            let q = fract(offset.xy + step.xy * f32(k + 1))
+            at = vec2(at.x * turn.x - at.y * turn.y, at.x * turn.y + at.y * turn.x)
+            unit.push(vec4(q.x, sqrt(q.y), at.x, at.y))
         }
         Space {
             free: Vec::filled(MARKERS, true),
@@ -1115,28 +1179,44 @@ impl Shade {
             }
         }
         var above: Vec<f32> = Vec::filled(nx * ny * nz, 0.0)
+        // Each layer the one above with its leaves, spread a cell each way by a [1 2 1] tent along
+        // x, then along z (the 3 × 3 tent, separable), weighed by the taps inside the grid.
+        let layer = nx * nz
+        var row: Vec<f32> = Vec::filled(layer, 0.0)
         var y = ny - 1
         while y > 0 {
             y -= 1
+            let up = (y + 1) * layer
             for z in 0..nz {
                 for x in 0..nx {
-                    // The layer above, spread a cell each way, and its own leaves.
-                    var s = 0.0
-                    var w = 0.0
-                    for dz in 0..3 {
-                        for dx in 0..3 {
-                            let (xx, zz) = (i32(x) + i32(dx) - 1, i32(z) + i32(dz) - 1)
-                            if xx >= 0 && zz >= 0 && xx < i32(nx) && zz < i32(nz) {
-                                let k = ((y + 1) * nz + u32(zz)) * nx + u32(xx)
-                                let wt = if dx == 1 && dz == 1 { 4.0 } else if dx == 1 || dz == 1 {
-                                    2.0
-                                } else { 1.0 }
-                                s += wt * (above[k] + leaf[k])
-                                w += wt
-                            }
-                        }
+                    let k = up + z * nx + x
+                    var v = 2.0 * (above[k] + leaf[k])
+                    if x > 0 {
+                        v += above[k - 1] + leaf[k - 1]
                     }
-                    above[(y * nz + z) * nx + x] = s / w
+                    if x + 1 < nx {
+                        v += above[k + 1] + leaf[k + 1]
+                    }
+                    row[z * nx + x] = v
+                }
+            }
+            for z in 0..nz {
+                let wz = 2.0 + (if z > 0 { 1.0 } else { 0.0 }) + (if z + 1 < nz { 1.0 } else {
+                    0.0
+                })
+                for x in 0..nx {
+                    let wx = 2.0 + (if x > 0 { 1.0 } else { 0.0 }) + (if x + 1 < nx { 1.0 } else {
+                        0.0
+                    })
+                    let r = z * nx + x
+                    var v = 2.0 * row[r]
+                    if z > 0 {
+                        v += row[r - nx]
+                    }
+                    if z + 1 < nz {
+                        v += row[r + nx]
+                    }
+                    above[y * layer + r] = v / (wx * wz)
                 }
             }
         }
@@ -2236,7 +2316,7 @@ pub struct Grow {
 /// (`std::par::spawn`), on the heap (its plant is made of it on the main thread, `plant_of`).
 pub fn grow_individual(g: take Grow) -> Shape {
     let t = grow_graph(g.genome, g.site, g.light, vec2(0.0), g.events, g.seed)
-    var s = shape_of(t, g.genome)
+    var s = shape_of(t, g.genome, measured: false)
     var top = 0.0
     for c in s.clumps {
         top = max(top, c.centre.y + c.radius * c.squash)
@@ -2258,6 +2338,154 @@ pub fn grow_individual(g: take Grow) -> Shape {
         s.clumps[i].radius *= k
     }
     s
+}
+
+/// The key a near individual's growth is cached under (§E7): every input its shape is grown from
+/// (its genome's values, its site, its light a year and its events as its history's record gives
+/// them, its seed, the height it's drawn at) and the growth's `VERSION`, so a changed gale, an
+/// early shading or a new growth is grown again. Its leaves, bark and blend aren't in it: they
+/// draw the shape, they don't grow it.
+pub fn grow_key(g: Grow) -> u64 {
+    var h = Hasher::new()
+    h.write_u32(VERSION)
+    for v in values_of(g.genome) {
+        h.write_u32(canonical_bits(v))
+    }
+    let s = g.site
+    for v in [s.light, s.wetness, s.slope, s.wind, s.shade_above, s.age, s.stand] {
+        h.write_u32(canonical_bits(v))
+    }
+    h.write_u32(g.light.len())
+    for v in g.light {
+        h.write_u32(canonical_bits(v))
+    }
+    h.write_u32(g.events.len())
+    for e in g.events {
+        h.write_u32(canonical_bits(e.age))
+        h.write_u32(e.kind)
+        h.write_u32(canonical_bits(e.strength))
+    }
+    h.write_u32(g.seed)
+    h.write_u32(canonical_bits(g.height))
+    h.finish()
+}
+
+/// Where a near individual's shape is kept in the program's storage (`std::io::store`): under its
+/// key (`grow_key`).
+pub fn grown_path(key: u64) -> String {
+    String::from(f"grown/{hex(key)}")
+}
+
+/// A word as sixteen hex digits.
+pub fn hex(key: u64) -> String {
+    let digits = "0123456789abcdef"
+    var name = String::new()
+    for i in 0..16 {
+        let d = u32((key >> (4 * (15 - i))) & 15)
+        name.push_str(digits.slice(d, d + 1))
+    }
+    name
+}
+
+/// A shape's every float and count folded to a word (§E7's determinism: equal on every host or a
+/// fault to find).
+pub fn shape_hash(s: Shape) -> u64 {
+    var h = Hasher::new()
+    for w in shape_words(s) {
+        h.write_u32(w)
+    }
+    h.finish()
+}
+
+/// What a kept shape begins with (`GRWN`), before the growth's `VERSION`.
+const SHAPE_MAGIC: u32 = 0x4E575247
+
+/// A shape as words: the magic, `VERSION`, its counts, its limbs (each point and radius), its
+/// clumps and its conversion's measures.
+fn shape_words(s: Shape) -> Vec<u32> {
+    var w: Vec<u32> = Vec::with_capacity(8 + 16 * s.limbs.len() + 5 * s.clumps.len())
+    w.push(SHAPE_MAGIC)
+    w.push(VERSION)
+    w.push(s.limbs.len())
+    w.push(s.clumps.len())
+    for l in s.limbs {
+        for k in 0..4 {
+            for v in [l.points[k].x, l.points[k].y, l.points[k].z, l.radii[k]] {
+                w.push(canonical_bits(v))
+            }
+        }
+    }
+    for c in s.clumps {
+        for v in [c.centre.x, c.centre.y, c.centre.z, c.radius, c.squash] {
+            w.push(canonical_bits(v))
+        }
+    }
+    let m = s.converted
+    for v in [canonical_bits(m.iou), canonical_bits(m.volume), m.limbs, m.chains, m.clumps] {
+        w.push(v)
+    }
+    w
+}
+
+/// A shape as bytes to keep (`std::io::store`: a veteran's 2,048 limbs are 128 KiB).
+pub fn shape_bytes(s: Shape) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    for w in shape_words(s) {
+        out.push(u8(w & 255))
+        out.push(u8((w >> 8) & 255))
+        out.push(u8((w >> 16) & 255))
+        out.push(u8(w >> 24))
+    }
+    out
+}
+
+/// Word `i` of `b`, little-endian.
+fn le_word(b: [u8], i: u32) -> u32 {
+    u32(b[4 * i]) | (u32(b[4 * i + 1]) << 8) | (u32(b[4 * i + 2]) << 16) | (u32(b[4 * i + 3]) << 24)
+}
+
+/// A kept shape read back (`shape_bytes`): none if the bytes aren't one this `VERSION` wrote.
+pub fn shape_from_bytes(b: [u8]) -> Option<Shape> {
+    let word = |i: u32| le_word(b, i)
+    let f = |i: u32| bitcast_f32(le_word(b, i))
+    if b.len() < 16 || b.len() % 4 != 0 || word(0) != SHAPE_MAGIC || word(1) != VERSION {
+        return None
+    }
+    let (nl, nc) = (word(2), word(3))
+    if b.len() / 4 != 4 + 16 * nl + 5 * nc + 5 {
+        return None
+    }
+    var limbs: Vec<Tube<4>> = Vec::with_capacity(nl)
+    var at = 4
+    for _ in 0..nl {
+        var points = [vec3(0.0); 4]
+        var radii = [0.0; 4]
+        for k in 0..4 {
+            points[k] = vec3(f(at), f(at + 1), f(at + 2))
+            radii[k] = f(at + 3)
+            at += 4
+        }
+        limbs.push(Tube { points, radii })
+    }
+    var clumps: Vec<Clump> = Vec::with_capacity(nc)
+    for _ in 0..nc {
+        clumps.push(
+            Clump {
+                centre: vec3(f(at), f(at + 1), f(at + 2)),
+                radius: f(at + 3),
+                squash: f(at + 4),
+            },
+        )
+        at += 5
+    }
+    let converted = Converted {
+        iou: f(at),
+        volume: f(at + 1),
+        limbs: word(at + 2),
+        chains: word(at + 3),
+        clumps: word(at + 4),
+    }
+    Some(Shape { limbs, clumps, converted })
 }
 
 /// A near individual's plant from its shape (`grow_individual`) and its kind's look, `out` (its
@@ -2357,12 +2585,27 @@ fn gray_scott(feed: f32, kill: f32, steps: u32, seed: u32) -> Vec<f32> {
 /// The moss's patch amount (0 to 1) at `p` (in its tile's cells, any), of cause class `class`
 /// (0 wet, 1 dry): the nearest cell's.
 pub fn moss_tile(class: u32, p: vec2) -> f32 {
+    moss_tile_in(MOSS, class, p)
+}
+
+/// `moss_tile` from `moss` (`MOSS`'s words): in GPU code a slice the pass binds (a constant
+/// table indexed there is copied whole into each invocation, its 8 KB a texel or a vertex, and
+/// makes its pipeline's compile slow: docs/bench.md "E7").
+pub fn moss_tile_in(moss: [u32], class: u32, p: vec2) -> f32 {
+    let at = moss_cell(class, p)
+    f32((moss[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+}
+
+/// The cell of class `class`'s patch at `p` (cells), as a byte's index in `MOSS`.
+pub fn moss_cell(class: u32, p: vec2) -> u32 {
     let n = i32(PATCH)
     let c = vec2i(floor(p))
     let (x, y) = (u32(((c.x % n) + n) % n), u32(((c.y % n) + n) % n))
-    let at = min(class, 1) * PATCH * PATCH + y * PATCH + x
-    f32((MOSS[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+    min(class, 1) * PATCH * PATCH + y * PATCH + x
 }
+
+/// The words `MOSS` takes.
+pub const MOSS_WORDS: u32 = 2 * PATCH * PATCH / 4
 
 /// Lichen's crusts (§E4): a diffusion-limited aggregation (Witten and Sander 1981) on a
 /// `PATCH`-a-side torus from eight seeds, walkers stuck where they touch the crust, at build; each

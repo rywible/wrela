@@ -106,6 +106,14 @@ fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
 }
 
 pub fn init() -> Vale {
+    // The archetypes grown at build, as this host holds them (§E7's hashes: the same everywhere).
+    var h = std::hash::Hasher::new()
+    for b in trees::archetypes::GROWN {
+        h.write_u32(u32(b))
+    }
+    print(
+        f"grown: the archetypes, {trees::archetypes::GROWN.len()} bytes; their hash {engine::growth::hex(h.finish())}",
+    )
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
@@ -282,7 +290,11 @@ fn the_vales_small_causes_are_placed(s: Vale) {
             let h = p.at.history.decode()
             if p.kind == trees::kinds::LOG_SHORT || p.kind == trees::kinds::LOG_LONG {
                 logs += 1
-                brackets += engine::growth::fungi_on(h.x, 12.0 * p.at.scale, u32(abs(p.at.at.x * 7.0 + p.at.at.z * 13.0))).len()
+                brackets += engine::growth::fungi_on(
+                    h.x,
+                    12.0 * p.at.scale,
+                    u32(abs(p.at.at.x * 7.0 + p.at.at.z * 13.0)),
+                ).len()
                 bare += engine::growth::bare_share(h.x)
             } else if engine::growth::lichen_of(h) > 0.5 {
                 lichened += 1
@@ -308,4 +320,17 @@ fn the_vales_small_causes_are_placed(s: Vale) {
         f"the vale's small causes: {logs} fallen trees, {brackets} brackets, {bare / f32(max(logs, 1))} of their bark gone; litter {litter / f32(max(cells, 1))} deep; {f32(mossy) / f32(max(cells, 1))} of the ground in moss's causes; {lichened} trees old enough for lichen",
     )
     assert(logs > 0 && cells > 0, "no fallen tree, or no ground")
+}
+
+/// The first ring of near trees (§E7: the `FIRST_N` nearest within 40 m of the first eye) grown and
+/// drawn as themselves within the frames, each grown (nothing is kept in a test's storage). Its
+/// time is printed, not judged: a frame test's host runs its parallel work on few helpers, so the
+/// ring's growths queue; the budget (1,000 ms) is measured with a played page's helpers by
+/// `wrela tool grow -- --hash` (docs/bench.md "E7").
+@test(frames: 900, gpu: true)
+fn the_first_ring_grows_before_the_vale_is_ready(s: Vale) {
+    borrow land = s.stage.land
+    let Some(ms) = land.ring_ms else { panic("the first ring wasn't drawn within 900 frames") }
+    print(f"the first ring: {land.ring.len()} trees in {ms} ms")
+    assert(land.ring.len() == land::stage::FIRST_N, f"{land.ring.len()} trees in the first ring")
 }

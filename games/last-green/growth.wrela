@@ -24,6 +24,8 @@ use std::math::TAU
 pub struct Grown: Copy + GpuData {
     pub land: Bare,
     pub beds: [u32; SQUARE_SOIL],
+    /// The moss's patches (`engine::growth::MOSS`), read where the ground is cooked.
+    pub moss: [u32; engine::growth::MOSS_WORDS],
 }
 
 /// How densely the old wood's floor plants cover its shade (`engine::terrain::Cover::under`), and
@@ -45,7 +47,7 @@ fn grown_land() -> Grown {
         let cm = min(u32(round(WATER.depth[c] * 100.0)), 65535)
         beds[c / 2] |= cm << (16 * (c % 2))
     }
-    Grown { land: w.land, beds }
+    Grown { land: w.land, beds, moss: engine::growth::MOSS }
 }
 
 impl Grown {
@@ -102,6 +104,7 @@ impl Grown {
             trodden: fields.y,
             rim: 0.0,
             rock_albedo: ground::rock_albedo,
+            moss: land::cover::moss_at(self.moss, at.xz),
         )
         // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
         // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left

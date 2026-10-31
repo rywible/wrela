@@ -207,6 +207,7 @@ run = ["git"]
 [tools.grow]
 package = "studio/grow"
 write = ["ws=.", "out=build/grow"]
+browser = true
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

@@ -3,8 +3,9 @@
 // tree); a tool test's prints aren't shown, so what each measured is in its assertion's message.
 
 use engine::growth::{
-    Converted, FALL, GALE, Genome, GrowthEvent, KNOT, SHOOT, Site, TreeGraph, genome_hash,
-    grow_graph, into_plant, limbs_through,
+    Converted, FALL, GALE, Genome, Grow, GrowthEvent, KNOT, SHOOT, Site, TreeGraph, genome_hash,
+    grow_graph, grow_individual, grow_key, into_plant, limbs_through, shape_bytes, shape_from_bytes,
+    shape_hash,
 }
 use engine::plant::{Bark, Leaves, Plant}
 use std::time::now
@@ -390,4 +391,53 @@ fn old_bark_cracks_deeper_and_moss_takes_the_north_face() {
         north > 2.0 * south,
         f"moss {north / 64.0} on the north face, {south / 64.0} on the south",
     )
+}
+
+/// A near tree's growth as the vale asks for one (§E7): a 60-year oak with its light a year (an
+/// opening's: a stunted tree under half the light breaks the same at any age, and grows no more)
+/// and a gale.
+fn near_oak(gale_at: f32) -> Grow {
+    var light: Vec<f32> = Vec::new()
+    for y in 0..60 {
+        light.push(0.8 + 0.2 * f32(y) / 60.0)
+    }
+    Grow {
+        genome: genomes()[Species::Oak],
+        site: Site { age: 60.0 },
+        light,
+        events: Vec::from([GrowthEvent { age: gale_at, kind: GALE, strength: 0.8 }]),
+        seed: 5,
+        leaves: Leaves {},
+        bark: Bark {},
+        blend: 1.1,
+        height: 18.0,
+    }
+}
+
+/// E7: a near tree's shape kept as bytes and read back is the same shape (its hash), and the
+/// same growth grown twice is too; one event moved (the gale a year later) gives another key, so
+/// the page's storage misses, and another tree.
+@test(tool, budget: 600)
+fn a_kept_shape_comes_back_and_its_key_names_every_input() {
+    let a = grow_individual(near_oak(30.0))
+    let again = grow_individual(near_oak(30.0))
+    assert(shape_hash(a) == shape_hash(again), "the same growth grown twice differs")
+    let Some(back) = shape_from_bytes(shape_bytes(a)) else {
+        panic("a kept shape didn't read back")
+    }
+    assert(shape_hash(back) == shape_hash(a), "a kept shape read back differs")
+    assert(
+        back.limbs.len() == a.limbs.len() && back.clumps.len() == a.clumps.len(),
+        "a kept shape's counts",
+    )
+    var bytes = shape_bytes(a)
+    bytes[4] = bytes[4] + 1
+    assert(shape_from_bytes(bytes).is_none(), "another version's shape was read")
+    assert(
+        grow_key(near_oak(30.0)) == grow_key(near_oak(30.0)),
+        "the same growth keyed twice differs",
+    )
+    assert(grow_key(near_oak(31.0)) != grow_key(near_oak(30.0)), "a moved gale keeps its key")
+    let moved = grow_individual(near_oak(31.0))
+    assert(shape_hash(moved) != shape_hash(a), "a moved gale grew the same tree")
 }

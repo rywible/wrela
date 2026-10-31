@@ -891,6 +891,8 @@ pub struct Wood {
     /// of its own drawn only far (a far layer's: never as cards, nor in the shadows).
     pub far_kinds: Vec<u32>,
     pub atlas: Texture<Rgba8>,
+    /// The moss's patches on bark (`growth::MOSS`), bound where limbs are drawn.
+    pub moss: GpuBuffer<u32>,
     outlines: GpuBuffer<vec2>,
     /// Bark's ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
     /// sampler that repeats them.
@@ -1008,6 +1010,7 @@ impl Wood {
         let ridges = plant::cook_ridges()
         let coarse = plant::cook_coarse(ridges)
         var w = Wood {
+            moss: buffer_of(Vec::from(growth::MOSS), at_least: 1),
             kinds,
             far_kinds,
             atlas,
@@ -1736,6 +1739,7 @@ impl Wood {
                     limbs: self.pool.limbs,
                     instances: ph.instances.span(start: 0, count: self.seen.places),
                     marks: ph.marks.span(start: 0, count: self.seen.places),
+                    moss: self.moss,
                 ),
                 bark_shade.bind(
                     lt,
