@@ -835,9 +835,48 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     }
     verify(rel, root)?
     verify_kept(p.kept)?
+    deploy_server(root)?
     unstore(p.deletes, root)?
     print(f"{BUCKET} let go of {p.deletes.len()} objects")
     Ok(after)
+}
+
+/// The console's server, if the release has one (`fly/`, studio/release/server.wrela): deployed to
+/// Fly.io by `flyctl`, which alone gets `FLY_API_TOKEN`, after the Workers (a console just deployed
+/// tries its server again every few seconds until the new one answers it). Without the token (the
+/// `production` environment has none yet) it says so and deploys nothing.
+pub fn deploy_server(root: str) -> Result<(), ToolError> {
+    if files::stat(f"{root}/fly/fly.toml").wait().is_err() {
+        return Ok(())
+    }
+    let token = secret("FLY_API_TOKEN").unwrap_or(String::new())
+    if token.is_empty() {
+        print("the console's server isn't deployed: FLY_API_TOKEN isn't set")
+        return Ok(())
+    }
+    var c = run::command("flyctl", root)
+    c.args = Vec::from(
+        [
+            String::from("deploy"),
+            String::from("fly"),
+            String::from("--remote-only"),
+            String::from("--ha=false"),
+            String::from("--yes"),
+        ],
+    )
+    c.secrets.push(String::from("FLY_API_TOKEN"))
+    c.timeout = RUN_TIMEOUT
+    print("the console's server: flyctl deploy")
+    let ran = run::run(c).wait().map_err(|e| ToolError::new(f"flyctl deploy: {e.message()}"))?
+    let out = said(ran)?
+    if !out.is_empty() {
+        print(out.as_str())
+    }
+    if ran.status != 0 {
+        return Err(ToolError::new(f"flyctl deploy exited {ran.status}"))
+    }
+    print("the console's server is deployed")
+    Ok(())
 }
 
 /// Whether `url` answers 200 with `want`, asked at most `TRIES` times, `BETWEEN_TRIES` apart: a

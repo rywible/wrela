@@ -372,3 +372,38 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Found:** 2026-10-22, with the gap above.
 - **Meanwhile:** the boards are local: a player's best runs and the route search's, kept in the game's own storage.
 - **Status:** fixed in toolchain 0.3.0 (rywible/wrela-compiler#19), after Ryan chose persistent storage (SQLite on the server, backed up to a bucket): `std::store`, keys and values in key order in one SQLite file beside the rooms' journals, which every room and every server build shares. Reads are requests; writes commit when a call returns, before its records are kept and its sends go. A client asks a server for a board or a replay as a message on its connection, which the server program answers from the store; a room's log is only for what its peers share.
+
+### A server takes one program's clients
+
+- **Needed:** one accounts server for every wrela game, and each game's runs uploaded to it and verified there (games/capybara/design.md, "Accounts and leaderboards"): the console signs in, and a game it shows submits runs.
+- **What happens:** a client's connection carries its program's pair id, a hash of that program's client and server modules, and `wrela-serve` refuses a client of another pair (language.md §15.3, runtime/serve's `Rooms::join`). So only the console's own client can reach a server the console's program builds, a game can't reach it at all, and one server program can't serve several client programs. A server also can't sign anything (std::crypto only verifies), so a token one server issued can't be checked by another server without a shared store, and two `wrela-serve`s can't share one (a data directory is for one process).
+- **Meanwhile:** the console's program is the server (`console/server`, `serve_init` and `serve` in console/main.wrela), so its server build holds each game's verifier (the capybara's `boards::Capybara`), and changes with each game's sim. A game reaches the boards through the console's channel to it (`std::host::send`, `receive`, `reply`; platform/link.wrela): the console calls, the game holds the call until it has an ask, and the console carries the ask to the server. The game's token is a record in the store, not a signed token.
+- **Status:** open: a server that admits named other pairs (`--pair`), or a client allowed another program's server.
+
+### A server sees no HTTP request
+
+- **Needed:** the account's session in a `__Host-` cookie (HttpOnly, Secure, SameSite), and each request that changes something checked for its Origin and a CSRF token (design.md, "Passkeys only, our own server").
+- **What happens:** a server program sees only its rooms' messages (`Event::Message`), over WebTransport. It is never given a request's headers, can't set a cookie, and isn't told a connection's Origin: `wrela-serve --origin` refuses browsers of other origins before a room hears of them, and admits a client with no Origin (not a browser).
+- **Meanwhile:** the session's token and its CSRF token are kept in the console's storage (its origin's alone, so a game on its own origin can't read them), and the token is the connection's first message (`Hello`). There is no ambient credential for another site to ride on, which is what a CSRF token guards against, and `--origin https://wrela.dev` keeps other pages' browsers out; every request that changes the account still carries the session's CSRF token, compared in constant time (platform/server.wrela). The server never learns an IP address, which the Privacy Policy relies on.
+- **Status:** open: a room told a connection's Origin, or an HTTP surface beside the rooms.
+
+### A server has no wall clock
+
+- **Needed:** sessions that expire after 90 days, game tokens after an hour, challenges after five minutes, and uploads counted by the hour, across server restarts.
+- **What happens:** `serve`'s `time` counts from the server process's start (language.md §19.3), and a server has no service for the time of day.
+- **Meanwhile:** the server keeps its own clock in its store (platform/server.wrela, `clock_key`): read at its first call and counted on from the host's time, written every 10 s. It never goes back, but stands still while the server is down, so an expiry is late by the server's downtime.
+- **Status:** open: the time of day as a server's service.
+
+### `wrela-serve` can't choose its address
+
+- **Needed:** the console's server on Fly.io, which delivers UDP only to the `fly-global-services` address; a wildcard bind receives it but replies from the wrong source, which Fly drops (https://fly.io/docs/networking/udp-and-tcp/).
+- **What happens:** a production `wrela-serve` binds every interface (runtime/serve, `IpBindConfig::InAddrAnyDual`), with no option for one address.
+- **Meanwhile:** the release's image relays UDP from `fly-global-services:443` to `wrela-serve` on the loopback with socat (studio/release/server.wrela). Not yet run on Fly.
+- **Status:** open: `wrela-serve --bind ADDR`.
+
+### `wrela-serve` keeps a room's printed lines to itself
+
+- **Needed:** debugging the console's server on a real `wrela-serve` (the end-to-end check in docs/bench.md, "The console's server").
+- **What happens:** a server program's `print`s are kept by its room's host (at most 256 lines a room) and never written out; `wrela-serve` prints only a room's failures.
+- **Meanwhile:** a debugging build wrote what it saw into its store, and the store was read with SQLite.
+- **Status:** open: `wrela-serve --print`, or a room's lines on its standard error.

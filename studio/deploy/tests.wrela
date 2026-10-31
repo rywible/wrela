@@ -998,7 +998,8 @@ fn a_worker_that_does_not_serve_a_kept_release_fails_the_deploy() {
 }
 
 /// The workspace grants the deploy tool the catalog's domains and GitHub alone, the pinned
-/// `npx`, and Cloudflare's secrets: a domain that the catalog gains is a grant to add.
+/// `npx` and `flyctl`, and Cloudflare's and Fly.io's secrets: a domain that the catalog gains is a
+/// grant to add.
 @test(tool, read: [("ws", "../..")], budget: 30)
 fn the_deploy_tool_is_granted_the_catalogs_domains() {
     let Some(manifest) = read("ws/wrela.toml") else { panic("no wrela.toml") }
@@ -1024,9 +1025,12 @@ fn the_deploy_tool_is_granted_the_catalogs_domains() {
     for h in want {
         assert(contains(hosts, f"\"{h.as_str()}\""), h.as_str())
     }
-    assert(contains(section, "\nrun = [\"npx\"]"), "npx")
+    assert(contains(section, "\nrun = [\"npx\", \"flyctl\"]"), "npx, and flyctl for the server")
     assert(
-        contains(section, "\nsecrets = [\"CLOUDFLARE_API_TOKEN\", \"CLOUDFLARE_ACCOUNT_ID\"]"),
+        contains(
+            section,
+            "\nsecrets = [\"CLOUDFLARE_API_TOKEN\", \"CLOUDFLARE_ACCOUNT_ID\", \"FLY_API_TOKEN\"]",
+        ),
         "secrets",
     )
 }

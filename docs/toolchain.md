@@ -53,6 +53,19 @@ wrela run games/capybara                               # serve it to a browser
 - `wrela-host --timestamps` prints each pass's GPU time; `--png`, `--every` and `--png-from` save frames; `--until TEXT` runs until the program prints `TEXT`.
 - `wrela-host --no-gpu <build> --ticks N --log out.ticks` runs a ticked program's ticks alone and records them; `--replay out.ticks` checks each tick's hash and names the first that differs.
 
+## The console's server
+
+The console's program has a server build (`server/game.wasm`): accounts and the games' boards (platform/server.wrela, console/server). Its passkeys are for `wrela.dev` from `https://wrela.dev` (`RP_ID` and `ORIGIN` in console/main.wrela). To run it on this machine:
+
+```bash
+wrela build console -o build/cons --set 'RP_ID="localhost"' --set 'ORIGIN="http://localhost:8080"'
+wrela-serve build/cons --dev --data build/cons-data      # writes build/cons/net.json; binds [::1] only
+```
+
+- A browser makes passkeys only on a secure context whose host is the relying party's ID: serve the console's page at `http://localhost:<port>` and set `ORIGIN` to it.
+- `wrela-serve` keeps a room's printed lines to itself (docs/toolchain-gaps.md); the store is `<data>/store.sqlite`, which SQLite reads while it runs.
+- Its tests run on a fake host (`wrela test platform`); `docs/bench.md`'s "The console's server" was measured on a real `wrela-serve`.
+
 ## Watching and measuring
 
 ```bash
