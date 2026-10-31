@@ -1964,21 +1964,30 @@ fn board_places(s: mut Lab, c: u32, category: u32) -> Vec<Place> {
 }
 
 /// The world's board for course `c` (or the whole game) and `category` on the runs card: each
-/// place's account name and time, fastest first, from the console's server (online.wrela).
-fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32) {
+/// place's account name and time, fastest first, from the console's server (online.wrela). The
+/// search's own note (what to type, that it's searching, or why it can't) is said once, across both
+/// categories when neither has a run; and a search board says no note while its completions are
+/// open (`finding`), so the list never covers it.
+fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, finding: bool) {
     let first = first_row(s.board)
     var places: Vec<Place> = Vec::new()
     var note = String::new()
+    var whole = false
     if s.board == online::SEARCH {
         places = online::found_places(mut s.online, c, category)
         let (names, said) = online::found(s.online)
-        note = if !said.is_empty() || s.search.blank() {
-            if s.search.blank() { String::from("Type a name to find its runs.") } else {
+        if !said.is_empty() || s.search.blank() {
+            note = if s.search.blank() { String::from("Type a name to find its runs.") } else {
                 said.clone()
             }
+            whole = true
         } else if places.is_empty() && !names.is_empty() {
-            String::from("They haven't run this level yet.")
-        } else { String::new() }
+            note = String::from("They haven't run this level yet.")
+        }
+        let part = s.search.part
+        if finding && !search::completions(part, s.search.parts[part].as_str()).is_empty() {
+            note.clear()
+        }
     } else {
         let course = online::board_course(s.board, c)
         online::want(mut s.online, course, category)
@@ -1988,7 +1997,16 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32) {
     }
     let head = row_rect(screen, category, first)
     if places.is_empty() {
-        let lines = wrap_note(s.fonts, note.as_str(), size * 0.8, head.w - size * 0.8)
+        var width = head.w
+        if whole {
+            if category != ANY {
+                return
+            }
+            if online::found_places(mut s.online, c, FULL).is_empty() {
+                width = row_rect(screen, FULL, first).right() - head.x
+            }
+        }
+        let lines = wrap_note(s.fonts, note.as_str(), size * 0.8, width - size * 0.8)
         for k in 0..lines.len() {
             let _ = s.list.text(
                 s.fonts,
@@ -2142,7 +2160,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
             INKED,
         )
         if worldly(s.board) {
-            world_rows(mut s, c, category, screen, size)
+            world_rows(mut s, c, category, screen, size, finding)
             continue
         }
         let runs = listed(s, c, category)
@@ -2429,19 +2447,31 @@ fn watch_bar(s: mut Lab, screen: vec2) {
         vec2(right + u * 2.0, r.y + u * 4.8),
         SOFT,
     )
-    // Race: the level again, this run the ghost (R, Select, or a click).
+    // Race: the level again, this run the ghost (R, Select, or a click), its key or button on it.
     let race = race_rect(screen)
     let pointing = s.device == Device::Keys && race.contains(s.pointer)
     s.list.rect(race, if pointing { vec4(0.94, 0.88, 0.72, 1.0) } else {
         vec4(1.0, 0.84, 0.32, 1.0)
     }, radius: u * 1.4)
+    let glyph = u * 3.0
+    let gw = screens::act_width(s.fonts, Act::Race, s.device, glyph)
     let rw = s.fonts.font(Face::Sans).measure("Race", size)
+    let gap = if gw > 0.0 { u * 1.0 } else { 0.0 }
+    let left = race.x + (race.w - gw - gap - rw) * 0.5
+    let _ = screens::act(
+        mut s.list,
+        s.fonts,
+        Act::Race,
+        s.device,
+        vec2(left, race.y + (race.h - glyph) * 0.5),
+        glyph,
+    )
     let _ = s.list.text(
         s.fonts,
         Face::Sans,
         "Race",
         size,
-        vec2(race.x + (race.w - rw) * 0.5, race.y + (race.h - size) * 0.5 - u * 0.2),
+        vec2(left + gw + gap, race.y + (race.h - size) * 0.5 - u * 0.2),
         INKED,
     )
     let alpha = 1.0 - smoothstep(IDLE, IDLE + 0.5, s.idle)
@@ -2467,8 +2497,8 @@ fn race_rect(screen: vec2) -> Rect {
     Rect::new(right - u * 14.0, screen.y - u * 11.6, u * 12.4, u * 5.8)
 }
 
-/// What the watch's prompts offer: play, seek, the speed, again from the start, a race against the
-/// run as the ghost (docs/plan-online-play.md, step 6), and back.
+/// What the watch's prompts offer: play, seek, the speed, again from the start, and back. The race
+/// against the run as the ghost (docs/plan-online-play.md, step 6) is the bar's button, its key on it.
 fn watch_prompts() -> Vec<Prompt> {
     Vec::from(
         [
@@ -2476,7 +2506,6 @@ fn watch_prompts() -> Vec<Prompt> {
             Prompt { act: Act::Change, say: "Seek" },
             Prompt { act: Act::Move, say: "Speed" },
             Prompt { act: Act::Again, say: "Again" },
-            Prompt { act: Act::Race, say: "Race" },
             Prompt { act: Act::Back, say: "Back" },
         ],
     )
@@ -2563,4 +2592,13 @@ fn a_frame_isnt_drawn_between_two_places_across_a_cut() {
     assert(mixed(a, b, 0.5).at == start, "across a cut")
     b.tally.cuts = 0
     assert(mixed(a, b, 0.5).at == start + vec2(15.0, 0.0), "without one")
+}
+
+@test
+fn the_watch_offers_race_once_on_its_bars_button_not_in_its_prompts() {
+    for p in watch_prompts() {
+        assert(p.act != Act::Race, f"{p.say}: the bar's button is the race")
+    }
+    let r = race_rect(vec2(1280.0, 720.0))
+    assert(r.w > 0.0 && r.right() <= 1280.0 && r.bottom() <= 720.0, "the button, on the screen")
 }
