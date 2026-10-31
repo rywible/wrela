@@ -16,7 +16,8 @@ use std::tool::drive
 use std::tool::drive::{Scalar, Step}
 use std::tool::files
 use std::tool::image
-use style::{Cma, SIDE, Stats, Target, against, distance, stats, target_of}
+use style::{SIDE, Stats, Target, against, distance, stats, target_of}
+use toolkit::cma::Cma
 use styles::cel
 use styles::cel::Cel
 use styles::painterly

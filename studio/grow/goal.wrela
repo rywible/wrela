@@ -1,0 +1,283 @@
+// A tree grown to a structured goal (`wrela tool grow -- --goal <goal.toml>`, docs/plan-world-class-3.md
+// §E6, §8's example): its species, age, exposure, light, the events of its life by year, the side
+// its light comes from, and its height; grown directly and its measurable properties checked.
+//
+// ```toml
+// species = "oak"        # oak, beech, birch, hawthorn, blackthorn, pine, alder
+// age = 180              # years
+// exposure = 0.6         # to the wind, 0 to 1
+// light = "open"         # open, edge or under (or a share of the open's, 0 to 1)
+// light_from = "south"   # north, east, south or west: its crown leans that way
+// height = 22            # m: grown within 10 %
+// seed = 3
+//
+// [[event]]
+// kind = "gale"          # gale, fire, browse, fall or lightning
+// year = 40              # its age then
+// strength = 0.9         # 0 to 1
+// ```
+
+use engine::growth::{
+    BROWSE, FALL, FIRE, GALE, Genome, GrowthEvent, LIGHTNING, Site, TreeGraph, genome_with,
+    grow_graph, into_plant, side_view, values_of,
+}
+use engine::plant::{Bark, Leaves}
+use specimens::{Ask, NAMES, SHARES, Specimen, index_of}
+use std::tool::ToolError
+use trees::genomes::genomes
+
+/// A goal (the file's fields; `height` and `light_from` where given).
+pub struct Goal: Clone {
+    pub species: u32,
+    pub age: f32,
+    pub exposure: f32,
+    pub light: f32,
+    pub light_from: Option<vec2>,
+    pub height: Option<f32>,
+    pub seed: u32,
+    pub events: Vec<GrowthEvent>,
+}
+
+/// How far a goal's crown leans toward its light (m: the record's lean, `grow_graph`'s,
+/// **proposed**).
+const LEAN: f32 = 1.5
+
+/// How many times a goal's height is grown toward (its genome's tallest scaled by the shortfall).
+const HEIGHT_TRIES: u32 = 4
+
+/// The value of `key = value` on `line`, unquoted, if the line holds `key`.
+fn value_of(line: str, key: str) -> Option<String> {
+    let at = line.find("=")?
+    if line.slice(0, at).trim() != key {
+        return None
+    }
+    let rest = String::from(line.slice(at + 1, line.len()).trim())
+    let cut = match rest.as_str().find("#") {
+        Some(h) => String::from(rest.as_str().slice(0, h).trim()),
+        None => take rest,
+    }
+    let v = cut.as_str()
+    if v.len() >= 2 && v.starts_with("\"") && v.ends_with("\"") {
+        return Some(String::from(v.slice(1, v.len() - 1)))
+    }
+    Some(String::from(v))
+}
+
+/// A direction's name as a unit vector on the ground (+x east, +z north).
+fn direction(name: str) -> Option<vec2> {
+    if name == "north" {
+        Some(vec2(0.0, 1.0))
+    } else if name == "south" {
+        Some(vec2(0.0, -1.0))
+    } else if name == "east" {
+        Some(vec2(1.0, 0.0))
+    } else if name == "west" {
+        Some(vec2(-1.0, 0.0))
+    } else { None }
+}
+
+/// An event's kind by its name (`GALE` …).
+fn event_kind(name: str) -> Option<u32> {
+    if name == "gale" {
+        Some(GALE)
+    } else if name == "fire" {
+        Some(FIRE)
+    } else if name == "browse" {
+        Some(BROWSE)
+    } else if name == "fall" {
+        Some(FALL)
+    } else if name == "lightning" {
+        Some(LIGHTNING)
+    } else { None }
+}
+
+/// A goal file's text parsed.
+pub fn parse(text: str) -> Result<Goal, ToolError> {
+    var g = Goal {
+        species: 0,
+        age: 100.0,
+        exposure: 0.0,
+        light: 1.0,
+        light_from: None,
+        height: None,
+        seed: 1,
+        events: Vec::new(),
+    }
+    var named = false
+    var in_event = false
+    var event = GrowthEvent { age: 0.0, kind: GALE, strength: 1.0 }
+    for (a, b) in text.split("\n") {
+        let line = text.slice(a, b).trim()
+        if line.len() == 0 || line.starts_with("#") {
+            continue
+        }
+        if line == "[[event]]" {
+            if in_event {
+                g.events.push(event)
+            }
+            in_event = true
+            event = GrowthEvent { age: 0.0, kind: GALE, strength: 1.0 }
+            continue
+        }
+        let number = |key: str| -> Option<f32> {
+            match value_of(line, key) {
+                Some(v) => v.as_str().parse_f32(),
+                None => None,
+            }
+        }
+        if in_event {
+            if let Some(v) = value_of(line, "kind") {
+                let Some(k) = event_kind(v.as_str()) else {
+                    return Err(ToolError::new(f"goal: no event kind {v}"))
+                }
+                event.kind = k
+            } else if let Some(y) = number("year") {
+                event.age = y
+            } else if let Some(s) = number("strength") {
+                event.strength = clamp(s, 0.0, 1.0)
+            }
+            continue
+        }
+        if let Some(v) = value_of(line, "species") {
+            let Some(k) = index_of(NAMES, v.as_str()) else {
+                return Err(ToolError::new(f"goal: no species {v}"))
+            }
+            g.species = k
+            named = true
+        } else if let Some(a) = number("age") {
+            g.age = a
+        } else if let Some(e) = number("exposure") {
+            g.exposure = clamp(e, 0.0, 1.0)
+        } else if let Some(v) = value_of(line, "light") {
+            g.light = match index_of(["open", "edge", "under"], v.as_str()) {
+                Some(i) => SHARES[i],
+                None => match v.as_str().parse_f32() {
+                    Some(x) => clamp(x, 0.05, 1.0),
+                    None => return Err(ToolError::new(f"goal: no light {v}")),
+                },
+            }
+        } else if let Some(v) = value_of(line, "light_from") {
+            g.light_from = direction(v.as_str())
+            if g.light_from.is_none() {
+                return Err(ToolError::new(f"goal: no direction {v}"))
+            }
+        } else if let Some(h) = number("height") {
+            g.height = Some(h)
+        } else if let Some(s) = number("seed") {
+            g.seed = u32(s)
+        }
+    }
+    if in_event {
+        g.events.push(event)
+    }
+    if !named {
+        return Err(ToolError::new("goal: no species"))
+    }
+    Ok(g)
+}
+
+/// Goal `g` grown with genome `gen`.
+fn grown_with(g: Goal, gen: Genome) -> TreeGraph {
+    let site = Site { age: g.age, light: g.light, wind: g.exposure }
+    let light = if g.light >= 1.0 { Vec::new() } else {
+        Vec::filled(u32(ceil(max(g.age, 1.0))), g.light)
+    }
+    let lean = match g.light_from {
+        Some(d) => d * LEAN,
+        None => vec2(0.0),
+    }
+    grow_graph(gen, site, light, lean, g.events, g.seed)
+}
+
+/// What a goal grew: its graph and genome, and each check's line (passed or not).
+pub struct Reached {
+    pub tree: TreeGraph,
+    pub genome: Genome,
+    pub checks: Vec<(String, bool)>,
+}
+
+/// Goal `g` grown: toward its height (where given) by its genome's tallest, `HEIGHT_TRIES` times
+/// at most; then its checks: its height within 10 %, its crown's centroid toward its light, a
+/// lightning scar where it names lightning.
+pub fn reach(g: Goal) -> Reached {
+    var gen = genomes()[g.species]
+    var t = grown_with(g, gen)
+    if let Some(want) = g.height {
+        for _ in 0..HEIGHT_TRIES {
+            if abs(t.height - want) <= 0.05 * want || t.height <= 0.0 {
+                break
+            }
+            var v = values_of(gen)
+            v[19] = v[19] * want / t.height
+            gen = genome_with(gen, v)
+            t = grown_with(g, gen)
+        }
+    }
+    var checks: Vec<(String, bool)> = Vec::new()
+    if let Some(want) = g.height {
+        checks.push(
+            (String::from(f"height {t.height} m, goal {want} m (within 10 %)"), abs(t.height - want) <= 0.1 * want),
+        )
+    }
+    if let Some(d) = g.light_from {
+        let c = crown_centroid(t)
+        checks.push((String::from(f"crown's centroid ({c.x}, {c.y}) m toward its light ({d.x}, {d.y})"), dot(c, d) > 0.0))
+    }
+    var lightning = false
+    for e in g.events {
+        lightning = lightning || e.kind == LIGHTNING
+    }
+    if lightning {
+        checks.push((String::from(f"a lightning scar: {t.scarred}"), t.scarred))
+    }
+    Reached { tree: take t, genome: gen, checks }
+}
+
+/// The middle of a grown tree's live tips on the ground (from its foot), where its leaves are.
+pub fn crown_centroid(t: TreeGraph) -> vec2 {
+    let n = t.nodes.len()
+    var has: Vec<bool> = Vec::filled(n, false)
+    for i in 1..n {
+        if t.nodes[i].alive && t.nodes[i].parent >= 0 {
+            has[u32(t.nodes[i].parent)] = true
+        }
+    }
+    var sum = vec2(0.0)
+    var count = 0.0
+    for i in 0..n {
+        if t.nodes[i].alive && !has[i] {
+            sum += t.nodes[i].tip.xz
+            count += 1.0
+        }
+    }
+    if count > 0.0 { sum / count } else { vec2(0.0) }
+}
+
+/// A goal's grown tree as a specimen (its side view and `grown.json`, the checks with it).
+pub fn specimen_of(g: Goal, r: Reached) -> Specimen {
+    let (p, c) = into_plant(r.tree, r.genome, Leaves {}, Bark {})
+    var checks = String::new()
+    for i in 0..r.checks.len() {
+        let sep = if i == 0 { "" } else { "," }
+        let (line, ok) = (r.checks[i].0.clone(), r.checks[i].1)
+        checks = String::from(f"{checks}{sep}{{\"check\":\"{line}\",\"passed\":{ok}}}")
+    }
+    let json = String::from(
+        f"{{\"species\":\"{NAMES[g.species]}\",\"age\":{g.age},\"exposure\":{g.exposure},\"light\":{g.light},\"seed\":{g.seed},\"events\":{g.events.len()},\"nodes\":{r.tree.nodes.len()},\"limbs\":{c.limbs},\"height\":{r.tree.height},\"scarred\":{r.tree.scarred},\"checks\":[{checks}]}}\n",
+    )
+    let cc = crown_centroid(r.tree)
+    Specimen {
+        ask: Ask { species: g.species, age: g.age, light: 0, wind: g.exposure, stand: 0.0, seed: g.seed },
+        nodes: r.tree.nodes.len(),
+        limbs: c.limbs,
+        chains: c.chains,
+        height: r.tree.height,
+        centroid: vec3(cc.x, 0.0, cc.y),
+        iou: c.iou,
+        volume: c.volume,
+        grow_ms: 0.0,
+        convert_ms: 0.0,
+        json,
+        side: side_view(p, 1024),
+    }
+}
