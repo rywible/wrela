@@ -19,7 +19,7 @@
 
 use engine::growth::{
     BROWSE, FALL, FIRE, GALE, Genome, GrowthEvent, LIGHTNING, Site, TreeGraph, genome_with,
-    grow_graph, into_plant, side_view, values_of,
+    grow_graph, into_plant, limbs_through, side_view, values_of,
 }
 use engine::plant::{Bark, Leaves}
 use specimens::{Ask, NAMES, SHARES, Specimen, index_of}
@@ -198,7 +198,8 @@ pub struct Reached {
 
 /// Goal `g` grown: toward its height (where given) by its genome's tallest, `HEIGHT_TRIES` times
 /// at most; then its checks: its height within 10 %, its crown's centroid toward its light, a
-/// lightning scar where it names lightning.
+/// fork where it names a gale (two limbs over 70 % of its height, E1.2's test 5), a lightning scar
+/// where it names lightning.
 pub fn reach(g: Goal) -> Reached {
     var gen = genomes()[g.species]
     var t = grown_with(g, gen)
@@ -216,16 +217,35 @@ pub fn reach(g: Goal) -> Reached {
     var checks: Vec<(String, bool)> = Vec::new()
     if let Some(want) = g.height {
         checks.push(
-            (String::from(f"height {t.height} m, goal {want} m (within 10 %)"), abs(t.height - want) <= 0.1 * want),
+            (
+                String::from(f"height {t.height} m, goal {want} m (within 10 %)"),
+                abs(t.height - want) <= 0.1 * want,
+            ),
         )
     }
     if let Some(d) = g.light_from {
         let c = crown_centroid(t)
-        checks.push((String::from(f"crown's centroid ({c.x}, {c.y}) m toward its light ({d.x}, {d.y})"), dot(c, d) > 0.0))
+        checks.push(
+            (
+                String::from(f"crown's centroid ({c.x}, {c.y}) m toward its light ({d.x}, {d.y})"),
+                dot(c, d) > 0.0,
+            ),
+        )
     }
     var lightning = false
+    var gale = false
     for e in g.events {
         lightning = lightning || e.kind == LIGHTNING
+        gale = gale || e.kind == GALE
+    }
+    if gale {
+        let forks = limbs_through(t, through: 0.55, above: 0.7)
+        checks.push(
+            (
+                String::from(f"a fork from the gale: {forks} limbs over 70 % of its height"),
+                forks >= 2,
+            ),
+        )
     }
     if lightning {
         checks.push((String::from(f"a lightning scar: {t.scarred}"), t.scarred))
@@ -267,7 +287,14 @@ pub fn specimen_of(g: Goal, r: Reached) -> Specimen {
     )
     let cc = crown_centroid(r.tree)
     Specimen {
-        ask: Ask { species: g.species, age: g.age, light: 0, wind: g.exposure, stand: 0.0, seed: g.seed },
+        ask: Ask {
+            species: g.species,
+            age: g.age,
+            light: 0,
+            wind: g.exposure,
+            stand: 0.0,
+            seed: g.seed,
+        },
         nodes: r.tree.nodes.len(),
         limbs: c.limbs,
         chains: c.chains,

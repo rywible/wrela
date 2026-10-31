@@ -1,9 +1,9 @@
 // A tree fitted to a silhouette (`wrela tool grow -- --fit`, docs/plan-world-class-3.md §E6): the
-// site (age, light, wind, slope), the seed and a delta on each steered genome value (`STEERED`,
-// within `RANGE` of the species' own) that make the grown tree's side view most like the target's,
-// by CMA-ES (`toolkit::cma`, Hansen 2016) from a fixed seed. Both silhouettes are compared as
-// masks `MASK` cells a side, each scaled by its larger extent and centred on its bounds: a photo's
-// scale and framing aren't the tree's.
+// site (age, light, wind: the growth reads no slope, so a fit can't see one and leaves it 0), the
+// seed and a delta on each steered genome value (`STEERED`, within `RANGE` of the species' own)
+// that make the grown tree's side view most like the target's, by CMA-ES (`toolkit::cma`, Hansen
+// 2016) from a fixed seed. Both silhouettes are compared as masks `MASK` cells a side, each scaled
+// by its larger extent and centred on its bounds: a photo's scale and framing aren't the tree's.
 
 use engine::growth::{Genome, Shape, Site, genome_with, grow_graph, shape_of, values_of}
 use engine::plant::limb_axis
@@ -28,8 +28,8 @@ pub const MASK: u32 = 96
 pub const STEERED: [u32; 10] = [0, 1, 2, 4, 6, 7, 8, 13, 15, 21]
 pub const RANGE: f32 = 0.25
 
-/// The site's coordinates, before the genome's: age, light, wind, slope, seed.
-const SITE_COORDS: u32 = 5
+/// The site's coordinates, before the genome's: age, light, wind, seed.
+const SITE_COORDS: u32 = 4
 pub const COORDS: u32 = SITE_COORDS + 10
 
 /// A fit's evaluations (§E6: 400), and how often its trajectory is printed.
@@ -63,21 +63,22 @@ pub fn candidate_of(species: u32, x: [f32]) -> Candidate {
         age: AGE_LO * pow(AGE_HI / AGE_LO, x[0]),
         light: mix(0.2, 1.0, x[1]),
         wind: x[2],
-        slope: 0.5 * x[3],
-        seed: 1 + min(u32(x[4] * f32(SEEDS)), SEEDS - 1),
+        slope: 0.0,
+        seed: 1 + min(u32(x[3] * f32(SEEDS)), SEEDS - 1),
         deltas,
     }
 }
 
 /// The search's point of candidate `c` (`candidate_of`'s inverse, its seed at its cell's middle).
 pub fn point_of(c: Candidate) -> Vec<f32> {
-    var x = Vec::from([
-        log(c.age / AGE_LO) / log(AGE_HI / AGE_LO),
-        (c.light - 0.2) / 0.8,
-        c.wind,
-        c.slope / 0.5,
-        (f32(c.seed - 1) + 0.5) / f32(SEEDS),
-    ])
+    var x = Vec::from(
+        [
+            log(c.age / AGE_LO) / log(AGE_HI / AGE_LO),
+            (c.light - 0.2) / 0.8,
+            c.wind,
+            (f32(c.seed - 1) + 0.5) / f32(SEEDS),
+        ],
+    )
     for i in 0..10 {
         x.push(0.5 + 0.5 * c.deltas[i] / RANGE)
     }
@@ -107,7 +108,7 @@ pub fn grown(c: Candidate) -> Shape {
 }
 
 /// A grown shape's silhouette side on (looking along z), as a mask (`MASK` a side, row 0 at the
-/// top): its limbs and clumps, scaled by its larger extent and centred on its bounds.
+/// top): its limbs and clumps, scaled by its larger extent and centred on its bounds, closed.
 pub fn silhouette(s: Shape) -> Vec<bool> {
     var lo = vec2(1.0e9)
     var hi = vec2(-1.0e9)
@@ -135,7 +136,7 @@ pub fn silhouette(s: Shape) -> Vec<bool> {
     for c in s.clumps {
         disc_into(mut mask, corner, cell, c.centre.xy, c.radius)
     }
-    mask
+    closed(mask, CLOSING)
 }
 
 /// Tube `l` drawn into `mask` (16 capsules along its axis).
@@ -179,6 +180,46 @@ fn capsule_into(mask: mut Vec<bool>, corner: vec2, cell: f32, a: vec2, b: vec2, 
     }
 }
 
+/// Mask `m` closed by a disc `r` cells across: dilated, then eroded (a crown's gaps between its
+/// clumps, and a photo's between its leaves, filled; its outline kept).
+pub fn closed(m: [bool], r: i32) -> Vec<bool> {
+    spread(spread(m, r, true), r, false)
+}
+
+/// The closing every mask a fit compares takes (cells): its crown's mass, not the sky between its
+/// clumps (docs/bench.md, "E6").
+pub const CLOSING: i32 = 2
+
+/// Each cell set if any (`any`) or every (not `any`) cell of `m` within `r` of it is set; the
+/// mask's outside counts as unset for a dilation and set for an erosion.
+fn spread(m: [bool], r: i32, any: bool) -> Vec<bool> {
+    let n = i32(MASK)
+    var out: Vec<bool> = Vec::filled(MASK * MASK, !any)
+    for y in 0..n {
+        for x in 0..n {
+            var v = !any
+            for dy in (-r)..(r + 1) {
+                for dx in (-r)..(r + 1) {
+                    if dx * dx + dy * dy > r * r {
+                        continue
+                    }
+                    let (xx, yy) = (x + dx, y + dy)
+                    let inside = xx >= 0 && yy >= 0 && xx < n && yy < n
+                    let c = if inside { m[u32(yy * n + xx)] } else { !any }
+                    if any && c {
+                        v = true
+                    }
+                    if !any && !c {
+                        v = false
+                    }
+                }
+            }
+            out[u32(y * n + x)] = v
+        }
+    }
+    out
+}
+
 /// An image's silhouette (its dark, opaque pixels: a tree black on white), as a mask the way
 /// `silhouette` makes one.
 pub fn mask_of_image(rgba: [u8], w: u32, h: u32) -> Vec<bool> {
@@ -211,7 +252,7 @@ pub fn mask_of_image(rgba: [u8], w: u32, h: u32) -> Vec<bool> {
             }
         }
     }
-    mask
+    closed(mask, CLOSING)
 }
 
 /// An image file's silhouette (`mask_of_image`).
@@ -266,7 +307,6 @@ pub fn fit(species: u32, target: [bool], evaluations: u32, seed: u32, said: bool
     var start = Vec::filled(COORDS, 0.5)
     start[1] = 0.8
     start[2] = 0.0
-    start[3] = 0.0
     var r = Run {
         species,
         target: Vec::from(target),
@@ -275,8 +315,9 @@ pub fn fit(species: u32, target: [bool], evaluations: u32, seed: u32, said: bool
         done: 0,
         trajectory: Vec::new(),
         said,
+        seed: 0,
     }
-    var broad = Cma::new(start, 0.3, seed)
+    var broad = Cma::new(start, 0.3, seed, lambda: POPULATION)
     let first = u32(BROAD * f32(evaluations))
     while r.done + broad.lambda <= first {
         let xs = broad.ask()
@@ -290,7 +331,8 @@ pub fn fit(species: u32, target: [bool], evaluations: u32, seed: u32, said: bool
         }
         let _ = r.scored(xs)
     }
-    var narrow = Cma::new(point_of(r.best), NARROW, seed + 1)
+    r.seed = r.best.seed
+    var narrow = Cma::new(point_of(r.best), NARROW, seed + 1, lambda: POPULATION)
     while r.done + narrow.lambda <= evaluations {
         let xs = narrow.ask()
         let scores = r.scored(xs)
@@ -298,6 +340,9 @@ pub fn fit(species: u32, target: [bool], evaluations: u32, seed: u32, said: bool
     }
     Fitted { best: r.best, iou: r.iou, evaluations: r.done, trajectory: take r.trajectory }
 }
+
+/// A generation's candidates (two for each of 8 helpers).
+const POPULATION: u32 = 16
 
 /// The share of a fit's evaluations its broad search takes, and its narrow search's step.
 const BROAD: f32 = 0.55
@@ -312,15 +357,23 @@ struct Run {
     done: u32,
     trajectory: Vec<(u32, f32)>,
     said: bool,
+    /// The seed every candidate takes once the sweep has chosen one (0 until then).
+    seed: u32,
 }
 
 impl Run {
+    /// The candidate at point `x`, with the chosen seed once there is one.
+    fn candidate(self, x: [f32]) -> Candidate {
+        let c = candidate_of(self.species, x)
+        if self.seed == 0 { c } else { Candidate { seed: self.seed, ..c } }
+    }
+
     /// Points `xs` scored (1 less their IoU: lower is better), on the helpers at once; the best
     /// kept and the trajectory said every `PRINT_EVERY`.
     fn scored(mut self, xs: [Vec<f32>]) -> Vec<f32> {
         var tasks: Vec<std::par::Task<f32>> = Vec::new()
         for x in xs {
-            let c = candidate_of(self.species, x)
+            let c = self.candidate(x)
             tasks.push(std::par::spawn(Scoring { c, target: self.target.clone() }, scored))
         }
         var scores: Vec<f32> = Vec::new()
@@ -329,7 +382,7 @@ impl Run {
             scores.push(1.0 - v)
             if v > self.iou {
                 self.iou = v
-                self.best = candidate_of(self.species, xs[k])
+                self.best = self.candidate(xs[k])
             }
             self.done += 1
             if self.done % PRINT_EVERY == 0 {

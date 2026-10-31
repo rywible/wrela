@@ -132,7 +132,30 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
 | `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
 | `passes`             | A frame's passes and dispatches, in order, as a page |
+| `grow`               | A tree grown from its species' genome and site as a specimen (`--species oak --age 180 --light open --wind 0.6 --seed 3 --out out/<dir>`: its side view and `grown.json`), every species' specimens as a page (`--specimens out/<dir>`), the trees' kinds side on (`--kinds out/<dir>`), a fit to a silhouette (`--fit <png> --species oak --out out/<dir>`), and a goal grown and checked (`--goal <goal.toml> --out out/<dir>`): below |
 | `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`); the impostor's ladder run and printed (`--net impostor --rungs ABCD`, the best run written with `--out`); or the learned rejector's truth, dataset, baseline and rung (`--net rejector --frames n [--out ...]`): `engine::neural` |
+
+### Growing and steering a tree (`wrela tool grow`)
+
+- `--fit <silhouette.png> --species <s>` finds the site (age, light, wind), the seed and each steered genome value's delta (±25 % of the species', `studio/grow/fit.wrela`'s `STEERED`) whose grown tree's side view best overlaps the silhouette: a tree dark on light, as `wrela tool grow` writes one or a photograph cut out by hand. Both masks are 96 cells a side, each scaled by its larger extent and centred on its bounds, and closed by 2 cells (a crown's mass). CMA-ES (`studio/toolkit/cma.wrela`) from a fixed seed: 400 evaluations, the trajectory printed every 20; it writes the best's `grown.json` (its IoU, evaluations and trajectory), `side.png`, `fitted.png` and `target.png`. A silhouette outside the workspace runs the tool as a package with it granted: `wrela tool studio/grow --write out=build/grow --read refs=<dir> -- --fit refs/<file>.png --species oak --out out/<dir>`.
+- `--goal <goal.toml>` grows a structured goal and checks what it can measure, failing if a check does: its height within 10 % (the genome's tallest scaled toward it), its crown's centroid toward `light_from`, a fork where it names a gale, a lightning scar where it names lightning. The format (`studio/grow/goal.wrela`'s header):
+
+```toml
+species = "oak"        # oak, beech, birch, hawthorn, blackthorn, pine, alder
+age = 180              # years
+exposure = 0.6         # to the wind, 0 to 1
+light = "open"         # open, edge or under (or a share of the open's, 0 to 1)
+light_from = "south"   # north, east, south or west: its crown leans that way
+height = 22            # m: grown within 10 %
+seed = 3
+
+[[event]]
+kind = "gale"          # gale, fire, browse, fall or lightning
+year = 40              # its age then
+strength = 0.9         # 0 to 1
+```
+
+- A tree's random draws are keyed by its seed and by what draws them (a shoot by its lineage, a year's space by its year), never by its genome's values or its site, so a steered value moves the tree it grows rather than drawing another one (docs/bench.md, "E6").
 
 ## Benching another device
 

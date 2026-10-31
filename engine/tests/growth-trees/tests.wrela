@@ -4,7 +4,7 @@
 
 use engine::growth::{
     Converted, FALL, GALE, Genome, GrowthEvent, KNOT, SHOOT, Site, TreeGraph, genome_hash,
-    grow_graph, into_plant,
+    grow_graph, into_plant, limbs_through,
 }
 use engine::plant::{Bark, Leaves, Plant}
 use std::time::now
@@ -43,36 +43,6 @@ fn laterals(t: TreeGraph) -> Vec<(f32, f32, f32)> {
         }
     }
     out
-}
-
-/// How many limbs carry a tree's crown above `above` (a share of its height): its live nodes over
-/// it, grouped by the branch each passes through at `through` (the last of its line no higher),
-/// a group of three nodes or more a limb. An excurrent tree's crown all passes through its trunk;
-/// a decurrent one's through several limbs.
-fn limbs_through(t: TreeGraph, through: f32, above: f32) -> u32 {
-    let n = t.nodes.len()
-    let (lo, hi) = (through * t.height, above * t.height)
-    // Each node's branch at `lo`: its own if its parent is no higher than `lo` and it is, else its
-    // parent's.
-    var at: Vec<i32> = Vec::filled(n, -1)
-    for i in 1..n {
-        let nd = t.nodes[i]
-        let p = u32(max(nd.parent, 0))
-        at[i] = if nd.tip.y > lo && t.nodes[p].tip.y <= lo { i32(i) } else { at[p] }
-    }
-    var count: Vec<u32> = Vec::filled(n, 0)
-    for i in 1..n {
-        if t.nodes[i].alive && t.nodes[i].tip.y > hi && at[i] >= 0 {
-            count[u32(at[i])] += 1
-        }
-    }
-    var limbs = 0
-    for c in count {
-        if c >= 3 {
-            limbs += 1
-        }
-    }
-    limbs
 }
 
 /// The height the leader (the main axis) reaches.
@@ -391,10 +361,6 @@ fn every_clump_of_leaves_has_its_wood_in_it() {
     }
 }
 
-
-
-
-
 /// E1.4: a 200-year oak's bark has deeper cracks than a 40-year one's (its relief's range, as the
 /// bark's pixel shades it: `growth::bark_cracks` on the oak's own bark's ridges), and moss covers
 /// a wet, shaded trunk's north face more than its south (the vale's sun in the south: the coverage
@@ -420,5 +386,8 @@ fn old_bark_cracks_deeper_and_moss_takes_the_north_face() {
         north += engine::growth::moss_at(wet, vec3(0.0, 0.0, -1.0), 3.0, patch)
         south += engine::growth::moss_at(wet, vec3(0.0, 0.0, 1.0), 3.0, patch)
     }
-    assert(north > 2.0 * south, f"moss {north / 64.0} on the north face, {south / 64.0} on the south")
+    assert(
+        north > 2.0 * south,
+        f"moss {north / 64.0} on the north face, {south / 64.0} on the south",
+    )
 }
