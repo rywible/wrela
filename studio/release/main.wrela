@@ -19,13 +19,14 @@
 //   within 1920×1080, `hero-<16 hex>.webp`), its title art (within 1200×480, with its alpha,
 //   `title-<16 hex>.webp`) and its theme (`theme-<16 hex>.txt`, as it is). The console reads them
 //   with `catalog.tsv` (a line a game: its id, title, session's address, each image's file and
-//   size, its tagline and its theme's file) and fetches each game's runtime, WASM and shaders
-//   ahead of time from `prefetch-<id>.txt`.
+//   size, its tagline, its theme's file and the address of its build that plays itself) and
+//   fetches each game's runtime, WASM and shaders ahead of time from `prefetch-<id>.txt`.
 // - **The docs**: the docs' program, the reference docs `wrela doc --export` writes of std and
 //   the docs' packages beside it (a file of the export can't take the place of one of the
 //   program's), and each page of the export as plain HTML (pages.wrela).
-// - **Each game**: its builds, each in a directory of its name, the MIT licence, and headers and
-//   a redirect that serve it only framed by the console.
+// - **Each game**: its builds, each in a directory of its name (a build may set constants of its
+//   package, as the capybara's `attract` does), the MIT licence, and headers and a redirect that
+//   serve it only framed by the console.
 //
 // Each bootstrap page names its Worker's storage namespace (`<meta name="wrela-storage">`), the
 // same in every release. **The release's id** is the first 20 hexadecimal digits of a SHA-256 of
@@ -219,16 +220,21 @@ fn release(revision: str) -> Result<String, ToolError> {
         Planned { dir: rooted(c.console.dir), out: String::from(f"{WORK}/{c.console.worker}") },
     )
     plan.push(Planned { dir: rooted(c.docs.dir), out: String::from(f"{WORK}/{c.docs.worker}") })
+    var sets: Vec<Vec<Text>> = Vec::new()
+    sets.push(Vec::new())
+    sets.push(Vec::new())
     for g in c.games {
         for b in g.builds {
             plan.push(
                 Planned { dir: rooted(b.dir), out: String::from(f"{WORK}/{g.worker}/{b.name}") },
             )
+            sets.push(b.set.clone())
         }
     }
     var builds: Vec<Call<toolchain::Built>> = Vec::new()
-    for p in plan {
-        builds.push(toolchain::build(p.dir.as_str(), p.out.as_str(), build_options()))
+    for k in 0..plan.len() {
+        borrow p = plan[k]
+        builds.push(toolchain::build(p.dir.as_str(), p.out.as_str(), build_options(sets[k])))
     }
     var exported: Vec<String> = Vec::new()
     for p in c.docs.packages {
@@ -699,11 +705,21 @@ fn is_marker(path: str) -> bool {
     path == ".wrela-build" || path.ends_with("/.wrela-build")
 }
 
-/// How a release's packages are built: as they ship, optimized through `wasm-opt`.
-pub fn build_options() -> toolchain::BuildOptions {
+/// How a release's packages are built: as they ship, optimized through `wasm-opt`, with the
+/// constants a build sets (catalog.wrela's `Build::set`, each `NAME=VALUE`).
+pub fn build_options(set: Vec<Text> = Vec::new()) -> toolchain::BuildOptions {
     var options = toolchain::options()
     options.optimize = true
     options.timeout = BUILD_TIMEOUT
+    for named in set {
+        let Some(eq) = named.find("=") else { continue }
+        options.set.push(
+            toolchain::Set {
+                name: String::from(named.slice(0, eq)),
+                value: String::from(named.slice(eq + 1, named.len())),
+            },
+        )
+    }
     options
 }
 

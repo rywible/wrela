@@ -232,7 +232,7 @@ pub fn tool_assisted(c: u32) -> Vec<Replay> {
 }
 
 /// A recorded run as `who`'s replay, cut at the goal.
-fn recorded(c: u32, run: [Hold], who: u32) -> Replay {
+pub fn recorded(c: u32, run: [Hold], who: u32) -> Replay {
     var holds: Vec<Hold> = Vec::new()
     var w = world(c)
     for h in run {

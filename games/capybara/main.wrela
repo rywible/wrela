@@ -103,6 +103,11 @@ pub const DEV: bool = false
 pub const HERO: bool = false
 const HERO_ZOOM: f32 = 2.6
 
+/// The game playing itself (`wrela build games/capybara --set ATTRACT=true`, the release's
+/// `attract` build), behind the console's home (attract.wrela): each level's searched human run
+/// in turn, watched, with no HUD, menus, sound, input, storage or network.
+pub const ATTRACT: bool = false
+
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
 
@@ -314,6 +319,8 @@ pub struct Lab {
     mine: Vec<u32>,
     lost: String,
     finished_run: Option<Replay>,
+    /// The game playing itself, in the `ATTRACT` build.
+    attract: attract::Attract,
 }
 
 pub fn init() -> Lab {
@@ -338,7 +345,7 @@ pub fn init() -> Lab {
         last: None,
         voice: None,
         settings: Settings {},
-        loading_settings: Some(load(SETTINGS)),
+        loading_settings: if ATTRACT { None } else { Some(load(SETTINGS)) },
         saving_settings: None,
         storing_settings: Storing {},
         music_on: true,
@@ -365,7 +372,7 @@ pub fn init() -> Lab {
         tree: Sent {},
         told: Vec::new(),
         progress: progress::fresh(),
-        loading: Some(load(SAVE)),
+        loading: if ATTRACT { None } else { Some(load(SAVE)) },
         saving: None,
         unread: None,
         storing: Storing {},
@@ -406,6 +413,7 @@ pub fn init() -> Lab {
         pointer: vec2(-1.0),
         nav: Stick {},
         console: Link::new(),
+        attract: attract::attract(),
     }
 }
 
@@ -453,7 +461,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
-    if s.voice.is_none() {
+    if s.voice.is_none() && !ATTRACT {
         s.voice = Some(sound::start(music::music()))
     }
     // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
@@ -466,14 +474,16 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
-    online::update(mut s.online, time)
-    if let Some((r, name, place)) = online::take_watch(mut s.online) {
-        open_watch(mut s, r.clone())
-        s.watch_name = name.clone()
-        s.watch_place = place
+    if !ATTRACT {
+        online::update(mut s.online, time)
+        if let Some((r, name, place)) = online::take_watch(mut s.online) {
+            open_watch(mut s, r.clone())
+            s.watch_name = name.clone()
+            s.watch_place = place
+        }
+        store_progress(mut s, dt)
+        store_settings(mut s, dt)
     }
-    store_progress(mut s, dt)
-    store_settings(mut s, dt)
     if live_snap.finished > 0 {
         // The best before this run, before it's kept among the runs.
         let key = live_snap.course << 16 | (live_snap.attempt & 0xffff)
@@ -499,6 +509,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     s.browsed = browsing || finding
     for raw in events() {
+        if ATTRACT {
+            continue
+        }
         s.console.event(raw)
         let e = in_play(raw, origin)
         if let Some(d) = device_of(e) {
@@ -536,7 +549,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             s.trail_of = 0
         }
     }
-    if !browsing {
+    if ATTRACT {
+        s.attract.play(mut s.watching)
+    } else if !browsing {
         s.watching = None
     }
     settle(mut s, live_snap, dt)
@@ -768,8 +783,12 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.draw(out, screen)
     out.present()
     playable(mut s)
-    publish(mut s, snap, play)
-    console(mut s)
+    if ATTRACT {
+        s.attract.ready(s.playable_at.is_some())
+    } else {
+        publish(mut s, snap, play)
+        console(mut s)
+    }
 }
 
 /// The console's link (platform::presentation): the game tells it once it's playable, and goes
@@ -1094,7 +1113,7 @@ fn hovered(s: Lab, screen: vec2, page: u32) -> Option<u32> {
 /// drawn on the plane of play, in ink: cast.wrela.)
 fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     s.list.clear(screen)
-    if HERO {
+    if HERO || ATTRACT {
         return
     }
     let u = unit(screen)

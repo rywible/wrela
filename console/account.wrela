@@ -525,6 +525,11 @@ pub fn idle(a: Accounts) -> bool {
     !a.open && !a.busy && a.waiting.is_empty() && a.passkey.is_none() && a.export_file.is_none()
 }
 
+/// Whether its panel is open over the home.
+pub fn shown(a: Accounts) -> bool {
+    a.open
+}
+
 pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
     a.game = Some(
         GameLink {
