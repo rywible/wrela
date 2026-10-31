@@ -148,6 +148,125 @@ pub struct Plant: Copy + GpuData {
     pub blend: f32,
 }
 
+/// A plant as the probes' occluders read it (`occluding_of`): its thickest limbs and its largest
+/// clumps, on the heap. A helper gathering occluders reads these, never a `Plant` (128 KiB at
+/// `MAX_LIMBS`: a copy of one overflowed a browser helper's stack, and the job never came back).
+pub struct Occluding {
+    pub cores: Vec<Core>,
+    pub clumps: Vec<Clump>,
+}
+
+/// A straight core inside a limb's piece, in its plant's frame (`inner_wood_capsule` with no
+/// instance): placed by its ends and its radius scaled, a tree's wood as the probes see it.
+pub struct Core: Copy {
+    pub a: vec3,
+    pub b: vec3,
+    pub radius: f32,
+}
+
+/// How much of a core's radius a placed one keeps (`occluders_into`): fitted in its plant's frame,
+/// a placed tree's widening and bend move its wood a little off it (**proposed**). Fitted at each
+/// tree, the job was every tree's limbs against their meshes: a wood's took longer than an
+/// arrival waits in Chrome, and shot 12 was never shown.
+pub const CORE_PLACED: f32 = 0.8
+
+/// A plant placed nowhere: at the origin, unturned, its size its own.
+const NOWHERE: Instance = Instance {
+    at: vec3(0.0),
+    yaw: 0.0,
+    tint: Unorm8x4 { bits: 0 },
+    scale: 1.0,
+    fork: 0.0,
+    wide: 1.0,
+}
+
+/// The limbs of a plant that occlude the probes (a grown kind's are in order of their section:
+/// its twigs, thousands, stop no light the probes see), and its clumps (its largest: a grown
+/// crown's 128, two capsules each over the probes' square of a wood, were most of the job).
+pub const OCCLUDER_LIMBS: u32 = 48
+pub const OCCLUDER_CLUMPS: u32 = 32
+
+/// Each of `plants` as the probes' occluders read it: the cores of its first `OCCLUDER_LIMBS`
+/// limbs, and its clumps as large as its `OCCLUDER_CLUMPS`th largest.
+pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
+    var out: Vec<Occluding> = Vec::new()
+    for k in 0..plants.len() {
+        borrow p = plants[k]
+        var radii: Vec<f32> = Vec::new()
+        for i in 0..p.clumps.len() {
+            radii.push(p.clumps[i].radius)
+        }
+        radii.sort_by(|a: f32, b: f32| a > b)
+        let least = if radii.len() > OCCLUDER_CLUMPS { radii[OCCLUDER_CLUMPS - 1] } else { 0.0 }
+        var clumps: Vec<Clump> = Vec::new()
+        for i in 0..p.clumps.len() {
+            if p.clumps[i].radius >= least {
+                clumps.push(p.clumps[i])
+            }
+        }
+        var cores: Vec<Core> = Vec::new()
+        for i in 0..min(p.limbs.len(), OCCLUDER_LIMBS) {
+            for piece in 0..3 {
+                let (a, b, radius) = inner_wood_capsule(p.limbs[i], piece, NOWHERE)
+                if radius > 0.0 {
+                    cores.push(Core { a, b, radius })
+                }
+            }
+        }
+        out.push(Occluding { cores: take cores, clumps: take clumps })
+    }
+    out
+}
+
+/// Keep the existing straight inner capsule inside curved wood. Narrow curved twigs can
+/// have no straight core; omit those instead of straightening their rendered silhouette.
+pub fn inner_wood_capsule(limb: Tube<4>, piece: u32, at: Instance) -> (vec3, vec3, f32) {
+    let a = at.place(limb.points[piece])
+    let b = at.place(limb.points[piece + 1])
+    let span = length(b - a)
+    let dir = (b - a) / max(span, 1.0e-6)
+    var alignment = 1.0
+    for ring in 0..(RINGS + 1) {
+        let (_, axis, _) = limb_ring_axis(limb, piece * RINGS + ring)
+        // place_round keeps girth round even where the centreline is narrowed or bent.
+        alignment = min(alignment, abs(dot(at.turn(axis), dir)))
+    }
+    let core = 0.6 * min(limb.radii[piece], limb.radii[piece + 1]) * at.scale
+    // Keep both capsule spheres behind the open ring planes, and exclude the closed tip.
+    let (last, _, _) = limb_ring_axis(limb, (piece + 1) * RINGS - 1)
+    let cap = if piece == 2 { length(b - at.place(last)) } else { 0.0 }
+    var radius = min(core, max(span - cap, 0.0) * 0.2 * alignment)
+    let inset = radius / max(alignment, 1.0e-6)
+    let a = a + dir * inset
+    let b = b - dir * (inset + cap)
+    // Fit the straight core against the actual curved, tapered triangle planes. A radius
+    // allowance from centreline error alone misses oblique rings. This runs only while
+    // preparing probe occluders and adds no capsules or rendered geometry.
+    var vertices: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    var normals: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    let first = piece * (RINGS + 1) * (SIDES + 1)
+    for v in 0..((RINGS + 1) * (SIDES + 1)) {
+        let (centre, normal, r, _) = limb_point(limb, first + v)
+        vertices.push(at.place_round(centre, normal * r))
+        normals.push(at.turn(normal))
+    }
+    for triangle in 0..(RINGS * SIDES * 2) {
+        let v = piece * RINGS * SIDES * 6 + triangle * 3
+        let i = limb_corner(v) - first
+        let j = limb_corner(v + 1) - first
+        let k = limb_corner(v + 2) - first
+        let face = cross(vertices[j] - vertices[i], vertices[k] - vertices[i])
+        let size = length(face)
+        if size <= 1.0e-7 { continue }
+        let outward = normals[i] + normals[j] + normals[k]
+        let n = face / size * if dot(face, outward) < 0.0 { -1.0 } else { 1.0 }
+        let margin = -max(dot(a - vertices[i], n), dot(b - vertices[i], n))
+        radius = min(radius, margin - 1.0e-5)
+        if radius <= 0.0 { return (a, b, 0.0) }
+    }
+    (a, b, radius)
+}
+
 /// A plant with no limbs or clumps yet, its leaves and bark as given.
 pub fn plant(leaves: Leaves, bark: Bark) -> Plant {
     Plant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
@@ -893,8 +1012,10 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
     // apart left a dotted crack round the limb: pale rings on logs).
     let radius = r_axis * closing
-    // How far along the limb (m), from its start: the bark's ridges run on across the joints.
-    var walked = 0.0
+    // How far along the limb (m), from its start: the bark's ridges run on across the joints;
+    // from its foot's height, so a trunk of several limbs (a grown one's runs) runs on across
+    // theirs too (from 0 at each foot, the pattern stepped round the trunk at each).
+    var walked = limb.points[0].y
     for k in 0..piece {
         walked += length(limb.points[k + 1] - limb.points[k])
     }

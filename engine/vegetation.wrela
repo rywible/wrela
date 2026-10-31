@@ -562,8 +562,12 @@ fn limb_world(
     let thick = 1.0 + (inst.thick - 1.0) * clamp(limb.radii[0] / trunk, 0.0, 1.0)
     let girth = TAU * limb.radii[0] * inst.scale * thick
     // Its cracks' spacing round it by its record (`growth::bark_cracks`), a whole number of
-    // repeats so the pattern meets itself.
-    let round = max(round(plant::bark_round(girth) * bark_cracks(inst.history.decode()).x), 1.0)
+    // repeats so the pattern meets itself; the trunk's (each limb as thick as half its foot's)
+    // all by its foot's girth, so its plates narrow up it as it thins and run on across its
+    // limbs' joints (each by its own foot, a grown trunk's pattern stepped at each).
+    let trunk_girth = TAU * trunk * inst.scale * inst.thick
+    let barked = if limb.radii[0] >= 0.5 * trunk { trunk_girth } else { girth }
+    let round = max(round(plant::bark_round(barked) * bark_cracks(inst.history.decode()).x), 1.0)
     let on_bark = vec2(along.x * round, along.y * inst.scale)
     // Where its moss's patches are read (`moss_patch`): one tile round it (so they meet), square
     // cells along it.

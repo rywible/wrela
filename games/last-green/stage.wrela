@@ -157,7 +157,7 @@ impl Tiles for FloorTiles {
     fn occluders_into(
         self,
         placed: [Placed],
-        plants: [Plant],
+        plants: [engine::plant::Occluding],
         d: vec3,
         lo: vec2,
         hi: vec2,

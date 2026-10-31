@@ -514,6 +514,7 @@ pub fn grow_traced(
         }
     }
     girth(mut t, g, site)
+    stiffen(mut t)
     straighten(mut t)
     lean_by(mut t, lean)
     (t, trace)
@@ -1245,7 +1246,7 @@ fn girth(t: mut TreeGraph, g: Genome, site: Site) {
 
 /// A tree's trunk straightened as reaction wood straightens it over its years: its axis (from its
 /// root, each node's thickest child) pulled toward the line from its foot to where it meets its
-/// crown (its lean into its light kept), by `STRAIGHTEN` low on it and none from 60 % of its
+/// crown (its lean into its light kept), by `STRAIGHTEN` low on it and none from 70 % of its
 /// height up, each axis node carrying its laterals with it (they keep their places on it). Its leaders' replacements had left its bole wandering a
 /// metre: a forest oak's a snake, and a shot's eye inside a near tree's trunk.
 fn straighten(t: mut TreeGraph) {
@@ -1283,7 +1284,7 @@ fn straighten(t: mut TreeGraph) {
     while k >= 0 {
         on_axis[u32(k)] = true
         let nd = t.nodes[u32(k)]
-        let s = STRAIGHTEN * (1.0 - smoothstep(0.2, 0.6, nd.tip.y / t.height))
+        let s = STRAIGHTEN * (1.0 - smoothstep(0.3, 0.7, nd.tip.y / t.height))
         let line = anchor.xz * clamp(nd.tip.y / max(anchor.y, 1.0e-3), 0.0, 1.0)
         shift[u32(k)] = (line - nd.tip.xz) * s
         k = thickest[u32(k)]
@@ -1299,6 +1300,81 @@ fn straighten(t: mut TreeGraph) {
 
 /// How much of a trunk's wander reaction wood takes back, low on it (`straighten`: **proposed**).
 const STRAIGHTEN: f32 = 0.85
+
+/// Thick wood holding its own line: each axis node with an axis beyond it (its parent's thickest
+/// child, and its own) moved toward the middle of its neighbours on the axis by its stiffness, its
+/// radius against its length (`STIFF`, up to `STIFF_MOST`), `STIFF_PASSES` times; a lateral carried
+/// with the node it hangs from, an axis with its foot. A shoot's wander at a year's scale, kept on
+/// wood as thick as the shoot was long, read as a limb of sausages (shot 5's near oaks); twigs keep
+/// it. Toward the middle, not onto the line before it: a heavy limb keeps its arch (turned onto its
+/// parent's line, an open oak's low limbs rose off the ground's reach).
+fn stiffen(t: mut TreeGraph) {
+    let n = t.nodes.len()
+    if n < 3 {
+        return
+    }
+    var thickest: Vec<i32> = Vec::filled(n, -1)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if !nd.alive || nd.parent < 0 {
+            continue
+        }
+        let q = u32(nd.parent)
+        if thickest[q] < 0 || t.nodes[u32(thickest[q])].radius < nd.radius {
+            thickest[q] = i32(i)
+        }
+    }
+    for _ in 0..STIFF_PASSES {
+        // Each node's own move (from where all are), then what it carries: parents come before
+        // their children, so each node's parent's move is known.
+        var own: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        for i in 1..n {
+            let p = t.nodes[i].parent
+            let c = thickest[i]
+            if p < 0 || c < 0 || thickest[u32(p)] != i32(i) {
+                continue
+            }
+            let (a, b) = (t.nodes[u32(p)].tip, t.nodes[u32(c)].tip)
+            let len = 0.5 * (length(t.nodes[i].tip - a) + length(b - t.nodes[i].tip))
+            if len > 1.0e-4 {
+                let w = clamp((t.nodes[i].radius / len - STIFF_FROM) * STIFF, 0.0, STIFF_MOST)
+                own[i] = (0.5 * (a + b) - t.nodes[i].tip) * w
+            }
+        }
+        var moved: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        var carried: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        for i in 1..n {
+            let p = t.nodes[i].parent
+            if p < 0 {
+                continue
+            }
+            let q = u32(p)
+            // An axis goes on from its foot's carry; a lateral hangs from its node where it moved.
+            carried[i] = if thickest[q] == i32(i) { carried[q] } else { moved[q] }
+            moved[i] = carried[i] + own[i]
+        }
+        for i in 1..n {
+            t.nodes[i].tip += moved[i]
+        }
+    }
+    for i in 1..n {
+        let p = t.nodes[i].parent
+        if p >= 0 {
+            let d = t.nodes[i].tip - t.nodes[u32(p)].tip
+            if dot(d, d) > 1.0e-10 {
+                t.nodes[i].dir = normalize(d)
+            }
+        }
+    }
+}
+
+/// A node's stiffness (`stiffen`): none under a radius 3 % of its length, rising by 3 a unit of
+/// it, at most 0.8 of the way to its neighbours' middle, a pass (**proposed**: from 5 % by 2, a
+/// near tree's 8 cm limbs bent at each node over shot 6's eye).
+const STIFF_FROM: f32 = 0.03
+const STIFF: f32 = 3.0
+const STIFF_MOST: f32 = 0.8
+const STIFF_PASSES: u32 = 3
 
 /// A tree leaned toward its light (`lean`, the record's: where its crown's middle moved), as
 /// reaction wood leans it: each point moved by `lean` times the square of its share of the height.
@@ -1623,9 +1699,16 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
         hi = max(hi, q)
     }
     // A shoot's foliage: its leaves (`leaf_density` of them, each `leaf_sun` across) in a cluster
-    // `FOLIAGE` times their own spread.
-    let leaf = max(g.leaf_sun * pow(g.leaf_density, 1.0 / 3.0) * FOLIAGE, 0.05)
-    let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 7.0, 2.0 * leaf)
+    // `FOLIAGE` times their own spread, but no more than `FOLIAGE_SHARE` of the tree's height (a
+    // sapling's few tips, each a 70 cm ball, were a few balls on a stick).
+    let leaf = clamp(
+        g.leaf_sun * pow(g.leaf_density, 1.0 / 3.0) * FOLIAGE,
+        0.05,
+        max(FOLIAGE_SHARE * t.height, 0.05),
+    )
+    // About a tenth of the crown across, no less than a tip's foliage (a small crown in bins two
+    // foliages across was a few large balls).
+    let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 10.0, leaf)
     let nx = u32((hi.x - lo.x) / bin) + 1
     let ny = u32((hi.y - lo.y) / bin) + 1
     let nz = u32((hi.z - lo.z) / bin) + 1
@@ -1708,6 +1791,7 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
 /// oak tip's six 10 cm leaves and its spurs' over 72 cm; at 36 cm the grown crowns held a quarter
 /// to a tenth of the cards the hand's did, thin).
 const FOLIAGE: f32 = 4.0
+const FOLIAGE_SHARE: f32 = 0.05
 
 /// The youngest shoot's year (the growth's last).
 fn max_born(t: TreeGraph) -> f32 {
@@ -2397,14 +2481,15 @@ pub const FLORA_SITE: Site = Site { light: 0.5, wetness: 0.5, age: 1.0 }
 
 /// A tree's bark's cracks from its history (`substance::history_of`: its age's share of its
 /// life in x, its stress, 1 less its vigour, in w): how far apart its ridges' pattern repeats
-/// round its trunk (x: a fast-grown trunk's bark stretched, its cracks wider apart; 1 the cooked
-/// pattern's) and how deep its cracks are (y: its relief's multiple, deeper with age). Lefebvre
-/// and Neyret 2002's fracture model, simplified to the cooked ridges scaled by the record
-/// (**proposed** ranges).
+/// round its trunk (x: a fast-grown trunk's bark stretched, its cracks as far apart as the cooked
+/// pattern's, 1; a stressed one's half as many again) and how deep its cracks are (y: its relief's
+/// multiple, deeper with age). Lefebvre and Neyret 2002's fracture model, simplified to the cooked
+/// ridges scaled by the record (**proposed** ranges: stretched to 0.75 and 1.55 deep, the grown
+/// oaks' bark read as brick).
 pub fn bark_cracks(history: vec4) -> vec2 {
     let vigour = 1.0 - history.w
     let age = history.x
-    vec2(1.25 - 0.5 * vigour, 0.45 + 1.1 * smoothstep(0.0, 0.6, age))
+    vec2(1.5 - 0.5 * vigour, 0.7 + 0.5 * smoothstep(0.0, 0.6, age))
 }
 
 /// How mossy bark is (0 to 1) by its causes: the ground's wetness at its foot and the light its
