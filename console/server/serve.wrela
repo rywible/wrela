@@ -6,16 +6,18 @@
 // Each call reads every event it was given (a `serve` that leaves one unread fails). A request is
 // a short connection: it opens, its one message is the HTTP request, and it closes once answered.
 // What the engine reads of it is the request's time, its two cookies and its body; the paths are
-// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET), and anything else is not found.
+// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a replay by
+// its hash under `REPLAYS`), and anything else is not found.
 
 use capybara::boards::Capybara
-use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, engine}
-use platform::wire::{ACCOUNTS, PUBLIC}
+use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, Versions, engine}
+use platform::wire::{ACCOUNTS, PUBLIC, REPLAYS, Request as Asking}
 use std::crypto
 use std::http::{Request, Response, bytes, request, respond, session_cookie, text}
 use std::input::{Event, events, payload}
 use std::io::Pending
 use std::net::POISONED
+use std::serialize::save
 use std::store
 use std::webauthn::base64url
 
@@ -25,10 +27,11 @@ pub struct Server {
     asked: Vec<(u32, Pending<u8>)>,
 }
 
-/// The server for the console at `origin`, its passkeys for relying party `rp_id`.
+/// The server for the console at `origin`, its passkeys for relying party `rp_id`, taking the
+/// agreements of `versions` (the console's legal pages').
 @server
-pub fn init(rp_id: str, origin: str) -> Server {
-    Server { engine: engine(Capybara {}, rp_id, origin), asked: Vec::new() }
+pub fn init(rp_id: str, origin: str, versions: Versions) -> Server {
+    Server { engine: engine(Capybara {}, rp_id, origin, versions), asked: Vec::new() }
 }
 
 /// One call: the answers in, then the events, then what the engine asks carried out.
@@ -75,7 +78,7 @@ pub fn serve(s: mut Server, time: f32) {
             Command::Verify { ticket, algorithm, key, message, signature } => {
                 s.asked.push((ticket, crypto::verify(algorithm, key, message, signature)))
             },
-            Command::Respond { conn, body, cookies, public } => {
+            Command::Respond { conn, body, cookies, public, immutable } => {
                 var out = bytes(200, body, "application/octet-stream")
                 for k in cookies {
                     let value = base64url(k.value)
@@ -85,7 +88,11 @@ pub fn serve(s: mut Server, time: f32) {
                     )
                 }
                 if public > 0 {
-                    out.set("cache-control", String::from(f"public, max-age={public}").as_str())
+                    let kept = if immutable { ", immutable" } else { "" }
+                    out.set(
+                        "cache-control",
+                        String::from(f"public, max-age={public}{kept}").as_str(),
+                    )
                 }
                 respond(conn, out)
             },
@@ -101,11 +108,14 @@ fn http(s: mut Server, r: Request) {
         Some(r.body.clone())
     } else if path == PUBLIC && (method == "GET" || method == "HEAD") {
         query_bytes(r.query.as_str())
+    } else if path.starts_with(REPLAYS) && (method == "GET" || method == "HEAD") {
+        replay_request(path.slice(REPLAYS.len(), path.len()))
     } else {
         None
     }
     let Some(body) = take body else {
-        let status = if path == ACCOUNTS || path == PUBLIC { 405 } else { 404 }
+        let known = path == ACCOUNTS || path == PUBLIC || path.starts_with(REPLAYS)
+        let status = if known { 405 } else { 404 }
         respond(r.conn, text(status, "Not here."))
         return
     }
@@ -136,6 +146,27 @@ fn query_bytes(query: str) -> Option<Vec<u8>> {
         return None
     }
     unbase64url(query.slice(2, query.len()))
+}
+
+/// The request for the replay whose hash is `hex`, 64 hexadecimal digits in lower case: none for
+/// anything else, which is not found.
+fn replay_request(hex: str) -> Option<Vec<u8>> {
+    if hex.len() != 64 {
+        return None
+    }
+    var hash: Vec<u8> = Vec::with_capacity(32)
+    for i in 0..32 {
+        let hi = digit(hex.byte(2 * i))?
+        let lo = digit(hex.byte(2 * i + 1))?
+        hash.push((hi << 4) | lo)
+    }
+    Some(save(Asking::Replay { hash }))
+}
+
+fn digit(c: u8) -> Option<u8> {
+    if c >= 48 && c <= 57 {
+        Some(c - 48)
+    } else if c >= 97 && c <= 102 { Some(c - 87) } else { None }
 }
 
 /// The bytes of base64url text without padding (RFC 4648 §5), or none if it isn't that.
@@ -177,4 +208,16 @@ fn base64url_reads_back() {
         assert(unbase64url(base64url(b).as_str()) == Some(b.clone()), f"{n} bytes")
     }
     assert(unbase64url("a+b/").is_none() && unbase64url("abcde").is_none(), "not base64url")
+}
+
+@test
+fn a_replays_path_is_its_hash() {
+    let hash: Vec<u8> = Vec::from([171; 32])
+    let path = platform::wire::replay_path(hash)
+    let Some(body) = replay_request(path.as_str().slice(REPLAYS.len(), path.len())) else {
+        panic("a replay's path")
+    }
+    assert(body == save(Asking::Replay { hash: hash.clone() }))
+    let upper = "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+    assert(replay_request(upper).is_none() && replay_request("abab").is_none(), "not a hash")
 }

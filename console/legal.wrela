@@ -3,7 +3,15 @@
 // drafts in plain English, for a lawyer's review before launch, and each page says so at its top.
 // They describe the accounts as they are built (platform/account.wrela, platform/server.wrela) and
 // the lines Ryan chose not to cross, which keep the accounts outside COPPA's personal information
-// (16 CFR 312, as amended in 2025): no age gate, generated names only, no stored IP addresses.
+// (16 CFR 312, as amended in 2025): generated names only, no stored IP addresses, and no age asked
+// beyond the player's word that they're 13 or older at sign-up (docs/plan-online-play.md, step 3,
+// which a lawyer may change).
+//
+// Each agreement has a version: the Terms and the Privacy Policy, which sign-up agrees to, and what
+// posting makes public, which an account agrees to before its first post. The server takes only
+// these versions (platform/server.wrela's `Versions`, given by main.wrela's `serve_init`) and keeps
+// which one each account agreed to, and when: a change to a page's substance is a new version, and
+// the next sign-up or post asks again.
 //
 // A page is paragraphs: one that starts with "# " is a heading, "- " a point of a list. The
 // Credits page shows the licences the release ships beside the console (studio/release): the MIT
@@ -25,6 +33,22 @@ pub const TITLES: [Text; 4] = [
 /// Each page's name on its link.
 pub const LINKS: [Text; 4] = ["Terms", "Privacy", "Credits", "Health"]
 
+/// The versions of the Terms, the Privacy Policy and what posting makes public: the day each last
+/// changed, as a number.
+pub const TERMS_VERSION: u32 = 20261031
+pub const PRIVACY_VERSION: u32 = 20261031
+pub const POSTING_VERSION: u32 = 20261031
+
+/// What posting makes public, as the console shows it before an account's first post: each item
+/// anyone can see, then what is never shared.
+pub const POSTING_SHARED: [Text; 4] = [
+    "Your account's name",
+    "The run's course, category and time",
+    "Its replay, the buttons you pressed, which anyone can watch and race",
+    "When you posted it",
+]
+pub const POSTING_NEVER: Text = "Nothing else goes. We never have your address, your device or an email."
+
 /// The banner every page carries.
 pub const DRAFT: Text = "DRAFT for review by a lawyer. Not yet in force."
 
@@ -37,7 +61,7 @@ pub const LICENCES: [Text; 4] = [
 ]
 
 pub const TERMS_TEXT: [Text; 42] = [
-    "Last changed 30 October 2026.",
+    "Last changed 31 October 2026.",
     "# Who we are",
     "wrela.dev is a place to play games made with Wrela. It is run by [operator: Ryan Wible or his LLC, to be decided] (\"we\", \"us\"). To reach us about these terms, write to [contact address, to be added before launch].",
     "wrela.dev is free. It shows no ads and sells nothing.",
@@ -46,7 +70,7 @@ pub const TERMS_TEXT: [Text; 42] = [
     "# Your account",
     "An account lets you put your runs on the world's leaderboards. You make one with a passkey: a key your phone, computer or security key keeps, unlocked with your fingerprint, face or PIN. There is no password and no email.",
     "We give your account a name, drawn at random from our own lists of words. You can draw again a few times, then the name is fixed. No one can type a name, so no name can say anything a person wrote.",
-    "When you make an account we show you ten recovery codes, once. Keep them somewhere safe. If you lose every passkey and every recovery code, we cannot get your account back: we have no other way to know it is yours.",
+    "After you make an account, your account's page offers ten recovery codes until you save them. Keep them somewhere safe. If you lose every passkey and every recovery code, we cannot get your account back: we have no other way to know it is yours.",
     "You can delete your account at any time (Account, then Delete account). It is gone at once, with everything we keep of it.",
     "# Fair play and the leaderboards",
     "The world boards are for runs a person played with their own hands, in real time, with the game's normal controls.",
@@ -56,7 +80,7 @@ pub const TERMS_TEXT: [Text; 42] = [
     "- A board belongs to one version of a game's physics. When a fix changes how the game plays, a new board starts; the old one stays as it was. We may reset boards before a game's release.",
     "- Places and times on a board are shown as they are. We don't promise any run will stay on a board.",
     "# Your runs",
-    "A run you upload is the buttons you pressed, tick by tick, and the time and category we work out from them. By uploading one you let us keep it, show it on the boards with your account's name, and let anyone watch it. You can take it down by deleting your account.",
+    "A run you post is the buttons you pressed, tick by tick, and the time and category we work out from them. Before your first post we show you exactly what becomes public, and nothing is posted unless you choose to: by hand, or with \"Post my best runs\" turned on. By posting one you let us keep it, show it on the boards with your account's name, and let anyone watch it. You can take it down by deleting your account.",
     "# Things you must not do",
     "- Attack, overload or probe the service, or try to reach another person's account.",
     "- Use the service in a way that breaks the law.",
@@ -64,7 +88,7 @@ pub const TERMS_TEXT: [Text; 42] = [
     "# The games and the code",
     "Wrela's games and code are open source, under the MIT licence (see Credits). These terms are about the service at wrela.dev, not about the code's licence.",
     "# Children",
-    "wrela.dev has no age check. It is built so that it doesn't collect personal information from anyone: no email, no typed names, no chat, no voice or video. The Privacy Policy says exactly what we keep.",
+    "You need to be 13 or older to make an account, and you tell us so when you make one. You can play without an account at any age. wrela.dev is built so that it doesn't collect personal information from anyone: no email, no typed names, no chat, no voice or video. The Privacy Policy says exactly what we keep.",
     "# No warranty",
     "The service, its games and everything on it are provided \"as is\" and \"as available\", without warranties of any kind, express or implied, including any warranty of merchantability, fitness for a particular purpose or non-infringement. We don't promise it will always be available, free of mistakes or safe for every person to play, or that your account, runs and places will be kept. You use it at your own risk.",
     "Some games have flashing lights and fast motion. Read the Health warning before you play.",
@@ -81,8 +105,8 @@ pub const TERMS_TEXT: [Text; 42] = [
     "This page is a draft for a lawyer's review and is not yet in force.",
 ]
 
-pub const PRIVACY_TEXT: [Text; 57] = [
-    "Last changed 30 October 2026.",
+pub const PRIVACY_TEXT: [Text; 58] = [
+    "Last changed 31 October 2026.",
     "# In short",
     "wrela.dev is free. It shows no ads, sells nothing, and never sells or rents anything about you to anyone.",
     "We built accounts to know as little about you as we can. We don't ask for your email, your name, your age or where you are. We never see a password. We don't show ads and we don't use anyone else's analytics.",
@@ -94,7 +118,8 @@ pub const PRIVACY_TEXT: [Text; 57] = [
     "- Your recovery codes, only as fingerprints (SHA-256 hashes), so a copy of our records can't be used to sign in.",
     "- One session cookie, which your browser keeps for wrela.dev and sends only there; no script can read it, ours included. Our server keeps its fingerprint, with when the session began and was last seen. It keeps you signed in. Games never see it. While you sign in or add a passkey, a second cookie holds that sign-in's token for at most five minutes. We use no other cookies.",
     "- A short-lived token for each game you play while signed in, which can only submit runs. We keep its fingerprint for an hour.",
-    "- Your runs: the buttons you pressed, tick by tick (a replay), the time and category our server works out from them, and when you uploaded each one.",
+    "- Your runs: the buttons you pressed, tick by tick (a replay), the time and category our server works out from them, and when you posted each one. Anyone can fetch a posted run's replay by its fingerprint (its SHA-256), which the boards show.",
+    "- What you agreed to: which version of these terms and this policy, that you said you're 13 or older, and when; and, once you agree to what posting makes public, which version and when, and whether you chose \"Post my best runs\".",
     "- How many runs you uploaded in the past hour, and fingerprints of the replays you uploaded, to stop the same run being sent twice.",
     "- Times on our server's own clock, for when each of these was made.",
     "# What we never keep",
@@ -127,12 +152,12 @@ pub const PRIVACY_TEXT: [Text; 57] = [
     "- GitHub holds the source code. It never receives account data.",
     "Each acts on our behalf, and none of them gets your account's records to use for itself.",
     "# How long we keep it",
-    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it; a game's token after an hour. A deleted account's records go from our server at once, from Cloudflare's caches of the public boards and replays within five minutes, and from the backups within [30 days: to be set with the backup's retention].",
+    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it; a game's token after an hour. A deleted account's records go from our server at once, from Cloudflare's caches of the public boards within five minutes, and from the backups within [30 days: to be set with the backup's retention]. A posted run's replay never changes, so Cloudflare's caches may keep a copy fetched by its fingerprint for up to a year after the account is deleted, though our server no longer has it.",
     "# Your choices",
     "- Export: Account, then Export my data, gives you everything above as a JSON file.",
     "- Delete: Account, then Delete account, deletes your passkeys' records, sessions, recovery codes, runs and name at once. You'll be asked to sign in with your passkey first.",
     "# Children",
-    "We don't ask anyone's age. wrela.dev is designed so that it doesn't collect personal information from anyone, children included: names are generated, nothing can be typed, and nothing above identifies a person. If you think we hold something we shouldn't, write to us and we will delete it.",
+    "We ask only that you're 13 or older to make an account, and keep only that you said so. wrela.dev is designed so that it doesn't collect personal information from anyone, children included: names are generated, nothing can be typed, and nothing above identifies a person. If you think we hold something we shouldn't, write to us and we will delete it.",
     "# Security",
     "Sign-in uses passkeys, checked on our server against the passkey's public key. Secrets are kept only as fingerprints. Every request that changes your account is checked against your session.",
     "# Changes",
@@ -215,6 +240,11 @@ fn the_pages_are_drafts_and_promise_what_the_server_does() {
     )
     assert(privacy.as_str().find("No IP addresses").is_some())
     assert(privacy.as_str().find("sells nothing").is_some(), "free, no ads, sells nothing")
+    // A replay read by its hash may be cached a year (the server's `REPLAY_AGE`): the policy says so.
+    assert(
+        platform::server::REPLAY_AGE == 365 * 86400 &&
+            privacy.as_str().find("up to a year").is_some(),
+    )
     var terms = String::new()
     for p in TERMS_TEXT {
         terms.push_str(p)

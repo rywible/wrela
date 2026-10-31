@@ -2659,8 +2659,15 @@ pub const ORIGIN: Text = "https://wrela.dev"
 /// health warning and the legal pages.
 pub const ONLINE: bool = true
 
+/// The server, taking the versions of the legal pages and of what posting makes public that this
+/// build shows (legal.wrela).
 pub fn serve_init() -> console_server::serve::Server {
-    console_server::serve::init(RP_ID, ORIGIN)
+    let versions = platform::server::Versions {
+        terms: legal::TERMS_VERSION,
+        privacy: legal::PRIVACY_VERSION,
+        posting: legal::POSTING_VERSION,
+    }
+    console_server::serve::init(RP_ID, ORIGIN, versions)
 }
 
 pub fn serve(s: mut console_server::serve::Server, time: f32) {

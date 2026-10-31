@@ -9,13 +9,16 @@
 // them.
 
 use account::{CEREMONY_BYTES, CODES, CHALLENGE_BYTES, HANDLE_BYTES, account_key}
-use server::{Asked, Claim, Command, Cookie, Engine, Game, Outcome, engine}
+use server::{Asked, Claim, Command, Cookie, Engine, Game, Outcome, Versions, engine}
 use std::crypto::{Signature, p256_key}
 use std::hash::sha256::sha256
 use std::serialize::{LoadError, load, save}
 use std::store::Entry
 use std::webauthn::base64url
-use wire::{ADD_PASSKEY, ANY, FULL, REGISTER, Reply, Request, SIGN_IN, WHOLE}
+use wire::{
+    ADD_PASSKEY, ANY, AROUND, Agreed, FULL, MOST_FOUND, NOT_AGREED, REGISTER, Reply, Request,
+    SIGN_IN, WHOLE,
+}
 
 // ---- a toy game ---------------------------------------------------------------------------------
 
@@ -94,6 +97,7 @@ struct Answered: Clone {
     reply: Reply,
     cookies: Vec<Cookie>,
     public: u32,
+    immutable: bool,
 }
 
 /// A browser's cookie.
@@ -165,12 +169,16 @@ fn answer_get(store: [Entry], key: [u8]) -> Vec<u8> {
     out
 }
 
-fn answer_scan(store: [Entry], from: [u8], to: [u8], limit: u32) -> Vec<u8> {
+fn answer_scan(store: [Entry], from: [u8], to: [u8], limit: u32, down: bool) -> Vec<u8> {
     var w = std::serialize::Writer::new()
     var picked: Vec<u32> = Vec::new()
-    for i in 0..store.len() {
-        borrow k = store[i].key
-        if k >= Vec::from(from) && (to.is_empty() || k < Vec::from(to)) && picked.len() < limit {
+    for k in 0..store.len() {
+        // Down: from the last, as the host's scan gives them.
+        let i = if down { store.len() - 1 - k } else { k }
+        borrow key = store[i].key
+        if key >= Vec::from(from) &&
+            (to.is_empty() || key < Vec::from(to)) &&
+            picked.len() < limit {
             picked.push(i)
         }
     }
@@ -218,8 +226,10 @@ impl Host {
                 Command::Get { ticket, key } => self.waiting.push(
                     (ticket, Some(answer_get(self.store, key))),
                 ),
-                Command::Scan { ticket, from, to, limit, .. } => {
-                    self.waiting.push((ticket, Some(answer_scan(self.store, from, to, limit))))
+                Command::Scan { ticket, from, to, limit, down } => {
+                    self.waiting.push(
+                        (ticket, Some(answer_scan(self.store, from, to, limit, down))),
+                    )
                 },
                 Command::Random { ticket, n } => {
                     var bytes: Vec<u8> = Vec::new()
@@ -271,13 +281,19 @@ impl Host {
             }
         }
         for c in commands {
-            if let Command::Respond { conn, body, cookies, public } = c {
+            if let Command::Respond { conn, body, cookies, public, immutable } = c {
                 for a in self.answered {
                     assert(a.conn != conn, "a request is answered once")
                 }
                 let r: Result<Reply, LoadError> = load(body.clone())
                 self.answered.push(
-                    Answered { conn, reply: take r.unwrap(), cookies: cookies.clone(), public },
+                    Answered {
+                        conn,
+                        reply: take r.unwrap(),
+                        cookies: cookies.clone(),
+                        public,
+                        immutable,
+                    },
                 )
                 self.closing.push(conn)
             }
@@ -370,6 +386,12 @@ impl Host {
     fn read(mut self, e: mut Engine<Toy>, browser: u32, request: Request) -> (Reply, u32) {
         let a = self.together(mut e, browser, [request.clone()], public: true)
         (a[0].reply.clone(), a[0].public)
+    }
+
+    /// Like `read`, the answer as the host gave it, with whether it never changes.
+    fn read_whole(mut self, e: mut Engine<Toy>, browser: u32, request: Request) -> Answered {
+        let a = self.together(mut e, browser, [request.clone()], public: true)
+        a[0].clone()
     }
 
     /// The keys that start with `prefix`.
@@ -481,6 +503,15 @@ fn client(kind: str, challenge: [u8], origin: str) -> Vec<u8> {
 
 const RP: Text = "wrela.dev"
 const ORIGIN: Text = "https://wrela.dev"
+/// The versions the toy's server takes, and a new account's agreement to them.
+const VERSIONS: Versions = Versions { terms: 3, privacy: 4, posting: 5 }
+const AGREED: Agreed = Agreed { terms: 3, privacy: 4, of_age: true }
+
+/// A challenge for `ceremony`: a new account's agreeing to the toy's versions.
+fn begin(ceremony: u32, csrf: Vec<u8> = Vec::new()) -> Request {
+    let agreed = if ceremony == REGISTER { AGREED } else { NOT_AGREED }
+    Request::Begin { ceremony, csrf: csrf.clone(), agreed }
+}
 
 fn challenge_of(rs: [Reply]) -> Vec<u8> {
     for r in rs {
@@ -538,7 +569,7 @@ fn refused(rs: [Reply]) -> bool {
 
 /// A new account in browser `conn`, its passkey credential `id`.
 fn sign_up(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8) -> Signed {
-    let begun = h.say(mut e, conn, Request::Begin { ceremony: REGISTER, csrf: Vec::new() })
+    let begun = h.say(mut e, conn, begin(REGISTER))
     let c = challenge_of(begun)
     let handle = handle_of(begun)
     let rs = h.say(
@@ -568,7 +599,7 @@ fn sign_in(
     counter: u32,
     signature: [u8],
 ) -> Vec<Reply> {
-    let c = challenge_of(h.say(mut e, conn, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c = challenge_of(h.say(mut e, conn, begin(SIGN_IN)))
     h.say(
         mut e,
         conn,
@@ -583,14 +614,14 @@ fn sign_in(
 }
 
 fn started() -> (Engine<Toy>, Host) {
-    (engine(Toy {}, RP, ORIGIN), host())
+    (engine(Toy {}, RP, ORIGIN, VERSIONS), host())
 }
 
 // ---- tests ------------------------------------------------------------------------------------------
 
 @test
 fn the_w3c_vectors_register_and_their_assertion_is_checked_with_the_registered_key() {
-    var e = engine(Toy {}, "example.org", "https://example.org")
+    var e = engine(Toy {}, "example.org", "https://example.org", VERSIONS)
     var h = host()
     // The challenges the vectors were made over, given as the host's random bytes, each with the
     // browser's token after it.
@@ -605,7 +636,7 @@ fn the_w3c_vectors_register_and_their_assertion_is_checked_with_the_registered_k
         first.push(b)
     }
     h.given.push(take first)
-    let begun = h.say(mut e, 1, Request::Begin { ceremony: REGISTER, csrf: Vec::new() })
+    let begun = h.say(mut e, 1, begin(REGISTER))
     assert(challenge_of(begun).len() == CHALLENGE_BYTES && handle_of(begun) == Vec::from([7; 16]))
     let id = unhex("c9a6f5b3462d02873fea0c56862234f99f081728084e511bb7760201a89054a5")
     let rs = h.say(
@@ -629,7 +660,7 @@ fn the_w3c_vectors_register_and_their_assertion_is_checked_with_the_registered_k
         second.push(b)
     }
     h.given.push(take second)
-    let _ = h.say(mut e, 1, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() })
+    let _ = h.say(mut e, 1, begin(SIGN_IN))
     let signature = unhex(AUTH_SIGNATURE)
     h.good.push(signature.clone())
     let auth = unhex("bfabc37432958b063360d3ad6461c9c4735ae7f8edd46592a5e0f01452b2e4b50d00000000")
@@ -693,7 +724,7 @@ fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
     var h = take both.1
     let s = sign_up(mut e, mut h, 1, 5)
     h.good.push(Vec::from([1]))
-    let c = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c = challenge_of(h.say(mut e, 2, begin(SIGN_IN)))
     let attempt = Request::SignIn {
         id: Vec::from([5]),
         client_data: client("webauthn.get", c, ORIGIN),
@@ -710,7 +741,7 @@ fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
     assert(refused(h.say(mut e, 2, attempt.clone())), "used once")
     // Two requests in one call with the same ceremony: both read it before either's delete
     // commits, and still only one may use it.
-    let c1 = challenge_of(h.say(mut e, 1, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c1 = challenge_of(h.say(mut e, 1, begin(SIGN_IN)))
     let twice = Request::SignIn {
         id: Vec::from([5]),
         client_data: client("webauthn.get", c1, ORIGIN),
@@ -724,7 +755,7 @@ fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
         "only the first of two at once",
     )
     // One left five minutes is gone.
-    let c2 = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c2 = challenge_of(h.say(mut e, 2, begin(SIGN_IN)))
     h.time += 301000
     let late = Request::SignIn {
         id: Vec::from([5]),
@@ -735,19 +766,19 @@ fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
     }
     assert(refused(h.say(mut e, 2, late)), "expired")
     // An expired ceremony left in the store goes as another begins.
-    let c3 = challenge_of(h.say(mut e, 4, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c3 = challenge_of(h.say(mut e, 4, begin(SIGN_IN)))
     h.time += 301000
-    let _ = h.say(mut e, 5, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() })
+    let _ = h.say(mut e, 5, begin(SIGN_IN))
     assert(h.keys("w/") == 1, "the expired one cleared")
     // A registration over a sign-in's challenge, or from another origin, is refused.
-    let c4 = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c4 = challenge_of(h.say(mut e, 2, begin(SIGN_IN)))
     let wrong = Request::Register {
         id: Vec::from([8]),
         client_data: client("webauthn.create", c4, ORIGIN),
         attestation: made(RP, [8], 8),
     }
     assert(refused(h.say(mut e, 2, wrong)), "another ceremony's challenge")
-    let c5 = challenge_of(h.say(mut e, 6, Request::Begin { ceremony: REGISTER, csrf: Vec::new() }))
+    let c5 = challenge_of(h.say(mut e, 6, begin(REGISTER)))
     let elsewhere = Request::Register {
         id: Vec::from([8]),
         client_data: client("webauthn.create", c5, "https://evil.example"),
@@ -811,6 +842,11 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
     let s = sign_up(mut e, mut h, 1, 5)
     assert(refused(h.say(mut e, 1, Request::Token { game: String::from("toy") })), "knighted first")
     let _ = h.say(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
+    let _ = h.say(
+        mut e,
+        1,
+        Request::Consent { csrf: s.csrf.clone(), version: 5, best_runs: false },
+    )
     assert(
         refused(h.say(mut e, 1, Request::Token { game: String::from("other") })),
         "only its game",
@@ -853,10 +889,15 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
     let Reply::Rejected { .. } = rs[0].clone() else { panic("an expired token") }
 }
 
-/// A knighted account in browser `conn` and a token for the toy's boards.
+/// A knighted account in browser `conn` that has agreed to posting, and a token for the toy's
+/// boards.
 fn uploader(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8) -> (Signed, Vec<u8>) {
     let s = sign_up(mut e, mut h, conn, id)
     let _ = h.say(mut e, conn, Request::Keep { csrf: s.csrf.clone() })
+    let consent = Request::Consent { csrf: s.csrf.clone(), version: 5, best_runs: false }
+    let Reply::Posting { agreed: true, .. } = h.say(mut e, conn, consent)[0].clone() else {
+        panic("agreed to posting")
+    }
     let Reply::Token { token, .. } = h.say(
         mut e,
         conn,
@@ -1022,7 +1063,7 @@ fn a_recovery_code_signs_in_once_ends_every_other_session_and_needs_a_passkey_ne
     // Until a passkey is added, nothing else.
     assert(refused(h.say(mut e, 3, Request::Token { game: String::from("toy") })))
     assert(refused(h.say(mut e, 3, Request::Reroll { csrf: csrf.clone() })))
-    let begun = h.say(mut e, 3, Request::Begin { ceremony: ADD_PASSKEY, csrf: csrf.clone() })
+    let begun = h.say(mut e, 3, begin(ADD_PASSKEY, csrf.clone()))
     assert(handle_of(begun) == s.handle, "a passkey added is made for the account's handle")
     let c = challenge_of(begun)
     let rs = h.say(
@@ -1232,7 +1273,7 @@ fn a_deletion_a_dropped_instance_left_is_finished_by_the_next() {
     until(mut e, mut h, "x/", 10)
     h.waiting.clear()
     h.closing.clear()
-    var next = engine(Toy {}, RP, ORIGIN)
+    var next = engine(Toy {}, RP, ORIGIN, VERSIONS)
     h.call(mut next, [])
     h.settle(mut next)
     for p in ["a/", "c/", "s/", "r/", "n/", "t/", "x/"] {
@@ -1309,4 +1350,389 @@ fn every_session_a_recovery_ends_stays_ended_however_many() {
     }
     assert(!me.signed_in, "the session stays ended")
     assert(h.keys("s/") == 1, "the recovery's own session alone")
+}
+
+// ---- agreement, posting and the public reads -----------------------------------------------------
+
+/// The value of the first account's record of kind `of` (`a/<id>/<of>`), if there is one.
+fn record(h: Host, of: u8) -> Option<Vec<u8>> {
+    for e in h.store {
+        if e.key.len() == 12 && e.key[0] == 97 && e.key[10] == 47 && e.key[11] == of {
+            return Some(e.value.clone())
+        }
+    }
+    None
+}
+
+@test
+fn an_account_is_made_only_with_the_current_agreement_and_keeps_it() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let asks = [
+        (NOT_AGREED, "nothing agreed"),
+        (Agreed { terms: 3, privacy: 4, of_age: false }, "under 13"),
+        (Agreed { terms: 2, privacy: 4, of_age: true }, "old terms"),
+        (Agreed { terms: 3, privacy: 9, of_age: true }, "another privacy policy"),
+    ]
+    for (agreed, why) in asks {
+        let rs = h.say(mut e, 1, Request::Begin { ceremony: REGISTER, csrf: Vec::new(), agreed })
+        assert(refused(rs), why)
+    }
+    assert(h.keys("w/") == 0, "no ceremony begun")
+    // Begun with the versions of the day, then the server's change: the sign-up can't finish.
+    let c = challenge_of(h.say(mut e, 1, begin(REGISTER)))
+    var newer = engine(Toy {}, RP, ORIGIN, Versions { terms: 4, privacy: 4, posting: 5 })
+    let rs = h.say(
+        mut newer,
+        1,
+        Request::Register {
+            id: Vec::from([5]),
+            client_data: client("webauthn.create", c, ORIGIN),
+            attestation: made(RP, [5], 5),
+        },
+    )
+    assert(refused(rs) && h.keys("a/") == 0, "the terms changed since it began")
+    // With the current versions: made, and what it agreed to kept with it, and when.
+    let made_at = h.time
+    let s = sign_up(mut e, mut h, 1, 5)
+    let Some(v) = record(h, account::OF_AGREED) else { panic("the agreement kept") }
+    let g: Result<account::Agreement, LoadError> = load(take v)
+    let Ok(g) = g else { panic("an agreement") }
+    assert(g.terms == 3 && g.privacy == 4 && g.of_age && g.at > made_at, f"{g.at}")
+    // A sign-in agrees to nothing again.
+    h.good.push(Vec::from([4]))
+    assert(session_of(sign_in(mut e, mut h, 2, 5, s.handle, 1, [4])).is_some())
+    let Reply::Export { text, .. } = h.say(
+        mut e,
+        1,
+        Request::Export { after: Vec::new() },
+    )[0].clone() else {
+        panic("an export")
+    }
+    assert(text.as_str().find("\"agreed\":{\"terms\":3,\"privacy\":4").is_some(), text.as_str())
+}
+
+@test
+fn a_post_needs_consent_and_the_best_runs_setting_is_kept() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    let _ = h.say(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
+    let Reply::Token { token, .. } = h.say(
+        mut e,
+        1,
+        Request::Token { game: String::from("toy") },
+    )[0].clone() else { panic("a token") }
+    let up = |moves: u32| -> Request {
+        Request::Upload {
+            token: token.clone(),
+            game: String::from("toy"),
+            replay: toy(0, moves, moves, 2),
+        }
+    }
+    let Reply::Posting { agreed, best_runs, .. } = h.say(
+        mut e,
+        1,
+        Request::Posting,
+    )[0].clone() else {
+        panic("posting")
+    }
+    assert(!agreed && !best_runs, "off until chosen")
+    let Reply::Rejected { why } = h.say(mut e, 1, up(10))[0].clone() else { panic("refused") }
+    assert(why.as_str().find("Agree").is_some(), why.as_str())
+    assert(h.keys("q/") == 0 && h.keys("u/") == 0, "nothing queued")
+    // The setting, with the session's CSRF token.
+    assert(refused(h.say(mut e, 1, Request::BestRuns { csrf: Vec::from([1; 16]), on: true })))
+    assert(refused(h.say(mut e, 2, Request::BestRuns { csrf: s.csrf.clone(), on: true })))
+    let Reply::Posting { agreed, best_runs, .. } = h.say(
+        mut e,
+        1,
+        Request::BestRuns { csrf: s.csrf.clone(), on: true },
+    )[0].clone() else { panic("set") }
+    assert(!agreed && best_runs, "the setting alone is no consent")
+    // Consent to another version than the server's is refused.
+    let stale = Request::Consent { csrf: s.csrf.clone(), version: 4, best_runs: true }
+    assert(refused(h.say(mut e, 1, stale)), "an old version")
+    let at = h.time
+    let rs = h.say(mut e, 1, Request::Consent { csrf: s.csrf.clone(), version: 5, best_runs: true })
+    let Reply::Posting { agreed: true, best_runs: true, .. } = rs[0].clone() else {
+        panic("agreed")
+    }
+    let Reply::Posting { agreed, at: when, best_runs } = h.say(
+        mut e,
+        1,
+        Request::Posting,
+    )[0].clone() else {
+        panic("posting")
+    }
+    assert(agreed && best_runs && when >= at && when > 0, "kept, with when")
+    let Reply::Verified { .. } = h.say(mut e, 1, up(11))[0].clone() else { panic("posted") }
+    // Off again: the consent stays.
+    let rs = h.say(mut e, 1, Request::BestRuns { csrf: s.csrf.clone(), on: false })
+    let Reply::Posting { agreed: true, best_runs: false, .. } = rs[0].clone() else {
+        panic("off")
+    }
+    // What posting shares changes: the consent is to agree again.
+    var newer = engine(Toy {}, RP, ORIGIN, Versions { terms: 3, privacy: 4, posting: 6 })
+    let Reply::Posting { agreed, .. } = h.say(mut newer, 1, Request::Posting)[0].clone() else {
+        panic("posting")
+    }
+    assert(!agreed, "another version")
+    let Reply::Rejected { .. } = h.say(mut newer, 1, up(12))[0].clone() else { panic("refused") }
+}
+
+@test
+fn a_replay_is_read_by_its_hash_and_kept_for_a_year() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (s, token) = uploader(mut e, mut h, 1, 5)
+    let good = toy(0, claimed: 30, moves: 30, m: 2)
+    let rs = h.say(
+        mut e,
+        1,
+        Request::Upload { token: token.clone(), game: String::from("toy"), replay: good.clone() },
+    )
+    let Reply::Verified { run, .. } = rs[0].clone() else { panic("verified") }
+    let hash = Vec::from(sha256(good))
+    // A board's page names each place's replay by its hash.
+    let (b, _) = h.read(
+        mut e,
+        2,
+        Request::Board { game: String::from("toy"), course: 0, category: ANY, from: 0 },
+    )
+    let Reply::Board { places, .. } = b else { panic("a board") }
+    assert(places.len() == 1 && places[0].replay == hash, "the hash on the board")
+    let a = h.read_whole(mut e, 2, Request::Replay { hash: hash.clone() })
+    let Reply::Run { run: by_hash, replay, .. } = a.reply else { panic("the replay") }
+    assert(by_hash == run && replay == good, "the run it names")
+    assert(a.public == server::REPLAY_AGE && a.immutable, f"{a.public}")
+    assert(wire::replay_path(hash).as_str().ends_with(account::hex(hash).as_str()))
+    // A hash nothing has, or one that isn't a hash, is refused, and that isn't kept.
+    for wrong in [Vec::filled(32, u8(0)), Vec::from([1, 2, 3])] {
+        let a = h.read_whole(mut e, 2, Request::Replay { hash: wrong.clone() })
+        assert(refused([a.reply.clone()]) && a.public == 0 && !a.immutable)
+    }
+    // Another account's upload of the same bytes is refused: a hash names one run.
+    let (_, other) = uploader(mut e, mut h, 3, 6)
+    let rs = h.say(
+        mut e,
+        3,
+        Request::Upload { token: other.clone(), game: String::from("toy"), replay: good.clone() },
+    )
+    let Reply::Rejected { why } = rs[0].clone() else { panic("refused") }
+    assert(why.as_str().find("already on the boards").is_some(), why.as_str())
+    // Its account deleted: gone from the server (a cache may keep it a while, as the policy says).
+    h.good.push(Vec::from([4]))
+    let Some(fresh) = session_of(sign_in(mut e, mut h, 1, 5, s.handle, 1, [4])) else {
+        panic("signed in")
+    }
+    let Reply::Done = h.say(
+        mut e,
+        1,
+        Request::Delete { csrf: fresh.csrf.clone() },
+    )[0].clone() else {
+        panic("deleted")
+    }
+    let a = h.read_whole(mut e, 2, Request::Replay { hash: hash.clone() })
+    assert(refused([a.reply.clone()]) && h.keys("h/") == 0, "gone with its account")
+}
+
+/// A knighted account that agreed to posting, with the name that `seed` draws, its number `id`,
+/// in browser `conn` with passkey `id`: its token.
+fn named(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8, seed: u64) -> (Signed, Vec<u8>) {
+    var bytes: Vec<u8> = Vec::filled(CHALLENGE_BYTES + CEREMONY_BYTES + HANDLE_BYTES, id)
+    for b in [0, 0, 0, 0, 0, 0, 0, id] {
+        bytes.push(b)
+    }
+    for k in 0..8 {
+        bytes.push(u8((seed >> (56 - 8 * k)) & 255))
+    }
+    h.given.push(take bytes)
+    uploader(mut e, mut h, conn, id)
+}
+
+/// Uploads a toy run of course 0 with `moves` moves with `token`: verified.
+fn post(e: mut Engine<Toy>, h: mut Host, conn: u32, token: [u8], moves: u32) {
+    let rs = h.say(
+        mut e,
+        conn,
+        Request::Upload {
+            token: Vec::from(token),
+            game: String::from("toy"),
+            replay: toy(0, moves, moves, 2),
+        },
+    )
+    let Reply::Verified { .. } = rs[0].clone() else { panic("verified") }
+}
+
+@test
+fn a_slice_holds_the_places_around_a_name() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    // Eight accounts on course 0, the k-th fastest with 10 + k moves.
+    var names: Vec<String> = Vec::new()
+    for k in 0..8 {
+        let (s, token) = uploader(mut e, mut h, k + 1, u8(k + 5))
+        post(mut e, mut h, k + 1, token, 10 + k)
+        names.push(s.name.clone())
+    }
+    let around = |name: String, course: u32| -> Request {
+        Request::Around { game: String::from("toy"), course, category: ANY, name: name.clone() }
+    }
+    let (r, age) = h.read(mut e, 20, around(names[6].clone(), 0))
+    assert(age == server::BOARD_AGE, "kept as a board's page is")
+    let Reply::Around { places, at } = r else { panic("a slice") }
+    assert(at == 7 && places.len() == AROUND + 2, f"{at}: {places.len()} places")
+    for i in 0..places.len() {
+        let k = i + 1
+        assert(places[i].place == k + 1 && places[i].name == names[k], places[i].name.as_str())
+        assert(places[i].ticks == 10 + k && places[i].replay.len() == 32)
+    }
+    // The fastest: nothing above it.
+    let (r, _) = h.read(mut e, 20, around(names[0].clone(), 0))
+    let Reply::Around { places, at } = r else { panic("a slice") }
+    assert(at == 1 && places.len() == AROUND + 1 && places[0].name == names[0])
+    // A name nobody has, text that isn't a name, and a board the name has no run on.
+    let nobody = names::text(names::draw(77777))
+    for (name, course) in [
+        (take nobody, 0),
+        (String::from("Sir Nobody"), 0),
+        (names[0].clone(), 1),
+    ] {
+        let (r, _) = h.read(mut e, 20, around(name.clone(), course))
+        assert(refused([take r]), name.as_str())
+    }
+}
+
+/// The seed that draws the name of parts `title`, `front`, `back` and `epithet`.
+fn seed_of(title: u32, front: u32, back: u32, epithet: u32) -> u64 {
+    let (t, f, b) = (u64(names::TITLES.len()), u64(names::FRONTS.len()), u64(names::BACKS.len()))
+    u64(title) + t * (u64(front) + f * (u64(back) + b * u64(epithet)))
+}
+
+@test
+fn a_search_finds_names_by_their_parts_at_most_twenty_and_never_a_deleted_one() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    // 24 Wobblesnouts with runs, each its own title and epithet, and one without a run.
+    var signed: Vec<Signed> = Vec::new()
+    for k in 0..24 {
+        let (s, token) = named(
+            mut e,
+            mut h,
+            k + 1,
+            u8(k + 5),
+            seed_of(title: k, front: 0, back: 0, epithet: k),
+        )
+        post(mut e, mut h, k + 1, token, 10 + k)
+        signed.push(s.clone())
+    }
+    let (quiet, _) = named(mut e, mut h, 30, 40, seed_of(title: 1, front: 0, back: 0, epithet: 40))
+    let search = |title: Text, noun: Text, epithet: Text| -> Request {
+        Request::Names {
+            game: String::from("toy"),
+            title: String::from(title),
+            noun: String::from(noun),
+            epithet: String::from(epithet),
+        }
+    }
+    let (r, age) = h.read(mut e, 99, search("", "wob", ""))
+    assert(age == server::BOARD_AGE)
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.len() == MOST_FOUND, f"{found.len()} found")
+    for f in found {
+        assert(f.name.as_str().find("Wobblesnout").is_some() && f.standings.len() >= 1)
+        assert(f.standings[0].course == 0 && f.standings[0].replay.len() == 32)
+    }
+    // By each part: a title and an epithet pick one; a name without a run is never found.
+    let (r, _) = h.read(mut e, 99, search("dame", "WOBBLES", ""))
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.len() == 1 && found[0].name == signed[1].name, f"{found.len()} found")
+    assert(found[0].name != quiet.name, "no run, not found")
+    let epithet = names::EPITHETS[3]
+    let (r, _) = h.read(mut e, 99, search("", "wobble", epithet))
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.len() == 1 && found[0].name == signed[3].name)
+    let (r, _) = h.read(mut e, 99, search("", "Wobblepaw", ""))
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.is_empty(), "another noun")
+    // Too wide, nothing at all, or what no name holds: refused.
+    for (t, n, p) in [
+        ("", "", "Unh"),
+        ("", "", ""),
+        ("", "w0b", ""),
+        ("", "", "                                 x"),
+    ] {
+        let (r, _) = h.read(mut e, 99, search(t, n, p))
+        assert(refused([take r]), f"{t}|{n}|{p}")
+    }
+    // Being deleted (its records still going): not found.
+    let (i, found) = find(h.store, account_key(10))
+    assert(found, "account 10")
+    let r: Result<account::Account, LoadError> = load(h.store[i].value.clone())
+    var going = (take r).unwrap()
+    going.deleting = true
+    h.store[i].value = save(going.clone())
+    let (r, _) = h.read(mut e, 99, search("", "wobble", names::EPITHETS[5]))
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.is_empty() && names::text(going.name) == signed[5].name, "being deleted")
+    // Deleted: gone from a search at once.
+    h.good.push(Vec::from([4]))
+    let Some(fresh) = session_of(sign_in(mut e, mut h, 4, 8, signed[3].handle, 1, [4])) else {
+        panic("signed in")
+    }
+    let Reply::Done = h.say(
+        mut e,
+        4,
+        Request::Delete { csrf: fresh.csrf.clone() },
+    )[0].clone() else {
+        panic("deleted")
+    }
+    let (r, _) = h.read(mut e, 99, search("", "wobble", epithet))
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.is_empty(), "a deleted account")
+}
+
+@test
+fn a_search_reads_a_range_of_names_a_page_at_a_time() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    // 70 Sir Wobblesnouts with runs, by epithet in the index's order, and one without: the epithet
+    // asked for is the last's, past the range's first page.
+    for k in 0..70 {
+        var bytes: Vec<u8> = Vec::filled(CHALLENGE_BYTES + CEREMONY_BYTES + HANDLE_BYTES, u8(k + 5))
+        for b in [0, 0, 0, 0, 0, 0, 1, u8(k + 5)] {
+            bytes.push(b)
+        }
+        let seed = seed_of(title: 0, front: 0, back: 0, epithet: k)
+        for i in 0..8 {
+            bytes.push(u8((seed >> (56 - 8 * i)) & 255))
+        }
+        h.given.push(take bytes)
+        let (_, token) = uploader(mut e, mut h, k + 1, u8(k + 5))
+        post(mut e, mut h, k + 1, token, 10 + k)
+    }
+    let _ = sign_up(mut e, mut h, 80, 90)
+    assert(h.keys("n/") == 71 && h.keys("p/") == 70, "only names with runs are searched")
+    let (r, _) = h.read(
+        mut e,
+        99,
+        Request::Names {
+            game: String::from("toy"),
+            title: String::from("Sir"),
+            noun: String::from("Wobblesnout"),
+            epithet: String::from(names::EPITHETS[69]),
+        },
+    )
+    let Reply::Names { found } = r else { panic("names") }
+    assert(
+        found.len() == 1 && found[0].name.as_str().ends_with(names::EPITHETS[69]),
+        f"{found.len()}",
+    )
 }
