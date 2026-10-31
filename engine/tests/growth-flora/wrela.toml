@@ -1,0 +1,8 @@
+# Ferns, grass and herbs grown (docs/plan-world-class-3.md §E3): the floor plants' growth programs
+# (engine::growth::grow_frond, grow_tussock, grow_rosette) and where the floor places them by their
+# causes (engine::grass::kind_shares, sward_density), on the CPU.
+[package]
+name = "growth_flora_tests"
+
+[dependencies]
+engine = { workspace = true }

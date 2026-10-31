@@ -1973,6 +1973,148 @@ pub fn scale(p: mut Plant, s: f32) {
     }
 }
 
+// ---- ferns, grass and herbs (§E3) ----------------------------------------------------------------
+
+/// A floor plant's genome (§E3): which growth program grows it (`ROSETTE`, `TUSSOCK`, `FROND`), the
+/// shape it's drawn as (`grass`' `HERB`, `STRAP`, `BRACKEN`), its longest leaf or frond (m), its
+/// leaf's width (m), how stiff its leaves stand (0 limp to 1 stiff), how many leaves, tillers or
+/// fronds it has at most, how much larger its leaves grow in shade (its plasticity, a share per
+/// unit of light under half), its colour (linear), the acidity, wetness and light it grows in (each
+/// a range), its flowers (their kind, 0 none, and their share) and how it likes trodden ground.
+/// Its numbers **proposed** from its habit (the field guides' sizes, and the shapes the floor drew
+/// it as before it was grown).
+pub struct FloraGenome: Copy {
+    pub program: u32,
+    pub shape: f32,
+    pub length: f32,
+    pub width: f32,
+    pub stiff: f32,
+    pub count: f32,
+    pub shade: f32,
+    pub colour: vec3,
+    pub acid: vec2,
+    pub wet: vec2,
+    pub light: vec2,
+    pub bloom: u32 = 0,
+    pub blooms: f32 = 0.0,
+    pub worn: f32 = 0.0,
+}
+
+/// The floor plants' growth programs.
+pub const ROSETTE: u32 = 0
+pub const TUSSOCK: u32 = 1
+pub const FROND: u32 = 2
+
+/// A genome's values in order (`genome_hash`'s input).
+pub fn flora_values(g: FloraGenome) -> Vec<f32> {
+    Vec::from(
+        [
+            f32(g.program), g.shape, g.length, g.width, g.stiff, g.count, g.shade, g.colour.x,
+            g.colour.y, g.colour.z, g.acid.x, g.acid.y, g.wet.x, g.wet.y, g.light.x, g.light.y,
+            f32(g.bloom), g.blooms, g.worn,
+        ],
+    )
+}
+
+/// How far a floor plant has grown at `age` (seasons): its leaves' share of their full length (a
+/// growth curve, 95 % by its first season's end).
+fn grown_by(age: f32) -> f32 {
+    1.0 - exp(-3.0 * max(age, 0.0))
+}
+
+/// A leaf's size in light `light` against half light's: larger in shade, smaller in sun, by the
+/// genome's plasticity.
+fn plastic(g: FloraGenome, light: f32) -> f32 {
+    max(1.0 + g.shade * (0.5 - light), 0.2)
+}
+
+/// A rosette grown (`grow_rosette`): its leaves, their length and width (m), and how far they
+/// droop (0 upright to 1 lying).
+pub struct Rosette: Copy {
+    pub leaves: u32,
+    pub length: f32,
+    pub width: f32,
+    pub droop: f32,
+}
+
+/// A herb (§E3): leaves round its centre at the golden angle, as many as its age and light give
+/// (`count` at most), each grown to its length by its age, larger in shade; its droop its
+/// limpness as far as it's grown.
+pub fn grow_rosette(g: FloraGenome, site: Site) -> Rosette {
+    let k = grown_by(site.age)
+    let p = plastic(g, site.light)
+    Rosette {
+        leaves: u32(round(max(g.count * k * (0.5 + 0.5 * site.light), 1.0))),
+        length: g.length * k * p,
+        width: g.width * p,
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A tussock grown (`grow_tussock`): its tillers, its blades' length (m) and their droop.
+pub struct Tussock: Copy {
+    pub tillers: u32,
+    pub length: f32,
+    pub droop: f32,
+}
+
+/// A grass (§E3): tillers added from its base each season by the light and the water it has
+/// (`count` at most, in the open on moist ground; few under a canopy, fewer in the dry or the
+/// waterlogged), each a blade grown to its length by its growth curve; its droop by its length.
+pub fn grow_tussock(g: FloraGenome, site: Site) -> Tussock {
+    let k = grown_by(site.age)
+    let light = smoothstep(0.05, 0.8, site.light)
+    let water = 1.0 - min(abs(site.wetness - 0.55) * 1.6, 0.9)
+    Tussock {
+        tillers: u32(round(max(g.count * min(site.age, 1.0) * light * water, 1.0))),
+        length: g.length * k * plastic(g, site.light),
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A frond grown (`grow_frond`): its length (m), its curl (radians: a fiddlehead's 2π, an open
+/// frond's 0), its pinnae, its width (m) and its droop.
+pub struct Frond: Copy {
+    pub length: f32,
+    pub curl: f32,
+    pub pinnae: u32,
+    pub width: f32,
+    pub droop: f32,
+}
+
+/// A fern (§E3): a rachis with pinnae at phyllotactic spacing, unrolled from its fiddlehead over
+/// its first season (circinate vernation: its curl falls from 2π at emergence to 0 by 0.6 of a
+/// season), larger and so broader in shade.
+pub fn grow_frond(g: FloraGenome, site: Site) -> Frond {
+    let k = grown_by(site.age)
+    let p = plastic(g, site.light)
+    Frond {
+        length: g.length * k * p,
+        curl: 2.0 * PI * (1.0 - smoothstep(0.0, 0.6, site.age)),
+        pinnae: u32(round(10.0 + 20.0 * k)),
+        width: g.width * p,
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A floor plant grown at `site` by its program, as the grass draws it: its height (m), width
+/// (m) and droop.
+pub fn flora_grown(g: FloraGenome, site: Site) -> vec3 {
+    if g.program == TUSSOCK {
+        let t = grow_tussock(g, site)
+        vec3(t.length, g.width * plastic(g, site.light), t.droop)
+    } else if g.program == FROND {
+        let f = grow_frond(g, site)
+        vec3(f.length, f.width, f.droop)
+    } else {
+        let r = grow_rosette(g, site)
+        vec3(r.length, r.width, r.droop)
+    }
+}
+
+/// The site a floor plant's row is grown at (`grass::SPECIES`): half light, moist, a season old.
+pub const FLORA_SITE: Site = Site { light: 0.5, wetness: 0.5, age: 1.0 }
+
 // ---- the bark and the moss as causes (§E1.4) ----------------------------------------------------
 
 /// A tree's bark's cracks from its history (`substance::history_of`: its age's share of its
