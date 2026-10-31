@@ -750,7 +750,7 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
     var e = take both.0
     var h = take both.1
     let (s, token) = uploader(mut e, mut h, 1, 5)
-    // 2,500 moves: three calls of play.
+    // 2,500 moves: several calls of play.
     let good = toy(1, claimed: 2500, moves: 2500, m: 2)
     let rs = h.say(
         mut e,
@@ -896,9 +896,9 @@ fn a_recovery_code_signs_in_once_ends_every_other_session_and_needs_a_passkey_ne
     // Until a passkey is added, nothing else.
     assert(refused(h.say(mut e, 3, Request::Token { game: String::from("toy") })))
     assert(refused(h.say(mut e, 3, Request::Reroll { csrf: csrf.clone() })))
-    let c = challenge_of(
-        h.say(mut e, 3, Request::Begin { ceremony: ADD_PASSKEY, csrf: csrf.clone() }),
-    )
+    let begun = h.say(mut e, 3, Request::Begin { ceremony: ADD_PASSKEY, csrf: csrf.clone() })
+    assert(handle_of(begun) == s.handle, "a passkey added is made for the account's handle")
+    let c = challenge_of(begun)
     let rs = h.say(
         mut e,
         3,

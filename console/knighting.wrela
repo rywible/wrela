@@ -1,0 +1,283 @@
+// The knighting: how a new account is given its name (Ryan, 2026-10-30: "a ceremony of being
+// bestowed a gamertag, like being knighted"). Nobody types a name on wrela, so being given one is
+// made an occasion: the console dims, a paper ribbon unrolls across it and the name is inked on it
+// in the picture book's sepia, a sword comes down and taps it on one shoulder and then the other,
+// each tap a burst of yuzu-yellow sparks, and a fanfare sounds on the game's own piano
+// (engine::piano, GRAND), with "Arise," above. Then the player keeps the name or draws again, a
+// few times (account.wrela). A draw again rolls the ribbon up and out with the new name, one tap,
+// no fanfare. With reduced motion, everything is where it ends, at once.
+//
+// The colours are the capybara book's (games/capybara/ink.wrela's paper and ink), since a name
+// belongs to every game but was first given there.
+
+use engine::perform::{PedalPoint, Performance, Played}
+use engine::piano::{Piano, piano, play_piano}
+use engine::piano_grand::GRAND
+use std::audio::play
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Fonts}
+
+/// How long the ceremony takes before its choices show, and a draw again's.
+pub const LENGTH: f32 = 4.0
+pub const AGAIN: f32 = 1.8
+
+/// The moments, in seconds: the veil, the ribbon, the ink, the two taps, "Arise".
+const VEIL: f32 = 0.5
+const UNROLL_FROM: f32 = 0.5
+const UNROLL: f32 = 0.9
+const INK_FROM: f32 = 1.2
+const INK: f32 = 0.6
+const FIRST_TAP: f32 = 2.0
+const SECOND_TAP: f32 = 2.6
+const ARISE: f32 = 2.9
+
+const PAPER = vec4(0.97, 0.93, 0.83, 1.0)
+const PAPER_SHADE = vec4(0.86, 0.79, 0.64, 1.0)
+const SEPIA = vec4(0.36, 0.22, 0.12, 1.0)
+const BLADE = vec4(0.86, 0.88, 0.91, 1.0)
+const GUARD = vec4(0.86, 0.66, 0.24, 1.0)
+const GRIP = vec4(0.42, 0.26, 0.15, 1.0)
+const YUZU = vec4(0.99, 0.83, 0.27, 1.0)
+
+/// The fanfare: a flourish up a C major chord, a turn, and the chord held under the pedal, as the
+/// second tap lands (`SECOND_TAP` seconds into the ceremony, which starts the voice).
+pub fn fanfare() -> Performance {
+    let at = f64(SECOND_TAP) - 0.05
+    var played: Vec<Played> = Vec::new()
+    let note = |key: u32, on: f64, held: f64, velocity: f32| -> Played {
+        Played { key, voice: 0, onset: at + on, release: at + on + held, velocity, note: 0 }
+    }
+    for (key, on, held, v) in [
+        (67, 0.0, 0.14, 0.62),
+        (72, 0.15, 0.14, 0.66),
+        (76, 0.3, 0.14, 0.7),
+        (79, 0.45, 0.36, 0.78),
+        (76, 0.84, 0.12, 0.64),
+        (48, 1.0, 1.8, 0.7),
+        (60, 1.0, 1.8, 0.66),
+        (72, 1.0, 1.8, 0.8),
+        (76, 1.0, 1.8, 0.8),
+        (79, 1.0, 1.8, 0.82),
+        (84, 1.0, 1.8, 0.86),
+    ] {
+        played.push(note(key, f64(on), f64(held), v))
+    }
+    Performance {
+        notes: played,
+        sustain: Vec::from(
+            [
+                PedalPoint { at: 0.0, depth: 0.0 },
+                PedalPoint { at: at + 0.95, depth: 0.0 },
+                PedalPoint { at: at + 0.97, depth: 1.0 },
+                PedalPoint { at: at + 3.2, depth: 1.0 },
+                PedalPoint { at: at + 3.4, depth: 0.0 },
+            ],
+        ),
+        soft: Vec::from([PedalPoint { at: 0.0, depth: 0.0 }]),
+        beats: Vec::from([0.0]),
+        length: at + 3.4,
+    }
+}
+
+@audio
+fn render(p: mut Piano, left: mut [f32], right: mut [f32]) {
+    play_piano(mut p, mut left, mut right)
+}
+
+/// Starts the fanfare with the ceremony, the first time: a program has one voice, so a second
+/// knighting in the same visit (an account deleted and another made) is silent.
+pub fn sound(started: mut bool) {
+    if started {
+        return
+    }
+    started = true
+    play(piano(GRAND, fanfare()), render)
+}
+
+fn ease(x: f32) -> f32 {
+    let t = clamp(x, 0.0, 1.0)
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How far `t` is through the span from `from`, `length` long: 0 to 1.
+fn through(t: f32, from: f32, length: f32) -> f32 {
+    clamp((t - from) / length, 0.0, 1.0)
+}
+
+/// Where the sword's tip is at `t`, from where it rests above, to `left`, to `right`, and away,
+/// and how far it has come down (0 at rest, 1 touching).
+fn tip(t: f32, left: vec2, right: vec2, above: vec2) -> (vec2, f32) {
+    let down1 = ease(through(t, FIRST_TAP - 0.45, 0.45))
+    let up1 = ease(through(t, FIRST_TAP, 0.2))
+    let across = ease(through(t, FIRST_TAP + 0.2, 0.2))
+    let down2 = ease(through(t, SECOND_TAP - 0.2, 0.2))
+    let away = ease(through(t, SECOND_TAP + 0.1, 0.5))
+    let lifted = mix(left, left + vec2(0.0, -60.0), up1)
+    var at = mix(above, left, down1)
+    if t >= FIRST_TAP {
+        at = mix(lifted, right + vec2(0.0, -60.0), across)
+    }
+    if t >= SECOND_TAP - 0.2 {
+        at = mix(right + vec2(0.0, -60.0), right, down2)
+    }
+    if t >= SECOND_TAP {
+        at = mix(right, above + vec2(240.0, 0.0), away)
+    }
+    let touching = if abs(t - FIRST_TAP) < 0.05 || abs(t - SECOND_TAP) < 0.05 { 1.0 } else { 0.0 }
+    (at, touching)
+}
+
+/// The ceremony at `t` seconds, for `name`, over a screen `w` by `h` (logical pixels, drawn at
+/// `zoom`): the first knighting, or (`again`) a draw again. Everything at its end with `reduced`.
+pub fn draw(
+    d: mut DrawList,
+    fonts: Fonts,
+    t0: f32,
+    name: str,
+    again: bool,
+    w: f32,
+    h: f32,
+    zoom: f32,
+    reduced: bool,
+) {
+    let t = if reduced { 99.0 } else if again { t0 + 1.0 } else { t0 }
+    let z = |r: Rect| -> Rect { Rect::new(r.x * zoom, r.y * zoom, r.w * zoom, r.h * zoom) }
+    // The veil.
+    let veil = if again { 1.0 } else { ease(through(t, 0.0, VEIL)) }
+    d.rect(
+        Rect::new(x: 0.0, y: 0.0, w: w * zoom, h: h * zoom),
+        vec4(0.02, 0.015, 0.01, 0.82 * veil),
+    )
+    // The ribbon: its width fits the name, and unrolls from the middle.
+    let size = min(34.0, w / 22.0)
+    borrow sans = fonts.font(Face::Sans)
+    let name_w = sans.measure(name, size * zoom) / zoom
+    let full = min(w - 48.0, name_w + 160.0)
+    let rolled = if again && t0 < 0.4 { 1.0 - ease(t0 / 0.4) } else { 1.0 }
+    let unroll = if again {
+        if t0 < 0.4 { rolled } else { ease(through(t0, from: 0.4, length: 0.6)) }
+    } else { ease(through(t, UNROLL_FROM, UNROLL)) }
+    let cy = h * 0.42
+    let rh = size * 2.2
+    let rw = max(full * unroll, rh * 0.6)
+    let x0 = w * 0.5 - rw * 0.5
+    // Its tails, behind: a notched flag at each end, a shade darker, a little lower.
+    if unroll > 0.05 {
+        for side in [-1.0, 1.0] {
+            let edge = w * 0.5 + side * rw * 0.5
+            let out = edge + side * rh * 0.9
+            let top = cy - rh * 0.25
+            let bottom = cy + rh * 0.75
+            let notch = vec2(out - side * rh * 0.3, (top + bottom) * 0.5)
+            let a = vec2(edge, top) * zoom
+            let b = vec2(out, top) * zoom
+            let c = vec2(out, bottom) * zoom
+            let e = vec2(edge, bottom) * zoom
+            d.triangle(a, b, notch * zoom, PAPER_SHADE)
+            d.triangle(a, notch * zoom, e, PAPER_SHADE)
+            d.triangle(notch * zoom, c, e, PAPER_SHADE)
+        }
+    }
+    d.rect(z(Rect::new(x0, cy - rh * 0.5, rw, rh)), PAPER, 3.0 * zoom)
+    d.ring(
+        z(Rect::new(x0, cy - rh * 0.5, rw, rh)),
+        vec4(SEPIA.xyz, 0.5),
+        3.0 * zoom,
+        max(zoom, 1.0),
+    )
+    // The rolls at its ends, until it has unrolled.
+    if unroll < 1.0 {
+        for side in [-1.0, 1.0] {
+            let x = w * 0.5 + side * rw * 0.5 - rh * 0.18
+            d.rect(
+                z(Rect::new(x, cy - rh * 0.58, rh * 0.36, rh * 1.16)),
+                PAPER_SHADE,
+                rh * 0.18 * zoom,
+            )
+        }
+    }
+    // The name, inked from the left as a pen writes it.
+    let inked = if again { ease(through(t0, from: 0.9, length: 0.4)) } else {
+        ease(through(t, INK_FROM, INK))
+    }
+    if inked > 0.0 {
+        let tx = w * 0.5 - name_w * 0.5
+        let ty = cy - (sans.ascender - 0.72 * 0.5) * size
+        d.push_clip(z(Rect::new(tx - 4.0, cy - rh, (name_w + 8.0) * inked, rh * 2.0)))
+        let _ = d.text(fonts, Face::Sans, name, size * zoom, vec2(tx, ty) * zoom, SEPIA)
+        d.pop_clip()
+    }
+    // "Arise," above it.
+    let arise = if again { 1.0 } else { ease(through(t, ARISE, 0.5)) }
+    if arise > 0.0 {
+        let s2 = size * 0.62
+        let word = "Arise,"
+        let ww = sans.measure(word, s2 * zoom) / zoom
+        let _ = d.text(
+            fonts,
+            Face::Sans,
+            word,
+            s2 * zoom,
+            vec2(w * 0.5 - ww * 0.5, cy - rh * 0.5 - s2 * 2.1) * zoom,
+            vec4(PAPER.xyz, arise),
+        )
+    }
+    // The sword, and its sparks.
+    if !again || t0 > 0.6 {
+        let left = vec2(x0 + rw * 0.12, cy - rh * 0.5)
+        let right = vec2(x0 + rw * 0.88, cy - rh * 0.5)
+        let above = vec2(w * 0.5 - 40.0, -80.0)
+        let local = if again { t0 - 0.6 + SECOND_TAP - 0.2 } else { t }
+        let (at, _) = tip(local, left, right, above)
+        let hilt = at + vec2(150.0, -230.0)
+        let along = normalize(at - hilt)
+        let across = vec2(-along.y, along.x)
+        let guard = hilt + along * 26.0
+        let blade = 6.0
+        d.triangle(guard * zoom, (guard + across * blade) * zoom, at * zoom, BLADE)
+        d.triangle(
+            guard * zoom,
+            (guard - across * blade) * zoom,
+            at * zoom,
+            vec4(BLADE.xyz * 0.82, 1.0),
+        )
+        d.line((guard - across * 22.0) * zoom, (guard + across * 22.0) * zoom, GUARD, 5.0 * zoom)
+        d.line(hilt * zoom, guard * zoom, GRIP, 6.0 * zoom)
+        d.ellipse(z(Rect::new(hilt.x - 6.0, hilt.y - 6.0, w: 12.0, h: 12.0)), GUARD)
+        for (k, tap) in [(0, FIRST_TAP), (1, SECOND_TAP)] {
+            let when = if again { if k == 0 { -9.0 } else { 0.6 + 0.2 } } else { tap }
+            let age = (if again { t0 } else { t }) - when
+            if age < 0.0 || age > 0.5 {
+                continue
+            }
+            let p = if k == 0 { left } else { right }
+            for i in 0..10 {
+                let a = f32(i) * 0.628 + f32(k) * 0.3
+                let r = 10.0 + age * 140.0
+                let q = p + vec2(cos(a), sin(a) * 0.7) * r
+                let s = 7.0 * (1.0 - age * 2.0)
+                d.diamond(
+                    z(Rect::new(q.x - s * 0.5, q.y - s * 0.5, s, s)),
+                    vec4(YUZU.xyz, 1.0 - age * 2.0),
+                )
+            }
+        }
+    }
+}
+
+@test
+fn the_fanfare_lands_on_the_second_tap_and_ends_held() {
+    let f = fanfare()
+    assert(f.notes.len() == 11)
+    let first = f.notes[0].onset
+    assert(first > f64(SECOND_TAP) - 0.1 && first <= f64(SECOND_TAP), "with the tap")
+    var last = 0.0
+    for n in f.notes {
+        assert(n.release > n.onset && n.key >= 21 && n.key <= 108, "a piano's key")
+        last = max(last, n.release)
+    }
+    assert(last <= f.length && f.length < f64(LENGTH) + 3.0, "over soon after the choices show")
+    // The taps come in order, after the ribbon is inked.
+    assert(INK_FROM + INK < FIRST_TAP && FIRST_TAP < SECOND_TAP && SECOND_TAP < ARISE)
+    assert(ARISE + 0.5 < LENGTH)
+}

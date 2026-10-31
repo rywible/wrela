@@ -2919,3 +2919,22 @@ cover all its level; the numbers say what each level's view costs, not that ever
 
 The 95th percentiles are the frames that draw a backdrop strip again (the Rainforest's the
 dearest); the scene is about 1.3 ms in each.
+
+## 2026-10-30: the console's server, verifying an upload (toolchain 0.10.3)
+
+How long the console's server takes to play an uploaded capybara run again, which sets
+`platform::server::PLAY_TICKS` (a call has 50 ms, `wrela_host::server::Limits`). The console built
+with `wrela build console` (release), served by `wrela-serve <build> --dev` on this machine (AMD
+Ryzen 5 5500U, 12 threads, Linux), and driven over WebTransport by a script that signs up with a
+real P-256 passkey and uploads two of the route search's human-possible runs as a player's
+(kept outside the repo: it is Python, aioquic and `cryptography`).
+
+| Run | Ticks | Calls of play (1,000 ticks each) | Upload to verified |
+| --- | ---: | ---: | ---: |
+| The Home Pond, human any% | 991 | 1 | 0.01 s |
+| The Aviary, human 100% | 3,407 | 4 | 0.04 s |
+
+So about 12 µs a tick, network round trips included: 1,000 ticks a call is about 12 ms here.
+`PLAY_TICKS` is 400 (about 5 ms here), for a server core several times slower, since a call past
+its deadline loses the room's instance and the run starts again. Not yet measured on a Fly.io
+machine.

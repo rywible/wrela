@@ -1,0 +1,1594 @@
+// The console's account: signing in with a passkey, the knighting (knighting.wrela), the account's
+// page (its passkeys, sessions, recovery codes, export and deletion), the legal pages (legal.wrela),
+// and what a game shown in the console asks of the boards (platform/link.wrela). It talks to the
+// console's server (platform/server.wrela) on one connection, `wire::ROOM`.
+//
+// It keeps to itself: the console's main.wrela only gives it its events, its time, a game shown
+// and closed, and a place to draw (a chip by the settings button, and its pages over everything
+// while open). While a page is open it takes the input.
+//
+// The session's token and CSRF token are kept in the console's storage (`SESSION`), which is the
+// console's origin's alone: a game, on its own origin, can't read it, and gets only a token for
+// its boards (wire.wrela's `Token`). The token isn't an HttpOnly cookie, since the server sees no
+// HTTP request (docs/toolchain-gaps.md); no script but the console's own runs on its page.
+
+use knighting::{AGAIN, LENGTH}
+use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
+use platform::wire::{
+    ADD_PASSKEY, Down, Me, PasskeyView, REGISTER, ROOM, Reply, Request, SIGN_IN, SessionView, Up,
+}
+use std::host
+use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
+use std::input::{Button, Event, Key, PadButton, payload}
+use std::io::{Pending, fetch, load as read_file, store}
+use std::net
+use std::serialize::{LoadError, Serialize, load, save}
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Fonts}
+
+/// The console's connection to its server, and where it keeps its session.
+const CONN: u32 = 7
+const SESSION: Text = "accounts/session"
+/// Seconds before a connection that closed is opened again.
+const RETRY: f32 = 5.0
+/// How long the authenticator's prompt may wait for the person (WebAuthn's recommended default).
+const PROMPT_MS: u32 = 300000
+/// A game's token is asked for again this long before it expires (it lasts an hour).
+const TOKEN_FRESH: f32 = 3000.0
+
+// The console's look (main.wrela's): near-white ink on near-black, quiet controls.
+const INK = vec4(0.98, 0.98, 0.98, 1.0)
+const MUTED = vec4(0.63, 0.63, 0.66, 1.0)
+const DARK = vec4(0.035, 0.035, 0.04, 1.0)
+const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
+const WARN = vec4(0.95, 0.74, 0.6, 1.0)
+const DANGER = vec4(0.86, 0.32, 0.28, 1.0)
+const BORDER = vec4(1.0, 1.0, 1.0, 0.1)
+const SECONDARY = vec4(0.15, 0.15, 0.16, 0.9)
+const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
+const RADIUS: f32 = 8.0
+const LABEL: f32 = 15.0
+const BODY: f32 = 15.0
+
+struct Kept: Serialize {
+    session: Vec<u8>,
+    csrf: Vec<u8>,
+}
+
+enum Page: Copy + Eq {
+    Account,
+    Choose,
+    Recover,
+    Knighting,
+    Codes,
+    Manage,
+    Delete,
+    Legal,
+}
+
+enum Act: Copy + Eq {
+    Chip,
+    Close,
+    SignIn,
+    Create,
+    UseCode,
+    SubmitCode,
+    Keep,
+    Reroll,
+    CodesSaved,
+    Manage,
+    AddPasskey,
+    Remove { index: u32 },
+    Revoke { index: u32 },
+    NewCodes,
+    Export,
+    Delete,
+    ConfirmDelete,
+    SignOut,
+    Back,
+    Legal { page: u32 },
+}
+
+/// What a request on the connection was for.
+enum Purpose: Copy + Eq {
+    Hello,
+    Begin,
+    Ceremony,
+    Recover,
+    Name,
+    Passkeys,
+    Codes,
+    Sessions,
+    SignOut,
+    Token,
+    Export,
+    Delete,
+    Game,
+}
+
+/// A game the console shows, and the call open to it.
+struct GameLink {
+    surface: u32,
+    id: String,
+    call: Option<Pending<u8>>,
+    token: Vec<u8>,
+    token_at: f32,
+    /// An ask carried to the server, waiting for its answer; and one waiting for a token.
+    asking: bool,
+    waiting_token: bool,
+    answer: Answer,
+}
+
+pub struct Accounts {
+    rp_id: String,
+    connected: bool,
+    opening: bool,
+    retry_at: f32,
+    ask: u32,
+    waiting: Vec<(u32, Purpose)>,
+    early: Vec<Vec<u8>>,
+    load: Option<Pending<u8>>,
+    loaded: bool,
+    write: Option<Pending<u8>>,
+    session: Vec<u8>,
+    csrf: Vec<u8>,
+    pub me: Me,
+    passkey: Option<Pending<u8>>,
+    ceremony: u32,
+    pub open: bool,
+    page: Page,
+    focus: u32,
+    message: String,
+    busy: bool,
+    codes: Vec<String>,
+    passkeys: Vec<PasskeyView>,
+    sessions: Vec<SessionView>,
+    typed: String,
+    export: String,
+    export_file: Option<Pending<u8>>,
+    controls: Vec<(Act, Rect)>,
+    shown: Vec<(Act, Rect)>,
+    pointer: Option<vec2>,
+    knight_t: f32,
+    knight_again: bool,
+    voice: bool,
+    legal: u32,
+    scroll: f32,
+    licences: Vec<Option<Pending<u8>>>,
+    licence_text: Vec<String>,
+    game: Option<GameLink>,
+    time: f32,
+    dirty: bool,
+}
+
+/// The console's account, its passkeys for relying party `rp_id`. It reads its session and opens
+/// its connection on the first update.
+pub fn new(rp_id: str) -> Accounts {
+    Accounts {
+        rp_id: rp_id.to_string(),
+        connected: false,
+        opening: false,
+        retry_at: 0.0,
+        ask: 0,
+        waiting: Vec::new(),
+        early: Vec::new(),
+        load: None,
+        loaded: false,
+        write: None,
+        session: Vec::new(),
+        csrf: Vec::new(),
+        me: Me {
+            signed_in: false,
+            name: String::new(),
+            fixed: false,
+            rerolls: 0,
+            must_add_passkey: false,
+        },
+        passkey: None,
+        ceremony: 0,
+        open: false,
+        page: Page::Choose,
+        focus: 0,
+        message: String::new(),
+        busy: false,
+        codes: Vec::new(),
+        passkeys: Vec::new(),
+        sessions: Vec::new(),
+        typed: String::new(),
+        export: String::new(),
+        export_file: None,
+        controls: Vec::new(),
+        shown: Vec::new(),
+        pointer: None,
+        knight_t: 0.0,
+        knight_again: false,
+        voice: false,
+        legal: 0,
+        scroll: 0.0,
+        licences: Vec::new(),
+        licence_text: Vec::new(),
+        game: None,
+        time: 0.0,
+        dirty: true,
+    }
+}
+
+fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut p {
+        Some(q) => answer = q.poll(),
+        None => {},
+    }
+    if answer.is_some() {
+        p = None
+    }
+    answer
+}
+
+// ---- the connection --------------------------------------------------------------------------
+
+/// Sends `request`, for `purpose`: its number.
+fn request(a: mut Accounts, request: Request, purpose: Purpose) -> u32 {
+    a.ask += 1
+    let bytes = save(Up { ask: a.ask, request: request.clone() })
+    if a.connected {
+        net::send(CONN, bytes)
+    } else if a.early.len() < 16 {
+        a.early.push(take bytes)
+    }
+    a.waiting.push((a.ask, purpose))
+    a.ask
+}
+
+fn keep_session(a: mut Accounts) {
+    let bytes = if a.session.is_empty() { Vec::new() } else {
+        save(Kept { session: a.session.clone(), csrf: a.csrf.clone() })
+    }
+    a.write = Some(store(SESSION, bytes))
+}
+
+fn signed_out(a: mut Accounts) {
+    a.session.clear()
+    a.csrf.clear()
+    a.me = Me {
+        signed_in: false,
+        name: String::new(),
+        fixed: false,
+        rerolls: 0,
+        must_add_passkey: false,
+    }
+    keep_session(mut a)
+    if a.page != Page::Legal {
+        a.page = Page::Choose
+    }
+    give_game_account(mut a)
+}
+
+fn purpose_of(a: mut Accounts, ask: u32) -> Option<Purpose> {
+    for i in 0..a.waiting.len() {
+        if a.waiting[i].0 == ask {
+            let (_, p) = a.waiting.remove(i)
+            return Some(p)
+        }
+    }
+    None
+}
+
+/// The server's reply `d`.
+fn replied(a: mut Accounts, d: Down) {
+    a.dirty = true
+    // An upload is answered twice: it stays waited on after `Queued`.
+    if let Reply::Queued { .. } = d.reply {
+        return
+    }
+    // A reply to no ask (0) is the server's own word: the session ended elsewhere.
+    let purpose = if d.ask == 0 { Some(Purpose::Hello) } else { purpose_of(mut a, d.ask) }
+    let Some(purpose) = purpose else { return }
+    a.busy = false
+    if purpose == Purpose::Game {
+        game_replied(mut a, d.reply.clone())
+        return
+    }
+    match d.reply {
+        Reply::Welcome { me } => {
+            let was = a.me.signed_in
+            a.me = me.clone()
+            if !me.signed_in {
+                if was || !a.session.is_empty() {
+                    signed_out(mut a)
+                }
+            } else {
+                a.message.clear()
+                if a.page == Page::Knighting && purpose == Purpose::Name {
+                    if me.fixed {
+                        a.page = if a.codes.is_empty() { Page::Account } else { Page::Codes }
+                    } else {
+                        a.knight_again = true
+                        a.knight_t = 0.0
+                    }
+                } else if a.page == Page::Recover ||
+                    a.page == Page::Choose ||
+                    a.page == Page::Manage {
+                    a.page = if me.fixed { Page::Account } else { Page::Knighting }
+                    if a.page == Page::Knighting {
+                        a.knight_again = true
+                        a.knight_t = AGAIN
+                    }
+                }
+                give_game_account(mut a)
+            }
+        },
+        Reply::Challenge { ceremony, challenge, handle, exclude } => {
+            a.ceremony = ceremony
+            if ceremony == REGISTER {
+                // The account's handle is random; its passkey is shown as the console's.
+                let user = PasskeyUser {
+                    id: handle.clone(),
+                    name: String::from("wrela account"),
+                    display_name: String::from("wrela account"),
+                }
+                a.passkey = Some(
+                    create_passkey(
+                        a.rp_id,
+                        platform::account::RP_NAME,
+                        user,
+                        challenge,
+                        [],
+                        PROMPT_MS,
+                    ),
+                )
+            } else if ceremony == ADD_PASSKEY {
+                // A passkey added to an account is made for its handle, which the server gives.
+                let user = PasskeyUser {
+                    id: handle.clone(),
+                    name: String::from("wrela account"),
+                    display_name: String::from("wrela account"),
+                }
+                a.passkey = Some(
+                    create_passkey(
+                        a.rp_id,
+                        platform::account::RP_NAME,
+                        user,
+                        challenge,
+                        exclude,
+                        PROMPT_MS,
+                    ),
+                )
+            } else {
+                a.passkey = Some(use_passkey(a.rp_id, challenge, [], PROMPT_MS))
+            }
+            a.busy = true
+        },
+        Reply::Session { session, csrf, me, codes } => {
+            a.session = session.clone()
+            a.csrf = csrf.clone()
+            a.me = me.clone()
+            keep_session(mut a)
+            a.message.clear()
+            if !codes.is_empty() {
+                // A new account: knighted first, then its codes.
+                a.codes = codes.clone()
+                a.page = Page::Knighting
+                a.knight_again = false
+                a.knight_t = 0.0
+                knighting::sound(mut a.voice)
+            } else if me.must_add_passkey {
+                a.page = Page::Manage
+                a.message = String::from(
+                    "You signed in with a recovery code. Add a passkey now: until you do, that's all this session can do.",
+                )
+            } else {
+                a.page = if me.fixed { Page::Account } else { Page::Knighting }
+                if !me.fixed {
+                    a.knight_again = true
+                    a.knight_t = AGAIN
+                }
+            }
+            give_game_account(mut a)
+        },
+        Reply::Codes { codes } => {
+            a.codes = codes.clone()
+            a.page = Page::Codes
+        },
+        Reply::Passkeys { passkeys } => a.passkeys = passkeys.clone(),
+        Reply::Sessions { sessions } => a.sessions = sessions.clone(),
+        Reply::Export { text, last } => {
+            a.export.push_str(text.as_str())
+            if last {
+                let bytes = Vec::from(a.export.as_bytes())
+                a.export_file = Some(host::export_file("wrela-account.json", bytes))
+                a.export.clear()
+                a.message = String::from("Your data is downloading as wrela-account.json.")
+            } else {
+                // More parts come for the same ask.
+                a.waiting.push((d.ask, Purpose::Export))
+            }
+        },
+        Reply::Done => {
+            if purpose == Purpose::Delete {
+                signed_out(mut a)
+                a.message = String::from("Your account and everything we kept of it are deleted.")
+            }
+        },
+        Reply::Token { token, .. } => {
+            match mut a.game {
+                Some(g) => {
+                    g.token = token.clone()
+                    g.token_at = a.time
+                },
+                None => {},
+            }
+            if let Some(g) = a.game {
+                if g.waiting_token {
+                    send_game(mut a)
+                }
+            }
+        },
+        Reply::Refused { why } => {
+            a.message = why.clone()
+            if purpose == Purpose::Token {
+                if let Some(g) = a.game {
+                    if g.waiting_token {
+                        send_game(mut a)
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+}
+
+// ---- the game shown ------------------------------------------------------------------------
+
+/// A game shows, in surface `surface`, its catalog key `id`: it's given the account.
+pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
+    a.game = Some(
+        GameLink {
+            surface,
+            id: id.to_string(),
+            call: None,
+            token: Vec::new(),
+            token_at: -99999.0,
+            asking: false,
+            waiting_token: false,
+            answer: Answer::Nothing,
+        },
+    )
+    send_game(mut a)
+}
+
+/// The game shown has closed.
+pub fn game_closed(a: mut Accounts) {
+    a.game = None
+}
+
+/// The account as the game shown may know it.
+fn linked(a: Accounts) -> Linked {
+    let token = match a.game {
+        Some(g) => g.token.clone(),
+        None => Vec::new(),
+    }
+    Linked { signed_in: a.me.signed_in && !a.me.must_add_passkey, name: a.me.name.clone(), token }
+}
+
+/// Calls the game with the account and the answer to its last ask, once its token is fresh.
+/// What `send_game` needs of the game shown: its key, whether a call or an ask is open, when its
+/// token came, whether one is being fetched, and the answer it's owed.
+struct Shown {
+    id: String,
+    open: bool,
+    token_at: f32,
+    waiting_token: bool,
+    answer: Answer,
+}
+
+fn shown_game(a: Accounts) -> Option<Shown> {
+    match a.game {
+        Some(g) => Some(
+            Shown {
+                id: g.id.clone(),
+                open: g.call.is_some() || g.asking,
+                token_at: g.token_at,
+                waiting_token: g.waiting_token,
+                answer: g.answer.clone(),
+            },
+        ),
+        None => None,
+    }
+}
+
+fn send_game(a: mut Accounts) {
+    let Some(g) = shown_game(a) else { return }
+    if g.open {
+        return
+    }
+    let wants_token = a.me.signed_in && a.me.fixed && !a.me.must_add_passkey
+    if wants_token && a.time - g.token_at > TOKEN_FRESH && a.connected && !g.waiting_token {
+        match mut a.game {
+            Some(l) => l.waiting_token = true,
+            None => {},
+        }
+        let _ = request(mut a, Request::Token { game: g.id.clone() }, Purpose::Token)
+        return
+    }
+    let call = ToGame { account: linked(a), answer: g.answer.clone() }
+    match mut a.game {
+        Some(l) => {
+            l.waiting_token = false
+            l.call = Some(host::send(l.surface, save(call)))
+        },
+        None => {},
+    }
+}
+
+/// The account changed: the game hears of it with its next call, which comes now if none is
+/// open (one is open while the game holds it, until it asks).
+fn give_game_account(a: mut Accounts) {
+    match mut a.game {
+        Some(g) => g.token_at = -99999.0,
+        None => {},
+    }
+}
+
+fn game_replied(a: mut Accounts, reply: Reply) {
+    let answer = match reply {
+        Reply::Verified { run, ticks, place } => Answer::Verified { run, ticks, place },
+        Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
+        Reply::Refused { why } => Answer::Rejected { why: why.clone() },
+        Reply::Board { places, total } => {
+            let (course, category) = match a.game {
+                Some(g) => match g.answer {
+                    Answer::Board { course, category, .. } => (course, category),
+                    _ => (0, 0),
+                },
+                None => (0, 0),
+            }
+            Answer::Board { course, category, places: places.clone(), total }
+        },
+        Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
+        _ => Answer::Offline {
+            why: String::from("The boards sent something this console doesn't read."),
+        },
+    }
+    match mut a.game {
+        Some(g) => {
+            g.asking = false
+            g.answer = take answer
+        },
+        None => return,
+    }
+    send_game(mut a)
+}
+
+/// The game's ask, from its reply to the console's call: carried to the server, or answered at
+/// once if the console can't.
+fn game_asked(a: mut Accounts, bytes: [u8]) {
+    let Some(g) = shown_game(a) else { return }
+    let Some(ask) = from_game(bytes) else { return }
+    if let Some(ans) = answer_now(a.me, a.connected, ask) {
+        match mut a.game {
+            Some(l) => l.answer = take ans,
+            None => {},
+        }
+        send_game(mut a)
+        return
+    }
+    let r = match ask {
+        Ask::Upload { token, replay } => Request::Upload {
+            token: token.clone(),
+            game: g.id.clone(),
+            replay: replay.clone(),
+        },
+        Ask::Board { course, category, from } => {
+            match mut a.game {
+                Some(l) => l.answer = Answer::Board {
+                    course,
+                    category,
+                    places: Vec::new(),
+                    total: 0,
+                },
+                None => {},
+            }
+            Request::Board { game: g.id.clone(), course, category, from }
+        },
+        Ask::Watch { run } => Request::Watch { run },
+    }
+    match mut a.game {
+        Some(l) => l.asking = true,
+        None => {},
+    }
+    let _ = request(mut a, r, Purpose::Game)
+}
+
+/// The answer to a game's `ask` that the console gives at once, without the server: offline, or
+/// an upload while signed out.
+fn answer_now(me: Me, connected: bool, ask: Ask) -> Option<Answer> {
+    if !connected {
+        return Some(
+            Answer::Offline {
+                why: String::from(
+                    "The boards can't be reached. Your runs stay saved here; try again later.",
+                ),
+            },
+        )
+    }
+    if let Ask::Upload { .. } = ask {
+        if !me.signed_in || !me.fixed || me.must_add_passkey {
+            return Some(
+                Answer::Offline {
+                    why: String::from("Sign in at the console to upload: press F10, then Sign in."),
+                },
+            )
+        }
+    }
+    None
+}
+
+// ---- each frame ----------------------------------------------------------------------------
+
+/// Polls what the account waits on, at the host's time `time`: whether anything it shows changed.
+pub fn update(a: mut Accounts, time: f32) -> bool {
+    let dt = max(time - a.time, 0.0)
+    a.time = time
+    if !a.loaded && a.load.is_none() {
+        a.load = Some(read_file(SESSION))
+    }
+    if let Some(result) = poll(mut a.load) {
+        a.loaded = true
+        if let Ok(bytes) = result {
+            let kept: Result<Kept, LoadError> = load(bytes.clone())
+            if let Ok(k) = kept {
+                a.session = k.session.clone()
+                a.csrf = k.csrf.clone()
+            }
+        }
+    }
+    if a.loaded && !a.connected && !a.opening && time >= a.retry_at {
+        net::open(CONN, ROOM)
+        a.opening = true
+    }
+    if let Some(result) = poll(mut a.passkey) {
+        a.dirty = true
+        a.busy = false
+        match result {
+            Ok(bytes) => {
+                if a.ceremony == SIGN_IN {
+                    if let Some(u) = read_passkey_use(bytes) {
+                        let r = Request::SignIn {
+                            id: u.id.clone(),
+                            client_data: u.client_data.clone(),
+                            authenticator_data: u.authenticator_data.clone(),
+                            signature: u.signature.clone(),
+                            user: u.user.clone(),
+                        }
+                        let _ = request(mut a, r, Purpose::Ceremony)
+                        a.busy = true
+                    }
+                } else if let Some(p) = read_new_passkey(bytes) {
+                    let r = if a.ceremony == REGISTER {
+                        Request::Register {
+                            id: p.id.clone(),
+                            client_data: p.client_data.clone(),
+                            attestation: p.attestation.clone(),
+                        }
+                    } else {
+                        Request::AddPasskey {
+                            csrf: a.csrf.clone(),
+                            id: p.id.clone(),
+                            client_data: p.client_data.clone(),
+                            attestation: p.attestation.clone(),
+                        }
+                    }
+                    let _ = request(mut a, r, Purpose::Ceremony)
+                    a.busy = true
+                }
+            },
+            Err(_) => a.message = String::from(
+                "The passkey prompt was closed, or this browser can't make passkeys here.",
+            ),
+        }
+    }
+    let _ = poll(mut a.write)
+    let _ = poll(mut a.export_file)
+    // The game's reply to the console's call: its next ask.
+    var asked: Option<Vec<u8>> = None
+    var gone = false
+    match mut a.game {
+        Some(g) => {
+            match poll(mut g.call) {
+                Some(Ok(bytes)) => asked = Some(take bytes),
+                Some(Err(_)) => gone = true,
+                None => {},
+            }
+        },
+        None => {},
+    }
+    if gone {
+        a.game = None
+    }
+    if let Some(bytes) = asked {
+        game_asked(mut a, bytes)
+    }
+    if a.game.is_some() {
+        send_game(mut a)
+    }
+    for i in 0..a.licences.len() {
+        if let Some(result) = poll(mut a.licences[i]) {
+            a.dirty = true
+            a.licence_text[i] = match result {
+                Ok(bytes) => String::from_utf8(bytes.clone()).unwrap_or(String::new()),
+                Err(_) => String::from(
+                    f"({legal::LICENCES[i]} ships beside the console in a release.)",
+                ),
+            }
+        }
+    }
+    if a.page == Page::Knighting && a.open {
+        a.knight_t += dt
+        a.dirty = true
+    }
+    let changed = a.dirty
+    a.dirty = false
+    changed
+}
+
+/// Whether it is animating, so the console draws every frame.
+pub fn animating(a: Accounts) -> bool {
+    a.open && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
+}
+
+fn open_page(a: mut Accounts, page: Page) {
+    a.page = page
+    a.focus = 0
+    a.message.clear()
+    a.scroll = 0.0
+    a.dirty = true
+    if page == Page::Manage && a.me.signed_in {
+        let _ = request(mut a, Request::Passkeys, Purpose::Passkeys)
+        let _ = request(mut a, Request::Sessions, Purpose::Sessions)
+    }
+}
+
+fn act(a: mut Accounts, x: Act) {
+    a.dirty = true
+    match x {
+        Act::Chip => {
+            a.open = true
+            let page = if !a.me.signed_in { Page::Choose } else if !a.me.fixed {
+                Page::Knighting
+            } else { Page::Account }
+            open_page(mut a, page)
+            if page == Page::Knighting {
+                a.knight_again = true
+                a.knight_t = AGAIN
+            }
+        },
+        Act::Close => a.open = false,
+        Act::SignIn => {
+            a.message.clear()
+            let _ = request(
+                mut a,
+                Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() },
+                Purpose::Begin,
+            )
+            a.busy = true
+        },
+        Act::Create => {
+            let _ = request(
+                mut a,
+                Request::Begin { ceremony: REGISTER, csrf: Vec::new() },
+                Purpose::Begin,
+            )
+            a.busy = true
+        },
+        Act::UseCode => {
+            a.typed.clear()
+            open_page(mut a, Page::Recover)
+        },
+        Act::SubmitCode => {
+            let _ = request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Recover)
+            a.busy = true
+        },
+        Act::Keep => {
+            let _ = request(mut a, Request::Keep { csrf: a.csrf.clone() }, Purpose::Name)
+        },
+        Act::Reroll => {
+            let _ = request(mut a, Request::Reroll { csrf: a.csrf.clone() }, Purpose::Name)
+        },
+        Act::CodesSaved => {
+            a.codes.clear()
+            open_page(mut a, Page::Account)
+        },
+        Act::Manage => open_page(mut a, Page::Manage),
+        Act::AddPasskey => {
+            let _ = request(
+                mut a,
+                Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone() },
+                Purpose::Begin,
+            )
+            a.busy = true
+        },
+        Act::Remove { index } => {
+            if index < a.passkeys.len() {
+                let id = a.passkeys[index].id.clone()
+                let _ = request(
+                    mut a,
+                    Request::RemovePasskey { csrf: a.csrf.clone(), id },
+                    Purpose::Passkeys,
+                )
+            }
+        },
+        Act::Revoke { index } => {
+            if index < a.sessions.len() {
+                let id = a.sessions[index].id.clone()
+                let _ = request(
+                    mut a,
+                    Request::Revoke { csrf: a.csrf.clone(), session: id },
+                    Purpose::Sessions,
+                )
+            }
+        },
+        Act::NewCodes => {
+            let _ = request(mut a, Request::NewCodes { csrf: a.csrf.clone() }, Purpose::Codes)
+        },
+        Act::Export => {
+            a.export.clear()
+            let _ = request(mut a, Request::Export, Purpose::Export)
+            a.message = String::from("Gathering your data...")
+        },
+        Act::Delete => open_page(mut a, Page::Delete),
+        Act::ConfirmDelete => {
+            let _ = request(mut a, Request::Delete { csrf: a.csrf.clone() }, Purpose::Delete)
+            a.busy = true
+        },
+        Act::SignOut => {
+            let _ = request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::SignOut)
+        },
+        Act::Back => {
+            let page = if a.me.signed_in && a.page != Page::Account {
+                Page::Account
+            } else if a.me.signed_in {
+                Page::Account
+            } else { Page::Choose }
+            if a.page == page || (a.page == Page::Account && a.me.signed_in) {
+                a.open = false
+            } else {
+                open_page(mut a, page)
+            }
+        },
+        Act::Legal { page } => {
+            open_page(mut a, Page::Legal)
+            a.legal = page
+            if page == legal::CREDITS && a.licences.is_empty() {
+                for path in legal::LICENCES {
+                    a.licences.push(Some(fetch(path)))
+                    a.licence_text.push(String::new())
+                }
+            }
+        },
+    }
+}
+
+/// Event `e` (positions in device pixels, `zoom` of them a logical pixel): whether the account
+/// took it, so the console doesn't.
+pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
+    match e {
+        Event::Connection { conn, open, .. } => {
+            if conn != CONN {
+                return false
+            }
+            a.dirty = true
+            a.opening = false
+            a.connected = open
+            if open {
+                // Hello first, then what waited.
+                let hello = save(
+                    Up { ask: 0, request: Request::Hello { session: a.session.clone() } },
+                )
+                net::send(CONN, hello)
+                a.waiting.push((0, Purpose::Hello))
+                for m in a.early {
+                    net::send(CONN, m)
+                }
+                a.early.clear()
+            } else {
+                a.retry_at = a.time + RETRY
+                a.busy = false
+                // What waited on the server won't be answered: a game hears it's offline.
+                var game_waited = false
+                for (_, p) in a.waiting {
+                    if p == Purpose::Game {
+                        game_waited = true
+                    }
+                }
+                a.waiting.clear()
+                if game_waited {
+                    game_replied(
+                        mut a,
+                        Reply::Refused {
+                            why: String::from(
+                                "The boards can't be reached just now. Try again later.",
+                            ),
+                        },
+                    )
+                }
+            }
+            return true
+        },
+        Event::Message { conn, .. } => {
+            if conn != CONN {
+                return false
+            }
+            let Some(bytes) = payload(e) else { return true }
+            let d: Result<Down, LoadError> = load(take bytes)
+            if let Ok(down) = d {
+                replied(mut a, down)
+            }
+            return true
+        },
+        _ => {},
+    }
+    if !a.open {
+        // Closed, the chip alone takes a click.
+        if let Event::PointerUp { at, button: Button::Primary, .. } = e {
+            for (x, r) in a.shown {
+                if x == Act::Chip && r.contains(at / zoom) {
+                    act(mut a, Act::Chip)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+    a.dirty = true
+    let knighting = a.page == Page::Knighting && a.knight_t < (if a.knight_again { AGAIN } else {
+        LENGTH
+    })
+    match e {
+        Event::PointerMove { at, .. } => a.pointer = Some(at / zoom),
+        Event::PointerUp { at, button: Button::Primary, .. } => {
+            let p = at / zoom
+            for (x, r) in a.shown {
+                if r.contains(p) && !knighting {
+                    act(mut a, x)
+                    return true
+                }
+            }
+        },
+        Event::Wheel { delta, .. } => a.scroll = max(a.scroll + delta.y / zoom, 0.0),
+        Event::KeyDown { key, repeat, mods } => {
+            if key == Key::Escape && !knighting {
+                act(mut a, Act::Back)
+            } else if key == Key::Enter && !repeat && !knighting {
+                if a.focus < a.shown.len() {
+                    act(mut a, a.shown[a.focus].0)
+                }
+            } else if key == Key::Down || key == Key::Right || (key == Key::Tab && !mods.shift) {
+                if a.page == Page::Legal && key == Key::Down {
+                    a.scroll += 40.0
+                } else {
+                    a.focus = if a.shown.is_empty() { 0 } else { (a.focus + 1) % a.shown.len() }
+                }
+            } else if key == Key::Up || key == Key::Left || (key == Key::Tab && mods.shift) {
+                if a.page == Page::Legal && key == Key::Up {
+                    a.scroll = max(a.scroll - 40.0, 0.0)
+                } else if !a.shown.is_empty() {
+                    a.focus = (a.focus + a.shown.len() - 1) % a.shown.len()
+                }
+            } else if key == Key::Backspace && a.page == Page::Recover {
+                let n = a.typed.len()
+                if n > 0 {
+                    a.typed.truncate(n - 1)
+                }
+            }
+        },
+        Event::Text { char } => {
+            if a.page == Page::Recover {
+                typed(mut a.typed, char)
+            }
+        },
+        Event::PadButton { button, pressed: true, .. } => {
+            if button == PadButton::South && !knighting && a.focus < a.shown.len() {
+                act(mut a, a.shown[a.focus].0)
+            } else if button == PadButton::East && !knighting {
+                act(mut a, Act::Back)
+            } else if button == PadButton::Down || button == PadButton::Right {
+                a.focus = if a.shown.is_empty() { 0 } else { (a.focus + 1) % a.shown.len() }
+            } else if button == PadButton::Up || button == PadButton::Left {
+                if !a.shown.is_empty() {
+                    a.focus = (a.focus + a.shown.len() - 1) % a.shown.len()
+                }
+            }
+        },
+        _ => {},
+    }
+    true
+}
+
+// ---- drawing ---------------------------------------------------------------------------------
+
+/// What drawing needs: the list, the fonts, the zoom.
+struct Pen {
+    zoom: f32,
+}
+
+fn z(r: Rect, zoom: f32) -> Rect {
+    let x0 = round(r.x * zoom)
+    let y0 = round(r.y * zoom)
+    Rect::new(x0, y0, round(r.right() * zoom) - x0, round(r.bottom() * zoom) - y0)
+}
+
+fn measure(fonts: Fonts, s: str, size: f32, face: Face) -> f32 {
+    fonts.font(face).measure(s, size)
+}
+
+/// Writes `s` with its top-left at `at` (logical pixels).
+fn write(
+    d: mut DrawList,
+    fonts: Fonts,
+    s: str,
+    size: f32,
+    at: vec2,
+    color: vec4,
+    zoom: f32,
+    face: Face = Face::Sans,
+) {
+    let _ = d.text(fonts, face, s, size * zoom, vec2(round(at.x * zoom), at.y * zoom), color)
+}
+
+/// `s` broken into lines that fit `width` at `size`.
+fn wrapped(fonts: Fonts, s: str, size: f32, width: f32, face: Face) -> Vec<String> {
+    var lines: Vec<String> = Vec::new()
+    var line = String::new()
+    for (from, to) in s.split(" ") {
+        let word = s.slice(from, to)
+        var trial = line.clone()
+        if !trial.is_empty() {
+            trial.push_str(" ")
+        }
+        trial.push_str(word)
+        if !line.is_empty() && measure(fonts, trial.as_str(), size, face) > width {
+            lines.push(line.clone())
+            line = String::from(word)
+        } else {
+            line = take trial
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(take line)
+    }
+    lines
+}
+
+/// Writes `s` wrapped to `width` from `at`: the height it took.
+fn paragraph(
+    d: mut DrawList,
+    fonts: Fonts,
+    s: str,
+    size: f32,
+    at: vec2,
+    width: f32,
+    color: vec4,
+    zoom: f32,
+    face: Face = Face::Sans,
+) -> f32 {
+    let lines = wrapped(fonts, s, size, width, face)
+    let lh = size * 1.5
+    for i in 0..lines.len() {
+        write(mut d, fonts, lines[i].as_str(), size, at + vec2(0.0, f32(i) * lh), color, zoom, face)
+    }
+    f32(lines.len()) * lh
+}
+
+fn button(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: Act,
+    r: Rect,
+    label: str,
+    zoom: f32,
+    primary: bool = false,
+    danger: bool = false,
+) {
+    let index = a.controls.len()
+    a.controls.push((x, r))
+    let hover = match a.pointer {
+        Some(p) => r.contains(p),
+        None => false,
+    }
+    let fill = if danger { DANGER } else if primary { INK } else if hover { RAISED } else {
+        SECONDARY
+    }
+    d.rect(z(r, zoom), fill, RADIUS * zoom)
+    if !primary && !danger {
+        d.ring(z(r, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
+    }
+    if index == a.focus {
+        d.ring(
+            z(r.shrink(-3.0), zoom),
+            vec4(INK.xyz, 0.7),
+            (RADIUS + 3.0) * zoom,
+            max(round(2.0 * zoom), 1.0),
+        )
+    }
+    let w = measure(fonts, label, LABEL * zoom, Face::Sans) / zoom
+    let c = r.center()
+    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
+    write(mut d, fonts, label, LABEL, vec2(c.x - w * 0.5, top), if primary { DARK } else {
+        INK
+    }, zoom)
+}
+
+/// A column of buttons from `y`, each the sheet's width: where it ended.
+fn stack(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    items: [(Act, Text, bool)],
+    x: f32,
+    y: f32,
+    w: f32,
+    zoom: f32,
+) -> f32 {
+    var at = y
+    for (act_of, label, primary) in items {
+        let danger = act_of == Act::ConfirmDelete
+        button(mut a, mut d, fonts, act_of, Rect::new(x, at, w, 40.0), label, zoom, primary, danger)
+        at += 48.0
+    }
+    at
+}
+
+/// The row of legal links at the sheet's foot.
+fn legal_row(a: mut Accounts, d: mut DrawList, fonts: Fonts, x: f32, y: f32, w: f32, zoom: f32) {
+    let gap = 8.0
+    let bw = (w - 2.0 * gap) / 3.0
+    for k in 0..3 {
+        let label = if k == 0 { "Terms" } else if k == 1 { "Privacy" } else { "Credits" }
+        button(
+            mut a,
+            mut d,
+            fonts,
+            Act::Legal { page: k },
+            Rect::new(x + f32(k) * (bw + gap), y, bw, 34.0),
+            label,
+            zoom,
+        )
+    }
+}
+
+/// Draws the chip, and the open page over everything (`w` by `h` logical pixels at `zoom`; the
+/// header's margin `margin`). With `reduced`, the knighting doesn't move.
+pub fn draw(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    w: f32,
+    h: f32,
+    margin: f32,
+    zoom: f32,
+    reduced: bool,
+) {
+    a.controls.clear()
+    // The chip, left of the settings button.
+    let chip_label = if a.me.signed_in { a.me.name.clone() } else { String::from("Sign in") }
+    let cw = min(
+        measure(fonts, chip_label.as_str(), 14.0 * zoom, Face::Sans) / zoom + 28.0,
+        w * 0.4,
+    )
+    let chip = Rect::new(w - margin - 52.0 - cw, 22.0, cw, 40.0)
+    a.controls.push((Act::Chip, chip))
+    if !a.open {
+        d.rect(z(chip, zoom), SECONDARY, 20.0 * zoom)
+        d.ring(z(chip, zoom), BORDER, 20.0 * zoom, max(round(zoom), 1.0))
+        d.push_clip(z(chip.shrink(10.0), zoom))
+        let top = chip.center().y - (fonts.font(Face::Sans).ascender - 0.36) * 14.0
+        write(mut d, fonts, chip_label.as_str(), 14.0, vec2(chip.x + 14.0, top), INK, zoom)
+        d.pop_clip()
+        a.shown = a.controls.clone()
+        return
+    }
+    a.controls.clear()
+    if a.page == Page::Knighting {
+        let again = a.knight_again
+        knighting::draw(mut d, fonts, a.knight_t, a.me.name.as_str(), again, w, h, zoom, reduced)
+        let done = reduced || a.knight_t >= (if again { AGAIN } else { LENGTH })
+        if done {
+            let bw = min(300.0, w - 48.0)
+            let x = w * 0.5 - bw * 0.5
+            var y = h * 0.58
+            let note = "A name is yours alone: no one else on wrela will ever have it."
+            let nw = measure(fonts, note, BODY * zoom, Face::Sans) / zoom
+            write(mut d, fonts, note, BODY, vec2(w * 0.5 - min(nw, w - 48.0) * 0.5, y), MUTED, zoom)
+            y += 36.0
+            button(
+                mut a,
+                mut d,
+                fonts,
+                Act::Keep,
+                Rect::new(x, y, bw, 40.0),
+                "Keep this name",
+                zoom,
+                primary: true,
+            )
+            if a.me.rerolls > 0 {
+                let label = f"Draw again ({a.me.rerolls} left)"
+                button(
+                    mut a,
+                    mut d,
+                    fonts,
+                    Act::Reroll,
+                    Rect::new(x, y + 48.0, bw, 40.0),
+                    label.as_str(),
+                    zoom,
+                )
+            }
+            if !a.message.is_empty() {
+                write(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
+            }
+        }
+        a.shown = a.controls.clone()
+        return
+    }
+    // A sheet over a dimmed console.
+    d.rect(Rect::new(x: 0.0, y: 0.0, w: w * zoom, h: h * zoom), vec4(0.0, 0.0, 0.0, 0.55))
+    let legal = a.page == Page::Legal
+    let sw = min(if legal { 720.0 } else { 460.0 }, w - 32.0)
+    let sh = min(h - 48.0, if legal { h - 48.0 } else { 600.0 })
+    let sheet = Rect::new(w * 0.5 - sw * 0.5, h * 0.5 - sh * 0.5, sw, sh)
+    d.rect(z(sheet, zoom), SHEET, 12.0 * zoom)
+    d.ring(z(sheet, zoom), BORDER, 12.0 * zoom, max(round(zoom), 1.0))
+    let x = sheet.x + 28.0
+    let iw = sw - 56.0
+    var y = sheet.y + 26.0
+    let title = match a.page {
+        Page::Account => "Your account",
+        Page::Choose => "Accounts",
+        Page::Recover => "Use a recovery code",
+        Page::Codes => "Your recovery codes",
+        Page::Manage => "Passkeys and sessions",
+        Page::Delete => "Delete your account",
+        Page::Legal => legal::TITLES[min(a.legal, 2)],
+        Page::Knighting => "",
+    }
+    write(mut d, fonts, title, 22.0, vec2(x, y), INK, zoom)
+    y += 44.0
+    match a.page {
+        Page::Choose => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "An account puts your runs on the world's leaderboards. There's no email and no password: you sign in with a passkey on this device, and we give you a name.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 18.0
+            let items = [
+                (Act::SignIn, "Sign in with a passkey", true),
+                (Act::Create, "Create an account", false),
+                (Act::UseCode, "Use a recovery code", false),
+                (Act::Close, "Not now", false),
+            ]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Account => {
+            write(mut d, fonts, a.me.name.as_str(), 18.0, vec2(x, y), INK, zoom)
+            y += 40.0
+            let items = [
+                (Act::Manage, "Passkeys and sessions", false),
+                (Act::Export, "Export my data", false),
+                (Act::Delete, "Delete account", false),
+                (Act::SignOut, "Sign out", false),
+                (Act::Close, "Close", true),
+            ]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Recover => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "Type one of the ten codes you were given when you made your account. It works once, ends every other session, and then you add a new passkey.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 14.0
+            let field = Rect::new(x, y, iw, 44.0)
+            d.rect(z(field, zoom), vec4(1.0, 1.0, 1.0, 0.06), RADIUS * zoom)
+            d.ring(z(field, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
+            var shown = a.typed.clone()
+            shown.push_str("_")
+            write(
+                mut d,
+                fonts,
+                shown.as_str(),
+                18.0,
+                vec2(x + 12.0, y + 10.0),
+                INK,
+                zoom,
+                Face::Mono,
+            )
+            y += 60.0
+            let items = [(Act::SubmitCode, "Sign in", true), (Act::Back, "Back", false)]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Codes => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "Keep these somewhere safe, away from this device: on paper, or in a password manager. Each signs in once if you lose your passkeys. We won't show them again.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 10.0
+            for i in 0..a.codes.len() {
+                let col = f32(i % 2) * iw * 0.5
+                let row = f32(i / 2) * 28.0
+                write(
+                    mut d,
+                    fonts,
+                    a.codes[i].as_str(),
+                    16.0,
+                    vec2(x + col, y + row),
+                    INK,
+                    zoom,
+                    Face::Mono,
+                )
+            }
+            y += f32((a.codes.len() + 1) / 2) * 28.0 + 16.0
+            y = stack(
+                mut a,
+                mut d,
+                fonts,
+                [(Act::CodesSaved, "I've saved them", true)],
+                x,
+                y,
+                iw,
+                zoom,
+            )
+        },
+        Page::Manage => {
+            write(mut d, fonts, "Passkeys", 13.0, vec2(x, y), MUTED, zoom)
+            y += 24.0
+            for i in 0..min(a.passkeys.len(), 6) {
+                let label = f"Passkey {i + 1} ({platform::account::hex(short(a.passkeys[i].id))})"
+                write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                button(
+                    mut a,
+                    mut d,
+                    fonts,
+                    Act::Remove { index: i },
+                    Rect::new(x + iw - 90.0, y, w: 90.0, h: 34.0),
+                    "Remove",
+                    zoom,
+                )
+                y += 40.0
+            }
+            y = stack(
+                mut a,
+                mut d,
+                fonts,
+                [(Act::AddPasskey, "Add a passkey", false)],
+                x,
+                y,
+                iw,
+                zoom,
+            )
+            write(mut d, fonts, "Sessions", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+            y += 28.0
+            for i in 0..min(a.sessions.len(), 5) {
+                let s = a.sessions[i].clone()
+                let label = if s.this {
+                    f"This console ({platform::account::hex(short(s.id))})"
+                } else {
+                    f"Session {platform::account::hex(short(s.id))}"
+                }
+                write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                if !s.this {
+                    button(
+                        mut a,
+                        mut d,
+                        fonts,
+                        Act::Revoke { index: i },
+                        Rect::new(x + iw - 90.0, y, w: 90.0, h: 34.0),
+                        "End",
+                        zoom,
+                    )
+                }
+                y += 40.0
+            }
+            let items = [(Act::NewCodes, "New recovery codes", false), (Act::Back, "Back", true)]
+            y = stack(mut a, mut d, fonts, items, x, y + 6.0, iw, zoom)
+        },
+        Page::Delete => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "This deletes your passkeys' records, your sessions, your recovery codes, every run you uploaded and your name, at once. It can't be undone. Your saves on this device stay.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 18.0
+            let items = [
+                (Act::ConfirmDelete, "Delete everything", false),
+                (Act::SignIn, "Sign in again first", false),
+                (Act::Back, "Back", true),
+            ]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Legal => {
+            write(mut d, fonts, legal::DRAFT, 13.0, vec2(x, y - 14.0), WARN, zoom)
+            let body = Rect::new(x, y + 8.0, iw, sheet.bottom() - y - 70.0)
+            d.push_clip(z(body, zoom))
+            var py = body.y - a.scroll
+            for p in legal::paragraphs(a.legal) {
+                if p.as_str().starts_with("# ") {
+                    py += 10.0
+                    write(mut d, fonts, p.as_str().slice(2, p.len()), 17.0, vec2(x, py), INK, zoom)
+                    py += 30.0
+                } else if p.as_str().starts_with("- ") {
+                    write(mut d, fonts, "•", BODY, vec2(x, py), MUTED, zoom)
+                    py += paragraph(
+                        mut d,
+                        fonts,
+                        p.as_str().slice(2, p.len()),
+                        BODY,
+                        vec2(x + 16.0, py),
+                        iw - 16.0,
+                        MUTED,
+                        zoom,
+                    ) +
+                        4.0
+                } else {
+                    py += paragraph(mut d, fonts, p.as_str(), BODY, vec2(x, py), iw, MUTED, zoom) +
+                        8.0
+                }
+            }
+            if a.legal == legal::CREDITS {
+                for i in 0..a.licence_text.len() {
+                    py += 10.0
+                    write(mut d, fonts, legal::LICENCES[i], 15.0, vec2(x, py), INK, zoom)
+                    py += 26.0
+                    borrow text = a.licence_text[i]
+                    for (from, to) in text.as_str().lines() {
+                        py += paragraph(
+                            mut d,
+                            fonts,
+                            text.as_str().slice(from, to),
+                            12.0,
+                            vec2(x, py),
+                            iw,
+                            MUTED,
+                            zoom,
+                            Face::Mono,
+                        )
+                    }
+                }
+            }
+            d.pop_clip()
+            // Scrolled no further than the end.
+            let end = py + a.scroll - body.y
+            a.scroll = min(a.scroll, max(end - body.h + 20.0, 0.0))
+            y = sheet.bottom() - 52.0
+            let gap = 8.0
+            let bw = (iw - 3.0 * gap) / 4.0
+            for k in 0..3 {
+                let label = if k == 0 { "Terms" } else if k == 1 { "Privacy" } else { "Credits" }
+                button(
+                    mut a,
+                    mut d,
+                    fonts,
+                    Act::Legal { page: k },
+                    Rect::new(x + f32(k) * (bw + gap), y, bw, 34.0),
+                    label,
+                    zoom,
+                    primary: k == a.legal,
+                )
+            }
+            button(
+                mut a,
+                mut d,
+                fonts,
+                Act::Back,
+                Rect::new(x + 3.0 * (bw + gap), y, bw, 34.0),
+                "Back",
+                zoom,
+            )
+        },
+        Page::Knighting => {},
+    }
+    if a.busy {
+        write(
+            mut d,
+            fonts,
+            "Waiting for your passkey or the server...",
+            13.0,
+            vec2(x, y + 4.0),
+            MUTED,
+            zoom,
+        )
+        y += 22.0
+    } else if !a.connected && a.page != Page::Legal {
+        write(mut d, fonts, "Connecting to wrela.dev...", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        y += 22.0
+    }
+    if !a.message.is_empty() && a.page != Page::Legal {
+        y += paragraph(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
+    }
+    if a.page != Page::Legal {
+        legal_row(mut a, mut d, fonts, x, sheet.bottom() - 52.0, iw, zoom)
+    }
+    a.focus = min(a.focus, max(a.controls.len(), 1) - 1)
+    a.shown = a.controls.clone()
+}
+
+/// `char` typed into a recovery code: a code is letters, digits and hyphens, so nothing else can be
+/// typed, here or anywhere in the console.
+fn typed(code: mut String, char: u32) {
+    let c = if char >= 97 && char <= 122 { char - 32 } else { char }
+    if code.len() < 24 && ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || c == 45) {
+        code.push_char(c)
+    }
+}
+
+/// The first four bytes of an ID, to name it.
+fn short(id: [u8]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    for i in 0..min(4, id.len()) {
+        out.push(id[i])
+    }
+    out
+}
+
+@test
+fn a_typed_recovery_code_takes_only_what_a_code_holds() {
+    var code = String::new()
+    for c in [97, 66, 45, 33, 32, 55, 0x1f600] {
+        typed(mut code, c)
+    }
+    assert(code == String::from("AB-7"), code.as_str())
+}
+
+@test
+fn a_game_is_told_at_once_when_the_console_cant_ask() {
+    let me = Me {
+        signed_in: true,
+        name: String::from("Sir Wobblesnout the Unhurried"),
+        fixed: true,
+        rerolls: 0,
+        must_add_passkey: false,
+    }
+    let up = Ask::Upload { token: Vec::from([5; 32]), replay: Vec::from([1]) }
+    let Some(Answer::Offline { .. }) = answer_now(me, connected: false, ask: up.clone()) else {
+        panic("offline")
+    }
+    assert(answer_now(me, connected: true, ask: up.clone()).is_none(), "carried to the server")
+    var out = me.clone()
+    out.signed_in = false
+    let Some(Answer::Offline { .. }) = answer_now(out, connected: true, ask: up.clone()) else {
+        panic("signed out")
+    }
+    var unknighted = me.clone()
+    unknighted.fixed = false
+    assert(answer_now(unknighted, connected: true, ask: up.clone()).is_some(), "not knighted yet")
+    assert(
+        answer_now(
+            out,
+            connected: true,
+            ask: Ask::Board { course: 0, category: 0, from: 0 },
+        ).is_none(),
+        "anyone may look at a board",
+    )
+}

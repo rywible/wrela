@@ -94,9 +94,11 @@ pub trait Game {
 pub const RUNS_AN_HOUR: u32 = 10
 /// Runs waiting to be verified, past which an upload is refused.
 pub const MOST_QUEUED: u32 = 32
-/// Ticks of a run played a call: about 10 ms of a 50 ms call on a slow core (the capybara's sim,
-/// measured in games/capybara/design.md, "Accounts and leaderboards").
-pub const PLAY_TICKS: u32 = 1000
+/// Ticks of a run played a call. The capybara's sim took about 12 µs a tick on wrela-serve
+/// (docs/bench.md, "The console's server"), so this is about 5 ms of a call's 50 ms there, room
+/// for a core several times slower: a call past its deadline loses the room's instance, and the
+/// run would start again.
+pub const PLAY_TICKS: u32 = 400
 /// Requests a connection may have under way at once.
 pub const MOST_JOBS: u32 = 8
 /// Recovery codes tried: by a connection in `TRY_WINDOW`, and by everyone in a minute.
@@ -305,6 +307,7 @@ enum Step: Copy + Eq {
     HelloAccount,
     BeginRandom,
     BeginAddScan,
+    BeginAddAccount,
     RegisterCredential,
     RegisterAccount,
     RegisterName,
@@ -1234,6 +1237,9 @@ impl<G: Game> Engine<G> {
                     seed: 0,
                     expires: self.now + CHALLENGE_LIFE,
                 }
+                if j.n == ADD_PASSKEY {
+                    c.handle = j.hash.clone()
+                }
                 if j.n == REGISTER {
                     c.handle = part(answer, CHALLENGE_BYTES, HANDLE_BYTES)
                     c.account = u64_at(answer, CHALLENGE_BYTES + HANDLE_BYTES)
@@ -1255,6 +1261,13 @@ impl<G: Game> Engine<G> {
                     exclude.push(part(e.key, skip, e.key.len() - skip))
                 }
                 j.keys = take exclude
+                self.get(account_key(j.id), Step::BeginAddAccount, take j)
+            },
+            Step::BeginAddAccount => {
+                // A passkey added is made for the account's handle, as its first was.
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else { return }
+                j.hash = a.handle.clone()
                 self.random(CHALLENGE_BYTES, Step::BeginRandom, take j)
             },
             Step::RegisterCredential => {

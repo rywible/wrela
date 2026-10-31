@@ -1,0 +1,97 @@
+// What the console and a game it shows say of accounts and boards, over the channel between them
+// (std::host's `send`, `receive` and `reply`). A game can't reach the console's server itself (a
+// server takes only its own program's clients: docs/toolchain-gaps.md), and never sees the
+// console's session: the console gives it the account's name and a token that can only submit
+// runs to that game's boards (wire.wrela's `Token`), and carries its asks to the server.
+//
+// Only the console calls (`send`), and a game only answers (`reply`), so the asks go the other way:
+// the console sends a `ToGame` (the account as it is, and the answer to the game's last ask), and
+// the game keeps that call until it has something to ask, then replies with it (`FromGame`). The
+// console carries the ask to the server and calls again with the answer. So there is always one
+// call open while the game shows, and nothing is asked twice. A game that doesn't take part never
+// receives, and the console's call waits unanswered until the game closes.
+
+use std::serialize::{LoadError, Serialize, load, save}
+use wire::Place
+
+/// The account, as a game may know it: its name and a token for the game's boards (empty when
+/// signed out, or before the name is fixed).
+pub struct Account: Clone + Eq + Serialize {
+    pub signed_in: bool,
+    pub name: String,
+    pub token: Vec<u8>,
+}
+
+/// What a game may ask.
+pub enum Ask: Clone + Serialize {
+    /// A run for the game's board: its replay's bytes, and the token it was given.
+    Upload { token: Vec<u8>, replay: Vec<u8> },
+    /// A page of a board, from place `from` (`wire::WHOLE` for a whole game's).
+    Board { course: u32, category: u32, from: u32 },
+    /// A run on a board, to watch.
+    Watch { run: u64 },
+}
+
+/// The answer to a game's last ask.
+pub enum Answer: Clone + Serialize {
+    /// Nothing asked yet.
+    Nothing,
+    Verified { run: u64, ticks: u32, place: u32 },
+    Rejected { why: String },
+    Board { course: u32, category: u32, places: Vec<Place>, total: u32 },
+    Run { run: u64, replay: Vec<u8> },
+    /// The console couldn't ask: offline, or signed out, said for a person.
+    Offline { why: String },
+}
+
+pub struct ToGame: Clone + Serialize {
+    pub account: Account,
+    pub answer: Answer,
+}
+
+pub struct FromGame: Clone + Serialize {
+    pub ask: Ask,
+}
+
+/// The most bytes a game's reply may carry: an upload's replay and a little more.
+pub const MOST_ASK: u32 = 65536
+
+/// A `ToGame` from the console's call, if it is one.
+pub fn to_game(bytes: [u8]) -> Option<ToGame> {
+    let r: Result<ToGame, LoadError> = load(Vec::from(bytes))
+    take r.ok()
+}
+
+/// A game's ask from its reply, if it is one and isn't too large.
+pub fn from_game(bytes: [u8]) -> Option<Ask> {
+    if bytes.len() > MOST_ASK {
+        return None
+    }
+    let r: Result<FromGame, LoadError> = load(Vec::from(bytes))
+    let Ok(f) = r else { return None }
+    Some(f.ask.clone())
+}
+
+@test
+fn the_link_reads_back_and_refuses_what_isnt_one() {
+    let call = ToGame {
+        account: Account {
+            signed_in: true,
+            name: String::from("Sir Wobblesnout the Unhurried"),
+            token: Vec::from([1, 2]),
+        },
+        answer: Answer::Verified { run: 7, ticks: 991, place: 2 },
+    }
+    let Some(back) = to_game(save(call)) else { panic("a call") }
+    assert(back.account.name == call.account.name && back.account.token == call.account.token)
+    let Answer::Verified { place, .. } = back.answer else { panic("its answer") }
+    assert(place == 2)
+    let ask = FromGame { ask: Ask::Upload { token: Vec::from([1, 2]), replay: Vec::from([9; 40]) } }
+    let Some(Ask::Upload { replay, .. }) = from_game(save(ask)) else { panic("an ask") }
+    assert(replay.len() == 40)
+    assert(from_game([1, 2, 3]).is_none() && to_game([]).is_none())
+    let big = FromGame {
+        ask: Ask::Upload { token: Vec::new(), replay: Vec::filled(MOST_ASK, u8(0)) },
+    }
+    assert(from_game(save(big)).is_none(), "too large")
+}
