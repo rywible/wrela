@@ -836,6 +836,11 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
             s.trail_of = 0
         }
     }
+    // The ghost's replay, and the one a race waits for, stay held while they're used.
+    match s.race_wanted {
+        Some((hash, _)) => online::pin(mut s.online, s.ghost_hash, hash),
+        None => online::pin(mut s.online, s.ghost_hash, Vec::new()),
+    }
     if !browsing {
         s.watching = None
     }

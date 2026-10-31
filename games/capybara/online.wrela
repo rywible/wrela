@@ -13,9 +13,10 @@
 // setting on. The runs posted are kept by their replays' SHA-256, apart from the game's progress,
 // so a posted run says so.
 //
-// A board's places come with their replays' hashes. When its rows arrive, the replays of the rows
-// shown and of the three places above the account's are fetched behind everything else and held
-// (at most `HELD`), so choosing a row plays at once, and a world's ghost has its run.
+// A board's places come with their replays' hashes. When its rows arrive, the replays of its first
+// rows and of the three places above the account's are fetched behind everything else and held
+// (at most `HELD`, the least recently used dropped first, never the ghost's or the race's), so
+// choosing a row plays at once, and a world's ghost has its run.
 
 use platform::link::{Account, Answer, Ask, FromGame, to_game}
 use platform::wire::{Found, Place, WHOLE}
@@ -42,9 +43,13 @@ const WAITING: Text = "capybara/posting"
 const STALE: f32 = 30.0
 const AGAIN: f32 = 30.0
 /// The most replays held to watch and race (at most 48 KiB each, wire.wrela's `MOST_REPLAY`), the
-/// rows of a board shown (main.wrela's `world_rows`), and the places above the account's fetched.
+/// rows of a board shown (main.wrela's `world_rows`), the first rows of a board whose replays are
+/// fetched ahead, and the places above the account's fetched. Both categories of the world's board
+/// and of the search, with the places above, the ghost's and a race's, are `HELD`: switching
+/// between them drops none.
 pub const HELD: u32 = 24
 pub const SHOWN: u32 = 8
+const AHEAD: u32 = 4
 const ABOVE: u32 = 3
 
 struct Uploaded: Serialize {
@@ -108,9 +113,10 @@ pub struct Online {
     /// A post of a waiting run under way, and when the next may be tried (s).
     posting: bool,
     again_at: f32,
-    /// The replays held, oldest first, by their hashes; and the one the player chose to watch,
-    /// whose it is and its place.
+    /// The replays held, by their hashes, the least recently used first; those never dropped
+    /// while in use (`pin`); and the one the player chose to watch, whose it is and its place.
     held: Vec<(Vec<u8>, Replay)>,
+    pins: Vec<Vec<u8>>,
     wanted: Option<(Vec<u8>, String, u32)>,
     watch: Option<(Replay, String, u32)>,
     /// The search last asked for (its title, noun and epithet), what it found, and what to say.
@@ -175,6 +181,7 @@ pub fn online() -> Online {
         posting: false,
         again_at: 0.0,
         held: Vec::new(),
+        pins: Vec::new(),
         wanted: None,
         watch: None,
         query: Vec::new(),
@@ -755,7 +762,7 @@ fn rows_came(o: mut Online, course: u32, category: u32) {
     let Some(shown) = board_of(o.boards, course, category) else { return }
     let places = o.boards[shown].places.clone()
     let total = o.boards[shown].total
-    for i in 0..min(places.len(), SHOWN) {
+    for i in 0..min(places.len(), AHEAD) {
         fetch(mut o, places[i].replay.clone())
     }
     if !o.account.signed_in || o.account.name.is_empty() || course == WHOLE {
@@ -800,20 +807,73 @@ pub fn board_course(board: u32, course: u32) -> u32 {
 
 // ---- replays -----------------------------------------------------------------------------------
 
-/// The replay held whose hash is `hash`, if it is.
-pub fn held(o: Online, hash: Vec<u8>) -> Option<Replay> {
-    for (h, r) in o.held {
-        if h == hash {
-            return Some(r.clone())
+/// Which of the replays held has hash `hash`, if one does.
+fn held_at(o: Online, hash: Vec<u8>) -> Option<u32> {
+    for i in 0..o.held.len() {
+        if o.held[i].0 == hash {
+            return Some(i)
         }
     }
     None
 }
 
+/// Whether the replay whose hash is `hash` is held.
+pub fn is_held(o: Online, hash: Vec<u8>) -> bool {
+    held_at(o, hash).is_some()
+}
+
+/// The replay held whose hash is `hash`, if it is.
+pub fn held(o: Online, hash: Vec<u8>) -> Option<Replay> {
+    match held_at(o, hash) {
+        Some(i) => Some(o.held[i].1.clone()),
+        None => None,
+    }
+}
+
+/// The replays held that are never dropped while they're in use: the ghost's, and the one a race
+/// waits for (each empty for none).
+pub fn pin(o: mut Online, ghost: Vec<u8>, race: Vec<u8>) {
+    if o.pins.len() != 2 || o.pins[0] != ghost || o.pins[1] != race {
+        o.pins = Vec::from([ghost.clone(), race.clone()])
+    }
+}
+
+/// The replay held whose hash is `hash`, used now: the last to be dropped.
+fn touch(o: mut Online, hash: Vec<u8>) {
+    let Some(i) = held_at(o, hash) else { return }
+    if i + 1 < o.held.len() {
+        let used = o.held.remove(i)
+        o.held.push(take used)
+    }
+}
+
+/// Holds replay `r`, whose hash is `hash`, as the most recently used, dropping the least recently
+/// used past `HELD` that isn't pinned.
+fn hold(o: mut Online, hash: Vec<u8>, r: Replay) {
+    if held_at(o, hash).is_some() {
+        touch(mut o, hash)
+        return
+    }
+    o.held.push((hash.clone(), r.clone()))
+    while o.held.len() > HELD {
+        var dropped = false
+        for i in 0..o.held.len() {
+            if !has_hash(o.pins, o.held[i].0) {
+                let _ = o.held.remove(i)
+                dropped = true
+                break
+            }
+        }
+        if !dropped {
+            return
+        }
+    }
+}
+
 /// Asks for the replay whose hash is `hash`, behind the player's asks, unless it's held or asked:
 /// for what the player asked brings (a board's rows, the places above the account's).
 fn fetch(o: mut Online, hash: Vec<u8>) {
-    if hash.len() != 32 || held(o, hash).is_some() {
+    if hash.len() != 32 || is_held(o, hash) {
         return
     }
     let _ = ask(
@@ -827,6 +887,10 @@ fn fetch(o: mut Online, hash: Vec<u8>) {
 /// Asks for the replay whose hash is `hash` before anything fetched behind, unless it's held or
 /// already on its way: for a row chosen, a race or a ghost. One waiting behind is brought forward.
 pub fn fetch_now(o: mut Online, hash: Vec<u8>) {
+    if is_held(o, hash) {
+        touch(mut o, hash)
+        return
+    }
     fetch(mut o, hash)
     let asked = Asked::Replay { hash: hash.clone() }
     for i in 0..o.fetches.len() {
@@ -845,12 +909,7 @@ fn came(o: mut Online, hash: Vec<u8>, bytes: [u8]) {
         return
     }
     let Ok(r) = boards::read(bytes) else { return }
-    if held(o, hash).is_none() {
-        o.held.push((hash.clone(), r.clone()))
-        while o.held.len() > HELD {
-            let _ = o.held.remove(0)
-        }
-    }
+    hold(mut o, hash, r)
     let wanted = o.wanted.clone()
     if let Some((h, name, place)) = wanted {
         if h == hash {
@@ -865,6 +924,7 @@ fn came(o: mut Online, hash: Vec<u8>, bytes: [u8]) {
 pub fn watch_place(o: mut Online, place: Place) {
     if !place.replay.is_empty() {
         if let Some(r) = held(o, place.replay) {
+            touch(mut o, place.replay)
             o.watch = Some((take r, place.name.clone(), place.place))
             return
         }
@@ -1256,25 +1316,58 @@ fn a_boards_rows_fetch_their_replays_and_the_three_above_the_players_and_no_more
             fetched.push(u32(hash[0]))
         }
     }
-    // The eight rows shown, and places 10, 11 and 12, above the player's thirteenth.
-    assert(fetched == Vec::from([1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]), f"{fetched.len()} fetched")
+    // The first four rows, and places 10, 11 and 12, above the player's thirteenth.
+    assert(fetched == Vec::from([1, 2, 3, 4, 10, 11, 12]), f"{fetched.len()} fetched")
     for (_, a) in o.asks {
         if let Asked::Replay { .. } = a {
             panic("fetches wait behind the player's asks")
         }
     }
-    // Held to a bound, the oldest dropped.
+    // Held to a bound, the least recently used dropped first.
     for n in 0..HELD + 4 {
         let bytes = save(real(n))
         came(mut o, Vec::from(sha256(bytes)), bytes)
     }
     assert(o.held.len() == HELD, "bounded")
-    assert(held(o, fingerprint(real(0))).is_none() && held(o, fingerprint(real(3))).is_none())
-    assert(held(o, fingerprint(real(4))).is_some(), "the newest kept")
+    assert(!is_held(o, fingerprint(real(0))) && !is_held(o, fingerprint(real(3))))
+    assert(is_held(o, fingerprint(real(4))), "the newest kept")
     // A replay whose bytes aren't the hash's run isn't held.
     let bytes = save(real(1))
     came(mut o, Vec::filled(32, u8(7)), bytes)
     assert(held(o, Vec::filled(32, u8(7))).is_none(), "not the run's own")
+}
+
+/// Replay `real(n)` come.
+fn came_run(o: mut Online, n: u32) {
+    let bytes = save(real(n))
+    came(mut o, Vec::from(sha256(bytes)), bytes)
+}
+
+@test
+fn the_least_recently_used_replay_goes_first_and_the_ghosts_and_the_races_never() {
+    var o = signed_in()
+    let hash = |n: u32| fingerprint(real(n))
+    for n in 0..HELD {
+        came_run(mut o, n)
+    }
+    // The ghost's and the race's pinned, the third used again: the fourth is the least recently
+    // used of the rest.
+    pin(mut o, hash(0), hash(1))
+    fetch_now(mut o, hash(2))
+    assert(o.asks.is_empty() && o.fetches.is_empty(), "held: nothing asked")
+    came_run(mut o, HELD)
+    assert(o.held.len() == HELD, "bounded")
+    assert(is_held(o, hash(0)) && is_held(o, hash(1)), "pinned")
+    assert(is_held(o, hash(2)), "used again")
+    assert(!is_held(o, hash(3)), "the least recently used")
+    for n in HELD + 1..HELD * 2 {
+        came_run(mut o, n)
+    }
+    assert(is_held(o, hash(0)) && is_held(o, hash(1)) && !is_held(o, hash(2)), "still pinned")
+    // Unpinned, the ghost's goes in its turn.
+    pin(mut o, Vec::new(), Vec::new())
+    came_run(mut o, HELD * 2)
+    assert(!is_held(o, hash(0)) && is_held(o, hash(1)), "the oldest first")
 }
 
 @test
