@@ -23,7 +23,7 @@
 // tallest crown (its height and kind), for what lies past the tiles streamed in.
 
 use grow::{
-    CROWN_PAD, Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED,
+    CROWN_PAD, Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, TreeEvent, UNMARKED,
     crown_shade,
 }
 use std::io::Shipped
@@ -33,9 +33,10 @@ use std::math::TAU
 
 /// The bytes' first word, and their version.
 const MAGIC: u32 = 0x5754_4c47
-pub const VERSION: u32 = 5
+pub const VERSION: u32 = 6
 
-/// Bytes a tree takes.
+/// Bytes a tree's record takes: its place, kind, height, crown and years. Its life's record (§E2)
+/// follows all the tile's records, as long as it is (`put_life`).
 pub const TREE_BYTES: u32 = 22
 
 /// The least height of a living tree the bake keeps: a seedling shorter isn't drawn, and the
@@ -151,7 +152,82 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     put_u16(mut out, if tr.shaped == grow::NONE { 65535 } else { tr.shaped & 65535 })
 }
 
-/// The tree whose 22 bytes are at `at` in `b`, its place from tile `t`'s corner.
+/// A tree's life's record (§E2), as long as it is: how many samples are written, where the
+/// recorded ones start and how many events it has (five, five and three bits of a `u16`), the
+/// years it lived (a `u16`), then its samples four bits each (`grow::LEVEL`'s levels; the inferred
+/// light first, if any are inferred, then the recorded ones), and its events (four bytes each).
+/// The samples past the written ones are never read, and the events fill from the first
+/// (`grow::noted`), so neither is kept: a young tree's life is a few bytes.
+fn put_life(out: mut Vec<u8>, tr: Tree) {
+    var events = 0
+    for e in tr.events {
+        if e.kind != grow::NO_EVENT {
+            events += 1
+        }
+    }
+    put_u16(mut out, u32(tr.written) | (u32(tr.recorded_from) << 5) | (events << 10))
+    put_u16(mut out, u32(clamp(round(tr.lived), 0.0, 65535.0)))
+    var levels: Vec<u32> = Vec::new()
+    if tr.written > 0 && tr.recorded_from > 0 {
+        levels.push(u32(tr.light_by_age[0]) / grow::LEVEL)
+    }
+    for k in u32(tr.recorded_from)..u32(tr.written) {
+        levels.push(u32(tr.light_by_age[k]) / grow::LEVEL)
+    }
+    var k = 0
+    while k < levels.len() {
+        let hi = if k + 1 < levels.len() { levels[k + 1] } else { 0 }
+        out.push(u8(levels[k] | (hi << 4)))
+        k += 2
+    }
+    for e in tr.events {
+        if e.kind != grow::NO_EVENT {
+            put_u16(mut out, u32(i32(e.year) + 32768))
+            out.push(e.kind)
+            out.push(e.strength)
+        }
+    }
+}
+
+/// `tr` with its life's record read from byte `at` of `b` (`put_life`), and where the next
+/// starts.
+fn get_life(b: [u8], at: u32, tr: Tree) -> (Tree, u32) {
+    var out = tr
+    let head = get_u16(b, at)
+    out.written = u8(head & 31)
+    out.recorded_from = u8((head >> 5) & 31)
+    let events = head >> 10
+    out.lived = f32(get_u16(b, at + 2))
+    let k0 = at + 4
+    let inferred = out.written > 0 && out.recorded_from > 0
+    let level = |i: u32| u8((u32(b[k0 + i / 2]) >> (4 * (i % 2)) & 15) * grow::LEVEL)
+    out.light_by_age = [0; grow::SAMPLES]
+    var n = 0
+    if inferred {
+        let l = level(0)
+        for i in 0..u32(out.recorded_from) {
+            out.light_by_age[i] = l
+        }
+        n = 1
+    }
+    for i in u32(out.recorded_from)..u32(out.written) {
+        out.light_by_age[i] = level(n)
+        n += 1
+    }
+    var k = k0 + (n + 1) / 2
+    out.events = [TreeEvent {}; 4]
+    for e in 0..events {
+        out.events[e] = TreeEvent {
+            year: i16(i32(get_u16(b, k)) - 32768),
+            kind: b[k + 2],
+            strength: b[k + 3],
+        }
+        k += 4
+    }
+    (out, k)
+}
+
+/// The tree whose `TREE_BYTES` are at `at` in `b`, its place from tile `t`'s corner.
 pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
     let packed = u32(b[at + 4])
     let state = State::from_u32((packed >> 3) & 3).unwrap_or(State::Alive)
@@ -186,6 +262,11 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
             i32(get_u16(b, at + 2)) ^ (t.y << 16),
             1103,
         ),
+        light_by_age: [0; grow::SAMPLES],
+        recorded_from: 0,
+        written: 0,
+        lived: 0.0,
+        events: [TreeEvent {}; 4],
     }
 }
 
@@ -197,7 +278,8 @@ pub fn as_baked(tr: Tree) -> Tree {
     let t = tile_of(tr.at)
     var b: Vec<u8> = Vec::with_capacity(TREE_BYTES)
     put_tree(mut b, tr, t)
-    get_tree(b, 0, t)
+    put_life(mut b, tr)
+    get_life(b, TREE_BYTES, get_tree(b, 0, t)).0
 }
 
 /// Bytes with runs of zeros coded short: a zero, then the run's length (a `u16`).
@@ -295,10 +377,17 @@ fn checked_run_byte(b: [u8], at: u32, n: u32, i: u32) -> Option<(u8, u32)> {
     Some((found, k))
 }
 
+/// Where tile bytes `b`'s trees' lives end (its `count` records, then their lives' length and
+/// the lives).
+fn lives_end(b: [u8], count: u32) -> u32 {
+    let at = 20 + count * TREE_BYTES
+    at + 4 + get_u32(b, at)
+}
+
 /// Where tile bytes `b`'s memory planes start: after its trees, its wear and its wetness.
 fn memory_planes(b: [u8]) -> u32 {
     let count = get_u32(b, 16)
-    let k = skip_runs(b, 20 + count * TREE_BYTES, WEAR_N * WEAR_N)
+    let k = skip_runs(b, lives_end(b, count), WEAR_N * WEAR_N)
     skip_runs(b, k, WET_N * WET_N)
 }
 
@@ -395,6 +484,15 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
             out.push(records[i * TREE_BYTES + byte])
         }
     }
+    // Their lives, in the same order, each as long as it is, after the section's length.
+    var lives: Vec<u8> = Vec::new()
+    for k in mine {
+        put_life(mut lives, h.trees[k])
+    }
+    put_u32(mut out, lives.len())
+    for x in lives {
+        out.push(x)
+    }
     // The trails: the herd's wear at each 2 m of the tile.
     var wear: Vec<u8> = Vec::with_capacity(WEAR_N * WEAR_N)
     let cell = TILE / f32(WEAR_N)
@@ -468,10 +566,13 @@ pub fn decode_tile(b: [u8]) -> Decisions {
         }
     }
     var trees: Vec<Tree> = Vec::with_capacity(count)
+    var life = 24 + count * TREE_BYTES
     for i in 0..count {
-        trees.push(get_tree(records, i * TREE_BYTES, t))
+        let (tr, next) = get_life(b, life, get_tree(records, i * TREE_BYTES, t))
+        trees.push(tr)
+        life = next
     }
-    let at = 20 + count * TREE_BYTES
+    let at = lives_end(b, count)
     let (wear8, k) = get_runs(b, at, WEAR_N * WEAR_N)
     let (wet8, k2) = get_runs(b, k, WET_N * WET_N)
     var wear: Vec<f32> = Vec::with_capacity(WEAR_N * WEAR_N)
@@ -719,10 +820,14 @@ pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
     let c = tile_grid(t, WET_N).cell_at(p)
     let n = WET_N * WET_N
     let count = get_u32(b, 16)
-    if count > (b.len() - 20) / TREE_BYTES {
+    if b.len() < 24 || count > (b.len() - 24) / TREE_BYTES {
         return UNMARKED
     }
-    let trees_end = 20 + count * TREE_BYTES
+    let lives_at = 20 + count * TREE_BYTES
+    if get_u32(b, lives_at) > b.len() - lives_at - 4 {
+        return UNMARKED
+    }
+    let trees_end = lives_at + 4 + get_u32(b, lives_at)
     let Some(wear_end) = checked_skip_runs(b, trees_end, WEAR_N * WEAR_N) else {
         return UNMARKED
     }
@@ -743,29 +848,31 @@ pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
 
 /// A magic-valid but malformed baked tile has no provenance, instead of trapping while it is
 /// inspected by an authoring click.
-fn test_tile_header(count: u32) -> Vec<u8> {
+fn test_tile_header(count: u32, lives: u32) -> Vec<u8> {
     var b: Vec<u8> = Vec::new()
     put_u32(mut b, MAGIC)
     put_u32(mut b, VERSION)
     put_u32(mut b, 0)
     put_u32(mut b, 0)
     put_u32(mut b, count)
+    put_u32(mut b, lives)
     b
 }
 
 @test
 fn malformed_tile_bytes_have_no_memory() {
     var cases: Vec<Vec<u8>> = Vec::new()
-    cases.push(test_tile_header(0)) // truncated before the first plane
-    var zero = test_tile_header(0)
+    cases.push(test_tile_header(0, 0)) // truncated before the first plane
+    cases.push(test_tile_header(0, 4294967295)) // the declared lives don't fit
+    var zero = test_tile_header(0, 0)
     var zero_run = Vec::from([0, 0, 0])
     zero.append(mut zero_run)
     cases.push(take zero) // a zero-length run never advances
-    var over = test_tile_header(0)
+    var over = test_tile_header(0, 0)
     var long_run = Vec::from([0, 255, 255])
     over.append(mut long_run)
     cases.push(take over) // the run reaches past its plane
-    cases.push(test_tile_header(4294967295)) // the declared tree bytes don't fit
+    cases.push(test_tile_header(4294967295, 0)) // the declared tree bytes don't fit
     for b in cases {
         assert(memory_in_tile(b, vec2(0.0)).mark == Mark::None, "malformed bytes have a memory")
     }

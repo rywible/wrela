@@ -2862,3 +2862,22 @@ cel=build/record/cel ...`, every look's fast record) is linked from Part D's PR.
 
 The released toolchain 0.11.1 (the workspace ran a local copy of its build until now) builds the
 vale identically: all 335 of its shaders, wasm and manifest files' SHA-256 the same.
+
+## E2, the history's light and events in the bake (2026-10-31, toolchain 0.11.1)
+
+The floor's (`games/last-green`) tiles and its first load (`wrela tool bench -- --scene
+last-green-walk`, the cold run's bytes loaded by its first frame and playable) on `main`
+(f1d94841) and as E2 changed them. The bake's `VERSION` is 6; a tree's base record stays 22 bytes
+(`TREE_BYTES`), its life after the tile's records, as long as it is.
+
+| Record | Tiles (65, raw) | Tiles (gzip -6) | Cold load (bytes) | Against `main` |
+|---|---|---|---|---|
+| `main`: 22 bytes a tree | 3,308,895 | 1,985,686 | 5,273,467 | |
+| the plan's: 74 bytes a tree, 32 samples | 10,353,000 | 4,250,000 | | |
+| the life as long as it is, 32 samples a byte each | 5,719,054 | 3,687,267 | 5,938,388 | +12.6 % |
+| the lever: 8 late samples, each 4 bits, a 2-byte header | 4,702,022 | | 5,667,726 | **+7.5 %** |
+
+The plan's lever (over 10 %: samples 16–31 halved to 8, the span kept) is taken, with the
+samples kept at 16 levels: the nurse tree's early shade still parts its sapling's samples 0–6
+(`a_nurse_trees_shade_is_in_a_saplings_early_light`), and every age of a 1,200-year history
+reads back through the bake.
