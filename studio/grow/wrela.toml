@@ -1,0 +1,10 @@
+# The grow tool (`wrela tool grow`, docs/plan-world-class-3.md §E1.5): a species' tree grown from
+# its genome and site (`engine::growth`), converted to the renderer's plant, and recorded as a
+# specimen (main.wrela says how). E6 adds the fits to the same tool.
+[package]
+name = "grow_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+engine = { workspace = true }
+trees = { workspace = true }

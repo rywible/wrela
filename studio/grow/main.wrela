@@ -1,0 +1,102 @@
+// The grow tool (docs/plan-world-class-3.md §E1.5): trees grown as specimens.
+//
+// ```text
+// wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>]
+//     [--seed <n>] --out <dir>
+// wrela tool grow -- --specimens <dir>
+// ```
+//
+// A specimen is a species' tree grown from its genome (content/trees/genomes.wrela) at a site
+// (`engine::growth::grow_graph`: its light a year, open 1, at a forest's edge half, under a
+// canopy a quarter; its exposure to the wind), converted to the renderer's plant (`into_plant`),
+// and written to `<dir>`: `side.png`, its side view (`growth::side_view`: its wood dark over its
+// crown), and `grown.json`: the genome's values and hash, the site, the seed, the graph's nodes,
+// the plant's limbs and chains, the height, the crown's centroid (its leaves' middle, from the
+// trunk), the conversion's woody IoU and crown volume (its clumps' over its leaves'), and the
+// milliseconds the growth and the conversion took on this machine (an optimized build).
+// `--specimens <dir>` writes each species at ages 10, 40, 100 and 200, in each light, a
+// specimen a directory (`<species>-<age>-<light>`), and `<dir>/index.html`, a page of them.
+
+use specimens::{AGES, Ask, LIGHTS, NAMES, Specimen, index_of, page, specimen, write}
+use std::io::print
+use std::tool::{ToolError, args}
+use toolkit::whole::{chunked, write_file}
+
+pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--seed <n>] --out <dir> | --specimens <dir>"
+
+/// A number argument after `flag`, if given.
+fn number_after(given: [String], flag: str) -> Option<f32> {
+    for i in 0..given.len() {
+        if given[i].as_str() == flag && i + 1 < given.len() {
+            return given[i + 1].as_str().parse_f32()
+        }
+    }
+    None
+}
+
+/// A text argument after `flag`, if given.
+fn text_after(given: [String], flag: str) -> Option<String> {
+    for i in 0..given.len() {
+        if given[i].as_str() == flag && i + 1 < given.len() {
+            return Some(given[i + 1].clone())
+        }
+    }
+    None
+}
+
+fn run(given: [String]) -> Result<(), ToolError> {
+    if let Some(dir) = text_after(given, "--specimens") {
+        var done: Vec<(String, Specimen)> = Vec::new()
+        for k in 0..NAMES.len() {
+            for age in AGES {
+                for light in 0..LIGHTS.len() {
+                    let s = specimen(Ask { species: k, age, light, wind: 0.0, seed: 1 })
+                    let name = String::from(f"{NAMES[k]}-{u32(age)}-{LIGHTS[light]}")
+                    print(
+                        f"grow: {name}: {s.nodes} nodes, {s.limbs} of {s.chains} limbs, {s.height} m, IoU {s.iou}, grown in {s.grow_ms} ms, converted in {s.convert_ms} ms",
+                    )
+                    var kept = s.clone_measures()
+                    write(take s, f"{dir}/{name}")?
+                    done.push((take name, take kept))
+                }
+            }
+        }
+        return write_file(f"{dir}/index.html", chunked(Vec::from(page(done).as_bytes())))
+    }
+    let Some(species) = text_after(given, "--species") else {
+        return Err(ToolError::new(USAGE))
+    }
+    let Some(k) = index_of(NAMES, species.as_str()) else {
+        return Err(ToolError::new(f"no species {species}: {USAGE}"))
+    }
+    let Some(age) = number_after(given, "--age") else {
+        return Err(ToolError::new(USAGE))
+    }
+    let light_name = text_after(given, "--light").unwrap_or(String::from("open"))
+    let Some(light) = index_of(LIGHTS, light_name.as_str()) else {
+        return Err(ToolError::new(f"no light {light_name}: {USAGE}"))
+    }
+    let Some(out) = text_after(given, "--out") else {
+        return Err(ToolError::new(USAGE))
+    }
+    let wind = clamp(number_after(given, "--wind").unwrap_or(0.0), 0.0, 1.0)
+    let seed = u32(number_after(given, "--seed").unwrap_or(1.0))
+    let s = specimen(Ask { species: k, age, light, wind, seed })
+    print(f"grow: {s.json}")
+    write(take s, out.as_str())
+}
+
+pub fn tool() -> u32 {
+    let given = args()
+    if given.len() == 0 {
+        print(USAGE)
+        return 2
+    }
+    match run(given) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"grow: {e.message()}")
+            1
+        },
+    }
+}
