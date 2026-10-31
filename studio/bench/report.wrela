@@ -400,9 +400,16 @@ fn pairs_json(xs: [(String, f64)]) -> String {
     s
 }
 
-/// A whole report: the machine, the date, and each scene's measurements.
+/// When a report's first frame and playable time say a frame showed (`shown`): its submission,
+/// from toolchain 0.12.0. A report without it timed the frames' starts.
+pub const SHOWN: Text = "submitted"
+
+/// A whole report: the machine, the date, when a frame is taken to show (`SHOWN`), and each
+/// scene's measurements.
 pub fn report_json(machine: str, date: str, all: [Measured]) -> String {
-    var s = String::from(f"{{\"machine\": \"{machine}\", \"date\": \"{date}\", \"scenes\": [")
+    var s = String::from(
+        f"{{\"machine\": \"{machine}\", \"date\": \"{date}\", \"shown\": \"{SHOWN}\", \"scenes\": [",
+    )
     for k in 0..all.len() {
         if k > 0 {
             s.push_str(", ")
@@ -509,6 +516,11 @@ pub fn compared(earlier: Doc, now: [Measured]) -> String {
     let Some(scenes) = earlier.get(TOP, "scenes") else {
         return String::from("the earlier report has no scenes\n")
     }
+    // A first frame timed at its start isn't comparable with one timed at its submission.
+    let same_shown = match earlier.get(TOP, "shown") {
+        Some(k) => earlier.text(k).unwrap_or(String::new()).as_str() == SHOWN,
+        None => false,
+    }
     for m in now {
         var found = false
         for i in 0..earlier.count(scenes) {
@@ -536,7 +548,11 @@ pub fn compared(earlier: Doc, now: [Measured]) -> String {
             let span = change(at("span", "p50"), m.span.p50)
             let interval = change(at("interval", "p95"), m.interval.p95)
             let cpu = change(at("cpu", "p50"), m.cpu.p50)
-            let first = change(number_at(earlier, e, "first_frame_ms"), m.first_frame_ms)
+            let first = if same_shown {
+                change(number_at(earlier, e, "first_frame_ms"), m.first_frame_ms)
+            } else {
+                String::from(f"{m.first_frame_ms:.2} (the earlier report timed frames' starts)")
+            }
             let peak = change(number_at(earlier, e, "gpu_peak") / 1048576.0, m.gpu_peak / 1048576.0)
             s.push_str(
                 f"{m.scene}: GPU span p50 {span}; interval p95 {interval}; CPU p50 {cpu}; first frame {first}; GPU peak MiB {peak}\n",

@@ -178,6 +178,20 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
     faster.span = Stats { p50: 1.0, p95: 3.0, p99: 4.0 }
     let lines = compared(earlier, Vec::from([take faster]))
     assert(contains(lines.as_str(), "herd: GPU span p50 2.00 -> 1.00 (-50.0%)"), lines.as_str())
+    // A report from before frames were timed at their submission: its first frame isn't compared.
+    let mark = "\"shown\": \"submitted\", "
+    let Some(at) = text.find(mark) else { panic("the report says how frames are timed") }
+    var old = String::from(text.as_str().slice(0, at))
+    old.push_str(text.as_str().slice(at + mark.len(), text.len()))
+    let Ok(older) = doc(old.as_str(), "report") else {
+        panic("the older report is JSON")
+    }
+    let old_lines = compared(older, Vec::from([m.clone()]))
+    assert(
+        contains(old_lines.as_str(), "(the earlier report timed frames' starts)"),
+        old_lines.as_str(),
+    )
+    assert(contains(old_lines.as_str(), "GPU span p50 2.00 -> 2.00"), old_lines.as_str())
     let table = markdown("Apple M4", "2026-10-25", Vec::from([take m]))
     assert(contains(table.as_str(), "## 2026-10-25, Apple M4"))
     assert(contains(table.as_str(), "| herd | 2.00 / 3.00 / 4.00 |"))
