@@ -98,10 +98,10 @@ impl Progress {
 }
 
 /// The progress stored as `bytes`, if it's progress this game could have made: of this version,
-/// a record a course with a time no longer than a run is kept and only that course's snacks, and
-/// runs that are the player's, of a course, and as long as their pads say. The runs aren't played
-/// here, so the console's save list reads a save at once; the game plays each as it loads them
-/// (replay.wrela's `checked`). Runs of another version of play are dropped, and the rest kept.
+/// a record a course, each with only that course's snacks. Of its runs, only the player's that
+/// could be runs (of a course, as long as their pads say) are kept, and none of another version
+/// of play: a bad run never costs the records. The runs aren't played here, so the console's save
+/// list reads a save at once; the game plays each as it loads them (replay.wrela's `checked`).
 pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
     let loaded: Result<Progress, LoadError> = load(take bytes)
     let Ok(p) = loaded else { return None }
@@ -114,17 +114,15 @@ pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
             return None
         }
     }
+    // Its runs, if they're of this version of play: a run that isn't the player's or couldn't be
+    // one is dropped, and too many are all dropped; the records stay either way.
     var out = p.clone()
-    if p.runs.version != BOARD {
-        out.runs = board()
-        return Some(out)
-    }
-    if p.runs.runs.len() > MOST_RUNS {
-        return None
-    }
-    for r in p.runs.runs {
-        if r.who != YOU || !plausible(r) {
-            return None
+    out.runs = board()
+    if p.runs.version == BOARD && p.runs.runs.len() <= MOST_RUNS {
+        for r in p.runs.runs {
+            if r.who == YOU && plausible(r) {
+                out.runs.runs.push(r.clone())
+            }
         }
     }
     Some(out)
@@ -239,12 +237,21 @@ fn progress_is_stored_and_read_back_and_nonsense_is_refused() {
     }
     assert(kept.records[HOME].best == MOST_TICKS + 1 && kept.records[WETLANDS].best == 12000)
     assert(clock_text(0xffffffff) == "596523:14.12", clock_text(0xffffffff))
+    // A run that isn't the player's, or is longer than its pads, is dropped; the records stay.
     var theirs = p.clone()
     theirs.runs.runs[0].who = YOU + 1
-    assert(read(encode(theirs)).is_none(), "a run that isn't the player's")
+    let Some(t) = read(encode(theirs)) else {
+        assert(false, "progress with another's run reads")
+        return
+    }
+    assert(t.runs.runs.is_empty() && t.records == p.records, "a run that isn't the player's")
     var padded = p.clone()
     padded.runs.runs[0].ticks += 1
-    assert(read(encode(padded)).is_none(), "a run longer than its pads")
+    let Some(d) = read(encode(padded)) else {
+        assert(false, "progress with a padded run reads")
+        return
+    }
+    assert(d.runs.runs.is_empty() && d.records == p.records, "a run longer than its pads")
 }
 
 @test

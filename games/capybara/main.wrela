@@ -231,6 +231,9 @@ pub struct Lab {
     progress: Progress,
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
+    /// Stored progress this build can't read (a later version's), as it was stored: never stored
+    /// over, and stored back as it is when the game returns to the console.
+    unread: Option<Vec<u8>>,
     storing: Storing,
     kept: u32,
     /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
@@ -320,6 +323,7 @@ pub fn init() -> Lab {
         progress: progress::fresh(),
         loading: Some(load(SAVE)),
         saving: None,
+        unread: None,
         storing: Storing {},
         kept: 0xffffffff,
         assisted: Vec::new(),
@@ -684,7 +688,11 @@ fn console(s: mut Lab) {
     }
     s.console.presented()
     if s.console.returning && s.storing.read && s.saving.is_none() {
-        s.console.save_and_return(SAVE, progress::encode(s.progress))
+        let bytes = match s.unread {
+            Some(b) => b.clone(),
+            None => progress::encode(s.progress),
+        }
+        s.console.save_and_return(SAVE, bytes)
     }
 }
 
@@ -1181,7 +1189,11 @@ fn store_progress(s: mut Lab, dt: f32) {
         s.loading = None
         match result {
             Ok(b) => {
-                s.progress = progress::merged(progress::read(b.clone()), s.progress.clone())
+                let stored = progress::read(b.clone())
+                if stored.is_none() && !b.is_empty() {
+                    s.unread = Some(b.clone())
+                }
+                s.progress = progress::merged(stored, s.progress.clone())
                 s.trail_of = 0
                 s.storing.loaded(read: true)
             },
@@ -1202,7 +1214,7 @@ fn store_progress(s: mut Lab, dt: f32) {
     let (loads, stores) = s.storing.due(
         dt,
         loading: s.loading.is_some(),
-        saving: s.saving.is_some() || s.console.returning,
+        saving: s.saving.is_some() || s.console.returning || s.unread.is_some(),
     )
     if loads {
         s.loading = Some(load(SAVE))
