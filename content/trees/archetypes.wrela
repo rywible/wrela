@@ -8,8 +8,10 @@
 // The plan's archetypes are 70 (seven species × five age classes × open and under). The memory
 // gate decides their count (§E1.3: the vale's GPU peak, 539.8 MiB on `main`, is already over its
 // 512), so the living kinds' number holds: each kind's form (its species, open or forest, young or
-// ancient) is one archetype grown, where it was a shape authored by hand. The great tree, the far
-// crowns and the dead (snags, logs: §E4's) stay authored.
+// ancient) is one archetype grown, where it was a shape authored by hand. The dead are grown too:
+// a fallen tree (§E4) a grown trunk laid, a standing one (§E8) a grown tree broken and its small
+// wood shed (`dead`). The great tree (the floor's alone: a character of its lore) and the two far
+// kinds no program places stay authored.
 
 use engine::growth::{Grow, GrowthEvent, Site, convert, fungi_on, grow_graph, scale}
 use land::grow::{NO_EVENT, Tree, events_of, light_at}
@@ -18,7 +20,7 @@ use genomes::genomes
 use kinds::{
     ALDER_A, ALDER_B, BEECH_ANCIENT, BEECH_FOREST, BEECH_OPEN, BIRCH_FOREST, BIRCH_OPEN, BUILT,
     HAWTHORN, KINDS, LOG_LONG, LOG_SHORT, OAK_ANCIENT, OAK_FOREST, OAK_OPEN, PINE_FOREST, PINE_OPEN,
-    SLOE, YOUNG_BROAD, YOUNG_PINE,
+    SLOE, SNAG_BROAD, SNAG_BURNT, SNAG_FORKED, SNAG_PINE, SNAG_STUMP, YOUNG_BROAD, YOUNG_PINE,
 }
 use species::{HABITS, Species}
 use std::field::Tube
@@ -77,6 +79,14 @@ pub fn archetype(k: u32) -> Option<Archetype> {
         (Species::Beech, 90.0, 0.9)
     } else if k == LOG_LONG {
         (Species::Oak, 150.0, 0.9)
+    } else if k == SNAG_BROAD {
+        (Species::Oak, 120.0, 0.8)
+    } else if k == SNAG_BURNT || k == SNAG_STUMP {
+        (Species::Oak, 90.0, 0.8)
+    } else if k == SNAG_PINE {
+        (Species::Pine, 100.0, 0.6)
+    } else if k == SNAG_FORKED {
+        (Species::Oak, 70.0, 0.4)
     } else {
         return None
     }
@@ -87,15 +97,52 @@ pub fn archetype(k: u32) -> Option<Archetype> {
 /// growth takes seconds). A log's (`LOG_SHORT`, `LOG_LONG`) is laid (`laid`).
 pub fn grown(k: u32, a: Archetype) -> Plant {
     let g = genomes()[a.species]
-    let t = grow_graph(g, Site { age: a.age, stand: a.stand }, [], vec2(0.0), [], a.seed)
+    // The forked snag's fork a gale's, in its youth (E1.2's fork: a lateral took the broken leader's
+    // place).
+    var events: Vec<GrowthEvent> = Vec::new()
+    if k == SNAG_FORKED {
+        events.push(GrowthEvent { age: 30.0, kind: engine::growth::GALE, strength: 0.9 })
+    }
+    var t = grow_graph(g, Site { age: a.age, stand: a.stand }, [], vec2(0.0), events, a.seed)
+    let alive_tall = t.height
+    if let Some((broke, shed)) = dead(k, a.seed) {
+        engine::growth::die(mut t, broke * alive_tall, shed)
+    }
     var p = engine::plant::plant(Leaves {}, Bark {})
     let _ = convert(t, g, mut p)
     if k == LOG_SHORT || k == LOG_LONG {
         return laid(p, BUILT[k], if k == LOG_LONG { 0.5 } else { 0.28 }, a.seed)
     }
+    if dead(k, a.seed).is_some() {
+        // Standing dead: no leaves, and scaled by the height it stood alive (`BUILT` is a snag's
+        // living height: its instance is scaled to its record's).
+        p.clumps.clear()
+        scale(mut p, BUILT[k] / max(alive_tall, 1.0e-3))
+        return p
+    }
     let s = BUILT[k] / max(p.top(), 1.0e-3)
     scale(mut p, s)
     p
+}
+
+/// A standing dead kind's break (a share of its living height) and the thinnest wood it keeps (m,
+/// before it's scaled), if `k` is one, drawn from its seed in each form's range (the hand's
+/// snags', **proposed**): a broad-leaved snag rotted from its top, most of it standing; a burnt
+/// one broken lower; a stump with its shard low; a forked one burnt to its fork; a pine's keeping
+/// its spiky branches, which rot slowly.
+fn dead(k: u32, seed: u32) -> Option<(f32, f32)> {
+    let u = engine::growth::Rng::keyed(seed).unit()
+    if k == SNAG_BROAD {
+        Some((mix(0.75, 0.95, u), 0.04))
+    } else if k == SNAG_BURNT {
+        Some((mix(0.55, 0.85, u), 0.06))
+    } else if k == SNAG_STUMP {
+        Some((mix(0.25, 0.4, u), 0.12))
+    } else if k == SNAG_FORKED {
+        Some((mix(0.65, 0.8, u), 0.05))
+    } else if k == SNAG_PINE {
+        Some((mix(0.75, 0.95, u), 0.015))
+    } else { None }
 }
 
 /// A fallen tree (§E4's deadwood) from its grown plant `p`, laid along +z on the ground (its foot
@@ -266,10 +313,10 @@ pub fn grown_into(k: u32, p: mut Plant) {
 /// The oldest a near individual is grown to (years: **proposed**).
 pub const GROWN_AGE: f32 = 120.0
 
-/// Whether kind `k` is grown (an archetype, not a fallen tree's), so a tree drawn as it can be a
-/// near individual.
+/// Whether kind `k` is grown alive (an archetype, not a fallen or a standing dead tree's), so a
+/// tree drawn as it can be a near individual.
 pub fn grows(k: u32) -> bool {
-    archetype(k).is_some() && k != LOG_SHORT && k != LOG_LONG
+    archetype(k).is_some() && k != LOG_SHORT && k != LOG_LONG && dead(k, 0).is_none()
 }
 
 /// Whether tree `t`, drawn as kind `k`, is drawn as itself near the eye at `present`: its kind
@@ -316,7 +363,10 @@ pub fn individual(t: Tree, k: u32, present: i32) -> Option<Grow> {
     // kind's built one: `kinds::scale_of`) is on them: its plant is its own (a young broadleaf
     // 2.6 times its built 3 m had leaves a third of a metre across at the eye).
     let look = kinds::LOOKS[k].0
-    let leaves = Leaves { size: look.size * clamp(1.0 / kinds::scale_of(k, kinds::drawn_tall(k, t.tall)), 0.5, 2.0), ..look }
+    let leaves = Leaves {
+        size: look.size * clamp(1.0 / kinds::scale_of(k, kinds::drawn_tall(k, t.tall)), 0.5, 2.0),
+        ..look,
+    }
     Some(
         Grow {
             genome: genomes()[species],

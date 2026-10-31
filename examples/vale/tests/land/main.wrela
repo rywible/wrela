@@ -241,7 +241,10 @@ fn the_ground_reads_its_soil() {
     assert(floor >= 0 && thin > 0, "no alluvium on the floor, or no thin soil on the crests")
     let fc = GROUND.cover_with(at(g.centre(u32(floor))), up, dry)
     let alluvium = vale::landscape::SOIL_ALBEDO[u32(SoilKind::Alluvium)]
-    assert(length(fc.albedo - alluvium) < 1.0e-3, f"the floor's ground {fc.albedo}, not alluvium's {alluvium}")
+    assert(
+        length(fc.albedo - alluvium) < 1.0e-3,
+        f"the floor's ground {fc.albedo}, not alluvium's {alluvium}",
+    )
     let ar = vale::landscape::SOIL_ROUGH[u32(SoilKind::Alluvium)]
     assert(abs(fc.rough - ar) < 1.0e-4, f"the floor's roughness {fc.rough}, not alluvium's {ar}")
     let shown = stones / f32(thin)
@@ -256,8 +259,60 @@ fn the_ground_reads_its_soil() {
         f"the crests' ground {crest} reads as the floor's {fc.albedo}",
     )
     let soaked = GROUND.cover_with(at(g.centre(u32(floor))), up, vec4(1.0, 0.0, 1.0, 0.0))
-    assert(soaked.rough < 0.8 * fc.rough, f"soaked ground's roughness {soaked.rough}, dry {fc.rough}")
+    assert(
+        soaked.rough < 0.8 * fc.rough,
+        f"soaked ground's roughness {soaked.rough}, dry {fc.rough}",
+    )
     print(
         f"the ground: the floor's {fc.albedo} (roughness {fc.rough}), the crests' {crest} ({thin} cells, stones over {shown}); soaked {soaked.rough}",
+    )
+}
+
+/// G-grown (docs/plan-world-class-3.md §0.5, §E8): every plant the vale draws is grown. Each
+/// instance its tiles place from its history (`trees::kinds::placed`: living, standing dead and
+/// fallen), each of its far layer's kinds, each species its floor places and each of its ground's
+/// small causes' fields has a growth's provenance; none authored.
+@test
+fn every_plant_the_vale_draws_is_grown() {
+    let d = vale::history::decisions()
+    let placed = trees::kinds::placed(d.trees, vale::landscape::height_at, vale::history::PRESENT)
+    var authored = 0
+    var by_kind = [0; trees::kinds::KINDS]
+    for p in placed {
+        if trees::kinds::provenance(p.kind).authored() {
+            authored += 1
+            by_kind[p.kind] += 1
+        }
+    }
+    var far = 0
+    for k in trees::kinds::far_kinds() {
+        if trees::kinds::provenance(k).authored() {
+            far += 1
+        }
+    }
+    var species = 0
+    for i in 0..engine::grass::SPECIES_N {
+        if engine::grass::species_provenance(i).authored() {
+            species += 1
+        }
+    }
+    var fields = 0
+    for i in 0..engine::growth::FIELDS.len() {
+        if engine::growth::field_provenance(i).authored() {
+            fields += 1
+        }
+    }
+    var kinds = String::new()
+    for k in 0..trees::kinds::KINDS {
+        if by_kind[k] > 0 {
+            kinds = String::from(f"{kinds} {trees::lines::KIND_KEYS[k]} {by_kind[k]};")
+        }
+    }
+    print(
+        f"G-grown: {placed.len()} instances, {authored} authored ({kinds}); far kinds {far}, species {species}, fields {fields}",
+    )
+    assert(
+        authored + far + species + fields == 0,
+        f"{authored} instances authored:{kinds} far kinds {far}, species {species}, fields {fields}",
     )
 }

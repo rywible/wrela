@@ -206,7 +206,8 @@ hand). Part E fills it.
 | The soil | grown (`land::soil` from the land's shape and water) |
 | The water | grown (laid from the land's drainage) |
 | Where trees stand, their ages, deaths and falls | grown (`land::grow`) |
-| The trees' forms | grown: each living kind an archetype grown at build from its species' genome (`trees::archetypes`, `engine::growth`); the 24 trees nearest the eye grown from their own records (`land::stage::near_trees`); the great tree, the far crowns and the standing dead authored |
+| The trees' forms | grown: each living kind an archetype grown at build from its species' genome (`trees::archetypes`, `engine::growth`); the 24 trees nearest the eye grown from their own records (`land::stage::near_trees`), the 6 within 40 m of the first eye before it's playable, each kept in the page's storage by its growth's every input (§E7); the far layer's crowns the forest kinds' archetypes |
+| The standing dead | grown: each snag kind (a broad-leaved snag, a burnt one, a stump, a forked one, a pine's) a tree grown from its genome, broken at its form's height and its wood under its form's thickness shed (`archetypes::dead`, `growth::die`; the forked one's fork a gale's in its youth) |
 | The floor's plants | grown: the 33 species' rows from their genomes (`engine::grass::GENOMES`: rosettes, tussocks, fronds), the fern's and bracken's fronds by the place's light, the sward by light and wetness |
 | The fallen trees | grown: a grown trunk laid along its fall, its bark lost and its bracket fungi by its rot (on the vale's tiles, 4,914 fallen trees, 20,848 brackets, 74 % of their bark gone) |
 | Moss | grown: a reaction-diffusion's patches on the ground, the logs and the trunks by wetness and light (6 % of the vale's ground in its causes) |
