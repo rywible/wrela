@@ -15,10 +15,9 @@
 //   cat asleep on some), and a wheelbarrow heaped with carrots.
 
 use engine::noise::{hash2, noise2}
-use ink::SUN
 use scenery::{
     Scene, NEAREST, FAR, NEAR, MIDDLE, View, crowned, fbm, nearer, on_layer, paint, pixel_on,
-    round_tree, under,
+    round_tree, sunny, under,
 }
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
@@ -326,15 +325,11 @@ fn barn(l: vec2, t: f32) -> (f32, vec3) {
     let shallow = plane(a, vec2(1.9, 4.5), vec2(0.7, 1.9))
     let roofline = max(steep, shallow)
     // A cooler wash on the side away from the sun, over the walls and the roof.
-    let sunny = smoothstep(
-        -0.35,
-        -0.15,
-        dot(l - vec2(0.8, 2.6), SUN) / 3.2 + 0.15 * noise2(l * 3.0),
-    )
-    let red = blend(vec3(0.64, 0.33, 0.36), vec3(0.8, 0.39, 0.33), sunny)
+    let lit = sunny(l, vec2(0.8, 2.6), 3.2)
+    let red = blend(vec3(0.64, 0.33, 0.36), vec3(0.8, 0.39, 0.33), lit)
     var best = (max(max(a.x - 2.8, -l.y), roofline), red)
     let roof = max(max(roofline - 0.16, 2.95 - l.y), -(roofline + 0.42))
-    best = over((roof, blend(vec3(0.4, 0.4, 0.46), vec3(0.52, 0.46, 0.44), sunny)), best)
+    best = over((roof, blend(vec3(0.4, 0.4, 0.46), vec3(0.52, 0.46, 0.44), lit)), best)
     // The doors: a white frame, crossed.
     let door = rbox(l - vec2(0.0, 1.15), vec2(1.05, 1.15), 0.02)
     var trim = abs(door) - 0.07

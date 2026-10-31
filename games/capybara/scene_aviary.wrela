@@ -712,11 +712,8 @@ fn dome_wall(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
         if h < 0.45 && abs(q.x - x) < 1.4 * s + 0.1 {
             let at = vec2(x, dome_ground(x) + 0.75 * s)
             let d = shrub(q, at, s, 0.05 * (noise2(q * 3.0) - 0.5))
-            let (fd0, _) = front
-            if d < fd0 {
-                let lit = vec3(0.48, 0.7, 0.42)
-                front = (d, crowned(lit, lit * vec3(0.84, 0.88, 0.94), q, at, s))
-            }
+            let lit = vec3(0.48, 0.7, 0.42)
+            front = nearer(front, (d, crowned(lit, lit * vec3(0.84, 0.88, 0.94), q, at, s)))
         }
     }
     let (d, albedo) = front

@@ -109,14 +109,23 @@ pub fn paint(
     mist: vec3 = MIST,
 ) -> vec4 {
     // Outside the shape and its line, nothing: no need to paint it.
-    if d > max(line * px * 0.65, px * 0.4) + px {
+    if d > reach(line, px) {
         return vec4(0.0)
     }
     var c = pooled(washed(albedo, q, g, gs), d, 0.12)
     c = blend(c, mist, haze)
-    let ink = blend(INK, mist, min(haze * 1.7, 0.9))
-    let o = inked(c, d, q, line * px, px, ink)
+    let o = inked(c, d, q, line * px, px, ink_in(mist, haze))
     o
+}
+
+/// How far outside a shape `paint` draws anything (m): its line, `line` px wide, and a pixel.
+pub fn reach(line: f32, px: f32) -> f32 {
+    max(line * px * 0.65, px * 0.4) + px
+}
+
+/// The ink of a layer faded by `haze` into the mist `mist`.
+pub fn ink_in(mist: vec3, haze: f32) -> vec3 {
+    blend(INK, mist, min(haze * 1.7, 0.9))
 }
 
 /// What a layer is under its ground: its fill washed and darkening downwards into shade.
@@ -155,8 +164,14 @@ pub fn fbm(p: vec2, octaves: u32) -> f32 {
 /// A crown's colour at `q`: its wash, and a darker one on the side away from the sun (`centre`
 /// its middle, `r` its size), with a soft painted edge between.
 pub fn crowned(lit: vec3, shade: vec3, q: vec2, centre: vec2, r: f32) -> vec3 {
+    blend(shade, lit, sunny(q, centre, r))
+}
+
+/// How much `q` is on the side of a round thing (`centre` its middle, `r` its size) that faces
+/// the sun: 0 away from it to 1 towards it, across a soft painted edge.
+pub fn sunny(q: vec2, centre: vec2, r: f32) -> f32 {
     let away = dot(q - centre, SUN) / r + 0.15 * noise2(q * 3.0)
-    blend(shade, lit, smoothstep(-0.35, -0.15, away))
+    smoothstep(-0.35, -0.15, away)
 }
 
 // ---- the sky ---------------------------------------------------------------------------------
@@ -249,6 +264,10 @@ pub const DOME_GLASS = vec3(0.82, 0.9, 0.93)
 /// and size.
 pub fn dome(l: vec2, r: f32) -> (f32, vec3) {
     let d = max(length(l) - r, -l.y)
+    // Far outside it, no paint draws it: its colour needn't be worked out.
+    if d > 1.0 {
+        return (d, DOME_GLASS)
+    }
     let w = sqrt(max(r * r - l.y * l.y, 1.0e-4))
     let lon = asin(clamp(l.x / w, -1.0, 1.0))
     let step = 0.3927

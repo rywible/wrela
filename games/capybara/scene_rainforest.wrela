@@ -20,7 +20,8 @@
 use engine::noise::{hash2, noise2}
 use ink::grain
 use scenery::{
-    Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, over, paint, pixel_on, under,
+    Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, over, paint, pixel_on, reach,
+    under,
 }
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
@@ -90,7 +91,7 @@ fn painted(
     line: f32,
     dapple: f32,
 ) -> vec4 {
-    if s.d > max(line * px * 0.65, px * 0.4) + px {
+    if s.d > reach(line, px) {
         return vec4(0.0)
     }
     let c = if s.r > 0.0 { crowned(s.lit, s.shade, q, s.centre, s.r) } else { s.lit }
@@ -597,10 +598,11 @@ fn residents(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) ->
         length(vec2(post_x, fy - 0.9)) - 0.07,
     )
     let rail = min(post, abs(fy - 0.78) - 0.035)
-    if rail < max(best.d, px - rail) {
+    let cut = max(best.d, px - rail)
+    if rail < cut {
         return paint(g, gs, rail, vec3(0.3, 0.45, 0.4), q, px, haze: 0.2, line: 1.0, mist: DAMP)
     }
-    best.d = max(best.d, px - rail)
+    best.d = cut
     painted(g, gs, best, q, px, haze: 0.2, line: 1.0, dapple: 0.7)
 }
 

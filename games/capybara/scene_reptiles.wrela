@@ -16,7 +16,9 @@
 //   ahead.
 
 use engine::noise::{hash2, noise2}
-use scenery::{Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, paint, pixel_on, under}
+use scenery::{
+    Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, paint, pixel_on, reach, under,
+}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
@@ -733,6 +735,9 @@ fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) ->
         let rock = if away { vec3(0.76, 0.6, 0.62) } else { vec3(0.92, 0.7, 0.54) }
         paint(g, gs, b, rock * band, q, px, haze: 0.42, line: 0.6, mist: HAZE)
     } else {
+        if a > reach(0.6, px) {
+            return vec4(0.0)
+        }
         // A slope rising to the right faces away from the sun.
         let rise = (ridge_at(q.x + 0.5, ice) - ridge) / 0.5
         let shade = smoothstep(0.05, 0.3, rise + 0.1 * noise2(q * 2.0))
