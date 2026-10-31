@@ -191,6 +191,11 @@ Test: the console's tests (the attract program opened, shown under, closed on pl
 capybara's (`#attract` plays the human line and loops). If the toolchain's release isn't out
 when the rest is ready, this step waits for a pull request of its own.
 
+As built (toolchain 0.16.0): the attract start is a build of its own, the capybara's package with
+`ATTRACT` set (the release's `attract`), not `capybara/#attract`, because 0.16.0's browser host
+opens no program at an address with a fragment (docs/toolchain-gaps.md). The look is proposed
+until Ryan sees it.
+
 ### Step 10. Copy
 
 Much of the site's copy reads as generated (Ryan: "it reads as ai slop writing"). The patterns
