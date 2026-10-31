@@ -2,9 +2,12 @@
 // drawn from platform/names.wrela's lists, a title, a noun made of two halves and an epithet, so
 // each part completes from its list as it's typed ("wob" gives Wobblesnout), and a controller,
 // which can't type, picks each part from its list instead. The console's server finds the names
-// whose parts start with what the search holds (link.wrela's `Names`); this is only the typing.
+// whose parts start with what the search holds (link.wrela's `Names`) by names.wrela's `matching`,
+// and the completions come from the same rules (`starts`, `starting`, `backs_after`), so what a
+// part completes to is what the server finds; this is only the typing.
 
-use platform::names::{BACKS, EPITHETS, FRONTS, TITLES}
+use platform::names::{BACKS, EPITHETS, FRONTS, TITLES, backs_after, starting, starts}
+use platform::wire::MOST_PART
 
 /// A name's parts, in the order the search holds them.
 pub const TITLE: u32 = 0
@@ -12,44 +15,32 @@ pub const NOUN: u32 = 1
 pub const EPITHET: u32 = 2
 pub const PARTS: u32 = 3
 
-/// The most bytes a part holds (wire.wrela's `MOST_PART`).
-const MOST: u32 = 32
-
-/// The search: what each part holds, as typed or picked, the part the keys go to, and which of
-/// its completions is picked in place of what was typed (0: none, `n`: the `n`th).
+/// The search: what each part holds, as typed or picked, the part the keys go to, which of its
+/// completions is picked in place of what was typed (0: none, `n`: the `n`th), and those
+/// completions (`completions` of the part and what it holds), worked out again only when either
+/// changes.
 pub struct Search: Clone {
     pub parts: Vec<String>,
     pub part: u32,
     pub pick: u32,
+    pub completed: Vec<String>,
 }
 
 /// An empty search, on the title.
 pub fn search() -> Search {
-    Search { parts: Vec::from([String::new(), String::new(), String::new()]), part: TITLE, pick: 0 }
-}
-
-/// `s` in lower case, ASCII only.
-fn lower(s: str) -> String {
-    var out = String::new()
-    for i in 0..s.len() {
-        let b = s.byte(i)
-        out.push_byte(if b >= 65 && b <= 90 { b + 32 } else { b })
+    Search {
+        parts: Vec::from([String::new(), String::new(), String::new()]),
+        part: TITLE,
+        pick: 0,
+        completed: completions(TITLE, ""),
     }
-    out
 }
 
-/// Whether `s` starts with `prefix`, in any case.
-fn starts(s: str, prefix: str) -> bool {
-    s.len() >= prefix.len() && lower(s.slice(0, prefix.len())) == lower(prefix)
-}
-
-/// The entries of `list` that start with `typed`.
+/// The entries of `list` that start with `typed`, in any case.
 fn listed(list: [Text], typed: str) -> Vec<String> {
     var out: Vec<String> = Vec::new()
-    for i in 0..list.len() {
-        if starts(list[i], typed) {
-            out.push(String::from(list[i]))
-        }
+    for i in starting(list, typed) {
+        out.push(String::from(list[i]))
     }
     out
 }
@@ -64,42 +55,42 @@ pub fn completions(part: u32, typed: str) -> Vec<String> {
     } else if part == EPITHET {
         return listed(EPITHETS, typed)
     }
-    var fronts: Vec<u32> = Vec::new()
+    // The first halves a noun starting with `typed` may have, each with the second halves that
+    // may follow it (names.wrela's `backs_after`, as the server's `matching` has them); whether
+    // what's typed runs past a first half.
+    var fronts: Vec<(u32, Vec<u32>)> = Vec::new()
     var whole = false
     for f in 0..FRONTS.len() {
-        let front = FRONTS[f]
-        if starts(front, typed) {
-            fronts.push(f)
-        } else if typed.len() > front.len() && starts(typed, front) {
-            fronts.push(f)
-            whole = true
+        let backs = backs_after(f, typed)
+        if !backs.is_empty() {
+            whole = whole || typed.len() > FRONTS[f].len()
+            fronts.push((f, take backs))
         }
     }
     if fronts.len() > 1 && !whole {
-        for f in fronts {
+        for (f, _) in fronts {
             out.push(String::from(FRONTS[f]))
         }
         return out
     }
-    for f in fronts {
-        for b in 0..BACKS.len() {
-            let noun = f"{FRONTS[f]}{BACKS[b]}"
-            if starts(noun.as_str(), typed) {
-                out.push(take noun)
-            }
+    for (f, backs) in fronts {
+        for b in backs {
+            out.push(f"{FRONTS[f]}{BACKS[b]}")
         }
     }
     out
 }
 
 impl Search {
+    /// The completions worked out again, for the part the keys are on and what it holds now.
+    fn refresh(mut self) {
+        self.completed = completions(self.part, self.parts[self.part].as_str())
+    }
+
     /// What part `part` holds: as typed, or the completion picked for the part the keys are on.
     pub fn value(self, part: u32) -> String {
-        if part == self.part && self.pick > 0 {
-            let all = completions(part, self.parts[part].as_str())
-            if self.pick <= all.len() {
-                return all[self.pick - 1].clone()
-            }
+        if part == self.part && self.pick > 0 && self.pick <= self.completed.len() {
+            return self.completed[self.pick - 1].clone()
         }
         self.parts[part].clone()
     }
@@ -111,7 +102,7 @@ impl Search {
         if self.pick > 0 || typed.is_empty() {
             return String::new()
         }
-        let all = completions(self.part, typed.as_str())
+        borrow all = self.completed
         if all.is_empty() || all[0].len() <= typed.len() {
             return String::new()
         }
@@ -120,9 +111,13 @@ impl Search {
 
     /// The picked completion made what's typed.
     fn settle(mut self) {
+        if self.pick == 0 {
+            return
+        }
         let v = self.value(self.part)
         self.parts[self.part] = take v
         self.pick = 0
+        self.refresh()
     }
 
     /// A character typed: a letter or a hyphen goes on the part, and so does a space where a title
@@ -138,6 +133,7 @@ impl Search {
                 !typed.is_empty() &&
                 !completions(TITLE, spaced.as_str()).is_empty() {
                 self.parts[self.part].push_byte(32)
+                self.refresh()
                 return true
             }
             return self.accept()
@@ -146,10 +142,11 @@ impl Search {
             return false
         }
         self.settle()
-        if self.parts[self.part].len() >= MOST {
+        if self.parts[self.part].len() >= MOST_PART {
             return false
         }
         self.parts[self.part].push_byte(u8(char))
+        self.refresh()
         true
     }
 
@@ -159,10 +156,12 @@ impl Search {
         let n = self.parts[self.part].len()
         if n > 0 {
             self.parts[self.part].truncate(n - 1)
+            self.refresh()
             return true
         }
         if self.part > TITLE {
             self.part -= 1
+            self.refresh()
         }
         false
     }
@@ -171,12 +170,8 @@ impl Search {
     /// part.
     pub fn accept(mut self) -> bool {
         self.settle()
-        let typed = self.parts[self.part].clone()
-        if !typed.is_empty() {
-            let all = completions(self.part, typed.as_str())
-            if !all.is_empty() {
-                self.parts[self.part] = all[0].clone()
-            }
+        if !self.parts[self.part].is_empty() && !self.completed.is_empty() {
+            self.parts[self.part] = self.completed[0].clone()
         }
         self.to(min(self.part + 1, PARTS - 1))
         true
@@ -186,11 +181,12 @@ impl Search {
     pub fn to(mut self, part: u32) {
         self.settle()
         self.part = min(part, PARTS - 1)
+        self.refresh()
     }
 
     /// The pick moved `by` along the part's completions, round through what was typed.
     pub fn turn(mut self, by: i32) -> bool {
-        let n = i32(completions(self.part, self.parts[self.part].as_str()).len()) + 1
+        let n = i32(self.completed.len()) + 1
         if n == 1 {
             return false
         }
@@ -235,6 +231,33 @@ fn each_part_completes_from_its_own_list() {
 }
 
 @test
+fn a_nouns_completions_are_the_nouns_the_servers_search_finds() {
+    for typed in ["", "w", "wob", "wobble", "wobblesn", "WOBBLEP", "zz"] {
+        let m = platform::names::matching("", typed, "")
+        var found = 0
+        for i in 0..m.fronts.len() {
+            found += m.backs[i].len()
+        }
+        let all = completions(NOUN, typed)
+        // Several first halves fit: those are listed, and each is one the server finds.
+        if all.len() == m.fronts.len() && m.fronts.len() > 1 && found > all.len() {
+            for i in 0..all.len() {
+                assert(all[i].as_str() == FRONTS[m.fronts[i]], typed)
+            }
+            continue
+        }
+        assert(all.len() == found, f"{typed}: {all.len()} of {found}")
+        var k = 0
+        for i in 0..m.fronts.len() {
+            for b in m.backs[i] {
+                assert(all[k] == f"{FRONTS[m.fronts[i]]}{BACKS[b]}", typed)
+                k += 1
+            }
+        }
+    }
+}
+
+@test
 fn typing_a_name_takes_its_hints_and_a_controller_picks_from_the_lists() {
     var s = search()
     for c in [115, 105] {
@@ -248,8 +271,10 @@ fn typing_a_name_takes_its_hints_and_a_controller_picks_from_the_lists() {
     assert(s.hint() == String::from("blesnout"))
     assert(!s.typed(55) && !s.typed(33), "no digits, no marks")
     assert(s.erase() && s.value(NOUN) == String::from("wo"))
+    assert(s.completed == completions(NOUN, "wo"), "kept as the part changes")
     s.parts[NOUN].clear()
     assert(!s.erase() && s.part == TITLE, "back from an empty part")
+    assert(s.completed == completions(TITLE, "Sir"), "and as the keys move")
     // A title that goes on with a space keeps it.
     var h = search()
     for c in [104, 101, 97, 100, 32] {
