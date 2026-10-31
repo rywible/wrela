@@ -1973,6 +1973,40 @@ pub fn scale(p: mut Plant, s: f32) {
     }
 }
 
+// ---- the bark and the moss as causes (§E1.4) ----------------------------------------------------
+
+/// A tree's bark's cracks from its history (`substance::history_of`: its age's share of its
+/// life in x, its stress, 1 less its vigour, in w): how far apart its ridges' pattern repeats
+/// round its trunk (x: a fast-grown trunk's bark stretched, its cracks wider apart; 1 the cooked
+/// pattern's) and how deep its cracks are (y: its relief's multiple, deeper with age). Lefebvre
+/// and Neyret 2002's fracture model, simplified to the cooked ridges scaled by the record
+/// (**proposed** ranges).
+pub fn bark_cracks(history: vec4) -> vec2 {
+    let vigour = 1.0 - history.w
+    let age = history.x
+    vec2(1.25 - 0.5 * vigour, 0.45 + 1.1 * smoothstep(0.0, 0.6, age))
+}
+
+/// How mossy bark is (0 to 1) by its causes: the ground's wetness at its foot and the light its
+/// crown had (`history`'s z and y: wet and shaded, more), where on it (its normal `n`: turned up,
+/// or away from the sun, -z, where the vale's and the floor's sun doesn't reach; `along` metres
+/// up its limb: near its foot), in patches (`patch`, its noise there) with edges: a material on
+/// the bark, not a tint over it.
+pub fn moss_at(history: vec4, n: vec3, along: f32, patch: f32) -> f32 {
+    let cause = smoothstep(0.25, 0.75, history.z) * (1.0 - 0.6 * history.y)
+    let foot = 1.0 - smoothstep(0.2, 1.4, along)
+    let place = max(
+        foot * 0.75,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.1, 0.9, -n.z) * 0.6),
+    )
+    min(1.0, (0.3 + cause) * place) * smoothstep(0.42, 0.58, patch)
+}
+
+/// How much of its bark's lichen an old tree carries (0 to 1, by its age's share of its life).
+pub fn lichen_of(history: vec4) -> f32 {
+    smoothstep(0.15, 0.7, history.x)
+}
+
 /// A tree grown and drawn (§E1.2): `grow_graph`, then `into_plant`.
 pub fn grow_tree(
     g: Genome,

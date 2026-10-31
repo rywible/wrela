@@ -8,7 +8,7 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
-use growth::Provenance
+use growth::{Provenance, bark_cracks, lichen_of, moss_at}
 use impostor::{
     Bake, Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
     volume_cut, volume_shade, which_crown,
@@ -552,7 +552,10 @@ fn limb_world(
     let limb = limbs[kinds[kind_of(inst)].limb_first + v / LIMB_POINTS]
     let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
     let girth = TAU * limb.radii[0] * inst.scale * inst.thick
-    let on_bark = vec2(along.x * plant::bark_round(girth), along.y * inst.scale)
+    // Its cracks' spacing round it by its record (`growth::bark_cracks`), a whole number of
+    // repeats so the pattern meets itself.
+    let round = max(round(plant::bark_round(girth) * bark_cracks(inst.history.decode()).x), 1.0)
+    let on_bark = vec2(along.x * round, along.y * inst.scale)
     (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), on_bark)
 }
 
@@ -574,7 +577,12 @@ pub fn limb(
         normal: n,
         along,
         up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
-        moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
+        moss: moss_at(
+            inst.history.decode(),
+            n,
+            along.y,
+            noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7),
+        ),
         keep: Flat { value: marks[i.index].x },
         kind: Flat { value: kind_of(inst) },
         history: Flat { value: inst.history.bits },
@@ -592,20 +600,6 @@ pub fn limb_shadow(
 ) -> ClipPosition {
     let (world, _, _) = limb_world(v.index, i.index, kinds, limbs, instances)
     ClipPosition { position: view * vec4(world, 1.0) }
-}
-
-/// How mossy bark is (0 to 1), its normal `n`, `along` metres up its limb, `patch` its noise
-/// there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the north (-z,
-/// where the sun doesn't reach), in patches with edges: moss is a material on the bark, not a
-/// tint over it. (All over a trunk's sides, it turned the wood's trunks green; soft and wide at
-/// a big trunk's foot, it still tinted its lower half.)
-fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
-    let foot = 1.0 - smoothstep(0.2, 1.4, along)
-    let place = max(
-        foot * 0.75,
-        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.25),
-    )
-    place * smoothstep(0.42, 0.58, patch)
 }
 
 /// Turns a surface by the gradient of its height, measured along two screen directions.
@@ -639,6 +633,9 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     rs: Sampler,
 ) -> Y::Out {
     let bark = kinds[b.kind.value].bake.bark
+    let history = std::gpu::Unorm8x4 { bits: b.history.value }.decode()
+    // Its cracks' depth by its record (`growth::bark_cracks`; their spacing is `limb_world`'s).
+    let cracks = bark_cracks(history)
     // Derivatives run before the coverage discard, so every lane has a surface and height.
     let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
     let size = vec2(f32(plant::RIDGES_W), f32(plant::RIDGES_H))
@@ -651,11 +648,15 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     } else { 0.0 }
     // The foot's bark: cracked plates, the ridges' fissures through them.
     let foot_tone = t.g * (0.6 + 0.4 * t.r)
-    let raised = mix(bark.raised(t), (foot_tone - 0.5) * 1.6, foot)
+    let raised = mix(bark.raised(t) * cracks.y, (foot_tone - 0.5) * 1.6, foot)
     // Its relief's slope, read from the tiles a texel (of those read) each way along them, turned
     // into the screen's by the tiles' own derivatives: the height's own screen derivatives are one
     // a 2x2 block of pixels, and on fine bark the blocks' normals read as stitches.
-    let height = |p: vec4| mix(bark.raised(p), (p.g * (0.6 + 0.4 * p.r) - 0.5) * 1.6, foot) * 0.035
+    let height = |p: vec4| mix(
+        bark.raised(p) * cracks.y,
+        (p.g * (0.6 + 0.4 * p.r) - 0.5) * 1.6,
+        foot,
+    ) * 0.035
     let step = vec2(max(texels, 1.0)) / size
     let (tu, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(step.x, 0.0), texels)
     let (tv, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(0.0, step.y), texels)
@@ -667,7 +668,6 @@ pub fn bark_shade<Q: Switches, Y: Style>(
         dpdy(b.world),
         vec2(dot(slope, dpdx(uv)), dot(slope, dpdy(uv))),
     )
-    let history = std::gpu::Unorm8x4 { bits: b.history.value }.decode()
     // Its ridges' tone, flattened where the look says it can't be told (`style::flattened`): their
     // mean the bark's middle tone (found before the discard, which `fwidth` can't follow).
     let (smooth_tone, flat) = flattened::<Y>(
@@ -682,13 +682,13 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     albedo = mix(albedo, bark.foot.xyz * (0.45 + 1.1 * mix(0.5, foot_tone, fine)), vec3(foot))
     // Darker down its furrows and cracks, as their depth hides them from the light: as much as
     // the bark is rough (a smooth bark's mottle isn't a furrow).
-    let rough = max(bark.relief, 1.6 * foot)
+    let rough = max(bark.relief * cracks.y, 1.6 * foot)
     let depth = clamp(raised / max(rough, 1.0e-3) + 0.5, 0.0, 1.0)
     albedo *= 1.0 - fine * 0.5 * min(rough / 1.6, 1.0) * (1.0 - depth)
     albedo = mix(
         albedo,
         bark.lichen.xyz,
-        vec3(bark.lichen.w * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
+        vec3(bark.lichen.w * lichen_of(history) * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
     )
     let a = Y::palette(lt.light, style::BARK, history, mix(albedo, bark.moss, vec3(b.moss)))
     let ln = lit_normal::<Y>(n, smooth_n, smooth_n)
