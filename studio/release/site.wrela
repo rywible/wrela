@@ -604,7 +604,20 @@ pub fn catalog_json(c: Catalog) -> Json {
     for g in c.games {
         var builds: Vec<(String, Json)> = Vec::new()
         for b in g.builds {
-            builds.push(member(b.name, text(b.dir)))
+            // A build with constants set is its package and them; one without, its package
+            // alone, as before.
+            if b.set.is_empty() {
+                builds.push(member(b.name, text(b.dir)))
+            } else {
+                var set: Vec<Json> = Vec::new()
+                for named in b.set {
+                    set.push(text(named))
+                }
+                var build: Vec<(String, Json)> = Vec::new()
+                build.push(member("package", text(b.dir)))
+                build.push(member("set", Json::List(take set)))
+                builds.push(member(b.name, Json::Obj(take build)))
+            }
         }
         var game: Vec<(String, Json)> = Vec::new()
         game.push(member("id", text(g.id)))
@@ -613,6 +626,7 @@ pub fn catalog_json(c: Catalog) -> Json {
         game.push(member("domain", text(g.domain)))
         game.push(member("session", text(g.session)))
         game.push(member("builds", Json::Obj(take builds)))
+        game.push(member("attract", text(g.attract)))
         game.push(member("cover", text(g.cover)))
         game.push(member("hero", text(g.hero)))
         game.push(member("logo", text(g.logo)))
@@ -635,7 +649,8 @@ pub struct Shipped: Clone {
 }
 
 /// A game's line of the console's catalog, between tabs: its id, title and session's address;
-/// its cover's, hero's and title art's files and sizes; its tagline; and its theme's file.
+/// its cover's, hero's and title art's files and sizes; its tagline; its theme's file; and the
+/// address of its build that plays itself (empty for none).
 pub fn catalog_line(
     game: Game,
     release: str,
@@ -651,7 +666,10 @@ pub fn catalog_line(
     for art in [cover.clone(), hero.clone(), logo.clone()] {
         line.push_str(f"\t{art.name.as_str()}\t{art.width}\t{art.height}")
     }
-    line.push_str(f"\t{game.tagline}\t{theme}")
+    line.push_str(f"\t{game.tagline}\t{theme}\t")
+    if !game.attract.is_empty() {
+        line.push_str(f"{o.as_str()}/releases/{release}/{game.attract}/")
+    }
     line
 }
 

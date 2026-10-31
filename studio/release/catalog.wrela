@@ -8,15 +8,19 @@
 // reader: the console and the games build without it, and it names packages and Workers, which
 // are a release's business, not a program's.
 
-/// A build of a game: its name (its directory in the game's Worker) and its package.
+/// A build of a game: its name (its directory in the game's Worker), its package, and the
+/// constants of the package's `main.wrela` it's built with, each `NAME=VALUE` as `wrela build
+/// --set` takes it (none for the package as it is).
 pub struct Build: Clone {
     pub name: Text,
     pub dir: Text,
+    pub set: Vec<Text> = Vec::new(),
 }
 
 /// A game: its id (its storage namespace and its prefetch list), its title, its Worker and
 /// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
-/// rendered. What the console's home shows of it while it's chosen, each left empty for none:
+/// rendered; and the build that plays itself (`attract`, empty for none), which the console's
+/// home shows behind its text once it has rested on the game a few seconds. What the console's home shows of it while it's chosen, each left empty for none:
 /// its hero, a PNG that Wrela rendered, full-bleed behind the home's text, which stands on its
 /// left; its title art, a PNG with alpha, in place of its title; its tagline, a line that sells
 /// it; and its theme, a melody the home plays softly, as text: its tempo in quarter notes a
@@ -28,6 +32,7 @@ pub struct Game: Clone {
     pub domain: Text,
     pub session: Text,
     pub builds: Vec<Build>,
+    pub attract: Text,
     pub cover: Text,
     pub hero: Text,
     pub logo: Text,
@@ -100,8 +105,18 @@ pub const CATALOG: Catalog = Catalog {
                     [
                         Build { name: "session", dir: "games/capybara/session" },
                         Build { name: "capybara", dir: "games/capybara" },
+                        // The game playing its searched runs by itself, with no sound and no
+                        // HUD (games/capybara/attract.wrela). It's a build of its own because
+                        // toolchain 0.16.0's browser host opens no program at an address with
+                        // a fragment (docs/toolchain-gaps.md).
+                        Build {
+                            name: "attract",
+                            dir: "games/capybara",
+                            set: Vec::from(["ATTRACT=true"]),
+                        },
                     ],
                 ),
+                attract: "attract",
                 cover: "games/capybara/cover.png",
                 hero: "games/capybara/hero.png",
                 logo: "",
@@ -154,6 +169,25 @@ fn component(value: str) -> Result<(), String> {
     } else {
         Err(String::from(f"invalid release component: '{value}'"))
     }
+}
+
+/// Whether `value` sets a constant as `wrela build --set` takes it: `NAME=VALUE`, the name a
+/// constant's (capitals, digits and `_`, not starting with a digit), the value one line with no
+/// tab.
+pub fn is_setting(value: str) -> bool {
+    let Some(eq) = value.find("=") else { return false }
+    if eq == 0 || eq + 1 == value.len() || value.find("\t").is_some() || !one_line(value) {
+        return false
+    }
+    for i in 0..eq {
+        let b = value.byte(i)
+        let capital = b >= 65 && b <= 90
+        let digit = b >= 48 && b <= 57
+        if !(capital || b == 95 || (digit && i > 0)) {
+            return false
+        }
+    }
+    true
 }
 
 /// The origin of a custom domain (`https://` and the domain), or why it isn't one: lowercase
@@ -211,8 +245,9 @@ fn first_label(domain: str) -> borrow str {
 /// Why `c` can't be released, if it can't: a part that isn't a component, a Worker or a domain
 /// two projects share, a console outside its zone, a game on one of the project's own hosts, a
 /// title or description that isn't one line, a tagline that isn't one line or is longer than the
-/// console shows, a session that isn't one of its game's builds, or a build with a reserved
-/// name. Whether its packages and covers are there is the tool's to check (`paths`).
+/// console shows, a session or an attract build that isn't one of its game's builds (or an
+/// attract build that is its session), a build with a reserved name, or a build's constant that
+/// isn't `NAME=VALUE`. Whether its packages and covers are there is the tool's to check (`paths`).
 pub fn check(c: Catalog) -> Result<(), String> {
     var workers: Vec<String> = Vec::new()
     var domains: Vec<String> = Vec::new()
@@ -278,6 +313,17 @@ pub fn check(c: Catalog) -> Result<(), String> {
         if !session {
             return Err(String::from("the session build is missing"))
         }
+        if !game.attract.is_empty() {
+            var attract = false
+            for b in game.builds {
+                if b.name == game.attract {
+                    attract = true
+                }
+            }
+            if !attract || game.attract == game.session {
+                return Err(String::from(f"the attract build of {game.id} isn't one of its own"))
+            }
+        }
         var names: Vec<String> = Vec::new()
         for b in game.builds {
             for reserved in RESERVED_BUILD_NAMES {
@@ -290,6 +336,11 @@ pub fn check(c: Catalog) -> Result<(), String> {
                 return Err(String::from(f"{game.id} has two builds named {b.name}"))
             }
             names.push(String::from(b.name))
+            for named in b.set {
+                if !is_setting(named) {
+                    return Err(String::from(f"invalid constant for {b.name}: '{named}'"))
+                }
+            }
         }
     }
     if seen.is_empty() {
