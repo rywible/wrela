@@ -1422,9 +1422,9 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         text(mut s, card.title, size, at, vec4(INK.xyz, fade * (1.0 - s.logo_in)))
     }
     // The actions in a line, the first the call to action, then Try again after a failure. Too
-    // wide for the screen, the call leaves out where it continues (the progress says), and then
-    // the buttons hug their labels.
-    let acts = actions(continuing.is_some())
+    // wide for the screen, the call leaves out where it continues (the progress says), then the
+    // buttons hug their labels, and then the quieter actions wait for Try again.
+    var acts = actions(continuing.is_some())
     var labels: Vec<String> = Vec::new()
     for i in 0..acts.len() {
         labels.push(action_label(acts[i], s.play_intent.is_some() && i == 0, continuing))
@@ -1435,6 +1435,11 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         labels[0] = String::from("Continue")
     }
     let tight = row_width(s, labels, tight: false) > span
+    while tight && acts.len() > 1 && row_width(s, labels, tight: true) > span {
+        let last = acts.len() - 1
+        let _ = acts.remove(last)
+        let _ = labels.remove(last)
+    }
     var at = margin
     for i in 0..labels.len() {
         let primary = i == 0
