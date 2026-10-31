@@ -755,13 +755,15 @@ fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolErr
             shares = shares_of(log.as_str().slice(a, b))
         }
     }
-    if let (Some(f), Some(bi)) = (
+    // When the playable frame was submitted (frames.json's `submitted_ms`, toolchain 0.12.0): a
+    // frame can begin long before its pipelines let it be drawn, so its start isn't when it shows.
+    if let (Some(f), Some(si)) = (
         playable_frame(framed, log.as_str()),
-        framed.get(TOP, "began_ms"),
+        framed.get(TOP, "submitted_ms"),
     ) {
-        let began = numbers(framed, bi, 0)
-        if f < began.len() {
-            playable_ms = began[f] - opened
+        let submitted = numbers(framed, si, 0)
+        if f < submitted.len() {
+            playable_ms = submitted[f] - opened
         }
     }
     Ok((opened, first_frame_ms, loaded_bytes, playable_ms, take shares))
