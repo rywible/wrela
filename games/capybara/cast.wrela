@@ -6,8 +6,9 @@
 //
 // The capybara squashes and stretches on a spring: low as it lands, tall as it jumps.
 
+use foes::Kind
 use body::{Mode, RADIUS}
-use course::Course
+use course::{Course, LEVELS}
 use dust::{
     Dust, EARTH_DUST, between, bubbles, burst, clippings, confetti, dust, dust_sprites, feathers,
     puff, spark_trail, sparkles, splash, step_dust, streak,
@@ -19,8 +20,8 @@ use sound::{
 use feel::{FEEL, HZ}
 use replay::Pose
 use sprites::{
-    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, SPARK, Sprite,
-    YUZU,
+    CAIMAN, CAPYBARA, CARROT, DRAFT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL,
+    SHADOW, SPARK, Sprite, YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -196,17 +197,31 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
                         bubbles(mut k.dust, s.at, u32(clamp(hit, 4.0, 16.0)))
                     }
                 }
-                // Stomped and bowled birds: feathers, sparkles.
+                // Stomped and bowled foes: a bird's call and its feathers, a Komodo dragon's
+                // thud and dust; sparkles.
                 for i in 0..s.foes.len() {
                     let (f, g) = (s.foes[i], before.foes[i])
                     if f.z < 0.0 && g.z > 0.0 {
-                        let kind = u32(-f.z + 0.5)
-                        k.cues.push(Cue { kind: if kind == 2 { COO } else { HONK }, pan: pan(f.x) })
-                        let colour = if kind == 1 { vec3(0.95, 0.95, 0.92) } else {
-                            vec3(0.6, 0.64, 0.72)
+                        let at = f.xy
+                        match kind_of(f) {
+                            Some(Kind::Goose) => {
+                                k.cues.push(Cue { kind: HONK, pan: pan(f.x) })
+                                feathers(mut k.dust, at, 10, vec3(0.95, 0.95, 0.92))
+                            },
+                            Some(Kind::Gull) => {
+                                k.cues.push(Cue { kind: COO, pan: pan(f.x) })
+                                feathers(mut k.dust, at, 10, vec3(0.97, 0.97, 0.95))
+                            },
+                            Some(Kind::Komodo) | Some(Kind::Ride) => {
+                                k.cues.push(Cue { kind: LAND, amount: 0.8, pan: pan(f.x) })
+                                puff(mut k.dust, at - vec2(0.0, 0.4), vec2(0.0), 8, 0.3)
+                            },
+                            _ => {
+                                k.cues.push(Cue { kind: COO, pan: pan(f.x) })
+                                feathers(mut k.dust, at, 10, vec3(0.6, 0.64, 0.72))
+                            },
                         }
-                        feathers(mut k.dust, f.xy, 10, colour)
-                        sparkles(mut k.dust, f.xy, 6, vec3(1.0, 0.9, 0.6))
+                        sparkles(mut k.dust, at, 6, vec3(1.0, 0.9, 0.6))
                     }
                 }
                 // What it picked up: sparkles of its colour.
@@ -310,7 +325,20 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     }
     // Wet on land: it drips.
     k.back += dt
+    let won_before = k.won
     k.won = if s.finished > 0 { k.won + dt } else { 0.0 }
+    // The last level's ending: the seagull drops the carrot, and the capybara eats it, a crunch a
+    // bite, with confetti at the last (`ending`).
+    if ending(s) {
+        for bite in BITES {
+            if won_before < bite && k.won >= bite {
+                k.cues.push(Cue { kind: CRUNCH, pan: 0.0 })
+            }
+        }
+        if won_before < BITES[2] && k.won >= BITES[2] {
+            confetti(mut k.dust, s.at + vec2(0.6 * s.facing, 0.3), carry: vec2(0.0, 2.0), n: 40)
+        }
+    }
     k.drips -= dt
     if !wet_now && s.wet > 0 && k.drips <= 0.0 {
         let x = between(mut k.dust, vec2(-0.3, 0.3))
@@ -380,15 +408,37 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     step_dust(mut k.dust, dt, |p: vec2| surface_at(k.waves, p.x))
 }
 
-/// The water's surface over `at` (m), if it's in the water or partly, else far below.
+/// The water's surface over `at` (m), if a sprite there reaches into the water (its middle within
+/// `REACH` of it, above or below), else far below. A capybara on a lakebed is in the water: a
+/// point a reach below its middle is in the ground.
 fn under(k: Cast, c: Course, at: vec2) -> f32 {
-    if c.water_at(at - vec2(0.0, 0.6)).is_none() {
+    if !c.touches_water(at, REACH) {
         return -1.0e4
     }
     match surface_at(k.waves, at.x) {
         Some(y) => y,
         None => -1.0e4,
     }
+}
+
+/// How far from its middle a sprite reaches into water (m), for its tint.
+const REACH: f32 = 0.6
+
+/// When the dropped carrot reaches the capybara at the last goal (s after it), and its bites.
+const DROP: f32 = 0.8
+const BITES: [f32; 3] = [1.0, 1.4, 1.8]
+
+/// Whether snapshot `s` is of the last level, whose goal is the ending: the capybara gets its
+/// snack (Ryan, 2026-10-30).
+pub fn ending(s: Snap) -> bool {
+    s.course == LEVELS - 1
+}
+
+/// The kind of foe a snapshot's foe is (`Snap::foes`: its kind's discriminant + 1, negated once
+/// knocked out), or none for an empty slot.
+fn kind_of(f: vec4) -> Option<Kind> {
+    let n = u32(abs(f.z) + 0.5)
+    if n == 0 { None } else { Kind::from_u32(n - 1) }
 }
 
 /// The middle of the goal's floor (m): where the kusudama stands.
@@ -496,10 +546,27 @@ pub fn sprites(
         shadow(mut back, c, s.at, 0.5)
     }
     for f in s.foes {
-        let kind = u32(abs(f.z) + 0.5)
-        if f.z > 0.0 && (kind == 1 || kind == 2) {
-            shadow(mut back, c, f.xy, if kind == 1 { 0.4 } else { 0.3 })
+        let kind = kind_of(f)
+        if f.z > 0.0 && kind.is_some() && kind != Some(Kind::Caiman) {
+            let ground = kind == Some(Kind::Goose) ||
+                kind == Some(Kind::Komodo) ||
+                kind == Some(Kind::Ride)
+            shadow(mut back, c, f.xy, if ground { 0.4 } else { 0.3 })
         }
+    }
+    // The updrafts' rising air.
+    for d in c.drafts {
+        back.push(
+            Sprite {
+                pose: vec4(0.0),
+                more: vec4(0.0),
+                at: (d.lo + d.hi) * 0.5,
+                half: (d.hi - d.lo) * 0.5,
+                angle: 0.0,
+                facing: 1.0,
+                kind: DRAFT,
+            },
+        )
     }
     // The checkpoints' flags and the goal's, the seagull on top with the snack it stole.
     for i in 0..c.checkpoints.len() {
@@ -526,15 +593,44 @@ pub fn sprites(
     })
     let pole = base + vec2(1.1, 0.0)
     let gone = if s.finished > 0 { k.won } else { 0.0 }
-    back.push(Sprite {
-        pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
-        more: vec4(0.0),
-        at: pole + vec2(0.0, 4.95) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
-        half: vec2(0.85, 0.6),
-        angle: if s.finished > 0 { 0.2 } else { 0.0 },
-        facing: if s.finished > 0 { 1.0 } else { -1.0 },
-        kind: SEAGULL,
-    })
+    let last = ending(s)
+    if last && s.finished > 0 {
+        // The ending: the carrot falls from the seagull's beak to the capybara, and is eaten a
+        // bite at a time.
+        let beak = pole + vec2(0.55, 4.95)
+        let mouth = s.at + vec2(0.55 * s.facing, 0.25)
+        let t = saturate(k.won / DROP)
+        let fall = beak + (mouth - beak) * t + vec2(0.0, 1.2 * sin(t * PI))
+        var left = 1.0
+        for bite in BITES {
+            if k.won >= bite {
+                left -= 0.3
+            }
+        }
+        if left > 0.15 {
+            front.push(Sprite {
+                pose: vec4(1.0),
+                more: vec4(0.0),
+                at: if t < 1.0 { fall } else { mouth },
+                half: vec2(0.3, 0.35) * left,
+                angle: if t < 1.0 { t * 6.0 } else { 1.4 * s.facing },
+                facing: 1.0,
+                kind: CARROT,
+            })
+        }
+    }
+    back.push(
+        Sprite {
+            pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
+            more: vec4(0.0),
+            at: pole + vec2(0.0, 4.95) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
+            half: vec2(0.85, 0.6),
+            angle: if s.finished > 0 { 0.2 } else { 0.0 },
+            facing: if s.finished > 0 { 1.0 } else { -1.0 },
+            // At the last goal it flies off without the carrot: it dropped it.
+            kind: if last && s.finished > 0 { GULL } else { SEAGULL },
+        },
+    )
     // The snacks and yuzus still to find, bobbing and turning a little.
     let bob = vec2(0.0, 0.08 * sin(time * 3.0))
     for i in 0..c.snacks.len() {
@@ -572,10 +668,7 @@ pub fn sprites(
     // The foes; a knocked one tumbles up and away for half a second.
     for i in 0..s.foes.len() {
         let f = s.foes[i]
-        let kind = u32(abs(f.z) + 0.5)
-        if kind == 0 {
-            continue
-        }
+        let Some(kind) = kind_of(f) else { continue }
         let knocked = f.z < 0.0
         let since = if knocked { f.w } else { 0.0 }
         if knocked && since > 60.0 {
@@ -586,14 +679,23 @@ pub fn sprites(
         let dir = if knocked { 1.0 } else { f.w }
         let seed = f32(i) * 1.37
         let near = distance(f.xy, s.at)
-        let (kind_f, half, pose) = if kind == 1 {
-            let charge = if near < 3.5 && (s.at.x - f.x) * dir > 0.0 { 1.0 } else { 0.0 }
-            (GOOSE, vec2(0.95, 0.9), vec4(time * 11.0 + seed, charge, 0.0, 0.0))
-        } else if kind == 2 {
-            (PIGEON, vec2(0.75, 0.65), vec4(time * 20.0 + seed, 0.0, 0.0, 0.0))
-        } else {
-            let gape = smoothstep(3.5, 1.5, near) + pow(max(sin(time * 0.9 + seed), 0.0), 12.0)
-            (CAIMAN, vec2(2.3, 0.65), vec4(time * 3.0 + seed, min(gape, 1.0), 0.0, 0.0))
+        let (kind_f, half, pose) = match kind {
+            Kind::Goose => {
+                let charge = if near < 3.5 && (s.at.x - f.x) * dir > 0.0 { 1.0 } else { 0.0 }
+                (GOOSE, vec2(0.95, 0.9), vec4(time * 11.0 + seed, charge, 0.0, 0.0))
+            },
+            Kind::Pigeon => (PIGEON, vec2(0.75, 0.65), vec4(time * 20.0 + seed, 0.0, 0.0, 0.0)),
+            Kind::Gull => (GULL, vec2(0.85, 0.6), vec4(time * 12.0 + seed, 1.0, 0.0, 0.0)),
+            Kind::Komodo | Kind::Ride => {
+                // A Komodo dragon: its tongue flicks; the ride's more often, and it smiles.
+                let ride = if kind == Kind::Ride { 1.0 } else { 0.0 }
+                let flick = pow(max(sin(time * (2.0 + ride * 2.0) + seed), 0.0), 8.0)
+                (KOMODO, vec2(2.3, 0.75), vec4(time * 4.0 + seed, flick, ride, 0.0))
+            },
+            Kind::Caiman => {
+                let gape = smoothstep(3.5, 1.5, near) + pow(max(sin(time * 0.9 + seed), 0.0), 12.0)
+                (CAIMAN, vec2(2.3, 0.65), vec4(time * 3.0 + seed, min(gape, 1.0), 0.0, 0.0))
+            },
         }
         front.push(
             Sprite {
@@ -774,21 +876,22 @@ pub fn iris(k: Cast, s: Snap, lag: f32) -> (vec2, f32) {
 
 // ---- tests -------------------------------------------------------------------------------------
 
-use camera::half_view
+use camera::{PLAY_ASPECT, half_view}
 use course::course
 use feel::STEP as TICK
 use pad::{Hold, Pad, pad_of}
 use proofs::LEVEL_FULL
 use replay::tool_assisted
 use watch::watch
-use world::{LEVEL, NO_TALLY, Tally, World, present, step, step_counted, world}
+use world::{NO_TALLY, Tally, World, present, step, step_counted, world}
+use course::WETLANDS
 
 /// One tick of `w` on `pad`, counted in `t` and reacted to: the kinds of cue it sent, as bits.
 fn heard(w: mut World, t: mut Tally, k: mut Cast, c: Course, pad: Pad) -> u32 {
     step_counted(mut w, mut t, pad)
     var s = present(w)
     s.tally = t
-    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    react(mut k, s, c, TICK, s.at, half_view(PLAY_ASPECT))
     var bits = 0
     for cue in k.cues {
         bits |= 1 << cue.kind
@@ -801,8 +904,8 @@ fn heard(w: mut World, t: mut Tally, k: mut Cast, c: Course, pad: Pad) -> u32 {
 @test
 fn the_level_played_through_sends_every_cue_and_ends_in_fireworks() {
     // The 100% run, reacted to every tick, then six seconds at the goal.
-    borrow c = course(LEVEL)
-    var w = world(LEVEL)
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
     var t = NO_TALLY
     var k = cast(c)
     var bits = 0
@@ -843,8 +946,8 @@ fn counts(t: Tally) -> [u32; 4] {
 /// `run` on the level, its frames seeing every `every`th tick from tick `phase`: the cues of each
 /// kind (`tally_cues`) they send, and what the run's ticks counted.
 fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
-    borrow c = course(LEVEL)
-    var w = world(LEVEL)
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
     var t = NO_TALLY
     var k = cast(c, from: Some(present(w)))
     var n = [0; 4]
@@ -856,7 +959,7 @@ fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
             if tick % every == phase {
                 var s = present(w)
                 s.tally = t
-                react(mut k, s, c, TICK * f32(every), s.at, half_view(16.0 / 9.0))
+                react(mut k, s, c, TICK * f32(every), s.at, half_view(PLAY_ASPECT))
                 tally_cues(mut k, mut n)
             }
         }
@@ -868,10 +971,10 @@ fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
 fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
     // The level's fastest 100% run lands on a jump pressed before landing: on the ground for one
     // tick, which a frame at 60 a second (every second tick of 120) sees only half the time.
-    var w = world(LEVEL)
+    var w = world(WETLANDS)
     var one_tick = 0
     var on = 0
-    for h in routes::FULL {
+    for h in routes_wetlands::FULL {
         for i in 0..h.ticks {
             step(mut w, pad_of(h, i))
             if w.body.grounded() {
@@ -885,7 +988,7 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
         }
     }
     assert(one_tick > 0, "the run has a landing that lasts a tick")
-    let (every_tick, t) = framed_cues(routes::FULL, every: 1, phase: 0)
+    let (every_tick, t) = framed_cues(routes_wetlands::FULL, every: 1, phase: 0)
     let m = counts(t)
     assert(
         every_tick == m,
@@ -893,7 +996,7 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
     )
     assert(t.landings > one_tick && t.jumps > 0 && t.doubles > 0, f"{t.landings} landings")
     for phase in [0, 1] {
-        let (framed, _) = framed_cues(routes::FULL, every: 2, phase: phase)
+        let (framed, _) = framed_cues(routes_wetlands::FULL, every: 2, phase: phase)
         assert(framed == every_tick, f"every second tick from {phase}: {framed[0]} landings")
     }
 }
@@ -902,8 +1005,8 @@ fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
 fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     // Frames at 60 a second, four times as fast: eight ticks a frame, through the run and the
     // fireworks after it.
-    borrow c = course(LEVEL)
-    let r = tool_assisted(LEVEL)[1].clone()
+    borrow c = course(WETLANDS)
+    let r = tool_assisted(WETLANDS)[1].clone()
     let (played, _) = framed_cues(r.holds, every: 1, phase: 0)
     var v = watch(r.clone())
     v.speed = 4
@@ -913,7 +1016,7 @@ fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     while v.playing {
         v.advance(1.0 / 60.0)
         let (_, s, _) = v.between()
-        react(mut k, s, c, 1.0 / 60.0, s.at, half_view(16.0 / 9.0))
+        react(mut k, s, c, 1.0 / 60.0, s.at, half_view(PLAY_ASPECT))
         tally_cues(mut k, mut n)
     }
     assert(n == counts(v.tally), f"{n[0]} landings heard of {v.tally.landings}")
@@ -921,14 +1024,68 @@ fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     assert(v.tally.cuts == 0, "no cut in a run without a death")
 }
 
+/// The capybara's sprite in snapshot `s` of the level, drawn by a new cast.
+fn capybara_sprite(s: Snap) -> Sprite {
+    borrow c = course(WETLANDS)
+    var back: Vec<Sprite> = Vec::new()
+    var front: Vec<Sprite> = Vec::new()
+    let k = cast(c, from: Some(s))
+    sprites(
+        k,
+        s,
+        c,
+        time: 0.0,
+        lag: 0.0,
+        hud: vec2(0.0),
+        count: false,
+        back: mut back,
+        front: mut front,
+    )
+    for f in front {
+        if f.kind == CAPYBARA {
+            return f
+        }
+    }
+    assert(false, "no capybara drawn")
+    front[0]
+}
+
+@test
+fn the_capybara_is_tinted_by_the_water_on_a_lakebed_and_not_on_dry_ground() {
+    // On dry ground at the start: no water over it.
+    let dry = capybara_sprite(present(world(WETLANDS)))
+    assert(dry.surface < -1.0e3, f"a surface of {dry.surface} on dry ground")
+    // The 100% run walks the lake's floor to the snack under the deep caiman: its middle is a
+    // radius above the floor, so a point a reach below it is in the ground, not the water.
+    borrow c = course(WETLANDS)
+    var w = world(WETLANDS)
+    var on_floor = 0
+    for h in LEVEL_FULL {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            let s = present(w)
+            let deep = match c.water_at(s.at) {
+                Some(i) => s.at.y < c.waters[i].surface() - 2.0,
+                None => false,
+            }
+            if w.body.grounded() && deep {
+                on_floor += 1
+                let f = capybara_sprite(s)
+                assert(f.surface > s.at.y + 2.0, f"a surface of {f.surface} over {s.at.y}")
+            }
+        }
+    }
+    assert(on_floor > 30, f"{on_floor} ticks on the lake's floor")
+}
+
 @test
 fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
     // The voice hisses for a slide in a cast before (Tab to the other course mid-slide): the new
     // cast's first frame, standing, asks for none.
-    borrow c = course(LEVEL)
-    let s = present(world(LEVEL))
+    borrow c = course(WETLANDS)
+    let s = present(world(WETLANDS))
     var k = cast(c, from: Some(s))
-    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    react(mut k, s, c, TICK, s.at, half_view(PLAY_ASPECT))
     var slide = -1.0
     for cue in k.cues {
         if cue.kind == SLIDE {
@@ -937,7 +1094,7 @@ fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
     }
     assert(slide == 0.0, f"the slide asked for {slide}")
     k.cues.clear()
-    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    react(mut k, s, c, TICK, s.at, half_view(PLAY_ASPECT))
     for cue in k.cues {
         assert(cue.kind != SLIDE, "asked once")
     }
@@ -946,19 +1103,59 @@ fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
 @test
 fn a_seek_into_a_death_isnt_heard_as_a_hurt() {
     // Halfway through dying after a frame that wasn't: hurt, played on to it; not, seeked to it.
-    borrow c = course(LEVEL)
-    let before = present(world(LEVEL))
+    borrow c = course(WETLANDS)
+    let before = present(world(WETLANDS))
     var dying = before
     dying.dying = DYING / 2
     var seeked = dying
     seeked.tally.cuts = 1
     for (s, hurts) in [(dying, true), (seeked, false)] {
         var k = cast(c, from: Some(before))
-        react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+        react(mut k, s, c, TICK, s.at, half_view(PLAY_ASPECT))
         var hurt = false
         for cue in k.cues {
             hurt = hurt || cue.kind == HURT
         }
         assert(hurt == hurts, f"a cut: {s.tally.cuts}")
+    }
+}
+
+@test
+fn at_the_last_goal_the_capybara_eats_its_snack_and_nowhere_else() {
+    // Snapshots at the goal of the last level and of the Wetlands, two and a half seconds on: the
+    // last's ending crunches three bites; the Wetlands' seagull keeps the carrot.
+    for (level, bites) in [(course::FOOD_COURT, 3), (WETLANDS, 0)] {
+        borrow c = course(level)
+        var s = present(world(level))
+        s.finished = 100
+        s.ticks = 100
+        var k = cast(c, from: Some(s))
+        var crunches = 0
+        for _ in 0..150 {
+            react(mut k, s, c, 1.0 / 60.0, s.at, half_view(PLAY_ASPECT))
+            for cue in k.cues {
+                if cue.kind == CRUNCH {
+                    crunches += 1
+                }
+            }
+            k.cues.clear()
+        }
+        assert(crunches == bites, f"level {level}: {crunches} bites")
+        assert(ending(s) == (bites > 0), "the ending is the last level's")
+    }
+}
+
+@test
+fn every_course_can_be_shown_its_pools_waves_and_all() {
+    // A course is shown by a new cast: its pools' waves sized to it, whatever its water (the
+    // Reptile House's 151 m of it outgrew a fixed budget of columns).
+    for c in 0..course::COURSES {
+        borrow at = course(c)
+        let k = cast(at, from: Some(present(world(c))))
+        var columns = 0
+        for w in at.waters {
+            columns += u32(ceil((w.hi.x - w.lo.x) / waves::COLUMN)) + 1
+        }
+        assert(k.waves.heights.len() == columns, f"course {c}: {k.waves.heights.len()} columns")
     }
 }

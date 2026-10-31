@@ -27,6 +27,8 @@
 
 use capybara::course::course
 use capybara::pad::{DOWN, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
+use capybara::body::Mode
+use capybara::signs::{DOUBLE_JUMP, SLIDE, SPLASH, SWIM}
 use capybara::world::{World, step}
 use slack::{STRETCH, pressed}
 use std::hash::{Hasher, StateHash, state_hash}
@@ -81,6 +83,10 @@ pub struct Goal: Copy {
     /// course's goal; at or past the goal's box, the segment ends at the course's goal.
     pub until: f32,
     pub snacks: u32,
+    /// The moves a run may not make, a bit each (signs.wrela's: the double jump, a splash or any
+    /// touch of water, a slide, swimming): a state that makes one is dropped, so a search with one
+    /// forbidden finds how far the course can be played without it (`Search::far`).
+    pub forbid: u32 = 0,
 }
 
 /// The goal of a whole run: the course's goal, with the snacks `snacks`.
@@ -148,9 +154,30 @@ pub fn ended(w: World, goal: Goal) -> bool {
     w.finished > 0 || (goal.until < course(w.course).goal_lo.x && w.body.at.x >= goal.until)
 }
 
-/// Whether `w` can still make its segment: not dying, and not past a snack it needs.
+/// The moves `w` is making, a bit each (signs.wrela's): a double jump's flip, wet, sliding,
+/// swimming.
+pub fn made(w: World) -> u32 {
+    let b = w.body
+    var out = 0
+    if b.flip > 0 {
+        out = out | DOUBLE_JUMP
+    }
+    if b.wet > 0 {
+        out = out | SPLASH
+    }
+    if b.mode == Mode::Slide {
+        out = out | SLIDE
+    }
+    if b.mode == Mode::Swim {
+        out = out | SWIM
+    }
+    out
+}
+
+/// Whether `w` can still make its segment: not dying, not making a move it may not, and not past
+/// a snack it needs.
 pub fn alive(w: World, goal: Goal) -> bool {
-    if w.dying > 0 {
+    if w.dying > 0 || made(w) & goal.forbid != 0 {
         return false
     }
     borrow c = course(w.course)
@@ -346,8 +373,10 @@ pub struct Search {
     /// The layer's states, and how each layer's were reached from the layer's before.
     nodes: Vec<Node>,
     links: Vec<Vec<Link>>,
-    /// The states held from so far: each layer's kids, summed.
+    /// The states held from so far: each layer's kids, summed. And the farthest right any of
+    /// them has lived (m).
     pub states: u32,
+    pub far: f32,
     /// The run found, once it has.
     pub found: Option<Found>,
     /// Whether it has stopped: it found a run, ran out of ticks, or dropped every state.
@@ -367,6 +396,7 @@ pub fn search(entry: World, last: u32, goal: Goal, settings: Settings) -> Search
         nodes,
         links: Vec::new(),
         states: 0,
+        far: entry.body.at.x,
         found: if now { Some(Found { pads: Vec::new(), end: entry }) } else { None },
         stopped: now,
     }
@@ -418,6 +448,7 @@ impl Search {
                 if !k.live {
                     continue
                 }
+                self.far = max(self.far, k.w.body.at.x)
                 let p = Pick { node: i, action: a, score: k.score, hash: k.hash }
                 if k.done == 0 {
                     picks.push(p)

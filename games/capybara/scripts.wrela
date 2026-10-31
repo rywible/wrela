@@ -1,6 +1,7 @@
 // Input scripts for running the lab without a person, as the native host and `wrela trace` take
 // them (`wrela script games/capybara scripts::RUN -o run.json`).
 
+use course::{AVIARY, FARM, FOOD_COURT, HOME, LEVELS, POLAR, RAINFOREST, REPTILES, SAVANNA, WETLANDS}
 use pad::{DOWN, Hold, JUMP, LEFT, PRESS, RIGHT, UP}
 use std::input::{Key, Script}
 
@@ -25,12 +26,35 @@ const KEYS: [(u32, Key); 5] = [
     (JUMP, Key::Space),
 ]
 
-/// A recorded run as a script of frames at 120 a second, one tick a frame: Enter on the first, to
-/// leave the title the game opens on (a tick that doesn't step), then from the second each hold's
-/// keys go down or up where its bits change. A press of jump held on is a release and a press in
-/// its frame, and a press not held on is a tap: down and up in its frame. Run it with `--fps 120`.
-pub fn script_of(run: [Hold]) -> Script {
-    keys_of(Script::frames().key_down(1, Key::Enter).key_up(2, Key::Enter), run, first: 2)
+/// A recorded run of level `level` as a script of frames at 120 a second, one tick a frame: on the
+/// first level, Enter on the first frame, to leave the title the game opens on (a tick that
+/// doesn't step); on another, Esc, down twice and Enter to its levels' map, right to the level and
+/// Enter. Then from the next frame each hold's keys go down or up where its bits change. A press
+/// of jump held on is a release and a press in its frame, and a press not held on is a tap: down
+/// and up in its frame. Run it with `--fps 120`.
+pub fn script_of(level: u32, run: [Hold]) -> Script {
+    if level == HOME {
+        return keys_of(
+            Script::frames().key_down(1, Key::Enter).key_up(2, Key::Enter),
+            run,
+            first: 2,
+        )
+    }
+    var s = Script::frames()
+    var f = 1
+    for key in [Key::Escape, Key::Down, Key::Down, Key::Enter] {
+        s = take s.key_down(f, key)
+        s = take s.key_up(f + 1, key)
+        f += 2
+    }
+    for _ in 0..level {
+        s = take s.key_down(f, Key::Right)
+        s = take s.key_up(f + 1, Key::Right)
+        f += 2
+    }
+    s = take s.key_down(f, Key::Enter)
+    s = take s.key_up(f + 1, Key::Enter)
+    keys_of(take s, run, first: f + 1)
 }
 
 /// `s` with the keys of `run` from frame `first` on.
@@ -61,21 +85,29 @@ fn keys_of(s: take Script, run: [Hold], first: u32) -> Script {
     s
 }
 
-/// The level's recorded any% run (`proofs::LEVEL_ANY`) from start to goal, for stills and clips
-/// of every part of the level, which the game starts on: `wrela-host <build> --fps 120 --frames
-/// 3500 --input level.json`.
-pub const LEVEL: Script = script_of(proofs::LEVEL_ANY)
+/// The Wetlands' recorded any% run (`proofs::LEVEL_ANY`) from start to goal, for stills and clips
+/// of every part of the level: `wrela-host <build> --fps 120 --frames 3600 --input level.json`.
+pub const LEVEL: Script = script_of(WETLANDS, proofs::LEVEL_ANY)
 
-/// The lab's recorded run (`proofs::LAB_RUN`), after Tab switches to the lab: at 120 frames a
-/// second, as `LEVEL`.
-pub const LAB: Script = keys_of(
-    Script::frames().key_down(1, Key::Tab).key_up(2, Key::Tab),
-    proofs::LAB_RUN,
-    first: 4,
-)
+/// The level's recorded 100% run (`proofs::LEVEL_FULL`), as `LEVEL`: it dives under the lake's
+/// deep caiman to the snack on its floor.
+pub const LEVEL_FULL: Script = script_of(WETLANDS, proofs::LEVEL_FULL)
+
+/// The lab's recorded run (`proofs::LAB_RUN`), after Tab steps past the levels to the lab (a
+/// developer's build: main.wrela's `DEV`): at 120 frames a second, as `LEVEL`.
+pub const LAB: Script = to_lab()
+
+fn to_lab() -> Script {
+    var s = Script::frames()
+    for i in 0..LEVELS {
+        s = take s.key_down(1 + 2 * i, Key::Tab)
+        s = take s.key_up(2 + 2 * i, Key::Tab)
+    }
+    keys_of(take s, proofs::LAB_RUN, first: 2 * LEVELS + 2)
+}
 
 /// The runs, at 1280x720 and 60 frames a second: Esc opens the menu from the title the game opens
-/// on, down twice and Enter choose the runs, Tab switches to the tool-assisted board, the pointer
+/// on, down three times and Enter choose the runs, Tab switches to the tool-assisted board, the pointer
 /// rests on its fastest any% run, then clicks it to watch it.
 pub const RUNS: Script = Script::frames()
     .key_down(1, Key::Escape)
@@ -84,15 +116,17 @@ pub const RUNS: Script = Script::frames()
     .key_up(4, Key::Down)
     .key_down(5, Key::Down)
     .key_up(6, Key::Down)
-    .key_down(7, Key::Enter)
-    .key_up(8, Key::Enter)
+    .key_down(7, Key::Down)
+    .key_up(8, Key::Down)
+    .key_down(9, Key::Enter)
+    .key_up(10, Key::Enter)
     .key_down(12, Key::Tab)
     .key_up(13, Key::Tab)
     .move_to(30, vec2(440.0, 286.0))
     .down(60, vec2(440.0, 286.0))
     .up(61, vec2(440.0, 286.0))
 
-/// The autopilot's ghost, at 60 frames a second: Esc opens the menu, down three times and Enter
+/// The autopilot's ghost, at 60 frames a second: Esc opens the menu, down four times and Enter
 /// choose the options, down twice to the ghost and right to the robot's (after the player's best),
 /// Esc backs out and Esc again plays, and the capybara runs right beside it.
 pub const GHOST: Script = Script::frames()
@@ -104,16 +138,30 @@ pub const GHOST: Script = Script::frames()
     .key_up(6, Key::Down)
     .key_down(7, Key::Down)
     .key_up(8, Key::Down)
-    .key_down(9, Key::Enter)
-    .key_up(10, Key::Enter)
-    .key_down(11, Key::Down)
-    .key_up(12, Key::Down)
+    .key_down(9, Key::Down)
+    .key_up(10, Key::Down)
+    .key_down(11, Key::Enter)
+    .key_up(12, Key::Enter)
     .key_down(13, Key::Down)
     .key_up(14, Key::Down)
-    .key_down(15, Key::Right)
-    .key_up(16, Key::Right)
-    .key_down(17, Key::Escape)
-    .key_up(18, Key::Escape)
+    .key_down(15, Key::Down)
+    .key_up(16, Key::Down)
+    .key_down(17, Key::Right)
+    .key_up(18, Key::Right)
     .key_down(19, Key::Escape)
     .key_up(20, Key::Escape)
-    .key_down(22, Key::D)
+    .key_down(21, Key::Escape)
+    .key_up(22, Key::Escape)
+    .key_down(24, Key::D)
+
+/// Each level's searched human-possible any% run (searched.wrela), as `LEVEL`, for stills and
+/// clips of the level: none until the level is searched.
+pub const HOME_RUN: Script = script_of(HOME, routes_home::HUMAN_ANY)
+pub const WETLANDS_RUN: Script = script_of(WETLANDS, routes_wetlands::HUMAN_ANY)
+pub const SAVANNA_RUN: Script = script_of(SAVANNA, routes_savanna::HUMAN_ANY)
+pub const RAINFOREST_RUN: Script = script_of(RAINFOREST, routes_rainforest::HUMAN_ANY)
+pub const AVIARY_RUN: Script = script_of(AVIARY, routes_aviary::HUMAN_ANY)
+pub const REPTILES_RUN: Script = script_of(REPTILES, routes_reptiles::HUMAN_ANY)
+pub const POLAR_RUN: Script = script_of(POLAR, routes_polar::HUMAN_ANY)
+pub const FARM_RUN: Script = script_of(FARM, routes_farm::HUMAN_ANY)
+pub const FOOD_COURT_RUN: Script = script_of(FOOD_COURT, routes_food_court::HUMAN_ANY)

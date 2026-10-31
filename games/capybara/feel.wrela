@@ -93,6 +93,30 @@ pub struct Feel: Copy {
     /// How long being wet lasts after the last touch of water (ticks): its first half at the wet
     /// speed, its second easing the top back down.
     pub wet_ticks: u32 = 180,
+    // Ice and air (the later habitats' ground and lifts, 2026-10-30).
+    /// On ice, the share of the ground's grip that's left: to speed up, turn, brake, slow from
+    /// above the top, and for a slide's friction. Slides run on and stops take longer.
+    pub ice_grip: f32 = 0.18,
+    /// An updraft's lift in the air (m/s², more than the fall's gravity), and the fastest it lifts
+    /// (m/s).
+    pub draft: f32 = 160.0,
+    pub draft_speed: f32 = 9.0,
+}
+
+impl Feel {
+    /// The feel on ice: the ground's grip at `ice_grip` of its own.
+    pub fn on_ice(self) -> Feel {
+        let g = self.ice_grip
+        Feel {
+            accel: self.accel * g,
+            turn: self.turn * g,
+            friction: self.friction * g,
+            over: self.over * g,
+            slide_friction: self.slide_friction * g,
+            slide_brake: self.slide_brake * g,
+            ..self,
+        }
+    }
 }
 
 /// The capybara's feel.

@@ -1,6 +1,7 @@
 // A course: its ground's pieces, its water, where the capybara starts and where the goal is, its
 // foes, snacks, yuzus and checkpoints, and the contacts a circle makes with its ground. Two
-// courses: the movement lab (course 0, the movement's test bed) and the first level (course 1).
+// courses are the levels (`LEVELS`, each in a module of its own: home.wrela, wetlands.wrela...)
+// and the movement lab, the movement's test bed (`LAB_COURSE`).
 
 use foes::{Kind, MAX_FOES, Spawn}
 use ground::{Corner, Piece, build_chain, corner}
@@ -139,6 +140,11 @@ pub struct Course: Clone {
     pub snacks: Vec<vec2>,
     pub yuzus: Vec<vec2>,
     pub checkpoints: Vec<vec2>,
+    /// The icy stretches of ground, each from its left to its right (m): ground whose contact is
+    /// in one has little grip (feel.wrela's `on_ice`).
+    pub ice: Vec<vec2> = Vec::new(),
+    /// The updrafts: boxes in which the air lifts the capybara (feel.wrela's `draft`).
+    pub drafts: Vec<Water> = Vec::new(),
 }
 
 /// A circle's contact with the ground: the piece, its nearest point, the unit normal from that
@@ -201,6 +207,20 @@ impl Course {
     pub fn ended(take self, ends: vec2) -> Course {
         var c = take self
         c.ends = ends
+        c
+    }
+
+    /// With the ground from `lo` to `hi` (m) icy.
+    pub fn icy_from(take self, lo: f32, hi: f32) -> Course {
+        var c = take self
+        c.ice.push(vec2(lo, hi))
+        c
+    }
+
+    /// With an updraft in the box from `lo` to `hi`.
+    pub fn draft(take self, lo: vec2, hi: vec2) -> Course {
+        var c = take self
+        c.drafts.push(Water { lo, hi })
         c
     }
 
@@ -391,6 +411,26 @@ impl Course {
         None
     }
 
+    /// Whether the ground at `x` is icy.
+    pub fn icy(self, x: f32) -> bool {
+        for i in self.ice {
+            if x >= i.x && x <= i.y {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Whether `p` is in an updraft.
+    pub fn lifted(self, p: vec2) -> bool {
+        for d in self.drafts {
+            if d.holds(p) {
+                return true
+            }
+        }
+        false
+    }
+
     /// Whether a circle of radius `r` at `p` touches any water: a puddle wets the capybara's feet.
     pub fn touches_water(self, p: vec2, r: f32) -> bool {
         for w in self.waters {
@@ -411,20 +451,73 @@ impl Course {
 
 // ---- the lab -----------------------------------------------------------------------------------
 
-/// The courses, by number.
-pub const COURSES: u32 = 2
+/// The levels, by number, in the order the game plays them: round the zoo's loop from the
+/// capybaras' own enclosure (design.md, "A map of the zoo").
+pub const HOME: u32 = 0
+pub const WETLANDS: u32 = 1
+pub const SAVANNA: u32 = 2
+pub const RAINFOREST: u32 = 3
+pub const AVIARY: u32 = 4
+pub const REPTILES: u32 = 5
+pub const POLAR: u32 = 6
+pub const FARM: u32 = 7
+pub const FOOD_COURT: u32 = 8
 
-/// Course `i`: 0 the lab, 1 the first level.
+/// How many levels there are. The courses are the levels, then the movement lab, which only a
+/// developer's build opens (main.wrela's `DEV`).
+pub const LEVELS: u32 = 9
+pub const LAB_COURSE: u32 = LEVELS
+pub const COURSES: u32 = LEVELS + 1
+
+/// Course `i`: a level, or the lab.
 pub fn course(i: u32) -> borrow Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == 0 { LAB } else { LEVEL }
+    match i {
+        HOME => home::COURSE,
+        WETLANDS => wetlands::COURSE,
+        SAVANNA => savanna::COURSE,
+        RAINFOREST => rainforest::COURSE,
+        AVIARY => aviary::COURSE,
+        REPTILES => reptiles::COURSE,
+        POLAR => polar::COURSE,
+        FARM => farm::COURSE,
+        FOOD_COURT => food_court::COURSE,
+        _ => LAB,
+    }
 }
 
 /// Course `i` made again as its literals say now: the course lens's (lens.wrela), whose drags
 /// change them in a lifted build. The game reads the constants, made once in the build.
 pub fn made(i: u32) -> Course {
     assert(i < COURSES, "a course that doesn't exist")
-    if i == 0 { lab() } else { level() }
+    match i {
+        HOME => home::built(),
+        WETLANDS => wetlands::built(),
+        SAVANNA => savanna::built(),
+        RAINFOREST => rainforest::built(),
+        AVIARY => aviary::built(),
+        REPTILES => reptiles::built(),
+        POLAR => polar::built(),
+        FARM => farm::built(),
+        FOOD_COURT => food_court::built(),
+        _ => lab(),
+    }
+}
+
+/// Course `i`'s name, as its title says it.
+pub fn name(i: u32) -> Text {
+    match i {
+        HOME => home::NAME,
+        WETLANDS => wetlands::NAME,
+        SAVANNA => savanna::NAME,
+        RAINFOREST => rainforest::NAME,
+        AVIARY => aviary::NAME,
+        REPTILES => reptiles::NAME,
+        POLAR => polar::NAME,
+        FARM => farm::NAME,
+        FOOD_COURT => food_court::NAME,
+        _ => "The lab",
+    }
 }
 
 /// The movement lab: from the left, a runway with two one-way ledges above it (2 m and 3.5 m
@@ -496,149 +589,11 @@ fn lab() -> Course {
         .water(vec2(78.5, -2.0), vec2(84.5, -1.8))
 }
 
-// ---- the first level -----------------------------------------------------------------------------
-
-/// The first level (a working name: the zoo's entrance), built round the movement: speed is the
-/// fun (design.md), so its hazards ask for speed and its shortcuts reward it. Four sections, a
-/// checkpoint after each of the first three:
-///
-/// 1. The gates (0 to 75 m): a goose on the runway to stomp or jump; a ledge 3.2 m up that only
-///    a double jump reaches, a snack on it; a 3 m pit; a puddle in a dip; a hill, a goose past
-///    it; a 4.5 m pit, a snack hanging inside it for the bold.
-/// 2. The big slide (80 to 160 m): steps under a pigeon; a deck with a yuzu; a 30° ramp down into
-///    a valley with a puddle and up to a lip over a 12 m pit. A slide-jump off the lip clears it,
-///    past a snack high over its middle; two one-way ledges in the pit are the slow way. Two geese
-///    on the landing, to bowl over sliding.
-/// 3. The lake (160 to 225 m): down a bank into water 41 m across and 8.5 m deep, a caiman at
-///    mid-depth and one by the floor guarding a snack; its far wall stands 3 m above the water,
-///    so out is a breach and a double jump; a low pigeon on the deck past it.
-/// 4. The gauntlet (225 to 330 m): mesas over pits, a goose on the first, a puddle on the second
-///    for the speed to clear an 8 m gap, two geese on the third, a pigeon over the climb to a
-///    tall fourth with a snack high above it, then a last hill to the goal.
-pub const LEVEL: Course = level()
-
-fn level() -> Course {
-    Course::new(
-        start: vec2(2.0, 0.35),
-        goal_lo: vec2(322.0, 1.0),
-        goal_hi: vec2(324.0, 6.0),
-        floor: -12.0,
-    )
-        .solid(
-            [
-                corner(vec2(-6.0, -20.0)),
-                corner(vec2(-6.0, 10.0)),
-                corner(vec2(-4.0, 10.0)),
-                corner(vec2(-4.0, 0.0), 0.5),
-                // 1. The gates: the runway, the first pit.
-                corner(vec2(28.0, 0.0)),
-                corner(vec2(28.0, -16.0)),
-                corner(vec2(31.0, -16.0)),
-                corner(vec2(31.0, 0.0)),
-                // The puddle's dip.
-                corner(vec2(34.0, 0.0), 1.5),
-                corner(vec2(35.5, -0.3), 1.5),
-                corner(vec2(38.5, -0.3), 1.5),
-                corner(vec2(40.0, 0.0), 1.5),
-                // The hill.
-                corner(vec2(44.0, 0.0), 4.0),
-                corner(vec2(51.0, 3.0), 5.0),
-                corner(vec2(58.0, 0.0), 4.0),
-                // The second pit.
-                corner(vec2(66.0, 0.0)),
-                corner(vec2(66.0, -16.0)),
-                corner(vec2(70.5, -16.0)),
-                corner(vec2(70.5, 0.0)),
-                // 2. The steps and the deck.
-                corner(vec2(80.0, 0.0)),
-                corner(vec2(80.0, 1.5)),
-                corner(vec2(84.0, 1.5)),
-                corner(vec2(84.0, 3.0)),
-                // The big slide: down into the valley, up to the lip.
-                corner(vec2(96.0, 3.0), 2.0),
-                corner(vec2(110.0, -5.0), 7.0),
-                corner(vec2(120.0, -5.0), 6.0),
-                corner(vec2(128.0, -3.0)),
-                // The big pit, and the landing.
-                corner(vec2(128.0, -16.0)),
-                corner(vec2(140.0, -16.0)),
-                corner(vec2(140.0, -4.0)),
-                corner(vec2(160.0, -4.0), 2.0),
-                // 3. Up to the lake's bank, down into it, across, and up its far wall.
-                corner(vec2(164.0, -1.0), 2.0),
-                corner(vec2(172.0, -10.0), 7.0),
-                corner(vec2(205.0, -10.0), 6.0),
-                corner(vec2(209.0, 1.5), 1.5),
-                // 4. The gauntlet: the deck's end, then mesas over pits.
-                corner(vec2(226.0, 1.5)),
-                corner(vec2(226.0, -16.0)),
-                corner(vec2(230.0, -16.0)),
-                corner(vec2(230.0, 2.5)),
-                corner(vec2(236.0, 2.5)),
-                corner(vec2(236.0, -16.0)),
-                corner(vec2(241.0, -16.0)),
-                corner(vec2(241.0, 1.0)),
-                corner(vec2(242.0, 1.0), 1.0),
-                corner(vec2(243.0, 0.7), 1.0),
-                corner(vec2(247.0, 0.7), 1.0),
-                corner(vec2(248.0, 1.0), 1.0),
-                corner(vec2(250.0, 1.0)),
-                corner(vec2(250.0, -16.0)),
-                corner(vec2(258.0, -16.0)),
-                corner(vec2(258.0, 0.0)),
-                corner(vec2(270.0, 0.0)),
-                corner(vec2(270.0, -16.0)),
-                corner(vec2(275.0, -16.0)),
-                corner(vec2(275.0, 4.0)),
-                corner(vec2(283.0, 4.0), 3.0),
-                corner(vec2(290.0, 1.0), 4.0),
-                corner(vec2(300.0, 1.0), 4.0),
-                corner(vec2(306.0, 4.0), 4.0),
-                corner(vec2(312.0, 1.0), 4.0),
-                // The goal's deck and the wall at the end.
-                corner(vec2(328.0, 1.0)),
-                corner(vec2(328.0, 14.0)),
-                corner(vec2(330.0, 14.0)),
-                corner(vec2(330.0, -20.0)),
-            ],
-        )
-        .ended(vec2(-4.0, 328.0))
-        .ledge([corner(vec2(10.0, 3.2)), corner(vec2(14.0, 3.2))])
-        .ledge([corner(vec2(129.0, -5.0)), corner(vec2(131.0, -5.0))])
-        .ledge([corner(vec2(133.5, -5.0)), corner(vec2(135.5, -5.0))])
-        .water(vec2(34.0, -0.3), vec2(40.0, -0.05))
-        .water(vec2(109.0, -5.0), vec2(121.0, -4.75))
-        .water(vec2(164.0, -10.0), vec2(210.0, -1.5))
-        .water(vec2(242.0, 0.7), vec2(248.0, 0.95))
-        .foe(Kind::Goose, vec2(20.0, 0.45), 4.0)
-        .foe(Kind::Goose, vec2(61.0, 0.45), 2.5)
-        .foe(Kind::Pigeon, vec2(82.0, 5.0), 2.5)
-        .foe(Kind::Goose, vec2(146.0, -3.55), 3.0)
-        .foe(Kind::Goose, vec2(152.0, -3.55), 3.0)
-        .foe(Kind::Caiman, vec2(180.0, -5.0), 6.0)
-        .foe(Kind::Caiman, vec2(195.0, -8.0), 7.0)
-        .foe(Kind::Pigeon, vec2(217.0, 3.0), 4.0)
-        .foe(Kind::Goose, vec2(233.0, 2.95), 2.0)
-        .foe(Kind::Goose, vec2(262.0, 0.45), 2.5)
-        .foe(Kind::Goose, vec2(267.0, 0.45), 2.0)
-        .foe(Kind::Pigeon, vec2(272.5, 5.5), 2.0)
-        .snack(vec2(12.0, 3.9))
-        .snack(vec2(67.6, -1.0))
-        .snack(vec2(137.0, 3.0))
-        .snack(vec2(200.0, -9.3))
-        .snack(vec2(285.5, 9.0))
-        .yuzu(vec2(90.0, 3.6))
-        .yuzu(vec2(222.0, 2.2))
-        .checkpoint(vec2(74.0, 0.0))
-        .checkpoint(vec2(158.0, -4.0))
-        .checkpoint(vec2(224.0, 1.5))
-}
-
 // ---- tests -------------------------------------------------------------------------------------
 
 @test
 fn the_labs_chains_close_and_join_and_its_start_stands_on_its_ground() {
-    borrow c = course(0)
+    borrow c = course(LAB_COURSE)
     assert(c.chains.len() == 4, "the ground and two ledges")
     for k in 0..c.chains.len() - 1 {
         let (first, last) = (c.chains[k], c.chains[k + 1])
@@ -658,7 +613,7 @@ fn the_labs_chains_close_and_join_and_its_start_stands_on_its_ground() {
 
 @test
 fn a_corner_is_never_ground_and_a_ledge_holds_only_from_above() {
-    borrow c = course(0)
+    borrow c = course(LAB_COURSE)
     // Past the first gap's near edge (x 36), level with the top: only the corner is near.
     let past = vec2(36.2, 0.2)
     let Some(k) = c.contact(past, 0.35, past, 0.35, ground: false) else { panic("no contact") }
@@ -676,7 +631,7 @@ fn a_corner_is_never_ground_and_a_ledge_holds_only_from_above() {
 
 @test
 fn the_pool_holds_water_up_to_its_surface() {
-    borrow c = course(0)
+    borrow c = course(LAB_COURSE)
     assert(c.water_at(vec2(108.0, -1.0)) == Some(0))
     assert(c.water_at(vec2(108.0, 0.1)).is_none())
     assert(c.waters[0].surface() == 0.0)

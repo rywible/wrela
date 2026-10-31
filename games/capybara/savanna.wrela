@@ -1,0 +1,165 @@
+// The Savanna: the third level, next door to the Wetlands, round the zoo's loop (design.md, "A
+// map of the zoo"). Its idea is speed, a little harder than the Wetlands: long grass slopes to
+// slide down, termite mounds as crests to jump from at speed, wide pits off ramps, a waterhole
+// and puddles whose wet speed clears long gaps, herds of geese on the flats to bowl over sliding,
+// pigeons over the rises, and acacia branches as one-way ledges. It has no new move or foe. A run
+// that keeps its speed flies over what a slower one climbs through: the big pits have branches
+// in them, the slow, safe way across.
+
+use course::Course
+use foes::Kind
+use ground::corner
+use signs::Sign
+
+/// Its name, as its title says it.
+pub const NAME: Text = "The Savanna"
+
+/// The course: four sections, a checkpoint after each of the first three and one in the fourth.
+///
+/// 1. The plains (0 to 100 m): a long grass rise and a slope down onto a flat where two geese
+///    graze, to bowl over sliding; a termite mound at the edge of a 5.5 m pit, a snack high over
+///    the pit; a puddle in a dip, then a 10 m gap that its wet speed clears.
+/// 2. The kopje (100 to 183 m): boulders as steps up under a pigeon; a yuzu on the top; a 27°
+///    slope down into a valley with a puddle and up to a lip over a 12 m pit, whose far side
+///    stands 2 m higher. A slide-jump off the lip clears it, and a double jump at the top of its
+///    arc takes a snack over it; two acacia branches in the pit are the slow way. Three geese on
+///    the landing, to bowl over sliding.
+/// 3. The waterhole (183 to 231 m): down a bank into water 24 m across and 5 m deep, a snack on
+///    its floor; its far bank stands 3 m above the water, so out is a breach and a double jump;
+///    then an 8 m gap, easy while still wet from the swim.
+/// 4. The termite mounds (231 to 352 m): a puddle, then two mounds at the edges of pits, a snack
+///    low in the first pit and a pigeon over the second; an acacia to climb, a snack over its
+///    top; a long slope down under a pigeon into a valley with a puddle and two geese, up to a
+///    lip over an 11 m pit with two branches in it; and the goal on the deck past it.
+pub const COURSE: Course = built()
+
+pub fn built() -> Course {
+    Course::new(
+        start: vec2(2.0, 0.35),
+        goal_lo: vec2(342.0, -3.5),
+        goal_hi: vec2(344.0, 1.5),
+        floor: -12.0,
+    )
+        .solid(
+            [
+                corner(vec2(-6.0, -20.0)),
+                corner(vec2(-6.0, 10.0)),
+                corner(vec2(-4.0, 10.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The plains: the long rise, and the slope down onto the geese's flat.
+                corner(vec2(12.0, 0.0), 5.0),
+                corner(vec2(26.0, 3.5), 6.0),
+                corner(vec2(42.0, -1.0), 6.0),
+                // The termite mound, and the first pit behind it.
+                corner(vec2(58.0, -1.0), 1.5),
+                corner(vec2(61.5, 1.2), 1.2),
+                corner(vec2(66.0, 0.3)),
+                corner(vec2(66.0, -16.0)),
+                corner(vec2(71.5, -16.0)),
+                corner(vec2(71.5, -1.0)),
+                // The puddle's dip, and the long gap.
+                corner(vec2(76.0, -1.0), 1.5),
+                corner(vec2(77.5, -1.3), 1.5),
+                corner(vec2(82.5, -1.3), 1.5),
+                corner(vec2(84.0, -1.0), 1.5),
+                corner(vec2(86.0, -1.0)),
+                corner(vec2(86.0, -16.0)),
+                corner(vec2(96.0, -16.0)),
+                corner(vec2(96.0, -1.0)),
+                // 2. The kopje: its boulders as steps up, and its top.
+                corner(vec2(104.0, -1.0)),
+                corner(vec2(104.0, 0.5), 0.3),
+                corner(vec2(108.0, 0.5)),
+                corner(vec2(108.0, 2.0), 0.3),
+                // The slope down into the valley, and up to the lip.
+                corner(vec2(121.0, 2.0), 2.5),
+                corner(vec2(137.0, -6.0), 7.0),
+                corner(vec2(145.0, -6.0), 6.0),
+                corner(vec2(152.0, -3.5)),
+                // The big pit, and the landing.
+                corner(vec2(152.0, -16.0)),
+                corner(vec2(164.0, -16.0)),
+                corner(vec2(164.0, -1.5)),
+                // 3. The waterhole: down its bank, across its floor, up its far bank.
+                corner(vec2(184.0, -1.5), 2.0),
+                corner(vec2(193.0, -10.5), 5.0),
+                corner(vec2(210.0, -10.5), 4.0),
+                corner(vec2(214.0, -2.5), 1.0),
+                // The gap past it.
+                corner(vec2(222.0, -2.5)),
+                corner(vec2(222.0, -16.0)),
+                corner(vec2(230.0, -16.0)),
+                corner(vec2(230.0, -2.5)),
+                // 4. The termite mounds: a puddle's dip, then the first mound and its pit.
+                corner(vec2(232.0, -2.5), 1.5),
+                corner(vec2(233.5, -2.8), 1.5),
+                corner(vec2(235.5, -2.8), 1.5),
+                corner(vec2(237.0, -2.5), 1.5),
+                corner(vec2(238.5, -2.5), 1.5),
+                corner(vec2(242.0, -0.3), 1.2),
+                corner(vec2(246.5, -1.2)),
+                corner(vec2(246.5, -16.0)),
+                corner(vec2(252.0, -16.0)),
+                corner(vec2(252.0, -2.5)),
+                // The second mound and its pit.
+                corner(vec2(255.0, -2.5), 1.5),
+                corner(vec2(258.5, 0.0), 1.2),
+                corner(vec2(263.0, -0.9)),
+                corner(vec2(263.0, -16.0)),
+                corner(vec2(269.5, -16.0)),
+                corner(vec2(269.5, -2.5)),
+                // The acacia's flat, the long slope down into the valley, and up to the lip.
+                corner(vec2(284.0, -2.5), 4.0),
+                corner(vec2(298.0, -7.5), 6.0),
+                corner(vec2(310.0, -7.5), 5.0),
+                corner(vec2(317.0, -5.0)),
+                // The last pit, the goal's deck, and the wall at the end.
+                corner(vec2(317.0, -16.0)),
+                corner(vec2(328.0, -16.0)),
+                corner(vec2(328.0, -5.0)),
+                corner(vec2(334.0, -5.0)),
+                corner(vec2(334.0, -3.5), 0.3),
+                corner(vec2(348.0, -3.5)),
+                corner(vec2(348.0, 14.0)),
+                corner(vec2(350.0, 14.0)),
+                corner(vec2(350.0, -20.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 348.0))
+        // The acacia branches: two in the big pit, two in the tree past the mounds, two in the
+        // last pit.
+        .ledge([corner(vec2(153.0, -4.5)), corner(vec2(155.5, -4.5))])
+        .ledge([corner(vec2(158.0, -3.0)), corner(vec2(160.5, -3.0))])
+        .ledge([corner(vec2(275.0, 0.0)), corner(vec2(278.0, 0.0))])
+        .ledge([corner(vec2(279.5, 2.5)), corner(vec2(282.5, 2.5))])
+        .ledge([corner(vec2(318.5, -7.0)), corner(vec2(321.0, -7.0))])
+        .ledge([corner(vec2(323.5, -7.0)), corner(vec2(326.0, -7.0))])
+        .water(vec2(76.0, -1.3), vec2(84.0, -1.05))
+        .water(vec2(138.0, -6.0), vec2(144.0, -5.75))
+        .water(vec2(184.0, -10.5), vec2(215.0, -5.5))
+        .water(vec2(232.0, -2.8), vec2(237.0, -2.55))
+        .water(vec2(299.0, -7.5), vec2(303.0, -7.25))
+        .foe(Kind::Goose, vec2(47.0, -0.55), 1.5)
+        .foe(Kind::Goose, vec2(52.0, -0.55), 1.5)
+        .foe(Kind::Pigeon, vec2(108.5, 5.6), 2.5)
+        .foe(Kind::Goose, vec2(169.0, -1.05), 1.5)
+        .foe(Kind::Goose, vec2(173.0, -1.05), 1.5)
+        .foe(Kind::Goose, vec2(177.0, -1.05), 1.5)
+        .foe(Kind::Pigeon, vec2(266.5, 4.0), 2.0)
+        .foe(Kind::Pigeon, vec2(292.5, -1.5), 2.0)
+        .foe(Kind::Goose, vec2(305.5, -7.05), 1.0)
+        .foe(Kind::Goose, vec2(308.0, -7.05), 1.0)
+        .snack(vec2(68.5, 5.0))
+        .snack(vec2(158.5, 2.2))
+        .snack(vec2(201.0, -9.9))
+        .snack(vec2(248.6, -2.9))
+        .snack(vec2(281.0, 7.0))
+        .yuzu(vec2(116.0, 2.6))
+        .checkpoint(vec2(100.0, -1.0))
+        .checkpoint(vec2(183.0, -1.5))
+        .checkpoint(vec2(231.0, -2.5))
+        .checkpoint(vec2(272.0, -2.5))
+}
+
+/// Its signs: none. It asks for no move the levels before it haven't taught.
+pub const SIGNS: [Sign; 0] = []

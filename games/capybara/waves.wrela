@@ -9,8 +9,9 @@
 // the top; a pale band under the surface and an inked line along it, with white foam where it
 // moves fast.
 
+use habitats::palette
 use course::Course
-use earth::{ground_top, solids}
+use earth::{ground_tops, solids}
 use ink::{inked, wash}
 use shapes::blend
 use engine::noise::{hash2, noise2}
@@ -21,9 +22,6 @@ use std::gpu::{
 
 /// A column's width (m).
 pub const COLUMN: f32 = 0.1
-
-/// The most columns of all a course's pools.
-pub const COLUMNS: u32 = 1024
 
 /// How fast a wave runs (m/s), how fast a column springs back to rest (1/s²), and how fast its
 /// motion dies away (1/s).
@@ -52,7 +50,6 @@ pub fn waves(c: Course) -> Waves {
         pools.push(vec4(w.lo.x, f32(n), f32(count), w.surface()))
         n += count
     }
-    assert(n <= COLUMNS, "the course's pools fit the columns")
     var heights: Vec<f32> = Vec::new()
     for _ in 0..n {
         heights.push(0.0)
@@ -153,7 +150,8 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
         var floor: Vec<vec2> = Vec::new()
         var x = w.lo.x
         while x <= w.hi.x {
-            let y = ground_top(outlines, x)
+            // The bed: the ground that goes on down, under any floe in the water.
+            let y = ground_tops(outlines, x).y
             if y < surface - 1.0e-3 {
                 floor.push(vec2(x, max(y, w.lo.y) - 0.05))
             }
@@ -178,9 +176,6 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
     out
 }
 
-pub const LAB_WATER: Vec<vec4> = water_mesh(course::LAB)
-pub const LEVEL_WATER: Vec<vec4> = water_mesh(course::LEVEL)
-
 // ---- the shader ---------------------------------------------------------------------------------
 
 /// What the water's shader is told: the camera's matrix, the view's middle and half-size (m), a
@@ -191,7 +186,9 @@ pub struct Pond: Copy + GpuData {
     pub half: vec2,
     pub px: f32,
     pub time: f32,
-    pub pad: vec2 = vec2(0.0),
+    /// The habitat drawn (habitats.wrela's `habitat_of`).
+    pub habitat: u32 = 0,
+    pub pad: f32 = 0.0,
 }
 
 pub struct Wetl: Copy {
@@ -266,8 +263,10 @@ pub fn water(
         min(depth, 1.0)
     let size = vec2(f32(below.width()), f32(below.height()))
     let behind = below.sample_level(s, pixel.position.xy / size + wobble / (f.half * 2.0)).rgb
-    let teal = blend(vec3(0.56, 0.82, 0.84), vec3(0.3, 0.55, 0.7), smoothstep(0.0, 3.0, depth))
-    let tint = blend(teal, vec3(0.2, 0.36, 0.55), smoothstep(3.0, 9.0, depth))
+    // The habitat's water (habitats.wrela): from its surface's colour down to its depths.
+    let pal = palette(f.habitat)
+    let teal = blend(pal.water_top, pal.water_mid, smoothstep(0.0, 3.0, depth))
+    let tint = blend(teal, pal.depths, smoothstep(3.0, 9.0, depth))
     var c = blend(behind, wash(tint, p), saturate(0.5 + depth * 0.09))
     c = blend(c, vec3(0.97, 0.99, 0.97), ripples(p, depth, f.time, f.px))
     // The pale band under the surface, white with foam where it moves, and the ink line on it.

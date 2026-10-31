@@ -2862,3 +2862,55 @@ cel=build/record/cel ...`, every look's fast record) is linked from Part D's PR.
 
 The released toolchain 0.11.1 (the workspace ran a local copy of its build until now) builds the
 vale identically: all 335 of its shaders, wasm and manifest files' SHA-256 the same.
+
+## 2026-10-30: the capybara game's nine levels (toolchain 0.10.3)
+
+Linux, AMD Radeon Graphics (RADV RENOIR, integrated), Mesa 26.1.6; headless Chrome stable driven by
+`wrela tool bench`. Each side measured alone, nothing else building or on the GPU. The branch is
+`capybara/finish-the-game` (nine levels, a backdrop pipeline per habitat, meshes built at load);
+`main` is caa7c376. M4 Air: not measured (no M4 to hand here; Ryan's run).
+
+**Starts** (`wrela tool bench -- --scene capybara-run --starts 3 --no-docs --no-native`, median of
+3; the program's `playable` print, which the branch adds and `main` lacks, so `main`'s is its
+first frame):
+
+| | Cold | Warm | Every pipeline built, cold | Pipelines |
+|---|---|---|---|---|
+| main | 300 ms (300, 307, 296) | 226 ms (226, 219, 229) | 1,829 to 1,845 ms | 10 |
+| branch, first | 502 ms (587, 502, 485) | 401 ms (401, 401, 401) | | 17 |
+| branch | 317 ms (336, 315, 317) | 227 ms (229, 219, 227) | 3,035 to 3,051 ms | 17 |
+
+The first branch run made every level's tool-assisted runs before its first frame (the sim playing
+37 runs); made for the course shown, as it's shown, the starts are `main`'s again. A cold start's
+first frame on the screen waits for its pipelines: the sprite pipeline, built last, at about
+3.0 s on the branch against 1.8 s on `main`: the seven habitats' strips no first frame needs are
+compiled before it (docs/toolchain-gaps.md, "A cold start's pipelines compile at the GPU process's
+own pace", and "A program's `playable` comes before its first frame is on the screen"). Warm,
+every pipeline by 75 to 80 ms (`main`: 9 to 57).
+
+**Download** (`wrela build --optimize size`): `game.wasm` 2,577,964 bytes, 804,118 gzipped
+(`main`: 2,530,064 and 792,335): nine levels for 1.5% more, as a course's meshes are built when
+it's shown and no longer baked (`main` baked 137 KB a course). The shaders: 17 pipelines,
+774,168 bytes of WGSL, 187,192 gzipped (`main`: 10, 328,529, 75,989); the largest is the
+sprites' at 97.4 KiB, each habitat's strips 52 to 80 KiB.
+
+**Frames** (`wrela profile games/capybara --frames 900 --size 1920x1080 --workers 4`, natively, each
+level's searched human any% run as its input). Not paired: `main` has one level. The runs are
+scripted at 120 frames a second and `profile` steps 60, so each drifts from its route and may not
+cover all its level; the numbers say what each level's view costs, not that every part was seen.
+
+| Level | GPU span p50 / p95 | CPU call p50 / p95 |
+|---|---|---|
+| The Capybaras' Home | 1.875 / 3.419 ms | 3.229 / 4.781 ms |
+| The Capybara Wetlands | 1.789 / 3.268 ms | 3.181 / 4.674 ms |
+| The Capybara Wetlands, `main` (`scripts::LEVEL`) | 1.870 / 3.336 ms | 3.264 / 4.673 ms |
+| The Savanna | 1.689 / 3.178 ms | 3.014 / 4.502 ms |
+| The Rainforest House | 1.725 / 4.397 ms | 3.141 / 5.858 ms |
+| The Aviary | 1.730 / 3.182 ms | 2.978 / 4.518 ms |
+| The Reptile House | 1.698 / 2.572 ms | 3.054 / 4.130 ms |
+| The Polar Coast | 1.738 / 2.534 ms | 2.773 / 3.838 ms |
+| The Petting Farm | 1.756 / 2.684 ms | 2.967 / 4.058 ms |
+| The Food Court | 1.681 / 2.281 ms | 2.794 / 3.618 ms |
+
+The 95th percentiles are the frames that draw a backdrop strip again (the Rainforest's the
+dearest); the scene is about 1.3 ms in each.

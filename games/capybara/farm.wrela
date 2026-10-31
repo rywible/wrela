@@ -1,0 +1,166 @@
+// The Petting Farm: the eighth level, harder than the Polar Coast, built round stomp chains. A
+// stomp bounces as high as a held jump and gives the double jump back, so the farm's pests are
+// stepping stones: a chain is met first over a safe trough, then over a pit, up a wall from a
+// pigeon, and last from a Komodo dragon on a bale and from gull to gull. On the way it asks for
+// every move again: hay-bale steps, the barn's fan, a slide down the hay chute into the duck
+// pond, a breach to its high bank, the pig pen's mud and a slide-jump off the goats' hill.
+
+use course::Course
+use foes::Kind
+use ground::corner
+use screens::Act
+use signs::Sign
+
+/// Its name, as its title says it.
+pub const NAME: Text = "The Petting Farm"
+
+/// The course: five sections, a checkpoint after each of the first four.
+///
+/// 1. The farmyard (0 to 58 m): hay-bale steps, a goose in the yard, a sign, then the feed
+///    trough: a dip 12 m across, safe to fall in, with two pigeons over it to bounce along. A
+///    snack high over the second pigeon that only a bounce reaches.
+/// 2. The hay barn (58 to 124 m): bales stacked up to a 10.5 m pit, a pigeon over it the only
+///    way across, a snack high over it that only its bounce and a double jump reach; a yuzu on
+///    the bales past it; the barn's floor, and its fan in a pit, whose updraft is the only way up
+///    to the hayloft. A Komodo dragon on the loft.
+/// 3. The duck pond (124 to 196 m): the hay chute, a slope down into a pond 40 m across, a gull
+///    over it, a snack over the water that a breach and a double jump reach, and a bank 3.8 m
+///    above the water: out by a breach and a double jump. A goose on the bank.
+/// 4. The pig pen and the goats' hill (196 to 292 m): a muddy pen, slippery, two geese in it; a
+///    puddle; up the goats' hill, a snack high over its top for a full jump and a double jump;
+///    down into a hollow and up to a lip over an 11.5 m pit that only a slide-jump clears.
+/// 5. The tractor shed (292 to 352 m): the hay wagon, a wall 7 m high with a pigeon before it to
+///    bounce up from; a pit with a Komodo dragon on a bale in it and a pigeon past it; a pit with
+///    two gulls over it and a snack high over the second that only a bounce reaches; the goal's
+///    deck.
+pub const COURSE: Course = built()
+
+pub fn built() -> Course {
+    Course::new(
+        start: vec2(2.0, 0.35),
+        goal_lo: vec2(344.0, 9.5),
+        goal_hi: vec2(346.0, 14.5),
+        floor: -12.0,
+    )
+        .solid(
+            [
+                corner(vec2(-6.0, -20.0)),
+                corner(vec2(-6.0, 10.0)),
+                corner(vec2(-4.0, 10.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The farmyard: the hay-bale steps, the yard, the trough.
+                corner(vec2(14.0, 0.0)),
+                corner(vec2(14.0, 1.0)),
+                corner(vec2(18.0, 1.0)),
+                corner(vec2(18.0, 2.0)),
+                corner(vec2(22.0, 2.0)),
+                corner(vec2(22.0, 0.0)),
+                corner(vec2(40.0, 0.0)),
+                corner(vec2(40.0, -2.0)),
+                corner(vec2(52.0, -2.0)),
+                corner(vec2(52.0, 0.0)),
+                // 2. The hay barn: the bales up to the pit, the bales past it, the barn's floor,
+                // the fan's pit and the hayloft.
+                corner(vec2(60.0, 0.0)),
+                corner(vec2(60.0, 1.5)),
+                corner(vec2(64.0, 1.5)),
+                corner(vec2(64.0, 3.0)),
+                corner(vec2(70.0, 3.0)),
+                corner(vec2(70.0, -16.0)),
+                corner(vec2(80.5, -16.0)),
+                corner(vec2(80.5, 5.5)),
+                corner(vec2(90.0, 5.5)),
+                corner(vec2(90.0, 0.0)),
+                corner(vec2(100.0, 0.0)),
+                corner(vec2(100.0, -2.0)),
+                corner(vec2(106.0, -2.0)),
+                corner(vec2(106.0, 8.0)),
+                corner(vec2(124.0, 8.0), 3.0),
+                // 3. The hay chute down, the duck pond, its high bank.
+                corner(vec2(137.0, 0.0), 3.0),
+                corner(vec2(140.0, 0.0), 2.0),
+                corner(vec2(145.0, -7.0), 5.0),
+                corner(vec2(175.0, -7.0), 4.0),
+                corner(vec2(179.0, 2.8), 1.5),
+                // 4. The bank's end, the pig pen, its puddle, the goats' hill, the hollow, the lip.
+                corner(vec2(196.0, 2.8)),
+                corner(vec2(196.0, 0.0)),
+                corner(vec2(229.0, 0.0), 1.5),
+                corner(vec2(230.5, -0.3), 1.5),
+                corner(vec2(233.5, -0.3), 1.5),
+                corner(vec2(235.0, 0.0), 1.5),
+                corner(vec2(238.0, 0.0), 4.0),
+                corner(vec2(249.0, 6.0), 4.0),
+                corner(vec2(253.0, 6.0), 4.0),
+                corner(vec2(267.0, -2.0), 6.0),
+                corner(vec2(274.0, -2.0), 5.0),
+                corner(vec2(280.0, 0.0)),
+                corner(vec2(280.0, -16.0)),
+                corner(vec2(291.5, -16.0)),
+                corner(vec2(291.5, 0.0)),
+                // 5. The tractor shed: the hay wagon's wall, the pit with the bale in it, the
+                // stack, the gulls' pit.
+                corner(vec2(302.0, 0.0)),
+                corner(vec2(302.0, 7.0)),
+                corner(vec2(308.0, 7.0)),
+                corner(vec2(308.0, -16.0)),
+                corner(vec2(312.5, -16.0)),
+                corner(vec2(312.5, 5.0)),
+                corner(vec2(314.5, 5.0)),
+                corner(vec2(314.5, -16.0)),
+                corner(vec2(319.0, -16.0)),
+                corner(vec2(319.0, 8.0)),
+                corner(vec2(324.0, 8.0)),
+                corner(vec2(324.0, -16.0)),
+                corner(vec2(334.5, -16.0)),
+                corner(vec2(334.5, 9.5)),
+                // The goal's deck and the wall at the end.
+                corner(vec2(352.0, 9.5)),
+                corner(vec2(352.0, 22.0)),
+                corner(vec2(354.0, 22.0)),
+                corner(vec2(354.0, -20.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 352.0))
+        .icy_from(lo: 200.0, hi: 226.0)
+        .draft(vec2(100.0, -2.0), vec2(106.0, 9.5))
+        .water(vec2(139.0, -7.0), vec2(180.0, -1.0))
+        .water(vec2(229.0, -0.3), vec2(235.0, -0.05))
+        .foe(Kind::Goose, vec2(28.0, 0.45), 3.0)
+        .foe(Kind::Pigeon, vec2(44.5, 1.0), 0.5)
+        .foe(Kind::Pigeon, vec2(49.5, 1.2), 0.5)
+        .foe(Kind::Pigeon, vec2(75.5, 3.8), 0.5)
+        .foe(Kind::Komodo, vec2(117.0, 8.4), 2.5)
+        .foe(Kind::Gull, vec2(158.0, 5.0), 4.0)
+        .foe(Kind::Goose, vec2(191.0, 3.25), 2.0)
+        .foe(Kind::Goose, vec2(207.0, 0.45), 2.5)
+        .foe(Kind::Goose, vec2(219.0, 0.45), 2.5)
+        .foe(Kind::Pigeon, vec2(299.0, 2.2), 0.0)
+        .foe(Kind::Komodo, vec2(313.5, 5.4), 0.0)
+        .foe(Kind::Pigeon, vec2(316.5, 7.2), 0.4)
+        .foe(Kind::Gull, vec2(327.5, 9.0), 0.8)
+        .foe(Kind::Gull, vec2(331.5, 9.8), 0.8)
+        .snack(vec2(49.5, 6.3))
+        .snack(vec2(76.0, 9.3))
+        .snack(vec2(168.0, 3.3))
+        .snack(vec2(251.0, 10.2))
+        .snack(vec2(331.5, 14.2))
+        .yuzu(vec2(86.0, 6.1))
+        .checkpoint(vec2(56.0, 0.0))
+        .checkpoint(vec2(109.0, 8.0))
+        .checkpoint(vec2(184.0, 2.8))
+        .checkpoint(vec2(296.0, 0.0))
+}
+
+/// Its signs: the stomp chain's, in the farmyard before the trough.
+pub const SIGNS: [Sign; 1] = [
+    Sign {
+        at: vec2(35.0, 0.0),
+        heading: "Bounce along",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 0,
+        line: "Land on them: a bounce is a jump, with the double jump back",
+        teaches: 0,
+    },
+]

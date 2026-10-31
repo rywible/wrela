@@ -279,12 +279,13 @@ fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
     b.ground = vec2(0.0, 1.0)
 }
 
-fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
+fn ground(b: mut Body, pad: Pad, c: Course, feel: Feel) {
     let Some(k) = support(c, b.at, b.at) else {
-        leave(mut b, b.vel, f)
-        air(mut b, pad, c, f)
+        leave(mut b, b.vel, feel)
+        air(mut b, pad, c, feel)
         return
     }
+    let f = if c.icy(k.point.x) { feel.on_ice() } else { feel }
     let p = c.pieces[k.piece]
     let t = k.tangent()
     // A crest too fast to follow: it leaves along the tangent.
@@ -471,6 +472,10 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.facing = dir
     }
     b.vel.y = max(b.vel.y - g * STEP, -f.terminal)
+    // An updraft lifts, up to its speed.
+    if c.lifted(b.at) && b.vel.y < f.draft_speed {
+        b.vel.y = min(b.vel.y + f.draft * STEP, f.draft_speed)
+    }
     let from = b.at
     let n = substeps(max(length(b.vel), length(start)))
     let h = STEP / f32(n)

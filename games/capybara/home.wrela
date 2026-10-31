@@ -1,0 +1,165 @@
+// The capybaras' home: the first level, in their own enclosure in the Wetlands (Ryan,
+// 2026-10-30). It teaches every move one at a time, as its own lesson with nothing else to manage
+// (Ryan's wife found the Wetlands hard while she was still learning: dodging the creatures and
+// learning the moves at once), then puts them together once, gently, at its end. Until that end
+// a miss costs nothing: its ditches are shallow enough to jump out of, and nothing hurts.
+
+use course::Course
+use foes::Kind
+use ground::corner
+use screens::Act
+use signs::{DOUBLE_JUMP, RUN_AND_JUMP, SLIDE, SPLASH, SWIM, Sign}
+
+/// Its name, as its title says it.
+pub const NAME: Text = "The Capybaras' Home"
+
+/// The course, in lessons, a checkpoint after each:
+///
+/// 1. Run and jump (0 to 36 m): a log to hop, a ditch to jump (or fall in and jump out of), a
+///    step up. A snack over the log.
+/// 2. The double jump (36 to 66 m): a wall too high for one jump, a snack high over its top, a
+///    ramp down.
+/// 3. Water is speed (66 to 90 m): a puddle in a dip, then a wide ditch its speed jumps; a snack
+///    over the ditch.
+/// 4. The slide (90 to 134 m): steps to a deck, a ramp down into a hollow and up to a low lip; a
+///    slide off the lip flies, past a snack.
+/// 5. Swimming (134 to 160 m): a pond with gentle banks and nothing in it but a snack on its floor.
+/// 6. The first goose (160 to 190 m): a yuzu, then a goose on flat ground, nothing else near it.
+/// 7. All together (190 to 222 m): a puddle, the first pit (3 m), and a step up to the goal.
+pub const COURSE: Course = built()
+
+pub fn built() -> Course {
+    Course::new(
+        start: vec2(2.0, 0.35),
+        goal_lo: vec2(215.0, 2.5),
+        goal_hi: vec2(217.0, 7.0),
+        floor: -12.0,
+    )
+        .solid(
+            [
+                corner(vec2(-6.0, -20.0)),
+                corner(vec2(-6.0, 10.0)),
+                corner(vec2(-4.0, 10.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The log, the ditch, the step.
+                corner(vec2(13.0, 0.0)),
+                corner(vec2(13.0, 0.8)),
+                corner(vec2(15.5, 0.8)),
+                corner(vec2(15.5, 0.0)),
+                corner(vec2(22.0, 0.0)),
+                corner(vec2(22.0, -1.2)),
+                corner(vec2(24.5, -1.2)),
+                corner(vec2(24.5, 0.0)),
+                corner(vec2(30.0, 0.0)),
+                corner(vec2(30.0, 1.5)),
+                // 2. The wall, its top, the ramp down.
+                corner(vec2(46.0, 1.5)),
+                corner(vec2(46.0, 5.0)),
+                corner(vec2(58.0, 5.0), 2.0),
+                corner(vec2(66.0, 0.0), 2.0),
+                // 3. The puddle's dip, then the wide ditch.
+                corner(vec2(70.0, 0.0), 1.5),
+                corner(vec2(71.5, -0.3), 1.5),
+                corner(vec2(74.5, -0.3), 1.5),
+                corner(vec2(76.0, 0.0), 1.5),
+                corner(vec2(80.0, 0.0)),
+                corner(vec2(80.0, -1.0)),
+                corner(vec2(86.0, -1.0)),
+                corner(vec2(86.0, 0.0)),
+                // 4. The steps, the deck, the ramp down into the hollow and up to the lip.
+                corner(vec2(92.0, 0.0)),
+                corner(vec2(92.0, 1.5)),
+                corner(vec2(95.0, 1.5)),
+                corner(vec2(95.0, 3.0)),
+                corner(vec2(100.0, 3.0), 2.0),
+                corner(vec2(112.0, -2.0), 5.0),
+                corner(vec2(118.0, -2.0), 4.0),
+                corner(vec2(124.0, 0.5)),
+                corner(vec2(124.0, 0.0)),
+                // 5. The pond's banks.
+                corner(vec2(136.0, 0.0), 2.0),
+                corner(vec2(141.0, -4.0), 3.0),
+                corner(vec2(153.0, -4.0), 3.0),
+                corner(vec2(159.0, 0.0), 2.0),
+                // 7. The last puddle, the pit, the step up to the goal's deck, and the end wall.
+                corner(vec2(190.0, 0.0), 1.5),
+                corner(vec2(191.5, -0.3), 1.5),
+                corner(vec2(194.5, -0.3), 1.5),
+                corner(vec2(196.0, 0.0), 1.5),
+                corner(vec2(200.0, 0.0)),
+                corner(vec2(200.0, -16.0)),
+                corner(vec2(203.0, -16.0)),
+                corner(vec2(203.0, 0.0)),
+                corner(vec2(208.0, 0.0)),
+                corner(vec2(208.0, 2.5)),
+                corner(vec2(222.0, 2.5)),
+                corner(vec2(222.0, 14.0)),
+                corner(vec2(224.0, 14.0)),
+                corner(vec2(224.0, -20.0)),
+            ],
+        )
+        .ended(vec2(-4.0, 222.0))
+        .water(vec2(70.0, -0.3), vec2(76.0, -0.05))
+        .water(vec2(136.0, -4.0), vec2(159.0, -0.6))
+        .water(vec2(190.0, -0.3), vec2(196.0, -0.05))
+        .foe(Kind::Goose, vec2(176.0, 0.45), 3.0)
+        .snack(vec2(14.25, 3.0))
+        .snack(vec2(52.0, 9.4))
+        .snack(vec2(83.0, 2.8))
+        .snack(vec2(127.0, 2.8))
+        .snack(vec2(147.0, -3.4))
+        .yuzu(vec2(166.0, 0.6))
+        .checkpoint(vec2(36.0, 1.5))
+        .checkpoint(vec2(54.0, 5.0))
+        .checkpoint(vec2(130.0, 0.0))
+        .checkpoint(vec2(186.0, 0.0))
+}
+
+/// Its signs, left to right, each before the lesson it names.
+pub const SIGNS: [Sign; 5] = [
+    Sign {
+        at: vec2(4.0, 0.0),
+        heading: "Run and jump",
+        first: Act::Run,
+        second: Act::Jump,
+        prompts: 2,
+        line: "",
+        teaches: RUN_AND_JUMP,
+    },
+    Sign {
+        at: vec2(40.0, 1.5),
+        heading: "Double jump",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 2,
+        line: "Again in the air",
+        teaches: DOUBLE_JUMP,
+    },
+    Sign {
+        at: vec2(67.5, 0.0),
+        heading: "Water is speed",
+        first: Act::Run,
+        second: Act::Run,
+        prompts: 0,
+        line: "A splash makes you faster",
+        teaches: SPLASH,
+    },
+    Sign {
+        at: vec2(97.5, 3.0),
+        heading: "Slide down slopes",
+        first: Act::Slide,
+        second: Act::Slide,
+        prompts: 1,
+        line: "Hold it while you run",
+        teaches: SLIDE,
+    },
+    Sign {
+        at: vec2(133.0, 0.0),
+        heading: "Swim fast",
+        first: Act::Jump,
+        second: Act::Swim,
+        prompts: 2,
+        line: "Up and down in turn: the dolphin kick",
+        teaches: SWIM,
+    },
+]

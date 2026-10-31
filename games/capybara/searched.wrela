@@ -1,0 +1,127 @@
+// The route search's runs of each level (`wrela tool route -- --level <key>` writes them as
+// routes_<key>.wrela, with their tests): any% and 100%, tool-assisted, and the same within a
+// person's limits (design.md, "The agent loop"). The replays (replay.wrela's `tool_assisted`),
+// the route tool and the levels' checks read them from here.
+
+use course::{AVIARY, FARM, FOOD_COURT, HOME, LEVELS, POLAR, RAINFOREST, REPTILES, SAVANNA, WETLANDS}
+use pad::Hold
+
+/// The levels' keys, by number: what the route tool takes and names their runs' files by.
+pub const KEYS: [Text; LEVELS] = [
+    "home",
+    "wetlands",
+    "savanna",
+    "rainforest",
+    "aviary",
+    "reptiles",
+    "polar",
+    "farm",
+    "food_court",
+]
+
+/// A level's searched runs: any% and 100%, tool-assisted, then human-possible.
+pub struct Searched: Clone {
+    pub any: Vec<Hold>,
+    pub full: Vec<Hold>,
+    pub human_any: Vec<Hold>,
+    pub human_full: Vec<Hold>,
+    /// Where each move is first needed (m), by its bit's place (routes_<key>.wrela's `NEEDS`).
+    pub needs: [f32; 5],
+}
+
+/// Level `c`'s searched runs (none for the lab).
+pub fn searched(c: u32) -> Searched {
+    match c {
+        HOME => of(
+            routes_home::ANY,
+            routes_home::FULL,
+            routes_home::HUMAN_ANY,
+            routes_home::HUMAN_FULL,
+            routes_home::NEEDS,
+        ),
+        WETLANDS => of(
+            routes_wetlands::ANY,
+            routes_wetlands::FULL,
+            routes_wetlands::HUMAN_ANY,
+            routes_wetlands::HUMAN_FULL,
+            routes_wetlands::NEEDS,
+        ),
+        SAVANNA => of(
+            routes_savanna::ANY,
+            routes_savanna::FULL,
+            routes_savanna::HUMAN_ANY,
+            routes_savanna::HUMAN_FULL,
+            routes_savanna::NEEDS,
+        ),
+        RAINFOREST => of(
+            routes_rainforest::ANY,
+            routes_rainforest::FULL,
+            routes_rainforest::HUMAN_ANY,
+            routes_rainforest::HUMAN_FULL,
+            routes_rainforest::NEEDS,
+        ),
+        AVIARY => of(
+            routes_aviary::ANY,
+            routes_aviary::FULL,
+            routes_aviary::HUMAN_ANY,
+            routes_aviary::HUMAN_FULL,
+            routes_aviary::NEEDS,
+        ),
+        REPTILES => of(
+            routes_reptiles::ANY,
+            routes_reptiles::FULL,
+            routes_reptiles::HUMAN_ANY,
+            routes_reptiles::HUMAN_FULL,
+            routes_reptiles::NEEDS,
+        ),
+        POLAR => of(
+            routes_polar::ANY,
+            routes_polar::FULL,
+            routes_polar::HUMAN_ANY,
+            routes_polar::HUMAN_FULL,
+            routes_polar::NEEDS,
+        ),
+        FARM => of(
+            routes_farm::ANY,
+            routes_farm::FULL,
+            routes_farm::HUMAN_ANY,
+            routes_farm::HUMAN_FULL,
+            routes_farm::NEEDS,
+        ),
+        FOOD_COURT => of(
+            routes_food_court::ANY,
+            routes_food_court::FULL,
+            routes_food_court::HUMAN_ANY,
+            routes_food_court::HUMAN_FULL,
+            routes_food_court::NEEDS,
+        ),
+        _ => of([], [], [], [], [1.0e9; 5]),
+    }
+}
+
+/// A level's searched runs, from its routes' constants.
+fn of(
+    any: [Hold],
+    full: [Hold],
+    human_any: [Hold],
+    human_full: [Hold],
+    needs: [f32; 5],
+) -> Searched {
+    Searched {
+        any: Vec::from(any),
+        full: Vec::from(full),
+        human_any: Vec::from(human_any),
+        human_full: Vec::from(human_full),
+        needs,
+    }
+}
+
+/// The level whose key is `key`, if one is.
+pub fn level_of(key: str) -> Option<u32> {
+    for i in 0..LEVELS {
+        if KEYS[i] == key {
+            return Some(i)
+        }
+    }
+    None
+}

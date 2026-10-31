@@ -90,12 +90,13 @@ pub struct Slack: Clone {
 pub const EARLY: u32 = 3
 pub const LATE: u32 = 12
 
-/// One shift of one change: where it is (the change's tick), how far, the state 2 ticks before
-/// it, and whether the shifted run finished.
+/// One shift of one change: where it is (the change's tick), how far, the state `back` ticks
+/// before it (at least as far back as the shift), and whether the shifted run finished.
 struct Shift: Copy {
     at: u32,
     within: u32,
     by: i32,
+    back: u32,
     from: World,
     ok: bool,
 }
@@ -125,12 +126,18 @@ fn held_at(held: [u32], t: u32, at: u32, by: i32) -> u32 {
     }
 }
 
-/// The run of `pads` with its change at tick `at` moved `by` ticks, as pads.
-pub fn moved(pads: [u32], at: u32, by: i32) -> Vec<u32> {
+/// The buttons held each tick of the run of `pads`: their presses left out.
+fn held_of(pads: [u32]) -> Vec<u32> {
     var held: Vec<u32> = Vec::with_capacity(pads.len())
     for p in pads {
         held.push(p & !PRESS)
     }
+    held
+}
+
+/// The run of `pads` with its change at tick `at` moved `by` ticks, as pads.
+pub fn moved(pads: [u32], at: u32, by: i32) -> Vec<u32> {
+    let held = held_of(pads)
     var out: Vec<u32> = Vec::with_capacity(pads.len())
     var last = 0
     for t in 0..held.len() {
@@ -142,12 +149,12 @@ pub fn moved(pads: [u32], at: u32, by: i32) -> Vec<u32> {
 }
 
 /// The run of `held` with its change at tick `at` moved `by` ticks, played from `from`, the state
-/// on tick `at - 2`.
+/// on tick `at - back`.
 @deterministic
 fn shifted(s: mut Shift, held: [u32], goal: Goal) {
     var w = s.from
-    var last = if s.at >= 3 { held[s.at - 3] } else { 0 }
-    for t in s.at - 2..held.len() {
+    var last = if s.at > s.back { held[s.at - s.back - 1] } else { 0 }
+    for t in s.at - s.back..held.len() {
         if s.within != WHOLE && t >= s.at + s.within {
             s.ok = alive(w, goal) && w.deaths == 0
             return
@@ -173,17 +180,14 @@ fn shifted(s: mut Shift, held: [u32], goal: Goal) {
 /// human limits: its changes firm `within` ticks (or over the whole run, `WHOLE`). A change in the
 /// first 2 ticks can't be moved early, so it isn't counted.
 pub fn slack(c: u32, pads: [u32], goal: Goal, within: u32) -> Slack {
-    var held: Vec<u32> = Vec::with_capacity(pads.len())
-    for p in pads {
-        held.push(p & !PRESS)
-    }
+    let held = held_of(pads)
     var shifts: Vec<Shift> = Vec::new()
     var w = world(c)
     var last = 0
     for t in 0..held.len() {
         if t + 2 < held.len() && held[t + 2] != held[t + 1] {
             for by in SHIFTS {
-                shifts.push(Shift { at: t + 2, within, by, from: w, ok: false })
+                shifts.push(Shift { at: t + 2, within, by, back: 2, from: w, ok: false })
             }
         }
         step(mut w, Pad { bits: pressed(held[t], last) })
@@ -215,4 +219,44 @@ pub fn slack(c: u32, pads: [u32], goal: Goal, within: u32) -> Slack {
 /// its changes firm.
 pub fn forgiving(s: Slack) -> bool {
     s.firm * 100 >= s.changes * FIRM
+}
+
+/// How far each change of the run of `pads` on course `c` to the end of `goal` can be moved, the
+/// same either way, with the run living through `within` ticks after (as `slack`'s): for each
+/// change, the most ticks up to `most`. A change before tick `most` + 1 can't be moved that far
+/// early, so it isn't counted. A wider window is an easier input: the time a player has to press.
+pub fn windows(c: u32, pads: [u32], goal: Goal, within: u32, most: u32) -> Vec<u32> {
+    let held = held_of(pads)
+    var states: Vec<World> = Vec::with_capacity(held.len())
+    var w = world(c)
+    var last = 0
+    for t in 0..held.len() {
+        states.push(w)
+        step(mut w, Pad { bits: pressed(held[t], last) })
+        last = held[t]
+    }
+    var shifts: Vec<Shift> = Vec::new()
+    for t in most + 1..held.len() {
+        if held[t] != held[t - 1] {
+            for k in 1..most + 1 {
+                for by in [-i32(k), i32(k)] {
+                    shifts.push(
+                        Shift { at: t, within, by, back: k, from: states[t - k], ok: false },
+                    )
+                }
+            }
+        }
+    }
+    shifts.par_each_mut(|s| shifted(mut s, held, goal))
+    var out: Vec<u32> = Vec::new()
+    var i = 0
+    while i < shifts.len() {
+        var k = 0
+        while k < most && shifts[i + 2 * k].ok && shifts[i + 2 * k + 1].ok {
+            k += 1
+        }
+        out.push(k)
+        i += 2 * most
+    }
+    out
 }

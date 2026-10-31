@@ -1,0 +1,647 @@
+// The levels' design, checked: what a level asks of a player, measured on the sim from its
+// searched runs (searched.wrela), so a change to a course that breaks a rule of good level design
+// fails like a broken jump does. Fun is judged by playing; these are the pitfalls that spoil it,
+// which a program can find:
+//
+// - A move is taught before it's needed: where a search with the move forbidden stops (the route
+//   tool's `--needs`), a sign that teaches it stands before (on this level or an earlier one).
+// - One thing at a time (Ryan's wife, 2026-10-30: dodging the creatures while still learning the
+//   moves): from a sign to where its move is needed, no foe patrols and no fall kills; and
+//   the first foe of each kind in the game patrols with no foe of another kind and no deadly fall
+//   near it. Nintendo's levels introduce a thing alone, then develop and twist it (Koichi
+//   Hayashida on Super Mario 3D Land's levels: docs/citations.md).
+// - No jumps into the unknown: standing at a deadly gap's edge, its far side is on the screen; and
+//   a foe the run comes near is on it from a reaction time away at the
+//   wet speed: the distance, not the run's own time, which a fast run makes too short to see.
+// - Short retries: the checkpoints are close together, timed at the running speed (a fast run
+//   bunny-hops far faster than a player learning the level runs: the polar agent found 30 to
+//   42 m/s), and coming back to one is safe: standing still there, nothing hurts.
+// - Random play breaks no rule: seeded random inputs never end a tick inside the ground, past the
+//   course's ends or with a number that isn't finite, and the same inputs give the same world.
+// - Measured difficulty: how far each input of the human run can come early or late and the run
+//   still live (`slack::windows`). Most inputs of any level have room (a run held through a long
+//   stretch); a level's difficulty is in its tight ones, so the first level may have none within
+//   `FIRST_WINDOW` ticks and every level must have a median of `ANY_WINDOW` or more.
+//
+// - Pacing: the human run never stands waiting more than 2 s (for a foe to pass, say).
+//
+// `wrela tool route -- --report` prints each level's numbers (`report`), for Ryan to read beside
+// playing it.
+
+use capybara::body::RADIUS
+use capybara::body::Mode
+use capybara::camera::{PLAY_ASPECT, camera, follow, framed, half_view}
+use capybara::cast::grounded
+use capybara::course::{Course, HOME, LEVELS, course}
+use capybara::earth::solids
+use capybara::feel::{FEEL, HZ, STEP}
+use capybara::foes::{Kind, half}
+use capybara::pad::{DOWN, Hold, JUMP, LEFT, Pad, RIGHT, UP, pad_of}
+use capybara::searched::searched
+use capybara::signs::signs
+use capybara::world::{NO_TALLY, Snap, World, back_at, present, step, step_counted, world}
+use engine::rng::{Rng, seed}
+use search::to_goal
+use slack::{RECOVER, pads_of, pressed, windows}
+use std::hash::state_hash
+
+/// A reaction time: what a foe or a gap must be on the screen for before the run meets it (s).
+pub const REACT: f32 = 0.4
+
+/// How near a lesson or a new foe nothing else may be (m).
+pub const ALONE: f32 = 6.0
+
+/// The longest the human run may take between checkpoints (s): what a death can cost, at most.
+/// The first level's are closer.
+pub const RETRY: f32 = 25.0
+pub const FIRST_RETRY: f32 = 15.0
+
+/// The most a timing window is measured to (ticks either way), the narrowest any input of the
+/// first level may be, and the narrowest any level's median may be.
+pub const MOST: u32 = 8
+pub const FIRST_WINDOW: u32 = 3
+pub const ANY_WINDOW: u32 = 2
+
+/// A run on a level, tick by tick: each tick's snapshot after it, its tally counted.
+pub fn traced(c: u32, run: [Hold]) -> Vec<Snap> {
+    var w = world(c)
+    var t = NO_TALLY
+    var out: Vec<Snap> = Vec::new()
+    for h in run {
+        for i in 0..h.ticks {
+            if w.finished == 0 {
+                step_counted(mut w, mut t, pad_of(h, i))
+                var s = present(w)
+                s.tally = t
+                out.push(s)
+            }
+        }
+    }
+    out
+}
+
+/// Whether falling at `x` on course `c` is falling out: no ground there (a block, a ledge, the
+/// ground itself) stands above its floor.
+fn deadly_at(c: Course, x: f32) -> bool {
+    match c.ground_at(x, 1.0e4) {
+        Some(y) => y < c.floor,
+        None => true,
+    }
+}
+
+/// Course `c`'s deadly gaps: each stretch (left, right, m) where falling is falling out.
+pub fn gaps(c: Course) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    var from: Option<f32> = None
+    var x = c.ends.x
+    while x <= c.ends.y {
+        let deadly = deadly_at(c, x)
+        match from {
+            Some(a) => {
+                if !deadly {
+                    out.push(vec2(a, x))
+                    from = None
+                }
+            },
+            None => {
+                if deadly {
+                    from = Some(x)
+                }
+            },
+        }
+        x += 0.25
+    }
+    out
+}
+
+/// The problems with level `c`'s deadly gaps, in words: one whose far side isn't on the 16:9
+/// screen of a player standing at its near edge, facing it, or is above or below the screen
+/// there. A leap of faith; the searched runs' bunny hops fly blind by choice (Ryan, 2026-10-30:
+/// the tech stays), so this asks it of the course, not of a run.
+pub fn blind_gaps(c: u32) -> Vec<String> {
+    borrow at = course(c)
+    let view = half_view(PLAY_ASPECT)
+    var out: Vec<String> = Vec::new()
+    for g in gaps(at) {
+        let near = at.ground_at(g.x - 0.3, 1.0e4).unwrap_or(0.0)
+        let far = at.ground_at(g.y + 0.3, 1.0e4).unwrap_or(0.0)
+        // The camera on a capybara standing at the edge, facing the gap, framed as the game does.
+        let eye = framed(camera(vec2(g.x - 0.3, near + RADIUS)), view, at.ends)
+        let off = vec2(g.y + 0.3, far) - eye
+        if off.x > view.x || abs(off.y) > view.y {
+            out.push(
+                f"the far side of the gap at {g.x:.1} m ({g.y:.1} m, {far - near:.1} m up) is off the screen from its edge",
+            )
+        }
+    }
+    out
+}
+
+/// Whether the stretch `a` to `b` (m) comes within `by` of the stretch `c` to `d`.
+fn near(a: f32, b: f32, c: f32, d: f32, by: f32) -> bool {
+    a - by < d && c < b + by
+}
+
+/// The moves the signs of the levels before `c` teach, a bit each.
+fn taught_before(c: u32) -> u32 {
+    var out = 0
+    for l in 0..c {
+        for s in signs(l) {
+            out = out | s.teaches
+        }
+    }
+    out
+}
+
+/// The problems with how level `c` teaches its moves, in words: none if a sign teaches each move
+/// the level needs (searched.wrela's `needs`: how far a search gets without it) before it's
+/// needed, unless an earlier level taught it, with nothing else to manage from that sign to there.
+pub fn lessons(c: u32) -> Vec<String> {
+    borrow at = course(c)
+    let needs = searched(c).needs
+    let before = taught_before(c)
+    let deadly = gaps(at)
+    var out: Vec<String> = Vec::new()
+    for b in 0..5 {
+        let bit = 1 << b
+        if needs[b] > 1.0e8 || before & bit != 0 {
+            continue
+        }
+        var sign: Option<f32> = None
+        for s in signs(c) {
+            if s.teaches & bit != 0 && s.at.x <= needs[b] {
+                sign = Some(s.at.x)
+            }
+        }
+        let Some(from) = sign else {
+            out.push(f"move {bit} is needed at {needs[b]:.1} m before a sign teaches it")
+            continue
+        }
+        // From the sign to where it's needed, and a metre on: no foe and no deadly fall near.
+        let to = needs[b] + 1.0
+        for f in at.foes {
+            let reach = f.range + half(f.kind).x
+            if near(from, to, f.at.x - reach, f.at.x + reach, 1.0) {
+                out.push(
+                    f"a foe at {f.at.x:.1} m patrols the lesson of move {bit} ({from:.1} to {to:.1} m)",
+                )
+            }
+        }
+        for g in deadly {
+            if near(from, to, g.x, g.y, 0.0) {
+                out.push(f"a deadly gap at {g.x:.1} m is in the lesson of move {bit}")
+            }
+        }
+    }
+    out
+}
+
+/// A kind of foe's name.
+fn named(k: Kind) -> Text {
+    match k {
+        Kind::Goose => "goose",
+        Kind::Pigeon => "pigeon",
+        Kind::Caiman => "caiman",
+        Kind::Gull => "gull",
+        Kind::Komodo => "Komodo dragon",
+        Kind::Ride => "ride",
+    }
+}
+
+/// The problems with how foes are first met, up to level `c`: the first foe of each kind in the
+/// game must patrol with no foe of another kind and no deadly fall within `ALONE` of its patrol.
+pub fn first_foes(c: u32) -> Vec<String> {
+    var seen = 0
+    for l in 0..c {
+        for f in course(l).foes {
+            seen = seen | (1 << u32(f.kind))
+        }
+    }
+    borrow at = course(c)
+    let deadly = gaps(at)
+    var out: Vec<String> = Vec::new()
+    for f in at.foes {
+        if seen & (1 << u32(f.kind)) != 0 {
+            continue
+        }
+        seen = seen | (1 << u32(f.kind))
+        let (a, b) = (f.at.x - f.range, f.at.x + f.range)
+        for o in at.foes {
+            if o.kind != f.kind && near(a, b, o.at.x - o.range, o.at.x + o.range, ALONE) {
+                let (a, b) = (named(f.kind), named(o.kind))
+                out.push(f"the first {a} at {f.at.x:.1} m has a {b} at {o.at.x:.1} m")
+            }
+        }
+        for g in deadly {
+            if near(a, b, g.x, g.y, ALONE) {
+                let a = named(f.kind)
+                out.push(f"the first {a} at {f.at.x:.1} m has a deadly gap at {g.x:.1} m")
+            }
+        }
+    }
+    out
+}
+
+/// The problems with what the run of `run` on level `c` sees coming, in words: a foe the run
+/// comes within a metre of that wasn't on it once it was nearer than `REACT` at the wet speed
+/// (5.4 m). (A gap's far side `REACT` before the
+/// jump is more than a fast run can see: at the Wetlands' big slide, 6 m before its lip, the
+/// view's edge is short of the far side of its 12 m pit.)
+pub fn unseen(c: u32, run: [Hold]) -> Vec<String> {
+    borrow at = course(c)
+    let snaps = traced(c, run)
+    let view = half_view(PLAY_ASPECT)
+    var cam = camera(at.start)
+    var eyes: Vec<vec2> = Vec::new()
+    for s in snaps {
+        follow(mut cam, s, STEP)
+        eyes.push(framed(cam, view, at.ends))
+    }
+    let reach = REACT * FEEL.wet_speed
+    let shows = |t: u32, p: vec2| abs(p.x - eyes[t].x) < view.x && abs(p.y - eyes[t].y) < view.y
+    var out: Vec<String> = Vec::new()
+    // Each foe the run comes near: on the screen from a reaction time away.
+    for i in 0..at.foes.len() {
+        for t in 0..snaps.len() {
+            let f = snaps[t].foes[i]
+            if f.z > 0.0 && distance(f.xy, snaps[t].at) < 1.0 + half(at.foes[i].kind).x {
+                var then = t
+                while then > 0 && distance(snaps[then].foes[i].xy, snaps[then].at) < reach {
+                    then -= 1
+                }
+                if !shows(then, snaps[then].foes[i].xy) {
+                    out.push(f"the foe at {at.foes[i].at.x:.1} m was met before it was seen")
+                }
+                break
+            }
+        }
+    }
+    out
+}
+
+/// The longest stretch of level `c` between checkpoints (and from the start, and to the goal),
+/// in seconds at the running speed: what a death there costs a player who runs it.
+pub fn longest_retry(c: u32) -> f32 {
+    borrow at = course(c)
+    var xs: Vec<f32> = Vec::from([at.start.x])
+    for p in at.checkpoints {
+        xs.push(p.x)
+    }
+    xs.push(at.goal_lo.x)
+    var longest = 0.0
+    for i in 1..xs.len() {
+        longest = max(longest, abs(xs[i] - xs[i - 1]))
+    }
+    longest / FEEL.speed
+}
+
+/// The checkpoints of level `c` where standing still after coming back is hurt or falls, by
+/// number.
+pub fn unsafe_comebacks(c: u32) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for i in 0..course(c).checkpoints.len() {
+        var w = back_at(c, i)
+        for _ in 0..3 * HZ {
+            step(mut w, Pad { bits: 0 })
+        }
+        if w.deaths > 0 {
+            out.push(i)
+        }
+    }
+    out
+}
+
+/// Whether `p` is inside one of `outlines` (closed rings of points).
+fn inside(outlines: [Vec<vec2>], p: vec2) -> bool {
+    for ring in outlines {
+        var odd = false
+        var j = ring.len() - 1
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[j])
+            if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+                odd = !odd
+            }
+            j = i
+        }
+        if odd {
+            return true
+        }
+    }
+    false
+}
+
+/// The buttons random play picks from.
+const PLAYED: [u32; 9] = [
+    RIGHT,
+    RIGHT | JUMP,
+    RIGHT | DOWN,
+    LEFT,
+    LEFT | JUMP,
+    JUMP,
+    DOWN,
+    UP,
+    0,
+]
+
+/// `ticks` of random play on level `c` from seed `from`, held a few ticks to most of a second at a
+/// time: the world after, or the first rule it broke, in words. Without `rules` it only plays.
+pub fn random_play(c: u32, from: u32, ticks: u32, rules: bool = true) -> Result<World, String> {
+    borrow at = course(c)
+    let outlines = solids(at)
+    var rng = Rng::new(seed(from))
+    var w = world(c)
+    var last = 0
+    var t = 0
+    while t < ticks {
+        let held = PLAYED[min(u32(rng.range(lo: 0.0, hi: f64(PLAYED.len()))), PLAYED.len() - 1)]
+        let n = u32(rng.range(lo: 3.0, hi: 60.0))
+        for _ in 0..n {
+            step(mut w, Pad { bits: pressed(held, last) })
+            last = held
+            t += 1
+            if !rules {
+                continue
+            }
+            let b = w.body
+            if !(b.at.x == b.at.x && b.at.y == b.at.y && b.vel.x == b.vel.x && b.vel.y == b.vel.y) {
+                return Err(f"a number that isn't one at tick {t}")
+            }
+            if b.at.x < at.ends.x - 0.5 || b.at.x > at.ends.y + 0.5 {
+                return Err(f"past the course's ends at tick {t}: {b.at.x:.2} m")
+            }
+            if w.dying == 0 && inside(outlines, b.at) {
+                return Err(f"inside the ground at tick {t}: {b.at.x:.2}, {b.at.y:.2}")
+            }
+        }
+    }
+    Ok(w)
+}
+
+/// How the human any% run of a level moves: the share of its ticks at the running speed or more,
+/// its longest stretch slower than half of it (s), and its longest wait, standing (s).
+pub struct Pace: Copy {
+    pub at_speed: f32,
+    pub slowest: f32,
+    pub waiting: f32,
+}
+
+/// The longest wait the human run may make (s).
+pub const WAIT: f32 = 2.0
+
+/// Level `c`'s pace.
+pub fn pace(c: u32) -> Pace {
+    let snaps = traced(c, searched(c).human_any)
+    var fast = 0
+    var slow = 0
+    var wait = 0
+    var slowest = 0
+    var waiting = 0
+    for s in snaps {
+        let v = length(s.vel)
+        if v >= FEEL.speed * 0.95 {
+            fast += 1
+        }
+        slow = if v < FEEL.speed * 0.5 { slow + 1 } else { 0 }
+        wait = if v < 0.5 && s.finished == 0 && s.dying == 0 { wait + 1 } else { 0 }
+        slowest = max(slowest, slow)
+        waiting = max(waiting, wait)
+    }
+    Pace {
+        at_speed: f32(fast) / f32(max(snaps.len(), 1)),
+        slowest: f32(slowest) / f32(HZ),
+        waiting: f32(waiting) / f32(HZ),
+    }
+}
+
+/// Every level's numbers, a few lines each, in words: its searched times, where it needs each
+/// move, its timing windows, its pace and its longest retry.
+pub fn report() -> String {
+    var out = String::new()
+    for c in 0..LEVELS {
+        let s = searched(c)
+        let name = capybara::course::name(c)
+        if s.any.is_empty() {
+            out.push_str(f"{name}: not searched\n")
+            continue
+        }
+        let time = |run: [Hold]| f32(capybara::world::play(c, run).finished) / f32(HZ)
+        let (any, full) = (time(s.any), time(s.full))
+        let (human_any, human_full) = (time(s.human_any), time(s.human_full))
+        let w = level_windows(c, MOST)
+        var narrow = 0
+        for x in w {
+            if x <= 2 {
+                narrow += 1
+            }
+        }
+        let p = pace(c)
+        let retry = longest_retry(c)
+        out.push_str(f"{name}\n")
+        out.push_str(
+            f"  times: any% {any:.2} s, 100% {full:.2} s; within a person's limits {human_any:.2} s, {human_full:.2} s\n",
+        )
+        let need = |x: f32| if x > 1.0e8 { String::from("never") } else { f"at {x:.0} m" }
+        let (d, wa, sl, sw) = (
+            need(s.needs[1]),
+            need(s.needs[2]),
+            need(s.needs[3]),
+            need(s.needs[4]),
+        )
+        out.push_str(f"  needs: double jump {d}, water {wa}, slide {sl}, swimming {sw}\n")
+        out.push_str(
+            f"  timing windows: median {median(w)} ticks either way; {narrow} of {w.len()} inputs within 2 (the tight ones)\n",
+        )
+        out.push_str(
+            f"  pace: {p.at_speed * 100.0:.0}% at speed, slowest stretch {p.slowest:.1} s, longest wait {p.waiting:.1} s; longest retry {retry:.1} s\n",
+        )
+    }
+    out
+}
+
+/// The median of `xs` (0 for none).
+pub fn median(xs: [u32]) -> u32 {
+    if xs.is_empty() {
+        return 0
+    }
+    var sorted = Vec::from(xs)
+    sorted.sort_by(|a, b| a < b)
+    sorted[sorted.len() / 2]
+}
+
+/// The timing windows of level `c`'s human any% run (`slack::windows`, within a second), each
+/// measured up to `most` ticks either way.
+pub fn level_windows(c: u32, most: u32) -> Vec<u32> {
+    let pads = pads_of(c, searched(c).human_any)
+    windows(c, pads, to_goal(0), RECOVER, most)
+}
+
+/// Level `c`'s windows against the rules (measured only as far as they ask, `FIRST_WINDOW`
+/// ticks: a test's fuel runs out measuring every level to `MOST`): every input of the first level
+/// has `FIRST_WINDOW` ticks' room, and any level's median `ANY_WINDOW`.
+fn windows_hold(c: u32) {
+    let w = level_windows(c, FIRST_WINDOW)
+    let m = median(w)
+    assert(m >= ANY_WINDOW, f"level {c}: a median window of {m} ticks")
+    if c == HOME {
+        for x in w {
+            assert(x >= FIRST_WINDOW, f"the first level has an input with {x} ticks' room")
+        }
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// Every level's problems from `check`, in words, each with its level's number.
+fn every(check: fn(u32) -> Vec<String>) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for c in 0..LEVELS {
+        for p in check(c) {
+            out.push(f"level {c}: {p}")
+        }
+    }
+    out
+}
+
+/// Fails with `problems`, one a line, if there are any.
+fn none_of(problems: [String], what: str) {
+    if problems.is_empty() {
+        return
+    }
+    var text = String::from(what)
+    for p in problems {
+        text.push_str("\n  ")
+        text.push_str(p)
+    }
+    panic(text)
+}
+
+@test
+fn every_level_is_searched() {
+    // Each level's runs finish in their times without a death: its routes' own test plays them.
+    for c in 0..LEVELS {
+        let s = searched(c)
+        let found = !s.any.is_empty() && !s.full.is_empty() && !s.human_any.is_empty()
+        assert(
+            found && !s.human_full.is_empty(),
+            f"level {c} isn't searched: wrela tool route -- --level <key>",
+        )
+    }
+}
+
+@test
+fn every_move_is_taught_before_it_is_needed_with_nothing_else_to_manage() {
+    none_of(every(lessons), "lessons with something else to manage")
+}
+
+@test
+fn the_first_foe_of_each_kind_comes_alone() {
+    none_of(every(first_foes), "foes met with something else")
+}
+
+@test
+fn every_deadly_gaps_far_side_shows_from_its_edge() {
+    none_of(every(blind_gaps), "leaps of faith")
+}
+
+@test
+fn no_foe_comes_before_the_screen_shows_it() {
+    none_of(every(|c: u32| unseen(c, searched(c).human_any)), "met unseen, any%")
+    none_of(every(|c: u32| unseen(c, searched(c).human_full)), "met unseen, 100%")
+}
+
+@test
+fn checkpoints_are_close_together_and_safe_to_come_back_to() {
+    for c in 0..LEVELS {
+        let most = if c == HOME { FIRST_RETRY } else { RETRY }
+        let longest = longest_retry(c)
+        assert(longest <= most, f"level {c}: {longest:.1} s between checkpoints")
+        let bad = unsafe_comebacks(c)
+        assert(bad.is_empty(), f"level {c}: coming back to checkpoint {bad[0]} isn't safe")
+    }
+}
+
+@test
+fn random_play_breaks_no_rule_and_plays_the_same_again() {
+    for c in 0..LEVELS {
+        for s in 0..4 {
+            match random_play(c, s * 7919 + c, 2400) {
+                Ok(w) => {
+                    let Ok(again) = random_play(c, s * 7919 + c, 2400, rules: false) else {
+                        panic("it played before")
+                    }
+                    assert(state_hash(w) == state_hash(again), f"level {c}, seed {s}: not the same")
+                },
+                Err(e) => panic(f"level {c}, seed {s}: {e}"),
+            }
+        }
+    }
+}
+
+@test
+fn random_play_finds_the_ground_it_should() {
+    // The check itself: a middle inside the ground is found, one in the air isn't.
+    borrow at = course(HOME)
+    let outlines = solids(at)
+    assert(inside(outlines, vec2(10.0, -1.0)) && !inside(outlines, vec2(10.0, 1.0)))
+    assert(!inside(outlines, vec2(23.0, -0.6)), "a ditch is open")
+}
+
+@test
+fn the_timing_windows_of_home_hold() {
+    windows_hold(capybara::course::HOME)
+}
+
+@test
+fn the_timing_windows_of_wetlands_hold() {
+    windows_hold(capybara::course::WETLANDS)
+}
+
+@test
+fn the_timing_windows_of_savanna_hold() {
+    windows_hold(capybara::course::SAVANNA)
+}
+
+@test
+fn the_timing_windows_of_rainforest_hold() {
+    windows_hold(capybara::course::RAINFOREST)
+}
+
+@test
+fn the_timing_windows_of_aviary_hold() {
+    windows_hold(capybara::course::AVIARY)
+}
+
+@test
+fn the_timing_windows_of_reptiles_hold() {
+    windows_hold(capybara::course::REPTILES)
+}
+
+@test
+fn the_timing_windows_of_polar_hold() {
+    windows_hold(capybara::course::POLAR)
+}
+
+@test
+fn the_timing_windows_of_farm_hold() {
+    windows_hold(capybara::course::FARM)
+}
+
+@test
+fn the_timing_windows_of_food_court_hold() {
+    windows_hold(capybara::course::FOOD_COURT)
+}
+
+@test
+fn the_human_run_never_waits_long() {
+    for c in 0..LEVELS {
+        let p = pace(c)
+        assert(p.waiting <= WAIT, f"level {c}: a wait of {p.waiting:.1} s")
+    }
+}
+
+@test
+fn a_gap_is_where_falling_is_falling_out() {
+    let g = gaps(course(HOME))
+    assert(g.len() == 1, f"{g.len()} gaps")
+    assert(abs(g[0].x - 200.0) < 0.5 && abs(g[0].y - 203.0) < 0.5, f"{g[0]}")
+}

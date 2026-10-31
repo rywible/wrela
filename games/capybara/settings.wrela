@@ -11,9 +11,9 @@ use camera::Aspect
 /// Where the settings are stored.
 pub const SETTINGS: Text = "capybara/settings"
 
-/// The stored settings' version (a store of the one before reads its settings and the aspect at
-/// first; of another, as the settings at first).
-const VERSION: u8 = 2
+/// The stored settings' version (a store of an earlier one reads what it has, the rest as at first;
+/// of another, as the settings at first).
+const VERSION: u8 = 3
 
 /// The ghost that runs beside the player: none, their best any% run, the robot's (the route
 /// search's fastest) or the human line's.
@@ -32,6 +32,8 @@ pub struct Settings: Copy + Eq {
     /// The view's shape: the fixed play area, or the screen's (camera.wrela's `Aspect`). Stored;
     /// no option shows it yet (the options' steps are the sim's).
     pub aspect: Aspect = Aspect::Fixed,
+    /// The player's best whole-game time (ticks: world.wrela's `Game`), or 0 without one.
+    pub best_game: u32 = 0,
 }
 
 /// The settings as stored.
@@ -45,14 +47,24 @@ pub fn encode(s: Settings) -> Vec<u8> {
         out.push(u8((s.learned >> (8 * i)) & 0xff))
     }
     out.push(if s.aspect == Aspect::Free { 1 } else { 0 })
+    for i in 0..4 {
+        out.push(u8((s.best_game >> (8 * i)) & 0xff))
+    }
     out
 }
 
 /// The settings stored as `b`, or the settings at first if `b` isn't settings of this version.
 pub fn decode(b: [u8]) -> Settings {
     let first = b.len() == 8 && b[0] == 1
-    if !first && (b.len() != 9 || b[0] != VERSION) {
+    let second = b.len() == 9 && b[0] == 2
+    if !first && !second && (b.len() != 13 || b[0] != VERSION) {
         return Settings {}
+    }
+    var best_game = 0
+    if !first && !second {
+        for i in 0..4 {
+            best_game = best_game | (u32(b[9 + i]) << (8 * i))
+        }
     }
     var learned = 0
     for i in 0..4 {
@@ -64,6 +76,7 @@ pub fn decode(b: [u8]) -> Settings {
         ghost: min(u32(b[3]), GHOSTS - 1),
         learned,
         aspect: if !first && b[8] == 1 { Aspect::Free } else { Aspect::Fixed },
+        best_game,
     }
 }
 
@@ -109,11 +122,17 @@ fn settings_are_stored_and_read_back_and_anything_else_reads_as_the_first() {
         ghost: HUMAN_GHOST,
         learned: 0x80000005,
         aspect: Aspect::Free,
+        best_game: 123456,
     }
     assert(decode(encode(s)) == s)
+    // The version before's (no best game) reads as stored, with none.
+    var two = encode(s)
+    two.truncate(9)
+    two[0] = 2
+    assert(decode(two) == Settings { best_game: 0, ..s }, "version 2's")
     // The version before's (no aspect) reads as stored, in the fixed aspect.
     let old = [1, 0, 1, u8(HUMAN_GHOST), 5, 0, 0, 0x80]
-    assert(decode(old) == Settings { aspect: Aspect::Fixed, ..s }, "the version before's")
+    assert(decode(old) == Settings { aspect: Aspect::Fixed, best_game: 0, ..s }, "version 1's")
     assert(decode([]) == Settings {}, "nothing stored")
     var other = encode(s)
     other[0] = 9

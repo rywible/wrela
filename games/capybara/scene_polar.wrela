@@ -1,0 +1,747 @@
+// What's behind The Polar Coast's course, the sixth habitat on the zoo's loop (design.md, "A map
+// of the zoo"), painted as the Wetlands' backdrop is (scenery.wrela): a rocky, snowy shore by a
+// cold sea pool, in cool whites and blues under a crisp, clear light.
+//
+// - The far cliffs (0.06): cliffs of blue-white ice, flat-topped and stepped, and a pale winter
+//   haze over them.
+// - The sea pool (0.2): its open water and an iceberg now and then, its rocky, snow-capped far
+//   shore, and over the shore the Reptile House's warm roof behind and the Petting Farm's red
+//   barn ahead.
+// - The coast (0.42): its residents along the snow: a line of penguins waddling and one sliding
+//   on its belly; two seals on a floe and one watching from the water; a polar bear asleep in the
+//   snow; puffins on a ledge; and the seagull's crew, gulls perched on a lookout's rail.
+// - The shore (0.68): snow drifts, ice-crusted crags hung with icicles, and frosted grass, nearest.
+//
+// The layers fade into a cold mist (`FROST`), not the Wetlands' green one, and a layer's snow
+// darkens into blue shade below its ground.
+
+use engine::noise::{hash2, noise2}
+use ink::{INK, washed}
+use scenery::{
+    Scene, PARALLAX, View, crowned, dome, fbm, nearer, on_layer, over, paint, pixel_on, reach,
+    under,
+}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
+use std::field::smin
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+
+/// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
+pub struct Polar {}
+
+impl Scene for Polar {
+    fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+        if k == 0 { shore(pixel, v, g, gs) } else if k == 1 {
+            coast(pixel, v, g, gs)
+        } else if k == 2 {
+            sea(pixel, v, g, gs)
+        } else { cliffs(pixel, v, g, gs) }
+    }
+}
+
+// ---- the palette and the means ---------------------------------------------------------------
+
+/// The cold mist the far layers fade into.
+const FROST = vec3(0.86, 0.91, 0.95)
+const SNOW = vec3(0.97, 0.98, 1.0)
+const SNOW_SHADE = vec3(0.78, 0.85, 0.95)
+const ROCK = vec3(0.6, 0.64, 0.72)
+const ROCK_SHADE = vec3(0.46, 0.5, 0.62)
+const ICE = vec3(0.74, 0.88, 0.97)
+const SEA = vec3(0.3, 0.5, 0.67)
+const SEA_PALE = vec3(0.6, 0.76, 0.87)
+
+/// The shade a layer's snow darkens into below its ground.
+const SHADE = vec3(0.32, 0.4, 0.56)
+
+/// `c` with an ink seam about a pixel (`px` m) wide where `d` (m) crosses 0: a line inside a
+/// shape, between two of its washes.
+fn seam(c: vec3, d: f32, px: f32) -> vec3 {
+    blend(c, INK, saturate(1.0 - abs(d) / (px * 0.9)) * 0.75)
+}
+
+/// Shape `a` in front of shape `b`, each a distance and a colour: their union, coloured by `a`
+/// where it is, and inked along `a`'s edge where it crosses `b` (`px` m a pixel).
+fn before(a: (f32, vec3), b: (f32, vec3), px: f32) -> (f32, vec3) {
+    let (da, ca) = a
+    let (db, cb) = b
+    let c = if da < 0.0 { ca } else { cb }
+    (min(da, db), if db < 0.0 { seam(c, da, px) } else { c })
+}
+
+/// Rock of colour `c` at `l` (m) in strata, each a little darker at its foot.
+fn strata(c: vec3, l: vec2) -> vec3 {
+    let stratum = fract(l.y / 0.42 + 0.25 * noise2(l * vec2(0.8, 0.3)))
+    blend(c, ROCK_SHADE * 0.92, smoothstep(0.25, 0.0, stratum) * 0.6)
+}
+
+/// A shape `s` times the size it was worked out at.
+fn grown(o: (f32, vec3), s: f32) -> (f32, vec3) {
+    let (d, c) = o
+    (d * s, c)
+}
+
+/// The near layers' snow below its sunlit lip: a cool blue wash, deeper on the nearest layer,
+/// so that the course's white snow and ice stay the brightest things on the screen.
+const COAST_SNOW = vec3(0.62, 0.71, 0.86)
+const DRIFT_SNOW = vec3(0.55, 0.63, 0.79)
+
+/// Snow `up` m above its ground (below 0 under it): white along its lip in the sun, its face
+/// under the lip the cooler wash `face`.
+fn snowy(up: f32, face: vec3) -> vec3 {
+    blend(face, SNOW, smoothstep(-0.3, -0.04, up))
+}
+
+// ---- the far cliffs --------------------------------------------------------------------------
+
+/// The ice cliffs' cells (m): a tabular mass in each.
+const CLIFF: f32 = 18.0
+
+/// The ice cliffs' tabular mass in cell `i` (`CLIFF`): where it starts and ends (m).
+fn cliff_mass(i: f32) -> (f32, f32) {
+    ((i + 0.05 + 0.25 * hash2(i32(i), 93)) * CLIFF, (i + 0.6 + 0.35 * hash2(i32(i), 94)) * CLIFF)
+}
+
+/// The ice cliffs' top at `x` (m): a tabular mass of ice in each 18 m, its top flat and gently
+/// stepped, its sides sheer, and a low shelf of sea ice in the gaps between.
+fn cliff_top(x: f32) -> f32 {
+    let i = floor(x / CLIFF)
+    let (a, b) = cliff_mass(i)
+    let tall = 1.6 + 2.6 * hash2(i32(i), 95) + 0.5 * fbm(vec2(x * 0.08, 2.0), 2)
+    let mass = smoothstep(a, a + 0.5, x) * (1.0 - smoothstep(b - 0.5, b, x))
+    1.0 + 0.1 * noise2(vec2(x * 0.6, 8.0)) + tall * mass
+}
+
+/// Where the Aviary's dome stands on the far layer (m): behind, over the ice shelf.
+const AVIARY_AT: f32 = -14.0
+
+fn cliffs(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[3])
+    let px = pixel_on(v, PARALLAX[3])
+    if q.y > 11.0 {
+        return vec4(0.0)
+    }
+    let top = cliff_top(q.x)
+    // The height over the top, as a distance: divided by the slope, so the line is as wide
+    // up a sheer step as along a flat top.
+    let slope = (cliff_top(q.x + 0.05) - cliff_top(q.x - 0.05)) / 0.1
+    let d = (q.y - top) / sqrt(1.0 + slope * slope)
+    // The pale winter haze over the cliffs, thinning upwards.
+    let haze = vec4(vec3(0.9, 0.94, 0.98), 0.45 * (1.0 - smoothstep(1.0, 8.5, q.y)))
+    // The Aviary's dome, the one thing of the zoo that shows from everywhere, on the shelf.
+    let (dome_d, glass) = dome(q - vec2(AVIARY_AT, 1.2), 2.4)
+    if dome_d < 0.0 || dome_d < d {
+        return over(paint(g, gs, dome_d, glass, q, px, haze: 0.5, line: 0.6, mist: FROST), haze)
+    }
+    if d > px * 2.0 {
+        return haze
+    }
+    // Blue-white ice, bluer lower down, streaked by crevasses, with snow on the top; a cooler
+    // wash down the sheer face at a mass's start, turned from the sun.
+    let streak = abs(fract(q.x * 0.31 + 0.6 * noise2(vec2(q.x * 0.4, q.y * 0.5))) - 0.5)
+    var c = blend(vec3(0.88, 0.93, 0.98), vec3(0.72, 0.83, 0.94), smoothstep(0.0, 3.0, top - q.y))
+    c = blend(c, vec3(0.64, 0.77, 0.91), smoothstep(0.06, 0.02, streak) * 0.45)
+    let (a, _) = cliff_mass(floor(q.x / CLIFF))
+    let face = smoothstep(a + 1.9, a + 1.5, q.x + 0.3 * noise2(q * 0.8)) * step(a, q.x)
+    c = blend(c, vec3(0.56, 0.7, 0.88), face * 0.85)
+    if q.y > top - 0.2 - 0.1 * noise2(vec2(q.x * 1.3, 4.0)) {
+        c = SNOW
+    }
+    over(paint(g, gs, d, c, q, px, haze: 0.5, line: 0.6, mist: FROST), haze)
+}
+
+// ---- the sea pool, and the zoo beyond its far shore ------------------------------------------
+
+/// The pool's surface on its layer (m).
+const WATER_LINE: f32 = 0.2
+
+/// The far shore's top at `x` (m): low, rocky headlands with the open sea between them, out to
+/// the ice shelf; unbroken under the zoo's buildings, which stand over it.
+fn far_shore(x: f32) -> f32 {
+    let bank = 0.45 + 1.0 * fbm(vec2(x * 0.09, 6.0), 2) + 0.12 * abs(sin(x * 1.7))
+    let near_zoo = min(abs(x - REPTILES_AT), abs(x - BARN_AT))
+    let land = max(
+        smoothstep(0.4, 0.52, noise2(vec2(x * 0.06, 3.0))),
+        smoothstep(8.0, 6.0, near_zoo),
+    )
+    WATER_LINE - 0.3 + (bank + 0.3) * land
+}
+
+/// The open water at `q`: deep blue near, paler towards the far shore, with pale ripples.
+fn water(q: vec2) -> vec3 {
+    let c = blend(SEA, SEA_PALE, smoothstep(-1.4, 0.0, q.y - WATER_LINE))
+    let ripple = noise2(vec2(q.x * 0.9, q.y * 10.0))
+    blend(c, SEA_PALE * 1.08, smoothstep(0.7, 0.78, ripple) * 0.6)
+}
+
+/// Where the Reptile House (behind, where the level starts) and the Petting Farm's barn (ahead,
+/// near where it ends) stand along the sea's layer (m).
+const REPTILES_AT: f32 = 2.0
+const BARN_AT: f32 = 128.0
+
+/// The Reptile House (`l` from the middle of its foot): a cream wall with warm windows under a
+/// hipped roof of terracotta tiles, a vent on its ridge, and a palm beside it.
+fn reptile_house(l: vec2) -> (f32, vec3) {
+    let wall = rbox(l - vec2(0.0, 1.0), vec2(3.0, 1.0), 0.04)
+    let pane = abs(fract(l.x / 1.2) - 0.5) < 0.2 && l.y > 0.9 && l.y < 1.6
+    var best = (wall, if pane { vec3(1.0, 0.8, 0.44) } else { vec3(0.95, 0.86, 0.68) })
+    let e = vec2(abs(l.x), l.y)
+    let roof = max(max(1.95 - l.y, l.y - 3.35), dot(e - vec2(3.4, 1.95), vec2(0.733, 0.681)))
+    let course = fract((l.y - 1.95) / 0.28) < 0.2
+    best = nearer(best, (roof, if course { vec3(0.72, 0.38, 0.26) } else { vec3(0.9, 0.52, 0.34) }))
+    best = nearer(best, (rbox(l - vec2(0.0, 3.5), vec2(0.3, 0.22), 0.05), vec3(0.8, 0.44, 0.3)))
+    // The palm: a curved trunk and its fronds, drooping.
+    let crown = vec2(4.4, 3.1)
+    var palm = min(
+        cone(l, vec2(3.9, 0.0), vec2(4.1, 1.6), ra: 0.13, rb: 0.1),
+        cone(l, vec2(4.1, 1.6), crown, ra: 0.1, rb: 0.08),
+    )
+    best = nearer(best, (palm, vec3(0.64, 0.5, 0.36)))
+    palm = 1.0e3
+    for a in [-0.4, 0.5, 1.4, 2.3, 3.2] {
+        let tip = crown + vec2(cos(a), sin(a) * 0.5 - 0.35) * 1.15
+        palm = min(palm, cone(l, crown, tip, ra: 0.13, rb: 0.0))
+    }
+    nearer(best, (palm, vec3(0.45, 0.66, 0.38)))
+}
+
+/// The Petting Farm's barn (`l` from the middle of its foot): red boards under a gambrel roof, a
+/// big door crossed in white, a loft door, a rooster on its weathervane, and a silo beside it.
+fn barn(l: vec2) -> (f32, vec3) {
+    let wall = rbox(l - vec2(0.0, 1.3), vec2(2.0, 1.3), 0.03)
+    let board = abs(fract(l.x / 0.32) - 0.5) < 0.08
+    var red = if board { vec3(0.68, 0.22, 0.18) } else { vec3(0.82, 0.28, 0.21) }
+    let door = abs(l.x) < 0.75 && l.y < 1.5
+    let cross = min(abs(l.x - l.y + 0.75), abs(l.x + l.y - 0.75)) < 0.09
+    if door && (abs(l.x) > 0.65 || l.y > 1.4 || cross) {
+        red = vec3(0.96, 0.94, 0.88)
+    }
+    let loft = rbox(l - vec2(0.0, 2.75), vec2(0.35, 0.35), 0.0)
+    if loft < 0.0 {
+        red = if loft > -0.08 { vec3(0.96, 0.94, 0.88) } else { vec3(0.36, 0.2, 0.18) }
+    }
+    var best = (wall, red)
+    let e = vec2(abs(l.x), l.y)
+    let roof = max(
+        2.5 - l.y,
+        max(
+            dot(e - vec2(2.25, 2.5), vec2(0.871, 0.492)),
+            dot(e - vec2(1.6, 3.65), vec2(0.351, 0.936)),
+        ),
+    )
+    best = nearer(best, (roof, vec3(0.48, 0.4, 0.42)))
+    let vane = min(
+        capsule(l, vec2(0.0, 4.2), vec2(0.0, 4.8), 0.025),
+        capsule(l, vec2(-0.25, 4.65), vec2(0.25, 4.65), 0.02),
+    )
+    let rooster = min(
+        min(ellipse(l - vec2(0.0, 4.95), vec2(0.13, 0.08)), length(l - vec2(0.12, 5.05)) - 0.05),
+        ellipse(l - vec2(-0.13, 5.02), vec2(0.05, 0.09)),
+    )
+    best = nearer(best, (min(vane, rooster), vec3(0.3, 0.28, 0.3)))
+    let silo = min(
+        rbox(l - vec2(3.0, 1.9), vec2(0.6, 1.9), 0.02),
+        max(length(l - vec2(3.0, 3.8)) - 0.6, 3.8 - l.y),
+    )
+    let hoop = abs(fract(l.y / 0.6) - 0.5) < 0.05 && l.y < 3.8
+    let steel = if l.y > 3.8 { vec3(0.62, 0.68, 0.74) } else if hoop {
+        vec3(0.62, 0.62, 0.62)
+    } else {
+        vec3(0.8, 0.8, 0.78)
+    }
+    nearer(best, (silo, steel))
+}
+
+fn sea(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[2])
+    let px = pixel_on(v, PARALLAX[2])
+    if q.y > 5.2 {
+        return vec4(0.0)
+    }
+    let surface = q.y - WATER_LINE
+    // Well under the surface only the water shows.
+    if surface < -px * 3.0 {
+        return vec4(blend(washed(water(q), q, g, gs), FROST, 0.4), 1.0)
+    }
+    var c = paint(g, gs, surface, water(q), q, px, haze: 0.4, line: 0.8, mist: FROST)
+    // An iceberg now and then, afloat.
+    let cell = floor(q.x / 11.0)
+    let h = hash2(i32(cell), 91)
+    let x = (cell + 0.3 + 0.4 * hash2(i32(cell), 92)) * 11.0
+    if h < 0.45 && abs(q.x - x) < 2.2 && q.y < WATER_LINE + 1.4 {
+        let l = q - vec2(x, WATER_LINE)
+        let w = 0.7 + 1.6 * h
+        let tall = 0.5 + 1.6 * h
+        // A box, its top cut into a peak off its middle: a gentle slope one side, a steep one the
+        // other.
+        let peak = l - vec2(w * (0.5 * hash2(i32(cell), 96) - 0.25), tall)
+        let roof = max(dot(peak, vec2(-0.45, 0.89)), dot(peak, vec2(0.77, 0.64)))
+        let berg = max(max(rbox(l - vec2(0.0, tall * 0.5), vec2(w, tall * 0.5), 0.12), roof), -l.y)
+        let ice = crowned(SNOW, ICE, l, vec2(0.0, 0.6), w)
+        c = over(c, paint(g, gs, berg, ice, q, px, haze: 0.4, line: 0.8, mist: FROST))
+    }
+    if c.w > 0.999 {
+        return c
+    }
+    // The far shore: blue-grey rock, its top under snow, and a cooler wash on the faces turned
+    // from the sun (those rising towards it).
+    let top = far_shore(q.x)
+    if q.y - top > px * 2.0 && abs(q.x - REPTILES_AT) > 5.7 && abs(q.x - BARN_AT) > 3.8 {
+        return c
+    }
+    // Above the shore and its line (a building's column), no rock to shade.
+    if q.y - top <= reach(0.8, px) {
+        let rise = (far_shore(q.x + 0.2) - far_shore(q.x - 0.2)) / 0.4
+        let away = smoothstep(0.15, 0.6, rise)
+        let crack = abs(fract(q.x * 0.6 + 0.6 * noise2(q * 1.5)) - 0.5)
+        var rock = blend(ROCK, ROCK_SHADE, max(smoothstep(0.1, 0.0, crack) * 0.8, away * 0.7))
+        if q.y > top - 0.22 - 0.12 * noise2(vec2(q.x * 2.0, 1.0)) {
+            rock = blend(SNOW, SNOW_SHADE, away)
+        }
+        c = over(c, paint(g, gs, q.y - top, rock, q, px, haze: 0.42, line: 0.8, mist: FROST))
+        if c.w > 0.999 {
+            return c
+        }
+    }
+    // Over the shore, the zoo next door: the Reptile House behind, the Petting Farm ahead.
+    let building = if abs(q.x - REPTILES_AT) < 5.7 {
+        reptile_house(q - vec2(REPTILES_AT, WATER_LINE))
+    } else if abs(q.x - BARN_AT) < 3.8 {
+        barn(q - vec2(BARN_AT, WATER_LINE))
+    } else { (1.0e3, SNOW) }
+    let (d, albedo) = building
+    over(c, paint(g, gs, d, albedo, q, px, haze: 0.42, line: 0.8, mist: FROST))
+}
+
+// ---- the coast and its residents --------------------------------------------------------------
+
+/// The coast's ground at `x` (m).
+fn coast_ground(x: f32) -> f32 {
+    -0.6 + 0.3 * sin(x * 0.09) + 0.15 * noise2(vec2(x * 0.3, 5.0))
+}
+
+/// How far apart the coast's sights are (m on its layer).
+const SIGHTS: f32 = 22.0
+
+/// The railing's height over the coast's ground (m).
+const RAIL: f32 = 0.85
+
+/// A king penguin `s` times the size of one 1.2 m tall (`l` from its feet), facing +x: a dark
+/// back, a white belly, an orange patch by its ear and its beak, a flipper held out behind.
+fn penguin(l: vec2, s: f32, px: f32) -> (f32, vec3) {
+    let p = l / s
+    let head = vec2(0.06, 1.04)
+    let d = smin(ellipse(p - vec2(0.0, 0.52), vec2(0.3, 0.5)), length(p - head) - 0.17, 0.12)
+    let back = vec3(0.2, 0.23, 0.3)
+    let coat = if length(p - head - vec2(0.08, 0.04)) < 0.035 {
+        vec3(0.96)
+    } else if ellipse(p - head - vec2(-0.04, -0.08), vec2(0.06, 0.09)) < 0.0 {
+        vec3(1.0, 0.7, 0.26)
+    } else if ellipse(p - vec2(0.11, 0.5), vec2(0.2, 0.42)) < 0.0 {
+        blend(vec3(0.97, 0.97, 0.95), vec3(1.0, 0.88, 0.6), smoothstep(0.65, 0.85, p.y))
+    } else { back }
+    var best = (d, coat)
+    best = before((ellipse(turn(p - vec2(-0.22, 0.6), -0.45), vec2(0.07, 0.3)), back), best, px / s)
+    best = before(
+        (
+            cone(p, head + vec2(0.13, 0.0), head + vec2(0.32, -0.05), ra: 0.045, rb: 0.012),
+            vec3(0.95, 0.5, 0.24),
+        ),
+        best,
+        px / s,
+    )
+    best = nearer(best, (ellipse(p - vec2(0.06, 0.03), vec2(0.15, 0.04)), vec3(0.95, 0.56, 0.28)))
+    let (pd, pc) = best
+    (pd * s, pc)
+}
+
+/// A penguin sliding on its belly (`l` from under it), facing +x: flippers swept back, feet
+/// trailing, speed lines behind.
+fn slider(l: vec2, px: f32) -> (f32, vec3) {
+    let head = vec2(0.6, 0.34)
+    let d = smin(ellipse(l - vec2(0.0, 0.24), vec2(0.58, 0.22)), length(l - head) - 0.17, 0.1)
+    let back = vec3(0.2, 0.23, 0.3)
+    let coat = if length(l - head - vec2(0.08, 0.05)) < 0.035 {
+        vec3(0.96)
+    } else if ellipse(l - head - vec2(-0.05, -0.06), vec2(0.07, 0.07)) < 0.0 {
+        vec3(1.0, 0.7, 0.26)
+    } else if ellipse(l - vec2(0.05, 0.1), vec2(0.56, 0.13)) < 0.0 {
+        vec3(0.97, 0.97, 0.95)
+    } else { back }
+    var best = (d, coat)
+    best = before((ellipse(turn(l - vec2(-0.1, 0.48), -0.38), vec2(0.3, 0.06)), back), best, px)
+    best = nearer(
+        best,
+        (
+            cone(l, head + vec2(0.13, 0.0), head + vec2(0.32, -0.03), ra: 0.045, rb: 0.012),
+            vec3(0.95, 0.5, 0.24),
+        ),
+    )
+    best = nearer(best, (ellipse(l - vec2(-0.64, 0.12), vec2(0.13, 0.05)), vec3(0.95, 0.56, 0.28)))
+    for y in [0.12, 0.3, 0.46] {
+        best = nearer(
+            best,
+            (capsule(l, vec2(-1.4, y), vec2(-0.9 + y * 0.3, y), 0.016), vec3(0.55, 0.68, 0.85)),
+        )
+    }
+    best
+}
+
+/// The penguins: a line of four waddling after their leader, and the last of them sliding down a
+/// hump of snow on its belly.
+fn penguins(l: vec2, t: f32, px: f32) -> (f32, vec3) {
+    var best = (1.0e3, SNOW)
+    for k in 0..4 {
+        let step = t * 5.0 + f32(k) * 1.7
+        let foot = vec2(-3.1 + f32(k) * 0.85, 0.03 * abs(sin(step)))
+        best = nearer(
+            best,
+            penguin(turn(l - foot, 0.1 * sin(step)), 0.92 + 0.08 * sin(f32(k) * 2.0), px),
+        )
+    }
+    let hump = ellipse(l - vec2(2.3, -0.15), vec2(1.5, 0.65))
+    best = nearer(best, (hump, crowned(SNOW, SNOW_SHADE, l, vec2(2.3, 0.2), 1.2)))
+    before(slider(turn(l - vec2(3.05, 0.4), -0.25), px), best, px)
+}
+
+/// A seal lying down (`l` from under its belly), facing +x; `arch` lifts its head and tail, as
+/// a seal on a floe does. Grey, dappled, paler beneath.
+fn seal(l: vec2, arch: f32, px: f32) -> (f32, vec3) {
+    let tail = vec2(-0.72, 0.18 + arch * 0.25)
+    let head = vec2(0.62, 0.36 + arch * 0.3)
+    var d = cone(l, tail, vec2(0.3, 0.26), ra: 0.12, rb: 0.25)
+    d = smin(d, length(l - head) - 0.18, 0.12)
+    d = smin(d, ellipse(l - head - vec2(0.17, -0.04), vec2(0.11, 0.08)), 0.05)
+    d = smin(d, cone(l, tail, tail + vec2(-0.32, 0.12 + arch * 0.15), ra: 0.07, rb: 0.09), 0.04)
+    let coat = if length(l - head - vec2(0.07, 0.05)) < 0.04 ||
+        length(l - head - vec2(0.27, -0.02)) < 0.03 {
+        INK
+    } else if noise2(l * 7.0 + vec2(arch * 5.0)) > 0.7 {
+        vec3(0.46, 0.49, 0.56)
+    } else {
+        blend(
+            vec3(0.84, 0.85, 0.86),
+            vec3(0.64, 0.67, 0.73),
+            smoothstep(0.06, 0.24, l.y - arch * 0.1),
+        )
+    }
+    let flipper = ellipse(turn(l - vec2(0.22, 0.1), 0.5), vec2(0.16, 0.06))
+    before((flipper, vec3(0.56, 0.59, 0.66)), (d, coat), px)
+}
+
+/// The seals' corner of the sea pool: two seals nose to nose on a floe, and a third watching from
+/// the water, bobbing.
+fn seals(l: vec2, t: f32, px: f32) -> (f32, vec3) {
+    let swell = smoothstep(0.7, 0.78, noise2(vec2(l.x * 1.5 + t * 0.3, l.y * 9.0))) * 0.5
+    let sea = blend(blend(SEA, SEA_PALE, smoothstep(-0.25, 0.1, l.y)), SEA_PALE * 1.08, swell)
+    var best = (rbox(l - vec2(0.0, -0.1), vec2(3.9, 0.2), 0.18), sea)
+    let floe = rbox(l - vec2(0.4, 0.13), vec2(2.0, 0.15), 0.08)
+    let ice = if l.y < 0.03 { ICE } else { crowned(SNOW, SNOW_SHADE, l, vec2(0.4, 0.3), 2.0) }
+    best = before((floe, ice), best, px)
+    best = before(seal(l - vec2(-0.5, 0.28), 0.0, px), best, px)
+    best = before(seal((l - vec2(1.5, 0.28)) * vec2(-1.0, 1.0), 1.0, px), best, px)
+    let head = l - vec2(-2.9, 0.1 + 0.03 * sin(t * 1.4))
+    let bobbing = max(
+        smin(
+            ellipse(head, vec2(0.17, 0.2)),
+            ellipse(head - vec2(0.17, -0.02), vec2(0.11, 0.08)),
+            0.05,
+        ),
+        -head.y - 0.12,
+    )
+    let face = if length(head - vec2(0.06, 0.06)) < 0.04 ||
+        length(head - vec2(0.27, -0.02)) < 0.03 {
+        INK
+    } else { vec3(0.64, 0.67, 0.73) }
+    before((bobbing, face), best, px)
+}
+
+/// A polar bear asleep (`l` from where it lies), facing +x: curled on the snow, its chin on its
+/// paws, its eye shut, breathing slowly (`t`), and z's rising off it.
+fn bear(l: vec2, t: f32, px: f32) -> (f32, vec3) {
+    let breath = 0.04 * sin(t * 1.2)
+    var d = ellipse(l - vec2(0.0, 0.5 + breath * 0.5), vec2(1.3, 0.52 + breath))
+    d = smin(d, ellipse(l - vec2(-0.9, 0.45), vec2(0.62, 0.48 + breath * 0.5)), 0.25)
+    let head = l - vec2(1.5, 0.3)
+    d = smin(d, ellipse(turn(head, -0.12), vec2(0.42, 0.26)), 0.18)
+    d = smin(d, ellipse(head - vec2(0.36, -0.05), vec2(0.2, 0.14)), 0.08)
+    d = smin(d, length(head - vec2(-0.16, 0.25)) - 0.08, 0.04)
+    let fur = crowned(vec3(0.99, 0.96, 0.87), vec3(0.83, 0.85, 0.9), l, vec2(0.0, 0.7), 1.2)
+    let nose = length(head - vec2(0.54, -0.02)) < 0.055
+    let lid = abs(length(head - vec2(0.09, 0.13)) - 0.07) < 0.016 && head.y < 0.12
+    var best = before((ellipse(l - vec2(1.3, 0.07), vec2(0.5, 0.09)), fur), (d, if nose || lid {
+        INK
+    } else { fur }), px)
+    for j in 0..2 {
+        let s = fract(t * 0.22 + f32(j) * 0.5)
+        let w = 0.17 * sin(s * 3.14159)
+        if w > 0.03 {
+            let z = l - vec2(2.0 + 0.4 * s, 0.95 + 1.1 * s)
+            let zd = min(
+                min(
+                    capsule(z, vec2(-w, w), vec2(w, w), 0.03),
+                    capsule(z, vec2(w, w), vec2(-w, -w), 0.03),
+                ),
+                capsule(z, vec2(-w, -w), vec2(w, -w), 0.03),
+            )
+            best = nearer(best, (zd, vec3(0.42, 0.52, 0.72)))
+        }
+    }
+    best
+}
+
+/// An Atlantic puffin (`l` from its feet), facing +x, 0.7 m tall: black above, a white face and
+/// breast, a big striped beak, orange feet; `fish` 1 if it has sand eels in its beak.
+fn puffin(l: vec2, fish: f32, t: f32, px: f32) -> (f32, vec3) {
+    let head = vec2(0.05, 0.56 + 0.02 * sin(t * 3.0 + fish * 2.0))
+    let d = smin(ellipse(l - vec2(0.0, 0.28), vec2(0.19, 0.26)), length(l - head) - 0.14, 0.06)
+    let coat = if length(l - head - vec2(0.05, 0.03)) < 0.03 {
+        INK
+    } else if ellipse(l - head - vec2(0.04, -0.01), vec2(0.09, 0.08)) < 0.0 ||
+        ellipse(l - vec2(0.07, 0.25), vec2(0.11, 0.19)) < 0.0 {
+        vec3(0.96, 0.96, 0.94)
+    } else { vec3(0.18, 0.19, 0.24) }
+    let along = l.x - head.x
+    let bill = if along < 0.13 {
+        vec3(0.48, 0.54, 0.66)
+    } else if along < 0.16 { vec3(1.0, 0.84, 0.36) } else { vec3(0.98, 0.4, 0.2) }
+    var best = before(
+        (cone(l, head + vec2(0.08, 0.0), head + vec2(0.29, -0.06), ra: 0.1, rb: 0.02), bill),
+        (d, coat),
+        px,
+    )
+    best = nearer(best, (ellipse(l - vec2(0.04, 0.02), vec2(0.1, 0.03)), vec3(0.98, 0.5, 0.22)))
+    if fish > 0.5 {
+        let eels = min(
+            capsule(l, head + vec2(0.22, -0.05), head + vec2(0.25, -0.24), 0.022),
+            capsule(l, head + vec2(0.18, -0.05), head + vec2(0.15, -0.21), 0.022),
+        )
+        best = nearer(best, (eels, vec3(0.78, 0.84, 0.88)))
+    }
+    best
+}
+
+/// The puffins' ledge: a rock stack capped with snow, three puffins on its top (one with sand
+/// eels for its chick) and one on the step below.
+fn puffins(l: vec2, t: f32, px: f32) -> (f32, vec3) {
+    let rough = 0.07 * noise2(l * 2.2 + vec2(5.0)) + 0.1 * noise2(l * 0.9 + vec2(2.0))
+    let crag = smin(
+        rbox(l - vec2(-0.3, 0.95), vec2(1.5, 0.95), 0.55),
+        rbox(l - vec2(1.5, 0.45), vec2(0.7, 0.45), 0.35),
+        0.25,
+    ) +
+        rough
+    let snowline = if l.x < 1.0 { 1.74 } else { 0.78 }
+    let cap = l.y - snowline - 0.05 * sin(l.x * 5.0)
+    let rock = strata(crowned(ROCK, ROCK_SHADE, l, vec2(-0.3, 1.2), 1.2), l)
+    let stone = if cap > 0.0 { SNOW } else { rock }
+    var best = (crag, if crag < 0.0 { seam(stone, cap, px) } else { stone })
+    for (x, y, dir, fish) in [
+        (-1.3, 1.88, 1.0, 0.0),
+        (-0.6, 1.88, 1.0, 0.0),
+        (0.2, 1.88, -1.0, 1.0),
+        (1.6, 0.88, 1.0, 0.0),
+    ] {
+        if abs(l.x - x) < 0.6 {
+            let bird = puffin((l - vec2(x, y)) * vec2(dir, 1.0) / 1.3, fish, t, px / 1.3)
+            best = nearer(best, grown(bird, 1.3))
+        }
+    }
+    best
+}
+
+/// A herring gull of the seagull's crew (`l` from its feet), facing +x, standing: white, grey
+/// wings tipped black, a yellow beak, pink legs.
+fn gull(l: vec2, t: f32, px: f32) -> (f32, vec3) {
+    let head = vec2(0.22, 0.5 + 0.015 * sin(t * 2.3))
+    let d = smin(
+        ellipse(turn(l - vec2(-0.04, 0.32), 0.18), vec2(0.32, 0.15)),
+        length(l - head) - 0.1,
+        0.07,
+    )
+    let eye = length(l - head - vec2(0.03, 0.02)) < 0.03
+    var best = (d, if eye { INK } else { vec3(0.98, 0.98, 0.97) })
+    let wing = ellipse(turn(l - vec2(-0.12, 0.36), 0.2), vec2(0.3, 0.09))
+    let tip = if l.x < -0.3 { vec3(0.2, 0.2, 0.24) } else { vec3(0.66, 0.71, 0.78) }
+    best = before((wing, tip), best, px)
+    let legs = min(
+        capsule(l, vec2(-0.03, 0.2), vec2(-0.03, 0.0), 0.016),
+        capsule(l, vec2(0.05, 0.2), vec2(0.06, 0.0), 0.016),
+    )
+    best = nearer(best, (legs, vec3(0.92, 0.66, 0.56)))
+    nearer(
+        best,
+        (
+            cone(l, head + vec2(0.08, -0.01), head + vec2(0.22, -0.04), ra: 0.035, rb: 0.014),
+            vec3(1.0, 0.82, 0.3),
+        ),
+    )
+}
+
+/// The seagull's crew, perched along a lookout's rail (`q` on the layer, the stretch's middle at
+/// `centre`), and a lifebuoy hung on it.
+fn crew(q: vec2, centre: f32, t: f32, px: f32) -> (f32, vec3) {
+    // The railing of a lookout over the water: posts and a rail, in slate-blue paint.
+    let up = q.y - coast_ground(q.x)
+    let x = clamp(q.x - centre, -3.3, 3.3)
+    let post_x = x - floor(x / 1.65 + 0.5) * 1.65
+    let post = max(
+        rbox(vec2(post_x, up - RAIL * 0.5), vec2(0.045, RAIL * 0.5), 0.02),
+        max(-up - 0.1, abs(q.x - centre) - 3.4),
+    )
+    let rail = max(abs(up - RAIL) - 0.035, abs(q.x - centre) - 3.3)
+    var best = (min(post, rail), vec3(0.43, 0.56, 0.68))
+    for (x, dir, s) in [(-2.4, 1.0, 1.3), (-1.3, 1.0, 1.2), (1.1, -1.0, 1.35), (2.3, 1.0, 1.25)] {
+        let gx = centre + x
+        if abs(q.x - gx) < 0.75 {
+            let foot = vec2(gx, coast_ground(gx) + RAIL + 0.035)
+            let (d, c) = gull((q - foot) * vec2(dir, 1.0) / s, t + x, px / s)
+            best = nearer(best, (d * s, c))
+        }
+    }
+    let ring = q - vec2(centre - 0.1, coast_ground(centre - 0.1) + RAIL - 0.32)
+    let buoy = abs(length(ring) - 0.2) - 0.07
+    let red = fract(atan2(ring.y, ring.x) / 1.5708 + 0.5) < 0.5
+    before((buoy, if red { vec3(0.92, 0.32, 0.26) } else { vec3(0.98, 0.97, 0.94) }), best, px)
+}
+
+/// A boulder, snow on its top (`l` from its foot, `r` m across).
+fn boulder(l: vec2, r: f32, seed: f32, px: f32) -> (f32, vec3) {
+    let rock = ellipse(l - vec2(0.0, r * 0.4), vec2(r, r * 0.72)) +
+        0.06 * noise2(l * 3.0 + vec2(seed * 31.0))
+    let cap = l.y - r * 0.72 - 0.07 * sin(l.x * 6.0 + seed * 20.0)
+    let c = if cap > 0.0 { crowned(SNOW, SNOW_SHADE, l, vec2(0.0, r), r) } else {
+        crowned(ROCK, ROCK_SHADE, l, vec2(0.0, r * 0.4), r)
+    }
+    (rock, if rock < 0.0 { seam(c, cap, px) } else { c })
+}
+
+fn coast(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[1])
+    let px = pixel_on(v, PARALLAX[1])
+    let ground = coast_ground(q.x)
+    if q.y > ground + 3.4 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, COAST_SNOW, q, ground, 0.16, mist: FROST, shade: SHADE)
+    }
+    let up = q.y - ground
+    var best = (up, snowy(up, COAST_SNOW))
+    // A boulder at a stretch's end, now and then.
+    let end = floor(q.x / SIGHTS + 0.5)
+    let h = hash2(i32(end), 41)
+    if h < 0.6 && abs(q.x - end * SIGHTS) < 1.4 {
+        let x = end * SIGHTS
+        best = before(boulder(q - vec2(x, coast_ground(x) - 0.15), 0.7 + 0.6 * h, h, px), best, px)
+    }
+    // The sights, one in each stretch, in turn: the penguins, the seals, the seagull's crew, the
+    // polar bear, the puffins.
+    let i = floor(q.x / SIGHTS)
+    let centre = (i + 0.5) * SIGHTS
+    if abs(q.x - centre) < 4.6 {
+        let local = q - vec2(centre, coast_ground(centre) - 0.05)
+        let dir = if hash2(i32(i), 48) < 0.5 { -1.0 } else { 1.0 }
+        let at = local * vec2(dir, 1.0)
+        let kind = i32(i - 5.0 * floor(i / 5.0))
+        let sight = if kind == 0 {
+            penguins(at, v.time, px)
+        } else if kind == 1 {
+            grown(seals(at / 1.2, v.time, px / 1.2), 1.2)
+        } else if kind == 2 {
+            crew(q, centre, v.time, px)
+        } else if kind == 3 {
+            bear(at, v.time, px)
+        } else { grown(puffins(at / 1.15, v.time, px / 1.15), 1.15) }
+        best = before(sight, best, px)
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.16, line: 1.0, mist: FROST)
+}
+
+// ---- the shore, nearest ----------------------------------------------------------------------
+
+/// The near shore's snow at `x` (m): drifts, each rising gently into the wind and dropping off
+/// steeply at its lee.
+fn drifts(x: f32) -> f32 {
+    let i = floor(x / 9.0)
+    let t = x / 9.0 - i
+    let h = 0.3 + 0.5 * hash2(i32(i), 71)
+    -1.8 +
+        h * smoothstep(0.0, 0.8, t) * (1.0 - smoothstep(0.8, 0.96, t)) +
+        0.08 * noise2(vec2(x * 0.7, 3.0))
+}
+
+/// A crag `h` m tall (`l` from its foot): a rounded rock glazed with ice at its edge, a slab
+/// on its top jutting out to one side under snow, and icicles hanging from the slab.
+fn crag(l: vec2, h: f32, seed: f32, px: f32) -> (f32, vec3) {
+    let rough = 0.05 * noise2(l * 2.5 + vec2(seed * 13.0)) +
+        0.07 * noise2(l * 0.9 + vec2(seed * 7.0))
+    let slab = l - vec2(0.3, h * 0.86)
+    let rock = smin(
+        ellipse(l - vec2(0.0, h * 0.45), vec2(1.2, h * 0.47)),
+        ellipse(slab, vec2(1.35, 0.26)),
+        0.2,
+    ) +
+        rough
+    let cap = l.y - h * 0.88 - 0.05 * sin(l.x * 6.0 + seed * 9.0)
+    let stone = blend(
+        strata(crowned(ROCK, ROCK_SHADE, l, vec2(0.0, h * 0.5), h * 0.5), l * 0.8),
+        ICE,
+        smoothstep(-0.14, -0.02, rock) * 0.7,
+    )
+    let c = if cap > 0.0 { crowned(SNOW, SNOW_SHADE, l, vec2(0.3, h), 0.8) } else { stone }
+    let best = (rock, if rock < 0.0 { seam(c, cap, px) } else { c })
+    var icicles = 1.0e3
+    for x in [1.25, 1.42, 1.56] {
+        let u = (x - 0.3) / 1.35
+        let under = h * 0.86 - 0.26 * sqrt(max(1.0 - u * u, 0.0)) + 0.05
+        let long = 0.25 + 0.4 * hash2(i32(x * 100.0), i32(seed * 100.0))
+        icicles = min(
+            icicles,
+            cone(l, vec2(x, under), vec2(x + 0.01, under - long), ra: 0.05, rb: 0.0),
+        )
+    }
+    nearer(best, (icicles, ICE))
+}
+
+fn shore(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let q = on_layer(pixel, v, PARALLAX[0])
+    let px = pixel_on(v, PARALLAX[0])
+    let ground = drifts(q.x)
+    if q.y > ground + 3.8 {
+        return vec4(0.0)
+    }
+    if q.y < ground - 0.3 {
+        return under(g, gs, DRIFT_SNOW, q, ground, 0.08, mist: FROST, shade: SHADE)
+    }
+    let up = q.y - ground
+    var best = (1.0e3, SNOW)
+    // A crag now and then, half buried in the drifts.
+    let cell = floor(q.x / 14.0)
+    let h = hash2(i32(cell), 74)
+    let x = (cell + 0.25 + 0.5 * hash2(i32(cell), 75)) * 14.0
+    if h < 0.4 && abs(q.x - x) < 1.9 {
+        let dir = if hash2(i32(cell), 76) < 0.5 { -1.0 } else { 1.0 }
+        best = crag((q - vec2(x, drifts(x) - 0.3)) * vec2(dir, 1.0), 2.9 + 2.0 * h, h, px)
+    }
+    best = before((up, snowy(up, DRIFT_SNOW)), best, px)
+    // Frosted grass: a tuft of three blades now and then, white at the tips, leaning in the wind.
+    let i = floor(q.x / 1.7)
+    if up < 1.1 && hash2(i32(i), 72) < 0.35 {
+        let x0 = (i + 0.5) * 1.7
+        let tall = 0.6 + 0.4 * hash2(i32(i), 73)
+        let sway = 0.08 * sin(v.time * 0.9 + x0 * 0.4)
+        var blades = 1.0e3
+        for s in [-1.0, 0.0, 1.0] {
+            let tip = vec2(x0 + s * 0.24 + sway, ground + tall * (1.0 - abs(s) * 0.2))
+            blades = min(
+                blades,
+                cone(q, vec2(x0 + s * 0.05, ground - 0.05), tip, ra: 0.045, rb: 0.0),
+            )
+        }
+        let frost = blend(vec3(0.66, 0.73, 0.68), SNOW, smoothstep(0.35, 0.85, up / tall))
+        best = before((blades, frost), best, px)
+    }
+    let (d, albedo) = best
+    paint(g, gs, d, albedo, q, px, haze: 0.08, line: 1.2, mist: FROST)
+}

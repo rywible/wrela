@@ -31,15 +31,13 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
+use habitats::habitat_of
 use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
 use camera::{Camera, camera, follow, framed, half_view, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
-use course::{Course, course}
-use earth::{
-    LAB_EARTH, LAB_GRASS, LAB_TOPS, LEVEL_EARTH, LEVEL_GRASS, LEVEL_TOPS, Field, earth,
-    earth_vertex, grass, grass_vertex,
-}
+use course::{Course, HOME, LEVELS, WETLANDS, course}
+use earth::{Field, earth, earth_mesh, earth_vertex, grass, grass_mesh, grass_vertex, profiles}
 use engine::frame::full
 use engine::present::Snapshots
 use engine::run::run
@@ -59,15 +57,15 @@ use std::gpu::{
 }
 use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
-use std::io::{Pending, load, store}
+use std::io::{Pending, load, print, store}
 use replay::{
     ANY, AUTOPILOT, Board, FULL, HUMAN, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
     replay, splits, tool_assisted, trail, verify,
 }
 use screens::{
-    Act, CARD, Facts, INKED, MENU_LABELS, OPTION_LABELS, Prompt, SOFT, card, clock, controls,
-    controls_rects, facts, footer, goal_card, list_rects, option_about, option_values, seconds,
-    start_rect, title, tree, unit,
+    Act, CARD, Facts, INKED, MENU_LABELS, OPTION_LABELS, Prompt, SOFT, card, clock, controls, Stop,
+    controls_rects, facts, footer, goal_card, list_rects, map, map_rects, option_about,
+    option_values, seconds, start_rect, title, tree, unit,
 }
 use settings::{AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, SETTINGS, Settings, decode, encode, turned}
 use signs::{learned, sign_words}
@@ -76,9 +74,16 @@ use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
 use ui::glyphs::{Device, device_of}
 use ui::text::{Face, Fonts}
-use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
-use world::{CONTROLS, LAB, LEVEL, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
+use waves::{Pond, water, water_mesh, water_vertex}
+use world::{CONTROLS, MAP, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
 use engine::menu::{Nav, Stick}
+
+/// A developer's build (`wrela build games/capybara --set DEV=true`): Tab plays the next course,
+/// the movement lab among them. A player's build has neither.
+pub const DEV: bool = false
+
+/// The course the game opens on: the first level.
+const FIRST: u32 = HOME
 
 /// The most sprites drawn: the cast's and the particles'.
 const SPRITES: u32 = 1024
@@ -94,15 +99,59 @@ const SEEK: u32 = 600
 /// How long the watch's prompts stay after the last key (s), and how long after the goal its card
 /// comes (s).
 const IDLE: f32 = 3.0
-const FINISH_CARD: f32 = 1.6
+const FINISH_CARD: f32 = f32(world::CARD) / f32(HZ)
+
+/// A course's meshes, built when it's shown (`ground_of`), so the build ships its corners and not
+/// its meshes: its ground and its grass (two vertices a point), its water, the top of its ground
+/// (earth.wrela's `profile`), and how many vertices each draws.
+struct Ground {
+    earth: GpuBuffer<vec4>,
+    grass: GpuBuffer<vec4>,
+    water: GpuBuffer<vec4>,
+    tops: GpuBuffer<f32>,
+    floors: GpuBuffer<f32>,
+    ice: GpuBuffer<vec4>,
+    earth_n: u32,
+    grass_n: u32,
+    water_n: u32,
+}
+
+/// Course `c`'s meshes.
+fn ground_of(c: Course) -> Ground {
+    let (tops, floors) = profiles(c)
+    let earth = earth_mesh(c)
+    let grass = grass_mesh(c)
+    let water = water_mesh(c)
+    Ground {
+        earth_n: earth.len() / 2,
+        grass_n: grass.len() / 2,
+        water_n: water.len(),
+        earth: buffer_of(earth, at_least: 2),
+        grass: buffer_of(grass, at_least: 2),
+        water: buffer_of(water, at_least: 3),
+        tops: buffer_of(tops),
+        floors: buffer_of(floors),
+        ice: buffer_of(ice_of(c), at_least: 1),
+    }
+}
+
+/// Course `c`'s icy stretches, for the ground's shaders: each from its left to its right.
+fn ice_of(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in c.ice {
+        out.push(vec4(i, 0.0, 0.0))
+    }
+    if out.is_empty() {
+        // A buffer has an element at least: a stretch that holds no x, not one at 0.
+        out.push(vec4(1.0e9, -1.0e9, 0.0, 0.0))
+    }
+    out
+}
 
 pub struct Lab {
     snaps: Snapshots<Snap>,
-    /// Each course's ground, grass, water and the top of its ground (the lab's, the level's).
-    earths: [GpuBuffer<vec4>; 2],
-    grasses: [GpuBuffer<vec4>; 2],
-    waters: [GpuBuffer<vec4>; 2],
-    tops: [GpuBuffer<f32>; 2],
+    /// The shown course's ground, grass, water and the top of its ground, built when it's shown.
+    ground: Ground,
     /// The shown course's pools and its waves' heights.
     pools: GpuBuffer<vec4>,
     heights: GpuBuffer<f32>,
@@ -136,6 +185,10 @@ pub struct Lab {
     /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
     /// frames' time (s), smoothed, for it.
     readout: bool,
+    /// The frames drawn, and the first whose page was whole (its backdrop's strips drawn and its
+    /// text's glyphs in), once it has been: when the game was playable (`playable`).
+    frames: u32,
+    playable_at: Option<u32>,
     /// How much the capybara is on the ground and slides, eased (earth.wrela's `Field`).
     presence: f32,
     sliding: f32,
@@ -171,9 +224,12 @@ pub struct Lab {
     saving: Option<Pending<u8>>,
     storing: Storing,
     kept: u32,
-    /// The tool-assisted runs of every course, the board shown (`PLAYERS` or `ASSISTED`), and the
-    /// run with the focus on it: its category's column and its row.
+    /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
+    /// asks: each is the sim playing the run, and making them delayed the first frame and each
+    /// change of level), the board shown (`PLAYERS` or `ASSISTED`), and the run with the focus on
+    /// it: its category's column and its row.
     assisted: Vec<Replay>,
+    assisted_of: Option<u32>,
     board: u32,
     column: u32,
     row: u32,
@@ -204,31 +260,24 @@ pub struct Lab {
 }
 
 pub fn init() -> Lab {
-    let latest = run(live(LEVEL), hz: HZ, step: tick_live, present: present_live)
-    var assisted = tool_assisted(LAB)
-    for r in tool_assisted(LEVEL) {
-        assisted.push(r.clone())
-    }
+    let latest = run(live(FIRST), hz: HZ, step: tick_live, present: present_live)
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
-    let shown = cast(course(LEVEL))
+    let shown = cast(course(FIRST))
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
-        earths: [buffer_of(LAB_EARTH), buffer_of(LEVEL_EARTH)],
-        grasses: [buffer_of(LAB_GRASS), buffer_of(LEVEL_GRASS)],
-        waters: [buffer_of(LAB_WATER), buffer_of(LEVEL_WATER)],
-        tops: [buffer_of(LAB_TOPS), buffer_of(LEVEL_TOPS)],
+        ground: ground_of(course(FIRST)),
         pools: buffer_of(shown.waves.pools, at_least: 8),
-        heights: buffer(COLUMNS),
+        heights: buffer_of(shown.waves.heights, at_least: 8),
         sprites: buffer(SPRITES),
-        shown: LEVEL,
+        shown: FIRST,
         cast: shown,
         sheet: sheet(),
         strips: strips(),
         linear: sampler(),
         grain: grain_texture(),
         repeat: sampler(address: Address::Repeat),
-        camera: camera(course(LEVEL).start),
+        camera: camera(course(FIRST).start),
         last: None,
         voice: None,
         settings: Settings {},
@@ -239,6 +288,8 @@ pub fn init() -> Lab {
         turns: None,
         device: Device::Keys,
         readout: false,
+        frames: 0,
+        playable_at: None,
         presence: 1.0,
         sliding: 0.0,
         frame_time: 0.0,
@@ -260,7 +311,8 @@ pub fn init() -> Lab {
         saving: None,
         storing: Storing {},
         kept: 0xffffffff,
-        assisted,
+        assisted: Vec::new(),
+        assisted_of: None,
         board: PLAYERS,
         column: ANY,
         row: 0,
@@ -405,6 +457,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.camera = camera(snap.at)
         s.cast = cast(c, from: opening)
         s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
+        s.heights = buffer_of(s.cast.waves.heights, at_least: 8)
+        if snap.course != s.shown {
+            s.ground = ground_of(c)
+        }
         s.shown = snap.course
         s.watched = watching
     }
@@ -474,8 +530,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         scene_size,
     )
     s.signs.upload(s.sign_list)
-    let (i, level) = (snap.course, snap.course == LEVEL)
-    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
+    let habitat = habitat_of(snap.course)
+    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time, habitat }
     // How much the capybara slides and is on the ground, eased, for the grass.
     let mode = Mode::from_u32(snap.mode)
     let on = grounded(mode)
@@ -490,6 +546,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         time,
         sliding: s.sliding,
         presence: s.presence,
+        habitat,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
@@ -503,7 +560,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         full.bind(z: 0.0),
         scenery::backdrop.bind(
             v: view,
-            tops: s.tops[i].items(),
+            tops: s.ground.floors.items(),
             drawn: s.strips.drawn(),
             marsh: s.strips.strips[0],
             wetlands: s.strips.strips[1],
@@ -517,21 +574,22 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     draw(
         scene,
-        earth_vertex.bind(verts: s.earths[i].items(), f: field),
+        earth_vertex.bind(verts: s.ground.earth.items(), f: field),
         earth.bind(
             f: field,
-            tops: s.tops[i].items(),
+            tops: s.ground.tops.items(),
             pools: s.pools.items(),
+            ice: s.ground.ice.items(),
             g: s.grain,
             gs: s.repeat,
         ),
-        vertices: if level { LEVEL_EARTH.len() / 2 } else { LAB_EARTH.len() / 2 },
+        vertices: s.ground.earth_n,
     )
     draw(
         scene,
-        grass_vertex.bind(verts: s.grasses[i].items(), f: field),
+        grass_vertex.bind(verts: s.ground.grass.items(), f: field),
         grass.bind(f: field),
-        vertices: if level { LEVEL_GRASS.len() / 2 } else { LAB_GRASS.len() / 2 },
+        vertices: s.ground.grass_n,
     )
     draw(
         scene,
@@ -549,10 +607,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.sheet.copy_below(s.linear, s.wet)
     label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
-    let pond = Pond { view_proj, centre: eye, half, px, time }
+    let pond = Pond { view_proj, centre: eye, half, px, time, habitat }
     draw(
         wet,
-        water_vertex.bind(verts: s.waters[i].items(), f: pond),
+        water_vertex.bind(verts: s.ground.water.items(), f: pond),
         water.bind(
             f: pond,
             pools: s.pools.items(),
@@ -560,7 +618,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             below: s.sheet.below,
             s: s.linear,
         ),
-        vertices: if level { LEVEL_WATER.len() } else { LAB_WATER.len() },
+        vertices: s.ground.water_n,
     )
     let ahead = Stage { first: behind, ..stage }
     draw(
@@ -595,6 +653,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     s.renderer.draw(out, screen)
     out.present()
+    playable(mut s)
     publish(mut s, snap, play)
 }
 
@@ -652,22 +711,43 @@ fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
     let _ = s.list.text(s.fonts, face, text, size, at, colour)
 }
 
-/// The course's name, as its title says it.
-fn course_name(c: u32) -> Text {
-    if c == LEVEL { "The Capybara Wetlands" } else { "The lab" }
-}
-
 /// The player's best any% time on course `c` (ticks), or 0 without one.
 fn best(s: Lab, c: u32) -> u32 {
     let runs = s.runs.ranked(c, ANY)
     if runs.len() > 0 { runs[0].ticks } else { 0 }
 }
 
+/// Level `c` on the levels' map, as the player's runs say: finished with any run, the most snacks
+/// one found, and the best any% time.
+fn stop_of(s: Lab, c: u32) -> Stop {
+    let all = course(c).every_snack()
+    var found = 0
+    for r in s.runs.ranked(c, ANY) {
+        found = max(found, (r.snacks & all).count_ones())
+    }
+    let best = best(s, c)
+    Stop { name: course::name(c), done: best > 0, found, snacks: course(c).snacks.len(), best }
+}
+
+/// The level on the map under the pointer, while the player uses the pointer.
+fn map_hovered(s: Lab, screen: vec2) -> Option<u32> {
+    if s.device != Device::Keys {
+        return None
+    }
+    let (_, rects) = map_rects(screen, LEVELS)
+    for i in 0..rects.len() {
+        if rects[i].contains(s.pointer) {
+            return Some(i)
+        }
+    }
+    None
+}
+
 /// What the pause's facts say of snapshot `snap`'s attempt.
 fn facts_of(s: Lab, snap: Snap) -> Facts {
     borrow c = course(snap.course)
     Facts {
-        name: course_name(snap.course),
+        name: course::name(snap.course),
         ticks: if snap.finished > 0 { snap.finished } else { snap.ticks },
         found: (snap.snacks & c.every_snack()).count_ones(),
         snacks: c.snacks.len(),
@@ -699,6 +779,11 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
             None => {},
         }
     }
+    // A whole game played through: its time, the best kept.
+    if live.game > 0 && (s.settings.best_game == 0 || live.game < s.settings.best_game) {
+        s.settings.best_game = live.game
+        s.storing_settings.unsaved = true
+    }
     let made = learned(live)
     if made & !s.settings.learned != 0 {
         s.settings.learned = s.settings.learned | made
@@ -726,6 +811,16 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
         s.finish_age += dt
     } else {
         s.finish_age = 0.0
+    }
+}
+
+/// The frame counted, and the first whole one said, as engine::frame says it, for the bench's
+/// cold and warm starts (docs/bench.md): its backdrop's strips drawn and its text's glyphs in.
+fn playable(s: mut Lab) {
+    s.frames += 1
+    if s.playable_at.is_none() && s.strips.ready == [true; 4] && !s.renderer.waiting() {
+        s.playable_at = Some(s.frames)
+        print(f"playable at frame {s.frames}")
     }
 }
 
@@ -772,7 +867,7 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
         var parts: Option<(Text, Vec<Text>, Vec<Rect>)> = None
         if page == TITLE {
             let start = start_rect(screen)
-            parts = Some((course_name(snap.course), Vec::from(["Start"]), Vec::from([start])))
+            parts = Some((course::name(snap.course), Vec::from(["Start"]), Vec::from([start])))
         } else if page == MENU {
             let (_, rects) = list_rects(screen, MENU)
             parts = Some(("Paused", Vec::from(MENU_LABELS), take rects))
@@ -784,6 +879,13 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS {
             parts = Some(("Runs", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
+        } else if page == MAP {
+            let (_, rects) = map_rects(screen, LEVELS)
+            var names: Vec<Text> = Vec::new()
+            for c in 0..LEVELS {
+                names.push(course::name(c))
+            }
+            parts = Some(("Levels", take names, take rects))
         }
         if let Some((heading, labels, rects)) = parts {
             nodes = tree(snap.chosen, page, heading, labels, on_screen(rects, origin))
@@ -824,7 +926,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             title(
                 mut s.list,
                 s.fonts,
-                course_name(snap.course),
+                course::name(snap.course),
                 screen,
                 d,
                 1.0,
@@ -888,6 +990,24 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             controls(mut s.list, s.fonts, screen, d, hover)
         } else if page == RUNS {
             runs_card(mut s, snap.course, screen)
+        } else if page == MAP {
+            var stops: Vec<Stop> = Vec::new()
+            for c in 0..LEVELS {
+                stops.push(stop_of(s, c))
+            }
+            let hover = map_hovered(s, screen)
+            map(mut s.list, s.fonts, screen, stops, snap.focus, hover)
+            footer(
+                mut s.list,
+                s.fonts,
+                [
+                    Prompt { act: Act::Run, say: "Move" },
+                    Prompt { act: Act::Choose, say: "Play" },
+                    Prompt { act: Act::Back, say: "Back" },
+                ],
+                d,
+                screen,
+            )
         }
         return
     }
@@ -898,7 +1018,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
         title(
             mut s.list,
             s.fonts,
-            course_name(snap.course),
+            course::name(snap.course),
             screen,
             d,
             alpha,
@@ -912,7 +1032,20 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     }
     if snap.finished > 0 && s.finish_age > FINISH_CARD {
         let alpha = smoothstep(FINISH_CARD, FINISH_CARD + 0.5, s.finish_age)
-        goal_card(mut s.list, s.fonts, screen, facts_of(s, snap), s.best_before, d, alpha)
+        let more = world::next(snap.course).is_some()
+        goal_card(
+            mut s.list,
+            s.fonts,
+            screen,
+            facts_of(s, snap),
+            s.best_before,
+            d,
+            alpha,
+            more: more,
+            ending: cast::ending(snap),
+            game: snap.game,
+            best_game: s.settings.best_game,
+        )
     }
     if s.readout {
         // The frame rate, the frame's time, and the size the scene is drawn at: native (the
@@ -1100,6 +1233,14 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     assisted(s, c, category)
 }
 
+/// Course `c`'s tool-assisted runs made, if they aren't.
+fn made_assisted(s: mut Lab, c: u32) {
+    if s.assisted_of != Some(c) {
+        s.assisted = tool_assisted(c)
+        s.assisted_of = Some(c)
+    }
+}
+
 /// The tool-assisted runs of course `c` made for `category`, fastest first.
 fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     var out: Vec<Replay> = Vec::new()
@@ -1149,6 +1290,9 @@ fn follow_ghost(s: mut Lab, c: u32) {
         return
     }
     s.trail_of = key
+    if s.settings.ghost == AUTOPILOT_GHOST || s.settings.ghost == HUMAN_GHOST {
+        made_assisted(mut s, c)
+    }
     s.trail = match ghost_run(s, c) {
         Some(r) => trail(r),
         None => Vec::new(),
@@ -1193,6 +1337,7 @@ fn back_rect(screen: vec2) -> Rect {
 /// click on it) watches it. Watching: Space or A pauses and plays, left and right seek, up and down
 /// change the speed, and R or X starts it again.
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
+    made_assisted(mut s, c)
     let nav = s.nav.nav(e)
     var watched = false
     match mut s.watching {
@@ -1288,6 +1433,7 @@ fn open_watch(s: mut Lab, r: take Replay) {
 /// made each and its time, the one with the focus washed in yuzu; a back button; and how to use
 /// them.
 fn runs_card(s: mut Lab, c: u32, screen: vec2) {
+    made_assisted(mut s, c)
     let (r, size) = runs_frame(screen)
     let u = unit(screen)
     let gold = vec4(0.62, 0.42, 0.08, 1.0)
@@ -1295,11 +1441,11 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
     let pointing = s.device == Device::Keys
     card(mut s.list, r, u)
-    let title = if c == LEVEL { "Runs: The Capybara Wetlands" } else { "Runs: the lab" }
+    let title = f"Runs: {course::name(c)}"
     let _ = s.list.text(
         s.fonts,
         Face::Sans,
-        title,
+        title.as_str(),
         size * 1.05,
         vec2(r.x + size * 1.2, r.y + size * 1.1),
         SOFT,
@@ -1506,13 +1652,16 @@ pub fn capybara(s: mut Lab) -> vec4 {
 
 // ---- tests -------------------------------------------------------------------------------------
 
-/// Three seconds of the run script on the hardware GPU: the level draws, with its foes and things,
-/// and the sim, ticking in lockstep, plays it, from the title it opens on (the script's Enter).
+/// Three seconds of the run script on the hardware GPU: the first level draws, with its foes and
+/// things, and the sim, ticking in lockstep, plays it, from the title it opens on (the script's
+/// Enter).
 @test(frames: 180, gpu: true, input: scripts::RUN)
 fn the_level_draws_and_its_sim_runs(s: Lab) {
     let n = s.snaps.newest()
     assert(n.ticks >= 358, "the ticker runs two ticks a frame")
-    assert(n.snap.course == LEVEL && n.snap.paused == 0, "the level, playing")
+    assert(n.snap.course == HOME && n.snap.paused == 0, "the first level, playing")
+    let Some(at) = s.playable_at else { panic("never playable") }
+    assert(at <= 10, f"playable at frame {at}")
     // Its clock is three ticks behind the ticks run: frame 0's two stood on the title the game
     // opens on, and the tick of the script's Enter (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
@@ -1553,10 +1702,10 @@ use world::{present, world}
 fn a_frame_isnt_drawn_between_two_places_across_a_cut() {
     // Thirty metres on, then back at the start: a frame halfway between draws the capybara at the
     // start if a cut came between (a restart, a comeback), and halfway if none did.
-    let start = course(LEVEL).start
-    var a = present(world(LEVEL))
+    let start = course(WETLANDS).start
+    var a = present(world(WETLANDS))
     a.at = start + vec2(30.0, 0.0)
-    var b = present(world(LEVEL))
+    var b = present(world(WETLANDS))
     b.tally.cuts = 1
     assert(mixed(a, b, 0.5).at == start, "across a cut")
     b.tally.cuts = 0

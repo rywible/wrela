@@ -6,7 +6,8 @@
 
 use course::course
 use pad::{DOWN, Hold, JUMP, PRESS, RIGHT, UP, hold}
-use world::{LEVEL, play}
+use world::play
+use course::WETLANDS
 
 /// The first level from start to goal (any%), tool-assisted, in 1311 ticks.
 pub const ANY: [Hold; 169] = [
@@ -870,14 +871,19 @@ pub const HUMAN_FULL: [Hold; 270] = [
 
 @test
 fn the_searched_runs_finish_in_their_times_without_a_death() {
-    let every = course(LEVEL).every_snack()
-    let any = play(LEVEL, ANY)
-    let full = play(LEVEL, FULL)
+    let every = course(WETLANDS).every_snack()
+    let any = play(WETLANDS, ANY)
+    let full = play(WETLANDS, FULL)
     assert(any.finished == 1311 && any.deaths == 0, "the any% run's time moved")
     assert(full.finished == 1858 && full.deaths == 0 && full.snacks == every)
-    let human_any = play(LEVEL, HUMAN_ANY)
-    let human_full = play(LEVEL, HUMAN_FULL)
+    let human_any = play(WETLANDS, HUMAN_ANY)
+    let human_full = play(WETLANDS, HUMAN_FULL)
     assert(human_any.finished == 1316 && human_any.deaths == 0)
     assert(human_full.finished == 1957 && human_full.deaths == 0)
     assert(human_full.snacks == every)
 }
+
+/// Where each move is first needed (m): how far a search gets with it forbidden (the run and jump,
+/// the double jump, a splash, the slide, swimming; 1e9 for one never needed). `wrela tool route --
+/// --level <key> --needs` measures them.
+pub const NEEDS: [f32; 5] = [1.0e9, 1.0e9, 1.0e9, 1.0e9, 1.0e9]
