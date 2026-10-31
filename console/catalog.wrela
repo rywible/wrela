@@ -12,8 +12,9 @@ pub struct Art: Clone {
 
 // A game: its id, title and session's address; its cover, on its tile; its hero, the art behind
 // the home screen when it's chosen; its title art, in place of its title; a line that sells it;
-// and its theme, a melody the home plays softly while it's chosen (`theme`), each optional but
-// the cover.
+// its theme, a melody the home plays softly while it's chosen (`theme`); and the address of its
+// build that plays itself (`attract`), which the home shows behind its text once it has rested on
+// the game; each optional but the cover.
 pub struct Card: Clone {
     pub id: String,
     pub title: String,
@@ -23,11 +24,14 @@ pub struct Card: Clone {
     pub logo: Art,
     pub tagline: String,
     pub theme: String,
+    pub attract: String,
 }
 
 // The columns of a line, between tabs: id, title, session, the cover's path, width and height,
-// the hero's, the title art's, the tagline and the theme's path.
-const COLUMNS: u32 = 14
+// the hero's, the title art's, the tagline, the theme's path and the attract build's address. A
+// release before the attract builds wrote the line without its last column.
+const COLUMNS: u32 = 15
+const BEFORE_ATTRACT: u32 = 14
 // The longest tagline, in bytes.
 const TAGLINE: u32 = 200
 
@@ -46,32 +50,55 @@ pub fn parse(text: str) -> Option<Vec<Card>> {
         borrow row = text.slice(line.0, line.1)
         if row.trim().is_empty() { continue }
         let columns = row.split("\t")
-        if columns.len() != COLUMNS { return None }
+        if columns.len() != COLUMNS && columns.len() != BEFORE_ATTRACT { return None }
         let part = |i: u32| row.slice(columns[i].0, columns[i].1).to_string()
         let number = |i: u32| row.slice(columns[i].0, columns[i].1).parse_u32()
         let Some(cover) = art(part(3), number(4), number(5), optional: false) else { return None }
         let Some(hero) = art(part(6), number(7), number(8), optional: true) else { return None }
         let Some(logo) = art(part(9), number(10), number(11), optional: true) else { return None }
         let (id, title, session, tagline, theme) = (part(0), part(1), part(2), part(12), part(13))
+        let attract = if columns.len() == COLUMNS { part(14) } else { String::new() }
         if !valid_key(id) ||
             title.is_empty() ||
             session.is_empty() ||
             tagline.len() > TAGLINE ||
             (!theme.is_empty() && path_problem(theme).is_some()) { return None }
         for c in cards { if c.id == id { return None } }
-        cards.push(Card { id, title, session, cover, hero, logo, tagline, theme })
+        cards.push(Card { id, title, session, cover, hero, logo, tagline, theme, attract })
     }
     if cards.is_empty() { None } else { Some(cards) }
 }
 
 // A catalog line with only a cover, for the tests.
 fn line(id: str, cover: str, width: str) -> String {
-    f"{id}\tTitle\turl\t{cover}\t{width}\t1\t\t0\t0\t\t0\t0\t\t"
+    f"{id}\tTitle\turl\t{cover}\t{width}\t1\t\t0\t0\t\t0\t0\t\t\t"
+}
+
+@test
+fn a_catalog_names_each_games_attract_build_and_one_from_before_still_reads() {
+    let attract = "first\tFirst\thttps://g.example/R/session/\ta\t1\t1\t\t0\t0\t\t0\t0\t\t\thttps://g.example/R/attract/\n"
+    let Some(cards) = parse(attract) else {
+        assert(false, "a catalog with the column")
+        return
+    }
+    assert(cards[0].attract == "https://g.example/R/attract/", cards[0].attract)
+    let Some(none) = parse(line("first", "a", "1")) else {
+        assert(false, "an empty column")
+        return
+    }
+    assert(none[0].attract.is_empty())
+    // A release's catalog from before the column: no game plays itself.
+    let Some(before) = parse("first\tFirst\turl\ta\t1\t1\t\t0\t0\t\t0\t0\t\ttheme.txt") else {
+        assert(false, "a catalog from before the column")
+        return
+    }
+    assert(before[0].attract.is_empty() && before[0].theme == "theme.txt")
+    assert(parse(f"{line("first", "a", "1")}\textra").is_none(), "a column too many")
 }
 
 @test
 fn a_catalog_can_hold_unrelated_games_without_changing_the_console() {
-    let text = "first\tFirst title\thttps://first.example/session/\ta.webp\t320\t180\thero-a.webp\t1920\t1080\ttitle-a.webp\t800\t240\tA line that sells it\ttheme-a.txt\nsecond\tSecond title\thttps://second.example/session/\tb.webp\t640\t360\t\t0\t0\t\t0\t0\t\t\n"
+    let text = "first\tFirst title\thttps://first.example/session/\ta.webp\t320\t180\thero-a.webp\t1920\t1080\ttitle-a.webp\t800\t240\tA line that sells it\ttheme-a.txt\t\nsecond\tSecond title\thttps://second.example/session/\tb.webp\t640\t360\t\t0\t0\t\t0\t0\t\t\t\n"
     let Some(cards) = parse(text) else {
         assert(false, "valid catalog")
         return
@@ -85,10 +112,10 @@ fn a_catalog_can_hold_unrelated_games_without_changing_the_console() {
     assert(parse("bad\trow").is_none())
     assert(parse(f"{line("same", "a", "1")}\n{line("same", "b", "1")}").is_none())
     assert(
-        parse("first\tFirst\turl\ta\t1\t1\thero\t0\t0\t\t0\t0\t\t").is_none(),
+        parse("first\tFirst\turl\ta\t1\t1\thero\t0\t0\t\t0\t0\t\t\t").is_none(),
         "a hero needs its size",
     )
-    assert(parse("first\tFirst\turl\ta\t1\t1\t\t5\t5\t\t0\t0\t\t").is_none(), "a size needs art")
+    assert(parse("first\tFirst\turl\ta\t1\t1\t\t5\t5\t\t0\t0\t\t\t").is_none(), "a size needs art")
 }
 
 @test
@@ -108,9 +135,9 @@ fn catalog_art_is_at_valid_relative_fetch_paths() {
     ] {
         assert(parse(line("first", path, "1")).is_none(), f"invalid cover: `{path}`")
         if !path.is_empty() {
-            let hero = f"first\tFirst\turl\ta\t1\t1\t{path}\t1\t1\t\t0\t0\t\t"
+            let hero = f"first\tFirst\turl\ta\t1\t1\t{path}\t1\t1\t\t0\t0\t\t\t"
             assert(parse(hero).is_none(), f"invalid hero: `{path}`")
-            let theme = f"first\tFirst\turl\ta\t1\t1\t\t0\t0\t\t0\t0\t\t{path}"
+            let theme = f"first\tFirst\turl\ta\t1\t1\t\t0\t0\t\t0\t0\t\t{path}\t"
             assert(parse(theme).is_none(), f"invalid theme: `{path}`")
         }
     }

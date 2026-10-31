@@ -336,6 +336,8 @@ pub struct Console {
     // onto the newest release once its home was left alone (update.wrela).
     update: update::Update,
     active_at: f32,
+    // The chosen game playing itself behind the home, once it has rested there (attract.wrela).
+    attract: attract::Attract,
 }
 
 // Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
@@ -471,6 +473,7 @@ pub fn init() -> Console {
         account: account::new(RP_ID, ONLINE),
         update: update::new(),
         active_at: 0.0,
+        attract: attract::new(),
     }
 }
 
@@ -948,6 +951,33 @@ fn update(s: mut Console) {
     update::update(mut s.update, s.presentation, safe_to_reload(s), s.active_at)
 }
 
+// The chosen game playing itself behind the home (attract.wrela): its build opened, shown and
+// closed as the home is. The home rests on it while `settled` (past the opening, the library in)
+// on the Games pane with no sheet or the account's panel over it, nothing starting or shown.
+// Whether it must be drawn.
+fn play_behind(s: mut Console, dt: f32, motion: bool, settled: bool) -> bool {
+    if s.cards.is_empty() { return false }
+    let fetched = s.prefetch_list.is_none() &&
+        s.prefetching.is_none() &&
+        s.selected < s.prefetched.len() &&
+        s.prefetched[s.selected]
+    let opening = if s.step == Step::Open { 1 } else { 0 }
+    let open = if s.handle.is_some() { 1 } else { 0 }
+    let closing = if s.closing.is_some() { 1 } else { 0 }
+    let home = attract::Home {
+        selected: s.selected,
+        address: !s.cards[s.selected].attract.is_empty(),
+        resting: settled && s.pane == Pane::Games && s.sheet < 0.01 && !account::shown(s.account),
+        playing: !browsing(s.step) || s.play_intent.is_some(),
+        strained: s.coarser > 0,
+        motion,
+        fetched,
+        surfaces: opening + open + closing,
+    }
+    let address = s.cards[s.selected].attract.clone()
+    attract::update(mut s.attract, home, address.as_str(), dt)
+}
+
 // Whether the console may reload now without losing anything: past the opening, on the games
 // shelf of its home with no game shown or closing, no call to a game, save export or import under
 // way, and its account idle (update.wrela).
@@ -1396,8 +1426,9 @@ fn shelf_offset(selected: u32, width: f32, gap: f32, w: f32, margin: f32) -> f32
 }
 
 // The home: the chosen game owns the screen. Its hero fills it behind everything (drawn by the
-// GPU, `backdrop`); at the left, from the bottom up, its actions, its progress, its tagline and its
-// title art. With more than one game, a shelf of covers along the bottom chooses among them; with
+// GPU, `backdrop`), and once the home has rested on it, the game plays itself there in the hero's
+// place (attract.wrela); at the left, from the bottom up, its actions, its progress, its tagline
+// and its title art. With more than one game, a shelf of covers along the bottom chooses among them; with
 // one, a quiet line says more are coming.
 fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     if s.cards.is_empty() {
@@ -1884,6 +1915,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         if s.hero_in != hero || s.logo_in != logo { eased = false }
     }
     drive_theme(mut s, phase.library)
+    if play_behind(mut s, dt, motion, settled: !room_shows && !intro) { eased = false }
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
     // the opening's slow turn and the camera's breath at the idle rate. The canvas keeps the last
     // frame, so a settled home draws nothing.
@@ -1974,7 +2006,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             s.inked[k] = vec4(0.0)
         }
     }
-    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    // Clear where the game behind the home shows (attract.wrela); opaque black otherwise.
+    let clear = if s.attract.shown > 0.0 { vec4(0.0) } else { vec4(0.0, 0.0, 0.0, 1.0) }
+    let pass = begin_screen_pass(clear: clear)
     if room_shows {
         draw(
             pass,
@@ -2013,6 +2047,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 if aspect >= 1.2 { 0.62 } else { 1.2 },
                 if many || aspect < 1.2 { 0.62 } else { 0.5 },
             ),
+            behind: vec4(s.attract.shown, 0.0, 0.0, 0.0),
         }
         if let Some(hero) = s.heroes[i].image {
             if let Some(cover) = s.covers[i].small {
