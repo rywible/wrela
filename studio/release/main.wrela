@@ -695,8 +695,6 @@ pub fn pages_of(bytes: take Vec<u8>) -> Result<Vec<Page>, String> {
     Ok(out)
 }
 
-/// A game's image, from its PNG at `path` (a root path): fitted within `within` with Lanczos,
-/// encoded as WebP, and its size.
 // What `images` holds for each game, in order, as its files' names begin.
 const KINDS: [Text; 3] = ["cover", "hero", "title"]
 
@@ -709,6 +707,8 @@ fn ship(tree: mut Tree, prefix: str, extension: str, bytes: [u8]) -> String {
     name
 }
 
+/// A game's image, from its PNG at `path` (a root path): fitted within `within` with Lanczos,
+/// encoded as WebP, and its size.
 fn cover(job: take (String, Size)) -> Result<(Vec<u8>, u32, u32), ToolError> {
     let (path, within) = job
     // Decoded, resized if it doesn't fit, and encoded, each blob given back after.

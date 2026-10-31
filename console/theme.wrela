@@ -297,7 +297,8 @@ pub fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
                 v.count = 0
                 v.pass = 0.0
                 v.clock = 0.0
-                for mut t in v.tones { t.held = min(t.held, 0.0) }
+                // What rings lets go from now, over its release.
+                for mut t in v.tones { t.held = min(t.held, t.age) }
             },
             Some(Cue::Add { note }) => if v.count < MOST_NOTES {
                 v.notes[v.count] = note

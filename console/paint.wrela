@@ -138,17 +138,19 @@ pub struct Picture: Copy + GpuData {
     pub look: vec4,
 }
 
+// Its image premultiplied, with its mip chain (`main::picture_texture`); drawn premultiplied.
 @fragment
-pub fn picture(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Picture) -> Over {
+pub fn picture(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Picture) -> vec4 {
     let size = look.rect.zw
     let uv = (v.pixel - look.rect.xy) / size
-    let seen = image.sample_level(linear, uv, 0.0)
+    let seen = image.sample(linear, uv)
     // Its corners rounded, their edges smoothed over a pixel.
     let radius = look.look.y
     let q = abs(v.pixel - look.rect.xy - size * 0.5) - (size * 0.5 - vec2(radius))
     let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius
     let inside = saturate(0.5 - d)
-    Over { color: vec4(seen.xyz * look.look.z, seen.w * inside * look.look.x) }
+    let cover = inside * look.look.x
+    vec4(seen.xyz * look.look.z * cover, seen.w * cover)
 }
 
 // The mark's ink: how much of each pixel the mark covers, drawn once a size into a layer

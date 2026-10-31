@@ -16,8 +16,8 @@ use brand::manrope::MANROPE
 use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{
-    GpuBuffer, RenderPass, Rgba8, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass,
-    buffer, buffer_of, draw, sampler, texture, write,
+    Blend, GpuBuffer, RenderPass, Rgba8, Rgba16Float, Sampler, Texture, begin_pass,
+    begin_screen_pass, buffer, buffer_of, draw, mip_levels, sampler, texture, write,
 }
 use std::audio::RingWriter
 use std::input::{Button, Event, Key, PadAxis, PadButton, events}
@@ -78,8 +78,9 @@ const RETRY_SECONDS: f32 = 3.0
 const DISPLAY = Face::Mono
 // Where the home's music setting is kept: a byte, 0 off.
 const MUSIC: Text = "console/music"
-// Seconds the theme's voice takes to fall quiet before it takes another game's theme.
-const QUIET_SECONDS: f32 = 1.6
+// Seconds the theme's voice is given to fall quiet before it takes another game's theme: about
+// 6% of its level is left (`theme::LEVEL_SECONDS`), which it lets go of as the new one comes.
+const QUIET_SECONDS: f32 = 2.5
 
 pub struct Profile: Clone + Serialize {
     version: u32,
@@ -174,9 +175,9 @@ fn fetched() -> Fetched {
     }
 }
 
-// What a picture lends the home besides itself: a cover its small copy and its colour, a hero its
-// colour, a title art nothing.
-enum Lends: Copy + Eq { Both, Colour, Nothing }
+// What a picture is to the home: a cover (on its tile, and its small copy and its colour standing
+// for the hero), a hero (behind it all, lending its colour) or a title art.
+enum Role: Copy + Eq { Cover, Hero, Title }
 
 // A picture to draw over the backdrop this frame, in device pixels: whose art (a cover, or the
 // title art), the game, where, how opaque, its corners' radius and how bright.
@@ -722,9 +723,9 @@ fn palette(bytes: Vec<u8>, width: u32, height: u32) -> vec3 {
     if top <= 0.0 { vec3(1.0) } else { sum / top }
 }
 
-// Fetches and decodes `art` into `f` while it's `wanted`, with what it `lends`, and lets go of it
+// Fetches and decodes `art` into `f` while it's `wanted`, as its `role` needs it, and lets go of it
 // when it isn't: whether it changed what shows. Art with no path is never fetched.
-fn arrive(f: mut Fetched, art: Art, wanted: bool, lends: Lends) -> bool {
+fn arrive(f: mut Fetched, art: Art, wanted: bool, role: Role) -> bool {
     if !wanted || art.path.is_empty() {
         let had = f.image.is_some()
         f.image = None
@@ -747,22 +748,19 @@ fn arrive(f: mut Fetched, art: Art, wanted: bool, lends: Lends) -> bool {
     if let Ok(bytes) = result {
         // The host decodes only art of the size the catalog says.
         if bytes.len() == art.width * art.height * 4 {
-            if lends != Lends::Nothing { f.tint = palette(bytes, art.width, art.height) }
-            if lends == Lends::Both {
+            if role != Role::Title { f.tint = palette(bytes, art.width, art.height) }
+            if role == Role::Cover {
                 let (w, h) = small_size(art.width, art.height)
                 var small = texture::<Rgba8>(width: w, height: h)
-                small.write(
-                    x: 0,
-                    y: 0,
-                    width: w,
-                    height: h,
-                    bytes: shrunk(bytes, art.width, art.height),
-                )
+                let shrunk = shrunk(bytes, art.width, art.height, to_width: w, to_height: h)
+                small.write(x: 0, y: 0, width: w, height: h, bytes: shrunk)
                 f.small = Some(take small)
             }
-            var image = texture::<Rgba8>(width: art.width, height: art.height)
-            image.write(x: 0, y: 0, width: art.width, height: art.height, bytes: bytes)
-            f.image = Some(take image)
+            if role == Role::Hero {
+                var image = texture::<Rgba8>(width: art.width, height: art.height)
+                image.write(x: 0, y: 0, width: art.width, height: art.height, bytes: bytes)
+                f.image = Some(take image)
+            } else { f.image = Some(picture_texture(bytes, art.width, art.height)) }
         }
     }
     true
@@ -774,10 +772,10 @@ fn small_size(width: u32, height: u32) -> (u32, u32) {
     (w, max(u32(round(f32(height) * f32(w) / f32(width))), 1))
 }
 
-// `bytes`' RGBA pixels, `width` × `height`, as their small copy (`small_size`): each pixel the
+// `bytes`' RGBA pixels, `width` × `height`, shrunk to `to_width` × `to_height`: each pixel the
 // mean of the box of pixels it covers.
-fn shrunk(bytes: [u8], width: u32, height: u32) -> Vec<u8> {
-    let (w, h) = small_size(width, height)
+fn shrunk(bytes: [u8], width: u32, height: u32, to_width: u32, to_height: u32) -> Vec<u8> {
+    let (w, h) = (to_width, to_height)
     var out: Vec<u8> = Vec::new()
     for y in 0..h {
         for x in 0..w {
@@ -800,6 +798,32 @@ fn shrunk(bytes: [u8], width: u32, height: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+// A picture drawn smaller than it is, from `bytes`' RGBA pixels, `width` × `height`: premultiplied
+// by its alpha, so its edges take none of the colour under its clear pixels as it's filtered, and
+// with its whole mip chain, each level the mean of the one before (`paint::picture`).
+fn picture_texture(bytes: [u8], width: u32, height: u32) -> Texture<Rgba8> {
+    var level: Vec<u8> = Vec::new()
+    for i in 0..width * height {
+        let a = u32(bytes[i * 4 + 3])
+        for c in 0..3 { level.push(u8((u32(bytes[i * 4 + c]) * a + 127) / 255)) }
+        level.push(u8(a))
+    }
+    let levels = mip_levels(width, height)
+    var image = texture::<Rgba8>(width: width, height: height, levels: levels)
+    var w = width
+    var h = height
+    for k in 0..levels {
+        if k > 0 {
+            let (next_w, next_h) = (max(w / 2, 1), max(h / 2, 1))
+            level = shrunk(level, w, h, to_width: next_w, to_height: next_h)
+            w = next_w
+            h = next_h
+        }
+        image.write(x: 0, y: 0, width: w, height: h, bytes: level, level: k)
+    }
+    image
 }
 
 fn near_cover(index: u32, selected: u32) -> bool {
@@ -869,9 +893,9 @@ fn update(s: mut Console) {
         borrow card = s.cards[i]
         let chosen = i == s.selected || i == s.title_shown
         let near = near_cover(i, s.selected)
-        if arrive(mut s.covers[i], card.cover, near, Lends::Both) { s.dirty = true }
-        if arrive(mut s.heroes[i], card.hero, chosen, Lends::Colour) { s.dirty = true }
-        if arrive(mut s.logos[i], card.logo, chosen, Lends::Nothing) { s.dirty = true }
+        if arrive(mut s.covers[i], card.cover, near, Role::Cover) { s.dirty = true }
+        if arrive(mut s.heroes[i], card.hero, chosen, Role::Hero) { s.dirty = true }
+        if arrive(mut s.logos[i], card.logo, chosen, Role::Title) { s.dirty = true }
     }
     if let Some(Ok(bytes)) = poll(mut s.music_load) {
         s.music = bytes.is_empty() || bytes[0] != 0
@@ -948,6 +972,8 @@ fn act(s: mut Console, action: Action) {
         },
         Action::Name => {},
         Action::Music => {
+            // The stored setting, if it's still being read, is this one's now.
+            s.music_load = None
             s.music = !s.music
             s.music_write = Some(store(MUSIC, [u8(if s.music { 1 } else { 0 })]))
         },
@@ -1434,12 +1460,13 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     if row_width(s, labels, tight: false) > span && labels[0].starts_with("Continue") {
         labels[0] = String::from("Continue")
     }
-    let tight = row_width(s, labels, tight: false) > span
+    var tight = row_width(s, labels, tight: false) > span
     while tight && acts.len() > 1 && row_width(s, labels, tight: true) > span {
         let last = acts.len() - 1
         let _ = acts.remove(last)
         let _ = labels.remove(last)
     }
+    tight = row_width(s, labels, tight: false) > span
     var at = margin
     for i in 0..labels.len() {
         let primary = i == 0
@@ -1802,7 +1829,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     } else {
         mix(s.sway, lean, ease(2.0))
     }
-    if length(s.sway - lean) > 0.001 { eased = false }
+    // The room's breath never comes to rest: it draws at the idle rate (`due`), not as it eases.
+    if !room_shows && length(s.sway - lean) > 0.001 { eased = false }
     // The home's light takes the colour of the chosen game's hero (or its cover) as the home
     // comes up, and eases to the next as the selection changes.
     let art_tint = if s.cards.is_empty() { None } else if s.heroes[s.selected].image.is_some() {
@@ -1884,7 +1912,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.renderer.upload(s.draw)
     // The artifact, where the opening or the room has it, traced for the room's camera: only
     // while the room shows, the opening's or, with no game to show yet, the home's.
-    if room_shows { trace_room(mut s, phase, cam, rest, width, height, time, motion, intro) }
+    if room_shows { trace_room(mut s, phase, cam, rest, width, height, time, motion, intro) } else {
+        // Nothing is traced, so no tracing is due.
+        s.behind = false
+    }
     // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
     // up, then going down into the dark with it; small in the header with the library.
     let marks = [
@@ -2027,6 +2058,7 @@ fn lay_picture<P: RenderPass>(
         quad.bind(screen, rect: look.rect),
         picture.bind(image: image, linear: linear, look: look),
         vertices: 6,
+        blend: Blend::Premultiplied,
     )
 }
 
@@ -2545,7 +2577,7 @@ fn a_small_copy_keeps_the_aspect_and_averages_its_boxes() {
             for c in [v, v, v, 255] { halves.push(u8(c)) }
         }
     }
-    let small = shrunk(halves, width: 96, height: 2)
+    let small = shrunk(halves, width: 96, height: 2, to_width: 48, to_height: 1)
     assert(small.len() == 48 * 1 * 4)
     assert(small[0] == 0 && small[47 * 4] == 200 && small[3] == 255)
 }
