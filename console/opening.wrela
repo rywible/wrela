@@ -1,8 +1,8 @@
 // The opening. The artifact, a black and silver tesseract, comes up out of the dark close to
 // the eye while a light passes slowly along the WRΞLA mark beneath it. As the light finishes,
 // the tesseract slows to rest with its cells nested, a cube inside a cube. It and the mark
-// hold, then go down into the dark together, and the library comes up out of it with the
-// tesseract far behind. The tesseract never travels, and never turns faster than its steady
+// hold, then go down into the dark together, and the home comes up out of it: the chosen game's
+// hero, which takes the tesseract's place. The tesseract never travels, and never turns faster than its steady
 // rate.
 use brand::facet
 
@@ -30,7 +30,7 @@ pub struct Moment: Copy {
     pub reveal: f32,
     // The opening has gone dark, and the tesseract has its place in the room.
     pub settled: bool,
-    // The room, the cards and the controls.
+    // The home: the chosen game's hero, its title and the controls.
     pub library: f32,
 }
 
@@ -74,7 +74,8 @@ pub fn turn_at(time: f32, opening: bool) -> f32 {
     clock_at(time, opening) * TURNING
 }
 
-// How lit the stage behind the cards is: the opening's tesseract, then the room's.
+// How lit the room is: the opening's tesseract, then the room's, which shows only while there's
+// no game to show.
 pub fn stage_light(m: Moment) -> f32 {
     if m.settled { m.library } else { m.title }
 }

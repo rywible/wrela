@@ -9,7 +9,7 @@ use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, 
 use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
-    ARCHIVE, Top, archive_script, card, catalog_line, code_of, docs_headers, docs_page,
+    ARCHIVE, Shipped, Top, archive_script, card, catalog_line, code_of, docs_headers, docs_page,
     docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all, suffix,
     with_storage, wrangler_config,
 }
@@ -53,6 +53,10 @@ fn one_game(
                     session,
                     builds: Vec::from([Build { name: build, dir: "session" }]),
                     cover: "cover.png",
+                    hero: "",
+                    logo: "",
+                    tagline: "",
+                    theme: "",
                 },
             ],
         ),
@@ -79,6 +83,26 @@ fn the_released_catalog_passes_its_checks() {
         }
     }
     assert(covers == CATALOG.games.len())
+}
+
+@test
+fn a_tagline_is_one_short_line_and_named_art_must_be_there() {
+    var c = one_game("session", "session", "game.example", "A console.", "console.example")
+    c.games[0].tagline = "A day at the zoo"
+    c.games[0].hero = "games/game/hero.png"
+    assert(check(c).is_ok())
+    var named = 0
+    for (path, why) in paths(c) {
+        if path.as_str() == "games/game/hero.png" {
+            named += 1
+            assert(contains(why.as_str(), "hero"), why.as_str())
+        }
+    }
+    assert(named == 1, "a named hero must be in the workspace")
+    for bad in ["two\nlines", "a\ttab"] {
+        c.games[0].tagline = bad
+        fails_with(c.clone(), "tagline")
+    }
 }
 
 @test
@@ -342,6 +366,10 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
             [Build { name: "floor", dir: "floor" }, Build { name: "session", dir: "session" }],
         ),
         cover: "cover.png",
+        hero: "hero.png",
+        logo: "",
+        tagline: "A line that sells it",
+        theme: "theme.txt",
     }
     let order = fetch_order(game)
     assert(order.len() == 2 && order[0] == "session" && order[1] == "floor")
@@ -366,10 +394,23 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
             "https://game.example/releases/R/session/game.wasm\nhttps://game.example/releases/R/floor/main.js\n",
         list.as_str(),
     )
-    let line = catalog_line(game, "R", "cover-0123456789abcdef.webp", width: 960, height: 540)
+    let shipped = |name: Text, width: u32, height: u32| Shipped {
+        name: String::from(name),
+        width,
+        height,
+    }
+    let line = catalog_line(
+        game,
+        "R",
+        shipped("cover-0123456789abcdef.webp", 960, 540),
+        shipped("hero-0123456789abcdef.webp", 1920, 1080),
+        shipped("", 0, 0),
+        "theme-0123456789abcdef.txt",
+    )
     assert(
         line.as_str() ==
-            "game\tGame\thttps://game.example/releases/R/session/\tcover-0123456789abcdef.webp\t960\t540",
+            "game\tGame\thttps://game.example/releases/R/session/\tcover-0123456789abcdef.webp\t960\t540\thero-0123456789abcdef.webp\t1920\t1080\t\t0\t0\tA line that sells it\ttheme-0123456789abcdef.txt",
+        line.as_str(),
     )
 }
 
