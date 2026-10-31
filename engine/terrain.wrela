@@ -126,7 +126,8 @@ impl Ground for Flat {
 /// (`flora`: the soil's acidity, its wetness, the light, how worn it is; each 0 to 1), which
 /// chooses their species (`grass::species_of`). And what the ground is made of where it shows
 /// (`materials`: weights of leaf litter, soil, rock, moss), whose cooked detail the ground's
-/// pixels show close up (`ground_shade`).
+/// pixels show close up (`ground_shade`); and how rough it is to the light (`rough`: a wet
+/// gley's smoother than a dry loam's, §E5).
 pub struct Cover: Copy + GpuData {
     pub albedo: vec3,
     pub grass: f32,
@@ -137,10 +138,12 @@ pub struct Cover: Copy + GpuData {
     pub under: vec4 = vec4(0.0),
     pub flora: vec4 = vec4(0.0),
     pub materials: vec4 = vec4(0.0, 1.0, 0.0, 0.0),
+    pub rough: f32 = 0.9,
 }
 
 /// One cooked point of the clipmap: the height, the normal (octahedral), the cover (the albedo's
-/// square root, for its dark greens' precision, and the grass), the meadow (tall, dry, deep),
+/// square root, for its dark greens' precision, and the grass), the meadow (tall, dry, deep, and
+/// the ground's roughness),
 /// the flowers (each kind's weight, and how many), and the wood's floor's plants (`Cover::under`).
 pub struct Texel: Copy + GpuData {
     pub height: f32,
@@ -902,7 +905,7 @@ pub fn cook_level<T: Terrain>(
         height: terrain.substrate_height(vec3(x, h, z)),
         normal: Oct32::encode(n),
         cover: Unorm8x4::encode(vec4(sqrt(saturate(c.albedo)), saturate(c.grass))),
-        meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, 0.0))),
+        meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, c.rough))),
         flowers: Unorm8x4::encode(saturate(c.flowers)),
         under: Unorm8x4::encode(saturate(c.under)),
         flora: Unorm8x4::encode(saturate(c.flora)),
@@ -1104,6 +1107,13 @@ fn normal_at_scale(levels: Levels, texels: [Texel], from: u32, xz: vec2, scale: 
     }
     let (n, _, _) = level_cover(levels, texels, l, xz)
     normalize(n)
+}
+
+/// The ground's roughness at `xz` (`Cover::rough`), from level `l`'s texels (bilinear).
+fn ground_rough(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
+    let (at, f) = level_cell(levels, l, xz)
+    let w = |i: u32| texels[i].meadow.decode().w
+    mix(mix(w(at.x), w(at.y), f.x), mix(w(at.z), w(at.w), f.x), f.y)
 }
 
 /// The ground's history at `xz` (`substance::Substance::history`), from the habitat level `l`
@@ -1349,7 +1359,8 @@ pub fn ground_shade<Q: Switches, Y: Style>(
     // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
     // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
     let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, ln, soft: 2.0)
-    let l = Lit { albedo, n: ln, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
+    let rough = ground_rough(lt.levels, texels, level, g.world.xz)
+    let l = Lit { albedo, n: ln, sun, sky, through: vec3(0.0), rough, reflected }
     let s = substance_of::<Y>(nf, nc, history, albedo, flat)
     let c = lit::shown(lt, l, g.world, s, style::GROUND)
     Y::written(vec4(c, view::GROUND), s)

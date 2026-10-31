@@ -470,10 +470,11 @@ impl engine::terrain::Ground for Ground {
 
 // ---- the ground, as the terrain draws it ---------------------------------------------------------
 
-/// Each soil kind's ground where it shows (linear albedo), in `SoilKind`'s order and `BED` last:
-/// bare rock (the rock's own, `rock_albedo`), a thin stony soil, the brown loam, the darker
-/// colluvium, the alluvium, the grey gley, the peat, the mere's silted bed.
-const SOIL_ALBEDO = [
+/// Each soil kind's ground where it shows (linear albedo, **proposed**: `design.md`'s "The
+/// ground"), in `SoilKind`'s order and `BED` last: bare rock (the rock's own, `rock_albedo`), a
+/// thin stony soil, the brown loam, the darker colluvium, the alluvium a dark loam, the grey gley,
+/// the black peat, the mere's silted bed.
+pub const SOIL_ALBEDO = [
     vec3(0.0),
     vec3(0.105, 0.09, 0.07),
     vec3(0.085, 0.062, 0.042),
@@ -483,6 +484,21 @@ const SOIL_ALBEDO = [
     vec3(0.03, 0.024, 0.018),
     vec3(0.045, 0.04, 0.03),
 ]
+
+/// How rough each kind is to the light (`Cover::rough`, **proposed**: `design.md`'s "The ground"):
+/// the dry soils matte, the wet ones smoother (a gley's and a peat's water between their grains),
+/// the mere's silt the smoothest.
+pub const SOIL_ROUGH = [0.85, 0.92, 0.9, 0.88, 0.85, 0.65, 0.6, 0.5]
+
+/// How much of a thin soil's ground its stones take, in patches (**proposed**).
+pub const THIN_STONES: f32 = 0.35
+
+/// Ground smoothed by its wetness (the history's, 0 to 1, `fields.z`): water fills the roughness
+/// between its grains (**proposed**: to 0.7 of it, soaked). Its darkening is the wood's floor's
+/// (`land::cover::wood_floor`: water in its pores, Lekner and Dorf 1988).
+fn wetted(c: Cover, wet: f32) -> Cover {
+    Cover { rough: c.rough * (1.0 - 0.3 * smoothstep(0.6, 0.95, wet)), ..c }
+}
 
 /// How much meadow each kind holds in the open (`Cover::grass`), and how deep a green it is: none
 /// on the mere's bed.
@@ -515,6 +531,9 @@ impl Ground {
         let face = smoothstep(0.62, 0.45, n.y)
         let bare = if kind == u32(SoilKind::Rock) {
             mix(1.0, 0.35, smoothstep(0.7, 0.86, n.y))
+        } else if kind == u32(SoilKind::Thin) {
+            // A thin soil's stones showing between its grass, in patches a few metres across.
+            THIN_STONES * smoothstep(0.4, 0.7, engine::noise::noise2(at.xz * 0.3 + vec2(11.0, -5.0)))
         } else { 0.0 }
         let rock = max(face, bare)
         // (The rock's colour only where it shows: it's most of the cover's noise.)
@@ -526,6 +545,7 @@ impl Ground {
             grass: SOIL_GRASS[kind] * (1.0 - rock),
             deep: SOIL_DEEP[kind],
             materials: vec4(0.0, 1.0 - rock, rock, 0.0),
+            rough: SOIL_ROUGH[kind],
         }
         if fields.x < 0.0 {
             return land::cover::far_wood(c, at, w, rock: rock)
@@ -540,8 +560,10 @@ impl Ground {
             rim: 0.0,
             rock_albedo: rock_albedo,
         )
-        // Nothing of the wood's floor grows on the mere's bed: its water covers it.
-        if kind == BED { under_water(floor) } else { floor }
+        // The history's wetness on whatever covers it; nothing of the wood's floor grows on the
+        // mere's bed: its water covers it.
+        let wet = wetted(floor, fields.z)
+        if kind == BED { under_water(wet) } else { wet }
     }
 }
 

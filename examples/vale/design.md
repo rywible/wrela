@@ -47,6 +47,24 @@ over its slope), as the floor's geology reads it; on a floodplain, as wet as its
 leave it (1 beside the stream, 0.55 at the floor's edge). The stream's bed is gley and peat, its
 floodplains alluvium, its crests thin.
 
+The ground (§E5: `landscape::SOIL_ALBEDO`, `SOIL_ROUGH`, `THIN_STONES`, `wetted`; **proposed**):
+each kind's soil where it shows, its meadow over it in the open and the wood's floor under the
+canopy. The history's wetness at the ground (`fields.z`) darkens whatever covers it, soaked to
+0.65 of its albedo (`land::cover::wood_floor`: water in its pores, Lekner and Dorf 1988), and
+smooths it, soaked to 0.7 of its roughness. The clearing and the floor keep their ground until
+H1.
+
+| Kind | Albedo (linear) | Roughness | Reads as |
+|---|---|---|---|
+| Rock | the rock's own (`rock_albedo`) | 0.85 | the band's grit, the shale |
+| Thin | (0.105, 0.09, 0.07) | 0.92 | stony: its stones a third of its ground, in patches |
+| Loam | (0.085, 0.062, 0.042) | 0.9 | brown earth |
+| Colluvium | (0.07, 0.05, 0.034) | 0.88 | deeper, darker earth at the slopes' feet |
+| Alluvium | (0.065, 0.052, 0.036) | 0.85 | dark loam on the floodplains |
+| Gley | (0.06, 0.062, 0.05) | 0.65 | grey and wet |
+| Peat | (0.03, 0.024, 0.018) | 0.6 | black |
+| The mere's bed | (0.045, 0.04, 0.03) | 0.5 | silt under the water |
+
 ## The water (`water.wrela`)
 
 Laid by `land::water::lay_with` over the land: the main stream in three courses (above the fall,

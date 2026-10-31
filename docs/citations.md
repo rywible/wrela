@@ -94,6 +94,7 @@ Each is our own Wrela code written from the published idea. No code was copied.
 
 | Source | Where | What it gives |
 |---|---|---|
+| Lekner and Dorf, [Why some things are darker when wet](https://doi.org/10.1364/AO.27.001278), *Applied Optics* 27(7) (1988) | `land::cover::wood_floor`'s wet ground, `examples/vale/landscape.wrela`'s `wetted` | Wet ground darker: water in its pores reflects back what would have scattered out |
 | A. Chaigne and A. Askenfelt, "Numerical simulations of piano strings" (JASA 1994); B. Bank and others, "Physics-based sound synthesis of the piano" (2000); P. J. Huber, robust regression (1964) | `engine::piano` | Each partial's frequency-dependent decay, fitted to each key by Huber-weighted least squares |
 | G. Weinreich on coupled strings; H. Conklin on phantom partials | `engine::piano` | A unison's aftersound; partials from the string's stretch |
 | J.-M. Jot and A. Chaigne, feedback delay networks (1991); J. Abel and P. Huang, echo density (2006); modal synthesis | `engine::piano` | The room (16-line FDN, Hadamard mix), its test's echo density measure, the soundboard's knock |
