@@ -62,12 +62,12 @@ fn entry(release: str, until: Option<i64>, docs: bool) -> Deploy {
     }
 }
 
-/// A ended 20 days ago, B 3 days ago, and C is live.
+/// A ended 20 days ago, B a day ago, and C is live.
 fn history(docs: bool) -> Vec<Deploy> {
     Vec::from(
         [
             entry(A, Some(now() - 20 * DAY), docs: docs),
-            entry(B, Some(now() - 3 * DAY), docs: docs),
+            entry(B, Some(now() - DAY), docs: docs),
             entry(C, None, docs: docs),
         ],
     )
@@ -89,12 +89,12 @@ fn a_release_stays_for_its_window_after_it_stops_being_live() {
     assert(releases(kept(h, now(), C)).as_str() == "b")
     let after = next_history(h, D, "head", workers(docs: false), now())
     assert(releases(after).as_str() == "bcd")
-    assert(after[0].live_until == Some(now() - 3 * DAY))
+    assert(after[0].live_until == Some(now() - DAY))
     assert(after[1].live_until == Some(now()), "the live one ends now")
     assert(after[2].live_until.is_none() && after[2].live_from == now())
     assert(after[2].source.as_str() == "head" && after[2].workers.len() == 2)
     // A release exactly `KEEP` past its end is still kept; a second later it isn't.
-    let edge = Vec::from([entry(A, Some(now() - 14 * DAY), docs: false)])
+    let edge = Vec::from([entry(A, Some(now() - 2 * DAY), docs: false)])
     assert(kept(edge, now(), D).len() == 1)
     assert(kept(edge, now() + 1, D).is_empty())
     assert(releases(kept(edge, now(), A)).is_empty(), "a redeploy of it isn't kept beside itself")
@@ -786,24 +786,25 @@ fn a_file_that_leaves_its_release_stops_the_deploy() {
     let _ = spoiled("invalid path", None, take escape)
 }
 
-/// The docs keep each kept release they served, and none they never served (404); but a game's
-/// missing release stops the deploy, and so does a docs failure that isn't a 404.
+/// The docs keep no release, and ask the live site for none, while the console and the game keep
+/// theirs; a game's missing release still stops the deploy.
 @test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
-fn the_docs_keep_what_they_served_and_skip_what_they_never_did() {
+fn the_docs_keep_no_release_but_a_game_must_keep_its_own() {
     var files = site(docs: true, docs_first: false)
-    // The docs served C, and never B.
     serve(mut files, "docs.example", C, [("index.html", String::from("docs"))])
     set_up(take files)
+    // A docs listing the deploy asked for would fail it.
+    for release in [B, C] {
+        faked(f"https://docs.example/releases/{release}/files.json", Fake::Status(503))
+    }
     if let Err(e) = deploy(options(dry_run: true)) {
         panic(e.message())
     }
-    assert(kept_file("docs-host", C, "index.html") == Some(String::from("docs")), "the docs' C")
-    assert(!there(f"scratch/docs-host/releases/{B}"), "the docs' B")
-    // A docs failure that isn't a 404 stops it.
-    faked(f"https://docs.example/releases/{B}/files.json", Fake::Status(503))
-    failed(deploy(options(dry_run: true)), "HTTP 503")
+    for release in [B, C] {
+        assert(!there(f"scratch/docs-host/releases/{release}"), release)
+        assert(kept_file("game-host", release, "session/game.wasm") == Some(String::from(release)))
+    }
     // A game's missing release stops it.
-    faked(f"https://docs.example/releases/{B}/files.json", Fake::Clear)
     faked(f"https://game.example/releases/{B}/files.json", Fake::Missing)
     failed(deploy(options(dry_run: true)), "HTTP 404")
 }
@@ -854,7 +855,7 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
     serve(mut files, "game.example", A, [("session/game.wasm", String::from(A))])
     set_up(take files)
     faked(REFS, Fake::Bytes(advertised(SOURCE)))
-    faked(f"https://console.example{main::API_PROBE}", Fake::Status(403))
+    faked(f"https://console.example{main::API_PROBE}", Fake::Status(405))
     let after = match deploy(options(dry_run: false)) {
         Ok(a) => take a,
         Err(e) => panic(e.message()),
@@ -910,16 +911,29 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
 }
 
 /// API paths that don't reach the console's server once it's deployed (the console's assets answer
-/// them: 404 or 405) fail the deploy; its router's 403 to a `POST` from no origin passes it.
+/// a `GET` with a 404) fail the deploy; the server's 405 to a `GET` of its accounts passes it.
 @test(tool, net: ["console.example"], budget: 60)
 fn api_paths_that_do_not_reach_the_server_fail_the_deploy() {
     match verify_api("console.example") {
         Ok(_) => panic("verified"),
-        Err(e) => assert(contains(e.message(), "doesn't reach the console's server"), e.message()),
+        Err(e) => assert(
+            contains(e.message(), "doesn't reach the console's server: HTTP 404"),
+            e.message(),
+        ),
     }
+    // A firewall's 403 isn't the server's answer either.
     faked(f"https://console.example{main::API_PROBE}", Fake::Status(403))
+    failed_api("HTTP 403")
+    faked(f"https://console.example{main::API_PROBE}", Fake::Status(405))
     if let Err(e) = verify_api("console.example") {
         panic(e.message())
+    }
+}
+
+fn failed_api(why: str) {
+    match verify_api("console.example") {
+        Ok(_) => panic(f"verified, but should fail with `{why}`"),
+        Err(e) => assert(contains(e.message(), why), e.message()),
     }
 }
 
