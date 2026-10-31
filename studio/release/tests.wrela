@@ -3,7 +3,9 @@
 // anchors and links), and, as tool tests on small fixtures, the walk of a package's dependencies
 // for its font licences and the members of a workspace.
 
-use catalog::{Build, CATALOG, Catalog, Console, Docs, Game, check, is_component, origin, paths}
+use catalog::{
+    Build, CATALOG, Catalog, Console, Docs, Game, attract_build, check, is_component, origin, paths,
+}
 use io::read_files
 use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, workspace_of}
 use manifest::{joined, parse}
@@ -136,52 +138,43 @@ fn build_names_cannot_collide_with_release_directories() {
 }
 
 @test
-fn the_attract_build_is_one_of_the_games_own_and_sets_constants_as_build_takes_them() {
+fn the_attract_address_is_one_of_the_games_own_builds_and_a_plain_fragment() {
     var c = one_game("session", "session", "game.example", "A console.", "console.example")
-    c.games[0].builds.push(Build { name: "attract", dir: "game", set: Vec::from(["ATTRACT=true"]) })
-    c.games[0].attract = "attract"
-    assert(check(c).is_ok())
-    c.games[0].attract = "missing"
-    fails_with(c.clone(), "attract build")
-    c.games[0].attract = "session"
-    fails_with(c.clone(), "attract build")
+    c.games[0].builds.push(Build { name: "floor", dir: "game" })
+    for good in ["floor", "floor#attract", "floor#attract-2"] {
+        c.games[0].attract = good
+        assert(check(c.clone()).is_ok(), good)
+    }
+    for bad in ["missing", "missing#attract", "session", "session#attract"] {
+        c.games[0].attract = bad
+        fails_with(c.clone(), "attract build")
+    }
+    // The fragment a token, which a host opens: not empty, no query or second fragment, nothing
+    // that asks for test mode.
+    for bad in ["floor#", "floor#Attract", "floor#a&b", "floor#a?b", "floor#a#b", "floor#test"] {
+        c.games[0].attract = bad
+        fails_with(c.clone(), "attract fragment")
+    }
     c.games[0].attract = ""
     assert(check(c).is_ok(), "a game with none")
-    for bad in [
-        "ATTRACT",
-        "=true",
-        "ATTRACT=",
-        "attract=true",
-        "1A=2",
-        "A B=1",
-        "A=one\ntwo",
-        "A=a\tb",
-    ] {
-        c.games[0].builds[1].set = Vec::from([bad])
-        fails_with(c.clone(), "invalid constant")
-    }
-    // The released capybara's attract build is its game's package with `ATTRACT` set.
+    // The released capybara plays itself in its play build, opened at `#attract`: no build of its
+    // own.
     borrow capybara = CATALOG.games[0]
+    assert(capybara.attract == "capybara#attract", capybara.attract)
+    assert(capybara.builds.len() == 2, "the session and the play build")
     var found = false
     for b in capybara.builds {
-        if b.name == capybara.attract {
+        if b.name == attract_build(capybara.attract) {
             found = true
-            assert(b.dir == "games/capybara" && b.set.len() == 1 && b.set[0] == "ATTRACT=true")
-            let options = build_options(b.set)
-            assert(options.set.len() == 1 && options.set[0].name.as_str() == "ATTRACT")
-            assert(options.set[0].value.as_str() == "true" && options.optimize)
+            assert(b.dir == "games/capybara")
         }
     }
-    assert(found, "the capybara has an attract build")
-    assert(build_options().set.is_empty())
-    // The fingerprint holds both: another attract build, or other constants, another release.
+    assert(found, "the capybara plays itself in one of its builds")
+    assert(build_options().set.is_empty() && build_options().optimize)
+    // The fingerprint holds it: another attract address, another release.
     let fingerprint = json::compact(catalog_json(CATALOG))
-    assert(contains(fingerprint.as_str(), "\"attract\": \"attract\""), fingerprint.as_str())
     assert(
-        contains(
-            fingerprint.as_str(),
-            "\"attract\": {\"package\": \"games/capybara\", \"set\": [\"ATTRACT=true\"]}",
-        ),
+        contains(fingerprint.as_str(), "\"attract\": \"capybara#attract\""),
         fingerprint.as_str(),
     )
     assert(contains(fingerprint.as_str(), "\"session\": \"games/capybara/session\""))
@@ -465,10 +458,9 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
             [
                 Build { name: "floor", dir: "floor" },
                 Build { name: "session", dir: "session" },
-                Build { name: "attract", dir: "floor", set: Vec::from(["ATTRACT=true"]) },
             ],
         ),
-        attract: "attract",
+        attract: "floor#attract",
         cover: "cover.png",
         hero: "hero.png",
         logo: "",
@@ -476,7 +468,7 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
         theme: "theme.txt",
     }
     let order = fetch_order(game)
-    assert(order.len() == 3 && order[0] == "session" && order[1] == "floor")
+    assert(order.len() == 2 && order[0] == "session" && order[1] == "floor")
     var builds: Vec<(Text, Vec<String>)> = Vec::new()
     builds.push(
         (
@@ -513,7 +505,7 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
     )
     assert(
         line.as_str() ==
-            "game\tGame\thttps://game.example/releases/R/session/\tcover-0123456789abcdef.webp\t960\t540\thero-0123456789abcdef.webp\t1920\t1080\t\t0\t0\tA line that sells it\ttheme-0123456789abcdef.txt\thttps://game.example/releases/R/attract/",
+            "game\tGame\thttps://game.example/releases/R/session/\tcover-0123456789abcdef.webp\t960\t540\thero-0123456789abcdef.webp\t1920\t1080\t\t0\t0\tA line that sells it\ttheme-0123456789abcdef.txt\thttps://game.example/releases/R/floor/#attract",
         line.as_str(),
     )
     // A game with no build that plays itself leaves its last column empty.

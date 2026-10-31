@@ -3,7 +3,7 @@
 // catalog, prefetch lists and card, the docs page's head and text, and the storage namespace each
 // bootstrap names.
 
-use catalog::{Catalog, Console, Docs, Game, origin_of}
+use catalog::{Catalog, Console, Docs, Game, attract_build, attract_fragment, origin_of}
 use json::{Json, compact, indented, member, member_of, member_of_obj, text}
 use pages::{Page, escape, group_of, groups, stem}
 
@@ -604,20 +604,7 @@ pub fn catalog_json(c: Catalog) -> Json {
     for g in c.games {
         var builds: Vec<(String, Json)> = Vec::new()
         for b in g.builds {
-            // A build with constants set is its package and them; one without, its package
-            // alone, as before.
-            if b.set.is_empty() {
-                builds.push(member(b.name, text(b.dir)))
-            } else {
-                var set: Vec<Json> = Vec::new()
-                for named in b.set {
-                    set.push(text(named))
-                }
-                var build: Vec<(String, Json)> = Vec::new()
-                build.push(member("package", text(b.dir)))
-                build.push(member("set", Json::List(take set)))
-                builds.push(member(b.name, Json::Obj(take build)))
-            }
+            builds.push(member(b.name, text(b.dir)))
         }
         var game: Vec<(String, Json)> = Vec::new()
         game.push(member("id", text(g.id)))
@@ -650,7 +637,7 @@ pub struct Shipped: Clone {
 
 /// A game's line of the console's catalog, between tabs: its id, title and session's address;
 /// its cover's, hero's and title art's files and sizes; its tagline; its theme's file; and the
-/// address of its build that plays itself (empty for none).
+/// address where it plays itself, its fragment kept (empty for none).
 pub fn catalog_line(
     game: Game,
     release: str,
@@ -668,7 +655,11 @@ pub fn catalog_line(
     }
     line.push_str(f"\t{game.tagline}\t{theme}\t")
     if !game.attract.is_empty() {
-        line.push_str(f"{o.as_str()}/releases/{release}/{game.attract}/")
+        line.push_str(f"{o.as_str()}/releases/{release}/{attract_build(game.attract)}/")
+        let fragment = attract_fragment(game.attract)
+        if !fragment.is_empty() {
+            line.push_str(f"#{fragment}")
+        }
     }
     line
 }
