@@ -77,9 +77,9 @@ pub const CATALOG: Catalog = Catalog {
         description: "Games made in Wrela, a language and engine for games that run in the browser.",
         api: "wrela-console-api",
         zone: "wrela.dev",
-        // The server ran in the console's Worker, which now serves static assets alone and so
-        // can't keep a Durable Object class.
-        api_from: "wrela-console",
+        // The server ran in the console's Worker until 2026-10-31, when its first deploy here
+        // took its class over (rywible/wrela#348); there's nothing left to take.
+        api_from: "",
     },
     docs: Docs {
         dir: "docsite",

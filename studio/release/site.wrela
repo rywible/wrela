@@ -319,18 +319,23 @@ fn contains(names: [String], name: str) -> bool {
 }
 
 /// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable
-/// Object and gives the host's router (`api`, toolchain 0.13.0's `server/cloudflare.js`, in the
-/// directory `server` beside the script) each request, which the Worker's routes bring only on
-/// the server's paths. A request the router doesn't answer is a 404.
+/// Objects, the server's and its rooms', and gives each request to the host's routers (`api`, then
+/// `rooms`: toolchain 0.15.0's `server/cloudflare.js`, in the directory `server` beside the
+/// script), which the Worker's routes bring only on the server's paths. A request neither answers
+/// is a 404.
 pub fn api_script(server: str) -> String {
     var out = String::from(
         "// The console's server (studio/release/site.wrela). Written by the release tool.\n",
     )
-    out.push_str(f"import {{ WrelaServer, api }} from \"./{server}/cloudflare.js\";\n")
-    out.push_str("export { WrelaServer };\n")
+    out.push_str(
+        f"import {{ WrelaServer, WrelaRoom, api, rooms }} from \"./{server}/cloudflare.js\";\n",
+    )
+    out.push_str("export { WrelaServer, WrelaRoom };\n")
     out.push_str("export default {\n")
     out.push_str("  async fetch(request, env, ctx) {\n")
-    out.push_str("    const answered = await api(request, env, { ctx: ctx });\n")
+    out.push_str(
+        "    const answered = (await api(request, env, { ctx: ctx })) ?? (await rooms(request, env));\n",
+    )
     out.push_str("    return answered ?? new Response(null, { status: 404 });\n")
     out.push_str("  },\n")
     out.push_str("};\n")

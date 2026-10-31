@@ -464,6 +464,9 @@ fn release(revision: str) -> Result<String, ToolError> {
         catalog_text.push_str("\n")
     }
     projects[0].tree.put_bytes("catalog.tsv", catalog_text.as_bytes())
+    // The console's own release, which it compares with the live one to move an open tab onto
+    // the newest (console/update.wrela).
+    projects[0].tree.put_bytes("release.txt", String::from(f"{r}\n").as_bytes())
     for g in 0..c.games.len() {
         borrow game = c.games[g]
         var lists: Vec<(Text, Vec<String>)> = Vec::new()
@@ -590,7 +593,7 @@ fn release(revision: str) -> Result<String, ToolError> {
         finals.push(take f)
     }
     // The console's server: its build's files beside its Worker's script, and the members of its
-    // Wrangler configuration it asks for (toolchain 0.13.0's `server/cloudflare.json`).
+    // Wrangler configuration it asks for (the pinned toolchain's `server/cloudflare.json`).
     let api = c.console.api
     let console_out = plan[0].out.clone()
     var server_members: Vec<(String, Json)> = Vec::new()

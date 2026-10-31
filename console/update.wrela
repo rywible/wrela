@@ -1,0 +1,187 @@
+// An open tab moves onto the newest release by itself (studio/deploy keeps an old release only a
+// short while): the console asks the site which release is live (`/deploys.json`, never cached)
+// every `EVERY` seconds, and once that isn't its own (`release.txt`, which the release writes
+// beside it), it reloads the page at a moment that loses nothing: on the home screen, no game
+// shown, nothing being saved or signed in, and nothing touched for `IDLE` seconds. The page's
+// storage stays, and a reload starts at the library (`decide_opening`).
+use std::http
+use std::io::{Pending, fetch}
+use std::json::{Kind, TOP, parse}
+
+/// How often the console asks which release is live, in seconds of its presentation.
+pub const EVERY: f32 = 600.0
+
+/// How long the home must be left alone before a reload, in seconds.
+pub const IDLE: f32 = 30.0
+
+/// What the console knows of its release and the live one.
+pub struct Update {
+    /// The console's own release, once read: none outside a release (`wrela run console`).
+    pub own: Option<String>,
+    own_load: Option<Pending<u8>>,
+    live_load: Option<Pending<u8>>,
+    /// When it next asks.
+    next: f32,
+    /// Whether the live release is another.
+    pub newer: bool,
+    /// Whether it has asked the host to reload, and the host's answer.
+    pub asked: bool,
+    reload: Option<Pending<u8>>,
+}
+
+pub fn new() -> Update {
+    Update {
+        own: None,
+        own_load: Some(fetch("release.txt")),
+        live_load: None,
+        next: EVERY,
+        newer: false,
+        asked: false,
+        reload: None,
+    }
+}
+
+fn is_release(id: str) -> bool {
+    if id.len() != 20 {
+        return false
+    }
+    for i in 0..id.len() {
+        let b = id.byte(i)
+        if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+            return false
+        }
+    }
+    true
+}
+
+/// The release a `release.txt` names (its text, a newline after it or not), if it's a release's
+/// id: 20 lowercase hexadecimal digits.
+pub fn release_of(bytes: [u8]) -> Option<String> {
+    let text = String::from_utf8(Vec::from(bytes))?
+    let id = text.trim()
+    if is_release(id) { Some(String::from(id)) } else { None }
+}
+
+/// The release `deploys.json` lists as live (its `live_until` null), if it lists exactly one.
+pub fn live_of(bytes: [u8]) -> Option<String> {
+    let text = String::from_utf8(Vec::from(bytes))?
+    let doc = parse(text.as_str())?
+    let list = doc.get(TOP, "deploys")?
+    var live: Option<String> = None
+    for i in 0..doc.count(list) {
+        let d = doc.at(list, i)?
+        let until = doc.get(d, "live_until")?
+        if doc.kind(until) != Kind::Null {
+            continue
+        }
+        if live.is_some() {
+            return None
+        }
+        let id = doc.text(doc.get(d, "release")?)?
+        if !is_release(id.as_str()) {
+            return None
+        }
+        live = Some(take id)
+    }
+    live
+}
+
+/// Whether to reload now: the live release is another, the home is `safe` to leave, and nothing
+/// was touched since `active_at`, `IDLE` seconds before `now`.
+pub fn due(newer: bool, safe: bool, now: f32, active_at: f32) -> bool {
+    newer && safe && now - active_at >= IDLE
+}
+
+fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut pending {
+        Some(p) => answer = p.poll(),
+        None => {},
+    }
+    if answer.is_some() { pending = None }
+    answer
+}
+
+/// Each frame, at `now` (seconds of the console's presentation): reads what came, asks which
+/// release is live when it's time, and reloads once it's `due`. The console's own release is read
+/// once; an answer that isn't one asks again at the next turn. The host's answer to the reload is
+/// read and dropped: a host that declines (the native one, or a console in another's surface)
+/// leaves it where it is, and it doesn't ask again.
+pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
+    if let Some(Ok(bytes)) = poll(mut u.own_load) {
+        u.own = release_of(bytes)
+    }
+    if let Some(result) = poll(mut u.live_load) {
+        if let Ok(answer) = result {
+            if let Some(r) = http::response(answer) {
+                if r.status == 200 {
+                    if let (Some(live), Some(own)) = (live_of(r.body), u.own.clone()) {
+                        u.newer = live.as_str() != own.as_str()
+                    }
+                }
+            }
+        }
+    }
+    let _ = poll(mut u.reload)
+    if u.own.is_none() || u.asked {
+        return
+    }
+    if !u.newer && u.live_load.is_none() && now >= u.next {
+        u.next = now + EVERY
+        let none: [http::Header; 0] = []
+        let empty: [u8; 0] = []
+        u.live_load = Some(http::fetch("GET", "/deploys.json", none, empty))
+    }
+    if due(u.newer, safe, now, active_at) {
+        u.asked = true
+        u.reload = Some(std::host::reload())
+    }
+}
+
+const OWN: Text = "0123456789abcdef0123"
+const LIVE: Text = "fedcba9876543210fedc"
+
+fn deploys(entries: [(Text, bool)]) -> String {
+    var out = String::from("{\"deploys\": [")
+    for k in 0..entries.len() {
+        let (id, live) = entries[k]
+        if k > 0 {
+            out.push_str(", ")
+        }
+        let until = if live { "null" } else { "\"2026-10-31T12:00:00+00:00\"" }
+        out.push_str(
+            f"{{\"release\": \"{id}\", \"source\": \"x\", \"workers\": [], \"live_from\": \"2026-10-30T12:00:00+00:00\", \"live_until\": {until}}}",
+        )
+    }
+    out.push_str("]}")
+    out
+}
+
+@test
+fn a_release_is_named_by_its_id_and_the_live_one_by_its_open_end() {
+    assert(release_of(String::from(f"{OWN}\n").as_bytes()) == Some(String::from(OWN)))
+    assert(release_of(String::from(OWN).as_bytes()) == Some(String::from(OWN)))
+    for bad in ["", "0123", "0123456789ABCDEF0123", "../../../../deploys.j"] {
+        assert(release_of(String::from(bad).as_bytes()).is_none(), bad)
+    }
+    let one = deploys([(OWN, false), (LIVE, true)])
+    assert(live_of(one.as_bytes()) == Some(String::from(LIVE)), one.as_str())
+    // None live, two live, or one that isn't an id: no answer, so no reload.
+    for d in [
+        deploys([(OWN, false)]),
+        deploys([(OWN, true), (LIVE, true)]),
+        deploys([("not-a-release", true)]),
+        String::from("{}"),
+        String::from("x"),
+    ] {
+        assert(live_of(d.as_bytes()).is_none(), d.as_str())
+    }
+}
+
+@test
+fn a_tab_reloads_only_when_a_newer_release_is_live_and_its_home_was_left_alone() {
+    assert(due(newer: true, safe: true, now: 100.0, active_at: 100.0 - IDLE))
+    assert(!due(newer: false, safe: true, now: 100.0, active_at: 0.0), "its own release is live")
+    assert(!due(newer: true, safe: false, now: 100.0, active_at: 0.0), "a game, a save, a sign-in")
+    assert(!due(newer: true, safe: true, now: 100.0, active_at: 100.0 - IDLE + 1.0), "touched")
+}

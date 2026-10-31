@@ -441,6 +441,12 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
 // ---- the game shown ------------------------------------------------------------------------
 
 /// A game shows, in surface `surface`, its catalog key `id`: it's given the account.
+/// Whether nothing of the account is under way or showing: its panel closed, no request, passkey
+/// ceremony or export in flight. The console reloads onto a new release only then.
+pub fn idle(a: Accounts) -> bool {
+    !a.open && !a.busy && a.waiting.is_empty() && a.passkey.is_none() && a.export_file.is_none()
+}
+
 pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
     a.game = Some(
         GameLink {
