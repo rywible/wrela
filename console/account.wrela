@@ -917,11 +917,11 @@ fn sends(x: Act) -> bool {
 /// What a control says while its request is under way.
 fn under_way(x: Act) -> Text {
     match x {
-        Act::SignIn | Act::AddPasskey => "Waiting for your passkey",
-        Act::CreateAccount => "Making your passkey",
-        Act::SubmitCode => "Checking your code",
-        Act::ConfirmDelete => "Deleting",
-        _ => "Saving",
+        Act::SignIn | Act::AddPasskey => "Waiting for your passkey…",
+        Act::CreateAccount => "Making your passkey…",
+        Act::SubmitCode => "Checking your code…",
+        Act::ConfirmDelete => "Deleting…",
+        _ => "Saving…",
     }
 }
 
@@ -1115,7 +1115,7 @@ fn act(a: mut Accounts, x: Act) {
         Act::Export => {
             a.export.clear()
             request(mut a, Request::Export { after: Vec::new() }, Purpose::Export)
-            a.message = String::from("Getting your data ready")
+            a.message = String::from("Getting your data ready…")
         },
         Act::Delete => open_page(mut a, Page::Delete),
         Act::ConfirmDelete => {
@@ -1945,7 +1945,7 @@ pub fn draw(
         write(
             mut d,
             fonts,
-            "Waiting for your passkey or wrela.dev",
+            "Waiting for your passkey or wrela.dev…",
             13.0,
             vec2(x, y + 4.0),
             MUTED,
@@ -1953,7 +1953,7 @@ pub fn draw(
         )
         y += 22.0
     } else if !a.connected && a.page != Page::Legal {
-        write(mut d, fonts, "Connecting", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        write(mut d, fonts, "Connecting…", 13.0, vec2(x, y + 4.0), MUTED, zoom)
         y += 22.0
     }
     if !a.message.is_empty() && a.page != Page::Legal {

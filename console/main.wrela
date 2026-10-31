@@ -1375,7 +1375,7 @@ fn status(s: Console) -> String {
 }
 
 fn empty_library_message(message: str) -> String {
-    if message.is_empty() { String::from("Loading games") } else { message.to_string() }
+    if message.is_empty() { String::from("Loading games…") } else { message.to_string() }
 }
 
 // A button's label: Play's says where it continues (`SaveInfo::place`), once there's a save.
@@ -1618,7 +1618,7 @@ fn saves(s: mut Console, w: f32, h: f32) {
     let first = s.marked / capacity * capacity
     let count = min(s.saves.len() - min(first, s.saves.len()), capacity)
     if count == 0 {
-        text(mut s, if s.step == Step::Open || s.step == Step::List { "Loading your saves" } else {
+        text(mut s, if s.step == Step::Open || s.step == Step::List { "Loading your saves…" } else {
             "No saves yet. Play, or import a save."
         }, 14.0, vec2(x, top), MUTED)
     }
@@ -1910,12 +1910,15 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
     // the opening's slow turn and the camera's breath at the idle rate. The canvas keeps the last
     // frame, so a settled home draws nothing.
+    // Glyphs asked of the host (an ellipsis: the console's fonts are Latin-1) are drawn as they
+    // come.
     let busy = s.dirty ||
         !s.settled ||
         !eased ||
         intro ||
         (width, height) != s.drawn_size ||
-        account::animating(s.account)
+        account::animating(s.account) ||
+        s.renderer.waiting()
     let editing = s.pane == Pane::Settings && s.focus == Action::Name
     let since = match s.drawn_at {
         Some(at) => Some(time - at),
@@ -1967,6 +1970,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.pointing = over
         s.cursor = Some(host::cursor(if over { "pointer" } else { "default" }))
     }
+    // What the fonts haven't is asked of the host's, and drawn once it has come.
+    let asking = s.renderer.waiting()
+    s.renderer.fetch(mut s.fonts, s.draw)
+    if asking && !s.renderer.waiting() { s.dirty = true }
     s.renderer.upload(s.draw)
     // The artifact, where the opening or the room has it, traced for the room's camera: only
     // while the room shows, the opening's or, with no game to show yet, the home's.
@@ -2524,7 +2531,7 @@ fn every_valid_game_key_has_a_downloadable_export_name() {
 fn an_empty_library_displays_its_error_instead_of_loading() {
     let message = "Can't read the list of games. Reload to try again."
     assert(empty_library_message(message) == message)
-    assert(empty_library_message("") == "Loading games")
+    assert(empty_library_message("") == "Loading games…")
 }
 
 @test
