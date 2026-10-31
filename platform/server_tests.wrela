@@ -958,7 +958,10 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
         1,
         Request::Upload { token: token.clone(), game: String::from("toy"), replay: good.clone() },
     )
-    let Reply::Rejected { .. } = rs[0].clone() else { panic("the same run twice") }
+    let Reply::Verified { run: again, place: first, .. } = rs[0].clone() else {
+        panic("the same run twice: what came of it")
+    }
+    assert(again == run && first == 1, "the same run, not another")
     let odd = toy(1, claimed: 2400, moves: 2400, m: 1)
     let rs = h.say(
         mut e,
@@ -1538,6 +1541,169 @@ fn a_replay_is_read_by_its_hash_and_kept_for_a_year() {
     }
     let a = h.read_whole(mut e, 2, Request::Replay { hash: hash.clone() })
     assert(refused([a.reply.clone()]) && h.keys("h/") == 0, "gone with its account")
+}
+
+/// The upload of `replay` with `token` from browser `conn`: its answer.
+fn upload(e: mut Engine<Toy>, h: mut Host, conn: u32, token: [u8], replay: [u8]) -> Reply {
+    let up = Request::Upload {
+        token: Vec::from(token),
+        game: String::from("toy"),
+        replay: Vec::from(replay),
+    }
+    h.say(mut e, conn, up)[0].clone()
+}
+
+@test
+fn a_replay_uploaded_by_two_accounts_at_once_is_the_first_ones_alone() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (owner, a) = uploader(mut e, mut h, 1, 5)
+    let (other, b) = uploader(mut e, mut h, 2, 6)
+    // The same bytes from both, in one call: each reads the hash as nobody's before either's
+    // claim commits.
+    let same = toy(0, claimed: 40, moves: 40, m: 2)
+    let up = |t: Vec<u8>| -> Request {
+        Request::Upload { token: t.clone(), game: String::from("toy"), replay: same.clone() }
+    }
+    let both = h.together(mut e, 3, [up(a.clone()), up(b.clone())])
+    let first_in = match both[0].reply {
+        Reply::Verified { .. } => true,
+        _ => false,
+    }
+    var verified = 0
+    var refused_copy = 0
+    for r in both {
+        match r.reply {
+            Reply::Verified { .. } => verified += 1,
+            Reply::Rejected { why } => {
+                assert(why.as_str().find("already on the boards").is_some(), why.as_str())
+                refused_copy += 1
+            },
+            _ => {},
+        }
+    }
+    assert(verified == 1 && refused_copy == 1, f"{verified} verified, {refused_copy} refused")
+    assert(h.keys("h/") == 1 && h.keys("u/") == 1, "one run, one hash")
+    let hash = Vec::from(sha256(same))
+    // Whichever got in, deleting the other account leaves its replay.
+    let Reply::Run { run, .. } = h.read(mut e, 9, Request::Replay { hash: hash.clone() }).0 else {
+        panic("the replay")
+    }
+    let (browser, id) = if first_in { (2, 6) } else { (1, 5) }
+    let handle = if first_in { other.handle.clone() } else { owner.handle.clone() }
+    h.good.push(Vec::from([4]))
+    let Some(fresh) = session_of(sign_in(mut e, mut h, browser, id, handle, 1, [4])) else {
+        panic("signed in")
+    }
+    let Reply::Done = h.say(
+        mut e,
+        browser,
+        Request::Delete { csrf: fresh.csrf.clone() },
+    )[0].clone() else {
+        panic("deleted")
+    }
+    let (r, _) = h.read(mut e, 9, Request::Replay { hash: hash.clone() })
+    let Reply::Run { run: still, .. } = r else { panic("the owner's replay stays") }
+    assert(still == run && h.keys("h/") == 1)
+}
+
+@test
+fn a_run_posted_again_hears_what_came_of_it_the_first_time() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, token) = uploader(mut e, mut h, 1, 5)
+    let good = toy(0, claimed: 30, moves: 30, m: 2)
+    let Reply::Verified { run, ticks, place } = upload(mut e, mut h, 1, token, good) else {
+        panic("verified")
+    }
+    // A faster run of another account's: posted again, the first is second now.
+    let (_, other) = uploader(mut e, mut h, 2, 6)
+    let Reply::Verified { .. } = upload(
+        mut e,
+        mut h,
+        2,
+        other,
+        toy(0, claimed: 20, moves: 20, m: 2),
+    ) else {
+        panic("verified")
+    }
+    let Reply::Verified { run: r2, ticks: t2, place: p2 } = upload(
+        mut e,
+        mut h,
+        1,
+        token,
+        good,
+    ) else {
+        panic("verified again")
+    }
+    assert(r2 == run && t2 == ticks && place == 1 && p2 == 2, f"{r2} {t2} {p2}")
+    assert(h.keys("u/") == 2 && h.keys("q/") == 0, "no run made of it again")
+    // A rejected run posted again is rejected again, for the same reason, and isn't played again.
+    let tampered = toy(0, claimed: 10, moves: 30, m: 4)
+    let Reply::Rejected { why } = upload(mut e, mut h, 1, token, tampered) else {
+        panic("rejected")
+    }
+    let Reply::Rejected { why: again } = upload(mut e, mut h, 1, token, tampered) else {
+        panic("rejected again")
+    }
+    assert(why == again && why.as_str().find("match its moves").is_some(), again.as_str())
+    assert(h.keys("h/") == 3 && h.keys("u/") == 2, "one record a replay")
+}
+
+@test
+fn a_run_posted_again_while_it_is_played_hears_when_it_is() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, token) = uploader(mut e, mut h, 1, 5)
+    let long = Request::Upload {
+        token: token.clone(),
+        game: String::from("toy"),
+        replay: toy(1, claimed: 40000, moves: 40000, m: 2),
+    }
+    h.call(mut e, [(901, h.asked(1, long.clone(), public: false))])
+    until(mut e, mut h, "q/", 20)
+    h.call(mut e, [(902, h.asked(1, long, public: false))])
+    h.settle(mut e)
+    var told: Vec<u32> = Vec::new()
+    for a in h.answered {
+        if let Reply::Verified { ticks: 40000, .. } = a.reply {
+            told.push(a.conn)
+        }
+    }
+    assert(told.len() == 2 && h.keys("u/") == 1, f"{told.len()} told")
+}
+
+@test
+fn a_run_is_refused_until_its_accounts_name_is_kept() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, token) = named(mut e, mut h, 1, 5, seed: 0)
+    // A token from before (a name is kept for good, so this is a record the store holds wrong).
+    let (i, found) = find(h.store, account_key(5))
+    assert(found, "account 5")
+    let r: Result<account::Account, LoadError> = load(h.store[i].value.clone())
+    var drawn = (take r).unwrap()
+    drawn.fixed = false
+    h.store[i].value = save(drawn.clone())
+    let Reply::Rejected { why } = upload(
+        mut e,
+        mut h,
+        1,
+        token,
+        toy(0, claimed: 30, moves: 30, m: 2),
+    ) else {
+        panic("refused")
+    }
+    assert(why.as_str().find("Keep your name").is_some(), why.as_str())
+    assert(h.keys("q/") == 0 && h.keys("h/") == 0 && h.keys("p/") == 0, "nothing of it kept")
+    // A name not kept draws again; once kept, it can't, so a searched name never goes stale.
+    let s = sign_up(mut e, mut h, 2, 6)
+    let _ = h.say(mut e, 2, Request::Keep { csrf: s.csrf.clone() })
+    assert(refused(h.say(mut e, 2, Request::Reroll { csrf: s.csrf.clone() })), "kept for good")
 }
 
 /// A knighted account that agreed to posting, with the name that `seed` draws, its number `id`,

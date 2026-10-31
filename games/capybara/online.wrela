@@ -487,9 +487,6 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     }
                 },
                 Answer::Rejected { why } => {
-                    if why.as_str().find("already uploaded").is_some() {
-                        mark_uploaded(mut o, hash.clone())
-                    }
                     unwait(mut o, hash)
                     set_status(mut o, hash, why.clone())
                 },

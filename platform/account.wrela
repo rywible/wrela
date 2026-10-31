@@ -150,9 +150,10 @@ pub const OF_RUN: u8 = 117
 pub const OF_BEST: u8 = 98
 pub const OF_TOKEN: u8 = 116
 pub const OF_HOUR: u8 = 104
-pub const OF_SEEN: u8 = 100
 pub const OF_AGREED: u8 = 103
 pub const OF_POSTING: u8 = 111
+/// `a/<id>/v<hash>`: a replay's hash the account claimed by uploading it (server.wrela's
+/// `Uploaded`), so it goes with the account.
 pub const OF_REPLAY: u8 = 118
 
 /// `a/<id>/<of><rest>`: an index entry under an account.
