@@ -181,6 +181,9 @@ pub fn grown_into(k: u32, p: mut Plant) {
     }
 }
 
+/// The oldest a near individual is grown to (years: **proposed**).
+pub const GROWN_AGE: f32 = 120.0
+
 /// Whether kind `k` is grown (an archetype), so a tree drawn as it can be a near individual.
 pub fn grows(k: u32) -> bool {
     archetype(k).is_some()
@@ -194,7 +197,9 @@ pub fn individual(t: Tree, k: u32, present: i32) -> Option<Grow> {
     let a = archetype(k)?
     let species = min(t.kind, u32(Species::Alder))
     let h = HABITS[species]
-    let age = max(f32(present - t.born), 1.0)
+    // Its age, to `GROWN_AGE` at most (a veteran's form is set long before; its growth's cost
+    // grows faster than its years: a 200-year oak's 1.2 s, docs/bench.md "E1.2").
+    let age = clamp(f32(present - t.born), 1.0, GROWN_AGE)
     var light: Vec<f32> = Vec::new()
     for y in 0..u32(ceil(age)) {
         let (l, _) = light_at(t, h, f32(y))

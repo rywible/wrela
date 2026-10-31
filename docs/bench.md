@@ -3092,3 +3092,22 @@ cards).
 over 16.7 ms 971 → 1,424. The cold load is 0.6 MiB more (the grown plants' bytes, `GROWN`), and
 playable 72 frames later. E7 (the archetypes' bake and the individuals' cache, G-cold) and E8
 (the vale regrown) take these up.
+
+**The dolly's pop** (shot 8, `wrela tool lookbook -- <out> --package examples/vale --fast --runs 3
+8`, medians of three, against the physical look's fast record on `main`, `build/record/physical`):
+
+| Build | still_pop | pop | flicker ×10⁻⁶ |
+|---|---|---|---|
+| `main` | 0.00098 | 0.00437 | 18.4 |
+| grown archetypes, no individuals | 0.00095 | 0.00483 | 20.0 |
+| individuals, swapped in as they're grown | 0.00111 | 0.00542 | 52.3 |
+| individuals, the first ring grown before playable | **0.00105** | 0.00515 | 26.6 |
+
+The plan's measure (`still_pop` within 10 % of the kinds' hand-over) **holds: +7.1 %**. A tree's
+swap from its archetype to itself pops where it's seen, so the frame now waits for the first ring
+(`land::stage::near_ready`: the 6 nearest within 40 m, **proposed**) before it's playable, and
+the rest swap in after, nearest first, four growing at a time. That wait is the growths' cost: in a
+wood all 24 near trees stand within 40 m, and grown to their full ages (an ancient's 800 years)
+they took 18 s; an individual is grown to 120 years at most (`archetypes::GROWN_AGE`,
+**proposed**: its form is set by then), and the six are ready about 6 s after the tiles. E7's
+budget for the first ring (1,000 ms) is the growth's cost to climb.

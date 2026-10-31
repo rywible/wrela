@@ -173,8 +173,9 @@ pub struct Landscape<T: Tiles> {
     pub still: bool = false,
     /// The near individuals (§E1.3, `near_trees`): each one's tree, growth and state.
     pub near: Vec<NearOne>,
-    /// Frames since the near individuals were last chosen.
+    /// Frames since the near individuals were last chosen, and whether they have been.
     pub near_since: u32,
+    pub near_chosen: bool,
 }
 
 /// A near individual (`near_trees`): its tree's tile and its instance there (its index in the
@@ -207,7 +208,12 @@ pub struct NearOne {
 /// cooking shares them).
 pub const NEAR: f32 = 120.0
 pub const NEAR_EVERY: u32 = 30
-pub const NEAR_GROWING: u32 = 2
+
+/// The first ring of near trees, grown before the frame is playable (§E7, m: **estimated**): at
+/// most the `FIRST_N` nearest within it (**proposed**: the growths' cost decides).
+pub const FIRST_RING: f32 = 40.0
+pub const FIRST_N: u32 = 6
+pub const NEAR_GROWING: u32 = 4
 
 /// A landscape drawn from `tiles`, its kinds cooked from `plants` (`far_kinds` its far crowns'),
 /// its water `mesh`, its render origin's tile `origin`.
@@ -241,6 +247,7 @@ pub fn landscape<T: Tiles>(
         water_tiles,
         near: Vec::new(),
         near_since: 0,
+        near_chosen: false,
     }
 }
 
@@ -687,6 +694,9 @@ pub fn a_delayed_tile_refreshes_neighbours_that_finished_during_its_job() {
 /// things; the frame adds the near shadows and the probes: `engine::frame::Frame::playable`).
 pub fn streamed<T: Tiles>(s: Landscape<T>, eye: vec2) -> bool {
     let Some(w) = s.wood else { return false }
+    if !near_ready(s, eye) {
+        return false
+    }
     let at = place::tile_of(eye)
     for j in (at.y - 1)..(at.y + 2) {
         for i in (at.x - 1)..(at.x + 2) {
@@ -697,6 +707,34 @@ pub fn streamed<T: Tiles>(s: Landscape<T>, eye: vec2) -> bool {
                     None => return false,
                 }
             }
+        }
+    }
+    true
+}
+
+/// Whether the near trees of the first ring (the `FIRST_N` nearest within `FIRST_RING`) are drawn as
+/// themselves (§E7: grown under the arrival's cover, so a tree's swap from its archetype isn't
+/// seen near the eye): chosen at least once since the tiles came, and none of them still growing.
+pub fn near_ready<T: Tiles>(s: Landscape<T>, eye: vec2) -> bool {
+    if s.near.len() == 0 {
+        return true
+    }
+    if !s.near_chosen {
+        return false
+    }
+    // The first ring: the `FIRST_N` nearest within `FIRST_RING` (in a wood all 24 stand within
+    // 40 m, and their growths took 18 s).
+    var ring: Vec<(f32, bool)> = Vec::new()
+    for o in s.near {
+        let d = length(o.at - eye)
+        if o.used && d < FIRST_RING {
+            ring.push((d, o.drawn))
+        }
+    }
+    ring.sort_by(|a: (f32, bool), b: (f32, bool)| a.0 < b.0)
+    for k in 0..min(ring.len(), FIRST_N) {
+        if !ring[k].1 {
+            return false
         }
     }
     true
@@ -1278,7 +1316,19 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
         let slot = w.slot_of(s.near[i].tile)
         if slot.is_none() {
-            if s.near[i].growing.is_none() && s.near[i].ordering.is_none() {
+            // Its tile gone: given up, once what's on the helpers is done (dropped, not joined).
+            let busy = match s.near[i].growing {
+                Some(t) => !t.done(),
+                None => false,
+            } ||
+                match s.near[i].ordering {
+                    Some(t) => !t.done(),
+                    None => false,
+                }
+            if !busy {
+                s.near[i].growing = None
+                s.near[i].ordering = None
+                s.near[i].shape = None
                 w.free_near(i)
                 s.near[i].used = false
                 s.near[i].drawn = false
@@ -1326,10 +1376,12 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
     // Not while tiles are coming: the growths would hold the helpers their cooking needs.
     if s.near_since >= NEAR_EVERY && !loading(s) {
         s.near_since = 0
+        s.near_chosen = true
         // The candidates: each placed instance within `NEAR`, nearest first.
         var near: Vec<(f32, u32, u32)> = Vec::new()
         for a in 0..s.own.len() {
-            if tile_distance(s.own[a].tile, eye) > NEAR {
+            // A tile kept but not in the wood (its slots full) has no instance to draw as itself.
+            if tile_distance(s.own[a].tile, eye) > NEAR || w.slot_of(s.own[a].tile).is_none() {
                 continue
             }
             for j in 0..s.own[a].placed.len() {
@@ -1389,6 +1441,8 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
             }
         }
         for (tile, j, k, t) in chosen {
+            // The nearest first, a few at a time (all at once, the first ring's cards' orders
+            // waited behind the others' growths on the helpers).
             if growing >= NEAR_GROWING {
                 break
             }
