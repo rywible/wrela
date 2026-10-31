@@ -11,7 +11,7 @@
 
 use feel::HZ
 use ink::INK
-use settings::{Settings, ghost_name}
+use settings::{Settings, ghost_name, ghost_of}
 use std::input::PadButton
 use std::math::TAU
 use std::semantics::{Node, Role}
@@ -129,7 +129,12 @@ pub enum Act: Copy + Eq {
     /// A watched run: again from its start.
     Again,
     /// A run of the player's: to the world's board.
-    Upload,
+    Post,
+    /// The run with the focus, or watched, raced as the ghost (world.wrela's `races`).
+    Race,
+    /// The search for a name (world.wrela's `finds`), and done with it (Enter: Space types).
+    Find,
+    Done,
 }
 
 /// A prompt: its glyphs, and what it does.
@@ -145,7 +150,7 @@ const GAP: f32 = 0.18
 pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
     let g = size * GAP
     if device == Device::Pad {
-        if a == Act::Pause || a == Act::Restart {
+        if a == Act::Pause || a == Act::Restart || a == Act::Race {
             size * 1.3
         } else if a == Act::Boards {
             size * 2.8 + g
@@ -156,6 +161,10 @@ pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
         key_width(fonts, "Space", size)
     } else if a == Act::Back || a == Act::Pause {
         key_width(fonts, "Esc", size)
+    } else if a == Act::Again {
+        key_width(fonts, "Home", size)
+    } else if a == Act::Done {
+        key_width(fonts, "Enter", size)
     } else if a == Act::Boards { key_width(fonts, "Tab", size) } else { size }
 }
 
@@ -178,17 +187,17 @@ pub fn act(
             dpad(mut list, ARM_UP | ARM_DOWN, at, size, i)
         } else if a == Act::Slide {
             dpad(mut list, ARM_DOWN, at, size, i)
-        } else if a == Act::Jump || a == Act::Choose {
+        } else if a == Act::Jump || a == Act::Choose || a == Act::Done {
             face_button(mut list, PadButton::South, at, size, i)
         } else if a == Act::Back {
             face_button(mut list, PadButton::East, at, size, i)
-        } else if a == Act::Again {
+        } else if a == Act::Find {
             face_button(mut list, PadButton::West, at, size, i)
-        } else if a == Act::Upload {
+        } else if a == Act::Post || a == Act::Again {
             face_button(mut list, PadButton::North, at, size, i)
         } else if a == Act::Pause {
             start_button(mut list, at, size, i)
-        } else if a == Act::Restart {
+        } else if a == Act::Restart || a == Act::Race {
             select_button(mut list, at, size, i)
         } else if a == Act::Boards {
             let w = shoulder(mut list, fonts, right: false, at: at, size: size, ink: i)
@@ -215,12 +224,18 @@ pub fn act(
         key(mut list, fonts, "Space", at, size, i)
     } else if a == Act::Back || a == Act::Pause {
         key(mut list, fonts, "Esc", at, size, i)
-    } else if a == Act::Restart || a == Act::Again {
+    } else if a == Act::Restart || a == Act::Race {
         key(mut list, fonts, "R", at, size, i)
+    } else if a == Act::Again {
+        key(mut list, fonts, "Home", at, size, i)
     } else if a == Act::Music {
         key(mut list, fonts, "M", at, size, i)
-    } else if a == Act::Upload {
+    } else if a == Act::Post {
         key(mut list, fonts, "U", at, size, i)
+    } else if a == Act::Find {
+        key(mut list, fonts, "F", at, size, i)
+    } else if a == Act::Done {
+        key(mut list, fonts, "Enter", at, size, i)
     } else { key(mut list, fonts, "Tab", at, size, i) }
 }
 
@@ -310,9 +325,10 @@ pub fn start_rect(screen: vec2) -> Rect {
     Rect::new(screen.x * 0.5 - u * 16.0, screen.y * 0.7 - u * 5.0, u * 32.0, u * 10.0)
 }
 
-/// The level's title: its name on a ribbon across the page, `alpha` of it (it fades and rises as
-/// play begins), and while the game waits on it, how to start and how to open the menu, the start
-/// breathing (`time`, s).
+/// The level's title: its name on a ribbon across the page under the line `over` ("A day at the
+/// zoo", or the run a race is against), `alpha` of it (it fades and rises as play begins), and
+/// while the game waits on it, how to start and how to open the menu, the start breathing (`time`,
+/// s).
 pub fn title(
     list: mut DrawList,
     fonts: Fonts,
@@ -322,6 +338,7 @@ pub fn title(
     alpha: f32,
     waiting: bool,
     time: f32,
+    over: str,
 ) {
     let u = unit(screen)
     let size = u * 6.4
@@ -355,7 +372,7 @@ pub fn title(
         mut list,
         fonts,
         Face::Sans,
-        "A day at the zoo",
+        over,
         u * 2.6,
         screen.x * 0.5,
         r.y + u * 2.2,
@@ -667,12 +684,13 @@ pub fn carrot(list: mut DrawList, at: vec2, size: f32, found: bool, alpha: f32 =
     }
 }
 
-/// What the options' values say, from `s`.
-pub fn option_values(s: Settings) -> Vec<String> {
+/// What the options' values say, from `s`, for a player with a place on the course's world board
+/// (`place`) or without.
+pub fn option_values(s: Settings, place: bool = false) -> Vec<String> {
     var out: Vec<String> = Vec::new()
     out.push(String::from(if s.music { "On" } else { "Off" }))
     out.push(String::from(if s.clock { "On" } else { "Off" }))
-    out.push(String::from(ghost_name(s.ghost)))
+    out.push(String::from(ghost_name(ghost_of(s, place))))
     out.push(String::new())
     out
 }
@@ -898,6 +916,8 @@ pub fn map(
 /// whether it's the player's best (`before`: their best before this run, 0 without one), the
 /// snacks found, the deaths, and how to go on to the next level (with `more`), play again or open
 /// the menu; `alpha` of it. At the last level's goal (`ending`), the capybara has its snack at last.
+/// Under the snacks, the lines `notes`: against a ghost, where the most time went; posted, the
+/// world place the run took, or why it didn't.
 pub fn goal_card(
     list: mut DrawList,
     fonts: Fonts,
@@ -910,10 +930,12 @@ pub fn goal_card(
     ending: bool = false,
     game: u32 = 0,
     best_game: u32 = 0,
+    notes: [String],
 ) {
     let u = unit(screen)
     let w = min(screen.x - u * 6.0, u * 80.0)
-    let h = u * 44.0
+    let lines = notes.len() + if game > 0 { 1 } else { 0 }
+    let h = u * (41.0 + 3.8 * f32(max(lines, 1)))
     let r = Rect::new(
         (screen.x - w) * 0.5,
         screen.y * 0.56 - h * 0.5 + (1.0 - alpha) * u * 4.0,
@@ -1003,6 +1025,19 @@ pub fn goal_card(
             x,
             r.y + u * 32.6,
             faded(GOLD, alpha),
+        )
+    }
+    let first = if game > 0 { 1 } else { 0 }
+    for i in 0..notes.len() {
+        centred(
+            mut list,
+            fonts,
+            Face::Sans,
+            notes[i].as_str(),
+            u * 2.8,
+            x,
+            r.y + u * (32.6 + 3.8 * f32(first + i)),
+            faded(SOFT, alpha),
         )
     }
     var choices: Vec<Prompt> = Vec::new()

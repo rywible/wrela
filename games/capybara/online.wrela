@@ -1,48 +1,80 @@
-// The capybara online: its runs uploaded to the world's boards, and those boards on the Runs page
-// (design.md, "Accounts and leaderboards"). The game never talks to the server: the console that
-// shows it carries its asks (platform/link.wrela), and gives it the account's name and a token that
-// can only submit runs. Offline, or opened alone, every run stays in the game's own storage; an
-// upload can be made later, since the replay is its proof.
+// The capybara online: its runs posted to the world's boards, those boards and a search of names
+// on the leaderboard, and their runs held to watch and race (design.md, "Online play"). The game
+// never talks to the server: the console that shows it carries its asks (platform/link.wrela), and
+// gives it the account's name, a token that can only submit runs, and what the account chose of
+// posting. Offline, or opened alone, every run stays in the game's own storage, and nothing is
+// asked of the network unless the player is signed in or opened the World's board or the search.
 //
-// It keeps a list of the runs it has uploaded (their replays' SHA-256), apart from the game's
-// progress and runs, so an uploaded run says so.
+// Posting is the player's choice. A post by hand first asks the console for its screen of what
+// posting makes public, until the account has agreed (`Ask::Consent`). With "Post my best runs"
+// on (`Account::post_best`), a finished run that beats the account's place on its board, or is its
+// first there, is posted when the run ends; one made while the game can't post waits in the game's
+// storage (`WAITING`, beside `UPLOADED`) and is posted when the console next links with the
+// setting on. The runs posted are kept by their replays' SHA-256, apart from the game's progress,
+// so a posted run says so.
+//
+// A board's places come with their replays' hashes. When its rows arrive, the replays of the rows
+// shown and of the three places above the account's are fetched behind everything else and held
+// (at most `HELD`), so choosing a row plays at once, and a world's ghost has its run.
 
 use platform::link::{Account, Answer, Ask, FromGame, to_game}
-use platform::wire::{Place, WHOLE}
-use replay::Replay
+use platform::wire::{Found, Place, WHOLE}
+use replay::{ANY, FULL, Replay, YOU, counts}
 use std::hash::sha256::sha256
 use std::host
 use std::io::{Pending, load, store}
 use std::serialize::{LoadError, Serialize, save}
 
-/// The leaderboard's boards, in its order: the world's, for the course shown, first; then the
-/// player's own and the tool-assisted (main.wrela's `PLAYERS` and `ASSISTED`); and the world's
-/// whole game (each account's best on every level, summed).
+/// The leaderboard's boards, in its order: the world's, for the course shown, first; the search
+/// of the world's names; the player's own and the tool-assisted (main.wrela's `PLAYERS` and
+/// `ASSISTED`); and the world's whole game (each account's best on every level, summed).
 pub const WORLD: u32 = 0
-pub const WHOLE_GAME: u32 = 3
-pub const BOARDS: u32 = 4
+pub const SEARCH: u32 = 1
+pub const WHOLE_GAME: u32 = 4
+pub const BOARDS: u32 = 5
 
-/// Where the uploaded runs' fingerprints are kept.
+/// Where the posted runs' fingerprints are kept, and the runs waiting to be posted.
 const UPLOADED: Text = "capybara/uploaded"
-/// A board shown is asked for again after this long (s).
+const WAITING: Text = "capybara/posting"
+/// A board shown is asked for again after this long (s), and a post the console couldn't make
+/// waits this long before it's tried again (s).
 const STALE: f32 = 30.0
+const AGAIN: f32 = 30.0
+/// The most replays held to watch and race (at most 48 KiB each, wire.wrela's `MOST_REPLAY`), the
+/// rows of a board shown (main.wrela's `world_rows`), and the places above the account's fetched.
+pub const HELD: u32 = 24
+pub const SHOWN: u32 = 8
+const ABOVE: u32 = 3
 
 struct Uploaded: Serialize {
     hashes: Vec<Vec<u8>>,
 }
 
-/// What an ask in flight was, to read its answer.
-enum Asked: Clone {
-    Upload { hash: Vec<u8> },
-    Board { course: u32, category: u32 },
-    Watch { name: String, place: u32 },
+struct Waiting: Serialize {
+    runs: Vec<Replay>,
 }
 
-/// A world's board as last given: its course (or `WHOLE`), category, places, and when.
+/// What an ask in flight was, to read its answer.
+enum Asked: Clone {
+    /// Run `run` posted (`hash` its fingerprint).
+    Upload { run: Replay, hash: Vec<u8> },
+    /// The console's screen of what posting makes public, before `run` is posted.
+    Consent { run: Replay },
+    Board { course: u32, category: u32 },
+    Around { course: u32, category: u32 },
+    Watch { name: String, place: u32 },
+    Replay { hash: Vec<u8> },
+    Names { query: Vec<String> },
+    SaveCodes,
+}
+
+/// A world's board as last given: its course (or `WHOLE`), category, places, how many it has,
+/// and when. A slice around the account's place is one too, its `total` the account's place.
 struct Shown: Clone {
     course: u32,
     category: u32,
     places: Vec<Place>,
+    total: u32,
     at: f32,
     note: String,
 }
@@ -52,19 +84,45 @@ pub struct Online {
     incoming: Option<Pending<u8>>,
     call: Option<u32>,
     replying: Option<Pending<u8>>,
-    /// The account, as the console says: who uploads.
+    /// The account, as the console says: who posts.
     pub account: Account,
-    /// Whether a console has called at all: opened alone, nothing can be uploaded.
+    /// Whether a console has called at all: opened alone, nothing can be posted.
     pub linked: bool,
+    /// The asks the player made, sent first, and the fetches behind them; the one in flight.
     asks: Vec<(Ask, Asked)>,
+    fetches: Vec<(Ask, Asked)>,
     flying: Option<Asked>,
     boards: Vec<Shown>,
+    slices: Vec<Shown>,
+    /// The account's time on each board (course, category, ticks; 0 when it has no place there),
+    /// where it's known.
+    known: Vec<(u32, u32, u32)>,
     statuses: Vec<(Vec<u8>, String)>,
     uploaded: Vec<Vec<u8>>,
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
     unsaved: bool,
+    /// The runs waiting to be posted, one a course for any% and one for 100%, as stored and read.
+    waiting: Vec<Replay>,
+    loading_waiting: Option<Pending<u8>>,
+    saving_waiting: Option<Pending<u8>>,
+    waiting_read: bool,
+    waiting_unsaved: bool,
+    /// A post of a waiting run under way, and when the next may be tried (s).
+    posting: bool,
+    again_at: f32,
+    /// The replays held, oldest first, by their hashes; the hashes asked for; and the one the player
+    /// chose to watch, whose it is and its place.
+    held: Vec<(Vec<u8>, Replay)>,
+    fetching: Vec<Vec<u8>>,
+    wanted: Option<(Vec<u8>, String, u32)>,
     watch: Option<(Replay, String, u32)>,
+    /// The search last asked for (its title, noun and epithet), what it found, and what to say.
+    query: Vec<String>,
+    found: Vec<Found>,
+    found_note: String,
+    /// Whether the console has been asked to remind the account of its recovery codes.
+    reminded: bool,
     time: f32,
 }
 
@@ -77,14 +135,31 @@ pub fn online() -> Online {
         account: Account { signed_in: false, name: String::new(), token: Vec::new() },
         linked: false,
         asks: Vec::new(),
+        fetches: Vec::new(),
         flying: None,
         boards: Vec::new(),
+        slices: Vec::new(),
+        known: Vec::new(),
         statuses: Vec::new(),
         uploaded: Vec::new(),
         loading: None,
         saving: None,
         unsaved: false,
+        waiting: Vec::new(),
+        loading_waiting: None,
+        saving_waiting: None,
+        waiting_read: false,
+        waiting_unsaved: false,
+        posting: false,
+        again_at: 0.0,
+        held: Vec::new(),
+        fetching: Vec::new(),
+        wanted: None,
         watch: None,
+        query: Vec::new(),
+        found: Vec::new(),
+        found_note: String::new(),
+        reminded: false,
         time: 0.0,
     }
 }
@@ -101,24 +176,39 @@ fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>>
     answer
 }
 
-/// A replay's fingerprint.
+/// A replay's fingerprint: the SHA-256 of its bytes, as the server names it too.
 pub fn fingerprint(r: Replay) -> Vec<u8> {
     Vec::from(sha256(save(r)))
 }
 
-/// Each frame, at the host's time `time`: the console's call read, an ask sent if one waits.
+/// Each frame, at the host's time `time`: the stored runs read and stored, the console's call
+/// read, a waiting run posted if one may be, and an ask sent if one waits.
 pub fn update(o: mut Online, time: f32) {
     o.time = time
     if !o.started {
         o.started = true
         o.incoming = Some(host::receive())
         o.loading = Some(load(UPLOADED))
+        o.loading_waiting = Some(load(WAITING))
     }
     if let Some(result) = poll(mut o.loading) {
         if let Ok(bytes) = result {
             let r: Result<Uploaded, LoadError> = std::serialize::load(bytes.clone())
             if let Ok(u) = r {
-                o.uploaded = u.hashes.clone()
+                for h in u.hashes {
+                    mark_uploaded(mut o, h.clone())
+                }
+            }
+        }
+    }
+    if let Some(result) = poll(mut o.loading_waiting) {
+        o.waiting_read = true
+        if let Ok(bytes) = result {
+            let r: Result<Waiting, LoadError> = std::serialize::load(bytes.clone())
+            if let Ok(w) = r {
+                for run in w.runs {
+                    wait(mut o, run.clone())
+                }
             }
         }
     }
@@ -126,6 +216,11 @@ pub fn update(o: mut Online, time: f32) {
     if o.unsaved && o.saving.is_none() {
         o.unsaved = false
         o.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
+    }
+    let _ = poll(mut o.saving_waiting)
+    if o.waiting_unsaved && o.waiting_read && o.saving_waiting.is_none() {
+        o.waiting_unsaved = false
+        o.saving_waiting = Some(store(WAITING, save(Waiting { runs: o.waiting.clone() })))
     }
     let _ = poll(mut o.replying)
     if let Some(result) = poll(mut o.incoming) {
@@ -148,9 +243,12 @@ pub fn update(o: mut Online, time: f32) {
             Err(_) => o.linked = false,
         }
     }
+    pump(mut o)
     if let Some(id) = o.call {
-        if !o.asks.is_empty() {
-            let (ask, asked) = o.asks.remove(0)
+        if !o.asks.is_empty() || !o.fetches.is_empty() {
+            let (ask, asked) = if !o.asks.is_empty() { o.asks.remove(0) } else {
+                o.fetches.remove(0)
+            }
             o.replying = Some(host::reply(id, save(FromGame { ask })))
             o.call = None
             o.flying = Some(take asked)
@@ -169,52 +267,299 @@ fn set_status(o: mut Online, hash: Vec<u8>, status: String) {
     o.statuses.push((hash.clone(), status.clone()))
 }
 
-fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
+fn posted(o: Online, hash: Vec<u8>) -> bool {
     for h in o.uploaded {
         if h == hash {
-            return
+            return true
         }
+    }
+    false
+}
+
+fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
+    if posted(o, hash) {
+        return
     }
     o.uploaded.push(hash.clone())
     o.unsaved = true
 }
 
-/// The console's answer to an ask: a run's status, a board, or a run to watch.
+// ---- posting -----------------------------------------------------------------------------------
+
+/// Whether the game may post a run with nobody asking: linked to a signed-in account that has
+/// agreed to what posting makes public and asked for its best runs to be posted.
+fn posts_alone(o: Online) -> bool {
+    o.linked &&
+        o.account.signed_in &&
+        !o.account.token.is_empty() &&
+        o.account.may_post &&
+        o.account.post_best
+}
+
+/// The account's time on board (`course`, `category`), if it's known: 0 when it has no place.
+fn known(o: Online, course: u32, category: u32) -> Option<u32> {
+    for (c, k, ticks) in o.known {
+        if c == course && k == category {
+            return Some(ticks)
+        }
+    }
+    None
+}
+
+fn learn(o: mut Online, course: u32, category: u32, ticks: u32) {
+    for i in 0..o.known.len() {
+        if o.known[i].0 == course && o.known[i].1 == category {
+            o.known[i].2 = ticks
+            return
+        }
+    }
+    o.known.push((course, category, ticks))
+}
+
+/// Whether run `r` would take a better place than the account's on a board it counts for: it has
+/// none there, its time there isn't known, or `r` is faster.
+pub fn beats(o: Online, r: Replay) -> bool {
+    for category in [ANY, FULL] {
+        if !counts(r, category) {
+            continue
+        }
+        match known(o, r.course, category) {
+            Some(ticks) => {
+                if ticks == 0 || r.ticks < ticks {
+                    return true
+                }
+            },
+            None => return true,
+        }
+    }
+    false
+}
+
+/// Run `r` among the waiting: one a course for any% and one for 100%, the faster kept.
+fn wait(o: mut Online, r: Replay) {
+    let full = counts(r, FULL)
+    var i = 0
+    while i < o.waiting.len() {
+        if o.waiting[i].course == r.course && counts(o.waiting[i], FULL) == full {
+            if o.waiting[i].ticks <= r.ticks {
+                return
+            }
+            let _ = o.waiting.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    o.waiting.push(r.clone())
+    o.waiting_unsaved = true
+}
+
+fn unwait(o: mut Online, hash: Vec<u8>) {
+    var i = 0
+    while i < o.waiting.len() {
+        if fingerprint(o.waiting[i]) == hash {
+            let _ = o.waiting.remove(i)
+            o.waiting_unsaved = true
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// A run the player has just finished (`r`, theirs and verified): it waits to be posted if it
+/// may be, when it beats the account's place, or the account's place isn't known. A run made
+/// while the game is linked to an account that doesn't post its best runs doesn't wait.
+pub fn finished(o: mut Online, r: Replay) {
+    let hash = fingerprint(r)
+    if r.who != YOU || posted(o, hash) || !beats(o, r) {
+        return
+    }
+    if o.linked && o.account.signed_in && !o.account.post_best {
+        return
+    }
+    wait(mut o, r.clone())
+    if posts_alone(o) {
+        set_status(mut o, hash, String::from("Posting…"))
+    }
+}
+
+/// The waiting runs posted, one at a time, while the game may post alone: each first waits for
+/// the account's place on its board (the slice around it), and goes only if it beats it.
+fn pump(o: mut Online) {
+    if !posts_alone(o) || o.posting || o.time < o.again_at || o.waiting.is_empty() {
+        return
+    }
+    let r = o.waiting[0].clone()
+    let hash = fingerprint(r)
+    if posted(o, hash) {
+        unwait(mut o, hash)
+        return
+    }
+    if known(o, r.course, ANY).is_none() {
+        around(mut o, r.course, ANY)
+        return
+    }
+    if !beats(o, r) {
+        unwait(mut o, hash)
+        return
+    }
+    o.posting = true
+    set_status(mut o, hash.clone(), String::from("Posting…"))
+    o.asks.push(
+        (
+            Ask::Upload { token: o.account.token.clone(), replay: save(r) },
+            Asked::Upload { run: r, hash },
+        ),
+    )
+}
+
+/// Posts run `r` at the player's choice, unless it has been: the console's screen of what posting
+/// makes public first, until the account has agreed. Its status says how it went.
+pub fn post(o: mut Online, r: Replay) {
+    let hash = fingerprint(r)
+    if posted(o, hash) {
+        set_status(mut o, hash.clone(), String::from("Posted"))
+        return
+    }
+    if !o.linked {
+        set_status(mut o, hash, String::from("Open the game from wrela.dev to post."))
+        return
+    }
+    if !o.account.signed_in || o.account.token.is_empty() {
+        set_status(mut o, hash, String::from("Sign in at the console to post. Press F10."))
+        return
+    }
+    set_status(mut o, hash.clone(), String::from("Posting…"))
+    if !o.account.may_post {
+        o.asks.push((Ask::Consent, Asked::Consent { run: r.clone() }))
+        return
+    }
+    o.asks.push(
+        (
+            Ask::Upload { token: o.account.token.clone(), replay: save(r) },
+            Asked::Upload { run: r.clone(), hash },
+        ),
+    )
+}
+
+/// What to say of run `r`: how its post went, or that it was posted; empty if neither.
+pub fn status(o: Online, r: Replay) -> String {
+    let hash = fingerprint(r)
+    for (h, s) in o.statuses {
+        if h == hash {
+            return s.clone()
+        }
+    }
+    if posted(o, hash) {
+        return String::from("Posted")
+    }
+    String::new()
+}
+
+// ---- answers -----------------------------------------------------------------------------------
+
+/// The console's answer to an ask: a run's post, a board or a slice, a replay, or names.
 fn answered(o: mut Online, asked: Asked, answer: Answer) {
     match asked {
-        Asked::Upload { hash } => match answer {
-            Answer::Verified { place, .. } => {
-                set_status(mut o, hash.clone(), f"Verified: {ordinal(place)} in the world")
-                mark_uploaded(mut o, hash)
-                o.boards.clear()
-            },
-            Answer::Rejected { why } => {
-                if why.as_str().find("already uploaded").is_some() {
+        Asked::Upload { run, hash } => {
+            o.posting = false
+            match answer {
+                Answer::Verified { place, ticks, .. } => {
+                    set_status(mut o, hash.clone(), f"{ordinal(place)} in the world")
                     mark_uploaded(mut o, hash.clone())
+                    unwait(mut o, hash)
+                    for category in [ANY, FULL] {
+                        if counts(run, category) {
+                            let before = known(o, run.course, category).unwrap_or(0)
+                            if before == 0 || ticks < before {
+                                learn(mut o, run.course, category, ticks)
+                            }
+                        }
+                    }
+                    // The boards are asked for again when next shown, kept meanwhile.
+                    for i in 0..o.boards.len() {
+                        o.boards[i].at = o.time - STALE
+                    }
+                    // After the account's first post, once: its recovery codes, if they're still
+                    // to be saved.
+                    if o.account.save_codes && !o.reminded {
+                        o.reminded = true
+                        o.asks.push((Ask::SaveCodes, Asked::SaveCodes))
+                    }
+                },
+                Answer::Rejected { why } => {
+                    if why.as_str().find("already uploaded").is_some() {
+                        mark_uploaded(mut o, hash.clone())
+                    }
+                    unwait(mut o, hash)
+                    set_status(mut o, hash, why.clone())
+                },
+                Answer::Offline { why } => {
+                    o.again_at = o.time + AGAIN
+                    set_status(mut o, hash, why.clone())
+                },
+                _ => {},
+            }
+        },
+        Asked::Consent { run } => match answer {
+            Answer::Posting { agreed, best_runs } => {
+                o.account.may_post = agreed
+                o.account.post_best = best_runs
+                if agreed {
+                    post(mut o, run)
+                } else {
+                    set_status(mut o, fingerprint(run), String::from("Not posted"))
                 }
-                set_status(mut o, hash, why.clone())
             },
-            Answer::Offline { why } => set_status(mut o, hash, why.clone()),
+            Answer::Offline { why } => set_status(mut o, fingerprint(run), why.clone()),
             _ => {},
         },
         Asked::Board { course, category } => {
-            let (places, note) = match answer {
-                Answer::Board { places, .. } => (places.clone(), if places.is_empty() {
-                    String::from("No runs yet. Upload one of yours to be the first.")
-                } else { String::new() }),
-                Answer::Offline { why } => (Vec::new(), why.clone()),
-                Answer::Rejected { why } => (Vec::new(), why.clone()),
-                _ => (Vec::new(), String::new()),
+            let (places, total, note) = match answer {
+                Answer::Board { places, total, .. } => (
+                    places.clone(),
+                    total,
+                    if places.is_empty() {
+                        String::from("Nobody's on this board yet. Be first.")
+                    } else { String::new() },
+                ),
+                Answer::Offline { why } => (Vec::new(), 0, why.clone()),
+                Answer::Rejected { why } => (Vec::new(), 0, why.clone()),
+                _ => (Vec::new(), 0, String::new()),
             }
-            var i = 0
-            while i < o.boards.len() {
-                if o.boards[i].course == course && o.boards[i].category == category {
-                    let _ = o.boards.remove(i)
-                } else {
-                    i += 1
+            drop_board(mut o, course, category)
+            o.boards.push(Shown { course, category, places, total, at: o.time, note })
+            rows_came(mut o, course, category)
+        },
+        Asked::Around { course, category } => match answer {
+            Answer::Around { places, at, .. } => {
+                var mine = 0
+                for p in places {
+                    if p.name == o.account.name {
+                        mine = p.ticks
+                    }
                 }
-            }
-            o.boards.push(Shown { course, category, places, at: o.time, note })
+                learn(mut o, course, category, mine)
+                var i = 0
+                while i < o.slices.len() {
+                    if o.slices[i].course == course && o.slices[i].category == category {
+                        let _ = o.slices.remove(i)
+                    } else {
+                        i += 1
+                    }
+                }
+                o.slices.push(
+                    Shown {
+                        course,
+                        category,
+                        places: places.clone(),
+                        total: at,
+                        at: o.time,
+                        note: String::new(),
+                    },
+                )
+                fetch_above(mut o, places, at)
+            },
+            _ => o.again_at = o.time + AGAIN,
         },
         Asked::Watch { name, place } => match answer {
             Answer::Run { replay, .. } => {
@@ -224,6 +569,46 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             },
             _ => {},
         },
+        Asked::Replay { hash } => {
+            unfetch(mut o, hash)
+            if let Answer::Run { replay, .. } = answer {
+                came(mut o, hash.clone(), replay)
+            }
+        },
+        Asked::Names { query } => {
+            if query != o.query {
+                return
+            }
+            match answer {
+                Answer::Names { found } => {
+                    o.found = found.clone()
+                    o.found_note = if found.is_empty() {
+                        String::from("Nobody by that name is on the boards yet.")
+                    } else { String::new() }
+                },
+                Answer::Rejected { why } => {
+                    o.found.clear()
+                    o.found_note = why.clone()
+                },
+                Answer::Offline { why } => {
+                    o.found.clear()
+                    o.found_note = why.clone()
+                },
+                _ => {},
+            }
+        },
+        Asked::SaveCodes => {},
+    }
+}
+
+fn drop_board(o: mut Online, course: u32, category: u32) {
+    var i = 0
+    while i < o.boards.len() {
+        if o.boards[i].course == course && o.boards[i].category == category {
+            let _ = o.boards.remove(i)
+        } else {
+            i += 1
+        }
     }
 }
 
@@ -236,6 +621,8 @@ pub fn ordinal(n: u32) -> String {
     } else if n % 10 == 3 { "rd" } else { "th" }
     f"{n}{tail}"
 }
+
+// ---- boards ------------------------------------------------------------------------------------
 
 /// Asks for board (`course`, or `WHOLE`, and `category`) if it isn't shown or is stale.
 pub fn want(o: mut Online, course: u32, category: u32) {
@@ -273,31 +660,39 @@ pub fn want(o: mut Online, course: u32, category: u32) {
                 course,
                 category,
                 places: Vec::new(),
+                total: 0,
                 at: o.time,
-                note: String::from("Loading the world's runs..."),
+                note: String::from("Loading the world's runs…"),
             },
         )
     }
 }
 
+/// Asks for board (`course`, `category`) once, for a ghost: if it has never been shown.
+pub fn want_once(o: mut Online, course: u32, category: u32) {
+    for b in o.boards {
+        if b.course == course && b.category == category {
+            return
+        }
+    }
+    want(mut o, course, category)
+}
+
 /// Board (`course`, `category`)'s places, and what to say if it has none.
 pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
     if !o.linked {
-        return (
-            Vec::new(),
-            String::from("Open the game from the wrela.dev console to see the world's runs."),
-        )
+        return (Vec::new(), String::from("Open the game from wrela.dev to see the world's runs."))
     }
     for b in o.boards {
         if b.course == course && b.category == category {
             return (b.places.clone(), b.note.clone())
         }
     }
-    (Vec::new(), String::from("Loading the world's runs..."))
+    (Vec::new(), String::from("Loading the world's runs…"))
 }
 
-/// The signed-in account's place on board (`course`, `category`) as last given: 0 if it has none
-/// there, or the board hasn't come.
+/// The signed-in account's place on board (`course`, `category`) as last given, by its page or the
+/// slice around it: 0 if it has none there, or neither has come.
 pub fn my_place(o: Online, course: u32, category: u32) -> u32 {
     if !o.account.signed_in || o.account.name.is_empty() {
         return 0
@@ -305,56 +700,204 @@ pub fn my_place(o: Online, course: u32, category: u32) -> u32 {
     for b in o.boards {
         if b.course == course && b.category == category {
             for p in b.places {
-                if p.name == o.account.name {
+                if p.name == o.account.name && p.place > 0 {
                     return p.place
                 }
             }
         }
     }
+    for b in o.slices {
+        if b.course == course && b.category == category && b.total > 0 {
+            return b.total
+        }
+    }
     0
 }
 
-/// Uploads run `r`, unless it has been: its status says how it went.
-pub fn upload(o: mut Online, r: Replay) {
-    let hash = fingerprint(r)
-    for h in o.uploaded {
-        if h == hash {
-            set_status(mut o, hash.clone(), String::from("Uploaded"))
+/// A board's rows came: the replays of those shown are fetched, and of the three places above the
+/// account's, from the board's page or, past it, from the slice around its place.
+fn rows_came(o: mut Online, course: u32, category: u32) {
+    var places: Vec<Place> = Vec::new()
+    var total = 0
+    for b in o.boards {
+        if b.course == course && b.category == category {
+            places = b.places.clone()
+            total = b.total
+        }
+    }
+    for i in 0..min(places.len(), SHOWN) {
+        fetch(mut o, places[i].replay.clone())
+    }
+    if !o.account.signed_in || o.account.name.is_empty() || course == WHOLE {
+        return
+    }
+    var mine = 0
+    for p in places {
+        if p.name == o.account.name {
+            mine = p.place
+            learn(mut o, course, category, p.ticks)
+        }
+    }
+    if mine > 0 {
+        fetch_above(mut o, places, mine)
+    } else if total <= places.len() {
+        learn(mut o, course, category, 0)
+    } else if known(o, course, category) != Some(0) {
+        around(mut o, course, category)
+    }
+}
+
+/// The replays of the `ABOVE` places just above place `mine`, among `places`.
+fn fetch_above(o: mut Online, places: [Place], mine: u32) {
+    for p in places {
+        if p.place > 0 && p.place < mine && p.place + ABOVE >= mine {
+            fetch(mut o, p.replay.clone())
+        }
+    }
+}
+
+/// Asks, behind the player's asks, for the slice of board (`course`, `category`) around the
+/// account's place, unless it's asked already.
+fn around(o: mut Online, course: u32, category: u32) {
+    if !o.linked || !o.account.signed_in || o.account.name.is_empty() {
+        return
+    }
+    for (_, asked) in o.fetches {
+        if let Asked::Around { course: c, category: k } = asked {
+            if c == course && k == category {
+                return
+            }
+        }
+    }
+    if let Some(Asked::Around { course: c, category: k }) = o.flying {
+        if c == course && k == category {
             return
         }
     }
-    if !o.linked {
-        set_status(mut o, hash, String::from("Open the game from the wrela.dev console to upload."))
-        return
-    }
-    if !o.account.signed_in || o.account.token.is_empty() {
-        set_status(mut o, hash, String::from("Sign in at the console (F10) to upload."))
-        return
-    }
-    set_status(mut o, hash.clone(), String::from("Uploading and checking..."))
-    o.asks.push(
-        (Ask::Upload { token: o.account.token.clone(), replay: save(r) }, Asked::Upload { hash }),
+    o.fetches.push(
+        (
+            Ask::Around { course, category, name: o.account.name.clone() },
+            Asked::Around { course, category },
+        ),
     )
 }
 
-/// What to say of run `r`: its upload's status, or that it was uploaded; empty if neither.
-pub fn status(o: Online, r: Replay) -> String {
-    let hash = fingerprint(r)
-    for (h, s) in o.statuses {
-        if h == hash {
-            return s.clone()
-        }
-    }
-    for h in o.uploaded {
-        if h == hash {
-            return String::from("Uploaded")
-        }
-    }
-    String::new()
+/// The course the world's board asks for: the course shown, or a whole game's.
+pub fn board_course(board: u32, course: u32) -> u32 {
+    if board == WHOLE_GAME { WHOLE } else { course }
 }
 
-/// Asks to watch the run at `place` (a whole game's place is several runs, and isn't watched).
+// ---- replays -----------------------------------------------------------------------------------
+
+/// The replay held whose hash is `hash`, if it is.
+pub fn held(o: Online, hash: Vec<u8>) -> Option<Replay> {
+    for (h, r) in o.held {
+        if h == hash {
+            return Some(r.clone())
+        }
+    }
+    None
+}
+
+fn fetching(o: Online, hash: Vec<u8>) -> bool {
+    for h in o.fetching {
+        if h == hash {
+            return true
+        }
+    }
+    false
+}
+
+fn unfetch(o: mut Online, hash: Vec<u8>) {
+    var i = 0
+    while i < o.fetching.len() {
+        if o.fetching[i] == hash {
+            let _ = o.fetching.remove(i)
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// Asks for the replay whose hash is `hash`, behind the player's asks, unless it's held or asked.
+fn fetch(o: mut Online, hash: Vec<u8>) {
+    if hash.len() != 32 || !o.linked || held(o, hash).is_some() || fetching(o, hash) {
+        return
+    }
+    o.fetching.push(hash.clone())
+    o.fetches.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
+}
+
+/// Asks for the replay whose hash is `hash` before anything fetched behind, unless it's held or
+/// already on its way: for a row chosen, a race or a ghost.
+pub fn fetch_now(o: mut Online, hash: Vec<u8>) {
+    if hash.len() != 32 || !o.linked || held(o, hash).is_some() {
+        return
+    }
+    if let Some(Asked::Replay { hash: h }) = o.flying {
+        if h == hash {
+            return
+        }
+    }
+    for (_, asked) in o.asks {
+        if let Asked::Replay { hash: h } = asked {
+            if h == hash {
+                return
+            }
+        }
+    }
+    var i = 0
+    while i < o.fetches.len() {
+        var same = false
+        if let Asked::Replay { hash: h } = o.fetches[i].1 {
+            same = h == hash
+        }
+        if same {
+            let _ = o.fetches.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    if !fetching(o, hash) {
+        o.fetching.push(hash.clone())
+    }
+    o.asks.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
+}
+
+/// A replay that came for `hash`: held if its bytes are the run's own (their SHA-256 is the hash)
+/// and a run of this game; watched if it's the one the player chose.
+fn came(o: mut Online, hash: Vec<u8>, bytes: [u8]) {
+    if Vec::from(sha256(bytes)) != hash {
+        return
+    }
+    let Ok(r) = boards::read(bytes) else { return }
+    if held(o, hash).is_none() {
+        o.held.push((hash.clone(), r.clone()))
+        while o.held.len() > HELD {
+            let _ = o.held.remove(0)
+        }
+    }
+    let wanted = o.wanted.clone()
+    if let Some((h, name, place)) = wanted {
+        if h == hash {
+            o.wanted = None
+            o.watch = Some((take r, name.clone(), place))
+        }
+    }
+}
+
+/// Watches the run at `place`: at once if its replay is held, else when it comes (a whole game's
+/// place is several runs, and isn't watched).
 pub fn watch_place(o: mut Online, place: Place) {
+    if !place.replay.is_empty() {
+        if let Some(r) = held(o, place.replay) {
+            o.watch = Some((take r, place.name.clone(), place.place))
+            return
+        }
+        o.wanted = Some((place.replay.clone(), place.name.clone(), place.place))
+        fetch_now(mut o, place.replay.clone())
+        return
+    }
     if place.run == 0 || o.flying.is_some() && o.asks.len() > 4 {
         return
     }
@@ -373,119 +916,462 @@ pub fn take_watch(o: mut Online) -> Option<(Replay, String, u32)> {
     w
 }
 
-/// The course the world's board asks for: the course shown, or a whole game's.
-pub fn board_course(board: u32, course: u32) -> u32 {
-    if board == WHOLE_GAME { WHOLE } else { course }
+/// The hash of the replay a world's ghost runs on course `course` (any%): the world record
+/// (`record`), or the place just above the account's (the record, if the account holds it). None
+/// while the board, or the account's place on it, isn't known.
+pub fn ghost_hash(o: Online, course: u32, record: bool) -> Option<Vec<u8>> {
+    let target = if record { 1 } else {
+        let mine = my_place(o, course, ANY)
+        if mine == 0 {
+            return None
+        }
+        max(mine, 2) - 1
+    }
+    match replay_at(o.boards, course, target) {
+        Some(h) => Some(take h),
+        None => replay_at(o.slices, course, target),
+    }
+}
+
+/// The hash of the replay at place `target` of course `course`'s any% board, among `shown`.
+fn replay_at(shown: [Shown], course: u32, target: u32) -> Option<Vec<u8>> {
+    for b in shown {
+        if b.course == course && b.category == ANY {
+            for p in b.places {
+                if p.place == target && !p.replay.is_empty() {
+                    return Some(p.replay.clone())
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The place and name of the run whose replay's hash is `hash`, on a board or a slice of course
+/// `course` shown: for the ghost's name.
+pub fn whose(o: Online, course: u32, hash: Vec<u8>) -> Option<(String, u32)> {
+    for b in o.boards {
+        if b.course == course {
+            for p in b.places {
+                if p.replay == hash {
+                    return Some((p.name.clone(), p.place))
+                }
+            }
+        }
+    }
+    for b in o.slices {
+        if b.course == course {
+            for p in b.places {
+                if p.replay == hash {
+                    return Some((p.name.clone(), p.place))
+                }
+            }
+        }
+    }
+    None
+}
+
+// ---- searching names ---------------------------------------------------------------------------
+
+/// Searches the names whose parts start with `title`, `noun` and `epithet` (the player opened the
+/// search, so it may ask): unless it's what was last asked. An empty search finds nothing.
+pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
+    let query = Vec::from([String::from(title), String::from(noun), String::from(epithet)])
+    if !o.linked {
+        o.found.clear()
+        o.found_note = String::from("Open the game from wrela.dev to search names.")
+        return
+    }
+    if title.is_empty() && noun.is_empty() && epithet.is_empty() {
+        o.query.clear()
+        o.found.clear()
+        o.found_note = String::new()
+        return
+    }
+    if query == o.query {
+        return
+    }
+    var i = 0
+    while i < o.asks.len() {
+        var old = false
+        if let Asked::Names { .. } = o.asks[i].1 {
+            old = true
+        }
+        if old {
+            let _ = o.asks.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    o.query = query.clone()
+    o.found_note = String::from("Searching…")
+    o.asks.push(
+        (
+            Ask::Names {
+                title: String::from(title),
+                noun: String::from(noun),
+                epithet: String::from(epithet),
+            },
+            Asked::Names { query },
+        ),
+    )
+}
+
+/// The names the search found, and what to say of them.
+pub fn found(o: Online) -> (Vec<Found>, String) {
+    (o.found.clone(), o.found_note.clone())
+}
+
+/// The runs the names found have on board (`course`, `category`), fastest first, as a board's
+/// places (numbered 0: a search knows no place), and their replays fetched.
+pub fn found_places(o: mut Online, course: u32, category: u32) -> Vec<Place> {
+    var out: Vec<Place> = Vec::new()
+    for f in o.found {
+        for s in f.standings {
+            if s.course == course && s.category == category {
+                out.push(
+                    Place {
+                        place: 0,
+                        name: f.name.clone(),
+                        ticks: s.ticks,
+                        run: s.run,
+                        replay: s.replay.clone(),
+                    },
+                )
+            }
+        }
+    }
+    out.sort_by(|a, b| a.ticks < b.ticks)
+    for i in 0..min(out.len(), SHOWN) {
+        fetch(mut o, out[i].replay.clone())
+    }
+    out
 }
 
 // ---- tests -------------------------------------------------------------------------------------
 
-use replay::{YOU, tool_assisted}
+use replay::tool_assisted
 use course::WETLANDS
+
+const ME: Text = "Dame Puddlesnout the Damp"
 
 fn signed_in() -> Online {
     var o = online()
     o.linked = true
     o.account = Account {
         signed_in: true,
-        name: String::from("Dame Puddlesnout the Damp"),
+        name: String::from(ME),
         token: Vec::from([3; 32]),
+        may_post: true,
     }
     o
 }
 
-@test
-fn an_upload_carries_the_games_token_and_its_answer_says_how_it_went() {
-    var o = signed_in()
+/// A run of the player's on the first level, `ticks` long as far as the boards are told.
+fn mine(ticks: u32) -> Replay {
     var r = tool_assisted(WETLANDS)[0].clone()
     r.who = YOU
-    upload(mut o, r.clone())
-    assert(o.asks.len() == 1, "asked")
-    let (ask, asked) = o.asks[0].clone()
+    r.ticks = ticks
+    r
+}
+
+/// A run of the player's that reads as one of this game's (`boards::read`), told apart by `n`.
+fn real(n: u32) -> Replay {
+    var r = tool_assisted(WETLANDS)[0].clone()
+    r.who = YOU
+    r.deaths = n
+    r
+}
+
+/// A place on a board, its replay's hash made from its number.
+fn place(n: u32, name: str, ticks: u32) -> Place {
+    Place {
+        place: n,
+        name: String::from(name),
+        ticks,
+        run: u64(n),
+        replay: Vec::filled(32, u8(n)),
+    }
+}
+
+/// The asks waiting, the player's then the fetches.
+fn all_asks(o: Online) -> Vec<Asked> {
+    var out: Vec<Asked> = Vec::new()
+    for (_, a) in o.asks {
+        out.push(a.clone())
+    }
+    for (_, a) in o.fetches {
+        out.push(a.clone())
+    }
+    out
+}
+
+/// Board (`WETLANDS`, any%) given as `places`, of `total`.
+fn given(o: mut Online, places: Vec<Place>, total: u32) {
+    want(mut o, WETLANDS, ANY)
+    var i = 0
+    while i < o.asks.len() {
+        var board = false
+        if let Asked::Board { .. } = o.asks[i].1 {
+            board = true
+        }
+        if board {
+            let (_, asked) = o.asks.remove(i)
+            answered(
+                mut o,
+                asked,
+                Answer::Board { course: WETLANDS, category: ANY, places: places.clone(), total },
+            )
+            return
+        }
+        i += 1
+    }
+    panic("the board wasn't asked for")
+}
+
+@test
+fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
+    var o = signed_in()
+    let r = mine(991)
+    post(mut o, r.clone())
+    assert(o.asks.len() == 1 && status(o, r) == String::from("Posting…"), "asked")
+    let (ask, asked) = o.asks.remove(0)
     let Ask::Upload { token, replay } = ask else { panic("an upload") }
     assert(token == Vec::from([3; 32]) && replay == save(r), "the token and the replay")
     answered(mut o, asked.clone(), Answer::Verified { run: 9, ticks: r.ticks, place: 2 })
-    assert(status(o, r) == String::from("Verified: 2nd in the world"), status(o, r).as_str())
-    // Once uploaded, it isn't again.
-    o.asks.clear()
-    upload(mut o, r.clone())
-    assert(o.asks.is_empty() && status(o, r) == String::from("Uploaded"))
+    assert(status(o, r) == String::from("2nd in the world"), status(o, r).as_str())
+    // Once posted, it isn't again.
+    post(mut o, r.clone())
+    assert(o.asks.is_empty() && status(o, r) == String::from("Posted"))
+}
+
+@test
+fn a_post_asks_for_the_consoles_consent_until_the_account_agrees() {
+    var o = signed_in()
+    o.account.may_post = false
+    let r = mine(991)
+    post(mut o, r.clone())
+    assert(o.asks.len() == 1, "one ask")
+    let (ask, asked) = o.asks.remove(0)
+    let Ask::Consent = ask else { panic("the console's screen first, never the upload") }
+    answered(mut o, asked.clone(), Answer::Posting { agreed: false, best_runs: false })
+    assert(o.asks.is_empty() && status(o, r) == String::from("Not posted"), "not now")
+    answered(mut o, asked, Answer::Posting { agreed: true, best_runs: true })
+    assert(o.account.may_post && o.account.post_best, "agreed")
+    let (ask, _) = o.asks.remove(0)
+    let Ask::Upload { .. } = ask else { panic("then the upload") }
+    // Agreed, a post goes straight away.
+    post(mut o, mine(992))
+    let Ask::Upload { .. } = o.asks[0].0 else { panic("no screen again") }
 }
 
 @test
 fn without_a_console_or_an_account_nothing_is_asked() {
-    var r = tool_assisted(WETLANDS)[0].clone()
-    r.who = YOU
+    let r = mine(991)
     var alone = online()
-    upload(mut alone, r.clone())
+    post(mut alone, r.clone())
     want(mut alone, WETLANDS, 0)
-    assert(alone.asks.is_empty() && status(alone, r).as_str().find("console").is_some())
+    search(mut alone, "Sir", "", "")
+    assert(alone.asks.is_empty() && alone.fetches.is_empty(), "opened alone")
+    assert(status(alone, r).as_str().find("wrela.dev").is_some())
     var out = signed_in()
     out.account.signed_in = false
-    upload(mut out, r.clone())
+    post(mut out, r.clone())
     assert(out.asks.is_empty() && status(out, r).as_str().find("Sign in").is_some())
 }
 
 @test
-fn a_board_is_asked_for_once_until_it_is_stale() {
+fn a_better_run_waits_and_posts_and_a_worse_one_doesnt() {
     var o = signed_in()
-    want(mut o, WETLANDS, 0)
-    want(mut o, WETLANDS, 0)
-    assert(o.asks.len() == 1, "once")
-    let (_, asked) = o.asks.remove(0)
-    let given = Vec::from(
-        [
-            Place {
-                place: 1,
-                name: String::from("Sir Wobblesnout the Unhurried"),
-                ticks: 900,
-                run: 4,
-            },
-        ],
+    o.account.post_best = true
+    given(mut o, Vec::from([place(1, "Sir Wobblesnout the Unhurried", 900), place(2, ME, 960)]), 2)
+    o.fetches.clear()
+    o.fetching.clear()
+    finished(mut o, mine(990))
+    assert(o.waiting.is_empty(), "slower than the account's place")
+    pump(mut o)
+    assert(o.asks.is_empty(), "nothing posted")
+    let better = mine(930)
+    finished(mut o, better.clone())
+    assert(o.waiting.len() == 1 && status(o, better) == String::from("Posting…"), "it waits")
+    pump(mut o)
+    assert(o.asks.len() == 1, "and posts")
+    let (ask, asked) = o.asks.remove(0)
+    let Ask::Upload { replay, .. } = ask else { panic("an upload") }
+    assert(replay == save(better))
+    pump(mut o)
+    assert(o.asks.is_empty(), "one at a time")
+    answered(mut o, asked, Answer::Verified { run: 7, ticks: 930, place: 2 })
+    assert(o.waiting.is_empty() && known(o, WETLANDS, ANY) == Some(930), "posted, the place known")
+    // With the setting off, a finished run doesn't wait.
+    o.account.post_best = false
+    finished(mut o, mine(800))
+    assert(o.waiting.is_empty(), "the setting off")
+}
+
+@test
+fn runs_made_offline_wait_and_post_when_the_console_links() {
+    var o = online()
+    finished(mut o, mine(990))
+    finished(mut o, mine(995))
+    assert(o.waiting.len() == 1 && o.waiting[0].ticks == 990, "the faster waits, stored")
+    assert(o.waiting_unsaved && o.asks.is_empty() && o.fetches.is_empty(), "nothing asked offline")
+    pump(mut o)
+    assert(o.asks.is_empty() && o.fetches.is_empty(), "not linked")
+    // Linked, the setting on: the account's place first, then the post.
+    o.linked = true
+    o.account = Account {
+        signed_in: true,
+        name: String::from(ME),
+        token: Vec::from([3; 32]),
+        may_post: true,
+        post_best: true,
+    }
+    pump(mut o)
+    assert(o.asks.is_empty() && o.fetches.len() == 1, "its place asked")
+    let (ask, asked) = o.fetches.remove(0)
+    let Ask::Around { name, .. } = ask else { panic("the slice around the account") }
+    assert(name == String::from(ME))
+    answered(
+        mut o,
+        asked,
+        Answer::Around { course: WETLANDS, category: ANY, places: Vec::new(), at: 0 },
     )
-    answered(mut o, asked, Answer::Board { course: WETLANDS, category: 0, places: given, total: 1 })
-    let (shown, _) = places(o, WETLANDS, 0)
-    assert(shown.len() == 1 && shown[0].ticks == 900)
-    want(mut o, WETLANDS, 0)
-    assert(o.asks.is_empty(), "fresh")
-    o.time += STALE + 1.0
-    want(mut o, WETLANDS, 0)
-    assert(o.asks.len() == 1, "stale")
+    pump(mut o)
+    let Some((Ask::Upload { replay, .. }, _)) = o.asks.pop() else { panic("posted") }
+    assert(replay == save(mine(990)))
+    // One that turns out slower than the account's place, once it's known, isn't posted.
+    var slower = online()
+    finished(mut slower, mine(990))
+    slower.linked = true
+    slower.account = o.account.clone()
+    pump(mut slower)
+    let (_, asked) = slower.fetches.remove(0)
+    let at = Vec::from([place(4, ME, 950)])
+    answered(
+        mut slower,
+        asked,
+        Answer::Around { course: WETLANDS, category: ANY, places: at, at: 4 },
+    )
+    pump(mut slower)
+    assert(slower.asks.is_empty() && slower.waiting.is_empty(), "the account's place is faster")
+}
+
+@test
+fn a_boards_rows_fetch_their_replays_and_the_three_above_the_players_and_no_more_are_held() {
+    var o = signed_in()
+    var rows: Vec<Place> = Vec::new()
+    for n in 1..14 {
+        rows.push(place(n, if n == 13 { ME } else { "Sir Wobblesnout the Unhurried" }, 900 + n))
+    }
+    given(mut o, rows, 13)
+    var fetched: Vec<u32> = Vec::new()
+    for a in all_asks(o) {
+        if let Asked::Replay { hash } = a {
+            fetched.push(u32(hash[0]))
+        }
+    }
+    // The eight rows shown, and places 10, 11 and 12, above the player's thirteenth.
+    assert(fetched == Vec::from([1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]), f"{fetched.len()} fetched")
+    for (_, a) in o.asks {
+        if let Asked::Replay { .. } = a {
+            panic("fetches wait behind the player's asks")
+        }
+    }
+    // Held to a bound, the oldest dropped.
+    for n in 0..HELD + 4 {
+        let bytes = save(real(n))
+        came(mut o, Vec::from(sha256(bytes)), bytes)
+    }
+    assert(o.held.len() == HELD, "bounded")
+    assert(held(o, fingerprint(real(0))).is_none() && held(o, fingerprint(real(3))).is_none())
+    assert(held(o, fingerprint(real(4))).is_some(), "the newest kept")
+    // A replay whose bytes aren't the hash's run isn't held.
+    let bytes = save(real(1))
+    came(mut o, Vec::filled(32, u8(7)), bytes)
+    assert(held(o, Vec::filled(32, u8(7))).is_none(), "not the run's own")
+}
+
+@test
+fn a_held_row_plays_at_once_and_another_is_fetched_first() {
+    var o = signed_in()
+    let bytes = save(real(0))
+    let hash = Vec::from(sha256(bytes))
+    var row = place(3, "Sir Wobblesnout the Unhurried", 950)
+    row.replay = hash.clone()
+    o.fetching.push(hash.clone())
+    o.fetches.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
+    watch_place(mut o, row.clone())
+    assert(take_watch(mut o).is_none() && o.fetches.is_empty() && o.asks.len() == 1, "asked first")
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Run { run: 3, replay: bytes.clone() })
+    let Some((_, name, at)) = take_watch(mut o) else { panic("watched when it came") }
+    assert(name == String::from("Sir Wobblesnout the Unhurried") && at == 3)
+    watch_place(mut o, row)
+    assert(take_watch(mut o).is_some() && o.asks.is_empty(), "held: at once, nothing asked")
+}
+
+@test
+fn the_world_ghosts_are_the_record_and_the_place_above_the_players() {
+    var o = signed_in()
+    assert(ghost_hash(o, WETLANDS, record: true).is_none(), "no board yet")
+    given(
+        mut o,
+        Vec::from(
+            [
+                place(1, "Sir Wobblesnout the Unhurried", 900),
+                place(2, "Lord Snufflepaw the Plucky", 920),
+                place(3, ME, 960),
+            ],
+        ),
+        3,
+    )
+    assert(my_place(o, WETLANDS, ANY) == 3)
+    assert(ghost_hash(o, WETLANDS, record: true) == Some(Vec::filled(32, u8(1))), "the record")
+    assert(ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(2))), "the run above")
+    let Some((name, at)) = whose(o, WETLANDS, Vec::filled(32, u8(2))) else { panic("whose") }
+    assert(at == 2 && name.as_str().starts_with("Lord"))
+    o.account.name = String::from("Sir Wobblesnout the Unhurried")
+    assert(
+        ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(1))),
+        "first: the record",
+    )
+    o.account.name = String::from("Count Muddlenose the Serene")
+    assert(ghost_hash(o, WETLANDS, record: false).is_none(), "no place, no run above")
+}
+
+@test
+fn a_search_asks_once_for_its_parts_and_lists_their_runs_on_the_level() {
+    var o = signed_in()
+    search(mut o, "Sir", "wob", "")
+    search(mut o, "Sir", "wob", "")
+    assert(o.asks.len() == 1, "once")
+    search(mut o, "Sir", "wobble", "")
+    assert(o.asks.len() == 1, "the newer in its place")
+    let (ask, asked) = o.asks.remove(0)
+    let Ask::Names { noun, .. } = ask else { panic("names") }
+    assert(noun == String::from("wobble"))
+    let standing = platform::wire::Standing {
+        course: WETLANDS,
+        category: ANY,
+        ticks: 900,
+        run: 4,
+        replay: Vec::filled(32, u8(4)),
+    }
+    let sir = Found {
+        name: String::from("Sir Wobblesnout the Unhurried"),
+        standings: Vec::from([take standing]),
+    }
+    answered(mut o, asked, Answer::Names { found: Vec::from([take sir]) })
+    let rows = found_places(mut o, WETLANDS, ANY)
+    assert(
+        rows.len() == 1 && rows[0].ticks == 900 && found_places(mut o, WETLANDS, FULL).is_empty(),
+    )
+    let (names, note) = found(o)
+    assert(names.len() == 1 && note.is_empty())
     assert(
         ordinal(1) == String::from("1st") &&
             ordinal(12) == String::from("12th") &&
             ordinal(23) == String::from("23rd"),
     )
-}
-
-@test
-fn the_menu_knows_the_players_world_place_and_a_watched_run_its_place() {
-    var o = signed_in()
-    assert(my_place(o, WETLANDS, 0) == 0, "no board yet")
-    want(mut o, WETLANDS, 0)
-    let (_, asked) = o.asks.remove(0)
-    let ahead = Place {
-        place: 1,
-        name: String::from("Sir Wobblesnout the Unhurried"),
-        ticks: 900,
-        run: 4,
-    }
-    let mine = Place {
-        place: 2,
-        name: String::from("Dame Puddlesnout the Damp"),
-        ticks: 960,
-        run: 5,
-    }
-    let given = Vec::from([ahead.clone(), take mine])
-    answered(mut o, asked, Answer::Board { course: WETLANDS, category: 0, places: given, total: 2 })
-    assert(my_place(o, WETLANDS, 0) == 2 && my_place(o, WETLANDS, 1) == 0)
-    o.account.signed_in = false
-    assert(my_place(o, WETLANDS, 0) == 0, "signed out, no place")
-    watch_place(mut o, ahead)
-    let (_, asked) = o.asks.remove(0)
-    var r = tool_assisted(WETLANDS)[0].clone()
-    r.who = YOU
-    answered(mut o, asked, Answer::Run { run: 4, replay: save(r) })
-    let Some((_, name, place)) = take_watch(mut o) else { panic("a run to watch") }
-    assert(name == String::from("Sir Wobblesnout the Unhurried") && place == 1)
 }
