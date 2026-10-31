@@ -19,7 +19,8 @@
 use engine::noise::{hash2, noise2}
 use ink::{INK, inked}
 use scenery::{
-    Scene, PARALLAX, View, crowned, dome, fbm, on_layer, over, paint, pixel_on, round_tree, under,
+    Scene, PARALLAX, View, crowned, dome, fbm, ink_in, on_layer, over, paint, pixel_on, round_tree,
+    under,
 }
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
@@ -94,8 +95,7 @@ fn painted(
     line: f32,
 ) -> vec4 {
     let o = paint(g, gs, p.d, p.colour, q, px, haze, line, mist: HAZE)
-    let ink = blend(INK, HAZE, min(haze * 1.7, 0.9))
-    let inner = inked(o.xyz, p.edge, q, line * px * 0.75, px, ink)
+    let inner = inked(o.xyz, p.edge, q, line * px * 0.75, px, ink_in(HAZE, haze))
     vec4(inner.xyz, o.w)
 }
 

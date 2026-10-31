@@ -143,7 +143,8 @@ pub fn step_foe(f: mut Foe, c: Course) {
         return
     }
     let x = f.at.x + f.dir * pace(f.kind) * STEP
-    let turn = abs(x - f.home.x) > f.range
+    // It turns at its range's ends; one past them (a ride left far from home) heads back.
+    let turn = abs(x - f.home.x) > f.range && abs(x - f.home.x) > abs(f.at.x - f.home.x)
     match f.kind {
         Kind::Goose | Kind::Komodo | Kind::Ride => {
             match c.ground_at(x, f.at.y) {

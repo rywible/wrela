@@ -20,7 +20,7 @@
 // neighbour's) few, as scenery.wrela's layers do.
 
 use engine::noise::{hash2, noise2}
-use ink::{INK, inked, pooled, washed}
+use ink::INK
 use scenery::{
     Scene, PARALLAX, View, crowned, dome, fbm, flamingo, hot_spring, nearer, on_layer, over, paint,
     pixel_on, round_tree, under,
@@ -37,6 +37,32 @@ const WARM = vec3(1.02, 0.99, 0.93)
 
 /// The shade a layer darkens into below its ground: a dusky violet.
 const DUSK = vec3(0.4, 0.38, 0.44)
+
+/// A shape painted in the late afternoon: its wash warmed (`WARM`), fading into the gold.
+fn warm(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    d: f32,
+    albedo: vec3,
+    q: vec2,
+    px: f32,
+    haze: f32,
+    line: f32,
+) -> vec4 {
+    paint(g, gs, d, albedo * WARM, q, px, haze, line, mist: GOLD)
+}
+
+/// What a layer is under its ground, in the late afternoon's gold and dusk.
+fn below(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    albedo: vec3,
+    q: vec2,
+    ground: f32,
+    haze: f32,
+) -> vec4 {
+    under(g, gs, albedo, q, ground, haze, mist: GOLD, shade: DUSK)
+}
 
 /// Layer `k` (0 the nearest, to 3 the farthest) at `pixel`, not premultiplied.
 pub struct FoodCourt {}
@@ -135,7 +161,7 @@ fn cafe(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
         return vec4(0.0)
     }
     if q.y < ground {
-        return under(g, gs, paving, q, ground + 0.15, 0.14, mist: GOLD, shade: DUSK)
+        return below(g, gs, paving, q, ground + 0.15, 0.14)
     }
     var best = (q.y - (ground + 0.15), paving)
     let cell = floor(q.x / TABLES)
@@ -155,7 +181,7 @@ fn cafe(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 
         }
     }
     let (d, albedo) = best
-    paint(g, gs, d, albedo * WARM, q, px, haze: 0.14, line: 1.2, mist: GOLD)
+    warm(g, gs, d, albedo, q, px, haze: 0.14, line: 1.2)
 }
 
 /// Café table `i` (`l` from its foot) under a striped umbrella, a bistro chair to either side;
@@ -286,7 +312,7 @@ fn stalls(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         return vec4(0.0)
     }
     if q.y < ground {
-        return under(g, gs, paving, q, ground + 0.2, 0.22, mist: GOLD, shade: DUSK)
+        return below(g, gs, paving, q, ground + 0.2, 0.22)
     }
     var best = (q.y - (ground + 0.2), paving)
     // Each stall stands in the middle of its span, less than half a span wide: only this span's.
@@ -303,7 +329,7 @@ fn stalls(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         best = nearer(best, strung(q.x - cell * STALLS, l.y, cell, t))
     }
     let (d, albedo) = best
-    paint(g, gs, d, albedo * WARM, q, px, haze: 0.22, line: 1.0, mist: GOLD)
+    warm(g, gs, d, albedo, q, px, haze: 0.22, line: 1.0)
 }
 
 /// Stall `i` (`l` from its foot's middle), one of four in turn: the ice-cream stand, the fruit
@@ -558,7 +584,7 @@ fn beyond(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
     }
     let promenade = vec3(0.88, 0.8, 0.68)
     if q.y < BANK - 0.2 {
-        return under(g, gs, promenade, q, BANK, 0.4, mist: GOLD, shade: DUSK)
+        return below(g, gs, promenade, q, BANK, 0.4)
     }
     // The promenade along the lake, and its railing, in front.
     let rx = q.x - floor(q.x / 1.6 + 0.5) * 1.6
@@ -569,7 +595,7 @@ fn beyond(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
     )
     let near = nearer((fy, promenade), (rail, vec3(0.3, 0.4, 0.36)))
     let (dn, cn) = near
-    var c = paint(g, gs, dn, cn * WARM, q, px, haze: 0.35, line: 0.8, mist: GOLD)
+    var c = warm(g, gs, dn, cn, q, px, haze: 0.35, line: 0.8)
     if c.w > 0.999 {
         return c
     }
@@ -602,7 +628,7 @@ fn beyond(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
             }
         }
         let (dw, cw) = lake
-        c = over(c, paint(g, gs, dw, cw * WARM, q, px, haze: 0.38, line: 0.7, mist: GOLD))
+        c = over(c, warm(g, gs, dw, cw, q, px, haze: 0.38, line: 0.7))
         if c.w > 0.999 {
             return c
         }
@@ -634,7 +660,7 @@ fn beyond(q: vec2, px: f32, t: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec
         }
     }
     let (d, albedo) = best
-    over(c, paint(g, gs, d, albedo * WARM, q, px, haze: 0.42, line: 0.8, mist: GOLD))
+    over(c, warm(g, gs, d, albedo, q, px, haze: 0.42, line: 0.8))
 }
 
 /// A duck on the water, `l` from her middle at the waterline and `s` her size, facing +x: a body
@@ -805,17 +831,7 @@ fn skyline(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let trees = 1.0 +
         0.8 * fbm(vec2(q.x * 0.12, 9.0), 2) +
         0.3 * abs(sin(q.x * 2.1)) * noise2(vec2(q.x * 0.5, 2.0))
-    var c = paint(
-        g,
-        gs,
-        q.y - trees,
-        vec3(0.5, 0.66, 0.58) * WARM,
-        q,
-        px,
-        haze: 0.5,
-        line: 0.6,
-        mist: GOLD,
-    )
+    var c = warm(g, gs, q.y - trees, vec3(0.5, 0.66, 0.58), q, px, haze: 0.5, line: 0.6)
     if c.w > 0.999 {
         return c
     }
@@ -824,14 +840,14 @@ fn skyline(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
         let (house, glass) = glasshouse(gl)
         c = over(
             c,
-            paint(g, gs, house * 1.3, glass * WARM, q, px, haze: 0.44, line: 0.6, mist: GOLD),
+            warm(g, gs, house * 1.3, glass, q, px, haze: 0.44, line: 0.6),
         )
     }
     // The Aviary's dome.
     let dl = q - DOME_AT
     if abs(dl.x) < 2.6 && dl.y < 2.6 {
         let (d, glass) = dome(dl, 2.4)
-        c = over(c, paint(g, gs, d, glass * WARM, q, px, haze: 0.44, line: 0.6, mist: GOLD))
+        c = over(c, warm(g, gs, d, glass, q, px, haze: 0.44, line: 0.6))
     }
     if c.w > 0.999 {
         return c
@@ -840,17 +856,7 @@ fn skyline(q: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let ridge = 1.5 + 2.6 * smoothstep(0.25, 0.8, fbm(vec2(q.x * 0.04 + 11.0, 3.0), 3))
     over(
         c,
-        paint(
-            g,
-            gs,
-            q.y - ridge,
-            vec3(0.64, 0.68, 0.86) * WARM,
-            q,
-            px,
-            haze: 0.6,
-            line: 0.5,
-            mist: GOLD,
-        ),
+        warm(g, gs, q.y - ridge, vec3(0.64, 0.68, 0.86), q, px, haze: 0.6, line: 0.5),
     )
 }
 
