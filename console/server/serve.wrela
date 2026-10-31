@@ -121,10 +121,11 @@ fn http(s: mut Server, r: Request) {
     )
 }
 
-/// The bytes of session cookie `name` (base64url): empty if it wasn't sent or doesn't read.
+/// The bytes of session cookie `name` (base64url): empty if it wasn't sent. One that doesn't read
+/// is one byte, which no token is, so the engine clears it.
 fn cookie_bytes(r: Request, name: Text) -> Vec<u8> {
     match r.session(name) {
-        Some(v) => unbase64url(v.as_str()).unwrap_or(Vec::new()),
+        Some(v) => unbase64url(v.as_str()).unwrap_or(Vec::from([u8(0)])),
         None => Vec::new(),
     }
 }

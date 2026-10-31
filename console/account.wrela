@@ -261,6 +261,18 @@ fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::
                 return
             }
         }
+        // The server was reached but couldn't finish (its instance was dropped, or the answer took
+        // too long): an upload may still be checked from its queue. Whose session it is is asked
+        // again, as when it can't be reached.
+        if r.status >= 500 {
+            let why = String::from(
+                "The server couldn't finish that just now. An upload may still count: look at the board in a minute.",
+            )
+            a.connected = false
+            a.retry_at = a.time + RETRY
+            replied(mut a, purpose, Reply::Refused { why })
+            return
+        }
     }
     a.connected = false
     a.retry_at = a.time + RETRY

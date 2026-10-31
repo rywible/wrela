@@ -127,7 +127,7 @@ pub const PRIVACY_TEXT: [Text; 57] = [
     "- GitHub holds the source code. It never receives account data.",
     "Each acts on our behalf, and none of them gets your account's records to use for itself.",
     "# How long we keep it",
-    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it; a game's token after an hour. A deleted account's records go from our server at once, and from the backups within [30 days: to be set with the backup's retention].",
+    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it; a game's token after an hour. A deleted account's records go from our server at once, from Cloudflare's caches of the public boards and replays within five minutes, and from the backups within [30 days: to be set with the backup's retention].",
     "# Your choices",
     "- Export: Account, then Export my data, gives you everything above as a JSON file.",
     "- Delete: Account, then Delete account, deletes your passkeys' records, sessions, recovery codes, runs and name at once. You'll be asked to sign in with your passkey first.",

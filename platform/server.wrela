@@ -119,9 +119,10 @@ pub const PLAY_TICKS: u32 = 400
 /// (`WRELA_LIMITS`, studio/release), which the server is never told.
 pub const ALL_TRIES: u32 = 30
 /// How long a public read may be kept by a cache, in seconds: a board's page (it changes as runs
-/// come), and a run's replay (it never does).
+/// come), and a run's replay (it changes only when its account is deleted). A deleted account's
+/// cached copies are gone within the longer, as the privacy policy says (console/legal.wrela).
 pub const BOARD_AGE: u32 = 30
-pub const RUN_AGE: u32 = 86400
+pub const RUN_AGE: u32 = 300
 /// An account's runs read for an export at a time.
 pub const EXPORT_RUNS: u32 = 64
 /// Expired ceremonies cleared as a new one begins.
@@ -687,10 +688,24 @@ impl<G: Game> Engine<G> {
         }
         match answer {
             Some(bytes) => self.advance(take job, bytes),
-            None => self.refuse(
-                job.conn,
-                "The server couldn't do that just now. Try again in a moment.",
-            ),
+            None => {
+                // A run's ranking can't finish: its upload hears so. A deletion's mark stays, and
+                // the next call takes it up again.
+                if let Some(q) = job.queued {
+                    let why = String::from(
+                        "The boards couldn't finish checking that run. Try again later.",
+                    )
+                    self.tell(q.id, Reply::Rejected { why })
+                }
+                if is_deletion(job.step) {
+                    self.deletions_waiting = true
+                    self.deletion_written = self.call
+                }
+                self.refuse(
+                    job.conn,
+                    "The server couldn't do that just now. Try again in a moment.",
+                )
+            },
         }
     }
 
@@ -977,6 +992,15 @@ impl<G: Game> Engine<G> {
         let token = part(secrets, 0, TOKEN_BYTES)
         let csrf = part(secrets, TOKEN_BYTES, CSRF_BYTES)
         let hash = hashed(token)
+        // The session this browser had ends: its cookie is replaced, so nothing could use it again.
+        if let Some(i) = self.conn_index(conn) {
+            let old = self.conns[i].session.clone()
+            let owner = self.conns[i].account
+            if !old.is_empty() {
+                self.forget(session_key(old))
+                self.delete(indexed(owner, OF_SESSION, old))
+            }
+        }
         let s = Session {
             account: a.id,
             csrf: csrf.clone(),
@@ -1979,6 +2003,8 @@ impl<G: Game> Engine<G> {
                 borrow e = es[0]
                 if e.key.len() != deletions().len() + 8 {
                     self.delete(e.key.clone())
+                    self.deletion_written = self.call
+                    self.deletions_waiting = true
                     return
                 }
                 j.id = u64_at(e.key, deletions().len())
@@ -2301,19 +2327,12 @@ impl<G: Game> Engine<G> {
     /// Whether a job may still write account `account`'s records, or did in this call or the last:
     /// a deletion deletes nothing while one might (it would miss what that writes).
     fn writing(self, account: u64) -> bool {
-        if self.verifying_for(account) {
-            return true
-        }
         for (a, _) in self.touched {
             if a == account {
                 return true
             }
         }
-        false
-    }
-
-    /// Whether a run of account `account` is being uploaded, verified, or ranked once played.
-    fn verifying_for(self, account: u64) -> bool {
+        // A run of the account's being uploaded, verified, or ranked once played.
         if let Some(v) = self.verifying {
             if v.queued.account == account {
                 return true
@@ -2578,6 +2597,13 @@ fn recent(xs: mut Vec<u64>, now: u64, window: u64) {
             i += 1
         }
     }
+}
+
+fn is_deletion(step: Step) -> bool {
+    step == Step::DeleteAccount ||
+        step == Step::DeleteScan ||
+        step == Step::DeleteNext ||
+        step == Step::DeleteResume
 }
 
 fn is_upload(step: Step) -> bool {
