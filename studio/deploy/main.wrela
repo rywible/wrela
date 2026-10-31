@@ -10,43 +10,40 @@
 // still hold. The console serves `deploys.json`, the history of deploys. A release is kept while
 // it's live and for `KEEP` after it stops being live (policy.wrela).
 //
-// **Where kept releases are.** A Worker's assets are its current release alone. Every release is
-// also in the R2 bucket (release_tool::site::BUCKET): each file once, by its SHA-256, and each
-// Worker's listing of it (its `files.json`). The Worker's script serves a request for any other
-// release from the bucket. So a deploy puts in the bucket each file of the new release that no
-// kept release lists, then each listing, before any Worker changes. A kept release the history
-// doesn't mark `stored` (one deployed before the bucket) is fetched from the live site, each
-// file checked against its SHA-256, and stored too. A file that doesn't arrive, or doesn't
+// **Where kept releases are.** Each Worker serves static assets alone, so Cloudflare runs no
+// script, and bills nothing, for any request of theirs (release_tool::site::wrangler_config).
+// Its assets are the new release and each release it keeps, beside it under `releases/<id>/`. So
+// a deploy fetches each kept release from the live site before any Worker changes: its listing
+// (`files.json`), as its Worker serves it, and each file it lists, once, checked against its
+// SHA-256, into the Worker's directory in the release. A file that doesn't arrive, or doesn't
 // match, stops the deploy before anything changes, and so does a Worker over the file limits.
-// Once the deploy passes, the bucket lets go of the releases past their window: their listings,
-// then each file no kept release lists. The docs are the one exception to keeping: nothing pins
-// their releases, so they keep only the releases the bucket holds, and they deploy last, so a
-// kept release the docs Worker answers 404 for never went live there, and no reader holds it.
+// A kept release the docs Worker answers 404 for never went live there, and no reader holds it:
+// the docs keep the rest. The console's server is a Worker of its own (`release.json`'s `api`), on
+// the console's API paths.
 //
 // With `--require-main-head`, a deploy whose commit is no longer the head of `main` (as GitHub's
 // git service advertises it, as `git ls-remote` reads it) stops before it changes anything.
 //
-// Wrangler puts and deletes the bucket's objects and deploys each Worker (`npx --yes
-// wrangler@<WRANGLER>`, granted as `npx`), with the secrets `CLOUDFLARE_API_TOKEN` and
-// `CLOUDFLARE_ACCOUNT_ID` given to it alone. The games deploy first and then the console, so a
-// console never offers a game release its Worker doesn't serve yet; the docs, which no other
-// Worker depends on, go last, so a failure there leaves the console and games up to date. Each
-// Worker must serve the new release, byte for byte, and each kept release's listing from the
-// bucket, and the console must list the new release as the one live release, before the deploy
-// passes. The log says what the bucket gets and lets go, what Wrangler said of each Worker and
+// Wrangler deploys each Worker (`npx --yes wrangler@<WRANGLER>`, granted as `npx`), with the
+// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. The console's
+// server deploys first, since the games and the console that call it are the release's; then the
+// games, and then the console, so a console never offers a game release its Worker doesn't serve
+// yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
+// and games up to date. Each Worker must serve the new release, byte for byte, and each kept
+// release's listing, and the console must list the new release as the one live release, before
+// the deploy passes. The log says what each Worker keeps, what Wrangler said of each Worker and
 // that each serves its releases.
 //
-// `--dry-run` does all but run Wrangler: it fetches the kept releases the bucket lacks into
-// `stored/` and writes `deploys.json`. The grants are the workspace's (`[tools.deploy]`), so the
-// secrets must be set, if only to empty values, for a dry run too.
+// `--dry-run` does all but run Wrangler: it fetches the kept releases into the release and writes
+// `deploys.json`. The grants are the workspace's (`[tools.deploy]`), so the secrets must be set,
+// if only to empty values, for a dry run too.
 
 use policy::{
-    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, blob_key, deploy_order, dropped, has,
-    history_json, home, insert, kept, listing_key, main_head, next_history, quoted, read_history,
-    read_listing, read_release, redirected, unreferenced, uploads,
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, history_json, home, insert,
+    kept, main_head, next_history, quoted, read_history, read_listing, read_release, redirected,
+    uploads,
 }
-use release_tool::io::{data_bytes, read_files, write_files}
-use release_tool::site::BUCKET
+use release_tool::io::{copy_files, data_bytes, read_files, write_files}
 use release_tool::tree::hex_sha
 use std::io::print
 use std::tool::{Call, Done, ToolError, any, args, secret}
@@ -73,11 +70,8 @@ pub const SECRETS: [Text; 2] = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 /// How many files of a kept release are fetched at once.
 pub const AT_ONCE: u32 = 16
 
-/// How many Wranglers put or delete the bucket's objects at once: each is a Node process.
-pub const RUNS_AT_ONCE: u32 = 8
-
-/// Where a dry run or a deploy keeps what it fetched of the kept releases the bucket lacks, in the
-/// release's root: each file by its SHA-256, and each listing at `<worker>/<release>/files.json`.
+/// Where a dry run or a deploy keeps what it fetched of the kept releases, in the release's root
+/// and outside each Worker's directory: each file by its SHA-256.
 pub const STAGE: Text = "stored"
 
 /// How long a request to a live site, and a run of Wrangler, may take, in seconds.
@@ -410,7 +404,7 @@ pub fn found(dir: str) -> Result<Vec<Found>, ToolError> {
     Ok(out)
 }
 
-// ---- The bucket --------------------------------------------------------------------------------
+// ---- Kept releases -----------------------------------------------------------------------------
 
 /// A kept release's listing on one of its Workers: the Worker, the release, its files (each its
 /// path and SHA-256, by path) and its `files.json` as the Worker served it.
@@ -419,23 +413,6 @@ pub struct Listing: Clone {
     pub release: String,
     pub files: Vec<(String, String)>,
     pub body: Vec<u8>,
-}
-
-/// An object the deploy puts in the bucket: its key, and the file it's put from, a path in the
-/// release's root.
-pub struct Put: Clone {
-    pub key: String,
-    pub file: String,
-}
-
-/// What a deploy does to the bucket: the objects it puts (each file the bucket lacks, then each
-/// listing), the keys it deletes once the deploy passes (the listings of the releases it lets
-/// go, then each file no kept release lists), and the listing of each kept release on each of
-/// its Workers, as the live site served it.
-pub struct Plan: Clone {
-    pub puts: Vec<Put>,
-    pub deletes: Vec<String>,
-    pub kept: Vec<Listing>,
 }
 
 /// Whether `names` has `name`.
@@ -506,130 +483,57 @@ pub fn fetch_files(wanted: [(String, String)], root: str) -> Result<(), ToolErro
     Ok(())
 }
 
-/// What a deploy of `rel` at `at`, after `deploys`, does to the bucket. The kept releases it
-/// holds are read first, so what they list isn't put again; then each kept release it lacks is
-/// fetched from the live site into `STAGE`; then the new release's files come from `root`.
-pub fn plan(rel: Release, deploys: [Deploy], at: i64, root: str) -> Result<Plan, ToolError> {
-    let keeping = kept(deploys, at, rel.release.as_str())
-    // The files the bucket holds, and those this deploy puts: sorted sets of SHA-256s.
-    var known: Vec<String> = Vec::new()
-    var put: Vec<String> = Vec::new()
-    var files: Vec<Put> = Vec::new()
-    var listings: Vec<Put> = Vec::new()
+/// Each release that a deploy of `rel` at `at`, after `deploys`, keeps, put beside the new one in
+/// the directory of each of its Workers in `root`: its listing as the Worker serves it, and each
+/// file that lists, fetched from the live site into `STAGE` (each once, checked against its
+/// SHA-256) and copied to its path. The listing of each kept release on each of its Workers.
+pub fn keep(
+    rel: Release,
+    deploys: [Deploy],
+    at: i64,
+    root: str,
+) -> Result<Vec<Listing>, ToolError> {
+    // The files fetched so far: a sorted set of SHA-256s.
+    var fetched: Vec<String> = Vec::new()
     var listed: Vec<Listing> = Vec::new()
-    for pass in 0..2 {
-        let stored = pass == 0
-        for d in keeping {
-            if d.stored != stored {
-                continue
-            }
-            for w in rel.workers {
-                // A Worker the kept release didn't have (a game added since) keeps nothing.
-                if !named(d.workers, w.worker.as_str()) {
-                    continue
-                }
-                // Nothing pins the docs' releases, and each page names its commit, so every
-                // release is mostly new files: the docs keep only what the bucket holds.
-                if w.docs && !stored {
-                    continue
-                }
-                let Some(l) = served_listing(d.release.as_str(), w)? else { continue }
-                var fetches: Vec<(String, String)> = Vec::new()
-                for (path, sha) in l.files {
-                    if stored {
-                        let _ = insert(mut known, sha.as_str())
-                    } else if !has(known, sha.as_str()) && insert(mut put, sha.as_str()) {
-                        fetches.push(
-                            (
-                                String::from(
-                                    f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/{quoted(path.as_str()).as_str()}",
-                                ),
-                                sha.clone(),
-                            ),
-                        )
-                        files.push(
-                            Put {
-                                key: blob_key(sha.as_str()),
-                                file: String::from(f"{STAGE}/{sha.as_str()}"),
-                            },
-                        )
-                    }
-                }
-                if !stored {
-                    fetch_files(fetches, root)?
-                    let file = String::from(
-                        f"{STAGE}/{w.worker.as_str()}/{d.release.as_str()}/files.json",
-                    )
-                    write_files(
-                        Vec::from([(String::from(f"{root}/{file.as_str()}"), l.body.clone())]),
-                    )?
-                    listings.push(
-                        Put { key: listing_key(w.worker.as_str(), d.release.as_str()), file },
-                    )
-                    print(
-                        f"{w.worker.as_str()} stores {d.release.as_str()}: {fetches.len()} files from {w.domain.as_str()}",
-                    )
-                }
-                listed.push(take l)
-            }
-        }
-    }
-    // The new release's files the bucket lacks, from the release.
-    for w in rel.workers {
-        let dir = String::from(f"{w.worker.as_str()}/releases/{rel.release.as_str()}")
-        let Some(text) = String::from_utf8(read_one(f"{root}/{dir.as_str()}/files.json")?) else {
-            return Err(ToolError::new(f"{dir.as_str()}/files.json isn't UTF-8"))
-        }
-        for (path, sha) in read_listing(rel.release.as_str(), text.as_str()).map_err(own)? {
-            if !has(known, sha.as_str()) && insert(mut put, sha.as_str()) {
-                files.push(
-                    Put {
-                        key: blob_key(sha.as_str()),
-                        file: String::from(f"{dir.as_str()}/{path.as_str()}"),
-                    },
-                )
-            }
-        }
-        listings.push(
-            Put {
-                key: listing_key(w.worker.as_str(), rel.release.as_str()),
-                file: String::from(f"{dir.as_str()}/files.json"),
-            },
-        )
-    }
-    // What the releases it lets go list that no release it keeps lists. A listing that can't be
-    // read leaves its release's files in the bucket.
-    var still = known.clone()
-    for sha in put {
-        let _ = insert(mut still, sha.as_str())
-    }
-    var deletes: Vec<String> = Vec::new()
-    var gone: Vec<Vec<(String, String)>> = Vec::new()
-    for d in dropped(deploys, at, rel.release.as_str()) {
+    for d in kept(deploys, at, rel.release.as_str()) {
         for w in rel.workers {
+            // A Worker the kept release didn't have (a game added since) keeps nothing.
             if !named(d.workers, w.worker.as_str()) {
                 continue
             }
-            match served_listing(d.release.as_str(), w) {
-                Ok(Some(l)) => {
-                    deletes.push(listing_key(w.worker.as_str(), d.release.as_str()))
-                    gone.push(l.files.clone())
-                },
-                Ok(None) => {},
-                Err(e) => print(
-                    f"{d.release.as_str()} stays in the bucket for {w.worker.as_str()}: {e.message()}",
-                ),
+            let Some(l) = served_listing(d.release.as_str(), w)? else { continue }
+            let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{d.release.as_str()}")
+            var fetches: Vec<(String, String)> = Vec::new()
+            var copies: Vec<(String, String)> = Vec::new()
+            for (path, sha) in l.files {
+                if insert(mut fetched, sha.as_str()) {
+                    fetches.push(
+                        (
+                            String::from(
+                                f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/{quoted(path.as_str()).as_str()}",
+                            ),
+                            sha.clone(),
+                        ),
+                    )
+                }
+                copies.push(
+                    (
+                        String::from(f"{root}/{STAGE}/{sha.as_str()}"),
+                        String::from(f"{dir.as_str()}/{path.as_str()}"),
+                    ),
+                )
             }
+            fetch_files(fetches, root)?
+            copy_files(copies)?
+            write_files(Vec::from([(String::from(f"{dir.as_str()}/files.json"), l.body.clone())]))?
+            print(
+                f"{w.worker.as_str()} keeps {d.release.as_str()}: {l.files.len()} files, {fetches.len()} fetched from {w.domain.as_str()}",
+            )
+            listed.push(take l)
         }
     }
-    for sha in unreferenced(gone, still) {
-        deletes.push(blob_key(sha.as_str()))
-    }
-    var puts = take files
-    for l in listings {
-        puts.push(l.clone())
-    }
-    Ok(Plan { puts, deletes, kept: listed })
+    Ok(listed)
 }
 
 // ---- Wrangler ----------------------------------------------------------------------------------
@@ -671,77 +575,24 @@ fn said(ran: run::Ran) -> Result<String, ToolError> {
     Ok(out)
 }
 
-/// Runs Wrangler with each of `runs` (what it does, and its arguments) in `root`: the first
-/// alone, since `npx` installs Wrangler on its first run and runs at once would race to install
-/// it into the same cache, then the rest `RUNS_AT_ONCE` at a time. Each must exit 0, or the
-/// first that doesn't stops it, with what Wrangler said.
-pub fn run_all(runs: [(String, Vec<String>)], root: str) -> Result<(), ToolError> {
-    var at = 0
-    while at < runs.len() {
-        let n = if at == 0 { 1 } else { min(RUNS_AT_ONCE, runs.len() - at) }
-        var calls: Vec<Call<run::Ran>> = Vec::new()
-        for k in 0..n {
-            calls.push(run::run(wrangler(runs[at + k].1, root)))
-        }
-        for k in 0..n {
-            let what = runs[at + k].0.as_str()
-            let ran = calls.remove(0).wait().map_err(|e| ToolError::new(f"{what}: {e.message()}"))?
-            if ran.status != 0 {
-                print(said(ran)?.as_str())
-                return Err(ToolError::new(f"{what}: wrangler exited {ran.status}"))
-            }
-        }
-        at += n
+/// Deploys the Worker that `<worker>.wrangler.json` in `root` configures, saying what Wrangler
+/// said.
+pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
+    let args = Vec::from(
+        [String::from("deploy"), String::from("--config"), String::from(f"{worker}.wrangler.json")],
+    )
+    print(f"{worker}: wrangler deploy")
+    let ran = run::run(wrangler(args, root))
+        .wait()
+        .map_err(|e| ToolError::new(f"wrangler deploy of {worker}: {e.message()}"))?
+    let out = said(ran)?
+    if !out.is_empty() {
+        print(out.as_str())
+    }
+    if ran.status != 0 {
+        return Err(ToolError::new(f"wrangler deploy of {worker} exited {ran.status}"))
     }
     Ok(())
-}
-
-/// Puts each of `puts` in the bucket.
-pub fn store(puts: [Put], root: str) -> Result<(), ToolError> {
-    var runs: Vec<(String, Vec<String>)> = Vec::new()
-    for p in puts {
-        let target = String::from(f"{BUCKET}/{p.key.as_str()}")
-        runs.push(
-            (
-                String::from(f"put {target.as_str()}"),
-                Vec::from(
-                    [
-                        String::from("r2"),
-                        String::from("object"),
-                        String::from("put"),
-                        target.clone(),
-                        String::from("--file"),
-                        p.file.clone(),
-                        String::from("--remote"),
-                    ],
-                ),
-            ),
-        )
-    }
-    run_all(runs, root)
-}
-
-/// Deletes each of `keys` from the bucket.
-pub fn unstore(keys: [String], root: str) -> Result<(), ToolError> {
-    var runs: Vec<(String, Vec<String>)> = Vec::new()
-    for k in keys {
-        let target = String::from(f"{BUCKET}/{k.as_str()}")
-        runs.push(
-            (
-                String::from(f"delete {target.as_str()}"),
-                Vec::from(
-                    [
-                        String::from("r2"),
-                        String::from("object"),
-                        String::from("delete"),
-                        target.clone(),
-                        String::from("--remote"),
-                    ],
-                ),
-            ),
-        )
-    }
-    run_all(runs, root)
 }
 
 // ---- The deploy --------------------------------------------------------------------------------
@@ -750,17 +601,6 @@ pub fn unstore(keys: [String], root: str) -> Result<(), ToolError> {
 pub fn now() -> Result<i64, ToolError> {
     let t = time::utc_now().wait()?
     Ok(i64(t.seconds))
-}
-
-/// How many of `puts` are files, and how many listings.
-fn counted(puts: [Put]) -> (u32, u32) {
-    var files: u32 = 0
-    for p in puts {
-        if p.key.as_str().starts_with("blobs/") {
-            files += 1
-        }
-    }
-    (files, puts.len() - files)
 }
 
 /// The deploy `o` says: the history it leaves.
@@ -774,11 +614,8 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     let at = now()?
     let deploys = history(console.domain.as_str())?
     print(f"deploying release {rel.release.as_str()} of {rel.source.as_str()}")
-    let p = plan(rel, deploys, at, root)?
-    let (files, listings) = counted(p.puts)
-    print(
-        f"the bucket gets {files} files and {listings} listings, and lets go of {p.deletes.len()} objects",
-    )
+    let listings = keep(rel, deploys, at, root)?
+    print(f"the Workers keep {listings.len()} listings of the releases a client may still hold")
     var names: Vec<String> = Vec::new()
     for w in rel.workers {
         names.push(w.worker.clone())
@@ -809,34 +646,12 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
         print("a dry run: nothing deployed")
         return Ok(after)
     }
-    store(p.puts, root)?
-    print(f"{BUCKET} holds the new and kept releases")
+    deploy_worker(rel.api.as_str(), root)?
     for w in deploy_order(rel.workers) {
-        let args = Vec::from(
-            [
-                String::from("deploy"),
-                String::from("--config"),
-                String::from(f"{w.worker.as_str()}.wrangler.json"),
-            ],
-        )
-        print(f"{w.worker.as_str()}: wrangler deploy")
-        let ran = run::run(wrangler(args, root))
-            .wait()
-            .map_err(|e| ToolError::new(f"wrangler deploy of {w.worker.as_str()}: {e.message()}"))?
-        let out = said(ran)?
-        if !out.is_empty() {
-            print(out.as_str())
-        }
-        if ran.status != 0 {
-            return Err(
-                ToolError::new(f"wrangler deploy of {w.worker.as_str()} exited {ran.status}"),
-            )
-        }
+        deploy_worker(w.worker.as_str(), root)?
     }
     verify(rel, root)?
-    verify_kept(p.kept)?
-    unstore(p.deletes, root)?
-    print(f"{BUCKET} let go of {p.deletes.len()} objects")
+    verify_kept(listings)?
     Ok(after)
 }
 
@@ -899,8 +714,8 @@ pub fn verify(rel: Release, root: str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Waits until each Worker serves each of `listings`, its kept releases, byte for byte: from the
-/// bucket, as they're no longer its assets.
+/// Waits until each Worker serves each of `listings`, its kept releases, byte for byte, as its
+/// assets beside the new release.
 pub fn verify_kept(listings: [Listing]) -> Result<(), ToolError> {
     for l in listings {
         let url = String::from(

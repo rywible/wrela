@@ -1,8 +1,8 @@
 // What a deploy decides, as plain functions: the deploy history the console serves
-// (`deploys.json`) and the releases it keeps and lets go, the dates it records, what the bucket
-// holds (each release's listing and its files by SHA-256) and what it may delete, the files a
-// Worker may upload, the order the Workers deploy in, the head of `main` as GitHub's git service
-// advertises it, and where a live site's redirect leads. main.wrela does the requests.
+// (`deploys.json`) and the releases it keeps, the dates it records, each kept release's listing
+// (its files by SHA-256), the files a Worker may upload, the order the Workers deploy in, the head
+// of `main` as GitHub's git service advertises it, and where a live site's redirect leads.
+// main.wrela does the requests.
 
 use release_tool::json::{Json, indented, member, text}
 use release_tool::tree::{MAX_FILE, MAX_FILES, check_path}
@@ -13,16 +13,14 @@ use std::tool::files::Kind
 /// can still play. 14 days.
 pub const KEEP: i64 = 14 * 24 * 3600
 
-/// A deploy the history lists: its release, the commit it was built from, its Workers, when it
-/// went live and stopped being live (`None` while it's live), each in seconds since 1970, and
-/// whether the bucket holds it. A history written before the bucket says nothing of it: false.
+/// A deploy the history lists: its release, the commit it was built from, its Workers, and when it
+/// went live and stopped being live (`None` while it's live), each in seconds since 1970.
 pub struct Deploy: Clone {
     pub release: String,
     pub source: String,
     pub workers: Vec<String>,
     pub live_from: i64,
     pub live_until: Option<i64>,
-    pub stored: bool = false,
 }
 
 /// Whether `id` is a release's id: 20 lowercase hexadecimal digits.
@@ -45,7 +43,8 @@ fn text_at(d: Doc, n: u32, key: str) -> Result<String, String> {
     Ok(t)
 }
 
-/// The deploys a `deploys.json` lists, oldest first, or why it isn't one.
+/// The deploys a `deploys.json` lists, oldest first, or why it isn't one. A member it doesn't
+/// know, such as the `stored` an R2 bucket's history wrote, is ignored.
 pub fn read_history(json: str) -> Result<Vec<Deploy>, String> {
     let Some(d) = parse_json(json) else { return Err(String::from("deploys.json isn't JSON")) }
     let Some(list) = d.get(TOP, "deploys") else {
@@ -91,11 +90,7 @@ pub fn read_history(json: str) -> Result<Vec<Deploy>, String> {
             }
             live_until = Some(t)
         }
-        let stored = match d.get(n, "stored") {
-            Some(s) => d.is_true(s),
-            None => false,
-        }
-        out.push(Deploy { release, source, workers, live_from, live_until, stored })
+        out.push(Deploy { release, source, workers, live_from, live_until })
     }
     Ok(out)
 }
@@ -118,21 +113,8 @@ pub fn kept(deploys: [Deploy], now: i64, release: str) -> Vec<Deploy> {
     out
 }
 
-/// The releases a deploy of `release` at `now` lets go from the bucket: those it holds that
-/// `kept` doesn't keep.
-pub fn dropped(deploys: [Deploy], now: i64, release: str) -> Vec<Deploy> {
-    var out: Vec<Deploy> = Vec::new()
-    for d in deploys {
-        if d.release.as_str() != release && d.stored && !keeps(d, now) {
-            out.push(d.clone())
-        }
-    }
-    out
-}
-
-/// The history after `release` goes live at `now`: the live one ends, the expired ones go, a
-/// redeploy of a release takes the place of its earlier entry, and the bucket holds each that
-/// stays, since the deploy stores each kept release it doesn't have.
+/// The history after `release` goes live at `now`: the live one ends, the expired ones go, and a
+/// redeploy of a release takes the place of its earlier entry.
 pub fn next_history(
     deploys: [Deploy],
     release: str,
@@ -151,7 +133,6 @@ pub fn next_history(
             Some(u) => u,
         }
         e.live_until = Some(until)
-        e.stored = true
         if now - until <= KEEP {
             out.push(take e)
         }
@@ -163,7 +144,6 @@ pub fn next_history(
             workers: Vec::from(workers),
             live_from: now,
             live_until: None,
-            stored: true,
         },
     )
     out
@@ -191,7 +171,6 @@ pub fn history_json(deploys: [Deploy]) -> String {
                 },
             ),
         )
-        m.push(member("stored", Json::Bool(d.stored)))
         list.push(Json::Obj(take m))
     }
     var top: Vec<(String, Json)> = Vec::new()
@@ -297,18 +276,7 @@ pub fn parse_stamp(s: str) -> Option<i64> {
     Some(days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + sec - offset)
 }
 
-// ---- The bucket --------------------------------------------------------------------------------
-
-/// A file's object in the bucket: one for its bytes, whatever releases and Workers list it.
-pub fn blob_key(sha: str) -> String {
-    String::from(f"blobs/{sha}")
-}
-
-/// The object of a release's listing (its `files.json`) on `worker`, as the Worker's script
-/// reads it (release_tool::site::ARCHIVE).
-pub fn listing_key(worker: str, release: str) -> String {
-    String::from(f"{worker}/{release}/files.json")
-}
+// ---- Listings ----------------------------------------------------------------------------------
 
 /// Whether `s` is a SHA-256 as `files.json` writes it: 64 lowercase hexadecimal digits.
 pub fn is_sha(s: str) -> bool {
@@ -379,21 +347,6 @@ pub fn insert(set: mut Vec<String>, s: str) -> bool {
     }
     set.insert(k, String::from(s))
     true
-}
-
-/// The files the bucket may delete once the releases whose listings are `gone` go: each SHA-256
-/// they list that no release the bucket still holds lists (`still`, a sorted set), sorted, each
-/// once.
-pub fn unreferenced(gone: [Vec<(String, String)>], still: [String]) -> Vec<String> {
-    var out: Vec<String> = Vec::new()
-    for files in gone {
-        for (_, sha) in files {
-            if !has(still, sha.as_str()) {
-                let _ = insert(mut out, sha.as_str())
-            }
-        }
-    }
-    out
 }
 
 // ---- Uploads -----------------------------------------------------------------------------------
@@ -498,15 +451,17 @@ pub struct Worker: Clone {
     pub docs: bool,
 }
 
-/// What `release.json` says: the commit, the release's id and its Workers.
+/// What `release.json` says: the commit, the release's id, the console's server's Worker (`api`)
+/// and its Workers.
 pub struct Release: Clone {
     pub source: String,
     pub release: String,
+    pub api: String,
     pub workers: Vec<Worker>,
 }
 
-/// The release a `release.json` describes, or why it doesn't: its id must be a release's, and
-/// exactly one Worker the console.
+/// The release a `release.json` describes, or why it doesn't: its id must be a release's, it must
+/// name the console's server's Worker, and exactly one Worker must be the console.
 pub fn read_release(json: str) -> Result<Release, String> {
     let Some(d) = parse_json(json) else { return Err(String::from("release.json isn't JSON")) }
     let Some(s) = d.get(TOP, "source") else {
@@ -523,6 +478,13 @@ pub fn read_release(json: str) -> Result<Release, String> {
     }
     if !is_release(release.as_str()) {
         return Err(String::from(f"invalid release: '{release.as_str()}'"))
+    }
+    let Some(a) = d.get(TOP, "api") else {
+        return Err(String::from("release.json names no server's Worker (api)"))
+    }
+    let Some(api) = d.text(a) else { return Err(String::from("release.json's api isn't text")) }
+    if api.is_empty() {
+        return Err(String::from("release.json names no server's Worker (api)"))
     }
     let Some(ws) = d.get(TOP, "workers") else {
         return Err(String::from("release.json has no workers"))
@@ -557,7 +519,7 @@ pub fn read_release(json: str) -> Result<Release, String> {
     if consoles != 1 {
         return Err(String::from("release.json needs exactly one console"))
     }
-    Ok(Release { source, release, workers })
+    Ok(Release { source, release, api, workers })
 }
 
 /// The console's Worker of `r`.
