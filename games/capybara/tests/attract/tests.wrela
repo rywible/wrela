@@ -1,5 +1,7 @@
-// The tool test: the capybara game built as its attract build into `scratch/attract`, loaded on
-// the CPU recording its commands, and its first frames' commands read back.
+// The tool test: the capybara game's play build, built into `scratch/attract`, loaded on the CPU
+// recording its commands, made to play itself as its address's `#attract` makes it, and its first
+// frames' commands read back. The native host has no address to give (docs/toolchain-gaps.md), so
+// the test calls the export that does what that answer does (main.wrela's `play_itself`).
 
 use hosts::both::bytes_of
 use hosts::steps::{built, recorded, stepped}
@@ -7,7 +9,7 @@ use std::input::Script
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::toolchain
-use std::tool::toolchain::{Override, Set}
+use std::tool::toolchain::Override
 
 /// The frames driven: a few seconds of the first level.
 const FRAMES: u32 = 240
@@ -15,28 +17,35 @@ const FRAMES: u32 = 240
 /// The voice's quanta rendered: two seconds.
 const QUANTA: u32 = 750
 
-/// The host services the attract build may ask for: what the host can do and its pixel ratio,
-/// and telling the console it's ready.
-const ASKS: [Text; 2] = ["environment", "surface/ready"]
+/// The host services the game playing itself may ask for: its address, what the host can do and
+/// its pixel ratio, and telling the console it's ready.
+const ASKS: [Text; 3] = ["nav/location", "environment", "surface/ready"]
 
-/// The attract build plays from its first whole frame, telling the console so, and asks for
-/// nothing but that and the host's environment: no storage read or written, nothing posted, no
-/// call from the console waited on, nothing fetched but its own files, and no voice.
+/// The game playing itself plays from its first whole frame, telling the console so, and asks for
+/// nothing but that, its address and the host's environment: no storage read or written, nothing
+/// posted, no call from the console waited on, nothing fetched but its own files, and no voice.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-fn the_attract_build_says_its_ready_and_asks_for_no_storage_or_network() {
+fn the_game_playing_itself_says_its_ready_and_asks_for_no_storage_or_network() {
     var options = toolchain::options()
-    options.set.push(Set { name: String::from("ATTRACT"), value: String::from("true") })
     for (name, dir) in [("engine", "engine"), ("ui", "ui"), ("platform", "platform")] {
         options.overrides.push(
             Override { name: String::from(name), dir: String::from(f"repo/{dir}") },
         )
     }
-    built("repo/games/capybara", "scratch/attract", options, "the attract build builds")
+    built("repo/games/capybara", "scratch/attract", options, "the play build builds")
     var load = drive::cpu()
     load.record = true
     let Ok(it) = drive::load("scratch/attract", load).wait() else { panic("the build loads") }
     let h = it.build
-    stepped(h, [Step::Init, Step::Frames(FRAMES, Script::frames())], "its frames")
+    stepped(
+        h,
+        [
+            Step::Init,
+            Step::Call(String::from("play_itself"), Vec::new()),
+            Step::Frames(FRAMES, Script::frames()),
+        ],
+        "its frames",
+    )
     var ready = 0
     for c in recorded(h) {
         let kind = c.kind.as_str()

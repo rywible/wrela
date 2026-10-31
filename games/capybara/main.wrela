@@ -90,6 +90,8 @@ use world::{
     live, present_live, races, tick_live,
 }
 use search::Search
+use attract::{Role, role_of}
+use platform::session::answer_of
 use engine::menu::{Nav, Stick}
 
 /// A developer's build (`wrela build games/capybara --set DEV=true`): Tab plays the next course,
@@ -102,11 +104,6 @@ pub const DEV: bool = false
 /// menus).
 pub const HERO: bool = false
 const HERO_ZOOM: f32 = 2.6
-
-/// The game playing itself (`wrela build games/capybara --set ATTRACT=true`, the release's
-/// `attract` build), behind the console's home (attract.wrela): each level's searched human run
-/// in turn, watched, with no HUD, menus, sound, input, storage or network.
-pub const ATTRACT: bool = false
 
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
@@ -319,7 +316,11 @@ pub struct Lab {
     mine: Vec<u32>,
     lost: String,
     finished_run: Option<Replay>,
-    /// The game playing itself, in the `ATTRACT` build.
+    /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
+    /// nothing is drawn, played, stored or asked for. The game played (`Play`) or playing itself
+    /// (`Attract`, opened at `#attract` behind the console's home).
+    role: Role,
+    address: Option<Pending<u8>>,
     attract: attract::Attract,
 }
 
@@ -345,7 +346,8 @@ pub fn init() -> Lab {
         last: None,
         voice: None,
         settings: Settings {},
-        loading_settings: if ATTRACT { None } else { Some(load(SETTINGS)) },
+        // Loaded once the game is played (`store_settings`, `store_progress`).
+        loading_settings: None,
         saving_settings: None,
         storing_settings: Storing {},
         music_on: true,
@@ -372,7 +374,7 @@ pub fn init() -> Lab {
         tree: Sent {},
         told: Vec::new(),
         progress: progress::fresh(),
-        loading: if ATTRACT { None } else { Some(load(SAVE)) },
+        loading: None,
         saving: None,
         unread: None,
         storing: Storing {},
@@ -413,6 +415,8 @@ pub fn init() -> Lab {
         pointer: vec2(-1.0),
         nav: Stick {},
         console: Link::new(),
+        role: Role::Deciding,
+        address: Some(host::address()),
         attract: attract::attract(),
     }
 }
@@ -461,8 +465,12 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
-    if s.voice.is_none() && !ATTRACT {
-        s.voice = Some(sound::start(music::music()))
+    // Until the address says what the game is, a frame of the margins' sky alone: no HUD, no
+    // sound, nothing stored or asked.
+    if !decided(mut s) {
+        let out = begin_screen_pass(clear: MARGINS)
+        out.present()
+        return
     }
     // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
     phase("sim")
@@ -474,88 +482,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
-    if !ATTRACT {
-        online::update(mut s.online, time)
-        if let Some((r, name, place)) = online::take_watch(mut s.online) {
-            open_watch(mut s, r.clone())
-            s.watch_name = name.clone()
-            s.watch_place = place
-        }
-        store_progress(mut s, dt)
-        store_settings(mut s, dt)
-    }
-    if live_snap.finished > 0 {
-        // The best before this run, before it's kept among the runs.
-        let key = live_snap.course << 16 | (live_snap.attempt & 0xffff)
-        if key != s.finish_key {
-            s.finish_key = key
-            s.best_before = best(s, live_snap.course)
-        }
-    }
-    keep_finished(mut s, live_snap)
-    // F3 shows the readout, and M turns the music off and on. The frames' keys are their own: the
-    // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
-    // board's and the watch's.
-    let browsing = live_snap.paused == 1 && live_snap.page == RUNS
-    let finding = live_snap.paused == 1 && live_snap.page == FIND
-    if (browsing || finding) && !s.browsed {
-        // The leaderboard opens on the world's board; opened alone, with no world to show, on
-        // the player's runs.
-        s.board = if s.online.linked { online::WORLD } else { PLAYERS }
-        s.row = 0
-    }
-    if finding {
-        s.board = online::SEARCH
-    }
-    s.browsed = browsing || finding
-    for raw in events() {
-        if ATTRACT {
-            continue
-        }
-        s.console.event(raw)
-        let e = in_play(raw, origin)
-        if let Some(d) = device_of(e) {
-            s.device = d
-        }
-        if let Event::PointerMove { at, .. } = e {
-            s.pointer = at
-        }
-        if let Event::KeyDown { key, repeat, .. } = e {
-            if key == Key::F3 && !repeat {
-                s.readout = !s.readout
-            } else if key == Key::M && !repeat {
-                s.settings.music = !s.settings.music
-                s.storing_settings.unsaved = true
-            }
-        }
-        if finding {
-            find(mut s, e, screen, time)
-        } else if browsing {
-            browse(mut s, e, live_snap.course, screen)
-        } else {
-            let _ = s.nav.nav(e)
-        }
-    }
-    // The search asked for once the typing pauses.
-    if s.search_changed && time - s.search_at > SEARCH_AFTER {
-        ask_search(mut s)
-    }
-    // A world's run to race, once its replay has come.
-    let wanted = s.race_wanted.clone()
-    if let Some((hash, name)) = wanted {
-        if let Some(r) = online::held(s.online, hash) {
-            s.race = Some((take r, name.clone()))
-            s.race_wanted = None
-            s.trail_of = 0
-        }
-    }
-    if ATTRACT {
+    if s.role == Role::Attract {
         s.attract.play(mut s.watching)
-    } else if !browsing {
-        s.watching = None
+    } else {
+        played(mut s, live_snap, time, dt, origin, screen)
     }
-    settle(mut s, live_snap, dt)
-    s.idle += dt
     // A watched run, or play.
     var snap = live_snap
     var lag = live_lag
@@ -783,12 +714,132 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.draw(out, screen)
     out.present()
     playable(mut s)
-    if ATTRACT {
+    if s.role == Role::Attract {
         s.attract.ready(s.playable_at.is_some())
     } else {
         publish(mut s, snap, play)
         console(mut s)
     }
+}
+
+/// Whether the game knows what it is: once its address answers, it plays itself if the address
+/// says `#attract` (attract.wrela's `role_of`), and is played otherwise, as it is where the host
+/// can't say (the native host).
+fn decided(s: mut Lab) -> bool {
+    if s.role != Role::Deciding {
+        return true
+    }
+    let Some(answer) = answer_of(mut s.address) else { return false }
+    begin(
+        mut s,
+        match answer {
+            Ok(bytes) => role_of(bytes),
+            Err(_) => Role::Play,
+        },
+    )
+    true
+}
+
+/// The game becomes `role`: played, its voice starts (its storage loads, and its link and the
+/// world's boards start, as the frames go: `played`); playing itself, it has none of them.
+fn begin(s: mut Lab, role: Role) {
+    s.role = role
+    s.address = None
+    if role == Role::Play {
+        s.voice = Some(sound::start(music::music()))
+    }
+}
+
+/// Plays itself, as the address `#attract` makes it, for a host that has no address to give (the
+/// native host and `std::tool::drive`'s: docs/toolchain-gaps.md): called before the first frame,
+/// as the attract tool test does.
+pub fn play_itself(s: mut Lab) {
+    if s.role == Role::Deciding {
+        begin(mut s, Role::Attract)
+    }
+}
+
+/// The player's part of the frame, from the sim's snapshot `live_snap` at the host's `time`, `dt`
+/// seconds on, the play area `screen` pixels at `origin`: the world's boards and the stored
+/// progress and settings kept up, the finished run kept, the frames' keys and clicks, the search
+/// asked once the typing pauses, a race's replay, the watch closed off the leaderboard, and what
+/// the frames keep up with from the sim (`settle`).
+fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen: vec2) {
+    online::update(mut s.online, time)
+    if let Some((r, name, place)) = online::take_watch(mut s.online) {
+        open_watch(mut s, r.clone())
+        s.watch_name = name.clone()
+        s.watch_place = place
+    }
+    store_progress(mut s, dt)
+    store_settings(mut s, dt)
+    if live_snap.finished > 0 {
+        // The best before this run, before it's kept among the runs.
+        let key = live_snap.course << 16 | (live_snap.attempt & 0xffff)
+        if key != s.finish_key {
+            s.finish_key = key
+            s.best_before = best(s, live_snap.course)
+        }
+    }
+    keep_finished(mut s, live_snap)
+    // F3 shows the readout, and M turns the music off and on. The frames' keys are their own: the
+    // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
+    // board's and the watch's.
+    let browsing = live_snap.paused == 1 && live_snap.page == RUNS
+    let finding = live_snap.paused == 1 && live_snap.page == FIND
+    if (browsing || finding) && !s.browsed {
+        // The leaderboard opens on the world's board; opened alone, with no world to show, on
+        // the player's runs.
+        s.board = if s.online.linked { online::WORLD } else { PLAYERS }
+        s.row = 0
+    }
+    if finding {
+        s.board = online::SEARCH
+    }
+    s.browsed = browsing || finding
+    for raw in events() {
+        s.console.event(raw)
+        let e = in_play(raw, origin)
+        if let Some(d) = device_of(e) {
+            s.device = d
+        }
+        if let Event::PointerMove { at, .. } = e {
+            s.pointer = at
+        }
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::F3 && !repeat {
+                s.readout = !s.readout
+            } else if key == Key::M && !repeat {
+                s.settings.music = !s.settings.music
+                s.storing_settings.unsaved = true
+            }
+        }
+        if finding {
+            find(mut s, e, screen, time)
+        } else if browsing {
+            browse(mut s, e, live_snap.course, screen)
+        } else {
+            let _ = s.nav.nav(e)
+        }
+    }
+    // The search asked for once the typing pauses.
+    if s.search_changed && time - s.search_at > SEARCH_AFTER {
+        ask_search(mut s)
+    }
+    // A world's run to race, once its replay has come.
+    let wanted = s.race_wanted.clone()
+    if let Some((hash, name)) = wanted {
+        if let Some(r) = online::held(s.online, hash) {
+            s.race = Some((take r, name.clone()))
+            s.race_wanted = None
+            s.trail_of = 0
+        }
+    }
+    if !browsing {
+        s.watching = None
+    }
+    settle(mut s, live_snap, dt)
+    s.idle += dt
 }
 
 /// The console's link (platform::presentation): the game tells it once it's playable, and goes
@@ -1113,7 +1164,7 @@ fn hovered(s: Lab, screen: vec2, page: u32) -> Option<u32> {
 /// drawn on the plane of play, in ink: cast.wrela.)
 fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     s.list.clear(screen)
-    if HERO || ATTRACT {
+    if HERO || s.role == Role::Attract {
         return
     }
     let u = unit(screen)

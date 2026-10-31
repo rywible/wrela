@@ -1,7 +1,7 @@
-# The capybara game's attract build (games/capybara built with `--set ATTRACT=true`, the
-# release's `attract`, which the console's home shows behind its text): it tells the console it's
-# ready, and stores nothing, reads no storage, posts nothing, fetches only its own files and asks
-# the host for nothing else. The tool test builds it through `std::tool::toolchain` and drives it
+# The capybara game playing itself (its play build opened at `#attract`, the release's
+# `attract`, which the console's home shows behind its text): it tells the console it's ready, and
+# stores nothing, reads no storage, posts nothing, fetches only its own files and asks the host for
+# nothing else. The tool test builds it through `std::tool::toolchain` and drives it
 # on the CPU, recording its commands.
 [package]
 name = "capybara_attract"

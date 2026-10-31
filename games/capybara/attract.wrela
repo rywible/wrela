@@ -1,13 +1,18 @@
-// The game playing itself (the build `--set ATTRACT=true`, the release's `attract`), which the
-// console's home shows behind its text once it has rested on the game (console/attract.wrela;
-// the look is proposed until Ryan sees it). It plays the route search's human-possible any% run
-// of each level (routes_<level>.wrela's `HUMAN_ANY`, never the tool-assisted one), one level
-// after another and round again, watched as a run on the leaderboard is (watch.wrela), its
-// fireworks and all. It shows no HUD and no menus, plays no sound, reads no input, stores
-// nothing and asks nothing of the network: main.wrela leaves its voice, the world's boards,
-// the stored progress and settings, the semantic tree and the console's link out of the build.
-// It tells the console it's ready once its first whole frame is drawn. The console mutes it and
-// gives it no input while it's shown behind; once the console stops showing it, it closes it.
+// The game playing itself: the play build opened at an address whose fragment says `attract`
+// (`capybara/#attract`, the release's catalog), which the console's home shows behind its text
+// once it has rested on the game (console/attract.wrela; the look is proposed until Ryan sees
+// it). The game decides it once, when the host answers its address (`role_of`), and until then
+// draws nothing but the sky and plays and asks for nothing. Playing itself, it plays the route
+// search's human-possible any% run of each level (routes_<level>.wrela's `HUMAN_ANY`, never the
+// tool-assisted one), one level after another and round again, watched as a run on the
+// leaderboard is (watch.wrela), its fireworks and all. It shows no HUD and no menus, plays no
+// sound, reads no input, stores nothing and asks nothing of the network: main.wrela never starts
+// its voice, the player's part of the frame (the world's boards, the stored progress and
+// settings, the keys) or the console's link, and publishes no semantic tree. The sim's ticker
+// runs as in every build (it starts in `init`, before the address answers), and no frame reads
+// it. It tells the console it's ready once its first whole frame is drawn. The console mutes it
+// and gives it no input while it's shown behind; once the console stops showing it, it hides or
+// closes it.
 
 use course::{HOME, LEVELS}
 use replay::{HUMAN, Replay, recorded}
@@ -15,6 +20,28 @@ use searched::searched
 use std::host
 use std::io::Pending
 use watch::{Watch, watch}
+
+/// What the game is: not yet known (its address not yet answered), played, or playing itself.
+pub enum Role: Copy + Eq { Deciding, Play, Attract }
+
+/// The fragment's part that makes the game play itself.
+pub const ATTRACT: Text = "attract"
+
+/// What address `address` (the host's answer, `host::address`) makes the game: playing itself
+/// when its fragment has `attract` among its parts (`/capybara/#attract`, `#a&attract`), played
+/// otherwise.
+pub fn role_of(address: [u8]) -> Role {
+    let Some(text) = String::from_utf8(Vec::from(address)) else { return Role::Play }
+    let t = text.as_str()
+    let Some(k) = t.find("#") else { return Role::Play }
+    let fragment = t.slice(from: k + 1, to: t.len())
+    for (from, to) in fragment.split("&") {
+        if fragment.slice(from, to) == ATTRACT {
+            return Role::Attract
+        }
+    }
+    Role::Play
+}
 
 /// Where the game playing itself is: the level it plays next, and its word to the console that
 /// it's ready, once sent.
@@ -66,6 +93,23 @@ impl Attract {
 }
 
 // ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn the_address_says_once_whether_the_game_plays_itself() {
+    let bytes = |a: Text| Vec::from(String::from(a).as_bytes())
+    for (address, role) in [
+        ("/releases/R/capybara/#attract", Role::Attract),
+        ("/capybara/#show=1&attract", Role::Attract),
+        ("/capybara/", Role::Play),
+        ("/capybara/?attract", Role::Play),
+        ("/capybara/#attractive", Role::Play),
+        ("/attract/#", Role::Play),
+        ("", Role::Play),
+    ] {
+        assert(role_of(bytes(address)) == role, address)
+    }
+    assert(role_of(Vec::from([u8(35), 0xff, 0xfe])) == Role::Play, "not UTF-8: played")
+}
 
 @test
 fn each_level_plays_the_searchs_human_line_never_the_robots() {
