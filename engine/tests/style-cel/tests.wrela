@@ -1,0 +1,255 @@
+// The cel look's panels (scenes/, `--set PANEL=<n>`), each built, drawn two frames on the hardware
+// GPU at 256 × 256 and its screen read (RGBA8, rows top to bottom).
+
+use hosts::both::bytes_of
+use hosts::steps::built
+use std::io::print
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::toolchain
+use std::tool::toolchain::{Override, Set}
+
+const SIDE: u32 = 256
+/// The cel look's bands and their first step's cosine (`styles::cel::BANDS`, `ramp`'s (1/3)²).
+const BANDS: u32 = 3
+const FIRST_STEP: f32 = 1.0 / 9.0
+/// The panels' light (`scenes::SUN`).
+const SUN: vec3 = vec3(0.9759, 0.0, 0.2182)
+
+/// Panel `panel`'s screen.
+fn screen(panel: u32) -> Vec<u8> {
+    let out = f"scratch/panel{panel}"
+    var options = toolchain::options()
+    options.overrides = Vec::from(
+        [
+            Override { name: String::from("engine"), dir: String::from("repo/engine") },
+            Override { name: String::from("styles"), dir: String::from("repo/content/styles") },
+        ],
+    )
+    options.set = Vec::from([Set { name: String::from("PANEL"), value: String::from(f"{panel}") }])
+    built("repo/engine/tests/style-cel/scenes", out.as_str(), options, "the panel builds")
+    var load = drive::gpu()
+    load.width = SIDE
+    load.height = SIDE
+    let steps = [Step::Init, Step::FrameAt(0.0), Step::FrameAt(0.016), Step::Capture]
+    let Ok(seen) = drive::run(out.as_str(), load, steps).wait() else { panic("it draws on a GPU") }
+    if let Some(trap) = seen.trap {
+        panic(trap.message.as_str())
+    }
+    bytes_of(seen.captures[0].rgba.clone())
+}
+
+/// Pixel (`x`, `y`)'s red, green and blue.
+fn rgb(px: [u8], x: u32, y: u32) -> vec3u {
+    let at = 4 * (y * SIDE + x)
+    vec3u(u32(px[at]), u32(px[at + 1]), u32(px[at + 2]))
+}
+
+/// The tones along row `y` that hold for four pixels or more (a band, not a step between two),
+/// left to right, the black off the shape left out; tones within 12/255 of one another are one
+/// (the lens's vignette shades a band a little across the screen).
+fn bands_along(px: [u8], y: u32) -> Vec<vec3u> {
+    var out: Vec<vec3u> = Vec::new()
+    var run = 0
+    var last = vec3u(9999)
+    for x in 0..SIDE {
+        let c = rgb(px, x, y)
+        run = if c == last { run + 1 } else { 1 }
+        last = c
+        if run == 4 && c != vec3u(0) {
+            var seen = false
+            for b in out {
+                let d = max(max(apart(b.x, c.x), apart(b.y, c.y)), apart(b.z, c.z))
+                if d <= 12 {
+                    seen = true
+                }
+            }
+            if !seen {
+                out.push(c)
+            }
+        }
+    }
+    out
+}
+
+/// How far apart two channels are.
+fn apart(a: u32, b: u32) -> u32 {
+    if a > b { a - b } else { b - a }
+}
+
+/// A lit sphere's ramp has exactly `BANDS` tones along a row through its middle.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn a_spheres_ramp_has_its_bands() {
+    let px = screen(0)
+    let bands = bands_along(px, SIDE / 2)
+    var shown = String::new()
+    for b in bands {
+        shown.push_str(f"({b.x}, {b.y}, {b.z}) ")
+    }
+    print(f"{bands.len()} tones along the sphere's middle row: {shown}")
+    assert(bands.len() == BANDS, f"{bands.len()} tones, not {BANDS}")
+}
+
+/// A cylinder with bark's relief lights as the smooth cylinder does (the look lights by the form's
+/// normal): its terminator's first step within a pixel of where the smooth one's cosine to the sun
+/// crosses the ramp's first step.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn a_cylinders_terminator_is_its_forms() {
+    let px = screen(1)
+    let y = SIDE / 2
+    // The darkest band's last pixel, from the left, on the cylinder: the last under halfway between
+    // the darkest band's tone and the next one's.
+    let dark = rgb(px, SIDE / 2 - 70, y).x
+    let lit = rgb(px, SIDE / 2 + 20, y).x
+    let half = (dark + lit) / 2
+    var edge = 0
+    for x in 0..SIDE {
+        let c = rgb(px, x, y)
+        if c != vec3u(0) && c.x < half {
+            edge = x
+        }
+    }
+    // Where the smooth cylinder's cosine crosses the step: n = (x / 0.6, 0, √(1 − x²/0.36)).
+    var want = 0.0
+    var best = 1.0e9
+    for k in 0..12000 {
+        let x = -0.6 + 1.2 * f32(k) / 12000.0
+        let n = vec3(x / 0.6, 0.0, sqrt(max(1.0 - x * x / 0.36, 0.0)))
+        let d = abs(dot(n, SUN) - FIRST_STEP)
+        if d < best {
+            best = d
+            want = (x + 1.0) * 0.5 * f32(SIDE)
+        }
+    }
+    print(f"the terminator's step at pixel {edge}; the smooth cylinder's at {want}")
+    assert(
+        abs(f32(edge) + 0.5 - want) <= 1.5,
+        f"the step is {f32(edge) + 0.5 - want} px from the form's",
+    )
+}
+
+/// The crease panels' camera (`scenes::eye_of`'s), as the test finds each pixel's point: the ray
+/// through a pixel from the eye toward the origin, `fovy` 0.8.
+fn ray_of(eye: vec3, x: u32, y: u32) -> vec3 {
+    let f = normalize(vec3(0.0) - eye)
+    let r = normalize(cross(f, vec3(0.0, 1.0, 0.0)))
+    let u = cross(r, f)
+    let t = tan(0.4)
+    let ndc = vec2((f32(x) + 0.5) / f32(SIDE) * 2.0 - 1.0, 1.0 - (f32(y) + 0.5) / f32(SIDE) * 2.0)
+    normalize(f + r * (ndc.x * t) + u * (ndc.y * t))
+}
+
+/// A cube's edges draw creases and its faces none: of the pixels the marks darken, nearly all see
+/// the cube within 6 cm of an edge (the shape is half the size, a texel two pixels: 3 to 6 cm
+/// across a face here as it turns away); of the pixels well inside a face, none are darkened.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn a_cubes_edges_crease_and_its_faces_dont() {
+    let px = screen(2)
+    let eye = vec3(2.6, 2.2, 3.4)
+    var dark = 0
+    var on_edges = 0
+    var faces = 0
+    var dark_faces = 0
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let c = rgb(px, x, y)
+            let darkened = c.x < 200 || c.y < 200 || c.z < 200
+            let ray = ray_of(eye, x, y)
+            var t = 0.0
+            var hit = false
+            for _k in 0..96 {
+                let p = eye + ray * t
+                let q = abs(p) - vec3(0.5)
+                let d = length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+                if d < 1.0e-4 {
+                    hit = true
+                }
+                if !hit {
+                    t += d
+                }
+            }
+            let a = abs(eye + ray * t)
+            var near = 0
+            for i in 0..3 {
+                if a[i] > 0.44 {
+                    near += 1
+                }
+            }
+            if darkened {
+                dark += 1
+                if hit && near >= 2 {
+                    on_edges += 1
+                }
+            }
+            if hit && near == 1 && max(a.x, max(a.y, a.z)) > 0.49 {
+                let inside = (a.x < 0.4 || a.x > 0.49) &&
+                    (a.y < 0.4 || a.y > 0.49) &&
+                    (a.z < 0.4 || a.z > 0.49)
+                if inside {
+                    faces += 1
+                    if darkened {
+                        dark_faces += 1
+                    }
+                }
+            }
+        }
+    }
+    print(
+        f"the cube: {dark} pixels darkened, {on_edges} of them on its edges; {dark_faces} of {faces} inside its faces",
+    )
+    assert(dark > 100, f"only {dark} pixels creased")
+    assert(f32(on_edges) >= 0.9 * f32(dark), f"{dark - on_edges} creased pixels off its edges")
+    assert(faces > 1000 && dark_faces == 0, f"{dark_faces} of {faces} face pixels creased")
+}
+
+/// A 1 cm bump on a plane 60 m off draws no crease.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn a_small_bump_far_off_draws_no_crease() {
+    let px = screen(3)
+    var dark = 0
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let c = rgb(px, x, y)
+            if c.x < 250 || c.y < 250 || c.z < 250 {
+                dark += 1
+            }
+        }
+    }
+    print(f"the plane with its bump at 60 m: {dark} pixels darkened")
+    assert(dark == 0, f"{dark} pixels creased")
+}
+
+/// The lens's vignette (`engine::paint::Look`'s 0.28): a pixel's colour over it at (`x`, `y`).
+fn unvignetted(c: vec3u, x: u32, y: u32) -> vec3 {
+    let uv = vec2((f32(x) + 0.5) / f32(SIDE) - 0.5, (f32(y) + 0.5) / f32(SIDE) - 0.5)
+    vec3(c) / (1.0 - 0.28 * dot(uv, uv))
+}
+
+/// A checker of 1 mm squares at 5 m reads as one flat tone: every pixel of its panel flattened,
+/// and, the lens's vignette taken off (`unvignetted`), within 2/255 of the middle's.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn a_fine_checker_reads_as_one_flat_tone() {
+    let px = screen(4)
+    let first = rgb(px, x: SIDE / 2, y: SIDE / 2)
+    var other = 0
+    var flat = 0
+    var widest = 0
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let c = unvignetted(rgb(px, x, y), x, y) - unvignetted(first, SIDE / 2, SIDE / 2)
+            let d = u32(ceil(max(max(abs(c.x), abs(c.y)), abs(c.z))))
+            widest = max(widest, d)
+            if d > 2 {
+                other += 1
+            }
+            if px[4 * (y * SIDE + x) + 3] == 255 {
+                flat += 1
+            }
+        }
+    }
+    print(
+        f"the checker: {flat} of {SIDE * SIDE} pixels flattened; the vignette taken off, every one within {widest}/255 of the middle's ({first.x}, {first.y}, {first.z})",
+    )
+    assert(flat == SIDE * SIDE, f"{SIDE * SIDE - flat} pixels not flattened")
+    assert(other == 0, f"{other} pixels of another tone")
+}

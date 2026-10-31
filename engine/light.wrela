@@ -31,6 +31,9 @@ pub struct Light: Copy + GpuData + Eq {
     /// The sun's angular size (radians: 0.53°), for the width of a shadow's penumbra
     /// (`shadow::Shadows::soft_pcss`).
     pub sun_size: f32 = 0.00925,
+    /// A fitting look's constants (`style::Knob`, `wrela tool fit --style`): what a fit's build
+    /// draws the candidate it's scoring with; 0 and unread otherwise.
+    pub fit: [vec4; 2] = [vec4(0.0), vec4(0.0)],
 }
 
 /// The clay view's albedo (`Light`'s `clay`): a mid grey.

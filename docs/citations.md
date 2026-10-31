@@ -152,6 +152,11 @@ Each is our own Wrela code written from the published idea. No code was copied.
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | `ui::ttf` | How TrueType's tables are read, and their fallbacks |
 | Lucide's settings-2 icon (ISC) | `console/` | Recreated from its 24-unit geometry |
 | [Tailwind CSS's zinc palette](https://tailwindcss.com/docs/colors) (MIT) | `docsite/` | The docs' neutral greys |
+| Z. H. Cigolle, S. Donow, D. Evangelakos, M. Mara, M. McGuire and Q. Meyer, ["A Survey of Efficient Representations for Independent Unit Vectors"](https://jcgt.org/published/0003/02/01/) (*JCGT* 2014) | `engine::substance` | The substance's normals and principal direction in octahedral coordinates |
+| D. DeCarlo, A. Finkelstein, S. Rusinkiewicz and A. Santella, ["Suggestive Contours for Conveying Shape"](https://gfx.cs.princeton.edu/proj/sugcon/) (SIGGRAPH 2003); T. Judd, F. Durand and E. Adelson, ["Apparent Ridges for Line Drawing"](https://people.csail.mit.edu/tjudd/apparentridges.html) (SIGGRAPH 2007) | `engine::marks::creased`, `styles::cel` | Lines where the form folds, from its curvature: a crease where the larger principal curvature per pixel is high and long enough along its ridge |
+| P. Bénard, A. Bousseau and J. Thollot, ["State-of-the-Art Report on Temporal Coherence for Stylized Animations"](https://doi.org/10.1111/j.1467-8659.2011.02075.x) (*Computer Graphics Forum* 2011) | `engine::marks` | Marks anchored in 3D and sized in 2D, faded across a lattice's levels: the compromise between the shower door and sliding it recommends |
+| E. Praun, H. Hoppe, M. Webb and A. Finkelstein, ["Real-Time Hatching"](https://hhoppe.com/proj/hatching/) (SIGGRAPH 2001) | `styles::ink` | Tonal art maps: a tone is a count of hatching's layers, each coming in past a threshold, coherent as the surface nears and recedes |
+| N. Hansen, ["The CMA Evolution Strategy: A Tutorial"](https://arxiv.org/abs/1604.00772) (2016) | `studio/fit/style.wrela` | The fit's search: (μ/μ_W, λ)-CMA-ES with rank-one and rank-μ updates and cumulative step-size adaptation, its default parameters |
 
 ## Read for principles
 
@@ -192,3 +197,44 @@ Named in words; no image is copied from them.
 | Miro and Lucid; shadcn/ui's documentation | Interaction conventions for the board; the polish the docs aim past |
 
 The lookdev rubric's "hero" anchor is a private set of 75 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0) and 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense", Ghibli's statement of September 2020). Ryan accepted that statement on 2026-10-28 as covering private review by an agent judge (docs/plan-world-class-3.md §B3.1): it is the rights holder's own public invitation, though not a formal licence, and it covers only stills from Ghibli's own release, not reposts. An agent looks at them beside a render to judge light, colour, value and depth. Eight Nintendo store screenshots that were in it were removed on 2026-10-28: their terms allowed private study only, not showing them to an agent judge (docs/plan-world-class-3.md D38).
+
+## The fit's reference sets
+
+The paintings and prints a look is fitted to (`wrela tool fit --style`, docs/plan-world-class-3.md
+§D8): CC0 (public domain) in The Met's Open Access, each its museum's record (`isPublicDomain`
+true), kept outside the repo under `$WRELA_REFERENCE_DIR/styles/<set>/<id>.jpg` with its record
+(`<id>.json`), fetched from its API's web-size image (`primaryImageSmall`) on 2026-10-30. Only their
+statistics are read (luma quintiles, edges, palette size, chroma); none is copied into wrela. The
+judge's hero set (above) isn't on this machine, so neither set was checked against its 23
+paintings.
+
+| Set | Work | The Met |
+|---|---|---|
+| cel | Katsushika Hokusai, *South Wind, Clear Sky (Gaifū kaisei), also known as Red Fuji, from the series Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei)* (ca. 1830–32) | [36490](https://www.metmuseum.org/art/collection/search/36490) |
+| cel | Katsushika Hokusai, *Storm below Mount Fuji (Sanka no haku u), from the series Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei)* (ca. 1830–32) | [36492](https://www.metmuseum.org/art/collection/search/36492) |
+| cel | Utagawa Hiroshige, *Sudden Shower at Shōno, from the series Fifty-three Stations of the Tōkaidō* (1834–35) | [36521](https://www.metmuseum.org/art/collection/search/36521) |
+| cel | Utagawa Hiroshige, *The Kiso Mountains in Snow* (dated 8th month of the Snake year, 1857) | [36545](https://www.metmuseum.org/art/collection/search/36545) |
+| cel | Utagawa Hiroshige, *A Snowy Evening at Kanbara Station* (ca. 1833–34) | [36937](https://www.metmuseum.org/art/collection/search/36937) |
+| cel | Utagawa Hiroshige, *Spring Rain at Tsuchiyama, from the series Fifty-three Stations of the Tōkaidō* (1834–35) | [36971](https://www.metmuseum.org/art/collection/search/36971) |
+| cel | Utagawa Hiroshige, *Okabe* (ca. 1842) | [37027](https://www.metmuseum.org/art/collection/search/37027) |
+| cel | Utagawa Hiroshige, *“Azuma Bridge from Komagatadō Temple,” from the series One Hundred Famous Views of Edo (Meisho Edo hyakkei, Komagatadō Azumabashi)* (1857) | [37282](https://www.metmuseum.org/art/collection/search/37282) |
+| cel | Katsushika Hokusai, *Reflection in Lake at Misaka in Kai Province (Kōshū Misaka suimen), from the series Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei* (ca. 1830–32) | [54868](https://www.metmuseum.org/art/collection/search/54868) |
+| cel | Utagawa Hiroshige, *Sudden Shower over Shin-Ōhashi Bridge and Atake (Ōhashi Atake no yūdachi), from the series One Hundred Famous Views of Edo (Meisho Edo hyakkei)* (1857) | [55433](https://www.metmuseum.org/art/collection/search/55433) |
+| cel | Katsushika Hokusai, *Noboto Bay (Noboto no ura), from the series Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei)* (ca. 1830–32) | [56216](https://www.metmuseum.org/art/collection/search/56216) |
+| cel | Utagawa Hiroshige, *Snowy Gorge* (undated) | [56683](https://www.metmuseum.org/art/collection/search/56683) |
+| cel | Katsushika Hokusai, *Kajikazawa in Kai Province (Kōshū Kajikazawa), from the series Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei)* (ca. 1830–32) | [56727](https://www.metmuseum.org/art/collection/search/56727) |
+| cel | Utagawa Hiroshige, *Station Thirty-Eight: Fujikawa, Scene at the Border, from the Fifty-Three Stations of the Tokaido* (ca. 1833–34) | [56906](https://www.metmuseum.org/art/collection/search/56906) |
+| painterly | Camille Corot, *River with a Distant Tower* (1865) | [435983](https://www.metmuseum.org/art/collection/search/435983) |
+| painterly | Charles-François Daubigny, *Landscape with a Sunlit Stream* (ca. 1877) | [436090](https://www.metmuseum.org/art/collection/search/436090) |
+| painterly | Camille Pissarro, *Barges at Pontoise* (1876) | [437302](https://www.metmuseum.org/art/collection/search/437302) |
+| painterly | Camille Pissarro, *Poplars, Eragny* (1895) | [437307](https://www.metmuseum.org/art/collection/search/437307) |
+| painterly | Camille Pissarro, *Morning, An Overcast Day, Rouen* (1896) | [437308](https://www.metmuseum.org/art/collection/search/437308) |
+| painterly | Alfred Sisley, *The Bridge at Villeneuve-la-Garenne* (1872) | [437680](https://www.metmuseum.org/art/collection/search/437680) |
+| painterly | Alfred Sisley, *View of Marly-le-Roi from Coeur-Volant* (1876) | [437682](https://www.metmuseum.org/art/collection/search/437682) |
+| painterly | Alfred Sisley, *Sahurs Meadows in Morning Sun* (1894) | [437683](https://www.metmuseum.org/art/collection/search/437683) |
+| painterly | Alfred Sisley, *The Road from Moret to Saint-Mammès* (1883–85) | [437684](https://www.metmuseum.org/art/collection/search/437684) |
+| painterly | Alfred Sisley, *The Road from Versailles to Louveciennes* (probably 1879) | [437685](https://www.metmuseum.org/art/collection/search/437685) |
+| painterly | Alfred Sisley, *Rue Eugène Moussoir at Moret: Winter* (1891) | [437686](https://www.metmuseum.org/art/collection/search/437686) |
+| painterly | Camille Pissarro, *Haystacks, Morning, Eragny* (1899) | [438738](https://www.metmuseum.org/art/collection/search/438738) |
+| painterly | Alfred Sisley, *Allée of Chestnut Trees* (1878) | [459121](https://www.metmuseum.org/art/collection/search/459121) |
+| painterly | Alfred Sisley, *The Seine at Bougival* (1876) | [901617](https://www.metmuseum.org/art/collection/search/901617) |

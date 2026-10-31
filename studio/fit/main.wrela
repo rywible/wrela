@@ -7,7 +7,18 @@
 // wrela tool fit -- --net sine --out <file.wrela> [--steps n] [--report]
 // wrela tool fit -- --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <file.wrela>]
 // wrela tool fit -- --net rejector [--frames n] [--steps n] [--out <file.wrela>]
+// wrela tool studio/fit --write ws=. --write out=build/fit --read refs=<dir> -- --style cel
+//     --package examples/vale --shot D5 (--reference-set refs/cel | --reference <png>)
+//     [--evaluations 200] [--seed 1] [--held D1,D3] [--out content/styles/cel_fitted.wrela]
 // ```
+//
+// `--style` (docs/plan-world-class-3.md §D8, fitting.wrela): a look's fittable constants
+// (`engine::style::Knob`, its `FITTABLE`) searched by CMA-ES (style.wrela) from its own values,
+// each candidate a still of the shot in the look's fitting build, scored against a set of
+// paintings' statistics or one reference's colour and structure; the best printed every 20
+// evaluations, scored on the held-out shots beside the look's own, and with `--out` written as
+// a look of its own. A set outside the workspace is read through a root of its own (`refs`): run
+// it as a package, as above.
 //
 // `impostor` (§B14.2b): its fixture (studio/fit/fixtures/impostor) built with its testing exports
 // and run on the native host with the GPU: the great tree's impostor baked and read back as rows,
@@ -47,7 +58,7 @@ use std::tool::toolchain
 use toolkit::driven::{number, untrapped}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool fit -- --net sine --out <content/... or build/....wrela> [--steps n] [--report] | --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <content/... or build/....wrela>] | --net rejector [--frames n] [--steps n] [--out <content/... or build/....wrela>] [--check]"
+pub const USAGE: Text = "usage: wrela tool fit -- --style cel|painterly [--package <dir>] [--shot D5] (--reference-set <dir> | --reference <png>) [--evaluations n] [--seed n] [--held D1,D3] [--out content/....wrela] | --net sine --out <content/... or build/....wrela> [--steps n] [--report] | --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <content/... or build/....wrela>] | --net rejector [--frames n] [--steps n] [--out <content/... or build/....wrela>] [--check]"
 
 /// A run of the tool: the net, where its source goes (a workspace path), how many steps, and
 /// whether to print the curve.
@@ -120,6 +131,136 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         return None
     }
     Some(o)
+}
+
+/// A `--style` run (fitting.wrela).
+pub struct StyleOptions: Clone {
+    pub style: String,
+    pub program: String,
+    pub shot: String,
+    pub reference: String,
+    pub set: String,
+    pub out: String,
+    pub evaluations: u32 = 200,
+    pub seed: u32 = 1,
+    pub held: Vec<String>,
+    pub width: u32 = 960,
+    pub height: u32 = 540,
+}
+
+pub fn parse_style(given: [String]) -> Option<StyleOptions> {
+    var o = StyleOptions {
+        style: String::new(),
+        program: String::from("ws/examples/vale"),
+        shot: String::from("D5"),
+        reference: String::new(),
+        set: String::new(),
+        out: String::new(),
+        held: Vec::from([String::from("D1"), String::from("D3")]),
+    }
+    var k = 0
+    while k + 1 < given.len() {
+        let a = given[k].as_str()
+        let v = given[k + 1].clone()
+        if a == "--style" {
+            o.style = take v
+        } else if a == "--package" {
+            o.program = String::from(f"ws/{v}")
+        } else if a == "--shot" {
+            o.shot = take v
+        } else if a == "--reference" {
+            o.reference = take v
+        } else if a == "--reference-set" {
+            o.set = take v
+        } else if a == "--out" {
+            o.out = take v
+        } else if a == "--evaluations" {
+            o.evaluations = v.as_str().parse_u32()?
+        } else if a == "--seed" {
+            o.seed = v.as_str().parse_u32()?
+        } else if a == "--held" {
+            o.held = Vec::new()
+            for part in v.as_str().split(",") {
+                let (x, y) = part
+                o.held.push(String::from(v.as_str().slice(x, y)))
+            }
+        } else {
+            return None
+        }
+        k += 2
+    }
+    if k != given.len() || fitting::fittee(o.style.as_str()).is_none() {
+        return None
+    }
+    if o.set.is_empty() == o.reference.is_empty() {
+        return None
+    }
+    if !o.out.is_empty() && !writable(o.out.as_str()) {
+        return None
+    }
+    Some(o)
+}
+
+/// A look fitted (`--style`): searched on the shot, scored on the held-out shots beside the look's
+/// own values, and written if `--out` names where.
+fn fit_style(o: StyleOptions) -> Result<(), ToolError> {
+    let Some(f) = fitting::fittee(o.style.as_str()) else {
+        return Err(ToolError::new("no such look"))
+    }
+    let look = f"styles::{f.module}::{f.base}Fitting"
+    let build = f"out/style-{f.module}"
+    print(f"fit: building {o.program} in {look}")
+    lookbook_tool::main::build_in(o.program.as_str(), look.as_str(), build.as_str())?
+    let (aim, what) = if o.set.is_empty() {
+        let (px, w) = fitting::read_image(o.reference.as_str())?
+        (fitting::Aim::One(take px, w), String::from(f"the reference {o.reference}"))
+    } else {
+        let (t, n) = fitting::set_target(o.set.as_str())?
+        (fitting::Aim::Set(take t), String::from(f"the {n} images of {o.set}"))
+    }
+    let i = fitting::shot_index(o.program.as_str(), o.shot.as_str())?
+    print(
+        f"fit: {o.style} to {what}, on shot {o.shot} ({i}), {o.evaluations} evaluations from seed {o.seed}",
+    )
+    var d = fitting::open(build.as_str(), i, o.width, o.height)?
+    let (own_px, own_w) = fitting::still_at(mut d, f.own, o.height)?
+    let own_score = fitting::score(aim.clone(), own_px, own_w)?
+    print(
+        f"fit: the look's own constants score {own_score:.4} ({fitting::named(f.clone(), f.own)})",
+    )
+    let found = fitting::search(
+        mut d,
+        o.height,
+        f.clone(),
+        aim.clone(),
+        evaluations: o.evaluations,
+        seed: o.seed,
+    )?
+    let _ = drive::close(d.b).wait()
+    print(f"fit: the best {found.best_score:.4} at {fitting::named(f.clone(), found.best)}")
+    var held = String::new()
+    for name in o.held.clone() {
+        let j = fitting::shot_index(o.program.as_str(), name.as_str())?
+        var h = fitting::open(build.as_str(), j, o.width, o.height)?
+        let (a, aw) = fitting::still_at(mut h, f.own, o.height)?
+        let (b, bw) = fitting::still_at(mut h, found.best, o.height)?
+        let _ = drive::close(h.b).wait()
+        let (sa, sb) = (fitting::score(aim.clone(), a, aw)?, fitting::score(aim.clone(), b, bw)?)
+        print(f"fit: held out, shot {name}: the look's own {sa:.4}, fitted {sb:.4}")
+        held.push_str(f" {name} {sa:.3} → {sb:.3};")
+    }
+    if !o.out.is_empty() {
+        let now = time::utc_now().wait()?
+        let about = f"The {o.style} look fitted to {what} on shot {o.shot} ({found.scores.len()} evaluations of CMA-ES from seed {o.seed}): its score {own_score:.3} → {found.best_score:.3}; held out (the look's own → fitted):{held} {date_of(f64(now.seconds) * 1000.0)}."
+        write_file(
+            f"ws/{o.out}",
+            chunked(
+                Vec::from(fitting::fitted_source(f.clone(), found.best, about.as_str()).as_bytes()),
+            ),
+        )?
+        print(f"fit: the fitted look to {o.out}")
+    }
+    Ok(())
 }
 
 /// Whether a source may be written at workspace path `p`: under `content/` or `build/`, a
@@ -370,7 +511,27 @@ fn fit(o: Options) -> Result<(), ToolError> {
 }
 
 pub fn tool() -> u32 {
-    let Some(o) = parse_args(args()) else {
+    let given = args()
+    var styled = false
+    for a in given.clone() {
+        if a.as_str() == "--style" {
+            styled = true
+        }
+    }
+    if styled {
+        let Some(o) = parse_style(given) else {
+            print(USAGE)
+            return 2
+        }
+        return match fit_style(o) {
+            Ok(()) => 0,
+            Err(e) => {
+                print(f"fit: {e.message()}")
+                1
+            },
+        }
+    }
+    let Some(o) = parse_args(given) else {
         print(USAGE)
         return 2
     }

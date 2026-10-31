@@ -23,7 +23,8 @@
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use switches::Switches
-use style::Style
+use style
+use style::{Style, lit_normal, substance_of}
 use noise::{hash2, hash2u, rand}
 use plant::{Wind, sway}
 use probes::{ProbeGrid, sky_light_near}
@@ -1753,7 +1754,7 @@ pub fn blade_shade<Q: Switches, Y: Style>(
     lt: Lighting<Q, Y>,
     look: GrassLook,
     species: [Species],
-) -> vec4 {
+) -> Y::Out {
     let b = blades[v.which.value]
     let colour = b.colour.decode()
     let kind = colour.w
@@ -1768,7 +1769,8 @@ pub fn blade_shade<Q: Switches, Y: Style>(
     let sky = lit::sky_at(lt, world, b.sky.decode().xyz * 2.0) * ao
     // (A wood's floor plant's species; a meadow blade's third part is how deep a green it is.)
     let sp = if kind > 0.1 { u32(round(colour.z * 255.0)) } else { 0 }
-    let albedo = if sp > 0 {
+    let history = vec4(0.0)
+    let picked = if sp > 0 {
         // A little lighter than its listed colour: at its value the wood's floor's leaves and
         // the meadow's forbs read as black cut-outs among the grass.
         let c = species[min(sp, species.len() - 1)].colour * 1.5
@@ -1776,11 +1778,16 @@ pub fn blade_shade<Q: Switches, Y: Style>(
     } else if kind > 0.1 { under_colour(look, kind, t, colour.x, colour.y) } else {
         grass_colour(look, t, colour.x, colour.y, colour.z)
     }
+    let albedo = Y::palette(lt.light, style::GRASS, history, picked)
+    // A blade's form is its sward's: the ground it grows from. (A blade has no history of its
+    // own: its cause is empty.)
+    let ln = lit_normal::<Y>(n, ground, ground)
+    let s = substance_of::<Y>(ground, ground, history, albedo)
     // The light toward a blade's reflection: its root's sky light (placed with it), near enough
     // for a blade this rough.
     let lit = Lit {
         albedo,
-        n,
+        n: ln,
         sun: sun * (0.5 + 0.5 * ao),
         sky,
         // A frond or a herb's leaf is thicker than a blade: less light through it (sunlit fronds
@@ -1793,10 +1800,10 @@ pub fn blade_shade<Q: Switches, Y: Style>(
         glint: 0.2,
         reflected: sky *
             0.5 *
-            light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.9),
+            light::gloss_occlusion(ao, abs(dot(ln, normalize(lt.cam.eye - world))), 0.9),
     }
-    let c = shown(lt, lit, world)
-    vec4(c, view::GRASS)
+    let c = shown(lt, lit, world, s, style::GRASS)
+    Y::written(vec4(c, view::GRASS), s)
 }
 
 /// What a flower's vertex passes on.
@@ -1868,15 +1875,23 @@ pub fn flower_shade<Q: Switches, Y: Style>(
     b: BloomVertex,
     lt: Lighting<Q, Y>,
     blooms: Blooms,
-) -> vec4 {
+) -> Y::Out {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
     let colour = blooms.kinds[min(kind, 3)]
-    let albedo = mix(
-        colour,
-        vec3(0.75, 0.52, 0.05),
-        vec3(centre * select(if_false: 0.3, if_true: 1.0, cond: kind == 0)),
+    let albedo = Y::palette(
+        lt.light,
+        style::FLOWER,
+        vec4(0.0),
+        mix(
+            colour,
+            vec3(0.75, 0.52, 0.05),
+            vec3(centre * select(if_false: 0.3, if_true: 1.0, cond: kind == 0)),
+        ),
     )
+    // A flower head's form is the meadow's, facing up.
+    let up = vec3(0.0, 1.0, 0.0)
+    let s = substance_of::<Y>(up, up, vec4(0.0), albedo)
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
     let (sun, sky, reflected) = sun_and_gloss(lt, b.world, n, soft: 1.0)
     let lit = Lit {
@@ -1889,8 +1904,8 @@ pub fn flower_shade<Q: Switches, Y: Style>(
         glint: 1.0,
         reflected: reflected * 0.9,
     }
-    let c = shown(lt, lit, b.world)
-    vec4(c, view::FLOWER)
+    let c = shown(lt, lit, b.world, s, style::FLOWER)
+    Y::written(vec4(c, view::FLOWER), s)
 }
 
 impl Grass {

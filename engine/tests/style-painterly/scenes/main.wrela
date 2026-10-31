@@ -1,0 +1,156 @@
+// The painterly look's panels (engine/tests/style-painterly), one a build (`--set PANEL=<n>`),
+// 256 × 256: 0, a sphere drawn into a depth and a form target, its shape found
+// (`substance::shaped`), and at each of its pixels whether its strokes' direction (the mark
+// lattice's, `marks::sample`) is within 15° of its latitude or its longitude; 1, a flat plane
+// facing the eye, grey, with its strokes on it (`marks::darkness` in the look), where the stroke
+// lattice's spacing is `STROKE_PX` (its octave's start).
+
+use engine::frame::full
+use engine::marks
+use engine::marks::darkness
+use engine::substance
+use engine::substance::{Substance, pack_form, shaped, unpack_form, unpack_shape}
+use engine::view::{Camera, NEAREST, ROCK, first_camera}
+use std::gpu::{
+    DepthTexture, FragCoord, Rg32Uint, Rgba16Float, Targets2, Texture, WithDepth,
+    begin_pass2_with_depth, begin_screen_pass, depth_texture, dispatch, draw, texture,
+    writable_texture,
+}
+use styles::painterly::{Painterly, STROKE_PX}
+
+/// Which panel this build draws.
+pub const PANEL: u32 = 0
+/// The screen's side (pixels).
+pub const SIDE: u32 = 256
+/// The plane's camera's field of view (narrow: its pixels' footprint about alike).
+pub const PLANE_FOV: f32 = 0.3
+
+/// The sphere's targets.
+pub struct State {
+    image: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    form: Texture<Rg32Uint>,
+    shape: Texture<Rg32Uint>,
+}
+
+pub fn init() -> State {
+    State {
+        image: texture::<Rgba16Float>(width: SIDE, height: SIDE),
+        depth: depth_texture(width: SIDE, height: SIDE),
+        form: texture::<Rg32Uint>(width: SIDE, height: SIDE),
+        shape: writable_texture::<Rg32Uint>(width: SIDE / 2, height: SIDE / 2),
+    }
+}
+
+/// The sphere's camera: a metre's sphere from 4 m.
+fn sphere_eye() -> Camera {
+    first_camera(vec3(0.0, 0.0, 4.0), vec3(0.0), 0.8, SIDE, SIDE)
+}
+
+/// The plane's camera: square on to it, where a pixel's footprint makes the strokes' lattice a
+/// metre's (its finer octave's) at 1/100 of an octave past `STROKE_PX` (the coarser's share 0.01).
+fn plane_eye() -> Camera {
+    let foot = exp2(0.01) / STROKE_PX
+    let d = foot * f32(SIDE) / (2.0 * tan(0.5 * PLANE_FOV))
+    first_camera(vec3(0.0, 0.0, d), vec3(0.0), PLANE_FOV, SIDE, SIDE)
+}
+
+/// The sphere at a pixel through `cam`: grey, tagged rock, its form's normal, and its depth.
+@fragment
+fn sphere(pixel: FragCoord, cam: Camera) -> WithDepth<Targets2<vec4, vec2u>> {
+    let ray = cam.ray(pixel.position.xy)
+    let b = dot(cam.eye, ray)
+    let c = dot(cam.eye, cam.eye) - 1.0
+    let h = b * b - c
+    if h <= 0.0 {
+        let n = vec3(0.0, 0.0, 1.0)
+        return WithDepth {
+            color: Targets2 { first: vec4(0.0), second: pack_form(n, n) },
+            depth: 0.0,
+        }
+    }
+    let p = cam.eye + ray * (-b - sqrt(h))
+    let n = normalize(p)
+    let depth = cam.near / max(dot(p - cam.eye, cam.forward), 1.0e-6)
+    WithDepth { color: Targets2 { first: vec4(vec3(0.5), ROCK), second: pack_form(n, n) }, depth }
+}
+
+/// Panel 0's readout at a pixel: red where its strokes' direction is within 15° of the sphere's
+/// latitude or longitude there, green where its latitude is the tangents' (`substance::tangents`:
+/// away from the poles), blue on the sphere.
+@fragment
+fn direction(
+    pixel: FragCoord,
+    cam: Camera,
+    depth: DepthTexture,
+    form: Texture<Rg32Uint>,
+    shape: Texture<Rg32Uint>,
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let z = depth.load(x: p.x, y: p.y)
+    if z <= 0.0 {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    let world = cam.world_at(pixel.position.xy, z)
+    let (n, _) = unpack_form(form.load(x: p.x, y: p.y))
+    let (dir, _, _) = unpack_shape(shape.load(x: p.x / 2, y: p.y / 2))
+    let foot = cam.footprint(cam.distance_of(z))
+    let m = marks::sample(marks::STROKES, world, n, dir, foot, STROKE_PX).fine
+    let latitude = normalize(cross(vec3(0.0, 1.0, 0.0), n))
+    let longitude = cross(n, latitude)
+    let along = max(abs(dot(m.dir, latitude)), abs(dot(m.dir, longitude)))
+    let within = if along >= cos(15.0 * 3.14159265 / 180.0) { 1.0 } else { 0.0 }
+    let away = if abs(n.y) < 0.9 { 1.0 } else { 0.0 }
+    vec4(within, away, 1.0, 1.0)
+}
+
+/// Panel 1 at a pixel: the plane (z = 0) grey, its strokes on it along x, its tone flat (`flat`
+/// 1, set here: the look's own `FLAT` 0 flattens nothing, so this is a long stroke's measure of
+/// `mark_of`, not what a program's shot draws).
+@fragment
+fn plane(pixel: FragCoord, cam: Camera) -> vec4 {
+    let ray = cam.ray(pixel.position.xy)
+    let p = cam.eye + ray * (-cam.eye.z / ray.z)
+    let n = vec3(0.0, 0.0, 1.0)
+    let foot = cam.footprint(dot(p - cam.eye, cam.forward))
+    let s = Substance { flat: 1.0, ..substance::NONE }
+    let dark = darkness::<Painterly>(marks::STROKES, p, n, vec3(1.0, 0.0, 0.0), foot, s)
+    vec4(vec3(0.5 * (1.0 - dark)), 1.0)
+}
+
+pub fn frame(state: mut State, time: f32, width: u32, height: u32) {
+    if PANEL == 1 {
+        let screen = begin_screen_pass(clear: vec4(0.0))
+        draw(screen, full.bind(z: 0.5), plane.bind(cam: plane_eye()), vertices: 3)
+        screen.present()
+        return
+    }
+    let cam = sphere_eye()
+    let p = begin_pass2_with_depth(
+        mut state.image,
+        mut state.form,
+        mut state.depth,
+        clear: vec4(0.0),
+        clear_depth: 0.0,
+    )
+    draw(p, full.bind(z: 0.5), sphere.bind(cam), vertices: 3, depth: NEAREST)
+    p.end()
+    dispatch(
+        shaped.bind(
+            form: state.form,
+            depth: state.depth,
+            cam: cam,
+            size: vec2u(SIDE),
+            out: mut state.shape,
+        ),
+        over: (SIDE / 2, SIDE / 2),
+    )
+    let screen = begin_screen_pass(clear: vec4(0.0))
+    draw(
+        screen,
+        full.bind(z: 0.5),
+        direction.bind(cam, depth: state.depth, form: state.form, shape: state.shape),
+        vertices: 3,
+    )
+    screen.present()
+}

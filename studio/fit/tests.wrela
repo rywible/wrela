@@ -1,0 +1,200 @@
+// The style fit (style.wrela, fitting.wrela): the search and the statistics on the CPU; and
+// the fit on the style panel (fixtures/style), built and drawn on the hardware GPU.
+
+use fitting::{Aim, fittee, search}
+use hosts::steps::built
+use lookbook_tool::quality::Driven
+use std::input::Script
+use std::io::print
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::toolchain
+use std::tool::toolchain::{Override, Set}
+use style::{Cma, Stats, distance, stats, target_of}
+use toolkit::driven::untrapped
+
+/// CMA-ES finds a bowl's bottom, four coordinates in [0, 1], within 200 evaluations: each within
+/// 0.01 of it.
+@test
+fn the_search_finds_a_bowls_bottom() {
+    let bottom = [0.3, 0.7, 0.55, 0.2]
+    var cma = Cma::new([0.5, 0.5, 0.5, 0.5], 0.3, 7)
+    var evaluations = 0
+    var best = 1.0e9
+    var at = Vec::from([0.5, 0.5, 0.5, 0.5])
+    while evaluations + cma.lambda <= 200 {
+        let xs = cma.ask()
+        var scores: Vec<f32> = Vec::new()
+        for x in xs.clone() {
+            var s = 0.0
+            for i in 0..4 {
+                s += (x[i] - bottom[i]) * (x[i] - bottom[i])
+            }
+            scores.push(s)
+            if s < best {
+                best = s
+                at = x.clone()
+            }
+        }
+        cma.tell(scores)
+        evaluations += cma.lambda
+    }
+    print(f"{evaluations} evaluations: the best {at[0]}, {at[1]}, {at[2]}, {at[3]} ({best})")
+    for i in 0..4 {
+        assert(abs(at[i] - bottom[i]) < 0.01, f"coordinate {i}: {at[i]} for {bottom[i]}")
+    }
+}
+
+/// A flat grey has no edges and one colour; a checker of black and white squares four pixels
+/// across has edges at each square's last column and row (but the image's: 1,695 of its 4,096
+/// pixels) and two colours; their quintiles say so; and a set
+/// of one is its own target.
+@test
+fn the_statistics_tell_flat_from_busy() {
+    let w = 64
+    var flat: Vec<u8> = Vec::new()
+    var checker: Vec<u8> = Vec::new()
+    for y in 0..w {
+        for x in 0..w {
+            let v = if ((x / 4) + (y / 4)) % 2 == 0 { 255 } else { 0 }
+            for _ in 0..3 {
+                flat.push(128)
+                checker.push(v)
+            }
+            flat.push(255)
+            checker.push(255)
+        }
+    }
+    let f = stats(flat, w)
+    let c = stats(checker, w)
+    print(
+        f"flat: edges {f.edges}, palette {f.palette}; checker: edges {c.edges}, palette {c.palette}",
+    )
+    assert(f.edges == 0.0 && f.palette == 0.0 && f.chroma < 0.01)
+    assert(c.edges == 1695.0 / 4096.0 && c.palette == 1.0)
+    assert(c.quintiles[0] == 0.0 && c.quintiles[3] == 1.0)
+    assert(distance(f, target_of([f])) == 0.0 && distance(c, target_of([f])) > 1.0)
+}
+
+/// The panel's size.
+const WIDTH: u32 = 256
+const HEIGHT: u32 = 144
+
+/// The style panel built in `look` and opened (its first frames drawn).
+fn panel(look: str) -> Driven {
+    let out = "scratch/panel"
+    var options = toolchain::options()
+    options.overrides = Vec::from(
+        [
+            Override { name: String::from("engine"), dir: String::from("repo/engine") },
+            Override { name: String::from("styles"), dir: String::from("repo/content/styles") },
+        ],
+    )
+    options.set = Vec::from([Set { name: String::from("LOOK"), value: String::from(look) }])
+    built("repo/studio/fit/fixtures/style", out, options, "the panel builds")
+    var load = drive::gpu()
+    load.width = WIDTH
+    load.height = HEIGHT
+    let Ok(loaded) = drive::load(out, load).wait() else { panic("it loads on a GPU") }
+    let d = Driven { b: loaded.build, script: Script::frames(), frame: 0, width: WIDTH }
+    let Ok(seen) = drive::steps(d.b, [Step::Init]).wait() else { panic("it inits") }
+    let Ok(_) = untrapped("init", take seen) else { panic("init trapped") }
+    d
+}
+
+/// The fit recovers the cel look's constants from a still it drew itself with known ones (the
+/// identity reference): from the look's own, within 5 % of each one's range in at most 200
+/// evaluations.
+@test(tool, read: [("repo", "../..")], budget: 600)
+fn the_fit_recovers_the_constants_a_still_was_drawn_with() {
+    let Some(f) = fittee("cel") else { panic("the cel look is fittable") }
+    var d = panel("styles::cel::CelFitting")
+    let known = [0.18, 3.3, 0.45]
+    let Ok((target, w)) = fitting::still_at(mut d, known, HEIGHT, settle: 2) else {
+        panic("the reference draws")
+    }
+    let aim = Aim::One(take target, w)
+    let Ok(found) = search(
+        mut d,
+        HEIGHT,
+        f.clone(),
+        aim,
+        evaluations: 200,
+        seed: 3,
+        settle: 2,
+    ) else {
+        panic("the search runs")
+    }
+    print(
+        f"{found.scores.len()} evaluations: the best {found.best_score} at {fitting::named(f.clone(), found.best)}; drawn with {fitting::named(f.clone(), known)}",
+    )
+    for i in 0..known.len() {
+        let k = f.knobs[i]
+        assert(
+            abs(found.best[i] - known[i]) <= 0.05 * (k.hi - k.lo),
+            f"{k.name}: {found.best[i]} for {known[i]}",
+        )
+    }
+}
+
+/// Six synthetic images: `posterized`, bands of three flat tones with hard edges between them;
+/// otherwise smooth ramps of many tones; their statistics.
+fn synthetic(posterized: bool) -> Vec<Stats> {
+    var out: Vec<Stats> = Vec::new()
+    let w = 128
+    for k in 0..6 {
+        var px: Vec<u8> = Vec::new()
+        for y in 0..w {
+            for x in 0..w {
+                let t = (f32(x) + f32(k * 17 + y) * 0.3) / f32(w)
+                let l = if posterized { [0.15, 0.45, 0.8][u32(fract(t * 1.5) * 3.0) % 3] } else {
+                    0.1 + 0.8 * (0.5 + 0.5 * sin(t * 6.2831853 + f32(y) / 40.0))
+                }
+                let tint = vec3(1.0, 0.95 - 0.05 * f32(k % 3), 0.8)
+                for c in 0..3 {
+                    px.push(u8(clamp(l * tint[c] * 255.0, 0.0, 255.0)))
+                }
+                px.push(255)
+            }
+        }
+        out.push(stats(px, w))
+    }
+    out
+}
+
+/// A set of few flat tones with hard edges between them fits the cel look to fewer tones and a
+/// harder ramp (`PALETTE_N`, `TERMINATOR`) than a set of smooth ramps of many tones.
+@test(tool, read: [("repo", "../..")], budget: 600)
+fn sets_move_the_tones_and_the_ramp_their_own_way() {
+    let Some(f) = fittee("cel") else { panic("the cel look is fittable") }
+    var d = panel("styles::cel::CelFitting")
+    let flat = target_of(synthetic(posterized: true))
+    let smooth = target_of(synthetic(posterized: false))
+    let Ok(a) = search(
+        mut d,
+        HEIGHT,
+        f.clone(),
+        Aim::Set(take flat),
+        evaluations: 100,
+        seed: 5,
+        settle: 2,
+    ) else {
+        panic("the flat set's search runs")
+    }
+    let Ok(b) = search(
+        mut d,
+        HEIGHT,
+        f.clone(),
+        Aim::Set(take smooth),
+        evaluations: 100,
+        seed: 5,
+        settle: 2,
+    ) else {
+        panic("the smooth set's search runs")
+    }
+    print(
+        f"flat tones: {fitting::named(f.clone(), a.best)} ({a.best_score}); smooth ramps: {fitting::named(f.clone(), b.best)} ({b.best_score})",
+    )
+    assert(a.best[1] < b.best[1], "fewer tones for the flat set")
+    assert(a.best[0] < b.best[0], "a harder ramp for the flat set")
+}

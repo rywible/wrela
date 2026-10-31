@@ -16,10 +16,10 @@
 //             temporal AA, metering, the arrival's cover, the dabs, the glow, the develop, the
 //             scene's overlay
 //
-// Every pipeline the frame itself draws with is one every lit program needs (the ground, the
-// sky, the lines, the resolve, the meter, the dabs, the glow, the develop): what's optional (the
-// water, a test's views; the air's fog is the frame's, `fog`) is drawn only from the scene's own methods, whose
-// defaults draw nothing, so a program builds only the pipelines it reaches.
+// Every pipeline the frame itself draws with is one every lit program needs (the ground, the sky,
+// the lines, the resolve, the meter, the dabs, the glow, the develop): what's optional (the water,
+// a test's views; the air's fog is the frame's, `fog`) is drawn only from the scene's own methods,
+// whose defaults draw nothing, so a program builds only the pipelines it reaches.
 
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
@@ -34,8 +34,7 @@ use fog::{FogField, FogVolume, sky_fogged}
 use light::Light
 use lit::Lighting
 use paint::{
-    BLOOM_LEVELS, Develop, Exposure, Look, Metering, bloom_down, bloom_up, dab_map, develop,
-    identity, lines, meter,
+    BLOOM_LEVELS, Develop, Exposure, Look, Metering, bloom_down, bloom_up, develop, identity, meter,
 }
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Steer, Trace, band}
@@ -43,7 +42,10 @@ use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use switches::Switches
+use marks
+use marks::{dab_map, lines}
 use style::Style
+use substance
 use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
 use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
@@ -53,10 +55,11 @@ use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, Blend, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, Half2, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass,
-    Texture, Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
-    begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler, depth_texture,
-    dispatch, draw, draw_multi, label, memory, sampler, texture, timed, writable_texture, copy,
+    GpuSpan, Half2, R32Float, R32Uint, R8, RenderPass, Rg32Uint, Rgba16Float, Rgba8, Sampler,
+    ScreenPass, Texture, Texture3d, VertexIndex, begin_depth_pass, begin_pass,
+    begin_pass2_with_depth, begin_pass4_with_depth, begin_pass_with_depth, begin_screen_pass,
+    buffer, buffer_of, comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, memory,
+    sampler, texture, timed, writable_texture, copy,
 }
 use std::io::{Pending, print}
 use std::time::phase
@@ -351,6 +354,13 @@ pub struct Targets {
     pub bloom_2: Texture<Rgba16Float>,
     pub bloom_3: Texture<Rgba16Float>,
     pub bloom_4: Texture<Rgba16Float>,
+    /// The substance a look reads after the shading passes (`substance`): the scene's size where
+    /// its look reads it (`style::Style::SUBSTANCE`), the shape half that (`substance::shaped`),
+    /// else a texel each.
+    pub form: Texture<Rg32Uint>,
+    pub shape: Texture<Rg32Uint>,
+    pub cause: Texture<R32Uint>,
+    pub tone: Texture<R32Uint>,
 }
 
 /// Targets of a texel each, before the first frame sizes them.
@@ -370,12 +380,18 @@ fn no_targets() -> Targets {
         bloom_2: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_3: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_4: texture::<Rgba16Float>(width: 1, height: 1),
+        form: texture::<Rg32Uint>(width: 1, height: 1),
+        shape: writable_texture::<Rg32Uint>(width: 1, height: 1),
+        cause: texture::<R32Uint>(width: 1, height: 1),
+        tone: texture::<R32Uint>(width: 1, height: 1),
     }
 }
 
 /// Targets for an output of `width` × `height`, the scene's `w` × `h` (`effects`: whether the
-/// scene draws over itself, whose targets every frame has now: the dabs share the water's).
-fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Targets {
+/// scene draws over itself, whose targets every frame has now: the dabs share the water's), with
+/// the substance's at the scene's size if `substance`.
+fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool, substance: bool) -> Targets {
+    let (sw, sh) = if substance { (w, h) } else { (1, 1) }
     Targets {
         scene: texture::<Rgba16Float>(width: w, height: h),
         scene_b: texture::<Rgba16Float>(width: w, height: h),
@@ -391,6 +407,10 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
         bloom_2: bloom_of(width, height, level: 2),
         bloom_3: bloom_of(width, height, level: 3),
         bloom_4: bloom_of(width, height, level: 4),
+        form: texture::<Rg32Uint>(width: sw, height: sh),
+        shape: writable_texture::<Rg32Uint>(width: (sw + 1) / 2, height: (sh + 1) / 2),
+        cause: texture::<R32Uint>(width: sw, height: sh),
+        tone: texture::<R32Uint>(width: sw, height: sh),
     }
 }
 
@@ -409,7 +429,73 @@ impl Targets {
             h(self.bloom_2) +
             h(self.bloom_3) +
             h(self.bloom_4)
-        n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3
+        let substance = memory::texels(self.form.width(), self.form.height(), 8) +
+            memory::texels(self.shape.width(), self.shape.height(), 8) +
+            memory::texels(self.cause.width(), self.cause.height(), 4) * 2
+        n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3 + substance
+    }
+}
+
+/// The ground's sides into `p` (the terrain pass), as the clipmap chose them (`cull`).
+fn ground_into<P: RenderPass, Q: Switches, Y: Style>(
+    p: P,
+    cam: Camera,
+    lt: Lighting<Q, Y>,
+    texels: GpuSpan<Texel>,
+    clipmap: Clipmap,
+) {
+    draw_multi(
+        p,
+        ground.bind(cam, lt.levels, texels),
+        ground_shade.bind(
+            lt,
+            texels,
+            litter: clipmap.details.litter,
+            soil: clipmap.details.soil,
+            rock: clipmap.details.rock,
+            moss: clipmap.details.moss,
+            ds: clipmap.details.s,
+        ),
+        indices: clipmap.indices(),
+        indirect: clipmap.sides_args(),
+        count: lt.levels.count * SIDES,
+        depth: NEAREST,
+    )
+}
+
+/// The sky's pixels into `p`, where nothing was drawn: through the froxels' air if `Q::FOG`
+/// (`fog::sky_fogged`), else as it is (`sky::sky_shade`), `view` the sky's table and `dome` its
+/// clouds.
+fn sky_into<P: RenderPass, Q: Switches, Y: Style>(
+    p: P,
+    lt: Lighting<Q, Y>,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+) {
+    if Q::FOG {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            sky_fogged::<Y>.bind(
+                lt.cam,
+                lt.light,
+                view,
+                dome,
+                s: lt.s,
+                fog: lt.fog,
+                fogged: lt.fogged,
+            ),
+            vertices: 3,
+            depth: BEHIND,
+        )
+    } else {
+        draw(
+            p,
+            full.bind(z: 0.0),
+            sky_shade::<Y>.bind(lt.cam, lt.light, view, dome, s: lt.s),
+            vertices: 3,
+            depth: BEHIND,
+        )
     }
 }
 
@@ -509,7 +595,8 @@ pub trait Resolver {
     fn resize(mut self, w: u32, h: u32)
 
     /// The history `into` resolved from the last (`t.last_history`) with this frame's scene, the
-    /// learned rejector's where the program's switches `Q` have it.
+    /// learned rejector's where the program's switches `Q` have it, held flat where the look says
+    /// and the substance's `tone` is flat (`Resolve::flat_clip`).
     fn resolve<Q: Switches>(
         mut self,
         into: mut Texture<Rgba16Float>,
@@ -520,6 +607,7 @@ pub trait Resolver {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     )
@@ -550,6 +638,7 @@ impl Resolver for Gathered {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     ) {
@@ -565,6 +654,7 @@ impl Resolver for Gathered {
                 motion,
                 last_motion,
                 last_history,
+                tone,
                 s,
                 net,
                 learned: Q::LEARNED,
@@ -605,6 +695,7 @@ impl Resolver for Shared {
         motion: Texture<Rgba16Float>,
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
+        tone: Texture<R32Uint>,
         s: Sampler,
         net: GpuSpan<Half2>,
     ) {
@@ -623,6 +714,7 @@ impl Resolver for Shared {
                 last_history,
                 self.means,
                 self.spreads,
+                tone,
                 s,
                 net,
                 learned: Q::LEARNED,
@@ -878,6 +970,11 @@ pub struct Debug: Copy {
     pub reference: Option<(Quality, bool)> = None,
     pub unsaid: bool = false,
 }
+
+/// The time F10 and F12 freeze the frame at (s): the same in every run, so a shot's frozen wind,
+/// water and clouds are (frozen at the frame's own time, they were wherever that run's load had got
+/// to, and a shot's flicker fell in one of two states: docs/lookdev.md).
+const FROZEN_AT: f32 = 60.0
 
 /// How far a dolly (F11's second press) moves the held eye each frame: 0.5 m/s at 60 frames a
 /// second, the frame's time frozen or not.
@@ -1459,7 +1556,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         if key == Key::F10 {
             self.debug.frozen = match self.debug.frozen {
                 Some(_) => None,
-                None => Some(self.time),
+                None => Some(FROZEN_AT),
             }
             return true
         }
@@ -1492,7 +1589,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 None => {
                     let history = self.on(Off::History)
                     self.debug.reference = Some((self.quality, history))
-                    self.debug.frozen = Some(self.debug.frozen.unwrap_or(self.time))
+                    self.debug.frozen = Some(self.debug.frozen.unwrap_or(FROZEN_AT))
                     self.debug.held = Some(self.debug.held.unwrap_or(self.aimed))
                     self.requality(Quality::reference())
                     // No history: the instrument's mean of 64 frames is then a 64-sample
@@ -1635,7 +1732,14 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         let scale = if self.debug.plain || !scaled { 1.0 } else { self.quality.scale * paced }
         let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
-            self.targets = targets_for(width, height, w, h, scene.has_effects())
+            self.targets = targets_for(
+                width,
+                height,
+                w,
+                h,
+                scene.has_effects(),
+                substance: Y::SUBSTANCE != 0,
+            )
             self.pyramid = Pyramid::new(width: w, height: h)
             self.ambient = Occlusion::new(width: w, height: h)
             let cq = self.quality.cascades
@@ -1686,6 +1790,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         if self.quality.measured {
             self.measure()
         }
+        self.cooks.planner.steady = self.debug.frozen.is_some()
         if self.ran % MEMORY_EVERY == 0 {
             self.memory(mut scene)
         }
@@ -2616,53 +2721,53 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         scene.prepass(pre, cam, wind, self.linear)
         pre.end()
         scene.after_prepass(mut self.targets, cam, wind, self.linear)
+        // The shading passes write the scene's colour, and the substance's three beside it where
+        // the look reads them (`substance`, `style::Style::SUBSTANCE`): its fragments' `Out`.
         label("vegetation")
-        let veg = begin_pass_with_depth(
+        let veg = style::opened::<Y::Out>(
             mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
             mut self.targets.depth,
             clear: vec4(0.0),
+            keep: false,
             keep_depth: true,
+            join: false,
         )
         scene.shade(veg, lt, wind, self.targets.ids)
-        veg.end()
+        style::closed::<Y::Out>(veg)
         let terrain = self.on(Off::Terrain)
         label("terrain")
-        let ter = begin_pass_with_depth(
+        let ter = style::opened::<Y::Out>(
             mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
             mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
             keep: true,
             keep_depth: true,
+            join: false,
         )
         if terrain {
-            draw_multi(
-                ter,
-                ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(
-                    lt,
-                    texels,
-                    litter: self.clipmap.details.litter,
-                    soil: self.clipmap.details.soil,
-                    rock: self.clipmap.details.rock,
-                    moss: self.clipmap.details.moss,
-                    ds: self.clipmap.details.s,
-                ),
-                indices: self.clipmap.indices(),
-                indirect: self.clipmap.sides_args(),
-                count: lt.levels.count * SIDES,
-                depth: NEAREST,
-            )
+            ground_into(ter, cam, lt, texels, self.clipmap)
         }
-        ter.end()
+        style::closed::<Y::Out>(ter)
         label("creature")
-        let cr = begin_pass_with_depth(
+        let cr = style::opened::<Y::Out>(
             mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
             mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
             keep: true,
             keep_depth: true,
             join: true,
         )
         scene.characters(cr, lt)
-        cr.end()
+        style::closed::<Y::Out>(cr)
         // The second phase (`cull`): this frame's pyramid from the opaque passes' depth, what the
         // first phase left out tested against it, and what it reveals drawn now.
         let late = Q::OCCLUSION && scene.reveals()
@@ -2679,61 +2784,40 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             )
             scene.late_prepass(lp, cam, wind, self.linear)
             lp.end()
-            let ls = begin_pass_with_depth(
+            let ls = style::opened::<Y::Out>(
                 mut self.targets.scene,
+                mut self.targets.form,
+                mut self.targets.cause,
+                mut self.targets.tone,
                 mut self.targets.depth,
+                clear: vec4(0.0, 0.0, 0.0, 1.0),
                 keep: true,
                 keep_depth: true,
+                join: false,
             )
             scene.late_shade(ls, lt, wind, self.targets.ids)
-            ls.end()
+            style::closed::<Y::Out>(ls)
         } else {
             self.pyramid.at.on = 0
         }
         // The sky joins the pass before it (the creature pass, or the late shading), where nothing
         // was drawn (its depth doesn't change).
         label("sky")
-        let sky = begin_pass_with_depth(
+        let sky = style::opened::<Y::Out>(
             mut self.targets.scene,
+            mut self.targets.form,
+            mut self.targets.cause,
+            mut self.targets.tone,
             mut self.targets.depth,
+            clear: vec4(0.0, 0.0, 0.0, 1.0),
             keep: true,
             keep_depth: true,
             join: true,
         )
         if !scene.sky_instead(sky) {
-            if Q::FOG {
-                draw(
-                    sky,
-                    full.bind(z: 0.0),
-                    sky_fogged.bind(
-                        cam,
-                        self.light,
-                        view: self.tables.view,
-                        dome: self.sky.dome,
-                        s: self.linear,
-                        fog: self.fog.grid,
-                        fogged: self.fog.lit,
-                    ),
-                    vertices: 3,
-                    depth: BEHIND,
-                )
-            } else {
-                draw(
-                    sky,
-                    full.bind(z: 0.0),
-                    sky_shade.bind(
-                        cam,
-                        self.light,
-                        view: self.tables.view,
-                        dome: self.sky.dome,
-                        s: self.linear,
-                    ),
-                    vertices: 3,
-                    depth: BEHIND,
-                )
-            }
+            sky_into(sky, lt, self.tables.view, self.sky.dome)
         }
-        sky.end()
+        style::closed::<Y::Out>(sky)
         // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was),
         // for the next frame's shading (its slices still in plain rendering, which has no history
         // to gather them); or the radiance cascades' light, in its place.
@@ -2773,6 +2857,21 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             time: self.time,
         }
         scene.effects(mut self.targets, fx)
+        // The form's shape, from the form and the depth the passes left (`substance::shaped`).
+        if (Y::SUBSTANCE & substance::FORM) != 0 {
+            label("shape")
+            let size = vec2u(self.targets.depth.width(), self.targets.depth.height())
+            dispatch(
+                substance::shaped.bind(
+                    form: self.targets.form,
+                    depth: self.targets.depth,
+                    cam: cam,
+                    size: size,
+                    out: mut self.targets.shape,
+                ),
+                over: ((size.x + 1) / 2, (size.y + 1) / 2),
+            )
+        }
         // The see-through matter, over the scene drawn so far (`particles`): the particles the
         // scene emits moved and sorted; dithered veils into the scene; or the veils (weighted)
         // and the particles into their targets, and laid over the scene.
@@ -2908,18 +3007,53 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             moving: scene.moves_in(cam, out),
             settled: if again { 0.0 } else { f32(self.settled) },
             learned: if Q::LEARNED && self.rejects { 1 } else { 0 },
+            flat_clip: Y::FLAT_CLIP,
         }
         self.settled = if !held(cam) { 0 } else if again { 1 } else { self.settled + 1 }
         let instead = scene.shows_instead()
-        // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
-        // debug views of form).
-        if !self.debug.plain && self.debug.view == 0 && !instead {
-            label("lines")
-            let d = Develop { cam, look: self.look, out, view: 0 }
-            let lp = begin_pass(mut self.targets.scene_b)
-            fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
-            lp.end()
-            swap(mut self.targets.scene, mut self.targets.scene_b)
+        // The look's marks, on the scene's own samples (`marks::marks_on`), before the lines: a
+        // look that turns the image to its paper (the ink look's hatching) would turn a line
+        // drawn under it back to paper too.
+        if Y::DRAWS {
+            if !self.debug.plain && self.debug.view == 0 && !instead {
+                label("marks")
+                let cp = begin_pass(mut self.targets.scene_b)
+                fullscreen(
+                    cp,
+                    marks::marks_on::<Y>.bind(
+                        Develop { cam, look: self.look, out, view: 0 },
+                        scene: self.targets.scene,
+                        depth: self.targets.depth,
+                        form: self.targets.form,
+                        shape: self.targets.shape,
+                        cause: self.targets.cause,
+                        tone: self.targets.tone,
+                    ),
+                )
+                cp.end()
+                swap(mut self.targets.scene, mut self.targets.scene_b)
+            }
+        }
+        // The lines over the marks, on the scene's own samples, so temporal AA anti-aliases them
+        // (none in the debug views of form).
+        // (Where the look draws them: `style::Style::MARKS`.)
+        if (Y::MARKS & marks::LINES) != 0 {
+            if !self.debug.plain && self.debug.view == 0 && !instead {
+                label("lines")
+                // The look's lines' darkness and width, where it sets them.
+                var look = self.look
+                if Y::LINE_DARK >= 0.0 {
+                    look.line_dark = Y::LINE_DARK
+                }
+                if Y::LINE_PX >= 0.0 {
+                    look.line_px = Y::LINE_PX
+                }
+                let d = Develop { cam, look, out, view: 0 }
+                let lp = begin_pass(mut self.targets.scene_b)
+                fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
+                lp.end()
+                swap(mut self.targets.scene, mut self.targets.scene_b)
+            }
         }
         label("temporal")
         swap(mut self.targets.history, mut self.targets.last_history)
@@ -2932,6 +3066,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             self.targets.motion,
             self.targets.last_motion,
             self.targets.last_history,
+            self.targets.tone,
             self.linear,
             self.rejector.items(),
         )
@@ -2990,21 +3125,27 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         }
         let hdr = self.look.output == 1 && std::gpu::screen_is().hdr
         let d = Develop { cam, look: self.look, out, view: self.debug.view, hdr: u32(hdr) }
-        // The dabs into the texture the water's copy held (done with by now).
-        let dp = begin_pass(mut self.targets.below)
-        fullscreen(
-            dp,
-            dab_map.bind(
-                cam,
-                look: d.look,
-                out: d.out,
-                levels: self.clipmap.levels(),
-                texels: self.clipmap.texels(),
-                scene: self.targets.scene,
-                depth: self.targets.depth,
-            ),
-        )
-        dp.end()
+        // The dabs into the texture the water's copy held (done with by now), where the look has
+        // them (`marks::DABS`).
+        if (Y::MARKS & marks::DABS) != 0 {
+            let dp = begin_pass(mut self.targets.below)
+            fullscreen(
+                dp,
+                dab_map.bind(
+                    cam,
+                    look: d.look,
+                    out: d.out,
+                    levels: self.clipmap.levels(),
+                    texels: self.clipmap.texels(),
+                    scene: self.targets.scene,
+                    depth: self.targets.depth,
+                ),
+            )
+            dp.end()
+        } else {
+            // None: the develop reads nothing there.
+            begin_pass(mut self.targets.below, clear: vec4(0.0)).end()
+        }
         // The bloom: down its pyramid from temporal AA's output (the first level the light
         // above the threshold), then back up it, each level adding its light to the one above.
         label("bloom")

@@ -1,0 +1,278 @@
+// A style fitted on a running build (`wrela tool fit -- --style ...`, docs/plan-world-class-3.md
+// §D8): the program built once in the look's fitting variant (`styles::<style>::<Look>Fitting`,
+// whose fittable constants are the light's: `engine::style::Knob`), opened at the shot, time frozen
+// and the eye held; each candidate set through the program's `fit` export, settled, its still
+// taken and scored (style.wrela). The search's best is written as a style of its own
+// (`<Look>Fitted`, its constants the best's), and scored on held-out shots the search never saw.
+
+use engine::style::Fittable
+use lookbook_tool::quality::{Driven, SETTLE}
+use lookbook_tool::shots::{SETTLE_FRAMES, keys, lookbook_of, names_in}
+use std::input::Key
+use std::io::print
+use std::tool::ToolError
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::drive::{Scalar, Step}
+use std::tool::files
+use std::tool::image
+use style::{Cma, SIDE, Stats, Target, against, distance, stats, target_of}
+use styles::cel
+use styles::cel::Cel
+use styles::painterly
+use styles::painterly::Painterly
+use toolkit::driven::untrapped
+use toolkit::whole::{blob_of, chunked, data_bytes, joined, read_file}
+
+/// Frames a candidate's constants settle for before its still: temporal AA's history and the
+/// probes' light taking them in.
+pub const EVAL_SETTLE: u32 = 120
+
+/// A look a fit can move: its module (`cel`), its type (`Cel`), its fittable constants and their
+/// own values.
+pub struct Fittee: Clone {
+    pub module: String,
+    pub base: String,
+    pub knobs: Vec<Fittable>,
+    pub own: Vec<f32>,
+}
+
+/// The look named `style` (`cel`, `painterly`), if a fit can move it.
+pub fn fittee(style: str) -> Option<Fittee> {
+    if style == "cel" {
+        var own: Vec<f32> = Vec::new()
+        for i in 0..cel::FITTABLE.len() {
+            own.push(Cel::at(i))
+        }
+        return Some(
+            Fittee {
+                module: String::from("cel"),
+                base: String::from("Cel"),
+                knobs: Vec::from(cel::FITTABLE),
+                own,
+            },
+        )
+    }
+    if style == "painterly" {
+        var own: Vec<f32> = Vec::new()
+        for i in 0..painterly::FITTABLE.len() {
+            own.push(Painterly::at(i))
+        }
+        return Some(
+            Fittee {
+                module: String::from("painterly"),
+                base: String::from("Painterly"),
+                knobs: Vec::from(painterly::FITTABLE),
+                own,
+            },
+        )
+    }
+    None
+}
+
+/// A point of the search (each coordinate in [0, 1]) as the constants' values, and back.
+pub fn values_of(f: Fittee, x: [f32]) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for i in 0..f.knobs.len() {
+        let k = f.knobs[i]
+        out.push(k.lo + (k.hi - k.lo) * clamp(x[i], 0.0, 1.0))
+    }
+    out
+}
+
+pub fn point_of(f: Fittee, v: [f32]) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for i in 0..f.knobs.len() {
+        let k = f.knobs[i]
+        out.push(clamp((v[i] - k.lo) / (k.hi - k.lo), 0.0, 1.0))
+    }
+    out
+}
+
+/// The `fit` export's arguments for `v`: eight, those past it 0.
+pub fn scalars(v: [f32]) -> Vec<Scalar> {
+    var out: Vec<Scalar> = Vec::new()
+    for i in 0..8 {
+        out.push(Scalar::F32(if i < v.len() { v[i] } else { 0.0 }))
+    }
+    out
+}
+
+/// An RGBA8 image `w` × `h` brought within `SIDE` × `SIDE` (Lanczos), and its width.
+pub fn shrunk(px: take Vec<u8>, w: u32, h: u32) -> Result<(Vec<u8>, u32), ToolError> {
+    let img = image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) }
+    let to = image::fit(
+        image::Size { width: w, height: h },
+        image::Size { width: SIDE, height: SIDE },
+    )
+    let out = image::resize(take img, to).wait()?
+    Ok((joined(data_bytes(take out.rgba)?), to.width))
+}
+
+/// An image file's (PNG or JPEG) pixels brought within `SIDE`, and its width.
+pub fn read_image(path: str) -> Result<(Vec<u8>, u32), ToolError> {
+    let b = files::read_blob(path).wait()?
+    let img = image::decode(Data::Blob(b)).wait()?
+    let (w, h) = (img.width, img.height)
+    shrunk(joined(data_bytes(take img.rgba)?), w, h)
+}
+
+/// The statistics' target of the images (`.jpg`, `.jpeg`, `.png`) in `dir`, and how many.
+pub fn set_target(dir: str) -> Result<(Target, u32), ToolError> {
+    var set: Vec<Stats> = Vec::new()
+    for e in files::list(dir).wait()? {
+        let n = e.name.as_str()
+        if !(n.ends_with(".jpg") || n.ends_with(".jpeg") || n.ends_with(".png")) {
+            continue
+        }
+        let (px, w) = read_image(f"{dir}/{n}")?
+        set.push(stats(px, w))
+    }
+    if set.len() < 2 {
+        return Err(ToolError::new(f"{dir} has {set.len()} images: a set is two or more"))
+    }
+    Ok((target_of(set), set.len()))
+}
+
+/// The shot of `program`'s lookbook named `shot` (its number, or the start of its name: `D5`).
+pub fn shot_index(program: str, shot: str) -> Result<u32, ToolError> {
+    let at = lookbook_of(program)
+    let src = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    let names = names_in(src.as_str())
+    if let Some(i) = shot.parse_u32() {
+        if i < names.len() {
+            return Ok(i)
+        }
+    }
+    for i in 0..names.len() {
+        if names[i].as_str().starts_with(shot) &&
+            (names[i].len() == shot.len() || names[i].as_str().byte(shot.len()) == 32) {
+            return Ok(i)
+        }
+    }
+    Err(ToolError::new(f"no shot {shot} in {at}"))
+}
+
+/// The build in `build` opened at shot `i`, `w` × `h`, settled, time frozen and the eye held.
+pub fn open(build: str, i: u32, w: u32, h: u32) -> Result<Driven, ToolError> {
+    var options = drive::gpu()
+    options.width = w
+    options.height = h
+    options.timeout = 600.0
+    let b = drive::load(build, options).wait()?.build
+    var d = Driven { b, script: keys(i, 0, capture: false), frame: 0, width: w }
+    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = d.run(SETTLE_FRAMES + 1)?
+    d.shown()?
+    d.press(Key::F10)
+    d.press(Key::F11)
+    let _ = d.run(SETTLE)?
+    Ok(d)
+}
+
+/// The still at constants `v` after `settle` frames, brought within `SIDE`, and its width.
+pub fn still_at(
+    d: mut Driven,
+    v: [f32],
+    h: u32,
+    settle: u32 = EVAL_SETTLE,
+) -> Result<(Vec<u8>, u32), ToolError> {
+    let seen = drive::steps(d.b, [Step::Call(String::from("fit"), scalars(v))], timeout: 600.0)
+        .wait()?
+    let _ = untrapped("fit", take seen)?
+    let _ = d.run(settle)?
+    let w = d.width
+    shrunk(d.screen()?, w, h)
+}
+
+/// What a fit is scored against: a set's statistics, or one reference's pixels (brought within
+/// `SIDE`, and its width).
+pub enum Aim: Clone {
+    Set(Target),
+    One(Vec<u8>, u32),
+}
+
+/// A still's score against `aim` (lower is better).
+pub fn score(aim: Aim, px: [u8], w: u32) -> Result<f32, ToolError> {
+    match aim {
+        Aim::Set(t) => Ok(distance(stats(px, w), t)),
+        Aim::One(r, rw) => {
+            if rw != w || r.len() != px.len() {
+                return Err(ToolError::new(f"the reference is {rw} wide and the still {w}"))
+            }
+            Ok(against(px, r, w))
+        },
+    }
+}
+
+/// The search's record: each evaluation's score, and the best's values and score.
+pub struct Searched: Clone {
+    pub scores: Vec<f32>,
+    pub best: Vec<f32>,
+    pub best_score: f32,
+}
+
+/// The CMA-ES search over `f`'s constants from its own values on the opened build `d`, scored
+/// against `aim`, `evaluations` renders at most (whole generations), from `seed`; the best so far
+/// printed every 20, each candidate settled `settle` frames.
+pub fn search(
+    d: mut Driven,
+    h: u32,
+    f: Fittee,
+    aim: Aim,
+    evaluations: u32,
+    seed: u32,
+    settle: u32 = EVAL_SETTLE,
+) -> Result<Searched, ToolError> {
+    var cma = Cma::new(point_of(f.clone(), f.own), 0.25, seed)
+    var out = Searched { scores: Vec::new(), best: f.own.clone(), best_score: 1.0e30 }
+    while out.scores.len() + cma.lambda <= evaluations {
+        let xs = cma.ask()
+        var scores: Vec<f32> = Vec::new()
+        for x in xs {
+            let v = values_of(f.clone(), x)
+            let (px, w) = still_at(mut d, v, h, settle)?
+            let s = score(aim.clone(), px, w)?
+            scores.push(s)
+            out.scores.push(s)
+            if s < out.best_score {
+                out.best_score = s
+                out.best = v.clone()
+            }
+            if out.scores.len() % 20 == 0 {
+                print(
+                    f"fit: {out.scores.len()} evaluations, the best {out.best_score:.4} at {named(f.clone(), out.best)}",
+                )
+            }
+        }
+        cma.tell(scores)
+    }
+    Ok(out)
+}
+
+/// `v` as `NAME value` pairs.
+pub fn named(f: Fittee, v: [f32]) -> String {
+    var out = String::new()
+    for i in 0..f.knobs.len() {
+        if i > 0 {
+            out.push_str(", ")
+        }
+        out.push_str(f"{f.knobs[i].name} {v[i]:.4}")
+    }
+    out
+}
+
+/// The fitted look's source: `<Look>Fitted`, the look with its fittable constants `v` (a
+/// `engine::style::Knob` of its own, its slots the look's), `about` its header.
+pub fn fitted_source(f: Fittee, v: [f32], about: str) -> String {
+    borrow m = f.module
+    borrow b = f.base
+    var at = String::new()
+    for i in 0..8 {
+        if i > 0 {
+            at.push_str(", ")
+        }
+        at.push_str(if i < v.len() { f"{v[i]}" } else { String::from("0.0") }.as_str())
+    }
+    f"// {about}\n// Written by `wrela tool fit --style {m}` (studio/fit): don't edit by hand.\n\nuse {m}\nuse {m}::{b}\nuse engine::light::{{Light, Lit}}\nuse engine::marks::MarkSample\nuse engine::paint::{{Develop, Exposure}}\nuse engine::style::{{Knob, Style}}\nuse engine::substance::{{Substance, Written}}\nuse std::gpu::{{Rgba8, Sampler, Texture3d}}\n\n/// The fitted values of `{m}::FITTABLE`: {named(f.clone(), v)}.\nconst AT: [f32; 8] = [{at}]\n\n/// The {m} look with its fitted constants (`engine::style::Style`).\npub struct {b}Fitted {{}}\n\nimpl Knob for {b}Fitted {{\n    fn at(i: u32) -> f32 {{\n        AT[i]\n    }}\n}}\n\nimpl Style for {b}Fitted {{\n    const SUBSTANCE: u32 = {b}::SUBSTANCE\n    const NORMAL: u32 = {b}::NORMAL\n    const MARKS: u32 = {b}::MARKS\n    const FLAT_CLIP: f32 = {b}::FLAT_CLIP\n    const FLAT: f32 = {b}::FLAT\n    const LINE_DARK: f32 = {b}::LINE_DARK\n    const LINE_PX: f32 = {b}::LINE_PX\n    type Out = Written\n\n    fn written(colour: vec4, s: Substance) -> Written {{\n        {b}::written(colour, s)\n    }}\n\n    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {{\n        {m}::shade_of::<{b}Fitted>(light, lit, s, class, world, eye)\n    }}\n\n    fn shade_leaf(\n        light: Light,\n        lit: Lit,\n        facing: vec3,\n        s: Substance,\n        world: vec3,\n        eye: vec3,\n    ) -> vec3 {{\n        {m}::shade_leaf_of::<{b}Fitted>(light, lit, facing, s, world, eye)\n    }}\n\n    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {{\n        {m}::palette_of::<{b}Fitted>(light, class, history, albedo)\n    }}\n\n    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {{\n        {b}::mark(m, s, depth_px)\n    }}\n\n    fn mark_px(kind: u32) -> f32 {{\n        {b}::mark_px(kind)\n    }}\n\n    fn lens(\n        paint: vec3,\n        px: vec2,\n        d: Develop,\n        e: Exposure,\n        lut: Texture3d<Rgba8>,\n        s: Sampler,\n    ) -> vec4 {{\n        {b}::lens(paint, px, d, e, lut, s)\n    }}\n}}\n"
+}

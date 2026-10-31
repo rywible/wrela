@@ -1,0 +1,118 @@
+// The looks under content/styles, and G-style (docs/plan-world-class-3.md §0.5, D10): the commit
+// that added a look's file changes nothing under `engine/`, so a look is its file alone, the
+// engine's slots taking it as it is.
+
+/// The files that aren't looks a program ships: the measuring and testing fixtures.
+pub const NOT_LOOKS: [Text; 1] = ["fixtures.wrela"]
+
+/// The look the engine's own drawing was extracted as (docs/plan-world-class-3.md §C2): the
+/// commit that added it is the engine's change that made the slots, so it's held to no G-style.
+pub const ENGINE_OWN: Text = "physical.wrela"
+
+/// The looks a file's source declares (`impl Style for X`), but a fit's variant (`XFitting`,
+/// whose constants a fit's build sets: no look a program ships).
+pub fn looks_in(source: str) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    var at = 0
+    loop {
+        let Some(found) = source.slice(at, source.len()).find("impl Style for ") else { break }
+        var i = at + found + 15
+        let start = i
+        while i < source.len() && source.byte(i) != 32 && source.byte(i) != 123 {
+            i += 1
+        }
+        let name = source.slice(start, i)
+        if !name.ends_with("Fitting") {
+            out.push(String::from(name))
+        }
+        at = i
+    }
+    out
+}
+
+/// A look's file and the commit that added it, and the engine's files that commit changed.
+pub struct Added: Clone {
+    pub file: String,
+    pub commit: String,
+    pub engine: Vec<String>,
+}
+
+/// From `git log --format=commit:%H --name-status -- content/styles engine` (newest first): each
+/// file under content/styles/ that a commit added (or made by a rename or a copy), with that
+/// commit (its oldest adding) and the paths under `engine/` it changed (a rename's either end).
+pub fn added_in(log: str) -> Vec<Added> {
+    var out: Vec<Added> = Vec::new()
+    var commit = String::new()
+    var engine: Vec<String> = Vec::new()
+    var adds: Vec<String> = Vec::new()
+    var lines: Vec<String> = Vec::new()
+    for (a, b) in log.split("\n") {
+        lines.push(String::from(log.slice(a, b)))
+    }
+    lines.push(String::from("commit:"))
+    for line in lines {
+        let l = line.as_str()
+        if l.starts_with("commit:") {
+            // The commit before (newer) is done: its adds, oldest last, replace any newer one's.
+            for f in adds.clone() {
+                var kept: Vec<Added> = Vec::new()
+                for x in out.clone() {
+                    if x.file.as_str() != f.as_str() {
+                        kept.push(x.clone())
+                    }
+                }
+                kept.push(Added { file: f.clone(), commit: commit.clone(), engine: engine.clone() })
+                out = take kept
+            }
+            commit = String::from(l.slice(7, l.len()))
+            engine = Vec::new()
+            adds = Vec::new()
+            continue
+        }
+        let Some(tab) = l.find("\t") else { continue }
+        let status = l.slice(0, tab)
+        let rest = l.slice(tab + 1, l.len())
+        // A rename or a copy (`R100`, `C75`) names its source and its destination: an engine
+        // file at either end is the engine's change, and a look's file it makes is an adding.
+        let moved = status.starts_with("R") || status.starts_with("C")
+        let t = if moved { rest.find("\t").unwrap_or(rest.len()) } else { rest.len() }
+        let from = rest.slice(0, t)
+        let start = if t < rest.len() { t + 1 } else { 0 }
+        let path = rest.slice(start, rest.len())
+        if path.starts_with("engine/") {
+            engine.push(String::from(path))
+        } else if from.starts_with("engine/") {
+            engine.push(String::from(from))
+        }
+        let adds_look = status == "A" || moved
+        if adds_look && path.starts_with("content/styles/") && path.ends_with(".wrela") {
+            adds.push(String::from(path.slice(15, path.len())))
+        }
+    }
+    out
+}
+
+/// Each look's adding commit, from the branch's recorded history first (`recorded`:
+/// `history.log`, its commits as they were before a squash merge folded them into one) and the
+/// live history (`live`) for a look the record lacks.
+pub fn combined(recorded: [Added], live: [Added]) -> Vec<Added> {
+    var out = Vec::from(recorded)
+    for a in live {
+        var have = false
+        for r in recorded {
+            if r.file.as_str() == a.file.as_str() {
+                have = true
+            }
+        }
+        if !have {
+            out.push(a.clone())
+        }
+    }
+    out
+}
+
+/// Whether a look's file holds G-style: its adding commit changed nothing under `engine/` (the
+/// engine's own look aside).
+pub fn holds(a: Added) -> bool {
+    a.file.as_str() == ENGINE_OWN || a.engine.is_empty()
+}

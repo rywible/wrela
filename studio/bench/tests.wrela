@@ -2,8 +2,8 @@
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
 use main::{
-    by_hand, chosen, counted, into_devices, lan_url, machine_in, measure, other_rows, parse_args,
-    playable_frame, posted, slug_of,
+    by_hand, chosen, counted, into_devices, labelled, lan_url, machine_in, measure, other_rows,
+    parse_args, playable_frame, posted, slug_of,
 }
 use report::{
     hitches, Measured, Stats, compared, date_of, doc, gates, intervals, markdown, report_json,
@@ -56,6 +56,35 @@ fn a_tier_is_one_of_the_four() {
     for s in tiered {
         assert(s.tiered, f"{s.name} has no tier")
     }
+}
+
+/// `--look` builds the scenes whose programs name a look (the vale's), and names the look's type
+/// in each row; a scene whose program names none is a usage error.
+@test
+fn a_look_is_set_on_a_program_that_names_one() {
+    let Some(o) = parse_args(texts(["--look", "styles::fixtures::Every"])) else {
+        panic("the vale in the full mask")
+    }
+    assert(o.look.as_str() == "styles::fixtures::Every")
+    let full = texts(
+        [
+            "--scene",
+            "vale-walk",
+            "--look",
+            "styles::fixtures::Every",
+            "--sustained",
+            "300",
+            "--no-docs",
+            "--no-native",
+        ],
+    )
+    assert(parse_args(full).is_some(), "the vale's walk in a look, sustained")
+    let looked = chosen(o)
+    assert(looked.len() == 1 && looked[0].name == "vale-walk", f"{looked.len()} scenes in a look")
+    assert(parse_args(texts(["--look", "x::Y", "--scene", "herd"])).is_none(), "the herd has none")
+    assert(labelled("vale-walk", "", "styles::fixtures::Every").as_str() == "vale-walk (Every)")
+    assert(labelled("vale-walk", "Low", "Cel").as_str() == "vale-walk (Low, Cel)")
+    assert(labelled("herd", "", "").as_str() == "herd")
 }
 
 @test
