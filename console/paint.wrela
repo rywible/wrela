@@ -40,7 +40,7 @@ pub struct Stage: Copy + GpuData {
     pub reveal: f32,
 }
 
-// Everything behind the cards: the artifact turning in the void.
+// The opening's room: the artifact turning in the void.
 @fragment
 pub fn stage(
     v: Vertex,
@@ -99,7 +99,8 @@ pub fn backdrop(
     // comes.
     let colour = mix(vec3(0.16), look.tint.xyz, look.tint.w)
     var stand = colour * mix(0.42, 0.18, p.y / screen.y)
-    if look.sizes.z > 0.0 {
+    // Once the hero is all in, it hides the stand-in: no blur.
+    if look.sizes.z > 0.0 && look.look.x < 1.0 {
         let at = filling(p, screen, look.sizes.zw, drift * 0.6)
         let reach = vec2(1.6 / look.sizes.z, 1.6 / look.sizes.w)
         var sum = cover.sample_level(linear, at, 0.0).xyz

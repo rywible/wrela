@@ -343,50 +343,39 @@ fn release(revision: str) -> Result<String, ToolError> {
         projects[1].tree.put(last_part(font), Source::File(rooted(font)))
     }
     // The games' images, each made by a task of its own: each game's cover, and its hero and
-    // title art if it names them.
+    // title art if it names them, shipped at `images[game * 3 + kind]` (`KINDS`).
     var jobs: Vec<(String, Size)> = Vec::new()
-    for g in c.games {
-        jobs.push((rooted(g.cover), COVER_BOX))
-        if !g.hero.is_empty() {
-            jobs.push((rooted(g.hero), HERO_BOX))
-        }
-        if !g.logo.is_empty() {
-            jobs.push((rooted(g.logo), LOGO_BOX))
+    var slots: Vec<u32> = Vec::new()
+    for g in 0..c.games.len() {
+        borrow game = c.games[g]
+        let wanted = [(game.cover, COVER_BOX), (game.hero, HERO_BOX), (game.logo, LOGO_BOX)]
+        for k in 0..3 {
+            let (path, within) = wanted[k]
+            if !path.is_empty() {
+                jobs.push((rooted(path), within))
+                slots.push(g * 3 + k)
+            }
         }
     }
     var made = all(take jobs, cover)
-    let shipped = |prefix: Text| -> Result<Shipped, ToolError> {
-        let (art, width, height) = made.remove(0)?
-        let name = String::from(f"{prefix}-{hex_sha(art).as_str().slice(from: 0, to: 16)}.webp")
-        projects[0].tree.put_bytes(name.as_str(), art)
-        Ok(Shipped { name, width, height })
+    var images: Vec<Shipped> = Vec::new()
+    for _ in 0..c.games.len() * 3 {
+        images.push(Shipped { name: String::new(), width: 0, height: 0 })
     }
-    var covers: Vec<(Shipped, Shipped, Shipped)> = Vec::new()
-    for g in c.games {
-        let none = Shipped { name: String::new(), width: 0, height: 0 }
-        let front = shipped("cover")?
-        let hero = if g.hero.is_empty() { none.clone() } else { shipped("hero")? }
-        let logo = if g.logo.is_empty() { none.clone() } else { shipped("title")? }
-        covers.push((take front, take hero, take logo))
+    for slot in slots {
+        let (art, width, height) = made.remove(0)?
+        let name = ship(mut projects[0].tree, KINDS[slot % 3], "webp", art)
+        images[slot] = Shipped { name, width, height }
     }
     // The themes, as they are.
     var theme_paths: Vec<String> = Vec::new()
-    for g in c.games {
-        if !g.theme.is_empty() {
-            theme_paths.push(rooted(g.theme))
-        }
-    }
+    for g in c.games { if !g.theme.is_empty() { theme_paths.push(rooted(g.theme)) } }
     var theme_bytes = read_files(theme_paths)?
     var themes: Vec<String> = Vec::new()
     for g in c.games {
-        if g.theme.is_empty() {
-            themes.push(String::new())
-            continue
-        }
-        let bytes = theme_bytes.remove(0)
-        let name = String::from(f"theme-{hex_sha(bytes).as_str().slice(from: 0, to: 16)}.txt")
-        projects[0].tree.put_bytes(name.as_str(), bytes)
-        themes.push(take name)
+        themes.push(if g.theme.is_empty() { String::new() } else {
+            ship(mut projects[0].tree, "theme", "txt", theme_bytes.remove(0))
+        })
     }
     // A game's headers and its redirect to the console.
     let parent_origin = origin_of(c.console.domain)
@@ -448,8 +437,14 @@ fn release(revision: str) -> Result<String, ToolError> {
     // The console's catalog and prefetch lists, and the headers and redirects that name them.
     var catalog_text = String::new()
     for g in 0..c.games.len() {
-        let (front, hero, logo) = covers[g]
-        let line = catalog_line(c.games[g], r, front, hero, logo, themes[g].as_str())
+        let line = catalog_line(
+            c.games[g],
+            r,
+            images[g * 3],
+            images[g * 3 + 1],
+            images[g * 3 + 2],
+            themes[g].as_str(),
+        )
         catalog_text.push_str(line.as_str())
         catalog_text.push_str("\n")
     }
@@ -483,10 +478,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     let tops = projects[1].tree.tops()
     projects[1].tree.put_bytes("_redirects", docs_redirects(tops, r).as_bytes())
     // Each Worker's release, under `releases/<id>/`, from its entry page.
-    var cover_name = String::new()
-    if !covers.is_empty() {
-        cover_name = covers[0].0.name.clone()
-    }
+    let cover_name = if images.is_empty() { String::new() } else { images[0].name.clone() }
     var has: Vec<String> = Vec::new()
     for e in projects[1].tree.entries {
         has.push(e.path.clone())
@@ -705,6 +697,18 @@ pub fn pages_of(bytes: take Vec<u8>) -> Result<Vec<Page>, String> {
 
 /// A game's image, from its PNG at `path` (a root path): fitted within `within` with Lanczos,
 /// encoded as WebP, and its size.
+// What `images` holds for each game, in order, as its files' names begin.
+const KINDS: [Text; 3] = ["cover", "hero", "title"]
+
+// Puts `bytes` in `tree` under a name of `prefix`, its content's hash and `extension`: the name.
+fn ship(tree: mut Tree, prefix: str, extension: str, bytes: [u8]) -> String {
+    let name = String::from(
+        f"{prefix}-{hex_sha(bytes).as_str().slice(from: 0, to: 16)}.{extension}",
+    )
+    tree.put_bytes(name.as_str(), bytes)
+    name
+}
+
 fn cover(job: take (String, Size)) -> Result<(Vec<u8>, u32, u32), ToolError> {
     let (path, within) = job
     // Decoded, resized if it doesn't fit, and encoded, each blob given back after.

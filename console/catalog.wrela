@@ -33,22 +33,18 @@ const TAGLINE: u32 = 200
 
 fn art(path: String, width: Option<u32>, height: Option<u32>, optional: bool) -> Option<Art> {
     let (Some(width), Some(height)) = (width, height) else { return None }
-    if path.is_empty() && optional && width == 0 && height == 0 {
-        return Some(Art { path: path.clone(), width, height })
+    let fine = if path.is_empty() { optional && width == 0 && height == 0 } else {
+        path_problem(path).is_none() && width > 0 && height > 0 && width <= 2048 && height <= 2048
     }
-    if path_problem(path).is_some() || width == 0 || height == 0 || width > 2048 || height > 2048 {
-        return None
-    }
-    Some(Art { path: path.clone(), width, height })
+    if fine { Some(Art { path: path.clone(), width, height }) } else { None }
 }
 
 pub fn parse(text: str) -> Option<Vec<Card>> {
     var cards: Vec<Card> = Vec::new()
     for line in text.lines() {
         // Not trimmed: the columns at its end may be empty.
-        borrow raw = text.slice(line.0, line.1)
-        if raw.trim().is_empty() { continue }
-        borrow row = if raw.ends_with("\r") { raw.slice(0, raw.len() - 1) } else { raw }
+        borrow row = text.slice(line.0, line.1)
+        if row.trim().is_empty() { continue }
         let columns = row.split("\t")
         if columns.len() != COLUMNS { return None }
         let part = |i: u32| row.slice(columns[i].0, columns[i].1).to_string()

@@ -1,5 +1,5 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
-use catalog::{Card, parse}
+use catalog::{Art, Card, parse}
 use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
@@ -48,7 +48,7 @@ const SANS_CAP: f32 = 0.72
 const HEADER_CAP: f32 = 15.0
 // The home's primary button's label, in pixels; the tagline's and the progress line's.
 const CALL: f32 = 16.0
-const TAGLINE: f32 = 19.0
+const TAGLINE_SIZE: f32 = 19.0
 const PROGRESS: f32 = 15.0
 // The title art's box at most, in logical pixels.
 const LOGO_WIDE: f32 = 600.0
@@ -174,15 +174,20 @@ fn fetched() -> Fetched {
     }
 }
 
+// What a picture lends the home besides itself: a cover its small copy and its colour, a hero its
+// colour, a title art nothing.
+enum Lends: Copy + Eq { Both, Colour, Nothing }
+
 // A picture to draw over the backdrop this frame, in device pixels: whose art (a cover, or the
-// title art), the game, where, how opaque and how bright.
-enum Art: Copy + Eq { Cover, Logo }
+// title art), the game, where, how opaque, its corners' radius and how bright.
+enum Layer: Copy + Eq { Cover, Logo }
 
 struct Drawn: Copy {
-    kind: Art,
+    layer: Layer,
     index: u32,
     rect: Rect,
     alpha: f32,
+    radius: f32,
     bright: f32,
 }
 
@@ -717,9 +722,9 @@ fn palette(bytes: Vec<u8>, width: u32, height: u32) -> vec3 {
     if top <= 0.0 { vec3(1.0) } else { sum / top }
 }
 
-// Fetches and decodes `art` into `f` while it's `wanted`, and lets go of it when it isn't: whether
-// it changed what shows. Art with no path is never fetched.
-fn arrive(f: mut Fetched, art: catalog::Art, wanted: bool) -> bool {
+// Fetches and decodes `art` into `f` while it's `wanted`, with what it `lends`, and lets go of it
+// when it isn't: whether it changed what shows. Art with no path is never fetched.
+fn arrive(f: mut Fetched, art: Art, wanted: bool, lends: Lends) -> bool {
     if !wanted || art.path.is_empty() {
         let had = f.image.is_some()
         f.image = None
@@ -742,17 +747,19 @@ fn arrive(f: mut Fetched, art: catalog::Art, wanted: bool) -> bool {
     if let Ok(bytes) = result {
         // The host decodes only art of the size the catalog says.
         if bytes.len() == art.width * art.height * 4 {
-            f.tint = palette(bytes, art.width, art.height)
-            let (w, h) = small_size(art.width, art.height)
-            var small = texture::<Rgba8>(width: w, height: h)
-            small.write(
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-                bytes: shrunk(bytes, art.width, art.height),
-            )
-            f.small = Some(take small)
+            if lends != Lends::Nothing { f.tint = palette(bytes, art.width, art.height) }
+            if lends == Lends::Both {
+                let (w, h) = small_size(art.width, art.height)
+                var small = texture::<Rgba8>(width: w, height: h)
+                small.write(
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                    bytes: shrunk(bytes, art.width, art.height),
+                )
+                f.small = Some(take small)
+            }
             var image = texture::<Rgba8>(width: art.width, height: art.height)
             image.write(x: 0, y: 0, width: art.width, height: art.height, bytes: bytes)
             f.image = Some(take image)
@@ -837,6 +844,7 @@ fn update(s: mut Console) {
                 Ok(cards) => {
                     s.cards = cards.clone()
                     s.prefetched = Vec::filled(cards.len(), value: false)
+                    s.tiles_lit = Vec::filled(cards.len(), value: 0.0)
                     for _ in 0..cards.len() {
                         s.covers.push(fetched())
                         s.heroes.push(fetched())
@@ -858,11 +866,12 @@ fn update(s: mut Console) {
     // Only covers near the selection hold textures or requests, and only the chosen game's hero
     // and title art (and the one easing out's).
     for i in 0..s.cards.len() {
-        let card = s.cards[i].clone()
+        borrow card = s.cards[i]
         let chosen = i == s.selected || i == s.title_shown
-        if arrive(mut s.covers[i], card.cover, near_cover(i, s.selected)) { s.dirty = true }
-        if arrive(mut s.heroes[i], card.hero, chosen) { s.dirty = true }
-        if arrive(mut s.logos[i], card.logo, chosen) { s.dirty = true }
+        let near = near_cover(i, s.selected)
+        if arrive(mut s.covers[i], card.cover, near, Lends::Both) { s.dirty = true }
+        if arrive(mut s.heroes[i], card.hero, chosen, Lends::Colour) { s.dirty = true }
+        if arrive(mut s.logos[i], card.logo, chosen, Lends::Nothing) { s.dirty = true }
     }
     if let Some(Ok(bytes)) = poll(mut s.music_load) {
         s.music = bytes.is_empty() || bytes[0] != 0
@@ -1167,8 +1176,11 @@ fn line_top(s: Console, face: Face, size: f32, middle: f32) -> f32 {
     middle - (s.fonts.font(face).ascender - cap * 0.5) * size
 }
 
-fn button_width(s: Console, label: str) -> f32 {
-    max(88.0, width_of(s, label, LABEL, Face::Sans) + 36.0)
+// A button's width for `label`: the primary one's, its label larger, wider still.
+fn button_width(s: Console, label: str, primary: bool = false) -> f32 {
+    if primary { max(132.0, width_of(s, label, CALL, Face::Sans) + 44.0) } else {
+        max(88.0, width_of(s, label, LABEL, Face::Sans) + 36.0)
+    }
 }
 
 // A button: the primary one solid, the rest quiet behind a hairline. Under the pointer it
@@ -1382,7 +1394,7 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         above = middle - size * SANS_CAP * 0.5
     }
     if !card.tagline.is_empty() {
-        let size = fitted(s, card.tagline, TAGLINE, room, Face::Sans)
+        let size = fitted(s, card.tagline, TAGLINE_SIZE, room, Face::Sans)
         let middle = above - (if above == top { 30.0 } else { 17.0 }) - size * SANS_CAP * 0.5
         let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
         text(mut s, card.tagline, size, at, vec4(INK.xyz, 0.94 * fade))
@@ -1391,13 +1403,12 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     // The title art, standing on what's below it; until it comes, the title in its place.
     let bottom = above - 26.0
     let room_for = logo_box(w, h, margin)
-    let logo = s.cards[s.title_shown].logo.clone()
-    let has_logo = s.logos[s.title_shown].image.is_some()
-    if has_logo {
-        let size = fit_within(vec2(f32(logo.width), f32(logo.height)), room_for)
+    if s.logos[s.title_shown].image.is_some() {
+        let size = fit_within(vec2(f32(card.logo.width), f32(card.logo.height)), room_for)
         let r = Rect::new(margin, bottom - size.y + lift, size.x, size.y)
         let alpha = fade * s.logo_in * s.reveal
-        s.drawn.push(Drawn { kind: Art::Logo, index: s.title_shown, rect: r, alpha, bright: 1.0 })
+        let index = s.title_shown
+        s.drawn.push(Drawn { layer: Layer::Logo, index, rect: r, alpha, radius: 0.0, bright: 1.0 })
     }
     if s.logo_in < 1.0 {
         let size = fitted(s, card.title, 56.0, room_for.x, Face::Sans)
@@ -1412,9 +1423,7 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         let a = acts[i]
         let label = action_label(a, s.play_intent.is_some() && i == 0, continuing)
         let primary = i == 0
-        let size = if primary { CALL } else { LABEL }
-        let width = max(button_width(s, label), width_of(s, label, size, Face::Sans) + 44.0)
-        let r = Rect::new(at, top, if primary { max(width, 132.0) } else { width }, 44.0)
+        let r = Rect::new(at, top, button_width(s, label, primary: primary), 44.0)
         button(mut s, a, r, 1, label, primary: primary)
         at = r.right() + 10.0
     }
@@ -1438,7 +1447,6 @@ fn shelf(s: mut Console, w: f32, margin: f32, top: f32, tile_h: f32) {
     let offset = shelf_offset(s.selected, width, gap, w, margin)
     s.shelf = mix(s.shelf, offset, k)
     if abs(s.shelf - offset) > 0.05 { s.settled = false }
-    if s.tiles_lit.len() != s.cards.len() { s.tiles_lit = Vec::filled(s.cards.len(), 0.0) }
     for i in 0..s.cards.len() {
         let r = Rect::new(margin + f32(i) * (width + gap) - s.shelf, top, width, tile_h)
         if r.right() < 0.0 || r.x > w { continue }
@@ -1451,7 +1459,10 @@ fn shelf(s: mut Console, w: f32, margin: f32, top: f32, tile_h: f32) {
         let _ = control(mut s, Action::Game { index: i }, r, 2, Kind::Tile)
         let bright = mix(0.55, 1.0, s.tiles_lit[i])
         if s.covers[i].image.is_some() {
-            s.drawn.push(Drawn { kind: Art::Cover, index: i, rect: r, alpha: s.reveal, bright })
+            let alpha = s.reveal
+            s.drawn.push(
+                Drawn { layer: Layer::Cover, index: i, rect: r, alpha, radius: 6.0, bright },
+            )
         } else {
             // No cover yet: its title on a quiet tile.
             rect(mut s, r, vec4(SECONDARY.xyz, 0.85), 6.0)
@@ -1798,7 +1809,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         let logo = if s.logos[s.title_shown].image.is_some() { 1.0 } else { 0.0 }
         s.hero_in = if hero == 0.0 { 0.0 } else { mix(s.hero_in, 1.0, ease(4.0)) }
         s.logo_in = if logo == 0.0 { 0.0 } else { mix(s.logo_in, 1.0, ease(6.0)) }
-        if abs(s.hero_in - hero) > 0.002 || abs(s.logo_in - logo) > 0.002 { eased = false }
+        // Come in, they're in: the backdrop stops blurring what the hero hides.
+        if abs(s.hero_in - hero) <= 0.002 { s.hero_in = hero }
+        if abs(s.logo_in - logo) <= 0.002 { s.logo_in = logo }
+        if s.hero_in != hero || s.logo_in != logo { eased = false }
     }
     drive_theme(mut s, phase.library)
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
@@ -1904,9 +1918,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         let hero_size = if s.heroes[i].image.is_some() {
             vec2(f32(s.cards[i].hero.width), f32(s.cards[i].hero.height))
         } else { vec2(0.0) }
-        let cover = s.cards[i].cover.clone()
         let thumb = if s.covers[i].small.is_some() {
-            let (w, h) = small_size(cover.width, cover.height)
+            let (w, h) = small_size(s.cards[i].cover.width, s.cards[i].cover.height)
             vec2(f32(w), f32(h))
         } else { vec2(0.0) }
         let look = Backdrop {
@@ -1916,7 +1929,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 phase.library * mix(0.4, 1.0, fade),
                 -s.sway * 10.0 * s.zoom,
             ),
-            tint: vec4(s.tint.xyz, s.tint.w),
+            tint: s.tint,
             screen: vec4(
                 screen,
                 if aspect >= 1.2 { 0.62 } else { 1.2 },
@@ -1934,9 +1947,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         for d in s.drawn {
             let r = snapped(d.rect, s.zoom)
             let rect = vec4(r.x, r.y, r.w, r.h)
-            let radius = if d.kind == Art::Cover { 6.0 * s.zoom } else { 0.0 }
-            let look = Picture { rect, look: vec4(d.alpha, radius, d.bright, 0.0) }
-            if d.kind == Art::Cover {
+            let look = Picture { rect, look: vec4(d.alpha, d.radius * s.zoom, d.bright, 0.0) }
+            if d.layer == Layer::Cover {
                 if let Some(t) = s.covers[d.index].image {
                     lay_picture(pass, screen, t, s.linear, look)
                 }
@@ -2041,8 +2053,6 @@ fn trace_room(
         time: if motion { clock_at(s.presentation, opening: intro) } else { 7.0 },
         // Dimmer in the room, as far off as it stands.
         light: if phase.settled { 0.72 } else { 1.0 },
-        // A tint that takes the light nowhere: its colour changes nothing.
-        tint: vec4(0.0),
         rays,
         columns: grid.0,
     }
@@ -2092,15 +2102,16 @@ fn drive_theme(s: mut Console, library: f32) {
     let wanted = if s.music && library >= 1.0 && browsing(s.step) && s.closing.is_none() {
         1.0
     } else { 0.0 }
-    if s.theme_sent != Some(chosen) && s.theme.is_some() {
-        if s.voice_level > 0.0 {
-            if theme::level(mut s.voice, 0.0) {
-                s.voice_level = 0.0
-                s.quiet_at = s.presentation
+    if s.theme_sent != Some(chosen) {
+        if let Some(t) = s.theme {
+            if s.voice_level > 0.0 {
+                if theme::level(mut s.voice, 0.0) {
+                    s.voice_level = 0.0
+                    s.quiet_at = s.presentation
+                }
+            } else if s.presentation - s.quiet_at >= QUIET_SECONDS {
+                if theme::send(mut s.voice, t) { s.theme_sent = Some(chosen) }
             }
-        } else if s.presentation - s.quiet_at >= QUIET_SECONDS {
-            let Some(t) = s.theme else { return }
-            if theme::send(mut s.voice, t) { s.theme_sent = Some(chosen) }
         }
     }
     let level = if s.theme_sent == Some(chosen) { wanted } else { 0.0 }
@@ -2239,7 +2250,6 @@ fn same_look(a: Artifact, b: Artifact) -> bool {
         a.place == b.place &&
         a.time == b.time &&
         a.light == b.light &&
-        a.tint == b.tint &&
         a.rays == b.rays
 }
 

@@ -1,5 +1,5 @@
 // The room the opening plays in: an endless dark, and the artifact, a four-dimensional cube,
-// turning in it. The CPU and the GPU place and project it with the same code.
+// turning in it, which the CPU places and the tracer sees through one camera.
 
 // The camera: where it stands and looks, and the tangent of half its vertical view.
 pub struct Camera: Copy + GpuData {
@@ -31,8 +31,9 @@ pub fn basis(c: Camera) -> (vec3, vec3, vec3) {
     (forward, side, cross(side, forward))
 }
 
-// A world point on the screen: pixels from the top left, and its distance along the view.
-pub fn project(c: Camera, p: vec3) -> vec3 {
+// A world point on the screen: pixels from the top left, and its distance along the view. The
+// tests check the camera's rays against it.
+fn project(c: Camera, p: vec3) -> vec3 {
     let (forward, side, up) = basis(c)
     let d = p - c.eye.xyz
     let depth = max(dot(d, forward), 0.001)
