@@ -1197,15 +1197,17 @@ fn store_progress(s: mut Lab, dt: f32) {
         s.saving = None
         s.storing.stored(ok: result.is_ok())
     }
+    // Returning to the console, its link's store is the one writer: a change waits, unsaved, and
+    // is stored after if that store fails and the game stays.
     let (loads, stores) = s.storing.due(
         dt,
         loading: s.loading.is_some(),
-        saving: s.saving.is_some(),
+        saving: s.saving.is_some() || s.console.returning,
     )
     if loads {
         s.loading = Some(load(SAVE))
     }
-    if stores && !s.console.returning {
+    if stores {
         s.saving = Some(store(SAVE, progress::encode(s.progress)))
     }
 }
@@ -1722,6 +1724,12 @@ fn a_load_or_a_store_that_failed_is_made_again_after_a_wait() {
     assert(st.due(0.016, loading: false, saving: true) == (false, false), "one store at a time")
     st.stored(ok: true)
     assert(st.due(0.016, loading: false, saving: false) == (false, true), "the newer runs")
+    // Returning to the console counts as a store under way: a change made then stays unsaved, so
+    // it's stored if the return's store fails and the game stays.
+    st.stored(ok: true)
+    st.unsaved = true
+    assert(st.due(0.016, loading: false, saving: true) == (false, false) && st.unsaved, "returning")
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "stored after")
     st.stored(ok: false)
     assert(st.unsaved, "a failed store's runs are unsaved again")
     assert(st.due(1.0, loading: false, saving: false) == (false, false), "and wait")
