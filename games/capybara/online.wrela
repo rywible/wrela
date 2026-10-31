@@ -449,13 +449,14 @@ fn unwait(o: mut Online, hash: Vec<u8>) {
 
 /// A run the player has just finished (`r`, theirs and verified): it waits to be posted if it
 /// may be, when it beats the account's place, or the account's place isn't known. A run made
-/// while the game is linked to an account that doesn't post its best runs doesn't wait.
+/// while the game is linked to an account that doesn't post its best runs doesn't wait; one made
+/// while what the account chose isn't known yet does.
 pub fn finished(o: mut Online, r: Replay) {
     let hash = fingerprint(r)
     if r.who != YOU || posted(o, hash) || !beats(o, r) {
         return
     }
-    if o.linked && o.account.signed_in && !o.account.post_best {
+    if o.linked && o.account.signed_in && o.account.posting_known && !o.account.post_best {
         return
     }
     wait(mut o, r.clone())
@@ -1117,6 +1118,7 @@ fn signed_in() -> Online {
         name: String::from(ME),
         token: Vec::from([3; 32]),
         may_post: true,
+        posting_known: true,
     }
     o
 }
@@ -1334,6 +1336,7 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
         token: Vec::from([3; 32]),
         may_post: true,
         post_best: true,
+        posting_known: true,
     }
     pump(mut o)
     assert(o.asks.is_empty() && o.fetches.len() == 1, "its place asked")

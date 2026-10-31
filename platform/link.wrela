@@ -19,7 +19,9 @@ use wire::{Found, Place}
 /// makes public: until then the game shows posting.wrela's words, and asks `Consent` once the
 /// player chooses Post), whether it posts its best runs, and whether its recovery codes are still
 /// to be saved (the console holds them on its account page until they are: after a post the game
-/// may show posting.wrela's `SAVE_CODES`).
+/// may show posting.wrela's `SAVE_CODES`). `may_post` and `post_best` are what the server said only
+/// once `posting_known`: until then (the console hasn't heard, or couldn't ask) they're unknown,
+/// never a choice not to post.
 pub struct Account: Clone + Eq + Serialize {
     pub signed_in: bool,
     pub name: String,
@@ -27,6 +29,7 @@ pub struct Account: Clone + Eq + Serialize {
     pub may_post: bool = false,
     pub post_best: bool = false,
     pub save_codes: bool = false,
+    pub posting_known: bool = false,
 }
 
 /// What a game may ask.
@@ -115,6 +118,7 @@ fn the_link_reads_back_and_refuses_what_isnt_one() {
     let Some(back) = to_game(save(call)) else { panic("a call") }
     assert(back.account.name == call.account.name && back.account.token == call.account.token)
     assert(!back.account.may_post && !back.account.save_codes, "nothing allowed unless said")
+    assert(!back.account.posting_known, "unknown unless said")
     let Answer::Verified { place, .. } = back.answer else { panic("its answer") }
     assert(place == 2)
     let ask = FromGame { ask: Ask::Upload { token: Vec::from([1, 2]), replay: Vec::from([9; 40]) } }

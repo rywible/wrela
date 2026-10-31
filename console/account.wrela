@@ -117,6 +117,8 @@ enum Act: Copy + Eq {
 /// `Other`.
 enum Purpose: Copy + Eq {
     Other,
+    /// What the account chose of posting (`Request::Posting`): its failure is said to no one.
+    Posting,
     Name,
     Token,
     Export,
@@ -125,6 +127,14 @@ enum Purpose: Copy + Eq {
     Consent,
     /// A game's `Ask::Consent`, carried to the server: its answer goes back to the game.
     GameConsent,
+}
+
+/// Whether the console knows what the account chose of posting: not yet (or the last ask failed),
+/// asked, or told.
+enum Known: Copy + Eq {
+    Unknown,
+    Asking,
+    Known,
 }
 
 /// A game the console shows, and the call open to it.
@@ -183,9 +193,11 @@ pub struct Accounts {
     /// The page a legal page goes back to, and the control whose request is under way.
     back: Page,
     doing: Option<Act>,
-    /// Posting, as the server last said: whether it was asked, whether the account has agreed to
-    /// what posting makes public, and whether it posts its best runs.
-    posting_asked: bool,
+    /// Posting, as the server last said: whether it's known (and when to ask again after an ask
+    /// failed), whether the account has agreed to what posting makes public, and whether it posts
+    /// its best runs.
+    posting: Known,
+    posting_at: f32,
     may_post: bool,
     post_best: bool,
     /// What posting shares, shown before "Post my best runs" is first turned on: its box.
@@ -240,7 +252,8 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         of_age: false,
         back: Page::Choose,
         doing: None,
-        posting_asked: false,
+        posting: Known::Unknown,
+        posting_at: 0.0,
         may_post: false,
         post_best: false,
         consent_best: false,
@@ -270,7 +283,7 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
 
 fn signed_out(a: mut Accounts) {
     a.csrf.clear()
-    a.posting_asked = false
+    a.posting = Known::Unknown
     a.may_post = false
     a.post_best = false
     a.codes.clear()
@@ -334,6 +347,12 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     a.busy = false
     if purpose == Purpose::Game {
         game_replied(mut a, reply)
+        return
+    }
+    if purpose == Purpose::Posting {
+        if posting_answered(mut a, reply) {
+            give_game_account(mut a)
+        }
         return
     }
     if purpose == Purpose::GameConsent {
@@ -511,7 +530,20 @@ fn posting_read(a: mut Accounts, reply: Reply) -> bool {
     let Reply::Posting { agreed, best_runs } = reply else { return false }
     a.may_post = agreed
     a.post_best = best_runs
+    a.posting = Known::Known
     true
+}
+
+/// The answer to `Request::Posting`: whether it said what the account chose. If not (it couldn't
+/// be reached, or refused), it stays unknown, asked again a little later, and is never taken as a
+/// choice not to post.
+fn posting_answered(a: mut Accounts, reply: Reply) -> bool {
+    if posting_read(mut a, reply) {
+        return true
+    }
+    a.posting = Known::Unknown
+    a.posting_at = a.time + RETRY
+    false
 }
 
 // ---- the game shown ------------------------------------------------------------------------
@@ -562,6 +594,7 @@ fn linked(a: Accounts) -> Linked {
         may_post: a.may_post,
         post_best: a.post_best,
         save_codes: !a.codes.is_empty(),
+        posting_known: a.posting == Known::Known,
     }
 }
 
@@ -765,6 +798,13 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
 
 // ---- each frame ----------------------------------------------------------------------------
 
+/// Whether what the account chose of posting is to be asked at `time`: it's signed in, the server
+/// can be reached, and it isn't known or asked, nor waiting after a failed ask.
+fn wants_posting(a: Accounts, time: f32) -> bool {
+    let whole = a.me.signed_in && !a.me.must_add_passkey
+    a.online && a.connected && whole && a.posting == Known::Unknown && time >= a.posting_at
+}
+
 /// Polls what the account waits on, at the host's time `time`: whether anything it shows changed.
 pub fn update(a: mut Accounts, time: f32) -> bool {
     let dt = max(time - a.time, 0.0)
@@ -773,11 +813,10 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
         request(mut a, Request::Me, Purpose::Other)
     }
-    // What the account chose of posting, once it's signed in.
-    let whole = a.me.signed_in && !a.me.must_add_passkey
-    if a.online && a.connected && whole && !a.posting_asked {
-        a.posting_asked = true
-        request(mut a, Request::Posting, Purpose::Other)
+    // What the account chose of posting, once it's signed in: asked until it's said.
+    if wants_posting(a, time) {
+        a.posting = Known::Asking
+        request(mut a, Request::Posting, Purpose::Posting)
     }
     var i = 0
     while i < a.waiting.len() {
@@ -2096,4 +2135,23 @@ fn a_games_consent_is_its_players_choice_recorded_without_the_consoles_page() {
     assert(!posting_read(mut a, Reply::Done) && !linked(a).may_post, "not a choice")
     assert(posting_read(mut a, Reply::Posting { agreed: true, best_runs: true }))
     assert(linked(a).may_post && linked(a).post_best && !a.open, "agreed, nothing opened")
+}
+
+@test
+fn posting_unknown_is_asked_until_its_known_and_never_an_opt_out() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    a.connected = true
+    assert(wants_posting(a, 0.0) && !linked(a).posting_known, "asked, unknown meanwhile")
+    a.posting = Known::Asking
+    assert(!wants_posting(a, 0.0), "once at a time")
+    // The ask failed (unreachable, refused): unknown again, and asked again after a while.
+    a.time = 10.0
+    assert(!posting_answered(mut a, Reply::Refused { why: String::from("Try again.") }))
+    assert(a.posting == Known::Unknown && !linked(a).posting_known && a.message.is_empty())
+    assert(!wants_posting(a, 10.0) && wants_posting(a, 10.0 + RETRY), "after a while")
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
+    let l = linked(a)
+    assert(l.posting_known && l.may_post && !l.post_best && !wants_posting(a, 99.0), "known")
 }
