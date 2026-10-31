@@ -1,0 +1,10 @@
+# The painterly look (content/styles/painterly.wrela, docs/plan-world-class-3.md §D5) on the
+# hardware GPU: its strokes' direction on a sphere (along its latitude or longitude), and their
+# length on a flat plane (`STROKE_PX`). The fixture (scenes/, a package of its own, not a workspace
+# member) draws each as a panel (`--set PANEL=<n>`) through the engine's shape and marks; the tool
+# tests build it, draw it through `std::tool::drive` and read its screen.
+[package]
+name = "style_painterly_tests"
+
+[dependencies]
+hosts = { workspace = true }

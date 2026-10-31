@@ -39,25 +39,43 @@
 // `--quality` measures each shot instead, as the lookdev instrument (quality.wrela,
 // docs/lookdev.md): play against a frozen-time reference, its flicker, pop and trail, into
 // `quality.json`; `--controls` adds the instrument's negative controls (`controls.json`).
+//
+// `--runs <n>` measures each shot n times, each measure the median of them (a shot's flicker
+// differs by up to a fifth from one run to the next); with `--bars` and `--near <share>`, only a
+// shot whose first run is within that share of a bar is run again. `--retrail` measures the trails
+// of the run in the output directory again from the frames its fast run kept, nothing drawn.
+//
+// `--look <type>` builds the package in that look first (`wrela build --set LOOK=<type>`, into
+// build/looks), and measures or renders that build. `--bars <dir>` holds each shot measured to the
+// bars of the run in `<dir>` (its `quality.json`, the physical look's): flicker and pop at most
+// 1.5 times its, trail at most its plus a pixel (docs/lookdev.md, "Judging a style"), printed and
+// written as `bars.json`; with `--held`, the run already in the output directory is held to them,
+// nothing measured.
 
 use shots::{
-    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, chosen,
-    keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
+    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, WS, build_of, check_line,
+    chosen, keys, lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
+use measures::{luma, trail}
 use quality::{
-    CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, measure, measured_json, row,
+    CONTROL_SHOT, Control, DETAIL_SHOT, Driven, FAST_POLL, HEADER, json_list, judged, lit, measure,
+    measured_json, row,
 }
 use std::input::Script
 use std::io::print
-use std::json::Doc
+use std::json::{Doc, TOP, parse}
 use std::tool::{Task, ToolError, args, spawn}
+use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::files
 use std::tool::image
+use std::tool::toolchain
 use toolkit::driven::untrapped
 use toolkit::page::run_page
-use toolkit::whole::{copy_file, read_file, write_file, write_png}
+use toolkit::whole::{
+    blob_of, chunked, copy_file, data_bytes, joined, read_file, write_file, write_png,
+}
 
 /// How long a page's clip may take, in seconds.
 const CLIP_TIMEOUT: f64 = 600.0
@@ -73,8 +91,16 @@ pub struct Still: Clone {
     pub capture: bool,
 }
 
-/// `s`'s still, rendered and written: the frame `SETTLE_FRAMES` in, or with `capture` the frame
-/// that prints `STILL`. The PNG's path.
+/// The screen as it is (no frame drawn for it): its width, height and RGBA.
+fn screen_of(b: drive::Build) -> Result<(u32, u32, Vec<u8>), ToolError> {
+    var seen = drive::steps(b, [Step::Capture], timeout: 600.0).wait()?
+    let screen = seen.captures.remove(0)
+    Ok((screen.width, screen.height, joined(data_bytes(take screen.rgba)?)))
+}
+
+/// `s`'s still, rendered and written: the frame `SETTLE_FRAMES` in (or, for a shot black then,
+/// `SETTLE_FRAMES` after it shows), or with `capture` the frame that prints `STILL`. The PNG's
+/// path.
 pub fn still(s: take Still) -> Result<String, ToolError> {
     var options = drive::gpu()
     options.width = s.width
@@ -104,10 +130,23 @@ pub fn still(s: take Still) -> Result<String, ToolError> {
         let frames = [Step::Frames(SETTLE_FRAMES + 1, s.keys.clone())]
         let _ = untrapped("the frames", drive::steps(b, frames, timeout: 600.0).wait()?)?
     }
-    var seen = drive::steps(b, [Step::Capture], timeout: 600.0).wait()?
+    var shown = screen_of(b)?
+    // A shot whose content hasn't arrived by then (black: a far place streams in) is run on until
+    // it shows (`Driven::shown`), then settled as long again; a shot shown in time is the frame it
+    // always was.
+    if !s.capture && !lit(shown.2) {
+        var d = Driven { b, script: s.keys.clone(), frame: 0, width: s.width }
+        if let Err(e) = d.shown(step: FAST_POLL) {
+            let _ = drive::close(b).wait()
+            return Err(take e)
+        }
+        print(f"lookbook: {s.png} shown {d.frame} frames late; settled {SETTLE_FRAMES} more")
+        let _ = d.run(SETTLE_FRAMES)?
+        shown = screen_of(b)?
+    }
     let _ = drive::close(b).wait()
-    let screen = seen.captures.remove(0)
-    let img = image::Image { width: screen.width, height: screen.height, rgba: take screen.rgba }
+    let (width, height, rgba) = take shown
+    let img = image::Image { width, height, rgba: Data::Blob(blob_of(chunked(take rgba))?) }
     write_png(take img, s.png.as_str())?
     Ok(take s.png)
 }
@@ -127,10 +166,307 @@ pub fn clip(build: str, keys: Script, webm: str, workers: u32) -> Result<(), Too
     copy_file(f"{build}/results/clip.webm", webm)
 }
 
+/// The median of `v`.
+fn median(v: take Vec<f64>) -> f64 {
+    var w = take v
+    w.sort_by(|a: f64, b: f64| a < b)
+    w[w.len() / 2]
+}
+
+/// The median of each of `runs`' flicker, pop, still pop, trail, PSNR, SSIM and sharpness (the
+/// first run's for the rest).
+pub fn medians(runs: Vec<quality::Measured>) -> quality::Measured {
+    var psnr: Vec<f64> = Vec::new()
+    var ssim: Vec<f64> = Vec::new()
+    var sharpness: Vec<f64> = Vec::new()
+    var flicker: Vec<f64> = Vec::new()
+    var pop: Vec<f64> = Vec::new()
+    var still_pop: Vec<f64> = Vec::new()
+    var trail: Vec<f64> = Vec::new()
+    for m in runs {
+        psnr.push(m.psnr)
+        ssim.push(m.ssim)
+        sharpness.push(m.sharpness)
+        flicker.push(m.flicker)
+        pop.push(m.pop)
+        still_pop.push(m.still_pop)
+        trail.push(m.trail)
+    }
+    quality::Measured {
+        psnr: median(take psnr),
+        ssim: median(take ssim),
+        sharpness: median(take sharpness),
+        flicker: median(take flicker),
+        pop: median(take pop),
+        still_pop: median(take still_pop),
+        trail: median(take trail),
+        ..runs[0].clone(),
+    }
+}
+
+/// `program` built in look `look` (`--set LOOK=<look>`) into build/looks: the build's directory.
+fn built_in(program: str, look: str) -> Result<String, ToolError> {
+    let parts = look.split("::")
+    let (a, b) = parts[parts.len() - 1]
+    let names = program.split("/")
+    let (pa, pb) = names[names.len() - 1]
+    let out = String::from(f"{WS}/build/looks/{program.slice(pa, pb)}-{look.slice(a, b)}")
+    print(f"building {program} in {look} into {out}")
+    build_in(program, look, out.as_str())?
+    Ok(out)
+}
+
+/// `program` built into `out` in look `look` (`wrela build --set LOOK=<look>`, the
+/// `engine::style` the program names), its errors printed if it doesn't build.
+pub fn build_in(program: str, look: str, out: str) -> Result<(), ToolError> {
+    var options = toolchain::options()
+    options.timeout = 600.0
+    options.set.push(toolchain::Set { name: String::from("LOOK"), value: String::from(look) })
+    let made = toolchain::build(program, out, options).wait()?
+    if !made.ok {
+        for d in made.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{program} didn't build in {look}"))
+    }
+    Ok(())
+}
+
+/// The bars a run is held to from the physical look's measures (`base`: flicker, pop, trail):
+/// flicker and pop at most 1.5 times its, trail at most its plus a pixel (docs/lookdev.md,
+/// **proposed**).
+pub fn bars(base: (f64, f64, f64)) -> (f64, f64, f64) {
+    let (bf, bp, bt) = base
+    (1.5 * bf, 1.5 * bp, bt + 1.0)
+}
+
+/// Whether a look's measures (`flicker`, `pop`, `trail`) hold the bars from `base` (`bars`).
+pub fn holds(flicker: f64, pop: f64, trail: f64, base: (f64, f64, f64)) -> (bool, bool, bool) {
+    let (mf, mp, mt) = bars(base)
+    (flicker <= mf, pop <= mp, trail <= mt)
+}
+
+/// Each shot's flicker, pop and trail in a run's `quality.json` text (`text`): (shot, the three).
+pub fn measures_in(text: str) -> Vec<(String, f64, f64, f64)> {
+    var out: Vec<(String, f64, f64, f64)> = Vec::new()
+    let Some(d) = parse(text) else { return out }
+    for k in 0..d.count(TOP) {
+        let Some(e) = d.at(TOP, k) else { continue }
+        let num = |key: str| match d.get(e, key) {
+            Some(v) => d.num(v).unwrap_or(0.0),
+            None => 0.0,
+        }
+        let shot = match d.get(e, "shot") {
+            Some(v) => d.text(v).unwrap_or(String::new()),
+            None => String::new(),
+        }
+        out.push((take shot, num("flicker"), num("pop"), num("trail")))
+    }
+    out
+}
+
+/// The shots of `ran` (this run's `quality.json` text) held to the bars of the run in `dir`: a
+/// table printed and `bars.json` written into `out`. Whether every shot held them (a shot the
+/// baseline lacks misses; no measures either side is an error).
+fn barred(ran: str, dir: str, out: str) -> Result<bool, ToolError> {
+    let at = String::from(f"{WS}/{dir}/quality.json")
+    let base = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    let bases = measures_in(base.as_str())
+    if bases.is_empty() || measures_in(ran).is_empty() {
+        return Err(ToolError::new(f"no measures to hold: {at} or this run's quality.json"))
+    }
+    print("| Shot | flicker ×10⁻⁶ (bar) | pop (bar) | trail px (bar) | |\n|---|---|---|---|---|")
+    var lines: Vec<String> = Vec::new()
+    var all = true
+    for (shot, f, p, t) in measures_in(ran) {
+        var found: Option<(f64, f64, f64)> = None
+        for (bs, bf, bp, bt) in bases {
+            if bs.as_str() == shot.as_str() {
+                found = Some((bf, bp, bt))
+            }
+        }
+        let Some(b) = found else {
+            print(f"| {shot} | (no baseline) | | | misses |")
+            all = false
+            continue
+        }
+        let (bf, bp, bt) = bars(b)
+        let (hf, hp, ht) = holds(f, p, t, b)
+        let ok = hf && hp && ht
+        all = all && ok
+        print(
+            f"| {shot} | {f * 1.0e6:.2} ({bf * 1.0e6:.2}) | {p:.4} ({bp:.4}) | {t:.0} ({bt:.0}) | {if ok { "holds" } else { "misses" }} |",
+        )
+        lines.push(
+            String::from(
+                f"{{\"shot\": \"{shot}\", \"flicker\": {f}, \"flicker_bar\": {bf}, \"pop\": {p}, \"pop_bar\": {bp}, \"trail\": {t}, \"trail_bar\": {bt}, \"holds\": {ok}}}",
+            ),
+        )
+    }
+    write_file(f"{out}/bars.json", Vec::from([Vec::from(json_list(lines).as_bytes())]))?
+    Ok(all)
+}
+
+/// Shot `name`'s measures in a baseline's (`measures_in`), if it has them.
+fn base_of(bases: [(String, f64, f64, f64)], name: str) -> Option<(f64, f64, f64)> {
+    for (s, f, p, t) in bases {
+        if s.as_str() == name {
+            return Some((f, p, t))
+        }
+    }
+    None
+}
+
+/// Whether a shot's first run (`m`: flicker, pop, trail) leaves it undecided against the bars
+/// from `base` (`bars`), so its other runs decide it: decided where a measure is more than `near`
+/// of its bar over it (a miss, whatever the others), or every one more than `near` under (a hold);
+/// a trail, in whole pixels, by `near` of its bar or a pixel. A shot the baseline lacks never is.
+/// (On the cel, painterly, ink and fitted cel looks' records, a first run decided 13, 15, 20 and
+/// 13 of the 20 shots, each as its median of three did.)
+pub fn near_bars(m: (f64, f64, f64), base: Option<(f64, f64, f64)>, near: f32) -> bool {
+    let Some(b) = base else { return true }
+    let (mf, mp, mt) = bars(b)
+    let (f, p, t) = m
+    let n = f64(near)
+    // (Less a hair: `near` is an f32's 0.2, a little over it as an f64.)
+    let tw = max(n * mt, 1.0) - 1.0e-6
+    let over = f > mf * (1.0 + n) || p > mp * (1.0 + n) || t >= mt + tw
+    let under = f < mf * (1.0 - n) && p < mp * (1.0 - n) && t <= mt - tw
+    !(over || under)
+}
+
+/// Every shot held its bars, said; or a miss, failing the tool (its table and `bars.json` say
+/// which).
+fn held_or_missed(all: bool) -> Result<(), ToolError> {
+    if all {
+        print("every shot holds its bars")
+        return Ok(())
+    }
+    Err(ToolError::new("a shot misses its bars (bars.json)"))
+}
+
+/// A run's `quality.json` text read back: each shot's name, its standing, and its measures (those
+/// `measured_json` writes; the blurred and quarter-size ones, which it doesn't, 0).
+pub fn measured_in(text: str) -> Vec<(String, String, quality::Measured)> {
+    var out: Vec<(String, String, quality::Measured)> = Vec::new()
+    let Some(d) = parse(text) else { return out }
+    for k in 0..d.count(TOP) {
+        let Some(e) = d.at(TOP, k) else { continue }
+        let num = |key: str| match d.get(e, key) {
+            Some(v) => d.num(v).unwrap_or(0.0),
+            None => 0.0,
+        }
+        let list = |key: str| {
+            var v: Vec<f64> = Vec::new()
+            if let Some(l) = d.get(e, key) {
+                for j in 0..d.count(l) {
+                    if let Some(x) = d.at(l, j) {
+                        v.push(d.num(x).unwrap_or(0.0))
+                    }
+                }
+            }
+            take v
+        }
+        let text_of = |key: str| match d.get(e, key) {
+            Some(v) => d.text(v).unwrap_or(String::new()),
+            None => String::new(),
+        }
+        let m = quality::Measured {
+            psnr: num("psnr"),
+            ssim: num("ssim"),
+            sharpness: num("sharpness"),
+            flicker: num("flicker"),
+            pop: num("pop"),
+            still_pop: num("still_pop"),
+            trail: num("trail"),
+            clipped: num("clipped"),
+            edge_reference: u32(num("edge_reference")),
+            edge_play: u32(num("edge_play")),
+            blurred_psnr: 0.0,
+            blurred_ssim: 0.0,
+            blurred_sharpness: 0.0,
+            blurred_flicker: 0.0,
+            quarter_psnr: 0.0,
+            stops_psnr: list("stops_psnr"),
+            lag_psnr: list("lag_psnr"),
+        }
+        out.push((text_of("shot"), text_of("standing"), take m))
+    }
+    out
+}
+
+/// A kept frame's luma and width (`--fast`'s `-moving.png` or `-settled.png`), if it's there.
+fn kept_luma(path: str) -> Option<(Vec<f32>, u32)> {
+    let Ok(b) = files::read_blob(path).wait() else { return None }
+    let Ok(img) = image::decode(Data::Blob(b)).wait() else { return None }
+    let w = img.width
+    let Ok(bytes) = data_bytes(take img.rgba) else { return None }
+    Some((luma(joined(take bytes)), w))
+}
+
+/// `--retrail`: the run in `o.out` with each shot's trail measured again from the frames its
+/// fast run kept (the median of its runs' where it ran more than once), nothing drawn: for a
+/// change to the trail's measure. The table printed and `quality.json` written again.
+fn retrail(o: Options) -> Result<(), ToolError> {
+    let out = o.out.as_str()
+    let at = String::from(f"{out}/quality.json")
+    let text = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    let ran = measured_in(text.as_str())
+    if ran.is_empty() {
+        return Err(ToolError::new(f"{at}: no measures to measure again"))
+    }
+    print(HEADER)
+    var entries: Vec<String> = Vec::new()
+    for (shot, standing, m) in ran {
+        var trails: Vec<f64> = Vec::new()
+        var r = 1
+        loop {
+            let run = if r == 1 { String::new() } else { String::from(f"-run{r}") }
+            let moving = kept_luma(f"{out}/{shot}{run}-moving.png")
+            let settled = kept_luma(f"{out}/{shot}{run}-settled.png")
+            let (Some((ml, w)), Some((sl, _))) = (take moving, take settled) else { break }
+            trails.push(trail(ml, sl, w))
+            r += 1
+        }
+        if trails.is_empty() {
+            return Err(
+                ToolError::new(f"{shot}: no kept frames in {out} (a `--fast` run keeps them)"),
+            )
+        }
+        let again = quality::Measured { trail: median(take trails), ..m.clone() }
+        print(row(shot.as_str(), again.clone()).as_str())
+        entries.push(measured_json(shot.as_str(), again, standing.as_str()))
+    }
+    write_file(at.as_str(), Vec::from([Vec::from(json_list(entries).as_bytes())]))?
+    print(f"lookbook: the trails measured again into {at}")
+    Ok(())
+}
+
+/// `--held`: the run already in `o.out` held to `--bars`, nothing measured.
+fn held(o: Options) -> Result<(), ToolError> {
+    if o.bars.is_empty() {
+        return Err(ToolError::new("--held takes --bars <dir>"))
+    }
+    let out = o.out.as_str()
+    let at = String::from(f"{out}/quality.json")
+    let ran = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+    held_or_missed(barred(ran.as_str(), o.bars.as_str(), out)?)
+}
+
 /// Makes the stills, then the clips, as `o` says.
 pub fn lookbook(o: Options) -> Result<(), ToolError> {
+    if o.retrail {
+        return retrail(o)
+    }
+    if o.held {
+        return held(o)
+    }
     let (view, presses, listed) = VIEWS[o.view]
-    let build = build_of(o.program.as_str())
+    let build = if o.look.is_empty() { build_of(o.program.as_str()) } else {
+        built_in(o.program.as_str(), o.look.as_str())?
+    }
     let names_at = if listed.is_empty() {
         lookbook_of(o.program.as_str())
     } else {
@@ -217,21 +553,60 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     // if `blurs`, changed as `c` says.
     let run = |i: u32, what: str, blurs: bool, c: Control| -> Result<quality::Measured, ToolError> {
         let name = stem(i, shots[i].as_str())
-        let m = measure(f"{out}/{name}{what}", build, i, presses, o.width, o.height, blurs, c)?
+        let m = measure(
+            f"{out}/{name}{what}",
+            build,
+            i,
+            presses,
+            o.width,
+            o.height,
+            blurs,
+            c,
+            fast: o.fast,
+            psnr_too: o.psnr,
+        )?
         print(row(f"{name}{what}", m.clone()).as_str())
         Ok(take m)
+    }
+    // The bars' baseline, where a shot's other runs wait on its first's nearness to them (`--near`).
+    var bases: Vec<(String, f64, f64, f64)> = Vec::new()
+    if o.near > 0.0 {
+        let at = String::from(f"{WS}/{o.bars}/quality.json")
+        let text = String::from_utf8(read_file(at.as_str(), at.as_str())?).unwrap_or(String::new())
+        bases = measures_in(text.as_str())
     }
     print(HEADER)
     var entries: Vec<String> = Vec::new()
     var ran: Vec<(u32, quality::Measured)> = Vec::new()
+    var once = 0
     for i in picks {
-        let m = run(i, "", o.controls && i == CONTROL_SHOT, Control {})?
+        var m = run(i, "", o.controls && i == CONTROL_SHOT, Control {})?
+        let name = stem(i, shots[i].as_str())
+        let again = o.near <= 0.0 ||
+            near_bars((m.flicker, m.pop, m.trail), base_of(bases.clone(), name.as_str()), o.near)
+        if !again {
+            once += 1
+        }
+        if o.runs > 1 && again {
+            var more: Vec<quality::Measured> = Vec::from([m.clone()])
+            for r in 1..o.runs {
+                more.push(run(i, f"-run{r + 1}", false, Control {})?)
+            }
+            m = medians(more)
+            print(row(f"{stem(i, shots[i].as_str())} (median of {o.runs})", m.clone()).as_str())
+        }
         entries.push(measured_json(stem(i, shots[i].as_str()).as_str(), m.clone(), "measured"))
         ran.push((i, take m))
     }
-    write_file(f"{out}/quality.json", Vec::from([Vec::from(json_list(entries).as_bytes())]))?
+    if once > 0 {
+        print(f"{once} shots measured once: their first run more than {o.near} of each bar away")
+    }
+    let listed = json_list(entries)
+    write_file(f"{out}/quality.json", Vec::from([Vec::from(listed.as_bytes())]))?
+    // Held to the bars (but failing the tool after the controls, so a miss still writes them).
+    let held = if o.bars.is_empty() { true } else { barred(listed.as_str(), o.bars.as_str(), out)? }
     if !o.controls {
-        return Ok(())
+        return held_or_missed(held)
     }
     // The plain runs the controls compare with: the table's, or their own.
     let plain = match ran_of(ran, CONTROL_SHOT) {
@@ -277,7 +652,7 @@ fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(
     if !all {
         return Err(ToolError::new("a negative control failed (controls.json)"))
     }
-    Ok(())
+    held_or_missed(held)
 }
 
 /// Shot `i`'s measures in `ran`, if it was measured.

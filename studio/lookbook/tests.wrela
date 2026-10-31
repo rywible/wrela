@@ -5,6 +5,8 @@ use shots::{
     PROGRAM, VIEWS, WS, build_of, check_line, chosen, keys, lookbook_of, names_in, names_listed,
     parse_args, shown_path, stem,
 }
+use main::{holds, measured_in, measures_in, medians, near_bars}
+use quality::{Measured, measured_json}
 use measures::{
     sharpness, blurred, clipped, edge_width, flicker, luma, mean_of, pop, psnr, quartered, ssim,
     trail,
@@ -230,6 +232,27 @@ fn the_measures_react_as_the_instrument_needs() {
     // A history dragging 6 pixels behind the edge is a 6-pixel trail; the reference has none.
     let ghost = luma(scene_image(w, h, 38))
     assert(trail(rl, rl, w) == 0.0 && trail(ghost, rl, w) >= 4.0)
+    // A whole image 4/255 lighter is no trail; the ghost on it still is.
+    var lighter = Vec::new()
+    var ghost_lighter = Vec::new()
+    for i in 0..rl.len() {
+        lighter.push(rl[i] + 4.0 / 255.0)
+        ghost_lighter.push(ghost[i] + 4.0 / 255.0)
+    }
+    assert(trail(lighter, rl, w) == 0.0, f"a lighter image trails {trail(lighter, rl, w)}")
+    assert(trail(ghost_lighter, rl, w) >= 4.0)
+    // A broad ghost, its lag over half the row (so the row's median): still a trail, 70 pixels.
+    let (bw, bh) = (100, 4)
+    var settled_rows: Vec<f32> = Vec::new()
+    var lagging: Vec<f32> = Vec::new()
+    for _ in 0..bh {
+        for x in 0..bw {
+            settled_rows.push(if x >= 10 { 0.2 } else { 0.0 })
+            lagging.push(if x >= 80 { 0.2 } else { 0.0 })
+        }
+    }
+    let broad = trail(lagging, settled_rows, bw)
+    assert(broad >= 69.0, f"a broad ghost trails {broad} px")
     // The edge stays sharp in a mean of jittered frames of it.
     let mean = mean_of([reference.clone(), reference.clone()])
     assert(edge_width(luma(mean), w) <= edge_width(rl, w) + 1)
@@ -260,4 +283,108 @@ fn dev_and_evaluation_choose_by_the_shots_names() {
     let Ok(picked) = parse_args(texts(["out", "--shots", "4,0"])) else { panic("picked") }
     let p = chosen(picked, names)
     assert(p.len() == 2 && p[0] == 4 && p[1] == 0, "as picked")
+}
+
+/// A shot's other runs are taken only when its first leaves it undecided (`--near`): no measure
+/// far over its bar, and not every one far under; a shot the baseline lacks always.
+@test
+fn a_shot_near_a_bar_is_run_again_and_one_far_from_every_bar_isnt() {
+    // Its bars: flicker 30e-6, pop 0.015, trail 5.
+    let base = Some((20.0e-6, 0.01, 4.0))
+    assert(!near_bars((10.0e-6, 0.005, 2.0), base, 0.2), "far from every bar")
+    assert(near_bars((27.0e-6, 0.005, 2.0), base, 0.2), "flicker within a fifth under its bar")
+    assert(near_bars((33.0e-6, 0.005, 2.0), base, 0.2), "flicker within a fifth over it")
+    assert(near_bars((10.0e-6, 0.0135, 2.0), base, 0.2), "pop near")
+    assert(near_bars((10.0e-6, 0.005, 5.0), base, 0.2), "trail on its bar")
+    assert(!near_bars((10.0e-6, 0.005, 4.0), base, 0.2), "trail a pixel under: decided")
+    assert(!near_bars((60.0e-6, 0.0135, 5.0), base, 0.2), "far over one bar: a miss, decided")
+    assert(near_bars((10.0e-6, 0.005, 2.0), None, 0.2), "no baseline: always")
+}
+
+/// A run's `quality.json` reads back as it was written (`measured_in`, for `--retrail`).
+@test
+fn a_runs_measures_read_back_as_written() {
+    let m = Measured {
+        psnr: 27.5,
+        ssim: 0.875,
+        sharpness: 0.5,
+        flicker: 0.0000125,
+        pop: 0.0125,
+        still_pop: 0.0005,
+        trail: 3.0,
+        clipped: 0.25,
+        edge_reference: 4,
+        edge_play: 5,
+        blurred_psnr: 0.0,
+        blurred_ssim: 0.0,
+        blurred_sharpness: 0.0,
+        blurred_flicker: 0.0,
+        quarter_psnr: 0.0,
+        stops_psnr: Vec::new(),
+        lag_psnr: Vec::from([31.5]),
+    }
+    let text = f"[{measured_json("07-dusk", m.clone(), "measured")}]"
+    let back = measured_in(text.as_str())
+    assert(back.len() == 1, f"{back.len()} entries")
+    let (shot, standing, b) = back[0].clone()
+    assert(shot.as_str() == "07-dusk" && standing.as_str() == "measured")
+    assert(
+        measured_json("07-dusk", b, "measured").as_str() ==
+            measured_json("07-dusk", m, "measured").as_str(),
+        "the same JSON again",
+    )
+}
+
+/// A look holds the physical look's bars when its flicker and pop are at most 1.5 times its and
+/// its trail at most a pixel longer; a run's measures are read back from its `quality.json`.
+@test
+fn a_look_holds_its_bars_against_the_physical_look() {
+    let base = (20.0e-6, 0.01, 4.0)
+    assert(
+        holds(flicker: 29.0e-6, pop: 0.015, trail: 5.0, base: base) == (true, true, true),
+        "at the bars",
+    )
+    assert(
+        holds(flicker: 31.0e-6, pop: 0.01, trail: 4.0, base: base) == (false, true, true),
+        "flicker past 1.5 times",
+    )
+    assert(
+        holds(flicker: 20.0e-6, pop: 0.016, trail: 4.0, base: base) == (true, false, true),
+        "pop past 1.5 times",
+    )
+    assert(
+        holds(flicker: 20.0e-6, pop: 0.01, trail: 5.5, base: base) == (true, true, false),
+        "trail past a pixel more",
+    )
+    let text = "[\n  {\"shot\": \"12-D1-the-forest-floor\", \"flicker\": 0.0000483, \"pop\": 0.0233, \"trail\": 65.0},\n  {\"shot\": \"13-D2\", \"flicker\": 0.0000003, \"pop\": 0.001, \"trail\": 2.0}\n]\n"
+    let m = measures_in(text)
+    assert(m.len() == 2, f"{m.len()} shots read")
+    let (shot, f, p, t) = m[0].clone()
+    assert(shot.as_str() == "12-D1-the-forest-floor" && f == 0.0000483 && p == 0.0233 && t == 65.0)
+}
+
+/// Several runs' measures are each the median of the runs'.
+@test
+fn several_runs_take_each_measures_median() {
+    let m = |f: f64, p: f64| Measured {
+        psnr: 20.0,
+        ssim: 0.5,
+        sharpness: 1.0,
+        flicker: f,
+        pop: p,
+        still_pop: 0.0,
+        trail: 3.0,
+        clipped: 0.0,
+        edge_reference: 0,
+        edge_play: 0,
+        blurred_psnr: 0.0,
+        blurred_ssim: 0.0,
+        blurred_sharpness: 0.0,
+        blurred_flicker: 0.0,
+        quarter_psnr: 0.0,
+        stops_psnr: Vec::new(),
+        lag_psnr: Vec::new(),
+    }
+    let got = medians(Vec::from([m(68.0e-6, 0.03), m(47.0e-6, 0.01), m(52.0e-6, 0.02)]))
+    assert(got.flicker == 52.0e-6 && got.pop == 0.02, f"medians {got.flicker}, {got.pop}")
 }

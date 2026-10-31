@@ -160,7 +160,8 @@ impl Spread {
 /// last frame (the dolly's, whose flicker isn't read; `Spread` keeps one for its frames).
 pub struct Pop {
     pub pop: f64,
-    last: Vec<f32>,
+    /// The last frame added's luma.
+    pub last: Vec<f32>,
 }
 
 impl Pop {
@@ -231,12 +232,21 @@ pub fn clipped(rgba: [u8]) -> f64 {
     f64(at) / f64(max(n, 1))
 }
 
+/// The most the row's median difference raises the trail's threshold (twice it, in luma): over a
+/// bright sky's 2.5–3% offset (twice it 0.06 at most), under an edge's lag (a trail's row has a
+/// step of 0.1 or more, `trail`).
+pub const ROW_CAP: f32 = 0.08
+
 /// Trail: in each row (`w` wide), from the sharpest edge of `reference` (its largest step across
-/// one pixel), how many pixels on either side `play` differs from it by more than 2/255 without a
-/// break; the median over the rows that have an edge. The instrument's reference here is play
-/// settled where the moving frame was taken, so only the history's lag counts: a history that
-/// drags behind a moving edge lengthens it, which frame-to-frame differences can't show, since a
-/// dragging history lowers them.
+/// one pixel), how many pixels on either side `play` differs from it without a break, by more
+/// than 2/255 and than twice the row's median difference; the median over the rows that have an
+/// edge. The instrument's reference here is play settled where the moving frame was taken, so
+/// only the history's lag counts: a history that drags behind a moving edge lengthens it, which
+/// frame-to-frame differences can't show, since a dragging history lowers them. (The row's
+/// median: a whole sky a little lighter moving than settled, or a flat tone a little off, is no
+/// trail behind the edge, and ran on to the row's end: shot 03's 6 px for the physical look and
+/// 527 for the cel, its sky 2.5% and 3% lighter in both, docs/lookdev.md; but at most `ROW_CAP`,
+/// so a trail over half its row, which is its own median, still counts.)
 pub fn trail(play: [f32], reference: [f32], w: u32) -> f64 {
     let h = play.len() / max(w, 1)
     var runs: Vec<f64> = Vec::new()
@@ -254,7 +264,8 @@ pub fn trail(play: [f32], reference: [f32], w: u32) -> f64 {
         if largest < 0.1 {
             continue
         }
-        let off = |x: u32| abs(play[row + x] - reference[row + x]) > 2.0 / 255.0
+        let least = max(2.0 / 255.0, min(2.0 * median_off(play, reference, row, w), ROW_CAP))
+        let off = |x: u32| abs(play[row + x] - reference[row + x]) > least
         var right = 0
         var x = edge
         while x < w && off(x) {
@@ -274,6 +285,24 @@ pub fn trail(play: [f32], reference: [f32], w: u32) -> f64 {
     }
     runs.sort_by(lower)
     runs[runs.len() / 2]
+}
+
+/// The median of `|play - reference|` along the row from `row`, `w` wide: from a histogram of
+/// 1/1024 steps (a difference past 1/4 counts as 1/4; a median that large is no trail's floor).
+fn median_off(play: [f32], reference: [f32], row: u32, w: u32) -> f32 {
+    var bins: [u32; 256] = [0; 256]
+    for x in 0..w {
+        let d = abs(play[row + x] - reference[row + x])
+        bins[min(u32(d * 1024.0), 255)] += 1
+    }
+    var seen = 0
+    for b in 0..256 {
+        seen += bins[b]
+        if 2 * seen >= w {
+            return (f32(b) + 0.5) / 1024.0
+        }
+    }
+    0.25
 }
 
 fn lower(a: f64, b: f64) -> bool {

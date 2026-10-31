@@ -1,0 +1,6 @@
+// The package's tool build, whose test is in tests.wrela. The tool itself does nothing.
+
+/// The package's tool, which does nothing: its tool test is its work.
+pub fn tool() -> u32 {
+    0
+}

@@ -95,6 +95,7 @@ fn sample_quad(v: VertexIndex, i: InstanceIndex) -> FarVertex {
         keep: Flat { value: 16383 << 14 },
         seed: Flat { value: 71 },
         kind: Flat { value: 0 },
+        history: Flat { value: 0 },
     }
 }
 

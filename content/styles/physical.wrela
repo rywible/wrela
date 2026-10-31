@@ -1,22 +1,56 @@
-// The physical look: light as it falls, through the lens as the frame's look says (`paint::Look`).
-// Today's image: the other looks are changes of it, a slot at a time.
+// The physical look (docs/plan-world-class-3.md §D3): light as it falls, through the lens as the
+// frame's look says (`paint::Look`). Today's image, to the pixel: the other looks are changes of
+// it, a slot at a time (README.md).
 
+use engine::marks
 use engine::light::{Light, Lit, tone}
 use engine::paint::{Develop, Exposure, graded, hdr_tone}
 use engine::style::Style
+use engine::substance::Substance
 use std::gpu::{Rgba8, Sampler, Texture3d}
 
-/// The physical look (`engine::style::Style`): every constant 0.
+/// The physical look (`engine::style::Style`): no substance, lit by the fine normal, the
+/// characters' lines its marks, temporal AA as it is.
 pub struct Physical {}
 
 impl Style for Physical {
+    /// No substance after the shading: nothing reads it.
+    const SUBSTANCE: u32 = 0
+    /// Lit by the fine normal, the shading's own.
+    const NORMAL: u32 = 0
+    /// The characters' lines (`marks::lines`) and the brush dabs and the paper's tooth
+    /// (`marks::dab_map`): part of today's look.
+    const MARKS: u32 = marks::LINES | marks::DABS
+    /// Temporal AA as it is.
+    const FLAT_CLIP: f32 = 0.0
+
+    /// The scene's colour alone: it reads no substance.
+    type Out = vec4
+
+    fn written(colour: vec4, s: Substance) -> vec4 {
+        colour
+    }
+
     /// The light's sum (`light::world`): the matte light and the gloss.
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3 {
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
         engine::light::world(light, lit, world, eye)
     }
 
+    /// A leaf's matte light, and its gloss on its side that faces the eye.
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        engine::light::matte(light, lit, world, eye) +
+            engine::light::gloss(light, Lit { n: facing, ..lit }, normalize(eye - world))
+    }
+
     /// The albedo as it is.
-    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3 {
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
         albedo
     }
 

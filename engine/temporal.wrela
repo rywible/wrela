@@ -21,8 +21,9 @@
 
 use neural::{Model, eval_gpu}
 use std::gpu::{
-    DepthTexture, FragCoord, GlobalId, Half2, Rgba16Float, Sampler, Slots, Texels, Texture,
+    DepthTexture, FragCoord, GlobalId, Half2, R32Uint, Rgba16Float, Sampler, Slots, Texels, Texture,
 }
+use substance
 use view::{Camera, class_of, thin}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
@@ -51,6 +52,10 @@ pub struct Resolve: Copy + GpuData {
     /// Whether this frame's share comes from the learned rejector (`learned_share`, B14.3:
     /// `switches::Switches::LEARNED`, its net `REJECTOR`), not from the heuristics.
     pub learned: u32 = 0,
+    /// How much a pixel's history is pulled to this frame's colour where its tone is flat (the
+    /// substance's `tone`): the look's `style::Style::FLAT_CLIP` (0: as the physical look; 1: the
+    /// neighbourhood's box shrunk to its centre).
+    pub flat_clip: f32 = 0.0,
 }
 
 /// The learned rejector's net (§B14.3c's rung A): the 14 inputs `rejector_inputs` makes, two
@@ -228,6 +233,7 @@ pub fn resolve(
     history: Texture<Rgba16Float>,
     means: Texture<Rgba16Float>,
     spreads: Texture<Rgba16Float>,
+    tone: Texture<R32Uint>,
     s: Sampler,
     net: [Half2],
     learned: const bool,
@@ -237,7 +243,7 @@ pub fn resolve(
     let hood = means.load(x: u32(near.x), y: u32(near.y))
     let spread = spreads.load(x: u32(near.x), y: u32(near.y))
     let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
-    blended(f, r, scene, net, learned)
+    blended(held_flat(f, r, tone, near), r, scene, net, learned)
 }
 
 /// `resolve` for a scene drawn at the output's size, which finds its nearest sample's
@@ -255,14 +261,16 @@ pub fn resolve_gathered(
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
+    tone: Texture<R32Uint>,
     s: Sampler,
     net: [Half2],
     learned: const bool,
 ) -> vec4 {
     let px = pixel.position.xy
-    let (hood, spread) = neighbourhood(scene, nearest(r, px))
+    let near = nearest(r, px)
+    let (hood, spread) = neighbourhood(scene, near)
     let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
-    blended(f, r, scene, net, learned)
+    blended(held_flat(f, r, tone, near), r, scene, net, learned)
 }
 
 /// What a resolve finds at an output pixel before it blends (`blended`): this frame's samples
@@ -557,6 +565,17 @@ fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]
 /// heuristics', or the learned rejector's under `Resolve::learned` where the program has it,
 /// `learned`, capped as a settled view's is), brought back from tamed; its alpha the nearest
 /// sample's tag.
+/// `f`, its history clipped harder where the look holds a flat tone flat (`Resolve::flat_clip`)
+/// and the substance says the tone at its nearest sample `near` is (`substance::unpack_tone`):
+/// the clipped history pulled to this frame's colour by that much.
+fn held_flat(f: Found, r: Resolve, tone: Texture<R32Uint>, near: vec2i) -> Found {
+    if r.flat_clip <= 0.0 {
+        return f
+    }
+    let (_, flat) = substance::unpack_tone(tone.load(x: u32(near.x), y: u32(near.y)))
+    Found { clipped: mix(f.clipped, f.current, vec3(r.flat_clip * flat)), ..f }
+}
+
 fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2], learned: bool) -> vec4 {
     let a = if f.forced != 0 { 1.0 } else if learned && r.learned != 0 {
         min(learned_share(f, r, scene, net), f.settle)
