@@ -8,7 +8,7 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
-use growth::{Provenance, bark_cracks, lichen_of, moss_at}
+use growth::{PATCH, Provenance, bark_cracks, bare_share, lichen_of, moss_at, moss_tile}
 use impostor::{
     Bake, Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
     volume_cut, volume_shade, which_crown,
@@ -312,11 +312,14 @@ pub fn card(
     let seed = seed_of(card, mark.y & 255)
     let mixed = (seed ^ (card.seed >> 15)) * 2246822519
     let (keep, size) = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
+    // A kind whose cards show past its instance's history (`Leaves::after`: a fallen tree's
+    // brackets past its rot) draws none before.
+    let shown = if inst.history.decode().x >= kd.bake.leaves.after { 1.0 } else { 0.0 }
     let (world, uv, _, _) = card_corner(
         c,
         v.index % OUTLINE,
         i.index,
-        CardDraw { grow: d.grow * size, ..d },
+        CardDraw { grow: d.grow * size * shown, ..d },
         cards,
         instances,
         outlines,
@@ -547,16 +550,26 @@ fn limb_world(
     kinds: [KindDesc],
     limbs: [Tube<4>],
     instances: [Instance],
-) -> (vec3, vec3, vec2) {
+) -> (vec3, vec3, vec2, vec2) {
     let inst = instances[i]
-    let limb = limbs[kinds[kind_of(inst)].limb_first + v / LIMB_POINTS]
+    let kd = kinds[kind_of(inst)]
+    let limb = limbs[kd.limb_first + v / LIMB_POINTS]
     let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
-    let girth = TAU * limb.radii[0] * inst.scale * inst.thick
+    // Its record's girth is its trunk's (`Instance::thick`): a limb thickened by it as far as it's
+    // as thick as its trunk (its first limb), its twigs not (all thickened, a grown crown's twigs
+    // read as flat bands).
+    let trunk = max(limbs[kd.limb_first].radii[0], 1.0e-4)
+    let thick = 1.0 + (inst.thick - 1.0) * clamp(limb.radii[0] / trunk, 0.0, 1.0)
+    let girth = TAU * limb.radii[0] * inst.scale * thick
     // Its cracks' spacing round it by its record (`growth::bark_cracks`), a whole number of
     // repeats so the pattern meets itself.
     let round = max(round(plant::bark_round(girth) * bark_cracks(inst.history.decode()).x), 1.0)
     let on_bark = vec2(along.x * round, along.y * inst.scale)
-    (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), on_bark)
+    // Where its moss's patches are read (`moss_patch`): one tile round it (so they meet), square
+    // cells along it.
+    let on_moss = vec2(along.x * f32(PATCH), along.y * inst.scale * f32(PATCH) / max(girth, 0.3))
+    let world = inst.place(centre) + inst.turn(n * radius * inst.scale * thick)
+    (world, inst.turn_normal(n, centre.y), on_bark, on_moss)
 }
 
 @vertex
@@ -569,20 +582,20 @@ pub fn limb(
     instances: [Instance],
     marks: [vec2u],
 ) -> BarkVertex {
-    let (world, n, along) = limb_world(v.index, i.index, kinds, limbs, instances)
+    let (world, n, along, on_moss) = limb_world(v.index, i.index, kinds, limbs, instances)
     let inst = instances[i.index]
+    // Rotting wood (`Bark::rots`) holds the wet, and the shade under the wood round it: mossier as
+    // it rots (its history's x its rot).
+    let h = inst.history.decode()
+    let rot = kinds[kind_of(inst)].bake.bark.rots * h.x
+    let moss_h = vec4(h.x, h.y * (1.0 - 0.5 * rot), max(h.z, 0.5 + rot), h.w)
     BarkVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
         normal: n,
         along,
         up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
-        moss: moss_at(
-            inst.history.decode(),
-            n,
-            along.y,
-            noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7),
-        ),
+        moss: moss_at(moss_h, n, along.y, moss_patch(moss_h, on_moss)),
         keep: Flat { value: marks[i.index].x },
         kind: Flat { value: kind_of(inst) },
         history: Flat { value: inst.history.bits },
@@ -598,8 +611,16 @@ pub fn limb_shadow(
     limbs: [Tube<4>],
     instances: [Instance],
 ) -> ClipPosition {
-    let (world, _, _) = limb_world(v.index, i.index, kinds, limbs, instances)
+    let (world, _, _, _) = limb_world(v.index, i.index, kinds, limbs, instances)
     ClipPosition { position: view * vec4(world, 1.0) }
+}
+
+/// The moss's patches on bark at `at` (its cells, `limb_world`'s: one tile round the limb):
+/// its reaction-diffusion's (`growth::moss_tile`, a wet tree's crowded class or a dry one's
+/// scattered). (Read in the world's x + z against height, round a trunk they ran in spirals.)
+fn moss_patch(history: vec4, at: vec2) -> f32 {
+    let class = if history.z > 0.5 { 0 } else { 1 }
+    0.35 + 0.3 * moss_tile(class, at)
 }
 
 /// Turns a surface by the gradient of its height, measured along two screen directions.
@@ -679,6 +700,11 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     }
     let tone = smooth_tone.x
     var albedo = mix(bark.dark, bark.light, vec3(tone))
+    // Dead wood's bark gone by its rot (`growth::bare_share`, in patches round and along it): the
+    // weathered wood under it, grey and smooth.
+    let peeled = bark.rots *
+        smoothstep(-0.04, 0.04, bare_share(history.x) - noise::noise2(b.along * vec2(3.0, 0.8)))
+    albedo = mix(albedo, vec3(0.30, 0.27, 0.22) * (0.85 + 0.3 * tone), vec3(peeled))
     albedo = mix(albedo, bark.foot.xyz * (0.45 + 1.1 * mix(0.5, foot_tone, fine)), vec3(foot))
     // Darker down its furrows and cracks, as their depth hides them from the light: as much as
     // the bark is rough (a smooth bark's mottle isn't a furrow).

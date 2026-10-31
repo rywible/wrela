@@ -188,8 +188,13 @@ hand). Part E fills it.
 | The soil | grown (`land::soil` from the land's shape and water) |
 | The water | grown (laid from the land's drainage) |
 | Where trees stand, their ages, deaths and falls | grown (`land::grow`) |
-| The trees' forms | authored (`trees::kinds`, the floor's species' kinds) |
+| The trees' forms | grown: each living kind an archetype grown at build from its species' genome (`trees::archetypes`, `engine::growth`); the 24 trees nearest the eye grown from their own records (`land::stage::near_trees`); the great tree, the far crowns and the standing dead authored |
+| The floor's plants | grown: the 33 species' rows from their genomes (`engine::grass::GENOMES`: rosettes, tussocks, fronds), the fern's and bracken's fronds by the place's light, the sward by light and wetness |
+| The fallen trees | grown: a grown trunk laid along its fall, its bark lost and its bracket fungi by its rot (on the vale's tiles, 4,914 fallen trees, 20,848 brackets, 74 % of their bark gone) |
+| Moss | grown: a reaction-diffusion's patches on the ground, the logs and the trunks by wetness and light (6 % of the vale's ground in its causes) |
+| Lichen | grown: a diffusion-limited growth's crusts on the rocks' open faces, and on old bark by age (4,278 trees old enough) |
+| Litter | grown: its depth by the canopy over it and the season (0.50 deep on average over the vale's tiles) |
 | The ground's cover | authored (rules over grown fields: `land::cover`) |
-| The rock's look | authored |
+| The rock's look | authored (its lichen grown) |
 | The sky and the clouds | authored (the floor's) |
 | The creature | none yet (Part F) |

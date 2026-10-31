@@ -109,8 +109,8 @@ impl Tiles for ValeTiles {
         NEAR_N
     }
 
-    fn grows(self, k: u32) -> bool {
-        trees::archetypes::grows(k)
+    fn grows(self, t: Tree, k: u32) -> bool {
+        trees::archetypes::grows_as_itself(t, k, PRESENT)
     }
 
     fn individual(self, t: Tree, k: u32) -> Option<Grow> {

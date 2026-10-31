@@ -103,14 +103,15 @@ impl Rng {
     }
 }
 
-/// The ground's small causes' fields (§E4), each with what it comes from today: the moss on the
-/// ground and the logs, the lichen on the rocks, the litter's layer, the fungi. Authored until E4
-/// grows them.
+/// The ground's small causes' fields (§E4): the moss on the ground, the logs and the trunks
+/// (`MOSS`, a reaction-diffusion's patches), the lichen on the rocks and old bark (`LICHEN`, a
+/// diffusion-limited growth's crusts), the litter's layer (`litter_at`) and the fungi
+/// (`fungi_on`): each grown from its causes.
 pub const FIELDS: [Text; 4] = ["moss", "lichen", "litter", "fungi"]
 
-/// Field `i`'s provenance (`FIELDS`).
+/// Field `i`'s provenance (`FIELDS`): each grown (its program's version, its seed `i`).
 pub fn field_provenance(i: u32) -> Provenance {
-    Provenance::Authored
+    Provenance::Grown(Grown { genome: genome_hash([f32(i)]), site: Site {}, seed: i })
 }
 
 // ---- trees (§E1) ----------------------------------------------------------------------------------
@@ -513,6 +514,7 @@ pub fn grow_traced(
         }
     }
     girth(mut t, g, site)
+    straighten(mut t)
     lean_by(mut t, lean)
     (t, trace)
 }
@@ -640,7 +642,7 @@ fn stand_light(stand: f32, y: f32, height: f32) -> f32 {
 }
 
 const STAND_TOP: f32 = 0.85
-const STAND_DEEP: f32 = 0.4
+const STAND_DEEP: f32 = 0.55
 
 /// How many times its shed years a branch may go without growing before it's shed (`shed`).
 const IDLE_YEARS: f32 = 3.0
@@ -1241,6 +1243,63 @@ fn girth(t: mut TreeGraph, g: Genome, site: Site) {
     }
 }
 
+/// A tree's trunk straightened as reaction wood straightens it over its years: its axis (from its
+/// root, each node's thickest child) pulled toward the line from its foot to where it meets its
+/// crown (its lean into its light kept), by `STRAIGHTEN` low on it and none from 60 % of its
+/// height up, each axis node carrying its laterals with it (they keep their places on it). Its leaders' replacements had left its bole wandering a
+/// metre: a forest oak's a snake, and a shot's eye inside a near tree's trunk.
+fn straighten(t: mut TreeGraph) {
+    let n = t.nodes.len()
+    if n < 2 || t.height <= 0.0 {
+        return
+    }
+    var thickest: Vec<i32> = Vec::filled(n, -1)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if !nd.alive || nd.parent < 0 {
+            continue
+        }
+        let q = u32(nd.parent)
+        if thickest[q] < 0 || t.nodes[u32(thickest[q])].radius < nd.radius {
+            thickest[q] = i32(i)
+        }
+    }
+    // The axis, each node's own pull (none at its crown, so its crown stays), and each node's
+    // deepest axis forebear's, which it moves by.
+    // Where the axis meets its crown (its first node at 80 % of its height): the line from the
+    // foot to there is what it's straightened toward (its lean into its light kept).
+    var anchor = vec3(0.0, t.height, 0.0)
+    var k = 0
+    while k >= 0 {
+        anchor = t.nodes[u32(k)].tip
+        if anchor.y >= 0.8 * t.height {
+            break
+        }
+        k = thickest[u32(k)]
+    }
+    var on_axis: Vec<bool> = Vec::filled(n, false)
+    var shift: Vec<vec2> = Vec::filled(n, vec2(0.0))
+    k = 0
+    while k >= 0 {
+        on_axis[u32(k)] = true
+        let nd = t.nodes[u32(k)]
+        let s = STRAIGHTEN * (1.0 - smoothstep(0.2, 0.6, nd.tip.y / t.height))
+        let line = anchor.xz * clamp(nd.tip.y / max(anchor.y, 1.0e-3), 0.0, 1.0)
+        shift[u32(k)] = (line - nd.tip.xz) * s
+        k = thickest[u32(k)]
+    }
+    var by: Vec<vec2> = Vec::filled(n, vec2(0.0))
+    for i in 0..n {
+        let p = t.nodes[i].parent
+        by[i] = if on_axis[i] { shift[i] } else if p >= 0 { by[u32(p)] } else { vec2(0.0) }
+        let d = by[i]
+        t.nodes[i].tip += vec3(d.x, 0.0, d.y)
+    }
+}
+
+/// How much of a trunk's wander reaction wood takes back, low on it (`straighten`: **proposed**).
+const STRAIGHTEN: f32 = 0.85
+
 /// A tree leaned toward its light (`lean`, the record's: where its crown's middle moved), as
 /// reaction wood leans it: each point moved by `lean` times the square of its share of the height.
 fn lean_by(t: mut TreeGraph, lean: vec2) {
@@ -1263,27 +1322,34 @@ pub struct Converted: Copy {
     pub clumps: u32,
 }
 
-/// The nodes a tube takes: a longer chain is cut into tubes of this many (a `Tube<4>` through its
-/// foot and two nodes, with a point held at the corner between them, follows the wood).
-const TUBE_NODES: u32 = 2
+/// The most nodes a tube takes along a smooth run (`chains_of`): three, which its four points
+/// pass through exactly (its foot and them), so a branch from any of them starts on its wood.
+const RUN_NODES: u32 = 3
+
+/// The radius (m) from which wood runs longer (`RUN_THICK` nodes a tube).
+const THICK_RUN: f32 = 0.05
+const RUN_THICK: u32 = 8
 
 /// Where a two-node tube's third point sits past its corner (a share of the piece after it).
 const CORNER: f32 = 0.1
 
 /// Whether a bole's run (`chains_of`, from `foot`) turns at its last node toward `next` by more
 /// than `BOLE_TURN` (its one tube, resampled, would cut the corner).
-fn turns(t: TreeGraph, foot: vec3, run: [u32], next: i32) -> bool {
+fn turns(t: TreeGraph, foot: vec3, run: [u32], next: i32, most: f32 = BOLE_TURN) -> bool {
     if next < 0 {
         return false
     }
     let at = t.nodes[run[run.len() - 1]].tip
     let before = if run.len() > 1 { t.nodes[run[run.len() - 2]].tip } else { foot }
     let (a, b) = (at - before, t.nodes[u32(next)].tip - at)
-    dot(a, b) < BOLE_TURN * length(a) * length(b)
+    dot(a, b) < most * length(a) * length(b)
 }
 
-/// The sharpest turn a bole's one tube takes (the cosine of it: 20°).
+/// The sharpest turn a run's tube takes between its nodes (the cosine of it: 20°), and a bole's
+/// thick bole's one tube (45°: cut at a gentler turn, its end, carried past the joint, stood out of
+/// the trunk on the bend's outside as a ledge; a thin one keeps 20°, its bends on a few nodes).
 const BOLE_TURN: f32 = 0.94
+const TRUNK_TURN: f32 = 0.7
 
 /// A chain of nodes one limb draws: its foot (its parent's tip, or the root's foot) and its
 /// nodes, and the section at its foot.
@@ -1291,6 +1357,10 @@ struct Chain {
     foot: vec3,
     nodes: Vec<u32>,
     section: f32,
+    /// Whether another run carries its line on past its end (its end's cap is buried in it), and
+    /// whether it carries on another's (so it starts as thick as that one ended).
+    continues: bool = false,
+    carried: bool = false,
 }
 
 /// A grown tree as the renderer's `plant::Plant` (§E1.2, explicit, not dropping): its limbs
@@ -1332,7 +1402,7 @@ pub fn shape_of(t: TreeGraph, g: Genome) -> Shape {
     var drawn: Vec<bool> = Vec::filled(t.nodes.len(), false)
     drawn[0] = true
     for c in 0..kept {
-        tubes.push(tube_through(t, all[c].foot, all[c].nodes))
+        tubes.push(chain_tube(t, all[c]))
         for k in all[c].nodes {
             drawn[k] = true
         }
@@ -1350,9 +1420,30 @@ pub fn shape_of(t: TreeGraph, g: Genome) -> Shape {
 pub fn limbs_of(t: TreeGraph) -> Vec<Tube<4>> {
     var tubes: Vec<Tube<4>> = Vec::new()
     for c in chains_of(t) {
-        tubes.push(tube_through(t, c.foot, c.nodes))
+        tubes.push(chain_tube(t, c))
     }
     tubes
+}
+
+/// A chain's tube (`tube_through`), its end carried on past its last node by 0.6 of its radius
+/// where another run goes on from there: its end's cap (its last 0.5 of a radius, closing to a
+/// point) inside the next one's start, no pinch at the joint (carried 1.2, it stood out of the
+/// next on a bend's outside).
+fn chain_tube(t: TreeGraph, c: Chain) -> Tube<4> {
+    var tb = tube_through(t, c.foot, c.nodes)
+    // A run carrying another's line on starts as thick as that one ended (its first node, a
+    // lateral that took over, is thinner than its parent: the trunk stepped in, a ledge).
+    let first = t.nodes[c.nodes[0]]
+    if c.carried && first.parent >= 0 {
+        tb.radii[0] = max(tb.radii[0], t.nodes[u32(first.parent)].radius)
+    }
+    if c.continues {
+        let d = tb.points[3] - tb.points[2]
+        if dot(d, d) > 1.0e-10 {
+            tb.points[3] += normalize(d) * tb.radii[3] * 0.6
+        }
+    }
+    tb
 }
 
 /// A grown tree's chains of nodes (`limbs_of`), largest section first.
@@ -1402,29 +1493,43 @@ fn chains_of(t: TreeGraph) -> Vec<Chain> {
             continue
         }
         let foot = if nd.parent >= 0 { t.nodes[u32(nd.parent)].tip } else { vec3(0.0) }
-        // Cut into runs of `TUBE_NODES`, each starting where the last ended; but the trunk's
-        // first, its bole up to its first branch, one tube (the kinds' tables read a tree's
-        // first limb as its trunk and the next as where it branches: `trees::kinds`).
+        // Cut into runs, each starting where the last ended: a run goes on while its line turns
+        // under `BOLE_TURN` at each node, up to `RUN_NODES` (each continued run's end carried into
+        // the next, `chain_tube`: a tube's end closes to a point, and a limb of short tubes read as
+        // a stack of bandages); but the
+        // trunk's first, its bole up to its first branch, one tube (the kinds' tables read a
+        // tree's first limb as its trunk and the next as where it branches: `trees::kinds`).
         var from = foot
         var run: Vec<u32> = Vec::new()
         var k = i32(i)
         var bole = i == 0
+        var carried = false
         while k >= 0 {
             run.push(u32(k))
+            let after = next[u32(k)]
+            // Thick wood (a trunk's, a scaffold's) in longer runs, its tube resampled through them
+            // (its few centimetres off them inside its radius): a joint on it read as a ledge.
+            let most = if t.nodes[u32(k)].radius >= THICK_RUN { RUN_THICK } else { RUN_NODES }
+            let bend = if t.nodes[u32(k)].radius >= THICK_RUN { TRUNK_TURN } else { BOLE_TURN }
             let cut = if bole {
-                branches[u32(k)] || next[u32(k)] < 0 || turns(t, from, run, next[u32(k)])
-            } else { run.len() == TUBE_NODES }
+                branches[u32(k)] || after < 0 || turns(t, from, run, after, most: bend)
+            } else {
+                run.len() >= most || turns(t, from, run, after)
+            }
             if cut {
                 bole = false
                 let end = t.nodes[u32(k)].tip
-                chains.push(Chain { foot: from, nodes: take run, section: 0.0 })
+                chains.push(
+                    Chain { foot: from, nodes: take run, section: 0.0, continues: after >= 0, carried },
+                )
+                carried = true
                 from = end
                 run = Vec::new()
             }
             k = next[u32(k)]
         }
         if run.len() > 0 {
-            chains.push(Chain { foot: from, nodes: take run, section: 0.0 })
+            chains.push(Chain { foot: from, nodes: take run, section: 0.0, carried })
         }
     }
     for c in 0..chains.len() {
@@ -1971,6 +2076,179 @@ pub fn scale(p: mut Plant, s: f32) {
         p.clumps[i].centre *= s
         p.clumps[i].radius *= s
     }
+}
+
+// ---- the floor's small causes (§E4) ---------------------------------------------------------------
+
+/// A patch tile's side (cells): a moss's or a lichen's patches repeat every tile.
+pub const PATCH: u32 = 64
+
+/// Moss's patches (§E4): a reaction-diffusion (Turing 1952; Gray and Scott's form, as Pearson
+/// 1993 maps it) run once per cause class on a `PATCH`-a-side torus, at build: class 0 the wet's
+/// (feed 0.037, kill 0.06: crowded cushions), class 1 the dry's (0.03, 0.062: scattered spots),
+/// each cell's amount of moss a byte, four a word.
+@fuel(2 ** 36)
+pub const MOSS: [u32; 2 * PATCH * PATCH / 4] = moss_patches()
+
+pub fn moss_patches() -> [u32; 2 * PATCH * PATCH / 4] {
+    var out = [0; 2 * PATCH * PATCH / 4]
+    for class in 0..2 {
+        let (feed, kill) = if class == 0 { (0.037, 0.06) } else { (0.03, 0.062) }
+        let v = gray_scott(feed, kill, 3000, 7 + class)
+        for i in 0..(PATCH * PATCH) {
+            let byte = u32(clamp(v[i] * 3.5, 0.0, 1.0) * 255.0)
+            let at = class * PATCH * PATCH + i
+            out[at / 4] = out[at / 4] | (byte << (8 * (at % 4)))
+        }
+    }
+    out
+}
+
+/// Gray and Scott's two species on a torus: `steps` steps (Du 0.16, Dv 0.08, dt 1) from u = 1,
+/// v = 0 with v seeded in squares drawn from `seed`; v's amount at each cell.
+fn gray_scott(feed: f32, kill: f32, steps: u32, seed: u32) -> Vec<f32> {
+    let n = PATCH
+    var u: Vec<f32> = Vec::filled(n * n, 1.0)
+    var v: Vec<f32> = Vec::filled(n * n, 0.0)
+    var rng = Rng::of(Grown { genome: seed, site: Site {}, seed })
+    for _ in 0..24 {
+        let (cx, cy) = (u32(rng.unit() * f32(n)), u32(rng.unit() * f32(n)))
+        for dy in 0..4 {
+            for dx in 0..4 {
+                let k = ((cy + dy) % n) * n + (cx + dx) % n
+                u[k] = 0.5
+                v[k] = 0.25
+            }
+        }
+    }
+    var lu: Vec<f32> = Vec::filled(n * n, 0.0)
+    var lv: Vec<f32> = Vec::filled(n * n, 0.0)
+    for _ in 0..steps {
+        for y in 0..n {
+            for x in 0..n {
+                let k = y * n + x
+                let (l, r) = (y * n + (x + n - 1) % n, y * n + (x + 1) % n)
+                let (d, t) = (((y + n - 1) % n) * n + x, ((y + 1) % n) * n + x)
+                lu[k] = u[l] + u[r] + u[d] + u[t] - 4.0 * u[k]
+                lv[k] = v[l] + v[r] + v[d] + v[t] - 4.0 * v[k]
+            }
+        }
+        for k in 0..(n * n) {
+            let uvv = u[k] * v[k] * v[k]
+            u[k] += 0.16 * lu[k] - uvv + feed * (1.0 - u[k])
+            v[k] += 0.08 * lv[k] + uvv - (feed + kill) * v[k]
+        }
+    }
+    v
+}
+
+/// The moss's patch amount (0 to 1) at `p` (in its tile's cells, any), of cause class `class`
+/// (0 wet, 1 dry): the nearest cell's.
+pub fn moss_tile(class: u32, p: vec2) -> f32 {
+    let n = i32(PATCH)
+    let c = vec2i(floor(p))
+    let (x, y) = (u32(((c.x % n) + n) % n), u32(((c.y % n) + n) % n))
+    let at = min(class, 1) * PATCH * PATCH + y * PATCH + x
+    f32((MOSS[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+}
+
+/// Lichen's crusts (§E4): a diffusion-limited aggregation (Witten and Sander 1981) on a
+/// `PATCH`-a-side torus from eight seeds, walkers stuck where they touch the crust, at build; each
+/// cell's crust a byte (blurred one cell: a crust's edge), four a word.
+@fuel(2 ** 34)
+pub const LICHEN: [u32; PATCH * PATCH / 4] = lichen_patch()
+
+pub fn lichen_patch() -> [u32; PATCH * PATCH / 4] {
+    let n = PATCH
+    var on: Vec<bool> = Vec::filled(n * n, false)
+    var rng = Rng::of(Grown { genome: 13, site: Site {}, seed: 13 })
+    for _ in 0..8 {
+        on[u32(rng.unit() * f32(n * n - 1))] = true
+    }
+    var stuck = 8
+    var tries = 0
+    while stuck < n * n * 2 / 5 && tries < 40000 {
+        tries += 1
+        var x = u32(rng.unit() * f32(n - 1))
+        var y = u32(rng.unit() * f32(n - 1))
+        for _ in 0..400 {
+            let near = on[y * n + (x + 1) % n] || on[y * n + (x + n - 1) % n] ||
+                on[((y + 1) % n) * n + x] || on[((y + n - 1) % n) * n + x]
+            if near && !on[y * n + x] {
+                on[y * n + x] = true
+                stuck += 1
+                break
+            }
+            let r = rng.unit()
+            if r < 0.25 { x = (x + 1) % n } else if r < 0.5 { x = (x + n - 1) % n } else if r < 0.75 {
+                y = (y + 1) % n
+            } else { y = (y + n - 1) % n }
+        }
+    }
+    var out = [0; PATCH * PATCH / 4]
+    for y in 0..n {
+        for x in 0..n {
+            var s = 0.0
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    if on[((y + dy + n - 1) % n) * n + (x + dx + n - 1) % n] {
+                        s += if dx == 1 && dy == 1 { 4.0 } else { 1.0 }
+                    }
+                }
+            }
+            let byte = u32(min(s / 8.0, 1.0) * 255.0)
+            let at = y * n + x
+            out[at / 4] = out[at / 4] | (byte << (8 * (at % 4)))
+        }
+    }
+    out
+}
+
+/// The lichen's crust (0 to 1) at `p` (in its tile's cells, any).
+pub fn lichen_tile(p: vec2) -> f32 {
+    let n = i32(PATCH)
+    let c = vec2i(floor(p))
+    let at = u32(((c.y % n) + n) % n) * PATCH + u32(((c.x % n) + n) % n)
+    f32((LICHEN[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+}
+
+/// The leaf litter's density on the ground (0 to 1, §E4) under a canopy of `canopy` (0 open to 1
+/// closed) in season `season` (0 to 1 from spring: most in autumn's fall, 0.8, least by
+/// midsummer's rot, 0.4): a closed canopy's litter about four times the open's.
+pub fn litter_at(canopy: f32, season: f32) -> f32 {
+    let fall = 0.75 + 0.25 * cos(2.0 * PI * (season - 0.8))
+    clamp((0.18 + 0.82 * canopy) * fall, 0.0, 1.0)
+}
+
+/// How rotten a fallen tree is (0 to 1): the years since it fell over its species' rot time
+/// (`habit.rots`, its years a metre) times its height.
+pub fn rot_of(years: f32, rots: f32, tall: f32) -> f32 {
+    clamp(years / max(rots * tall, 1.0), 0.0, 1.0)
+}
+
+/// The share of a fallen tree's bark gone by its rot (§E4: peeled and fallen as the sapwood under
+/// it rots).
+pub fn bare_share(rot: f32) -> f32 {
+    clamp(1.6 * rot, 0.0, 1.0)
+}
+
+/// The rot past which bracket fungi fruit on a fallen tree, and how many a metre of it at most.
+pub const BRACKETS_FROM: f32 = 0.2
+pub const BRACKETS_A_METRE: f32 = 0.5
+
+/// The bracket fungi on a fallen tree `length` m long, `rot` rotten (§E4): where along it (a share
+/// of its length) and how large (m), drawn from `seed`; none before `BRACKETS_FROM`.
+pub fn fungi_on(rot: f32, length: f32, seed: u32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    if rot < BRACKETS_FROM {
+        return out
+    }
+    let n = u32(ceil(BRACKETS_A_METRE * length * smoothstep(BRACKETS_FROM, 0.7, rot)))
+    var rng = Rng::of(Grown { genome: seed, site: Site {}, seed })
+    for _ in 0..max(n, 1) {
+        out.push(vec2(0.15 + 0.8 * rng.unit(), 0.06 + 0.1 * rng.unit()))
+    }
+    out
 }
 
 // ---- ferns, grass and herbs (§E3) ----------------------------------------------------------------

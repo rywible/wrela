@@ -223,7 +223,7 @@ pub const MAP_PX: f32 = 4.0
 /// The interest check on the bake (#54 §4): its report (`report.json`) and its views
 /// (`views.bin`), shipped for the map lens and the floor's tests; and the map with the check
 /// (`map.bin`, `interest::map_image`), which the play harness shows (M).
-@fuel(2 ** 43)
+@fuel(2 ** 44)
 pub const CHECKED: Shipped = ship("check", checked())
 
 fn checked() -> Vec<(String, Vec<u8>)> {

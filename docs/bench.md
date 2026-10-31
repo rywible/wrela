@@ -3015,3 +3015,35 @@ wood all 24 near trees stand within 40 m, and grown to their full ages (an ancie
 they took 18 s; an individual is grown to 120 years at most (`archetypes::GROWN_AGE`,
 **proposed**: its form is set by then), and the six are ready about 6 s after the tiles. E7's
 budget for the first ring (1,000 ms) is the growth's cost to climb.
+
+## E4 and the grown trees' first lookdev (2026-10-31, toolchain 0.11.1)
+
+E4's small causes on the vale (`the_vales_small_causes_are_placed`, its tiles round its middle):
+4,914 fallen trees and 20,848 bracket fungi on them, 74 % of their bark gone (by each one's rot,
+`growth::rot_of`, `bare_share`); the litter 0.50 deep on average (`litter_at`); 6 % of the ground
+in moss's causes (wet, under the canopy); 4,278 trees old enough for lichen (`lichen_of`).
+
+**The first lit look at the grown trees** (`wrela tool lookbook -- <out> --package examples/vale
+--fast 0 1 2 8 10 11`, against the physical look's record on `main`), and what each pass fixed:
+
+1. Limbs as stacks of flat bandages: every tube's last ring closes to a point, and a grown limb
+   was a chain of two-node tubes. Runs now go on while they turn under 20° (three nodes a tube on
+   twigs, its four points through them; eight on wood 5 cm thick or more, resampled), and a run
+   another carries on past its joint has its end carried 0.6 of its radius into the next.
+2. Twigs as bands: an instance's thickness (its record's girth against its kind's trunk, to 3×)
+   thickened every limb; it now fades from the trunk to the twigs.
+3. A shot's eye inside a near tree's trunk, a forest oak a snake: grown boles wandered a metre.
+   `growth::straighten` takes back 85 % of a bole's wander toward the line from its foot to its
+   crown (its lean into its light kept), none from 60 % of its height up.
+4. Green spirals round the trunks: the bark's moss read in the world's x + z against height; now
+   in the bark's own place, one tile round the limb.
+5. A fallen tree regrown standing on its log, and a veteran grown young (120 years) and
+   stretched to its height: neither is a near individual now (`archetypes::grows_as_itself`).
+6. A ledge round a trunk: a bole cut at a 20° bend, its carried end standing out of the next on
+   the bend's outside. A thick bole is cut only at a turn over 45°.
+
+The fallen trees are a grown trunk laid along +z (the kind's girth, its taper grown) with the
+hand's root plate, and bracket fungi that show past their rot (`Leaves::after`); rotting wood is
+wetter and shadier, so mossier. Still to look at: shot 11 (its first ring takes too long to grow
+for the instrument's wait), the forest birch and pine (poles with tufts), and a low fork's
+crease where two tubes meet.

@@ -176,7 +176,7 @@ impl Tiles for FloorTiles {
         0
     }
 
-    fn grows(self, k: u32) -> bool {
+    fn grows(self, t: land::grow::Tree, k: u32) -> bool {
         false
     }
 
