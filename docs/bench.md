@@ -2881,3 +2881,63 @@ The plan's lever (over 10 %: samples 16–31 halved to 8, the span kept) is take
 samples kept at 16 levels: the nurse tree's early shade still parts its sapling's samples 0–6
 (`a_nurse_trees_shade_is_in_a_saplings_early_light`), and every age of a 1,200-year history
 reads back through the bake.
+
+## E1.2, trees grown and converted (2026-10-30, toolchain 0.11.1)
+
+`engine/tests/growth-trees` (eight tool tests, on the CPU; the specimens from
+`content/trees/genomes.wrela` with seed 1). The conversion `into_plant` keeps a grown graph's
+limbs largest section first, each a `Tube<4>` through two nodes with a point held just past the
+corner between them (the renderer's tangents are no longer than their chords, so the short piece
+holds the curve to the wood: three nodes a tube bowed off thin twigs, the pine at 40 years at
+0.92 with every chain kept). The woody IoU draws the graph's nodes and the plant's tubes through
+the same rasterizer (each a tube, sixteen capsules along `limb_axis`), 384 px on the longer side,
+4 × 4 samples a pixel, by coverage. "Edge" is half the open's light every year.
+
+| Species | Age | Light | Nodes | Chains | IoU at 2,048 limbs | IoU, every chain | Crown volume / leaves' |
+|---|---|---|---|---|---|---|---|
+| oak | 40 | open | 1,736 | 1,058 | 0.991 | 0.991 | 1.001 |
+| oak | 40 | edge | 535 | 354 | 0.990 | 0.990 | 0.998 |
+| oak | 100 | open | 5,799 | 3,338 | **0.913** | 0.996 | 0.993 |
+| oak | 100 | edge | 1,000 | 643 | 0.992 | 0.992 | 1.005 |
+| beech | 40 | open | 1,478 | 857 | 0.994 | 0.994 | 1.005 |
+| beech | 40 | edge | 57 | 41 | 0.990 | 0.990 | 0.998 |
+| beech | 100 | open | 5,073 | 2,841 | **0.940** | 0.997 | 0.996 |
+| beech | 100 | edge | 38 | 29 | 0.993 | 0.993 | 0.999 |
+| birch | 40 | open | 740 | 415 | 0.993 | 0.993 | 1.002 |
+| birch | 40 | edge | 533 | 285 | 0.995 | 0.995 | 0.996 |
+| birch | 100 | open | 2,119 | 1,140 | 0.996 | 0.996 | 0.987 |
+| birch | 100 | edge | 1,726 | 921 | 0.998 | 0.998 | 1.000 |
+| hawthorn | 40 | open | 3,530 | 2,107 | 0.991 | 0.996 | 1.001 |
+| hawthorn | 40 | edge | 107 | 79 | 0.994 | 0.994 | 0.997 |
+| hawthorn | 100 | open | 9,562 | 5,563 | **0.868** | 0.998 | 1.000 |
+| hawthorn | 100 | edge | 20 | 15 | 0.995 | 0.995 | 0.997 |
+| blackthorn | 40 | open | 2,930 | 1,779 | 0.997 | 0.997 | 1.002 |
+| blackthorn | 40 | edge | 8 | 6 | 0.998 | 0.998 | 0.997 |
+| blackthorn | 100 | open | 6,156 | 3,515 | **0.946** | 0.999 | 1.006 |
+| blackthorn | 100 | edge | 4 | 3 | 1.000 | 1.000 | 0.997 |
+| pine | 40 | open | 588 | 331 | 0.991 | 0.991 | 0.998 |
+| pine | 40 | edge | 217 | 121 | 0.996 | 0.996 | 0.998 |
+| pine | 100 | open | 2,615 | 1,436 | 0.997 | 0.997 | 1.014 |
+| pine | 100 | edge | 1,570 | 854 | 0.998 | 0.998 | 0.988 |
+| alder | 40 | open | 1,474 | 824 | 0.995 | 0.995 | 1.009 |
+| alder | 40 | edge | 70 | 42 | 0.996 | 0.996 | 0.999 |
+| alder | 100 | open | 4,276 | 2,316 | 0.988 | 0.998 | 0.997 |
+| alder | 100 | edge | 1,044 | 578 | 0.999 | 0.999 | 0.999 |
+
+**The conversion's IoU (0.97) is Blocked at `MAX_LIMBS` 2,048:** every chain kept, it is 0.990
+or more for every specimen; the cap costs the veterans (the hawthorn at 100 years 0.868, the oak
+0.913). Levers, in order: the conversion drawn through one rasterizer for both silhouettes (it
+had compared one tapered capsule a node with the tubes' sixteen, so the ceiling read 0.94); runs
+fitted with one tube while it stays within a quarter of each node's radius (chains −21 %, the
+ceiling down to 0.95: dropped); two nodes a tube with the corner point (ceilings 0.990–0.999);
+a bud's least resource 0.5 → 1 (a 100-year oak's chains 4,011 → 3,158; 1.2 starves the pine's
+leader, 1.5 the shrubs); `MAX_LIMBS` 512 → 2,048 (4,096 overflows the constants that hold a
+`Plant`: docs/toolchain-gaps.md). The test holds 0.86.
+
+**At half the open's light** the beech, the most shade-tolerant of the seven, hardly grows (38
+nodes at 100 years) and the two thorns stay seedlings: the bud's threshold doesn't carry a
+species' shade tolerance. Tying it to `shed_light` (6.25 × it, from 0.5 to 1) gave the beech 3
+nodes at a quarter's light and the oak's chains back up 30 %: dropped. A branch that doesn't
+grow is shed after `IDLE_YEARS` × `shed_years` only while it's also dim (under twice
+`shed_light`): before, an oak at half light grew 651 nodes by 40 years and collapsed to its seed
+by 100.

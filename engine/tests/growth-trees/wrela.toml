@@ -1,0 +1,9 @@
+# Trees grown (engine::growth::grow_graph and into_plant, docs/plan-world-class-3.md §E1.2): their
+# form from their genome (content/trees/genomes.wrela), their site, their light and their events,
+# measured from the grown graph and plant, on the CPU.
+[package]
+name = "growth_trees_tests"
+
+[dependencies]
+engine = { workspace = true }
+trees = { workspace = true }

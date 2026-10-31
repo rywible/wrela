@@ -6,6 +6,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A constant can't hold a value over about 200 KiB
+
+- **Needed:** a grown veteran tree as a `plant::Plant` (docs/plan-world-class-3.md §E1.2): its woody silhouette within IoU 0.97 of its growth graph takes up to 5,563 limbs (a 100-year hawthorn), so `MAX_LIMBS` at 4,096 or more, a `Plant` of 256 KiB.
+- **What happens:** toolchain 0.11.1 traps computing the constants that hold a `Plant` (`trees::kinds`' `SHAPES`, which builds each kind's plant, and `FALLEN_LIMBS`): "computing the constant `SHAPES` trapped: an index out of range, an integer overflow, or a value too large for the stack". At `MAX_LIMBS` 2,048 (128 KiB) they compute.
+- **Found:** 2026-10-30, raising `MAX_LIMBS` for E1.2.
+- **Meanwhile:** `MAX_LIMBS` is 2,048; the thinnest limbs past it are drawn by the crown's clumps, and the conversion's IoU at 2,048 is the measured floor (0.87, docs/bench.md "E1.2"), the plan's 0.97 Blocked.
+- **Status:** open: a larger stack for constant evaluation, or values of that size held off it.
+
 ### A driven frame doesn't say its passes' targets or GPU times
 
 - **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.
