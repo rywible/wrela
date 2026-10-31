@@ -11,7 +11,7 @@
 use course::{COURSES, HOME, LEVELS, WETLANDS, course}
 use feel::HZ
 use replay::{
-    BOARD, Board, MOST_RUNS, MOST_TICKS, Replay, YOU, board, checked, length, tool_assisted,
+    BOARD, Board, MOST_RUNS, MOST_TICKS, Replay, YOU, board, checked, plausible, tool_assisted,
 }
 use std::serialize::{LoadError, Serialize, load, save}
 
@@ -21,21 +21,16 @@ pub const SAVE: Text = "capybara/save"
 /// The progress's version.
 const VERSION: u32 = 1
 
-/// How many snacks each course has, counted as the game is built, so the session program, which
-/// reads the progress, needn't carry the courses.
-const SNACKS: [u32; COURSES] = snack_counts()
+/// Each course's snacks, a bit each (`Course::every_snack`), worked out as the game is built, so
+/// the session program, which reads the progress, needn't carry the courses.
+const SNACKS: [u32; COURSES] = snack_masks()
 
-fn snack_counts() -> [u32; COURSES] {
+fn snack_masks() -> [u32; COURSES] {
     var out = [0; COURSES]
     for c in 0..COURSES {
-        out[c] = course(c).snacks.len()
+        out[c] = course(c).every_snack()
     }
     out
-}
-
-/// Course `c`'s snacks, a bit each.
-fn every_snack(c: u32) -> u32 {
-    if SNACKS[c] >= 32 { 0xffffffff } else { (1 << SNACKS[c]) - 1 }
 }
 
 /// A course's record: its best any% time (ticks, 0 for none) and the snacks of the run that found
@@ -73,7 +68,7 @@ impl Progress {
         if r.best == 0 || ticks < r.best {
             r.best = ticks
         }
-        let all = every_snack(c)
+        let all = SNACKS[c]
         if (snacks & all).count_ones() > r.found.count_ones() {
             r.found = snacks & all
         }
@@ -115,7 +110,7 @@ pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
     }
     for c in 0..COURSES {
         let r = p.records[c]
-        if r.best > MOST_TICKS || (r.found & !every_snack(c)) != 0 {
+        if r.best > MOST_TICKS || (r.found & !SNACKS[c]) != 0 {
             return None
         }
     }
@@ -128,7 +123,7 @@ pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
         return None
     }
     for r in p.runs.runs {
-        if r.who != YOU || r.course >= COURSES || r.ticks == 0 || length(r) != Some(r.ticks) {
+        if r.who != YOU || !plausible(r) {
             return None
         }
     }
@@ -168,9 +163,7 @@ pub fn clock_text(ticks: u32) -> String {
     let s = hundredths / 100
     let secs = s % 60
     let tail = hundredths % 100
-    let pad = if secs < 10 { "0" } else { "" }
-    let tail_pad = if tail < 10 { "0" } else { "" }
-    f"{s / 60}:{pad}{secs}.{tail_pad}{tail}"
+    f"{s / 60}:{secs:02}.{tail:02}"
 }
 
 /// One line for the console's save list: the levels finished, the snacks found, and the best
@@ -184,7 +177,7 @@ pub fn describe(p: Progress) -> String {
     var snacks = 0
     for c in 0..LEVELS {
         found += p.records[c].found.count_ones()
-        snacks += SNACKS[c]
+        snacks += SNACKS[c].count_ones()
     }
     var line = String::from(f"{done} of {LEVELS} levels · {found} of {snacks} snacks")
     if p.game > 0 {

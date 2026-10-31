@@ -399,7 +399,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
-    store_runs(mut s, dt)
+    store_progress(mut s, dt)
     store_settings(mut s, dt)
     if live_snap.finished > 0 {
         // The best before this run, before it's kept among the runs.
@@ -483,11 +483,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         }
     }
     let aspect = screen.x / max(screen.y, 1.0)
-    var half = half_view(aspect)
-    var eye = framed(s.camera, half, c.ends)
-    if HERO {
-        half = half / HERO_ZOOM
-        eye = snap.at + vec2(-half.x * 0.45, half.y * 0.2)
+    let half = if HERO { half_view(aspect) / HERO_ZOOM } else { half_view(aspect) }
+    let eye = if HERO { snap.at + vec2(-half.x * 0.45, half.y * 0.2) } else {
+        framed(s.camera, half, c.ends)
     }
     react(mut s.cast, snap, c, dt, eye, half)
     // What happened, to the voice.
@@ -1110,7 +1108,7 @@ fn keep_finished(s: mut Lab, snap: Snap) {
         s.storing.unsaved = true
     }
     if let Some(r) = replay(snap, YOU) {
-        if verify(r) && s.progress.runs.add(r.clone()) {
+        if verify(r) && s.progress.runs.add(take r) {
             s.storing.unsaved = true
             s.trail_of = 0
         }
@@ -1164,10 +1162,10 @@ impl Storing {
     }
 }
 
-/// Reads the stored runs once they load, `dt` seconds after the last frame, and stores them when
-/// they've changed, one store at a time, and only once the stored ones are read or are known to
+/// Reads the stored progress once it loads, `dt` seconds after the last frame, and stores it when
+/// it's changed, one store at a time, and only once the stored ones are read or are known to
 /// be none (`IoError::missing`). A load or a store that failed is made again (`Storing`).
-fn store_runs(s: mut Lab, dt: f32) {
+fn store_progress(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading {
         Some(p) => loaded = p.poll(),
@@ -1207,7 +1205,7 @@ fn store_runs(s: mut Lab, dt: f32) {
 }
 
 /// Reads the stored settings once they load, and stores them when they've changed, as the runs
-/// are (`store_runs`). Settings changed before the stored ones are read stay as changed.
+/// are (`store_progress`). Settings changed before the stored ones are read stay as changed.
 fn store_settings(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading_settings {

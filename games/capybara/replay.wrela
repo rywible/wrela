@@ -104,11 +104,17 @@ pub fn length(r: Replay) -> Option<u32> {
     Some(n)
 }
 
+/// Whether `r` could be a run, before it's played: of a course, of some ticks, no longer than
+/// `MOST_TICKS`, and as long as its pads say.
+pub fn plausible(r: Replay) -> bool {
+    r.course < COURSES && r.ticks > 0 && length(r) == Some(r.ticks)
+}
+
 /// Whether `r` plays, on the sim, to the goal on the tick it says, with the snacks and the deaths
-/// it says: what it claims is what the rules make of its pads. A run of no ticks, or longer than
-/// `MOST_TICKS`, doesn't, and isn't played.
+/// it says: what it claims is what the rules make of its pads. A run that isn't `plausible`
+/// doesn't, and isn't played.
 pub fn verify(r: Replay) -> bool {
-    if r.course >= COURSES || r.who > HUMAN || r.ticks == 0 || length(r) != Some(r.ticks) {
+    if r.who > HUMAN || !plausible(r) {
         return false
     }
     let w = played(r, r.ticks)

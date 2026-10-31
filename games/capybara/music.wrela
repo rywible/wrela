@@ -81,7 +81,7 @@ const INTRO = score("intro", meter(beats: 4, unit: 4))
     )
 
 /// The theme's melody and its bass, which the console's home plays too, softly, on its own bell
-/// (`theme.txt`, which route/design.wrela's `the_consoles_theme_is_the_games` holds to these).
+/// (`theme.txt`, which route/tests.wrela's `the_consoles_theme_is_the_games` holds to these).
 pub const THEME_MELODY: [Text; 4] = [
     "d5/8 !mf c5 g4/4 e5/2 | d5/8 c5 g4/4 r/4 b4/4 !accent ~ |",
     "b4/4 d5/8 c5 g4/2 | f5/4. f5/8 e5/4 d5/4 !accent ~ |",
