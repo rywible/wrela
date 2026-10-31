@@ -15,6 +15,55 @@ pub enum Json: Clone {
     Obj(Vec<(String, Json)>),
 }
 
+/// Node `n` of a document std::json read, as a value: none if it holds a number that isn't a whole
+/// one from 0 (which a Wrangler configuration has no need of).
+pub fn from_doc(doc: std::json::Doc, n: u32) -> Option<Json> {
+    match doc.kind(n) {
+        std::json::Kind::Null => Some(Json::Null),
+        std::json::Kind::Bool => Some(Json::Bool(doc.is_true(n))),
+        std::json::Kind::Num => {
+            let v = doc.num(n)?
+            if v < 0.0 || v != floor(v) || v > 9007199254740991.0 {
+                return None
+            }
+            Some(Json::Int(u64(v)))
+        },
+        std::json::Kind::Text => Some(Json::Text(doc.text(n)?)),
+        std::json::Kind::List => {
+            var out: Vec<Json> = Vec::new()
+            for i in 0..doc.count(n) {
+                out.push(from_doc(doc, doc.at(n, i)?)?)
+            }
+            Some(Json::List(take out))
+        },
+        std::json::Kind::Obj => {
+            var out: Vec<(String, Json)> = Vec::new()
+            for (k, v) in doc.members(n) {
+                out.push((k.clone(), from_doc(doc, v)?))
+            }
+            Some(Json::Obj(take out))
+        },
+    }
+}
+
+/// Member `key` of an object's members, if it has one.
+pub fn member_of(members: [(String, Json)], key: str) -> Option<Json> {
+    for (k, v) in members {
+        if k.as_str() == key {
+            return Some(v.clone())
+        }
+    }
+    None
+}
+
+/// Member `key` of `j`, if it's an object that has one.
+pub fn member_of_obj(j: Json, key: str) -> Option<Json> {
+    match j {
+        Json::Obj(members) => member_of(members, key),
+        _ => None,
+    }
+}
+
 /// A text value.
 pub fn text(s: str) -> Json {
     Json::Text(String::from(s))

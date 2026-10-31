@@ -1,0 +1,584 @@
+// A player's name on wrela: a title, a made-up noun and an epithet, all from the lists below
+// ("Sir Wobblesnout the Unhurried"). Nobody types a name: the console's server draws one at
+// random when an account is made, and the player is knighted with it (a few draws again before
+// it is fixed). So no name can say anything a person wrote, and none holds a real name: a name is
+// four numbers into these lists, in the picture book's tone (games/capybara/design.md, "Accounts
+// and leaderboards"; docs/toolchain-gaps.md has none: this is a choice, not a limit).
+//
+// The lists are curated by hand. Their test checks every noun the halves can make, every title
+// and every epithet against a list of stems a name must never hold, and that no two choices give
+// the same text, so a name is unique when its four numbers are (the server keeps them unique).
+
+use std::serialize::Serialize
+
+/// A name: an index into each list.
+pub struct Name: Copy + Eq + Serialize {
+    pub title: u32,
+    pub front: u32,
+    pub back: u32,
+    pub epithet: u32,
+}
+
+pub const TITLES: [Text; 48] = [
+    "Sir",
+    "Dame",
+    "Lord",
+    "Lady",
+    "Baron",
+    "Baroness",
+    "Count",
+    "Countess",
+    "Duke",
+    "Duchess",
+    "Viscount",
+    "Earl",
+    "Captain",
+    "Admiral",
+    "Commodore",
+    "Professor",
+    "Doctor",
+    "Keeper",
+    "Head Keeper",
+    "Warden",
+    "Mayor",
+    "Squire",
+    "Chancellor",
+    "Envoy",
+    "Marshal",
+    "Sheriff",
+    "Councillor",
+    "Treasurer",
+    "Grand Vizier",
+    "High Steward",
+    "Chief",
+    "Sergeant",
+    "Lieutenant",
+    "Colonel",
+    "Archivist",
+    "Librarian",
+    "Conductor",
+    "Ranger",
+    "Navigator",
+    "Herald",
+    "Steward",
+    "Bandleader",
+    "Lighthouse Keeper",
+    "Harbourmaster",
+    "Postmaster",
+    "Stationmaster",
+    "Gardener Royal",
+    "Chief Taster",
+]
+
+/// A noun's first half.
+pub const FRONTS: [Text; 64] = [
+    "Wobble",
+    "Puddle",
+    "Snuffle",
+    "Waddle",
+    "Burble",
+    "Muddle",
+    "Dapple",
+    "Yuzu",
+    "Tumble",
+    "Wiggle",
+    "Doodle",
+    "Snooze",
+    "Bubble",
+    "Pickle",
+    "Noodle",
+    "Crumble",
+    "Toffee",
+    "Biscuit",
+    "Sprout",
+    "Pebble",
+    "Thistle",
+    "Clover",
+    "Bramble",
+    "Mossy",
+    "Turnip",
+    "Radish",
+    "Parsnip",
+    "Barley",
+    "Muffin",
+    "Pudding",
+    "Custard",
+    "Dumpling",
+    "Pumpkin",
+    "Cabbage",
+    "Teacup",
+    "Kettle",
+    "Bonbon",
+    "Mitten",
+    "Velvet",
+    "Paddle",
+    "Ripple",
+    "Drizzle",
+    "Splosh",
+    "Whisker",
+    "Fuzzy",
+    "Plum",
+    "Fig",
+    "Melon",
+    "Honey",
+    "Treacle",
+    "Marble",
+    "Pepper",
+    "Nutmeg",
+    "Mango",
+    "Lettuce",
+    "Carrot",
+    "Acorn",
+    "Hazel",
+    "Sunny",
+    "Breezy",
+    "Drowsy",
+    "Dozy",
+    "Snug",
+    "Bobble",
+]
+
+/// A noun's second half.
+pub const BACKS: [Text; 48] = [
+    "snout",
+    "paw",
+    "belly",
+    "whiskers",
+    "toes",
+    "nose",
+    "ears",
+    "cheeks",
+    "puff",
+    "fluff",
+    "foot",
+    "snoot",
+    "flop",
+    "trot",
+    "nibble",
+    "munch",
+    "chomp",
+    "bean",
+    "bun",
+    "loaf",
+    "nugget",
+    "sock",
+    "slipper",
+    "hat",
+    "britches",
+    "bonnet",
+    "boots",
+    "wellies",
+    "mop",
+    "chops",
+    "tum",
+    "noggin",
+    "knees",
+    "splash",
+    "soak",
+    "float",
+    "wallow",
+    "dozer",
+    "napper",
+    "muncher",
+    "nibbler",
+    "wader",
+    "plodder",
+    "potter",
+    "muzzle",
+    "tuft",
+    "hopper",
+    "wick",
+]
+
+pub const EPITHETS: [Text; 128] = [
+    "Unhurried",
+    "Damp",
+    "Splendid",
+    "Magnificent",
+    "Soggy",
+    "Unbothered",
+    "Serene",
+    "Majestic",
+    "Peckish",
+    "Well-Rested",
+    "Fashionably Late",
+    "Slightly Wet",
+    "Thoroughly Soaked",
+    "Imperturbable",
+    "Somewhat Brave",
+    "Unflappable",
+    "Eventually Punctual",
+    "Gloriously Round",
+    "Sleepy",
+    "Snack-Seeking",
+    "Yuzu-Crowned",
+    "Dignified",
+    "Bewildered",
+    "Very Calm",
+    "Calm Beyond Reason",
+    "Ever-Hungry",
+    "Contented",
+    "Easily Pleased",
+    "Wise",
+    "Bold",
+    "Mostly Brave",
+    "Lionhearted",
+    "Pondering",
+    "Thoughtful",
+    "Undaunted",
+    "Unruffled",
+    "Splashy",
+    "Waterproof",
+    "Mostly Waterproof",
+    "Very Round",
+    "Rotund",
+    "Plump",
+    "Buoyant",
+    "Wallowing",
+    "Snoozing",
+    "Napping",
+    "Prompt",
+    "Tardy",
+    "Leisurely",
+    "Meandering",
+    "Dawdling",
+    "Unstoppable",
+    "Somewhat Stoppable",
+    "Excellent",
+    "Adequate",
+    "Pretty Good",
+    "Tremendous",
+    "Small",
+    "Enormous",
+    "Medium-Sized",
+    "Fuzzy",
+    "Bristly",
+    "Whiskered",
+    "Gentle",
+    "Polite",
+    "Courteous",
+    "Gracious",
+    "Generous",
+    "Hospitable",
+    "Agreeable",
+    "Amiable",
+    "Jolly",
+    "Cheerful",
+    "Merry",
+    "Blissful",
+    "Freshly Bathed",
+    "Well-Soaked",
+    "Squeaky Clean",
+    "Puddle-Proof",
+    "Goose-Defying",
+    "Pigeon-Wary",
+    "Caiman-Dodging",
+    "Seagull-Chasing",
+    "Carrot-Finding",
+    "Snack-Fetching",
+    "Twice-Jumping",
+    "Sliding",
+    "Swift",
+    "Swiftish",
+    "Quick",
+    "Zoomy",
+    "Unhasty",
+    "Fastest Afloat",
+    "Bravest Ashore",
+    "Kindly",
+    "Steadfast",
+    "Patient",
+    "Ponderous",
+    "Resplendent",
+    "Benevolent",
+    "Quietly Confident",
+    "Loudly Confident",
+    "Hopeful",
+    "Optimistic",
+    "Unsinkable",
+    "Barely Awake",
+    "Wide Awake",
+    "Early Riser",
+    "Late Sleeper",
+    "First of Her Name",
+    "First of His Name",
+    "First of Their Name",
+    "Last to Leave",
+    "Bringer of Snacks",
+    "Keeper of Yuzus",
+    "Lord of the Puddle",
+    "Friend to Geese",
+    "Terror of Pigeons",
+    "Admired by Ducks",
+    "Beloved of Otters",
+    "Wanderer",
+    "Explorer",
+    "Navigator",
+    "Adventurous",
+    "Courageous",
+    "Dashing",
+    "Plucky",
+    "Fearless",
+]
+
+/// How many names there are.
+pub fn count() -> u64 {
+    u64(TITLES.len()) * u64(FRONTS.len()) * u64(BACKS.len()) * u64(EPITHETS.len())
+}
+
+/// The longest a name's text can be, in bytes: what the longest of each list makes.
+pub const LONGEST: u32 = 72
+
+/// The name that `seed` draws (eight random bytes, as a number): each part by its share of the
+/// seed. Every name is as likely as any other, to within one part in 2^40.
+pub fn draw(seed: u64) -> Name {
+    var x = seed
+    let title = u32(x % u64(TITLES.len()))
+    x = x / u64(TITLES.len())
+    let front = u32(x % u64(FRONTS.len()))
+    x = x / u64(FRONTS.len())
+    let back = u32(x % u64(BACKS.len()))
+    x = x / u64(BACKS.len())
+    let epithet = u32(x % u64(EPITHETS.len()))
+    Name { title, front, back, epithet }
+}
+
+/// Whether `n`'s parts are all in their lists.
+pub fn valid(n: Name) -> bool {
+    n.title < TITLES.len() &&
+        n.front < FRONTS.len() &&
+        n.back < BACKS.len() &&
+        n.epithet < EPITHETS.len()
+}
+
+/// The noun of `n`: its two halves together ("Wobblesnout").
+pub fn noun(n: Name) -> String {
+    f"{FRONTS[n.front]}{BACKS[n.back]}"
+}
+
+/// `n` as the player sees it: "Sir Wobblesnout the Unhurried". A part out of its list is shown as
+/// nothing, never read past it.
+pub fn text(n: Name) -> String {
+    if !valid(n) {
+        return String::new()
+    }
+    f"{TITLES[n.title]} {noun(n)} the {EPITHETS[n.epithet]}"
+}
+
+/// `n` as a store key's bytes: its four parts, big-endian, so each name has one key.
+pub fn key(n: Name) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(8)
+    for part in [n.title, n.front, n.back, n.epithet] {
+        out.push(u8(part >> 8))
+        out.push(u8(part & 255))
+    }
+    out
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// Stems that no part of a name may hold, in any case: crude, cruel or hateful words, and short
+/// ones that hide in longer words (which is why "Grass", "Cucumber" and "Titmouse" aren't in the
+/// lists). Kept as stems so a word's other forms are caught too.
+const NEVER: [Text; 40] = [
+    "ass",
+    "arse",
+    "butt",
+    "bum",
+    "shit",
+    "fuck",
+    "cunt",
+    "cock",
+    "dick",
+    "piss",
+    "tit",
+    "twat",
+    "wank",
+    "fag",
+    "nig",
+    "rape",
+    "sex",
+    "porn",
+    "nazi",
+    "hitler",
+    "kkk",
+    "slut",
+    "whore",
+    "bitch",
+    "bastard",
+    "damn",
+    "hell",
+    "crap",
+    "poo",
+    "pee",
+    "cum",
+    "jizz",
+    "spunk",
+    "nude",
+    "naked",
+    "kill",
+    "die",
+    "dead",
+    "drug",
+    "booze",
+]
+
+/// `s` in lower case, ASCII only.
+fn lower(s: str) -> String {
+    var out = String::new()
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        out.push_byte(if b >= 65 && b <= 90 { b + 32 } else { b })
+    }
+    out
+}
+
+/// Why `s` can't be part of a name, if it can't: a stem it holds, or a character other than a
+/// letter, a space or a hyphen.
+fn problem(s: str) -> Option<String> {
+    if s.is_empty() {
+        return Some(String::from("an empty part"))
+    }
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        let letter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+        if !letter && b != 32 && b != 45 {
+            return Some(f"`{s}` holds a character a name doesn't")
+        }
+    }
+    let low = lower(s)
+    for stem in NEVER {
+        if low.as_str().find(stem).is_some() {
+            return Some(f"`{s}` holds `{stem}`")
+        }
+    }
+    None
+}
+
+/// Whether `xs` holds the same text twice, ignoring case.
+fn repeats(xs: [String]) -> Option<String> {
+    var sorted: Vec<String> = Vec::new()
+    for x in xs {
+        sorted.push(lower(x.as_str()))
+    }
+    sorted.sort_by(|a, b| a.as_str() < b.as_str())
+    for i in 1..sorted.len() {
+        if sorted[i] == sorted[i - 1] {
+            return Some(sorted[i].clone())
+        }
+    }
+    None
+}
+
+fn texts(xs: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for x in xs {
+        out.push(String::from(x))
+    }
+    out
+}
+
+/// The first problem of any part of `list`.
+fn listed_problem(list: [Text]) -> Option<String> {
+    for part in list {
+        if let Some(why) = problem(part) {
+            return Some(why)
+        }
+    }
+    None
+}
+
+/// The index of `list`'s longest part.
+fn longest_of(list: [Text]) -> u32 {
+    var best = 0
+    for i in 0..list.len() {
+        if list[i].len() > list[best].len() {
+            best = i
+        }
+    }
+    best
+}
+
+@test
+fn every_part_and_every_noun_the_halves_make_is_clean() {
+    for why in [
+        listed_problem(TITLES),
+        listed_problem(FRONTS),
+        listed_problem(BACKS),
+        listed_problem(EPITHETS),
+    ] {
+        if let Some(w) = why {
+            panic(w.as_str())
+        }
+    }
+    // Each title and epithet is checked above; a noun joins two halves, so a stem could form
+    // across the join: each of the 3,072 nouns is checked whole.
+    for f in 0..FRONTS.len() {
+        for b in 0..BACKS.len() {
+            let n = Name { title: 0, front: f, back: b, epithet: 0 }
+            if let Some(why) = problem(noun(n).as_str()) {
+                panic(why.as_str())
+            }
+        }
+    }
+}
+
+@test
+fn no_two_choices_give_the_same_name() {
+    for same in [
+        repeats(texts(TITLES)),
+        repeats(texts(FRONTS)),
+        repeats(texts(BACKS)),
+        repeats(texts(EPITHETS)),
+    ] {
+        if let Some(x) = same {
+            panic(f"`{x}` is in a list twice")
+        }
+    }
+    // Two halves could join to another pair's noun ("Pud" + "dlesnout"): every noun is unique, so a
+    // name's text is unique when its parts are, and the server keeps the parts unique.
+    var nouns: Vec<String> = Vec::new()
+    for f in 0..FRONTS.len() {
+        for b in 0..BACKS.len() {
+            nouns.push(noun(Name { title: 0, front: f, back: b, epithet: 0 }))
+        }
+    }
+    if let Some(same) = repeats(nouns) {
+        panic(f"the noun `{same}` is made twice")
+    }
+    // Two names differ in their keys when their parts do.
+    let a = key(Name { title: 1, front: 0, back: 0, epithet: 0 })
+    let b = key(Name { title: 0, front: 1, back: 0, epithet: 0 })
+    assert(a != b && a.len() == 8)
+}
+
+@test
+fn there_are_millions_of_names_and_none_is_too_long() {
+    assert(count() > 18000000, f"{count()} names")
+    let n = Name {
+        title: longest_of(TITLES),
+        front: longest_of(FRONTS),
+        back: longest_of(BACKS),
+        epithet: longest_of(EPITHETS),
+    }
+    let longest = text(n).len()
+    assert(longest <= LONGEST, f"the longest name is {longest} bytes: {text(n)}")
+}
+
+@test
+fn a_seed_draws_each_part_from_its_own_digits() {
+    let n = draw(0)
+    assert(text(n) == String::from("Sir Wobblesnout the Unhurried"), text(n).as_str())
+    // The next title, then the next front half, as the seed counts up in each list's base.
+    assert(draw(1).title == 1 && draw(1).front == 0)
+    assert(draw(u64(TITLES.len())).front == 1 && draw(u64(TITLES.len())).title == 0)
+    let last = draw(count() - 1)
+    assert(
+        last.title == TITLES.len() - 1 &&
+            last.front == FRONTS.len() - 1 &&
+            last.back == BACKS.len() - 1 &&
+            last.epithet == EPITHETS.len() - 1,
+    )
+    assert(valid(draw(0xffffffffffffffff)), "any seed draws a name")
+    assert(text(Name { title: 99, front: 0, back: 0, epithet: 0 }).is_empty())
+}

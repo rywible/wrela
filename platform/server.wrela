@@ -1,0 +1,2694 @@
+// The console's server: accounts, sessions and verified leaderboards, for every wrela game
+// (games/capybara/design.md, "Accounts and leaderboards"). The console's program runs it as its
+// server build, on Cloudflare (toolchain 0.13.0's host: a Durable Object holds the instance and its
+// store), answering HTTP requests to wrela.dev's `/api/` (wire.wrela). A game reaches it only through
+// the console (link.wrela), since a server takes only its own program's clients
+// (docs/toolchain-gaps.md, "A server takes one program's clients").
+//
+// It is a state machine over its host, so tests can run it on a fake store: what it asks of the
+// host comes out as `Command`s (the store's reads and writes, random bytes, a signature to check,
+// the responses), and the host's answers go back in by their ticket (`answer`). The console's
+// `serve` (console_server) carries the commands out through std::store, std::crypto and std::http,
+// one call at a time; a read is answered on the call after the one that asked, and the host commits
+// a call's writes when it returns, before its responses go.
+//
+// **A request is a short connection**: it opens, gives its one request (`http`), and takes one
+// response. Every request is answered: one whose work ends without a reply is refused at the end of
+// the call (`end`). Its session is the `__Host-session` cookie, read again on each request.
+//
+// What it keeps is in the store (account.wrela's keys), never only in memory: the host may drop the
+// instance between requests, and does after a failed call. A ceremony's challenge is kept in the
+// store too, under the token of the browser that asked for it (its `__Host-ceremony` cookie), so it
+// is used once, by that browser. In memory are only what may be lost: the requests under way, which
+// ceremonies and names were used in calls whose writes a read may not yet see, a limit on recovery
+// tries across everyone (the host limits each client: docs/toolchain.md), the run being verified, and
+// which requests wait for their uploads.
+//
+// **Passkeys** (WebAuthn Level 3, §7, through std::webauthn; the signature through std::crypto):
+// every check the design asks for. A credential belongs to one account; an assertion is taken only
+// for its credential's account, and with the account's handle when the browser gives one.
+//
+// **Runs** are verified by playing them again on the board's build (the game's `Game`): the server
+// works out the time and the category itself, and refuses a run whose claim the rules can't make.
+// An upload is bounded (its bytes, its ticks, an account's runs an hour, the queue's length), and
+// the queue plays one run at a time, `PLAY_TICKS` ticks a call, so a run an attacker chose holds up
+// the server's other requests a bounded time each call. The queue is in the store, so it goes on
+// after the instance is dropped; the upload's request is answered when its run is.
+//
+// **The clock** is the host's wall clock: each request's time (`Asked::time`), never going back
+// while the instance runs. Work no request waits on (the queue) needs no time.
+
+use account::{
+    Account, CHALLENGE_BYTES, CHALLENGE_LIFE, CODES, CODE_BYTES, CSRF_BYTES, FRESH, GameToken,
+    HANDLE_BYTES, HOUR, MINUTE, MOST_PASSKEYS, OF_BEST, OF_CODE, OF_HOUR, OF_PASSKEY, OF_RUN,
+    OF_SEEN, OF_SESSION, OF_TOKEN, Passkey, REROLLS, Recovery, SESSION_LIFE, Session, TOKEN_BYTES,
+    TOKEN_LIFE, account_key, ceremonies, ceremony_key, code, code_hash, code_key, hashed, hex,
+    indexed, name_key, passkey_key, public_id, session_key, token_key, u32_at, u64_at,
+    under_account, with_bytes, CEREMONY_BYTES,
+}
+use names::{Name, draw}
+use std::collections::replace
+use std::crypto::{Signature, verified}
+use std::fmt::json_text
+use std::serialize::{LoadError, Serialize, load, save}
+use std::store::{append_u32, append_u64, entries, past, value}
+use std::webauthn::{Credential, Expected, assertion, base64url, registration}
+use wire::{
+    ADD_PASSKEY, ANY, BOARD_PAGE, EXPORT_PART, FULL, MOST_REPLAY, Me, PasskeyView, Place, REGISTER,
+    Reply, Request, SIGN_IN, SessionView, WHOLE, public,
+}
+
+// ---- what a game gives the server ----------------------------------------------------------------
+
+/// What a replay says it is, read without playing it: its course and its time in ticks.
+pub struct Claim: Copy {
+    pub course: u32,
+    pub ticks: u32,
+}
+
+/// What playing a replay made of it: its time, and whether it counts for 100%.
+pub struct Outcome: Copy {
+    pub ticks: u32,
+    pub full: bool,
+}
+
+/// A game's boards: its name, its board's version (its build of play: a change to play starts a
+/// new one, games/capybara/design.md, "Physics is locked at release"), its courses, and how to
+/// check a replay.
+pub trait Game {
+    /// A replay being played.
+    type Run
+
+    /// The game's key (`capybara`), as its catalog names it.
+    fn id(self) -> Text
+
+    /// The board version this build verifies for.
+    fn board(self) -> u32
+
+    /// How many courses have boards: courses 0 to this, less one.
+    fn courses(self) -> u32
+
+    /// What `replay` claims, if it reads as one of the game's replays and is within its bounds
+    /// (its course, its length): `Err` says why not, for a person.
+    fn claim(self, replay: [u8]) -> Result<Claim, Text>
+
+    /// A replay that `claim` took, ready to play.
+    fn start(self, replay: [u8]) -> Self::Run
+
+    /// Plays at most `ticks` more ticks of `run`: none until it has played all of it, then what it
+    /// came to, or why its claim isn't what the rules make of it.
+    fn play(self, run: mut Self::Run, ticks: u32) -> Option<Result<Outcome, Text>>
+}
+
+// ---- bounds --------------------------------------------------------------------------------------
+
+/// Runs an account may upload an hour.
+pub const RUNS_AN_HOUR: u32 = 10
+/// Runs waiting to be verified, and their ticks, past which an upload is refused. An upload's
+/// request is answered once its run is verified, and the host gives a request 30 s: the queue's
+/// ticks bound that wait (about 20 µs a tick on Cloudflare's runtime here, docs/bench.md, so about
+/// 10 s), and are more than two of the longest runs a game takes.
+pub const MOST_QUEUED: u32 = 32
+pub const QUEUE_TICKS: u32 = 500000
+/// Ticks of a run played a call. The capybara's sim took about 12 µs a tick on wrela-serve
+/// (docs/bench.md, "The console's server"), so this is about 5 ms a call: the server's other
+/// requests wait no longer than that behind a run, and a call stays far inside Workers Paid's CPU
+/// time (30 s an invocation: developers.cloudflare.com/durable-objects/platform/limits/).
+pub const PLAY_TICKS: u32 = 400
+/// Recovery codes everyone may try in a minute. Each client's own limit is the host's, by address
+/// (`WRELA_LIMITS`, studio/release), which the server is never told.
+pub const ALL_TRIES: u32 = 30
+/// How long a public read may be kept by a cache, in seconds: a board's page (it changes as runs
+/// come), and a run's replay (it changes only when its account is deleted). A deleted account's
+/// cached copies are gone within the longer, as the privacy policy says (console/legal.wrela).
+pub const BOARD_AGE: u32 = 30
+pub const RUN_AGE: u32 = 300
+/// An account's runs read for an export at a time.
+pub const EXPORT_RUNS: u32 = 64
+/// Expired ceremonies cleared as a new one begins.
+pub const PRUNED: u32 = 16
+/// The most places a run's place is counted to.
+pub const MOST_PLACE: u32 = 1000
+
+// ---- what the server asks of its host ------------------------------------------------------------
+
+pub enum Command: Clone {
+    Get { ticket: u32, key: Vec<u8> },
+    Scan { ticket: u32, from: Vec<u8>, to: Vec<u8>, limit: u32, down: bool },
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Delete { key: Vec<u8> },
+    Random { ticket: u32, n: u32 },
+    Verify {
+        ticket: u32,
+        algorithm: Signature,
+        key: Vec<u8>,
+        message: Vec<u8>,
+        signature: Vec<u8>,
+    },
+    /// The one answer to request `conn`: a `Reply`'s bytes, the cookies it sets, and how long a
+    /// cache may keep it (0: none may).
+    Respond { conn: u32, body: Vec<u8>, cookies: Vec<Cookie>, public: u32 },
+}
+
+/// A first-party session cookie (`std::http::session_cookie`): `__Host-<name>`, holding `value`,
+/// for `max_age` seconds (0 clears it).
+pub struct Cookie: Clone {
+    pub name: String,
+    pub value: Vec<u8>,
+    pub max_age: u32,
+}
+
+/// The session's and a ceremony's cookies.
+pub const SESSION: Text = "session"
+pub const CEREMONY: Text = "ceremony"
+
+/// A request, as the host gave it: when it was taken (the host's wall clock, milliseconds since the
+/// Unix epoch), whether it may be cached (a `GET`), its cookies' values, and its body (a `Request`).
+pub struct Asked: Clone {
+    pub time: u64,
+    pub public: bool,
+    pub session: Vec<u8>,
+    pub ceremony: Vec<u8>,
+    pub body: Vec<u8>,
+}
+
+// ---- records of runs -----------------------------------------------------------------------------
+
+/// A verified run (`u/<run>`): whose, which board, its course, time and categories, and its
+/// replay.
+pub struct Run: Clone + Serialize {
+    pub id: u64,
+    pub account: u64,
+    pub game: String,
+    pub board: u32,
+    pub course: u32,
+    pub ticks: u32,
+    pub full: bool,
+    pub uploaded: u64,
+    pub replay: Vec<u8>,
+}
+
+/// A run waiting to be verified (`q/<uploaded>/<run>`), and who to tell.
+pub struct Queued: Clone + Serialize {
+    pub id: u64,
+    pub account: u64,
+    pub name: String,
+    pub game: String,
+    pub board: u32,
+    pub course: u32,
+    pub ticks: u32,
+    pub uploaded: u64,
+    pub replay: Vec<u8>,
+}
+
+/// An account's best on a board (`a/<id>/b<board key>`): the run, its time, and the board's key
+/// that ranks it, to replace it.
+pub struct Best: Clone + Serialize {
+    pub run: u64,
+    pub ticks: u32,
+    pub ranked: Vec<u8>,
+}
+
+/// A place on a board's ranking (`b/...`): the name it shows and the run to watch.
+pub struct Ranked: Clone + Serialize {
+    pub name: String,
+    pub run: u64,
+}
+
+/// What an account's index entry of a run holds (`a/<id>/u<run>`): enough to show it in an export
+/// without its replay.
+pub struct RunIndex: Clone + Serialize {
+    pub game: String,
+    pub board: u32,
+    pub course: u32,
+    pub ticks: u32,
+    pub full: bool,
+    pub uploaded: u64,
+}
+
+fn text_key(p: Text) -> Vec<u8> {
+    Vec::from(String::from(p).as_bytes())
+}
+
+fn push_text(k: mut Vec<u8>, s: str) {
+    for i in 0..s.len() {
+        k.push(s.byte(i))
+    }
+    k.push(0)
+}
+
+/// `u/<run>`: a run.
+pub fn run_key(id: u64) -> Vec<u8> {
+    var k = text_key("u/")
+    append_u64(mut k, id)
+    k
+}
+
+/// `q/`: the queue, oldest first.
+pub fn queue_prefix() -> Vec<u8> {
+    text_key("q/")
+}
+
+pub fn queue_key(at: u64, id: u64) -> Vec<u8> {
+    var k = queue_prefix()
+    append_u64(mut k, at)
+    append_u64(mut k, id)
+    k
+}
+
+/// `x/`: the accounts being deleted.
+pub fn deletions() -> Vec<u8> {
+    text_key("x/")
+}
+
+/// `x/<id>`: account `id` is being deleted, until every record of it is gone.
+pub fn deletion_key(id: u64) -> Vec<u8> {
+    var k = deletions()
+    append_u64(mut k, id)
+    k
+}
+
+/// What a board is: its game, version, course (or `WHOLE`) and category, as key bytes.
+pub fn board_part(game: str, board: u32, course: u32, category: u32) -> Vec<u8> {
+    var k: Vec<u8> = Vec::new()
+    push_text(mut k, game)
+    append_u32(mut k, board)
+    append_u32(mut k, course)
+    append_u32(mut k, category)
+    k
+}
+
+/// `b/<board>`: a board's ranking, fastest first: `b/<board><ticks><account>`.
+pub fn board_prefix(game: str, board: u32, course: u32, category: u32) -> Vec<u8> {
+    var k = text_key("b/")
+    for b in board_part(game, board, course, category) {
+        k.push(b)
+    }
+    k
+}
+
+pub fn ranked_key(
+    game: str,
+    board: u32,
+    course: u32,
+    category: u32,
+    ticks: u32,
+    account: u64,
+) -> Vec<u8> {
+    var k = board_prefix(game, board, course, category)
+    append_u32(mut k, ticks)
+    append_u64(mut k, account)
+    k
+}
+
+/// `a/<id>/b<board>`: an account's best on a board.
+pub fn best_key(account: u64, game: str, board: u32, course: u32, category: u32) -> Vec<u8> {
+    indexed(account, OF_BEST, board_part(game, board, course, category))
+}
+
+/// `a/<id>/b<game><version>`: the start of an account's bests on one version of a game's boards.
+pub fn bests_prefix(account: u64, game: str, board: u32) -> Vec<u8> {
+    var rest: Vec<u8> = Vec::new()
+    push_text(mut rest, game)
+    append_u32(mut rest, board)
+    indexed(account, OF_BEST, rest)
+}
+
+/// `a/<id>/h<hour>`: an account's uploads in an hour of the server's clock.
+pub fn rate_key(account: u64, hour: u64) -> Vec<u8> {
+    var rest: Vec<u8> = Vec::new()
+    append_u64(mut rest, hour)
+    indexed(account, OF_HOUR, rest)
+}
+
+/// `a/<id>/d<replay's hash>`: a replay the account has uploaded, so it isn't twice.
+pub fn upload_key(account: u64, replay: [u8]) -> Vec<u8> {
+    indexed(account, OF_SEEN, hashed(replay))
+}
+
+// ---- the server's state ---------------------------------------------------------------------------
+
+/// A ceremony a browser began (`w/...`): its challenge, and for a new account, what it will be.
+struct Ceremony: Clone + Serialize {
+    kind: u32,
+    challenge: Vec<u8>,
+    handle: Vec<u8>,
+    account: u64,
+    seed: u64,
+    expires: u64,
+}
+
+/// A request, and the session its cookie is for.
+struct Conn: Clone {
+    conn: u32,
+    /// Whether it was answered, and whether its answer may be cached.
+    answered: bool,
+    public: bool,
+    /// The session's token's hash: empty when signed out.
+    session: Vec<u8>,
+    account: u64,
+    csrf: Vec<u8>,
+    fresh_until: u64,
+    recovery: bool,
+    /// Its ceremony cookie's value, and the cookies its response sets.
+    ceremony: Vec<u8>,
+    cookies: Vec<Cookie>,
+    /// The run its upload waits for (0: none; a run's number never is).
+    run: u64,
+}
+
+/// What a job waits for.
+enum Step: Copy + Eq {
+    HelloSession,
+    HelloAccount,
+    BeginRandom,
+    BeginPrune,
+    CeremonyTaken,
+    BeginAddScan,
+    BeginAddAccount,
+    RegisterCredential,
+    RegisterAccount,
+    RegisterName,
+    RegisterSeed,
+    RegisterSecrets,
+    SignInCredential,
+    SignInAccount,
+    SignInVerify,
+    SignInSecrets,
+    RecoverCode,
+    RecoverAccount,
+    RecoverSessions,
+    RecoverSecrets,
+    NameAccount,
+    NameSeed,
+    NameTaken,
+    AddCredential,
+    AddCount,
+    AddSession,
+    RemoveScan,
+    PasskeysScan,
+    CodesScan,
+    CodesRandom,
+    SessionsScan,
+    RevokeScan,
+    TokenAccount,
+    TokenPrune,
+    TokenRandom,
+    QueueAccount,
+    ExportAccount,
+    DeleteResume,
+    ExportScan,
+    ExportRuns,
+    ExportRun,
+    DeleteAccount,
+    DeleteScan,
+    DeleteNext,
+    UploadToken,
+    UploadAccount,
+    UploadRate,
+    UploadSeen,
+    UploadQueue,
+    UploadId,
+    BoardScan,
+    WatchRun,
+    FinishBest,
+    FinishBests,
+    FinishPlace,
+}
+
+/// A request under way, waiting on its ticket: what it has learned so far.
+struct Job: Clone {
+    conn: u32,
+    /// The call it began in: a key deleted since may have been read by it before the delete
+    /// committed (`gone`).
+    since: u64,
+    ticket: u32,
+    step: Step,
+    request: Request,
+    account: Option<Account>,
+    passkey: Option<Passkey>,
+    session: Option<Session>,
+    credential: Option<Credential>,
+    message: Vec<u8>,
+    hash: Vec<u8>,
+    keys: Vec<Vec<u8>>,
+    views: Vec<Vec<u8>>,
+    text: String,
+    id: u64,
+    seed: u64,
+    tries: u32,
+    n: u32,
+    queued: Option<Queued>,
+    categories: Vec<u32>,
+    category: u32,
+}
+
+/// The run being verified.
+struct Verifying<R> {
+    key: Vec<u8>,
+    queued: Queued,
+    run: R,
+}
+
+/// The server.
+pub struct Engine<G: Game> {
+    game: G,
+    rp_id: String,
+    origin: String,
+    out: Vec<Command>,
+    ticket: u32,
+    /// The server's clock: the latest request's time, in milliseconds since the Unix epoch.
+    now: u64,
+    conns: Vec<Conn>,
+    jobs: Vec<Job>,
+    /// When anyone tried a recovery code, within a minute.
+    tries: Vec<u64>,
+    /// The queue may hold runs; the ticket of a scan for the oldest.
+    queue_waiting: bool,
+    queue_scan: Option<u32>,
+    /// The calls counted, and the last that wrote the queue: a read made in a call is answered
+    /// from the store as it was before the call's writes (wrela_host::server), so the queue is
+    /// read again only in a later call.
+    call: u64,
+    queue_written: u64,
+    /// Names written, and single-use or revocable keys deleted (ceremonies, sessions, recovery
+    /// codes, passkeys), lately: a read made before their call committed wouldn't see them so
+    /// (docs/toolchain-gaps.md, "A call's reads don't see its writes").
+    recent_names: Vec<(Vec<u8>, u64)>,
+    gone: Vec<(Vec<u8>, u64)>,
+    /// The accounts whose records a job wrote lately (a run's upload, verification or ranking),
+    /// which a deletion's scan made before the write committed wouldn't see.
+    touched: Vec<(u64, u64)>,
+    /// Uploads let into the queue lately (the call, and the run's ticks), which a scan of the queue
+    /// made before their call committed wouldn't count.
+    admitted: Vec<(u64, u32)>,
+    /// Whether deletions a dropped instance left may wait (`x/`), and the call that last finished one.
+    deletions_waiting: bool,
+    deletion_written: u64,
+    verifying: Option<Verifying<G::Run>>,
+    /// Whether the last call asked for nothing: then nothing would call it again, so a run being
+    /// played asks the host for a byte to be called at once.
+    nudge: Option<u32>,
+}
+
+/// A server for `game`'s boards, its passkeys for relying party `rp_id` from `origin` alone.
+pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
+    Engine {
+        game,
+        rp_id: rp_id.to_string(),
+        origin: origin.to_string(),
+        out: Vec::new(),
+        ticket: 0,
+        now: 0,
+        conns: Vec::new(),
+        jobs: Vec::new(),
+        tries: Vec::new(),
+        queue_waiting: true,
+        queue_scan: None,
+        call: 0,
+        queue_written: 0,
+        recent_names: Vec::new(),
+        gone: Vec::new(),
+        touched: Vec::new(),
+        admitted: Vec::new(),
+        deletions_waiting: true,
+        deletion_written: 0,
+        verifying: None,
+        nudge: None,
+    }
+}
+
+fn blank_job(conn: u32, request: take Request) -> Job {
+    Job {
+        conn,
+        since: 0,
+        ticket: 0,
+        step: Step::HelloSession,
+        request,
+        account: None,
+        passkey: None,
+        session: None,
+        credential: None,
+        message: Vec::new(),
+        hash: Vec::new(),
+        keys: Vec::new(),
+        views: Vec::new(),
+        text: String::new(),
+        id: 0,
+        seed: 0,
+        tries: 0,
+        n: 0,
+        queued: None,
+        categories: Vec::new(),
+        category: 0,
+    }
+}
+
+fn me_of(a: Account, recovery: bool) -> Me {
+    Me {
+        signed_in: true,
+        name: names::text(a.name),
+        fixed: a.fixed,
+        rerolls: a.rerolls,
+        must_add_passkey: recovery,
+    }
+}
+
+fn nobody() -> Me {
+    Me { signed_in: false, name: String::new(), fixed: false, rerolls: 0, must_add_passkey: false }
+}
+
+fn read<T: Serialize>(bytes: [u8]) -> Option<T> {
+    let r: Result<T, LoadError> = load(Vec::from(bytes))
+    take r.ok()
+}
+
+/// The value a `get` answered with, as a `T`: none for no value, or one that doesn't read.
+fn got<T: Serialize>(answer: [u8]) -> Option<T> {
+    let v = value(answer)?
+    read(v)
+}
+
+/// The bytes from `at`, `n` of them.
+fn part(bytes: [u8], at: u32, n: u32) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(n)
+    for i in at..at + n {
+        out.push(bytes[i])
+    }
+    out
+}
+
+fn same_bytes(a: [u8], b: [u8]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    // Every byte is compared, whatever the first that differs, so the time says nothing of where.
+    var d: u32 = 0
+    for i in 0..a.len() {
+        d = d | u32(a[i] ^ b[i])
+    }
+    d == 0
+}
+
+impl<G: Game> Engine<G> {
+    // ---- the host's side --------------------------------------------------------------------
+
+    /// Starts a call.
+    pub fn begin(mut self) {
+        self.call += 1
+    }
+
+    /// Ends a call: the queue's work, then a refusal for each request whose work ended unanswered,
+    /// so none waits for the host's timeout.
+    pub fn end(mut self) {
+        self.verify_some()
+        self.resume_deletions()
+        self.forget_old()
+        var left: Vec<u32> = Vec::new()
+        for c in self.conns {
+            if !c.answered && !self.busy(c) {
+                left.push(c.conn)
+            }
+        }
+        for conn in left {
+            self.refuse(conn, "The server couldn't do that just now. Try again in a moment.")
+        }
+    }
+
+    /// Request `conn` closed (answered, or its client went): its jobs finish their writes, and an
+    /// upload it waited for is verified all the same.
+    pub fn closed(mut self, conn: u32) {
+        self.conns.retain(|c| c.conn != conn)
+    }
+
+    /// Request `conn`'s request: read its session from its cookie, if it has one, then do it.
+    pub fn http(mut self, conn: u32, asked: Asked) {
+        self.closed(conn)
+        self.conns.push(
+            Conn {
+                conn,
+                answered: false,
+                public: asked.public,
+                session: Vec::new(),
+                account: 0,
+                csrf: Vec::new(),
+                fresh_until: 0,
+                recovery: false,
+                ceremony: asked.ceremony.clone(),
+                cookies: Vec::new(),
+                run: 0,
+            },
+        )
+        self.now = max(self.now, asked.time)
+        let parsed: Option<Request> = read(asked.body)
+        let Some(request) = take parsed else {
+            self.refuse(conn, "That request isn't one we read.")
+            return
+        }
+        if asked.public && !public(request) {
+            self.refuse(conn, "That request changes things: it can't be a GET.")
+            return
+        }
+        // The public reads and an upload (by a game's token) are no session's.
+        if sessionless(request) || asked.session.is_empty() {
+            self.request(conn, take request)
+            return
+        }
+        var job = blank_job(conn, take request)
+        if asked.session.len() != TOKEN_BYTES {
+            self.no_session(take job)
+            return
+        }
+        job.hash = hashed(asked.session)
+        let k = session_key(job.hash)
+        self.get(take k, Step::HelloSession, take job)
+    }
+
+    /// The host's answer to ticket `ticket`: its bytes, or none if the request failed.
+    pub fn answer(mut self, ticket: u32, answer: Option<Vec<u8>>) {
+        if self.nudge == Some(ticket) {
+            self.nudge = None
+            return
+        }
+        if self.queue_scan == Some(ticket) {
+            self.queue_scan = None
+            self.queue_answered(answer)
+            return
+        }
+        var found: Option<u32> = None
+        for i in 0..self.jobs.len() {
+            if self.jobs[i].ticket == ticket {
+                found = Some(i)
+            }
+        }
+        let Some(i) = found else { return }
+        let job = self.jobs.remove(i)
+        if job.step == Step::QueueAccount {
+            self.queue_scan = None
+        }
+        match answer {
+            Some(bytes) => self.advance(take job, bytes),
+            None => {
+                // A run's ranking can't finish: its upload hears so. A deletion's mark stays, and
+                // the next call takes it up again.
+                if let Some(q) = job.queued {
+                    let why = String::from(
+                        "The boards couldn't finish checking that run. Try again later.",
+                    )
+                    self.tell(q.id, Reply::Rejected { why })
+                }
+                if is_deletion(job.step) {
+                    self.deletions_waiting = true
+                    self.deletion_written = self.call
+                }
+                self.refuse(
+                    job.conn,
+                    "The server couldn't do that just now. Try again in a moment.",
+                )
+            },
+        }
+    }
+
+    /// What the server asks of its host, since the last time.
+    pub fn commands(mut self) -> Vec<Command> {
+        replace(mut self.out, Vec::new())
+    }
+
+    // ---- helpers ------------------------------------------------------------------------------
+
+    fn next_ticket(mut self) -> u32 {
+        self.ticket += 1
+        self.ticket
+    }
+
+    fn conn_index(self, conn: u32) -> Option<u32> {
+        for i in 0..self.conns.len() {
+            if self.conns[i].conn == conn {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    /// Whether request `c` still has work under way: a job (its session being read among them), or
+    /// an upload being verified.
+    fn busy(self, c: Conn) -> bool {
+        if c.run != 0 {
+            return true
+        }
+        for j in self.jobs {
+            if j.conn == c.conn {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Answers request `conn` with `reply`, once: a public read's answer may be cached.
+    fn reply(mut self, conn: u32, reply: take Reply) {
+        let Some(i) = self.conn_index(conn) else { return }
+        if self.conns[i].answered {
+            return
+        }
+        self.conns[i].answered = true
+        let public = if !self.conns[i].public { 0 } else {
+            match reply {
+                Reply::Board { .. } => BOARD_AGE,
+                Reply::Run { .. } => RUN_AGE,
+                _ => 0,
+            }
+        }
+        let cookies = self.conns[i].cookies.clone()
+        self.out.push(Command::Respond { conn, body: save(reply), cookies, public })
+    }
+
+    fn refuse(mut self, conn: u32, why: Text) {
+        self.reply(conn, Reply::Refused { why: String::from(why) })
+    }
+
+    /// Answers request `conn` with its account as `me`, and its session's CSRF token.
+    fn welcome(mut self, conn: u32, me: take Me) {
+        let csrf = match self.conn_index(conn) {
+            Some(i) => self.conns[i].csrf.clone(),
+            None => Vec::new(),
+        }
+        self.reply(conn, Reply::Welcome { me, csrf })
+    }
+
+    /// Answers the request that waits for run `run`, if one still does.
+    fn tell(mut self, run: u64, reply: take Reply) {
+        var waiting: Option<u32> = None
+        for i in 0..self.conns.len() {
+            if self.conns[i].run == run {
+                self.conns[i].run = 0
+                waiting = Some(self.conns[i].conn)
+            }
+        }
+        let Some(conn) = waiting else { return }
+        self.reply(conn, take reply)
+    }
+
+    /// Sets cookie `name` on request `conn`'s response (`value` empty and `max_age` 0 clear it).
+    fn cookie(mut self, conn: u32, name: Text, value: take Vec<u8>, max_age: u32) {
+        let Some(i) = self.conn_index(conn) else { return }
+        self.conns[i].cookies.push(Cookie { name: String::from(name), value, max_age })
+    }
+
+    /// Request `conn`'s session cookie is for no session (any more): it is cleared.
+    fn session_gone(mut self, conn: u32) {
+        self.cookie(conn, SESSION, Vec::new(), 0)
+    }
+
+    /// `job`'s session cookie is for no session: cleared, and its request goes on signed out.
+    fn no_session(mut self, job: take Job) {
+        self.session_gone(job.conn)
+        self.request(job.conn, job.request.clone())
+    }
+
+    /// Waits on `job`'s ticket, from the call it began in.
+    fn push_job(mut self, job: take Job) {
+        var j = take job
+        if j.since == 0 {
+            j.since = self.call
+        }
+        self.jobs.push(take j)
+    }
+
+    fn get(mut self, key: take Vec<u8>, step: Step, job: take Job) {
+        var j = take job
+        let t = self.next_ticket()
+        self.out.push(Command::Get { ticket: t, key })
+        j.ticket = t
+        j.step = step
+        self.push_job(take j)
+    }
+
+    fn scan(mut self, from: take Vec<u8>, limit: u32, step: Step, job: take Job) {
+        let to = past(from).unwrap_or(Vec::new())
+        self.scan_range(take from, take to, limit, step, take job)
+    }
+
+    fn scan_range(
+        mut self,
+        from: take Vec<u8>,
+        to: take Vec<u8>,
+        limit: u32,
+        step: Step,
+        job: take Job,
+    ) {
+        var j = take job
+        let t = self.next_ticket()
+        self.out.push(Command::Scan { ticket: t, from, to, limit, down: false })
+        j.ticket = t
+        j.step = step
+        self.push_job(take j)
+    }
+
+    fn random(mut self, n: u32, step: Step, job: take Job) {
+        var j = take job
+        let t = self.next_ticket()
+        self.out.push(Command::Random { ticket: t, n })
+        j.ticket = t
+        j.step = step
+        self.push_job(take j)
+    }
+
+    fn put<T: Serialize>(mut self, key: take Vec<u8>, record: T) {
+        self.out.push(Command::Put { key, value: save(record) })
+    }
+
+    fn put_bytes(mut self, key: take Vec<u8>, value: take Vec<u8>) {
+        self.out.push(Command::Put { key, value })
+    }
+
+    fn delete(mut self, key: take Vec<u8>) {
+        self.out.push(Command::Delete { key })
+    }
+
+    /// Deletes `key`, a single-use or revocable record, and remembers it gone: a read of it made
+    /// before this call's writes commit is not to be trusted.
+    fn forget(mut self, key: take Vec<u8>) {
+        self.gone.push((key.clone(), self.call))
+        self.delete(take key)
+    }
+
+    /// The request's account, if it is signed in with a session whose CSRF token is `csrf`
+    /// (none: no token asked for), and a passkey session unless `recovery` allows one made by a
+    /// code; a refusal said if not.
+    fn signed_in(mut self, conn: u32, csrf: Option<Vec<u8>>, recovery: bool) -> Option<Conn> {
+        let Some(i) = self.conn_index(conn) else { return None }
+        let c = self.conns[i].clone()
+        if c.session.is_empty() {
+            self.refuse(conn, "Sign in first.")
+            return None
+        }
+        if let Some(token) = csrf {
+            if !same_bytes(token, c.csrf) {
+                self.refuse(conn, "That request didn't come from this console. Reload it.")
+                return None
+            }
+        }
+        if c.recovery && !recovery {
+            self.refuse(conn, "Add a passkey first: you signed in with a recovery code.")
+            return None
+        }
+        Some(c)
+    }
+
+    /// Like `signed_in`, and the sign-in fresh: within `FRESH` of a passkey's, or by a code.
+    fn fresh(mut self, conn: u32, csrf: Vec<u8>, recovery: bool) -> Option<Conn> {
+        let c = self.signed_in(conn, Some(csrf.clone()), recovery)?
+        if !c.recovery && c.fresh_until < self.now {
+            self.refuse(
+                conn,
+                "Sign in with your passkey again first: this needs a fresh sign-in.",
+            )
+            return None
+        }
+        Some(c)
+    }
+
+    /// Takes the ceremony that request `conn`'s cookie names, of the kind `job`'s request finishes,
+    /// then goes on with `job` (`CeremonyTaken`); refused if it has none, or one that has expired
+    /// or was used. It is used up whatever comes of it: deleted, and its cookie cleared.
+    fn take_ceremony(mut self, conn: u32, job: take Job) {
+        var j = take job
+        let kind = match j.request {
+            Request::Register { .. } => REGISTER,
+            Request::SignIn { .. } => SIGN_IN,
+            _ => ADD_PASSKEY,
+        }
+        let Some(i) = self.conn_index(conn) else { return }
+        let v = self.conns[i].ceremony.clone()
+        if v.len() != 8 + CEREMONY_BYTES {
+            self.refuse(conn, expired(kind))
+            return
+        }
+        let expires = u64_at(v, 0)
+        let key = ceremony_key(expires, hashed(part(v, 8, CEREMONY_BYTES)))
+        self.cookie(conn, CEREMONY, Vec::new(), 0)
+        if expires < self.now || lately(self.gone, key) {
+            self.refuse(conn, expired(kind))
+            return
+        }
+        // Used now: a read made before this call's delete commits would still find it.
+        self.forget(key.clone())
+        j.n = kind
+        self.get(take key, Step::CeremonyTaken, take j)
+    }
+
+    fn is_signed_in(self, conn: u32) -> bool {
+        match self.conn_index(conn) {
+            Some(i) => !self.conns[i].session.is_empty(),
+            None => false,
+        }
+    }
+
+    fn expected(self, challenge: Vec<u8>) -> Expected {
+        Expected {
+            rp_id: self.rp_id.clone(),
+            origin: self.origin.clone(),
+            challenge: challenge.clone(),
+        }
+    }
+
+    /// Binds connection `conn` to a session.
+    fn bind(mut self, conn: u32, hash: Vec<u8>, s: Session) {
+        if let Some(i) = self.conn_index(conn) {
+            self.conns[i].session = hash.clone()
+            self.conns[i].account = s.account
+            self.conns[i].csrf = s.csrf.clone()
+            self.conns[i].fresh_until = s.fresh_until
+            self.conns[i].recovery = s.recovery
+        }
+    }
+
+    /// Lets go of every request's binding to the session `hash` (every session, if empty) of
+    /// `account`: a request under way of a session that ended is no longer signed in.
+    fn unbind(mut self, account: u64, hash: Vec<u8>) {
+        for i in 0..self.conns.len() {
+            let c = self.conns[i].clone()
+            if c.account == account &&
+                !c.session.is_empty() &&
+                (hash.is_empty() || same_bytes(c.session, hash)) {
+                self.conns[i].session = Vec::new()
+                self.conns[i].account = 0
+                self.conns[i].csrf = Vec::new()
+                self.conns[i].recovery = false
+            }
+        }
+    }
+
+    /// Writes a new session for `account` from `secrets` (its token, then its CSRF token), binds
+    /// request `conn` to it, sets its cookie, and answers with it.
+    fn begin_session(
+        mut self,
+        conn: u32,
+        a: Account,
+        secrets: [u8],
+        recovery: bool,
+        codes: Vec<String>,
+    ) {
+        let token = part(secrets, 0, TOKEN_BYTES)
+        let csrf = part(secrets, TOKEN_BYTES, CSRF_BYTES)
+        let hash = hashed(token)
+        // The session this browser had ends: its cookie is replaced, so nothing could use it again.
+        if let Some(i) = self.conn_index(conn) {
+            let old = self.conns[i].session.clone()
+            let owner = self.conns[i].account
+            if !old.is_empty() {
+                self.forget(session_key(old))
+                self.delete(indexed(owner, OF_SESSION, old))
+            }
+        }
+        let s = Session {
+            account: a.id,
+            csrf: csrf.clone(),
+            created: self.now,
+            seen: self.now,
+            fresh_until: self.now + FRESH,
+            recovery,
+        }
+        self.put(session_key(hash), s.clone())
+        self.put(
+            indexed(a.id, OF_SESSION, hash),
+            SessionView { id: public_id(hash), created: self.now, seen: self.now, this: false },
+        )
+        self.bind(conn, hash.clone(), s.clone())
+        self.cookie(conn, SESSION, take token, u32(SESSION_LIFE / 1000))
+        self.reply(conn, Reply::Session { csrf, me: me_of(a, recovery), codes: codes.clone() })
+    }
+
+    /// Writes recovery codes for account `id` from `bytes`, and gives them as text.
+    fn write_codes(mut self, id: u64, bytes: [u8]) -> Vec<String> {
+        var codes: Vec<String> = Vec::new()
+        for k in 0..CODES {
+            let c = code(part(bytes, k * CODE_BYTES, CODE_BYTES))
+            let Some(h) = code_hash(c.as_str()) else { panic("a code reads back") }
+            self.put(code_key(h), Recovery { account: id })
+            self.put_bytes(indexed(id, OF_CODE, h), Vec::new())
+            codes.push(take c)
+        }
+        codes
+    }
+
+    // ---- requests -----------------------------------------------------------------------------
+
+    fn request(mut self, conn: u32, request: Request) {
+        var job = blank_job(conn, request.clone())
+        match request {
+            // A session's `Me` is answered as its cookie is read (`HelloAccount`): this one has none.
+            Request::Me => self.welcome(conn, nobody()),
+            Request::Begin { ceremony, csrf } => {
+                if ceremony == REGISTER && self.is_signed_in(conn) {
+                    self.refuse(conn, "Sign out first to make another account.")
+                    return
+                }
+                if ceremony == REGISTER || ceremony == SIGN_IN {
+                    // The challenge and the browser's token; a new account's handle, number and
+                    // name come with them.
+                    job.n = ceremony
+                    self.random(begin_bytes(ceremony), Step::BeginRandom, take job)
+                } else if ceremony == ADD_PASSKEY {
+                    let Some(c) = self.fresh(conn, csrf, recovery: true) else { return }
+                    job.n = ceremony
+                    job.id = c.account
+                    self.scan(
+                        indexed(c.account, OF_PASSKEY, []),
+                        MOST_PASSKEYS,
+                        Step::BeginAddScan,
+                        take job,
+                    )
+                } else {
+                    self.refuse(conn, "That isn't a ceremony.")
+                }
+            },
+            Request::Register { .. } | Request::SignIn { .. } => self.take_ceremony(conn, take job),
+            Request::Recover { code } => {
+                recent(mut self.tries, self.now, MINUTE)
+                if self.tries.len() >= ALL_TRIES {
+                    self.refuse(conn, "Too many tries. Wait a few minutes, then try again.")
+                    return
+                }
+                self.tries.push(self.now)
+                let Some(h) = code_hash(code.as_str()) else {
+                    self.refuse(
+                        conn,
+                        "That isn't a recovery code: it has 16 letters and digits.",
+                    )
+                    return
+                }
+                job.hash = h.clone()
+                self.get(code_key(h), Step::RecoverCode, take job)
+            },
+            Request::Reroll { csrf } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                self.get(account_key(c.account), Step::NameAccount, take job)
+            },
+            Request::Keep { csrf } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                self.get(account_key(c.account), Step::NameAccount, take job)
+            },
+            Request::AddPasskey { csrf, .. } => {
+                let Some(c) = self.fresh(conn, csrf, recovery: true) else { return }
+                job.id = c.account
+                job.hash = c.session.clone()
+                self.take_ceremony(conn, take job)
+            },
+            Request::RemovePasskey { csrf, id } => {
+                let Some(c) = self.fresh(conn, csrf, recovery: false) else { return }
+                job.id = c.account
+                job.message = id.clone()
+                self.scan(
+                    indexed(c.account, OF_PASSKEY, []),
+                    MOST_PASSKEYS + 1,
+                    Step::RemoveScan,
+                    take job,
+                )
+            },
+            Request::Passkeys => {
+                let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
+                self.scan(
+                    indexed(c.account, OF_PASSKEY, []),
+                    MOST_PASSKEYS + 1,
+                    Step::PasskeysScan,
+                    take job,
+                )
+            },
+            Request::NewCodes { csrf } => {
+                let Some(c) = self.fresh(conn, csrf, recovery: false) else { return }
+                job.id = c.account
+                self.scan(indexed(c.account, OF_CODE, []), 4 * CODES, Step::CodesScan, take job)
+            },
+            Request::Sessions => {
+                let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
+                job.id = c.account
+                job.hash = c.session.clone()
+                self.scan(indexed(c.account, OF_SESSION, []), 256, Step::SessionsScan, take job)
+            },
+            Request::Revoke { csrf, session } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: true) else {
+                    return
+                }
+                job.id = c.account
+                job.hash = c.session.clone()
+                job.message = session.clone()
+                self.scan(indexed(c.account, OF_SESSION, []), 256, Step::RevokeScan, take job)
+            },
+            Request::SignOut { csrf } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: true) else {
+                    return
+                }
+                self.forget(session_key(c.session))
+                self.delete(indexed(c.account, OF_SESSION, c.session))
+                self.unbind(c.account, c.session.clone())
+                self.session_gone(conn)
+                self.welcome(conn, nobody())
+            },
+            Request::Token { game } => {
+                let Some(c) = self.signed_in(conn, None, recovery: false) else { return }
+                if game.as_str() != self.game.id() {
+                    self.refuse(conn, "That game has no boards here.")
+                    return
+                }
+                self.get(account_key(c.account), Step::TokenAccount, take job)
+            },
+            Request::Export { after } => {
+                let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
+                job.id = c.account
+                job.message = after.clone()
+                self.get(account_key(c.account), Step::ExportAccount, take job)
+            },
+            Request::Delete { csrf } => {
+                let Some(c) = self.fresh(conn, csrf, recovery: false) else { return }
+                job.id = c.account
+                self.get(account_key(c.account), Step::DeleteAccount, take job)
+            },
+            Request::Upload { token, game, replay } => {
+                if game.as_str() != self.game.id() {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That game has no boards here.") },
+                    )
+                    return
+                }
+                if replay.len() > MOST_REPLAY || token.len() != TOKEN_BYTES {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That run is too long to upload.") },
+                    )
+                    return
+                }
+                match self.game.claim(replay) {
+                    Ok(claim) => {
+                        job.category = claim.course
+                        job.tries = claim.ticks
+                        job.message = replay.clone()
+                        self.get(token_key(hashed(token)), Step::UploadToken, take job)
+                    },
+                    Err(why) => self.reply(conn, Reply::Rejected { why: String::from(why) }),
+                }
+            },
+            Request::Board { game, course, category, from } => {
+                if game.as_str() != self.game.id() ||
+                    (course >= self.game.courses() && course != WHOLE) ||
+                    (category != ANY && category != FULL) ||
+                    from > 10000 {
+                    self.refuse(conn, "There's no such board.")
+                    return
+                }
+                job.n = from
+                let prefix = if course == WHOLE {
+                    whole_prefix(game, self.game.board(), category)
+                } else { board_prefix(game, self.game.board(), course, category) }
+                self.scan(take prefix, from + BOARD_PAGE + 1, Step::BoardScan, take job)
+            },
+            Request::Watch { run } => {
+                self.get(run_key(run), Step::WatchRun, take job)
+            },
+        }
+    }
+
+    // ---- answers ------------------------------------------------------------------------------
+
+    fn advance(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let conn = j.conn
+        // A job that writes an account's runs: a deletion waits it out (`writing`).
+        if is_upload(j.step) {
+            self.touched.push((j.id, self.call))
+        } else if let Some(q) = j.queued {
+            self.touched.push((q.account, self.call))
+        }
+        match j.step {
+            Step::HelloSession => {
+                let s: Option<Session> = got(answer)
+                let s = if lately(self.gone, session_key(j.hash)) { None } else { take s }
+                let Some(s) = s else {
+                    self.no_session(take j)
+                    return
+                }
+                if s.created + SESSION_LIFE < self.now {
+                    self.forget(session_key(j.hash))
+                    self.delete(indexed(s.account, OF_SESSION, j.hash))
+                    self.no_session(take j)
+                    return
+                }
+                j.session = Some(s.clone())
+                self.get(account_key(s.account), Step::HelloAccount, take j)
+            },
+            Step::HelloAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(s) = j.session.clone() else { return }
+                let Some(a) = a else {
+                    self.no_session(take j)
+                    return
+                }
+                // Ended while it was read (signed out, revoked): it stays ended.
+                if a.deleting || lately(self.gone, session_key(j.hash)) {
+                    self.no_session(take j)
+                    return
+                }
+                // When it was last seen, written at most once an hour, not with every request.
+                if s.seen + HOUR < self.now {
+                    var seen = s.clone()
+                    seen.seen = self.now
+                    self.put(session_key(j.hash), take seen)
+                    self.put(
+                        indexed(a.id, OF_SESSION, j.hash),
+                        SessionView {
+                            id: public_id(j.hash),
+                            created: s.created,
+                            seen: self.now,
+                            this: false,
+                        },
+                    )
+                }
+                self.bind(conn, j.hash.clone(), s.clone())
+                match j.request {
+                    Request::Me => self.welcome(conn, me_of(a, s.recovery)),
+                    _ => self.request(conn, j.request.clone()),
+                }
+            },
+            Step::BeginRandom => {
+                if answer.len() < begin_bytes(j.n) {
+                    self.refuse(conn, "The server couldn't start that. Try again.")
+                    return
+                }
+                let challenge = part(answer, 0, CHALLENGE_BYTES)
+                let token = part(answer, CHALLENGE_BYTES, CEREMONY_BYTES)
+                let at = CHALLENGE_BYTES + CEREMONY_BYTES
+                var c = Ceremony {
+                    kind: j.n,
+                    challenge: challenge.clone(),
+                    handle: Vec::new(),
+                    account: 0,
+                    seed: 0,
+                    expires: self.now + CHALLENGE_LIFE,
+                }
+                if j.n == ADD_PASSKEY {
+                    c.handle = j.hash.clone()
+                    c.account = j.id
+                }
+                if j.n == REGISTER {
+                    c.handle = part(answer, at, HANDLE_BYTES)
+                    c.account = u64_at(answer, at + HANDLE_BYTES)
+                    c.seed = u64_at(answer, at + HANDLE_BYTES + 8)
+                }
+                let handle = c.handle.clone()
+                // Kept under the token's hash; the browser keeps the token, and when it expires.
+                var held: Vec<u8> = Vec::new()
+                append_u64(mut held, c.expires)
+                with_bytes(mut held, token)
+                self.put(ceremony_key(c.expires, hashed(token)), c.clone())
+                self.cookie(conn, CEREMONY, take held, u32(CHALLENGE_LIFE / 1000))
+                self.reply(
+                    conn,
+                    Reply::Challenge { ceremony: j.n, challenge, handle, exclude: j.keys.clone() },
+                )
+                // Ceremonies begun and never finished go once they expire, a few as each begins.
+                var to = ceremonies()
+                append_u64(mut to, self.now)
+                self.scan_range(ceremonies(), take to, PRUNED, Step::BeginPrune, take j)
+            },
+            Step::BeginPrune => {
+                let Some(es) = entries(answer) else { return }
+                for e in es {
+                    self.delete(e.key.clone())
+                }
+            },
+            Step::CeremonyTaken => {
+                let c: Option<Ceremony> = got(answer)
+                let Some(c) = c else {
+                    self.refuse(conn, expired(j.n))
+                    return
+                }
+                if c.kind != j.n || c.expires < self.now {
+                    self.refuse(conn, expired(j.n))
+                    return
+                }
+                // A passkey added: begun by this account, in a session of its.
+                if j.n == ADD_PASSKEY && c.account != j.id {
+                    self.refuse(conn, expired(j.n))
+                    return
+                }
+                let (id, client_data, attestation) = match j.request.clone() {
+                    Request::SignIn { id, .. } => {
+                        j.message = c.challenge.clone()
+                        self.get(passkey_key(id), Step::SignInCredential, take j)
+                        return
+                    },
+                    Request::Register { id, client_data, attestation } => (
+                        take id,
+                        take client_data,
+                        take attestation,
+                    ),
+                    Request::AddPasskey { id, client_data, attestation, .. } => (
+                        take id,
+                        take client_data,
+                        take attestation,
+                    ),
+                    _ => return,
+                }
+                match registration(
+                    id,
+                    client_data,
+                    attestation,
+                    self.expected(c.challenge.clone()),
+                ) {
+                    Ok(cred) => {
+                        j.credential = Some(cred.clone())
+                        if j.n == REGISTER {
+                            j.id = c.account
+                            j.seed = c.seed
+                            j.hash = c.handle.clone()
+                            self.get(passkey_key(cred.id), Step::RegisterCredential, take j)
+                        } else {
+                            self.get(passkey_key(cred.id), Step::AddCredential, take j)
+                        }
+                    },
+                    Err(why) => self.refuse(conn, why),
+                }
+            },
+            Step::BeginAddScan => {
+                let Some(es) = entries(answer) else { return }
+                var exclude: Vec<Vec<u8>> = Vec::new()
+                let skip = indexed(j.id, OF_PASSKEY, []).len()
+                for e in es {
+                    exclude.push(part(e.key, skip, e.key.len() - skip))
+                }
+                j.keys = take exclude
+                self.get(account_key(j.id), Step::BeginAddAccount, take j)
+            },
+            Step::BeginAddAccount => {
+                // A passkey added is made for the account's handle, as its first was.
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else { return }
+                j.hash = a.handle.clone()
+                self.random(begin_bytes(ADD_PASSKEY), Step::BeginRandom, take j)
+            },
+            Step::RegisterCredential => {
+                if value(answer).is_some() {
+                    self.refuse(conn, "That passkey is already an account's. Sign in with it.")
+                    return
+                }
+                self.get(account_key(j.id), Step::RegisterAccount, take j)
+            },
+            Step::RegisterAccount => {
+                if value(answer).is_some() || j.id == 0 {
+                    self.refuse(conn, "The server couldn't make your account. Try again.")
+                    return
+                }
+                let n = draw(j.seed)
+                self.get(name_key(n), Step::RegisterName, take j)
+            },
+            Step::RegisterName | Step::NameTaken => {
+                let n = draw(j.seed)
+                if value(answer).is_some() || lately(self.recent_names, name_key(n)) {
+                    // Taken: another draw, a few times.
+                    j.tries += 1
+                    if j.tries > 8 {
+                        self.refuse(conn, "The server couldn't find a name. Try again.")
+                        return
+                    }
+                    let next = if j.step == Step::RegisterName { Step::RegisterSeed } else {
+                        Step::NameSeed
+                    }
+                    self.random(8, next, take j)
+                    return
+                }
+                if j.step == Step::RegisterName {
+                    j.account = Some(
+                        Account {
+                            id: j.id,
+                            handle: j.hash.clone(),
+                            name: n,
+                            fixed: false,
+                            rerolls: REROLLS,
+                            created: self.now,
+                            deleting: false,
+                        },
+                    )
+                    self.random(
+                        TOKEN_BYTES + CSRF_BYTES + CODES * CODE_BYTES,
+                        Step::RegisterSecrets,
+                        take j,
+                    )
+                } else {
+                    self.renamed(take j, n)
+                }
+            },
+            Step::RegisterSeed | Step::NameSeed => {
+                if answer.len() < 8 {
+                    return
+                }
+                j.seed = u64_at(answer, 0)
+                let next = if j.step == Step::RegisterSeed { Step::RegisterName } else {
+                    Step::NameTaken
+                }
+                self.get(name_key(draw(j.seed)), next, take j)
+            },
+            Step::RegisterSecrets => {
+                let Some(a) = j.account.clone() else { return }
+                let Some(cred) = j.credential.clone() else { return }
+                if answer.len() < TOKEN_BYTES + CSRF_BYTES + CODES * CODE_BYTES {
+                    return
+                }
+                self.put(account_key(a.id), a.clone())
+                self.put_bytes(name_key(a.name), save(a.id))
+                self.recent_names.push((name_key(a.name), self.call))
+                self.put(
+                    passkey_key(cred.id),
+                    Passkey {
+                        account: a.id,
+                        credential: cred.clone(),
+                        created: self.now,
+                        used: self.now,
+                    },
+                )
+                self.put(
+                    indexed(a.id, OF_PASSKEY, cred.id),
+                    PasskeyView { id: cred.id.clone(), created: self.now, used: self.now },
+                )
+                let codes = self.write_codes(
+                    a.id,
+                    part(answer, TOKEN_BYTES + CSRF_BYTES, CODES * CODE_BYTES),
+                )
+                self.begin_session(conn, a, answer, recovery: false, codes: codes)
+            },
+            Step::SignInCredential => {
+                let p: Option<Passkey> = got(answer)
+                let removed = match j.request {
+                    Request::SignIn { id, .. } => lately(self.gone, passkey_key(id)),
+                    _ => false,
+                }
+                let p = if removed { None } else { take p }
+                let Some(p) = p else {
+                    self.refuse(
+                        conn,
+                        "That passkey isn't one we know. Its account may have been deleted.",
+                    )
+                    return
+                }
+                j.passkey = Some(p.clone())
+                self.get(account_key(p.account), Step::SignInAccount, take j)
+            },
+            Step::SignInAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else {
+                    self.refuse(conn, "That passkey's account is gone.")
+                    return
+                }
+                let Some(p) = j.passkey.clone() else { return }
+                let Request::SignIn {
+                    client_data,
+                    authenticator_data,
+                    signature,
+                    user,
+                    ..
+                } = j.request.clone() else {
+                    return
+                }
+                if a.deleting || p.account != a.id {
+                    self.refuse(conn, "That passkey's account is gone.")
+                    return
+                }
+                // The browser names the account the passkey was made for: it must be this one.
+                if !user.is_empty() && !same_bytes(user, a.handle) {
+                    self.refuse(conn, "That passkey belongs to another account.")
+                    return
+                }
+                match assertion(
+                    client_data,
+                    authenticator_data,
+                    self.expected(j.message.clone()),
+                    p.credential.clone(),
+                ) {
+                    Ok(signed) => {
+                        j.account = Some(a.clone())
+                        j.n = signed.counter
+                        let t = self.next_ticket()
+                        self.out.push(
+                            Command::Verify {
+                                ticket: t,
+                                algorithm: p.credential.signature(),
+                                key: p.credential.key.clone(),
+                                message: signed.message.clone(),
+                                signature,
+                            },
+                        )
+                        j.ticket = t
+                        j.step = Step::SignInVerify
+                        self.push_job(take j)
+                    },
+                    Err(why) => self.refuse(conn, why),
+                }
+            },
+            Step::SignInVerify => {
+                if !verified(answer) {
+                    self.refuse(conn, "That passkey's signature doesn't check out.")
+                    return
+                }
+                self.random(TOKEN_BYTES + CSRF_BYTES, Step::SignInSecrets, take j)
+            },
+            Step::SignInSecrets => {
+                let Some(a) = j.account.clone() else { return }
+                let Some(p) = j.passkey.clone() else { return }
+                if answer.len() < TOKEN_BYTES + CSRF_BYTES {
+                    return
+                }
+                // Removed (or its account deleted) while this sign-in went on.
+                if lately(self.gone, passkey_key(p.credential.id)) {
+                    self.refuse(
+                        conn,
+                        "That passkey isn't one we know. Its account may have been deleted.",
+                    )
+                    return
+                }
+                var used = p.clone()
+                used.credential.counter = j.n
+                used.used = self.now
+                self.put(passkey_key(p.credential.id), used.clone())
+                self.put(
+                    indexed(a.id, OF_PASSKEY, p.credential.id),
+                    PasskeyView { id: p.credential.id.clone(), created: p.created, used: self.now },
+                )
+                self.begin_session(conn, a, answer, recovery: false, codes: Vec::new())
+            },
+            Step::RecoverCode => {
+                let r: Option<Recovery> = got(answer)
+                let r = if lately(self.gone, code_key(j.hash)) { None } else { take r }
+                let Some(r) = r else {
+                    self.refuse(conn, "That code isn't one we know, or it has been used.")
+                    return
+                }
+                j.id = r.account
+                self.get(account_key(r.account), Step::RecoverAccount, take j)
+            },
+            Step::RecoverAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else {
+                    self.refuse(conn, "That code's account is gone.")
+                    return
+                }
+                if a.deleting {
+                    self.refuse(conn, "That code's account is gone.")
+                    return
+                }
+                // Another request used it while this one read its account.
+                if lately(self.gone, code_key(j.hash)) {
+                    self.refuse(conn, "That code isn't one we know, or it has been used.")
+                    return
+                }
+                // Used up, and every other session ends.
+                self.forget(code_key(j.hash))
+                self.delete(indexed(a.id, OF_CODE, j.hash))
+                j.account = Some(a.clone())
+                self.scan(indexed(a.id, OF_SESSION, []), 256, Step::RecoverSessions, take j)
+            },
+            Step::RecoverSessions => {
+                let Some(a) = j.account.clone() else { return }
+                let Some(es) = entries(answer) else { return }
+                let skip = indexed(a.id, OF_SESSION, []).len()
+                for e in es {
+                    let h = part(e.key, skip, e.key.len() - skip)
+                    self.forget(session_key(h))
+                    self.delete(e.key.clone())
+                }
+                self.unbind(a.id, Vec::new())
+                self.random(TOKEN_BYTES + CSRF_BYTES, Step::RecoverSecrets, take j)
+            },
+            Step::RecoverSecrets => {
+                let Some(a) = j.account.clone() else { return }
+                if answer.len() < TOKEN_BYTES + CSRF_BYTES {
+                    return
+                }
+                self.begin_session(conn, a, answer, recovery: true, codes: Vec::new())
+            },
+            Step::NameAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else { return }
+                if a.fixed {
+                    self.refuse(conn, "Your name is fixed.")
+                    return
+                }
+                match j.request {
+                    Request::Keep { .. } => {
+                        var kept = a.clone()
+                        kept.fixed = true
+                        self.put(account_key(a.id), kept.clone())
+                        self.welcome(conn, me_of(kept, recovery: false))
+                    },
+                    _ => {
+                        if a.rerolls == 0 {
+                            self.refuse(conn, "There are no draws left.")
+                            return
+                        }
+                        j.account = Some(a.clone())
+                        self.random(8, Step::NameSeed, take j)
+                    },
+                }
+            },
+            Step::AddCredential => {
+                if value(answer).is_some() {
+                    self.refuse(conn, "That passkey is already an account's.")
+                    return
+                }
+                self.scan(indexed(j.id, OF_PASSKEY, []), MOST_PASSKEYS + 1, Step::AddCount, take j)
+            },
+            Step::AddCount => {
+                let Some(es) = entries(answer) else { return }
+                if es.len() >= MOST_PASSKEYS {
+                    self.refuse(
+                        conn,
+                        "An account has at most 16 passkeys. Remove one first.",
+                    )
+                    return
+                }
+                let Some(cred) = j.credential.clone() else { return }
+                self.put(
+                    passkey_key(cred.id),
+                    Passkey { account: j.id, credential: cred.clone(), created: self.now, used: 0 },
+                )
+                self.put(
+                    indexed(j.id, OF_PASSKEY, cred.id),
+                    PasskeyView { id: cred.id.clone(), created: self.now, used: 0 },
+                )
+                self.get(session_key(j.hash), Step::AddSession, take j)
+            },
+            Step::AddSession => {
+                // A session a code made is a whole one once it has added a passkey.
+                let s: Option<Session> = got(answer)
+                if let Some(s) = s {
+                    if s.recovery && !lately(self.gone, session_key(j.hash)) {
+                        var whole = s.clone()
+                        whole.recovery = false
+                        whole.fresh_until = self.now + FRESH
+                        self.put(session_key(j.hash), whole.clone())
+                        self.bind(conn, j.hash.clone(), whole.clone())
+                    }
+                }
+                self.get(account_key(j.id), Step::TokenAccount, take j)
+                // TokenAccount with no game asked answers with the account, below.
+            },
+            Step::RemoveScan => {
+                let Some(es) = entries(answer) else { return }
+                let skip = indexed(j.id, OF_PASSKEY, []).len()
+                var found = false
+                var left: Vec<PasskeyView> = Vec::new()
+                for e in es {
+                    let id = part(e.key, skip, e.key.len() - skip)
+                    if same_bytes(id, j.message) {
+                        found = true
+                    } else if let Some(v) = read::<PasskeyView>(e.value) {
+                        left.push(take v)
+                    }
+                }
+                if !found {
+                    self.refuse(conn, "That passkey isn't one of yours.")
+                    return
+                }
+                if left.is_empty() {
+                    self.refuse(
+                        conn,
+                        "That's your only passkey: add another before you remove it.",
+                    )
+                    return
+                }
+                self.forget(passkey_key(j.message))
+                self.delete(indexed(j.id, OF_PASSKEY, j.message))
+                self.reply(conn, Reply::Passkeys { passkeys: left })
+            },
+            Step::PasskeysScan => {
+                let Some(es) = entries(answer) else { return }
+                var list: Vec<PasskeyView> = Vec::new()
+                for e in es {
+                    if let Some(v) = read::<PasskeyView>(e.value) {
+                        list.push(take v)
+                    }
+                }
+                self.reply(conn, Reply::Passkeys { passkeys: list })
+            },
+            Step::CodesScan => {
+                let Some(es) = entries(answer) else { return }
+                let skip = indexed(j.id, OF_CODE, []).len()
+                for e in es {
+                    self.forget(code_key(part(e.key, skip, e.key.len() - skip)))
+                    self.delete(e.key.clone())
+                }
+                self.random(CODES * CODE_BYTES, Step::CodesRandom, take j)
+            },
+            Step::CodesRandom => {
+                if answer.len() < CODES * CODE_BYTES {
+                    return
+                }
+                let codes = self.write_codes(j.id, answer)
+                self.reply(conn, Reply::Codes { codes })
+            },
+            Step::SessionsScan | Step::RevokeScan => {
+                let Some(es) = entries(answer) else { return }
+                let skip = indexed(j.id, OF_SESSION, []).len()
+                var list: Vec<SessionView> = Vec::new()
+                var revoked = false
+                for e in es {
+                    let h = part(e.key, skip, e.key.len() - skip)
+                    let Some(v) = read::<SessionView>(e.value) else { continue }
+                    if j.step == Step::RevokeScan && same_bytes(public_id(h), j.message) {
+                        self.forget(session_key(h))
+                        self.delete(e.key.clone())
+                        self.unbind(j.id, h.clone())
+                        revoked = true
+                        continue
+                    }
+                    var view = v.clone()
+                    view.this = same_bytes(h, j.hash)
+                    list.push(take view)
+                }
+                if j.step == Step::RevokeScan && !revoked {
+                    self.refuse(conn, "That session has already ended.")
+                    return
+                }
+                if j.step == Step::RevokeScan && !self.is_signed_in(conn) {
+                    // This session itself.
+                    self.session_gone(conn)
+                    self.welcome(conn, nobody())
+                    return
+                }
+                self.reply(conn, Reply::Sessions { sessions: list })
+            },
+            Step::TokenAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else { return }
+                match j.request {
+                    Request::Token { .. } => {
+                        if !a.fixed {
+                            self.refuse(conn, "Be knighted first: keep your name.")
+                            return
+                        }
+                        j.account = Some(a.clone())
+                        self.scan(indexed(a.id, OF_TOKEN, []), 64, Step::TokenPrune, take j)
+                    },
+                    // A passkey added: the account as it is now.
+                    _ => {
+                        let recovery = match self.conn_index(conn) {
+                            Some(i) => self.conns[i].recovery,
+                            None => false,
+                        }
+                        self.welcome(conn, me_of(a, recovery))
+                    },
+                }
+            },
+            Step::TokenPrune => {
+                // Tokens that have expired go as a new one comes.
+                let Some(a) = j.account.clone() else { return }
+                let Some(es) = entries(answer) else { return }
+                let skip = indexed(a.id, OF_TOKEN, []).len()
+                for e in es {
+                    if e.value.len() == 8 && u64_at(e.value, 0) < self.now {
+                        self.delete(token_key(part(e.key, skip, e.key.len() - skip)))
+                        self.delete(e.key.clone())
+                    }
+                }
+                self.random(TOKEN_BYTES, Step::TokenRandom, take j)
+            },
+            Step::TokenRandom => {
+                let Some(a) = j.account.clone() else { return }
+                if answer.len() < TOKEN_BYTES {
+                    return
+                }
+                let token = part(answer, 0, TOKEN_BYTES)
+                var expires: Vec<u8> = Vec::new()
+                append_u64(mut expires, self.now + TOKEN_LIFE)
+                self.put_bytes(indexed(a.id, OF_TOKEN, hashed(token)), take expires)
+                self.put(
+                    token_key(hashed(token)),
+                    GameToken {
+                        account: a.id,
+                        game: String::from(self.game.id()),
+                        expires: self.now + TOKEN_LIFE,
+                    },
+                )
+                self.reply(conn, Reply::Token { token, expires_in: u32(TOKEN_LIFE / 1000) })
+            },
+            Step::ExportAccount => {
+                // Where the last part ended: nowhere (the start), after a record, or after a
+                // replay, each by its key (`export_part`).
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else { return }
+                let after = j.message.clone()
+                // A cursor goes on within this account's records or runs, nowhere else.
+                if !after.is_empty() {
+                    let within = if after[0] == 0 { under_account(j.id) } else {
+                        indexed(j.id, OF_RUN, [])
+                    }
+                    if after[0] > 1 || !starts_with(part(after, 1, after.len() - 1), within) {
+                        self.refuse(conn, "That export can't go on from there. Start it again.")
+                        return
+                    }
+                }
+                if after.is_empty() {
+                    j.text = export_head(a)
+                    self.scan(under_account(j.id), 512, Step::ExportScan, take j)
+                } else if after[0] == 0 {
+                    self.scan_after(
+                        part(after, 1, after.len() - 1),
+                        under_account(j.id),
+                        Step::ExportScan,
+                        take j,
+                    )
+                } else {
+                    j.n = 1
+                    let runs = indexed(j.id, OF_RUN, [])
+                    self.scan_after(part(after, 1, after.len() - 1), runs, Step::ExportRuns, take j)
+                }
+            },
+            Step::ExportScan => {
+                let Some(es) = entries(answer) else { return }
+                let prefix = under_account(j.id)
+                for e in es {
+                    if e.key.len() <= prefix.len() {
+                        continue
+                    }
+                    let of = e.key[prefix.len()]
+                    let rest = part(e.key, prefix.len() + 1, e.key.len() - prefix.len() - 1)
+                    export_entry(mut j.text, of, rest, e.value)
+                    if j.text.len() >= EXPORT_PART {
+                        self.export_part(take j, 0, e.key.clone())
+                        return
+                    }
+                }
+                if es.len() == 512 {
+                    borrow last = es[es.len() - 1].key
+                    self.scan_after(last.clone(), prefix, Step::ExportScan, take j)
+                    return
+                }
+                j.text.push_str("],\"replays\":[")
+                j.n = 0
+                self.scan(indexed(j.id, OF_RUN, []), EXPORT_RUNS, Step::ExportRuns, take j)
+            },
+            Step::ExportRuns => {
+                // A batch of the account's runs, by their index keys, each read in turn.
+                let Some(es) = entries(answer) else { return }
+                j.keys.clear()
+                j.views.clear()
+                let skip = indexed(j.id, OF_RUN, []).len()
+                for e in es {
+                    if e.key.len() == skip + 8 {
+                        j.keys.push(run_key(u64_at(e.key, skip)))
+                        j.views.push(e.key.clone())
+                    }
+                }
+                // Another batch follows a full one.
+                j.tries = if es.len() == EXPORT_RUNS { 1 } else { 0 }
+                self.export_next_run(take j)
+            },
+            Step::ExportRun => {
+                let r: Option<Run> = got(answer)
+                let at = j.views.remove(0)
+                if let Some(r) = r {
+                    if j.n > 0 {
+                        j.text.push_str(",")
+                    }
+                    j.n += 1
+                    j.text.push_str(f"{{\"run\":\"{r.id}\",\"replay\":\"{base64url(r.replay)}\"}}")
+                }
+                if j.text.len() >= EXPORT_PART {
+                    self.export_part(take j, 1, take at)
+                    return
+                }
+                j.hash = take at
+                self.export_next_run(take j)
+            },
+            Step::DeleteAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else {
+                    // A deletion resumed after it finished: only its mark is left. Others may wait.
+                    self.delete(deletion_key(j.id))
+                    self.deletion_written = self.call
+                    self.deletions_waiting = true
+                    return
+                }
+                var going = a.clone()
+                going.deleting = true
+                self.put(account_key(a.id), going.clone())
+                // Marked, so a dropped instance's successor finishes it (`resume_deletions`).
+                self.put_bytes(deletion_key(a.id), Vec::new())
+                j.account = Some(take going)
+                self.unbind(a.id, Vec::new())
+                self.scan(under_account(a.id), 256, Step::DeleteScan, take j)
+            },
+            Step::DeleteNext => {
+                let Some(a) = j.account.clone() else { return }
+                self.scan(under_account(a.id), 256, Step::DeleteScan, take j)
+            },
+            Step::DeleteScan => {
+                let Some(a) = j.account.clone() else { return }
+                let Some(es) = entries(answer) else { return }
+                // A job of the account's may write after this scan, or wrote since it was made: the
+                // deletion deletes nothing until none can, then scans afresh.
+                if self.writing(a.id) {
+                    self.random(1, Step::DeleteNext, take j)
+                    return
+                }
+                let prefix = under_account(a.id)
+                for e in es {
+                    if e.key.len() <= prefix.len() {
+                        continue
+                    }
+                    let of = e.key[prefix.len()]
+                    let rest = part(e.key, prefix.len() + 1, e.key.len() - prefix.len() - 1)
+                    if of == OF_PASSKEY {
+                        self.forget(passkey_key(rest))
+                    } else if of == OF_SESSION {
+                        self.forget(session_key(rest))
+                    } else if of == OF_CODE {
+                        self.forget(code_key(rest))
+                    } else if of == OF_TOKEN {
+                        self.delete(token_key(rest))
+                    } else if of == OF_RUN && rest.len() == 8 {
+                        self.delete(run_key(u64_at(rest, 0)))
+                    } else if of == OF_BEST {
+                        if let Some(b) = read::<Best>(e.value) {
+                            self.delete(b.ranked.clone())
+                        }
+                    }
+                    self.delete(e.key.clone())
+                }
+                if es.len() == 256 {
+                    // A scan now would be answered before these deletes commit, and find them
+                    // again: the next is made in the next call, after a byte asked for.
+                    self.random(1, Step::DeleteNext, take j)
+                    return
+                }
+                self.delete(name_key(a.name))
+                self.delete(account_key(a.id))
+                self.delete(deletion_key(a.id))
+                self.deletion_written = self.call
+                if conn == 0 {
+                    // Resumed: another may wait.
+                    self.deletions_waiting = true
+                }
+                self.session_gone(conn)
+                self.reply(conn, Reply::Done)
+            },
+            Step::DeleteResume => {
+                let Some(es) = entries(answer) else { return }
+                if es.is_empty() {
+                    return
+                }
+                borrow e = es[0]
+                if e.key.len() != deletions().len() + 8 {
+                    self.delete(e.key.clone())
+                    self.deletion_written = self.call
+                    self.deletions_waiting = true
+                    return
+                }
+                j.id = u64_at(e.key, deletions().len())
+                self.get(account_key(j.id), Step::DeleteAccount, take j)
+            },
+            Step::UploadToken => {
+                let t: Option<GameToken> = got(answer)
+                let Some(t) = t else {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("Sign in at the console to upload.") },
+                    )
+                    return
+                }
+                if t.expires < self.now || t.game.as_str() != self.game.id() {
+                    self.reply(
+                        conn,
+                        Reply::Rejected {
+                            why: String::from("Sign in at the console again to upload."),
+                        },
+                    )
+                    return
+                }
+                for other in self.jobs {
+                    if other.id == t.account && is_upload(other.step) {
+                        self.reply(
+                            conn,
+                            Reply::Rejected { why: String::from("One upload at a time.") },
+                        )
+                        return
+                    }
+                }
+                j.id = t.account
+                self.get(account_key(t.account), Step::UploadAccount, take j)
+            },
+            Step::UploadAccount => {
+                let a: Option<Account> = got(answer)
+                let Some(a) = a else {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That account is gone.") },
+                    )
+                    return
+                }
+                if a.deleting {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That account is gone.") },
+                    )
+                    return
+                }
+                j.account = Some(a.clone())
+                self.get(rate_key(a.id, self.now / HOUR), Step::UploadRate, take j)
+            },
+            Step::UploadRate => {
+                var count: u32 = 0
+                if let Some(v) = value(answer) {
+                    if v.len() == 4 {
+                        count = u32_at(v, 0)
+                    }
+                }
+                if count >= RUNS_AN_HOUR {
+                    self.reply(
+                        conn,
+                        Reply::Rejected {
+                            why: String::from(
+                                f"At most {RUNS_AN_HOUR} uploads an hour. Try again later.",
+                            ),
+                        },
+                    )
+                    return
+                }
+                j.n = count
+                self.get(upload_key(j.id, j.message), Step::UploadSeen, take j)
+            },
+            Step::UploadSeen => {
+                if value(answer).is_some() {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That run is already uploaded.") },
+                    )
+                    return
+                }
+                self.scan(queue_prefix(), MOST_QUEUED + 1, Step::UploadQueue, take j)
+            },
+            Step::UploadQueue => {
+                let Some(es) = entries(answer) else { return }
+                // `tries` is the run's claimed ticks. The queue as read, and the uploads let in that
+                // it couldn't count: those still to be written, and those written since it was read.
+                var ticks = u64(j.tries)
+                var runs = es.len()
+                for e in es {
+                    if let Some(q) = read::<Queued>(e.value) {
+                        ticks += u64(q.ticks)
+                    }
+                }
+                for other in self.jobs {
+                    if other.step == Step::UploadId {
+                        ticks += u64(other.tries)
+                        runs += 1
+                    }
+                }
+                let call = self.call
+                self.admitted.retain(|a| a.0 + 1 >= call)
+                for (_, t) in self.admitted {
+                    ticks += u64(t)
+                    runs += 1
+                }
+                if runs >= MOST_QUEUED || ticks > u64(QUEUE_TICKS) {
+                    self.reply(
+                        conn,
+                        Reply::Rejected {
+                            why: String::from("The boards are busy. Try again in a few minutes."),
+                        },
+                    )
+                    return
+                }
+                self.random(8, Step::UploadId, take j)
+            },
+            Step::UploadId => {
+                let Some(a) = j.account.clone() else { return }
+                if answer.len() < 8 {
+                    return
+                }
+                // A run's number is never 0: 0 is a whole game's place.
+                let id = max(u64_at(answer, 0), 1)
+                let Request::Upload { replay, .. } = j.request.clone() else { return }
+                var count: Vec<u8> = Vec::new()
+                append_u32(mut count, j.n + 1)
+                self.put_bytes(rate_key(a.id, self.now / HOUR), take count)
+                self.put_bytes(upload_key(a.id, replay), Vec::new())
+                let q = Queued {
+                    id,
+                    account: a.id,
+                    name: names::text(a.name),
+                    game: String::from(self.game.id()),
+                    board: self.game.board(),
+                    course: j.category,
+                    ticks: j.tries,
+                    uploaded: self.now,
+                    replay: replay.clone(),
+                }
+                self.put(queue_key(self.now, id), q)
+                self.admitted.push((self.call, j.tries))
+                self.queue_waiting = true
+                self.queue_written = self.call
+                // Answered when its run is.
+                if let Some(i) = self.conn_index(conn) {
+                    self.conns[i].run = id
+                }
+            },
+            Step::BoardScan => {
+                let Some(es) = entries(answer) else { return }
+                let Request::Board { course, .. } = j.request.clone() else { return }
+                var places: Vec<Place> = Vec::new()
+                for k in j.n..min(es.len(), j.n + BOARD_PAGE) {
+                    borrow e = es[k]
+                    let Some(r) = read::<Ranked>(e.value) else { continue }
+                    // The key ends with the time and the account.
+                    let ticks = u32_at(e.key, e.key.len() - 12)
+                    let run = if course == WHOLE { 0 } else { r.run }
+                    places.push(Place { place: k + 1, name: r.name.clone(), ticks, run })
+                }
+                self.reply(conn, Reply::Board { places, total: es.len() })
+            },
+            Step::WatchRun => {
+                let r: Option<Run> = got(answer)
+                let Some(r) = r else {
+                    self.refuse(conn, "That run is gone.")
+                    return
+                }
+                self.reply(
+                    conn,
+                    Reply::Run { run: r.id, game: r.game.clone(), replay: r.replay.clone() },
+                )
+            },
+            Step::QueueAccount => {
+                self.queue_scan = None
+                let Some(q) = j.queued.clone() else { return }
+                let a: Option<Account> = got(answer)
+                let gone = match a {
+                    Some(a) => a.deleting,
+                    None => true,
+                }
+                if gone {
+                    self.delete(j.keys[0].clone())
+                    self.queue_written = self.call
+                    self.tell(
+                        q.id,
+                        Reply::Rejected { why: String::from("That run's account is gone.") },
+                    )
+                    return
+                }
+                let run = self.game.start(q.replay)
+                self.verifying = Some(Verifying { key: j.keys[0].clone(), queued: q.clone(), run })
+            },
+            Step::FinishBest => self.finish_best(take j, answer),
+            Step::FinishBests => self.finish_bests(take j, answer),
+            Step::FinishPlace => {
+                let Some(q) = j.queued.clone() else { return }
+                let Some(es) = entries(answer) else { return }
+                // The places ahead, and this one.
+                let place = es.len() + 1
+                self.tell(q.id, Reply::Verified { run: q.id, ticks: j.tries, place })
+            },
+        }
+    }
+
+    /// A name drawn again: the old one let go, the new one the account's.
+    fn renamed(mut self, job: take Job, n: Name) {
+        let j = take job
+        let Some(a) = j.account.clone() else { return }
+        var b = a.clone()
+        b.name = n
+        b.rerolls = a.rerolls - 1
+        self.delete(name_key(a.name))
+        self.put_bytes(name_key(n), save(a.id))
+        self.recent_names.push((name_key(n), self.call))
+        self.put(account_key(a.id), b.clone())
+        self.welcome(j.conn, me_of(b, recovery: false))
+    }
+
+    /// Answers with an export's part, which ended after the key `key` of its records (`phase` 0)
+    /// or of its runs' index (1): the console asks for the next from there.
+    fn export_part(mut self, job: take Job, phase: u8, key: take Vec<u8>) {
+        var next = Vec::from([phase])
+        with_bytes(mut next, key)
+        self.reply(job.conn, Reply::Export { text: job.text.clone(), next, last: false })
+    }
+
+    /// Reads the next run of the batch, or the next batch after a full one, or ends the export.
+    fn export_next_run(mut self, job: take Job) {
+        var j = take job
+        if !j.keys.is_empty() {
+            let k = j.keys.remove(0)
+            self.get(take k, Step::ExportRun, take j)
+            return
+        }
+        if j.tries == 1 {
+            let runs = indexed(j.id, OF_RUN, [])
+            self.scan_after(j.hash.clone(), runs, Step::ExportRuns, take j)
+            return
+        }
+        j.text.push_str("]}")
+        self.reply(j.conn, Reply::Export { text: j.text.clone(), next: Vec::new(), last: true })
+    }
+
+    /// Scans on from just after `key`, within `prefix`, a page at a time.
+    fn scan_after(mut self, key: take Vec<u8>, prefix: Vec<u8>, step: Step, job: take Job) {
+        var from = take key
+        from.push(0)
+        let to = past(prefix).unwrap_or(Vec::new())
+        let limit = if step == Step::ExportRuns { EXPORT_RUNS } else { 512 }
+        self.scan_range(take from, take to, limit, step, take job)
+    }
+
+    // ---- verification -------------------------------------------------------------------------
+
+    /// Plays the run being verified a call's share, or takes the oldest from the queue.
+    fn verify_some(mut self) {
+        var taken = replace(mut self.verifying, None)
+        match mut taken {
+            Some(v) => {
+                match self.game.play(mut v.run, PLAY_TICKS) {
+                    None => {
+                        // More to play: something must call again.
+                        self.nudge_next()
+                        self.verifying = take taken
+                    },
+                    Some(result) => {
+                        self.delete(v.key.clone())
+                        self.queue_waiting = true
+                        self.queue_written = self.call
+                        self.played(v.queued.clone(), result)
+                    },
+                }
+            },
+            None => {
+                if self.queue_waiting && self.queue_scan.is_none() {
+                    if self.call <= self.queue_written {
+                        // The queue was written this call: read it in the next, which a byte
+                        // asked for brings at once.
+                        self.nudge_next()
+                        return
+                    }
+                    let t = self.next_ticket()
+                    let from = queue_prefix()
+                    let to = past(from).unwrap_or(Vec::new())
+                    self.out.push(Command::Scan { ticket: t, from, to, limit: 1, down: false })
+                    self.queue_scan = Some(t)
+                }
+            },
+        }
+    }
+
+    /// Finishes a deletion a dropped instance left, one at a time: looked for when the engine starts
+    /// and after each it finishes, once that finish has committed.
+    fn resume_deletions(mut self) {
+        if !self.deletions_waiting || self.call <= self.deletion_written {
+            return
+        }
+        self.deletions_waiting = false
+        self.scan(deletions(), 1, Step::DeleteResume, blank_job(0, Request::Me))
+    }
+
+    /// Lets go of what was deleted or written lately once no read made before it can still be
+    /// used: kept while a job that began by then is under way, and for the call after (a read made
+    /// in a call is answered in the next).
+    fn forget_old(mut self) {
+        var oldest = self.call
+        for j in self.jobs {
+            oldest = min(oldest, j.since)
+        }
+        let call = self.call
+        self.gone.retain(|g| g.1 >= oldest || g.1 + 1 >= call)
+        self.recent_names.retain(|g| g.1 >= oldest || g.1 + 1 >= call)
+        self.touched.retain(|t| t.1 + 1 >= call)
+    }
+
+    /// Whether a job may still write account `account`'s records, or did in this call or the last:
+    /// a deletion deletes nothing while one might (it would miss what that writes).
+    fn writing(self, account: u64) -> bool {
+        for (a, _) in self.touched {
+            if a == account {
+                return true
+            }
+        }
+        // A run of the account's being uploaded, verified, or ranked once played.
+        if let Some(v) = self.verifying {
+            if v.queued.account == account {
+                return true
+            }
+        }
+        for j in self.jobs {
+            if is_upload(j.step) && j.id == account {
+                return true
+            }
+            if let Some(q) = j.queued {
+                if q.account == account {
+                    return true
+                }
+            }
+        }
+        false
+    }
+
+    /// Asks the host for a byte, so that it calls again at once (the host calls while answers
+    /// arrive).
+    fn nudge_next(mut self) {
+        if self.nudge.is_none() {
+            let t = self.next_ticket()
+            self.out.push(Command::Random { ticket: t, n: 1 })
+            self.nudge = Some(t)
+        }
+    }
+
+    fn queue_answered(mut self, answer: Option<Vec<u8>>) {
+        let Some(bytes) = answer else { return }
+        let Some(es) = entries(bytes) else { return }
+        if es.is_empty() {
+            self.queue_waiting = false
+            return
+        }
+        borrow e = es[0]
+        let Some(q) = read::<Queued>(e.value) else {
+            // What can't be read can't be verified.
+            self.delete(e.key.clone())
+            self.queue_written = self.call
+            return
+        }
+        if q.board != self.game.board() || q.game.as_str() != self.game.id() {
+            self.delete(e.key.clone())
+            self.queue_written = self.call
+            self.tell(
+                q.id,
+                Reply::Rejected {
+                    why: String::from("That run is for another version of the game."),
+                },
+            )
+            return
+        }
+        // A run whose account went while it waited goes with it.
+        var job = blank_job(0, Request::Watch { run: q.id })
+        job.queued = Some(q.clone())
+        job.keys.push(e.key.clone())
+        let t = self.next_ticket()
+        self.out.push(Command::Get { ticket: t, key: account_key(q.account) })
+        job.ticket = t
+        job.step = Step::QueueAccount
+        self.push_job(take job)
+        self.queue_scan = Some(0)
+    }
+
+    /// A run played to its end: refused, or kept and ranked.
+    fn played(mut self, q: Queued, result: Result<Outcome, Text>) {
+        self.touched.push((q.account, self.call))
+        match result {
+            Err(why) => self.tell(q.id, Reply::Rejected { why: String::from(why) }),
+            Ok(o) => {
+                if o.ticks != q.ticks {
+                    self.tell(
+                        q.id,
+                        Reply::Rejected {
+                            why: String::from("That run's time isn't what its moves make."),
+                        },
+                    )
+                    return
+                }
+                let r = Run {
+                    id: q.id,
+                    account: q.account,
+                    game: q.game.clone(),
+                    board: q.board,
+                    course: q.course,
+                    ticks: o.ticks,
+                    full: o.full,
+                    uploaded: q.uploaded,
+                    replay: q.replay.clone(),
+                }
+                self.put(run_key(r.id), r.clone())
+                var id8: Vec<u8> = Vec::new()
+                append_u64(mut id8, r.id)
+                self.put(
+                    indexed(r.account, OF_RUN, id8),
+                    RunIndex {
+                        game: r.game.clone(),
+                        board: r.board,
+                        course: r.course,
+                        ticks: r.ticks,
+                        full: r.full,
+                        uploaded: r.uploaded,
+                    },
+                )
+                var job = blank_job(0, Request::Watch { run: r.id })
+                job.queued = Some(q.clone())
+                job.tries = o.ticks
+                job.categories.push(ANY)
+                if o.full {
+                    job.categories.push(FULL)
+                }
+                self.next_best(take job)
+            },
+        }
+    }
+
+    /// The next category of the finished run: read the account's best there.
+    fn next_best(mut self, job: take Job) {
+        var j = take job
+        let Some(q) = j.queued.clone() else { return }
+        if j.categories.is_empty() {
+            // Ranked: its place on the any% board.
+            let from = board_prefix(q.game, q.board, q.course, ANY)
+            let to = ranked_key(q.game, q.board, q.course, ANY, j.tries, q.account)
+            self.scan_range(take from, take to, MOST_PLACE, Step::FinishPlace, take j)
+            return
+        }
+        j.category = j.categories.remove(0)
+        self.get(
+            best_key(q.account, q.game, q.board, q.course, j.category),
+            Step::FinishBest,
+            take j,
+        )
+    }
+
+    fn finish_best(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        let Some(q) = j.queued.clone() else { return }
+        let old: Option<Best> = got(answer)
+        if let Some(b) = old {
+            if b.ticks <= j.tries {
+                // Not better than the account's best.
+                self.next_best(take j)
+                return
+            }
+            self.delete(b.ranked.clone())
+        }
+        let ranked = ranked_key(q.game, q.board, q.course, j.category, j.tries, q.account)
+        self.put(ranked.clone(), Ranked { name: q.name.clone(), run: q.id })
+        self.put(
+            best_key(q.account, q.game, q.board, q.course, j.category),
+            Best { run: q.id, ticks: j.tries, ranked },
+        )
+        // A new best changes the whole game's sum: read every best of the account's.
+        self.scan(
+            bests_prefix(q.account, q.game, q.board),
+            4 * self.game.courses() + 4,
+            Step::FinishBests,
+            take j,
+        )
+    }
+
+    fn finish_bests(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        let Some(q) = j.queued.clone() else { return }
+        let Some(es) = entries(answer) else { return }
+        // The bests the scan saw are as of before this call's writes: the one just written is
+        // this run's.
+        var courses: Vec<u32> = Vec::new()
+        var sum: u32 = 0
+        var whole_old: Option<Best> = None
+        let skip = bests_prefix(q.account, q.game, q.board).len()
+        for e in es {
+            if e.key.len() < skip + 8 {
+                continue
+            }
+            let course = u32_at(e.key, skip)
+            let category = u32_at(e.key, skip + 4)
+            if category != j.category {
+                continue
+            }
+            let Some(b) = read::<Best>(e.value) else { continue }
+            if course == WHOLE {
+                whole_old = Some(take b)
+            } else if course != q.course {
+                courses.push(course)
+                sum += b.ticks
+            }
+        }
+        courses.push(q.course)
+        sum += j.tries
+        if courses.len() == self.game.courses() {
+            if let Some(b) = whole_old {
+                self.delete(b.ranked.clone())
+            }
+            let ranked = whole_key(q.game, q.board, j.category, sum, q.account)
+            self.put(ranked.clone(), Ranked { name: q.name.clone(), run: 0 })
+            self.put(
+                best_key(q.account, q.game, q.board, WHOLE, j.category),
+                Best { run: 0, ticks: sum, ranked },
+            )
+        }
+        self.next_best(take j)
+    }
+}
+
+/// Whether `bytes` starts with `prefix`.
+fn starts_with(bytes: [u8], prefix: [u8]) -> bool {
+    if bytes.len() < prefix.len() {
+        return false
+    }
+    for i in 0..prefix.len() {
+        if bytes[i] != prefix[i] {
+            return false
+        }
+    }
+    true
+}
+
+/// Whether `key` is among the keys used lately.
+fn lately(keys: [(Vec<u8>, u64)], key: [u8]) -> bool {
+    for (k, _) in keys {
+        if same_bytes(k, key) {
+            return true
+        }
+    }
+    false
+}
+
+/// Whether `r` is no session's: a public read, or an upload, which a game's token makes.
+fn sessionless(r: Request) -> bool {
+    match r {
+        Request::Upload { .. } => true,
+        _ => public(r),
+    }
+}
+
+/// The random bytes a ceremony of `kind` begins with: its challenge and its browser's token, and for
+/// a new account, its handle, number and name's seed.
+fn begin_bytes(kind: u32) -> u32 {
+    let n = CHALLENGE_BYTES + CEREMONY_BYTES
+    if kind == REGISTER { n + HANDLE_BYTES + 16 } else { n }
+}
+
+/// Why a ceremony of `kind` can't be finished: it has expired, or was used.
+fn expired(kind: u32) -> Text {
+    if kind == REGISTER {
+        "That sign-up has expired. Start again."
+    } else if kind == SIGN_IN { "That sign-in has expired. Try again." } else {
+        "That has expired. Start again."
+    }
+}
+
+/// Drops the times in `xs` older than `window` before `now`.
+fn recent(xs: mut Vec<u64>, now: u64, window: u64) {
+    var i = 0
+    while i < xs.len() {
+        if xs[i] + window <= now {
+            let _ = xs.remove(i)
+        } else {
+            i += 1
+        }
+    }
+}
+
+fn is_deletion(step: Step) -> bool {
+    step == Step::DeleteAccount ||
+        step == Step::DeleteScan ||
+        step == Step::DeleteNext ||
+        step == Step::DeleteResume
+}
+
+fn is_upload(step: Step) -> bool {
+    step == Step::UploadAccount ||
+        step == Step::UploadRate ||
+        step == Step::UploadSeen ||
+        step == Step::UploadQueue ||
+        step == Step::UploadId
+}
+
+/// A whole game's board: `b/<board>` with `WHOLE` for its course.
+pub fn whole_prefix(game: str, board: u32, category: u32) -> Vec<u8> {
+    board_prefix(game, board, WHOLE, category)
+}
+
+pub fn whole_key(game: str, board: u32, category: u32, ticks: u32, account: u64) -> Vec<u8> {
+    ranked_key(game, board, WHOLE, category, ticks, account)
+}
+
+// ---- the export ---------------------------------------------------------------------------------
+
+fn quoted(out: mut String, s: str) {
+    out.push_str("\"")
+    json_text(mut out, s)
+    out.push_str("\"")
+}
+
+fn export_head(a: Account) -> String {
+    var out = String::from(
+        "{\"about\":\"Everything wrela.dev keeps of your account. Times are milliseconds of the server's clock.\",",
+    )
+    out.push_str(f"\"account\":{{\"id\":\"{a.id}\",\"handle\":\"{base64url(a.handle)}\",\"name\":")
+    quoted(mut out, names::text(a.name).as_str())
+    out.push_str(f",\"name_fixed\":{a.fixed},\"created\":{a.created}}},\"records\":[")
+    out
+}
+
+/// One of an account's index entries as JSON, after the ones before it.
+fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
+    if !out.ends_with("[") {
+        out.push_str(",")
+    }
+    if of == OF_PASSKEY {
+        let v = read::<PasskeyView>(value)
+        out.push_str(f"{{\"passkey\":\"{base64url(rest)}\"")
+        if let Some(v) = v {
+            out.push_str(f",\"created\":{v.created},\"used\":{v.used}")
+        }
+        out.push_str("}")
+    } else if of == OF_SESSION {
+        let v = read::<SessionView>(value)
+        out.push_str(f"{{\"session\":\"{hex(public_id(rest))}\"")
+        if let Some(v) = v {
+            out.push_str(f",\"created\":{v.created},\"seen\":{v.seen}")
+        }
+        out.push_str("}")
+    } else if of == OF_CODE {
+        out.push_str("{\"recovery_code\":\"unused (we keep only its hash)\"}")
+    } else if of == OF_RUN {
+        let v = read::<RunIndex>(value)
+        let id = if rest.len() == 8 { u64_at(rest, 0) } else { 0 }
+        out.push_str(f"{{\"run\":\"{id}\"")
+        if let Some(v) = v {
+            out.push_str(",\"game\":")
+            quoted(mut out, v.game.as_str())
+            out.push_str(
+                f",\"board\":{v.board},\"course\":{v.course},\"ticks\":{v.ticks},\"full\":{v.full},\"uploaded\":{v.uploaded}",
+            )
+        }
+        out.push_str("}")
+    } else if of == OF_BEST {
+        let v = read::<Best>(value)
+        out.push_str("{\"best\":")
+        match v {
+            Some(b) => out.push_str(f"{{\"run\":\"{b.run}\",\"ticks\":{b.ticks}}}"),
+            None => out.push_str("null"),
+        }
+        out.push_str("}")
+    } else if of == OF_TOKEN {
+        out.push_str("{\"game_token\":\"(we keep only its hash, until it expires)\"}")
+    } else if of == OF_HOUR {
+        out.push_str("{\"uploads_this_hour\":\"(a count, for the upload limit)\"}")
+    } else if of == OF_SEEN {
+        out.push_str(f"{{\"uploaded_replay_sha256\":\"{hex(rest)}\"}}")
+    } else {
+        out.push_str("{}")
+    }
+}

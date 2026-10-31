@@ -37,6 +37,7 @@
 // serves its kept releases from R2, and `release.json` says what the release holds.
 
 use catalog::{CATALOG, Catalog, Game, check, origin_of, paths}
+use json::{Json, from_doc}
 use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_files}
 use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
@@ -159,6 +160,12 @@ struct Planned: Clone {
     out: String,
 }
 
+/// Where the console's server build goes in the release: beside its Worker's script and outside its
+/// assets, since its module isn't for the public.
+pub fn server_dir(worker: str) -> String {
+    String::from(f"{worker}.server")
+}
+
 fn rooted(path: str) -> String {
     String::from(f"{WS}/{path}")
 }
@@ -258,10 +265,16 @@ fn release(revision: str) -> Result<String, ToolError> {
         .wait()
         .map_err(|e| ToolError::new(f"the docs' export: {e.message()}"))?
     print(f"exported {n} files of the docs to {corpus.as_str()}")
-    // The builds' files, in their projects.
+    // The builds' files, in their projects. The console's server build (`server/`) isn't served:
+    // it runs in the console's Worker, from beside its script (`server_dir`).
+    var server_files: Vec<String> = Vec::new()
     var at = 0
     for k in 0..2 {
         for f in outputs[at] {
+            if k == 0 && f.as_str().starts_with("server/") {
+                server_files.push(f.clone())
+                continue
+            }
             if !is_marker(f.as_str()) {
                 projects[k].tree.put(
                     f.as_str(),
@@ -486,6 +499,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     let (docs_head, docs_body) = docs_page(c.docs, ordered, has)
     var finals: Vec<Project> = Vec::new()
     var scripts: Vec<String> = Vec::new()
+    var copies: Vec<(String, String)> = Vec::new()
     for k in 0..projects.len() {
         borrow p = projects[k]
         var entry: Option<String> = None
@@ -552,11 +566,46 @@ fn release(revision: str) -> Result<String, ToolError> {
         f.tree.put_bytes("_headers", all_headers.as_bytes())
         f.tree.sort()
         check_files(f.tree.entries).map_err(own)?
-        scripts.push(archive_script(f.worker.as_str(), all_headers.as_str()))
+        let server = if f.role == Role::Console { server_dir(f.worker.as_str()) } else {
+            String::new()
+        }
+        scripts.push(archive_script(f.worker.as_str(), all_headers.as_str(), server.as_str()))
         finals.push(take f)
     }
+    // The console's server: its build's files beside the Worker's script, and the members of its
+    // Wrangler configuration it asks for (toolchain 0.13.0's `server/cloudflare.json`).
+    let console_out = plan[0].out.clone()
+    var server_members: Vec<(String, Json)> = Vec::new()
+    for f in server_files {
+        let rest = f.as_str().slice("server/".len(), f.len())
+        copies.push(
+            (
+                String::from(f"{console_out.as_str()}/{f.as_str()}"),
+                String::from(f"{OUT}/{server_dir(c.console.worker).as_str()}/{rest}"),
+            ),
+        )
+        if rest == "cloudflare.json" {
+            let bytes = read_files(
+                Vec::from([String::from(f"{console_out.as_str()}/{f.as_str()}")]),
+            )?
+            let Some(t) = String::from_utf8(bytes[0].clone()) else {
+                return Err(ToolError::new("the server's cloudflare.json isn't UTF-8"))
+            }
+            let Some(doc) = parse_json(t.as_str()) else {
+                return Err(ToolError::new("the server's cloudflare.json isn't JSON"))
+            }
+            let Some(Json::Obj(members)) = from_doc(doc, TOP) else {
+                return Err(
+                    ToolError::new("the server's cloudflare.json isn't an object of whole numbers"),
+                )
+            }
+            server_members = take members
+        }
+    }
+    if server_members.is_empty() {
+        return Err(ToolError::new("the console's build has no server (server/cloudflare.json)"))
+    }
     // Written: each Worker's files, its configuration and script, and what the release holds.
-    var copies: Vec<(String, String)> = Vec::new()
     var writes: Vec<(String, Vec<u8>)> = Vec::new()
     for k in 0..finals.len() {
         borrow p = finals[k]
@@ -567,10 +616,13 @@ fn release(revision: str) -> Result<String, ToolError> {
                 Source::Bytes(b) => writes.push((take to, b.clone())),
             }
         }
+        let given = if p.role == Role::Console { server_members.clone() } else { Vec::new() }
         writes.push(
             (
                 String::from(f"{OUT}/{p.worker.as_str()}.wrangler.json"),
-                Vec::from(wrangler_config(p.worker.as_str(), p.domain.as_str(), r).as_bytes()),
+                Vec::from(
+                    wrangler_config(p.worker.as_str(), p.domain.as_str(), r, given).as_bytes(),
+                ),
             ),
         )
         writes.push(

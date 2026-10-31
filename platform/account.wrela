@@ -1,0 +1,361 @@
+// What the console's server keeps of an account, and where (games/capybara/design.md, "Accounts and
+// leaderboards"). An account is a random number and a random handle (the passkeys' user ID), a
+// generated name (names.wrela), its passkeys' public keys, its sessions, its recovery codes'
+// hashes and its runs. Nothing else: no email, no typed name, no address (the host never gives a
+// server one: std::http).
+//
+// Everything lives in the server's store (std::store), as `Serialize`d records under keys that
+// sort by what reads them: each record by its own key, and an account's records also under the
+// account (`a/<id>/...`), so one scan finds all of them to export or delete.
+//
+// Secrets are kept only as their SHA-256: a session's token, a game's token and a recovery code are
+// random (std::crypto::random) and given once, so a copy of the store opens no account.
+
+use names::Name
+use std::hash::sha256::sha256
+use std::serialize::Serialize
+use std::store::{append_u32, append_u64}
+use std::webauthn::Credential
+
+/// How the relying party is shown in a person's passkey list.
+pub const RP_NAME: Text = "wrela"
+
+/// Lifetimes, in milliseconds of the server's clock (the host's wall clock: server.wrela).
+pub const MINUTE: u64 = 60000
+pub const HOUR: u64 = 60 * MINUTE
+pub const DAY: u64 = 24 * HOUR
+/// A session lasts this long from sign-in, unless it is revoked or signed out first.
+pub const SESSION_LIFE: u64 = 90 * DAY
+/// A sign-in with a passkey is fresh this long: adding or removing a passkey, new recovery codes
+/// and deleting the account need one.
+pub const FRESH: u64 = 5 * MINUTE
+/// A game's token lasts this long.
+pub const TOKEN_LIFE: u64 = HOUR
+/// A ceremony's challenge is good for this long, once.
+pub const CHALLENGE_LIFE: u64 = 5 * MINUTE
+
+/// How many times a new account may draw its name again before it is fixed.
+pub const REROLLS: u32 = 3
+/// How many recovery codes an account has.
+pub const CODES: u32 = 10
+/// The most passkeys an account may have (and so the most a ceremony excludes).
+pub const MOST_PASSKEYS: u32 = 16
+
+/// Bytes of the secrets: a session's or a game's token, a CSRF token, a passkey challenge and the
+/// token of the browser that asked for it, an account's handle, a recovery code.
+pub const TOKEN_BYTES: u32 = 32
+pub const CSRF_BYTES: u32 = 16
+pub const CHALLENGE_BYTES: u32 = 32
+pub const CEREMONY_BYTES: u32 = 16
+pub const HANDLE_BYTES: u32 = 16
+pub const CODE_BYTES: u32 = 10
+
+/// An account.
+pub struct Account: Clone + Serialize {
+    pub id: u64,
+    /// The passkeys' user ID: random, so a passkey says nothing of the account's number.
+    pub handle: Vec<u8>,
+    pub name: Name,
+    /// Whether the name is fixed: kept by the player, or out of draws.
+    pub fixed: bool,
+    pub rerolls: u32,
+    pub created: u64,
+    /// Being deleted: it can't sign in, and its records are going.
+    pub deleting: bool,
+}
+
+/// A passkey, by its credential's ID.
+pub struct Passkey: Clone + Serialize {
+    pub account: u64,
+    pub credential: Credential,
+    pub created: u64,
+    pub used: u64,
+}
+
+/// A session, by its token's hash. Its CSRF token is given with it, and every request that
+/// changes something carries it.
+pub struct Session: Clone + Serialize {
+    pub account: u64,
+    pub csrf: Vec<u8>,
+    pub created: u64,
+    pub seen: u64,
+    /// Until when its passkey sign-in is fresh.
+    pub fresh_until: u64,
+    /// Made by a recovery code: it can only add a passkey until one is added.
+    pub recovery: bool,
+}
+
+/// A game's token, by its hash: it can only submit runs, as `account`, to `game`'s boards.
+pub struct GameToken: Clone + Serialize {
+    pub account: u64,
+    pub game: String,
+    pub expires: u64,
+}
+
+/// A recovery code, by its hash.
+pub struct Recovery: Clone + Serialize {
+    pub account: u64,
+}
+
+// ---- keys --------------------------------------------------------------------------------------
+
+fn prefix(p: Text) -> Vec<u8> {
+    Vec::from(String::from(p).as_bytes())
+}
+
+/// Appends `bytes` to `key`.
+pub fn with_bytes(key: mut Vec<u8>, bytes: [u8]) {
+    for b in bytes {
+        key.push(b)
+    }
+}
+
+/// `a/<id>`: an account.
+pub fn account_key(id: u64) -> Vec<u8> {
+    var k = prefix("a/")
+    append_u64(mut k, id)
+    k
+}
+
+/// `a/<id>/`: everything kept under an account.
+pub fn under_account(id: u64) -> Vec<u8> {
+    var k = account_key(id)
+    k.push(47)
+    k
+}
+
+/// What an account's index entries are of: the first byte after `a/<id>/`.
+pub const OF_PASSKEY: u8 = 112
+pub const OF_SESSION: u8 = 115
+pub const OF_CODE: u8 = 114
+pub const OF_RUN: u8 = 117
+pub const OF_BEST: u8 = 98
+pub const OF_TOKEN: u8 = 116
+pub const OF_HOUR: u8 = 104
+pub const OF_SEEN: u8 = 100
+
+/// `a/<id>/<of><rest>`: an index entry under an account.
+pub fn indexed(id: u64, of: u8, rest: [u8]) -> Vec<u8> {
+    var k = under_account(id)
+    k.push(of)
+    with_bytes(mut k, rest)
+    k
+}
+
+/// `c/<credential ID>`: a passkey.
+pub fn passkey_key(credential: [u8]) -> Vec<u8> {
+    var k = prefix("c/")
+    with_bytes(mut k, credential)
+    k
+}
+
+/// `s/<hash>`: a session.
+pub fn session_key(hash: [u8]) -> Vec<u8> {
+    var k = prefix("s/")
+    with_bytes(mut k, hash)
+    k
+}
+
+/// `t/<hash>`: a game's token.
+pub fn token_key(hash: [u8]) -> Vec<u8> {
+    var k = prefix("t/")
+    with_bytes(mut k, hash)
+    k
+}
+
+/// `r/<hash>`: a recovery code.
+pub fn code_key(hash: [u8]) -> Vec<u8> {
+    var k = prefix("r/")
+    with_bytes(mut k, hash)
+    k
+}
+
+/// `n/<name>`: whose a name is.
+pub fn name_key(n: Name) -> Vec<u8> {
+    var k = prefix("n/")
+    with_bytes(mut k, names::key(n))
+    k
+}
+
+/// `w/<expires><hash>`: a passkey ceremony begun, until it is used or expires. The browser that
+/// began it holds its token (a cookie), and the key sorts by when it expires, so the expired ones are
+/// found at the front.
+pub fn ceremony_key(expires: u64, hash: [u8]) -> Vec<u8> {
+    var k = ceremonies()
+    append_u64(mut k, expires)
+    with_bytes(mut k, hash)
+    k
+}
+
+/// `w/`: every ceremony, the soonest to expire first.
+pub fn ceremonies() -> Vec<u8> {
+    prefix("w/")
+}
+
+/// The SHA-256 of a secret: what the store keeps in its place.
+pub fn hashed(secret: [u8]) -> Vec<u8> {
+    Vec::from(sha256(secret))
+}
+
+/// A session's public ID: the first 8 bytes of its token's hash, enough to name it in a list and
+/// to revoke it, and nothing toward its token.
+pub fn public_id(hash: [u8]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    for i in 0..min(8, hash.len()) {
+        out.push(hash[i])
+    }
+    out
+}
+
+/// The `u64` of eight bytes from `at`, big-endian.
+pub fn u64_at(bytes: [u8], at: u32) -> u64 {
+    var x: u64 = 0
+    for i in 0..8 {
+        x = (x << 8) | u64(bytes[at + i])
+    }
+    x
+}
+
+/// The `u32` of four bytes from `at`, big-endian.
+pub fn u32_at(bytes: [u8], at: u32) -> u32 {
+    var x: u32 = 0
+    for i in 0..4 {
+        x = (x << 8) | u32(bytes[at + i])
+    }
+    x
+}
+
+/// `n` in hexadecimal.
+pub fn hex(bytes: [u8]) -> String {
+    let digits = "0123456789abcdef"
+    var out = String::new()
+    for b in bytes {
+        out.push_byte(digits.byte(u32(b >> 4)))
+        out.push_byte(digits.byte(u32(b & 15)))
+    }
+    out
+}
+
+// ---- recovery codes ----------------------------------------------------------------------------
+
+/// Crockford's base 32: no I, L, O or U, so a code read aloud or copied by hand survives.
+const ALPHABET: Text = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+/// A recovery code from 10 random bytes (80 bits): 16 characters in four groups,
+/// `ABCD-EFGH-JKMN-PQRS`.
+pub fn code(bytes: [u8]) -> String {
+    assert(bytes.len() == CODE_BYTES, "a recovery code is 10 bytes")
+    var out = String::new()
+    var acc: u32 = 0
+    var bits = 0
+    var n = 0
+    for b in bytes {
+        acc = (acc << 8) | u32(b)
+        bits += 8
+        while bits >= 5 {
+            bits -= 5
+            if n > 0 && n % 4 == 0 {
+                out.push_byte(45)
+            }
+            out.push_byte(ALPHABET.byte((acc >> bits) & 31))
+            acc = acc & ((1 << bits) - 1)
+            n += 1
+        }
+    }
+    out
+}
+
+fn in_alphabet(b: u8) -> bool {
+    for i in 0..ALPHABET.len() {
+        if ALPHABET.byte(i) == b {
+            return true
+        }
+    }
+    false
+}
+
+/// A code as a person typed it, as the store hashes it: its 16 characters in upper case, with
+/// hyphens and spaces dropped and O read as 0, I and L as 1. None for anything that can't be a
+/// code.
+pub fn normalized(typed: str) -> Option<String> {
+    if typed.len() > 64 {
+        return None
+    }
+    var out = String::new()
+    for i in 0..typed.len() {
+        var b = typed.byte(i)
+        if b == 45 || b == 32 {
+            continue
+        }
+        if b >= 97 && b <= 122 {
+            b -= 32
+        }
+        if b == 79 {
+            b = 48
+        }
+        if b == 73 || b == 76 {
+            b = 49
+        }
+        if !in_alphabet(b) {
+            return None
+        }
+        out.push_byte(b)
+    }
+    if out.len() != 16 {
+        return None
+    }
+    Some(out)
+}
+
+/// The hash the store keeps of a typed code, if it can be a code.
+pub fn code_hash(typed: str) -> Option<Vec<u8>> {
+    let n = normalized(typed)?
+    Some(hashed(n.as_bytes()))
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_recovery_code_is_sixteen_characters_and_reads_back_however_it_is_typed() {
+    let c = code([0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert(c == String::from("0000-0000-0000-0000"), c.as_str())
+    let d = code([255, 255, 255, 255, 255, 255, 255, 255, 255, 255])
+    assert(d == String::from("ZZZZ-ZZZZ-ZZZZ-ZZZZ"), d.as_str())
+    let e = code([1, 35, 69, 103, 137, 171, 205, 239, 1, 35])
+    assert(e.len() == 19)
+    let typed = String::from(" abcd efgh-jkmn PQRS ")
+    let Some(n) = normalized(typed.as_str()) else { panic("a code") }
+    assert(n == String::from("ABCDEFGHJKMNPQRS"))
+    // O, I and L are read as the digits they look like.
+    assert(normalized("OOOO-IIII-LLLL-0000") == Some(String::from("0000111111110000")))
+    assert(code_hash(e.as_str()) == code_hash(lower(e.as_str()).as_str()), "case")
+    for bad in ["", "ABCD", "ABCD-EFGH-JKMN-PQRSX", "ABCD-EFGH-JKMN-PQR!", "UUUU-UUUU-UUUU-UUUU"] {
+        assert(normalized(bad).is_none(), bad)
+    }
+}
+
+fn lower(s: str) -> String {
+    var out = String::new()
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        out.push_byte(if b >= 65 && b <= 90 { b + 32 } else { b })
+    }
+    out
+}
+
+@test
+fn an_accounts_records_sort_under_it_and_numbers_sort_as_numbers() {
+    let a = account_key(1)
+    let b = account_key(256)
+    assert(a.len() == 10 && a < b, "big-endian")
+    let pk = indexed(1, OF_PASSKEY, [9])
+    let under = under_account(1)
+    for i in 0..under.len() {
+        assert(pk[i] == under[i], "under its account")
+    }
+    let Some(end) = std::store::past(under) else { panic("an end") }
+    assert(pk < end && indexed(1, OF_RUN, [255, 255]) < end && account_key(2) >= end)
+    assert(public_id(hashed([1, 2, 3])).len() == 8)
+    assert(u64_at(account_key(258), 2) == 258)
+    assert(hex([0, 171, 255]) == String::from("00abff"))
+}

@@ -5,9 +5,10 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.12.0"
+toolchain = "0.13.0"
 members = [
     "console",
+    "console/server",
     "console/tests/shader-budget",
     "content/*",
     "docsite",

@@ -1,0 +1,180 @@
+// The console's server on its host (language.md §19.5, toolchain 0.13.0's Cloudflare host):
+// `platform::server`'s engine, its commands carried out through std::store, std::crypto and
+// std::http, and the host's answers given back to it on the next call. The console's `serve_init`
+// and `serve` (console/main.wrela) are these.
+//
+// Each call reads every event it was given (a `serve` that leaves one unread fails). A request is
+// a short connection: it opens, its one message is the HTTP request, and it closes once answered.
+// What the engine reads of it is the request's time, its two cookies and its body; the paths are
+// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET), and anything else is not found.
+
+use capybara::boards::Capybara
+use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, engine}
+use platform::wire::{ACCOUNTS, PUBLIC}
+use std::crypto
+use std::http::{Request, Response, bytes, request, respond, session_cookie, text}
+use std::input::{Event, events, payload}
+use std::io::Pending
+use std::net::POISONED
+use std::store
+use std::webauthn::base64url
+
+/// The server: the engine, and its requests waiting on the host.
+pub struct Server {
+    engine: Engine<Capybara>,
+    asked: Vec<(u32, Pending<u8>)>,
+}
+
+/// The server for the console at `origin`, its passkeys for relying party `rp_id`.
+@server
+pub fn init(rp_id: str, origin: str) -> Server {
+    Server { engine: engine(Capybara {}, rp_id, origin), asked: Vec::new() }
+}
+
+/// One call: the answers in, then the events, then what the engine asks carried out.
+@server
+pub fn serve(s: mut Server, time: f32) {
+    let _ = time
+    s.engine.begin()
+    var i = 0
+    while i < s.asked.len() {
+        match s.asked[i].1.poll() {
+            Some(result) => {
+                let (ticket, _) = s.asked.remove(i)
+                s.engine.answer(ticket, take result.ok())
+            },
+            None => i += 1,
+        }
+    }
+    for e in events() {
+        match e {
+            Event::Message { conn, .. } => {
+                let Some(bytes) = payload(e) else { continue }
+                // A request that failed an instance comes back marked: it is dropped unread.
+                if conn >= POISONED {
+                    continue
+                }
+                let Some(r) = request(conn, bytes) else { continue }
+                http(mut s, r)
+            },
+            // A request opens with its message; its close is the engine's to hear.
+            Event::Connection { conn, open: false, .. } => s.engine.closed(conn),
+            _ => {},
+        }
+    }
+    s.engine.end()
+    for c in s.engine.commands() {
+        match c {
+            Command::Get { ticket, key } => s.asked.push((ticket, store::get(key))),
+            Command::Scan { ticket, from, to, limit, down } => {
+                s.asked.push((ticket, store::scan(from, to, limit, down)))
+            },
+            Command::Put { key, value } => store::put(key, value),
+            Command::Delete { key } => store::delete(key),
+            Command::Random { ticket, n } => s.asked.push((ticket, crypto::random(n))),
+            Command::Verify { ticket, algorithm, key, message, signature } => {
+                s.asked.push((ticket, crypto::verify(algorithm, key, message, signature)))
+            },
+            Command::Respond { conn, body, cookies, public } => {
+                var out = bytes(200, body, "application/octet-stream")
+                for k in cookies {
+                    let value = base64url(k.value)
+                    out.set(
+                        "set-cookie",
+                        session_cookie(k.name.as_str(), value.as_str(), k.max_age).as_str(),
+                    )
+                }
+                if public > 0 {
+                    out.set("cache-control", String::from(f"public, max-age={public}").as_str())
+                }
+                respond(conn, out)
+            },
+        }
+    }
+}
+
+/// A request to the engine, if it's one of wire.wrela's: else it is answered here.
+fn http(s: mut Server, r: Request) {
+    let method = r.method.as_str()
+    let path = r.path.as_str()
+    let body = if path == ACCOUNTS && method == "POST" {
+        Some(r.body.clone())
+    } else if path == PUBLIC && (method == "GET" || method == "HEAD") {
+        query_bytes(r.query.as_str())
+    } else {
+        None
+    }
+    let Some(body) = take body else {
+        let status = if path == ACCOUNTS || path == PUBLIC { 405 } else { 404 }
+        respond(r.conn, text(status, "Not here."))
+        return
+    }
+    s.engine.http(
+        r.conn,
+        Asked {
+            time: r.time,
+            public: method != "POST",
+            session: cookie_bytes(r, SESSION),
+            ceremony: cookie_bytes(r, CEREMONY),
+            body,
+        },
+    )
+}
+
+/// The bytes of session cookie `name` (base64url): empty if it wasn't sent. One that doesn't read
+/// is one byte, which no token is, so the engine clears it.
+fn cookie_bytes(r: Request, name: Text) -> Vec<u8> {
+    match r.session(name) {
+        Some(v) => unbase64url(v.as_str()).unwrap_or(Vec::from([u8(0)])),
+        None => Vec::new(),
+    }
+}
+
+/// The request in a public read's query, `q=<base64url>`.
+fn query_bytes(query: str) -> Option<Vec<u8>> {
+    if !query.starts_with("q=") {
+        return None
+    }
+    unbase64url(query.slice(2, query.len()))
+}
+
+/// The bytes of base64url text without padding (RFC 4648 §5), or none if it isn't that.
+fn unbase64url(s: str) -> Option<Vec<u8>> {
+    if s.len() % 4 == 1 {
+        return None
+    }
+    var out: Vec<u8> = Vec::with_capacity(s.len() * 3 / 4)
+    var acc: u32 = 0
+    var bits: u32 = 0
+    for i in 0..s.len() {
+        let c = s.byte(i)
+        let v = if c >= 65 && c <= 90 {
+            c - 65
+        } else if c >= 97 && c <= 122 {
+            c - 71
+        } else if c >= 48 && c <= 57 {
+            c + 4
+        } else if c == 45 { 62 } else if c == 95 { 63 } else {
+            return None
+        }
+        acc = (acc << 6) | u32(v)
+        bits += 6
+        if bits >= 8 {
+            bits -= 8
+            out.push(u8((acc >> bits) & 255))
+        }
+    }
+    Some(out)
+}
+
+@test
+fn base64url_reads_back() {
+    for n in [0, 1, 2, 3, 16, 24, 31] {
+        var b: Vec<u8> = Vec::new()
+        for k in 0..n {
+            b.push(u8((k * 37 + 250) & 255))
+        }
+        assert(unbase64url(base64url(b).as_str()) == Some(b.clone()), f"{n} bytes")
+    }
+    assert(unbase64url("a+b/").is_none() && unbase64url("abcde").is_none(), "not base64url")
+}

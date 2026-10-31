@@ -330,6 +330,8 @@ pub struct Console {
     coarser: u32,
     counted: u32,
     spent: f32,
+    // The account: sign-in, the knighting, the legal pages and the games' boards (account.wrela).
+    account: account::Accounts,
 }
 
 // Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
@@ -462,6 +464,7 @@ pub fn init() -> Console {
         coarser: 0,
         counted: 0,
         spent: 0.0,
+        account: account::new(RP_ID, ONLINE),
     }
 }
 
@@ -674,6 +677,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
         Step::Frame => {
             let Some(id) = s.handle else { return }
             s.pending = Some(host::show(id, s.profile.game))
+            account::game_shown(mut s.account, id, s.profile.game)
             // Keep the closure request alive before the host suspends this console.
             s.closing = Some(host::wait_closed(id))
             s.step = Step::Show
@@ -919,6 +923,7 @@ fn update(s: mut Console) {
     }
     if poll(mut s.closing).is_some() {
         s.dirty = true
+        account::game_closed(mut s.account)
         // A game that was starting or playing has closed; a session closed only to change the
         // selection keeps a play already asked of the new one.
         if s.step != Step::Idle { s.play_intent = None }
@@ -933,6 +938,7 @@ fn update(s: mut Console) {
     }
     let _ = poll(mut s.cursor)
     fulfill_play(mut s)
+    if account::update(mut s.account, s.presentation) { s.dirty = true }
 }
 
 fn open_pane(s: mut Console, pane: Pane) {
@@ -1710,6 +1716,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.activate = None
     for event in events() {
         s.dirty = true
+        if account::event(mut s.account, event, s.zoom) { continue }
         match event {
             Event::PointerMove { at, .. } => {
                 s.pointer = Some(at / s.zoom)
@@ -1858,7 +1865,12 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
     // the opening's slow turn and the camera's breath at the idle rate. The canvas keeps the last
     // frame, so a settled home draws nothing.
-    let busy = s.dirty || !s.settled || !eased || intro || (width, height) != s.drawn_size
+    let busy = s.dirty ||
+        !s.settled ||
+        !eased ||
+        intro ||
+        (width, height) != s.drawn_size ||
+        account::animating(s.account)
     let editing = s.pane == Pane::Settings && s.focus == Action::Name
     let since = match s.drawn_at {
         Some(at) => Some(time - at),
@@ -1899,6 +1911,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             }
             if games { s.controls.truncate(before) } else { footer(mut s, w, h, margin) }
         }
+        account::draw(mut s.account, mut s.draw, s.fonts, w, h, margin, s.zoom, s.reduced)
     }
     // Over anything it can press, the pointer becomes a hand.
     let over = match s.pointer {
@@ -2610,4 +2623,24 @@ fn another_game_is_chosen_while_saves_are_read_but_not_while_one_starts() {
         Step::PickFile,
         Step::Import,
     ] { assert(!browsing(step)) }
+}
+
+// ---- the server ----------------------------------------------------------------------------
+
+// The console's server build: accounts and the games' boards (console/server). Its passkeys are
+// for wrela.dev from the console's origin; a local build sets its own (docs/toolchain.md, "The
+// console's server").
+pub const RP_ID: Text = "wrela.dev"
+pub const ORIGIN: Text = "https://wrela.dev"
+/// Whether the console has a server to sign in to (`console/server`, in its Worker on
+/// Cloudflare). A build without one sets it false (`--set ONLINE=false`): its chip opens only the
+/// health warning and the legal pages.
+pub const ONLINE: bool = true
+
+pub fn serve_init() -> console_server::serve::Server {
+    console_server::serve::init(RP_ID, ORIGIN)
+}
+
+pub fn serve(s: mut console_server::serve::Server, time: f32) {
+    console_server::serve::serve(mut s, time)
 }

@@ -1,0 +1,229 @@
+// The console's legal pages: the Terms of Service, the Privacy Policy, the Credits and a health
+// warning (photosensitive seizures). They are
+// drafts in plain English, for a lawyer's review before launch, and each page says so at its top.
+// They describe the accounts as they are built (platform/account.wrela, platform/server.wrela) and
+// the lines Ryan chose not to cross, which keep the accounts outside COPPA's personal information
+// (16 CFR 312, as amended in 2025): no age gate, generated names only, no stored IP addresses.
+//
+// A page is paragraphs: one that starts with "# " is a heading, "- " a point of a list. The
+// Credits page shows the licences the release ships beside the console (studio/release): the MIT
+// licence and each font's SIL Open Font License, fetched whole, so what it shows is what ships.
+
+/// The pages.
+pub const TERMS: u32 = 0
+pub const PRIVACY: u32 = 1
+pub const CREDITS: u32 = 2
+pub const HEALTH: u32 = 3
+pub const PAGES: u32 = 4
+
+pub const TITLES: [Text; 4] = [
+    "Terms of Service",
+    "Privacy Policy",
+    "Credits and licences",
+    "Health warning",
+]
+/// Each page's name on its link.
+pub const LINKS: [Text; 4] = ["Terms", "Privacy", "Credits", "Health"]
+
+/// The banner every page carries.
+pub const DRAFT: Text = "DRAFT for review by a lawyer. Not yet in force."
+
+/// The licence files the Credits page shows, as the release names them beside the console.
+pub const LICENCES: [Text; 4] = [
+    "LICENSE",
+    "fonts/OFL-Manrope.txt",
+    "fonts/OFL-Inter.txt",
+    "fonts/OFL-JetBrainsMono.txt",
+]
+
+pub const TERMS_TEXT: [Text; 42] = [
+    "Last changed 30 October 2026.",
+    "# Who we are",
+    "wrela.dev is a place to play games made with Wrela. It is run by [operator: Ryan Wible or his LLC, to be decided] (\"we\", \"us\"). To reach us about these terms, write to [contact address, to be added before launch].",
+    "wrela.dev is free. It shows no ads and sells nothing.",
+    "# Playing without an account",
+    "You can play every game on wrela.dev without an account. Your saves and your best runs stay in your browser, on your device.",
+    "# Your account",
+    "An account lets you put your runs on the world's leaderboards. You make one with a passkey: a key your phone, computer or security key keeps, unlocked with your fingerprint, face or PIN. There is no password and no email.",
+    "We give your account a name, drawn at random from our own lists of words. You can draw again a few times, then the name is fixed. No one can type a name, so no name can say anything a person wrote.",
+    "When you make an account we show you ten recovery codes, once. Keep them somewhere safe. If you lose every passkey and every recovery code, we cannot get your account back: we have no other way to know it is yours.",
+    "You can delete your account at any time (Account, then Delete account). It is gone at once, with everything we keep of it.",
+    "# Fair play and the leaderboards",
+    "The world boards are for runs a person played with their own hands, in real time, with the game's normal controls.",
+    "- A run made or changed by a program goes on the tool-assisted board, never the human one. That includes input scripts and macros, slowing the game down, splicing runs together, and editing a replay.",
+    "- We check every run by playing its button presses again on the game's own rules, and we refuse a run whose time or score the rules can't make. Passing that check doesn't prove a person played it.",
+    "- We may remove from the human board, without notice, any run we believe broke these rules, and we may close an account that keeps breaking them.",
+    "- A board belongs to one version of a game's physics. When a fix changes how the game plays, a new board starts; the old one stays as it was. We may reset boards before a game's release.",
+    "- Places and times on a board are shown as they are. We don't promise any run will stay on a board.",
+    "# Your runs",
+    "A run you upload is the buttons you pressed, tick by tick, and the time and category we work out from them. By uploading one you let us keep it, show it on the boards with your account's name, and let anyone watch it. You can take it down by deleting your account.",
+    "# Things you must not do",
+    "- Attack, overload or probe the service, or try to reach another person's account.",
+    "- Use the service in a way that breaks the law.",
+    "- Pretend a run of a program's is a person's.",
+    "# The games and the code",
+    "Wrela's games and code are open source, under the MIT licence (see Credits). These terms are about the service at wrela.dev, not about the code's licence.",
+    "# Children",
+    "wrela.dev has no age check. It is built so that it doesn't collect personal information from anyone: no email, no typed names, no chat, no voice or video. The Privacy Policy says exactly what we keep.",
+    "# No warranty",
+    "The service, its games and everything on it are provided \"as is\" and \"as available\", without warranties of any kind, express or implied, including any warranty of merchantability, fitness for a particular purpose or non-infringement. We don't promise it will always be available, free of mistakes or safe for every person to play, or that your account, runs and places will be kept. You use it at your own risk.",
+    "Some games have flashing lights and fast motion. Read the Health warning before you play.",
+    "# Limits on our liability",
+    "As far as the law allows, [operator] is not liable for any indirect, incidental, special, consequential or punitive damages, or for any loss of data, accounts, runs or places, arising from your use of the service or the games, even if told such loss was possible. As far as the law allows, our total liability for any claim about the service is limited to zero, since you paid nothing for it. Some places don't allow these limits, and there they apply only as far as the law of that place allows. [To be reviewed by a lawyer for each place we serve.]",
+    "# Changes",
+    "If we change these terms, we will show the new date at the top and say what changed on this page before the change takes effect. If you keep using an account after that, the new terms apply; if you don't agree, you can delete it.",
+    "# The law",
+    "[Governing law and venue: to be decided with a lawyer.]",
+    "# Ending",
+    "You can stop using wrela.dev and delete your account at any time. We may suspend or close an account that breaks these terms, and we will remove its runs from the boards.",
+    "# Questions",
+    "Write to [contact address, to be added before launch].",
+    "This page is a draft for a lawyer's review and is not yet in force.",
+]
+
+pub const PRIVACY_TEXT: [Text; 57] = [
+    "Last changed 30 October 2026.",
+    "# In short",
+    "wrela.dev is free. It shows no ads, sells nothing, and never sells or rents anything about you to anyone.",
+    "We built accounts to know as little about you as we can. We don't ask for your email, your name, your age or where you are. We never see a password. We don't show ads and we don't use anyone else's analytics.",
+    "You can play every game without an account. Then nothing about you leaves your device.",
+    "# What we keep, and only this",
+    "- An account number and an account handle: random numbers we make. The handle is what your passkey knows your account by.",
+    "- Your passkey's public key, its credential ID, its signature counter, and when it was added and last used. The private key never leaves your device; we never see it.",
+    "- Your account's name: four numbers that pick words from our lists. You never type it.",
+    "- Your recovery codes, only as fingerprints (SHA-256 hashes), so a copy of our records can't be used to sign in.",
+    "- One session cookie, which your browser keeps for wrela.dev and sends only there; no script can read it, ours included. Our server keeps its fingerprint, with when the session began and was last seen. It keeps you signed in. Games never see it. While you sign in or add a passkey, a second cookie holds that sign-in's token for at most five minutes. We use no other cookies.",
+    "- A short-lived token for each game you play while signed in, which can only submit runs. We keep its fingerprint for an hour.",
+    "- Your runs: the buttons you pressed, tick by tick (a replay), the time and category our server works out from them, and when you uploaded each one.",
+    "- How many runs you uploaded in the past hour, and fingerprints of the replays you uploaded, to stop the same run being sent twice.",
+    "- Times on our server's own clock, for when each of these was made.",
+    "# What we never keep",
+    "- No email address, phone number, real name or typed name of any kind.",
+    "- No password.",
+    "- No chat, messages or other free text.",
+    "- No photos, voice or video.",
+    "- No location.",
+    "- No IP addresses. Our server program is never told your IP address. Cloudflare (below) sees it, as any host must, to deliver each request, and our Worker uses it for one thing: counting each address's requests over a minute, to limit how fast anyone can try to sign in. It is never written down or logged.",
+    "- No third-party analytics, advertising, tracking pixels or social buttons.",
+    "# What we use identifiers for",
+    "The account number, the account handle, the passkey's credential ID and the session and game tokens are persistent identifiers. We use them only to:",
+    "- sign you in, keep you signed in, and let you sign out or end a session elsewhere;",
+    "- show your verified runs on the leaderboards under your account's name;",
+    "- check uploaded runs, enforce the upload limits, and stop cheating and abuse;",
+    "- keep the service secure and working, and find and fix its faults;",
+    "- give you a copy of your data, and delete it when you ask.",
+    "We never use them to show ads, to build a profile of you, to follow you across other sites, or to contact you.",
+    "# Lines we don't cross",
+    "Each of these would mean collecting personal information, and so a new design and, for children, a parent's verified consent first. We won't do any of them without changing this policy first:",
+    "- asking for an email address or a phone number;",
+    "- letting anyone type a name, a message or anything else;",
+    "- chat, voice or video, including video of runs;",
+    "- precise location;",
+    "- third-party analytics, ads or social sign-in;",
+    "- using an identifier for anything beyond the list above;",
+    "- keeping IP addresses.",
+    "# Who helps us run it",
+    "- Cloudflare serves the website and runs our server, and stores its records and their backups. It sees the IP address of each visit and connection, as any web host does.",
+    "- GitHub holds the source code. It never receives account data.",
+    "Each acts on our behalf, and none of them gets your account's records to use for itself.",
+    "# How long we keep it",
+    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it; a game's token after an hour. A deleted account's records go from our server at once, from Cloudflare's caches of the public boards and replays within five minutes, and from the backups within [30 days: to be set with the backup's retention].",
+    "# Your choices",
+    "- Export: Account, then Export my data, gives you everything above as a JSON file.",
+    "- Delete: Account, then Delete account, deletes your passkeys' records, sessions, recovery codes, runs and name at once. You'll be asked to sign in with your passkey first.",
+    "# Children",
+    "We don't ask anyone's age. wrela.dev is designed so that it doesn't collect personal information from anyone, children included: names are generated, nothing can be typed, and nothing above identifies a person. If you think we hold something we shouldn't, write to us and we will delete it.",
+    "# Security",
+    "Sign-in uses passkeys, checked on our server against the passkey's public key. Secrets are kept only as fingerprints. Every request that changes your account is checked against your session.",
+    "# Changes",
+    "If we change this policy, we will put the new date at the top and say on this page what changed before the change takes effect.",
+    "# Contact",
+    "Write to [contact address, to be added before launch]. This page is a draft for a lawyer's review and is not yet in force.",
+]
+
+pub const CREDITS_TEXT: [Text; 12] = [
+    "# The code",
+    "Wrela's games, the console, the engine and this site are open source under the MIT licence, copyright Ryan Wible. The source is at https://github.com/rywible/wrela.",
+    "The toolchain that builds them (the Wrela compiler, its standard library and its hosts) is at https://github.com/rywible/wrela-compiler, with its own licences and notices; the release's WebAssembly is optimized by Binaryen's wasm-opt (Apache License 2.0).",
+    "# The fonts",
+    "- Manrope, copyright 2018 The Manrope Project Authors, under the SIL Open Font License 1.1.",
+    "- Inter, copyright 2016 The Inter Project Authors, under the SIL Open Font License 1.1.",
+    "- JetBrains Mono, copyright 2020 The JetBrains Mono Project Authors, under the SIL Open Font License 1.1.",
+    "# The music and the art",
+    "Every picture and sound in the games is made by code. The capybara game's theme is Ryan Wible's melody. No generative image, sound or music model made any of it.",
+    "# The licences in full",
+    "Each licence below is the file this release ships beside the console.",
+    "",
+]
+
+pub const HEALTH_TEXT: [Text; 9] = [
+    "# Photosensitive seizures",
+    "A very small number of people may have a seizure when they see certain visual images, including flashing lights, patterns or fast motion, such as those in video games. This can happen to people with no history of seizures or epilepsy.",
+    "Stop playing at once and see a doctor if you or a child playing has any of these: lightheadedness, changed vision, eye or face twitching, jerking or shaking of the arms or legs, confusion, disorientation, or any involuntary movement or loss of awareness.",
+    "Parents: watch your children while they play, and ask them about these symptoms. Children and teenagers are more likely than adults to have these seizures.",
+    "# To lower the risk",
+    "- Play in a well-lit room, sitting farther from the screen.",
+    "- Don't play when you are drowsy or tired.",
+    "- Take a break of at least 10 to 15 minutes every hour. Turning on your system's reduced-motion setting calms the console's motion.",
+    "If you or anyone in your family has had seizures or epilepsy, talk to a doctor before playing. This page is a draft for a lawyer's review.",
+]
+
+/// Page `page`'s paragraphs.
+pub fn paragraphs(page: u32) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    if page == TERMS {
+        for p in TERMS_TEXT {
+            out.push(String::from(p))
+        }
+    } else if page == PRIVACY {
+        for p in PRIVACY_TEXT {
+            out.push(String::from(p))
+        }
+    } else if page == HEALTH {
+        for p in HEALTH_TEXT {
+            out.push(String::from(p))
+        }
+    } else {
+        for p in CREDITS_TEXT {
+            out.push(String::from(p))
+        }
+    }
+    out
+}
+
+@test
+fn the_pages_are_drafts_and_promise_what_the_server_does() {
+    for page in [TERMS, PRIVACY, HEALTH] {
+        let ps = paragraphs(page)
+        var all = String::new()
+        for p in ps {
+            all.push_str(p.as_str())
+            all.push_str("\n")
+        }
+        assert(all.as_str().find("draft").is_some(), "says it's a draft")
+    }
+    var privacy = String::new()
+    for p in PRIVACY_TEXT {
+        privacy.push_str(p)
+    }
+    // What the server does, the policy says: sessions end after 90 days, game tokens after an hour,
+    // ten recovery codes kept as hashes.
+    assert(account_life_days() == 90 && privacy.as_str().find("90 days").is_some())
+    assert(privacy.as_str().find("an hour").is_some())
+    assert(
+        privacy.as_str().find("Cloudflare").is_some() && privacy.as_str().find("Fly.io").is_none(),
+    )
+    assert(privacy.as_str().find("No IP addresses").is_some())
+    assert(privacy.as_str().find("sells nothing").is_some(), "free, no ads, sells nothing")
+    var terms = String::new()
+    for p in TERMS_TEXT {
+        terms.push_str(p)
+    }
+    for promise in ["\"as is\"", "not liable", "[operator", "Health warning"] {
+        assert(terms.as_str().find(promise).is_some(), promise)
+    }
+}
+
+fn account_life_days() -> u64 {
+    platform::account::SESSION_LIFE / platform::account::DAY
+}

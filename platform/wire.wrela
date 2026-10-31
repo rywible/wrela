@@ -1,0 +1,147 @@
+// The messages between the console and its server, over HTTP to the server's own origin
+// (std::http): the console sends a `Request` as a request's body, and the server answers it with one
+// `Reply` as the response's. Both are `Serialize`d. A public read (a board, a run) may go as a `GET`
+// whose query is the request (`PUBLIC`), so the host can keep its answer in Cloudflare's cache;
+// everything else is a `POST` to `ACCOUNTS`.
+//
+// The session is the `__Host-session` cookie, which the browser keeps and a script never reads;
+// a ceremony's is the `__Host-ceremony` cookie, so only the browser that began it can finish it. A
+// request that changes the account also carries the session's CSRF token (`csrf`), which the server
+// compares with the session's: a second check behind the cookie's `SameSite=Strict` and the
+// host's refusal of another site's `Origin`.
+
+use std::serialize::Serialize
+
+/// Where the console sends its requests: a `POST` with the request as its body, or a `GET` of a
+/// public read with the request in base64url after `?q=`.
+pub const ACCOUNTS: Text = "/api/accounts"
+pub const PUBLIC: Text = "/api/public"
+
+/// The ceremonies a challenge is for.
+pub const REGISTER: u32 = 0
+pub const SIGN_IN: u32 = 1
+pub const ADD_PASSKEY: u32 = 2
+
+/// The categories a board ranks (as a game's verifier names them): any% and 100%.
+pub const ANY: u32 = 0
+pub const FULL: u32 = 1
+/// The course number of a whole game's board: the sum of an account's best time on every course.
+pub const WHOLE: u32 = 4294967295
+
+/// The most bytes of a replay an upload carries.
+pub const MOST_REPLAY: u32 = 49152
+/// The most bytes of text an export part carries, so a response stays well under the host's 1 MiB.
+pub const EXPORT_PART: u32 = 262144
+/// The most entries a board's page holds.
+pub const BOARD_PAGE: u32 = 20
+
+pub enum Request: Clone + Serialize {
+    /// The account the session cookie is for, if any, and the session's CSRF token. Asked when the
+    /// console starts: a session resumed this way is no longer fresh.
+    Me,
+    /// A challenge for `ceremony` (REGISTER, SIGN_IN, ADD_PASSKEY).
+    Begin { ceremony: u32, csrf: Vec<u8> },
+    /// A new account's first passkey, over the REGISTER challenge.
+    Register { id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
+    /// A sign-in with a passkey, over the SIGN_IN challenge.
+    SignIn {
+        id: Vec<u8>,
+        client_data: Vec<u8>,
+        authenticator_data: Vec<u8>,
+        signature: Vec<u8>,
+        user: Vec<u8>,
+    },
+    /// A sign-in with a recovery code, as typed.
+    Recover { code: String },
+    /// Draws the name again, or keeps it.
+    Reroll { csrf: Vec<u8> },
+    Keep { csrf: Vec<u8> },
+    /// Another passkey, over the ADD_PASSKEY challenge.
+    AddPasskey { csrf: Vec<u8>, id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
+    RemovePasskey { csrf: Vec<u8>, id: Vec<u8> },
+    Passkeys,
+    /// New recovery codes in place of the old.
+    NewCodes { csrf: Vec<u8> },
+    Sessions,
+    /// Ends a session by its public ID, or this one.
+    Revoke { csrf: Vec<u8>, session: Vec<u8> },
+    SignOut { csrf: Vec<u8> },
+    /// A token for `game`, which can only submit runs.
+    Token { game: String },
+    /// Everything kept of the account, as JSON, a part at a time: from the start (`after` empty),
+    /// or from where the last part's `next` says.
+    Export { after: Vec<u8> },
+    /// Deletes the account and everything kept of it.
+    Delete { csrf: Vec<u8> },
+    /// A run for `game`'s board, as its replay's bytes, with a game's token. It is answered once
+    /// the run is verified: `Verified` or `Rejected`.
+    Upload { token: Vec<u8>, game: String, replay: Vec<u8> },
+    /// A page of a board: `course` (or WHOLE) and `category`, from place `from` (0 the fastest).
+    Board { game: String, course: u32, category: u32, from: u32 },
+    /// A run's replay, to watch.
+    Watch { run: u64 },
+}
+
+/// Whether `r` is a public read, sent by `GET` to `PUBLIC`: the same answer for everyone, so a
+/// cache may keep it. Anything else goes by `POST` to `ACCOUNTS`.
+pub fn public(r: Request) -> bool {
+    match r {
+        Request::Board { .. } | Request::Watch { .. } => true,
+        _ => false,
+    }
+}
+
+/// What the console may show of an account.
+pub struct Me: Clone + Serialize {
+    pub signed_in: bool,
+    pub name: String,
+    pub fixed: bool,
+    pub rerolls: u32,
+    /// Signed in with a recovery code: a passkey must be added before anything else.
+    pub must_add_passkey: bool,
+}
+
+pub struct PasskeyView: Clone + Serialize {
+    pub id: Vec<u8>,
+    pub created: u64,
+    pub used: u64,
+}
+
+pub struct SessionView: Clone + Serialize {
+    pub id: Vec<u8>,
+    pub created: u64,
+    pub seen: u64,
+    pub this: bool,
+}
+
+/// A place on a board.
+pub struct Place: Clone + Serialize {
+    pub place: u32,
+    pub name: String,
+    pub ticks: u32,
+    /// The run to watch (0 for a whole game's place, which is several runs).
+    pub run: u64,
+}
+
+pub enum Reply: Clone + Serialize {
+    /// The session's account (or nobody), after `Me` or a change, and the session's CSRF token.
+    Welcome { me: Me, csrf: Vec<u8> },
+    Challenge { ceremony: u32, challenge: Vec<u8>, handle: Vec<u8>, exclude: Vec<Vec<u8>> },
+    /// A session begun (its cookie set): its CSRF token, for the console to keep while it runs, and
+    /// with a new account its recovery codes, shown once.
+    Session { csrf: Vec<u8>, me: Me, codes: Vec<String> },
+    Codes { codes: Vec<String> },
+    Passkeys { passkeys: Vec<PasskeyView> },
+    Sessions { sessions: Vec<SessionView> },
+    Token { token: Vec<u8>, expires_in: u32 },
+    /// A part of an export: ask for the next, from `next`, until `last`. Each part ends after a
+    /// whole record, so the parts joined are the JSON.
+    Export { text: String, next: Vec<u8>, last: bool },
+    Done,
+    Verified { run: u64, ticks: u32, place: u32 },
+    Rejected { why: String },
+    Board { places: Vec<Place>, total: u32 },
+    Run { run: u64, game: String, replay: Vec<u8> },
+    /// The request isn't one the server takes now: why, said for a person.
+    Refused { why: String },
+}

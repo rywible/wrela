@@ -127,6 +127,8 @@ pub enum Act: Copy + Eq {
     Boards,
     /// A watched run: again from its start.
     Again,
+    /// A run of the player's: to the world's board.
+    Upload,
 }
 
 /// A prompt: its glyphs, and what it does.
@@ -181,6 +183,8 @@ pub fn act(
             face_button(mut list, PadButton::East, at, size, i)
         } else if a == Act::Again {
             face_button(mut list, PadButton::West, at, size, i)
+        } else if a == Act::Upload {
+            face_button(mut list, PadButton::North, at, size, i)
         } else if a == Act::Pause {
             start_button(mut list, at, size, i)
         } else if a == Act::Restart {
@@ -214,6 +218,8 @@ pub fn act(
         key(mut list, fonts, "R", at, size, i)
     } else if a == Act::Music {
         key(mut list, fonts, "M", at, size, i)
+    } else if a == Act::Upload {
+        key(mut list, fonts, "U", at, size, i)
     } else { key(mut list, fonts, "Tab", at, size, i) }
 }
 
