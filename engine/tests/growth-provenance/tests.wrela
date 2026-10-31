@@ -9,8 +9,9 @@ use std::io::print
 use trees::kinds::{KINDS, provenance}
 
 /// How many of the vale's drawn things are authored now: each part of §E that grows a kind of
-/// them lowers it, to 0 at §E8 (63 at E0; 47 at E1.3, its 16 living kinds grown).
-const AUTHORED_NOW: u32 = 47
+/// them lowers it, to 0 at §E8 (63 at E0; 47 at E1.3, its 16 living kinds grown; 14 at E3, its
+/// 33 species grown).
+const AUTHORED_NOW: u32 = 14
 
 @test
 fn the_vales_authored_things_are_counted_and_fall() {
