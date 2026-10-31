@@ -70,7 +70,7 @@ enum Asked: Clone + Eq {
     Around { course: u32, category: u32 },
     Watch { name: String, place: u32 },
     Replay { hash: Vec<u8> },
-    Names { query: Vec<String> },
+    Names { query: Vec<String>, course: u32 },
     SaveCodes,
 }
 
@@ -108,7 +108,7 @@ pub struct Online {
     /// one for 100%), each as stored and read (`Stored`).
     uploaded: Vec<Vec<u8>>,
     uploads: Stored,
-    waiting: Vec<Replay>,
+    waiting: Vec<(Vec<u8>, Replay)>,
     waits: Stored,
     /// A post of a waiting run under way, and when the next may be tried (s).
     posting: bool,
@@ -119,9 +119,12 @@ pub struct Online {
     pins: Vec<Vec<u8>>,
     wanted: Option<(Vec<u8>, String, u32)>,
     watch: Option<(Replay, String, u32)>,
-    /// The search last asked for (its title, noun and epithet), what it found, and what to say.
+    /// The search last asked for (its title, noun and epithet), how many names it found, their
+    /// runs as boards (each course and category's, fastest first: `found_places`), and what to
+    /// say.
     query: Vec<String>,
-    found: Vec<Found>,
+    found: u32,
+    found_boards: Vec<Shown>,
     found_note: String,
     time: f32,
 }
@@ -185,7 +188,8 @@ pub fn online() -> Online {
         wanted: None,
         watch: None,
         query: Vec::new(),
-        found: Vec::new(),
+        found: 0,
+        found_boards: Vec::new(),
         found_note: String::new(),
         time: 0.0,
     }
@@ -226,7 +230,11 @@ pub fn update(o: mut Online, time: f32) {
         o.uploads.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
     }
     if o.waits.due() {
-        o.waits.saving = Some(store(WAITING, save(Waiting { runs: o.waiting.clone() })))
+        var runs: Vec<Replay> = Vec::with_capacity(o.waiting.len())
+        for (_, r) in o.waiting {
+            runs.push(r.clone())
+        }
+        o.waits.saving = Some(store(WAITING, save(Waiting { runs })))
     }
     let _ = answer_of(mut o.replying)
     if let Some(result) = answer_of(mut o.incoming) {
@@ -411,22 +419,23 @@ pub fn beats(o: Online, r: Replay) -> bool {
     false
 }
 
-/// Run `r` among the waiting: one a course for any% and one for 100%, the faster kept.
+/// Run `r` among the waiting, beside its fingerprint: one a course for any% and one for 100%, the
+/// faster kept.
 fn wait(o: mut Online, r: Replay) {
     let (course, full) = (r.course, counts(r, FULL))
-    for w in o.waiting {
+    for (_, w) in o.waiting {
         if w.course == course && counts(w, FULL) == full && w.ticks <= r.ticks {
             return
         }
     }
-    o.waiting.retain(|w| w.course != course || counts(w, FULL) != full)
-    o.waiting.push(r.clone())
+    o.waiting.retain(|w| w.1.course != course || counts(w.1, FULL) != full)
+    o.waiting.push((fingerprint(r), r.clone()))
     o.waits.unsaved = true
 }
 
 fn unwait(o: mut Online, hash: Vec<u8>) {
     let before = o.waiting.len()
-    o.waiting.retain(|w| fingerprint(w) != hash)
+    o.waiting.retain(|w| w.0 != hash)
     if o.waiting.len() != before {
         o.waits.unsaved = true
     }
@@ -450,25 +459,25 @@ pub fn finished(o: mut Online, r: Replay) {
 }
 
 /// The waiting runs posted, one at a time, while the game may post alone: each first waits for
-/// the account's place on its board (the slice around it), and goes only if it beats it.
+/// the account's place on its board (the slice around it), and goes only if it beats it. Nothing
+/// is done while that slice is asked; one that can't be asked waits `AGAIN`.
 fn pump(o: mut Online) {
     if !posts_alone(o) || o.posting || o.time < o.again_at || o.waiting.is_empty() {
         return
     }
-    let r = o.waiting[0].clone()
-    let hash = fingerprint(r)
-    if posted(o, hash) {
+    let course = o.waiting[0].1.course
+    if posted(o, o.waiting[0].0) || known(o, course, ANY).is_some() && !beats(o, o.waiting[0].1) {
+        let hash = o.waiting[0].0.clone()
         unwait(mut o, hash)
         return
     }
-    if known(o, r.course, ANY).is_none() {
-        around(mut o, r.course, ANY)
+    if known(o, course, ANY).is_none() {
+        if !asking(o, Asked::Around { course, category: ANY }) && !around(mut o, course, ANY) {
+            o.again_at = o.time + AGAIN
+        }
         return
     }
-    if !beats(o, r) {
-        unwait(mut o, hash)
-        return
-    }
+    let (hash, r) = o.waiting[0].clone()
     let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
     if ask(mut o, take upload, Asked::Upload { run: r, hash: hash.clone() }, By::Alone) {
         o.posting = true
@@ -501,9 +510,9 @@ pub fn post(o: mut Online, r: Replay) {
     let _ = ask(mut o, take upload, Asked::Upload { run: r.clone(), hash }, By::Player)
 }
 
-/// What to say of run `r`: how its post went, or that it was posted; empty if neither.
-pub fn status(o: Online, r: Replay) -> String {
-    let hash = fingerprint(r)
+/// What to say of the run whose fingerprint is `hash`: how its post went, or that it was posted;
+/// empty if neither.
+pub fn status(o: Online, hash: Vec<u8>) -> String {
     for (h, s) in o.statuses {
         if h == hash {
             return s.clone()
@@ -622,23 +631,23 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 came(mut o, hash.clone(), replay)
             }
         },
-        Asked::Names { query } => {
+        Asked::Names { query, course } => {
             if query != o.query {
                 return
             }
             match answer {
                 Answer::Names { found } => {
-                    o.found = found.clone()
+                    came_names(mut o, found, course)
                     o.found_note = if found.is_empty() {
                         String::from("Nobody by that name is on the boards yet.")
                     } else { String::new() }
                 },
                 Answer::Rejected { why } => {
-                    o.found.clear()
+                    clear_found(mut o)
                     o.found_note = why.clone()
                 },
                 Answer::Offline { why } => {
-                    o.found.clear()
+                    clear_found(mut o)
                     o.found_note = why.clone()
                 },
                 _ => {},
@@ -780,7 +789,7 @@ fn rows_came(o: mut Online, course: u32, category: u32) {
     } else if total <= places.len() {
         learn(mut o, course, category, 0)
     } else if known(o, course, category) != Some(0) {
-        around(mut o, course, category)
+        let _ = around(mut o, course, category)
     }
 }
 
@@ -794,10 +803,10 @@ fn fetch_above(o: mut Online, places: [Place], mine: u32) {
 }
 
 /// Asks, behind the player's asks, for the slice of board (`course`, `category`) around the
-/// account's place, unless it's asked already.
-fn around(o: mut Online, course: u32, category: u32) {
+/// account's place, unless it's asked already. Whether it was asked.
+fn around(o: mut Online, course: u32, category: u32) -> bool {
     let slice = Ask::Around { course, category, name: o.account.name.clone() }
-    let _ = ask(mut o, take slice, Asked::Around { course, category }, By::Background)
+    ask(mut o, take slice, Asked::Around { course, category }, By::Background)
 }
 
 /// The course the world's board asks for: the course shown, or a whole game's.
@@ -947,11 +956,10 @@ pub fn take_watch(o: mut Online) -> Option<(Replay, String, u32)> {
 }
 
 /// The hash of the replay a world's ghost runs on course `course` (any%): the world record
-/// (`record`), or the place just above the account's (the record, if the account holds it). None
-/// while the board, or the account's place on it, isn't known.
-pub fn ghost_hash(o: Online, course: u32, record: bool) -> Option<Vec<u8>> {
+/// (`record`), or the place just above the account's, `mine` (`my_place`; the record, if the
+/// account holds it). None while the board, or the account's place on it, isn't known.
+pub fn ghost_hash(o: Online, course: u32, record: bool, mine: u32) -> Option<Vec<u8>> {
     let target = if record { 1 } else {
-        let mine = my_place(o, course, ANY)
         if mine == 0 {
             return None
         }
@@ -984,12 +992,13 @@ pub fn whose(o: Online, course: u32, hash: Vec<u8>) -> Option<(String, u32)> {
 // ---- searching names ---------------------------------------------------------------------------
 
 /// Searches the names whose parts start with `title`, `noun` and `epithet` (the player opened the
-/// search, so it may ask): unless it's what was last asked. An empty search finds nothing.
-pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
+/// search, so it may ask) from the leaderboard of course `course`: unless it's what was last
+/// asked. An empty search finds nothing.
+pub fn search(o: mut Online, course: u32, title: str, noun: str, epithet: str) {
     let query = Vec::from([String::from(title), String::from(noun), String::from(epithet)])
     if title.is_empty() && noun.is_empty() && epithet.is_empty() {
         o.query.clear()
-        o.found.clear()
+        clear_found(mut o)
         o.found_note = String::new()
         return
     }
@@ -1008,8 +1017,8 @@ pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
         noun: String::from(noun),
         epithet: String::from(epithet),
     }
-    if !ask(mut o, take names, Asked::Names { query: query.clone() }, By::Player) {
-        o.found.clear()
+    if !ask(mut o, take names, Asked::Names { query: query.clone(), course }, By::Player) {
+        clear_found(mut o)
         o.found_note = String::from("Open the game from wrela.dev to search names.")
         return
     }
@@ -1017,35 +1026,65 @@ pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
     o.found_note = String::from("Searching…")
 }
 
-/// The names the search found, and what to say of them.
-pub fn found(o: Online) -> (Vec<Found>, String) {
-    (o.found.clone(), o.found_note.clone())
+fn clear_found(o: mut Online) {
+    o.found = 0
+    o.found_boards.clear()
 }
 
-/// The runs the names found have on board (`course`, `category`), fastest first, as a board's
-/// places (numbered 0: a search knows no place), and their replays fetched.
-pub fn found_places(o: mut Online, course: u32, category: u32) -> Vec<Place> {
-    var out: Vec<Place> = Vec::new()
-    for f in o.found {
-        for s in f.standings {
-            if s.course == course && s.category == category {
-                out.push(
-                    Place {
-                        place: 0,
-                        name: f.name.clone(),
-                        ticks: s.ticks,
-                        run: s.run,
-                        replay: s.replay.clone(),
+/// The names a search found came, asked from the leaderboard of course `course`: their runs as
+/// boards (numbered 0: a search knows no place), each fastest first, and the replays of the first
+/// rows of `course`'s fetched.
+fn came_names(o: mut Online, found: [Found], course: u32) {
+    clear_found(mut o)
+    o.found = found.len()
+    for f in found {
+        for st in f.standings {
+            let row = Place {
+                place: 0,
+                name: f.name.clone(),
+                ticks: st.ticks,
+                run: st.run,
+                replay: st.replay.clone(),
+            }
+            match board_of(o.found_boards, st.course, st.category) {
+                Some(b) => o.found_boards[b].places.push(take row),
+                None => o.found_boards.push(
+                    Shown {
+                        course: st.course,
+                        category: st.category,
+                        places: Vec::from([take row]),
+                        total: 0,
+                        at: o.time,
+                        note: String::new(),
                     },
-                )
+                ),
             }
         }
     }
-    out.sort_by(|a, b| a.ticks < b.ticks)
-    for i in 0..min(out.len(), SHOWN) {
-        fetch(mut o, out[i].replay.clone())
+    for b in 0..o.found_boards.len() {
+        o.found_boards[b].places.sort_by(|x, y| x.ticks < y.ticks)
     }
-    out
+    for category in [ANY, FULL] {
+        let Some(b) = board_of(o.found_boards, course, category) else { continue }
+        for i in 0..min(o.found_boards[b].places.len(), AHEAD) {
+            let hash = o.found_boards[b].places[i].replay.clone()
+            fetch(mut o, hash)
+        }
+    }
+}
+
+/// How many names the search found, and what to say of them.
+pub fn found(o: Online) -> (u32, String) {
+    (o.found, o.found_note.clone())
+}
+
+/// The runs the names found have on board (`course`, `category`), fastest first, as a board's
+/// places (numbered 0: a search knows no place).
+pub fn found_places(o: Online, course: u32, category: u32) -> Vec<Place> {
+    match board_of(o.found_boards, course, category) {
+        Some(b) => o.found_boards[b].places.clone(),
+        None => Vec::new(),
+    }
 }
 
 // ---- tests -------------------------------------------------------------------------------------
@@ -1134,15 +1173,18 @@ fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
     var o = signed_in()
     let r = mine(991)
     post(mut o, r.clone())
-    assert(o.asks.len() == 1 && status(o, r) == String::from("Posting…"), "asked")
+    assert(o.asks.len() == 1 && status(o, fingerprint(r)) == String::from("Posting…"), "asked")
     let (ask, asked) = o.asks.remove(0)
     let Ask::Upload { token, replay } = ask else { panic("an upload") }
     assert(token == Vec::from([3; 32]) && replay == save(r), "the token and the replay")
     answered(mut o, asked.clone(), Answer::Verified { run: 9, ticks: r.ticks, place: 2 })
-    assert(status(o, r) == String::from("2nd in the world"), status(o, r).as_str())
+    assert(
+        status(o, fingerprint(r)) == String::from("2nd in the world"),
+        status(o, fingerprint(r)).as_str(),
+    )
     // Once posted, it isn't again.
     post(mut o, r.clone())
-    assert(o.asks.is_empty() && status(o, r) == String::from("Posted"))
+    assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Posted"))
 }
 
 @test
@@ -1155,7 +1197,7 @@ fn a_post_asks_for_the_consoles_consent_until_the_account_agrees() {
     let (ask, asked) = o.asks.remove(0)
     let Ask::Consent = ask else { panic("the console's screen first, never the upload") }
     answered(mut o, asked.clone(), Answer::Done)
-    assert(o.asks.is_empty() && status(o, r) == String::from("Not posted"), "not now")
+    assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Not posted"), "not now")
     o.account.may_post = true
     o.account.post_best = true
     answered(mut o, asked, Answer::Done)
@@ -1173,13 +1215,13 @@ fn without_a_console_or_an_account_nothing_is_asked() {
     var alone = online()
     post(mut alone, r.clone())
     want(mut alone, WETLANDS, 0, By::Player)
-    search(mut alone, "Sir", "", "")
+    search(mut alone, WETLANDS, "Sir", "", "")
     assert(alone.asks.is_empty() && alone.fetches.is_empty(), "opened alone")
-    assert(status(alone, r).as_str().find("wrela.dev").is_some())
+    assert(status(alone, fingerprint(r)).as_str().find("wrela.dev").is_some())
     var out = signed_in()
     out.account.signed_in = false
     post(mut out, r.clone())
-    assert(out.asks.is_empty() && status(out, r).as_str().find("Sign in").is_some())
+    assert(out.asks.is_empty() && status(out, fingerprint(r)).as_str().find("Sign in").is_some())
 }
 
 @test
@@ -1238,7 +1280,7 @@ fn a_better_run_waits_and_posts_and_a_worse_one_doesnt() {
     assert(o.asks.is_empty(), "nothing posted")
     let better = mine(930)
     finished(mut o, better.clone())
-    assert(o.waiting.len() == 1 && status(o, better) == String::from("Posting…"), "it waits")
+    assert(o.waiting.len() == 1 && status(o, fingerprint(better)) == String::from("Posting…"))
     pump(mut o)
     assert(o.asks.len() == 1, "and posts")
     let (ask, asked) = o.asks.remove(0)
@@ -1259,7 +1301,7 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     var o = online()
     finished(mut o, mine(990))
     finished(mut o, mine(995))
-    assert(o.waiting.len() == 1 && o.waiting[0].ticks == 990, "the faster waits, stored")
+    assert(o.waiting.len() == 1 && o.waiting[0].1.ticks == 990, "the faster waits, stored")
     assert(o.waits.unsaved && o.asks.is_empty() && o.fetches.is_empty(), "nothing asked offline")
     pump(mut o)
     assert(o.asks.is_empty() && o.fetches.is_empty(), "not linked")
@@ -1392,7 +1434,10 @@ fn a_held_row_plays_at_once_and_another_is_fetched_first() {
 @test
 fn the_world_ghosts_are_the_record_and_the_place_above_the_players() {
     var o = signed_in()
-    assert(ghost_hash(o, WETLANDS, record: true).is_none(), "no board yet")
+    assert(
+        ghost_hash(o, WETLANDS, record: true, mine: my_place(o, WETLANDS, ANY)).is_none(),
+        "no board yet",
+    )
     given(
         mut o,
         Vec::from(
@@ -1405,26 +1450,38 @@ fn the_world_ghosts_are_the_record_and_the_place_above_the_players() {
         3,
     )
     assert(my_place(o, WETLANDS, ANY) == 3)
-    assert(ghost_hash(o, WETLANDS, record: true) == Some(Vec::filled(32, u8(1))), "the record")
-    assert(ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(2))), "the run above")
+    assert(
+        ghost_hash(o, WETLANDS, record: true, mine: my_place(o, WETLANDS, ANY)) ==
+            Some(Vec::filled(32, u8(1))),
+        "the record",
+    )
+    assert(
+        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)) ==
+            Some(Vec::filled(32, u8(2))),
+        "the run above",
+    )
     let Some((name, at)) = whose(o, WETLANDS, Vec::filled(32, u8(2))) else { panic("whose") }
     assert(at == 2 && name.as_str().starts_with("Lord"))
     o.account.name = String::from("Sir Wobblesnout the Unhurried")
     assert(
-        ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(1))),
+        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)) ==
+            Some(Vec::filled(32, u8(1))),
         "first: the record",
     )
     o.account.name = String::from("Count Muddlenose the Serene")
-    assert(ghost_hash(o, WETLANDS, record: false).is_none(), "no place, no run above")
+    assert(
+        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)).is_none(),
+        "no place, no run above",
+    )
 }
 
 @test
 fn a_search_asks_once_for_its_parts_and_lists_their_runs_on_the_level() {
     var o = signed_in()
-    search(mut o, "Sir", "wob", "")
-    search(mut o, "Sir", "wob", "")
+    search(mut o, WETLANDS, "Sir", "wob", "")
+    search(mut o, WETLANDS, "Sir", "wob", "")
     assert(o.asks.len() == 1, "once")
-    search(mut o, "Sir", "wobble", "")
+    search(mut o, WETLANDS, "Sir", "wobble", "")
     assert(o.asks.len() == 1, "the newer in its place")
     let (ask, asked) = o.asks.remove(0)
     let Ask::Names { noun, .. } = ask else { panic("names") }
@@ -1441,12 +1498,20 @@ fn a_search_asks_once_for_its_parts_and_lists_their_runs_on_the_level() {
         standings: Vec::from([take standing]),
     }
     answered(mut o, asked, Answer::Names { found: Vec::from([take sir]) })
-    let rows = found_places(mut o, WETLANDS, ANY)
+    let rows = found_places(o, WETLANDS, ANY)
     assert(
-        rows.len() == 1 && rows[0].ticks == 900 && found_places(mut o, WETLANDS, FULL).is_empty(),
+        rows.len() == 1 && rows[0].ticks == 900 && found_places(o, WETLANDS, FULL).is_empty(),
     )
     let (names, note) = found(o)
-    assert(names.len() == 1 && note.is_empty())
+    assert(names == 1 && note.is_empty())
+    // The first rows' replays fetched as the names came, for the level searched from.
+    var fetched = false
+    for a in all_asks(o) {
+        if let Asked::Replay { hash } = a {
+            fetched = hash == Vec::filled(32, u8(4))
+        }
+    }
+    assert(fetched, "its run's replay fetched ahead")
     assert(
         ordinal(1) == String::from("1st") &&
             ordinal(12) == String::from("12th") &&

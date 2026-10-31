@@ -314,10 +314,16 @@ pub struct Lab {
     ghost_hash: Vec<u8>,
     ghost_name: String,
     /// The attempt's clock at each checkpoint it reached, where the most time went against the
-    /// ghost's run once it reached the goal, and its run, kept, for the card's word on its post.
+    /// ghost's run once it reached the goal, and its run's fingerprint once kept (empty before),
+    /// for the card's word on its post.
     mine: Vec<u32>,
     lost: String,
-    finished_run: Option<Replay>,
+    finished_print: Vec<u8>,
+    /// The signed-in player's place on the live course's world board (any%; 0 for none), worked
+    /// out once a frame; and the fingerprints of the player's runs of a course and category as
+    /// the board lists them (online.wrela's `fingerprint`), worked out once until the runs change.
+    place: u32,
+    prints: Vec<(u32, u32, Vec<Vec<u8>>)>,
     /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
     /// nothing is drawn, played, stored or asked for. The game played (`Play`) or playing itself
     /// (`Attract`, opened at `#attract` behind the console's home).
@@ -401,7 +407,9 @@ pub fn init() -> Lab {
         ghost_name: String::new(),
         mine: Vec::new(),
         lost: String::new(),
-        finished_run: None,
+        finished_print: Vec::new(),
+        place: 0,
+        prints: Vec::new(),
         trail: Vec::new(),
         splits: Vec::new(),
         trail_of: 0,
@@ -769,6 +777,7 @@ pub fn play_itself(s: mut Lab) {
 /// asked once the typing pauses, a race's replay, the watch closed off the leaderboard, and what
 /// the frames keep up with from the sim (`settle`).
 fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen: vec2) {
+    s.place = online::my_place(s.online, live_snap.course, ANY)
     online::update(mut s.online, time)
     if let Some((r, name, place)) = online::take_watch(mut s.online) {
         open_watch(mut s, r.clone())
@@ -966,7 +975,7 @@ fn facts_of(s: Lab, snap: Snap) -> Facts {
         snacks: c.snacks.len(),
         deaths: snap.deaths,
         best: best(s, snap.course),
-        place: online::my_place(s.online, snap.course, ANY),
+        place: s.place,
     }
 }
 
@@ -976,7 +985,7 @@ fn facts_of(s: Lab, snap: Snap) -> Facts {
 fn settle(s: mut Lab, live: Snap, dt: f32) {
     match s.turns {
         Some(before) => {
-            let place = has_place(s, live.course)
+            let place = has_place(s)
             if before != live.turns && turned(mut s.settings, before, live.turns, place) {
                 s.storing_settings.unsaved = true
                 if before[2] != live.turns[2] {
@@ -1228,7 +1237,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             )
         } else if page == OPTIONS {
             let hover = hovered(s, screen, OPTIONS)
-            let values = option_values(s.settings, place: has_place(s, snap.course))
+            let values = option_values(s.settings, place: has_place(s))
             screens::list(
                 mut s.list,
                 s.fonts,
@@ -1365,21 +1374,19 @@ fn goal_notes(s: Lab) -> Vec<String> {
     if !s.lost.is_empty() {
         out.push(s.lost.clone())
     }
-    match s.finished_run {
-        Some(r) => {
-            let said = online::status(s.online, r)
-            if !said.is_empty() {
-                out.push(take said)
-            }
-        },
-        None => {},
+    if !s.finished_print.is_empty() {
+        let said = online::status(s.online, s.finished_print)
+        if !said.is_empty() {
+            out.push(take said)
+        }
     }
     out
 }
 
-/// Whether the signed-in player has a place on course `c`'s world board (any%), as last given.
-fn has_place(s: Lab, c: u32) -> bool {
-    online::my_place(s.online, c, ANY) > 0
+/// Whether the signed-in player has a place on the live course's world board (any%), as last
+/// given.
+fn has_place(s: Lab) -> bool {
+    s.place > 0
 }
 
 // ---- runs ----------------------------------------------------------------------------------------
@@ -1395,16 +1402,17 @@ fn keep_finished(s: mut Lab, snap: Snap) {
     if s.progress.finished(snap.course, ticks: snap.finished, snacks: snap.snacks) {
         s.storing.unsaved = true
     }
-    s.finished_run = None
+    s.finished_print.clear()
     if let Some(r) = replay(snap, YOU) {
         if verify(r) {
             // To the world's board, if it beats the account's place there and the account posts
             // its best runs (or waiting until it can: online.wrela).
             online::finished(mut s.online, r.clone())
-            s.finished_run = Some(r.clone())
+            s.finished_print = online::fingerprint(r)
             if s.progress.runs.add(take r) {
                 s.storing.unsaved = true
                 s.trail_of = 0
+                s.prints.clear()
             }
         }
     }
@@ -1476,6 +1484,7 @@ fn store_progress(s: mut Lab, dt: f32) {
                 }
                 s.progress = progress::merged(stored, s.progress.clone())
                 s.trail_of = 0
+                s.prints.clear()
                 s.storing.loaded(read: true)
             },
             Err(e) => s.storing.loaded(read: e.missing()),
@@ -1560,6 +1569,22 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     assisted(s, c, category)
 }
 
+/// Which of `s.prints` holds the fingerprints of the player's runs of course `c` that count for
+/// `category`, in `listed`'s order: worked out the first time, and again once the runs change.
+fn prints_of(s: mut Lab, c: u32, category: u32) -> u32 {
+    for k in 0..s.prints.len() {
+        if s.prints[k].0 == c && s.prints[k].1 == category {
+            return k
+        }
+    }
+    var hashes: Vec<Vec<u8>> = Vec::new()
+    for r in s.progress.runs.ranked(c, category) {
+        hashes.push(online::fingerprint(r))
+    }
+    s.prints.push((c, category, take hashes))
+    s.prints.len() - 1
+}
+
 /// Course `c`'s tool-assisted runs made, if they aren't.
 fn made_assisted(s: mut Lab, c: u32) {
     if s.assisted_of != Some(c) {
@@ -1594,7 +1619,7 @@ fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
         },
         None => {},
     }
-    let g = ghost_of(s.settings, has_place(s, c))
+    let g = ghost_of(s.settings, has_place(s))
     if g == ABOVE_GHOST || g == RECORD_GHOST {
         if s.ghost_hash.is_empty() {
             return None
@@ -1637,7 +1662,7 @@ fn follow_ghost(s: mut Lab, c: u32) {
         },
         None => {},
     }
-    let g = ghost_of(s.settings, has_place(s, c))
+    let g = ghost_of(s.settings, has_place(s))
     var hash: Vec<u8> = Vec::new()
     // Signed in (online.wrela's `By::Background`), the course's board once: whether the player
     // has a place (the ghost at first is the run above it), and a world's ghost's run.
@@ -1646,13 +1671,13 @@ fn follow_ghost(s: mut Lab, c: u32) {
         online::want_once(mut s.online, c, ANY)
     }
     if s.race.is_none() && world_ghost {
-        if let Some(h) = online::ghost_hash(s.online, c, record: g == RECORD_GHOST) {
+        if let Some(h) = online::ghost_hash(s.online, c, record: g == RECORD_GHOST, mine: s.place) {
             hash = h.clone()
             online::fetch_now(mut s.online, h)
         }
     }
     // A world's run counts once its replay is held.
-    let ready = !hash.is_empty() && online::held(s.online, hash).is_some()
+    let ready = !hash.is_empty() && online::is_held(s.online, hash)
     let key = (c + 1) << 8 | g << 1 | if ready { 1 } else { 0 }
     if key == s.trail_of && hash == s.ghost_hash {
         return
@@ -2014,7 +2039,7 @@ fn ask_search(s: mut Lab) {
         s.search.value(search::NOUN),
         s.search.value(search::EPITHET),
     )
-    online::search(mut s.online, title.as_str(), noun.as_str(), epithet.as_str())
+    online::search(mut s.online, s.shown, title.as_str(), noun.as_str(), epithet.as_str())
 }
 
 /// Watches run `r` from its start.
@@ -2037,7 +2062,7 @@ fn rows(s: mut Lab, c: u32, category: u32) -> u32 {
 /// course `c` and `category`.
 fn board_places(s: mut Lab, c: u32, category: u32) -> Vec<Place> {
     if s.board == online::SEARCH {
-        return online::found_places(mut s.online, c, category)
+        return online::found_places(s.online, c, category)
     }
     let (places, _) = online::places(s.online, online::board_course(s.board, c), category)
     places
@@ -2054,18 +2079,17 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
     var note = String::new()
     var whole = false
     if s.board == online::SEARCH {
-        places = online::found_places(mut s.online, c, category)
+        places = online::found_places(s.online, c, category)
         let (names, said) = online::found(s.online)
         if !said.is_empty() || s.search.blank() {
             note = if s.search.blank() { String::from("Type a name to find its runs.") } else {
                 said.clone()
             }
             whole = true
-        } else if places.is_empty() && !names.is_empty() {
+        } else if places.is_empty() && names > 0 {
             note = String::from("They haven't run this level yet.")
         }
-        let part = s.search.part
-        if finding && !search::completions(part, s.search.parts[part].as_str()).is_empty() {
+        if finding && !s.search.completed.is_empty() {
             note.clear()
         }
     } else {
@@ -2082,7 +2106,7 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
             if category != ANY {
                 return
             }
-            if online::found_places(mut s.online, c, FULL).is_empty() {
+            if online::found_places(s.online, c, FULL).is_empty() {
                 width = row_rect(screen, FULL, first).right() - head.x
             }
         }
@@ -2244,6 +2268,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
             continue
         }
         let runs = listed(s, c, category)
+        let printed = if s.board == PLAYERS { prints_of(mut s, c, category) } else { 0 }
         if runs.len() == 0 {
             let _ = s.list.text(
                 s.fonts,
@@ -2276,9 +2301,9 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
                 SOFT,
             )
             let _ = s.list.text(s.fonts, Face::Sans, who, size, vec2(row.x + size * 1.9, y), colour)
-            if s.board == PLAYERS {
+            if s.board == PLAYERS && i < s.prints[printed].2.len() {
                 // How its post went, if it was asked.
-                let said = online::status(s.online, run)
+                let said = online::status(s.online, s.prints[printed].2[i])
                 if !said.is_empty() {
                     let _ = s.list.text(
                         s.fonts,
@@ -2406,7 +2431,7 @@ fn search_line(s: mut Lab, screen: vec2, size: f32, finding: bool) {
 /// few, the one picked washed in yuzu.
 fn search_picks(s: mut Lab, screen: vec2, size: f32) {
     let part = s.search.part
-    let all = search::completions(part, s.search.parts[part].as_str())
+    borrow all = s.search.completed
     if all.is_empty() {
         return
     }
