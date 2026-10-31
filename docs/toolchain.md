@@ -55,16 +55,19 @@ wrela run games/capybara                               # serve it to a browser
 
 ## The console's server
 
-The console's program has a server build (`server/game.wasm`): accounts and the games' boards (platform/server.wrela, console/server). Its passkeys are for `wrela.dev` from `https://wrela.dev` (`RP_ID` and `ORIGIN` in console/main.wrela). It has no host in production yet (docs/toolchain-gaps.md, "A server runs only on `wrela-serve`"), so the console is built with `ONLINE = false`. To run it on this machine:
+The console's program has a server build: accounts and the games' boards (platform/server.wrela, console/server). Its passkeys are for `wrela.dev` from `https://wrela.dev` (`RP_ID` and `ORIGIN` in console/main.wrela). It runs on Cloudflare, in the console's Worker: toolchain 0.13.0's build writes `server/cloudflare.js` (the host: a Durable Object holding the program and its SQLite store, and `api`, the Worker's router for `/api/*`) and `server/cloudflare.json` (the Wrangler members it needs), and `wrela tool release` puts them beside the console's Worker (`<worker>.server/`, studio/release/site.wrela). It needs **Workers Paid**: Workers Free gives a Durable Object 10 ms of CPU an invocation, and a run's verification takes more (developers.cloudflare.com/durable-objects/platform/limits/). To run it on this machine, in the real Workers runtime:
 
 ```bash
-wrela build console -o build/cons --set ONLINE=true --set 'RP_ID="localhost"' --set 'ORIGIN="http://localhost:8080"'
-wrela-serve build/cons --dev --data build/cons-data      # writes build/cons/net.json; binds [::1] only
+wrela build console -o build/cons --set 'RP_ID="localhost"' --set 'ORIGIN="http://localhost:8787"'
 ```
 
-- A browser makes passkeys only on a secure context whose host is the relying party's ID: serve the console's page at `http://localhost:<port>` and set `ORIGIN` to it.
-- `wrela-serve` keeps a room's printed lines to itself (docs/toolchain-gaps.md); the store is `<data>/store.sqlite`, which SQLite reads while it runs.
-- Its tests run on a fake host (`wrela test platform`); `docs/bench.md`'s "The console's server" was measured on a real `wrela-serve`.
+Then stage it as the release does (the console's files in `wrela/`, its `server/` as `wrela.server/`, a `wrela.worker.js` that exports `WrelaServer` and calls `api` first, and a `wrela.wrangler.json` with `server/cloudflare.json`'s members, `WRELA_ORIGINS` set to `http://localhost:8787`) and run `npx wrangler@4.151.0 dev --config wrela.wrangler.json` there.
+
+- A browser makes passkeys only on a secure context whose host is the relying party's ID: `http://localhost:<port>` is one, and its `__Host-` cookies work there too.
+- The router refuses a `POST` whose `Origin` isn't in `WRELA_ORIGINS` (403), and a client past a rate limit (429: studio/release's `RATE_LIMITS`, `WRELA_LIMITS`); the server never sees an address.
+- `WRELA_PRINT=1` in the Worker's variables sends the program's printed lines to its log.
+- Its tests run on a fake host that commits and answers as 0.13.0's host does (`wrela test platform`); `docs/bench.md`'s "The console's server" was measured on `wrangler dev`.
+- `ONLINE` (console/main.wrela) is true; `--set ONLINE=false` builds a console without a server, whose chip opens only the health warning and the legal pages.
 
 ## Watching and measuring
 

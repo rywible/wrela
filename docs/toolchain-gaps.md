@@ -385,26 +385,26 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Needed:** the account's session in a `__Host-` cookie (HttpOnly, Secure, SameSite), and each request that changes something checked for its Origin and a CSRF token (design.md, "Passkeys only, our own server").
 - **What happens:** a server program sees only its rooms' messages (`Event::Message`), over WebTransport. It is never given a request's headers, can't set a cookie, and isn't told a connection's Origin: `wrela-serve --origin` refuses browsers of other origins before a room hears of them, and admits a client with no Origin (not a browser).
 - **Meanwhile:** the session's token and its CSRF token are kept in the console's storage (its origin's alone, so a game on its own origin can't read them), and the token is the connection's first message (`Hello`). There is no ambient credential for another site to ride on, which is what a CSRF token guards against, and `--origin https://wrela.dev` keeps other pages' browsers out; every request that changes the account still carries the session's CSRF token, compared in constant time (platform/server.wrela). The server never learns an IP address, which the Privacy Policy relies on.
-- **Status:** open. Ryan chose (2026-10-31) plain HTTP requests for sign-in and the boards, served on Cloudflare under wrela.dev itself, so the session is a first-party `__Host-` cookie and Cloudflare's per-path rules apply ("A server runs only on `wrela-serve`", below).
+- **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46), after Ryan chose (2026-10-31) plain HTTP for sign-in and the boards: `std::http`, a request as a short connection whose message is the request (its method, path, query, allowlisted headers and cookies, and body) and one `respond`, with `session_cookie` for a `__Host-` cookie. The Cloudflare host's router refuses a change from another origin (403), and limits each client by its address (429), which never reaches the program. The console's session is the `__Host-session` cookie and a ceremony's the `__Host-ceremony` cookie (platform/server.wrela); the CSRF token stays, as a second check.
 
 ### A server has no wall clock
 
 - **Needed:** sessions that expire after 90 days, game tokens after an hour, challenges after five minutes, and uploads counted by the hour, across server restarts.
 - **What happens:** `serve`'s `time` counts from the server process's start (language.md §19.3), and a server has no service for the time of day.
 - **Meanwhile:** the server keeps its own clock in its store (platform/server.wrela, `clock_key`): read at its first call and counted on from the host's time, written every 10 s. It never goes back, but stands still while the server is down, so an expiry is late by the server's downtime.
-- **Status:** open: the time of day as a server's service.
+- **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46): each HTTP request carries the host's wall clock (`std::http::Request::time`), and `std::time::wall_clock` asks for it. The server's clock is the latest request's time (platform/server.wrela), and its stored clock is gone.
 
 ### A server runs only on `wrela-serve`
 
 - **Needed:** the console's server on Cloudflare, Workers and Durable Objects (Ryan, 2026-10-31): Cloudflare's protection (floods, firewall rules, rate limits, bot checks, no server address to attack), one vendor with the website, and a server build is wasm, which a Durable Object runs. Sign-in and the boards as plain HTTP requests under wrela.dev (a request in, a response with its cookie out, `std::store` behind it); WebSockets later, for live play.
 - **What happens:** a server build runs only on the native `wrela-serve`, and only over WebTransport (language.md §19.3). Cloudflare's proxy can't carry WebTransport: it has no HTTP/3 to an origin (https://developers.cloudflare.com/speed/optimization/protocol/http3/), and its UDP proxy, Spectrum, is an Enterprise add-on (https://developers.cloudflare.com/spectrum/protocols-per-plan/).
 - **Found:** 2026-10-31, choosing where the console's server runs; it was set up on Fly.io first, with a UDP relay for `wrela-serve`'s wildcard bind, and taken down unused.
-- **Meanwhile:** the release leaves the console's server build out, and the console is built with `ONLINE = false`: its chip opens the health warning and the legal pages, and a game hears that the world's boards open soon. The server runs locally on `wrela-serve` (docs/toolchain.md, "The console's server").
-- **Status:** open: a Cloudflare host for a server build, with HTTP requests, then WebSockets.
+- **Meanwhile:** the release left the console's server build out, and the console was built with `ONLINE = false`.
+- **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46): a server build also writes `server/cloudflare.js` (a Durable Object that runs it beside its SQLite store, and the Worker's router, `api`) and `server/cloudflare.json` (its Wrangler members). The release puts them in the console's Worker (studio/release/site.wrela), on Workers Paid: Free's 10 ms of CPU a Durable Object invocation is too little to verify a run, since the host runs calls for up to 250 ms before it hands on to the object's alarm (Ryan chose Paid, 2026-10-31). WebSocket rooms came in 0.14.0, which the console doesn't use yet.
 
 ### `wrela-serve` keeps a room's printed lines to itself
 
-- **Needed:** debugging the console's server on a real `wrela-serve` (the end-to-end check in docs/bench.md, "The console's server").
+- **Needed:** debugging the console's server on a real `wrela-serve` (the end-to-end check in docs/bench.md, "The console's server"). On the Cloudflare host, `WRELA_PRINT=1` sends them to the Worker's log.
 - **What happens:** a server program's `print`s are kept by its room's host (at most 256 lines a room) and never written out; `wrela-serve` prints only a room's failures.
 - **Meanwhile:** a debugging build wrote what it saw into its store, and the store was read with SQLite.
 - **Status:** open: `wrela-serve --print`, or a room's lines on its standard error.

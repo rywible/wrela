@@ -2936,5 +2936,26 @@ real P-256 passkey and uploads two of the route search's human-possible runs as 
 
 So about 12 µs a tick, network round trips included: 1,000 ticks a call is about 12 ms here.
 `PLAY_TICKS` is 400 (about 5 ms here), for a server core several times slower, since a call past
-its deadline loses the room's instance and the run starts again. Not yet measured on the host it
-will run on (Cloudflare; docs/toolchain-gaps.md, "A server runs only on `wrela-serve`").
+its deadline loses the room's instance and the run starts again.
+
+## 2026-10-31: the console's server on Cloudflare's runtime (toolchain 0.13.0)
+
+The same two runs uploaded to the console's server on toolchain 0.13.0's Cloudflare host, run by
+`wrangler@4.151.0 dev` (workerd, the Workers runtime, with a local SQLite store) on the same
+machine. The console was built with `wrela build console --set 'RP_ID="localhost"' --set
+'ORIGIN="http://localhost:8787"'` and staged as the release stages it (docs/toolchain.md, "The
+console's server"). A script outside the repo drives it over HTTP as two browsers would, with
+their cookies (Python, `urllib` and `cryptography`).
+
+| Run | Ticks | Calls of play (400 ticks each) | Upload request to its answer |
+| --- | ---: | ---: | ---: |
+| The Home Pond, human any% | 991 | 3 | 0.05 s |
+| The Aviary, human 100% | 3,407 | 9 | 0.07 s |
+
+The upload's request is answered once its run is verified, so its time includes the play, the
+store's writes and the HTTP round trip. The same script checked, on that runtime: a sign-up and a
+real ES256 sign-in (WebCrypto), a forged signature refused, a tampered run refused, the cookies'
+`HttpOnly`, `Secure`, `SameSite=Strict` and `Path=/`, a board answered with `public, max-age=30`
+and a replay with `public, max-age=86400`, the export, sign-out clearing the cookie, another
+origin's `POST` refused (403), and a client past 60 changes a minute refused (429). Not measured:
+CPU time per call on Cloudflare's own machines, which its dashboard gives after the first deploy.

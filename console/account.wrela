@@ -1,35 +1,34 @@
 // The console's account: signing in with a passkey, the knighting (knighting.wrela), the account's
 // page (its passkeys, sessions, recovery codes, export and deletion), the legal pages (legal.wrela),
-// and what a game shown in the console asks of the boards (platform/link.wrela). It talks to the
-// console's server (platform/server.wrela) on one connection, `wire::ROOM`.
+// and what a game shown in the console asks of the boards (platform/link.wrela). It asks the
+// console's server (platform/server.wrela) over HTTP on the console's own origin (std::http::fetch,
+// wire.wrela's paths), each request answered by one reply.
 //
 // It keeps to itself: the console's main.wrela only gives it its events, its time, a game shown
 // and closed, and a place to draw (a chip by the settings button, and its pages over everything
 // while open). While a page is open it takes the input.
 //
-// The session's token and CSRF token are kept in the console's storage (`SESSION`), which is the
-// console's origin's alone: a game, on its own origin, can't read it, and gets only a token for
-// its boards (wire.wrela's `Token`). The token isn't an HttpOnly cookie, since the server sees no
-// HTTP request (docs/toolchain-gaps.md); no script but the console's own runs on its page.
+// The session is a `__Host-` cookie the browser keeps and sends: HttpOnly, so no script reads it,
+// not even the console's. The console holds only the session's CSRF token, in memory, which the
+// server gives with each `Welcome`. A game, on its own origin, gets neither: only a token for its
+// boards (wire.wrela's `Token`).
 
 use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
 use platform::wire::{
-    ADD_PASSKEY, Down, Me, PasskeyView, REGISTER, ROOM, Reply, Request, SIGN_IN, SessionView, Up,
+    ACCOUNTS, ADD_PASSKEY, Me, PUBLIC, PasskeyView, REGISTER, Reply, Request, SIGN_IN, SessionView,
 }
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
-use std::input::{Button, Event, Key, PadButton, payload}
-use std::io::{Pending, fetch, load as read_file, store}
-use std::net
-use std::serialize::{LoadError, Serialize, load, save}
+use std::http::{Header, response}
+use std::input::{Button, Event, Key, PadButton}
+use std::io::{Pending, fetch}
+use std::serialize::{LoadError, load, save}
+use std::webauthn::base64url
 use ui::draw::{DrawList, Rect}
 use ui::text::{Face, Fonts}
 
-/// The console's connection to its server, and where it keeps its session.
-const CONN: u32 = 7
-const SESSION: Text = "accounts/session"
-/// Seconds before a connection that closed is opened again.
+/// Seconds before the server is asked again after it couldn't be reached.
 const RETRY: f32 = 5.0
 /// How long the authenticator's prompt may wait for the person (WebAuthn's recommended default).
 const PROMPT_MS: u32 = 300000
@@ -49,11 +48,6 @@ const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
 const RADIUS: f32 = 8.0
 const LABEL: f32 = 15.0
 const BODY: f32 = 15.0
-
-struct Kept: Serialize {
-    session: Vec<u8>,
-    csrf: Vec<u8>,
-}
 
 enum Page: Copy + Eq {
     Account,
@@ -89,7 +83,7 @@ enum Act: Copy + Eq {
     Legal { page: u32 },
 }
 
-/// What a request on the connection was for.
+/// What a request to the server was for.
 enum Purpose: Copy + Eq {
     Hello,
     Begin,
@@ -122,17 +116,14 @@ struct GameLink {
 pub struct Accounts {
     rp_id: String,
     online: bool,
+    /// Whether the server answered the last request, and when to ask again if it didn't.
     connected: bool,
-    opening: bool,
     retry_at: f32,
-    ask: u32,
-    waiting: Vec<(u32, Purpose)>,
-    early: Vec<Vec<u8>>,
-    load: Option<Pending<u8>>,
-    loaded: bool,
-    write: Option<Pending<u8>>,
-    session: Vec<u8>,
+    /// The requests under way, and what each was for.
+    waiting: Vec<(Pending<u8>, Purpose)>,
+    /// The session's CSRF token, as the server last gave it, and the export's next part.
     csrf: Vec<u8>,
+    export_part: u32,
     pub me: Me,
     passkey: Option<Pending<u8>>,
     ceremony: u32,
@@ -162,24 +153,18 @@ pub struct Accounts {
     dirty: bool,
 }
 
-/// The console's account, its passkeys for relying party `rp_id`. It reads its session and opens
-/// its connection on the first update, if the console has a server (`online`): without one, its chip
+/// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
+/// its cookie is on the first update, if the console has a server (`online`): without one, its chip
 /// opens only the health warning and the legal pages, and a game hears the boards aren't open.
 pub fn new(rp_id: str, online: bool) -> Accounts {
     Accounts {
         rp_id: rp_id.to_string(),
         online,
         connected: false,
-        opening: false,
         retry_at: 0.0,
-        ask: 0,
         waiting: Vec::new(),
-        early: Vec::new(),
-        load: None,
-        loaded: false,
-        write: None,
-        session: Vec::new(),
         csrf: Vec::new(),
+        export_part: 0,
         me: Me {
             signed_in: false,
             name: String::new(),
@@ -228,30 +213,29 @@ fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>>
     answer
 }
 
-// ---- the connection --------------------------------------------------------------------------
+// ---- the server ------------------------------------------------------------------------------
 
-/// Sends `request`, for `purpose`: its number.
-fn request(a: mut Accounts, request: Request, purpose: Purpose) -> u32 {
-    a.ask += 1
-    let bytes = save(Up { ask: a.ask, request: request.clone() })
-    if a.connected {
-        net::send(CONN, bytes)
-    } else if a.early.len() < 16 {
-        a.early.push(take bytes)
+/// Sends `request`, for `purpose`: a public read (a board, a run) by `GET`, so a cache may answer it,
+/// and anything else by `POST`.
+fn request(a: mut Accounts, request: Request, purpose: Purpose) {
+    let public = match request {
+        Request::Board { .. } | Request::Watch { .. } => true,
+        _ => false,
     }
-    a.waiting.push((a.ask, purpose))
-    a.ask
-}
-
-fn keep_session(a: mut Accounts) {
-    let bytes = if a.session.is_empty() { Vec::new() } else {
-        save(Kept { session: a.session.clone(), csrf: a.csrf.clone() })
+    let asked = if public {
+        let q = base64url(save(request))
+        std::http::fetch("GET", String::from(f"{PUBLIC}?q={q}").as_str(), [], [])
+    } else {
+        let kind = Header {
+            name: String::from("content-type"),
+            value: String::from("application/octet-stream"),
+        }
+        std::http::fetch("POST", ACCOUNTS, [take kind], save(request))
     }
-    a.write = Some(store(SESSION, bytes))
+    a.waiting.push((take asked, purpose))
 }
 
 fn signed_out(a: mut Accounts) {
-    a.session.clear()
     a.csrf.clear()
     a.me = Me {
         signed_in: false,
@@ -260,44 +244,66 @@ fn signed_out(a: mut Accounts) {
         rerolls: 0,
         must_add_passkey: false,
     }
-    keep_session(mut a)
     if a.page != Page::Legal {
         a.page = Page::Choose
     }
     give_game_account(mut a)
 }
 
-fn purpose_of(a: mut Accounts, ask: u32) -> Option<Purpose> {
-    for i in 0..a.waiting.len() {
-        if a.waiting[i].0 == ask {
-            let (_, p) = a.waiting.remove(i)
-            return Some(p)
-        }
+/// A request's answer: its reply, or, if the server couldn't be reached or refused it before it
+/// was read (a limit, the host's refusal), a refusal said for a person.
+fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::IoError>) {
+    let unreachable = "The server can't be reached just now. Try again in a moment."
+    let reply = match result {
+        Ok(bytes) => match response(bytes) {
+            Some(r) => {
+                if r.status == 200 {
+                    let read: Result<Reply, LoadError> = load(r.body.clone())
+                    match read {
+                        Ok(reply) => Some(reply.clone()),
+                        Err(_) => None,
+                    }
+                } else if r.status == 429 {
+                    a.connected = true
+                    replied(
+                        mut a,
+                        purpose,
+                        Reply::Refused {
+                            why: String::from("Too many tries. Wait a minute, then try again."),
+                        },
+                    )
+                    return
+                } else { None }
+            },
+            None => None,
+        },
+        Err(_) => None,
     }
-    None
+    let Some(reply) = reply else {
+        a.connected = false
+        a.retry_at = a.time + RETRY
+        replied(mut a, purpose, Reply::Refused { why: String::from(unreachable) })
+        return
+    }
+    a.connected = true
+    replied(mut a, purpose, reply)
 }
 
-/// The server's reply `d`.
-fn replied(a: mut Accounts, d: Down) {
+/// The server's reply to a request for `purpose`.
+fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     a.dirty = true
-    // An upload is answered twice: it stays waited on after `Queued`.
-    if let Reply::Queued { .. } = d.reply {
-        return
-    }
-    // A reply to no ask (0) is the server's own word: the session ended elsewhere.
-    let purpose = if d.ask == 0 { Some(Purpose::Hello) } else { purpose_of(mut a, d.ask) }
-    let Some(purpose) = purpose else { return }
     a.busy = false
     if purpose == Purpose::Game {
-        game_replied(mut a, d.reply.clone())
+        game_replied(mut a, reply)
         return
     }
-    match d.reply {
-        Reply::Welcome { me } => {
+    match reply {
+        Reply::Welcome { me, csrf } => {
             let was = a.me.signed_in
             a.me = me.clone()
+            a.csrf = csrf.clone()
             if !me.signed_in {
-                if was || !a.session.is_empty() {
+                if was {
                     signed_out(mut a)
                 }
             } else {
@@ -362,11 +368,9 @@ fn replied(a: mut Accounts, d: Down) {
             }
             a.busy = true
         },
-        Reply::Session { session, csrf, me, codes } => {
-            a.session = session.clone()
+        Reply::Session { csrf, me, codes } => {
             a.csrf = csrf.clone()
             a.me = me.clone()
-            keep_session(mut a)
             a.message.clear()
             if !codes.is_empty() {
                 // A new account: knighted first, then its codes.
@@ -403,8 +407,8 @@ fn replied(a: mut Accounts, d: Down) {
                 a.export.clear()
                 a.message = String::from("Your data is downloading as wrela-account.json.")
             } else {
-                // More parts come for the same ask.
-                a.waiting.push((d.ask, Purpose::Export))
+                a.export_part += 1
+                request(mut a, Request::Export { part: a.export_part }, Purpose::Export)
             }
         },
         Reply::Done => {
@@ -429,6 +433,9 @@ fn replied(a: mut Accounts, d: Down) {
         },
         Reply::Refused { why } => {
             a.message = why.clone()
+            if purpose == Purpose::Export {
+                a.export.clear()
+            }
             if purpose == Purpose::Token {
                 if let Some(g) = a.game {
                     if g.waiting_token {
@@ -511,7 +518,7 @@ fn send_game(a: mut Accounts) {
             Some(l) => l.waiting_token = true,
             None => {},
         }
-        let _ = request(mut a, Request::Token { game: g.id.clone() }, Purpose::Token)
+        request(mut a, Request::Token { game: g.id.clone() }, Purpose::Token)
         return
     }
     let call = ToGame { account: linked(a), answer: g.answer.clone() }
@@ -600,7 +607,7 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
         Some(l) => l.asking = true,
         None => {},
     }
-    let _ = request(mut a, r, Purpose::Game)
+    request(mut a, r, Purpose::Game)
 }
 
 /// The answer to a game's `ask` that the console gives at once, without the server: no server yet,
@@ -640,22 +647,19 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
 pub fn update(a: mut Accounts, time: f32) -> bool {
     let dt = max(time - a.time, 0.0)
     a.time = time
-    if !a.loaded && a.load.is_none() {
-        a.load = Some(read_file(SESSION))
+    // Whose session the cookie is, asked first, and again while the server can't be reached.
+    if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
+        request(mut a, Request::Me, Purpose::Hello)
     }
-    if let Some(result) = poll(mut a.load) {
-        a.loaded = true
-        if let Ok(bytes) = result {
-            let kept: Result<Kept, LoadError> = load(bytes.clone())
-            if let Ok(k) = kept {
-                a.session = k.session.clone()
-                a.csrf = k.csrf.clone()
-            }
+    var i = 0
+    while i < a.waiting.len() {
+        match a.waiting[i].0.poll() {
+            Some(result) => {
+                let (_, purpose) = a.waiting.remove(i)
+                answered(mut a, purpose, take result)
+            },
+            None => i += 1,
         }
-    }
-    if a.online && a.loaded && !a.connected && !a.opening && time >= a.retry_at {
-        net::open(CONN, ROOM)
-        a.opening = true
     }
     if let Some(result) = poll(mut a.passkey) {
         a.dirty = true
@@ -671,7 +675,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                             signature: u.signature.clone(),
                             user: u.user.clone(),
                         }
-                        let _ = request(mut a, r, Purpose::Ceremony)
+                        request(mut a, r, Purpose::Ceremony)
                         a.busy = true
                     }
                 } else if let Some(p) = read_new_passkey(bytes) {
@@ -689,7 +693,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                             attestation: p.attestation.clone(),
                         }
                     }
-                    let _ = request(mut a, r, Purpose::Ceremony)
+                    request(mut a, r, Purpose::Ceremony)
                     a.busy = true
                 }
             },
@@ -698,7 +702,6 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
             ),
         }
     }
-    let _ = poll(mut a.write)
     let _ = poll(mut a.export_file)
     // The game's reply to the console's call: its next ask.
     var asked: Option<Vec<u8>> = None
@@ -754,8 +757,8 @@ fn open_page(a: mut Accounts, page: Page) {
     a.scroll = 0.0
     a.dirty = true
     if page == Page::Manage && a.me.signed_in {
-        let _ = request(mut a, Request::Passkeys, Purpose::Passkeys)
-        let _ = request(mut a, Request::Sessions, Purpose::Sessions)
+        request(mut a, Request::Passkeys, Purpose::Passkeys)
+        request(mut a, Request::Sessions, Purpose::Sessions)
     }
 }
 
@@ -780,7 +783,7 @@ fn act(a: mut Accounts, x: Act) {
         Act::Close => a.open = false,
         Act::SignIn => {
             a.message.clear()
-            let _ = request(
+            request(
                 mut a,
                 Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() },
                 Purpose::Begin,
@@ -788,7 +791,7 @@ fn act(a: mut Accounts, x: Act) {
             a.busy = true
         },
         Act::Create => {
-            let _ = request(
+            request(
                 mut a,
                 Request::Begin { ceremony: REGISTER, csrf: Vec::new() },
                 Purpose::Begin,
@@ -800,14 +803,14 @@ fn act(a: mut Accounts, x: Act) {
             open_page(mut a, Page::Recover)
         },
         Act::SubmitCode => {
-            let _ = request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Recover)
+            request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Recover)
             a.busy = true
         },
         Act::Keep => {
-            let _ = request(mut a, Request::Keep { csrf: a.csrf.clone() }, Purpose::Name)
+            request(mut a, Request::Keep { csrf: a.csrf.clone() }, Purpose::Name)
         },
         Act::Reroll => {
-            let _ = request(mut a, Request::Reroll { csrf: a.csrf.clone() }, Purpose::Name)
+            request(mut a, Request::Reroll { csrf: a.csrf.clone() }, Purpose::Name)
         },
         Act::CodesSaved => {
             a.codes.clear()
@@ -815,7 +818,7 @@ fn act(a: mut Accounts, x: Act) {
         },
         Act::Manage => open_page(mut a, Page::Manage),
         Act::AddPasskey => {
-            let _ = request(
+            request(
                 mut a,
                 Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone() },
                 Purpose::Begin,
@@ -825,7 +828,7 @@ fn act(a: mut Accounts, x: Act) {
         Act::Remove { index } => {
             if index < a.passkeys.len() {
                 let id = a.passkeys[index].id.clone()
-                let _ = request(
+                request(
                     mut a,
                     Request::RemovePasskey { csrf: a.csrf.clone(), id },
                     Purpose::Passkeys,
@@ -835,7 +838,7 @@ fn act(a: mut Accounts, x: Act) {
         Act::Revoke { index } => {
             if index < a.sessions.len() {
                 let id = a.sessions[index].id.clone()
-                let _ = request(
+                request(
                     mut a,
                     Request::Revoke { csrf: a.csrf.clone(), session: id },
                     Purpose::Sessions,
@@ -843,20 +846,21 @@ fn act(a: mut Accounts, x: Act) {
             }
         },
         Act::NewCodes => {
-            let _ = request(mut a, Request::NewCodes { csrf: a.csrf.clone() }, Purpose::Codes)
+            request(mut a, Request::NewCodes { csrf: a.csrf.clone() }, Purpose::Codes)
         },
         Act::Export => {
             a.export.clear()
-            let _ = request(mut a, Request::Export, Purpose::Export)
+            a.export_part = 0
+            request(mut a, Request::Export { part: 0 }, Purpose::Export)
             a.message = String::from("Gathering your data...")
         },
         Act::Delete => open_page(mut a, Page::Delete),
         Act::ConfirmDelete => {
-            let _ = request(mut a, Request::Delete { csrf: a.csrf.clone() }, Purpose::Delete)
+            request(mut a, Request::Delete { csrf: a.csrf.clone() }, Purpose::Delete)
             a.busy = true
         },
         Act::SignOut => {
-            let _ = request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::SignOut)
+            request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::SignOut)
         },
         Act::Back => {
             if !a.online {
@@ -890,62 +894,6 @@ fn act(a: mut Accounts, x: Act) {
 /// Event `e` (positions in device pixels, `zoom` of them a logical pixel): whether the account
 /// took it, so the console doesn't.
 pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
-    match e {
-        Event::Connection { conn, open, .. } => {
-            if conn != CONN {
-                return false
-            }
-            a.dirty = true
-            a.opening = false
-            a.connected = open
-            if open {
-                // Hello first, then what waited.
-                let hello = save(
-                    Up { ask: 0, request: Request::Hello { session: a.session.clone() } },
-                )
-                net::send(CONN, hello)
-                a.waiting.push((0, Purpose::Hello))
-                for m in a.early {
-                    net::send(CONN, m)
-                }
-                a.early.clear()
-            } else {
-                a.retry_at = a.time + RETRY
-                a.busy = false
-                // What waited on the server won't be answered: a game hears it's offline.
-                var game_waited = false
-                for (_, p) in a.waiting {
-                    if p == Purpose::Game {
-                        game_waited = true
-                    }
-                }
-                a.waiting.clear()
-                if game_waited {
-                    game_replied(
-                        mut a,
-                        Reply::Refused {
-                            why: String::from(
-                                "The boards can't be reached just now. Try again later.",
-                            ),
-                        },
-                    )
-                }
-            }
-            return true
-        },
-        Event::Message { conn, .. } => {
-            if conn != CONN {
-                return false
-            }
-            let Some(bytes) = payload(e) else { return true }
-            let d: Result<Down, LoadError> = load(take bytes)
-            if let Ok(down) = d {
-                replied(mut a, down)
-            }
-            return true
-        },
-        _ => {},
-    }
     if !a.open {
         // Closed, the chip alone takes a click.
         if let Event::PointerUp { at, button: Button::Primary, .. } = e {

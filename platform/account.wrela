@@ -1,8 +1,8 @@
 // What the console's server keeps of an account, and where (games/capybara/design.md, "Accounts and
 // leaderboards"). An account is a random number and a random handle (the passkeys' user ID), a
 // generated name (names.wrela), its passkeys' public keys, its sessions, its recovery codes'
-// hashes and its runs. Nothing else: no email, no typed name, no address (the server is never told
-// one: docs/toolchain-gaps.md, "A server sees no HTTP request").
+// hashes and its runs. Nothing else: no email, no typed name, no address (the host never gives a
+// server one: std::http).
 //
 // Everything lives in the server's store (std::store), as `Serialize`d records under keys that
 // sort by what reads them: each record by its own key, and an account's records also under the
@@ -20,7 +20,7 @@ use std::webauthn::Credential
 /// How the relying party is shown in a person's passkey list.
 pub const RP_NAME: Text = "wrela"
 
-/// Lifetimes, in milliseconds of the server's clock (`clock.wrela`).
+/// Lifetimes, in milliseconds of the server's clock (the host's wall clock: server.wrela).
 pub const MINUTE: u64 = 60000
 pub const HOUR: u64 = 60 * MINUTE
 pub const DAY: u64 = 24 * HOUR
@@ -41,11 +41,12 @@ pub const CODES: u32 = 10
 /// The most passkeys an account may have (and so the most a ceremony excludes).
 pub const MOST_PASSKEYS: u32 = 16
 
-/// Bytes of the secrets: a session's or a game's token, a CSRF token, a passkey challenge, an
-/// account's handle, a recovery code.
+/// Bytes of the secrets: a session's or a game's token, a CSRF token, a passkey challenge and the
+/// token of the browser that asked for it, an account's handle, a recovery code.
 pub const TOKEN_BYTES: u32 = 32
 pub const CSRF_BYTES: u32 = 16
 pub const CHALLENGE_BYTES: u32 = 32
+pub const CEREMONY_BYTES: u32 = 16
 pub const HANDLE_BYTES: u32 = 16
 pub const CODE_BYTES: u32 = 10
 
@@ -175,9 +176,19 @@ pub fn name_key(n: Name) -> Vec<u8> {
     k
 }
 
-/// `clock`: the server's clock when it last wrote it.
-pub fn clock_key() -> Vec<u8> {
-    prefix("clock")
+/// `w/<expires><hash>`: a passkey ceremony begun, until it is used or expires. The browser that
+/// began it holds its token (a cookie), and the key sorts by when it expires, so the expired ones are
+/// found at the front.
+pub fn ceremony_key(expires: u64, hash: [u8]) -> Vec<u8> {
+    var k = ceremonies()
+    append_u64(mut k, expires)
+    with_bytes(mut k, hash)
+    k
+}
+
+/// `w/`: every ceremony, the soonest to expire first.
+pub fn ceremonies() -> Vec<u8> {
+    prefix("w/")
 }
 
 /// The SHA-256 of a secret: what the store keeps in its place.

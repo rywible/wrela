@@ -2632,9 +2632,10 @@ fn another_game_is_chosen_while_saves_are_read_but_not_while_one_starts() {
 // console's server").
 pub const RP_ID: Text = "wrela.dev"
 pub const ORIGIN: Text = "https://wrela.dev"
-/// Whether the console has a server to sign in to (`console/server`): not yet, until the toolchain
-/// can run it on Cloudflare (docs/toolchain-gaps.md). A local run sets it (`--set ONLINE=true`).
-pub const ONLINE: bool = false
+/// Whether the console has a server to sign in to (`console/server`, in its Worker on
+/// Cloudflare). A build without one sets it false (`--set ONLINE=false`): its chip opens only the
+/// health warning and the legal pages.
+pub const ONLINE: bool = true
 
 pub fn serve_init() -> console_server::serve::Server {
     console_server::serve::init(RP_ID, ORIGIN)

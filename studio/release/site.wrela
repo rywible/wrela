@@ -340,11 +340,12 @@ pub const CONTENT_TYPES: [(Text, Text); 14] = [
     ("otf", "font/otf"),
 ]
 
-/// What a Worker's script does past its constants (`archive_script`), a line at a time: it
-/// serves a release that isn't the Worker's current one, which only the request for one runs
-/// (`run_worker_first`), from the bucket, with the headers its `_headers` gives (Cloudflare
-/// applies `_headers` to assets alone). Anything else is the assets' answer, a 404.
-pub const ARCHIVE: [Text; 65] = [
+/// What a Worker's script does past its constants (`archive_script`), a line at a time: it gives
+/// the console's server its requests first (`API`), then serves a release that isn't the Worker's
+/// current one, which only the request for one runs (`run_worker_first`), from the bucket, with
+/// the headers its `_headers` gives (Cloudflare applies `_headers` to assets alone). Anything else
+/// is the assets' answer, a 404.
+pub const ARCHIVE: [Text; 67] = [
     "// Each `_headers` rule: its pattern, where `*` matches any run, and its headers.",
     "const RULES = [];",
     "for (const line of HEADERS.split(\"\\n\")) {",
@@ -387,7 +388,9 @@ pub const ARCHIVE: [Text; 65] = [
     "  return LISTINGS.get(release);",
     "}",
     "export default {",
-    "  async fetch(request, env) {",
+    "  async fetch(request, env, ctx) {",
+    "    const answered = await API(request, env, ctx);",
+    "    if (answered !== null) return answered;",
     "    const url = new URL(request.url);",
     "    const rest = url.pathname.slice(\"/releases/\".length);",
     "    const release = rest.slice(0, 20);",
@@ -413,8 +416,11 @@ pub const ARCHIVE: [Text; 65] = [
 ]
 
 /// A Worker's script, `<worker>.worker.js`: its name, its `_headers` and `CONTENT_TYPES` as
-/// constants, then `ARCHIVE`.
-pub fn archive_script(worker: str, headers: str) -> String {
+/// constants, then `ARCHIVE`. A Worker with a server (`server`, the directory beside the script
+/// that holds the server build's host: toolchain 0.13.0's `server/`) exports its Durable Object
+/// and gives the host's router (`api`) every request first, which answers those under `/api/`;
+/// one without has none (`API` answers nothing).
+pub fn archive_script(worker: str, headers: str, server: str) -> String {
     var types: Vec<(String, Json)> = Vec::new()
     for (suffix, t) in CONTENT_TYPES {
         types.push(member(suffix, text(t)))
@@ -422,6 +428,13 @@ pub fn archive_script(worker: str, headers: str) -> String {
     var out = String::from(
         "// A Worker's kept releases, from R2 (studio/release/site.wrela). Written by the release tool.\n",
     )
+    if server.is_empty() {
+        out.push_str("const API = async () => null;\n")
+    } else {
+        out.push_str(f"import {{ WrelaServer, api }} from \"./{server}/cloudflare.js\";\n")
+        out.push_str("export { WrelaServer };\n")
+        out.push_str("const API = (request, env, ctx) => api(request, env, { ctx: ctx });\n")
+    }
     out.push_str(f"const WORKER = {compact(text(worker)).as_str()};\n")
     out.push_str(f"const HEADERS = {compact(text(headers)).as_str()};\n")
     out.push_str(f"const TYPES = {compact(Json::Obj(take types)).as_str()};\n")
@@ -432,17 +445,46 @@ pub fn archive_script(worker: str, headers: str) -> String {
     out
 }
 
+/// The per-client rate limits of a Worker with a server, ahead of the server (toolchain 0.13.0's
+/// `WRELA_LIMITS`, each a Workers Rate Limiting binding keyed on the client's address, which goes no
+/// further: developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/): its binding, its
+/// namespace, the path it counts under (wire.wrela's), its methods (none: every one), and the
+/// requests a client may make in a minute. A sign-in is three requests, so 60 changes a minute
+/// leaves a person room and an attacker few guesses; the public reads are mostly the cache's.
+pub const RATE_LIMITS: [(Text, Text, Text, Text, u32); 2] = [
+    ("ACCOUNTS_LIMIT", "4401", "/api/accounts", "POST", 60),
+    ("PUBLIC_LIMIT", "4402", "/api/public", "", 300),
+]
+
 /// A Worker's Wrangler configuration: `release` as its assets, its script (`archive_script`)
-/// for the requests of any other release, and the bucket, on its custom domain only.
-pub fn wrangler_config(worker: str, domain: str, release: str) -> String {
+/// for the requests of any other release, and the bucket, on its custom domain only. With a
+/// server, the members its build asks for (`server`, its `cloudflare.json`), its origin as the one
+/// that may change things (`WRELA_ORIGINS`), and `RATE_LIMITS`.
+pub fn wrangler_config(worker: str, domain: str, release: str, server: [(String, Json)]) -> String {
     var route: Vec<(String, Json)> = Vec::new()
     route.push(member("pattern", text(domain)))
     route.push(member("custom_domain", Json::Bool(true)))
     var assets: Vec<(String, Json)> = Vec::new()
     assets.push(member("directory", text(f"./{worker}")))
     assets.push(member("binding", text("ASSETS")))
-    // Explicit routes: a navigation to a kept release's page runs the script too.
-    let first = Vec::from([text("/releases/*"), text(f"!/releases/{release}/*")])
+    // Explicit routes: a navigation to a kept release's page runs the script too, and the server's
+    // paths.
+    var first = Vec::from([text("/releases/*"), text(f"!/releases/{release}/*")])
+    for (k, v) in server {
+        if k.as_str() != "assets" {
+            continue
+        }
+        let Json::Obj(given) = v else { continue }
+        for (name, routes) in given {
+            if name.as_str() != "run_worker_first" {
+                continue
+            }
+            let Json::List(rs) = routes else { continue }
+            for r in rs {
+                first.push(r.clone())
+            }
+        }
+    }
     assets.push(member("run_worker_first", Json::List(take first)))
     var bucket: Vec<(String, Json)> = Vec::new()
     bucket.push(member("binding", text("RELEASES")))
@@ -456,9 +498,59 @@ pub fn wrangler_config(worker: str, domain: str, release: str) -> String {
     c.push(member("routes", Json::List(Vec::from([Json::Obj(take route)]))))
     c.push(member("workers_dev", Json::Bool(false)))
     c.push(member("preview_urls", Json::Bool(false)))
+    if !server.is_empty() {
+        server_members(mut c, domain, server)
+    }
     var out = indented(Json::Obj(take c))
     out.push_str("\n")
     out
+}
+
+/// A server's members of a Wrangler configuration: as its build gives them, its variables filled
+/// (its origin, and the limits), and the limits' bindings.
+fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Json)]) {
+    var limits: Vec<Json> = Vec::new()
+    var bindings: Vec<Json> = Vec::new()
+    for (binding, namespace, prefix, method, n) in RATE_LIMITS {
+        var l: Vec<(String, Json)> = Vec::new()
+        l.push(member("binding", text(binding)))
+        l.push(member("prefix", text(prefix)))
+        if !method.is_empty() {
+            l.push(member("methods", Json::List(Vec::from([text(method)]))))
+        }
+        l.push(member("period", Json::Int(60)))
+        limits.push(Json::Obj(take l))
+        var simple: Vec<(String, Json)> = Vec::new()
+        simple.push(member("limit", Json::Int(u64(n))))
+        simple.push(member("period", Json::Int(60)))
+        var b: Vec<(String, Json)> = Vec::new()
+        b.push(member("name", text(binding)))
+        b.push(member("namespace_id", text(namespace)))
+        b.push(member("simple", Json::Obj(take simple)))
+        bindings.push(Json::Obj(take b))
+    }
+    for (k, v) in server {
+        // The run-first routes join the Worker's own; its note is for whoever merges, not Wrangler.
+        if k.as_str() == "assets" || k.as_str() == "comment" {
+            continue
+        }
+        if k.as_str() == "vars" {
+            var vars: Vec<(String, Json)> = Vec::new()
+            if let Json::Obj(given) = v {
+                for (name, value) in given {
+                    if name.as_str() != "WRELA_ORIGINS" && name.as_str() != "WRELA_LIMITS" {
+                        vars.push((name.clone(), value.clone()))
+                    }
+                }
+            }
+            vars.push(member("WRELA_ORIGINS", text(f"https://{domain}")))
+            vars.push(member("WRELA_LIMITS", text(compact(Json::List(limits.clone())).as_str())))
+            c.push(member("vars", Json::Obj(take vars)))
+            continue
+        }
+        c.push((k.clone(), v.clone()))
+    }
+    c.push(member("ratelimits", Json::List(take bindings)))
 }
 
 /// The catalog as JSON, compact with its keys sorted: the first bytes of the release's

@@ -487,7 +487,7 @@ fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
         put(
             mut out,
             f"{r.worker.as_str()}.wrangler.json",
-            wrangler_config(r.worker.as_str(), r.domain.as_str(), D).as_str(),
+            wrangler_config(r.worker.as_str(), r.domain.as_str(), D, []).as_str(),
         )
     }
     for release in [B, C] {

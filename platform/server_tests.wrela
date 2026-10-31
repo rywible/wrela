@@ -8,14 +8,14 @@
 // test-vectors/webauthn-test-vectors.py), and from passkeys made here as an authenticator makes
 // them.
 
-use account::{CODES, CHALLENGE_BYTES, HANDLE_BYTES, MINUTE, account_key, code_hash}
-use server::{Claim, Command, Engine, Game, Outcome, engine}
+use account::{CEREMONY_BYTES, CODES, CHALLENGE_BYTES, HANDLE_BYTES, account_key}
+use server::{Asked, Claim, Command, Cookie, Engine, Game, Outcome, engine}
 use std::crypto::{Signature, p256_key}
 use std::hash::sha256::sha256
 use std::serialize::{LoadError, load, save}
 use std::store::Entry
 use std::webauthn::base64url
-use wire::{ADD_PASSKEY, ANY, Down, FULL, REGISTER, Reply, Request, SIGN_IN, Up, WHOLE}
+use wire::{ADD_PASSKEY, ANY, FULL, REGISTER, Reply, Request, SIGN_IN, WHOLE}
 
 // ---- a toy game ---------------------------------------------------------------------------------
 
@@ -87,17 +87,39 @@ fn toy(course: u8, claimed: u32, moves: u32, m: u8) -> Vec<u8> {
 
 // ---- the fake host ----------------------------------------------------------------------------------
 
+/// A response the server gave: its request, its reply, the cookies it set, and how long it may be
+/// cached.
+struct Answered: Clone {
+    conn: u32,
+    reply: Reply,
+    cookies: Vec<Cookie>,
+    public: u32,
+}
+
+/// A browser's cookie.
+struct Kept: Clone {
+    browser: u32,
+    name: String,
+    value: Vec<u8>,
+}
+
 struct Host {
     store: Vec<Entry>,
     waiting: Vec<(u32, Option<Vec<u8>>)>,
-    sent: Vec<(u32, Down)>,
+    /// The requests answered, and the ones whose close the server hears on the next call.
+    answered: Vec<Answered>,
+    closing: Vec<u32>,
+    /// Each browser's cookies, as its browser keeps them.
+    jar: Vec<Kept>,
+    next_conn: u32,
     /// Random answers to give first, in order; then a counter's bytes.
     given: Vec<Vec<u8>>,
     counter: u32,
     /// Signatures the host says check out.
     good: Vec<Vec<u8>>,
     checked: Vec<Command>,
-    time: f32,
+    /// The host's wall clock, in milliseconds since the Unix epoch.
+    time: u64,
     calls: u32,
 }
 
@@ -105,12 +127,15 @@ fn host() -> Host {
     Host {
         store: Vec::new(),
         waiting: Vec::new(),
-        sent: Vec::new(),
+        answered: Vec::new(),
+        closing: Vec::new(),
+        jar: Vec::new(),
+        next_conn: 0,
         given: Vec::new(),
         counter: 0,
         good: Vec::new(),
         checked: Vec::new(),
-        time: 1.0,
+        time: 1793404800000,
         calls: 0,
     }
 }
@@ -165,21 +190,25 @@ fn counted(w: mut std::serialize::Writer, b: [u8]) {
 }
 
 impl Host {
-    /// One call: the answers waiting, then `events`, then what the server asked carried out.
-    fn call(mut self, e: mut Engine<Toy>, opened: Option<u32>, message: Option<(u32, Vec<u8>)>) {
+    /// One call: the answers waiting and the requests that closed, then the requests given, then
+    /// what the server asked carried out.
+    fn call(mut self, e: mut Engine<Toy>, requests: [(u32, Asked)]) {
         self.calls += 1
-        self.time += 0.01
-        e.begin(self.time)
+        self.time += 10
+        e.begin()
         let waiting = self.waiting.clone()
         self.waiting.clear()
         for (t, a) in waiting {
             e.answer(t, a.clone())
         }
-        if let Some(c) = opened {
-            e.opened(c)
+        let closing = self.closing.clone()
+        self.closing.clear()
+        for c in closing {
+            e.closed(c)
         }
-        if let Some((c, bytes)) = message {
-            e.message(c, bytes.clone())
+        for (c, asked) in requests {
+            e.opened(c)
+            e.http(c, asked.clone())
         }
         e.end()
         let commands = e.commands()
@@ -222,7 +251,7 @@ impl Host {
                 _ => {},
             }
         }
-        // Then its writes commit, after its requests were answered (wrela_host::server's `call`).
+        // Then its writes commit, then its responses go (toolchain 0.13.0's host: `carryOut`).
         for c in commands {
             match c {
                 Command::Put { key, value } => {
@@ -239,42 +268,119 @@ impl Host {
                         let _ = self.store.remove(i)
                     }
                 },
-                Command::Send { conn, bytes } => {
-                    let d: Result<Down, LoadError> = load(bytes.clone())
-                    self.sent.push((conn, take d.unwrap()))
-                },
                 _ => {},
+            }
+        }
+        for c in commands {
+            if let Command::Respond { conn, body, cookies, public } = c {
+                for a in self.answered {
+                    assert(a.conn != conn, "a request is answered once")
+                }
+                let r: Result<Reply, LoadError> = load(body.clone())
+                self.answered.push(
+                    Answered { conn, reply: take r.unwrap(), cookies: cookies.clone(), public },
+                )
+                self.closing.push(conn)
             }
         }
     }
 
-    /// Calls until nothing waits, as the host calls a room at once while answers wait.
+    /// Calls until nothing waits, as the host calls at once while answers wait.
     fn settle(mut self, e: mut Engine<Toy>) {
         var n = 0
-        while !self.waiting.is_empty() && n < 20000 {
-            self.call(mut e, None, None)
+        while (!self.waiting.is_empty() || !self.closing.is_empty()) && n < 20000 {
+            self.call(mut e, [])
             n += 1
         }
         assert(n < 20000, "the server settles")
     }
 
-    fn open(mut self, e: mut Engine<Toy>, conn: u32) {
-        self.call(mut e, Some(conn), None)
-        self.settle(mut e)
-    }
-
-    /// Sends `request` on `conn` and settles: the replies to it, in order.
-    fn say(mut self, e: mut Engine<Toy>, conn: u32, request: Request) -> Vec<Reply> {
-        self.sent.clear()
-        self.call(mut e, None, Some((conn, save(Up { ask: 9, request: request.clone() }))))
-        self.settle(mut e)
-        var out: Vec<Reply> = Vec::new()
-        for (c, d) in self.sent {
-            if c == conn {
-                out.push(d.reply.clone())
+    /// Browser `browser`'s cookie `name`: empty if it has none.
+    fn cookie(self, browser: u32, name: Text) -> Vec<u8> {
+        for k in self.jar {
+            if k.browser == browser && k.name.as_str() == name {
+                return k.value.clone()
             }
         }
+        Vec::new()
+    }
+
+    /// Browser `browser` keeps cookie `name` as `value` (none if empty), as a `Set-Cookie` says.
+    fn keep(mut self, browser: u32, name: str, value: [u8]) {
+        var i = 0
+        while i < self.jar.len() {
+            if self.jar[i].browser == browser && self.jar[i].name.as_str() == name {
+                let _ = self.jar.remove(i)
+            } else {
+                i += 1
+            }
+        }
+        if !value.is_empty() {
+            self.jar.push(Kept { browser, name: String::from(name), value: Vec::from(value) })
+        }
+    }
+
+    /// Browser `browser`'s request for `request`, with its cookies, as a `POST` (or a `GET` if
+    /// `public`).
+    fn asked(self, browser: u32, request: Request, public: bool) -> Asked {
+        Asked {
+            time: self.time,
+            public,
+            session: self.cookie(browser, server::SESSION),
+            ceremony: self.cookie(browser, server::CEREMONY),
+            body: save(request),
+        }
+    }
+
+    /// Browser `browser` sends `requests` in one call: each one's answer, its cookies kept.
+    fn together(mut self, e: mut Engine<Toy>, browser: u32, requests: [Request]) -> Vec<Answered> {
+        var given: Vec<(u32, Asked)> = Vec::new()
+        var conns: Vec<u32> = Vec::new()
+        for r in requests {
+            self.next_conn += 1
+            conns.push(self.next_conn)
+            given.push((self.next_conn, self.asked(browser, r.clone(), public: false)))
+        }
+        self.answered.clear()
+        self.call(mut e, given)
+        self.settle(mut e)
+        var out: Vec<Answered> = Vec::new()
+        for c in conns {
+            var found: Option<Answered> = None
+            for a in self.answered {
+                if a.conn == c {
+                    found = Some(a.clone())
+                }
+            }
+            let Some(a) = found else { panic("every request is answered") }
+            for k in a.cookies {
+                self.keep(browser, k.name.as_str(), k.value)
+            }
+            out.push(a.clone())
+        }
         out
+    }
+
+    /// Browser `browser` sends `request`: its answer, in a list as the tests read it.
+    fn say(mut self, e: mut Engine<Toy>, browser: u32, request: Request) -> Vec<Reply> {
+        let a = self.together(mut e, browser, [request.clone()])
+        Vec::from([a[0].reply.clone()])
+    }
+
+    /// Browser `browser` reads `request` by a `GET`: its answer, and how long it may be cached.
+    fn read(mut self, e: mut Engine<Toy>, browser: u32, request: Request) -> (Reply, u32) {
+        self.next_conn += 1
+        let c = self.next_conn
+        let asked = self.asked(browser, request, public: true)
+        self.answered.clear()
+        self.call(mut e, [(c, take asked)])
+        self.settle(mut e)
+        for a in self.answered {
+            if a.conn == c {
+                return (a.reply.clone(), a.public)
+            }
+        }
+        panic("every request is answered")
     }
 
     /// The keys that start with `prefix`.
@@ -405,7 +511,8 @@ fn handle_of(rs: [Reply]) -> Vec<u8> {
     panic("a challenge")
 }
 
-/// An account's session after it signed up: its token, CSRF token, name and codes.
+/// An account's session after it signed up: its token (its browser's cookie), CSRF token, name
+/// and codes.
 struct Signed: Clone {
     session: Vec<u8>,
     csrf: Vec<u8>,
@@ -416,10 +523,10 @@ struct Signed: Clone {
 
 fn session_of(rs: [Reply]) -> Option<Signed> {
     for r in rs {
-        if let Reply::Session { session, csrf, me, codes } = r {
+        if let Reply::Session { csrf, me, codes } = r {
             return Some(
                 Signed {
-                    session: session.clone(),
+                    session: Vec::new(),
                     csrf: csrf.clone(),
                     name: me.name.clone(),
                     codes: codes.clone(),
@@ -440,7 +547,7 @@ fn refused(rs: [Reply]) -> bool {
     false
 }
 
-/// A new account on connection `conn`, its passkey credential `id`.
+/// A new account in browser `conn`, its passkey credential `id`.
 fn sign_up(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8) -> Signed {
     let begun = h.say(mut e, conn, Request::Begin { ceremony: REGISTER, csrf: Vec::new() })
     let c = challenge_of(begun)
@@ -457,10 +564,11 @@ fn sign_up(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8) -> Signed {
     let Some(s) = session_of(rs) else { panic("a session") }
     var signed = s.clone()
     signed.handle = take handle
+    signed.session = h.cookie(conn, server::SESSION)
     signed
 }
 
-/// A sign-in on `conn` with credential `id` of the account whose handle is `handle`, its signature
+/// A sign-in in browser `conn` with credential `id` of the account whose handle is `handle`, its signature
 /// `signature` (which the host checks against its good list).
 fn sign_in(
     e: mut Engine<Toy>,
@@ -486,11 +594,7 @@ fn sign_in(
 }
 
 fn started() -> (Engine<Toy>, Host) {
-    var e = engine(Toy {}, RP, ORIGIN)
-    var h = host()
-    h.open(mut e, 1)
-    h.open(mut e, 2)
-    (e, h)
+    (engine(Toy {}, RP, ORIGIN), host())
 }
 
 // ---- tests ------------------------------------------------------------------------------------------
@@ -499,9 +603,12 @@ fn started() -> (Engine<Toy>, Host) {
 fn the_w3c_vectors_register_and_their_assertion_is_checked_with_the_registered_key() {
     var e = engine(Toy {}, "example.org", "https://example.org")
     var h = host()
-    h.open(mut e, 1)
-    // The challenges the vectors were made over, given as the host's random bytes.
+    // The challenges the vectors were made over, given as the host's random bytes, each with the
+    // browser's token after it.
     var first = unhex("c1184a5fddf8045e13dc47f54b61f5a656b666b59018f16d870e9256e9952012")
+    for b in [3; CEREMONY_BYTES] {
+        first.push(b)
+    }
     for b in [7; 16] {
         first.push(b)
     }
@@ -522,13 +629,17 @@ fn the_w3c_vectors_register_and_their_assertion_is_checked_with_the_registered_k
         },
     )
     let Some(s) = session_of(rs) else { panic("the vector's registration is taken") }
-    assert(s.codes.len() == CODES && s.session.len() == 32 && !s.name.is_empty())
+    assert(s.codes.len() == CODES && h.cookie(1, server::SESSION).len() == 32 && !s.name.is_empty())
     assert(h.keys("c/") == 1 && h.keys("n/") == 1 && h.keys("r/") == CODES && h.keys("s/") == 1)
     let (_, found) = find(h.store, account_key(42))
     assert(found, "account 42")
     // Its sign-in: the server asks the host to check the vector's signature, by the key the
     // registration gave, over the authenticator's data and the client's data's hash.
-    h.given.push(unhex("b1106fa46a57bef1781511c0557dc898a03413d5f0f17d244630c194c7e1adb5"))
+    var second = unhex("b1106fa46a57bef1781511c0557dc898a03413d5f0f17d244630c194c7e1adb5")
+    for b in [4; CEREMONY_BYTES] {
+        second.push(b)
+    }
+    h.given.push(take second)
     let _ = h.say(mut e, 1, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() })
     let signature = unhex(AUTH_SIGNATURE)
     h.good.push(signature.clone())
@@ -587,7 +698,7 @@ fn a_bad_signature_another_accounts_handle_or_a_stale_counter_signs_nobody_in() 
 }
 
 @test
-fn a_challenge_is_used_once_by_the_connection_that_asked_and_expires() {
+fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
     let both = started()
     var e = take both.0
     var h = take both.1
@@ -602,14 +713,30 @@ fn a_challenge_is_used_once_by_the_connection_that_asked_and_expires() {
         user: s.handle.clone(),
     }
     // A synced passkey's counter stays 0, so only the challenge stops a replay of its assertion.
-    // Another connection can't use it.
-    assert(refused(h.say(mut e, 1, attempt.clone())), "another connection's challenge")
-    // Asked again on its own connection: the first use (by connection 1) didn't touch it.
+    // Another browser can't use it: it hasn't the ceremony's cookie.
+    assert(refused(h.say(mut e, 3, attempt.clone())), "another browser's challenge")
+    // Asked again by its own browser: the first try (by browser 3) didn't touch it.
     assert(session_of(h.say(mut e, 2, attempt.clone())).is_some(), "its own")
+    assert(h.cookie(2, server::CEREMONY).is_empty(), "the ceremony's cookie cleared")
     assert(refused(h.say(mut e, 2, attempt.clone())), "used once")
+    // Two requests in one call with the same ceremony: both read it before either's delete
+    // commits, and still only one may use it.
+    let c1 = challenge_of(h.say(mut e, 1, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let twice = Request::SignIn {
+        id: Vec::from([5]),
+        client_data: client("webauthn.get", c1, ORIGIN),
+        authenticator_data: auth_data(RP, 1 | 4, 0, []),
+        signature: Vec::from([1]),
+        user: s.handle.clone(),
+    }
+    let both = h.together(mut e, 1, [twice.clone(), twice.clone()])
+    assert(
+        session_of([both[0].reply.clone()]).is_some() && refused([both[1].reply.clone()]),
+        "only the first of two at once",
+    )
     // One left five minutes is gone.
     let c2 = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
-    h.time += 301.0
+    h.time += 301000
     let late = Request::SignIn {
         id: Vec::from([5]),
         client_data: client("webauthn.get", c2, ORIGIN),
@@ -618,22 +745,27 @@ fn a_challenge_is_used_once_by_the_connection_that_asked_and_expires() {
         user: s.handle.clone(),
     }
     assert(refused(h.say(mut e, 2, late)), "expired")
+    // An expired ceremony left in the store goes as another begins.
+    let c3 = challenge_of(h.say(mut e, 4, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    h.time += 301000
+    let _ = h.say(mut e, 5, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() })
+    assert(h.keys("w/") == 1, "the expired one cleared")
     // A registration over a sign-in's challenge, or from another origin, is refused.
-    let c3 = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    let c4 = challenge_of(h.say(mut e, 2, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
     let wrong = Request::Register {
         id: Vec::from([8]),
-        client_data: client("webauthn.create", c3, ORIGIN),
+        client_data: client("webauthn.create", c4, ORIGIN),
         attestation: made(RP, [8], 8),
     }
     assert(refused(h.say(mut e, 2, wrong)), "another ceremony's challenge")
-    h.open(mut e, 3)
-    let c4 = challenge_of(h.say(mut e, 3, Request::Begin { ceremony: REGISTER, csrf: Vec::new() }))
+    let c5 = challenge_of(h.say(mut e, 6, Request::Begin { ceremony: REGISTER, csrf: Vec::new() }))
     let elsewhere = Request::Register {
         id: Vec::from([8]),
-        client_data: client("webauthn.create", c4, "https://evil.example"),
+        client_data: client("webauthn.create", c5, "https://evil.example"),
         attestation: made(RP, [8], 8),
     }
-    assert(refused(h.say(mut e, 3, elsewhere)), "another origin")
+    assert(refused(h.say(mut e, 6, elsewhere)), "another origin")
+    assert(c3.len() == CHALLENGE_BYTES)
 }
 
 @test
@@ -646,7 +778,7 @@ fn changes_need_the_sessions_csrf_token() {
     assert(refused(h.say(mut e, 1, Request::Reroll { csrf: Vec::new() })), "no token")
     assert(refused(h.say(mut e, 2, Request::Reroll { csrf: s.csrf.clone() })), "not signed in")
     let rs = h.say(mut e, 1, Request::Reroll { csrf: s.csrf.clone() })
-    let Reply::Welcome { me } = rs[0].clone() else { panic("renamed") }
+    let Reply::Welcome { me, .. } = rs[0].clone() else { panic("renamed") }
     assert(me.rerolls == 2 && me.name != s.name && !me.fixed, me.name.as_str())
     assert(h.keys("n/") == 1, "the old name let go")
     for _ in 0..2 {
@@ -654,7 +786,7 @@ fn changes_need_the_sessions_csrf_token() {
     }
     assert(refused(h.say(mut e, 1, Request::Reroll { csrf: s.csrf.clone() })), "out of draws")
     let kept = h.say(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
-    let Reply::Welcome { me } = kept[0].clone() else { panic("kept") }
+    let Reply::Welcome { me, .. } = kept[0].clone() else { panic("kept") }
     assert(me.fixed)
     assert(
         refused(h.say(mut e, 1, Request::Delete { csrf: Vec::from([1; 16]) })),
@@ -669,7 +801,7 @@ fn names_are_unique_however_the_draw_falls() {
     var h = take both.1
     // Two accounts whose first draws are the same seed.
     for conn in [1, 2] {
-        var bytes: Vec<u8> = Vec::filled(CHALLENGE_BYTES + HANDLE_BYTES, u8(conn))
+        var bytes: Vec<u8> = Vec::filled(CHALLENGE_BYTES + CEREMONY_BYTES + HANDLE_BYTES, u8(conn))
         for b in [0, 0, 0, 0, 0, 0, 0, conn, 0, 0, 0, 0, 0, 0, 0, 3] {
             bytes.push(b)
         }
@@ -699,13 +831,13 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
         1,
         Request::Token { game: String::from("toy") },
     )[0].clone() else { panic("a token") }
-    // As a session it opens nothing.
-    let Reply::Welcome { me } = h.say(
-        mut e,
-        2,
-        Request::Hello { session: token.clone() },
-    )[0].clone() else { panic("welcome") }
+    // As a session it opens nothing, and the cookie that held it is cleared.
+    h.keep(2, server::SESSION, token)
+    let Reply::Welcome { me, .. } = h.say(mut e, 2, Request::Me)[0].clone() else {
+        panic("welcome")
+    }
     assert(!me.signed_in, "a game's token isn't a session")
+    assert(h.cookie(2, server::SESSION).is_empty(), "a session cookie for no session is cleared")
     // A session's token doesn't upload.
     let up = |t: Vec<u8>| -> Request {
         Request::Upload {
@@ -717,9 +849,9 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
     let rs = h.say(mut e, 2, up(s.session.clone()))
     let Reply::Rejected { .. } = rs[0].clone() else { panic("a session's token can't upload") }
     let rs = h.say(mut e, 2, up(token.clone()))
-    let Reply::Queued { .. } = rs[0].clone() else { panic("the game's token uploads") }
+    let Reply::Verified { .. } = rs[0].clone() else { panic("the game's token uploads") }
     // An hour on, it has expired.
-    h.time += 3601.0
+    h.time += 3601000
     let rs = h.say(
         mut e,
         2,
@@ -732,7 +864,7 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
     let Reply::Rejected { .. } = rs[0].clone() else { panic("an expired token") }
 }
 
-/// A knighted account on `conn` and a token for the toy's boards.
+/// A knighted account in browser `conn` and a token for the toy's boards.
 fn uploader(e: mut Engine<Toy>, h: mut Host, conn: u32, id: u8) -> (Signed, Vec<u8>) {
     let s = sign_up(mut e, mut h, conn, id)
     let _ = h.say(mut e, conn, Request::Keep { csrf: s.csrf.clone() })
@@ -757,17 +889,19 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
         1,
         Request::Upload { token: token.clone(), game: String::from("toy"), replay: good.clone() },
     )
-    let Reply::Queued { run } = rs[0].clone() else { panic("queued") }
-    let Reply::Verified { ticks, place, .. } = rs[1].clone() else { panic("verified") }
+    // Answered once it is verified.
+    let Reply::Verified { run, ticks, place } = rs[0].clone() else { panic("verified") }
     assert(ticks == 2500 && place == 1, f"{ticks} at {place}")
     // Every move even: it counts for 100% too.
     for category in [ANY, FULL] {
-        let b = h.say(
+        // A board's page is a public read: a cache may keep it a while.
+        let (b, age) = h.read(
             mut e,
             2,
             Request::Board { game: String::from("toy"), course: 1, category, from: 0 },
         )
-        let Reply::Board { places, .. } = b[0].clone() else { panic("a board") }
+        assert(age == server::BOARD_AGE, "a board's page may be cached")
+        let Reply::Board { places, .. } = b else { panic("a board") }
         assert(
             places.len() == 1 &&
                 places[0].name == s.name &&
@@ -775,10 +909,12 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
                 places[0].run == run,
         )
     }
-    let Reply::Run { replay, .. } = h.say(mut e, 2, Request::Watch { run })[0].clone() else {
-        panic("the run")
-    }
-    assert(replay == good, "its replay, to watch")
+    let (watched, age) = h.read(mut e, 2, Request::Watch { run })
+    let Reply::Run { replay, .. } = watched else { panic("the run") }
+    assert(replay == good && age == server::RUN_AGE, "its replay, to watch")
+    // What changes things can't be a GET; and a POST's answer is never cached.
+    let (r, age) = h.read(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
+    assert(refused([take r]) && age == 0, "a change by GET")
     // A run that claims a time its moves don't make, an odd one for 100%, and the same run again.
     let tampered = toy(1, claimed: 2000, moves: 2500, m: 2)
     let rs = h.say(
@@ -799,7 +935,7 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
         1,
         Request::Upload { token: token.clone(), game: String::from("toy"), replay: odd },
     )
-    let Reply::Verified { place, .. } = rs[1].clone() else { panic("verified") }
+    let Reply::Verified { place, .. } = rs[0].clone() else { panic("verified") }
     assert(place == 1, "faster on any%")
     let b = h.say(
         mut e,
@@ -825,7 +961,7 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
             replay: toy(0, claimed: 100, moves: 100, m: 2),
         },
     )
-    let Reply::Verified { .. } = rs[1].clone() else { panic("verified") }
+    let Reply::Verified { .. } = rs[0].clone() else { panic("verified") }
     let b = h.say(
         mut e,
         2,
@@ -850,13 +986,13 @@ fn uploads_are_bounded() {
     let Reply::Rejected { .. } = rs[0].clone() else { panic("not one of the game's") }
     for k in 0..server::RUNS_AN_HOUR {
         let rs = h.say(mut e, 1, up(toy(0, 10 + k, 10 + k, 2)))
-        let Reply::Queued { .. } = rs[0].clone() else { panic("within the hour's") }
+        let Reply::Verified { .. } = rs[0].clone() else { panic("within the hour's") }
     }
     let rs = h.say(mut e, 1, up(toy(0, claimed: 99, moves: 99, m: 2)))
     let Reply::Rejected { why } = rs[0].clone() else { panic("past the hour's") }
     assert(why.as_str().find("an hour").is_some(), why.as_str())
     // The next hour, with a new token (the first has expired).
-    h.time += 3600.0
+    h.time += 3600000
     let Reply::Token { token: fresh, .. } = h.say(
         mut e,
         1,
@@ -869,7 +1005,7 @@ fn uploads_are_bounded() {
         game: String::from("toy"),
         replay: toy(0, claimed: 99, moves: 99, m: 2),
     }
-    let Reply::Queued { .. } = h.say(mut e, 1, again)[0].clone() else { panic("the next hour") }
+    let Reply::Verified { .. } = h.say(mut e, 1, again)[0].clone() else { panic("the next hour") }
 }
 
 @test
@@ -878,17 +1014,14 @@ fn a_recovery_code_signs_in_once_ends_every_other_session_and_needs_a_passkey_ne
     var e = take both.0
     var h = take both.1
     let s = sign_up(mut e, mut h, 1, 5)
-    h.open(mut e, 3)
     borrow code = s.codes[3]
     let rs = h.say(mut e, 3, Request::Recover { code: code.clone() })
     let Reply::Session { me, csrf, .. } = rs[0].clone() else { panic("recovered") }
     assert(me.must_add_passkey)
-    // The session on connection 1 ended, and it was told.
-    let Reply::Welcome { me } = h.say(
-        mut e,
-        1,
-        Request::Hello { session: s.session.clone() },
-    )[0].clone() else { panic("welcome") }
+    // The session in browser 1 ended: its next request finds so.
+    let Reply::Welcome { me, .. } = h.say(mut e, 1, Request::Me)[0].clone() else {
+        panic("welcome")
+    }
     assert(!me.signed_in, "every other session ended")
     assert(h.keys("s/") == 1)
     // Used up.
@@ -909,7 +1042,7 @@ fn a_recovery_code_signs_in_once_ends_every_other_session_and_needs_a_passkey_ne
             attestation: made(RP, [9], 9),
         },
     )
-    let Reply::Welcome { me } = rs[0].clone() else { panic("a passkey added") }
+    let Reply::Welcome { me, .. } = rs[0].clone() else { panic("a passkey added") }
     assert(!me.must_add_passkey && h.keys("c/") == 2)
     assert(!refused(h.say(mut e, 3, Request::Reroll { csrf: csrf.clone() })))
 }
@@ -919,16 +1052,18 @@ fn recovery_codes_are_rate_limited() {
     let both = started()
     var e = take both.0
     var h = take both.1
-    for k in 0..server::CONN_TRIES {
-        let rs = h.say(mut e, 1, Request::Recover { code: String::from(f"0000-0000-0000-000{k}") })
+    // Everyone's tries in a minute, from any browser (each browser's own limit is the host's).
+    for k in 0..server::ALL_TRIES {
+        let rs = h.say(mut e, k, Request::Recover { code: String::from("0000-0000-0000-0000") })
         let Reply::Refused { why } = rs[0].clone() else { panic("refused") }
         assert(why.as_str().find("Too many").is_none(), "within the limit")
     }
-    let rs = h.say(mut e, 1, Request::Recover { code: String::from("0000-0000-0000-0009") })
+    let rs = h.say(mut e, 99, Request::Recover { code: String::from("0000-0000-0000-0009") })
     let Reply::Refused { why } = rs[0].clone() else { panic("refused") }
     assert(why.as_str().find("Too many").is_some(), why.as_str())
-    // Another connection has its own, until everyone's are spent.
-    let rs = h.say(mut e, 2, Request::Recover { code: String::from("not a code") })
+    // A minute on, there are tries again.
+    h.time += 60000
+    let rs = h.say(mut e, 99, Request::Recover { code: String::from("not a code") })
     let Reply::Refused { why } = rs[0].clone() else { panic("refused") }
     assert(why.as_str().find("Too many").is_none())
 }
@@ -948,12 +1083,21 @@ fn an_account_deleted_leaves_nothing_and_its_export_holds_what_was_kept() {
             replay: toy(0, claimed: 10, moves: 10, m: 2),
         },
     )
+    // Asked part by part until the last.
     var text = String::new()
-    for r in h.say(mut e, 1, Request::Export) {
-        if let Reply::Export { text: t, .. } = r {
-            text.push_str(t.as_str())
-        }
+    var part = 0
+    var last = false
+    while !last && part < 8 {
+        let Reply::Export { text: t, last: l } = h.say(
+            mut e,
+            1,
+            Request::Export { part },
+        )[0].clone() else { panic("a part") }
+        text.push_str(t.as_str())
+        last = l
+        part += 1
     }
+    assert(last, "the export ends")
     let Some(doc) = std::json::parse(text.as_str()) else { panic(text.as_str()) }
     let Some(acct) = doc.get(std::json::TOP, "account") else { panic("an account") }
     let Some(n) = doc.get(acct, "name") else { panic("a name") }
@@ -967,15 +1111,17 @@ fn an_account_deleted_leaves_nothing_and_its_export_holds_what_was_kept() {
     }
     assert(h.keys("t/") == 271, "a token each")
     // Deleting needs a fresh sign-in.
-    h.time += 600.0
+    h.time += 600000
     assert(refused(h.say(mut e, 1, Request::Delete { csrf: s.csrf.clone() })), "not fresh")
     h.good.push(Vec::from([4]))
     let rs = sign_in(mut e, mut h, 1, 5, s.handle, 1, [4])
     let Some(fresh) = session_of(rs) else { panic("signed in") }
     let rs = h.say(mut e, 1, Request::Delete { csrf: fresh.csrf.clone() })
     let Reply::Done = rs[rs.len() - 1].clone() else { panic("deleted") }
-    // Every record of the account is gone: only the server's clock is left.
-    for p in ["a/", "c/", "s/", "r/", "n/", "u/", "b/", "q/", "t/"] {
+    assert(h.cookie(1, server::SESSION).is_empty(), "its session's cookie cleared")
+    // Every record of the account is gone, and nothing else is left.
+    for p in ["a/", "c/", "s/", "r/", "n/", "u/", "b/", "q/", "t/", "w/"] {
         assert(h.keys(p) == 0, p)
     }
+    assert(h.store.is_empty())
 }
