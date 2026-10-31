@@ -211,10 +211,8 @@ pub const BUDS_MAX: u32 = 4096
 pub const LIGHT_CELL: f32 = 0.5
 pub const LIGHT_MARGIN: f32 = 2.0
 
-/// The leaves' extinction (Beer–Lambert's k: a leaf layer's share of the light it stops), and the
-/// years a shoot bears leaves.
+/// The leaves' extinction (Beer–Lambert's k: a leaf layer's share of the light it stops).
 const EXTINCTION: f32 = 0.5
-const LEAF_YEARS: f32 = 2.0
 
 /// The resource a unit of the tree's light buys (Palubicki's α), and the least a bud needs to make
 /// its year's shoot (one a year, as long as its share and its light make it, up to 1.5 times the
@@ -296,35 +294,11 @@ pub fn grow_traced(
             Envelope::at(g, site, year + 1.0, lean),
             t.nodes,
             KILL * g.internode,
-            reach,
+            0.5 * reach,
             mut rng,
         )
         let m = space.points.len()
-        var best: Vec<f32> = Vec::filled(m, 1.0e9)
-        var owner: Vec<i32> = Vec::filled(m, -1)
-        for i in 0..n {
-            let nd = t.nodes[i]
-            if !nd.alive || nd.kind != SHOOT {
-                continue
-            }
-            for which in 0..2 {
-                let d = if which == 0 { nd.dir } else { nd.bud }
-                if (which == 0 && continued[i]) || (which == 1 && dot(nd.bud, nd.bud) == 0.0) {
-                    continue
-                }
-                space.near(nd.tip, reach, |k| {
-                    let q = space.points[k]
-                    if space.free[k] {
-                        let v = q - nd.tip
-                        let l = length(v)
-                        if l <= reach && l > 1.0e-4 && dot(v / l, d) >= CONE && l < best[k] {
-                            best[k] = l
-                            owner[k] = i32(i * 2 + which)
-                        }
-                    }
-                })
-            }
-        }
+        let owner = perceived(t.nodes, continued, space, reach)
         var room_of: Vec<f32> = Vec::filled(2 * n, 0.0)
         var toward: Vec<vec3> = Vec::filled(2 * n, vec3(0.0))
         for k in 0..m {
@@ -523,6 +497,111 @@ pub fn grow_traced(
     (t, trace)
 }
 
+/// Each marker's bud (`i × 2` a node's terminal, `+ 1` its dormant lateral; -1 none): of the buds
+/// that perceive it (within `reach`, in their cone), the nearest, the lower index on a tie (as if
+/// each bud claimed its markers in turn). Each free marker looks for its buds on a grid of them
+/// (in a grown crown the free markers are few, the buds many).
+fn perceived(nodes: [Node], continued: [bool], space: Space, reach: f32) -> Vec<i32> {
+    let m = space.points.len()
+    var owner: Vec<i32> = Vec::filled(m, -1)
+    // The buds: each its place, its direction and its id, in id order.
+    var at: Vec<vec3> = Vec::new()
+    var dirs: Vec<vec3> = Vec::new()
+    var ids: Vec<u32> = Vec::new()
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for i in 0..nodes.len() {
+        let nd = nodes[i]
+        if !nd.alive || nd.kind != SHOOT {
+            continue
+        }
+        if !continued[i] {
+            at.push(nd.tip)
+            dirs.push(nd.dir)
+            ids.push(i * 2)
+        }
+        if dot(nd.bud, nd.bud) > 0.0 {
+            at.push(nd.tip)
+            dirs.push(nd.bud)
+            ids.push(i * 2 + 1)
+        }
+        lo = min(lo, nd.tip)
+        hi = max(hi, nd.tip)
+    }
+    let nb = at.len()
+    if nb == 0 {
+        return owner
+    }
+    let cell = reach
+    let reach2 = reach * reach
+    let (nx, ny, nz) = (
+        u32((hi.x - lo.x) / cell) + 1,
+        u32((hi.y - lo.y) / cell) + 1,
+        u32((hi.z - lo.z) / cell) + 1,
+    )
+    let top = vec3(f32(nx - 1), f32(ny - 1), f32(nz - 1))
+    let cell_of = |p: vec3| {
+        let c = clamp((p - lo) / cell, vec3(0.0), top)
+        (u32(c.y) * nz + u32(c.z)) * nx + u32(c.x)
+    }
+    var starts: Vec<u32> = Vec::filled(nx * ny * nz + 1, 0)
+    for p in at {
+        starts[cell_of(p) + 1] += 1
+    }
+    for c in 1..starts.len() {
+        starts[c] += starts[c - 1]
+    }
+    var fill = starts.clone()
+    var order: Vec<u32> = Vec::filled(nb, 0)
+    for b in 0..nb {
+        let c = cell_of(at[b])
+        order[fill[c]] = b
+        fill[c] += 1
+    }
+    for k in 0..m {
+        if !space.free[k] {
+            continue
+        }
+        let q = space.points[k]
+        let a = (q - vec3(reach) - lo) / cell
+        let z = (q + vec3(reach) - lo) / cell
+        if z.x < 0.0 ||
+            z.y < 0.0 ||
+            z.z < 0.0 ||
+            a.x >= top.x + 1.0 ||
+            a.y >= top.y + 1.0 ||
+            a.z >= top.z + 1.0 {
+            continue
+        }
+        let (a, z) = (clamp(a, vec3(0.0), top), clamp(z, vec3(0.0), top))
+        var best = 1.0e9
+        var who = -1
+        for y in u32(a.y)..(u32(z.y) + 1) {
+            for zz in u32(a.z)..(u32(z.z) + 1) {
+                for x in u32(a.x)..(u32(z.x) + 1) {
+                    let c = (y * nz + zz) * nx + x
+                    for o in starts[c]..starts[c + 1] {
+                        let b = order[o]
+                        let v = q - at[b]
+                        let l2 = dot(v, v)
+                        if l2 > reach2 || l2 <= 1.0e-8 {
+                            continue
+                        }
+                        let l = sqrt(l2)
+                        let id = i32(ids[b])
+                        if dot(v, dirs[b]) >= CONE * l && (l < best || (l == best && id < who)) {
+                            best = l
+                            who = id
+                        }
+                    }
+                }
+            }
+        }
+        owner[k] = who
+    }
+    owner
+}
+
 /// How many times its shed years a branch may go without growing before it's shed (`shed`).
 const IDLE_YEARS: f32 = 3.0
 
@@ -698,10 +777,12 @@ impl Space {
         s.place(e, cell)
         // The nodes on the same grid, and each point near one taken.
         var taken: Vec<u32> = Vec::new()
+        let kill2 = kill * kill
         for nd in nodes {
             if nd.alive {
                 s.near(nd.tip, kill, |k| {
-                    if length(s.points[k] - nd.tip) <= kill {
+                    let v = s.points[k] - nd.tip
+                    if dot(v, v) <= kill2 {
                         taken.push(k)
                     }
                 })
@@ -710,6 +791,21 @@ impl Space {
         for k in taken {
             s.free[k] = false
         }
+        // The cells' runs of the free markers alone (a bud perceives only those: in a grown
+        // crown most are taken), each run in its order.
+        var starts: Vec<u32> = Vec::filled(s.starts.len(), 0)
+        var order: Vec<u32> = Vec::new()
+        for c in 0..(s.starts.len() - 1) {
+            starts[c] = order.len()
+            for k in s.starts[c]..s.starts[c + 1] {
+                if s.free[s.order[k]] {
+                    order.push(s.order[k])
+                }
+            }
+        }
+        starts[s.starts.len() - 1] = order.len()
+        s.starts = take starts
+        s.order = take order
         s
     }
 
@@ -1252,16 +1348,25 @@ fn tube_through(t: TreeGraph, foot: vec3, run: [u32]) -> Tube<4> {
     Tube { points, radii }
 }
 
-/// The crown's clumps (`into_plant`): the young shoots' leaves binned on a grid about two leaves'
+/// The crown's clumps (`into_plant`): the live tips' leaves binned on a grid about two leaves'
 /// spread across, each bin a clump at its leaves' middle as wide as they spread; merged by nearest
 /// pairs to `MAX_CLUMPS`, each merge's volume kept; then all scaled so their union's volume is the
 /// leaves' (each leaf a ball of its size, on a fine grid). The volume's ratio before the scale is
 /// returned with them (1 after it, within the grid's rounding).
 fn crowned(t: TreeGraph, g: Genome) -> (Vec<Clump>, f32) {
+    // Its leaves where the shade grid counts them (`Shade::of`): at each live tip.
+    let n = t.nodes.len()
+    var continued: Vec<bool> = Vec::filled(n, false)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if nd.alive && nd.main && nd.parent >= 0 {
+            continued[u32(nd.parent)] = true
+        }
+    }
     var pts: Vec<vec3> = Vec::new()
-    let year = max_born(t)
-    for nd in t.nodes {
-        if nd.alive && nd.kind == SHOOT && year - nd.born < LEAF_YEARS {
+    for i in 0..n {
+        let nd = t.nodes[i]
+        if nd.alive && nd.kind == SHOOT && !continued[i] {
             pts.push(nd.tip)
         }
     }
@@ -1274,7 +1379,9 @@ fn crowned(t: TreeGraph, g: Genome) -> (Vec<Clump>, f32) {
         lo = min(lo, q)
         hi = max(hi, q)
     }
-    let leaf = max(g.leaf_sun, 0.05)
+    // A shoot's foliage: its leaves (`leaf_density` of them, each `leaf_sun` across) in a cluster
+    // `FOLIAGE` times their own spread.
+    let leaf = max(g.leaf_sun * pow(g.leaf_density, 1.0 / 3.0) * FOLIAGE, 0.05)
     let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 7.0, 4.0 * leaf)
     let nx = u32((hi.x - lo.x) / bin) + 1
     let ny = u32((hi.y - lo.y) / bin) + 1
@@ -1339,6 +1446,10 @@ fn crowned(t: TreeGraph, g: Genome) -> (Vec<Clump>, f32) {
     let ratio = union_volume(clumps) / max(want, 1.0e-6)
     (clumps, ratio)
 }
+
+/// How far a shoot's leaves spread round it, as a multiple of their own packed size (**proposed**:
+/// an oak shoot's six 10 cm leaves over 36 cm).
+const FOLIAGE: f32 = 2.0
 
 /// The youngest shoot's year (the growth's last).
 fn max_born(t: TreeGraph) -> f32 {
@@ -1553,7 +1664,8 @@ pub fn side_view(p: Plant, px: u32) -> (u32, u32, Vec<u8>) {
                     let q = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * sub
                     var inside = false
                     for c in 0..p.clumps.len() {
-                        if !inside && p.clumps[c].distance(vec3(q.x, q.y, p.clumps[c].centre.z)) < 0.0 {
+                        if !inside &&
+                            p.clumps[c].distance(vec3(q.x, q.y, p.clumps[c].centre.z)) < 0.0 {
                             inside = true
                         }
                     }

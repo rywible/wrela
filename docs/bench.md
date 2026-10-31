@@ -3037,3 +3037,18 @@ nodes at a quarter's light and the oak's chains back up 30 %: dropped. A branch 
 grow is shed after `IDLE_YEARS` × `shed_years` only while it's also dim (under twice
 `shed_light`): before, an oak at half light grew 651 nodes by 40 years and collapsed to its seed
 by 100.
+
+**Cost** (`wrela tool grow -- --species oak --age 100 --out out/oak-100`, the tool's optimized
+build on the M4 Air, nothing else running): a 100-year oak (5,799 nodes) grew in **727 ms** at
+first, its year's time mostly the buds perceiving the space's markers (511 ms), then the markers'
+grid (111 ms) and the shade grid (65 ms). Each marker's bud is now found from the marker, among
+the buds on a grid of them (the free markers are a third of the 3,000 in a grown crown; each bud's
+search walked 27 cells, most of them empty), the grid of markers holds only the free ones, and
+distances are compared squared: **364 ms**, the same tree node for node. Halving the buds' grid's
+cell gained nothing; 2,000 markers a year (290 ms) starves the pine's leader (test 1). The plan's
+50 ms (**estimated**) isn't reached: E7's first ring sets `NEAR_N` from this. The conversion
+takes 114 ms more.
+
+The crown's leaves are now at every live tip (where the shade grid counts them), each tip's
+foliage `leaf_sun × ∛leaf_density × 2` across (**proposed**): with the last two years' shoots
+only, each a leaf-sized ball, a 100-year oak's crown was 70 small clumps over bare limbs.
