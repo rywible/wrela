@@ -15,7 +15,7 @@
 // The words, the card and its timing are proposed (design.md).
 
 use body::Mode
-use screens::{Act, INKED, act, act_width, card, unit}
+use screens::{Act, INKED, act, act_width, card, centred, unit}
 use sprites::{SIGN, Sprite}
 use ui::draw::{DrawList, Rect}
 use ui::glyphs::Device
@@ -63,20 +63,31 @@ pub struct Sign: Copy {
     pub teaches: u32,
 }
 
-/// Course `c`'s signs: its level's; the lab has none.
-pub fn signs(c: u32) -> Vec<Sign> {
-    match c {
-        HOME => Vec::from(home::SIGNS),
-        WETLANDS => Vec::from(wetlands::SIGNS),
-        SAVANNA => Vec::from(savanna::SIGNS),
-        RAINFOREST => Vec::from(rainforest::SIGNS),
-        AVIARY => Vec::from(aviary::SIGNS),
-        REPTILES => Vec::from(reptiles::SIGNS),
-        POLAR => Vec::from(polar::SIGNS),
-        FARM => Vec::from(farm::SIGNS),
-        FOOD_COURT => Vec::from(food_court::SIGNS),
-        _ => Vec::new(),
+/// None: the lab's signs.
+const NO_SIGNS: [Sign; 0] = []
+
+/// Course `c`'s signs, read in place: its level's; the lab has none.
+pub fn signs(c: u32) -> borrow [Sign] {
+    if c == HOME {
+        return home::SIGNS
+    } else if c == WETLANDS {
+        return wetlands::SIGNS
+    } else if c == SAVANNA {
+        return savanna::SIGNS
+    } else if c == RAINFOREST {
+        return rainforest::SIGNS
+    } else if c == AVIARY {
+        return aviary::SIGNS
+    } else if c == REPTILES {
+        return reptiles::SIGNS
+    } else if c == POLAR {
+        return polar::SIGNS
+    } else if c == FARM {
+        return farm::SIGNS
+    } else if c == FOOD_COURT {
+        return food_court::SIGNS
     }
+    NO_SIGNS
 }
 
 /// The moves snapshot `s` shows made: a jump, a double jump, a splash, a slide, a kick.
@@ -120,17 +131,56 @@ pub fn sign_sprites(c: u32, out: mut Vec<Sprite>) {
     }
 }
 
-/// Sign `s`'s note broken into lines on its board, `m` pixels a metre, and how tall its words
-/// stand (px).
-fn laid_out(fonts: Fonts, s: Sign, m: f32) -> (Vec<(u32, u32)>, f32) {
-    borrow font = fonts.font(Face::Sans)
+/// Sign `s`'s note broken into lines on its board, `m` pixels a metre.
+fn board_note(fonts: Fonts, s: Sign, m: f32) -> Vec<(u32, u32)> {
     let width = (BOARD_HALF.x - RIM - INSET) * 2.0 * m
-    let lines = if s.line.len() > 0 { font.wrap(s.line, NOTE * m, width) } else { Vec::new() }
-    let n = lines.len()
+    if s.line.len() > 0 { fonts.font(Face::Sans).wrap(s.line, NOTE * m, width) } else { Vec::new() }
+}
+
+/// How tall sign `s`'s words stand on its board (px), `m` pixels a metre, its note `lines` lines.
+fn board_tall(fonts: Fonts, s: Sign, m: f32, lines: u32) -> f32 {
+    borrow font = fonts.font(Face::Sans)
     let rows = (if s.prompts > 0 { (GLYPH + SPACE) * m } else {
         0.0
-    }) + f32(n) * font.line_height(NOTE * m)
-    (lines, font.line_height(HEADING * m) + SPACE * m + rows)
+    }) + f32(lines) * font.line_height(NOTE * m)
+    font.line_height(HEADING * m) + SPACE * m + rows
+}
+
+/// The signs' notes broken into lines, kept from frame to frame: the course they're of, and each
+/// sign's lines on its board (`m` pixels a metre) and on the card (`u` the screens' unit), broken
+/// again only when the course or a size changes.
+pub struct Wraps {
+    course: u32 = 0xffffffff,
+    m: f32 = 0.0,
+    boards: Vec<Vec<(u32, u32)>> = Vec::new(),
+    u: f32 = 0.0,
+    cards: Vec<Vec<(u32, u32)>> = Vec::new(),
+}
+
+impl Wraps {
+    /// Course `c`'s notes, broken for boards `m` pixels a metre and a card in unit `u` if they
+    /// aren't (either 0: kept as they are).
+    fn update(mut self, fonts: Fonts, c: u32, m: f32, u: f32) {
+        if c != self.course {
+            self.course = c
+            self.m = 0.0
+            self.u = 0.0
+        }
+        if m > 0.0 && m != self.m {
+            self.m = m
+            self.boards.clear()
+            for s in signs(c) {
+                self.boards.push(board_note(fonts, s, m))
+            }
+        }
+        if u > 0.0 && u != self.u {
+            self.u = u
+            self.cards.clear()
+            for s in signs(c) {
+                self.cards.push(card_note(fonts, s, u))
+            }
+        }
+    }
 }
 
 /// How wide sign `s`'s prompts are for `device`, their glyphs `glyph` px high, and the space
@@ -160,11 +210,12 @@ fn draw_prompts(
 }
 
 /// Course `c`'s signs' words and prompts, drawn on their boards into `list`, for the scene: its
-/// middle at `eye` and half its size `half` (m), `screen` pixels. A sign whose move is in
-/// `learned` says its prompts faintly. The frames draw them over the water (main.wrela), so it
-/// never bends them.
+/// middle at `eye` and half its size `half` (m), `screen` pixels, their notes' lines kept in
+/// `wraps`. A sign whose move is in `learned` says its prompts faintly. The frames draw them over
+/// the water (main.wrela), so it never bends them.
 pub fn sign_words(
     list: mut DrawList,
+    wraps: mut Wraps,
     fonts: Fonts,
     c: u32,
     learned: u32,
@@ -174,18 +225,21 @@ pub fn sign_words(
     screen: vec2,
 ) {
     let m = screen.y / (2.0 * half.y)
-    for s in signs(c) {
+    wraps.update(fonts, c, m, 0.0)
+    borrow all = signs(c)
+    for i in 0..all.len() {
+        let s = all[i]
         if !on_screen(s, eye, half) {
             continue
         }
         let mid = s.at + BOARD
         let at = vec2((mid.x - eye.x) * m + screen.x * 0.5, (eye.y - mid.y) * m + screen.y * 0.5)
-        let (lines, tall) = laid_out(fonts, s, m)
+        borrow lines = wraps.boards[i]
+        let tall = board_tall(fonts, s, m, lines.len())
         borrow font = fonts.font(Face::Sans)
         let (size, glyph, note) = (HEADING * m, GLYPH * m, NOTE * m)
         var y = at.y - tall * 0.5
-        let hw = font.measure(s.heading, size)
-        let _ = list.text(fonts, Face::Sans, s.heading, size, vec2(at.x - hw * 0.5, y), INKED)
+        centred(mut list, fonts, Face::Sans, s.heading, size, at.x, y, INKED)
         y += font.line_height(size) + SPACE * m
         let faint = if learned & s.teaches != 0 { 0.35 } else { 1.0 }
         if s.prompts > 0 {
@@ -194,9 +248,7 @@ pub fn sign_words(
             y += glyph + SPACE * m
         }
         for (a, b) in lines {
-            let part = s.line.slice(a, b)
-            let lw = font.measure(part, note)
-            let _ = list.text(fonts, Face::Sans, part, note, vec2(at.x - lw * 0.5, y), INKED)
+            centred(mut list, fonts, Face::Sans, s.line.slice(a, b), note, at.x, y, INKED)
             y += font.line_height(note)
         }
     }
@@ -294,6 +346,11 @@ pub fn card_rect(fonts: Fonts, k: Card, device: Device, screen: vec2) -> Option<
         return None
     }
     let s = signs(k.course)[i]
+    Some(paper(fonts, s, device, screen, card_note(fonts, s, unit(screen))))
+}
+
+/// Where the card's paper is for sign `s`, its note `lines` lines (`card_note`).
+fn paper(fonts: Fonts, s: Sign, device: Device, screen: vec2, lines: [(u32, u32)]) -> Rect {
     let u = unit(screen)
     borrow font = fonts.font(Face::Sans)
     var w = font.measure(s.heading, u * CARD_HEADING)
@@ -302,31 +359,36 @@ pub fn card_rect(fonts: Fonts, k: Card, device: Device, screen: vec2) -> Option<
         let (p, _) = prompts_width(fonts, s, device, u * CARD_GLYPH)
         w += u * 3.0 + p
     }
-    for (a, b) in card_note(fonts, s, u) {
+    for (a, b) in lines {
         w = max(w, font.measure(s.line.slice(a, b), u * CARD_NOTE))
         h += font.line_height(u * CARD_NOTE)
     }
-    Some(Rect::new((screen.x - w) * 0.5 - u * 3.5, u * 2.6, w + u * 7.0, h + u * 5.0))
+    Rect::new((screen.x - w) * 0.5 - u * 3.5, u * 2.6, w + u * 7.0, h + u * 5.0)
 }
 
 /// Card `k` at the top of `screen`, `alpha` of it: its sign's heading with its buttons beside it,
-/// for `device`; a sign with no buttons says its note under its heading instead.
+/// for `device`; a sign with no buttons says its note under its heading instead, its lines kept
+/// in `wraps`.
 pub fn sign_card(
     list: mut DrawList,
+    wraps: mut Wraps,
     fonts: Fonts,
     k: Card,
     device: Device,
     screen: vec2,
     alpha: f32,
 ) {
-    let Some(r) = card_rect(fonts, k, device, screen) else {
+    let Some(i) = k.sign else {
         return
     }
     if alpha <= 0.0 {
         return
     }
-    let s = signs(k.course)[k.sign.unwrap()]
+    let s = signs(k.course)[i]
     let u = unit(screen)
+    wraps.update(fonts, k.course, 0.0, u)
+    borrow lines = wraps.cards[i]
+    let r = paper(fonts, s, device, screen, lines)
     let (size, glyph, note) = (u * CARD_HEADING, u * CARD_GLYPH, u * CARD_NOTE)
     borrow font = fonts.font(Face::Sans)
     card(mut list, r, u, alpha)
@@ -344,10 +406,8 @@ pub fn sign_card(
         draw_prompts(mut list, fonts, s, device, at, glyph, alpha)
     }
     var y = top + tall
-    for (a, b) in card_note(fonts, s, u) {
-        let part = s.line.slice(a, b)
-        let lw = font.measure(part, note)
-        let _ = list.text(fonts, Face::Sans, part, note, vec2(r.x + (r.w - lw) * 0.5, y), ink)
+    for (a, b) in lines {
+        centred(mut list, fonts, Face::Sans, s.line.slice(a, b), note, r.x + r.w * 0.5, y, ink)
         y += font.line_height(note)
     }
 }
@@ -408,7 +468,7 @@ fn a_signs_words_read_at_16_px_and_fit_its_board() {
     let panel = (BOARD_HALF - vec2(RIM + INSET, RIM)) * 2.0 * m
     for c in 0..course::LEVELS {
         for s in signs(c) {
-            let (_, tall) = laid_out(fonts, s, m)
+            let tall = board_tall(fonts, s, m, board_note(fonts, s, m).len())
             assert(tall <= panel.y, f"{s.heading}: {tall} px tall on a {panel.y} px panel")
             assert(font.measure(s.heading, HEADING * m) <= panel.x, f"{s.heading}: too wide")
             for d in [Device::Keys, Device::Pad] {

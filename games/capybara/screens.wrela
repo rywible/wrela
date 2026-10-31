@@ -85,7 +85,7 @@ fn width_of(fonts: Fonts, face: Face, text: str, size: f32) -> f32 {
 }
 
 /// `text` centred on `x`, its top at `y`.
-fn centred(
+pub fn centred(
     list: mut DrawList,
     fonts: Fonts,
     face: Face,

@@ -78,7 +78,7 @@ use settings::{
     ABOVE_GHOST, AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, RECORD_GHOST, SETTINGS, Settings, decode,
     encode, ghost_of, turned,
 }
-use signs::{Card, learned, sign_card, sign_words}
+use signs::{Card, Wraps, learned, sign_card, sign_words}
 use std::host
 use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
@@ -229,6 +229,7 @@ pub struct Lab {
     signs: Uploaded,
     sign_list: DrawList,
     sign_card: Card,
+    sign_wraps: Wraps,
     /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
     /// from frame to frame, so no frame makes them).
     back: Vec<Sprite>,
@@ -366,6 +367,7 @@ pub fn init() -> Lab {
         signs: Uploaded::new(),
         sign_list: DrawList::new(),
         sign_card: Card {},
+        sign_wraps: Wraps {},
         back: Vec::with_capacity(SPRITES),
         front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
@@ -581,6 +583,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.sign_list.clear(scene_size)
     sign_words(
         mut s.sign_list,
+        mut s.sign_wraps,
         s.fonts,
         snap.course,
         s.settings.learned,
@@ -1281,7 +1284,8 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     let since = f32(snap.ticks) / f32(HZ)
     let titled = if snap.attempt == 0 { 1.0 - smoothstep(0.6, 2.4, since) } else { 0.0 }
     if snap.finished == 0 {
-        sign_card(mut s.list, s.fonts, s.sign_card, d, screen, s.sign_card.alpha() * (1.0 - titled))
+        let alpha = s.sign_card.alpha() * (1.0 - titled)
+        sign_card(mut s.list, mut s.sign_wraps, s.fonts, s.sign_card, d, screen, alpha)
     }
     if titled > 0.0 {
         let alpha = titled
