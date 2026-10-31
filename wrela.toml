@@ -69,8 +69,9 @@ members = [
     "ui/brand",
     "ui/tests/*",
 ]
-# The files the workspace may hold: wrela sources and manifests, assets with their licences, the
-# prose, and the one CI file. Each of the `wrela` repository's files is one of these.
+# The files the workspace may hold: wrela sources and manifests, assets with their licences, a
+# game's theme, the prose, and the one CI file. Each of the `wrela` repository's files is one of
+# these.
 allow = [
     "**/*.wrela",
     "**/wrela.toml",
@@ -100,6 +101,7 @@ allow = [
     "docs/lookdev.md",
     "docs/devices.md",
     "games/*/design.md",
+    "games/*/theme.txt",
     "examples/vale/design.md",
     "content/styles/README.md",
     "studio/styles/history.log",
