@@ -2,8 +2,9 @@
 // and replays"). The ticker records each attempt as it's played (world.wrela's `Live`); a finished
 // one becomes a `Replay`, which plays exactly the same again on the sim (`world::play`), so it is
 // its own proof: `verify` plays it and checks its time and what it found, as the leaderboards'
-// server will. The game keeps the best few of each category in its own storage (`Board`), draws
-// one beside the player as a ghost (`trail`), and plays any of them back to watch (main.wrela).
+// server will. The player's progress (progress.wrela) keeps the best few of each category
+// (`Board`); the game draws one beside the player as a ghost (`trail`), and plays any of them back
+// to watch (main.wrela).
 //
 // A board belongs to one version of play (`BOARD`): a change to the sim or the courses that
 // changes how a run plays starts a new one, and the runs of the old one are dropped.
@@ -14,7 +15,7 @@ use feel::HZ
 use pad::{Hold, pad_of}
 use proofs::LAB_RUN
 use std::collections::Vec
-use std::serialize::{LoadError, Serialize, load, save}
+use std::serialize::Serialize
 use world::{Snap, World, step, world}
 use course::LAB_COURSE
 use course::WETLANDS
@@ -22,9 +23,6 @@ use course::WETLANDS
 /// The version of play the runs are for: 3 since a kick off the bottom of water waits the kicks'
 /// cooldown.
 pub const BOARD: u32 = 3
-
-/// Where the game keeps its runs, in its own storage.
-pub const SAVED: Text = "capybara/runs"
 
 /// The categories (design.md, "Speedrunning"): any%, to the goal, and 100%, to the goal with
 /// every snack. A 100% run counts for any% too.
@@ -47,7 +45,7 @@ pub const KEPT: u32 = 5
 pub const MOST_TICKS: u32 = 30 * 60 * HZ
 
 /// The most runs a board holds: the best `KEPT` of each course's two categories.
-const MOST_RUNS: u32 = COURSES * 2 * KEPT
+pub const MOST_RUNS: u32 = COURSES * 2 * KEPT
 
 /// A finished attempt: its course, who made it, its time (the clock's ticks on reaching the goal),
 /// the snacks it found (a bit each), its deaths, and its pads.
@@ -106,11 +104,17 @@ pub fn length(r: Replay) -> Option<u32> {
     Some(n)
 }
 
+/// Whether `r` could be a run, before it's played: of a course, of some ticks, no longer than
+/// `MOST_TICKS`, and as long as its pads say.
+pub fn plausible(r: Replay) -> bool {
+    r.course < COURSES && r.ticks > 0 && length(r) == Some(r.ticks)
+}
+
 /// Whether `r` plays, on the sim, to the goal on the tick it says, with the snacks and the deaths
-/// it says: what it claims is what the rules make of its pads. A run of no ticks, or longer than
-/// `MOST_TICKS`, doesn't, and isn't played.
+/// it says: what it claims is what the rules make of its pads. A run that isn't `plausible`
+/// doesn't, and isn't played.
 pub fn verify(r: Replay) -> bool {
-    if r.course >= COURSES || r.who > HUMAN || r.ticks == 0 || length(r) != Some(r.ticks) {
+    if r.who > HUMAN || !plausible(r) {
         return false
     }
     let w = played(r, r.ticks)
@@ -193,11 +197,9 @@ impl Board {
     }
 }
 
-/// The board in `bytes`: its runs that are of this version of play and that verify; an empty board
-/// for anything else, and for more runs than a board holds (each verified is played).
-pub fn read(bytes: take Vec<u8>) -> Board {
-    let loaded: Result<Board, LoadError> = load(take bytes)
-    let Ok(b) = loaded else { return board() }
+/// Board `b`'s runs that are of this version of play and that verify, the player's own: none for
+/// another version, or for more runs than a board holds (each verified is played).
+pub fn checked(b: Board) -> Board {
     var out = board()
     if b.version != BOARD || b.runs.len() > MOST_RUNS {
         return out
@@ -208,11 +210,6 @@ pub fn read(bytes: take Vec<u8>) -> Board {
         }
     }
     out
-}
-
-/// `b` as bytes, to store.
-pub fn bytes(b: Board) -> Vec<u8> {
-    save(b)
 }
 
 /// The tool-assisted runs of course `c`, as replays: a level's any% and 100% from the route
@@ -364,7 +361,7 @@ fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
 }
 
 @test
-fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
+fn a_board_keeps_only_the_runs_that_verify_on_this_version() {
     var b = board()
     let any = tool_assisted(WETLANDS)[0].clone()
     var mine = any.clone()
@@ -373,13 +370,12 @@ fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
     var doctored = mine.clone()
     doctored.ticks -= 60
     let _ = b.add(take doctored)
-    let back = read(bytes(b))
+    let back = checked(b)
     assert(back.runs.len() == 1 && back.runs[0].ticks == any.ticks, f"{back.runs.len()} runs")
     var old = board()
     old.version = BOARD + 1
     let _ = old.add(take mine)
-    assert(read(bytes(old)).runs.len() == 0, "another version's runs are dropped")
-    assert(read(Vec::from([1, 2, 3])).runs.len() == 0, "bytes that aren't a board")
+    assert(checked(old).runs.len() == 0, "another version's runs are dropped")
 }
 
 @test
@@ -393,14 +389,14 @@ fn a_stored_run_of_no_ticks_too_many_or_too_long_isnt_played() {
     assert(!verify(long), "a run past the longest kept")
     var b = board()
     b.runs.push(claimed(LAB_COURSE, ticks: 0, snacks: 0))
-    assert(read(bytes(b)).runs.len() == 0, "an empty run isn't read")
+    assert(checked(b).runs.len() == 0, "an empty run isn't read")
     var mine = tool_assisted(LAB_COURSE)[0].clone()
     mine.who = YOU
     var many = board()
     for _ in 0..MOST_RUNS + 1 {
         many.runs.push(mine.clone())
     }
-    assert(read(bytes(many)).runs.len() == 0, "more runs than a board holds")
+    assert(checked(many).runs.len() == 0, "more runs than a board holds")
 }
 
 /// The key events that take the controls from holding `from` to holding `to` (pad.wrela's bits).

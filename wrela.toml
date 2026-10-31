@@ -27,6 +27,7 @@ members = [
     "games/capybara/route",
     "games/capybara/budget",
     "games/capybara/keys",
+    "games/capybara/session",
     "games/last-green/session",
     "games/last-green/session/tests/export",
     "games/last-green/stair",
@@ -241,7 +242,7 @@ timeout = 5400
 [tools.deploy]
 package = "studio/deploy"
 write = ["release=build/release"]
-net = ["wrela.dev", "docs.wrela.dev", "leapling.wrela.dev", "last-green.wrela.dev", "github.com"]
+net = ["wrela.dev", "docs.wrela.dev", "capybara.wrela.dev", "github.com"]
 run = ["npx"]
 secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 timeout = 3600

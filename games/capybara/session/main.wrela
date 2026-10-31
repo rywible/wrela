@@ -1,0 +1,91 @@
+// The capybara game's small session program: save policy before the game's renderer is loaded.
+// The game keeps the player's progress at `SAVE` as it changes and as it returns to the console;
+// this program files it under the player's profile, backs it up before a new game, exports and
+// imports it, and hands it to the game it starts. The policy is platform's (`platform::session`);
+// this program gives it the game's progress (progress.wrela).
+use capybara::progress::{SAVE, describe, encode, read}
+use platform::protocol::SaveFile
+use platform::session
+use platform::session::{Game, checked, summary}
+use std::serialize::save
+
+const GAME: Text = "capybara"
+
+/// The capybara game to its session program.
+pub struct Capybara: Copy {}
+
+pub type Session = session::Session<Capybara>
+
+impl Game for Capybara {
+    fn name(self) -> Text {
+        GAME
+    }
+
+    fn save_path(self) -> Text {
+        SAVE
+    }
+
+    fn entry(self) -> Text {
+        "../capybara"
+    }
+
+    fn foreign_import(self) -> Text {
+        "This file is not a save of the capybara game."
+    }
+
+    /// Only this game reads its progress: its runs are played when the game loads them.
+    fn body(self, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        let Some(progress) = read(bytes.clone()) else { return None }
+        Some(encode(progress))
+    }
+
+    fn description(self, body: Vec<u8>) -> String {
+        match read(body.clone()) {
+            Some(p) => describe(p),
+            None => String::new(),
+        }
+    }
+}
+
+pub fn init() -> Session {
+    session::init(Capybara {})
+}
+
+pub fn frame(s: mut Session, time: f32, width: u32, height: u32) {
+    session::frame(mut s)
+}
+
+use capybara::course::HOME
+use capybara::progress::fresh
+
+@test
+fn foreign_truncated_or_impossible_saves_are_rejected_before_writing() {
+    let foreign = SaveFile {
+        game: String::from("different-game"),
+        version: 1,
+        saved: 0,
+        body: encode(fresh()),
+    }
+    assert(checked(Capybara {}, save(foreign)).is_none())
+    assert(checked(Capybara {}, Vec::new()).is_none())
+    assert(checked(Capybara {}, Vec::filled(12, 255)).is_none())
+    var impossible = fresh()
+    impossible.records[HOME].found = 0xffffffff
+    let wrong = SaveFile {
+        game: String::from(GAME),
+        version: 1,
+        saved: 0,
+        body: encode(impossible),
+    }
+    assert(checked(Capybara {}, save(wrong)).is_none())
+    var played = fresh()
+    let _ = played.finished(HOME, ticks: 9000, snacks: 1)
+    let good = SaveFile { game: String::from(GAME), version: 1, saved: 7, body: encode(played) }
+    let Some(file) = checked(Capybara {}, save(good)) else {
+        assert(false, "a capybara save imports")
+        return
+    }
+    let info = summary(Capybara {}, file, "continue")
+    assert(info.label == "Continue" && info.saved == 7)
+    assert(info.description.starts_with("1 of 9 levels · 1 of "), info.description)
+}

@@ -59,9 +59,11 @@ use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
 use std::io::{Pending, load, print, store}
 use replay::{
-    ANY, AUTOPILOT, Board, FULL, HUMAN, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
-    replay, splits, tool_assisted, trail, verify,
+    ANY, AUTOPILOT, FULL, HUMAN, Pose, Replay, YOU, counts, replay, splits, tool_assisted, trail,
+    verify,
 }
+use progress::{Progress, SAVE}
+use platform::presentation::Link
 use screens::{
     Act, CARD, Facts, INKED, MENU_LABELS, OPTION_LABELS, Prompt, SOFT, card, clock, controls, Stop,
     controls_rects, facts, footer, goal_card, list_rects, map, map_rects, option_about,
@@ -81,6 +83,13 @@ use engine::menu::{Nav, Stick}
 /// A developer's build (`wrela build games/capybara --set DEV=true`): Tab plays the next course,
 /// the movement lab among them. A player's build has neither.
 pub const DEV: bool = false
+
+/// A build for still pictures (`wrela build games/capybara --set HERO=true`): the console's hero
+/// and the game's cover. The view is `HERO_ZOOM` times nearer, with the capybara in its right
+/// third, and nothing is drawn over the scene (the snacks' count, the title, the clock, the
+/// menus).
+pub const HERO: bool = false
+const HERO_ZOOM: f32 = 2.6
 
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
@@ -216,12 +225,15 @@ pub struct Lab {
     wet: Vec<vec4>,
     tree: Sent,
     told: Vec<Pending<u8>>,
-    /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
-    /// (`Storing`). The attempt whose finish was last kept (its course and attempt), so each is
-    /// kept once.
-    runs: Board,
+    /// The player's progress (progress.wrela: each course's record, the best whole game, their
+    /// runs), as it loads from storage and is stored again, and when (`Storing`). The attempt
+    /// whose finish was last kept (its course and attempt), so each is kept once.
+    progress: Progress,
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
+    /// Stored progress this build can't read (a later version's), as it was stored: never stored
+    /// over, and stored back as it is when the game returns to the console.
+    unread: Option<Vec<u8>>,
     storing: Storing,
     kept: u32,
     /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
@@ -257,6 +269,8 @@ pub struct Lab {
     idle: f32,
     pointer: vec2,
     nav: Stick,
+    /// The link to the console that opened the game (`console`).
+    console: Link,
 }
 
 pub fn init() -> Lab {
@@ -306,9 +320,10 @@ pub fn init() -> Lab {
         wet: Vec::new(),
         tree: Sent {},
         told: Vec::new(),
-        runs: board(),
-        loading: Some(load(SAVED)),
+        progress: progress::fresh(),
+        loading: Some(load(SAVE)),
         saving: None,
+        unread: None,
         storing: Storing {},
         kept: 0xffffffff,
         assisted: Vec::new(),
@@ -331,6 +346,7 @@ pub fn init() -> Lab {
         idle: 0.0,
         pointer: vec2(-1.0),
         nav: Stick {},
+        console: Link::new(),
     }
 }
 
@@ -391,7 +407,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
-    store_runs(mut s, dt)
+    store_progress(mut s, dt)
     store_settings(mut s, dt)
     if live_snap.finished > 0 {
         // The best before this run, before it's kept among the runs.
@@ -407,6 +423,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // board's and the watch's.
     let browsing = live_snap.paused == 1 && live_snap.page == RUNS
     for raw in events() {
+        s.console.event(raw)
         let e = in_play(raw, origin)
         if let Some(d) = device_of(e) {
             s.device = d
@@ -474,8 +491,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         }
     }
     let aspect = screen.x / max(screen.y, 1.0)
-    let half = half_view(aspect)
-    let eye = framed(s.camera, half, c.ends)
+    let half = if HERO { half_view(aspect) / HERO_ZOOM } else { half_view(aspect) }
+    let eye = if HERO { snap.at + vec2(-half.x * 0.45, half.y * 0.2) } else {
+        framed(s.camera, half, c.ends)
+    }
     react(mut s.cast, snap, c, dt, eye, half)
     // What happened, to the voice.
     match mut s.voice {
@@ -490,7 +509,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // Where the snacks' count is, on the plane of play: found carrots fly there. It shows while
     // playing.
     let hud_at = eye + vec2(-half.x + 1.1, half.y - 0.85)
-    let count = snap.paused == 0 && !watching
+    let count = snap.paused == 0 && !watching && !HERO
     let view_proj = flat_camera(eye, half)
     let px = 2.0 * half.y / f32(rh)
     s.back.clear()
@@ -655,6 +674,26 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     out.present()
     playable(mut s)
     publish(mut s, snap, play)
+    console(mut s)
+}
+
+/// The console's link (platform::presentation): the game tells it once it's playable, and goes
+/// back to it when the player asks (F10, a controller's Home, or Select and Start held), its
+/// progress stored first; not before the stored progress is read, so it isn't stored over, and
+/// one writer at a time: a store of the progress under way finishes first, and none starts while
+/// it returns (`store_progress`), so an older one can't land over the last.
+fn console(s: mut Lab) {
+    if s.playable_at.is_none() {
+        return
+    }
+    s.console.presented()
+    if s.console.returning && s.storing.read && s.saving.is_none() {
+        let bytes = match s.unread {
+            Some(b) => b.clone(),
+            None => progress::encode(s.progress),
+        }
+        s.console.save_and_return(SAVE, bytes)
+    }
 }
 
 /// The margins round the play area: the sky's colour at the top of the page, as the page's
@@ -713,20 +752,20 @@ fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
 
 /// The player's best any% time on course `c` (ticks), or 0 without one.
 fn best(s: Lab, c: u32) -> u32 {
-    let runs = s.runs.ranked(c, ANY)
-    if runs.len() > 0 { runs[0].ticks } else { 0 }
+    s.progress.records[c].best
 }
 
-/// Level `c` on the levels' map, as the player's runs say: finished with any run, the most snacks
-/// one found, and the best any% time.
+/// Level `c` on the levels' map, as the player's progress says: finished, the most snacks one run
+/// found, and the best any% time.
 fn stop_of(s: Lab, c: u32) -> Stop {
-    let all = course(c).every_snack()
-    var found = 0
-    for r in s.runs.ranked(c, ANY) {
-        found = max(found, (r.snacks & all).count_ones())
+    let r = s.progress.records[c]
+    Stop {
+        name: course::name(c),
+        done: r.best > 0,
+        found: r.found.count_ones(),
+        snacks: course(c).snacks.len(),
+        best: r.best,
     }
-    let best = best(s, c)
-    Stop { name: course::name(c), done: best > 0, found, snacks: course(c).snacks.len(), best }
 }
 
 /// The level on the map under the pointer, while the player uses the pointer.
@@ -780,9 +819,8 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
         }
     }
     // A whole game played through: its time, the best kept.
-    if live.game > 0 && (s.settings.best_game == 0 || live.game < s.settings.best_game) {
-        s.settings.best_game = live.game
-        s.storing_settings.unsaved = true
+    if s.progress.whole_game(live.game) {
+        s.storing.unsaved = true
     }
     let made = learned(live)
     if made & !s.settings.learned != 0 {
@@ -914,6 +952,9 @@ fn hovered(s: Lab, screen: vec2, page: u32) -> Option<u32> {
 /// drawn on the plane of play, in ink: cast.wrela.)
 fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     s.list.clear(screen)
+    if HERO {
+        return
+    }
     let u = unit(screen)
     let d = s.device
     if s.watching.is_some() {
@@ -1044,7 +1085,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             more: more,
             ending: cast::ending(snap),
             game: snap.game,
-            best_game: s.settings.best_game,
+            best_game: s.progress.game,
         )
     }
     if s.readout {
@@ -1069,16 +1110,19 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
 
 // ---- runs ----------------------------------------------------------------------------------------
 
-/// Keeps the attempt in `snap` once it reaches the goal, if it's among the player's best, and
-/// stores the runs.
+/// Keeps the attempt in `snap` once it reaches the goal: its course's record, and its run if it's
+/// among the player's best; and stores the progress.
 fn keep_finished(s: mut Lab, snap: Snap) {
     let key = snap.course << 16 | (snap.attempt & 0xffff)
     if snap.finished == 0 || key == s.kept {
         return
     }
     s.kept = key
+    if s.progress.finished(snap.course, ticks: snap.finished, snacks: snap.snacks) {
+        s.storing.unsaved = true
+    }
     if let Some(r) = replay(snap, YOU) {
-        if verify(r) && s.runs.add(r.clone()) {
+        if verify(r) && s.progress.runs.add(take r) {
             s.storing.unsaved = true
             s.trail_of = 0
         }
@@ -1132,10 +1176,10 @@ impl Storing {
     }
 }
 
-/// Reads the stored runs once they load, `dt` seconds after the last frame, and stores them when
-/// they've changed, one store at a time, and only once the stored ones are read or are known to
+/// Reads the stored progress once it loads, `dt` seconds after the last frame, and stores it when
+/// it's changed, one store at a time, and only once the stored ones are read or are known to
 /// be none (`IoError::missing`). A load or a store that failed is made again (`Storing`).
-fn store_runs(s: mut Lab, dt: f32) {
+fn store_progress(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading {
         Some(p) => loaded = p.poll(),
@@ -1145,11 +1189,11 @@ fn store_runs(s: mut Lab, dt: f32) {
         s.loading = None
         match result {
             Ok(b) => {
-                let mine = s.runs.clone()
-                s.runs = read(b.clone())
-                for r in mine.runs {
-                    let _ = s.runs.add(r.clone())
+                let stored = progress::read(b.clone())
+                if stored.is_none() && !b.is_empty() {
+                    s.unread = Some(b.clone())
                 }
+                s.progress = progress::merged(stored, s.progress.clone())
                 s.trail_of = 0
                 s.storing.loaded(read: true)
             },
@@ -1165,21 +1209,23 @@ fn store_runs(s: mut Lab, dt: f32) {
         s.saving = None
         s.storing.stored(ok: result.is_ok())
     }
+    // Returning to the console, its link's store is the one writer: a change waits, unsaved, and
+    // is stored after if that store fails and the game stays.
     let (loads, stores) = s.storing.due(
         dt,
         loading: s.loading.is_some(),
-        saving: s.saving.is_some(),
+        saving: s.saving.is_some() || s.console.returning || s.unread.is_some(),
     )
     if loads {
-        s.loading = Some(load(SAVED))
+        s.loading = Some(load(SAVE))
     }
     if stores {
-        s.saving = Some(store(SAVED, bytes(s.runs)))
+        s.saving = Some(store(SAVE, progress::encode(s.progress)))
     }
 }
 
 /// Reads the stored settings once they load, and stores them when they've changed, as the runs
-/// are (`store_runs`). Settings changed before the stored ones are read stay as changed.
+/// are (`store_progress`). Settings changed before the stored ones are read stay as changed.
 fn store_settings(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading_settings {
@@ -1228,7 +1274,7 @@ fn store_settings(s: mut Lab, dt: f32) {
 /// tool-assisted ones), fastest first.
 fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     if s.board == PLAYERS {
-        return s.runs.ranked(c, category)
+        return s.progress.runs.ranked(c, category)
     }
     assisted(s, c, category)
 }
@@ -1260,7 +1306,7 @@ fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
 fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
     let g = s.settings.ghost
     if g == BEST_GHOST {
-        let best = s.runs.ranked(c, ANY)
+        let best = s.progress.runs.ranked(c, ANY)
         if best.len() > 0 {
             return Some(best[0].clone())
         }
@@ -1667,7 +1713,7 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
     // The test's storage is empty: the stored runs are read as none, so new ones may be stored.
     assert(
-        s.storing.read && s.loading.is_none() && s.runs.runs.len() == 0,
+        s.storing.read && s.loading.is_none() && s.progress.runs.runs.len() == 0,
         "nothing stored is no runs",
     )
 }
@@ -1690,6 +1736,12 @@ fn a_load_or_a_store_that_failed_is_made_again_after_a_wait() {
     assert(st.due(0.016, loading: false, saving: true) == (false, false), "one store at a time")
     st.stored(ok: true)
     assert(st.due(0.016, loading: false, saving: false) == (false, true), "the newer runs")
+    // Returning to the console counts as a store under way: a change made then stays unsaved, so
+    // it's stored if the return's store fails and the game stays.
+    st.stored(ok: true)
+    st.unsaved = true
+    assert(st.due(0.016, loading: false, saving: true) == (false, false) && st.unsaved, "returning")
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "stored after")
     st.stored(ok: false)
     assert(st.unsaved, "a failed store's runs are unsaved again")
     assert(st.due(1.0, loading: false, saving: false) == (false, false), "and wait")

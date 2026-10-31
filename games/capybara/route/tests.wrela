@@ -275,3 +275,17 @@ fn the_human_routes_keep_to_the_limits_and_are_forgiving() {
         f"100%: at least {FIRM}% of its changes firm within a second",
     )
 }
+
+/// The console's home plays the game's theme from `theme.txt` (studio/release's catalog), which
+/// must be the theme the game plays (music.wrela's `theme_text`).
+@test(tool, read: [("game", "..")], budget: 30)
+fn the_consoles_theme_is_the_games() {
+    let Ok(bytes) = std::tool::files::read("game/theme.txt").wait() else {
+        panic("no theme.txt")
+    }
+    let Some(text) = String::from_utf8(bytes.clone()) else { panic("theme.txt isn't text") }
+    assert(
+        text == capybara::music::theme_text(),
+        "theme.txt is music.wrela's theme: write `theme_text()` to it",
+    )
+}
