@@ -675,13 +675,15 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
 
 /// The console's link (platform::presentation): the game tells it once it's playable, and goes
 /// back to it when the player asks (F10, a controller's Home, or Select and Start held), its
-/// progress stored first; not before the stored progress is read, so it isn't stored over.
+/// progress stored first; not before the stored progress is read, so it isn't stored over, and
+/// one writer at a time: a store of the progress under way finishes first, and none starts while
+/// it returns (`store_progress`), so an older one can't land over the last.
 fn console(s: mut Lab) {
     if s.playable_at.is_none() {
         return
     }
     s.console.presented()
-    if s.console.returning && s.storing.read {
+    if s.console.returning && s.storing.read && s.saving.is_none() {
         s.console.save_and_return(SAVE, progress::encode(s.progress))
     }
 }
@@ -1203,7 +1205,7 @@ fn store_progress(s: mut Lab, dt: f32) {
     if loads {
         s.loading = Some(load(SAVE))
     }
-    if stores {
+    if stores && !s.console.returning {
         s.saving = Some(store(SAVE, progress::encode(s.progress)))
     }
 }

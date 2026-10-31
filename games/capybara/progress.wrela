@@ -105,12 +105,12 @@ impl Progress {
 pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
     let loaded: Result<Progress, LoadError> = load(take bytes)
     let Ok(p) = loaded else { return None }
-    if p.version != VERSION || p.records.len() != COURSES || p.game > LEVELS * MOST_TICKS {
+    if p.version != VERSION || p.records.len() != COURSES {
         return None
     }
     for c in 0..COURSES {
         let r = p.records[c]
-        if r.best > MOST_TICKS || (r.found & !SNACKS[c]) != 0 {
+        if (r.found & !SNACKS[c]) != 0 {
             return None
         }
     }
@@ -159,7 +159,8 @@ pub fn encode(p: Progress) -> Vec<u8> {
 
 /// A time as minutes, seconds and hundredths: 24:05.31.
 pub fn clock_text(ticks: u32) -> String {
-    let hundredths = ticks * 100 / HZ
+    // Whole seconds first, so a long time doesn't overflow.
+    let hundredths = ticks / HZ * 100 + ticks % HZ * 100 / HZ
     let s = hundredths / 100
     let secs = s % 60
     let tail = hundredths % 100
@@ -227,9 +228,17 @@ fn progress_is_stored_and_read_back_and_nonsense_is_refused() {
     var snacks = p.clone()
     snacks.records[HOME].found = 0xffffffff
     assert(read(encode(snacks)).is_none(), "snacks the level hasn't")
+    // A slow first finish, or a long whole game, is still progress: no longer than a run is kept
+    // is the runs' limit, not the records'.
     var slow = p.clone()
     slow.records[HOME].best = MOST_TICKS + 1
-    assert(read(encode(slow)).is_none(), "a time longer than a run is kept")
+    slow.game = LEVELS * MOST_TICKS + 1
+    let Some(kept) = read(encode(slow)) else {
+        assert(false, "a slow finish reads back")
+        return
+    }
+    assert(kept.records[HOME].best == MOST_TICKS + 1 && kept.records[WETLANDS].best == 12000)
+    assert(clock_text(0xffffffff) == "596523:14.12", clock_text(0xffffffff))
     var theirs = p.clone()
     theirs.runs.runs[0].who = YOU + 1
     assert(read(encode(theirs)).is_none(), "a run that isn't the player's")
