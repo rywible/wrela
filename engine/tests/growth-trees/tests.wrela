@@ -285,9 +285,10 @@ fn every_specimen_converts_whole() {
     assert(worst_volume <= 0.05, f"a crown's volume {worst_volume} off its leaves': {volume_at}")
 }
 
-/// The grown kinds (`trees::archetypes`), as the renderer draws them. Every new limb starts
-/// inside older wood. This catches chord-based attachments that leave
-/// visible gaps where a trunk or scaffold curves.
+/// The grown kinds (`trees::archetypes`), as they're converted: every new limb starts inside
+/// older wood. This catches chord-based attachments that leave visible gaps where a trunk or
+/// scaffold curves. At full precision: the shipped half floats (`GROWN`) step 7.8 mm 8 to 16 m up,
+/// more than the 5 mm this holds a joint to (a twig 5.5 mm off, E8's, was the half floats').
 @test(tool, budget: 600)
 fn living_branches_join_the_parent_wood() {
     for kind in [
@@ -298,7 +299,7 @@ fn living_branches_join_the_parent_wood() {
         trees::kinds::BIRCH_OPEN,
         trees::kinds::ALDER_A,
     ] {
-        let p = trees::kinds::kind_plant(kind)
+        let p = trees::archetypes::grown(kind, trees::archetypes::archetype(kind).unwrap())
         for i in 1..p.limbs.len() {
             let child = p.limbs[i]
             if child.points[0].y < 0.1 {

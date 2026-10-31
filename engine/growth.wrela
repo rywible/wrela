@@ -15,7 +15,7 @@ use std::math::PI
 
 /// The growth's version: a change to any growth program that changes what it grows bumps it, so a
 /// cached growth keyed by it is grown again (§E7).
-pub const VERSION: u32 = 2
+pub const VERSION: u32 = 3
 
 /// Where an organism grew, as its growth reads it: its light (0 to 1, the open sky's 1), the
 /// ground's wetness (0 to 1), the slope (radians), its exposure to the wind (0 to 1), the shade
@@ -204,12 +204,20 @@ pub struct Node: Copy {
     /// keys its own draws; and the phyllotaxis' angle at it (its parent's and the divergence).
     pub id: u32 = 0,
     pub phyllo: f32 = 0.0,
+    /// The way its axis set out (its leader's up, a lateral's its bud's), which its shoots stay
+    /// near (`SET_POINT`).
+    pub heading: vec3 = vec3(0.0, 1.0, 0.0),
 }
 
 /// The lineage word of a shoot from node `parent_id`: going on along its axis, or its lateral.
 fn shoot_id(parent_id: u32, main: bool) -> u32 {
     hash_u32(parent_id ^ (if main { 0x9E3779B9 } else { 0x85EBCA6B }))
 }
+
+/// The salt of a tree's draws (2: the growth's version when they were keyed so). Not `VERSION`
+/// itself: a growth changed (its version bumped, so its kept shapes are grown again) needn't draw
+/// every tree anew.
+const STREAM_SALT: u32 = 2
 
 /// What a tree's year's draws are keyed by besides the seed: the year's free space, its leader's
 /// dying, its events.
@@ -291,7 +299,7 @@ pub fn grow_traced(
     // Every draw is keyed by the seed and by what draws it (a shoot by its lineage, a year's
     // space by its year), never by the genome's values or the site, nor by how many draws came
     // before: so a steered value moves the tree it grows (§E6's fit) and doesn't reseed it.
-    let stream = hash_u32(seed ^ hash_u32(VERSION))
+    let stream = hash_u32(seed ^ hash_u32(STREAM_SALT))
     var t = TreeGraph { nodes: Vec::new() }
     t.nodes.push(
         Node {
@@ -495,6 +503,7 @@ pub fn grow_traced(
             var main = terminal
             var id = from.id
             var phyllo = from.phyllo
+            let heading = if terminal { from.heading } else { from.bud }
             let lit = t.nodes[at].light
             let leader = terminal && axis[at]
             let shoots = 1
@@ -505,10 +514,19 @@ pub fn grow_traced(
                 var rng = Rng::keyed(id)
                 let grad = shade.towards(tip)
                 let up = vec3(0.0, 1.0, 0.0)
-                dir = normalize(
-                    dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
-                        0.4
-                    })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(-1.0, 1.0), rng.between(-0.5, 0.5), rng.between(-1.0, 1.0)),
+                let was = dir
+                dir = turned_at_most(
+                    heading,
+                    SET_POINT,
+                    turned_at_most(
+                        was,
+                        MAX_TURN,
+                        normalize(
+                            dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
+                                0.4
+                            })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(-1.0, 1.0), rng.between(-0.5, 0.5), rng.between(-1.0, 1.0)),
+                        ),
+                    ),
                 )
                 // The wind's exposure stunts every shoot, the leader most.
                 let wind = (1.0 - g.wind_shorten * site.wind) * (if leader { 0.9 } else { 1.0 })
@@ -529,7 +547,9 @@ pub fn grow_traced(
                         g.branching + g.branching_spread * rng.between(-1.0, 1.0),
                     )
                 } else { vec3(0.0) }
-                t.nodes.push(Node { parent, tip, dir, born: year, main, bud: side, id, phyllo })
+                t.nodes.push(
+                    Node { parent, tip, dir, born: year, main, bud: side, id, phyllo, heading },
+                )
                 parent = i32(t.nodes.len() - 1)
 
                 main = true
@@ -733,6 +753,28 @@ const IDLE_YEARS: f32 = 3.0
 /// The light (a multiple of the genome's `shed_light`) under which a branch that doesn't grow
 /// counts its idle years (**proposed**).
 const IDLE_LIGHT: f32 = 2.0
+
+/// How far a shoot turns from the way its parent pointed in a year, at most, and how far from its
+/// axis's heading (degrees, **proposed**): wood is stiff, and a branch holds its gravitropic
+/// set-point angle (Digby and Firn 1995); a lateral pulled each year toward the free space under its
+/// crown had curled back on itself (the pines' looping lower limbs, E8's lookdev).
+const MAX_TURN: f32 = 30.0
+const SET_POINT: f32 = 50.0
+
+/// `want` turned from `was` by `degrees` at most, toward it.
+fn turned_at_most(was: vec3, degrees: f32, want: vec3) -> vec3 {
+    let c = dot(was, want)
+    let most = cos(degrees * PI / 180.0)
+    if c >= most {
+        return want
+    }
+    let side = want - was * c
+    let l = length(side)
+    if l < 1.0e-6 {
+        return was
+    }
+    normalize(was * most + side / l * sqrt(1.0 - most * most))
+}
 
 /// The leader's terminal bud dying, some years, past a tree's youth (sympodial growth: an oak's
 /// leader is replaced by its laterals again and again, a pine's hardly ever): each year with chance
@@ -1876,9 +1918,15 @@ fn tube_through(t: TreeGraph, foot: vec3, run: [u32]) -> Tube<4> {
 /// pairs to `MAX_CLUMPS`, each merge's volume kept; then all scaled so their union's volume is the
 /// leaves' (each leaf a ball of its size, on a fine grid). The volume's ratio before the scale is
 /// returned with them (1 after it, within the grid's rounding).
+/// The years of a branch's growth that bear leaves along it (**proposed**).
+const LEAF_YEARS: f32 = 4.0
+
 fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
-    // Its leaves where the shade grid counts them (`Shade::of`): at each live tip.
+    // Its leaves: at each live tip (where the shade grid counts them, `Shade::of`), and along each
+    // live shoot of its last `LEAF_YEARS` (a branch's spurs and short shoots: a limb leafy only at
+    // its tip, after years of one shoot a year, was a bare noodle with a ball at its end).
     let n = t.nodes.len()
+    let latest = max_born(t)
     var continued: Vec<bool> = Vec::filled(n, false)
     for i in 1..n {
         let nd = t.nodes[i]
@@ -1889,7 +1937,7 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
     var pts: Vec<vec3> = Vec::new()
     for i in 0..n {
         let nd = t.nodes[i]
-        if nd.alive && nd.kind == SHOOT && !continued[i] {
+        if nd.alive && nd.kind == SHOOT && (!continued[i] || nd.born >= latest - LEAF_YEARS) {
             var k = i32(i)
             while k > 0 && !drawn[u32(k)] {
                 k = t.nodes[u32(k)].parent

@@ -602,6 +602,9 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
 
 /// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
 /// radius at the foot: crooked a little, its torn roots or stump at the foot.
+/// The roots of a fallen tree's root plate (**proposed**).
+const ROOTS: u32 = 12
+
 fn log(s: u32, long: f32, girth: f32) -> Plant {
     let bark = Bark {
         dark: vec3(0.11, 0.09, 0.07),
@@ -634,11 +637,32 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
         ],
         [girth * 0.35, girth, girth * 0.4, girth * 0.4],
     )
-    // The root plate's stubs at the foot.
-    for i in 0..4 {
-        let a = TAU * (f32(i) + rand(s, 10 + i)) / 4.0
-        let tip = vec3(cos(a) * girth * 2.4, girth + sin(a) * girth * 2.4, -girth * 0.6)
-        p.straight(vec3(0.0, girth, 0.2), tip, r_from: girth * 0.35, r_to: girth * 0.1)
+    // The root plate torn up with it: its roots radiating round the foot in the plate's plane
+    // (an upturned tree's roots spread sideways from its foot, so its plate stands on end), thick
+    // and short, each snapped off blunt where the ground held it (a tube's end closes to a point
+    // over its last piece: kept to a few centimetres, a cap; tapering roots read as spikes, and
+    // four straight cones as a star: E8's lookdev and its judge). Each from the log's seed.
+    let foot = vec3(0.0, girth, 0.1)
+    for i in 0..ROOTS {
+        let a = TAU * (f32(i) + 0.7 * rand(s, 10 + i)) / f32(ROOTS)
+        let out = vec3(cos(a), sin(a), 0.0)
+        // Roots below the foot run into the ground (the plate's lower half is buried): shorter.
+        let long = girth * mix(0.7, 1.7, rand(s, 40 + i)) * (if out.y < -0.3 { 0.5 } else { 1.0 })
+        let back = vec3(0.0, 0.0, -girth * mix(0.1, 0.5, rand(s, 70 + i)))
+        let curl = vec3(-out.y, out.x, 0.0) * (rand(s, 100 + i) - 0.5) * 0.5 * long
+        let droop = vec3(0.0, -0.15 * long, 0.0) * rand(s, 190 + i)
+        let end = foot + out * long + back + curl + droop
+        let towards = normalize(end - (foot + out * (0.55 * long) + back * 0.5 + curl * 0.3))
+        let r0 = girth * mix(0.22, 0.38, rand(s, 130 + i))
+        p.tube(
+            [
+                foot + out * (0.15 * girth),
+                foot + out * (0.55 * long) + back * 0.5 + curl * 0.3,
+                end,
+                end + towards * (0.15 * r0),
+            ],
+            [r0, r0 * 0.7, r0 * 0.5, r0 * 0.4],
+        )
     }
     p
 }
@@ -1107,7 +1131,8 @@ fn trunk_pieces(p: Plant) -> Vec<bool> {
         going = false
         for i in 1..p.limbs.len() {
             let l = p.limbs[i]
-            if !trunk[i] && length(l.points[0] - end.points[3]) < 1.0e-3 &&
+            if !trunk[i] &&
+                length(l.points[0] - end.points[3]) < 1.0e-3 &&
                 l.radii[0] >= 0.6 * end.radii[3] {
                 trunk[i] = true
                 end = l
@@ -1898,7 +1923,6 @@ pub fn far_placed(
     out
 }
 
-
 /// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each
 /// instance's clumps (leaves) and limbs (wood), placed (the clearing's).
 pub fn occluders(
@@ -1935,7 +1959,7 @@ pub fn occluders_into(
         let at = engine::plant::Instance { at: x, ..p.at }
         borrow plant = plants[p.kind]
         for c in plant.clumps {
-                // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
+            // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
             let r = c.radius * c.squash
             let reach = c.radius - r
             for side in [vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)] {
@@ -1965,7 +1989,6 @@ pub fn occluders_into(
         }
     }
 }
-
 
 @test
 fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
@@ -2248,7 +2271,6 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
     assert(retained > 0 && omitted > 0, "curved twig cores were neither bounded nor omitted")
 }
 
-
 /// A veteran oak or beech is drawn as its own species' ancient kind, not the great oak: a beech
 /// with a beech's bark and leaves.
 @test
@@ -2317,4 +2339,3 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
     }
     assert(hi - lo > HEADING, f"the trees' turns span {hi - lo}: they stand alike")
 }
-
