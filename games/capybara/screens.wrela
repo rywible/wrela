@@ -698,11 +698,11 @@ pub fn option_values(s: Settings, place: bool = false) -> Vec<String> {
 /// What option `item` does, said under the options.
 pub fn option_about(item: u32) -> Text {
     if item == MUSIC {
-        "The song. The sounds play either way."
+        "Turn the song on or off. Sound effects stay on."
     } else if item == CLOCK {
-        "The time, and at each checkpoint how far ahead or behind your ghost's run you are."
+        "Shows your time, and how far ahead or behind your ghost you are at each flag."
     } else if item == GHOST {
-        "A pale capybara that runs a past run beside you."
+        "Race a pale capybara that replays a run. Pick whose."
     } else { "" }
 }
 
@@ -740,12 +740,14 @@ pub fn controls(list: mut DrawList, fonts: Fonts, screen: vec2, device: Device, 
     let pad = device == Device::Pad
     let rows = [
         ("Run", Act::Run, Act::Run, ""),
-        ("Jump", Act::Jump, Act::Jump, "Again in the air to jump again"),
-        ("Slide", Act::Slide, Act::Slide, "Hold while running, or landing on a slope"),
-        ("Swim", Act::Jump, Act::Swim, "Up and down in turn: the dolphin kick"),
+        ("Jump", Act::Jump, Act::Jump, "Press again in the air to double jump"),
+        ("Slide", Act::Slide, Act::Slide, "Hold while you run, or as you land on a slope"),
+        ("Swim", Act::Jump, Act::Swim, "Press up and down in turn to dolphin kick"),
         ("Restart", Act::Restart, Act::Restart, ""),
         ("Pause", Act::Pause, Act::Pause, ""),
-        ("Music", Act::Music, Act::Music, if pad { "In the options" } else { "Off and on" }),
+        ("Music", Act::Music, Act::Music, if pad { "Change it in Options" } else {
+            "Turn it off and on"
+        }),
     ]
     for (name, first, second, about) in rows {
         let line = fonts.font(Face::Sans).line_height(label)
@@ -769,7 +771,7 @@ pub fn controls(list: mut DrawList, fonts: Fonts, screen: vec2, device: Device, 
         y += u * 7.6
     }
     let other = if pad { "On the keyboard? Press any key." } else {
-        "Playing with a controller? Press any of its buttons."
+        "Using a controller? Press any button."
     }
     let _ = say(mut list, fonts, Face::Sans, other, note, vec2(left, r.bottom() - u * 7.0), SOFT)
     list.rect(back, if hover { LIT } else { YUZU }, radius: u * 1.4)
@@ -968,7 +970,7 @@ pub fn goal_card(
         r.y + u * 14.0,
         faded(INKED, alpha),
     )
-    let best = if before == 0 || f.ticks < before { String::from("A new best!") } else {
+    let best = if before == 0 || f.ticks < before { String::from("New best") } else {
         let b = seconds(before)
         f"Best {b}"
     }
@@ -1013,8 +1015,8 @@ pub fn goal_card(
     if game > 0 {
         let t = seconds(game)
         let b = seconds(best_game)
-        let line = if game <= best_game { f"The whole zoo in {t}: your best!" } else {
-            f"The whole zoo in {t} (best {b})"
+        let line = if game <= best_game { f"The whole zoo in {t}. That's your best." } else {
+            f"The whole zoo in {t}. Your best is {b}."
         }
         centred(
             mut list,

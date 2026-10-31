@@ -969,17 +969,19 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
 /// Where the most time went against the ghost (`most_lost`: the stretch and the ticks), as the
 /// goal's card says it, with `flags` checkpoints compared.
 fn lost_words(lost: Option<(u32, u32)>, flags: u32) -> String {
-    let Some((stretch, ticks)) = lost else { return String::from("No time lost to the ghost") }
+    let Some((stretch, ticks)) = lost else {
+        return String::from("You never fell behind the ghost")
+    }
     let t = seconds(ticks)
     if flags == 0 {
-        f"{t} s behind the ghost"
+        f"You finished {t} s behind the ghost"
     } else if stretch == 0 {
-        f"Most time lost before the first flag: {t} s"
+        f"You lost the most time before the first flag ({t} s)"
     } else if stretch == flags {
-        f"Most time lost after the last flag: {t} s"
+        f"You lost the most time after the last flag ({t} s)"
     } else {
         let flag = online::ordinal(stretch)
-        f"Most time lost after the {flag} flag: {t} s"
+        f"You lost the most time after the {flag} flag ({t} s)"
     }
 }
 
@@ -2148,7 +2150,9 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
-                if s.board == PLAYERS { "Reach the goal to add a run" } else { "None" },
+                if s.board == PLAYERS { "No runs yet. Reach the goal." } else {
+                    "No tool-assisted runs yet"
+                },
                 size * 0.9,
                 vec2(head.x + size * 0.4, head.y + size * 0.2),
                 SOFT,

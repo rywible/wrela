@@ -170,7 +170,7 @@ pub fn clock_text(ticks: u32) -> String {
 pub fn describe(p: Progress) -> String {
     let done = p.levels_done()
     if done == 0 {
-        return String::from("A new day at the zoo")
+        return String::from("No levels finished yet")
     }
     var found = 0
     var snacks = 0
@@ -273,7 +273,7 @@ fn a_change_to_play_drops_the_runs_and_keeps_what_was_finished() {
 @test
 fn the_save_list_says_how_far_the_player_got() {
     var p = fresh()
-    assert(describe(p) == "A new day at the zoo")
+    assert(describe(p) == "No levels finished yet")
     let _ = p.finished(HOME, ticks: 9000, snacks: 0b11)
     let _ = p.finished(WETLANDS, ticks: 9000, snacks: 0b1)
     var snacks = 0
