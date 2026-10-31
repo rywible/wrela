@@ -1774,6 +1774,79 @@ fn a_slice_holds_the_places_around_a_name() {
     }
 }
 
+/// Puts `n` places on the toy's any% board of course 0 straight into the store, the k-th with
+/// `100 + k` ticks, account `1000 + k` and the name that seed `k` draws, each with its name and its
+/// best.
+fn crowd(h: mut Host, n: u32) {
+    for k in 0..n {
+        let id = u64(1000 + k)
+        let name = names::draw(u64(k))
+        let ranked = server::ranked_key(
+            "toy",
+            board: 7,
+            course: 0,
+            category: ANY,
+            ticks: 100 + k,
+            account: id,
+        )
+        let replay = Vec::filled(32, u8(k & 255))
+        put(
+            mut h,
+            ranked.clone(),
+            save(server::Ranked { name: names::text(name), run: id, replay }),
+        )
+        put(
+            mut h,
+            server::best_key(id, "toy", board: 7, course: 0, category: ANY),
+            save(server::Best { run: id, ticks: 100 + k, ranked, replay: Vec::new() }),
+        )
+        put(mut h, account::name_key(name), save(id))
+    }
+}
+
+fn put(h: mut Host, key: Vec<u8>, value: Vec<u8>) {
+    let (i, found) = find(h.store, key)
+    if found {
+        h.store[i].value = value.clone()
+    } else {
+        h.store.insert(i, Entry { key: key.clone(), value: value.clone() })
+    }
+}
+
+@test
+fn a_slice_past_the_places_counted_still_holds_the_places_around_it() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    crowd(mut h, server::MOST_PLACE + 8)
+    let around = |k: u32| -> Request {
+        Request::Around {
+            game: String::from("toy"),
+            course: 0,
+            category: ANY,
+            name: names::text(names::draw(u64(k))),
+        }
+    }
+    // Within the places counted, the last of them, and the first past them: numbered while counted.
+    for (k, at_is) in [
+        (997, 998),
+        (server::MOST_PLACE - 1, server::MOST_PLACE),
+        (server::MOST_PLACE, 0),
+        (server::MOST_PLACE + 7, 0),
+    ] {
+        let (r, _) = h.read(mut e, 20, around(k))
+        let Reply::Around { places, at } = r else { panic("a slice") }
+        let below = min(AROUND, server::MOST_PLACE + 7 - k)
+        assert(at == at_is && places.len() == AROUND + 1 + below, f"{k}: at {at}, {places.len()}")
+        for i in 0..places.len() {
+            let ticks = 100 + k - AROUND + i
+            let number = if at == 0 { 0 } else { at - AROUND + i }
+            assert(places[i].ticks == ticks && places[i].place == number, f"{k}: {i}")
+        }
+        assert(places[AROUND].name == names::text(names::draw(u64(k))), "its own in the middle")
+    }
+}
+
 /// The seed that draws the name of parts `title`, `front`, `back` and `epithet`.
 fn seed_of(title: u32, front: u32, back: u32, epithet: u32) -> u64 {
     let (t, f, b) = (u64(names::TITLES.len()), u64(names::FRONTS.len()), u64(names::BACKS.len()))
@@ -1901,4 +1974,22 @@ fn a_search_reads_a_range_of_names_a_page_at_a_time() {
         found.len() == 1 && found[0].name.as_str().ends_with(names::EPITHETS[69]),
         f"{found.len()}",
     )
+    // A title alone is one range of the index, its every first half, and its candidates' runs are
+    // read at once: a few calls, not one a first half and one a candidate.
+    let before = h.calls
+    let (r, _) = h.read(
+        mut e,
+        99,
+        Request::Names {
+            game: String::from("toy"),
+            title: String::from("Sir"),
+            noun: String::new(),
+            epithet: String::new(),
+        },
+    )
+    let Reply::Names { found } = r else { panic("names") }
+    assert(found.len() == MOST_FOUND && h.calls - before <= 6, f"{h.calls - before} calls")
+    for k in 0..found.len() {
+        assert(found[k].name.as_str().ends_with(names::EPITHETS[k]), "in the index's order")
+    }
 }

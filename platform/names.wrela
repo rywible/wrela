@@ -430,12 +430,33 @@ pub struct Matching: Clone {
     pub epithets: Vec<u32>,
 }
 
-/// Whether `s` starts with `prefix`, in any case.
-fn starts(s: str, prefix: str) -> bool {
-    s.len() >= prefix.len() && lower(s.slice(0, prefix.len())) == lower(prefix)
+/// Whether byte `b` may be in a name: a letter, a space or a hyphen.
+pub fn name_char(b: u8) -> bool {
+    (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 32 || b == 45
 }
 
-fn starting(list: [Text], prefix: str) -> Vec<u32> {
+/// `b` in lower case, ASCII only.
+fn lower_byte(b: u8) -> u8 {
+    if b >= 65 && b <= 90 { b + 32 } else { b }
+}
+
+/// Whether `s` starts with `prefix`, in any case (ASCII). Nothing is allocated, so a search may
+/// test every part of every list with it.
+pub fn starts(s: str, prefix: str) -> bool {
+    if s.len() < prefix.len() {
+        return false
+    }
+    for i in 0..prefix.len() {
+        if lower_byte(s.byte(i)) != lower_byte(prefix.byte(i)) {
+            return false
+        }
+    }
+    true
+}
+
+/// The indices of `list`'s parts that start with `prefix`, in any case, in the list's order (all
+/// of them for an empty one).
+pub fn starting(list: [Text], prefix: str) -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
     for i in 0..list.len() {
         if starts(list[i], prefix) {
@@ -443,6 +464,19 @@ fn starting(list: [Text], prefix: str) -> Vec<u32> {
         }
     }
     out
+}
+
+/// The second halves (`BACKS`' indices) that may follow first half `front` in a noun that starts
+/// with `noun`, in any case: every one when the front starts with `noun` ("wob" and Wobble), those
+/// that start with the rest when `noun` runs past it ("wobblesn" and Wobble: snout, snoot), and
+/// none otherwise.
+pub fn backs_after(front: u32, noun: str) -> Vec<u32> {
+    let f = FRONTS[front]
+    if starts(f, noun) {
+        starting(BACKS, "")
+    } else if noun.len() > f.len() && starts(noun, f) {
+        starting(BACKS, noun.slice(f.len(), noun.len()))
+    } else { Vec::new() }
 }
 
 /// The parts of the names whose title, noun and epithet start with `title`, `noun` and `epithet`,
@@ -455,12 +489,7 @@ pub fn matching(title: str, noun: str, epithet: str) -> Matching {
         epithets: starting(EPITHETS, epithet),
     }
     for f in 0..FRONTS.len() {
-        let front = FRONTS[f]
-        let backs = if starts(front, noun) {
-            starting(BACKS, "")
-        } else if noun.len() > front.len() && starts(noun, front) {
-            starting(BACKS, noun.slice(front.len(), noun.len()))
-        } else { Vec::new() }
+        let backs = backs_after(f, noun)
         if !backs.is_empty() {
             m.fronts.push(f)
             m.backs.push(take backs)
@@ -543,8 +572,7 @@ const NEVER: [Text; 40] = [
 fn lower(s: str) -> String {
     var out = String::new()
     for i in 0..s.len() {
-        let b = s.byte(i)
-        out.push_byte(if b >= 65 && b <= 90 { b + 32 } else { b })
+        out.push_byte(lower_byte(s.byte(i)))
     }
     out
 }
@@ -556,9 +584,7 @@ fn problem(s: str) -> Option<String> {
         return Some(String::from("an empty part"))
     }
     for i in 0..s.len() {
-        let b = s.byte(i)
-        let letter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
-        if !letter && b != 32 && b != 45 {
+        if !name_char(s.byte(i)) {
             return Some(f"`{s}` holds a character a name doesn't")
         }
     }
@@ -722,4 +748,7 @@ fn a_name_reads_back_from_its_text_and_its_key_and_a_search_matches_its_parts() 
     assert(matches(matching("si", "Wobblesn", "unh"), n))
     assert(!matches(matching("Dame", "", ""), n) && !matches(matching("", "wobblepaw", ""), n))
     assert(matching("", "", "zzz").epithets.is_empty())
+    assert(starts("Wobble", "wOB") && !starts("Wob", "wobble") && starts("Sir", ""))
+    assert(backs_after(0, "WOBBLESN").len() == 2 && backs_after(1, "wob").is_empty())
+    assert(name_char(45) && name_char(122) && !name_char(48) && !name_char(95))
 }

@@ -57,7 +57,7 @@ use account::{
     passkey_key, posted_key, posting_key, public_id, session_key, token_key, u32_at, u64_at,
     under_account, with_bytes, CEREMONY_BYTES,
 }
-use names::{Name, draw}
+use names::{Matching, Name, draw}
 use std::collections::replace
 use std::crypto::{Signature, verified}
 use std::fmt::json_text
@@ -148,16 +148,17 @@ pub const RUN_AGE: u32 = 300
 /// names never changes; a deleted account's replay is gone from the server, though a cache may
 /// still hold it for this long, as the privacy policy says.
 pub const REPLAY_AGE: u32 = 31536000
-/// A search's bounds: the ranges it may read of the index of names on the boards (`p/`, a title and
-/// a noun's first half each),
-/// the entries a read of one takes, the entries it reads in all, and the names it reads the runs
-/// of, and how many searches may be under way at once.
+/// A search's bounds: the titles and nouns' first halves it may cover together (each pair a range of
+/// the index of names on the boards, `p/`, read with its title's next ones as one), the entries a
+/// read of one takes, the entries it reads in all, and the names it reads the runs of, and how many
+/// searches may be under way at once.
 pub const MOST_RANGES: u32 = 64
 pub const RANGE_PAGE: u32 = 64
 pub const MOST_SCANNED: u32 = 1024
 pub const MOST_CANDIDATES: u32 = 40
 pub const MOST_SEARCHES: u32 = 4
-/// An account's runs read for an export at a time.
+/// An account's records, and its runs, read for an export at a time.
+pub const EXPORT_RECORDS: u32 = 512
 pub const EXPORT_RUNS: u32 = 64
 /// Expired ceremonies cleared as a new one begins.
 pub const PRUNED: u32 = 16
@@ -544,9 +545,18 @@ struct Job: Clone {
     queued: Option<Queued>,
     categories: Vec<u32>,
     category: u32,
-    /// What a new account agreed to, from its ceremony; and what a search found.
+    /// What a new account agreed to, from its ceremony.
     agreed: Agreed,
-    found: Vec<Found>,
+    /// The parts a search's names may have, worked out once for its every page.
+    matching: Option<Matching>,
+}
+
+/// A search whose candidates' runs are being read, all at once: what it found, each with its
+/// candidate's place in the index's order, and how many reads are still to come.
+struct Search: Clone {
+    conn: u32,
+    found: Vec<(u32, Found)>,
+    left: u32,
 }
 
 /// A replay's hash claimed by an upload lately (`Uploaded`), by `account` as run `run`, in call
@@ -602,6 +612,8 @@ pub struct Engine<G: Game> {
     /// call): a read made before their call committed wouldn't see them.
     claims: Vec<Claiming>,
     finished: Vec<(u64, u64)>,
+    /// The searches reading their candidates.
+    searching: Vec<Search>,
     /// Whether deletions a dropped instance left may wait (`x/`), and the call that last finished one.
     deletions_waiting: bool,
     deletion_written: u64,
@@ -635,6 +647,7 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str, versions: Versions
         admitted: Vec::new(),
         claims: Vec::new(),
         finished: Vec::new(),
+        searching: Vec::new(),
         deletions_waiting: true,
         deletion_written: 0,
         verifying: None,
@@ -667,7 +680,7 @@ fn blank_job(conn: u32, request: take Request) -> Job {
         categories: Vec::new(),
         category: 0,
         agreed: NOT_AGREED,
-        found: Vec::new(),
+        matching: None,
     }
 }
 
@@ -827,6 +840,9 @@ impl<G: Game> Engine<G> {
                 if is_deletion(job.step) {
                     self.deletions_waiting = true
                     self.deletion_written = self.call
+                }
+                if job.step == Step::NamesAccount {
+                    self.searching.retain(|s| s.conn != job.conn)
                 }
                 self.refuse(
                     job.conn,
@@ -1133,11 +1149,11 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// The searches of names under way.
+    /// The searches of names under way: reading the index, or their candidates.
     fn searches(self) -> u32 {
-        var n = 0
+        var n = self.searching.len()
         for j in self.jobs {
-            if j.step == Step::NamesRange || j.step == Step::NamesAccount {
+            if j.step == Step::NamesRange {
                 n += 1
             }
         }
@@ -1491,24 +1507,29 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "Search is busy. Try again in a moment.")
                     return
                 }
-                // Each title's and first half's range of the index of names on the boards, in its
-                // order.
+                // The index of names on the boards, in its order: a range for each title's run of
+                // first halves one after another (all of them, for no noun: the whole title's), from
+                // its first's to past its last's. `keys` holds each range's start and its end.
                 for t in m.titles {
-                    for f in m.fronts {
-                        var k = text_key("p/")
-                        for part in [t, f] {
-                            k.push(u8(part >> 8))
-                            k.push(u8(part & 255))
+                    var k = 0
+                    while k < m.fronts.len() {
+                        var last = k
+                        while last + 1 < m.fronts.len() &&
+                            m.fronts[last + 1] == m.fronts[last] + 1 {
+                            last += 1
                         }
-                        job.keys.push(take k)
+                        job.keys.push(name_index(t, m.fronts[k]))
+                        job.keys.push(name_index(t, m.fronts[last] + 1))
+                        k = last + 1
                     }
                 }
                 if job.keys.is_empty() {
                     self.reply(conn, Reply::Names { found: Vec::new() })
                     return
                 }
-                let first = job.keys[0].clone()
-                self.scan(take first, RANGE_PAGE, Step::NamesRange, take job)
+                job.matching = Some(take m)
+                let (from, to) = (job.keys[0].clone(), job.keys[1].clone())
+                self.scan_range(take from, take to, RANGE_PAGE, Step::NamesRange, take job)
             },
         }
     }
@@ -2180,18 +2201,20 @@ impl<G: Game> Engine<G> {
                 }
                 if after.is_empty() {
                     j.text = export_head(a)
-                    self.scan(under_account(j.id), 512, Step::ExportScan, take j)
+                    self.scan(under_account(j.id), EXPORT_RECORDS, Step::ExportScan, take j)
                 } else if after[0] == 0 {
                     self.scan_after(
                         part(after, 1, after.len() - 1),
                         under_account(j.id),
+                        EXPORT_RECORDS,
                         Step::ExportScan,
                         take j,
                     )
                 } else {
                     j.n = 1
                     let runs = indexed(j.id, OF_RUN, [])
-                    self.scan_after(part(after, 1, after.len() - 1), runs, Step::ExportRuns, take j)
+                    let from = part(after, 1, after.len() - 1)
+                    self.scan_after(take from, runs, EXPORT_RUNS, Step::ExportRuns, take j)
                 }
             },
             Step::ExportScan => {
@@ -2209,9 +2232,9 @@ impl<G: Game> Engine<G> {
                         return
                     }
                 }
-                if es.len() == 512 {
+                if es.len() == EXPORT_RECORDS {
                     borrow last = es[es.len() - 1].key
-                    self.scan_after(last.clone(), prefix, Step::ExportScan, take j)
+                    self.scan_after(last.clone(), prefix, EXPORT_RECORDS, Step::ExportScan, take j)
                     return
                 }
                 j.text.push_str("],\"replays\":[")
@@ -2618,6 +2641,8 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 j.id = id
+                // The board's ranking, kept for each read of it.
+                j.message = board_prefix(game, self.game.board(), course, category)
                 self.get(
                     best_key(id, game, self.game.board(), course, category),
                     Step::AroundBest,
@@ -2625,21 +2650,35 @@ impl<G: Game> Engine<G> {
                 )
             },
             Step::AroundBest => {
-                let Some(b) = value(answer) else {
+                let b = match value(answer) {
+                    Some(v) => best_of(v),
+                    None => None,
+                }
+                let Some(b) = b else {
                     self.refuse(conn, "That name has no run on that board.")
                     return
                 }
-                let Some(b) = best_of(b) else {
-                    self.refuse(conn, "That name has no run on that board.")
-                    return
-                }
-                let Request::Around { game, course, category, .. } = j.request.clone() else {
-                    return
-                }
-                // The places just above, then this one and those below, then how many are ahead.
+                // Every place ahead of it, as many as are counted: how many, and the last of them
+                // are the places just above.
                 j.hash = b.ranked.clone()
-                let from = board_prefix(game, self.game.board(), course, category)
-                self.scan_down(take from, b.ranked.clone(), AROUND, Step::AroundAbove, take j)
+                let from = j.message.clone()
+                self.scan_range(take from, b.ranked.clone(), MOST_PLACE, Step::AroundCount, take j)
+            },
+            Step::AroundCount => {
+                let Some(es) = entries(answer) else { return }
+                if es.len() == MOST_PLACE {
+                    // Past the places counted: those just above are read from it, unnumbered.
+                    j.tries = 0
+                    let from = j.message.clone()
+                    self.scan_down(take from, j.hash.clone(), AROUND, Step::AroundAbove, take j)
+                    return
+                }
+                j.tries = es.len() + 1
+                for k in es.len() - min(AROUND, es.len())..es.len() {
+                    j.keys.push(es[k].key.clone())
+                    j.views.push(es[k].value.clone())
+                }
+                self.around_below(take j)
             },
             Step::AroundAbove => {
                 let Some(es) = entries(answer) else { return }
@@ -2650,40 +2689,24 @@ impl<G: Game> Engine<G> {
                     j.keys.push(es[k].key.clone())
                     j.views.push(es[k].value.clone())
                 }
-                j.n = es.len()
-                let Request::Around { game, course, category, .. } = j.request.clone() else {
-                    return
-                }
-                let to = past(board_prefix(game, self.game.board(), course, category))
-                self.scan_range(
-                    j.hash.clone(),
-                    (take to).unwrap_or(Vec::new()),
-                    AROUND + 1,
-                    Step::AroundBelow,
-                    take j,
-                )
+                self.around_below(take j)
             },
             Step::AroundBelow => {
                 let Some(es) = entries(answer) else { return }
-                for e in es {
-                    j.keys.push(e.key.clone())
-                    j.views.push(e.value.clone())
-                }
-                let Request::Around { game, course, category, .. } = j.request.clone() else {
-                    return
-                }
-                let from = board_prefix(game, self.game.board(), course, category)
-                self.scan_range(take from, j.hash.clone(), MOST_PLACE, Step::AroundCount, take j)
-            },
-            Step::AroundCount => {
-                let Some(es) = entries(answer) else { return }
                 let Request::Around { course, .. } = j.request.clone() else { return }
-                // Its place, if within the places counted; the slice's are numbered from it.
-                let at = if es.len() < MOST_PLACE { es.len() + 1 } else { 0 }
+                // `tries` is its place, if within the places counted (0 if not), and `n` the places
+                // above it in the slice: the slice's are numbered from it.
+                let at = j.tries
                 var places: Vec<Place> = Vec::new()
-                for i in 0..j.keys.len() {
+                for i in 0..j.keys.len() + es.len() {
                     let number = if at == 0 { 0 } else { at - j.n + i }
-                    if let Some(p) = place_of(j.keys[i], j.views[i], number, course) {
+                    let p = if i < j.keys.len() {
+                        place_of(j.keys[i], j.views[i], number, course)
+                    } else {
+                        borrow e = es[i - j.keys.len()]
+                        place_of(e.key, e.value, number, course)
+                    }
+                    if let Some(p) = take p {
                         places.push(take p)
                     }
                 }
@@ -2721,6 +2744,14 @@ impl<G: Game> Engine<G> {
                 self.tell(q.id, Reply::Verified { run: q.id, ticks: j.tries, place })
             },
         }
+    }
+
+    /// The slice's places above are read: then its own and those below it.
+    fn around_below(mut self, job: take Job) {
+        var j = take job
+        j.n = j.keys.len()
+        let to = past(j.message).unwrap_or(Vec::new())
+        self.scan_range(j.hash.clone(), take to, AROUND + 1, Step::AroundBelow, take j)
     }
 
     /// An upload of a replay claimed before (`u`, as the store had it when `job` read it, or a
@@ -2797,8 +2828,7 @@ impl<G: Game> Engine<G> {
     fn names_range(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
         let Some(es) = entries(answer) else { return }
-        let Request::Names { title, noun, epithet, .. } = j.request.clone() else { return }
-        let m = names::matching(title, noun, epithet)
+        let Some(m) = j.matching else { return }
         let skip = text_key("p/").len()
         for e in es {
             j.tries += 1
@@ -2817,46 +2847,50 @@ impl<G: Game> Engine<G> {
         }
         let room = j.views.len() < MOST_CANDIDATES && j.tries < MOST_SCANNED
         if room && es.len() == RANGE_PAGE {
-            borrow last = es[es.len() - 1].key
-            self.scan_after(last.clone(), j.keys[0].clone(), Step::NamesRange, take j)
+            var from = es[es.len() - 1].key.clone()
+            from.push(0)
+            let to = j.keys[1].clone()
+            self.scan_range(take from, take to, RANGE_PAGE, Step::NamesRange, take j)
             return
         }
         let _ = j.keys.remove(0)
+        let _ = j.keys.remove(0)
         if room && !j.keys.is_empty() {
-            let next = j.keys[0].clone()
-            self.scan(take next, RANGE_PAGE, Step::NamesRange, take j)
+            let (from, to) = (j.keys[0].clone(), j.keys[1].clone())
+            self.scan_range(take from, take to, RANGE_PAGE, Step::NamesRange, take j)
             return
         }
-        j.n = 0
-        self.names_next(take j)
+        self.names_read(take j)
     }
 
-    /// Reads the next candidate's account and its bests, or answers with what was found.
-    fn names_next(mut self, job: take Job) {
+    /// Reads every candidate's account and its bests at once, a scan each, or answers with none.
+    fn names_read(mut self, job: take Job) {
         let j = take job
-        if j.n >= j.views.len() || j.found.len() >= MOST_FOUND {
-            self.reply(j.conn, Reply::Names { found: j.found.clone() })
+        if j.views.is_empty() {
+            self.reply(j.conn, Reply::Names { found: Vec::new() })
             return
         }
-        let id = u64_at(j.views[j.n], 8)
-        let to = past(bests_prefix(id, self.game.id(), self.game.board())).unwrap_or(Vec::new())
-        self.scan_range(
-            account_key(id),
-            take to,
-            4 * self.game.courses() + 8,
-            Step::NamesAccount,
-            take j,
-        )
+        self.searching.push(Search { conn: j.conn, found: Vec::new(), left: j.views.len() })
+        let to_end = self.game.courses() * 4 + 8
+        for k in 0..j.views.len() {
+            let id = u64_at(j.views[k], 8)
+            var c = blank_job(j.conn, j.request.clone())
+            c.since = j.since
+            c.n = k
+            c.views.push(j.views[k].clone())
+            let to = past(bests_prefix(id, self.game.id(), self.game.board())).unwrap_or(Vec::new())
+            self.scan_range(account_key(id), take to, to_end, Step::NamesAccount, take c)
+        }
     }
 
     /// A candidate's account and its bests: found if it isn't being deleted and has a run on the
-    /// boards, which is all a board shows of it.
+    /// boards, which is all a board shows of it. The search answers once its every candidate is
+    /// read, with the first `MOST_FOUND` found in the index's order.
     fn names_account(mut self, job: take Job, answer: Vec<u8>) {
-        var j = take job
+        let j = take job
         let Some(es) = entries(answer) else { return }
-        let id = u64_at(j.views[j.n], 8)
-        let name = names::from_key(part(j.views[j.n], at: 0, n: 8))
-        j.n += 1
+        let id = u64_at(j.views[0], 8)
+        let name = names::from_key(part(j.views[0], at: 0, n: 8))
         var live = false
         var standings: Vec<Standing> = Vec::new()
         let prefix = bests_prefix(id, self.game.id(), self.game.board())
@@ -2878,12 +2912,32 @@ impl<G: Game> Engine<G> {
                 )
             }
         }
-        if let Some(n) = name {
-            if live && !standings.is_empty() {
-                j.found.push(Found { name: names::text(n), standings })
+        var at: Option<u32> = None
+        for i in 0..self.searching.len() {
+            if self.searching[i].conn == j.conn {
+                at = Some(i)
             }
         }
-        self.names_next(take j)
+        // Its search refused already (another candidate's read failed).
+        let Some(i) = at else { return }
+        if let Some(n) = name {
+            if live && !standings.is_empty() {
+                self.searching[i].found.push((j.n, Found { name: names::text(n), standings }))
+            }
+        }
+        self.searching[i].left -= 1
+        if self.searching[i].left > 0 {
+            return
+        }
+        var search = self.searching.remove(i)
+        search.found.sort_by(|a, b| a.0 < b.0)
+        var found: Vec<Found> = Vec::new()
+        for (_, f) in search.found {
+            if found.len() < MOST_FOUND {
+                found.push(f.clone())
+            }
+        }
+        self.reply(j.conn, Reply::Names { found })
     }
 
     /// A name drawn again: the old one let go, the new one the account's.
@@ -2918,21 +2972,25 @@ impl<G: Game> Engine<G> {
         }
         if j.tries == 1 {
             let runs = indexed(j.id, OF_RUN, [])
-            self.scan_after(j.hash.clone(), runs, Step::ExportRuns, take j)
+            self.scan_after(j.hash.clone(), runs, EXPORT_RUNS, Step::ExportRuns, take j)
             return
         }
         j.text.push_str("]}")
         self.reply(j.conn, Reply::Export { text: j.text.clone(), next: Vec::new(), last: true })
     }
 
-    /// Scans on from just after `key`, within `prefix`, a page at a time.
-    fn scan_after(mut self, key: take Vec<u8>, prefix: Vec<u8>, step: Step, job: take Job) {
+    /// Scans on from just after `key`, within `prefix`, `limit` entries at most.
+    fn scan_after(
+        mut self,
+        key: take Vec<u8>,
+        prefix: Vec<u8>,
+        limit: u32,
+        step: Step,
+        job: take Job,
+    ) {
         var from = take key
         from.push(0)
         let to = past(prefix).unwrap_or(Vec::new())
-        let limit = if step == Step::ExportRuns { EXPORT_RUNS } else if step == Step::NamesRange {
-            RANGE_PAGE
-        } else { 512 }
         self.scan_range(take from, take to, limit, step, take job)
     }
 
@@ -3246,6 +3304,17 @@ fn place_of(key: [u8], value: [u8], number: u32, course: u32) -> Option<Place> {
     )
 }
 
+/// `p/<title><front>`: where the names of title `title` and first half `front` start in the index
+/// of names on the boards (`account::posted_key`'s), each part two bytes, big-endian.
+fn name_index(title: u32, front: u32) -> Vec<u8> {
+    var k = text_key("p/")
+    for p in [title, front] {
+        k.push(u8(p >> 8))
+        k.push(u8(p & 255))
+    }
+    k
+}
+
 /// Whether `part` can be the start of a part of a name: at most `MOST_PART` bytes of letters,
 /// spaces and hyphens.
 fn searchable(part: str) -> bool {
@@ -3253,9 +3322,7 @@ fn searchable(part: str) -> bool {
         return false
     }
     for i in 0..part.len() {
-        let b = part.byte(i)
-        let letter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
-        if !letter && b != 32 && b != 45 {
+        if !names::name_char(part.byte(i)) {
             return false
         }
     }
