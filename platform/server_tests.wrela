@@ -183,30 +183,8 @@ impl Host {
         }
         e.end()
         let commands = e.commands()
-        // The call's writes commit first; then its requests are answered from what is committed.
-        for c in commands {
-            match c {
-                Command::Put { key, value } => {
-                    let (i, found) = find(self.store, key)
-                    if found {
-                        self.store[i].value = value.clone()
-                    } else {
-                        self.store.insert(i, Entry { key: key.clone(), value: value.clone() })
-                    }
-                },
-                Command::Delete { key } => {
-                    let (i, found) = find(self.store, key)
-                    if found {
-                        let _ = self.store.remove(i)
-                    }
-                },
-                Command::Send { conn, bytes } => {
-                    let d: Result<Down, LoadError> = load(bytes.clone())
-                    self.sent.push((conn, take d.unwrap()))
-                },
-                _ => {},
-            }
-        }
+        // A call's requests are answered at its end, from the store as it was before the call's
+        // writes, which commit after.
         for c in commands {
             match c {
                 Command::Get { ticket, key } => self.waiting.push(
@@ -240,6 +218,30 @@ impl Host {
                         }
                     }
                     self.waiting.push((ticket, Some(Vec::from([if ok { u8(1) } else { u8(0) }]))))
+                },
+                _ => {},
+            }
+        }
+        // Then its writes commit, after its requests were answered (wrela_host::server's `call`).
+        for c in commands {
+            match c {
+                Command::Put { key, value } => {
+                    let (i, found) = find(self.store, key)
+                    if found {
+                        self.store[i].value = value.clone()
+                    } else {
+                        self.store.insert(i, Entry { key: key.clone(), value: value.clone() })
+                    }
+                },
+                Command::Delete { key } => {
+                    let (i, found) = find(self.store, key)
+                    if found {
+                        let _ = self.store.remove(i)
+                    }
+                },
+                Command::Send { conn, bytes } => {
+                    let d: Result<Down, LoadError> = load(bytes.clone())
+                    self.sent.push((conn, take d.unwrap()))
                 },
                 _ => {},
             }
@@ -959,6 +961,11 @@ fn an_account_deleted_leaves_nothing_and_its_export_holds_what_was_kept() {
     assert(
         text.as_str().find("\"replay\":").is_some() && text.as_str().find("\"passkey\":").is_some(),
     )
+    // More records than one page of the deletion's scans (256): a token each.
+    for _ in 0..270 {
+        let _ = h.say(mut e, 1, Request::Token { game: String::from("toy") })
+    }
+    assert(h.keys("t/") == 271, "a token each")
     // Deleting needs a fresh sign-in.
     h.time += 600.0
     assert(refused(h.say(mut e, 1, Request::Delete { csrf: s.csrf.clone() })), "not fresh")

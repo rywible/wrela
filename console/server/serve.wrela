@@ -1,0 +1,79 @@
+// The console's server on its host (language.md §19.4): `platform::server`'s engine, its
+// commands carried out through std::store, std::crypto and std::net, and the host's answers given
+// back to it on the next call. The console's `serve_init` and `serve` (console/main.wrela) are
+// these.
+//
+// Each call reads every event it was given (a `serve` that leaves one unread fails). A message
+// that trapped the room comes back poisoned (`POISONED` on its connection's number): it is dropped
+// unread, so one bad message can't take the room down twice.
+
+use capybara::boards::Capybara
+use platform::server::{Command, Engine, engine}
+use std::crypto
+use std::input::{Event, events, payload}
+use std::io::Pending
+use std::net::{POISONED, close, send}
+use std::store
+
+/// The server: the engine, and its requests waiting on the host.
+pub struct Server {
+    engine: Engine<Capybara>,
+    asked: Vec<(u32, Pending<u8>)>,
+}
+
+/// The server for the console at `origin`, its passkeys for relying party `rp_id`.
+@server
+pub fn init(rp_id: str, origin: str) -> Server {
+    Server { engine: engine(Capybara {}, rp_id, origin), asked: Vec::new() }
+}
+
+/// One call: the answers in, then the events, then what the engine asks carried out.
+@server
+pub fn serve(s: mut Server, time: f32) {
+    s.engine.begin(time)
+    var i = 0
+    while i < s.asked.len() {
+        match s.asked[i].1.poll() {
+            Some(result) => {
+                let (ticket, _) = s.asked.remove(i)
+                s.engine.answer(ticket, take result.ok())
+            },
+            None => i += 1,
+        }
+    }
+    for e in events() {
+        match e {
+            Event::Message { conn, .. } => {
+                let Some(bytes) = payload(e) else { continue }
+                if conn < POISONED {
+                    s.engine.message(conn, take bytes)
+                }
+            },
+            Event::Connection { conn, open, .. } => {
+                if open {
+                    s.engine.opened(conn)
+                } else {
+                    s.engine.closed(conn)
+                }
+            },
+            _ => {},
+        }
+    }
+    s.engine.end()
+    for c in s.engine.commands() {
+        match c {
+            Command::Get { ticket, key } => s.asked.push((ticket, store::get(key))),
+            Command::Scan { ticket, from, to, limit, down } => {
+                s.asked.push((ticket, store::scan(from, to, limit, down)))
+            },
+            Command::Put { key, value } => store::put(key, value),
+            Command::Delete { key } => store::delete(key),
+            Command::Random { ticket, n } => s.asked.push((ticket, crypto::random(n))),
+            Command::Verify { ticket, algorithm, key, message, signature } => {
+                s.asked.push((ticket, crypto::verify(algorithm, key, message, signature)))
+            },
+            Command::Send { conn, bytes } => send(conn, bytes),
+            Command::Close { conn } => close(conn),
+        }
+    }
+}

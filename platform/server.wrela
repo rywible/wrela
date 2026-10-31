@@ -339,6 +339,7 @@ enum Step: Copy + Eq {
     ExportRun,
     DeleteAccount,
     DeleteScan,
+    DeleteNext,
     UploadToken,
     UploadAccount,
     UploadRate,
@@ -407,6 +408,13 @@ pub struct Engine<G: Game> {
     /// The queue may hold runs; the ticket of a scan for the oldest.
     queue_waiting: bool,
     queue_scan: Option<u32>,
+    /// The calls counted, and the last that wrote the queue: a read made in a call is answered
+    /// from the store as it was before the call's writes (wrela_host::server), so the queue is
+    /// read again only in a later call.
+    call: u64,
+    queue_written: u64,
+    /// Names written lately, which a read made before their call committed wouldn't see.
+    recent_names: Vec<Vec<u8>>,
     verifying: Option<Verifying<G::Run>>,
     /// Whether the last call asked for nothing: then nothing would call it again, so a run being
     /// played asks the host for a byte to be called at once.
@@ -433,6 +441,9 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
         tries: Vec::new(),
         queue_waiting: true,
         queue_scan: None,
+        call: 0,
+        queue_written: 0,
+        recent_names: Vec::new(),
         verifying: None,
         nudge: None,
     }
@@ -516,6 +527,7 @@ impl<G: Game> Engine<G> {
     /// Starts a call at the host's time `time` (seconds since the server started): the first reads
     /// the stored clock.
     pub fn begin(mut self, time: f32) {
+        self.call += 1
         if !self.ready {
             if self.clock.is_none() {
                 let t = self.next_ticket()
@@ -799,6 +811,23 @@ impl<G: Game> Engine<G> {
             return None
         }
         Some(c.clone())
+    }
+
+    fn named_lately(self, n: Name) -> bool {
+        let k = name_key(n)
+        for r in self.recent_names {
+            if r == k {
+                return true
+            }
+        }
+        false
+    }
+
+    fn name_written(mut self, n: Name) {
+        if self.recent_names.len() >= 64 {
+            let _ = self.recent_names.remove(0)
+        }
+        self.recent_names.push(name_key(n))
     }
 
     fn is_signed_in(self, conn: u32) -> bool {
@@ -1245,7 +1274,7 @@ impl<G: Game> Engine<G> {
             },
             Step::RegisterName | Step::NameTaken => {
                 let n = draw(j.seed)
-                if value(answer).is_some() {
+                if value(answer).is_some() || self.named_lately(n) {
                     // Taken: another draw, a few times.
                     j.tries += 1
                     if j.tries > 8 {
@@ -1297,6 +1326,7 @@ impl<G: Game> Engine<G> {
                 }
                 self.put(account_key(a.id), a.clone())
                 self.put_bytes(name_key(a.name), save(a.id))
+                self.name_written(a.name)
                 self.put(
                     passkey_key(cred.id),
                     Passkey {
@@ -1710,6 +1740,10 @@ impl<G: Game> Engine<G> {
                 self.unbind(a.id, Vec::new(), conn)
                 self.scan(under_account(a.id), 256, Step::DeleteScan, take j)
             },
+            Step::DeleteNext => {
+                let Some(a) = j.account.clone() else { return }
+                self.scan(under_account(a.id), 256, Step::DeleteScan, take j)
+            },
             Step::DeleteScan => {
                 let Some(a) = j.account.clone() else { return }
                 let Some(es) = entries(answer) else { return }
@@ -1738,8 +1772,9 @@ impl<G: Game> Engine<G> {
                     self.delete(e.key.clone())
                 }
                 if es.len() == 256 {
-                    // The writes are this call's: the next scan, after it, finds the rest.
-                    self.scan(take prefix, 256, Step::DeleteScan, take j)
+                    // A scan now would be answered before these deletes commit, and find them
+                    // again: the next is made in the next call, after a byte asked for.
+                    self.random(1, Step::DeleteNext, take j)
                     return
                 }
                 self.delete(name_key(a.name))
@@ -1874,6 +1909,7 @@ impl<G: Game> Engine<G> {
                 }
                 self.put(queue_key(self.now, id), q)
                 self.queue_waiting = true
+                self.queue_written = self.call
                 self.reply(conn, ask, Reply::Queued { run: id })
             },
             Step::BoardScan => {
@@ -1912,6 +1948,7 @@ impl<G: Game> Engine<G> {
                 }
                 if gone {
                     self.delete(j.keys[0].clone())
+                    self.queue_written = self.call
                     return
                 }
                 let run = self.game.start(q.replay)
@@ -1938,6 +1975,7 @@ impl<G: Game> Engine<G> {
         b.rerolls = a.rerolls - 1
         self.delete(name_key(a.name))
         self.put_bytes(name_key(n), save(a.id))
+        self.name_written(n)
         self.put(account_key(a.id), b.clone())
         self.reply(j.conn, j.ask, Reply::Welcome { me: me_of(b, recovery: false) })
     }
@@ -1970,22 +2008,25 @@ impl<G: Game> Engine<G> {
                 match self.game.play(mut v.run, PLAY_TICKS) {
                     None => {
                         // More to play: something must call again.
-                        if self.nudge.is_none() {
-                            let t = self.next_ticket()
-                            self.out.push(Command::Random { ticket: t, n: 1 })
-                            self.nudge = Some(t)
-                        }
+                        self.nudge_next()
                         self.verifying = take taken
                     },
                     Some(result) => {
                         self.delete(v.key.clone())
                         self.queue_waiting = true
+                        self.queue_written = self.call
                         self.played(v.queued.clone(), result)
                     },
                 }
             },
             None => {
                 if self.queue_waiting && self.queue_scan.is_none() {
+                    if self.call <= self.queue_written {
+                        // The queue was written this call: read it in the next, which a byte
+                        // asked for brings at once.
+                        self.nudge_next()
+                        return
+                    }
                     let t = self.next_ticket()
                     let from = queue_prefix()
                     let to = past(from).unwrap_or(Vec::new())
@@ -1993,6 +2034,16 @@ impl<G: Game> Engine<G> {
                     self.queue_scan = Some(t)
                 }
             },
+        }
+    }
+
+    /// Asks the host for a byte, so that it calls again at once (a room is called when something
+    /// happens, and an answer is something).
+    fn nudge_next(mut self) {
+        if self.nudge.is_none() {
+            let t = self.next_ticket()
+            self.out.push(Command::Random { ticket: t, n: 1 })
+            self.nudge = Some(t)
         }
     }
 
@@ -2007,10 +2058,12 @@ impl<G: Game> Engine<G> {
         let Some(q) = read::<Queued>(e.value) else {
             // What can't be read can't be verified.
             self.delete(e.key.clone())
+            self.queue_written = self.call
             return
         }
         if q.board != self.game.board() || q.game.as_str() != self.game.id() {
             self.delete(e.key.clone())
+            self.queue_written = self.call
             self.reply(
                 q.conn,
                 q.ask,

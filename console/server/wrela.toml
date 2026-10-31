@@ -1,0 +1,10 @@
+# The console's server build (language.md §15.3): accounts and the games' verified boards, which
+# the console's `serve` runs (serve.wrela). It is the one package that names the games with boards,
+# since a server takes only its own program's clients, so their verifiers ride in the console's
+# server build (docs/toolchain-gaps.md, "A server takes one program's clients").
+[package]
+name = "console_server"
+
+[dependencies]
+platform = { workspace = true }
+capybara = { workspace = true }

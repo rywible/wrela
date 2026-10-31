@@ -2611,3 +2611,19 @@ fn another_game_is_chosen_while_saves_are_read_but_not_while_one_starts() {
         Step::Import,
     ] { assert(!browsing(step)) }
 }
+
+// ---- the server ----------------------------------------------------------------------------
+
+// The console's server build: accounts and the games' boards (console/server). Its passkeys are
+// for wrela.dev from the console's origin; a local build sets its own (docs/toolchain.md, "The
+// console's server").
+pub const RP_ID: Text = "wrela.dev"
+pub const ORIGIN: Text = "https://wrela.dev"
+
+pub fn serve_init() -> console_server::serve::Server {
+    console_server::serve::init(RP_ID, ORIGIN)
+}
+
+pub fn serve(s: mut console_server::serve::Server, time: f32) {
+    console_server::serve::serve(mut s, time)
+}

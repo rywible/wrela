@@ -1,0 +1,185 @@
+// The capybara's world boards: how the console's server checks an uploaded run (platform's
+// `server::Game`; design.md, "Accounts and leaderboards", anti-cheat's first layer). The server
+// plays the replay again on this build's sim, a share of it each call, from the level's start (a
+// constant of the build, so an offline run needs nothing from the server to start), and takes the
+// time, the snacks and the deaths from what the sim made of its pads, never from what the replay
+// says: a run whose claim the rules can't make is refused. It is `replay::verify`, split over calls.
+//
+// A board is one version of play (`replay::BOARD`): this build verifies only runs of its own
+// version, and the lab has no board.
+
+use course::{LEVELS, course}
+use pad::{MOST_HOLDS, pad_of}
+use platform::server::{Claim, Game, Outcome}
+use replay::{BOARD, MOST_TICKS, Replay, YOU, length}
+use std::serialize::{LoadError, load}
+use world::{World, step, world}
+
+/// The capybara's key, as the release's catalog names it.
+pub const GAME: Text = "capybara"
+
+/// The capybara's boards, for the console's server.
+pub struct Capybara {}
+
+/// A replay being played: where it is in its holds, and the sim.
+pub struct Playing {
+    replay: Replay,
+    world: World,
+    hold: u32,
+    tick: u32,
+}
+
+/// The replay in `bytes`, if it is one a player of this build could have made: a level's (not
+/// the lab's), a person's, of at least one tick and at most `MOST_TICKS`, its holds each a tick or
+/// more and no more of them than a run records, its time the length of its pads.
+pub fn read(bytes: [u8]) -> Result<Replay, Text> {
+    let loaded: Result<Replay, LoadError> = load(Vec::from(bytes))
+    let Ok(r) = loaded else { return Err("That isn't a run of this game.") }
+    if r.course >= LEVELS {
+        return Err("That course has no board.")
+    }
+    if r.who != YOU {
+        return Err("A tool's run goes on the tool-assisted board, not this one.")
+    }
+    if r.holds.len() > MOST_HOLDS || r.ticks == 0 || r.ticks > MOST_TICKS {
+        return Err("That run is too long to check.")
+    }
+    for h in r.holds {
+        if h.ticks == 0 {
+            return Err("That run's moves aren't ones the game records.")
+        }
+    }
+    if length(r) != Some(r.ticks) {
+        return Err("That run's time isn't the length of its moves.")
+    }
+    Ok(r.clone())
+}
+
+impl Game for Capybara {
+    type Run = Playing
+
+    fn id(self) -> Text {
+        GAME
+    }
+
+    fn board(self) -> u32 {
+        BOARD
+    }
+
+    fn courses(self) -> u32 {
+        LEVELS
+    }
+
+    fn claim(self, replay: [u8]) -> Result<Claim, Text> {
+        let r = read(replay)?
+        Ok(Claim { course: r.course, ticks: r.ticks })
+    }
+
+    fn start(self, replay: [u8]) -> Playing {
+        let Ok(r) = read(replay) else { panic("a run its claim took") }
+        let w = world(r.course)
+        Playing { replay: r, world: w, hold: 0, tick: 0 }
+    }
+
+    fn play(self, run: mut Playing, ticks: u32) -> Option<Result<Outcome, Text>> {
+        var n = 0
+        while n < ticks && run.hold < run.replay.holds.len() {
+            let h = run.replay.holds[run.hold]
+            step(mut run.world, pad_of(h, run.tick))
+            run.tick += 1
+            n += 1
+            if run.tick == h.ticks {
+                run.hold += 1
+                run.tick = 0
+            }
+        }
+        if run.hold < run.replay.holds.len() {
+            return None
+        }
+        let w = run.world
+        if w.finished != run.replay.ticks {
+            return Some(Err("That run doesn't reach the goal on the tick it says."))
+        }
+        if w.snacks != run.replay.snacks || w.deaths != run.replay.deaths {
+            return Some(Err("That run's snacks or deaths aren't what its moves make."))
+        }
+        let all = course(w.course).every_snack()
+        Some(Ok(Outcome { ticks: w.finished, full: (w.snacks & all) == all }))
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use course::WETLANDS
+use replay::{AUTOPILOT, tool_assisted}
+use std::serialize::save
+
+/// The route search's run of the Wetlands, as a player's.
+fn mine(k: u32) -> Replay {
+    var r = tool_assisted(WETLANDS)[k].clone()
+    r.who = YOU
+    r
+}
+
+/// Plays `bytes` as the server does, `share` ticks at a time.
+fn checked(bytes: [u8], share: u32) -> Result<Outcome, Text> {
+    let g = Capybara {}
+    let _ = g.claim(bytes)?
+    var run = g.start(bytes)
+    loop {
+        if let Some(result) = g.play(mut run, share) {
+            return result
+        }
+    }
+}
+
+@test
+fn a_players_run_plays_again_to_its_time_and_category_however_it_is_split() {
+    for k in [0, 1] {
+        let r = mine(k)
+        for share in [1000, 777] {
+            let Ok(o) = checked(save(r), share) else { panic("the search's run checks") }
+            assert(o.ticks == r.ticks, f"{o.ticks} ticks")
+            assert(o.full == (k == 1), "the 100% run found every snack, the any% run didn't")
+        }
+    }
+}
+
+@test
+fn a_tampered_run_is_refused() {
+    let r = mine(0)
+    // Its moves changed: from half way, nothing held (a hold during a death's 1.1 s, when the sim
+    // ignores the pad, could change alone and still play the same).
+    var moved = r.clone()
+    for i in moved.holds.len() / 2..moved.holds.len() {
+        moved.holds[i].bits = 0
+    }
+    assert(checked(save(moved), 1000).is_err(), "other moves don't make its time")
+    // Its time claimed shorter, its holds cut to match.
+    var short = r.clone()
+    let last = short.holds.len() - 1
+    short.holds[last].ticks = max(short.holds[last].ticks, 2) - 1
+    short.ticks = length(short).unwrap_or(0)
+    assert(checked(save(short), 1000).is_err(), "it doesn't reach the goal on its last tick")
+    // A death or a snack it didn't have, and a time that isn't its moves' length.
+    var dead = r.clone()
+    dead.deaths += 1
+    assert(checked(save(dead), 1000).is_err(), "a death it didn't die")
+    var claimed = r.clone()
+    claimed.ticks -= 1
+    assert(checked(save(claimed), 1000).is_err(), "a time that isn't its length")
+}
+
+@test
+fn only_a_players_runs_of_a_level_are_taken() {
+    var robot = mine(0)
+    robot.who = AUTOPILOT
+    assert(read(save(robot)).is_err(), "a tool's run")
+    var lab = mine(0)
+    lab.course = LEVELS
+    assert(read(save(lab)).is_err(), "the lab")
+    assert(read([1, 2, 3]).is_err(), "bytes that aren't a run")
+    var empty = mine(0)
+    empty.holds[0].ticks = 0
+    assert(read(save(empty)).is_err(), "a hold of no ticks")
+}
