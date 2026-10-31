@@ -141,6 +141,10 @@ fn ice_of(c: Course) -> Vec<vec4> {
     for i in c.ice {
         out.push(vec4(i, 0.0, 0.0))
     }
+    if out.is_empty() {
+        // A buffer has an element at least: a stretch that holds no x, not one at 0.
+        out.push(vec4(1.0e9, -1.0e9, 0.0, 0.0))
+    }
     out
 }
 

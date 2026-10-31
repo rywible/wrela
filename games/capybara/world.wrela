@@ -252,7 +252,8 @@ pub fn step(w: mut World, pad: Pad) {
             },
             Touch::Bowl => knock(mut w.foes[i]),
             Touch::Ride => {
-                if w.body.mode != Mode::Swim {
+                // Not from the water, nor straight back onto a ride just jumped off.
+                if w.body.mode != Mode::Swim && w.foes[i].since == 0 {
                     w.riding = i + 1
                     w.foes[i].ridden = true
                 }
@@ -298,6 +299,10 @@ pub fn step(w: mut World, pad: Pad) {
     }
 }
 
+/// Ticks after jumping off a ride before it can be climbed on again (0.25 s): on the tick of the
+/// leap the capybara is still on its back.
+const REMOUNT: u32 = 30
+
 /// The level after course `c`, if there is one.
 pub fn next(c: u32) -> Option<u32> {
     if c + 1 < LEVELS { Some(c + 1) } else { None }
@@ -309,9 +314,10 @@ fn ride(w: mut World, pad: Pad, c: Course) {
     let i = w.riding - 1
     let f = w.foes[i]
     if pad.pressed() {
-        // Off: the ride wanders back home.
+        // Off: the ride wanders back home, and can't be climbed on again for a moment.
         w.riding = 0
         w.foes[i].ridden = false
+        w.foes[i].since = REMOUNT
         bounce(mut w.body, held: true, f: FEEL, under: false)
         w.body.vel.x = RIDE
         return
@@ -652,13 +658,17 @@ pub fn live(c: u32) -> Live {
 fn game_after(g: mut Game, before: World, after: World) {
     let moved = after.attempt != before.attempt || after.course != before.course
     if moved {
-        let onward = before.finished > 0 && next(before.course) == Some(after.course)
+        // From the goal's card itself, not the levels' map (the pause).
+        let onward = before.finished > 0 &&
+            !before.paused &&
+            next(before.course) == Some(after.course)
         if onward {
             // On to the next level from the goal's card: the run goes on.
         } else if after.course == HOME {
             g = Game { on: true, ticks: 0, done: 0 }
-        } else if after.course != before.course {
-            g.on = false
+        } else if after.course != before.course || g.done > 0 {
+            // Another level, or a new attempt after a whole game is done: the run is over.
+            g = Game { on: false, ticks: 0, done: 0 }
         }
     }
     // The level's clock ran: so does the game's. A restart (R, Select) steps its new attempt in
@@ -1190,4 +1200,51 @@ fn random_presses_in_the_menus_keep_a_valid_focus_and_esc_always_gets_back_to_pl
         }
         assert(!w.paused, f"round {round}: still paused on page {w.page} after Esc four times")
     }
+}
+
+@test
+fn jumping_off_a_ride_leaves_it_and_it_wanders_back_home() {
+    borrow c = course(course::REPTILES)
+    var i = 0
+    while c.foes[i].kind != foes::Kind::Ride {
+        i += 1
+    }
+    var w = world(course::REPTILES)
+    w.paused = false
+    w.riding = i + 1
+    w.foes[i].ridden = true
+    for _ in 0..120 {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.riding == i + 1, "it carries the capybara")
+    let off_at = w.foes[i].at.x
+    step(mut w, Pad { bits: JUMP | pad::PRESS })
+    for _ in 0..6 {
+        step(mut w, Pad { bits: JUMP })
+    }
+    assert(w.riding == 0, "a jump leaves it, not straight back onto it")
+    for _ in 0..240 {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.deaths == 0 && w.foes[i].at.x < off_at - 2.0, "and it heads back home")
+}
+
+@test
+fn a_whole_game_ends_on_the_map_even_to_the_next_level_and_once_it_is_done() {
+    var l = live(HOME)
+    live_tick(mut l, [down(Key::Enter)])
+    live_tick(mut l, [up(Key::Enter)])
+    live_tick(mut l, [])
+    l.world.finished = l.world.ticks
+    live_tick(mut l, [down(Key::Escape)])
+    choose(mut l.world, SEE_MAP)
+    live_tick(mut l, [down(Key::Right)])
+    live_tick(mut l, [down(Key::Enter)])
+    assert(l.world.course == WETLANDS && !l.game.on, "the next level chosen on the map: no run")
+    // A whole game done: a new attempt at the last level is not one.
+    var d = live(course::FOOD_COURT)
+    d.world.paused = false
+    d.game = Game { on: true, ticks: 500, done: 500 }
+    live_tick(mut d, [down(Key::R)])
+    assert(!d.game.on && present_live(d).game == 0, "a whole game is done once")
 }
