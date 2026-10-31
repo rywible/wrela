@@ -23,7 +23,7 @@ use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
 use engine::memory::{Share, Usage}
 use engine::particles::{Particle, SOFT, SPARK}
-use engine::plant::{Bark, Leaves, Ordering, Plant, Wind, orders_of}
+use engine::plant::{Bark, Leaves, Occluding, Ordering, Plant, Wind, occluding_of, orders_of}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::reflect::copy_below
 use engine::terrain::Clipmap
@@ -76,7 +76,7 @@ pub trait Tiles: Copy + Eq {
     fn occluders_into(
         self,
         placed: [Placed],
-        plants: [Plant],
+        plants: [Occluding],
         d: vec3,
         lo: vec2,
         hi: vec2,
@@ -215,6 +215,11 @@ pub const NEAR_EVERY: u32 = 30
 pub const FIRST_RING: f32 = 40.0
 pub const FIRST_N: u32 = 6
 pub const NEAR_GROWING: u32 = 4
+
+/// While tiles come, the first ring's growths at once, and how often (frames) the near ones are
+/// chosen while it isn't drawn (**proposed**).
+pub const NEAR_LOADING: u32 = 2
+pub const NEAR_EVERY_URGENT: u32 = 5
 
 /// A landscape drawn from `tiles`, its kinds cooked from `plants` (`far_kinds` its far crowns'),
 /// its water `mesh`, its render origin's tile `origin`.
@@ -1300,9 +1305,11 @@ pub fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
 
 /// The trees near the eye drawn as themselves (§E1.3): each frame, a growth finished is cooked
 /// (`vegetation::kind_near`) and its instance drawn as it (`Wood::set_near`, `retarget`); every
-/// `NEAR_EVERY` frames, once no tile is still coming, the `Tiles::near` trees nearest the eye
-/// within `NEAR` (those whose kinds are grown) are chosen, an individual no longer among them drawn as its archetype again and given
-/// up, and the new ones' growths started (`NEAR_GROWING` at a time, the nearest first). A tile
+/// `NEAR_EVERY` frames, once no tile is still coming (while its first ring isn't drawn, every
+/// `NEAR_EVERY_URGENT`, coming or not), the `Tiles::near` trees nearest the eye within `NEAR`
+/// (those whose kinds are grown) are chosen, an individual no longer among them drawn as its archetype again and given
+/// up, and the new ones' growths started (`NEAR_GROWING` at a time, `NEAR_LOADING` while tiles
+/// come, the nearest first). A tile
 /// dropped gives up its individuals; one loaded again draws them as themselves again.
 pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
     if s.near.len() == 0 {
@@ -1374,8 +1381,13 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
     }
     s.near_since += 1
-    // Not while tiles are coming: the growths would hold the helpers their cooking needs.
-    if s.near_since >= NEAR_EVERY && !loading(s) {
+    // Not while tiles are coming (the growths would hold the helpers their cooking needs), but
+    // for the first ring, `NEAR_LOADING` at a time and chosen more often: the arrival waits on it,
+    // and far from where the vale began its tiles came for longer than the lookbook waited.
+    let loads = loading(s)
+    let urgent = !near_ready(s, eye)
+    let every = if urgent { NEAR_EVERY_URGENT } else { NEAR_EVERY }
+    if s.near_since >= every && (!loads || urgent) {
         s.near_since = 0
         s.near_chosen = true
         // The candidates: each placed instance within `NEAR`, nearest first.
@@ -1444,7 +1456,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         for (tile, j, k, t) in chosen {
             // The nearest first, a few at a time (all at once, the first ring's cards' orders
             // waited behind the others' growths on the helpers).
-            if growing >= NEAR_GROWING {
+            if growing >= (if loads { NEAR_LOADING } else { NEAR_GROWING }) {
                 break
             }
             var has = false
@@ -1583,7 +1595,7 @@ const OCCLUDED_MARGIN: f32 = 20.0
 pub struct OccluderInput<T: Tiles> {
     tiles: T,
     placed: Vec<Placed>,
-    plants: Vec<Plant>,
+    plants: Vec<Occluding>,
     lo: vec2,
     hi: vec2,
 }
@@ -1623,7 +1635,7 @@ pub fn occlude<T: Tiles>(s: mut Landscape<T>, eye: vec2, origin: vec3) {
     let input = OccluderInput {
         tiles: s.tiles,
         placed,
-        plants: s.plants.clone(),
+        plants: occluding_of(s.plants),
         lo: world - half,
         hi: world + half,
     }
@@ -1685,6 +1697,7 @@ pub fn loaded_probe_occluders<T: Tiles>(
         }
     }
     let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
+    let plants = occluding_of(plants)
     var out: Vec<Occluder> = Vec::new()
     for a in own {
         if tile_distance(a.tile, world) < PROBE_TREES {

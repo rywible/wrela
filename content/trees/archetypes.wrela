@@ -34,8 +34,12 @@ pub struct Archetype: Copy {
 }
 
 /// Kind `k`'s archetype, if it's grown (**proposed** ages: a mature tree at about a quarter of
-/// its species' life, an ancient at two thirds, the young at 20 years in the open; a forest's
-/// stand 0.9, the birch's 0.6 and the pine's 0.75, whose crowns a closer stand left a tuft).
+/// its species' life, an ancient at two thirds, the young a beech of 12 years (about its built
+/// 3 m) and a pine of 35 (the youngest the pine's strong leader grows a cone of laterals by: at 8
+/// or 20 a stick); a forest's stand 1 for the oak
+/// and the beech, 0.6 for the birch and the pine, whose crowns a closer stand left a tuft; the open
+/// pine's 0.35, its neighbours' shade on its foot: grown alone it kept a live limb at 2 m, and
+/// under a browse line few of its forks cleared it, too few for neighbours to fork apart).
 pub fn archetype(k: u32) -> Option<Archetype> {
     let (species, age, stand) = if k == OAK_OPEN {
         (Species::Oak, 150.0, 0.0)
@@ -54,9 +58,9 @@ pub fn archetype(k: u32) -> Option<Archetype> {
     } else if k == BIRCH_FOREST {
         (Species::Birch, 50.0, 0.6)
     } else if k == PINE_OPEN {
-        (Species::Pine, 100.0, 0.0)
+        (Species::Pine, 100.0, 0.35)
     } else if k == PINE_FOREST {
-        (Species::Pine, 100.0, 0.75)
+        (Species::Pine, 100.0, 0.6)
     } else if k == ALDER_A {
         (Species::Alder, 60.0, 0.0)
     } else if k == ALDER_B {
@@ -66,9 +70,9 @@ pub fn archetype(k: u32) -> Option<Archetype> {
     } else if k == SLOE {
         (Species::Sloe, 25.0, 0.0)
     } else if k == YOUNG_BROAD {
-        (Species::Beech, 20.0, 0.0)
+        (Species::Beech, 12.0, 0.0)
     } else if k == YOUNG_PINE {
-        (Species::Pine, 20.0, 0.0)
+        (Species::Pine, 35.0, 0.0)
     } else if k == LOG_SHORT {
         (Species::Beech, 90.0, 0.9)
     } else if k == LOG_LONG {
@@ -131,14 +135,16 @@ fn laid(p: Plant, long: f32, girth: f32, seed: u32) -> Plant {
     // short bole stretched to its length was a metre thick).
     let rs = girth / max(r0, 1.0e-3)
     let (r, r_end) = (girth, end.radii[2] * rs)
+    // Its foot closed by a short piece swelling from a stub, as the hand's log's (a tube's start is
+    // open: begun at its girth, its rim read as a lid on the log's end at the eye, shot 7).
     out.tube(
         [
-            vec3(0.0, r, 0.0),
-            vec3(0.0, 0.5 * (r + r_end), 0.5 * long),
+            vec3(0.0, r, -0.25 * r),
+            vec3(0.0, r, 0.35 * r),
             vec3(0.0, r_end, long - r_end * 0.5),
             vec3(0.0, r_end, long),
         ],
-        [r, mix(r, r_end, 0.5), r_end, r_end],
+        [0.35 * r, r, r_end, r_end],
     )
     for f in fungi_on(1.0, long, seed) {
         let side = if f.x > 0.5 { 1.0 } else { -1.0 }
@@ -306,6 +312,11 @@ pub fn individual(t: Tree, k: u32, present: i32) -> Option<Grow> {
             )
         }
     }
+    // Its leaves as large as its kind's look's once its instance's scale (its height against its
+    // kind's built one: `kinds::scale_of`) is on them: its plant is its own (a young broadleaf
+    // 2.6 times its built 3 m had leaves a third of a metre across at the eye).
+    let look = kinds::LOOKS[k].0
+    let leaves = Leaves { size: look.size * clamp(1.0 / kinds::scale_of(k, kinds::drawn_tall(k, t.tall)), 0.5, 2.0), ..look }
     Some(
         Grow {
             genome: genomes()[species],
@@ -313,7 +324,7 @@ pub fn individual(t: Tree, k: u32, present: i32) -> Option<Grow> {
             light,
             events,
             seed: t.seed,
-            leaves: kinds::LOOKS[k].0,
+            leaves,
             bark: kinds::LOOKS[k].1,
             blend: kinds::LOOKS[k].2,
             height: BUILT[k],

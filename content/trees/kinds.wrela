@@ -1898,54 +1898,6 @@ pub fn far_placed(
     out
 }
 
-/// Keep the existing straight inner capsule inside curved wood. Narrow curved twigs can
-/// have no straight core; omit those instead of straightening their rendered silhouette.
-fn inner_wood_capsule(limb: Tube<4>, piece: u32, at: Instance) -> (vec3, vec3, f32) {
-    let a = at.place(limb.points[piece])
-    let b = at.place(limb.points[piece + 1])
-    let span = length(b - a)
-    let dir = (b - a) / max(span, 1.0e-6)
-    var alignment = 1.0
-    for ring in 0..(RINGS + 1) {
-        let (_, axis, _) = limb_ring_axis(limb, piece * RINGS + ring)
-        // place_round keeps girth round even where the centreline is narrowed or bent.
-        alignment = min(alignment, abs(dot(at.turn(axis), dir)))
-    }
-    let core = 0.6 * min(limb.radii[piece], limb.radii[piece + 1]) * at.scale
-    // Keep both capsule spheres behind the open ring planes, and exclude the closed tip.
-    let (last, _, _) = limb_ring_axis(limb, (piece + 1) * RINGS - 1)
-    let cap = if piece == 2 { length(b - at.place(last)) } else { 0.0 }
-    var radius = min(core, max(span - cap, 0.0) * 0.2 * alignment)
-    let inset = radius / max(alignment, 1.0e-6)
-    let a = a + dir * inset
-    let b = b - dir * (inset + cap)
-    // Fit the straight core against the actual curved, tapered triangle planes. A radius
-    // allowance from centreline error alone misses oblique rings. This runs only while
-    // preparing probe occluders and adds no capsules or rendered geometry.
-    var vertices: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
-    var normals: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
-    let first = piece * (RINGS + 1) * (SIDES + 1)
-    for v in 0..((RINGS + 1) * (SIDES + 1)) {
-        let (centre, normal, r, _) = limb_point(limb, first + v)
-        vertices.push(at.place_round(centre, normal * r))
-        normals.push(at.turn(normal))
-    }
-    for triangle in 0..(RINGS * SIDES * 2) {
-        let v = piece * RINGS * SIDES * 6 + triangle * 3
-        let i = limb_corner(v) - first
-        let j = limb_corner(v + 1) - first
-        let k = limb_corner(v + 2) - first
-        let face = cross(vertices[j] - vertices[i], vertices[k] - vertices[i])
-        let size = length(face)
-        if size <= 1.0e-7 { continue }
-        let outward = normals[i] + normals[j] + normals[k]
-        let n = face / size * if dot(face, outward) < 0.0 { -1.0 } else { 1.0 }
-        let margin = -max(dot(a - vertices[i], n), dot(b - vertices[i], n))
-        radius = min(radius, margin - 1.0e-5)
-        if radius <= 0.0 { return (a, b, 0.0) }
-    }
-    (a, b, radius)
-}
 
 /// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each
 /// instance's clumps (leaves) and limbs (wood), placed (the clearing's).
@@ -1956,19 +1908,16 @@ pub fn occluders(
     hi: vec2,
 ) -> Vec<engine::probes::Occluder> {
     var out: Vec<engine::probes::Occluder> = Vec::new()
-    occluders_into(placed, plants, vec3(0.0), lo, hi, mut out)
+    occluders_into(placed, engine::plant::occluding_of(plants), vec3(0.0), lo, hi, mut out)
     out
 }
-
-/// The limbs of a tree that occlude the probes (a hand's kind held at most 48).
-const OCCLUDER_LIMBS: u32 = 48
 
 /// `occluders`'s, of trees placed in the world moved by `d` (into render space), added to `out`:
 /// a tree outside the square is skipped before anything of it is read, and its kind's plant is
 /// read where it is (a copy a tree cost the Last Green's walk 40 ms a probe replacement).
 pub fn occluders_into(
     placed: [Placed],
-    plants: [Plant],
+    plants: [engine::plant::Occluding],
     d: vec3,
     lo: vec2,
     hi: vec2,
@@ -1986,7 +1935,7 @@ pub fn occluders_into(
         let at = engine::plant::Instance { at: x, ..p.at }
         borrow plant = plants[p.kind]
         for c in plant.clumps {
-            // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
+                // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
             let r = c.radius * c.squash
             let reach = c.radius - r
             for side in [vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)] {
@@ -2003,16 +1952,16 @@ pub fn occluders_into(
                 }
             }
         }
-        // Its thickest limbs (a grown kind's are in order of their section: its twigs, thousands,
-        // stop no light the probes see; drawn as capsules they held the probes' bake for ever).
-        for i in 0..min(plant.limbs.len(), OCCLUDER_LIMBS) {
-            let l = plant.limbs[i]
-            for k in 0..3 {
-                let (a, b, radius) = inner_wood_capsule(l, k, at)
-                if radius > 0.0 {
-                    out.push(engine::probes::Occluder { a, radius, b, solid: 1.0 })
-                }
-            }
+        // Its thickest limbs' cores (`plant::occluding_of`: fitted once to its kind's wood).
+        for c in plant.cores {
+            out.push(
+                engine::probes::Occluder {
+                    a: at.place(c.a),
+                    radius: c.radius * at.scale * engine::plant::CORE_PLACED,
+                    b: at.place(c.b),
+                    solid: 1.0,
+                },
+            )
         }
     }
 }
@@ -2261,7 +2210,7 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
             }
             for limb in p.limbs {
                 for piece in 0..3 {
-                    let (a, b, radius) = inner_wood_capsule(limb, piece, inst)
+                    let (a, b, radius) = engine::plant::inner_wood_capsule(limb, piece, inst)
                     if radius <= 0.0 {
                         omitted += 1
                         continue
