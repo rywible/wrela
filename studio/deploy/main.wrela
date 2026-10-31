@@ -17,8 +17,8 @@
 // (`files.json`), as its Worker serves it, and each file it lists, once, checked against its
 // SHA-256, into the Worker's directory in the release. A file that doesn't arrive, or doesn't
 // match, stops the deploy before anything changes, and so does a Worker over the file limits.
-// A kept release the docs Worker answers 404 for never went live there, and no reader holds it:
-// the docs keep the rest. The console's server is a Worker of its own (`release.json`'s `api`), on
+// The docs keep none: nothing pins their releases, each release is mostly new pages (each names
+// its commit), and a reader's tab that finds a page gone reloads. The console's server is a Worker of its own (`release.json`'s `api`), on
 // the console's API paths.
 //
 // With `--require-main-head`, a deploy whose commit is no longer the head of `main` (as GitHub's
@@ -82,9 +82,10 @@ pub const RUN_TIMEOUT: f64 = 600.0
 /// or that its origin answered 500, 502, 503 or 504: so it's tried at most 5 times.
 pub const BACKOFF: [f64; 4] = [1.0, 2.0, 4.0, 8.0]
 
-/// A path of the console's API that its server answers a `POST` with no `Origin` at with 403
-/// (toolchain 0.13.0's router refuses a change from no origin, before the server sees it), as the
-/// console's assets never do: they answer 404 or 405.
+/// A path of the console's API that its server answers a `GET` at with 405, since only a `POST`
+/// changes things there (console/server/serve.wrela), as the console's assets never answer a
+/// `GET`: they answer 404. A `GET`, not a `POST` from no origin, which the zone's firewall refuses
+/// before any Worker runs.
 pub const API_PROBE: Text = "/api/accounts"
 
 /// How many times a Worker is asked whether it serves the new release, and the seconds between.
@@ -430,15 +431,10 @@ fn named(names: [String], name: str) -> bool {
     false
 }
 
-/// The listing of `release` that `w` serves, or `None` if `w` is the docs and they never served
-/// it (404).
-pub fn served_listing(release: str, w: Worker) -> Result<Option<Listing>, ToolError> {
+/// The listing of `release` that `w` serves.
+pub fn served_listing(release: str, w: Worker) -> Result<Listing, ToolError> {
     let url = String::from(f"https://{w.domain.as_str()}/releases/{release}/files.json")
     let g = get(url.as_str())?
-    if g.status == 404 && w.docs {
-        print(f"{w.worker.as_str()} never served {release}")
-        return Ok(None)
-    }
     if g.status != 200 {
         return Err(ToolError::new(f"GET {url.as_str()}: HTTP {g.status}"))
     }
@@ -446,16 +442,7 @@ pub fn served_listing(release: str, w: Worker) -> Result<Option<Listing>, ToolEr
         return Err(ToolError::new(f"{release}: its files.json isn't UTF-8"))
     }
     let files = read_listing(release, text.as_str()).map_err(own)?
-    Ok(
-        Some(
-            Listing {
-                worker: w.clone(),
-                release: String::from(release),
-                files,
-                body: g.body.clone(),
-            },
-        ),
-    )
+    Ok(Listing { worker: w.clone(), release: String::from(release), files, body: g.body.clone() })
 }
 
 /// Fetches each of `wanted` (a file's URL on the live site, and its SHA-256) into `STAGE` in
@@ -544,11 +531,12 @@ pub fn keep(
     var listed: Vec<Listing> = Vec::new()
     for d in kept(deploys, at, rel.release.as_str()) {
         for w in rel.workers {
-            // A Worker the kept release didn't have (a game added since) keeps nothing.
-            if !named(d.workers, w.worker.as_str()) {
+            // A Worker the kept release didn't have (a game added since) keeps nothing, and nor
+            // do the docs.
+            if w.docs || !named(d.workers, w.worker.as_str()) {
                 continue
             }
-            let Some(l) = served_listing(d.release.as_str(), w)? else { continue }
+            let l = served_listing(d.release.as_str(), w)?
             let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{d.release.as_str()}")
             var fetched = 0
             for (path, sha) in l.files {
@@ -765,8 +753,8 @@ pub fn verify(rel: Release, root: str) -> Result<(), ToolError> {
 }
 
 /// Waits until the console's API paths on `domain` reach its server's Worker, as a route that takes
-/// them before the console's custom domain does: until a `POST` of `API_PROBE` with no `Origin`
-/// answers 403, asked at most `TRIES` times, `BETWEEN_TRIES` apart.
+/// them before the console's custom domain does: until a `GET` of `API_PROBE` answers 405, asked
+/// at most `TRIES` times, `BETWEEN_TRIES` apart.
 pub fn verify_api(domain: str) -> Result<(), ToolError> {
     let url = String::from(f"https://{domain}{API_PROBE}")
     var last = String::new()
@@ -774,11 +762,9 @@ pub fn verify_api(domain: str) -> Result<(), ToolError> {
         if tries > 0 {
             let _ = time::after(BETWEEN_TRIES).wait()?
         }
-        var req = request(url.as_str())
-        req.method = String::from("POST")
-        match http::fetch(take req).wait() {
+        match http::fetch(request(url.as_str())).wait() {
             Ok(r) => {
-                if r.status == 403 {
+                if r.status == 405 {
                     print(f"{domain}'s API paths reach its server")
                     return Ok(())
                 }

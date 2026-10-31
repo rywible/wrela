@@ -44,9 +44,9 @@ use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_f
 use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
 use site::{
-    CACHE_RULES, Report, Shipped, Top, api_config, api_script, card, catalog_json, catalog_line,
-    docs_headers, docs_page, docs_redirects, fetch_order, headers, prefetch_list, release_json,
-    replace_all, with_storage, wrangler_config,
+    CACHE_RULES, FAVICONS, NOT_FOUND, Report, Shipped, Top, api_config, api_script, card,
+    catalog_json, catalog_line, docs_headers, docs_page, docs_redirects, fetch_order, headers, ico,
+    prefetch_list, release_json, replace_all, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use std::io::print
@@ -499,6 +499,23 @@ fn release(revision: str) -> Result<String, ToolError> {
         has.push(e.path.clone())
     }
     let (docs_head, docs_body) = docs_page(c.docs, ordered, has)
+    // Every Worker's favicon: the console's icons, as one ICO.
+    var icons: Vec<String> = Vec::new()
+    for (path, _) in FAVICONS {
+        let Some(e) = projects[0].tree.find(path) else {
+            return Err(ToolError::new(f"the console's build has no {path}"))
+        }
+        let Source::File(from) = projects[0].tree.entries[e].source else {
+            return Err(ToolError::new(f"the console's {path} isn't its build's"))
+        }
+        icons.push(from.clone())
+    }
+    var pngs = read_files(icons)?
+    var sized: Vec<(Vec<u8>, u32)> = Vec::new()
+    for k in 0..FAVICONS.len() {
+        sized.push((replace(mut pngs[k], Vec::new()), FAVICONS[k].1))
+    }
+    let favicon = ico(sized)
     var finals: Vec<Project> = Vec::new()
     var copies: Vec<(String, String)> = Vec::new()
     for k in 0..projects.len() {
@@ -555,6 +572,9 @@ fn release(revision: str) -> Result<String, ToolError> {
             f.tree.put_bytes("index.html", text.as_bytes())
         }
         f.tree.put_bytes(f"releases/{r}/files.json", files_json(versioned.entries).as_bytes())
+        // Beside its releases, as `_headers` is: its favicon and its 404 page.
+        f.tree.put_bytes("favicon.ico", favicon)
+        f.tree.put_bytes("404.html", String::from(NOT_FOUND).as_bytes())
         let Some(h) = f.tree.find("_headers") else { return Err(ToolError::new("no _headers")) }
         let Source::Bytes(old) = f.tree.entries[h].source else {
             return Err(ToolError::new("_headers"))

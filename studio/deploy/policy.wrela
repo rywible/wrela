@@ -11,8 +11,9 @@ use std::json::{Doc, Kind as JsonKind, TOP, parse as parse_json}
 use std::tool::files::Kind
 
 /// How long a release stays after it stops being live, in seconds: a tab left open that long
-/// can still play. 14 days.
-pub const KEEP: i64 = 14 * 24 * 3600
+/// can still play. A tab holds its release for a session (a game streams its files as it plays),
+/// not for weeks, and each kept release is fetched again and uploaded with every deploy: 2 days.
+pub const KEEP: i64 = 2 * 24 * 3600
 
 /// A deploy the history lists: its release, the commit it was built from, its Workers, and when it
 /// went live and stopped being live (`None` while it's live), each in seconds since 1970.

@@ -9,7 +9,7 @@ use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, 
 use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
-    Shipped, Top, api_config, api_script, card, catalog_line, code_of, docs_headers, docs_page,
+    Shipped, Top, api_config, api_script, card, ico, catalog_line, code_of, docs_headers, docs_page,
     docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all, suffix,
     with_storage, wrangler_config,
 }
@@ -312,7 +312,7 @@ fn each_worker_serves_its_assets_on_its_domain_only() {
     let w = wrangler_config("game-host", "game.example")
     assert(
         w.as_str() ==
-            "{\n  \"name\": \"game-host\",\n  \"compatibility_date\": \"2026-10-12\",\n  \"assets\": {\n    \"directory\": \"./game-host\"\n  },\n  \"routes\": [\n    {\n      \"pattern\": \"game.example\",\n      \"custom_domain\": true\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}\n",
+            "{\n  \"name\": \"game-host\",\n  \"compatibility_date\": \"2026-10-12\",\n  \"assets\": {\n    \"directory\": \"./game-host\",\n    \"not_found_handling\": \"404-page\"\n  },\n  \"routes\": [\n    {\n      \"pattern\": \"game.example\",\n      \"custom_domain\": true\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}\n",
         w.as_str(),
     )
     var reports: Vec<site::Report> = Vec::new()
@@ -339,6 +339,31 @@ fn each_worker_serves_its_assets_on_its_domain_only() {
             "\"console\": true,\n      \"docs\": false,\n      \"files\": 3,\n      \"bytes\": 12\n    }\n  ]\n}",
         ),
     )
+}
+
+/// Each Worker's favicon holds each PNG as it is, after a header and an entry for each that says
+/// its size, its length and where it starts.
+@test
+fn a_favicon_holds_each_icon_as_its_png() {
+    let small = Vec::from(String::from("PNG-16").as_bytes())
+    let large = Vec::from(String::from("PNG-of-32").as_bytes())
+    let f = ico([(small.clone(), 16), (large.clone(), 32)])
+    assert(f.len() == 6 + 2 * 16 + small.len() + large.len(), f"{f.len()} bytes")
+    // Reserved, an icon, two images.
+    assert(f[0] == 0 && f[1] == 0 && f[2] == 1 && f[3] == 0 && f[4] == 2 && f[5] == 0)
+    let word = |at: u32| -> u32 {
+        u32(f[at]) | (u32(f[at + 1]) << 8) | (u32(f[at + 2]) << 16) | (u32(f[at + 3]) << 24)
+    }
+    for (k, png, size) in [(0, small.clone(), 16), (1, large.clone(), 32)] {
+        let e = 6 + 16 * k
+        assert(u32(f[e]) == size && u32(f[e + 1]) == size, "its size")
+        assert(f[e + 4] == 1 && f[e + 6] == 32, "a plane, 32 bits")
+        assert(word(e + 8) == png.len(), "its length")
+        let at = word(e + 12)
+        for i in 0..png.len() {
+            assert(f[at + i] == png[i], "its PNG")
+        }
+    }
 }
 
 @test
