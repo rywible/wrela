@@ -658,28 +658,34 @@ fn give_game_account(a: mut Accounts) {
 }
 
 fn game_replied(a: mut Accounts, reply: Reply) {
-    let answer = match reply {
+    let (course, category) = match a.game {
+        Some(g) => match g.answer {
+            Answer::Board { course, category, .. } => (course, category),
+            _ => (0, 0),
+        },
+        None => (0, 0),
+    }
+    answer_game(mut a, game_answer(reply, course, category))
+}
+
+/// What the server's `reply` to a game's ask tells the game: a board's page names its board
+/// (`course`, `category`), which the reply doesn't.
+fn game_answer(reply: Reply, course: u32, category: u32) -> Answer {
+    match reply {
         Reply::Verified { run, ticks, place } => Answer::Verified { run, ticks, place },
         Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
         Reply::Refused { why } => Answer::Rejected { why: why.clone() },
         Reply::Board { places, total } => {
-            let (course, category) = match a.game {
-                Some(g) => match g.answer {
-                    Answer::Board { course, category, .. } => (course, category),
-                    _ => (0, 0),
-                },
-                None => (0, 0),
-            }
             Answer::Board { course, category, places: places.clone(), total }
         },
         Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
         Reply::Around { places, at } => Answer::Around { places: places.clone(), at },
+        Reply::Unplaced => Answer::Unplaced,
         Reply::Names { found } => Answer::Names { found: found.clone() },
         _ => Answer::Offline {
             why: String::from("The boards sent something the console can't read."),
         },
     }
-    answer_game(mut a, take answer)
 }
 
 /// The answer to the game's ask: its next call takes it.
@@ -2154,4 +2160,19 @@ fn posting_unknown_is_asked_until_its_known_and_never_an_opt_out() {
     assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
     let l = linked(a)
     assert(l.posting_known && l.may_post && !l.post_best && !wants_posting(a, 99.0), "known")
+}
+
+@test
+fn a_name_with_no_place_on_a_board_is_said_so_to_the_game() {
+    let Answer::Unplaced = game_answer(Reply::Unplaced, course: 0, category: 0) else {
+        panic("no place, said")
+    }
+    let Answer::Board { course, category, .. } = game_answer(
+        Reply::Board { places: Vec::new(), total: 0 },
+        course: 3,
+        category: 1,
+    ) else {
+        panic("a board")
+    }
+    assert(course == 3 && category == 1, "the board asked for")
 }

@@ -891,7 +891,9 @@ impl<G: Game> Engine<G> {
     /// Answers request `conn` with `reply`, once: a public read's answer may be cached.
     fn reply(mut self, conn: u32, reply: take Reply) {
         let age = match reply {
-            Reply::Board { .. } | Reply::Around { .. } | Reply::Names { .. } => BOARD_AGE,
+            Reply::Board { .. } | Reply::Around { .. } | Reply::Unplaced | Reply::Names { .. } => {
+                BOARD_AGE
+            },
             Reply::Run { .. } => RUN_AGE,
             _ => 0,
         }
@@ -1479,11 +1481,13 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That board doesn't exist.")
                     return
                 }
+                // Through the names on the boards alone (`p/`), and one answer for any name without
+                // a place there, so a slice never says whether an account that never posted exists.
                 let Some(n) = names::parse(name.as_str()) else {
-                    self.refuse(conn, "No one has that name.")
+                    self.reply(conn, Reply::Unplaced)
                     return
                 }
-                self.get(name_key(n), Step::AroundName, take job)
+                self.get(posted_key(n), Step::AroundName, take job)
             },
             Request::Names { game, title, noun, epithet } => {
                 if game.as_str() != self.game.id() {
@@ -2626,7 +2630,7 @@ impl<G: Game> Engine<G> {
             Step::AroundName => {
                 let id: Option<u64> = got(answer)
                 let Some(id) = id else {
-                    self.refuse(conn, "No one has that name.")
+                    self.reply(conn, Reply::Unplaced)
                     return
                 }
                 let Request::Around { game, course, category, .. } = j.request.clone() else {
@@ -2647,7 +2651,7 @@ impl<G: Game> Engine<G> {
                     None => None,
                 }
                 let Some(b) = b else {
-                    self.refuse(conn, "That name has no run on that board.")
+                    self.reply(conn, Reply::Unplaced)
                     return
                 }
                 // Every place ahead of it, as many as are counted: how many, and the last of them

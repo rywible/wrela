@@ -633,6 +633,11 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 )
                 fetch_above(mut o, places, at)
             },
+            // No place there yet: any run of the account's is its first.
+            Answer::Unplaced => {
+                learn(mut o, course, category, 0)
+                o.slices.retain(|b| b.course != course || b.category != category)
+            },
             _ => o.again_at = o.time + AGAIN,
         },
         Asked::Watch { name, place } => match answer {
@@ -1343,11 +1348,8 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     let (ask, asked) = o.fetches.remove(0)
     let Ask::Around { name, .. } = ask else { panic("the slice around the account") }
     assert(name == String::from(ME))
-    answered(
-        mut o,
-        asked,
-        Answer::Around { places: Vec::new(), at: 0 },
-    )
+    // The account has no place on that board yet (the server's `Unplaced`).
+    answered(mut o, asked, Answer::Unplaced)
     pump(mut o)
     let Some((Ask::Upload { replay, .. }, _)) = o.asks.pop() else { panic("posted") }
     assert(replay == save(mine(990)))

@@ -1759,21 +1759,27 @@ fn a_slice_holds_the_places_around_a_name() {
     let (r, _) = h.read(mut e, 20, around(names[0].clone(), 0))
     let Reply::Around { places, at } = r else { panic("a slice") }
     assert(at == 1 && places.len() == AROUND + 1 && places[0].name == names[0])
-    // A name nobody has, text that isn't a name, and a board the name has no run on.
+    // A name nobody has, text that isn't a name, a board the name has no run on, and an account
+    // that never posted: one answer, kept as a board's page is, so a slice says nothing of whether
+    // an account exists.
     let nobody = names::text(names::draw(77777))
+    let quiet = sign_up(mut e, mut h, 30, 40)
+    let _ = h.say(mut e, 30, Request::Keep { csrf: quiet.csrf.clone() })
     for (name, course) in [
         (take nobody, 0),
         (String::from("Sir Nobody"), 0),
         (names[0].clone(), 1),
+        (quiet.name.clone(), 0),
     ] {
-        let (r, _) = h.read(mut e, 20, around(name.clone(), course))
-        assert(refused([take r]), name.as_str())
+        let a = h.read_whole(mut e, 20, around(name.clone(), course))
+        assert(save(a.reply) == save(Reply::Unplaced), name.as_str())
+        assert(a.public == server::BOARD_AGE, "kept as a board's page is")
     }
 }
 
 /// Puts `n` places on the toy's any% board of course 0 straight into the store, the k-th with
-/// `100 + k` ticks, account `1000 + k` and the name that seed `k` draws, each with its name and its
-/// best.
+/// `100 + k` ticks, account `1000 + k` and the name that seed `k` draws, each with its name (on the
+/// boards too, `p/`) and its best.
 fn crowd(h: mut Host, n: u32) {
     for k in 0..n {
         let id = u64(1000 + k)
@@ -1798,6 +1804,7 @@ fn crowd(h: mut Host, n: u32) {
             save(server::Best { run: id, ticks: 100 + k, ranked, replay: Vec::new() }),
         )
         put(mut h, account::name_key(name), save(id))
+        put(mut h, account::posted_key(name), save(id))
     }
 }
 

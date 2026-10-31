@@ -43,7 +43,8 @@ pub enum Ask: Clone + Serialize {
     /// A run's replay by its hash (a place's `replay`), to watch or race: answered by `Run`, and
     /// kept by the browser's cache, so asking again costs nothing.
     Replay { hash: Vec<u8> },
-    /// The places around `name`'s on a board (`wire::WHOLE` for a whole game's).
+    /// The places around `name`'s on a board (`wire::WHOLE` for a whole game's): answered by
+    /// `Around`, or by `Unplaced` when the name has no place there.
     Around { course: u32, category: u32, name: String },
     /// The names whose title, noun and epithet start with these (an empty part matches any).
     Names { title: String, noun: String, epithet: String },
@@ -70,6 +71,9 @@ pub enum Answer: Clone + Serialize {
     /// A slice of a board: the places around the name asked for, which is place `at` (0: past the
     /// first thousand).
     Around { places: Vec<Place>, at: u32 },
+    /// The name asked about (`Around`) has no place on that board: the account has no run there
+    /// (yet), so any run of its would be its first.
+    Unplaced,
     Names { found: Vec<Found> },
     /// The agreement (`Consent`) is recorded: what it changed is in the call's account.
     Done,

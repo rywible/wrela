@@ -116,7 +116,8 @@ pub enum Request: Clone + Serialize {
     /// `replay_path(hash)`, never changing, so a cache keeps it a year.
     Replay { hash: Vec<u8> },
     /// The places around `name`'s on a board (`course` or WHOLE, and `category`): `AROUND` above
-    /// it, its own, and `AROUND` below.
+    /// it, its own, and `AROUND` below; or `Unplaced`, if the name has no place there. Only names
+    /// with runs on the boards are read, so it says nothing of an account that never posted.
     Around { game: String, course: u32, category: u32, name: String },
     /// The names on `game`'s boards whose title, noun and epithet start with these (any case; an
     /// empty part matches any), at most `MOST_FOUND`, each with its runs on the boards.
@@ -211,6 +212,10 @@ pub enum Reply: Clone + Serialize {
     /// A slice of a board: the places around an account's, which is place `at` (0: past the first
     /// `MOST_PLACE`).
     Around { places: Vec<Place>, at: u32 },
+    /// The name asked about (`Around`) has no place on that board: no run of its there, no run on
+    /// any board, or no such name. One answer for all of them, so a slice never says whether an
+    /// account exists.
+    Unplaced,
     Names { found: Vec<Found> },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
