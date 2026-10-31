@@ -394,3 +394,31 @@ fn every_clump_of_leaves_has_its_wood_in_it() {
 
 
 
+
+/// E1.4: a 200-year oak's bark has deeper cracks than a 40-year one's (its relief's range, as the
+/// bark's pixel shades it: `growth::bark_cracks` on the oak's own bark's ridges), and moss covers
+/// a wet, shaded trunk's north face more than its south (the vale's sun in the south: the coverage
+/// the limb's vertex works out, `growth::moss_at`, averaged over its patches).
+@test
+fn old_bark_cracks_deeper_and_moss_takes_the_north_face() {
+    let oak = trees::kinds::LOOKS[trees::kinds::OAK_OPEN].1
+    let range = |age: f32| {
+        let h = engine::substance::history_of(age, 600.0, 0.7, 0.5, 0.6)
+        let deep = engine::growth::bark_cracks(h).y
+        // Its ridges' highest and lowest (`Bark::raised` at a ridge and in a furrow).
+        let hi = oak.raised(vec4(1.0, 1.0, 1.0, 1.0)) * deep
+        let lo = oak.raised(vec4(0.0, 0.0, 0.0, 0.0)) * deep
+        hi - lo
+    }
+    let (young, old) = (range(40.0), range(200.0))
+    assert(old > 1.3 * young, f"a 200-year oak's relief {old}, a 40-year one's {young}")
+    let wet = engine::substance::history_of(150.0, 600.0, 0.3, 0.8, 0.5)
+    var north = 0.0
+    var south = 0.0
+    for i in 0..64 {
+        let patch = f32(i) / 63.0
+        north += engine::growth::moss_at(wet, vec3(0.0, 0.0, -1.0), 3.0, patch)
+        south += engine::growth::moss_at(wet, vec3(0.0, 0.0, 1.0), 3.0, patch)
+    }
+    assert(north > 2.0 * south, f"moss {north / 64.0} on the north face, {south / 64.0} on the south")
+}
