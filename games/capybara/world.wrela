@@ -12,7 +12,8 @@
 //
 // Paused, the world stands still and its clock with it. The game opens paused on the level's title
 // (`TITLE`): a jump's key, Enter, a click or a controller's A plays. Esc, P or a controller's Start
-// pauses, on the pause's menu (`MENU`): resume, restart, the runs, the options and the controls.
+// pauses, on the pause's menu (`MENU`): resume, restart, the leaderboard, the levels, the options
+// and the controls.
 // The menus are the sim's (engine::menu), so a restart chosen in one replays from the tick log:
 // the arrows, the d-pad or the stick move the focus, a jump's key, Enter or A chooses, and Esc,
 // Backspace or B backs out. A press on a menu's node (the frames publish each page's items as a
@@ -54,11 +55,13 @@ pub const OPTIONS: u32 = 3
 pub const CONTROLS: u32 = 4
 pub const MAP: u32 = 5
 
-/// The menu's items, top to bottom.
+/// The menu's items, in the order a player meets them: the essentials first, Resume and Restart,
+/// then the leaderboard (the runs' page) and the levels, a column; under it Options and Controls
+/// side by side (`menu_moved`).
 pub const RESUME: u32 = 0
 pub const RESTART: u32 = 1
-pub const SEE_MAP: u32 = 2
-pub const SEE_RUNS: u32 = 3
+pub const SEE_BOARD: u32 = 2
+pub const SEE_MAP: u32 = 3
 pub const SEE_OPTIONS: u32 = 4
 pub const SEE_CONTROLS: u32 = 5
 pub const MENU_ITEMS: u32 = 6
@@ -363,6 +366,20 @@ fn nav_of(w: mut World, e: Event) -> Option<Nav> {
     nav
 }
 
+/// The menu's focus after `nav`. Up and down go round the column and the row under it (down from
+/// the levels to Options, up from Resume to Options), and left and right cross the row, so every
+/// item is two presses from Resume at most: Controls is up and right, the levels up twice.
+pub fn menu_moved(nav: Nav, focus: u32) -> u32 {
+    let row = focus == SEE_OPTIONS || focus == SEE_CONTROLS
+    if nav == Nav::Down {
+        if row { RESUME } else { focus + 1 }
+    } else if nav == Nav::Up {
+        if row { SEE_MAP } else if focus == RESUME { SEE_OPTIONS } else { focus - 1 }
+    } else if (nav == Nav::Left || nav == Nav::Right) && row {
+        if focus == SEE_OPTIONS { SEE_CONTROLS } else { SEE_OPTIONS }
+    } else { focus }
+}
+
 /// Pauses `w`, on the menu.
 fn pause(w: mut World) {
     w.paused = true
@@ -380,7 +397,7 @@ fn choose(w: mut World, item: u32) {
     } else if item == SEE_MAP {
         w.page = MAP
         w.focus = if w.course < LEVELS { w.course } else { 0 }
-    } else if item == SEE_RUNS {
+    } else if item == SEE_BOARD {
         w.page = RUNS
     } else if item == SEE_OPTIONS {
         w.page = OPTIONS
@@ -460,11 +477,13 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
         } else if nav == Some(Nav::Choose) {
             choose(mut w, w.focus)
         } else if let Some(n) = nav {
-            w.focus = moved(n, focus: w.focus, count: MENU_ITEMS)
+            w.focus = menu_moved(n, w.focus)
         }
     } else if w.page == OPTIONS {
         if let Some(item) = pressed {
-            turn(mut w, item, by: 1)
+            if item < OPTION_ITEMS {
+                turn(mut w, item, by: 1)
+            }
         } else if back_out {
             back(mut w, SEE_OPTIONS)
         } else if nav == Some(Nav::Choose) || nav == Some(Nav::Right) {
@@ -502,7 +521,7 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
     } else if w.page == RUNS {
         // The runs' keys are the frames'; only backing out is the sim's.
         if back_out || pressed.is_some() {
-            back(mut w, SEE_RUNS)
+            back(mut w, SEE_BOARD)
         }
     }
 }
@@ -960,7 +979,7 @@ fn the_menu_moves_its_focus_and_chooses_a_restart() {
     assert(w.focus == RESTART, "down a row")
     tick_with(mut w, [down(Key::Up)])
     tick_with(mut w, [down(Key::Up)])
-    assert(w.focus == SEE_CONTROLS, "and round from the top")
+    assert(w.focus == SEE_OPTIONS, "and round from the top, to the row at the foot")
     tick_with(mut w, [down(Key::Down)])
     tick_with(mut w, [down(Key::Down)])
     tick_with(mut w, [down(Key::Space)])
@@ -987,6 +1006,50 @@ fn a_controller_and_its_stick_work_the_menu() {
     assert(w.page == MENU && w.focus == SEE_OPTIONS, "B backs out, to the item it came from")
     tick_with(mut w, [press(PadButton::East)])
     assert(!w.paused, "and from the menu, plays")
+}
+
+@test
+fn every_item_of_the_menu_is_two_presses_from_resume_at_most() {
+    // The fewest presses to each item from Resume, by the arrows alone.
+    var far: [u32; 6] = [99, 99, 99, 99, 99, 99]
+    far[RESUME] = 0
+    for step in 0..MENU_ITEMS {
+        for i in 0..MENU_ITEMS {
+            if far[i] != step {
+                continue
+            }
+            for n in [Nav::Up, Nav::Down, Nav::Left, Nav::Right] {
+                let j = menu_moved(n, i)
+                far[j] = min(far[j], step + 1)
+            }
+        }
+    }
+    for i in 0..MENU_ITEMS {
+        assert(far[i] <= 2, f"item {i} is {far[i]} presses away")
+    }
+    // The essentials first, the leaderboard straight after.
+    assert(RESUME == 0 && RESTART == 1 && SEE_BOARD == 2 && SEE_MAP == 3)
+    // In the sim, from the keys: Esc, up and right, Enter opens the controls.
+    var w = started(WETLANDS)
+    for key in [Key::Escape, Key::Up, Key::Right, Key::Enter] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.paused && w.page == CONTROLS, "the controls")
+    tick_with(mut w, [down(Key::Escape)])
+    assert(w.page == MENU && w.focus == SEE_CONTROLS, "back to the item it came from")
+    for key in [Key::Up, Key::Up, Key::Enter] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.page == RUNS, "up the column to the leaderboard")
+    // The stick crosses the row, and goes round it.
+    assert(menu_moved(Nav::Left, SEE_OPTIONS) == SEE_CONTROLS)
+    assert(menu_moved(Nav::Right, RESTART) == RESTART, "the column doesn't cross")
+    assert(
+        menu_moved(Nav::Down, SEE_CONTROLS) == RESUME &&
+            menu_moved(Nav::Down, SEE_MAP) == SEE_OPTIONS,
+    )
 }
 
 @test
@@ -1027,7 +1090,7 @@ fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
 fn on_the_runs_only_backing_out_is_the_sims() {
     var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
-    choose(mut w, SEE_RUNS)
+    choose(mut w, SEE_BOARD)
     for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::Up, Key::Down] {
         tick_with(mut w, [down(key)])
         tick_with(mut w, [up(key)])
@@ -1037,8 +1100,8 @@ fn on_the_runs_only_backing_out_is_the_sims() {
         "the keys are the frames'",
     )
     tick_with(mut w, [down(Key::Backspace)])
-    assert(w.paused && w.page == MENU && w.focus == SEE_RUNS, "Backspace backs out")
-    choose(mut w, SEE_RUNS)
+    assert(w.paused && w.page == MENU && w.focus == SEE_BOARD, "Backspace backs out")
+    choose(mut w, SEE_BOARD)
     tick_with(mut w, [down(Key::Escape)])
     assert(w.page == MENU, "and Esc")
 }
