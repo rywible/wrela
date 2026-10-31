@@ -603,7 +603,7 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
 /// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
 /// radius at the foot: crooked a little, its torn roots or stump at the foot.
 /// The roots of a fallen tree's root plate (**proposed**).
-const ROOTS: u32 = 12
+pub const ROOTS: u32 = 12
 
 fn log(s: u32, long: f32, girth: f32) -> Plant {
     let bark = Bark {
