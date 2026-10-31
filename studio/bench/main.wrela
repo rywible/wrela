@@ -738,7 +738,11 @@ pub fn measure(
 fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolError> {
     let load = json_of(f"{dir}/results/load.json")?
     let opened = number_at(load, TOP, "opened_ms")
-    let first_frame_ms = number_at(load, TOP, "first_submitted_ms") - opened
+    // No frame submitted: 0, which the starts read as a failure, never a time before the page.
+    let first_frame_ms = match load.get(TOP, "first_submitted_ms") {
+        Some(k) => load.num(k).unwrap_or(opened) - opened,
+        None => 0.0,
+    }
     var loaded_bytes = 0.0
     if let Some(r) = load.get(TOP, "resources") {
         for i in 0..load.count(r) {

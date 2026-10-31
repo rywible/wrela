@@ -6,8 +6,8 @@ use main::{
     parse_args, playable_frame, posted, slug_of,
 }
 use report::{
-    hitches, Measured, Stats, compared, date_of, doc, gates, intervals, markdown, report_json,
-    spans, stats, throughput, time_of,
+    hitches, Measured, SHOWN, Stats, compared, date_of, doc, gates, intervals, markdown,
+    report_json, spans, stats, throughput, time_of,
 }
 use scenes::{SCENES, Scene, WALKS, script}
 use std::tool::files
@@ -179,7 +179,7 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
     let lines = compared(earlier, Vec::from([take faster]))
     assert(contains(lines.as_str(), "herd: GPU span p50 2.00 -> 1.00 (-50.0%)"), lines.as_str())
     // A report from before frames were timed at their submission: its first frame isn't compared.
-    let mark = "\"shown\": \"submitted\", "
+    let mark = f"\"shown\": \"{SHOWN}\", "
     let Some(at) = text.find(mark) else { panic("the report says how frames are timed") }
     var old = String::from(text.as_str().slice(0, at))
     old.push_str(text.as_str().slice(at + mark.len(), text.len()))

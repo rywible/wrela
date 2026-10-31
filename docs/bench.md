@@ -13,6 +13,7 @@ From toolchain 0.12.0 a frame shows when it's submitted: the first frame and the
 (the frame the program printed `playable` in) are their frames' submissions (`submitted_ms`);
 rows on earlier toolchains took the frames' starts (`began_ms`), which come before their
 pipelines let them be drawn. The intervals and throughput stay on starts, which a timer paces.
+Other engines' rows ("Other engines on this machine") keep their own harness's first frame.
 
 **Reading the intervals.** Headless Chrome's paced frames jitter round the display's 16.67 ms: the
 leapling, whose GPU frame is 2.1 ms, has 226 to 302 of its 600 intervals over 16.7 ms and a 99th
