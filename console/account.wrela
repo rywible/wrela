@@ -1143,9 +1143,9 @@ fn stack(
 /// The row of legal links at the sheet's foot.
 fn legal_row(a: mut Accounts, d: mut DrawList, fonts: Fonts, x: f32, y: f32, w: f32, zoom: f32) {
     let gap = 8.0
-    let bw = (w - 2.0 * gap) / 3.0
-    for k in 0..3 {
-        let label = if k == 0 { "Terms" } else if k == 1 { "Privacy" } else { "Credits" }
+    let bw = (w - 3.0 * gap) / 4.0
+    for k in 0..legal::PAGES {
+        let label = legal::LINKS[k]
         button(
             mut a,
             mut d,
@@ -1249,7 +1249,7 @@ pub fn draw(
         Page::Codes => "Your recovery codes",
         Page::Manage => "Passkeys and sessions",
         Page::Delete => "Delete your account",
-        Page::Legal => legal::TITLES[min(a.legal, 2)],
+        Page::Legal => legal::TITLES[min(a.legal, legal::PAGES - 1)],
         Page::Knighting => "",
     }
     write(mut d, fonts, title, 22.0, vec2(x, y), INK, zoom)
@@ -1439,7 +1439,8 @@ pub fn draw(
                     write(mut d, fonts, p.as_str().slice(2, p.len()), 17.0, vec2(x, py), INK, zoom)
                     py += 30.0
                 } else if p.as_str().starts_with("- ") {
-                    write(mut d, fonts, "•", BODY, vec2(x, py), MUTED, zoom)
+                    // A point: a dot, as the fonts hold no bullet.
+                    d.ellipse(z(Rect::new(x + 3.0, py + BODY * 0.55, 5.0, 5.0), zoom), MUTED)
                     py += paragraph(
                         mut d,
                         fonts,
@@ -1483,9 +1484,9 @@ pub fn draw(
             a.scroll = min(a.scroll, max(end - body.h + 20.0, 0.0))
             y = sheet.bottom() - 52.0
             let gap = 8.0
-            let bw = (iw - 3.0 * gap) / 4.0
-            for k in 0..3 {
-                let label = if k == 0 { "Terms" } else if k == 1 { "Privacy" } else { "Credits" }
+            let bw = (iw - 4.0 * gap) / 5.0
+            for k in 0..legal::PAGES {
+                let label = legal::LINKS[k]
                 button(
                     mut a,
                     mut d,
@@ -1502,7 +1503,7 @@ pub fn draw(
                 mut d,
                 fonts,
                 Act::Back,
-                Rect::new(x + 3.0 * (bw + gap), y, bw, 34.0),
+                Rect::new(x + 4.0 * (bw + gap), y, bw, 34.0),
                 "Back",
                 zoom,
             )

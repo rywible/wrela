@@ -1,4 +1,5 @@
-// The console's legal pages: the Terms of Service, the Privacy Policy and the Credits. They are
+// The console's legal pages: the Terms of Service, the Privacy Policy, the Credits and a health
+// warning (photosensitive seizures). They are
 // drafts in plain English, for a lawyer's review before launch, and each page says so at its top.
 // They describe the accounts as they are built (platform/account.wrela, platform/server.wrela) and
 // the lines Ryan chose not to cross, which keep the accounts outside COPPA's personal information
@@ -12,8 +13,17 @@
 pub const TERMS: u32 = 0
 pub const PRIVACY: u32 = 1
 pub const CREDITS: u32 = 2
+pub const HEALTH: u32 = 3
+pub const PAGES: u32 = 4
 
-pub const TITLES: [Text; 3] = ["Terms of Service", "Privacy Policy", "Credits and licences"]
+pub const TITLES: [Text; 4] = [
+    "Terms of Service",
+    "Privacy Policy",
+    "Credits and licences",
+    "Health warning",
+]
+/// Each page's name on its link.
+pub const LINKS: [Text; 4] = ["Terms", "Privacy", "Credits", "Health"]
 
 /// The banner every page carries.
 pub const DRAFT: Text = "DRAFT for review by a lawyer. Not yet in force."
@@ -26,10 +36,11 @@ pub const LICENCES: [Text; 4] = [
     "fonts/OFL-JetBrainsMono.txt",
 ]
 
-pub const TERMS_TEXT: [Text; 40] = [
+pub const TERMS_TEXT: [Text; 42] = [
     "Last changed 30 October 2026.",
     "# Who we are",
-    "wrela.dev is a place to play games made with Wrela. It is run by Ryan Wible (\"we\", \"us\"). To reach us about these terms, write to [contact address, to be added before launch].",
+    "wrela.dev is a place to play games made with Wrela. It is run by [operator: Ryan Wible or his LLC, to be decided] (\"we\", \"us\"). To reach us about these terms, write to [contact address, to be added before launch].",
+    "wrela.dev is free. It shows no ads and sells nothing.",
     "# Playing without an account",
     "You can play every game on wrela.dev without an account. Your saves and your best runs stay in your browser, on your device.",
     "# Your account",
@@ -55,9 +66,10 @@ pub const TERMS_TEXT: [Text; 40] = [
     "# Children",
     "wrela.dev has no age check. It is built so that it doesn't collect personal information from anyone: no email, no typed names, no chat, no voice or video. The Privacy Policy says exactly what we keep.",
     "# No warranty",
-    "The service is free and provided as it is. We try to keep it running and your account safe, but we can't promise it will always be available, free of mistakes, or that your runs and places will be kept forever.",
+    "The service, its games and everything on it are provided \"as is\" and \"as available\", without warranties of any kind, express or implied, including any warranty of merchantability, fitness for a particular purpose or non-infringement. We don't promise it will always be available, free of mistakes or safe for every person to play, or that your account, runs and places will be kept. You use it at your own risk.",
+    "Some games have flashing lights and fast motion. Read the Health warning before you play.",
     "# Limits on our liability",
-    "As far as the law allows, we aren't liable for indirect or consequential losses, or for the loss of runs, places or accounts. [To be reviewed by a lawyer for each place we serve.]",
+    "As far as the law allows, [operator] is not liable for any indirect, incidental, special, consequential or punitive damages, or for any loss of data, accounts, runs or places, arising from your use of the service or the games, even if told such loss was possible. As far as the law allows, our total liability for any claim about the service is limited to zero, since you paid nothing for it. Some places don't allow these limits, and there they apply only as far as the law of that place allows. [To be reviewed by a lawyer for each place we serve.]",
     "# Changes",
     "If we change these terms, we will show the new date at the top and say what changed on this page before the change takes effect. If you keep using an account after that, the new terms apply; if you don't agree, you can delete it.",
     "# The law",
@@ -69,9 +81,10 @@ pub const TERMS_TEXT: [Text; 40] = [
     "This page is a draft for a lawyer's review and is not yet in force.",
 ]
 
-pub const PRIVACY_TEXT: [Text; 57] = [
+pub const PRIVACY_TEXT: [Text; 58] = [
     "Last changed 30 October 2026.",
     "# In short",
+    "wrela.dev is free. It shows no ads, sells nothing, and never sells or rents anything about you to anyone.",
     "We built accounts to know as little about you as we can. We don't ask for your email, your name, your age or where you are. We never see a password. We don't show ads and we don't use anyone else's analytics.",
     "You can play every game without an account. Then nothing about you leaves your device.",
     "# What we keep, and only this",
@@ -144,6 +157,18 @@ pub const CREDITS_TEXT: [Text; 12] = [
     "",
 ]
 
+pub const HEALTH_TEXT: [Text; 9] = [
+    "# Photosensitive seizures",
+    "A very small number of people may have a seizure when they see certain visual images, including flashing lights, patterns or fast motion, such as those in video games. This can happen to people with no history of seizures or epilepsy.",
+    "Stop playing at once and see a doctor if you or a child playing has any of these: lightheadedness, changed vision, eye or face twitching, jerking or shaking of the arms or legs, confusion, disorientation, or any involuntary movement or loss of awareness.",
+    "Parents: watch your children while they play, and ask them about these symptoms. Children and teenagers are more likely than adults to have these seizures.",
+    "# To lower the risk",
+    "- Play in a well-lit room, sitting farther from the screen.",
+    "- Don't play when you are drowsy or tired.",
+    "- Take a break of at least 10 to 15 minutes every hour. Turning on your system's reduced-motion setting calms the console's motion.",
+    "If you or anyone in your family has had seizures or epilepsy, talk to a doctor before playing. This page is a draft for a lawyer's review.",
+]
+
 /// Page `page`'s paragraphs.
 pub fn paragraphs(page: u32) -> Vec<String> {
     var out: Vec<String> = Vec::new()
@@ -153,6 +178,10 @@ pub fn paragraphs(page: u32) -> Vec<String> {
         }
     } else if page == PRIVACY {
         for p in PRIVACY_TEXT {
+            out.push(String::from(p))
+        }
+    } else if page == HEALTH {
+        for p in HEALTH_TEXT {
             out.push(String::from(p))
         }
     } else {
@@ -165,7 +194,7 @@ pub fn paragraphs(page: u32) -> Vec<String> {
 
 @test
 fn the_pages_are_drafts_and_promise_what_the_server_does() {
-    for page in [TERMS, PRIVACY] {
+    for page in [TERMS, PRIVACY, HEALTH] {
         let ps = paragraphs(page)
         var all = String::new()
         for p in ps {
@@ -186,6 +215,14 @@ fn the_pages_are_drafts_and_promise_what_the_server_does() {
         privacy.as_str().find("Fly.io").is_some() && privacy.as_str().find("Cloudflare").is_some(),
     )
     assert(privacy.as_str().find("No IP addresses").is_some())
+    assert(privacy.as_str().find("sells nothing").is_some(), "free, no ads, sells nothing")
+    var terms = String::new()
+    for p in TERMS_TEXT {
+        terms.push_str(p)
+    }
+    for promise in ["\"as is\"", "not liable", "[operator", "Health warning"] {
+        assert(terms.as_str().find(promise).is_some(), promise)
+    }
 }
 
 fn account_life_days() -> u64 {
