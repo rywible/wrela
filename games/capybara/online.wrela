@@ -5,8 +5,9 @@
 // posting. Offline, or opened alone, every run stays in the game's own storage, and nothing is
 // asked of the network unless the player is signed in or opened the World's board or the search.
 //
-// Posting is the player's choice. A post by hand first asks the console for its screen of what
-// posting makes public, until the account has agreed (`Ask::Consent`). With "Post my best runs"
+// Posting is the player's choice. A post by hand first waits on the game's own screen of what
+// posting makes public (platform/posting.wrela's words: `consenting`), until the account has
+// agreed; the player's Post there is recorded through the console (`consent`, `Ask::Consent`). With "Post my best runs"
 // on (`Account::post_best`), a finished run that beats the account's place on its board, or is its
 // first there, is posted when the run ends; one made while the game can't post waits in the game's
 // storage (`WAITING`, beside `UPLOADED`) and is posted when the console next links with the
@@ -19,6 +20,7 @@
 // choosing a row plays at once, and a world's ghost has its run.
 
 use platform::link::{Account, Answer, Ask, FromGame, to_game}
+use platform::posting
 use platform::wire::{Found, Place, WHOLE}
 use replay::{ANY, FULL, Replay, YOU, counts}
 use std::hash::sha256::sha256
@@ -64,14 +66,14 @@ struct Waiting: Serialize {
 enum Asked: Clone + Eq {
     /// Run `run` posted (`hash` its fingerprint).
     Upload { run: Replay, hash: Vec<u8> },
-    /// The console's screen of what posting makes public, before `run` is posted.
+    /// The player's Post on the screen of what posting makes public, recorded before `run` is
+    /// posted.
     Consent { run: Replay },
     Board { course: u32, category: u32 },
     Around { course: u32, category: u32 },
     Watch { name: String, place: u32 },
     Replay { hash: Vec<u8> },
     Names { query: Vec<String>, course: u32 },
-    SaveCodes,
 }
 
 /// A world's board as last given: its course (or `WHOLE`), category, places, how many it has,
@@ -126,6 +128,9 @@ pub struct Online {
     found: u32,
     found_boards: Vec<Shown>,
     found_note: String,
+    /// The run posted by hand while the account hasn't agreed to what posting makes public: the
+    /// game shows posting.wrela's screen until the player chooses (`consent`).
+    pub consenting: Option<Replay>,
     time: f32,
 }
 
@@ -191,6 +196,7 @@ pub fn online() -> Online {
         found: 0,
         found_boards: Vec::new(),
         found_note: String::new(),
+        consenting: None,
         time: 0.0,
     }
 }
@@ -485,8 +491,8 @@ fn pump(o: mut Online) {
     }
 }
 
-/// Posts run `r` at the player's choice, unless it has been: the console's screen of what posting
-/// makes public first, until the account has agreed. Its status says how it went.
+/// Posts run `r` at the player's choice, unless it has been: the screen of what posting makes
+/// public first (`consenting`), until the account has agreed. Its status says how it went.
 pub fn post(o: mut Online, r: Replay) {
     let hash = fingerprint(r)
     if posted(o, hash) {
@@ -503,11 +509,25 @@ pub fn post(o: mut Online, r: Replay) {
     }
     set_status(mut o, hash.clone(), String::from("Posting…"))
     if !o.account.may_post {
-        let _ = ask(mut o, Ask::Consent, Asked::Consent { run: r.clone() }, By::Player)
+        o.consenting = Some(r.clone())
         return
     }
     let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
     let _ = ask(mut o, take upload, Asked::Upload { run: r.clone(), hash }, By::Player)
+}
+
+/// The player's choice on the screen of what posting makes public, for the run it was shown for:
+/// Post (`post`, with posting.wrela's `BEST_RUNS` box ticked or not) is recorded through the
+/// console, then the run goes; Not now posts nothing.
+pub fn consent(o: mut Online, post: bool, best_runs: bool) {
+    let Some(r) = o.consenting.clone() else { return }
+    o.consenting = None
+    if !post {
+        set_status(mut o, fingerprint(r), String::from("Not posted"))
+        return
+    }
+    let agreed = Ask::Consent { version: posting::VERSION, best_runs }
+    let _ = ask(mut o, take agreed, Asked::Consent { run: r }, By::Player)
 }
 
 /// What to say of the run whose fingerprint is `hash`: how its post went, or that it was posted;
@@ -548,11 +568,6 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     for i in 0..o.boards.len() {
                         o.boards[i].at = o.time - STALE
                     }
-                    // After the account's first post: its recovery codes, if they're still to be
-                    // saved (the console reminds it once a load).
-                    if o.account.save_codes {
-                        let _ = ask(mut o, Ask::SaveCodes, Asked::SaveCodes, By::Background)
-                    }
                 },
                 Answer::Rejected { why } => {
                     unwait(mut o, hash)
@@ -575,6 +590,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 }
             },
             Answer::Offline { why } => set_status(mut o, fingerprint(run), why.clone()),
+            Answer::Rejected { why } => set_status(mut o, fingerprint(run), why.clone()),
             _ => {},
         },
         Asked::Board { course, category } => {
@@ -653,7 +669,6 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 _ => {},
             }
         },
-        Asked::SaveCodes => {},
     }
 }
 
@@ -1188,16 +1203,22 @@ fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
 }
 
 @test
-fn a_post_asks_for_the_consoles_consent_until_the_account_agrees() {
+fn a_post_waits_on_the_players_consent_until_the_account_agrees() {
     var o = signed_in()
     o.account.may_post = false
     let r = mine(991)
     post(mut o, r.clone())
-    assert(o.asks.len() == 1, "one ask")
-    let (ask, asked) = o.asks.remove(0)
-    let Ask::Consent = ask else { panic("the console's screen first, never the upload") }
-    answered(mut o, asked.clone(), Answer::Done)
+    assert(o.asks.is_empty() && o.consenting.is_some(), "the screen first, nothing asked")
+    consent(mut o, post: false, best_runs: true)
     assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Not posted"), "not now")
+    post(mut o, r.clone())
+    consent(mut o, post: true, best_runs: true)
+    assert(o.asks.len() == 1 && o.consenting.is_none(), "one ask")
+    let (ask, asked) = o.asks.remove(0)
+    let Ask::Consent { version, best_runs } = ask else { panic("the choice, never the upload") }
+    assert(version == posting::VERSION && best_runs, "what the player read and chose")
+    answered(mut o, asked.clone(), Answer::Done)
+    assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Not posted"), "refused")
     o.account.may_post = true
     o.account.post_best = true
     answered(mut o, asked, Answer::Done)

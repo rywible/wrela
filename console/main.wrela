@@ -2698,7 +2698,7 @@ pub fn serve_init() -> console_server::serve::Server {
     let versions = platform::server::Versions {
         terms: legal::TERMS_VERSION,
         privacy: legal::PRIVACY_VERSION,
-        posting: legal::POSTING_VERSION,
+        posting: platform::posting::VERSION,
     }
     console_server::serve::init(RP_ID, ORIGIN, versions)
 }

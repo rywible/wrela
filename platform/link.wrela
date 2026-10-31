@@ -16,9 +16,10 @@ use wire::{Found, Place}
 
 /// The account, as a game may know it: its name and a token for the game's boards (empty when
 /// signed out, or before the name is fixed), whether it may post (it has agreed to what posting
-/// makes public: until then a post asks `Consent` first), whether it posts its best runs, and
-/// whether its recovery codes are still to be saved (the console holds them until they are; a first
-/// post's results may remind the player once, `SaveCodes`).
+/// makes public: until then the game shows posting.wrela's words, and asks `Consent` once the
+/// player chooses Post), whether it posts its best runs, and whether its recovery codes are still
+/// to be saved (the console holds them on its account page until they are: after a post the game
+/// may show posting.wrela's `SAVE_CODES`).
 pub struct Account: Clone + Eq + Serialize {
     pub signed_in: bool,
     pub name: String,
@@ -43,14 +44,12 @@ pub enum Ask: Clone + Serialize {
     Around { course: u32, category: u32, name: String },
     /// The names whose title, noun and epithet start with these (an empty part matches any).
     Names { title: String, noun: String, epithet: String },
-    /// Before the account's first post: the console shows what posting makes public, with Post and
-    /// Not now, and answers `Done` once the player chooses (at once if the account already
-    /// agreed). The account that call carries says what was chosen: `may_post` once agreed, and
-    /// `post_best`.
-    Consent,
-    /// The console shows the account's recovery codes to save, if they still are and it hasn't
-    /// since it opened: answered by `Done`.
-    SaveCodes,
+    /// The player chose Post on the game's own screen of what posting makes public
+    /// (posting.wrela's words, at `version`, its `VERSION`), with posting.wrela's `BEST_RUNS` box
+    /// ticked or not (`best_runs`): the console records the agreement with the server and answers
+    /// `Done`, its call's account then saying `may_post` and `post_best`; or why not. A game asks it
+    /// only after the player's choice, never on its own, and never for Not now.
+    Consent { version: u32, best_runs: bool },
 }
 
 /// The answer to a game's last ask.
@@ -69,8 +68,7 @@ pub enum Answer: Clone + Serialize {
     /// first thousand).
     Around { places: Vec<Place>, at: u32 },
     Names { found: Vec<Found> },
-    /// The console's own page asked for (`Consent`, `SaveCodes`) is done with: what it changed is
-    /// in the call's account.
+    /// The agreement (`Consent`) is recorded: what it changed is in the call's account.
     Done,
     /// The console couldn't ask: offline, or signed out, said for a person.
     Offline { why: String },

@@ -8,7 +8,8 @@
 // which a lawyer may change).
 //
 // Each agreement has a version: the Terms and the Privacy Policy, which sign-up agrees to, and what
-// posting makes public, which an account agrees to before its first post. The server takes only
+// posting makes public (platform/posting.wrela), which an account agrees to before its first post,
+// in the console or in a game. The server takes only
 // these versions (platform/server.wrela's `Versions`, given by main.wrela's `serve_init`) and keeps
 // which one each account agreed to, and when: a change to a page's substance is a new version, and
 // the next sign-up or post asks again.
@@ -33,21 +34,11 @@ pub const TITLES: [Text; 4] = [
 /// Each page's name on its link.
 pub const LINKS: [Text; 4] = ["Terms", "Privacy", "Credits", "Health"]
 
-/// The versions of the Terms, the Privacy Policy and what posting makes public: the day each last
-/// changed, as a number.
+/// The versions of the Terms and the Privacy Policy: the day each last changed, as a number. What
+/// posting makes public has its own (platform/posting.wrela's `VERSION`), since a game shows those
+/// words too.
 pub const TERMS_VERSION: u32 = 20261031
 pub const PRIVACY_VERSION: u32 = 20261031
-pub const POSTING_VERSION: u32 = 20261031
-
-/// What posting makes public, as the console shows it before an account's first post: each item
-/// anyone can see, then what is never shared.
-pub const POSTING_SHARED: [Text; 4] = [
-    "Your account's name",
-    "The run's course, category and time",
-    "Its replay (the buttons you pressed), which anyone can watch and race",
-    "When you posted it",
-]
-pub const POSTING_NEVER: Text = "Nothing else is shared. We never have your address, your device or an email."
 
 /// The banner every page carries.
 pub const DRAFT: Text = "DRAFT for review by a lawyer. Not yet in force."

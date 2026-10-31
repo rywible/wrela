@@ -18,11 +18,18 @@
 //
 // A new account's recovery codes come after its sign-up, not in it: the server gives them once,
 // and the console keeps them in memory only (never in storage) until the player says they're
-// saved, offering them on the account's page meanwhile, and once at a game's ask (`SaveCodes`,
-// after a first post). Gone unsaved (the console closed), new ones take a fresh passkey sign-in.
+// saved, offering them on the account's page meanwhile (a game is told they wait,
+// `Account::save_codes`, and may remind the player to come here). Gone unsaved (the console
+// closed), new ones take a fresh passkey sign-in.
+//
+// What posting makes public (platform/posting.wrela) is shown here, on the account's page, before
+// "Post my best runs" is first turned on; a game shows the same words itself before a first post,
+// since the console is hidden while a game shows, and asks the console only to record the player's
+// choice (`Ask::Consent`).
 
 use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
+use platform::posting
 use platform::session::answer_of
 use platform::wire::{
     ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
@@ -116,6 +123,8 @@ enum Purpose: Copy + Eq {
     Delete,
     Game,
     Consent,
+    /// A game's `Ask::Consent`, carried to the server: its answer goes back to the game.
+    GameConsent,
 }
 
 /// A game the console shows, and the call open to it.
@@ -179,11 +188,8 @@ pub struct Accounts {
     posting_asked: bool,
     may_post: bool,
     post_best: bool,
-    /// The first post's screen: its box, and whether a game waits on the choice.
+    /// What posting shares, shown before "Post my best runs" is first turned on: its box.
     consent_best: bool,
-    consent_for_game: bool,
-    /// Whether the codes have been offered at a game's ask since the console opened.
-    reminded: bool,
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
@@ -238,8 +244,6 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         may_post: false,
         post_best: false,
         consent_best: false,
-        consent_for_game: false,
-        reminded: false,
     }
 }
 
@@ -330,6 +334,16 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     a.busy = false
     if purpose == Purpose::Game {
         game_replied(mut a, reply)
+        return
+    }
+    if purpose == Purpose::GameConsent {
+        // The game's player agreed on its own screen: recorded, the game hears so with the account.
+        if posting_read(mut a, reply) {
+            give_game_account(mut a)
+            answer_game(mut a, Answer::Done)
+        } else {
+            game_replied(mut a, reply)
+        }
         return
     }
     match reply {
@@ -435,19 +449,10 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             a.page = Page::Codes
             give_game_account(mut a)
         },
-        Reply::Posting { agreed, best_runs } => {
-            a.may_post = agreed
-            a.post_best = best_runs
+        Reply::Posting { .. } => {
+            let _ = posting_read(mut a, reply)
             if purpose == Purpose::Consent {
-                a.message.clear()
-                if a.consent_for_game {
-                    // The game asked: its answer, and back to it.
-                    a.consent_for_game = false
-                    answer_game(mut a, Answer::Done)
-                    a.open = false
-                } else {
-                    open_page(mut a, Page::Account)
-                }
+                open_page(mut a, Page::Account)
             }
             give_game_account(mut a)
         },
@@ -499,6 +504,14 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         _ => {},
     }
+}
+
+/// What the account chose of posting, if `reply` says (`Reply::Posting`): whether it did.
+fn posting_read(a: mut Accounts, reply: Reply) -> bool {
+    let Reply::Posting { agreed, best_runs } = reply else { return false }
+    a.may_post = agreed
+    a.post_best = best_runs
+    true
 }
 
 // ---- the game shown ------------------------------------------------------------------------
@@ -653,32 +666,6 @@ fn answer_game(a: mut Accounts, answer: take Answer) {
 fn game_asked(a: mut Accounts, bytes: [u8]) {
     let Some(g) = shown_game(a) else { return }
     let Some(ask) = from_game(bytes) else { return }
-    // The console's own pages: the codes need no server, and the first post's screen waits on the
-    // player.
-    if let Ask::SaveCodes = ask {
-        let _ = remind_codes(mut a)
-        answer_game(mut a, Answer::Done)
-        return
-    }
-    // Unless the account already agreed; if the console can't post at all, that's said below, as
-    // for any ask it can't carry.
-    if let Ask::Consent = ask {
-        if answer_now(a.me, a.online, a.connected, Ask::Consent).is_none() {
-            if a.may_post {
-                answer_game(mut a, Answer::Done)
-                return
-            }
-            match mut a.game {
-                Some(l) => l.asking = true,
-                None => {},
-            }
-            a.consent_for_game = true
-            a.consent_best = a.post_best
-            a.open = true
-            open_page(mut a, Page::Posting)
-            return
-        }
-    }
     if let Some(ans) = answer_now(a.me, a.online, a.connected, ask) {
         match mut a.game {
             Some(l) => l.answer = take ans,
@@ -687,46 +674,58 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
         send_game(mut a)
         return
     }
+    if let Ask::Board { course, category, .. } = ask {
+        // Its reply names no board: the answer kept says which.
+        match mut a.game {
+            Some(l) => l.answer = Answer::Board { course, category, places: Vec::new(), total: 0 },
+            None => {},
+        }
+    }
+    let (r, purpose) = carried(ask, g.id.as_str(), a.csrf)
+    match mut a.game {
+        Some(l) => l.asking = true,
+        None => {},
+    }
+    request(mut a, r, purpose)
+}
+
+/// The request that carries game `game`'s `ask` to the server, and what it's for: a session's
+/// change (the consent) carries the session's CSRF token `csrf`.
+fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
+    let id = String::from(game)
     let r = match ask {
         Ask::Upload { token, replay } => Request::Upload {
             token: token.clone(),
-            game: g.id.clone(),
+            game: id,
             replay: replay.clone(),
         },
-        Ask::Board { course, category, from } => {
-            match mut a.game {
-                Some(l) => l.answer = Answer::Board {
-                    course,
-                    category,
-                    places: Vec::new(),
-                    total: 0,
-                },
-                None => {},
-            }
-            Request::Board { game: g.id.clone(), course, category, from }
+        Ask::Board { course, category, from } => Request::Board {
+            game: id,
+            course,
+            category,
+            from,
         },
         Ask::Watch { run } => Request::Watch { run },
         Ask::Replay { hash } => Request::Replay { hash: hash.clone() },
         Ask::Around { course, category, name } => Request::Around {
-            game: g.id.clone(),
+            game: id,
             course,
             category,
             name: name.clone(),
         },
         Ask::Names { title, noun, epithet } => Request::Names {
-            game: g.id.clone(),
+            game: id,
             title: title.clone(),
             noun: noun.clone(),
             epithet: epithet.clone(),
         },
-        // Answered above.
-        Ask::Consent | Ask::SaveCodes => return,
+        // The player's choice on the game's own screen, recorded as the console's own is.
+        Ask::Consent { version, best_runs } => {
+            let r = Request::Consent { csrf: Vec::from(csrf), version, best_runs }
+            return (take r, Purpose::GameConsent)
+        },
     }
-    match mut a.game {
-        Some(l) => l.asking = true,
-        None => {},
-    }
-    request(mut a, r, Purpose::Game)
+    (take r, Purpose::Game)
 }
 
 /// The answer to a game's `ask` that the console gives at once, without the server: no server yet,
@@ -751,7 +750,7 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
         )
     }
     let posting = match ask {
-        Ask::Upload { .. } | Ask::Consent => true,
+        Ask::Upload { .. } | Ask::Consent { .. } => true,
         _ => false,
     }
     if posting && (!me.signed_in || !me.fixed || me.must_add_passkey) {
@@ -762,18 +761,6 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
         )
     }
     None
-}
-
-/// Shows the account's recovery codes to save, once since the console opened, if they still are:
-/// whether it did. For a game's ask after a first post (`Ask::SaveCodes`).
-pub fn remind_codes(a: mut Accounts) -> bool {
-    if a.codes.is_empty() || a.reminded {
-        return false
-    }
-    a.reminded = true
-    a.open = true
-    open_page(mut a, Page::Codes)
-    true
 }
 
 // ---- each frame ----------------------------------------------------------------------------
@@ -967,14 +954,6 @@ fn asks_consent_first(a: Accounts) -> bool {
     !a.may_post && !a.post_best
 }
 
-/// The first post's screen closed without agreeing: a game that waits hears so.
-fn not_now(a: mut Accounts) {
-    if a.consent_for_game {
-        a.consent_for_game = false
-        answer_game(mut a, Answer::Done)
-    }
-}
-
 fn act(a: mut Accounts, x: Act) {
     a.dirty = true
     if a.busy && sends(x) {
@@ -999,10 +978,7 @@ fn act(a: mut Accounts, x: Act) {
                 a.knight_t = AGAIN
             }
         },
-        Act::Close => {
-            not_now(mut a)
-            a.open = false
-        },
+        Act::Close => a.open = false,
         Act::SignIn => {
             a.message.clear()
             request(
@@ -1066,20 +1042,13 @@ fn act(a: mut Accounts, x: Act) {
         Act::Post => {
             let r = Request::Consent {
                 csrf: a.csrf.clone(),
-                version: legal::POSTING_VERSION,
+                version: posting::VERSION,
                 best_runs: a.consent_best,
             }
             request(mut a, r, Purpose::Consent)
             a.busy = true
         },
-        Act::NotNow => {
-            if a.consent_for_game {
-                not_now(mut a)
-                a.open = false
-            } else {
-                open_page(mut a, Page::Account)
-            }
-        },
+        Act::NotNow => open_page(mut a, Page::Account),
         Act::Manage => open_page(mut a, Page::Manage),
         Act::AddPasskey => {
             request(
@@ -1128,10 +1097,6 @@ fn act(a: mut Accounts, x: Act) {
         Act::Back => {
             if !a.online {
                 a.open = false
-                return
-            }
-            if a.page == Page::Posting && a.consent_for_game {
-                act(mut a, Act::NotNow)
                 return
             }
             let page = returns_to(a)
@@ -1549,7 +1514,7 @@ pub fn draw(
         Page::Account => "Your account",
         Page::Choose => "Your account",
         Page::Create => "Create account",
-        Page::Posting => "Before you post",
+        Page::Posting => posting::TITLE,
         Page::Recover => "Use a recovery code",
         Page::Codes => "Your recovery codes",
         Page::Manage => "Passkeys and sessions",
@@ -1665,7 +1630,7 @@ pub fn draw(
             y += paragraph(
                 mut d,
                 fonts,
-                "Anyone can see these on the world's boards.",
+                posting::LEAD,
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1673,13 +1638,13 @@ pub fn draw(
                 zoom,
             )
             y += 8.0
-            for item in legal::POSTING_SHARED {
+            for item in posting::SHARED {
                 d.ellipse(z(Rect::new(x + 3.0, y + BODY * 0.55, w: 5.0, h: 5.0), zoom), INK)
                 y += paragraph(mut d, fonts, item, BODY, vec2(x + 16.0, y), iw - 16.0, INK, zoom) +
                     4.0
             }
             y += 8.0
-            y += paragraph(mut d, fonts, legal::POSTING_NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
+            y += paragraph(mut d, fonts, posting::NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
             y += 14.0
             checkbox(
                 mut a,
@@ -1688,7 +1653,7 @@ pub fn draw(
                 Act::PostBest,
                 vec2(x, y),
                 iw,
-                "Post my best runs",
+                posting::BEST_RUNS,
                 a.consent_best,
                 zoom,
             )
@@ -1696,7 +1661,7 @@ pub fn draw(
             y += paragraph(
                 mut d,
                 fonts,
-                "Each new personal best goes up when the run ends. You can turn this off on your account page.",
+                posting::BEST_RUNS_NOTE,
                 13.0,
                 vec2(x + 32.0, y),
                 iw - 32.0,
@@ -1704,8 +1669,7 @@ pub fn draw(
                 zoom,
             )
             y += 14.0
-            let agree = if a.consent_for_game { "Post" } else { "Agree" }
-            let items = [(Act::Post, agree, true), (Act::NotNow, "Not now", false)]
+            let items = [(Act::Post, "Agree", true), (Act::NotNow, posting::NOT_NOW, false)]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Account => {
@@ -2098,18 +2062,38 @@ fn posting_waits_for_agreement_and_the_game_hears_it() {
     a.may_post = true
     a.post_best = true
     assert(linked(a).may_post && linked(a).post_best && !asks_consent_first(a))
+    let agreed = Ask::Consent { version: posting::VERSION, best_runs: true }
     let Some(Answer::Offline { .. }) = answer_now(
         a.me,
         online: true,
         connected: false,
-        ask: Ask::Consent,
+        ask: agreed.clone(),
     ) else {
         panic("offline")
     }
     var out = a.me.clone()
     out.signed_in = false
     assert(
-        answer_now(out, online: true, connected: true, ask: Ask::Consent).is_some(),
+        answer_now(out, online: true, connected: true, ask: agreed.clone()).is_some(),
         "signed out",
     )
+}
+
+@test
+fn a_games_consent_is_its_players_choice_recorded_without_the_consoles_page() {
+    let ask = Ask::Consent { version: posting::VERSION, best_runs: true }
+    let (r, purpose) = carried(ask, "capybara", [7, 7])
+    let Request::Consent { csrf, version, best_runs } = r else { panic("the consent, relayed") }
+    assert(purpose == Purpose::GameConsent && csrf == Vec::from([7, 7]))
+    assert(version == posting::VERSION && best_runs, "what the player read and chose")
+    let (_, other) = carried(Ask::Watch { run: 3 }, "capybara", [7, 7])
+    assert(other == Purpose::Game)
+    // Recorded: the game's account says so, and the console's own pages stay closed (a game shown
+    // hides the console).
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(!posting_read(mut a, Reply::Done) && !linked(a).may_post, "not a choice")
+    assert(posting_read(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    assert(linked(a).may_post && linked(a).post_best && !a.open, "agreed, nothing opened")
 }

@@ -1,0 +1,35 @@
+// What posting a run makes public, as a player reads it before an account's first post, and the
+// version of those words that the account agrees to. Both the console (its account page, where
+// the setting lives) and a game (before a post, on its own screen: the console is hidden while a
+// game shows) show these same words, so what an account agreed to is what it read wherever it
+// read it. The server takes only this version (server.wrela's `Versions`, given by the console's
+// build), and keeps which one each account agreed to, and when: a change to their substance is a
+// new version, and the next post asks again.
+
+/// The version of what posting makes public: the day it last changed, as a number.
+pub const VERSION: u32 = 20261031
+
+/// The screen's title, and what comes before the list.
+pub const TITLE: Text = "Before you post"
+pub const LEAD: Text = "Anyone can see these on the world's boards."
+
+/// Each thing anyone can see, then what is never shared.
+pub const SHARED: [Text; 4] = [
+    "Your account's name",
+    "The run's course, category and time",
+    "Its replay (the buttons you pressed), which anyone can watch and race",
+    "When you posted it",
+]
+pub const NEVER: Text = "Nothing else is shared. We never have your address, your device or an email."
+
+/// The screen's box, which posts each new personal best, and what it means.
+pub const BEST_RUNS: Text = "Post my best runs"
+pub const BEST_RUNS_NOTE: Text = "Each new personal best goes up when the run ends. You can turn this off on your account page."
+
+/// The screen's two choices: posting (agreeing to the above, at `VERSION`), and not.
+pub const POST: Text = "Post"
+pub const NOT_NOW: Text = "Not now"
+
+/// The line a game shows after a post while the account's recovery codes are still to be saved
+/// (link.wrela's `Account::save_codes`): the console keeps them on its account page.
+pub const SAVE_CODES: Text = "Save your recovery codes from the console's account page."
