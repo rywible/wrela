@@ -90,6 +90,7 @@ use world::{
     live, present_live, races, tick_live,
 }
 use search::Search
+use online::By
 use attract::{Role, role_of}
 use platform::session::answer_of
 use engine::menu::{Nav, Stick}
@@ -1189,10 +1190,10 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
                 over: over.as_str(),
             )
         } else if page == MENU {
-            // The course's world board, asked for while the menu shows, only for a player who
-            // is signed in, so play stays offline otherwise (design.md, "Online play"): the facts
-            // say the player's place, and the leaderboard opens on it.
-            if s.online.account.signed_in { online::want(mut s.online, snap.course, ANY) }
+            // The course's world board, asked for while the menu shows in the background (only
+            // for a player who is signed in, so play stays offline otherwise: online.wrela's
+            // `By`): the facts say the player's place, and the leaderboard opens on it.
+            online::want(mut s.online, snap.course, ANY, By::Background)
             let hover = hovered(s, screen, MENU)
             screens::list(
                 mut s.list,
@@ -1629,10 +1630,10 @@ fn follow_ghost(s: mut Lab, c: u32) {
     }
     let g = ghost_of(s.settings, has_place(s, c))
     var hash: Vec<u8> = Vec::new()
-    // Signed in, the course's board once: whether the player has a place (the ghost at first is
-    // the run above it), and a world's ghost's run.
+    // Signed in (online.wrela's `By::Background`), the course's board once: whether the player
+    // has a place (the ghost at first is the run above it), and a world's ghost's run.
     let world_ghost = g == ABOVE_GHOST || g == RECORD_GHOST
-    if s.online.account.signed_in && (world_ghost || !s.settings.chosen) {
+    if world_ghost || !s.settings.chosen {
         online::want_once(mut s.online, c, ANY)
     }
     if s.race.is_none() && world_ghost {
@@ -2060,7 +2061,7 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
         }
     } else {
         let course = online::board_course(s.board, c)
-        online::want(mut s.online, course, category)
+        online::want(mut s.online, course, category, By::Player)
         let (shown, said) = online::places(s.online, course, category)
         places = take shown
         note = take said

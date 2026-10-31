@@ -55,7 +55,7 @@ struct Waiting: Serialize {
 }
 
 /// What an ask in flight was, to read its answer.
-enum Asked: Clone {
+enum Asked: Clone + Eq {
     /// Run `run` posted (`hash` its fingerprint).
     Upload { run: Replay, hash: Vec<u8> },
     /// The console's screen of what posting makes public, before `run` is posted.
@@ -111,10 +111,9 @@ pub struct Online {
     /// A post of a waiting run under way, and when the next may be tried (s).
     posting: bool,
     again_at: f32,
-    /// The replays held, oldest first, by their hashes; the hashes asked for; and the one the player
-    /// chose to watch, whose it is and its place.
+    /// The replays held, oldest first, by their hashes; and the one the player chose to watch,
+    /// whose it is and its place.
     held: Vec<(Vec<u8>, Replay)>,
-    fetching: Vec<Vec<u8>>,
     wanted: Option<(Vec<u8>, String, u32)>,
     watch: Option<(Replay, String, u32)>,
     /// The search last asked for (its title, noun and epithet), what it found, and what to say.
@@ -153,7 +152,6 @@ pub fn online() -> Online {
         posting: false,
         again_at: 0.0,
         held: Vec::new(),
-        fetching: Vec::new(),
         wanted: None,
         watch: None,
         query: Vec::new(),
@@ -284,6 +282,70 @@ fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
     o.unsaved = true
 }
 
+// ---- asking ------------------------------------------------------------------------------------
+
+/// Who an ask is for, which says when it may be made (design.md, "Online play": play stays offline
+/// unless the player is signed in or asks for the world).
+pub enum By: Copy + Eq {
+    /// The player asked for it, or for what brings it (a board's rows bring their replays): it
+    /// needs a console.
+    Player,
+    /// Nobody asked: a board for the pause's facts or a ghost, the slice around the account's
+    /// place, the recovery codes' reminder. It needs a signed-in account.
+    Background,
+    /// A post nobody asked for, of a run that beats the account's place: it needs an account that
+    /// posts its best runs (`posts_alone`).
+    Alone,
+}
+
+/// Whether an ask for `by` may be made now.
+fn may(o: Online, by: By) -> bool {
+    match by {
+        By::Player => o.linked,
+        By::Background => o.linked && o.account.signed_in && !o.account.name.is_empty(),
+        By::Alone => posts_alone(o),
+    }
+}
+
+/// Whether `asked` is asked already: in flight, or waiting.
+fn asking(o: Online, asked: Asked) -> bool {
+    if let Some(f) = o.flying {
+        if f == asked {
+            return true
+        }
+    }
+    for (_, a) in o.asks {
+        if a == asked {
+            return true
+        }
+    }
+    for (_, a) in o.fetches {
+        if a == asked {
+            return true
+        }
+    }
+    false
+}
+
+/// Asks `ask` (`asked` to read its answer) for `by`, if `by` may and it isn't asked already: a
+/// replay or a slice behind the player's asks, the rest before them. Whether it was asked.
+fn ask(o: mut Online, ask: take Ask, asked: take Asked, by: By) -> bool {
+    if !may(o, by) || asking(o, asked) {
+        return false
+    }
+    let behind = match asked {
+        Asked::Replay { .. } => true,
+        Asked::Around { .. } => true,
+        _ => false,
+    }
+    if behind {
+        o.fetches.push((take ask, take asked))
+    } else {
+        o.asks.push((take ask, take asked))
+    }
+    true
+}
+
 // ---- posting -----------------------------------------------------------------------------------
 
 /// Whether the game may post a run with nobody asking: linked to a signed-in account that has
@@ -402,14 +464,11 @@ fn pump(o: mut Online) {
         unwait(mut o, hash)
         return
     }
-    o.posting = true
-    set_status(mut o, hash.clone(), String::from("Posting…"))
-    o.asks.push(
-        (
-            Ask::Upload { token: o.account.token.clone(), replay: save(r) },
-            Asked::Upload { run: r, hash },
-        ),
-    )
+    let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
+    if ask(mut o, take upload, Asked::Upload { run: r, hash: hash.clone() }, By::Alone) {
+        o.posting = true
+        set_status(mut o, hash, String::from("Posting…"))
+    }
 }
 
 /// Posts run `r` at the player's choice, unless it has been: the console's screen of what posting
@@ -430,15 +489,11 @@ pub fn post(o: mut Online, r: Replay) {
     }
     set_status(mut o, hash.clone(), String::from("Posting…"))
     if !o.account.may_post {
-        o.asks.push((Ask::Consent, Asked::Consent { run: r.clone() }))
+        let _ = ask(mut o, Ask::Consent, Asked::Consent { run: r.clone() }, By::Player)
         return
     }
-    o.asks.push(
-        (
-            Ask::Upload { token: o.account.token.clone(), replay: save(r) },
-            Asked::Upload { run: r.clone(), hash },
-        ),
-    )
+    let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
+    let _ = ask(mut o, take upload, Asked::Upload { run: r.clone(), hash }, By::Player)
 }
 
 /// What to say of run `r`: how its post went, or that it was posted; empty if neither.
@@ -483,7 +538,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     // to be saved.
                     if o.account.save_codes && !o.reminded {
                         o.reminded = true
-                        o.asks.push((Ask::SaveCodes, Asked::SaveCodes))
+                        let _ = ask(mut o, Ask::SaveCodes, Asked::SaveCodes, By::Background)
                     }
                 },
                 Answer::Rejected { why } => {
@@ -566,7 +621,6 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             _ => {},
         },
         Asked::Replay { hash } => {
-            unfetch(mut o, hash)
             if let Answer::Run { replay, .. } = answer {
                 came(mut o, hash.clone(), replay)
             }
@@ -620,29 +674,17 @@ pub fn ordinal(n: u32) -> String {
 
 // ---- boards ------------------------------------------------------------------------------------
 
-/// Asks for board (`course`, or `WHOLE`, and `category`) if it isn't shown or is stale.
-pub fn want(o: mut Online, course: u32, category: u32) {
+/// Asks for board (`course`, or `WHOLE`, and `category`) for `by`, if it isn't shown or is stale.
+pub fn want(o: mut Online, course: u32, category: u32, by: By) {
     for b in o.boards {
         if b.course == course && b.category == category && o.time - b.at < STALE {
             return
         }
     }
-    for (_, asked) in o.asks {
-        if let Asked::Board { course: c, category: k } = asked {
-            if c == course && k == category {
-                return
-            }
-        }
-    }
-    if let Some(Asked::Board { course: c, category: k }) = o.flying {
-        if c == course && k == category {
-            return
-        }
-    }
-    if !o.linked {
+    let board = Ask::Board { course, category, from: 0 }
+    if !ask(mut o, take board, Asked::Board { course, category }, by) {
         return
     }
-    o.asks.push((Ask::Board { course, category, from: 0 }, Asked::Board { course, category }))
     // Shown as loading until it comes; a board asked again keeps its places meanwhile.
     var found = false
     for b in o.boards {
@@ -664,14 +706,15 @@ pub fn want(o: mut Online, course: u32, category: u32) {
     }
 }
 
-/// Asks for board (`course`, `category`) once, for a ghost: if it has never been shown.
+/// Asks for board (`course`, `category`) once, for a ghost (in the background): if it has never
+/// been shown.
 pub fn want_once(o: mut Online, course: u32, category: u32) {
     for b in o.boards {
         if b.course == course && b.category == category {
             return
         }
     }
-    want(mut o, course, category)
+    want(mut o, course, category, By::Background)
 }
 
 /// Board (`course`, `category`)'s places, and what to say if it has none.
@@ -755,27 +798,8 @@ fn fetch_above(o: mut Online, places: [Place], mine: u32) {
 /// Asks, behind the player's asks, for the slice of board (`course`, `category`) around the
 /// account's place, unless it's asked already.
 fn around(o: mut Online, course: u32, category: u32) {
-    if !o.linked || !o.account.signed_in || o.account.name.is_empty() {
-        return
-    }
-    for (_, asked) in o.fetches {
-        if let Asked::Around { course: c, category: k } = asked {
-            if c == course && k == category {
-                return
-            }
-        }
-    }
-    if let Some(Asked::Around { course: c, category: k }) = o.flying {
-        if c == course && k == category {
-            return
-        }
-    }
-    o.fetches.push(
-        (
-            Ask::Around { course, category, name: o.account.name.clone() },
-            Asked::Around { course, category },
-        ),
-    )
+    let slice = Ask::Around { course, category, name: o.account.name.clone() }
+    let _ = ask(mut o, take slice, Asked::Around { course, category }, By::Background)
 }
 
 /// The course the world's board asks for: the course shown, or a whole game's.
@@ -795,69 +819,32 @@ pub fn held(o: Online, hash: Vec<u8>) -> Option<Replay> {
     None
 }
 
-fn fetching(o: Online, hash: Vec<u8>) -> bool {
-    for h in o.fetching {
-        if h == hash {
-            return true
-        }
-    }
-    false
-}
-
-fn unfetch(o: mut Online, hash: Vec<u8>) {
-    var i = 0
-    while i < o.fetching.len() {
-        if o.fetching[i] == hash {
-            let _ = o.fetching.remove(i)
-        } else {
-            i += 1
-        }
-    }
-}
-
-/// Asks for the replay whose hash is `hash`, behind the player's asks, unless it's held or asked.
+/// Asks for the replay whose hash is `hash`, behind the player's asks, unless it's held or asked:
+/// for what the player asked brings (a board's rows, the places above the account's).
 fn fetch(o: mut Online, hash: Vec<u8>) {
-    if hash.len() != 32 || !o.linked || held(o, hash).is_some() || fetching(o, hash) {
+    if hash.len() != 32 || held(o, hash).is_some() {
         return
     }
-    o.fetching.push(hash.clone())
-    o.fetches.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
+    let _ = ask(
+        mut o,
+        Ask::Replay { hash: hash.clone() },
+        Asked::Replay { hash: hash.clone() },
+        By::Player,
+    )
 }
 
 /// Asks for the replay whose hash is `hash` before anything fetched behind, unless it's held or
-/// already on its way: for a row chosen, a race or a ghost.
+/// already on its way: for a row chosen, a race or a ghost. One waiting behind is brought forward.
 pub fn fetch_now(o: mut Online, hash: Vec<u8>) {
-    if hash.len() != 32 || !o.linked || held(o, hash).is_some() {
-        return
-    }
-    if let Some(Asked::Replay { hash: h }) = o.flying {
-        if h == hash {
+    fetch(mut o, hash)
+    let asked = Asked::Replay { hash: hash.clone() }
+    for i in 0..o.fetches.len() {
+        if o.fetches[i].1 == asked {
+            let waiting = o.fetches.remove(i)
+            o.asks.push(take waiting)
             return
         }
     }
-    for (_, asked) in o.asks {
-        if let Asked::Replay { hash: h } = asked {
-            if h == hash {
-                return
-            }
-        }
-    }
-    var i = 0
-    while i < o.fetches.len() {
-        var same = false
-        if let Asked::Replay { hash: h } = o.fetches[i].1 {
-            same = h == hash
-        }
-        if same {
-            let _ = o.fetches.remove(i)
-        } else {
-            i += 1
-        }
-    }
-    if !fetching(o, hash) {
-        o.fetching.push(hash.clone())
-    }
-    o.asks.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
 }
 
 /// A replay that came for `hash`: held if its bytes are the run's own (their SHA-256 is the hash)
@@ -897,12 +884,8 @@ pub fn watch_place(o: mut Online, place: Place) {
     if place.run == 0 || o.flying.is_some() && o.asks.len() > 4 {
         return
     }
-    o.asks.push(
-        (
-            Ask::Watch { run: place.run },
-            Asked::Watch { name: place.name.clone(), place: place.place },
-        ),
-    )
+    let watched = Asked::Watch { name: place.name.clone(), place: place.place }
+    let _ = ask(mut o, Ask::Watch { run: place.run }, take watched, By::Player)
 }
 
 /// A world's run that has come to watch, whose it is and its place, once.
@@ -973,11 +956,6 @@ pub fn whose(o: Online, course: u32, hash: Vec<u8>) -> Option<(String, u32)> {
 /// search, so it may ask): unless it's what was last asked. An empty search finds nothing.
 pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
     let query = Vec::from([String::from(title), String::from(noun), String::from(epithet)])
-    if !o.linked {
-        o.found.clear()
-        o.found_note = String::from("Open the game from wrela.dev to search names.")
-        return
-    }
     if title.is_empty() && noun.is_empty() && epithet.is_empty() {
         o.query.clear()
         o.found.clear()
@@ -987,30 +965,25 @@ pub fn search(o: mut Online, title: str, noun: str, epithet: str) {
     if query == o.query {
         return
     }
-    var i = 0
-    while i < o.asks.len() {
-        var old = false
-        if let Asked::Names { .. } = o.asks[i].1 {
-            old = true
-        }
-        if old {
-            let _ = o.asks.remove(i)
-        } else {
-            i += 1
-        }
-    }
-    o.query = query.clone()
-    o.found_note = String::from("Searching…")
-    o.asks.push(
-        (
-            Ask::Names {
-                title: String::from(title),
-                noun: String::from(noun),
-                epithet: String::from(epithet),
-            },
-            Asked::Names { query },
-        ),
+    // A newer search in the place of one still waiting.
+    o.asks.retain(
+        |a| match a.1 {
+            Asked::Names { .. } => false,
+            _ => true,
+        },
     )
+    let names = Ask::Names {
+        title: String::from(title),
+        noun: String::from(noun),
+        epithet: String::from(epithet),
+    }
+    if !ask(mut o, take names, Asked::Names { query: query.clone() }, By::Player) {
+        o.found.clear()
+        o.found_note = String::from("Open the game from wrela.dev to search names.")
+        return
+    }
+    o.query = take query
+    o.found_note = String::from("Searching…")
 }
 
 /// The names the search found, and what to say of them.
@@ -1104,7 +1077,7 @@ fn all_asks(o: Online) -> Vec<Asked> {
 
 /// Board (`WETLANDS`, any%) given as `places`, of `total`.
 fn given(o: mut Online, places: Vec<Place>, total: u32) {
-    want(mut o, WETLANDS, ANY)
+    want(mut o, WETLANDS, ANY, By::Player)
     var i = 0
     while i < o.asks.len() {
         var board = false
@@ -1168,7 +1141,7 @@ fn without_a_console_or_an_account_nothing_is_asked() {
     let r = mine(991)
     var alone = online()
     post(mut alone, r.clone())
-    want(mut alone, WETLANDS, 0)
+    want(mut alone, WETLANDS, 0, By::Player)
     search(mut alone, "Sir", "", "")
     assert(alone.asks.is_empty() && alone.fetches.is_empty(), "opened alone")
     assert(status(alone, r).as_str().find("wrela.dev").is_some())
@@ -1179,12 +1152,55 @@ fn without_a_console_or_an_account_nothing_is_asked() {
 }
 
 @test
+fn a_players_ask_needs_a_console_a_background_one_an_account_and_a_post_alone_its_setting() {
+    // Who may ask, by the three rules: opened alone, linked signed out, signed in, posting alone.
+    let state = |k: u32| {
+        var o = if k < 2 { online() } else { signed_in() }
+        o.linked = k > 0
+        o.account.post_best = k == 3
+        take o
+    }
+    let rules = [
+        (By::Player, [false, true, true, true]),
+        (By::Background, [false, false, true, true]),
+        (By::Alone, [false, false, false, true]),
+    ]
+    for (by, allowed) in rules {
+        for k in 0..4 {
+            var o = state(k)
+            let board = Ask::Board { course: WETLANDS, category: ANY, from: 0 }
+            let asked = ask(mut o, take board, Asked::Board { course: WETLANDS, category: ANY }, by)
+            assert(asked == allowed[k] && o.asks.len() == u32(asked), f"rule {k}")
+        }
+    }
+    // Asked once: again while it waits, or while it's in flight, it isn't.
+    var o = signed_in()
+    want(mut o, WETLANDS, ANY, By::Player)
+    o.boards.clear()
+    want(mut o, WETLANDS, ANY, By::Background)
+    assert(o.asks.len() == 1, "waiting")
+    let (_, flying) = o.asks.remove(0)
+    o.flying = Some(take flying)
+    o.boards.clear()
+    want(mut o, WETLANDS, ANY, By::Player)
+    assert(o.asks.is_empty(), "in flight")
+    // A replay fetched behind, then wanted now, is asked once, first.
+    let hash = Vec::filled(32, u8(9))
+    fetch(mut o, hash.clone())
+    fetch(mut o, hash.clone())
+    assert(o.fetches.len() == 1, "behind, once")
+    fetch_now(mut o, hash.clone())
+    assert(o.fetches.is_empty() && o.asks.len() == 1, "brought forward")
+    fetch_now(mut o, hash)
+    assert(o.asks.len() == 1, "not twice")
+}
+
+@test
 fn a_better_run_waits_and_posts_and_a_worse_one_doesnt() {
     var o = signed_in()
     o.account.post_best = true
     given(mut o, Vec::from([place(1, "Sir Wobblesnout the Unhurried", 900), place(2, ME, 960)]), 2)
     o.fetches.clear()
-    o.fetching.clear()
     finished(mut o, mine(990))
     assert(o.waiting.is_empty(), "slower than the account's place")
     pump(mut o)
@@ -1297,8 +1313,8 @@ fn a_held_row_plays_at_once_and_another_is_fetched_first() {
     let hash = Vec::from(sha256(bytes))
     var row = place(3, "Sir Wobblesnout the Unhurried", 950)
     row.replay = hash.clone()
-    o.fetching.push(hash.clone())
-    o.fetches.push((Ask::Replay { hash: hash.clone() }, Asked::Replay { hash: hash.clone() }))
+    fetch(mut o, hash.clone())
+    assert(o.fetches.len() == 1, "fetched behind")
     watch_place(mut o, row.clone())
     assert(take_watch(mut o).is_none() && o.fetches.is_empty() && o.asks.len() == 1, "asked first")
     let (_, asked) = o.asks.remove(0)

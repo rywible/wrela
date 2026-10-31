@@ -49,7 +49,7 @@ pub const MOST_RUNS: u32 = COURSES * 2 * KEPT
 
 /// A finished attempt: its course, who made it, its time (the clock's ticks on reaching the goal),
 /// the snacks it found (a bit each), its deaths, and its pads.
-pub struct Replay: Clone + Serialize {
+pub struct Replay: Clone + Eq + Serialize {
     pub course: u32,
     pub who: u32,
     pub ticks: u32,
