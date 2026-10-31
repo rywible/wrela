@@ -1,5 +1,6 @@
 // The released console and its games, and the reference docs: each a Cloudflare Worker serving
-// static assets on its own domain. `wrela tool release` builds a release of them all, and the
+// static assets on its own domain, and the console's server a Worker of its own on the console's
+// API paths. `wrela tool release` builds a release of them all, and the
 // deploy tool (studio/deploy) deploys it. The console reads the catalog that a release writes
 // for it (catalog.tsv), not this value: what it shows is what the release built.
 //
@@ -34,12 +35,18 @@ pub struct Game: Clone {
     pub theme: Text,
 }
 
-/// The console: its package, Worker, domain, and the one-line description its page has.
+/// The console: its package, Worker, domain, and the one-line description its page has; the
+/// Worker its server runs in (`api`), on the console's domain's API paths, as a route of its
+/// Cloudflare zone (`zone`, the domain or one it's under); and the Worker the server ran in
+/// before (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over.
 pub struct Console: Clone {
     pub dir: Text,
     pub worker: Text,
     pub domain: Text,
     pub description: Text,
+    pub api: Text,
+    pub zone: Text,
+    pub api_from: Text,
 }
 
 /// The reference docs: a Wrela program (`package`) beside the docs that `wrela doc --export`
@@ -68,6 +75,11 @@ pub const CATALOG: Catalog = Catalog {
         worker: "wrela-console",
         domain: "wrela.dev",
         description: "Games made in Wrela, a language and engine for games that run in the browser.",
+        api: "wrela-console-api",
+        zone: "wrela.dev",
+        // The server ran in the console's Worker, which now serves static assets alone and so
+        // can't keep a Durable Object class.
+        api_from: "wrela-console",
     },
     docs: Docs {
         dir: "docsite",
@@ -197,16 +209,35 @@ fn first_label(domain: str) -> borrow str {
 }
 
 /// Why `c` can't be released, if it can't: a part that isn't a component, a Worker or a domain
-/// two projects share, a game on one of the project's own hosts, a title or description that
-/// isn't one line, a tagline that isn't one line or is longer than the console shows, a session that isn't one of its game's builds, or a build with a reserved
+/// two projects share, a console outside its zone, a game on one of the project's own hosts, a
+/// title or description that isn't one line, a tagline that isn't one line or is longer than the
+/// console shows, a session that isn't one of its game's builds, or a build with a reserved
 /// name. Whether its packages and covers are there is the tool's to check (`paths`).
 pub fn check(c: Catalog) -> Result<(), String> {
     var workers: Vec<String> = Vec::new()
     var domains: Vec<String> = Vec::new()
     component(c.console.worker)?
     workers.push(String::from(c.console.worker))
+    component(c.console.api)?
+    if has(workers, c.console.api) {
+        return Err(String::from("the console's server needs a Worker of its own"))
+    }
+    workers.push(String::from(c.console.api))
+    if !c.console.api_from.is_empty() {
+        component(c.console.api_from)?
+        if c.console.api_from == c.console.api {
+            return Err(String::from("the server's Worker can't take over its own classes"))
+        }
+    }
     domains.push(String::from(c.console.domain))
     origin(c.console.domain)?
+    origin(c.console.zone)?
+    let d = c.console.domain
+    let z = c.console.zone
+    let under = d.len() > z.len() && d.ends_with(z) && d.byte(d.len() - z.len() - 1) == 46
+    if d != z && !under {
+        return Err(String::from(f"{d} isn't in the zone {z}"))
+    }
     if !one_line(c.console.description) {
         return Err(String::from("the console needs a one-line description"))
     }

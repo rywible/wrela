@@ -1,6 +1,7 @@
-// What a release serves beside its builds: each Worker's headers and redirects, its Wrangler
-// configuration and its script for its kept releases, the console's catalog, prefetch lists and
-// card, the docs page's head and text, and the storage namespace each bootstrap names.
+// What a release serves beside its builds: each Worker's headers and redirects and its Wrangler
+// configuration, the console's server's Worker (its script and configuration), the console's
+// catalog, prefetch lists and card, the docs page's head and text, and the storage namespace each
+// bootstrap names.
 
 use catalog::{Catalog, Console, Docs, Game, origin_of}
 use json::{Json, compact, indented, member, member_of, member_of_obj, text}
@@ -317,135 +318,26 @@ fn contains(names: [String], name: str) -> bool {
     false
 }
 
-/// The R2 bucket that keeps the releases a Worker no longer has as its assets: each file once,
-/// by its SHA-256, at `blobs/<sha>`, and each release's `files.json` at
-/// `<worker>/<release>/files.json` (studio/deploy puts them there).
-pub const BUCKET: Text = "wrela-releases"
-
-/// The content type of a kept file, by its suffix; any other is `application/octet-stream`.
-pub const CONTENT_TYPES: [(Text, Text); 14] = [
-    ("html", "text/html; charset=utf-8"),
-    ("js", "text/javascript; charset=utf-8"),
-    ("json", "application/json; charset=utf-8"),
-    ("wasm", "application/wasm"),
-    ("wgsl", "text/plain; charset=utf-8"),
-    ("txt", "text/plain; charset=utf-8"),
-    ("md", "text/markdown; charset=utf-8"),
-    ("tsv", "text/tab-separated-values; charset=utf-8"),
-    ("css", "text/css; charset=utf-8"),
-    ("svg", "image/svg+xml"),
-    ("png", "image/png"),
-    ("webp", "image/webp"),
-    ("ttf", "font/ttf"),
-    ("otf", "font/otf"),
-]
-
-/// What a Worker's script does past its constants (`archive_script`), a line at a time: it gives
-/// the console's server its requests first (`API`), then serves a release that isn't the Worker's
-/// current one, which only the request for one runs (`run_worker_first`), from the bucket, with
-/// the headers its `_headers` gives (Cloudflare applies `_headers` to assets alone). Anything else
-/// is the assets' answer, a 404.
-pub const ARCHIVE: [Text; 67] = [
-    "// Each `_headers` rule: its pattern, where `*` matches any run, and its headers.",
-    "const RULES = [];",
-    "for (const line of HEADERS.split(\"\\n\")) {",
-    "  if (line.trim() === \"\") continue;",
-    "  if (line === line.trimStart()) {",
-    "    RULES.push({ pattern: line.trim(), headers: [] });",
-    "  } else if (RULES.length > 0) {",
-    "    const k = line.indexOf(\":\");",
-    "    RULES[RULES.length - 1].headers.push([line.slice(0, k).trim(), line.slice(k + 1).trim()]);",
-    "  }",
-    "}",
-    "function matches(pattern, path) {",
-    "  const parts = pattern.split(\"*\");",
-    "  if (!path.startsWith(parts[0])) return false;",
-    "  if (parts.length === 1) return path === parts[0];",
-    "  let at = parts[0].length;",
-    "  for (let k = 1; k < parts.length - 1; k++) {",
-    "    const i = path.indexOf(parts[k], at);",
-    "    if (i < 0) return false;",
-    "    at = i + parts[k].length;",
-    "  }",
-    "  const last = parts[parts.length - 1];",
-    "  return path.length - last.length >= at && path.endsWith(last);",
-    "}",
-    "function type(path) {",
-    "  const name = path.slice(path.lastIndexOf(\"/\") + 1);",
-    "  const dot = name.lastIndexOf(\".\");",
-    "  const suffix = dot > 0 ? name.slice(dot + 1) : \"\";",
-    "  return Object.hasOwn(TYPES, suffix) ? TYPES[suffix] : \"application/octet-stream\";",
-    "}",
-    "// Each release's listing, once read: its text and its files' SHA-256s by path.",
-    "const LISTINGS = new Map();",
-    "async function listing(env, release) {",
-    "  if (!LISTINGS.has(release)) {",
-    "    const o = await env.RELEASES.get(WORKER + \"/\" + release + \"/files.json\");",
-    "    if (o === null) return null;",
-    "    const text = await o.text();",
-    "    LISTINGS.set(release, { text: text, files: JSON.parse(text) });",
-    "  }",
-    "  return LISTINGS.get(release);",
-    "}",
-    "export default {",
-    "  async fetch(request, env, ctx) {",
-    "    const answered = await API(request, env, ctx);",
-    "    if (answered !== null) return answered;",
-    "    const url = new URL(request.url);",
-    "    const rest = url.pathname.slice(\"/releases/\".length);",
-    "    const release = rest.slice(0, 20);",
-    "    const kept = url.pathname.startsWith(\"/releases/\") && /^[0-9a-f]{20}$/.test(release) && rest[20] === \"/\";",
-    "    if (!kept || (request.method !== \"GET\" && request.method !== \"HEAD\")) return env.ASSETS.fetch(request);",
-    "    let path;",
-    "    try { path = decodeURIComponent(rest.slice(21)); } catch { return env.ASSETS.fetch(request); }",
-    "    if (path === \"\" || path.endsWith(\"/\")) path += \"index.html\";",
-    "    const list = await listing(env, release);",
-    "    if (list === null) return env.ASSETS.fetch(request);",
-    "    let body = list.text;",
-    "    if (path !== \"files.json\") {",
-    "      const sha = Object.hasOwn(list.files, path) ? list.files[path] : null;",
-    "      const o = typeof sha === \"string\" ? await env.RELEASES.get(\"blobs/\" + sha) : null;",
-    "      if (o === null) return env.ASSETS.fetch(request);",
-    "      body = o.body;",
-    "    }",
-    "    const headers = new Headers({ \"Content-Type\": type(path) });",
-    "    for (const r of RULES) if (matches(r.pattern, url.pathname)) for (const [n, v] of r.headers) headers.set(n, v);",
-    "    return new Response(request.method === \"HEAD\" ? null : body, { headers: headers });",
-    "  },",
-    "};",
-]
-
-/// A Worker's script, `<worker>.worker.js`: its name, its `_headers` and `CONTENT_TYPES` as
-/// constants, then `ARCHIVE`. A Worker with a server (`server`, the directory beside the script
-/// that holds the server build's host: toolchain 0.13.0's `server/`) exports its Durable Object
-/// and gives the host's router (`api`) every request first, which answers those under `/api/`;
-/// one without has none (`API` answers nothing).
-pub fn archive_script(worker: str, headers: str, server: str) -> String {
-    var types: Vec<(String, Json)> = Vec::new()
-    for (suffix, t) in CONTENT_TYPES {
-        types.push(member(suffix, text(t)))
-    }
+/// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable
+/// Object and gives the host's router (`api`, toolchain 0.13.0's `server/cloudflare.js`, in the
+/// directory `server` beside the script) each request, which the Worker's routes bring only on
+/// the server's paths. A request the router doesn't answer is a 404.
+pub fn api_script(server: str) -> String {
     var out = String::from(
-        "// A Worker's kept releases, from R2 (studio/release/site.wrela). Written by the release tool.\n",
+        "// The console's server (studio/release/site.wrela). Written by the release tool.\n",
     )
-    if server.is_empty() {
-        out.push_str("const API = async () => null;\n")
-    } else {
-        out.push_str(f"import {{ WrelaServer, api }} from \"./{server}/cloudflare.js\";\n")
-        out.push_str("export { WrelaServer };\n")
-        out.push_str("const API = (request, env, ctx) => api(request, env, { ctx: ctx });\n")
-    }
-    out.push_str(f"const WORKER = {compact(text(worker)).as_str()};\n")
-    out.push_str(f"const HEADERS = {compact(text(headers)).as_str()};\n")
-    out.push_str(f"const TYPES = {compact(Json::Obj(take types)).as_str()};\n")
-    for line in ARCHIVE {
-        out.push_str(line)
-        out.push_str("\n")
-    }
+    out.push_str(f"import {{ WrelaServer, api }} from \"./{server}/cloudflare.js\";\n")
+    out.push_str("export { WrelaServer };\n")
+    out.push_str("export default {\n")
+    out.push_str("  async fetch(request, env, ctx) {\n")
+    out.push_str("    const answered = await api(request, env, { ctx: ctx });\n")
+    out.push_str("    return answered ?? new Response(null, { status: 404 });\n")
+    out.push_str("  },\n")
+    out.push_str("};\n")
     out
 }
 
-/// The per-client rate limits of a Worker with a server, ahead of the server (toolchain 0.13.0's
+/// The per-client rate limits of the console's server, ahead of it (toolchain 0.13.0's
 /// `WRELA_LIMITS`, each a Workers Rate Limiting binding keyed on the client's address, which goes no
 /// further: developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/): its binding, its
 /// namespace, the path it counts under (wire.wrela's), its methods (none: every one), and the
@@ -457,51 +349,130 @@ pub const RATE_LIMITS: [(Text, Text, Text, Text, u32); 2] = [
     ("PUBLIC_LIMIT", "4402", "/api/public", "", 300),
 ]
 
-/// A Worker's Wrangler configuration: `release` as its assets, its script (`archive_script`)
-/// for the requests of any other release, and the bucket, on its custom domain only. With a
-/// server, the members its build asks for (`server`, its `cloudflare.json`), its origin as the one
-/// that may change things (`WRELA_ORIGINS`), and `RATE_LIMITS`.
-pub fn wrangler_config(worker: str, domain: str, release: str, server: [(String, Json)]) -> String {
+/// A Worker's Wrangler configuration: its directory as its assets, on its custom domain only, and
+/// no script. Cloudflare bills a request only when it runs a Worker's script, and a Worker that
+/// has one runs it for each request no asset matches, a 404 too
+/// (developers.cloudflare.com/workers/static-assets/routing/static-site-generation/, its routing
+/// diagram). So the assets answer every request: the release's, each kept release's (the deploy
+/// puts them beside it, studio/deploy), and a 404.
+pub fn wrangler_config(worker: str, domain: str) -> String {
     var route: Vec<(String, Json)> = Vec::new()
     route.push(member("pattern", text(domain)))
     route.push(member("custom_domain", Json::Bool(true)))
     var assets: Vec<(String, Json)> = Vec::new()
     assets.push(member("directory", text(f"./{worker}")))
-    assets.push(member("binding", text("ASSETS")))
-    // Explicit routes: a navigation to a kept release's page runs the script too, and the server's
-    // paths.
-    var first = Vec::from([text("/releases/*"), text(f"!/releases/{release}/*")])
-    if let Some(assets) = member_of(server, "assets") {
-        if let Some(Json::List(rs)) = member_of_obj(assets, "run_worker_first") {
-            for r in rs {
-                first.push(r.clone())
-            }
-        }
-    }
-    assets.push(member("run_worker_first", Json::List(take first)))
-    var bucket: Vec<(String, Json)> = Vec::new()
-    bucket.push(member("binding", text("RELEASES")))
-    bucket.push(member("bucket_name", text(BUCKET)))
     var c: Vec<(String, Json)> = Vec::new()
     c.push(member("name", text(worker)))
     c.push(member("compatibility_date", text(COMPATIBILITY_DATE)))
-    c.push(member("main", text(f"./{worker}.worker.js")))
     c.push(member("assets", Json::Obj(take assets)))
-    c.push(member("r2_buckets", Json::List(Vec::from([Json::Obj(take bucket)]))))
     c.push(member("routes", Json::List(Vec::from([Json::Obj(take route)]))))
     c.push(member("workers_dev", Json::Bool(false)))
     c.push(member("preview_urls", Json::Bool(false)))
-    if !server.is_empty() {
-        server_members(mut c, domain, server)
-    }
     var out = indented(Json::Obj(take c))
     out.push_str("\n")
     out
 }
 
-/// A server's members of a Wrangler configuration: as its build gives them, its variables filled
-/// (its origin, and the limits), and the limits' bindings.
-fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Json)]) {
+/// The console's server's Worker's Wrangler configuration: its script (`api_script`), and a route
+/// in `zone` on `domain` for each path the server's build runs first (its `cloudflare.json`'s
+/// `assets.run_worker_first`), which takes those paths before the console's custom domain does
+/// (developers.cloudflare.com/workers/configuration/routing/routes/); the members the build asks
+/// for, its first migration taking its classes over from the Worker `from` if one is named
+/// (`transferred`), its origin as the one that may change things (`WRELA_ORIGINS`), and
+/// `RATE_LIMITS`. Or why it can't be: the build names no paths, or one a route can't be (a route's
+/// `*` is the last of its path), or its migrations can't be a transfer.
+pub fn api_config(
+    worker: str,
+    domain: str,
+    zone: str,
+    from: str,
+    server: [(String, Json)],
+) -> Result<String, String> {
+    var routes: Vec<Json> = Vec::new()
+    if let Some(assets) = member_of(server, "assets") {
+        if let Some(Json::List(rs)) = member_of_obj(assets, "run_worker_first") {
+            for r in rs {
+                let Json::Text(path) = r else {
+                    return Err(String::from("the server's paths aren't text"))
+                }
+                let at = path.as_str().find("*")
+                let last = match at {
+                    Some(k) => k + 1 == path.len(),
+                    None => true,
+                }
+                if !path.as_str().starts_with("/") || !last {
+                    return Err(String::from(f"the server's path {path.as_str()} can't be a route"))
+                }
+                var route: Vec<(String, Json)> = Vec::new()
+                route.push(member("pattern", text(f"{domain}{path.as_str()}")))
+                route.push(member("zone_name", text(zone)))
+                routes.push(Json::Obj(take route))
+            }
+        }
+    }
+    if routes.is_empty() {
+        return Err(String::from("the server's build names no paths (assets.run_worker_first)"))
+    }
+    var c: Vec<(String, Json)> = Vec::new()
+    c.push(member("name", text(worker)))
+    c.push(member("compatibility_date", text(COMPATIBILITY_DATE)))
+    c.push(member("main", text(f"./{worker}.worker.js")))
+    c.push(member("routes", Json::List(take routes)))
+    c.push(member("workers_dev", Json::Bool(false)))
+    c.push(member("preview_urls", Json::Bool(false)))
+    server_members(mut c, domain, from, server)?
+    var out = indented(Json::Obj(take c))
+    out.push_str("\n")
+    Ok(out)
+}
+
+/// `migrations`, a server build's (`new_sqlite_classes` first), with its first migration taking
+/// each of those classes over from the Worker `from`, with their Durable Objects, in place of
+/// making them new: a transfer migration, which the destination's deploy alone applies
+/// (developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/).
+/// Or why it can't be one: no first migration of new SQLite classes.
+pub fn transferred(migrations: Json, from: str) -> Result<Json, String> {
+    let none = Err(String::from("the server's first migration makes no new SQLite classes"))
+    let Json::List(list) = migrations else { return none }
+    if list.is_empty() {
+        return none
+    }
+    let Json::Obj(first) = list[0] else { return none }
+    let Some(Json::List(classes)) = member_of(first, "new_sqlite_classes") else { return none }
+    var moved: Vec<Json> = Vec::new()
+    for class in classes {
+        let Json::Text(name) = class else { return none }
+        var t: Vec<(String, Json)> = Vec::new()
+        t.push(member("from", text(name.as_str())))
+        t.push(member("from_script", text(from)))
+        t.push(member("to", text(name.as_str())))
+        moved.push(Json::Obj(take t))
+    }
+    var m: Vec<(String, Json)> = Vec::new()
+    for (k, v) in first {
+        if k.as_str() == "new_sqlite_classes" {
+            m.push(member("transferred_classes", Json::List(take moved)))
+            moved = Vec::new()
+        } else {
+            m.push((k.clone(), v.clone()))
+        }
+    }
+    var out: Vec<Json> = Vec::from([Json::Obj(take m)])
+    for k in 1..list.len() {
+        out.push(list[k].clone())
+    }
+    Ok(Json::List(take out))
+}
+
+/// A server's members of a Wrangler configuration: as its build gives them, its migrations a
+/// transfer from `from` if it names a Worker, its variables filled (its origin, and the limits),
+/// and the limits' bindings.
+fn server_members(
+    c: mut Vec<(String, Json)>,
+    domain: str,
+    from: str,
+    server: [(String, Json)],
+) -> Result<(), String> {
     var limits: Vec<Json> = Vec::new()
     var bindings: Vec<Json> = Vec::new()
     for (binding, namespace, prefix, method, n) in RATE_LIMITS {
@@ -523,7 +494,7 @@ fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Jso
         bindings.push(Json::Obj(take b))
     }
     for (k, v) in server {
-        // The run-first routes join the Worker's own; its note is for whoever merges, not Wrangler.
+        // The run-first paths are its routes; its note is for whoever merges, not Wrangler.
         if k.as_str() == "assets" || k.as_str() == "comment" {
             continue
         }
@@ -541,9 +512,14 @@ fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Jso
             c.push(member("vars", Json::Obj(take vars)))
             continue
         }
+        if k.as_str() == "migrations" && !from.is_empty() {
+            c.push(member("migrations", transferred(v.clone(), from)?))
+            continue
+        }
         c.push((k.clone(), v.clone()))
     }
     c.push(member("ratelimits", Json::List(take bindings)))
+    Ok(())
 }
 
 /// The catalog as JSON, compact with its keys sorted: the first bytes of the release's
@@ -554,6 +530,9 @@ pub fn catalog_json(c: Catalog) -> Json {
     console.push(member("worker", text(c.console.worker)))
     console.push(member("domain", text(c.console.domain)))
     console.push(member("description", text(c.console.description)))
+    console.push(member("api", text(c.console.api)))
+    console.push(member("zone", text(c.console.zone)))
+    console.push(member("api_from", text(c.console.api_from)))
     var packages: Vec<Json> = Vec::new()
     for p in c.docs.packages {
         packages.push(text(p))
@@ -679,8 +658,9 @@ pub struct Report: Clone {
     pub bytes: u64,
 }
 
-/// `release.json`: the release's source revision, its id, and each Worker's report.
-pub fn release_json(source: str, release: str, workers: [Report]) -> String {
+/// `release.json`: the release's source revision, its id, the console's server's Worker, and each
+/// Worker's report.
+pub fn release_json(source: str, release: str, api: str, workers: [Report]) -> String {
     var list: Vec<Json> = Vec::new()
     for w in workers {
         var m: Vec<(String, Json)> = Vec::new()
@@ -695,6 +675,7 @@ pub fn release_json(source: str, release: str, workers: [Report]) -> String {
     var top: Vec<(String, Json)> = Vec::new()
     top.push(member("source", text(source)))
     top.push(member("release", text(release)))
+    top.push(member("api", text(api)))
     top.push(member("workers", Json::List(take list)))
     indented(Json::Obj(take top))
 }

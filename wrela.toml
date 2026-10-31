@@ -237,11 +237,10 @@ write = ["out=build/release", "work=build/release-work"]
 timeout = 5400
 
 # The deploy tool (studio/deploy): deploys the release in build/release to Cloudflare Workers,
-# keeping the releases live clients may still use in an R2 bucket. It writes the history, and
-# what it fetches of kept releases the bucket lacks, into the release, reads the live site (the
-# catalog's domains, studio/release/catalog.wrela) and main's head on GitHub, and runs Wrangler
-# through `npx`, to fill the bucket and deploy, with Cloudflare's secrets, which only Wrangler
-# gets.
+# keeping the releases live clients may still use in each Worker's assets. It writes the history,
+# and the kept releases it fetches from the live site (the catalog's domains,
+# studio/release/catalog.wrela), into the release, reads main's head on GitHub, and runs Wrangler
+# through `npx` to deploy, with Cloudflare's secrets, which only Wrangler gets.
 [tools.deploy]
 package = "studio/deploy"
 write = ["release=build/release"]
