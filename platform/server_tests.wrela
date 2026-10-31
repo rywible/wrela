@@ -1124,3 +1124,154 @@ fn an_account_deleted_leaves_nothing_and_its_export_holds_what_was_kept() {
     }
     assert(h.store.is_empty())
 }
+
+@test
+fn an_export_goes_on_only_within_its_own_account() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let _ = sign_up(mut e, mut h, 1, 5)
+    let _ = sign_up(mut e, mut h, 2, 6)
+    // From before every account, from another account's records, or of another phase: refused.
+    for after in [Vec::from([u8(0)]), Vec::from([u8(0), 97, 47]), Vec::from([u8(7)])] {
+        let rs = h.say(mut e, 2, Request::Export { after: after.clone() })
+        assert(refused(rs), "a cursor outside the account")
+    }
+}
+
+@test
+fn a_session_ended_while_another_request_read_it_stays_ended() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    let cookie = h.cookie(1, server::SESSION)
+    // Last seen over an hour ago, so a request writes when it was seen.
+    h.time += 2 * account::HOUR
+    let both = h.together(mut e, 1, [Request::SignOut { csrf: s.csrf.clone() }, Request::Me])
+    let Reply::Welcome { me, .. } = both[0].reply.clone() else { panic("signed out") }
+    assert(!me.signed_in)
+    // The cookie, kept: it opens nothing.
+    h.keep(1, server::SESSION, cookie)
+    let Reply::Welcome { me, .. } = h.say(mut e, 1, Request::Me)[0].clone() else {
+        panic("welcome")
+    }
+    assert(!me.signed_in, "the session stays ended")
+    assert(h.keys("s/") == 0)
+}
+
+@test
+fn a_recovery_code_used_twice_at_once_signs_in_once() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    let code = Request::Recover { code: s.codes[0].clone() }
+    let both = h.together(mut e, 3, [code.clone(), code.clone()])
+    var sessions = 0
+    for a in both {
+        if session_of([a.reply.clone()]).is_some() {
+            sessions += 1
+        }
+    }
+    assert(sessions == 1, f"{sessions} sessions")
+}
+
+@test
+fn uploads_let_in_at_once_keep_the_queue_within_its_ticks() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, a) = uploader(mut e, mut h, 1, 5)
+    let (_, b) = uploader(mut e, mut h, 2, 6)
+    // Each within the bound alone, both past it.
+    let half = server::QUEUE_TICKS / 2 + 1
+    let up = |t: Vec<u8>, moves: u32| -> Request {
+        Request::Upload {
+            token: t.clone(),
+            game: String::from("toy"),
+            replay: toy(0, half, moves, 2),
+        }
+    }
+    let both = h.together(mut e, 3, [up(a, 3), up(b, 4)])
+    var busy = 0
+    for r in both {
+        if let Reply::Rejected { why } = r.reply {
+            if why.as_str().find("busy").is_some() {
+                busy += 1
+            }
+        }
+    }
+    assert(busy == 1, f"{busy} turned away")
+}
+
+/// Calls with nothing new until `key`'s prefix holds a key, at most `n` times.
+fn until(e: mut Engine<Toy>, h: mut Host, prefix: Text, n: u32) {
+    var k = 0
+    while h.keys(prefix) == 0 && k < n {
+        h.call(mut e, [])
+        k += 1
+    }
+    assert(h.keys(prefix) > 0, prefix)
+}
+
+@test
+fn a_deletion_a_dropped_instance_left_is_finished_by_the_next() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    let _ = h.say(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
+    // More records than a page of the deletion's scans: a token each.
+    for _ in 0..270 {
+        let _ = h.say(mut e, 1, Request::Token { game: String::from("toy") })
+    }
+    let asked = h.asked(1, Request::Delete { csrf: s.csrf.clone() }, public: false)
+    h.call(mut e, [(900, take asked)])
+    // Marked, then the instance is dropped: what it asked is never answered.
+    until(mut e, mut h, "x/", 10)
+    h.waiting.clear()
+    h.closing.clear()
+    var next = engine(Toy {}, RP, ORIGIN)
+    h.call(mut next, [])
+    h.settle(mut next)
+    for p in ["a/", "c/", "s/", "r/", "n/", "t/", "x/"] {
+        assert(h.keys(p) == 0, p)
+    }
+}
+
+@test
+fn a_run_verified_while_its_account_is_deleted_leaves_nothing() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (s, token) = uploader(mut e, mut h, 1, 5)
+    // Fresh first: the deletion comes while a long run is being played.
+    h.good.push(Vec::from([4]))
+    let Some(fresh) = session_of(sign_in(mut e, mut h, 1, 5, s.handle, 1, [4])) else {
+        panic("signed in")
+    }
+    let run = Request::Upload {
+        token: token.clone(),
+        game: String::from("toy"),
+        replay: toy(1, claimed: 40000, moves: 40000, m: 2),
+    }
+    h.call(mut e, [(901, h.asked(1, run, public: false))])
+    until(mut e, mut h, "q/", 20)
+    for _ in 0..10 {
+        h.call(mut e, [])
+    }
+    let delete = h.asked(1, Request::Delete { csrf: fresh.csrf.clone() }, public: false)
+    h.call(mut e, [(902, take delete)])
+    h.settle(mut e)
+    var done = false
+    for a in h.answered {
+        if let Reply::Done = a.reply {
+            done = a.conn == 902
+        }
+    }
+    assert(done, "deleted")
+    for p in ["a/", "u/", "b/", "q/", "n/", "x/"] {
+        assert(h.keys(p) == 0, p)
+    }
+}
