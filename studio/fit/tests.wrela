@@ -10,7 +10,8 @@ use std::tool::drive
 use std::tool::drive::Step
 use std::tool::toolchain
 use std::tool::toolchain::{Override, Set}
-use style::{Cma, Stats, distance, stats, target_of}
+use style::{Stats, distance, stats, target_of}
+use toolkit::cma::Cma
 use toolkit::driven::untrapped
 
 /// CMA-ES finds a bowl's bottom, four coordinates in [0, 1], within 200 evaluations: each within

@@ -1,0 +1,47 @@
+// The grow tool's fits (docs/plan-world-class-3.md §E6).
+
+use fit::{Candidate, EVALUATIONS, fit, grown, silhouette}
+use std::io::print
+
+/// Three trees grown with hidden parameters (each its own site, seed and genome's deltas), each
+/// fitted back from its silhouette alone to IoU 0.85 within `EVALUATIONS`.
+@test(tool, budget: 600)
+fn three_hidden_trees_are_fitted_back() {
+    let hidden = [
+        Candidate {
+            species: 0,
+            age: 90.0,
+            light: 0.7,
+            wind: 0.2,
+            slope: 0.1,
+            seed: 7,
+            deltas: [0.1, -0.15, 0.05, 0.1, 0.0, -0.1, 0.05, 0.0, 0.1, 0.15],
+        },
+        Candidate {
+            species: 1,
+            age: 140.0,
+            light: 1.0,
+            wind: 0.0,
+            slope: 0.0,
+            seed: 3,
+            deltas: [-0.1, 0.05, 0.0, -0.05, 0.1, 0.05, 0.0, 0.1, -0.1, 0.0],
+        },
+        Candidate {
+            species: 2,
+            age: 45.0,
+            light: 0.5,
+            wind: 0.4,
+            slope: 0.0,
+            seed: 11,
+            deltas: [0.0, 0.1, -0.1, 0.0, -0.05, 0.0, 0.1, -0.1, 0.0, -0.05],
+        },
+    ]
+    var said = String::new()
+    for h in hidden {
+        let target = silhouette(grown(h))
+        let f = fit(h.species, target, EVALUATIONS, 1, said: false)
+        said = String::from(f"{said} species {h.species}: IoU {f.iou} in {f.evaluations};")
+        assert(f.iou >= 0.85, f"a hidden tree fitted to IoU {f.iou} in {f.evaluations}:{said}")
+    }
+    assert(false, f"(report){said}")
+}

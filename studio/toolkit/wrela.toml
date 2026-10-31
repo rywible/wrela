@@ -4,3 +4,6 @@
 # read.
 [package]
 name = "toolkit"
+
+[dependencies]
+engine = { workspace = true }

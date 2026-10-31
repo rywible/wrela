@@ -5,6 +5,8 @@
 //     [--seed <n>] --out <dir>
 // wrela tool grow -- --specimens <dir>
 // wrela tool grow -- --kinds <dir>
+// wrela tool grow -- --fit <silhouette.png> --species <s> --out <dir> [--evaluations <n>] [--seed <n>]
+// wrela tool grow -- --goal <goal.toml> --out <dir>
 // ```
 //
 // A specimen is a species' tree grown from its genome (content/trees/genomes.wrela) at a site
@@ -19,13 +21,28 @@
 // specimen a directory (`<species>-<age>-<light>`), and `<dir>/index.html`, a page of them.
 // `--kinds <dir>` draws each of the trees' kinds (`trees::kinds::kind_plant`: the archetypes
 // grown at build, the rest authored) side on, `<dir>/<k>.png`, with a page.
+// `--fit` finds the site, the seed and the genome's deltas (fit.wrela) whose tree's side view is
+// most like the silhouette's (a tree dark on light; a photograph's, cut out), by CMA-ES over 400
+// evaluations, its trajectory printed every 20; it writes the best's `grown.json` (with its IoU,
+// evaluations and trajectory), `side.png`, and both masks compared (`fitted.png`, `target.png`).
+// `--goal` grows a structured goal (goal.wrela says its format) and checks what it can measure:
+// its height within 10 %, its crown toward its light, a lightning scar; it writes the specimen
+// with the checks in its `grown.json`, and fails if a check does.
 
+use engine::growth::into_plant
+use engine::growth::side_view
+use engine::plant::{Bark, Leaves}
+use fit::{EVALUATIONS, MASK, candidate_json, fit, genome_of, mask_rgba, read_mask, silhouette}
+use goal::{parse, reach, specimen_of}
 use specimens::{AGES, Ask, LIGHTS, NAMES, Specimen, index_of, kinds_page, page, specimen, write}
+use std::tool::blob::Data
+use std::tool::image
+use toolkit::whole::{blob_of, read_file, write_png}
 use std::io::print
 use std::tool::{ToolError, args}
 use toolkit::whole::{chunked, write_file}
 
-pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>] [--seed <n>] --out <dir> | --specimens <dir> | --kinds <dir>"
+pub const USAGE: Text = "usage: wrela tool grow -- --species <s> --age <years> [--light open|edge|under] [--wind <0..1>] [--stand <0..1>] [--seed <n>] --out <dir> | --specimens <dir> | --kinds <dir> | --fit <silhouette.png> --species <s> --out <dir> [--evaluations <n>] [--seed <n>] | --goal <goal.toml> --out <dir>"
 
 /// A number argument after `flag`, if given.
 fn number_after(given: [String], flag: str) -> Option<f32> {
@@ -69,6 +86,31 @@ fn run(given: [String]) -> Result<(), ToolError> {
     if let Some(dir) = text_after(given, "--kinds") {
         return kinds_page(dir.as_str())
     }
+    if let Some(path) = text_after(given, "--fit") {
+        return fitted(given, path.as_str())
+    }
+    if let Some(path) = text_after(given, "--goal") {
+        let Some(out) = text_after(given, "--out") else {
+            return Err(ToolError::new(USAGE))
+        }
+        let Some(text) = String::from_utf8(read_file(path.as_str(), shown: path.as_str())?) else {
+            return Err(ToolError::new(f"the goal {path} isn't text"))
+        }
+        let g = parse(text.as_str())?
+        let r = reach(g.clone())
+        var failed = 0
+        for (line, ok) in r.checks {
+            print(f"grow: {if ok { "passed" } else { "FAILED" }}: {line}")
+            if !ok {
+                failed += 1
+            }
+        }
+        write(specimen_of(g, r), out.as_str())?
+        if failed > 0 {
+            return Err(ToolError::new(f"{failed} of the goal's checks failed"))
+        }
+        return Ok(())
+    }
     let Some(species) = text_after(given, "--species") else {
         return Err(ToolError::new(USAGE))
     }
@@ -91,6 +133,57 @@ fn run(given: [String]) -> Result<(), ToolError> {
     let s = specimen(Ask { species: k, age, light, wind, stand, seed })
     print(f"grow: {s.json}")
     write(take s, out.as_str())
+}
+
+/// `--fit`: species `--species` fitted to the silhouette at `path`, written to `--out`.
+fn fitted(given: [String], path: str) -> Result<(), ToolError> {
+    let Some(species) = text_after(given, "--species") else {
+        return Err(ToolError::new(USAGE))
+    }
+    let Some(k) = index_of(NAMES, species.as_str()) else {
+        return Err(ToolError::new(f"no species {species}: {USAGE}"))
+    }
+    let Some(out) = text_after(given, "--out") else {
+        return Err(ToolError::new(USAGE))
+    }
+    let evaluations = u32(number_after(given, "--evaluations").unwrap_or(f32(EVALUATIONS)))
+    let seed = u32(number_after(given, "--seed").unwrap_or(1.0))
+    let target = read_mask(path)?
+    let f = fit(k, target.clone(), evaluations, seed)
+    print(f"grow: fitted to IoU {f.iou} in {f.evaluations} evaluations")
+    var trajectory = String::new()
+    for i in 0..f.trajectory.len() {
+        let sep = if i == 0 { "" } else { "," }
+        trajectory = String::from(f"{trajectory}{sep}[{f.trajectory[i].0},{f.trajectory[i].1}]")
+    }
+    let json = String::from(
+        f"{{\"species\":\"{NAMES[k]}\",{candidate_json(f.best)},\"iou\":{f.iou},\"evaluations\":{f.evaluations},\"trajectory\":[{trajectory}]}}\n",
+    )
+    write_file(f"{out}/grown.json", chunked(Vec::from(json.as_bytes())))?
+    let shape = fit::grown(f.best)
+    let mask = silhouette(shape)
+    for (name, m) in [("fitted", take mask), ("target", take target)] {
+        let px = blob_of(chunked(mask_rgba(m)))?
+        write_png(
+            image::Image { width: MASK, height: MASK, rgba: Data::Blob(px) },
+            f"{out}/{name}.png",
+        )?
+    }
+    // Its side view, the specimens' (on this thread: its plant is 130 KB).
+    let g = genome_of(f.best)
+    let t = engine::growth::grow_graph(
+        g,
+        engine::growth::Site { age: f.best.age, light: f.best.light, wind: f.best.wind, slope: f.best.slope },
+        if f.best.light >= 1.0 { Vec::new() } else {
+            Vec::filled(u32(ceil(f.best.age)), f.best.light)
+        },
+        vec2(0.0),
+        [],
+        f.best.seed,
+    )
+    let (p, _) = into_plant(t, g, Leaves {}, Bark {})
+    let (w, h, px) = side_view(p, 1024)
+    write_png(image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) }, f"{out}/side.png")
 }
 
 pub fn tool() -> u32 {

@@ -732,6 +732,35 @@ pub fn values_of(g: Genome) -> Vec<f32> {
     )
 }
 
+/// `g` with its values `v` (`values_of`'s order): a genome steered (`wrela tool grow -- --fit`).
+pub fn genome_with(g: Genome, v: [f32]) -> Genome {
+    Genome {
+        apical: v[0],
+        branching: v[1],
+        branching_spread: v[2],
+        divergence: v[3],
+        internode: v[4],
+        internode_shade: v[5],
+        phototropism: v[6],
+        gravitropism: v[7],
+        shed_light: v[8],
+        shed_years: v[9],
+        pipe: v[10],
+        bark: v[11],
+        cracks: v[12],
+        leaf_sun: v[13],
+        leaf_shade: v[14],
+        leaf_density: v[15],
+        wind_shorten: v[16],
+        wind_thicken: v[17],
+        lifespan: v[18],
+        tallest: v[19],
+        rate: v[20],
+        crown: v[21],
+        ..g
+    }
+}
+
 /// A lateral bud's direction off a shoot along `dir`: `angle` degrees from it, turned `round`
 /// degrees about it (the phyllotaxis' running angle).
 fn lateral_of(dir: vec3, round: f32, angle: f32) -> vec3 {
@@ -1470,8 +1499,9 @@ pub struct Shape {
     pub converted: Converted,
 }
 
-/// `convert`'s shape: its limbs the largest `MAX_LIMBS` chains, its crown's clumps.
-pub fn shape_of(t: TreeGraph, g: Genome) -> Shape {
+/// `convert`'s shape: its limbs the largest `MAX_LIMBS` chains, its crown's clumps (`measured`:
+/// the woody IoU too).
+pub fn shape_of(t: TreeGraph, g: Genome, measured: bool = true) -> Shape {
     let all = chains_of(t)
     let kept = min(all.len(), MAX_LIMBS)
     var tubes: Vec<Tube<4>> = Vec::new()
@@ -1486,7 +1516,8 @@ pub fn shape_of(t: TreeGraph, g: Genome) -> Shape {
     // The crown: its tips' leaves, a tip whose limb isn't drawn folded onto its nearest drawn
     // forebear (its leaves in that clump: §E1.2), gathered.
     let (clumps, volume) = crowned(t, g, drawn)
-    let iou = woody_iou(t, tubes)
+    // The woody silhouettes' IoU, unless it isn't wanted (a fit's thousands of candidates).
+    let iou = if measured { woody_iou(t, tubes) } else { 0.0 }
     let converted = Converted { iou, volume, limbs: kept, chains: all.len(), clumps: clumps.len() }
     Shape { limbs: take tubes, clumps, converted }
 }
