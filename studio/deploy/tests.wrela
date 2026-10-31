@@ -4,7 +4,7 @@
 // the kept releases it puts in each Worker's assets, what stops it before it changes anything,
 // and the Workers deployed in order, each serving the release and its kept ones as assets.
 
-use main::{Listing, Options, deploy, parse_args, verify, verify_kept}
+use main::{Listing, Options, deploy, parse_args, verify, verify_api, verify_kept}
 use policy::{
     CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, has, history_json, insert,
     is_inside, kept, main_head, next_history, parse_stamp, quoted, read_history, read_listing,
@@ -13,7 +13,7 @@ use policy::{
 use release_tool::catalog::CATALOG
 use release_tool::io::{read_files, write_files}
 use release_tool::json::{Json, compact, member, text}
-use release_tool::site::{Report, release_json, replace_all, wrangler_config}
+use release_tool::site::{Report, api_config, release_json, replace_all, wrangler_config}
 use release_tool::tree::hex_sha
 use std::tool::ToolError
 use std::tool::files
@@ -364,8 +364,10 @@ fn a_release_names_one_console() {
     assert(read_release(none.as_str()).is_err())
     assert(read_release(release_json("head", "D", "api-host", [])).is_err(), "an invalid id")
     // A release with no server's Worker isn't one.
-    let no_api = replace_all(one.as_str(), "\"api\": \"api-host\"", "\"api\": \"\"")
-    assert(no_api.as_str() != one.as_str() && read_release(no_api.as_str()).is_err(), "no api")
+    for bad in ["", "../x", "a b"] {
+        let other = replace_all(one.as_str(), "\"api\": \"api-host\"", f"\"api\": \"{bad}\"")
+        assert(other.as_str() != one.as_str() && read_release(other.as_str()).is_err(), bad)
+    }
 }
 
 // ---- Tool tests: setting up --------------------------------------------------------------------
@@ -443,7 +445,7 @@ fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
         reports.push(docs_report.clone())
     }
     put(mut out, "release.json", release_json(SOURCE, D, "api-host", reports).as_str())
-    put(mut out, "api-host.wrangler.json", API_CONFIG)
+    put(mut out, "api-host.wrangler.json", api_host_config().as_str())
     for r in reports {
         let page = [("index.html", String::from("new"))]
         put(mut out, f"{r.worker.as_str()}/releases/{D}/index.html", "new")
@@ -475,9 +477,23 @@ fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// The console's server's Worker's configuration, as the release tool writes it in short: a
-/// script on the console's API paths.
-const API_CONFIG: Text = "{\"name\": \"api-host\", \"main\": \"./api-host.worker.js\", \"routes\": [{\"pattern\": \"console.example/api/*\", \"zone_name\": \"console.example\"}]}"
+/// The console's server's Worker's configuration, as the release tool writes it for a server
+/// build that runs `/api/*` first: a script on the console's API paths.
+fn api_host_config() -> String {
+    let first = Json::Obj(
+        Vec::from([member("run_worker_first", Json::List(Vec::from([text("/api/*")])))]),
+    )
+    match api_config(
+        "api-host",
+        "console.example",
+        "console.example",
+        "",
+        [member("assets", take first)],
+    ) {
+        Ok(c) => c,
+        Err(e) => panic(e.as_str()),
+    }
+}
 
 fn options(dry_run: bool) -> Options {
     Options {
@@ -540,7 +556,19 @@ fn kept_file(worker: str, release: str, path: str) -> Option<String> {
 /// serve; a release past its window isn't kept.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
 fn kept_releases_come_from_the_live_site_checked_into_the_workers_assets() {
-    set_up(site(docs: false, docs_first: false))
+    var files = site(docs: false, docs_first: false)
+    // B's game has a file the new release has too: it's copied from the release, not fetched.
+    serve(
+        mut files,
+        "game.example",
+        B,
+        [
+            ("session/game.wasm", String::from(B)),
+            ("session/files/floor/t1_-1.bin", String::from("tile")),
+            ("session/same.txt", String::from("new")),
+        ],
+    )
+    set_up(take files)
     let after = match deploy(options(dry_run: true)) {
         Ok(a) => take a,
         Err(e) => panic(e.message()),
@@ -585,6 +613,7 @@ fn kept_releases_come_from_the_live_site_checked_into_the_workers_assets() {
         "A, past its window",
     )
     assert(!there(staged("new").as_str()), "the new release's files are in the release already")
+    assert(kept_file("game-host", B, "session/same.txt") == Some(String::from("new")), "copied")
     let Some(t) = read("scratch/console-host/deploys.json") else { panic("no deploys.json") }
     assert(t.as_str() == history_json(after).as_str(), t.as_str())
     assert(releases(after).as_str() == "bcd")
@@ -630,14 +659,16 @@ fn a_file_that_does_not_arrive_stops_the_deploy() {
     assert(waited == 0, "a 404 is not retried")
 }
 
-/// A file whose fetch keeps failing in transport, or whose origin keeps answering 503, is tried
-/// 5 times, the waits between 15 s in all, and then stops the deploy, saying so.
+/// A file whose fetch keeps failing in transport, or whose origin keeps answering 500 or 503, is
+/// tried 5 times, the waits between 15 s in all, and then stops the deploy, saying so.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
 fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
-    for k in 0..2 {
-        // The 503 first: a fake's failures in transport come before its status.
+    for k in 0..3 {
+        // The statuses first: a fake's failures in transport come before its status.
         let (why, fake) = if k == 0 {
             ("HTTP 503, 5 tries", Fake::Status(503))
+        } else if k == 1 {
+            ("HTTP 500, 5 tries", Fake::Status(500))
         } else {
             ("connection reset (a fake site's failure) (5 tries)", Fake::Fail(100))
         }
@@ -689,6 +720,11 @@ fn batch_retried(lasting: bool) -> u64 {
     for name in BATCH {
         served.push((name, String::from(f"body of {name}")))
     }
+    // The batch is all the deploy fetches: the other kept releases list nothing.
+    let none: [(Text, String); 0] = []
+    serve(mut files, "console.example", B, none)
+    serve(mut files, "console.example", C, none)
+    serve(mut files, "game.example", B, none)
     serve(mut files, "game.example", C, served)
     // What an earlier deploy of this test wrote.
     let _ = files::remove_all("scratch/stored").wait()
@@ -818,6 +854,7 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
     serve(mut files, "game.example", A, [("session/game.wasm", String::from(A))])
     set_up(take files)
     faked(REFS, Fake::Bytes(advertised(SOURCE)))
+    faked(f"https://console.example{main::API_PROBE}", Fake::Status(403))
     let after = match deploy(options(dry_run: false)) {
         Ok(a) => take a,
         Err(e) => panic(e.message()),
@@ -869,6 +906,20 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
     match verify(listed_release(), "scratch") {
         Ok(_) => panic("verified"),
         Err(e) => assert(contains(e.message(), "doesn't serve"), e.message()),
+    }
+}
+
+/// API paths that don't reach the console's server once it's deployed (the console's assets answer
+/// them: 404 or 405) fail the deploy; its router's 403 to a `POST` from no origin passes it.
+@test(tool, net: ["console.example"], budget: 60)
+fn api_paths_that_do_not_reach_the_server_fail_the_deploy() {
+    match verify_api("console.example") {
+        Ok(_) => panic("verified"),
+        Err(e) => assert(contains(e.message(), "doesn't reach the console's server"), e.message()),
+    }
+    faked(f"https://console.example{main::API_PROBE}", Fake::Status(403))
+    if let Err(e) = verify_api("console.example") {
+        panic(e.message())
     }
 }
 

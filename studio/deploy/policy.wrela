@@ -4,6 +4,7 @@
 // of `main` as GitHub's git service advertises it, and where a live site's redirect leads.
 // main.wrela does the requests.
 
+use release_tool::catalog::is_component
 use release_tool::json::{Json, indented, member, text}
 use release_tool::tree::{MAX_FILE, MAX_FILES, check_path}
 use std::json::{Doc, Kind as JsonKind, TOP, parse as parse_json}
@@ -461,7 +462,8 @@ pub struct Release: Clone {
 }
 
 /// The release a `release.json` describes, or why it doesn't: its id must be a release's, it must
-/// name the console's server's Worker, and exactly one Worker must be the console.
+/// name the console's server's Worker (a release component, as the catalog's names are), and
+/// exactly one Worker must be the console.
 pub fn read_release(json: str) -> Result<Release, String> {
     let Some(d) = parse_json(json) else { return Err(String::from("release.json isn't JSON")) }
     let Some(s) = d.get(TOP, "source") else {
@@ -483,8 +485,8 @@ pub fn read_release(json: str) -> Result<Release, String> {
         return Err(String::from("release.json names no server's Worker (api)"))
     }
     let Some(api) = d.text(a) else { return Err(String::from("release.json's api isn't text")) }
-    if api.is_empty() {
-        return Err(String::from("release.json names no server's Worker (api)"))
+    if !is_component(api.as_str()) {
+        return Err(String::from(f"invalid server's Worker in release.json: '{api.as_str()}'"))
     }
     let Some(ws) = d.get(TOP, "workers") else {
         return Err(String::from("release.json has no workers"))
@@ -532,9 +534,10 @@ pub fn home(r: Release) -> Worker {
     panic("read_release checks there is a console")
 }
 
-/// The Workers in the order they deploy: the games first, then the console that pins their
-/// releases, then the docs, which no other Worker depends on. So a console never offers a game
-/// release its Worker doesn't serve yet, and a failure in the docs leaves the rest up to date.
+/// The Workers of a release's assets in the order they deploy, after the console's server's
+/// Worker (main.wrela's `deploy`): the games first, then the console that pins their releases,
+/// then the docs, which no other Worker depends on. So a console never offers a game release its
+/// Worker doesn't serve yet, and a failure in the docs leaves the rest up to date.
 pub fn deploy_order(workers: [Worker]) -> Vec<Worker> {
     var out: Vec<Worker> = Vec::new()
     for rank in 0..3 {

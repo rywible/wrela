@@ -621,7 +621,13 @@ fn release(revision: str) -> Result<String, ToolError> {
             ),
         )
     }
-    let config = api_config(api, c.console.domain, c.console.zone, server_members).map_err(own)?
+    let config = api_config(
+        api,
+        c.console.domain,
+        c.console.zone,
+        c.console.api_from,
+        server_members,
+    ).map_err(own)?
     writes.push((String::from(f"{OUT}/{api}.wrangler.json"), Vec::from(config.as_bytes())))
     writes.push(
         (

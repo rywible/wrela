@@ -377,12 +377,15 @@ pub fn wrangler_config(worker: str, domain: str) -> String {
 /// in `zone` on `domain` for each path the server's build runs first (its `cloudflare.json`'s
 /// `assets.run_worker_first`), which takes those paths before the console's custom domain does
 /// (developers.cloudflare.com/workers/configuration/routing/routes/); the members the build asks
-/// for, its origin as the one that may change things (`WRELA_ORIGINS`), and `RATE_LIMITS`. Or why
-/// the build's paths can't be its routes: none, or one that isn't a path from `/`.
+/// for, its first migration taking its classes over from the Worker `from` if one is named
+/// (`transferred`), its origin as the one that may change things (`WRELA_ORIGINS`), and
+/// `RATE_LIMITS`. Or why it can't be: the build names no paths, or one a route can't be (a route's
+/// `*` is the last of its path), or its migrations can't be a transfer.
 pub fn api_config(
     worker: str,
     domain: str,
     zone: str,
+    from: str,
     server: [(String, Json)],
 ) -> Result<String, String> {
     var routes: Vec<Json> = Vec::new()
@@ -392,7 +395,12 @@ pub fn api_config(
                 let Json::Text(path) = r else {
                     return Err(String::from("the server's paths aren't text"))
                 }
-                if !path.as_str().starts_with("/") {
+                let at = path.as_str().find("*")
+                let last = match at {
+                    Some(k) => k + 1 == path.len(),
+                    None => true,
+                }
+                if !path.as_str().starts_with("/") || !last {
                     return Err(String::from(f"the server's path {path.as_str()} can't be a route"))
                 }
                 var route: Vec<(String, Json)> = Vec::new()
@@ -412,15 +420,59 @@ pub fn api_config(
     c.push(member("routes", Json::List(take routes)))
     c.push(member("workers_dev", Json::Bool(false)))
     c.push(member("preview_urls", Json::Bool(false)))
-    server_members(mut c, domain, server)
+    server_members(mut c, domain, from, server)?
     var out = indented(Json::Obj(take c))
     out.push_str("\n")
     Ok(out)
 }
 
-/// A server's members of a Wrangler configuration: as its build gives them, its variables filled
-/// (its origin, and the limits), and the limits' bindings.
-fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Json)]) {
+/// `migrations`, a server build's (`new_sqlite_classes` first), with its first migration taking
+/// each of those classes over from the Worker `from`, with their Durable Objects, in place of
+/// making them new: a transfer migration, which the destination's deploy alone applies
+/// (developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/).
+/// Or why it can't be one: no first migration of new SQLite classes.
+pub fn transferred(migrations: Json, from: str) -> Result<Json, String> {
+    let none = Err(String::from("the server's first migration makes no new SQLite classes"))
+    let Json::List(list) = migrations else { return none }
+    if list.is_empty() {
+        return none
+    }
+    let Json::Obj(first) = list[0] else { return none }
+    let Some(Json::List(classes)) = member_of(first, "new_sqlite_classes") else { return none }
+    var moved: Vec<Json> = Vec::new()
+    for class in classes {
+        let Json::Text(name) = class else { return none }
+        var t: Vec<(String, Json)> = Vec::new()
+        t.push(member("from", text(name.as_str())))
+        t.push(member("from_script", text(from)))
+        t.push(member("to", text(name.as_str())))
+        moved.push(Json::Obj(take t))
+    }
+    var m: Vec<(String, Json)> = Vec::new()
+    for (k, v) in first {
+        if k.as_str() == "new_sqlite_classes" {
+            m.push(member("transferred_classes", Json::List(take moved)))
+            moved = Vec::new()
+        } else {
+            m.push((k.clone(), v.clone()))
+        }
+    }
+    var out: Vec<Json> = Vec::from([Json::Obj(take m)])
+    for k in 1..list.len() {
+        out.push(list[k].clone())
+    }
+    Ok(Json::List(take out))
+}
+
+/// A server's members of a Wrangler configuration: as its build gives them, its migrations a
+/// transfer from `from` if it names a Worker, its variables filled (its origin, and the limits),
+/// and the limits' bindings.
+fn server_members(
+    c: mut Vec<(String, Json)>,
+    domain: str,
+    from: str,
+    server: [(String, Json)],
+) -> Result<(), String> {
     var limits: Vec<Json> = Vec::new()
     var bindings: Vec<Json> = Vec::new()
     for (binding, namespace, prefix, method, n) in RATE_LIMITS {
@@ -460,9 +512,14 @@ fn server_members(c: mut Vec<(String, Json)>, domain: str, server: [(String, Jso
             c.push(member("vars", Json::Obj(take vars)))
             continue
         }
+        if k.as_str() == "migrations" && !from.is_empty() {
+            c.push(member("migrations", transferred(v.clone(), from)?))
+            continue
+        }
         c.push((k.clone(), v.clone()))
     }
     c.push(member("ratelimits", Json::List(take bindings)))
+    Ok(())
 }
 
 /// The catalog as JSON, compact with its keys sorted: the first bytes of the release's
@@ -475,6 +532,7 @@ pub fn catalog_json(c: Catalog) -> Json {
     console.push(member("description", text(c.console.description)))
     console.push(member("api", text(c.console.api)))
     console.push(member("zone", text(c.console.zone)))
+    console.push(member("api_from", text(c.console.api_from)))
     var packages: Vec<Json> = Vec::new()
     for p in c.docs.packages {
         packages.push(text(p))

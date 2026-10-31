@@ -30,8 +30,8 @@
 // games, and then the console, so a console never offers a game release its Worker doesn't serve
 // yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
 // and games up to date. Each Worker must serve the new release, byte for byte, and each kept
-// release's listing, and the console must list the new release as the one live release, before
-// the deploy passes. The log says what each Worker keeps, what Wrangler said of each Worker and
+// release's listing, the console must list the new release as the one live release, and the
+// console's API paths must reach its server, before the deploy passes. The log says what each Worker keeps, what Wrangler said of each Worker and
 // that each serves its releases.
 //
 // `--dry-run` does all but run Wrangler: it fetches the kept releases into the release and writes
@@ -79,8 +79,13 @@ pub const FETCH_TIMEOUT: f64 = 60.0
 pub const RUN_TIMEOUT: f64 = 600.0
 
 /// The seconds a kept release's file waits before each retry of a `GET` that failed in transport
-/// or that its origin answered 502, 503 or 504: so it's tried at most 5 times.
+/// or that its origin answered 500, 502, 503 or 504: so it's tried at most 5 times.
 pub const BACKOFF: [f64; 4] = [1.0, 2.0, 4.0, 8.0]
+
+/// A path of the console's API that its server answers a `POST` with no `Origin` at with 403
+/// (toolchain 0.13.0's router refuses a change from no origin, before the server sees it), as the
+/// console's assets never do: they answer 404 or 405.
+pub const API_PROBE: Text = "/api/accounts"
 
 /// How many times a Worker is asked whether it serves the new release, and the seconds between.
 pub const TRIES: u32 = 12
@@ -224,10 +229,10 @@ pub fn get(url: str) -> Result<Got, ToolError> {
 }
 
 /// Whether a `GET`'s result may mend if it's tried again: it failed in transport (no response
-/// came), or the origin answered 502, 503 or 504. A definite answer (200, a 404, ...) isn't.
+/// came), or the origin answered 500, 502, 503 or 504. A definite answer (200, a 404, ...) isn't.
 pub fn transient(r: Result<Got, Failure>) -> bool {
     match r {
-        Ok(g) => g.status == 502 || g.status == 503 || g.status == 504,
+        Ok(g) => g.status == 500 || g.status == 502 || g.status == 503 || g.status == 504,
         Err(f) => f.transport,
     }
 }
@@ -483,18 +488,59 @@ pub fn fetch_files(wanted: [(String, String)], root: str) -> Result<(), ToolErro
     Ok(())
 }
 
+/// The files of the new release `rel`, read from `root` before anything changes: each a SHA-256
+/// and the root path of a file that has it, sorted by SHA-256. A Worker whose listing is missing
+/// or isn't one stops the deploy.
+pub fn new_files(rel: Release, root: str) -> Result<Vec<(String, String)>, ToolError> {
+    var out: Vec<(String, String)> = Vec::new()
+    for w in rel.workers {
+        let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{rel.release.as_str()}")
+        let Some(text) = String::from_utf8(read_one(f"{dir.as_str()}/files.json")?) else {
+            return Err(ToolError::new(f"{dir.as_str()}/files.json isn't UTF-8"))
+        }
+        for (path, sha) in read_listing(rel.release.as_str(), text.as_str()).map_err(own)? {
+            out.push((sha.clone(), String::from(f"{dir.as_str()}/{path.as_str()}")))
+        }
+    }
+    out.sort_by(|a: (String, String), b: (String, String)| a.0 < b.0)
+    Ok(out)
+}
+
+/// The root path of a file of `files` (sorted by SHA-256, `new_files`) that has `sha`, if one has.
+fn file_with(files: [(String, String)], sha: str) -> Option<String> {
+    var lo: u32 = 0
+    var hi = files.len()
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if files[mid].0.as_str() < sha {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo < files.len() && files[lo].0.as_str() == sha {
+        return Some(files[lo].1.clone())
+    }
+    None
+}
+
 /// Each release that a deploy of `rel` at `at`, after `deploys`, keeps, put beside the new one in
 /// the directory of each of its Workers in `root`: its listing as the Worker serves it, and each
-/// file that lists, fetched from the live site into `STAGE` (each once, checked against its
-/// SHA-256) and copied to its path. The listing of each kept release on each of its Workers.
+/// file that lists, copied from the new release (`local`, `new_files`) if it has it, else fetched
+/// from the live site into `STAGE`, each once, all at once (`fetch_files`) and each checked
+/// against its SHA-256. The listing of each kept release on each of its Workers.
 pub fn keep(
     rel: Release,
     deploys: [Deploy],
     at: i64,
+    local: [(String, String)],
     root: str,
 ) -> Result<Vec<Listing>, ToolError> {
-    // The files fetched so far: a sorted set of SHA-256s.
-    var fetched: Vec<String> = Vec::new()
+    // The files to fetch so far: a sorted set of SHA-256s.
+    var fetching: Vec<String> = Vec::new()
+    var fetches: Vec<(String, String)> = Vec::new()
+    var copies: Vec<(String, String)> = Vec::new()
+    var writes: Vec<(String, Vec<u8>)> = Vec::new()
     var listed: Vec<Listing> = Vec::new()
     for d in kept(deploys, at, rel.release.as_str()) {
         for w in rel.workers {
@@ -504,35 +550,37 @@ pub fn keep(
             }
             let Some(l) = served_listing(d.release.as_str(), w)? else { continue }
             let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{d.release.as_str()}")
-            var fetches: Vec<(String, String)> = Vec::new()
-            var copies: Vec<(String, String)> = Vec::new()
+            var fetched = 0
             for (path, sha) in l.files {
-                if insert(mut fetched, sha.as_str()) {
-                    fetches.push(
-                        (
-                            String::from(
-                                f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/{quoted(path.as_str()).as_str()}",
-                            ),
-                            sha.clone(),
-                        ),
-                    )
+                let from = match file_with(local, sha.as_str()) {
+                    Some(f) => take f,
+                    None => {
+                        if insert(mut fetching, sha.as_str()) {
+                            fetches.push(
+                                (
+                                    String::from(
+                                        f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/{quoted(path.as_str()).as_str()}",
+                                    ),
+                                    sha.clone(),
+                                ),
+                            )
+                            fetched += 1
+                        }
+                        String::from(f"{root}/{STAGE}/{sha.as_str()}")
+                    },
                 }
-                copies.push(
-                    (
-                        String::from(f"{root}/{STAGE}/{sha.as_str()}"),
-                        String::from(f"{dir.as_str()}/{path.as_str()}"),
-                    ),
-                )
+                copies.push((take from, String::from(f"{dir.as_str()}/{path.as_str()}")))
             }
-            fetch_files(fetches, root)?
-            copy_files(copies)?
-            write_files(Vec::from([(String::from(f"{dir.as_str()}/files.json"), l.body.clone())]))?
+            writes.push((String::from(f"{dir.as_str()}/files.json"), l.body.clone()))
             print(
-                f"{w.worker.as_str()} keeps {d.release.as_str()}: {l.files.len()} files, {fetches.len()} fetched from {w.domain.as_str()}",
+                f"{w.worker.as_str()} keeps {d.release.as_str()}: {l.files.len()} files, {fetched} to fetch from {w.domain.as_str()}",
             )
             listed.push(take l)
         }
     }
+    fetch_files(fetches, root)?
+    copy_files(copies)?
+    write_files(take writes)?
     Ok(listed)
 }
 
@@ -614,7 +662,8 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     let at = now()?
     let deploys = history(console.domain.as_str())?
     print(f"deploying release {rel.release.as_str()} of {rel.source.as_str()}")
-    let listings = keep(rel, deploys, at, root)?
+    let local = new_files(rel, root)?
+    let listings = keep(rel, deploys, at, local, root)?
     print(f"the Workers keep {listings.len()} listings of the releases a client may still hold")
     var names: Vec<String> = Vec::new()
     for w in rel.workers {
@@ -652,6 +701,7 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     }
     verify(rel, root)?
     verify_kept(listings)?
+    verify_api(console.domain.as_str())?
     Ok(after)
 }
 
@@ -712,6 +762,32 @@ pub fn verify(rel: Release, root: str) -> Result<(), ToolError> {
     }
     print(f"{console.domain.as_str()} lists {rel.release.as_str()} as live")
     Ok(())
+}
+
+/// Waits until the console's API paths on `domain` reach its server's Worker, as a route that takes
+/// them before the console's custom domain does: until a `POST` of `API_PROBE` with no `Origin`
+/// answers 403, asked at most `TRIES` times, `BETWEEN_TRIES` apart.
+pub fn verify_api(domain: str) -> Result<(), ToolError> {
+    let url = String::from(f"https://{domain}{API_PROBE}")
+    var last = String::new()
+    for tries in 0..TRIES {
+        if tries > 0 {
+            let _ = time::after(BETWEEN_TRIES).wait()?
+        }
+        var req = request(url.as_str())
+        req.method = String::from("POST")
+        match http::fetch(take req).wait() {
+            Ok(r) => {
+                if r.status == 403 {
+                    print(f"{domain}'s API paths reach its server")
+                    return Ok(())
+                }
+                last = String::from(f"HTTP {r.status}")
+            },
+            Err(e) => last = String::from(e.message()),
+        }
+    }
+    Err(ToolError::new(f"POST {url.as_str()} doesn't reach the console's server: {last.as_str()}"))
 }
 
 /// Waits until each Worker serves each of `listings`, its kept releases, byte for byte, as its

@@ -35,9 +35,10 @@ pub struct Game: Clone {
     pub theme: Text,
 }
 
-/// The console: its package, Worker, domain, and the one-line description its page has; and the
+/// The console: its package, Worker, domain, and the one-line description its page has; the
 /// Worker its server runs in (`api`), on the console's domain's API paths, as a route of its
-/// Cloudflare zone (`zone`, the domain or one it's under).
+/// Cloudflare zone (`zone`, the domain or one it's under); and the Worker the server ran in
+/// before (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over.
 pub struct Console: Clone {
     pub dir: Text,
     pub worker: Text,
@@ -45,6 +46,7 @@ pub struct Console: Clone {
     pub description: Text,
     pub api: Text,
     pub zone: Text,
+    pub api_from: Text,
 }
 
 /// The reference docs: a Wrela program (`package`) beside the docs that `wrela doc --export`
@@ -75,6 +77,9 @@ pub const CATALOG: Catalog = Catalog {
         description: "Games made in Wrela, a language and engine for games that run in the browser.",
         api: "wrela-console-api",
         zone: "wrela.dev",
+        // The server ran in the console's Worker, which now serves static assets alone and so
+        // can't keep a Durable Object class.
+        api_from: "wrela-console",
     },
     docs: Docs {
         dir: "docsite",
@@ -218,6 +223,12 @@ pub fn check(c: Catalog) -> Result<(), String> {
         return Err(String::from("the console's server needs a Worker of its own"))
     }
     workers.push(String::from(c.console.api))
+    if !c.console.api_from.is_empty() {
+        component(c.console.api_from)?
+        if c.console.api_from == c.console.api {
+            return Err(String::from("the server's Worker can't take over its own classes"))
+        }
+    }
     domains.push(String::from(c.console.domain))
     origin(c.console.domain)?
     origin(c.console.zone)?
