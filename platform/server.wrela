@@ -705,7 +705,7 @@ impl<G: Game> Engine<G> {
             }
         }
         for conn in left {
-            self.refuse(conn, "The server couldn't do that just now. Try again in a moment.")
+            self.refuse(conn, "Something went wrong on our end. Try again in a moment.")
         }
     }
 
@@ -736,11 +736,11 @@ impl<G: Game> Engine<G> {
         self.now = max(self.now, asked.time)
         let parsed: Option<Request> = read(asked.body)
         let Some(request) = take parsed else {
-            self.refuse(conn, "That request isn't one we read.")
+            self.refuse(conn, "wrela.dev can't read that request. Reload the page and try again.")
             return
         }
         if asked.public && !public(request) {
-            self.refuse(conn, "That request changes things: it can't be a GET.")
+            self.refuse(conn, "That request changes things, so it can't be a GET.")
             return
         }
         // The public reads and an upload (by a game's token) are no session's.
@@ -787,7 +787,7 @@ impl<G: Game> Engine<G> {
                 // the next call takes it up again.
                 if let Some(q) = job.queued {
                     let why = String::from(
-                        "The boards couldn't finish checking that run. Try again later.",
+                        "We couldn't finish checking that run. Try again later.",
                     )
                     self.tell(q.id, Reply::Rejected { why })
                 }
@@ -797,7 +797,7 @@ impl<G: Game> Engine<G> {
                 }
                 self.refuse(
                     job.conn,
-                    "The server couldn't do that just now. Try again in a moment.",
+                    "Something went wrong on our end. Try again in a moment.",
                 )
             },
         }
@@ -1008,12 +1008,12 @@ impl<G: Game> Engine<G> {
         }
         if let Some(token) = csrf {
             if !same_bytes(token, c.csrf) {
-                self.refuse(conn, "That request didn't come from this console. Reload it.")
+                self.refuse(conn, "That request didn't come from this console. Reload the page.")
                 return None
             }
         }
         if c.recovery && !recovery {
-            self.refuse(conn, "Add a passkey first: you signed in with a recovery code.")
+            self.refuse(conn, "You signed in with a recovery code. Add a passkey first.")
             return None
         }
         Some(c)
@@ -1025,7 +1025,7 @@ impl<G: Game> Engine<G> {
         if !c.recovery && c.fresh_until < self.now {
             self.refuse(
                 conn,
-                "Sign in with your passkey again first: this needs a fresh sign-in.",
+                "This needs a fresh sign-in. Sign in with your passkey again first.",
             )
             return None
         }
@@ -1072,7 +1072,7 @@ impl<G: Game> Engine<G> {
         }
         if agreed.terms != self.versions.terms || agreed.privacy != self.versions.privacy {
             return Some(
-                "The Terms or the Privacy Policy changed since this page loaded. Reload it and read them again.",
+                "The Terms or the Privacy Policy changed since this page loaded. Reload the page and read them again.",
             )
         }
         None
@@ -1237,7 +1237,7 @@ impl<G: Game> Engine<G> {
                         take job,
                     )
                 } else {
-                    self.refuse(conn, "That isn't a ceremony.")
+                    self.refuse(conn, "That isn't a sign-in or a sign-up.")
                 }
             },
             Request::Register { .. } | Request::SignIn { .. } => self.take_ceremony(conn, take job),
@@ -1251,7 +1251,7 @@ impl<G: Game> Engine<G> {
                 let Some(h) = code_hash(code.as_str()) else {
                     self.refuse(
                         conn,
-                        "That isn't a recovery code: it has 16 letters and digits.",
+                        "That isn't a recovery code. A code has 16 letters and digits.",
                     )
                     return
                 }
@@ -1329,7 +1329,7 @@ impl<G: Game> Engine<G> {
             Request::Token { game } => {
                 let Some(c) = self.signed_in(conn, None, recovery: false) else { return }
                 if game.as_str() != self.game.id() {
-                    self.refuse(conn, "That game has no boards here.")
+                    self.refuse(conn, "That game has no boards on wrela.dev.")
                     return
                 }
                 self.get(account_key(c.account), Step::TokenAccount, take job)
@@ -1349,7 +1349,9 @@ impl<G: Game> Engine<G> {
                 if game.as_str() != self.game.id() {
                     self.reply(
                         conn,
-                        Reply::Rejected { why: String::from("That game has no boards here.") },
+                        Reply::Rejected {
+                            why: String::from("That game has no boards on wrela.dev."),
+                        },
                     )
                     return
                 }
@@ -1372,7 +1374,7 @@ impl<G: Game> Engine<G> {
             },
             Request::Board { game, course, category, from } => {
                 if !self.board_known(game, course, category) || from > 10000 {
-                    self.refuse(conn, "There's no such board.")
+                    self.refuse(conn, "That board doesn't exist.")
                     return
                 }
                 job.n = from
@@ -1395,7 +1397,7 @@ impl<G: Game> Engine<G> {
                 if version != self.versions.posting {
                     self.refuse(
                         conn,
-                        "What posting shares changed since this page loaded. Reload it and read it again.",
+                        "What a post shares has changed since this page loaded. Reload the page and read it again.",
                     )
                     return
                 }
@@ -1422,7 +1424,7 @@ impl<G: Game> Engine<G> {
             },
             Request::Around { game, course, category, name } => {
                 if !self.board_known(game, course, category) {
-                    self.refuse(conn, "There's no such board.")
+                    self.refuse(conn, "That board doesn't exist.")
                     return
                 }
                 let Some(n) = names::parse(name.as_str()) else {
@@ -1433,7 +1435,7 @@ impl<G: Game> Engine<G> {
             },
             Request::Names { game, title, noun, epithet } => {
                 if game.as_str() != self.game.id() {
-                    self.refuse(conn, "That game has no boards here.")
+                    self.refuse(conn, "That game has no boards on wrela.dev.")
                     return
                 }
                 if !searchable(title) || !searchable(noun) || !searchable(epithet) {
@@ -1446,11 +1448,11 @@ impl<G: Game> Engine<G> {
                 }
                 let m = names::matching(title, noun, epithet)
                 if m.titles.len() * m.fronts.len() > MOST_RANGES {
-                    self.refuse(conn, "Type more of the name to search, its title or its noun.")
+                    self.refuse(conn, "Type more of the name to search. Try its title or its noun.")
                     return
                 }
                 if self.searches() >= MOST_SEARCHES {
-                    self.refuse(conn, "Search is busy just now. Try again in a moment.")
+                    self.refuse(conn, "Search is busy. Try again in a moment.")
                     return
                 }
                 // Each title's and first half's range of the index of names on the boards, in its
@@ -1538,7 +1540,7 @@ impl<G: Game> Engine<G> {
             },
             Step::BeginRandom => {
                 if answer.len() < begin_bytes(j.n) {
-                    self.refuse(conn, "The server couldn't start that. Try again.")
+                    self.refuse(conn, "We couldn't start that. Try again.")
                     return
                 }
                 let challenge = part(answer, 0, CHALLENGE_BYTES)
@@ -1668,14 +1670,17 @@ impl<G: Game> Engine<G> {
             },
             Step::RegisterCredential => {
                 if value(answer).is_some() {
-                    self.refuse(conn, "That passkey is already an account's. Sign in with it.")
+                    self.refuse(
+                        conn,
+                        "That passkey already has an account. Sign in with it instead.",
+                    )
                     return
                 }
                 self.get(account_key(j.id), Step::RegisterAccount, take j)
             },
             Step::RegisterAccount => {
                 if value(answer).is_some() || j.id == 0 {
-                    self.refuse(conn, "The server couldn't make your account. Try again.")
+                    self.refuse(conn, "We couldn't make your account. Try again.")
                     return
                 }
                 let n = draw(j.seed)
@@ -1687,7 +1692,7 @@ impl<G: Game> Engine<G> {
                     // Taken: another draw, a few times.
                     j.tries += 1
                     if j.tries > 8 {
-                        self.refuse(conn, "The server couldn't find a name. Try again.")
+                        self.refuse(conn, "We couldn't find a name for you. Try again.")
                         return
                     }
                     let next = if j.step == Step::RegisterName { Step::RegisterSeed } else {
@@ -1774,7 +1779,7 @@ impl<G: Game> Engine<G> {
                 let Some(p) = p else {
                     self.refuse(
                         conn,
-                        "That passkey isn't one we know. Its account may have been deleted.",
+                        "We don't know that passkey. Its account may have been deleted.",
                     )
                     return
                 }
@@ -1803,7 +1808,10 @@ impl<G: Game> Engine<G> {
                 }
                 // The browser names the account the passkey was made for: it must be this one.
                 if !user.is_empty() && !same_bytes(user, a.handle) {
-                    self.refuse(conn, "That passkey belongs to another account.")
+                    self.refuse(
+                        conn,
+                        "That passkey belongs to another account. Sign in with it instead.",
+                    )
                     return
                 }
                 match assertion(
@@ -1834,7 +1842,7 @@ impl<G: Game> Engine<G> {
             },
             Step::SignInVerify => {
                 if !verified(answer) {
-                    self.refuse(conn, "That passkey's signature doesn't check out.")
+                    self.refuse(conn, "That passkey's signature isn't valid. Try again.")
                     return
                 }
                 self.random(TOKEN_BYTES + CSRF_BYTES, Step::SignInSecrets, take j)
@@ -1849,7 +1857,7 @@ impl<G: Game> Engine<G> {
                 if lately(self.gone, passkey_key(p.credential.id)) {
                     self.refuse(
                         conn,
-                        "That passkey isn't one we know. Its account may have been deleted.",
+                        "We don't know that passkey. Its account may have been deleted.",
                     )
                     return
                 }
@@ -1867,7 +1875,7 @@ impl<G: Game> Engine<G> {
                 let r: Option<Recovery> = got(answer)
                 let r = if lately(self.gone, code_key(j.hash)) { None } else { take r }
                 let Some(r) = r else {
-                    self.refuse(conn, "That code isn't one we know, or it has been used.")
+                    self.refuse(conn, "We don't know that code, or it's already been used.")
                     return
                 }
                 j.id = r.account
@@ -1885,7 +1893,7 @@ impl<G: Game> Engine<G> {
                 }
                 // Another request used it while this one read its account.
                 if lately(self.gone, code_key(j.hash)) {
-                    self.refuse(conn, "That code isn't one we know, or it has been used.")
+                    self.refuse(conn, "We don't know that code, or it's already been used.")
                     return
                 }
                 // Used up, and every other session ends.
@@ -1917,7 +1925,7 @@ impl<G: Game> Engine<G> {
                 let a: Option<Account> = got(answer)
                 let Some(a) = a else { return }
                 if a.fixed {
-                    self.refuse(conn, "Your name is fixed.")
+                    self.refuse(conn, "You've kept your name. It can't change now.")
                     return
                 }
                 match j.request {
@@ -1929,7 +1937,7 @@ impl<G: Game> Engine<G> {
                     },
                     _ => {
                         if a.rerolls == 0 {
-                            self.refuse(conn, "There are no draws left.")
+                            self.refuse(conn, "You have no draws left.")
                             return
                         }
                         j.account = Some(a.clone())
@@ -1939,7 +1947,7 @@ impl<G: Game> Engine<G> {
             },
             Step::AddCredential => {
                 if value(answer).is_some() {
-                    self.refuse(conn, "That passkey is already an account's.")
+                    self.refuse(conn, "That passkey already has an account.")
                     return
                 }
                 self.scan(indexed(j.id, OF_PASSKEY, []), MOST_PASSKEYS + 1, Step::AddCount, take j)
@@ -1999,7 +2007,7 @@ impl<G: Game> Engine<G> {
                 if left.is_empty() {
                     self.refuse(
                         conn,
-                        "That's your only passkey: add another before you remove it.",
+                        "That's your only passkey. Add another before you remove it.",
                     )
                     return
                 }
@@ -2070,7 +2078,7 @@ impl<G: Game> Engine<G> {
                 match j.request {
                     Request::Token { .. } => {
                         if !a.fixed {
-                            self.refuse(conn, "Be knighted first: keep your name.")
+                            self.refuse(conn, "Keep your name at the console first.")
                             return
                         }
                         j.account = Some(a.clone())
@@ -2130,7 +2138,7 @@ impl<G: Game> Engine<G> {
                         indexed(j.id, OF_RUN, [])
                     }
                     if after[0] > 1 || !starts_with(part(after, 1, after.len() - 1), within) {
-                        self.refuse(conn, "That export can't go on from there. Start it again.")
+                        self.refuse(conn, "That export can't continue from there. Start it again.")
                         return
                     }
                 }
@@ -2319,7 +2327,11 @@ impl<G: Game> Engine<G> {
                     if other.id == t.account && is_upload(other.step) {
                         self.reply(
                             conn,
-                            Reply::Rejected { why: String::from("One upload at a time.") },
+                            Reply::Rejected {
+                                why: String::from(
+                                    "One upload at a time. Wait for this one to finish.",
+                                ),
+                            },
                         )
                         return
                     }
@@ -2358,7 +2370,7 @@ impl<G: Game> Engine<G> {
                         conn,
                         Reply::Rejected {
                             why: String::from(
-                                "Agree to what posting shares first. The console shows it before your first post.",
+                                "Agree to what posting shares first. The console asks before your first post.",
                             ),
                         },
                     )
@@ -2378,7 +2390,7 @@ impl<G: Game> Engine<G> {
                         conn,
                         Reply::Rejected {
                             why: String::from(
-                                f"At most {RUNS_AN_HOUR} uploads an hour. Try again later.",
+                                f"You can upload {RUNS_AN_HOUR} runs an hour. Try again later.",
                             ),
                         },
                     )
@@ -2942,7 +2954,7 @@ impl<G: Game> Engine<G> {
                     self.tell(
                         q.id,
                         Reply::Rejected {
-                            why: String::from("That run's time isn't what its moves make."),
+                            why: String::from("That run's time doesn't match its moves."),
                         },
                     )
                     return
@@ -3216,7 +3228,7 @@ fn quoted(out: mut String, s: str) {
 
 fn export_head(a: Account) -> String {
     var out = String::from(
-        "{\"about\":\"Everything wrela.dev keeps of your account. Times are milliseconds of the server's clock.\",",
+        "{\"about\":\"Everything wrela.dev keeps about your account. Times are in milliseconds, on the server's clock.\",",
     )
     out.push_str(f"\"account\":{{\"id\":\"{a.id}\",\"handle\":\"{base64url(a.handle)}\",\"name\":")
     quoted(mut out, names::text(a.name).as_str())

@@ -630,21 +630,21 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
         Step::List | Step::Prepare | Step::Start | Step::Export | Step::Import => {
             let result: Result<Reply, LoadError> = load(bytes.clone())
             let Ok(reply) = result else {
-                failed(mut s, "The game sent an unsupported response.")
+                failed(mut s, "The game sent something the console can't read.")
                 return
             }
             match reply {
                 Reply::Error { message } => failed(mut s, message),
                 Reply::Saves { entries } => {
                     if entries.len() > 256 {
-                        failed(mut s, "The game sent too many saves.")
+                        failed(mut s, "The game has more saves than the console can list.")
                         return
                     }
                     for entry in entries {
                         if !valid_key(entry.slot) ||
                             entry.label.len() > 160 ||
                             entry.description.len() > 512 {
-                            failed(mut s, "The game sent unsupported save details.")
+                            failed(mut s, "The game sent a save the console can't read.")
                             return
                         }
                     }
@@ -666,7 +666,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
                 },
                 Reply::Exported { bytes } => {
                     let Some(plan) = s.exporting else {
-                        failed(mut s, "The game sent an unsupported response.")
+                        failed(mut s, "The game sent something the console can't read.")
                         return
                     }
                     let name = export_name(plan)
@@ -708,7 +708,7 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     if let Some(text) = String::from_utf8(bytes.clone()) {
         if let Some(cards) = parse(text) { return Ok(cards.clone()) }
     }
-    Err(String::from("The game library could not be read."))
+    Err(String::from("Can't read the list of games. Reload to try again."))
 }
 
 // Covers within reach of the selection hold textures and requests: enough for the shelf.
@@ -889,7 +889,7 @@ fn update(s: mut Console) {
                 Err(message) => s.message = message.clone(),
             },
             Err(_) => s.message = String::from(
-                "The game library could not load. Check your connection and reload.",
+                "Can't load the games. Check your connection and reload.",
             ),
         }
     }
@@ -914,7 +914,7 @@ fn update(s: mut Console) {
     if let Some(result) = poll(mut s.profile_write) {
         if result.is_err() {
             s.dirty = true
-            s.message = String::from("Your profile could not be saved on this device.")
+            s.message = String::from("Can't save your profile on this device.")
         }
     }
     if let Some(result) = poll(mut s.pending) {
@@ -1006,12 +1006,12 @@ fn act(s: mut Console, action: Action) {
         },
         Action::SaveProfile => {
             if s.profile.name.trim().is_empty() {
-                s.message = String::from("Enter a name for this profile.")
+                s.message = String::from("Type a name for your profile.")
                 return
             }
             let bytes = save(s.profile)
             s.profile_write = Some(store("console/profile", bytes))
-            s.message = String::from("Profile saved.")
+            s.message = String::from("Name saved.")
         },
         Action::Game { index } => {
             // The selected game's own action is to play it: continue, or begin.
@@ -1596,8 +1596,8 @@ fn saves(s: mut Console, w: f32, h: f32) {
     let first = s.marked / capacity * capacity
     let count = min(s.saves.len() - min(first, s.saves.len()), capacity)
     if count == 0 {
-        text(mut s, if s.step == Step::Open || s.step == Step::List { "Reading saves" } else {
-            "No saves yet"
+        text(mut s, if s.step == Step::Open || s.step == Step::List { "Loading your saves" } else {
+            "No saves yet. Play, or import a save."
         }, 14.0, vec2(x, top), MUTED)
     }
     for i in first..first + count {
@@ -1622,8 +1622,8 @@ fn saves(s: mut Console, w: f32, h: f32) {
         y += 50.0
     }
     let cell = (width - 10.0) * 0.5
-    button(mut s, Action::Export, Rect::new(x, y, cell, 38.0), row + 1, "Export")
-    button(mut s, Action::Import, Rect::new(x + cell + 10.0, y, cell, 38.0), row + 1, "Import")
+    button(mut s, Action::Export, Rect::new(x, y, cell, 38.0), row + 1, "Export save")
+    button(mut s, Action::Import, Rect::new(x + cell + 10.0, y, cell, 38.0), row + 1, "Import save")
     let state = status(s)
     if !state.is_empty() {
         let size = fitted(s, state, 13.0, width, Face::Sans)
@@ -1658,7 +1658,7 @@ fn settings(s: mut Console, w: f32, h: f32) {
         Action::SaveProfile,
         Rect::new(x, y: 194.0, w: 120.0, h: 38.0),
         2,
-        "Save",
+        "Save name",
         primary: true,
     )
     // The home's music: the chosen game's theme, softly.
@@ -2479,7 +2479,7 @@ fn an_export_keeps_the_requested_slot_when_selection_changes() {
 @test
 fn an_invalid_utf8_catalog_finishes_with_an_error() {
     match catalog_result(Vec::<u8>::from([255])) {
-        Err(message) => assert(message == "The game library could not be read."),
+        Err(message) => assert(message == "Can't read the list of games. Reload to try again."),
         Ok(_) => assert(false, "Invalid UTF-8 is a catalog completion error"),
     }
 }
@@ -2496,7 +2496,7 @@ fn every_valid_game_key_has_a_downloadable_export_name() {
 
 @test
 fn an_empty_library_displays_its_error_instead_of_loading() {
-    let message = "The game library could not be read."
+    let message = "Can't read the list of games. Reload to try again."
     assert(empty_library_message(message) == message)
     assert(empty_library_message("") == "Loading games")
 }

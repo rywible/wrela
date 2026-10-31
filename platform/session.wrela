@@ -480,7 +480,7 @@ pub fn frame<G: Game>(s: mut Session<G>) {
             let request: Result<Request, LoadError> = load(take call.bytes)
             match request {
                 Ok(r) => begin(mut s, r),
-                Err(_) => error(mut s, "Unsupported session message."),
+                Err(_) => error(mut s, "The console sent something the game can't read."),
             }
         }
     }
