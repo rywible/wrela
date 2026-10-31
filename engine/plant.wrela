@@ -431,6 +431,16 @@ pub fn level_cards(n: u32, level: u32) -> u32 {
     n >> level
 }
 
+/// How many of a plant's `n` limbs level `level` draws: a hand's few (at most `LEVEL_LIMBS`)
+/// all at every level; a grown plant's, in order of their section, its thickest: all at level 0,
+/// a quarter at 1, a sixteenth at 2, never fewer than `LEVEL_LIMBS` (its twigs, thousands, are
+/// below a pixel there: a tube draw each, they doubled the vale's frame).
+pub fn level_limbs(n: u32, level: u32) -> u32 {
+    if n <= LEVEL_LIMBS { n } else { max(n >> (2 * level), LEVEL_LIMBS) }
+}
+
+pub const LEVEL_LIMBS: u32 = 64
+
 /// Card width at a nested density level. Half as many cards need sqrt(2) times the width,
 /// preserving area without the large individual leaves of quarter-density steps.
 pub fn card_scale(level: u32) -> f32 {

@@ -1306,15 +1306,33 @@ pub fn into_plant(t: TreeGraph, g: Genome, leaves: Leaves, bark: Bark) -> (Plant
 
 /// `into_plant` into `p` (its limbs and clumps added, its leaves and bark its own), in place.
 pub fn convert(t: TreeGraph, g: Genome, p: mut Plant) -> Converted {
+    let s = shape_of(t, g)
+    for tb in s.limbs {
+        p.tube(tb.points, tb.radii)
+    }
+    for c in s.clumps {
+        p.cushion(c.centre, c.radius, c.squash)
+    }
+    s.converted
+}
+
+/// A grown tree's drawn shape, on the heap (a `Plant` is 130 KB, more than a helper's stack holds
+/// in a browser): its limbs and clumps as `convert` adds them, and what the conversion measured.
+pub struct Shape {
+    pub limbs: Vec<Tube<4>>,
+    pub clumps: Vec<Clump>,
+    pub converted: Converted,
+}
+
+/// `convert`'s shape: its limbs the largest `MAX_LIMBS` chains, its crown's clumps.
+pub fn shape_of(t: TreeGraph, g: Genome) -> Shape {
     let all = chains_of(t)
     let kept = min(all.len(), MAX_LIMBS)
     var tubes: Vec<Tube<4>> = Vec::new()
     var drawn: Vec<bool> = Vec::filled(t.nodes.len(), false)
     drawn[0] = true
     for c in 0..kept {
-        let tb = tube_through(t, all[c].foot, all[c].nodes)
-        p.tube(tb.points, tb.radii)
-        tubes.push(tb)
+        tubes.push(tube_through(t, all[c].foot, all[c].nodes))
         for k in all[c].nodes {
             drawn[k] = true
         }
@@ -1322,11 +1340,9 @@ pub fn convert(t: TreeGraph, g: Genome, p: mut Plant) -> Converted {
     // The crown: its tips' leaves, a tip whose limb isn't drawn folded onto its nearest drawn
     // forebear (its leaves in that clump: §E1.2), gathered.
     let (clumps, volume) = crowned(t, g, drawn)
-    for c in clumps {
-        p.cushion(c.centre, c.radius, c.squash)
-    }
     let iou = woody_iou(t, tubes)
-    Converted { iou, volume, limbs: kept, chains: all.len(), clumps: clumps.len() }
+    let converted = Converted { iou, volume, limbs: kept, chains: all.len(), clumps: clumps.len() }
+    Shape { limbs: take tubes, clumps, converted }
 }
 
 /// Every limb of a grown tree (`into_plant`'s): its chains of nodes, each a tube fitted through
@@ -1504,7 +1520,7 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
     // A shoot's foliage: its leaves (`leaf_density` of them, each `leaf_sun` across) in a cluster
     // `FOLIAGE` times their own spread.
     let leaf = max(g.leaf_sun * pow(g.leaf_density, 1.0 / 3.0) * FOLIAGE, 0.05)
-    let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 7.0, 4.0 * leaf)
+    let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 7.0, 2.0 * leaf)
     let nx = u32((hi.x - lo.x) / bin) + 1
     let ny = u32((hi.y - lo.y) / bin) + 1
     let nz = u32((hi.z - lo.z) / bin) + 1
@@ -1583,9 +1599,10 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
     (clumps, ratio)
 }
 
-/// How far a shoot's leaves spread round it, as a multiple of their own packed size (**proposed**:
-/// an oak shoot's six 10 cm leaves over 36 cm).
-const FOLIAGE: f32 = 2.0
+/// How far a tip's leaves spread round it, as a multiple of their own packed size (**proposed**: an
+/// oak tip's six 10 cm leaves and its spurs' over 72 cm; at 36 cm the grown crowns held a quarter
+/// to a tenth of the cards the hand's did, thin).
+const FOLIAGE: f32 = 4.0
 
 /// The youngest shoot's year (the growth's last).
 fn max_born(t: TreeGraph) -> f32 {
@@ -1898,18 +1915,48 @@ pub struct Grow {
     pub height: f32,
 }
 
-/// A near individual grown (`g`), its plant scaled to its height, and its cards' orders: a
-/// helper's task (`std::par::spawn`).
-pub fn grow_individual(g: take Grow) -> (Plant, Vec<u32>) {
+/// A near individual grown (`g`), its shape scaled to its height: a helper's task
+/// (`std::par::spawn`), on the heap (its plant is made of it on the main thread, `plant_of`).
+pub fn grow_individual(g: take Grow) -> Shape {
     let t = grow_graph(g.genome, g.site, g.light, vec2(0.0), g.events, g.seed)
-    // In place: a plant is 130 KB, and a helper's stack holds few.
-    var p = plant(g.leaves, g.bark)
-    let _ = convert(t, g.genome, mut p)
-    let s = g.height / max(p.top(), 1.0e-3)
-    scale(mut p, s)
-    p.blend = g.blend
-    let orders = plant::card_orders(p, p.cards(), g.seed)
-    (p, orders)
+    var s = shape_of(t, g.genome)
+    var top = 0.0
+    for c in s.clumps {
+        top = max(top, c.centre.y + c.radius * c.squash)
+    }
+    for l in s.limbs {
+        for q in l.points {
+            top = max(top, q.y)
+        }
+    }
+    let k = g.height / max(top, 1.0e-3)
+    for i in 0..s.limbs.len() {
+        for j in 0..4 {
+            s.limbs[i].points[j] *= k
+            s.limbs[i].radii[j] *= k
+        }
+    }
+    for i in 0..s.clumps.len() {
+        s.clumps[i].centre *= k
+        s.clumps[i].radius *= k
+    }
+    s
+}
+
+/// A near individual's plant from its shape (`grow_individual`) and its kind's look, `out` (its
+/// leaves, bark and blend set; its limbs and clumps cleared first).
+pub fn plant_of(s: Shape, leaves: Leaves, bark: Bark, blend: f32, out: mut Plant) {
+    out.limbs.clear()
+    out.clumps.clear()
+    out.leaves = leaves
+    out.bark = bark
+    out.blend = blend
+    for tb in s.limbs {
+        out.tube(tb.points, tb.radii)
+    }
+    for c in s.clumps {
+        out.cushion(c.centre, c.radius, c.squash)
+    }
 }
 
 /// `p` scaled by `s` about its foot, in place.

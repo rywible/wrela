@@ -23,11 +23,11 @@ use engine::grass::{Contact, Grass, GrassLook}
 use engine::light::Light
 use engine::memory::{Share, Usage}
 use engine::particles::{Particle, SOFT, SPARK}
-use engine::plant::{Ordering, Plant, Wind, orders_of}
+use engine::plant::{Bark, Leaves, Ordering, Plant, Wind, orders_of}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::reflect::copy_below
 use engine::terrain::Clipmap
-use engine::growth::{Grow, grow_individual}
+use engine::growth::{Grow, Shape, grow_individual, plant_of}
 use engine::vegetation::{Kind, Placed, kind_near, kind_ordered}
 use engine::view::{Camera, NEAREST}
 use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
@@ -189,7 +189,15 @@ pub struct NearOne {
     /// The seed its growth was given (its record's).
     pub seed: u32 = 0,
     pub slot: u32,
-    pub growing: Option<std::par::Task<(Plant, Vec<u32>)>> = None,
+    pub growing: Option<std::par::Task<Shape>> = None,
+    /// Its shape grown, and its cards' orders being found (`plant::orders_of`, its plant held in
+    /// the task's input: a helper's stack in a browser holds no 130 KB plant).
+    pub shape: Option<Shape> = None,
+    pub ordering: Option<std::par::Task<Vec<u32>>> = None,
+    /// Its kind's leaves, bark and crown's blend.
+    pub leaves: Leaves = Leaves {},
+    pub bark: Bark = Bark {},
+    pub blend: f32 = 1.1,
     pub drawn: bool = false,
     pub used: bool = false,
 }
@@ -1253,8 +1261,8 @@ pub fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
 
 /// The trees near the eye drawn as themselves (§E1.3): each frame, a growth finished is cooked
 /// (`vegetation::kind_near`) and its instance drawn as it (`Wood::set_near`, `retarget`); every
-/// `NEAR_EVERY` frames the `Tiles::near` trees nearest the eye within `NEAR` (those whose kinds are
-/// grown) are chosen, an individual no longer among them drawn as its archetype again and given
+/// `NEAR_EVERY` frames, once no tile is still coming, the `Tiles::near` trees nearest the eye
+/// within `NEAR` (those whose kinds are grown) are chosen, an individual no longer among them drawn as its archetype again and given
 /// up, and the new ones' growths started (`NEAR_GROWING` at a time, the nearest first). A tile
 /// dropped gives up its individuals; one loaded again draws them as themselves again.
 pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
@@ -1270,7 +1278,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
         let slot = w.slot_of(s.near[i].tile)
         if slot.is_none() {
-            if s.near[i].growing.is_none() {
+            if s.near[i].growing.is_none() && s.near[i].ordering.is_none() {
                 w.free_near(i)
                 s.near[i].used = false
                 s.near[i].drawn = false
@@ -1278,15 +1286,32 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
             continue
         }
         let at = slot.unwrap()
-        let done = match s.near[i].growing {
+        let grown = match s.near[i].growing {
             Some(t) => t.done(),
             None => false,
         }
-        if done {
+        let ordered = match s.near[i].ordering {
+            Some(t) => t.done(),
+            None => false,
+        }
+        if grown {
+            // Its plant made of its shape here, its cards' orders found on a helper.
             let Some(task) = replace(mut s.near[i].growing, None) else { continue }
-            let (plant, orders) = (take task).join()
+            let shape = (take task).join()
+            var p = engine::plant::plant(s.near[i].leaves, s.near[i].bark)
+            plant_of(shape, s.near[i].leaves, s.near[i].bark, s.near[i].blend, mut p)
+            s.near[i].ordering = Some(
+                std::par::spawn(Ordering { plant: p, seed: s.near[i].index + 1 }, orders_of),
+            )
+            s.near[i].shape = Some(take shape)
+        } else if ordered {
+            let Some(task) = replace(mut s.near[i].ordering, None) else { continue }
+            let Some(shape) = replace(mut s.near[i].shape, None) else { continue }
+            let orders = (take task).join()
             label("near tree")
-            let k = kind_near(plant, seed: s.near[i].index + 1, found: take orders)
+            var p = engine::plant::plant(s.near[i].leaves, s.near[i].bark)
+            plant_of(shape, s.near[i].leaves, s.near[i].bark, s.near[i].blend, mut p)
+            let k = kind_near(p, seed: s.near[i].index + 1, found: take orders)
             w.set_near(i, k, s.near[i].archetype)
             w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
             s.near[i].drawn = true
@@ -1298,7 +1323,8 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
     }
     s.near_since += 1
-    if s.near_since >= NEAR_EVERY {
+    // Not while tiles are coming: the growths would hold the helpers their cooking needs.
+    if s.near_since >= NEAR_EVERY && !loading(s) {
         s.near_since = 0
         // The candidates: each placed instance within `NEAR`, nearest first.
         var near: Vec<(f32, u32, u32)> = Vec::new()
@@ -1337,7 +1363,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
         // Those no longer chosen, given up.
         for i in 0..s.near.len() {
-            if !s.near[i].used || s.near[i].growing.is_some() {
+            if !s.near[i].used || s.near[i].growing.is_some() || s.near[i].ordering.is_some() {
                 continue
             }
             var kept = false
@@ -1358,7 +1384,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         // The new ones' growths, a few at a time.
         var growing = 0
         for o in s.near {
-            if o.growing.is_some() {
+            if o.growing.is_some() || o.ordering.is_some() {
                 growing += 1
             }
         }
@@ -1380,13 +1406,16 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
                 continue
             }
             let Some(g) = s.tiles.individual(t, k) else { continue }
-            let seed = g.seed
+            let (seed, leaves, bark, blend) = (g.seed, g.leaves, g.bark, g.blend)
             s.near[free] = NearOne {
                 tile,
                 index: j,
                 at: t.at,
                 archetype: k,
                 seed,
+                leaves,
+                bark,
+                blend,
                 slot: 0,
                 growing: Some(std::par::spawn(take g, grow_individual)),
                 used: true,

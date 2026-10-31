@@ -3062,3 +3062,33 @@ takes 114 ms more.
 The crown's leaves are now at every live tip (where the shade grid counts them), each tip's
 foliage `leaf_sun × ∛leaf_density × 2` across (**proposed**): with the last two years' shoots
 only, each a leaf-sized ball, a 100-year oak's crown was 70 small clumps over bare limbs.
+
+## E1.3, the archetypes and the near individuals (2026-10-31, toolchain 0.11.1)
+
+`wrela tool bench -- --scene vale-walk --no-docs` on the M4 Air, nothing else running, `main`
+(f1d94841) against this branch: the vale's 16 living kinds grown at build (`trees::archetypes`),
+its 24 trees nearest the eye grown as themselves (`land::stage::near_trees`).
+
+| Build | GPU span p50 / p95 / p99 ms | Over 16.7 / 33 ms | Cold playable (frame) | Loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|
+| `main`: the kinds authored | 15.80 / 19.10 / 20.77 | 971 / 17 | 459 (6,429 ms) | 3.2 | 540.0 |
+| grown, every limb drawn | 34.89 / 45.40 / 48.00 | 1498 / 1085 | | 3.8 | 588.6 |
+| grown, limbs by level (`plant::level_limbs`) | **17.81 / 23.02 / 25.02** | 1424 / 4 | 531 (past the cold run's frames) | 3.8 | **579.5** |
+
+What it took to run at all in Chrome: a near individual's growth returns its shape on the heap
+(`growth::Shape`) and its plant is made on the main thread (a browser's helper stack holds no
+130 KB `Plant`: the first run trapped); the growths start once no tile is coming (they held the
+helpers the tiles' cooking needs: the vale never became playable); the probes' occluders take a
+tree's 48 thickest limbs (`trees::kinds::OCCLUDER_LIMBS`: each grown tree's thousands of twigs
+as capsules held the probes' bake for ever). A grown kind's limbs are drawn by level, its
+thickest first: all at the cards' first level, a quarter at the second, a sixteenth at the third,
+never fewer than 64 (each a tube draw, every limb doubled the frame). Its crown's foliage is a tip's
+leaves over 72 cm (`FOLIAGE` 4: at 36 cm the grown crowns held a quarter to a tenth of the hand's
+cards).
+
+**Gates.** G-memory: the vale's GPU peak 579.5 MiB, **not met** (512; `main` misses it too,
+540.0): the 39.5 MiB more is the room the 24 individuals hold (each the most cards of any kind,
+28,528, and 2,048 limbs). G-profile: the GPU span's p50 2.0 ms over `main`'s, the walk's frames
+over 16.7 ms 971 → 1,424. The cold load is 0.6 MiB more (the grown plants' bytes, `GROWN`), and
+playable 72 frames later. E7 (the archetypes' bake and the individuals' cache, G-cold) and E8
+(the vale regrown) take these up.
