@@ -6,10 +6,16 @@
 // fades (`learned`; the game keeps what it has seen made, settings.wrela), and the sign stays,
 // as the zoo's. Presentation only: the sim knows nothing of them.
 //
-// The words are proposed (design.md).
+// The signs stand on the plane of play, so they pass at the camera's speed (Ryan: "it's hard to
+// read the instructions as they go by"). So a sign's prompt stays with the player: while the
+// capybara is within a sign's reach and hasn't made its move, the sign's heading and buttons show
+// on a card at the top of the screen, steady while the world moves (`Card`), until a second
+// after the sign leaves the screen.
+//
+// The words, the card and its timing are proposed (design.md).
 
 use body::Mode
-use screens::{Act, CARD, INKED, Prompt, SOFT, act, act_width}
+use screens::{Act, INKED, act, act_width, card, unit}
 use sprites::{SIGN, Sprite}
 use ui::draw::{DrawList, Rect}
 use ui::glyphs::Device
@@ -25,8 +31,25 @@ pub const SLIDE: u32 = 8
 pub const SWIM: u32 = 16
 
 /// Where a sign's board is on its post: its middle above the post's foot, and its half-size (m).
-pub const BOARD = vec2(0.0, 3.0)
-pub const BOARD_HALF = vec2(1.35, 0.8)
+/// Its cream panel, which the words keep inside, is `RIM` in from its edge.
+pub const BOARD = vec2(0.0, 3.35)
+pub const BOARD_HALF = vec2(1.9, 1.1)
+const RIM: f32 = 0.11
+
+/// The sizes of a sign's words (m): its heading, its buttons' glyphs and its note, and the space
+/// between them; and how far in from the panel's sides they keep. The view is 2 ×
+/// `camera::HALF_HEIGHT` m high, so on a 720 px screen the note is 16 px, the heading 21.
+pub const HEADING: f32 = 0.37
+pub const GLYPH: f32 = 0.5
+pub const NOTE: f32 = 0.28
+const SPACE: f32 = 0.1
+const INSET: f32 = 0.15
+
+/// How near its post a sign's reach is (m), and its card's times (s): how long it stays once the
+/// sign has left the screen or its move is made, and how long it takes to fade.
+pub const REACH: f32 = 6.0
+pub const STAYS: f32 = 1.0
+pub const FADES: f32 = 0.35
 
 /// A sign: its post's foot, what it's headed, its prompts (none: only `line`), a line under
 /// them, and the move it teaches.
@@ -77,15 +100,18 @@ pub fn learned(s: Snap) -> u32 {
     out
 }
 
-/// Course `c`'s signs as sprites: a post, and the board the frames write on.
+/// Course `c`'s signs as sprites: a post, and the board the frames write on, its half-size and its
+/// middle over the sprite's in `pose` (sprites.wrela's `sign`).
 pub fn sign_sprites(c: u32, out: mut Vec<Sprite>) {
+    let top = BOARD.y + BOARD_HALF.y + 0.1
+    let middle = vec2(0.0, top * 0.5 - 0.05)
     for s in signs(c) {
         out.push(
             Sprite {
-                pose: vec4(0.0),
+                pose: vec4(BOARD_HALF, BOARD.y - middle.y, RIM),
                 more: vec4(0.0),
-                at: s.at + vec2(0.0, 1.9),
-                half: vec2(1.45, 1.95),
+                at: s.at + middle,
+                half: vec2(BOARD_HALF.x + 0.1, top * 0.5),
                 angle: 0.0,
                 facing: 1.0,
                 kind: SIGN,
@@ -94,9 +120,49 @@ pub fn sign_sprites(c: u32, out: mut Vec<Sprite>) {
     }
 }
 
+/// Sign `s`'s note broken into lines on its board, `m` pixels a metre, and how tall its words
+/// stand (px).
+fn laid_out(fonts: Fonts, s: Sign, m: f32) -> (Vec<(u32, u32)>, f32) {
+    borrow font = fonts.font(Face::Sans)
+    let width = (BOARD_HALF.x - RIM - INSET) * 2.0 * m
+    let lines = if s.line.len() > 0 { font.wrap(s.line, NOTE * m, width) } else { Vec::new() }
+    let n = lines.len()
+    let rows = (if s.prompts > 0 { (GLYPH + SPACE) * m } else {
+        0.0
+    }) + f32(n) * font.line_height(NOTE * m)
+    (lines, font.line_height(HEADING * m) + SPACE * m + rows)
+}
+
+/// How wide sign `s`'s prompts are for `device`, their glyphs `glyph` px high, and the space
+/// between them.
+fn prompts_width(fonts: Fonts, s: Sign, device: Device, glyph: f32) -> (f32, f32) {
+    let a = act_width(fonts, s.first, device, glyph)
+    let b = if s.prompts > 1 { act_width(fonts, s.second, device, glyph) } else { 0.0 }
+    let space = if s.prompts > 1 { glyph * 0.32 } else { 0.0 }
+    (a + b + space, space)
+}
+
+/// Sign `s`'s prompts, `glyph` px high, from `at` (their top left), `alpha` of their ink.
+fn draw_prompts(
+    list: mut DrawList,
+    fonts: Fonts,
+    s: Sign,
+    device: Device,
+    at: vec2,
+    glyph: f32,
+    alpha: f32,
+) {
+    let (_, space) = prompts_width(fonts, s, device, glyph)
+    let x = at.x + act(mut list, fonts, s.first, device, at, glyph, alpha) + space
+    if s.prompts > 1 {
+        let _ = act(mut list, fonts, s.second, device, vec2(x, at.y), glyph, alpha)
+    }
+}
+
 /// Course `c`'s signs' words and prompts, drawn on their boards into `list`, for the scene: its
 /// middle at `eye` and half its size `half` (m), `screen` pixels. A sign whose move is in
-/// `learned` says its prompts faintly.
+/// `learned` says its prompts faintly. The frames draw them over the water (main.wrela), so it
+/// never bends them.
 pub fn sign_words(
     list: mut DrawList,
     fonts: Fonts,
@@ -109,50 +175,189 @@ pub fn sign_words(
 ) {
     let m = screen.y / (2.0 * half.y)
     for s in signs(c) {
-        let mid = s.at + BOARD
-        if abs(mid.x - eye.x) > half.x + BOARD_HALF.x {
+        if !on_screen(s, eye, half) {
             continue
         }
+        let mid = s.at + BOARD
         let at = vec2((mid.x - eye.x) * m + screen.x * 0.5, (eye.y - mid.y) * m + screen.y * 0.5)
-        let w = BOARD_HALF.x * 2.0 * m
-        let board = Rect::new(at.x - w * 0.5, at.y - BOARD_HALF.y * m, w, BOARD_HALF.y * 2.0 * m)
-        let size = 0.28 * m
-        let glyph = 0.38 * m
-        let note = 0.2 * m
+        let (lines, tall) = laid_out(fonts, s, m)
         borrow font = fonts.font(Face::Sans)
-        let lines = if s.line.len() > 0 { font.wrap(s.line, note, board.w - 0.3 * m) } else {
-            Vec::new()
-        }
-        let gap = 0.1 * m
-        let rows = (if s.prompts > 0 { glyph + gap } else {
-            0.0
-        }) + f32(lines.len()) * font.line_height(note)
-        var y = board.y + (board.h - font.line_height(size) - gap - rows) * 0.5
+        let (size, glyph, note) = (HEADING * m, GLYPH * m, NOTE * m)
+        var y = at.y - tall * 0.5
         let hw = font.measure(s.heading, size)
         let _ = list.text(fonts, Face::Sans, s.heading, size, vec2(at.x - hw * 0.5, y), INKED)
-        y += font.line_height(size) + gap
+        y += font.line_height(size) + SPACE * m
         let faint = if learned & s.teaches != 0 { 0.35 } else { 1.0 }
         if s.prompts > 0 {
-            let a = act_width(fonts, s.first, device, glyph)
-            let b = if s.prompts > 1 { act_width(fonts, s.second, device, glyph) } else { 0.0 }
-            let space = if s.prompts > 1 { 0.16 * m } else { 0.0 }
-            var x = at.x - (a + b + space) * 0.5
-            x += act(mut list, fonts, s.first, device, vec2(x, y), glyph, faint) + space
-            if s.prompts > 1 {
-                let _ = act(mut list, fonts, s.second, device, vec2(x, y), glyph, faint)
-            }
-            y += glyph + gap
+            let (w, _) = prompts_width(fonts, s, device, glyph)
+            draw_prompts(mut list, fonts, s, device, vec2(at.x - w * 0.5, y), glyph, faint)
+            y += glyph + SPACE * m
         }
         for (a, b) in lines {
             let part = s.line.slice(a, b)
             let lw = font.measure(part, note)
-            let _ = list.text(fonts, Face::Sans, part, note, vec2(at.x - lw * 0.5, y), SOFT)
+            let _ = list.text(fonts, Face::Sans, part, note, vec2(at.x - lw * 0.5, y), INKED)
             y += font.line_height(note)
         }
     }
 }
 
+/// Whether sign `s`'s board is on a screen whose middle is at `eye`, half its size `half` (m).
+fn on_screen(s: Sign, eye: vec2, half: vec2) -> bool {
+    abs(s.at.x + BOARD.x - eye.x) <= half.x + BOARD_HALF.x
+}
+
+// ---- the card ----------------------------------------------------------------------------------
+
+/// The sign of course `c` whose reach the capybara at `x` (m) is in: the nearest, within `REACH`
+/// of its post. Signs at least 2 × `REACH` apart have reaches that never meet.
+pub fn reached(c: u32, x: f32) -> Option<u32> {
+    var best: Option<u32> = None
+    var near = REACH
+    let all = signs(c)
+    for i in 0..all.len() {
+        let d = abs(all[i].at.x - x)
+        if d <= near {
+            best = Some(i)
+            near = d
+        }
+    }
+    best
+}
+
+/// The card that keeps a sign's prompt on the screen: the course it's of, the sign it shows, and
+/// how long since that sign left the screen or its move was made (s).
+pub struct Card: Copy {
+    pub course: u32 = 0xffffffff,
+    pub sign: Option<u32> = None,
+    pub gone: f32 = 0.0,
+}
+
+impl Card {
+    /// The card `dt` seconds on: the capybara at `at` on course `c`, the moves `learned` made, the
+    /// screen's middle at `eye` and half its size `half` (m). A sign in reach whose move isn't
+    /// made shows, steady. Once its move is made the card fades at once, and once the sign is off
+    /// the screen it stays `STAYS`, then fades.
+    pub fn next(mut self, c: u32, learned: u32, at: vec2, eye: vec2, half: vec2, dt: f32) {
+        if c != self.course {
+            self.course = c
+            self.sign = None
+        }
+        let all = signs(c)
+        if let Some(i) = reached(c, at.x) {
+            if learned & all[i].teaches == 0 {
+                self.sign = Some(i)
+                self.gone = 0.0
+                return
+            }
+        }
+        let Some(i) = self.sign else {
+            return
+        }
+        if learned & all[i].teaches != 0 {
+            self.gone = max(self.gone, STAYS) + dt
+        } else if on_screen(all[i], eye, half) {
+            self.gone = 0.0
+        } else {
+            self.gone += dt
+        }
+        if self.gone >= STAYS + FADES {
+            self.sign = None
+        }
+    }
+
+    /// How much of the card shows, 0 to 1.
+    pub fn alpha(self) -> f32 {
+        if self.sign.is_none() { 0.0 } else { 1.0 - smoothstep(STAYS, STAYS + FADES, self.gone) }
+    }
+}
+
+/// The card's sizes, in the screens' units: its heading, its buttons' glyphs, a note and how wide
+/// a note runs before it wraps.
+const CARD_HEADING: f32 = 4.0
+const CARD_GLYPH: f32 = 5.0
+const CARD_NOTE: f32 = 3.2
+const CARD_WRAP: f32 = 56.0
+
+/// A sign with no buttons: its note's lines on the card, `u` the screens' unit.
+fn card_note(fonts: Fonts, s: Sign, u: f32) -> Vec<(u32, u32)> {
+    if s.prompts > 0 || s.line.len() == 0 {
+        return Vec::new()
+    }
+    fonts.font(Face::Sans).wrap(s.line, u * CARD_NOTE, u * CARD_WRAP)
+}
+
+/// Where card `k`'s paper is on `screen` (px), at the top in the middle, clear of the snacks' count
+/// and the clock; none when it shows no sign.
+pub fn card_rect(fonts: Fonts, k: Card, device: Device, screen: vec2) -> Option<Rect> {
+    let Some(i) = k.sign else {
+        return None
+    }
+    let s = signs(k.course)[i]
+    let u = unit(screen)
+    borrow font = fonts.font(Face::Sans)
+    var w = font.measure(s.heading, u * CARD_HEADING)
+    var h = max(u * CARD_GLYPH, font.line_height(u * CARD_HEADING))
+    if s.prompts > 0 {
+        let (p, _) = prompts_width(fonts, s, device, u * CARD_GLYPH)
+        w += u * 3.0 + p
+    }
+    for (a, b) in card_note(fonts, s, u) {
+        w = max(w, font.measure(s.line.slice(a, b), u * CARD_NOTE))
+        h += font.line_height(u * CARD_NOTE)
+    }
+    Some(Rect::new((screen.x - w) * 0.5 - u * 3.5, u * 2.6, w + u * 7.0, h + u * 5.0))
+}
+
+/// Card `k` at the top of `screen`, `alpha` of it: its sign's heading with its buttons beside it,
+/// for `device`; a sign with no buttons says its note under its heading instead.
+pub fn sign_card(
+    list: mut DrawList,
+    fonts: Fonts,
+    k: Card,
+    device: Device,
+    screen: vec2,
+    alpha: f32,
+) {
+    let Some(r) = card_rect(fonts, k, device, screen) else {
+        return
+    }
+    if alpha <= 0.0 {
+        return
+    }
+    let s = signs(k.course)[k.sign.unwrap()]
+    let u = unit(screen)
+    let (size, glyph, note) = (u * CARD_HEADING, u * CARD_GLYPH, u * CARD_NOTE)
+    borrow font = fonts.font(Face::Sans)
+    card(mut list, r, u, alpha)
+    let ink = vec4(INKED.xyz, alpha)
+    let top = r.y + u * 2.5
+    let line = font.line_height(size)
+    let tall = max(glyph, line)
+    let heading = font.measure(s.heading, size)
+    let (p, _) = prompts_width(fonts, s, device, glyph)
+    let row = heading + if s.prompts > 0 { u * 3.0 + p } else { 0.0 }
+    let x = r.x + (r.w - row) * 0.5
+    let _ = list.text(fonts, Face::Sans, s.heading, size, vec2(x, top + (tall - line) * 0.5), ink)
+    if s.prompts > 0 {
+        let at = vec2(x + heading + u * 3.0, top + (tall - glyph) * 0.5)
+        draw_prompts(mut list, fonts, s, device, at, glyph, alpha)
+    }
+    var y = top + tall
+    for (a, b) in card_note(fonts, s, u) {
+        let part = s.line.slice(a, b)
+        let lw = font.measure(part, note)
+        let _ = list.text(fonts, Face::Sans, part, note, vec2(r.x + (r.w - lw) * 0.5, y), ink)
+        y += font.line_height(note)
+    }
+}
+
 // ---- tests -------------------------------------------------------------------------------------
+
+/// How many pixels a metre of the scene is on a screen 720 px high.
+fn at_720() -> f32 {
+    720.0 / (2.0 * camera::HALF_HEIGHT)
+}
 
 @test
 fn each_of_the_levels_moves_has_a_sign_left_to_right_and_none_in_the_lab() {
@@ -160,18 +365,142 @@ fn each_of_the_levels_moves_has_a_sign_left_to_right_and_none_in_the_lab() {
     var taught = 0
     for i in 0..all.len() {
         taught = taught | all[i].teaches
-        if i > 0 {
-            assert(all[i].at.x - all[i - 1].at.x >= 2.0 * BOARD_HALF.x + 1.0, "boards apart")
-        }
     }
     assert(taught == RUN_AND_JUMP | DOUBLE_JUMP | SPLASH | SLIDE | SWIM)
     assert(signs(course::LAB_COURSE).len() == 0)
 }
 
 @test
-fn a_signs_board_stands_clear_of_the_capybara_running_under_it() {
+fn every_levels_signs_stand_8_m_apart_so_each_is_read_alone() {
+    for c in 0..course::LEVELS {
+        let all = signs(c)
+        for i in 1..all.len() {
+            let apart = all[i].at.x - all[i - 1].at.x
+            assert(apart >= 8.0, f"course {c}: signs {i - 1} and {i} are {apart} m apart")
+        }
+    }
+}
+
+@test
+fn a_signs_board_stands_clear_of_the_capybara_and_the_ground() {
     // The capybara stands about 1.3 m tall as drawn: the board's foot is well above it.
     assert(BOARD.y - BOARD_HALF.y > 2.0)
+    for c in 0..course::LEVELS {
+        borrow at = course::course(c)
+        for s in signs(c) {
+            let (lo, hi) = (s.at + BOARD - BOARD_HALF, s.at + BOARD + BOARD_HALF)
+            for k in 0..9 {
+                let x = mix(lo.x, hi.x, f32(k) / 8.0)
+                if let Some(y) = at.ground_at(x, hi.y) {
+                    assert(y < lo.y, f"course {c}: ground at {x} m, {y} m up, in the sign's board")
+                }
+            }
+        }
+    }
+}
+
+@test
+fn a_signs_words_read_at_16_px_and_fit_its_board() {
+    let m = at_720()
+    assert(NOTE * m >= 16.0 && HEADING * m >= 20.0 && GLYPH * m >= 28.0, f"{NOTE * m} px")
+    let fonts = Fonts::load()
+    borrow font = fonts.font(Face::Sans)
+    let panel = (BOARD_HALF - vec2(RIM + INSET, RIM)) * 2.0 * m
+    for c in 0..course::LEVELS {
+        for s in signs(c) {
+            let (_, tall) = laid_out(fonts, s, m)
+            assert(tall <= panel.y, f"{s.heading}: {tall} px tall on a {panel.y} px panel")
+            assert(font.measure(s.heading, HEADING * m) <= panel.x, f"{s.heading}: too wide")
+            for d in [Device::Keys, Device::Pad] {
+                let (w, _) = prompts_width(fonts, s, d, GLYPH * m)
+                assert(w <= panel.x, f"{s.heading}: its buttons too wide")
+            }
+        }
+    }
+}
+
+@test
+fn the_sign_nearest_the_capybara_within_its_reach_is_the_one_in_reach() {
+    // The wetlands' run and jump at 0 m, the double jump at 8, the splash at 32.4.
+    assert(reached(WETLANDS, course::course(WETLANDS).start.x) == Some(0), "at the start")
+    assert(reached(WETLANDS, 3.9) == Some(0) && reached(WETLANDS, 4.1) == Some(1))
+    assert(reached(WETLANDS, 20.0).is_none(), "between them, out of either's reach")
+    assert(reached(WETLANDS, 27.0) == Some(2), "the splash's, before the pit")
+    assert(reached(course::LAB_COURSE, 0.0).is_none())
+}
+
+@test
+fn a_signs_card_shows_in_its_reach_until_its_move_is_made() {
+    let half = camera::half_view(16.0 / 9.0)
+    let at = vec2(2.0, 0.35)
+    var k = Card {}
+    k.next(WETLANDS, 0, at, at, half, 1.0 / 60.0)
+    assert(k.sign == Some(0) && k.alpha() == 1.0, "run and jump, at the start")
+    // Steady while in reach.
+    for _ in 0..600 {
+        k.next(WETLANDS, 0, at, at, half, 1.0 / 60.0)
+    }
+    assert(k.alpha() == 1.0, "steady")
+    // A jump: the card fades, and is gone.
+    k.next(WETLANDS, RUN_AND_JUMP, at, at, half, 1.0 / 60.0)
+    assert(k.alpha() < 1.0 && k.alpha() > 0.0, f"fading, {k.alpha()}")
+    for _ in 0..60 {
+        k.next(WETLANDS, RUN_AND_JUMP, at, at, half, 1.0 / 60.0)
+    }
+    assert(k.sign.is_none() && k.alpha() == 0.0, "gone")
+    // A move already made: its card never shows.
+    var made = Card {}
+    made.next(WETLANDS, RUN_AND_JUMP, at, at, half, 1.0 / 60.0)
+    assert(made.sign.is_none())
+    // A sign that teaches no move (the polar's ice) shows whatever's made.
+    var ice = Card {}
+    let beach = vec2(8.0, 0.35)
+    ice.next(course::POLAR, 0xffffffff, beach, beach, half, 1.0 / 60.0)
+    assert(ice.sign == Some(0))
+}
+
+@test
+fn a_signs_card_stays_while_the_sign_shows_then_a_second_more() {
+    let half = camera::half_view(16.0 / 9.0)
+    var k = Card {}
+    let dt = 1.0 / 60.0
+    k.next(WETLANDS, RUN_AND_JUMP, vec2(5.0, 0.35), vec2(5.0, 0.35), half, dt)
+    assert(k.sign == Some(1), "the double jump's")
+    // Past its reach, the sign still on the screen: it stays.
+    let past = vec2(16.0, 0.35)
+    k.next(WETLANDS, RUN_AND_JUMP, past, past, half, 5.0)
+    assert(k.sign == Some(1) && k.alpha() == 1.0, "on the screen")
+    // The sign off the screen: a second at full, then it fades and goes.
+    let far = vec2(8.0 + half.x + BOARD_HALF.x + 1.0, 0.35)
+    k.next(WETLANDS, RUN_AND_JUMP, far, far, half, 0.9)
+    assert(k.alpha() == 1.0, "a second after it's gone, still")
+    k.next(WETLANDS, RUN_AND_JUMP, far, far, half, 0.3)
+    assert(k.alpha() < 1.0, "then fading")
+    k.next(WETLANDS, RUN_AND_JUMP, far, far, half, FADES)
+    assert(k.sign.is_none(), "and gone")
+    // A new level starts clear.
+    k.next(WETLANDS, 0, vec2(2.0, 0.35), vec2(2.0, 0.35), half, dt)
+    k.next(course::SAVANNA, 0, vec2(2.0, 0.35), vec2(2.0, 0.35), half, dt)
+    assert(k.sign.is_none(), "the savanna has no signs")
+}
+
+@test
+fn a_signs_card_sits_at_the_top_in_the_middle_clear_of_the_count_and_the_clock() {
+    let fonts = Fonts::load()
+    let screen = vec2(1280.0, 720.0)
+    for c in 0..course::LEVELS {
+        for i in 0..signs(c).len() {
+            let k = Card { course: c, sign: Some(i) }
+            for d in [Device::Keys, Device::Pad] {
+                let r = card_rect(fonts, k, d, screen).unwrap()
+                assert(abs(r.center().x - screen.x * 0.5) < 0.5 && r.y < screen.y * 0.1)
+                // The count's carrots take the left quarter, the clock the right sixth.
+                assert(r.x > screen.x * 0.25 && r.right() < screen.x * 0.75, f"course {c} sign {i}")
+                assert(r.bottom() < screen.y * 0.3, "high, over the sky")
+            }
+        }
+    }
+    assert(card_rect(fonts, Card {}, Device::Keys, screen).is_none())
 }
 
 @test

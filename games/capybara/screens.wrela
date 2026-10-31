@@ -21,7 +21,8 @@ use ui::glyphs::{
     select_button, shoulder, start_button,
 }
 use ui::text::{Face, Fonts}
-use world::{CLOCK, GHOST, MENU, MUSIC, OPTIONS, PAGE_NODE, node}
+use world::{CLOCK, GHOST, MENU, MUSIC, OPTIONS, PAGE_NODE, SEE_OPTIONS, node}
+use online::ordinal
 
 /// The cards' colours: their ink, the ink of what's said softly, their cream, the yuzu of the
 /// item with the focus, the paler wash of the item under the pointer, and the inks of a split
@@ -399,8 +400,15 @@ pub fn title(
 
 // ---- lists: the menu and the options -----------------------------------------------------------
 
-/// The menu's labels, top to bottom (world.wrela's `RESUME`...).
-pub const MENU_LABELS: [Text; 6] = ["Resume", "Restart", "Levels", "Runs", "Options", "Controls"]
+/// The menu's labels, in order (world.wrela's `RESUME`...): the column, then the row under it.
+pub const MENU_LABELS: [Text; 6] = [
+    "Resume",
+    "Restart",
+    "Leaderboard",
+    "Levels",
+    "Options",
+    "Controls",
+]
 
 /// The options' labels (world.wrela's `MUSIC`...).
 pub const OPTION_LABELS: [Text; 4] = ["Music", "Clock", "Ghost", "Back"]
@@ -409,32 +417,39 @@ pub const OPTION_LABELS: [Text; 4] = ["Music", "Clock", "Ghost", "Back"]
 const PANEL: f32 = 46.0
 const BETWEEN: f32 = 3.0
 
-/// A list page's shape, in units: its card's width, its items, and the room under them for a
-/// note (the options say what the focused one does).
-fn shape(page: u32) -> (f32, u32, f32) {
-    if page == OPTIONS { (56.0, 4, 9.0) } else { (40.0, 6, 0.0) }
+/// A list page's shape, in units: its card's width, its items, their rows' height, the size of
+/// their labels, and the room under them for a note (the options say what the focused one does).
+/// The menu's rows are taller, larger targets for a pointer and a glance.
+fn shape(page: u32) -> (f32, u32, f32, f32, f32) {
+    if page == OPTIONS { (56.0, 4, 8.0, 4.2, 9.0) } else { (58.0, 6, 10.0, 4.8, 0.0) }
 }
 
 /// Whether `screen` is wide enough for the facts beside the menu.
 fn wide(screen: vec2) -> bool {
-    screen.x >= unit(screen) * (40.0 + BETWEEN + PANEL + 8.0)
+    screen.x >= unit(screen) * (58.0 + BETWEEN + PANEL + 8.0)
 }
 
-/// Where list page `page` (`MENU`, `OPTIONS`) is on `screen`: its card, and each item's rect.
-/// The menu stands to the left of the facts beside it, where there's room.
+/// Where list page `page` (`MENU`, `OPTIONS`) is on `screen`: its card, and each item's rect. The
+/// menu's last two items share its last row (world.wrela's `menu_moved`), and the menu stands to
+/// the left of the facts beside it, where there's room.
 pub fn list_rects(screen: vec2, page: u32) -> (Rect, Vec<Rect>) {
     let u = unit(screen)
-    let (width, count, note) = shape(page)
+    let (width, count, tall, _, note) = shape(page)
+    let rows = if page == MENU { count - 1 } else { count }
     let w = min(u * width, screen.x - u * 4.0)
-    let row = u * 8.0
-    let h = u * (12.0 + note) + row * f32(count)
+    let row = u * tall
+    let h = u * (12.0 + note) + row * f32(rows)
     let x = if page == MENU && wide(screen) {
         (screen.x - (w + u * (BETWEEN + PANEL))) * 0.5
     } else { (screen.x - w) * 0.5 }
     let r = Rect::new(x, (screen.y - h) * 0.5 - u * 3.0, w, h)
+    let inner = w - u * 4.4
     var items: Vec<Rect> = Vec::new()
     for i in 0..count {
-        items.push(Rect::new(r.x + u * 2.2, r.y + u * 10.0 + f32(i) * row, w - u * 4.4, row - u))
+        let paired = page == MENU && i >= SEE_OPTIONS
+        let (k, half) = if paired { (rows - 1, (inner - u) * 0.5) } else { (i, inner) }
+        let left = r.x + u * 2.2 + if paired { f32(i - SEE_OPTIONS) * (half + u) } else { 0.0 }
+        items.push(Rect::new(left, r.y + u * 10.0 + f32(k) * row, half, row - u))
     }
     (r, items)
 }
@@ -484,19 +499,37 @@ pub fn list(
         vec2(r.x + u * 3.4, r.y + u * 3.6),
         SOFT,
     )
-    let size = u * 4.2
+    if page == MENU {
+        // A faint line over the row the last two items share.
+        let y = items[SEE_OPTIONS].y - u * 0.5
+        list.line(
+            vec2(r.x + u * 3.4, y),
+            vec2(r.right() - u * 3.4, y),
+            vec4(INK, 0.2),
+            width: max(u * 0.2, 1.0),
+        )
+    }
+    let (_, _, _, label, _) = shape(page)
+    let size = u * label
     let line = fonts.font(Face::Sans).line_height(size)
     for i in 0..labels.len() {
         let item = items[i]
+        // The focus: washed in yuzu, ringed in ink and marked.
         if i == focus {
             list.rect(item, YUZU, radius: u * 1.4)
+            list.ring(item, INKED, radius: u * 1.4, width: max(u * 0.35, 2.0))
             let m = vec2(item.x + u * 2.0, item.y + item.h * 0.5)
             list.diamond(Rect::new(m.x - u * 0.9, m.y - u * 0.9, u * 1.8, u * 1.8), INKED)
         } else if hover == Some(i) {
             list.rect(item, LIT, radius: u * 1.4)
         }
         let y = item.y + (item.h - line) * 0.5
-        let _ = say(mut list, fonts, Face::Sans, labels[i], size, vec2(item.x + u * 4.4, y), INKED)
+        // A label that shares its row sits in the middle of its half.
+        let lw = width_of(fonts, Face::Sans, labels[i], size)
+        let x = if page == MENU && i >= SEE_OPTIONS { item.x + (item.w - lw) * 0.5 + u } else {
+            item.x + u * 4.4
+        }
+        let _ = say(mut list, fonts, Face::Sans, labels[i], size, vec2(x, y), INKED)
         if i < values.len() && values[i].len() > 0 {
             let v = values[i].as_str()
             let vs = size * 0.86
@@ -526,17 +559,40 @@ pub struct Facts: Copy {
     pub deaths: u32,
     /// The player's best time on the course (ticks), or 0 without one.
     pub best: u32,
+    /// The player's place on the course's world board (any%), or 0 without one.
+    pub place: u32 = 0,
 }
 
-/// The attempt's facts, on a card beside the list, if the screen is wide enough: the course's
-/// name, its time, its snacks, its deaths and the best time.
+/// The facts panel's rows, top to bottom, for `f`: the time, the best, the snacks and the world
+/// place, the best and the place only where there's one.
+pub fn fact_rows(f: Facts) -> Vec<u32> {
+    var out = Vec::from([TIME_ROW])
+    if f.best > 0 {
+        out.push(BEST_ROW)
+    }
+    out.push(SNACKS_ROW)
+    if f.place > 0 {
+        out.push(PLACE_ROW)
+    }
+    out
+}
+
+/// The facts panel's rows (`fact_rows`).
+pub const TIME_ROW: u32 = 0
+pub const BEST_ROW: u32 = 1
+pub const SNACKS_ROW: u32 = 2
+pub const PLACE_ROW: u32 = 3
+
+/// The attempt's facts, plainly, on a card beside the list, if the screen is wide enough: the
+/// course's name, then its time, the best, the snacks and the world place (`fact_rows`).
 pub fn facts(list: mut DrawList, fonts: Fonts, screen: vec2, f: Facts) {
     if !wide(screen) {
         return
     }
     let u = unit(screen)
     let (beside, _) = list_rects(screen, MENU)
-    let rows = if f.best > 0 { 4 } else { 3 }
+    let shown = fact_rows(f)
+    let rows = shown.len()
     let r = Rect::new(
         beside.right() + u * BETWEEN,
         beside.y,
@@ -555,18 +611,18 @@ pub fn facts(list: mut DrawList, fonts: Fonts, screen: vec2, f: Facts) {
     var y = r.y + u * 12.0
     let label = u * 2.8
     let value = u * 3.6
-    for i in 0..rows {
-        let name = ["Time", "Snacks", "Deaths", "Best"][i]
+    for i in shown {
+        let name = ["Time", "Best", "Snacks", "World"][i]
         let _ = say(mut list, fonts, Face::Sans, name, label, vec2(left, y + u * 0.6), SOFT)
         let x = left + u * 13.0
-        if i == 1 {
+        if i == SNACKS_ROW {
             for k in 0..f.snacks {
                 carrot(mut list, vec2(x + f32(k) * u * 3.6, y), u * 4.4, found: k < f.found)
             }
         } else {
-            let text = if i == 0 { seconds(f.ticks) } else if i == 2 { f"{f.deaths}" } else {
+            let text = if i == TIME_ROW { seconds(f.ticks) } else if i == BEST_ROW {
                 seconds(f.best)
-            }
+            } else { ordinal(f.place) }
             let _ = say(mut list, fonts, Face::Mono, text.as_str(), value, vec2(x, y), INKED)
         }
         y += u * 6.4
@@ -1066,12 +1122,48 @@ fn a_list_s_items_are_on_its_card_one_under_another() {
     assert(items.len() == MENU_LABELS.len())
     for i in 0..items.len() {
         assert(r.encloses(items[i]), f"item {i} on the card")
-        if i > 0 {
+        if i == world::SEE_CONTROLS {
+            assert(items[i].y == items[i - 1].y && items[i].x >= items[i - 1].right(), "beside")
+        } else if i > 0 {
             assert(items[i].y >= items[i - 1].bottom(), "under the one before")
         }
     }
     let (narrow, _) = list_rects(vec2(400.0, 720.0), MENU)
     assert(abs(narrow.center().x - 200.0) < 1.0, "alone and centred on a narrow screen")
+}
+
+@test
+fn the_menu_puts_the_essentials_first_in_rows_a_glance_and_a_thumb_can_find() {
+    assert(
+        MENU_LABELS[world::RESUME] == "Resume" &&
+            MENU_LABELS[world::RESTART] == "Restart" &&
+            MENU_LABELS[world::SEE_BOARD] == "Leaderboard" &&
+            MENU_LABELS[world::SEE_MAP] == "Levels" &&
+            MENU_LABELS[world::SEE_OPTIONS] == "Options" &&
+            MENU_LABELS[world::SEE_CONTROLS] == "Controls",
+        "in order",
+    )
+    let screen = vec2(1280.0, 720.0)
+    let u = unit(screen)
+    let (r, items) = list_rects(screen, MENU)
+    let (_, options) = list_rects(screen, OPTIONS)
+    let fonts = Fonts::load()
+    let (_, _, _, label, _) = shape(MENU)
+    for i in 0..items.len() {
+        assert(items[i].h >= u * 9.0 && items[i].h > options[0].h, f"item {i} a taller row")
+        // Room for the focus's mark at its left, and a margin at its right.
+        let w = width_of(fonts, Face::Sans, MENU_LABELS[i], u * label)
+        assert(w + u * 6.0 <= items[i].w, f"{MENU_LABELS[i]} fits its row, {w / u} units")
+    }
+    assert(r.bottom() < screen.y - u * 9.0, "clear of the prompts at the foot")
+}
+
+@test
+fn the_facts_say_the_attempt_plainly_with_the_best_and_the_place_where_there_are_some() {
+    let f = Facts { name: "Wetlands", ticks: 600, found: 1, snacks: 5, deaths: 3, best: 0 }
+    assert(fact_rows(f) == Vec::from([TIME_ROW, SNACKS_ROW]), "no best, no place")
+    let both = Facts { best: 1200, place: 4, ..f }
+    assert(fact_rows(both) == Vec::from([TIME_ROW, BEST_ROW, SNACKS_ROW, PLACE_ROW]))
 }
 
 @test
@@ -1085,6 +1177,8 @@ fn a_page_s_tree_names_its_items_by_their_nodes() {
     assert(nodes[2].id == node(7, world::MENU, 1) && nodes[2].label.as_str() == "Restart")
     assert(nodes[2].parent == nodes[0].id && nodes[2].rect.z > 0.0)
     assert(nodes[2].role == Role::MenuItem, "a menu item, which a pointer presses")
+    // A screen reader reads them in the menu's order, the leaderboard third.
+    assert(nodes[3].label.as_str() == "Leaderboard" && nodes[6].label.as_str() == "Controls")
 }
 
 @test

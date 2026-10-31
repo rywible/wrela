@@ -8,7 +8,7 @@
 // on the first frame.
 //
 // The game opens on the level's title; Esc, P or a controller's Start pauses on a menu: resume,
-// restart, the runs, the options and the controls. The pages and their focus are the sim's
+// restart, the leaderboard, the levels, the options and the controls. The pages and their focus are the sim's
 // (world.wrela); the frames draw them, with the keys or the controller's buttons the player last
 // used (ui::glyphs), and publish each as a semantic tree, so a click or a screen reader works
 // them too. While playing, the screen holds only the snacks' count at the top left, and the clock
@@ -21,9 +21,9 @@
 // lab). A controller: the stick or pad, South or East to jump, Select to restart.
 //
 // Runs (replay.wrela): each finished attempt is a replay, and the best few of each category are
-// kept in the game's storage. The menu's Runs shows them: two boards, the player's runs and the
-// tool-assisted runs (the route search's, made by a program, never ranked with a player's), each
-// any% and 100%. Choosing a run watches it (watch.wrela). The ghost that runs beside the player
+// kept in the game's storage. The menu's Leaderboard shows them beside the world's: the world's
+// board first, the player's runs, the tool-assisted runs (the route search's, made by a program,
+// never ranked with a player's) and the world's whole game, each any% and 100%. Choosing a run watches it (watch.wrela). The ghost that runs beside the player
 // (the options) is their best, a tool-assisted run, or none; with the clock shown, each
 // checkpoint's split is against it.
 //
@@ -70,7 +70,7 @@ use screens::{
     option_values, seconds, start_rect, title, tree, unit,
 }
 use settings::{AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, SETTINGS, Settings, decode, encode, turned}
-use signs::{learned, sign_words}
+use signs::{Card, learned, sign_card, sign_words}
 use std::host
 use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
@@ -97,10 +97,10 @@ const FIRST: u32 = HOME
 /// The most sprites drawn: the cast's and the particles'.
 const SPRITES: u32 = 1024
 
-/// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
-/// tool-assisted board").
-const PLAYERS: u32 = 0
-const ASSISTED: u32 = 1
+/// The leaderboard's boards after the world's (online.wrela's `WORLD`, first): the player's runs,
+/// and the tool-assisted runs (design.md: "a separate tool-assisted board").
+const PLAYERS: u32 = 1
+const ASSISTED: u32 = 2
 
 /// How far a watched run seeks at a press (ticks): five seconds.
 const SEEK: u32 = 600
@@ -205,10 +205,11 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The signs' words, drawn into the scene behind the cast (signs.wrela), with the one
-    /// renderer's atlas.
+    /// The signs' words, drawn into the scene over the water and behind the cast (signs.wrela),
+    /// with the one renderer's atlas; and the card that keeps the sign in reach on the screen.
     signs: Uploaded,
     sign_list: DrawList,
+    sign_card: Card,
     /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
     /// from frame to frame, so no frame makes them).
     back: Vec<Sprite>,
@@ -238,11 +239,13 @@ pub struct Lab {
     kept: u32,
     /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
     /// asks: each is the sim playing the run, and making them delayed the first frame and each
-    /// change of level), the board shown (`PLAYERS` or `ASSISTED`), and the run with the focus on
-    /// it: its category's column and its row.
+    /// change of level), the board shown (online.wrela's `WORLD`..., `PLAYERS`, `ASSISTED`),
+    /// whether the leaderboard was open the last frame, and the run with the focus on it: its
+    /// category's column and its row.
     assisted: Vec<Replay>,
     assisted_of: Option<u32>,
     board: u32,
+    browsed: bool,
     column: u32,
     row: u32,
     /// The trail the ghost follows, the clock at each checkpoint it reached (its splits), and the
@@ -271,10 +274,11 @@ pub struct Lab {
     nav: Stick,
     /// The link to the console that opened the game (`console`).
     console: Link,
-    /// The world's boards and uploads (online.wrela), and whose the run watched is when it is the
-    /// world's (empty for the player's own and the tool-assisted ones).
+    /// The world's boards and uploads (online.wrela), and whose the run watched is and its place
+    /// when it is the world's (empty and 0 for the player's own and the tool-assisted ones).
     online: online::Online,
     watch_name: String,
+    watch_place: u32,
 }
 
 pub fn init() -> Lab {
@@ -316,6 +320,7 @@ pub fn init() -> Lab {
         list: DrawList::new(),
         signs: Uploaded::new(),
         sign_list: DrawList::new(),
+        sign_card: Card {},
         back: Vec::with_capacity(SPRITES),
         front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
@@ -332,11 +337,13 @@ pub fn init() -> Lab {
         kept: 0xffffffff,
         assisted: Vec::new(),
         assisted_of: None,
-        board: PLAYERS,
+        board: online::WORLD,
+        browsed: false,
         column: ANY,
         row: 0,
         online: online::online(),
         watch_name: String::new(),
+        watch_place: 0,
         trail: Vec::new(),
         splits: Vec::new(),
         trail_of: 0,
@@ -414,9 +421,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
     online::update(mut s.online, time)
-    if let Some((r, name)) = online::take_watch(mut s.online) {
+    if let Some((r, name, place)) = online::take_watch(mut s.online) {
         open_watch(mut s, r.clone())
         s.watch_name = name.clone()
+        s.watch_place = place
     }
     store_progress(mut s, dt)
     store_settings(mut s, dt)
@@ -433,6 +441,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
     // board's and the watch's.
     let browsing = live_snap.paused == 1 && live_snap.page == RUNS
+    if browsing && !s.browsed {
+        // The leaderboard opens on the world's board; opened alone, with no world to show, on
+        // the player's runs.
+        s.board = if s.online.linked { online::WORLD } else { PLAYERS }
+        s.row = 0
+    }
+    s.browsed = browsing
     for raw in events() {
         s.console.event(raw)
         let e = in_play(raw, origin)
@@ -507,6 +522,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         framed(s.camera, half, c.ends)
     }
     react(mut s.cast, snap, c, dt, eye, half)
+    if snap.paused == 0 && !watching {
+        s.sign_card.next(snap.course, s.settings.learned, snap.at, eye, half, dt)
+    }
     // What happened, to the voice.
     match mut s.voice {
         Some(v) => {
@@ -628,7 +646,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: behind,
     )
-    s.renderer.draw_uploaded(scene, s.signs, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
     label("water copy")
@@ -650,6 +667,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         ),
         vertices: s.ground.water_n,
     )
+    // The signs' words over the water, so it never bends them, and behind the cast.
+    s.renderer.draw_uploaded(wet, s.signs, scene_size)
     let ahead = Stage { first: behind, ..stage }
     draw(
         wet,
@@ -803,6 +822,7 @@ fn facts_of(s: Lab, snap: Snap) -> Facts {
         snacks: c.snacks.len(),
         deaths: snap.deaths,
         best: best(s, snap.course),
+        place: online::my_place(s.online, snap.course, ANY),
     }
 }
 
@@ -927,7 +947,7 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             let (_, back) = controls_rects(screen)
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS {
-            parts = Some(("Runs", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
+            parts = Some(("Leaderboard", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
         } else if page == MAP {
             let (_, rects) = map_rects(screen, LEVELS)
             var names: Vec<Text> = Vec::new()
@@ -986,6 +1006,9 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
                 time: time,
             )
         } else if page == MENU {
+            // The course's world board, asked for while the menu shows (when the console is
+            // there): the facts say the player's place, and the leaderboard opens on it.
+            online::want(mut s.online, snap.course, ANY)
             let hover = hovered(s, screen, MENU)
             screens::list(
                 mut s.list,
@@ -1063,10 +1086,15 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
         }
         return
     }
-    // The title, fading as the first attempt begins.
+    // The title, fading as the first attempt begins, and as it goes, the card of the sign in
+    // reach (signs.wrela).
     let since = f32(snap.ticks) / f32(HZ)
-    if snap.attempt == 0 && since < 2.4 {
-        let alpha = 1.0 - smoothstep(0.6, 2.4, since)
+    let titled = if snap.attempt == 0 { 1.0 - smoothstep(0.6, 2.4, since) } else { 0.0 }
+    if snap.finished == 0 {
+        sign_card(mut s.list, s.fonts, s.sign_card, d, screen, s.sign_card.alpha() * (1.0 - titled))
+    }
+    if titled > 0.0 {
+        let alpha = titled
         title(
             mut s.list,
             s.fonts,
@@ -1519,6 +1547,7 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
 fn open_watch(s: mut Lab, r: take Replay) {
     s.watching = Some(watch(take r))
     s.watch_name = String::new()
+    s.watch_place = 0
     s.idle = 0.0
 }
 
@@ -1622,9 +1651,10 @@ fn wrap_note(fonts: Fonts, s: str, size: f32, width: f32) -> Vec<String> {
     lines
 }
 
-/// The runs card, over the paused page: the boards, each category's runs, fastest first, who
-/// made each and its time, the one with the focus washed in yuzu; a back button; and how to use
-/// them.
+/// The leaderboard, over the paused page: the boards (the world's first, then the player's own
+/// and the tool-assisted, as filters of it, and the whole game), each category's runs, fastest
+/// first, who made each and its time, the one with the focus washed in yuzu; a back button; and
+/// how to use them.
 fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     made_assisted(mut s, c)
     let (r, size) = runs_frame(screen)
@@ -1634,7 +1664,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
     let pointing = s.device == Device::Keys
     card(mut s.list, r, u)
-    let title = f"Runs: {course::name(c)}"
+    let title = f"Leaderboard  ·  {course::name(c)}"
     let _ = s.list.text(
         s.fonts,
         Face::Sans,
@@ -1646,11 +1676,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     // The boards' names: the one shown filled in, the other lit under the pointer.
     for b in 0..online::BOARDS {
         let tab = board_rect(screen, b)
-        let name = if b == PLAYERS { "Yours" } else if b == ASSISTED {
-            "Tool-assisted"
-        } else if b == online::WORLD {
-            "World"
-        } else { "Whole game" }
+        let name = board_name(b)
         if b == s.board {
             s.list.rect(tab, INKED, radius: size * 0.8)
         } else if pointing && tab.contains(s.pointer) {
@@ -1686,7 +1712,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
-                if s.board == PLAYERS { "None yet: reach the goal" } else { "None" },
+                if s.board == PLAYERS { "Reach the goal to add a run" } else { "None" },
                 size * 0.9,
                 vec2(head.x + size * 0.4, head.y + size * 0.2),
                 SOFT,
@@ -1755,14 +1781,23 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     if s.board == PLAYERS {
         items.push(Prompt { act: Act::Upload, say: "Upload" })
     }
-    items.push(Prompt { act: Act::Boards, say: "Boards" })
+    items.push(Prompt { act: Act::Boards, say: "Next board" })
     items.push(Prompt { act: Act::Back, say: "Back" })
     footer(mut s.list, s.fonts, items, s.device, screen)
 }
 
-/// Watching: a bar at the foot of the page, as a video player's: who made the run, its category
-/// and its time; whether it plays; how far through it is; its speed; and for a few seconds after
-/// the last key, the prompts.
+/// Board `b`'s name on the leaderboard.
+fn board_name(b: u32) -> Text {
+    if b == online::WORLD {
+        "World"
+    } else if b == PLAYERS {
+        "Yours"
+    } else if b == ASSISTED { "Tool-assisted" } else { "Whole game" }
+}
+
+/// Watching: a bar at the foot of the page, as a video player's: who made the run (a world's run:
+/// the account and its place), its category and its time; whether it plays; how far through it
+/// is; its speed; and for a few seconds after the last key, the prompts (`watch_prompts`).
 fn watch_bar(s: mut Lab, screen: vec2) {
     let u = unit(screen)
     let size = u * 2.6
@@ -1773,7 +1808,10 @@ fn watch_bar(s: mut Lab, screen: vec2) {
                 named.clone()
             }
             let category = if counts(w.replay, FULL) { "100%" } else { "Any%" }
-            (f"{who}  ·  {category}", w.tick, w.end(), w.playing, SPEEDS[w.speed])
+            let label = if s.watch_place > 0 {
+                f"{who}  ·  {online::ordinal(s.watch_place)}  ·  {category}"
+            } else { f"{who}  ·  {category}" }
+            (take label, w.tick, w.end(), w.playing, SPEEDS[w.speed])
         },
         None => return,
     }
@@ -1833,13 +1871,7 @@ fn watch_bar(s: mut Lab, screen: vec2) {
         let _ = screens::prompts(
             mut s.list,
             s.fonts,
-            [
-                Prompt { act: Act::Choose, say: "Play" },
-                Prompt { act: Act::Change, say: "Seek" },
-                Prompt { act: Act::Move, say: "Speed" },
-                Prompt { act: Act::Again, say: "Again" },
-                Prompt { act: Act::Back, say: "Back" },
-            ],
+            watch_prompts(),
             s.device,
             vec2(screen.x * 0.5, r.y - u * 5.0),
             u * 3.6,
@@ -1847,6 +1879,20 @@ fn watch_bar(s: mut Lab, screen: vec2) {
             backed: true,
         )
     }
+}
+
+/// What the watch's prompts offer. A world's run will offer to race it as the ghost here
+/// (docs/plan-online-play.md, step 6), beside the account and its place on the bar.
+fn watch_prompts() -> Vec<Prompt> {
+    Vec::from(
+        [
+            Prompt { act: Act::Choose, say: "Play" },
+            Prompt { act: Act::Change, say: "Seek" },
+            Prompt { act: Act::Move, say: "Speed" },
+            Prompt { act: Act::Again, say: "Again" },
+            Prompt { act: Act::Back, say: "Back" },
+        ],
+    )
 }
 
 /// The watched run's time (ticks), or 0.

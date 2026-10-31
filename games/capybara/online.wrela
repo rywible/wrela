@@ -15,10 +15,10 @@ use std::host
 use std::io::{Pending, load, store}
 use std::serialize::{LoadError, Serialize, save}
 
-/// The Runs page's boards past the player's and the tool-assisted (main.wrela's `PLAYERS` and
-/// `ASSISTED`): the world's, for the course shown, and the world's whole game (each account's best
-/// on every level, summed).
-pub const WORLD: u32 = 2
+/// The leaderboard's boards, in its order: the world's, for the course shown, first; then the
+/// player's own and the tool-assisted (main.wrela's `PLAYERS` and `ASSISTED`); and the world's
+/// whole game (each account's best on every level, summed).
+pub const WORLD: u32 = 0
 pub const WHOLE_GAME: u32 = 3
 pub const BOARDS: u32 = 4
 
@@ -35,7 +35,7 @@ struct Uploaded: Serialize {
 enum Asked: Clone {
     Upload { hash: Vec<u8> },
     Board { course: u32, category: u32 },
-    Watch { name: String },
+    Watch { name: String, place: u32 },
 }
 
 /// A world's board as last given: its course (or `WHOLE`), category, places, and when.
@@ -64,7 +64,7 @@ pub struct Online {
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
     unsaved: bool,
-    watch: Option<(Replay, String)>,
+    watch: Option<(Replay, String, u32)>,
     time: f32,
 }
 
@@ -200,7 +200,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
         Asked::Board { course, category } => {
             let (places, note) = match answer {
                 Answer::Board { places, .. } => (places.clone(), if places.is_empty() {
-                    String::from("No runs yet. Be the first: upload one from the Players board.")
+                    String::from("No runs yet. Upload one of yours to be the first.")
                 } else { String::new() }),
                 Answer::Offline { why } => (Vec::new(), why.clone()),
                 Answer::Rejected { why } => (Vec::new(), why.clone()),
@@ -216,10 +216,10 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             }
             o.boards.push(Shown { course, category, places, at: o.time, note })
         },
-        Asked::Watch { name } => match answer {
+        Asked::Watch { name, place } => match answer {
             Answer::Run { replay, .. } => {
                 if let Ok(r) = boards::read(replay) {
-                    o.watch = Some((take r, name.clone()))
+                    o.watch = Some((take r, name.clone(), place))
                 }
             },
             _ => {},
@@ -296,6 +296,24 @@ pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
     (Vec::new(), String::from("Loading the world's runs..."))
 }
 
+/// The signed-in account's place on board (`course`, `category`) as last given: 0 if it has none
+/// there, or the board hasn't come.
+pub fn my_place(o: Online, course: u32, category: u32) -> u32 {
+    if !o.account.signed_in || o.account.name.is_empty() {
+        return 0
+    }
+    for b in o.boards {
+        if b.course == course && b.category == category {
+            for p in b.places {
+                if p.name == o.account.name {
+                    return p.place
+                }
+            }
+        }
+    }
+    0
+}
+
 /// Uploads run `r`, unless it has been: its status says how it went.
 pub fn upload(o: mut Online, r: Replay) {
     let hash = fingerprint(r)
@@ -340,11 +358,16 @@ pub fn watch_place(o: mut Online, place: Place) {
     if place.run == 0 || o.flying.is_some() && o.asks.len() > 4 {
         return
     }
-    o.asks.push((Ask::Watch { run: place.run }, Asked::Watch { name: place.name.clone() }))
+    o.asks.push(
+        (
+            Ask::Watch { run: place.run },
+            Asked::Watch { name: place.name.clone(), place: place.place },
+        ),
+    )
 }
 
-/// A world's run that has come to watch, and whose it is, once.
-pub fn take_watch(o: mut Online) -> Option<(Replay, String)> {
+/// A world's run that has come to watch, whose it is and its place, once.
+pub fn take_watch(o: mut Online) -> Option<(Replay, String, u32)> {
     let w = o.watch.clone()
     o.watch = None
     w
@@ -433,4 +456,36 @@ fn a_board_is_asked_for_once_until_it_is_stale() {
             ordinal(12) == String::from("12th") &&
             ordinal(23) == String::from("23rd"),
     )
+}
+
+@test
+fn the_menu_knows_the_players_world_place_and_a_watched_run_its_place() {
+    var o = signed_in()
+    assert(my_place(o, WETLANDS, 0) == 0, "no board yet")
+    want(mut o, WETLANDS, 0)
+    let (_, asked) = o.asks.remove(0)
+    let ahead = Place {
+        place: 1,
+        name: String::from("Sir Wobblesnout the Unhurried"),
+        ticks: 900,
+        run: 4,
+    }
+    let mine = Place {
+        place: 2,
+        name: String::from("Dame Puddlesnout the Damp"),
+        ticks: 960,
+        run: 5,
+    }
+    let given = Vec::from([ahead.clone(), take mine])
+    answered(mut o, asked, Answer::Board { course: WETLANDS, category: 0, places: given, total: 2 })
+    assert(my_place(o, WETLANDS, 0) == 2 && my_place(o, WETLANDS, 1) == 0)
+    o.account.signed_in = false
+    assert(my_place(o, WETLANDS, 0) == 0, "signed out, no place")
+    watch_place(mut o, ahead)
+    let (_, asked) = o.asks.remove(0)
+    var r = tool_assisted(WETLANDS)[0].clone()
+    r.who = YOU
+    answered(mut o, asked, Answer::Run { run: 4, replay: save(r) })
+    let Some((_, name, place)) = take_watch(mut o) else { panic("a run to watch") }
+    assert(name == String::from("Sir Wobblesnout the Unhurried") && place == 1)
 }
