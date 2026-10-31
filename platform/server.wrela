@@ -122,9 +122,6 @@ pub const ALL_TRIES: u32 = 30
 /// come), and a run's replay (it never does).
 pub const BOARD_AGE: u32 = 30
 pub const RUN_AGE: u32 = 86400
-/// The ceremonies and names used lately, which a read made before their call's writes committed
-/// wouldn't see as used.
-pub const MOST_RECENT: u32 = 64
 /// An account's runs read for an export at a time.
 pub const EXPORT_RUNS: u32 = 64
 /// Expired ceremonies cleared as a new one begins.
@@ -421,6 +418,9 @@ enum Step: Copy + Eq {
 /// A request under way, waiting on its ticket: what it has learned so far.
 struct Job: Clone {
     conn: u32,
+    /// The call it began in: a key deleted since may have been read by it before the delete
+    /// committed (`gone`).
+    since: u64,
     ticket: u32,
     step: Step,
     request: Request,
@@ -473,8 +473,11 @@ pub struct Engine<G: Game> {
     /// Names written, and single-use or revocable keys deleted (ceremonies, sessions, recovery
     /// codes, passkeys), lately: a read made before their call committed wouldn't see them so
     /// (docs/toolchain-gaps.md, "A call's reads don't see its writes").
-    recent_names: Vec<Vec<u8>>,
-    gone: Vec<Vec<u8>>,
+    recent_names: Vec<(Vec<u8>, u64)>,
+    gone: Vec<(Vec<u8>, u64)>,
+    /// The accounts whose records a job wrote lately (a run's upload, verification or ranking),
+    /// which a deletion's scan made before the write committed wouldn't see.
+    touched: Vec<(u64, u64)>,
     /// Uploads let into the queue lately (the call, and the run's ticks), which a scan of the queue
     /// made before their call committed wouldn't count.
     admitted: Vec<(u64, u32)>,
@@ -505,6 +508,7 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
         queue_written: 0,
         recent_names: Vec::new(),
         gone: Vec::new(),
+        touched: Vec::new(),
         admitted: Vec::new(),
         deletions_waiting: true,
         deletion_written: 0,
@@ -516,6 +520,7 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
 fn blank_job(conn: u32, request: take Request) -> Job {
     Job {
         conn,
+        since: 0,
         ticket: 0,
         step: Step::HelloSession,
         request,
@@ -597,6 +602,7 @@ impl<G: Game> Engine<G> {
     pub fn end(mut self) {
         self.verify_some()
         self.resume_deletions()
+        self.forget_old()
         var left: Vec<u32> = Vec::new()
         for c in self.conns {
             if !c.answered && !self.busy(c) {
@@ -784,13 +790,22 @@ impl<G: Game> Engine<G> {
         self.request(job.conn, job.request.clone())
     }
 
+    /// Waits on `job`'s ticket, from the call it began in.
+    fn push_job(mut self, job: take Job) {
+        var j = take job
+        if j.since == 0 {
+            j.since = self.call
+        }
+        self.jobs.push(take j)
+    }
+
     fn get(mut self, key: take Vec<u8>, step: Step, job: take Job) {
         var j = take job
         let t = self.next_ticket()
         self.out.push(Command::Get { ticket: t, key })
         j.ticket = t
         j.step = step
-        self.jobs.push(take j)
+        self.push_job(take j)
     }
 
     fn scan(mut self, from: take Vec<u8>, limit: u32, step: Step, job: take Job) {
@@ -811,7 +826,7 @@ impl<G: Game> Engine<G> {
         self.out.push(Command::Scan { ticket: t, from, to, limit, down: false })
         j.ticket = t
         j.step = step
-        self.jobs.push(take j)
+        self.push_job(take j)
     }
 
     fn random(mut self, n: u32, step: Step, job: take Job) {
@@ -820,7 +835,7 @@ impl<G: Game> Engine<G> {
         self.out.push(Command::Random { ticket: t, n })
         j.ticket = t
         j.step = step
-        self.jobs.push(take j)
+        self.push_job(take j)
     }
 
     fn put<T: Serialize>(mut self, key: take Vec<u8>, record: T) {
@@ -838,7 +853,7 @@ impl<G: Game> Engine<G> {
     /// Deletes `key`, a single-use or revocable record, and remembers it gone: a read of it made
     /// before this call's writes commit is not to be trusted.
     fn forget(mut self, key: take Vec<u8>) {
-        remember(mut self.gone, key.clone())
+        self.gone.push((key.clone(), self.call))
         self.delete(take key)
     }
 
@@ -1179,6 +1194,12 @@ impl<G: Game> Engine<G> {
     fn advance(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
         let conn = j.conn
+        // A job that writes an account's runs: a deletion waits it out (`writing`).
+        if is_upload(j.step) {
+            self.touched.push((j.id, self.call))
+        } else if let Some(q) = j.queued {
+            self.touched.push((q.account, self.call))
+        }
         match j.step {
             Step::HelloSession => {
                 let s: Option<Session> = got(answer)
@@ -1415,7 +1436,7 @@ impl<G: Game> Engine<G> {
                 }
                 self.put(account_key(a.id), a.clone())
                 self.put_bytes(name_key(a.name), save(a.id))
-                remember(mut self.recent_names, name_key(a.name))
+                self.recent_names.push((name_key(a.name), self.call))
                 self.put(
                     passkey_key(cred.id),
                     Passkey {
@@ -1498,7 +1519,7 @@ impl<G: Game> Engine<G> {
                         )
                         j.ticket = t
                         j.step = Step::SignInVerify
-                        self.jobs.push(take j)
+                        self.push_job(take j)
                     },
                     Err(why) => self.refuse(conn, why),
                 }
@@ -1514,6 +1535,14 @@ impl<G: Game> Engine<G> {
                 let Some(a) = j.account.clone() else { return }
                 let Some(p) = j.passkey.clone() else { return }
                 if answer.len() < TOKEN_BYTES + CSRF_BYTES {
+                    return
+                }
+                // Removed (or its account deleted) while this sign-in went on.
+                if lately(self.gone, passkey_key(p.credential.id)) {
+                    self.refuse(
+                        conn,
+                        "That passkey isn't one we know. Its account may have been deleted.",
+                    )
                     return
                 }
                 var used = p.clone()
@@ -1873,8 +1902,10 @@ impl<G: Game> Engine<G> {
             Step::DeleteAccount => {
                 let a: Option<Account> = got(answer)
                 let Some(a) = a else {
-                    // A deletion resumed after it finished: only its mark is left.
+                    // A deletion resumed after it finished: only its mark is left. Others may wait.
                     self.delete(deletion_key(j.id))
+                    self.deletion_written = self.call
+                    self.deletions_waiting = true
                     return
                 }
                 var going = a.clone()
@@ -1893,6 +1924,12 @@ impl<G: Game> Engine<G> {
             Step::DeleteScan => {
                 let Some(a) = j.account.clone() else { return }
                 let Some(es) = entries(answer) else { return }
+                // A job of the account's may write after this scan, or wrote since it was made: the
+                // deletion deletes nothing until none can, then scans afresh.
+                if self.writing(a.id) {
+                    self.random(1, Step::DeleteNext, take j)
+                    return
+                }
                 let prefix = under_account(a.id)
                 for e in es {
                     if e.key.len() <= prefix.len() {
@@ -1917,9 +1954,7 @@ impl<G: Game> Engine<G> {
                     }
                     self.delete(e.key.clone())
                 }
-                // A run of the account's still being verified or ranked writes its records after
-                // this scan: the deletion waits for it, and deletes them too.
-                if es.len() == 256 || self.verifying_for(a.id) {
+                if es.len() == 256 {
                     // A scan now would be answered before these deletes commit, and find them
                     // again: the next is made in the next call, after a byte asked for.
                     self.random(1, Step::DeleteNext, take j)
@@ -2161,7 +2196,7 @@ impl<G: Game> Engine<G> {
         b.rerolls = a.rerolls - 1
         self.delete(name_key(a.name))
         self.put_bytes(name_key(n), save(a.id))
-        remember(mut self.recent_names, name_key(n))
+        self.recent_names.push((name_key(n), self.call))
         self.put(account_key(a.id), b.clone())
         self.welcome(j.conn, me_of(b, recovery: false))
     }
@@ -2249,7 +2284,35 @@ impl<G: Game> Engine<G> {
         self.scan(deletions(), 1, Step::DeleteResume, blank_job(0, Request::Me))
     }
 
-    /// Whether a run of account `account` is being verified, or ranked once played.
+    /// Lets go of what was deleted or written lately once no read made before it can still be
+    /// used: kept while a job that began by then is under way, and for the call after (a read made
+    /// in a call is answered in the next).
+    fn forget_old(mut self) {
+        var oldest = self.call
+        for j in self.jobs {
+            oldest = min(oldest, j.since)
+        }
+        let call = self.call
+        self.gone.retain(|g| g.1 >= oldest || g.1 + 1 >= call)
+        self.recent_names.retain(|g| g.1 >= oldest || g.1 + 1 >= call)
+        self.touched.retain(|t| t.1 + 1 >= call)
+    }
+
+    /// Whether a job may still write account `account`'s records, or did in this call or the last:
+    /// a deletion deletes nothing while one might (it would miss what that writes).
+    fn writing(self, account: u64) -> bool {
+        if self.verifying_for(account) {
+            return true
+        }
+        for (a, _) in self.touched {
+            if a == account {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Whether a run of account `account` is being uploaded, verified, or ranked once played.
     fn verifying_for(self, account: u64) -> bool {
         if let Some(v) = self.verifying {
             if v.queued.account == account {
@@ -2257,6 +2320,9 @@ impl<G: Game> Engine<G> {
             }
         }
         for j in self.jobs {
+            if is_upload(j.step) && j.id == account {
+                return true
+            }
             if let Some(q) = j.queued {
                 if q.account == account {
                     return true
@@ -2309,12 +2375,13 @@ impl<G: Game> Engine<G> {
         self.out.push(Command::Get { ticket: t, key: account_key(q.account) })
         job.ticket = t
         job.step = Step::QueueAccount
-        self.jobs.push(take job)
+        self.push_job(take job)
         self.queue_scan = Some(0)
     }
 
     /// A run played to its end: refused, or kept and ranked.
     fn played(mut self, q: Queued, result: Result<Outcome, Text>) {
+        self.touched.push((q.account, self.call))
         match result {
             Err(why) => self.tell(q.id, Reply::Rejected { why: String::from(why) }),
             Ok(o) => {
@@ -2468,21 +2535,13 @@ fn starts_with(bytes: [u8], prefix: [u8]) -> bool {
 }
 
 /// Whether `key` is among the keys used lately.
-fn lately(keys: [Vec<u8>], key: [u8]) -> bool {
-    for k in keys {
+fn lately(keys: [(Vec<u8>, u64)], key: [u8]) -> bool {
+    for (k, _) in keys {
         if same_bytes(k, key) {
             return true
         }
     }
     false
-}
-
-/// Keeps `key` among the keys used lately, the oldest let go past `MOST_RECENT`.
-fn remember(keys: mut Vec<Vec<u8>>, key: take Vec<u8>) {
-    if keys.len() >= MOST_RECENT {
-        let _ = keys.remove(0)
-    }
-    keys.push(take key)
 }
 
 /// Whether `r` is no session's: a public read, or an upload, which a game's token makes.

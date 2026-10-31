@@ -1275,3 +1275,38 @@ fn a_run_verified_while_its_account_is_deleted_leaves_nothing() {
         assert(h.keys(p) == 0, p)
     }
 }
+
+@test
+fn every_session_a_recovery_ends_stays_ended_however_many() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    // 70 sessions, each in its own browser.
+    h.good.push(Vec::from([4]))
+    for b in 2..71 {
+        let _ = sign_in(mut e, mut h, b, 5, s.handle, 0, [4])
+    }
+    assert(h.keys("s/") == 70)
+    // The session a recovery's scan finds first, of a browser seen over an hour ago.
+    var first = 1
+    for b in 2..71 {
+        if account::hashed(h.cookie(b, server::SESSION)) <
+            account::hashed(h.cookie(first, server::SESSION)) {
+            first = b
+        }
+    }
+    h.time += 2 * account::HOUR
+    let recover = h.asked(200, Request::Recover { code: s.codes[0].clone() }, public: false)
+    h.call(mut e, [(9001, take recover)])
+    h.call(mut e, [])
+    // Its `Me` is read as the recovery ends every session, and goes on after.
+    let me = h.asked(first, Request::Me, public: false)
+    h.call(mut e, [(9002, take me)])
+    h.settle(mut e)
+    let Reply::Welcome { me, .. } = h.say(mut e, first, Request::Me)[0].clone() else {
+        panic("welcome")
+    }
+    assert(!me.signed_in, "the session stays ended")
+    assert(h.keys("s/") == 1, "the recovery's own session alone")
+}
