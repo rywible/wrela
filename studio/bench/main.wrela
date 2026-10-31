@@ -732,12 +732,17 @@ pub fn measure(
 }
 
 /// A start's numbers, from the page in `dir`'s `load.json`, `frames.json` and `log.txt`: when the
-/// page opened (ms since the epoch), ms from then to its first frame, the bytes it loaded, and
-/// ms to the program's first line that says `playable` (0 if none did).
+/// page opened (ms since the epoch), ms from then to its first frame's submission, the bytes it
+/// loaded, and ms to the submission of the frame its program printed `playable` in (0 if none
+/// did). A frame shows when it's submitted (toolchain 0.12.0); a cadence is measured at starts.
 fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolError> {
     let load = json_of(f"{dir}/results/load.json")?
     let opened = number_at(load, TOP, "opened_ms")
-    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
+    // No frame submitted: 0, which the starts read as a failure, never a time before the page.
+    let first_frame_ms = match load.get(TOP, "first_submitted_ms") {
+        Some(k) => load.num(k).unwrap_or(opened) - opened,
+        None => 0.0,
+    }
     var loaded_bytes = 0.0
     if let Some(r) = load.get(TOP, "resources") {
         for i in 0..load.count(r) {
@@ -755,13 +760,14 @@ fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolErr
             shares = shares_of(log.as_str().slice(a, b))
         }
     }
-    if let (Some(f), Some(bi)) = (
+    if let (Some(f), Some(si)) = (
         playable_frame(framed, log.as_str()),
-        framed.get(TOP, "began_ms"),
+        framed.get(TOP, "submitted_ms"),
     ) {
-        let began = numbers(framed, bi, 0)
-        if f < began.len() {
-            playable_ms = began[f] - opened
+        if let Some(k) = framed.at(si, f) {
+            if let Some(t) = framed.num(k) {
+                playable_ms = t - opened
+            }
         }
     }
     Ok((opened, first_frame_ms, loaded_bytes, playable_ms, take shares))
