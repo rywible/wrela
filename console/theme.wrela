@@ -98,6 +98,10 @@ impl Reader {
     }
 }
 
+fn ends_mark(c: u8) -> bool {
+    c == 32 || c == 9 || c == 124 || c == 40 || c == 41 || c == 126
+}
+
 // The voice in `line`, its notes added to `notes` at `beat` seconds a quarter note: how long it
 // lasts, in seconds. None if it isn't a voice of the notation, or holds too many notes.
 fn read_voice(line: str, beat: f32, notes: mut Vec<Note>) -> Option<f32> {
@@ -117,8 +121,9 @@ fn read_voice(line: str, beat: f32, notes: mut Vec<Note>) -> Option<f32> {
             r.at += 1
             continue
         } else if c == 33 {
-            // A mark, to the next space.
-            while r.more() && r.peek() != 32 && r.peek() != 9 { r.at += 1 }
+            // A mark, to what ends it as engine::score reads one: a space, a bar line, a slur or
+            // a tie.
+            while r.more() && !ends_mark(r.peek()) { r.at += 1 }
             continue
         } else if c == 126 {
             r.at += 1
@@ -278,9 +283,13 @@ fn strike(v: mut Voice, n: Note) {
     v.next = (v.next + 1) % TONES
 }
 
-// The next quantum, added into `left` and `right`.
+// The next quantum, into `left` and `right`, which hold the last one's.
 @audio
 pub fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+    for i in 0..left.len() {
+        left[i] = 0.0
+        right[i] = 0.0
+    }
     var more = true
     while more {
         match v.cues.pop() {
@@ -369,6 +378,12 @@ fn a_theme_reads_as_its_score_is_written() {
     // The second voice: two whole bars, the tie one note.
     assert(theme.notes.len() == 9 && theme.notes[8].key == 48 && theme.notes[8].length == 2.0)
     assert(theme.length == 4.0)
+    // A mark ends at a tie, as engine::score reads it.
+    let Some(held) = read("120\nc4/2 !accent~ c4/2") else {
+        assert(false, "a tie after a mark")
+        return
+    }
+    assert(held.notes.len() == 1 && held.notes[0].length == 2.0, "one note held over the tie")
 }
 
 @test
@@ -398,12 +413,13 @@ fn a_games_theme_reads_with_its_marks_ties_and_sharps() {
     assert(tied.key == 71 && abs(tied.length - 2.0 * beat) < 0.0001)
 }
 
-// The loudest sample of `v` over the next second's quanta.
+// The loudest sample of `v` over the next second's quanta, rendered into the same buffers, as
+// the host does.
 fn loudest(v: mut Voice) -> f32 {
     var most = 0.0
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
     for _ in 0..SAMPLE_RATE / QUANTUM {
-        var l = [0.0; QUANTUM]
-        var r = [0.0; QUANTUM]
         render(mut v, mut l, mut r)
         for i in 0..QUANTUM { most = max(most, max(abs(l[i]), abs(r[i]))) }
     }
@@ -427,4 +443,15 @@ fn the_voice_plays_a_theme_softly_and_falls_quiet() {
     assert(level(mut w, 0.0))
     for _ in 0..4 { let _ = loudest(mut v) }
     assert(loudest(mut v) < 0.001, "and falls quiet")
+}
+
+@test
+fn each_quantum_is_written_afresh() {
+    // The host hands the voice the last quantum's buffers.
+    let (_, v) = voice()
+    var v = take v
+    var l = [1.0; QUANTUM]
+    var r = [1.0; QUANTUM]
+    render(mut v, mut l, mut r)
+    for i in 0..QUANTUM { assert(l[i] == 0.0 && r[i] == 0.0, "silence, not the last quantum") }
 }

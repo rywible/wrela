@@ -986,12 +986,9 @@ fn act(s: mut Console, action: Action) {
             s.picked = index
             play(mut s, PlayIntent::Selected)
         },
-        // Play continues the most recent save; with none it begins.
+        // Play continues the most recent save, once the saves are read; with none it begins
+        // (`play_plan`).
         Action::Play => {
-            if s.saves.is_empty() {
-                play(mut s, PlayIntent::NewGame)
-                return
-            }
             if s.picked != 0 { s.prepared_slot = None }
             s.picked = 0
             play(mut s, PlayIntent::Selected)
@@ -1176,11 +1173,19 @@ fn line_top(s: Console, face: Face, size: f32, middle: f32) -> f32 {
     middle - (s.fonts.font(face).ascender - cap * 0.5) * size
 }
 
-// A button's width for `label`: the primary one's, its label larger, wider still.
-fn button_width(s: Console, label: str, primary: bool = false) -> f32 {
-    if primary { max(132.0, width_of(s, label, CALL, Face::Sans) + 44.0) } else {
-        max(88.0, width_of(s, label, LABEL, Face::Sans) + 36.0)
-    }
+// A button's width for `label`: the primary one's, its label larger, wider still; `tight`, only
+// as wide as its label needs.
+fn button_width(s: Console, label: str, primary: bool = false, tight: bool = false) -> f32 {
+    let (size, pad, least) = if primary { (CALL, 44.0, 132.0) } else { (LABEL, 36.0, 88.0) }
+    let need = width_of(s, label, size, Face::Sans) + pad
+    if tight { need - 12.0 } else { max(least, need) }
+}
+
+// The width of a row of buttons labelled `labels`, the first the primary.
+fn row_width(s: Console, labels: [String], tight: bool) -> f32 {
+    var sum = f32(labels.len() - 1) * 10.0
+    for i in 0..labels.len() { sum += button_width(s, labels[i], primary: i == 0, tight: tight) }
+    sum
 }
 
 // A button: the primary one solid, the rest quiet behind a hairline. Under the pointer it
@@ -1416,25 +1421,27 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
         text(mut s, card.title, size, at, vec4(INK.xyz, fade * (1.0 - s.logo_in)))
     }
-    // The actions in a line, the first the call to action.
+    // The actions in a line, the first the call to action, then Try again after a failure. Too
+    // wide for the screen, the call leaves out where it continues (the progress says), and then
+    // the buttons hug their labels.
     let acts = actions(continuing.is_some())
-    var at = margin
+    var labels: Vec<String> = Vec::new()
     for i in 0..acts.len() {
-        let a = acts[i]
-        let label = action_label(a, s.play_intent.is_some() && i == 0, continuing)
-        let primary = i == 0
-        let r = Rect::new(at, top, button_width(s, label, primary: primary), 44.0)
-        button(mut s, a, r, 1, label, primary: primary)
-        at = r.right() + 10.0
+        labels.push(action_label(acts[i], s.play_intent.is_some() && i == 0, continuing))
     }
-    if !s.message.is_empty() {
-        button(
-            mut s,
-            Action::Retry,
-            Rect::new(at, top, button_width(s, "Try again"), 44.0),
-            1,
-            "Try again",
-        )
+    if !s.message.is_empty() { labels.push(String::from("Try again")) }
+    let span = w - margin * 2.0
+    if row_width(s, labels, tight: false) > span && labels[0].starts_with("Continue") {
+        labels[0] = String::from("Continue")
+    }
+    let tight = row_width(s, labels, tight: false) > span
+    var at = margin
+    for i in 0..labels.len() {
+        let primary = i == 0
+        let a = if i < acts.len() { acts[i] } else { Action::Retry }
+        let r = Rect::new(at, top, button_width(s, labels[i], primary: primary, tight: tight), 44.0)
+        button(mut s, a, r, 1, labels[i], primary: primary)
+        at = r.right() + 10.0
     }
 }
 
