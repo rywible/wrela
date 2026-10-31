@@ -313,3 +313,84 @@ fn every_specimen_converts_whole() {
     assert(worst >= 0.86, f"the worst woody IoU {worst}: {at}; the most chains {most} ({most_at})")
     assert(worst_volume <= 0.05, f"a crown's volume {worst_volume} off its leaves': {volume_at}")
 }
+
+/// The grown kinds (`trees::archetypes`), as the renderer draws them. Every new limb starts
+/// inside older wood. This catches chord-based attachments that leave
+/// visible gaps where a trunk or scaffold curves.
+@test(tool, budget: 600)
+fn living_branches_join_the_parent_wood() {
+    for kind in [
+        trees::kinds::OAK_OPEN,
+        trees::kinds::OAK_FOREST,
+        trees::kinds::BEECH_OPEN,
+        trees::kinds::BEECH_FOREST,
+        trees::kinds::BIRCH_OPEN,
+        trees::kinds::ALDER_A,
+    ] {
+        let p = trees::kinds::kind_plant(kind)
+        for i in 1..p.limbs.len() {
+            let child = p.limbs[i]
+            if child.points[0].y < 0.1 {
+                continue
+            }
+            var nearest = 1.0e6
+            for j in 0..i {
+                for piece in 0..24 {
+                    let parent = p.limbs[j]
+                    let (a, _, ar) = engine::plant::limb_axis(parent, f32(piece) / 24.0)
+                    let (b, _, br) = engine::plant::limb_axis(parent, f32(piece + 1) / 24.0)
+                    let t = saturate(
+                        dot(child.points[0] - a, b - a) / max(dot(b - a, b - a), 1.0e-9),
+                    )
+                    let d = length(child.points[0] - mix(a, b, vec3(t))) - mix(ar, br, t)
+                    nearest = min(nearest, d)
+                }
+            }
+            assert(nearest <= 0.005, f"kind {kind} branch {i} is detached by {nearest} m")
+        }
+    }
+}
+
+/// Every clump of a living broad-leaved kind has its wood in it: its middle within 0.3 of its
+/// radius of a limb's axis (a shell of clumps over a few bare scaffolds, most of them with no
+/// wood to them, read as leaves floating off the tree: the owner's lookdev).
+@test(tool, budget: 600)
+fn every_clump_of_leaves_has_its_wood_in_it() {
+    let kinds = [
+        trees::kinds::OAK_OPEN,
+        trees::kinds::OAK_FOREST,
+        trees::kinds::BEECH_OPEN,
+        trees::kinds::BEECH_FOREST,
+        trees::kinds::BIRCH_OPEN,
+        trees::kinds::BIRCH_FOREST,
+        trees::kinds::ALDER_A,
+        trees::kinds::ALDER_B,
+        trees::kinds::YOUNG_BROAD,
+        trees::kinds::OAK_ANCIENT,
+        trees::kinds::BEECH_ANCIENT,
+    ]
+    for kind in kinds {
+        let p = trees::kinds::kind_plant(kind)
+        assert(p.clumps.len() > 20, f"kind {kind} has {p.clumps.len()} clumps")
+        for i in 0..p.clumps.len() {
+            let c = p.clumps[i]
+            var nearest = 1.0e6
+            for l in 0..p.limbs.len() {
+                for piece in 0..32 {
+                    let (a, _, _) = engine::plant::limb_axis(p.limbs[l], f32(piece) / 32.0)
+                    let (b, _, _) = engine::plant::limb_axis(p.limbs[l], f32(piece + 1) / 32.0)
+                    let t = saturate(dot(c.centre - a, b - a) / max(dot(b - a, b - a), 1.0e-9))
+                    nearest = min(nearest, length(c.centre - mix(a, b, vec3(t))))
+                }
+            }
+            assert(
+                nearest <= 0.3 * c.radius + 1.0e-3,
+                f"kind {kind}'s clump {i} is {nearest} m from its wood, {c.radius} m across",
+            )
+        }
+    }
+}
+
+
+
+

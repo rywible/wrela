@@ -29,6 +29,7 @@ pub struct Ask: Copy {
     pub age: f32,
     pub light: u32,
     pub wind: f32,
+    pub stand: f32,
     pub seed: u32,
 }
 
@@ -67,7 +68,7 @@ pub fn light_of(age: f32, light: u32) -> Vec<f32> {
 /// A specimen grown, converted and measured.
 pub fn specimen(a: Ask) -> Specimen {
     let g: Genome = genomes()[a.species]
-    let site = Site { age: a.age, wind: a.wind, light: SHARES[a.light] }
+    let site = Site { age: a.age, wind: a.wind, light: SHARES[a.light], stand: a.stand }
     let light = light_of(a.age, a.light)
     let began = now()
     let t = grow_graph(g, site, light, vec2(0.0), [], a.seed)
@@ -92,7 +93,7 @@ pub fn specimen(a: Ask) -> Specimen {
     }
     let (grow_ms, convert_ms) = ((grown - began) * 1000.0, (done - grown) * 1000.0)
     let json = String::from(
-        f"{{\"species\":\"{NAMES[a.species]}\",\"age\":{a.age},\"light\":\"{LIGHTS[a.light]}\",\"wind\":{a.wind},\"seed\":{a.seed},\"genome\":{genome_hash(vs)},\"values\":[{values}],\"nodes\":{t.nodes.len()},\"limbs\":{c.limbs},\"chains\":{c.chains},\"clumps\":{c.clumps},\"height\":{t.height},\"centroid\":[{centroid.x},{centroid.y},{centroid.z}],\"iou\":{c.iou},\"volume\":{c.volume},\"grow_ms\":{grow_ms},\"convert_ms\":{convert_ms}}}\n",
+        f"{{\"species\":\"{NAMES[a.species]}\",\"age\":{a.age},\"light\":\"{LIGHTS[a.light]}\",\"wind\":{a.wind},\"stand\":{a.stand},\"seed\":{a.seed},\"genome\":{genome_hash(vs)},\"values\":[{values}],\"nodes\":{t.nodes.len()},\"limbs\":{c.limbs},\"chains\":{c.chains},\"clumps\":{c.clumps},\"height\":{t.height},\"centroid\":[{centroid.x},{centroid.y},{centroid.z}],\"iou\":{c.iou},\"volume\":{c.volume},\"grow_ms\":{grow_ms},\"convert_ms\":{convert_ms}}}\n",
     )
     Specimen {
         ask: a,
@@ -150,4 +151,28 @@ impl Specimen {
             side: (0, 0, Vec::new()),
         }
     }
+}
+
+/// Each of the trees' kinds side on (`kind_plant`), `<dir>/<k>.png`, and `<dir>/index.html`.
+pub fn kinds_page(dir: str) -> Result<(), ToolError> {
+    var rows = String::new()
+    for k in 0..trees::kinds::KINDS {
+        let p = trees::kinds::kind_plant(k)
+        let (w, h, px) = side_view(p, 512)
+        write_png(
+            image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) },
+            f"{dir}/{k}.png",
+        )?
+        let how = match trees::archetypes::archetype(k) {
+            Some(a) => String::from(f"{NAMES[a.species]}, {a.age} years, stand {a.stand}"),
+            None => String::from("authored"),
+        }
+        rows = String::from(
+            f"{rows}<figure><img src=\"{k}.png\" alt=\"kind {k}\" loading=\"lazy\"><figcaption><b>kind {k}</b><span>{how} · {p.limbs.len()} limbs · {p.clumps.len()} clumps</span></figcaption></figure>\n",
+        )
+    }
+    write_file(
+        f"{dir}/index.html",
+        chunked(Vec::from(String::from(f"{PAGE_HEAD}{rows}</div>\n").as_bytes())),
+    )
 }

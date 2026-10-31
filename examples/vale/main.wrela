@@ -238,3 +238,31 @@ fn the_vale_draws_its_forest_from_its_history(s: Vale) {
     )
     assert(n > 1000, f"{n} trees loaded")
 }
+
+/// The trees near the eye drawn as themselves (docs/plan-world-class-3.md §E1.3): after its first
+/// frames, the vale's near individuals are drawn, each within `NEAR` of the eye, each grown from
+/// its own record (its growth's seed the record's); every other instance is its kind's archetype.
+@test(frames: 900, gpu: true)
+fn the_trees_near_the_eye_are_their_own(s: Vale) {
+    let eye = s.stage.land.eye
+    var drawn = 0
+    for o in s.stage.land.near {
+        if !o.drawn {
+            continue
+        }
+        drawn += 1
+        let d = length(o.at - vec2(eye.x, eye.z))
+        assert(d < land::stage::NEAR + 30.0, f"an individual {d} m from the eye")
+        var seed = 0
+        for g in s.stage.land.grounds {
+            for t in g.trees {
+                if length(t.at - o.at) < 1.0e-2 {
+                    seed = t.seed
+                }
+            }
+        }
+        assert(o.seed == seed, f"an individual grown from seed {o.seed}, its record's {seed}")
+    }
+    print(f"the vale: {drawn} of {s.stage.land.near.len()} near trees drawn as themselves")
+    assert(drawn >= 8, f"{drawn} near trees drawn as themselves")
+}

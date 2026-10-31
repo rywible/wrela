@@ -10,7 +10,7 @@
 
 use growth::Provenance
 use impostor::{
-    Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
+    Bake, Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
     volume_cut, volume_shade, which_crown,
 }
 use light::Lit
@@ -33,8 +33,8 @@ use std::field::Tube
 use std::math::TAU
 use std::gpu::{
     Atomics, ClipPosition, Compare, Depth, DepthTexture, DrawIndexedArgs, Flat, FragCoord,
-    GpuBuffer, GpuSpan, InstanceIndex, R32Uint, RenderPass, Rgba8, Sampler, Texture, VertexIndex,
-    buffer, buffer_of, discard, dispatch, draw, write,
+    GpuBuffer, GpuSpan, InstanceIndex, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture,
+    VertexIndex, buffer, buffer_of, discard, dispatch, draw, texture, texture3d, write,
 }
 use view::{Camera, PREPASSED}
 
@@ -60,6 +60,42 @@ pub struct Kind {
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
 pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
     kind_ordered(plant, seed, card_orders(plant, plant.cards(), seed), atlas, s)
+}
+
+/// A near individual's kind (§E1.3: `wood::Wood::set_near`): its cards cooked and its limbs, but
+/// no impostor or volume of its own (it's near; past its cards it's drawn as its archetype), its
+/// cards' orders found already (`plant::orders_of` on a helper).
+pub fn kind_near(plant: Plant, seed: u32, found: take Vec<u32>) -> Kind {
+    let n = plant.cards()
+    var cards: GpuBuffer<Card> = buffer(max(n, 1))
+    if n > 0 {
+        dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
+    }
+    let limb_count = plant.limbs.len()
+    var list: Vec<Tube<4>> = Vec::new()
+    for i in 0..limb_count {
+        list.push(plant.limbs[i])
+    }
+    Kind {
+        plant,
+        cards,
+        card_count: n,
+        orders: buffer_of(take found, at_least: 1),
+        limbs: buffer_of(list, at_least: 1),
+        limb_count,
+        top: plant.top(),
+        reach: plant.reach(),
+        impostor: Impostor {
+            colour: texture::<Rgba8>(width: 1, height: 1),
+            normal: texture::<Rgba16Float>(width: 1, height: 1),
+            bake: Bake { mid: vec3(0.0), half: 1.0, leaves: plant.leaves, bark: plant.bark },
+            bounds: buffer(1),
+        },
+        volume: Cooked {
+            grid: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),
+            grid_depth: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),
+        },
+    }
 }
 
 /// `kind`, its cards' orders found already (`card_orders`, `plant::orders_of` on a helper).

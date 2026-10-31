@@ -27,7 +27,8 @@ use engine::plant::{Ordering, Plant, Wind, orders_of}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::reflect::copy_below
 use engine::terrain::Clipmap
-use engine::vegetation::{Kind, Placed, kind_ordered}
+use engine::growth::{Grow, grow_individual}
+use engine::vegetation::{Kind, Placed, kind_near, kind_ordered}
 use engine::view::{Camera, NEAREST}
 use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
 use engine::wood::{Pooling, Wood}
@@ -84,6 +85,16 @@ pub trait Tiles: Copy + Eq {
 
     /// The height at `p` of the land its trees stand on.
     fn height_at(self, p: vec2) -> f32
+
+    /// How many trees near the eye it draws as individuals (§E1.3: `near_trees`): 0 for none.
+    fn near(self) -> u32
+
+    /// Whether a tree drawn as kind `k` can be a near individual (its kind is grown).
+    fn grows(self, k: u32) -> bool
+
+    /// Tree `t`, drawn as kind `k`, as a near individual's growth (its own history's light and
+    /// events), if its kind is grown.
+    fn individual(self, t: Tree, k: u32) -> Option<Grow>
 }
 
 /// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
@@ -160,7 +171,35 @@ pub struct Landscape<T: Tiles> {
     pub last_wind: Option<Wind> = None,
     pub last_contact: Contact = Contact {},
     pub still: bool = false,
+    /// The near individuals (§E1.3, `near_trees`): each one's tree, growth and state.
+    pub near: Vec<NearOne>,
+    /// Frames since the near individuals were last chosen.
+    pub near_since: u32,
 }
+
+/// A near individual (`near_trees`): its tree's tile and its instance there (its index in the
+/// tile's placed instances), its place, its archetype (the kind it's drawn as till it's grown and
+/// when it's left), its growth's seed, the slot it's in, its growth on a helper (till it's done), and whether it's
+/// drawn as itself.
+pub struct NearOne {
+    pub tile: vec2i,
+    pub index: u32,
+    pub at: vec2,
+    pub archetype: u32,
+    /// The seed its growth was given (its record's).
+    pub seed: u32 = 0,
+    pub slot: u32,
+    pub growing: Option<std::par::Task<(Plant, Vec<u32>)>> = None,
+    pub drawn: bool = false,
+    pub used: bool = false,
+}
+
+/// How near the eye a tree is drawn as itself (m: §E1.3's `NEAR`, **estimated**), how often (in
+/// frames) the near ones are chosen again, and how many grow on the helpers at once (the tiles'
+/// cooking shares them).
+pub const NEAR: f32 = 120.0
+pub const NEAR_EVERY: u32 = 30
+pub const NEAR_GROWING: u32 = 2
 
 /// A landscape drawn from `tiles`, its kinds cooked from `plants` (`far_kinds` its far crowns'),
 /// its water `mesh`, its render origin's tile `origin`.
@@ -192,6 +231,8 @@ pub fn landscape<T: Tiles>(
         water_tris: buffer_of(water_tris, at_least: 1),
         water_args: buffer(max(water_tiles.len(), 1)),
         water_tiles,
+        near: Vec::new(),
+        near_since: 0,
     }
 }
 
@@ -1113,6 +1154,7 @@ pub fn stream<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, clipmap: mut Clipmap,
     if changed {
         c.near_changed = true
     }
+    near_trees(mut s, eye)
 }
 
 /// The probes' grid round `at` (render space, the render origin `o` taken off) over `tiles`' land.
@@ -1209,6 +1251,152 @@ pub fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
     (lo - vec2(1.0), hi + vec2(1.0))
 }
 
+/// The trees near the eye drawn as themselves (§E1.3): each frame, a growth finished is cooked
+/// (`vegetation::kind_near`) and its instance drawn as it (`Wood::set_near`, `retarget`); every
+/// `NEAR_EVERY` frames the `Tiles::near` trees nearest the eye within `NEAR` (those whose kinds are
+/// grown) are chosen, an individual no longer among them drawn as its archetype again and given
+/// up, and the new ones' growths started (`NEAR_GROWING` at a time, the nearest first). A tile
+/// dropped gives up its individuals; one loaded again draws them as themselves again.
+pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
+    if s.near.len() == 0 {
+        return
+    }
+    let Some(taken) = replace(mut s.wood, None) else { return }
+    var w = take taken
+    // Growths finished, and individuals whose tile went or came again.
+    for i in 0..s.near.len() {
+        if !s.near[i].used {
+            continue
+        }
+        let slot = w.slot_of(s.near[i].tile)
+        if slot.is_none() {
+            if s.near[i].growing.is_none() {
+                w.free_near(i)
+                s.near[i].used = false
+                s.near[i].drawn = false
+            }
+            continue
+        }
+        let at = slot.unwrap()
+        let done = match s.near[i].growing {
+            Some(t) => t.done(),
+            None => false,
+        }
+        if done {
+            let Some(task) = replace(mut s.near[i].growing, None) else { continue }
+            let (plant, orders) = (take task).join()
+            label("near tree")
+            let k = kind_near(plant, seed: s.near[i].index + 1, found: take orders)
+            w.set_near(i, k, s.near[i].archetype)
+            w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
+            s.near[i].drawn = true
+            s.near[i].slot = at
+        } else if s.near[i].drawn && s.near[i].slot != at {
+            // Its tile loaded again, its instance its archetype's: drawn as itself again.
+            w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
+            s.near[i].slot = at
+        }
+    }
+    s.near_since += 1
+    if s.near_since >= NEAR_EVERY {
+        s.near_since = 0
+        // The candidates: each placed instance within `NEAR`, nearest first.
+        var near: Vec<(f32, u32, u32)> = Vec::new()
+        for a in 0..s.own.len() {
+            if tile_distance(s.own[a].tile, eye) > NEAR {
+                continue
+            }
+            for j in 0..s.own[a].placed.len() {
+                let p = s.own[a].placed[j].at.at
+                let d = length(vec2(p.x, p.z) - eye)
+                if d < NEAR {
+                    near.push((d, a, j))
+                }
+            }
+        }
+        near.sort_by(|x: (f32, u32, u32), y: (f32, u32, u32)| x.0 < y.0)
+        var chosen: Vec<(vec2i, u32, u32, Tree)> = Vec::new()
+        for (_, a, j) in near {
+            if chosen.len() >= s.near.len() {
+                break
+            }
+            let tile = s.own[a].tile
+            let p = s.own[a].placed[j]
+            let at = vec2(p.at.at.x, p.at.at.z)
+            for g in s.grounds {
+                if g.tile != tile {
+                    continue
+                }
+                for t in g.trees {
+                    if length(t.at - at) < 1.0e-2 && s.tiles.grows(p.kind) {
+                        chosen.push((tile, j, p.kind, t))
+                        break
+                    }
+                }
+            }
+        }
+        // Those no longer chosen, given up.
+        for i in 0..s.near.len() {
+            if !s.near[i].used || s.near[i].growing.is_some() {
+                continue
+            }
+            var kept = false
+            for (tile, j, _, _) in chosen {
+                if s.near[i].tile == tile && s.near[i].index == j {
+                    kept = true
+                }
+            }
+            if !kept {
+                if s.near[i].drawn {
+                    w.retarget(s.near[i].tile, s.near[i].index, w.near_kind(i), s.near[i].archetype)
+                }
+                w.free_near(i)
+                s.near[i].used = false
+                s.near[i].drawn = false
+            }
+        }
+        // The new ones' growths, a few at a time.
+        var growing = 0
+        for o in s.near {
+            if o.growing.is_some() {
+                growing += 1
+            }
+        }
+        for (tile, j, k, t) in chosen {
+            if growing >= NEAR_GROWING {
+                break
+            }
+            var has = false
+            var free = s.near.len()
+            for i in 0..s.near.len() {
+                if s.near[i].used && s.near[i].tile == tile && s.near[i].index == j {
+                    has = true
+                }
+                if !s.near[i].used && free == s.near.len() {
+                    free = i
+                }
+            }
+            if has || free == s.near.len() {
+                continue
+            }
+            let Some(g) = s.tiles.individual(t, k) else { continue }
+            let seed = g.seed
+            s.near[free] = NearOne {
+                tile,
+                index: j,
+                at: t.at,
+                archetype: k,
+                seed,
+                slot: 0,
+                growing: Some(std::par::spawn(take g, grow_individual)),
+                used: true,
+            }
+            growing += 1
+        }
+    }
+    s.wood = Some(take w)
+}
+
 /// The load's first links: the forest's kinds, as many a frame as the planner allows; the wood
 /// once they're all cooked, its far kinds `far_kinds`; the frame it was made in is `wood_at` (a
 /// program may read through it then: the floor's great tree's net).
@@ -1260,6 +1448,17 @@ pub fn cook_wood<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, linear: Sampler) {
         cards_to: CARDS_TO,
         impostors_to: IMPOSTORS_TO,
     )
+    // Room for its near individuals, each as many cards as its most of any kind and the limbs a
+    // plant holds (§E1.3).
+    let n = s.tiles.near()
+    if n > 0 {
+        var most = 1
+        for k in w.kinds {
+            most = max(most, k.card_count)
+        }
+        w.reserve_near(n, most, engine::plant::MAX_LIMBS)
+        s.near = Vec::from_fn(n, |_| NearOne { tile: vec2i(0), index: 0, at: vec2(0.0), archetype: 0, slot: 0 })
+    }
     // Retain leaf detail by output size and keep large crowns as geometry farther away.
     // The whole handover stays inside the loaded near forest; cut cells use output pixels.
     w.cards_limit = 160.0
