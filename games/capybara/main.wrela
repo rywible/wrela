@@ -271,6 +271,10 @@ pub struct Lab {
     nav: Stick,
     /// The link to the console that opened the game (`console`).
     console: Link,
+    /// The world's boards and uploads (online.wrela), and whose the run watched is when it is the
+    /// world's (empty for the player's own and the tool-assisted ones).
+    online: online::Online,
+    watch_name: String,
 }
 
 pub fn init() -> Lab {
@@ -331,6 +335,8 @@ pub fn init() -> Lab {
         board: PLAYERS,
         column: ANY,
         row: 0,
+        online: online::online(),
+        watch_name: String::new(),
         trail: Vec::new(),
         splits: Vec::new(),
         trail_of: 0,
@@ -407,6 +413,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
+    online::update(mut s.online, time)
+    if let Some((r, name)) = online::take_watch(mut s.online) {
+        open_watch(mut s, r.clone())
+        s.watch_name = name.clone()
+    }
     store_progress(mut s, dt)
     store_settings(mut s, dt)
     if live_snap.finished > 0 {
@@ -1358,8 +1369,9 @@ fn runs_frame(screen: vec2) -> (Rect, f32) {
 /// Where board `b`'s name is on the runs card, which a click chooses.
 fn board_rect(screen: vec2, b: u32) -> Rect {
     let (r, size) = runs_frame(screen)
-    let w = size * 8.0
-    let x = r.x + r.w * 0.5 - w - size * 0.3 + f32(b) * (w + size * 0.6)
+    let gap = size * 0.5
+    let w = min(size * 8.0, (r.w - size * 2.4 - gap * 3.0) / 4.0)
+    let x = r.x + r.w * 0.5 - (w * 4.0 + gap * 3.0) * 0.5 + f32(b) * (w + gap)
     Rect::new(x, r.y + size * 3.2, w, size * 1.6)
 }
 
@@ -1431,9 +1443,27 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         },
         _ => false,
     }
+    let upload = match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::U && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => pad == 0 &&
+            pressed &&
+            button == PadButton::North,
+        _ => false,
+    }
+    let world = s.board == online::WORLD || s.board == online::WHOLE_GAME
     if switch {
-        s.board = 1 - s.board
+        s.board = (s.board + 1) % online::BOARDS
         s.row = 0
+    } else if upload && s.board == PLAYERS {
+        let runs = listed(s, c, s.column)
+        if runs.len() > 0 {
+            online::upload(mut s.online, runs[min(s.row, runs.len() - 1)].clone())
+        }
+    } else if nav == Some(Nav::Choose) && world {
+        let (places, _) = online::places(s.online, online::board_course(s.board, c), s.column)
+        if places.len() > 0 {
+            online::watch_place(mut s.online, places[min(s.row, places.len() - 1)].clone())
+        }
     } else if nav == Some(Nav::Up) {
         s.row = if s.row > 0 { s.row - 1 } else { 0 }
     } else if nav == Some(Nav::Down) {
@@ -1447,10 +1477,26 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
             open_watch(mut s, runs[i].clone())
         }
     }
-    s.row = min(s.row, max(listed(s, c, s.column).len(), 1) - 1)
+    s.row = min(s.row, max(rows(s, c, s.column), 1) - 1)
     if let Event::PointerDown { at, .. } = e {
         s.pointer = at
-        for b in [PLAYERS, ASSISTED] {
+        if world {
+            for category in [ANY, FULL] {
+                let (places, _) = online::places(
+                    s.online,
+                    online::board_course(s.board, c),
+                    category,
+                )
+                for i in 0..places.len() {
+                    if row_rect(screen, category, i).contains(at) {
+                        s.column = category
+                        s.row = i
+                        online::watch_place(mut s.online, places[i].clone())
+                    }
+                }
+            }
+        }
+        for b in 0..online::BOARDS {
             if board_rect(screen, b).contains(at) {
                 s.board = b
                 s.row = 0
@@ -1472,7 +1518,108 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
 /// Watches run `r` from its start.
 fn open_watch(s: mut Lab, r: take Replay) {
     s.watching = Some(watch(take r))
+    s.watch_name = String::new()
     s.idle = 0.0
+}
+
+/// How many rows the board shown has for course `c` and `category`.
+fn rows(s: Lab, c: u32, category: u32) -> u32 {
+    if s.board == online::WORLD || s.board == online::WHOLE_GAME {
+        let (places, _) = online::places(s.online, online::board_course(s.board, c), category)
+        return places.len()
+    }
+    listed(s, c, category).len()
+}
+
+/// The world's board for course `c` (or the whole game) and `category` on the runs card: each
+/// place's account name and time, fastest first, from the console's server (online.wrela).
+fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32) {
+    let course = online::board_course(s.board, c)
+    online::want(mut s.online, course, category)
+    let (places, note) = online::places(s.online, course, category)
+    let head = row_rect(screen, category, 0)
+    if places.is_empty() {
+        let lines = wrap_note(s.fonts, note.as_str(), size * 0.8, head.w - size * 0.8)
+        for k in 0..lines.len() {
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                lines[k].as_str(),
+                size * 0.8,
+                vec2(head.x + size * 0.4, head.y + size * 0.2 + f32(k) * size * 1.1),
+                SOFT,
+            )
+        }
+        return
+    }
+    let gold = vec4(0.62, 0.42, 0.08, 1.0)
+    let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
+    for i in 0..min(places.len(), 8) {
+        let row = row_rect(screen, category, i)
+        if category == s.column && i == s.row {
+            s.list.rect(row, yuzu, radius: size * 0.4)
+        }
+        borrow p = places[i]
+        let colour = if p.place == 1 { gold } else { INKED }
+        let y = row.y + size * 0.25
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            f"{p.place}".as_str(),
+            size,
+            vec2(row.x + size * 0.5, y),
+            SOFT,
+        )
+        let time = seconds(p.ticks)
+        let tw = s.fonts.font(Face::Mono).measure(time.as_str(), size)
+        let room = row.w - tw - size * 3.0
+        let nsize = min(
+            size * 0.8,
+            size *
+                0.8 *
+                room /
+                max(s.fonts.font(Face::Sans).measure(p.name.as_str(), size * 0.8), 1.0),
+        )
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            p.name.as_str(),
+            nsize,
+            vec2(row.x + size * 1.9, y + (size - nsize) * 0.5),
+            colour,
+        )
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            time.as_str(),
+            size,
+            vec2(row.x + row.w - tw - size * 0.5, y),
+            colour,
+        )
+    }
+}
+
+/// `s` broken into lines no wider than `width` at `size`.
+fn wrap_note(fonts: Fonts, s: str, size: f32, width: f32) -> Vec<String> {
+    var lines: Vec<String> = Vec::new()
+    var line = String::new()
+    for (from, to) in s.split(" ") {
+        var trial = line.clone()
+        if !trial.is_empty() {
+            trial.push_str(" ")
+        }
+        trial.push_str(s.slice(from, to))
+        if !line.is_empty() && fonts.font(Face::Sans).measure(trial.as_str(), size) > width {
+            lines.push(line.clone())
+            line = String::from(s.slice(from, to))
+        } else {
+            line = take trial
+        }
+    }
+    if !line.is_empty() {
+        lines.push(take line)
+    }
+    lines
 }
 
 /// The runs card, over the paused page: the boards, each category's runs, fastest first, who
@@ -1497,9 +1644,13 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
         SOFT,
     )
     // The boards' names: the one shown filled in, the other lit under the pointer.
-    for b in [PLAYERS, ASSISTED] {
+    for b in 0..online::BOARDS {
         let tab = board_rect(screen, b)
-        let name = if b == PLAYERS { "Players" } else { "Tool-assisted" }
+        let name = if b == PLAYERS { "Yours" } else if b == ASSISTED {
+            "Tool-assisted"
+        } else if b == online::WORLD {
+            "World"
+        } else { "Whole game" }
         if b == s.board {
             s.list.rect(tab, INKED, radius: size * 0.8)
         } else if pointing && tab.contains(s.pointer) {
@@ -1526,6 +1677,10 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
             vec2(head.x + size * 0.4, head.y - size * 2.0),
             INKED,
         )
+        if s.board == online::WORLD || s.board == online::WHOLE_GAME {
+            world_rows(mut s, c, category, screen, size)
+            continue
+        }
         let runs = listed(s, c, category)
         if runs.len() == 0 {
             let _ = s.list.text(
@@ -1557,6 +1712,20 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
                 SOFT,
             )
             let _ = s.list.text(s.fonts, Face::Sans, who, size, vec2(row.x + size * 1.9, y), colour)
+            if s.board == PLAYERS {
+                // How its upload went, if it was asked.
+                let said = online::status(s.online, run)
+                if !said.is_empty() {
+                    let _ = s.list.text(
+                        s.fonts,
+                        Face::Sans,
+                        said.as_str(),
+                        size * 0.62,
+                        vec2(row.x + size * 4.4, y + size * 0.22),
+                        SOFT,
+                    )
+                }
+            }
             let time = seconds(run.ticks)
             let tw = s.fonts.font(Face::Mono).measure(time.as_str(), size)
             let _ = s.list.text(
@@ -1582,17 +1751,13 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
         vec2(back.x + (back.w - bw) * 0.5, back.y + size * 0.35),
         INKED,
     )
-    footer(
-        mut s.list,
-        s.fonts,
-        [
-            Prompt { act: Act::Choose, say: "Watch" },
-            Prompt { act: Act::Boards, say: "Boards" },
-            Prompt { act: Act::Back, say: "Back" },
-        ],
-        s.device,
-        screen,
-    )
+    var items = Vec::from([Prompt { act: Act::Choose, say: "Watch" }])
+    if s.board == PLAYERS {
+        items.push(Prompt { act: Act::Upload, say: "Upload" })
+    }
+    items.push(Prompt { act: Act::Boards, say: "Boards" })
+    items.push(Prompt { act: Act::Back, say: "Back" })
+    footer(mut s.list, s.fonts, items, s.device, screen)
 }
 
 /// Watching: a bar at the foot of the page, as a video player's: who made the run, its category
@@ -1601,9 +1766,12 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
 fn watch_bar(s: mut Lab, screen: vec2) {
     let u = unit(screen)
     let size = u * 2.6
+    let named = s.watch_name.clone()
     let (label, tick, end, playing, speed) = match s.watching {
         Some(w) => {
-            let who = who_name(w.replay.who)
+            let who = if named.is_empty() { String::from(who_name(w.replay.who)) } else {
+                named.clone()
+            }
             let category = if counts(w.replay, FULL) { "100%" } else { "Any%" }
             (f"{who}  ·  {category}", w.tick, w.end(), w.playing, SPEEDS[w.speed])
         },

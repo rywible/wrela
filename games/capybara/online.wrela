@@ -1,0 +1,436 @@
+// The capybara online: its runs uploaded to the world's boards, and those boards on the Runs page
+// (design.md, "Accounts and leaderboards"). The game never talks to the server: the console that
+// shows it carries its asks (platform/link.wrela), and gives it the account's name and a token that
+// can only submit runs. Offline, or opened alone, every run stays in the game's own storage; an
+// upload can be made later, since the replay is its proof.
+//
+// It keeps a list of the runs it has uploaded (their replays' SHA-256), apart from the game's
+// progress and runs, so an uploaded run says so.
+
+use platform::link::{Account, Answer, Ask, FromGame, to_game}
+use platform::wire::{Place, WHOLE}
+use replay::Replay
+use std::hash::sha256::sha256
+use std::host
+use std::io::{Pending, load, store}
+use std::serialize::{LoadError, Serialize, save}
+
+/// The Runs page's boards past the player's and the tool-assisted (main.wrela's `PLAYERS` and
+/// `ASSISTED`): the world's, for the course shown, and the world's whole game (each account's best
+/// on every level, summed).
+pub const WORLD: u32 = 2
+pub const WHOLE_GAME: u32 = 3
+pub const BOARDS: u32 = 4
+
+/// Where the uploaded runs' fingerprints are kept.
+const UPLOADED: Text = "capybara/uploaded"
+/// A board shown is asked for again after this long (s).
+const STALE: f32 = 30.0
+
+struct Uploaded: Serialize {
+    hashes: Vec<Vec<u8>>,
+}
+
+/// What an ask in flight was, to read its answer.
+enum Asked: Clone {
+    Upload { hash: Vec<u8> },
+    Board { course: u32, category: u32 },
+    Watch { name: String },
+}
+
+/// A world's board as last given: its course (or `WHOLE`), category, places, and when.
+struct Shown: Clone {
+    course: u32,
+    category: u32,
+    places: Vec<Place>,
+    at: f32,
+    note: String,
+}
+
+pub struct Online {
+    started: bool,
+    incoming: Option<Pending<u8>>,
+    call: Option<u32>,
+    replying: Option<Pending<u8>>,
+    /// The account, as the console says: who uploads.
+    pub account: Account,
+    /// Whether a console has called at all: opened alone, nothing can be uploaded.
+    pub linked: bool,
+    asks: Vec<(Ask, Asked)>,
+    flying: Option<Asked>,
+    boards: Vec<Shown>,
+    statuses: Vec<(Vec<u8>, String)>,
+    uploaded: Vec<Vec<u8>>,
+    loading: Option<Pending<u8>>,
+    saving: Option<Pending<u8>>,
+    unsaved: bool,
+    watch: Option<(Replay, String)>,
+    time: f32,
+}
+
+pub fn online() -> Online {
+    Online {
+        started: false,
+        incoming: None,
+        call: None,
+        replying: None,
+        account: Account { signed_in: false, name: String::new(), token: Vec::new() },
+        linked: false,
+        asks: Vec::new(),
+        flying: None,
+        boards: Vec::new(),
+        statuses: Vec::new(),
+        uploaded: Vec::new(),
+        loading: None,
+        saving: None,
+        unsaved: false,
+        watch: None,
+        time: 0.0,
+    }
+}
+
+fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut p {
+        Some(q) => answer = q.poll(),
+        None => {},
+    }
+    if answer.is_some() {
+        p = None
+    }
+    answer
+}
+
+/// A replay's fingerprint.
+pub fn fingerprint(r: Replay) -> Vec<u8> {
+    Vec::from(sha256(save(r)))
+}
+
+/// Each frame, at the host's time `time`: the console's call read, an ask sent if one waits.
+pub fn update(o: mut Online, time: f32) {
+    o.time = time
+    if !o.started {
+        o.started = true
+        o.incoming = Some(host::receive())
+        o.loading = Some(load(UPLOADED))
+    }
+    if let Some(result) = poll(mut o.loading) {
+        if let Ok(bytes) = result {
+            let r: Result<Uploaded, LoadError> = std::serialize::load(bytes.clone())
+            if let Ok(u) = r {
+                o.uploaded = u.hashes.clone()
+            }
+        }
+    }
+    let _ = poll(mut o.saving)
+    if o.unsaved && o.saving.is_none() {
+        o.unsaved = false
+        o.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
+    }
+    let _ = poll(mut o.replying)
+    if let Some(result) = poll(mut o.incoming) {
+        match result {
+            Ok(bytes) => {
+                if let Some(call) = host::read_call(bytes) {
+                    if let Some(t) = to_game(call.bytes) {
+                        o.linked = true
+                        o.account = t.account.clone()
+                        let flying = o.flying.clone()
+                        o.flying = None
+                        if let Some(asked) = flying {
+                            answered(mut o, asked, t.answer.clone())
+                        }
+                        o.call = Some(call.id)
+                    }
+                }
+            },
+            // No console shows the game (or the channel closed): nothing to ask.
+            Err(_) => o.linked = false,
+        }
+    }
+    if let Some(id) = o.call {
+        if !o.asks.is_empty() {
+            let (ask, asked) = o.asks.remove(0)
+            o.replying = Some(host::reply(id, save(FromGame { ask })))
+            o.call = None
+            o.flying = Some(take asked)
+            o.incoming = Some(host::receive())
+        }
+    }
+}
+
+fn set_status(o: mut Online, hash: Vec<u8>, status: String) {
+    for i in 0..o.statuses.len() {
+        if o.statuses[i].0 == hash {
+            o.statuses[i].1 = status.clone()
+            return
+        }
+    }
+    o.statuses.push((hash.clone(), status.clone()))
+}
+
+fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
+    for h in o.uploaded {
+        if h == hash {
+            return
+        }
+    }
+    o.uploaded.push(hash.clone())
+    o.unsaved = true
+}
+
+/// The console's answer to an ask: a run's status, a board, or a run to watch.
+fn answered(o: mut Online, asked: Asked, answer: Answer) {
+    match asked {
+        Asked::Upload { hash } => match answer {
+            Answer::Verified { place, .. } => {
+                set_status(mut o, hash.clone(), f"Verified: {ordinal(place)} in the world")
+                mark_uploaded(mut o, hash)
+                o.boards.clear()
+            },
+            Answer::Rejected { why } => {
+                if why.as_str().find("already uploaded").is_some() {
+                    mark_uploaded(mut o, hash.clone())
+                }
+                set_status(mut o, hash, why.clone())
+            },
+            Answer::Offline { why } => set_status(mut o, hash, why.clone()),
+            _ => {},
+        },
+        Asked::Board { course, category } => {
+            let (places, note) = match answer {
+                Answer::Board { places, .. } => (places.clone(), if places.is_empty() {
+                    String::from("No runs yet. Be the first: upload one from the Players board.")
+                } else { String::new() }),
+                Answer::Offline { why } => (Vec::new(), why.clone()),
+                Answer::Rejected { why } => (Vec::new(), why.clone()),
+                _ => (Vec::new(), String::new()),
+            }
+            var i = 0
+            while i < o.boards.len() {
+                if o.boards[i].course == course && o.boards[i].category == category {
+                    let _ = o.boards.remove(i)
+                } else {
+                    i += 1
+                }
+            }
+            o.boards.push(Shown { course, category, places, at: o.time, note })
+        },
+        Asked::Watch { name } => match answer {
+            Answer::Run { replay, .. } => {
+                if let Ok(r) = boards::read(replay) {
+                    o.watch = Some((take r, name.clone()))
+                }
+            },
+            _ => {},
+        },
+    }
+}
+
+/// `n` as a place: 1st, 2nd, 3rd, 4th...
+pub fn ordinal(n: u32) -> String {
+    let tail = if n % 100 >= 11 && n % 100 <= 13 { "th" } else if n % 10 == 1 { "st" } else if n %
+        10 ==
+        2 {
+        "nd"
+    } else if n % 10 == 3 { "rd" } else { "th" }
+    f"{n}{tail}"
+}
+
+/// Asks for board (`course`, or `WHOLE`, and `category`) if it isn't shown or is stale.
+pub fn want(o: mut Online, course: u32, category: u32) {
+    for b in o.boards {
+        if b.course == course && b.category == category && o.time - b.at < STALE {
+            return
+        }
+    }
+    for (_, asked) in o.asks {
+        if let Asked::Board { course: c, category: k } = asked {
+            if c == course && k == category {
+                return
+            }
+        }
+    }
+    if let Some(Asked::Board { course: c, category: k }) = o.flying {
+        if c == course && k == category {
+            return
+        }
+    }
+    if !o.linked {
+        return
+    }
+    o.asks.push((Ask::Board { course, category, from: 0 }, Asked::Board { course, category }))
+    // Shown as loading until it comes; a board asked again keeps its places meanwhile.
+    var found = false
+    for b in o.boards {
+        if b.course == course && b.category == category {
+            found = true
+        }
+    }
+    if !found {
+        o.boards.push(
+            Shown {
+                course,
+                category,
+                places: Vec::new(),
+                at: o.time,
+                note: String::from("Loading the world's runs..."),
+            },
+        )
+    }
+}
+
+/// Board (`course`, `category`)'s places, and what to say if it has none.
+pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
+    if !o.linked {
+        return (
+            Vec::new(),
+            String::from("Open the game from the wrela.dev console to see the world's runs."),
+        )
+    }
+    for b in o.boards {
+        if b.course == course && b.category == category {
+            return (b.places.clone(), b.note.clone())
+        }
+    }
+    (Vec::new(), String::from("Loading the world's runs..."))
+}
+
+/// Uploads run `r`, unless it has been: its status says how it went.
+pub fn upload(o: mut Online, r: Replay) {
+    let hash = fingerprint(r)
+    for h in o.uploaded {
+        if h == hash {
+            set_status(mut o, hash.clone(), String::from("Uploaded"))
+            return
+        }
+    }
+    if !o.linked {
+        set_status(mut o, hash, String::from("Open the game from the wrela.dev console to upload."))
+        return
+    }
+    if !o.account.signed_in || o.account.token.is_empty() {
+        set_status(mut o, hash, String::from("Sign in at the console (F10) to upload."))
+        return
+    }
+    set_status(mut o, hash.clone(), String::from("Uploading and checking..."))
+    o.asks.push(
+        (Ask::Upload { token: o.account.token.clone(), replay: save(r) }, Asked::Upload { hash }),
+    )
+}
+
+/// What to say of run `r`: its upload's status, or that it was uploaded; empty if neither.
+pub fn status(o: Online, r: Replay) -> String {
+    let hash = fingerprint(r)
+    for (h, s) in o.statuses {
+        if h == hash {
+            return s.clone()
+        }
+    }
+    for h in o.uploaded {
+        if h == hash {
+            return String::from("Uploaded")
+        }
+    }
+    String::new()
+}
+
+/// Asks to watch the run at `place` (a whole game's place is several runs, and isn't watched).
+pub fn watch_place(o: mut Online, place: Place) {
+    if place.run == 0 || o.flying.is_some() && o.asks.len() > 4 {
+        return
+    }
+    o.asks.push((Ask::Watch { run: place.run }, Asked::Watch { name: place.name.clone() }))
+}
+
+/// A world's run that has come to watch, and whose it is, once.
+pub fn take_watch(o: mut Online) -> Option<(Replay, String)> {
+    let w = o.watch.clone()
+    o.watch = None
+    w
+}
+
+/// The course the world's board asks for: the course shown, or a whole game's.
+pub fn board_course(board: u32, course: u32) -> u32 {
+    if board == WHOLE_GAME { WHOLE } else { course }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use replay::{YOU, tool_assisted}
+use course::WETLANDS
+
+fn signed_in() -> Online {
+    var o = online()
+    o.linked = true
+    o.account = Account {
+        signed_in: true,
+        name: String::from("Dame Puddlesnout the Damp"),
+        token: Vec::from([3; 32]),
+    }
+    o
+}
+
+@test
+fn an_upload_carries_the_games_token_and_its_answer_says_how_it_went() {
+    var o = signed_in()
+    var r = tool_assisted(WETLANDS)[0].clone()
+    r.who = YOU
+    upload(mut o, r.clone())
+    assert(o.asks.len() == 1, "asked")
+    let (ask, asked) = o.asks[0].clone()
+    let Ask::Upload { token, replay } = ask else { panic("an upload") }
+    assert(token == Vec::from([3; 32]) && replay == save(r), "the token and the replay")
+    answered(mut o, asked.clone(), Answer::Verified { run: 9, ticks: r.ticks, place: 2 })
+    assert(status(o, r) == String::from("Verified: 2nd in the world"), status(o, r).as_str())
+    // Once uploaded, it isn't again.
+    o.asks.clear()
+    upload(mut o, r.clone())
+    assert(o.asks.is_empty() && status(o, r) == String::from("Uploaded"))
+}
+
+@test
+fn without_a_console_or_an_account_nothing_is_asked() {
+    var r = tool_assisted(WETLANDS)[0].clone()
+    r.who = YOU
+    var alone = online()
+    upload(mut alone, r.clone())
+    want(mut alone, WETLANDS, 0)
+    assert(alone.asks.is_empty() && status(alone, r).as_str().find("console").is_some())
+    var out = signed_in()
+    out.account.signed_in = false
+    upload(mut out, r.clone())
+    assert(out.asks.is_empty() && status(out, r).as_str().find("Sign in").is_some())
+}
+
+@test
+fn a_board_is_asked_for_once_until_it_is_stale() {
+    var o = signed_in()
+    want(mut o, WETLANDS, 0)
+    want(mut o, WETLANDS, 0)
+    assert(o.asks.len() == 1, "once")
+    let (_, asked) = o.asks.remove(0)
+    let given = Vec::from(
+        [
+            Place {
+                place: 1,
+                name: String::from("Sir Wobblesnout the Unhurried"),
+                ticks: 900,
+                run: 4,
+            },
+        ],
+    )
+    answered(mut o, asked, Answer::Board { course: WETLANDS, category: 0, places: given, total: 1 })
+    let (shown, _) = places(o, WETLANDS, 0)
+    assert(shown.len() == 1 && shown[0].ticks == 900)
+    want(mut o, WETLANDS, 0)
+    assert(o.asks.is_empty(), "fresh")
+    o.time += STALE + 1.0
+    want(mut o, WETLANDS, 0)
+    assert(o.asks.len() == 1, "stale")
+    assert(
+        ordinal(1) == String::from("1st") &&
+            ordinal(12) == String::from("12th") &&
+            ordinal(23) == String::from("23rd"),
+    )
+}
