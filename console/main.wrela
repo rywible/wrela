@@ -332,6 +332,10 @@ pub struct Console {
     spent: f32,
     // The account: sign-in, the knighting, the legal pages and the games' boards (account.wrela).
     account: account::Accounts,
+    // Whether a newer release is live, and when the console was last touched: an open tab moves
+    // onto the newest release once its home was left alone (update.wrela).
+    update: update::Update,
+    active_at: f32,
 }
 
 // Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
@@ -465,6 +469,8 @@ pub fn init() -> Console {
         counted: 0,
         spent: 0.0,
         account: account::new(RP_ID, ONLINE),
+        update: update::new(),
+        active_at: 0.0,
     }
 }
 
@@ -939,6 +945,21 @@ fn update(s: mut Console) {
     let _ = poll(mut s.cursor)
     fulfill_play(mut s)
     if account::update(mut s.account, s.presentation) { s.dirty = true }
+    update::update(mut s.update, s.presentation, safe_to_reload(s), s.active_at)
+}
+
+// Whether the console may reload now without losing anything: past the opening, on the games
+// shelf of its home with no game shown or closing, no call to a game, save export or import under
+// way, and its account idle (update.wrela).
+fn safe_to_reload(s: Console) -> bool {
+    s.decided &&
+        s.presentation >= s.intro_until &&
+        browsing(s.step) &&
+        s.pending.is_none() &&
+        s.closing.is_none() &&
+        s.exporting.is_none() &&
+        s.pane == Pane::Games &&
+        account::idle(s.account)
 }
 
 fn open_pane(s: mut Console, pane: Pane) {
@@ -1716,6 +1737,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.activate = None
     for event in events() {
         s.dirty = true
+        s.active_at = s.presentation
         if account::event(mut s.account, event, s.zoom) { continue }
         match event {
             Event::PointerMove { at, .. } => {

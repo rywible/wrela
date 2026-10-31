@@ -765,7 +765,7 @@ fn the_builds_deadline_fits_the_runs_budget() {
     assert(BUILD_TIMEOUT + 300.0 <= f64(budget), f"{BUILD_TIMEOUT} s in a budget of {budget} s")
 }
 
-/// What toolchain 0.13.0's server build writes beside `server/game.wasm` for the Worker's
+/// What toolchain 0.15.0's server build writes beside `server/game.wasm` for the Worker's
 /// configuration (wrela-compiler, docs/plans/cloudflare-host.md §8).
 /// The console's server's Worker that names the Worker the server ran in before takes its classes
 /// over from it in its first migration, with their Durable Objects, in place of making them.
@@ -781,7 +781,7 @@ fn the_servers_first_deploy_takes_its_classes_over_from_the_worker_it_ran_in() {
     }
     let Some(c) = std::json::parse(w.as_str()) else { panic(w.as_str()) }
     let Some(migrations) = c.get(std::json::TOP, "migrations") else { panic("migrations") }
-    assert(c.count(migrations) == 1)
+    assert(c.count(migrations) == 2)
     let first = c.at(migrations, 0).unwrap()
     assert(c.text(c.get(first, "tag").unwrap()) == Some(String::from("wrela-server-1")))
     assert(c.get(first, "new_sqlite_classes").is_none(), "no new class")
@@ -791,12 +791,19 @@ fn the_servers_first_deploy_takes_its_classes_over_from_the_worker_it_ran_in() {
     assert(c.text(c.get(t, "from").unwrap()) == Some(String::from("WrelaServer")))
     assert(c.text(c.get(t, "from_script").unwrap()) == Some(String::from("wrela")))
     assert(c.text(c.get(t, "to").unwrap()) == Some(String::from("WrelaServer")))
+    // A later migration, the rooms' class, makes its class as the build asks.
+    let rooms = c.at(migrations, 1).unwrap()
+    assert(c.text(c.get(rooms, "tag").unwrap()) == Some(String::from("wrela-room-1")))
+    assert(
+        c.get(rooms, "new_sqlite_classes").is_some() &&
+            c.get(rooms, "transferred_classes").is_none(),
+    )
     // Its binding is to the class as it was.
     let Some(objects) = c.get(std::json::TOP, "durable_objects") else { panic("durable_objects") }
     assert(c.write(objects).as_str().find("WrelaServer").is_some())
 }
 
-const SERVER_JSON: Text = "{\"comment\": \"merge these\", \"durable_objects\": {\"bindings\": [{\"name\": \"WRELA_SERVER\", \"class_name\": \"WrelaServer\"}]}, \"migrations\": [{\"tag\": \"wrela-server-1\", \"new_sqlite_classes\": [\"WrelaServer\"]}], \"rules\": [{\"type\": \"CompiledWasm\", \"globs\": [\"**/*.wasm\"], \"fallthrough\": true}], \"limits\": {\"cpu_ms\": 5000}, \"vars\": {\"WRELA_ORIGINS\": \"\"}, \"assets\": {\"run_worker_first\": [\"/api/*\"]}}"
+const SERVER_JSON: Text = "{\"comment\": \"merge these\", \"durable_objects\": {\"bindings\": [{\"name\": \"WRELA_SERVER\", \"class_name\": \"WrelaServer\"}, {\"name\": \"WRELA_ROOM\", \"class_name\": \"WrelaRoom\"}]}, \"migrations\": [{\"tag\": \"wrela-server-1\", \"new_sqlite_classes\": [\"WrelaServer\"]}, {\"tag\": \"wrela-room-1\", \"new_sqlite_classes\": [\"WrelaRoom\"]}], \"rules\": [{\"type\": \"CompiledWasm\", \"globs\": [\"**/*.wasm\"], \"fallthrough\": true}], \"vars\": {\"WRELA_ORIGINS\": \"\", \"WRELA_LIMITS\": \"[]\"}, \"assets\": {\"run_worker_first\": [\"/api/*\", \"/room/*\"]}}"
 
 @test
 fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
@@ -816,20 +823,20 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
     // The server's paths are its routes, in the console's zone: they take those paths before the
     // console's custom domain does.
     let Some(routes) = c.get(top, "routes") else { panic("routes") }
-    assert(c.count(routes) == 1)
-    let route = c.at(routes, 0).unwrap()
-    assert(c.text(c.get(route, "pattern").unwrap()) == Some(String::from("wrela.dev/api/*")))
-    assert(c.text(c.get(route, "zone_name").unwrap()) == Some(String::from("wrela.dev")))
-    assert(c.get(route, "custom_domain").is_none())
+    assert(c.count(routes) == 2)
+    for (k, pattern) in [(0, "wrela.dev/api/*"), (1, "wrela.dev/room/*")] {
+        let route = c.at(routes, k).unwrap()
+        assert(c.text(c.get(route, "pattern").unwrap()) == Some(String::from(pattern)), pattern)
+        assert(c.text(c.get(route, "zone_name").unwrap()) == Some(String::from("wrela.dev")))
+        assert(c.get(route, "custom_domain").is_none())
+    }
     // The build's members, as it gave them.
     let Some(objects) = c.get(top, "durable_objects") else { panic("durable_objects") }
     assert(c.write(objects).as_str().find("WrelaServer").is_some())
     let Some(migrations) = c.get(top, "migrations") else { panic("migrations") }
     assert(c.write(migrations).as_str().find("wrela-server-1").is_some())
     assert(c.write(migrations).as_str().find("transferred_classes").is_none(), "none named")
-    let Some(limits) = c.get(top, "limits") else { panic("limits") }
-    let Some(cpu) = c.get(limits, "cpu_ms") else { panic("cpu_ms") }
-    assert(c.num(cpu) == Some(5000.0) && c.get(top, "rules").is_some())
+    assert(c.get(top, "rules").is_some())
     assert(c.get(top, "comment").is_none(), "the build's note isn't Wrangler's")
     // Its origin alone may change things, and each client is limited.
     let Some(vars) = c.get(top, "vars") else { panic("vars") }
@@ -854,10 +861,13 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
     assert(
         contains(
             s.as_str(),
-            "import { WrelaServer, api } from \"./wrela-api.server/cloudflare.js\";\n",
+            "import { WrelaServer, WrelaRoom, api, rooms } from \"./wrela-api.server/cloudflare.js\";\n",
         ) &&
-            contains(s.as_str(), "export { WrelaServer };\n") &&
-            contains(s.as_str(), "    const answered = await api(request, env, { ctx: ctx });\n") &&
+            contains(s.as_str(), "export { WrelaServer, WrelaRoom };\n") &&
+            contains(
+                s.as_str(),
+                "    const answered = (await api(request, env, { ctx: ctx })) ?? (await rooms(request, env));\n",
+            ) &&
             contains(s.as_str(), "    return answered ?? new Response(null, { status: 404 });\n"),
         s.as_str(),
     )
