@@ -20,7 +20,9 @@
 // semantic tree) chooses it too, by its number (`node`). The options (the music, the clock, the
 // ghost) are the frames', kept in the game's storage: the sim counts the steps a player takes on
 // each (`World::turns`), and the frames take them. On the runs' page the frames take the keys and
-// clicks (replay.wrela's runs, to watch or race as a ghost), and the sim only closes it.
+// clicks (replay.wrela's runs, to watch or race as a ghost), and the sim only closes it, opens the
+// search for a name (`FIND`, where the frames take the typing), and starts a race (`races`): the
+// level again from its title, the run raced as the ghost.
 //
 // The ticker steps a `Live`: the world, its attempt's run as it's played (pad.wrela's `Run`), so
 // a finished attempt is a replay, and what happened, counted tick by tick for the frames (`Tally`).
@@ -54,6 +56,13 @@ pub const RUNS: u32 = 2
 pub const OPTIONS: u32 = 3
 pub const CONTROLS: u32 = 4
 pub const MAP: u32 = 5
+/// The leaderboard's search for a name, over the runs' page: the keys type, so only a few close it.
+pub const FIND: u32 = 6
+
+/// The runs' page's nodes, which the frames publish: back, the search, and a race (watching).
+pub const RUNS_BACK: u32 = 0
+pub const RUNS_FIND: u32 = 1
+pub const RUNS_RACE: u32 = 2
 
 /// The menu's items, in the order a player meets them: the essentials first, Resume and Restart,
 /// then the leaderboard (the runs' page) and the levels, a column; under it Options and Controls
@@ -424,10 +433,60 @@ fn turn(w: mut World, item: u32, by: i32) {
     w.turns[item] += by
 }
 
+/// Whether event `e` starts a race on the runs' page: R, or a controller's Select (both restart in
+/// play). The frames read it too, for the run to race.
+pub fn races(e: Event) -> bool {
+    match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::R && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 && pressed && button == PadButton::Select
+        },
+        _ => false,
+    }
+}
+
+/// Whether event `e` opens the search on the runs' page: F, or a controller's West (X).
+pub fn finds(e: Event) -> bool {
+    match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::F && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 && pressed && button == PadButton::West
+        },
+        _ => false,
+    }
+}
+
+/// Whether event `e` closes the search, back to the runs: Esc or Enter, or a controller's South,
+/// East or Start. Nothing that types does.
+pub fn leaves_find(e: Event) -> bool {
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            !repeat && (key == Key::Escape || key == Key::Enter || key == Key::NumpadEnter)
+        },
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 &&
+                pressed &&
+                (button == PadButton::South ||
+                    button == PadButton::East ||
+                    button == PadButton::Start)
+        },
+        _ => false,
+    }
+}
+
+/// A race: the level again, standing on its title until a press starts it.
+fn race(w: mut World) {
+    restart(mut w, w.course)
+    w.chosen += 1
+    w.paused = true
+    w.page = TITLE
+}
+
 /// Paused, event `e` (`nav` in the menus) on the page shown.
 fn paused(w: mut World, e: Event, nav: Option<Nav>) {
-    // R and Tab work as they do in play, but on the runs, whose keys are the frames'.
-    if w.page != RUNS {
+    // R and Tab work as they do in play, but on the runs and the search, whose keys are the
+    // frames'.
+    if w.page != RUNS && w.page != FIND {
         if let Event::KeyDown { key, repeat, .. } = e {
             if !repeat && key == Key::R {
                 restart(mut w, w.course)
@@ -519,9 +578,19 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
             w.focus = moved(n, focus: w.focus, count: LEVELS)
         }
     } else if w.page == RUNS {
-        // The runs' keys are the frames'; only backing out is the sim's.
-        if back_out || pressed.is_some() {
+        // The runs' keys are the frames'; only backing out, the search and a race are the sim's.
+        if races(e) || pressed == Some(RUNS_RACE) {
+            race(mut w)
+        } else if finds(e) || pressed == Some(RUNS_FIND) {
+            w.chosen += 1
+            w.page = FIND
+        } else if back_out || pressed.is_some() {
             back(mut w, SEE_BOARD)
+        }
+    } else if w.page == FIND {
+        if dismissed || pressed.is_some() || leaves_find(e) {
+            w.chosen += 1
+            w.page = RUNS
         }
     }
 }
@@ -1091,7 +1160,7 @@ fn on_the_runs_only_backing_out_is_the_sims() {
     var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
     choose(mut w, SEE_BOARD)
-    for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::Up, Key::Down] {
+    for key in [Key::Space, Key::Enter, Key::U, Key::Tab, Key::Up, Key::Down] {
         tick_with(mut w, [down(key)])
         tick_with(mut w, [up(key)])
     }
@@ -1104,6 +1173,38 @@ fn on_the_runs_only_backing_out_is_the_sims() {
     choose(mut w, SEE_BOARD)
     tick_with(mut w, [down(Key::Escape)])
     assert(w.page == MENU, "and Esc")
+}
+
+@test
+fn on_the_runs_f_opens_the_search_whose_typing_is_the_frames_and_r_races() {
+    var w = started(WETLANDS)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [down(Key::F)])
+    assert(w.page == FIND, "the search")
+    // Typing a name, Backspace and P (which back out and pause elsewhere) and R stay in it.
+    for key in [Key::P, Key::R, Key::Backspace, Key::Space, Key::Z, Key::Tab, Key::Down] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.paused && w.page == FIND && w.attempt == 0, "the keys type")
+    tick_with(mut w, [down(Key::Enter)])
+    assert(w.page == RUNS, "Enter searches, back on the runs")
+    tick_with(mut w, [press(PadButton::West)])
+    tick_with(mut w, [press(PadButton::East)])
+    assert(w.page == RUNS, "and a controller's X and B")
+    // A race: the level again, on its title, the options' steps kept.
+    w.turns = [0, 0, 2]
+    let attempt = w.attempt
+    tick_with(mut w, [down(Key::R)])
+    assert(w.paused && w.page == TITLE && w.attempt == attempt + 1 && w.course == WETLANDS)
+    assert(w.ticks == 0 && w.turns == [0, 0, 2], "from the start")
+    tick_with(mut w, [down(Key::Space)])
+    assert(!w.paused, "a press starts it")
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [assist(node(w.chosen, RUNS, RUNS_RACE), Assist::Activate)])
+    assert(w.page == TITLE, "the race's node too")
 }
 
 @test
