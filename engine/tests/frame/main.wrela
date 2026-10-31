@@ -21,6 +21,10 @@ use engine::terrain::Clipmap
 use engine::view::first_camera
 use bare::{AHEAD, Bare, START, SUN, air_of, bare}
 
+/// The fixture's look (`engine::style`): `--set LOOK=styles::fixtures::Every` builds it in another
+/// (engine/tests/substance).
+pub type LOOK = Physical
+
 /// The bare scene's air: froxels, or clear (`engine/tests/switches` builds it both ways, `--set
 /// FOG=false`).
 pub const FOG: bool = true
@@ -84,7 +88,7 @@ pub enum Step: Copy + Eq {
 }
 
 pub struct State {
-    pub frame: Frame<Gathered, Bared, Physical>,
+    pub frame: Frame<Gathered, Bared, LOOK>,
     pub scene: Bare,
     pub step: Step,
     /// The frame each step began at (`Record::ran`), in `Step`'s order.
@@ -99,7 +103,7 @@ pub fn init() -> State {
     let air = air_of(SUN)
     // Not measuring until the script's last step: until then a frame's order is the same on
     // every run and in both hosts, which the tests of order read.
-    let frame: Frame<Gathered, Bared, Physical> = Frame::new(
+    let frame: Frame<Gathered, Bared, LOOK> = Frame::new(
         Quality { measured: false },
         sunlight(air),
         air,

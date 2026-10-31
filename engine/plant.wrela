@@ -896,6 +896,9 @@ pub struct Instance: Copy + GpuData {
     /// Tilt of local +z above the ground plane, in radians, before yaw.
     pub pitch: f32 = 0.0,
     pub thick: f32 = 1.0,
+    /// Its history (`substance::Substance::history`, `substance::history_of`): its age as a share
+    /// of its kind's life, its crown's light, the ground's wetness at its foot, its stress.
+    pub history: Unorm8x4 = Unorm8x4 { bits: 0 },
 }
 
 /// No plant: an empty place in an instances' buffer.

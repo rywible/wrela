@@ -100,7 +100,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Needed:** a helper inside `blockouts::realize` that reads the ground through the `height` function it was given (§B11d).
 - **What happens:** E0702 "a closure can't capture a function-typed parameter yet".
 - **Found:** 2026-10-26.
-- **Meanwhile:** a plain function taking what the closure would have captured (`rock_look(height(at), water, seed)`).
+- **Meanwhile:** a plain function taking what the closure would have captured (`rock_look(height(at), water, seed)`). D1's curvature (`substance::field_shape`, a gradient of a gradient of a field) hit it too (2026-10-30): it takes a `std::field::Surface`, whose `distance` its closures call.
 - **Status:** open.
 
 ### A struct update of the floor's stage is malformed IR
@@ -167,6 +167,23 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open: nothing in the toolchain can fix the browser's pace. What's left is the program's: smaller shaders on the load's path (the floor's creature-field realizer, 160–230 KiB of WGSL with its dual-number gradients; the terrain's `cook_level`, 140–166 KiB).
 
 ## Fixed
+
+### A fragment can't return its look's associated type
+
+- **Needed:** one shading shader for every look (docs/plan-world-class-3.md §D1): the scene's colour alone for a look that reads no substance (`type Out = vec4`), and a `Targets4` of it and the substance for one that reads it, so the physical look's frame and shaders are as they were and the others' passes write 24 bytes a sample.
+- **What happened:** toolchain 0.10.3 checked a fragment's return type before instantiation, so `-> Y::Out` was E0602 ("returns a colour …"); and an `if` on an associated constant lowered both branches, so the physical look's instance of the four-target branch was a draw of one colour into a pass of four (E0603), though no instance ever took it.
+- **Found:** 2026-10-30, D1.
+- **Evidence:** `compiler/sema/src/gpu.rs`'s fragment check; `compiler/lower/src/body.rs`'s `region` lowered an `If`'s two branches whatever its condition.
+- **Meanwhile:** nothing: fixed before D1 landed.
+- **Status:** fixed in 0.11.0: the return type is checked per instantiation, and an `if` whose condition folds (a constant, or comparisons and logic of constants, in the condition itself) lowers only its taken branch.
+
+### A build can't choose a program's look
+
+- **Needed:** the vale built in each look (§D1's costs, D4–D6's stills, D10's `wrela tool styles --check`) from one `main.wrela`.
+- **What happened:** `--set` set a `pub const` only; a look is a type (`Frame<R, Q, Y: Style>`), and its fragments' output type is the look's (above), so an enum matched at run time can't choose it.
+- **Found:** 2026-10-30, D1.
+- **Meanwhile:** nothing: fixed before D1 landed.
+- **Status:** fixed in 0.11.0: `--set LOOK=styles::fixtures::Every` points the program's `pub type LOOK` at another type.
 
 ### A warm page doesn't time its pipelines
 

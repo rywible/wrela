@@ -1,0 +1,183 @@
+// The ink look (docs/plan-world-class-3.md §D6): no colour, a paper white, hatching and lines. The
+// light is a density on the form's normal (`NORMAL` 1: the sun's share, the sky adding a floor);
+// the hatching runs along the form's principal direction (round a ball where it curves alike every
+// way), `HATCH_PX` apart, in up to three layers as the density rises, the second crossed at 60° and
+// the third at 120° (Praun, Hoppe, Webb and Finkelstein's tonal art maps: each layer appears as a
+// threshold is crossed, so a tone is a count of layers, and a layer's lines hold on the surface as
+// it nears or recedes: `engine::marks`' lattices), its direction taken in 15° steps; the
+// silhouettes and creases as the cel look's, thicker. Leaves, grass and flowers take a wash, not
+// lines (`washed`: lines finer than their cards alias), as the characters do (they move through
+// the lattice's lines), and the ink is a grey (`INK_DARK`), not a black. Its coherence is Blocked: it misses the physical look's flicker bars (docs/bench.md).
+// Where the light is nought the image stays black, not paper: the marks pass darkens the image by
+// a look's marks (`marks::marks_on`), so the hatching's paper is the light divided back out, and
+// there's none to divide.
+// Every constant here is **proposed**.
+
+use engine::light::{LUMA, Light, Lit}
+use engine::marks
+use engine::marks::MarkSample
+use engine::noise::hash2
+use engine::paint::{Develop, Exposure}
+use engine::style
+use engine::style::Style
+use engine::substance
+use engine::substance::{Substance, Written}
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The hatching's lines apart (output pixels), and how wide each is.
+pub const HATCH_PX: f32 = 6.0
+pub const HATCH_WIDE: f32 = 1.2
+/// The density past which each layer appears, and how soft its coming is.
+pub const LAYERS: [f32; 3] = [0.25, 0.5, 0.75]
+pub const LAYER_SOFT: f32 = 0.08
+/// The most light the sky adds under the sun's (a dark side's density at least 1 less it).
+pub const SKY_FLOOR: f32 = 0.15
+/// A wash's ink for each layer a thin thing's density brings in (`washed`): a line's share of its
+/// cell, about.
+pub const WASH: f32 = 0.25
+/// How dark the ink is: the share of the paper's light a line takes.
+pub const INK_DARK: f32 = 0.75
+/// The paper's white, and its grain.
+pub const PAPER: vec3 = vec3(0.96, 0.95, 0.91)
+pub const GRAIN: f32 = 0.02
+/// The lines' width (output pixels) and darkness; a crease's least curve per pixel and extent, as
+/// the cel look's.
+pub const LINE_PX: f32 = 2.2
+pub const LINE_DARK: f32 = 0.9
+pub const CREASE: f32 = 0.35
+pub const CREASE_PX: f32 = 12.0
+
+/// The ink look (`engine::style::Style`).
+pub struct Ink {}
+
+/// The steps a layer's direction is taken in (radians): each step's lines one family on the mark
+/// lattice's plane, so a line stays where it is however the form's direction wavers within it.
+pub const TURN_STEP: f32 = 0.2617994
+
+/// Lines across angle `a` on the lattice's plane at the pixel (`m`): a line each cell, `HATCH_WIDE`
+/// pixels wide.
+fn lines(m: MarkSample, a: f32) -> f32 {
+    let across = -sin(a) * m.place.x + cos(a) * m.place.y
+    let d = abs(fract(across) - 0.5) * m.size_px
+    1.0 - smoothstep(0.5 * HATCH_WIDE - 0.75, 0.5 * HATCH_WIDE + 0.75, d)
+}
+
+/// Layer `k`'s ink at a pixel (`m`, its lattice sample; 0 to 1): its lines, along the form's
+/// direction turned by 60° a layer, taken in `TURN_STEP`s (the two steps round it, the nearer
+/// alone but in the middle third between them); the layer coming in as the density
+/// (`1 - m.lit`) passes its threshold (`LAYERS[k]`).
+pub fn layer(m: MarkSample, k: u32) -> f32 {
+    let density = 1.0 - saturate(m.lit)
+    let on = smoothstep(LAYERS[k] - LAYER_SOFT, LAYERS[k] + LAYER_SOFT, density)
+    let t = (m.turn + f32(k) * 1.0471976) / TURN_STEP
+    let lo = floor(t)
+    let w = smoothstep(1.0 / 3.0, 2.0 / 3.0, t - lo)
+    on * mix(lines(m, lo * TURN_STEP), lines(m, (lo + 1.0) * TURN_STEP), w)
+}
+
+/// How much ink a thin thing's pixel takes (`m`): a wash, `WASH` of the coverage each layer's
+/// lines would give as it comes in (`layer`'s threshold, softly).
+pub fn washed(m: MarkSample) -> f32 {
+    let density = 1.0 - saturate(m.lit)
+    var ink = 0.0
+    for k in 0..3 {
+        ink += WASH * smoothstep(LAYERS[k] - LAYER_SOFT, LAYERS[k] + LAYER_SOFT, density)
+    }
+    saturate(ink)
+}
+
+/// How much ink a pixel takes from the hatching (`m`): its three layers' (`layer`), the most.
+pub fn hatched(m: MarkSample) -> f32 {
+    max(layer(m, 0), max(layer(m, 1), layer(m, 2)))
+}
+
+impl Style for Ink {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::CREASES | marks::HATCH
+    const LINE_DARK: f32 = LINE_DARK
+    const LINE_PX: f32 = LINE_PX
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    /// The light as a density's complement in [0, 1], grey: the sun's share on the form's normal,
+    /// the sky's light (its luma) adding a floor under it (`SKY_FLOOR` at most, so a dark side
+    /// takes every layer), a dark albedo darker.
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        let sun = saturate(dot(lit.n, light.sun)) * lit.sun
+        let sky = SKY_FLOOR * saturate(dot(lit.sky, LUMA) * 2.0)
+        vec3(saturate((sun + sky) * (0.6 + 0.4 * dot(lit.albedo, LUMA) / 0.25)))
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Ink::shade(light, lit, s, style::LEAVES, world, eye)
+    }
+
+    /// Luma alone.
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        vec3(dot(albedo, LUMA))
+    }
+
+    /// The hatching (`marks::HATCH`): the paper with its lines' ink (`hatched`), as the marks pass
+    /// takes it (it darkens the image by the mark: here, from the image's light to the paper's
+    /// white less its ink); a crease (`marks::CREASES`) as the cel look's, darker.
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        let light = max(m.lit, 1.0e-3)
+        if m.kind == marks::HATCH {
+            // Thin things (a crown's leaves, the grass, flowers) take a wash as dark as their
+            // hatching's layers would be (`WASH` of each), not its lines: a leaf card's or a
+            // blade's pixel is a different leaf's from frame to frame as it aliases, and its
+            // lines came and went with it.
+            // A character takes the wash too: its hatching's lines would be the world's lattice's,
+            // and it moves through them.
+            let thin = m.class == style::LEAVES ||
+                m.class == style::GRASS ||
+                m.class == style::FLOWER ||
+                m.class == style::CREATURE
+            let ink = INK_DARK * if thin { washed(m) } else { hatched(m) }
+            return 1.0 - dot(PAPER, LUMA) * (1.0 - ink) / light
+        }
+        if m.kind == marks::CREASES {
+            let solid = m.class == style::GROUND ||
+                m.class == style::BARK ||
+                m.class == style::STONE ||
+                m.class == style::CREATURE
+            if !solid {
+                return 0.0
+            }
+            let curve = smoothstep(CREASE * 0.6, CREASE * 1.5, m.offset.x)
+            let long = smoothstep(CREASE_PX * 0.3, CREASE_PX, m.size_px)
+            return LINE_DARK * curve * long * dot(PAPER, LUMA) / light
+        }
+        0.0
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        HATCH_PX
+    }
+
+    /// The paper: the image's light (the hatched paper where the marks drew; the sky as light as
+    /// its luma takes it) on the paper's white, no colour, and its grain.
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        let l = smoothstep(0.0, 0.9, dot(paint, LUMA))
+        let grain = GRAIN * (hash2(i32(px.x), i32(px.y)) - 0.5)
+        vec4(PAPER * l + vec3(grain), 1.0)
+    }
+}

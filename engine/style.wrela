@@ -1,12 +1,20 @@
-// The look a program's frame draws with (docs/plan-world-class-3.md §C2, D2): a type the program
-// names (`Frame<R, Q, Y: Style>`), whose slots the frame calls where a surface's light is summed
-// (`lit::shown`: `shade`) and where the image goes to the screen (`paint::develop`: `lens`). Part
-// D gives the slots the substance they read and the styles that fill them; here each has the
-// physical look's body (`styles::physical::Physical`), and the constants are 0.
+// The look a program's frame draws with (docs/plan-world-class-3.md §C2, §D2): a type the program
+// names (`Frame<R, Q, Y: Style>`, a program's `pub type LOOK`), whose constants say what the frame
+// makes for it (its substance, the normal it lights, its marks, its temporal AA on flat tones) and
+// whose slots the frame calls: where a surface's albedo is chosen (`palette`), where its light is
+// summed (`lit::shown`: `shade`), where its marks are drawn (`mark`), and where the image goes to
+// the screen (`paint::develop`: `lens`). A look is a file of `content/styles` (its README).
 
-use light::{Light, Lit}
+use light::{LUMA, Light, Lit}
+use marks
+use marks::MarkSample
 use paint::{Develop, Exposure}
-use std::gpu::{Rgba8, Sampler, Texture3d}
+use std::gpu::{
+    DepthPass, DepthPass4, DepthTexture, R32Uint, RenderPass, Rg32Uint, Rgba16Float, Rgba8, Sampler,
+    Texture, Texture3d, begin_pass4_with_depth, begin_pass_with_depth,
+}
+use substance::Written
+use substance::Substance
 
 /// A look: its constants say what the frame makes for it, its functions what it does with it.
 pub trait Style {
@@ -14,20 +22,66 @@ pub trait Style {
     const SUBSTANCE: u32 = 0
     /// Which normal lights the form: 0 the fine (the shading's own), 1 the form's, 2 the coarse.
     const NORMAL: u32 = 0
-    /// Which marks are drawn (D7's bits: lines, creases, dabs, strokes, hatch); 0: the frame's
-    /// own, as before the marks.
+    /// Which marks are drawn (`marks`' bits: lines, creases, dabs, strokes, hatch); 0: none.
     const MARKS: u32 = 0
+    /// Whether it draws any of the marks the marks pass draws (`marks::DRAWN`): the pass's gate,
+    /// a `bool` the build folds (a mask's test it built the pass for a look that draws none).
+    const DRAWS: bool = (Self::MARKS & marks::DRAWN) != 0
     /// How hard temporal AA clips where the substance says the tone is flat (0: as the physical
     /// look; 1: the neighbourhood's box shrunk to its centre's tone).
     const FLAT_CLIP: f32 = 0.0
+    /// Where a surface's albedo varies across a pixel by less than this in luma, its mean takes
+    /// its place (`flattened`): what the eye can't resolve, flattened (0: never).
+    const FLAT: f32 = 0.0
+    /// How dark the lines round the characters and solid forms are (`marks::LINES`): under 0, the
+    /// program's own (`paint::Look::line_dark`).
+    const LINE_DARK: f32 = -1.0
+    /// How wide those lines are (output pixels, `paint::Look::line_px`): under 0, the program's
+    /// own.
+    const LINE_PX: f32 = -1.0
 
-    /// The light a surface at `world`, lit as `lit` says (its albedo, normal and the light that
-    /// reaches it) under `light`, shows the eye at `eye`.
-    fn shade(light: Light, lit: Lit, world: vec3, eye: vec3) -> vec3
+    /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
+    /// that reads no substance after the pass, or that and the substance's three
+    /// (`substance::Written`). The shading pass is its (`Shaded::opened`).
+    type Out: Shaded
 
-    /// The colour a material of class `class` (`view`'s), its history `history` (D1's cause: age,
-    /// light, wetness, stress), and albedo `albedo` becomes in this look, before light.
-    fn palette(class: u32, history: vec4, albedo: vec3) -> vec3
+    /// A fragment's `Out`: its colour (the lit colour and its tag) and its substance.
+    fn written(colour: vec4, s: Substance) -> Self::Out
+
+    /// The light a surface at `world` of class `class` (`GROUND` …: what it's made of), lit as
+    /// `lit` says (its albedo, the normal it's lit by, `NORMAL`'s, and the light that reaches it:
+    /// the transport terms, as values) under `light`, shows the eye at `eye`; `s` is its substance,
+    /// as far as the look reads it.
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3
+
+    /// A leaf's light (`style::LEAVES`): `shade`'s, but its gloss is on its side that faces the
+    /// eye (`facing`), where its crown's normal (`lit.n`) lights the rest of it.
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        Self::shade(light, lit, s, LEAVES, world, eye)
+    }
+
+    /// The colour a material of class `class`, its history `history` (D1's cause: age, light,
+    /// wetness, stress), and albedo `albedo` becomes in this look, before light.
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3
+
+    /// How dark a mark `m` makes a pixel (0: not at all; below 0 it lightens), its substance `s`,
+    /// at a depth whose output pixel is `depth_px` metres across: none by default.
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        0.0
+    }
+
+    /// How many output pixels across a mark of kind `kind` (`marks`' bits) is: the spacing of its
+    /// lattice (`marks::sample`).
+    fn mark_px(kind: u32) -> f32 {
+        12.0
+    }
 
     /// The lens: the output pixel `px`, painted (`paint`: its dabs, bloom and sharpening in), as
     /// the screen shows it, at exposure `e`, `d` saying the output, the view and the look's
@@ -40,4 +94,201 @@ pub trait Style {
         lut: Texture3d<Rgba8>,
         s: Sampler,
     ) -> vec4
+}
+
+/// What a surface is made of, as `Style::shade` and `Style::palette` are told (each shading pass's
+/// own): the ground, leaves, bark, grass, flowers, water, stone, a character or creature, and the
+/// sky.
+pub const GROUND: u32 = 0
+pub const LEAVES: u32 = 1
+pub const BARK: u32 = 2
+pub const GRASS: u32 = 3
+pub const FLOWER: u32 = 4
+pub const WATER: u32 = 5
+pub const STONE: u32 = 6
+pub const CREATURE: u32 = 7
+pub const SKY: u32 = 8
+pub const CLASSES: u32 = 9
+
+/// What a look's shading fragments write (`Style::Out`), and the pass that takes it: the scene's
+/// colour alone into the scene, or that and the substance's three into the scene and the form,
+/// cause and tone targets beside it. A frame opens its shading passes through its look's `Out`,
+/// so a look's passes are only ever the kind its fragments fit (a branch on `SUBSTANCE` built
+/// both, and `wrela check` checked the one a look never takes: a four-target pass drawn with the
+/// physical look's one colour).
+pub trait Shaded: Copy {
+    type Pass: RenderPass
+
+    fn opened(
+        scene: mut Texture<Rgba16Float>,
+        form: mut Texture<Rg32Uint>,
+        cause: mut Texture<R32Uint>,
+        tone: mut Texture<R32Uint>,
+        depth: mut DepthTexture,
+        clear: vec4,
+        keep: bool,
+        keep_depth: bool,
+        join: bool,
+    ) -> Self::Pass
+
+    /// `p` ended (a pass's `end` is its own type's, not `RenderPass`'s).
+    fn closed(p: Self::Pass)
+}
+
+/// The shading pass for fragments that write `O` (`Shaded::opened`): a frame's, as
+/// `opened::<Y::Out>(...)`.
+pub fn opened<O: Shaded>(
+    scene: mut Texture<Rgba16Float>,
+    form: mut Texture<Rg32Uint>,
+    cause: mut Texture<R32Uint>,
+    tone: mut Texture<R32Uint>,
+    depth: mut DepthTexture,
+    clear: vec4 = vec4(0.0, 0.0, 0.0, 1.0),
+    keep: bool = false,
+    keep_depth: bool = false,
+    join: bool = false,
+) -> O::Pass {
+    O::opened(mut scene, mut form, mut cause, mut tone, mut depth, clear, keep, keep_depth, join)
+}
+
+/// A shading pass `opened` ended.
+pub fn closed<O: Shaded>(p: O::Pass) {
+    O::closed(p)
+}
+
+impl Shaded for vec4 {
+    type Pass = DepthPass<Rgba16Float>
+
+    fn opened(
+        scene: mut Texture<Rgba16Float>,
+        form: mut Texture<Rg32Uint>,
+        cause: mut Texture<R32Uint>,
+        tone: mut Texture<R32Uint>,
+        depth: mut DepthTexture,
+        clear: vec4,
+        keep: bool,
+        keep_depth: bool,
+        join: bool,
+    ) -> DepthPass<Rgba16Float> {
+        begin_pass_with_depth(mut scene, mut depth, clear, keep, keep_depth: keep_depth, join: join)
+    }
+
+    fn closed(p: DepthPass<Rgba16Float>) {
+        p.end()
+    }
+}
+
+impl Shaded for Written {
+    type Pass = DepthPass4<Rgba16Float, Rg32Uint, R32Uint, R32Uint>
+
+    fn opened(
+        scene: mut Texture<Rgba16Float>,
+        form: mut Texture<Rg32Uint>,
+        cause: mut Texture<R32Uint>,
+        tone: mut Texture<R32Uint>,
+        depth: mut DepthTexture,
+        clear: vec4,
+        keep: bool,
+        keep_depth: bool,
+        join: bool,
+    ) -> DepthPass4<Rgba16Float, Rg32Uint, R32Uint, R32Uint> {
+        begin_pass4_with_depth(
+            mut scene,
+            mut form,
+            mut cause,
+            mut tone,
+            mut depth,
+            clear,
+            keep,
+            keep_depth: keep_depth,
+            join: join,
+        )
+    }
+
+    fn closed(p: DepthPass4<Rgba16Float, Rg32Uint, R32Uint, R32Uint>) {
+        p.end()
+    }
+}
+
+/// The normal a surface is lit by in look `Y` (`Style::NORMAL`): its fine one (the shading's own),
+/// its form's, or its coarse one.
+pub fn lit_normal<Y: Style>(fine: vec3, form: vec3, coarse: vec3) -> vec3 {
+    if Y::NORMAL == 1 {
+        return form
+    }
+    if Y::NORMAL == 2 {
+        return coarse
+    }
+    fine
+}
+
+/// A look's constants a fit may move (`wrela tool fit --style`, docs/plan-world-class-3.md §D8),
+/// up to eight, in the order the look lists them (its `FITTABLE`): `at`'s (each a `const` of the
+/// look's), or, where the look is fitting (`FIT`: the fit's one build), the light's
+/// (`light::Light::fit`, the candidate's). A look reads each through `knob`, which folds to
+/// `at`'s where it isn't fitting.
+pub trait Knob {
+    const FIT: bool = false
+
+    fn at(i: u32) -> f32
+}
+
+/// Constant `i` of look `K` (`Knob`).
+pub fn knob<K: Knob>(light: Light, i: u32) -> f32 {
+    if K::FIT {
+        return light.fit[i / 4][i % 4]
+    }
+    K::at(i)
+}
+
+/// A constant a fit may move: its name, as the look's file writes it, and its range.
+pub struct Fittable: Copy {
+    pub name: Text,
+    pub lo: f32,
+    pub hi: f32,
+}
+
+/// A surface's albedo in look `Y` (`Style::FLAT`), and how flat it is: its `mean` (the material
+/// without its detail finer than the pixel) where its `fine` albedo varies across the pixel by less
+/// than a quarter of `FLAT` in luma (`fwidth`), `fine` where by more than twice it, and between
+/// them between. Called in a fragment shader's uniform control flow.
+pub fn flattened<Y: Style>(fine: vec3, mean: vec3) -> (vec3, f32) {
+    if Y::FLAT <= 0.0 {
+        return (fine, 0.0)
+    }
+    let range = fwidth(dot(fine, LUMA))
+    // Fading from a quarter of `FLAT` to twice it, so a pixel whose range wavers about it (as a
+    // jittered frame's samples move) doesn't flicker between the two.
+    let flat = 1.0 - smoothstep(0.25 * Y::FLAT, 2.0 * Y::FLAT, range)
+    (mix(fine, mean, vec3(flat)), flat)
+}
+
+/// A fragment's substance as far as `Y` reads it (`Style::SUBSTANCE`): a surface whose form's
+/// normal is `n_form` and coarse normal `n_coarse`, its history `history` and its albedo before
+/// light `tone` (`flat` where `flattened` made it). Nothing for a look that reads none, so the
+/// physical look's shaders are as they were; and each channel only if it's read, so what makes the
+/// others is no code. (The form's shape is found after the passes: `substance::shaped`.)
+pub fn substance_of<Y: Style>(
+    n_form: vec3,
+    n_coarse: vec3,
+    history: vec4,
+    tone: vec3,
+    flat: f32 = 0.0,
+) -> Substance {
+    if Y::SUBSTANCE == 0 {
+        return substance::NONE
+    }
+    var s = substance::NONE
+    if (Y::SUBSTANCE & substance::CAUSE) != 0 {
+        s.history = history
+    }
+    if (Y::SUBSTANCE & substance::TONE) != 0 {
+        s.tone = tone
+        s.flat = flat
+    }
+    if (Y::SUBSTANCE & substance::FORM) != 0 {
+        s.n_form = n_form
+        s.n_coarse = n_coarse
+    }
+    s
 }

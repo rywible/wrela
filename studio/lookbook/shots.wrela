@@ -214,6 +214,32 @@ pub struct Options: Clone {
     /// Which of the shots, when none is picked by number (`--shots dev`, `--shots evaluation`):
     /// `ALL`, `EVALUATION` or `DEVELOPMENT`.
     pub set: u32 = ALL,
+    /// The look the program's built in (`--look`: `wrela build --set LOOK=<type>`,
+    /// `engine::style`), or empty for its own build.
+    pub look: String = String::new(),
+    /// A run whose measures (`<dir>/quality.json`) are the bars' baseline (`--bars`: docs/lookdev.md,
+    /// "Judging a style"), or empty.
+    pub bars: String = String::new(),
+    /// Whether the run already in the output directory is held to `bars`, nothing measured
+    /// (`--held`).
+    pub held: bool = false,
+    /// How many times each shot is measured (`--runs`), its measures each the median of them: a
+    /// shot's flicker differs by up to a fifth from one run to the next (docs/lookdev.md).
+    pub runs: u32 = 1,
+    /// With `--bars` and `--runs`, the share of a bar that decides a shot from its first run
+    /// (`--near`, as 0.2: `main::near_bars`): a measure that far over its bar, or all that far
+    /// under, and its run-to-run spread (2 %, 13 % at most: docs/lookdev.md) can't change it. 0
+    /// takes every run of every shot.
+    pub near: f32 = 0.0,
+    /// The run already in the output directory's trails measured again from the frames it kept
+    /// (`--retrail`: each shot's `-moving.png` and `-settled.png`), nothing drawn.
+    pub retrail: bool = false,
+    /// The fast run's measures alone (`--fast`: `quality::fast_shot`), at 960 × 540 unless `--size`
+    /// says otherwise: no reference, the windows short.
+    pub fast: bool = false,
+    /// With `--fast`, the reference at the still too, and the still's PSNR, SSIM and sharpness
+    /// against it (`--psnr`).
+    pub psnr: bool = false,
 }
 
 /// The shots a run takes when none is picked by number: all of them, a lookbook's evaluation
@@ -264,6 +290,7 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
     }
     var k = 0
     var out: Option<String> = None
+    var sized = false
     while k < given.len() {
         let a = given[k].as_str()
         let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
@@ -280,8 +307,35 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             o.capture = true
         } else if a == "--quality" {
             o.quality = true
+        } else if a == "--fast" {
+            o.quality = true
+            o.fast = true
+        } else if a == "--psnr" {
+            o.psnr = true
+        } else if a == "--held" {
+            o.held = true
         } else if a == "--controls" {
             o.controls = true
+        } else if a == "--look" && !value.is_empty() {
+            o.look = String::from(value)
+            k += 1
+        } else if a == "--runs" && !value.is_empty() {
+            let Some(n) = value.parse_u32() else {
+                return Err(String::from("--runs takes how many times to measure each shot"))
+            }
+            o.runs = max(n, 1)
+            k += 1
+        } else if a == "--near" && !value.is_empty() {
+            let Some(f) = value.parse_f32() else {
+                return Err(String::from("--near takes a share of a bar, as 0.2"))
+            }
+            o.near = max(f, 0.0)
+            k += 1
+        } else if a == "--retrail" {
+            o.retrail = true
+        } else if a == "--bars" && !value.is_empty() {
+            o.bars = String::from(value)
+            k += 1
         } else if a == "--shots" && value == "dev" {
             o.set = DEVELOPMENT
             k += 1
@@ -320,6 +374,7 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             }
             o.width = w
             o.height = h
+            sized = true
             k += 1
         } else if a == "--jobs" || a == "--workers" {
             let Some(n) = value.parse_u32() else {
@@ -344,6 +399,13 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             o.picks.push(n)
         }
         k += 1
+    }
+    if o.fast && !sized {
+        o.width = 960
+        o.height = 540
+    }
+    if o.near > 0.0 && o.bars.is_empty() {
+        return Err(String::from("--near takes --bars: the bars a shot's first run is near"))
     }
     let Some(path) = take out else { return Err(String::from(USAGE)) }
     o.out = take path

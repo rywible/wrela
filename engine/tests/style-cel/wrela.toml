@@ -1,0 +1,11 @@
+# The cel look (content/styles/cel.wrela, docs/plan-world-class-3.md §D4) on the hardware GPU: its
+# ramp's bands on a sphere, its form-lit terminator on a cylinder with bark's relief, its creases on
+# a cube's edges (none on its faces, none on a 1 cm bump at 60 m), and a 1 mm checker at 5 m
+# flattened to one tone. The fixture (scenes/, a package of its own, not a workspace member) draws
+# each as a panel (`--set PANEL=<n>`) through the look's slots and the engine's shape and marks
+# passes; the tool tests build it, draw it through `std::tool::drive` and read its screen.
+[package]
+name = "style_cel_tests"
+
+[dependencies]
+hosts = { workspace = true }

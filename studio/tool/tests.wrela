@@ -189,8 +189,10 @@ fn literal_at(d: Doc, file: str, text_of: str, column: u32) -> u32 {
 
 /// Each lens's program (studio/glue's on its sphere, studio/maplens/glue's on the Last Green,
 /// studio/courselens/glue's on the capybara) checks alone, and exports each action of its table,
-/// with the state and then its arguments, which the headless runner passes.
-@test(tool, read: [("ws", "../..")], budget: 300)
+/// with the state and then its arguments, which the headless runner passes. (Three programs
+/// checked, the Last Green's whole: 211 s alone on the M4 Air with Part D's engine, past 300 under
+/// the suite's other tests.)
+@test(tool, read: [("ws", "../..")], budget: 600)
 fn the_lens_program_exports_each_action() {
     exports_each("studio/glue", "Lens", ACTIONS)
     exports_each("studio/maplens/glue", "MapLens", MAP_ACTIONS)

@@ -473,7 +473,7 @@ fn licks(u: f32, around: f32, burn: f32, time: f32) -> f32 {
 /// cut from it, hard-edged; through the haze. The cloth is tagged as the climber's, the licks as
 /// a veil, so no line is drawn round each tongue.
 @fragment
-pub fn garment_shade<Q: Switches, Y: Style>(g: GarmentVertex, lt: Lighting<Q, Y>) -> vec4 {
+pub fn garment_shade<Q: Switches, Y: Style>(g: GarmentVertex, lt: Lighting<Q, Y>) -> Y::Out {
     // The face's opening, cut from the hood as a smooth oval: through it, the hood's inside.
     if g.burns.value != 0 && g.uv.y < f32(HOOD_ROWS) && face_open(g.uv) {
         discard()
@@ -489,6 +489,11 @@ pub fn garment_shade<Q: Switches, Y: Style>(g: GarmentVertex, lt: Lighting<Q, Y>
         burning = g.burn > 0.0
     }
     let n = normalize(g.normal)
+    // A garment's form is its cloth's, its own coarse form; found here, in the control flow
+    // every pixel takes.
+    let s = if Y::SUBSTANCE == 0 {
+        engine::substance::NONE
+    } else { engine::style::substance_of::<Y>(n, n, vec4(0.0), vec3(0.0)) }
     if burning {
         colour = INK
     } else if dot(g.outward, lt.cam.eye - g.world) < 0.0 {
@@ -503,7 +508,7 @@ pub fn garment_shade<Q: Switches, Y: Style>(g: GarmentVertex, lt: Lighting<Q, Y>
         colour = EDGE
     }
     let tag = if burning { VEIL } else { CREATURE + f32(GARMENT_PART) }
-    vec4(through_air(lt, colour, g.world), tag)
+    Y::written(vec4(through_air(lt, colour, g.world), tag), s)
 }
 
 // ---- the climber -------------------------------------------------------------------------------

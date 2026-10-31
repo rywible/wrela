@@ -20,6 +20,7 @@
 //    it (`lit::through_air`, before the air's aerial table); the sky's, the last slice's.
 
 use light::Light
+use style::Style
 use probes::{ProbeGrid, density_at, ground_under, mean_near}
 use shadow::{Shadows, statically_sunlit}
 use sky::{Clouds, cloud_shadow, hg, sky_with_clouds}
@@ -256,7 +257,7 @@ pub fn fog_at(g: FogGrid, lit: Texture3d<Rgba16Float>, s: Sampler, world: vec3) 
 /// The sky's pixel (as `sky::sky_shade` draws it) through the froxels' last slice: its colour times what
 /// shows of it, and the light in front of it.
 @fragment
-pub fn sky_fogged(
+pub fn sky_fogged<Y: Style>(
     pixel: FragCoord,
     cam: Camera,
     light: Light,
@@ -265,10 +266,10 @@ pub fn sky_fogged(
     s: Sampler,
     fog: FogGrid,
     fogged: Texture3d<Rgba16Float>,
-) -> vec4 {
+) -> Y::Out {
     let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), dome, s)
     let f = fog_at(fog, fogged, s, cam.eye + cam.ray(pixel.position.xy) * (FOG_FAR * 0.999))
-    vec4(c.rgb * f.a + f.rgb, c.a * 0.99)
+    Y::written(vec4(c.rgb * f.a + f.rgb, c.a * 0.99), substance::NONE)
 }
 
 /// The froxels: this frame's light and density (`scatter`), the last frame's (`last`, as
