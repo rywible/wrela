@@ -1,6 +1,9 @@
-// The console's account: signing in with a passkey, the knighting (knighting.wrela), the account's
-// page (its passkeys, sessions, recovery codes, export and deletion), the legal pages (legal.wrela),
-// and what a game shown in the console asks of the boards (platform/link.wrela). It asks the
+// The console's account: signing in with a passkey, or making an account once the player agrees to
+// the Terms and the Privacy Policy and says they're 13 or older, the knighting (knighting.wrela),
+// the account's page (its recovery codes to save, whether it posts its best runs, its passkeys,
+// sessions, export and deletion), what posting makes public (shown once, before the first post),
+// the legal pages (legal.wrela), and what a game shown in the console asks of the boards
+// (platform/link.wrela). It asks the
 // console's server (platform/server.wrela) over HTTP on the console's own origin (std::http::fetch,
 // wire.wrela's paths), each request answered by one reply.
 //
@@ -12,12 +15,17 @@
 // not even the console's. The console holds only the session's CSRF token, in memory, which the
 // server gives with each `Welcome`. A game, on its own origin, gets neither: only a token for its
 // boards (wire.wrela's `Token`).
+//
+// A new account's recovery codes come after its sign-up, not in it: the server gives them once,
+// and the console keeps them in memory only (never in storage) until the player says they're
+// saved, offering them on the account's page meanwhile, and once at a game's ask (`SaveCodes`,
+// after a first post). Gone unsaved (the console closed), new ones take a fresh passkey sign-in.
 
 use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
 use platform::wire::{
-    ACCOUNTS, ADD_PASSKEY, Me, PUBLIC, PasskeyView, REGISTER, Reply, Request, SIGN_IN, SessionView,
-    public,
+    ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
+    SIGN_IN, SessionView, public, replay_path,
 }
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
@@ -53,6 +61,8 @@ const BODY: f32 = 15.0
 enum Page: Copy + Eq {
     Account,
     Choose,
+    Create,
+    Posting,
     Recover,
     Knighting,
     Codes,
@@ -65,12 +75,23 @@ enum Act: Copy + Eq {
     Chip,
     Close,
     SignIn,
+    /// Opens the page that makes an account; its boxes; and the account made.
     Create,
+    Agree,
+    OfAge,
+    CreateAccount,
     UseCode,
     SubmitCode,
     Keep,
     Reroll,
     CodesSaved,
+    SaveCodes,
+    Later,
+    /// Posting: the account's setting, the first post's screen's box, and its two choices.
+    BestRuns,
+    PostBest,
+    Post,
+    NotNow,
     Manage,
     AddPasskey,
     Remove { index: u32 },
@@ -93,6 +114,7 @@ enum Purpose: Copy + Eq {
     Export,
     Delete,
     Game,
+    Consent,
 }
 
 /// A game the console shows, and the call open to it.
@@ -145,6 +167,23 @@ pub struct Accounts {
     game: Option<GameLink>,
     time: f32,
     dirty: bool,
+    /// Making an account: its two boxes, ticked by the player.
+    agree: bool,
+    of_age: bool,
+    /// The page a legal page goes back to, and the control whose request is under way.
+    back: Page,
+    doing: Option<Act>,
+    /// Posting, as the server last said: whether it's known (and asked), whether the account has
+    /// agreed to what posting makes public, and whether it posts its best runs.
+    posting_known: bool,
+    posting_asked: bool,
+    may_post: bool,
+    post_best: bool,
+    /// The first post's screen: its box, and whether a game waits on the choice.
+    consent_best: bool,
+    consent_for_game: bool,
+    /// Whether the codes have been offered at a game's ask since the console opened.
+    reminded: bool,
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
@@ -191,6 +230,17 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         game: None,
         time: 0.0,
         dirty: true,
+        agree: false,
+        of_age: false,
+        back: Page::Choose,
+        doing: None,
+        posting_known: false,
+        posting_asked: false,
+        may_post: false,
+        post_best: false,
+        consent_best: false,
+        consent_for_game: false,
+        reminded: false,
     }
 }
 
@@ -211,7 +261,10 @@ fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>>
 /// Sends `request`, for `purpose`: a public read (a board, a run) by `GET`, so a cache may answer it,
 /// and anything else by `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
-    let asked = if public(request) {
+    let asked = if let Request::Replay { hash } = request {
+        // A replay at its own path, by its hash, which the browser's cache keeps a year.
+        std::http::fetch("GET", replay_path(hash).as_str(), [], [])
+    } else if public(request) {
         let q = base64url(save(request))
         std::http::fetch("GET", String::from(f"{PUBLIC}?q={q}").as_str(), [], [])
     } else {
@@ -226,6 +279,11 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
 
 fn signed_out(a: mut Accounts) {
     a.csrf.clear()
+    a.posting_known = false
+    a.posting_asked = false
+    a.may_post = false
+    a.post_best = false
+    a.codes.clear()
     a.me = Me {
         signed_in: false,
         name: String::new(),
@@ -300,14 +358,16 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             } else {
                 a.message.clear()
                 if a.page == Page::Knighting && purpose == Purpose::Name {
+                    // Sign-up ends at the knighting: the codes wait on the account's page.
                     if me.fixed {
-                        a.page = if a.codes.is_empty() { Page::Account } else { Page::Codes }
+                        a.page = Page::Account
                     } else {
                         a.knight_again = true
                         a.knight_t = 0.0
                     }
                 } else if a.page == Page::Recover ||
                     a.page == Page::Choose ||
+                    a.page == Page::Create ||
                     a.page == Page::Manage {
                     a.page = if me.fixed { Page::Account } else { Page::Knighting }
                     if a.page == Page::Knighting {
@@ -387,6 +447,24 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         Reply::Codes { codes } => {
             a.codes = codes.clone()
             a.page = Page::Codes
+            give_game_account(mut a)
+        },
+        Reply::Posting { agreed, best_runs, .. } => {
+            a.posting_known = true
+            a.may_post = agreed
+            a.post_best = best_runs
+            if purpose == Purpose::Consent {
+                a.message.clear()
+                if a.consent_for_game {
+                    // The game asked: its answer, and back to it.
+                    a.consent_for_game = false
+                    answer_game(mut a, Answer::Posting { agreed, best_runs })
+                    a.open = false
+                } else {
+                    open_page(mut a, Page::Account)
+                }
+            }
+            give_game_account(mut a)
         },
         Reply::Passkeys { passkeys } => a.passkeys = passkeys.clone(),
         Reply::Sessions { sessions } => a.sessions = sessions.clone(),
@@ -468,7 +546,14 @@ fn linked(a: Accounts) -> Linked {
         Some(g) => g.token.clone(),
         None => Vec::new(),
     }
-    Linked { signed_in: a.me.signed_in && !a.me.must_add_passkey, name: a.me.name.clone(), token }
+    Linked {
+        signed_in: a.me.signed_in && !a.me.must_add_passkey,
+        name: a.me.name.clone(),
+        token,
+        may_post: a.may_post,
+        post_best: a.post_best,
+        save_codes: !a.codes.is_empty(),
+    }
 }
 
 /// Calls the game with the account and the answer to its last ask, once its token is fresh.
@@ -546,10 +631,26 @@ fn game_replied(a: mut Accounts, reply: Reply) {
             Answer::Board { course, category, places: places.clone(), total }
         },
         Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
+        Reply::Around { places, at } => {
+            let (course, category) = match a.game {
+                Some(g) => match g.answer {
+                    Answer::Around { course, category, .. } => (course, category),
+                    _ => (0, 0),
+                },
+                None => (0, 0),
+            }
+            Answer::Around { course, category, places: places.clone(), at }
+        },
+        Reply::Names { found } => Answer::Names { found: found.clone() },
         _ => Answer::Offline {
             why: String::from("The boards sent something this console doesn't read."),
         },
     }
+    answer_game(mut a, take answer)
+}
+
+/// The answer to the game's ask: its next call takes it.
+fn answer_game(a: mut Accounts, answer: take Answer) {
     match mut a.game {
         Some(g) => {
             g.asking = false
@@ -565,6 +666,30 @@ fn game_replied(a: mut Accounts, reply: Reply) {
 fn game_asked(a: mut Accounts, bytes: [u8]) {
     let Some(g) = shown_game(a) else { return }
     let Some(ask) = from_game(bytes) else { return }
+    // The console's own pages: the codes need no server, and the first post's screen waits on the
+    // player.
+    if let Ask::SaveCodes = ask {
+        let shown = remind_codes(mut a)
+        answer_game(mut a, Answer::Opened { shown })
+        return
+    }
+    if let Ask::Consent = ask {
+        if a.may_post && answer_now(a.me, a.online, a.connected, Ask::Consent).is_none() {
+            answer_game(mut a, Answer::Posting { agreed: true, best_runs: a.post_best })
+            return
+        }
+        if answer_now(a.me, a.online, a.connected, Ask::Consent).is_none() {
+            match mut a.game {
+                Some(l) => l.asking = true,
+                None => {},
+            }
+            a.consent_for_game = true
+            a.consent_best = a.post_best
+            a.open = true
+            open_page(mut a, Page::Posting)
+            return
+        }
+    }
     if let Some(ans) = answer_now(a.me, a.online, a.connected, ask) {
         match mut a.game {
             Some(l) => l.answer = take ans,
@@ -592,6 +717,27 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
             Request::Board { game: g.id.clone(), course, category, from }
         },
         Ask::Watch { run } => Request::Watch { run },
+        Ask::Replay { hash } => Request::Replay { hash: hash.clone() },
+        Ask::Around { course, category, name } => {
+            match mut a.game {
+                Some(l) => l.answer = Answer::Around {
+                    course,
+                    category,
+                    places: Vec::new(),
+                    at: 0,
+                },
+                None => {},
+            }
+            Request::Around { game: g.id.clone(), course, category, name: name.clone() }
+        },
+        Ask::Names { title, noun, epithet } => Request::Names {
+            game: g.id.clone(),
+            title: title.clone(),
+            noun: noun.clone(),
+            epithet: epithet.clone(),
+        },
+        // Answered above.
+        Ask::Consent | Ask::SaveCodes => return,
     }
     match mut a.game {
         Some(l) => l.asking = true,
@@ -619,16 +765,30 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
             },
         )
     }
-    if let Ask::Upload { .. } = ask {
-        if !me.signed_in || !me.fixed || me.must_add_passkey {
-            return Some(
-                Answer::Offline {
-                    why: String::from("Sign in at the console to upload: press F10, then Sign in."),
-                },
-            )
-        }
+    let posting = match ask {
+        Ask::Upload { .. } | Ask::Consent => true,
+        _ => false,
+    }
+    if posting && (!me.signed_in || !me.fixed || me.must_add_passkey) {
+        return Some(
+            Answer::Offline {
+                why: String::from("Sign in at the console to post. Press F10, then Sign in."),
+            },
+        )
     }
     None
+}
+
+/// Shows the account's recovery codes to save, once since the console opened, if they still are:
+/// whether it did. For a game's ask after a first post (`Ask::SaveCodes`).
+pub fn remind_codes(a: mut Accounts) -> bool {
+    if a.codes.is_empty() || a.reminded {
+        return false
+    }
+    a.reminded = true
+    a.open = true
+    open_page(mut a, Page::Codes)
+    true
 }
 
 // ---- each frame ----------------------------------------------------------------------------
@@ -640,6 +800,12 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     // Whose session the cookie is, asked first, and again while the server can't be reached.
     if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
         request(mut a, Request::Me, Purpose::Other)
+    }
+    // What the account chose of posting, once it's signed in.
+    let whole = a.me.signed_in && !a.me.must_add_passkey
+    if a.online && a.connected && whole && !a.posting_known && !a.posting_asked {
+        a.posting_asked = true
+        request(mut a, Request::Posting, Purpose::Other)
     }
     var i = 0
     while i < a.waiting.len() {
@@ -752,8 +918,86 @@ fn open_page(a: mut Accounts, page: Page) {
     }
 }
 
+/// Whether `x` sends a request whose answer it waits for: not again until it comes.
+fn sends(x: Act) -> bool {
+    match x {
+        Act::SignIn | Act::CreateAccount | Act::SubmitCode | Act::AddPasskey | Act::ConfirmDelete => {
+            true
+        },
+        Act::Post | Act::BestRuns | Act::Keep | Act::Reroll | Act::NewCodes => true,
+        _ => false,
+    }
+}
+
+/// What a control says while its request is under way.
+fn under_way(x: Act) -> Text {
+    match x {
+        Act::SignIn | Act::AddPasskey => "Waiting for your passkey...",
+        Act::CreateAccount => "Making your passkey...",
+        Act::SubmitCode => "Checking your code...",
+        Act::ConfirmDelete => "Deleting...",
+        _ => "Saving...",
+    }
+}
+
+/// The request that makes an account, if both its boxes are ticked: it carries the versions agreed
+/// to, which the server checks against its own.
+fn create_request(a: Accounts) -> Option<Request> {
+    if !a.agree || !a.of_age {
+        return None
+    }
+    let agreed = Agreed {
+        terms: legal::TERMS_VERSION,
+        privacy: legal::PRIVACY_VERSION,
+        of_age: true,
+    }
+    Some(Request::Begin { ceremony: REGISTER, csrf: Vec::new(), agreed })
+}
+
+/// Where Back goes from the page open: a legal page back where it was opened from (making an
+/// account keeps its boxes), anything else to the account's page, or the first page signed out.
+fn returns_to(a: Accounts) -> Page {
+    if a.page == Page::Legal && a.back != Page::Legal {
+        a.back
+    } else if a.me.signed_in { Page::Account } else { Page::Choose }
+}
+
+/// The account page's buttons below its setting: its codes to save first, while they wait.
+fn account_items(a: Accounts) -> Vec<(Act, Text, bool)> {
+    var items: Vec<(Act, Text, bool)> = Vec::new()
+    if !a.codes.is_empty() {
+        items.push((Act::SaveCodes, "Save your recovery codes", true))
+    }
+    items.push((Act::Manage, "Passkeys and sessions", false))
+    items.push((Act::Export, "Export my data", false))
+    items.push((Act::Delete, "Delete account", false))
+    items.push((Act::SignOut, "Sign out", false))
+    items.push((Act::Close, "Close", a.codes.is_empty()))
+    items
+}
+
+/// Whether turning on "Post my best runs" shows what posting shares first: it does until the
+/// account has agreed.
+fn asks_consent_first(a: Accounts) -> bool {
+    !a.may_post && !a.post_best
+}
+
+/// The first post's screen closed without agreeing: a game that waits hears so.
+fn not_now(a: mut Accounts) {
+    if a.consent_for_game {
+        a.consent_for_game = false
+        answer_game(mut a, Answer::Posting { agreed: false, best_runs: a.post_best })
+    }
+}
+
 fn act(a: mut Accounts, x: Act) {
     a.dirty = true
+    if a.busy && sends(x) {
+        return
+    }
+    if sends(x) {
+        a.doing = Some(x)
+    }
     match x {
         Act::Chip => {
             a.open = true
@@ -770,22 +1014,34 @@ fn act(a: mut Accounts, x: Act) {
                 a.knight_t = AGAIN
             }
         },
-        Act::Close => a.open = false,
+        Act::Close => {
+            not_now(mut a)
+            a.open = false
+        },
         Act::SignIn => {
             a.message.clear()
             request(
                 mut a,
-                Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() },
+                Request::Begin { ceremony: SIGN_IN, csrf: Vec::new(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
             a.busy = true
         },
         Act::Create => {
-            request(
-                mut a,
-                Request::Begin { ceremony: REGISTER, csrf: Vec::new() },
-                Purpose::Other,
-            )
+            a.agree = false
+            a.of_age = false
+            open_page(mut a, Page::Create)
+        },
+        Act::Agree => a.agree = !a.agree,
+        Act::OfAge => a.of_age = !a.of_age,
+        Act::CreateAccount => {
+            let Some(r) = create_request(a) else {
+                a.doing = None
+                a.message = String::from("Tick both boxes to create your account.")
+                return
+            }
+            a.message.clear()
+            request(mut a, r, Purpose::Other)
             a.busy = true
         },
         Act::UseCode => {
@@ -804,13 +1060,46 @@ fn act(a: mut Accounts, x: Act) {
         },
         Act::CodesSaved => {
             a.codes.clear()
+            give_game_account(mut a)
             open_page(mut a, Page::Account)
+        },
+        Act::SaveCodes => open_page(mut a, Page::Codes),
+        Act::Later => open_page(mut a, Page::Account),
+        Act::BestRuns => {
+            if asks_consent_first(a) {
+                // Turned on before any post: what posting shares, first.
+                a.doing = None
+                a.consent_best = true
+                open_page(mut a, Page::Posting)
+                return
+            }
+            let r = Request::BestRuns { csrf: a.csrf.clone(), on: !a.post_best }
+            request(mut a, r, Purpose::Other)
+            a.busy = true
+        },
+        Act::PostBest => a.consent_best = !a.consent_best,
+        Act::Post => {
+            let r = Request::Consent {
+                csrf: a.csrf.clone(),
+                version: legal::POSTING_VERSION,
+                best_runs: a.consent_best,
+            }
+            request(mut a, r, Purpose::Consent)
+            a.busy = true
+        },
+        Act::NotNow => {
+            if a.consent_for_game {
+                not_now(mut a)
+                a.open = false
+            } else {
+                open_page(mut a, Page::Account)
+            }
         },
         Act::Manage => open_page(mut a, Page::Manage),
         Act::AddPasskey => {
             request(
                 mut a,
-                Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone() },
+                Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
             a.busy = true
@@ -856,11 +1145,11 @@ fn act(a: mut Accounts, x: Act) {
                 a.open = false
                 return
             }
-            let page = if a.me.signed_in && a.page != Page::Account {
-                Page::Account
-            } else if a.me.signed_in {
-                Page::Account
-            } else { Page::Choose }
+            if a.page == Page::Posting && a.consent_for_game {
+                act(mut a, Act::NotNow)
+                return
+            }
+            let page = returns_to(a)
             if a.page == page || (a.page == Page::Account && a.me.signed_in) {
                 a.open = false
             } else {
@@ -868,6 +1157,9 @@ fn act(a: mut Accounts, x: Act) {
             }
         },
         Act::Legal { page } => {
+            if a.page != Page::Legal {
+                a.back = a.page
+            }
             open_page(mut a, Page::Legal)
             a.legal = page
             if page == legal::CREDITS && a.licences.is_empty() {
@@ -1045,6 +1337,7 @@ fn button(
     zoom: f32,
     primary: bool = false,
     danger: bool = false,
+    disabled: bool = false,
 ) {
     let index = a.controls.len()
     a.controls.push((x, r))
@@ -1052,13 +1345,28 @@ fn button(
         Some(p) => r.contains(p),
         None => false,
     }
-    let fill = if danger { DANGER } else if primary { INK } else if hover { RAISED } else {
-        SECONDARY
+    // While its request is under way, it says what's happening.
+    let label = if a.busy && a.doing == Some(x) { String::from(under_way(x)) } else {
+        String::from(label)
     }
+    let primary = primary && !disabled
+    let fill = if danger { DANGER } else if primary { INK } else if hover && !disabled {
+        RAISED
+    } else { SECONDARY }
     d.rect(z(r, zoom), fill, RADIUS * zoom)
     if !primary && !danger {
         d.ring(z(r, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
     }
+    focus_ring(a, mut d, index, r, zoom)
+    let w = measure(fonts, label.as_str(), LABEL * zoom, Face::Sans) / zoom
+    let c = r.center()
+    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
+    let ink = if primary { DARK } else if disabled { MUTED } else { INK }
+    write(mut d, fonts, label.as_str(), LABEL, vec2(c.x - w * 0.5, top), ink, zoom)
+}
+
+/// Draws the focus ring around `r` if it's the focused control, `index` in the list.
+fn focus_ring(a: Accounts, d: mut DrawList, index: u32, r: Rect, zoom: f32) {
     if index == a.focus {
         d.ring(
             z(r.shrink(-3.0), zoom),
@@ -1067,12 +1375,65 @@ fn button(
             max(round(2.0 * zoom), 1.0),
         )
     }
-    let w = measure(fonts, label, LABEL * zoom, Face::Sans) / zoom
-    let c = r.center()
-    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
-    write(mut d, fonts, label, LABEL, vec2(c.x - w * 0.5, top), if primary { DARK } else {
-        INK
-    }, zoom)
+}
+
+/// A box the player ticks, `on` or not, with `label` after it, in a row of height 32 from `at`.
+fn checkbox(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: Act,
+    at: vec2,
+    w: f32,
+    label: str,
+    on: bool,
+    zoom: f32,
+) {
+    let r = Rect::new(at.x, at.y, w, 32.0)
+    let index = a.controls.len()
+    a.controls.push((x, r))
+    let b = Rect::new(at.x, at.y + 6.0, w: 20.0, h: 20.0)
+    if on {
+        d.rect(z(b, zoom), INK, 5.0 * zoom)
+        // A tick.
+        let p = |u: f32, v: f32| -> vec2 { vec2(b.x + u * 20.0, b.y + v * 20.0) * zoom }
+        let width = max(round(2.0 * zoom), 1.0)
+        d.line(p(0.25, 0.52), p(0.43, 0.7), DARK, width)
+        d.line(p(0.43, 0.7), p(0.76, 0.3), DARK, width)
+    } else {
+        d.rect(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.06), 5.0 * zoom)
+        d.ring(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.45), 5.0 * zoom, max(round(1.5 * zoom), 1.0))
+    }
+    focus_ring(a, mut d, index, Rect::new(b.x, b.y, b.w, b.h), zoom)
+    let top = at.y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY
+    write(mut d, fonts, label, BODY, vec2(at.x + 32.0, top), INK, zoom)
+}
+
+/// A link: underlined words, `label` from `at` at `size`, which act as `x`: how wide it is.
+fn link(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: Act,
+    at: vec2,
+    label: str,
+    size: f32,
+    zoom: f32,
+) -> f32 {
+    let w = measure(fonts, label, size * zoom, Face::Sans) / zoom
+    let r = Rect::new(at.x - 2.0, at.y - 4.0, w + 4.0, size + 10.0)
+    let index = a.controls.len()
+    a.controls.push((x, r))
+    write(mut d, fonts, label, size, at, INK, zoom)
+    let base = at.y + size * 1.15
+    d.line(
+        vec2(at.x, base) * zoom,
+        vec2(at.x + w, base) * zoom,
+        vec4(INK.xyz, 0.6),
+        max(round(zoom), 1.0),
+    )
+    focus_ring(a, mut d, index, r, zoom)
+    w
 }
 
 /// A column of buttons from `y`, each the sheet's width: where it ended.
@@ -1201,7 +1562,9 @@ pub fn draw(
     var y = sheet.y + 26.0
     let title = match a.page {
         Page::Account => "Your account",
-        Page::Choose => "Accounts",
+        Page::Choose => "Your account",
+        Page::Create => "Create account",
+        Page::Posting => "Before you post",
         Page::Recover => "Use a recovery code",
         Page::Codes => "Your recovery codes",
         Page::Manage => "Passkeys and sessions",
@@ -1216,7 +1579,7 @@ pub fn draw(
             y += paragraph(
                 mut d,
                 fonts,
-                "An account puts your runs on the world's leaderboards. There's no email and no password: you sign in with a passkey on this device, and we give you a name.",
+                "An account puts your runs on the world's leaderboards. You sign in with a passkey on this device. There's no email and no password, and we give you a name.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1224,24 +1587,158 @@ pub fn draw(
                 zoom,
             )
             y += 18.0
-            let items = [
-                (Act::SignIn, "Sign in with a passkey", true),
-                (Act::Create, "Create an account", false),
-                (Act::UseCode, "Use a recovery code", false),
-                (Act::Close, "Not now", false),
-            ]
+            y = stack(mut a, mut d, fonts, [(Act::SignIn, "Sign in", true)], x, y, iw, zoom)
+            let _ = link(
+                mut a,
+                mut d,
+                fonts,
+                Act::UseCode,
+                vec2(x, y),
+                "Lost your passkey?",
+                13.0,
+                zoom,
+            )
+            y += 34.0
+            let items = [(Act::Create, "Create account", false), (Act::Close, "Not now", false)]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Create => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "You'll make a passkey on this device, then we draw your name.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 16.0
+            // The first box's words hold the two pages' links, each opening its page and coming back.
+            checkbox(mut a, mut d, fonts, Act::Agree, vec2(x, y), 28.0, "", a.agree, zoom)
+            let words = vec2(x + 32.0, y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY)
+            var at = words.x
+            let gap = |s: str| -> f32 { measure(fonts, s, BODY * zoom, Face::Sans) / zoom }
+            write(mut d, fonts, "I agree to the", BODY, vec2(at, words.y), INK, zoom)
+            at += gap("I agree to the ")
+            at += link(
+                mut a,
+                mut d,
+                fonts,
+                Act::Legal { page: legal::TERMS },
+                vec2(at, words.y),
+                "Terms",
+                BODY,
+                zoom,
+            )
+            write(mut d, fonts, " and the", BODY, vec2(at, words.y), INK, zoom)
+            at += gap(" and the ")
+            var line = words.y
+            if at + gap("Privacy Policy") > x + iw {
+                at = words.x
+                line += BODY * 1.5
+            }
+            let _ = link(
+                mut a,
+                mut d,
+                fonts,
+                Act::Legal { page: legal::PRIVACY },
+                vec2(at, line),
+                "Privacy Policy",
+                BODY,
+                zoom,
+            )
+            y += 40.0 + (line - words.y)
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::OfAge,
+                vec2(x, y),
+                iw,
+                "I'm 13 or older",
+                a.of_age,
+                zoom,
+            )
+            y += 50.0
+            let ready = a.agree && a.of_age
+            button(
+                mut a,
+                mut d,
+                fonts,
+                Act::CreateAccount,
+                Rect::new(x, y, iw, 40.0),
+                "Create account",
+                zoom,
+                primary: true,
+                disabled: !ready,
+            )
+            y += 48.0
+            y = stack(mut a, mut d, fonts, [(Act::Back, "Back", false)], x, y, iw, zoom)
+        },
+        Page::Posting => {
+            y += paragraph(
+                mut d,
+                fonts,
+                "Anyone can see these on the world's boards.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 8.0
+            for item in legal::POSTING_SHARED {
+                d.ellipse(z(Rect::new(x + 3.0, y + BODY * 0.55, w: 5.0, h: 5.0), zoom), INK)
+                y += paragraph(mut d, fonts, item, BODY, vec2(x + 16.0, y), iw - 16.0, INK, zoom) +
+                    4.0
+            }
+            y += 8.0
+            y += paragraph(mut d, fonts, legal::POSTING_NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
+            y += 14.0
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::PostBest,
+                vec2(x, y),
+                iw,
+                "Post my best runs",
+                a.consent_best,
+                zoom,
+            )
+            y += 32.0
+            y += paragraph(
+                mut d,
+                fonts,
+                "Each new personal best goes up when its run ends. You can turn this off on your account's page.",
+                13.0,
+                vec2(x + 32.0, y),
+                iw - 32.0,
+                MUTED,
+                zoom,
+            )
+            y += 14.0
+            let agree = if a.consent_for_game { "Post" } else { "Agree" }
+            let items = [(Act::Post, agree, true), (Act::NotNow, "Not now", false)]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Account => {
             write(mut d, fonts, a.me.name.as_str(), 18.0, vec2(x, y), INK, zoom)
             y += 40.0
-            let items = [
-                (Act::Manage, "Passkeys and sessions", false),
-                (Act::Export, "Export my data", false),
-                (Act::Delete, "Delete account", false),
-                (Act::SignOut, "Sign out", false),
-                (Act::Close, "Close", true),
-            ]
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::BestRuns,
+                vec2(x, y),
+                iw,
+                "Post my best runs",
+                a.post_best,
+                zoom,
+            )
+            y += 44.0
+            let items = account_items(a)
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Recover => {
@@ -1279,7 +1776,7 @@ pub fn draw(
             y += paragraph(
                 mut d,
                 fonts,
-                "Keep these somewhere safe, away from this device: on paper, or in a password manager. Each signs in once if you lose your passkeys. We won't show them again.",
+                "Keep these somewhere safe, away from this device, on paper or in a password manager. Each one signs you in once if you lose your passkeys. Once you've saved them, we won't show them again.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1302,16 +1799,8 @@ pub fn draw(
                 )
             }
             y += f32((a.codes.len() + 1) / 2) * 28.0 + 16.0
-            y = stack(
-                mut a,
-                mut d,
-                fonts,
-                [(Act::CodesSaved, "I've saved them", true)],
-                x,
-                y,
-                iw,
-                zoom,
-            )
+            let items = [(Act::CodesSaved, "I've saved them", true), (Act::Later, "Later", false)]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Manage => {
             write(mut d, fonts, "Passkeys", 13.0, vec2(x, y), MUTED, zoom)
@@ -1574,4 +2063,68 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
     ) else {
         panic("no server yet")
     }
+}
+
+@test
+fn making_an_account_waits_for_both_boxes_and_carries_the_versions_agreed_to() {
+    var a = new("wrela.dev", online: true)
+    a.page = Page::Create
+    assert(create_request(a).is_none(), "both unticked")
+    a.agree = true
+    assert(create_request(a).is_none(), "one box isn't both")
+    a.agree = false
+    a.of_age = true
+    assert(create_request(a).is_none(), "nor the other")
+    a.agree = true
+    let Some(Request::Begin { ceremony, agreed, .. }) = create_request(a) else {
+        panic("ready")
+    }
+    assert(ceremony == REGISTER && agreed.of_age)
+    assert(agreed.terms == legal::TERMS_VERSION && agreed.privacy == legal::PRIVACY_VERSION)
+    // A legal page opened from its link goes back to the page that opened it.
+    a.back = Page::Create
+    a.page = Page::Legal
+    assert(returns_to(a) == Page::Create)
+    a.back = Page::Legal
+    assert(returns_to(a) == Page::Choose, "signed out, the first page")
+    assert(sends(Act::CreateAccount) && sends(Act::Post) && !sends(Act::Agree), "sent once")
+}
+
+@test
+fn recovery_codes_wait_on_the_account_page_until_saved() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(account_items(a)[0].0 == Act::Manage && !linked(a).save_codes, "none to save")
+    for k in 0..10 {
+        a.codes.push(String::from(f"CODE-{k}"))
+    }
+    let items = account_items(a)
+    assert(items[0].0 == Act::SaveCodes && items[0].2, "offered first")
+    assert(linked(a).save_codes, "a game may remind")
+}
+
+@test
+fn posting_waits_for_agreement_and_the_game_hears_it() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(!linked(a).may_post && asks_consent_first(a), "not until agreed")
+    a.may_post = true
+    a.post_best = true
+    assert(linked(a).may_post && linked(a).post_best && !asks_consent_first(a))
+    let Some(Answer::Offline { .. }) = answer_now(
+        a.me,
+        online: true,
+        connected: false,
+        ask: Ask::Consent,
+    ) else {
+        panic("offline")
+    }
+    var out = a.me.clone()
+    out.signed_in = false
+    assert(
+        answer_now(out, online: true, connected: true, ask: Ask::Consent).is_some(),
+        "signed out",
+    )
 }

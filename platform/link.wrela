@@ -12,14 +12,20 @@
 // receives, and the console's call waits unanswered until the game closes.
 
 use std::serialize::{LoadError, Serialize, load, save}
-use wire::Place
+use wire::{Found, Place}
 
 /// The account, as a game may know it: its name and a token for the game's boards (empty when
-/// signed out, or before the name is fixed).
+/// signed out, or before the name is fixed), whether it may post (it has agreed to what posting
+/// makes public: until then a post asks `Consent` first), whether it posts its best runs, and
+/// whether its recovery codes are still to be saved (the console holds them until they are; a first
+/// post's results may remind the player once, `SaveCodes`).
 pub struct Account: Clone + Eq + Serialize {
     pub signed_in: bool,
     pub name: String,
     pub token: Vec<u8>,
+    pub may_post: bool = false,
+    pub post_best: bool = false,
+    pub save_codes: bool = false,
 }
 
 /// What a game may ask.
@@ -30,6 +36,20 @@ pub enum Ask: Clone + Serialize {
     Board { course: u32, category: u32, from: u32 },
     /// A run on a board, to watch.
     Watch { run: u64 },
+    /// A run's replay by its hash (a place's `replay`), to watch or race: answered by `Run`, and
+    /// kept by the browser's cache, so asking again costs nothing.
+    Replay { hash: Vec<u8> },
+    /// The places around `name`'s on a board (`wire::WHOLE` for a whole game's).
+    Around { course: u32, category: u32, name: String },
+    /// The names whose title, noun and epithet start with these (an empty part matches any).
+    Names { title: String, noun: String, epithet: String },
+    /// Before the account's first post: the console shows what posting makes public, with Post and
+    /// Not now, and answers `Posting` once the player chooses (at once if the account already
+    /// agreed).
+    Consent,
+    /// The console shows the account's recovery codes to save, if they still are and it hasn't
+    /// since it opened: answered by `Opened`.
+    SaveCodes,
 }
 
 /// The answer to a game's last ask.
@@ -40,6 +60,15 @@ pub enum Answer: Clone + Serialize {
     Rejected { why: String },
     Board { course: u32, category: u32, places: Vec<Place>, total: u32 },
     Run { run: u64, replay: Vec<u8> },
+    /// A slice of a board: the places around the name asked for, which is place `at` (0: past the
+    /// first thousand).
+    Around { course: u32, category: u32, places: Vec<Place>, at: u32 },
+    Names { found: Vec<Found> },
+    /// What the player chose on the console's screen of what posting makes public: to post (and so
+    /// agreed), or not now; and whether the account now posts its best runs.
+    Posting { agreed: bool, best_runs: bool },
+    /// Whether the console showed the page asked for.
+    Opened { shown: bool },
     /// The console couldn't ask: offline, or signed out, said for a person.
     Offline { why: String },
 }
@@ -84,6 +113,7 @@ fn the_link_reads_back_and_refuses_what_isnt_one() {
     }
     let Some(back) = to_game(save(call)) else { panic("a call") }
     assert(back.account.name == call.account.name && back.account.token == call.account.token)
+    assert(!back.account.may_post && !back.account.save_codes, "nothing allowed unless said")
     let Answer::Verified { place, .. } = back.answer else { panic("its answer") }
     assert(place == 2)
     let ask = FromGame { ask: Ask::Upload { token: Vec::from([1, 2]), replay: Vec::from([9; 40]) } }

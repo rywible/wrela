@@ -35,15 +35,26 @@
 // the server's other requests a bounded time each call. The queue is in the store, so it goes on
 // after the instance is dropped; the upload's request is answered when its run is.
 //
+// **Agreement** is recorded, never assumed: an account is made only with the current Terms and
+// Privacy Policy agreed to and its player 13 or older, and a run is posted only once the account
+// has agreed to what posting makes public (`Versions`, which the console's build gives). Each is
+// kept with its version and its time.
+//
+// **The public reads** (a board's page, a slice of one, a run's replay, a search of names) answer
+// everyone the same, so the host's cache keeps them (`BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). They
+// show nothing a board doesn't: a search finds only names with runs on the boards, and a replay is
+// found only by its hash, which a board's page gives. Each reads a bounded number of entries.
+//
 // **The clock** is the host's wall clock: each request's time (`Asked::time`), never going back
 // while the instance runs. Work no request waits on (the queue) needs no time.
 
 use account::{
-    Account, CHALLENGE_BYTES, CHALLENGE_LIFE, CODES, CODE_BYTES, CSRF_BYTES, FRESH, GameToken,
-    HANDLE_BYTES, HOUR, MINUTE, MOST_PASSKEYS, OF_BEST, OF_CODE, OF_HOUR, OF_PASSKEY, OF_RUN,
-    OF_SEEN, OF_SESSION, OF_TOKEN, Passkey, REROLLS, Recovery, SESSION_LIFE, Session, TOKEN_BYTES,
-    TOKEN_LIFE, account_key, ceremonies, ceremony_key, code, code_hash, code_key, hashed, hex,
-    indexed, name_key, passkey_key, public_id, session_key, token_key, u32_at, u64_at,
+    Account, Agreement, CHALLENGE_BYTES, CHALLENGE_LIFE, CODES, CODE_BYTES, CSRF_BYTES, FRESH,
+    GameToken, HANDLE_BYTES, HOUR, MINUTE, MOST_PASSKEYS, OF_AGREED, OF_BEST, OF_CODE, OF_HOUR,
+    OF_PASSKEY, OF_POSTING, OF_REPLAY, OF_RUN, OF_SEEN, OF_SESSION, OF_TOKEN, Passkey, Posting,
+    REROLLS, Recovery, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE, account_key, agreement_key,
+    ceremonies, ceremony_key, code, code_hash, code_key, hashed, hex, indexed, name_key,
+    passkey_key, posted_key, posting_key, public_id, session_key, token_key, u32_at, u64_at,
     under_account, with_bytes, CEREMONY_BYTES,
 }
 use names::{Name, draw}
@@ -54,8 +65,9 @@ use std::serialize::{LoadError, Serialize, load, save}
 use std::store::{append_u32, append_u64, entries, past, value}
 use std::webauthn::{Credential, Expected, assertion, base64url, registration}
 use wire::{
-    ADD_PASSKEY, ANY, BOARD_PAGE, EXPORT_PART, FULL, MOST_REPLAY, Me, PasskeyView, Place, REGISTER,
-    Reply, Request, SIGN_IN, SessionView, WHOLE, public,
+    ADD_PASSKEY, ANY, AROUND, Agreed, BOARD_PAGE, EXPORT_PART, FULL, Found, MOST_FOUND, MOST_PART,
+    MOST_REPLAY, Me, NOT_AGREED, PasskeyView, Place, REGISTER, Reply, Request, SIGN_IN, SessionView,
+    Standing, WHOLE, public,
 }
 
 // ---- what a game gives the server ----------------------------------------------------------------
@@ -100,6 +112,15 @@ pub trait Game {
     fn play(self, run: mut Self::Run, ticks: u32) -> Option<Result<Outcome, Text>>
 }
 
+/// The versions of what a player agrees to, as the console's build has them (console/legal.wrela):
+/// the Terms and the Privacy Policy, at sign-up, and what posting makes public, before the first
+/// post. The server takes only these.
+pub struct Versions: Copy {
+    pub terms: u32,
+    pub privacy: u32,
+    pub posting: u32,
+}
+
 // ---- bounds --------------------------------------------------------------------------------------
 
 /// Runs an account may upload an hour.
@@ -123,6 +144,19 @@ pub const ALL_TRIES: u32 = 30
 /// cached copies are gone within the longer, as the privacy policy says (console/legal.wrela).
 pub const BOARD_AGE: u32 = 30
 pub const RUN_AGE: u32 = 300
+/// How long a replay read by its hash may be kept, in seconds: a year, as immutable. What a hash
+/// names never changes; a deleted account's replay is gone from the server, though a cache may
+/// still hold it for this long, as the privacy policy says.
+pub const REPLAY_AGE: u32 = 31536000
+/// A search's bounds: the ranges it may read of the index of names on the boards (`p/`, a title and
+/// a noun's first half each),
+/// the entries a read of one takes, the entries it reads in all, and the names it reads the runs
+/// of, and how many searches may be under way at once.
+pub const MOST_RANGES: u32 = 64
+pub const RANGE_PAGE: u32 = 64
+pub const MOST_SCANNED: u32 = 1024
+pub const MOST_CANDIDATES: u32 = 40
+pub const MOST_SEARCHES: u32 = 4
 /// An account's runs read for an export at a time.
 pub const EXPORT_RUNS: u32 = 64
 /// Expired ceremonies cleared as a new one begins.
@@ -145,9 +179,9 @@ pub enum Command: Clone {
         message: Vec<u8>,
         signature: Vec<u8>,
     },
-    /// The one answer to request `conn`: a `Reply`'s bytes, the cookies it sets, and how long a
-    /// cache may keep it (0: none may).
-    Respond { conn: u32, body: Vec<u8>, cookies: Vec<Cookie>, public: u32 },
+    /// The one answer to request `conn`: a `Reply`'s bytes, the cookies it sets, how long a cache
+    /// may keep it (0: none may), and whether it never changes.
+    Respond { conn: u32, body: Vec<u8>, cookies: Vec<Cookie>, public: u32, immutable: bool },
 }
 
 /// A first-party session cookie (`std::http::session_cookie`): `__Host-<name>`, holding `value`,
@@ -201,18 +235,49 @@ pub struct Queued: Clone + Serialize {
     pub replay: Vec<u8>,
 }
 
-/// An account's best on a board (`a/<id>/b<board key>`): the run, its time, and the board's key
-/// that ranks it, to replace it.
+/// An account's best on a board (`a/<id>/b<board key>`): the run, its time, the board's key that
+/// ranks it, to replace it, and its replay's hash (empty for a whole game's).
 pub struct Best: Clone + Serialize {
     pub run: u64,
     pub ticks: u32,
     pub ranked: Vec<u8>,
+    pub replay: Vec<u8>,
 }
 
-/// A place on a board's ranking (`b/...`): the name it shows and the run to watch.
+/// A place on a board's ranking (`b/...`): the name it shows, the run to watch and its replay's
+/// hash (empty for a whole game's).
 pub struct Ranked: Clone + Serialize {
     pub name: String,
     pub run: u64,
+    pub replay: Vec<u8>,
+}
+
+/// A best and a place as they were kept before replays had hashes: read as one with none.
+struct BestBefore: Clone + Serialize {
+    run: u64,
+    ticks: u32,
+    ranked: Vec<u8>,
+}
+
+struct RankedBefore: Clone + Serialize {
+    name: String,
+    run: u64,
+}
+
+fn best_of(bytes: [u8]) -> Option<Best> {
+    if let Some(b) = read::<Best>(bytes) {
+        return Some(b)
+    }
+    let b = read::<BestBefore>(bytes)?
+    Some(Best { run: b.run, ticks: b.ticks, ranked: b.ranked.clone(), replay: Vec::new() })
+}
+
+fn ranked_of(bytes: [u8]) -> Option<Ranked> {
+    if let Some(r) = read::<Ranked>(bytes) {
+        return Some(r)
+    }
+    let r = read::<RankedBefore>(bytes)?
+    Some(Ranked { name: r.name.clone(), run: r.run, replay: Vec::new() })
 }
 
 /// What an account's index entry of a run holds (`a/<id>/u<run>`): enough to show it in an export
@@ -241,6 +306,13 @@ fn push_text(k: mut Vec<u8>, s: str) {
 pub fn run_key(id: u64) -> Vec<u8> {
     var k = text_key("u/")
     append_u64(mut k, id)
+    k
+}
+
+/// `h/<hash>`: the verified run whose replay's SHA-256 is `hash`, as its number's 8 bytes.
+pub fn replay_key(hash: [u8]) -> Vec<u8> {
+    var k = text_key("h/")
+    with_bytes(mut k, hash)
     k
 }
 
@@ -336,6 +408,7 @@ struct Ceremony: Clone + Serialize {
     account: u64,
     seed: u64,
     expires: u64,
+    agreed: Agreed,
 }
 
 /// A request, and the session its cookie is for.
@@ -411,6 +484,19 @@ enum Step: Copy + Eq {
     UploadId,
     BoardScan,
     WatchRun,
+    PostingRead,
+    BestRunsRead,
+    UploadConsent,
+    UploadPosted,
+    ReplayIndex,
+    ReplayRun,
+    AroundName,
+    AroundBest,
+    AroundAbove,
+    AroundBelow,
+    AroundCount,
+    NamesRange,
+    NamesAccount,
     FinishBest,
     FinishBests,
     FinishPlace,
@@ -441,6 +527,9 @@ struct Job: Clone {
     queued: Option<Queued>,
     categories: Vec<u32>,
     category: u32,
+    /// What a new account agreed to, from its ceremony; and what a search found.
+    agreed: Agreed,
+    found: Vec<Found>,
 }
 
 /// The run being verified.
@@ -455,6 +544,7 @@ pub struct Engine<G: Game> {
     game: G,
     rp_id: String,
     origin: String,
+    versions: Versions,
     out: Vec<Command>,
     ticket: u32,
     /// The server's clock: the latest request's time, in milliseconds since the Unix epoch.
@@ -491,12 +581,14 @@ pub struct Engine<G: Game> {
     nudge: Option<u32>,
 }
 
-/// A server for `game`'s boards, its passkeys for relying party `rp_id` from `origin` alone.
-pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
+/// A server for `game`'s boards, its passkeys for relying party `rp_id` from `origin` alone, taking
+/// the agreements of `versions`.
+pub fn engine<G: Game>(game: take G, rp_id: str, origin: str, versions: Versions) -> Engine<G> {
     Engine {
         game,
         rp_id: rp_id.to_string(),
         origin: origin.to_string(),
+        versions,
         out: Vec::new(),
         ticket: 0,
         now: 0,
@@ -541,6 +633,8 @@ fn blank_job(conn: u32, request: take Request) -> Job {
         queued: None,
         categories: Vec::new(),
         category: 0,
+        agreed: NOT_AGREED,
+        found: Vec::new(),
     }
 }
 
@@ -746,20 +840,33 @@ impl<G: Game> Engine<G> {
 
     /// Answers request `conn` with `reply`, once: a public read's answer may be cached.
     fn reply(mut self, conn: u32, reply: take Reply) {
+        let age = match reply {
+            Reply::Board { .. } | Reply::Around { .. } | Reply::Names { .. } => BOARD_AGE,
+            Reply::Run { .. } => RUN_AGE,
+            _ => 0,
+        }
+        self.respond(conn, take reply, age, immutable: false)
+    }
+
+    /// Answers request `conn` with `reply`, once, which a cache may keep `age` seconds if it was a
+    /// public read (a `GET`), as never changing if `immutable`.
+    fn respond(mut self, conn: u32, reply: take Reply, age: u32, immutable: bool) {
         let Some(i) = self.conn_index(conn) else { return }
         if self.conns[i].answered {
             return
         }
         self.conns[i].answered = true
-        let public = if !self.conns[i].public { 0 } else {
-            match reply {
-                Reply::Board { .. } => BOARD_AGE,
-                Reply::Run { .. } => RUN_AGE,
-                _ => 0,
-            }
-        }
+        let public = if self.conns[i].public { age } else { 0 }
         let cookies = self.conns[i].cookies.clone()
-        self.out.push(Command::Respond { conn, body: save(reply), cookies, public })
+        self.out.push(
+            Command::Respond {
+                conn,
+                body: save(reply),
+                cookies,
+                public,
+                immutable: immutable && public > 0,
+            },
+        )
     }
 
     fn refuse(mut self, conn: u32, why: Text) {
@@ -818,6 +925,23 @@ impl<G: Game> Engine<G> {
         var j = take job
         let t = self.next_ticket()
         self.out.push(Command::Get { ticket: t, key })
+        j.ticket = t
+        j.step = step
+        self.push_job(take j)
+    }
+
+    /// The last `limit` entries from `from` to before `to`, the last first.
+    fn scan_down(
+        mut self,
+        from: take Vec<u8>,
+        to: take Vec<u8>,
+        limit: u32,
+        step: Step,
+        job: take Job,
+    ) {
+        var j = take job
+        let t = self.next_ticket()
+        self.out.push(Command::Scan { ticket: t, from, to, limit, down: true })
         j.ticket = t
         j.step = step
         self.push_job(take j)
@@ -937,6 +1061,53 @@ impl<G: Game> Engine<G> {
         self.get(take key, Step::CeremonyTaken, take j)
     }
 
+    /// Why a new account can't be made with `agreed`, if it can't: it must agree to the current
+    /// Terms and Privacy Policy, and its player be 13 or older.
+    fn disagreed(self, agreed: Agreed) -> Option<Text> {
+        if !agreed.of_age {
+            return Some("You need to be 13 or older to make an account.")
+        }
+        if agreed.terms == 0 || agreed.privacy == 0 {
+            return Some("Agree to the Terms and the Privacy Policy to make an account.")
+        }
+        if agreed.terms != self.versions.terms || agreed.privacy != self.versions.privacy {
+            return Some(
+                "The Terms or the Privacy Policy changed since this page loaded. Reload it and read them again.",
+            )
+        }
+        None
+    }
+
+    /// Whether `game` has a board for `course` (or WHOLE) and `category` here.
+    fn board_known(self, game: str, course: u32, category: u32) -> bool {
+        game == self.game.id() &&
+            (course < self.game.courses() || course == WHOLE) &&
+            (category == ANY || category == FULL)
+    }
+
+    /// What posting record `p` (none: never chosen) says, as the console reads it.
+    fn posting_reply(self, p: Option<Posting>) -> Reply {
+        match p {
+            Some(p) => Reply::Posting {
+                agreed: p.version == self.versions.posting,
+                at: p.at,
+                best_runs: p.best_runs,
+            },
+            None => Reply::Posting { agreed: false, at: 0, best_runs: false },
+        }
+    }
+
+    /// The searches of names under way.
+    fn searches(self) -> u32 {
+        var n = 0
+        for j in self.jobs {
+            if j.step == Step::NamesRange || j.step == Step::NamesAccount {
+                n += 1
+            }
+        }
+        n
+    }
+
     fn is_signed_in(self, conn: u32) -> bool {
         match self.conn_index(conn) {
             Some(i) => !self.conns[i].session.is_empty(),
@@ -1039,10 +1210,16 @@ impl<G: Game> Engine<G> {
         match request {
             // A session's `Me` is answered as its cookie is read (`HelloAccount`): this one has none.
             Request::Me => self.welcome(conn, nobody()),
-            Request::Begin { ceremony, csrf } => {
+            Request::Begin { ceremony, csrf, agreed } => {
                 if ceremony == REGISTER && self.is_signed_in(conn) {
                     self.refuse(conn, "Sign out first to make another account.")
                     return
+                }
+                if ceremony == REGISTER {
+                    if let Some(why) = self.disagreed(agreed) {
+                        self.refuse(conn, why)
+                        return
+                    }
                 }
                 if ceremony == REGISTER || ceremony == SIGN_IN {
                     // The challenge and the browser's token; a new account's handle, number and
@@ -1194,10 +1371,7 @@ impl<G: Game> Engine<G> {
                 }
             },
             Request::Board { game, course, category, from } => {
-                if game.as_str() != self.game.id() ||
-                    (course >= self.game.courses() && course != WHOLE) ||
-                    (category != ANY && category != FULL) ||
-                    from > 10000 {
+                if !self.board_known(game, course, category) || from > 10000 {
                     self.refuse(conn, "There's no such board.")
                     return
                 }
@@ -1209,6 +1383,94 @@ impl<G: Game> Engine<G> {
             },
             Request::Watch { run } => {
                 self.get(run_key(run), Step::WatchRun, take job)
+            },
+            Request::Posting => {
+                let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
+                self.get(posting_key(c.account), Step::PostingRead, take job)
+            },
+            Request::Consent { csrf, version, best_runs } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                if version != self.versions.posting {
+                    self.refuse(
+                        conn,
+                        "What posting shares changed since this page loaded. Reload it and read it again.",
+                    )
+                    return
+                }
+                let p = Posting { version, at: self.now, best_runs }
+                self.put(posting_key(c.account), p.clone())
+                self.touched.push((c.account, self.call))
+                self.reply(conn, self.posting_reply(Some(take p)))
+            },
+            Request::BestRuns { csrf, on } => {
+                let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                job.id = c.account
+                job.n = if on { 1 } else { 0 }
+                self.get(posting_key(c.account), Step::BestRunsRead, take job)
+            },
+            Request::Replay { hash } => {
+                if hash.len() != 32 {
+                    self.refuse(conn, "That isn't a replay's hash.")
+                    return
+                }
+                job.hash = hash.clone()
+                self.get(replay_key(hash), Step::ReplayIndex, take job)
+            },
+            Request::Around { game, course, category, name } => {
+                if !self.board_known(game, course, category) {
+                    self.refuse(conn, "There's no such board.")
+                    return
+                }
+                let Some(n) = names::parse(name.as_str()) else {
+                    self.refuse(conn, "No one has that name.")
+                    return
+                }
+                self.get(name_key(n), Step::AroundName, take job)
+            },
+            Request::Names { game, title, noun, epithet } => {
+                if game.as_str() != self.game.id() {
+                    self.refuse(conn, "That game has no boards here.")
+                    return
+                }
+                if !searchable(title) || !searchable(noun) || !searchable(epithet) {
+                    self.refuse(conn, "A name has only letters, spaces and hyphens.")
+                    return
+                }
+                if title.is_empty() && noun.is_empty() && epithet.is_empty() {
+                    self.refuse(conn, "Type part of a name to search.")
+                    return
+                }
+                let m = names::matching(title, noun, epithet)
+                if m.titles.len() * m.fronts.len() > MOST_RANGES {
+                    self.refuse(conn, "Type more of the name to search, its title or its noun.")
+                    return
+                }
+                if self.searches() >= MOST_SEARCHES {
+                    self.refuse(conn, "Search is busy just now. Try again in a moment.")
+                    return
+                }
+                // Each title's and first half's range of the index of names on the boards, in its
+                // order.
+                for t in m.titles {
+                    for f in m.fronts {
+                        var k = text_key("p/")
+                        for part in [t, f] {
+                            k.push(u8(part >> 8))
+                            k.push(u8(part & 255))
+                        }
+                        job.keys.push(take k)
+                    }
+                }
+                if job.keys.is_empty() {
+                    self.reply(conn, Reply::Names { found: Vec::new() })
+                    return
+                }
+                let first = job.keys[0].clone()
+                self.scan(take first, RANGE_PAGE, Step::NamesRange, take job)
             },
         }
     }
@@ -1289,6 +1551,7 @@ impl<G: Game> Engine<G> {
                     account: 0,
                     seed: 0,
                     expires: self.now + CHALLENGE_LIFE,
+                    agreed: NOT_AGREED,
                 }
                 if j.n == ADD_PASSKEY {
                     c.handle = j.hash.clone()
@@ -1298,6 +1561,9 @@ impl<G: Game> Engine<G> {
                     c.handle = part(answer, at, HANDLE_BYTES)
                     c.account = u64_at(answer, at + HANDLE_BYTES)
                     c.seed = u64_at(answer, at + HANDLE_BYTES + 8)
+                    if let Request::Begin { agreed, .. } = j.request {
+                        c.agreed = agreed
+                    }
                 }
                 let handle = c.handle.clone()
                 // Kept under the token's hash; the browser keeps the token, and when it expires.
@@ -1335,6 +1601,15 @@ impl<G: Game> Engine<G> {
                 if j.n == ADD_PASSKEY && c.account != j.id {
                     self.refuse(conn, expired(j.n))
                     return
+                }
+                // A new account: what it agreed to is still what it must (the versions may have
+                // changed with the server since it began).
+                if j.n == REGISTER {
+                    if let Some(why) = self.disagreed(c.agreed) {
+                        self.refuse(conn, why)
+                        return
+                    }
+                    j.agreed = c.agreed
                 }
                 let (id, client_data, attestation) = match j.request.clone() {
                     Request::SignIn { id, .. } => {
@@ -1473,6 +1748,15 @@ impl<G: Game> Engine<G> {
                 self.put(
                     indexed(a.id, OF_PASSKEY, cred.id),
                     PasskeyView { id: cred.id.clone(), created: self.now, used: self.now },
+                )
+                self.put(
+                    agreement_key(a.id),
+                    Agreement {
+                        terms: j.agreed.terms,
+                        privacy: j.agreed.privacy,
+                        of_age: j.agreed.of_age,
+                        at: self.now,
+                    },
                 )
                 let codes = self.write_codes(
                     a.id,
@@ -1972,9 +2256,11 @@ impl<G: Game> Engine<G> {
                     } else if of == OF_RUN && rest.len() == 8 {
                         self.delete(run_key(u64_at(rest, 0)))
                     } else if of == OF_BEST {
-                        if let Some(b) = read::<Best>(e.value) {
+                        if let Some(b) = best_of(e.value) {
                             self.delete(b.ranked.clone())
                         }
+                    } else if of == OF_REPLAY {
+                        self.delete(replay_key(rest))
                     }
                     self.delete(e.key.clone())
                 }
@@ -1985,6 +2271,7 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 self.delete(name_key(a.name))
+                self.delete(posted_key(a.name))
                 self.delete(account_key(a.id))
                 self.delete(deletion_key(a.id))
                 self.deletion_written = self.call
@@ -2057,7 +2344,27 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 j.account = Some(a.clone())
-                self.get(rate_key(a.id, self.now / HOUR), Step::UploadRate, take j)
+                self.get(posting_key(a.id), Step::UploadConsent, take j)
+            },
+            Step::UploadConsent => {
+                // Posted only once the account agreed to what posting makes public.
+                let p: Option<Posting> = got(answer)
+                let agreed = match p {
+                    Some(p) => p.version == self.versions.posting,
+                    None => false,
+                }
+                if !agreed {
+                    self.reply(
+                        conn,
+                        Reply::Rejected {
+                            why: String::from(
+                                "Agree to what posting shares first. The console shows it before your first post.",
+                            ),
+                        },
+                    )
+                    return
+                }
+                self.get(rate_key(j.id, self.now / HOUR), Step::UploadRate, take j)
             },
             Step::UploadRate => {
                 var count: u32 = 0
@@ -2085,6 +2392,17 @@ impl<G: Game> Engine<G> {
                     self.reply(
                         conn,
                         Reply::Rejected { why: String::from("That run is already uploaded.") },
+                    )
+                    return
+                }
+                self.get(replay_key(hashed(j.message)), Step::UploadPosted, take j)
+            },
+            Step::UploadPosted => {
+                // Another account's run, the same to the byte: a replay names one run by its hash.
+                if value(answer).is_some() {
+                    self.reply(
+                        conn,
+                        Reply::Rejected { why: String::from("That run is already on the boards.") },
                     )
                     return
                 }
@@ -2162,11 +2480,8 @@ impl<G: Game> Engine<G> {
                 var places: Vec<Place> = Vec::new()
                 for k in j.n..min(es.len(), j.n + BOARD_PAGE) {
                     borrow e = es[k]
-                    let Some(r) = read::<Ranked>(e.value) else { continue }
-                    // The key ends with the time and the account.
-                    let ticks = u32_at(e.key, e.key.len() - 12)
-                    let run = if course == WHOLE { 0 } else { r.run }
-                    places.push(Place { place: k + 1, name: r.name.clone(), ticks, run })
+                    let Some(p) = place_of(e.key, e.value, k + 1, course) else { continue }
+                    places.push(take p)
                 }
                 self.reply(conn, Reply::Board { places, total: es.len() })
             },
@@ -2181,6 +2496,129 @@ impl<G: Game> Engine<G> {
                     Reply::Run { run: r.id, game: r.game.clone(), replay: r.replay.clone() },
                 )
             },
+            Step::PostingRead => {
+                let p: Option<Posting> = got(answer)
+                self.reply(conn, self.posting_reply(p))
+            },
+            Step::BestRunsRead => {
+                let p: Option<Posting> = got(answer)
+                var kept = match p {
+                    Some(p) => p.clone(),
+                    None => Posting { version: 0, at: 0, best_runs: false },
+                }
+                kept.best_runs = j.n == 1
+                self.put(posting_key(j.id), kept.clone())
+                self.touched.push((j.id, self.call))
+                self.reply(conn, self.posting_reply(Some(take kept)))
+            },
+            Step::ReplayIndex => {
+                let Some(v) = value(answer) else {
+                    self.refuse(conn, "That replay isn't on the boards.")
+                    return
+                }
+                if v.len() != 8 {
+                    self.refuse(conn, "That replay isn't on the boards.")
+                    return
+                }
+                self.get(run_key(u64_at(v, 0)), Step::ReplayRun, take j)
+            },
+            Step::ReplayRun => {
+                // What the hash names, and only that: the bytes never change, so a cache keeps them.
+                let r: Option<Run> = got(answer)
+                let Some(r) = r else {
+                    self.refuse(conn, "That replay isn't on the boards.")
+                    return
+                }
+                if !same_bytes(hashed(r.replay), j.hash) {
+                    self.refuse(conn, "That replay isn't on the boards.")
+                    return
+                }
+                let reply = Reply::Run { run: r.id, game: r.game.clone(), replay: r.replay.clone() }
+                self.respond(conn, take reply, REPLAY_AGE, immutable: true)
+            },
+            Step::AroundName => {
+                let id: Option<u64> = got(answer)
+                let Some(id) = id else {
+                    self.refuse(conn, "No one has that name.")
+                    return
+                }
+                let Request::Around { game, course, category, .. } = j.request.clone() else {
+                    return
+                }
+                j.id = id
+                self.get(
+                    best_key(id, game, self.game.board(), course, category),
+                    Step::AroundBest,
+                    take j,
+                )
+            },
+            Step::AroundBest => {
+                let Some(b) = value(answer) else {
+                    self.refuse(conn, "That name has no run on that board.")
+                    return
+                }
+                let Some(b) = best_of(b) else {
+                    self.refuse(conn, "That name has no run on that board.")
+                    return
+                }
+                let Request::Around { game, course, category, .. } = j.request.clone() else {
+                    return
+                }
+                // The places just above, then this one and those below, then how many are ahead.
+                j.hash = b.ranked.clone()
+                let from = board_prefix(game, self.game.board(), course, category)
+                self.scan_down(take from, b.ranked.clone(), AROUND, Step::AroundAbove, take j)
+            },
+            Step::AroundAbove => {
+                let Some(es) = entries(answer) else { return }
+                // The last first: kept fastest first.
+                var k = es.len()
+                while k > 0 {
+                    k -= 1
+                    j.keys.push(es[k].key.clone())
+                    j.views.push(es[k].value.clone())
+                }
+                j.n = es.len()
+                let Request::Around { game, course, category, .. } = j.request.clone() else {
+                    return
+                }
+                let to = past(board_prefix(game, self.game.board(), course, category))
+                self.scan_range(
+                    j.hash.clone(),
+                    (take to).unwrap_or(Vec::new()),
+                    AROUND + 1,
+                    Step::AroundBelow,
+                    take j,
+                )
+            },
+            Step::AroundBelow => {
+                let Some(es) = entries(answer) else { return }
+                for e in es {
+                    j.keys.push(e.key.clone())
+                    j.views.push(e.value.clone())
+                }
+                let Request::Around { game, course, category, .. } = j.request.clone() else {
+                    return
+                }
+                let from = board_prefix(game, self.game.board(), course, category)
+                self.scan_range(take from, j.hash.clone(), MOST_PLACE, Step::AroundCount, take j)
+            },
+            Step::AroundCount => {
+                let Some(es) = entries(answer) else { return }
+                let Request::Around { course, .. } = j.request.clone() else { return }
+                // Its place, if within the places counted; the slice's are numbered from it.
+                let at = if es.len() < MOST_PLACE { es.len() + 1 } else { 0 }
+                var places: Vec<Place> = Vec::new()
+                for i in 0..j.keys.len() {
+                    let number = if at == 0 { 0 } else { at - j.n + i }
+                    if let Some(p) = place_of(j.keys[i], j.views[i], number, course) {
+                        places.push(take p)
+                    }
+                }
+                self.reply(conn, Reply::Around { places, at })
+            },
+            Step::NamesRange => self.names_range(take j, answer),
+            Step::NamesAccount => self.names_account(take j, answer),
             Step::QueueAccount => {
                 self.queue_scan = None
                 let Some(q) = j.queued.clone() else { return }
@@ -2211,6 +2649,100 @@ impl<G: Game> Engine<G> {
                 self.tell(q.id, Reply::Verified { run: q.id, ticks: j.tries, place })
             },
         }
+    }
+
+    /// A page of one of a search's ranges of the name index: the names in it that match, then the
+    /// range's next page, the next range, or the runs of the names found.
+    fn names_range(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let Some(es) = entries(answer) else { return }
+        let Request::Names { title, noun, epithet, .. } = j.request.clone() else { return }
+        let m = names::matching(title, noun, epithet)
+        let skip = text_key("p/").len()
+        for e in es {
+            j.tries += 1
+            if e.key.len() != skip + 8 || j.views.len() >= MOST_CANDIDATES {
+                continue
+            }
+            let Some(n) = names::from_key(part(e.key, skip, 8)) else { continue }
+            let id: Option<u64> = read(e.value)
+            let Some(id) = id else { continue }
+            if names::matches(m, n) {
+                // A candidate: its name's key, then its account's number.
+                var c = part(e.key, skip, 8)
+                append_u64(mut c, id)
+                j.views.push(take c)
+            }
+        }
+        let room = j.views.len() < MOST_CANDIDATES && j.tries < MOST_SCANNED
+        if room && es.len() == RANGE_PAGE {
+            borrow last = es[es.len() - 1].key
+            self.scan_after(last.clone(), j.keys[0].clone(), Step::NamesRange, take j)
+            return
+        }
+        let _ = j.keys.remove(0)
+        if room && !j.keys.is_empty() {
+            let next = j.keys[0].clone()
+            self.scan(take next, RANGE_PAGE, Step::NamesRange, take j)
+            return
+        }
+        j.n = 0
+        self.names_next(take j)
+    }
+
+    /// Reads the next candidate's account and its bests, or answers with what was found.
+    fn names_next(mut self, job: take Job) {
+        let j = take job
+        if j.n >= j.views.len() || j.found.len() >= MOST_FOUND {
+            self.reply(j.conn, Reply::Names { found: j.found.clone() })
+            return
+        }
+        let id = u64_at(j.views[j.n], 8)
+        let to = past(bests_prefix(id, self.game.id(), self.game.board())).unwrap_or(Vec::new())
+        self.scan_range(
+            account_key(id),
+            take to,
+            4 * self.game.courses() + 8,
+            Step::NamesAccount,
+            take j,
+        )
+    }
+
+    /// A candidate's account and its bests: found if it isn't being deleted and has a run on the
+    /// boards, which is all a board shows of it.
+    fn names_account(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let Some(es) = entries(answer) else { return }
+        let id = u64_at(j.views[j.n], 8)
+        let name = names::from_key(part(j.views[j.n], at: 0, n: 8))
+        j.n += 1
+        var live = false
+        var standings: Vec<Standing> = Vec::new()
+        let prefix = bests_prefix(id, self.game.id(), self.game.board())
+        for e in es {
+            if e.key == account_key(id) {
+                if let Some(a) = read::<Account>(e.value) {
+                    live = !a.deleting
+                }
+            } else if starts_with(e.key, prefix) && e.key.len() == prefix.len() + 8 {
+                let Some(b) = best_of(e.value) else { continue }
+                standings.push(
+                    Standing {
+                        course: u32_at(e.key, prefix.len()),
+                        category: u32_at(e.key, prefix.len() + 4),
+                        ticks: b.ticks,
+                        run: b.run,
+                        replay: b.replay.clone(),
+                    },
+                )
+            }
+        }
+        if let Some(n) = name {
+            if live && !standings.is_empty() {
+                j.found.push(Found { name: names::text(n), standings })
+            }
+        }
+        self.names_next(take j)
     }
 
     /// A name drawn again: the old one let go, the new one the account's.
@@ -2257,7 +2789,9 @@ impl<G: Game> Engine<G> {
         var from = take key
         from.push(0)
         let to = past(prefix).unwrap_or(Vec::new())
-        let limit = if step == Step::ExportRuns { EXPORT_RUNS } else { 512 }
+        let limit = if step == Step::ExportRuns { EXPORT_RUNS } else if step == Step::NamesRange {
+            RANGE_PAGE
+        } else { 512 }
         self.scan_range(take from, take to, limit, step, take job)
     }
 
@@ -2339,7 +2873,7 @@ impl<G: Game> Engine<G> {
             }
         }
         for j in self.jobs {
-            if is_upload(j.step) && j.id == account {
+            if (is_upload(j.step) || j.step == Step::BestRunsRead) && j.id == account {
                 return true
             }
             if let Some(q) = j.queued {
@@ -2427,6 +2961,10 @@ impl<G: Game> Engine<G> {
                 self.put(run_key(r.id), r.clone())
                 var id8: Vec<u8> = Vec::new()
                 append_u64(mut id8, r.id)
+                // Its replay by its hash, a public read, and under its account, to go with it.
+                let hash = hashed(r.replay)
+                self.put_bytes(replay_key(hash), id8.clone())
+                self.put_bytes(indexed(r.account, OF_REPLAY, hash), Vec::new())
                 self.put(
                     indexed(r.account, OF_RUN, id8),
                     RunIndex {
@@ -2472,7 +3010,10 @@ impl<G: Game> Engine<G> {
     fn finish_best(mut self, job: take Job, answer: Vec<u8>) {
         let j = take job
         let Some(q) = j.queued.clone() else { return }
-        let old: Option<Best> = got(answer)
+        let old = match value(answer) {
+            Some(v) => best_of(v),
+            None => None,
+        }
         if let Some(b) = old {
             if b.ticks <= j.tries {
                 // Not better than the account's best.
@@ -2482,10 +3023,15 @@ impl<G: Game> Engine<G> {
             self.delete(b.ranked.clone())
         }
         let ranked = ranked_key(q.game, q.board, q.course, j.category, j.tries, q.account)
-        self.put(ranked.clone(), Ranked { name: q.name.clone(), run: q.id })
+        // On the boards now: its name is one a search finds.
+        if let Some(n) = names::parse(q.name.as_str()) {
+            self.put_bytes(posted_key(n), save(q.account))
+        }
+        let replay = hashed(q.replay)
+        self.put(ranked.clone(), Ranked { name: q.name.clone(), run: q.id, replay: replay.clone() })
         self.put(
             best_key(q.account, q.game, q.board, q.course, j.category),
-            Best { run: q.id, ticks: j.tries, ranked },
+            Best { run: q.id, ticks: j.tries, ranked, replay },
         )
         // A new best changes the whole game's sum: read every best of the account's.
         self.scan(
@@ -2515,7 +3061,7 @@ impl<G: Game> Engine<G> {
             if category != j.category {
                 continue
             }
-            let Some(b) = read::<Best>(e.value) else { continue }
+            let Some(b) = best_of(e.value) else { continue }
             if course == WHOLE {
                 whole_old = Some(take b)
             } else if course != q.course {
@@ -2530,14 +3076,49 @@ impl<G: Game> Engine<G> {
                 self.delete(b.ranked.clone())
             }
             let ranked = whole_key(q.game, q.board, j.category, sum, q.account)
-            self.put(ranked.clone(), Ranked { name: q.name.clone(), run: 0 })
+            self.put(ranked.clone(), Ranked { name: q.name.clone(), run: 0, replay: Vec::new() })
             self.put(
                 best_key(q.account, q.game, q.board, WHOLE, j.category),
-                Best { run: 0, ticks: sum, ranked },
+                Best { run: 0, ticks: sum, ranked, replay: Vec::new() },
             )
         }
         self.next_best(take j)
     }
+}
+
+/// The place numbered `number` on a board of `course` from its ranking's entry (`key`, `value`): the
+/// key ends with the time and the account.
+fn place_of(key: [u8], value: [u8], number: u32, course: u32) -> Option<Place> {
+    let r = ranked_of(value)?
+    if key.len() < 12 {
+        return None
+    }
+    let whole = course == WHOLE
+    Some(
+        Place {
+            place: number,
+            name: r.name.clone(),
+            ticks: u32_at(key, key.len() - 12),
+            run: if whole { 0 } else { r.run },
+            replay: if whole { Vec::new() } else { r.replay.clone() },
+        },
+    )
+}
+
+/// Whether `part` can be the start of a part of a name: at most `MOST_PART` bytes of letters,
+/// spaces and hyphens.
+fn searchable(part: str) -> bool {
+    if part.len() > MOST_PART {
+        return false
+    }
+    for i in 0..part.len() {
+        let b = part.byte(i)
+        let letter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+        if !letter && b != 32 && b != 45 {
+            return false
+        }
+    }
+    true
 }
 
 /// Whether `bytes` starts with `prefix`.
@@ -2608,6 +3189,8 @@ fn is_deletion(step: Step) -> bool {
 
 fn is_upload(step: Step) -> bool {
     step == Step::UploadAccount ||
+        step == Step::UploadConsent ||
+        step == Step::UploadPosted ||
         step == Step::UploadRate ||
         step == Step::UploadSeen ||
         step == Step::UploadQueue ||
@@ -2675,7 +3258,7 @@ fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
         }
         out.push_str("}")
     } else if of == OF_BEST {
-        let v = read::<Best>(value)
+        let v = best_of(value)
         out.push_str("{\"best\":")
         match v {
             Some(b) => out.push_str(f"{{\"run\":\"{b.run}\",\"ticks\":{b.ticks}}}"),
@@ -2688,6 +3271,26 @@ fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
         out.push_str("{\"uploads_this_hour\":\"(a count, for the upload limit)\"}")
     } else if of == OF_SEEN {
         out.push_str(f"{{\"uploaded_replay_sha256\":\"{hex(rest)}\"}}")
+    } else if of == OF_REPLAY {
+        out.push_str(f"{{\"posted_replay_sha256\":\"{hex(rest)}\"}}")
+    } else if of == OF_AGREED {
+        out.push_str("{\"agreed\":")
+        match read::<Agreement>(value) {
+            Some(g) => out.push_str(
+                f"{{\"terms\":{g.terms},\"privacy\":{g.privacy},\"thirteen_or_older\":{g.of_age},\"at\":{g.at}}}",
+            ),
+            None => out.push_str("null"),
+        }
+        out.push_str("}")
+    } else if of == OF_POSTING {
+        out.push_str("{\"posting\":")
+        match read::<Posting>(value) {
+            Some(p) => out.push_str(
+                f"{{\"agreed_version\":{p.version},\"at\":{p.at},\"post_best_runs\":{p.best_runs}}}",
+            ),
+            None => out.push_str("null"),
+        }
+        out.push_str("}")
     } else {
         out.push_str("{}")
     }

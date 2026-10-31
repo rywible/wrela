@@ -375,6 +375,122 @@ pub fn key(n: Name) -> Vec<u8> {
     out
 }
 
+/// The name whose key (`key`) is `bytes`, if they are one.
+pub fn from_key(bytes: [u8]) -> Option<Name> {
+    if bytes.len() != 8 {
+        return None
+    }
+    let at = |i: u32| -> u32 { (u32(bytes[2 * i]) << 8) | u32(bytes[2 * i + 1]) }
+    let n = Name { title: at(0), front: at(1), back: at(2), epithet: at(3) }
+    if !valid(n) {
+        return None
+    }
+    Some(n)
+}
+
+/// The name whose text (`text`) is `s`, if one's is: every noun is unique, so at most one is.
+pub fn parse(s: str) -> Option<Name> {
+    if s.len() > LONGEST {
+        return None
+    }
+    for t in 0..TITLES.len() {
+        let head = f"{TITLES[t]} "
+        if !s.starts_with(head.as_str()) {
+            continue
+        }
+        for e in 0..EPITHETS.len() {
+            let tail = f" the {EPITHETS[e]}"
+            if s.len() < head.len() + tail.len() || !s.ends_with(tail.as_str()) {
+                continue
+            }
+            let middle = s.slice(head.len(), s.len() - tail.len())
+            for f in 0..FRONTS.len() {
+                if !middle.starts_with(FRONTS[f]) {
+                    continue
+                }
+                let rest = middle.slice(FRONTS[f].len(), middle.len())
+                for b in 0..BACKS.len() {
+                    if rest == BACKS[b] {
+                        return Some(Name { title: t, front: f, back: b, epithet: e })
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The parts that names starting with a search's parts may have: its titles, its fronts each with
+/// the backs that may follow it (a noun's prefix can end in either half), and its epithets, each
+/// in its list's order.
+pub struct Matching: Clone {
+    pub titles: Vec<u32>,
+    pub fronts: Vec<u32>,
+    pub backs: Vec<Vec<u32>>,
+    pub epithets: Vec<u32>,
+}
+
+/// Whether `s` starts with `prefix`, in any case.
+fn starts(s: str, prefix: str) -> bool {
+    s.len() >= prefix.len() && lower(s.slice(0, prefix.len())) == lower(prefix)
+}
+
+fn starting(list: [Text], prefix: str) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for i in 0..list.len() {
+        if starts(list[i], prefix) {
+            out.push(i)
+        }
+    }
+    out
+}
+
+/// The parts of the names whose title, noun and epithet start with `title`, `noun` and `epithet`,
+/// in any case (an empty one matches any).
+pub fn matching(title: str, noun: str, epithet: str) -> Matching {
+    var m = Matching {
+        titles: starting(TITLES, title),
+        fronts: Vec::new(),
+        backs: Vec::new(),
+        epithets: starting(EPITHETS, epithet),
+    }
+    for f in 0..FRONTS.len() {
+        let front = FRONTS[f]
+        let backs = if starts(front, noun) {
+            starting(BACKS, "")
+        } else if noun.len() > front.len() && starts(noun, front) {
+            starting(BACKS, noun.slice(front.len(), noun.len()))
+        } else { Vec::new() }
+        if !backs.is_empty() {
+            m.fronts.push(f)
+            m.backs.push(take backs)
+        }
+    }
+    m
+}
+
+fn holds(xs: [u32], x: u32) -> bool {
+    for y in xs {
+        if y == x {
+            return true
+        }
+    }
+    false
+}
+
+/// Whether name `n` is one that `m` matches.
+pub fn matches(m: Matching, n: Name) -> bool {
+    if !holds(m.titles, n.title) || !holds(m.epithets, n.epithet) {
+        return false
+    }
+    for i in 0..m.fronts.len() {
+        if m.fronts[i] == n.front {
+            return holds(m.backs[i], n.back)
+        }
+    }
+    false
+}
+
 // ---- tests -------------------------------------------------------------------------------------
 
 /// Stems that no part of a name may hold, in any case: crude, cruel or hateful words, and short
@@ -581,4 +697,29 @@ fn a_seed_draws_each_part_from_its_own_digits() {
     )
     assert(valid(draw(0xffffffffffffffff)), "any seed draws a name")
     assert(text(Name { title: 99, front: 0, back: 0, epithet: 0 }).is_empty())
+}
+
+@test
+fn a_name_reads_back_from_its_text_and_its_key_and_a_search_matches_its_parts() {
+    for seed in [0, 1, 99, 123456789, 0xffffffffffffffff] {
+        let n = draw(seed)
+        assert(parse(text(n).as_str()) == Some(n), text(n).as_str())
+        assert(from_key(key(n)) == Some(n))
+    }
+    for bad in [
+        "",
+        "Sir Wobblesnout",
+        "Sir Wobble the Unhurried",
+        "sir wobblesnout the unhurried",
+    ] {
+        assert(parse(bad).is_none(), bad)
+    }
+    assert(from_key([0, 99, 0, 0, 0, 0, 0, 0]).is_none(), "a title past its list")
+    // "wob" gives Wobblesnout, whatever the title and the epithet; "wobblesn" only the snouts.
+    let n = draw(0)
+    let m = matching("", "wob", "")
+    assert(matches(m, n) && m.titles.len() == TITLES.len() && m.fronts.len() == 1)
+    assert(matches(matching("si", "Wobblesn", "unh"), n))
+    assert(!matches(matching("Dame", "", ""), n) && !matches(matching("", "wobblepaw", ""), n))
+    assert(matching("", "", "zzz").epithets.is_empty())
 }

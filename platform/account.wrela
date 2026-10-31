@@ -97,6 +97,24 @@ pub struct Recovery: Clone + Serialize {
     pub account: u64,
 }
 
+/// What an account agreed to when it was made (`a/<id>/g`): the Terms' and the Privacy Policy's
+/// versions, that its player is 13 or older, and when. A record of its own beside the account's, so
+/// accounts made before it was asked still read.
+pub struct Agreement: Clone + Serialize {
+    pub terms: u32,
+    pub privacy: u32,
+    pub of_age: bool,
+    pub at: u64,
+}
+
+/// What an account chose of posting (`a/<id>/o`): the version of what posting makes public it
+/// agreed to (0: none) and when, and whether the game posts its best runs.
+pub struct Posting: Clone + Serialize {
+    pub version: u32,
+    pub at: u64,
+    pub best_runs: bool,
+}
+
 // ---- keys --------------------------------------------------------------------------------------
 
 fn prefix(p: Text) -> Vec<u8> {
@@ -133,6 +151,9 @@ pub const OF_BEST: u8 = 98
 pub const OF_TOKEN: u8 = 116
 pub const OF_HOUR: u8 = 104
 pub const OF_SEEN: u8 = 100
+pub const OF_AGREED: u8 = 103
+pub const OF_POSTING: u8 = 111
+pub const OF_REPLAY: u8 = 118
 
 /// `a/<id>/<of><rest>`: an index entry under an account.
 pub fn indexed(id: u64, of: u8, rest: [u8]) -> Vec<u8> {
@@ -140,6 +161,16 @@ pub fn indexed(id: u64, of: u8, rest: [u8]) -> Vec<u8> {
     k.push(of)
     with_bytes(mut k, rest)
     k
+}
+
+/// `a/<id>/g`: what the account agreed to when it was made.
+pub fn agreement_key(id: u64) -> Vec<u8> {
+    indexed(id, OF_AGREED, [])
+}
+
+/// `a/<id>/o`: what the account chose of posting.
+pub fn posting_key(id: u64) -> Vec<u8> {
+    indexed(id, OF_POSTING, [])
 }
 
 /// `c/<credential ID>`: a passkey.
@@ -173,6 +204,14 @@ pub fn code_key(hash: [u8]) -> Vec<u8> {
 /// `n/<name>`: whose a name is.
 pub fn name_key(n: Name) -> Vec<u8> {
     var k = prefix("n/")
+    with_bytes(mut k, names::key(n))
+    k
+}
+
+/// `p/<name>`: whose a name with a run on the boards is, which a search of names reads, so it never
+/// reads an account that hasn't posted.
+pub fn posted_key(n: Name) -> Vec<u8> {
+    var k = prefix("p/")
     with_bytes(mut k, names::key(n))
     k
 }
