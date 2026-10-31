@@ -969,7 +969,7 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
 /// Where the most time went against the ghost (`most_lost`: the stretch and the ticks), as the
 /// goal's card says it, with `flags` checkpoints compared.
 fn lost_words(lost: Option<(u32, u32)>, flags: u32) -> String {
-    let Some((stretch, ticks)) = lost else { return String::from("Ahead of the ghost all the way") }
+    let Some((stretch, ticks)) = lost else { return String::from("No time lost to the ghost") }
     let t = seconds(ticks)
     if flags == 0 {
         f"{t} s behind the ghost"
@@ -1631,9 +1631,6 @@ fn part_rect(screen: vec2, part: u32) -> Rect {
         if p == search::NOUN {
             x += the + gap
         }
-    }
-    if part == search::EPITHET {
-        x += the + gap
     }
     Rect::new(x, r.y + size * 5.4, widths[part], size * 1.9)
 }
@@ -2398,7 +2395,7 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     )
     // How far through: a line, the part played inked.
     let left = r.x + u * 8.6
-    let right = r.right() - u * 22.0
+    let right = r.right() - u * 37.0
     let y = r.y + u * 6.0
     let done = left + (right - left) * saturate(f32(tick) / f32(max(end, 1)))
     s.list.line(vec2(left, y), vec2(right, y), vec4(INK, 0.25), width: u * 0.6)
@@ -2425,10 +2422,9 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     // Race: the level again, this run the ghost (R, Select, or a click).
     let race = race_rect(screen)
     let pointing = s.device == Device::Keys && race.contains(s.pointer)
-    card(mut s.list, race, u * 0.6, 0.94)
-    s.list.rect(race.shrink(u * 0.5), if pointing { vec4(0.94, 0.88, 0.72, 1.0) } else {
+    s.list.rect(race, if pointing { vec4(0.94, 0.88, 0.72, 1.0) } else {
         vec4(1.0, 0.84, 0.32, 1.0)
-    }, radius: u * 1.2)
+    }, radius: u * 1.4)
     let rw = s.fonts.font(Face::Sans).measure("Race", size)
     let _ = s.list.text(
         s.fonts,
@@ -2453,12 +2449,12 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     }
 }
 
-/// Where the watch's race button is: over the bar's right end.
+/// Where the watch's race button is: at the bar's right end.
 fn race_rect(screen: vec2) -> Rect {
     let u = unit(screen)
     let w = min(screen.x - u * 6.0, u * 110.0)
     let right = (screen.x + w) * 0.5
-    Rect::new(right - u * 16.0, screen.y - u * 20.4, u * 16.0, u * 6.4)
+    Rect::new(right - u * 14.0, screen.y - u * 11.6, u * 12.4, u * 5.8)
 }
 
 /// What the watch's prompts offer: play, seek, the speed, again from the start, a race against the

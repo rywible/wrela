@@ -153,6 +153,49 @@ pub const GHOST: Script = Script::frames()
     .key_up(22, Key::Escape)
     .key_down(24, Key::D)
 
+/// The leaderboard's search, at 60 frames a second: Esc, down twice and Enter open the
+/// leaderboard, F opens the search, and "si", a space ("Sir"), "wob" are typed, its completions
+/// under the noun. Opened alone, it says where the world's names are.
+pub const SEARCH: Script = Script::frames()
+    .press(1, Key::Escape)
+    .press(3, Key::Down)
+    .press(5, Key::Down)
+    .press(9, Key::Enter)
+    .press(12, Key::F)
+    .text(16, "si")
+    .text(18, " ")
+    .text(20, "wob")
+
+/// Watching a run, at 60 frames a second: the leaderboard as `SEARCH` opens it, Tab to the
+/// tool-assisted runs, and Enter watches the fastest any%, its bar offering Race.
+pub const WATCHED: Script = Script::frames()
+    .press(1, Key::Escape)
+    .press(3, Key::Down)
+    .press(5, Key::Down)
+    .press(9, Key::Enter)
+    .press(12, Key::Tab)
+    .press(15, Key::Enter)
+
+/// A race, at 120 frames a second: the leaderboard's tool-assisted runs as `WATCHED` opens them,
+/// down to the second fastest any%, R races it from the level's title, Enter starts it, and the
+/// first level's searched human line plays to the goal, whose card says where it lost the most
+/// time.
+pub const RACE: Script = raced()
+
+fn raced() -> Script {
+    let s = Script::frames()
+        .press(1, Key::Escape)
+        .press(3, Key::Down)
+        .press(5, Key::Down)
+        .press(9, Key::Enter)
+        .press(12, Key::Tab)
+        .press(14, Key::Down)
+        .press(15, Key::R)
+        .key_down(18, Key::Enter)
+        .key_up(19, Key::Enter)
+    keys_of(take s, routes_home::HUMAN_ANY, first: 19)
+}
+
 /// Each level's searched human-possible any% run (searched.wrela), as `LEVEL`, for stills and
 /// clips of the level: none until the level is searched.
 pub const HOME_RUN: Script = script_of(HOME, routes_home::HUMAN_ANY)
