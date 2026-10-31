@@ -660,10 +660,11 @@ fn game_after(g: mut Game, before: World, after: World) {
         } else if after.course != before.course {
             g.on = false
         }
-        return
     }
-    // The level's clock ran: so does the game's.
-    if g.on && g.done == 0 && after.ticks > before.ticks {
+    // The level's clock ran: so does the game's. A restart (R, Select) steps its new attempt in
+    // the tick it's made, so that attempt's first tick counts too.
+    let ran = if moved { after.ticks > 0 } else { after.ticks > before.ticks }
+    if g.on && g.done == 0 && ran {
         g.ticks += 1
         if after.finished > 0 && next(after.course).is_none() {
             g.done = g.ticks
@@ -1119,8 +1120,13 @@ fn a_whole_game_counts_each_levels_clock_on_through_the_next_level_and_ends_at_a
     }
     assert(l.game.ticks == at_goal + l.world.ticks, "the next level's clock adds on")
     // A restart is part of the run; the map to another level ends it.
+    let before = l.game.ticks
     live_tick(mut l, [down(Key::R)])
     assert(l.game.on && l.world.attempt == 2, "a restart keeps it on")
+    for _ in 0..20 {
+        live_tick(mut l, [])
+    }
+    assert(l.game.ticks == before + l.world.ticks, "the restarted attempt's every tick counts")
     live_tick(mut l, [up(Key::R)])
     live_tick(mut l, [down(Key::Escape)])
     choose(mut l.world, SEE_MAP)
