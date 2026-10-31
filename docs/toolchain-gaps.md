@@ -6,6 +6,19 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A program can't show another program playing behind its own canvas
+
+- **Needed:** attract mode on the console's home (Ryan, 2026-10-30: "I really like the idea of the game playing by itself behind the home screen"): the chosen game's own build, playing one of its replays with no input and no sound, behind the home's text in place of its hero. The capybara game can: every run is a replay (`games/capybara/replay.wrela`), its searched runs are constants (`routes_<level>.wrela`), and a start of its own (`#attract` in its address, read with `host::address`) could play one on a loop.
+- **What happens:** toolchain 0.11.1's browser host (as 0.10.3's) lays each program a page opens (`host::open`) in an iframe filling the page *behind* the opener's canvas (`runtime/browser/src/platform.ts` `#open`: `position:fixed;inset:0;z-index:0;pointer-events:none`, under the canvas's `z-index:1`), so it is drawn already, but the canvas is configured opaque (`runtime/browser/src/worker.ts:121`, `ctx.configure({ ..., alphaMode: "opaque" })`), so nothing behind it can show: a screen pass's alpha is dropped. `host::show` is the only way to see a surface, and it hides the opener (`surface/show`: `this.canvas.style.visibility = "hidden"`). The native host opens no surfaces at all.
+- **Found:** 2026-10-30, redesigning the console's home (the PR that adds hero art, title art, taglines and themes to the catalog).
+- **Weighed:**
+  - *The game's build behind the console's canvas* (this entry): the game's own renderer, at the device's size and rate, for the cost of a few KB of catalog; the build is the one the player is about to play, so its files are fetched ahead anyway. It needs the toolchain change below, and a start of the game's own.
+  - *A clip the release renders* with the game's renderer (`wrela-host --png --every K` frames, as the lookbook does): no video decoder in std or the hosts, so it would be a flipbook of `host::decode_image` frames: 6 s at 12 frames a second at 960×540 is 72 textures, about 150 MB of GPU memory and 3 MB to download, blurry behind a 1080p screen. Rejected.
+  - *A `<video>` the host plays*: an encoder in the release (none in `std::tool::image`) and the same transparent canvas. No better than the game itself.
+- **Proposed:** `host::underlay(id, on)`: the surface `id` (opened, not shown) is drawn behind this program, which is now composited with premultiplied alpha (the canvas reconfigured `alphaMode: "premultiplied"`, the screen pass's alpha kept), the surface getting no input and no audio (muted, or told so with its `environment`, as reduced motion is); `on: false` puts both back. The opener draws its screen with alpha where the game should show (the console: its hero's gradient over a clear screen). A frame budget should stay the opener's: a host that strains (`strained` in console/main.wrela) closes the surface.
+- **Meanwhile:** the home shows the game's hero, a still the release ships (`catalog.tsv`'s hero column), drifting a little with the pointer. Nothing is worked around: no flipbook, no frame of the game's in the console.
+- **Status:** open. With it: a catalog column naming the game's attract build and start (`capybara/#attract`), the console opening it once the home has rested on a game for a few seconds and fading the hero out over it, and the game's `#attract` start (the game's own work: a searched route a level, on a loop, its HUD and sound off).
+
 ### A driven frame doesn't say its passes' targets or GPU times
 
 - **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.

@@ -4,10 +4,15 @@
 // them; how a game keeps its saves is the session program's choice.
 use std::serialize::{Serialize, load, save}
 
+/// A save in a profile's list: its slot, its label in the console's save list, a line of its
+/// progress, which the console shows under the game's title too ("3 of 9 levels · 11 snacks"),
+/// where it resumes, which the console's Continue names ("Continue: The Wetlands"; empty, it says
+/// only Continue), and when it was saved.
 pub struct SaveInfo: Clone + Serialize {
     pub slot: String,
     pub label: String,
     pub description: String,
+    pub place: String,
     pub saved: u32,
 }
 
@@ -64,12 +69,15 @@ fn session_replies_keep_game_owned_save_metadata() {
             slot: String::from("continue"),
             label: String::from("Continue"),
             description: String::from("A game supplied summary"),
+            place: String::from("The second level"),
             saved: 42,
         },
     )
     let back: Result<Reply, std::serialize::LoadError> = load(save(Reply::Saves { entries }))
     match back {
-        Ok(Reply::Saves { entries }) => assert(entries.len() == 1 && entries[0].saved == 42),
+        Ok(Reply::Saves { entries }) => assert(
+            entries.len() == 1 && entries[0].saved == 42 && entries[0].place == "The second level",
+        ),
         _ => assert(false, "session reply round trip"),
     }
 }

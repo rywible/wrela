@@ -1,0 +1,458 @@
+// A game's theme, which the home plays softly while the game is chosen. The release ships it as
+// text (catalog::Card::theme): its tempo, quarter notes a minute, on the first line, then a voice
+// a line in engine::score's notation (notes, chords, rests, durations, dots, triplets and ties;
+// its bar lines, slurs and marks are read past). The console reads it here (`read`), and plays it
+// on a loop with a voice of its own (`start`): a soft, bell-like tone, the same for every game,
+// so the game's melody is all that's its.
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
+
+// The most notes a theme holds, and the longest it is, in seconds.
+pub const MOST_NOTES: u32 = 512
+const LONGEST: f32 = 240.0
+// The silence after a pass before the next, in seconds.
+const BREATH: f32 = 2.0
+// The tones that sound at once; the oldest makes way.
+const TONES: u32 = 16
+// The whole voice's loudness at full level: soft, under anything else the page plays.
+const LOUDNESS: f32 = 0.09
+// Seconds the level takes to come most of the way to what's wanted: slow in, slow out.
+const LEVEL_SECONDS: f32 = 0.9
+// How fast a struck tone rings down, and its second harmonic before it, a second.
+const RING: f32 = 3.2
+const SHINE: f32 = 6.0
+
+// A note: its key (MIDI's numbering, 60 middle C), and when it starts and how long it lasts, in
+// seconds from the theme's start.
+pub struct Note: Copy {
+    pub key: u32,
+    pub start: f32,
+    pub length: f32,
+}
+
+pub struct Theme: Clone {
+    pub notes: Vec<Note>,
+    // A pass, in seconds: the longest voice.
+    pub length: f32,
+}
+
+// The semitone of each letter, from a: a b c d e f g.
+const LETTERS: [i32; 7] = [9, 11, 0, 2, 4, 5, 7]
+
+struct Reader {
+    text: String,
+    at: u32,
+}
+
+impl Reader {
+    fn more(self) -> bool {
+        self.at < self.text.len()
+    }
+
+    fn peek(self) -> u8 {
+        if self.more() { self.text.byte(self.at) } else { 0 }
+    }
+
+    fn skip_space(mut self) {
+        while self.more() && (self.peek() == 32 || self.peek() == 9) { self.at += 1 }
+    }
+
+    // A pitch: a letter, sharps (#) or flats (b), an octave.
+    fn pitch(mut self) -> Option<u32> {
+        let c = self.peek()
+        if c < 97 || c > 103 { return None }
+        self.at += 1
+        var key = LETTERS[u32(c - 97)]
+        while self.peek() == 35 || self.peek() == 98 {
+            key += if self.peek() == 35 { 1 } else { -1 }
+            self.at += 1
+        }
+        let digit = self.peek()
+        if digit < 48 || digit > 57 { return None }
+        self.at += 1
+        let key = key + (i32(digit) - 48 + 1) * 12
+        if key < 0 || key > 127 { None } else { Some(u32(key)) }
+    }
+
+    // A duration, in quarter notes: `/n`, dots, `t`; none keeps `last`.
+    fn duration(mut self, last: f32) -> Option<f32> {
+        if self.peek() != 47 { return Some(last) }
+        self.at += 1
+        var n: u32 = 0
+        while self.peek() >= 48 && self.peek() <= 57 && n < 1000 {
+            n = n * 10 + u32(self.peek() - 48)
+            self.at += 1
+        }
+        if n != 1 && n != 2 && n != 4 && n != 8 && n != 16 && n != 32 && n != 64 { return None }
+        var length = 4.0 / f32(n)
+        var dot = length * 0.5
+        while self.peek() == 46 {
+            length += dot
+            dot *= 0.5
+            self.at += 1
+        }
+        if self.peek() == 116 {
+            length *= 2.0 / 3.0
+            self.at += 1
+        }
+        Some(length)
+    }
+}
+
+fn ends_mark(c: u8) -> bool {
+    c == 32 || c == 9 || c == 124 || c == 40 || c == 41 || c == 126
+}
+
+// The voice in `line`, its notes added to `notes` at `beat` seconds a quarter note: how long it
+// lasts, in seconds. None if it isn't a voice of the notation, or holds too many notes.
+fn read_voice(line: str, beat: f32, notes: mut Vec<Note>) -> Option<f32> {
+    var r = Reader { text: line.to_string(), at: 0 }
+    var t = 0.0
+    var last = 1.0
+    // The notes just read, by index into `notes`, and those tied forward from them.
+    var heard: Vec<u32> = Vec::new()
+    var tied: Vec<u32> = Vec::new()
+    loop {
+        r.skip_space()
+        if !r.more() { break }
+        let c = r.peek()
+        var keys: Vec<u32> = Vec::new()
+        if c == 124 || c == 40 || c == 41 {
+            // A bar line or a slur.
+            r.at += 1
+            continue
+        } else if c == 33 {
+            // A mark, to what ends it as engine::score reads one: a space, a bar line, a slur or
+            // a tie.
+            while r.more() && !ends_mark(r.peek()) { r.at += 1 }
+            continue
+        } else if c == 126 {
+            r.at += 1
+            tied = heard.clone()
+            continue
+        } else if c == 60 {
+            r.at += 1
+            loop {
+                r.skip_space()
+                if r.peek() == 62 {
+                    r.at += 1
+                    break
+                }
+                let Some(key) = r.pitch() else { return None }
+                keys.push(key)
+            }
+            if keys.is_empty() { return None }
+        } else if c == 114 {
+            r.at += 1
+        } else {
+            let Some(key) = r.pitch() else { return None }
+            keys.push(key)
+        }
+        let Some(length) = r.duration(last) else { return None }
+        last = length
+        let seconds = length * beat
+        var now: Vec<u32> = Vec::new()
+        for key in keys {
+            // A tied note goes on; any other starts.
+            var held: Option<u32> = None
+            for i in tied { if notes[i].key == key { held = Some(i) } }
+            match held {
+                Some(i) => {
+                    notes[i].length += seconds
+                    now.push(i)
+                },
+                None => {
+                    if notes.len() >= MOST_NOTES { return None }
+                    now.push(notes.len())
+                    notes.push(Note { key, start: t, length: seconds })
+                },
+            }
+        }
+        heard = take now
+        tied.clear()
+        t += seconds
+    }
+    Some(t)
+}
+
+// The theme in `text`, if it's one: a tempo from 20 to 400, then voices, within `MOST_NOTES`
+// notes and `LONGEST` seconds.
+pub fn read(text: str) -> Option<Theme> {
+    var tempo: Option<u32> = None
+    var notes: Vec<Note> = Vec::new()
+    var length = 0.0
+    for line in text.lines() {
+        borrow row = text.slice(line.0, line.1).trim()
+        if row.is_empty() { continue }
+        match tempo {
+            None => {
+                let Some(t) = row.parse_u32() else { return None }
+                if t < 20 || t > 400 { return None }
+                tempo = Some(t)
+            },
+            Some(t) => {
+                let Some(voice) = read_voice(row, 60.0 / f32(t), mut notes) else { return None }
+                length = max(length, voice)
+            },
+        }
+    }
+    if notes.is_empty() || length > LONGEST { return None }
+    Some(Theme { notes, length })
+}
+
+// ---- the voice --------------------------------------------------------------------------------
+
+// What the console tells the voice.
+pub enum Cue: Copy {
+    // Drop the theme and start its clock again.
+    Clear,
+    // Add a note to the theme.
+    Add { note: Note },
+    // A pass lasts `seconds`.
+    Pass { seconds: f32 },
+    // The level wanted, 0 to 1.
+    Level { to: f32 },
+}
+
+struct Tone: Copy {
+    hz: f32,
+    phase: f32,
+    age: f32,
+    // Seconds until it lets go, and its loudness.
+    held: f32,
+    gain: f32,
+    // How far it has rung down, and its second harmonic (`RING`, `SHINE`).
+    ring: f32,
+    shine: f32,
+}
+
+const SILENT = Tone { hz: 0.0, phase: 0.0, age: 0.0, held: 0.0, gain: 0.0, ring: 0.0, shine: 0.0 }
+
+pub struct Voice {
+    cues: RingReader<Cue>,
+    notes: [Note; MOST_NOTES],
+    count: u32,
+    pass: f32,
+    clock: f32,
+    tones: [Tone; TONES],
+    next: u32,
+    level: f32,
+    level_to: f32,
+}
+
+// A voice and the writer its cues come through, not yet playing.
+fn voice() -> (RingWriter<Cue>, Voice) {
+    let (writer, reader) = ring::<Cue>(1024)
+    let voice = Voice {
+        cues: reader,
+        notes: [Note { key: 0, start: 0.0, length: 0.0 }; MOST_NOTES],
+        count: 0,
+        pass: 0.0,
+        clock: 0.0,
+        tones: [SILENT; TONES],
+        next: 0,
+        level: 0.0,
+        level_to: 0.0,
+    }
+    (writer, voice)
+}
+
+// Starts the console's voice: the writer is how the frames send it cues.
+pub fn start() -> RingWriter<Cue> {
+    let (writer, v) = voice()
+    play(take v, render)
+    writer
+}
+
+// Gives the voice `theme` to play from its start, its level eased to `level`. False if the ring
+// is full: send it again.
+pub fn send(w: mut RingWriter<Cue>, theme: Theme) -> bool {
+    if !w.push(Cue::Clear) { return false }
+    for n in theme.notes { if !w.push(Cue::Add { note: n }) { return false } }
+    w.push(Cue::Pass { seconds: theme.length + BREATH })
+}
+
+pub fn level(w: mut RingWriter<Cue>, to: f32) -> bool {
+    w.push(Cue::Level { to })
+}
+
+fn strike(v: mut Voice, n: Note) {
+    let hz = 440.0 * exp2((f32(n.key) - 69.0) / 12.0)
+    // Higher notes a little softer, as a music box's tines are.
+    let gain = 0.5 * clamp(1.3 - (f32(n.key) - 60.0) / 48.0, 0.5, 1.3)
+    v.tones[v.next] = Tone { hz, phase: 0.0, age: 0.0, held: n.length, gain, ring: 1.0, shine: 1.0 }
+    v.next = (v.next + 1) % TONES
+}
+
+// The next quantum, into `left` and `right`, which hold the last one's.
+@audio
+pub fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+    for i in 0..left.len() {
+        left[i] = 0.0
+        right[i] = 0.0
+    }
+    var more = true
+    while more {
+        match v.cues.pop() {
+            Some(Cue::Clear) => {
+                v.count = 0
+                v.pass = 0.0
+                v.clock = 0.0
+                // What rings lets go from now, over its release.
+                for mut t in v.tones { t.held = min(t.held, t.age) }
+            },
+            Some(Cue::Add { note }) => if v.count < MOST_NOTES {
+                v.notes[v.count] = note
+                v.count += 1
+            },
+            Some(Cue::Pass { seconds }) => v.pass = seconds,
+            Some(Cue::Level { to }) => v.level_to = saturate(to),
+            None => more = false,
+        }
+    }
+    let dt = 1.0 / f32(SAMPLE_RATE)
+    let span = f32(QUANTUM) * dt
+    // The notes that start within this quantum, round the end of a pass to its start.
+    if v.pass > 0.0 && v.level > 0.0001 {
+        let (from, to) = (v.clock, v.clock + span)
+        for i in 0..v.count {
+            let s = v.notes[i].start
+            if (s >= from && s < to) || (to > v.pass && s + v.pass >= from && s + v.pass < to) {
+                strike(mut v, v.notes[i])
+            }
+        }
+        v.clock = to
+        if v.clock >= v.pass { v.clock -= v.pass }
+    }
+    let ease = 1.0 - exp(-span / LEVEL_SECONDS)
+    let start_level = v.level
+    v.level += (v.level_to - v.level) * ease
+    if max(start_level, v.level) <= 0.0001 {
+        // Silent: what was ringing is let go.
+        for mut t in v.tones { t.gain = 0.0 }
+        return
+    }
+    var levels = [0.0; QUANTUM]
+    for i in 0..QUANTUM {
+        levels[i] = mix(start_level, v.level, f32(i) / f32(QUANTUM)) * LOUDNESS
+    }
+    let (rings, shines) = (exp(-RING * dt), exp(-SHINE * dt))
+    for k in 0..TONES {
+        var t = v.tones[k]
+        if t.gain <= 0.0 { continue }
+        for i in 0..QUANTUM {
+            // A struck tone: in over 6 ms, ringing down over two seconds, and let go over a
+            // quarter of one when its note ends; its harmonics from its own sine and cosine.
+            let attack = saturate(t.age / 0.006)
+            let release = saturate(1.0 + (t.held - t.age) / 0.25)
+            let p = t.phase * 6.2831855
+            let (sine, cosine) = (sin(p), cos(p))
+            let second = 2.0 * sine * cosine
+            let third = sine * (3.0 - 4.0 * sine * sine)
+            let s = sine + 0.16 * second * t.shine + 0.04 * third
+            let a = s * t.gain * attack * t.ring * release * levels[i]
+            left[i] += a
+            right[i] += a
+            t.phase = fract(t.phase + t.hz * dt)
+            t.age += dt
+            t.ring *= rings
+            t.shine *= shines
+        }
+        if t.age > t.held + 0.25 || t.age > 6.0 { t.gain = 0.0 }
+        v.tones[k] = t
+    }
+}
+
+@test
+fn a_theme_reads_as_its_score_is_written() {
+    let text = "120\nr/2 d6/8 !mp c6 g5/4 | f#5/4. bb4/8 <c4 e4>/2 |\nc3/1 | c3/2~ c3/2\n"
+    let Some(theme) = read(text) else {
+        assert(false, "a theme")
+        return
+    }
+    // At 120 a minute, a quarter note is half a second.
+    let first = theme.notes[0]
+    assert(first.key == 86 && first.start == 1.0 && first.length == 0.25, "d6 after a half rest")
+    assert(theme.notes[1].key == 84 && theme.notes[1].length == 0.25, "c6 keeps the eighth")
+    assert(theme.notes[3].key == 78 && theme.notes[3].length == 0.75, "a dotted quarter's f#5")
+    assert(theme.notes[4].key == 70, "bb4")
+    assert(theme.notes[5].key == 60 && theme.notes[6].key == 64 && theme.notes[5].start == 3.0)
+    // The second voice: two whole bars, the tie one note.
+    assert(theme.notes.len() == 9 && theme.notes[8].key == 48 && theme.notes[8].length == 2.0)
+    assert(theme.length == 4.0)
+    // A mark ends at a tie, as engine::score reads it.
+    let Some(held) = read("120\nc4/2 !accent~ c4/2") else {
+        assert(false, "a tie after a mark")
+        return
+    }
+    assert(held.notes.len() == 1 && held.notes[0].length == 2.0, "one note held over the tie")
+}
+
+@test
+fn anything_else_is_no_theme() {
+    for text in ["", "120", "fast\nc4", "120\nh4", "120\nc4/3", "120\n<c4", "9\nc4", "120\nc"] {
+        assert(read(text).is_none(), text)
+    }
+    var long = String::from("60\n")
+    for _ in 0..MOST_NOTES + 1 { long.push_str("c4/16 ") }
+    assert(read(long).is_none(), "too many notes")
+}
+
+@test
+fn a_games_theme_reads_with_its_marks_ties_and_sharps() {
+    // A game's theme as a game's score writes it: a melody with dynamics, accents and ties after
+    // them, and a bass, at 109 a minute.
+    let text = "109\nd5/8 !mf c5 g4/4 e5/2 | d5/8 c5 g4/4 r/4 b4/4 !accent ~ | b4/4 d5/8 c5 g4/2 | f5/4. f5/8 e5/4 d5/4 !accent ~ | d5/2 r/8 g4/8 g#4 a4 | c5/8 b4 g4/4 e4/2 | f4/8 e4 d4/4 a4/4 b4/4 | c5/2. r/4 |\nc2/4 r/8 c2/8 g2/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 | d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 d2/4 r/4 | e2/4 r/8 e2/8 b1/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 | d2/4 r/8 a1/8 g1/4 r/4 | c2/4 r/8 c2/8 g2/4 r/4 |\n"
+    let Some(theme) = read(text) else {
+        assert(false, "a theme")
+        return
+    }
+    let beat = 60.0 / 109.0
+    assert(theme.notes.len() == 28 + 24, "two tied notes are one each")
+    assert(abs(theme.length - 32.0 * beat) < 0.001, "eight bars")
+    // The b4 tied over the bar lasts two quarters.
+    let tied = theme.notes[7]
+    assert(tied.key == 71 && abs(tied.length - 2.0 * beat) < 0.0001)
+}
+
+// The loudest sample of `v` over the next second's quanta, rendered into the same buffers, as
+// the host does.
+fn loudest(v: mut Voice) -> f32 {
+    var most = 0.0
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    for _ in 0..SAMPLE_RATE / QUANTUM {
+        render(mut v, mut l, mut r)
+        for i in 0..QUANTUM { most = max(most, max(abs(l[i]), abs(r[i]))) }
+    }
+    most
+}
+
+@test
+fn the_voice_plays_a_theme_softly_and_falls_quiet() {
+    let (writer, v) = voice()
+    var w = take writer
+    var v = take v
+    let Some(theme) = read("120\nc5/4 e5 g5 c6 |\nc3/1 |") else {
+        assert(false, "a theme")
+        return
+    }
+    assert(send(mut w, theme) && level(mut w, 1.0))
+    let first = loudest(mut v)
+    let second = loudest(mut v)
+    assert(first > 0.005, "it sounds")
+    assert(second <= 0.12, f"softly: {second}")
+    assert(level(mut w, 0.0))
+    for _ in 0..4 { let _ = loudest(mut v) }
+    assert(loudest(mut v) < 0.001, "and falls quiet")
+}
+
+@test
+fn each_quantum_is_written_afresh() {
+    // The host hands the voice the last quantum's buffers.
+    let (_, v) = voice()
+    var v = take v
+    var l = [1.0; QUANTUM]
+    var r = [1.0; QUANTUM]
+    render(mut v, mut l, mut r)
+    for i in 0..QUANTUM { assert(l[i] == 0.0 && r[i] == 0.0, "silence, not the last quantum") }
+}

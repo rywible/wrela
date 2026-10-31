@@ -15,7 +15,11 @@ pub struct Build: Clone {
 
 /// A game: its id (its storage namespace and its prefetch list), its title, its Worker and
 /// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
-/// rendered.
+/// rendered. What the console's home shows of it while it's chosen, each left empty for none:
+/// its hero, a PNG that Wrela rendered, full-bleed behind the home's text, which stands on its
+/// left; its title art, a PNG with alpha, in place of its title; its tagline, a line that sells
+/// it; and its theme, a melody the home plays softly, as text: its tempo in quarter notes a
+/// minute on the first line, then a voice a line in engine::score's notation.
 pub struct Game: Clone {
     pub id: Text,
     pub title: Text,
@@ -24,6 +28,10 @@ pub struct Game: Clone {
     pub session: Text,
     pub builds: Vec<Build>,
     pub cover: Text,
+    pub hero: Text,
+    pub logo: Text,
+    pub tagline: Text,
+    pub theme: Text,
 }
 
 /// The console: its package, Worker, domain, and the one-line description its page has.
@@ -81,6 +89,10 @@ pub const CATALOG: Catalog = Catalog {
                     ],
                 ),
                 cover: "games/leapling/cover.png",
+                hero: "",
+                logo: "",
+                tagline: "",
+                theme: "",
             },
             Game {
                 id: "last-green",
@@ -97,10 +109,17 @@ pub const CATALOG: Catalog = Catalog {
                     ],
                 ),
                 cover: "games/last-green/cover.png",
+                hero: "",
+                logo: "",
+                tagline: "",
+                theme: "",
             },
         ],
     ),
 }
+
+/// The longest tagline, in bytes: the console's catalog takes no longer.
+pub const TAGLINE: u32 = 200
 
 /// The names a game's build can't take: the paths the release puts beside its builds.
 pub const RESERVED_BUILD_NAMES: [Text; 7] = [
@@ -197,7 +216,7 @@ fn first_label(domain: str) -> borrow str {
 
 /// Why `c` can't be released, if it can't: a part that isn't a component, a Worker or a domain
 /// two projects share, a game on one of the project's own hosts, a title or description that
-/// isn't one line, a session that isn't one of its game's builds, or a build with a reserved
+/// isn't one line, a tagline that isn't one line or is longer than the console shows, a session that isn't one of its game's builds, or a build with a reserved
 /// name. Whether its packages and covers are there is the tool's to check (`paths`).
 pub fn check(c: Catalog) -> Result<(), String> {
     var workers: Vec<String> = Vec::new()
@@ -231,6 +250,11 @@ pub fn check(c: Catalog) -> Result<(), String> {
         component(game.session)?
         if game.title.is_empty() || game.title.find("\t").is_some() || !one_line(game.title) {
             return Err(String::from("invalid catalog title"))
+        }
+        let tagline = game.tagline
+        if !tagline.is_empty() &&
+            (tagline.find("\t").is_some() || !one_line(tagline) || tagline.len() > TAGLINE) {
+            return Err(String::from(f"invalid tagline for {game.id}"))
         }
         var session = false
         for b in game.builds {
@@ -270,7 +294,8 @@ pub fn check(c: Catalog) -> Result<(), String> {
 }
 
 /// What must be in the workspace for `c` to build, each a path from the workspace's directory
-/// and what to say if it isn't there: each package's manifest, and each game's cover.
+/// and what to say if it isn't there: each package's manifest, and each game's cover, and its
+/// hero, title art and theme if it names them.
 pub fn paths(c: Catalog) -> Vec<(String, String)> {
     var out: Vec<(String, String)> = Vec::new()
     let p = c.console.dir
@@ -284,6 +309,15 @@ pub fn paths(c: Catalog) -> Vec<(String, String)> {
         out.push(
             (String::from(game.cover), String::from(f"missing Wrela-rendered cover for {game.id}")),
         )
+        for (named, what) in [
+            (game.hero, "hero"),
+            (game.logo, "title art"),
+            (game.theme, "theme"),
+        ] {
+            if !named.is_empty() {
+                out.push((String::from(named), String::from(f"missing {what} for {game.id}")))
+            }
+        }
         for b in game.builds {
             out.push(
                 (
