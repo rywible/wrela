@@ -1401,6 +1401,29 @@ fn a_bad_signature_another_accounts_handle_or_a_stale_counter_signs_nobody_in() 
 }
 
 @test
+fn a_bad_passkey_is_answered_alike_for_an_account_that_exists_never_did_or_was_deleted() {
+    var h = host()
+    let live = sign_up(mut h, 1, 5)
+    let gone = sign_up(mut h, 2, 6)
+    let csrf = fresh(mut h, 2, 6, gone)
+    let Reply::Done = h.say(2, Request::Delete { csrf })[0].clone() else { panic("deleted") }
+    // The same tries at each: a passkey nobody has, twice over one challenge, its cookie kept back.
+    var said: Vec<String> = Vec::new()
+    for handle in [live.handle.clone(), Vec::from([66; 16]), gone.handle.clone()] {
+        let c = challenge_of(h.say(3, begin(SIGN_IN)))
+        let token = h.cookie(3, server::CEREMONY)
+        for _ in 0..2 {
+            h.keep(3, server::CEREMONY, token)
+            said.push(why_of(h.say(3, signing_in(c, 77, handle, 0, [1]))[0].clone()))
+        }
+    }
+    for w in said {
+        assert(w == said[0] && !w.is_empty(), w.as_str())
+    }
+    assert(h.keys(live.at().as_str(), "w/") == 0, "nothing written of a sign-in that failed")
+}
+
+@test
 fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
     var h = host()
     let s = sign_up(mut h, 1, 5)

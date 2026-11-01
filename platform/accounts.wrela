@@ -7,7 +7,8 @@
 //   either of the Worker's keys; it must be for this account (a sign-up's, an added passkey's) or
 //   name none (a sign-in's), and come with the cookie of the browser that began it. A sign-up
 //   finding this account already made is a replay, refused; a sign-in's or an added passkey's
-//   challenge is kept used until it expires (`w/`).
+//   challenge is kept used until it expires (`w/`). A sign-in's is spent only once its passkey and
+//   signature check out, so a bad one is answered alike whether the account exists or not.
 // - **Its runs.** An upload is admitted here (its token, the hour's count, the agreement, the name
 //   kept, and what came of the same replay before, by board version), played at the edge, then
 //   recorded here: the run and its replay, its bests and whole-game sums, and each best told to its
@@ -531,8 +532,8 @@ impl<G: Game> Engine<G> {
         }
         self.keep(take k, Vec::new())
         if j.n == SIGN_IN {
-            let Request::SignIn { id, .. } = j.request.clone() else { return }
-            self.get(passkey_key(id), Step::SignInPasskey, take j)
+            // Its passkey's signature checked already: the session's secrets next.
+            self.random(TOKEN_BYTES + CSRF_BYTES, Step::SignInSecrets, take j)
             return
         }
         // A passkey added.
@@ -928,7 +929,11 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 j.account = take a
-                self.spend(take j)
+                // The passkey and its signature first, the challenge spent only once they check
+                // out: a sign-in that fails writes nothing, so an account that exists answers a
+                // bad passkey as one that doesn't, however often it's tried.
+                let Request::SignIn { id, .. } = j.request.clone() else { return }
+                self.get(passkey_key(id), Step::SignInPasskey, take j)
             },
             Step::SignInPasskey => {
                 let p: Option<Passkey> = got(answer)
@@ -957,7 +962,7 @@ impl<G: Game> Engine<G> {
                     p.credential.clone(),
                 ) {
                     Ok(signed) => {
-                        j.n = signed.counter
+                        j.seed = u64(signed.counter)
                         let algorithm = p.credential.signature()
                         borrow k = p.credential.key
                         borrow m = signed.message
@@ -971,7 +976,7 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That passkey's signature isn't valid. Try again.")
                     return
                 }
-                self.random(TOKEN_BYTES + CSRF_BYTES, Step::SignInSecrets, take j)
+                self.spend(take j)
             },
             Step::SignInSecrets => {
                 let Some(a) = j.account.clone() else { return }
@@ -989,7 +994,7 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 var used = p.clone()
-                used.credential.counter = j.n
+                used.credential.counter = u32(j.seed)
                 used.used = self.now
                 self.put(passkey_key(p.credential.id), used)
                 self.begin_session(conn, a, answer, Vec::new())
