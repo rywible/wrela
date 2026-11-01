@@ -11,6 +11,7 @@ use engine::character::{Cast, PartOf, cast}
 use engine::creature::MAX_BONES
 use engine::gait::{Walker, palette, shifted, stand, step}
 use engine::lit::Lighting
+use engine::present::short_way
 use engine::style::Style
 use engine::switches::Switches
 use engine::view::Camera
@@ -24,6 +25,7 @@ use kit::roe::{
 }
 use kit::walks::WALKS
 use std::gpu::RenderPass
+use std::math::TAU
 
 /// The grown fawn's proportions, its skeleton, its walk (the optimized walk on level ground at
 /// its age) and the walker's body of it, as the vale's grazer's.
@@ -38,6 +40,10 @@ const FALLS_BEHIND: f32 = 1.5
 /// How near the sim's fawn it stops (m).
 const ARRIVED: f32 = 0.15
 
+/// How far it turns standing before it sets its feet again (radians, **proposed**: about 20°): the
+/// gait sets them only as it moves, and its legs twist past this.
+const REPLANT: f32 = 0.35
+
 /// The most of a pause it catches up on, its walker's steps and its face's easing (s): a held
 /// shot, a frozen frame or a hidden tab isn't walked through in one frame.
 const CATCH_UP: f32 = 0.25
@@ -46,6 +52,8 @@ const CATCH_UP: f32 = 0.25
 /// and the time it was last drawn at.
 struct Following: Copy {
     walker: Option<Walker> = None,
+    /// The heading its feet were last set at.
+    planted: f32 = 0.0,
     face: Face = Face {},
     stepped: f32 = 0.0,
     drawn: f32 = 0.0,
@@ -190,6 +198,7 @@ impl Fawns {
             Some(w) if length(w.root.pos.xz - to) <= FALLS_BEHIND => w,
             _ => {
                 self.following.stepped = time
+                self.following.planted = root.heading
                 stand(GROUND, BODY, to, root.heading)
             },
         }
@@ -205,9 +214,15 @@ impl Fawns {
             if go {
                 // The sim's pace, but not past where it stands this step.
                 walker.speed = min(max(walker.speed, f.walker.speed), length(to - from) / DT)
+                self.following.planted = walker.root.heading
             } else {
-                // Standing, the gait doesn't turn it: it pivots to the sim's way as the sim's does.
+                // Standing, the gait doesn't turn it: it pivots to the sim's way as the sim's does,
+                // its feet set again under it each `REPLANT` of the turn.
                 turn_toward(mut walker, root.heading, DT)
+                if abs(short_way(walker.root.heading - self.following.planted, TAU)) > REPLANT {
+                    walker = stand(GROUND, BODY, walker.root.pos.xz, walker.root.heading)
+                    self.following.planted = walker.root.heading
+                }
             }
             walker.along = 0.0
             step(mut walker, GROUND, Ahead { from, dir }, BODY, walk, go: go, dt: DT)
