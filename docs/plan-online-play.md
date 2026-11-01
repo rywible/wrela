@@ -322,7 +322,9 @@ and the list above:
   they're set and rotated.
 - **A removal is acknowledged by a message back** (`Note::Removed`), since the outbox tells its sender
   nothing (docs/toolchain-gaps.md); a deletion answers `Done` once every removal is sent, sessions
-  and passkeys gone at once, and its store clears when the last one comes back. A message to itself
+  and passkeys gone at once, and its store clears when the last one comes back. Its name is let go
+  last, once every other removal is back, since the boards' and the search's keys by name are the
+  next holder's after (§5, the council's round 2). A message to itself
   (`Note::Finish`) finishes a deletion an instance dropped part way.
 - **A name change sends nothing to the boards or search:** a name is kept for good before a run can
   go up (a reroll is refused once it's kept), so no board or search holds a name that can change.
@@ -495,3 +497,61 @@ why:
   begin); only a board's pages take the cursor, since a slice isn't paged; an older board's replay
   is still copied once into its verifier's call, which serializes it; and the waiting run that's
   due is still copied once, since posting it changes what it's read from.
+
+**The council, round 2** (2026-10-31, gpt-6.1-sol and gpt-6-astra over the branch at `366725ab`;
+verdict "don't merge"): ten findings once the two were deduplicated, each checked against the code
+and the 0.18.0 host first, all of them found to hold, and all fixed. Each new test was seen to fail
+with the code it guards broken, then pass.
+
+1. *A late draw wrote a stale account back* (blocker): a reroll wrote the account it read before
+   asking its names shard, so a late answer undid a Keep made meanwhile or wrote a deleted account
+   back. Fixed (`528641be`): the account is read again first (`NameCommit`), and the draw goes only
+   if the account is as the draw found it and its session still stands; if not, the claimed name is
+   let go. Tests: `a_draw_whose_shard_answers_late_never_undoes_a_keep`, `..._never_brings_back_a_deleted_account`.
+2. *A deleted account's late removals took a new holder's name* (major): the name was let go beside
+   the board and search removals, which delete keys by name. Fixed (`c98a63dc`) the first way the
+   council gave: the name is let go only once every other removal is said done
+   (`SWEPT`'s `NAME_KEPT`, then `NAME_RELEASED`). Test:
+   `a_deleted_accounts_late_removals_never_take_its_name_from_the_next_to_hold_it`.
+3. *A crash after the last clear lost the deletion's mark* (major). Fixed (`a09b647d`): `GONE` is
+   kept with the sweep, before any clear, and the cleared range ends before it; the clear already
+   resumes from the unacknowledged removal while `SWEPT` (the range's last key) stands. Test:
+   `a_deletion_dropped_after_its_last_clear_keeps_its_mark_and_a_held_sign_up_is_refused`.
+4. *A bad sign-in told an account that exists from one that doesn't* (major). Fixed (`b9865a7b`):
+   the passkey and its signature are checked before the challenge is spent, so a failed sign-in
+   writes nothing. Test: `a_bad_passkey_is_answered_alike_for_an_account_that_exists_never_did_or_was_deleted`.
+5. *A recovery ended at most 1,024 sessions* (major, carried over). Fixed (`58e9e5f9`) with a
+   generation: `Account::sessions`, which a recovery moves on, and `Session::generation`; one of an
+   older generation opens nothing and goes as it's seen. Test:
+   `a_recovery_ends_more_sessions_than_a_page_of_them` (1,100).
+6. *The console kept one account's state for the next* (major). Fixed (`a41f5c85`): the server's
+   `Me` carries the handle; when it changes (`identify`) the posting choices, codes to save,
+   passkeys, sessions, an export and the game's token go, the choices are asked again, and replies
+   to what was asked for the account before are dropped (`epoch`; a game's own asks still go
+   through). The game is told who the account is by a digest of its handle (`Account::id`). Test:
+   `another_account_signed_in_keeps_nothing_of_the_one_before`.
+7. *The game's waiting runs and bests weren't the account's* (major). Fixed (`b1a0746e`): a
+   `Wait` names its account (a run found signed out, the first to post it, as before: posted once
+   an account that posts its best runs signs in), another account never posts it, a slice answers
+   only for the account it was asked for, and the bests and slices known go when another signs in.
+   Tests: `a_run_waiting_for_one_account_never_posts_as_another`,
+   `another_account_signed_in_starts_from_its_own_bests`.
+8. *A game told "signed out" never heard a later sign-in* (major). Fixed (`994d4fcc`): with nothing
+   to ask, the game hands the call back (`Ask::Nothing`) once it has held it `HEARTBEAT` (2 s, well
+   inside the host's two minutes for a call), and the console calls again at once. A test can't run
+   both programs over their channel (docs/toolchain-gaps.md, "A test can't run a program and the
+   program it shows together"), so each side is tested on the other's bytes:
+   `a_held_call_is_handed_back_so_a_later_sign_in_reaches_the_game`,
+   `a_game_handing_its_call_back_is_called_again_with_the_account_heard_of_since`.
+9. *A failed slice before an automatic post was asked again at once* (minor). Fixed (`57cfd815`):
+   the runs waiting on it wait the server's `retry_after`, half a minute at least. Test:
+   `a_slice_that_fails_isnt_asked_again_before_the_server_said`.
+10. *A run past the 1,000 places counted was told it was 1,001st* (minor, carried over). Fixed
+    (`b17243c3`): its place is 0, unnumbered as a slice says it, and the game says "Past the top
+    1,000 in the world". Tests: `a_run_past_the_places_counted_is_said_unnumbered` (platform and
+    capybara).
+
+Checked: `wrela check` and `wrela test` for the platform (66), the console (69), its server, the
+capybara (179), studio/release and studio/deploy, and `wrela suite fmt`. Kept: sign-ups closed on
+the live server; offline play makes no request; nothing posts without the account's consent.
+Not run: the console and the game together in a browser against `wrangler dev`.
