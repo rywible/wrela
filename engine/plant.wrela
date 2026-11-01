@@ -1516,10 +1516,36 @@ pub fn bark_at(
     texels: f32,
 ) -> (vec4, f32) {
     let level = log2(max(texels, 1.0)) / log2(f32(COARSE))
-    let a = sharpened(fine.sample_level(s, uv), texels)
+    // Magnified, the fine tile through a smooth cubic (its bilinear's texel grid showed as stairs
+    // down the sharpened edges: the development panel's stair-stepped bark texels, §G9).
+    let read = if texels < 1.0 {
+        smooth_read(fine, s, uv, vec2(f32(RIDGES_W), f32(RIDGES_H)))
+    } else { fine.sample_level(s, uv) }
+    let a = sharpened(read, texels)
     let b = coarse.sample_level(s, uv)
     let shown = 1.0 - smoothstep(1.0, 2.0, level)
     (mix(mix(a, b, vec4(saturate(level))), BARK_MEAN, vec4(1.0 - shown)), shown)
+}
+
+/// Texture `t` (`size` texels) at `uv` through a cubic B-spline (Sigg and Hadwiger, GPU Gems 2,
+/// ch. 20: four bilinear reads, each placed and weighted so their sum is the cubic's sixteen
+/// texels'): smooth across its texels' edges, where a bilinear read's slope jumps at each.
+pub fn smooth_read(t: Texture<Rgba8>, s: Sampler, uv: vec2, size: vec2) -> vec4 {
+    let p = uv * size - vec2(0.5)
+    let i = floor(p)
+    let f = p - i
+    let (f2, f3) = (f * f, f * f * f)
+    let w0 = (vec2(1.0) - 3.0 * f + 3.0 * f2 - f3) / 6.0
+    let w1 = (vec2(4.0) - 6.0 * f2 + 3.0 * f3) / 6.0
+    let w2 = (vec2(1.0) + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0
+    let w3 = f3 / 6.0
+    let (g0, g1) = (w0 + w1, w2 + w3)
+    // Where each pair's bilinear read lands (texel centres at half-texels).
+    let h0 = (i - vec2(0.5) + w1 / g0) / size
+    let h1 = (i + vec2(1.5) + w3 / g1) / size
+    let read = |x: f32, y: f32| t.sample_level(s, vec2(x, y))
+    g0.y * (g0.x * read(h0.x, h0.y) + g1.x * read(h1.x, h0.y)) +
+        g1.y * (g0.x * read(h0.x, h1.y) + g1.x * read(h1.x, h1.y))
 }
 
 /// Patterns `t` read by a pixel `texels` of their texels wide, magnified (under a texel): their
