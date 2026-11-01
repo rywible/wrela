@@ -311,7 +311,8 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     (head, all)
 }
 
-fn contains(names: [String], name: str) -> bool {
+/// Whether `names` holds `name`.
+pub(package) fn contains(names: [String], name: str) -> bool {
     for n in names {
         if n.as_str() == name {
             return true
@@ -354,12 +355,7 @@ pub const VERIFIER_JSON: Text = "verifier.json"
 
 /// Whether a verifier's `files` (their names) include its `VERIFIER_JSON`.
 pub fn described(files: [String]) -> bool {
-    for f in files {
-        if f.as_str() == VERIFIER_JSON {
-            return true
-        }
-    }
-    false
+    contains(files, VERIFIER_JSON)
 }
 
 /// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable

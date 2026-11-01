@@ -8,7 +8,7 @@
 
 use json::{Json, compact, member, text}
 use manifest::last_part
-use site::{replace_all, suffix}
+use site::{contains, replace_all, suffix}
 use std::hash::sha256::{Sha256, hex}
 use std::json::{TOP, parse as parse_json}
 use tree::{Entry, Tree, before_by_parts, frame}
@@ -35,15 +35,6 @@ pub struct Build: Clone {
 /// `path` in the build at `dir`, as the Worker's files have it.
 pub fn in_dir(dir: str, path: str) -> String {
     if dir.is_empty() { String::from(path) } else { String::from(f"{dir}/{path}") }
-}
-
-fn listed(names: [String], name: str) -> bool {
-    for n in names {
-        if n.as_str() == name {
-            return true
-        }
-    }
-    false
 }
 
 /// The payloads of `b`, each its path in the build, sorted by their parts: its manifest's `wasm`
@@ -82,14 +73,14 @@ pub fn payloads(b: Build) -> Result<Vec<String>, String> {
     }
     var out: Vec<String> = Vec::new()
     for n in named {
-        if !listed(b.files, n.as_str()) {
+        if !contains(b.files, n.as_str()) {
             return Err(
                 String::from(
                     f"the build at '{b.dir.as_str()}' names {n.as_str()}, which it doesn't have",
                 ),
             )
         }
-        if !listed(out, n.as_str()) {
+        if !contains(out, n.as_str()) {
             out.push(n.clone())
         }
     }
@@ -97,13 +88,13 @@ pub fn payloads(b: Build) -> Result<Vec<String>, String> {
         let s = m.as_str()
         let cut = if s.ends_with(".wasm") { s.len() - 5 } else { s.len() }
         let lines = String::from(f"{s.slice(0, cut)}.lines")
-        if listed(b.files, lines.as_str()) && !listed(out, lines.as_str()) {
+        if contains(b.files, lines.as_str()) && !contains(out, lines.as_str()) {
             out.push(take lines)
         }
     }
     for f in b.files {
         let p = f.as_str()
-        if p.starts_with("files/") && !p.starts_with(ICONS) && !listed(out, p) {
+        if p.starts_with("files/") && !p.starts_with(ICONS) && !contains(out, p) {
             out.push(f.clone())
         }
     }
@@ -185,7 +176,7 @@ pub fn address(tree: mut Tree, builds: [Build]) -> Result<Moved, String> {
     for b in builds {
         let dir = b.dir.as_str()
         let map_path = in_dir(dir, MAP)
-        if listed(b.files, MAP) || tree.find(map_path.as_str()).is_some() {
+        if contains(b.files, MAP) || tree.find(map_path.as_str()).is_some() {
             return Err(String::from(f"the build at '{dir}' has an {MAP} of its own"))
         }
         // Each payload's URL, then each script's.
