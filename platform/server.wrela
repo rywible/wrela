@@ -162,6 +162,9 @@ pub struct Cookie: Clone {
 pub const SESSION: Text = "session"
 pub const CEREMONY: Text = "ceremony"
 
+/// Why a new account is refused while sign-ups are closed (`Engine::close_sign_ups`).
+const CLOSED: Text = "New accounts are closed for now. Every game still plays without one."
+
 /// A request, as the host gave it: when it was taken (the host's wall clock, milliseconds since the
 /// Unix epoch), whether it may be cached (a `GET`), its cookies' values, and its body (a `Request`).
 pub struct Asked: Clone {
@@ -489,6 +492,9 @@ pub struct Engine<G: Game> {
     /// Whether the last call asked for nothing: then nothing would call it again, so a run being
     /// played asks the host for a byte to be called at once.
     nudge: Option<u32>,
+    /// Whether new accounts may be made. Signing in, recovery and play without an account don't
+    /// depend on it.
+    sign_ups: bool,
 }
 
 /// A server for `game`'s boards, its passkeys for relying party `rp_id` from `origin` alone.
@@ -515,6 +521,7 @@ pub fn engine<G: Game>(game: take G, rp_id: str, origin: str) -> Engine<G> {
         deletion_written: 0,
         verifying: None,
         nudge: None,
+        sign_ups: true,
     }
 }
 
@@ -592,6 +599,11 @@ fn same_bytes(a: [u8], b: [u8]) -> bool {
 
 impl<G: Game> Engine<G> {
     // ---- the host's side --------------------------------------------------------------------
+
+    /// Refuses new accounts from now on: a `Begin` or a `Register` for one is refused.
+    pub fn close_sign_ups(mut self) {
+        self.sign_ups = false
+    }
 
     /// Starts a call.
     pub fn begin(mut self) {
@@ -1040,6 +1052,10 @@ impl<G: Game> Engine<G> {
             // A session's `Me` is answered as its cookie is read (`HelloAccount`): this one has none.
             Request::Me => self.welcome(conn, nobody()),
             Request::Begin { ceremony, csrf } => {
+                if ceremony == REGISTER && !self.sign_ups {
+                    self.refuse(conn, CLOSED)
+                    return
+                }
                 if ceremony == REGISTER && self.is_signed_in(conn) {
                     self.refuse(conn, "Sign out first to make another account.")
                     return
@@ -1063,6 +1079,7 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That isn't a ceremony.")
                 }
             },
+            Request::Register { .. } if !self.sign_ups => self.refuse(conn, CLOSED),
             Request::Register { .. } | Request::SignIn { .. } => self.take_ceremony(conn, take job),
             Request::Recover { code } => {
                 recent(mut self.tries, self.now, MINUTE)

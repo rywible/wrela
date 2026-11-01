@@ -758,6 +758,29 @@ fn a_challenge_is_used_once_by_the_browser_that_asked_and_expires() {
 }
 
 @test
+fn closed_sign_ups_refuse_a_new_account_and_still_sign_in() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let _ = sign_up(mut e, mut h, 1, 5)
+    e.close_sign_ups()
+    let accounts = h.keys("a/")
+    assert(
+        refused(h.say(mut e, 2, Request::Begin { ceremony: REGISTER, csrf: Vec::new() })),
+        "begin",
+    )
+    let made = Request::Register {
+        id: Vec::from([6]),
+        client_data: Vec::new(),
+        attestation: Vec::new(),
+    }
+    assert(refused(h.say(mut e, 2, made)), "register")
+    assert(h.keys("a/") == accounts, "no account made")
+    let c = challenge_of(h.say(mut e, 3, Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() }))
+    assert(c.len() == CHALLENGE_BYTES, "sign-in still begins")
+}
+
+@test
 fn changes_need_the_sessions_csrf_token() {
     let both = started()
     var e = take both.0
