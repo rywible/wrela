@@ -1921,8 +1921,12 @@ each rejected; keys in `build/g-private`). Levers between rounds:
 | G4 | shot 1 **after** ("b's shadows are noisy and cross-hatched"); 6 **before** ("over-softened shadows flatten the ground") | 6 **after** ("soft, plausible dapples beat stair-stepped edges") |
 | G1 | shots 1 and 12 equal; 3 **before** ("a cold blue cast" on the trunk's shade: its blue less red rose 0.7 → 6.5 of 255 in the mid-tones) | 3 equal ("practically identical") |
 
-The final round, every item on its shots at the part's last head, is in "G-look, the final
-round".
+**The final round** (the head with G8 and G9 in, 3a8cf0e9's ceiling back at 4, against the head
+without each item; a fresh judge each, calibrated, which rejected the blur each time;
+`build/glook-*f*`): **G7**, all twelve shots equal (two judges of six); **G4**, shot 1 after
+("crisp, directional branch shadows and clean ground beat … noisy, dithered shadowing") and shot 6
+after ("the blocky, stepped patches on the ground give away the shadow technique" without it);
+**G1**, shots 1, 3 and 12 equal. No item's judge prefers "before" on a named shot.
 
 ### 2026-11-01: G5.0, rendered: the rung decides
 
