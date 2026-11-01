@@ -116,9 +116,6 @@ pub const GROWN_WOOD: bool = false
 /// games/last-green --set GROWN_FAWN=true`).
 pub const GROWN_FAWN: bool = false
 
-/// The player's eyes over its feet (m), where the grown fawn looks when it notices them.
-const PLAYER_EYE: f32 = 1.6
-
 pub struct Floor {
     console: Link,
     /// The way back down to the stair, and the tower's journey.
@@ -519,7 +516,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             s.stage.fawn.at_rest(
                 on_ground(c.fawn),
                 c.fawn.z,
-                eye: s.frame.cam.eye + o,
+                eye: s.frame.cam.eye + s.frame.cam.origin,
                 time: time,
                 origin: o,
                 moved: moved,
@@ -531,7 +528,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             if s.shots.held.is_none() && apart < FAWN_DRAWN {
                 s.stage.fawn.following(
                     f,
-                    player: feet + o + vec3(0.0, PLAYER_EYE, 0.0),
+                    player: feet + o + vec3(0.0, behaviour::PLAYER_HEIGHT, 0.0),
                     time: time,
                     origin: o,
                     shadowed: apart < s.frame.quality().shadows.moving_span,

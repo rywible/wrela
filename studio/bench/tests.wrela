@@ -110,6 +110,10 @@ fn a_set_builds_with_its_constant_and_names_it() {
     let without = texts(["--scene", "last-green-walk", "--set", "GROWN_WOOD"])
     assert(parse_args(without).is_none(), "a set without its value")
     assert(parse_args(texts(["--set", "GROWN_WOOD=true"])).is_none(), "a set on every scene")
+    for empty in ["=true", "GROWN_WOOD="] {
+        let v = texts(["--scene", "last-green-walk", "--set", empty])
+        assert(parse_args(v).is_none(), f"an empty name or value: {empty}")
+    }
     let named = with_sets(labelled("last-green-walk", "Low", ""), o.sets)
     assert(
         named.as_str() == "last-green-walk (Low) [GROWN_WOOD=true, GROWN_FAWN=true]",

@@ -179,6 +179,9 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         } else if a == "--set" {
             let v = value(k)?
             let eq = v.as_str().find("=")?
+            if eq == 0 || eq + 1 >= v.len() {
+                return None
+            }
             o.sets.push(
                 toolchain::Set {
                     name: String::from(v.as_str().slice(0, eq)),

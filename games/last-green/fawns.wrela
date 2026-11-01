@@ -193,7 +193,9 @@ impl Fawns {
                 stand(GROUND, BODY, to, root.heading)
             },
         }
-        self.following.stepped = max(self.following.stepped, time - CATCH_UP)
+        // At most `CATCH_UP` s behind the frame's time, and never ahead of it (a frozen frame's time
+        // giving way to an earlier one).
+        self.following.stepped = clamp(self.following.stepped, time - CATCH_UP, time)
         var walk = WALK.walk
         walk.speed = max(f.walker.speed, walk.speed)
         while self.following.stepped + DT <= time {
@@ -201,7 +203,8 @@ impl Fawns {
             let go = length(to - from) > ARRIVED
             let dir = if go { normalize(to - from) } else { root.forward().xz }
             if go {
-                walker.speed = max(walker.speed, f.walker.speed)
+                // The sim's pace, but not past where it stands this step.
+                walker.speed = min(max(walker.speed, f.walker.speed), length(to - from) / DT)
             } else {
                 // Standing, the gait doesn't turn it: it pivots to the sim's way as the sim's does.
                 turn_toward(mut walker, root.heading, DT)
