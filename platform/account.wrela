@@ -68,6 +68,9 @@ pub struct Account: Clone + Serialize {
     pub created: u64,
     /// Being deleted: it can't sign in or post, and its records are going.
     pub deleting: bool,
+    /// The generation of its sessions: one of an older generation opens nothing. A recovery makes
+    /// the next, so it ends every session there was, however many.
+    pub sessions: u64 = 0,
 }
 
 /// What an account has counted (`k`): the last revision of anything it told another instance (each
@@ -94,6 +97,8 @@ pub struct Session: Clone + Serialize {
     pub fresh_until: u64,
     /// Made by a recovery code: it can only add a passkey until one is added.
     pub recovery: bool,
+    /// Its account's generation of sessions when it was made (`Account::sessions`).
+    pub generation: u64 = 0,
 }
 
 /// A game's token (`t/<secret's hash>`): it can only submit runs, as this account, to `game`'s

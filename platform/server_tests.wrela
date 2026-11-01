@@ -2113,7 +2113,7 @@ fn a_recovery_code_used_twice_at_once_signs_in_once() {
 }
 
 @test
-fn every_session_a_recovery_ends_stays_ended_however_many() {
+fn every_session_a_recovery_ends_stays_ended_while_one_is_read() {
     var h = host()
     let s = sign_up(mut h, 1, 5)
     // 70 sessions, each in its own browser.
@@ -2133,6 +2133,46 @@ fn every_session_a_recovery_ends_stays_ended_however_many() {
     let Reply::Welcome { me, .. } = h.say(2, Request::Me)[0].clone() else { panic("welcome") }
     assert(!me.signed_in, "the session stays ended")
     assert(h.keys(s.at().as_str(), "s/") == 1, "the recovery's own session alone")
+}
+
+@test
+fn a_recovery_ends_more_sessions_than_a_page_of_them() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    // 1,100 sessions, more than any page a request reads, made as sign-ins would make them.
+    let at = h.instance(s.at().as_str())
+    var last: Vec<u8> = Vec::new()
+    for k in 0..1100 {
+        let token = Vec::from(sha256(save(u32(k))))
+        let key = account::session_key(account::hashed(token))
+        let session = account::Session {
+            csrf: Vec::from([1; 16]),
+            created: h.time,
+            seen: h.time,
+            fresh_until: 0,
+            recovery: false,
+        }
+        put_entry(mut h.instances[at].store, key, save(session))
+        if last.is_empty() || key > account::session_key(account::hashed(last)) {
+            last = token.clone()
+        }
+    }
+    // The one whose key is read last, in browser 2.
+    h.keep(2, server::SESSION, account::held(s.handle, last))
+    let Reply::Welcome { me, .. } = h.say(2, Request::Me)[0].clone() else { panic("welcome") }
+    assert(me.signed_in, "a session")
+    let Reply::Session { .. } = h.say(
+        3,
+        Request::Recover { code: s.codes[0].clone() },
+    )[0].clone() else {
+        panic("recovered")
+    }
+    let Reply::Welcome { me, .. } = h.say(2, Request::Me)[0].clone() else { panic("welcome") }
+    assert(!me.signed_in, "ended, past the first page")
+    let Reply::Welcome { me, .. } = h.say(1, Request::Me)[0].clone() else { panic("welcome") }
+    assert(!me.signed_in, "the sign-up's ended too")
+    let Reply::Welcome { me, .. } = h.say(3, Request::Me)[0].clone() else { panic("welcome") }
+    assert(me.signed_in && me.must_add_passkey, "the recovery's own session opens")
 }
 
 @test

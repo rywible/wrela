@@ -392,6 +392,7 @@ impl<G: Game> Engine<G> {
         old: [u8],
         secrets: [u8],
         recovery: bool,
+        generation: u64,
     ) -> (Vec<u8>, Vec<u8>, Session) {
         let token = part(secrets, 0, TOKEN_BYTES)
         let csrf = part(secrets, TOKEN_BYTES, CSRF_BYTES)
@@ -410,6 +411,7 @@ impl<G: Game> Engine<G> {
             seen: self.now,
             fresh_until: self.now + FRESH,
             recovery,
+            generation,
         }
         let hash = hashed(token)
         self.put(session_key(hash), s.clone())
@@ -420,7 +422,12 @@ impl<G: Game> Engine<G> {
     fn begin_session(mut self, conn: u32, a: Account, secrets: [u8], codes: Vec<String>) {
         let Some(i) = self.conn_index(conn) else { return }
         let old = self.conns[i].cookie.clone()
-        let (cookie, hash, s) = self.new_session(old, secrets, recovery: false)
+        let (cookie, hash, s) = self.new_session(
+            old,
+            secrets,
+            recovery: false,
+            generation: a.sessions,
+        )
         let csrf = s.csrf.clone()
         self.bind(conn, hash, s)
         self.cookie(conn, server::SESSION, take cookie, u32(SESSION_LIFE / 1000))
@@ -790,6 +797,12 @@ impl<G: Game> Engine<G> {
                     self.no_session(conn, j.request.clone())
                     return
                 }
+                // Of a generation a recovery ended: it goes as it's seen.
+                if s.generation < a.sessions {
+                    self.forget(session_key(j.hash))
+                    self.no_session(conn, j.request.clone())
+                    return
+                }
                 // When it was last seen, written at most once an hour, not with every request.
                 if s.seen + HOUR < self.now {
                     var seen = s.clone()
@@ -1040,16 +1053,23 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why })
                     return
                 }
-                // Used up, and every other session ends.
+                // Used up, and every other session ends: the account's sessions' generation goes
+                // on, so none made before opens anything, however many there are.
                 self.forget(code_key(j.hash))
-                j.account = take a
+                let Some(was) = take a else { return }
+                var next = was.clone()
+                next.sessions = was.sessions + 1
+                self.keep(key(ACCOUNT, []), save(next.clone()))
+                j.account = Some(take next)
                 self.get(key(COUNTERS, []), Step::RecoverCounters, take j)
             },
             Step::RecoverCounters => {
                 let revision = self.next_revision(self.counters(answer), runs: 0)
                 let note = Note::Code { hash: j.hash.clone(), revision, owner: Vec::new() }
                 self.tell(codes_instance(j.hash).as_str(), note, [])
-                self.scan(under("s/"), 1024, Step::RecoverSessions, take j)
+                // The ended sessions' records, a page of them cleared now (the rest go as they're
+                // seen, or with the account).
+                self.scan(under("s/"), CLEARED, Step::RecoverSessions, take j)
             },
             Step::RecoverSessions => {
                 let Some(es) = entries(answer) else { return }
@@ -1069,7 +1089,12 @@ impl<G: Game> Engine<G> {
                     )
                     return
                 }
-                let (cookie, _, s) = self.new_session(cookie, answer, recovery: true)
+                let (cookie, _, s) = self.new_session(
+                    cookie,
+                    answer,
+                    recovery: true,
+                    generation: a.sessions,
+                )
                 let csrf = s.csrf.clone()
                 self.back(conn, Back::Session { cookie, csrf, me: me_of(a, recovery: true) })
             },
@@ -1179,10 +1204,14 @@ impl<G: Game> Engine<G> {
                 let skip = under("s/").len()
                 var list: Vec<SessionView> = Vec::new()
                 var revoked = false
+                let generation = match j.account {
+                    Some(a) => a.sessions,
+                    None => 0,
+                }
                 for e in es {
                     let h = part(e.key, skip, e.key.len() - skip)
                     let Some(s) = read::<Session>(e.value) else { continue }
-                    if lately(self.gone, e.key) {
+                    if lately(self.gone, e.key) || s.generation < generation {
                         continue
                     }
                     if j.step == Step::RevokeScan && same_bytes(public_id(h), j.message) {
