@@ -193,7 +193,7 @@ pub fn shade_of<K: Knob>(
     }
     if glossy(class, s.history.z) {
         let r = lit.n * (2.0 * dot(lit.n, v)) - v
-        c += light.sun_colour * (0.6 * lit.sun * step(HIGHLIGHT, dot(r, l)))
+        c += light.sun_colour * (engine::character::BAND * lit.sun * step(HIGHLIGHT, dot(r, l)))
     }
     c
 }

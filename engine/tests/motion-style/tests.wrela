@@ -5,10 +5,9 @@
 
 use engine::gait::{Body, Palette, TOE, Walker, frame_of, palette, stand, step}
 use engine::motion::{Motion, stylize, stylizer}
-use engine::creature::Skeleton
-use kit::gaits::{CLEARANCE, DT, Gait, Ground}
+use kit::gaits::{DT, Gait, Ground}
 use kit::genome::{ROE, quadruped_at}
-use kit::muscles::{Ahead, walker_body}
+use kit::muscles::Ahead
 use kit::quadruped::skeleton
 use kit::walks::WALKS
 use std::units::deg
@@ -27,12 +26,7 @@ const FRAMES: u32 = 150
 
 /// The grown roe's walker body walking `g`.
 pub fn body_of(g: Gait) -> Body {
-    var b = walker_body(quadruped_at(ROE, 1.0), g.head_k, g.tail_k)
-    b.clear = CLEARANCE
-    b.crouch = g.crouch
-    b.follow = g.follow
-    b.smooth = g.smooth
-    b
+    kit::gaits::body_of(quadruped_at(ROE, 1.0), g)
 }
 
 /// The walk's frames on uneven ground: each frame's walker, after 30 frames setting off.
@@ -51,12 +45,8 @@ pub fn walked(g: Gait, b: Body) -> Vec<Walker> {
 
 fn same(a: Palette, b: Palette, n: u32) -> bool {
     for i in 0..n {
-        for c in 0..4 {
-            for r in 0..4 {
-                if bitcast_u32(a.bones[i][c][r]) != bitcast_u32(b.bones[i][c][r]) {
-                    return false
-                }
-            }
+        if !same_bone(a, b, i) {
+            return false
         }
     }
     true

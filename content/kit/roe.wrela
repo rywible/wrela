@@ -131,7 +131,7 @@ pub fn look_of(g: CreatureGenome, age: f32, map: CoatMap) -> CoatLook {
     let q = quadruped_at(g, age)
     let f = quadruped::frame(q)
     let (_, eye) = quadruped::face_points(q)
-    let radius = 0.045 * f.head_length * q.eye
+    let radius = quadruped::eye_radius(q)
     CoatLook {
         map,
         genes: g.coat,
@@ -249,15 +249,15 @@ pub fn attend(f: mut Face, q: quadruped::Quadruped, toward: Option<vec3>, dt: f3
     f.eyes += (eyes - f.eyes) * k
 }
 
-/// Palette `bones` (of the roe of proportions `q`) with its face turned as `f` says: each ear
+/// Palette `bones` (of the roe of proportions `q`, its skeleton `s`) with its face turned as `f` says: each ear
 /// about its root and each eye about its centre by the face's turn about the head's up (the right
 /// side's mirrored), carried by the head.
 pub fn faced(
     bones: [mat4; engine::creature::MAX_BONES],
+    s: engine::creature::Skeleton,
     q: quadruped::Quadruped,
     f: Face,
 ) -> [mat4; engine::creature::MAX_BONES] {
-    let s = quadruped::skeleton(q)
     let fr = quadruped::frame(q)
     let head = bones[s.find("head").index]
     var out = bones

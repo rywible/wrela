@@ -300,13 +300,11 @@ pub fn drop_to_reach(w: Walker, b: Body, i: u32, heel: f32 = 0.0) -> f32 {
     let m = frame_of(w, b)
     let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
     let hip = apply(m, b.hips[i])
-    var ankle = w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
-    if heel != 0.0 {
+    let ankle = if heel == 0.0 {
+        w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    } else {
         // Its heel rolled up about its toe, as `palette` rolls it.
-        let toe = w.feet[i].at + (m * vec4(0.0, 0.0, TOE * b.foot_height[i], 0.0)).xyz
-        let along = (rigid_inverse(m) * vec4(ankle - toe, 0.0)).xyz
-        let rolled = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel).rotate(along)
-        ankle = toe + (m * vec4(rolled, 0.0)).xyz
+        apply(m, ankle_target(b, i, apply(rigid_inverse(m), w.feet[i].at), heel).0)
     }
     let v = ankle - hip
     let r = b.reach[i]
@@ -390,9 +388,6 @@ fn settle_body(w: mut Walker, b: Body, dt: f32) {
             hind += y
             hinds += 1.0
         }
-    }
-    if lowest > 1.0e8 {
-        lowest = 0.0
     }
     if b.smooth {
         // Its planted feet's mean height (fore and hind alike).
@@ -486,10 +481,9 @@ pub fn step<T: Terrain, P: Path>(
             let land = below(terrain, landing(w, b, walk, i, travel, cadence, forward, m, t))
             let e = s * s * (3.0 - 2.0 * s)
             let lift = swing_lift(terrain, foot.from, land.point, walk.lift, b.clear, b.smooth)
-            let sn = sin(PI * s)
             // A smooth body's foot lifts by sin² (at rest as it lifts and lands; C2 profiles, a
             // smootherstep along and sin⁴ up, cost more mid-swing than they spared at its ends).
-            let arc = if b.smooth { sn * sn } else { sn }
+            let arc = arc_at(s, b.smooth)
             foot.at = mix(foot.from, land.point, vec3(e)) + vec3(0.0, lift * arc, 0.0)
             foot.normal = land.normal
         }
@@ -501,6 +495,13 @@ pub fn step<T: Terrain, P: Path>(
     for i in 0..b.spring_bones.len() {
         w.springs[i].follow(apply(m, b.spring_tips[i]), b.stiffness[i], dt)
     }
+}
+
+/// A swing's lift at `s` of its way (0 to 1) as a share of its height: sin, or a smooth body's
+/// sin².
+fn arc_at(s: f32, smooth: bool) -> f32 {
+    let sn = sin(PI * s)
+    if smooth { sn * sn } else { sn }
 }
 
 /// How high a foot swinging from `from` to `to` lifts: `lift`, or, keeping `clear` over the
@@ -524,8 +525,7 @@ fn swing_lift<T: Terrain>(
         let p = mix(from, to, vec3(e))
         let rise = terrain.height(p.x, p.z) - p.y
         if rise > 0.0 {
-            let sn = sin(PI * u)
-            most = max(most, clear + rise / if smooth { sn * sn } else { sn })
+            most = max(most, clear + rise / arc_at(u, smooth))
         }
     }
     most
@@ -597,17 +597,9 @@ pub fn palette(s: Skeleton, b: Body, w: Walker, heel: [f32; 4] = [0.0; 4]) -> Pa
     let legs = s.legs()
     for i in 0..s.leg_count() {
         let j = legs[i].joints
-        let (h, k, a, f) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]), s.rest(j[3]))
+        let (h, k, a) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]))
         // The foot joint's target, in the body's space: over its sole by its rest height.
-        let sole = apply(inv, w.feet[i].at)
-        var foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
-        var roll = Quat::identity()
-        if heel[i] != 0.0 {
-            // Its heel rolled up about its toe (`TOE` of its height ahead of its sole).
-            roll = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel[i])
-            foot_to = apply(about(roll, sole + vec3(0.0, 0.0, TOE * b.foot_height[i])), foot_to)
-        }
-        let ankle_to = foot_to - roll.rotate(f - a)
+        let (ankle_to, roll) = ankle_target(b, i, apply(inv, w.feet[i].at), heel[i])
         let (knee, ankle) = if b.smooth { bend_pole(h, k, a, ankle_to) } else {
             bend(h, k, a, ankle_to)
         }
@@ -672,6 +664,19 @@ pub struct Palette: Copy + GpuData {
     pub bones: [mat4; MAX_BONES],
 }
 
+/// Leg `i`'s ankle's target in the body's space, its sole at `sole` there, and its foot's turn:
+/// its foot joint over its sole by its rest height, and its heel rolled up by `heel` radians about
+/// its toe (`TOE` of its height ahead of its sole: the toe stays where it's planted).
+fn ankle_target(b: Body, i: u32, sole: vec3, heel: f32) -> (vec3, Quat) {
+    var foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
+    var roll = Quat::identity()
+    if heel != 0.0 {
+        roll = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel)
+        foot_to = apply(about(roll, sole + vec3(0.0, 0.0, TOE * b.foot_height[i])), foot_to)
+    }
+    (foot_to - roll.rotate(b.ankle_to_foot[i]), roll)
+}
+
 /// How far ahead of its sole a foot's toe is, against its foot joint's height over its sole
 /// (**proposed**: a hoof's toe a little ahead of its fetlock).
 pub const TOE: f32 = 0.5
@@ -697,28 +702,22 @@ pub fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
 /// Where a two-bone limb's middle joint goes, its root at `h` and its rest middle joint and end
 /// at `k` and `a`, when its end goes to `to`: in the plane of the rest bend, each bone keeping
 /// its length, and the end pulled no farther than the limb reaches.
+pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
+    bent(h, k, a, to, k - h)
+}
+
 /// `bend` with its knee turned toward a fixed pole: the rest knee's bend off the rest limb's line
 /// (from its root to its end), across the reach. `bend`'s side, the rest knee's offset across the
 /// reach, vanishes when the reach lies along it (a leg straight down mid-swing) and the knee flips
 /// side from one frame to the next; the pole's doesn't while the reach stays off the pole.
 pub fn bend_pole(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
-    let (l1, l2) = (length(k - h), length(a - k))
-    let span = to - h
-    let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)
-    let dir = if length(span) > 1.0e-6 { normalize(span) } else { normalize(a - h) }
-    let limb = normalize(a - h)
-    let pole = (k - h) - limb * dot(k - h, limb)
-    let across = pole - dir * dot(pole, dir)
-    let out = if length(across) > 1.0e-6 { normalize(across) } else {
-        let side = if abs(dir.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
-        normalize(cross(dir, side))
-    }
-    let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d)
-    let knee = h + dir * along + out * sqrt(max(l1 * l1 - along * along, 0.0))
-    (knee, h + dir * d)
+    let limb = if length(a - h) > 1.0e-6 { normalize(a - h) } else { normalize(k - h) }
+    bent(h, k, a, to, (k - h) - limb * dot(k - h, limb))
 }
 
-pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
+/// The two-bone solve `bend` and `bend_pole` share: the knee pushed across the reach toward
+/// `toward`'s part across it.
+fn bent(h: vec3, k: vec3, a: vec3, to: vec3, toward: vec3) -> (vec3, vec3) {
     let (l1, l2) = (length(k - h), length(a - k))
     let span = to - h
     let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)
@@ -728,9 +727,9 @@ pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
         // A folded rest limb has its end at its root; its first bone still gives a direction.
         normalize(k - h)
     }
-    // Across the reach, toward the rest knee.
-    let rest_out = (k - h) - dir * dot(k - h, dir)
-    let out = if length(rest_out) > 1.0e-6 { normalize(rest_out) } else {
+    // Across the reach, toward `toward`.
+    let across_reach = toward - dir * dot(toward, dir)
+    let out = if length(across_reach) > 1.0e-6 { normalize(across_reach) } else {
         let across = if abs(dir.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
         normalize(cross(dir, across))
     }

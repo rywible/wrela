@@ -18,8 +18,8 @@ fn the_command_line_takes_a_directory_a_size_and_captures() {
     }
     assert(o.out.as_str() == "ws/build/m" && o.width == 64 && o.height == 48)
     assert(o.captures.len() == 2 && o.captures[0].name == "canopy" && o.captures[1].name == "gust")
-    let Ok(all) = parse_args(texts(["build/m"])) else { panic("every capture") }
-    assert(all.captures.len() == NAMES.len() && all.width == 1280 && all.height == 720)
+    let Ok(all) = parse_args(texts(["build/m"])) else { panic("every capture but the vale's") }
+    assert(all.captures.len() + 1 == NAMES.len() && all.width == 1280 && all.height == 720)
     let Err(why) = parse_args(texts(["build/m", "fog"])) else { panic("an unknown capture") }
     assert(why.as_str().find("no capture fog").is_some(), why.as_str())
     assert(parse_args(texts([])).is_err(), "no directory")

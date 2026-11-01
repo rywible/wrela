@@ -233,7 +233,7 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 // second), `TRAIL_ACROSS` off the shot's look, its way `TRAIL_TURN` across its line
                 // to the eye, toward the look.
                 let look = normalize(at.xz - eye.xz)
-                let lead = grazer::walk().walk.speed * (engine::shot::SETTLE - 0.5)
+                let lead = grazer::WALK.walk.speed * (engine::shot::SETTLE - 0.5)
                 let start = eye.xz + turned(look, TRAIL_ACROSS) * (TRAIL_AT + lead)
                 let to_eye = normalize(eye.xz - start)
                 let middle = normalize(eye.xz + look * (TRAIL_AT + lead) - start)
@@ -254,7 +254,7 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                     }
                 }
                 let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since, eye)
-                s.stage.pushes = grazer::pushes(grazer::body(), w.walker, origin)
+                s.stage.pushes = grazer::pushes(grazer::BODY, w.walker, origin)
                 s.walking = Some((f, w))
                 s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
             }

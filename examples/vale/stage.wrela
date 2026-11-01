@@ -16,8 +16,8 @@ use engine::lit::Lighting
 use engine::switches::Switches
 use engine::style::Style
 use engine::memory::{Share, Usage}
-use engine::grass::{PUSHES, Push}
-use engine::particles::{Emits, puff, splash}
+use engine::grass::{PUSHES, Push, with_pushes}
+use engine::particles::{Emits, PUFF, SPLASH, burst}
 use engine::water::WaterMesh
 use engine::plant::{Plant, Wind}
 use engine::probes::{Occluder, ProbeGrid, Trace}
@@ -152,16 +152,17 @@ pub struct Stage {
 /// The vale's stage at load: its kinds the floor's species' (`trees::kinds`), its water laid
 /// (`water::mesh`), its tiles cooked from the first frame round the eye.
 pub fn stage() -> Stage {
+    let water = water::mesh()
     Stage {
         land: landscape(
             TILES,
             trees::kinds::plants(grown: true),
             trees::kinds::far_kinds(),
-            water::mesh(),
+            water.clone(),
             vec2i(0),
         ),
         grazer: cast(grazer::grazer(), grazer::look(), REALIZED, SLICES),
-        water: water::mesh(),
+        water,
         footprints: buffer_of([vec4(1.0e9, 1.0e9, 0.0, 0.0)], at_least: 1),
     }
 }
@@ -193,15 +194,11 @@ impl Scene for Stage {
             let seed = 0x9E37 + u32(self.land.sprayed) + k
             let surface = self.water.height_at(world.xz)
             if surface != engine::water::NONE && surface > world.y + 0.01 {
-                for p in splash(vec3(at.x, at.y + surface - world.y, at.z), seed) {
-                    e.push(p)
-                }
+                burst(mut e, SPLASH, vec3(at.x, at.y + surface - world.y, at.z), seed)
             } else {
                 let ground = GROUND.cover(world, vec3(0.0, 1.0, 0.0))
                 if ground.grass < 0.5 {
-                    for p in puff(at, ground.albedo, seed) {
-                        e.push(p)
-                    }
+                    burst(mut e, PUFF, at, seed, tint: ground.albedo)
                 }
             }
         }
@@ -301,7 +298,7 @@ impl Scene for Stage {
         hzb: Hzb,
     ) {
         self.land.eye = lt.cam.eye + lt.cam.origin
-        self.land.grass.contact.pushes = self.pushes
+        self.land.grass.contact = with_pushes(self.land.grass.contact, self.pushes)
         self.land.grass.place(
             lt.cam,
             lt.light,

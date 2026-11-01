@@ -20,13 +20,13 @@
 // `optimize` (studio/gait) searches each pace's walk on each terrain (`GROUNDS`) by CMA-ES and
 // writes the results (`kit::walks`); `score` measures one.
 
-use engine::gait::{Body, Walk, Walker, frame_of, stand, step}
-use engine::loads::{Loads, Pose, Segments, joint_loads, segments_of}
+use engine::gait::{Body, Walk, frame_of, stand, step}
+use engine::loads::{Loads, Pose, Segments, joint_loads}
 use engine::terrain::{Cover, Terrain}
 use engine::noise::noise2
-use genome::{CreatureGenome, DENSITY, Flesh, grown_body, quadruped_at}
+use genome::{CreatureGenome, grown_segments, quadruped_at}
 use muscles::{Ahead, pose_of, walker_body}
-use quadruped::{Quadruped, plain, skeleton}
+use quadruped::{Quadruped, skeleton}
 
 /// A gait: the walker's walk, its springs' stiffness (the head's chain's and the tail's), and
 /// how far below its rest height its body goes (`engine::gait::Body::crouch`).
@@ -276,12 +276,7 @@ pub fn run(
     down: bool,
 ) -> Run {
     let q = quadruped_at(g, 1.0)
-    let segs = segments_of(
-        grown_body(g, 1.0, plain(Flesh {})),
-        |c: Flesh| DENSITY,
-        finest: 0.01,
-        height: q.withers,
-    )
+    let segs = grown_segments(g, 1.0)
     run_with(g, q, segs, gait, p, ground, seconds, down)
 }
 
@@ -319,6 +314,17 @@ pub fn both_ways(
 /// (`kit::grown`).
 pub const SIZING: f32 = 20.0
 
+/// The walker's body of a kit animal of proportions `q` walking `gait`: its springs', its crouch's,
+/// its pitch's follow and its smoothness, keeping `CLEARANCE` over the ground under its swings.
+pub fn body_of(q: Quadruped, gait: Gait) -> Body {
+    var b = walker_body(q, gait.head_k, gait.tail_k)
+    b.clear = CLEARANCE
+    b.crouch = gait.crouch
+    b.follow = gait.follow
+    b.smooth = gait.smooth
+    b
+}
+
 /// The frames a run sets off over, not scored, and its step.
 pub const SETTLE: u32 = 90
 pub const DT: f32 = 1.0 / 60.0
@@ -349,11 +355,7 @@ pub fn run_with(
     down: bool,
 ) -> Run {
     let s = skeleton(q)
-    var b = walker_body(q, gait.head_k, gait.tail_k)
-    b.clear = CLEARANCE
-    b.crouch = gait.crouch
-    b.follow = gait.follow
-    b.smooth = gait.smooth
+    let b = body_of(q, gait)
     let terrain = if down { Ground { grade: -ground.grade, ..ground } } else { ground }
     let walk = gait.walk
     var w = stand(terrain, b, vec2(0.0), 0.0)

@@ -3,7 +3,7 @@
 // walk holds a 30° slope up and down, clears a log, recovers from a drop, and spends at least 10 %
 // less than the hand-set walk; the search is the same from its seed.
 
-use kit::gaits::{Ground, HAND, Pace, Run, effort, gait_at, run, score}
+use kit::gaits::{Ground, HAND, Pace, effort, gait_at, run, score, score_with}
 use kit::genome::ROE
 use kit::walks::WALKS
 use engine::loads::Loads
@@ -153,6 +153,7 @@ fn the_search_is_the_same_from_its_seed() {
 
 /// Two generations of the gait tool's search on level ground (its population, from its seed).
 fn searched() -> Vec<f32> {
+    let (q, segs) = (kit::genome::quadruped_at(ROE, 1.0), kit::genome::grown_segments(ROE, 1.0))
     var cma = toolkit::cma::Cma::new([0.5, 0.4, 0.4, 0.5, 0.0, 1.0], 0.2, 5, lambda: 8)
     var best = Vec::from([0.5, 0.4, 0.4, 0.5, 0.0, 1.0])
     var least = 1.0e30
@@ -160,8 +161,10 @@ fn searched() -> Vec<f32> {
         let xs = cma.ask()
         var totals: Vec<f32> = Vec::new()
         for x in xs {
-            let t = score(
+            let t = score_with(
                 ROE,
+                q,
+                segs.clone(),
                 gait_at(ROE, Pace::Walk, x),
                 Pace::Walk,
                 Ground {},

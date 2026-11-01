@@ -265,18 +265,12 @@ fn the_coat_has_no_seam_at_a_join() {
 
 // ---- the muscles (§F4) ---------------------------------------------------------------------------
 
-use kit::muscles::{Ahead, GROUPS, muscle_mass, muscles, standing, walked, walker_body}
-use engine::loads::{joint_loads, segments_of}
+use kit::muscles::{GROUPS, muscle_mass, muscles, standing}
+use engine::loads::joint_loads
 
 /// The roe's segments, grown to `age`, of genome `g`.
 fn segments(g: kit::genome::CreatureGenome, age: f32) -> engine::loads::Segments {
-    let q = quadruped_at(g, age)
-    segments_of(
-        grown_body(g, age, plain(Flesh {})),
-        |c: Flesh| kit::genome::DENSITY,
-        finest: 0.01,
-        height: q.withers,
-    )
+    kit::genome::grown_segments(g, age)
 }
 
 /// The muscles a genome grows standing (the loads that size them before the gait is optimized).

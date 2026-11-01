@@ -201,8 +201,12 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
     }
     let Some(path) = take out else { return Err(String::from(USAGE)) }
     o.out = take path
+    // With none named, the floor's (the vale's `trail` is named alone, with its package).
     if o.captures.is_empty() {
         for n in NAMES {
+            if n == "trail" {
+                continue
+            }
             let Some(c) = capture(n) else { panic("each name is a capture") }
             o.captures.push(take c)
         }

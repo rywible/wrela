@@ -5,11 +5,10 @@
 // the bone it spans. Before the gait is optimized (F5) the standing pose's loads size them;
 // after, the optimized walk's.
 
-use engine::gait::{Body, Path, Walk, Walker, palette, stand, step}
-use engine::loads::{Contact, Loads, Pose, Segments, peaks}
-use engine::creature::{Bone, Inside, Placed, Skeleton, Then, group, smooth}
+use engine::gait::{Body, Path, Walker, palette}
+use engine::loads::{Contact, Loads, Pose, peaks}
+use engine::creature::{Inside, Placed, Skeleton, Then, group, smooth}
 use std::field::With
-use engine::terrain::Terrain
 use genome::CreatureGenome
 use quadruped::{Look, Quadruped, QuadrupedParts, body, frame, skeleton}
 
@@ -29,31 +28,6 @@ impl Path for Ahead {
     fn at(self, s: f32) -> vec2 {
         vec2(0.0, s)
     }
-}
-
-/// `frames` poses `dt` apart of a kit animal of proportions `q` walking `walk` along `path` on
-/// `terrain` from the origin (its first `settle` steps not kept: it sets off), each its bones'
-/// matrices and its planted feet (`engine::loads::Pose`).
-pub fn walked<T: Terrain, P: Path>(
-    q: Quadruped,
-    b: Body,
-    walk: Walk,
-    terrain: T,
-    path: P,
-    frames: u32,
-    settle: u32,
-    dt: f32,
-) -> Vec<Pose> {
-    let s = skeleton(q)
-    var w = stand(terrain, b, path.at(0.0), 0.0)
-    var out: Vec<Pose> = Vec::new()
-    for k in 0..(frames + settle) {
-        step(mut w, terrain, path, b, walk, go: true, dt: dt)
-        if k >= settle {
-            out.push(pose_of(s, b, w))
-        }
-    }
-    out
 }
 
 /// Walker `w`'s pose: its palette's bones and its planted feet, each under its leg's foot bone.

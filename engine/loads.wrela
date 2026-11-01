@@ -136,7 +136,6 @@ pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
         borrow b = poses[t]
         borrow c = poses[t + 1]
         // Each part's centre, acceleration, turn, angular velocity and acceleration (world).
-        var at: Vec<vec3> = Vec::new()
         var force: Vec<vec3> = Vec::new()
         var moment: Vec<vec3> = Vec::new()
         var omegas: Vec<vec3> = Vec::new()
@@ -157,7 +156,6 @@ pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
             let inertia = |v: vec3| r1 * (i_rest * (v * r1))
             let m = s.mass[i]
             let f = m * (acc - G)
-            at.push(p1)
             omegas.push(w)
             force.push(f)
             moment.push(cross(p1, f) + inertia(alpha) + cross(w, inertia(w)))

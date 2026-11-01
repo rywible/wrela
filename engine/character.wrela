@@ -350,7 +350,8 @@ pub fn highlight<Y: Style>(light: Light, s: Lit, v: vec3) -> vec3 {
     light.sun_colour * (BAND * s.sun * step(Y::HIGHLIGHT, dot(mirror, light.sun)))
 }
 
-/// How bright a banded look's highlight is, per unit of the sun's colour (the cel look's water's).
+/// How bright a banded look's highlight is, per unit of the sun's colour (the cel look's water's
+/// and wet stone's too).
 pub const BAND: f32 = 0.6
 
 /// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the

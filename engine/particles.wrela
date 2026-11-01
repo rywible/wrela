@@ -79,76 +79,74 @@ impl Emits {
     }
 }
 
-/// The drops a footfall in water throws (`splash`), and the bits a footfall on litter or dry
-/// ground stirs (`puff`).
-pub const SPLASH: u32 = 24
-pub const PUFF: u32 = 12
-
-/// A footfall's splash at `at` (on the water's surface, render space): `SPLASH` drops thrown up
-/// and out round it (up to 1.4 m/s up, 0.6 m/s out, a millimetre or two across), white against
-/// what's behind them, falling back in half a second or so (`seed` varies them).
-pub fn splash(at: vec3, seed: u32) -> [Particle; SPLASH] {
-    var out = [Particle {
-        at,
-        life: 0.0,
-        vel: vec3(0.0),
-        size: 0.0,
-        colour: vec4(0.0),
-        kind: SOFT,
-        drag: 0.0,
-        grow: 0.0,
-        age: 0.0,
-    }; SPLASH]
-    for k in 0..SPLASH {
-        let r = |i: u32| noise::rand(seed, k * 8 + i)
-        let a = std::math::TAU * r(0)
-        let out_speed = 0.2 + 0.4 * r(1)
-        out[k] = Particle {
-            at: at + vec3(cos(a), 0.0, sin(a)) * (0.02 * r(2)),
-            life: 0.35 + 0.35 * r(3),
-            vel: vec3(cos(a) * out_speed, 0.6 + 0.8 * r(4), sin(a) * out_speed),
-            size: 0.0015 + 0.0015 * r(5),
-            colour: vec4(0.85, 0.9, 0.92, 0.7),
-            kind: SOFT,
-            drag: 0.5,
-            grow: 0.0,
-            age: 0.0,
-        }
-    }
-    out
+/// A burst of soft particles thrown up and out round a point (a footfall's: `SPLASH`, `PUFF`):
+/// how many, how far round the point they start (m) and how high (a share of that), how long they
+/// live (s), how fast they go out and up (m/s), how large they are (m), their colour (straight
+/// alpha), how fast they take the wind's speed (per second) and how fast they grow (m/s); each
+/// range low to high.
+pub struct Burst: Copy {
+    pub count: u32,
+    pub spread: f32,
+    pub lift: f32 = 0.0,
+    pub life: vec2,
+    pub out: vec2,
+    pub up: vec2,
+    pub size: vec2,
+    pub colour: vec4,
+    pub drag: f32,
+    pub grow: f32 = 0.0,
 }
 
-/// A footfall's puff at `at` (on the ground, render space): `PUFF` bits of litter and dust of
-/// `colour` kicked up and out round the hoof, a few centimetres, settling in under a second.
-pub fn puff(at: vec3, colour: vec3, seed: u32) -> [Particle; PUFF] {
-    var out = [Particle {
-        at,
-        life: 0.0,
-        vel: vec3(0.0),
-        size: 0.0,
-        colour: vec4(0.0),
-        kind: SOFT,
-        drag: 0.0,
-        grow: 0.0,
-        age: 0.0,
-    }; PUFF]
-    for k in 0..PUFF {
-        let r = |i: u32| noise::rand(seed, k * 8 + i)
-        let a = std::math::TAU * r(0)
-        let out_speed = 0.1 + 0.25 * r(1)
-        out[k] = Particle {
-            at: at + vec3(cos(a), 0.01, sin(a)) * (0.03 * r(2)),
-            life: 0.4 + 0.5 * r(3),
-            vel: vec3(cos(a) * out_speed, 0.25 + 0.35 * r(4), sin(a) * out_speed),
-            size: 0.003 + 0.004 * r(5),
-            colour: vec4(colour, 0.85),
-            kind: SOFT,
-            drag: 2.5,
-            grow: 0.01,
-            age: 0.0,
-        }
+/// A footfall's splash in water (§F7): 24 drops up to 1.4 m/s up and 0.6 m/s out, a millimetre or
+/// two across, white against what's behind them, falling back in half a second or so.
+pub const SPLASH = Burst {
+    count: 24,
+    spread: 0.02,
+    life: vec2(0.35, 0.7),
+    out: vec2(0.2, 0.6),
+    up: vec2(0.6, 1.4),
+    size: vec2(0.0015, 0.003),
+    colour: vec4(0.85, 0.9, 0.92, 0.7),
+    drag: 0.5,
+}
+
+/// A footfall's puff on litter or dry ground (§F7): 12 bits of the ground's colour (its `colour`'s
+/// rgb is replaced: `burst`'s `tint`) kicked a few centimetres up and out, settling in under a
+/// second.
+pub const PUFF = Burst {
+    count: 12,
+    spread: 0.03,
+    lift: 0.01,
+    life: vec2(0.4, 0.9),
+    out: vec2(0.1, 0.35),
+    up: vec2(0.25, 0.6),
+    size: vec2(0.003, 0.007),
+    colour: vec4(1.0, 1.0, 1.0, 0.85),
+    drag: 2.5,
+    grow: 0.01,
+}
+
+/// Burst `b` at `at` (render space) emitted into `e`, its colour's rgb times `tint`, its draws
+/// from `seed`.
+pub fn burst(e: mut Emits, b: Burst, at: vec3, seed: u32, tint: vec3 = vec3(1.0)) {
+    for k in 0..b.count {
+        let r = |i: u32, range: vec2| noise::pick(seed, k * 8 + i, range.x, range.y)
+        let a = r(0, vec2(0.0, std::math::TAU))
+        let out = r(1, b.out)
+        e.push(
+            Particle {
+                at: at + vec3(cos(a), b.lift, sin(a)) * r(2, vec2(0.0, b.spread)),
+                life: r(3, b.life),
+                vel: vec3(cos(a) * out, r(4, b.up), sin(a) * out),
+                size: r(5, b.size),
+                colour: vec4(b.colour.rgb * tint, b.colour.a),
+                kind: SOFT,
+                drag: b.drag,
+                grow: b.grow,
+                age: 0.0,
+            },
+        )
     }
-    out
 }
 
 /// A frame's step for the particles: the camera they're drawn with (the scene's depth is its),

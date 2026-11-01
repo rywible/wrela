@@ -2221,6 +2221,32 @@ pub struct Contact: Copy + GpuData {
     pub at: vec4 = vec4(0.0),
     pub tail: vec4 = vec4(0.0),
     pub pushes: [Push; PUSHES] = [Push {}; PUSHES],
+    /// Where the pushes reach: a circle on the plane (its centre's x and z, render space, and its
+    /// radius) holding every push's reach; none (0) and no blade is pushed (`with_pushes` sets it).
+    pub reach: vec4 = vec4(0.0),
+}
+
+/// `c` with `pushes`, and the circle that holds their reach.
+pub fn with_pushes(c: Contact, pushes: [Push; PUSHES]) -> Contact {
+    var centre = vec2(0.0)
+    var n = 0.0
+    for q in pushes {
+        if q.a.w > 0.0 {
+            centre += 0.5 * (q.a.xz + q.b.xz)
+            n += 1.0
+        }
+    }
+    if n == 0.0 {
+        return Contact { pushes, reach: vec4(0.0), ..c }
+    }
+    centre /= n
+    var radius = 0.0
+    for q in pushes {
+        if q.a.w > 0.0 {
+            radius = max(radius, max(length(q.a.xz - centre), length(q.b.xz - centre)) + q.a.w)
+        }
+    }
+    Contact { pushes, reach: vec4(centre.x, 0.0, centre.y, radius), ..c }
 }
 
 /// How many pushes a contact has room for: a quadruped's four hooves and its body.
@@ -2241,8 +2267,11 @@ pub fn push(a: vec3, b: vec3, reach: f32, lean: f32) -> Push {
 }
 
 /// A blade's point `point` (its root `root`) leaned away from each of `c`'s pushes it's within
-/// reach of: turned about its root in the upright plane away from the push's line.
+/// reach of (none outside the circle that holds their reach, `Contact::reach`): turned about its root in the upright plane away from the push's line.
 pub fn pushed(point: vec3, root: vec3, c: Contact) -> vec3 {
+    if c.reach.w <= 0.0 || length(root.xz - c.reach.xz) >= c.reach.w {
+        return point
+    }
     var p = point
     for k in 0..PUSHES {
         let q = c.pushes[k]

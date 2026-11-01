@@ -31,7 +31,7 @@
 // near-lossless, which FFmpeg makes: the tool runs `ffmpeg`, which must be on `PATH`) and a
 // contact sheet of six frames at half size, each labelled by its frame (`<name>-sheet.webp`,
 // composed here); `--frames-only` makes no clip. 1280x720 unless `--size` says otherwise. With
-// no capture named, all of them, one at a time.
+// no capture named, all of them but the vale's `trail`, one at a time.
 
 use audio_tool::sheet::Image
 use captures::{Capture, Options, compose, parse_args, picks}
