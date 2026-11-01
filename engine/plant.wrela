@@ -858,6 +858,22 @@ fn in_leaf(uv: vec2, base: vec2, dir: vec2, len: f32) -> (f32, f32, f32) {
     (min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01), saturate(s), t / len)
 }
 
+/// How far a leaf's point (`along` its length 0 to 1, `across` it over its length) is from its
+/// secondary veins, as their tissue (0 on a vein, 1 off them): `VEINS` a side, leaving the midrib
+/// toward the tip at `VEIN_SLOPE` (a pinnate leaf's, as a beech's or an oak's), each fading out
+/// toward the tip and the base.
+pub fn secondary_veins(along: f32, across: f32) -> f32 {
+    let phase = (along - abs(across) * VEIN_SLOPE) * f32(VEINS)
+    let apart = abs(phase - round(phase)) / f32(VEINS)
+    let inside = smoothstep(0.04, 0.12, along) * (1.0 - smoothstep(0.85, 0.97, along))
+    mix(1.0, smoothstep(0.002, 0.006, apart), inside)
+}
+
+/// A leaf's secondary veins a side, and how far toward the tip they run per unit out from the
+/// midrib (**proposed**: a beech leaf's seven to ten pairs, at about 45°).
+pub const VEINS: u32 = 8
+pub const VEIN_SLOPE: f32 = 1.0
+
 /// How much of a leaf's length its own stalk is, from the stem to its blade.
 const LEAF_STALK: f32 = 0.08
 
@@ -879,7 +895,7 @@ pub fn sprig_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32, vec2) {
         if inside > best {
             best = inside
             which = i
-            let rib = smoothstep(0.012, 0.065, abs(across))
+            let rib = min(smoothstep(0.006, 0.03, abs(across)), secondary_veins(along, across))
             let fold = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
             tissue = vec2(rib, fold)
         }
@@ -2018,4 +2034,29 @@ fn a_card_placed_with_its_areas_found_once_is_where_card_place_puts_it() {
         let (b, pb, kb) = placed_card(p, areas, n, 7, id)
         assert(a == b && pa == pb && ka == kb, f"card {id} of {n} moved")
     }
+}
+
+/// A leaf's veins (its midrib and its secondaries, the atlas's tissue under a half) cover 5 to 15 %
+/// of its blade (§G3), over the sprigs of eight seeds.
+@test
+fn a_leafs_veins_cover_a_tenth_of_it() {
+    var blade = 0
+    var vein = 0
+    for seed in 0..8 {
+        for y in 0..160 {
+            for x in 0..160 {
+                let uv = (vec2(f32(x), f32(y)) + vec2(0.5)) / 80.0 - vec2(1.0)
+                let (m, _, tissue) = sprig_on(uv, seed, w: 0.002, n: 5)
+                // A blade's (the stem's and the stalks' tissue is 0, 0.5 exactly).
+                if m > 0.5 && !(tissue.x == 0.0 && tissue.y == 0.5) {
+                    blade += 1
+                    if tissue.x < 0.5 {
+                        vein += 1
+                    }
+                }
+            }
+        }
+    }
+    let share = f32(vein) / f32(max(blade, 1))
+    assert(share >= 0.05 && share <= 0.15, f"veins cover {share} of the blades")
 }
