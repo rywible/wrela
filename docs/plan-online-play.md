@@ -451,3 +451,47 @@ needs a passkey sign-up (a person) and a release's layout of the console with it
 Kept: offline play makes no request (the asks still need a console, and the background ones an
 account); nothing is posted before the account agrees, by the screen's Post or the console's page;
 sign-ups stay closed on the live server (console/server/serve.wrela's `close_sign_ups`).
+
+**Simplify, pass 2** (2026-10-31; the four reviewers again, over the branch since `f19f42c2`):
+applied in the platform, the console, its server, the capybara and the release and deploy tools,
+among them one key builder and `latest_as`, one challenge maker for the edge and an account, an
+upload's replay passed by reference, board pages read on from where the last ended (a page's
+`next`, a request's `after`), the leaderboard's per-frame work done as rows come, the API Worker's
+keys given only to a `POST` to `/api/accounts`, and the deploy's verifier put once. Skipped, and
+why:
+
+- *Search by a title alone reads every letter's shard.* Sharding the title index too is a design
+  change; a follow-up. Neighbouring ranges in a shard are read as one now.
+- *Independent reads issued together, and an account kept in memory.* Both need a job that waits
+  on several tickets; a follow-up.
+- *A keys-only count of the places ahead.* The store can't (docs/toolchain-gaps.md, "A store can't
+  count its keys without reading their values").
+- *A generic `platform/online.wrela` client for every game.* A large refactor; a follow-up.
+- *The posting dialog's whole model in posting.wrela* (layout, tree and input for both). Its words
+  were already shared, and now so is the line that says to sign in to post (`SIGN_IN`). The rest
+  is a follow-up with the client above: the console's page is one of its sheet's, laid out in the
+  sheet's units with its zoom and its tree, and the game's is laid out on its own scale with its
+  pad's focus in main.wrela, so one model needs the platform to depend on `ui` and an input of both
+  kinds. Its button stays "Agree" on the console, where posting.wrela's "Post" would misname it:
+  the page opens only from "Post my best runs", and its button agrees and turns that on, posting
+  nothing (docs/voice.md: a button says what happens).
+- *The removal acknowledgements.* Kept: the account's last clear must not drop messages still in
+  its outbox, and the plan's guarantee is that removals land before the account forgets. Revisit
+  when the host says whether clearing a store keeps its outbox (docs/toolchain-gaps.md, "An
+  instance can't hear that its messages were delivered").
+- *A Job and a Step for each kind of instance.* A follow-up, best done once instance code can be
+  tested calling std itself (docs/toolchain-gaps.md, "Instance code can't be tested on a fake host
+  of std's").
+- *The engine's own read-your-writes.* Kept until the host has it (docs/toolchain-gaps.md, "A
+  call's reads don't see its writes", updated).
+- *Numbering the posting screen's nodes anew each time.* Kept: it works round the host's focus in
+  a modal dialog (docs/toolchain-gaps.md, "A modal dialog opens on its first control...").
+- *The catalog repeating the board version, and the release adding the bucket's binding.* Each is
+  the toolchain's to give (docs/toolchain-gaps.md, "A release can't read the board version its game
+  builds", "A server build doesn't bind the bucket its archived builds are in").
+- *Done otherwise than asked:* `mine_in` reads the account's place found as the rows came
+  (`Shown::mine`) rather than searching with `picked`; a sign-up's refusal is `step_refused`, for
+  every step of a sign-up, not only its draws (and a failed call at any of them now lets the next
+  begin); only a board's pages take the cursor, since a slice isn't paged; an older board's replay
+  is still copied once into its verifier's call, which serializes it; and the waiting run that's
+  due is still copied once, since posting it changes what it's read from.

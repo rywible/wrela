@@ -22,7 +22,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Found:** 2026-10-31, building the sharded server's deletion.
 - **Evidence:** runtime/cloudflare/src/host.ts's `deliver` (wrela-compiler at `c3eaac3`) calls `store.acknowledged(m.id)` and nothing more; `std::server` has no event for it.
 - **Meanwhile:** each removal carries an id (server.wrela's `Letter::confirm`), its receiver sends a `Note::Removed` back in the call that applies it, and the account keeps each pending (`x/<id>`) until it hears; the last one clears the store (platform/accounts.wrela).
-- **Status:** open: an event for a message acknowledged, or an outbox the sender can read.
+- **Status:** open: an event for a message acknowledged, or an outbox the sender can read. The acknowledgements stay until then (/simplify's second pass, 2026-10-31): the account's last clear must not drop messages still in its outbox, and the host doesn't say whether clearing an instance's store (`deleteAll`) keeps its outbox.
 
 ### A program can't come back over the program it shows
 
@@ -465,13 +465,58 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the release left the console's server build out, and the console was built with `ONLINE = false`.
 - **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46): a server build also writes `server/cloudflare.js` (a Durable Object that runs it beside its SQLite store, and the Worker's router, `api`) and `server/cloudflare.json` (its Wrangler members). The release puts them in the console's Worker (studio/release/site.wrela), on Workers Paid: Free's 10 ms of CPU a Durable Object invocation is too little to verify a run, since the host runs calls for up to 250 ms before it hands on to the object's alarm (Ryan chose Paid, 2026-10-31). WebSocket rooms came in 0.14.0, which the console doesn't use yet.
 
+### A store can't count its keys without reading their values
+
+- **Needed:** a board's place for a run (platform/ranking.wrela's `RankCount` and `AroundCount`): how many places are ahead of it, up to `MOST_PLACE`.
+- **What happens:** toolchain 0.18.0's `std::store::scan` gives each entry's key and value, so counting a thousand places reads a thousand `Ranked` records (each a name, a run and a replay's hash) only to count them, toward the host's 1 MiB a scan.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (efficiency).
+- **Evidence:** compiler/std/store.wrela's `scan(from, to, limit, down)` and `entries`, which hold `Entry { key, value }`; there is no keys-only form or count.
+- **Meanwhile:** the board scans the places ahead with their values and counts them.
+- **Status:** open: a keys-only scan (`store::keys(from, to, limit)`) or a count (`store::count(from, to, limit) -> u32`).
+
+### Instance code can't be tested on a fake host of std's
+
+- **Needed:** each of the console's server's instances written as code that calls `std::store`, `std::crypto` and `std::server` itself, a request's steps one after another, rather than a state machine that hands its host `Command`s and waits on tickets (platform/server.wrela's `Job` and its hundred `Step`s), and tested on a host of many instances.
+- **What happens:** toolchain 0.18.0's tests run std's server services against nothing: a test can't make instances, deliver their calls and messages, or hold and fail them, so code that calls std directly can't be tested beyond one instance.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude: a Job and a Step for each kind of instance).
+- **Evidence:** platform/server_tests.wrela's fake host, which drives the engine's `Command`s; `std::server`'s services answer only on a real host.
+- **Meanwhile:** the engine stays a state machine over its host, and the platform's tests run it on its own fake host of many instances (`wrela test platform`).
+- **Status:** open: a fake multi-instance host in `std::testing` (instances, their stores, outboxes and calls, with holds and failures a test sets), as 0.18.0's Cloudflare host behaves.
+
+### A modal dialog opens on its first control, and the focus asked for once isn't asked again
+
+- **Needed:** the capybara's screen of what posting makes public (games/capybara/screens.wrela's `posting_tree`) opening with the focus on Post each time it comes up.
+- **What happens:** the browser host focuses a modal dialog's first control as it opens, whatever node says `focused`, and then moves the focus to the `focused` node only when that node's id differs from the last one asked for, which it keeps when that node goes. So a dialog that comes up again with the same ids opens on its first control (the box), not on Post.
+- **Found:** 2026-10-31, playing the posting screen; /simplify's second pass asked for the workaround to go.
+- **Evidence:** runtime/browser/src/semantics.ts at wrela-compiler `a4ad713` (v0.17.0; 0.18.0's source isn't checked out here, and 0.18.0 behaves the same in play): `#dialogs` focuses `querySelector(FOCUSABLE)` of a dialog newly open, and `update`'s `if (asked !== this.#focused)` sets `#focused` only on a change, while the loop that removes the nodes that went leaves it.
+- **Meanwhile:** the game numbers the screen's nodes anew each time it comes up (main.wrela's `consents`), so its Post is a new id the host focuses.
+- **Status:** open: a modal dialog that opens on its `focused` node if it has one, and `#focused` cleared when its node goes.
+
+### A release can't read the board version its game builds
+
+- **Needed:** the release's catalog naming the board version the console's server verifies (studio/release/catalog.wrela's `console.board`), under which each release keeps its verifier, as games/capybara/replay.wrela's `BOARD` says it.
+- **What happens:** a tool can't read a package's constant: the catalog repeats it, and a test reads replay.wrela's source for the line (studio/release/tests.wrela's `the_catalogs_board_is_the_games`).
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude).
+- **Evidence:** `std::tool::toolchain` builds a package and reads its manifest, which records `--set`s but not a constant's value; `wrela build --report consts` prints the constants a build computes, not a `pub const` that's a literal.
+- **Meanwhile:** the catalog says the version, and the test ties it to the source.
+- **Status:** open: a server build's manifest naming its `Game::board`, or a tool's way to read a package's `pub const`.
+
+### A server build doesn't bind the bucket its archived builds are in
+
+- **Needed:** the console's server playing an older board's runs with that board's archived verifier (`std::server::call_build`), which the host reads from an R2 bucket bound as `WRELA_BUILDS`.
+- **What happens:** toolchain 0.18.0's `server/cloudflare.json` gives the Worker Loader's binding (`WRELA_LOADER`) and not the bucket's, so each release adds it to the API Worker's configuration itself.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude).
+- **Evidence:** studio/release/site.wrela's `server_members` (for `api_config`) pushes an `r2_buckets` member (`WRELA_BUILDS`, `BUILDS_BUCKET`) after the build's members.
+- **Meanwhile:** the release adds the binding, its bucket named by `BUILDS_BUCKET`.
+- **Status:** open: `server/cloudflare.json` binding the bucket `call_build` reads, named by the build or a `wrela build` option.
+
 ### A call's reads don't see its writes
 
 - **Needed:** a single-use key taken once, and a unique key claimed once, by the console's server: a passkey ceremony's challenge (used once, even by two requests in one call), an account's name (no two accounts with one), and the verification queue read after an upload writes it.
 - **What happens:** `std::store`'s reads are answered on the next call, from the store as it was before the call's writes, which commit when the call returns (language.md §19.4; toolchain 0.13.0's Cloudflare host does the same). So two requests in one call both read a challenge before either's delete commits, and a read made in the call that wrote a key misses it.
 - **Found:** 2026-10-31, moving the console's server to HTTP, where a challenge moved from a connection's memory to the store.
-- **Meanwhile:** the engine remembers what it used or wrote lately and checks it before trusting a read (platform/server.wrela: `spent` for challenges, `recent_names` for names, `queue_written` for the queue). Each new key of the kind needs its own list.
-- **Status:** open: an atomic take (`store::take(key)`: read and delete in one) and claim (`store::put_new(key, value) -> bool`), which one Durable Object or one SQLite file can do in a statement, or a call's reads answered after its writes commit.
+- **Meanwhile:** the engine remembers what it deleted and wrote lately (platform/server.wrela's `gone` and `written`, read through `Engine::latest` and `latest_as`) and checks them before trusting a read, keeping each as long as a job begun before it may still read it (`forget_old`); toolchain 0.18.0 is the same (2026-10-31, the sharded server). Every read of a key the instance writes has to go through it.
+- **Status:** open: a call's reads seeing its own writes and those of the calls before whose writes haven't committed (read-your-writes, as a Durable Object's own storage gives in one invocation), or an atomic take (`store::take(key)`: read and delete in one) and claim (`store::put_new(key, value) -> bool`), which one Durable Object or one SQLite file can do in a statement. Raised again by /simplify's second pass over the sharded server (2026-10-31).
 
 ### `wrela-serve` keeps a room's printed lines to itself
 
