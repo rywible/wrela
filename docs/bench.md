@@ -3724,8 +3724,8 @@ walker's state, eased, and the strides to a rolling window; each searched again:
 Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: the M4's to re-measure.
 
 The grass's contact carries five pushes (`engine::grass::Push`: the grazer's hooves and its body,
-`kit::roe::pushes`); a footfall splashes in water (`particles::splash`, 24 drops) and puffs on
-bare ground or litter (`particles::puff`, 12). The tests (`engine/tests/interaction`): blades
+`kit::roe::pushes`); a footfall splashes in water (`particles::SPLASH`, 24 drops) and puffs on
+bare ground or litter (`particles::PUFF`, 12). The tests (`engine/tests/interaction`): blades
 0.05–0.3 m from each planted hoof lean 22° or more (at least 20); a fern 0.5 m to the chest's side
 12° away (at least 10); a footfall in water 24 drops, each rising. The cost, `wrela profile
 examples/vale --serial --size 1920x1080 --warmup 600 --frames 300` natively at F6 (f63ef9b5) and
@@ -3829,5 +3829,4 @@ four rounds running; its hide's albedo no longer moves it (a 30 % darker back ca
 darker in the sun: the doe's lit back is sRGB 191, 154, 118 against the soil's 141, 121, 95), so
 the next lever is the creature's lit value, not its colour: the character shading's band light
 (`character::character_shade`'s `cel`) lights it about 40 % brighter and flatter than the ground
-it stands on. F9's motion panel and F10's panel judged the fawn; the doe walks the same optimized
-walk, unscaled.
+it stands on. F10's panel and F9's first two rounds judged the fawn; F9's rounds 3 and 4 the doe.
