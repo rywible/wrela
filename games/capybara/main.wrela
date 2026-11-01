@@ -324,6 +324,13 @@ pub struct Lab {
     /// the board lists them (online.wrela's `fingerprint`), worked out once until the runs change.
     place: u32,
     prints: Vec<(u32, u32, Vec<Vec<u8>>)>,
+    /// The screen of what posting makes public, while it's up (online.wrela's `consenting`):
+    /// whether its box is ticked and which control has the focus (screens.wrela's `POSTING_BOX`...).
+    /// And whether the reminder to save the recovery codes was shown since the attempt began.
+    posting_best: bool,
+    posting_focus: u32,
+    consent_up: bool,
+    reminder_seen: bool,
     /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
     /// nothing is drawn, played, stored or asked for. The game played (`Play`) or playing itself
     /// (`Attract`, opened at `#attract` behind the console's home).
@@ -410,6 +417,10 @@ pub fn init() -> Lab {
         finished_print: Vec::new(),
         place: 0,
         prints: Vec::new(),
+        posting_best: false,
+        posting_focus: screens::POSTING_POST,
+        consent_up: false,
+        reminder_seen: false,
         trail: Vec::new(),
         splits: Vec::new(),
         trail_of: 0,
@@ -810,6 +821,19 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
         s.board = online::SEARCH
     }
     s.browsed = browsing || finding
+    online::browsing(mut s.online, browsing)
+    // The screen of what posting makes public comes up with its box unticked, the focus on Post.
+    let consenting = browsing && s.online.consenting.is_some()
+    if consenting && !s.consent_up {
+        s.posting_best = false
+        s.posting_focus = screens::POSTING_POST
+    }
+    s.consent_up = consenting
+    // The reminder to save the recovery codes, once seen, goes with the attempt it was seen on.
+    if s.reminder_seen && !browsing && live_snap.finished == 0 {
+        online::reminded(mut s.online)
+        s.reminder_seen = false
+    }
     for raw in events() {
         s.console.event(raw)
         let e = in_play(raw, origin)
@@ -829,6 +853,8 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
         }
         if finding {
             find(mut s, e, screen, time)
+        } else if browsing && s.online.consenting.is_some() {
+            consenting_input(mut s, e, screen)
         } else if browsing {
             browse(mut s, e, live_snap.course, screen)
         } else {
@@ -1136,6 +1162,16 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
         } else if page == CONTROLS {
             let (_, back) = controls_rects(screen)
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
+        } else if page == RUNS && s.online.consenting.is_some() {
+            // The screen of what posting makes public, a modal dialog over the leaderboard.
+            let laid = screens::posting_laid(s.fonts, screen)
+            nodes = screens::posting_tree(
+                snap.chosen,
+                laid,
+                origin,
+                best_runs: s.posting_best,
+                focus: s.posting_focus,
+            )
         } else if page == RUNS {
             // Back and the search's tab on the board, and its parts' boxes while it's shown; Race
             // while a run is watched (world.wrela's `RUNS_BACK`, `RUNS_RACE`, `RUNS_SEARCH`,
@@ -1330,7 +1366,11 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     if snap.finished > 0 && s.finish_age > FINISH_CARD {
         let alpha = smoothstep(FINISH_CARD, FINISH_CARD + 0.5, s.finish_age)
         let more = world::next(snap.course).is_some()
-        let notes = goal_notes(s)
+        var notes = goal_notes(s)
+        if let Some(line) = online::reminder(s.online) {
+            notes.push(String::from(line))
+            s.reminder_seen = true
+        }
         goal_card(
             mut s.list,
             s.fonts,
@@ -1922,6 +1962,67 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
     }
 }
 
+/// A key, a click or a press on a node while the screen of what posting makes public is up, over
+/// the leaderboard (the sim's keys still work: Esc, B, R or F leave the leaderboard, which is Not
+/// now). Up and down go between the box and the buttons, left and right between the buttons, and
+/// choosing (a jump's key, Enter or A, or a click) ticks the box or presses the button; Post
+/// records the player's agreement through the console (online.wrela's `consent`), and the run
+/// goes.
+fn consenting_input(s: mut Lab, e: Event, screen: vec2) {
+    let nav = s.nav.nav(e)
+    var chosen: Option<u32> = None
+    if let Event::Assist { node, action } = e {
+        let (page, item) = world::item_of(node)
+        if node != 0 && page == world::POSTING {
+            if item == world::PAGE_NODE && action == std::input::Assist::Dismiss {
+                chosen = Some(screens::POSTING_NOT_NOW)
+            } else if item < screens::POSTING_ITEMS {
+                if action == std::input::Assist::Activate {
+                    chosen = Some(item)
+                } else if action == std::input::Assist::Focus {
+                    s.posting_focus = item
+                }
+            }
+        }
+    }
+    if let Event::PointerDown { at, .. } = e {
+        s.pointer = at
+        let laid = screens::posting_laid(s.fonts, screen)
+        for i in 0..screens::POSTING_ITEMS {
+            if laid.controls[i].contains(at) {
+                s.posting_focus = i
+                chosen = Some(i)
+            }
+        }
+    }
+    let focus = s.posting_focus
+    if nav == Some(Nav::Choose) {
+        chosen = Some(focus)
+    } else if nav == Some(Nav::Up) {
+        s.posting_focus = screens::POSTING_BOX
+    } else if nav == Some(Nav::Down) && focus == screens::POSTING_BOX {
+        s.posting_focus = screens::POSTING_POST
+    } else if nav == Some(Nav::Left) && focus == screens::POSTING_NOT_NOW {
+        s.posting_focus = screens::POSTING_POST
+    } else if nav == Some(Nav::Right) && focus == screens::POSTING_POST {
+        s.posting_focus = screens::POSTING_NOT_NOW
+    }
+    match chosen {
+        Some(i) => {
+            if i == screens::POSTING_BOX {
+                s.posting_best = !s.posting_best
+            } else {
+                online::consent(
+                    mut s.online,
+                    post: i == screens::POSTING_POST,
+                    best_runs: s.posting_best,
+                )
+            }
+        },
+        None => {},
+    }
+}
+
 /// Whether event `e` is a press on the runs' page's node `item`, as the sim reads it.
 fn pressed_node(s: Lab, e: Event, item: u32) -> bool {
     if let Event::Assist { node, action } = e {
@@ -2367,6 +2468,37 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
         )
         return
     }
+    if s.online.consenting.is_some() {
+        let laid = screens::posting_laid(s.fonts, screen)
+        var hover: Option<u32> = None
+        for i in 0..screens::POSTING_ITEMS {
+            if pointing && laid.controls[i].contains(s.pointer) {
+                hover = Some(i)
+            }
+        }
+        screens::posting_card(
+            mut s.list,
+            s.fonts,
+            screen,
+            laid,
+            best_runs: s.posting_best,
+            focus: s.posting_focus,
+            hover: hover,
+        )
+        footer(
+            mut s.list,
+            s.fonts,
+            [
+                Prompt { act: Act::Move, say: "Move" },
+                Prompt { act: Act::Choose, say: "Choose" },
+                Prompt { act: Act::Back, say: "Not now" },
+            ],
+            s.device,
+            screen,
+        )
+        return
+    }
+    runs_note(mut s, screen, size)
     var items = Vec::from(
         [Prompt { act: Act::Choose, say: "Watch" }, Prompt { act: Act::Race, say: "Race" }],
     )
@@ -2377,6 +2509,26 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
     items.push(Prompt { act: Act::Boards, say: "Next board" })
     items.push(Prompt { act: Act::Back, say: "Back" })
     footer(mut s.list, s.fonts, items, s.device, screen)
+}
+
+/// What the runs card says at its foot, beside Back: the reminder to save the account's recovery
+/// codes after a post, while they're still to be saved.
+fn runs_note(s: mut Lab, screen: vec2, size: f32) {
+    let Some(line) = online::reminder(s.online) else { return }
+    s.reminder_seen = true
+    let (r, _) = runs_frame(screen)
+    let back = back_rect(screen)
+    let lines = wrap_note(s.fonts, line, size * 0.75, back.x - r.x - size * 2.4)
+    for k in 0..lines.len() {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            lines[k].as_str(),
+            size * 0.75,
+            vec2(r.x + size * 1.2, back.y + size * 0.1 + f32(k) * size * 0.95),
+            INKED,
+        )
+    }
 }
 
 /// The search's line on its board: each part's box, what it holds (or what it's for, soft), and

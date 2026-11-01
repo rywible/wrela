@@ -58,6 +58,11 @@ pub const CONTROLS: u32 = 4
 pub const MAP: u32 = 5
 /// The leaderboard's search for a name, over the runs' page: the keys type, so only a few close it.
 pub const FIND: u32 = 6
+/// Not a page of the sim's: the screen of what posting makes public, which the frames show over
+/// the runs' page before an account's first post, and whose keys they take (screens.wrela's
+/// `posting_card`). Its nodes are numbered as a page's, so the sim, on the runs' page, lets them be;
+/// leaving the runs' page is Not now.
+pub const POSTING: u32 = 7
 
 /// The runs' page's nodes, which the frames publish: back, a race (watching), the board of the
 /// search (its tab), and on it its parts' boxes, the title's first (`RUNS_PART + part`). A press

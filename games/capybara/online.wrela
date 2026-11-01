@@ -1417,6 +1417,26 @@ fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
     // Once posted, it isn't again.
     post(mut o, r.clone())
     assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Posted"))
+    assert(reminder(o).is_none(), "no codes to save, no reminder")
+}
+
+@test
+fn after_a_post_the_recovery_codes_reminder_shows_until_its_seen() {
+    var o = signed_in()
+    o.account.save_codes = true
+    assert(reminder(o).is_none(), "not before a post")
+    post(mut o, mine(991))
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: 991, place: 9 })
+    assert(reminder(o) == Some(posting::SAVE_CODES), "after it")
+    reminded(mut o)
+    assert(reminder(o).is_none(), "once")
+    // Saved meanwhile, it's not said.
+    post(mut o, mine(990))
+    let (_, asked) = o.asks.remove(0)
+    o.account.save_codes = false
+    answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: 990, place: 8 })
+    assert(reminder(o).is_none(), "saved")
 }
 
 @test
