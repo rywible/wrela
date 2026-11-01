@@ -91,8 +91,8 @@ pub fn coat(g: CoatGenes, lo: vec2, size: vec2, seed: u32) -> CoatMap {
                 nv[i] = v[i] + dt * (dv * lv + uvv - (g.feed + g.kill) * v[i])
             }
         }
-        var was_u = take u
-        var was_v = take v
+        let was_u = take u
+        let was_v = take v
         u = take nu
         v = take nv
         nu = take was_u
