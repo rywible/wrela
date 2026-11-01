@@ -12,11 +12,9 @@
 // as its message would be (which may come before or after), then the run's place.
 
 use account::{HANDLE_BYTES, key, part, u32_at, under}
-use server::{
-    Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, got, lately, read,
-}
+use server::{Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, got, read}
 use std::serialize::{Serialize, save}
-use std::store::{append_u32, entries, past}
+use std::store::{append_u32, past}
 use wire::{AROUND, BOARD_PAGE, Place, Reply, Request, RunRef}
 
 /// What an account last told a board (`a<handle>`): its revision, and its place's time and name's
@@ -166,23 +164,19 @@ impl<G: Game> Engine<G> {
                 self.scan_range(under("r"), take to, MOST_PLACE, Step::RankCount, take j)
             },
             Step::RankCount => {
-                let Some(es) = entries(answer) else { return }
-                if es.len() == MOST_PLACE {
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
+                if scan.full {
                     // Past the places counted: unnumbered, as a slice says it (0).
                     self.back(conn, Back::Place { place: 0 })
                     return
                 }
-                var ahead: u32 = 0
-                for e in es {
-                    if !lately(self.gone, e.key) {
-                        ahead += 1
-                    }
-                }
-                self.back(conn, Back::Place { place: ahead + 1 })
+                self.back(conn, Back::Place { place: es.len() + 1 })
             },
             Step::BoardScan => {
                 // Numbered after the `from` places before the page.
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 var places: Vec<Place> = Vec::new()
                 var next: Vec<u8> = Vec::new()
                 for k in 0..min(es.len(), BOARD_PAGE) {
@@ -218,8 +212,9 @@ impl<G: Game> Engine<G> {
                 self.scan_range(under("r"), take to, MOST_PLACE, Step::AroundCount, take j)
             },
             Step::AroundCount => {
-                let Some(es) = entries(answer) else { return }
-                if es.len() == MOST_PLACE {
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
+                if scan.full {
                     // Past the places counted: those just above are read from it, unnumbered.
                     j.tries = 0
                     let to = j.hash.clone()
@@ -234,7 +229,8 @@ impl<G: Game> Engine<G> {
                 self.around_below(take j)
             },
             Step::AroundAbove => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 // The last first: kept fastest first.
                 var k = es.len()
                 while k > 0 {
@@ -245,7 +241,8 @@ impl<G: Game> Engine<G> {
                 self.around_below(take j)
             },
             Step::AroundBelow => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 // `tries` is its place, if within the places counted (0 if not), and `n` the places
                 // above it in the slice: the slice's are numbered from it.
                 let at = j.tries

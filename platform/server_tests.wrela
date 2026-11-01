@@ -3205,3 +3205,44 @@ fn a_sign_up_whose_tag_check_fails_lets_the_next_begin() {
     let rs = h.say(1, register(handle, challenge_of(again), 5))
     assert(session_of(rs).is_some(), f"the next sign-up goes on: {why_of(rs[0])}")
 }
+
+@test
+fn a_removal_said_done_twice_never_clears_the_store_before_the_name_is_let_go() {
+    var h = host()
+    let (s, token) = uploader(mut h, 1, 5)
+    post(mut h, 1, token, 20)
+    let csrf = fresh(mut h, 1, 5, s)
+    // Its names and search shards don't hear yet.
+    h.holding.push(String::from("names/"))
+    h.holding.push(String::from("search/"))
+    let Reply::Done = h.say(1, Request::Delete { csrf })[0].clone() else { panic("deleted") }
+    // The search hears and says done, so the name is let go next; as that's written, the search's
+    // removal is said done again.
+    h.holding.retain(|p| p.as_str() == "names/")
+    let at = s.at()
+    var k = 0
+    while k < 400 {
+        let i = h.instance(at.as_str())
+        var releasing = false
+        for j in h.instances[i].engine.jobs {
+            if j.step == server::Step::ReleaseAccount {
+                releasing = true
+            }
+        }
+        if releasing {
+            break
+        }
+        let _ = h.step()
+        k += 1
+    }
+    assert(k < 400, "its name about to be let go")
+    let again = server::Note::Removed { id: Vec::from(String::from("l").as_bytes()) }
+    let letter = server::Letter { time: h.time, note: again, confirm: Vec::new() }
+    h.tell(server::search_instance(97).as_str(), at.as_str(), save(letter))
+    h.settle()
+    assert(h.keys(at.as_str(), "x/") == 1, "the name's removal still waits")
+    assert(record(h, s, account::ACCOUNT).is_some(), "the store isn't cleared before it's done")
+    h.holding.clear()
+    h.settle()
+    assert(nothing_left(h, s), "then it is")
+}

@@ -46,7 +46,8 @@
 //
 // **Guards in memory.** One instance answers one call at a time, but a request's work spans calls
 // (each read is answered on the next), so each instance remembers what it wrote and deleted lately
-// (`gone`, `written`): a read made before such a call committed isn't trusted for that key.
+// (`gone`, `written`): a read made before such a call committed isn't trusted for that key, and
+// every `get` and every scan is read with them (`latest`, `scanned`).
 
 use account::{HANDLE_BYTES, account_instance, part, u64_at, under, unhex, with_bytes}
 use names::Name
@@ -54,7 +55,7 @@ use std::collections::replace
 use std::crypto::Signature
 use std::hash::sha256::{hex, sha256}
 use std::serialize::{LoadError, Serialize, load, save}
-use std::store::{append_u32, append_u64, value}
+use std::store::{Entry, append_u32, append_u64, entries, value}
 use wire::{ANY, FULL, Found, Me, Reply, Request, RunRef, Standing, WHOLE, public}
 
 // ---- what a game gives the server ----------------------------------------------------------------
@@ -494,6 +495,25 @@ pub struct Conn: Clone {
     pub cookies: Vec<Cookie>,
 }
 
+/// The range a scan read (from `from` to before `to`, none: to the end), the most it asked for,
+/// and which way, kept with its job so its answer is read with this instance's own writes since
+/// (`Engine::scanned`).
+pub struct Span: Clone {
+    pub from: Vec<u8>,
+    pub to: Vec<u8>,
+    pub limit: u32,
+    pub down: bool,
+}
+
+/// A scan's answer as its instance sees it (`Engine::scanned`): its entries, in the scan's order,
+/// at most as many as it asked for; whether the store gave that many (or more were cut), so more
+/// may lie past the last; and the key a next page starts after (empty: none was read).
+pub struct Scanned: Clone {
+    pub entries: Vec<Entry>,
+    pub full: bool,
+    pub last: Vec<u8>,
+}
+
 /// A request, a call or a message under way, waiting on its ticket: what it has learned so far.
 pub struct Job: Clone {
     pub conn: u32,
@@ -502,6 +522,8 @@ pub struct Job: Clone {
     pub since: u64,
     pub ticket: u32,
     pub step: Step,
+    /// The scan it waits on, if it's a scan.
+    pub range: Span,
     pub request: Request,
     /// The call it answers, or the message it acts on.
     pub inner: Option<Inner>,
@@ -712,6 +734,7 @@ pub(package) fn blank_job(conn: u32, request: take Request) -> Job {
         since: 0,
         ticket: 0,
         step: Step::HelloSession,
+        range: Span { from: Vec::new(), to: Vec::new(), limit: 0, down: false },
         request,
         inner: None,
         note: Note::Nothing,
@@ -1109,7 +1132,8 @@ impl<G: Game> Engine<G> {
         self.wait(t, step, take job)
     }
 
-    /// The entries from `from` to before `to` (none: to the end), `limit` at most.
+    /// The entries from `from` to before `to` (none: to the end), `limit` at most: its answer is
+    /// read with `scanned`.
     pub(package) fn scan_range(
         mut self,
         from: take Vec<u8>,
@@ -1118,9 +1142,7 @@ impl<G: Game> Engine<G> {
         step: Step,
         job: take Job,
     ) {
-        let t = self.next_ticket()
-        self.out.push(Command::Scan { ticket: t, from, to, limit, down: false })
-        self.wait(t, step, take job)
+        self.scan_way(take from, take to, limit, down: false, step: step, job: take job)
     }
 
     /// The last `limit` entries from `from` to before `to`, the last first.
@@ -1132,9 +1154,75 @@ impl<G: Game> Engine<G> {
         step: Step,
         job: take Job,
     ) {
+        self.scan_way(take from, take to, limit, down: true, step: step, job: take job)
+    }
+
+    fn scan_way(
+        mut self,
+        from: take Vec<u8>,
+        to: take Vec<u8>,
+        limit: u32,
+        down: bool,
+        step: Step,
+        job: take Job,
+    ) {
+        var j = take job
+        j.range = Span { from: from.clone(), to: to.clone(), limit, down }
         let t = self.next_ticket()
-        self.out.push(Command::Scan { ticket: t, from, to, limit, down: true })
-        self.wait(t, step, take job)
+        self.out.push(Command::Scan { ticket: t, from, to, limit, down })
+        self.wait(t, step, take j)
+    }
+
+    /// `job`'s scan's answer (`answer`) as this instance sees it now, as `latest` sees a `get`'s:
+    /// what it deleted lately isn't in it, and what it wrote lately in the scan's range is, with
+    /// what it wrote. A store that gave all it was asked for reached only as far as its last key,
+    /// so what was written past that is left to the next page. None if it isn't a scan's answer.
+    pub(package) fn scanned(self, job: Job, answer: [u8]) -> Option<Scanned> {
+        let es = entries(answer)?
+        borrow r = job.range
+        let full = es.len() >= r.limit
+        let last = if es.is_empty() { Vec::new() } else { es[es.len() - 1].key.clone() }
+        var out: Vec<Entry> = Vec::new()
+        for e in es {
+            if !lately(self.gone, e.key) && !self.wrote(e.key) {
+                out.push(e.clone())
+            }
+        }
+        for (k, v, _) in self.written {
+            let within = k >= r.from && (r.to.is_empty() || k < r.to)
+            let reached = !full || (if r.down { k >= last } else { k <= last })
+            if within && reached {
+                out.push(Entry { key: k.clone(), value: v.clone() })
+            }
+        }
+        if r.down {
+            out.sort_by(|a, b| a.key > b.key)
+        } else {
+            out.sort_by(|a, b| a.key < b.key)
+        }
+        let cut = out.len() > r.limit
+        out.truncate(r.limit)
+        // Where a next page starts: past every key this answer holds, and past what the store
+        // gave, unless some of that was cut.
+        var furthest = take last
+        if !out.is_empty() {
+            borrow o = out[out.len() - 1].key
+            let past = if r.down { o.clone() < furthest } else { o.clone() > furthest }
+            if cut || furthest.is_empty() || past {
+                furthest = o.clone()
+            }
+        }
+        Some(Scanned { entries: out, full: full || cut, last: furthest })
+    }
+
+    /// Whether this instance wrote `key` lately (`keep`).
+    fn wrote(self, key: [u8]) -> bool {
+        for (k, _, _) in self.written {
+            if same_bytes(k, key) {
+                return true
+            }
+        }
+        false
     }
 
     /// The entries under `prefix`, `limit` at most.
@@ -1195,10 +1283,11 @@ impl<G: Game> Engine<G> {
         self.out.push(Command::Put { key, value: save(record) })
     }
 
-    /// Writes `value` at `key`: what this instance remembers writing there before is let go, so
+    /// Writes `value` at `key`: what this instance remembers of it, written or gone, is let go, so
     /// it never stands for what's there now.
     pub(package) fn put_bytes(mut self, key: take Vec<u8>, value: take Vec<u8>) {
         self.written.retain(|w| !same_bytes(w.0, key))
+        self.gone.retain(|g| !same_bytes(g.0, key))
         self.out.push(Command::Put { key, value })
     }
 
@@ -1220,7 +1309,6 @@ impl<G: Game> Engine<G> {
     /// writes commit sees what this wrote (`latest`). A key is remembered written or gone, never
     /// both.
     pub(package) fn keep(mut self, key: take Vec<u8>, value: take Vec<u8>) {
-        self.gone.retain(|g| !same_bytes(g.0, key))
         self.put_bytes(key.clone(), value.clone())
         self.written.push((take key, take value, self.call))
     }

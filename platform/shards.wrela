@@ -19,10 +19,9 @@ use account::{key, under}
 use names::{Name, matches, matching}
 use server::{
     ALL_TRIES, Back, Engine, Game, Inner, Job, Kind, Listed, Listing, MOST_SCANNED, Note,
-    RANGE_PAGE, Step, blank_job, got, lately, letter_of, read, searchable,
+    RANGE_PAGE, Step, blank_job, got, letter_of, read, searchable,
 }
 use std::serialize::{Serialize, save}
-use std::store::entries
 use wire::{Found, MOST_FOUND, Reply, Request}
 
 /// A name at its shard (`n<name's key>`): its owner (none: free, released), the generation of its
@@ -260,11 +259,11 @@ impl<G: Game> Engine<G> {
     /// the next range, or the answer.
     fn search_range(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
-        let Some(es) = entries(answer) else { return }
+        let Some(scan) = self.scanned(j, answer) else { return }
         let Some(m) = j.matching.clone() else { return }
-        for e in es {
+        for e in scan.entries {
             j.tries += 1
-            if j.found.len() >= MOST_FOUND || lately(self.gone, e.key) {
+            if j.found.len() >= MOST_FOUND {
                 continue
             }
             let Some(n) = name_of(e.key) else { continue }
@@ -275,8 +274,8 @@ impl<G: Game> Engine<G> {
             }
         }
         let room = j.found.len() < MOST_FOUND && j.tries < MOST_SCANNED
-        if room && es.len() == RANGE_PAGE {
-            var from = es[es.len() - 1].key.clone()
+        if room && scan.full {
+            var from = scan.last.clone()
             from.push(0)
             let to = j.keys[1].clone()
             self.scan_range(take from, take to, RANGE_PAGE, Step::SearchRange, take j)

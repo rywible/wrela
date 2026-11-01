@@ -42,7 +42,7 @@ use std::crypto::verified
 use std::fmt::json_text
 use std::hash::sha256::{hex, sha256}
 use std::serialize::{Serialize, save}
-use std::store::{entries, past, value}
+use std::store::{past, value}
 use std::webauthn::{Expected, assertion, base64url, registration}
 use wire::{
     ADD_PASSKEY, ANY, Agreed, FULL, Me, NOT_AGREED, PasskeyView, REGISTER, Reply, Request, RunRef,
@@ -815,7 +815,8 @@ impl<G: Game> Engine<G> {
             },
             Step::BeginAddScan => {
                 // An added passkey's challenge, excluding the passkeys the account has.
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 let skip = under("c/").len()
                 for e in es {
                     j.keys.push(part(e.key, skip, e.key.len() - skip))
@@ -1025,7 +1026,8 @@ impl<G: Game> Engine<G> {
                 self.scan_range(under("w/"), take to, PRUNED, Step::SignInPrune, take j)
             },
             Step::SignInPrune => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 for e in es {
                     self.delete(e.key.clone())
                 }
@@ -1073,7 +1075,8 @@ impl<G: Game> Engine<G> {
                 self.scan(under("s/"), CLEARED, Step::RecoverSessions, take j)
             },
             Step::RecoverSessions => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 for e in es {
                     self.forget(e.key.clone())
                 }
@@ -1107,7 +1110,8 @@ impl<G: Game> Engine<G> {
                 self.scan(under("c/"), MOST_PASSKEYS + 1, Step::AddCount, take j)
             },
             Step::AddCount => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 if es.len() >= MOST_PASSKEYS {
                     self.refuse(conn, "An account has at most 16 passkeys. Remove one first.")
                     return
@@ -1138,7 +1142,8 @@ impl<G: Game> Engine<G> {
                 self.welcome(conn, me_of(a, recovery))
             },
             Step::RemoveScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 let skip = under("c/").len()
                 var found = false
                 var left: Vec<PasskeyView> = Vec::new()
@@ -1162,7 +1167,8 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Passkeys { passkeys: left })
             },
             Step::PasskeysScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 let skip = under("c/").len()
                 var list: Vec<PasskeyView> = Vec::new()
                 for e in es {
@@ -1174,7 +1180,8 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Passkeys { passkeys: list })
             },
             Step::CodesScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 let skip = under("r/").len()
                 for e in es {
                     j.keys.push(part(e.key, skip, e.key.len() - skip))
@@ -1201,7 +1208,8 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Codes { codes })
             },
             Step::SessionsScan | Step::RevokeScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 let skip = under("s/").len()
                 var list: Vec<SessionView> = Vec::new()
                 var revoked = false
@@ -1212,7 +1220,7 @@ impl<G: Game> Engine<G> {
                 for e in es {
                     let h = part(e.key, skip, e.key.len() - skip)
                     let Some(s) = read::<Session>(e.value) else { continue }
-                    if lately(self.gone, e.key) || s.generation < generation {
+                    if s.generation < generation {
                         continue
                     }
                     if j.step == Step::RevokeScan && same_bytes(public_id(h), j.message) {
@@ -1245,7 +1253,8 @@ impl<G: Game> Engine<G> {
             },
             Step::TokenPrune => {
                 // Tokens that have expired go as a new one comes.
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 for e in es {
                     if let Some(t) = read::<GameToken>(e.value) {
                         if t.expires < self.now {
@@ -1275,18 +1284,19 @@ impl<G: Game> Engine<G> {
             Step::ExportRuns => self.export_runs(take j, answer),
             Step::DeleteCounters | Step::DeleteScan => self.swept(take j, answer),
             Step::RemovedScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
+                // Read with what this instance wrote and deleted lately, its mark and its
+                // removals alike, so a removal said done twice never reads the name's let go
+                // before its own is written.
                 var pending = 0
                 var swept: Option<Vec<u8>> = None
                 for e in es {
                     if e.key == under(SWEPT) {
                         swept = Some(e.value.clone())
-                    } else if !lately(self.gone, e.key) {
+                    } else {
                         pending += 1
                     }
-                }
-                if let Some(v) = self.latest(under(SWEPT), []) {
-                    swept = Some(take v)
                 }
                 let Some(mark) = swept else {
                     self.done(j)
@@ -1330,7 +1340,8 @@ impl<G: Game> Engine<G> {
                 self.sweep(take j)
             },
             Step::ClearScan => {
-                let Some(es) = entries(answer) else { return }
+                let Some(scan) = self.scanned(j, answer) else { return }
+                borrow es = scan.entries
                 if es.is_empty() {
                     // Cleared: only the mark is left (kept before clearing began, past the range
                     // cleared), so nothing of it comes back.
@@ -1606,7 +1617,8 @@ impl<G: Game> Engine<G> {
     /// board, and the account's runs told its search shard.
     fn record_bests(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
-        let Some(es) = entries(answer) else { return }
+        let Some(scan) = self.scanned(j, answer) else { return }
+        borrow es = scan.entries
         let Some(a) = j.account.clone() else { return }
         // The replay is the run's now: taken out of the call it came in.
         let replay = match mut j.inner {
@@ -1775,7 +1787,8 @@ impl<G: Game> Engine<G> {
 
     fn export_scan(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
-        let Some(es) = entries(answer) else { return }
+        let Some(scan) = self.scanned(j, answer) else { return }
+        borrow es = scan.entries
         for e in es {
             export_entry(mut j.text, e.key, e.value)
             if j.text.len() >= wire::EXPORT_PART {
@@ -1783,9 +1796,8 @@ impl<G: Game> Engine<G> {
                 return
             }
         }
-        if !es.is_empty() {
-            borrow last = es[es.len() - 1].key
-            self.export_from(take j, last.clone())
+        if !scan.last.is_empty() {
+            self.export_from(take j, scan.last.clone())
             return
         }
         if j.n == 0 {
@@ -1802,7 +1814,8 @@ impl<G: Game> Engine<G> {
 
     fn export_runs(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
-        let Some(es) = entries(answer) else { return }
+        let Some(scan) = self.scanned(j, answer) else { return }
+        borrow es = scan.entries
         for e in es {
             let Some(r) = read::<Run>(e.value) else { continue }
             if j.tries > 0 || !j.text.ends_with("[") {
@@ -1819,9 +1832,8 @@ impl<G: Game> Engine<G> {
                 return
             }
         }
-        if !es.is_empty() {
-            borrow last = es[es.len() - 1].key
-            self.export_from(take j, last.clone())
+        if !scan.last.is_empty() {
+            self.export_from(take j, scan.last.clone())
             return
         }
         j.text.push_str("]}")
@@ -1861,7 +1873,8 @@ impl<G: Game> Engine<G> {
             self.scan_range(Vec::new(), under("x/"), CLEARED, Step::DeleteScan, take j)
             return
         }
-        let Some(es) = entries(answer) else { return }
+        let Some(scan) = self.scanned(j, answer) else { return }
+        borrow es = scan.entries
         let revision = j.seed
         for e in es {
             let k = e.key.clone()
@@ -1897,9 +1910,8 @@ impl<G: Game> Engine<G> {
                 self.pend(id, to.as_str(), note)
             }
         }
-        if !es.is_empty() {
-            borrow last = es[es.len() - 1].key
-            var from = last.clone()
+        if !scan.last.is_empty() {
+            var from = scan.last.clone()
             from.push(0)
             self.scan_range(take from, under("x/"), CLEARED, Step::DeleteScan, take j)
             return
