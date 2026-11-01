@@ -718,15 +718,14 @@ fn game_id(handle: [u8]) -> Vec<u8> {
     out
 }
 
-/// Calls the game with the account and the answer to its last ask, once its token is fresh.
-/// What `send_game` needs of the game shown: its key, whether a call or an ask is open, when its
-/// token came, whether one is being fetched, and the answer it's owed.
+/// What `send_game` needs of the game shown to know whether to call it: its key, whether a call
+/// or an ask is open, when its token came, and whether one is being fetched. The answer it's owed
+/// is read only as a call goes.
 struct Shown {
     id: String,
     open: bool,
     token_at: f32,
     waiting_token: bool,
-    answer: Answer,
 }
 
 fn shown_game(a: Accounts) -> Option<Shown> {
@@ -737,13 +736,13 @@ fn shown_game(a: Accounts) -> Option<Shown> {
                 open: g.call.is_some() || g.asking,
                 token_at: g.token_at,
                 waiting_token: g.waiting_token,
-                answer: g.answer.clone(),
             },
         ),
         None => None,
     }
 }
 
+/// Calls the game with the account and the answer to its last ask, once its token is fresh.
 fn send_game(a: mut Accounts) {
     let Some(g) = shown_game(a) else { return }
     if g.open {
@@ -758,9 +757,10 @@ fn send_game(a: mut Accounts) {
         request(mut a, Request::Token { game: g.id.clone() }, Purpose::Token)
         return
     }
-    let call = ToGame { account: linked(a), answer: g.answer.clone() }
+    let account = linked(a)
     match mut a.game {
         Some(l) => {
+            let call = ToGame { account, answer: l.answer.clone() }
             l.waiting_token = false
             l.call = Some(host::send(l.surface, save(call)))
         },
