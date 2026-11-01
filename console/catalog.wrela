@@ -13,8 +13,8 @@ pub struct Art: Clone {
 // A game: its id, title and session's address; its cover, on its tile; its hero, the art behind
 // the home screen when it's chosen; its title art, in place of its title; a line that sells it;
 // its theme, a melody the home plays softly while it's chosen (`theme`); and the address of its
-// build that plays itself (`attract`), which the home shows behind its text once it has rested on
-// the game; each optional but the cover.
+// build that plays itself (`attract`), which the home shows behind its text once it shows the
+// game; each optional but the cover.
 pub struct Card: Clone {
     pub id: String,
     pub title: String,

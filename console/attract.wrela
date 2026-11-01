@@ -1,11 +1,16 @@
 // The chosen game playing itself behind the home (attract mode; the look is proposed until Ryan
-// sees it): once the home has rested on a game for `REST` seconds, browsing its shelf with
-// nothing over it, the console opens the game where it plays itself (the catalog's `attract`: a
-// build of the game and its fragment, `capybara/#attract`) in a surface of its own, waits for it
-// to say it's ready (`host::wait_ready`), shows it behind the console (`host::underlay`), and
-// fades the hero out over it in about `FADE_IN` seconds: the backdrop (paint.wrela) draws the hero
-// with less alpha, keeping the text's dark gradient, so the game shows through where the hero
-// was. The program behind is muted and hears no input.
+// sees it): once the selection has stayed on a game for `REST` seconds and its files are fetched
+// ahead, the console opens the game where it plays itself (the catalog's `attract`: a build of
+// the game and its fragment, `capybara/#attract`) in a surface of its own, hidden, and waits for
+// it to say it's ready (`host::wait_ready`). That's while the opening still plays, or a sheet
+// covers the home: the load is out of the way before the home is seen (Ryan, 2026-11-01: it
+// "loads very slowly", when it opened only after the home had rested on the game three seconds).
+// Once the home shows its shelf with nothing over it, the console shows it behind (`host::underlay`)
+// and calls it (`host::send`): until then it holds its run on its first frame, which is the hero
+// (games/capybara/attract.wrela), so as the hero fades out over it in about `FADE_IN` seconds the
+// run starts from where the hero stood. The backdrop (paint.wrela) draws the hero with less alpha,
+// keeping the text's dark gradient, so the game shows through where the hero was. The program
+// behind is muted and hears no input.
 //
 // A sheet or the account's panel over the home, or reduced motion, hides it (the hero fading back
 // in first, over `FADE_OUT` seconds, then `underlay(id, on: false)`), and it's shown again, faded
@@ -18,13 +23,16 @@ use platform::session::answer_of
 use std::host
 use std::io::Pending
 
-/// Seconds the home rests on a game before its attract build opens.
-pub const REST: f32 = 3.0
+/// Seconds the selection stays on a game before its attract build opens: browsing past a game
+/// doesn't open it.
+pub const REST: f32 = 0.5
 /// Seconds the hero takes to fade out over the game behind it, and to come back in.
 pub const FADE_IN: f32 = 1.0
 pub const FADE_OUT: f32 = 0.3
 /// The most surfaces a host keeps open at a time (`host::open`): the session's count too.
 pub const SURFACES: u32 = 4
+/// The call that lets the build's run go from its first frame: any call does.
+const PLAY: u8 = 1
 
 /// Where the attract build is: none open; opening; opening, no longer wanted (closed once its
 /// surface's id comes); waiting for its first frame; being shown behind the console; shown; being
@@ -40,6 +48,9 @@ pub struct Attract {
     surface: Option<u32>,
     pending: Option<Pending<u8>>,
     closing: Option<Pending<u8>>,
+    /// The call that lets the build's run go, once it's first shown, and whether it was made.
+    calling: Option<Pending<u8>>,
+    called: bool,
     /// How far the hero has faded out over the game (0 to 1).
     pub shown: f32,
     /// The host declined or a build failed: no attract for this page's load.
@@ -55,6 +66,8 @@ pub fn new() -> Attract {
         surface: None,
         pending: None,
         closing: None,
+        calling: None,
+        called: false,
         shown: 0.0,
         off: false,
     }
@@ -76,18 +89,25 @@ pub struct Home: Copy {
     pub surfaces: u32,
 }
 
-/// Whether the home may show the selected game behind it.
-pub fn wanted(h: Home) -> bool {
-    h.address && h.resting && !h.playing && !h.strained && h.motion
+/// Whether the selected game's attract build may be open: it has one, no game starts or shows, the
+/// host doesn't strain and motion isn't reduced. The home needn't show it yet (`wanted`).
+pub fn kept(h: Home) -> bool {
+    h.address && !h.playing && !h.strained && h.motion
 }
 
-/// Whether the selected game's attract build opens now: wanted, rested on, nothing fetched
-/// ahead under way, the last one closed, and room for its surface.
+/// Whether the home may show the selected game behind it.
+pub fn wanted(h: Home) -> bool {
+    kept(h) && h.resting
+}
+
+/// Whether the selected game's attract build opens now: it may be open, the selection has stayed
+/// on it, nothing fetched ahead is under way, the last one closed, and there's room for its
+/// surface.
 pub fn opens(a: Attract, h: Home) -> bool {
     !a.off &&
         a.step == Step::Idle &&
         a.closing.is_none() &&
-        wanted(h) &&
+        kept(h) &&
         a.rest_on == h.selected &&
         a.rested >= REST &&
         h.fetched &&
@@ -120,10 +140,10 @@ pub fn faded(shown: f32, target: f32, dt: f32) -> f32 {
     }
 }
 
-/// The rest, `dt` seconds on: how long the home has stayed on the selection while it may show
-/// it, from 0 when the selection moves or the home is covered.
+/// The rest, `dt` seconds on: how long the selection has stayed on a game whose build may be open,
+/// from 0 when it moves.
 pub fn rest(a: mut Attract, h: Home, dt: f32) {
-    if wanted(h) && a.rest_on == h.selected {
+    if kept(h) && a.rest_on == h.selected {
         a.rested += dt
     } else {
         a.rest_on = h.selected
@@ -142,6 +162,7 @@ fn shut(a: mut Attract) {
     if let Some(id) = a.surface { a.closing = Some(host::close(id)) }
     a.surface = None
     a.pending = None
+    a.called = false
     a.step = Step::Idle
 }
 
@@ -161,6 +182,7 @@ fn give_up(a: mut Attract) {
 pub fn update(a: mut Attract, h: Home, address: str, dt: f32) -> bool {
     var draw = false
     if answer_of(mut a.closing).is_some() { draw = true }
+    let _ = answer_of(mut a.calling)
     rest(mut a, h, dt)
     if let Some(result) = answer_of(mut a.pending) {
         match result {
@@ -212,6 +234,10 @@ pub fn update(a: mut Attract, h: Home, address: str, dt: f32) -> bool {
                 Some(true) => {
                     a.pending = Some(host::underlay(id, on: true))
                     a.step = Step::Underlay
+                    if !a.called {
+                        a.calling = Some(host::send(id, [PLAY]))
+                        a.called = true
+                    }
                 },
                 Some(false) => {
                     a.pending = Some(host::underlay(id, on: false))
@@ -254,7 +280,7 @@ fn home() -> Home {
 }
 
 @test
-fn the_attract_build_opens_once_the_home_has_rested_on_a_game() {
+fn the_attract_build_opens_once_the_selection_has_stayed_on_a_game() {
     var a = new()
     let h = home()
     // The first frame starts the rest on the selection.
@@ -265,7 +291,6 @@ fn the_attract_build_opens_once_the_home_has_rested_on_a_game() {
     assert(opens(a, h))
     for (what, other) in [
         ("no attract build", Home { address: false, ..h }),
-        ("a sheet over the home", Home { resting: false, ..h }),
         ("a game starting", Home { playing: true, ..h }),
         ("a strained host", Home { strained: true, ..h }),
         ("reduced motion", Home { motion: false, ..h }),
@@ -276,22 +301,23 @@ fn the_attract_build_opens_once_the_home_has_rested_on_a_game() {
         assert(!opens(a, other), what)
     }
     assert(opens(a, Home { surfaces: SURFACES - 1, ..h }), "the session's surfaces counted")
+    assert(opens(a, Home { resting: false, ..h }), "under the opening or a sheet: loaded, hidden")
     a.off = true
     assert(!opens(a, h), "a host that declined")
 }
 
 @test
-fn the_rest_starts_again_when_the_selection_moves_or_the_home_is_covered() {
+fn the_rest_starts_again_when_the_selection_moves_or_a_game_starts() {
     var a = new()
     let h = home()
     for _ in 0..30 { rest(mut a, h, 0.1) }
     assert(abs(a.rested - 3.0) < 0.01, f"{a.rested}")
     rest(mut a, Home { selected: 1, ..h }, 0.1)
     assert(a.rested == 0.0, "another game")
-    rest(mut a, Home { selected: 1, ..h }, 0.1)
-    assert(a.rested > 0.0)
     rest(mut a, Home { selected: 1, resting: false, ..h }, 0.1)
-    assert(a.rested == 0.0, "a sheet over it")
+    assert(a.rested > 0.0, "a sheet over it doesn't")
+    rest(mut a, Home { selected: 1, playing: true, ..h }, 0.1)
+    assert(a.rested == 0.0, "a game starting")
 }
 
 @test

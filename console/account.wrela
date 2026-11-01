@@ -1349,7 +1349,12 @@ fn act(a: mut Accounts, x: Act) {
 /// took it, so the console doesn't.
 pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
     if !a.open {
-        // Closed, the chip alone takes a click.
+        // Closed, the chip alone takes a click, and lights under the pointer.
+        if let Event::PointerMove { at, .. } = e {
+            let was = over_chip(a)
+            a.pointer = Some(at / zoom)
+            if over_chip(a) != was { a.dirty = true }
+        }
         if let Event::PointerUp { at, button: Button::Primary, .. } = e {
             for (x, r) in a.shown {
                 if x == Act::Chip && r.contains(at / zoom) {
@@ -1627,6 +1632,15 @@ fn button(
     write(mut d, fonts, label.as_str(), LABEL, vec2(c.x - w * 0.5, top), ink, zoom)
 }
 
+/// Whether the pointer is over the chip, as last drawn: a hand over it, and its lighter fill.
+pub fn over_chip(a: Accounts) -> bool {
+    let Some(p) = a.pointer else { return false }
+    for (x, r) in a.shown {
+        if x == Act::Chip && r.contains(p) { return true }
+    }
+    false
+}
+
 /// Draws the focus ring around `r` if it's the focused control, `index` in the list.
 fn focus_ring(a: Accounts, d: mut DrawList, index: u32, r: Rect, zoom: f32) {
     if index == a.focus {
@@ -1756,7 +1770,7 @@ pub fn draw(
     a.controls.clear()
     a.nodes.clear()
     a.node_controls.clear()
-    // The chip, left of the settings button.
+    // The chip, in the header's corner.
     let chip_label = if !a.online { String::from("Health and legal") } else if a.me.signed_in {
         a.me.name.clone()
     } else { String::from("Sign in") }
@@ -1764,10 +1778,14 @@ pub fn draw(
         measure(fonts, chip_label.as_str(), 14.0 * zoom, Face::Sans) / zoom + 28.0,
         w * 0.4,
     )
-    let chip = Rect::new(w - margin - 52.0 - cw, 22.0, cw, 40.0)
+    let chip = Rect::new(w - margin - cw, 22.0, cw, 40.0)
     a.controls.push((Act::Chip, chip))
     if !a.open {
-        d.rect(z(chip, zoom), SECONDARY, 20.0 * zoom)
+        let hover = match a.pointer {
+            Some(p) => chip.contains(p),
+            None => false,
+        }
+        d.rect(z(chip, zoom), if hover { RAISED } else { SECONDARY }, 20.0 * zoom)
         d.ring(z(chip, zoom), BORDER, 20.0 * zoom, max(round(zoom), 1.0))
         d.push_clip(z(chip.shrink(10.0), zoom))
         let top = chip.center().y - (fonts.font(Face::Sans).ascender - 0.36) * 14.0

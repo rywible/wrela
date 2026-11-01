@@ -3,6 +3,7 @@
 //
 // ```text
 // wrela tool route -- --level <key> [--human] [--seconds S]
+// wrela tool route -- --stroll
 // ```
 //
 // The key is the level's (searched.wrela's `KEYS`: home, wetlands...). With `--needs` it searches
@@ -23,6 +24,9 @@
 // from the start alone. It writes routes_<key>.wrela again if a run is better, keeping the other mode's
 // while they still finish: a human run stands for a tool-assisted one that doesn't, and while a
 // human run doesn't, it writes nothing until `--human` has found new ones.
+//
+// With `--stroll` it searches nothing: it makes every level's stroll from its human 100% run
+// (stroll.wrela) and writes them as the game's strolls.wrela, for the game playing itself.
 
 use capybara::course::{course, name}
 use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, holds_of}
@@ -35,7 +39,7 @@ use std::time::{now, since}
 use std::tool::args
 use std::tool::files::write
 
-pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human | --needs] [--seconds S] | --report"
+pub const USAGE: Text = "usage: wrela tool route -- --level <key> [--human | --needs] [--seconds S] | --report | --stroll"
 
 /// The seconds each category is searched unless `--seconds` gives another.
 pub const SECONDS: u32 = 300
@@ -69,6 +73,8 @@ pub struct Ask: Copy + Eq {
     pub needs: bool = false,
     /// Print every level's numbers (design.wrela's `report`), and search nothing.
     pub report: bool = false,
+    /// Make every level's stroll (stroll.wrela), and search nothing.
+    pub stroll: bool = false,
 }
 
 /// No level asked for yet.
@@ -86,6 +92,8 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
             ask.needs = true
         } else if a == "--report" && given.len() == 1 {
             ask.report = true
+        } else if a == "--stroll" && given.len() == 1 {
+            ask.stroll = true
         } else if a == "--level" && k + 1 < given.len() && ask.level == NO_LEVEL {
             ask.level = level_of(given[k + 1].as_str())?
             k += 1
@@ -97,7 +105,7 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
         }
         k += 1
     }
-    if ask.level == NO_LEVEL && !ask.report { None } else { Some(ask) }
+    if ask.level == NO_LEVEL && !ask.report && !ask.stroll { None } else { Some(ask) }
 }
 
 /// The ticks on which the run of `pads` first reaches each checkpoint's x: a fast run may pass
@@ -461,6 +469,9 @@ pub fn tool() -> u32 {
         print(design::report())
         return 0
     }
+    if ask.stroll {
+        return write_strolls()
+    }
     let level = ask.level
     let key = KEYS[level]
     let file = f"routes_{key}.wrela"
@@ -576,6 +587,115 @@ fn write_routes(key: str, named: str, file: str, routes: [Route; 4], needs: [f32
     match write(f"game/{file}", text.as_bytes()).wait() {
         Ok(_) => {
             print(f"route: wrote games/capybara/{file}")
+            0
+        },
+        Err(e) => {
+            print(f"route: {e.message()}")
+            1
+        },
+    }
+}
+
+/// strolls.wrela with each level's stroll `strolls` (by level), its time, its human 100% run's
+/// time and its pauses.
+pub fn strolls_text(strolls: [Vec<Hold>], times: [u32], runs: [u32], pauses: [u32]) -> String {
+    var text = String::from(
+        "// The strolls: each level's human-possible 100% run made calm, for the game playing itself behind\n// the console's home (attract.wrela): its twitches smoothed into plain running wherever the run\n// still finishes, and pauses where it stops to look, each made up (route/stroll.wrela). No person\n// has played them. `wrela tool route -- --stroll` writes this file again from routes_<key>.wrela's\n// `HUMAN_FULL`; run it again when a level's human runs change.\n\n",
+    )
+    var bits = 0
+    for r in strolls {
+        for h in r {
+            bits = bits | h.bits
+        }
+    }
+    var names: Vec<Text> = Vec::new()
+    let order: [Text; 6] = ["DOWN", "JUMP", "LEFT", "PRESS", "RIGHT", "UP"]
+    let values = [DOWN, JUMP, LEFT, PRESS, RIGHT, UP]
+    for i in 0..order.len() {
+        if bits & values[i] != 0 {
+            names.push(order[i])
+        }
+        if i == 0 {
+            names.push("Hold")
+        }
+    }
+    names.push("hold")
+    text.push_str("use course::{")
+    for i in 0..KEYS.len() {
+        if i > 0 {
+            text.push_str(", ")
+        }
+        text.push_str(constant_of(KEYS[i]))
+    }
+    text.push_str(", course}\nuse pad::{")
+    for i in 0..names.len() {
+        if i > 0 {
+            text.push_str(", ")
+        }
+        text.push_str(names[i])
+    }
+    text.push_str("}\nuse world::play\n")
+    for i in 0..KEYS.len() {
+        let c = constant_of(KEYS[i])
+        let pausing = if pauses[i] == 0 { String::from("no pause") } else if pauses[i] == 1 {
+            String::from("a pause")
+        } else { f"{pauses[i]} pauses" }
+        let doc = f"/// A stroll through {name(i)}, in {times[i]} ticks (its human 100% run takes {runs[i]}), with {pausing}.\n"
+        text.push_str("\n")
+        constant(mut text, f"STROLL_{c}", Route { run: strolls[i].clone(), time: times[i], doc })
+    }
+    text.push_str(
+        "\n/// Level `c`'s stroll (none for the lab).\npub fn stroll(c: u32) -> Vec<Hold> {\n    match c {\n",
+    )
+    for i in 0..KEYS.len() {
+        let c = constant_of(KEYS[i])
+        text.push_str(f"        {c} => Vec::from(STROLL_{c}),\n")
+    }
+    text.push_str("        _ => Vec::new(),\n    }\n}\n")
+    text.push_str(
+        "\n@test\nfn each_stroll_finishes_in_its_time_with_every_snack_and_no_death() {\n",
+    )
+    for i in 0..KEYS.len() {
+        let c = constant_of(KEYS[i])
+        let key = KEYS[i]
+        text.push_str(
+            f"    let {key} = play({c}, STROLL_{c})\n    assert({key}.finished == {times[i]} && {key}.deaths == 0, \"{key}\")\n    assert({key}.snacks == course({c}).every_snack(), \"{key}'s snacks\")\n",
+        )
+    }
+    text.push_str("}\n")
+    text
+}
+
+/// Makes each level's stroll (stroll.wrela) and writes strolls.wrela.
+fn write_strolls() -> u32 {
+    var strolls: Vec<Vec<Hold>> = Vec::new()
+    var times: Vec<u32> = Vec::new()
+    var runs: Vec<u32> = Vec::new()
+    var pauses: Vec<u32> = Vec::new()
+    for level in 0..KEYS.len() {
+        let start = now()
+        let all = course(level).every_snack()
+        let run = searched(level).human_full
+        let Some(s) = stroll::stroll(level, run, all) else {
+            print(
+                f"route: {KEYS[level]}'s human 100% run no longer finishes: search it first (--human)",
+            )
+            return 1
+        }
+        let before = pads_of(level, run).len()
+        let changes = stroll::changes(s.held)
+        print(
+            f"stroll: {KEYS[level]}: {s.time} ticks (from {before}), {changes} changes, {s.pauses} pauses ({since(start)} s)",
+        )
+        times.push(s.time)
+        runs.push(before)
+        pauses.push(s.pauses)
+        strolls.push(stroll::holds(s))
+    }
+    let text = strolls_text(strolls, times, runs, pauses)
+    match write("game/strolls.wrela", text.as_bytes()).wait() {
+        Ok(_) => {
+            print("route: wrote games/capybara/strolls.wrela")
             0
         },
         Err(e) => {

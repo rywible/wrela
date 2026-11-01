@@ -5215,3 +5215,23 @@ its time) are recorded here as this machine's numbers and listed to measure ther
 12. **G-pixels:** the herd the same as `build/base-0.9`, the climber lab's last frame within 0.00 of
     it, the capybara the same as its own last change's build ("H1").
 13. **G-bench:** "Whether D27 holds" (above), finished here: a row per gate per scene per device.
+
+## 2026-11-01: the console's attract build, opened hidden under the opening (toolchain 0.18.0)
+
+When the game playing itself shows behind the console's home, from the page's start: the iframe
+of `capybara/#attract` added (`host::open`) and made inert (`host::underlay`), seen by a
+`MutationObserver` on the page. The console, the capybara's play build and its session built
+with `wrela build` (release, no `wasm-opt`) into one directory with a catalog written by hand,
+served by `wrela tool serve` on this machine (Apple M4, macOS 26.6.2), in the Claude app's
+browser pane, the browser's cache and shader cache warm; one run each, a visit (the 7.7 s
+opening plays), not a reload.
+
+| Build | Opened | Shown |
+|---|---|---|
+| Before: opened once the home had rested 3 s on the game (console/attract.wrela `REST` 3.0) | 17.7 s | not logged (later) |
+| After: opened once the selection has stayed 0.5 s and its files are fetched, hidden | 1.0 s | 8.2 s |
+
+"Before" logged only when each iframe first appeared, polling every 50 ms. The opening's frames while the attract build loads behind it (after, the
+pane in view): 541 frames in 9 s, none over 34 ms (50th percentile 17 ms, 95th 18 ms). A
+cold load over the network (the WASM and the shaders compiled for the first time) wasn't
+measured: it moves "shown" only when it takes longer than the opening.

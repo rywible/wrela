@@ -37,7 +37,6 @@ const DARK = vec4(0.035, 0.035, 0.04, 1.0)
 const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
 const WARN = vec4(0.95, 0.74, 0.6, 1.0)
 const BORDER = vec4(1.0, 1.0, 1.0, 0.1)
-const INPUT = vec4(1.0, 1.0, 1.0, 0.15)
 const SECONDARY = vec4(0.15, 0.15, 0.16, 0.9)
 const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
 const RADIUS: f32 = 8.0
@@ -91,7 +90,7 @@ pub struct Profile: Clone + Serialize {
     motion: bool,
 }
 
-enum Pane: Copy + Eq { Games, Saves, Settings }
+enum Pane: Copy + Eq { Games, Saves }
 
 enum PlayIntent: Copy + Eq { Selected, NewGame }
 
@@ -120,25 +119,20 @@ enum Step: Copy + Eq {
 
 enum Action: Copy + Eq {
     Games,
-    Settings,
     // The chosen game's call to action: continue its latest save, or begin.
     Play,
     NewGame,
     Load,
     Export,
     Import,
-    SaveProfile,
-    Name,
-    Music,
     Game { index: u32 },
     Save { index: u32 },
     Page { first: u32 },
     Retry,
 }
 
-// How a focused control shows it: a ring slides to buttons and the settings button; tiles
-// and rows light themselves.
-enum Kind: Copy + Eq { Button, Tile, Row, Icon }
+// How a focused control shows it: a ring slides to buttons; tiles and rows light themselves.
+enum Kind: Copy + Eq { Button, Tile, Row }
 
 struct Control: Copy {
     action: Action,
@@ -305,7 +299,7 @@ pub struct Console {
     tint: vec4,
     // The theme's voice, the selection's theme as it's fetched and read, which game's theme the
     // voice holds, the level last asked of it and when it was asked to fall quiet; and the music
-    // setting, as it's read and written.
+    // setting, as it's read.
     voice: RingWriter<Cue>,
     theme_of: Option<u32>,
     theme_load: Option<Pending<u8>>,
@@ -315,7 +309,6 @@ pub struct Console {
     quiet_at: f32,
     music: bool,
     music_load: Option<Pending<u8>>,
-    music_write: Option<Pending<u8>>,
     // The page's icons, asked for once.
     icons: Vec<Pending<u8>>,
     retry_at: f32,
@@ -461,7 +454,6 @@ pub fn init() -> Console {
         quiet_at: -100.0,
         music: true,
         music_load: Some(read_file(MUSIC)),
-        music_write: None,
         icons: page_icons(),
         retry_at: 0.0,
         zoom: 1.0,
@@ -909,7 +901,6 @@ fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.music_load) {
         s.music = bytes.is_empty() || bytes[0] != 0
     }
-    let _ = answer_of(mut s.music_write)
     if let Some(result) = answer_of(mut s.profile_write) {
         if result.is_err() {
             s.dirty = true
@@ -948,9 +939,9 @@ fn update(s: mut Console) {
 }
 
 // The chosen game playing itself behind the home (attract.wrela): its build opened, shown and
-// closed as the home is. The home rests on it while `settled` (past the opening, the library in)
-// on the Games pane with no sheet or the account's panel over it, nothing starting or shown.
-// Whether it must be drawn.
+// closed as the home is. It opens hidden, even under the opening; the home shows it while
+// `settled` (past the opening, the library in) on the Games pane with no sheet or the account's
+// panel over it, nothing starting or shown. Whether it must be drawn.
 fn play_behind(s: mut Console, dt: f32, motion: bool, settled: bool) -> bool {
     if s.cards.is_empty() { return false }
     let fetched = s.prefetch_list.is_none() &&
@@ -993,7 +984,6 @@ fn open_pane(s: mut Console, pane: Pane) {
     s.focus = match pane {
         Pane::Games => Action::Play,
         Pane::Saves => if s.saves.is_empty() { Action::Import } else { Action::Save { index: 0 } },
-        Pane::Settings => Action::Name,
     }
 }
 
@@ -1019,26 +1009,6 @@ fn act(s: mut Console, action: Action) {
     match action {
         Action::Games => open_pane(mut s, Pane::Games),
         Action::Load => open_pane(mut s, Pane::Saves),
-        Action::Settings => {
-            let pane = if s.pane == Pane::Settings { Pane::Games } else { Pane::Settings }
-            open_pane(mut s, pane)
-        },
-        Action::Name => {},
-        Action::Music => {
-            // The stored setting, if it's still being read, is this one's now.
-            s.music_load = None
-            s.music = !s.music
-            s.music_write = Some(store(MUSIC, [u8(if s.music { 1 } else { 0 })]))
-        },
-        Action::SaveProfile => {
-            if s.profile.name.trim().is_empty() {
-                s.message = String::from("Type a name for your profile.")
-                return
-            }
-            let bytes = save(s.profile)
-            s.profile_write = Some(store("console/profile", bytes))
-            s.message = String::from("Name saved.")
-        },
         Action::Game { index } => {
             // The selected game's own action is to play it: continue, or begin.
             if index == s.selected {
@@ -1299,33 +1269,6 @@ fn glow(s: Console, action: Action) -> f32 {
     if s.glowing == Some(action) { smoothstep(0.0, 1.0, s.glow) } else { 0.0 }
 }
 
-// A line `stroke` wide from `a` to `b`, level or upright.
-fn stroke(s: mut Console, a: vec2, b: vec2, width: f32) {
-    let lo = min(a, b) - vec2(width * 0.5)
-    let hi = max(a, b) + vec2(width * 0.5)
-    rect(mut s, Rect::spanning(lo, hi), INK, width * 0.5)
-}
-
-// Settings: a quiet square button holding two sliders, as Lucide draws its settings-2 icon
-// on a 24-unit grid.
-fn settings_button(s: mut Console, r: Rect) {
-    let _ = control(mut s, Action::Settings, r, 0, Kind::Icon)
-    let hover = if s.input == Input::Pointer { glow(s, Action::Settings) } else { 0.0 }
-    let shown = if s.pane == Pane::Settings { 1.0 } else { hover }
-    if shown > 0.0 { rect(mut s, r, vec4(RAISED.xyz, RAISED.w * shown), RADIUS) }
-    let unit = 20.0 / 24.0
-    let o = r.center() - vec2(12.0 * unit)
-    let width = 1.75
-    stroke(mut s, o + vec2(11.0, 7.0) * unit, o + vec2(20.0, 7.0) * unit, width)
-    stroke(mut s, o + vec2(5.0, 17.0) * unit, o + vec2(14.0, 17.0) * unit, width)
-    for centre in [vec2(7.0, 7.0), vec2(17.0, 17.0)] {
-        let c = o + centre * unit
-        let outer = 3.0 * unit + width * 0.5
-        let disc = Rect::new(c.x - outer, c.y - outer, outer * 2.0, outer * 2.0)
-        ring(mut s, disc, INK, outer, width)
-    }
-}
-
 fn key_width(s: Console, cap: str) -> f32 {
     max(22.0, width_of(s, cap, 11.0, Face::Sans) + 12.0)
 }
@@ -1422,10 +1365,11 @@ fn shelf_offset(selected: u32, width: f32, gap: f32, w: f32, margin: f32) -> f32
 }
 
 // The home: the chosen game owns the screen. Its hero fills it behind everything (drawn by the
-// GPU, `backdrop`), and once the home has rested on it, the game plays itself there in the hero's
-// place (attract.wrela); at the left, from the bottom up, its actions, its progress, its tagline
-// and its title art. With more than one game, a shelf of covers along the bottom chooses among them; with
-// one, a quiet line says more are coming.
+// GPU, `backdrop`), and once the home shows it, the game plays itself there in the hero's place,
+// from the hero's own frame (attract.wrela); at the left, from the bottom up, its actions, what the console is doing
+// (a request under way, or one that failed), its tagline and its title art. With more than one
+// game, a shelf of covers along the bottom chooses among them. (Ryan, 2026-11-01: the title and
+// the actions alone; the line of where a save is and the one that said more games are coming went.)
 fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     if s.cards.is_empty() {
         let label = empty_library_message(s.message)
@@ -1447,28 +1391,12 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     let many = s.cards.len() > 1
     let tile_h = tile_height(h)
     let shelf_top = h - 56.0 - tile_h
-    if many { shelf(mut s, w, margin, shelf_top, tile_h) } else {
-        // One game: no shelf, only a quiet line where it would be.
-        let middle = h - 35.0
-        text(
-            mut s,
-            "More games soon",
-            13.0,
-            vec2(margin, line_top(s, Face::Sans, 13.0, middle)),
-            MUTED,
-        )
-    }
-    // From the bottom up: the actions, the progress, the tagline, the title art.
+    if many { shelf(mut s, w, margin, shelf_top, tile_h) }
+    // From the bottom up: the actions, the status, the tagline, the title art.
     let top = if many { shelf_top - 40.0 - 44.0 } else { min(h * 0.74, h - 92.0 - 44.0) }
     let room = min(w - margin * 2.0, 760.0)
     let continuing = if s.saves.is_empty() { None } else { Some(s.saves[0].clone()) }
-    let state = status(s)
-    let progress = if !state.is_empty() { state.clone() } else {
-        match continuing {
-            Some(save) => save.description.clone(),
-            None => String::new(),
-        }
-    }
+    let progress = status(s)
     var above = top
     if !progress.is_empty() {
         let size = fitted(s, progress, PROGRESS, room, Face::Sans)
@@ -1658,44 +1586,6 @@ fn saves(s: mut Console, w: f32, h: f32) {
     }
 }
 
-fn settings(s: mut Console, w: f32, h: f32) {
-    let panel = sheet_frame(mut s, w, h, "Settings")
-    let x = panel.x
-    let width = panel.w
-    text(mut s, "Profile name", 13.0, vec2(x, 110.0), MUTED)
-    let field = Rect::new(x, 134.0, width, 44.0)
-    let editing = control(mut s, Action::Name, field, 1, Kind::Row)
-    rect(mut s, field, vec4(1.0, 1.0, 1.0, 0.03), RADIUS)
-    if editing {
-        // As an input shows focus: a brighter border inside a soft ring.
-        ring(mut s, field.shrink(-3.0), vec4(1.0, 1.0, 1.0, 0.16), RADIUS + 3.0, 3.0)
-        ring(mut s, field, vec4(1.0, 1.0, 1.0, 0.55), RADIUS)
-    } else { ring(mut s, field, INPUT, RADIUS) }
-    let name = s.profile.name.clone()
-    let size = fitted(s, name, 15.0, width - 32.0, Face::Sans)
-    let middle = field.center().y
-    text(mut s, name, size, vec2(x + 14.0, line_top(s, Face::Sans, size, middle)), INK)
-    let blink = fract(s.presentation * 1.1) < 0.6
-    if editing && blink {
-        let caret = x + 15.0 + width_of(s, name, size, Face::Sans)
-        rect(mut s, Rect::new(caret, middle - 9.0, w: 1.5, h: 18.0), INK)
-    }
-    button(
-        mut s,
-        Action::SaveProfile,
-        Rect::new(x, y: 194.0, w: 120.0, h: 38.0),
-        2,
-        "Save name",
-        primary: true,
-    )
-    // The home's music: the chosen game's theme, softly.
-    text(mut s, "Music on the home screen", 13.0, vec2(x, 266.0), MUTED)
-    let label = if s.music { "On" } else { "Off" }
-    button(mut s, Action::Music, Rect::new(x, y: 290.0, w: 120.0, h: 38.0), 3, label)
-    let state = status(s)
-    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, 348.0), MUTED) }
-}
-
 // The focus ring, with keys or a pad: a ring just outside the focused button, sliding from one
 // to the next.
 fn focus_ring(s: mut Console) {
@@ -1703,7 +1593,7 @@ fn focus_ring(s: mut Console) {
     var target: Option<Rect> = None
     if s.input != Input::Pointer {
         for c in s.shown {
-            if lit(s, c.action) && (c.kind == Kind::Button || c.kind == Kind::Icon) {
+            if lit(s, c.action) && c.kind == Kind::Button {
                 target = Some(c.rect)
             }
         }
@@ -1733,10 +1623,6 @@ fn focus_ring(s: mut Console) {
     if s.ring_alpha < 0.01 { return }
     let r = s.ring.shrink(-3.0)
     ring(mut s, r, vec4(1.0, 1.0, 1.0, 0.9 * s.ring_alpha), RADIUS + 3.0, 2.0)
-}
-
-fn header(s: mut Console, w: f32, margin: f32) {
-    settings_button(mut s, Rect::new(w - margin - 40.0, y: 22.0, w: 40.0, h: 40.0))
 }
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
@@ -1793,25 +1679,12 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 }
                 if key == Key::Up || (key == Key::Tab && mods.shift) { navigate(mut s, Move::Up) }
                 if key == Key::Escape { open_pane(mut s, Pane::Games) }
-                if s.pane == Pane::Settings && key == Key::A && mods.command() {
-                    s.profile.name.clear()
-                }
-                if s.pane == Pane::Settings && key == Key::Backspace {
-                    let end = previous(s.profile.name, s.profile.name.len())
-                    s.profile.name.truncate(end)
-                }
-            },
-            Event::Text { char } => {
-                if s.pane == Pane::Settings && s.profile.name.len() < 120 && char >= 32 {
-                    s.profile.name.push_char(char)
-                }
             },
             Event::PadButton { button, pressed: true, .. } => {
                 s.input = Input::Pad
                 s.intro_until = 0.0
                 if button == PadButton::South { s.enter = true }
                 if button == PadButton::East { open_pane(mut s, Pane::Games) }
-                if button == PadButton::Start { act(mut s, Action::Settings) }
                 if button == PadButton::Right { navigate(mut s, Move::Right) }
                 if button == PadButton::Left { navigate(mut s, Move::Left) }
                 if button == PadButton::Down { navigate(mut s, Move::Down) }
@@ -1924,12 +1797,11 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         (width, height) != s.drawn_size ||
         account::animating(s.account) ||
         s.renderer.waiting()
-    let editing = s.pane == Pane::Settings && s.focus == Action::Name
     let since = match s.drawn_at {
         Some(at) => Some(time - at),
         None => None,
     }
-    if !due(since, busy, moving: (motion && room_shows) || editing || s.behind) { return }
+    if !due(since, busy, moving: (motion && room_shows) || s.behind) { return }
     s.dirty = false
     s.settled = true
     s.drawn_at = Some(time)
@@ -1949,7 +1821,6 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     if phase.library > 0.0 {
         let games = s.pane == Pane::Games
         if games { focus_ring(mut s) }
-        header(mut s, w, margin)
         library(mut s, w, h, margin)
         if games { footer(mut s, w, h, margin) }
         // A sheet takes the controls; the library behind it only shows. A closing sheet
@@ -1959,7 +1830,6 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             let before = s.controls.len()
             match s.sheet_pane {
                 Pane::Saves => saves(mut s, w, h),
-                Pane::Settings => settings(mut s, w, h),
                 Pane::Games => {},
             }
             if games { s.controls.truncate(before) } else { footer(mut s, w, h, margin) }
@@ -1974,7 +1844,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let over = match s.pointer {
         Some(p) => under(s.controls, p).is_some(),
         None => false,
-    }
+    } || (!account::shown(s.account) && account::over_chip(s.account))
     if over != s.pointing {
         s.pointing = over
         s.cursor = Some(host::cursor(if over { "pointer" } else { "default" }))
@@ -2447,7 +2317,7 @@ fn focus_moves_across_rows_and_along_them() {
         }
     }
     let controls = [
-        row(Action::Settings, 900.0, 0),
+        row(Action::Games, 900.0, 0),
         row(Action::Game { index: 0 }, 50.0, 1),
         row(Action::Play, 50.0, 2),
         row(Action::Load, 200.0, 2),
@@ -2455,9 +2325,9 @@ fn focus_moves_across_rows_and_along_them() {
     assert(neighbour(controls, Action::Play, Move::Right) == Some(Action::Load))
     assert(neighbour(controls, Action::Load, Move::Right).is_none())
     assert(neighbour(controls, Action::Play, Move::Up) == Some(Action::Game { index: 0 }))
-    assert(neighbour(controls, Action::Game { index: 0 }, Move::Up) == Some(Action::Settings))
+    assert(neighbour(controls, Action::Game { index: 0 }, Move::Up) == Some(Action::Games))
     assert(neighbour(controls, Action::Play, Move::Down).is_none())
-    assert(neighbour(controls, Action::Retry, Move::Down) == Some(Action::Settings))
+    assert(neighbour(controls, Action::Retry, Move::Down) == Some(Action::Games))
     // From a tile far to the right, down still reaches the main action first.
     let wide = [
         row(Action::Game { index: 4 }, 900.0, 1),
