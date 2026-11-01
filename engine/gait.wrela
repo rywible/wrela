@@ -295,12 +295,19 @@ const REACH: f32 = 0.995
 
 /// How far the body must come down (m, 0 or less) for leg `i` to reach its foot: its hip moves
 /// along world up as its height changes, and its ankle's target is fixed (by the foot's place
-/// and the body's turn).
-fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
+/// and the body's turn, its heel rolled up by `heel` radians as `palette` rolls it).
+pub fn drop_to_reach(w: Walker, b: Body, i: u32, heel: f32 = 0.0) -> f32 {
     let m = frame_of(w, b)
     let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
     let hip = apply(m, b.hips[i])
-    let ankle = w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    var ankle = w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    if heel != 0.0 {
+        // Its heel rolled up about its toe, as `palette` rolls it.
+        let toe = w.feet[i].at + (m * vec4(0.0, 0.0, TOE * b.foot_height[i], 0.0)).xyz
+        let along = (rigid_inverse(m) * vec4(ankle - toe, 0.0)).xyz
+        let rolled = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel).rotate(along)
+        ankle = toe + (m * vec4(rolled, 0.0)).xyz
+    }
     let v = ankle - hip
     let r = b.reach[i]
     if dot(v, v) <= r * r {
@@ -577,9 +584,11 @@ fn about(r: Quat, at: vec3) -> mat4 {
 
 /// The palette that poses skeleton `s` as walker `w` stands: each leg's foot joint over its
 /// sole, its hip to its ankle bent by two-bone IK in the plane of its rest knee, its ankle and
-/// foot keeping their rest turn; each sprung bone turned toward its spring about its joint,
-/// carrying the bones below it; the rest as their parents go; all in the body's frame.
-pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
+/// foot keeping their rest turn (or, by `heel[i]` radians, rolled up about its toe: the toe stays
+/// where it's planted, `engine::motion`'s anticipation); each sprung bone turned toward its
+/// spring about its joint, carrying the bones below it; the rest as their parents go; all in the
+/// body's frame.
+pub fn palette(s: Skeleton, b: Body, w: Walker, heel: [f32; 4] = [0.0; 4]) -> Palette {
     let m = frame_of(w, b)
     let inv = rigid_inverse(m)
     // Each bone's matrix in the body's space: rest to posed.
@@ -591,8 +600,14 @@ pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
         let (h, k, a, f) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]), s.rest(j[3]))
         // The foot joint's target, in the body's space: over its sole by its rest height.
         let sole = apply(inv, w.feet[i].at)
-        let foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
-        let ankle_to = foot_to - (f - a)
+        var foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
+        var roll = Quat::identity()
+        if heel[i] != 0.0 {
+            // Its heel rolled up about its toe (`TOE` of its height ahead of its sole).
+            roll = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel[i])
+            foot_to = apply(about(roll, sole + vec3(0.0, 0.0, TOE * b.foot_height[i])), foot_to)
+        }
+        let ankle_to = foot_to - roll.rotate(f - a)
         let (knee, ankle) = if b.smooth { bend_pole(h, k, a, ankle_to) } else {
             bend(h, k, a, ankle_to)
         }
@@ -600,7 +615,7 @@ pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
         let lower = turn(normalize(a - k), normalize(ankle - knee))
         mats[j[0].index] = bone_matrix(upper, h, h)
         mats[j[1].index] = bone_matrix(lower, k, knee)
-        let below = bone_matrix(Quat::identity(), a, ankle)
+        let below = bone_matrix(roll, a, ankle)
         mats[j[2].index] = below
         mats[j[3].index] = below
         for x in j {
@@ -656,6 +671,10 @@ impl Spring {
 pub struct Palette: Copy + GpuData {
     pub bones: [mat4; MAX_BONES],
 }
+
+/// How far ahead of its sole a foot's toe is, against its foot joint's height over its sole
+/// (**proposed**: a hoof's toe a little ahead of its fetlock).
+pub const TOE: f32 = 0.5
 
 /// The rotation that turns the unit vector `a` to the unit vector `b`, the short way.
 pub fn turn(a: vec3, b: vec3) -> Quat {

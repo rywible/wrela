@@ -137,7 +137,8 @@ the ground; every place is **proposed** until §B5's panel freezes the list.
 | D8 | the wood under cloud | (150, 1.7, 301.6) | 13:00 | overcast |
 
 The creature's shots (9, 10, D7) draw the vale's grazer (`grazer.wrela`): in shot 10 it walks
-toward the eye from where the shot looks, stepped from the shot's start; in 9 and D7 it grazes
+toward the eye along the shot's look, stepped from the shot's start, 10 m away at the still (the
+shot's field a long lens's 23°, so the fawn reads: §F9's strip); in 9 and D7 it grazes
 there, three-quarters on to the eye (`Shot::cast` 0).
 
 ## The grazer (`grazer.wrela`, `kit::roe`)

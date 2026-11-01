@@ -145,10 +145,21 @@ pub fn mark_of(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
     -STROKE_VARY * vary * cover
 }
 
+/// The painterly look's motion (`engine::motion`, §F6): a painting's: a 3° wind-up before each step, its sway a fifth more, its strides and bob a tenth higher, every frame drawn (**proposed**: the twelve
+/// principles' anticipation, follow-through, exaggeration and timing, Thomas and Johnston 1981).
+pub const ANTICIPATE: f32 = 3.0
+pub const OVERSHOOT: f32 = 0.2
+pub const EXAGGERATE: f32 = 0.1
+pub const ON_TWOS: bool = false
+
 impl Style for Painterly {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::DABS | marks::STROKES
+    const ANTICIPATE: f32 = ANTICIPATE
+    const OVERSHOOT: f32 = OVERSHOOT
+    const EXAGGERATE: f32 = EXAGGERATE
+    const ON_TWOS: bool = ON_TWOS
     type Out = Written
 
     fn written(colour: vec4, s: Substance) -> Written {
@@ -198,6 +209,10 @@ impl Style for PainterlyFitting {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::DABS | marks::STROKES
+    const ANTICIPATE: f32 = ANTICIPATE
+    const OVERSHOOT: f32 = OVERSHOOT
+    const EXAGGERATE: f32 = EXAGGERATE
+    const ON_TWOS: bool = ON_TWOS
     type Out = Written
 
     fn written(colour: vec4, s: Substance) -> Written {

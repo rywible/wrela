@@ -182,6 +182,8 @@ The vale's creature's numbers (`kit::genome::ROE`) and the methods that grow it 
 | R. Featherstone, *Rigid Body Dynamics Algorithms* (Springer 2008) | `engine::loads::joint_loads` | Inverse dynamics: each joint's torque by Newton–Euler over its subtree's masses |
 | M. Hildebrand, ["Symmetrical Gaits of Horses"](https://doi.org/10.1126/science.150.3697.701) (*Science* 1965) | `kit::genome::ROE`'s gait ranges | The hind legs' lag: a walk's limb phase kept among the lateral-sequence walks (a tenth to two fifths of a cycle), short of a trot's half |
 | T. Geijtenbeek, M. van de Panne and A. F. van der Stappen, ["Flexible Muscle-Based Locomotion for Bipedal Creatures"](https://doi.org/10.1145/2508363.2508399) (SIGGRAPH Asia 2013) | `kit::gaits` | The gait's objective's shape: effort, stability and speed weighed, searched by CMA-ES (ours a kinematic walker's, its effort a work proxy from the poses' loads) |
+| F. Thomas and O. Johnston, *The Illusion of Life: Disney Animation* (Abbeville 1981) | `engine::motion`, the looks' motion constants (`content/styles`) | The stylizer's levers: anticipation, follow-through, exaggeration and timing on twos, from the twelve principles |
+| R. McN. Alexander and A. S. Jayes, ["A dynamic similarity hypothesis for the gaits of quadrupedal mammals"](https://doi.org/10.1111/j.1469-7998.1983.tb04278.x) (*Journal of Zoology* 1983) | `kit::roe::walk_at` | A fawn's walk from the grown roe's: speed by the root of the legs' length, cadence by its inverse |
 
 ## Read for principles
 

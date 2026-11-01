@@ -30,6 +30,11 @@ impl Style for PainterlyFitted {
     const FLAT: f32 = Painterly::FLAT
     const LINE_DARK: f32 = Painterly::LINE_DARK
     const LINE_PX: f32 = Painterly::LINE_PX
+    const ANTICIPATE: f32 = Painterly::ANTICIPATE
+    const ANTICIPATE_S: f32 = Painterly::ANTICIPATE_S
+    const OVERSHOOT: f32 = Painterly::OVERSHOOT
+    const EXAGGERATE: f32 = Painterly::EXAGGERATE
+    const ON_TWOS: bool = Painterly::ON_TWOS
     type Out = Written
 
     fn written(colour: vec4, s: Substance) -> Written {

@@ -26,6 +26,21 @@ builds the vale in every look here and checks that adding one changed nothing in
 | `palette` | the colour a material's albedo becomes, from its class and its history (and the light, which carries a fit's candidate constants: `engine::style::Knob`) | the albedo |
 | `mark` | how dark a mark makes a pixel | none |
 | `lens` | the image to the screen: exposure, grade, vignette | the tone curve, the grade, the vignette |
+| `ANTICIPATE`, `ANTICIPATE_S` | its motion's wind-up (`engine::motion`, §F6): a planted foot's heel rolled up about its toe by `ANTICIPATE` degrees over the last `ANTICIPATE_S` s of its stance | 0°, 0.08 s |
+| `OVERSHOOT` | how much more a character's secondary chains (head, ears, tail) sway than its gait's springs carry them | 0 |
+| `EXAGGERATE` | how much higher a swing lifts and a body bobs about its running height | 0 |
+| `ON_TWOS` | whether a character's pose is made on every other frame and held between, as hand animation is | off |
+
+With the motion constants 0 and off, a character's pose is its gait's exactly; none moves a
+planted foot. The world-style table (the looks' motion, **proposed**: the twelve principles'
+anticipation, follow-through, exaggeration and timing, Thomas and Johnston 1981):
+
+| Look | `ANTICIPATE` | `ANTICIPATE_S` | `OVERSHOOT` | `EXAGGERATE` | `ON_TWOS` |
+|---|---|---|---|---|---|
+| `Physical` | 0° | 0.08 s | 0 | 0 | off |
+| `Cel` | 4° | 0.08 s | 0.3 | 0.25 | on |
+| `Ink` | 4° | 0.08 s | 0.2 | 0.15 | on |
+| `Painterly` | 3° | 0.08 s | 0.2 | 0.1 | off |
 
 The characters, the water and the climber's garment keep their own lighting (their cel bands, the
 water's optics); a look reaches them through `palette` and its lens.

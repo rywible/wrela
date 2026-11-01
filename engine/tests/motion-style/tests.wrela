@@ -1,0 +1,190 @@
+// The pose stylizer (`engine::motion`, §F6) over the grown roe's optimized walk (`kit::walks`):
+// with nothing to do it's the gait's pose to the bit; on twos its pose changes only on even
+// frames; its wind-up starts `anticipate_s` before each swing, within a frame; and it moves no
+// planted foot.
+
+use engine::gait::{Body, Palette, TOE, Walker, frame_of, palette, stand, step}
+use engine::motion::{Motion, stylize, stylizer}
+use engine::creature::Skeleton
+use kit::gaits::{CLEARANCE, DT, Gait, Ground}
+use kit::genome::{ROE, quadruped_at}
+use kit::muscles::{Ahead, walker_body}
+use kit::quadruped::skeleton
+use kit::walks::WALKS
+use std::units::deg
+
+/// A cel world's motion: every lever at once (`styles::cel`'s numbers).
+const STYLED = Motion {
+    anticipate: 4.0 * deg,
+    anticipate_s: 0.08,
+    overshoot: 0.3,
+    exaggerate: 0.25,
+    on_twos: true,
+}
+
+/// The frames each test walks (after setting off).
+const FRAMES: u32 = 150
+
+/// The grown roe's walker body walking `g`.
+pub fn body_of(g: Gait) -> Body {
+    var b = walker_body(quadruped_at(ROE, 1.0), g.head_k, g.tail_k)
+    b.clear = CLEARANCE
+    b.crouch = g.crouch
+    b.follow = g.follow
+    b.smooth = g.smooth
+    b
+}
+
+/// The walk's frames on uneven ground: each frame's walker, after 30 frames setting off.
+pub fn walked(g: Gait, b: Body) -> Vec<Walker> {
+    let terrain = Ground { amplitude: 0.3 }
+    var w = stand(terrain, b, vec2(0.0), 0.0)
+    var out: Vec<Walker> = Vec::new()
+    for k in 0..(30 + FRAMES) {
+        step(mut w, terrain, Ahead {}, b, g.walk, go: true, dt: DT)
+        if k >= 30 {
+            out.push(w)
+        }
+    }
+    out
+}
+
+fn same(a: Palette, b: Palette, n: u32) -> bool {
+    for i in 0..n {
+        for c in 0..4 {
+            for r in 0..4 {
+                if bitcast_u32(a.bones[i][c][r]) != bitcast_u32(b.bones[i][c][r]) {
+                    return false
+                }
+            }
+        }
+    }
+    true
+}
+
+/// With every parameter 0 and holds off, the pose is the gait's, to the bit.
+@test
+fn unstyled_its_the_gaits_pose() {
+    let g = WALKS[0]
+    let b = body_of(g)
+    let s = skeleton(quadruped_at(ROE, 1.0))
+    var st = stylizer()
+    for w in walked(g, b) {
+        let p = stylize(mut st, Motion {}, Ground { amplitude: 0.3 }, s, b, g.walk, w, DT)
+        assert(same(p, palette(s, b, w), s.len()), "the unstyled pose isn't the gait's")
+    }
+}
+
+/// On twos, the pose changes only on even frames: each odd frame holds the frame before's.
+@test
+fn on_twos_it_changes_only_on_even_frames() {
+    let g = WALKS[0]
+    let b = body_of(g)
+    let s = skeleton(quadruped_at(ROE, 1.0))
+    var st = stylizer()
+    var last = Palette { bones: [std::transform::identity(); engine::creature::MAX_BONES] }
+    var k = 0
+    for w in walked(g, b) {
+        let p = stylize(mut st, STYLED, Ground { amplitude: 0.3 }, s, b, g.walk, w, DT)
+        if k % 2 == 1 {
+            assert(same(p, last, s.len()), f"frame {k} moved")
+        } else if k > 0 {
+            assert(!same(p, last, s.len()), f"frame {k} held")
+        }
+        last = p
+        k += 1
+    }
+}
+
+/// Each leg's wind-up (its heel's roll) begins `anticipate_s` before its foot lifts, within a
+/// frame.
+@test
+fn the_wind_up_precedes_each_swing() {
+    let g = WALKS[0]
+    let b = body_of(g)
+    let s = skeleton(quadruped_at(ROE, 1.0))
+    let m = Motion { anticipate: 4.0 * deg }
+    let legs = s.legs()
+    var st = stylizer()
+    var began = [-1; 4]
+    var rolled = [false; 4]
+    var planted = [true; 4]
+    var swings = 0
+    var k = 0
+    for w in walked(g, b) {
+        let p = stylize(mut st, m, Ground { amplitude: 0.3 }, s, b, g.walk, w, DT)
+        let gait = palette(s, b, w)
+        for i in 0..4 {
+            let foot = legs[i].joints[3].index
+            let rolls = !same_bone(p, gait, foot)
+            // (A wind-up under way as the walk's first frame is counted from isn't timed.)
+            if rolls && !rolled[i] && w.feet[i].planted && k > 0 {
+                began[i] = k
+            }
+            if planted[i] && !w.feet[i].planted && began[i] >= 0 {
+                let lead = f32(k - began[i]) * DT
+                assert(
+                    abs(lead - m.anticipate_s) <= DT,
+                    f"leg {i}'s wind-up began {lead} s before it lifted",
+                )
+                swings += 1
+                began[i] = -1
+            }
+            rolled[i] = rolls && w.feet[i].planted
+            planted[i] = w.feet[i].planted
+        }
+        k += 1
+    }
+    assert(swings >= 8, f"only {swings} swings were wound up")
+}
+
+pub fn same_bone(a: Palette, b: Palette, i: u32) -> bool {
+    for c in 0..4 {
+        for r in 0..4 {
+            if bitcast_u32(a.bones[i][c][r]) != bitcast_u32(b.bones[i][c][r]) {
+                return false
+            }
+        }
+    }
+    true
+}
+
+/// Styled, no planted foot moves: each planted foot's toe (the point its heel rolls about) is no
+/// further from where it's planted than the gait's own pose puts it (a gait's leg can hang a
+/// millimetre or two short of its foot), within 0.1 mm.
+@test
+fn it_moves_no_planted_foot() {
+    let g = WALKS[0]
+    let b = body_of(g)
+    let s = skeleton(quadruped_at(ROE, 1.0))
+    let legs = s.legs()
+    var st = stylizer()
+    for w in walked(g, b) {
+        let p = stylize(
+            mut st,
+            Motion { on_twos: false, ..STYLED },
+            Ground { amplitude: 0.3 },
+            s,
+            b,
+            g.walk,
+            w,
+            DT,
+        )
+        let gait = palette(s, b, w)
+        let m = frame_of(w, b)
+        for i in 0..4 {
+            if w.feet[i].planted {
+                let j = legs[i].joints[3]
+                let f = s.rest(j)
+                let toe = vec4(f.x, 0.0, f.z + TOE * b.foot_height[i], 1.0)
+                let planted = w.feet[i].at + (m * vec4(0.0, 0.0, TOE * b.foot_height[i], 0.0)).xyz
+                let styled = length((p.bones[j.index] * toe).xyz - planted)
+                let own = length((gait.bones[j.index] * toe).xyz - planted)
+                assert(
+                    styled <= own + 1.0e-4,
+                    f"leg {i}'s planted toe {styled} m off, the gait's {own}",
+                )
+            }
+        }
+    }
+}

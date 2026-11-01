@@ -6,6 +6,7 @@
 // the same frames; in another shot it grazes, its muzzle lowered to the ground.
 
 use engine::gait::{Body, Path, Walker, frame_of, palette, stand, step}
+use engine::motion::{Motion, Stylizer, stylize, stylizer}
 use engine::creature::MAX_BONES
 use engine::terrain::{Cover, Terrain}
 use kit::gaits::{CLEARANCE, DT, Gait}
@@ -87,18 +88,21 @@ impl Path for Trail {
     }
 }
 
-/// A walk in progress: its walker, its way, and how far it's been stepped (s since it set off).
+/// A walk in progress: its walker, its way, how far it's been stepped (s since it set off), and
+/// its pose's stylizer (`engine::motion`) and when it last drew (s since it set off).
 pub struct Walking: Copy {
     pub walker: Walker,
     pub trail: Trail,
     pub stepped: f32,
+    pub style: Stylizer,
+    pub drawn: f32 = 0.0,
 }
 
 /// The grazer setting off from `from` toward `to`, standing.
 pub fn set_off(from: vec2, to: vec2) -> Walking {
     let d = to - from
     let w = stand(Relief {}, body(), from, atan2(d.x, d.y))
-    Walking { walker: w, trail: Trail { from, to }, stepped: 0.0 }
+    Walking { walker: w, trail: Trail { from, to }, stepped: 0.0, style: stylizer() }
 }
 
 /// `w` stepped at the walker's rate (`kit::gaits::DT`) until it's walked `until` s: the same
@@ -111,9 +115,13 @@ pub fn walk_to(w: mut Walking, until: f32) {
     }
 }
 
-/// The palette of walker `w` (world space).
-pub fn walking(w: Walker) -> [mat4; MAX_BONES] {
-    palette(skeleton(quadruped_at(ROE, FAWN_AGE)), body(), w).bones
+/// The palette of walk `w` as it's walked by now (`at` s since it set off: world space), styled by
+/// the world's motion `m` (`engine::motion::stylize`: the physical world's is the gait's pose).
+pub fn walking(w: mut Walking, m: Motion, at: f32) -> [mat4; MAX_BONES] {
+    let s = skeleton(quadruped_at(ROE, FAWN_AGE))
+    let dt = max(at - w.drawn, 0.0)
+    w.drawn = at
+    stylize(mut w.style, m, Relief {}, s, body(), walk().walk, w.walker, dt).bones
 }
 
 /// `bones` (world space) less the render space's origin `origin`.

@@ -109,12 +109,14 @@ pub const SHOTS: [Shot; 20] = [
         time: 14.0,
         reach: 1.5,
     },
-    // 10. The creature walking toward the eye at 10 m, down the deer's trail to the mere.
+    // 10. The creature walking toward the eye at 10 m, down the deer's trail to the mere: a long
+    // lens's field (23°), so a fawn half a metre tall at 10 m is an eighth of the frame.
     Shot {
         name: "down the trail",
         eye: vec3(-9.0, 1.4, -14.0),
         at: vec3(-3.0, 0.8, -4.0),
         moves: vec2(0.0, 0.0),
+        fovy: 0.4,
         cast: 0,
         time: 17.0,
         reach: 1.5,

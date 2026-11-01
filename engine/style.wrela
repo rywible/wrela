@@ -39,6 +39,15 @@ pub trait Style {
     /// How wide those lines are (output pixels, `paint::Look::line_px`): under 0, the program's
     /// own.
     const LINE_PX: f32 = -1.0
+    /// Its motion (`motion::Motion`, D31): a counter-pose of `ANTICIPATE` degrees for
+    /// `ANTICIPATE_S` seconds before a limb's swing, the secondary chains' sway scaled by
+    /// 1 + `OVERSHOOT`, the stride's lift and the body's bob by 1 + `EXAGGERATE`, and the pose held
+    /// on twos (`ON_TWOS`); all 0 and off, the gait's pose exactly.
+    const ANTICIPATE: f32 = 0.0
+    const ANTICIPATE_S: f32 = 0.08
+    const OVERSHOOT: f32 = 0.0
+    const EXAGGERATE: f32 = 0.0
+    const ON_TWOS: bool = false
 
     /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
     /// that reads no substance after the pass, or that and the substance's three

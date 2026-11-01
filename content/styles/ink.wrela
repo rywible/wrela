@@ -91,10 +91,21 @@ pub fn hatched(m: MarkSample) -> f32 {
     max(layer(m, 0), max(layer(m, 1), layer(m, 2)))
 }
 
+/// The ink look's motion (`engine::motion`, §F6): an inked drawing's: a 4° wind-up before each step, its sway a fifth more, its strides and bob 15 % higher, held on twos (**proposed**: the twelve
+/// principles' anticipation, follow-through, exaggeration and timing, Thomas and Johnston 1981).
+pub const ANTICIPATE: f32 = 4.0
+pub const OVERSHOOT: f32 = 0.2
+pub const EXAGGERATE: f32 = 0.15
+pub const ON_TWOS: bool = true
+
 impl Style for Ink {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::CREASES | marks::HATCH
+    const ANTICIPATE: f32 = ANTICIPATE
+    const OVERSHOOT: f32 = OVERSHOOT
+    const EXAGGERATE: f32 = EXAGGERATE
+    const ON_TWOS: bool = ON_TWOS
     const LINE_DARK: f32 = LINE_DARK
     const LINE_PX: f32 = LINE_PX
     type Out = Written

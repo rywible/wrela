@@ -84,9 +84,10 @@ pub struct Vale {
     grazing: Option<(f32, [mat4; engine::creature::MAX_BONES])>,
 }
 
-/// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye from what the
-/// shot looks at.
+/// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye along its
+/// look, `TRAIL_AT` m from it at the shot's still.
 pub const WALKS_IN: Text = "down the trail"
+pub const TRAIL_AT: f32 = 10.0
 
 /// How far from facing the eye the grazer grazes (radians: three-quarters on, its side and its
 /// face both seen).
@@ -199,8 +200,8 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
         },
     }
     light(mut s, hour, skies, eye.y)
-    // The grazer, where a held shot casts it (`Shot::cast`): walking toward the eye from where the
-    // shot looks in "down the trail", grazing there facing three-quarters from the eye in another;
+    // The grazer, where a held shot casts it (`Shot::cast`): walking toward the eye along its look
+    // in "down the trail", grazing there facing three-quarters from the eye in another;
     // not drawn otherwise.
     let origin = s.frame.origin
     let cast = match (s.held, s.shots.held) {
@@ -216,17 +217,21 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 None => true,
             }
             if fresh {
-                s.walking = Some((from, grazer::set_off(at.xz, eye.xz)))
+                // From far enough up the trail that it's `TRAIL_AT` from the eye at the shot's
+                // still (`engine::shot::SETTLE` in; its speed eased up over its first half second).
+                let toward = normalize(at.xz - eye.xz)
+                let lead = grazer::walk().walk.speed * (engine::shot::SETTLE - 0.5)
+                s.walking = Some(
+                    (from, grazer::set_off(eye.xz + toward * (TRAIL_AT + lead), eye.xz)),
+                )
             }
             if let Some((f, w)) = s.walking {
                 var w = w
-                grazer::walk_to(mut w, s.shots.since(time))
+                let since = s.shots.since(time)
+                grazer::walk_to(mut w, since)
+                let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since)
                 s.walking = Some((f, w))
-                s.stage.grazer.pose(
-                    grazer::shifted(grazer::walking(w.walker), origin),
-                    shadowed: true,
-                    moved: false,
-                )
+                s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
             }
         } else {
             s.walking = None
