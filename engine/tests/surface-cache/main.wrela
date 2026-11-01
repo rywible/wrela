@@ -1,7 +1,9 @@
 // The probes' surface cache (§G1, `distance::Distance::albedo`): a red wall (a thick capsule of
-// a red bark) on flat ground, drawn through `engine::frame` until its distance volume is cooked.
-// Then probes' rays are traced (`probes::trace`): toward the wall's sunlit side, its shaded side,
-// and the open ground beside it, with the volume and without it.
+// a red bark) on flat ground, a solid occluder of the probes as well as the distance volume's (as
+// a landscape's trunks are both: `land::stage::solid_capsules`), drawn through `engine::frame`
+// until its volumes are cooked. Then probes' rays are traced (`probes::trace`): toward the wall's
+// sunlit side, its shaded side, and the open ground beside it, with the volume's colours and
+// without them, lit by the open sky (the first bake's) and by the probes (a bake again's).
 
 use engine::air::hazy
 use engine::distance::{Capsule, Solids, pack_albedo}
@@ -50,7 +52,18 @@ impl Scene for Walled {
     }
 
     fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
-        Some(Vec::new())
+        Some(
+            Vec::from(
+                [
+                    Occluder {
+                        a: WALL.a - origin,
+                        radius: WALL.radius,
+                        b: WALL.b - origin,
+                        solid: pack_albedo(RED),
+                    },
+                ],
+            ),
+        )
     }
 
     fn height_at(self, world: vec2) -> f32 {
@@ -137,6 +150,8 @@ pub struct State {
     pub sun: Vec<vec4>,
     /// The rays again with no colours cooked (an empty cache: what the probes read before §G1).
     pub bare: Vec<vec4>,
+    /// The rays again lit by the probes where they end (`Trace::bounced`: a bake again's).
+    pub again: Vec<vec4>,
     pub cooked_at: u32,
 }
 
@@ -165,6 +180,7 @@ pub fn init() -> State {
         light: Vec::new(),
         sun: Vec::new(),
         bare: Vec::new(),
+        again: Vec::new(),
         cooked_at: 0,
     }
 }
@@ -238,6 +254,32 @@ fn ask(s: mut State) {
         over: 4,
     )
     s.asked.push(read(b.items()))
+    var g: GpuBuffer<vec4> = buffer(4)
+    var gs: GpuBuffer<vec4> = buffer(4)
+    dispatch(
+        rays.bind(
+            Trace { bounced: 1, ..t },
+            density: probes.density,
+            volume: f.distance.volume,
+            colours: f.distance.albedo,
+            levels: f.clipmap.levels(),
+            texels: f.clipmap.texels(),
+            sh: sh,
+            near: f.near.front,
+            far: f.far.front,
+            cmp: f.cmp,
+            view: f.tables.view,
+            dome: f.sky.dome,
+            maps: probes.maps,
+            s: f.linear,
+            seen: probes.seen.items(),
+            origin: o,
+            out: mut g,
+            sun_out: mut gs,
+        ),
+        over: 4,
+    )
+    s.asked.push(read(g.items()))
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
@@ -248,19 +290,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.cooked_at = s.frame.ran
         ask(mut s)
     }
-    if s.asked.len() == 3 && s.bare.is_empty() {
+    if s.asked.len() == 4 && s.bare.is_empty() {
         match s.asked[2].poll() {
             Some(Ok(v)) => s.bare = take v,
             _ => {},
         }
     }
-    if s.asked.len() == 3 && s.light.is_empty() {
+    if s.asked.len() == 4 && s.light.is_empty() {
         match s.asked[0].poll() {
             Some(Ok(v)) => s.light = take v,
             _ => {},
         }
     }
-    if s.asked.len() == 3 && s.sun.is_empty() {
+    if s.asked.len() == 4 && s.again.is_empty() {
+        match s.asked[3].poll() {
+            Some(Ok(v)) => s.again = take v,
+            _ => {},
+        }
+    }
+    if s.asked.len() == 4 && s.sun.is_empty() {
         match s.asked[1].poll() {
             Some(Ok(v)) => s.sun = take v,
             _ => {},
@@ -287,17 +335,24 @@ fn apart(a: f32, b: f32) -> f32 {
     min(d, 360.0 - d)
 }
 
-/// A probe's ray that meets the red wall's sunlit side brings back a red bounce: its hue within
-/// 10° of the wall's.
+/// A probe's ray that meets the red wall's sunlit side brings back a red bounce, past the wall's
+/// own density in the probes' volume: its hue within 10° of the wall's and its light more than a
+/// hundredth (not black), lit by the open sky and by the probes alike.
 @test(frames: 200, gpu: true)
 fn a_red_wall_bounces_red(s: State) {
-    assert(s.light.len() == 4, f"cooked at frame {s.cooked_at}: {s.light.len()} rays read back")
-    let c = s.light[0].xyz
-    print(
-        f"the sunlit side: went {s.light[0].w:.2} m, light {c} (hue {hue(c):.1}°, the wall's {hue(RED):.1}°)",
+    assert(
+        s.light.len() == 4 && s.again.len() == 4,
+        f"cooked at frame {s.cooked_at}: {s.light.len()}, {s.again.len()} rays read back",
     )
-    assert(abs(s.light[0].w - 4.0) < 0.5, f"the ray stopped {s.light[0].w} m on, not at the wall")
-    assert(apart(hue(c), hue(RED)) <= 10.0, f"its bounce's hue {hue(c)}°, the wall's {hue(RED)}°")
+    for (name, r) in [("the open sky's", s.light[0]), ("the probes'", s.again[0])] {
+        let c = r.xyz
+        print(
+            f"the sunlit side, {name}: went {r.w:.2} m, light {c} (hue {hue(c):.1}°, the wall's {hue(RED):.1}°)",
+        )
+        assert(abs(r.w - 4.0) < 0.5, f"{name}: the ray stopped {r.w} m on, not at the wall")
+        assert(dot(c, engine::light::LUMA) > 0.01, f"{name}: its bounce is black, {c}")
+        assert(apart(hue(c), hue(RED)) <= 10.0, f"{name}: its bounce's hue {hue(c)}°")
+    }
 }
 
 /// The wall's side away from the sun brings back none of the sun's light.

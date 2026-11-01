@@ -88,12 +88,19 @@ pub struct Named: Clone {
     pub pairs: u32,
 }
 
-/// `s` with its ASCII capitals lowered.
+/// `s` with its ASCII capitals lowered and its typographic apostrophes (’) plain (').
 fn lower(s: str) -> String {
     var out: Vec<u8> = Vec::new()
-    for i in 0..s.len() {
+    var i = 0
+    while i < s.len() {
         let b = s.byte(i)
+        if b == 0xE2 && i + 2 < s.len() && s.byte(i + 1) == 0x80 && s.byte(i + 2) == 0x99 {
+            out.push(39)
+            i += 3
+            continue
+        }
         out.push(if b >= 65 && b <= 90 { b + 32 } else { b })
+        i += 1
     }
     String::from_utf8(take out).unwrap_or(String::from(s))
 }

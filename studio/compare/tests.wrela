@@ -389,6 +389,8 @@ fn synthetic_losses_select_their_items() {
         (6, [0, 4], "j0: The mere shows no Reflections of the trees", "G2"),
         (2, [0, 1], "j0: the leaves don't glow where they're backlit", "G3"),
         (4, [4, 1], "j0: the fall's spray reads as grey noise", "G6"),
+        // A typographic apostrophe names as a plain one.
+        (3, [1, 2], "j0: the sky’s colour is off", "G7"),
     ]
     for (pair, rows, sentence, item) in cases {
         let ranked = menu::ranked_items(tally_losing(pair, rows, sentence), classes)

@@ -45,7 +45,8 @@ pub struct Look: Copy + GpuData {
     pub output: u32 = 0,
     pub peak: f32 = 4.0,
     /// The exposed light's contrast about `light::PIVOT` (`light::tone_contrast`, §G7): 1 is
-    /// `light::tone`'s curve, as it was.
+    /// `light::tone`'s curve, as it was. The physical look's lens reads it; the others keep their
+    /// own curves.
     pub contrast: f32 = 1.0,
 }
 
@@ -433,22 +434,31 @@ fn the_meter_reads_the_band_from_the_median_up() {
     )
 }
 
-/// Metering keeps scenes' order (§G7): of two scenes a stop apart, and of a dusk view whose
-/// meter asks past the old ceiling, the brighter's metered band comes out brighter at its own
-/// exposure (a strength under 1 meters part of the difference away, never all of it, nor past it).
+/// Metering keeps scenes' order (§G7): of scenes a stop or more apart, from a dusk view to a bright
+/// noon, the brighter's metered band comes out brighter at its own exposure, under the engine's
+/// ceiling and under the vale's 8 (its strength under 1 meters part of the difference away, never
+/// all of it, nor past it). And the dusk view's meter asks past the engine's ceiling, so a raised
+/// one shows it brighter.
 @test
 fn metering_keeps_the_scenes_order() {
-    let m = Metering { hi: 8.0, fresh: 1, ..METERING }
-    var shown: Vec<f32> = Vec::new()
-    for stop in [-9.0, -6.0, -5.0, -4.0, -2.0, -1.0, 0.0, 1.0] {
-        // A scene of two tones a stop either side of `stop`, half its pixels each.
+    assert(METERING.strength < 1.0, f"a strength of {METERING.strength} meters the order away")
+    let stops = [-9.0, -6.0, -5.0, -4.0, -2.0, -1.0, 0.0, 1.0]
+    // A scene of two tones a stop either side of `stop`, half its pixels each: its metered band.
+    let band = |stop: f32| {
         var h = [0; 128]
         h[bin_of(stop - 1.0)] = 2048
         h[bin_of(stop + 1.0)] = 2048
-        let (metered, _) = band_of(h, total: 4096, lo: BAND_LO, hi: BAND_HI)
-        shown.push(metered * metered_exposure(m, metered))
+        band_of(h, total: 4096, lo: BAND_LO, hi: BAND_HI).0
     }
-    for k in 1..shown.len() {
-        assert(shown[k] > shown[k - 1], f"scene {k} shows {shown[k]}, the darker {shown[k - 1]}")
+    for hi in [METERING.hi, 8.0] {
+        let m = Metering { hi, fresh: 1, ..METERING }
+        var last = 0.0
+        for stop in stops {
+            let shown = band(stop) * metered_exposure(m, band(stop))
+            assert(shown > last, f"at a ceiling of {hi}, {stop} shows {shown}, the darker {last}")
+            last = shown
+        }
     }
+    let unbounded = metered_exposure(Metering { hi: 1.0e9, ..METERING }, band(stops[0]))
+    assert(unbounded > METERING.hi, f"the dusk view asks {unbounded}, inside the ceiling")
 }

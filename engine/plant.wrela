@@ -212,6 +212,8 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
     var out: Vec<Occluding> = Vec::new()
     for k in 0..plants.len() {
         borrow p = plants[k]
+        // Its wood's colour, as the probes' rays see it.
+        let wood = distance::pack_albedo(bark_of(p.bark))
         if p.bark.grown == 0.0 {
             var limbs: Vec<Tube<4>> = Vec::new()
             for i in 0..p.limbs.len() {
@@ -221,14 +223,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
             for i in 0..p.clumps.len() {
                 clumps.push(p.clumps[i])
             }
-            out.push(
-                Occluding {
-                    cores: Vec::new(),
-                    limbs,
-                    clumps,
-                    wood: distance::pack_albedo(bark_of(p.bark)),
-                },
-            )
+            out.push(Occluding { cores: Vec::new(), limbs, clumps, wood })
             continue
         }
         var radii: Vec<f32> = Vec::new()
@@ -252,14 +247,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
                 }
             }
         }
-        out.push(
-            Occluding {
-                cores,
-                limbs: Vec::new(),
-                clumps,
-                wood: distance::pack_albedo(bark_of(p.bark)),
-            },
-        )
+        out.push(Occluding { cores, limbs: Vec::new(), clumps, wood })
     }
     out
 }
@@ -891,8 +879,8 @@ pub fn secondary_veins(along: f32, across: f32) -> f32 {
     mix(1.0, smoothstep(0.002, 0.006, apart), inside)
 }
 
-/// A leaf's secondary veins a side, and how far toward the tip they run per unit out from the
-/// midrib (**proposed**: a beech leaf's seven to ten pairs, at about 45°).
+/// A leaf's secondary veins a side (a European beech's 4 to 9 pairs: Go Botany, docs/citations.md),
+/// and how far toward the tip they run per unit out from the midrib (**proposed**: 45°).
 pub const VEINS: u32 = 8
 pub const VEIN_SLOPE: f32 = 1.0
 

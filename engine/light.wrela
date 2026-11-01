@@ -272,9 +272,13 @@ pub fn tone(c: vec3, exposure: f32) -> vec3 {
 /// the shoulder's knee; over 1, its shadows deeper and its lights brighter), and a shoulder that
 /// rolls the lights off toward white rather than clipping them (`soft_shoulder`).
 pub fn tone_contrast(c: vec3, exposure: f32, contrast: f32) -> vec3 {
-    let x = max(c * exposure, vec3(0.0))
-    let t = soft_shoulder(PIVOT * pow(x / PIVOT, vec3(contrast)))
+    let t = soft_shoulder(contrasted(c * exposure, contrast))
     vec3(srgb(t.x), srgb(t.y), srgb(t.z))
+}
+
+/// Exposed light `x` with its contrast about `PIVOT` raised to `contrast` (none below 0).
+pub fn contrasted(x: vec3, contrast: f32) -> vec3 {
+    PIVOT * pow(max(x, vec3(0.0)) / PIVOT, vec3(contrast))
 }
 
 /// The light a contrast turns about (linear, exposed): a little under middle grey, where most of a
@@ -434,7 +438,8 @@ fn metallic_light_is_coloured_reflection_without_diffuse() {
 @test
 fn the_contrast_keeps_lumas_order_and_rolls_off_its_lights() {
     var last = -1.0
-    var x = 0.001
+    // From 2⁻¹⁰ (a thousandth) to 8, doubling.
+    var x = 1.0 / 1024.0
     while x <= 8.0 {
         let c = vec3(x)
         let y = dot(tone_contrast(c, exposure: 1.0, contrast: 1.2), LUMA)

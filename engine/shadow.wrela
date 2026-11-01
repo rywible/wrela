@@ -41,8 +41,9 @@ pub struct Shadows: Copy + GpuData {
     pub sun_size: f32 = 0.00925,
     pub near_depth: f32 = 499.0,
     pub far_depth: f32 = 5199.0,
-    /// The moving map's depth span (m: `shadows`' 1 to 80), its soft lookup's as the static maps'.
-    pub moving_depth: f32 = 79.0,
+    /// The moving map's depth span (m: `shadows`' 1 to `2 × MOVING_REACH`), its soft lookup's as
+    /// the static maps'.
+    pub moving_depth: f32 = 2.0 * MOVING_REACH - 1.0,
 }
 
 /// Points on the unit disc, evenly spread (a Vogel spiral: the golden angle round, the square

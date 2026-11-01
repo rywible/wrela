@@ -74,9 +74,9 @@ pub fn leaf_sky_normal(n: vec3) -> vec3 {
     normalize(vec3(n.x, max(abs(n.y), 0.25), n.z))
 }
 
-/// How much brighter a leaf's light through it is with the sun right behind it (**proposed**: a
-/// thin leaf scatters what it passes mostly forward; a lone leaf against the sun shows a third of
-/// the sun's light, §G3).
+/// How much brighter a leaf's light through it is with the sun right behind it (**proposed**: so a
+/// lone leaf against the sun shows a third of the sun's light, as the development set's backlit
+/// beech leaves read, vale-d2-canopy; §G3).
 const AGAINST_SUN: f32 = 1.3
 
 /// How deep in its crown (m) a leaf's light through it is gone: past it, the light that reaches a
