@@ -30,8 +30,8 @@ use server::{
 use std::collections::replace
 use std::hash::sha256::sha256
 use wire::{
-    ADD_PASSKEY, ANY, Agreed, CURSOR_BYTES, FULL, Found, MOST_FOUND, MOST_REPLAY, NOT_AGREED,
-    REGISTER, Reply, Request, SIGN_IN, WHOLE,
+    ADD_PASSKEY, ANY, Agreed, CURSOR_BYTES, FULL, Found, MOST_FOUND, MOST_FROM, MOST_REPLAY,
+    NOT_AGREED, REGISTER, Reply, Request, SIGN_IN, WHOLE,
 }
 
 /// What a verifier is asked (`call_build`'s request under wrela-verify-1): what replay `replay`
@@ -139,9 +139,10 @@ impl<G: Game> Engine<G> {
     fn board_asked(self, request: Request) -> Option<String> {
         let (game, course, category) = match request {
             Request::Board { game, course, category, from, after } => {
-                // A page after another names where it ends; the first starts at the top.
+                // A page after another names where it ends; the first starts at the top. None is
+                // numbered past any board's places.
                 let first = after.is_empty() && from == 0
-                if !first && (after.len() != CURSOR_BYTES || from == 0) {
+                if !first && (after.len() != CURSOR_BYTES || from == 0 || from > MOST_FROM) {
                     return None
                 }
                 (game.clone(), course, category)

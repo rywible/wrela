@@ -3269,3 +3269,21 @@ fn a_deletions_clear_remembers_none_of_what_it_deletes() {
     assert(nothing_left_of(h, s), "cleared")
     assert(most < 64, f"{most} keys remembered gone")
 }
+
+@test
+fn a_page_numbered_past_any_board_is_refused() {
+    var h = host()
+    crowd(mut h, 30)
+    let after = Vec::filled(wire::CURSOR_BYTES, u8(0))
+    for from in [4294967295, 4294967295 - wire::BOARD_PAGE, wire::MOST_FROM + 1] {
+        let (r, _) = h.read(20, board(0, ANY, from, after.clone()))
+        assert(refused([take r]), f"from {from}")
+    }
+    let Reply::Board { places, .. } = h.read(
+        20,
+        board(0, ANY, wire::MOST_FROM, after.clone()),
+    ).0 else {
+        panic("the deepest page still reads")
+    }
+    assert(places[0].place == wire::MOST_FROM + 1)
+}

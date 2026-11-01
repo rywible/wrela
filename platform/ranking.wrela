@@ -15,7 +15,7 @@ use account::{HANDLE_BYTES, key, part, u32_at, under}
 use server::{Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, got, read}
 use std::serialize::{Serialize, save}
 use std::store::{append_u32, past}
-use wire::{AROUND, BOARD_PAGE, Place, Reply, Request, RunRef}
+use wire::{AROUND, BOARD_PAGE, MOST_FROM, Place, Reply, Request, RunRef}
 
 /// What an account last told a board (`a<handle>`): its revision, and its place's time and name's
 /// key, if it has one (`present`).
@@ -65,6 +65,12 @@ impl<G: Game> Engine<G> {
         let job = blank_job(conn, request.clone())
         match request {
             Request::Board { from, after, .. } => {
+                // The edge refuses one numbered past any board's places; so does a board, so a
+                // place's number never overflows.
+                if from > MOST_FROM {
+                    self.refuse(conn, "That page is past the end of the board.")
+                    return
+                }
                 // From the fastest, or just after the last page's last place: a page deep down
                 // reads its own places, and one more to say there are more.
                 var j = take job

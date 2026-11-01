@@ -40,6 +40,9 @@ pub const MOST_REPLAY: u32 = 49152
 pub const EXPORT_PART: u32 = 262144
 /// The most entries a board's page holds.
 pub const BOARD_PAGE: u32 = 20
+/// The most places a page may be numbered after (`Request::Board`'s `from`): far past any board's,
+/// and its places' numbers still a `u32`.
+pub const MOST_FROM: u32 = 1 << 30
 /// The bytes of a page's `next`: a place's time and its account's handle.
 pub const CURSOR_BYTES: u32 = 4 + account::HANDLE_BYTES
 /// The places a slice holds above an account's place, and below it.
