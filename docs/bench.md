@@ -3659,7 +3659,10 @@ grown (none authored) and its growth hashes the same across hosts here; its crea
 from a genome; it renders through four looks with no change to `engine/`; its runtime, program
 and shaders fit their sizes. The tiers below `Epic` were measured and ordered at C7. Every M4 number here
 is C's, from before Parts D–H, and is to measure again on that machine: until then each M4 cell
-is a historical one, not the plan's final measure; no other device has a row (D37).
+is a historical one, not the plan's final measure; no other device has a row (D37). Plan three
+isn't complete in the sense of its claim: D27 doesn't hold, and its Part G closed Blocked without
+building G2 (the water's reflections), G5.1 (virtual geometry from fields) or G6 (the fall), which
+the final panel's menu names. Plan four (`docs/plan-world-class-4.md`) opens with them.
 
 ## The hypotheses (docs/plan-world-class-3.md §7)
 
