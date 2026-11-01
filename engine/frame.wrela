@@ -107,8 +107,9 @@ pub trait Scene {
 
     /// What's solid round the eye (render space, the render origin `origin` taken off), for the
     /// distance volume (`distance`): `None` if it hasn't changed since version `since` (its
-    /// `Solids::version`), which the volume was last cooked from. None by default: the volume
-    /// holds the ground alone.
+    /// `Solids::version`), which the volume was last cooked from: every solid occluder among them
+    /// (the probes' rays meet solids by the volume where it holds some). None by default: the
+    /// volume holds the ground alone, and the rays meet the solid occluders by their density.
     fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
         None
     }
@@ -2439,9 +2440,10 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             return
         }
         let key = self.probe_key()
-        // The rays step through the solids' distance volume once it's cooked.
+        // The rays step through the solids' distance volume once it's cooked, if it holds the
+        // scene's solids.
         let trace = Trace {
-            solids: self.distance.read(),
+            solids: self.distance.for_rays(),
             ..scene.trace(self.light, self.probes.using.grid),
         }
         let texels = self.clipmap.texels()

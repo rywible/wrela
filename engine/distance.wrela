@@ -455,6 +455,15 @@ impl Distance {
         DistanceGrid { on, ..self.grid }
     }
 
+    /// The grid as the probes' rays step through it (`probes::Trace::solids`): `read`'s where it
+    /// holds the scene's solids, none where it holds the ground alone (`frame::Scene::solids`'
+    /// default), whose rays meet the occluders' solids by their density.
+    pub fn for_rays(self) -> DistanceGrid {
+        if self.solids.capsules.is_empty() && self.solids.shapes.is_empty() { NO_DISTANCE } else {
+            self.read()
+        }
+    }
+
     /// Everything it holds dropped (the render origin moved: its voxels and its solids are of
     /// the old render space), to be cooked again round the eye from the scene's solids, which it
     /// asks for anew.
