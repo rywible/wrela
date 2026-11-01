@@ -13,6 +13,9 @@
 // waits too, and goes once the account's places on each board it counts for are known (the slices
 // around them; none there is its first) and it beats one. A post the server puts off
 // (`Answer::Failed`) waits longer each time, its count kept with it; only a rejection drops it.
+// A waiting run is the account's it was made for (a run found signed out, the first to post it),
+// so another account signed in on the device never posts it, and what the game knew of one
+// account's places goes when another signs in.
 // The runs posted are kept by their replays' SHA-256, apart from the game's progress, so a posted
 // run says so.
 //
@@ -67,12 +70,15 @@ struct Uploaded: Serialize {
 
 /// A run waiting to be posted, as it's stored: its replay, how many times the server put it off
 /// (`Answer::Failed`: each wait after is longer, and the count is kept with it, so a closed tab
-/// doesn't start over), and whether the player posted it by hand (it goes whatever the account's
-/// place, and with "Post my best runs" off).
+/// doesn't start over), whether the player posted it by hand (it goes whatever the account's
+/// place, and with "Post my best runs" off), and the account it's for (`Account::id`): the one
+/// signed in when it was posted or found, or, for a run found with none, the first to post it.
+/// Another account signed in never posts it.
 struct Wait: Clone + Serialize {
     run: Replay,
     tries: u32,
     chosen: bool,
+    account: Vec<u8> = Vec::new(),
 }
 
 struct Waiting: Serialize {
@@ -88,13 +94,14 @@ struct Queued: Clone {
 
 /// What an ask in flight was, to read its answer.
 enum Asked: Clone + Eq {
-    /// Run `run` posted (`hash` its fingerprint).
-    Upload { run: Replay, hash: Vec<u8> },
+    /// Run `run` posted (`hash` its fingerprint), for account `account` (its `Account::id`).
+    Upload { run: Replay, hash: Vec<u8>, account: Vec<u8> },
     /// The player's Post on the screen of what posting makes public, recorded before `run` is
     /// posted.
     Consent { run: Replay },
     Board { course: u32, category: u32, from: u32 },
-    Around { course: u32, category: u32 },
+    /// The slice around account `account`'s place (its `Account::id`).
+    Around { course: u32, category: u32, account: Vec<u8> },
     Watch { name: String, place: u32 },
     Replay { hash: Vec<u8> },
     Names { query: Vec<String>, course: u32 },
@@ -333,14 +340,34 @@ pub fn update(o: mut Online, time: f32) {
     }
 }
 
-/// The account as the console says it is now: if it's another (or signed out), which places on
-/// the boards and slices shown are its are found again.
+/// The account as the console says it is now: if it's another (or signed out), what the game knew
+/// of the one before goes (its times and the slices around its places, the screen of what posting
+/// makes public for its run), and which places on the boards shown are its are found again.
 pub fn set_account(o: mut Online, account: take Account) {
-    let other = account.signed_in != o.account.signed_in || account.name != o.account.name
+    let another = account.id != o.account.id || account.signed_in != o.account.signed_in
+    let other = another || account.name != o.account.name
     o.account = take account
+    if another {
+        o.known.clear()
+        o.slices.clear()
+        if let Some(r) = o.consenting.clone() {
+            o.consenting = None
+            set_status(mut o, fingerprint(r), String::from("Not posted"))
+        }
+    }
     if other {
         mark_mine(mut o)
     }
+}
+
+/// Whether waiting run `w` is the signed-in account's to post: made for it, or for none.
+fn ours(o: Online, w: Wait) -> bool {
+    w.account.is_empty() || w.account == o.account.id
+}
+
+/// The signed-in account's id, or none.
+fn account_id(o: Online) -> Vec<u8> {
+    if o.account.signed_in { o.account.id.clone() } else { Vec::new() }
 }
 
 /// Which place on each board and slice shown is the signed-in account's, found once as the places
@@ -561,18 +588,24 @@ fn queue(o: mut Online, w: Wait, at: f32) {
         o.waits.storing.unsaved = true
         return
     }
-    let (course, full) = (w.run.course, counts(w.run, FULL))
-    let slot = |q: Queued| !q.wait.chosen &&
-        q.wait.run.course == course &&
-        counts(q.wait.run, FULL) == full
     for q in o.waiting {
-        if slot(q) && q.wait.run.ticks <= w.run.ticks {
+        if same_slot(q.wait, w) && q.wait.run.ticks <= w.run.ticks {
             return
         }
     }
-    o.waiting.retain(|q| !slot(q))
+    o.waiting.retain(|q| !same_slot(q.wait, w))
     o.waiting.push(Queued { hash, wait: w.clone(), at })
     o.waits.storing.unsaved = true
+}
+
+/// Whether waiting runs `a` and `b` are best runs found for the same place: the same account's,
+/// course and category (one a course for any% and one for 100%).
+fn same_slot(a: Wait, b: Wait) -> bool {
+    !a.chosen &&
+        !b.chosen &&
+        a.account == b.account &&
+        a.run.course == b.run.course &&
+        counts(a.run, FULL) == counts(b.run, FULL)
 }
 
 /// The waiting runs as stored, read: each put off before waits as long again as it last did.
@@ -585,7 +618,8 @@ fn restore(o: mut Online, w: Waiting) {
 
 /// Run `r` waiting to be posted: by hand (`chosen`), or as a best run found.
 fn wait(o: mut Online, r: Replay, chosen: bool) {
-    queue(mut o, Wait { run: r.clone(), tries: 0, chosen }, o.time)
+    let account = account_id(o)
+    queue(mut o, Wait { run: r.clone(), tries: 0, chosen, account }, o.time)
 }
 
 fn unwait(o: mut Online, hash: Vec<u8>) {
@@ -646,6 +680,10 @@ fn pump(o: mut Online) {
         if o.waiting[i].at > o.time {
             continue
         }
+        // Another account's waits for it.
+        if !ours(o, o.waiting[i].wait) {
+            continue
+        }
         let q = o.waiting[i].clone()
         if posted(o, q.hash) {
             unwait(mut o, q.hash)
@@ -673,8 +711,8 @@ fn pump(o: mut Online) {
         for category in [ANY, FULL] {
             if counts(r, category) && known(o, r.course, category).is_none() {
                 unknown = true
-                if !asking(o, Asked::Around { course: r.course, category }) &&
-                    !around(mut o, r.course, category) {
+                let slice = Asked::Around { course: r.course, category, account: account_id(o) }
+                if !asking(o, slice) && !around(mut o, r.course, category) {
                     put_off(mut o, q.hash.clone(), AGAIN, counted: false)
                 }
             }
@@ -691,11 +729,20 @@ fn pump(o: mut Online) {
     }
 }
 
-/// Asks to post run `r` (its fingerprint `hash`) for `by`.
+/// Asks to post run `r` (its fingerprint `hash`) for `by`, as the signed-in account's: a run found
+/// with no account is this one's from now on.
 fn upload(o: mut Online, r: Replay, hash: Vec<u8>, by: By) {
+    let account = account_id(o)
     let upload = Ask::Upload { token: o.account.token.clone(), board: BOARD, replay: save(r) }
-    if ask(mut o, take upload, Asked::Upload { run: r.clone(), hash: hash.clone() }, by) {
+    let asked = Asked::Upload { run: r.clone(), hash: hash.clone(), account: account.clone() }
+    if ask(mut o, take upload, take asked, by) {
         o.posting = true
+        if let Some(i) = queued(o, hash) {
+            if o.waiting[i].wait.account.is_empty() {
+                o.waiting[i].wait.account = account.clone()
+                o.waits.storing.unsaved = true
+            }
+        }
         set_status(mut o, hash, String::from("Posting…"))
     }
 }
@@ -781,7 +828,7 @@ pub fn status(o: Online, hash: Vec<u8>) -> String {
 /// The console's answer to an ask: a run's post, a board or a slice, a replay, or names.
 fn answered(o: mut Online, asked: Asked, answer: Answer) {
     match asked {
-        Asked::Upload { run, hash } => {
+        Asked::Upload { run, hash, account } => {
             o.posting = false
             match answer {
                 Answer::Verified { place, ticks, .. } => {
@@ -789,9 +836,9 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     mark_uploaded(mut o, hash.clone())
                     unwait(mut o, hash)
                     // The server's time for it, which it played: the account's best where it's
-                    // better.
+                    // better, if it's still the account signed in.
                     for category in [ANY, FULL] {
-                        if counts(run, category) {
+                        if counts(run, category) && account == account_id(o) {
                             let before = known(o, run.course, category).unwrap_or(0)
                             if before == 0 || ticks < before {
                                 learn(mut o, run.course, category, ticks)
@@ -874,7 +921,9 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             mark_mine(mut o)
             rows_came(mut o, course, category)
         },
-        Asked::Around { course, category } => match answer {
+        // Another account's slice: what it says isn't this one's.
+        Asked::Around { course, category, account } => match answer {
+            _ if account != account_id(o) => {},
             Answer::Around { places, at } => {
                 o.slices.retain(|b| b.course != course || b.category != category)
                 o.slices.push(
@@ -1188,7 +1237,8 @@ fn fetch_above(o: mut Online, places: [Place], i: u32) {
 /// account's place, unless it's asked already. Whether it was asked.
 fn around(o: mut Online, course: u32, category: u32) -> bool {
     let slice = Ask::Around { course, category, name: o.account.name.clone() }
-    ask(mut o, take slice, Asked::Around { course, category }, By::Background)
+    let asked = Asked::Around { course, category, account: account_id(o) }
+    ask(mut o, take slice, take asked, By::Background)
 }
 
 /// The course the world's board asks for: the course shown, or a whole game's.
@@ -1700,6 +1750,89 @@ fn a_run_posted_past_the_places_counted_says_so_unnumbered() {
     answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: 5000, place: 0 })
     let said = status(o, fingerprint(r))
     assert(said == String::from("Past the top 1,000 in the world"), said.as_str())
+}
+
+/// Account `id`, signed in as `name`, agreed to posting and posting its best runs.
+fn account_of(id: u8, name: Text) -> Account {
+    Account {
+        signed_in: true,
+        id: Vec::from([id; 16]),
+        name: String::from(name),
+        token: Vec::from([id; 32]),
+        may_post: true,
+        post_best: true,
+        posting_known: true,
+    }
+}
+
+/// The uploads asked for, by their tokens.
+fn upload_tokens(o: Online) -> Vec<Vec<u8>> {
+    var out: Vec<Vec<u8>> = Vec::new()
+    for (ask, _) in o.asks {
+        if let Ask::Upload { token, .. } = ask {
+            out.push(token.clone())
+        }
+    }
+    out
+}
+
+@test
+fn a_run_waiting_for_one_account_never_posts_as_another() {
+    var o = signed_in()
+    set_account(mut o, account_of(1, ME))
+    let r = mine(991)
+    post(mut o, r.clone())
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Failed { why: String::from("Busy."), retry_after: 30 })
+    // Another signs in on this device; the run's wait ends.
+    set_account(mut o, account_of(2, "Dame Puddlefoot the Brave"))
+    o.time += 3600.0
+    pump(mut o)
+    assert(upload_tokens(o).is_empty(), "not posted as the other")
+    // Stored and read back, it's still the first's.
+    var stored: Vec<Wait> = Vec::new()
+    for q in o.waiting {
+        stored.push(q.wait.clone())
+    }
+    var again = signed_in()
+    set_account(mut again, account_of(2, "Dame Puddlefoot the Brave"))
+    restore(mut again, Waiting { runs: stored })
+    again.time += 3600.0
+    pump(mut again)
+    assert(upload_tokens(again).is_empty(), "nor once stored")
+    // The first again: it goes, with its token.
+    set_account(mut o, account_of(1, ME))
+    pump(mut o)
+    assert(upload_tokens(o) == Vec::from([Vec::from([1; 32])]), "posted as the first")
+}
+
+@test
+fn another_account_signed_in_starts_from_its_own_bests() {
+    var o = signed_in()
+    set_account(mut o, account_of(1, ME))
+    // The first's place, any% and 100%: 1,000 ticks.
+    for category in [ANY, FULL] {
+        learn(mut o, WETLANDS, category, 1000)
+    }
+    let r = mine_full(1200)
+    assert(!beats(o, r), "slower than the first's best")
+    // A slice asked for the first comes once another is signed in: it's dropped.
+    let late = Asked::Around { course: WETLANDS, category: ANY, account: Vec::from([1; 16]) }
+    set_account(mut o, account_of(2, "Dame Puddlefoot the Brave"))
+    answered(mut o, late, Answer::Unplaced)
+    assert(known(o, WETLANDS, ANY).is_none(), "not the second's")
+    // The second's first run waits to be posted, its places asked for as its own.
+    finished(mut o, r.clone())
+    assert(queued(o, fingerprint(r)).is_some(), "it waits")
+    pump(mut o)
+    var asked = 0
+    for a in all_asks(o) {
+        if let Asked::Around { account, .. } = a {
+            assert(account == Vec::from([2; 16]), "the second's slice")
+            asked += 1
+        }
+    }
+    assert(asked == 2, f"{asked} slices")
 }
 
 @test
@@ -2280,7 +2413,7 @@ fn the_leaderboard_opens_at_the_players_place_and_pages_on_past_the_rows_shown()
     )
     answered(
         mut o,
-        Asked::Around { course: WETLANDS, category: ANY },
+        Asked::Around { course: WETLANDS, category: ANY, account: Vec::new() },
         Answer::Around { places: around, at: 35 },
     )
     assert(placed(o, WETLANDS, ANY) && my_place(o, WETLANDS, ANY) == 35)
@@ -2361,7 +2494,7 @@ fn past_the_first_thousand_the_run_above_is_the_one_above_in_the_slice() {
     }
     answered(
         mut o,
-        Asked::Around { course: WETLANDS, category: ANY },
+        Asked::Around { course: WETLANDS, category: ANY, account: Vec::new() },
         Answer::Around { places: around, at: 0 },
     )
     assert(my_place(o, WETLANDS, ANY) == 0 && placed(o, WETLANDS, ANY), "a place, unnumbered")
