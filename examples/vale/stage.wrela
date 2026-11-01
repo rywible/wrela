@@ -16,7 +16,9 @@ use engine::lit::Lighting
 use engine::switches::Switches
 use engine::style::Style
 use engine::memory::{Share, Usage}
-use engine::particles::Emits
+use engine::grass::{PUSHES, Push}
+use engine::particles::{Emits, puff, splash}
+use engine::water::WaterMesh
 use engine::plant::{Plant, Wind}
 use engine::probes::{Occluder, ProbeGrid, Trace}
 use engine::shadow::Shadows
@@ -136,6 +138,13 @@ pub const TILES = ValeTiles { bake: 0 }
 pub struct Stage {
     pub land: Landscape<ValeTiles>,
     pub grazer: Cast<Hide, Grazer, CoatLook>,
+    /// What the grazer pushes through the grass this frame (render space), and where its hooves
+    /// came down (render space, and the world's: a splash where it's in water, a puff of what's
+    /// on the ground where it's dry and bare).
+    pub pushes: [Push; PUSHES] = [Push {}; PUSHES],
+    pub footfalls: Vec<(vec3, vec3)> = Vec::new(),
+    /// The water as the sim reads it (`water::mesh`): where a hoof comes down in it.
+    water: WaterMesh,
     footprints: GpuBuffer<vec4>,
     pub skies: Skies = Skies::Fair,
 }
@@ -152,6 +161,7 @@ pub fn stage() -> Stage {
             vec2i(0),
         ),
         grazer: cast(grazer::grazer(), grazer::look(), REALIZED, SLICES),
+        water: water::mesh(),
         footprints: buffer_of([vec4(1.0e9, 1.0e9, 0.0, 0.0)], at_least: 1),
     }
 }
@@ -174,8 +184,28 @@ impl Scene for Stage {
         probe_grid(at, origin.xz, TILES)
     }
 
+    /// The falls' spray and foam, and the grazer's footfalls': a splash where a hoof came down in
+    /// water, a puff of the ground's colour where it came down on bare ground or litter.
     fn emit(mut self, e: mut Emits) {
         land::stage::emit(mut self.land, water::MISTS, mut e)
+        for k in 0..self.footfalls.len() {
+            let (at, world) = self.footfalls[k]
+            let seed = 0x9E37 + u32(self.land.sprayed) + k
+            let surface = self.water.height_at(world.xz)
+            if surface != engine::water::NONE && surface > world.y + 0.01 {
+                for p in splash(vec3(at.x, at.y + surface - world.y, at.z), seed) {
+                    e.push(p)
+                }
+            } else {
+                let ground = GROUND.cover(world, vec3(0.0, 1.0, 0.0))
+                if ground.grass < 0.5 {
+                    for p in puff(at, ground.albedo, seed) {
+                        e.push(p)
+                    }
+                }
+            }
+        }
+        self.footfalls = Vec::new()
     }
 
     /// The air: a height fog, and a sphere of mist at the fall.
@@ -262,7 +292,7 @@ impl Scene for Stage {
         }
     }
 
-    /// The grass placed round the eye, and the wood's lists.
+    /// The grass placed round the eye, what pushes through it (the grazer), and the wood's lists.
     fn choose<Q: Switches, Y: Style>(
         mut self,
         lt: Lighting<Q, Y>,
@@ -271,6 +301,7 @@ impl Scene for Stage {
         hzb: Hzb,
     ) {
         self.land.eye = lt.cam.eye + lt.cam.origin
+        self.land.grass.contact.pushes = self.pushes
         self.land.grass.place(
             lt.cam,
             lt.light,

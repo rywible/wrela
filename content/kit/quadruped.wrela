@@ -298,8 +298,8 @@ fn leg_names(q: Quadruped) -> [[Text; 4]; 4] {
 }
 
 /// `q`'s skeleton: pelvis, lumbar, chest, withers, neck, head, four tail joints, the
-/// scapulae, and four legs (fore left, fore right, hind left, hind right: a gait's order), the
-/// right ones paired with the left.
+/// scapulae, four legs (fore left, fore right, hind left, hind right: a gait's order), the
+/// right ones paired with the left, and the ears and the eyes (on the head, paired).
 pub fn skeleton(q: Quadruped) -> Skeleton {
     let f = frame(q)
     var s = Skeleton::new()
@@ -308,7 +308,7 @@ pub fn skeleton(q: Quadruped) -> Skeleton {
     let chest = s.joint("chest", lumbar, f.chest)
     s.joint("withers", chest, f.withers)
     let neck = s.joint("neck", chest, f.neck)
-    s.joint("head", neck, f.head)
+    let head = s.joint("head", neck, f.head)
     let t0 = s.joint("tail 0", pelvis, f.tail[0])
     let t1 = s.joint("tail 1", t0, f.tail[1])
     let t2 = s.joint("tail 2", t1, f.tail[2])
@@ -317,7 +317,25 @@ pub fn skeleton(q: Quadruped) -> Skeleton {
     let names = leg_names(q)
     s.leg_pair(names[0], names[1], scapula, f.fore)
     s.leg_pair(names[2], names[3], pelvis, f.hind)
+    // The face's turning parts, after the legs (so the bones before them keep their places).
+    let (ear, eye) = face_points(q)
+    s.joint_pair("ear left", "ear right", head, ear)
+    s.joint_pair("eye left", "eye right", head, eye)
     s
+}
+
+/// Where `q`'s left ear's root and left eye's centre are, in its rest space (each turns on a
+/// joint of its own: `skeleton`'s "ear left", "eye left").
+pub fn face_points(q: Quadruped) -> (vec3, vec3) {
+    let f = frame(q)
+    let hl = f.head_length
+    let (fw, up) = (f.forward, f.up)
+    let deep = q.head_depth
+    let side = vec3(1.0, 0.0, 0.0)
+    (
+        f.head + side * 0.16 * hl - fw * 0.08 * hl + up * 0.42 * deep * hl,
+        f.head + side * 0.2 * hl + fw * 0.22 * hl + up * 0.16 * deep * hl,
+    )
 }
 
 // ---- shapes ---------------------------------------------------------------------------------------
@@ -575,18 +593,16 @@ pub fn head<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Grou
                 )
                 .join(
                     "eye",
-                    bone,
-                    sphere(0.045 * hl * q.eye)
-                        .translate(side * 0.2 * hl + fw * 0.22 * hl + up * 0.16 * deep * hl)
-                        .with(look.eyes),
+                    s.find("eye left"),
+                    sphere(0.045 * hl * q.eye).translate(vec3(0.0)).with(look.eyes),
                     seam: smooth(0.015 * hl),
                     mirror: true,
                 )
                 .join(
                     "ear",
-                    bone,
+                    s.find("ear left"),
                     ear_shape(q.ears * hl, 0.24 * hl, q.ears_out)
-                        .translate(side * 0.16 * hl - fw * 0.08 * hl + up * 0.42 * deep * hl)
+                        .translate(vec3(0.0))
                         .with(look.ears),
                     seam: smooth(0.04 * hl),
                     mirror: true,

@@ -30,6 +30,7 @@ builds the vale in every look here and checks that adding one changed nothing in
 | `OVERSHOOT` | how much more a character's secondary chains (head, ears, tail) sway than its gait's springs carry them | 0 |
 | `EXAGGERATE` | how much higher a swing lifts and a body bobs about its running height | 0 |
 | `ON_TWOS` | whether a character's pose is made on every other frame and held between, as hand animation is | off |
+| `HIGHLIGHT` | a character's glossy parts' highlight (an eye's cornea, `engine::character::highlight`): 0 the physical light's gloss, else one band where the reflection comes within this cosine of the sun (and no gloss on the rest of the character) | 0: the gloss |
 
 With the motion constants 0 and off, a character's pose is its gait's exactly; none moves a
 planted foot. The world-style table (the looks' motion, **proposed**: the twelve principles'

@@ -81,7 +81,7 @@ pub struct Vale {
     walking: Option<(f32, grazer::Walking)>,
     /// The grazer's pose grazing in another cast shot, while it's held: the shot's held since, and
     /// its palette (world space, `grazer::grazing`: found once a hold).
-    grazing: Option<(f32, [mat4; engine::creature::MAX_BONES])>,
+    grazing: Option<(f32, grazer::Grazing)>,
 }
 
 /// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye along its
@@ -228,8 +228,17 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
             if let Some((f, w)) = s.walking {
                 var w = w
                 let since = s.shots.since(time)
+                let was = w.walker.feet
                 grazer::walk_to(mut w, since)
-                let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since)
+                // Where a hoof came down since the last frame (a splash or a puff: `Stage::emit`).
+                for i in 0..4 {
+                    let foot = w.walker.feet[i]
+                    if foot.planted && !was[i].planted {
+                        s.stage.footfalls.push((foot.at - origin, foot.at))
+                    }
+                }
+                let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since, eye)
+                s.stage.pushes = grazer::pushes(grazer::body(), w.walker, origin)
                 s.walking = Some((f, w))
                 s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
             }
@@ -243,13 +252,18 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 let heading = atan2(eye.x - at.x, eye.z - at.z) + GRAZING_TURN
                 s.grazing = Some((from, grazer::grazing(at.xz, heading)))
             }
-            if let Some((_, bones)) = s.grazing {
+            if let Some((f, g)) = s.grazing {
+                var g = g
+                let bones = grazer::grazing_now(mut g, s.shots.since(time), eye)
+                s.stage.pushes = grazer::pushes(g.body, g.walker, origin)
+                s.grazing = Some((f, g))
                 s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
             }
         },
         None => {
             s.walking = None
             s.grazing = None
+            s.stage.pushes = [engine::grass::Push {}; engine::grass::PUSHES]
             s.stage.grazer.hide()
         },
     }

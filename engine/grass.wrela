@@ -2216,10 +2216,59 @@ fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
 /// A cloth lying on the grass: a capsule over the ground from `at` to `tail` (each a centre in
 /// render space, its height the cloth's underside there, and a radius), the radius and height
 /// going from one to the other. A robe's hem and its train behind it. Zero radius at `at`
-/// disables it.
+/// disables it. And what pushes through the grass (`pushes`: a creature's hooves and its body).
 pub struct Contact: Copy + GpuData {
     pub at: vec4 = vec4(0.0),
     pub tail: vec4 = vec4(0.0),
+    pub pushes: [Push; PUSHES] = [Push {}; PUSHES],
+}
+
+/// How many pushes a contact has room for: a quadruped's four hooves and its body.
+pub const PUSHES: u32 = 5
+
+/// Something pushing through the grass (§F7): a line from `a.xyz` to `b.xyz` (render space, a
+/// point where they're the same), within `a.w` m of which (over the ground) a blade leans away
+/// from it, by `b.w` radians at the line falling to none at that reach (as 1 − (d / reach)²).
+/// No reach: none.
+pub struct Push: Copy + GpuData {
+    pub a: vec4 = vec4(0.0),
+    pub b: vec4 = vec4(0.0),
+}
+
+/// A push from `a` to `b` (render space) reaching `reach` m and leaning a blade by `lean` radians.
+pub fn push(a: vec3, b: vec3, reach: f32, lean: f32) -> Push {
+    Push { a: vec4(a, reach), b: vec4(b, lean) }
+}
+
+/// A blade's point `point` (its root `root`) leaned away from each of `c`'s pushes it's within
+/// reach of: turned about its root in the upright plane away from the push's line.
+pub fn pushed(point: vec3, root: vec3, c: Contact) -> vec3 {
+    var p = point
+    for k in 0..PUSHES {
+        let q = c.pushes[k]
+        let reach = q.a.w
+        if reach <= 0.0 {
+            continue
+        }
+        // The nearest point of its line, over the ground.
+        let ab = q.b.xz - q.a.xz
+        let l2 = dot(ab, ab)
+        let s = if l2 > 1.0e-8 { clamp(dot(root.xz - q.a.xz, ab) / l2, 0.0, 1.0) } else { 0.0 }
+        let away = root.xz - mix(q.a.xz, q.b.xz, vec2(s))
+        let d = length(away)
+        if d >= reach {
+            continue
+        }
+        let lean = q.b.w * (1.0 - (d / reach) * (d / reach))
+        let dir = if d > 1.0e-4 { away / d } else { vec2(1.0, 0.0) }
+        let v = p - root
+        let r = dot(v.xz, dir)
+        let side = v.xz - dir * r
+        let (co, si) = (cos(lean), sin(lean))
+        let out = r * co + v.y * si
+        p = root + vec3(side.x + dir.x * out, v.y * co - r * si, side.y + dir.y * out)
+    }
+    p
 }
 
 /// A round contact: a hem alone, centred at `at.xyz`, `at.w` round.
@@ -2227,11 +2276,12 @@ pub fn round_contact(at: vec4) -> Contact {
     Contact { at, tail: at }
 }
 
-/// A blade point under or against the cloth: pressed down under it toward the ground, and out
-/// a little at its edge, so the cloth lies on the grass instead of the grass standing through
-/// it. Roots stay fixed, and grass below a raised hem is untouched. There is no ground
-/// displacement or moving hole in the grass.
+/// A blade point leaned away from what pushes through the grass (`pushed`), then under or against
+/// the cloth: pressed down under it toward the ground, and out a little at its edge, so the cloth
+/// lies on the grass instead of the grass standing through it. Roots stay fixed, and grass below
+/// a raised hem is untouched. There is no ground displacement or moving hole in the grass.
 pub fn cloth_contact(point: vec3, root: vec3, t: f32, cloth: Contact) -> vec3 {
+    let point = pushed(point, root, cloth)
     if cloth.at.w <= 0.0 || t <= 0.0 {
         return point
     }

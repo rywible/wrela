@@ -3640,3 +3640,16 @@ cycle, where the frames fall on the same phases, and a walk clean for 8 s left i
 - **G-profile:** the grazer's walk is 10.0 µs a frame natively (3,600 frames of a step and its
   palette on uneven ground, the fawn's body; the vale's shot 10 does this once a frame), within
   0.2 ms of C6's frame. Its grazing pose is found once a hold. The M4's to re-measure.
+
+## F7, the grazer touching the world (2026-10-31, toolchain 0.16.0)
+
+Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: the M4's to re-measure.
+
+The grass's contact carries five pushes (`engine::grass::Push`: the grazer's hooves and its body,
+`kit::roe::pushes`); a footfall splashes in water (`particles::splash`, 24 drops) and puffs on
+bare ground or litter (`particles::puff`, 12). The tests (`engine/tests/interaction`): blades
+0.05–0.3 m from each planted hoof lean 22° or more (at least 20); a fern 0.5 m to the chest's side
+12° away (at least 10); a footfall in water 24 drops, each rising. The cost, `wrela profile
+examples/vale --serial --size 1920x1080 --warmup 600 --frames 300` natively at F6 (f63ef9b5) and
+with the pushes, GPU median: **vegetation 11.675 → 11.682 ms, its prepass 5.697 → 5.705 ms**
+(+0.01 ms each, within 0.2); no `particles` label in either (the first view has no emitter near).

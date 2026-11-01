@@ -48,6 +48,10 @@ pub trait Style {
     const OVERSHOOT: f32 = 0.0
     const EXAGGERATE: f32 = 0.0
     const ON_TWOS: bool = false
+    /// A character's glossy parts' highlight (an eye's cornea: `character::highlight`): 0, the
+    /// sun's gloss as the physical light gives it; else one band, where the part's reflection
+    /// comes within this cosine of the sun.
+    const HIGHLIGHT: f32 = 0.0
 
     /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
     /// that reads no substance after the pass, or that and the substance's three

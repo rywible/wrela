@@ -88,6 +88,35 @@ The references stay outside the repository, so the tool runs as a package with t
   It writes `tally.json` and `tally.md` (each pair's preferences and rubric means, the rules, the verdict, the rubric's rows ranked by how much the vale lost them) for docs/bench.md's "Public visual references". Changing a reference (any field of its record: what a judge is shown, its rights, its copy) or a shot (any field: its framing too) changes the manifest's or the shots' hash, and the tool refuses a panel whose hashes aren't the frozen ones: a changed source or shot makes a new baseline.
 - **The judges** are eight agents in fresh contexts. Each is given the rubric, the pairs' images (its own access to the files), their credits and conditions, and nothing of what the implementer expects, and is told to judge by viewing alone (no checksums, bytes or pixel arithmetic). Each writes `judges/<name>.json`.
 
+## The motion review
+
+The vale's walking creature against freely licensed footage of a real deer walking (G-motion,
+docs/plan-world-class-3.md §F9): shot 10's three seconds (`wrela tool studio/motion --write ws=.
+-- <out> --package examples/vale --frames-only trail`) and the reference's (`references::vale`'s
+`vale-motion-walk`, the seconds its record names), through the reference review's rules: its
+attributed mode, rights-aware access, calibration and complete tally. Five rows, each 0 to 3 for
+each clip, a sentence each, and a preference:
+
+| Row | 3 is |
+|---|---|
+| weight | the animal's mass reads in its motion: its body rides its legs and settles onto each footfall |
+| timing | the gait's rhythm reads as an animal's: its feet's order, its pace, how it changes |
+| contact | its feet plant and leave without sliding, skating or sinking |
+| secondary motion | its head, ears and tail follow the body's motion and settle |
+| readability | the motion reads at a glance: what the animal is doing and where it's going |
+
+- **The clips** are strips of frames sampled at 10 a second over three seconds of walking (no
+  frame is interpolated), each shown whole and cropped round the animal; the footage's frames are
+  extracted and cropped, which its credit notes. The judge records what differs between them
+  (the animal, its path, the camera, the frame rate, the animation method) and judges the motion,
+  not the scene.
+- **Calibration**: the vale's strip against itself held on every third frame (a stutter: 3.3
+  frames a second) and against itself blurred (the stills' eight passes): a judge that prefers
+  either degraded strip is replaced; every attempt is kept.
+- **The gate**: eight valid judges, each judging the pair; they prefer the vale's motion or rate
+  it equal in at least 40 % of their judgements. "Equal" means within one point on every row, as
+  the stills' review reads it. The agents' tally is the verdict (D38).
+
 ## Judging a style
 
 A look other than the physical one (docs/plan-world-class-3.md Part D, `content/styles`) has no

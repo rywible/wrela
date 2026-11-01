@@ -35,6 +35,7 @@ impl Style for PainterlyFitted {
     const OVERSHOOT: f32 = Painterly::OVERSHOOT
     const EXAGGERATE: f32 = Painterly::EXAGGERATE
     const ON_TWOS: bool = Painterly::ON_TWOS
+    const HIGHLIGHT: f32 = Painterly::HIGHLIGHT
     type Out = Written
 
     fn written(colour: vec4, s: Substance) -> Written {

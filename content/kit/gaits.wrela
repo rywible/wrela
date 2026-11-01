@@ -156,12 +156,12 @@ pub struct Score: Copy {
     pub total: f32,
 }
 
-/// The chains frozen in the poses the effort reads: the neck's and the head's ride the chest,
-/// the tail's the pelvis.
+/// The chains frozen in the poses the effort reads: the neck's and the head's (its ears and its
+/// eyes) ride the chest, the tail's the pelvis.
 fn frozen(s: engine::creature::Skeleton, p: Pose) -> Pose {
     var out = p.clone()
     let (chest, pelvis) = (s.find("chest").index, s.find("pelvis").index)
-    for name in ["neck", "head"] {
+    for name in ["neck", "head", "ear left", "ear right", "eye left", "eye right"] {
         out.bones[s.find(name).index] = p.bones[chest]
     }
     for name in ["tail 0", "tail 1", "tail 2", "tail 3"] {

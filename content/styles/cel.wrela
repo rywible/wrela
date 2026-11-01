@@ -282,6 +282,7 @@ impl Style for Cel {
     const OVERSHOOT: f32 = OVERSHOOT
     const EXAGGERATE: f32 = EXAGGERATE
     const ON_TWOS: bool = ON_TWOS
+    const HIGHLIGHT: f32 = HIGHLIGHT
     /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
     /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
     /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)
@@ -336,6 +337,7 @@ impl Style for CelFitting {
     const OVERSHOOT: f32 = OVERSHOOT
     const EXAGGERATE: f32 = EXAGGERATE
     const ON_TWOS: bool = ON_TWOS
+    const HIGHLIGHT: f32 = HIGHLIGHT
     /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
     /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
     /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)

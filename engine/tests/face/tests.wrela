@@ -1,0 +1,152 @@
+// The grazer's eyes and face (§F8): a cornea's highlight is where the sun's mirror is in the
+// physical look and one band in the cel look (`engine::character::highlight`), and its ears come
+// round toward a sound within half a second (`kit::roe::attend`).
+
+use engine::character::highlight
+use engine::light::{LUMA, Light, Lit}
+use engine::style::Style
+use kit::genome::{ROE, quadruped_at}
+use kit::roe::{FAWN_AGE, Face, attend}
+use styles::cel::Cel
+use styles::physical::Physical
+use std::math::PI
+
+/// The sun and the eye the tests light an eye by: the sun high to one side, the eye ahead.
+const SUN: vec3 = vec3(0.48, 0.72, 0.5)
+const VIEW: vec3 = vec3(-0.2, 0.15, 0.97)
+
+/// A cornea's light at normal `n` (seen along `VIEW`, lit by `SUN`), in look `Y`: its luminance.
+fn lum<Y: Style>(n: vec3) -> f32 {
+    let light = Light {
+        sun: normalize(SUN),
+        exposure: 1.0,
+        sun_colour: vec3(1.0),
+        eye: 0.0,
+        horizon: 0.0,
+    }
+    let s = Lit {
+        albedo: vec3(0.02),
+        n,
+        sun: 1.0,
+        sky: vec3(0.0),
+        through: vec3(0.0),
+        rough: 0.05,
+        glint: 1.0,
+    }
+    dot(highlight::<Y>(light, s, normalize(VIEW)), LUMA)
+}
+
+/// The normal at grid point (`i`, `j`) of a sphere's lat-long grid (`N` × 2`N`).
+const N: u32 = 90
+
+fn normal(i: u32, j: u32) -> vec3 {
+    let (th, ph) = (PI * (f32(i) + 0.5) / f32(N), PI * (f32(j) + 0.5) / f32(N))
+    vec3(sin(th) * cos(ph), cos(th), sin(th) * sin(ph))
+}
+
+/// In the physical look a cornea's brightest point faces halfway between the sun and the eye (the
+/// sun's mirror toward the eye), within 5°.
+@test
+fn the_physical_highlight_is_the_suns_mirror() {
+    var most = -1.0
+    var at = vec3(0.0)
+    for i in 0..N {
+        for j in 0..(2 * N) {
+            let n = normal(i, j)
+            if dot(n, normalize(VIEW)) > 0.0 {
+                let l = lum::<Physical>(n)
+                if l > most {
+                    most = l
+                    at = n
+                }
+            }
+        }
+    }
+    let half = normalize(normalize(SUN) + normalize(VIEW))
+    let off = acos(clamp(dot(at, half), -1.0, 1.0)) * 180.0 / PI
+    assert(off <= 5.0, f"the brightest point {off}° from the sun's mirror")
+}
+
+/// In the cel look a cornea's highlight is one band: every point of it the eye sees lit by it is
+/// lit alike, and they're one patch.
+@test
+fn the_cel_highlight_is_one_band() {
+    var lit: Vec<bool> = Vec::filled(N * 2 * N, false)
+    var level = -1.0
+    var count = 0
+    for i in 0..N {
+        for j in 0..(2 * N) {
+            let n = normal(i, j)
+            let l = if dot(n, normalize(VIEW)) > 0.0 { lum::<Cel>(n) } else { 0.0 }
+            if l > 0.0 {
+                if level < 0.0 {
+                    level = l
+                }
+                assert(
+                    abs(l - level) <= 1.0e-5 * level,
+                    f"a second band's level {l} beside {level}",
+                )
+                lit[i * 2 * N + j] = true
+                count += 1
+            }
+        }
+    }
+    assert(count > 0, "no highlight")
+    // One patch: everything lit reached from the first lit point (the grid's neighbours, the
+    // longitude wrapping round).
+    var seen: Vec<bool> = Vec::filled(N * 2 * N, false)
+    var todo: Vec<u32> = Vec::new()
+    for k in 0..lit.len() {
+        if lit[k] {
+            todo.push(k)
+            seen[k] = true
+            break
+        }
+    }
+    var reached = 0
+    while todo.len() > 0 {
+        let k = todo.pop().unwrap()
+        reached += 1
+        let (i, j) = (k / (2 * N), k % (2 * N))
+        let next = [
+            if i > 0 { (i - 1) * 2 * N + j } else { k },
+            if i + 1 < N { (i + 1) * 2 * N + j } else { k },
+            i * 2 * N + (j + 1) % (2 * N),
+            i * 2 * N + (j + 2 * N - 1) % (2 * N),
+        ]
+        for m in next {
+            if lit[m] && !seen[m] {
+                seen[m] = true
+                todo.push(m)
+            }
+        }
+    }
+    assert(
+        reached == count,
+        f"the highlight's {count} points in more than one patch ({reached} in the first)",
+    )
+}
+
+/// A sound to the fawn's side: its ears come round within half a second (nine tenths of the
+/// turn they settle at).
+@test
+fn the_ears_turn_toward_a_sound_within_half_a_second() {
+    let q = quadruped_at(ROE, FAWN_AGE)
+    let f = kit::quadruped::frame(q)
+    for side in [-1.0, 1.0] {
+        let sound = f.head + vec3(3.0 * side, 0.0, 0.5)
+        var settled = Face {}
+        for _ in 0..600 {
+            attend(mut settled, q, Some(sound), 1.0 / 60.0)
+        }
+        var face = Face {}
+        for _ in 0..30 {
+            attend(mut face, q, Some(sound), 1.0 / 60.0)
+        }
+        assert(abs(settled.ears) > 0.2, f"the ears settled at {settled.ears} rad: no turn to test")
+        assert(
+            face.ears / settled.ears >= 0.9,
+            f"after 0.5 s the ears {face.ears} of {settled.ears} rad",
+        )
+    }
+}
