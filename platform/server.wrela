@@ -1195,28 +1195,34 @@ impl<G: Game> Engine<G> {
         self.out.push(Command::Put { key, value: save(record) })
     }
 
+    /// Writes `value` at `key`: what this instance remembers writing there before is let go, so
+    /// it never stands for what's there now.
     pub(package) fn put_bytes(mut self, key: take Vec<u8>, value: take Vec<u8>) {
+        self.written.retain(|w| !same_bytes(w.0, key))
         self.out.push(Command::Put { key, value })
     }
 
+    /// Deletes `key`: likewise, what this instance remembers writing there is let go.
     pub(package) fn delete(mut self, key: take Vec<u8>) {
+        self.written.retain(|w| !same_bytes(w.0, key))
         self.out.push(Command::Delete { key })
     }
 
     /// Deletes `key`, a single-use or revocable record, and remembers it gone: a read of it made
     /// before this call's writes commit is not to be trusted.
     pub(package) fn forget(mut self, key: take Vec<u8>) {
+        self.gone.retain(|g| !same_bytes(g.0, key))
         self.gone.push((key.clone(), self.call))
         self.delete(take key)
     }
 
     /// Writes `value` at `key` and remembers it written: a read of it made before this call's
-    /// writes commit sees what this wrote (`latest`).
+    /// writes commit sees what this wrote (`latest`). A key is remembered written or gone, never
+    /// both.
     pub(package) fn keep(mut self, key: take Vec<u8>, value: take Vec<u8>) {
-        self.written.retain(|w| !same_bytes(w.0, key))
         self.gone.retain(|g| !same_bytes(g.0, key))
-        self.written.push((key.clone(), value.clone(), self.call))
-        self.put_bytes(take key, take value)
+        self.put_bytes(key.clone(), value.clone())
+        self.written.push((take key, take value, self.call))
     }
 
     /// What is at `key` as a read answered `answer` sees it, made since call `since`: what this

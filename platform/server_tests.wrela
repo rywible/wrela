@@ -3146,3 +3146,17 @@ fn recovery_ends_another_accounts_session_in_the_same_browser() {
     }
     assert(h.keys(b.at().as_str(), "s/") == 1 && h.keys(a.at().as_str(), "s/") == 1)
 }
+
+// ---- what an instance remembers of its own writes -------------------------------------------------
+
+@test
+fn a_key_kept_then_forgotten_reads_as_gone() {
+    var e = engine(Toy {}, RP, ORIGIN, VERSIONS, account_instance([7; HANDLE_BYTES]).as_str())
+    e.begin()
+    e.keep(Vec::from([1]), Vec::from([2]))
+    e.forget(Vec::from([1]))
+    // A read made before either committed, which found the key as it was before both.
+    assert(e.latest([1], [1, 9]).is_none(), "gone, not what was kept before")
+    e.keep(Vec::from([1]), Vec::from([3]))
+    assert(e.latest([1], [0]) == Some(Vec::from([3])), "kept again")
+}
