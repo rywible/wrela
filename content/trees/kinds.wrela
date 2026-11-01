@@ -1115,8 +1115,7 @@ fn instance(
     wide: f32,
     tint: vec2,
 ) -> Placed {
-    let way = way_of(toward, s)
-    let yaw = atan2(way.x, way.y)
+    let yaw = yaw_of(toward, s)
     Placed {
         kind,
         at: Instance {
@@ -1130,13 +1129,10 @@ fn instance(
     }
 }
 
-/// The way a plant's +z is turned toward `toward` (`instance`'s), or at random by its seed `s`
-/// where it's too short to say.
-fn way_of(toward: vec2, s: u32) -> vec2 {
-    if length(toward) > 0.05 { toward } else {
-        let a = TAU * rand(s, 90)
-        vec2(sin(a), cos(a))
-    }
+/// How a plant's +z is turned toward `toward` (`instance`'s, radians from +z toward +x), or at
+/// random by its seed `s` where it's too short to say.
+fn yaw_of(toward: vec2, s: u32) -> f32 {
+    if length(toward) > 0.05 { atan2(toward.x, toward.y) } else { TAU * rand(s, 90) }
 }
 
 /// The way a living tree's kind's +z is turned (`instance`'s `toward`): toward the light, as the
@@ -1964,7 +1960,8 @@ fn laid(
         }
     }
     let (standing, lying) = (take near, take met)
-    let base = way_of(t.fall, t.seed)
+    let yaw = yaw_of(t.fall, t.seed)
+    let base = vec2(sin(yaw), cos(yaw))
     var best = t
     var most = -1.0e9
     for k in 0..2 * TURNS + 1 {

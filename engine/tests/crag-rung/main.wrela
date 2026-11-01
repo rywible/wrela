@@ -132,10 +132,13 @@ fn start(s: mut State) {
     let cell = cells()[s.rungs.len()]
     let b = bed(PIECE)
     s.started = now()
-    let mesh = realize_rigid(b, Tolerance { tolerance: cell, largest: cell })
+    // Today's as `stone::realize_bed` realizes a bed (its tolerance 50 cm, its colours a cell of
+    // 25 cm); the footprint's at its cell each.
+    let (tolerance, colour) = if s.rungs.is_empty() { (0.5, 0.25) } else { (cell, cell) }
+    let mesh = realize_rigid(b, Tolerance { tolerance, largest: cell })
     s.tallies.push(read(mesh.tally.items()))
     s.errors.push(measured_error(mesh, b.field()))
-    s.colours.push(colours(mesh, b.field(), ByChannels {}, cell))
+    s.colours.push(colours(mesh, b.field(), ByChannels {}, colour))
     s.meshes.push(take mesh)
     s.rungs.push(Rung { cell, tally: None, error_um: None, seconds: 0.0 })
 }

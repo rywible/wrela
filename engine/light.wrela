@@ -289,8 +289,10 @@ pub fn contrasted(x: vec3, contrast: f32) -> vec3 {
     }
     let stops = log2(y / PIVOT)
     let (top, white) = (log2(UPPER / PIVOT), log2(WHITE / PIVOT))
+    // (Its slope above `UPPER` kept over `EASED`: past a contrast of about 1.9 it would turn down,
+    // brighter light coming out darker.)
     let turned = if stops <= top { contrast * stops } else {
-        contrast * top + (stops - top) * (white - contrast * top) / (white - top)
+        contrast * top + (stops - top) * max((white - contrast * top) / (white - top), EASED)
     }
     c * (PIVOT * exp2(turned) / y)
 }
@@ -299,6 +301,10 @@ pub fn contrasted(x: vec3, contrast: f32) -> vec3 {
 /// where they come out as they were (the ACES fit's top, as `KNEE` is a little under).
 pub const UPPER: f32 = 1.0
 pub const WHITE: f32 = 8.0
+
+/// The least slope (in stops a stop) `contrasted` eases its lights back to: a high contrast keeps
+/// their order, `WHITE` then a little over what it was.
+const EASED: f32 = 0.25
 
 /// The light a contrast turns about (linear, exposed): a little under middle grey, where most of a
 /// scene's metered band falls, so its median holds.
@@ -489,4 +495,7 @@ fn the_contrast_keeps_lumas_order_and_rolls_off_its_lights() {
     )
     let white = contrasted(vec3(WHITE), 1.2).x
     assert(abs(white - WHITE) < 1.0e-3 * WHITE, f"{WHITE} comes out {white}")
+    // A contrast past where the ease would turn down still keeps the lights' order.
+    let (lit, brighter) = (contrasted(vec3(2.0), 2.5).x, contrasted(vec3(8.0), 2.5).x)
+    assert(brighter > lit, f"at a contrast of 2.5, 8 comes out {brighter} under 2's {lit}")
 }

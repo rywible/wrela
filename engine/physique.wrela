@@ -284,7 +284,6 @@ pub fn segments_apart(a0: vec3, a1: vec3, b0: vec3, b1: vec3) -> f32 {
     length((a0 + d1 * s) - (b0 + d2 * t))
 }
 
-
 // ---- mass by an adaptive octree -----------------------------------------------------------------
 
 /// What `adaptive_mass` finds: the mass (kg), the volume (m³), the centre of mass, and how many
