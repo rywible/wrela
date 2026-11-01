@@ -226,6 +226,12 @@ pub fn band_of(bins: [u32; 128], total: u32, lo: f32, hi: f32) -> (f32, f32) {
     (exp2(sum / max(weight, 1.0)), exp2(all / max(f32(total), 1.0)))
 }
 
+/// The exposure `m` settles on for a scene metered at `metered` (`band_of`'s band): `base` times
+/// (`reference` / it) to the power `strength`, within `lo` to `hi`.
+pub fn metered_exposure(m: Metering, metered: f32) -> f32 {
+    clamp(m.base * pow(m.reference / metered, m.strength), m.lo, m.hi)
+}
+
 /// The exposure: one workgroup, each invocation sixteen of a 64 × 64 grid of the scene's pixels
 /// put in a histogram of their log luminance in workgroup memory (`BINS` bins over `STOPS` stops);
 /// then the band's geometric mean (`band_of`), metered as `Metering` says.
@@ -254,7 +260,7 @@ pub fn meter(
         h[b] = bins.load(b)
     }
     let (metered, mean) = band_of(h, total: 4096, lo: BAND_LO, hi: BAND_HI)
-    let target = clamp(m.base * pow(m.reference / metered, m.strength), m.lo, m.hi)
+    let target = metered_exposure(m, metered)
     exposure.update(id, |old| {
         let value = if m.fresh != 0 { target } else {
             min(mix(old.value, target, m.rate), target * m.flash)
@@ -408,4 +414,33 @@ fn the_meter_reads_the_band_from_the_median_up() {
         abs(log2(with_sun) - bin_middle(lit)) < 1.0e-4,
         f"the sun moved the band: {log2(with_sun)}",
     )
+}
+
+/// Metering keeps scenes' order (§G7): of two scenes a stop apart, and of a dusk view whose
+/// meter asks past the old ceiling, the brighter's metered band comes out brighter at its own
+/// exposure (a strength under 1 meters part of the difference away, never all of it, nor past it).
+@test
+fn metering_keeps_the_scenes_order() {
+    let m = Metering {
+        base: 0.62,
+        reference: 0.286,
+        strength: 0.85,
+        lo: 0.15,
+        hi: 8.0,
+        rate: 0.05,
+        flash: 1.25,
+        fresh: 1,
+    }
+    var shown: Vec<f32> = Vec::new()
+    for stop in [-9.0, -6.0, -5.0, -4.0, -2.0, -1.0, 0.0, 1.0] {
+        // A scene of two tones a stop either side of `stop`, half its pixels each.
+        var h = [0; 128]
+        h[bin_of(stop - 1.0)] = 2048
+        h[bin_of(stop + 1.0)] = 2048
+        let (metered, _) = band_of(h, total: 4096, lo: BAND_LO, hi: BAND_HI)
+        shown.push(metered * metered_exposure(m, metered))
+    }
+    for k in 1..shown.len() {
+        assert(shown[k] > shown[k - 1], f"scene {k} shows {shown[k]}, the darker {shown[k - 1]}")
+    }
 }

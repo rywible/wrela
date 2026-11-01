@@ -268,6 +268,40 @@ pub fn tone(c: vec3, exposure: f32) -> vec3 {
     vec3(srgb(t.x), srgb(t.y), srgb(t.z))
 }
 
+/// `tone` with the exposed light's contrast about `PIVOT` raised to `contrast` (1: `tone`'s below
+/// the shoulder's knee; over 1, its shadows deeper and its lights brighter), and a shoulder that
+/// rolls the lights off toward white rather than clipping them (`soft_shoulder`).
+pub fn tone_contrast(c: vec3, exposure: f32, contrast: f32) -> vec3 {
+    let x = max(c * exposure, vec3(0.0))
+    let t = soft_shoulder(PIVOT * pow(x / PIVOT, vec3(contrast)))
+    vec3(srgb(t.x), srgb(t.y), srgb(t.z))
+}
+
+/// The light a contrast turns about (linear, exposed): a little under middle grey, where most of a
+/// scene's metered band falls, so its median holds.
+pub const PIVOT: f32 = 0.1
+
+/// `aces` up to `KNEE`, then rolling off toward white as an exponential from it, its value and its
+/// slope continuous there (the fit itself reaches 1 at 7.24 and clips past it).
+pub fn soft_shoulder(x: vec3) -> vec3 {
+    let k = vec3(KNEE)
+    let at = aces(k)
+    // The fit's slope at the knee (its derivative, the quotient rule).
+    let (num, den) = (KNEE * (2.51 * KNEE + 0.03), KNEE * (2.43 * KNEE + 0.59) + 0.14)
+    let slope = ((5.02 * KNEE + 0.03) * den - num * (4.86 * KNEE + 0.59)) / (den * den)
+    let rest = vec3(1.0) - at
+    let over = vec3(1.0) - rest * exp(-(x - k) * slope / rest)
+    let fit = aces(x)
+    vec3(
+        if x.x > KNEE { over.x } else { fit.x },
+        if x.y > KNEE { over.y } else { fit.y },
+        if x.z > KNEE { over.z } else { fit.z },
+    )
+}
+
+/// Where `soft_shoulder` leaves the fit (linear, exposed).
+pub const KNEE: f32 = 3.0
+
 /// A filmic shoulder: a fit of the ACES curve, from linear light to [0, 1].
 pub fn aces(x: vec3) -> vec3 {
     clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0))
@@ -395,4 +429,34 @@ fn metallic_light_is_coloured_reflection_without_diffuse() {
     let clay = Light { clay: 1, ..light }
     assert(gloss(clay, s, n) == vec3(0.0), "clay view retained metallic reflections")
     assert(length(matte(clay, s, vec3(0.0), n)) > 0.1, "metal became black in clay view")
+}
+
+/// The physical look's curve keeps luma's order from deep shade to glare and rolls its lights off
+/// without clipping them (§G7): at a contrast of 1.2, every doubling of exposed light from a
+/// thousandth to 8 comes out brighter and under 1 (the fit alone clips from 7.24); at 1, it's
+/// `tone` below the knee; the shoulder is continuous at the knee.
+@test
+fn the_contrast_keeps_lumas_order_and_rolls_off_its_lights() {
+    var last = -1.0
+    var x = 0.001
+    while x <= 8.0 {
+        let c = vec3(x)
+        let y = dot(tone_contrast(c, exposure: 1.0, contrast: 1.2), LUMA)
+        assert(y > last, f"{x} comes out {y}, darker than half it ({last})")
+        assert(y < 1.0, f"{x} clips")
+        if x < KNEE {
+            assert(
+                length(tone_contrast(c, exposure: 1.0, contrast: 1.0) - tone(c, 1.0)) < 1.0e-6,
+                "a contrast of 1 isn't tone's",
+            )
+        }
+        last = y
+        x *= 2.0
+    }
+    let (below, above) = (
+        soft_shoulder(vec3(KNEE - 1.0e-3)).x,
+        soft_shoulder(vec3(KNEE + 1.0e-3)).x,
+    )
+    assert(abs(above - below) < 1.0e-3, f"the shoulder jumps at the knee: {below} → {above}")
+    assert(soft_shoulder(vec3(KNEE * 1.2)).x < 1.0, "the shoulder clips just past the knee")
 }

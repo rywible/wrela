@@ -3,7 +3,7 @@
 // it, a slot at a time (README.md).
 
 use engine::marks
-use engine::light::{Light, Lit, tone}
+use engine::light::{Light, Lit, tone_contrast}
 use engine::paint::{Develop, Exposure, graded, hdr_tone}
 use engine::style::Style
 use engine::substance::Substance
@@ -75,7 +75,12 @@ impl Style for Physical {
                 1.0,
             )
         }
-        var c = graded(tone(paint, e.value), lut, s, look.grade)
+        var c = graded(
+            tone_contrast(paint, exposure: e.value, contrast: CONTRAST),
+            lut,
+            s,
+            look.grade,
+        )
         if clay {
             return vec4(c, 1.0)
         }
@@ -84,3 +89,6 @@ impl Style for Physical {
         vec4(c, 1.0)
     }
 }
+
+/// The physical look's contrast about middle grey (`light::tone_contrast`).
+pub const CONTRAST: f32 = 1.2
