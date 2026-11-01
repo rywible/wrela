@@ -107,7 +107,6 @@ fn turned(v: vec2, a: f32) -> vec2 {
 /// face both seen).
 pub const GRAZING_TURN: f32 = 0.9
 
-
 /// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
 pub const WALK_HOUR: f32 = 10.5
 pub const WALK_SKIES: Skies = Skies::Fair
