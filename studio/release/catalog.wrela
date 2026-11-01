@@ -18,9 +18,8 @@ pub struct Build: Clone {
 /// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
 /// rendered; and where it plays itself (`attract`, empty for none): one of its builds, and after
 /// a `#` the fragment that build reads from its address (`capybara#attract`, opened at
-/// `capybara/#attract`), which the console's home shows behind its text once it has rested on the
-/// game a few seconds. What the console's home shows of it while it's chosen, each left empty for
-/// none:
+/// `capybara/#attract`), which the console's home shows behind its text while the game is chosen.
+/// What the console's home shows of it while it's chosen, each left empty for none:
 /// its hero, a PNG that Wrela rendered, full-bleed behind the home's text, which stands on its
 /// left; its title art, a PNG with alpha, in place of its title; its tagline, a line that sells
 /// it; and its theme, a melody the home plays softly, as text: its tempo in quarter notes a
@@ -106,7 +105,7 @@ pub const CATALOG: Catalog = Catalog {
         [
             Game {
                 id: "capybara",
-                title: "Capybara",
+                title: "O'Capy",
                 worker: "wrela-capybara",
                 domain: "capybara.wrela.dev",
                 session: "session",
@@ -116,14 +115,16 @@ pub const CATALOG: Catalog = Catalog {
                         Build { name: "capybara", dir: "games/capybara" },
                     ],
                 ),
-                // The play build, playing its searched runs by itself with no sound and no HUD
+                // The play build, strolling through the levels by itself with no sound and no HUD
                 // when its address says `#attract` (games/capybara/attract.wrela): toolchain
                 // 0.17.0 opens a program at an address with a fragment.
                 attract: "capybara#attract",
                 cover: "games/capybara/cover.png",
+                // The first frame of the attract build, 4:3 (games/capybara/main.wrela's `HERO`).
                 hero: "games/capybara/hero.png",
                 logo: "",
-                tagline: "Run, swim and slide through nine habitats at the zoo.",
+                // No tagline: the title and its actions alone (Ryan, 2026-11-01).
+                tagline: "",
                 theme: "games/capybara/theme.txt",
             },
         ],

@@ -1,0 +1,230 @@
+// Strolls: each level's human-possible 100% run made calm, for the game playing itself behind the
+// console's home (attract.wrela; Ryan, 2026-11-01: the speedrun it played "is not chill", and he
+// asked for "a more human like demo"). `wrela tool route -- --stroll` writes them as the game's
+// strolls.wrela, with their test.
+//
+// A searched run changes its buttons every few ticks, sliding, tucking and swimming up wherever a
+// tick is saved: that's what reads as a robot. A stroll begins as the run routes_<key>.wrela holds
+// (`HUMAN_FULL`: every snack, so it wanders after them), and then:
+//
+// - **Smoothed.** Each stretch of buttons that isn't plain running is tried as plain running, then
+//   as the stretch before it, then as the one after, and the first that still finishes (at the
+//   goal, with every snack, no death, within a human's limits) stays. Passes go on until one
+//   changes nothing (at most `PASSES`). A stroll is slower than its run, which is the point.
+// - **Paused.** Every `BETWEEN` ticks or more of play, where the capybara runs on the ground with
+//   a run-up ahead (`RUN_UP`: running on, no jump), it lets go for a pause (`PAUSES`), as a person
+//   stops to look. The pause costs it the ground it would have covered, so it runs on a few ticks
+//   more (as many as make up that ground, then up to four either side, `MAKE_UP`), and it stays
+//   only if the run still finishes. A pause that can't be made up is tried again `RETRY` ticks on.
+//
+// Each check plays the run from the stretch it changes on (the world there kept), so a level takes
+// seconds, not minutes.
+
+use capybara::feel::{FEEL, HZ}
+use capybara::pad::{Hold, JUMP, LEFT, Pad, RIGHT, holds_of}
+use capybara::world::{World, step, world}
+use slack::{finishes, human, pads_of, pressed}
+
+/// The most smoothing passes.
+pub const PASSES: u32 = 6
+
+/// The pauses' lengths in ticks, in turn: about one and a half to two seconds.
+pub const PAUSES: [u32; 3] = [200, 240, 180]
+
+/// The fewest ticks of play between pauses: about five seconds.
+pub const BETWEEN: u32 = 600
+
+/// The running on the ground a pause needs ahead of it (right held, jump not), so the capybara is
+/// back at speed before anything asks more of it: half a second.
+pub const RUN_UP: u32 = 60
+
+/// How far either side of the ticks that make up the ground a pause loses are tried.
+const MAKE_UP: [i32; 9] = [0, -1, 1, -2, 2, -3, 3, -4, 4]
+
+/// How many ticks on a pause that couldn't be made up is tried again.
+const RETRY: u32 = 30
+
+/// The ticks a changed run may run on past its last button to reach the goal: plain running.
+const TAIL: u32 = 600
+
+/// A stroll: its buttons held each tick (no presses), its time, and its pauses.
+pub struct Stroll: Clone {
+    pub held: Vec<u32>,
+    pub time: u32,
+    pub pauses: u32,
+}
+
+/// The pads of the buttons held each tick `held`: jump pressed as it goes down.
+fn pads(held: [u32]) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    var last = 0
+    for h in held {
+        out.push(pressed(h, last))
+        last = h
+    }
+    out
+}
+
+/// The buttons held each tick of `pads`.
+fn held_of(pads: [u32]) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for p in pads {
+        out.push(p & !capybara::pad::PRESS)
+    }
+    out
+}
+
+/// `held` cut at the tick it finishes on, if it finishes as a 100% run must when played from `w`,
+/// the world on its tick `from`: at the goal with `snacks`, no death, within a human's limits. It
+/// may run on plainly past its last button for up to `TAIL` ticks.
+fn fitted(w: World, held: take Vec<u32>, from: u32, snacks: u32) -> Option<Vec<u32>> {
+    var v = w
+    var out = take held
+    let end = out.len() + TAIL
+    var last = if from > 0 { out[from - 1] } else { 0 }
+    var t = from
+    while v.finished == 0 && t < end {
+        if t >= out.len() { out.push(RIGHT) }
+        let h = out[t]
+        step(mut v, Pad { bits: pressed(h, last) })
+        if v.deaths > 0 { return None }
+        last = h
+        t += 1
+    }
+    if !finishes(v, snacks) { return None }
+    out.truncate(t)
+    if !human(pads(out)) { return None }
+    Some(out)
+}
+
+/// `held` with each stretch that isn't plain running made plainer where the run still finishes,
+/// pass after pass.
+pub fn smoothed(c: u32, held: take Vec<u32>, snacks: u32) -> Vec<u32> {
+    var best = take held
+    for _ in 0..PASSES {
+        var changed = false
+        var w = world(c)
+        var s = 0
+        while s < best.len() {
+            var e = s
+            while e < best.len() && best[e] == best[s] { e += 1 }
+            if best[s] != RIGHT {
+                let before = if s > 0 { best[s - 1] } else { RIGHT }
+                let after = if e < best.len() { best[e] } else { RIGHT }
+                for bits in [RIGHT, before, after] {
+                    if bits == best[s] { continue }
+                    var tried = best.clone()
+                    for t in s..e { tried[t] = bits }
+                    if let Some(f) = fitted(w, take tried, s, snacks) {
+                        best = take f
+                        changed = true
+                        break
+                    }
+                }
+            }
+            // On over the stretch as it now is.
+            let stop = min(e, best.len())
+            var last = if s > 0 { best[s - 1] } else { 0 }
+            for t in s..stop {
+                step(mut w, Pad { bits: pressed(best[t], last) })
+                last = best[t]
+            }
+            s = stop
+        }
+        if !changed { break }
+    }
+    best
+}
+
+/// Whether the capybara may pause before tick `t` of `held`, in world `w`: on its own feet on the
+/// ground, running right near its speed, with a run-up from `t` on.
+fn may_pause(w: World, held: [u32], t: u32) -> bool {
+    if !w.body.grounded() || w.riding != 0 || w.body.vel.x < FEEL.speed * 0.6 { return false }
+    if t + RUN_UP > held.len() { return false }
+    for k in t..t + RUN_UP {
+        if held[k] & RIGHT == 0 || held[k] & (JUMP | LEFT) != 0 { return false }
+    }
+    true
+}
+
+/// The ticks of running that make up the ground a pause of `pause` ticks before tick `t` loses,
+/// played from `w`: how far behind the paused run is, a run-up later, in ticks at the speed.
+fn lost(w: World, held: [u32], t: u32, pause: u32) -> i32 {
+    var on = w
+    var stopped = w
+    var last = if t > 0 { held[t - 1] } else { 0 }
+    for _ in 0..pause { step(mut stopped, Pad { bits: 0 }) }
+    var was = 0
+    for k in t..t + RUN_UP {
+        step(mut on, Pad { bits: pressed(held[k], last) })
+        step(mut stopped, Pad { bits: pressed(held[k], was) })
+        last = held[k]
+        was = held[k]
+    }
+    let behind = on.body.at.x - stopped.body.at.x
+    i32(round(behind / (FEEL.speed / f32(HZ))))
+}
+
+/// `held` with pauses where they fit, each made up so the run still finishes.
+pub fn paused(c: u32, held: take Vec<u32>, snacks: u32) -> (Vec<u32>, u32) {
+    var best = take held
+    var w = world(c)
+    var t = 0
+    var played = 0
+    var count = 0
+    var last = 0
+    while t < best.len() {
+        if played >= BETWEEN && may_pause(w, best, t) {
+            let pause = PAUSES[count % PAUSES.len()]
+            let need = lost(w, best, t, pause)
+            var kept = false
+            for by in MAKE_UP {
+                let extra = need + by
+                if extra < 0 { continue }
+                var tried: Vec<u32> = Vec::new()
+                for k in 0..t { tried.push(best[k]) }
+                for _ in 0..pause { tried.push(0) }
+                for _ in 0..u32(extra) { tried.push(RIGHT) }
+                for k in t..best.len() { tried.push(best[k]) }
+                if let Some(f) = fitted(w, take tried, t, snacks) {
+                    best = take f
+                    count += 1
+                    played = 0
+                    kept = true
+                    break
+                }
+            }
+            if !kept { played = BETWEEN - RETRY }
+        }
+        step(mut w, Pad { bits: pressed(best[t], last) })
+        last = best[t]
+        t += 1
+        played += 1
+    }
+    (best, count)
+}
+
+/// Level `c`'s stroll from its human 100% run `run` (every snack `snacks`), or none if that run
+/// no longer finishes.
+pub fn stroll(c: u32, run: [Hold], snacks: u32) -> Option<Stroll> {
+    let held = held_of(pads_of(c, run))
+    let Some(start) = fitted(world(c), take held, 0, snacks) else { return None }
+    let smooth = smoothed(c, take start, snacks)
+    let (calm, pauses) = paused(c, take smooth, snacks)
+    let time = calm.len()
+    Some(Stroll { held: calm, time, pauses })
+}
+
+/// A stroll's holds, as a routes file writes them.
+pub fn holds(s: Stroll) -> Vec<Hold> {
+    holds_of(pads(s.held))
+}
+
+/// How many times a stroll's buttons change.
+pub fn changes(held: [u32]) -> u32 {
+    var n = 0
+    for i in 1..held.len() {
+        if held[i] != held[i - 1] { n += 1 }
+    }
+    n
+}

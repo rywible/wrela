@@ -62,7 +62,7 @@ pub struct Backdrop: Copy + GpuData {
     // The hero's size and the cover's small copy's, in pixels: 0 while it isn't there.
     pub sizes: vec4,
     // How far the hero has come in over what stands in for it, how lit it all is, and how far
-    // the picture has drifted, in pixels.
+    // what stands in for it has drifted, in pixels.
     pub look: vec4,
     // The game's colour, and how much of the gradient's dark takes it.
     pub tint: vec4,
@@ -75,10 +75,10 @@ pub struct Backdrop: Copy + GpuData {
 }
 
 // The pixel of an image of `size` that fills the screen (cropping its overflow, centred) at
-// screen pixel `p`, a little larger than the screen so a drift of `drift` pixels never shows an
-// edge; as a fraction of the image.
-fn filling(p: vec2, screen: vec2, size: vec2, drift: vec2) -> vec2 {
-    let scale = max(screen.x / size.x, screen.y / size.y) * 1.03
+// screen pixel `p`, `over` times larger than the screen so a drift of `drift` pixels never shows
+// an edge; as a fraction of the image.
+fn filling(p: vec2, screen: vec2, size: vec2, drift: vec2, over: f32) -> vec2 {
+    let scale = max(screen.x / size.x, screen.y / size.y) * over
     ((p - drift - screen * 0.5) / scale + size * 0.5) / size
 }
 
@@ -106,7 +106,7 @@ pub fn backdrop(
     var stand = colour * mix(0.42, 0.18, p.y / screen.y)
     // Once the hero is all in, it hides the stand-in: no blur.
     if look.sizes.z > 0.0 && look.look.x < 1.0 {
-        let at = filling(p, screen, look.sizes.zw, drift * 0.6)
+        let at = filling(p, screen, look.sizes.zw, drift * 0.6, 1.03)
         let reach = vec2(1.6 / look.sizes.z, 1.6 / look.sizes.w)
         var sum = cover.sample_level(linear, at, 0.0).xyz
         for k in 0..12 {
@@ -117,8 +117,10 @@ pub fn backdrop(
         stand = sum / 13.0 * 0.78
     }
     var color = stand
+    // The hero holds still, filling the screen exactly: it's the first frame of the game playing
+    // itself behind (attract.wrela), which takes its place without a shift as it fades.
     if look.sizes.x > 0.0 {
-        let at = filling(p, screen, look.sizes.xy, drift)
+        let at = filling(p, screen, look.sizes.xy, vec2(0.0), 1.0)
         color = mix(stand, hero.sample_level(linear, at, 0.0).xyz, look.look.x)
     }
     // The dark behind the text: across from the left, up from the bottom, and a little under the

@@ -38,9 +38,9 @@
 use habitats::habitat_of
 use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
-use camera::{Camera, camera, follow, framed, half_view, play_rect}
+use camera::{Camera, camera, follow, framed, half_view_in, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
-use course::{Course, HOME, LEVELS, WETLANDS, course}
+use course::{Course, HOME, LEVELS, RAINFOREST, WETLANDS, course}
 use earth::{Field, earth, earth_mesh, earth_vertex, grass, grass_mesh, grass_vertex, profiles}
 use engine::frame::full
 use engine::present::Snapshots
@@ -99,12 +99,16 @@ use engine::menu::{Nav, Stick}
 /// the movement lab among them. A player's build has neither.
 pub const DEV: bool = false
 
-/// A build for still pictures (`wrela build games/capybara --set HERO=true`): the console's hero
-/// and the game's cover. The view is `HERO_ZOOM` times nearer, with the capybara in its right
-/// third, and nothing is drawn over the scene (the snacks' count, the title, the clock, the
-/// menus).
+/// A build for still pictures (`wrela build games/capybara --set HERO=true`): the console's hero.
+/// It plays itself as the address `#attract` makes it, on a host that has no address to give (the
+/// native host), with nothing drawn over the scene (the snacks' count, the title, the clock, the
+/// menus), and holds its run where it begins for good: its frames are the frame the console shows
+/// behind its home until it lets the run go, the hero (attract.wrela).
 pub const HERO: bool = false
-const HERO_ZOOM: f32 = 2.6
+
+/// The level the game playing itself begins on, standing in its stroll's first pause
+/// (attract.wrela): the hero's scene. `--set` takes another, for the stills of each.
+pub const ATTRACT_FROM: u32 = RAINFOREST
 
 /// The course the game opens on: the first level.
 const FIRST: u32 = HOME
@@ -462,7 +466,7 @@ pub fn init() -> Lab {
         console: Link::new(),
         role: Role::Deciding,
         address: Some(host::address()),
-        attract: attract::attract(),
+        attract: attract::attract(ATTRACT_FROM),
     }
 }
 
@@ -543,7 +547,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
                 let (_, first, _) = w.between()
                 opening = Some(first)
             }
-            w.advance(dt)
+            // Playing itself, the run holds on its first frame until the console shows it.
+            let held = s.role == Role::Attract && (s.attract.held || HERO)
+            w.advance(if held { 0.0 } else { dt })
             let (a, b, t) = w.between()
             snap = mixed(a, b, t)
             lag = if b.ticks > a.ticks { 1.0 - t } else { 0.0 }
@@ -573,10 +579,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         }
     }
     let aspect = screen.x / max(screen.y, 1.0)
-    let half = if HERO { half_view(aspect) / HERO_ZOOM } else { half_view(aspect) }
-    let eye = if HERO { snap.at + vec2(-half.x * 0.45, half.y * 0.2) } else {
-        framed(s.camera, half, c.ends)
-    }
+    let half = half_view_in(aspect, s.settings.aspect)
+    let eye = framed(s.camera, half, c.ends)
     react(mut s.cast, snap, c, dt, eye, half)
     if snap.paused == 0 && !watching {
         s.sign_card.next(snap.course, s.settings.learned, snap.at, eye, half, dt)
@@ -762,6 +766,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     playable(mut s)
     if s.role == Role::Attract {
         s.attract.ready(s.playable_at.is_some())
+        s.attract.listen()
     } else {
         publish(mut s, snap, play)
         console(mut s)
@@ -773,6 +778,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
 /// can't say (the native host).
 fn decided(s: mut Lab) -> bool {
     if s.role != Role::Deciding {
+        return true
+    }
+    if HERO {
+        begin(mut s, Role::Attract)
         return true
     }
     let Some(answer) = answer_of(mut s.address) else { return false }
@@ -1235,7 +1244,7 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             nodes = tree(snap.chosen, page, heading, labels, on_screen(rects, origin))
         }
     }
-    host::publish(mut s.told, mut s.tree, "Capybara", nodes, play)
+    host::publish(mut s.told, mut s.tree, "O'Capy", nodes, play)
 }
 
 /// The item of list page `page` under the pointer, while the player uses the pointer.

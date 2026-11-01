@@ -16,7 +16,7 @@
 //   package and every package it depends on (manifest.wrela), and each game's cover: its PNG
 //   fitted within 960×540 with Lanczos and encoded as WebP at quality 90, method 6, named by its
 //   bytes' SHA-256 (`cover-<16 hex>.webp`); and, for a game that names them, its hero (fitted
-//   within 1920×1080, `hero-<16 hex>.webp`), its title art (within 1200×480, with its alpha,
+//   within 1920×1440, `hero-<16 hex>.webp`), its title art (within 1200×480, with its alpha,
 //   `title-<16 hex>.webp`) and its theme (`theme-<16 hex>.txt`, as it is). The console reads them
 //   with `catalog.tsv` (a line a game: its id, title, session's address, each image's file and
 //   size, its tagline, its theme's file and the address where it plays itself) and
@@ -77,8 +77,10 @@ pub const REPOSITORY: Text = "https://github.com/rywible/wrela"
 /// A cover's box and its WebP's quality and method: a 960×540 cover is 30 to 110 KB, not 2 MB
 /// of pixels.
 pub const COVER_BOX: Size = Size { width: 960, height: 540 }
-/// A hero's box, behind a 1080p screen, and a title art's.
-pub const HERO_BOX: Size = Size { width: 1920, height: 1080 }
+/// A hero's box, behind a 1080p screen of any shape from 4:3 to 16:9 and wider (a hero 4:3 like
+/// the capybara's, which a 16:9 screen crops above and below as the game behind it does), and a
+/// title art's.
+pub const HERO_BOX: Size = Size { width: 1920, height: 1440 }
 pub const LOGO_BOX: Size = Size { width: 1200, height: 480 }
 pub const COVER_QUALITY: f64 = 90.0
 pub const COVER_METHOD: u8 = 6

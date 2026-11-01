@@ -18,12 +18,13 @@ const FRAMES: u32 = 240
 const QUANTA: u32 = 750
 
 /// The host services the game playing itself may ask for: its address, what the host can do and
-/// its pixel ratio, and telling the console it's ready.
-const ASKS: [Text; 3] = ["nav/location", "environment", "surface/ready"]
+/// its pixel ratio, telling the console it's ready, and waiting for the console's call that lets
+/// its run go.
+const ASKS: [Text; 4] = ["nav/location", "environment", "surface/ready", "channel/receive"]
 
 /// The game playing itself plays from its first whole frame, telling the console so, and asks for
-/// nothing but that, its address and the host's environment: no storage read or written, nothing
-/// posted, no call from the console waited on, nothing fetched but its own files, and no voice.
+/// nothing but that, its address, the host's environment and the console's call that lets its run
+/// go: no storage read or written, nothing posted, nothing fetched but its own files, and no voice.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
 fn the_game_playing_itself_says_its_ready_and_asks_for_no_storage_or_network() {
     var options = toolchain::options()

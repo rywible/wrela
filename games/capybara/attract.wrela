@@ -1,22 +1,27 @@
 // The game playing itself: the play build opened at an address whose fragment says `attract`
 // (`capybara/#attract`, the release's catalog), which the console's home shows behind its text
-// once it has rested on the game (console/attract.wrela; the look is proposed until Ryan sees
-// it). The game decides it once, when the host answers its address (`role_of`), and until then
-// draws nothing but the sky and plays and asks for nothing. Playing itself, it plays the route
-// search's human-possible any% run of each level (routes_<level>.wrela's `HUMAN_ANY`, never the
-// tool-assisted one), one level after another and round again, watched as a run on the
-// leaderboard is (watch.wrela), its fireworks and all. It shows no HUD and no menus, plays no
+// while it shows the game (console/attract.wrela; the look is proposed until Ryan sees it). The game decides it once, when the host answers its address (`role_of`), and until then
+// draws nothing but the sky and plays and asks for nothing. Playing itself, it strolls through
+// each level (strolls.wrela: the route search's human-possible 100% run, its twitches smoothed
+// into plain running and with pauses where it stops to look; Ryan, 2026-11-01: the any% speedrun
+// it played before "is not chill"), one level after another and round again, watched as a run on
+// the leaderboard is (watch.wrela), its fireworks and all. It shows no HUD and no menus, plays no
 // sound, reads no input, stores nothing and asks nothing of the network: main.wrela never starts
 // its voice, the player's part of the frame (the world's boards, the stored progress and
 // settings, the keys) or the console's link, and publishes no semantic tree. The sim's ticker
 // runs as in every build (it starts in `init`, before the address answers), and no frame reads
-// it. It tells the console it's ready once its first whole frame is drawn. The console mutes it
-// and gives it no input while it's shown behind; once the console stops showing it, it hides or
-// closes it.
+// it. It tells the console it's ready once its first whole frame is drawn, and holds the run on
+// that frame (the scene's own motion going on) until the console calls it as it shows it
+// (`host::receive`): the console loads it early, hidden, and the hero behind the home's text is
+// that first frame (`HERO` in main.wrela), so the hero fades into the run as it starts (Ryan,
+// 2026-11-01: "so that it seemlessly starts playing"). With no one to call it (the native host,
+// a page opened alone) it plays at once. The console mutes it and gives it no input while it's
+// shown behind; once the console stops showing it, it hides or closes it.
 
 use course::{HOME, LEVELS}
 use replay::{HUMAN, Replay, recorded}
-use searched::searched
+use strolls::stroll
+use platform::session::answer_of
 use std::host
 use std::io::Pending
 use watch::{Watch, watch}
@@ -43,21 +48,54 @@ pub fn role_of(address: [u8]) -> Role {
     Role::Play
 }
 
-/// Where the game playing itself is: the level it plays next, and its word to the console that
-/// it's ready, once sent.
+/// How far into a stroll's first pause it begins (ticks): the capybara has come to a stop.
+pub const STOPPED: u32 = 90
+
+/// The shortest let-go that is one of a stroll's pauses (ticks): its moves let go for less.
+const PAUSE: u32 = 120
+
+/// Where the game playing itself is: the level it plays next and whether it has begun, its word
+/// to the console that it's ready, once sent, and whether it holds the run on its first frame,
+/// waiting for the console's call (and its answer to it).
 pub struct Attract {
     pub next: u32,
+    begun: bool,
     ready: Option<Pending<u8>>,
     pub said: bool,
+    pub held: bool,
+    call: Option<Pending<u8>>,
+    answer: Option<Pending<u8>>,
 }
 
-pub fn attract() -> Attract {
-    Attract { next: HOME, ready: None, said: false }
+/// It begins on level `from`, standing in its stroll's first pause (`still_at`).
+pub fn attract(from: u32) -> Attract {
+    Attract {
+        next: from,
+        begun: false,
+        ready: None,
+        said: false,
+        held: true,
+        call: None,
+        answer: None,
+    }
 }
 
-/// Level `c`'s human-possible any% run, as a replay cut at its goal.
+/// The tick `STOPPED` ticks into run `r`'s first pause, if it has one: where it begins, standing,
+/// the camera on it, the hero's frame.
+pub fn still_at(r: Replay) -> Option<u32> {
+    var t = 0
+    for h in r.holds {
+        if h.bits == 0 && h.ticks >= PAUSE {
+            return Some(t + STOPPED)
+        }
+        t += h.ticks
+    }
+    None
+}
+
+/// Level `c`'s stroll, as a replay cut at its goal.
 pub fn line(c: u32) -> Replay {
-    recorded(c, searched(c).human_any, HUMAN)
+    recorded(c, stroll(c), HUMAN)
 }
 
 /// The level after `c`, round to the first after the last.
@@ -74,7 +112,12 @@ impl Attract {
             None => true,
         }
         if done {
-            watching = Some(watch(line(self.next)))
+            var w = watch(line(self.next))
+            if !self.begun {
+                if let Some(t) = still_at(w.replay) { w.seek(t) }
+                self.begun = true
+            }
+            watching = Some(take w)
             self.next = after(self.next)
         }
     }
@@ -89,6 +132,25 @@ impl Attract {
             Some(p) => { if p.poll().is_some() { self.ready = None } },
             None => {},
         }
+    }
+
+    /// Waits for the console's call while it holds the run: any call lets it go (answered), and
+    /// so does no one to call it (the wait fails).
+    pub fn listen(mut self) {
+        if self.held && self.call.is_none() {
+            self.call = Some(host::receive())
+        }
+        match answer_of(mut self.call) {
+            Some(Ok(bytes)) => {
+                if let Some(c) = host::read_call(bytes) {
+                    self.answer = Some(host::reply(c.id, []))
+                }
+                self.held = false
+            },
+            Some(Err(_)) => self.held = false,
+            None => {},
+        }
+        let _ = answer_of(mut self.answer)
     }
 }
 
@@ -112,19 +174,18 @@ fn the_address_says_once_whether_the_game_plays_itself() {
 }
 
 @test
-fn each_level_plays_the_searchs_human_line_never_the_robots() {
+fn each_level_plays_its_stroll_to_its_goal() {
     for c in 0..LEVELS {
         let r = line(c)
-        let s = searched(c)
+        let s = stroll(c)
         assert(r.course == c && r.who == HUMAN)
-        assert(r.ticks > 0, f"level {c} reaches its goal")
-        // Its pads are the human line's (not the tool-assisted one's, where they differ), cut at
-        // the goal.
+        assert(r.ticks > 0 && r.deaths == 0, f"level {c} reaches its goal")
+        // Its pads are the stroll's, cut at the goal.
         var kept = 0
         for h in r.holds { kept += h.ticks }
         assert(kept == r.ticks, f"level {c}: cut at the goal")
         for i in 0..r.holds.len() - 1 {
-            assert(r.holds[i] == s.human_any[i], f"level {c}: hold {i}")
+            assert(r.holds[i] == s[i], f"level {c}: hold {i}")
         }
     }
 }
@@ -139,10 +200,14 @@ fn watched(w: Option<Watch>) -> u32 {
 
 @test
 fn it_plays_each_level_to_its_end_then_the_next_and_round_again() {
-    var a = attract()
+    var a = attract(HOME)
     var watching: Option<Watch> = None
     a.play(mut watching)
     assert(watched(watching) == HOME && a.next == after(HOME))
+    match watching {
+        Some(w) => assert(Some(w.tick) == still_at(line(HOME)), "it begins in the first pause"),
+        None => panic("a run to watch"),
+    }
     // Playing, it stays on its level.
     a.play(mut watching)
     assert(watched(watching) == HOME)
@@ -165,4 +230,16 @@ fn it_plays_each_level_to_its_end_then_the_next_and_round_again() {
     watching = None
     a.play(mut watching)
     assert(watched(watching) == LEVELS - 1 && a.next == HOME)
+}
+
+@test
+fn each_strolls_first_pause_stands_the_capybara_still_on_the_ground() {
+    for c in 0..LEVELS {
+        let r = line(c)
+        let Some(t) = still_at(r) else { continue }
+        var w = watch(take r)
+        w.seek(t)
+        let b = w.world.body
+        assert(b.grounded() && abs(b.vel.x) < 0.05, f"level {c}: still at tick {t}: {b.vel}")
+    }
 }

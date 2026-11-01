@@ -17,10 +17,12 @@
 //
 // The play area (contract, D3; design.md): the view shows `HALF_HEIGHT` up and down from the
 // camera and, with `Aspect::Fixed` (the default), `HALF_HEIGHT × PLAY_ASPECT` (16:9) across,
-// whatever the screen's shape: a wider screen shows the same course with margins at its sides
-// (pillarboxed), a taller one margins above and below (letterboxed), each in the sky's colour
-// (`play_rect`). So no player sees more of the course ahead for a wider screen. `Aspect::Free` (a
-// setting) fills the screen instead, the view as wide as its shape.
+// whatever the screen's shape. A screen from 4:3 (`TALLEST`) to 21:9 (`WIDEST`) is filled: it shows
+// the same width of the course, a wider one less of it up and down and a taller one more
+// (`half_view_in`); past them a screen has margins, at its sides (pillarboxed) or above and below
+// (letterboxed), in the sky's colour (`play_rect`). (Ryan, 2026-11-01: the margins read as blue
+// bands.) So no player sees more of the course ahead for a wider screen. `Aspect::Free` (a setting) fills the
+// screen instead, the view as wide as its shape.
 
 use body::Mode
 use feel::FEEL
@@ -138,22 +140,40 @@ pub fn half_view(aspect: f32) -> vec2 {
 /// The play area's shape, width over height, in the fixed aspect.
 pub const PLAY_ASPECT: f32 = 16.0 / 9.0
 
-/// What the view's shape follows: the play area's (16:9, the margins round it the sky's), or the
-/// screen's.
+/// The widest and the tallest play areas the fixed aspect fills, width over height (21:9 and
+/// 4:3): a wider screen has margins at its sides, a taller one above and below.
+pub const WIDEST: f32 = 21.0 / 9.0
+pub const TALLEST: f32 = 4.0 / 3.0
+
+/// What the view's shape follows: the play area's (4:3 to 21:9, the margins round it the sky's),
+/// or the screen's.
 pub enum Aspect: Copy + Eq + Fieldless {
     Fixed,
     Free,
 }
 
 /// Where the play area lies on a screen `screen` pixels: its left, top, width and height. In the
-/// fixed aspect, the largest 16:9 rectangle in the screen's middle; in the free one, the screen.
+/// fixed aspect, the largest rectangle from 4:3 to 21:9 in the screen's middle (the screen itself
+/// when its shape is between them); in the free one, the screen.
 pub fn play_rect(screen: vec2, a: Aspect) -> vec4 {
     if a == Aspect::Free {
         return vec4(0.0, 0.0, screen.x, screen.y)
     }
-    let w = min(screen.x, round(screen.y * PLAY_ASPECT))
-    let h = min(screen.y, round(screen.x / PLAY_ASPECT))
+    let shape = clamp(screen.x / max(screen.y, 1.0), TALLEST, WIDEST)
+    let w = min(screen.x, round(screen.y * shape))
+    let h = min(screen.y, round(screen.x / shape))
     vec4(floor((screen.x - w) * 0.5), floor((screen.y - h) * 0.5), w, h)
+}
+
+/// Half the view's size on the plane of play (m), for a play area `aspect` wide to its height
+/// (`play_rect`'s): in the fixed aspect always as wide as 16:9's, a wider area showing less up and
+/// down, a taller one more.
+pub fn half_view_in(aspect: f32, a: Aspect) -> vec2 {
+    if a == Aspect::Free {
+        return half_view(aspect)
+    }
+    let across = HALF_HEIGHT * PLAY_ASPECT
+    vec2(across, across / aspect)
 }
 
 // ---- tests -------------------------------------------------------------------------------------
@@ -166,10 +186,10 @@ use world::{present, step, world}
 use course::LAB_COURSE
 use course::WETLANDS
 
-/// Whether the camera keeps the capybara in view, a metre and a half inside a 16:9 screen's
-/// edges, through `run` on course `at`.
-fn keeps_in_view(at: u32, run: [Hold]) -> bool {
-    let half = half_view(16.0 / 9.0) - vec2(1.5)
+/// Whether the camera keeps the capybara in view, `inside` m inside the edges of a view `half`
+/// across and up (m), through `run` on course `at`.
+fn keeps_in_view(at: u32, run: [Hold], view: vec2, inside: f32) -> bool {
+    let half = view - vec2(inside)
     var w = world(at)
     var c = camera(course(at).start)
     for h in run {
@@ -186,27 +206,49 @@ fn keeps_in_view(at: u32, run: [Hold]) -> bool {
     true
 }
 
-/// In the fixed aspect a 21:9 screen and a 16:9 one see the same width of the course (the wider
-/// one pillarboxed), and so does a 4:3 one (letterboxed); in the free aspect the wider sees more.
+/// In the fixed aspect a 21:9 screen, a 16:10 one and a 4:3 one see the same width of the course
+/// as a 16:9 one (each filled, the wider seeing less up and down, the taller more), and so do a
+/// 32:9 one (pillarboxed) and a phone's 9:19.5 (letterboxed); in the free aspect the wider sees
+/// more.
 @test
 fn the_play_area_shows_the_same_width_at_any_shape() {
+    let widest = play_rect(vec2(3840.0, 1080.0), Aspect::Fixed)
     let wide = play_rect(vec2(2520.0, 1080.0), Aspect::Fixed)
     let usual = play_rect(vec2(1920.0, 1080.0), Aspect::Fixed)
+    let laptop = play_rect(vec2(1728.0, 1080.0), Aspect::Fixed)
     let tall = play_rect(vec2(1440.0, 1080.0), Aspect::Fixed)
-    let width = |r: vec4| half_view(r.z / r.w).x
-    assert(abs(width(wide) - width(usual)) < 1.0e-3, "a 21:9 screen sees more of the course")
-    assert(abs(width(tall) - width(usual)) < 1.0e-2, "a 4:3 screen sees less of the course")
-    assert(wide.x == 300.0 && wide.z == 1920.0, f"the 21:9 screen's margins: {wide}")
-    assert(tall.y > 0.0 && tall.z == 1440.0, f"the 4:3 screen's margins: {tall}")
+    let phone = play_rect(vec2(390.0, 844.0), Aspect::Fixed)
+    let half = |r: vec4| half_view_in(r.z / r.w, Aspect::Fixed)
+    for (what, r) in [
+        ("21:9", wide),
+        ("32:9", widest),
+        ("16:10", laptop),
+        ("4:3", tall),
+        ("a phone", phone),
+    ] {
+        assert(abs(half(r).x - half(usual).x) < 1.0e-2, f"{what}: another width of the course")
+    }
+    for (what, r) in [("21:9", wide), ("16:10", laptop), ("4:3", tall)] {
+        assert(r.xy == vec2(0.0), f"{what} has margins: {r}")
+    }
+    assert(half(wide).y < HALF_HEIGHT - 1.0, "the 21:9 screen sees less up and down")
+    assert(half(tall).y > HALF_HEIGHT + 1.0, "the 4:3 screen sees more up and down")
+    assert(widest.x == 660.0 && widest.z == 2520.0, f"the 32:9 screen's margins: {widest}")
+    assert(phone.y > 0.0 && phone.z == 390.0, f"the phone's margins: {phone}")
     let free = play_rect(vec2(2520.0, 1080.0), Aspect::Free)
-    assert(width(free) > width(usual) + 1.0, "the free aspect fills the screen")
+    assert(half_view_in(free.z / free.w, Aspect::Free).x > half(usual).x + 1.0, "the free fills")
 }
 
 @test
 fn the_camera_keeps_the_capybara_in_view_through_the_lab_and_the_level() {
-    assert(keeps_in_view(LAB_COURSE, LAB_RUN), "the lab")
-    assert(keeps_in_view(WETLANDS, LEVEL_ANY), "the level, any%")
-    assert(keeps_in_view(WETLANDS, LEVEL_FULL), "the level, 100%")
+    let usual = half_view(PLAY_ASPECT)
+    assert(keeps_in_view(LAB_COURSE, LAB_RUN, usual, 1.5), "the lab")
+    assert(keeps_in_view(WETLANDS, LEVEL_ANY, usual, 1.5), "the level, any%")
+    assert(keeps_in_view(WETLANDS, LEVEL_FULL, usual, 1.5), "the level, 100%")
+    // The widest filled screen sees less up and down: still a capybara's length inside it.
+    let wide = half_view_in(WIDEST, Aspect::Fixed)
+    assert(keeps_in_view(WETLANDS, LEVEL_ANY, wide, 0.6), "the level, any%, at 21:9")
+    assert(keeps_in_view(WETLANDS, LEVEL_FULL, wide, 0.6), "the level, 100%, at 21:9")
 }
 
 @test

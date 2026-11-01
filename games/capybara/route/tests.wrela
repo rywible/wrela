@@ -175,6 +175,9 @@ fn the_command_line_takes_the_level_the_seconds_and_the_human_mode() {
     assert(parse_args([]).is_none(), "no level")
     assert(parse_args([level.clone(), s("moon")]).is_none(), "no such level")
     assert(parse_args([s("60")]).is_none() && parse_args([s("--human"), s("--human")]).is_none())
+    let stroll = parse_args([s("--stroll")]).expect("every level's strolls")
+    assert(stroll.stroll && !stroll.human && !stroll.needs, "the strolls alone")
+    assert(parse_args([s("--stroll"), level.clone(), home.clone()]).is_none(), "of every level")
 }
 
 @test
