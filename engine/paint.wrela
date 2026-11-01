@@ -436,7 +436,7 @@ fn the_meter_reads_the_band_from_the_median_up() {
 
 /// Metering keeps scenes' order (§G7): of scenes a stop or more apart, from a dusk view to a bright
 /// noon, the brighter's metered band comes out brighter at its own exposure, under the engine's
-/// ceiling and under the vale's 8 (its strength under 1 meters part of the difference away, never
+/// ceiling and under one raised to 8 (its strength under 1 meters part of the difference away, never
 /// all of it, nor past it). And the dusk view's meter asks past the engine's ceiling, so a raised
 /// one shows it brighter.
 @test
