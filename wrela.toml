@@ -58,6 +58,7 @@ members = [
     "studio/listening",
     "studio/lookbook",
     "studio/styles",
+    "studio/grow",
     "studio/motion",
     "studio/round",
     "studio/serve",
@@ -203,6 +204,13 @@ write = ["ws=.", "out=build/fit"]
 package = "studio/styles"
 write = ["ws=."]
 run = ["git"]
+
+# The grow tool (studio/grow): a species' tree grown from its genome and site as a specimen (its
+# side view and grown.json), and the specimen page (docs/plan-world-class-3.md §E1.5).
+[tools.grow]
+package = "studio/grow"
+write = ["ws=.", "out=build/grow"]
+browser = true
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

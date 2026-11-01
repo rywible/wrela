@@ -16,12 +16,30 @@ pub fn far_wood(c: Cover, at: vec3, w: f32, rock: f32) -> Cover {
     c
 }
 
+/// The moss's patches at `xz`, its wet class's and its dry one's (`growth::moss_tile` at the
+/// floor's cell of 25 cm), from `moss`, a terrain's own copy of `growth::MOSS`: a terrain is
+/// bound as a pass's data, so its words are read there, not copied into each texel's invocation
+/// (docs/bench.md "E7").
+pub fn moss_pair(moss: [u32; engine::growth::MOSS_WORDS], xz: vec2) -> vec2 {
+    let byte = |class: u32| {
+        let at = engine::growth::moss_cell(class, xz * 4.0)
+        f32((moss[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+    }
+    vec2(byte(0), byte(1))
+}
+
+/// The season the floor's litter lies in (0 to 1 from spring: `growth::litter_at`): late summer's.
+pub const LITTER_SEASON: f32 = 0.65
+
 /// The wood's floor over the history's fields (#54 §9, `land::bake::tile_fields`: their light,
 /// wear, wet and thorn), on a cover `c` as a sample `w` metres across sees it: where the canopy
 /// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where
 /// trails wear it (`trodden`), bare earth and worn grass; darker where it's wet, and a stream's
 /// bed and banks under its water (its gravel's stones the land's rock, `rock_albedo` at a point, its
-/// normal and a sample's width); and where a cut's dry lip is (`rim`), bare soil.
+/// normal and a sample's width); and where a cut's dry lip is (`rim`), bare soil. In a grown wood
+/// (`grown`, §E4) its litter lies by the canopy and the season and its moss grows in patches,
+/// `moss` each moss class's patch at the point (`moss_pair`, from the terrain's own copy of
+/// `growth::MOSS`); in a hand's (the floor's until it adopts the grown wood, D40), as before §E4.
 pub fn wood_floor(
     c: Cover,
     at: vec3,
@@ -31,6 +49,8 @@ pub fn wood_floor(
     trodden: f32,
     rim: f32,
     rock_albedo: fn(vec3, vec3, f32) -> vec3,
+    grown: bool,
+    moss: vec2,
 ) -> Cover {
     var c = c
     let xz = at.xz
@@ -51,8 +71,21 @@ pub fn wood_floor(
         vec3(0.13, 0.085, 0.05),
         vec3(smoothstep(0.2, 0.85, leaves)),
     )
-    let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
-        (1.0 - open)
+    // Grown, how thick the litter lies by the canopy over it and the season
+    // (`growth::litter_at`): thin under a gap's light, the soil showing through.
+    let litter = if grown {
+        let deep = engine::growth::litter_at(1.0 - light, LITTER_SEASON)
+        mix(vec3(0.09, 0.07, 0.05), litter, vec3(smoothstep(0.1, 0.6, deep)))
+    } else { litter }
+    // Moss where it's damp under the canopy, grown in its reaction-diffusion's patches (a cell
+    // 25 cm, the wet's crowded or the dry's scattered: `moss`, each class's at the point,
+    // `moss_pair`; past a cell's width, its mean); by hand, in a noise's patches.
+    let mossy = if grown {
+        let patches = mix(if wet > 0.5 { moss.x } else { moss.y }, 0.3, smoothstep(0.1, 0.5, w))
+        smoothstep(0.3, 0.6, patches) * smoothstep(0.25, 0.7, wet + 0.3) * (1.0 - open)
+    } else {
+        smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) * (1.0 - open)
+    }
     var floor = mix(litter, vec3(0.042, 0.06, 0.035), vec3(mossy * 0.5))
     // Under thorn, darker and bare.
     floor = floor * (1.0 - 0.3 * thorn)

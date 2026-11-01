@@ -21,6 +21,14 @@
 // (`bake::tile_fields`). The soil itself (`soil`) comes from the ground's shape, its rock and its
 // water.
 //
+// Each tree also keeps the record its own growth reads (docs/plan-world-class-3.md §E2), which a
+// reconstruction from the survivors would lose (a nurse tree rotted away, a gale's year): its
+// crown's light over its life (`Tree::light_by_age`, sampled at its habit's `sample_age`s as the
+// history runs, the samples before the history began inferred) and the four strongest things that
+// befell it (`Tree::events`: gales, fires, browsing, a neighbour's fall, lightning). Read them
+// through `light_at(tree, habit, age) -> (light, inferred)` (between samples; toward the present
+// light past the last; an age past its present or its death read there) and `events_of(tree)`.
+//
 // The species and the grain are the floor's data: 2 m cells and 2-year steps for the bake
 // (`BAKE`), 4 m cells and 10-year steps for the preview an editor shows after each edit
 // (`PREVIEW`).
@@ -372,6 +380,142 @@ pub struct Tree: Copy {
     /// choice), 0 until then.
     pub fork: f32,
     pub seed: u32,
+    /// Its crown's light over its life (0–255), sampled at its habit's `sample_age`s as the
+    /// history ran (§E2): `written` of them, those below `recorded_from` inferred (it stood before
+    /// the history began: the light it first measured, constant), the rest the canopy's light the
+    /// step it crossed each age. Past the last, `light_at` runs toward `light` at `lived`.
+    pub light_by_age: [u8; SAMPLES] = [0; SAMPLES],
+    pub recorded_from: u8 = 0,
+    pub written: u8 = 0,
+    /// Its age at the history's present, or when it was last alive (years).
+    pub lived: f32 = 0.0,
+    /// The four strongest things that befell it (`TreeEvent`; an empty slot's kind `NO_EVENT`).
+    pub events: [TreeEvent; 4] = [TreeEvent {}; 4],
+}
+
+/// How many light samples a tree's life holds (`Tree::light_by_age`): 16 over its first years,
+/// when its crown's architecture is decided, and `LATE` over the rest of `SPAN` × its lifespan.
+/// §E2's payload lever, taken: the plan's 16 late samples halved to 8 (the floor's first load grew
+/// 14 % with 16, docs/bench.md "E2"), the span kept.
+pub const SAMPLES: u32 = 16 + LATE
+pub const LATE: u32 = 8
+
+/// The levels a light sample takes (a sample is kept as one of 16 in the bake: `LEVEL` apart in
+/// its byte, 0 to 255).
+pub const LEVEL: u32 = 17
+
+/// How far past its lifespan a tree's samples reach (a survivor outlives it), and the first
+/// years' span (at most `EARLY` years, at most half the whole).
+pub const SPAN: f32 = 1.5
+pub const EARLY: f32 = 75.0
+
+/// The age of a habit's light sample `k` (`Tree::light_by_age`): rising strictly for every habit,
+/// the blackthorn's 50 years too. Samples 0–15 at `k × early / 15`; the `LATE` after from there
+/// to `span`.
+pub fn sample_age(h: Habit, k: u32) -> f32 {
+    let span = SPAN * h.lifespan
+    let early = min(EARLY, 0.5 * span)
+    if k < 16 {
+        return f32(k) * early / 15.0
+    }
+    early + f32(k - 15) * (span - early) / f32(LATE)
+}
+
+/// What befell a tree in a year (`Tree::events`): its kind (`GALE` …) and how hard (0–255).
+pub struct TreeEvent: Copy {
+    pub year: i16 = 0,
+    pub kind: u8 = NO_EVENT,
+    pub strength: u8 = 0,
+}
+
+/// A tree event's kinds: the growth's own (`engine::growth::GALE` …), so a record's event is the
+/// growth's by its code.
+pub const NO_EVENT: u8 = 0
+pub const GALE: u8 = u8(engine::growth::GALE)
+pub const FIRE: u8 = u8(engine::growth::FIRE)
+pub const BROWSE: u8 = u8(engine::growth::BROWSE)
+pub const FALL: u8 = u8(engine::growth::FALL)
+pub const LIGHTNING: u8 = u8(engine::growth::LIGHTNING)
+
+/// `t` with `kind` noted in `year` as hard as `strength` (0 to 1): among its four strongest, the
+/// weakest it beats replaced; one of a kind already noted that year kept at the harder.
+pub fn noted(t: Tree, year: i32, kind: u8, strength: f32) -> Tree {
+    var out = t
+    let s = u8(clamp(strength * 255.0 + 0.5, 1.0, 255.0))
+    let y = i16(clamp(year, -32768, 32767))
+    for k in 0..4 {
+        if out.events[k].kind == kind && out.events[k].year == y {
+            if s > out.events[k].strength {
+                out.events[k].strength = s
+            }
+            return out
+        }
+    }
+    var weakest = 0
+    for k in 1..4 {
+        if out.events[k].strength < out.events[weakest].strength {
+            weakest = k
+        }
+    }
+    if out.events[weakest].kind == NO_EVENT || s > out.events[weakest].strength {
+        out.events[weakest] = TreeEvent { year: y, kind, strength: s }
+    }
+    out
+}
+
+/// `t` with its light samples written for a step from `year` to `year + step` in which its crown's
+/// light was `light`: every sample whose age the step crosses; on its first step, if it stood
+/// before the history began (`start`), every sample of the ages it had already lived, inferred.
+pub fn recorded(t: Tree, h: Habit, year: i32, step: i32, light: f32, start: i32) -> Tree {
+    var out = t
+    let age = f32(year - t.born)
+    let byte = u8(u32(clamp(light * 15.0 + 0.5, 0.0, 15.0)) * LEVEL)
+    if out.written == 0 && t.born < start {
+        while u32(out.written) < SAMPLES && sample_age(h, u32(out.written)) <= age {
+            out.light_by_age[u32(out.written)] = byte
+            out.written += 1
+        }
+        out.recorded_from = out.written
+    }
+    let upto = age + f32(step)
+    while u32(out.written) < SAMPLES && sample_age(h, u32(out.written)) <= upto {
+        out.light_by_age[u32(out.written)] = byte
+        out.written += 1
+    }
+    out.lived = upto
+    out
+}
+
+/// A tree's crown's light at `age` (0 to 1), and whether it's inferred (§E2): its samples between
+/// their ages; below `recorded_from`, the inferred light, constant; past the last written sample,
+/// toward `light` at `lived`. An age past `lived` (its present, or its death) is read at `lived`.
+pub fn light_at(t: Tree, h: Habit, age: f32) -> (f32, bool) {
+    if t.written == 0 {
+        return (t.light, true)
+    }
+    let a = clamp(age, 0.0, t.lived)
+    let last = u32(t.written) - 1
+    let at = |k: u32| f32(t.light_by_age[k]) / 255.0
+    let inferred = t.recorded_from > 0 && a < sample_age(h, u32(t.recorded_from))
+    if a >= sample_age(h, last) {
+        let (a0, a1) = (sample_age(h, last), max(t.lived, sample_age(h, last) + 1.0e-3))
+        let f = clamp((a - a0) / (a1 - a0), 0.0, 1.0)
+        return (mix(at(last), t.light, f), inferred)
+    }
+    var k = 0
+    while k + 1 <= last && sample_age(h, k + 1) <= a {
+        k += 1
+    }
+    if inferred {
+        return (at(0), true)
+    }
+    let (a0, a1) = (sample_age(h, k), sample_age(h, k + 1))
+    (mix(at(k), at(k + 1), clamp((a - a0) / (a1 - a0), 0.0, 1.0)), false)
+}
+
+/// The things that befell a tree, its four strongest (§E2: what a tree's growth reads).
+pub fn events_of(t: Tree) -> [TreeEvent; 4] {
+    t.events
 }
 
 impl Tree {
@@ -1443,6 +1587,7 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
         // doesn't carry a sapling past browsing and shade in one jump.
         let was = t.tall
         t.light = n.light
+        t = recorded(t, h, year, cx.grain.step, n.light, cx.map.present - cx.grain.years)
         let fl = clamp((n.light - h.need) / (0.9 - h.need), 0.0, 1.0)
         let soil = 1.0 - 0.6 * cx.land.thin[c]
         let cap = cx.land.cap[c]
@@ -1477,12 +1622,19 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
         t.lean += (lean - t.lean) * min(0.1 * step, 1.0)
         // Browsing keeps a line below which few branches grow: deer and cattle crop what they
         // reach (wood pasture, and along the trails).
+        // Browsing raises its lowest branch: noted the year it first does (§E2), not each year.
         if ch.browse_line > 0.0 && t.tall > ch.browse_line + 1.0 {
+            if t.lift < ch.browse_line {
+                t = noted(t, year, BROWSE, 0.5)
+            }
             t.lift = max(t.lift, ch.browse_line)
         }
         if cx.land.browsed[c] != UNBROWSED &&
             year >= cx.map.herd.arrives &&
             t.tall > HEAD_ROOM + 1.0 {
+            if t.lift < HEAD_ROOM {
+                t = noted(t, year, BROWSE, 0.5)
+            }
             t.lift = max(t.lift, HEAD_ROOM)
         }
         var p = if h.windborne { 0.004 } else { 0.002 }
@@ -2760,6 +2912,194 @@ fn stream_smoothing_keeps_every_bit_without_allocating() {
                 assert(bitcast_u32(a.z) == bitcast_u32(b.z), "width changed")
                 assert(bitcast_u32(a.w) == bitcast_u32(b.w), "depth changed")
             }
+        }
+    }
+}
+
+/// A habit that lives `lifespan` years (`sample_age`'s tests).
+fn living(lifespan: f32) -> Habit {
+    Habit {
+        tallest: 30.0,
+        rate: 0.5,
+        need: 0.3,
+        lifespan,
+        crown: 0.2,
+        shade: 0.8,
+        palatable: 0.5,
+        reach: 30.0,
+        mature: 30.0,
+        stands: 1.0,
+        rots: 1.0,
+        wet: 0.0,
+        thin: 0.0,
+        deep: 0.0,
+        beyond: 0.0,
+        windborne: false,
+        thorny: false,
+        suckers: false,
+    }
+}
+
+/// A tree born in `born` grown through steps of `step` years from `from` to `to`, its crown's
+/// light each step `light(year)` (`recorded`, as `live` calls it), the history begun at `start`.
+fn lived_through(
+    h: Habit,
+    born: i32,
+    from: i32,
+    to: i32,
+    step: i32,
+    start: i32,
+    light: fn(i32) -> f32,
+) -> Tree {
+    var t = sapling(vec2(0.0), 0, born, 1.0, 7, h)
+    var year = from
+    while year < to {
+        t.light = light(year)
+        t = recorded(t, h, year, step, t.light, start)
+        year += step
+    }
+    t
+}
+
+/// Every habit's sample ages rise strictly, the blackthorn's 50 years too, and reach 1.5 times
+/// its lifespan.
+@test
+fn a_lifes_sample_ages_rise_strictly() {
+    for life in [50.0, 300.0, 600.0, 1200.0] {
+        let h = living(life)
+        for k in 1..SAMPLES {
+            assert(
+                sample_age(h, k) > sample_age(h, k - 1),
+                f"lifespan {life}: sample {k} doesn't rise",
+            )
+        }
+        let last = sample_age(h, SAMPLES - 1)
+        assert(abs(last - SPAN * life) < 1.0e-3 * life, f"lifespan {life}: the last at {last}")
+    }
+}
+
+/// A nurse tree's shade over a sapling's first 30 years, gone by the end, is in its early samples:
+/// two forests the same at the end but for it give the sapling different samples 0 to 6; each
+/// recorded sample is the light of the step that crossed its age; and `light_at` its present age
+/// is its present light.
+@test
+fn a_nurse_trees_shade_is_in_a_saplings_early_light() {
+    let oak = living(600.0)
+    let nursed = lived_through(
+        oak,
+        born: 0,
+        from: 0,
+        to: 120,
+        step: 5,
+        start: 0,
+        light: |y| if y < 30 { 0.15 } else { 0.9 },
+    )
+    let open = lived_through(oak, born: 0, from: 0, to: 120, step: 5, start: 0, light: |y| 0.9)
+    for k in 0..7 {
+        assert(
+            nursed.light_by_age[k] != open.light_by_age[k],
+            f"sample {k} the same under a nurse as in the open",
+        )
+    }
+    assert(nursed.recorded_from == 0, "a tree born in the history has no inferred samples")
+    // Sample ages 0, 5 … 30 (early 75 over 15): each the light of the step it was crossed in.
+    for k in 0..7 {
+        let a = sample_age(oak, k)
+        let crossed_in = 5 * i32(ceil(a / 5.0)) - 5
+        let want = level_of(if crossed_in < 30 { 0.15 } else { 0.9 })
+        let year = max(crossed_in, 0)
+        let w = level_of(if year < 30 { 0.15 } else { 0.9 })
+        assert(
+            nursed.light_by_age[k] == w,
+            f"sample {k} at {a}: {nursed.light_by_age[k]}, not {w} ({want})",
+        )
+    }
+    let (now, _) = light_at(nursed, oak, nursed.lived)
+    assert(abs(now - nursed.light) < 1.0e-6, f"its present light {now}, not {nursed.light}")
+}
+
+/// A light as a sample keeps it (one of 16 levels, `LEVEL` apart).
+fn level_of(light: f32) -> u8 {
+    u8(u32(clamp(light * 15.0 + 0.5, 0.0, 15.0)) * LEVEL)
+}
+
+/// An oak whose history stops at 100, its light changed at 80 (between samples at 75 and 178.1),
+/// reads 90 and 100 toward its present light, the same before and after the bake, and never its
+/// unwritten sample at 178.1; a tree dead at 50 reads its death's light past it.
+@test
+fn a_lifes_unfinished_tail_runs_to_its_present_light() {
+    let oak = living(600.0)
+    let t = lived_through(oak, born: 0, from: 0, to: 100, step: 5, start: 0, light: |y| if y < 80 {
+        0.4
+    } else { 0.9 })
+    assert(u32(t.written) == 16, f"{t.written} samples written to age 100")
+    assert(abs(sample_age(oak, 16) - 178.125) < 0.01, "the next sample's age")
+    let (at90, _) = light_at(t, oak, 90.0)
+    let (at100, _) = light_at(t, oak, 100.0)
+    let a75 = f32(t.light_by_age[15]) / 255.0
+    assert(abs(at90 - mix(a75, 0.9, 15.0 / 25.0)) < 1.0e-5, f"90 reads {at90}")
+    assert(abs(at100 - 0.9) < 1.0e-6, f"100 reads {at100}")
+    // Past its present it reads its present, not the unwritten tail.
+    let (at130, _) = light_at(t, oak, 130.0)
+    assert(at130 == at100, f"past its present it read {at130}")
+    let dead = lived_through(oak, born: 0, from: 0, to: 50, step: 5, start: 0, light: |y| 0.6)
+    let (at50, _) = light_at(dead, oak, 50.0)
+    let (at80, _) = light_at(dead, oak, 80.0)
+    assert(at50 == at80, f"dead at 50, it read {at80} at 80")
+}
+
+/// A tree standing when the history began has its earlier samples inferred: `recorded_from` past
+/// 0, and `light_at` says so below it; the blackthorn's too.
+@test
+fn a_tree_older_than_the_history_has_its_early_light_inferred() {
+    for life in [50.0, 600.0] {
+        let h = living(life)
+        let t = lived_through(
+            h,
+            born: -40,
+            from: 0,
+            to: 30,
+            step: 5,
+            start: 0,
+            light: |y| 0.5 + 0.01 * f32(y),
+        )
+        assert(t.recorded_from > 0, f"lifespan {life}: no inferred samples")
+        let (_, inferred) = light_at(t, h, 10.0)
+        assert(inferred, f"lifespan {life}: age 10, before the history, not inferred")
+        let (_, late) = light_at(t, h, 60.0)
+        assert(!late, f"lifespan {life}: age 60, recorded, said inferred")
+    }
+}
+
+/// Histories of 400, 600 and 1,200 years and a survivor at 1.4 times its lifespan round-trip
+/// through the bake and read every age in range.
+@test
+fn long_lives_round_trip_and_read_every_age() {
+    for (life, years) in [(300.0, 400), (600.0, 600), (1200.0, 1200), (300.0, 420)] {
+        let h = living(life)
+        var t = lived_through(
+            h,
+            born: 0,
+            from: 0,
+            to: years,
+            step: 5,
+            start: 0,
+            light: |y| 0.3 + 0.5 * f32(y % 97) / 97.0,
+        )
+        t.at = vec2(10.0, 10.0)
+        let b = bake::as_baked(t)
+        assert(
+            b.written == t.written && b.recorded_from == t.recorded_from,
+            f"{years}: the record's counts",
+        )
+        for k in 0..SAMPLES {
+            assert(b.light_by_age[k] == t.light_by_age[k], f"{years}: sample {k}")
+        }
+        var a = 0.0
+        while a <= f32(years) + 50.0 {
+            let (l, _) = light_at(b, h, a)
+            assert(l >= 0.0 && l <= 1.0, f"{years}: age {a} reads {l}")
+            a += 3.7
         }
     }
 }

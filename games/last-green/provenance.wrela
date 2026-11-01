@@ -338,13 +338,16 @@ pub fn click(
     let c = cam.unjittered()
     let dir = c.ray(px / size * c.screen)
     // The near tiles' records are the world's: the eye there (the render origin added back).
-    let picked = pick(tiles, c.eye + c.origin, dir, height, trees::kinds::drawn_crowns)
+    let drawn = |trees: [Tree]| trees::kinds::drawn_crowns(trees, main::GROWN_WOOD)
+    let picked = pick(tiles, c.eye + c.origin, dir, height, drawn)
     let ms = 1000.0 * (std::time::now() - began)
     match picked {
         Picked::Tree { tile, i, distance } => {
             let t = tiles[tile].trees[i]
             // A kept tree is drawn as the great oak (`trees::kinds::placed`).
-            let k = if t.pinned { trees::kinds::GREAT } else { trees::kinds::kind_of(t) }
+            let k = if t.pinned { trees::kinds::GREAT } else {
+                trees::kinds::kind_of(t, main::GROWN_WOOD)
+            }
             tree_json(t, k, distance, ms)
         },
         Picked::Ground { point, normal, distance } => ground_json(

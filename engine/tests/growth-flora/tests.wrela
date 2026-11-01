@@ -1,0 +1,103 @@
+// The floor plants grown (docs/plan-world-class-3.md §E3), each measured from its growth
+// program's output, and where the floor places them, over a cause map known here.
+
+use engine::grass::{
+    BRACKEN_GENOME, FERN_GENOME, FLORA, GENOMES, SPECIES, SPECIES_N, flora_at, kind_shares,
+    sward_density,
+}
+use engine::growth::{Site, flora_values, genome_hash, grow_frond, grow_tussock}
+use std::math::PI
+
+/// A fern at a tenth of its first season has its fronds curled (over π); by its season's end,
+/// open (under 0.3).
+@test
+fn a_ferns_fronds_unroll_over_its_first_season() {
+    let young = grow_frond(FERN_GENOME, Site { age: 0.1, light: 0.2 })
+    let grown = grow_frond(FERN_GENOME, Site { age: 1.0, light: 0.2 })
+    assert(young.curl > PI, f"a tenth of a season: curl {young.curl}")
+    assert(grown.curl < 0.3, f"a season: curl {grown.curl}")
+}
+
+/// A fern in deep shade grows a frond at least 1.3 times a sun fern's.
+@test
+fn a_shade_fern_is_larger_than_a_sun_fern() {
+    let shade = grow_frond(FERN_GENOME, Site { age: 1.0, light: 0.1 })
+    let sun = grow_frond(FERN_GENOME, Site { age: 1.0, light: 0.9 })
+    assert(shade.length >= 1.3 * sun.length, f"shade {shade.length} m, sun {sun.length} m")
+}
+
+/// A tussock in the open has at least twice the tillers of one under a canopy.
+@test
+fn a_tussock_in_the_open_has_twice_the_tillers() {
+    let g = GENOMES[32]
+    let open = grow_tussock(g, Site { age: 2.0, light: 0.95, wetness: 0.55 })
+    let under = grow_tussock(g, Site { age: 2.0, light: 0.15, wetness: 0.55 })
+    assert(open.tillers >= 2 * under.tillers, f"open {open.tillers}, under {under.tillers}")
+}
+
+/// Over a test tile whose cause map is known (light rising east, wetness north, 16 × 16 places,
+/// each with the same fern, bracken and herb patches), ferns take the shaded places of middling
+/// wetness, and the sward is dense where it's light.
+@test
+fn ferns_take_the_moist_shade_and_grass_the_light() {
+    let under = vec4(1.0, 0.6, 0.6, 0.22)
+    var ferns = 0
+    var ferns_moist_shade = 0
+    var fern_light = 0.0
+    var dense = 0
+    var dense_light = 0.0
+    for j in 0..16 {
+        for i in 0..16 {
+            let (light, wet) = ((f32(i) + 0.5) / 16.0, (f32(j) + 0.5) / 16.0)
+            let h = vec4(0.5, wet, light, 0.0)
+            let s = kind_shares(FLORA, under, h)
+            if s.x > s.y && s.x > s.z {
+                ferns += 1
+                fern_light += light
+                if light < 0.45 && wet > 0.1 && wet < 0.9 {
+                    ferns_moist_shade += 1
+                }
+            }
+            if sward_density(FLORA, h) > 0.6 {
+                dense += 1
+                dense_light += light
+            }
+        }
+    }
+    assert(ferns > 10, f"{ferns} places of ferns")
+    assert(ferns_moist_shade == ferns, f"{ferns_moist_shade} of {ferns} ferns in the moist shade")
+    assert(fern_light / f32(ferns) < 0.3, f"the ferns' mean light {fern_light / f32(ferns)}")
+    assert(dense > 10, f"{dense} places of dense sward")
+    assert(
+        dense_light / f32(dense) > 0.6,
+        f"the dense sward's mean light {dense_light / f32(dense)}",
+    )
+}
+
+/// The floor's flora grown twice is the same to the byte (each row's genome hash, height, width
+/// and droop; the frond and sward tables), and no row's shape is its own: each is its genome's.
+@test
+fn the_flora_grows_the_same_twice() {
+    let digest = |f: engine::grass::Flora| {
+        var v: Vec<f32> = Vec::new()
+        for i in 0..SPECIES_N {
+            let r = f.species[i]
+            v.push(f32(r.genome % 65536))
+            v.push(r.tall)
+            v.push(r.wide)
+            v.push(r.bend)
+        }
+        for k in 0..4 {
+            v.push(f.ferns[k].x)
+            v.push(f.brackens[k].x)
+            v.push(f.sward[k].x)
+            v.push(f.sward[k].w)
+        }
+        genome_hash(v)
+    }
+    assert(digest(flora_at(1.0)) == digest(flora_at(1.0)), "grown twice, two floras")
+    for i in 0..SPECIES_N {
+        assert(SPECIES[i].genome == genome_hash(flora_values(GENOMES[i])), f"row {i}'s genome")
+    }
+    let _ = BRACKEN_GENOME
+}

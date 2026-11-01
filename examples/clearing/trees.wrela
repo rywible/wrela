@@ -68,7 +68,7 @@ pub const KINDS: u32 = 12
 /// Kind `k`'s plant.
 pub fn kind_plant(k: u32) -> Plant {
     if k == GREAT {
-        great_tree()
+        great_tree().widened()
     } else if k < INNER_TREES {
         forest_tree(100 + k, edge: 0.85)
     } else if k < SHRUBS {

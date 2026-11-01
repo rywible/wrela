@@ -157,7 +157,7 @@ impl Tiles for FloorTiles {
     fn occluders_into(
         self,
         placed: [Placed],
-        plants: [Plant],
+        plants: [engine::plant::Occluding],
         d: vec3,
         lo: vec2,
         hi: vec2,
@@ -168,6 +168,24 @@ impl Tiles for FloorTiles {
 
     fn height_at(self, p: vec2) -> f32 {
         land_at(self.source, p)
+    }
+
+    // The floor draws no near individuals yet (§E1.3 is the vale's; the floor's GPU memory is
+    // over its budget already: docs/bench.md).
+    fn near(self) -> u32 {
+        0
+    }
+
+    fn grows(self, t: land::grow::Tree, k: u32) -> bool {
+        false
+    }
+
+    fn individual(self, t: land::grow::Tree, k: u32) -> Option<engine::growth::Grow> {
+        None
+    }
+
+    fn grown(self) -> bool {
+        main::GROWN_WOOD
     }
 }
 
@@ -192,7 +210,7 @@ pub fn stage() -> Stage {
     Stage {
         land: landscape(
             FloorTiles { source: FLOOR },
-            trees::kinds::plants(),
+            trees::kinds::plants(main::GROWN_WOOD),
             trees::kinds::far_kinds(),
             history::waters().mesh,
             vec2i(0),
@@ -1039,11 +1057,11 @@ pub fn land_at(source: u32, p: vec2) -> f32 {
 /// `trees` placed on `source`'s land (`trees::kinds::placed`).
 pub fn placed_on(source: u32, trees: [land::grow::Tree]) -> Vec<engine::vegetation::Placed> {
     if source == GROWN_LAND {
-        trees::kinds::placed(trees, grown_at, map::PRESENT)
+        trees::kinds::placed(trees, grown_at, map::PRESENT, main::GROWN_WOOD)
     } else if source == SPECIMEN_LAND {
-        trees::kinds::placed(trees, level_at, map::PRESENT)
+        trees::kinds::placed(trees, level_at, map::PRESENT, main::GROWN_WOOD)
     } else {
-        trees::kinds::placed(trees, height_at, map::PRESENT)
+        trees::kinds::placed(trees, height_at, map::PRESENT, main::GROWN_WOOD)
     }
 }
 

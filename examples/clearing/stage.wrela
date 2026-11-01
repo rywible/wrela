@@ -114,7 +114,7 @@ pub fn stage(walker: Walker, light: Light) -> Stage {
         wood: None,
         stones: Vec::new(),
         footprints: buffer_of(footprints(), at_least: 1),
-        grass: Grass::new(),
+        grass: Grass::new(grown: false),
         fawn: cast(grown(), Fawn {}, REALIZED, CREATURE_SLICES),
         walker,
         off: Flags::none(),

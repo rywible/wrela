@@ -101,6 +101,12 @@ impl Tiers for FloorTier {
 pub const NEURAL: bool = false
 pub const LEARNED: bool = false
 
+/// Whether the floor's wood is grown (plan three's §E, the vale's: its trees' kinds,
+/// `trees::kinds::kind_plant`'s `grown`, its grass's flora and the causes of its moss, lichen and
+/// litter) or the hand's: the hand's until the floor adopts it (D40, §H1: `wrela build
+/// games/last-green --set GROWN_WOOD=true`).
+pub const GROWN_WOOD: bool = false
+
 pub struct Floor {
     console: Link,
     /// The way back down to the stair, and the tower's journey.

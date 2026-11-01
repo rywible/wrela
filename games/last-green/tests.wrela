@@ -58,8 +58,8 @@ fn nothing_grows_into_the_head_room() {
             f"a shrub (kind {t.kind}) stands at {at} under a {line} m line",
         )
         assert(t.lift >= line, f"a tree at {at} keeps branches to {t.lift} m under a {line} m line")
-        let k = trees::kinds::drawn_kind(t)
-        let low = trees::kinds::lowest_placed(k, t.tall, t.fork)
+        let k = trees::kinds::drawn_kind(t, main::GROWN_WOOD)
+        let low = trees::kinds::lowest_placed(k, t.tall, t.fork, main::GROWN_WOOD)
         assert(
             low >= line - 0.01,
             f"a tree at {at}, {t.tall} m, drawn as kind {k}: branches to {low} m",
@@ -546,7 +546,14 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
                     r = max(r, o.r)
                 }
             })
-            let over = trees::kinds::trunk_at(trees::kinds::kind_of(t), t.tall, 1.2, t.fork) - r
+            let over = trees::kinds::trunk_at(
+                trees::kinds::kind_of(t, main::GROWN_WOOD),
+                t.tall,
+                1.2,
+                t.fork,
+                main::GROWN_WOOD,
+            ) -
+                r
             if over > worst {
                 worst = over
                 at = t.at
@@ -715,7 +722,9 @@ fn the_camera_is_never_inside_a_thing() {
     // Each kind's cards, as cooked (`main.wrela` cooks kind `k` with seed `k + 1`).
     var cards: Vec<Vec<vec4>> = Vec::new()
     for k in 0..trees::kinds::KINDS {
-        cards.push(engine::plant::card_centres(trees::kinds::kind_plant(k), k + 1))
+        cards.push(
+            engine::plant::card_centres(trees::kinds::kind_plant(k, main::GROWN_WOOD), k + 1),
+        )
     }
     // The trees, binned 16 m a bin over the floor.
     let all = decisions().trees
@@ -776,6 +785,7 @@ fn the_camera_is_never_inside_a_thing() {
                             [all[ti]],
                             |p: vec2| ground::GROUND.at(p.x, p.y),
                             map::PRESENT,
+                            main::GROWN_WOOD,
                         ) {
                             if length(pl.at.at - eye) > 40.0 {
                                 continue
@@ -890,12 +900,28 @@ fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
             if KIND_SPECIES[a] == KIND_SPECIES[b] {
                 continue
             }
-            let share = |k: u32| trees::kinds::fork_height(k, tall: 10.0, fork: 0.0) / 10.0
-            let thick = |k: u32| trees::kinds::trunk_at(k, tall: 10.0, h: 1.2, fork: 0.0) / 10.0
+            let share = |k: u32| trees::kinds::fork_height(
+                k,
+                tall: 10.0,
+                fork: 0.0,
+                grown: main::GROWN_WOOD,
+            ) /
+                10.0
+            let thick = |k: u32| trees::kinds::trunk_at(
+                k,
+                tall: 10.0,
+                h: 1.2,
+                fork: 0.0,
+                grown: main::GROWN_WOOD,
+            ) /
+                10.0
             let form = abs(share(a) - share(b)) >= 0.03 ||
                 abs(thick(a) - thick(b)) >= 0.1 * max(thick(a), thick(b))
             assert(form, f"kinds {a} and {b} (two species) fork alike and are as thick")
-            let (pa, pb) = (trees::kinds::kind_plant(a), trees::kinds::kind_plant(b))
+            let (pa, pb) = (
+                trees::kinds::kind_plant(a, main::GROWN_WOOD),
+                trees::kinds::kind_plant(b, main::GROWN_WOOD),
+            )
             let bark = max(abs(pa.bark.light - pb.bark.light), abs(pa.bark.dark - pb.bark.dark))
             assert(
                 max(max(bark.x, bark.y), bark.z) >= 0.02,
@@ -908,11 +934,11 @@ fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
     var kinds: Vec<u32> = Vec::new()
     var forks: Vec<f32> = Vec::new()
     for t in decisions().trees {
-        if trees::kinds::forks(t) {
-            let k = trees::kinds::kind_of(t)
+        if trees::kinds::forks(t, main::GROWN_WOOD) {
+            let k = trees::kinds::kind_of(t, main::GROWN_WOOD)
             all.push(t)
             kinds.push(k)
-            forks.push(trees::kinds::fork_height(k, t.tall, t.fork))
+            forks.push(trees::kinds::fork_height(k, t.tall, t.fork, main::GROWN_WOOD))
         }
     }
     let g = Grid::over(domain_lo(), domain_hi(), trees::kinds::NEIGHBOURS_WITHIN)
@@ -1583,7 +1609,10 @@ fn every_kind_has_its_line_and_the_burnt_snags_differ() {
     let burnt = [trees::kinds::SNAG_BURNT, trees::kinds::SNAG_STUMP, trees::kinds::SNAG_FORKED]
     for a in 0..3 {
         for b in (a + 1)..3 {
-            let (pa, pb) = (trees::kinds::kind_plant(burnt[a]), trees::kinds::kind_plant(burnt[b]))
+            let (pa, pb) = (
+                trees::kinds::kind_plant(burnt[a], main::GROWN_WOOD),
+                trees::kinds::kind_plant(burnt[b], main::GROWN_WOOD),
+            )
             let (ta, tb) = (pa.top(), pb.top())
             let (ra, rb) = (pa.reach(), pb.reach())
             assert(

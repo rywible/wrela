@@ -1,0 +1,2945 @@
+// An organism's development (docs/plan-world-class-3.md §E0): what shape a plant has, grown from a
+// genome and its site's history, where `land::grow` is the forest's history (what stands where).
+// The principle every step holds: every visible thing has a cause the record can name. A drawn
+// thing's `Provenance` says which it has: `Grown` (its genome, its site, its seed and the growth's
+// version, so the growth can be run again and give the same thing) or `Authored` (a hand's shape,
+// counted until none is left: `engine/tests/growth-provenance`).
+//
+// Growth runs on the CPU alone, stepped in a fixed order from `Rng` (D33: byte-identical on every
+// device): no `std::rng`, no GPU.
+
+use plant::{Bark, Clump, Leaves, MAX_CLUMPS, MAX_LIMBS, Plant, limb_axis, plant}
+use std::field::{Tube, hash_u32}
+use std::hash::{Hasher, canonical_bits}
+use std::math::PI
+
+/// The growth's version: a change to any growth program that changes what it grows bumps it, so a
+/// cached growth keyed by it is grown again (§E7).
+pub const VERSION: u32 = 4
+
+/// Where an organism grew, as its growth reads it: its light (0 to 1, the open sky's 1), the
+/// ground's wetness (0 to 1), the slope (radians), its exposure to the wind (0 to 1), the shade
+/// above it (0 to 1: a closed canopy's 1), its age (years, or seasons for a fern or a grass), and
+/// the stand round it (0 to 1: neighbours as tall as it on every side, a closed stand's 1, which
+/// shade its lower crown: `stand_light`).
+pub struct Site: Copy + GpuData {
+    pub light: f32 = 1.0,
+    pub wetness: f32 = 0.5,
+    pub slope: f32 = 0.0,
+    pub wind: f32 = 0.0,
+    pub shade_above: f32 = 0.0,
+    pub age: f32 = 0.0,
+    pub stand: f32 = 0.0,
+}
+
+/// A grown thing's cause: its genome (`genome_hash` of the genome's values), its site, its seed
+/// and the growth's `VERSION`.
+pub struct Grown: Copy + GpuData {
+    pub genome: u32,
+    pub site: Site,
+    pub seed: u32,
+    pub version: u32 = VERSION,
+}
+
+/// What a drawn thing came from: grown (its cause), or a hand's shape.
+pub enum Provenance {
+    Grown(Grown),
+    Authored,
+}
+
+impl Provenance {
+    /// Whether it was authored (`engine/tests/growth-provenance` counts these).
+    pub fn authored(self) -> bool {
+        match self {
+            Provenance::Authored => true,
+            Provenance::Grown(_) => false,
+        }
+    }
+}
+
+/// A genome's values folded to one word: its identity in a `Grown` and a cache's key.
+pub fn genome_hash(values: [f32]) -> u32 {
+    var h = 2166136261
+    for v in values {
+        h = hash_u32(h ^ bitcast_u32(v))
+    }
+    h
+}
+
+/// A site folded to one word (`Rng::of`).
+pub fn site_hash(s: Site) -> u32 {
+    genome_hash([s.light, s.wetness, s.slope, s.wind, s.shade_above, s.age, s.stand])
+}
+
+/// The growth's random stream: seeded by a grown thing's cause and stepped in the order the
+/// growth asks, so the same cause grows the same thing on every device.
+pub struct Rng: Copy {
+    state: u32,
+    drawn: u32,
+}
+
+impl Rng {
+    /// The stream of `g`: its genome, its site and its seed.
+    pub fn of(g: Grown) -> Rng {
+        Rng {
+            state: hash_u32(g.genome ^ hash_u32(site_hash(g.site) ^ hash_u32(g.seed ^ g.version))),
+            drawn: 0,
+        }
+    }
+
+    /// The stream keyed by `key` alone (a tree's draws keyed by its seed and what draws them, so a
+    /// genome's or a site's change bends the tree it grows rather than drawing another: D34).
+    pub fn keyed(key: u32) -> Rng {
+        Rng { state: hash_u32(key), drawn: 0 }
+    }
+
+    /// The next word.
+    pub fn next(mut self) -> u32 {
+        self.drawn += 1
+        hash_u32(self.state ^ self.drawn.wrapping_mul(2654435761))
+    }
+
+    /// The next draw in [0, 1) (its top 24 bits).
+    pub fn unit(mut self) -> f32 {
+        f32(self.next() >> 8) * (1.0 / 16777216.0)
+    }
+
+    /// The next draw in [lo, hi).
+    pub fn between(mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.unit()
+    }
+}
+
+/// The ground's small causes' fields (§E4): the moss on the ground, the logs and the trunks
+/// (`MOSS`, a reaction-diffusion's patches), the lichen on the rocks and old bark (`LICHEN`, a
+/// diffusion-limited growth's crusts), the litter's layer (`litter_at`) and the fungi
+/// (`fungi_on`): each grown from its causes.
+pub const FIELDS: [Text; 4] = ["moss", "lichen", "litter", "fungi"]
+
+/// Field `i`'s provenance (`FIELDS`): each grown (its program's version, its seed `i`).
+pub fn field_provenance(i: u32) -> Provenance {
+    Provenance::Grown(Grown { genome: genome_hash([f32(i)]), site: Site {}, seed: i })
+}
+
+// ---- trees (§E1) ----------------------------------------------------------------------------------
+
+/// A tree species' genome (§E1.1): the parameters its self-organizing growth reads (Palubicki,
+/// Horel, Longay, Runions, Lane, Měch and Prusinkiewicz 2009), each species' values in
+/// content/trees/genomes.wrela with its source or **proposed**.
+pub struct Genome: Copy {
+    /// Apical control: how much the leader suppresses its laterals (0 decurrent, 1 excurrent).
+    pub apical: f32,
+    /// A lateral's angle from its parent (degrees), and how much it varies.
+    pub branching: f32,
+    pub branching_spread: f32,
+    /// The angle between successive buds round a shoot (degrees: 137.5 for most broadleaves, 180
+    /// for a two-ranked beech).
+    pub divergence: f32,
+    /// A shoot's length a year in full light (m), and the share of it left in deep shade.
+    pub internode: f32,
+    pub internode_shade: f32,
+    /// How far a shoot bends toward the light and against gravity a year (0 to 1).
+    pub phototropism: f32,
+    pub gravitropism: f32,
+    /// The light below which a branch is shed, and the years it takes.
+    pub shed_light: f32,
+    pub shed_years: f32,
+    /// The pipe model's exponent: a limb's section to the leaves beyond it (2 a pure pipe model).
+    pub pipe: f32,
+    /// The bark's thickness a year of girth (m) and how readily it cracks (0 to 1, §E1.4).
+    pub bark: f32,
+    pub cracks: f32,
+    /// A leaf's size in sun and in shade (m), and the leaves a shoot bears.
+    pub leaf_sun: f32,
+    pub leaf_shade: f32,
+    pub leaf_density: f32,
+    /// Thigmomorphogenesis: the leader's shortening and the trunk's thickening per unit of exposure.
+    pub wind_shorten: f32,
+    pub wind_thicken: f32,
+    /// How long it lives and how tall it grows (years, m), how fast it rises (m a year, young:
+    /// its height's curve's start) and its crown's radius per metre of height in the open: its
+    /// habit's (`land::grow::Habit`), the crown's envelope the space colonization fills.
+    pub lifespan: f32,
+    pub tallest: f32,
+    pub rate: f32 = 0.4,
+    pub crown: f32 = 0.3,
+}
+
+/// What befell a tree in its growth's terms (§E1.2, from the history's `land::grow::TreeEvent`):
+/// at which age, of which kind (`GALE` …: the history's codes) and how hard (0 to 1).
+pub struct GrowthEvent: Copy {
+    pub age: f32,
+    pub kind: u32,
+    pub strength: f32,
+}
+
+/// A growth event's kinds: the history's (`land::grow::GALE` …).
+pub const GALE: u32 = 1
+pub const FIRE: u32 = 2
+pub const BROWSE: u32 = 3
+pub const FALL: u32 = 4
+pub const LIGHTNING: u32 = 5
+
+/// A node of a growing tree (`TreeGraph`): a shoot's internode, from its parent's tip to its own.
+/// A shoot continues its parent's axis (`main`) or starts a lateral; a shed lateral leaves its
+/// first node as a knot.
+pub struct Node: Copy {
+    pub parent: i32,
+    pub tip: vec3,
+    pub dir: vec3,
+    pub born: f32,
+    pub radius: f32 = 0.0,
+    /// Its buds' light last year (0 to 1), and the light of everything beyond it, summed.
+    pub light: f32 = 1.0,
+    pub kind: u32 = SHOOT,
+    pub alive: bool = true,
+    pub main: bool = true,
+    /// Its dormant lateral bud's direction (none once it's grown, or for a knot).
+    pub bud: vec3 = vec3(0.0),
+    /// The years in a row its branch's light has been under the shed light (`Genome::shed_light`),
+    /// and the years in a row its branch has grown nothing (out of room).
+    pub dark: f32 = 0.0,
+    pub idle: f32 = 0.0,
+    /// Its lineage's word (`shoot_id`: its parent's, and whether it goes on or branches), which
+    /// keys its own draws; and the phyllotaxis' angle at it (its parent's and the divergence).
+    pub id: u32 = 0,
+    pub phyllo: f32 = 0.0,
+    /// The way its axis set out (its leader's up, a lateral's its bud's), which its shoots stay
+    /// near (`SET_POINT`).
+    pub heading: vec3 = vec3(0.0, 1.0, 0.0),
+}
+
+/// The lineage word of a shoot from node `parent_id`: going on along its axis, or its lateral.
+fn shoot_id(parent_id: u32, main: bool) -> u32 {
+    hash_u32(parent_id ^ (if main { 0x9E3779B9 } else { 0x85EBCA6B }))
+}
+
+/// The salt of a tree's draws (2: the growth's version when they were keyed so). Not `VERSION`
+/// itself: a growth changed (its version bumped, so its kept shapes are grown again) needn't draw
+/// every tree anew.
+const STREAM_SALT: u32 = 2
+
+/// What a tree's year's draws are keyed by besides the seed: the year's free space, its leader's
+/// dying, its events.
+const DRAWS_SPACE: u32 = 0x27D4EB2F
+const DRAWS_LEADER: u32 = 0x165667B1
+const DRAWS_EVENT: u32 = 0xD3A2646C
+
+/// Whether each node is continued: a live shoot goes on from it along its axis (one that isn't is
+/// a tip).
+fn continued_of(nodes: [Node]) -> Vec<bool> {
+    var continued: Vec<bool> = Vec::filled(nodes.len(), value: false)
+    for i in 1..nodes.len() {
+        let nd = nodes[i]
+        if nd.alive && nd.main && nd.parent >= 0 {
+            continued[u32(nd.parent)] = true
+        }
+    }
+    continued
+}
+
+/// Each node's thickest live child (-1 for none): the way its axis goes on.
+fn thickest_of(nodes: [Node]) -> Vec<i32> {
+    var thickest: Vec<i32> = Vec::filled(nodes.len(), -1)
+    for i in 1..nodes.len() {
+        let nd = nodes[i]
+        if !nd.alive || nd.parent < 0 {
+            continue
+        }
+        let q = u32(nd.parent)
+        if thickest[q] < 0 || nodes[u32(thickest[q])].radius < nd.radius {
+            thickest[q] = i32(i)
+        }
+    }
+    thickest
+}
+
+/// A node's kinds.
+pub const SHOOT: u32 = 0
+pub const KNOT: u32 = 1
+
+/// A tree as it grew (§E1.2): its nodes in the order they grew (a parent before its children),
+/// its height, and whether lightning scarred it.
+pub struct TreeGraph {
+    pub nodes: Vec<Node>,
+    pub height: f32 = 0.0,
+    pub scarred: bool = false,
+}
+
+/// The buds a year may grow, the strongest by their share (the growth's second cost lever).
+pub const BUDS_MAX: u32 = 4096
+
+/// The light grid's cell (m) and its margin round the tree (Palubicki's self-shading grid): the
+/// growth's first cost lever.
+pub const LIGHT_CELL: f32 = 0.5
+pub const LIGHT_MARGIN: f32 = 2.0
+
+/// The leaves' extinction (Beer–Lambert's k: a leaf layer's share of the light it stops).
+const EXTINCTION: f32 = 0.5
+
+/// The resource a unit of the tree's light buys (Palubicki's α), and the least a bud needs to make
+/// its year's shoot (one a year, as long as its share and its light make it, up to 1.5 times the
+/// genome's `internode`). **Proposed**: at 1, a 100-year oak's twigs are fewest without starving
+/// a pine's leader (at 0.5, 70 % more; at 1.2, the pine's leader dies). Under half the open's
+/// light an oak, a birch, a pine and an alder grow; a beech hardly does, though it's the most
+/// shade-tolerant (its tolerance isn't in the threshold: docs/bench.md "E1.2").
+const VIGOUR: f32 = 2.0
+const BUD_NEEDS: f32 = 1.0
+
+/// The share of a shoot's nodes that bear a lateral bud, at no apical control.
+const LATERAL_BUDS: f32 = 1.2
+
+/// A shoot's tip's radius (m), the pipe model's start, and how much thicker a limb grows each year
+/// of its age (its rings: a twig is thin however old the tree, its trunk thickens year on year).
+const TIP_RADIUS: f32 = 0.008
+const RINGS_A_YEAR: f32 = 0.01
+
+/// A tree grown (§E1.2): from its genome, its site, its light each year of its life (`light`,
+/// from the history's record: `land::grow::light_at`; past its end, its last), the side its light
+/// came from (`lean`, the record's), what befell it (`events`) and its seed, a year at a time to
+/// the site's age. Each year: the light at each bud (the record's, shaded by its own crown on a
+/// grid, Beer–Lambert, and toward its lean); the light summed to the root and handed back to the
+/// buds under apical control (the extended Borchert-Honda model Palubicki uses); each bud's shoots
+/// by its share, bent toward the light and against gravity; a branch long in the dark shed to a
+/// knot; the year's events; the wind's exposure. Then each limb's radius by the pipe model.
+pub fn grow_graph(
+    g: Genome,
+    site: Site,
+    light: [f32],
+    lean: vec2,
+    events: [GrowthEvent],
+    seed: u32,
+) -> TreeGraph {
+    let (t, _) = grow_traced(g, site, light, lean, events, seed)
+    t
+}
+
+/// `grow_graph`, and a line a year of how it grew (its nodes, the buds that grew, the mean light
+/// at its buds): for tuning and the specimens' records.
+pub fn grow_traced(
+    g: Genome,
+    site: Site,
+    light: [f32],
+    lean: vec2,
+    events: [GrowthEvent],
+    seed: u32,
+) -> (TreeGraph, String) {
+    var trace = String::new()
+    // Every draw is keyed by the seed and by what draws it (a shoot by its lineage, a year's
+    // space by its year), never by the genome's values or the site, nor by how many draws came
+    // before: so a steered value moves the tree it grows (§E6's fit) and doesn't reseed it.
+    let stream = hash_u32(seed ^ hash_u32(STREAM_SALT))
+    var t = TreeGraph { nodes: Vec::new() }
+    t.nodes.push(
+        Node {
+            parent: -1,
+            tip: vec3(0.0, 0.05, 0.0),
+            dir: vec3(0.0, 1.0, 0.0),
+            born: 0.0,
+            id: stream,
+        },
+    )
+    let years = u32(ceil(max(site.age, 1.0)))
+    let lean3 = vec3(lean.x, 0.0, lean.y)
+    let towards = if length(lean3) > 1.0e-3 { normalize(lean3) } else { vec3(0.0) }
+    let reach = PERCEIVE * g.internode
+    for y in 0..years {
+        let year = f32(y)
+        let year_key = hash_u32(stream ^ hash_u32(y))
+        let recorded = if light.len() == 0 { site.light } else {
+            light[min(y, light.len() - 1)]
+        }
+        let n = t.nodes.len()
+        // The live tips (a shoot no live shoot continues) and the dormant laterals: the buds.
+        let continued = continued_of(t.nodes)
+        // The crown's leaves on the grid, and each cell's leaf area above it.
+        let shade = Shade::of(t.nodes, continued, g)
+        // The free space round each bud: each marker the envelope holds now, in a bud's cone and
+        // reach, counted for the nearest such bud (its terminal, or its dormant lateral).
+        var space_draws = Rng::keyed(year_key ^ DRAWS_SPACE)
+        let space = Space::fresh(
+            Envelope::at(g, site, year + 1.0, lean, t.height),
+            t.nodes,
+            KILL * g.internode,
+            0.5 * reach,
+            mut space_draws,
+        )
+        let m = space.points.len()
+        let owner = perceived(t.nodes, continued, space, reach)
+        var room_of: Vec<f32> = Vec::filled(2 * n, 0.0)
+        var toward: Vec<vec3> = Vec::filled(2 * n, vec3(0.0))
+        for k in 0..m {
+            if owner[k] >= 0 {
+                let o = u32(owner[k])
+                room_of[o] += 1.0
+                toward[o] += normalize(space.points[k] - t.nodes[o / 2].tip)
+            }
+        }
+        // Each bud's light: its own (a tip's terminal bud, its dormant lateral), summed to the root.
+        var own: Vec<f32> = Vec::filled(n, 0.0)
+        var lat: Vec<f32> = Vec::filled(n, 0.0)
+        for i in 0..n {
+            let nd = t.nodes[i]
+            if !nd.alive || nd.kind != SHOOT {
+                continue
+            }
+            let leaves = (if !continued[i] { 1.0 } else { 0.0 }) + (if dot(nd.bud, nd.bud) > 0.0 {
+                0.5
+            } else { 0.0 })
+            let lit = recorded *
+                stand_light(site.stand, nd.tip.y, t.height) *
+                shade.light_beside(nd.tip, shade.own(leaves)) *
+                gap_side(nd.tip, towards)
+            let facing = if dot(towards, towards) > 0.0 { 1.0 + 0.3 * dot(nd.dir, towards) } else {
+                1.0
+            }
+            if !continued[i] {
+                own[i] = lit * facing * min(room_of[2 * i] / SPACE_FULL, 1.0)
+            }
+            if dot(nd.bud, nd.bud) > 0.0 {
+                lat[i] = lit * (if dot(towards, towards) > 0.0 {
+                    1.0 + 0.3 * dot(nd.bud, towards)
+                } else { 1.0 }) * min(room_of[2 * i + 1] / SPACE_FULL, 1.0)
+            }
+            t.nodes[i].light = lit
+        }
+        var sum: Vec<f32> = Vec::filled(n, 0.0)
+        var i = n
+        while i > 0 {
+            i -= 1
+            sum[i] += own[i] + lat[i]
+            let p = t.nodes[i].parent
+            if p >= 0 && t.nodes[i].alive {
+                sum[u32(p)] += sum[i]
+            }
+        }
+        // The resource handed back from the root, under apical control at each fork.
+        let lambda = 0.35 + 0.3 * g.apical
+        var flow: Vec<f32> = Vec::filled(n, 0.0)
+        flow[0] = VIGOUR * sum[0]
+        var bud_v: Vec<f32> = Vec::filled(n, 0.0)
+        var lat_v: Vec<f32> = Vec::filled(n, 0.0)
+        // Each node's main and lateral shares: its main child (or its terminal bud) against its
+        // lateral children and its dormant bud.
+        var main_q: Vec<f32> = Vec::filled(n, 0.0)
+        var side_q: Vec<f32> = Vec::filled(n, 0.0)
+        for i in 1..n {
+            let nd = t.nodes[i]
+            if !nd.alive || nd.parent < 0 {
+                continue
+            }
+            let p = u32(nd.parent)
+            if nd.main {
+                main_q[p] += sum[i]
+            } else {
+                side_q[p] += sum[i]
+            }
+        }
+        // In growth's order, a parent before its children: each node's share from its parent's
+        // split, then its own split between its main way on and its laterals.
+        var vm_of: Vec<f32> = Vec::filled(n, 0.0)
+        var vl_of: Vec<f32> = Vec::filled(n, 0.0)
+        var axis: Vec<bool> = Vec::filled(n, value: false)
+        axis[0] = true
+        for i in 0..n {
+            let nd = t.nodes[i]
+            if !nd.alive {
+                continue
+            }
+            if nd.parent >= 0 {
+                let p = u32(nd.parent)
+                axis[i] = axis[p] && nd.main
+                flow[i] = if nd.main {
+                    if main_q[p] > 0.0 { vm_of[p] * sum[i] / main_q[p] } else { 0.0 }
+                } else {
+                    let ql = side_q[p] + lat[p]
+                    if ql > 0.0 { vl_of[p] * sum[i] / ql } else { 0.0 }
+                }
+            }
+            if nd.kind != SHOOT {
+                continue
+            }
+            let qm = main_q[i] + own[i]
+            let ql = side_q[i] + lat[i]
+            let v = flow[i]
+            let denom = lambda * qm + (1.0 - lambda) * ql
+            let vm = if denom > 0.0 { v * lambda * qm / denom } else { 0.0 }
+            let vl = v - vm
+            vm_of[i] = vm
+            vl_of[i] = vl
+            if !continued[i] && qm > 0.0 {
+                bud_v[i] = vm * own[i] / qm
+            }
+            if ql > 0.0 {
+                lat_v[i] = vl * lat[i] / ql
+            }
+        }
+        // The buds that grow this year: the strongest `BUDS_MAX` by share.
+        var buds: Vec<(f32, u32, bool)> = Vec::new()
+        var short: Vec<(f32, u32, bool)> = Vec::new()
+        for i in 0..n {
+            for terminal in [true, false] {
+                let v = if terminal { bud_v[i] } else { lat_v[i] }
+                if v >= BUD_NEEDS {
+                    buds.push((v, i, terminal))
+                } else if v > 0.0 && t.nodes[i].light >= g.shed_light {
+                    short.push((v, i, terminal))
+                }
+            }
+        }
+        // A tree whose resource, split evenly, leaves too few buds their `BUD_NEEDS` (one in shade)
+        // still grows its strongest: as many as `SLOW` of its resource buys, at least one; none in
+        // its own dark (under `shed_light`: a bud in a stand's shade doesn't flush).
+        let slow = max(u32(SLOW * flow[0] / BUD_NEEDS), if flow[0] > 0.0 { 1 } else { 0 })
+        if buds.len() < slow {
+            short.sort_by(
+                |a: (f32, u32, bool), b: (f32, u32, bool)| a.0 > b.0 || (a.0 == b.0 && a.1 < b.1),
+            )
+            for k in 0..min(slow - buds.len(), short.len()) {
+                buds.push(short[k])
+            }
+        }
+        if buds.len() > BUDS_MAX {
+            buds.sort_by(|a: (f32, u32, bool), b: (f32, u32, bool)| a.0 > b.0)
+            buds.truncate(BUDS_MAX)
+        }
+        let height = t.height
+        let room = max(1.0 - height / max(g.tallest, 1.0), 0.06)
+        if y % 5 == 0 {
+            var lit_sum = 0.0
+            var lit_n = 0.0
+            for i in 0..n {
+                if own[i] > 0.0 || lat[i] > 0.0 {
+                    lit_sum += t.nodes[i].light
+                    lit_n += 1.0
+                }
+            }
+            trace.push_str(
+                f"y{y}: {n} nodes, {buds.len()} buds grow, light {lit_sum / max(lit_n, 1.0):.2} over {lit_n:.0}, root {sum[0]:.0}; ",
+            )
+        }
+        for (_, at, terminal) in buds {
+            let from = t.nodes[at]
+            var dir = if terminal { from.dir } else { from.bud }
+            let parent = i32(at)
+            var tip = from.tip
+            let main = terminal
+            var id = from.id
+            var phyllo = from.phyllo
+            let heading = if terminal { from.heading } else { from.bud }
+            let lit = t.nodes[at].light
+            let leader = terminal && axis[at]
+            let free_way = toward[2 * at + (if terminal { 0 } else { 1 })]
+            let space_dir = if length(free_way) > 1.0e-4 { normalize(free_way) } else { vec3(0.0) }
+            id = shoot_id(id, main)
+            var rng = Rng::keyed(id)
+            let grad = shade.towards(tip)
+            let up = vec3(0.0, 1.0, 0.0)
+            let was = dir
+            dir = turned_at_most(
+                heading,
+                SET_POINT,
+                turned_at_most(
+                    was,
+                    MAX_TURN,
+                    normalize(
+                        dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
+                            0.4
+                        })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(lo: -1.0, hi: 1.0), rng.between(lo: -0.5, hi: 0.5), rng.between(lo: -1.0, hi: 1.0)),
+                    ),
+                ),
+            )
+            // The wind's exposure stunts every shoot, the leader most.
+            let wind = (1.0 - g.wind_shorten * site.wind) * (if leader { 0.9 } else { 1.0 })
+            // A shoot's length is the genome's (a shaded bud makes none, not a short one: a
+            // shortened shoot packs the shade it grew in tighter), shortened a little in shade.
+            let len = g.internode * mix(mix(g.internode_shade, 1.0, 0.7), 1.0, lit) * room * wind
+            tip = tip + dir * len
+            phyllo += g.divergence
+            // Not every node bears a lateral that will grow: fewer the stronger the apical
+            // control (an excurrent leader's laterals are its few whorls).
+            let side = if rng.unit() < LATERAL_BUDS * (1.0 - 0.6 * g.apical) {
+                lateral_of(
+                    dir,
+                    phyllo,
+                    g.branching + g.branching_spread * rng.between(lo: -1.0, hi: 1.0),
+                )
+            } else { vec3(0.0) }
+            t.nodes.push(
+                Node { parent, tip, dir, born: year, main, bud: side, id, phyllo, heading },
+            )
+            t.height = max(t.height, tip.y)
+            if !terminal {
+                t.nodes[at].bud = vec3(0.0)
+            }
+        }
+        shed(mut t, g, n)
+        var leader_draws = Rng::keyed(year_key ^ DRAWS_LEADER)
+        sympodial(mut t, g, year, mut leader_draws)
+        if y % 5 == 4 {
+            compact(mut t)
+        }
+        for e in events {
+            if u32(floor(e.age)) == y {
+                var event_draws = Rng::keyed(year_key ^ DRAWS_EVENT ^ e.kind)
+                befall(mut t, e, site, mut event_draws)
+            }
+        }
+    }
+    girth(mut t, g, site)
+    stiffen(mut t)
+    straighten(mut t)
+    lean_by(mut t, lean)
+    (t, trace)
+}
+
+/// How far `q` is from the cell `[from, from + cell)` along one axis (0 inside it).
+fn gap(q: f32, from: f32, cell: f32) -> f32 {
+    max(max(from - q, q - (from + cell)), 0.0)
+}
+
+/// Each marker's bud (`i × 2` a node's terminal, `+ 1` its dormant lateral; -1 none): of the buds
+/// that perceive it (within `reach`, in their cone), the nearest, the lower index on a tie (as if
+/// each bud claimed its markers in turn). Each free marker looks for its buds on a grid of them
+/// (in a grown crown the free markers are few, the buds many).
+fn perceived(nodes: [Node], continued: [bool], space: Space, reach: f32) -> Vec<i32> {
+    let m = space.points.len()
+    var owner: Vec<i32> = Vec::filled(m, -1)
+    // The buds: each its place, its direction and its id, in id order.
+    var at: Vec<vec3> = Vec::new()
+    var dirs: Vec<vec3> = Vec::new()
+    var ids: Vec<u32> = Vec::new()
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for i in 0..nodes.len() {
+        let nd = nodes[i]
+        if !nd.alive || nd.kind != SHOOT {
+            continue
+        }
+        if !continued[i] {
+            at.push(nd.tip)
+            dirs.push(nd.dir)
+            ids.push(i * 2)
+        }
+        if dot(nd.bud, nd.bud) > 0.0 {
+            at.push(nd.tip)
+            dirs.push(nd.bud)
+            ids.push(i * 2 + 1)
+        }
+        lo = min(lo, nd.tip)
+        hi = max(hi, nd.tip)
+    }
+    let nb = at.len()
+    if nb == 0 {
+        return owner
+    }
+    let cell = reach
+    let reach2 = reach * reach
+    let (nx, ny, nz) = (
+        u32((hi.x - lo.x) / cell) + 1,
+        u32((hi.y - lo.y) / cell) + 1,
+        u32((hi.z - lo.z) / cell) + 1,
+    )
+    let top = vec3(f32(nx - 1), f32(ny - 1), f32(nz - 1))
+    let cell_of = |p: vec3| {
+        let c = clamp((p - lo) / cell, vec3(0.0), top)
+        (u32(c.y) * nz + u32(c.z)) * nx + u32(c.x)
+    }
+    var starts: Vec<u32> = Vec::filled(nx * ny * nz + 1, 0)
+    for p in at {
+        starts[cell_of(p) + 1] += 1
+    }
+    for c in 1..starts.len() {
+        starts[c] += starts[c - 1]
+    }
+    var fill = starts.clone()
+    var order: Vec<u32> = Vec::filled(nb, 0)
+    for b in 0..nb {
+        let c = cell_of(at[b])
+        order[fill[c]] = b
+        fill[c] += 1
+    }
+    for k in 0..m {
+        if !space.free[k] {
+            continue
+        }
+        let q = space.points[k]
+        let a = (q - vec3(reach) - lo) / cell
+        let z = (q + vec3(reach) - lo) / cell
+        if z.x < 0.0 ||
+            z.y < 0.0 ||
+            z.z < 0.0 ||
+            a.x >= top.x + 1.0 ||
+            a.y >= top.y + 1.0 ||
+            a.z >= top.z + 1.0 {
+            continue
+        }
+        let (a, z) = (clamp(a, vec3(0.0), top), clamp(z, vec3(0.0), top))
+        var best = reach2
+        var who = -1
+        // Its own cell first, then each round it no nearer than the best found (its nearest
+        // point's distance): the same bud as every cell's, sooner.
+        let own = clamp((q - lo) / cell, vec3(0.0), top)
+        let (ox, oy, oz) = (u32(own.x), u32(own.y), u32(own.z))
+        for pass in 0..2 {
+            for y in u32(a.y)..(u32(z.y) + 1) {
+                for zz in u32(a.z)..(u32(z.z) + 1) {
+                    for x in u32(a.x)..(u32(z.x) + 1) {
+                        let mine = x == ox && y == oy && zz == oz
+                        if (pass == 0) != mine {
+                            continue
+                        }
+                        let near = vec3(
+                            gap(q.x, lo.x + f32(x) * cell, cell),
+                            gap(q.y, lo.y + f32(y) * cell, cell),
+                            gap(q.z, lo.z + f32(zz) * cell, cell),
+                        )
+                        if dot(near, near) > best {
+                            continue
+                        }
+                        let c = (y * nz + zz) * nx + x
+                        for o in starts[c]..starts[c + 1] {
+                            let b = order[o]
+                            let v = q - at[b]
+                            let l2 = dot(v, v)
+                            if l2 <= 1.0e-8 || l2 > best {
+                                continue
+                            }
+                            // In its cone (`CONE`, squared: no root), the nearest, the lower id on a tie.
+                            let id = i32(ids[b])
+                            let along = dot(v, dirs[b])
+                            if along >= 0.0 &&
+                                along * along >= CONE * CONE * l2 &&
+                                (l2 < best || who < 0 || id < who) {
+                                best = l2
+                                who = id
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        owner[k] = who
+    }
+    owner
+}
+
+/// How much more light a bud on its gap's side gets than one at its trunk, and less on the
+/// neighbour's (its place round the trunk, not its shoot's heading: the neighbour shades that half
+/// of the crown). **Proposed**: at 0.4 an 80-year oak's crown leans 0.2 of its reach into a gap
+/// (docs/bench.md, "E6").
+const GAP_SIDE: f32 = 0.4
+
+/// A bud's light on the gap's side (`towards`, none without a gap): `GAP_SIDE` more at the gap's
+/// edge of the crown, less on the far side, eased in over a metre from the trunk.
+fn gap_side(tip: vec3, towards: vec3) -> f32 {
+    let off = vec2(tip.x, tip.z)
+    let r = length(off)
+    if dot(towards, towards) == 0.0 || r < 1.0e-4 {
+        return 1.0
+    }
+    1.0 + GAP_SIDE * min(r, 1.0) * dot(off / r, vec2(towards.x, towards.z))
+}
+
+/// The share of a tree's resource that grows its strongest buds when too few reach `BUD_NEEDS`
+/// (**proposed**: a tree in shade grows, slowly).
+const SLOW: f32 = 0.25
+
+/// The light a stand (`Site::stand`) leaves at height `y` on a tree `height` tall: its neighbours'
+/// crowns, as tall as `STAND_TOP` of it and as deep as `STAND_DEEP` of it, take `stand` of the
+/// light below their tops, all of it under their crowns' feet (**proposed**: a stand-grown tree's
+/// lower limbs die and its crown stands high and narrow, as a forest's).
+fn stand_light(stand: f32, y: f32, height: f32) -> f32 {
+    if stand <= 0.0 || height <= 0.0 {
+        return 1.0
+    }
+    let top = STAND_TOP * height
+    let under = clamp((top - y) / max(STAND_DEEP * height, 1.0e-3), 0.0, 1.0)
+    1.0 - stand * under
+}
+
+const STAND_TOP: f32 = 0.85
+const STAND_DEEP: f32 = 0.55
+
+/// How many times its shed years a branch may go without growing before it's shed (`shed`).
+const IDLE_YEARS: f32 = 3.0
+
+/// The light (a multiple of the genome's `shed_light`) under which a branch that doesn't grow
+/// counts its idle years (**proposed**).
+const IDLE_LIGHT: f32 = 2.0
+
+/// How far a shoot turns from the way its parent pointed in a year, at most, and how far from its
+/// axis's heading (degrees, **proposed**): wood is stiff, and a branch holds its gravitropic
+/// set-point angle (Digby and Firn 1995); a lateral pulled each year toward the free space under its
+/// crown had curled back on itself (the pines' looping lower limbs, E8's lookdev).
+const MAX_TURN: f32 = 30.0
+const SET_POINT: f32 = 50.0
+
+/// `want` turned from `was` by `degrees` at most, toward it.
+fn turned_at_most(was: vec3, degrees: f32, want: vec3) -> vec3 {
+    let c = dot(was, want)
+    let most = cos(degrees * PI / 180.0)
+    if c >= most {
+        return want
+    }
+    let side = want - was * c
+    let l = length(side)
+    if l < 1.0e-6 {
+        return was
+    }
+    normalize(was * most + side / l * sqrt(1.0 - most * most))
+}
+
+/// The leader's terminal bud dying, some years, past a tree's youth (sympodial growth: an oak's
+/// leader is replaced by its laterals again and again, a pine's hardly ever): each year with chance
+/// `(1 - apical) × LEADER_DIES`, its tip a knot, so its laterals take over (rivals, a spreading
+/// crown).
+fn sympodial(t: mut TreeGraph, g: Genome, year: f32, rng: mut Rng) {
+    if year < YOUTH * g.lifespan || rng.unit() >= (1.0 - g.apical) * LEADER_DIES {
+        return
+    }
+    let n = t.nodes.len()
+    let continued = continued_of(t.nodes)
+    var axis: Vec<bool> = Vec::filled(n, value: false)
+    axis[0] = true
+    for i in 1..n {
+        let nd = t.nodes[i]
+        axis[i] = axis[u32(max(nd.parent, 0))] && nd.main && nd.alive
+    }
+    for i in 0..n {
+        if axis[i] && !continued[i] && t.nodes[i].kind == SHOOT {
+            t.nodes[i].kind = KNOT
+            t.nodes[i].bud = vec3(0.0)
+        }
+    }
+}
+
+/// The share of its life after which a tree's leader can die (`sympodial`), and the yearly chance
+/// at no apical control.
+const YOUTH: f32 = 0.03
+const LEADER_DIES: f32 = 0.12
+
+/// A tree with its gone nodes taken out (`grow_graph`, every few years: what's shed or broken is
+/// walked no more), each parent renumbered.
+fn compact(t: mut TreeGraph) {
+    let n = t.nodes.len()
+    var to: Vec<i32> = Vec::filled(n, -1)
+    var kept: Vec<Node> = Vec::with_capacity(n)
+    for i in 0..n {
+        let nd = t.nodes[i]
+        let parent_gone = nd.parent >= 0 && to[u32(nd.parent)] < 0
+        if !nd.alive || parent_gone {
+            continue
+        }
+        to[i] = i32(kept.len())
+        kept.push(Node { parent: if nd.parent >= 0 { to[u32(nd.parent)] } else { -1 }, ..nd })
+    }
+    t.nodes = take kept
+}
+
+/// A grown tree dead and standing (§E4's standing dead, §E8): its trunk and limbs broken off
+/// above `broke` (m), and every piece thinner than `shed` (m: the twigs and small branches that
+/// rot and fall first, more the longer it's stood) gone with what grows from it; its leaves go
+/// with its life (a dead tip bears none: its plant's clumps are cleared after it's converted).
+pub fn die(t: mut TreeGraph, broke: f32, shed: f32) {
+    let n = t.nodes.len()
+    var gone: Vec<bool> = Vec::filled(n, value: false)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        let p = u32(max(nd.parent, 0))
+        gone[i] = gone[p] || !nd.alive || nd.tip.y > broke || nd.radius < shed
+    }
+    var top = 0.0
+    for i in 0..n {
+        if gone[i] {
+            t.nodes[i].alive = false
+        } else {
+            top = max(top, t.nodes[i].tip.y)
+        }
+    }
+    t.height = top
+}
+
+/// How many limbs carry a tree's crown above `above` (a share of its height): its live nodes over
+/// it, grouped by the branch each passes through at `through` (the last of its line no higher),
+/// a group of three nodes or more a limb. An excurrent tree's crown all passes through its trunk;
+/// a decurrent one's through several limbs.
+pub fn limbs_through(t: TreeGraph, through: f32, above: f32) -> u32 {
+    let n = t.nodes.len()
+    let (lo, hi) = (through * t.height, above * t.height)
+    // Each node's branch at `lo`: its own if its parent is no higher than `lo` and it is, else its
+    // parent's.
+    var at: Vec<i32> = Vec::filled(n, -1)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        let p = u32(max(nd.parent, 0))
+        at[i] = if nd.tip.y > lo && t.nodes[p].tip.y <= lo { i32(i) } else { at[p] }
+    }
+    var count: Vec<u32> = Vec::filled(n, 0)
+    for i in 1..n {
+        if t.nodes[i].alive && t.nodes[i].tip.y > hi && at[i] >= 0 {
+            count[u32(at[i])] += 1
+        }
+    }
+    var limbs = 0
+    for c in count {
+        if c >= 3 {
+            limbs += 1
+        }
+    }
+    limbs
+}
+
+/// A genome's values in order (`genome_hash`).
+pub fn values_of(g: Genome) -> Vec<f32> {
+    Vec::from(
+        [
+            g.apical,
+            g.branching,
+            g.branching_spread,
+            g.divergence,
+            g.internode,
+            g.internode_shade,
+            g.phototropism,
+            g.gravitropism,
+            g.shed_light,
+            g.shed_years,
+            g.pipe,
+            g.bark,
+            g.cracks,
+            g.leaf_sun,
+            g.leaf_shade,
+            g.leaf_density,
+            g.wind_shorten,
+            g.wind_thicken,
+            g.lifespan,
+            g.tallest,
+            g.rate,
+            g.crown,
+        ],
+    )
+}
+
+/// `g` with its values `v` (`values_of`'s order): a genome steered (`wrela tool grow -- --fit`).
+pub fn genome_with(g: Genome, v: [f32]) -> Genome {
+    Genome {
+        apical: v[0],
+        branching: v[1],
+        branching_spread: v[2],
+        divergence: v[3],
+        internode: v[4],
+        internode_shade: v[5],
+        phototropism: v[6],
+        gravitropism: v[7],
+        shed_light: v[8],
+        shed_years: v[9],
+        pipe: v[10],
+        bark: v[11],
+        cracks: v[12],
+        leaf_sun: v[13],
+        leaf_shade: v[14],
+        leaf_density: v[15],
+        wind_shorten: v[16],
+        wind_thicken: v[17],
+        lifespan: v[18],
+        tallest: v[19],
+        rate: v[20],
+        crown: v[21],
+        ..g,
+    }
+}
+
+/// A lateral bud's direction off a shoot along `dir`: `angle` degrees from it, turned `round`
+/// degrees about it (the phyllotaxis' running angle).
+fn lateral_of(dir: vec3, round: f32, angle: f32) -> vec3 {
+    let up = if abs(dir.y) < 0.95 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
+    let a = normalize(cross(dir, up))
+    let b = cross(dir, a)
+    let r = round * (PI / 180.0)
+    let side = a * cos(r) + b * sin(r)
+    let t = angle * (PI / 180.0)
+    normalize(dir * cos(t) + side * sin(t))
+}
+
+/// The crown's space (§E1.2's space colonization, Runions et al. 2007, as Palubicki's bud
+/// competition): markers through the crown's envelope, each free until a node grows within `KILL`
+/// of it. Each keeps its place in the envelope (its height's share, its distance's share of the
+/// radius there, its angle), so as the envelope grows with the tree its markers spread with it: a
+/// young crown has as many as an old one. A marker counts for a bud within `PERCEIVE` of it and in
+/// its cone, nearer it than any other bud. A bud with no free space round it doesn't grow, so the
+/// crown fills its space and stops: what bounds a tree's growth, where its light alone doesn't.
+struct Space {
+    /// Each marker's place in the envelope (height's share, radius's share, and its angle's
+    /// cosine and sine).
+    unit: Vec<vec4>,
+    points: Vec<vec3>,
+    free: Vec<bool>,
+    lo: vec3,
+    cell: f32,
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    /// The markers by cell (`starts` its cells' runs in `order`).
+    starts: Vec<u32>,
+    order: Vec<u32>,
+}
+
+/// The markers in a crown's envelope, how far a bud perceives them and the cone it does (cos of
+/// its half angle), as shoots' lengths; how near a node takes one; and the markers a bud needs
+/// round it to grow at its full light.
+const MARKERS: u32 = 3000
+const PERCEIVE: f32 = 4.0
+const CONE: f32 = 0.5
+const KILL: f32 = 1.2
+const SPACE_FULL: f32 = 3.0
+
+/// A crown's envelope (§E1.2): its foot and top at an age (m), its widest radius, how far its
+/// middle has moved toward its light (`lean`) at its top, and its shape. The height's curve is the
+/// habit's (`tallest`, rising at `rate` when young), the wind's exposure taking from it; its radius
+/// `crown` of its height; its shape a dome for a decurrent crown, a cone for an excurrent one.
+struct Envelope {
+    base: f32,
+    top: f32,
+    radius: f32,
+    lean: vec2,
+    apical: f32,
+}
+
+impl Envelope {
+    fn at(g: Genome, site: Site, age: f32, lean: vec2, height: f32) -> Envelope {
+        // No higher than the tree reaches now and a bud's reach (`PERCEIVE` shoots) over it: a tree
+        // held back (by shade) has the space within its reach, not where an open-grown one of its
+        // age would be.
+        let top = min(
+            g.tallest *
+                (1.0 - exp(-max(age, 0.5) * g.rate / g.tallest)) *
+                (1.0 - g.wind_shorten * site.wind),
+            height + PERCEIVE * g.internode,
+        )
+        // A stand's neighbours leave it half the room each way.
+        let radius = (g.crown * top + 0.3) * (1.0 - 0.5 * site.stand)
+        Envelope { base: 0.1 * top, top, radius, lean, apical: g.apical }
+    }
+
+    /// The radius at height share `u` (0 its foot, 1 its top).
+    fn radius_at(self, u: f32) -> f32 {
+        let h = (u - 0.45) / 0.55
+        let dome = sqrt(max(1.0 - h * h, 0.0))
+        let cone = pow(1.0 - u, 0.9) * min(u / 0.08 + 0.2, 1.0)
+        self.radius * mix(dome, cone, self.apical)
+    }
+
+    /// A marker's place (`Space::unit`) in it.
+    fn place(self, unit: vec4) -> vec3 {
+        let y = self.base + unit.x * (self.top - self.base)
+        let r = self.radius_at(unit.x) * unit.y
+        let mid = self.lean * unit.x
+        vec3(mid.x + r * unit.z, y, mid.y + r * unit.w)
+    }
+}
+
+impl Space {
+    /// This year's free space (§E1.2): `MARKERS` points drawn through envelope `e` (each its
+    /// height's share, its radius's share as its area's, its angle), those within `kill` of a live
+    /// node dropped (the space its wood and leaves fill), on a grid of `cell`.
+    fn fresh(e: Envelope, nodes: [Node], kill: f32, cell: f32, rng: mut Rng) -> Space {
+        var s = Space::of(mut rng)
+        s.place(e, cell)
+        // The nodes on the same grid, and each point near one taken.
+        let kill2 = kill * kill
+        let top = vec3(f32(s.nx - 1), f32(s.ny - 1), f32(s.nz - 1))
+        for nd in nodes {
+            if !nd.alive {
+                continue
+            }
+            let a = clamp((nd.tip - vec3(kill) - s.lo) / s.cell, vec3(0.0), top)
+            let b = clamp((nd.tip + vec3(kill) - s.lo) / s.cell, vec3(0.0), top)
+            for y in u32(a.y)..(u32(b.y) + 1) {
+                for z in u32(a.z)..(u32(b.z) + 1) {
+                    let row = (y * s.nz + z) * s.nx
+                    for c in (row + u32(a.x))..(row + u32(b.x) + 1) {
+                        for o in s.starts[c]..s.starts[c + 1] {
+                            let k = s.order[o]
+                            let v = s.points[k] - nd.tip
+                            if dot(v, v) <= kill2 {
+                                s.free[k] = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    /// `MARKERS` markers' places in an envelope: a low-discrepancy sequence (Roberts' R3, the
+    /// generalized golden ratio's) offset by a draw from `rng` (a Cranley-Patterson rotation), so
+    /// the space is spread evenly, with no clumps and gaps of white noise for the crown to grow
+    /// into one year and not another: a tree's shape is its genome's and site's, its seed's less.
+    fn of(rng: mut Rng) -> Space {
+        var unit: Vec<vec4> = Vec::with_capacity(MARKERS)
+        let offset = vec3(rng.unit(), rng.unit(), rng.unit())
+        let step = vec3(0.8191725, 0.6710436, 0.5497005)
+        // The angles turn by the same step each marker: their cosines and sines by a rotation.
+        let turn = vec2(cos(2.0 * PI * step.z), sin(2.0 * PI * step.z))
+        var at = vec2(cos(2.0 * PI * offset.z), sin(2.0 * PI * offset.z))
+        for k in 0..MARKERS {
+            let q = fract(offset.xy + step.xy * f32(k + 1))
+            at = vec2(at.x * turn.x - at.y * turn.y, at.x * turn.y + at.y * turn.x)
+            unit.push(vec4(q.x, sqrt(q.y), at.x, at.y))
+        }
+        Space {
+            free: Vec::filled(MARKERS, value: true),
+            points: Vec::new(),
+            unit,
+            lo: vec3(0.0),
+            cell: 1.0,
+            nx: 1,
+            ny: 1,
+            nz: 1,
+            starts: Vec::new(),
+            order: Vec::new(),
+        }
+    }
+
+    /// Its markers placed in envelope `e`, on a grid of `cell`.
+    fn place(mut self, e: Envelope, cell: f32) {
+        var lo = vec3(1.0e9)
+        var hi = vec3(-1.0e9)
+        var points: Vec<vec3> = Vec::with_capacity(self.unit.len())
+        for u in self.unit {
+            let p = e.place(u)
+            points.push(p)
+            lo = min(lo, p)
+            hi = max(hi, p)
+        }
+        lo -= vec3(cell)
+        hi += vec3(cell)
+        let nx = u32(ceil((hi.x - lo.x) / cell)) + 1
+        let ny = u32(ceil((hi.y - lo.y) / cell)) + 1
+        let nz = u32(ceil((hi.z - lo.z) / cell)) + 1
+        var counts: Vec<u32> = Vec::filled(nx * ny * nz + 1, 0)
+        let cell_of = |p: vec3| {
+            let c = clamp((p - lo) / cell, vec3(0.0), vec3(f32(nx - 1), f32(ny - 1), f32(nz - 1)))
+            (u32(c.y) * nz + u32(c.z)) * nx + u32(c.x)
+        }
+        for p in points {
+            counts[cell_of(p) + 1] += 1
+        }
+        for k in 1..counts.len() {
+            counts[k] += counts[k - 1]
+        }
+        var fill = counts.clone()
+        var order: Vec<u32> = Vec::filled(points.len(), 0)
+        for k in 0..points.len() {
+            let c = cell_of(points[k])
+            order[fill[c]] = k
+            fill[c] += 1
+        }
+        self.points = take points
+        self.lo = lo
+        self.cell = cell
+        self.nx = nx
+        self.ny = ny
+        self.nz = nz
+        self.starts = take counts
+        self.order = take order
+    }
+}
+
+/// The light a tree's own crown leaves at each point (Palubicki's self-shading grid, as leaf area
+/// above, Beer–Lambert): its young shoots' leaves counted on a grid of `LIGHT_CELL` over its box
+/// and `LIGHT_MARGIN` round it, each cell's leaf area above it summed downward, spread a cell
+/// each way at each layer (the light's slant).
+struct Shade {
+    lo: vec3,
+    cell: f32,
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    /// Each cell's leaf area above it, and its own (m² of leaf per m² of ground).
+    above: Vec<f32>,
+    leaf: Vec<f32>,
+    /// One bud's leaves, in a cell's units.
+    area: f32,
+}
+
+impl Shade {
+    fn of(nodes: [Node], continued: [bool], g: Genome) -> Shade {
+        var lo = vec3(1.0e9)
+        var hi = vec3(-1.0e9)
+        for nd in nodes {
+            if nd.alive {
+                lo = min(lo, nd.tip)
+                hi = max(hi, nd.tip)
+            }
+        }
+        lo -= vec3(LIGHT_MARGIN)
+        hi += vec3(LIGHT_MARGIN)
+        // A big tree's grid is coarser: at most 32 cells along its longest side.
+        let cell = max(LIGHT_CELL, max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 32.0)
+        let nx = u32(ceil((hi.x - lo.x) / cell)) + 1
+        let ny = u32(ceil((hi.y - lo.y) / cell)) + 1
+        let nz = u32(ceil((hi.z - lo.z) / cell)) + 1
+        var leaf: Vec<f32> = Vec::filled(nx * ny * nz, 0.0)
+        let area = 2.0 * g.leaf_density * g.leaf_sun * g.leaf_sun / (cell * cell)
+        // Every live bud's leaves (Palubicki's shadow casters): a tip's, and a dormant lateral's
+        // half as many.
+        for i in 0..nodes.len() {
+            let nd = nodes[i]
+            if !nd.alive || nd.kind != SHOOT {
+                continue
+            }
+            let leaves = (if !continued[i] { 1.0 } else { 0.0 }) + (if dot(nd.bud, nd.bud) > 0.0 {
+                0.5
+            } else { 0.0 })
+            if leaves > 0.0 {
+                let c = (nd.tip - lo) / cell
+                let (x, y, z) = (u32(c.x), u32(c.y), u32(c.z))
+                leaf[(y * nz + z) * nx + x] += area * leaves
+            }
+        }
+        var above: Vec<f32> = Vec::filled(nx * ny * nz, 0.0)
+        // Each layer the one above with its leaves, spread a cell each way by a [1 2 1] tent along
+        // x, then along z (the 3 × 3 tent, separable), weighed by the taps inside the grid.
+        let layer = nx * nz
+        var row: Vec<f32> = Vec::filled(layer, 0.0)
+        var y = ny - 1
+        while y > 0 {
+            y -= 1
+            let up = (y + 1) * layer
+            for z in 0..nz {
+                for x in 0..nx {
+                    let k = up + z * nx + x
+                    var v = 2.0 * (above[k] + leaf[k])
+                    if x > 0 {
+                        v += above[k - 1] + leaf[k - 1]
+                    }
+                    if x + 1 < nx {
+                        v += above[k + 1] + leaf[k + 1]
+                    }
+                    row[z * nx + x] = v
+                }
+            }
+            for z in 0..nz {
+                let wz = 2.0 + (if z > 0 { 1.0 } else { 0.0 }) + (if z + 1 < nz { 1.0 } else {
+                    0.0
+                })
+                for x in 0..nx {
+                    let wx = 2.0 + (if x > 0 { 1.0 } else { 0.0 }) + (if x + 1 < nx { 1.0 } else {
+                        0.0
+                    })
+                    let r = z * nx + x
+                    var v = 2.0 * row[r]
+                    if z > 0 {
+                        v += row[r - nx]
+                    }
+                    if z + 1 < nz {
+                        v += row[r + nx]
+                    }
+                    above[y * layer + r] = v / (wx * wz)
+                }
+            }
+        }
+        Shade { lo, cell, nx, ny, nz, above, leaf, area }
+    }
+
+    fn index(self, p: vec3) -> u32 {
+        let c = clamp(
+            (p - self.lo) / self.cell,
+            vec3(0.0),
+            vec3(f32(self.nx - 1), f32(self.ny - 1), f32(self.nz - 1)),
+        )
+        (u32(c.y) * self.nz + u32(c.z)) * self.nx + u32(c.x)
+    }
+
+    /// The light at `p` (0 to 1) under the leaves above it, and half its own cell's (so how
+    /// crowded its height is counts whatever the grid's cell).
+    fn light_at(self, p: vec3) -> f32 {
+        self.light_beside(p, 0.0)
+    }
+
+    /// `light_at`, a bud at `p` whose own leaves (`own`, in its cell's units) don't shade it
+    /// (Palubicki's `C - s + a`).
+    fn light_beside(self, p: vec3, own: f32) -> f32 {
+        let k = self.index(p)
+        exp(-EXTINCTION * (self.above[k] + 0.5 * max(self.leaf[k] - own, 0.0)))
+    }
+
+    /// A bud's own leaves in its cell's units (`light_beside`).
+    fn own(self, leaves: f32) -> f32 {
+        self.area * leaves
+    }
+
+    /// Which way the light is less shaded from `p`, in the ground's plane (unit, or 0).
+    fn towards(self, p: vec3) -> vec3 {
+        let d = self.cell
+        let gx = self.light_at(p + vec3(d, 0.0, 0.0)) - self.light_at(p - vec3(d, 0.0, 0.0))
+        let gz = self.light_at(p + vec3(0.0, 0.0, d)) - self.light_at(p - vec3(0.0, 0.0, d))
+        let v = vec3(gx, 0.0, gz)
+        if length(v) > 1.0e-4 { normalize(v) } else { vec3(0.0) }
+    }
+}
+
+/// A tree with its branches long in the dark shed (Palubicki §4.2): a lateral whose light, beyond
+/// it, per live shoot has stayed under `shed_light` for `shed_years` is dropped, its first node left
+/// a knot on its parent and the rest gone (of the first `n` nodes: this year's growth aside).
+fn shed(t: mut TreeGraph, g: Genome, n: u32) {
+    // Which branches grew this year: each node after the first `n` (this year's), and its line.
+    var grew: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
+    var j = t.nodes.len()
+    while j > 0 {
+        j -= 1
+        if j >= n || grew[j] {
+            grew[j] = true
+            let p = t.nodes[j].parent
+            if p >= 0 {
+                grew[u32(p)] = true
+            }
+        }
+    }
+    // Each branch's light (its shoots' own, not the space round them: a crown out of room stops
+    // growing, it doesn't drop its limbs) and its shoots, summed from its tips.
+    var shoots: Vec<f32> = Vec::filled(n, 0.0)
+    var sum: Vec<f32> = Vec::filled(n, 0.0)
+    var i = n
+    while i > 0 {
+        i -= 1
+        let nd = t.nodes[i]
+        if !nd.alive || nd.kind != SHOOT {
+            continue
+        }
+        shoots[i] += 1.0
+        sum[i] += nd.light
+        if nd.parent >= 0 {
+            shoots[u32(nd.parent)] += shoots[i]
+            sum[u32(nd.parent)] += sum[i]
+        }
+    }
+    // Whether a node's own line goes on (a live shoot continues it): a main node whose line has
+    // ended (a dead leader's stub, its laterals having taken over) is shed as a branch is.
+    var goes_on: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
+    for i in 1..t.nodes.len() {
+        let nd = t.nodes[i]
+        if nd.alive && nd.main && nd.kind == SHOOT && nd.parent >= 0 {
+            goes_on[u32(nd.parent)] = true
+        }
+    }
+    var dead: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if nd.parent >= 0 && dead[u32(nd.parent)] {
+            dead[i] = true
+            continue
+        }
+        if !nd.alive || (nd.main && (goes_on[i] || grew[i])) || nd.kind != SHOOT {
+            continue
+        }
+        let mean = sum[i] / max(shoots[i], 1.0)
+        t.nodes[i].dark = if mean < g.shed_light { nd.dark + 1.0 } else { 0.0 }
+        // Idle: not grown, and dim (a branch in fair light that doesn't grow, under a canopy, keeps).
+        t.nodes[i].idle = if grew[i] || mean >= IDLE_LIGHT * g.shed_light { 0.0 } else {
+            nd.idle + 1.0
+        }
+        // Long dark, or long out of room (a branch that hasn't grown in years, within the crown).
+        if t.nodes[i].dark >= g.shed_years || t.nodes[i].idle >= IDLE_YEARS * g.shed_years {
+            dead[i] = true
+        }
+    }
+    for i in 1..t.nodes.len() {
+        if !dead[i] {
+            continue
+        }
+        let p = t.nodes[i].parent
+        if p >= 0 && !dead[u32(p)] {
+            // The branch's foot: a knot a stub's length out from its parent.
+            let from = t.nodes[u32(p)].tip
+            t.nodes[i].tip = from + t.nodes[i].dir * 0.12
+            t.nodes[i].kind = KNOT
+            t.nodes[i].bud = vec3(0.0)
+        } else {
+            t.nodes[i].alive = false
+        }
+    }
+}
+
+/// What befell a tree in a year (§E1.2's events): a gale breaks the leader above a height drawn
+/// from its strength and the exposure (a lateral takes over: a broken tree's forked crown);
+/// browsing takes its low shoots; a neighbour's fall tears a side of its crown; fire takes what's
+/// low; lightning scars it.
+fn befall(t: mut TreeGraph, e: GrowthEvent, site: Site, rng: mut Rng) {
+    let n = t.nodes.len()
+    var gone: Vec<bool> = Vec::filled(n, value: false)
+    if e.kind == GALE && e.strength > 0.3 {
+        let at = t.height * (1.0 - 0.45 * e.strength * (0.5 + 0.5 * site.wind))
+        // The leader standing tallest: down from the highest live shoot to the first of its line
+        // over the break, whose stub stays, dead (a knot: no bud), so its laterals below take over.
+        var top = 0
+        for i in 0..n {
+            let nd = t.nodes[i]
+            if nd.alive && nd.kind == SHOOT && nd.tip.y > t.nodes[top].tip.y {
+                top = i
+            }
+        }
+        var stub = -1
+        var k = i32(top)
+        while k > 0 {
+            let p = t.nodes[u32(k)].parent
+            if p >= 0 && t.nodes[u32(p)].tip.y <= at && t.nodes[u32(k)].tip.y > at {
+                stub = k
+            }
+            k = p
+        }
+        if stub > 0 {
+            t.nodes[u32(stub)].kind = KNOT
+            t.nodes[u32(stub)].bud = vec3(0.0)
+            for i in (u32(stub) + 1)..n {
+                let p = t.nodes[i].parent
+                if p >= 0 && (p == stub || gone[u32(p)]) {
+                    gone[i] = true
+                }
+            }
+        }
+    } else if e.kind == BROWSE || e.kind == FIRE {
+        let below = if e.kind == BROWSE { 1.8 } else { 1.0 + 4.0 * e.strength }
+        for i in 1..n {
+            let nd = t.nodes[i]
+            if nd.alive && nd.kind == SHOOT && nd.tip.y < below && !nd.main {
+                gone[i] = true
+            }
+            if nd.parent >= 0 && gone[u32(nd.parent)] {
+                gone[i] = true
+            }
+        }
+    } else if e.kind == FALL {
+        let a = rng.between(0.0, 2.0 * PI)
+        let side = vec3(cos(a), 0.0, sin(a))
+        for i in 1..n {
+            let nd = t.nodes[i]
+            let torn = nd.alive &&
+                !nd.main &&
+                dot(nd.tip * vec3(1.0, 0.0, 1.0), side) > 1.0 &&
+                rng.unit() < e.strength
+            if torn || (nd.parent >= 0 && gone[u32(nd.parent)]) {
+                gone[i] = true
+            }
+        }
+    } else if e.kind == LIGHTNING {
+        t.scarred = true
+    }
+    for i in 1..n {
+        if gone[i] {
+            t.nodes[i].alive = false
+        }
+    }
+}
+
+/// Each live limb's radius by the pipe model (Shinozaki, Yoda, Hozumi and Kira 1964): a limb's
+/// section, to the power `pipe`, is the sum of its children's, from `TIP_RADIUS` at each shoot's
+/// tip; thicker by its age's rings (`RINGS_A_YEAR`); the trunk thickened by the wind's exposure
+/// (`wind_thicken`).
+fn girth(t: mut TreeGraph, g: Genome, site: Site) {
+    let n = t.nodes.len()
+    var s: Vec<f32> = Vec::filled(n, 0.0)
+    var i = n
+    while i > 0 {
+        i -= 1
+        let nd = t.nodes[i]
+        if !nd.alive {
+            continue
+        }
+        if s[i] == 0.0 {
+            s[i] = pow(TIP_RADIUS, g.pipe)
+        }
+        if nd.parent >= 0 {
+            s[u32(nd.parent)] += s[i]
+        }
+    }
+    let thicken = 1.0 + g.wind_thicken * site.wind
+    let last = max_born(t)
+    for i in 0..n {
+        let r = pow(s[i], 1.0 / g.pipe) * (1.0 + RINGS_A_YEAR * (last - t.nodes[i].born))
+        // Most at the foot, none at the top.
+        let low = 1.0 - clamp(t.nodes[i].tip.y / max(t.height, 1.0), 0.0, 1.0)
+        t.nodes[i].radius = r * mix(1.0, thicken, low)
+    }
+}
+
+/// A tree's trunk straightened as reaction wood straightens it over its years: its axis (from its
+/// root, each node's thickest child) pulled toward the line from its foot to where it meets its
+/// crown (its lean into its light kept), by `STRAIGHTEN` low on it and none from 70 % of its
+/// height up, each axis node carrying its laterals with it (they keep their places on it). Its leaders' replacements had left its bole wandering a
+/// metre: a forest oak's a snake, and a shot's eye inside a near tree's trunk.
+fn straighten(t: mut TreeGraph) {
+    let n = t.nodes.len()
+    if n < 2 || t.height <= 0.0 {
+        return
+    }
+    let thickest = thickest_of(t.nodes)
+    // The axis, each node's own pull (none at its crown, so its crown stays), and each node's
+    // deepest axis forebear's, which it moves by.
+    // Where the axis meets its crown (its first node at 80 % of its height): the line from the
+    // foot to there is what it's straightened toward (its lean into its light kept).
+    var anchor = vec3(0.0, t.height, 0.0)
+    var k = 0
+    while k >= 0 {
+        anchor = t.nodes[u32(k)].tip
+        if anchor.y >= 0.8 * t.height {
+            break
+        }
+        k = thickest[u32(k)]
+    }
+    var on_axis: Vec<bool> = Vec::filled(n, value: false)
+    var shift: Vec<vec2> = Vec::filled(n, vec2(0.0))
+    k = 0
+    while k >= 0 {
+        on_axis[u32(k)] = true
+        let nd = t.nodes[u32(k)]
+        let s = STRAIGHTEN * (1.0 - smoothstep(0.3, 0.7, nd.tip.y / t.height))
+        let line = anchor.xz * clamp(nd.tip.y / max(anchor.y, 1.0e-3), 0.0, 1.0)
+        shift[u32(k)] = (line - nd.tip.xz) * s
+        k = thickest[u32(k)]
+    }
+    var by: Vec<vec2> = Vec::filled(n, vec2(0.0))
+    for i in 0..n {
+        let p = t.nodes[i].parent
+        by[i] = if on_axis[i] { shift[i] } else if p >= 0 { by[u32(p)] } else { vec2(0.0) }
+        let d = by[i]
+        t.nodes[i].tip += vec3(d.x, 0.0, d.y)
+    }
+}
+
+/// How much of a trunk's wander reaction wood takes back, low on it (`straighten`: **proposed**).
+const STRAIGHTEN: f32 = 0.85
+
+/// Thick wood holding its own line: each axis node with an axis beyond it (its parent's thickest
+/// child, and its own) moved toward the middle of its neighbours on the axis by its stiffness, its
+/// radius against its length (`STIFF`, up to `STIFF_MOST`), `STIFF_PASSES` times; a lateral carried
+/// with the node it hangs from, an axis with its foot. A shoot's wander at a year's scale, kept on
+/// wood as thick as the shoot was long, read as a limb of sausages (shot 5's near oaks); twigs keep
+/// it. Toward the middle, not onto the line before it: a heavy limb keeps its arch (turned onto its
+/// parent's line, an open oak's low limbs rose off the ground's reach).
+fn stiffen(t: mut TreeGraph) {
+    let n = t.nodes.len()
+    if n < 3 {
+        return
+    }
+    let thickest = thickest_of(t.nodes)
+    for _ in 0..STIFF_PASSES {
+        // Each node's own move (from where all are), then what it carries: parents come before
+        // their children, so each node's parent's move is known.
+        var own: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        for i in 1..n {
+            let p = t.nodes[i].parent
+            let c = thickest[i]
+            if p < 0 || c < 0 || thickest[u32(p)] != i32(i) {
+                continue
+            }
+            let (a, b) = (t.nodes[u32(p)].tip, t.nodes[u32(c)].tip)
+            let len = 0.5 * (length(t.nodes[i].tip - a) + length(b - t.nodes[i].tip))
+            if len > 1.0e-4 {
+                let w = clamp((t.nodes[i].radius / len - STIFF_FROM) * STIFF, 0.0, STIFF_MOST)
+                own[i] = (0.5 * (a + b) - t.nodes[i].tip) * w
+            }
+        }
+        var moved: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        var carried: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        for i in 1..n {
+            let p = t.nodes[i].parent
+            if p < 0 {
+                continue
+            }
+            let q = u32(p)
+            // An axis goes on from its foot's carry; a lateral hangs from its node where it moved.
+            carried[i] = if thickest[q] == i32(i) { carried[q] } else { moved[q] }
+            moved[i] = carried[i] + own[i]
+        }
+        for i in 1..n {
+            t.nodes[i].tip += moved[i]
+        }
+    }
+    for i in 1..n {
+        let p = t.nodes[i].parent
+        if p >= 0 {
+            let d = t.nodes[i].tip - t.nodes[u32(p)].tip
+            if dot(d, d) > 1.0e-10 {
+                t.nodes[i].dir = normalize(d)
+            }
+        }
+    }
+}
+
+/// A node's stiffness (`stiffen`): none under a radius 3 % of its length, rising by 3 a unit of
+/// it, at most 0.8 of the way to its neighbours' middle, a pass (**proposed**: from 5 % by 2, a
+/// near tree's 8 cm limbs bent at each node over shot 6's eye).
+const STIFF_FROM: f32 = 0.03
+const STIFF: f32 = 3.0
+const STIFF_MOST: f32 = 0.8
+const STIFF_PASSES: u32 = 3
+
+/// A tree leaned toward its light (`lean`, the record's: where its crown's middle moved), as
+/// reaction wood leans it: each point moved by `lean` times the square of its share of the height.
+fn lean_by(t: mut TreeGraph, lean: vec2) {
+    let h = max(t.height, 1.0)
+    for i in 0..t.nodes.len() {
+        let f = clamp(t.nodes[i].tip.y / h, 0.0, 1.0)
+        t.nodes[i].tip += vec3(lean.x, 0.0, lean.y) * (f * f)
+    }
+}
+
+/// How a grown tree became the renderer's plant (§E1.2's conversion, R2 F9): the woody
+/// silhouettes' IoU (the graph's every node a capsule of its radius against the plant's tubes,
+/// side on, no leaves), the crown's volume against the leaves' (its clumps' union over its young
+/// shoots' leaves'), the limbs kept of the chains the graph made, and the clumps.
+pub struct Converted: Copy {
+    pub iou: f32,
+    pub volume: f32,
+    pub limbs: u32,
+    pub chains: u32,
+    pub clumps: u32,
+}
+
+/// The most nodes a tube takes along a smooth run (`chains_of`): three, which its four points
+/// pass through exactly (its foot and them), so a branch from any of them starts on its wood.
+const RUN_NODES: u32 = 3
+
+/// The radius (m) from which wood runs longer (`RUN_THICK` nodes a tube).
+const THICK_RUN: f32 = 0.05
+const RUN_THICK: u32 = 8
+
+/// Where a two-node tube's third point sits past its corner (a share of the piece after it).
+const CORNER: f32 = 0.1
+
+/// Whether a bole's run (`chains_of`, from `foot`) turns at its last node toward `next` by more
+/// than `BOLE_TURN` (its one tube, resampled, would cut the corner).
+fn turns(t: TreeGraph, foot: vec3, run: [u32], next: i32, most: f32 = BOLE_TURN) -> bool {
+    if next < 0 {
+        return false
+    }
+    let at = t.nodes[run[run.len() - 1]].tip
+    let before = if run.len() > 1 { t.nodes[run[run.len() - 2]].tip } else { foot }
+    let (a, b) = (at - before, t.nodes[u32(next)].tip - at)
+    dot(a, b) < most * length(a) * length(b)
+}
+
+/// The sharpest turn a run's tube takes between its nodes (the cosine of it: 20°), and a bole's
+/// thick bole's one tube (45°: cut at a gentler turn, its end, carried past the joint, stood out of
+/// the trunk on the bend's outside as a ledge; a thin one keeps 20°, its bends on a few nodes).
+const BOLE_TURN: f32 = 0.94
+const TRUNK_TURN: f32 = 0.7
+
+/// A chain of nodes one limb draws: its foot (its parent's tip, or the root's foot) and its
+/// nodes, and the section at its foot.
+struct Chain {
+    foot: vec3,
+    nodes: Vec<u32>,
+    section: f32,
+    /// Whether another run carries its line on past its end (its end's cap is buried in it), and
+    /// whether it carries on another's (so it starts as thick as that one ended).
+    continues: bool = false,
+    carried: bool = false,
+}
+
+/// A grown tree as the renderer's `plant::Plant` (§E1.2, explicit, not dropping): its limbs
+/// ordered by their pipe-model section, the largest `MAX_LIMBS` kept as tubes (a run of nodes
+/// each continuing the last becomes a tube fitted through its points, a long run several); the
+/// rest drawn by their parents' clumps; its young shoots' leaves gathered into clumps, merged by
+/// nearest pairs to `MAX_CLUMPS`, sized so their union's volume is the leaves'.
+pub fn into_plant(t: TreeGraph, g: Genome, leaves: Leaves, bark: Bark) -> (Plant, Converted) {
+    var p = plant(leaves, bark)
+    let c = convert(t, g, mut p)
+    (p, c)
+}
+
+/// `into_plant` into `p` (its limbs and clumps added, its leaves and bark its own), in place.
+pub fn convert(t: TreeGraph, g: Genome, p: mut Plant) -> Converted {
+    let s = shape_of(t, g)
+    for tb in s.limbs {
+        p.tube(tb.points, tb.radii)
+    }
+    for c in s.clumps {
+        p.cushion(c.centre, c.radius, c.squash)
+    }
+    s.converted
+}
+
+/// A grown tree's drawn shape, on the heap (a `Plant` is 130 KB, more than a helper's stack holds
+/// in a browser): its limbs and clumps as `convert` adds them, and what the conversion measured.
+pub struct Shape {
+    pub limbs: Vec<Tube<4>>,
+    pub clumps: Vec<Clump>,
+    pub converted: Converted,
+}
+
+/// `convert`'s shape: its limbs the largest `MAX_LIMBS` chains, its crown's clumps (`measured`:
+/// the woody IoU too).
+pub fn shape_of(t: TreeGraph, g: Genome, measured: bool = true) -> Shape {
+    let all = chains_of(t)
+    let kept = min(all.len(), MAX_LIMBS)
+    var tubes: Vec<Tube<4>> = Vec::new()
+    var drawn: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
+    drawn[0] = true
+    for c in 0..kept {
+        tubes.push(chain_tube(t, all[c]))
+        for k in all[c].nodes {
+            drawn[k] = true
+        }
+    }
+    // The crown: its tips' leaves, a tip whose limb isn't drawn folded onto its nearest drawn
+    // forebear (its leaves in that clump: §E1.2), gathered.
+    let (clumps, volume) = crowned(t, g, drawn)
+    // The woody silhouettes' IoU, unless it isn't wanted (a fit's thousands of candidates).
+    let iou = if measured { woody_iou(t, tubes) } else { 0.0 }
+    let converted = Converted { iou, volume, limbs: kept, chains: all.len(), clumps: clumps.len() }
+    Shape { limbs: tubes, clumps, converted }
+}
+
+/// A chain's tube (`tube_through`), its end carried on past its last node by 0.6 of its radius
+/// where another run goes on from there: its end's cap (its last 0.5 of a radius, closing to a
+/// point) inside the next one's start, no pinch at the joint (carried 1.2, it stood out of the
+/// next on a bend's outside).
+fn chain_tube(t: TreeGraph, c: Chain) -> Tube<4> {
+    var tb = tube_through(t, c.foot, c.nodes)
+    // A run carrying another's line on starts as thick as that one ended (its first node, a
+    // lateral that took over, is thinner than its parent: the trunk stepped in, a ledge).
+    let first = t.nodes[c.nodes[0]]
+    if c.carried && first.parent >= 0 {
+        tb.radii[0] = max(tb.radii[0], t.nodes[u32(first.parent)].radius)
+    }
+    if c.continues {
+        let d = tb.points[3] - tb.points[2]
+        if dot(d, d) > 1.0e-10 {
+            tb.points[3] += normalize(d) * tb.radii[3] * 0.6
+        }
+    }
+    tb
+}
+
+/// A grown tree's chains of nodes (`shape_of`'s limbs), largest section first.
+fn chains_of(t: TreeGraph) -> Vec<Chain> {
+    let n = t.nodes.len()
+    // What's drawn: every live node but a shed branch's stub with nothing beyond it (a knot: the
+    // bark's, §E1.4; drawn, a 12 cm stub read as a branch at head height).
+    var children: Vec<u32> = Vec::filled(n, 0)
+    for i in 1..n {
+        if t.nodes[i].alive && t.nodes[i].parent >= 0 {
+            children[u32(t.nodes[i].parent)] += 1
+        }
+    }
+    var drawn: Vec<bool> = Vec::filled(n, value: false)
+    for i in 0..n {
+        drawn[i] = t.nodes[i].alive && (t.nodes[i].kind != KNOT || children[i] > 0)
+    }
+    // Each node's thickest drawn child: its chain's next (the wood's own line: a lateral that
+    // took over a dead leader carries the trunk on, not the leader's thin stub).
+    var next: Vec<i32> = Vec::filled(n, -1)
+    for i in 1..n {
+        let nd = t.nodes[i]
+        if !drawn[i] || nd.parent < 0 {
+            continue
+        }
+        let q = u32(nd.parent)
+        if next[q] < 0 || t.nodes[u32(next[q])].radius < nd.radius {
+            next[q] = i32(i)
+        }
+    }
+    // Whether a node bears a drawn branch (a drawn child it doesn't continue into).
+    var branches: Vec<bool> = Vec::filled(n, value: false)
+    for i in 1..n {
+        let q = t.nodes[i].parent
+        if drawn[i] && q >= 0 && next[u32(q)] != i32(i) {
+            branches[u32(q)] = true
+        }
+    }
+    var chains: Vec<Chain> = Vec::new()
+    for i in 0..n {
+        let nd = t.nodes[i]
+        if !drawn[i] {
+            continue
+        }
+        let starts = i == 0 || (nd.parent >= 0 && next[u32(nd.parent)] != i32(i))
+        if !starts {
+            continue
+        }
+        let foot = if nd.parent >= 0 { t.nodes[u32(nd.parent)].tip } else { vec3(0.0) }
+        // Cut into runs, each starting where the last ended: a run goes on while its line turns
+        // under `BOLE_TURN` at each node, up to `RUN_NODES` (each continued run's end carried into
+        // the next, `chain_tube`: a tube's end closes to a point, and a limb of short tubes read as
+        // a stack of bandages); but the
+        // trunk's first, its bole up to its first branch, one tube (the kinds' tables read a
+        // tree's first limb as its trunk and the next as where it branches: `trees::kinds`).
+        var from = foot
+        var run: Vec<u32> = Vec::new()
+        var k = i32(i)
+        var bole = i == 0
+        var carried = false
+        while k >= 0 {
+            run.push(u32(k))
+            let after = next[u32(k)]
+            // Thick wood (a trunk's, a scaffold's) in longer runs, its tube resampled through them
+            // (its few centimetres off them inside its radius): a joint on it read as a ledge.
+            let most = if t.nodes[u32(k)].radius >= THICK_RUN { RUN_THICK } else { RUN_NODES }
+            let bend = if t.nodes[u32(k)].radius >= THICK_RUN { TRUNK_TURN } else { BOLE_TURN }
+            let cut = if bole {
+                branches[u32(k)] || after < 0 || turns(t, from, run, after, most: bend)
+            } else {
+                run.len() >= most || turns(t, from, run, after)
+            }
+            if cut {
+                bole = false
+                let end = t.nodes[u32(k)].tip
+                chains.push(
+                    Chain {
+                        foot: from,
+                        nodes: run,
+                        section: 0.0,
+                        continues: after >= 0,
+                        carried,
+                    },
+                )
+                carried = true
+                from = end
+                run = Vec::new()
+            }
+            k = next[u32(k)]
+        }
+        if run.len() > 0 {
+            chains.push(Chain { foot: from, nodes: run, section: 0.0, carried })
+        }
+    }
+    for c in 0..chains.len() {
+        let r = t.nodes[chains[c].nodes[0]].radius
+        chains[c].section = r * r
+    }
+    chains.sort_by(|a: Chain, b: Chain| a.section > b.section)
+    chains
+}
+
+/// A tube through a chain of nodes from `foot`: four points at a third of its length apart, its
+/// radius at each.
+fn tube_through(t: TreeGraph, foot: vec3, run: [u32]) -> Tube<4> {
+    // Its foot as thick as the wood it leaves: a lateral as itself, a continuing piece its parent.
+    let first = t.nodes[run[0]]
+    let r0 = if first.main && first.parent >= 0 { t.nodes[u32(first.parent)].radius } else {
+        first.radius
+    }
+    var pts: Vec<vec3> = Vec::from([foot])
+    var rs: Vec<f32> = Vec::from([r0])
+    for k in run {
+        pts.push(t.nodes[k].tip)
+        rs.push(t.nodes[k].radius)
+    }
+    // A run of two nodes keeps its bend: a point just past it (the renderer's tangents are no
+    // longer than their chords, so the short piece holds the curve to the corner).
+    if pts.len() == 3 {
+        pts.insert(2, mix(pts[1], pts[2], vec3(CORNER)))
+        rs.insert(2, mix(rs[1], rs[2], CORNER))
+    }
+    // Four points (a run of three nodes): the nodes themselves.
+    if pts.len() == 4 {
+        return Tube {
+            points: [pts[0], pts[1], pts[2], pts[3]],
+            radii: [rs[0], rs[1], rs[2], rs[3]],
+        }
+    }
+    var lens: Vec<f32> = Vec::from([0.0])
+    for k in 1..pts.len() {
+        lens.push(lens[k - 1] + length(pts[k] - pts[k - 1]))
+    }
+    let total = max(lens[lens.len() - 1], 1.0e-4)
+    var points = [vec3(0.0); 4]
+    var radii = [0.0; 4]
+    for j in 0..4 {
+        let want = total * f32(j) / 3.0
+        var k = 1
+        while k + 1 < pts.len() && lens[k] < want {
+            k += 1
+        }
+        let f = clamp((want - lens[k - 1]) / max(lens[k] - lens[k - 1], 1.0e-6), 0.0, 1.0)
+        points[j] = mix(pts[k - 1], pts[k], vec3(f))
+        radii[j] = mix(rs[k - 1], rs[k], f)
+    }
+    Tube { points, radii }
+}
+
+/// The crown's clumps (`into_plant`): the live tips' leaves binned on a grid about two leaves'
+/// spread across, each bin a clump at its leaves' middle as wide as they spread; merged by nearest
+/// pairs to `MAX_CLUMPS`, each merge's volume kept; then all scaled so their union's volume is the
+/// leaves' (each leaf a ball of its size, on a fine grid). The volume's ratio before the scale is
+/// returned with them (1 after it, within the grid's rounding).
+/// The years of a branch's growth that bear leaves along it (**proposed**).
+const LEAF_YEARS: f32 = 4.0
+
+fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
+    // Its leaves: at each live tip (where the shade grid counts them, `Shade::of`), and along each
+    // live shoot of its last `LEAF_YEARS` (a branch's spurs and short shoots: a limb leafy only at
+    // its tip, after years of one shoot a year, was a bare noodle with a ball at its end).
+    let n = t.nodes.len()
+    let latest = max_born(t)
+    let continued = continued_of(t.nodes)
+    var pts: Vec<vec3> = Vec::new()
+    for i in 0..n {
+        let nd = t.nodes[i]
+        if nd.alive && nd.kind == SHOOT && (!continued[i] || nd.born >= latest - LEAF_YEARS) {
+            var k = i32(i)
+            while k > 0 && !drawn[u32(k)] {
+                k = t.nodes[u32(k)].parent
+            }
+            pts.push(t.nodes[u32(max(k, 0))].tip)
+        }
+    }
+    if pts.len() == 0 {
+        return (Vec::new(), 1.0)
+    }
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for q in pts {
+        lo = min(lo, q)
+        hi = max(hi, q)
+    }
+    // A shoot's foliage: its leaves (`leaf_density` of them, each `leaf_sun` across) in a cluster
+    // `FOLIAGE` times their own spread, but no more than `FOLIAGE_SHARE` of the tree's height (a
+    // sapling's few tips, each a 70 cm ball, were a few balls on a stick).
+    let leaf = clamp(
+        g.leaf_sun * pow(g.leaf_density, 1.0 / 3.0) * FOLIAGE,
+        0.05,
+        max(FOLIAGE_SHARE * t.height, 0.05),
+    )
+    // About a tenth of the crown across, no less than a tip's foliage (a small crown in bins two
+    // foliages across was a few large balls).
+    let bin = max(max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) / 10.0, leaf)
+    let nx = u32((hi.x - lo.x) / bin) + 1
+    let ny = u32((hi.y - lo.y) / bin) + 1
+    let nz = u32((hi.z - lo.z) / bin) + 1
+    var sums: Vec<vec4> = Vec::filled(nx * ny * nz, vec4(0.0))
+    var sq: Vec<f32> = Vec::filled(nx * ny * nz, 0.0)
+    for q in pts {
+        let c = (q - lo) / bin
+        let k = (u32(c.y) * nz + u32(c.z)) * nx + u32(c.x)
+        sums[k] += vec4(q, 1.0)
+        sq[k] += dot(q, q)
+    }
+    var clumps: Vec<Clump> = Vec::new()
+    for k in 0..sums.len() {
+        let s = sums[k]
+        if s.w == 0.0 {
+            continue
+        }
+        let m = s.xyz / s.w
+        let spread = sqrt(max(sq[k] / s.w - dot(m, m), 0.0))
+        clumps.push(Clump { centre: m, radius: spread + leaf })
+    }
+    // Merge the nearest pairs (a merge a ball as big as both together) until they fit.
+    while clumps.len() > MAX_CLUMPS {
+        var best = (0, 1)
+        var d = 1.0e18
+        for a in 0..clumps.len() {
+            for b in (a + 1)..clumps.len() {
+                let e = length(clumps[a].centre - clumps[b].centre)
+                if e < d {
+                    d = e
+                    best = (a, b)
+                }
+            }
+        }
+        let (a, b) = best
+        let (ca, cb) = (clumps[a], clumps[b])
+        let (va, vb) = (ca.radius * ca.radius * ca.radius, cb.radius * cb.radius * cb.radius)
+        let merged = Clump {
+            centre: (ca.centre * va + cb.centre * vb) / (va + vb),
+            radius: pow(va + vb, 1.0 / 3.0),
+        }
+        clumps[a] = merged
+        let _ = clumps.remove(b)
+    }
+    // Each clump on the tip nearest its middle, so its wood is in it (a bin's middle can fall
+    // between its twigs: leaves floating off the tree).
+    for k in 0..clumps.len() {
+        var best = 1.0e18
+        var at = clumps[k].centre
+        for q in pts {
+            let d = dot(q - clumps[k].centre, q - clumps[k].centre)
+            if d < best {
+                best = d
+                at = q
+            }
+        }
+        clumps[k].centre = at
+    }
+    // The leaves' volume, and the clumps', the clumps scaled to it.
+    let want = covered(pts, leaf)
+    var s = 1.0
+    var lo_s = 0.05
+    var hi_s = 3.0
+    for _ in 0..12 {
+        s = 0.5 * (lo_s + hi_s)
+        var scaled = clumps.clone()
+        for k in 0..scaled.len() {
+            scaled[k].radius *= s
+        }
+        if union_volume(scaled) > want { hi_s = s } else { lo_s = s }
+    }
+    for k in 0..clumps.len() {
+        clumps[k].radius *= s
+    }
+    let ratio = union_volume(clumps) / max(want, 1.0e-6)
+    (clumps, ratio)
+}
+
+/// How far a tip's leaves spread round it, as a multiple of their own packed size (**proposed**: an
+/// oak tip's six 10 cm leaves and its spurs' over 72 cm; at 36 cm the grown crowns held a quarter
+/// to a tenth of the cards the hand's did, thin).
+const FOLIAGE: f32 = 4.0
+const FOLIAGE_SHARE: f32 = 0.05
+
+/// The youngest shoot's year (the growth's last).
+fn max_born(t: TreeGraph) -> f32 {
+    var y = 0.0
+    for nd in t.nodes {
+        y = max(y, nd.born)
+    }
+    y
+}
+
+/// The volume (m³) within `r` of any of `pts`: the cells of a grid a half `r` across whose
+/// centres are, counted once each (only the cells near a point are kept, so a crown of small
+/// leaves costs its leaves, not its box).
+fn covered(pts: [vec3], r: f32) -> f32 {
+    let cell = 0.5 * r
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for q in pts {
+        lo = min(lo, q - vec3(r))
+        hi = max(hi, q + vec3(r))
+    }
+    let nx = u32((hi.x - lo.x) / cell) + 1
+    let nz = u32((hi.z - lo.z) / cell) + 1
+    let reach = i32(ceil(r / cell))
+    var keys: Vec<u32> = Vec::new()
+    for q in pts {
+        let c = (q - lo) / cell
+        let (cx, cy, cz) = (i32(c.x), i32(c.y), i32(c.z))
+        for dy in -reach..(reach + 1) {
+            for dz in -reach..(reach + 1) {
+                for dx in -reach..(reach + 1) {
+                    let (x, y, z) = (cx + dx, cy + dy, cz + dz)
+                    let centre = lo + (vec3(f32(x), f32(y), f32(z)) + vec3(0.5)) * cell
+                    if x >= 0 && y >= 0 && z >= 0 && length(centre - q) <= r {
+                        keys.push((u32(y) * nz + u32(z)) * nx + u32(x))
+                    }
+                }
+            }
+        }
+    }
+    keys.sort_by(|a: u32, b: u32| a < b)
+    var count = 0
+    for k in 0..keys.len() {
+        if k == 0 || keys[k] != keys[k - 1] {
+            count += 1
+        }
+    }
+    f32(count) * cell * cell * cell
+}
+
+/// The lattice `union_volume` samples a clump's ball with: a cube's 8 × 8 × 8 cell centres, those
+/// inside the unit ball.
+const BALL_SIDE: u32 = 8
+
+/// The volume (m³) inside any of `clumps`: each clump's ball sampled on a lattice
+/// (`BALL_SIDE`), a sample counted for the first clump holding it, so each part of the union is
+/// counted once; at any size, not on a grid of the crown's.
+fn union_volume(clumps: [Clump]) -> f32 {
+    var total = 0.0
+    for i in 0..clumps.len() {
+        let c = clumps[i]
+        var ball = 0
+        var own = 0
+        for z in 0..BALL_SIDE {
+            for y in 0..BALL_SIDE {
+                for x in 0..BALL_SIDE {
+                    let u = (vec3(f32(x), f32(y), f32(z)) + vec3(0.5)) / f32(BALL_SIDE) * 2.0 -
+                        vec3(1.0)
+                    if dot(u, u) > 1.0 {
+                        continue
+                    }
+                    ball += 1
+                    let p = c.centre + u * c.radius
+                    if c.distance(p) >= 0.0 {
+                        continue
+                    }
+                    var earlier = false
+                    for j in 0..i {
+                        let o = clumps[j]
+                        if length(p - o.centre) < o.radius && o.distance(p) < 0.0 {
+                            earlier = true
+                            break
+                        }
+                    }
+                    if !earlier {
+                        own += 1
+                    }
+                }
+            }
+        }
+        total += 4.0 / 3.0 * PI * c.radius * c.radius * c.radius * f32(own) / f32(max(ball, 1))
+    }
+    total
+}
+
+/// The side view's raster's size (pixels along its longer side), and its samples a side in each
+/// pixel: a pixel is wood where the wood covers at least half its samples.
+const SIDE_PX: u32 = 384
+const SAMPLES_SIDE: u32 = 4
+
+/// The woody silhouettes' IoU (§E1.2): the graph's every live node a capsule of its radius, and the
+/// plant's tubes (each sampled along `limb_axis`, its radius there), side on (x across, y up), on
+/// one raster over the graph's box, a pixel wood where wood covers at least half of it (a twig
+/// far finer than a pixel is wood in neither).
+pub fn woody_iou(t: TreeGraph, tubes: [Tube<4>]) -> f32 {
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for nd in t.nodes {
+        if nd.alive {
+            lo = min(lo, nd.tip.xy - vec2(nd.radius))
+            hi = max(hi, nd.tip.xy + vec2(nd.radius))
+        }
+    }
+    lo = min(lo, vec2(-0.5, 0.0))
+    hi = max(hi, vec2(0.5, 0.5))
+    let px = max(hi.x - lo.x, hi.y - lo.y) / f32(SIDE_PX)
+    let sub = px / f32(SAMPLES_SIDE)
+    let (w, h) = (u32((hi.x - lo.x) / px) + 1, u32((hi.y - lo.y) / px) + 1)
+    let (sw, sh) = (w * SAMPLES_SIDE, h * SAMPLES_SIDE)
+    var graph: Vec<bool> = Vec::filled(sw * sh, value: false)
+    var plant_on: Vec<bool> = Vec::filled(sw * sh, value: false)
+    // The graph's wood as the plant draws it: a shed branch's stub with nothing beyond it isn't
+    // (`chains_of`).
+    var children: Vec<u32> = Vec::filled(t.nodes.len(), 0)
+    for nd in t.nodes {
+        if nd.alive && nd.parent >= 0 {
+            children[u32(nd.parent)] += 1
+        }
+    }
+    for i in 0..t.nodes.len() {
+        let nd = t.nodes[i]
+        if nd.alive && (nd.kind != KNOT || children[i] > 0) {
+            let (from, r_from) = if nd.parent >= 0 {
+                (t.nodes[u32(nd.parent)].tip, t.nodes[u32(nd.parent)].radius)
+            } else { (vec3(0.0), nd.radius) }
+            // A lateral starts as thick as itself, not its parent.
+            let r0 = if nd.main { r_from } else { nd.radius }
+            let d = nd.tip - from
+            let straight = Tube {
+                points: [from, from + d / 3.0, from + d * 2.0 / 3.0, nd.tip],
+                radii: [
+                    r0,
+                    mix(r0, nd.radius, 1.0 / 3.0),
+                    mix(r0, nd.radius, 2.0 / 3.0),
+                    nd.radius,
+                ],
+            }
+            drawn(mut graph, sw, sh, lo, sub, straight)
+        }
+    }
+    for limb in tubes {
+        drawn(mut plant_on, sw, sh, lo, sub, limb)
+    }
+    // Each pixel's coverage by each (its samples' share): their overlap over their union, summed.
+    var both = 0
+    var either = 0
+    for y in 0..h {
+        for x in 0..w {
+            var a = 0
+            var b = 0
+            for sy in 0..SAMPLES_SIDE {
+                for sx in 0..SAMPLES_SIDE {
+                    let k = (y * SAMPLES_SIDE + sy) * sw + x * SAMPLES_SIDE + sx
+                    if graph[k] {
+                        a += 1
+                    }
+                    if plant_on[k] {
+                        b += 1
+                    }
+                }
+            }
+            both += min(a, b)
+            either += max(a, b)
+        }
+    }
+    f32(both) / f32(max(either, 1))
+}
+
+/// A grown plant side on (x across, y up), `px` pixels on its longer side, a pixel's colour by
+/// coverage (4 × 4 samples): its wood (`plant`'s tubes) dark, its crown (its clumps, by their
+/// fields' zero) a light green over it, the ground a line; RGBA8, rows top to bottom (the
+/// specimen tool's silhouette, `studio/grow`).
+pub fn side_view(p: Plant, px: u32) -> (u32, u32, Vec<u8>) {
+    var lo = vec2(-0.5, 0.0)
+    var hi = vec2(0.5, 0.5)
+    for k in 0..p.limbs.len() {
+        for q in 0..4 {
+            let at = p.limbs[k].points[q].xy
+            let r = p.limbs[k].radii[q]
+            lo = min(lo, at - vec2(r))
+            hi = max(hi, at + vec2(r))
+        }
+    }
+    for k in 0..p.clumps.len() {
+        let c = p.clumps[k]
+        lo = min(lo, c.centre.xy - vec2(c.radius))
+        hi = max(hi, c.centre.xy + vec2(c.radius))
+    }
+    let pad = 0.05 * max(hi.x - lo.x, hi.y - lo.y)
+    lo -= vec2(pad)
+    hi += vec2(pad)
+    let size = max(hi.x - lo.x, hi.y - lo.y) / f32(px)
+    let sub = size / f32(SAMPLES_SIDE)
+    let (w, h) = (u32((hi.x - lo.x) / size) + 1, u32((hi.y - lo.y) / size) + 1)
+    let (sw, sh) = (w * SAMPLES_SIDE, h * SAMPLES_SIDE)
+    var wood: Vec<bool> = Vec::filled(sw * sh, value: false)
+    for k in 0..p.limbs.len() {
+        drawn(mut wood, sw, sh, lo, sub, p.limbs[k])
+    }
+    var out: Vec<u8> = Vec::filled(w * h * 4, 255)
+    let n = f32(SAMPLES_SIDE * SAMPLES_SIDE)
+    for y in 0..h {
+        for x in 0..w {
+            var a = 0.0
+            var b = 0.0
+            for sy in 0..SAMPLES_SIDE {
+                for sx in 0..SAMPLES_SIDE {
+                    let (i, j) = (x * SAMPLES_SIDE + sx, y * SAMPLES_SIDE + sy)
+                    if wood[j * sw + i] {
+                        a += 1.0
+                    }
+                    let q = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * sub
+                    var inside = false
+                    for c in 0..p.clumps.len() {
+                        if !inside &&
+                            p.clumps[c].distance(vec3(q.x, q.y, p.clumps[c].centre.z)) < 0.0 {
+                            inside = true
+                        }
+                    }
+                    if inside {
+                        b += 1.0
+                    }
+                }
+            }
+            let (fa, fb) = (a / n, b / n * 0.55)
+            // Wood (34, 30, 26) over the crown's green (120, 156, 104) over white; the ground at 0.
+            let crown = mix(vec3(255.0), vec3(120.0, 156.0, 104.0), vec3(fb))
+            var c = mix(crown, vec3(34.0, 30.0, 26.0), vec3(fa))
+            let ground_y = (0.0 - lo.y) / size
+            if abs(f32(y) - ground_y) < 0.5 {
+                c = vec3(150.0)
+            }
+            // Rows top to bottom: y up in the view is down the image.
+            let k = ((h - 1 - y) * w + x) * 4
+            out[k] = u8(c.x)
+            out[k + 1] = u8(c.y)
+            out[k + 2] = u8(c.z)
+        }
+    }
+    (w, h, out)
+}
+
+/// A tube drawn side on (x across, y up) as the renderer's axis (`limb_axis`) runs, in sixteen
+/// tapered capsules, on a raster `w` × `h` of `px` metres from `lo`.
+fn drawn(on: mut Vec<bool>, w: u32, h: u32, lo: vec2, px: f32, limb: Tube<4>) {
+    let start = limb_axis(limb, 0.0)
+    var prev = start.0
+    var prev_r = start.2
+    for s in 1..17 {
+        let (at, _, r) = limb_axis(limb, f32(s) / 16.0)
+        capsule(mut on, w, h, lo, px, prev.xy, at.xy, prev_r, r)
+        prev = at
+        prev_r = r
+    }
+}
+
+/// A tapered capsule from `a` (`ra` thick) to `b` (`rb`), set on a raster `w` × `h` of `px`
+/// metres from `lo`.
+fn capsule(
+    on: mut Vec<bool>,
+    w: u32,
+    h: u32,
+    lo: vec2,
+    px: f32,
+    a: vec2,
+    b: vec2,
+    ra: f32,
+    rb: f32,
+) {
+    let r = max(ra, rb)
+    let mn = (min(a, b) - vec2(r) - lo) / px
+    let mx = (max(a, b) + vec2(r) - lo) / px
+    let (x0, y0) = (u32(max(floor(mn.x), 0.0)), u32(max(floor(mn.y), 0.0)))
+    let (x1, y1) = (min(u32(max(ceil(mx.x), 0.0)), w - 1), min(u32(max(ceil(mx.y), 0.0)), h - 1))
+    let ab = b - a
+    let l2 = max(dot(ab, ab), 1.0e-12)
+    for y in y0..(y1 + 1) {
+        for x in x0..(x1 + 1) {
+            let q = lo + (vec2(f32(x), f32(y)) + vec2(0.5)) * px
+            let t = clamp(dot(q - a, ab) / l2, 0.0, 1.0)
+            if length(q - (a + ab * t)) <= mix(ra, rb, t) {
+                on[y * w + x] = true
+            }
+        }
+    }
+}
+
+/// A near individual's growth (§E1.3): its genome, its site, its light a year and its events
+/// (its own history's: `land::grow::light_at`, `events_of`), its seed, its kind's leaves, bark
+/// and crown's blend, and the height it's drawn at (its kind's, so it's placed as its archetype
+/// is).
+pub struct Grow {
+    pub genome: Genome,
+    pub site: Site,
+    pub light: Vec<f32>,
+    pub events: Vec<GrowthEvent>,
+    pub seed: u32,
+    pub leaves: Leaves,
+    pub bark: Bark,
+    pub blend: f32,
+    pub height: f32,
+}
+
+/// A near individual grown (`g`), its shape scaled to its height: a helper's task
+/// (`std::par::spawn`), on the heap (its plant is made of it on the main thread, `plant_of`).
+pub fn grow_individual(g: take Grow) -> Shape {
+    let t = grow_graph(g.genome, g.site, g.light, vec2(0.0), g.events, g.seed)
+    var s = shape_of(t, g.genome, measured: false)
+    var top = 0.0
+    for c in s.clumps {
+        top = max(top, c.centre.y + c.radius * c.squash)
+    }
+    for l in s.limbs {
+        for q in l.points {
+            top = max(top, q.y)
+        }
+    }
+    let k = g.height / max(top, 1.0e-3)
+    for i in 0..s.limbs.len() {
+        for j in 0..4 {
+            s.limbs[i].points[j] *= k
+            s.limbs[i].radii[j] *= k
+        }
+    }
+    for i in 0..s.clumps.len() {
+        s.clumps[i].centre *= k
+        s.clumps[i].radius *= k
+    }
+    s
+}
+
+/// The key a near individual's growth is cached under (§E7): every input its shape is grown from
+/// (its genome's values, its site, its light a year and its events as its history's record gives
+/// them, its seed, the height it's drawn at) and the growth's `VERSION`, so a changed gale, an
+/// early shading or a new growth is grown again. Its leaves, bark and blend aren't in it: they
+/// draw the shape, they don't grow it.
+pub fn grow_key(g: Grow) -> u64 {
+    var h = Hasher::new()
+    h.write_u32(VERSION)
+    for v in values_of(g.genome) {
+        h.write_u32(canonical_bits(v))
+    }
+    let s = g.site
+    for v in [s.light, s.wetness, s.slope, s.wind, s.shade_above, s.age, s.stand] {
+        h.write_u32(canonical_bits(v))
+    }
+    h.write_u32(g.light.len())
+    for v in g.light {
+        h.write_u32(canonical_bits(v))
+    }
+    h.write_u32(g.events.len())
+    for e in g.events {
+        h.write_u32(canonical_bits(e.age))
+        h.write_u32(e.kind)
+        h.write_u32(canonical_bits(e.strength))
+    }
+    h.write_u32(g.seed)
+    h.write_u32(canonical_bits(g.height))
+    // What the conversion fits a shape into (the plant's, outside this file's `VERSION`).
+    h.write_u32(MAX_LIMBS)
+    h.write_u32(MAX_CLUMPS)
+    h.finish()
+}
+
+/// Where a near individual's shape is kept in the program's storage (`std::io::store`): one of
+/// `KEPT` places, by its key (`grow_key`), the key kept with it (`shape_bytes`), so another tree's
+/// shape there is a miss. The storage holds at most `KEPT` shapes (nothing in it is ever
+/// removed: a place a tree writes over is another's it held).
+pub fn grown_path(key: u64) -> String {
+    String::from(f"grown/{key % u64(KEPT)}")
+}
+
+/// How many near individuals' shapes the storage keeps (**proposed**: about 33 MB at a veteran's
+/// 128 KiB).
+pub const KEPT: u32 = 256
+
+/// A shape's every float and count folded to a word (§E7's determinism: equal on every host or a
+/// fault to find).
+pub fn shape_hash(s: Shape) -> u64 {
+    var h = Hasher::new()
+    for w in shape_words(s) {
+        h.write_u32(w)
+    }
+    h.finish()
+}
+
+/// What a kept shape begins with (`GRWN`), before the growth's `VERSION`.
+const SHAPE_MAGIC: u32 = 0x4E575247
+
+/// A shape as words: the magic, `VERSION`, its counts, its limbs (each point and radius), its
+/// clumps and its conversion's measures.
+fn shape_words(s: Shape) -> Vec<u32> {
+    var w: Vec<u32> = Vec::with_capacity(8 + 16 * s.limbs.len() + 5 * s.clumps.len())
+    w.push(SHAPE_MAGIC)
+    w.push(VERSION)
+    w.push(s.limbs.len())
+    w.push(s.clumps.len())
+    for l in s.limbs {
+        for k in 0..4 {
+            for v in [l.points[k].x, l.points[k].y, l.points[k].z, l.radii[k]] {
+                w.push(canonical_bits(v))
+            }
+        }
+    }
+    for c in s.clumps {
+        for v in [c.centre.x, c.centre.y, c.centre.z, c.radius, c.squash] {
+            w.push(canonical_bits(v))
+        }
+    }
+    let m = s.converted
+    for v in [canonical_bits(m.iou), canonical_bits(m.volume), m.limbs, m.chains, m.clumps] {
+        w.push(v)
+    }
+    w
+}
+
+/// A shape as bytes to keep under `key` (`std::io::store`: a veteran's 2,048 limbs are 128 KiB):
+/// its words (`shape_words`) with the key after the magic and the version.
+pub fn shape_bytes(s: Shape, key: u64) -> Vec<u8> {
+    var words = shape_words(s)
+    words.insert(2, u32(key >> 32))
+    words.insert(2, u32(key & 0xFFFFFFFF))
+    var out: Vec<u8> = Vec::with_capacity(4 * words.len())
+    for w in words {
+        out.push(u8(w & 255))
+        out.push(u8((w >> 8) & 255))
+        out.push(u8((w >> 16) & 255))
+        out.push(u8(w >> 24))
+    }
+    out
+}
+
+/// Word `i` of `b`, little-endian.
+fn le_word(b: [u8], i: u32) -> u32 {
+    u32(b[4 * i]) | (u32(b[4 * i + 1]) << 8) | (u32(b[4 * i + 2]) << 16) | (u32(b[4 * i + 3]) << 24)
+}
+
+/// A kept shape read back (`shape_bytes`): none if the bytes aren't one this `VERSION` wrote for
+/// `key`, or their counts aren't a plant's.
+pub fn shape_from_bytes(b: [u8], key: u64) -> Option<Shape> {
+    let word = |i: u32| le_word(b, i)
+    let f = |i: u32| bitcast_f32(le_word(b, i))
+    if b.len() < 24 || b.len() % 4 != 0 || word(0) != SHAPE_MAGIC || word(1) != VERSION {
+        return None
+    }
+    if word(2) != u32(key & 0xFFFFFFFF) || word(3) != u32(key >> 32) {
+        return None
+    }
+    let (nl, nc) = (word(4), word(5))
+    if nl > MAX_LIMBS || nc > MAX_CLUMPS || b.len() / 4 != 6 + 16 * nl + 5 * nc + 5 {
+        return None
+    }
+    var limbs: Vec<Tube<4>> = Vec::with_capacity(nl)
+    var at = 6
+    for _ in 0..nl {
+        var points = [vec3(0.0); 4]
+        var radii = [0.0; 4]
+        for k in 0..4 {
+            points[k] = vec3(f(at), f(at + 1), f(at + 2))
+            radii[k] = f(at + 3)
+            at += 4
+        }
+        limbs.push(Tube { points, radii })
+    }
+    var clumps: Vec<Clump> = Vec::with_capacity(nc)
+    for _ in 0..nc {
+        clumps.push(
+            Clump {
+                centre: vec3(f(at), f(at + 1), f(at + 2)),
+                radius: f(at + 3),
+                squash: f(at + 4),
+            },
+        )
+        at += 5
+    }
+    let converted = Converted {
+        iou: f(at),
+        volume: f(at + 1),
+        limbs: word(at + 2),
+        chains: word(at + 3),
+        clumps: word(at + 4),
+    }
+    Some(Shape { limbs, clumps, converted })
+}
+
+/// A near individual's plant from its shape (`grow_individual`) and its kind's look, `out` (its
+/// leaves, bark and blend set; its limbs and clumps cleared first).
+pub fn plant_of(s: Shape, leaves: Leaves, bark: Bark, blend: f32, out: mut Plant) {
+    out.limbs.clear()
+    out.clumps.clear()
+    out.leaves = leaves
+    out.bark = bark
+    out.blend = blend
+    for tb in s.limbs {
+        out.tube(tb.points, tb.radii)
+    }
+    for c in s.clumps {
+        out.cushion(c.centre, c.radius, c.squash)
+    }
+}
+
+/// `p` scaled by `s` about its foot, in place.
+pub fn scale(p: mut Plant, s: f32) {
+    for i in 0..p.limbs.len() {
+        for j in 0..4 {
+            p.limbs[i].points[j] *= s
+            p.limbs[i].radii[j] *= s
+        }
+    }
+    for i in 0..p.clumps.len() {
+        p.clumps[i].centre *= s
+        p.clumps[i].radius *= s
+    }
+}
+
+// ---- the floor's small causes (§E4) ---------------------------------------------------------------
+
+/// A patch tile's side (cells): a moss's or a lichen's patches repeat every tile.
+pub const PATCH: u32 = 64
+
+/// Moss's patches (§E4): a reaction-diffusion (Turing 1952; Gray and Scott's form, as Pearson
+/// 1993 maps it) run once per cause class on a `PATCH`-a-side torus, at build: class 0 the wet's
+/// (feed 0.037, kill 0.06: crowded cushions), class 1 the dry's (0.03, 0.062: scattered spots),
+/// each cell's amount of moss a byte, four a word.
+@fuel(2 ** 36)
+pub const MOSS: [u32; 2 * PATCH * PATCH / 4] = moss_patches()
+
+pub fn moss_patches() -> [u32; 2 * PATCH * PATCH / 4] {
+    var out = [0; 2 * PATCH * PATCH / 4]
+    for class in 0..2 {
+        let (feed, kill) = if class == 0 { (0.037, 0.06) } else { (0.03, 0.062) }
+        let v = gray_scott(feed, kill, 3000, 7 + class)
+        for i in 0..(PATCH * PATCH) {
+            let byte = u32(clamp(v[i] * 3.5, 0.0, 1.0) * 255.0)
+            let at = class * PATCH * PATCH + i
+            out[at / 4] = out[at / 4] | (byte << (8 * (at % 4)))
+        }
+    }
+    out
+}
+
+/// Gray and Scott's two species on a torus: `steps` steps (Du 0.16, Dv 0.08, dt 1) from u = 1,
+/// v = 0 with v seeded in squares drawn from `seed`; v's amount at each cell.
+fn gray_scott(feed: f32, kill: f32, steps: u32, seed: u32) -> Vec<f32> {
+    let n = PATCH
+    var u: Vec<f32> = Vec::filled(n * n, 1.0)
+    var v: Vec<f32> = Vec::filled(n * n, 0.0)
+    var rng = Rng::of(Grown { genome: seed, site: Site {}, seed })
+    for _ in 0..24 {
+        let (cx, cy) = (u32(rng.unit() * f32(n)), u32(rng.unit() * f32(n)))
+        for dy in 0..4 {
+            for dx in 0..4 {
+                let k = ((cy + dy) % n) * n + (cx + dx) % n
+                u[k] = 0.5
+                v[k] = 0.25
+            }
+        }
+    }
+    var lu: Vec<f32> = Vec::filled(n * n, 0.0)
+    var lv: Vec<f32> = Vec::filled(n * n, 0.0)
+    for _ in 0..steps {
+        for y in 0..n {
+            for x in 0..n {
+                let k = y * n + x
+                let (l, r) = (y * n + (x + n - 1) % n, y * n + (x + 1) % n)
+                let (d, t) = (((y + n - 1) % n) * n + x, ((y + 1) % n) * n + x)
+                lu[k] = u[l] + u[r] + u[d] + u[t] - 4.0 * u[k]
+                lv[k] = v[l] + v[r] + v[d] + v[t] - 4.0 * v[k]
+            }
+        }
+        for k in 0..(n * n) {
+            let uvv = u[k] * v[k] * v[k]
+            u[k] += 0.16 * lu[k] - uvv + feed * (1.0 - u[k])
+            v[k] += 0.08 * lv[k] + uvv - (feed + kill) * v[k]
+        }
+    }
+    v
+}
+
+/// The moss's patch amount (0 to 1) at `p` (in its tile's cells, any), of cause class `class`
+/// (0 wet, 1 dry): the nearest cell's.
+pub fn moss_tile(class: u32, p: vec2) -> f32 {
+    moss_tile_in(MOSS, class, p)
+}
+
+/// `moss_tile` from `moss` (`MOSS`'s words): in GPU code a slice the pass binds (a constant
+/// table indexed there is copied whole into each invocation, its 8 KB a texel or a vertex, and
+/// makes its pipeline's compile slow: docs/bench.md "E7").
+pub fn moss_tile_in(moss: [u32], class: u32, p: vec2) -> f32 {
+    let at = moss_cell(class, p)
+    f32((moss[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+}
+
+/// The cell of class `class`'s patch at `p` (cells), as a byte's index in `MOSS`.
+pub fn moss_cell(class: u32, p: vec2) -> u32 {
+    let n = i32(PATCH)
+    let c = vec2i(floor(p))
+    let (x, y) = (u32(((c.x % n) + n) % n), u32(((c.y % n) + n) % n))
+    min(class, 1) * PATCH * PATCH + y * PATCH + x
+}
+
+/// The words `MOSS` takes.
+pub const MOSS_WORDS: u32 = 2 * PATCH * PATCH / 4
+
+/// Lichen's crusts (§E4): a diffusion-limited aggregation (Witten and Sander 1981) on a
+/// `PATCH`-a-side torus from eight seeds, walkers stuck where they touch the crust, at build; each
+/// cell's crust a byte (blurred one cell: a crust's edge), four a word.
+@fuel(2 ** 34)
+pub const LICHEN: [u32; PATCH * PATCH / 4] = lichen_patch()
+
+pub fn lichen_patch() -> [u32; PATCH * PATCH / 4] {
+    let n = PATCH
+    var on: Vec<bool> = Vec::filled(n * n, value: false)
+    var rng = Rng::of(Grown { genome: 13, site: Site {}, seed: 13 })
+    for _ in 0..8 {
+        on[u32(rng.unit() * f32(n * n - 1))] = true
+    }
+    var stuck = 8
+    var tries = 0
+    while stuck < n * n * 2 / 5 && tries < 40000 {
+        tries += 1
+        var x = u32(rng.unit() * f32(n - 1))
+        var y = u32(rng.unit() * f32(n - 1))
+        for _ in 0..400 {
+            let near = on[y * n + (x + 1) % n] ||
+                on[y * n + (x + n - 1) % n] ||
+                on[((y + 1) % n) * n + x] ||
+                on[((y + n - 1) % n) * n + x]
+            if near && !on[y * n + x] {
+                on[y * n + x] = true
+                stuck += 1
+                break
+            }
+            let r = rng.unit()
+            if r < 0.25 { x = (x + 1) % n } else if r < 0.5 { x = (x + n - 1) % n } else if r <
+                0.75 {
+                y = (y + 1) % n
+            } else { y = (y + n - 1) % n }
+        }
+    }
+    var out = [0; PATCH * PATCH / 4]
+    for y in 0..n {
+        for x in 0..n {
+            var s = 0.0
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    if on[((y + dy + n - 1) % n) * n + (x + dx + n - 1) % n] {
+                        s += if dx == 1 && dy == 1 { 4.0 } else { 1.0 }
+                    }
+                }
+            }
+            let byte = u32(min(s / 8.0, 1.0) * 255.0)
+            let at = y * n + x
+            out[at / 4] = out[at / 4] | (byte << (8 * (at % 4)))
+        }
+    }
+    out
+}
+
+/// The lichen's crust (0 to 1) at `p` (in its tile's cells, any).
+pub fn lichen_tile(p: vec2) -> f32 {
+    let n = i32(PATCH)
+    let c = vec2i(floor(p))
+    let at = u32(((c.y % n) + n) % n) * PATCH + u32(((c.x % n) + n) % n)
+    f32((LICHEN[at / 4] >> (8 * (at % 4))) & 255) / 255.0
+}
+
+/// The leaf litter's density on the ground (0 to 1, §E4) under a canopy of `canopy` (0 open to 1
+/// closed) in season `season` (0 to 1 from spring: most in autumn's fall, 0.8, least by
+/// midsummer's rot, 0.4): a closed canopy's litter about four times the open's.
+pub fn litter_at(canopy: f32, season: f32) -> f32 {
+    let fall = 0.75 + 0.25 * cos(2.0 * PI * (season - 0.8))
+    clamp((0.18 + 0.82 * canopy) * fall, 0.0, 1.0)
+}
+
+/// How rotten a fallen tree is (0 to 1): the years since it fell over its species' rot time
+/// (`habit.rots`, its years a metre) times its height.
+pub fn rot_of(years: f32, rots: f32, tall: f32) -> f32 {
+    clamp(years / max(rots * tall, 1.0), 0.0, 1.0)
+}
+
+/// The share of a fallen tree's bark gone by its rot (§E4: peeled and fallen as the sapwood under
+/// it rots).
+pub fn bare_share(rot: f32) -> f32 {
+    clamp(1.6 * rot, 0.0, 1.0)
+}
+
+/// The rot past which bracket fungi fruit on a fallen tree, and how many a metre of it at most.
+pub const BRACKETS_FROM: f32 = 0.2
+pub const BRACKETS_A_METRE: f32 = 0.5
+
+/// The bracket fungi on a fallen tree `length` m long, `rot` rotten (§E4): where along it (a share
+/// of its length) and how large (m), drawn from `seed`; none before `BRACKETS_FROM`.
+pub fn fungi_on(rot: f32, length: f32, seed: u32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    if rot < BRACKETS_FROM {
+        return out
+    }
+    let n = u32(ceil(BRACKETS_A_METRE * length * smoothstep(BRACKETS_FROM, 0.7, rot)))
+    var rng = Rng::of(Grown { genome: seed, site: Site {}, seed })
+    for _ in 0..max(n, 1) {
+        out.push(vec2(0.15 + 0.8 * rng.unit(), 0.06 + 0.1 * rng.unit()))
+    }
+    out
+}
+
+// ---- ferns, grass and herbs (§E3) ----------------------------------------------------------------
+
+/// A floor plant's genome (§E3): which growth program grows it (`ROSETTE`, `TUSSOCK`, `FROND`), the
+/// shape it's drawn as (`grass`' `HERB`, `STRAP`, `BRACKEN`), its longest leaf or frond (m), its
+/// leaf's width (m), how stiff its leaves stand (0 limp to 1 stiff), how many leaves, tillers or
+/// fronds it has at most, how much larger its leaves grow in shade (its plasticity, a share per
+/// unit of light under half), its colour (linear), the acidity, wetness and light it grows in (each
+/// a range), its flowers (their kind, 0 none, and their share) and how it likes trodden ground.
+/// Its numbers **proposed** from its habit (the field guides' sizes, and the shapes the floor drew
+/// it as before it was grown).
+pub struct FloraGenome: Copy {
+    pub program: u32,
+    pub shape: f32,
+    pub length: f32,
+    pub width: f32,
+    pub stiff: f32,
+    pub count: f32,
+    pub shade: f32,
+    pub colour: vec3,
+    pub acid: vec2,
+    pub wet: vec2,
+    pub light: vec2,
+    pub bloom: u32 = 0,
+    pub blooms: f32 = 0.0,
+    pub worn: f32 = 0.0,
+}
+
+/// The floor plants' growth programs.
+pub const ROSETTE: u32 = 0
+pub const TUSSOCK: u32 = 1
+pub const FROND: u32 = 2
+
+/// A genome's values in order (`genome_hash`'s input).
+pub fn flora_values(g: FloraGenome) -> Vec<f32> {
+    Vec::from(
+        [
+            f32(g.program),
+            g.shape,
+            g.length,
+            g.width,
+            g.stiff,
+            g.count,
+            g.shade,
+            g.colour.x,
+            g.colour.y,
+            g.colour.z,
+            g.acid.x,
+            g.acid.y,
+            g.wet.x,
+            g.wet.y,
+            g.light.x,
+            g.light.y,
+            f32(g.bloom),
+            g.blooms,
+            g.worn,
+        ],
+    )
+}
+
+/// How far a floor plant has grown at `age` (seasons): its leaves' share of their full length (a
+/// growth curve, 95 % by its first season's end).
+fn grown_by(age: f32) -> f32 {
+    1.0 - exp(-3.0 * max(age, 0.0))
+}
+
+/// A leaf's size in light `light` against half light's: larger in shade, smaller in sun, by the
+/// genome's plasticity.
+fn plastic(g: FloraGenome, light: f32) -> f32 {
+    max(1.0 + g.shade * (0.5 - light), 0.2)
+}
+
+/// A rosette grown (`grow_rosette`): its leaves, their length and width (m), and how far they
+/// droop (0 upright to 1 lying).
+pub struct Rosette: Copy {
+    pub leaves: u32,
+    pub length: f32,
+    pub width: f32,
+    pub droop: f32,
+}
+
+/// A herb (§E3): leaves round its centre at the golden angle, as many as its age and light give
+/// (`count` at most), each grown to its length by its age, larger in shade; its droop its
+/// limpness as far as it's grown.
+pub fn grow_rosette(g: FloraGenome, site: Site) -> Rosette {
+    let k = grown_by(site.age)
+    let p = plastic(g, site.light)
+    Rosette {
+        leaves: u32(round(max(g.count * k * (0.5 + 0.5 * site.light), 1.0))),
+        length: g.length * k * p,
+        width: g.width * p,
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A tussock grown (`grow_tussock`): its tillers, its blades' length (m) and their droop.
+pub struct Tussock: Copy {
+    pub tillers: u32,
+    pub length: f32,
+    pub droop: f32,
+}
+
+/// A grass (§E3): tillers added from its base each season by the light and the water it has
+/// (`count` at most, in the open on moist ground; few under a canopy, fewer in the dry or the
+/// waterlogged), each a blade grown to its length by its growth curve; its droop by its length.
+pub fn grow_tussock(g: FloraGenome, site: Site) -> Tussock {
+    let k = grown_by(site.age)
+    let light = smoothstep(0.05, 0.8, site.light)
+    let water = 1.0 - min(abs(site.wetness - 0.55) * 1.6, 0.9)
+    Tussock {
+        tillers: u32(round(max(g.count * min(site.age, 1.0) * light * water, 1.0))),
+        length: g.length * k * plastic(g, site.light),
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A frond grown (`grow_frond`): its length (m), its curl (radians: a fiddlehead's 2π, an open
+/// frond's 0), its pinnae, its width (m) and its droop.
+pub struct Frond: Copy {
+    pub length: f32,
+    pub curl: f32,
+    pub pinnae: u32,
+    pub width: f32,
+    pub droop: f32,
+}
+
+/// A fern (§E3): a rachis with pinnae at phyllotactic spacing, unrolled from its fiddlehead over
+/// its first season (circinate vernation: its curl falls from 2π at emergence to 0 by 0.6 of a
+/// season), larger and so broader in shade.
+pub fn grow_frond(g: FloraGenome, site: Site) -> Frond {
+    let k = grown_by(site.age)
+    let p = plastic(g, site.light)
+    Frond {
+        length: g.length * k * p,
+        curl: 2.0 * PI * (1.0 - smoothstep(0.0, 0.6, site.age)),
+        pinnae: u32(round(10.0 + 20.0 * k)),
+        width: g.width * p,
+        droop: (1.0 - g.stiff) * k,
+    }
+}
+
+/// A floor plant grown at `site` by its program, as the grass draws it: its height (m), width
+/// (m) and droop.
+pub fn flora_grown(g: FloraGenome, site: Site) -> vec3 {
+    if g.program == TUSSOCK {
+        let t = grow_tussock(g, site)
+        vec3(t.length, g.width * plastic(g, site.light), t.droop)
+    } else if g.program == FROND {
+        let f = grow_frond(g, site)
+        vec3(f.length, f.width, f.droop)
+    } else {
+        let r = grow_rosette(g, site)
+        vec3(r.length, r.width, r.droop)
+    }
+}
+
+/// The site a floor plant's row is grown at (`grass::SPECIES`): half light, moist, a season old.
+pub const FLORA_SITE: Site = Site { light: 0.5, wetness: 0.5, age: 1.0 }
+
+// ---- the bark and the moss as causes (§E1.4) ----------------------------------------------------
+
+/// A tree's bark's cracks from its history (`substance::history_of`: its age's share of its
+/// life in x, its stress, 1 less its vigour, in w): how far apart its ridges' pattern repeats
+/// round its trunk (x: a fast-grown trunk's bark stretched, its cracks as far apart as the cooked
+/// pattern's, 1; a stressed one's half as many again) and how deep its cracks are (y: its relief's
+/// multiple, deeper with age). Lefebvre and Neyret 2002's fracture model, simplified to the cooked
+/// ridges scaled by the record (**proposed** ranges: stretched to 0.75 and 1.55 deep, the grown
+/// oaks' bark read as brick).
+pub fn bark_cracks(history: vec4) -> vec2 {
+    let vigour = 1.0 - history.w
+    let age = history.x
+    vec2(1.5 - 0.5 * vigour, 0.7 + 0.5 * smoothstep(0.0, 0.6, age))
+}
+
+/// How mossy bark is (0 to 1) by its causes: the ground's wetness at its foot and the light its
+/// crown had (`history`'s z and y: wet and shaded, more), where on it (its normal `n`: turned up,
+/// or away from the sun, -z, where the vale's and the floor's sun doesn't reach; `along` metres
+/// up its limb: near its foot), in patches (`patch`, its noise there) with edges: a material on
+/// the bark, not a tint over it.
+pub fn moss_at(history: vec4, n: vec3, along: f32, patch: f32) -> f32 {
+    let cause = smoothstep(0.25, 0.75, history.z) * (1.0 - 0.6 * history.y)
+    let foot = 1.0 - smoothstep(0.2, 1.4, along)
+    let place = max(
+        foot * 0.75,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.1, 0.9, -n.z) * 0.6),
+    )
+    min(1.0, (0.3 + cause) * place) * smoothstep(0.42, 0.58, patch)
+}
+
+/// How much of its bark's lichen an old tree carries (0 to 1, by its age's share of its life).
+pub fn lichen_of(history: vec4) -> f32 {
+    smoothstep(0.15, 0.7, history.x)
+}
+
+/// A tree grown and drawn (§E1.2): `grow_graph`, then `into_plant`.
+pub fn grow_tree(
+    g: Genome,
+    site: Site,
+    light: [f32],
+    lean: vec2,
+    events: [GrowthEvent],
+    seed: u32,
+    leaves: Leaves,
+    bark: Bark,
+) -> Plant {
+    let (p, _) = into_plant(grow_graph(g, site, light, lean, events, seed), g, leaves, bark)
+    p
+}
+
+@test
+fn the_same_cause_draws_the_same_stream_and_another_cause_another() {
+    let g = Grown { genome: 7, site: Site { light: 0.6, age: 80.0 }, seed: 3 }
+    var a = Rng::of(g)
+    var b = Rng::of(g)
+    var c = Rng::of(Grown { seed: 4, ..g })
+    var same = true
+    var differs = false
+    for _ in 0..64 {
+        let (x, y, z) = (a.next(), b.next(), c.next())
+        same = same && x == y
+        differs = differs || x != z
+    }
+    assert(same, "one cause, two streams")
+    assert(differs, "another seed, another stream")
+    var r = Rng::of(g)
+    for _ in 0..1000 {
+        let u = r.unit()
+        assert(u >= 0.0 && u < 1.0, f"a unit draw {u}")
+    }
+}
+
+@test
+fn a_genome_hash_tells_its_values_apart() {
+    assert(genome_hash([1.0, 2.0]) == genome_hash([1.0, 2.0]))
+    assert(genome_hash([1.0, 2.0]) != genome_hash([2.0, 1.0]))
+    assert(genome_hash([1.0, 2.0]) != genome_hash([1.0, 2.0001]))
+}

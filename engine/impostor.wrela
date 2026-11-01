@@ -228,10 +228,15 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
     }
 }
 
-/// A limb for view `i.index`.
+/// A limb for view `i.index`, its bark's run along it from its foot (a grown kind's from its foot's
+/// height, as `vegetation::limb_world` draws it near).
 @vertex
 pub fn bake_limb(v: VertexIndex, i: InstanceIndex, b: Bake, limbs: [Tube<4>]) -> BakeVertex {
-    let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    let limb = limbs[v.index / LIMB_VERTICES]
+    let (p, n, from_foot) = limb_vertex(limb, v.index % LIMB_VERTICES)
+    let along = if b.bark.grown > 0.0 {
+        vec2(from_foot.x, from_foot.y + limb.points[0].y)
+    } else { from_foot }
     let (d, _, _) = view_basis(i.index)
     BakeVertex {
         clip: ClipPosition { position: in_cell(b, i.index, p) },

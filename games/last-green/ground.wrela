@@ -215,14 +215,16 @@ pub fn joints(p: vec2, size: f32) -> (f32, f32) {
 /// The floor's ground: the map's land, and the clearing's.
 pub struct Ground: Copy + GpuData {
     pub land: Land,
+    /// The moss's patches (`engine::growth::MOSS`), read where the ground is cooked.
+    pub moss: [u32; engine::growth::MOSS_WORDS],
 }
 
 /// The ground of the floor's map.
 pub const GROUND: Ground = ground()
 
 fn ground() -> Ground {
-    let g = Ground { land: map::land() }
-    Ground { land: g.land.settled(|q| g.under_crags(q)) }
+    let g = Ground { land: map::land(), moss: engine::growth::MOSS }
+    Ground { land: g.land.settled(|q| g.under_crags(q)), moss: engine::growth::MOSS }
 }
 
 impl Ground {
@@ -597,7 +599,20 @@ impl Ground {
         // The dry lip loses its litter before it meets the cut face. Fine soil remains
         // between exposed fragments on a gentle shoulder; sheer rock keeps its ownership.
         let rim = self.upper_bank(xz, footprint: w) * (1.0 - c.materials.z)
-        land::cover::wood_floor(c, at, n, fields, w, trodden, rim, rock_albedo)
+        land::cover::wood_floor(
+            c,
+            at,
+            n,
+            fields,
+            w,
+            trodden,
+            rim,
+            rock_albedo,
+            grown: main::GROWN_WOOD,
+            moss: if main::GROWN_WOOD { land::cover::moss_pair(self.moss, at.xz) } else {
+                vec2(0.0)
+            },
+        )
     }
 }
 
@@ -1049,7 +1064,7 @@ fn dry_ravine_rim_exposes_soil_without_planting_its_cut_face() {
     var land = Land {}
     land.ravines[0] = vec4(-100.0, -300.0, 7.0, 10.0)
     land.ravines[1] = vec4(100.0, -300.0, 7.0, 10.0)
-    let g = Ground { land }
+    let g = Ground { land, moss: engine::growth::MOSS }
     // At 75 m along, halfway between walking slumps, the authored rim is exactly 10 m out.
     let rim = vec3(-25.0, 0.0, -290.0)
     let outside = vec3(-25.0, 0.0, -285.0)

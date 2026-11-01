@@ -19,6 +19,7 @@
 // volumes stand in farther away (`vegetation`, `impostor`). The wind (`Wind`, `sway`) moves
 // every instance.
 
+use std::mem::debug_build
 use noise::{direction, hash2, pick, rand}
 use std::field::{Surface, PartName, Tube, unnamed}
 use std::gpu::{
@@ -79,6 +80,9 @@ pub struct Leaves: Copy + GpuData {
     pub cover: f32 = 1.7,
     pub through: vec3 = vec3(0.11, 0.16, 0.02),
     pub per_card: u32 = 6,
+    /// The share of its instance's history (`Instance::history`'s x) past which its cards show (0:
+    /// always): a fallen tree's bracket fungi, past its rot (§E4).
+    pub after: f32 = 0.0,
 }
 
 impl Leaves {
@@ -99,7 +103,14 @@ pub struct Bark: Copy + GpuData {
     pub light: vec3 = vec3(0.30, 0.25, 0.19),
     pub bands: f32 = 0.0,
     pub moss: vec3 = vec3(0.07, 0.085, 0.04),
+    /// Whether it's dead wood (1) whose bark falls away by its instance's rot (its history's x,
+    /// `growth::bare_share`), or living (0).
+    pub rots: f32 = 0.0,
     pub grain: vec3 = vec3(1.0, 0.0, 0.0),
+    /// Whether it's a grown kind's (1, §E4: its cracks, lichen and moss caused, by its instance's
+    /// record, and its limbs thickened by their share of its trunk), or a hand's (0: as before §E,
+    /// the floor's and the clearing's until they adopt the grown wood, D40).
+    pub grown: f32 = 0.0,
     /// Another bark low on its trunk (rgb: its colour, its fissures the ridges'; w: how high it
     /// reaches, m of the plant as it's built; 0 none): a pine's grey plates under its orange, a
     /// birch's black fissured foot.
@@ -126,14 +137,18 @@ impl Bark {
 }
 
 /// The most limbs and clumps a plant has (a crown of fine clumps over its whole shell takes over
-/// a hundred, and the branches that carry them out to it over thirty).
-pub const MAX_LIMBS: u32 = 48
+/// a hundred, and the branches that carry them out to it over thirty; a grown one's limbs are its
+/// chains, thousands).
+pub const MAX_LIMBS: u32 = 2048
 pub const MAX_CLUMPS: u32 = 128
 
+/// The most limbs a hand's plant has (`HandPlant`: the great tree's, the far crowns').
+pub const HAND_LIMBS: u32 = 48
+
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
-/// frame (its base at the origin, +y up).
-pub struct Plant: Copy + GpuData {
-    pub limbs: Bounded<Tube<4>, MAX_LIMBS>,
+/// frame (its base at the origin, +y up), with room for `L` limbs.
+pub struct PlantOf<const L: u32>: Copy + GpuData {
+    pub limbs: Bounded<Tube<4>, L>,
     pub clumps: Bounded<Clump, MAX_CLUMPS>,
     pub leaves: Leaves,
     pub bark: Bark,
@@ -141,12 +156,171 @@ pub struct Plant: Copy + GpuData {
     pub blend: f32,
 }
 
+/// A plant as the probes' occluders read it (`occluding_of`), on the heap: a grown kind's
+/// thickest limbs' cores and its largest clumps; a hand's limbs, fitted at each tree as before §E
+/// (`inner_wood_capsule` at its instance), and all its clumps. A helper gathering occluders reads
+/// these, never a `Plant` (128 KiB at `MAX_LIMBS`: a copy of one overflowed a browser helper's
+/// stack, and the job never came back).
+pub struct Occluding: Clone {
+    pub cores: Vec<Core>,
+    pub limbs: Vec<Tube<4>>,
+    pub clumps: Vec<Clump>,
+}
+
+/// A straight core inside a limb's piece, in its plant's frame (`inner_wood_capsule` with no
+/// instance): placed by its ends and its radius scaled, a tree's wood as the probes see it.
+pub struct Core: Copy {
+    pub a: vec3,
+    pub b: vec3,
+    pub radius: f32,
+}
+
+/// How much of a core's radius a placed one keeps (`occluders_into`): fitted in its plant's frame,
+/// a placed tree's widening and bend move its wood a little off it (**proposed**). Fitted at each
+/// tree, the job was every tree's limbs against their meshes: a wood's took longer than an
+/// arrival waits in Chrome, and shot 12 was never shown.
+pub const CORE_PLACED: f32 = 0.8
+
+/// A plant placed nowhere: at the origin, unturned, its size its own.
+const NOWHERE: Instance = Instance {
+    at: vec3(0.0),
+    yaw: 0.0,
+    tint: Unorm8x4 { bits: 0 },
+    scale: 1.0,
+    fork: 0.0,
+    wide: 1.0,
+}
+
+/// The limbs of a plant that occlude the probes (a grown kind's are in order of their section:
+/// its twigs, thousands, stop no light the probes see), and its clumps (its largest: a grown
+/// crown's 128, two capsules each over the probes' square of a wood, were most of the job).
+pub const OCCLUDER_LIMBS: u32 = 48
+pub const OCCLUDER_CLUMPS: u32 = 32
+
+/// Each of `plants` as the probes' occluders read it: a grown kind's (`Bark::grown`) cores of
+/// its first `OCCLUDER_LIMBS` limbs, and its clumps as large as its `OCCLUDER_CLUMPS`th largest; a
+/// hand's limbs and clumps.
+pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
+    var out: Vec<Occluding> = Vec::new()
+    for k in 0..plants.len() {
+        borrow p = plants[k]
+        if p.bark.grown == 0.0 {
+            var limbs: Vec<Tube<4>> = Vec::new()
+            for i in 0..p.limbs.len() {
+                limbs.push(p.limbs[i])
+            }
+            var clumps: Vec<Clump> = Vec::new()
+            for i in 0..p.clumps.len() {
+                clumps.push(p.clumps[i])
+            }
+            out.push(Occluding { cores: Vec::new(), limbs, clumps })
+            continue
+        }
+        var radii: Vec<f32> = Vec::new()
+        for i in 0..p.clumps.len() {
+            radii.push(p.clumps[i].radius)
+        }
+        radii.sort_by(|a: f32, b: f32| a > b)
+        let least = if radii.len() > OCCLUDER_CLUMPS { radii[OCCLUDER_CLUMPS - 1] } else { 0.0 }
+        var clumps: Vec<Clump> = Vec::new()
+        for i in 0..p.clumps.len() {
+            if p.clumps[i].radius >= least {
+                clumps.push(p.clumps[i])
+            }
+        }
+        var cores: Vec<Core> = Vec::new()
+        for i in 0..min(p.limbs.len(), OCCLUDER_LIMBS) {
+            for piece in 0..3 {
+                let (a, b, radius) = inner_wood_capsule(p.limbs[i], piece, NOWHERE)
+                if radius > 0.0 {
+                    cores.push(Core { a, b, radius })
+                }
+            }
+        }
+        out.push(Occluding { cores, limbs: Vec::new(), clumps })
+    }
+    out
+}
+
+/// Keep the existing straight inner capsule inside curved wood. Narrow curved twigs can
+/// have no straight core; omit those instead of straightening their rendered silhouette.
+pub fn inner_wood_capsule(limb: Tube<4>, piece: u32, at: Instance) -> (vec3, vec3, f32) {
+    let a = at.place(limb.points[piece])
+    let b = at.place(limb.points[piece + 1])
+    let span = length(b - a)
+    let dir = (b - a) / max(span, 1.0e-6)
+    var alignment = 1.0
+    for ring in 0..(RINGS + 1) {
+        let (_, axis, _) = limb_ring_axis(limb, piece * RINGS + ring)
+        // place_round keeps girth round even where the centreline is narrowed or bent.
+        alignment = min(alignment, abs(dot(at.turn(axis), dir)))
+    }
+    let core = 0.6 * min(limb.radii[piece], limb.radii[piece + 1]) * at.scale
+    // Keep both capsule spheres behind the open ring planes, and exclude the closed tip.
+    let (last, _, _) = limb_ring_axis(limb, (piece + 1) * RINGS - 1)
+    let cap = if piece == 2 { length(b - at.place(last)) } else { 0.0 }
+    var radius = min(core, max(span - cap, 0.0) * 0.2 * alignment)
+    let inset = radius / max(alignment, 1.0e-6)
+    let a = a + dir * inset
+    let b = b - dir * (inset + cap)
+    // Fit the straight core against the actual curved, tapered triangle planes. A radius
+    // allowance from centreline error alone misses oblique rings. This runs only while
+    // preparing probe occluders and adds no capsules or rendered geometry.
+    var vertices: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    var normals: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    let first = piece * (RINGS + 1) * (SIDES + 1)
+    for v in 0..((RINGS + 1) * (SIDES + 1)) {
+        let (centre, normal, r, _) = limb_point(limb, first + v)
+        vertices.push(at.place_round(centre, normal * r))
+        normals.push(at.turn(normal))
+    }
+    for triangle in 0..(RINGS * SIDES * 2) {
+        let v = piece * RINGS * SIDES * 6 + triangle * 3
+        let i = limb_corner(v) - first
+        let j = limb_corner(v + 1) - first
+        let k = limb_corner(v + 2) - first
+        let face = cross(vertices[j] - vertices[i], vertices[k] - vertices[i])
+        let size = length(face)
+        if size <= 1.0e-7 { continue }
+        let outward = normals[i] + normals[j] + normals[k]
+        let n = face / size * if dot(face, outward) < 0.0 { -1.0 } else { 1.0 }
+        let margin = -max(dot(a - vertices[i], n), dot(b - vertices[i], n))
+        radius = min(radius, margin - 1.0e-5)
+        if radius <= 0.0 { return (a, b, 0.0) }
+    }
+    (a, b, radius)
+}
+
+/// A plant as the wood draws it: room for a grown one's limbs (128 KiB).
+pub type Plant = PlantOf<MAX_LIMBS>
+
+/// A plant built by hand, with room for a hand's limbs (3 KiB): small enough to carry where a
+/// grown one's room isn't (the lens's derivatives of its literals carry each of its numbers 17
+/// times over), widened to a `Plant` where it's drawn (`PlantOf::widened`).
+pub type HandPlant = PlantOf<HAND_LIMBS>
+
 /// A plant with no limbs or clumps yet, its leaves and bark as given.
 pub fn plant(leaves: Leaves, bark: Bark) -> Plant {
     Plant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
 }
 
-impl Plant {
+/// A hand's plant (`HandPlant`) with no limbs or clumps yet, its leaves and bark as given.
+pub fn hand_plant(leaves: Leaves, bark: Bark) -> HandPlant {
+    HandPlant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
+}
+
+impl<const L: u32> PlantOf<L> {
+    /// This plant in a grown plant's room (`Plant`), as the wood draws it.
+    pub fn widened(self) -> Plant {
+        var out = plant(leaves: self.leaves, bark: self.bark)
+        for i in 0..self.limbs.len() {
+            out.limbs.push(self.limbs[i])
+        }
+        out.clumps = self.clumps
+        out.blend = self.blend
+        out
+    }
+
     /// A limb from `from` to `to`, bending toward `bend` (a quadratic curve), its radius
     /// `r_from` at its start and `r_to` at its end.
     pub fn limb(mut self, from: vec3, bend: vec3, to: vec3, r_from: f32, r_to: f32) {
@@ -165,6 +339,10 @@ impl Plant {
     /// A limb through four points, its radius at each given: a trunk that flares at its root
     /// and tapers in one tube, with no seam where two tubes cross.
     pub fn tube(mut self, points: [vec3; 4], radii: [f32; 4]) {
+        // A limb past its room is a fault a debug build names (§E1.2: none dropped silently).
+        if debug_build() {
+            assert(!self.limbs.is_full(), "a plant's limbs past its room")
+        }
         if !self.limbs.is_full() {
             self.limbs.push(Tube { points, radii })
         }
@@ -230,6 +408,9 @@ impl Plant {
 
     /// A clump of leaves at `at`, `radius` across and `squash` as tall (`Clump`).
     pub fn cushion(mut self, at: vec3, radius: f32, squash: f32) {
+        if debug_build() {
+            assert(!self.clumps.is_full(), "a plant's clumps past MAX_CLUMPS")
+        }
         if !self.clumps.is_full() {
             self.clumps.push(Clump { centre: at, radius, squash })
         }
@@ -329,7 +510,7 @@ impl Plant {
 }
 
 /// A plant's field: its limbs, and its crown as one soft solid. The lens draws it as clay.
-impl Surface for Plant {
+impl<const L: u32> Surface for PlantOf<L> {
     fn distance(self, p: vec3) -> f32 {
         let (crown, _) = self.crown(p)
         min(self.wood(p), crown)
@@ -422,6 +603,16 @@ pub const CARD_LEVELS: u32 = 3
 pub fn level_cards(n: u32, level: u32) -> u32 {
     n >> level
 }
+
+/// How many of a plant's `n` limbs level `level` draws: a hand's few (at most `LEVEL_LIMBS`)
+/// all at every level; a grown plant's, in order of their section, its thickest: all at level 0,
+/// a quarter at 1, a sixteenth at 2, never fewer than `LEVEL_LIMBS` (its twigs, thousands, are
+/// below a pixel there: a tube draw each, they doubled the vale's frame).
+pub fn level_limbs(n: u32, level: u32) -> u32 {
+    if n <= LEVEL_LIMBS { n } else { max(n >> (2 * level), LEVEL_LIMBS) }
+}
+
+pub const LEVEL_LIMBS: u32 = 64
 
 /// Card width at a nested density level. Half as many cards need sqrt(2) times the width,
 /// preserving area without the large individual leaves of quarter-density steps.

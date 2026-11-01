@@ -4,11 +4,11 @@
 // from this, as the clearing loads. And a far tree: a crown alone, for the woods beyond it.
 
 use engine::noise::{pick, rand}
-use engine::plant::{Bark, Leaves, Plant, limb_axis, limb_at_height, plant}
+use engine::plant::{Bark, HandPlant, Leaves, Plant, hand_plant, limb_axis, limb_at_height, plant}
 use std::math::TAU
 
-/// The great tree, its base at the origin.
-pub fn great_tree() -> Plant {
+/// The great tree, its base at the origin: a hand's plant (`HandPlant`; drawn, `widened`).
+pub fn great_tree() -> HandPlant {
     // Old bark: darker than a young tree's, so the trunk stays a shape in shade under the crown;
     // deep furrows broken into blocks, as an old oak's.
     let bark = Bark {
@@ -18,7 +18,7 @@ pub fn great_tree() -> Plant {
         relief: 1.7,
         lichen: vec4(0.34, 0.38, 0.3, 0.3),
     }
-    var p = plant(
+    var p = hand_plant(
         leaves: Leaves {
             size: 0.25,
             cover: 1.65,
