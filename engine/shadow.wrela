@@ -41,6 +41,8 @@ pub struct Shadows: Copy + GpuData {
     pub sun_size: f32 = 0.00925,
     pub near_depth: f32 = 499.0,
     pub far_depth: f32 = 5199.0,
+    /// The moving map's depth span (m: `shadows`' 1 to 80), its soft lookup's as the static maps'.
+    pub moving_depth: f32 = 79.0,
 }
 
 /// Points on the unit disc, evenly spread (a Vogel spiral: the golden angle round, the square
@@ -127,7 +129,7 @@ pub fn shadows(
     Shadows {
         near: sun_view(sun_of(near, s), near.centre, near.span, near.reach),
         far: sun_view(sun_of(far, s), far.centre, far.span, far.reach),
-        moving: sun_view(s, centre, moving_span, 40.0),
+        moving: sun_view(s, centre, moving_span, MOVING_REACH),
         right,
         near_texel: near.span / f32(near.side),
         up,
@@ -136,8 +138,12 @@ pub fn shadows(
         moving_texel: texel,
         near_depth: 2.0 * near.reach - 1.0,
         far_depth: 2.0 * far.reach - 1.0,
+        moving_depth: 2.0 * MOVING_REACH - 1.0,
     }
 }
+
+/// How far toward the sun the moving map is seen from (m).
+const MOVING_REACH: f32 = 40.0
 
 /// A symmetric filter in shadow texels. Comparison sampling filters each tap bilinearly.
 /// Rotating sparse taps each frame made static dappled shadows flicker, especially while
@@ -225,7 +231,8 @@ fn soft_lookup(
 
 /// How lit `world` is by the sun (0 to 1), its normal `n`: the static cascades (the near one
 /// where it holds the point, else the far) and the moving map, the darker of the two; `soft`
-/// texels of penumbra (`pcss` as `statically_sunlit`'s).
+/// texels of penumbra (`pcss` as `statically_sunlit`'s; with the soft shadows the moving map's
+/// penumbra is found as the static maps' are, so a creature's shadow softens as a tree's does).
 pub fn sunlit(
     sh: Shadows,
     world: vec3,
@@ -238,15 +245,20 @@ pub fn sunlit(
     pcss: bool = true,
 ) -> f32 {
     let lit = statically_sunlit(sh, world, n, near, far, s, soft, pcss: pcss)
-    let (m, _) = lookup(
-        sh.moving,
-        moving,
-        sh.texel_uv.z,
-        s,
-        world + n * (sh.moving_texel * 1.5),
-        1.5,
-        bias: 0.0008,
-    )
+    let at = world + n * (sh.moving_texel * 1.5)
+    let (m, _) = if pcss && sh.soft_pcss != 0 {
+        soft_lookup(
+            sh.moving,
+            moving,
+            sh.texel_uv.z,
+            sh.moving_texel,
+            sh.moving_depth,
+            sh.sun_size,
+            s,
+            at,
+            bias: 0.0008,
+        )
+    } else { lookup(sh.moving, moving, sh.texel_uv.z, s, at, 1.5, bias: 0.0008) }
     min(lit, m)
 }
 
