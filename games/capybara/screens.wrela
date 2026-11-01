@@ -136,6 +136,8 @@ pub enum Act: Copy + Eq {
     /// The search for a name (world.wrela's `finds`), and done with it (Enter: Space types).
     Find,
     Done,
+    /// A world's board: between its top and the account's place.
+    Places,
 }
 
 /// A prompt: its glyphs, and what it does.
@@ -155,6 +157,8 @@ pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
             size * 1.3
         } else if a == Act::Boards {
             size * 2.8 + g
+        } else if a == Act::Places {
+            key_width(fonts, "LT", size)
         } else if a == Act::Music { 0.0 } else { size }
     } else if a == Act::Run || a == Act::Change || a == Act::Swim || a == Act::Move {
         2.0 * size + g
@@ -166,6 +170,8 @@ pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
         key_width(fonts, "Home", size)
     } else if a == Act::Done {
         key_width(fonts, "Enter", size)
+    } else if a == Act::Places {
+        key_width(fonts, "Home", size)
     } else if a == Act::Boards { key_width(fonts, "Tab", size) } else { size }
 }
 
@@ -200,6 +206,8 @@ pub fn act(
             start_button(mut list, at, size, i)
         } else if a == Act::Restart || a == Act::Race {
             select_button(mut list, at, size, i)
+        } else if a == Act::Places {
+            key(mut list, fonts, "LT", at, size, i)
         } else if a == Act::Boards {
             let w = shoulder(mut list, fonts, right: false, at: at, size: size, ink: i)
             w +
@@ -237,6 +245,8 @@ pub fn act(
         key(mut list, fonts, "F", at, size, i)
     } else if a == Act::Done {
         key(mut list, fonts, "Enter", at, size, i)
+    } else if a == Act::Places {
+        key(mut list, fonts, "Home", at, size, i)
     } else { key(mut list, fonts, "Tab", at, size, i) }
 }
 

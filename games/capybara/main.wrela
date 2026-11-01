@@ -329,6 +329,14 @@ pub struct Lab {
     /// And whether the reminder to save the recovery codes was shown since the attempt began.
     posting_best: bool,
     posting_focus: u32,
+    /// The world's boards as the leaderboard shows them: around the account's place (`near`: the
+    /// slice round it, or its page if the account is on it) or from the top; the first row shown
+    /// of each category's (any%, 100%), and whether it has been put at the account's place yet.
+    /// And whether the account has a place on the live course's board at all, numbered or not.
+    near: bool,
+    first: [u32; 2],
+    anchored: [bool; 2],
+    placed: bool,
     consent_up: bool,
     reminder_seen: bool,
     /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
@@ -419,6 +427,10 @@ pub fn init() -> Lab {
         prints: Vec::new(),
         posting_best: false,
         posting_focus: screens::POSTING_POST,
+        near: true,
+        first: [0; 2],
+        anchored: [false; 2],
+        placed: false,
         consent_up: false,
         reminder_seen: false,
         trail: Vec::new(),
@@ -789,6 +801,7 @@ pub fn play_itself(s: mut Lab) {
 /// the frames keep up with from the sim (`settle`).
 fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen: vec2) {
     s.place = online::my_place(s.online, live_snap.course, ANY)
+    s.placed = online::placed(s.online, live_snap.course, ANY)
     online::update(mut s.online, time)
     if let Some((r, name, place)) = online::take_watch(mut s.online) {
         open_watch(mut s, r.clone())
@@ -815,7 +828,7 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
         // The leaderboard opens on the world's board; opened alone, with no world to show, on
         // the player's runs.
         s.board = if s.online.linked { online::WORLD } else { PLAYERS }
-        s.row = 0
+        to_board(mut s, s.board)
     }
     if finding {
         s.board = online::SEARCH
@@ -1438,7 +1451,7 @@ fn goal_notes(s: Lab) -> Vec<String> {
 /// Whether the signed-in player has a place on the live course's world board (any%), as last
 /// given.
 fn has_place(s: Lab) -> bool {
-    s.place > 0
+    s.placed
 }
 
 // ---- runs ----------------------------------------------------------------------------------------
@@ -1723,7 +1736,7 @@ fn follow_ghost(s: mut Lab, c: u32) {
         online::want_once(mut s.online, c, ANY)
     }
     if s.race.is_none() && world_ghost {
-        if let Some(h) = online::ghost_hash(s.online, c, record: g == RECORD_GHOST, mine: s.place) {
+        if let Some(h) = online::ghost_hash(s.online, c, record: g == RECORD_GHOST) {
             hash = h.clone()
             online::fetch_now(mut s.online, h)
         }
@@ -1769,9 +1782,8 @@ fn board_rect(screen: vec2, b: u32) -> Rect {
     Rect::new(x, r.y + size * 3.2, w, size * 1.6)
 }
 
-/// The rows a board shows, and the first row its places take: the search's line takes the first.
-const SHOWN_ROWS: u32 = online::SHOWN
-
+/// The first row a board's places take: the search's line takes the first (online.wrela's
+/// `shown_rows`).
 fn first_row(board: u32) -> u32 {
     if board == online::SEARCH { 1 } else { 0 }
 }
@@ -1897,9 +1909,23 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
             button == PadButton::North,
         _ => false,
     }
+    // Home or a controller's trigger: between the top of a world's board and the account's place.
+    let jump = match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::Home && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 &&
+                pressed &&
+                (button == PadButton::LeftTrigger || button == PadButton::RightTrigger)
+        },
+        _ => false,
+    }
     let world = worldly(s.board)
     if switch {
-        s.board = (s.board + 1) % online::BOARDS
+        to_board(mut s, (s.board + 1) % online::BOARDS)
+    } else if jump && jumps(s, c) {
+        s.near = !s.near
+        s.first = [0; 2]
+        s.anchored = [false; 2]
         s.row = 0
     } else if post && s.board == PLAYERS {
         let runs = listed(s, c, s.column)
@@ -1912,9 +1938,18 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
             online::watch_place(mut s.online, places[min(s.row, places.len() - 1)].clone())
         }
     } else if nav == Some(Nav::Up) {
-        s.row = if s.row > 0 { s.row - 1 } else { 0 }
+        if s.row > 0 {
+            s.row -= 1
+        } else if world && s.first[s.column] > 0 {
+            // Past the top row shown: the board moves down one.
+            s.first[s.column] -= 1
+        }
     } else if nav == Some(Nav::Down) {
-        s.row += 1
+        if !world || s.row + 1 < rows(mut s, c, s.column) {
+            s.row += 1
+        } else {
+            scroll_down(mut s, c)
+        }
     } else if nav == Some(Nav::Left) || nav == Some(Nav::Right) {
         s.column = if nav == Some(Nav::Left) { ANY } else { FULL }
     } else if nav == Some(Nav::Choose) {
@@ -1932,7 +1967,7 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         if world {
             for category in [ANY, FULL] {
                 let places = board_places(mut s, c, category)
-                for i in 0..min(places.len(), SHOWN_ROWS - first) {
+                for i in 0..places.len() {
                     if row_rect(screen, category, i + first).contains(at) {
                         s.column = category
                         s.row = i
@@ -1943,8 +1978,7 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         }
         for b in 0..online::BOARDS {
             if board_rect(screen, b).contains(at) {
-                s.board = b
-                s.row = 0
+                to_board(mut s, b)
             }
         }
         if !world {
@@ -2175,22 +2209,81 @@ fn open_watch(s: mut Lab, r: take Replay) {
     s.idle = 0.0
 }
 
+/// The leaderboard on board `b`: a world's board opens at the account's place, if it has one.
+fn to_board(s: mut Lab, b: u32) {
+    s.board = b
+    s.row = 0
+    s.near = true
+    s.first = [0; 2]
+    s.anchored = [false; 2]
+}
+
+/// Whether the board shown can move between its top and the account's place: a world's board,
+/// not its search, on which the account has a place, in the category with the focus.
+fn jumps(s: Lab, c: u32) -> bool {
+    if s.board != online::WORLD && s.board != online::WHOLE_GAME {
+        return false
+    }
+    online::placed(s.online, online::board_course(s.board, c), s.column)
+}
+
+/// Down past the last row shown of a world's board: the board moves up one, asking for its next
+/// page when the rows from the top run out.
+fn scroll_down(s: mut Lab, c: u32) {
+    let k = s.column
+    let all = board_list(s, c, k)
+    if s.first[k] + online::shown_rows(s.board) < all.len() {
+        s.first[k] += 1
+    } else if s.board != online::SEARCH && !near_slice(s, c, k) {
+        online::more(mut s.online, online::board_course(s.board, c), k)
+    }
+}
+
+/// Whether the world's board shown for `category` is the slice round the account's place.
+fn near_slice(s: Lab, c: u32, category: u32) -> bool {
+    s.near && !online::slice(s.online, online::board_course(s.board, c), category).is_empty()
+}
+
 /// How many rows the board shown has for course `c` and `category`.
 fn rows(s: mut Lab, c: u32, category: u32) -> u32 {
     if worldly(s.board) {
-        return min(board_places(mut s, c, category).len(), SHOWN_ROWS - first_row(s.board))
+        return board_places(mut s, c, category).len()
     }
     listed(s, c, category).len()
 }
 
-/// The places of the world's board shown (the world's, its search's, or its whole game's) for
-/// course `c` and `category`.
-fn board_places(s: mut Lab, c: u32, category: u32) -> Vec<Place> {
+/// All the places of the world's board shown for course `c` and `category`: its search's; or the
+/// world's (or its whole game's) round the account's place when the leaderboard is near it and
+/// the slice has come, else its pages from the top.
+fn board_list(s: Lab, c: u32, category: u32) -> Vec<Place> {
     if s.board == online::SEARCH {
         return online::found_places(s.online, c, category)
     }
-    let (places, _) = online::places(s.online, online::board_course(s.board, c), category)
+    let course = online::board_course(s.board, c)
+    if near_slice(s, c, category) {
+        return online::slice(s.online, course, category)
+    }
+    let (places, _) = online::places(s.online, course, category)
     places
+}
+
+/// The rows of the world's board shown for course `c` and `category`, as many as it shows from the
+/// first (`first`): near the account's place, put there once it's among them.
+fn board_places(s: mut Lab, c: u32, category: u32) -> Vec<Place> {
+    let all = board_list(s, c, category)
+    let shown = online::shown_rows(s.board)
+    if s.near && !s.anchored[category] && s.board != online::SEARCH && s.online.account.signed_in {
+        borrow name = s.online.account.name
+        if let Some((first, mine)) = online::anchor(all, name.as_str(), s.board) {
+            s.first[category] = first
+            s.anchored[category] = true
+            if category == s.column {
+                s.row = mine - first
+            }
+        }
+    }
+    s.first[category] = min(s.first[category], max(all.len(), shown) - shown)
+    online::window(all, s.first[category], s.board)
 }
 
 /// The world's board for course `c` (or the whole game) and `category` on the runs card: each
@@ -2220,9 +2313,14 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
     } else {
         let course = online::board_course(s.board, c)
         online::want(mut s.online, course, category, By::Player)
-        let (shown, said) = online::places(s.online, course, category)
-        places = take shown
+        let (_, said) = online::places(s.online, course, category)
         note = take said
+    }
+    if !places.is_empty() || s.board != online::SEARCH {
+        // The rows shown, from the first: each one's replay fetched ahead, so choosing it plays at
+        // once.
+        places = board_places(mut s, c, category)
+        online::fetch_rows(mut s.online, places)
     }
     let head = row_rect(screen, category, first)
     if places.is_empty() {
@@ -2250,7 +2348,7 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
     }
     let gold = vec4(0.62, 0.42, 0.08, 1.0)
     let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
-    for i in 0..min(places.len(), SHOWN_ROWS - first) {
+    for i in 0..places.len() {
         let row = row_rect(screen, category, i + first)
         if category == s.column && i == s.row {
             s.list.rect(row, yuzu, radius: size * 0.4)
@@ -2258,12 +2356,15 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
         borrow p = places[i]
         let colour = if p.place == 1 { gold } else { INKED }
         let y = row.y + size * 0.25
-        // A search knows no place: its rows are numbered by time.
-        let number = if p.place > 0 { p.place } else { i + 1 }
+        // A search knows no place: its rows are numbered by time. Past the first thousand a slice
+        // numbers none.
+        let number = if p.place > 0 { f"{p.place}" } else if s.board == online::SEARCH {
+            f"{s.first[category] + i + 1}"
+        } else { String::from("·") }
         let _ = s.list.text(
             s.fonts,
             Face::Mono,
-            f"{number}".as_str(),
+            number.as_str(),
             size,
             vec2(row.x + size * 0.5, y),
             SOFT,
@@ -2504,6 +2605,9 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
     )
     if s.board == PLAYERS {
         items.push(Prompt { act: Act::Post, say: "Post" })
+    }
+    if jumps(s, c) {
+        items.push(Prompt { act: Act::Places, say: if s.near { "Top" } else { "Your place" } })
     }
     items.push(Prompt { act: Act::Find, say: "Search" })
     items.push(Prompt { act: Act::Boards, say: "Next board" })

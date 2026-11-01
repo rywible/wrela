@@ -16,10 +16,14 @@
 // The runs posted are kept by their replays' SHA-256, apart from the game's progress, so a posted
 // run says so.
 //
-// A board's places come with their replays' hashes. When its rows arrive, the replays of its first
-// rows and of the three places above the account's are fetched behind everything else and held
-// (at most `HELD`, the least recently used dropped first, never the ghost's or the race's), so
-// choosing a row plays at once, and a world's ghost has its run.
+// A board's places come with their replays' hashes. The leaderboard opens a world's board at the
+// account's place (the slice round it, or its page if it's on it), moves past the rows it shows a
+// row at a time, asking for the board's next page from the top (`more`), and goes between the top
+// and the account's place. Every row it shows has its replay fetched behind everything else
+// (`fetch_rows`), and so do the three places above the account's, found by where it is among them
+// (past the first thousand a slice numbers none), and they're held (at most `HELD`, the least
+// recently used dropped first, never the ghost's or the race's), so choosing a row plays at once,
+// and a world's ghost has its run.
 
 use platform::link::{Account, Answer, Ask, FromGame, to_game}
 use platform::posting
@@ -50,13 +54,11 @@ const STALE: f32 = 30.0
 const AGAIN: f32 = 30.0
 const LONGEST: f32 = 1800.0
 /// The most replays held to watch and race (at most 48 KiB each, wire.wrela's `MOST_REPLAY`), the
-/// rows of a board shown (main.wrela's `world_rows`), the first rows of a board whose replays are
-/// fetched ahead, and the places above the account's fetched. Both categories of the world's board
-/// and of the search, with the places above, the ghost's and a race's, are `HELD`: switching
-/// between them drops none.
-pub const HELD: u32 = 24
+/// rows of a board shown (main.wrela's `world_rows`, `shown_rows`: each is fetched ahead), and the
+/// places above the account's fetched. Both categories of the world's board and of the search,
+/// with the places above, the ghost's and a race's, are `HELD`: switching between them drops none.
+pub const HELD: u32 = 40
 pub const SHOWN: u32 = 8
-const AHEAD: u32 = 4
 const ABOVE: u32 = 3
 
 struct Uploaded: Serialize {
@@ -91,7 +93,7 @@ enum Asked: Clone + Eq {
     /// The player's Post on the screen of what posting makes public, recorded before `run` is
     /// posted.
     Consent { run: Replay },
-    Board { course: u32, category: u32 },
+    Board { course: u32, category: u32, from: u32 },
     Around { course: u32, category: u32 },
     Watch { name: String, place: u32 },
     Replay { hash: Vec<u8> },
@@ -776,7 +778,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             Answer::Failed { why, .. } => set_status(mut o, fingerprint(run), why.clone()),
             _ => {},
         },
-        Asked::Board { course, category } => {
+        Asked::Board { course, category, from } => {
             let (places, total, note) = match answer {
                 Answer::Board { places, total, .. } => (
                     places.clone(),
@@ -788,6 +790,20 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 Answer::Offline { why } => (Vec::new(), 0, why.clone()),
                 Answer::Rejected { why } => (Vec::new(), 0, why.clone()),
                 _ => (Vec::new(), 0, String::new()),
+            }
+            if from > 0 {
+                // A page further down, after the places shown: kept if they're still the ones it
+                // follows.
+                if let Some(i) = board_of(o.boards, course, category) {
+                    if o.boards[i].places.len() == from && note.is_empty() {
+                        for p in places {
+                            o.boards[i].places.push(p.clone())
+                        }
+                        o.boards[i].total = total
+                        fetch_rows(mut o, places)
+                    }
+                }
+                return
             }
             o.boards.retain(|b| b.course != course || b.category != category)
             o.boards.push(Shown { course, category, places, total, at: o.time, note })
@@ -813,7 +829,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                         note: String::new(),
                     },
                 )
-                fetch_above(mut o, places, at)
+                fetch_above(mut o, places)
             },
             // No place there yet: any run of the account's is its first.
             Answer::Unplaced => {
@@ -914,7 +930,7 @@ pub fn want(o: mut Online, course: u32, category: u32, by: By) {
         }
     }
     let board = Ask::Board { course, category, from: 0 }
-    if !ask(mut o, take board, Asked::Board { course, category }, by) {
+    if !ask(mut o, take board, Asked::Board { course, category, from: 0 }, by) {
         return
     }
     // Shown as loading until it comes; a board asked again keeps its places meanwhile.
@@ -952,6 +968,80 @@ pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
     }
 }
 
+/// Asks for the next page of board (`course`, `category`), after the places it has, if it has more
+/// and none is asked: for the player, who scrolled to the last row shown.
+pub fn more(o: mut Online, course: u32, category: u32) {
+    let Some(i) = board_of(o.boards, course, category) else { return }
+    let from = o.boards[i].places.len()
+    if from == 0 || from >= o.boards[i].total {
+        return
+    }
+    let page = Ask::Board { course, category, from }
+    let _ = ask(mut o, take page, Asked::Board { course, category, from }, By::Player)
+}
+
+/// The places around the account's on board (`course`, `category`), as the slice last gave them:
+/// none if it hasn't come, or the account has no place there.
+pub fn slice(o: Online, course: u32, category: u32) -> Vec<Place> {
+    match board_of(o.slices, course, category) {
+        Some(i) => o.slices[i].places.clone(),
+        None => Vec::new(),
+    }
+}
+
+/// How many of a board's rows the leaderboard shows at once: the search's line takes the first.
+pub fn shown_rows(board: u32) -> u32 {
+    if board == SEARCH { SHOWN - 1 } else { SHOWN }
+}
+
+/// The rows board `board` shows of `places`, from the one at `first`.
+pub fn window(places: [Place], first: u32, board: u32) -> Vec<Place> {
+    var out: Vec<Place> = Vec::new()
+    for i in first..min(places.len(), first + shown_rows(board)) {
+        out.push(places[i].clone())
+    }
+    out
+}
+
+/// Where `name` is among `places`, if it is.
+fn index_of(places: [Place], name: str) -> Option<u32> {
+    for i in 0..places.len() {
+        if places[i].name.as_str() == name {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// The first row board `board` shows of `places` so that `name`'s is among them, with the places
+/// just above it (`ABOVE`, the runs to race) over it, and where `name`'s is: none if it isn't
+/// there.
+pub fn anchor(places: [Place], name: str, board: u32) -> Option<(u32, u32)> {
+    let Some(i) = index_of(places, name) else { return None }
+    let last = max(places.len(), shown_rows(board)) - shown_rows(board)
+    Some((min(max(i, ABOVE) - ABOVE, last), i))
+}
+
+/// Whether the signed-in account has a place on board (`course`, `category`), as its page or the
+/// slice around it last said: numbered or not (past the first thousand a slice doesn't number).
+pub fn placed(o: Online, course: u32, category: u32) -> bool {
+    if !o.account.signed_in || o.account.name.is_empty() {
+        return false
+    }
+    borrow name = o.account.name
+    mine_in(o.boards, course, category, name).is_some() ||
+        mine_in(o.slices, course, category, name).is_some()
+}
+
+/// Board (`course`, `category`) among `shown`, and where `name` is among its places, if it is.
+fn mine_in(shown: [Shown], course: u32, category: u32, name: str) -> Option<(u32, u32)> {
+    let Some(b) = board_of(shown, course, category) else { return None }
+    match index_of(shown[b].places, name) {
+        Some(i) => Some((b, i)),
+        None => None,
+    }
+}
+
 /// The signed-in account's place on board (`course`, `category`) as last given, by its page or the
 /// slice around it: 0 if it has none there, or neither has come.
 pub fn my_place(o: Online, course: u32, category: u32) -> u32 {
@@ -975,10 +1065,8 @@ fn rows_came(o: mut Online, course: u32, category: u32) {
     let Some(shown) = board_of(o.boards, course, category) else { return }
     let places = o.boards[shown].places.clone()
     let total = o.boards[shown].total
-    for i in 0..min(places.len(), AHEAD) {
-        fetch(mut o, places[i].replay.clone())
-    }
-    if !o.account.signed_in || o.account.name.is_empty() || course == WHOLE {
+    fetch_rows(mut o, window(places, 0, WORLD))
+    if !o.account.signed_in || o.account.name.is_empty() {
         return
     }
     var mine = 0
@@ -989,7 +1077,7 @@ fn rows_came(o: mut Online, course: u32, category: u32) {
         }
     }
     if mine > 0 {
-        fetch_above(mut o, places, mine)
+        fetch_above(mut o, places)
     } else if total <= places.len() {
         learn(mut o, course, category, 0)
     } else if known(o, course, category) != Some(0) {
@@ -997,12 +1085,12 @@ fn rows_came(o: mut Online, course: u32, category: u32) {
     }
 }
 
-/// The replays of the `ABOVE` places just above place `mine`, among `places`.
-fn fetch_above(o: mut Online, places: [Place], mine: u32) {
-    for p in places {
-        if p.place > 0 && p.place < mine && p.place + ABOVE >= mine {
-            fetch(mut o, p.replay.clone())
-        }
+/// The replays of the `ABOVE` places just above the account's among `places`, by where it is
+/// (past the first thousand a slice numbers none).
+fn fetch_above(o: mut Online, places: [Place]) {
+    let Some(i) = index_of(places, o.account.name.as_str()) else { return }
+    for k in max(i, ABOVE) - ABOVE..i {
+        fetch(mut o, places[k].replay.clone())
     }
 }
 
@@ -1080,6 +1168,13 @@ fn hold(o: mut Online, hash: Vec<u8>, r: Replay) {
         if !dropped {
             return
         }
+    }
+}
+
+/// Asks for the replays of `places`, the rows shown, behind the player's asks.
+pub fn fetch_rows(o: mut Online, places: [Place]) {
+    for p in places {
+        fetch(mut o, p.replay.clone())
     }
 }
 
@@ -1178,23 +1273,43 @@ pub fn take_watch(o: mut Online) -> Option<(Replay, String, u32)> {
 }
 
 /// The hash of the replay a world's ghost runs on course `course` (any%): the world record
-/// (`record`), or the place just above the account's, `mine` (`my_place`; the record, if the
-/// account holds it). None while the board, or the account's place on it, isn't known.
-pub fn ghost_hash(o: Online, course: u32, record: bool, mine: u32) -> Option<Vec<u8>> {
-    let target = if record { 1 } else {
-        if mine == 0 {
-            return None
+/// (`record`), or the run just above the account's, found by where the account is among the places
+/// shown (its board's page, or the slice around it, which past the first thousand numbers none);
+/// the record, if the account holds it. None while the board, or the account's place on it, isn't
+/// known.
+pub fn ghost_hash(o: Online, course: u32, record: bool) -> Option<Vec<u8>> {
+    if record {
+        let first = |p: Place| p.place == 1 && !p.replay.is_empty()
+        if let Some((b, i)) = picked(o.boards, course, Some(ANY), first) {
+            return Some(o.boards[b].places[i].replay.clone())
         }
-        max(mine, 2) - 1
+        return match picked(o.slices, course, Some(ANY), first) {
+            Some((b, i)) => Some(o.slices[b].places[i].replay.clone()),
+            None => None,
+        }
     }
-    let at = |p: Place| p.place == target && !p.replay.is_empty()
-    if let Some((b, i)) = picked(o.boards, course, Some(ANY), at) {
-        return Some(o.boards[b].places[i].replay.clone())
+    if !o.account.signed_in || o.account.name.is_empty() {
+        return None
     }
-    match picked(o.slices, course, Some(ANY), at) {
-        Some((b, i)) => Some(o.slices[b].places[i].replay.clone()),
-        None => None,
+    borrow name = o.account.name
+    if let Some(h) = above(o.boards, course, name) {
+        return Some(h)
     }
+    above(o.slices, course, name)
+}
+
+/// The replay's hash of the run just above `name`'s among board (`course`, any%) of `shown`, by
+/// position; `name`'s own, if it's the first place.
+fn above(shown: [Shown], course: u32, name: str) -> Option<Vec<u8>> {
+    let Some((b, i)) = mine_in(shown, course, ANY, name) else { return None }
+    borrow places = shown[b].places
+    if i > 0 && !places[i - 1].replay.is_empty() {
+        return Some(places[i - 1].replay.clone())
+    }
+    if i == 0 && places[0].place == 1 {
+        return Some(places[0].replay.clone())
+    }
+    None
 }
 
 /// The place and name of the run whose replay's hash is `hash`, on a board or a slice of course
@@ -1288,10 +1403,8 @@ fn came_names(o: mut Online, found: [Found], course: u32) {
     }
     for category in [ANY, FULL] {
         let Some(b) = board_of(o.found_boards, course, category) else { continue }
-        for i in 0..min(o.found_boards[b].places.len(), AHEAD) {
-            let hash = o.found_boards[b].places[i].replay.clone()
-            fetch(mut o, hash)
-        }
+        let shown = window(o.found_boards[b].places, 0, SEARCH)
+        fetch_rows(mut o, shown)
     }
 }
 
@@ -1628,7 +1741,12 @@ fn a_players_ask_needs_a_console_a_background_one_an_account_and_a_post_alone_it
         for k in 0..4 {
             var o = state(k)
             let board = Ask::Board { course: WETLANDS, category: ANY, from: 0 }
-            let asked = ask(mut o, take board, Asked::Board { course: WETLANDS, category: ANY }, by)
+            let asked = ask(
+                mut o,
+                take board,
+                Asked::Board { course: WETLANDS, category: ANY, from: 0 },
+                by,
+            )
             assert(asked == allowed[k] && o.asks.len() == u32(asked), f"rule {k}")
         }
     }
@@ -1761,8 +1879,12 @@ fn a_boards_rows_fetch_their_replays_and_the_three_above_the_players_and_no_more
             fetched.push(u32(hash[0]))
         }
     }
-    // The first four rows, and places 10, 11 and 12, above the player's thirteenth.
-    assert(fetched == Vec::from([1, 2, 3, 4, 10, 11, 12]), f"{fetched.len()} fetched")
+    // Every row shown, and places 10, 11 and 12, above the player's thirteenth.
+    assert(fetched == Vec::from([1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]), f"{fetched.len()} fetched")
+    assert(window(o.boards[0].places, 0, WORLD).len() == SHOWN && SHOWN == 8, "the rows shown")
+    // Every row shown of both categories of the world's board and of its search, the places above,
+    // the ghost's and a race's are held at once.
+    assert(HELD >= 2 * shown_rows(WORLD) + 2 * shown_rows(SEARCH) + ABOVE + 2, "held at once")
     for (_, a) in o.asks {
         if let Asked::Replay { .. } = a {
             panic("fetches wait behind the player's asks")
@@ -1844,7 +1966,7 @@ fn a_held_row_plays_at_once_and_another_is_fetched_first() {
 fn the_world_ghosts_are_the_record_and_the_place_above_the_players() {
     var o = signed_in()
     assert(
-        ghost_hash(o, WETLANDS, record: true, mine: my_place(o, WETLANDS, ANY)).is_none(),
+        ghost_hash(o, WETLANDS, record: true).is_none(),
         "no board yet",
     )
     given(
@@ -1860,26 +1982,23 @@ fn the_world_ghosts_are_the_record_and_the_place_above_the_players() {
     )
     assert(my_place(o, WETLANDS, ANY) == 3)
     assert(
-        ghost_hash(o, WETLANDS, record: true, mine: my_place(o, WETLANDS, ANY)) ==
-            Some(Vec::filled(32, u8(1))),
+        ghost_hash(o, WETLANDS, record: true) == Some(Vec::filled(32, u8(1))),
         "the record",
     )
     assert(
-        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)) ==
-            Some(Vec::filled(32, u8(2))),
+        ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(2))),
         "the run above",
     )
     let Some((name, at)) = whose(o, WETLANDS, Vec::filled(32, u8(2))) else { panic("whose") }
     assert(at == 2 && name.as_str().starts_with("Lord"))
     o.account.name = String::from("Sir Wobblesnout the Unhurried")
     assert(
-        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)) ==
-            Some(Vec::filled(32, u8(1))),
+        ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(1))),
         "first: the record",
     )
     o.account.name = String::from("Count Muddlenose the Serene")
     assert(
-        ghost_hash(o, WETLANDS, record: false, mine: my_place(o, WETLANDS, ANY)).is_none(),
+        ghost_hash(o, WETLANDS, record: false).is_none(),
         "no place, no run above",
     )
 }
@@ -1921,9 +2040,148 @@ fn a_search_asks_once_for_its_parts_and_lists_their_runs_on_the_level() {
         }
     }
     assert(fetched, "its run's replay fetched ahead")
+    // Every result shown is fetched ahead: the rows under the search's line.
+    var many: Vec<Found> = Vec::new()
+    for n in 0..12 {
+        let standing = platform::wire::Standing {
+            course: WETLANDS,
+            category: ANY,
+            ticks: 900 + n,
+            run: RunRef { handle: Vec::filled(16, u8(40 + n)), n: 40 + n },
+            replay: Vec::filled(32, u8(40 + n)),
+        }
+        many.push(
+            Found { name: f"Sir Wobble{n} the Unhurried", standings: Vec::from([take standing]) },
+        )
+    }
+    var wide = signed_in()
+    came_names(mut wide, many, WETLANDS)
+    assert(wide.fetches.len() == shown_rows(SEARCH) && shown_rows(SEARCH) == 7, "the rows shown")
     assert(
         ordinal(1) == String::from("1st") &&
             ordinal(12) == String::from("12th") &&
             ordinal(23) == String::from("23rd"),
     )
+}
+
+@test
+fn the_leaderboard_opens_at_the_players_place_and_pages_on_past_the_rows_shown() {
+    var o = signed_in()
+    var top: Vec<Place> = Vec::new()
+    for n in 1..21 {
+        top.push(place(n, "Sir Wobblesnout the Unhurried", 900 + n))
+    }
+    given(mut o, top, 50)
+    // Not on the first page: the slice round the account's place is asked.
+    var slice_asked = false
+    for a in all_asks(o) {
+        if let Asked::Around { .. } = a {
+            slice_asked = true
+        }
+    }
+    assert(slice_asked && !placed(o, WETLANDS, ANY), "its place asked")
+    var around: Vec<Place> = Vec::new()
+    for n in 30..41 {
+        around.push(place(n, if n == 35 { ME } else { "Lord Snufflepaw the Plucky" }, 900 + n))
+    }
+    o.fetches.retain(
+        |f| match f.1 {
+            Asked::Around { .. } => false,
+            _ => true,
+        },
+    )
+    answered(
+        mut o,
+        Asked::Around { course: WETLANDS, category: ANY },
+        Answer::Around { places: around, at: 35 },
+    )
+    assert(placed(o, WETLANDS, ANY) && my_place(o, WETLANDS, ANY) == 35)
+    let shown = slice(o, WETLANDS, ANY)
+    let Some((first, mine)) = anchor(shown, ME, WORLD) else { panic("the account's row") }
+    assert(first == 2 && mine == 5, "the three above it over it")
+    let rows = window(shown, first, WORLD)
+    assert(rows.len() == SHOWN && rows[mine - first].name == String::from(ME), "shown")
+    // Near the top or the bottom, it starts or ends the rows shown.
+    let near_top = anchor(top_of(n: 10, from: 1), "Count 2", WORLD)
+    assert(near_top == Some((0, 1)), "near the top")
+    let near_end = anchor(top_of(n: 20, from: 1), "Count 19", WORLD)
+    assert(near_end == Some((12, 18)), "near the end")
+    assert(anchor(shown, "Nobody", WORLD).is_none())
+    // From the top, the next page is asked once the rows run out, and it follows the first.
+    more(mut o, WETLANDS, ANY)
+    more(mut o, WETLANDS, ANY)
+    var pages: Vec<u32> = Vec::new()
+    for a in all_asks(o) {
+        if let Asked::Board { from, .. } = a {
+            pages.push(from)
+        }
+    }
+    assert(pages == Vec::from([20]), "once, from the 21st")
+    let (_, asked) = o.asks.remove(0)
+    answered(
+        mut o,
+        asked,
+        Answer::Board {
+            course: WETLANDS,
+            category: ANY,
+            places: top_of(n: 20, from: 21),
+            total: 50,
+        },
+    )
+    let (all, _) = places(o, WETLANDS, ANY)
+    assert(all.len() == 40 && all[20].place == 21, "after the first")
+    // A page that no longer follows (the board came again meanwhile) isn't put after it.
+    answered(
+        mut o,
+        Asked::Board { course: WETLANDS, category: ANY, from: 20 },
+        Answer::Board {
+            course: WETLANDS,
+            category: ANY,
+            places: top_of(n: 20, from: 21),
+            total: 50,
+        },
+    )
+    let (all, _) = places(o, WETLANDS, ANY)
+    assert(all.len() == 40, "not twice")
+}
+
+/// `n` places from place `from`, each named "Count <place>".
+fn top_of(n: u32, from: u32) -> Vec<Place> {
+    var out: Vec<Place> = Vec::new()
+    for k in from..from + n {
+        out.push(place(k % 256, f"Count {k}", 900 + k))
+        out[out.len() - 1].place = k
+    }
+    out
+}
+
+@test
+fn past_the_first_thousand_the_run_above_is_the_one_above_in_the_slice() {
+    var o = signed_in()
+    // The slice past the first thousand numbers none.
+    var around: Vec<Place> = Vec::new()
+    for k in 0..11 {
+        var p = place(60 + k, if k == 5 { ME } else { "Lord Snufflepaw the Plucky" }, 5000 + k)
+        p.place = 0
+        around.push(take p)
+    }
+    answered(
+        mut o,
+        Asked::Around { course: WETLANDS, category: ANY },
+        Answer::Around { places: around, at: 0 },
+    )
+    assert(my_place(o, WETLANDS, ANY) == 0 && placed(o, WETLANDS, ANY), "a place, unnumbered")
+    assert(
+        ghost_hash(o, WETLANDS, record: false) == Some(Vec::filled(32, u8(64))),
+        "the run just above, by where it is",
+    )
+    assert(ghost_hash(o, WETLANDS, record: true).is_none(), "the record isn't in the slice")
+    // Its replays, of the three above it, fetched ahead.
+    var fetched: Vec<u32> = Vec::new()
+    for a in all_asks(o) {
+        if let Asked::Replay { hash } = a {
+            fetched.push(u32(hash[0]))
+        }
+    }
+    assert(fetched == Vec::from([62, 63, 64]), f"{fetched.len()} fetched")
 }
