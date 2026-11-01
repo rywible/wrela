@@ -3016,13 +3016,14 @@ and a replay with `public, max-age=86400`, the export, sign-out clearing the coo
 origin's `POST` refused (403), and a client past 60 changes a minute refused (429). Not measured:
 CPU time per call on Cloudflare's own machines, which its dashboard gives after the first deploy.
 
-## Zstandard against Brotli (to measure on first deploy)
+## Zstandard against Brotli (2026-11-01, first deploy)
 
 The gate for the zone's Compression Rule (docs/plan-online-play.md step 12; docs/toolchain.md,
 "Delivery"): it stays only if each file's Zstandard bytes are within 5% of its Brotli bytes. The
 files are the console's and the capybara's WASM modules and runtime scripts, as the deploy's
 Zstandard check names them (studio/deploy `compressed`), on the live site after the first deploy
-with the rule set, each fetched twice with curl, the bytes on the wire as curl counts them:
+with the rule set, each fetched once with curl, the bytes on the wire as curl counts them (the
+uncompressed column with `accept-encoding: identity`):
 
 ```bash
 curl -s -o /dev/null -H 'accept-encoding: zstd' -w '%{size_download}\n' https://wrela.dev/b/<sha256>.wasm
@@ -3031,14 +3032,21 @@ curl -s -o /dev/null -H 'accept-encoding: br' -w '%{size_download}\n' https://wr
 
 | File | Uncompressed bytes | Zstandard bytes | Brotli bytes | Zstandard / Brotli |
 | --- | ---: | ---: | ---: | ---: |
-| the console's WASM | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
-| the console's runtime (`main.js`, `worker.js`, `worklet.js`) | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
-| the capybara's WASM (session, play build) | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
-| the capybara's runtime | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+| the console's WASM | 3,194,857 | 628,372 | 613,832 | 1.024 |
+| the console's runtime (`main.js`, `worker.js`, `worklet.js`) | 244,134 | 85,472 | 84,099 | 1.016 |
+| the capybara's WASM (session, play build) | 293,659 | 59,286 | 58,010 | 1.022 |
+| the capybara's runtime | 244,134 | 85,455 | 84,048 | 1.017 |
 
-Release, commit and toolchain: to record on first deploy (toolchain 0.18.0).
+Every file is within 5% of Brotli (the worst, the console's WASM, 2.4% larger), so the rule stays.
+Each came back with `content-encoding: zstd` when asked with `accept-encoding: zstd`, as the
+deploy's own check said of all 9 WASM modules and runtime scripts. Before the merge, main's
+console WASM (e25ffdc0's release) measured 570,088 zstd against 554,602 Brotli bytes (1.028).
 
-## Early Hints (to measure on first deploy)
+Release 34035cc91d12f6b0d2ff, main b3081e38 (#351), toolchain 0.18.0; the console at
+`https://wrela.dev/b/b72e8191….wasm`, the capybara at `https://capybara.wrela.dev/b/844d61f4….wasm`,
+the runtime set `/r/574fd788…/` on both.
+
+## Early Hints (2026-11-01, first deploy)
 
 Whether the zone's Early Hints (docs/plan-online-play.md step 13; docs/toolchain.md, "Delivery")
 starts the WASM sooner: each bootstrap page's preloads are `Link` headers in `_headers`, which
@@ -3051,10 +3059,18 @@ and after:
 
 | Page | Machine, browser | Before: `requestStart` (ms) | After: `requestStart` (ms) | After: `initiatorType` |
 | --- | --- | ---: | ---: | --- |
-| the console, `https://wrela.dev/` | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
-| the capybara's session, framed by the console | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+| the console, `https://wrela.dev/` | not measured | not measured | not measured | not measured |
+| the capybara's session, framed by the console | not measured | not measured | not measured | not measured |
 
-Release, commit and toolchain: to record on first deploy (toolchain 0.18.0).
+The check passes: after a first request that let Cloudflare keep the page's `Link` header,
+`curl -sv --http2` gets `HTTP/2 103` then `HTTP/2 200` for `https://wrela.dev/` (5 of 5) and for
+the capybara's session page (3 of 3). The timings weren't measured: the zone's Early Hints were
+on before the release that carries the `Link` headers deployed, so there is no "before" on the
+same release, and the desktop app's browser pane, the one browser at hand, reported the console's
+WASM with `initiatorType` `link` (`requestStart` 148 ms), not `early-hints`. Whether the hint
+starts the WASM sooner in Chrome is still to measure, with a fresh profile, as above.
+
+Release 34035cc91d12f6b0d2ff, main b3081e38 (#351), toolchain 0.18.0.
 
 ## E2, the history's light and events in the bake (2026-10-31, toolchain 0.11.1)
 
