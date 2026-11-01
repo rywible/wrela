@@ -1937,31 +1937,33 @@ docs/plan-world-class-3.md §G5.0, measured (`engine/tests/crag-rung`, 6fc3ecff;
 Radeon "Lucienne", not the M4 Air). **The worked numbers in "G5.0, the prototype rung" above are
 wrong:** a crag's beds aren't extracted at 4 cm but at 45 cm (`stone::realize_bed`, the floor's
 crags; the 4 cm was another built thing's near level). The rung: one piece of a crag's bed (a
-`stone::Bed`, 1.2 × 0.8 × 1.0 m, its joints, bedding and three chips) realized at today's 45 cm
-cell and at the floor's pixel footprint for an eye 10, 25, 50 and 100 m off (1080p at 0.82 rad:
+`stone::Bed`, 1.2 × 0.8 × 1.0 m, its joints, bedding and three chips) realized as
+`stone::realize_bed` realizes it today (its tolerance 50 cm, its cell 45 cm, its colours a cell of
+25 cm; the xhigh review's correction of the first run, which took 45 cm for all three) and at the
+floor's pixel footprint for an eye 10, 25, 50 and 100 m off (1080p at 0.82 rad:
 8 mm, 2 cm, 4 cm, 8 cm), each mesh's surface measured against the bed's own field
 (`realize::measured_error`), and each distance's two stills (1920 × 1080, `engine::plain`'s
 light) differenced:
 
 | Cell | Vertices | Bytes | Its surface's error | That error in pixels at 10 / 25 / 50 / 100 m | Its realize, host to readback |
 |---|---|---|---|---|---|
-| 45 cm (today) | 32 | 2,256 | 130.8 mm | **16.35** / 6.54 / 3.27 / 1.64 | 5.0 ms (its pipelines' first) |
-| 8 mm (10 m's pixel) | 102,230 | 7,359,720 | 0.60 mm | 0.07 at 10 m | 9.8 ms |
+| 45 cm (today) | 24 | 1,680 | 287.2 mm | **35.90** / 14.36 / 7.18 / 3.59 | 13.6 ms (its pipelines' first) |
+| 8 mm (10 m's pixel) | 102,230 | 7,359,720 | 0.60 mm | 0.07 at 10 m | 9.8 ms (50.1 under the GPU queue's load) |
 | 2 cm (25 m's) | 16,339 | 1,176,384 | 6.52 mm | 0.33 at 25 m | 2.3 ms |
 | 4 cm (50 m's) | 4,071 | 293,088 | 2.59 mm | 0.06 at 50 m | 1.8 ms |
 | 8 cm (100 m's) | 1,025 | 73,776 | 12.17 mm | 0.15 at 100 m | 0.9 ms |
 
 | Eye at | The piece's pixels | Today's still against the footprint's: over 8/255 | Mean difference |
 |---|---|---|---|
-| 10 m | 26,632 | 63.2 % | 32.3 / 255 |
-| 25 m | 4,263 | 63.3 % | 31.7 / 255 |
-| 50 m | 1,062 | 62.4 % | 30.7 / 255 |
-| 100 m | 265 | 63.4 % | 29.2 / 255 |
+| 10 m | 27,394 | 67.7 % | 33.4 / 255 |
+| 25 m | 4,393 | 66.3 % | 32.2 / 255 |
+| 50 m | 1,088 | 65.5 % | 31.1 / 255 |
+| 100 m | 275 | 65.5 % | 29.9 / 255 |
 
 Today's cell rounds a bed's edges by a cell and smooths its colour over it: its surface strays
-16 pixels from its field at 10 m and still 1.6 at 100 m, and two thirds of its pixels differ from
+36 pixels from its field at 10 m and still 3.6 at 100 m, and two thirds of its pixels differ from
 the footprint's at every distance. The footprint's extraction holds within a third of a pixel
-everywhere, at 3,200 times the vertices at 10 m (7.4 MB for this piece alone) and 32 times at
+everywhere, at 4,300 times the vertices at 10 m (7.4 MB for this piece alone) and 43 times at
 100 m. **The rung's verdict:** G5.1's extraction would change how the floor's crags read at
 every distance, and its cost needs the per-frame block tree the plan describes (a piece's 10 m
 extraction is 9.8 ms here: cached blocks, refined where the surface may be). **It isn't built in
