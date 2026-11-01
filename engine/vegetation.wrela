@@ -560,7 +560,19 @@ fn limb_world(
     let inst = instances[i]
     let kd = kinds[kind_of(inst)]
     let limb = limbs[kd.limb_first + v / LIMB_POINTS]
-    let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
+    let (centre, n, foot_radius, along) = limb_point(limb, v % LIMB_POINTS)
+    // An upright trunk's foot flares into its roots (`plant::root_flare`, §G11); a log's doesn't.
+    let rise = limb.points[3] - limb.points[0]
+    let upright = v / LIMB_POINTS == 0 && rise.y > 0.7 * length(rise)
+    let radius = if upright {
+        foot_radius *
+            plant::root_flare(
+                centre.y - limb.points[0].y,
+                limb.radii[0],
+                along.x,
+                fract(inst.at.x * 0.37 + inst.at.z * 0.61),
+            )
+    } else { foot_radius }
     if kd.bake.bark.grown == 0.0 {
         // A hand's kind: every limb thickened by its record (`Instance::thick`), its ridges round
         // it by its own girth, along it from its foot.
