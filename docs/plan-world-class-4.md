@@ -49,8 +49,9 @@ fall, the water's reflections, solid things near the eye, foliage near the eye, 
 floor, the creature), its class panel (§0.5 G-class) moves from losing to equal on the shots where
 that class shows, while each part's own cost on the M4 stays within its budget (§0.5 G-M4's table:
 5.0 ms of GPU in all, **proposed**), so the vale's sustained GPU p50 ends within Part A's baseline
-(A4) plus those budgets, and, if D3's single pass for the cards saves what hypothesis H9 bets,
-no slower than the baseline.** The claim says which it was. A class that can't reach equal ends Blocked with its trajectory, as plan three's
+(A4) plus those budgets. Whether it ends no slower than the baseline is Part I's measurement of the
+whole scene, not a consequence of any one part's gate (D's budget is already net of D3's saving).**
+The claim says which it was. A class that can't reach equal ends Blocked with its trajectory, as plan three's
 did; the claim says which classes did.
 
 Fidelity is still judged against freely licensed photographs of the real subjects by agents
@@ -655,7 +656,29 @@ both, since a cut alone frees no bytes.
 
 ## 10. The council's findings
 
-(Filled by the council's rounds.)
+A council of two Codex reviewers (`gpt-6.1-sol`, correctness and verification; `gpt-6-astra`,
+architecture and risk; both at high reasoning effort, read-only, through `codex exec` on this
+plan's branch) reviewed it on 2026-11-01 in three rounds, with a Claude leader (the thread that
+wrote it). Every claim was checked against the source before its decision.
+
+| Round | ID | Finding | Decision | What changed |
+|---|---|---|---|---|
+| 1 | A-F1 | G-rung's one surface error fits no reflection or motion, and bark's near distances weren't its | Accepted | Each class's own error (surface; image error against a ground-truth render; the gait's), its own distances, resident bytes beside drawn |
+| 1 | A-F2, B-F2 | The kinematic walker's feasibility forbids a bound's flight | Accepted | G-motion-sim's feasibility from contact forces, ballistic flight valid, hop, hover and pull fixtures |
+| 1 | A-F3, B-F4 | Performance Done-whens without pass rules; B's +0.5 ms against D43's "no slower" | Accepted | G-M4's rule and a budget a part |
+| 1 | A-F4 | Part F read growth records the growth doesn't keep (radii by year, shed limbs) | Accepted | F1, the growth's records, a prerequisite with tests and its bytes |
+| 1 | A-F5, B-F5 | D4 frames no stream; a shot's label isn't coverage | Accepted | D11, the stream; A1's coverage check |
+| 1 | A-F6 | Part F's three phrases cited to one line | Accepted | Each phrase its own line |
+| 1 | B-F1 | The cut frees no bytes: `engine::virtual` keeps every level | Accepted | D1's residency (cooked on demand, evicted past `NEAR_SOLID`), G-memory with every level and transient |
+| 1 | B-F3 | A set is one surface: two trunks of a kind collide, and the resolve is a pass a level | Accepted | D2's global cluster table, one resolve within seven storage buffers, a collision test |
+| 1 | B-F6 | G-class misstated G-reference's per-pair rule | Accepted | G-class's own count rule and tally test |
+| 2 | A-F7, B-F7 | The PSNR trigger ran the wrong way | Accepted | Surface error over a pixel, or PSNR under 30 dB, fixtures both sides |
+| 2 | A-F8, B-F6 | "Four not against" isn't a median at equal | Accepted | A count, its split cases tested |
+| 2 | A-F3, B-F4 | The cumulative rule let budgets transfer, could switch off a net saving, and missed G's CPU budget | Accepted | Each part's own on/off change within its own budget; D net of D3; the CPU p50 checked |
+| 3 | A-F3, B-F4 | D43 still implied H9 meant no slowdown | Accepted | "No slower" is Part I's measured whole-scene result |
+
+Round 3 found nothing new; its one disputed line was fixed after it, as the council's rules allow
+a plan's third round to close.
 
 ## 11. For Ryan: the questions only you can answer
 
