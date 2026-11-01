@@ -20,8 +20,8 @@ leaderboard, and the friction to that is making an account"). So:
 - **Reading is open; being on the boards takes an account and a choice.** Anyone may see the
   World's boards, watch their runs, race them as ghosts and search names. These public reads need
   no account, the server ties none to them (it reads no session for one), and the edge cache
-  serves them; they still carry the site's cookies and skip the browser's cache, as every
-  `std::http::fetch` does in toolchain 0.17.0 (docs/toolchain-gaps.md). Posting is the player's
+  serves them; since toolchain 0.18.0 they go with `std::http::fetch_public`, with no cookie, and the
+  browser's cache keeps them too (docs/toolchain-gaps.md). Posting is the player's
   explicit choice, after the console says exactly what becomes public, and a setting posts every
   new personal best.
 - **Fast.** Watching a board's run starts with nothing to wait for; a posted run shows its place
@@ -299,6 +299,57 @@ and after, in docs/bench.md.
   council's list (a replayed challenge, upload versus delete, a delayed release after a new owner, a
   held removal, 1,001 ranked accounts with a top one deleted, a failed board call and its retry), and
   `wrangler dev` end to end with two browsers.
+
+As built (2026-10-31, toolchain 0.18.0): platform/server.wrela is the core (the instances' kinds and
+names, what they say to each other: `Inner` calls, `Back` replies, `Note` messages in a `Letter`
+with the sender's time), edge.wrela the edge, accounts.wrela an account, shards.wrela the names,
+codes, replays and search shards, ranking.wrela a board and a whole board; the console's server
+(console/server/serve.wrela) carries out each instance's commands. Where it differs from the table
+and the list above:
+
+- **One more kind, `replays/<00..3f>`** (replay's hash → the account that posted it), so a copy of
+  another account's posted replay is still refused, as the one-object server refused it; without it a
+  world record's public replay could be posted by anyone. The edge asks it once a run plays, before
+  the account records it. A deleted account's replays are let go, and never its own again, so an
+  upload of its still under way when it was deleted never comes back.
+- **A challenge is 32 bytes:** an 8-byte nonce, the expiry, and the first 16 bytes of the HMAC-SHA256
+  tag (RFC 2104 §5), so it's a WebAuthn challenge's usual size and the W3C's test vectors still
+  register and sign in. What it covers adds the agreement a sign-up began with, so a sign-up's finish
+  carries the same (`Register { handle, challenge, agreed, .. }`); a sign-in's names no handle (its
+  passkey does), and its nonce is kept spent in the account it signs in to. The keys are the API
+  Worker's secrets `WRELA_CEREMONY_KEY` and `WRELA_CEREMONY_KEY_OLD`, given as request headers,
+  since a program reads no Worker variable (docs/toolchain-gaps.md); docs/toolchain.md says how
+  they're set and rotated.
+- **A removal is acknowledged by a message back** (`Note::Removed`), since the outbox tells its sender
+  nothing (docs/toolchain-gaps.md); a deletion answers `Done` once every removal is sent, sessions
+  and passkeys gone at once, and its store clears when the last one comes back. A message to itself
+  (`Note::Finish`) finishes a deletion an instance dropped part way.
+- **A name change sends nothing to the boards or search:** a name is kept for good before a run can
+  go up (a reroll is refused once it's kept), so no board or search holds a name that can change.
+- **An older board's runs** go through `call_build` on the verifier `games/capybara/boards.wrela`'s
+  `ARCHIVED` names (empty today: version 3 is the first with one kept); the upload names its board
+  (`Upload { board }`, link.wrela's `Ask::Upload { board }`). The release writes each build's verifier
+  path to release.json, from the catalog's `console.boards` and `console.board` (a test checks it is
+  replay.wrela's `BOARD`), and the deploy puts its files in the `wrela-builds` bucket with Wrangler
+  before any Worker deploys.
+- **The game's side** is the least it needed to compile against the new link (link.wrela): a place's
+  run is a `RunRef`, `Ask::Watch { run }` reads a replay (`Ask::Replay` is gone; the game finds a
+  hash's run among the places it shows), `Answer::Verified` and `Answer::Run` carry a `RunRef`, and
+  `Ask::Upload` carries its board. A separate pass finishes the game's side.
+
+Checked: `wrela test platform` (58 tests: every assertion of the one-object server carried over where
+it still applies, the queue's gone with it; and the council's list, each broken in the code it guards
+and seen to fail first), `wrela test console`, `console/server`, `studio/release`, `studio/deploy`
+and the capybara's online, search and boards tests. End to end on `wrangler@4.151.0 dev` with curl
+and a throwaway client (2026-10-31): the shipped build routes every kind of request to its instance
+and refuses sign-ups; a copy with sign-ups opened signed up two accounts, posted the Wetlands' route
+run (played at the edge: 1,311 ticks, place 1), read its board, slice, searches and its replay at its
+path (`public, max-age=31536000, immutable`, then from the edge's cache), refused the second
+account's copy, and after a deletion moved the second account up, forgot the run (past the cache) and
+left the account's object holding its mark alone with its outbox empty; and a build of board 4
+played a board-3 run, and refused a bad one, through the board-3 build's verifier in the local
+bucket through the Worker Loader (the council's remaining check N6). Passkey sign-in itself, and
+two browsers' sessions, still want a person.
 
 ## 3. How a string is written
 

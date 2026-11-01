@@ -6,6 +6,24 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A server can't read its Worker's secrets
+
+- **Needed:** the console's server making and checking its ceremonies' challenges with a key no one else holds (docs/plan-online-play.md step 14: `nonce ‖ expiry ‖ HMAC-SHA256(key, ...)`, "a Worker secret, two for rotation"), set with `wrangler secret put` and never in the repository.
+- **What happens:** toolchain 0.18.0 gives a server program no way to read a Worker variable or secret: `std::server`, `std::http` and `std::crypto` have none, and the Cloudflare host reads only its own (`WRELA_ORIGINS`, `WRELA_LIMITS`, `WRELA_PRINT`).
+- **Found:** 2026-10-31, building the sharded server.
+- **Evidence:** runtime/cloudflare/src/cloudflare.ts's `Env` (wrela-compiler at `c3eaac3`, 0.18.0) names only the host's bindings and variables, and `api` passes the program a request's allowlisted headers alone (`seenByServer`); spec §19.5 lists no service for them.
+- **Meanwhile:** the API Worker's script (studio/release/site.wrela's `api_script`) removes any `x-wrela-key` and `x-wrela-key-old` header a client sent and sets them from the secrets `WRELA_CEREMONY_KEY` and `WRELA_CEREMONY_KEY_OLD` before it calls `api`, and the program reads its keys from those headers (console/server/serve.wrela). A request dispatched to an instance carries them on, so no instance keeps them.
+- **Status:** open: a server service that reads a named secret (say `std::server::secret(name)`), as `std::tool::secret` does for a tool.
+
+### An instance can't hear that its messages were delivered
+
+- **Needed:** an account's deletion clearing its store only once each removal it sent (to its boards, code shards, names shard and others) has taken effect (docs/plan-online-play.md step 14, "clears its store only once each is acknowledged").
+- **What happens:** toolchain 0.18.0's outbox drops a message once its receiver acknowledges it (`std::server::ack`), and tells the sender nothing: no event says a message went, or that the outbox is empty.
+- **Found:** 2026-10-31, building the sharded server's deletion.
+- **Evidence:** runtime/cloudflare/src/host.ts's `deliver` (wrela-compiler at `c3eaac3`) calls `store.acknowledged(m.id)` and nothing more; `std::server` has no event for it.
+- **Meanwhile:** each removal carries an id (server.wrela's `Letter::confirm`), its receiver sends a `Note::Removed` back in the call that applies it, and the account keeps each pending (`x/<id>`) until it hears; the last one clears the store (platform/accounts.wrela).
+- **Status:** open: an event for a message acknowledged, or an outbox the sender can read.
+
 ### A fake site can't answer with a header
 
 - **Needed:** the deploy's Zstandard check (studio/deploy `verify_zstd`, docs/plan-online-play.md step 12) tested end to end on a fake site that answers a WASM with `content-encoding: zstd`, as one with the zone's Compression Rule set does, and the deploy passing with the rule required.
@@ -14,15 +32,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Evidence:** `fake` in runtime/native/src/tool/http.rs (wrela-compiler at `a4ad713`, 0.17.0) builds every answer's headers from `length(n)`, a `content-length` only.
 - **Meanwhile:** the answer's rule is a test of code (`not_zstd`: only a 200 with `content-encoding: zstd` passes), and a tool test checks that on fake sites every console and game WASM and runtime script is a warning, or with the rule required the deploy's failure (studio/deploy/tests.wrela).
 - **Status:** open: a `Fake` of headers (say `Fake::Headers(Vec<Header>)`, added to the file's answer).
-
-### A client can't fetch a public read without its cookies, or with the browser's cache
-
-- **Needed:** the console's public reads (a board's page, a slice, a run's replay by its hash, a search of names: platform/wire.wrela's `PUBLIC` and `REPLAYS`) sent with no cookie, so nothing in them can tie a reader to an account, and kept by the browser's own cache, so a replay asked for again (its path never changes, `immutable` for a year) costs no request at all.
-- **What happens:** toolchain 0.17.0's `std::http::fetch` sends the origin's cookies with every request and skips the browser's cache: its browser host calls `fetch` with `credentials: "same-origin"`, `redirect: "error"` and `cache: "no-store"`, for every method. Nothing in `std::http` asks for `credentials: "omit"` or the default cache mode.
-- **Found:** 2026-10-31, the council's review of the online-play branch (rywible/wrela, `capybara/design-online-play`).
-- **Evidence:** the browser host bundled in 0.17.0's `wrela` (`strings ~/.wrela/toolchains/0.17.0/bin/wrela`) holds `credentials:"same-origin",redirect:"error",cache:"no-store"` in the `fetch` it makes for `http/fetch`; `wrela doc std::http::fetch` (0.17.0) says it is sent "with the origin's cookies".
-- **Meanwhile:** a public read needs no account and the server ties none to it: it reads no session for one and sets no cookie on its answer (server.wrela's `sessionless`; server_tests.wrela's `a_public_read_is_no_sessions_and_sets_no_cookie`), so its answer is the same for everyone and Cloudflare's edge cache serves it (`cache-control: public`, server.wrela's `BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). The browser asks the edge again each time; the capybara holds the replays it fetched in memory (games/capybara/online.wrela's `HELD`).
-- **Status:** open: a fetch that omits credentials and uses the browser's cache (say `std::http::fetch` options, or a `fetch_public(path)` for `GET`).
 
 ### A driven build can't be given an address
 
@@ -191,6 +200,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open.
 
 ## Fixed
+
+### A client can't fetch a public read without its cookies, or with the browser's cache
+
+- **Needed:** the console's public reads (a board's page, a slice, a run's replay by its hash, a search of names: platform/wire.wrela's `PUBLIC` and `REPLAYS`) sent with no cookie, so nothing in them can tie a reader to an account, and kept by the browser's own cache, so a replay asked for again (its path never changes, `immutable` for a year) costs no request at all.
+- **What happens:** toolchain 0.17.0's `std::http::fetch` sends the origin's cookies with every request and skips the browser's cache: its browser host calls `fetch` with `credentials: "same-origin"`, `redirect: "error"` and `cache: "no-store"`, for every method. Nothing in `std::http` asks for `credentials: "omit"` or the default cache mode.
+- **Found:** 2026-10-31, the council's review of the online-play branch (rywible/wrela, `capybara/design-online-play`).
+- **Evidence:** the browser host bundled in 0.17.0's `wrela` (`strings ~/.wrela/toolchains/0.17.0/bin/wrela`) holds `credentials:"same-origin",redirect:"error",cache:"no-store"` in the `fetch` it makes for `http/fetch`; `wrela doc std::http::fetch` (0.17.0) says it is sent "with the origin's cookies".
+- **Meanwhile:** a public read needs no account and the server ties none to it: it reads no session for one and sets no cookie on its answer (server.wrela's `sessionless`; server_tests.wrela's `a_public_read_is_no_sessions_and_sets_no_cookie`), so its answer is the same for everyone and Cloudflare's edge cache serves it (`cache-control: public`, server.wrela's `BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). The browser asks the edge again each time; the capybara holds the replays it fetched in memory (games/capybara/online.wrela's `HELD`).
+- **Status:** fixed in toolchain 0.18.0: `std::http::fetch_public(path, headers)`, a `GET` with no cookies that the browser's cache may answer. The console sends every public read with it (console/account.wrela's `request`), and a run's replay is read at its own path (wire.wrela's `run_path`), `immutable` for a year.
 
 ### A program can't be opened at an address with a fragment
 
