@@ -186,6 +186,9 @@ pub struct Me: Clone + Serialize {
     pub rerolls: u32,
     /// Signed in with a recovery code: a passkey must be added before anything else.
     pub must_add_passkey: bool,
+    /// The account's handle (empty when signed out): who it is, whatever its name, so the console
+    /// knows another account from the one it had.
+    pub handle: Vec<u8> = Vec::new(),
 }
 
 pub struct PasskeyView: Clone + Serialize {

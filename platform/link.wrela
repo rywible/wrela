@@ -24,6 +24,9 @@ use wire::{Found, Place, RunRef}
 /// never a choice not to post.
 pub struct Account: Clone + Eq + Serialize {
     pub signed_in: bool,
+    /// Who the account is, whatever its name (empty when signed out): what the game keeps of it is
+    /// its, and goes when it's another.
+    pub id: Vec<u8> = Vec::new(),
     pub name: String,
     pub token: Vec<u8>,
     pub may_post: bool = false,

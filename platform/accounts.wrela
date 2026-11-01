@@ -93,6 +93,7 @@ fn me_of(a: Account, recovery: bool) -> Me {
         fixed: a.fixed,
         rerolls: a.rerolls,
         must_add_passkey: recovery,
+        handle: a.handle.clone(),
     }
 }
 

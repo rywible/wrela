@@ -38,6 +38,7 @@ use platform::wire::{
     ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
     SIGN_IN, SessionView, public, run_path,
 }
+use std::hash::sha256::sha256
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
 use std::http::{Header, response}
@@ -165,8 +166,11 @@ pub struct Accounts {
     /// Whether the server answered the last request, and when to ask again if it didn't.
     connected: bool,
     retry_at: f32,
-    /// The requests under way, and what each was for.
-    waiting: Vec<(Pending<u8>, Purpose)>,
+    /// The requests under way, what each was for, and the account it was made for (`epoch`).
+    waiting: Vec<(Pending<u8>, Purpose, u32)>,
+    /// Counted up each time the console's account becomes another (`identify`): a reply to a
+    /// request made for the one before is dropped, but a game's own asks'.
+    epoch: u32,
     /// The session's CSRF token, as the server last gave it.
     csrf: Vec<u8>,
     pub me: Me,
@@ -233,6 +237,7 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         connected: false,
         retry_at: 0.0,
         waiting: Vec::new(),
+        epoch: 0,
         csrf: Vec::new(),
         me: Me {
             signed_in: false,
@@ -304,22 +309,77 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
         }
         std::http::fetch("POST", ACCOUNTS, [take kind], save(request))
     }
-    a.waiting.push((take asked, purpose))
+    a.waiting.push((take asked, purpose, a.epoch))
+}
+
+/// The console's account is `me` now: if it's another than it was (by its handle, whatever its
+/// name), nothing of the one before stays (`another_account`).
+fn identify(a: mut Accounts, me: take Me) {
+    if me.handle != a.me.handle {
+        another_account(mut a)
+    }
+    a.me = take me
+}
+
+/// The console's account became another (or none): what it knew of the one before goes (its
+/// choices of posting, its codes still to save, its passkeys and sessions shown, an export under
+/// way, the game's token), the new one's choices are asked for again, and replies to what was
+/// asked for the one before are dropped.
+fn another_account(a: mut Accounts) {
+    a.epoch += 1
+    a.posting = Known::Unknown
+    a.posting_at = 0.0
+    a.may_post = false
+    a.post_best = false
+    a.consent_best = false
+    a.codes.clear()
+    a.passkeys.clear()
+    a.sessions.clear()
+    a.export.clear()
+    match mut a.game {
+        Some(g) => {
+            g.token.clear()
+            g.token_at = -99999.0
+            g.waiting_token = false
+        },
+        None => {},
+    }
+}
+
+/// Whether a reply to a request for `purpose`, made for the account of `epoch`, is read: one made
+/// for the account the console has, or a game's own ask (its board, its run's post with its own
+/// token), whoever it was made for.
+fn keeps(a: Accounts, purpose: Purpose, epoch: u32) -> bool {
+    epoch == a.epoch || purpose == Purpose::Game
+}
+
+/// A reply to a request made for the account before (`another_account`): dropped. A game's
+/// consent carried for it is said to the game as not taken, so it can be asked again.
+fn dropped(a: mut Accounts, purpose: Purpose) {
+    a.dirty = true
+    a.busy = false
+    if purpose == Purpose::GameConsent {
+        let why = String::from("You're signed in to another account now. Post again to post as it.")
+        answer_game(mut a, Answer::Failed { why, retry_after: u32(RETRY) })
+    }
 }
 
 fn signed_out(a: mut Accounts) {
     a.csrf.clear()
+    identify(
+        mut a,
+        Me {
+            signed_in: false,
+            name: String::new(),
+            fixed: false,
+            rerolls: 0,
+            must_add_passkey: false,
+        },
+    )
     a.posting = Known::Unknown
     a.may_post = false
     a.post_best = false
     a.codes.clear()
-    a.me = Me {
-        signed_in: false,
-        name: String::new(),
-        fixed: false,
-        rerolls: 0,
-        must_add_passkey: false,
-    }
     if a.page != Page::Legal {
         a.page = Page::Choose
     }
@@ -406,7 +466,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     match reply {
         Reply::Welcome { me, csrf } => {
             let was = a.me.signed_in
-            a.me = me.clone()
+            identify(mut a, me.clone())
             a.csrf = csrf.clone()
             if !me.signed_in {
                 if was {
@@ -480,7 +540,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Session { csrf, me, codes } => {
             a.csrf = csrf.clone()
-            a.me = me.clone()
+            identify(mut a, me.clone())
             a.message.clear()
             if !codes.is_empty() {
                 // A new account: knighted first, then its codes.
@@ -630,6 +690,7 @@ fn linked(a: Accounts) -> Linked {
     }
     Linked {
         signed_in: a.me.signed_in && !a.me.must_add_passkey,
+        id: game_id(a.me.handle),
         name: a.me.name.clone(),
         token,
         may_post: a.may_post,
@@ -637,6 +698,24 @@ fn linked(a: Accounts) -> Linked {
         save_codes: !a.codes.is_empty(),
         posting_known: a.posting == Known::Known,
     }
+}
+
+/// Who the account is, as a game is told it (`Linked::id`): a digest of its handle, which says
+/// nothing else of it (empty when signed out).
+fn game_id(handle: [u8]) -> Vec<u8> {
+    if handle.is_empty() {
+        return Vec::new()
+    }
+    var m = Vec::from(String::from("wrela-game-account").as_bytes())
+    for b in handle {
+        m.push(b)
+    }
+    let d = sha256(m)
+    var out: Vec<u8> = Vec::new()
+    for i in 0..16 {
+        out.push(d[i])
+    }
+    out
 }
 
 /// Calls the game with the account and the answer to its last ask, once its token is fresh.
@@ -894,8 +973,12 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     while i < a.waiting.len() {
         match a.waiting[i].0.poll() {
             Some(result) => {
-                let (_, purpose) = a.waiting.remove(i)
-                answered(mut a, purpose, take result)
+                let (_, purpose, epoch) = a.waiting.remove(i)
+                if keeps(a, purpose, epoch) {
+                    answered(mut a, purpose, take result)
+                } else {
+                    dropped(mut a, purpose)
+                }
             },
             None => i += 1,
         }
@@ -2411,6 +2494,64 @@ fn posting_unknown_is_asked_until_its_known_and_never_an_opt_out() {
     assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
     let l = linked(a)
     assert(l.posting_known && l.may_post && !l.post_best && !wants_posting(a, 99.0), "known")
+}
+
+/// Account `h`'s `Me`, knighted, named `name`.
+fn me_of(h: u8, name: Text) -> Me {
+    Me {
+        signed_in: true,
+        name: String::from(name),
+        fixed: true,
+        rerolls: 0,
+        must_add_passkey: false,
+        handle: Vec::from([h; 16]),
+    }
+}
+
+@test
+fn another_account_signed_in_keeps_nothing_of_the_one_before() {
+    var a = new("wrela.dev", online: true)
+    a.connected = true
+    a.game = Some(
+        GameLink {
+            surface: 1,
+            id: String::from("capybara"),
+            call: None,
+            token: Vec::new(),
+            token_at: 0.0,
+            asking: false,
+            uploading: false,
+            waiting_token: false,
+            answer: Answer::Nothing,
+        },
+    )
+    // A new account, its codes still to save, posting its best runs, its game's token given.
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    a.codes.push(String::from("CODE-1"))
+    let was = a.epoch
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    match mut a.game {
+        Some(g) => g.token = Vec::from([7; 48]),
+        None => {},
+    }
+    let first = linked(a)
+    assert(first.post_best && first.save_codes && !first.id.is_empty(), "the first's")
+    // From "Sign in again first", another account's passkey: it agreed, but posts nothing alone.
+    identify(mut a, me_of(2, "Dame Puddlefoot"))
+    let l = linked(a)
+    assert(!l.posting_known && !l.may_post && !l.post_best, "its choices not yet known")
+    assert(!l.save_codes && l.token.is_empty() && l.id != first.id, "nothing of the first's")
+    assert(wants_posting(a, a.time), "its choices asked for")
+    // What was asked for the first is dropped as it comes; the game's own asks aren't.
+    assert(!keeps(a, Purpose::Posting, was) && !keeps(a, Purpose::Other, was))
+    assert(!keeps(a, Purpose::GameConsent, was) && keeps(a, Purpose::Game, was))
+    assert(keeps(a, Purpose::Posting, a.epoch))
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
+    let l = linked(a)
+    assert(l.posting_known && l.may_post && !l.post_best, "its own choices")
+    // The same account again (a fresh sign-in) keeps what it had.
+    identify(mut a, me_of(2, "Dame Puddlefoot"))
+    assert(linked(a).posting_known && keeps(a, Purpose::Posting, a.epoch), "the same account")
 }
 
 @test
