@@ -61,10 +61,10 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ### A program's stack doesn't say how near it is to full
 
-- **Needed:** the floor's stage holding two creatures' casts by value (docs/plan-world-class-3.md §H1: the hand's fawn, or the grown one behind a switch), as every other cast is held.
-- **What happens:** toolchain 0.18.0 builds and type-checks it, and the floor's init then traps natively and in the browser: "the stack overflowed: calls too deep, or values too large for the thread's stack", at a call far from the value that filled it (`trees::kinds::log`, building the kinds' plants after the stage's fields). Nothing says which frame holds what, or how much room was left before the change.
-- **Found:** 2026-11-01, H1 (bisected to the commit that added the second cast).
-- **Meanwhile:** each fawn is held in a `Vec` (`games/last-green/fawns.wrela`), so the stage holds two small headers.
+- **Needed:** a field added to the floor's stage (docs/plan-world-class-3.md §H1: room for the grown fawn's cast beside the hand's, behind a switch), as the stage holds its other casts.
+- **What happens:** toolchain 0.18.0 builds and type-checks it, and the floor's init then traps natively and in the browser: "the stack overflowed: calls too deep, or values too large for the thread's stack", at a call far from what filled it (`trees::kinds::log`). The stage's literal builds the kinds' plants (`trees::kinds::plants`), each a `plant::Plant` of 128 KiB passed by value, under the stage's by-value fields, so the room left was small and one more field took it. Nothing says which frame holds what, or how much room was left before the change.
+- **Found:** 2026-11-01, H1 (bisected to the commit that added the field).
+- **Meanwhile:** each fawn is held in a `Vec` (`games/last-green/fawns.wrela`), so the stage holds two small headers. The plants built in place, or each kind's room sized to it (a log's 32 limbs, not 2,048), would leave more.
 - **Status:** open: a build report of the largest frames on a program's init path (the bytes each function's frame holds), or a stack sized to them.
 
 ### A tool's build can't take longer than 600 s

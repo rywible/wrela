@@ -2354,6 +2354,59 @@ less alike; bark a field near the eye, not a magnified tile (the ridges' own `ri
 pixel is under a texel); the leaves' cards with relief and thickness; a trunk's foot that meets
 the ground without moving the shots' near trunks into the camera.
 
+### 2026-11-01: the final panel (H2), Part H's head, toolchain 0.18.0
+
+docs/plan-world-class-3.md §H2.2 (D38): the vale as the plan leaves it (Part G merged, G7 out of
+the vale, the probes' solids fix; Part H changes nothing the vale draws), its twelve evaluation
+stills at 1920×1080 (`build/stills-h2`, `wrela tool lookbook -- build/stills-h2 --package
+examples/vale --stills --size 1920x1080 0 … 11`, Linux pop-os, Radeon "Lucienne") against the
+same references, B5's seed (5) and mode (attributed), eight agent judges in fresh contexts given
+B5's brief; all eight passed both calibration pairs (none rejected). The hashes equal B5's:
+shots `88c877da27abda2b01a81d2777a35b66b533f7c5b82902306b64c2825ede6ca1`, manifest
+`b78df49ef41682168868ef3443f88f0d7a423eaf4f8d0595d938924b551bdaf3` (`build/h2-sealed/key.json`;
+every judge's file in `build/h2-sealed/judges/`).
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/h2-sealed --a build/h2-twelve --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/h2-sealed --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.50, 1.88, 1.12, 0.25 | 2.12, 3.00, 2.75, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.25, 2.00, 2.00, 2.00, 1.00 | 2.00, 2.88, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.50, 2.00, 2.00, 0.88 | 2.00, 2.88, 2.62, 2.25, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.62, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.88, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.38, 1.75, 0.00 | 2.12, 3.00, 3.00, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.75, 1.88, 1.50, 1.12, 0.88 | 2.50, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.12, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.62, 1.00, 1.00, 0.62, 0.25 | 2.62, 2.88, 2.00, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.00, 2.75, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: every pair lost 8
+to 0; majority: 0 pairs won or equal (fails). **Fails.**
+
+Ranked losses: artifacts 28.75, colour 16.62, depth 15.00, value 13.50, light 9.88 (their sum 83.75).
+
+| Panel | Pairs won or equal | Share of 96 | artifacts | colour | value | depth | light | Sum |
+|---|---|---|---|---|---|---|---|---|
+| B5 (the baseline) | 0 of 12 | 0 % | 26.75 | 15.88 | 14.38 | 13.62 | 12.50 | 83.13 |
+| D11 (physical) | 0 of 12 | 0 % | 26.62 | 16.25 | 14.12 | 12.50 | 9.50 | 78.99 |
+| E8 (the grown vale) | 0 of 12 | 0 % | 29.12 | 16.50 | 12.25 | 13.25 | 8.75 | 79.87 |
+| F10 (the grown creature) | 0 of 12 | 0 % | 28.75 | 16.75 | 13.88 | 15.50 | 10.88 | 85.76 |
+| G, the last head | 0 of 12 | 0 % | 29.38 | 17.50 | 13.00 | 14.88 | 9.12 | 83.88 |
+| **H2 (the plan's end)** | **0 of 12** | **0 %** | **28.75** | **16.62** | **13.50** | **15.00** | **9.88** | **83.75** |
+
+**G-reference: misses**, on all three rules, as it did at B5. Across the plan the light row's
+losses fell (12.50 → 9.88) and artifacts rose (26.75 → 28.75: the grown wood's forms are new
+faults, the judges' sentences say which: the fallen beech's radial root plate, leaf-card litter,
+floating logs, the fall's flat sheet, an old oak's ghosted bark relief, a kinked limb). What the
+judges name first is still artifacts and colour on every pair. Every pair's worst row and its
+eight sentences are in `build/h2-sealed/tally.md` (the tally's output, kept with the panel).
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
@@ -3436,33 +3489,50 @@ of its shading pass. The prepass and the shading pass each draw every card.
 
 ## Whether D27 holds
 
-docs/plan-world-class-3.md §0.1, D27 (**proposed**). The table has a row per gate per scene per
-device, each cell "holds", "misses by ..." or "blocked: ...". Part C started it with the M4's
-performance rows; Part H finishes it. The M4 Air numbers are Chrome at 1080p, Epic,
-toolchain 0.10.3: the frame from C6's 600 s sustained run, memory from the same run's GPU peak,
-and the starts from C5's three-run medians (salts new to the machine).
+docs/plan-world-class-3.md §0.1, D27 (**proposed**). A row per gate per scene per device, each
+cell "holds", "misses by ..." or "blocked: ...". Part C started it with the M4's performance
+rows; Part H finishes it (§H2). The M4 Air's numbers are Chrome at 1080p, `Epic`, toolchain
+0.10.3: the frame from C6's 600 s sustained run, memory from the same run's GPU peak, and the
+starts from C5's three-run medians (salts new to the machine). Parts D–H changed both scenes'
+frames since, and this plan's last machine was Linux (Radeon "Lucienne"), not the M4: each M4
+cell is C's number, **to measure again on the M4** with the scenes as Part H leaves them (the
+last column says what this machine measured, which is no stand-in for the M4's).
 
 | Gate | Scene | M4 Air | Note |
 |---|---|---|---|
-| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.37 ms (18.37) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). |
-| | floor | misses by 1.34 ms (13.34) | Its fog is 6.5 ms serial, beside the cards. |
+| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.37 ms (18.37) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). Here: 57.12 ms (Part G's walk). |
+| | floor | misses by 1.34 ms (13.34) | Its fog is 6.5 ms serial, beside the cards. Here: 32.20 ms (H1). |
 | Paced p99 < 20 ms | vale | misses by 11.48 ms (31.48) | The same frames' overruns. |
 | | floor | misses by 15.45 ms (35.45) | |
 | 0 of 1,200 paced frames over 33 ms | vale | misses by 6 | |
 | | floor | misses by 27 | |
 | 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.9 a second; 58.8 needed) | |
-| | floor | holds, by 0.02 a second (58.84) | Within run-to-run noise: the 120 s Epic run after it begun 56.9. |
-| GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | It held 478.8 at playable. Its walk now runs 1,260 frames (C4's 1,020, under 512 at 508.2), and the probes baked round the moving eye are what grows. |
-| | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). C4's calibration lever, which took ~24.5 MiB off, was reverted in review: its count missed quads past the room it calibrated in. |
-| Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). |
-| | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. |
-| Warm start < 3 s | vale | **holds** (2.21) | |
-| | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. |
-| Lower tiers measured, each under the one above | vale, floor | **holds** (C7) | Epic > High > Medium > Low on both. |
+| | floor | holds, by 0.02 a second (58.84) | Within run-to-run noise: the 120 s Epic run after it began 56.9. |
+| GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | Here 606.4 (Part G's walk: G1's colour volume +9.4 MB among it). |
+| | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). Here 743.7. |
+| Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). Here 10.4 s. |
+| | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. Here 36.9 s. |
+| Warm start < 3 s | vale | **holds** (2.21) | Here 7.5 s. |
+| | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. Here 14.6 s. |
+| Lower tiers measured, each under the one above | vale, floor | **holds** (C7) | Epic > High > Medium > Low on both; Part H changed no tier. |
+| Fidelity (G-reference: ≥ 50 % of 96, no pair worse than 6–2, ≥ 6 pairs won or equal) | vale | misses: 0 % of 96 (50 % needed), every pair lost 8–0, 0 of 12 pairs won or equal | The stills are the same on any device; H2's panel ("Public visual references"). |
+| Every plant grown (G-grown) | vale | **holds** on this machine; blocked: the M4's Chrome run | 26,156 instances, 0 authored; the growth's hashes the same in two native runs and Chrome here ("H2"). |
+| Every creature grown from its genome | vale | **holds** (Part F) | The grazer grown (`kit::roe`): its proportions, muscles and coat from its genome, its body plan and face authored. |
+| Its motion (G-motion, ≥ 40 %) | vale | blocked: 0 % in four rounds (F9) | |
+| Steerable (G-steer, IoU ≥ 0.85) | vale | **holds** for the oak (0.874) and the beech (0.880); blocked: the birch (0.689) | E6. |
+| Four styles, no change to `engine/` | vale | **holds** (D10, again at H2) | `wrela tool styles -- --check`: `Cel`, `Painterly`, `Ink` and the two fitted looks each added in a commit that changes no engine file; `Physical` the engine's own. Coherence: `Cel` holds its 60 bars, `Painterly` 59, `Ink` Blocked ("D4–D7b"). |
+| Size (the runtime ≤ 1 MB, program and shaders ≤ 6 MB gzipped, cold load ≤ 8 MiB) | vale, floor | **holds** | 26 KB; the vale 3.23 MB, the floor 5.59 MB; their cold loads 4.0 and 6.0 MiB ("H2"). |
 | Other devices | all | blocked: deferred to a later plan (D37) | |
-| Fidelity (G-reference) | vale | pending: Part G's review | |
-| Grown plants and creatures (G-grown) | vale | pending: Parts E and F | |
-| Four styles, no change to `engine/` | vale | **holds** (D10) | `wrela tool styles -- --check`: `Cel`, `Painterly`, `Ink` and the two fitted looks each added in a commit that changes no engine file; `Physical` the engine's own. Coherence: `Cel` holds its 60 bars, `Painterly` 59, `Ink` Blocked ("D4–D7b"). | |
+
+**The claim** (D27): **it doesn't hold, on the one device it names.** On the M4 Air the vale misses
+every frame-time gate (its GPU median 18.37 ms against 12, its p99 31.48 against 20, 6 frames
+over 33 ms, 42.9 frames begun a second against 58.8), its memory by 27.8 MiB and its cold start by
+1.69 s, and holds its warm start; the floor misses all but its throughput. Its fidelity misses
+on every judge's ballot: at H2's final panel no judge preferred a still or rated one equal on any of the twelve pairs (0 of 96), the same as at B5. What it claims of content holds: every plant in the vale is
+grown (none authored) and its growth hashes the same across hosts here; its creature is grown
+from a genome; it renders through four looks with no change to `engine/`; its runtime, program
+and shaders fit their sizes. The tiers below `Epic` are measured and ordered. The M4's numbers are
+C's and are to measure again with Parts D–H on that machine; no other device has a row (D37).
 
 ## The hypotheses (docs/plan-world-class-3.md §7)
 
@@ -4722,3 +4792,245 @@ darker in the sun: the doe's lit back is sRGB 191, 154, 118 against the soil's 1
 the next lever is the creature's lit value, not its colour: the character shading's band light
 (`character::character_shade`'s `cel`) lights it about 40 % brighter and flatter than the ground
 it stands on. F10's panel and F9's first two rounds judged the fawn; F9's rounds 3 and 4 the doe.
+
+## H1, the floor adopts (2026-11-01, toolchain 0.18.0)
+
+docs/plan-world-class-3.md §H1 (D40). Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**:
+the stills, the judges and the pixel comparisons hold anywhere; every timing here is this
+machine's, and the M4's are to measure (listed in "Whether D27 holds").
+
+**The switches.** Each capability the vale proved is a constant of the floor's build
+(`games/last-green/main.wrela`), off unless `--set`:
+
+- `GROWN_WOOD` (Part E's, unchanged here): the floor's kinds grown, its flora and its causes.
+- `GROWN_FAWN` (new): the roe grown from its genome as the vale's grazer (`kit::roe` at
+  `VALE_AGE`, its `VALE_MUSCLES` and `VALE_COAT`) in the hand fawn's place
+  (`games/last-green/fawns.wrela`). A shot stands it where it casts the fawn, its face attending
+  to the eye; in play its own walker walks after the sim's fawn at its pace (its way straight
+  ahead, as the sim's: `behaviour::Ahead`), its face to the player while the sim's senses notice
+  them (F8). The two ages tried before it (0.3, 0.45) were grown by `wrela tool gait -- --grow
+  --write` at those ages; they are gone with the switch's own tables (/simplify).
+- `LOOK` (new, a type, as the vale's): `--set LOOK=styles::cel::Cel` builds the cel floor. The
+  plan's `pub const STYLE` is `pub type LOOK`, since a look is a type (docs/toolchain.md).
+- `TIER` (C7's).
+
+The great tree stays authored under every switch (`trees::great_tree`: a character of the lore;
+games/last-green/design.md).
+
+**The builds** (`wrela pipelines games/last-green --set GROWN_WOOD=… --set GROWN_FAWN=… --set
+LOOK=… --set TIER=…`, all 32): each builds; the pipelines are the same with either grown switch
+on or off.
+
+| Tier | Physical | Cel |
+|---|---|---|
+| Epic | 170 (147 entry points) | 171 (148) |
+| High | 168 (145) | 169 (146) |
+| Medium | 166 (143) | 167 (144) |
+| Low | 162 (139) | 163 (140) |
+
+**A stack the floor's init didn't have.** The stage first held room for both fawns' casts by
+value (the other none), and the floor's init then overflowed its stack building the kinds'
+plants (a wasm trap in `trees::kinds::log`; each `Plant` is 128 KiB, passed by value). Bisected
+over Part G's 46 commits and this one: every Part G commit gets through, this one didn't. Each
+fawn is now held in a list (`Fawns`), the one built or none (docs/toolchain-gaps.md).
+
+**The grown floor** (`GROWN_WOOD` and `GROWN_FAWN`): the 23 shots' stills (`wrela tool lookbook --
+build/f-<name> --stills --capture --size 1920x1080`, the floor built each way), blind pairs
+against the floor as it is, three agent judges in fresh contexts (the shots split 9, 9 and 8,
+each pack with a calibration pair, all three passed). **"Before" on 18 of 23**, "after" on 4,
+equal on 1:
+
+| Shot | Preferred | Before / after (the rows' sum) | The judge's why (its sides a and b) |
+|---|---|---|---|
+| floor 00 the clearing | before | 13 / 11 | A's backlit, darker tree gives stronger light and value structure at a similar artifact cost. |
+| floor 01 wood pasture | before | 14 / 9 | B's spreading trees and canopy shade give real light, value and depth where A reads as repeated lollipops. |
+| floor 02 beech high forest | before | 14 / 9 | A is a convincing, well-layered wood, while B's floating vines and visible leaf cards break plausibility. |
+| floor 03 the old road | before | 12 / 10 | A's fuller, rim-lit trees model the light and layer the depth better, while both share similar log and hillside flaws. |
+| floor 04 the crags top | before | 8 / 8 | Both share the black occluder, and A's varied broadleaf canopy reads more natural than B's repeated cones. |
+| floor 05 the towers foot | before | 10 / 9 | B's full grass and naturally spreading trees remove A's visible tuft pattern and lollipop forms. |
+| floor 06 the ring | after | 10 / 12 | A's sun-dappled clearing reads the light and values clearly, while B's dark foreground and hard stalks cost more than its better haze gains. |
+| floor 07 the mere | after | 9 / 10 | B's floating black leaf sprites read as stray artifacts against the sky, while the rest of the scene is close. |
+| floor 08 the stream in the wood | before | 12 / 9 | b's flared trunk and canopy shade make the plateau feel like it sits under trees, where a looks like a bare lit set. |
+| floor 09 the waterfall | before | 9 / 8 | The scenes match, but a's crowned rim trees add scale and life that b's sparse stub lacks. |
+| floor 10 the burn | before | 11 / 9 | a's snags read as varied broken trunks, while b's identical forked poles break the illusion despite its better logs. |
+| floor 11 the windthrow | after | 9 / 12 | b's logs have real cylindrical form and girth and its centre tree a believable crown, where a's logs read as flat sticks. |
+| floor 12 the plateaus edge | equal | 10 / 10 | The two are nearly identical apart from the distant forest texture, and neither difference is large enough to choose on. |
+| floor 13 the towns site | before | 13 / 9 | b's trees have believable layered crowns over a deep understorey, while a's spherical bushes and tufted poles look artificial. |
+| floor 14 the wardens arena | before | 10 / 10 | b's crowns and the forked pale trunk at left read as grown trees in a deep wood, which outweighs its odd orange branch stubs. |
+| floor 15 the wildwood | before | 13 / 8 | b's flared, tapering, bark-modelled trunks and raking sun read as an old wood, whereas a's trunks look like posts in a tangle. |
+| floor 16 the fawn in the glade | before | 12 / 10 | B's dense, canopied wood with a shaded floor and layered trunks beats a's sparse lollipop clearing. |
+| floor 17 the fawn under the beeches | before | 12 / 9 | A's trees, root flares and dappled floor are far more convincing despite the clipping, while b's poles and stacked logs read as primitives. |
+| floor 18 the fawn by the stream | after | 8 / 9 | B's view down the ravine gives clearer depth and its shrub is a more plausible form than a's fan of sticks, though a keeps the fawn in view. |
+| floor 19 the climbers robe | before | 12 / 9 | B's thick, canopied trees and visible fawn make a deep, readable wood where a looks like a sparse plantation. |
+| floor 20 the climber close | before | 12 / 10 | B's thick, layered trunks and canopy give a convincing wood with stronger value and depth. |
+| floor 21 the climbers hood | before | 11 / 9 | A's trees have believable spreading crowns and the floor is dense, while b's logs and snags look like primitives. |
+| floor 22 the climbers train | before | 10 / 7 | A reads as a lit wood with canopy and floor shadow, while b is a bare grove of stacked cylinders with floating stray geometry. |
+
+What the judges fault: crowns read as "lollipops" and "repeated cones" on thin bare boles ("posts",
+"a sparse plantation"), floating vines and leaf cards (the wildwood's and the beech forest's
+looping thin limbs), identical forked snags, logs as "stacked cylinders", trunks without the
+hand's flared feet. The grown kinds are the vale's archetypes (`trees::archetypes::GROWN`, shared:
+the floor's forest kinds grown in a stand, narrow-crowned), so every lever on them changes the vale
+as well, whose panels this part doesn't run again. **Not adopted: `GROWN_WOOD` stays off
+(Blocked).** Next levers: the floor's own archetypes (its forest kinds grown in the open, its
+crowns as broad as the hand's), the trunk's foot flared, the young beech's lime leaves and the
+long whip limbs culled. The measures (G-look's (2) and (3)) weren't run: the judge's preference
+decided it.
+
+**The grown fawn alone** (`GROWN_FAWN`, the hand's wood; its four shots: the fawn in the glade,
+under the beeches, by the stream, and the climber's robe), one judge in a fresh context a round,
+calibrated:
+
+| Its age | The glade | Under the beeches | By the stream | The robe | The judge |
+|---|---|---|---|---|---|
+| 0.45 (21 kg, 0.66 m at the withers) | before | before | after | before | "reads as a miniature" beside the climber |
+| 1.0 (as the vale's grazer, 0.72 m) | **after** | before | **after** | before | "shaded, muted and scaled like part of the scene" where the hand's is "a flat saturated orange cutout"; under the beeches and in the robe's shot it is "an implausibly small speck" |
+
+(At 0.3, 12 kg and 0.57 m, the grown floor's judge read the fawn as tiny, and it wasn't judged
+alone.) **Not adopted: `GROWN_FAWN` stays off (Blocked), at 1.0.** The two shots it loses are
+composed for the hand's fawn, about 0.9 m at the withers (`fawn::character::SIZE` 0.6 of the
+grazer), which the log and the distance hide a roe behind. Next levers: those two shots'
+placements for a roe's size, or a larger deer's genome (a fallow deer's 0.9 m): both are Ryan's
+calls on the floor's content.
+
+**The cel floor** (`--set LOOK=styles::cel::Cel`, the floor as it is), G-look for a new style:
+
+- (1) Its 23 stills: `build/f-cel` (1920 × 1080).
+- (2) and (3) The fast instrument against the physical floor's bars (`wrela tool lookbook --
+  build/fast-floor-cel --fast --look styles::cel::Cel --bars build/fast-floor-phys 0 … 22`):
+  flicker and pop at most 1.5 times the physical's, trail at most its plus a pixel. **22 of 23
+  hold**; the wildwood's trail misses, 12 px against 5 (the median of three runs of each look).
+- (4) Three agent judges in fresh contexts scored the stills without a pair on the rubric and
+  a *style* row (the treatment consistent across the picture, as one hand drew it), each pack
+  with a control (a still's eight-pass blur among them; each scored it under its original). Means
+  over the 23: **light 1.96, colour 2.09, value 1.91, depth 2.17, artifacts 1.13, style 1.04**
+  (the vale's cel stills at D4–D6: 1.67, 1.58, 1.67, 1.50, 1.00, and 0.67 on the style row
+  against its painting set).
+
+| Shot | Light, colour, value, depth, artifacts, style | Flicker ×10⁻⁶ (bar) | Pop (bar) | Trail px (bar) | |
+|---|---|---|---|---|---|
+| floor 00 the clearing | 2, 3, 2, 3, 1, 1 | 9.28 (17.78) | 0.0030 (0.0060) | 2 (3) | holds |
+| floor 01 wood pasture | 2, 2, 2, 2, 1, 1 | 26.02 (46.88) | 0.0049 (0.0080) | 2 (3) | holds |
+| floor 02 beech high forest | 3, 3, 3, 3, 2, 2 | 34.17 (86.08) | 0.0070 (0.0161) | 2 (3) | holds |
+| floor 03 the old road | 2, 1, 1, 2, 1, 1 | 7.15 (16.76) | 0.0031 (0.0060) | 3 (4) | holds |
+| floor 04 the crags top | 0, 1, 0, 1, 0, 0 | 3.08 (8.03) | 0.0010 (0.0020) | 2 (3) | holds |
+| floor 05 the towers foot | 2, 2, 2, 1, 1, 2 | 6.71 (7.92) | 0.0025 (0.0034) | 2 (3) | holds |
+| floor 06 the ring | 2, 2, 2, 2, 1, 1 | 75.93 (133.76) | 0.0074 (0.0123) | 2 (3) | holds |
+| floor 07 the mere | 2, 1, 2, 1, 1, 0 | 32.01 (53.80) | 0.0023 (0.0047) | 1 (3) | holds |
+| floor 08 the stream in the wood | 2, 3, 2, 3, 1, 2 | 13.09 (20.35) | 0.0035 (0.0092) | 2 (4) | holds |
+| floor 09 the waterfall | 1, 1, 1, 1, 1, 1 | 6.96 (10.71) | 0.0017 (0.0028) | 2 (3) | holds |
+| floor 10 the burn | 2, 2, 2, 2, 1, 2 | 19.00 (37.07) | 0.0043 (0.0071) | 2 (3) | holds |
+| floor 11 the windthrow | 2, 2, 2, 3, 1, 2 | 6.08 (11.03) | 0.0044 (0.0166) | 3 (4) | holds |
+| floor 12 the plateaus edge | 1, 2, 1, 2, 1, 1 | 3.47 (6.99) | 0.0020 (0.0042) | 4 (4) | holds |
+| floor 13 the towns site | 2, 3, 2, 2, 2, 2 | 26.90 (54.07) | 0.0059 (0.0094) | 2 (3) | holds |
+| floor 14 the wardens arena | 2, 2, 2, 3, 2, 2 | 38.44 (71.09) | 0.0061 (0.0104) | 2 (3) | holds |
+| floor 15 the wildwood | 3, 3, 3, 3, 2, 2 | 26.57 (55.78) | 0.1251 (0.1597) | 12 (5) | misses (median of three, each look) |
+| floor 16 the fawn in the glade | 2, 2, 2, 2, 1, 0 | 80.17 (130.05) | 0.0072 (0.0127) | 3 (4) | holds |
+| floor 17 the fawn under the beeches | 3, 3, 3, 3, 1, 1 | 89.01 (138.37) | 0.0061 (0.0174) | 2 (3) | holds |
+| floor 18 the fawn by the stream | 2, 2, 2, 1, 1, 1 | 36.79 (73.18) | 0.0052 (0.0110) | 3 (4) | holds |
+| floor 19 the climbers robe | 2, 2, 2, 3, 1, 0 | 77.98 (128.52) | 0.0078 (0.0152) | 2 (3) | holds |
+| floor 20 the climber close | 2, 2, 2, 2, 1, 0 | 106.92 (182.12) | 0.0099 (0.0216) | 2 (4) | holds |
+| floor 21 the climbers hood | 2, 2, 2, 2, 1, 0 | 69.06 (114.28) | 0.0101 (0.0170) | 4 (5) | holds |
+| floor 22 the climbers train | 2, 2, 2, 3, 1, 0 | 83.41 (164.62) | 0.0083 (0.0155) | 3 (4) | holds |
+
+The judges see the cel treatment in the foliage, the bark and the clouds, and not on the
+climber's cloak or the fawn ("soft and photographic"), nor in the dense ground cover's noise. The
+characters are lit by their own shading (`content/climber/draw.wrela`'s garment, `engine::character`),
+which reaches the look's substance (`Style::written`) but not its `shade`; the grass goes through
+it (`lit::shown`). The cel floor builds and is judged; the floor's look stays `Physical` (the
+plan's default). **Blocked:** the wildwood's trail. Next lever: the cel outlines' history under
+temporal AA at the near trunk's silhouette. The characters shaded through the look is the next
+item for its style row.
+
+**G-pixels** (`wrela same <pkg> --against <build> --frames 240 --size 1280x720`):
+
+- The herd: **the same** as `build/base-0.9/herd` (240 frames, the same commands and pipelines,
+  its last frame within 0.00).
+- The climber lab: its last frame **within 0.00** of `build/base-0.9/climber-lab`, its commands
+  differing from frame 0 (the engine's command stream, Parts C–G).
+- The capybara: differs from `build/base-0.9/capybara` (its last frame 4.42 from it, 10 % of its
+  channels): the game itself changed since 0.9.0 (rywible/wrela#343, #345, #351, other sessions'
+  work). Against its own last change's build (b3081e38, #351, built here on 0.18.0) it is **the
+  same** (240 frames, the same commands). So Parts F, G and H moved none of its pixels.
+- `build/base-0.9` was gone from the disk: rebuilt as §B0 made it, from 807f9c08^ on 0.9.0 (`wrela
+  build <pkg> -o build/base-0.9/<name>`; 0.9.0's build has no `--release`).
+
+**The floor's walk at `Epic`** (this machine's Chrome at 1080p; `wrela tool bench -- --scene
+last-green-walk --sustained 120 --no-docs`, and `--look styles::cel::Cel`, and `--starts 3`):
+
+| Build | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | GPU peak MiB | Sustained 120 s (minute 1, last) |
+|---|---|---|---|---|
+| the floor | 32.20 / 126.76 / 182.52 | 33.45 / 75.49 / 152.69 | 743.7 | 31.88, 31.94 (1.00) |
+| the cel floor | 32.62 / 127.36 / 183.76 | 34.02 / 75.99 / 154.24 | 763.2 | 32.48, 32.51 (1.00) |
+
+The starts, medians of three: **cold 36.9 s** (36.95, 36.83, 37.07), **warm 14.6 s** (14.38, 14.78,
+14.62); the first frame 11.4 s cold, 3.0 s warm. Here the floor's gates all miss as they did on
+the M4 at C5–C6 (docs/bench.md, "Whether D27 holds"): the M4's numbers are the gates', to measure
+again there with Part H's switches.
+
+The grown floor's optimized build runs past the 600 s a tool's build may take
+(docs/toolchain-gaps.md), so the bench can't build it: its frame against the floor's is
+`wrela profile` (natively, 1920 × 1080, three pairs interleaved):
+
+| Pass (ms, the median of the pairs' runs) | The floor | Grown (`GROWN_WOOD`, `GROWN_FAWN`) |
+|---|---|---|
+| **GPU frame span** | **34.11** | **32.02** (−6.1 %) |
+| vegetation | 6.31 | 4.97 |
+| vegetation prepass | 6.02 | 3.16 |
+| terrain | 2.26 | 3.98 |
+| shadows far | 11.37 | 18.83 |
+| probes again | 2.64 | 2.26 |
+| motion | 1.01 | 0.51 |
+| creature | 1.05 | 1.08 |
+| look | 2.88 | 2.97 |
+
+(`wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/floor-default --pairs
+3`, 60 warmup and 120 measured frames at the floor's start; the other passes within 0.1 ms.) The
+grown kinds draw fewer cards (the vegetation passes), the caused ground costs the terrain 1.7 ms,
+and the far cascade draws more (its range 7.96–11.67 against 17.83–19.16).
+
+## H2, the final gates (2026-11-01, toolchain 0.18.0)
+
+docs/plan-world-class-3.md §H2. Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: the
+gates defined on the M4 (G-sustained, G-memory, G-cold, G-warm, G-tier, G-grown's Chrome run and
+its time) are recorded here as this machine's numbers and listed to measure there. The thirteen:
+
+1. **`wrela suite`** on 0.18.0 (the plan's 0.10.0 is long past: main's pin, rywible/wrela#351):
+   SUITE.
+2. **G-reference** (D38): **misses**, the final panel under "Public visual references" (above): 0 of
+   96 judgements prefer the still or rate it equal, every pair lost 8 to 0, the shots' and the
+   manifest's hashes B5's.
+3. **G-sustained** (the M4's): not measured here. The last M4 numbers are C6's (the vale's GPU p50
+   18.37 ms, the floor's 13.34: "Whether D27 holds"). Here, 120 s sustained, the vale's walk 57.12
+   ms (Part G's, "Part G's walk and memory") and the floor's 32.20 ms: no comparison with the M4's.
+4. **G-memory:** the GPU peak on the walk here, the vale 606.4 MiB (Part G's) and the floor 743.7
+   MiB: both over 512, as on the M4 at C4–C6 (the vale 539.8, the floor 735.6).
+5. **G-cold, G-warm** (medians of three, here): the floor cold 36.9 s, warm 14.6 s; the vale's
+   cold 10.4 s (11.03, 10.29, 10.42), warm 7.5 s (7.50, 7.17, 8.67). The M4's at C5: the vale 6.69 / 2.21 s, the floor 13.33 / 5.38 s.
+6. **G-tier:** C7's four M4 rows hold (each lower tier cheaper than the one above, on both scenes);
+   Part H changes no tier. The floor's pipelines per tier: Epic 170, High 168, Medium 166, Low 162.
+7. **G-grown:** **holds here.** `examples/vale/tests/land`'s `every_plant_the_vale_draws_is_grown`:
+   26,156 instances, 0 authored (E8 counted 26,922: Part G's logs laid where the ground holds them,
+   or not at all). `wrela tool grow -- --hash --package examples/vale`: two native runs and one in
+   Chrome, the archetypes' hash `a003a12bbd48d613` (508,280 bytes) and the first ring's shapes'
+   `362677e6de00fa1d` in each, the same as at E7; the first ring in 545 and 503 ms natively and
+   880 ms in Chrome (the plan's 1,000 ms). The archetypes' growth at build, 19.7 s here (E7). The
+   M4's Chrome run, the third device, is to measure there.
+8. **G-steer** (E6, unchanged since): the identity fits 0.874 (the oak) and 0.880 (the beech) hold
+   0.85; the birch's 0.689 is Blocked ("E6, steering"); the photo fits 0.761 and 0.659, recorded.
+9. **G-style:** `wrela tool styles -- --check` holds: each of the six looks builds the vale (109–111
+   pipelines), and each look's file was added in a commit that changed no engine file (`cel.wrela`
+   in ca931cda, `painterly.wrela` in 525ef4c9, `ink.wrela` in 7269c195, the two fitted looks in
+   ee285c32; `physical.wrela` the engine's own). The coherence table and bars: D4–D7b's (`Cel` holds
+   its 60, `Painterly` 59, `Ink` Blocked), and the cel floor's 22 of 23 ("H1").
+10. **G-motion:** **Blocked** at F9 (0 % against 40 %, four rounds: "F9, the motion review").
+11. **G-size:** **holds.** `wrela build <pkg> --optimize` (Binaryen's `wasm-opt`, as the release
+    ships a game): the runtime (`main.js`) 77,796 bytes, **26.0 KB gzipped** (≤ 1 MB). The vale's
+    program and shaders 9.25 MB raw, **3.23 MB gzipped** (2.49 + 0.74); the floor's 18.03 MB raw,
+    **5.59 MB gzipped** (4.02 + 1.58), against ≤ 6 MB. The floor's cold load as served, 6.0 MiB
+    (its walk's "Loaded MiB", ≤ 8); the vale's 4.0 MiB. No `.br` or `.gz` in either build (D26).
+    The release itself (`wrela tool release`) now ships the console, the docs and the capybara alone
+    (rywible/wrela#343 onward), so the two scenes are measured from their own builds.
+12. **G-pixels:** the herd the same as `build/base-0.9`, the climber lab's last frame within 0.00 of
+    it, the capybara the same as its own last change's build ("H1").
+13. **G-bench:** "Whether D27 holds" (above), finished here: a row per gate per scene per device.
