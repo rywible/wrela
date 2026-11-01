@@ -541,10 +541,17 @@ fn known(o: Online, course: u32, category: u32) -> Option<u32> {
     None
 }
 
+/// The account's time on board (`course`, `category`) is `ticks` (0: no place), as an answer says
+/// it: kept only if it's faster than what's known. An account's best never gets slower, and a
+/// public read may be a cache's from before a run the server verified since, so no answer makes
+/// the time known slower, nor says it has no place once it has one.
 fn learn(o: mut Online, course: u32, category: u32, ticks: u32) {
     for i in 0..o.known.len() {
         if o.known[i].0 == course && o.known[i].1 == category {
-            o.known[i].2 = ticks
+            let was = o.known[i].2
+            if was == 0 || (ticks != 0 && ticks < was) {
+                o.known[i].2 = ticks
+            }
             return
         }
     }
@@ -879,10 +886,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     // better, if it's still the account signed in.
                     for category in [ANY, FULL] {
                         if counts(run, category) && account == account_id(o) {
-                            let before = known(o, run.course, category).unwrap_or(0)
-                            if before == 0 || ticks < before {
-                                learn(mut o, run.course, category, ticks)
-                            }
+                            learn(mut o, run.course, category, ticks)
                         }
                     }
                     if o.account.save_codes {
@@ -2129,9 +2133,9 @@ fn a_best_run_waits_for_both_its_places_and_a_newcomers_first_post_goes() {
     // A run slower on both boards than the account's places isn't posted.
     finished(mut o, mine_full(3595))
     assert(o.waiting.is_empty(), "beats neither")
-    // One that beats the 100% place alone is.
-    learn(mut o, WETLANDS, FULL, 3700)
-    finished(mut o, mine_full(3650))
+    // One that beats the 100% place alone is (its any% place faster since).
+    learn(mut o, WETLANDS, ANY, 3500)
+    finished(mut o, mine_full(3550))
     pump(mut o)
     let Some((Ask::Upload { .. }, _)) = o.asks.pop() else { panic("a better 100%") }
 }
@@ -2693,4 +2697,36 @@ fn a_chosen_run_says_its_coming_or_why_not_and_leaving_or_choosing_another_gives
     let (_, asked) = o.asks.remove(0)
     answered(mut o, asked, Answer::Run { run: third.run.clone(), replay: one })
     assert(watch_note(o).as_str().starts_with("Can't load"), "not the run's own")
+}
+
+@test
+fn a_cached_place_never_makes_a_verified_best_slower() {
+    var o = signed_in()
+    post(mut o, mine(990))
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: 990, place: 4 })
+    assert(known(o, WETLANDS, ANY) == Some(990), "the server's time")
+    // A slice and a page a cache kept from before it: the account's place slower there, or none.
+    let before = Place {
+        place: 7,
+        name: String::from(ME),
+        ticks: 1000,
+        run: RunRef::none(),
+        replay: Vec::new(),
+    }
+    let slice = Asked::Around { course: WETLANDS, category: ANY, account: account_id(o) }
+    answered(mut o, slice.clone(), Answer::Around { places: Vec::from([before.clone()]), at: 7 })
+    assert(known(o, WETLANDS, ANY) == Some(990), "not the cached slice's")
+    answered(mut o, slice, Answer::Unplaced)
+    assert(known(o, WETLANDS, ANY) == Some(990), "not the cached slice's absence")
+    let page = Answer::Board {
+        course: WETLANDS,
+        category: ANY,
+        places: Vec::from([take before]),
+        total: 1,
+        next: Vec::new(),
+    }
+    answered(mut o, Asked::Board { course: WETLANDS, category: ANY, from: 0 }, page)
+    assert(known(o, WETLANDS, ANY) == Some(990), "not the cached page's")
+    assert(!beats(o, mine(995)) && beats(o, mine(985)), "only a faster run goes up alone")
 }
