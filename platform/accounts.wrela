@@ -886,7 +886,10 @@ impl<G: Game> Engine<G> {
                                 take j,
                             )
                         } else {
-                            self.renamed(take j, n, generation)
+                            // The account read again before it's written: it may have changed
+                            // while the shard was asked.
+                            j.expires = generation
+                            self.get(key(ACCOUNT, []), Step::NameCommit, take j)
                         }
                     },
                     Some(Back::Taken) => {
@@ -1312,6 +1315,7 @@ impl<G: Game> Engine<G> {
                 self.random(1, Step::ClearNext, take j)
             },
             Step::ClearNext => self.clear(take j),
+            Step::NameCommit => self.name_commit(take j, answer),
             Step::ReleaseAccount => {
                 if let Some(a) = self.account_of(answer) {
                     let release = Note::Release {
@@ -1496,6 +1500,40 @@ impl<G: Game> Engine<G> {
             Some(p) => p.version == self.versions.posting,
             None => false,
         }
+    }
+
+    /// A name drawn again and claimed (`job.seed` its draw, `job.expires` its generation), the
+    /// account as it is now read (`answer`): renamed, if the account is still as the draw found it
+    /// (the same name, draws and keep, not deleted or being deleted, and its session not ended);
+    /// if not, the claim is let go and nothing of it stays, so a late draw never undoes a Keep or
+    /// brings back a deleted account.
+    fn name_commit(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        let n = draw(j.seed)
+        let generation = j.expires
+        let now = if self.deleting { None } else { self.live_account(answer) }
+        let ended = match self.conn_index(j.conn) {
+            Some(i) => self.conns[i].session.is_empty(),
+            None => true,
+        }
+        let kept = match now {
+            Some(a) => a.fixed,
+            None => false,
+        }
+        let same = match (now.clone(), j.account.clone()) {
+            (Some(a), Some(b)) => save(a) == save(b),
+            _ => false,
+        }
+        if same && !ended {
+            self.renamed(take j, n, generation)
+            return
+        }
+        let release = Note::Release { name: n, owner: self.handle.clone(), generation }
+        self.tell(names_instance(n).as_str(), release, [])
+        let why = if ended { "Sign in first." } else if kept {
+            "You've kept your name. It can't change now."
+        } else { "Your name changed meanwhile. Reload the page and try again." }
+        self.refuse(j.conn, why)
     }
 
     /// A name drawn again (generation `generation` at its shard): the old one let go, the new one

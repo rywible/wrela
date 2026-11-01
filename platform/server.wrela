@@ -568,6 +568,7 @@ pub enum Step: Copy + Eq {
     RecoverSecrets,
     NameSeed,
     NameClaim,
+    NameCommit,
     AddCredential,
     AddCount,
     AddSession,

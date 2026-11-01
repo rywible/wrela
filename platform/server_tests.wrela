@@ -1620,6 +1620,57 @@ fn a_late_release_never_frees_a_name_a_later_owner_holds() {
     assert(owner == b.handle && generation == 2, f"the new owner's, generation {generation}")
 }
 
+/// The account record of `s`, as its store holds it.
+fn account_record(h: Host, s: Signed) -> Option<account::Account> {
+    let v = record(h, s, account::ACCOUNT)?
+    let a: Result<account::Account, LoadError> = load(v.clone())
+    take a.ok()
+}
+
+@test
+fn a_draw_whose_shard_answers_late_never_undoes_a_keep() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    // The draw's shard is slow to answer, and the name is kept meanwhile.
+    h.pausing.push(String::from("names/"))
+    let drawn = h.send(1, [Request::Reroll { csrf: s.csrf.clone() }], public: false)
+    h.settle()
+    assert(h.paused.len() == 1, "waiting at the shard")
+    h.pausing.clear()
+    let Reply::Welcome { me, .. } = h.say(
+        1,
+        Request::Keep { csrf: s.csrf.clone() },
+    )[0].clone() else {
+        panic("kept")
+    }
+    assert(me.fixed && me.name == s.name)
+    h.unpause()
+    h.settle()
+    let Some(a) = account_record(h, s) else { panic("an account") }
+    assert(a.fixed && names::text(a.name) == s.name && a.rerolls == account::REROLLS, "as kept")
+    assert(owned_names(h) == 1, "the late claim let go")
+    assert(refused([h.answers(1, drawn)[0].reply.clone()]), "the draw came too late")
+}
+
+@test
+fn a_draw_whose_shard_answers_late_never_brings_back_a_deleted_account() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    h.pausing.push(String::from("names/"))
+    let drawn = h.send(1, [Request::Reroll { csrf: s.csrf.clone() }], public: false)
+    h.settle()
+    assert(h.paused.len() == 1, "waiting at the shard")
+    h.pausing.clear()
+    let Reply::Done = h.say(1, Request::Delete { csrf: s.csrf.clone() })[0].clone() else {
+        panic("deleted")
+    }
+    assert(nothing_left(h, s), "deleted before the draw comes back")
+    h.unpause()
+    h.settle()
+    assert(nothing_left(h, s), "still nothing of it, and no name of it held")
+    assert(refused([h.answers(1, drawn)[0].reply.clone()]), "the draw came too late")
+}
+
 // ---- passkeys as an authenticator makes them --------------------------------------------------------
 
 fn unhex(s: str) -> Vec<u8> {
