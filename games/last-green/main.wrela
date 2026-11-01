@@ -78,6 +78,10 @@ fn quality() -> Quality {
     TIER.quality(Quality { shadows: ShadowQuality { far: FAR_CASCADE } })
 }
 
+/// The floor's look (`engine::style`, plan three's Part D; D40, §H1): the physical, or `wrela build
+/// games/last-green --set LOOK=styles::cel::Cel` builds the cel floor.
+pub type LOOK = Physical
+
 /// The floor's tier (`engine::tier`, D37): `wrela build games/last-green --set TIER=Medium`
 /// builds another.
 pub const TIER: Tier = Tier::Epic
@@ -107,6 +111,14 @@ pub const LEARNED: bool = false
 /// games/last-green --set GROWN_WOOD=true`).
 pub const GROWN_WOOD: bool = false
 
+/// Whether the floor's fawn is grown (plan three's §F, the vale's grazer's: the roe grown from its
+/// genome to a fawn's age, `fawns`) or the hand's: the hand's until the floor adopts it (D40,
+/// §H1: `wrela build games/last-green --set GROWN_FAWN=true`).
+pub const GROWN_FAWN: bool = false
+
+/// The player's eyes over its feet (m), where the grown fawn looks when it notices them.
+const PLAYER_EYE: f32 = 1.6
+
 pub struct Floor {
     console: Link,
     /// The way back down to the stair, and the tower's journey.
@@ -114,7 +126,7 @@ pub struct Floor {
     snaps: Snapshots<World>,
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Shared, Tiered<FloorTier>, Physical>,
+    frame: Frame<Shared, Tiered<FloorTier>, LOOK>,
     stage: Stage,
     /// Whether the floor's ready (its kinds cooked, the tiles round the player in and placed).
     ready: bool,
@@ -504,9 +516,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // wolf: in play, where it's as near.
     match cast {
         Some(c) => {
-            s.stage.fawn.pose(
-                fawn::character::at_rest(on_ground(c.fawn), c.fawn.z),
-                shadowed: true,
+            s.stage.fawn.at_rest(
+                on_ground(c.fawn),
+                c.fawn.z,
+                eye: s.frame.cam.eye + o,
+                time: time,
+                origin: o,
                 moved: moved,
             )
         },
@@ -514,8 +529,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
             let apart = length(f.walker.root.pos - (feet + o))
             if s.shots.held.is_none() && apart < FAWN_DRAWN {
-                s.stage.fawn.pose(
-                    behaviour::palette(f, o),
+                s.stage.fawn.following(
+                    f,
+                    player: feet + o + vec3(0.0, PLAYER_EYE, 0.0),
+                    time: time,
+                    origin: o,
                     shadowed: apart < s.frame.quality().shadows.moving_span,
                     moved: moved,
                 )
@@ -1059,7 +1077,7 @@ pub fn test_course_points(c: u32, from: u32) -> CourseRow {
 pub fn test_settled(s: Floor) -> f32 {
     let eye = s.frame.cam.eye.xz
     let still = !engine::frame::Scene::loading(s.stage) &&
-        (!s.stage.fawn.on || s.stage.fawn.realized.is_some()) &&
+        !s.stage.fawn.unsettled() &&
         (!s.stage.wolf.on || s.stage.wolf.realized.is_some()) &&
         !s.frame.ready.arriving
     if still && s.frame.lit(s.stage, eye, eye + s.frame.cam.origin.xz) { 1.0 } else { 0.0 }

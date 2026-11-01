@@ -24,7 +24,7 @@ use kit::gaits::{
     run_with,
 }
 use kit::muscles::{Sized, muscle_mass, muscles}
-use kit::roe::{COAT_SEED, VALE_AGE, walk_at}
+use kit::roe::{COAT_SEED, FAWN_AGE, VALE_AGE, walk_at}
 use kit::genome::{ROE, grown_segments, quadruped_at}
 use kit::walks::WALKS
 use engine::loads::Segments
@@ -72,42 +72,49 @@ fn line(s: Score) -> String {
     )
 }
 
-/// The vale's grazer grown, as Wrela source (`kit::grown`): the muscles of the grown animal and of
-/// the vale's grazer (at `kit::roe::VALE_AGE`) sized from `level` (the optimized walk on level
-/// ground; at another age by dynamic similarity, `roe::walk_at`) over `SIZING` s, and its coat's map
-/// (`kit::coat::coat`, from `roe::COAT_SEED`). `segs` are the grown animal's segments.
+/// The grazers grown, as Wrela source (`kit::grown`): the muscles of the grown animal, and of the
+/// vale's grazer (at `kit::roe::VALE_AGE`) and the floor's fawn (at `kit::roe::FAWN_AGE`), each
+/// sized from `level` (the optimized walk on level ground; at another age by dynamic similarity,
+/// `roe::walk_at`) over `SIZING` s, and each one's coat's map (`kit::coat::coat`, from
+/// `roe::COAT_SEED`). `segs` are the grown animal's segments.
 fn grow(level: Gait, segs: Segments) -> String {
     let q = quadruped_at(ROE, 1.0)
-    let fq = quadruped_at(ROE, VALE_AGE)
     let total = segs.total
     let grown_run = run_with(ROE, q, segs, level, Pace::Walk, Ground {}, SIZING, down: false)
-    // The vale's grazer grown, its walk the grown animal's own; else its walk at its age.
-    let (vale_run, vale_mass) = if VALE_AGE == 1.0 { (grown_run.clone(), total) } else {
-        let vale_walk = walk_at(ROE, level, VALE_AGE)
-        let fsegs = grown_segments(ROE, VALE_AGE)
-        let mass = fsegs.total
-        (run_with(ROE, fq, fsegs, vale_walk, Pace::Walk, Ground {}, SIZING, down: false), mass)
-    }
     let gm = muscles(ROE, q, grown_run.loads, total)
-    let fm = muscles(ROE, fq, vale_run.loads, vale_mass)
     print(
-        f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}, the vale's grazer's {muscle_mass(fm):.2} kg (its walk {line(vale_run.score).as_str()})",
+        f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}",
     )
-    let (lo, size) = chart_of(fq)
-    let map = coat(ROE.coat, lo, size, COAT_SEED)
     var out = String::from(
-        "// The vale's grazer grown (kit::roe, docs/plan-world-class-3.md §F3–F5): written by `wrela tool\n// gait -- --write`. Don't edit: run the tool again.\n\nuse coat::CoatMap\nuse muscles::Sized\n\n",
+        "// The grazers grown (kit::roe, docs/plan-world-class-3.md §F3–F5, §H1): the vale's and the\n// floor's fawn, written by `wrela tool gait -- --write`. Don't edit: run the tool again.\n\nuse coat::CoatMap\nuse muscles::Sized\n\n",
     )
-    out.push_str(
-        f"pub const GROWN_MUSCLES: [Sized; 7] = {sized(gm).as_str()}\n\npub const VALE_MUSCLES: [Sized; 7] = {sized(fm).as_str()}\n\npub const VALE_COAT: CoatMap = CoatMap {{\n    words: [",
-    )
-    for i in 0..map.words.len() {
-        out.push_str(if i % 8 == 0 { "\n        " } else { " " })
-        out.push_str(f"{map.words[i]},")
+    out.push_str(f"pub const GROWN_MUSCLES: [Sized; 7] = {sized(gm).as_str()}\n")
+    for (name, age) in [("VALE", VALE_AGE), ("FAWN", FAWN_AGE)] {
+        let aq = quadruped_at(ROE, age)
+        // Grown, its walk the grown animal's own; else its walk at its age.
+        let (run, mass) = if age == 1.0 { (grown_run.clone(), total) } else {
+            let asegs = grown_segments(ROE, age)
+            let mass = asegs.total
+            let walk = walk_at(ROE, level, age)
+            (run_with(ROE, aq, asegs, walk, Pace::Walk, Ground {}, SIZING, down: false), mass)
+        }
+        let m = muscles(ROE, aq, run.loads, mass)
+        print(
+            f"gait: {name} at {age}: the muscles {muscle_mass(m):.2} kg of {mass:.2} (its walk {line(run.score).as_str()})",
+        )
+        let (lo, size) = chart_of(aq)
+        let map = coat(ROE.coat, lo, size, COAT_SEED)
+        out.push_str(
+            f"\npub const {name}_MUSCLES: [Sized; 7] = {sized(m).as_str()}\n\npub const {name}_COAT: CoatMap = CoatMap {{\n    words: [",
+        )
+        for i in 0..map.words.len() {
+            out.push_str(if i % 8 == 0 { "\n        " } else { " " })
+            out.push_str(f"{map.words[i]},")
+        }
+        out.push_str(
+            f"\n    ],\n    lo: vec2({map.lo.x}, {map.lo.y}),\n    size: vec2({map.size.x}, {map.size.y}),\n}}\n",
+        )
     }
-    out.push_str(
-        f"\n    ],\n    lo: vec2({map.lo.x}, {map.lo.y}),\n    size: vec2({map.size.x}, {map.size.y}),\n}}\n",
-    )
     out
 }
 

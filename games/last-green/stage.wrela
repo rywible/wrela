@@ -96,7 +96,7 @@ pub struct Stage {
     pub footprints: GpuBuffer<vec4>,
     /// The climber (its sword realized at the first frame), the fawn and the wolf.
     pub drawn: Option<Drawn>,
-    pub fawn: Cast<fawn::creature::Coat, fawn::character::Grown, fawn::character::FawnLook>,
+    pub fawn: fawns::Fawns,
     pub wolf: CastWolf,
     pub rocks: Option<Rocks>,
     pub off: Flags<System>,
@@ -221,12 +221,7 @@ pub fn stage() -> Stage {
         pool: pool(),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
         drawn: None,
-        fawn: cast(
-            fawn::character::grown(),
-            fawn::character::FawnLook {},
-            fawn::character::REALIZED,
-            fawn::character::SLICES,
-        ),
+        fawn: fawns::fawns(),
         wolf: cast_wolf(),
         rocks: None,
         off: Flags::none(),
@@ -658,7 +653,7 @@ impl Scene for Stage {
         if let Some(d) = self.drawn {
             d.draw(pass, lt, lt.cam)
         }
-        self.fawn.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+        self.fawn.draw(pass, lt)
         self.wolf.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
     }
 
