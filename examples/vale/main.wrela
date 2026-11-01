@@ -107,11 +107,6 @@ fn turned(v: vec2, a: f32) -> vec2 {
 /// face both seen).
 pub const GRAZING_TURN: f32 = 0.9
 
-/// The vale's contrast about the tone curve's pivot (`engine::paint::Look::contrast`), **proposed**
-/// (§G7: searched on the eight development shots, docs/bench.md "G7"; its meter's ceiling, raised
-/// to 8 with it there, is the engine's again: G-look's judges found dusk from the crest washed out
-/// at 8 and at 6).
-pub const CONTRAST: f32 = 1.2
 
 /// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
 pub const WALK_HOUR: f32 = 10.5
@@ -155,7 +150,7 @@ pub fn init() -> Vale {
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
-    var f: Frame<Shared, Tiered<ValeTier>, LOOK> = Frame::new(
+    let f: Frame<Shared, Tiered<ValeTier>, LOOK> = Frame::new(
         quality(),
         light,
         air,
@@ -164,8 +159,6 @@ pub fn init() -> Vale {
         probe_grid(eye.xz, vec2(0.0), TILES),
         eye.xz,
     )
-    // The vale's look (§G7): its contrast.
-    f.look.contrast = CONTRAST
     Vale {
         frame: f,
         stage: stage(),
