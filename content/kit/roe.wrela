@@ -26,9 +26,10 @@ pub struct Hide: Copy + GpuData + Blend {
 /// spots showing, read as too small against the vale's shots' references and their judges, §F2).
 pub const VALE_AGE: f32 = 1.0
 
-/// The floor's fawn's age (D40, §H1; **proposed**): a summer fawn of about three months, 12 kg and
-/// 0.57 m at the withers, its spots not yet faded (`CoatGenes::fade`, 0.45).
-pub const FAWN_AGE: f32 = 0.3
+/// The floor's fawn's age (D40, §H1; **proposed**): the oldest that keeps its spots
+/// (`CoatGenes::fade`, 0.45), 21 kg and 0.66 m at the withers (at 0.3, 12 kg and 0.57 m, it was
+/// a speck in the floor's fawn shots).
+pub const FAWN_AGE: f32 = 0.45
 
 /// Its seed for the coat's pattern.
 pub const COAT_SEED: u32 = 7
