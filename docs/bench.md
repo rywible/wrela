@@ -3471,13 +3471,13 @@ Each ships only if its own gate says it pays; each gets its outcome here when it
 | ID | Hypothesis | Decided at | Outcome |
 |---|---|---|---|
 | H1 | Specialization alone (C1) recovers at least 2 ms of the clearing's GPU frame and 3 ms of the floor's | C1, C6 | not held: compiling the switches out moved nothing (the clearing 12.39 → 12.68 ms GPU p50; its fog and distance volume were off at run time already: "C1, every switch a constant") |
-| H2 | Most of the visual-review gain comes from the grown floor (E3–E5), not from lighting | E8's panel against D11's | pending |
+| H2 | Most of the visual-review gain comes from the grown floor (E3–E5), not from lighting | E8's panel against D11's | not held: there was no gain to attribute. E8 lost every pair 0 / 0 / 8 as D11 did, and no row moved by more than 2.5 (artifacts 26.62 → 29.12, value 14.12 → 12.25, light 9.50 → 8.75: "the third panel (E8)") |
 | H3 | Mark coherence (D7) is the hardest problem in Part D and the bars will be held by `Cel` and `Ink` before `Painterly` | D7's table | half held: mark coherence was the hardest problem (Ink is Blocked on it), but `Painterly` holds 59 of 60 bars and `Ink` none of its flicker bars ("D4–D7b, the looks' coherence") |
 | H4 | The learned style beats hand-tuned `Painterly` on flicker and pop at equal preference | D9 | withdrawn (D41): the learned style is deferred until Ryan rules on docs/citations.md's rule |
-| H5 | Growth is byte-identical across devices on the CPU without fixed-point arithmetic | E7's hashes | pending |
-| H6 | Motion, not rendering, decides the creature shots (9, 10) | F10's panel against E8's | pending |
-| H7 | Bounce colour (G1) moves the "light" row more than any other single item | G1's panel | pending |
-| H8 | The vale needs no more than three of Part G's items to reach G-reference | G's tallies | pending |
+| H5 | Growth is byte-identical across devices on the CPU without fixed-point arithmetic | E7's hashes | held on this machine: two native runs and Chrome gave the same archetypes' and first ring's hashes at E7 and again at Part H's head ("Part H, the final gates"); the M4's Chrome, the third device, is to re-measure |
+| H6 | Motion, not rendering, decides the creature shots (9, 10) | F10's panel against E8's | not held: neither decided them. Both creature pairs stayed lost 0 / 0 / 8 at F10, and the judges faulted the leaf cards, the root plates, the smeared ground and the empty slope, not the creature's motion or its rendering ("the fourth panel (F10)"); G-motion stayed Blocked at 0 % ("F9") |
+| H7 | Bounce colour (G1) moves the "light" row more than any other single item | G1's panel | not held: on the development panel G1 moved the light row's losses 7.50 → 7.62 (G3's to G1's); the most any item moved it was G7's 9.00 → 7.75, within the panel's run-to-run spread, and G7 later left the vale ("G1, bounce light"; "Part G closes, again") |
+| H8 | The vale needs no more than three of Part G's items to reach G-reference | G's tallies | not held: eight items (G7, G4, G3, G1, G8, G9 and G10's four parts) left the development panel at 0 of 8 pairs (losses 51.01 → 49.88) and the sealed twelve at 0 of 12 ("Part G closes, again: Blocked") |
 
 ## D1, the substance (2026-10-30, toolchain 0.11.0)
 

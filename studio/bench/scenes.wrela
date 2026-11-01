@@ -39,6 +39,7 @@ pub const SCENES: [Scene; 8] = [
         height: 1080,
         arrives: true,
         tiered: true,
+        looked: true,
     },
     Scene {
         name: "last-green-walk",
@@ -49,6 +50,7 @@ pub const SCENES: [Scene; 8] = [
         walks: WALKS,
         arrives: true,
         tiered: true,
+        looked: true,
     },
     Scene { name: "capybara-run", pkg: "games/capybara", frames: 600, width: 1920, height: 1080 },
     Scene {

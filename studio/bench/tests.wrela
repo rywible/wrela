@@ -58,8 +58,8 @@ fn a_tier_is_one_of_the_four() {
     }
 }
 
-/// `--look` builds the scenes whose programs name a look (the vale's), and names the look's type
-/// in each row; a scene whose program names none is a usage error.
+/// `--look` builds the scenes whose programs name a look (the floor's and the vale's), and names
+/// the look's type in each row; a scene whose program names none is a usage error.
 @test
 fn a_look_is_set_on_a_program_that_names_one() {
     let Some(o) = parse_args(texts(["--look", "styles::fixtures::Every"])) else {
@@ -80,7 +80,13 @@ fn a_look_is_set_on_a_program_that_names_one() {
     )
     assert(parse_args(full).is_some(), "the vale's walk in a look, sustained")
     let looked = chosen(o)
-    assert(looked.len() == 1 && looked[0].name == "vale-walk", f"{looked.len()} scenes in a look")
+    assert(
+        looked.len() == 3 &&
+            looked[0].name == "last-green-shot" &&
+            looked[1].name == "last-green-walk" &&
+            looked[2].name == "vale-walk",
+        f"{looked.len()} scenes in a look",
+    )
     assert(parse_args(texts(["--look", "x::Y", "--scene", "herd"])).is_none(), "the herd has none")
     assert(labelled("vale-walk", "", "styles::fixtures::Every").as_str() == "vale-walk (Every)")
     assert(labelled("vale-walk", "Low", "Cel").as_str() == "vale-walk (Low, Cel)")
