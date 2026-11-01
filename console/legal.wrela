@@ -143,7 +143,7 @@ pub const PRIVACY_TEXT: [Text; 58] = [
     "- GitHub holds the source code. It never receives account data.",
     "Each acts on our behalf, and none of them gets your account's records to use for itself.",
     "# How long we keep it",
-    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it. A game's token ends after an hour. When you delete your account, its records go from our server right away, from Cloudflare's caches of the public boards within five minutes, and from the backups within [30 days: to be set with the backup's retention]. A posted run's replay never changes, so Cloudflare's caches may keep a copy fetched by its fingerprint for up to a year after the account is deleted, even though our server no longer has it.",
+    "We keep your account's records until you delete the account. A session ends after 90 days, or when you sign out or end it. A game's token ends after an hour. When you delete your account, you're signed out everywhere at once, its runs leave the public boards within moments, its records go from our server as soon as each board has let its runs go, from Cloudflare's caches of the public boards within five minutes, and from the backups within [30 days: to be set with the backup's retention]. A posted run's replay never changes, so Cloudflare's caches, and the browsers that watched it, may keep a copy for up to a year after the account is deleted, even though our server no longer has it.",
     "# Your choices",
     "- Export. Choose Account, then Export my data, to get everything above as a JSON file.",
     "- Delete. Choose Account, then Delete account, to delete your passkeys' records, sessions, recovery codes, runs and name right away. We'll ask you to sign in with your passkey first.",
@@ -231,10 +231,9 @@ fn the_pages_are_drafts_and_promise_what_the_server_does() {
     )
     assert(privacy.as_str().find("No IP addresses").is_some())
     assert(privacy.as_str().find("sells nothing").is_some(), "free, no ads, sells nothing")
-    // A replay read by its hash may be cached a year (the server's `REPLAY_AGE`): the policy says so.
+    // A run's replay may be cached a year (the server's `RUN_AGE`): the policy says so.
     assert(
-        platform::server::REPLAY_AGE == 365 * 86400 &&
-            privacy.as_str().find("up to a year").is_some(),
+        platform::server::RUN_AGE == 365 * 86400 && privacy.as_str().find("up to a year").is_some(),
     )
     var terms = String::new()
     for p in TERMS_TEXT {

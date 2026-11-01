@@ -1,0 +1,293 @@
+// A board's instance (server.wrela's `board/<game>/<board>/<course>/<category>`, and a whole game's,
+// `whole/<game>/<board>/<category>`): every account's best there, which only that account writes,
+// each an upsert of its own revision (`Note::Best`, tombstones too), so a late or repeated one
+// changes nothing. Every best is kept, however far down, so when a place above goes, the next moves
+// up; what is read is bounded (a page, a slice, the places counted to `MOST_PLACE`).
+//
+// - `a<handle>`: what the account last told (`Entry`), so a late message is known for one.
+// - `r<ticks><handle>`: its place, fastest first, then by handle (`server::Ranked`).
+// - `n<name's key>`: whose a name on the board is, so a slice around a name reads one key.
+//
+// The edge ranks an upload here (`Inner::Rank`): the account's best as its account told it, applied
+// as its message would be (which may come before or after), then the run's place.
+
+use account::{HANDLE_BYTES, part, u32_at}
+use server::{
+    Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, lately, read,
+    text_key,
+}
+use std::serialize::{Serialize, save}
+use std::store::{append_u32, entries, past}
+use wire::{AROUND, BOARD_PAGE, Place, Reply, Request, RunRef}
+
+/// What an account last told a board (`a<handle>`): its revision, and its place's time and name's
+/// key, if it has one (`present`).
+pub struct Entry: Clone + Serialize {
+    pub revision: u64,
+    pub present: bool,
+    pub ticks: u32,
+    pub key: Vec<u8>,
+}
+
+fn entry_key(handle: [u8]) -> Vec<u8> {
+    var k = text_key("a")
+    for b in handle {
+        k.push(b)
+    }
+    k
+}
+
+/// `r<ticks><handle>`: a place.
+pub fn place_key(ticks: u32, handle: [u8]) -> Vec<u8> {
+    var k = text_key("r")
+    append_u32(mut k, ticks)
+    for b in handle {
+        k.push(b)
+    }
+    k
+}
+
+fn named_key(name: [u8]) -> Vec<u8> {
+    var k = text_key("n")
+    for b in name {
+        k.push(b)
+    }
+    k
+}
+
+/// The place numbered `number` from its entry (`key`, `value`).
+fn place_of(key: [u8], value: [u8], number: u32) -> Option<Place> {
+    let r = read::<Ranked>(value)?
+    if key.len() != 5 + HANDLE_BYTES {
+        return None
+    }
+    Some(
+        Place {
+            place: number,
+            name: r.name.clone(),
+            ticks: u32_at(key, 1),
+            run: r.run.clone(),
+            replay: r.replay.clone(),
+        },
+    )
+}
+
+impl<G: Game> Engine<G> {
+    /// Request `conn` to a board: a page of it, or a slice around a name.
+    pub(package) fn board_http(mut self, conn: u32, request: Request) {
+        let job = blank_job(conn, request.clone())
+        match request {
+            Request::Board { from, .. } => {
+                var j = take job
+                j.n = from
+                self.scan(text_key("r"), from + BOARD_PAGE + 1, Step::BoardScan, take j)
+            },
+            Request::Around { name, .. } => {
+                // One answer for any name without a place here, so a slice never says whether an
+                // account that never posted exists.
+                let Some(n) = names::parse(name.as_str()) else {
+                    self.reply(conn, Reply::Unplaced)
+                    return
+                }
+                self.get(named_key(names::key(n)), Step::AroundName, take job)
+            },
+            _ => self.refuse(conn, "A board answers only a page of it, or a slice."),
+        }
+    }
+
+    /// Call `conn` to a board: an upload's ranking.
+    pub(package) fn board_called(mut self, conn: u32, inner: Inner) {
+        let Inner::Rank { best, .. } = inner else {
+            self.back(conn, Back::Refused { why: String::from("A board doesn't answer that.") })
+            return
+        }
+        let Note::Best { handle, .. } = best else {
+            self.back(conn, Back::Refused { why: String::from("That isn't a best.") })
+            return
+        }
+        var j = blank_job(conn, Request::Me)
+        j.inner = Some(inner.clone())
+        j.best = best.clone()
+        self.get(entry_key(handle), Step::RankRead, take j)
+    }
+
+    /// A message to a board: an account's best there.
+    pub(package) fn board_delivered(mut self, job: take Job) {
+        var j = take job
+        let Note::Best { handle, .. } = j.note.clone() else {
+            self.done(j)
+            return
+        }
+        j.best = j.note.clone()
+        self.get(entry_key(handle), Step::BestRead, take j)
+    }
+
+    /// Applies best `note` to the board, its account's entry as a read answered `answer`: unless
+    /// it's older than what the account told before, its old place goes and its new one comes.
+    fn apply(mut self, note: Note, answer: [u8]) {
+        let Note::Best { handle, revision, best } = note else { return }
+        let k = entry_key(handle)
+        let old: Option<Entry> = match self.latest(k, answer) {
+            Some(v) => read(v),
+            None => None,
+        }
+        if let Some(e) = old {
+            if revision <= e.revision {
+                return
+            }
+            if e.present {
+                self.forget(place_key(e.ticks, handle))
+                self.forget(named_key(e.key))
+            }
+        }
+        if best.is_empty() {
+            self.keep(take k, save(Entry { revision, present: false, ticks: 0, key: Vec::new() }))
+            return
+        }
+        borrow r = best[0]
+        self.keep(place_key(r.ticks, handle), save(r.clone()))
+        self.keep(named_key(r.key), Vec::from(handle))
+        self.keep(
+            take k,
+            save(Entry { revision, present: true, ticks: r.ticks, key: r.key.clone() }),
+        )
+    }
+
+    pub(package) fn board_answer(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let conn = j.conn
+        match j.step {
+            Step::BestRead => {
+                self.apply(j.best.clone(), answer)
+                self.done(j)
+            },
+            Step::RankRead => {
+                self.apply(j.best.clone(), answer)
+                let Some(Inner::Rank { ticks, handle, .. }) = j.inner.clone() else { return }
+                // The places ahead of a run of `ticks` by its account, as many as are counted.
+                let to = place_key(ticks, handle)
+                self.scan_range(text_key("r"), take to, MOST_PLACE, Step::RankCount, take j)
+            },
+            Step::RankCount => {
+                let Some(es) = entries(answer) else { return }
+                var ahead: u32 = 0
+                for e in es {
+                    if !lately(self.gone, e.key) {
+                        ahead += 1
+                    }
+                }
+                self.back(conn, Back::Place { place: ahead + 1 })
+            },
+            Step::BoardScan => {
+                let Some(es) = entries(answer) else { return }
+                var places: Vec<Place> = Vec::new()
+                for k in j.n..min(es.len(), j.n + BOARD_PAGE) {
+                    borrow e = es[k]
+                    let Some(p) = place_of(e.key, e.value, k + 1) else { continue }
+                    places.push(take p)
+                }
+                self.reply(conn, Reply::Board { places, total: es.len() })
+            },
+            Step::AroundName => {
+                let Some(handle) = std::store::value(answer) else {
+                    self.reply(conn, Reply::Unplaced)
+                    return
+                }
+                j.handle = handle.clone()
+                self.get(entry_key(handle), Step::AroundEntry, take j)
+            },
+            Step::AroundEntry => {
+                let e: Option<Entry> = got_entry(answer)
+                let Some(e) = e else {
+                    self.reply(conn, Reply::Unplaced)
+                    return
+                }
+                if !e.present {
+                    self.reply(conn, Reply::Unplaced)
+                    return
+                }
+                // Every place ahead of it, as many as are counted: how many, and the last of them
+                // are the places just above.
+                j.hash = place_key(e.ticks, j.handle)
+                let to = j.hash.clone()
+                self.scan_range(text_key("r"), take to, MOST_PLACE, Step::AroundCount, take j)
+            },
+            Step::AroundCount => {
+                let Some(es) = entries(answer) else { return }
+                if es.len() == MOST_PLACE {
+                    // Past the places counted: those just above are read from it, unnumbered.
+                    j.tries = 0
+                    let to = j.hash.clone()
+                    self.scan_down(text_key("r"), take to, AROUND, Step::AroundAbove, take j)
+                    return
+                }
+                j.tries = es.len() + 1
+                for k in es.len() - min(AROUND, es.len())..es.len() {
+                    j.keys.push(es[k].key.clone())
+                    j.views.push(es[k].value.clone())
+                }
+                self.around_below(take j)
+            },
+            Step::AroundAbove => {
+                let Some(es) = entries(answer) else { return }
+                // The last first: kept fastest first.
+                var k = es.len()
+                while k > 0 {
+                    k -= 1
+                    j.keys.push(es[k].key.clone())
+                    j.views.push(es[k].value.clone())
+                }
+                self.around_below(take j)
+            },
+            Step::AroundBelow => {
+                let Some(es) = entries(answer) else { return }
+                // `tries` is its place, if within the places counted (0 if not), and `n` the places
+                // above it in the slice: the slice's are numbered from it.
+                let at = j.tries
+                var places: Vec<Place> = Vec::new()
+                for i in 0..j.keys.len() + es.len() {
+                    let number = if at == 0 { 0 } else { at - j.n + i }
+                    let p = if i < j.keys.len() {
+                        place_of(j.keys[i], j.views[i], number)
+                    } else {
+                        borrow e = es[i - j.keys.len()]
+                        place_of(e.key, e.value, number)
+                    }
+                    if let Some(p) = take p {
+                        places.push(take p)
+                    }
+                }
+                self.reply(conn, Reply::Around { places, at })
+            },
+            _ => {},
+        }
+    }
+
+    /// The slice's places above are read: then its own and those below it.
+    fn around_below(mut self, job: take Job) {
+        var j = take job
+        j.n = j.keys.len()
+        let to = past(text_key("r")).unwrap_or(Vec::new())
+        self.scan_range(j.hash.clone(), take to, AROUND + 1, Step::AroundBelow, take j)
+    }
+}
+
+fn got_entry(answer: [u8]) -> Option<Entry> {
+    server::got(answer)
+}
+
+@test
+fn a_boards_places_sort_fastest_first_then_by_account() {
+    assert(place_key(9, [255; 16]) < place_key(10, [0; 16]), "by time")
+    assert(place_key(9, [1; 16]) < place_key(9, [2; 16]), "then by account")
+    let r = Ranked {
+        ticks: 9,
+        name: String::from("Sir Wobblesnout the Unhurried"),
+        key: Vec::new(),
+        run: RunRef { handle: Vec::from([1; 16]), n: 4 },
+        replay: Vec::new(),
+    }
+    let Some(p) = place_of(place_key(9, [1; 16]), save(r), 3) else { panic("a place") }
+    assert(p.place == 3 && p.ticks == 9 && p.run.n == 4)
+    assert(place_of([1, 2], [], 1).is_none() && part([1, 2, 3], at: 1, n: 2) == Vec::from([2, 3]))
+}

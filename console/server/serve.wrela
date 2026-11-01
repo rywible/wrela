@@ -1,29 +1,39 @@
-// The console's server on its host (language.md §19.5, toolchain 0.13.0's Cloudflare host):
-// `platform::server`'s engine, its commands carried out through std::store, std::crypto and
-// std::http, and the host's answers given back to it on the next call. The console's `serve_init`
-// and `serve` (console/main.wrela) are these.
+// The console's server on its host (language.md §19.5, toolchain 0.18.0's Cloudflare host):
+// `platform::server`'s engine, one instance of it in each of the server's named instances and at
+// its edge, its commands carried out through std::store, std::crypto, std::server and std::http,
+// and the host's answers given back to it on the next call. The console's `serve_init` and `serve`
+// (console/main.wrela) are these.
 //
 // Each call reads every event it was given (a `serve` that leaves one unread fails). A request is
-// a short connection: it opens, its one message is the HTTP request, and it closes once answered.
-// What the engine reads of it is the request's time, its two cookies and its body; the paths are
-// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a replay by
-// its hash under `REPLAYS`), and anything else is not found.
+// a short connection: it opens, its one message is the HTTP request, and it closes once answered;
+// a call and a message are short connections too (std::server). What the engine reads of a
+// request is its time, its two cookies, the Worker's keys (`x-wrela-key` and `x-wrela-key-old`,
+// which the API Worker sets: studio/release's `api_script`) and its body; the paths are
+// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a run's
+// replay at its path under `RUNS`), and anything else is not found. New accounts are closed until
+// the Terms and the Privacy Policy are final (console/legal.wrela, rywible/wrela#352): signing in,
+// recovery and play without an account go on.
 
 use capybara::boards::Capybara
 use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, Versions, engine}
-use platform::wire::{ACCOUNTS, PUBLIC, REPLAYS, Request as Asking, replay_hash}
+use platform::wire::{ACCOUNTS, PUBLIC, RUNS, Request as Asking, run_of}
 use std::crypto
-use std::http::{Request, Response, bytes, request, respond, session_cookie, text}
+use std::http::{Request, bytes, request, respond, session_cookie, text}
 use std::input::{Event, events, payload}
 use std::io::Pending
 use std::net::POISONED
 use std::serialize::save
+use std::server::{Route, call, call_build, called, delivered, dispatch, me, reply, send}
 use std::store
 use std::webauthn::base64url
 
-/// The server: the engine, and its requests waiting on the host.
+/// The server: the engine (made on the first call, once the instance knows its name), and its
+/// requests waiting on the host.
 pub struct Server {
-    engine: Engine<Capybara>,
+    rp_id: String,
+    origin: String,
+    versions: Versions,
+    engine: Option<Engine<Capybara>>,
     asked: Vec<(u32, Pending<u8>)>,
 }
 
@@ -31,52 +41,81 @@ pub struct Server {
 /// agreements of `versions` (the console's legal pages').
 @server
 pub fn init(rp_id: str, origin: str, versions: Versions) -> Server {
-    Server { engine: engine(Capybara {}, rp_id, origin, versions), asked: Vec::new() }
+    Server {
+        rp_id: rp_id.to_string(),
+        origin: origin.to_string(),
+        versions,
+        engine: None,
+        asked: Vec::new(),
+    }
 }
 
 /// One call: the answers in, then the events, then what the engine asks carried out.
 @server
 pub fn serve(s: mut Server, time: f32) {
     let _ = time
-    s.engine.begin()
+    if s.engine.is_none() {
+        var e = engine(Capybara {}, s.rp_id.as_str(), s.origin.as_str(), s.versions, me().as_str())
+        // Sign-ups stay closed until Ryan says otherwise: reopening them is deleting this line.
+        e.close_sign_ups()
+        s.engine = Some(take e)
+    }
+    match mut s.engine {
+        Some(e) => once(mut e, mut s.asked),
+        None => {},
+    }
+}
+
+/// A call of the engine: the answers in, then the events, then its commands carried out, each
+/// request kept in `asked` until it's answered.
+fn once(e: mut Engine<Capybara>, asked: mut Vec<(u32, Pending<u8>)>) {
+    e.begin()
     var i = 0
-    while i < s.asked.len() {
-        match s.asked[i].1.poll() {
+    while i < asked.len() {
+        match asked[i].1.poll() {
             Some(result) => {
-                let (ticket, _) = s.asked.remove(i)
-                s.engine.answer(ticket, take result.ok())
+                let (ticket, _) = asked.remove(i)
+                e.answer(ticket, take result.ok())
             },
             None => i += 1,
         }
     }
-    for e in events() {
-        match e {
+    for ev in events() {
+        match ev {
             Event::Message { conn, .. } => {
-                let Some(bytes) = payload(e) else { continue }
+                let Some(bytes) = payload(ev) else { continue }
                 // A request that failed an instance comes back marked: it is dropped unread.
                 if conn >= POISONED {
                     continue
                 }
-                let Some(r) = request(conn, bytes) else { continue }
-                http(mut s, r)
+                if let Some(r) = request(conn, bytes) {
+                    http(mut e, r)
+                } else if let Some(c) = called(conn, bytes) {
+                    e.called(conn, c.from.as_str(), c.body)
+                } else if let Some(m) = delivered(conn, bytes) {
+                    e.delivered(conn, m.from.as_str(), m.id, m.body)
+                }
             },
-            // A request opens with its message; its close is the engine's to hear.
-            Event::Connection { conn, open: false, .. } => s.engine.closed(conn),
+            // A connection opens with its message; its close is the engine's to hear.
+            Event::Connection { conn, open: false, .. } => e.closed(conn),
             _ => {},
         }
     }
-    s.engine.end()
-    for c in s.engine.commands() {
+    e.end()
+    for c in e.commands() {
         match c {
-            Command::Get { ticket, key } => s.asked.push((ticket, store::get(key))),
+            Command::Get { ticket, key } => asked.push((ticket, store::get(key))),
             Command::Scan { ticket, from, to, limit, down } => {
-                s.asked.push((ticket, store::scan(from, to, limit, down)))
+                asked.push((ticket, store::scan(from, to, limit, down)))
             },
             Command::Put { key, value } => store::put(key, value),
             Command::Delete { key } => store::delete(key),
-            Command::Random { ticket, n } => s.asked.push((ticket, crypto::random(n))),
+            Command::Random { ticket, n } => asked.push((ticket, crypto::random(n))),
             Command::Verify { ticket, algorithm, key, message, signature } => {
-                s.asked.push((ticket, crypto::verify(algorithm, key, message, signature)))
+                asked.push((ticket, crypto::verify(algorithm, key, message, signature)))
+            },
+            Command::Hmac { ticket, key, message } => {
+                asked.push((ticket, crypto::hmac(key, message)))
             },
             Command::Respond { conn, body, cookies, public, immutable } => {
                 var out = bytes(200, body, "application/octet-stream")
@@ -96,39 +135,57 @@ pub fn serve(s: mut Server, time: f32) {
                 }
                 respond(conn, out)
             },
+            Command::Dispatch { conn, to } => {
+                let _ = dispatch(conn, Route::Instance(to.clone()))
+            },
+            Command::Call { ticket, to, body } => asked.push((ticket, call(to.as_str(), body))),
+            Command::Reply { conn, body } => reply(conn, body),
+            Command::Send { to, body } => send(to.as_str(), body),
+            Command::Ack { conn } => std::server::ack(conn),
+            Command::CallBuild { ticket, artifact, body } => {
+                asked.push((ticket, call_build(artifact.as_str(), body)))
+            },
         }
     }
 }
 
 /// A request to the engine, if it's one of wire.wrela's: else it is answered here.
-fn http(s: mut Server, r: Request) {
+fn http(e: mut Engine<Capybara>, r: Request) {
     let method = r.method.as_str()
     let path = r.path.as_str()
+    let reads = method == "GET" || method == "HEAD"
     let body = if path == ACCOUNTS && method == "POST" {
         Some(r.body.clone())
-    } else if path == PUBLIC && (method == "GET" || method == "HEAD") {
+    } else if path == PUBLIC && reads {
         query_bytes(r.query.as_str())
-    } else if path.starts_with(REPLAYS) && (method == "GET" || method == "HEAD") {
-        match replay_hash(path) {
-            Some(hash) => Some(save(Asking::Replay { hash })),
+    } else if path.starts_with(RUNS) && reads {
+        match run_of(path) {
+            Some(run) => Some(save(Asking::Watch { run })),
             None => None,
         }
     } else {
         None
     }
     let Some(body) = take body else {
-        let known = path == ACCOUNTS || path == PUBLIC || path.starts_with(REPLAYS)
+        let known = path == ACCOUNTS || path == PUBLIC || path.starts_with(RUNS)
         let status = if known { 405 } else { 404 }
         respond(r.conn, text(status, "Not here."))
         return
     }
-    s.engine.http(
+    var keys: Vec<Vec<u8>> = Vec::new()
+    for name in ["x-wrela-key", "x-wrela-key-old"] {
+        if let Some(k) = r.header(name) {
+            keys.push(Vec::from(k.as_bytes()))
+        }
+    }
+    e.http(
         r.conn,
         Asked {
             time: r.time,
             public: method != "POST",
             session: cookie_bytes(r, SESSION),
             ceremony: cookie_bytes(r, CEREMONY),
+            keys,
             body,
         },
     )
@@ -152,7 +209,7 @@ fn query_bytes(query: str) -> Option<Vec<u8>> {
 }
 
 /// The bytes of base64url text without padding (RFC 4648 §5), or none if it isn't that.
-fn unbase64url(s: str) -> Option<Vec<u8>> {
+pub fn unbase64url(s: str) -> Option<Vec<u8>> {
     if s.len() % 4 == 1 {
         return None
     }
@@ -190,19 +247,4 @@ fn base64url_reads_back() {
         assert(unbase64url(base64url(b).as_str()) == Some(b.clone()), f"{n} bytes")
     }
     assert(unbase64url("a+b/").is_none() && unbase64url("abcde").is_none(), "not base64url")
-}
-
-@test
-fn a_replays_path_is_its_hash() {
-    let hash: Vec<u8> = Vec::from([171; 32])
-    let path = platform::wire::replay_path(hash)
-    assert(replay_hash(path.as_str()) == Some(hash.clone()), "a replay's path")
-    let upper = "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
-    for wrong in [
-        String::from(f"{REPLAYS}{upper}"),
-        String::from(f"{REPLAYS}abab"),
-        String::from(f"/api/public/REPLAY/{std::hash::sha256::hex(hash)}"),
-    ] {
-        assert(replay_hash(wrong.as_str()).is_none(), wrong.as_str())
-    }
 }

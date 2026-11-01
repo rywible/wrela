@@ -36,7 +36,7 @@ use platform::posting
 use platform::session::answer_of
 use platform::wire::{
     ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
-    SIGN_IN, SessionView, public, replay_path,
+    SIGN_IN, SessionView, public, run_path,
 }
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
@@ -171,7 +171,11 @@ pub struct Accounts {
     csrf: Vec<u8>,
     pub me: Me,
     passkey: Option<Pending<u8>>,
+    /// The ceremony under way: what it's for, its challenge and the handle it's for, which its
+    /// finish carries back.
     ceremony: u32,
+    challenge: Vec<u8>,
+    handle: Vec<u8>,
     pub open: bool,
     page: Page,
     focus: u32,
@@ -239,6 +243,8 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         },
         passkey: None,
         ceremony: 0,
+        challenge: Vec::new(),
+        handle: Vec::new(),
         open: false,
         page: Page::Choose,
         focus: 0,
@@ -281,17 +287,16 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
 
 // ---- the server ------------------------------------------------------------------------------
 
-/// Sends `request`, for `purpose`: a public read (a board, a run) by `GET`, so a cache may answer it,
-/// and anything else by `POST`.
+/// Sends `request`, for `purpose`: a public read (a board, a slice, a search, a run) by a public
+/// `GET`, with no cookie, so the browser's cache and the edge's may answer it, and anything else by
+/// `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
-    let asked = if let Request::Replay { hash } = request {
-        // A replay at its own path, by its hash, which the edge's cache keeps a year (0.17.0's
-        // fetch skips the browser's own, and sends the cookies, which the server reads for no
-        // public read: docs/toolchain-gaps.md).
-        std::http::fetch("GET", replay_path(hash).as_str(), [], [])
+    let asked = if let Request::Watch { run } = request {
+        // A run's replay at its own path, which never changes: kept a year.
+        std::http::fetch_public(run_path(run).as_str(), [])
     } else if public(request) {
         let q = base64url(save(request))
-        std::http::fetch("GET", String::from(f"{PUBLIC}?q={q}").as_str(), [], [])
+        std::http::fetch_public(String::from(f"{PUBLIC}?q={q}").as_str(), [])
     } else {
         let kind = Header {
             name: String::from("content-type"),
@@ -432,6 +437,8 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Challenge { ceremony, challenge, handle, exclude } => {
             a.ceremony = ceremony
+            a.challenge = challenge.clone()
+            a.handle = handle.clone()
             if ceremony == REGISTER {
                 // The account's handle is random; its passkey is shown as the console's.
                 let user = PasskeyUser {
@@ -707,7 +714,11 @@ fn game_replied(a: mut Accounts, reply: Reply) {
 /// can't be taken now, so it's tried again; one it rejected never goes up.
 fn game_answer(reply: Reply, course: u32, category: u32, uploading: bool) -> Answer {
     match reply {
-        Reply::Verified { run, ticks, place } => Answer::Verified { run, ticks, place },
+        Reply::Verified { run, ticks, place } => Answer::Verified {
+            run: run.clone(),
+            ticks,
+            place,
+        },
         Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
         Reply::Refused { why } => {
             if uploading {
@@ -717,7 +728,7 @@ fn game_answer(reply: Reply, course: u32, category: u32, uploading: bool) -> Ans
         Reply::Board { places, total } => {
             Answer::Board { course, category, places: places.clone(), total }
         },
-        Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
+        Reply::Run { run, replay, .. } => Answer::Run { run: run.clone(), replay: replay.clone() },
         Reply::Around { places, at } => Answer::Around { places: places.clone(), at },
         Reply::Unplaced => Answer::Unplaced,
         Reply::Names { found } => Answer::Names { found: found.clone() },
@@ -779,9 +790,10 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
 fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
     let id = String::from(game)
     let r = match ask {
-        Ask::Upload { token, replay } => Request::Upload {
+        Ask::Upload { token, board, replay } => Request::Upload {
             token: token.clone(),
             game: id,
+            board,
             replay: replay.clone(),
         },
         Ask::Board { course, category, from } => Request::Board {
@@ -790,8 +802,7 @@ fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
             category,
             from,
         },
-        Ask::Watch { run } => Request::Watch { run },
-        Ask::Replay { hash } => Request::Replay { hash: hash.clone() },
+        Ask::Watch { run } => Request::Watch { run: run.clone() },
         Ask::Around { course, category, name } => Request::Around {
             game: id,
             course,
@@ -888,6 +899,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                 if a.ceremony == SIGN_IN {
                     if let Some(u) = read_passkey_use(bytes) {
                         let r = Request::SignIn {
+                            challenge: a.challenge.clone(),
                             id: u.id.clone(),
                             client_data: u.client_data.clone(),
                             authenticator_data: u.authenticator_data.clone(),
@@ -900,6 +912,9 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                 } else if let Some(p) = read_new_passkey(bytes) {
                     let r = if a.ceremony == REGISTER {
                         Request::Register {
+                            handle: a.handle.clone(),
+                            challenge: a.challenge.clone(),
+                            agreed: agreed_now(),
                             id: p.id.clone(),
                             client_data: p.client_data.clone(),
                             attestation: p.attestation.clone(),
@@ -907,6 +922,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                     } else {
                         Request::AddPasskey {
                             csrf: a.csrf.clone(),
+                            challenge: a.challenge.clone(),
                             id: p.id.clone(),
                             client_data: p.client_data.clone(),
                             attestation: p.attestation.clone(),
@@ -1018,12 +1034,13 @@ fn create_request(a: Accounts) -> Option<Request> {
     if !a.agree || !a.of_age {
         return None
     }
-    let agreed = Agreed {
-        terms: legal::TERMS_VERSION,
-        privacy: legal::PRIVACY_VERSION,
-        of_age: true,
-    }
-    Some(Request::Begin { ceremony: REGISTER, csrf: Vec::new(), agreed })
+    Some(Request::Begin { ceremony: REGISTER, csrf: Vec::new(), agreed: agreed_now() })
+}
+
+/// What a player who ticked both boxes agrees to: this build's Terms and Privacy Policy, and that
+/// they're 13 or older. A sign-up's finish carries it again, as its challenge was made for it.
+fn agreed_now() -> Agreed {
+    Agreed { terms: legal::TERMS_VERSION, privacy: legal::PRIVACY_VERSION, of_age: true }
 }
 
 /// Where Back goes from the page open: a legal page back where it was opened from (making an
@@ -2235,7 +2252,7 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
         rerolls: 0,
         must_add_passkey: false,
     }
-    let up = Ask::Upload { token: Vec::from([5; 32]), replay: Vec::from([1]) }
+    let up = Ask::Upload { token: Vec::from([5; 32]), board: 3, replay: Vec::from([1]) }
     let Some(Answer::Offline { .. }) = answer_now(
         me,
         online: true,
@@ -2355,7 +2372,8 @@ fn a_games_consent_is_its_players_choice_recorded_without_the_consoles_page() {
     let Request::Consent { csrf, version, best_runs } = r else { panic("the consent, relayed") }
     assert(purpose == Purpose::GameConsent && csrf == Vec::from([7, 7]))
     assert(version == posting::VERSION && best_runs, "what the player read and chose")
-    let (_, other) = carried(Ask::Watch { run: 3 }, "capybara", [7, 7])
+    let run = platform::wire::RunRef { handle: Vec::from([3; 16]), n: 3 }
+    let (_, other) = carried(Ask::Watch { run }, "capybara", [7, 7])
     assert(other == Purpose::Game)
     // Recorded: the game's account says so, and the console's own pages stay closed (a game shown
     // hides the console).

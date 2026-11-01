@@ -21,8 +21,8 @@
 
 use platform::link::{Account, Answer, Ask, FromGame, to_game}
 use platform::posting
-use platform::wire::{Found, Place, WHOLE}
-use replay::{ANY, FULL, Replay, YOU, counts}
+use platform::wire::{Found, Place, RunRef, WHOLE}
+use replay::{ANY, BOARD, FULL, Replay, YOU, counts}
 use std::hash::sha256::sha256
 use std::host
 use platform::session::answer_of
@@ -485,7 +485,7 @@ fn pump(o: mut Online) {
         return
     }
     let (hash, r) = o.waiting[0].clone()
-    let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
+    let upload = Ask::Upload { token: o.account.token.clone(), board: BOARD, replay: save(r) }
     if ask(mut o, take upload, Asked::Upload { run: r, hash: hash.clone() }, By::Alone) {
         o.posting = true
         set_status(mut o, hash, String::from("Posting…"))
@@ -513,7 +513,7 @@ pub fn post(o: mut Online, r: Replay) {
         o.consenting = Some(r.clone())
         return
     }
-    let upload = Ask::Upload { token: o.account.token.clone(), replay: save(r) }
+    let upload = Ask::Upload { token: o.account.token.clone(), board: BOARD, replay: save(r) }
     let _ = ask(mut o, take upload, Asked::Upload { run: r.clone(), hash }, By::Player)
 }
 
@@ -912,12 +912,30 @@ fn fetch(o: mut Online, hash: Vec<u8>) {
     if hash.len() != 32 || is_held(o, hash) {
         return
     }
-    let _ = ask(
-        mut o,
-        Ask::Replay { hash: hash.clone() },
-        Asked::Replay { hash: hash.clone() },
-        By::Player,
-    )
+    let Some(run) = run_of(o, hash) else { return }
+    let _ = ask(mut o, Ask::Watch { run }, Asked::Replay { hash: hash.clone() }, By::Player)
+}
+
+/// The run whose replay's hash is `hash`, from the places shown (a board's, a slice's or a
+/// search's), which the server reads it by.
+fn run_of(o: Online, hash: [u8]) -> Option<RunRef> {
+    let find = |shown: [Shown]| -> Option<RunRef> {
+        for b in shown {
+            for p in b.places {
+                if p.replay == Vec::from(hash) && !p.run.is_none() {
+                    return Some(p.run.clone())
+                }
+            }
+        }
+        None
+    }
+    if let Some(r) = find(o.boards) {
+        return Some(r)
+    }
+    if let Some(r) = find(o.slices) {
+        return Some(r)
+    }
+    find(o.found_boards)
 }
 
 /// Asks for the replay whose hash is `hash` before anything fetched behind, unless it's held or
@@ -968,11 +986,11 @@ pub fn watch_place(o: mut Online, place: Place) {
         fetch_now(mut o, place.replay.clone())
         return
     }
-    if place.run == 0 || o.flying.is_some() && o.asks.len() > 4 {
+    if place.run.is_none() || o.flying.is_some() && o.asks.len() > 4 {
         return
     }
     let watched = Asked::Watch { name: place.name.clone(), place: place.place }
-    let _ = ask(mut o, Ask::Watch { run: place.run }, take watched, By::Player)
+    let _ = ask(mut o, Ask::Watch { run: place.run.clone() }, take watched, By::Player)
 }
 
 /// A world's run that has come to watch, whose it is and its place, once.
@@ -1070,7 +1088,7 @@ fn came_names(o: mut Online, found: [Found], course: u32) {
                 place: 0,
                 name: f.name.clone(),
                 ticks: st.ticks,
-                run: st.run,
+                run: st.run.clone(),
                 replay: st.replay.clone(),
             }
             match board_of(o.found_boards, st.course, st.category) {
@@ -1156,7 +1174,7 @@ fn place(n: u32, name: str, ticks: u32) -> Place {
         place: n,
         name: String::from(name),
         ticks,
-        run: u64(n),
+        run: RunRef { handle: Vec::filled(16, u8(n)), n },
         replay: Vec::filled(32, u8(n)),
     }
 }
@@ -1203,9 +1221,18 @@ fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
     post(mut o, r.clone())
     assert(o.asks.len() == 1 && status(o, fingerprint(r)) == String::from("Posting…"), "asked")
     let (ask, asked) = o.asks.remove(0)
-    let Ask::Upload { token, replay } = ask else { panic("an upload") }
+    let Ask::Upload { token, board, replay } = ask else { panic("an upload") }
     assert(token == Vec::from([3; 32]) && replay == save(r), "the token and the replay")
-    answered(mut o, asked.clone(), Answer::Verified { run: 9, ticks: r.ticks, place: 2 })
+    assert(board == BOARD, "this build's board")
+    answered(
+        mut o,
+        asked.clone(),
+        Answer::Verified {
+            run: RunRef { handle: Vec::from([9; 16]), n: 9 },
+            ticks: r.ticks,
+            place: 2,
+        },
+    )
     assert(
         status(o, fingerprint(r)) == String::from("2nd in the world"),
         status(o, fingerprint(r)).as_str(),
@@ -1291,8 +1318,20 @@ fn a_players_ask_needs_a_console_a_background_one_an_account_and_a_post_alone_it
     o.boards.clear()
     want(mut o, WETLANDS, ANY, By::Player)
     assert(o.asks.is_empty(), "in flight")
-    // A replay fetched behind, then wanted now, is asked once, first.
+    // A replay fetched behind, then wanted now, is asked once, first: by the run of the place
+    // shown with it.
     let hash = Vec::filled(32, u8(9))
+    let row = place(9, "Sir Wobblesnout the Unhurried", 900)
+    o.boards.push(
+        Shown {
+            course: WETLANDS,
+            category: ANY,
+            places: Vec::from([take row]),
+            total: 1,
+            at: o.time,
+            note: String::new(),
+        },
+    )
     fetch(mut o, hash.clone())
     fetch(mut o, hash.clone())
     assert(o.fetches.len() == 1, "behind, once")
@@ -1322,7 +1361,11 @@ fn a_better_run_waits_and_posts_and_a_worse_one_doesnt() {
     assert(replay == save(better))
     pump(mut o)
     assert(o.asks.is_empty(), "one at a time")
-    answered(mut o, asked, Answer::Verified { run: 7, ticks: 930, place: 2 })
+    answered(
+        mut o,
+        asked,
+        Answer::Verified { run: RunRef { handle: Vec::from([7; 16]), n: 7 }, ticks: 930, place: 2 },
+    )
     assert(o.waiting.is_empty() && known(o, WETLANDS, ANY) == Some(930), "posted, the place known")
     // With the setting off, a finished run doesn't wait.
     o.account.post_best = false
@@ -1451,12 +1494,18 @@ fn a_held_row_plays_at_once_and_another_is_fetched_first() {
     let hash = Vec::from(sha256(bytes))
     var row = place(3, "Sir Wobblesnout the Unhurried", 950)
     row.replay = hash.clone()
+    // Fetched by its run, which a board shown gives with it.
+    fetch(mut o, hash.clone())
+    assert(o.fetches.is_empty(), "no run known for it yet")
+    given(mut o, Vec::from([row.clone()]), 1)
     fetch(mut o, hash.clone())
     assert(o.fetches.len() == 1, "fetched behind")
+    let Ask::Watch { run } = o.fetches[0].0.clone() else { panic("by its run") }
+    assert(run == row.run, "the place's run")
     watch_place(mut o, row.clone())
     assert(take_watch(mut o).is_none() && o.fetches.is_empty() && o.asks.len() == 1, "asked first")
     let (_, asked) = o.asks.remove(0)
-    answered(mut o, asked, Answer::Run { run: 3, replay: bytes.clone() })
+    answered(mut o, asked, Answer::Run { run: row.run.clone(), replay: bytes.clone() })
     let Some((_, name, at)) = take_watch(mut o) else { panic("watched when it came") }
     assert(name == String::from("Sir Wobblesnout the Unhurried") && at == 3)
     watch_place(mut o, row)
@@ -1522,7 +1571,7 @@ fn a_search_asks_once_for_its_parts_and_lists_their_runs_on_the_level() {
         course: WETLANDS,
         category: ANY,
         ticks: 900,
-        run: 4,
+        run: RunRef { handle: Vec::filled(16, u8(4)), n: 4 },
         replay: Vec::filled(32, u8(4)),
     }
     let sir = Found {

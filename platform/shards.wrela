@@ -1,0 +1,502 @@
+// The server's shards (server.wrela): the names, the recovery codes, the replays and the search,
+// each spread over instances by a hash or a letter, so no one instance holds everyone's.
+//
+// - **`names/<00..3f>`** is the authority on its names: `Claim` gives a free name to an account with
+//   a new generation, and a `Keep` or a `Release` changes it only if its owner and generation are
+//   still the name's, so a late release never frees a name a later owner holds. A released name
+//   keeps its generation, so the next claim's is higher.
+// - **`codes/<00..3f>`** keeps each recovery code's hash and its account, which only that account
+//   writes (an upsert with its revision), and finds a code's account for a recovery, within
+//   `ALL_TRIES` a minute a shard.
+// - **`replays/<00..3f>`** keeps whose each posted replay is, so a replay names one run on the
+//   boards: another account's copy is refused, and its owner's deletion lets it go (`r<hash>` is
+//   the owner's handle, or a 0 and the handle of the deleted account that let it go).
+// - **`search/<letter>`** keeps each posted name whose noun starts with its letter, with its runs,
+//   twice: by noun (`n`), so a search with a noun reads its ranges of one shard, and by title (`t`),
+//   so a search by a title alone reads its title's range of every shard.
+
+use names::{Name, matches, matching}
+use server::{
+    ALL_TRIES, Back, Engine, Game, Inner, Job, Kind, Listed, Listing, MOST_SCANNED, Note,
+    RANGE_PAGE, Step, blank_job, lately, letter_of, read, searchable, text_key,
+}
+use std::serialize::{Serialize, save}
+use std::store::entries
+use wire::{Found, MOST_FOUND, Reply, Request}
+
+/// A name at its shard (`n<name's key>`): its owner (none: free, released), the generation of its
+/// last claim, and whether its owner kept it for good.
+pub struct NameEntry: Clone + Serialize {
+    pub owner: Vec<u8>,
+    pub generation: u64,
+    pub kept: bool,
+}
+
+/// A recovery code at its shard (`c<hash>`): its account (none: used up or gone), at the revision
+/// its account last told it.
+pub struct CodeEntry: Clone + Serialize {
+    pub owner: Vec<u8>,
+    pub revision: u64,
+}
+
+/// An account at its search shard (`a<handle>`): the revision it last told, and its name's key
+/// there (empty: not on the boards).
+pub struct SearchEntry: Clone + Serialize {
+    pub revision: u64,
+    pub key: Vec<u8>,
+}
+
+/// A posted name in a search shard's indexes: its account, and its listing.
+pub struct SearchRow: Clone + Serialize {
+    pub handle: Vec<u8>,
+    pub listing: Listing,
+}
+
+fn two(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x >> 8))
+    out.push(u8(x & 255))
+}
+
+/// `n<front><back><title><epithet>`: a name in a search shard, by its noun.
+pub fn by_noun(n: Name) -> Vec<u8> {
+    var k = text_key("n")
+    for p in [n.front, n.back, n.title, n.epithet] {
+        two(mut k, p)
+    }
+    k
+}
+
+/// `t<title><front><back><epithet>`: a name in a search shard, by its title: the index's order, in
+/// which a search's names come.
+pub fn by_title(n: Name) -> Vec<u8> {
+    var k = text_key("t")
+    for p in [n.title, n.front, n.back, n.epithet] {
+        two(mut k, p)
+    }
+    k
+}
+
+/// The name of an index's key (`by_noun`'s or `by_title`'s), if it is one.
+fn name_of(k: [u8]) -> Option<Name> {
+    if k.len() != 9 {
+        return None
+    }
+    let at = |i: u32| -> u32 { (u32(k[1 + 2 * i]) << 8) | u32(k[2 + 2 * i]) }
+    let n = if k[0] == 110 {
+        Name { front: at(0), back: at(1), title: at(2), epithet: at(3) }
+    } else { Name { title: at(0), front: at(1), back: at(2), epithet: at(3) } }
+    if !names::valid(n) {
+        return None
+    }
+    Some(n)
+}
+
+/// A one-letter key's prefix with `x` after it, two bytes.
+fn ranged(p: Text, x: u32) -> Vec<u8> {
+    var k = text_key(p)
+    two(mut k, x)
+    k
+}
+
+fn name_key(n: Name) -> Vec<u8> {
+    var k = text_key("n")
+    for b in names::key(n) {
+        k.push(b)
+    }
+    k
+}
+
+impl<G: Game> Engine<G> {
+    /// Call `conn` to a shard.
+    pub(package) fn shard_called(mut self, conn: u32, inner: Inner) {
+        var j = blank_job(conn, Request::Me)
+        j.inner = Some(inner.clone())
+        match inner {
+            Inner::Claim { name, .. } => {
+                if self.kind != Kind::Names {
+                    self.back(conn, Back::Refused { why: String::from("Not a names shard.") })
+                    return
+                }
+                self.get(name_key(name), Step::ClaimRead, take j)
+            },
+            Inner::Lookup { hash } => {
+                if self.kind != Kind::Codes {
+                    self.back(conn, Back::Refused { why: String::from("Not a codes shard.") })
+                    return
+                }
+                server::recent(mut self.tries, self.now, account::MINUTE)
+                if self.tries.len() >= ALL_TRIES {
+                    let why = String::from("Too many tries. Wait a few minutes, then try again.")
+                    self.back(conn, Back::Refused { why })
+                    return
+                }
+                self.tries.push(self.now)
+                var k = text_key("c")
+                for b in hash {
+                    k.push(b)
+                }
+                self.get(take k, Step::LookupRead, take j)
+            },
+            Inner::Own { hash, .. } => {
+                if self.kind != Kind::Replays {
+                    self.back(conn, Back::Refused { why: String::from("Not a replays shard.") })
+                    return
+                }
+                var k = text_key("r")
+                for b in hash {
+                    k.push(b)
+                }
+                self.get(take k, Step::OwnRead, take j)
+            },
+            Inner::Search { title, noun, epithet } => {
+                if self.kind != Kind::Search {
+                    self.back(conn, Back::Refused { why: String::from("Not a search shard.") })
+                    return
+                }
+                self.search(take j, title, noun, epithet)
+            },
+            _ => self.back(
+                conn,
+                Back::Refused { why: String::from("A shard doesn't answer that.") },
+            ),
+        }
+    }
+
+    /// A message to a shard.
+    pub(package) fn shard_delivered(mut self, job: take Job) {
+        let j = take job
+        match j.note.clone() {
+            Note::Keep { name, .. } => {
+                if self.kind == Kind::Names {
+                    self.get(name_key(name), Step::NameNoteRead, take j)
+                    return
+                }
+            },
+            Note::Release { name, .. } => {
+                if self.kind == Kind::Names {
+                    self.get(name_key(name), Step::NameNoteRead, take j)
+                    return
+                }
+            },
+            Note::Code { hash, .. } => {
+                if self.kind == Kind::Codes {
+                    var k = text_key("c")
+                    for b in hash {
+                        k.push(b)
+                    }
+                    self.get(take k, Step::CodeNoteRead, take j)
+                    return
+                }
+            },
+            Note::Disown { hash, .. } => {
+                if self.kind == Kind::Replays {
+                    var k = text_key("r")
+                    for b in hash {
+                        k.push(b)
+                    }
+                    self.get(take k, Step::DisownRead, take j)
+                    return
+                }
+            },
+            Note::Listed { handle, .. } => {
+                if self.kind == Kind::Search {
+                    var k = text_key("a")
+                    for b in handle {
+                        k.push(b)
+                    }
+                    self.get(take k, Step::ListedRead, take j)
+                    return
+                }
+            },
+            _ => {},
+        }
+        // Not this shard's to keep: taken, so it doesn't come again.
+        self.done(j)
+    }
+
+    /// Request `conn` to a search shard: a search with a noun, which the edge sent here.
+    pub(package) fn search_http(mut self, conn: u32, request: Request) {
+        let Request::Names { title, noun, epithet, .. } = request else {
+            self.refuse(conn, "A search shard answers only a search.")
+            return
+        }
+        if !searchable(title) || !searchable(noun) || !searchable(epithet) {
+            self.refuse(conn, "A name has only letters, spaces and hyphens.")
+            return
+        }
+        self.search(blank_job(conn, request.clone()), title, noun, epithet)
+    }
+
+    /// The letter of this search shard.
+    fn letter(self) -> u8 {
+        self.name.byte(self.name.len() - 1)
+    }
+
+    /// A search's ranges, each a start and an end in `job.keys`: by noun, each first half of this
+    /// letter that the noun may start with; by title (no noun), each title.
+    fn search(mut self, job: take Job, title: str, noun: str, epithet: str) {
+        var j = take job
+        let m = matching(title, noun, epithet)
+        if noun.is_empty() {
+            for t in m.titles {
+                j.keys.push(ranged("t", t))
+                j.keys.push(ranged("t", t + 1))
+            }
+        } else {
+            let me = self.letter()
+            for f in m.fronts {
+                if letter_of(f) == me {
+                    j.keys.push(ranged("n", f))
+                    j.keys.push(ranged("n", f + 1))
+                }
+            }
+        }
+        if j.keys.is_empty() || m.epithets.is_empty() {
+            self.found(take j)
+            return
+        }
+        j.matching = Some(take m)
+        let (from, to) = (j.keys[0].clone(), j.keys[1].clone())
+        self.scan_range(take from, take to, RANGE_PAGE, Step::SearchRange, take j)
+    }
+
+    /// A page of one of a search's ranges: the names in it that match, then the range's next page,
+    /// the next range, or the answer.
+    fn search_range(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let Some(es) = entries(answer) else { return }
+        let Some(m) = j.matching.clone() else { return }
+        for e in es {
+            j.tries += 1
+            if j.found.len() >= MOST_FOUND || lately(self.gone, e.key) {
+                continue
+            }
+            let Some(n) = name_of(e.key) else { continue }
+            let Some(row) = read::<SearchRow>(e.value) else { continue }
+            if matches(m, n) {
+                let found = Found { name: names::text(n), standings: row.listing.standings.clone() }
+                j.found.push(Listed { order: by_title(n), found })
+            }
+        }
+        let room = j.found.len() < MOST_FOUND && j.tries < MOST_SCANNED
+        if room && es.len() == RANGE_PAGE {
+            var from = es[es.len() - 1].key.clone()
+            from.push(0)
+            let to = j.keys[1].clone()
+            self.scan_range(take from, take to, RANGE_PAGE, Step::SearchRange, take j)
+            return
+        }
+        let _ = j.keys.remove(0)
+        let _ = j.keys.remove(0)
+        if room && !j.keys.is_empty() {
+            let (from, to) = (j.keys[0].clone(), j.keys[1].clone())
+            self.scan_range(take from, take to, RANGE_PAGE, Step::SearchRange, take j)
+            return
+        }
+        self.found(take j)
+    }
+
+    /// A search's answer: to its request, or to the edge's call.
+    fn found(mut self, job: take Job) {
+        let j = take job
+        let Some(i) = self.conn_index(j.conn) else { return }
+        if self.conns[i].via == server::Via::Call {
+            self.back(j.conn, Back::Found { found: j.found.clone() })
+            return
+        }
+        var out: Vec<Found> = Vec::new()
+        for f in j.found {
+            out.push(f.found.clone())
+        }
+        self.reply(j.conn, Reply::Names { found: out })
+    }
+
+    pub(package) fn shard_answer(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        let conn = j.conn
+        match j.step {
+            Step::ClaimRead => {
+                let Some(Inner::Claim { name, owner }) = j.inner.clone() else { return }
+                let k = name_key(name)
+                let e: Option<NameEntry> = match self.latest(k, answer) {
+                    Some(v) => read(v),
+                    None => None,
+                }
+                let generation = match e {
+                    Some(e) => {
+                        if !e.owner.is_empty() {
+                            self.back(conn, Back::Taken)
+                            return
+                        }
+                        e.generation + 1
+                    },
+                    None => 1,
+                }
+                self.keep(take k, save(NameEntry { owner: owner.clone(), generation, kept: false }))
+                self.back(conn, Back::Claimed { generation })
+            },
+            Step::NameNoteRead => {
+                let (name, owner, generation, kept) = match j.note.clone() {
+                    Note::Keep { name, owner, generation } => (
+                        name,
+                        owner.clone(),
+                        generation,
+                        true,
+                    ),
+                    Note::Release { name, owner, generation } => (
+                        name,
+                        owner.clone(),
+                        generation,
+                        false,
+                    ),
+                    _ => return,
+                }
+                let k = name_key(name)
+                let e: Option<NameEntry> = match self.latest(k, answer) {
+                    Some(v) => read(v),
+                    None => None,
+                }
+                // Only its owner's, at its generation: a late one changes nothing of a later
+                // claim's.
+                if let Some(e) = e {
+                    if server::same_bytes(e.owner, owner) && e.generation == generation {
+                        let next = if kept {
+                            NameEntry { owner: owner.clone(), generation, kept: true }
+                        } else { NameEntry { owner: Vec::new(), generation, kept: false } }
+                        self.keep(take k, save(next))
+                    }
+                }
+                self.done(j)
+            },
+            Step::LookupRead => {
+                let e: Option<CodeEntry> = match value_of(answer) {
+                    Some(v) => read(v),
+                    None => None,
+                }
+                match e {
+                    Some(e) => {
+                        if !e.owner.is_empty() {
+                            self.back(conn, Back::Owner { handle: e.owner.clone() })
+                            return
+                        }
+                    },
+                    None => {},
+                }
+                let why = String::from("We don't know that code, or it's already been used.")
+                self.back(conn, Back::Refused { why })
+            },
+            Step::CodeNoteRead => {
+                let Note::Code { hash, revision, owner } = j.note.clone() else { return }
+                var k = text_key("c")
+                for b in hash {
+                    k.push(b)
+                }
+                let e: Option<CodeEntry> = match self.latest(k, answer) {
+                    Some(v) => read(v),
+                    None => None,
+                }
+                let newer = match e {
+                    Some(e) => revision > e.revision,
+                    None => true,
+                }
+                if newer {
+                    self.keep(take k, save(CodeEntry { owner: owner.clone(), revision }))
+                }
+                self.done(j)
+            },
+            Step::OwnRead => {
+                let Some(Inner::Own { hash, owner }) = j.inner.clone() else { return }
+                var k = text_key("r")
+                for b in hash {
+                    k.push(b)
+                }
+                let mine = match self.latest(k, answer) {
+                    // Free: its own now.
+                    None => true,
+                    Some(v) => {
+                        if v.len() == owner.len() {
+                            server::same_bytes(v, owner)
+                        } else {
+                            // Let go by an account that was deleted: free for any other, never
+                            // its own again (its owner's late upload is refused).
+                            v.len() != owner.len() + 1 ||
+                                !server::same_bytes(account::part(v, 1, owner.len()), owner)
+                        }
+                    },
+                }
+                if !mine {
+                    self.back(conn, Back::Other)
+                    return
+                }
+                self.keep(take k, owner.clone())
+                self.back(conn, Back::Mine)
+            },
+            Step::DisownRead => {
+                let Note::Disown { hash, owner } = j.note.clone() else { return }
+                var k = text_key("r")
+                for b in hash {
+                    k.push(b)
+                }
+                let held = match self.latest(k, answer) {
+                    Some(v) => v.len() == owner.len() && server::same_bytes(v, owner),
+                    None => true,
+                }
+                if held {
+                    // Let go, and kept let go by it, so an upload of its still under way when it
+                    // was deleted never makes it its own again.
+                    var gone = Vec::from([u8(0)])
+                    for b in owner {
+                        gone.push(b)
+                    }
+                    self.keep(take k, take gone)
+                }
+                self.done(j)
+            },
+            Step::ListedRead => {
+                let Note::Listed { handle, revision, listing } = j.note.clone() else { return }
+                var k = text_key("a")
+                for b in handle {
+                    k.push(b)
+                }
+                let e: Option<SearchEntry> = match self.latest(k, answer) {
+                    Some(v) => read(v),
+                    None => None,
+                }
+                if let Some(e) = e {
+                    if revision <= e.revision {
+                        self.done(j)
+                        return
+                    }
+                    if let Some(old) = names::from_key(e.key) {
+                        self.forget(by_noun(old))
+                        self.forget(by_title(old))
+                    }
+                }
+                var at: Vec<u8> = Vec::new()
+                if !listing.is_empty() {
+                    borrow l = listing[0]
+                    let row = save(SearchRow { handle: handle.clone(), listing: l.clone() })
+                    self.keep(by_noun(l.name), row.clone())
+                    self.keep(by_title(l.name), take row)
+                    at = names::key(l.name)
+                }
+                self.keep(take k, save(SearchEntry { revision, key: at }))
+                self.done(j)
+            },
+            Step::SearchRange => self.search_range(take j, answer),
+            _ => {},
+        }
+    }
+}
+
+fn value_of(answer: [u8]) -> Option<Vec<u8>> {
+    std::store::value(answer)
+}
+
+@test
+fn a_search_shards_keys_read_back_in_both_orders() {
+    let n = names::draw(123456789)
+    assert(name_of(by_noun(n)) == Some(n) && name_of(by_title(n)) == Some(n))
+    assert(by_title(names::draw(0)) < by_title(names::draw(1)), "by title first")
+    assert(name_of([1, 2, 3]).is_none())
+}
