@@ -349,10 +349,6 @@ fn holds(xs: [u32], x: u32) -> bool {
     false
 }
 
-fn starts(s: str, prefix: str) -> bool {
-    s.starts_with(prefix)
-}
-
 impl Host {
     /// The instance named `name`, made if it isn't: its index.
     fn instance(mut self, name: str) -> u32 {
@@ -400,7 +396,7 @@ impl Host {
 
     fn held(self, name: str) -> bool {
         for p in self.holding {
-            if starts(name, p.as_str()) {
+            if name.starts_with(p.as_str()) {
                 return true
             }
         }
@@ -409,7 +405,7 @@ impl Host {
 
     fn pauses(self, name: str) -> bool {
         for p in self.pausing {
-            if starts(name, p.as_str()) {
+            if name.starts_with(p.as_str()) {
                 return true
             }
         }
@@ -436,7 +432,7 @@ impl Host {
 
     fn fails(self, name: str) -> bool {
         for p in self.failing {
-            if starts(name, p.as_str()) {
+            if name.starts_with(p.as_str()) {
                 return true
             }
         }
@@ -877,7 +873,7 @@ impl Host {
         let p = Vec::from(String::from(prefix).as_bytes())
         var n = 0
         for x in self.instances {
-            if x.name.is_empty() || !starts(x.name.as_str(), at) {
+            if x.name.is_empty() || !x.name.starts_with(at) {
                 continue
             }
             for e in x.store {
@@ -904,7 +900,7 @@ impl Host {
         var n = 0
         for x in self.instances {
             for m in x.outbox {
-                if starts(m.to.as_str(), at) {
+                if m.to.starts_with(at) {
                     n += 1
                 }
             }
@@ -1165,9 +1161,7 @@ fn give(h: mut Host, conn: u32, id: u8, seed: u64) {
 
 fn seed_bytes(seed: u64) -> Vec<u8> {
     var drawn: Vec<u8> = Vec::new()
-    for k in 0..8 {
-        drawn.push(u8((seed >> (56 - 8 * k)) & 255))
-    }
+    std::store::append_u64(mut drawn, seed)
     drawn
 }
 

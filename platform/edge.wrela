@@ -94,20 +94,11 @@ impl<G: Game> Engine<G> {
                 self.edge_upload(conn, request.clone())
                 return
             },
-            Request::Board { game, course, category, from } => {
-                if !self.board_known(game, course, category) || from > 10000 {
-                    self.refuse(conn, "That board doesn't exist.")
-                    return
+            Request::Board { .. } | Request::Around { .. } => {
+                match self.board_asked(request) {
+                    Some(to) => self.dispatch(conn, take to),
+                    None => self.refuse(conn, "That board doesn't exist."),
                 }
-                self.dispatch(conn, board_instance(game, self.game.board(), course, category))
-                return
-            },
-            Request::Around { game, course, category, .. } => {
-                if !self.board_known(game, course, category) {
-                    self.refuse(conn, "That board doesn't exist.")
-                    return
-                }
-                self.dispatch(conn, board_instance(game, self.game.board(), course, category))
                 return
             },
             Request::Watch { run } => {
@@ -124,18 +115,11 @@ impl<G: Game> Engine<G> {
             },
             _ => {},
         }
-        // A session's own: to its account, which reads its session there.
-        if let Some(to) = own {
-            self.dispatch(conn, to.clone())
-            return
-        }
-        if !cookie.is_empty() {
-            // A cookie that can't be a session's is cleared.
-            self.cookie(conn, server::SESSION, Vec::new(), 0)
-        }
-        match request {
-            Request::Me => self.reply(conn, Reply::Welcome { me: nobody(), csrf: Vec::new() }),
-            _ => self.refuse(conn, "Sign in first."),
+        // A session's own: to its account, which reads its session there. A cookie that can't
+        // be a session's is cleared.
+        match own {
+            Some(to) => self.dispatch(conn, to.clone()),
+            None => self.no_session(conn, request),
         }
     }
 
@@ -147,6 +131,25 @@ impl<G: Game> Engine<G> {
         }
         self.conns[i].answered = true
         self.out.push(server::Command::Dispatch { conn, to })
+    }
+
+    /// The board instance a page or a slice asks for, if it's one of this game's boards and a
+    /// request it takes.
+    fn board_asked(self, request: Request) -> Option<String> {
+        let (game, course, category) = match request {
+            Request::Board { game, course, category, from } => {
+                if from > 10000 {
+                    return None
+                }
+                (game.clone(), course, category)
+            },
+            Request::Around { game, course, category, .. } => (game.clone(), course, category),
+            _ => return None,
+        }
+        if !self.board_known(game, course, category) {
+            return None
+        }
+        Some(board_instance(game, self.game.board(), course, category))
     }
 
     /// Whether `game` has a board for `course` (or WHOLE) and `category` here.
@@ -201,18 +204,27 @@ impl<G: Game> Engine<G> {
                 return
             }
         }
-        if self.signing_key(conn).is_none() {
-            self.refuse(conn, "Signing in isn't working on our end right now. Try again later.")
-            return
-        }
         var j = blank_job(conn, Request::Me)
         j.n = ceremony
         j.agreed = if ceremony == REGISTER { agreed } else { NOT_AGREED }
-        let handle = if ceremony == REGISTER { HANDLE_BYTES } else { 0 }
-        self.random(NONCE_BYTES + CEREMONY_BYTES + handle, Step::EdgeBeginRandom, take j)
+        self.begin_challenge(take j)
     }
 
-    fn begin_random(mut self, job: take Job, answer: Vec<u8>) {
+    /// A ceremony's challenge for request `job.conn`, here or at an account (an added passkey's):
+    /// `job.n` is the ceremony, `job.agreed` what a sign-up agreed to, `job.handle` the account it's
+    /// for (a new account's is drawn here; none for a sign-in) and `job.keys` the passkeys it
+    /// excludes. Random bytes for its nonce and the browser's token, then its tag.
+    pub(package) fn begin_challenge(mut self, job: take Job) {
+        let j = take job
+        if self.signing_key(j.conn).is_none() {
+            self.refuse(j.conn, "Signing in isn't working on our end right now. Try again later.")
+            return
+        }
+        let handle = if j.n == REGISTER { HANDLE_BYTES } else { 0 }
+        self.random(NONCE_BYTES + CEREMONY_BYTES + handle, Step::ChallengeRandom, take j)
+    }
+
+    pub(package) fn challenge_random(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
         let handle = if j.n == REGISTER { HANDLE_BYTES } else { 0 }
         if answer.len() < NONCE_BYTES + CEREMONY_BYTES + handle {
@@ -221,14 +233,16 @@ impl<G: Game> Engine<G> {
         }
         j.message = part(answer, 0, NONCE_BYTES)
         j.hash = part(answer, NONCE_BYTES, CEREMONY_BYTES)
-        j.handle = part(answer, NONCE_BYTES + CEREMONY_BYTES, handle)
+        if j.n == REGISTER {
+            j.handle = part(answer, NONCE_BYTES + CEREMONY_BYTES, handle)
+        }
         j.expires = self.now + CHALLENGE_LIFE
         let Some(key) = self.signing_key(j.conn) else { return }
         let m = ceremony_message(j.n, j.hash, j.handle, j.message, j.expires, j.agreed)
-        self.hmac(key, m, Step::EdgeBeginTag, take j)
+        self.hmac(key, m, Step::ChallengeTag, take j)
     }
 
-    fn begin_tag(mut self, job: take Job, answer: Vec<u8>) {
+    pub(package) fn challenge_tag(mut self, job: take Job, answer: Vec<u8>) {
         let j = take job
         if answer.len() < 32 {
             self.refuse(j.conn, "We couldn't start that. Try again.")
@@ -243,7 +257,7 @@ impl<G: Game> Engine<G> {
                 ceremony: j.n,
                 challenge,
                 handle: j.handle.clone(),
-                exclude: Vec::new(),
+                exclude: j.keys.clone(),
             },
         )
     }
@@ -402,9 +416,7 @@ impl<G: Game> Engine<G> {
         loop {
             match self.game.play(mut run, PLAY_TICKS) {
                 None => continue,
-                Some(Err(why)) => {
-                    return Verdict { ok: false, ticks: 0, full: false, why: String::from(why) }
-                },
+                Some(Err(why)) => return refused_verdict(why),
                 Some(Ok(o)) => {
                     if o.ticks != ticks {
                         let why = String::from("That run's time doesn't match its moves.")
@@ -556,24 +568,15 @@ impl<G: Game> Engine<G> {
         let verdict = match asked {
             Some(v) => {
                 if v.board != self.game.board() {
-                    let why = String::from("That run is for another version of the game.")
-                    Verdict { ok: false, ticks: 0, full: false, why }
+                    refused_verdict("That run is for another version of the game.")
                 } else {
                     match self.game.claim(v.replay) {
                         Ok(c) => self.play(v.replay, c.ticks),
-                        Err(why) => Verdict {
-                            ok: false,
-                            ticks: 0,
-                            full: false,
-                            why: String::from(why),
-                        },
+                        Err(why) => refused_verdict(why),
                     }
                 }
             },
-            None => {
-                let why = String::from("That isn't a run of this game.")
-                Verdict { ok: false, ticks: 0, full: false, why }
-            },
+            None => refused_verdict("That isn't a run of this game."),
         }
         let Some(i) = self.conn_index(conn) else { return }
         self.conns[i].answered = true
@@ -585,8 +588,8 @@ impl<G: Game> Engine<G> {
     pub(package) fn edge_answer(mut self, job: take Job, answer: Vec<u8>) {
         let j = take job
         match j.step {
-            Step::EdgeBeginRandom => self.begin_random(take j, answer),
-            Step::EdgeBeginTag => self.begin_tag(take j, answer),
+            Step::ChallengeRandom => self.challenge_random(take j, answer),
+            Step::ChallengeTag => self.challenge_tag(take j, answer),
             Step::EdgeVerify => {
                 // An archived build's verdict; none that reads is the build's failure.
                 let v: Option<Verdict> = read(answer)
@@ -679,6 +682,11 @@ impl<G: Game> Engine<G> {
         }
         false
     }
+}
+
+/// A replay that doesn't come to what it claims, and why.
+fn refused_verdict(why: str) -> Verdict {
+    Verdict { ok: false, ticks: 0, full: false, why: String::from(why) }
 }
 
 @test

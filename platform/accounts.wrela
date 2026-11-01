@@ -140,7 +140,7 @@ impl<G: Game> Engine<G> {
 
     /// Request `conn`'s cookie is for no session (any more): cleared, and its request answered
     /// signed out.
-    fn no_session(mut self, conn: u32, request: Request) {
+    pub(package) fn no_session(mut self, conn: u32, request: Request) {
         let Some(i) = self.conn_index(conn) else { return }
         if !self.conns[i].cookie.is_empty() {
             self.cookie(conn, server::SESSION, Vec::new(), 0)
@@ -379,9 +379,14 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Writes a new session for account `a` from `secrets` (its token, then its CSRF token), from a
-    /// browser whose session cookie was `old` (it ends): the cookie's bytes, and the CSRF token.
-    fn new_session(mut self, old: [u8], secrets: [u8], recovery: bool) -> (Vec<u8>, Vec<u8>) {
+    /// Writes a new session from `secrets` (its token, then its CSRF token), from a browser whose
+    /// session cookie was `old` (it ends): the cookie's bytes, its token's hash, and the session.
+    fn new_session(
+        mut self,
+        old: [u8],
+        secrets: [u8],
+        recovery: bool,
+    ) -> (Vec<u8>, Vec<u8>, Session) {
         let token = part(secrets, 0, TOKEN_BYTES)
         let csrf = part(secrets, TOKEN_BYTES, CSRF_BYTES)
         if let Some((owner, secret)) = held_parts(old) {
@@ -400,23 +405,18 @@ impl<G: Game> Engine<G> {
             fresh_until: self.now + FRESH,
             recovery,
         }
-        self.put(session_key(hashed(token)), s)
-        (held(self.handle, token), csrf)
+        let hash = hashed(token)
+        self.put(session_key(hash), s.clone())
+        (held(self.handle, token), hash, s)
     }
 
     /// A session begun for request `conn` (its cookie set), answered with it.
     fn begin_session(mut self, conn: u32, a: Account, secrets: [u8], codes: Vec<String>) {
         let Some(i) = self.conn_index(conn) else { return }
         let old = self.conns[i].cookie.clone()
-        let (cookie, csrf) = self.new_session(old, secrets, recovery: false)
-        let s = Session {
-            csrf: csrf.clone(),
-            created: self.now,
-            seen: self.now,
-            fresh_until: self.now + FRESH,
-            recovery: false,
-        }
-        self.bind(conn, hashed(part(cookie, HANDLE_BYTES, TOKEN_BYTES)), s)
+        let (cookie, hash, s) = self.new_session(old, secrets, recovery: false)
+        let csrf = s.csrf.clone()
+        self.bind(conn, hash, s)
         self.cookie(conn, server::SESSION, take cookie, u32(SESSION_LIFE / 1000))
         self.reply(
             conn,
@@ -458,7 +458,7 @@ impl<G: Game> Engine<G> {
             self.ceremony_refused(conn, kind, expired(kind))
             return
         }
-        if keys.is_empty() || keys[0].len() < KEY_BYTES {
+        if self.signing_key(conn).is_none() {
             self.ceremony_refused(
                 conn,
                 kind,
@@ -565,9 +565,12 @@ impl<G: Game> Engine<G> {
         self.take_ceremony(conn, REGISTER, challenge, agreed, blank_job(conn, request.clone()))
     }
 
-    fn refuse_register(mut self, conn: u32, why: Text) {
-        self.registering = false
-        self.refuse(conn, why)
+    /// Refuses `job`'s request, as `why`: a sign-up's step lets the next sign-up here begin.
+    fn step_refused(mut self, job: Job, why: Text) {
+        if signs_up(job.step) {
+            self.registering = false
+        }
+        self.refuse(job.conn, why)
     }
 
     /// A sign-up's challenge checks out: this account must not be made already (or deleted).
@@ -598,14 +601,15 @@ impl<G: Game> Engine<G> {
         codes
     }
 
-    /// The next revision, after counters `k` (as read) and what this instance gave out, written.
-    fn next_revision(mut self, k: Option<Counters>) -> u64 {
-        let (revision, runs) = match k {
+    /// The next revision, after counters `k` (as read) and what this instance gave out, written
+    /// with `runs` more runs counted.
+    fn next_revision(mut self, k: Option<Counters>, runs: u32) -> u64 {
+        let (revision, kept) = match k {
             Some(c) => (c.revision, c.runs),
             None => (0, 0),
         }
         self.revision = max(self.revision, revision) + 1
-        self.runs = max(self.runs, runs)
+        self.runs = max(self.runs, kept) + runs
         self.keep(key(COUNTERS, []), save(Counters { revision: self.revision, runs: self.runs }))
         self.revision
     }
@@ -618,6 +622,15 @@ impl<G: Game> Engine<G> {
     /// The account a read answered `answer` with, as this instance last wrote it.
     fn account_of(self, answer: [u8]) -> Option<Account> {
         self.latest_as(key(ACCOUNT, []), answer)
+    }
+
+    /// The account as `account_of` reads it, unless it's being deleted.
+    fn live_account(self, answer: [u8]) -> Option<Account> {
+        let a = self.account_of(answer)?
+        if a.deleting {
+            return None
+        }
+        Some(a)
     }
 
     // ---- a sign-in ------------------------------------------------------------------------------
@@ -785,64 +798,24 @@ impl<G: Game> Engine<G> {
                 self.signed(conn, j.request.clone(), a)
             },
             Step::BeginAddScan => {
+                // An added passkey's challenge, excluding the passkeys the account has.
                 let Some(es) = entries(answer) else { return }
-                var exclude: Vec<Vec<u8>> = Vec::new()
                 let skip = under("c/").len()
                 for e in es {
-                    exclude.push(part(e.key, skip, e.key.len() - skip))
+                    j.keys.push(part(e.key, skip, e.key.len() - skip))
                 }
-                j.keys = take exclude
-                self.random(NONCE_BYTES + CEREMONY_BYTES, Step::BeginAddRandom, take j)
+                j.n = ADD_PASSKEY
+                j.agreed = NOT_AGREED
+                j.handle = self.handle.clone()
+                self.begin_challenge(take j)
             },
-            Step::BeginAddRandom => {
-                let Some(i) = self.conn_index(conn) else { return }
-                let keys = self.conns[i].keys.clone()
-                if answer.len() < NONCE_BYTES + CEREMONY_BYTES ||
-                    keys.is_empty() ||
-                    keys[0].len() < KEY_BYTES {
-                    self.refuse(conn, "We couldn't start that. Try again.")
-                    return
-                }
-                j.message = part(answer, 0, NONCE_BYTES)
-                j.hash = part(answer, NONCE_BYTES, CEREMONY_BYTES)
-                j.expires = self.now + account::CHALLENGE_LIFE
-                let m = ceremony_message(
-                    ADD_PASSKEY,
-                    j.hash,
-                    self.handle,
-                    j.message,
-                    j.expires,
-                    NOT_AGREED,
-                )
-                self.hmac(keys[0], m, Step::BeginAddTag, take j)
-            },
-            Step::BeginAddTag => {
-                if answer.len() < 32 {
-                    self.refuse(conn, "We couldn't start that. Try again.")
-                    return
-                }
-                let challenge = challenge_of(j.message, j.expires, answer)
-                self.cookie(
-                    conn,
-                    server::CEREMONY,
-                    j.hash.clone(),
-                    u32(account::CHALLENGE_LIFE / 1000),
-                )
-                self.reply(
-                    conn,
-                    Reply::Challenge {
-                        ceremony: ADD_PASSKEY,
-                        challenge,
-                        handle: self.handle.clone(),
-                        exclude: j.keys.clone(),
-                    },
-                )
-            },
+            Step::ChallengeRandom => self.challenge_random(take j, answer),
+            Step::ChallengeTag => self.challenge_tag(take j, answer),
             Step::TagChecked => self.tag_checked(take j, answer),
             Step::SpentRead => self.spent_read(take j, answer),
             Step::RegisterGone => {
                 if value(answer).is_some() {
-                    self.refuse_register(conn, expired(REGISTER))
+                    self.step_refused(j, expired(REGISTER))
                     return
                 }
                 self.get(key(ACCOUNT, []), Step::RegisterAccount, take j)
@@ -850,13 +823,13 @@ impl<G: Game> Engine<G> {
             Step::RegisterAccount => {
                 // Made already: this sign-up is the first's replay.
                 if self.account_of(answer).is_some() {
-                    self.refuse_register(conn, expired(REGISTER))
+                    self.step_refused(j, expired(REGISTER))
                     return
                 }
                 // What it agreed to is still what it must (the versions may have changed with the
                 // server since it began).
                 if let Some(why) = self.disagreed(j.agreed) {
-                    self.refuse_register(conn, why)
+                    self.step_refused(j, why)
                     return
                 }
                 let Request::Register {
@@ -873,16 +846,12 @@ impl<G: Game> Engine<G> {
                         j.tries = 0
                         self.random(8, Step::RegisterSeed, take j)
                     },
-                    Err(why) => self.refuse_register(conn, why),
+                    Err(why) => self.step_refused(j, why),
                 }
             },
             Step::RegisterSeed | Step::NameSeed => {
                 if answer.len() < 8 {
-                    if j.step == Step::RegisterSeed {
-                        self.refuse_register(conn, "We couldn't make your account. Try again.")
-                    } else {
-                        self.refuse(conn, "We couldn't draw a name. Try again.")
-                    }
+                    self.step_refused(j, draw_failed(j.step))
                     return
                 }
                 j.seed = u64_at(answer, 0)
@@ -893,7 +862,7 @@ impl<G: Game> Engine<G> {
             },
             Step::RegisterClaim | Step::NameClaim => {
                 let back: Option<Back> = read(answer)
-                let registering = j.step == Step::RegisterClaim
+                let registering = signs_up(j.step)
                 match back {
                     Some(Back::Claimed { generation }) => {
                         let n = draw(j.seed)
@@ -922,36 +891,23 @@ impl<G: Game> Engine<G> {
                         // Taken: another draw, a few times.
                         j.tries += 1
                         if j.tries > 8 {
-                            if registering {
-                                self.refuse_register(
-                                    conn,
-                                    "We couldn't find a name for you. Try again.",
-                                )
-                            } else {
-                                self.refuse(conn, "We couldn't find a name for you. Try again.")
-                            }
+                            self.step_refused(j, "We couldn't find a name for you. Try again.")
                             return
                         }
                         let next = if registering { Step::RegisterSeed } else { Step::NameSeed }
                         self.random(8, next, take j)
                     },
-                    _ => {
-                        if registering {
-                            self.refuse_register(conn, "We couldn't make your account. Try again.")
-                        } else {
-                            self.refuse(conn, "We couldn't draw a name. Try again.")
-                        }
-                    },
+                    _ => self.step_refused(j, draw_failed(j.step)),
                 }
             },
             Step::RegisterSecrets => {
                 let Some(a) = j.account.clone() else { return }
                 let Some(cred) = j.credential.clone() else { return }
                 if answer.len() < TOKEN_BYTES + CSRF_BYTES + CODES * CODE_BYTES {
-                    self.refuse_register(conn, "We couldn't make your account. Try again.")
+                    self.step_refused(j, "We couldn't make your account. Try again.")
                     return
                 }
-                let revision = self.next_revision(None)
+                let revision = self.next_revision(None, runs: 0)
                 self.keep(key(ACCOUNT, []), save(a.clone()))
                 self.put(
                     passkey_key(cred.id),
@@ -966,12 +922,8 @@ impl<G: Game> Engine<G> {
                 self.begin_session(conn, a, answer, codes)
             },
             Step::SignInAccount => {
-                let a = self.account_of(answer)
-                let gone = match a {
-                    Some(a) => a.deleting,
-                    None => true,
-                }
-                if gone {
+                let a = self.live_account(answer)
+                if a.is_none() {
                     self.refuse(
                         conn,
                         "We don't know that passkey. Its account may have been deleted.",
@@ -1065,12 +1017,8 @@ impl<G: Game> Engine<G> {
                 self.get(key(ACCOUNT, []), Step::RecoverAccount, take j)
             },
             Step::RecoverAccount => {
-                let a = self.account_of(answer)
-                let gone = match a {
-                    Some(a) => a.deleting,
-                    None => true,
-                }
-                if gone {
+                let a = self.live_account(answer)
+                if a.is_none() {
                     self.back(
                         conn,
                         Back::Refused { why: String::from("That code's account is gone.") },
@@ -1089,7 +1037,7 @@ impl<G: Game> Engine<G> {
                 self.get(key(COUNTERS, []), Step::RecoverCounters, take j)
             },
             Step::RecoverCounters => {
-                let revision = self.next_revision(self.counters(answer))
+                let revision = self.next_revision(self.counters(answer), runs: 0)
                 let note = Note::Code { hash: j.hash.clone(), revision, owner: Vec::new() }
                 self.tell(codes_instance(j.hash).as_str(), note, [])
                 self.scan(under("s/"), 1024, Step::RecoverSessions, take j)
@@ -1112,7 +1060,8 @@ impl<G: Game> Engine<G> {
                     )
                     return
                 }
-                let (cookie, csrf) = self.new_session(cookie, answer, recovery: true)
+                let (cookie, _, s) = self.new_session(cookie, answer, recovery: true)
+                let csrf = s.csrf.clone()
                 self.back(conn, Back::Session { cookie, csrf, me: me_of(a, recovery: true) })
             },
             Step::AddCredential => {
@@ -1199,7 +1148,7 @@ impl<G: Game> Engine<G> {
                 self.get(key(COUNTERS, []), Step::CodesCounters, take j)
             },
             Step::CodesCounters => {
-                let revision = self.next_revision(self.counters(answer))
+                let revision = self.next_revision(self.counters(answer), runs: 0)
                 // The old codes let go at their shards, at the same revision the new are told at.
                 for h in j.keys {
                     let note = Note::Code { hash: h.clone(), revision, owner: Vec::new() }
@@ -1367,12 +1316,7 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Posting { agreed, best_runs: j.n == 1 })
             },
             Step::WatchAccount => {
-                let a = self.account_of(answer)
-                let live = match a {
-                    Some(a) => !a.deleting,
-                    None => false,
-                }
-                if !live {
+                if self.live_account(answer).is_none() {
                     self.refuse(conn, "That run is gone.")
                     return
                 }
@@ -1409,12 +1353,8 @@ impl<G: Game> Engine<G> {
                 self.get(key(ACCOUNT, []), Step::AdmitAccount, take j)
             },
             Step::AdmitAccount => {
-                let a = self.account_of(answer)
+                let a = if self.deleting { None } else { self.live_account(answer) }
                 let Some(a) = a else {
-                    self.back(conn, Back::Refused { why: String::from("That account is gone.") })
-                    return
-                }
-                if a.deleting || self.deleting {
                     self.back(conn, Back::Refused { why: String::from("That account is gone.") })
                     return
                 }
@@ -1498,12 +1438,8 @@ impl<G: Game> Engine<G> {
                 self.back(conn, Back::Admitted)
             },
             Step::RecordAccount => {
-                let a = self.account_of(answer)
-                let gone = match a {
-                    Some(a) => a.deleting,
-                    None => true,
-                }
-                if gone || self.deleting {
+                let a = self.live_account(answer)
+                if a.is_none() || self.deleting {
                     self.back(conn, Back::Refused { why: String::from("That account is gone.") })
                     return
                 }
@@ -1512,13 +1448,9 @@ impl<G: Game> Engine<G> {
                 self.get(outcome_key(j.hash, board), Step::RecordOutcome, take j)
             },
             Step::RecordCounters => {
-                let k = self.counters(answer)
-                let revision = self.next_revision(take k)
-                self.runs += 1
-                let runs = self.runs
-                self.keep(key(COUNTERS, []), save(Counters { revision, runs }))
-                j.seed = revision
-                j.n = runs
+                // The run's number is the next.
+                j.seed = self.next_revision(self.counters(answer), runs: 1)
+                j.n = self.runs
                 let Some(Inner::Record { board, .. }) = j.inner.clone() else { return }
                 let prefix = key("b/", board_part(self.game.id(), board, course: 0, category: 0))
                 let cut = prefix.len() - 8
@@ -1832,7 +1764,7 @@ impl<G: Game> Engine<G> {
         var j = take job
         let Some(a) = j.account.clone() else { return }
         if j.step == Step::DeleteCounters {
-            j.seed = self.next_revision(self.counters(answer))
+            j.seed = self.next_revision(self.counters(answer), runs: 0)
             self.scan_range(Vec::new(), under("x/"), CLEARED, Step::DeleteScan, take j)
             return
         }
@@ -1902,6 +1834,22 @@ impl<G: Game> Engine<G> {
     fn clear(mut self, job: take Job) {
         self.deleting = true
         self.scan_range(Vec::new(), under(GONE), CLEARED, Step::ClearScan, take job)
+    }
+}
+
+/// Whether `step` is one of a new account's: while one waits, no other sign-up begins here.
+pub(package) fn signs_up(step: Step) -> bool {
+    step == Step::RegisterGone ||
+        step == Step::RegisterAccount ||
+        step == Step::RegisterSeed ||
+        step == Step::RegisterClaim ||
+        step == Step::RegisterSecrets
+}
+
+/// Why a name couldn't be drawn at `step`: a new account's, or a draw again's.
+fn draw_failed(step: Step) -> Text {
+    if signs_up(step) { "We couldn't make your account. Try again." } else {
+        "We couldn't draw a name. Try again."
     }
 }
 

@@ -532,9 +532,10 @@ pub struct Job: Clone {
 
 /// What a job waits for.
 pub enum Step: Copy + Eq {
+    // A ceremony's challenge, at the edge or an account (edge.wrela).
+    ChallengeRandom,
+    ChallengeTag,
     // The edge (edge.wrela).
-    EdgeBeginRandom,
-    EdgeBeginTag,
     EdgeLookup,
     EdgeRecover,
     EdgeAdmit,
@@ -547,8 +548,6 @@ pub enum Step: Copy + Eq {
     HelloSession,
     HelloAccount,
     BeginAddScan,
-    BeginAddRandom,
-    BeginAddTag,
     TagChecked,
     SpentRead,
     RegisterGone,
@@ -838,22 +837,12 @@ impl<G: Game> Engine<G> {
     pub fn http(mut self, conn: u32, asked: Asked) {
         self.closed(conn)
         self.now = max(self.now, asked.time)
-        self.conns.push(
-            Conn {
-                conn,
-                via: Via::Http,
-                answered: false,
-                public: asked.public,
-                session: Vec::new(),
-                csrf: Vec::new(),
-                fresh_until: 0,
-                recovery: false,
-                cookie: asked.session.clone(),
-                ceremony: asked.ceremony.clone(),
-                keys: asked.keys.clone(),
-                cookies: Vec::new(),
-            },
-        )
+        var c = self.blank_conn(conn, Via::Http)
+        c.public = asked.public
+        c.cookie = asked.session.clone()
+        c.ceremony = asked.ceremony.clone()
+        c.keys = asked.keys.clone()
+        self.conns.push(take c)
         let parsed: Option<Request> = read(asked.body)
         let Some(request) = take parsed else {
             self.refuse(conn, "wrela.dev can't read that request. Reload the page and try again.")
@@ -975,7 +964,7 @@ impl<G: Game> Engine<G> {
             return
         }
         if self.kind == Kind::Account {
-            if j.step == Step::RegisterClaim || j.step == Step::RegisterSecrets {
+            if accounts::signs_up(j.step) {
                 self.registering = false
             }
             if j.step == Step::DeleteCounters || j.step == Step::DeleteScan {
