@@ -1924,11 +1924,13 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32, grown: bool)
 }
 
 /// A fallen tree laid among the trunks `standing` (each one's foot, x and z, and radius) and the
-/// logs `lying` before it (their trunks' wood, `log_wood`), so it passes through none (§G8: the
-/// development panel's logs through each other and through trunks): the way it fell, else turned
-/// the least of `TURNS` steps of `TURN` either way that clears them (`clearance`); else the
-/// clearest way, broken short (its length `BREAK` at a time) until it's clear; none if it isn't
-/// clear at a quarter of its length (a tree hung up in its neighbours).
+/// logs `lying` before it (their trunks' wood, `log_wood`), so it passes through none and lies on
+/// the ground (§G8: the development panel's logs through each other and through trunks; G-look's,
+/// a log turned across a crest or over another hanging in the air): the way it fell, else turned
+/// the least of `TURNS` steps of `TURN` either way that clears them (`clearance`) and lies on the
+/// ground along `SUPPORTED` of its length (`supported`); else the best of those ways, broken
+/// short (its length `BREAK` at a time) until it's laid so; none if it isn't at a quarter of its
+/// length (a tree hung up in its neighbours).
 fn laid(
     t: Tree,
     height: fn(vec2) -> f32,
@@ -1941,35 +1943,67 @@ fn laid(
         let a = TAU * rand(t.seed, 90)
         vec2(sin(a), cos(a))
     }
-    var clearest = t
+    var best = t
     var most = -1.0e9
     for k in 0..2 * TURNS + 1 {
         let side = if k % 2 == 1 { 1.0 } else { -1.0 }
         var u = t
         u.fall = rotate(base, TURN * f32((k + 1) / 2) * side)
         let p = fallen_placement(u, height, present, grown)
-        let c = clearance(log_wood(p, grown), standing, lying)
-        if c >= 0.0 {
+        let s = laid_score(p, grown, height, standing, lying)
+        if s >= 0.0 {
             return Some(p)
         }
-        if c > most {
-            most = c
-            clearest = u
+        if s > most {
+            most = s
+            best = u
         }
     }
-    var u = clearest
+    var u = best
     for _ in 0..8 {
         u.tall *= BREAK
         if u.tall < 0.25 * t.tall {
             break
         }
         let p = fallen_placement(u, height, present, grown)
-        if clearance(log_wood(p, grown), standing, lying) >= 0.0 {
+        if laid_score(p, grown, height, standing, lying) >= 0.0 {
             return Some(p)
         }
     }
     None
 }
+
+/// How well log `p` is laid (`laid`): its clearance (`clearance`), or how far short of
+/// `SUPPORTED` the ground holds it (`supported`), the worse; 0 or over, laid.
+fn laid_score(
+    p: Placed,
+    grown: bool,
+    height: fn(vec2) -> f32,
+    standing: [vec3],
+    lying: [Tube<4>],
+) -> f32 {
+    min(clearance(log_wood(p, grown), standing, lying), supported(p, grown, height) - SUPPORTED)
+}
+
+/// How much of log `p`'s trunk lies on the ground (`height`): the share of points along it whose
+/// underside is within half its radius of the ground there.
+fn supported(p: Placed, grown: bool, height: fn(vec2) -> f32) -> f32 {
+    let trunk = trunk_of(p.kind, grown)
+    var on = 0
+    for i in 0..17 {
+        let f = f32(i) / 16.0
+        let under = log_support(p.at, trunk, f)
+        let (_, _, r) = limb_axis(trunk, mix(1.0 / 3.0, 2.0 / 3.0, f))
+        if under.y - height(under.xz) <= 0.5 * r * p.at.scale {
+            on += 1
+        }
+    }
+    f32(on) / 17.0
+}
+
+/// How much of a log's length must lie on the ground (`laid`, **proposed**: a log rests along
+/// most of itself, a little bridging a hollow).
+const SUPPORTED: f32 = 0.5
 
 /// A fallen tree's turns from the way it fell (`laid`: 15° each, to 90° either way), and how much
 /// of its length a break leaves.
@@ -2743,5 +2777,35 @@ fn fallen_logs_lie_clear_of_trunks_and_of_each_other() {
                 }
             }
         }
+    }
+}
+
+/// A tree that falls across a crest is laid where the ground holds it (§G8): falling straight over
+/// a ridge (its ground falling away a metre in two each side), it's turned along the ridge or
+/// broken short, and at least half its length lies within half its radius of the ground.
+@test
+fn a_log_across_a_crest_is_laid_where_the_ground_holds_it() {
+    let now: i32 = 900
+    let ridge = |q: vec2| -0.6 * abs(q.x)
+    for grown in [false, true] {
+        var t = land::grow::grown(
+            vec2(-2.0, 0.0),
+            OAK,
+            born: 0,
+            year: 120,
+            seed: 3,
+            h: species::HABITS[OAK],
+            open: true,
+        )
+        t.state = State::Log
+        t.fell = now - 5
+        t.fall = vec2(1.0, 0.0)
+        // Straight over, it hangs: the test's ground is the one `laid` turns it from.
+        let straight = fallen_placement(t, ridge, now, grown)
+        assert(supported(straight, grown, ridge) < SUPPORTED, f"grown {grown}: no crest to test")
+        let laid = placed([t], ridge, now, grown)
+        assert(laid.len() == 1, f"grown {grown}: the log was dropped")
+        let s = supported(laid[0], grown, ridge)
+        assert(s >= SUPPORTED, f"grown {grown}: {s} of it lies on the ground")
     }
 }
