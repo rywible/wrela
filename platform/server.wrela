@@ -127,11 +127,11 @@ pub const PLAY_TICKS: u32 = 4096
 /// the host's, by address (`WRELA_LIMITS`, studio/release), which the server is never told.
 pub const ALL_TRIES: u32 = 30
 /// How long a public read may be kept by a cache, in seconds: a board's page, a slice and a search
-/// (they change as runs come). A run's replay never changes once posted, so it's kept a year,
-/// as immutable; a deleted account's runs are gone from the server, though a cache may still hold
-/// one this long, as the privacy policy says (console/legal.wrela).
+/// (they change as runs come). A run's replay never changes once posted, so it's kept as
+/// immutable, but only a day: a deleted account's runs are gone from the server, and a cache may
+/// still hold one this long, as the privacy policy says (console/legal.wrela).
 pub const BOARD_AGE: u32 = 30
-pub const RUN_AGE: u32 = 31536000
+pub const RUN_AGE: u32 = 86400
 /// A search's bounds: the entries a read of a shard's range takes, the entries it reads in all.
 pub const RANGE_PAGE: u32 = 64
 pub const MOST_SCANNED: u32 = 1024

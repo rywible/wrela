@@ -297,7 +297,7 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
 /// `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
     let asked = if let Request::Watch { run } = request {
-        // A run's replay at its own path, which never changes: kept a year.
+        // A run's replay at its own path, which never changes: kept a day.
         std::http::fetch_public(run_path(run).as_str(), [])
     } else if public(request) {
         let q = base64url(save(request))

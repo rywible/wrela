@@ -18,7 +18,7 @@ use std::serialize::Serialize
 /// Where the console sends its requests: a `POST` with the request as its body, or a `GET` of a
 /// public read with the request in base64url after `?q=`. A run's replay is also at a path of its
 /// own, its account's handle in hexadecimal and its number (`run_path`): it never changes, so a
-/// cache keeps it for good. It is under `PUBLIC`, so the host's limit on public reads counts it too.
+/// cache keeps it a day (server.wrela's `RUN_AGE`). It is under `PUBLIC`, so the host's limit on public reads counts it too.
 pub const ACCOUNTS: Text = "/api/accounts"
 pub const PUBLIC: Text = "/api/public"
 pub const RUNS: Text = "/api/public/run/"
@@ -158,7 +158,7 @@ pub enum Request: Clone + Serialize {
     /// places before it: 0 for the first page). A page deep down reads only its own places.
     Board { game: String, course: u32, category: u32, from: u32, after: Vec<u8> },
     /// A run's replay, to watch or race, answered by `Run`: sent as a `GET` of `run_path(run)`,
-    /// never changing, so a cache keeps it a year.
+    /// never changing, so a cache keeps it a day.
     Watch { run: RunRef },
     /// The places around `name`'s on a board (`course` or WHOLE, and `category`): `AROUND` above
     /// it, its own, and `AROUND` below; or `Unplaced`, if the name has no place there. Only names

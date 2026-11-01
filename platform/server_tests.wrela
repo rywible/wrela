@@ -1841,7 +1841,7 @@ fn an_upload_is_played_again_and_its_time_and_category_are_the_servers() {
         let p = places_of(b)
         assert(p.len() == 1 && p[0].name == s.name && p[0].ticks == 2500 && p[0].run == run)
     }
-    // Its replay, by the run, kept a year: it never changes.
+    // Its replay, by the run, kept a day: it never changes.
     let a = h.read_whole(2, Request::Watch { run: run.clone() })
     let Reply::Run { replay, run: watched, .. } = a.reply else { panic("the run") }
     assert(replay == good && watched == run && a.public == server::RUN_AGE && a.immutable)
@@ -2420,7 +2420,7 @@ fn the_best_runs_setting_never_undoes_a_consent_made_beside_it() {
 }
 
 @test
-fn a_runs_replay_is_read_by_its_run_and_kept_for_a_year() {
+fn a_runs_replay_is_read_by_its_run_and_kept_a_day() {
     var h = host()
     let (s, token) = uploader(mut h, 1, 5)
     let good = toy(0, claimed: 30, moves: 30, m: 2)
@@ -2432,7 +2432,8 @@ fn a_runs_replay_is_read_by_its_run_and_kept_for_a_year() {
     let a = h.read_whole(2, Request::Watch { run: run.clone() })
     let Reply::Run { replay, .. } = a.reply else { panic("the replay") }
     assert(replay == good && Vec::from(sha256(replay)) == hash, "the run's bytes")
-    assert(a.public == server::RUN_AGE && a.immutable, f"{a.public}")
+    // A day, so a deleted account's replay leaves the caches soon after it leaves the server.
+    assert(a.public == 86400 && a.immutable, f"{a.public}")
     assert(wire::run_of(wire::run_path(run).as_str()) == Some(run.clone()))
     // A run nobody has, or of no account, is refused, and that isn't kept.
     for wrong in [
