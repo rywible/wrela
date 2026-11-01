@@ -109,9 +109,10 @@ pub const GRAZING_TURN: f32 = 0.9
 
 /// The vale's contrast about the tone curve's pivot (`engine::paint::Look::contrast`), and how far
 /// its meter may raise the exposure (`engine::paint::Metering::hi`), **proposed** (§G7: searched on
-/// the eight development shots, docs/bench.md "G7").
+/// the eight development shots, docs/bench.md "G7"; the ceiling 8 there, 6 after G-look's second
+/// round, whose judge found dusk from the crest washed out at 8).
 pub const CONTRAST: f32 = 1.2
-pub const METERING_HI: f32 = 8.0
+pub const METERING_HI: f32 = 6.0
 
 /// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
 pub const WALK_HOUR: f32 = 10.5

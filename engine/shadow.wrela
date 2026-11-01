@@ -54,9 +54,11 @@ fn disc(i: u32, n: u32) -> vec2 {
     vec2(cos(a), sin(a)) * r
 }
 
-/// How far the blocker search reaches (texels), and the soft filter's widest (texels).
+/// How far the blocker search reaches (texels), and the soft filter's widest (texels, its radius:
+/// a low sun's far blockers spread a crown's dappled gaps over 20 texels and more, and the
+/// spots went to a smear, G4's G-look on the meadow at evening; **proposed**).
 const SEARCH: f32 = 6.0
-const WIDEST: f32 = 24.0
+const WIDEST: f32 = 6.0
 
 /// Where the static cascades are: each a square `span` metres wide round `centre`, seen from
 /// `reach` metres toward the sun, `side` texels a side; and the sun its map was drawn from (a map
