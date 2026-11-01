@@ -4996,13 +4996,59 @@ equal on 1:
 What the judges fault: crowns read as "lollipops" and "repeated cones" on thin bare boles ("posts",
 "a sparse plantation"), floating vines and leaf cards (the wildwood's and the beech forest's
 looping thin limbs), identical forked snags, logs as "stacked cylinders", trunks without the
-hand's flared feet. The grown kinds are the vale's archetypes (`trees::archetypes::GROWN`, shared:
-the floor's forest kinds grown in a stand, narrow-crowned), so every lever on them changes the vale
-as well, whose panels this part doesn't run again. **Not adopted: `GROWN_WOOD` stays off
-(Blocked).** Next levers: the floor's own archetypes (its forest kinds grown in the open, its
-crowns as broad as the hand's), the trunk's foot flared, the young beech's lime leaves and the
-long whip limbs culled. The measures (G-look's (2) and (3)) weren't run: the judge's preference
-decided it.
+hand's flared feet. **Not adopted: `GROWN_WOOD` stays off (Blocked).**
+
+G-look's measures (2) and (3) for the switch alone (`GROWN_WOOD`, the hand's fawn), run after the
+council asked for them: the floor's 23 on the fast instrument with PSNR, each build's
+(`wrela tool lookbook -- build/fast-floor-<name> --fast --psnr 0 … 22`, `base2` against `wood`):
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px |
+|---|---|---|---|---|
+| floor 00-the-clearing | 30.26 → 31.30 | 11.86 → 14.20 | 0.0040 → 0.0038 | 2 → 2 |
+| floor 01-wood-pasture | 26.33 → 26.45 | 31.26 → 18.64 | 0.0054 → 0.0051 | 2 → 2 |
+| floor 02-beech-high-forest | 21.68 → 20.08 | 55.07 → 49.55 | 0.0109 → 0.0118 | 2 → 3 |
+| floor 03-the-old-road | 29.63 → 28.91 | 11.17 → 10.47 | 0.0040 → 0.0035 | 3 → 3 |
+| floor 04-the-crags-top | 38.09 → 38.22 | 5.36 → 5.49 | 0.0013 → 0.0013 | 2 → 2 |
+| floor 05-the-towers-foot | 34.41 → 34.76 | 5.29 → 5.33 | 0.0023 → 0.0018 | 2 → 2 |
+| floor 06-the-ring | 25.49 → 24.46 | 89.17 → 45.97 | 0.0082 → 0.0075 | 2 → 2 |
+| floor 07-the-mere | 34.10 → 34.54 | 35.86 → 30.16 | 0.0032 → 0.0030 | 2 → 2 |
+| floor 08-the-stream-in-the-wood | 25.47 → 26.75 | 13.57 → 14.02 | 0.0062 → 0.0053 | 3 → 3 |
+| floor 09-the-waterfall | 38.17 → 36.87 | 7.15 → 7.07 | 0.0018 → 0.0016 | 3 → 2 |
+| floor 10-the-burn | 27.39 → 27.22 | 24.75 → 16.20 | 0.0047 → 0.0053 | 2 → 2 |
+| floor 11-the-windthrow | 27.92 → 28.30 | 7.30 → 7.57 | 0.0110 → 0.0091 | 3 → 3 |
+| floor 12-the-plateaus-edge | 38.06 → 38.39 | 4.67 → 4.92 | 0.0028 → 0.0028 | 3 → 2 |
+| floor 13-the-towns-site | 24.33 → 25.02 | 36.04 → 23.82 | 0.0063 → 0.0056 | 2 → 2 |
+| floor 14-the-wardens-arena | 22.97 → 23.27 | 47.66 → 30.70 | 0.0070 → 0.0065 | 2 → 2 |
+| floor 15-the-wildwood | 24.78 → 22.99 | 43.23 → 38.96 | 0.1053 → 0.0594 | 6 → 2 |
+| floor 16-the-fawn-in-the-glade | 23.88 → 28.27 | 86.70 → 59.24 | 0.0085 → 0.0061 | 3 → 3 |
+| floor 17-the-fawn-under-the-beeches | 24.14 → 22.89 | 92.24 → 77.15 | 0.0116 → 0.0103 | 3 → 2 |
+| floor 18-the-fawn-by-the-stream | 23.28 → 27.53 | 48.78 → 36.14 | 0.0070 → 0.0058 | 3 → 3 |
+| floor 19-the-climbers-robe | 23.86 → 26.67 | 85.68 → 73.59 | 0.0101 → 0.0076 | 3 → 2 |
+| floor 20-the-climber-close | 24.44 → 26.27 | 121.45 → 112.99 | 0.0143 → 0.0105 | 3 → 3 |
+| floor 21-the-climbers-hood | 25.55 → 28.51 | 75.90 → 76.69 | 0.0114 → 0.0106 | 4 → 4 |
+| floor 22-the-climbers-train | 25.73 → 27.86 | 109.71 → 93.34 | 0.0103 → 0.0086 | 3 → 3 |
+
+PSNR down on 7 of 23; flicker up past a run's spread (13 %) on 1; pop on 0
+
+The grown wood's flicker is down on 16 shots and up on 7, past a run's spread only on the
+clearing's (+20 %); its pop up past the spread on none; its PSNR up on 16. The measures favour it
+where the judges didn't.
+
+**A lever tried: the forest kinds grown in the open** (the council's round 1 asked for the levers to
+be tried, not named). Every living kind's archetype grown at `stand` 0 (the open) instead of its
+forest stand (1 for the oak and the beech, 0.6 for the birch, the pine and the alder), for one
+build of the floor with `GROWN_WOOD` (`scratchpad/p-open.py`, not committed), its 23 stills judged
+blind against the floor as it is by three judges in fresh contexts (all three calibrations
+passed): **after on 13, before on 9, equal on 1** (from 4 / 18 / 1 without it). The judges credit
+"natural, varied crowns and branching" over the hand's "stylised lollipop clump" and "cloned
+canopies", and still fault "branches loop around the trunk in implausible coils", snags as
+"Y-forked poles", logs as "parallel cylinders", and the denser canopy's murk ("walls off the view
+and flattens light"). The archetypes are `trees::archetypes::GROWN`, which the vale draws too:
+with the lever, `wrela same examples/vale` (60 frames, against its build before) differs in its
+commands from frame 0, so it moves the vale's trees, and **it isn't merged**: Ryan's rule is that it
+merges only if the vale's panels say it helps, and they weren't run. The floor's own archetypes
+(the lever for the floor alone) or the vale's panels with it are plan four's (its §11).
+Next levers, after it: the looping whip limbs culled, the snags' forms, the trunks' flared feet.
 
 **The grown fawn alone** (`GROWN_FAWN`, the hand's wood; its four shots: the fawn in the glade,
 under the beeches, by the stream, and the climber's robe), one judge in a fresh context a round,
