@@ -2136,6 +2136,57 @@ two rounds: 50.62, then 50.00 against 47.99): all four are taken out (e83a1a6e, 
 d5a8abe3, 22156280). The levers on G8 (its support) and G9 (its cubic read, its sharpening
 halved) stay, judged with G8 and G9 in "Part G closes, again".
 
+
+### 2026-11-01: G8 and G9, their G-look's last rounds
+
+Each judged alone (the head against the head without it, on all twelve shots, two fresh judges
+of six; calibrated on an eight-pass blur, which each rejected; numbered from 1 as the plan does).
+Levers between rounds: G8, a way taken only if half the log lies on the ground (`supported`), and
+the prefilter by the log's chord (council round 2); G9, the cubic read, the sharpening halved, a
+log's bark in plates and a beech's bands unsharpened.
+
+| Round | G8: after / before / equal | G9: after / before / equal |
+|---|---|---|
+| at G8 and G9's panel (`build/glook-g8f*`, `glook-g9f*`) | 4 / 4 / 4 | 4 / 3 / 5 |
+| with G8's support, G9's cubic read (`glook-g8z*`, `glook-g9z*`) | 5 / 4 / 3 | 5 / 3 / 4 |
+| the last head (`glook-g8l*`, `glook-g9l*`) | **7 / 2 / 3** | **6 / 1 / 5** |
+
+**Blocked, G-look on G8:** "before" on shot 11 (the fallen beech: "more of the scene with less of
+the blocky, plate-textured log bark", a log laid into the view) and shot 8 (dusk from the crest:
+"a plate-textured log with a smaller log stuck into it"). Next levers: the logs laid in the
+history, so a laid log's place is every reader's (the footing, the interest, the growth), and
+its clearance tested against every fallen limb (the root plate's too), not the trunk alone.
+**Blocked, G-look on G9:** "before" on shot 1 (the forest floor's near trunk: "stacked tiled
+blocks" against "real furrowed bark"). Next lever: that kind's own pattern (a beech's smooth bark
+under the oak's furrows' tile).
+
+### 2026-11-01: Part G's cost, the vale's frame
+
+`wrela profile examples/vale --serial --size 1920x1080 --warmup 600 --frames 300`, main (808e39ba)
+and the part's last head, on Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: GPU
+medians, ms.
+
+| Label | main | head | change |
+|---|---|---|---|
+| vegetation | 11.686 | 12.639 | +0.953 |
+| vegetation prepass | 5.707 | 5.528 | −0.179 |
+| terrain | 4.837 | 3.769 | −1.068 |
+| water | 4.460 | 3.488 | −0.972 |
+| temporal | 3.615 | 3.613 | 0 |
+| look | 2.692 | 2.831 | +0.139 |
+| bloom | 2.139 | 2.165 | +0.026 |
+| fog | 1.366 | 1.497 | +0.131 |
+| the rest | 3.001 | 3.028 | +0.027 |
+| **every frame's, summed** | **39.503** | **38.558** | **−0.945** |
+| probes again (a re-bake, every other frame) | 3.33 | 4.46 | +1.12 |
+
+The vegetation's rise is PCSS on the leaves and limbs and the bark's cubic read; terrain's and
+water's fall is PCSS's widest filter, 24 → 6 texels (its taps stay near each other: G4's own cost
+was +0.94 ms at 24). The re-bake's rise is the trace reading the distance volume each step in
+the leaves too (G1's fix), an average of +0.56 ms over the frames: on the whole, about 0.4 ms
+under main. A frame's call 60.38 → 60.58 ms (this iGPU's vale is far over budget: the M4's numbers
+are §C6's). **The M4's to re-measure**, with the walk's cook and its memory (below).
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
