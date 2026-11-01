@@ -265,6 +265,9 @@ pub struct Console {
     message: String,
     pixel_ratio: f32,
     reduced: bool,
+    /// Whether the host shows a semantic tree, as its environment says: the account's pages
+    /// publish theirs (account.wrela).
+    semantics: bool,
     intro_until: f32,
     focus: Action,
     controls: Vec<Control>,
@@ -422,6 +425,7 @@ pub fn init() -> Console {
         message: String::new(),
         pixel_ratio: 1.0,
         reduced: false,
+        semantics: false,
         intro_until: OPENING_SECONDS,
         focus: Action::Play,
         controls: Vec::new(),
@@ -851,6 +855,7 @@ fn update(s: mut Console) {
             if !bytes.is_empty() { s.reduced = env.reduced_motion }
             s.reloaded = Some(env.reloaded)
             if let Some(ratio) = env.pixel_ratio { s.pixel_ratio = clamp(ratio, 0.5, 4.0) }
+            s.semantics = env.capabilities & host::SEMANTICS != 0
         }
     }
     if let Some(result) = answer_of(mut s.profile_load) {
@@ -1960,6 +1965,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             if games { s.controls.truncate(before) } else { footer(mut s, w, h, margin) }
         }
         account::draw(mut s.account, mut s.draw, s.fonts, w, h, margin, s.zoom, s.reduced)
+        if s.semantics {
+            let view = vec4(0.0, 0.0, f32(width), f32(height))
+            account::publish(mut s.account, view)
+        }
     }
     // Over anything it can press, the pointer becomes a hand.
     let over = match s.pointer {

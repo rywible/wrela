@@ -9,7 +9,10 @@
 //
 // It keeps to itself: the console's main.wrela only gives it its events, its time, a game shown
 // and closed, and a place to draw (a chip by the settings button, and its pages over everything
-// while open). While a page is open it takes the input.
+// while open). While a page is open it takes the input, and publishes the page as a semantic tree
+// (std::semantics, `publish`): a dialog of its text, its boxes with whether each is ticked, its
+// links, and its buttons with whether each can be pressed, so the keyboard and a screen reader
+// work on them as a page's own controls; their presses come back as `Event::Assist`.
 //
 // The session is a `__Host-` cookie the browser keeps and sends: HttpOnly, so no script reads it,
 // not even the console's. The console holds only the session's CSRF token, in memory, which the
@@ -38,8 +41,9 @@ use platform::wire::{
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
 use std::http::{Header, response}
-use std::input::{Button, Event, Key, PadButton}
+use std::input::{Assist, Button, Event, Key, PadButton}
 use std::io::{Pending, fetch}
+use std::semantics::{Node, Role, Sent}
 use std::serialize::{LoadError, load, save}
 use std::webauthn::base64url
 use ui::draw::{DrawList, Rect}
@@ -207,6 +211,12 @@ pub struct Accounts {
     post_best: bool,
     /// What posting shares, shown before "Post my best runs" is first turned on: its box.
     consent_best: bool,
+    /// The page as last drawn, as a semantic tree: its nodes (the dialog first), the control each
+    /// acts as (an index of `shown`), and what was sent of it to the host.
+    nodes: Vec<Node>,
+    node_controls: Vec<Option<u32>>,
+    tree: Sent,
+    told: Vec<Pending<u8>>,
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
@@ -262,6 +272,10 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         may_post: false,
         post_best: false,
         consent_best: false,
+        nodes: Vec::new(),
+        node_controls: Vec::new(),
+        tree: Sent {},
+        told: Vec::new(),
     }
 }
 
@@ -908,6 +922,15 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
         }
     }
     let _ = answer_of(mut a.export_file)
+    // What the semantic tree sent, done with.
+    i = 0
+    while i < a.told.len() {
+        if a.told[i].poll().is_some() {
+            let _ = a.told.remove(i)
+        } else {
+            i += 1
+        }
+    }
     // The game's reply to the console's call: its next ask.
     var asked: Option<Vec<u8>> = None
     var gone = false
@@ -1230,6 +1253,13 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             }
         },
         Event::Wheel { delta, .. } => a.scroll = max(a.scroll + delta.y / zoom, 0.0),
+        Event::Assist { node, action } => {
+            if !knighting {
+                if let Some(x) = assisted(mut a, node, action) {
+                    act(mut a, x)
+                }
+            }
+        },
         Event::KeyDown { key, repeat, mods } => {
             if key == Key::Escape && !knighting {
                 act(mut a, Act::Back)
@@ -1279,7 +1309,88 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
     true
 }
 
+/// What the keyboard or a screen reader did to node `node` of the page's tree (`action`): the
+/// control to act as, if it pressed one (or dismissed the dialog: Back). A focus moved to a
+/// control is the console's focus too.
+fn assisted(a: mut Accounts, node: u32, action: Assist) -> Option<Act> {
+    if node == 0 || node > a.node_controls.len() {
+        return None
+    }
+    if node == 1 && action == Assist::Dismiss {
+        return Some(Act::Back)
+    }
+    let Some(i) = a.node_controls[node - 1] else { return None }
+    if i >= a.shown.len() {
+        return None
+    }
+    if action == Assist::Focus {
+        a.focus = i
+        return None
+    }
+    if action == Assist::Activate { Some(a.shown[i].0) } else { None }
+}
+
+/// Publishes the page as last drawn as the console's semantic tree, named as the page is
+/// (`wrela`), with the canvas's view `view` (device pixels); none while no page is open.
+pub fn publish(a: mut Accounts, view: vec4) {
+    let nodes = if a.open { a.nodes.clone() } else { Vec::new() }
+    host::publish(mut a.told, mut a.tree, "wrela", nodes, view)
+}
+
 // ---- drawing ---------------------------------------------------------------------------------
+
+/// Adds a part of the page to its tree, in reading order under the dialog: what it is, its name,
+/// where it is (logical pixels), and the control it acts as, if it's one.
+fn said(
+    a: mut Accounts,
+    role: Role,
+    label: str,
+    r: Rect,
+    zoom: f32,
+    control: Option<u32> = None,
+    checked: bool = false,
+    disabled: bool = false,
+    level: u32 = 0,
+) {
+    let at = z(r, zoom)
+    let focused = match control {
+        Some(i) => i == a.focus,
+        None => false,
+    }
+    a.nodes.push(
+        Node {
+            id: a.nodes.len() + 1,
+            parent: 1,
+            role,
+            label: String::from(label),
+            rect: vec4(at.x, at.y, at.w, at.h),
+            checked,
+            disabled,
+            focused,
+            level,
+        },
+    )
+    a.node_controls.push(control)
+}
+
+/// Writes `s` wrapped to `width` from `at`, as `paragraph` does, and adds it to the page's tree:
+/// the height it took.
+fn para(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    s: str,
+    size: f32,
+    at: vec2,
+    width: f32,
+    color: vec4,
+    zoom: f32,
+    face: Face = Face::Sans,
+) -> f32 {
+    let h = paragraph(mut d, fonts, s, size, at, width, color, zoom, face)
+    said(mut a, Role::Text, s, Rect::new(at.x, at.y, width, h), zoom)
+    h
+}
 
 /// What drawing needs: the list, the fonts, the zoom.
 struct Pen {
@@ -1376,6 +1487,7 @@ fn button(
     let label = if a.busy && a.doing == Some(x) { String::from(under_way(x)) } else {
         String::from(label)
     }
+    said(mut a, Role::Button, label.as_str(), r, zoom, control: Some(index), disabled: disabled)
     let primary = primary && !disabled
     let fill = if danger { DANGER } else if primary { INK } else if hover && !disabled {
         RAISED
@@ -1404,7 +1516,8 @@ fn focus_ring(a: Accounts, d: mut DrawList, index: u32, r: Rect, zoom: f32) {
     }
 }
 
-/// A box the player ticks, `on` or not, with `label` after it, in a row of height 32 from `at`.
+/// A box the player ticks, `on` or not, with `label` after it, in a row of height 32 from `at`. A
+/// box whose words are drawn apart (with links in them) is named by `spoken`.
 fn checkbox(
     a: mut Accounts,
     d: mut DrawList,
@@ -1415,10 +1528,13 @@ fn checkbox(
     label: str,
     on: bool,
     zoom: f32,
+    spoken: Text = "",
 ) {
     let r = Rect::new(at.x, at.y, w, 32.0)
     let index = a.controls.len()
     a.controls.push((x, r))
+    let name = if label.is_empty() { String::from(spoken) } else { String::from(label) }
+    said(mut a, Role::Checkbox, name.as_str(), r, zoom, control: Some(index), checked: on)
     let b = Rect::new(at.x, at.y + 6.0, w: 20.0, h: 20.0)
     if on {
         d.rect(z(b, zoom), INK, 5.0 * zoom)
@@ -1451,6 +1567,7 @@ fn link(
     let r = Rect::new(at.x - 2.0, at.y - 4.0, w + 4.0, size + 10.0)
     let index = a.controls.len()
     a.controls.push((x, r))
+    said(mut a, Role::Link, label, r, zoom, control: Some(index))
     write(mut d, fonts, label, size, at, INK, zoom)
     let base = at.y + size * 1.15
     d.line(
@@ -1514,6 +1631,8 @@ pub fn draw(
     reduced: bool,
 ) {
     a.controls.clear()
+    a.nodes.clear()
+    a.node_controls.clear()
     // The chip, left of the settings button.
     let chip_label = if !a.online { String::from("Health and legal") } else if a.me.signed_in {
         a.me.name.clone()
@@ -1536,6 +1655,10 @@ pub fn draw(
     }
     a.controls.clear()
     if a.page == Page::Knighting {
+        // The tree's dialog, named by the name drawn.
+        let name = a.me.name.clone()
+        a.nodes.push(Node { id: 1, role: Role::Dialog, label: name, modal: true })
+        a.node_controls.push(None)
         let again = a.knight_again
         knighting::draw(mut d, fonts, a.knight_t, a.me.name.as_str(), again, w, h, zoom, reduced)
         let done = reduced || a.knight_t >= (if again { AGAIN } else { LENGTH })
@@ -1545,7 +1668,9 @@ pub fn draw(
             var y = h * 0.58
             let note = "No one else on wrela will ever have this name."
             let nw = measure(fonts, note, BODY * zoom, Face::Sans) / zoom
-            write(mut d, fonts, note, BODY, vec2(w * 0.5 - min(nw, w - 48.0) * 0.5, y), MUTED, zoom)
+            let at = vec2(w * 0.5 - min(nw, w - 48.0) * 0.5, y)
+            write(mut d, fonts, note, BODY, at, MUTED, zoom)
+            said(mut a, Role::Text, note, Rect::new(at.x, at.y, nw, BODY * 1.5), zoom)
             y += 36.0
             button(
                 mut a,
@@ -1570,7 +1695,9 @@ pub fn draw(
                 )
             }
             if !a.message.is_empty() {
-                write(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
+                let m = a.message.clone()
+                write(mut d, fonts, m.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
+                said(mut a, Role::Text, m.as_str(), Rect::new(x, y + 100.0, bw, 20.0), zoom)
             }
         }
         a.shown = a.controls.clone()
@@ -1600,10 +1727,24 @@ pub fn draw(
         Page::Knighting => "",
     }
     write(mut d, fonts, title, 22.0, vec2(x, y), INK, zoom)
+    // The tree: a dialog named by the page's title, its heading first.
+    let sz = z(sheet, zoom)
+    a.nodes.push(
+        Node {
+            id: 1,
+            role: Role::Dialog,
+            label: String::from(title),
+            modal: true,
+            rect: vec4(sz.x, sz.y, sz.w, sz.h),
+        },
+    )
+    a.node_controls.push(None)
+    said(mut a, Role::Heading, title, Rect::new(x, y, iw, 30.0), zoom, level: 1)
     y += 44.0
     match a.page {
         Page::Choose => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 "With an account, your runs go on the world's leaderboards. You sign in with a passkey on this device. There's no email and no password. We give you a name.",
@@ -1630,7 +1771,8 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Create => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 "You'll make a passkey on this device, then we draw your name.",
@@ -1642,7 +1784,18 @@ pub fn draw(
             )
             y += 16.0
             // The first box's words hold the two pages' links, each opening its page and coming back.
-            checkbox(mut a, mut d, fonts, Act::Agree, vec2(x, y), 28.0, "", a.agree, zoom)
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::Agree,
+                vec2(x, y),
+                28.0,
+                "",
+                a.agree,
+                zoom,
+                spoken: "I agree to the Terms and the Privacy Policy",
+            )
             let words = vec2(x + 32.0, y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY)
             var at = words.x
             let gap = |s: str| -> f32 { measure(fonts, s, BODY * zoom, Face::Sans) / zoom }
@@ -1704,7 +1857,8 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, [(Act::Back, "Back", false)], x, y, iw, zoom)
         },
         Page::Posting => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 posting::LEAD,
@@ -1717,11 +1871,21 @@ pub fn draw(
             y += 8.0
             for item in posting::SHARED {
                 d.ellipse(z(Rect::new(x + 3.0, y + BODY * 0.55, w: 5.0, h: 5.0), zoom), INK)
-                y += paragraph(mut d, fonts, item, BODY, vec2(x + 16.0, y), iw - 16.0, INK, zoom) +
+                y += para(
+                    mut a,
+                    mut d,
+                    fonts,
+                    item,
+                    BODY,
+                    vec2(x + 16.0, y),
+                    iw - 16.0,
+                    INK,
+                    zoom,
+                ) +
                     4.0
             }
             y += 8.0
-            y += paragraph(mut d, fonts, posting::NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
+            y += para(mut a, mut d, fonts, posting::NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
             y += 14.0
             checkbox(
                 mut a,
@@ -1735,7 +1899,8 @@ pub fn draw(
                 zoom,
             )
             y += 32.0
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 posting::BEST_RUNS_NOTE,
@@ -1750,7 +1915,9 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Account => {
-            write(mut d, fonts, a.me.name.as_str(), 18.0, vec2(x, y), INK, zoom)
+            let name = a.me.name.clone()
+            write(mut d, fonts, name.as_str(), 18.0, vec2(x, y), INK, zoom)
+            said(mut a, Role::Text, name.as_str(), Rect::new(x, y, iw, 27.0), zoom)
             y += 40.0
             checkbox(
                 mut a,
@@ -1768,7 +1935,8 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Recover => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 "Type one of the ten codes you got when you made your account. Each code works once. It signs you out everywhere else, then you add a new passkey.",
@@ -1780,6 +1948,8 @@ pub fn draw(
             )
             y += 14.0
             let field = Rect::new(x, y, iw, 44.0)
+            let typed = String::from(f"Recovery code: {a.typed}")
+            said(mut a, Role::Text, typed.as_str(), field, zoom)
             d.rect(z(field, zoom), vec4(1.0, 1.0, 1.0, 0.06), RADIUS * zoom)
             d.ring(z(field, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
             var shown = a.typed.clone()
@@ -1799,7 +1969,8 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Codes => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 "Keep these somewhere safe and away from this device, like on paper or in a password manager. If you lose your passkeys, each code signs you in once. After you save them, we won't show them again.",
@@ -1813,6 +1984,14 @@ pub fn draw(
             for i in 0..a.codes.len() {
                 let col = f32(i % 2) * iw * 0.5
                 let row = f32(i / 2) * 28.0
+                let code = a.codes[i].clone()
+                said(
+                    mut a,
+                    Role::Text,
+                    code.as_str(),
+                    Rect::new(x + col, y + row, iw * 0.5, 24.0),
+                    zoom,
+                )
                 write(
                     mut d,
                     fonts,
@@ -1834,6 +2013,7 @@ pub fn draw(
             for i in 0..min(a.passkeys.len(), 6) {
                 let label = f"Passkey {i + 1} ({std::hash::sha256::hex(short(a.passkeys[i].id))})"
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
                 button(
                     mut a,
                     mut d,
@@ -1865,6 +2045,7 @@ pub fn draw(
                     f"Session {std::hash::sha256::hex(short(s.id))}"
                 }
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
                 if !s.this {
                     button(
                         mut a,
@@ -1882,7 +2063,8 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y + 6.0, iw, zoom)
         },
         Page::Delete => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
                 "This deletes your account and everything in it. You can't undo it. Your saves on this device stay.",
@@ -1908,12 +2090,15 @@ pub fn draw(
             for p in legal::paragraphs(a.legal) {
                 if p.as_str().starts_with("# ") {
                     py += 10.0
-                    write(mut d, fonts, p.as_str().slice(2, p.len()), 17.0, vec2(x, py), INK, zoom)
+                    let heading = p.as_str().slice(2, p.len())
+                    write(mut d, fonts, heading, 17.0, vec2(x, py), INK, zoom)
+                    said(mut a, Role::Heading, heading, Rect::new(x, py, iw, 26.0), zoom, level: 2)
                     py += 30.0
                 } else if p.as_str().starts_with("- ") {
                     // A point: a dot, as the fonts hold no bullet.
                     d.ellipse(z(Rect::new(x + 3.0, py + BODY * 0.55, w: 5.0, h: 5.0), zoom), MUTED)
-                    py += paragraph(
+                    py += para(
+                        mut a,
                         mut d,
                         fonts,
                         p.as_str().slice(2, p.len()),
@@ -1925,7 +2110,17 @@ pub fn draw(
                     ) +
                         4.0
                 } else {
-                    py += paragraph(mut d, fonts, p.as_str(), BODY, vec2(x, py), iw, MUTED, zoom) +
+                    py += para(
+                        mut a,
+                        mut d,
+                        fonts,
+                        p.as_str(),
+                        BODY,
+                        vec2(x, py),
+                        iw,
+                        MUTED,
+                        zoom,
+                    ) +
                         8.0
                 }
             }
@@ -1934,9 +2129,10 @@ pub fn draw(
                     py += 10.0
                     write(mut d, fonts, legal::LICENCES[i], 15.0, vec2(x, py), INK, zoom)
                     py += 26.0
-                    borrow text = a.licence_text[i]
+                    let text = a.licence_text[i].clone()
                     for (from, to) in text.as_str().lines() {
-                        py += paragraph(
+                        py += para(
+                            mut a,
                             mut d,
                             fonts,
                             text.as_str().slice(from, to),
@@ -1983,22 +2179,18 @@ pub fn draw(
         Page::Knighting => {},
     }
     if a.busy {
-        write(
-            mut d,
-            fonts,
-            "Waiting for your passkey or wrela.dev…",
-            13.0,
-            vec2(x, y + 4.0),
-            MUTED,
-            zoom,
-        )
+        let waiting = "Waiting for your passkey or wrela.dev…"
+        write(mut d, fonts, waiting, 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        said(mut a, Role::Text, waiting, Rect::new(x, y + 4.0, iw, 20.0), zoom)
         y += 22.0
     } else if !a.connected && a.page != Page::Legal {
         write(mut d, fonts, "Connecting…", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        said(mut a, Role::Text, "Connecting…", Rect::new(x, y + 4.0, iw, 20.0), zoom)
         y += 22.0
     }
     if !a.message.is_empty() && a.page != Page::Legal {
-        y += paragraph(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
+        let m = a.message.clone()
+        y += para(mut a, mut d, fonts, m.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
     }
     if a.page != Page::Legal {
         legal_row(mut a, mut d, fonts, x, sheet.bottom() - 52.0, iw, zoom)
@@ -2239,4 +2431,54 @@ fn an_upload_that_cant_be_taken_now_is_tried_again_and_a_rejected_one_isnt() {
     let Answer::Rejected { .. } = game_answer(busy, course: 0, category: 0, uploading: false) else {
         panic("said")
     }
+}
+
+/// The node of `a`'s tree whose role is `role` and whose name is `label`: its number.
+fn node_of(a: Accounts, role: Role, label: Text) -> u32 {
+    for n in a.nodes {
+        if n.role == role && n.label.as_str() == label {
+            return n.id
+        }
+    }
+    0
+}
+
+@test
+fn the_agreement_is_a_tree_of_boxes_links_and_buttons_a_screen_reader_can_use() {
+    var a = new("wrela.dev", online: true)
+    a.connected = true
+    a.open = true
+    a.page = Page::Create
+    let fonts = Fonts::load()
+    var d = DrawList::new()
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(a.nodes[0].role == Role::Dialog && a.nodes[0].label.as_str() == "Create account")
+    let agree = node_of(a, Role::Checkbox, "I agree to the Terms and the Privacy Policy")
+    let of_age = node_of(a, Role::Checkbox, "I'm 13 or older")
+    let create = node_of(a, Role::Button, "Create account")
+    assert(agree != 0 && of_age != 0 && create != 0, "named boxes and the button")
+    assert(node_of(a, Role::Link, "Terms") != 0 && node_of(a, Role::Link, "Privacy Policy") != 0)
+    assert(!a.nodes[agree - 1].checked && a.nodes[create - 1].disabled, "unticked, can't press")
+    assert(std::semantics::problem(a.nodes).is_none(), "a tree the host takes")
+    // Pressed by a screen reader, each box acts as a click does; ticked, the button can be pressed.
+    let Some(Act::Agree) = assisted(mut a, agree, Assist::Activate) else { panic("the box") }
+    let Some(Act::Legal { page }) = assisted(
+        mut a,
+        node_of(a, Role::Link, "Privacy Policy"),
+        Assist::Activate,
+    ) else {
+        panic("the link")
+    }
+    assert(page == legal::PRIVACY)
+    let _ = assisted(mut a, of_age, Assist::Focus)
+    assert(a.shown[a.focus].0 == Act::OfAge, "its focus, the console's")
+    let Some(Act::Back) = assisted(mut a, 1, Assist::Dismiss) else { panic("dismissed") }
+    a.agree = true
+    a.of_age = true
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(a.nodes[agree - 1].checked && !a.nodes[create - 1].disabled, "ticked, can press")
+    // The text of what posting shares, before the setting is first turned on.
+    a.page = Page::Posting
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(node_of(a, Role::Text, posting::NEVER) != 0 && node_of(a, Role::Button, "Agree") != 0)
 }
