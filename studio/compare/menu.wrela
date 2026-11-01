@@ -93,12 +93,14 @@ fn lower(s: str) -> String {
     var out: Vec<u8> = Vec::new()
     var i = 0
     while i < s.len() {
-        let b = s.byte(i)
-        if b == 0xE2 && i + 2 < s.len() && s.byte(i + 1) == 0x80 && s.byte(i + 2) == 0x99 {
-            out.push(39)
-            i += 3
-            continue
+        if let Some((c, n)) = s.char_at(i) {
+            if c == 0x2019 {
+                out.push(39)
+                i += n
+                continue
+            }
         }
+        let b = s.byte(i)
         out.push(if b >= 65 && b <= 90 { b + 32 } else { b })
         i += 1
     }

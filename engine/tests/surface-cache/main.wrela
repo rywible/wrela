@@ -187,8 +187,6 @@ pub fn init() -> State {
 
 fn ask(s: mut State) {
     borrow f = s.frame
-    let g = f.distance.read()
-    let o = f.origin
     let q = f.quality().shadows
     let sh = shadows(
         f.light.sun,
@@ -199,7 +197,25 @@ fn ask(s: mut State) {
         moving_side: q.moving_side,
     )
     borrow probes = f.probes.using
-    let t = Trace { solids: g, ..s.scene.trace(f.light, probes.grid) }
+    let t = Trace { solids: f.distance.read(), ..s.scene.trace(f.light, probes.grid) }
+    let (light, sun) = traced(f, sh, t, f.distance.albedo)
+    s.asked.push(take light)
+    s.asked.push(take sun)
+    let (bare, _) = traced(f, sh, t, texture3d::<Rgba8>(width: 1, height: 1, depth: 1))
+    s.asked.push(take bare)
+    let (again, _) = traced(f, sh, Trace { bounced: 1, ..t }, f.distance.albedo)
+    s.asked.push(take again)
+}
+
+/// The rays (`rays`) traced as `t` says through `f`'s volumes, the solids' colours `colours`:
+/// each ray's light and its sun's alone, asked back.
+fn traced(
+    f: Frame<Gathered, Approved, Physical>,
+    sh: Shadows,
+    t: Trace,
+    colours: Texture3d<Rgba8>,
+) -> (Pending<vec4>, Pending<vec4>) {
+    borrow probes = f.probes.using
     var r: GpuBuffer<vec4> = buffer(4)
     var u: GpuBuffer<vec4> = buffer(4)
     dispatch(
@@ -207,7 +223,7 @@ fn ask(s: mut State) {
             t,
             density: probes.density,
             volume: f.distance.volume,
-            colours: f.distance.albedo,
+            colours: colours,
             levels: f.clipmap.levels(),
             texels: f.clipmap.texels(),
             sh: sh,
@@ -219,67 +235,13 @@ fn ask(s: mut State) {
             maps: probes.maps,
             s: f.linear,
             seen: probes.seen.items(),
-            origin: o,
+            origin: f.origin,
             out: mut r,
             sun_out: mut u,
         ),
         over: 4,
     )
-    s.asked.push(read(r.items()))
-    s.asked.push(read(u.items()))
-    let none = texture3d::<Rgba8>(width: 1, height: 1, depth: 1)
-    var b: GpuBuffer<vec4> = buffer(4)
-    var bs: GpuBuffer<vec4> = buffer(4)
-    dispatch(
-        rays.bind(
-            t,
-            density: probes.density,
-            volume: f.distance.volume,
-            colours: none,
-            levels: f.clipmap.levels(),
-            texels: f.clipmap.texels(),
-            sh: sh,
-            near: f.near.front,
-            far: f.far.front,
-            cmp: f.cmp,
-            view: f.tables.view,
-            dome: f.sky.dome,
-            maps: probes.maps,
-            s: f.linear,
-            seen: probes.seen.items(),
-            origin: o,
-            out: mut b,
-            sun_out: mut bs,
-        ),
-        over: 4,
-    )
-    s.asked.push(read(b.items()))
-    var g: GpuBuffer<vec4> = buffer(4)
-    var gs: GpuBuffer<vec4> = buffer(4)
-    dispatch(
-        rays.bind(
-            Trace { bounced: 1, ..t },
-            density: probes.density,
-            volume: f.distance.volume,
-            colours: f.distance.albedo,
-            levels: f.clipmap.levels(),
-            texels: f.clipmap.texels(),
-            sh: sh,
-            near: f.near.front,
-            far: f.far.front,
-            cmp: f.cmp,
-            view: f.tables.view,
-            dome: f.sky.dome,
-            maps: probes.maps,
-            s: f.linear,
-            seen: probes.seen.items(),
-            origin: o,
-            out: mut g,
-            sun_out: mut gs,
-        ),
-        over: 4,
-    )
-    s.asked.push(read(g.items()))
+    (read(r.items()), read(u.items()))
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {

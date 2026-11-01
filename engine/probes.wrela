@@ -32,7 +32,7 @@ use std::gpu::{
 }
 use std::math::PI
 use switches::Switches
-use distance::{DISTANCE_FAR, DistanceGrid, NO_DISTANCE, albedo_at, distance_at, distance_normal}
+use distance::{DistanceGrid, NO_DISTANCE, albedo_at, distance_at, distance_normal}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::Camera
 
@@ -185,20 +185,23 @@ pub struct Occluder: Copy + GpuData {
 const OCCLUDER_ROW: u32 = 32768
 
 /// One occluder's voxels: each voxel in its box gets the larger of what it has and the
-/// occluder's density there (fixed point, 1/1000s), so they cook in any order: the leaves' in the
-/// first `grid.voxels()`, the solids' in the next (`filterable` reads both). One workgroup an
-/// occluder, its invocations taking the box's voxels in turn.
+/// occluder's density there (fixed point, 1/1000s), so they cook in any order: in a voxel's low 16
+/// bits the leaves', in its high 16 the solids' (`filterable` reads both), the solid occluders in
+/// one pass (`solids` 1) and the leaves' in another (0), so a pass's max changes its own half
+/// alone (the other is the same in every value it compares). One workgroup an occluder, its
+/// invocations taking the box's voxels in turn.
 @compute(64)
 pub fn cook_occluders(
     grid: ProbeGrid,
     occluders: [Occluder],
     volume: mut Atomics<u32>,
+    solids: u32,
     group: std::gpu::WorkgroupId,
     lid: std::gpu::LocalId,
 ) {
     // Groups run (x, y): a dispatch has at most 65535 a dimension, a dense wood more occluders.
     let k = group.y * OCCLUDER_ROW + group.x
-    if k >= occluders.len() {
+    if k >= occluders.len() || (occluders[k].solid != 0) != (solids != 0) {
         return
     }
     let o = occluders[k]
@@ -226,8 +229,11 @@ pub fn cook_occluders(
             1.0 - smoothstep(0.55, 1.05, d)
         }
         if density > 0.001 {
-            let at = grid.voxel_index(v) + if o.solid != 0 { grid.voxels() } else { 0 }
-            let _ = volume.max(at, u32(density * 1000.0))
+            let (at, q) = (grid.voxel_index(v), u32(density * 1000.0))
+            let other = volume.load(at)
+            let _ = if solids != 0 { volume.max(at, (q << 16) | (other & 0xFFFF)) } else {
+                volume.max(at, (other & 0xFFFF0000) | q)
+            }
         }
         i += 64
     }
@@ -253,29 +259,25 @@ pub fn filterable(
     id: GlobalId,
 ) {
     let i = grid.voxel_index(id.xyz())
-    let (leaves, solids) = (f32(volume[i]) * 0.001, f32(volume[i + grid.voxels()]) * 0.001)
+    let (leaves, solids) = (f32(volume[i] & 0xFFFF) * 0.001, f32(volume[i] >> 16) * 0.001)
     density.store(id, vec4(max(leaves, solids), leaves, solids, 0.0))
 }
 
 /// The occluders' density at `p` (per unit of extinction), between voxels (trilinear, through
 /// `s`, a linear sampler); none outside the voxels' middles.
 pub fn density_at(grid: ProbeGrid, density: Texture3d<Rgba16Float>, s: Sampler, p: vec3) -> f32 {
-    let dims = vec3(grid.volume_dims)
-    let g = (p - grid.volume_corner) / grid.voxel
-    if g.x < 0.5 ||
-        g.y < 0.5 ||
-        g.z < 0.5 ||
-        g.x >= dims.x - 0.5 ||
-        g.y >= dims.y - 0.5 ||
-        g.z >= dims.z - 0.5 {
-        return 0.0
-    }
-    density.sample_level(s, g / dims).r
+    densities_at(grid, density, s, p).r
 }
 
 /// The leaves' density at `p` alone, as `density_at` reads both: where the solids' distance
 /// volume holds the solids (a trace's `t.solids`), they're its.
 pub fn leaves_at(grid: ProbeGrid, density: Texture3d<Rgba16Float>, s: Sampler, p: vec3) -> f32 {
+    densities_at(grid, density, s, p).g
+}
+
+/// The occluders' densities at `p` (`filterable`'s channels), between voxels; none outside the
+/// voxels' middles.
+fn densities_at(grid: ProbeGrid, density: Texture3d<Rgba16Float>, s: Sampler, p: vec3) -> vec4 {
     let dims = vec3(grid.volume_dims)
     let g = (p - grid.volume_corner) / grid.voxel
     if g.x < 0.5 ||
@@ -284,9 +286,9 @@ pub fn leaves_at(grid: ProbeGrid, density: Texture3d<Rgba16Float>, s: Sampler, p
         g.x >= dims.x - 0.5 ||
         g.y >= dims.y - 0.5 ||
         g.z >= dims.z - 0.5 {
-        return 0.0
+        return vec4(0.0)
     }
-    density.sample_level(s, g / dims).g
+    density.sample_level(s, g / dims)
 }
 
 // ---- tracing and baking ---------------------------------------------------------------------
@@ -310,6 +312,32 @@ pub struct Trace: Copy + GpuData {
 
 /// How near a ray comes to a solid in the distance volume before it's met it (m).
 const SOLID_HIT: f32 = 0.1
+
+/// What a surface a ray meets at `at` reflects per unit of its albedo (its normal `n`, `above` m
+/// over the ground there): the sky's part and the sun's, the sun's through the shadows; lit round
+/// it by the probes there when the ray's a bake again's (`Trace::bounced`), by the open sky else.
+fn surface_light(
+    t: Trace,
+    at: vec3,
+    n: vec3,
+    above: f32,
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    seen: [u32],
+) -> (vec3, vec3) {
+    let lit = statically_sunlit(sh, at, n, near, far, cmp, 1.0)
+    let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
+    if t.bounced != 0 {
+        // Lit by the probes there: the sky round it, occluded, and the light off what's round it.
+        let h = held_at(t.grid, maps, s, seen, at.xz, above, n: n)
+        return (probe_light(h.sky, n), sun + probe_light(h.sun, n))
+    }
+    (open_light(maps, n), sun)
+}
 
 /// The light round the point over `xz`, `above` metres up, averaged over every facing (the light
 /// a mote of air scatters, each way alike), its sun's part times `sun`: from the nearer layer's
@@ -398,6 +426,9 @@ pub fn trace(
     // At least a step each: as many as a march of fixed steps takes.
     let steps = u32(t.reach / step)
     var leaving = from_surface
+    // With the solids' distance volume, a solid is its (§G1: its surface and its colour), met in
+    // the leaves as in the open; its density is left out, the leaves' alone kept.
+    let solids = t.solids.on != 0
     for _ in 0..steps {
         if x >= t.reach {
             break
@@ -407,57 +438,50 @@ pub fn trace(
         if p.y <= ground {
             // The ground's bounce: its albedo lit by the sun and the open sky.
             let (n, albedo, _) = ground_at(levels, texels, p.xz)
-            let lit = statically_sunlit(sh, vec3(p.x, ground, p.z), n, near, far, cmp, 1.0)
-            let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
-            if t.bounced != 0 {
-                // Lit by the probes there: the sky round it, occluded, and the light off what's
-                // round it.
-                let h = held_at(t.grid, maps, s, seen, p.xz, LAYER_HEIGHTS[0], n: n)
-                return (
-                    light + trans * albedo * probe_light(h.sky, n),
-                    sun_light + trans * albedo * (sun + probe_light(h.sun, n)),
-                    x,
-                )
-            }
-            return (light + trans * albedo * open_light(maps, n), trans * albedo * sun, x)
+            let (sky, sun) = surface_light(
+                t,
+                vec3(p.x, ground, p.z),
+                n,
+                LAYER_HEIGHTS[0],
+                sh,
+                near,
+                far,
+                cmp,
+                maps,
+                s,
+                seen,
+            )
+            return (light + trans * albedo * sky, sun_light + trans * albedo * sun, x)
         }
-        // With the solids' distance volume, a solid is its (§G1: its surface and its colour), met
-        // in the leaves as in the open; its density is left out, the leaves' alone kept.
-        let solids = t.solids.on != 0
-        let free = if solids { distance_at(t.solids, volume, p) } else { DISTANCE_FAR }
-        if solids && free >= SOLID_HIT {
-            leaving = false
-        }
-        if solids && free < SOLID_HIT && !leaving {
-            // A solid: its surface lit as the ground's is, its colour the surface cache's (the
-            // nearest solid's, as the volume was cooked).
-            let n = distance_normal(t.solids, volume, p)
-            let solid = albedo_at(t.solids, colours, p)
-            let lit = statically_sunlit(sh, p, n, near, far, cmp, 1.0)
-            let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
-            if t.bounced != 0 {
-                // Lit by the probes there, as the ground is.
-                let h = held_at(
-                    t.grid,
+        var free = step
+        var d = 0.0
+        if solids {
+            free = distance_at(t.solids, volume, p)
+            if free >= SOLID_HIT {
+                leaving = false
+            } else if !leaving {
+                // A solid: its surface lit as the ground's is, its colour the surface cache's (the
+                // nearest solid's, as the volume was cooked).
+                let n = distance_normal(t.solids, volume, p)
+                let (sky, sun) = surface_light(
+                    t,
+                    p,
+                    n,
+                    max(p.y - ground, LAYER_HEIGHTS[0]),
+                    sh,
+                    near,
+                    far,
+                    cmp,
                     maps,
                     s,
                     seen,
-                    p.xz,
-                    max(p.y - ground, LAYER_HEIGHTS[0]),
-                    n: n,
                 )
-                return (
-                    light + trans * solid * probe_light(h.sky, n),
-                    sun_light + trans * solid * (sun + probe_light(h.sun, n)),
-                    x,
-                )
+                let solid = albedo_at(t.solids, colours, p)
+                return (light + trans * solid * sky, sun_light + trans * solid * sun, x)
             }
-            return (light + trans * solid * open_light(maps, n), sun_light + trans * solid * sun, x)
-        }
-        var d = if solids { leaves_at(t.grid, density, s, p) } else {
-            density_at(t.grid, density, s, p)
-        }
-        if !solids {
+            d = leaves_at(t.grid, density, s, p)
+        } else {
+            d = density_at(t.grid, density, s, p)
             if leaving && d > SOLID {
                 d = 0.0
             } else {
@@ -486,10 +510,7 @@ pub fn trace(
             x += step
             continue
         }
-        if !solids {
-            x += step
-            continue
-        }
+        // Through open air as far as no solid is (two steps at most; a step with no volume).
         x += clamp(free, step, 2.0 * step)
     }
     // The sky and its clouds, without the sun's disc (the sun's light is the shadows').
@@ -1392,8 +1413,7 @@ fn shift_voxels(
     }
     // The leaves' and the solids' apart, as `cook_occluders` holds them.
     let i = grid.voxel_index(id.xyz())
-    out.store(i, u32(round(v.g * 1000.0)))
-    out.store(i + grid.voxels(), u32(round(v.b * 1000.0)))
+    out.store(i, (u32(round(v.b * 1000.0)) << 16) | u32(round(v.g * 1000.0)))
 }
 
 /// Columns a strip of baking traces, a frame each (a short submission), with `RAYS` rays a
@@ -1621,8 +1641,8 @@ impl Baked {
             )
         }
         let s = i32(round(step))
-        if b.volume.len() < 2 * g.voxels() {
-            b.volume = buffer(2 * g.voxels())
+        if b.volume.len() < g.voxels() {
+            b.volume = buffer(g.voxels())
         }
         dispatch(
             shift_voxels.bind(
@@ -1670,9 +1690,8 @@ impl Baked {
     /// share by an atomic max, then read into `density`.
     pub fn cook(mut self) {
         label("probes occluders")
-        // The leaves' voxels and the solids' (`cook_occluders`), held only while they're cooked (a
-        // shift makes them first).
-        let n = 2 * self.grid.voxels()
+        // The voxels are held only while they're cooked (a shift makes them first).
+        let n = self.grid.voxels()
         if self.volume.len() < n {
             self.volume = buffer(n)
         }
@@ -1682,25 +1701,28 @@ impl Baked {
         }
         // With none, the volume stays clear: a renewed buffer still holds the old occluders.
         if self.occluder_count > 0 {
-            dispatch(
-                cook_occluders.bind(
-                    grid: self.grid,
-                    occluders: self.occluders.span(start: 0, count: self.occluder_count),
-                    volume: mut self.volume,
-                ),
-                groups: (
-                    min(self.occluder_count, OCCLUDER_ROW),
-                    (self.occluder_count + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
-                    1,
-                ),
-            )
+            // The solids' pass, then the leaves' (`cook_occluders`: each its own half of a voxel).
+            for solids in [1, 0] {
+                dispatch(
+                    cook_occluders.bind(
+                        grid: self.grid,
+                        occluders: self.occluders.span(start: 0, count: self.occluder_count),
+                        volume: mut self.volume,
+                        solids: solids,
+                    ),
+                    groups: (
+                        min(self.occluder_count, OCCLUDER_ROW),
+                        (self.occluder_count + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
+                        1,
+                    ),
+                )
+            }
         }
         dispatch(
             filterable.bind(self.grid, self.volume.items(), density: mut self.density),
             over: self.density,
         )
-        // Cooked: what's read is the density; the voxels go (B7.5: 7 MiB a grid of the floor's, each
-        // half).
+        // Cooked: what's read is the density; the voxels go (B7.5: 7 MiB a grid of the floor's).
         self.volume = buffer(1)
     }
 
