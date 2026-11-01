@@ -1,0 +1,182 @@
+// The vale's grazer (docs/plan-world-class-3.md §F2–F5): a roe fawn grown from its genome
+// (`kit::roe`: its proportions at its age, its muscles sized from its optimized walk's loads, its
+// coat's spots grown by reaction-diffusion), cast where a shot casts it. In "down the trail" it
+// walks toward the eye on its optimized walk (`kit::walks`, the level ground's, at its age by
+// dynamic similarity), stepped at the walker's rate from the shot's start, so every capture walks
+// the same frames; in another shot it grazes, its muzzle lowered to the ground.
+
+use engine::gait::{Body, Path, Walker, frame_of, palette, stand, step}
+use engine::creature::MAX_BONES
+use engine::terrain::{Cover, Terrain}
+use kit::gaits::{CLEARANCE, DT, Gait}
+use kit::genome::{ROE, quadruped_at}
+use kit::grown::{FAWN_COAT, FAWN_MUSCLES}
+use kit::muscles::{MuscledParts, walker_body}
+use kit::quadruped::{frame, skeleton}
+use kit::roe::{CoatLook, FAWN_AGE, Hide, roe, walk_at}
+use kit::walks::WALKS
+use landscape::height_at
+use std::quat::Quat
+
+/// The grazer as a stage keeps it while its mesh is realized.
+pub type Grazer = engine::creature::Body<MuscledParts<Hide>>
+
+/// The grazer, grown.
+pub fn grazer() -> Grazer {
+    roe(ROE, FAWN_AGE, FAWN_MUSCLES)
+}
+
+/// Its look: its hide, its coat's spots at its age.
+pub fn look() -> CoatLook {
+    CoatLook { map: FAWN_COAT, genes: ROE.coat, age: FAWN_AGE }
+}
+
+/// How it's realized: cells no larger than 6 mm (its cannons are under 2 cm thick: the engine's
+/// 2 cm cells lose them), its skin's weights falling off over 2 cm (the engine's 5 cm blends a
+/// fawn's hock into its gaskin: a part's weight falls off within its own length).
+pub const REALIZED = engine::look::CreatureLook {
+    surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
+    deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
+}
+
+/// The frames a slice of its realization takes each.
+pub const SLICES: u32 = 1
+
+/// Its walk: the optimized walk on level ground (`kit::walks`' first), at its age.
+pub fn walk() -> Gait {
+    walk_at(ROE, WALKS[0], FAWN_AGE)
+}
+
+/// The walker's body of it, walking `walk()`.
+pub fn body() -> Body {
+    let g = walk()
+    var b = walker_body(quadruped_at(ROE, FAWN_AGE), g.head_k, g.tail_k)
+    b.clear = CLEARANCE
+    b.crouch = g.crouch
+    b.follow = g.follow
+    b.smooth = g.smooth
+    b
+}
+
+/// The vale's relief as the walker's ground.
+pub struct Relief: Copy + GpuData {}
+
+impl Terrain for Relief {
+    fn height(self, x: f32, z: f32) -> f32 {
+        height_at(vec2(x, z))
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: vec3(0.3), grass: 0.0 }
+    }
+}
+
+/// A straight way from `from` to `to` (on the plane).
+pub struct Trail: Copy {
+    pub from: vec2,
+    pub to: vec2,
+}
+
+impl Path for Trail {
+    fn at(self, s: f32) -> vec2 {
+        self.from + normalize(self.to - self.from) * s
+    }
+
+    fn length(self) -> f32 {
+        length(self.to - self.from)
+    }
+}
+
+/// A walk in progress: its walker, its way, and how far it's been stepped (s since it set off).
+pub struct Walking: Copy {
+    pub walker: Walker,
+    pub trail: Trail,
+    pub stepped: f32,
+}
+
+/// The grazer setting off from `from` toward `to`, standing.
+pub fn set_off(from: vec2, to: vec2) -> Walking {
+    let d = to - from
+    let w = stand(Relief {}, body(), from, atan2(d.x, d.y))
+    Walking { walker: w, trail: Trail { from, to }, stepped: 0.0 }
+}
+
+/// `w` stepped at the walker's rate (`kit::gaits::DT`) until it's walked `until` s: the same
+/// steps whatever the frame rate.
+pub fn walk_to(w: mut Walking, until: f32) {
+    let (b, g) = (body(), walk())
+    while w.stepped + DT <= until {
+        step(mut w.walker, Relief {}, w.trail, b, g.walk, go: true, dt: DT)
+        w.stepped += DT
+    }
+}
+
+/// The palette of walker `w` (world space).
+pub fn walking(w: Walker) -> [mat4; MAX_BONES] {
+    palette(skeleton(quadruped_at(ROE, FAWN_AGE)), body(), w).bones
+}
+
+/// `bones` (world space) less the render space's origin `origin`.
+pub fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
+    var out = bones
+    let shift = std::transform::translate(-origin)
+    for i in 0..MAX_BONES {
+        out[i] = shift * bones[i]
+    }
+    out
+}
+
+/// How far a grazing fawn lowers its body and reaches its forefeet ahead (shares of its
+/// withers' height, **proposed**: its legs are long for its neck, so it splays them to reach the
+/// grass).
+pub const GRAZING_CROUCH: f32 = 0.12
+pub const GRAZING_REACH: f32 = 0.18
+
+/// Its palette grazing (world space), standing at `at` (on the plane) facing `heading` (radians
+/// from +z toward +x): standing on its four feet as the walker sets it
+/// down there, lowered and its forefeet reached ahead (`GRAZING_CROUCH`, `GRAZING_REACH`), its
+/// neck turned down about its root and its head at the poll so its nose is 2 cm over the ground
+/// (the least turn of the neck that brings it there, of a grid of the two's turns), or as near
+/// as they turn.
+pub fn grazing(at: vec2, heading: f32) -> [mat4; MAX_BONES] {
+    let q = quadruped_at(ROE, FAWN_AGE)
+    let s = skeleton(q)
+    var b = body()
+    b.crouch = GRAZING_CROUCH * q.withers
+    var w = stand(Relief {}, b, at, heading)
+    let ahead = vec2(sin(heading), cos(heading)) * (GRAZING_REACH * q.withers)
+    for i in 0..2 {
+        let p = w.feet[i].at.xz + ahead
+        w.feet[i].at = vec3(p.x, height_at(p), p.y)
+    }
+    let m = frame_of(w, b)
+    let f = frame(q)
+    let (neck, head) = (s.find("neck"), s.find("head"))
+    let (root, poll) = (s.rest(neck), s.rest(head))
+    let nose = f.head + f.forward * (1.2 * f.head_length)
+    let x = vec3(1.0, 0.0, 0.0)
+    let bow = |a: f32| m * engine::gait::bone_matrix(Quat::axis_angle(x, a), root, root)
+    let nod = |n: f32| engine::gait::bone_matrix(Quat::axis_angle(x, n), poll, poll)
+    // The nose's height over the ground under it, its neck bowed by `a` and its head nodded by `n`.
+    let over = |a: f32, n: f32| {
+        let p = (bow(a) * nod(n) * vec4(nose, 1.0)).xyz
+        p.y - height_at(p.xz)
+    }
+    var best = (0.0, 0.0)
+    var least = 1.0e9
+    for i in 0..25 {
+        for k in 0..13 {
+            let (a, n) = (2.4 * f32(i) / 24.0, -0.3 + 1.3 * f32(k) / 12.0)
+            let miss = abs(over(a, n) - 0.02) + 0.01 * a
+            if miss < least {
+                least = miss
+                best = (a, n)
+            }
+        }
+    }
+    let p = palette(s, b, w)
+    var bones = p.bones
+    bones[neck.index] = bow(best.0)
+    bones[head.index] = bow(best.0) * nod(best.1)
+    bones
+}

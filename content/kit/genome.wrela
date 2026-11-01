@@ -63,7 +63,7 @@ pub struct Allometry: Copy {
 /// rates (per texel, a step's); its wavelength as a share of the body's length (the diffusion
 /// rates are scaled to it); and the age (a share of maturity) by which the juvenile's spots have
 /// faded.
-pub struct CoatGenes: Copy {
+pub struct CoatGenes: Copy + GpuData {
     pub feed: f32,
     pub kill: f32,
     pub du: f32,
@@ -80,16 +80,18 @@ pub struct MuscleGenes: Copy {
     pub effort: f32,
 }
 
-/// The ranges the gait's optimizer searches (F5), each low to high: the walk's speed (m/s), its
-/// duty (the share of a cycle a foot is planted), its swing's lift (m), the head's and the
-/// tail's springs' stiffness, and the body's lean into its travel (radians).
+/// The ranges the gait's optimizer searches (F5, `gaits::gait_at`), each low to high: the share of
+/// a cycle a foot is planted (its duty), its swing's lift (m), its cycles a second (its cadence),
+/// how far the hind legs' phases lag the pace's (a share of a cycle), how far below its rest
+/// height its body goes (m: its legs flexed, `engine::gait::Body::crouch`), and the share of its
+/// feet's slope its trunk pitches by (`Body::follow`).
 pub struct GaitGenes: Copy {
-    pub speed: vec2,
     pub duty: vec2,
     pub lift: vec2,
-    pub head_k: vec2,
-    pub tail_k: vec2,
-    pub lean: vec2,
+    pub cadence: vec2,
+    pub lag: vec2,
+    pub crouch: vec2,
+    pub follow: vec2,
 }
 
 /// A creature's genome.
@@ -106,7 +108,9 @@ pub struct CreatureGenome: Copy {
 /// thirds grown by its first autumn (60–70 % of its mass: Animal Diversity Web), so the logistic's
 /// rate is 8.5 a year to maturity (**proposed**: a year). The handles and the exponents are
 /// **proposed** (a fawn's legs and head large for its body, its neck short: Huxley's negative
-/// allometry of the limbs and the head).
+/// allometry of the limbs and the head). So are the gait's ranges; the hind legs' lag keeps a
+/// walk among Hildebrand's lateral-sequence walks, an ungulate's (a hind foot's lead on its side's
+/// fore from a tenth of a cycle to two fifths: short of the half that's a trot's, Hildebrand 1965).
 pub const ROE: CreatureGenome = CreatureGenome {
     plan: Plan {
         rest: Quadruped {
@@ -132,6 +136,7 @@ pub const ROE: CreatureGenome = CreatureGenome {
             tail_hang: 80.0,
             legs: 0.6,
             feet: Feet::Hooves,
+            track: 1.4,
         },
         withers: 0.72,
         chest_depth: 0.44,
@@ -173,12 +178,12 @@ pub const ROE: CreatureGenome = CreatureGenome {
     },
     muscle: MuscleGenes { stress: 3.0e5, effort: 3.0 },
     gait: GaitGenes {
-        speed: vec2(0.6, 1.6),
-        duty: vec2(0.55, 0.8),
+        duty: vec2(0.5, 0.85),
         lift: vec2(0.04, 0.16),
-        head_k: vec2(20.0, 120.0),
-        tail_k: vec2(20.0, 120.0),
-        lean: vec2(-0.1, 0.1),
+        cadence: vec2(0.6, 2.6),
+        lag: vec2(-0.15, 0.15),
+        crouch: vec2(0.0, 0.2),
+        follow: vec2(0.2, 1.0),
     },
 }
 

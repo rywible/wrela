@@ -70,6 +70,9 @@ pub struct Quadruped: Copy {
     pub feet: Feet,
     /// How high the knees and hocks stand, against the base's (1): a deer's long cannons above 1.
     pub cannon: f32 = 1.0,
+    /// How far apart the feet stand side to side (the knees, hocks and feet out from the body's
+    /// middle), against the base's (1).
+    pub track: f32 = 1.0,
     /// The feet's size, the eyes' and the brows', each against the base's (1).
     pub hoof: f32 = 1.0,
     pub eye: f32 = 1.0,
@@ -225,15 +228,15 @@ pub fn frame(q: Quadruped) -> Frame {
         [
             vec3(x * 0.62, w - 0.62 * d, fz - 0.02 * l),
             vec3(x * 0.66, w - 1.0 * d, fz - 0.07 * l),
-            vec3(x * 0.6, 0.3 * w * q.cannon, fz - 0.06 * l),
-            vec3(x * 0.58, 0.1 * w, fz - 0.05 * l),
+            vec3(x * 0.6 * q.track, 0.3 * w * q.cannon, fz - 0.06 * l),
+            vec3(x * 0.58 * q.track, 0.1 * w, fz - 0.05 * l),
         ]
     } else {
         [
             vec3(x * 0.62, w - 0.6 * d, fz - 0.02 * l),
             vec3(x * 0.66, w - 1.0 * d, fz - 0.09 * l),
-            vec3(x * 0.6, 0.17 * w * q.cannon, fz - 0.07 * l),
-            vec3(x * 0.58, 0.035 * w, fz - 0.03 * l),
+            vec3(x * 0.6 * q.track, 0.17 * w * q.cannon, fz - 0.07 * l),
+            vec3(x * 0.58 * q.track, 0.035 * w, fz - 0.03 * l),
         ]
     }
     // Hind leg: hip, stifle (forward), hock (back), foot or fetlock.
@@ -243,15 +246,15 @@ pub fn frame(q: Quadruped) -> Frame {
         [
             vec3(x * 0.62, hy - 0.4 * d, hz),
             vec3(x * 0.72, hy - 0.88 * d, hz + 0.035 * l),
-            vec3(x * 0.6, 0.38 * w * q.cannon, hz - 0.06 * l),
-            vec3(x * 0.58, 0.1 * w, hz - 0.05 * l),
+            vec3(x * 0.6 * q.track, 0.38 * w * q.cannon, hz - 0.06 * l),
+            vec3(x * 0.58 * q.track, 0.1 * w, hz - 0.05 * l),
         ]
     } else {
         [
             vec3(x * 0.62, hy - 0.4 * d, hz),
             vec3(x * 0.7, hy - 0.92 * d, hz + 0.08 * l),
-            vec3(x * 0.6, 0.27 * w * q.cannon, hz - 0.07 * l),
-            vec3(x * 0.58, 0.035 * w, hz - 0.03 * l),
+            vec3(x * 0.6 * q.track, 0.27 * w * q.cannon, hz - 0.07 * l),
+            vec3(x * 0.58 * q.track, 0.035 * w, hz - 0.03 * l),
         ]
     }
     Frame {

@@ -7,10 +7,11 @@
 
 use engine::gait::{Body, Path, Walk, Walker, palette, stand, step}
 use engine::loads::{Contact, Loads, Pose, Segments, peaks}
-use engine::creature::{Bone, Skeleton}
+use engine::creature::{Bone, Inside, Placed, Skeleton, Then, group, smooth}
+use std::field::With
 use engine::terrain::Terrain
 use genome::CreatureGenome
-use quadruped::{Quadruped, frame, skeleton}
+use quadruped::{Look, Quadruped, QuadrupedParts, body, frame, skeleton}
 
 /// The walker's body of a kit animal of proportions `q`: its springs on the neck and head
 /// (`head_k`) and the tail (`tail_k`).
@@ -140,7 +141,7 @@ pub const GROUPS: [Group; 7] = [
     },
     Group {
         name: "neck",
-        from: "chest",
+        from: "neck",
         to: "head",
         bears: ["neck", "head", "neck", "head"],
         limb: false,
@@ -167,18 +168,18 @@ pub struct Sized: Copy {
 /// Muscle's density (kg/m³: Mendez and Keys 1960's 1.06 g/cm³).
 pub const MUSCLE_DENSITY: f32 = 1060.0
 
-/// Each group's size (`GROUPS`' order) for a kit animal of proportions `q` and genome `g` bearing
-/// `loads`: its peak torque over the loads' feasible frames (`engine::loads::peaks`; a limb's the
+/// Each group's size (`GROUPS`' order) for a kit animal of proportions `q` and genome `g` at `age`
+/// bearing `loads`: its peak torque over the loads' feasible frames (`engine::loads::peaks`; a limb's the
 /// larger of its two sides'), scaled to the genome's strongest effort (its peak foot force,
 /// `MuscleGenes::effort`, over the loads' own), over the genome's stress and its moment arm (the
 /// limb's radius where it crosses its joint: a muscle wraps the joint at the limb's surface; the
 /// back's epaxials over the vertebrae, `BACK_ARM` of the chest's depth; the neck's half its
 /// radius).
-pub fn muscles(g: CreatureGenome, q: Quadruped, loads: Loads) -> [Sized; 7] {
+pub fn muscles(g: CreatureGenome, q: Quadruped, loads: Loads, age: f32 = 1.0) -> [Sized; 7] {
     let s = skeleton(q)
     let f = frame(q)
     let peak = peaks(loads)
-    let margin = g.muscle.effort / max(peak_foot(loads, g.allometry.adult), 1.0e-3)
+    let margin = g.muscle.effort / max(peak_foot(loads, genome::mass_at(g.allometry, age)), 1.0e-3)
     var out = [Sized { section: 0.0, arm: 0.0, length: 0.0, radius: 0.0, mass: 0.0 }; 7]
     for i in 0..7 {
         let gr = GROUPS[i]
@@ -230,4 +231,85 @@ pub fn muscle_mass(m: [Sized; 7]) -> f32 {
         total += x.mass
     }
     total
+}
+
+/// Where each group's belly lies off the line between its bones' joints (`GROUPS`' order; the
+/// left side's, a unit direction in rest space): the haunch's hamstrings behind and outside the
+/// thigh, the gastrocnemius behind the gaskin, the triceps behind the upper arm, the carpal
+/// extensors before the forearm, the epaxials over the spine, the neck's over its vertebrae, the
+/// scapula's muscles outside it (**proposed**: a deer's superficial muscles, as a dissection's
+/// drawings lay them).
+pub const OUTWARD: [vec3; 7] = [
+    vec3(0.35, 0.0, -0.94),
+    vec3(0.0, 0.0, -1.0),
+    vec3(0.3, 0.0, -0.95),
+    vec3(0.3, 0.0, 0.95),
+    vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+    vec3(1.0, 0.0, 0.0),
+]
+
+/// How far off the midline the paired axial muscles (the back's, the neck's) lie, as a share of
+/// the chest's half-width (**proposed**).
+pub const BESIDE: f32 = 0.3
+
+/// A muscle part: an anatomy kit's spindle on its bone, with channels.
+type MusclePart<C> = Placed<With<anatomy::Muscle, C>>
+
+/// The muscles' parts (`GROUPS`' order), each a mirrored pair.
+pub type MuscleParts<C> = Then<Then<Then<Then<Then<Then<MusclePart<C>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>
+
+/// A kit body with its muscles (`muscled`).
+pub type MuscledParts<C> = Then<QuadrupedParts<C>, engine::creature::Group<MuscleParts<C>>>
+
+/// The kit's body of proportions `q` coloured by `look`, with the muscles `m` sized
+/// (`muscles`): each group's belly an anatomy kit's spindle (`anatomy::muscle`) from its origin's
+/// joint to its insertion's, its line of action its moment arm off theirs (`OUTWARD`), its belly's
+/// radius its section's, blended into the body over the skin's width; a limb's pair one each
+/// side, an axial group's a pair beside the midline (`BESIDE`), each half its section. A group's
+/// belly inside the authored body changes nothing.
+pub fn muscled<C: Copy + GpuData>(
+    q: Quadruped,
+    m: [Sized; 7],
+    look: Look<C>,
+) -> engine::creature::Body<MuscledParts<C>> {
+    let s = skeleton(q)
+    let f = frame(q)
+    // Each group's spindle on its origin's bone, in that bone's space.
+    let spindle = |i: u32| {
+        let gr = GROUPS[i]
+        let from = s.find(gr.from)
+        let a = s.rest(from)
+        let b = s.rest(s.find(gr.to))
+        let radius = if gr.limb { m[i].radius } else { m[i].radius * sqrt(0.5) }
+        let beside = if gr.limb { vec3(0.0) } else { vec3(BESIDE * f.half_width, 0.0, 0.0) }
+        let off = OUTWARD[i] * m[i].arm + beside
+        (from, anatomy::muscle(off, b - a + off, radius))
+    }
+    let skin = smooth(0.6 * f.leg)
+    let tint = [look.back, look.legs, look.legs, look.legs, look.back, look.back, look.back]
+    body(q, look).add(
+        group(
+            s,
+            "muscles",
+            |g: Inside| {
+                let (b0, m0) = spindle(0)
+                let (b1, m1) = spindle(1)
+                let (b2, m2) = spindle(2)
+                let (b3, m3) = spindle(3)
+                let (b4, m4) = spindle(4)
+                let (b5, m5) = spindle(5)
+                let (b6, m6) = spindle(6)
+                g.join(GROUPS[0].name, b0, m0.with(tint[0]), seam: skin)
+                    .join(GROUPS[1].name, b1, m1.with(tint[1]), seam: skin)
+                    .join(GROUPS[2].name, b2, m2.with(tint[2]), seam: skin)
+                    .join(GROUPS[3].name, b3, m3.with(tint[3]), seam: skin)
+                    .join(GROUPS[4].name, b4, m4.with(tint[4]), seam: skin)
+                    .join(GROUPS[5].name, b5, m5.with(tint[5]), seam: skin)
+                    .join(GROUPS[6].name, b6, m6.with(tint[6]), seam: skin)
+            },
+            seam: skin,
+            mirror: true,
+        ),
+    )
 }

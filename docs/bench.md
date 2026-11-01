@@ -3561,3 +3561,82 @@ than two of the base's own runs of it (3.40) and differs on the edges of leaves 
 runs of any shot do: **within the run-to-run variation, not shown identical.** The capture mode's
 variation is the engine's (F7: a still is the frame its resolve settles on); recorded for G's
 lookdev instrument.
+
+## F1–F5, the grazer grown (2026-10-31, toolchain 0.16.0)
+
+Linux pop-os (Ryzen, Radeon "Lucienne"), **not the M4 Air**. The searches' and the tests' numbers
+are the machine's arithmetic, the same anywhere; the times are this machine's.
+
+**F1–F4** (`engine/tests/growth-creature`): the grown roe's withers 0.71996 m against the handle's
+0.72 and its chest 0.325 m against 0.3168 (its measure, the kit's); at age 0.1 its legs' share of
+its withers 1.174 times the grown's and its head's of its body 1.339 times; its integrated mass at
+age 1 29.67 kg against the curve's 27.91 (6 %); age 0.5 between in every handle; the same body
+twice. Its coat's wavelength 14.22 texels (0.1264 m), 2.0 times on a body twice as large; 61 spots
+at age 0.1, the largest 0.54 % of the map, none at 1; the same map by seed and another by
+another; no seam (one chart). A heavier genome's thigh 1.4997 times the section; the muscles as the
+optimized walk sizes them 12.49 kg of 29.69 (42 %); the same muscles twice.
+
+**F5, the gaits optimized** (`wrela tool gait -- --generations 80 --seconds 20 --write`, 8 min
+9 s on 12 threads; CMA-ES from seed 5, 8 a generation; each candidate 20 s after setting off, a
+grade's up it and down it). The walker is kinematic; the measures are `kit::gaits`' (effort |τ·ω|
+per metre over the feasible frames, the secondary chains frozen; the share of frames the centre of
+mass is outside the support of the feet planted through the frame; a planted foot's gap; a swing's
+clearance; speed; the infeasible share, over 5 % invalid). The best total by generation, and the
+result:
+
+| Gait | total at gen 1 / 10 / 20 / 40 / 80 | effort (J/m) | outside | gap (m) | clearance (m) | infeasible |
+|---|---|---|---|---|---|---|
+| walk, level | 140.2 / 107.4 / 1.2 / 1.1 / 1.1 | 306.5 | 0.000 | 0.000 | 0.039 | 0.000 |
+| walk, 15° | 692.4 / 90.0 / 30.3 / 22.9 / 20.0 | 5509.7 | 0.000 | 0.018 | 0.020 | 0.042 |
+| walk, 30° | 834.5 / 163.2 / 127.8 / 78.2 / 73.4 | 1083.4 | 0.111 | 0.019 | 0.033 | 0.319 (invalid) |
+| walk, a 0.3 m step | 791.6 / 205.2 / 137.2 / 129.8 / 121.2 | 534.1 | 0.000 | 0.018 | 0.007 | 0.258 (invalid) |
+| walk, uneven | 406.6 / 22.4 / 18.6 / 15.6 / 15.6 | 4529.7 | 0.000 | 0.000 | 0.032 | 0.000 |
+| trot, level | 472.6 / 188.4 / 132.8 / 128.0 / 125.4 | 397.1 | 0.037 | 0.000 | 0.027 | 0.406 (invalid) |
+| trot, 15° | 898.3 / 314.4 / 175.3 / 148.2 / 145.1 | 718.1 | 0.100 | 0.019 | 0.014 | 0.770 (invalid) |
+| trot, 30° | 1201.2 / 608.2 / 448.3 / 410.6 / 394.5 | 606.5 | 0.151 | 0.079 | −0.021 | 0.784 (invalid) |
+| trot, a 0.3 m step | 1341.2 / 383.0 / 272.1 / 246.5 / 215.8 | 191.1 | 0.117 | 0.033 | 0.038 | 0.754 (invalid) |
+| trot, uneven | 894.2 / 141.7 / 140.8 / 133.6 / 133.3 | 556.4 | 0.066 | 0.000 | 0.034 | 0.496 (invalid) |
+| bound, level | 1435.7 / 771.8 / 733.4 / 637.0 / 637.0 | 171.7 | 0.850 | 0.081 | 0.023 | 0.890 (invalid) |
+| bound, 15° | 1489.4 / 913.4 / 857.6 / 703.2 / 703.2 | 186.9 | 0.802 | 0.111 | −0.014 | 0.905 (invalid) |
+| bound, 30° | 1889.8 / 1342.6 / 1206.0 / 1146.9 / 1146.9 | 206.0 | 0.914 | 0.175 | −0.114 | 0.978 (invalid) |
+| bound, a 0.3 m step | 1590.7 / 832.9 / 785.2 / 730.6 / 669.7 | 82.9 | 0.914 | 0.081 | −0.033 | 0.921 (invalid) |
+| bound, uneven | 1192.4 / 802.3 / 802.3 / 711.9 / 696.2 | 411.3 | 0.809 | 0.093 | 0.007 | 0.869 (invalid) |
+
+The hand-set walk (the clearing's, on the walker as it was) on level ground over the same 20 s:
+**384.4 J/m** → the optimized **306.5 J/m**, 20.3 % less (`the_optimized_walk_spends_less_than_
+the_hand_set`; the hand-set walk is itself invalid on these measures: 59 % of its frames
+infeasible, 23 % outside its support, a foot hanging 15 cm, so its effort is over its 41 %
+feasible frames). The 15° and uneven walks are valid but dear (a high duty and a quick swing to
+keep their feet within 2 cm of the ground: the gap's penalty outweighs the effort's).
+
+The tests (`engine/tests/growth-gait`, 10): the head's spring can't move the effort (to 1e-6);
+equal peaks and unequal power differ; a fixture's effort 20 J/m by hand within 5 %; a hop invalid;
+a log 0.3 m thick cleared; after a 0.2 m drop no stride outside its support from the fourth past
+it; the optimized walk under the hand-set's by 20 %; the search the same from its seed; the baked
+muscles the walk's to the bit.
+
+The levers on the 30° walk, in order, each searched again: the support as the feet planted
+through the frame's step (a lift and a landing in one step aren't ordered by the frames: a
+lateral pair's window under a frame wide was missed); the hind legs' lag bounded to Hildebrand's
+lateral-sequence walks (a wider range found a trot); a smooth body's trunk pitched about its hips'
+middle, not its root's ground (downhill it threw its centre of mass past its forefeet: 40 %
+outside); its feet set down plumb under its hips; its height held over the ground averaged along
+its length (a step's edge jerked it at 134 m/s²); its crouch's range to 0.2 m; a touchdown placed
+where the foot came down, not where the frame found it (the search had settled on 24 frames a
+cycle, where the frames fall on the same phases, and a walk clean for 8 s left its support after
+22); each candidate 20 s. The outside share went 0 (8 s, frame-locked) → 0.053 over 60 s → 0.111
+(20 s); the gap 0.054 → 0.019 (0.0206 over 60 s).
+
+- **Blocked: the 30° walk's stability and gap**, 0.111 of 60 s outside its support and a foot
+  hanging 2.06 cm against 0 and 2 cm (`the_walk_holds_a_30_degree_slope` holds the recorded
+  numbers). Next lever: a sway, the walker shifting its weight over the feet that stay before one
+  lifts (it has no roll and no lateral shift); then a per-ground objective that ranks stability
+  before effort.
+- **Blocked: the 0.3 m step's walk, the trot and the bound** (invalid: 26 %, 41–78 % and 87–98 %
+  of their frames infeasible). The kinematic walker has no flight phase and no take-off, so a
+  bound's airborne frames are infeasible by construction; a trot's diagonal pair carries no
+  moment about its line. Next lever: a ballistic flight phase in the walker (the body's path
+  between take-off and landing a parabola), then the springs' damping searched.
+- **G-profile:** the grazer's walk is 10.0 µs a frame natively (3,600 frames of a step and its
+  palette on uneven ground, the fawn's body; the vale's shot 10 does this once a frame), within
+  0.2 ms of C6's frame. Its grazing pose is found once a hold. The M4's to re-measure.

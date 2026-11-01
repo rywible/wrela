@@ -304,10 +304,12 @@ fn a_heavier_genome_grows_thicker_thighs() {
     )
 }
 
-/// F4: the muscles' total mass is 30 to 45 % of the body's (the mammalian range).
+/// F4: the muscles' total mass is 30 to 45 % of the body's (the mammalian range), as the
+/// optimized walk sizes them (F5's re-sizing, baked by the gait tool: `kit::grown`; the growth-gait
+/// tests hold the bake to a fresh sizing).
 @test
 fn the_muscles_are_a_mammals_share_of_the_body() {
-    let m = standing_muscles(ROE)
+    let m = kit::grown::GROWN_MUSCLES
     let body = segments(ROE, 1.0).total
     var each = String::new()
     for i in 0..GROUPS.len() {

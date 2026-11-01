@@ -90,9 +90,11 @@ pub struct Pose: Clone {
 
 /// A pose stream's loads, each of its frames but its first and last (the central differences'):
 /// each joint's torque (N·m, world: what the joint exerts on its bone and those below it), each
-/// planted foot's force (N), the allocation's residual and whether the frame is feasible.
+/// bone's angular velocity (rad/s, world), each planted foot's force (N), the allocation's
+/// residual and whether the frame is feasible.
 pub struct Loads: Clone {
     pub torques: Vec<Vec<vec3>>,
+    pub omegas: Vec<Vec<vec3>>,
     pub forces: Vec<Vec<vec3>>,
     pub residual: Vec<f32>,
     pub feasible: Vec<bool>,
@@ -120,6 +122,7 @@ fn turn_of(m: mat4) -> mat3 {
 pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
     var out = Loads {
         torques: Vec::new(),
+        omegas: Vec::new(),
         forces: Vec::new(),
         residual: Vec::new(),
         feasible: Vec::new(),
@@ -136,6 +139,7 @@ pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
         var at: Vec<vec3> = Vec::new()
         var force: Vec<vec3> = Vec::new()
         var moment: Vec<vec3> = Vec::new()
+        var omegas: Vec<vec3> = Vec::new()
         var com = vec3(0.0)
         var mass = 0.0
         for i in 0..n {
@@ -154,6 +158,7 @@ pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
             let m = s.mass[i]
             let f = m * (acc - G)
             at.push(p1)
+            omegas.push(w)
             force.push(f)
             moment.push(cross(p1, f) + inertia(alpha) + cross(w, inertia(w)))
             com += m * p1
@@ -201,6 +206,7 @@ pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
             torques.push(sub_m[i] - cross(joint, sub_f[i]))
         }
         out.torques.push(take torques)
+        out.omegas.push(take omegas)
         out.forces.push(take forces)
         out.residual.push(residual)
         out.feasible.push(feasible)

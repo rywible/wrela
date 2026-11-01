@@ -58,6 +58,7 @@ members = [
     "studio/listening",
     "studio/lookbook",
     "studio/styles",
+    "studio/gait",
     "studio/grow",
     "studio/motion",
     "studio/round",
@@ -204,6 +205,12 @@ write = ["ws=.", "out=build/fit"]
 package = "studio/styles"
 write = ["ws=."]
 run = ["git"]
+
+# The gait tool (studio/gait): the grazer's gaits optimized in simulation, written as
+# content/kit/walks.wrela (§F5).
+[tools.gait]
+package = "studio/gait"
+write = ["ws=."]
 
 # The grow tool (studio/grow): a species' tree grown from its genome and site as a specimen (its
 # side view and grown.json), and the specimen page (docs/plan-world-class-3.md §E1.5).

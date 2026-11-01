@@ -1,0 +1,10 @@
+# The gait tool (`wrela tool gait`, docs/plan-world-class-3.md §F5): each pace's walk optimized on
+# each ground by CMA-ES over the grazer's genome's ranges (kit::gaits scores them), the results
+# written as `content/kit/walks.wrela` (main.wrela says how).
+[package]
+name = "gait_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+engine = { workspace = true }
+kit = { workspace = true }

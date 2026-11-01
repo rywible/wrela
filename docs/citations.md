@@ -164,7 +164,24 @@ Each is our own Wrela code written from the published idea. No code was copied.
 | D. DeCarlo, A. Finkelstein, S. Rusinkiewicz and A. Santella, ["Suggestive Contours for Conveying Shape"](https://gfx.cs.princeton.edu/proj/sugcon/) (SIGGRAPH 2003); T. Judd, F. Durand and E. Adelson, ["Apparent Ridges for Line Drawing"](https://people.csail.mit.edu/tjudd/apparentridges.html) (SIGGRAPH 2007) | `engine::marks::creased`, `styles::cel` | Lines where the form folds, from its curvature: a crease where the larger principal curvature per pixel is high and long enough along its ridge |
 | P. Bénard, A. Bousseau and J. Thollot, ["State-of-the-Art Report on Temporal Coherence for Stylized Animations"](https://doi.org/10.1111/j.1467-8659.2011.02075.x) (*Computer Graphics Forum* 2011) | `engine::marks` | Marks anchored in 3D and sized in 2D, faded across a lattice's levels: the compromise between the shower door and sliding it recommends |
 | E. Praun, H. Hoppe, M. Webb and A. Finkelstein, ["Real-Time Hatching"](https://hhoppe.com/proj/hatching/) (SIGGRAPH 2001) | `styles::ink` | Tonal art maps: a tone is a count of hatching's layers, each coming in past a threshold, coherent as the surface nears and recedes |
-| N. Hansen, ["The CMA Evolution Strategy: A Tutorial"](https://arxiv.org/abs/1604.00772) (2016) | `studio/toolkit/cma.wrela` (the looks' fit, `studio/fit`; the trees', `studio/grow`) | The fit's search: (μ/μ_W, λ)-CMA-ES with rank-one and rank-μ updates and cumulative step-size adaptation, its default parameters |
+| N. Hansen, ["The CMA Evolution Strategy: A Tutorial"](https://arxiv.org/abs/1604.00772) (2016) | `studio/toolkit/cma.wrela` (the looks' fit, `studio/fit`; the trees', `studio/grow`; the gaits', `studio/gait`) | The fit's search: (μ/μ_W, λ)-CMA-ES with rank-one and rank-μ updates and cumulative step-size adaptation, its default parameters |
+
+### The grazer's genome
+
+The vale's creature's numbers (`kit::genome::ROE`) and the methods that grow it (docs/plan-world-class-3.md §F1–F5). Numbers not from these are marked **proposed** where they're set.
+
+| Source | Where | What it gives |
+|---|---|---|
+| [Animal Diversity Web: *Capreolus capreolus*](https://animaldiversity.org/accounts/Capreolus_capreolus/) | `kit::genome::ROE` | A roe deer's height at the withers (66–83 cm), its grown mass (22.6–30 kg), and a fawn's 60–70 % of it by its first autumn |
+| [GBIF: *Capreolus capreolus*](https://gbif.org/species/195657926) | `kit::genome::ROE` | A fawn's mass at birth (1.3–1.9 kg) |
+| J. S. Huxley, *Problems of Relative Growth* (1932) | `kit::genome::quadruped_at` | Allometric growth: each part's size y = b·x^k against the body's mass, a fawn's limbs and head large for its body |
+| A. M. Turing, "The Chemical Basis of Morphogenesis" (*Phil. Trans. R. Soc. B* 1952); J. E. Pearson, ["Complex Patterns in a Simple System"](https://doi.org/10.1126/science.261.5118.189) (*Science* 1993); J. D. Murray, *Mathematical Biology II*, ch. 3 | `kit::coat` | The coat's Gray-Scott reaction-diffusion, its spots' feed and kill rates (Pearson's), and its wavelength scaled to the body by the diffusion rates (Murray's size-to-pattern result) |
+| R. McN. Alexander, *Principles of Animal Locomotion* (Princeton 2003) | `kit::muscles` | Muscles sized at a constant stress: a section by the peak torque it bears over its moment arm |
+| R. A. Mendez and A. Keys, "Density and composition of mammalian muscle" (*Metabolism* 1960) | `kit::muscles::MUSCLE_DENSITY` | Muscle's density, 1.06 g/cm³ |
+| P. B. Stark and R. L. Parker, ["Bounded-Variable Least-Squares: an Algorithm and Applications"](https://www.stat.berkeley.edu/~stark/Preprints/bvls.pdf) (*Computational Statistics* 1995) | `engine::loads::allocate` | The feet's forces: a bounded least squares by an active set (the vertical forces non-negative, the horizontals free) |
+| R. Featherstone, *Rigid Body Dynamics Algorithms* (Springer 2008) | `engine::loads::joint_loads` | Inverse dynamics: each joint's torque by Newton–Euler over its subtree's masses |
+| M. Hildebrand, ["Symmetrical Gaits of Horses"](https://doi.org/10.1126/science.150.3697.701) (*Science* 1965) | `kit::genome::ROE`'s gait ranges | The hind legs' lag: a walk's limb phase kept among the lateral-sequence walks (a tenth to two fifths of a cycle), short of a trot's half |
+| T. Geijtenbeek, M. van de Panne and A. F. van der Stappen, ["Flexible Muscle-Based Locomotion for Bipedal Creatures"](https://doi.org/10.1145/2508363.2508399) (SIGGRAPH Asia 2013) | `kit::gaits` | The gait's objective's shape: effort, stability and speed weighed, searched by CMA-ES (ours a kinematic walker's, its effort a work proxy from the poses' loads) |
 
 ## Read for principles
 

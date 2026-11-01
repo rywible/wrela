@@ -1,0 +1,86 @@
+// The vale's grazer as drawn (docs/plan-world-class-3.md §F2–F5): a roe deer grown from its genome
+// (`genome::ROE`) to an age, its muscles sized by the rule from its optimized walk's loads and its
+// coat's pattern grown by reaction-diffusion, both baked by the gait tool (`kit::grown`); its
+// hide's colours by region (`LOOK`) and its coat's map read as its albedo's pattern (`CoatLook`);
+// and its walk at its age, the grown animal's scaled by dynamic similarity (`walk_at`).
+
+use coat::{CoatMap, pattern_at}
+use gaits::Gait
+use genome::{CoatGenes, CreatureGenome, quadruped_at}
+use muscles::{MuscledParts, Sized, muscled}
+use quadruped::Look
+use std::field::{Blend, Color, rgb}
+
+/// What a point of the roe carries: its hide's colour, and how much its coat's pattern shows
+/// there (the back's and the flanks': a fawn's spots run along them).
+pub struct Hide: Copy + GpuData + Blend {
+    pub albedo: Color,
+    pub spotted: f32 = 0.0,
+}
+
+/// The vale's grazer's age (a share of maturity): a fawn in its first summer, two months or so,
+/// its spots fading (**proposed**).
+pub const FAWN_AGE: f32 = 0.2
+
+/// Its seed for the coat's pattern.
+pub const COAT_SEED: u32 = 7
+
+/// A roe's summer coat by region (linear albedo, **proposed**: a fox-red back over a buff belly,
+/// greyer legs, a darker head and muzzle, a black nose, a pale rump; the vale's earlier fawn's
+/// red-brown read cream in the vale's sun and was darkened and reddened to a roe's).
+pub const LOOK: Look<Hide> = Look {
+    back: Hide { albedo: rgb(r: 0.26, g: 0.085, b: 0.025), spotted: 1.0 },
+    belly: Hide { albedo: rgb(r: 0.4, g: 0.25, b: 0.12) },
+    legs: Hide { albedo: rgb(r: 0.14, g: 0.08, b: 0.04) },
+    feet: Hide { albedo: rgb(r: 0.0572, g: 0.0437, b: 0.0306) },
+    head: Hide { albedo: rgb(r: 0.2, g: 0.09, b: 0.035) },
+    muzzle: Hide { albedo: rgb(r: 0.13, g: 0.075, b: 0.042) },
+    ears: Hide { albedo: rgb(r: 0.16, g: 0.09, b: 0.05) },
+    eyes: Hide { albedo: rgb(r: 0.0208, g: 0.0138, b: 0.009) },
+    nose: Hide { albedo: rgb(r: 0.02, g: 0.016, b: 0.013) },
+    tail: Hide { albedo: rgb(r: 0.6, g: 0.5, b: 0.38) },
+}
+
+/// A fawn's spots' colour (linear albedo: cream, **proposed**).
+pub const SPOT: vec3 = vec3(0.62, 0.5, 0.36)
+
+/// The roe's look (`engine::character::Look`): its hide's colour, its coat's pattern over it
+/// where the hide's spotted (the map's value at the point's place on the body's chart, as visible
+/// at its age: `coat::pattern_at`), a spot's edge a little sharpened.
+pub struct CoatLook: Copy + GpuData {
+    pub map: CoatMap,
+    pub genes: CoatGenes,
+    pub age: f32,
+}
+
+impl engine::character::Look<Hide> for CoatLook {
+    fn surface(self, c: Hide, rest: vec3, fp: f32) -> (vec3, f32) {
+        let hide = vec3(c.albedo.r, c.albedo.g, c.albedo.b)
+        let spot = smoothstep(0.3, 0.6, pattern_at(self.map, self.genes, rest, self.age))
+        (mix(hide, SPOT, vec3(spot * c.spotted)), 0.7)
+    }
+}
+
+/// The roe `g` grown to `age`, its muscles `m` (`muscles::muscles`, at that age).
+pub fn roe(
+    g: CreatureGenome,
+    age: f32,
+    m: [Sized; 7],
+) -> engine::creature::Body<MuscledParts<Hide>> {
+    muscled(quadruped_at(g, age), m, LOOK)
+}
+
+/// The grown animal's walk `gait` for `g` at `age`, by dynamic similarity (Alexander and Jayes
+/// 1983: animals of a shape at the same Froude number move alike): its speed by the square root
+/// of its legs' length against the grown's, its cadence by its inverse, its lift and its crouch
+/// by the ratio itself; its duty, its phases, its springs and its pitch's follow the same.
+pub fn walk_at(g: CreatureGenome, gait: Gait, age: f32) -> Gait {
+    let r = quadruped_at(g, age).withers / quadruped_at(g, 1.0).withers
+    let root = sqrt(r)
+    var out = gait
+    out.walk.speed = gait.walk.speed * root
+    out.walk.cadence = gait.walk.cadence / root
+    out.walk.lift = gait.walk.lift * r
+    out.crouch = gait.crouch * r
+    out
+}
