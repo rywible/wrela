@@ -2959,3 +2959,25 @@ real ES256 sign-in (WebCrypto), a forged signature refused, a tampered run refus
 and a replay with `public, max-age=86400`, the export, sign-out clearing the cookie, another
 origin's `POST` refused (403), and a client past 60 changes a minute refused (429). Not measured:
 CPU time per call on Cloudflare's own machines, which its dashboard gives after the first deploy.
+
+## Zstandard against Brotli (to measure on first deploy)
+
+The gate for the zone's Compression Rule (docs/plan-online-play.md step 12; docs/toolchain.md,
+"Delivery"): it stays only if each file's Zstandard bytes are within 5% of its Brotli bytes. The
+files are the console's and the capybara's WASM modules and runtime scripts, as the deploy's
+Zstandard check names them (studio/deploy `compressed`), on the live site after the first deploy
+with the rule set, each fetched twice with curl, the bytes on the wire as curl counts them:
+
+```bash
+curl -s -o /dev/null -H 'accept-encoding: zstd' -w '%{size_download}\n' https://wrela.dev/b/<sha256>.wasm
+curl -s -o /dev/null -H 'accept-encoding: br' -w '%{size_download}\n' https://wrela.dev/b/<sha256>.wasm
+```
+
+| File | Uncompressed bytes | Zstandard bytes | Brotli bytes | Zstandard / Brotli |
+| --- | ---: | ---: | ---: | ---: |
+| the console's WASM | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+| the console's runtime (`main.js`, `worker.js`, `worklet.js`) | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+| the capybara's WASM (session, play build) | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+| the capybara's runtime | to measure on first deploy | to measure on first deploy | to measure on first deploy | to measure on first deploy |
+
+Release, commit and toolchain: to record on first deploy (toolchain 0.18.0).

@@ -494,6 +494,41 @@ pub fn quoted(path: str) -> String {
     out
 }
 
+// ---- Zstandard ---------------------------------------------------------------------------------
+
+/// The files of a release's listing (`read_listing`) that the deploy asks for as Zstandard: its
+/// WASM modules (`/b/<sha>.wasm`) and its runtime's scripts (`/r/<set>/<name>.js`), each by its
+/// path from the Worker's root.
+pub fn compressed(files: [(String, String)]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for (path, _) in files {
+        let p = path.as_str()
+        if (p.starts_with("/b/") && p.ends_with(".wasm")) ||
+            (p.starts_with("/r/") && p.ends_with(".js")) {
+            out.push(path.clone())
+        }
+    }
+    out
+}
+
+/// What's wrong with the answer to a `GET` of `url` that asked for Zstandard, if anything: a
+/// status that isn't 200, or a `content-encoding` that isn't `zstd`.
+pub fn not_zstd(url: str, status: u16, encoding: Option<String>) -> Option<String> {
+    if status != 200 {
+        return Some(String::from(f"GET {url}: HTTP {status}"))
+    }
+    match encoding {
+        Some(e) => {
+            if e.as_str().trim() == "zstd" {
+                None
+            } else {
+                Some(String::from(f"{url} comes back as {e.as_str().trim()}, not Zstandard"))
+            }
+        },
+        None => Some(String::from(f"{url} comes back uncompressed, not as Zstandard")),
+    }
+}
+
 // ---- Workers -----------------------------------------------------------------------------------
 
 /// A Worker of the release, as `release.json` says: its name and domain, and whether it's the

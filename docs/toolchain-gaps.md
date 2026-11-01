@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A fake site can't answer with a header
+
+- **Needed:** the deploy's Zstandard check (studio/deploy `verify_zstd`, docs/plan-online-play.md step 12) tested end to end on a fake site that answers a WASM with `content-encoding: zstd`, as one with the zone's Compression Rule set does, and the deploy passing with the rule required.
+- **What happens:** toolchain 0.17.0's fake sites answer with `content-length` alone, and `std::tool::testing::Fake` sets a status, a 404, a body, a delay or failures, never a header.
+- **Found:** 2026-10-31, writing the Zstandard check.
+- **Evidence:** `fake` in runtime/native/src/tool/http.rs (wrela-compiler at `a4ad713`, 0.17.0) builds every answer's headers from `length(n)`, a `content-length` only.
+- **Meanwhile:** the answer's rule is a test of code (`not_zstd`: only a 200 with `content-encoding: zstd` passes), and a tool test checks that on fake sites every console and game WASM and runtime script is a warning, or with the rule required the deploy's failure (studio/deploy/tests.wrela).
+- **Status:** open: a `Fake` of headers (say `Fake::Headers(Vec<Header>)`, added to the file's answer).
+
 ### A client can't fetch a public read without its cookies, or with the browser's cache
 
 - **Needed:** the console's public reads (a board's page, a slice, a run's replay by its hash, a search of names: platform/wire.wrela's `PUBLIC` and `REPLAYS`) sent with no cookie, so nothing in them can tie a reader to an account, and kept by the browser's own cache, so a replay asked for again (its path never changes, `immutable` for a year) costs no request at all.

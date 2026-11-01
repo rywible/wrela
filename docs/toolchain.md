@@ -69,6 +69,19 @@ Then stage it in one Worker, which the release splits in two (the console's file
 - Its tests run on a fake host that commits and answers as 0.13.0's host does (`wrela test platform`); `docs/bench.md`'s "The console's server" was measured on `wrangler dev`.
 - `ONLINE` (console/main.wrela) is true; `--set ONLINE=false` builds a console without a server, whose chip opens only the health warning and the legal pages.
 
+## Delivery
+
+A release (`wrela tool release`, studio/release) puts what one release shares with the next at content addresses at each Worker's root, so a deploy that doesn't change a file doesn't change its URL (studio/release/addresses.wrela):
+
+- **Payloads** at `/b/<sha256>.<ext>`: each build's manifest's `wasm` and `wasm_relaxed`, each pipeline's `shader`, the modules' `.lines`, and its streamed files (`files/`, but `files/icons/`, which its page links against its own address).
+- **Runtimes** at `/r/<sha256 of the set>/`: a build's `main.js`, `worker.js`, `worklet.js` and their siblings, together, so `import.meta.url` still finds each.
+- **Each release's own files** under `releases/<id>/`: its pages, manifests, `net.json`, icons, `catalog.tsv`, `prefetch-<id>.txt`, `release.txt`, `files.json`, and each build's `addresses.json` beside its manifest: `{"game.wasm": "/b/<sha256>.wasm", "files/floor/t1.bin": "/b/<sha256>.bin", ...}`, each payload's path in the build and its URL. Toolchain 0.18.0's browser host reads it; 0.17.0's doesn't, so a release built on 0.17.0 doesn't load.
+- `/b/*`, `/r/*` and `/releases/*` are `public, max-age=31536000, immutable`. `files.json` lists the shared files by their root-absolute paths; the deploy keeps each kept release's own files and the shared files they name, each once (studio/deploy).
+
+Ryan sets this on the `wrela.dev` zone once, in the Cloudflare dashboard:
+
+- **The Compression Rule**: Rules, Overview, Create rule, Compression Rule; match the default content types (they include `application/wasm` and `text/javascript`: developers.cloudflare.com/speed/optimization/content/compression/); under Compression options, Custom: Zstandard, Brotli, Gzip (developers.cloudflare.com/rules/compression-rules/settings/). Once a deploy's log has no "warning: ... not as Zstandard", set `ZSTD_RULE` to `true` in studio/deploy/main.wrela: from then on a console's or game's WASM or runtime script that doesn't come back with `content-encoding: zstd` (asked with `accept-encoding: zstd, br`) fails the deploy. The rule stays only if zstd's bytes are within 5% of Brotli's (docs/bench.md, "Zstandard against Brotli").
+
 ## Watching and measuring
 
 ```bash

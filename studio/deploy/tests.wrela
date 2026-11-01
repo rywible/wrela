@@ -4,11 +4,14 @@
 // the kept releases it puts in each Worker's assets, what stops it before it changes anything,
 // and the Workers deployed in order, each serving the release and its kept ones as assets.
 
-use main::{Listing, Options, deploy, found, parse_args, verify, verify_api, verify_kept}
+use main::{
+    Listing, Options, ZSTD_RULE, deploy, found, parse_args, verify, verify_api, verify_kept,
+    verify_zstd,
+}
 use policy::{
-    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, has, history_json, insert,
-    is_inside, is_shared, kept, main_head, next_history, parse_stamp, placed, quoted, read_history,
-    read_listing, read_release, redirected, stamp, uploads,
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, has, history_json,
+    insert, not_zstd, is_inside, is_shared, kept, main_head, next_history, parse_stamp, placed,
+    quoted, read_history, read_listing, read_release, redirected, stamp, uploads,
 }
 use release_tool::catalog::CATALOG
 use release_tool::io::{read_files, write_files}
@@ -530,6 +533,7 @@ fn options(dry_run: bool) -> Options {
         dry_run,
         limits: CLOUDFLARE,
         repository: String::from("https://github.com/rywible/wrela"),
+        zstd: false,
     }
 }
 
@@ -1074,6 +1078,83 @@ fn failed_api(why: str) {
     match verify_api("console.example") {
         Ok(_) => panic(f"verified, but should fail with `{why}`"),
         Err(e) => assert(contains(e.message(), why), e.message()),
+    }
+}
+
+/// The deploy asks for each WASM module and runtime script as Zstandard, and only an answer of
+/// 200 with `content-encoding: zstd` is one.
+@test
+fn only_a_zstd_answer_is_zstandard() {
+    let sha = hex_sha(String::from("x").as_bytes())
+    let files = Vec::from(
+        [
+            (String::from(f"/b/{sha.as_str()}.bin"), sha.clone()),
+            (String::from(f"/b/{sha.as_str()}.wasm"), sha.clone()),
+            (String::from(f"/b/{sha.as_str()}.wgsl"), sha.clone()),
+            (String::from(f"/r/{sha.as_str()}/main.js"), sha.clone()),
+            (String::from("session/index.html"), sha.clone()),
+            (String::from("pages.js"), sha.clone()),
+        ],
+    )
+    let asked = compressed(files)
+    assert(asked.len() == 2, f"{asked.len()}")
+    assert(asked[0].as_str().ends_with(".wasm") && asked[1].as_str().ends_with("/main.js"))
+    assert(not_zstd("u", 200, Some(String::from("zstd"))).is_none())
+    for (status, encoding, why) in [
+        (200, Some(String::from("br")), "as br, not Zstandard"),
+        (200, Some(String::from("gzip")), "as gzip"),
+        (200, None, "uncompressed"),
+        (404, Some(String::from("zstd")), "HTTP 404"),
+    ] {
+        let Some(p) = not_zstd("u", status, encoding) else { panic(why) }
+        assert(contains(p.as_str(), why), p.as_str())
+    }
+    // Until Ryan sets the zone's rule, the check only warns.
+    assert(!ZSTD_RULE, "set: the deploy now fails without Zstandard")
+}
+
+/// On a site that serves no Zstandard (a fake site's answers are uncompressed), the check warns
+/// of each WASM and runtime script of the console and the games, but not the docs; with the rule
+/// set, it fails the deploy.
+@test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
+fn a_file_that_does_not_come_back_as_zstandard_warns_until_the_rule_is_set() {
+    var files = shared_site()
+    addressed(mut files, "sites/game.example", D, "D's wasm")
+    addressed(mut files, "docs-host", D, "the docs' wasm")
+    addressed(mut files, "sites/docs.example", D, "the docs' wasm")
+    set_up(take files)
+    var rel = listed_release()
+    rel.workers.push(worker("docs-host", console: false, docs: true))
+    for (k, domain) in [(0, "console.example"), (1, "game.example"), (2, "docs.example")] {
+        rel.workers[k].domain = String::from(domain)
+    }
+    let warned = match verify_zstd(rel, "scratch", required: false) {
+        Ok(w) => take w,
+        Err(e) => panic(e.message()),
+    }
+    var all = String::new()
+    for w in warned {
+        all.push_str(f"{w.as_str()}\n")
+    }
+    let wasm = hex_sha(String::from("D's wasm").as_bytes())
+    assert(warned.len() == 2, all.as_str())
+    assert(
+        contains(
+            all.as_str(),
+            f"https://game.example/b/{wasm.as_str()}.wasm comes back uncompressed",
+        ),
+        all.as_str(),
+    )
+    assert(
+        contains(
+            all.as_str(),
+            f"https://game.example/r/{set_of().as_str()}/main.js comes back uncompressed",
+        ),
+        all.as_str(),
+    )
+    match verify_zstd(rel, "scratch", required: true) {
+        Ok(_) => panic("passed without Zstandard"),
+        Err(e) => assert(contains(e.message(), "not as Zstandard"), e.message()),
     }
 }
 

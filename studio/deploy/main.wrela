@@ -33,7 +33,8 @@
 // yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
 // and games up to date. Each Worker must serve the new release, byte for byte, and each kept
 // release's listing, the console must list the new release as the one live release, and the
-// console's API paths must reach its server, before the deploy passes. The log says what each Worker keeps, what Wrangler said of each Worker and
+// console's API paths must reach its server, before the deploy passes. Then each WASM and runtime
+// script of the console and the games must come back as Zstandard (`ZSTD_RULE`). The log says what each Worker keeps, what Wrangler said of each Worker and
 // that each serves its releases.
 //
 // `--dry-run` does all but run Wrangler: it fetches the kept releases into the release and writes
@@ -41,9 +42,9 @@
 // if only to empty values, for a dry run too.
 
 use policy::{
-    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, history_json, home, insert,
-    kept, main_head, next_history, placed, quoted, read_history, read_listing, read_release,
-    redirected, uploads,
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, history_json,
+    home, insert, kept, main_head, next_history, not_zstd, placed, quoted, read_history,
+    read_listing, read_release, redirected, uploads,
 }
 use release_tool::io::{copy_files, data_bytes, read_files, write_files}
 use release_tool::tree::hex_sha
@@ -90,6 +91,15 @@ pub const BACKOFF: [f64; 4] = [1.0, 2.0, 4.0, 8.0]
 /// before any Worker runs.
 pub const API_PROBE: Text = "/api/accounts"
 
+/// Whether Ryan has set the zone's Compression Rule (Zstandard, then Brotli, then Gzip:
+/// docs/toolchain.md, "Delivery"). Once it's set, a WASM or runtime script of the console or a game
+/// that doesn't come back with `content-encoding: zstd` fails the deploy; until then the log
+/// warns of each.
+pub const ZSTD_RULE: bool = false
+
+/// What the Zstandard check asks for, as a browser that takes both does.
+pub const ACCEPT_ENCODING: Text = "zstd, br"
+
 /// How many times a Worker is asked whether it serves the new release, and the seconds between.
 pub const TRIES: u32 = 12
 pub const BETWEEN_TRIES: f64 = 5.0
@@ -97,14 +107,16 @@ pub const BETWEEN_TRIES: f64 = 5.0
 pub const USAGE: Text = "usage: wrela tool deploy -- [--require-main-head] [--dry-run]"
 
 /// What a deploy does: the root its release is in, whether it stops unless its commit is the
-/// head of `main`, whether it stops before Wrangler runs, the Workers' limits, and the
-/// repository whose `main` it checks.
+/// head of `main`, whether it stops before Wrangler runs, the Workers' limits, the repository
+/// whose `main` it checks, and whether a file that doesn't come back as Zstandard fails it
+/// (`ZSTD_RULE`).
 pub struct Options: Clone {
     pub root: String,
     pub require_main_head: bool,
     pub dry_run: bool,
     pub limits: Limits,
     pub repository: String,
+    pub zstd: bool,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -115,6 +127,7 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         dry_run: false,
         limits: CLOUDFLARE,
         repository: String::from(REPOSITORY),
+        zstd: ZSTD_RULE,
     }
     for a in given {
         if a.as_str() == "--require-main-head" && !o.require_main_head {
@@ -735,6 +748,7 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     verify(rel, root)?
     verify_kept(listings)?
     verify_api(console.domain.as_str())?
+    let _ = verify_zstd(rel, root, o.zstd)?
     Ok(after)
 }
 
@@ -819,6 +833,56 @@ pub fn verify_api(domain: str) -> Result<(), ToolError> {
         }
     }
     Err(ToolError::new(f"POST {url.as_str()} doesn't reach the console's server: {last.as_str()}"))
+}
+
+/// Asks each WASM and runtime script of the new release `rel` (in `root`) on the console and the
+/// games (`compressed`) for Zstandard or Brotli (`ACCEPT_ENCODING`), and says which didn't come
+/// back as Zstandard (`not_zstd`): each a warning in the log, or, if `required`, the deploy's
+/// failure. The warnings.
+pub fn verify_zstd(rel: Release, root: str, required: bool) -> Result<Vec<String>, ToolError> {
+    var problems: Vec<String> = Vec::new()
+    var asked = 0
+    let r = rel.release.as_str()
+    for w in rel.workers {
+        if w.docs {
+            continue
+        }
+        let listing = read_one(f"{root}/{w.worker.as_str()}/releases/{r}/files.json")?
+        let Some(text) = String::from_utf8(take listing) else {
+            return Err(ToolError::new(f"{w.worker.as_str()}'s files.json isn't UTF-8"))
+        }
+        for path in compressed(read_listing(r, text.as_str()).map_err(own)?) {
+            let url = String::from(f"https://{w.domain.as_str()}{quoted(path.as_str()).as_str()}")
+            var req = request(url.as_str())
+            req.headers.push(
+                Header {
+                    name: String::from("Accept-Encoding"),
+                    value: String::from(ACCEPT_ENCODING),
+                },
+            )
+            asked += 1
+            let problem = match http::fetch(take req).wait() {
+                Ok(got) => not_zstd(url.as_str(), got.status, got.header("content-encoding")),
+                Err(e) => Some(String::from(f"GET {url.as_str()}: {e.message()}")),
+            }
+            if let Some(p) = problem {
+                problems.push(p.clone())
+            }
+        }
+    }
+    if problems.is_empty() {
+        print(f"each of {asked} WASM modules and runtime scripts comes back as Zstandard")
+        return Ok(problems)
+    }
+    if required {
+        return Err(ToolError::new(problems[0].as_str()))
+    }
+    for p in problems {
+        print(
+            f"warning: {p.as_str()} (until the zone's Compression Rule is set: docs/toolchain.md)",
+        )
+    }
+    Ok(problems)
 }
 
 /// Waits until each Worker serves each of `listings`, its kept releases, byte for byte, as its
