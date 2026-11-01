@@ -212,8 +212,7 @@ impl Fawns {
             let go = length(to - from) > ARRIVED
             let dir = if go { normalize(to - from) } else { root.forward().xz }
             if go {
-                // The sim's pace, but not past where it stands this step.
-                walker.speed = min(max(walker.speed, f.walker.speed), length(to - from) / DT)
+                walker.speed = max(walker.speed, f.walker.speed)
                 self.following.planted = walker.root.heading
             } else {
                 // Standing, the gait doesn't turn it: it pivots to the sim's way as the sim's does,
@@ -224,6 +223,9 @@ impl Fawns {
                     self.following.planted = walker.root.heading
                 }
             }
+            // The sim's pace, but never past where it stands this step, arriving or not (the gait
+            // eases its speed down over several steps).
+            walker.speed = min(walker.speed, length(to - from) / DT)
             walker.along = 0.0
             step(mut walker, GROUND, Ahead { from, dir }, BODY, walk, go: go, dt: DT)
             self.following.stepped += DT
