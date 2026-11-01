@@ -154,7 +154,7 @@ fn wavelength_of(m: CoatMap) -> f32 {
 /// the largest one's share of the map.
 fn spots(m: CoatMap, age: f32) -> (u32, f32) {
     let n = MAP_W * MAP_H
-    var seen: Vec<bool> = Vec::filled(n, false)
+    var seen: Vec<bool> = Vec::filled(n, value: false)
     let fade = spots_at(ROE.coat, age)
     let on = |i: u32| texel(m, i % MAP_W, i / MAP_W) * fade > 0.5
     var count = 0

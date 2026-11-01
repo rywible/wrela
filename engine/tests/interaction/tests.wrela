@@ -22,7 +22,7 @@ fn lean(root: vec3, c: Contact) -> f32 {
 /// The fawn standing at the origin on level ground: its pushes and its body's line's ends.
 fn standing() -> (Contact, vec3, vec3) {
     let q = quadruped_at(ROE, VALE_AGE)
-    var b = walker_body(q, 70.0, 28.0)
+    var b = walker_body(q, head_k: 70.0, tail_k: 28.0)
     b.smooth = true
     let w = stand(Ground {}, b, vec2(0.0), 0.0)
     let c = Contact { pushes: pushes(q, b, w, vec3(0.0)) }

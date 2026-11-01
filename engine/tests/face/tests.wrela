@@ -71,7 +71,7 @@ fn the_physical_highlight_is_the_suns_mirror() {
 /// lit alike, and they're one patch.
 @test
 fn the_cel_highlight_is_one_band() {
-    var lit: Vec<bool> = Vec::filled(N * 2 * N, false)
+    var lit: Vec<bool> = Vec::filled(N * 2 * N, value: false)
     var level = -1.0
     var count = 0
     for i in 0..N {
@@ -94,7 +94,7 @@ fn the_cel_highlight_is_one_band() {
     assert(count > 0, "no highlight")
     // One patch: everything lit reached from the first lit point (the grid's neighbours, the
     // longitude wrapping round).
-    var seen: Vec<bool> = Vec::filled(N * 2 * N, false)
+    var seen: Vec<bool> = Vec::filled(N * 2 * N, value: false)
     var todo: Vec<u32> = Vec::new()
     for k in 0..lit.len() {
         if lit[k] {
