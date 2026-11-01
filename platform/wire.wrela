@@ -97,16 +97,18 @@ pub enum Request: Clone + Serialize {
     /// Whether the account has agreed to what posting makes public, and whether it posts its best
     /// runs: answered by `Posting`.
     Posting,
-    /// Agrees to what posting makes public (`version`, the console's `POSTING_VERSION`), and sets
+    /// Agrees to what posting makes public (`version`, posting.wrela's `VERSION`), and sets
     /// whether the game posts the account's best runs.
     Consent { csrf: Vec<u8>, version: u32, best_runs: bool },
     /// Turns posting the account's best runs on or off.
     BestRuns { csrf: Vec<u8>, on: bool },
     /// A run for `game`'s board, as its replay's bytes, with a game's token, from an account that
     /// has kept its name and agreed to what posting makes public. It is answered once the run is
-    /// verified: `Verified` or `Rejected`. The same replay uploaded again by its account is
-    /// answered with what came of it the first time (its place now, or the same reason), once it
-    /// has been played; another account's is refused.
+    /// verified: `Verified`, or `Rejected` when it can never go on the board (what playing it
+    /// found, its bytes, or another account's copy); or `Refused` when it can't be taken now (its
+    /// token, its account's choices, the queue or the hour), to be tried again. The same replay
+    /// uploaded again by its account is answered with what came of it the first time (its place
+    /// now, or the same reason), once it has been played.
     Upload { token: Vec<u8>, game: String, replay: Vec<u8> },
     /// A page of a board: `course` (or WHOLE) and `category`, from place `from` (0 the fastest).
     Board { game: String, course: u32, category: u32, from: u32 },

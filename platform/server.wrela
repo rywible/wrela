@@ -836,7 +836,7 @@ impl<G: Game> Engine<G> {
                     let why = String::from(
                         "We couldn't finish checking that run. Try again later.",
                     )
-                    self.tell(q.id, Reply::Rejected { why })
+                    self.tell(q.id, Reply::Refused { why })
                 }
                 if is_deletion(job.step) {
                     self.deletions_waiting = true
@@ -2364,32 +2364,19 @@ impl<G: Game> Engine<G> {
             },
             Step::UploadToken => {
                 let t: Option<GameToken> = got(answer)
+                // What only stops it now (its token, its account, the queue, the hour) is refused,
+                // so it's tried again; `Rejected` is for a run that can never go on the board.
                 let Some(t) = t else {
-                    self.reply(
-                        conn,
-                        Reply::Rejected { why: String::from("Sign in at the console to upload.") },
-                    )
+                    self.refuse(conn, "Sign in at the console to upload.")
                     return
                 }
                 if t.expires < self.now || t.game.as_str() != self.game.id() {
-                    self.reply(
-                        conn,
-                        Reply::Rejected {
-                            why: String::from("Sign in at the console again to upload."),
-                        },
-                    )
+                    self.refuse(conn, "Sign in at the console again to upload.")
                     return
                 }
                 for other in self.jobs {
                     if other.id == t.account && is_upload(other.step) {
-                        self.reply(
-                            conn,
-                            Reply::Rejected {
-                                why: String::from(
-                                    "One upload at a time. Wait for this one to finish.",
-                                ),
-                            },
-                        )
+                        self.refuse(conn, "One upload at a time. Wait for this one to finish.")
                         return
                     }
                 }
@@ -2399,27 +2386,16 @@ impl<G: Game> Engine<G> {
             Step::UploadAccount => {
                 let a: Option<Account> = got(answer)
                 let Some(a) = a else {
-                    self.reply(
-                        conn,
-                        Reply::Rejected { why: String::from("That account is gone.") },
-                    )
+                    self.refuse(conn, "That account is gone.")
                     return
                 }
                 if a.deleting {
-                    self.reply(
-                        conn,
-                        Reply::Rejected { why: String::from("That account is gone.") },
-                    )
+                    self.refuse(conn, "That account is gone.")
                     return
                 }
                 // A board shows the name, so only a name that can't change goes on one.
                 if !a.fixed {
-                    self.reply(
-                        conn,
-                        Reply::Rejected {
-                            why: String::from("Keep your name at the console first."),
-                        },
-                    )
+                    self.refuse(conn, "Keep your name at the console first.")
                     return
                 }
                 j.account = Some(a.clone())
@@ -2433,13 +2409,9 @@ impl<G: Game> Engine<G> {
                     None => false,
                 }
                 if !agreed {
-                    self.reply(
+                    self.refuse(
                         conn,
-                        Reply::Rejected {
-                            why: String::from(
-                                "Agree to what posting shares first. The console asks before your first post.",
-                            ),
-                        },
+                        "Agree to what posting shares first. You're asked before your first post.",
                     )
                     return
                 }
@@ -2469,14 +2441,10 @@ impl<G: Game> Engine<G> {
                     }
                 }
                 if count >= RUNS_AN_HOUR {
-                    self.reply(
-                        conn,
-                        Reply::Rejected {
-                            why: String::from(
-                                f"You can upload {RUNS_AN_HOUR} runs an hour. Try again later.",
-                            ),
-                        },
+                    let why = String::from(
+                        f"You can upload {RUNS_AN_HOUR} runs an hour. Try again later.",
                     )
+                    self.reply(conn, Reply::Refused { why })
                     return
                 }
                 j.n = count
@@ -2505,13 +2473,14 @@ impl<G: Game> Engine<G> {
                     ticks += u64(t)
                     runs += 1
                 }
+                if j.tries > QUEUE_TICKS {
+                    // Longer than the queue holds: never taken.
+                    let why = String::from("That run is too long to check.")
+                    self.reply(conn, Reply::Rejected { why })
+                    return
+                }
                 if runs >= MOST_QUEUED || ticks > u64(QUEUE_TICKS) {
-                    self.reply(
-                        conn,
-                        Reply::Rejected {
-                            why: String::from("The boards are busy. Try again in a few minutes."),
-                        },
-                    )
+                    self.refuse(conn, "The boards are busy. Try again in a few minutes.")
                     return
                 }
                 self.random(8, Step::UploadId, take j)

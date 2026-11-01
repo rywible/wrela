@@ -578,6 +578,11 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     o.again_at = o.time + AGAIN
                     set_status(mut o, hash, why.clone())
                 },
+                // Not now: the run stays waiting, tried again after a while.
+                Answer::Failed { why, retry_after } => {
+                    o.again_at = o.time + max(f32(retry_after), 1.0)
+                    set_status(mut o, hash, why.clone())
+                },
                 _ => {},
             }
         },
@@ -592,6 +597,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             },
             Answer::Offline { why } => set_status(mut o, fingerprint(run), why.clone()),
             Answer::Rejected { why } => set_status(mut o, fingerprint(run), why.clone()),
+            Answer::Failed { why, .. } => set_status(mut o, fingerprint(run), why.clone()),
             _ => {},
         },
         Asked::Board { course, category } => {

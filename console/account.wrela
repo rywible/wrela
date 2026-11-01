@@ -47,6 +47,9 @@ use ui::text::{Face, Fonts}
 
 /// Seconds before the server is asked again after it couldn't be reached.
 const RETRY: f32 = 5.0
+/// Seconds a client past the host's rate limits waits: they count a minute (studio/release's
+/// `RATE_LIMITS`).
+const LIMITED: f32 = 60.0
 /// How long the authenticator's prompt may wait for the person (WebAuthn's recommended default).
 const PROMPT_MS: u32 = 300000
 /// A game's token is asked for again this long before it expires (it lasts an hour).
@@ -144,8 +147,10 @@ struct GameLink {
     call: Option<Pending<u8>>,
     token: Vec<u8>,
     token_at: f32,
-    /// An ask carried to the server, waiting for its answer; and one waiting for a token.
+    /// An ask carried to the server, waiting for its answer (and whether it's an upload); and one
+    /// waiting for a token.
     asking: bool,
+    uploading: bool,
     waiting_token: bool,
     answer: Answer,
 }
@@ -301,7 +306,7 @@ fn signed_out(a: mut Accounts) {
 }
 
 /// A request's answer: its reply, or, if the server couldn't be reached or refused it before it
-/// was read (a limit, the host's refusal), a refusal said for a person.
+/// was read (a limit, the host's refusal), a failure said for a person, to be tried again.
 fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::IoError>) {
     let r = match result {
         Ok(bytes) => response(bytes),
@@ -311,7 +316,7 @@ fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::
         if r.status == 429 {
             let why = String::from("Too many tries. Wait a minute, then try again.")
             a.connected = true
-            replied(mut a, purpose, Reply::Refused { why })
+            failed(mut a, purpose, take why, LIMITED)
             return
         }
         if r.status == 200 {
@@ -331,13 +336,25 @@ fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::
             )
             a.connected = false
             a.retry_at = a.time + RETRY
-            replied(mut a, purpose, Reply::Refused { why })
+            failed(mut a, purpose, take why, RETRY)
             return
         }
     }
     a.connected = false
     a.retry_at = a.time + RETRY
     let why = String::from("Can't reach wrela.dev. Check your connection and try again.")
+    failed(mut a, purpose, take why, RETRY)
+}
+
+/// A request for `purpose` got no answer from the server (`why`, said for a person), to be tried
+/// again no sooner than `after` seconds: a game hears that it may ask again, never that it was
+/// refused; the console's own pages say why.
+fn failed(a: mut Accounts, purpose: Purpose, why: take String, after: f32) {
+    if purpose == Purpose::Game || purpose == Purpose::GameConsent {
+        a.dirty = true
+        answer_game(mut a, Answer::Failed { why, retry_after: u32(after) })
+        return
+    }
     replied(mut a, purpose, Reply::Refused { why })
 }
 
@@ -569,6 +586,7 @@ pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
             token: Vec::new(),
             token_at: -99999.0,
             asking: false,
+            uploading: false,
             waiting_token: false,
             answer: Answer::Nothing,
         },
@@ -658,23 +676,28 @@ fn give_game_account(a: mut Accounts) {
 }
 
 fn game_replied(a: mut Accounts, reply: Reply) {
-    let (course, category) = match a.game {
+    let (course, category, uploading) = match a.game {
         Some(g) => match g.answer {
-            Answer::Board { course, category, .. } => (course, category),
-            _ => (0, 0),
+            Answer::Board { course, category, .. } => (course, category, g.uploading),
+            _ => (0, 0, g.uploading),
         },
-        None => (0, 0),
+        None => (0, 0, false),
     }
-    answer_game(mut a, game_answer(reply, course, category))
+    answer_game(mut a, game_answer(reply, course, category, uploading))
 }
 
 /// What the server's `reply` to a game's ask tells the game: a board's page names its board
-/// (`course`, `category`), which the reply doesn't.
-fn game_answer(reply: Reply, course: u32, category: u32) -> Answer {
+/// (`course`, `category`), which the reply doesn't. An upload the server refused (`uploading`)
+/// can't be taken now, so it's tried again; one it rejected never goes up.
+fn game_answer(reply: Reply, course: u32, category: u32, uploading: bool) -> Answer {
     match reply {
         Reply::Verified { run, ticks, place } => Answer::Verified { run, ticks, place },
         Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
-        Reply::Refused { why } => Answer::Rejected { why: why.clone() },
+        Reply::Refused { why } => {
+            if uploading {
+                Answer::Failed { why: why.clone(), retry_after: u32(RETRY) }
+            } else { Answer::Rejected { why: why.clone() } }
+        },
         Reply::Board { places, total } => {
             Answer::Board { course, category, places: places.clone(), total }
         },
@@ -721,8 +744,15 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
         }
     }
     let (r, purpose) = carried(ask, g.id.as_str(), a.csrf)
+    let uploading = match r {
+        Request::Upload { .. } => true,
+        _ => false,
+    }
     match mut a.game {
-        Some(l) => l.asking = true,
+        Some(l) => {
+            l.asking = true
+            l.uploading = uploading
+        },
         None => {},
     }
     request(mut a, r, purpose)
@@ -2164,15 +2194,47 @@ fn posting_unknown_is_asked_until_its_known_and_never_an_opt_out() {
 
 @test
 fn a_name_with_no_place_on_a_board_is_said_so_to_the_game() {
-    let Answer::Unplaced = game_answer(Reply::Unplaced, course: 0, category: 0) else {
+    let Answer::Unplaced = game_answer(
+        Reply::Unplaced,
+        course: 0,
+        category: 0,
+        uploading: false,
+    ) else {
         panic("no place, said")
     }
     let Answer::Board { course, category, .. } = game_answer(
         Reply::Board { places: Vec::new(), total: 0 },
         course: 3,
         category: 1,
+        uploading: false,
     ) else {
         panic("a board")
     }
     assert(course == 3 && category == 1, "the board asked for")
+}
+
+@test
+fn an_upload_that_cant_be_taken_now_is_tried_again_and_a_rejected_one_isnt() {
+    let busy = Reply::Refused { why: String::from("The boards are busy.") }
+    let Answer::Failed { retry_after, .. } = game_answer(
+        busy.clone(),
+        course: 0,
+        category: 0,
+        uploading: true,
+    ) else {
+        panic("tried again")
+    }
+    assert(retry_after == u32(RETRY))
+    let Answer::Rejected { .. } = game_answer(
+        Reply::Rejected { why: String::from("That run's time doesn't match its moves.") },
+        course: 0,
+        category: 0,
+        uploading: true,
+    ) else {
+        panic("for good")
+    }
+    // Another ask's refusal is said for the person (a search too wide, say).
+    let Answer::Rejected { .. } = game_answer(busy, course: 0, category: 0, uploading: false) else {
+        panic("said")
+    }
 }

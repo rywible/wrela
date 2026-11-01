@@ -63,9 +63,16 @@ pub enum Answer: Clone + Serialize {
     /// An upload's run, on the boards at `place`; or refused, and why. A run posted again is
     /// answered with what came of it the first time (`Verified`, at its place now, or `Rejected`,
     /// for the same reason), so `Verified` is what says a run is on the boards, never a refusal's
-    /// words.
+    /// words. For an upload, `Rejected` is for good: that replay can never go on this board (what
+    /// playing it found, its bytes, or another account's copy). For another ask it's the server's
+    /// refusal, said for a person.
     Verified { run: u64, ticks: u32, place: u32 },
     Rejected { why: String },
+    /// No answer now, to be asked again no sooner than `retry_after` seconds: the server couldn't
+    /// be reached or finish, or was busy, or over a limit; or, for an upload, it can't be taken
+    /// yet (its token, the account's choices, the queue, the hour). An upload's run is to be kept:
+    /// it may even be on the boards already, and its upload again hears what came of it.
+    Failed { why: String, retry_after: u32 },
     Board { course: u32, category: u32, places: Vec<Place>, total: u32 },
     Run { run: u64, replay: Vec<u8> },
     /// A slice of a board: the places around the name asked for, which is place `at` (0: past the

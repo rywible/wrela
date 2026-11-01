@@ -866,7 +866,7 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
         }
     }
     let rs = h.say(mut e, 2, up(s.session.clone()))
-    let Reply::Rejected { .. } = rs[0].clone() else { panic("a session's token can't upload") }
+    let Reply::Refused { .. } = rs[0].clone() else { panic("a session's token can't upload") }
     let rs = h.say(mut e, 2, up(token.clone()))
     let Reply::Verified { .. } = rs[0].clone() else { panic("the game's token uploads") }
     // An hour on, it has expired.
@@ -880,7 +880,7 @@ fn a_games_token_only_submits_runs_and_a_session_never_does() {
             replay: toy(0, claimed: 4, moves: 4, m: 2),
         },
     )
-    let Reply::Rejected { .. } = rs[0].clone() else { panic("an expired token") }
+    let Reply::Refused { .. } = rs[0].clone() else { panic("an expired token, till it's new") }
 }
 
 /// A knighted account in browser `conn` that has agreed to posting, and a token for the toy's
@@ -1011,16 +1011,16 @@ fn uploads_are_bounded() {
     let Reply::Rejected { .. } = rs[0].clone() else { panic("past the most bytes") }
     let rs = h.say(mut e, 1, up(toy(5, claimed: 3, moves: 3, m: 2)))
     let Reply::Rejected { .. } = rs[0].clone() else { panic("not one of the game's") }
-    // A run whose ticks would make the queue longer than an upload may wait.
+    // A run longer than the queue may hold is never taken.
     let rs = h.say(mut e, 1, up(toy(0, claimed: server::QUEUE_TICKS + 1, moves: 3, m: 2)))
     let Reply::Rejected { why } = rs[0].clone() else { panic("past the queue's ticks") }
-    assert(why.as_str().find("busy").is_some(), why.as_str())
+    assert(why.as_str().find("too long").is_some(), why.as_str())
     for k in 0..server::RUNS_AN_HOUR {
         let rs = h.say(mut e, 1, up(toy(0, 10 + k, 10 + k, 2)))
         let Reply::Verified { .. } = rs[0].clone() else { panic("within the hour's") }
     }
     let rs = h.say(mut e, 1, up(toy(0, claimed: 99, moves: 99, m: 2)))
-    let Reply::Rejected { why } = rs[0].clone() else { panic("past the hour's") }
+    let Reply::Refused { why } = rs[0].clone() else { panic("past the hour's, till the next") }
     assert(why.as_str().find("an hour").is_some(), why.as_str())
     // The next hour, with a new token (the first has expired).
     h.time += 3600000
@@ -1234,7 +1234,7 @@ fn uploads_let_in_at_once_keep_the_queue_within_its_ticks() {
     let both = h.together(mut e, 3, [up(a, 3), up(b, 4)])
     var busy = 0
     for r in both {
-        if let Reply::Rejected { why } = r.reply {
+        if let Reply::Refused { why } = r.reply {
             if why.as_str().find("busy").is_some() {
                 busy += 1
             }
@@ -1437,7 +1437,7 @@ fn a_post_needs_consent_and_the_best_runs_setting_is_kept() {
         panic("posting")
     }
     assert(!agreed && !best_runs, "off until chosen")
-    let Reply::Rejected { why } = h.say(mut e, 1, up(10))[0].clone() else { panic("refused") }
+    let Reply::Refused { why } = h.say(mut e, 1, up(10))[0].clone() else { panic("refused") }
     assert(why.as_str().find("Agree").is_some(), why.as_str())
     assert(h.keys("q/") == 0 && h.keys("u/") == 0, "nothing queued")
     // The setting, with the session's CSRF token.
@@ -1480,7 +1480,7 @@ fn a_post_needs_consent_and_the_best_runs_setting_is_kept() {
         panic("posting")
     }
     assert(!agreed, "another version")
-    let Reply::Rejected { .. } = h.say(mut newer, 1, up(12))[0].clone() else { panic("refused") }
+    let Reply::Refused { .. } = h.say(mut newer, 1, up(12))[0].clone() else { panic("refused") }
 }
 
 @test
@@ -1686,7 +1686,7 @@ fn a_run_is_refused_until_its_accounts_name_is_kept() {
     var drawn = (take r).unwrap()
     drawn.fixed = false
     h.store[i].value = save(drawn.clone())
-    let Reply::Rejected { why } = upload(
+    let Reply::Refused { why } = upload(
         mut e,
         mut h,
         1,
