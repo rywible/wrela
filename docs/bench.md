@@ -3506,15 +3506,15 @@ last column says what this machine measured, which is no stand-in for the M4's).
 | | floor | misses by 15.45 ms (35.45) | |
 | 0 of 1,200 paced frames over 33 ms | vale | misses by 6 | |
 | | floor | misses by 27 | |
-| 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.9 a second; 58.8 needed) | |
-| | floor | holds, by 0.02 a second (58.84) | Within run-to-run noise: the 120 s Epic run after it began 56.9. |
+| 1,200 frames begun within 20.4 s, one in flight, at most 12 intervals over 25 ms | vale | misses (42.9 a second; 58.8 needed) | |
+| | floor | misses: its starts hold by 0.02 a second (58.84), but at least 27 intervals were over 25 ms (12 allowed: the same run's 27 over 33 ms) | Its starts within run-to-run noise: the 120 s Epic run after it began 56.9. |
 | GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | Here 606.4 (Part G's walk: G1's colour volume +9.4 MB among it). |
 | | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). Here 743.7. |
 | Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). Here 10.4 s. |
 | | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. Here 36.9 s. |
 | Warm start < 3 s | vale | **holds** (2.21) | Here 7.5 s. |
 | | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. Here 14.6 s. |
-| Lower tiers measured, each under the one above | vale, floor | **holds** (C7) | Epic > High > Medium > Low on both; Part H changed no tier. |
+| Lower tiers measured, each under the one above | vale, floor | held at C7, before Parts D–H; to measure again | Epic > High > Medium > Low on both at C7; Part H changed no tier, Parts D–G changed what each draws. |
 | Fidelity (G-reference: ≥ 50 % of 96, no pair worse than 6–2, ≥ 6 pairs won or equal) | vale | misses: 0 % of 96 (50 % needed), every pair lost 8–0, 0 of 12 pairs won or equal | The stills are the same on any device; H2's panel ("Public visual references"). |
 | Every plant grown (G-grown) | vale | **holds** on this machine; blocked: the M4's Chrome run | 26,156 instances, 0 authored; the growth's hashes the same in two native runs and Chrome here ("H2"). |
 | Every creature grown from its genome | vale | **holds** (Part F) | The grazer grown (`kit::roe`): its proportions, muscles and coat from its genome, its body plan and face authored. |
@@ -3527,12 +3527,13 @@ last column says what this machine measured, which is no stand-in for the M4's).
 **The claim** (D27): **it doesn't hold, on the one device it names.** On the M4 Air the vale misses
 every frame-time gate (its GPU median 18.37 ms against 12, its p99 31.48 against 20, 6 frames
 over 33 ms, 42.9 frames begun a second against 58.8), its memory by 27.8 MiB and its cold start by
-1.69 s, and holds its warm start; the floor misses all but its throughput. Its fidelity misses
+1.69 s, and holds its warm start; the floor misses every one. Its fidelity misses
 on every judge's ballot: at H2's final panel no judge preferred a still or rated one equal on any of the twelve pairs (0 of 96), the same as at B5. What it claims of content holds: every plant in the vale is
 grown (none authored) and its growth hashes the same across hosts here; its creature is grown
 from a genome; it renders through four looks with no change to `engine/`; its runtime, program
-and shaders fit their sizes. The tiers below `Epic` are measured and ordered. The M4's numbers are
-C's and are to measure again with Parts D–H on that machine; no other device has a row (D37).
+and shaders fit their sizes. The tiers below `Epic` were measured and ordered at C7. Every M4 number here
+is C's, from before Parts D–H, and is to measure again on that machine: until then each M4 cell
+is a historical one, not the plan's final measure; no other device has a row (D37).
 
 ## The hypotheses (docs/plan-world-class-3.md §7)
 
@@ -5007,8 +5008,8 @@ its time) are recorded here as this machine's numbers and listed to measure ther
    MiB: both over 512, as on the M4 at C4–C6 (the vale 539.8, the floor 735.6).
 5. **G-cold, G-warm** (medians of three, here): the floor cold 36.9 s, warm 14.6 s; the vale's
    cold 10.4 s (11.03, 10.29, 10.42), warm 7.5 s (7.50, 7.17, 8.67). The M4's at C5: the vale 6.69 / 2.21 s, the floor 13.33 / 5.38 s.
-6. **G-tier:** C7's four M4 rows hold (each lower tier cheaper than the one above, on both scenes);
-   Part H changes no tier. The floor's pipelines per tier: Epic 170, High 168, Medium 166, Low 162.
+6. **G-tier:** held at C7 (each lower tier cheaper than the one above, on both scenes), before Parts
+   D–H; to measure again on the M4 (Part H changes no tier; Parts D–G changed what each draws). The floor's pipelines per tier: Epic 170, High 168, Medium 166, Low 162.
 7. **G-grown:** **holds here.** `examples/vale/tests/land`'s `every_plant_the_vale_draws_is_grown`:
    26,156 instances, 0 authored (E8 counted 26,922: Part G's logs laid where the ground holds them,
    or not at all). `wrela tool grow -- --hash --package examples/vale`: two native runs and one in
