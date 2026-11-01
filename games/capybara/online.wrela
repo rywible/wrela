@@ -751,6 +751,24 @@ fn pump(o: mut Online) {
     }
 }
 
+/// The slice around the account's place on board (`course`, `category`) didn't come: each best run
+/// waiting on it waits `retry_after` seconds at least (`AGAIN` at least), so it isn't asked again
+/// before then.
+fn slice_failed(o: mut Online, course: u32, category: u32, retry_after: f32) {
+    var waiting: Vec<Vec<u8>> = Vec::new()
+    for q in o.waiting {
+        if !q.wait.chosen &&
+            ours(o, q.wait) &&
+            q.wait.run.course == course &&
+            counts(q.wait.run, category) {
+            waiting.push(q.hash.clone())
+        }
+    }
+    for h in waiting {
+        put_off(mut o, h, retry_after, counted: false)
+    }
+}
+
 /// Asks to post run `r` (its fingerprint `hash`) for `by`, as the signed-in account's: a run found
 /// with no account is this one's from now on.
 fn upload(o: mut Online, r: Replay, hash: Vec<u8>, by: By) {
@@ -973,8 +991,12 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 learn(mut o, course, category, 0)
                 o.slices.retain(|b| b.course != course || b.category != category)
             },
-            // Not known: asked again when the run is next due.
-            _ => {},
+            // Not known: the runs waiting on it wait as long as the server asked, at least, and
+            // it's asked again once they're due.
+            Answer::Failed { retry_after, .. } => {
+                slice_failed(mut o, course, category, f32(retry_after))
+            },
+            _ => slice_failed(mut o, course, category, AGAIN),
         },
         Asked::Watch { name, place } => {
             // Still wanted: the player hasn't left or chosen another meanwhile.
@@ -1891,6 +1913,52 @@ fn a_held_call_is_handed_back_so_a_later_sign_in_reaches_the_game() {
     let Some((Ask::Around { .. }, Some(Asked::Around { .. }))) = next_reply(mut o) else {
         panic("its place asked, at once")
     }
+}
+
+/// The slices asked for, by their categories.
+fn slices_asked(o: Online) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for a in all_asks(o) {
+        if let Asked::Around { category, .. } = a {
+            out.push(category)
+        }
+    }
+    out
+}
+
+@test
+fn a_slice_that_fails_isnt_asked_again_before_the_server_said() {
+    var o = signed_in()
+    o.account.post_best = true
+    let r = mine(991)
+    finished(mut o, r.clone())
+    pump(mut o)
+    assert(slices_asked(o) == Vec::from([ANY]), "its place asked")
+    let (_, asked) = o.fetches.remove(0)
+    // Over a limit: asked again no sooner than two minutes on.
+    answered(
+        mut o,
+        asked,
+        Answer::Failed { why: String::from("Too many tries."), retry_after: 120 },
+    )
+    let start = o.time
+    for dt in [0.0, 1.0, 60.0, 119.0] {
+        o.time = start + dt
+        pump(mut o)
+        assert(slices_asked(o).is_empty(), f"not at {dt} s")
+    }
+    o.time = start + 120.0
+    pump(mut o)
+    assert(slices_asked(o) == Vec::from([ANY]), "asked again once it may be")
+    // Offline, or any other failure: half a minute at least.
+    let (_, asked) = o.fetches.remove(0)
+    answered(mut o, asked, Answer::Offline { why: String::from("Can't reach the boards.") })
+    o.time += 29.0
+    pump(mut o)
+    assert(slices_asked(o).is_empty(), "not straight away")
+    o.time += 1.0
+    pump(mut o)
+    assert(slices_asked(o) == Vec::from([ANY]), "after a while")
 }
 
 @test
