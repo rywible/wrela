@@ -25,10 +25,14 @@ pub struct Server {
     asked: Vec<(u32, Pending<u8>)>,
 }
 
-/// The server for the console at `origin`, its passkeys for relying party `rp_id`.
+/// The server for the console at `origin`, its passkeys for relying party `rp_id`. New accounts
+/// are closed until the Terms and the Privacy Policy are final (console/legal.wrela): signing in,
+/// recovery and play without an account go on.
 @server
 pub fn init(rp_id: str, origin: str) -> Server {
-    Server { engine: engine(Capybara {}, rp_id, origin), asked: Vec::new() }
+    var e = engine(Capybara {}, rp_id, origin)
+    e.close_sign_ups()
+    Server { engine: e, asked: Vec::new() }
 }
 
 /// One call: the answers in, then the events, then what the engine asks carried out.
