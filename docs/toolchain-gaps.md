@@ -483,6 +483,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the engine stays a state machine over its host, and the platform's tests run it on its own fake host of many instances (`wrela test platform`).
 - **Status:** open: a fake multi-instance host in `std::testing` (instances, their stores, outboxes and calls, with holds and failures a test sets), as 0.18.0's Cloudflare host behaves.
 
+### A test can't run a program and the program it shows together
+
+- **Needed:** the console and the capybara run together in one test, over their channel (`host::send`, `receive`, `reply`), with the console's session and posting replies held and let go, so a stall between them (the council's round 2, finding 8: a game told "signed out" holding its call, the console unable to tell it of a later sign-in) is seen as it happens.
+- **What happens:** toolchain 0.18.0's tests can't do I/O (`error[E0600]: ... is a test, which the build runs, which can't io`), and the channel's calls are I/O, so neither program's update can run in a test; nor can a package's test reach another program's package.
+- **Found:** 2026-10-31, the council's round 2 on #351.
+- **Evidence:** `wrela test console` refusing a test that called `replied` (it can reach `create_passkey`); runtime/browser/src/platform.ts at wrela-compiler `c3eaac3` (v0.18.0), the services `surface/call`, `channel/receive` and `channel/reply`.
+- **Meanwhile:** the rule both sides keep is platform/link.wrela's (`HEARTBEAT`, `Ask::Nothing`), and each side is tested on the bytes the other sends: the game hands a held call back and acts on the next call's account (games/capybara/online.wrela's `next_reply`), and the console answers the hand-back at once with the account as it is now (console/account.wrela's `answer_now`, `linked`).
+- **Status:** open: a test host for a program's channel (`std::testing`: calls a test sends and replies it reads, as the browser host's `We` carries them), or tests that drive two programs' updates.
+
 ### A modal dialog opens on its first control, and the focus asked for once isn't asked again
 
 - **Needed:** the capybara's screen of what posting makes public (games/capybara/screens.wrela's `posting_tree`) opening with the focus on Post each time it comes up.

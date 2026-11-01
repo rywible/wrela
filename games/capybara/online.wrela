@@ -28,7 +28,7 @@
 // recently used dropped first, never the ghost's or the race's), so choosing a row plays at once,
 // and a world's ghost has its run.
 
-use platform::link::{Account, Answer, Ask, FromGame, to_game}
+use platform::link::{Account, Answer, Ask, FromGame, HEARTBEAT, ToGame, to_game}
 use platform::posting
 use platform::wire::{Found, Place, RunRef, WHOLE}
 use replay::{ANY, BOARD, FULL, Replay, YOU, counts}
@@ -125,7 +125,9 @@ struct Shown: Clone {
 pub struct Online {
     started: bool,
     incoming: Option<Pending<u8>>,
+    /// The console's call held, and when it came (the host's time, s).
     call: Option<u32>,
+    called_at: f32,
     replying: Option<Pending<u8>>,
     /// The account, as the console says: who posts.
     pub account: Account,
@@ -226,6 +228,7 @@ pub fn online() -> Online {
         started: false,
         incoming: None,
         call: None,
+        called_at: 0.0,
         replying: None,
         account: Account { signed_in: false, name: String::new(), token: Vec::new() },
         linked: false,
@@ -319,6 +322,7 @@ pub fn update(o: mut Online, time: f32) {
                             answered(mut o, asked, t.answer.clone())
                         }
                         o.call = Some(call.id)
+                        o.called_at = o.time
                     }
                 }
             },
@@ -328,16 +332,34 @@ pub fn update(o: mut Online, time: f32) {
     }
     pump(mut o)
     if let Some(id) = o.call {
-        if !o.asks.is_empty() || !o.fetches.is_empty() {
-            let (ask, asked) = if !o.asks.is_empty() { o.asks.remove(0) } else {
-                o.fetches.remove(0)
-            }
+        if let Some((ask, asked)) = next_reply(mut o) {
             o.replying = Some(host::reply(id, save(FromGame { ask })))
             o.call = None
-            o.flying = Some(take asked)
+            o.flying = take asked
             o.incoming = Some(host::receive())
         }
     }
+}
+
+/// What the console's held call is answered with now, and what was asked: the player's asks
+/// first, then the fetches; with neither, nothing, once the call has been held `HEARTBEAT`, so the
+/// console calls again with the account as it is now. None: it's held on.
+fn next_reply(o: mut Online) -> Option<(Ask, Option<Asked>)> {
+    if o.call.is_none() {
+        return None
+    }
+    if !o.asks.is_empty() {
+        let (ask, asked) = o.asks.remove(0)
+        return Some((take ask, Some(take asked)))
+    }
+    if !o.fetches.is_empty() {
+        let (ask, asked) = o.fetches.remove(0)
+        return Some((take ask, Some(take asked)))
+    }
+    if o.time - o.called_at >= HEARTBEAT {
+        return Some((Ask::Nothing, None))
+    }
+    None
 }
 
 /// The account as the console says it is now: if it's another (or signed out), what the game knew
@@ -1833,6 +1855,42 @@ fn another_account_signed_in_starts_from_its_own_bests() {
         }
     }
     assert(asked == 2, f"{asked} slices")
+}
+
+@test
+fn a_held_call_is_handed_back_so_a_later_sign_in_reaches_the_game() {
+    // Opened before the console knew its account: its call says signed out, and the game holds it.
+    var o = online()
+    o.linked = true
+    let out = ToGame { account: o.account.clone(), answer: Answer::Nothing }
+    let Some(t) = to_game(save(out)) else { panic("a call") }
+    set_account(mut o, t.account.clone())
+    o.call = Some(1)
+    o.called_at = o.time
+    let r = mine(991)
+    finished(mut o, r.clone())
+    pump(mut o)
+    assert(all_asks(o).is_empty(), "signed out: nothing asked")
+    o.time += HEARTBEAT * 0.5
+    assert(next_reply(mut o).is_none(), "held a while")
+    // Then handed back with nothing to ask, so the console calls again.
+    o.time += HEARTBEAT * 0.5
+    let Some((Ask::Nothing, None)) = next_reply(mut o) else { panic("handed back") }
+    o.call = None
+    // Its next call carries the account the console has heard of meanwhile (the session, then
+    // its choices of posting, each late): the run's places are asked for, to post it.
+    var signed = account_of(1, ME)
+    signed.post_best = true
+    let Some(t) = to_game(save(ToGame { account: signed, answer: Answer::Nothing })) else {
+        panic("a call")
+    }
+    set_account(mut o, t.account.clone())
+    o.call = Some(2)
+    o.called_at = o.time
+    pump(mut o)
+    let Some((Ask::Around { .. }, Some(Asked::Around { .. }))) = next_reply(mut o) else {
+        panic("its place asked, at once")
+    }
 }
 
 @test

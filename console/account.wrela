@@ -769,7 +769,8 @@ fn send_game(a: mut Accounts) {
 }
 
 /// The account changed: the game hears of it with its next call, which comes now if none is
-/// open (one is open while the game holds it, until it asks).
+/// open (one is open while the game holds it, until it asks, or hands it back within
+/// `link::HEARTBEAT` with nothing to ask).
 fn give_game_account(a: mut Accounts) {
     match mut a.game {
         Some(g) => g.token_at = -99999.0,
@@ -877,6 +878,8 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
 fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
     let id = String::from(game)
     let r = match ask {
+        // Never carried: `answer_now` answers it.
+        Ask::Nothing => Request::Me,
         Ask::Upload { token, board, replay } => Request::Upload {
             token: token.clone(),
             game: id,
@@ -915,6 +918,11 @@ fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
 /// The answer to a game's `ask` that the console gives at once, without the server: no server yet,
 /// offline, or an upload while signed out.
 fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer> {
+    // The game handed the call back with nothing to ask: called again at once, with the account
+    // as it is now.
+    if let Ask::Nothing = ask {
+        return Some(Answer::Nothing)
+    }
     if !online {
         return Some(
             Answer::Offline {
@@ -2552,6 +2560,31 @@ fn another_account_signed_in_keeps_nothing_of_the_one_before() {
     // The same account again (a fresh sign-in) keeps what it had.
     identify(mut a, me_of(2, "Dame Puddlefoot"))
     assert(linked(a).posting_known && keeps(a, Purpose::Posting, a.epoch), "the same account")
+}
+
+@test
+fn a_game_handing_its_call_back_is_called_again_with_the_account_heard_of_since() {
+    var a = new("wrela.dev", online: true)
+    // The game's call went before the console knew whose session it is: signed out.
+    let held = linked(a)
+    assert(!held.signed_in && !held.posting_known)
+    // The session comes late, then its choices of posting, later still.
+    a.connected = true
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    // The game hands its call back with nothing to ask: answered at once, with no request, and
+    // the next call carries the account as it is now.
+    let Some(back) = from_game(save(platform::link::FromGame { ask: Ask::Nothing })) else {
+        panic("an ask")
+    }
+    let Some(Answer::Nothing) = answer_now(a.me, a.online, a.connected, back.clone()) else {
+        panic("answered at once")
+    }
+    let Some(Answer::Nothing) = answer_now(a.me, a.online, connected: false, ask: back) else {
+        panic("offline too")
+    }
+    let now = linked(a)
+    assert(now.signed_in && now.posting_known && now.may_post && now.post_best, "as it is now")
 }
 
 @test

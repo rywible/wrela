@@ -8,8 +8,11 @@
 // the console sends a `ToGame` (the account as it is, and the answer to the game's last ask), and
 // the game keeps that call until it has something to ask, then replies with it (`FromGame`). The
 // console carries the ask to the server and calls again with the answer. So there is always one
-// call open while the game shows, and nothing is asked twice. A game that doesn't take part never
-// receives, and the console's call waits unanswered until the game closes.
+// call open while the game shows, and nothing is asked twice. With nothing to ask, the game hands
+// the call back (`Ask::Nothing`) once it has held it `HEARTBEAT`, and the console calls again at
+// once, so the account as it is now (a sign-in, what it chose of posting) reaches the game within
+// that, never only once the game asks something. A game that doesn't take part never receives,
+// and the console's call waits unanswered until the game closes.
 
 use std::serialize::{LoadError, Serialize, load, save}
 use wire::{Found, Place, RunRef}
@@ -35,8 +38,16 @@ pub struct Account: Clone + Eq + Serialize {
     pub posting_known: bool = false,
 }
 
+/// How long a game holds the console's call with nothing to ask before it hands it back (s): so
+/// long, at most, before it hears the account changed. Well within the host's two minutes for a
+/// call.
+pub const HEARTBEAT: f32 = 2.0
+
 /// What a game may ask.
 pub enum Ask: Clone + Serialize {
+    /// Nothing: the call handed back after `HEARTBEAT`, so the console calls again with the
+    /// account as it is now (and `Answer::Nothing`). It's never carried to the server.
+    Nothing,
     /// A run for the game's board version `board` (its build of play's): its replay's bytes, and
     /// the token it was given.
     Upload { token: Vec<u8>, board: u32, replay: Vec<u8> },
