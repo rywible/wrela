@@ -112,8 +112,8 @@ pub const LEARNED: bool = false
 pub const GROWN_WOOD: bool = false
 
 /// Whether the floor's fawn is grown (plan three's §F: the roe grown from its genome as the vale's
-/// grazer, `fawns`) or the hand's: the hand's until the floor adopts it (D40,
-/// §H1: `wrela build games/last-green --set GROWN_FAWN=true`).
+/// grazer, `fawns`) or the hand's: the hand's until the floor adopts it (D40, §H1: `wrela build
+/// games/last-green --set GROWN_FAWN=true`).
 pub const GROWN_FAWN: bool = false
 
 /// The player's eyes over its feet (m), where the grown fawn looks when it notices them.

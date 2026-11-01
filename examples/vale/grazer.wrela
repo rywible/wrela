@@ -56,7 +56,8 @@ impl land::senses::Occluders for Open {
 
 /// Palette `bones` (world space) with its face turned to the eye at `eye` where it senses it
 /// (`land::senses::sense`: a still, silent watcher, seen in its field within its sight), back to
-/// rest where it doesn't; `face` eased over `dt` s (`kit::roe::attended_to`), `root` where it stands.
+/// rest where it doesn't; `face` eased over `dt` s (`kit::roe::attended_to`), `root` where it
+/// stands.
 pub fn attended(
     face: mut Face,
     bones: [mat4; MAX_BONES],

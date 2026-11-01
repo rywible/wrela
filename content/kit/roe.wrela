@@ -1,8 +1,9 @@
-// The vale's grazer as drawn (docs/plan-world-class-3.md §F2–F5): a roe deer grown from its genome
-// (`genome::ROE`) to an age, its muscles sized by the rule from its optimized walk's loads and its
-// coat's pattern grown by reaction-diffusion, both baked by the gait tool (`kit::grown`); its
-// hide's colours by region (`LOOK`) and its coat's map read as its albedo's pattern (`CoatLook`);
-// and its walk at its age, the grown animal's scaled by dynamic similarity (`walk_at`).
+// The vale's grazer as drawn, and the floor's grown fawn (docs/plan-world-class-3.md §F2–F5, §H1):
+// a roe deer grown from its genome (`genome::ROE`) to an age, its muscles sized by the rule from
+// its optimized walk's loads and its coat's pattern grown by reaction-diffusion, both baked by the
+// gait tool (`kit::grown`); its hide's colours by region (`LOOK`) and its coat's map read as its
+// albedo's pattern (`CoatLook`); its walk at its age, the grown animal's scaled by dynamic
+// similarity (`walk_at`); how it's realized, and its face attending.
 
 use coat::{CoatMap, pattern_at}
 use gaits::Gait

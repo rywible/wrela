@@ -180,7 +180,7 @@ impl Path for Ahead {
 }
 
 /// Its heading turned toward `want` (radians), by `PIVOT` a second at most, slower at a bound.
-fn turn_toward(w: mut Walker, want: f32, dt: f32) {
+pub fn turn_toward(w: mut Walker, want: f32, dt: f32) {
     let diff = short_way(want - w.root.heading, TAU)
     let rate = PIVOT * (1.0 - 0.6 * clamp(w.speed / BOUND.speed, 0.0, 1.0))
     w.root.heading += clamp(diff, -rate * dt, rate * dt)
