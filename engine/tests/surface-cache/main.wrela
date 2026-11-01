@@ -30,6 +30,10 @@ const EYE = vec3(0.0, 1.6, 0.0)
 const WALL = Capsule { a: vec3(0.0, -1.0, 12.0), radius: 2.0, b: vec3(0.0, 6.0, 12.0) }
 const RED = vec3(0.6, 0.06, 0.05)
 
+/// A second wall past the distance volume's reach (it holds 48 m either side of the eye), inside
+/// the probes' grid (62 m): only its density occludes there.
+const FAR_WALL = Capsule { a: vec3(56.0, -1.0, 0.0), radius: 2.0, b: vec3(56.0, 6.0, 0.0) }
+
 pub struct Walled {
     weather: Weather,
 }
@@ -48,7 +52,7 @@ impl Scene for Walled {
     }
 
     fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
-        grid(at, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+        grid(at, cols: 31, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
     }
 
     fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
@@ -59,6 +63,12 @@ impl Scene for Walled {
                         a: WALL.a - origin,
                         radius: WALL.radius,
                         b: WALL.b - origin,
+                        solid: pack_albedo(RED),
+                    },
+                    Occluder {
+                        a: FAR_WALL.a - origin,
+                        radius: FAR_WALL.radius,
+                        b: FAR_WALL.b - origin,
                         solid: pack_albedo(RED),
                     },
                 ],
@@ -89,9 +99,10 @@ impl Scene for Walled {
 }
 
 /// The rays: 0 toward the wall's sunlit side (from 6 m past it, along -z); 1 toward its shaded side
-/// (from 6 m before it, along +z); 2 and 3 down to the open ground 20 m to its side. Each its light
-/// (the sky's part and the sun's summed), then the sun's alone.
-@compute(4)
+/// (from 6 m before it, along +z); 2 and 3 down to the open ground 20 m to its side; 4 toward the
+/// far wall, from 6 m before it (along +x, from past the distance volume's reach). Each its light (the sky's part and the sun's summed),
+/// then the sun's alone.
+@compute(5)
 fn rays(
     t: Trace,
     density: Texture3d<Rgba16Float>,
@@ -116,6 +127,8 @@ fn rays(
     let (from, dir) = if id.x == 0 { (vec3(0.0, 2.0, 18.0), vec3(0.0, 0.0, -1.0)) } else if id.x ==
         1 {
         (vec3(0.0, 2.0, 6.0), vec3(0.0, 0.0, 1.0))
+    } else if id.x == 4 {
+        (vec3(48.0, 2.0, 0.0), vec3(1.0, 0.0, 0.0))
     } else {
         (vec3(-20.0, 3.0, 0.0), normalize(vec3(0.0, -1.0, 0.3)))
     }
@@ -163,7 +176,7 @@ pub fn init() -> State {
         air,
         Clipmap::new(levels: 6, finest: 0.5),
         first_camera(EYE, EYE + vec3(0.0, 0.0, 20.0), 0.82, width: 320, height: 180),
-        grid(EYE.xz, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        grid(EYE.xz, cols: 31, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
         EYE.xz,
     )
     State {
@@ -216,8 +229,8 @@ fn traced(
     colours: Texture3d<Rgba8>,
 ) -> (Pending<vec4>, Pending<vec4>) {
     borrow probes = f.probes.using
-    var r: GpuBuffer<vec4> = buffer(4)
-    var u: GpuBuffer<vec4> = buffer(4)
+    var r: GpuBuffer<vec4> = buffer(5)
+    var u: GpuBuffer<vec4> = buffer(5)
     dispatch(
         rays.bind(
             t,
@@ -239,7 +252,7 @@ fn traced(
             out: mut r,
             sun_out: mut u,
         ),
-        over: 4,
+        over: 5,
     )
     (read(r.items()), read(u.items()))
 }
@@ -303,7 +316,7 @@ fn apart(a: f32, b: f32) -> f32 {
 @test(frames: 200, gpu: true)
 fn a_red_wall_bounces_red(s: State) {
     assert(
-        s.light.len() == 4 && s.again.len() == 4,
+        s.light.len() == 5 && s.again.len() == 5,
         f"cooked at frame {s.cooked_at}: {s.light.len()}, {s.again.len()} rays read back",
     )
     for (name, r) in [("the open sky's", s.light[0]), ("the probes'", s.again[0])] {
@@ -320,7 +333,7 @@ fn a_red_wall_bounces_red(s: State) {
 /// The wall's side away from the sun brings back none of the sun's light.
 @test(frames: 200, gpu: true)
 fn a_shaded_side_brings_back_no_sun(s: State) {
-    assert(s.sun.len() == 4, f"{s.sun.len()} rays read back")
+    assert(s.sun.len() == 5, f"{s.sun.len()} rays read back")
     print(f"the shaded side: went {s.light[1].w:.2} m, its sun {s.sun[1].xyz}")
     assert(abs(s.light[1].w - 4.0) < 0.5, f"the ray stopped {s.light[1].w} m on, not at the wall")
     assert(length(s.sun[1].xyz) == 0.0, f"the shaded side's sun {s.sun[1].xyz}")
@@ -330,10 +343,20 @@ fn a_shaded_side_brings_back_no_sun(s: State) {
 /// within 1/255.
 @test(frames: 200, gpu: true)
 fn the_open_grounds_bounce_is_unchanged(s: State) {
-    assert(s.light.len() == 4 && s.bare.len() == 4, f"{s.light.len()}, {s.bare.len()} read back")
+    assert(s.light.len() == 5 && s.bare.len() == 5, f"{s.light.len()}, {s.bare.len()} read back")
     let d = abs(s.light[2].xyz - s.bare[2].xyz)
     print(f"the open ground: {s.light[2]} with the cache, {s.bare[2]} with none")
     assert(max(d.x, max(d.y, d.z)) <= 1.0 / 255.0, f"the ground's bounce moved by {d}")
     // And the wall's is the cache's: with none, it's the old grey's.
     assert(apart(hue(s.bare[0].xyz), hue(RED)) > 10.0, "the wall's bounce was red before the cache")
+}
+
+/// A solid past the distance volume's reach still stops a probe's ray (its density stands in): a
+/// ray toward the far wall goes no farther than a step or two into it (its surface 6 m on), where
+/// with the volume's solids alone it went on to its reach (24 m).
+@test(frames: 200, gpu: true)
+fn a_solid_past_the_volume_still_stops_a_ray(s: State) {
+    assert(s.light.len() == 5, f"{s.light.len()} rays read back")
+    print(f"toward the far wall: went {s.light[4].w:.2} m")
+    assert(s.light[4].w < 9.0, f"the ray went {s.light[4].w} m, through the far wall")
 }

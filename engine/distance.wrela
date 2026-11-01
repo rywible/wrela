@@ -151,6 +151,13 @@ fn held(g: DistanceGrid, w: vec3i) -> bool {
     inside_box(w, max(g.origin, g.lo), min(g.origin + vec3i(g.dims), g.hi))
 }
 
+/// Whether the volume holds the distance at `p` (render space): it's cooked, and the voxels round
+/// `p` (`distance_at`'s eight) are in it.
+pub fn holds(g: DistanceGrid, p: vec3) -> bool {
+    let w = vec3i(floor(p / g.voxel - vec3(0.5)))
+    g.on != 0 && held(g, w) && held(g, w + vec3i(1))
+}
+
 /// The distance from `p` (render space) to the nearest solid, at most `DISTANCE_FAR`, between
 /// the voxels round it (trilinear); `DISTANCE_FAR` where the volume doesn't reach or isn't
 /// cooked.

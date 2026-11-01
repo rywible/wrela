@@ -1414,8 +1414,9 @@ pub fn bark_round(girth: f32) -> f32 {
     max(round(girth / BARK_ACROSS), 1.0)
 }
 
-/// Where on bark's tile the plant standing at `at` begins (round, in tiles, and along, m): a draw
-/// from its place (a quarter metre's cell), so no two trunks show the same bark (every trunk read
+/// Where on bark's tile the plant standing at `at` begins (round, in tiles, and along, m; `at` keyed
+/// to the world, `view::Camera::keyed`, so it's the same as the render origin moves): a draw from
+/// its place (a quarter metre's cell), so no two trunks show the same bark (every trunk read
 /// the tile from its corner: the development panel's repeating bark, §G9).
 pub fn bark_offset(at: vec3) -> vec2 {
     let cell = floor(at.xz * 4.0)

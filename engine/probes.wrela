@@ -455,7 +455,9 @@ pub fn trace(
         }
         var free = step
         var d = 0.0
-        if solids {
+        // Where the volume doesn't hold it (past its reach, or a slab not yet cooked), the solids'
+        // density stands in for it, as with none.
+        if solids && distance::holds(t.solids, p) {
             free = distance_at(t.solids, volume, p)
             if free >= SOLID_HIT {
                 leaving = false

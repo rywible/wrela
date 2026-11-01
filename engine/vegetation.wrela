@@ -623,7 +623,7 @@ pub fn limb(
         clip: ClipPosition { position: cam.clip(world) },
         world,
         normal: n,
-        along: along + plant::bark_offset(inst.at),
+        along: along + plant::bark_offset(inst.at + cam.keyed()),
         up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
         moss: mossed,
         keep: Flat { value: marks[i.index].x },

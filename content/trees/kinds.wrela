@@ -1957,7 +1957,9 @@ fn laid(
     }
     var met: Vec<Tube<4>> = Vec::new()
     for l in lying {
-        if min(length(l.points[0].xz - t.at), length(l.points[3].xz - t.at)) < reach {
+        // Its axis's chord, a metre and its girth wider (a log is bowed under that).
+        let wide = 1.0 + max(l.radii[0], l.radii[1])
+        if to_segment(t.at, l.points[0].xz, l.points[3].xz).0 < reach + wide {
             met.push(l)
         }
     }
@@ -2792,4 +2794,36 @@ fn a_log_across_a_crest_is_laid_where_the_ground_holds_it() {
         let s = supported(laid[0], grown, ridge)
         assert(s >= SUPPORTED, f"grown {grown}: {s} of it lies on the ground")
     }
+}
+
+/// A short tree falling across the middle of a long log is laid clear of it (§G8: the log's ends
+/// are far from the short tree's foot, its middle isn't).
+@test
+fn a_short_log_falling_across_a_long_ones_middle_is_laid_clear_of_it() {
+    let now: i32 = 900
+    let h = species::HABITS[OAK]
+    var long = land::grow::grown(vec2(0.0), OAK, born: 0, year: 200, seed: 5, h: h, open: true)
+    long.state = State::Log
+    long.fell = now - 5
+    long.fall = vec2(1.0, 0.0)
+    var short = land::grow::grown(
+        vec2(0.42 * long.tall, -2.0),
+        OAK,
+        born: 0,
+        year: 12,
+        seed: 6,
+        h: h,
+        open: true,
+    )
+    short.state = State::Log
+    short.fell = now - 5
+    short.fall = vec2(0.0, 1.0)
+    // The short one's reach (its height and 2 m) falls short of the long one's ends.
+    let ends = min(length(short.at), length(short.at - long.fall * long.tall * 0.85))
+    assert(ends > short.tall + 2.0, f"the long log's ends are {ends} m off: no test")
+    let laid = placed([long, short], |q| 0.0, now, grown: true)
+    assert(laid.len() == 2, f"{laid.len()} of 2 logs laid")
+    let (a, b) = (log_wood(laid[0], grown: true), log_wood(laid[1], grown: true))
+    let apart = clearance(b, [], [a])
+    assert(apart >= 0.0, f"the short log meets the long one, {apart} m")
 }
