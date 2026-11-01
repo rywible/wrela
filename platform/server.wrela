@@ -320,21 +320,39 @@ pub enum Checked: Clone + Serialize {
     Rejected { why: String },
 }
 
-/// A replay uploaded, by its SHA-256 (`h/<hash>`): the account that uploaded it first, as run
-/// `run`, and what came of it. It is claimed as the upload is let into the queue, one record a
-/// hash, so a replay names one run: another account's copy of it is refused, and its own account's
-/// upload of it again hears what came of the first. The account keeps an index entry of it
-/// (`a/<id>/v<hash>`), so deleting the account deletes the hashes it claimed, and no other's.
+/// A replay uploaded to one version of a game's boards, by its SHA-256 and the version
+/// (`h/<hash><board>`): the account that uploaded it, as run `run`, and what came of it there. It
+/// is claimed as the upload is let into the queue, one record a hash and version, so a replay
+/// names one run on a board: its own account's upload of it again hears what came of it on that
+/// version, and on a new version it is played again. Every record of a hash is one account's:
+/// another account's copy is refused. The account keeps an index entry of each
+/// (`a/<id>/v<hash><board>`), so deleting the account deletes the hashes it claimed, and no
+/// other's.
 pub struct Uploaded: Clone + Serialize {
     pub account: u64,
     pub run: u64,
     pub checked: Checked,
 }
 
-/// `h/<hash>`: the upload whose replay's SHA-256 is `hash` (`Uploaded`).
+/// `h/<hash>`: every upload of the replay whose SHA-256 is `hash`, a version of the boards each
+/// (`h/<hash><board>`; or, from an index entry's rest, the record it names).
 pub fn replay_key(hash: [u8]) -> Vec<u8> {
     var k = text_key("h/")
     with_bytes(mut k, hash)
+    k
+}
+
+/// `h/<hash><board>`: what came of the replay whose SHA-256 is `hash` on board version `board`.
+pub fn outcome_key(hash: [u8], board: u32) -> Vec<u8> {
+    var k = replay_key(hash)
+    append_u32(mut k, board)
+    k
+}
+
+/// The rest of an account's index entry of the replay `hash` uploaded to board version `board`.
+fn outcome_rest(hash: [u8], board: u32) -> Vec<u8> {
+    var k = Vec::from(hash)
+    append_u32(mut k, board)
     k
 }
 
@@ -497,6 +515,7 @@ enum Step: Copy + Eq {
     UploadAccount,
     UploadRate,
     UploadClaim,
+    UploadOwner,
     UploadPlace,
     UploadQueue,
     UploadId,
@@ -562,10 +581,11 @@ struct Search: Clone {
     left: u32,
 }
 
-/// A replay's hash claimed by an upload lately (`Uploaded`), by `account` as run `run`, in call
-/// `call`: a read made before that call's writes commit doesn't see it.
+/// A replay's hash claimed by an upload lately (`Uploaded`) on board version `board`, by `account`
+/// as run `run`, in call `call`: a read made before that call's writes commit doesn't see it.
 struct Claiming: Clone {
     hash: Vec<u8>,
+    board: u32,
     call: u64,
     account: u64,
     run: u64,
@@ -1478,8 +1498,11 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That isn't a replay's hash.")
                     return
                 }
+                // Its uploads, the newest version's first: any verified one names it.
                 job.hash = hash.clone()
-                self.get(replay_key(hash), Step::ReplayIndex, take job)
+                let from = replay_key(hash)
+                let to = past(from).unwrap_or(Vec::new())
+                self.scan_down(take from, take to, 16, Step::ReplayIndex, take job)
             },
             Request::Around { game, course, category, name } => {
                 if !self.board_known(game, course, category) {
@@ -2328,8 +2351,8 @@ impl<G: Game> Engine<G> {
                             self.delete(b.ranked.clone())
                         }
                     } else if of == OF_REPLAY {
-                        // A hash it claimed: a copy another account uploaded was refused, so
-                        // none of theirs goes with it.
+                        // A hash it claimed on a version (its rest: the hash and the version): a
+                        // copy another account uploaded was refused, so none of theirs goes.
                         self.forget(replay_key(rest))
                     }
                     self.delete(e.key.clone())
@@ -2421,13 +2444,35 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 j.hash = hashed(j.message)
-                self.get(replay_key(j.hash), Step::UploadClaim, take j)
+                self.get(outcome_key(j.hash, self.game.board()), Step::UploadClaim, take j)
             },
             Step::UploadClaim => {
-                // The replay uploaded before: what came of it, rather than another run.
+                // The replay uploaded before to this version of the boards: what came of it,
+                // rather than another run.
                 let u: Option<Uploaded> = got(answer)
-                let u = if lately(self.gone, replay_key(j.hash)) { None } else { take u }
+                let k = outcome_key(j.hash, self.game.board())
+                let u = if lately(self.gone, k) { None } else { take u }
                 let Some(j) = self.claimed(take j, take u) else { return }
+                // New to this version: whose the hash is on any other, the newest first.
+                let from = replay_key(j.hash)
+                let to = past(from).unwrap_or(Vec::new())
+                self.scan_down(take from, take to, 1, Step::UploadOwner, take j)
+            },
+            Step::UploadOwner => {
+                let Some(es) = entries(answer) else { return }
+                var other: Option<Uploaded> = None
+                for e in es {
+                    if lately(self.gone, e.key) {
+                        continue
+                    }
+                    if let Some(u) = read::<Uploaded>(e.value) {
+                        if u.account != j.id {
+                            other = Some(u.clone())
+                        }
+                    }
+                }
+                // Another account's: refused as a copy.
+                let Some(j) = self.claimed(take j, take other) else { return }
                 self.get(rate_key(j.id, self.now / HOUR), Step::UploadRate, take j)
             },
             Step::UploadPlace => {
@@ -2503,14 +2548,22 @@ impl<G: Game> Engine<G> {
                 var count: Vec<u8> = Vec::new()
                 append_u32(mut count, j.n + 1)
                 self.put_bytes(rate_key(a.id, self.now / HOUR), take count)
-                // The hash is the account's now, and its name one a search may find.
+                // The hash is the account's now, on this version, and its name one a search may
+                // find.
+                let board = self.game.board()
                 self.put(
-                    replay_key(j.hash),
+                    outcome_key(j.hash, board),
                     Uploaded { account: a.id, run: id, checked: Checked::Waiting },
                 )
-                self.put_bytes(indexed(a.id, OF_REPLAY, j.hash), Vec::new())
+                self.put_bytes(indexed(a.id, OF_REPLAY, outcome_rest(j.hash, board)), Vec::new())
                 self.claims.push(
-                    Claiming { hash: j.hash.clone(), call: self.call, account: a.id, run: id },
+                    Claiming {
+                        hash: j.hash.clone(),
+                        board,
+                        call: self.call,
+                        account: a.id,
+                        run: id,
+                    },
                 )
                 self.put_bytes(posted_key(a.name), save(a.id))
                 let q = Queued {
@@ -2575,14 +2628,18 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, Reply::Posting { agreed, best_runs: j.n == 1 })
             },
             Step::ReplayIndex => {
-                // A verified run's, and only that.
-                let u: Option<Uploaded> = got(answer)
-                let run = match u {
-                    Some(u) => match u.checked {
-                        Checked::Verified { .. } => Some(u.run),
-                        _ => None,
-                    },
-                    None => None,
+                // A verified run's, and only that: on any version, the newest.
+                let Some(es) = entries(answer) else { return }
+                var run: Option<u64> = None
+                for e in es {
+                    if run.is_some() || lately(self.gone, e.key) {
+                        continue
+                    }
+                    if let Some(u) = read::<Uploaded>(e.value) {
+                        if let Checked::Verified { .. } = u.checked {
+                            run = Some(u.run)
+                        }
+                    }
                 }
                 let Some(run) = run else {
                     self.refuse(conn, "That replay isn't on the boards.")
@@ -2737,8 +2794,10 @@ impl<G: Game> Engine<G> {
         let conn = j.conn
         var held = take u
         if held.is_none() {
+            // Claimed since: another account's on any version, or its own on this one.
+            let board = self.game.board()
             for c in self.claims {
-                if same_bytes(c.hash, j.hash) {
+                if same_bytes(c.hash, j.hash) && (c.account != j.id || c.board == board) {
                     held = Some(
                         Uploaded { account: c.account, run: c.run, checked: Checked::Waiting },
                     )
@@ -2760,7 +2819,7 @@ impl<G: Game> Engine<G> {
                 // Played since this read was asked: read what came of it.
                 for (run, call) in self.finished {
                     if run == u.run && call >= j.asked {
-                        let k = replay_key(j.hash)
+                        let k = outcome_key(j.hash, self.game.board())
                         self.get(take k, Step::UploadClaim, take j)
                         return None
                     }
@@ -2785,15 +2844,15 @@ impl<G: Game> Engine<G> {
     /// hash is let go, so it may be uploaded again.
     fn unclaim(mut self, q: Queued) {
         let hash = hashed(q.replay)
-        self.claims.retain(|c| !same_bytes(c.hash, hash))
-        self.forget(replay_key(hash))
-        self.delete(indexed(q.account, OF_REPLAY, hash))
+        self.claims.retain(|c| !same_bytes(c.hash, hash) || c.board != q.board)
+        self.forget(outcome_key(hash, q.board))
+        self.delete(indexed(q.account, OF_REPLAY, outcome_rest(hash, q.board)))
     }
 
-    /// Writes what came of upload `q`'s run (`Uploaded`).
+    /// Writes what came of upload `q`'s run (`Uploaded`), on its version of the boards.
     fn checked(mut self, q: Queued, checked: take Checked) {
         let hash = hashed(q.replay)
-        self.put(replay_key(hash), Uploaded { account: q.account, run: q.id, checked })
+        self.put(outcome_key(hash, q.board), Uploaded { account: q.account, run: q.id, checked })
         self.finished.push((q.id, self.call))
     }
 
@@ -3373,6 +3432,7 @@ fn is_upload(step: Step) -> bool {
     step == Step::UploadAccount ||
         step == Step::UploadConsent ||
         step == Step::UploadClaim ||
+        step == Step::UploadOwner ||
         step == Step::UploadRate ||
         step == Step::UploadQueue ||
         step == Step::UploadId
@@ -3451,7 +3511,9 @@ fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
     } else if of == OF_HOUR {
         out.push_str("{\"uploads_this_hour\":\"(a count, for the upload limit)\"}")
     } else if of == OF_REPLAY {
-        out.push_str(f"{{\"uploaded_replay_sha256\":\"{hex(rest)}\"}}")
+        let hash = part(rest, 0, min(rest.len(), 32))
+        let board = if rest.len() == 36 { u32_at(rest, 32) } else { 0 }
+        out.push_str(f"{{\"uploaded_replay_sha256\":\"{hex(hash)}\",\"board\":{board}}}")
     } else if of == OF_AGREED {
         out.push_str("{\"agreed\":")
         match read::<Agreement>(value) {

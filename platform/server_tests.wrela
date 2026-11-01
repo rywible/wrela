@@ -23,8 +23,11 @@ use wire::{
 // ---- a toy game ---------------------------------------------------------------------------------
 
 /// A game whose replay is its course, the time it claims (4 bytes) and its moves: a run's time is
-/// how many moves it has, and it counts for 100% when every move is even.
-struct Toy {}
+/// how many moves it has, and it counts for 100% when every move is even. Its boards are version
+/// `board`.
+struct Toy {
+    board: u32 = 7,
+}
 
 struct ToyRun {
     moves: Vec<u8>,
@@ -39,7 +42,7 @@ impl Game for Toy {
     }
 
     fn board(self) -> u32 {
-        7
+        self.board
     }
 
     fn courses(self) -> u32 {
@@ -1693,6 +1696,43 @@ fn a_run_posted_again_hears_what_came_of_it_the_first_time() {
     }
     assert(why == again && why.as_str().find("match its moves").is_some(), again.as_str())
     assert(h.keys("h/") == 3 && h.keys("u/") == 2, "one record a replay")
+}
+
+@test
+fn a_run_posted_again_on_a_new_version_of_the_boards_is_played_on_it() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, token) = uploader(mut e, mut h, 1, 5)
+    let good = toy(0, claimed: 30, moves: 30, m: 2)
+    let Reply::Verified { run: first, .. } = upload(mut e, mut h, 1, token, good) else {
+        panic("verified on version 7")
+    }
+    // A change to play starts version 8: the same replay is a new run there, played again.
+    var next = engine(Toy { board: 8 }, RP, ORIGIN, VERSIONS)
+    let Reply::Verified { run, place, .. } = upload(mut next, mut h, 1, token, good) else {
+        panic("verified on version 8")
+    }
+    assert(run != first && place == 1, f"{run} {place}")
+    assert(h.keys("u/") == 2 && h.keys("h/") == 2, "a run and an outcome a version")
+    let (b, _) = h.read(
+        mut next,
+        2,
+        Request::Board { game: String::from("toy"), course: 0, category: ANY, from: 0 },
+    )
+    let Reply::Board { places, .. } = b else { panic("a board") }
+    assert(places.len() == 1 && places[0].run == run, "on version 8's board")
+    // Posted again there, what came of it there; another account's copy is refused there too.
+    let Reply::Verified { run: again, .. } = upload(mut next, mut h, 1, token, good) else {
+        panic("verified again")
+    }
+    let (_, other) = uploader(mut next, mut h, 3, 6)
+    let Reply::Rejected { why } = upload(mut next, mut h, 3, other, good) else { panic("a copy") }
+    assert(again == run && why.as_str().find("already on the boards").is_some(), why.as_str())
+    // The replay by its hash is still the account's.
+    let (r, _) = h.read(mut next, 2, Request::Replay { hash: Vec::from(sha256(good)) })
+    let Reply::Run { replay, .. } = r else { panic("the replay") }
+    assert(replay == good)
 }
 
 @test
