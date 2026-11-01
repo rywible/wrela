@@ -2105,6 +2105,32 @@ plastic", "a stencilled pattern"): 295ef776.
 0 of 12. Losses artifacts 28.25, colour 17.12, depth 14.12, value 12.00, light 10.62 (sum 82.11,
 against 82.13).
 
+
+**The development panel again, the flare out** (`build/g10b-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.75, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.38, 2.00, 1.00, 0.38 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 1.00, 0.25 | 3.00, 2.62, 2.75, 3.00, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.25, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.50, 2.00, 1.62, 2.00, 1.00 | 2.12, 3.00, 2.25, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.62, 2.75, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.88, 1.62, 1.88, 1.00, 1.12 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 15.88, colour 9.62, depth 9.00, value 8.12, light 7.38: **sum 50.00**,
+still over G8 and G9's 47.99. The judges' notes: log and root ends 7 → 5, but now
+"mushroom-" and "bone-ended" logs and "capped" posts (the end grain lit pale on the break's
+cone, and the root plate's disc); faceted 19 → 6; the trunks' feet 19 → 12. The sealed panel
+(`build/g10b-sealed`): artifacts 29.00, colour 17.12, depth 14.38, value 12.50, light 9.88 (sum
+82.88).
+
+**G10's parts didn't move the panel** (the flare, the ends, the root plate, the twenty sides,
+two rounds: 50.62, then 50.00 against 47.99): all four are taken out (e83a1a6e, 14bafc3a,
+d5a8abe3, 22156280). The levers on G8 (its support) and G9 (its cubic read, its sharpening
+halved) stay, judged with G8 and G9 in "Part G closes, again".
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
