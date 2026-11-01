@@ -1297,12 +1297,8 @@ pub fn posting_card(
     let u = unit(screen)
     list.rect(Rect::new(x: 0.0, y: 0.0, w: screen.x, h: screen.y), vec4(INK, 0.35))
     card(mut list, laid.card, u)
-    for l in laid.lines {
-        let _ = list.text(fonts, Face::Sans, l.text.as_str(), l.size, l.at, if l.soft {
-            SOFT
-        } else { INKED })
-    }
     let line = max(u * 0.3, 1.5)
+    // The focus and the pointer's wash first, under the words.
     for i in 0..POSTING_ITEMS {
         let r = laid.controls[i]
         if i == focus {
@@ -1314,6 +1310,11 @@ pub fn posting_card(
         } else if hover == Some(i) {
             list.rect(r, LIT, radius: u * 1.0)
         }
+    }
+    for l in laid.lines {
+        let _ = list.text(fonts, Face::Sans, l.text.as_str(), l.size, l.at, if l.soft {
+            SOFT
+        } else { INKED })
     }
     // The box: an inked square, a tick in it when on.
     let row = laid.controls[POSTING_BOX]
@@ -1359,7 +1360,10 @@ pub fn posting_card(
 
 /// The screen's semantic tree: a modal dialog named by its title, its words as text, the box as a
 /// checkbox (ticked if `best_runs`), and Post and Not now as buttons, the one with the focus
-/// (`focus`) focused, each at its place on the screen (`laid`, moved by `origin`). A press comes
+/// (`focus`) focused, each at its place on the screen (`laid`, moved by `origin`). A modal dialog
+/// takes the keyboard into the host's tree: Tab and Shift+Tab go round its controls (each an
+/// `Assist::Focus`), Space or Enter presses one, and Esc dismisses it; a controller's d-pad moves
+/// the game's focus, which the tree follows. A press comes
 /// back as `Event::Assist` on its node (world.wrela's `node`, on the page `POSTING`); a dismissal
 /// of the dialog is Not now.
 pub fn posting_tree(

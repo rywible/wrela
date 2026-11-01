@@ -326,7 +326,6 @@ pub struct Lab {
     prints: Vec<(u32, u32, Vec<Vec<u8>>)>,
     /// The screen of what posting makes public, while it's up (online.wrela's `consenting`):
     /// whether its box is ticked and which control has the focus (screens.wrela's `POSTING_BOX`...).
-    /// And whether the reminder to save the recovery codes was shown since the attempt began.
     posting_best: bool,
     posting_focus: u32,
     /// The world's boards as the leaderboard shows them: around the account's place (`near`: the
@@ -337,7 +336,12 @@ pub struct Lab {
     first: [u32; 2],
     anchored: [bool; 2],
     placed: bool,
+    /// Whether the screen of what posting makes public was up last frame, and how many times it has
+    /// come up: its nodes are numbered anew each time, so the host starts each with the focus on
+    /// Post, not where the last one's was left.
     consent_up: bool,
+    consents: u32,
+    /// Whether the reminder to save the recovery codes was shown since the attempt began.
     reminder_seen: bool,
     /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
     /// nothing is drawn, played, stored or asked for. The game played (`Play`) or playing itself
@@ -432,6 +436,7 @@ pub fn init() -> Lab {
         anchored: [false; 2],
         placed: false,
         consent_up: false,
+        consents: 0,
         reminder_seen: false,
         trail: Vec::new(),
         splits: Vec::new(),
@@ -840,6 +845,7 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
     if consenting && !s.consent_up {
         s.posting_best = false
         s.posting_focus = screens::POSTING_POST
+        s.consents += 1
     }
     s.consent_up = consenting
     // The reminder to save the recovery codes, once seen, goes with the attempt it was seen on.
@@ -1181,7 +1187,7 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             // The screen of what posting makes public, a modal dialog over the leaderboard.
             let laid = screens::posting_laid(s.fonts, screen)
             nodes = screens::posting_tree(
-                snap.chosen,
+                snap.chosen + s.consents,
                 laid,
                 origin,
                 best_runs: s.posting_best,
@@ -2003,9 +2009,11 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
 }
 
 /// A key, a click or a press on a node while the screen of what posting makes public is up, over
-/// the leaderboard (the sim's keys still work: Esc, B, R or F leave the leaderboard, which is Not
-/// now). Up and down go between the box and the buttons, left and right between the buttons, and
-/// choosing (a jump's key, Enter or A, or a click) ticks the box or presses the button; Post
+/// the leaderboard. In a browser the dialog takes the keyboard (screens.wrela's `posting_tree`):
+/// its presses, focus and dismissal come as `Event::Assist`. Elsewhere, and on a controller, up and
+/// down go between the box and the buttons, left and right between the buttons, and choosing (a
+/// jump's key, Enter or A, or a click) ticks the box or presses the button; B leaves the
+/// leaderboard, which is Not now. Post
 /// records the player's agreement through the console (online.wrela's `consent`), and the run
 /// goes.
 fn consenting_input(s: mut Lab, e: Event, screen: vec2) {
@@ -2597,7 +2605,11 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
             mut s.list,
             s.fonts,
             [
-                Prompt { act: Act::Move, say: "Move" },
+                // The keys go round the dialog in the host's tree, with Tab (`posting_tree`).
+                Prompt {
+                    act: if s.device == Device::Pad { Act::Move } else { Act::Boards },
+                    say: "Move",
+                },
                 Prompt { act: Act::Choose, say: "Choose" },
                 Prompt { act: Act::Back, say: "Not now" },
             ],

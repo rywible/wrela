@@ -104,11 +104,18 @@ pub fn node(chosen: u32, page: u32, item: u32) -> u32 {
     1 + (chosen % 1024) * NODES + page * 16 + item
 }
 
-/// The page and the item of node `n` (`node`).
+/// The page and the item of node `n` (`node`). Node 0, which the host's focus leaving the tree
+/// is on (an `Assist::Focus`), is on no page.
 pub fn item_of(n: u32) -> (u32, u32) {
+    if n == 0 {
+        return (NO_PAGE, 0)
+    }
     let k = (n - 1) % NODES
     (k / 16, k % 16)
 }
+
+/// The page of no node: node 0's (`item_of`).
+const NO_PAGE: u32 = 0xffffffff
 
 /// How near the capybara's middle must come to a snack or a yuzu to take it (m).
 const REACH: f32 = 0.8
@@ -1163,6 +1170,17 @@ fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
     tick_with(mut w, [assist(node(w.chosen, OPTIONS, PAGE_NODE), Assist::Dismiss)])
     assert(w.page == MENU, "the page dismissed")
     assert(item_of(node(chosen: 3000, page: CONTROLS, item: PAGE_NODE)) == (CONTROLS, PAGE_NODE))
+    // The focus leaving the tree (the host's focus on node 0) is on no page: nothing happens, on
+    // the menu or on the runs, where the screen of what posting makes public has its nodes.
+    let before = w
+    tick_with(mut w, [assist(0, Assist::Focus)])
+    assert(w == before, "node 0 changes nothing")
+    choose(mut w, SEE_BOARD)
+    tick_with(
+        mut w,
+        [assist(0, Assist::Focus), assist(node(w.chosen, POSTING, 1), Assist::Activate)],
+    )
+    assert(w.page == RUNS, "the posting screen's presses are the frames'")
 }
 
 @test
