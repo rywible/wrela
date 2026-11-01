@@ -107,6 +107,10 @@ pub struct Bark: Copy + GpuData {
     /// `growth::bare_share`), or living (0).
     pub rots: f32 = 0.0,
     pub grain: vec3 = vec3(1.0, 0.0, 0.0),
+    /// Whether it's a grown kind's (1, §E4: its cracks, lichen and moss caused, by its instance's
+    /// record, and its limbs thickened by their share of its trunk), or a hand's (0: as before §E,
+    /// the floor's and the clearing's until they adopt the grown wood, D40).
+    pub grown: f32 = 0.0,
     /// Another bark low on its trunk (rgb: its colour, its fissures the ridges'; w: how high it
     /// reaches, m of the plant as it's built; 0 none): a pine's grey plates under its orange, a
     /// birch's black fissured foot.
@@ -148,11 +152,14 @@ pub struct Plant: Copy + GpuData {
     pub blend: f32,
 }
 
-/// A plant as the probes' occluders read it (`occluding_of`): its thickest limbs and its largest
-/// clumps, on the heap. A helper gathering occluders reads these, never a `Plant` (128 KiB at
-/// `MAX_LIMBS`: a copy of one overflowed a browser helper's stack, and the job never came back).
+/// A plant as the probes' occluders read it (`occluding_of`), on the heap: a grown kind's
+/// thickest limbs' cores and its largest clumps; a hand's limbs, fitted at each tree as before §E
+/// (`inner_wood_capsule` at its instance), and all its clumps. A helper gathering occluders reads
+/// these, never a `Plant` (128 KiB at `MAX_LIMBS`: a copy of one overflowed a browser helper's
+/// stack, and the job never came back).
 pub struct Occluding: Clone {
     pub cores: Vec<Core>,
+    pub limbs: Vec<Tube<4>>,
     pub clumps: Vec<Clump>,
 }
 
@@ -186,12 +193,25 @@ const NOWHERE: Instance = Instance {
 pub const OCCLUDER_LIMBS: u32 = 48
 pub const OCCLUDER_CLUMPS: u32 = 32
 
-/// Each of `plants` as the probes' occluders read it: the cores of its first `OCCLUDER_LIMBS`
-/// limbs, and its clumps as large as its `OCCLUDER_CLUMPS`th largest.
+/// Each of `plants` as the probes' occluders read it: a grown kind's (`Bark::grown`) cores of
+/// its first `OCCLUDER_LIMBS` limbs, and its clumps as large as its `OCCLUDER_CLUMPS`th largest; a
+/// hand's limbs and clumps.
 pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
     var out: Vec<Occluding> = Vec::new()
     for k in 0..plants.len() {
         borrow p = plants[k]
+        if p.bark.grown == 0.0 {
+            var limbs: Vec<Tube<4>> = Vec::new()
+            for i in 0..p.limbs.len() {
+                limbs.push(p.limbs[i])
+            }
+            var clumps: Vec<Clump> = Vec::new()
+            for i in 0..p.clumps.len() {
+                clumps.push(p.clumps[i])
+            }
+            out.push(Occluding { cores: Vec::new(), limbs: take limbs, clumps: take clumps })
+            continue
+        }
         var radii: Vec<f32> = Vec::new()
         for i in 0..p.clumps.len() {
             radii.push(p.clumps[i].radius)
@@ -213,7 +233,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
                 }
             }
         }
-        out.push(Occluding { cores: take cores, clumps: take clumps })
+        out.push(Occluding { cores: take cores, limbs: Vec::new(), clumps: take clumps })
     }
     out
 }
@@ -1012,10 +1032,8 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
     // apart left a dotted crack round the limb: pale rings on logs).
     let radius = r_axis * closing
-    // How far along the limb (m), from its start: the bark's ridges run on across the joints;
-    // from its foot's height, so a trunk of several limbs (a grown one's runs) runs on across
-    // theirs too (from 0 at each foot, the pattern stepped round the trunk at each).
-    var walked = limb.points[0].y
+    // How far along the limb (m), from its start: the bark's ridges run on across the joints.
+    var walked = 0.0
     for k in 0..piece {
         walked += length(limb.points[k + 1] - limb.points[k])
     }

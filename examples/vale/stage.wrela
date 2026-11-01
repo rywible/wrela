@@ -82,7 +82,7 @@ impl Tiles for ValeTiles {
     }
 
     fn placed(self, trees: [Tree]) -> Vec<Placed> {
-        trees::kinds::placed(trees, height_at, PRESENT)
+        trees::kinds::placed(trees, height_at, PRESENT, grown: true)
     }
 
     fn far_placed(self, f: Far, t: vec2i, step: u32) -> Vec<Placed> {
@@ -116,6 +116,11 @@ impl Tiles for ValeTiles {
     fn individual(self, t: Tree, k: u32) -> Option<Grow> {
         trees::archetypes::individual(t, k, PRESENT)
     }
+
+    // The vale's wood is grown (D33).
+    fn grown(self) -> bool {
+        true
+    }
 }
 
 /// How many of the vale's trees near the eye are drawn as themselves (§E1.3: **proposed**, the
@@ -141,7 +146,7 @@ pub fn stage() -> Stage {
     Stage {
         land: landscape(
             TILES,
-            trees::kinds::plants(),
+            trees::kinds::plants(grown: true),
             trees::kinds::far_kinds(),
             water::mesh(),
             vec2i(0),

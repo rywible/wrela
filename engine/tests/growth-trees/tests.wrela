@@ -342,7 +342,7 @@ fn every_clump_of_leaves_has_its_wood_in_it() {
         trees::kinds::BEECH_ANCIENT,
     ]
     for kind in kinds {
-        let p = trees::kinds::kind_plant(kind)
+        let p = trees::kinds::kind_plant(kind, grown: true)
         assert(p.clumps.len() > 20, f"kind {kind} has {p.clumps.len()} clumps")
         for i in 0..p.clumps.len() {
             let c = p.clumps[i]

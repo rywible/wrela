@@ -3358,6 +3358,27 @@ Identical on this machine's native host and its Chrome (H5 holds here); every ea
 this section hashed the same across hosts too. The M4's Chrome is the plan's third run: **to
 re-measure on the M4.**
 
+Run again on Part E's last revision (the council's R1-B-F4: E8 changed the growth, its `VERSION`
+and the archetypes' bytes since the run above), the same command; on 776afe31 and again with the
+floor's switch and the ring's fallback count (`Landscape::ring_fallen_back`) on top:
+
+```
+native 1 (the first ring in 547 ms):
+  grown: the archetypes, 508280 bytes; their hash a003a12bbd48d613
+  grown: the first ring, 6 trees (0 from the storage, 0 drawn as their archetypes); their shapes' hash 362677e6de00fa1d
+native 2 (the first ring in 555 ms):
+  grown: the archetypes, 508280 bytes; their hash a003a12bbd48d613
+  grown: the first ring, 6 trees (0 from the storage, 0 drawn as their archetypes); their shapes' hash 362677e6de00fa1d
+Chrome (the first ring in 1235 ms):
+  grown: the archetypes, 508280 bytes; their hash a003a12bbd48d613
+  grown: the first ring, 6 trees (0 from the storage, 0 drawn as their archetypes); their shapes' hash 362677e6de00fa1d
+grow: the hashes are the same in every run
+```
+
+776afe31's run gave the same three hashes (native 548 and 547 ms, Chrome 996 ms). The first ring
+in Chrome here is 996 to 1,235 ms between runs, about the plan's 1,000 ms budget: **to re-measure
+on the M4.**
+
 **G-cold and G-warm** (`wrela tool bench -- --scene vale-walk --starts 3 --size 960x540 --frames
 60 --no-docs`, playable ms, the median of three; this machine, so each step against `main`
 006223f8 measured the same way, the same bench tool in both). This GPU loses its device on the
@@ -3428,3 +3449,74 @@ worst pair of frames: a grown trunk's deeper cracks, the root plate filling the 
 judge preferred E8 there in both rounds: named deliberate. **Blocked:** shot 0's pop and the
 flicker on shots 2 and 8, where the judge preferred main; next lever, the near bark's relief
 contrast at a dolly's range (the panel's judges fault the bark too).
+
+## E: the floor and the clearing kept (2026-10-31, toolchain 0.13.0)
+
+Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: a pixel comparison, not a gate's
+timing, so nothing here needs re-measuring there.
+
+Part E's growth reaches code the floor (`games/last-green`) and the clearing share with the vale:
+`trees::kinds`' kinds and every table read from them (the forks, crowns, trunks and logs the sim
+and the interest check use), the bark's, the ground's and the rocks' shaders, the grass's species
+and the probes' occluders. D40 puts the floor's adoption behind a switch in §H1, judged there on
+its 23 shots; so every one of these is opt-in, and off draws as before §E: the floor's
+`GROWN_WOOD` (`pub const` in main.wrela, false; `--set GROWN_WOOD=true` builds the grown floor),
+`trees::kinds`' `grown` argument (two rows of `SHAPES`; the hand's logs and their rot as before),
+`plant::Bark::grown` (a kind's bark caused: cracks, lichen, moss, its limbs' thickening),
+`grass::Grass::new(grown)` (`HAND_FLORA`: the 33 rows as the hand set them), `RockLook::grown`,
+`land::cover::wood_floor`'s `grown`, `terrain::Cover::rough` unset (0) as the ground's 0.9, and the
+hand's kinds' occluders fitted at each tree as before (`plant::Occluding::limbs`). The clearing
+passes false. The council's round 2 asked for this before the merge (R1-B-F3).
+
+**The interest check.** The floor's build files (`files/check/report.json`, `shots.json`,
+`walk.bin`, `views.bin`, `calibration.json`, `reach.json`: the trees as drawn, their crowns, the
+obstacles and the walk) are byte-identical to the merge base's (006223f8).
+
+**The stills.** `wrela tool lookbook -- build/px/floor --stills --capture --size 960x540` (and
+`--package examples/clearing`) on this branch and on 006223f8, each built the same way, every shot
+twice and the shots that didn't meet five times each side. Capture mode isn't deterministic here:
+a shot lands in one of a few states from run to run (the last column: the largest mean difference
+between two runs of one build), so each shot's record is its closest pair, branch and base:
+
+| Shot | Runs (branch / merge base) | Closest pair: pixels differing | Its largest difference | Largest difference between two runs of one build (mean, of 255) |
+|---|---|---|---|---|
+| floor 00 the clearing | 2/2 | 0.000 % | 1/255 | 0.15 |
+| floor 01 wood pasture | 2/2 | 0.017 % | 5/255 | 0.00 |
+| floor 02 beech high forest | 2/2 | 0.428 % | 14/255 | 3.25 |
+| floor 03 the old road | 2/2 | 0 (identical) | 0/255 | 1.88 |
+| floor 04 the crag's top | 2/2 | 0 (identical) | 0/255 | 0.91 |
+| floor 05 the tower's foot | 2/2 | 0 (identical) | 0/255 | 0.10 |
+| floor 06 the ring | 2/2 | 0.000 % | 1/255 | 3.55 |
+| floor 07 the mere | 2/2 | 0 (identical) | 0/255 | 0.00 |
+| floor 08 the stream in the wood | 5/5 | 0.052 % | 28/255 | 2.42 |
+| floor 09 the waterfall | 2/2 | 0 (identical) | 0/255 | 0.00 |
+| floor 10 the burn | 5/5 | 0.107 % | 2/255 | 1.71 |
+| floor 11 the windthrow | 2/2 | 0.455 % | 12/255 | 1.37 |
+| floor 12 the plateau's edge | 2/2 | 0 (identical) | 0/255 | 0.71 |
+| floor 13 the town's site | 5/5 | 67.048 % | 120/255 | 3.40 |
+| floor 14 the warden's arena | 5/5 | 0 (identical) | 0/255 | 3.28 |
+| floor 15 the wildwood | 2/2 | 0.294 % | 5/255 | 1.87 |
+| floor 16 the fawn in the glade | 2/2 | 0.080 % | 8/255 | 1.79 |
+| floor 17 the fawn under the beeches | 2/2 | 0.364 % | 17/255 | 2.01 |
+| floor 18 the fawn by the stream | 2/2 | 0.003 % | 1/255 | 1.12 |
+| floor 19 the climber's robe | 2/2 | 0.258 % | 13/255 | 0.00 |
+| floor 20 the climber close | 2/2 | 0.416 % | 9/255 | 1.85 |
+| floor 21 the climber's hood | 2/2 | 0.211 % | 9/255 | 0.00 |
+| floor 22 the climber's train | 2/2 | 0.010 % | 3/255 | 2.52 |
+| clearing 00 the opening | 2/2 | 0 (identical) | 0/255 | 0.00 |
+| clearing 01 toward the gap | 2/2 | 0 (identical) | 0/255 | 0.00 |
+| clearing 02 the great tree | 2/2 | 0.008 % | 3/255 | 0.00 |
+
+Ten of the floor's shots meet a run of the base's to the pixel or within 1/255 on a few pixels, and
+two of the clearing's three to the pixel. Twelve of the floor's and the clearing's third differ on
+at most 0.46 % of their pixels, by at most 28/255: isolated pixels on near trunks' bark, the same in
+every run of a build (shots 1, 19 and 21 have no run-to-run variation at all). For a hand's kind
+every term the bark's shaders gained is left out or times 1 (`limb_world` returns the before-§E
+vertex, `mossy` its moss); computing the bark's terms without the times-1 factors changed none of
+these pixels, so the likeliest cause is the limb shaders' float rounding as their compiled code
+changed, which the bark's relief, a normal from the screen's derivatives, makes visible.
+Shot 13 never met the base's states in five runs each; its closest pair (1.68/255 mean) is nearer
+than two of the base's own runs of it (3.40) and differs on the edges of leaves and grass, as the
+runs of any shot do: **within the run-to-run variation, not shown identical.** The capture mode's
+variation is the engine's (F7: a still is the frame its resolve settles on); recorded for G's
+lookdev instrument.

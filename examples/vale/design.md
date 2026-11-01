@@ -211,11 +211,11 @@ hand). Part E fills it.
 | The floor's plants | grown: the 33 species' rows from their genomes (`engine::grass::GENOMES`: rosettes, tussocks, fronds), the fern's and bracken's fronds by the place's light, the sward by light and wetness |
 | The fallen trees | grown: a grown trunk laid along its fall, its bark lost and its bracket fungi by its rot (on the vale's tiles, 4,914 fallen trees, 20,848 brackets, 74 % of their bark gone) |
 | Moss | grown: a reaction-diffusion's patches on the ground, the logs and the trunks by wetness and light (6 % of the vale's ground in its causes) |
-| Lichen | grown: a diffusion-limited growth's crusts on the rocks' open faces, and on old bark by age (4,278 trees old enough) |
+| Lichen | grown: on old bark by age (4,278 trees old enough). The vale's crags are its terrain's rock, whose lichen is the terrain's detail tile (authored); the diffusion-limited growth's crusts (`growth::LICHEN`) are a rock bed's (`rock::RockLook::grown`), which only the floor draws, behind its switch (`GROWN_WOOD`) |
 | Litter | grown: its depth by the canopy over it and the season (0.50 deep on average over the vale's tiles) |
 | The fallen trees' root plates | authored: the hand's roots on a grown trunk (12 short roots, blunt-ended: **proposed**) |
 | The ground's cover | authored (rules over grown fields: `land::cover`) |
-| The rock's look | authored (its lichen grown) |
+| The rock's look | authored (the terrain's rock and its lichen: `terrain`'s detail tile) |
 | The sky and the clouds | authored (the floor's) |
 | The creature | none yet (Part F) |
 

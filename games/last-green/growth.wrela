@@ -104,7 +104,10 @@ impl Grown {
             trodden: fields.y,
             rim: 0.0,
             rock_albedo: ground::rock_albedo,
-            moss: land::cover::moss_pair(self.moss, at.xz),
+            grown: main::GROWN_WOOD,
+            moss: if main::GROWN_WOOD { land::cover::moss_pair(self.moss, at.xz) } else {
+                vec2(0.0)
+            },
         )
         // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
         // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left
@@ -511,7 +514,7 @@ fn shots() -> Shots {
     // its reach round it.
     var stems: Vec<vec3> = Vec::new()
     var wood: Vec<vec3> = Vec::new()
-    for t in trees::kinds::as_drawn(trees) {
+    for t in trees::kinds::as_drawn(trees, main::GROWN_WOOD) {
         let stem = t.state != State::Log && t.state != State::Gone && t.tall > 1.5
         if stem {
             stems.push(vec3(t.at, t.girth))
@@ -793,7 +796,7 @@ fn shot_files() -> Vec<(String, Vec<u8>)> {
 @test
 fn the_wood_stands_on_no_face_rock_or_pond() {
     var standing = 0
-    for t in trees::kinds::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees, main::GROWN_WOOD) {
         assert(
             t.at.x >= LO.x && t.at.y >= LO.y && t.at.x < HI.x && t.at.y < HI.y,
             f"a tree at {t.at} past the bake",
@@ -882,7 +885,7 @@ fn the_grown_views_shots_see_past_the_stems() {
     let p = inside.eye.xz
     assert(p.x > LO.x && p.y > LO.y && p.x < HI.x && p.y < HI.y, "in the wood past its bake")
     var stems: Vec<vec3> = Vec::new()
-    for t in trees::kinds::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees, main::GROWN_WOOD) {
         if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
             stems.push(vec3(t.at, t.girth))
         }

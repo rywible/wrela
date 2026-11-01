@@ -127,7 +127,8 @@ impl Ground for Flat {
 /// chooses their species (`grass::species_of`). And what the ground is made of where it shows
 /// (`materials`: weights of leaf litter, soil, rock, moss), whose cooked detail the ground's
 /// pixels show close up (`ground_shade`); and how rough it is to the light (`rough`: a wet
-/// gley's smoother than a dry loam's, §E5).
+/// gley's smoother than a dry loam's, §E5; 0, unset, is `GROUND_ROUGH`: a ground not read from
+/// its soil, the floor's and the clearing's until H1).
 pub struct Cover: Copy + GpuData {
     pub albedo: vec3,
     pub grass: f32,
@@ -138,8 +139,11 @@ pub struct Cover: Copy + GpuData {
     pub under: vec4 = vec4(0.0),
     pub flora: vec4 = vec4(0.0),
     pub materials: vec4 = vec4(0.0, 1.0, 0.0, 0.0),
-    pub rough: f32 = 0.9,
+    pub rough: f32 = 0.0,
 }
+
+/// A ground's roughness where its cover doesn't set one (`Cover::rough`).
+pub const GROUND_ROUGH: f32 = 0.9
 
 /// One cooked point of the clipmap: the height, the normal (octahedral), the cover (the albedo's
 /// square root, for its dark greens' precision, and the grass), the meadow (tall, dry, deep, and
@@ -1109,11 +1113,13 @@ fn normal_at_scale(levels: Levels, texels: [Texel], from: u32, xz: vec2, scale: 
     normalize(n)
 }
 
-/// The ground's roughness at `xz` (`Cover::rough`), from level `l`'s texels (bilinear).
+/// The ground's roughness at `xz` (`Cover::rough`), from level `l`'s texels (bilinear; unset,
+/// `GROUND_ROUGH`).
 fn ground_rough(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
     let (at, f) = level_cell(levels, l, xz)
     let w = |i: u32| texels[i].meadow.decode().w
-    mix(mix(w(at.x), w(at.y), f.x), mix(w(at.z), w(at.w), f.x), f.y)
+    let r = mix(mix(w(at.x), w(at.y), f.x), mix(w(at.z), w(at.w), f.x), f.y)
+    if r == 0.0 { GROUND_ROUGH } else { r }
 }
 
 /// The ground's history at `xz` (`substance::Substance::history`), from the habitat level `l`

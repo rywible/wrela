@@ -18,7 +18,7 @@ pub const REACH: f32 = 40.0
 /// its root plate and the body's footprint too; each height is evaluated once, not per capsule.
 const GROUND_CELL: f32 = 0.75
 const MOST_GROUND: u32 = 640
-const MOST_LIMBS: u32 = trees::kinds::FALLEN_LIMBS_MOST
+const MOST_LIMBS: u32 = trees::kinds::fallen_most(main::GROWN_WOOD)
 const MOST_QUERIES: u32 = MOST_GROUND + 2 * MOST + MOST_LIMBS
 
 struct SampledGround {
@@ -36,7 +36,7 @@ fn local(p: vec2, origin: vec2, forward: vec2, side: vec2) -> vec2 {
     vec2(dot(p - origin, side), dot(p - origin, forward))
 }
 
-fn sample_ground(log: Placed, limbs: Bounded<Tube<4>, engine::plant::MAX_LIMBS>) -> SampledGround {
+fn sample_ground(log: Placed, limbs: Bounded<Tube<4>, trees::kinds::FALLEN_ROOM>) -> SampledGround {
     let origin = log.at.at.xz
     let forward = vec2(sin(log.at.yaw), cos(log.at.yaw))
     let side = vec2(forward.y, -forward.x)
@@ -109,7 +109,7 @@ pub fn obstacles(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Obstacle> {
     var all: Vec<Obstacle> = Vec::new()
     for t in trees {
         if t.state == State::Log {
-            let log = trees::kinds::fallen_placement(t, height, map::PRESENT)
+            let log = trees::kinds::fallen_placement(t, height, map::PRESENT, main::GROWN_WOOD)
             for o in shapes(log, height) {
                 all.push(o)
             }
@@ -122,7 +122,7 @@ pub fn obstacles(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Obstacle> {
 /// intervals keeps every centreline bend; subdivision bounds footprint and height variation.
 pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
     var all: Vec<Obstacle> = Vec::new()
-    let limbs = trees::kinds::fallen_limbs(log)
+    let limbs = trees::kinds::fallen_limbs(log, main::GROWN_WOOD)
     assert(limbs.len() <= MOST_LIMBS, "fallen wood exceeded its limb bound")
     var sampled = sample_ground(log, limbs)
     var segments = 0
@@ -198,7 +198,7 @@ fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
             let records = shapes(placed, height)
             assert(records.len() > 6 && records.len() <= MOST, "missing wood or unbounded records")
             let packed = land::footing::Obstacles::of(records, vec2(-64.0), vec2(64.0))
-            for limb in trees::kinds::fallen_limbs(placed) {
+            for limb in trees::kinds::fallen_limbs(placed, main::GROWN_WOOD) {
                 for i in 0..25 {
                     let (axis, _, radius) = limb_axis(limb, f32(i) / 24.0)
                     if axis.y + radius - height(axis.xz) <= 0.02 {
@@ -295,7 +295,7 @@ fn an_off_lattice_hollow_keeps_exact_clearance_under_the_rendered_log() {
     var inst = engine::plant::NO_INSTANCE
     inst.scale = 1.0
     let log = Placed { kind: trees::kinds::LOG_SHORT, at: inst }
-    let limbs = trees::kinds::fallen_limbs(log)
+    let limbs = trees::kinds::fallen_limbs(log, main::GROWN_WOOD)
     let sampled = sample_ground(log, limbs)
     let trunk = limbs[0]
     var centre = vec2(0.0)

@@ -546,7 +546,8 @@ pub fn limb_indices(n: u32) -> Vec<u32> {
 /// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS` of instance `i`'s kind (every kind's limbs
 /// in `limbs`, `KindDesc`), in the world, and where it is on its bark (`BarkVertex::along`:
 /// round a whole number of bark's tiles, as round as its limb is at its foot in the world;
-/// along, in the world's metres).
+/// along, in the world's metres), and where its moss's patches are read (`moss_patch`; a grown
+/// kind's, `Bark::grown`).
 fn limb_world(
     v: u32,
     i: u32,
@@ -558,6 +559,21 @@ fn limb_world(
     let kd = kinds[kind_of(inst)]
     let limb = limbs[kd.limb_first + v / LIMB_POINTS]
     let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
+    if kd.bake.bark.grown == 0.0 {
+        // A hand's kind: every limb thickened by its record (`Instance::thick`), its ridges round
+        // it by its own girth, along it from its foot.
+        let girth = TAU * limb.radii[0] * inst.scale * inst.thick
+        let on_bark = vec2(along.x * plant::bark_round(girth), along.y * inst.scale)
+        return (
+            inst.place_round(centre, n * radius),
+            inst.turn_normal(n, centre.y),
+            on_bark,
+            on_bark,
+        )
+    }
+    // A grown kind's: along it from its foot's height, so a trunk of several limbs (a grown one's
+    // runs) runs on across theirs (from 0 at each foot, the pattern stepped round it at each).
+    let along = vec2(along.x, along.y + limb.points[0].y)
     // Its record's girth is its trunk's (`Instance::thick`): a limb thickened by it as far as it's
     // as thick as its trunk (its first limb), its twigs not (all thickened, a grown crown's twigs
     // read as flat bands).
@@ -592,18 +608,24 @@ pub fn limb(
 ) -> BarkVertex {
     let (world, n, along, on_moss) = limb_world(v.index, i.index, kinds, limbs, instances)
     let inst = instances[i.index]
-    // Rotting wood (`Bark::rots`) holds the wet, and the shade under the wood round it: mossier as
-    // it rots (its history's x its rot).
-    let h = inst.history.decode()
-    let rot = kinds[kind_of(inst)].bake.bark.rots * h.x
-    let moss_h = vec4(h.x, h.y * (1.0 - 0.5 * rot), max(h.z, 0.5 + rot), h.w)
+    let bark = kinds[kind_of(inst)].bake.bark
+    let mossed = if bark.grown == 0.0 {
+        mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7))
+    } else {
+        // Rotting wood (`Bark::rots`) holds the wet, and the shade under the wood round it:
+        // mossier as it rots (its history's x its rot).
+        let h = inst.history.decode()
+        let rot = bark.rots * h.x
+        let moss_h = vec4(h.x, h.y * (1.0 - 0.5 * rot), max(h.z, 0.5 + rot), h.w)
+        moss_at(moss_h, n, along.y, moss_patch(moss, moss_h, on_moss))
+    }
     BarkVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
         normal: n,
         along,
         up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
-        moss: moss_at(moss_h, n, along.y, moss_patch(moss, moss_h, on_moss)),
+        moss: mossed,
         keep: Flat { value: marks[i.index].x },
         kind: Flat { value: kind_of(inst) },
         history: Flat { value: inst.history.bits },
@@ -623,10 +645,24 @@ pub fn limb_shadow(
     ClipPosition { position: view * vec4(world, 1.0) }
 }
 
-/// The moss's patches on bark at `at` (its cells, `limb_world`'s: one tile round the limb):
-/// its reaction-diffusion's (`growth::moss_tile_in` from the wood's copy of `growth::MOSS`, a wet
-/// tree's crowded class or a dry one's scattered). (Read in the world's x + z against height,
-/// round a trunk they ran in spirals.)
+/// How mossy a hand's kind's bark is (0 to 1), its normal `n`, `along` metres up its limb, `patch`
+/// its noise there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the
+/// north (-z, where the sun doesn't reach), in patches with edges: moss is a material on the bark,
+/// not a tint over it. (All over a trunk's sides, it turned the wood's trunks green; soft and wide
+/// at a big trunk's foot, it still tinted its lower half.) A grown kind's is caused (`moss_at`).
+fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
+    let foot = 1.0 - smoothstep(0.2, 1.4, along)
+    let place = max(
+        foot * 0.75,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.25),
+    )
+    place * smoothstep(0.42, 0.58, patch)
+}
+
+/// The moss's patches on a grown kind's bark at `at` (its cells, `limb_world`'s: one tile round
+/// the limb): its reaction-diffusion's (`growth::moss_tile_in` from the wood's copy of
+/// `growth::MOSS`, a wet tree's crowded class or a dry one's scattered). (Read in the world's
+/// x + z against height, round a trunk they ran in spirals.)
 fn moss_patch(moss: [u32], history: vec4, at: vec2) -> f32 {
     let class = if history.z > 0.5 { 0 } else { 1 }
     0.35 + 0.3 * moss_tile_in(moss, class, at)
@@ -664,8 +700,11 @@ pub fn bark_shade<Q: Switches, Y: Style>(
 ) -> Y::Out {
     let bark = kinds[b.kind.value].bake.bark
     let history = std::gpu::Unorm8x4 { bits: b.history.value }.decode()
-    // Its cracks' depth by its record (`growth::bark_cracks`; their spacing is `limb_world`'s).
-    let cracks = bark_cracks(history)
+    // A grown kind's cracks' depth by its record (`growth::bark_cracks`; their spacing is
+    // `limb_world`'s), and its lichen by its light (`growth::lichen_of`); a hand's, its own.
+    let grown = bark.grown > 0.0
+    let cracks = if grown { bark_cracks(history) } else { vec2(1.0) }
+    let lichened = if grown { lichen_of(history) } else { 1.0 }
     // Derivatives run before the coverage discard, so every lane has a surface and height.
     let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
     let size = vec2(f32(plant::RIDGES_W), f32(plant::RIDGES_H))
@@ -727,7 +766,7 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     albedo = mix(
         albedo,
         bark.lichen.xyz,
-        vec3(bark.lichen.w * lichen_of(history) * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
+        vec3(bark.lichen.w * lichened * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
     )
     let a = Y::palette(lt.light, style::BARK, history, mix(albedo, bark.moss, vec3(b.moss)))
     let ln = lit_normal::<Y>(n, smooth_n, smooth_n)

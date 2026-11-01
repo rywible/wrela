@@ -600,30 +600,34 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
     p
 }
 
-/// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
-/// radius at the foot: crooked a little, its torn roots or stump at the foot.
-/// The roots of a fallen tree's root plate (**proposed**).
+/// The roots of a grown wood's fallen tree's root plate (**proposed**).
 const ROOTS: u32 = 12
 
-fn log(s: u32, long: f32, girth: f32) -> Plant {
+/// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
+/// radius at the foot: crooked a little, its torn roots or stump at the foot. In a grown wood
+/// (`grown`, §E4) it rots: its bark falls away and its brackets show by its rot, its root plate
+/// torn up; by hand, its trunk and four stubs alone.
+fn log(s: u32, long: f32, girth: f32, grown: bool) -> Plant {
     let bark = Bark {
         dark: vec3(0.11, 0.09, 0.07),
         light: vec3(0.30, 0.26, 0.20),
         moss: vec3(0.07, 0.11, 0.03),
-        rots: 1.0,
+        rots: if grown { 1.0 } else { 0.0 },
         grain: vec3(0.6, 0.2, 0.2),
     }
-    // Its leaves its bracket fungi's (§E4: cream and brown shelves, shown past their rot), its
-    // shape grown (`archetypes::laid`); by hand, its trunk and its root plate alone.
-    let brackets = Leaves {
-        young: vec3(0.42, 0.33, 0.2),
-        old: vec3(0.16, 0.09, 0.05),
-        through: vec3(0.1, 0.06, 0.03),
-        size: 0.12,
-        cover: 1.4,
-        after: engine::growth::BRACKETS_FROM,
-    }
-    var p = plant(leaves: brackets, bark: bark)
+    // Grown, its leaves its bracket fungi's (§E4: cream and brown shelves, shown past their rot),
+    // its shape grown (`archetypes::laid`); by hand, no leaves.
+    let leaves = if grown {
+        Leaves {
+            young: vec3(0.42, 0.33, 0.2),
+            old: vec3(0.16, 0.09, 0.05),
+            through: vec3(0.1, 0.06, 0.03),
+            size: 0.12,
+            cover: 1.4,
+            after: engine::growth::BRACKETS_FROM,
+        }
+    } else { Leaves { size: 0.2 } }
+    var p = plant(leaves: leaves, bark: bark)
     let bow = pick(s, 1, lo: -0.6, hi: 0.6)
     // Its foot closed by a short piece swelling from a stub (a tube's start is open: its rim
     // showed as a white ring: round 5). The far end is a short break: closing a final
@@ -637,6 +641,15 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
         ],
         [girth * 0.35, girth, girth * 0.4, girth * 0.4],
     )
+    if !grown {
+        // The root plate's stubs at the foot.
+        for i in 0..4 {
+            let a = TAU * (f32(i) + rand(s, 10 + i)) / 4.0
+            let tip = vec3(cos(a) * girth * 2.4, girth + sin(a) * girth * 2.4, -girth * 0.6)
+            p.straight(vec3(0.0, girth, 0.2), tip, r_from: girth * 0.35, r_to: girth * 0.1)
+        }
+        return p
+    }
     // The root plate torn up with it: its roots radiating round the foot in the plate's plane
     // (an upturned tree's roots spread sideways from its foot, so its plate stands on end), thick
     // and short, each snapped off blunt where the ground held it (a tube's end closes to a point
@@ -667,12 +680,16 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
     p
 }
 
-/// Kind `k`'s plant.
-/// Kind `k`'s plant: its archetype grown (`archetypes`), in its authored kind's leaves and bark;
-/// or, for the kinds still authored (the great tree, the far crowns, the dead), its shape by hand.
-pub fn kind_plant(k: u32) -> Plant {
-    var p = authored_plant(k)
-    archetypes::grown_into(k, mut p)
+/// Kind `k`'s plant, `grown` (the vale's: D33) or the hand's (the floor's, until it adopts the
+/// grown species: D40). Grown, its archetype's (`archetypes`), in its authored kind's leaves and
+/// bark; or, for the kinds still authored (the great tree, the far crowns), its shape by hand.
+pub fn kind_plant(k: u32, grown: bool) -> Plant {
+    var p = authored_plant(k, grown)
+    if grown {
+        archetypes::grown_into(k, mut p)
+        // Its bark's look caused (`engine::plant::Bark::grown`): the grown wood's, every kind.
+        p.bark.grown = 1.0
+    }
     p
 }
 
@@ -683,14 +700,16 @@ pub const LOOKS: [(Leaves, Bark, f32); KINDS] = looks()
 fn looks() -> [(Leaves, Bark, f32); KINDS] {
     var out = [(Leaves {}, Bark {}, 0.0); KINDS]
     for k in 0..KINDS {
-        let p = authored_plant(k)
+        var p = authored_plant(k, grown: true)
+        p.bark.grown = 1.0
         out[k] = (p.leaves, p.bark, p.blend)
     }
     out
 }
 
-/// Kind `k`'s plant as authored by hand (a grown kind keeps its leaves and bark from it).
-fn authored_plant(k: u32) -> Plant {
+/// Kind `k`'s plant as authored by hand (a grown kind keeps its leaves and bark from it), its
+/// fallen trees a grown wood's (`log`'s `grown`) or not.
+fn authored_plant(k: u32, grown: bool) -> Plant {
     let oak_leaves = Leaves {
         young: vec3(0.105, 0.16, 0.055),
         old: vec3(0.055, 0.095, 0.035),
@@ -975,9 +994,9 @@ fn authored_plant(k: u32) -> Plant {
     } else if k == SNAG_PINE {
         snag(117, 18.0, burnt: false, conifer: true, form: 0)
     } else if k == LOG_SHORT {
-        log(118, long: 12.0, girth: 0.28)
+        log(118, long: 12.0, girth: 0.28, grown: grown)
     } else if k == LOG_LONG {
-        log(119, long: 20.0, girth: 0.5)
+        log(119, long: 20.0, girth: 0.5, grown: grown)
     } else if k == FAR_A {
         far_tree(120)
     } else if k == FAR_B {
@@ -1112,19 +1131,18 @@ pub fn heading(t: Tree) -> vec2 {
 
 pub const HEADING: f32 = 0.7
 
-/// The lowest a plant's branches or leaves come (m, as it's built): its limbs' (not its trunk's,
-/// the first, nor its roots', which reach into the ground) and its clumps'. (Its roots counted,
-/// every broad-leaved kind's lowest branch was under the ground, and a browsed tree was always
-/// drawn in its forest form.)
-/// Which of a plant's limbs are its trunk: its first, and each that starts where the last ended,
-/// nearly as thick (a grown trunk's bole is one tube to a turn, then on in pieces:
+/// Which of a plant's limbs are its trunk: its first; and, `grown`, each that starts where the
+/// last ended, nearly as thick (a grown trunk's bole is one tube to a turn, then on in pieces:
 /// `engine::growth::chains_of`), not branches.
-fn trunk_pieces(p: Plant) -> Vec<bool> {
+fn trunk_pieces(p: Plant, grown: bool) -> Vec<bool> {
     var trunk: Vec<bool> = Vec::filled(p.limbs.len(), false)
     if p.limbs.len() == 0 {
         return trunk
     }
     trunk[0] = true
+    if !grown {
+        return trunk
+    }
     var end = p.limbs[0]
     var going = true
     while going {
@@ -1144,9 +1162,12 @@ fn trunk_pieces(p: Plant) -> Vec<bool> {
     trunk
 }
 
-fn lowest(p: Plant) -> f32 {
+/// The lowest a plant's branches or leaves come (m, as it's built): its limbs' (not its trunk's,
+/// `trunk`, nor its roots', which reach into the ground) and its clumps'. (Its roots counted,
+/// every broad-leaved kind's lowest branch was under the ground, and a browsed tree was always
+/// drawn in its forest form.)
+fn lowest(p: Plant, trunk: [bool]) -> f32 {
     var low = 1.0e9
-    let trunk = trunk_pieces(p)
     for i in 1..p.limbs.len() {
         let l = p.limbs[i]
         if l.points[3].y < 0.0 || trunk[i] {
@@ -1163,20 +1184,37 @@ fn lowest(p: Plant) -> f32 {
     low
 }
 
-/// What each kind's tables are read from (`LOWEST`, `TRUNKS`, `CROWN_R`, `CROWN_BASE`,
-/// `CROWN_TOP`, `FORK_Y`), its plant built once for all of them.
+/// Each kind's shape as it's built, as the trees' drawing and their forks read it, its plant built
+/// once for all of them.
 struct Shapes {
+    /// Its lowest branch (`lowest`: the great oak's isn't needed, it's kept).
     lowest: [f32; KINDS],
+    /// Its trunk (its first limb).
     trunks: [Tube<4>; KINDS],
+    /// Its crown as the eye sees it (m): its radius, the farthest its clumps' middles stand from
+    /// its trunk and half a clump; its base, halfway between its lowest leaves and the lowest
+    /// middle less half a clump; and its top, the highest middle and half a clump (a clump's edge
+    /// is leaves with gaps between, which the eye sees through: calibrated against the renderer's
+    /// depth, #55 AC3).
     crown_r: [f32; KINDS],
     crown_base: [f32; KINDS],
     crown_top: [f32; KINDS],
+    /// Where its trunk first forks (m): its lowest limb's foot (its first limb is its trunk); 0
+    /// for a kind with no limbs.
     fork_y: [f32; KINDS],
 }
 
-const SHAPES: Shapes = shapes_of_kinds()
+/// The kinds' shapes, as the hand built them and as they're grown (`kind_plant`'s `grown`): a
+/// program draws one or the other (the floor the hand's, the vale the grown: D40), and its trees'
+/// forks, trunks and crowns are read from the same.
+const SHAPES: [Shapes; 2] = [shapes_of_kinds(grown: false), shapes_of_kinds(grown: true)]
 
-fn shapes_of_kinds() -> Shapes {
+/// `SHAPES`' row for `grown`.
+fn row(grown: bool) -> u32 {
+    if grown { 1 } else { 0 }
+}
+
+fn shapes_of_kinds(grown: bool) -> Shapes {
     var out = Shapes {
         lowest: [0.0; KINDS],
         trunks: [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS],
@@ -1186,9 +1224,10 @@ fn shapes_of_kinds() -> Shapes {
         fork_y: [0.0; KINDS],
     }
     for k in 0..KINDS {
-        let p = kind_plant(k)
-        let low = lowest(p)
-        // Its crown, as `CROWN_R`, `CROWN_BASE` and `CROWN_TOP` read it.
+        let p = kind_plant(k, grown)
+        let trunk = trunk_pieces(p, grown)
+        let low = lowest(p, trunk)
+        // Its crown, as `crown_r`, `crown_base` and `crown_top` read it.
         var reach = 0.0
         var leaves = 1.0e9
         var high = 0.0
@@ -1211,7 +1250,6 @@ fn shapes_of_kinds() -> Shapes {
         if p.limbs.len() > 0 {
             out.trunks[k] = p.limbs[0]
         }
-        let trunk = trunk_pieces(p)
         for i in 1..p.limbs.len() {
             // Not a root (a limb into the ground), nor the trunk going on.
             if p.limbs[i].points[3].y < 0.0 || trunk[i] {
@@ -1224,21 +1262,21 @@ fn shapes_of_kinds() -> Shapes {
     out
 }
 
-/// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
-pub const LOWEST: [f32; KINDS] = SHAPES.lowest
-
-/// The lowest branch of kind `k` placed `tall` high and forking `fork` higher (m).
-pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
-    bend(LOWEST[k], fork) * scale_of(k, tall)
+/// The lowest branch of kind `k` (`Shapes::lowest`: the great oak's isn't needed, it's kept)
+/// placed `tall` high and forking `fork` higher (m), the kinds `grown` or the hand's.
+pub fn lowest_placed(k: u32, tall: f32, fork: f32, grown: bool) -> f32 {
+    bend(SHAPES[row(grown)].lowest[k], fork) * scale_of(k, tall)
 }
 
-/// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
-const TRUNKS: [Tube<4>; KINDS] = SHAPES.trunks
+/// Kind `k`'s trunk (its first limb), as it's built, `grown` or the hand's.
+fn trunk_of(k: u32, grown: bool) -> Tube<4> {
+    SHAPES[row(grown)].trunks[k]
+}
 
 /// The radius kind `k`'s trunk is drawn at `h` m over the ground, placed `tall` high and forking
 /// `fork` higher: between its trunk's points, scaled to the tree.
-pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
-    let t = TRUNKS[k]
+pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32, grown: bool) -> f32 {
+    let t = trunk_of(k, grown)
     let s = scale_of(k, tall)
     let y = unbend(h / s, fork)
     var r = t.radii[3]
@@ -1253,15 +1291,6 @@ pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
 
 // ---- the crowns as they're drawn ---------------------------------------------------------------
 
-/// Each kind's crown as it's built (m), as the eye sees it: its radius, the farthest its clumps'
-/// middles stand from its trunk and half a clump; its base, halfway between its lowest leaves
-/// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
-/// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
-/// renderer's depth, #55 AC3).
-const CROWN_R: [f32; KINDS] = SHAPES.crown_r
-const CROWN_BASE: [f32; KINDS] = SHAPES.crown_base
-const CROWN_TOP: [f32; KINDS] = SHAPES.crown_top
-
 /// How tall a living tree of the history `tall` high is drawn as kind `k`: a thorn at least
 /// 1.5 m.
 pub fn drawn_tall(k: u32, tall: f32) -> f32 {
@@ -1271,46 +1300,48 @@ pub fn drawn_tall(k: u32, tall: f32) -> f32 {
 /// How wide a living tree's crown is drawn against its kind's (`Instance::wide`), drawn as kind
 /// `k`, `tall` high: by how wide the history grew it (its reach, held by its neighbours'), its
 /// leaves spreading half as far again (crowns interlock), to half its kind's at the least.
-pub fn crown_wide(t: Tree, k: u32, tall: f32) -> f32 {
-    clamp(SPREAD * t.reach / max(CROWN_R[k] * scale_of(k, tall), 0.1), 0.5, 1.0)
+pub fn crown_wide(t: Tree, k: u32, tall: f32, grown: bool) -> f32 {
+    clamp(SPREAD * t.reach / max(SHAPES[row(grown)].crown_r[k] * scale_of(k, tall), 0.1), 0.5, 1.0)
 }
 
 /// How far past the history's reach a crown's leaves spread (`crown_wide`).
 const SPREAD: f32 = 1.5
 
 /// Each tree as it's drawn, for the interest check (`interest::Evidence::crowns`): its crown as
-/// the eye sees it (`CROWN_BASE`, `CROWN_TOP`, `CROWN_R`: its kind's, placed at its height and
-/// fork and as wide as it's drawn, denser for being narrower; the kept tree's as it's built;
-/// none for a snag or a log), and its trunk's radius at the eye (`as_drawn`'s girth, at 2 m).
-pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
+/// the eye sees it (`Shapes`' crowns: its kind's, placed at its height and fork and as wide as
+/// it's drawn, denser for being narrower; the kept tree's as it's built; none for a snag or a
+/// log), and its trunk's radius at the eye (`as_drawn`'s girth, at 2 m), of the kinds `grown` or
+/// the hand's.
+pub fn drawn_crowns(trees: [Tree], grown: bool) -> Vec<Drawn> {
+    borrow sh = SHAPES[row(grown)]
     var out: Vec<Drawn> = Vec::with_capacity(trees.len())
     for t in trees {
         let standing = t.state == State::Alive || t.state == State::Snag
         let trunk = if standing && !t.pinned && t.tall > 2.0 {
-            max(t.girth, trunk_at(kind_of(t), t.tall, h: 2.0, fork: t.fork))
+            max(t.girth, trunk_at(kind_of(t, grown), t.tall, h: 2.0, fork: t.fork, grown: grown))
         } else { t.girth }
         if t.state != State::Alive {
             out.push(Drawn { base: 0.0, top: 0.0, reach: 0.0, dense: 1.0, trunk })
         } else if t.pinned {
             out.push(
                 Drawn {
-                    base: CROWN_BASE[GREAT],
-                    top: CROWN_TOP[GREAT],
-                    reach: CROWN_R[GREAT],
+                    base: sh.crown_base[GREAT],
+                    top: sh.crown_top[GREAT],
+                    reach: sh.crown_r[GREAT],
                     dense: 1.0,
                     trunk,
                 },
             )
         } else {
-            let k = drawn_kind(t)
+            let k = drawn_kind(t, grown)
             let tall = drawn_tall(k, t.tall)
             let s = scale_of(k, tall)
-            let wide = crown_wide(t, k, tall)
+            let wide = crown_wide(t, k, tall, grown)
             out.push(
                 Drawn {
-                    base: bend(CROWN_BASE[k], t.fork) * s,
-                    top: bend(CROWN_TOP[k], t.fork) * s,
-                    reach: CROWN_R[k] * s * wide,
+                    base: bend(sh.crown_base[k], t.fork) * s,
+                    top: bend(sh.crown_top[k], t.fork) * s,
+                    reach: sh.crown_r[k] * s * wide,
                     dense: 1.0 / wide,
                     trunk,
                 },
@@ -1322,14 +1353,10 @@ pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
 
 // ---- each tree's fork --------------------------------------------------------------------------
 
-/// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
-/// limb is its trunk); 0 for a kind with no limbs.
-const FORK_Y: [f32; KINDS] = SHAPES.fork_y
-
 /// How high a tree of kind `k`, placed `tall` high and forking `fork` higher than its kind,
 /// first forks (m over the ground).
-pub fn fork_height(k: u32, tall: f32, fork: f32) -> f32 {
-    bend(FORK_Y[k], fork) * scale_of(k, tall)
+pub fn fork_height(k: u32, tall: f32, fork: f32, grown: bool) -> f32 {
+    bend(SHAPES[row(grown)].fork_y[k], fork) * scale_of(k, tall)
 }
 
 /// The forks a standing tree may take (`Tree::fork`), and how far apart the first fork's heights
@@ -1361,12 +1388,13 @@ pub fn forks_apart(a: f32, b: f32) -> bool {
 /// No kind chosen yet.
 const UNCHOSEN: u32 = 4294967295
 
-/// Whether a tree's fork is chosen: a standing tree's (living or dead) drawn as a kind with limbs.
-pub fn forks(t: Tree) -> bool {
+/// Whether a tree's fork is chosen: a standing tree's (living or dead) drawn as a kind with limbs,
+/// the kinds `grown` or the hand's.
+pub fn forks(t: Tree, grown: bool) -> bool {
     !t.pinned &&
         (t.state == State::Alive || t.state == State::Snag) &&
         t.tall > 1.2 &&
-        FORK_Y[kind_of(t)] > 0.0
+        SHAPES[row(grown)].fork_y[kind_of(t, grown)] > 0.0
 }
 
 /// How many times the choice goes over the trees again, each tree whose fork is still at a
@@ -1379,8 +1407,8 @@ const FORK_PASSES: u32 = 24
 /// before it; or, if none is, the one that stands farthest from them (as a share). Then, over
 /// `FORK_PASSES` passes, each tree whose fork isn't apart from a neighbour's chooses again among
 /// all its neighbours. Each tree is judged as the bake will keep it (`bake::as_baked`): its kind
-/// is then the one it's drawn as.
-pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
+/// is then the one it's drawn as, of the kinds `grown` or the hand's.
+pub fn forked(trees: take Vec<Tree>, grown: bool) -> Vec<Tree> {
     var kept = take trees
     var out: Vec<Tree> = Vec::with_capacity(kept.len())
     for t in kept {
@@ -1419,8 +1447,8 @@ pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
     var kinds: Vec<u32> = Vec::filled(n, UNCHOSEN)
     var heights: Vec<f32> = Vec::filled(n, 0.0)
     for i in 0..n {
-        if forks(out[i]) {
-            choose_fork(mut out, mut kinds, mut heights, near, i, first: true)
+        if forks(out[i], grown) {
+            choose_fork(mut out, mut kinds, mut heights, near, i, first: true, grown: grown)
         }
     }
     for _ in 0..FORK_PASSES {
@@ -1428,7 +1456,7 @@ pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
         for i in 0..n {
             if kinds[i] != UNCHOSEN &&
                 fork_gap(out, kinds, heights, near, i, kinds[i], heights[i]) < FORK_APART {
-                choose_fork(mut out, mut kinds, mut heights, near, i, first: false)
+                choose_fork(mut out, mut kinds, mut heights, near, i, first: false, grown: grown)
                 moved += 1
             }
         }
@@ -1483,11 +1511,11 @@ fn fork_gap(
 
 /// Whether tree `t`, forking `f` higher than its kind, keeps its branches above its browse line
 /// (`Tree::lift`) as it's drawn.
-fn clears(t: Tree, f: f32) -> bool {
+fn clears(t: Tree, f: f32, grown: bool) -> bool {
     var tf = t
     tf.fork = f
-    let k = kind_of(tf)
-    t.lift <= 0.0 || t.state != State::Alive || lowest_placed(k, t.tall, f) >= t.lift
+    let k = kind_of(tf, grown)
+    t.lift <= 0.0 || t.state != State::Alive || lowest_placed(k, t.tall, f, grown) >= t.lift
 }
 
 /// Tree `i` chooses its fork: the first of `FORKS` (from one its seed picks) apart from its
@@ -1500,6 +1528,7 @@ fn choose_fork(
     near: Near,
     i: u32,
     first: bool,
+    grown: bool,
 ) {
     let t = trees[i]
     // Under a browse line, only the forks whose branches clear it, if any do (a small tree's
@@ -1517,18 +1546,18 @@ fn choose_fork(
     }
     var any_clear = false
     for f in choices {
-        any_clear = any_clear || clears(t, f)
+        any_clear = any_clear || clears(t, f, grown)
     }
     var best = t.fork
     var best_gap = -1.0
     for f in choices {
-        if any_clear && !clears(t, f) {
+        if any_clear && !clears(t, f, grown) {
             continue
         }
         var tf = t
         tf.fork = f
-        let k = kind_of(tf)
-        let gap = fork_gap(trees, kinds, heights, near, i, k, fork_height(k, t.tall, f))
+        let k = kind_of(tf, grown)
+        let gap = fork_gap(trees, kinds, heights, near, i, k, fork_height(k, t.tall, f, grown))
         if gap > best_gap {
             best_gap = gap
             best = f
@@ -1538,28 +1567,28 @@ fn choose_fork(
         }
     }
     trees[i].fork = best
-    let k = kind_of(trees[i])
+    let k = kind_of(trees[i], grown)
     kinds[i] = k
-    heights[i] = fork_height(k, t.tall, best)
+    heights[i] = fork_height(k, t.tall, best, grown)
 }
 
 /// What a player walks round of the history's trees, as they're drawn: each standing tree's
 /// girth the larger of the history's and its drawn trunk's at a chest's height (1.2 m), so the
-/// player stops where the trunk is seen.
-pub fn as_drawn(trees: [Tree]) -> Vec<Tree> {
+/// player stops where the trunk is seen (of the kinds `grown` or the hand's).
+pub fn as_drawn(trees: [Tree], grown: bool) -> Vec<Tree> {
     var out: Vec<Tree> = Vec::with_capacity(trees.len())
     for t in trees {
         var d = t
-        d.girth = drawn_girth(t)
+        d.girth = drawn_girth(t, grown)
         out.push(d)
     }
     out
 }
 
 /// Tree `t`'s girth as a player walks round it (`as_drawn`).
-pub fn drawn_girth(t: Tree) -> f32 {
+pub fn drawn_girth(t: Tree, grown: bool) -> f32 {
     if (t.state == State::Alive || t.state == State::Snag) && !t.pinned && t.tall > 2.0 {
-        max(t.girth, trunk_at(kind_of(t), t.tall, 1.2, t.fork))
+        max(t.girth, trunk_at(kind_of(t, grown), t.tall, 1.2, t.fork, grown))
     } else {
         t.girth
     }
@@ -1574,19 +1603,19 @@ pub fn scale_of(k: u32, tall: f32) -> f32 {
 /// (`engine::plant::Instance::thick`): as thick as its history grew it at breast height, never
 /// thinner than its kind's, to `THICKEST` times (an ancient's trunk, its kind's scaled to its
 /// height, was a pole: the owner's ancients, larger than life).
-pub fn thickness(t: Tree, k: u32) -> f32 {
-    let kinds = trunk_at(k, drawn_tall(k, t.tall), 1.2, t.fork)
+pub fn thickness(t: Tree, k: u32, grown: bool) -> f32 {
+    let kinds = trunk_at(k, drawn_tall(k, t.tall), 1.2, t.fork, grown)
     clamp(t.girth / max(kinds, 1.0e-3), 1.0, THICKEST)
 }
 
 const THICKEST: f32 = 3.0
 
-/// The kind a standing tree (living, or a snag) is drawn as.
-pub fn kind_of(t: Tree) -> u32 {
+/// The kind a standing tree (living, or a snag) is drawn as, of the kinds `grown` or the hand's.
+pub fn kind_of(t: Tree, grown: bool) -> u32 {
     if t.state == State::Snag {
         snag_kind(t)
     } else {
-        drawn_kind(t)
+        drawn_kind(t, grown)
     }
 }
 
@@ -1604,10 +1633,11 @@ fn snag_kind(t: Tree) -> u32 {
 
 /// The kind a living tree is drawn as: its species, grown in the open or in the forest (by the
 /// light its crown had), or young; and where browsing keeps its branches above a line (its
-/// `lift`), the forest's form when the open one's would come below it.
-pub fn drawn_kind(t: Tree) -> u32 {
+/// `lift`), the forest's form when the open one's would come below it (the kinds `grown` or the
+/// hand's).
+pub fn drawn_kind(t: Tree, grown: bool) -> u32 {
     let k = crowded_form(t, living_kind(t))
-    if t.lift <= 0.0 || lowest_placed(k, t.tall, t.fork) >= t.lift {
+    if t.lift <= 0.0 || lowest_placed(k, t.tall, t.fork, grown) >= t.lift {
         k
     } else if k == OAK_OPEN {
         OAK_FOREST
@@ -1714,13 +1744,16 @@ fn settle_log(inst: Instance, trunk: Tube<4>, height: fn(vec2) -> f32, sink: f32
     out
 }
 
-/// The same decayed, terrain-supported fallen tree for drawing and collision.
-pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Placed {
-    let rot = engine::growth::rot_of(
-        f32(present - t.fell),
-        HABITS[min(t.kind, u32(Species::Alder))].rots,
-        t.tall,
-    )
+/// The same decayed, terrain-supported fallen tree for drawing and collision, of the kinds
+/// `grown` (rotting by its species' habit: `engine::growth::rot_of`) or the hand's.
+pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32, grown: bool) -> Placed {
+    let rot = if grown {
+        engine::growth::rot_of(
+            f32(present - t.fell),
+            HABITS[min(t.kind, u32(Species::Alder))].rots,
+            t.tall,
+        )
+    } else { clamp(f32(present - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0) }
     let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
     let kind = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
     var p = instance(
@@ -1736,22 +1769,51 @@ pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Place
         tint: tint(t.seed),
     )
     p.at.scale = clamp(len / BUILT[kind], 0.25, 1.8)
-    p.at = settle_log(p.at, TRUNKS[kind], height, 0.3 * rot * t.girth)
-    // Its rot in its history (its bark's loss and its brackets read it: `Bark::rots`,
-    // `Leaves::after`), on damp ground under the canopy's light.
-    p.at.history = std::gpu::Unorm8x4::encode(vec4(rot, 0.3, 0.6, 1.0))
+    p.at = settle_log(p.at, trunk_of(kind, grown), height, 0.3 * rot * t.girth)
+    if grown {
+        // Its rot in its history (its bark's loss and its brackets read it: `Bark::rots`,
+        // `Leaves::after`), on damp ground under the canopy's light.
+        p.at.history = std::gpu::Unorm8x4::encode(vec4(rot, 0.3, 0.6, 1.0))
+    }
     p
 }
 
-const FALLEN_LIMBS = [kind_plant(LOG_SHORT).limbs, kind_plant(LOG_LONG).limbs]
+/// The room a fallen tree's limbs are held in (`fallen_limbs`): its trunk's and its root plate's
+/// (a plant's room, `engine::plant::MAX_LIMBS`, is a grown crown's: 64 KiB a copy).
+pub const FALLEN_ROOM: u32 = 32
 
-/// The most limbs a fallen tree has (its trunk and its root plate's roots: `fallen_limbs`).
-pub const FALLEN_LIMBS_MOST: u32 = max(FALLEN_LIMBS[0].len(), FALLEN_LIMBS[1].len())
+/// The fallen trees' limbs, short and long, the hand's and grown (`fallen_limbs`).
+const FALLEN_LIMBS = [
+    fallen_of(kind_plant(LOG_SHORT, grown: false)),
+    fallen_of(kind_plant(LOG_LONG, grown: false)),
+]
+const FALLEN_GROWN = [
+    fallen_of(kind_plant(LOG_SHORT, grown: true)),
+    fallen_of(kind_plant(LOG_LONG, grown: true)),
+]
+
+fn fallen_of(p: Plant) -> Bounded<Tube<4>, FALLEN_ROOM> {
+    var out: Bounded<Tube<4>, FALLEN_ROOM> = Bounded::new()
+    for i in 0..p.limbs.len() {
+        assert(!out.is_full(), f"a fallen tree's limbs past {FALLEN_ROOM}")
+        out.push(p.limbs[i])
+    }
+    out
+}
+
+/// The most limbs a fallen tree of the kinds `grown` or the hand's has (its trunk and its root
+/// plate's roots: `fallen_limbs`).
+pub fn fallen_most(grown: bool) -> u32 {
+    if grown {
+        max(FALLEN_GROWN[0].len(), FALLEN_GROWN[1].len())
+    } else { max(FALLEN_LIMBS[0].len(), FALLEN_LIMBS[1].len()) }
+}
 
 /// All of a placed log's wood in the world, including its root plate. Collision samples the
 /// same curved axes and radii as the renderer, including decay, scale, yaw and terrain pitch.
-pub fn fallen_limbs(p: Placed) -> Bounded<Tube<4>, engine::plant::MAX_LIMBS> {
-    var limbs = FALLEN_LIMBS[if p.kind == LOG_LONG { 1 } else { 0 }]
+pub fn fallen_limbs(p: Placed, grown: bool) -> Bounded<Tube<4>, FALLEN_ROOM> {
+    let long = if p.kind == LOG_LONG { 1 } else { 0 }
+    var limbs = if grown { FALLEN_GROWN[long] } else { FALLEN_LIMBS[long] }
     for i in 0..limbs.len() {
         var limb = limbs[i]
         for j in 0..4 {
@@ -1764,8 +1826,9 @@ pub fn fallen_limbs(p: Placed) -> Bounded<Tube<4>, engine::plant::MAX_LIMBS> {
 }
 
 /// The instances of a tile's trees, `height(p)` the ground's height: the great oak (the kept
-/// tree), each tree the history kept, living, standing dead or fallen.
-pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Placed> {
+/// tree), each tree the history kept, living, standing dead or fallen, of the kinds `grown` or
+/// the hand's.
+pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32, grown: bool) -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
     for t in trees {
         let y = height(t.at)
@@ -1785,9 +1848,9 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Place
             )
         } else if t.state == State::Alive {
             if t.tall > 1.2 {
-                let k = drawn_kind(t)
+                let k = drawn_kind(t, grown)
                 let tall = drawn_tall(k, t.tall)
-                let wide = crown_wide(t, k, tall)
+                let wide = crown_wide(t, k, tall, grown)
                 let tint = stand_tint(t.at, height, t.seed)
                 var p = instance(
                     k,
@@ -1801,7 +1864,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Place
                     wide: wide,
                     tint: tint,
                 )
-                p.at.thick = thickness(t, k)
+                p.at.thick = thickness(t, k, grown)
                 p.at.history = history(t, present)
                 out.push(p)
             }
@@ -1822,7 +1885,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32) -> Vec<Place
                 ),
             )
         } else if t.state == State::Log {
-            out.push(fallen_placement(t, height, present))
+            out.push(fallen_placement(t, height, present, grown))
         }
     }
     out
@@ -1839,11 +1902,11 @@ fn history(t: Tree, present: i32) -> std::gpu::Unorm8x4 {
     )
 }
 
-/// Each kind's plant.
-pub fn plants() -> Vec<Plant> {
+/// Each kind's plant, `grown` or the hand's (`kind_plant`).
+pub fn plants(grown: bool) -> Vec<Plant> {
     var out: Vec<Plant> = Vec::new()
     for k in 0..KINDS {
-        out.push(kind_plant(k))
+        out.push(kind_plant(k, grown))
     }
     out
 }
@@ -1979,7 +2042,17 @@ pub fn occluders_into(
                 }
             }
         }
-        // Its thickest limbs' cores (`plant::occluding_of`: fitted once to its kind's wood).
+        // A hand's kind's limbs, fitted at the tree.
+        for l in plant.limbs {
+            for k in 0..3 {
+                let (a, b, radius) = engine::plant::inner_wood_capsule(l, k, at)
+                if radius > 0.0 {
+                    out.push(engine::probes::Occluder { a, radius, b, solid: 1.0 })
+                }
+            }
+        }
+        // A grown kind's thickest limbs' cores (`plant::occluding_of`: fitted once to its kind's
+        // wood).
         for c in plant.cores {
             out.push(
                 engine::probes::Occluder {
@@ -1996,7 +2069,7 @@ pub fn occluders_into(
 @test
 fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
     for kind in [LOG_SHORT, LOG_LONG] {
-        let p = kind_plant(kind)
+        let p = kind_plant(kind, grown: false)
         let trunk = p.limbs[0]
         let cap = length(trunk.points[3] - trunk.points[2])
         assert(cap <= trunk.radii[1] * 0.6, f"log {kind} has a {cap} m pointed end")
@@ -2007,7 +2080,7 @@ fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
 @test
 fn fallen_logs_rest_on_slopes_and_clear_intervening_ground() {
     for kind in [LOG_SHORT, LOG_LONG] {
-        let trunk = TRUNKS[kind]
+        let trunk = trunk_of(kind, grown: false)
         for slope in [-0.45, 0.0, 0.45] {
             for yaw in [0.0, 0.8, 2.7] {
                 let height = |p: vec2| 2.0 + slope * (sin(yaw) * p.x + cos(yaw) * p.y)
@@ -2044,15 +2117,20 @@ fn fallen_logs_rest_on_slopes_and_clear_intervening_ground() {
 
 @test
 fn fallen_collision_wood_matches_the_rendered_root_plate_and_trunk() {
-    for kind in [LOG_SHORT, LOG_LONG] {
+    for (kind, grown) in [
+        (LOG_SHORT, false),
+        (LOG_LONG, false),
+        (LOG_SHORT, true),
+        (LOG_LONG, true),
+    ] {
         var inst = engine::plant::NO_INSTANCE
         inst.at = vec3(16.0, 5.0, -11.0)
         inst.scale = 1.4
         inst.yaw = 0.8
         inst.pitch = -0.37
         let placed = Placed { kind, at: inst }
-        let world = fallen_limbs(placed)
-        let local = kind_plant(kind).limbs
+        let world = fallen_limbs(placed, grown)
+        let local = kind_plant(kind, grown).limbs
         assert(world.len() == local.len() && world.len() > 1, "fallen root plate is missing")
         for i in 0..world.len() {
             for step in 0..13 {
@@ -2079,7 +2157,7 @@ fn fallen_collision_wood_matches_the_rendered_root_plate_and_trunk() {
 @test
 fn broadleaf_crowns_have_unequal_vertical_sprays() {
     for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
-        let p = authored_plant(kind)
+        let p = authored_plant(kind, grown: false)
         var lo = 2.0
         var hi = 0.0
         var small = 1.0e6
@@ -2223,7 +2301,7 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
     var omitted = 0
     var retained = 0
     for kind in [OAK_OPEN, OAK_FOREST, SNAG_BROAD, LOG_LONG] {
-        let p = authored_plant(kind)
+        let p = authored_plant(kind, grown: false)
         for fork in [-0.4, 0.0, 0.4] {
             let inst = Instance {
                 at: vec3(11.0, 3.0, -7.0),
@@ -2274,6 +2352,73 @@ fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
     assert(retained > 0 && omitted > 0, "curved twig cores were neither bounded nor omitted")
 }
 
+/// Every new limb of a hand's kind starts inside older wood. This catches chord-based
+/// attachments that leave visible gaps where a trunk or scaffold curves.
+@test
+fn living_branches_join_the_parent_wood() {
+    for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
+        let p = kind_plant(kind, grown: false)
+        for i in 1..p.limbs.len() {
+            let child = p.limbs[i]
+            if child.points[0].y < 0.1 {
+                continue
+            }
+            var nearest = 1.0e6
+            for j in 0..i {
+                for piece in 0..24 {
+                    let parent = p.limbs[j]
+                    let (a, _, ar) = limb_axis(parent, f32(piece) / 24.0)
+                    let (b, _, br) = limb_axis(parent, f32(piece + 1) / 24.0)
+                    let t = saturate(dot(child.points[0] - a, b - a) / dot(b - a, b - a))
+                    let d = length(child.points[0] - mix(a, b, vec3(t))) - mix(ar, br, t)
+                    nearest = min(nearest, d)
+                }
+            }
+            assert(nearest <= 0.005, f"kind {kind} branch {i} is detached by {nearest} m")
+        }
+    }
+}
+
+/// Every clump of a hand's living broad-leaved kind has its wood in it: its middle within 0.3 of
+/// its radius of a limb's axis (a shell of clumps over a few bare scaffolds, most of them with no
+/// wood to them, read as leaves floating off the tree: the owner's lookdev).
+@test
+fn every_clump_of_leaves_has_its_wood_in_it() {
+    let kinds = [
+        OAK_OPEN,
+        OAK_FOREST,
+        BEECH_OPEN,
+        BEECH_FOREST,
+        BIRCH_OPEN,
+        BIRCH_FOREST,
+        ALDER_A,
+        ALDER_B,
+        YOUNG_BROAD,
+        OAK_ANCIENT,
+        BEECH_ANCIENT,
+    ]
+    for kind in kinds {
+        let p = kind_plant(kind, grown: false)
+        assert(p.clumps.len() > 20, f"kind {kind} has {p.clumps.len()} clumps")
+        for i in 0..p.clumps.len() {
+            let c = p.clumps[i]
+            var nearest = 1.0e6
+            for l in 0..p.limbs.len() {
+                for piece in 0..32 {
+                    let (a, _, _) = limb_axis(p.limbs[l], f32(piece) / 32.0)
+                    let (b, _, _) = limb_axis(p.limbs[l], f32(piece + 1) / 32.0)
+                    let t = saturate(dot(c.centre - a, b - a) / max(dot(b - a, b - a), 1.0e-9))
+                    nearest = min(nearest, length(c.centre - mix(a, b, vec3(t))))
+                }
+            }
+            assert(
+                nearest <= 0.3 * c.radius + 1.0e-3,
+                f"kind {kind}'s clump {i} is {nearest} m from its wood, {c.radius} m across",
+            )
+        }
+    }
+}
+
 /// A veteran oak or beech is drawn as its own species' ancient kind, not the great oak: a beech
 /// with a beech's bark and leaves.
 @test
@@ -2289,19 +2434,34 @@ fn veterans_are_drawn_as_their_own_species() {
             h: habits[species],
             open: true,
         )
-        t.girth = VETERAN + 0.1
-        assert(drawn_kind(t) == ancient, f"a veteran of species {species} drawn as {drawn_kind(t)}")
-        t.girth = VETERAN - 0.1
-        assert(drawn_kind(t) != ancient, f"a younger tree of species {species} drawn as a veteran")
+        for grown in [false, true] {
+            t.girth = VETERAN + 0.1
+            let k = drawn_kind(t, grown)
+            assert(k == ancient, f"a veteran of species {species} drawn as {k}")
+            t.girth = VETERAN - 0.1
+            assert(
+                drawn_kind(t, grown) != ancient,
+                f"a younger tree of species {species} drawn as a veteran",
+            )
+        }
     }
     // Their looks (a grown kind keeps its authored kind's: `kind_plant`).
-    let (oak, beech) = (authored_plant(OAK_ANCIENT), authored_plant(BEECH_ANCIENT))
-    assert(beech.bark.light.x == authored_plant(BEECH_OPEN).bark.light.x, "a veteran beech's bark")
+    let (oak, beech) = (
+        authored_plant(OAK_ANCIENT, grown: false),
+        authored_plant(BEECH_ANCIENT, grown: false),
+    )
     assert(
-        beech.leaves.young.x == authored_plant(BEECH_OPEN).leaves.young.x,
+        beech.bark.light.x == authored_plant(BEECH_OPEN, grown: false).bark.light.x,
+        "a veteran beech's bark",
+    )
+    assert(
+        beech.leaves.young.x == authored_plant(BEECH_OPEN, grown: false).leaves.young.x,
         "a veteran beech's leaves",
     )
-    assert(oak.bark.light.x == authored_plant(OAK_OPEN).bark.light.x, "a veteran oak's bark")
+    assert(
+        oak.bark.light.x == authored_plant(OAK_OPEN, grown: false).bark.light.x,
+        "a veteran oak's bark",
+    )
 }
 
 /// A living tree is turned toward its light give or take its own share of `HEADING`, so a row of
@@ -2325,7 +2485,7 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
             open: true,
         )
         t.lean = vec2(1.0, 0.0)
-        let p = placed([t], |q| 0.0, now)
+        let p = placed([t], |q| 0.0, now, grown: true)
         let off = p[0].at.yaw - atan2(1.0, 0.0)
         assert(abs(off) <= HEADING + 1.0e-4, f"a tree turned {off} from its light")
         lo = min(lo, off)
@@ -2334,11 +2494,11 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
         log.state = State::Log
         log.fall = vec2(0.6, 0.8)
         log.fell = now - 5
-        let l = placed([log], |q| 0.0, now)
+        let l = placed([log], |q| 0.0, now, grown: true)
         assert(abs(l[0].at.yaw - atan2(0.6, 0.8)) < 1.0e-4, "a log turned from the way it fell")
         var kept = t
         kept.pinned = true
-        assert(placed([kept], |q| 0.0, now)[0].at.yaw == 0.0, "the great oak turned")
+        assert(placed([kept], |q| 0.0, now, grown: true)[0].at.yaw == 0.0, "the great oak turned")
     }
     assert(hi - lo > HEADING, f"the trees' turns span {hi - lo}: they stand alike")
 }

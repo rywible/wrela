@@ -162,7 +162,7 @@ impl Specimen {
 pub fn kinds_page(dir: str) -> Result<(), ToolError> {
     var rows = String::new()
     for k in 0..trees::kinds::KINDS {
-        let p = trees::kinds::kind_plant(k)
+        let p = trees::kinds::kind_plant(k, grown: true)
         let (w, h, px) = side_view(p, 512)
         write_png(
             image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) },

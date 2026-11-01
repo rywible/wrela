@@ -301,7 +301,8 @@ pub fn place(
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = density_scale(keep, k)
     let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
-    let grass = rand(seed, 3) < cover.a * at.thin * sward_density(flora, t.flora)
+    let dense = if flora.grown == 0 { 1.0 } else { sward_density(flora, t.flora) }
+    let grass = rand(seed, 3) < cover.a * at.thin * dense
     // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
     // the meadow's drifts of flowers (`bloom_drift`).
     let wxz = xz + keyed
@@ -1055,6 +1056,445 @@ pub fn species_row(g: FloraGenome, site: Site) -> Species {
     }
 }
 
+/// The wood's floor's species as the hand set them (0 is none: the generic herb), before they were
+/// grown (§E3): the flora of a program that hasn't adopted the grown one (`HAND_FLORA`, D40).
+pub const HAND_SPECIES: [Species; SPECIES_N] = [
+    Species {
+        colour: vec3(0.075, 0.13, 0.04),
+        shape: HERB,
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.0, 1.0),
+        light: vec2(0.0, 1.0),
+        tall: 0.1,
+        wide: 0.13,
+        bend: 0.7,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Bluebell: strap leaves, a haze of blue flowers; acid to neutral soil, shade.
+    Species {
+        colour: vec3(0.035, 0.085, 0.03),
+        shape: STRAP,
+        acid: vec2(0.3, 0.9),
+        wet: vec2(0.0, 0.65),
+        light: vec2(0.05, 0.5),
+        tall: 0.3,
+        wide: 0.022,
+        bend: 0.55,
+        bloom: 3,
+        blooms: 0.55,
+    },
+    // Dog's mercury: carpets of upright leaves on base-rich soil, in shade.
+    Species {
+        colour: vec3(0.05, 0.11, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.4),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.0, 0.5),
+        tall: 0.24,
+        wide: 0.06,
+        bend: 0.25,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Ramsons: broad bright leaves and white flowers on damp, rich soil.
+    Species {
+        colour: vec3(0.07, 0.15, 0.04),
+        shape: HERB,
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.4, 0.95),
+        light: vec2(0.0, 0.55),
+        tall: 0.28,
+        wide: 0.07,
+        bend: 0.45,
+        bloom: 1,
+        blooms: 0.35,
+    },
+    // Wood anemone: small leaves and white flowers, in light shade.
+    Species {
+        colour: vec3(0.06, 0.12, 0.035),
+        shape: HERB,
+        acid: vec2(0.15, 0.75),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.1, 0.6),
+        tall: 0.12,
+        wide: 0.05,
+        bend: 0.4,
+        bloom: 1,
+        blooms: 0.6,
+    },
+    // Bramble: arching canes of dark leaflets where light comes through: gaps and edges.
+    Species {
+        colour: vec3(0.035, 0.07, 0.025),
+        shape: BRACKEN,
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.0, 0.75),
+        light: vec2(0.25, 0.85),
+        tall: 0.75,
+        wide: 0.3,
+        bend: 0.95,
+        bloom: 1,
+        blooms: 0.05,
+    },
+    // Foxglove: tall spikes of purple flowers in glades, on acid soil.
+    Species {
+        colour: vec3(0.06, 0.11, 0.04),
+        shape: STRAP,
+        acid: vec2(0.5, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.35, 1.0),
+        tall: 1.1,
+        wide: 0.05,
+        bend: 0.1,
+        bloom: 3,
+        blooms: 0.9,
+    },
+    // Nettle: upright, on rich and worn ground, at edges.
+    Species {
+        colour: vec3(0.05, 0.10, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.3, 1.0),
+        tall: 0.7,
+        wide: 0.07,
+        bend: 0.15,
+        bloom: 0,
+        blooms: 0.0,
+        worn: 1.0,
+    },
+    // Pendulous sedge: long arching leaves in the wet.
+    Species {
+        colour: vec3(0.09, 0.13, 0.035),
+        shape: STRAP,
+        acid: vec2(0.0, 0.8),
+        wet: vec2(0.5, 1.0),
+        light: vec2(0.0, 0.8),
+        tall: 0.6,
+        wide: 0.025,
+        bend: 0.9,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Bilberry: low shrubby leaves on acid soil.
+    Species {
+        colour: vec3(0.05, 0.10, 0.025),
+        shape: HERB,
+        acid: vec2(0.6, 1.0),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.15, 0.75),
+        tall: 0.3,
+        wide: 0.06,
+        bend: 0.2,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Wavy hair-grass: fine tufts on acid soil.
+    Species {
+        colour: vec3(0.11, 0.14, 0.045),
+        shape: STRAP,
+        acid: vec2(0.55, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.2, 0.9),
+        tall: 0.35,
+        wide: 0.012,
+        bend: 0.6,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Moss in cushions where it's damp and shaded.
+    Species {
+        colour: vec3(0.07, 0.13, 0.02),
+        shape: HERB,
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.3, 1.0),
+        light: vec2(0.0, 0.4),
+        tall: 0.05,
+        wide: 0.14,
+        bend: 0.9,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Ivy: dark carpets in deep shade.
+    Species {
+        colour: vec3(0.025, 0.055, 0.02),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.8),
+        light: vec2(0.0, 0.3),
+        tall: 0.06,
+        wide: 0.08,
+        bend: 0.8,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Wood sorrel: pale trefoil leaves on acid, moist soil in shade.
+    Species {
+        colour: vec3(0.08, 0.15, 0.045),
+        shape: HERB,
+        acid: vec2(0.5, 1.0),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.0, 0.4),
+        tall: 0.07,
+        wide: 0.05,
+        bend: 0.5,
+        bloom: 1,
+        blooms: 0.3,
+    },
+    // Yellow pimpernel and bugle: low, with yellow and blue flowers, on wet rich soil.
+    Species {
+        colour: vec3(0.05, 0.10, 0.035),
+        shape: HERB,
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.45, 1.0),
+        light: vec2(0.05, 0.7),
+        tall: 0.1,
+        wide: 0.05,
+        bend: 0.5,
+        bloom: 2,
+        blooms: 0.4,
+    },
+    // Hart's-tongue fern: broad glossy straps on damp, base-rich banks in shade.
+    Species {
+        colour: vec3(0.06, 0.13, 0.03),
+        shape: STRAP,
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.4, 1.0),
+        light: vec2(0.0, 0.4),
+        tall: 0.35,
+        wide: 0.05,
+        bend: 0.6,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Wood melick: fine, pale grass in shade on neutral soil.
+    Species {
+        colour: vec3(0.08, 0.13, 0.04),
+        shape: STRAP,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.7),
+        light: vec2(0.05, 0.5),
+        tall: 0.3,
+        wide: 0.01,
+        bend: 0.7,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Red campion: pink flowers in light shade and at the wood's edges.
+    Species {
+        colour: vec3(0.05, 0.09, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.2, 0.8),
+        light: vec2(0.2, 0.8),
+        tall: 0.5,
+        wide: 0.05,
+        bend: 0.2,
+        bloom: 4,
+        blooms: 0.5,
+    },
+    // Herb Robert: low, red-stemmed, small pink flowers, in shade on stony ground.
+    Species {
+        colour: vec3(0.065, 0.09, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.7),
+        light: vec2(0.05, 0.6),
+        tall: 0.2,
+        wide: 0.06,
+        bend: 0.5,
+        bloom: 4,
+        blooms: 0.4,
+    },
+    // Enchanter's nightshade: small white flowers on damp ground in shade.
+    Species {
+        colour: vec3(0.06, 0.11, 0.035),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.3, 0.9),
+        light: vec2(0.0, 0.45),
+        tall: 0.35,
+        wide: 0.05,
+        bend: 0.3,
+        bloom: 1,
+        blooms: 0.4,
+    },
+    // Lesser celandine and primrose: low, yellow flowers in damp light shade.
+    Species {
+        colour: vec3(0.06, 0.12, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.3, 0.9),
+        light: vec2(0.1, 0.65),
+        tall: 0.09,
+        wide: 0.07,
+        bend: 0.7,
+        bloom: 2,
+        blooms: 0.5,
+    },
+    // The open's species (the knapweed and crested dog's-tail meadow; acid grassland on acid
+    // soil; rush pasture in the wet), mixed into the grass where the canopy opens.
+    // Common knapweed: purple heads on neutral soil.
+    Species {
+        colour: vec3(0.05, 0.09, 0.035),
+        shape: HERB,
+        acid: vec2(0.0, 0.65),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.6, 1.0),
+        tall: 0.55,
+        wide: 0.04,
+        bend: 0.15,
+        bloom: 3,
+        blooms: 0.6,
+    },
+    // Ox-eye daisy: white heads on dry, neutral soil.
+    Species {
+        colour: vec3(0.06, 0.11, 0.035),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.6, 1.0),
+        tall: 0.45,
+        wide: 0.04,
+        bend: 0.2,
+        bloom: 1,
+        blooms: 0.7,
+    },
+    // Meadow buttercup: yellow on damp, rich soil.
+    Species {
+        colour: vec3(0.06, 0.12, 0.03),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.55, 1.0),
+        tall: 0.4,
+        wide: 0.05,
+        bend: 0.25,
+        bloom: 2,
+        blooms: 0.6,
+    },
+    // Ribwort plantain: a rosette of ribbed straps, its dark spikes; on worn ground too.
+    Species {
+        colour: vec3(0.05, 0.10, 0.04),
+        shape: STRAP,
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.55, 1.0),
+        tall: 0.25,
+        wide: 0.035,
+        bend: 0.6,
+        bloom: 0,
+        blooms: 0.0,
+        worn: 0.7,
+    },
+    // Yarrow: feathery leaves, flat white heads, on dry ground.
+    Species {
+        colour: vec3(0.07, 0.11, 0.05),
+        shape: BRACKEN,
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.5),
+        light: vec2(0.6, 1.0),
+        tall: 0.35,
+        wide: 0.08,
+        bend: 0.3,
+        bloom: 1,
+        blooms: 0.5,
+    },
+    // Broad-leaved dock: big dark leaves on rich, trodden ground by paths.
+    Species {
+        colour: vec3(0.04, 0.08, 0.025),
+        shape: HERB,
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.45, 1.0),
+        tall: 0.4,
+        wide: 0.14,
+        bend: 0.5,
+        bloom: 0,
+        blooms: 0.0,
+        worn: 1.0,
+    },
+    // Soft rush: dense stiff tufts, dark, in the wet.
+    Species {
+        colour: vec3(0.04, 0.09, 0.03),
+        shape: STRAP,
+        acid: vec2(0.2, 1.0),
+        wet: vec2(0.6, 1.0),
+        light: vec2(0.4, 1.0),
+        tall: 0.75,
+        wide: 0.012,
+        bend: 0.08,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Creeping thistle: spiny, purple, on worn and grazed ground.
+    Species {
+        colour: vec3(0.06, 0.10, 0.05),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.55, 1.0),
+        tall: 0.65,
+        wide: 0.05,
+        bend: 0.1,
+        bloom: 3,
+        blooms: 0.4,
+        worn: 0.8,
+    },
+    // Tormentil and heath bedstraw: low, yellow and white, on acid grassland.
+    Species {
+        colour: vec3(0.05, 0.10, 0.03),
+        shape: HERB,
+        acid: vec2(0.55, 1.0),
+        wet: vec2(0.0, 0.8),
+        light: vec2(0.5, 1.0),
+        tall: 0.1,
+        wide: 0.04,
+        bend: 0.6,
+        bloom: 2,
+        blooms: 0.6,
+    },
+    // Red clover: low trefoils and pink heads in the sward.
+    Species {
+        colour: vec3(0.06, 0.12, 0.045),
+        shape: HERB,
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.6, 1.0),
+        tall: 0.18,
+        wide: 0.06,
+        bend: 0.5,
+        bloom: 4,
+        blooms: 0.5,
+    },
+    // Cock's-foot: coarse blue-green tussocks.
+    Species {
+        colour: vec3(0.07, 0.11, 0.07),
+        shape: STRAP,
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.5, 1.0),
+        tall: 0.6,
+        wide: 0.02,
+        bend: 0.5,
+        bloom: 0,
+        blooms: 0.0,
+    },
+    // Ling heather: low dark shrubs, pink-purple in flower, on dry acid ground.
+    Species {
+        colour: vec3(0.035, 0.055, 0.03),
+        shape: BRACKEN,
+        acid: vec2(0.7, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.5, 1.0),
+        tall: 0.35,
+        wide: 0.12,
+        bend: 0.2,
+        bloom: 4,
+        blooms: 0.6,
+    },
+]
+
 /// How many species there are (`SPECIES`).
 pub const SPECIES_N: u32 = 33
 /// The upright rush in the species table.
@@ -1073,6 +1513,21 @@ pub struct Flora: Copy + GpuData {
     /// A grass's tillers against the open's (`growth::grow_tussock`) at four wetnesses (rows) and
     /// four lights (each row's components), `FLORA_LIGHTS` both: the sward's density.
     pub sward: [vec4; 4],
+    /// Whether it's grown (1: `flora_at`'s) or the hand's (0: `HAND_FLORA`, whose ferns' and
+    /// bracken's sizes, kinds' shares and sward are as before §E3, and the tables above unread).
+    pub grown: u32,
+}
+
+/// The flora as the hand set it (`HAND_SPECIES`): a program's that hasn't adopted the grown one
+/// (`Grass::new`'s `grown`: the floor's and the clearing's, D40).
+pub const HAND_FLORA: Flora = Flora {
+    species: HAND_SPECIES,
+    ferns: [vec4(0.0); 4],
+    brackens: [vec4(0.0); 4],
+    fern_range: vec4(0.0),
+    bracken_range: vec4(0.0),
+    sward: [vec4(1.0); 4],
+    grown: 0,
 }
 
 /// The floor's flora a season grown (`flora_at`), at build.
@@ -1140,6 +1595,7 @@ pub fn flora_at(age: f32) -> Flora {
         fern_range: vec4(FERN_GENOME.light, FERN_GENOME.wet),
         bracken_range: vec4(BRACKEN_GENOME.light, BRACKEN_GENOME.wet),
         sward,
+        grown: 1,
     }
 }
 
@@ -1173,7 +1629,8 @@ pub fn sward_density(flora: Flora, h: vec4) -> f32 {
 /// its kind's habitat suits the place (a fern in moist shade, bracken in a gap's light on drier
 /// ground): fern, bracken, herb.
 pub fn kind_shares(flora: Flora, under: vec4, h: vec4) -> vec3 {
-    let within = |x: f32, lo: f32, hi: f32| smoothstep(lo - 0.15, lo, x) * smoothstep(hi + 0.15, hi, x)
+    let within = |x: f32, lo: f32, hi: f32| smoothstep(lo - 0.15, lo, x) *
+        smoothstep(hi + 0.15, hi, x)
     let fr = flora.fern_range
     let br = flora.bracken_range
     vec3(
@@ -1315,8 +1772,8 @@ fn under_plant(
     if occupied <= 0.0 {
         return
     }
-    // Its kind by the place's habitat (`kind_shares`).
-    let shares = kind_shares(flora, u, t.flora)
+    // Its kind by the place's habitat (`kind_shares`; a hand's flora, by its patches alone).
+    let shares = if flora.grown == 0 { u.yzw } else { kind_shares(flora, u, t.flora) }
     let r = rand(p.seed, 10) * (shares.x + shares.y + shares.z)
     let kind = if p.forb || rand(p.seed, 34) < rush_habitat(t.flora) || r >= shares.x + shares.y {
         HERB
@@ -1333,6 +1790,10 @@ fn under_plant(
     let (tall, wide, bend) = if sp > 0 {
         // Each species keeps its habit: rush stems stay upright while strap leaves arch.
         (leaf_height(spec) * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
+    } else if kind == FERN && flora.grown == 0 {
+        (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
+    } else if kind == BRACKEN && flora.grown == 0 {
+        (0.75 + 0.45 * v, 0.32, 0.5 + 0.2 * rand(p.seed, 7))
     } else if kind == FERN {
         // Its frond grown at the place's light (`flora_at`: a shade fern's larger).
         let f = frond_at(flora.ferns, t.flora.z)
@@ -1533,9 +1994,11 @@ pub struct Grass {
     kept: Vec<Kept>,
     /// Each tier's group of blades' indices (`group_indices`).
     indices: GpuBuffer<u32>,
-    /// The wood's floor's species (`SPECIES`), where kernels and shaders read them: a constant
+    /// The wood's floor's species (its flora's), where kernels and shaders read them: a constant
     /// array indexed by a value is copied into each invocation.
     species: GpuBuffer<Species>,
+    /// Its flora: grown (`FLORA`) or the hand's (`HAND_FLORA`).
+    flora: Flora,
 }
 
 /// What a ring's placement was made from: its cells, the render origin's offset (`keyed`), the
@@ -1566,7 +2029,10 @@ const UNPLACED = Kept {
 }
 
 impl Grass {
-    pub fn new() -> Grass {
+    /// A program's grass, its flora `grown` (§E3: the vale's) or the hand's (`HAND_FLORA`: the
+    /// floor's and the clearing's until they adopt it, D40).
+    pub fn new(grown: bool) -> Grass {
+        let flora = if grown { FLORA } else { HAND_FLORA }
         var rings: Vec<AppendBuffer<Blade>> = Vec::new()
         var flowers: Vec<AppendBuffer<Flower>> = Vec::new()
         var kept: Vec<Kept> = Vec::new()
@@ -1588,7 +2054,8 @@ impl Grass {
             calls: 0,
             kept,
             indices: buffer_of(group_indices()),
-            species: buffer_of(SPECIES),
+            species: buffer_of(flora.species),
+            flora,
         }
     }
 
@@ -1616,7 +2083,7 @@ impl Grass {
     ) {
         let half = atan(cam.tan_half * cam.aspect) + 0.15
         let ahead = cos(half + 0.35)
-        let flora = FLORA
+        let flora = self.flora
         let keyed = cam.keyed()
         let probed = vec4(grid.corner, grid.spacing, f32(grid.cols))
         var changed = false

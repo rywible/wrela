@@ -327,7 +327,8 @@ fn the_vales_small_causes_are_placed(s: Vale) {
 }
 
 /// The first ring of near trees (§E7: the `FIRST_N` nearest within 40 m of the first eye) grown and
-/// drawn as themselves within the frames, each grown (nothing is kept in a test's storage). Its
+/// drawn as themselves within the frames (none as its archetype: `Landscape::ring_fallen_back`),
+/// each grown (nothing is kept in a test's storage). Its
 /// time is printed, not judged: a frame test's host runs its parallel work on few helpers, so the
 /// ring's growths queue; the budget (1,000 ms) is measured with a played page's helpers by
 /// `wrela tool grow -- --hash` (docs/bench.md "E7").
@@ -337,4 +338,5 @@ fn the_first_ring_grows_before_the_vale_is_ready(s: Vale) {
     let Some(ms) = land.ring_ms else { panic("the first ring wasn't drawn within 900 frames") }
     print(f"the first ring: {land.ring.len()} trees in {ms} ms")
     assert(land.ring.len() == land::stage::FIRST_N, f"{land.ring.len()} trees in the first ring")
+    assert(land.ring_fallen_back == 0, f"{land.ring_fallen_back} of the ring drawn as archetypes")
 }

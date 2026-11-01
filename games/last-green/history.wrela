@@ -84,7 +84,7 @@ pub const BAKED: Shipped = ship("floor", bake(forked(grown(BAKE)), tiles_lo(), t
 /// The history with each standing tree's fork chosen among its neighbours (`trees::kinds::forked`).
 pub fn forked(h: take History) -> History {
     let all = h.trees.clone()
-    History { trees: trees::kinds::forked(take all), ..h }
+    History { trees: trees::kinds::forked(take all, main::GROWN_WOOD), ..h }
 }
 
 /// The bake read back: the floor's decisions.
@@ -175,7 +175,7 @@ pub const OBSTACLES: Obstacles = obstacles(decisions())
 fn obstacles(u: land::bake::Unbaked) -> Obstacles {
     let m = map::map()
     obstacles_of(
-        trees::kinds::as_drawn(u.trees),
+        trees::kinds::as_drawn(u.trees, main::GROWN_WOOD),
         species::HABITS,
         u.streams,
         stones::stones(m),
@@ -241,7 +241,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
         take u.wear,
     )
     // The crowns the renderer draws, and what's built (AC3's calibration).
-    e.crowns = trees::kinds::drawn_crowns(e.trees)
+    e.crowns = trees::kinds::drawn_crowns(e.trees, main::GROWN_WOOD)
     e.solids = blockouts::solids(m)
     let c = check(ground::GROUND, m, species::HABITS, e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::GROUND, m, c)

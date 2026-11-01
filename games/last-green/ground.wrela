@@ -608,7 +608,10 @@ impl Ground {
             trodden,
             rim,
             rock_albedo,
-            moss: land::cover::moss_pair(self.moss, at.xz),
+            grown: main::GROWN_WOOD,
+            moss: if main::GROWN_WOOD { land::cover::moss_pair(self.moss, at.xz) } else {
+                vec2(0.0)
+            },
         )
     }
 }

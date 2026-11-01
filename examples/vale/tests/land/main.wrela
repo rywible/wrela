@@ -275,7 +275,12 @@ fn the_ground_reads_its_soil() {
 @test
 fn every_plant_the_vale_draws_is_grown() {
     let d = vale::history::decisions()
-    let placed = trees::kinds::placed(d.trees, vale::landscape::height_at, vale::history::PRESENT)
+    let placed = trees::kinds::placed(
+        d.trees,
+        vale::landscape::height_at,
+        vale::history::PRESENT,
+        grown: true,
+    )
     var authored = 0
     var by_kind = [0; trees::kinds::KINDS]
     for p in placed {

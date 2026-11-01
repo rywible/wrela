@@ -101,6 +101,11 @@ pub trait Tiles: Copy + Eq {
     /// Tree `t`, drawn as kind `k`, as a near individual's growth (its own history's light and
     /// events), if its kind is grown.
     fn individual(self, t: Tree, k: u32) -> Option<Grow>
+
+    /// Whether its wood is grown (§E: its grass's flora, `engine::grass::Grass::new`, as its
+    /// trees' kinds, `trees::kinds::kind_plant`), or the hand's (the floor's until it adopts it,
+    /// D40).
+    fn grown(self) -> bool
 }
 
 /// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
@@ -196,8 +201,10 @@ pub struct Landscape<T: Tiles> {
     pub ring_from: Option<f64> = None,
     pub ring_said: bool = false,
     /// The milliseconds the first ring took, from its first choosing to its last tree drawn, once
-    /// it's drawn (`say_ring`).
+    /// it's drawn (`say_ring`), and how many of its trees are drawn as their archetypes, not
+    /// themselves (their cards outgrew their room in the wood: `Wood::set_near`).
     pub ring_ms: Option<f32> = None,
+    pub ring_fallen_back: u32 = 0,
 }
 
 /// A near individual (`near_trees`): its tree's tile and its instance there (its index in the
@@ -293,7 +300,7 @@ pub fn landscape<T: Tiles>(
         far_layer: Vec::new(),
         own: Vec::new(),
         far_fetch: tiles.fetch("far.bin"),
-        grass: Grass::new(),
+        grass: Grass::new(grown: tiles.grown()),
         water_verts: buffer_of(mesh.verts.clone(), at_least: 1),
         water_tris: buffer_of(water_tris, at_least: 1),
         water_args: buffer(max(water_tiles.len(), 1)),
@@ -1654,6 +1661,7 @@ fn say_ring<T: Tiles>(s: mut Landscape<T>) {
     )
     var h = std::hash::Hasher::new()
     var cached = 0
+    var fallen_back = 0
     var grow_ms = 0.0
     var drawn_ms = 0.0
     for (tile, j) in placed {
@@ -1665,16 +1673,20 @@ fn say_ring<T: Tiles>(s: mut Landscape<T>) {
                 if o.from_cache {
                     cached += 1
                 }
+                if !o.itself {
+                    fallen_back += 1
+                }
             }
         }
     }
+    s.ring_fallen_back = fallen_back
     let ms = match s.ring_from {
         Some(t) => 1000.0 * (now() - t),
         None => 0.0,
     }
     s.ring_ms = Some(f32(ms))
     print(
-        f"grown: the first ring, {placed.len()} trees in {ms:.0} ms ({cached} from the storage; the slowest grown in {grow_ms:.0} ms and drawn in {drawn_ms:.0}); their shapes' hash {h.finish():016x}",
+        f"grown: the first ring, {placed.len()} trees in {ms:.0} ms ({cached} from the storage, {fallen_back} drawn as their archetypes; the slowest grown in {grow_ms:.0} ms and drawn in {drawn_ms:.0}); their shapes' hash {h.finish():016x}",
     )
 }
 

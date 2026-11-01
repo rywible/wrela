@@ -43,7 +43,7 @@ fn a_tree_fallen_twenty_years_has_lost_its_bark_and_grows_brackets() {
     assert(fungi_on(rot, 17.0, 3).len() >= 1, f"rot {rot}: no bracket")
     assert(fungi_on(0.1, 17.0, 3).len() == 0, "a fresh fall fruits")
     for k in [LOG_SHORT, LOG_LONG] {
-        let p = kind_plant(k)
+        let p = kind_plant(k, grown: true)
         assert(p.limbs.len() > 2 && p.clumps.len() >= 1, f"log kind {k}: {p.limbs.len()} limbs")
         assert(p.leaves.after > 0.0 && p.bark.rots > 0.0, f"log kind {k}: its rot unread")
     }
