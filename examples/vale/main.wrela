@@ -108,11 +108,15 @@ fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
 pub fn init() -> Vale {
     // The archetypes grown at build, as this host holds them (§E7's hashes: the same everywhere).
     var h = std::hash::Hasher::new()
-    for b in trees::archetypes::GROWN {
-        h.write_u32(u32(b))
+    borrow grown = trees::archetypes::GROWN
+    for i in 0..(grown.len() / 4) {
+        h.write_u32(land::bake::get_u32(grown, 4 * i))
+    }
+    for i in (4 * (grown.len() / 4))..grown.len() {
+        h.write_u32(u32(grown[i]))
     }
     print(
-        f"grown: the archetypes, {trees::archetypes::GROWN.len()} bytes; their hash {engine::growth::hex(h.finish())}",
+        f"grown: the archetypes, {trees::archetypes::GROWN.len()} bytes; their hash {h.finish():016x}",
     )
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)

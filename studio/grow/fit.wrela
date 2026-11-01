@@ -15,6 +15,7 @@ use std::tool::files
 use std::tool::image
 use toolkit::cma::Cma
 use toolkit::whole::{data_bytes, joined}
+use specimens::light_a_year
 use trees::genomes::genomes
 
 /// A silhouette mask's cells a side.
@@ -100,10 +101,7 @@ pub fn genome_of(c: Candidate) -> Genome {
 pub fn grown(c: Candidate) -> Shape {
     let g = genome_of(c)
     let site = Site { age: c.age, light: c.light, wind: c.wind, slope: c.slope }
-    let light = if c.light >= 1.0 { Vec::new() } else {
-        Vec::filled(u32(ceil(max(c.age, 1.0))), c.light)
-    }
-    let t = grow_graph(g, site, light, vec2(0.0), [], c.seed)
+    let t = grow_graph(g, site, light_a_year(c.age, c.light), vec2(0.0), [], c.seed)
     shape_of(t, g, measured: false)
 }
 

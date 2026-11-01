@@ -603,7 +603,7 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
 /// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
 /// radius at the foot: crooked a little, its torn roots or stump at the foot.
 /// The roots of a fallen tree's root plate (**proposed**).
-pub const ROOTS: u32 = 12
+const ROOTS: u32 = 12
 
 fn log(s: u32, long: f32, girth: f32) -> Plant {
     let bark = Bark {
@@ -1744,6 +1744,9 @@ pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32, present: i32) -> Place
 }
 
 const FALLEN_LIMBS = [kind_plant(LOG_SHORT).limbs, kind_plant(LOG_LONG).limbs]
+
+/// The most limbs a fallen tree has (its trunk and its root plate's roots: `fallen_limbs`).
+pub const FALLEN_LIMBS_MOST: u32 = max(FALLEN_LIMBS[0].len(), FALLEN_LIMBS[1].len())
 
 /// All of a placed log's wood in the world, including its root plate. Collision samples the
 /// same curved axes and radii as the renderer, including decay, scale, yaw and terrain pitch.

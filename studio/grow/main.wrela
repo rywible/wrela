@@ -33,10 +33,9 @@
 // once in Chrome, printing each run's `grown:` lines (its archetypes' hash, its first ring's
 // trees, time and hash: hash.wrela) and failing unless they're the same (§E7's determinism).
 
-use engine::growth::into_plant
 use engine::growth::side_view
 use engine::plant::{Bark, Leaves}
-use fit::{EVALUATIONS, MASK, candidate_json, fit, genome_of, mask_rgba, read_mask, silhouette}
+use fit::{EVALUATIONS, MASK, candidate_json, fit, mask_rgba, read_mask, silhouette}
 use goal::{parse, reach, specimen_of}
 use specimens::{AGES, Ask, LIGHTS, NAMES, Specimen, index_of, kinds_page, page, specimen, write}
 use std::tool::blob::Data
@@ -178,23 +177,8 @@ fn fitted(given: [String], path: str) -> Result<(), ToolError> {
         )?
     }
     // Its side view, the specimens' (on this thread: its plant is 130 KB).
-    let g = genome_of(f.best)
-    let t = engine::growth::grow_graph(
-        g,
-        engine::growth::Site {
-            age: f.best.age,
-            light: f.best.light,
-            wind: f.best.wind,
-            slope: f.best.slope,
-        },
-        if f.best.light >= 1.0 { Vec::new() } else {
-            Vec::filled(u32(ceil(f.best.age)), f.best.light)
-        },
-        vec2(0.0),
-        [],
-        f.best.seed,
-    )
-    let (p, _) = into_plant(t, g, Leaves {}, Bark {})
+    var p = engine::plant::plant(Leaves {}, Bark {})
+    engine::growth::plant_of(shape, Leaves {}, Bark {}, 1.1, mut p)
     let (w, h, px) = side_view(p, 1024)
     write_png(
         image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) },

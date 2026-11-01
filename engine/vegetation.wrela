@@ -712,8 +712,11 @@ pub fn bark_shade<Q: Switches, Y: Style>(
     var albedo = mix(bark.dark, bark.light, vec3(tone))
     // Dead wood's bark gone by its rot (`growth::bare_share`, in patches round and along it): the
     // weathered wood under it, grey and smooth.
-    let peeled = bark.rots *
-        smoothstep(-0.04, 0.04, bare_share(history.x) - noise::noise2(b.along * vec2(3.0, 0.8)))
+    // (Its noise only on rotting wood: a living kind's `rots` is 0.)
+    let peeled = if bark.rots > 0.0 {
+        bark.rots *
+            smoothstep(-0.04, 0.04, bare_share(history.x) - noise::noise2(b.along * vec2(3.0, 0.8)))
+    } else { 0.0 }
     albedo = mix(albedo, vec3(0.30, 0.27, 0.22) * (0.85 + 0.3 * tone), vec3(peeled))
     albedo = mix(albedo, bark.foot.xyz * (0.45 + 1.1 * mix(0.5, foot_tone, fine)), vec3(foot))
     // Darker down its furrows and cracks, as their depth hides them from the light: as much as

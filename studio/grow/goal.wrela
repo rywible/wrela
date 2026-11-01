@@ -22,7 +22,7 @@ use engine::growth::{
     grow_graph, into_plant, limbs_through, side_view, values_of,
 }
 use engine::plant::{Bark, Leaves}
-use specimens::{Ask, NAMES, SHARES, Specimen, index_of}
+use specimens::{Ask, NAMES, SHARES, Specimen, index_of, light_a_year}
 use std::tool::ToolError
 use trees::genomes::genomes
 
@@ -179,9 +179,7 @@ pub fn parse(text: str) -> Result<Goal, ToolError> {
 /// Goal `g` grown with genome `gen`.
 fn grown_with(g: Goal, gen: Genome) -> TreeGraph {
     let site = Site { age: g.age, light: g.light, wind: g.exposure }
-    let light = if g.light >= 1.0 { Vec::new() } else {
-        Vec::filled(u32(ceil(max(g.age, 1.0))), g.light)
-    }
+    let light = light_a_year(g.age, g.light)
     let lean = match g.light_from {
         Some(d) => d * LEAN,
         None => vec2(0.0),

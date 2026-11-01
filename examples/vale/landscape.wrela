@@ -562,7 +562,7 @@ impl Ground {
             trodden: fields.y,
             rim: 0.0,
             rock_albedo: rock_albedo,
-            moss: land::cover::moss_at(self.moss, at.xz),
+            moss: land::cover::moss_pair(self.moss, at.xz),
         )
         // The history's wetness on whatever covers it; nothing of the wood's floor grows on the
         // mere's bed: its water covers it.

@@ -151,7 +151,7 @@ pub struct Plant: Copy + GpuData {
 /// A plant as the probes' occluders read it (`occluding_of`): its thickest limbs and its largest
 /// clumps, on the heap. A helper gathering occluders reads these, never a `Plant` (128 KiB at
 /// `MAX_LIMBS`: a copy of one overflowed a browser helper's stack, and the job never came back).
-pub struct Occluding {
+pub struct Occluding: Clone {
     pub cores: Vec<Core>,
     pub clumps: Vec<Clump>,
 }

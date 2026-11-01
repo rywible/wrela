@@ -104,7 +104,7 @@ impl Grown {
             trodden: fields.y,
             rim: 0.0,
             rock_albedo: ground::rock_albedo,
-            moss: land::cover::moss_at(self.moss, at.xz),
+            moss: land::cover::moss_pair(self.moss, at.xz),
         )
         // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
         // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left

@@ -948,7 +948,8 @@ pub struct Wood {
 }
 
 /// Instance `at`'s kind rewritten in place (its tint's high half, `impostor::of_kind`):
-/// dispatched over `at + 1` invocations, the last its own.
+/// dispatched over `at + 1` invocations, the last its own (a `Slots` is indexed by the invocation
+/// alone, and a span of the one instance would start off a storage binding's 256-byte alignment).
 @compute(64)
 fn retargeted(every: mut Slots<Instance>, at: u32, kind: u32, id: GlobalId) {
     if id.x == at {

@@ -174,10 +174,9 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             o.look = value(k)?
             k += 2
         } else if a == "--size" {
-            let v = value(k)?
-            let x = v.as_str().find("x")?
-            o.width = v.as_str().slice(0, x).parse_u32()?
-            o.height = v.as_str().slice(x + 1, v.len()).parse_u32()?
+            let (w, h) = toolkit::command::size_of(value(k)?.as_str())?
+            o.width = w
+            o.height = h
             k += 2
         } else {
             return None

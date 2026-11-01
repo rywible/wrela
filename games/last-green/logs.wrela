@@ -18,7 +18,7 @@ pub const REACH: f32 = 40.0
 /// its root plate and the body's footprint too; each height is evaluated once, not per capsule.
 const GROUND_CELL: f32 = 0.75
 const MOST_GROUND: u32 = 640
-const MOST_LIMBS: u32 = 1 + trees::kinds::ROOTS
+const MOST_LIMBS: u32 = trees::kinds::FALLEN_LIMBS_MOST
 const MOST_QUERIES: u32 = MOST_GROUND + 2 * MOST + MOST_LIMBS
 
 struct SampledGround {

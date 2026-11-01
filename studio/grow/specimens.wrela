@@ -11,7 +11,7 @@ use toolkit::whole::{blob_of, chunked, write_file, write_png}
 use trees::genomes::genomes
 
 /// The species' names, in `Species`' order.
-pub const NAMES: [Text; 7] = ["oak", "beech", "birch", "hawthorn", "blackthorn", "pine", "alder"]
+pub const NAMES = trees::lines::SPECIES_NAMES
 
 /// The lights a specimen grows in, and each one's share of the open's light a year.
 pub const LIGHTS: [Text; 3] = ["open", "edge", "under"]
@@ -62,7 +62,12 @@ pub fn index_of(names: [Text], s: str) -> Option<u32> {
 /// The light a year for a specimen of `age` in light `light` (`LIGHTS`): none for the open (the
 /// growth's own full light).
 pub fn light_of(age: f32, light: u32) -> Vec<f32> {
-    if light == 0 { Vec::new() } else { Vec::filled(u32(ceil(max(age, 1.0))), SHARES[light]) }
+    light_a_year(age, SHARES[light])
+}
+
+/// A tree's light a year over `age` years at `share` of the open's: none for the open's own.
+pub fn light_a_year(age: f32, share: f32) -> Vec<f32> {
+    if share >= 1.0 { Vec::new() } else { Vec::filled(u32(ceil(max(age, 1.0))), share) }
 }
 
 /// A specimen grown, converted and measured.

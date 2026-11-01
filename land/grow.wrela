@@ -428,13 +428,14 @@ pub struct TreeEvent: Copy {
     pub strength: u8 = 0,
 }
 
-/// A tree event's kinds.
+/// A tree event's kinds: the growth's own (`engine::growth::GALE` …), so a record's event is the
+/// growth's by its code.
 pub const NO_EVENT: u8 = 0
-pub const GALE: u8 = 1
-pub const FIRE: u8 = 2
-pub const BROWSE: u8 = 3
-pub const FALL: u8 = 4
-pub const LIGHTNING: u8 = 5
+pub const GALE: u8 = u8(engine::growth::GALE)
+pub const FIRE: u8 = u8(engine::growth::FIRE)
+pub const BROWSE: u8 = u8(engine::growth::BROWSE)
+pub const FALL: u8 = u8(engine::growth::FALL)
+pub const LIGHTNING: u8 = u8(engine::growth::LIGHTNING)
 
 /// `t` with `kind` noted in `year` as hard as `strength` (0 to 1): among its four strongest, the
 /// weakest it beats replaced; one of a kind already noted that year kept at the harder.

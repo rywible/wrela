@@ -608,7 +608,7 @@ impl Ground {
             trodden,
             rim,
             rock_albedo,
-            moss: land::cover::moss_at(self.moss, at.xz),
+            moss: land::cover::moss_pair(self.moss, at.xz),
         )
     }
 }

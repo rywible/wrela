@@ -28,8 +28,8 @@ use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::reflect::copy_below
 use engine::terrain::Clipmap
 use engine::growth::{
-    Grow, Shape, grow_individual, grow_key, grown_path, hex, plant_of, shape_bytes,
-    shape_from_bytes, shape_hash,
+    Grow, Shape, grow_individual, grow_key, grown_path, plant_of, shape_bytes, shape_from_bytes,
+    shape_hash,
 }
 use std::io::{load, store}
 use std::time::now
@@ -130,6 +130,8 @@ pub struct Landscape<T: Tiles> {
     pub tiles: T,
     pub origin: vec2i,
     pub plants: Vec<Plant>,
+    /// Each kind's wood as the probes' occluders take it (`plant::occluding_of`), fitted once.
+    pub cores: Vec<Occluding>,
     pub far_kinds: Vec<u32>,
     pub kinds: Vec<Kind>,
     /// The kinds' pool as they're cooked (`engine::wood::Pooling`), until the wood takes it.
@@ -233,6 +235,14 @@ pub struct NearOne {
     pub used: bool = false,
 }
 
+impl NearOne {
+    /// Whether its shape is still being looked for, grown or ordered (a request or a task of its
+    /// is under way).
+    pub fn in_hand(self) -> bool {
+        self.growing.is_some() || self.ordering.is_some() || self.cached.is_some()
+    }
+}
+
 /// How near the eye a tree is drawn as itself (m: §E1.3's `NEAR`, **estimated**), how often (in
 /// frames) the near ones are chosen again, and how many grow on the helpers at once (the tiles'
 /// cooking shares them).
@@ -260,10 +270,12 @@ pub fn landscape<T: Tiles>(
     origin: vec2i,
 ) -> Landscape<T> {
     let (water_tris, water_tiles) = tiled(mesh)
+    let cores = occluding_of(plants)
     Landscape {
         tiles,
         origin,
         plants,
+        cores,
         far_kinds,
         kinds: Vec::new(),
         ordering: Vec::new(),
@@ -1495,10 +1507,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
         // Those no longer chosen, given up.
         for i in 0..s.near.len() {
-            if !s.near[i].used ||
-                s.near[i].growing.is_some() ||
-                s.near[i].ordering.is_some() ||
-                s.near[i].cached.is_some() {
+            if !s.near[i].used || s.near[i].in_hand() {
                 continue
             }
             var kept = false
@@ -1519,7 +1528,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         // The new ones' growths, a few at a time.
         var growing = 0
         for o in s.near {
-            if o.growing.is_some() || o.ordering.is_some() || o.cached.is_some() {
+            if o.in_hand() {
                 growing += 1
             }
         }
@@ -1630,7 +1639,7 @@ fn say_ring<T: Tiles>(s: mut Landscape<T>) {
     }
     s.ring_ms = Some(f32(ms))
     print(
-        f"grown: the first ring, {placed.len()} trees in {ms:.0} ms ({cached} from the storage; the slowest grown in {grow_ms:.0} ms and drawn in {drawn_ms:.0}); their shapes' hash {hex(h.finish())}",
+        f"grown: the first ring, {placed.len()} trees in {ms:.0} ms ({cached} from the storage; the slowest grown in {grow_ms:.0} ms and drawn in {drawn_ms:.0}); their shapes' hash {h.finish():016x}",
     )
 }
 
@@ -1779,7 +1788,7 @@ pub fn occlude<T: Tiles>(s: mut Landscape<T>, eye: vec2, origin: vec3) {
     let input = OccluderInput {
         tiles: s.tiles,
         placed,
-        plants: occluding_of(s.plants),
+        plants: s.cores.clone(),
         lo: world - half,
         hi: world + half,
     }

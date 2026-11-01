@@ -14,6 +14,7 @@
 // kinds no program places stay authored.
 
 use engine::growth::{Grow, GrowthEvent, Site, convert, fungi_on, grow_graph, scale}
+use land::bake::{get_u32, put_u32}
 use land::grow::{NO_EVENT, Tree, events_of, light_at}
 use engine::plant::{Bark, Clump, Leaves, MAX_CLUMPS, MAX_LIMBS, Plant}
 use genomes::genomes
@@ -213,17 +214,6 @@ fn grown_bytes() -> Vec<u8> {
         }
     }
     out
-}
-
-/// Its words, little-endian.
-fn put_u32(out: mut Vec<u8>, x: u32) {
-    for i in 0..4 {
-        out.push(u8((x >> (8 * i)) & 255))
-    }
-}
-
-fn get_u32(b: [u8], at: u32) -> u32 {
-    u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
 }
 
 /// Two values as half floats, a word.

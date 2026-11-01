@@ -225,6 +225,35 @@ const DRAWS_SPACE: u32 = 0x27D4EB2F
 const DRAWS_LEADER: u32 = 0x165667B1
 const DRAWS_EVENT: u32 = 0xD3A2646C
 
+/// Whether each node is continued: a live shoot goes on from it along its axis (one that isn't is
+/// a tip).
+fn continued_of(nodes: [Node]) -> Vec<bool> {
+    var continued: Vec<bool> = Vec::filled(nodes.len(), false)
+    for i in 1..nodes.len() {
+        let nd = nodes[i]
+        if nd.alive && nd.main && nd.parent >= 0 {
+            continued[u32(nd.parent)] = true
+        }
+    }
+    continued
+}
+
+/// Each node's thickest live child (-1 for none): the way its axis goes on.
+fn thickest_of(nodes: [Node]) -> Vec<i32> {
+    var thickest: Vec<i32> = Vec::filled(nodes.len(), -1)
+    for i in 1..nodes.len() {
+        let nd = nodes[i]
+        if !nd.alive || nd.parent < 0 {
+            continue
+        }
+        let q = u32(nd.parent)
+        if thickest[q] < 0 || nodes[u32(thickest[q])].radius < nd.radius {
+            thickest[q] = i32(i)
+        }
+    }
+    thickest
+}
+
 /// A node's kinds.
 pub const SHOOT: u32 = 0
 pub const KNOT: u32 = 1
@@ -322,13 +351,7 @@ pub fn grow_traced(
         }
         let n = t.nodes.len()
         // The live tips (a shoot no live shoot continues) and the dormant laterals: the buds.
-        var continued: Vec<bool> = Vec::filled(n, false)
-        for i in 1..n {
-            let nd = t.nodes[i]
-            if nd.alive && nd.main && nd.parent >= 0 {
-                continued[u32(nd.parent)] = true
-            }
-        }
+        let continued = continued_of(t.nodes)
         // The crown's leaves on the grid, and each cell's leaf area above it.
         let shade = Shade::of(t.nodes, continued, g)
         // The free space round each bud: each marker the envelope holds now, in a bud's cone and
@@ -495,67 +518,58 @@ pub fn grow_traced(
                 f"y{y}: {n} nodes, {buds.len()} buds grow, light {lit_sum / max(lit_n, 1.0):.2} over {lit_n:.0}, root {sum[0]:.0}; ",
             )
         }
-        for (v, at, terminal) in buds {
+        for (_, at, terminal) in buds {
             let from = t.nodes[at]
             var dir = if terminal { from.dir } else { from.bud }
-            var parent = i32(at)
+            let parent = i32(at)
             var tip = from.tip
-            var main = terminal
+            let main = terminal
             var id = from.id
             var phyllo = from.phyllo
             let heading = if terminal { from.heading } else { from.bud }
             let lit = t.nodes[at].light
             let leader = terminal && axis[at]
-            let shoots = 1
             let free_way = toward[2 * at + (if terminal { 0 } else { 1 })]
             let space_dir = if length(free_way) > 1.0e-4 { normalize(free_way) } else { vec3(0.0) }
-            for s in 0..shoots {
-                id = shoot_id(id, main)
-                var rng = Rng::keyed(id)
-                let grad = shade.towards(tip)
-                let up = vec3(0.0, 1.0, 0.0)
-                let was = dir
-                dir = turned_at_most(
-                    heading,
-                    SET_POINT,
-                    turned_at_most(
-                        was,
-                        MAX_TURN,
-                        normalize(
-                            dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
-                                0.4
-                            })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(-1.0, 1.0), rng.between(-0.5, 0.5), rng.between(-1.0, 1.0)),
-                        ),
+            id = shoot_id(id, main)
+            var rng = Rng::keyed(id)
+            let grad = shade.towards(tip)
+            let up = vec3(0.0, 1.0, 0.0)
+            let was = dir
+            dir = turned_at_most(
+                heading,
+                SET_POINT,
+                turned_at_most(
+                    was,
+                    MAX_TURN,
+                    normalize(
+                        dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
+                            0.4
+                        })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(-1.0, 1.0), rng.between(-0.5, 0.5), rng.between(-1.0, 1.0)),
                     ),
+                ),
+            )
+            // The wind's exposure stunts every shoot, the leader most.
+            let wind = (1.0 - g.wind_shorten * site.wind) * (if leader { 0.9 } else { 1.0 })
+            // A shoot's length is the genome's (a shaded bud makes none, not a short one: a
+            // shortened shoot packs the shade it grew in tighter), shortened a little in shade.
+            let len = g.internode * mix(mix(g.internode_shade, 1.0, 0.7), 1.0, lit) * room * wind
+            tip = tip + dir * len
+            phyllo += g.divergence
+            // Not every node bears a lateral that will grow: fewer the stronger the apical
+            // control (an excurrent leader's laterals are its few whorls).
+            let side = if rng.unit() < LATERAL_BUDS * (1.0 - 0.6 * g.apical) {
+                lateral_of(
+                    dir,
+                    phyllo,
+                    g.branching + g.branching_spread * rng.between(-1.0, 1.0),
                 )
-                // The wind's exposure stunts every shoot, the leader most.
-                let wind = (1.0 - g.wind_shorten * site.wind) * (if leader { 0.9 } else { 1.0 })
-                // A shoot's length is the genome's (a shaded bud makes none, not a short one: a
-                // shortened shoot packs the shade it grew in tighter), shortened a little in shade.
-                let len = g.internode *
-                    mix(mix(g.internode_shade, 1.0, 0.7), 1.0, lit) *
-                    room *
-                    wind
-                tip = tip + dir * len
-                phyllo += g.divergence
-                // Not every node bears a lateral that will grow: fewer the stronger the apical
-                // control (an excurrent leader's laterals are its few whorls).
-                let side = if rng.unit() < LATERAL_BUDS * (1.0 - 0.6 * g.apical) {
-                    lateral_of(
-                        dir,
-                        phyllo,
-                        g.branching + g.branching_spread * rng.between(-1.0, 1.0),
-                    )
-                } else { vec3(0.0) }
-                t.nodes.push(
-                    Node { parent, tip, dir, born: year, main, bud: side, id, phyllo, heading },
-                )
-                parent = i32(t.nodes.len() - 1)
-
-                main = true
-                t.height = max(t.height, tip.y)
-            }
-            if !terminal && shoots > 0 {
+            } else { vec3(0.0) }
+            t.nodes.push(
+                Node { parent, tip, dir, born: year, main, bud: side, id, phyllo, heading },
+            )
+            t.height = max(t.height, tip.y)
+            if !terminal {
                 t.nodes[at].bud = vec3(0.0)
             }
         }
@@ -785,15 +799,12 @@ fn sympodial(t: mut TreeGraph, g: Genome, year: f32, rng: mut Rng) {
         return
     }
     let n = t.nodes.len()
+    let continued = continued_of(t.nodes)
     var axis: Vec<bool> = Vec::filled(n, false)
-    var continued: Vec<bool> = Vec::filled(n, false)
     axis[0] = true
     for i in 1..n {
         let nd = t.nodes[i]
         axis[i] = axis[u32(max(nd.parent, 0))] && nd.main && nd.alive
-        if nd.alive && nd.main && nd.parent >= 0 {
-            continued[u32(nd.parent)] = true
-        }
     }
     for i in 0..n {
         if axis[i] && !continued[i] && t.nodes[i].kind == SHOOT {
@@ -1058,21 +1069,6 @@ impl Space {
                 }
             }
         }
-        // The cells' runs of the free markers alone (a bud perceives only those: in a grown
-        // crown most are taken), each run in its order.
-        var starts: Vec<u32> = Vec::filled(s.starts.len(), 0)
-        var order: Vec<u32> = Vec::new()
-        for c in 0..(s.starts.len() - 1) {
-            starts[c] = order.len()
-            for k in s.starts[c]..s.starts[c + 1] {
-                if s.free[s.order[k]] {
-                    order.push(s.order[k])
-                }
-            }
-        }
-        starts[s.starts.len() - 1] = order.len()
-        s.starts = take starts
-        s.order = take order
         s
     }
 
@@ -1148,23 +1144,6 @@ impl Space {
         self.nz = nz
         self.starts = take counts
         self.order = take order
-    }
-
-    /// Each marker within `reach` of `p` (its index): `f` with it.
-    fn near(self, p: vec3, reach: f32, f: fn(u32)) {
-        let top = vec3(f32(self.nx - 1), f32(self.ny - 1), f32(self.nz - 1))
-        let a = clamp((p - vec3(reach) - self.lo) / self.cell, vec3(0.0), top)
-        let b = clamp((p + vec3(reach) - self.lo) / self.cell, vec3(0.0), top)
-        for y in u32(a.y)..(u32(b.y) + 1) {
-            for z in u32(a.z)..(u32(b.z) + 1) {
-                for x in u32(a.x)..(u32(b.x) + 1) {
-                    let c = (y * self.nz + z) * self.nx + x
-                    for k in self.starts[c]..self.starts[c + 1] {
-                        f(self.order[k])
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1496,17 +1475,7 @@ fn straighten(t: mut TreeGraph) {
     if n < 2 || t.height <= 0.0 {
         return
     }
-    var thickest: Vec<i32> = Vec::filled(n, -1)
-    for i in 1..n {
-        let nd = t.nodes[i]
-        if !nd.alive || nd.parent < 0 {
-            continue
-        }
-        let q = u32(nd.parent)
-        if thickest[q] < 0 || t.nodes[u32(thickest[q])].radius < nd.radius {
-            thickest[q] = i32(i)
-        }
-    }
+    let thickest = thickest_of(t.nodes)
     // The axis, each node's own pull (none at its crown, so its crown stays), and each node's
     // deepest axis forebear's, which it moves by.
     // Where the axis meets its crown (its first node at 80 % of its height): the line from the
@@ -1555,17 +1524,7 @@ fn stiffen(t: mut TreeGraph) {
     if n < 3 {
         return
     }
-    var thickest: Vec<i32> = Vec::filled(n, -1)
-    for i in 1..n {
-        let nd = t.nodes[i]
-        if !nd.alive || nd.parent < 0 {
-            continue
-        }
-        let q = u32(nd.parent)
-        if thickest[q] < 0 || t.nodes[u32(thickest[q])].radius < nd.radius {
-            thickest[q] = i32(i)
-        }
-    }
+    let thickest = thickest_of(t.nodes)
     for _ in 0..STIFF_PASSES {
         // Each node's own move (from where all are), then what it carries: parents come before
         // their children, so each node's parent's move is known.
@@ -1735,16 +1694,6 @@ pub fn shape_of(t: TreeGraph, g: Genome, measured: bool = true) -> Shape {
     Shape { limbs: take tubes, clumps, converted }
 }
 
-/// Every limb of a grown tree (`into_plant`'s): its chains of nodes, each a tube fitted through
-/// its run, ordered by the section at its foot, largest first.
-pub fn limbs_of(t: TreeGraph) -> Vec<Tube<4>> {
-    var tubes: Vec<Tube<4>> = Vec::new()
-    for c in chains_of(t) {
-        tubes.push(chain_tube(t, c))
-    }
-    tubes
-}
-
 /// A chain's tube (`tube_through`), its end carried on past its last node by 0.6 of its radius
 /// where another run goes on from there: its end's cap (its last 0.5 of a radius, closing to a
 /// point) inside the next one's start, no pinch at the joint (carried 1.2, it stood out of the
@@ -1766,7 +1715,7 @@ fn chain_tube(t: TreeGraph, c: Chain) -> Tube<4> {
     tb
 }
 
-/// A grown tree's chains of nodes (`limbs_of`), largest section first.
+/// A grown tree's chains of nodes (`shape_of`'s limbs), largest section first.
 fn chains_of(t: TreeGraph) -> Vec<Chain> {
     let n = t.nodes.len()
     // What's drawn: every live node but a shed branch's stub with nothing beyond it (a knot: the
@@ -1927,13 +1876,7 @@ fn crowned(t: TreeGraph, g: Genome, drawn: [bool]) -> (Vec<Clump>, f32) {
     // its tip, after years of one shoot a year, was a bare noodle with a ball at its end).
     let n = t.nodes.len()
     let latest = max_born(t)
-    var continued: Vec<bool> = Vec::filled(n, false)
-    for i in 1..n {
-        let nd = t.nodes[i]
-        if nd.alive && nd.main && nd.parent >= 0 {
-            continued[u32(nd.parent)] = true
-        }
-    }
+    let continued = continued_of(t.nodes)
     var pts: Vec<vec3> = Vec::new()
     for i in 0..n {
         let nd = t.nodes[i]
@@ -2127,8 +2070,9 @@ fn union_volume(clumps: [Clump]) -> f32 {
                     var earlier = false
                     for j in 0..i {
                         let o = clumps[j]
-                        if !earlier && length(p - o.centre) < o.radius && o.distance(p) < 0.0 {
+                        if length(p - o.centre) < o.radius && o.distance(p) < 0.0 {
                             earlier = true
+                            break
                         }
                     }
                     if !earlier {
@@ -2421,18 +2365,7 @@ pub fn grow_key(g: Grow) -> u64 {
 /// Where a near individual's shape is kept in the program's storage (`std::io::store`): under its
 /// key (`grow_key`).
 pub fn grown_path(key: u64) -> String {
-    String::from(f"grown/{hex(key)}")
-}
-
-/// A word as sixteen hex digits.
-pub fn hex(key: u64) -> String {
-    let digits = "0123456789abcdef"
-    var name = String::new()
-    for i in 0..16 {
-        let d = u32((key >> (4 * (15 - i))) & 15)
-        name.push_str(digits.slice(d, d + 1))
-    }
-    name
+    String::from(f"grown/{key:016x}")
 }
 
 /// A shape's every float and count folded to a word (§E7's determinism: equal on every host or a
