@@ -47,8 +47,9 @@ measures it again whole on the M4 at its end. Between here and there it adds a c
 class, so progress shows before the twelve pairs move: **for each class this plan builds (the
 fall, the water's reflections, solid things near the eye, foliage near the eye, bark and the
 floor, the creature), its class panel (§0.5 G-class) moves from losing to equal on the shots where
-that class shows, while the M4's sustained frame for the vale gets no slower than this plan's own
-B-measure of it.** A class that can't reach equal ends Blocked with its trajectory, as plan three's
+that class shows, while the M4's sustained GPU p50 for the vale ends no slower than Part A's
+baseline of it (A4): each part spends at most its budget (§0.5 G-M4's table), and D3's single pass
+for the cards is the saving that pays for them (hypothesis H9).** A class that can't reach equal ends Blocked with its trajectory, as plan three's
 did; the claim says which classes did.
 
 Fidelity is still judged against freely licensed photographs of the real subjects by agents
@@ -115,26 +116,56 @@ three §0.5). New kinds:
 
 - **G-rung** (an artifact class's ladder, before it's built): for the class's representative
   pieces (named in its part), today's form and each candidate rung measured against the class's
-  ground truth (the field, the growth graph, the simulated sheet) at an eye 10, 25, 50 and 100 m
-  off at 1080p and 0.82 rad: the surface's error in pixels, the bytes, the GPU ms to draw it and to
-  realize it, and the stills differenced (share of pixels over 8/255). The table goes in
+  ground truth at 1080p and 0.82 rad, at the class's distances (10, 25, 50 and 100 m unless its
+  part names others: bark at 1, 3 and 10 m, where an old oak's shot puts the eye), in the class's
+  own error: **surface error in pixels** for solids, leaves and bark (against the field or the
+  growth); **image error** (PSNR and the share of pixels over 8/255 against a ground-truth render
+  the part's step 0 makes) for the fall and the reflections, whose fault is light, not surface;
+  for motion, the gait's own measures (§G0). Each rung also has its bytes **resident** (every level
+  kept, not only those drawn), and its GPU ms to draw and to realize. The table goes in
   `docs/bench.md` before the class's first build step. A candidate is built only where its rung
-  shows today's error over a pixel at a distance the shots use.
+  shows today's error over the class's threshold (a pixel; 30 dB PSNR for image error,
+  **proposed**) at a distance the shots use.
 - **G-class** (a small panel on the class): the shots where the class shows (development shots,
   and the class's own development shot under G-select), each against its public reference, eight
   agent judges in fresh contexts with calibration controls, B5's brief, the class's rubric row
-  named in the brief. Its tally is read for that class's sentences: the gate is the class's named
-  faults gone from the judges' notes, and the pairs it shows on at equal or better (G-reference's
-  per-pair rule, 6 of 8 judges not against). A G-class panel never uses the sealed twelve.
+  named in the brief. Its tally is read for that class's sentences. The gate, per pair: the class's
+  named faults (the part lists its words) in no judge's notes, and **at least four of the eight
+  judges prefer the still or rate the pair equal** (the pair's median judgement equal or better).
+  This is stronger than G-reference's per-pair safeguard (no pair lost worse than 6 to 2,
+  `studio/compare/tally.wrela`), and is its own rule with its own tally test: two judges not
+  against fails, four passes. A G-class panel never uses the sealed twelve.
 - **G-select** (the selection rule's test): a synthetic tally whose only fault is on a class no
   development shot shows must open that class's development shot and put its item on the menu; a
   tool test in `studio/compare` holds it, and the plan's menu (§A1) is regenerated from both panels'
   sentences before each part.
 - **G-M4** (D44): a performance gate's numbers from the M4, pasted from Ryan's run with its report
-  path; a Linux number in its place is a skipped step (plan three's shortcut 3).
+  path; a Linux number in its place is a skipped step (plan three's shortcut 3). **The rule, every
+  part:** the part's switch defaults **on** only if the vale's sustained (600 s) GPU p50 with it on
+  is within the A4 baseline plus the sum of the budgets of the parts merged so far (D3's measured
+  saving subtracted), and its paced p99 no worse than the baseline's plus the same; else it ships
+  **off** with its numbers, as a hypothesis does, and the part's class claim says so. The budgets
+  (GPU ms, **proposed**):
+
+  | Part | Budget | Why |
+  |---|---|---|
+  | B, the fall | 0.5 | a sheet, its foam and spray, on screen in a few shots |
+  | C, reflections | 1.0 | a half-size planar view where still water shows |
+  | D, near solids | 0.0 | the visibility buffer must pay for itself (D3, H9: a third of the 18.8 ms saved) |
+  | E, foliage | 1.5 | instanced blades within `NEAR_LEAF` |
+  | F, bark and floor | 1.0 | relief evaluated per pixel near |
+  | G, the creature | 1.0 GPU (fur) and 0.3 CPU (the body) | in its two shots |
+
+  At Part I the claim (D43) reads the vale's p50 against the baseline: no slower.
 - **G-motion-sim** (§G): the simulated gaits' tests: a walk, a trot and a bound on level ground,
-  15° and 30° slopes, a 0.3 m step, uneven ground, and a shove recovered, each with its worst
-  stride's infeasible share under 5 % (plan three's walker's measure, now of a simulated body).
+  15° and 30° slopes, a 0.3 m step, uneven ground, and a shove recovered. Feasibility is the
+  simulated body's, not the kinematic walker's (whose measure counts every frame without a
+  planted foot infeasible, `engine/loads.wrela`, and so would forbid a bound's flight): a stance
+  frame is infeasible where the ground reaction it needs lies outside its contacts' friction cones
+  (μ 0.8, **proposed**) or its support; a flight frame is valid where the body's centre of mass
+  falls ballistically (its acceleration g within 2 %). Each gait's worst stride under 5 %
+  infeasible, no fall, no penetration over 1 cm. The tests' own fixtures: a ballistic hop passes;
+  a body hovering, and one whose stance needs a pull from the ground, fail.
 
 ### 0.6 What this plan leaves out, and why
 
@@ -222,18 +253,24 @@ the sealed panel names on those classes never reached the menu: at H2 the menu's
 sealed tally names G2 6.88 and G6 4.62 lost, second and third (`docs/bench.md:2524`,
 `docs/bench.md:2525`), and Part G built neither.
 
-- The development set gains **D9, the fall** and **D10, the mere**: lookbook shots of the vale
-  outside the twelve (never any sealed shot's camera), each with a public reference chosen under
+- The development set gains **D9, the fall**, **D10, the mere** and **D11, the stream** (D4's shot
+  shows none of its stream: `docs/bench.md:2349`): lookbook shots of
+  the vale outside the twelve (never any sealed shot's camera), each with a public reference chosen under
   D29's rules (Wikimedia Commons first), credited in `references/vale.wrela` and
   `docs/citations.md`, their hashes added to a new development manifest (the sealed manifest's hash
   is unchanged: `b78df49e…`).
 - `studio/compare/menu.wrela`'s map gains a class column; a class the sealed tally faults that no
   development shot shows is reported by `--tally` as "unshown" and fails the menu's check.
-- **Tests:** G-select's synthetic tally; the twelve's shots and manifest hashes unchanged; the
-  development manifest's hash recorded.
+- **Coverage:** a class's development shot must show its class: the class's pixels (from the
+  frame's ids: the water's, the solids' kinds, the creature's) at least 5 % of the frame
+  (**proposed**) and unoccluded at its centre. `studio/compare` refuses to register a shot to a
+  class it doesn't cover, and every existing mapping is checked (D4 against the stream fails today).
+- **Tests:** G-select's synthetic tally; the coverage check (a shot without its subject fails);
+  the twelve's shots and manifest hashes unchanged; the development manifest's hash recorded.
 
-**Done when:** (1) D9 and D10 render (stills pasted as paths) and have references with credits;
-(2) the G-select test passes; (3) the development panel run on D1–D10 (eight judges), its tally in
+**Done when:** (1) D9, D10 and D11 render (stills pasted as paths), cover their classes, and have
+references with credits;
+(2) the G-select test passes; (3) the development panel run on D1–D11 (eight judges), its tally in
 `docs/bench.md`, and the menu regenerated from it with each part's class named.
 
 ### A2. The rung tool
@@ -308,14 +345,15 @@ substance's cause target already carries wetness).
 **Done when, Part B:** (1) G-rung table pasted; (2) the G-class panel on D9 (the fall) and the
 shots where water falls: the faults "flat", "strip", "card", "ribbon" gone from the judges' notes
 and the pair at equal or better; (3) G-look on the vale's twelve (the fall's shot 10, and every
-shot whose pixels move); (4) G-M4: the vale's walk with the fall in view, its GPU p50 no worse than
-A4's baseline plus the part's named cost (`estimated` 0.5 ms), measured.
+shot whose pixels move); (4) G-M4 by §0.5's rule (its budget 0.5 ms): the switch's default from
+it.
 
 ## Part C: the water's reflections (G2) (`engine/wc4-c`)
 
 **What the judges say.** The menu's map names G2 from the sealed tally's dusk-from-the-crest and
-fall pairs (`docs/bench.md:2524`); the development panel's stream (D4) loses on
-"a translucent plane" (13 notes in 5 pairs: `docs/bench.md:2350`).
+fall pairs (`docs/bench.md:2524`); the development panel faults the stream's sheet
+as "a translucent plane" (13 notes in 5 pairs: `docs/bench.md:2350`), though D4 frames
+no stream (A1's D11 does).
 
 ### C0. The water's rung
 
@@ -337,9 +375,10 @@ water's plane as its clip, read by the water's shading with its normal's distort
 The stream's sheet reads as "a translucent plane": its depth's colour (absorption by depth), its
 refraction of the bed, its normals from the flow, and the reflections C1 or SSR give it.
 
-**Done when, Part C:** (1) G-rung pasted; (2) the G-class panel on D10 (the mere) and D4 (the
-stream): "translucent plane" and the reflections' faults gone, the pairs at equal or better; (3)
-G-look on the twelve; (4) G-M4: the planar view's cost measured, its switch's default set by it.
+**Done when, Part C:** (1) G-rung pasted; (2) the G-class panel on D10 (the mere) and D11 (the
+stream): "translucent plane", "flat" and the reflections' faults gone, the pairs at equal or
+better; (3) G-look on the twelve; (4) G-M4 by §0.5's rule (its budget 1.0 ms): `PLANAR`'s default
+from it.
 
 ## Part D: solid things near the eye (G5.1, re-scoped) (`engine/wc4-d`)
 
@@ -364,15 +403,27 @@ SDF, its bark's relief from §F added as displacement where §F lands), limbs at
 field per fork: no kink where two tubes meet). The cut picks each cluster's level by its error on
 the screen (`Cut::pixels`, 1 **proposed**); far, today's meshes and impostors.
 
+**Residency.** The cut decides what's drawn, not what's kept: `engine::virtual` cooks every level
+of a surface and keeps them (`Clusters::bytes` counts each level's geometry and its scratch), so
+D1's rung counts resident bytes separately from drawn triangles. The near set's levels are cooked
+on demand as a piece enters `NEAR_SOLID` (finest level last, a slice a frame under the planner's
+`Work::Realize`), and evicted past it with hysteresis (`NEAR_SOLID` + 5 m, **proposed**); the
+step's gate is the walk's GPU peak, every level and transient counted, within G-memory on the M4.
+
 ### D2. The visibility buffer, 32-bit, two passes
 
 WebGPU has neither mesh shaders nor 64-bit atomics (`docs/toolchain-gaps.md:114`).
 The visibility buffer (Burns and Hunt 2013) is a `R32Uint` target. `engine::virtual` already packs
 its id in 32 bits (`id_of`: a level's 4 bits, a cluster set's 2, a software flag, then the
-triangle's index in its level's list; `MOST_SETS` 4); D2 widens the sets to the near solids'
-kinds (crag, rock, trunk, log, root plate, limb: the set bits taken from the index's, which the
-rung's counts size) and draws it by the hardware rasterizer with its depth test for clusters over
-`Cut::small` pixels, and by the software rasterizer's two passes (an `atomicMax` of the depth's
+triangle's index in its level's list; `MOST_SETS` 4), but a set is one surface with its own
+buffers, and its resolve runs a fullscreen pass a level. Two trunks of one kind would collide.
+**D2's prerequisite, its own commit:** one global table of every near piece's picked clusters
+(each frame's picks gathered into one list, a triangle's index into it the id's low bits, a
+piece's transform and material by its cluster's entry), so an id names one triangle of one piece,
+and one resolve pass reads it, within seven storage buffers a kernel
+(`docs/toolchain-gaps.md:135`). Its test: two meshes of one kind sharing
+local triangle indices resolve to their own pieces. The buffer is drawn by the hardware rasterizer
+with its depth test for clusters over `Cut::small` pixels, and by the software rasterizer's two passes (an `atomicMax` of the depth's
 bits, then an `atomicMin` of the id at the winning depth: `docs/toolchain-gaps.md:119`)
 for the small ones, merged through the depth test (`soft_merge`, already built). Shading reads the
 id once a pixel: one shading pass for every near solid.
@@ -392,12 +443,14 @@ the trunks standing at the year it falls, so every reader (the drawing, the floo
 probes' occluders) sees one laid log; the root plate a torn disc of soil and roots from its tree's
 root field, not capsules in a star.
 
-**Done when, Part D:** (1) G-rung pasted with the M4's ms; (2) the G-class panel on the development
+**Done when, Part D:** (1) G-rung pasted with the M4's ms and the resident bytes; (2) the global
+table's test; (3) the G-class panel on the development
 shots where logs, trunks and rock show (D1, D3, D6): the
 faults "floating", "through", "cylinder", "capsule", "faceted", "kinked" gone from the notes and
-the pairs at equal or better; (3) G-look on the twelve and the floor's 23; (4) G-M4: the vale's
-walk with `VISIBILITY` on and off, H9's outcome; (5) G-memory: the clusters' bytes within the
-vale's 512 MiB at its peak, measured on the M4.
+the pairs at equal or better; (4) G-look on the twelve and the floor's 23; (5) G-M4 by §0.5's
+rule (its budget 0: the visibility buffer pays for itself), `VISIBILITY` on and off, H9's outcome;
+(6) G-memory: the walk's GPU peak, every level resident and every transient counted, within the
+vale's 512 MiB on the M4.
 
 ## Part E: foliage near the eye (`engine/wc4-e`)
 
@@ -427,14 +480,14 @@ weathered by the cause target's age), in the count the ground's litter field giv
 
 **Done when, Part E:** (1) G-rung pasted; (2) the G-class panel on D1 (the forest floor), D2 (the
 canopy against the sun) and D3: "confetti", "cards", "cutout", "sprite" gone, the pairs at equal or
-better; (3) G-look on the twelve and the floor's 23; (4) G-M4: the vale's walk, the blades' cost
-against D3's single pass.
+better; (3) G-look on the twelve and the floor's 23; (4) G-M4 by §0.5's rule (its budget 1.5 ms):
+the blades' default from it.
 
 ## Part F: bark and the forest floor as fields (`engine/wc4-f`)
 
 **What the judges say.** Near bark is magnified and tiled: 26 notes of magnified or stretched
-textures and 25 of bark tiling in the development pairs (`docs/bench.md:2348`, `docs/bench.md:2349`); at H2 an old oak's bark is "ghosted double layers of bark relief",
-"extruded slabs", "horizontal tiling seams" (`docs/bench.md:2509`).
+textures and 25 of bark tiling in the development pairs (`docs/bench.md:2348`, `docs/bench.md:2349`); at H2 an old oak's bark is "ghosted double layers of bark relief"
+(`docs/bench.md:2509`), "extruded slabs" (`docs/bench.md:2506`) and "horizontal tiling seams" (`docs/bench.md:2507`).
 
 ### F0. Bark's rung
 
@@ -444,23 +497,35 @@ a bark's fractures from the girth's growth, layer by layer). Rungs: today's magn
 (plan three's G9); the grown relief as a field evaluated per pixel (parallax occlusion,
 Tatarchuk 2006); as displacement on D1's near clusters.
 
-### F1. Bark grown from the trunk's expansion
+### F1. The growth's records (a prerequisite)
 
-Each trunk's bark relief grown from its own girth's history (the growth graph's radii by year):
+The growth keeps one radius a node and compacts its graph, removing dead nodes
+(`engine/growth.wrela`: `GrowthNode`, its compaction, `die`), so neither a trunk's girth by year
+nor the limbs it shed survive to be read. This step records them in the growth's output: each
+trunk node's radius at a few ages (8 samples, **proposed**) and each shed branch's tube before its
+removal, both in the grown archetypes' bytes and E7's cache key (its `VERSION` raised), their
+bytes measured against the memory gate. Its tests: a trunk's earlier radii recovered and
+monotone; a branch shed before the compaction recovered with its tube; the hashes the same on
+two runs.
+
+### F2. Bark grown from the trunk's expansion
+
+Each trunk's bark relief grown from its own girth's history (F1's radii by age):
 fractures open where the circumference grew past the bark's strain, plates between them, a
 species' parameters (an oak's deep furrows, a beech's smooth skin, a birch's peeling bands) from
 its genome. Evaluated as a field: on D1's clusters as displacement within `NEAR_SOLID`, as
 parallax past it, as today's tile far.
 
-### F2. The floor's litter and twigs as geometry
+### F3. The floor's litter and twigs as geometry
 
-Twigs and small branches shed by the growth (its `shed` record) lie as instanced tubes on the
+Twigs and small branches shed by the growth (F1's shed record) lie as instanced tubes on the
 floor; E2's leaves lie with them; the ground's smeared texture (`docs/bench.md:1135`) is the
 ground's own field, not a magnified tile.
 
 **Done when, Part F:** (1) G-rung pasted; (2) the G-class panel on D1 and D3: "tiling",
 "stretched", "smeared", "ghosted", "slab" gone, the pairs at equal or better; (3) G-look on the
-twelve and the floor's 23; (4) G-M4: the walk, the bark's cost per pixel.
+twelve and the floor's 23; (4) F1's tests and its bytes; (5) G-M4 by §0.5's rule
+(its budget 1.0 ms).
 
 ## Part G: the creature: a simulated gait, its secondary motion, its shading (`engine/wc4-g`)
 
@@ -503,7 +568,8 @@ colour; its countershading; its eyes as F8's.
 **Done when, Part G:** (1) G-rung pasted; (2) G-motion-sim's tests pass (the worst stride under 5
 % infeasible on every gait); (3) G-motion's panel (plan three's §F9, its rubric and footage under
 D51's answer) at or above 40 %, or Blocked with its trajectory; (4) G-look on shots 8 and 7
-(grazing at the edge, down the trail); (5) G-M4: the body's CPU ms a frame.
+(grazing at the edge, down the trail); (5) G-M4 by §0.5's rule (its budget 1.0 ms GPU for the fur,
+0.3 ms CPU for the body).
 
 ## Part H: the shots' framing (`engine/wc4-h`)
 
@@ -562,8 +628,9 @@ today's cell strays 35.9 px at 10 m and 3.6 px at 100 m, and its stills differ f
 on two thirds of their pixels at every distance; the footprint at 10 m is 102,230 vertices and 7.36
 MB for one 1.3 m piece. A rung like it decides a class's build: here, that today's crag can't be
 judged at any distance the shots use, and that the footprint at 10 m is too large to keep for every
-bed (a crag of a few hundred beds would be gigabytes), so the cut (D1) is the answer, not a finer
-fixed cell.
+bed (a crag of a few hundred beds would be gigabytes). The cut (D1) decides what's drawn; the near
+set's residency (D1's cook on demand and eviction) decides what's kept, and the rung measures
+both, since a cut alone frees no bytes.
 
 ## 9. Sources to cite when their code lands
 
