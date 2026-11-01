@@ -611,7 +611,7 @@ fn a_builds_payloads_and_runtime_move_to_their_content_addresses() {
     let Some(m) = String::from_utf8(map.clone()) else { panic("UTF-8") }
     assert(
         m.as_str() ==
-            f"{{\"files/floor/t1.bin\": \"/b/{sha_of("tile").as_str()}.bin\", \"game.lines\": \"/b/{sha_of("lines of wasm").as_str()}.lines\", \"game.relaxed.wasm\": \"/b/{sha_of("relaxed wasm").as_str()}.wasm\", \"game.wasm\": \"{wasm.as_str()}\", \"pipeline_0.wgsl\": \"{shader.as_str()}\"}}",
+            f"{{\"files\": {{\"files/floor/t1.bin\": \"/b/{sha_of("tile").as_str()}.bin\", \"game.lines\": \"/b/{sha_of("lines of wasm").as_str()}.lines\", \"game.relaxed.wasm\": \"/b/{sha_of("relaxed wasm").as_str()}.wasm\", \"game.wasm\": \"{wasm.as_str()}\", \"pipeline_0.wgsl\": \"{shader.as_str()}\"}}, \"format\": \"wrela-addresses-1\"}}",
         m.as_str(),
     )
     // Its page preloads them there and runs its runtime from its set; the manifest stays.
@@ -744,7 +744,10 @@ fn a_served_worker_has_each_payload_once_at_its_address() {
         let Some(text) = String::from_utf8(b.clone()) else { panic("UTF-8") }
         let Some(doc) = std::json::parse(text.as_str()) else { panic("JSON") }
         let dir = p.slice(0, p.len() - "addresses.json".len())
-        for (path, n) in doc.members(std::json::TOP) {
+        let Some(format) = doc.get(std::json::TOP, "format") else { panic("format") }
+        assert(doc.text(format) == Some(String::from("wrela-addresses-1")), "format")
+        let Some(files) = doc.get(std::json::TOP, "files") else { panic("files") }
+        for (path, n) in doc.members(files) {
             let Some(url) = doc.text(n) else { panic("a URL") }
             assert(url.as_str().starts_with("/b/"), url.as_str())
             assert(w.find(url.as_str().slice(1, url.len())).is_some(), url.as_str())
