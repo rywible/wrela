@@ -933,9 +933,8 @@ pub fn sprig_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32, vec2) {
 // ---- limbs as geometry -----------------------------------------------------------------------
 
 /// Sides round a limb's tube, and rings along each of its three curved pieces. Its middle
-/// rings follow the smooth axis; the final ring closes its tip. (14 sides, a near old trunk's
-/// facets were each a hand wide: the development panel's faceted, octagonal trunks, §G12.)
-pub const SIDES: u32 = 20
+/// rings follow the smooth axis; the final ring closes its tip.
+pub const SIDES: u32 = 14
 pub const RINGS: u32 = 4
 /// Vertices a limb draws: each piece's rings of quads round it.
 pub const LIMB_VERTICES: u32 = 3 * RINGS * SIDES * 6
