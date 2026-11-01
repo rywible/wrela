@@ -41,7 +41,8 @@ pub enum Ask: Clone + Serialize {
     /// A run on a board, to watch.
     Watch { run: u64 },
     /// A run's replay by its hash (a place's `replay`), to watch or race: answered by `Run`, and
-    /// kept by the browser's cache, so asking again costs nothing.
+    /// kept by the edge's cache, so asking again costs the server nothing (the browser's own cache
+    /// isn't used: docs/toolchain-gaps.md).
     Replay { hash: Vec<u8> },
     /// The places around `name`'s on a board (`wire::WHOLE` for a whole game's): answered by
     /// `Around`, or by `Unplaced` when the name has no place there.

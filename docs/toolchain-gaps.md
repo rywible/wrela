@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A client can't fetch a public read without its cookies, or with the browser's cache
+
+- **Needed:** the console's public reads (a board's page, a slice, a run's replay by its hash, a search of names: platform/wire.wrela's `PUBLIC` and `REPLAYS`) sent with no cookie, so nothing in them can tie a reader to an account, and kept by the browser's own cache, so a replay asked for again (its path never changes, `immutable` for a year) costs no request at all.
+- **What happens:** toolchain 0.17.0's `std::http::fetch` sends the origin's cookies with every request and skips the browser's cache: its browser host calls `fetch` with `credentials: "same-origin"`, `redirect: "error"` and `cache: "no-store"`, for every method. Nothing in `std::http` asks for `credentials: "omit"` or the default cache mode.
+- **Found:** 2026-10-31, the council's review of the online-play branch (rywible/wrela, `capybara/design-online-play`).
+- **Evidence:** the browser host bundled in 0.17.0's `wrela` (`strings ~/.wrela/toolchains/0.17.0/bin/wrela`) holds `credentials:"same-origin",redirect:"error",cache:"no-store"` in the `fetch` it makes for `http/fetch`; `wrela doc std::http::fetch` (0.17.0) says it is sent "with the origin's cookies".
+- **Meanwhile:** a public read needs no account and the server ties none to it: it reads no session for one and sets no cookie on its answer (server.wrela's `sessionless`; server_tests.wrela's `a_public_read_is_no_sessions_and_sets_no_cookie`), so its answer is the same for everyone and Cloudflare's edge cache serves it (`cache-control: public`, server.wrela's `BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). The browser asks the edge again each time; the capybara holds the replays it fetched in memory (games/capybara/online.wrela's `HELD`).
+- **Status:** open: a fetch that omits credentials and uses the browser's cache (say `std::http::fetch` options, or a `fetch_public(path)` for `GET`).
+
 ### A driven build can't be given an address
 
 - **Needed:** the capybara's attract tool test (games/capybara/tests/attract) driving the play build as the console opens it, at `capybara/#attract`, so the test's build decides it plays itself from its address as a browser's does.

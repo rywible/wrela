@@ -271,7 +271,9 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
 /// and anything else by `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
     let asked = if let Request::Replay { hash } = request {
-        // A replay at its own path, by its hash, which the browser's cache keeps a year.
+        // A replay at its own path, by its hash, which the edge's cache keeps a year (0.17.0's
+        // fetch skips the browser's own, and sends the cookies, which the server reads for no
+        // public read: docs/toolchain-gaps.md).
         std::http::fetch("GET", replay_path(hash).as_str(), [], [])
     } else if public(request) {
         let q = base64url(save(request))

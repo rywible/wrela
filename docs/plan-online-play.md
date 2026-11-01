@@ -18,7 +18,10 @@ leaderboard, and the friction to that is making an account"). So:
 - **Offline stays offline.** Play never touches the network. An account is the explicit step that
   makes things online.
 - **Reading is open; being on the boards takes an account and a choice.** Anyone may see the
-  World's boards, watch their runs, race them as ghosts and search names. Posting is the player's
+  World's boards, watch their runs, race them as ghosts and search names. These public reads need
+  no account, the server ties none to them (it reads no session for one), and the edge cache
+  serves them; they still carry the site's cookies and skip the browser's cache, as every
+  `std::http::fetch` does in toolchain 0.17.0 (docs/toolchain-gaps.md). Posting is the player's
   explicit choice, after the console says exactly what becomes public, and a setting posts every
   new personal best.
 - **Fast.** Watching a board's run starts with nothing to wait for; a posted run shows its place

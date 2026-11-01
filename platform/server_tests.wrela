@@ -1540,6 +1540,24 @@ fn a_replay_is_read_by_its_hash_and_kept_for_a_year() {
     assert(refused([a.reply.clone()]) && h.keys("h/") == 0, "gone with its account")
 }
 
+@test
+fn a_public_read_is_no_sessions_and_sets_no_cookie() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, token) = uploader(mut e, mut h, 1, 5)
+    post(mut e, mut h, 1, token, 10)
+    let board = Request::Board { game: String::from("toy"), course: 0, category: ANY, from: 0 }
+    // Signed in, with a cookie that is no session's, and with none: one answer, no cookie set.
+    h.keep(2, server::SESSION, [9, 9, 9])
+    let none = h.read_whole(mut e, 3, board.clone())
+    for browser in [1, 2, 3] {
+        let a = h.read_whole(mut e, browser, board.clone())
+        assert(save(a.reply) == save(none.reply) && a.public == server::BOARD_AGE, f"{browser}")
+        assert(a.cookies.is_empty(), f"browser {browser}'s answer sets no cookie")
+    }
+}
+
 /// The upload of `replay` with `token` from browser `conn`: its answer.
 fn upload(e: mut Engine<Toy>, h: mut Host, conn: u32, token: [u8], replay: [u8]) -> Reply {
     let up = Request::Upload {

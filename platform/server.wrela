@@ -41,7 +41,8 @@
 // kept with its version and its time.
 //
 // **The public reads** (a board's page, a slice of one, a run's replay, a search of names) answer
-// everyone the same, so the host's cache keeps them (`BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). They
+// everyone the same, so the host's cache keeps them (`BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`): they
+// read no session, though the browser sends its cookie with them, and set no cookie. They
 // show nothing a board doesn't: a search finds only names with runs on the boards, and a replay is
 // found only by its hash, which a board's page gives. Each reads a bounded number of entries.
 //
