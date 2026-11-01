@@ -73,11 +73,11 @@ pub struct CoatGenes: Copy {
 }
 
 /// The muscles' rule (F4): the stress a muscle's section bears at its peak load (Pa: Alexander's
-/// constant-stress rule), and the share of the body's mass its muscles may take (the mammalian
-/// range's middle, as a check).
+/// constant-stress rule), and the strongest effort they're sized for: a foot's peak force at a
+/// gallop, in body weights (the loads they're sized from are scaled up to it).
 pub struct MuscleGenes: Copy {
     pub stress: f32,
-    pub share: f32,
+    pub effort: f32,
 }
 
 /// The ranges the gait's optimizer searches (F5), each low to high: the walk's speed (m/s), its
@@ -171,7 +171,7 @@ pub const ROE: CreatureGenome = CreatureGenome {
         wavelength: 0.1,
         fade: 0.45,
     },
-    muscle: MuscleGenes { stress: 3.0e5, share: 0.38 },
+    muscle: MuscleGenes { stress: 3.0e5, effort: 3.0 },
     gait: GaitGenes {
         speed: vec2(0.6, 1.6),
         duty: vec2(0.55, 0.8),

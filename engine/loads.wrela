@@ -1,0 +1,626 @@
+// A creature's loads from its poses (docs/plan-world-class-3.md §F4): the walker (`gait`) gives
+// poses, not forces, so the forces come from them by inverse dynamics, specified so two
+// implementations give the same torques.
+//
+// - Each part's mass, centre and inertia are its bone's (`physique::integrate` per bone:
+//   `segments_of`); its linear and angular accelerations come from the pose stream by central
+//   differences (`joint_loads`, a frame each side).
+// - The body's required external wrench each frame: the force F = Σ m_i (a_i − g), and its moment
+//   about the centre of mass M = Σ r_i × m_i a_i + Σ (I_i α_i + ω_i × I_i ω_i).
+// - The planted feet carry it as point forces (`allocate`), in units of the body's weight and its
+//   moments of its weight times its standing height, so the solve is the same for a fawn and a
+//   stag: the least ‖A f − b‖² + ε ‖f‖², each foot's vertical force at least 0, its horizontal
+//   free, solved by a bounded-variable active set over the vertical bounds (Stark and Parker's
+//   BVLS shape), the feet in their order. Its residual ‖A f − b‖ is kept; a frame with no planted
+//   foot, or a residual over `INFEASIBLE`, is infeasible.
+// - Each joint's torque is the moment about it of what its bone and those below it need, less
+//   their contacts' forces (`Loads::torques`: Newton–Euler from the feet up the chains to the
+//   spine and out to the others, summed by subtree).
+//
+// Units: metres, kilograms, seconds, newtons; +y up.
+
+use creature::{Bone, Creature, Skeleton}
+use physique::{Per, integrate}
+
+/// Gravity (m/s²).
+pub const G: vec3 = vec3(0.0, -9.81, 0.0)
+
+/// The allocation's regularization (`allocate`): the minimizer is unique, and within ε ‖f‖² / 2 of
+/// the least residual (a quarter-weight stance's bias ε / 4 of the weight).
+pub const EPSILON: f32 = 1.0e-6
+
+/// The residual (a share of the weight, or of the weight times the height for the moments) past
+/// which a frame is infeasible.
+pub const INFEASIBLE: f32 = 0.05
+
+/// A body's parts as its loads read them: each bone's mass (kg), its centre and its moments of
+/// inertia about axes through it along the rest space's (kg m²), its parent (itself for the root)
+/// and where its joint is (rest space); and the body's standing height (m) and whole mass.
+pub struct Segments: Clone {
+    pub mass: Vec<f32>,
+    pub centre: Vec<vec3>,
+    pub inertia: Vec<vec3>,
+    pub parent: Vec<u32>,
+    pub joint: Vec<vec3>,
+    pub height: f32,
+    pub total: f32,
+}
+
+/// `c`'s segments: its mass per bone at `density(channels)`, cells down to `finest` m
+/// (`physique::integrate`), its skeleton's parents and joints, and its standing height `height`.
+pub fn segments_of<C, K: Creature<C>>(
+    c: K,
+    density: fn(C) -> f32,
+    finest: f32,
+    height: f32,
+) -> Segments {
+    let m = integrate(c, density, Per::Bone, finest)
+    let s = c.skeleton()
+    var out = Segments {
+        mass: Vec::new(),
+        centre: Vec::new(),
+        inertia: Vec::new(),
+        parent: Vec::new(),
+        joint: Vec::new(),
+        height,
+        total: m.total.mass,
+    }
+    for i in 0..s.len() {
+        let b = Bone { index: i }
+        out.mass.push(m.per[i].mass)
+        out.centre.push(m.per[i].centre)
+        out.inertia.push(m.per[i].inertia)
+        out.parent.push(s.parent(b).index)
+        out.joint.push(s.rest(b))
+    }
+    out
+}
+
+/// A planted foot: where it meets the ground (world) and the bone it's under.
+pub struct Contact: Copy {
+    pub at: vec3,
+    pub bone: u32,
+}
+
+/// A frame's pose: each bone's matrix (rest space to world) and its planted feet.
+pub struct Pose: Clone {
+    pub bones: Vec<mat4>,
+    pub contacts: Vec<Contact>,
+}
+
+/// A pose stream's loads, each of its frames but its first and last (the central differences'):
+/// each joint's torque (N·m, world: what the joint exerts on its bone and those below it), each
+/// planted foot's force (N), the allocation's residual and whether the frame is feasible.
+pub struct Loads: Clone {
+    pub torques: Vec<Vec<vec3>>,
+    pub forces: Vec<Vec<vec3>>,
+    pub residual: Vec<f32>,
+    pub feasible: Vec<bool>,
+}
+
+/// The rotation vector (axis times angle, radians) of rotation matrix `r`.
+fn rotation_vector(r: mat3) -> vec3 {
+    let c = clamp((r[0].x + r[1].y + r[2].z - 1.0) * 0.5, -1.0, 1.0)
+    let angle = acos(c)
+    let skew = vec3(r[1].z - r[2].y, r[2].x - r[0].z, r[0].y - r[1].x)
+    let s = sin(angle)
+    if s < 1.0e-6 {
+        // Near no turn: the skew part is twice the vector.
+        return skew * 0.5
+    }
+    skew * (angle / (2.0 * s))
+}
+
+/// The rotation part of `m`.
+fn turn_of(m: mat4) -> mat3 {
+    mat3(m[0].xyz, m[1].xyz, m[2].xyz)
+}
+
+/// Each frame's loads (`Loads`) of `poses`, `dt` apart, of a body of `s`'s segments.
+pub fn joint_loads(poses: [Pose], s: Segments, dt: f32) -> Loads {
+    var out = Loads {
+        torques: Vec::new(),
+        forces: Vec::new(),
+        residual: Vec::new(),
+        feasible: Vec::new(),
+    }
+    let n = s.mass.len()
+    if poses.len() < 3 {
+        return out
+    }
+    for t in 1..(poses.len() - 1) {
+        borrow a = poses[t - 1]
+        borrow b = poses[t]
+        borrow c = poses[t + 1]
+        // Each part's centre, acceleration, turn, angular velocity and acceleration (world).
+        var at: Vec<vec3> = Vec::new()
+        var force: Vec<vec3> = Vec::new()
+        var moment: Vec<vec3> = Vec::new()
+        var com = vec3(0.0)
+        var mass = 0.0
+        for i in 0..n {
+            let place = |m: mat4| (m * vec4(s.centre[i], 1.0)).xyz
+            let (p0, p1, p2) = (place(a.bones[i]), place(b.bones[i]), place(c.bones[i]))
+            let acc = (p2 - 2.0 * p1 + p0) / (dt * dt)
+            let (r0, r1, r2) = (turn_of(a.bones[i]), turn_of(b.bones[i]), turn_of(c.bones[i]))
+            // R(t+1) R(t)ᵀ and R(t) R(t−1)ᵀ: the turns over each half step (world).
+            let w_after = rotation_vector(r2 * transposed(r1)) / dt
+            let w_before = rotation_vector(r1 * transposed(r0)) / dt
+            let w = 0.5 * (w_after + w_before)
+            let alpha = (w_after - w_before) / dt
+            // Its inertia in the world: R I Rᵀ, I diagonal along the rest axes.
+            let i_rest = s.inertia[i]
+            let inertia = |v: vec3| r1 * (i_rest * (v * r1))
+            let m = s.mass[i]
+            let f = m * (acc - G)
+            at.push(p1)
+            force.push(f)
+            moment.push(cross(p1, f) + inertia(alpha) + cross(w, inertia(w)))
+            com += m * p1
+            mass += m
+        }
+        com /= max(mass, 1.0e-9)
+        // The body's wrench about its centre of mass: the sum of the parts'.
+        var total_f = vec3(0.0)
+        var total_m = vec3(0.0)
+        for i in 0..n {
+            total_f += force[i]
+            total_m += moment[i]
+        }
+        total_m -= cross(com, total_f)
+        // The planted feet's forces.
+        var rel: Vec<vec3> = Vec::new()
+        for k in 0..b.contacts.len() {
+            rel.push(b.contacts[k].at - com)
+        }
+        let weight = mass * 9.81
+        let (forces, residual) = allocate(rel, total_f, total_m, weight, s.height)
+        let feasible = b.contacts.len() > 0 && residual <= INFEASIBLE
+        // Each joint's torque: its subtree's moment about it, the contacts' taken off.
+        var sub_f = force.clone()
+        var sub_m = moment.clone()
+        for k in 0..b.contacts.len() {
+            let j = b.contacts[k].bone
+            sub_f[j] -= forces[k]
+            sub_m[j] -= cross(b.contacts[k].at, forces[k])
+        }
+        // Children after their parents: summed into them from the last.
+        var i = n
+        while i > 0 {
+            i -= 1
+            let p = s.parent[i]
+            if p != i {
+                let (f, m) = (sub_f[i], sub_m[i])
+                sub_f[p] += f
+                sub_m[p] += m
+            }
+        }
+        var torques: Vec<vec3> = Vec::new()
+        for i in 0..n {
+            let joint = (b.bones[i] * vec4(s.joint[i], 1.0)).xyz
+            torques.push(sub_m[i] - cross(joint, sub_f[i]))
+        }
+        out.torques.push(take torques)
+        out.forces.push(take forces)
+        out.residual.push(residual)
+        out.feasible.push(feasible)
+    }
+    out
+}
+
+/// `r` transposed.
+fn transposed(r: mat3) -> mat3 {
+    mat3(vec3(r[0].x, r[1].x, r[2].x), vec3(r[0].y, r[1].y, r[2].y), vec3(r[0].z, r[1].z, r[2].z))
+}
+
+/// The planted feet's forces (N) carrying `force` and `moment` (about the centre of mass), each
+/// foot at `at[k]` from the centre of mass (m), the body `weight` (N) and `height` (m) high: the
+/// least ‖A f − b‖² + ε ‖f‖² in units of the weight (the moments of the weight times the height),
+/// each vertical force at least 0 (`allocate`'s active set); and its residual ‖A f − b‖.
+pub fn allocate(
+    at: [vec3],
+    force: vec3,
+    moment: vec3,
+    weight: f32,
+    height: f32,
+) -> (Vec<vec3>, f32) {
+    let n = at.len()
+    let unknowns = 3 * n
+    var out: Vec<vec3> = Vec::filled(n, vec3(0.0))
+    let (w, h) = (f64(weight), f64(height))
+    let b = [
+        f64(force.x) / w,
+        f64(force.y) / w,
+        f64(force.z) / w,
+        f64(moment.x) / (w * h),
+        f64(moment.y) / (w * h),
+        f64(moment.z) / (w * h),
+    ]
+    if n == 0 {
+        var r = 0.0
+        for row in 0..6 {
+            r += b[row] * b[row]
+        }
+        return (out, f32(sqrt(r)))
+    }
+    // A's columns: foot k's x, y and z force (each a unit of the weight) gives itself on the
+    // force rows and (at[k] / height) × e on the moment rows (f64: AᵀA has rank 6 of up to 12,
+    // ε alone holding the rest up, past an f32's digits).
+    var a: Vec<f64> = Vec::filled(6 * unknowns, 0.0)
+    for k in 0..n {
+        let r = vec3d(at[k]) / h
+        for c in 0..3 {
+            let e = vec3d(
+                if c == 0 { 1.0 } else { 0.0 },
+                if c == 1 { 1.0 } else { 0.0 },
+                if c == 2 { 1.0 } else { 0.0 },
+            )
+            let m = cross(r, e)
+            let col = 3 * k + c
+            a[0 * unknowns + col] = e.x
+            a[1 * unknowns + col] = e.y
+            a[2 * unknowns + col] = e.z
+            a[3 * unknowns + col] = m.x
+            a[4 * unknowns + col] = m.y
+            a[5 * unknowns + col] = m.z
+        }
+    }
+    // The active set: the vertical forces held at 0 (`fixed`), the rest solved; a free vertical
+    // force under 0 is held, a held one whose gradient points inward is let go, one at a time in
+    // the feet's order, until neither.
+    var fixed: Vec<bool> = Vec::filled(unknowns, value: false)
+    var x: Vec<f64> = Vec::filled(unknowns, 0.0)
+    for _ in 0..(4 * unknowns + 4) {
+        x = solve_free(a, b, fixed, unknowns)
+        var worst = unknowns
+        for k in 0..n {
+            let v = 3 * k + 1
+            if !fixed[v] && x[v] < 0.0 && (worst == unknowns || x[v] < x[worst]) {
+                worst = v
+            }
+        }
+        if worst < unknowns {
+            fixed[worst] = true
+            continue
+        }
+        // The objective's gradient at a held vertical force: let it go if raising it helps.
+        var release = unknowns
+        var most = 0.0
+        for k in 0..n {
+            let v = 3 * k + 1
+            if fixed[v] {
+                var g = f64(EPSILON) * x[v]
+                for row in 0..6 {
+                    var ax = 0.0
+                    for col in 0..unknowns {
+                        ax += a[row * unknowns + col] * x[col]
+                    }
+                    g += a[row * unknowns + v] * (ax - b[row])
+                }
+                if g < most - 1.0e-12 {
+                    most = g
+                    release = v
+                }
+            }
+        }
+        if release == unknowns {
+            break
+        }
+        fixed[release] = false
+    }
+    var residual = 0.0
+    for row in 0..6 {
+        var ax = 0.0
+        for col in 0..unknowns {
+            ax += a[row * unknowns + col] * x[col]
+        }
+        residual += (ax - b[row]) * (ax - b[row])
+    }
+    for k in 0..n {
+        out[k] = vec3(f32(x[3 * k] * w), f32(x[3 * k + 1] * w), f32(x[3 * k + 2] * w))
+    }
+    (out, f32(sqrt(residual)))
+}
+
+/// The least ‖A x − b‖² + ε ‖x‖² over the unknowns not `fixed` (those at 0): the normal equations
+/// (AᵀA + εI) x = Aᵀb over them, by Gaussian elimination with partial pivoting.
+fn solve_free(a: [f64], b: [f64; 6], fixed: [bool], n: u32) -> Vec<f64> {
+    var free: Vec<u32> = Vec::new()
+    for i in 0..n {
+        if !fixed[i] {
+            free.push(i)
+        }
+    }
+    let m = free.len()
+    var out: Vec<f64> = Vec::filled(n, 0.0)
+    if m == 0 {
+        return out
+    }
+    // The augmented matrix [AᵀA + εI | Aᵀb], m rows of m + 1.
+    var s: Vec<f64> = Vec::filled(m * (m + 1), 0.0)
+    for r in 0..m {
+        for c in 0..m {
+            var v = if r == c { f64(EPSILON) } else { 0.0 }
+            for row in 0..6 {
+                v += a[row * n + free[r]] * a[row * n + free[c]]
+            }
+            s[r * (m + 1) + c] = v
+        }
+        var v = 0.0
+        for row in 0..6 {
+            v += a[row * n + free[r]] * b[row]
+        }
+        s[r * (m + 1) + m] = v
+    }
+    for col in 0..m {
+        var pivot = col
+        for r in (col + 1)..m {
+            if abs(s[r * (m + 1) + col]) > abs(s[pivot * (m + 1) + col]) {
+                pivot = r
+            }
+        }
+        if pivot != col {
+            for c in 0..(m + 1) {
+                let t = s[col * (m + 1) + c]
+                s[col * (m + 1) + c] = s[pivot * (m + 1) + c]
+                s[pivot * (m + 1) + c] = t
+            }
+        }
+        let d = s[col * (m + 1) + col]
+        for r in (col + 1)..m {
+            let k = s[r * (m + 1) + col] / d
+            for c in col..(m + 1) {
+                s[r * (m + 1) + c] -= k * s[col * (m + 1) + c]
+            }
+        }
+    }
+    var x: Vec<f64> = Vec::filled(m, 0.0)
+    var r = m
+    while r > 0 {
+        r -= 1
+        var v = s[r * (m + 1) + m]
+        for c in (r + 1)..m {
+            v -= s[r * (m + 1) + c] * x[c]
+        }
+        x[r] = v / s[r * (m + 1) + r]
+    }
+    for i in 0..m {
+        out[free[i]] = x[i]
+    }
+    out
+}
+
+/// Each joint's peak torque (N·m) over the feasible frames of `l`.
+pub fn peaks(l: Loads) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    if l.torques.len() == 0 {
+        return out
+    }
+    out = Vec::filled(l.torques[0].len(), 0.0)
+    for t in 0..l.torques.len() {
+        if !l.feasible[t] {
+            continue
+        }
+        for j in 0..l.torques[t].len() {
+            out[j] = max(out[j], length(l.torques[t][j]))
+        }
+    }
+    out
+}
+
+// ---- fixtures (§F4) ------------------------------------------------------------------------------
+
+/// A one-bone body of `mass` kg, its centre at its rest origin and its inertia `inertia`, standing
+/// `height` high.
+fn rigid(mass: f32, inertia: vec3, height: f32) -> Segments {
+    Segments {
+        mass: Vec::from([mass]),
+        centre: Vec::from([vec3(0.0)]),
+        inertia: Vec::from([inertia]),
+        parent: Vec::from([0]),
+        joint: Vec::from([vec3(0.0)]),
+        height,
+        total: mass,
+    }
+}
+
+/// Three frames `dt` apart of a rigid body at `at` accelerating at `a` (m/s²) and turning about
+/// +x at `alpha` (rad/s²) from rest at the middle frame, on feet at `feet` (world).
+fn accelerating(at: vec3, a: vec3, alpha: f32, feet: [vec3], dt: f32) -> Vec<Pose> {
+    var out: Vec<Pose> = Vec::new()
+    for k in 0..3 {
+        let t = (f32(k) - 1.0) * dt
+        let m = std::transform::translate(at + 0.5 * a * t * t) *
+            std::transform::rotate_x(0.5 * alpha * t * t)
+        var contacts: Vec<Contact> = Vec::new()
+        for f in feet {
+            contacts.push(Contact { at: f, bone: 0 })
+        }
+        out.push(Pose { bones: Vec::from([m]), contacts })
+    }
+    out
+}
+
+/// A two-bone leg holding 10 kg at a 0.3 m lever from its knee: the knee's torque 29.4 N·m
+/// (10 kg × 9.81 m/s² × 0.3 m) within 5 %.
+@test
+fn a_knee_holding_a_mass_at_a_lever_bears_its_moment() {
+    let s = Segments {
+        mass: Vec::from([0.0, 10.0]),
+        centre: Vec::from([vec3(0.0, 0.75, 0.0), vec3(0.3, 0.5, 0.0)]),
+        inertia: Vec::from([vec3(0.0), vec3(0.0)]),
+        parent: Vec::from([0, 0]),
+        joint: Vec::from([vec3(0.0, 1.0, 0.0), vec3(0.0, 0.5, 0.0)]),
+        height: 1.0,
+        total: 10.0,
+    }
+    let still = Pose {
+        bones: Vec::from([std::transform::identity(), std::transform::identity()]),
+        contacts: Vec::new(),
+    }
+    let l = joint_loads([still.clone(), still.clone(), still.clone()], s, 1.0 / 60.0)
+    let knee = length(l.torques[0][1])
+    assert(abs(knee - 29.43) <= 0.05 * 29.43, f"the knee bears {knee} N·m")
+    assert(!l.feasible[0], "a frame with no planted foot is feasible")
+}
+
+/// A rigid body on two feet accelerating at 2 m/s² forward and 1 rad/s² in pitch: its feet's
+/// forces sum to m (a − g) within 1 %, and their moment about its centre of mass to I α.
+@test
+fn an_accelerating_bodys_feet_carry_its_wrench() {
+    let (m, inertia) = (50.0, vec3(2.0, 3.0, 4.0))
+    let at = vec3(0.0, 1.0, 0.0)
+    // Fore and aft (two diagonal feet can't push about their own line: the pitch moment's).
+    let feet = [vec3(0.0, 0.0, 0.3), vec3(0.0, 0.0, -0.3)]
+    let l = joint_loads(
+        accelerating(at, vec3(0.0, 0.0, 2.0), 1.0, feet, 1.0 / 60.0),
+        rigid(m, inertia, 1.0),
+        1.0 / 60.0,
+    )
+    var f = vec3(0.0)
+    var moment = vec3(0.0)
+    for k in 0..2 {
+        f += l.forces[0][k]
+        moment += cross(feet[k] - at, l.forces[0][k])
+    }
+    let want_f = m * (vec3(0.0, 0.0, 2.0) - G)
+    let want_m = vec3(inertia.x * 1.0, 0.0, 0.0)
+    assert(length(f - want_f) <= 0.01 * length(want_f), f"the feet carry {f}, not {want_f}")
+    assert(length(moment - want_m) <= 0.01 * length(want_m), f"their moment {moment}, not {want_m}")
+    assert(l.feasible[0] && l.residual[0] < 1.0e-3, f"its residual {l.residual[0]}")
+}
+
+/// A body braking at 3 m/s² on four feet: its feet's horizontal forces sum to m a within 1 %
+/// (backward).
+@test
+fn a_braking_bodys_feet_push_back() {
+    let m = 30.0
+    let feet = [
+        vec3(0.15, 0.0, 0.35),
+        vec3(-0.15, 0.0, 0.35),
+        vec3(0.15, 0.0, -0.35),
+        vec3(-0.15, 0.0, -0.35),
+    ]
+    let l = joint_loads(
+        accelerating(vec3(0.0, 0.7, 0.0), vec3(0.0, 0.0, -3.0), 0.0, feet, 1.0 / 60.0),
+        rigid(m, vec3(1.0), 0.7),
+        1.0 / 60.0,
+    )
+    var z = 0.0
+    for k in 0..4 {
+        z += l.forces[0][k].z
+    }
+    assert(z < 0.0 && abs(z - m * -3.0) <= 0.01 * m * 3.0, f"the feet push {z} N, not {m * -3.0}")
+}
+
+/// An airborne frame (a hop: no foot planted) is infeasible.
+@test
+fn an_airborne_frame_is_infeasible() {
+    let l = joint_loads(
+        accelerating(vec3(0.0, 1.0, 0.0), vec3(0.0), 0.0, [], 1.0 / 60.0),
+        rigid(20.0, vec3(1.0), 1.0),
+        1.0 / 60.0,
+    )
+    assert(!l.feasible[0], "an airborne frame is feasible")
+}
+
+/// A static body on four feet at its corners, at 10, 50 and 100 kg: each foot carries a quarter
+/// of its weight, the residual under 1e-5, and the same whatever the feet's order.
+@test
+fn a_symmetric_stance_shares_the_weight_alike() {
+    let feet = [
+        vec3(0.2, -0.6, 0.4),
+        vec3(-0.2, -0.6, 0.4),
+        vec3(0.2, -0.6, -0.4),
+        vec3(-0.2, -0.6, -0.4),
+    ]
+    for m in [10.0, 50.0, 100.0] {
+        let w = m * 9.81
+        for turn in 0..4 {
+            var at: Vec<vec3> = Vec::new()
+            for k in 0..4 {
+                at.push(feet[(k + turn) % 4])
+            }
+            let (f, residual) = allocate(at, vec3(0.0, w, 0.0), vec3(0.0), w, 0.6)
+            assert(residual < 1.0e-5, f"at {m} kg the residual is {residual}")
+            for k in 0..4 {
+                assert(
+                    length(f[k] - vec3(0.0, 0.25 * w, 0.0)) <= 1.0e-4 * w,
+                    f"at {m} kg foot {k} carries {f[k]}",
+                )
+            }
+        }
+    }
+}
+
+/// A static body on three feet at uneven places: the allocation is the minimum-norm solution
+/// (Aᵀ (A Aᵀ)⁻¹ b, solved here apart) within 1 %.
+@test
+fn an_asymmetric_stance_takes_the_least_forces() {
+    let feet = [vec3(0.3, -0.7, 0.4), vec3(-0.25, -0.7, 0.35), vec3(0.05, -0.7, -0.5)]
+    let (w, h) = (300.0, 0.7)
+    let (f, _) = allocate(feet, vec3(0.0, w, 0.0), vec3(0.0), w, h)
+    // A (6 × 9) and b, as `allocate` sets them out.
+    var a = [[0.0; 9]; 6]
+    for k in 0..3 {
+        for c in 0..3 {
+            let e = vec3(if c == 0 { 1.0 } else { 0.0 }, if c == 1 { 1.0 } else { 0.0 }, if c == 2 {
+                1.0
+            } else { 0.0 })
+            let m = cross(feet[k] / h, e)
+            a[0][3 * k + c] = e.x
+            a[1][3 * k + c] = e.y
+            a[2][3 * k + c] = e.z
+            a[3][3 * k + c] = m.x
+            a[4][3 * k + c] = m.y
+            a[5][3 * k + c] = m.z
+        }
+    }
+    let b = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    // A Aᵀ y = b by Gauss-Jordan, then f = Aᵀ y.
+    var s = [[0.0; 7]; 6]
+    for r in 0..6 {
+        for c in 0..6 {
+            var v = 0.0
+            for k in 0..9 {
+                v += a[r][k] * a[c][k]
+            }
+            s[r][c] = v
+        }
+        s[r][6] = b[r]
+    }
+    for col in 0..6 {
+        var p = col
+        for r in col..6 {
+            if abs(s[r][col]) > abs(s[p][col]) {
+                p = r
+            }
+        }
+        let t = s[col]
+        s[col] = s[p]
+        s[p] = t
+        let d = s[col][col]
+        for c in 0..7 {
+            s[col][c] /= d
+        }
+        for r in 0..6 {
+            if r != col {
+                let k = s[r][col]
+                for c in 0..7 {
+                    s[r][c] -= k * s[col][c]
+                }
+            }
+        }
+    }
+    for k in 0..3 {
+        var want = vec3(0.0)
+        for r in 0..6 {
+            want += vec3(a[r][3 * k], a[r][3 * k + 1], a[r][3 * k + 2]) * s[r][6]
+        }
+        want *= w
+        assert(
+            length(f[k] - want) <= 0.01 * length(want),
+            f"foot {k} carries {f[k]}, the least {want}",
+        )
+    }
+}

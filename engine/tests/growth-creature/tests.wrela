@@ -262,3 +262,67 @@ fn the_coat_has_no_seam_at_a_join() {
         last = now
     }
 }
+
+// ---- the muscles (§F4) ---------------------------------------------------------------------------
+
+use kit::muscles::{Ahead, GROUPS, muscle_mass, muscles, standing, walked, walker_body}
+use engine::loads::{joint_loads, segments_of}
+
+/// The roe's segments, grown to `age`, of genome `g`.
+fn segments(g: kit::genome::CreatureGenome, age: f32) -> engine::loads::Segments {
+    let q = quadruped_at(g, age)
+    segments_of(
+        grown_body(g, age, plain(Flesh {})),
+        |c: Flesh| kit::genome::DENSITY,
+        finest: 0.01,
+        height: q.withers,
+    )
+}
+
+/// The muscles a genome grows standing (the loads that size them before the gait is optimized).
+fn standing_muscles(g: kit::genome::CreatureGenome) -> [kit::muscles::Sized; 7] {
+    let q = quadruped_at(g, 1.0)
+    muscles(g, q, joint_loads(standing(q), segments(g, 1.0), 1.0 / 60.0))
+}
+
+/// F4: a heavier genome (its grown mass 1.5 times, its plan scaled to it) grows thicker thighs:
+/// the section 1.3 times or more.
+@test
+fn a_heavier_genome_grows_thicker_thighs() {
+    var heavy = ROE
+    let k = pow(1.5, 1.0 / 3.0)
+    heavy.allometry.adult *= 1.5
+    heavy.plan.withers *= k
+    heavy.plan.rest.length *= k
+    let (a, b) = (standing_muscles(ROE), standing_muscles(heavy))
+    print(
+        f"the thigh's section {a[0].section * 1.0e4} cm², heavier {b[0].section * 1.0e4} cm² ({b[0].section / a[0].section}x)",
+    )
+    assert(
+        b[0].section >= 1.3 * a[0].section,
+        f"the heavier thigh {b[0].section / a[0].section} times",
+    )
+}
+
+/// F4: the muscles' total mass is 30 to 45 % of the body's (the mammalian range).
+@test
+fn the_muscles_are_a_mammals_share_of_the_body() {
+    let m = standing_muscles(ROE)
+    let body = segments(ROE, 1.0).total
+    var each = String::new()
+    for i in 0..GROUPS.len() {
+        each.push_str(f" {GROUPS[i].name} {m[i].mass}")
+    }
+    print(f"muscles {muscle_mass(m)} kg of {body} ({muscle_mass(m) / body}):{each.as_str()}")
+    let share = muscle_mass(m) / body
+    assert(share >= 0.3 && share <= 0.45, f"the muscles {share} of the body")
+}
+
+/// F4: the same genome grows the same muscles, to the bit.
+@test
+fn the_same_genome_grows_the_same_muscles() {
+    let (a, b) = (standing_muscles(ROE), standing_muscles(ROE))
+    for i in 0..GROUPS.len() {
+        assert(bitcast_u32(a[i].section) == bitcast_u32(b[i].section), f"{GROUPS[i].name} differs")
+    }
+}
