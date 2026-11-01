@@ -26,9 +26,10 @@ pub struct Tree: Clone {
     pub entries: Vec<Entry>,
 }
 
-/// The largest file Cloudflare serves, and the most files a Worker's assets may have.
+/// The largest file Cloudflare serves, and the most files a Worker's assets may have on Workers
+/// Paid, with Wrangler 4.34 or later (developers.cloudflare.com/workers/platform/limits/).
 pub const MAX_FILE: u64 = 25 * 1024 * 1024
-pub const MAX_FILES: u32 = 20000
+pub const MAX_FILES: u32 = 100000
 
 /// The parts of a path that never ship: private storage and runtime output.
 pub const PRIVATE: [Text; 4] = ["storage", "results", ".native", "node_modules"]

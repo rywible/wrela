@@ -3,11 +3,14 @@
 // anchors and links), and, as tool tests on small fixtures, the walk of a package's dependencies
 // for its font licences and the members of a workspace.
 
+use addresses::{address, payloads, runtime_hash}
 use catalog::{
     Build, CATALOG, Catalog, Console, Docs, Game, attract_build, check, is_component, origin, paths,
 }
 use io::read_files
-use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, workspace_of}
+use main::{
+    BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, served, workspace_of,
+}
 use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
@@ -469,25 +472,31 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
     }
     let order = fetch_order(game)
     assert(order.len() == 2 && order[0] == "session" && order[1] == "floor")
-    var builds: Vec<(Text, Vec<String>)> = Vec::new()
+    // Each file by its path in its build, and its content address if it moved there: the
+    // session's and the floor's runtime is one set, fetched once.
+    let at = |path: Text, url: Text| (String::from(path), String::from(url))
+    var builds: Vec<(Text, Vec<(String, String)>)> = Vec::new()
     builds.push(
         (
             "session",
             Vec::from(
                 [
-                    String::from("files/tile.bin"),
-                    String::from("game.lines"),
-                    String::from("game.wasm"),
-                    String::from("index.html"),
+                    at("addresses.json", ""),
+                    at("files/tile.bin", "/b/1111.bin"),
+                    at("game.lines", "/b/2222.lines"),
+                    at("game.wasm", "/b/3333.wasm"),
+                    at("index.html", ""),
+                    at("main.js", "/r/4444/main.js"),
+                    at("manifest.json", ""),
                 ],
             ),
         ),
     )
-    builds.push(("floor", Vec::from([String::from("main.js")])))
+    builds.push(("floor", Vec::from([at("main.js", "/r/4444/main.js"), at("net.json", "")])))
     let list = prefetch_list(game, "R", builds)
     assert(
         list.as_str() ==
-            "https://game.example/releases/R/session/game.wasm\nhttps://game.example/releases/R/floor/main.js\n",
+            "https://game.example/releases/R/session/addresses.json\nhttps://game.example/b/3333.wasm\nhttps://game.example/r/4444/main.js\nhttps://game.example/releases/R/session/manifest.json\nhttps://game.example/releases/R/floor/net.json\n",
         list.as_str(),
     )
     let shipped = |name: Text, width: u32, height: u32| Shipped {
@@ -521,6 +530,255 @@ fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
     )
     assert(none.as_str().ends_with("\tA line that sells it\t\t"), none.as_str())
     assert(none.as_str().split("\t").len() == 15, none.as_str())
+}
+
+// ---- Content addresses -------------------------------------------------------------------------
+
+/// The page a build's bootstrap is, as toolchain 0.17.0 writes it: its preloads and its script.
+const PAGE: Text = "<html><head>\n<link rel=\"preload\" href=\"manifest.json\" as=\"fetch\" crossorigin>\n<link rel=\"preload\" href=\"game.wasm\" as=\"fetch\" crossorigin>\n<link rel=\"preload\" href=\"pipeline_0.wgsl\" as=\"fetch\" crossorigin>\n<link rel=\"icon\" href=\"files/icons/icon-16.png\">\n</head><body><script type=\"module\" src=\"main.js\"></script></body></html>"
+
+const MANIFEST: Text = "{\"wasm\": \"game.wasm\", \"wasm_relaxed\": \"game.relaxed.wasm\", \"pipelines\": [{\"shader\": \"pipeline_0.wgsl\"}, {\"shader\": \"pipeline_0.wgsl\"}]}"
+
+/// A build at `dir` in `t`, whose WASM is `wasm`: its files, each as bytes (so read).
+fn build_in(t: mut Tree, dir: Text, wasm: Text) -> addresses::Build {
+    let files = [
+        ("index.html", String::from(PAGE)),
+        ("manifest.json", String::from(MANIFEST)),
+        ("net.json", String::from("{}")),
+        ("game.wasm", String::from(wasm)),
+        ("game.lines", String::from(f"lines of {wasm}")),
+        ("game.relaxed.wasm", String::from(f"relaxed {wasm}")),
+        ("pipeline_0.wgsl", String::from("shader")),
+        ("main.js", String::from("main")),
+        ("worker.js", String::from("worker")),
+        ("worklet.js", String::from("worklet")),
+        ("files/floor/t1.bin", String::from("tile")),
+        ("files/icons/icon-16.png", String::from("icon")),
+    ]
+    var names: Vec<String> = Vec::new()
+    for (path, body) in files {
+        t.put_bytes(addresses::in_dir(dir, path).as_str(), body.as_bytes())
+        names.push(String::from(path))
+    }
+    addresses::Build { dir: String::from(dir), files: names, manifest: String::from(MANIFEST) }
+}
+
+fn sha_of(body: Text) -> String {
+    tree::hex_sha(String::from(body).as_bytes())
+}
+
+@test
+fn a_builds_payloads_and_runtime_move_to_their_content_addresses() {
+    var t = Tree::new()
+    let b = build_in(mut t, "session", "wasm")
+    let Ok(listed) = payloads(b) else { panic("payloads") }
+    var names = String::new()
+    for p in listed {
+        names.push_str(f"{p.as_str()} ")
+    }
+    // The manifest's modules and shader (once), the modules' trap locations it has, and the
+    // streamed files, but not the icons the page links.
+    assert(
+        names.as_str() ==
+            "files/floor/t1.bin game.lines game.relaxed.wasm game.wasm pipeline_0.wgsl ",
+        names.as_str(),
+    )
+    let moved = match address(mut t, [b.clone()]) {
+        Ok(m) => take m,
+        Err(e) => panic(e.as_str()),
+    }
+    let set = runtime_hash(
+        [
+            (String::from("main.js"), sha_of("main")),
+            (String::from("worker.js"), sha_of("worker")),
+            (String::from("worklet.js"), sha_of("worklet")),
+        ],
+    )
+    let wasm = String::from(f"/b/{sha_of("wasm").as_str()}.wasm")
+    let shader = String::from(f"/b/{sha_of("shader").as_str()}.wgsl")
+    // Its map: each payload's path and URL.
+    let Some(k) = t.find("session/addresses.json") else { panic("no addresses.json") }
+    let Source::Bytes(map) = t.entries[k].source else { panic("bytes") }
+    let Some(m) = String::from_utf8(map.clone()) else { panic("UTF-8") }
+    assert(
+        m.as_str() ==
+            f"{{\"files/floor/t1.bin\": \"/b/{sha_of("tile").as_str()}.bin\", \"game.lines\": \"/b/{sha_of("lines of wasm").as_str()}.lines\", \"game.relaxed.wasm\": \"/b/{sha_of("relaxed wasm").as_str()}.wasm\", \"game.wasm\": \"{wasm.as_str()}\", \"pipeline_0.wgsl\": \"{shader.as_str()}\"}}",
+        m.as_str(),
+    )
+    // Its page preloads them there and runs its runtime from its set; the manifest stays.
+    let Some(pk) = t.find("session/index.html") else { panic("no page") }
+    let Source::Bytes(page) = t.entries[pk].source else { panic("bytes") }
+    let Some(p) = String::from_utf8(page.clone()) else { panic("UTF-8") }
+    assert(contains(p.as_str(), f"href=\"{wasm.as_str()}\" as=\"fetch\""), p.as_str())
+    assert(contains(p.as_str(), f"href=\"{shader.as_str()}\" as=\"fetch\""), p.as_str())
+    assert(contains(p.as_str(), "href=\"manifest.json\" as=\"fetch\""), p.as_str())
+    assert(contains(p.as_str(), "href=\"files/icons/icon-16.png\""), p.as_str())
+    assert(contains(p.as_str(), f"src=\"/r/{set.as_str()}/main.js\""), p.as_str())
+    // Nothing moved stays in the build; its page, manifest, net.json and icons do.
+    for gone in [
+        "game.wasm",
+        "game.lines",
+        "pipeline_0.wgsl",
+        "main.js",
+        "worklet.js",
+        "files/floor/t1.bin",
+    ] {
+        assert(t.find(addresses::in_dir("session", gone).as_str()).is_none(), gone)
+    }
+    for kept in ["index.html", "manifest.json", "net.json", "files/icons/icon-16.png"] {
+        assert(t.find(addresses::in_dir("session", kept).as_str()).is_some(), kept)
+    }
+    // Each moved file once at its address, by its bytes.
+    assert(moved.files.len() == 8, f"{moved.files.len()} files")
+    assert(moved.urls.len() == 8, f"{moved.urls.len()} moved")
+    var shared = String::new()
+    for f in moved.files {
+        shared.push_str(f"{f.path.as_str()} ")
+    }
+    assert(contains(shared.as_str(), f"b/{sha_of("wasm").as_str()}.wasm "), shared.as_str())
+    assert(contains(shared.as_str(), f"r/{set.as_str()}/worklet.js "), shared.as_str())
+}
+
+@test
+fn a_build_that_names_a_file_it_lacks_or_has_its_own_map_is_refused() {
+    var t = Tree::new()
+    var b = build_in(mut t, "", "wasm")
+    b.manifest = String::from("{\"wasm\": \"other.wasm\", \"pipelines\": []}")
+    match address(mut t, [b.clone()]) {
+        Ok(_) => panic("addressed"),
+        Err(e) => assert(contains(e.as_str(), "other.wasm, which it doesn't have"), e.as_str()),
+    }
+    b.manifest = String::from(MANIFEST)
+    t.put_bytes("addresses.json", String::from("{}").as_bytes())
+    match address(mut t, [take b]) {
+        Ok(_) => panic("addressed"),
+        Err(e) => assert(contains(e.as_str(), "of its own"), e.as_str()),
+    }
+}
+
+/// A Worker as a release serves it, with `release`'s own `catalog.tsv` (`docs`, which only a
+/// change to the docs changes), its builds at `dirs`: what moved, and the files.
+fn worker_of(dirs: [Text], release: Text, docs: Text) -> Tree {
+    var t = Tree::new()
+    var builds: Vec<addresses::Build> = Vec::new()
+    for d in dirs {
+        builds.push(build_in(mut t, d, "wasm"))
+    }
+    t.put_bytes("catalog.tsv", String::from(docs).as_bytes())
+    t.put_bytes("_headers", String::from("/*\n  X-Content-Type-Options: nosniff\n").as_bytes())
+    let moved = match address(mut t, builds) {
+        Ok(m) => take m,
+        Err(e) => panic(e.as_str()),
+    }
+    t.sort()
+    // An entry page, as the release makes the console's from its page once it's addressed.
+    var entry: Option<String> = None
+    if let Some(k) = t.find("index.html") {
+        let Source::Bytes(b) = t.entries[k].source else { panic("bytes") }
+        let Some(page) = String::from_utf8(b.clone()) else { panic("UTF-8") }
+        entry = Some(
+            replace_all(page.as_str(), "<head>", f"<head>\n<base href=\"/releases/{release}/\">"),
+        )
+    }
+    match served(t, moved, release, take entry, [u8(0)]) {
+        Ok(s) => take s,
+        Err(e) => panic(e.as_str()),
+    }
+}
+
+fn shared_paths(t: Tree) -> String {
+    var out = String::new()
+    for e in t.entries {
+        if e.path.as_str().starts_with("b/") || e.path.as_str().starts_with("r/") {
+            out.push_str(f"{e.path.as_str()}={e.sha.as_str()} ")
+        }
+    }
+    out
+}
+
+/// The plan's deploy-delta check (docs/plan-online-play.md, step 11): two releases that differ
+/// only in the docs give the console and a game no new `/b/` or `/r/` URL; what's new is only
+/// their own release's files.
+@test
+fn a_docs_only_change_gives_the_console_and_a_game_no_new_shared_url() {
+    for dirs in [[""], ["session"]] {
+        let before = worker_of(dirs, "aaaaaaaaaaaaaaaaaaaa", "docs at one commit")
+        let after = worker_of(dirs, "bbbbbbbbbbbbbbbbbbbb", "docs at the next")
+        assert(!shared_paths(after).is_empty(), "something moved")
+        assert(
+            shared_paths(before).as_str() == shared_paths(after).as_str(),
+            shared_paths(after).as_str(),
+        )
+        for e in after.entries {
+            let p = e.path.as_str()
+            if before.find(p).is_none() {
+                assert(p.starts_with("releases/bbbbbbbbbbbbbbbbbbbb/"), p)
+            }
+        }
+    }
+}
+
+/// The plan's served-artifact check, as the release writes it: no release-relative copy of a
+/// moved file, and each target of each `addresses.json` beside it; `files.json` lists both.
+@test
+fn a_served_worker_has_each_payload_once_at_its_address() {
+    let r = "aaaaaaaaaaaaaaaaaaaa"
+    let w = worker_of(["session", "floor"], r, "x")
+    var maps = 0
+    for e in w.entries {
+        let p = e.path.as_str()
+        if !p.ends_with("/addresses.json") {
+            continue
+        }
+        maps += 1
+        let Source::Bytes(b) = e.source else { panic("bytes") }
+        let Some(text) = String::from_utf8(b.clone()) else { panic("UTF-8") }
+        let Some(doc) = std::json::parse(text.as_str()) else { panic("JSON") }
+        let dir = p.slice(0, p.len() - "addresses.json".len())
+        for (path, n) in doc.members(std::json::TOP) {
+            let Some(url) = doc.text(n) else { panic("a URL") }
+            assert(url.as_str().starts_with("/b/"), url.as_str())
+            assert(w.find(url.as_str().slice(1, url.len())).is_some(), url.as_str())
+            assert(w.find(f"{dir}{path.as_str()}").is_none(), path.as_str())
+        }
+    }
+    assert(maps == 2, f"{maps} maps")
+    let Some(k) = w.find(f"releases/{r}/files.json") else { panic("files.json") }
+    let Source::Bytes(listing) = w.entries[k].source else { panic("bytes") }
+    let Some(l) = String::from_utf8(listing.clone()) else { panic("UTF-8") }
+    assert(
+        contains(
+            l.as_str(),
+            f"\"/b/{sha_of("wasm").as_str()}.wasm\": \"{sha_of("wasm").as_str()}\"",
+        ),
+        l.as_str(),
+    )
+    assert(contains(l.as_str(), "\"session/addresses.json\""), l.as_str())
+    assert(!contains(l.as_str(), "\"session/game.wasm\""), l.as_str())
+    // The two builds' one runtime and one WASM, each once.
+    var wasms = 0
+    for e in w.entries {
+        if e.path.as_str().starts_with("b/") && e.path.as_str().ends_with(".wasm") {
+            wasms += 1
+        }
+    }
+    assert(wasms == 2, f"{wasms} modules: the standard and the relaxed")
+    // Kept for a year, like a release's files.
+    let Some(h) = w.find("_headers") else { panic("_headers") }
+    let Source::Bytes(hb) = w.entries[h].source else { panic("bytes") }
+    let Some(headers_text) = String::from_utf8(hb.clone()) else { panic("UTF-8") }
+    assert(
+        contains(
+            headers_text.as_str(),
+            "/b/*\n  Cache-Control: public, max-age=31536000, immutable\n",
+        ),
+    )
+    assert(
+        contains(
+            headers_text.as_str(),
+            "/r/*\n  Cache-Control: public, max-age=31536000, immutable\n",
+        ),
+    )
 }
 
 // ---- The docs ----------------------------------------------------------------------------------

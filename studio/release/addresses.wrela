@@ -1,0 +1,249 @@
+// Where a release's builds put what one release shares with the next: each build's payloads at
+// `/b/<sha256>.<ext>` and its runtime's scripts together at `/r/<sha256 of the set>/`, both
+// immutable (site::CACHE_RULES), so a deploy that doesn't change a file doesn't change its URL
+// and a returning player's browser keeps it. Toolchain 0.18.0's browser host reads a build's
+// `addresses.json` (each payload's path in the build, and its URL under `/b/`), and the
+// runtime's scripts find each other beside themselves (`import.meta.url`), so they move as one
+// set. The rest of a build stays with its release: its page, its manifest, `net.json`, its icons.
+
+use json::{Json, compact, member, text}
+use manifest::last_part
+use site::{replace_all, suffix}
+use std::hash::sha256::{Sha256, hex}
+use std::json::{TOP, parse as parse_json}
+use tree::{Entry, Tree, before_by_parts, frame}
+
+/// Where the payloads and the runtimes are, at a Worker's root.
+pub const BLOBS: Text = "b"
+pub const RUNTIMES: Text = "r"
+
+/// Where a build's icons are (the console's, console/icon.wrela): its page links them against
+/// its own address (`std::host::icon`), not through the map, so they stay with it.
+pub const ICONS: Text = "files/icons/"
+
+/// The file a build's map is in, beside its manifest.
+pub const MAP: Text = "addresses.json"
+
+/// A build in a Worker's files: its directory there (empty for the Worker's own build, at its
+/// root), its output's files (each its path in the build) and its manifest's text.
+pub struct Build: Clone {
+    pub dir: String,
+    pub files: Vec<String>,
+    pub manifest: String,
+}
+
+/// `path` in the build at `dir`, as the Worker's files have it.
+pub fn in_dir(dir: str, path: str) -> String {
+    if dir.is_empty() { String::from(path) } else { String::from(f"{dir}/{path}") }
+}
+
+fn listed(names: [String], name: str) -> bool {
+    for n in names {
+        if n.as_str() == name {
+            return true
+        }
+    }
+    false
+}
+
+/// The payloads of `b`, each its path in the build, sorted by their parts: its manifest's `wasm`
+/// and `wasm_relaxed` and each pipeline's `shader`, each module's trap locations beside it
+/// (`game.lines` for `game.wasm`) if the build has them, and its streamed files (`files/`, but
+/// its icons). Or why not: a manifest that isn't one, or that names a file the build hasn't.
+pub fn payloads(b: Build) -> Result<Vec<String>, String> {
+    let Some(doc) = parse_json(b.manifest.as_str()) else {
+        return Err(String::from(f"{in_dir(b.dir.as_str(), "manifest.json").as_str()} isn't JSON"))
+    }
+    var named: Vec<String> = Vec::new()
+    for key in ["wasm", "wasm_relaxed"] {
+        if let Some(n) = doc.get(TOP, key) {
+            if let Some(t) = doc.text(n) {
+                named.push(take t)
+            }
+        }
+    }
+    if named.is_empty() {
+        return Err(
+            String::from(f"{in_dir(b.dir.as_str(), "manifest.json").as_str()} names no WASM"),
+        )
+    }
+    var modules: Vec<String> = Vec::new()
+    for m in named {
+        modules.push(m.clone())
+    }
+    if let Some(list) = doc.get(TOP, "pipelines") {
+        for i in 0..doc.count(list) {
+            let Some(p) = doc.at(list, i) else { continue }
+            let Some(s) = doc.get(p, "shader") else { continue }
+            if let Some(t) = doc.text(s) {
+                named.push(take t)
+            }
+        }
+    }
+    var out: Vec<String> = Vec::new()
+    for n in named {
+        if !listed(b.files, n.as_str()) {
+            return Err(
+                String::from(
+                    f"the build at '{b.dir.as_str()}' names {n.as_str()}, which it doesn't have",
+                ),
+            )
+        }
+        if !listed(out, n.as_str()) {
+            out.push(n.clone())
+        }
+    }
+    for m in modules {
+        let s = m.as_str()
+        let cut = if s.ends_with(".wasm") { s.len() - 5 } else { s.len() }
+        let lines = String::from(f"{s.slice(0, cut)}.lines")
+        if listed(b.files, lines.as_str()) && !listed(out, lines.as_str()) {
+            out.push(take lines)
+        }
+    }
+    for f in b.files {
+        let p = f.as_str()
+        if p.starts_with("files/") && !p.starts_with(ICONS) && !listed(out, p) {
+            out.push(f.clone())
+        }
+    }
+    out.sort_by(|a: String, c: String| before_by_parts(a.as_str(), c.as_str()))
+    Ok(out)
+}
+
+/// The scripts of `b`'s runtime, sorted: its output's `.js` files beside its page (`main.js`,
+/// `worker.js`, `worklet.js` and their siblings).
+pub fn runtime(b: Build) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for f in b.files {
+        let p = f.as_str()
+        if p.ends_with(".js") && p.find("/").is_none() {
+            out.push(f.clone())
+        }
+    }
+    out.sort_by(|a: String, c: String| a < c)
+    out
+}
+
+/// A payload's URL: `/b/`, its SHA-256 and its file's extension (`/b/<sha>.wasm`).
+pub fn blob_url(path: str, sha: str) -> String {
+    String::from(f"/{BLOBS}/{sha}{suffix(last_part(path))}")
+}
+
+/// A runtime's directory's name: the SHA-256 of its scripts, each framed by its name, then its
+/// SHA-256 in hexadecimal (`tree::frame`), in the order given (sorted by name).
+pub fn runtime_hash(scripts: [(String, String)]) -> String {
+    var d = Sha256::new()
+    for (name, sha) in scripts {
+        frame(mut d, name.as_str(), u64(sha.len()))
+        d.update(sha.as_bytes())
+    }
+    hex(d.finish())
+}
+
+/// `addresses.json`: each payload's path in its build and its URL, compact, in the order given.
+pub fn addresses_json(map: [(String, String)]) -> String {
+    var members: Vec<(String, Json)> = Vec::new()
+    for (path, url) in map {
+        members.push(member(path.as_str(), text(url.as_str())))
+    }
+    compact(Json::Obj(take members))
+}
+
+/// `page` with each of `map`'s paths (each a file of its build, and its URL) that an attribute
+/// names in full (`href="game.wasm"`, `src="main.js"`) named by its URL: its preloads and its
+/// script.
+pub fn pointed(page: str, map: [(String, String)]) -> String {
+    var out = String::from(page)
+    for (path, url) in map {
+        for attribute in ["href", "src"] {
+            out = replace_all(
+                out.as_str(),
+                f"{attribute}=\"{path.as_str()}\"",
+                f"{attribute}=\"{url.as_str()}\"",
+            )
+        }
+    }
+    out
+}
+
+/// What `address` moved out of a Worker's files: each moved file's path there and its URL, and
+/// the files at those URLs, each once, at its path from the Worker's root (`b/<sha>.wasm`,
+/// `r/<hash>/main.js`).
+pub struct Moved: Clone {
+    pub urls: Vec<(String, String)>,
+    pub files: Vec<Entry>,
+}
+
+/// Moves the payloads and the runtime of each of `builds` out of `tree` (each file's SHA-256
+/// read, as the fingerprint reads them) to their URLs, puts each build's `addresses.json` beside
+/// its manifest, and points each build's page (its `index.html`, as bytes) at them. What moved,
+/// or why it can't: a build's manifest that `payloads` refuses, a file of a build that `tree`
+/// hasn't, or a build that has an `addresses.json` of its own.
+pub fn address(tree: mut Tree, builds: [Build]) -> Result<Moved, String> {
+    var moved = Moved { urls: Vec::new(), files: Vec::new() }
+    for b in builds {
+        let dir = b.dir.as_str()
+        let map_path = in_dir(dir, MAP)
+        if listed(b.files, MAP) || tree.find(map_path.as_str()).is_some() {
+            return Err(String::from(f"the build at '{dir}' has an {MAP} of its own"))
+        }
+        // Each payload's URL, then each script's.
+        var map: Vec<(String, String)> = Vec::new()
+        for p in payloads(b)? {
+            let e = entry_at(tree, in_dir(dir, p.as_str()).as_str())?
+            map.push((p.clone(), blob_url(p.as_str(), e.sha.as_str())))
+        }
+        var scripts: Vec<(String, String)> = Vec::new()
+        for s in runtime(b) {
+            let e = entry_at(tree, in_dir(dir, s.as_str()).as_str())?
+            scripts.push((s.clone(), e.sha.clone()))
+        }
+        let set = runtime_hash(scripts)
+        var all = map.clone()
+        for (s, _) in scripts {
+            all.push((s.clone(), String::from(f"/{RUNTIMES}/{set.as_str()}/{s.as_str()}")))
+        }
+        for (p, url) in all {
+            let path = in_dir(dir, p.as_str())
+            var e = entry_at(tree, path.as_str())?
+            tree.remove(path.as_str())
+            let at = String::from(url.as_str().slice(1, url.len()))
+            var known = false
+            for f in moved.files {
+                if f.path.as_str() == at.as_str() {
+                    known = true
+                }
+            }
+            if !known {
+                e.path = take at
+                moved.files.push(take e)
+            }
+            moved.urls.push((take path, url.clone()))
+        }
+        let page_path = in_dir(dir, "index.html")
+        if let Some(k) = tree.find(page_path.as_str()) {
+            if let tree::Source::Bytes(bytes) = tree.entries[k].source {
+                let Some(page) = String::from_utf8(bytes.clone()) else {
+                    return Err(String::from(f"{page_path.as_str()} isn't UTF-8"))
+                }
+                let p = pointed(page.as_str(), all)
+                tree.put_bytes(page_path.as_str(), p.as_bytes())
+            }
+        }
+        tree.put_bytes(map_path.as_str(), addresses_json(map).as_bytes())
+    }
+    moved.files.sort_by(|a: Entry, c: Entry| before_by_parts(a.path.as_str(), c.path.as_str()))
+    Ok(moved)
+}
+
+/// The entry at `path` in `tree`, its SHA-256 read; or why not.
+fn entry_at(tree: Tree, path: str) -> Result<Entry, String> {
+    let Some(k) = tree.find(path) else {
+        return Err(String::from(f"a build's {path} isn't in its Worker's files"))
+    }
+    if tree.entries[k].sha.is_empty() {
+        return Err(String::from(f"{path} hasn't been read"))
+    }
+    Ok(tree.entries[k].clone())
+}

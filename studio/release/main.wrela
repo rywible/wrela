@@ -34,10 +34,14 @@
 // Each Worker serves its release under `releases/<id>/` with `files.json` (each file's SHA-256,
 // for a later deploy to keep), from an entry page that names that release (`<base>`), with
 // headers and redirects (site.wrela), as static assets alone: `<worker>.wrangler.json` configures
-// it. The console's server is a Worker of its own, on the console's API paths (`<api>.worker.js`
+// it. What a release shares with the next is at content addresses at the Worker's root
+// (addresses.wrela): each build's payloads under `b/`, its runtime under `r/`, which its page,
+// its `addresses.json` and the console's prefetch lists name; `files.json` lists them by their
+// root-absolute paths (`/b/<sha>.wasm`). The console's server is a Worker of its own, on the console's API paths (`<api>.worker.js`
 // and `<api>.wrangler.json`, its build beside them), and `release.json` says what the release
 // holds.
 
+use addresses::{Build, Moved, address, in_dir}
 use catalog::{CATALOG, Catalog, Game, check, origin_of, paths}
 use json::{Json, from_doc}
 use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_files}
@@ -58,7 +62,7 @@ use std::tool::files::{Entry, Kind}
 use std::tool::image
 use std::tool::image::{Image, Size}
 use std::tool::toolchain
-use tree::{Source, Tree, check_files, files_json, frame, hex_sha}
+use tree::{Source, Tree, before_by_parts, check_files, files_json, frame, hex_sha}
 
 /// The roots: the workspace, read; the builds' stage; the release.
 pub const WS: Text = "ws"
@@ -449,6 +453,53 @@ fn release(revision: str) -> Result<String, ToolError> {
     }
     let release = fingerprint(mut projects)?
     let r = release.as_str()
+    // Each build's payloads and runtime at their content addresses, its page pointed at them and
+    // its map beside its manifest: each build by its project, its directory and its files, in
+    // `plan`'s order.
+    var owners: Vec<(u32, String, Vec<String>)> = Vec::new()
+    for k in 0..2 {
+        var shipped: Vec<String> = Vec::new()
+        for f in outputs[k] {
+            if !is_marker(f.as_str()) && !(k == 0 && f.as_str().starts_with("server/")) {
+                shipped.push(f.clone())
+            }
+        }
+        owners.push((k, String::new(), take shipped))
+    }
+    var o = 2
+    for g in 0..c.games.len() {
+        for b in c.games[g].builds {
+            var shipped: Vec<String> = Vec::new()
+            for f in outputs[o] {
+                if !is_marker(f.as_str()) {
+                    shipped.push(f.clone())
+                }
+            }
+            owners.push((2 + g, String::from(b.name), take shipped))
+            o += 1
+        }
+    }
+    var manifest_paths: Vec<String> = Vec::new()
+    for i in 0..plan.len() {
+        manifest_paths.push(String::from(f"{plan[i].out.as_str()}/manifest.json"))
+    }
+    var manifests = read_files(manifest_paths)?
+    var builds_of: Vec<Vec<Build>> = Vec::new()
+    for _ in 0..projects.len() {
+        builds_of.push(Vec::new())
+    }
+    for i in 0..owners.len() {
+        let (k, dir, shipped) = owners[i].clone()
+        let Some(text) = String::from_utf8(replace(mut manifests[i], Vec::new())) else {
+            return Err(ToolError::new(f"{plan[i].out.as_str()}/manifest.json isn't UTF-8"))
+        }
+        builds_of[k].push(Build { dir, files: shipped, manifest: text })
+    }
+    var moved: Vec<Moved> = Vec::new()
+    for k in 0..projects.len() {
+        moved.push(address(mut projects[k].tree, builds_of[k]).map_err(own)?)
+        projects[k].tree.sort()
+    }
     // The console's catalog and prefetch lists, and the headers and redirects that name them.
     var catalog_text = String::new()
     for g in 0..c.games.len() {
@@ -469,15 +520,33 @@ fn release(revision: str) -> Result<String, ToolError> {
     projects[0].tree.put_bytes("release.txt", String::from(f"{r}\n").as_bytes())
     for g in 0..c.games.len() {
         borrow game = c.games[g]
-        var lists: Vec<(Text, Vec<String>)> = Vec::new()
+        var lists: Vec<(Text, Vec<(String, String)>)> = Vec::new()
         for name in fetch_order(game) {
-            var paths_of: Vec<String> = Vec::new()
             let prefix = String::from(f"{name}/")
+            var paths_of: Vec<(String, String)> = Vec::new()
             for e in projects[2 + g].tree.entries {
                 if e.path.as_str().starts_with(prefix.as_str()) {
-                    paths_of.push(String::from(e.path.as_str().slice(prefix.len(), e.path.len())))
+                    paths_of.push(
+                        (
+                            String::from(e.path.as_str().slice(prefix.len(), e.path.len())),
+                            String::new(),
+                        ),
+                    )
                 }
             }
+            for (path, url) in moved[2 + g].urls {
+                if path.as_str().starts_with(prefix.as_str()) {
+                    paths_of.push(
+                        (String::from(path.as_str().slice(prefix.len(), path.len())), url.clone()),
+                    )
+                }
+            }
+            paths_of.sort_by(
+                |a: (String, String), b: (String, String)| before_by_parts(
+                    a.0.as_str(),
+                    b.0.as_str(),
+                ),
+            )
             lists.push((name, take paths_of))
         }
         let list = prefetch_list(game, r, lists)
@@ -554,42 +623,7 @@ fn release(revision: str) -> Result<String, ToolError> {
             }
         }
         var f = project(p.role, p.worker.as_str(), p.domain.as_str(), p.namespace.as_str())
-        var versioned = Tree::new()
-        for e in p.tree.entries {
-            let path = e.path.as_str()
-            let cut = match path.find("/") {
-                Some(i) => i,
-                None => path.len(),
-            }
-            let top = path.slice(0, cut)
-            if top == "releases" || top == "_headers" || top == "_redirects" {
-                f.tree.entries.push(e.clone())
-            } else {
-                var moved = e.clone()
-                moved.path = String::from(f"releases/{r}/{path}")
-                f.tree.entries.push(take moved)
-                versioned.entries.push(e.clone())
-            }
-        }
-        if let Some(text) = take entry {
-            f.tree.put_bytes("index.html", text.as_bytes())
-        }
-        f.tree.put_bytes(f"releases/{r}/files.json", files_json(versioned.entries).as_bytes())
-        // Beside its releases, as `_headers` is: its favicon and its 404 page.
-        f.tree.put_bytes("favicon.ico", favicon)
-        f.tree.put_bytes("404.html", String::from(NOT_FOUND).as_bytes())
-        let Some(h) = f.tree.find("_headers") else { return Err(ToolError::new("no _headers")) }
-        let Source::Bytes(old) = f.tree.entries[h].source else {
-            return Err(ToolError::new("_headers"))
-        }
-        let Some(given) = String::from_utf8(old.clone()) else {
-            return Err(ToolError::new("_headers"))
-        }
-        var all_headers = given.clone()
-        all_headers.push_str(CACHE_RULES)
-        f.tree.put_bytes("_headers", all_headers.as_bytes())
-        f.tree.sort()
-        check_files(f.tree.entries).map_err(own)?
+        f.tree = served(p.tree, moved[k], r, take entry, favicon).map_err(own)?
         finals.push(take f)
     }
     // The console's server: its build's files beside its Worker's script, and the members of its
@@ -692,6 +726,63 @@ fn release(revision: str) -> Result<String, ToolError> {
     // The stage, emptied.
     empty(WORK)?
     Ok(report)
+}
+
+/// A Worker's files as it serves them, from `tree` (its files at their paths in the release,
+/// sorted by their parts, its `_headers` among them) and what `address` moved out of it: its
+/// release under `releases/<release>/` with its `files.json`, which lists what moved by its
+/// root-absolute path; what moved at the root (`b/`, `r/`); its entry page if it has one
+/// (`entry`, which names the release as its `<base>`); its favicon and 404 page; and its headers,
+/// `CACHE_RULES` last. Or why it can't ship (`check_files`).
+pub fn served(
+    tree: Tree,
+    moved: Moved,
+    release: str,
+    entry: take Option<String>,
+    favicon: [u8],
+) -> Result<Tree, String> {
+    var out = Tree::new()
+    var versioned: Vec<tree::Entry> = Vec::new()
+    for e in moved.files {
+        var listed = e.clone()
+        listed.path = String::from(f"/{e.path.as_str()}")
+        versioned.push(take listed)
+        out.entries.push(e.clone())
+    }
+    for e in tree.entries {
+        let path = e.path.as_str()
+        let cut = match path.find("/") {
+            Some(i) => i,
+            None => path.len(),
+        }
+        let top = path.slice(0, cut)
+        if top == "releases" || top == "_headers" || top == "_redirects" {
+            out.entries.push(e.clone())
+            continue
+        }
+        var moved_to = e.clone()
+        moved_to.path = String::from(f"releases/{release}/{path}")
+        out.entries.push(take moved_to)
+        versioned.push(e.clone())
+    }
+    if let Some(text) = take entry {
+        out.put_bytes("index.html", text.as_bytes())
+    }
+    out.put_bytes(f"releases/{release}/files.json", files_json(versioned).as_bytes())
+    // Beside its releases, as `_headers` is: its favicon and its 404 page.
+    out.put_bytes("favicon.ico", favicon)
+    out.put_bytes("404.html", String::from(NOT_FOUND).as_bytes())
+    let Some(h) = out.find("_headers") else { return Err(String::from("no _headers")) }
+    let Source::Bytes(old) = out.entries[h].source else { return Err(String::from("_headers")) }
+    let Some(given) = String::from_utf8(old.clone()) else {
+        return Err(String::from("_headers isn't UTF-8"))
+    }
+    var all_headers = given.clone()
+    all_headers.push_str(CACHE_RULES)
+    out.put_bytes("_headers", all_headers.as_bytes())
+    out.sort()
+    check_files(out.entries)?
+    Ok(out)
 }
 
 /// Whether a build's file is its output's own record (`.wrela-build`), which doesn't ship.

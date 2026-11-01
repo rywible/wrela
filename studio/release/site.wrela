@@ -98,8 +98,9 @@ pub fn docs_headers(home: str) -> String {
     h
 }
 
-/// What every Worker's headers end with: a release's files are kept, its entry points never.
-pub const CACHE_RULES: Text = "/releases/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n/deploys.json\n  Cache-Control: no-cache\n"
+/// What every Worker's headers end with: a release's files, and the payloads and runtimes at
+/// their content addresses (addresses.wrela), are kept; its entry points never.
+pub const CACHE_RULES: Text = "/releases/*\n  Cache-Control: public, max-age=31536000, immutable\n/b/*\n  Cache-Control: public, max-age=31536000, immutable\n/r/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n/deploys.json\n  Cache-Control: no-cache\n"
 
 /// A top entry of the docs' Worker before its release is put in `releases/`: its name, whether
 /// it's a directory, and for a directory whether a Markdown file is somewhere inside it.
@@ -120,6 +121,7 @@ pub fn docs_redirects(tops: [Top], release: str) -> String {
         } else if !t.dir &&
             (suffix(name) == ".txt" || suffix(name) == ".json") &&
             name != "manifest.json" &&
+            name != "addresses.json" &&
             name != "files.json" {
             out.push_str(f"/{name} /releases/{release}/{name} 302\n")
         }
@@ -689,15 +691,27 @@ pub fn prefetched(path: str) -> bool {
 }
 
 /// What the console fetches of a game ahead of time, once it's idle: each build's files that
-/// `prefetched` keeps, by their address. `builds` holds each build's name and its files' paths,
-/// in `fetch_order`, its paths sorted by their parts.
-pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<String>)]) -> String {
+/// `prefetched` keeps, by their address, each once. `builds` holds each build's name and its
+/// files, in `fetch_order`, each its path in the build and its URL on the game's origin if it
+/// moved to a content address (addresses.wrela), else empty for its release's copy; its paths
+/// sorted by their parts.
+pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<(String, String)>)]) -> String {
     let o = origin_of(game.domain)
     var out = String::new()
+    var seen: Vec<String> = Vec::new()
     for (name, paths) in builds {
-        for p in paths {
-            if prefetched(p.as_str()) {
-                out.push_str(f"{o.as_str()}/releases/{release}/{name}/{p.as_str()}\n")
+        for (p, url) in paths {
+            if !prefetched(p.as_str()) {
+                continue
+            }
+            let line = if url.is_empty() {
+                String::from(f"{o.as_str()}/releases/{release}/{name}/{p.as_str()}")
+            } else {
+                String::from(f"{o.as_str()}{url.as_str()}")
+            }
+            if !contains(seen, line.as_str()) {
+                out.push_str(f"{line.as_str()}\n")
+                seen.push(take line)
             }
         }
     }
