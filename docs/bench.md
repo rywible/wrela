@@ -5169,7 +5169,12 @@ gates defined on the M4 (G-sustained, G-memory, G-cold, G-warm, G-tier, G-grown'
 its time) are recorded here as this machine's numbers and listed to measure there. The thirteen:
 
 1. **`wrela suite`** on 0.18.0 (the plan's 0.10.0 is long past: main's pin, rywible/wrela#351):
-   SUITE.
+   **148 of 150 checks pass** (23 m 58 s, before the review's fixes). The two that fail,
+   `engine/tests/frame` (2 of 16) and `examples/vale` (3 of 4), are the debug build's budget under
+   the suite's load ("a step of work … past twice the playing budget"); each passes alone, as do
+   `fmt`, `content/kit` and `games/last-green`, and, after the review's and the council's fixes,
+   `fmt`, `games/last-green` (103 tests) and `studio/bench` (22). It isn't an all-pass suite: the
+   budget panics under load are plan three's throughout.
 2. **G-reference** (D38): **misses**, the final panel under "Public visual references" (above): 0 of
    96 judgements prefer the still or rate it equal, every pair lost 8 to 0, the shots' and the
    manifest's hashes B5's.
