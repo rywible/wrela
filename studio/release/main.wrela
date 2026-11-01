@@ -37,9 +37,10 @@
 // it. What a release shares with the next is at content addresses at the Worker's root
 // (addresses.wrela): each build's payloads under `b/`, its runtime under `r/`, which its page,
 // its `addresses.json` and the console's prefetch lists name; `files.json` lists them by their
-// root-absolute paths (`/b/<sha>.wasm`). The console's server is a Worker of its own, on the console's API paths (`<api>.worker.js`
-// and `<api>.wrangler.json`, its build beside them), and `release.json` says what the release
-// holds.
+// root-absolute paths (`/b/<sha>.wasm`). Each page's preloads are `Link` headers too, for Early
+// Hints. The console's server is a Worker of its own, on the console's API paths
+// (`<api>.worker.js` and `<api>.wrangler.json`, its build beside them), and `release.json` says
+// what the release holds.
 
 use addresses::{Build, Moved, address, in_dir}
 use catalog::{CATALOG, Catalog, Game, check, origin_of, paths}
@@ -49,8 +50,8 @@ use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
 use site::{
     CACHE_RULES, FAVICONS, NOT_FOUND, Report, Shipped, Top, api_config, api_script, card,
-    catalog_json, catalog_line, docs_headers, docs_page, docs_redirects, fetch_order, headers, ico,
-    prefetch_list, release_json, replace_all, with_storage, wrangler_config,
+    catalog_json, catalog_line, docs_headers, docs_page, docs_redirects, early_hints, fetch_order,
+    headers, ico, prefetch_list, preloads, release_json, replace_all, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use std::io::print
@@ -733,7 +734,8 @@ fn release(revision: str) -> Result<String, ToolError> {
 /// release under `releases/<release>/` with its `files.json`, which lists what moved by its
 /// root-absolute path; what moved at the root (`b/`, `r/`); its entry page if it has one
 /// (`entry`, which names the release as its `<base>`); its favicon and 404 page; and its headers,
-/// `CACHE_RULES` last. Or why it can't ship (`check_files`).
+/// with each page's preloads as `Link` headers (`early_hints`) and `CACHE_RULES` last. Or why it
+/// can't ship (`check_files`, `early_hints`).
 pub fn served(
     tree: Tree,
     moved: Moved,
@@ -749,6 +751,7 @@ pub fn served(
         versioned.push(take listed)
         out.entries.push(e.clone())
     }
+    var hints = String::new()
     for e in tree.entries {
         let path = e.path.as_str()
         let cut = match path.find("/") {
@@ -762,10 +765,25 @@ pub fn served(
         }
         var moved_to = e.clone()
         moved_to.path = String::from(f"releases/{release}/{path}")
+        // A bootstrap page's preloads, from the address it's served at (its directory).
+        if path == "index.html" || path.ends_with("/index.html") {
+            if let Source::Bytes(b) = e.source {
+                let Some(text) = String::from_utf8(b.clone()) else {
+                    return Err(String::from(f"{path} isn't UTF-8"))
+                }
+                let dir = path.slice(0, path.len() - "index.html".len())
+                let at = String::from(f"/releases/{release}/{dir}")
+                hints.push_str(
+                    early_hints(at.as_str(), at.as_str(), preloads(text.as_str()))?.as_str(),
+                )
+            }
+        }
         out.entries.push(take moved_to)
         versioned.push(e.clone())
     }
     if let Some(text) = take entry {
+        let base = String::from(f"/releases/{release}/")
+        hints.push_str(early_hints("/", base.as_str(), preloads(text.as_str()))?.as_str())
         out.put_bytes("index.html", text.as_bytes())
     }
     out.put_bytes(f"releases/{release}/files.json", files_json(versioned).as_bytes())
@@ -778,6 +796,7 @@ pub fn served(
         return Err(String::from("_headers isn't UTF-8"))
     }
     var all_headers = given.clone()
+    all_headers.push_str(hints.as_str())
     all_headers.push_str(CACHE_RULES)
     out.put_bytes("_headers", all_headers.as_bytes())
     out.sort()

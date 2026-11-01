@@ -721,6 +721,69 @@ pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<(String, Stri
     out
 }
 
+/// The URLs a page preloads as fetches (`<link rel="preload" href="..." as="fetch" ...>`), in
+/// its order.
+pub fn preloads(page: str) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    var at = 0
+    while at < page.len() {
+        let rest = page.slice(at, page.len())
+        let Some(start) = rest.find("<link ") else { break }
+        let tag_from = rest.slice(start, rest.len())
+        let Some(end) = tag_from.find(">") else { break }
+        let tag = tag_from.slice(0, end)
+        at += start + end + 1
+        if tag.find(" rel=\"preload\"").is_none() || tag.find(" as=\"fetch\"").is_none() {
+            continue
+        }
+        let Some(h) = tag.find(" href=\"") else { continue }
+        let value = tag.slice(h + 7, tag.len())
+        let Some(q) = value.find("\"") else { continue }
+        out.push(String::from(value.slice(0, q)))
+    }
+    out
+}
+
+/// The `_headers` rule for a page served at `path` that preloads `preloaded` (`preloads`), each
+/// relative to `base` (the page's directory, or its `<base>`) unless it's root-absolute: each
+/// as a `Link` header, which a zone with Early Hints sends ahead of the page, as a 103. Empty
+/// for a page that preloads nothing. Or why not: a URL that leaves the origin or its directory,
+/// or that a header can't carry.
+pub fn early_hints(path: str, base: str, preloaded: [String]) -> Result<String, String> {
+    if preloaded.is_empty() {
+        return Ok(String::new())
+    }
+    var out = String::from(f"{path}\n")
+    for u in preloaded {
+        let s = u.as_str()
+        var plain = !s.is_empty() && !s.starts_with("//")
+        for i in 0..s.len() {
+            let b = s.byte(i)
+            plain = plain &&
+                b > 32 &&
+                b < 127 &&
+                b != 60 &&
+                b != 62 &&
+                b != 44 &&
+                b != 59 &&
+                b != 34 &&
+                b != 92 &&
+                b != 58
+        }
+        for (a, b) in s.split("/") {
+            if s.slice(a, b) == ".." {
+                plain = false
+            }
+        }
+        if !plain {
+            return Err(String::from(f"a page at {path} preloads '{s}', which a header can't name"))
+        }
+        let url = if s.starts_with("/") { String::from(s) } else { String::from(f"{base}{s}") }
+        out.push_str(f"  Link: <{url.as_str()}>; rel=preload; as=fetch; crossorigin\n")
+    }
+    Ok(out)
+}
+
 /// A bootstrap page with the storage namespace its program keeps its files under: the same in
 /// every release, so a release doesn't lose what the last one stored.
 pub fn with_storage(page: str, namespace: str) -> String {

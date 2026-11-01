@@ -15,8 +15,8 @@ use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
     Shipped, Top, api_config, api_script, card, ico, catalog_json, catalog_line, code_of,
-    docs_headers, docs_page, docs_redirects, fetch_order, headers, prefetch_list, release_json,
-    replace_all, suffix, with_storage, wrangler_config,
+    docs_headers, docs_page, docs_redirects, early_hints, fetch_order, headers, prefetch_list,
+    preloads, release_json, replace_all, suffix, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use tree::{Entry, Source, Tree, before_by_parts, check_files, files_json, frame}
@@ -779,6 +779,47 @@ fn a_served_worker_has_each_payload_once_at_its_address() {
             "/r/*\n  Cache-Control: public, max-age=31536000, immutable\n",
         ),
     )
+}
+
+/// Each bootstrap page's preloads are `Link` headers for the path it's served at, for Early
+/// Hints: a build's page at its directory, an entry page at `/` against its `<base>`.
+@test
+fn each_pages_preloads_are_its_link_headers() {
+    let r = "aaaaaaaaaaaaaaaaaaaa"
+    let wasm = String::from(f"/b/{sha_of("wasm").as_str()}.wasm")
+    let shader = String::from(f"/b/{sha_of("shader").as_str()}.wgsl")
+    for (dirs, path, base) in [
+        ([""], String::from("/"), f"/releases/{r}/"),
+        ([""], f"/releases/{r}/", f"/releases/{r}/"),
+        (["session"], f"/releases/{r}/session/", f"/releases/{r}/session/"),
+    ] {
+        let w = worker_of(dirs, r, "x")
+        let Some(h) = w.find("_headers") else { panic("_headers") }
+        let Source::Bytes(hb) = w.entries[h].source else { panic("bytes") }
+        let Some(text) = String::from_utf8(hb.clone()) else { panic("UTF-8") }
+        let want = f"\n{path}\n  Link: <{base}manifest.json>; rel=preload; as=fetch; crossorigin\n  Link: <{wasm.as_str()}>; rel=preload; as=fetch; crossorigin\n  Link: <{shader.as_str()}>; rel=preload; as=fetch; crossorigin\n"
+        assert(contains(text.as_str(), want), text.as_str())
+        // Before the cache rules, which end it.
+        assert(text.as_str().ends_with(site::CACHE_RULES), text.as_str())
+    }
+    // A preload is a `<link>` with both `rel="preload"` and `as="fetch"`.
+    let found = preloads(
+        "<link rel=\"preload\" href=\"a.wasm\" as=\"fetch\" crossorigin><link rel=\"icon\" href=\"i.png\"><link rel=\"preload\" href=\"f.woff2\" as=\"font\"><link as=\"fetch\" rel=\"preload\" href=\"/b/x.wgsl\">",
+    )
+    assert(found.len() == 2 && found[0].as_str() == "a.wasm" && found[1].as_str() == "/b/x.wgsl")
+    let none: [String; 0] = []
+    assert(early_hints("/", "/", none) == Ok(String::new()), "no preloads, no rule")
+    for bad in [
+        "https://other.example/a.wasm",
+        "//other.example/a",
+        "a>b",
+        "a b",
+        "../x.wasm",
+        "a,b",
+        "",
+    ] {
+        assert(early_hints("/", "/r/", [String::from(bad)]).is_err(), bad)
+    }
 }
 
 // ---- The docs ----------------------------------------------------------------------------------
