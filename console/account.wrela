@@ -1171,13 +1171,24 @@ fn asks_consent_first(a: Accounts) -> bool {
     !a.may_post && !a.post_best
 }
 
+/// Whether press `x` goes on: one that sends a request doesn't while another is under way, and
+/// marks one under way (`busy`, until its answer comes), so pressed twice it sends once.
+fn press(a: mut Accounts, x: Act) -> bool {
+    if !sends(x) {
+        return true
+    }
+    if a.busy {
+        return false
+    }
+    a.doing = Some(x)
+    a.busy = true
+    true
+}
+
 fn act(a: mut Accounts, x: Act) {
     a.dirty = true
-    if a.busy && sends(x) {
+    if !press(mut a, x) {
         return
-    }
-    if sends(x) {
-        a.doing = Some(x)
     }
     match x {
         Act::Chip => {
@@ -1203,7 +1214,6 @@ fn act(a: mut Accounts, x: Act) {
                 Request::Begin { ceremony: SIGN_IN, csrf: Vec::new(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
-            a.busy = true
         },
         Act::Create => {
             a.agree = false
@@ -1215,12 +1225,12 @@ fn act(a: mut Accounts, x: Act) {
         Act::CreateAccount => {
             let Some(r) = create_request(a) else {
                 a.doing = None
+                a.busy = false
                 a.message = String::from("Tick both boxes to create your account.")
                 return
             }
             a.message.clear()
             request(mut a, r, Purpose::Other)
-            a.busy = true
         },
         Act::UseCode => {
             a.typed.clear()
@@ -1228,7 +1238,6 @@ fn act(a: mut Accounts, x: Act) {
         },
         Act::SubmitCode => {
             request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Other)
-            a.busy = true
         },
         Act::Keep => {
             request(mut a, Request::Keep { csrf: a.csrf.clone() }, Purpose::Name)
@@ -1247,13 +1256,13 @@ fn act(a: mut Accounts, x: Act) {
             if asks_consent_first(a) {
                 // Turned on before any post: what posting shares, first.
                 a.doing = None
+                a.busy = false
                 a.consent_best = true
                 open_page(mut a, Page::Posting)
                 return
             }
             let r = Request::BestRuns { csrf: a.csrf.clone(), on: !a.post_best }
             request(mut a, r, Purpose::Other)
-            a.busy = true
         },
         Act::PostBest => a.consent_best = !a.consent_best,
         Act::Post => {
@@ -1263,7 +1272,6 @@ fn act(a: mut Accounts, x: Act) {
                 best_runs: a.consent_best,
             }
             request(mut a, r, Purpose::Consent)
-            a.busy = true
         },
         Act::NotNow => open_page(mut a, Page::Account),
         Act::Manage => open_page(mut a, Page::Manage),
@@ -1273,7 +1281,6 @@ fn act(a: mut Accounts, x: Act) {
                 Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
-            a.busy = true
         },
         Act::Remove { index } => {
             if index < a.passkeys.len() {
@@ -1306,7 +1313,6 @@ fn act(a: mut Accounts, x: Act) {
         Act::Delete => open_page(mut a, Page::Delete),
         Act::ConfirmDelete => {
             request(mut a, Request::Delete { csrf: a.csrf.clone() }, Purpose::Delete)
-            a.busy = true
         },
         Act::SignOut => {
             request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::Other)
@@ -2682,4 +2688,19 @@ fn the_agreement_is_a_tree_of_boxes_links_and_buttons_a_screen_reader_can_use() 
     a.page = Page::Posting
     draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
     assert(node_of(a, Role::Text, posting::NEVER) != 0 && node_of(a, Role::Button, "Agree") != 0)
+}
+
+@test
+fn a_press_that_sends_a_request_sends_it_once_until_its_answer_comes() {
+    for x in [Act::Keep, Act::Reroll, Act::NewCodes, Act::SignIn, Act::ConfirmDelete] {
+        var a = new("wrela.dev", online: true)
+        a.me = me_of(1, "Sir Wobblesnout the Unhurried")
+        assert(press(mut a, x) && a.doing == Some(x), "the first goes")
+        assert(!press(mut a, x), "the second sends nothing")
+        // Its answer comes (`replied`, which does IO a test can't).
+        a.busy = false
+        assert(press(mut a, x), "again once answered")
+    }
+    var a = new("wrela.dev", online: true)
+    assert(press(mut a, Act::Agree) && press(mut a, Act::Agree) && !a.busy, "a box sends nothing")
 }
