@@ -126,6 +126,14 @@ convergence and coherence, not taste; (4) the blind judge on the rubric without 
 where the look was fitted to a set of paintings (`wrela tool fit --style`), the pair (still,
 painting) on one added row, *style* (3 is "the same hand").
 
+**A look with no set to be fitted to** (the floor's cel look, docs/bench.md "H1"): its stills under
+neutral names, at most eight to a judge in a fresh context, each scored alone on the rubric and on
+a *style* row that asks whether the treatment holds across the picture, near and far, as one hand
+drew it. Each judge's stills include a control, one of them blurred eight times by a 3×3 box under
+another neutral name; a judge who scores the blur at or above its original is discarded. The
+floor's 23 shots go to three judges this way, and so do G-look's blind pairs on them (each pack with
+its calibration pair), so no judge holds more than eighteen images.
+
 **Coherence** (§D7): a look's marks are anchored in 3D and sized in 2D (`engine::marks`), and the
 instrument measures what that leaves on the screen. `wrela tool lookbook -- <out> --package
 examples/vale --fast --shots dev --look <type> --bars <physical-run>` builds the vale in the

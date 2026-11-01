@@ -59,6 +59,22 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `MAX_LIMBS` is 2,048; the thinnest limbs past it are drawn by the crown's clumps, and the conversion's IoU at 2,048 is the measured floor (0.87, docs/bench.md "E1.2"), the plan's 0.97 Blocked.
 - **Status:** open: a larger stack for constant evaluation, or values of that size held off it.
 
+### A program's stack doesn't say how near it is to full
+
+- **Needed:** the floor's stage holding two creatures' casts by value (docs/plan-world-class-3.md §H1: the hand's fawn, or the grown one behind a switch), as every other cast is held.
+- **What happens:** toolchain 0.18.0 builds and type-checks it, and the floor's init then traps natively and in the browser: "the stack overflowed: calls too deep, or values too large for the thread's stack", at a call far from the value that filled it (`trees::kinds::log`, building the kinds' plants after the stage's fields). Nothing says which frame holds what, or how much room was left before the change.
+- **Found:** 2026-11-01, H1 (bisected to the commit that added the second cast).
+- **Meanwhile:** each fawn is held in a `Vec` (`games/last-green/fawns.wrela`), so the stage holds two small headers.
+- **Status:** open: a build report of the largest frames on a program's init path (the bytes each function's frame holds), or a stack sized to them.
+
+### A tool's build can't take longer than 600 s
+
+- **Needed:** the bench to measure the floor grown (`wrela tool bench -- --scene last-green-walk --set GROWN_WOOD=true --set GROWN_FAWN=true`, §H1), whose optimized build bakes the grown history.
+- **What happens:** `std::tool::toolchain::build` stops a build at its deadline, and 0.18.0 refuses one over 600 s ("a deadline is more than 0 seconds and at most 600"); the grown floor's optimized build ran past it.
+- **Found:** 2026-11-01, H1.
+- **Meanwhile:** the grown floor's frame measured with `wrela profile`, its switches set in its source for the run.
+- **Status:** open: a longer deadline for a tool's build, or the build's constants taken from a cache the CLI's build filled.
+
 ### A driven frame doesn't say its passes' targets or GPU times
 
 - **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.
