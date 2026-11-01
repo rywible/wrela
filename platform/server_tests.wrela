@@ -1246,8 +1246,30 @@ fn places(h: Host) -> u32 {
     h.keys("board/", "r") + h.keys("whole/", "r")
 }
 
-fn board(course: u32, category: u32, from: u32 = 0) -> Request {
-    Request::Board { game: String::from("toy"), course, category, from }
+/// A page of a board: the first, or the one after the `from` places before it, from where the
+/// last ended (`after`).
+fn board(course: u32, category: u32, from: u32 = 0, after: take Vec<u8> = Vec::new()) -> Request {
+    Request::Board { game: String::from("toy"), course, category, from, after }
+}
+
+/// The page of the toy's any% board of course 0 that holds place `place`, reached as a player's
+/// scrolling reaches it: a page at a time from the top, each after the last.
+fn page_with(h: mut Host, place: u32) -> Vec<wire::Place> {
+    var from: u32 = 0
+    var after: Vec<u8> = Vec::new()
+    loop {
+        let Reply::Board { places, total, next } = h.read(
+            20,
+            board(0, ANY, from, after.clone()),
+        ).0 else {
+            panic("a page")
+        }
+        if from + places.len() >= place || from + places.len() >= total {
+            return places.clone()
+        }
+        from += places.len()
+        after = next.clone()
+    }
 }
 
 /// The places of `reply`, a board's page.
@@ -2611,10 +2633,49 @@ fn the_thousand_and_first_moves_up_when_a_place_above_goes() {
         panic("a slice")
     }
     assert(at == server::MOST_PLACE && places[AROUND].name == last, f"moved up: {at}")
-    let p = places_of(h.read(20, board(0, ANY, from: server::MOST_PLACE - 5)).0)
-    assert(p[4].place == server::MOST_PLACE && p[4].name == last, "on its page")
+    let p = page_with(mut h, server::MOST_PLACE)
+    let at = (server::MOST_PLACE - 1) % wire::BOARD_PAGE
+    assert(p[at].place == server::MOST_PLACE && p[at].name == last, "on its page")
     assert(nothing_left(h, s) == false, "the crowd is still on the board")
     assert(h.store_of(s.at().as_str()).len() == 1, "the account's store cleared")
+}
+
+@test
+fn a_deep_page_reads_after_the_last_and_is_numbered_from_it() {
+    var h = host()
+    let n = server::MOST_PLACE + 8
+    crowd(mut h, n)
+    // Every page from the top, each from where the last ended: numbered on, in order, each
+    // saying there are more by the one place past it it read, no more.
+    var from: u32 = 0
+    var after: Vec<u8> = Vec::new()
+    var pages = 0
+    loop {
+        let r = h.read(20, board(0, ANY, from, after.clone())).0
+        let Reply::Board { places, total, next } = r else { panic("a page") }
+        assert(places.len() == min(wire::BOARD_PAGE, n - from), f"page {pages}")
+        for i in 0..places.len() {
+            let ok = places[i].place == from + i + 1 && places[i].ticks == 100 + from + i
+            assert(ok, f"page {pages}, row {i}: {places[i].place}")
+        }
+        assert(next.len() == wire::CURSOR_BYTES, "it says where it ends")
+        pages += 1
+        from += places.len()
+        if total <= from {
+            break
+        }
+        assert(total == from + 1, f"one place past the page: {total}")
+        after = next.clone()
+    }
+    assert(from == n && pages == (n + wire::BOARD_PAGE - 1) / wire::BOARD_PAGE, f"{pages} pages")
+    // A page further down needs where the last ended, as the server said it; the first, none.
+    for wrong in [
+        board(0, ANY, from: 40),
+        board(0, ANY, from: 0, after: Vec::filled(wire::CURSOR_BYTES, u8(1))),
+        board(0, ANY, from: 40, after: Vec::from([1, 2, 3])),
+    ] {
+        let Reply::Refused { .. } = h.read(20, wrong).0 else { panic("refused") }
+    }
 }
 
 @test

@@ -101,7 +101,8 @@ enum Asked: Clone + Eq {
 }
 
 /// A world's board as last given: its course (or `WHOLE`), category, places, how many it has,
-/// and when. A slice around the account's place is one too, its `total` the account's place.
+/// and when; and where its next page starts (the last page's `next`). A slice around the
+/// account's place is one too, its `total` the account's place.
 struct Shown: Clone {
     course: u32,
     category: u32,
@@ -109,6 +110,7 @@ struct Shown: Clone {
     total: u32,
     at: f32,
     note: String,
+    next: Vec<u8> = Vec::new(),
 }
 
 pub struct Online {
@@ -791,17 +793,18 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             _ => {},
         },
         Asked::Board { course, category, from } => {
-            let (places, total, note) = match answer {
-                Answer::Board { places, total, .. } => (
+            let (places, total, next, note) = match answer {
+                Answer::Board { places, total, next, .. } => (
                     places.clone(),
                     total,
+                    next.clone(),
                     if places.is_empty() {
                         String::from("Nobody's on this board yet. Be first.")
                     } else { String::new() },
                 ),
-                Answer::Offline { why } => (Vec::new(), 0, why.clone()),
-                Answer::Rejected { why } => (Vec::new(), 0, why.clone()),
-                _ => (Vec::new(), 0, String::new()),
+                Answer::Offline { why } => (Vec::new(), 0, Vec::new(), why.clone()),
+                Answer::Rejected { why } => (Vec::new(), 0, Vec::new(), why.clone()),
+                _ => (Vec::new(), 0, Vec::new(), String::new()),
             }
             if from > 0 {
                 // A page further down, after the places shown: kept if they're still the ones it
@@ -812,13 +815,14 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                             o.boards[i].places.push(p.clone())
                         }
                         o.boards[i].total = total
+                        o.boards[i].next = take next
                         fetch_rows(mut o, places)
                     }
                 }
                 return
             }
             o.boards.retain(|b| b.course != course || b.category != category)
-            o.boards.push(Shown { course, category, places, total, at: o.time, note })
+            o.boards.push(Shown { course, category, places, total, at: o.time, note, next })
             rows_came(mut o, course, category)
         },
         Asked::Around { course, category } => match answer {
@@ -947,7 +951,7 @@ pub fn want(o: mut Online, course: u32, category: u32, by: By) {
             return
         }
     }
-    let board = Ask::Board { course, category, from: 0 }
+    let board = Ask::Board { course, category, from: 0, after: Vec::new() }
     if !ask(mut o, take board, Asked::Board { course, category, from: 0 }, by) {
         return
     }
@@ -986,15 +990,16 @@ pub fn places(o: Online, course: u32, category: u32) -> (Vec<Place>, String) {
     }
 }
 
-/// Asks for the next page of board (`course`, `category`), after the places it has, if it has more
-/// and none is asked: for the player, who scrolled to the last row shown.
+/// Asks for the next page of board (`course`, `category`), after the places it has (from where the
+/// last page ended), if it has more and none is asked: for the player, who scrolled to the last
+/// row shown.
 pub fn more(o: mut Online, course: u32, category: u32) {
     let Some(i) = board_of(o.boards, course, category) else { return }
     let from = o.boards[i].places.len()
     if from == 0 || from >= o.boards[i].total {
         return
     }
-    let page = Ask::Board { course, category, from }
+    let page = Ask::Board { course, category, from, after: o.boards[i].next.clone() }
     let _ = ask(mut o, take page, Asked::Board { course, category, from }, By::Player)
 }
 
@@ -1552,6 +1557,9 @@ fn all_asks(o: Online) -> Vec<Asked> {
     out
 }
 
+/// Where the pages `given` ends, as the server says it.
+const PAGE_END: [u8; 20] = [7; 20]
+
 /// Board (`WETLANDS`, any%) given as `places`, of `total`.
 fn given(o: mut Online, places: Vec<Place>, total: u32) {
     want(mut o, WETLANDS, ANY, By::Player)
@@ -1563,10 +1571,17 @@ fn given(o: mut Online, places: Vec<Place>, total: u32) {
         }
         if board {
             let (_, asked) = o.asks.remove(i)
+            let next = Vec::from(PAGE_END)
             answered(
                 mut o,
                 asked,
-                Answer::Board { course: WETLANDS, category: ANY, places: places.clone(), total },
+                Answer::Board {
+                    course: WETLANDS,
+                    category: ANY,
+                    places: places.clone(),
+                    total,
+                    next,
+                },
             )
             return
         }
@@ -1811,7 +1826,7 @@ fn a_players_ask_needs_a_console_a_background_one_an_account_and_a_post_alone_it
     for (by, allowed) in rules {
         for k in 0..4 {
             var o = state(k)
-            let board = Ask::Board { course: WETLANDS, category: ANY, from: 0 }
+            let board = Ask::Board { course: WETLANDS, category: ANY, from: 0, after: Vec::new() }
             let asked = ask(
                 mut o,
                 take board,
@@ -2188,7 +2203,9 @@ fn the_leaderboard_opens_at_the_players_place_and_pages_on_past_the_rows_shown()
         }
     }
     assert(pages == Vec::from([20]), "once, from the 21st")
-    let (_, asked) = o.asks.remove(0)
+    let (page, asked) = o.asks.remove(0)
+    let Ask::Board { after, .. } = page else { panic("a page") }
+    assert(after == Vec::from(PAGE_END), "from where the first page ended")
     answered(
         mut o,
         asked,
@@ -2197,8 +2214,11 @@ fn the_leaderboard_opens_at_the_players_place_and_pages_on_past_the_rows_shown()
             category: ANY,
             places: top_of(n: 20, from: 21),
             total: 50,
+            next: Vec::from([8; 20]),
         },
     )
+    let Some(b) = board_of(o.boards, WETLANDS, ANY) else { panic("the board") }
+    assert(o.boards[b].next == Vec::from([8; 20]), "the next page starts after this one")
     let (all, _) = places(o, WETLANDS, ANY)
     assert(all.len() == 40 && all[20].place == 21, "after the first")
     // A page that no longer follows (the board came again meanwhile) isn't put after it.
@@ -2210,6 +2230,7 @@ fn the_leaderboard_opens_at_the_players_place_and_pages_on_past_the_rows_shown()
             category: ANY,
             places: top_of(n: 20, from: 21),
             total: 50,
+            next: Vec::from([9; 20]),
         },
     )
     let (all, _) = places(o, WETLANDS, ANY)

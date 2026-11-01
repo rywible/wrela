@@ -66,10 +66,18 @@ impl<G: Game> Engine<G> {
     pub(package) fn board_http(mut self, conn: u32, request: Request) {
         let job = blank_job(conn, request.clone())
         match request {
-            Request::Board { from, .. } => {
+            Request::Board { from, after, .. } => {
+                // From the fastest, or just after the last page's last place: a page deep down
+                // reads its own places, and one more to say there are more.
                 var j = take job
                 j.n = from
-                self.scan(under("r"), from + BOARD_PAGE + 1, Step::BoardScan, take j)
+                var start = under("r")
+                if !after.is_empty() {
+                    account::with_bytes(mut start, after)
+                    start.push(0)
+                }
+                let to = past(under("r")).unwrap_or(Vec::new())
+                self.scan_range(take start, take to, BOARD_PAGE + 1, Step::BoardScan, take j)
             },
             Request::Around { name, .. } => {
                 // One answer for any name without a place here, so a slice never says whether an
@@ -168,14 +176,17 @@ impl<G: Game> Engine<G> {
                 self.back(conn, Back::Place { place: ahead + 1 })
             },
             Step::BoardScan => {
+                // Numbered after the `from` places before the page.
                 let Some(es) = entries(answer) else { return }
                 var places: Vec<Place> = Vec::new()
-                for k in j.n..min(es.len(), j.n + BOARD_PAGE) {
+                var next: Vec<u8> = Vec::new()
+                for k in 0..min(es.len(), BOARD_PAGE) {
                     borrow e = es[k]
-                    let Some(p) = place_of(e.key, e.value, k + 1) else { continue }
+                    next = part(e.key, 1, e.key.len() - 1)
+                    let Some(p) = place_of(e.key, e.value, j.n + k + 1) else { continue }
                     places.push(take p)
                 }
-                self.reply(conn, Reply::Board { places, total: es.len() })
+                self.reply(conn, Reply::Board { places, total: j.n + es.len(), next })
             },
             Step::AroundName => {
                 let Some(handle) = std::store::value(answer) else {

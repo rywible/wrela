@@ -37,8 +37,9 @@ pub enum Ask: Clone + Serialize {
     /// A run for the game's board version `board` (its build of play's): its replay's bytes, and
     /// the token it was given.
     Upload { token: Vec<u8>, board: u32, replay: Vec<u8> },
-    /// A page of a board, from place `from` (`wire::WHOLE` for a whole game's).
-    Board { course: u32, category: u32, from: u32 },
+    /// A page of a board (`wire::WHOLE` for a whole game's): the first (`from` 0, `after` empty),
+    /// or the one after the `from` places it has, from the last page's `next` (`after`).
+    Board { course: u32, category: u32, from: u32, after: Vec<u8> },
     /// A run's replay (a place's `run`), to watch or race: answered by `Run`, whose bytes the game
     /// checks against the place's `replay` hash. It never changes, so the browser's cache and the
     /// edge's keep it, and asking again costs the server nothing.
@@ -74,7 +75,7 @@ pub enum Answer: Clone + Serialize {
     /// run is to be kept: it may even be on the boards already, and its upload again hears what came
     /// of it.
     Failed { why: String, retry_after: u32 },
-    Board { course: u32, category: u32, places: Vec<Place>, total: u32 },
+    Board { course: u32, category: u32, places: Vec<Place>, total: u32, next: Vec<u8> },
     Run { run: RunRef, replay: Vec<u8> },
     /// A slice of a board: the places around the name asked for, which is place `at` (0: past the
     /// first thousand).

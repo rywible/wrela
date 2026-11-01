@@ -725,8 +725,8 @@ fn game_answer(reply: Reply, course: u32, category: u32, uploading: bool) -> Ans
                 Answer::Failed { why: why.clone(), retry_after: u32(RETRY) }
             } else { Answer::Rejected { why: why.clone() } }
         },
-        Reply::Board { places, total } => {
-            Answer::Board { course, category, places: places.clone(), total }
+        Reply::Board { places, total, next } => {
+            Answer::Board { course, category, places: places.clone(), total, next: next.clone() }
         },
         Reply::Run { run, replay, .. } => Answer::Run { run: run.clone(), replay: replay.clone() },
         Reply::Around { places, at } => Answer::Around { places: places.clone(), at },
@@ -766,7 +766,15 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
     if let Ask::Board { course, category, .. } = ask {
         // Its reply names no board: the answer kept says which.
         match mut a.game {
-            Some(l) => l.answer = Answer::Board { course, category, places: Vec::new(), total: 0 },
+            Some(l) => {
+                l.answer = Answer::Board {
+                    course,
+                    category,
+                    places: Vec::new(),
+                    total: 0,
+                    next: Vec::new(),
+                }
+            },
             None => {},
         }
     }
@@ -796,11 +804,12 @@ fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
             board,
             replay: replay.clone(),
         },
-        Ask::Board { course, category, from } => Request::Board {
+        Ask::Board { course, category, from, after } => Request::Board {
             game: id,
             course,
             category,
             from,
+            after: after.clone(),
         },
         Ask::Watch { run } => Request::Watch { run: run.clone() },
         Ask::Around { course, category, name } => Request::Around {
@@ -2286,7 +2295,7 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
             out,
             online: true,
             connected: true,
-            ask: Ask::Board { course: 0, category: 0, from: 0 },
+            ask: Ask::Board { course: 0, category: 0, from: 0, after: Vec::new() },
         ).is_none(),
         "anyone may look at a board",
     )
@@ -2294,7 +2303,7 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
         me,
         online: false,
         connected: true,
-        ask: Ask::Board { course: 0, category: 0, from: 0 },
+        ask: Ask::Board { course: 0, category: 0, from: 0, after: Vec::new() },
     ) else {
         panic("no server yet")
     }
@@ -2415,7 +2424,7 @@ fn a_name_with_no_place_on_a_board_is_said_so_to_the_game() {
         panic("no place, said")
     }
     let Answer::Board { course, category, .. } = game_answer(
-        Reply::Board { places: Vec::new(), total: 0 },
+        Reply::Board { places: Vec::new(), total: 0, next: Vec::new() },
         course: 3,
         category: 1,
         uploading: false,

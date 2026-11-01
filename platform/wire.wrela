@@ -40,6 +40,8 @@ pub const MOST_REPLAY: u32 = 49152
 pub const EXPORT_PART: u32 = 262144
 /// The most entries a board's page holds.
 pub const BOARD_PAGE: u32 = 20
+/// The bytes of a page's `next`: a place's time and its account's handle.
+pub const CURSOR_BYTES: u32 = 4 + account::HANDLE_BYTES
 /// The places a slice holds above an account's place, and below it.
 pub const AROUND: u32 = 5
 /// The most names a search finds, and the most bytes of each part it is given.
@@ -148,8 +150,10 @@ pub enum Request: Clone + Serialize {
     /// uploaded again by its account is answered with what came of it the first time (its place
     /// now, or the same reason).
     Upload { token: Vec<u8>, game: String, board: u32, replay: Vec<u8> },
-    /// A page of a board: `course` (or WHOLE) and `category`, from place `from` (0 the fastest).
-    Board { game: String, course: u32, category: u32, from: u32 },
+    /// A page of a board: `course` (or WHOLE) and `category`, from the fastest (`after` empty), or
+    /// just after the last page (`after` its `next`), whose places are numbered after `from` (the
+    /// places before it: 0 for the first page). A page deep down reads only its own places.
+    Board { game: String, course: u32, category: u32, from: u32, after: Vec<u8> },
     /// A run's replay, to watch or race, answered by `Run`: sent as a `GET` of `run_path(run)`,
     /// never changing, so a cache keeps it a year.
     Watch { run: RunRef },
@@ -244,7 +248,9 @@ pub enum Reply: Clone + Serialize {
     Done,
     Verified { run: RunRef, ticks: u32, place: u32 },
     Rejected { why: String },
-    Board { places: Vec<Place>, total: u32 },
+    /// A board's page: its places, how many there are as far as the page saw (past its own when
+    /// there are more), and where the next page starts (`Request::Board`'s `after`).
+    Board { places: Vec<Place>, total: u32, next: Vec<u8> },
     Run { run: RunRef, game: String, replay: Vec<u8> },
     /// Whether the account agreed to the current version of what posting makes public, and whether
     /// it posts its best runs.
