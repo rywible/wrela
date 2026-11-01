@@ -23,9 +23,9 @@ use account::{
     CEREMONY_BYTES, CHALLENGE_LIFE, HANDLE_BYTES, account_instance, code_hash, held_parts, part,
 }
 use server::{
-    Back, CLOSED, Engine, Game, Inner, Job, KEY_BYTES, NONCE_BYTES, Note, PLAY_TICKS, Step, Verdict,
-    blank_job, board_instance, ceremony_message, challenge_of, codes_instance, letters, nobody,
-    read, replays_instance, search_instance, searchable,
+    Back, CLOSED, Claim, Engine, Game, Inner, Job, KEY_BYTES, NONCE_BYTES, Note, PLAY_TICKS, Step,
+    Verdict, blank_job, board_instance, ceremony_message, challenge_of, codes_instance, letters,
+    nobody, read, replays_instance, search_instance, searchable,
 }
 use std::collections::replace
 use std::hash::sha256::sha256
@@ -334,7 +334,8 @@ impl<G: Game> Engine<G> {
             )
             return
         }
-        if board != self.game.board() && self.archived(board).is_none() {
+        let current = board == self.game.board()
+        if !current && self.archived(board).is_none() {
             let why = String::from(
                 "That version of the game's boards is closed. Update the game to post.",
             )
@@ -345,21 +346,23 @@ impl<G: Game> Engine<G> {
             self.refuse(conn, "Sign in at the console to upload.")
             return
         }
-        let claim = match self.game.claim(replay) {
-            Ok(c) => c,
-            Err(why) => {
-                self.reply(conn, Reply::Rejected { why: String::from(why) })
-                return
-            },
-        }
+        // This build's board's runs are bounded by its rules here; an older board's only by its
+        // own verifier's, whose verdict says its course.
+        let claim = if current {
+            match self.game.claim(replay) {
+                Ok(c) => c,
+                Err(why) => {
+                    self.reply(conn, Reply::Rejected { why: String::from(why) })
+                    return
+                },
+            }
+        } else { Claim { course: 0, ticks: 0 } }
         let hash = Vec::from(sha256(replay))
         let inner = Inner::Admit {
             token: secret.clone(),
             game: game.clone(),
             board,
             hash: hash.clone(),
-            course: claim.course,
-            ticks: claim.ticks,
         }
         // The job keeps the request, its replay with it, for the plays and the record to come.
         var j = blank_job(conn, take request)
@@ -402,7 +405,7 @@ impl<G: Game> Engine<G> {
         let Request::Upload { replay, .. } = j.request else { return }
         if j.n == self.game.board() {
             // This build's board: played here, all of it.
-            let verdict = self.play(replay, j.ticks)
+            let verdict = self.play(replay, Claim { course: j.course, ticks: j.ticks })
             self.played(take j, verdict)
             return
         }
@@ -416,19 +419,19 @@ impl<G: Game> Engine<G> {
         self.push_job(take j)
     }
 
-    /// What `replay`, claiming `ticks`, comes to on this build's board.
-    pub(package) fn play(self, replay: [u8], ticks: u32) -> Verdict {
+    /// What `replay`, claiming `claim`, comes to on this build's board.
+    pub(package) fn play(self, replay: [u8], claim: Claim) -> Verdict {
         var run = self.game.start(replay)
         loop {
             match self.game.play(mut run, PLAY_TICKS) {
                 None => continue,
                 Some(Err(why)) => return refused_verdict(why),
                 Some(Ok(o)) => {
-                    if o.ticks != ticks {
-                        let why = String::from("That run's time doesn't match its moves.")
-                        return Verdict { ok: false, ticks: o.ticks, full: o.full, why }
+                    let ok = o.ticks == claim.ticks
+                    let why = if ok { String::new() } else {
+                        String::from("That run's time doesn't match its moves.")
                     }
-                    return Verdict { ok: true, ticks: o.ticks, full: o.full, why: String::new() }
+                    return Verdict { ok, ticks: o.ticks, full: o.full, why, course: claim.course }
                 },
             }
         }
@@ -581,7 +584,7 @@ impl<G: Game> Engine<G> {
                     refused_verdict("That run is for another version of the game.")
                 } else {
                     match self.game.claim(v.replay) {
-                        Ok(c) => self.play(v.replay, c.ticks),
+                        Ok(c) => self.play(v.replay, c),
                         Err(why) => refused_verdict(why),
                     }
                 }
@@ -604,7 +607,12 @@ impl<G: Game> Engine<G> {
                 // An archived build's verdict; none that reads is the build's failure.
                 let v: Option<Verdict> = read(answer)
                 match v {
-                    Some(v) => self.played(take j, v),
+                    // Its course is the verifier's, as its claim read it.
+                    Some(v) => {
+                        var r = take j
+                        r.course = v.course
+                        self.played(take r, v)
+                    },
                     None => self.refuse(j.conn, "We couldn't check that run. Try again later."),
                 }
             },
@@ -696,7 +704,7 @@ impl<G: Game> Engine<G> {
 
 /// A replay that doesn't come to what it claims, and why.
 fn refused_verdict(why: str) -> Verdict {
-    Verdict { ok: false, ticks: 0, full: false, why: String::from(why) }
+    Verdict { ok: false, ticks: 0, full: false, why: String::from(why), course: 0 }
 }
 
 @test
@@ -706,7 +714,9 @@ fn a_verifiers_call_and_answer_keep_their_form() {
     let back: Option<Verify> = read(v)
     let Some(back) = back else { panic("a call") }
     assert(back.board == 3 && back.replay == Vec::from([1, 2]))
-    let w = std::serialize::save(Verdict { ok: true, ticks: 9, full: false, why: String::new() })
+    let w = std::serialize::save(
+        Verdict { ok: true, ticks: 9, full: false, why: String::new(), course: 1 },
+    )
     let verdict: Option<Verdict> = read(w)
     assert(verdict.is_some() && read::<Verify>([1, 2, 3]).is_none())
 }

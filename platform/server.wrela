@@ -238,13 +238,14 @@ pub struct Listing: Clone + Serialize {
 }
 
 /// What a played replay came to, from the edge or an archived build's verifier (`call_build`'s
-/// `wrela-verify-1`: `Verify` in, `Verdict` out): whether it's what it claims, its time and
-/// whether it counts for 100%, or why not.
+/// `wrela-verify-1`: `Verify` in, `Verdict` out): whether it's what it claims, its time, whether it
+/// counts for 100% and its course (by the rules of the build that played it), or why not.
 pub struct Verdict: Clone + Serialize {
     pub ok: bool,
     pub ticks: u32,
     pub full: bool,
     pub why: String,
+    pub course: u32,
 }
 
 /// What a call asks of an instance.
@@ -257,10 +258,10 @@ pub enum Inner: Clone + Serialize {
     /// To an account: a sign-in by its code `hash`, from a browser whose session cookie was
     /// `cookie` (another account's, ended, or none): `Session`, or `Refused`.
     Recover { hash: Vec<u8>, cookie: Vec<u8> },
-    /// To an account: may run `hash` (on `game`'s board version `board`, course `course`, claiming
-    /// `ticks`) go up, by game token `token`'s secret? `Admitted`; or what came of it before
-    /// (`Recorded`, `Rejected`); or `Refused`.
-    Admit { token: Vec<u8>, game: String, board: u32, hash: Vec<u8>, course: u32, ticks: u32 },
+    /// To an account: may run `hash` (on `game`'s board version `board`) go up, by game token
+    /// `token`'s secret? `Admitted`; or what came of it before (`Recorded`, `Rejected`); or
+    /// `Refused`.
+    Admit { token: Vec<u8>, game: String, board: u32, hash: Vec<u8> },
     /// To a replays shard: replay `hash` is account `owner`'s now, unless it's another's
     /// (`Mine` or `Other`).
     Own { hash: Vec<u8>, owner: Vec<u8> },

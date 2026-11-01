@@ -31,9 +31,11 @@ use wire::{
 
 /// A game whose replay is its course, the time it claims (4 bytes) and its moves: a run's time is
 /// how many moves it has, and it counts for 100% when every move is even. Its boards are version
-/// `board`, and version 7's verifier is archived (so a build of version 7 plays its own).
+/// `board`, of `courses` courses, and version 7's verifier is archived (so a build of version 7
+/// plays its own).
 struct Toy: Copy {
     board: u32 = 7,
+    courses: u32 = 2,
 }
 
 const TOY_ARCHIVED: [(u32, Text); 1] = [(7, "verifiers/toy/7/0123abcd")]
@@ -55,11 +57,11 @@ impl Game for Toy {
     }
 
     fn courses(self) -> u32 {
-        2
+        self.courses
     }
 
     fn claim(self, replay: [u8]) -> Result<Claim, Text> {
-        if replay.len() < 5 || replay[0] >= 2 {
+        if replay.len() < 5 || u32(replay[0]) >= self.courses {
             return Err("That isn't a run of this game.")
         }
         Ok(Claim { course: u32(replay[0]), ticks: account::u32_at(replay, 1) })
@@ -3382,4 +3384,25 @@ fn a_games_token_ends_with_the_session_that_made_it() {
     let Some(_) = session_of(sign_in(mut h, 5, 5, s.handle, 0, [4])) else { panic("signed in") }
     let t5 = token_of(mut h, 5)
     assert(!token_refused(mut h, t5, 14), "its session stands")
+}
+
+@test
+fn a_run_of_an_archived_board_is_bounded_by_its_own_verifier() {
+    var h = host()
+    let (_, token) = uploader(mut h, 1, 5)
+    // Version 8 has one course; version 7, whose verifier is archived, two.
+    h.deploy(Toy { board: 8, courses: 1 }, VERSIONS)
+    let second = toy(1, claimed: 25, moves: 25, m: 2)
+    let Reply::Rejected { .. } = h.say(1, up(token, second, 8))[0].clone() else {
+        panic("not a course of version 8's")
+    }
+    let r = h.say(1, up(token, second, 7))[0].clone()
+    let Reply::Verified { place, ticks, .. } = r else { panic(f"version 7's: {why_of(r)}") }
+    assert(ticks == 25 && place == 1, f"{ticks} at {place}")
+    let seven = board_instance("toy", board: 7, course: 1, category: ANY)
+    assert(h.keys(seven.as_str(), "r") == 1, "on version 7's board of its course")
+    // What version 7's verifier refuses by its own bounds is rejected.
+    let r = h.say(1, up(token, toy(2, claimed: 5, moves: 5, m: 2), 7))[0].clone()
+    let Reply::Rejected { why } = r else { panic(f"refused by its verifier: {why_of(r)}") }
+    assert(why.as_str().find("isn't a run").is_some(), why.as_str())
 }
