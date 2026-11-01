@@ -546,10 +546,8 @@ pub struct Release: Clone {
     pub source: String,
     pub release: String,
     pub api: String,
-    /// Where its server's verifier is kept in the bucket of builds, and its files' names
-    /// (release_tool::site's `Verifier`).
-    pub verifier: String,
-    pub verifier_files: Vec<String>,
+    /// Where its server's verifier is kept in the bucket of builds, and its files' names.
+    pub verifier: release_tool::site::Verifier,
     pub workers: Vec<Worker>,
 }
 
@@ -627,8 +625,7 @@ pub fn read_release(json: str) -> Result<Release, String> {
     let Some(fs) = d.get(v, "files") else {
         return Err(String::from("release.json's verifier has no files"))
     }
-    var verifier_files: Vec<String> = Vec::new()
-    var described = false
+    var files: Vec<String> = Vec::new()
     for k in 0..d.count(fs) {
         let Some(f) = d.at(fs, k) else { return Err(String::from("a verifier's file is missing")) }
         let Some(name) = d.text(f) else {
@@ -638,13 +635,13 @@ pub fn read_release(json: str) -> Result<Release, String> {
         if n.find("/").is_some() || !std::server::artifact_path(n) {
             return Err(String::from(f"invalid verifier's file in release.json: '{n}'"))
         }
-        described = described || n == "verifier.json"
-        verifier_files.push(name.clone())
+        files.push(name.clone())
     }
-    if !described {
+    if !release_tool::site::described(files) {
         return Err(String::from("release.json's verifier has no verifier.json"))
     }
-    Ok(Release { source, release, api, verifier: path, verifier_files, workers })
+    let verifier = release_tool::site::Verifier { path, files }
+    Ok(Release { source, release, api, verifier, workers })
 }
 
 /// The console's Worker of `r`.

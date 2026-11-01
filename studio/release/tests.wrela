@@ -1133,6 +1133,18 @@ fn the_catalogs_board_is_the_games() {
     )
 }
 
+/// The path the Worker gives the ceremonies' keys to is the one the console posts its account's
+/// requests to (platform/wire.wrela's `ACCOUNTS`), which alone reads them.
+@test(tool, read: [("ws", "../..")], budget: 30)
+fn the_keys_go_where_the_ceremonies_are() {
+    let Ok(all) = read_files(Vec::from([String::from("ws/platform/wire.wrela")])) else {
+        panic("no wire.wrela")
+    }
+    let Some(source) = String::from_utf8(all[0].clone()) else { panic("not UTF-8") }
+    let line = String::from(f"\npub const ACCOUNTS: Text = \"{site::KEYED}\"\n")
+    assert(source.as_str().find(line.as_str()).is_some(), line.as_str())
+}
+
 /// A build's deadline fits the run's budget, with 5 minutes left for the covers and the
 /// writing: the deadline counts a build's wait behind the others, so it's most of the budget.
 @test(tool, read: [("ws", "../..")], budget: 30)
@@ -1257,19 +1269,23 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
             contains(s.as_str(), "    return answered ?? new Response(null, { status: 404 });\n"),
         s.as_str(),
     )
-    // The ceremonies' keys reach the program from the Worker's secrets alone: what a client sent
-    // under their names is removed first.
+    // The ceremonies' keys reach the program from the Worker's secrets alone, and only on a POST
+    // to the accounts' path: what a client sent under their names is removed from every request.
+    let where_keyed = "  if (request.method === \"POST\" && new URL(request.url).pathname === \"/api/accounts\") {\n"
     for k in 0..2 {
         let (secret, header) = (site::KEY_SECRETS[k], site::KEY_HEADERS[k])
         let removed = String::from(f"  headers.delete(\"{header}\");\n")
-        let given = String::from(f"  if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
-        let (Some(r), Some(g)) = (
+        let given = String::from(
+            f"    if (env.{secret}) headers.set(\"{header}\", env.{secret});\n",
+        )
+        let (Some(r), Some(w), Some(g)) = (
             s.as_str().find(removed.as_str()),
+            s.as_str().find(where_keyed),
             s.as_str().find(given.as_str()),
         ) else {
             panic(s.as_str())
         }
-        assert(r < g, "removed, then set")
+        assert(r < w && w < g, "removed from every request, then set on a ceremony's alone")
     }
     // The archived builds' bucket, for `call_build`.
     let Some(buckets) = c.get(top, "r2_buckets") else { panic("r2_buckets") }

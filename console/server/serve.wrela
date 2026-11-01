@@ -8,8 +8,8 @@
 // a short connection: it opens, its one message is the HTTP request, and it closes once answered;
 // a call and a message are short connections too (std::server). What the engine reads of a
 // request is its time, its two cookies, the Worker's keys (`x-wrela-key` and `x-wrela-key-old`,
-// which the API Worker sets: studio/release's `api_script`) and its body; the paths are
-// wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a run's
+// which the API Worker sets on a POST to `ACCOUNTS` alone: studio/release's `api_script`) and its
+// body; the paths are wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a run's
 // replay at its path under `RUNS`), and anything else is not found. New accounts are closed until
 // the Terms and the Privacy Policy are final (console/legal.wrela, rywible/wrela#352): signing in,
 // recovery and play without an account go on.
@@ -154,7 +154,8 @@ fn http(e: mut Engine<Capybara>, r: Request) {
     let method = r.method.as_str()
     let path = r.path.as_str()
     let reads = method == "GET" || method == "HEAD"
-    let body = if path == ACCOUNTS && method == "POST" {
+    let posted = path == ACCOUNTS && method == "POST"
+    let body = if posted {
         Some(r.body.clone())
     } else if path == PUBLIC && reads {
         query_bytes(r.query.as_str())
@@ -172,10 +173,13 @@ fn http(e: mut Engine<Capybara>, r: Request) {
         respond(r.conn, text(status, "Not here."))
         return
     }
+    // The ceremonies' keys, which only a request to the accounts carries.
     var keys: Vec<Vec<u8>> = Vec::new()
-    for name in ["x-wrela-key", "x-wrela-key-old"] {
-        if let Some(k) = r.header(name) {
-            keys.push(Vec::from(k.as_bytes()))
+    if posted {
+        for name in ["x-wrela-key", "x-wrela-key-old"] {
+            if let Some(k) = r.header(name) {
+                keys.push(Vec::from(k.as_bytes()))
+            }
         }
     }
     e.http(

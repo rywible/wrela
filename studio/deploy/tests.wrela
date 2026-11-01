@@ -5,8 +5,8 @@
 // and the Workers deployed in order, each serving the release and its kept ones as assets.
 
 use main::{
-    Listing, Options, ZSTD_RULE, deploy, found, parse_args, verify, verify_api, verify_kept,
-    verify_zstd,
+    Listing, Options, ZSTD_RULE, deploy, found, keep_verifier, parse_args, verify, verify_api,
+    verify_kept, verify_zstd,
 }
 use policy::{
     CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, has, history_json,
@@ -401,7 +401,7 @@ fn a_release_names_one_console() {
     )
     // Its verifier: a path of the bucket of builds, and files each a plain name, its description
     // among them.
-    assert(r.verifier.as_str() == "verifiers/toy/7/0123abcd" && r.verifier_files.len() == 2)
+    assert(r.verifier.path.as_str() == "verifiers/toy/7/0123abcd" && r.verifier.files.len() == 2)
     for (from, to) in [
         ("\"verifiers/toy/7/0123abcd\"", "\"../toy\""),
         ("\"verifiers/toy/7/0123abcd\"", "\"builds/toy\""),
@@ -1032,6 +1032,14 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
         panic("the verifier kept")
     }
     assert(v.as_str() == "verify")
+    // Kept again, as the next release of the same build keeps it: it's there, so nothing is put.
+    let Some(json) = read("scratch/release.json") else { panic("release.json") }
+    let Ok(rel) = read_release(json.as_str()) else { panic("the release") }
+    if let Err(e) = keep_verifier(rel, "scratch") {
+        panic(e.message())
+    }
+    let Some(again) = read("scratch/npx.log") else { panic("the log") }
+    assert(again == log, "put once")
     for (domain, release) in [
         ("console.example", B),
         ("game.example", B),
@@ -1066,8 +1074,10 @@ fn listed_release() -> Release {
         source: String::from("head"),
         release: String::from(D),
         api: String::from("api-host"),
-        verifier: String::from("verifiers/toy/7/0123abcd"),
-        verifier_files: Vec::from([String::from("verifier.json")]),
+        verifier: Verifier {
+            path: String::from("verifiers/toy/7/0123abcd"),
+            files: Vec::from([String::from("verifier.json")]),
+        },
         workers: Vec::from(
             [
                 worker("console-host", console: true, docs: false),

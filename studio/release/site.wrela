@@ -328,6 +328,10 @@ fn contains(names: [String], name: str) -> bool {
 pub const KEY_SECRETS: [Text; 2] = ["WRELA_CEREMONY_KEY", "WRELA_CEREMONY_KEY_OLD"]
 pub const KEY_HEADERS: [Text; 2] = ["x-wrela-key", "x-wrela-key-old"]
 
+/// The path of the requests whose ceremonies the keys are for: a `POST` there (platform/wire.wrela's
+/// `ACCOUNTS`, which a test checks) is the only request the Worker gives them to.
+pub const KEYED: Text = "/api/accounts"
+
 /// The R2 bucket of archived builds' verifiers (toolchain 0.18.0's `call_build`, its binding
 /// `WRELA_BUILDS`): each release's deploy puts its server's verifier there (`verifier_path`).
 pub const BUILDS_BUCKET: Text = "wrela-builds"
@@ -345,12 +349,25 @@ pub struct Verifier: Clone {
     pub files: Vec<String>,
 }
 
+/// The file of a verifier that says what it is (`wrela-verify-1`): every verifier has it.
+pub const VERIFIER_JSON: Text = "verifier.json"
+
+/// Whether a verifier's `files` (their names) include its `VERIFIER_JSON`.
+pub fn described(files: [String]) -> bool {
+    for f in files {
+        if f.as_str() == VERIFIER_JSON {
+            return true
+        }
+    }
+    false
+}
+
 /// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable
 /// Objects, the server's and its rooms', and gives each request to the host's routers (`api`, then
 /// `rooms`: toolchain 0.18.0's `server/cloudflare.js`, in the directory `server` beside the
 /// script), which the Worker's routes bring only on the server's paths, with the ceremonies' keys
-/// (`KEY_SECRETS`) as the headers `KEY_HEADERS` in place of any a client sent. A request neither
-/// answers is a 404.
+/// (`KEY_SECRETS`) as the headers `KEY_HEADERS` on a `POST` to `KEYED` alone, and any a client
+/// sent removed from every request. A request neither answers is a 404.
 pub fn api_script(server: str) -> String {
     var out = String::from(
         "// The console's server (studio/release/site.wrela). Written by the release tool.\n",
@@ -359,14 +376,23 @@ pub fn api_script(server: str) -> String {
         f"import {{ WrelaServer, WrelaRoom, api, rooms }} from \"./{server}/cloudflare.js\";\n",
     )
     out.push_str("export { WrelaServer, WrelaRoom };\n")
-    out.push_str("// The ceremonies' keys, from the Worker's secrets, never from a client.\n")
+    out.push_str(
+        "// The ceremonies' keys, from the Worker's secrets, never from a client, and only where a\n",
+    )
+    out.push_str("// ceremony is.\n")
     out.push_str("function keyed(request, env) {\n")
     out.push_str("  const headers = new Headers(request.headers);\n")
+    for header in KEY_HEADERS {
+        out.push_str(f"  headers.delete(\"{header}\");\n")
+    }
+    out.push_str(
+        f"  if (request.method === \"POST\" && new URL(request.url).pathname === \"{KEYED}\") {{\n",
+    )
     for k in 0..2 {
         let (secret, header) = (KEY_SECRETS[k], KEY_HEADERS[k])
-        out.push_str(f"  headers.delete(\"{header}\");\n")
-        out.push_str(f"  if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
+        out.push_str(f"    if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
     }
+    out.push_str("  }\n")
     out.push_str("  return new Request(request, { headers });\n")
     out.push_str("}\n")
     out.push_str("export default {\n")

@@ -671,6 +671,29 @@ fn said(ran: run::Ran) -> Result<String, ToolError> {
     Ok(out)
 }
 
+/// Runs Wrangler with `args` in `root` (`what`, as its errors name it): its exit status and what
+/// it said.
+fn wrangler_ran(args: [String], root: str, what: str) -> Result<(i32, String), ToolError> {
+    let ran = run::run(wrangler(args, root))
+        .wait()
+        .map_err(|e| ToolError::new(f"{what}: {e.message()}"))?
+    let out = said(ran)?
+    Ok((ran.status, out))
+}
+
+/// Runs Wrangler with `args` in `root` (`what`, as its errors name it): what it said, or, if it
+/// failed, an error once what it said is printed.
+fn run_wrangler(args: [String], root: str, what: str) -> Result<String, ToolError> {
+    let (status, out) = wrangler_ran(args, root, what)?
+    if status != 0 {
+        if !out.is_empty() {
+            print(out.as_str())
+        }
+        return Err(ToolError::new(f"{what} exited {status}"))
+    }
+    Ok(out)
+}
+
 /// Deploys the Worker that `<worker>.wrangler.json` in `root` configures, saying what Wrangler
 /// said.
 pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
@@ -678,15 +701,9 @@ pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
         [String::from("deploy"), String::from("--config"), String::from(f"{worker}.wrangler.json")],
     )
     print(f"{worker}: wrangler deploy")
-    let ran = run::run(wrangler(args, root))
-        .wait()
-        .map_err(|e| ToolError::new(f"wrangler deploy of {worker}: {e.message()}"))?
-    let out = said(ran)?
+    let out = run_wrangler(args, root, f"wrangler deploy of {worker}")?
     if !out.is_empty() {
         print(out.as_str())
-    }
-    if ran.status != 0 {
-        return Err(ToolError::new(f"wrangler deploy of {worker} exited {ran.status}"))
     }
     Ok(())
 }
@@ -694,12 +711,31 @@ pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
 /// Puts the release's server's verifier in the bucket of builds (release_tool::site's
 /// `BUILDS_BUCKET`), at its path, a file at a time, before any Worker deploys: a later build plays
 /// this board's runs with it (toolchain 0.18.0's `call_build`). Its path names its files' bytes, so
-/// putting it again, as each release of the same build does, changes nothing.
+/// one whose `verifier.json` is there already (each release of the same build's) is that one, and
+/// isn't put again.
 pub fn keep_verifier(rel: Release, root: str) -> Result<(), ToolError> {
     let bucket = release_tool::site::BUILDS_BUCKET
-    print(f"the server's verifier: {bucket}/{rel.verifier.as_str()}")
-    for f in rel.verifier_files {
-        let key = String::from(f"{bucket}/{rel.verifier.as_str()}/{f.as_str()}")
+    let at = String::from(f"{bucket}/{rel.verifier.path.as_str()}")
+    print(f"the server's verifier: {at.as_str()}")
+    let described = String::from(f"{at.as_str()}/{release_tool::site::VERIFIER_JSON}")
+    let probe = Vec::from(
+        [
+            String::from("r2"),
+            String::from("object"),
+            String::from("get"),
+            described.clone(),
+            String::from("--pipe"),
+            String::from("--remote"),
+        ],
+    )
+    // Any failure (none there, or Wrangler's own) puts it, which says what went wrong.
+    let (status, _) = wrangler_ran(probe, root, f"wrangler r2 object get {described.as_str()}")?
+    if status == 0 {
+        print("  kept already")
+        return Ok(())
+    }
+    for f in rel.verifier.files {
+        let key = String::from(f"{at.as_str()}/{f.as_str()}")
         let file = String::from(f"{rel.api.as_str()}.server/verifier/{f.as_str()}")
         let args = Vec::from(
             [
@@ -712,16 +748,7 @@ pub fn keep_verifier(rel: Release, root: str) -> Result<(), ToolError> {
                 String::from("--remote"),
             ],
         )
-        let ran = run::run(wrangler(args, root))
-            .wait()
-            .map_err(|e| ToolError::new(f"wrangler r2 object put {key.as_str()}: {e.message()}"))?
-        let out = said(ran)?
-        if ran.status != 0 {
-            if !out.is_empty() {
-                print(out.as_str())
-            }
-            return Err(ToolError::new(f"wrangler r2 object put {key.as_str()} exited {ran.status}"))
-        }
+        let _ = run_wrangler(args, root, f"wrangler r2 object put {key.as_str()}")?
     }
     Ok(())
 }

@@ -5,8 +5,10 @@
 // assets directory. A Worker of a script alone (the console's server) has routes in a zone and no
 // assets, and changes no site. Either adds the Worker's name to `scratch/npx.log` (a line each, in
 // the order they ran) and prints what it uploaded. `r2 object put <bucket>/<key> --file <path>
-// --remote` puts the file at `scratch/r2/<bucket>/<key>` and adds `r2 <bucket>/<key>` to the log.
-// Any other command, or a configuration of assets and a script, exits 2 or more.
+// --remote` puts the file at `scratch/r2/<bucket>/<key>` and adds `r2 <bucket>/<key>` to the log;
+// `r2 object get <bucket>/<key> --pipe --remote` prints that file, or exits 1 if there's none (as
+// Wrangler does for a key that doesn't exist), and logs nothing. Any other command, or a
+// configuration of assets and a script, exits 2 or more.
 
 use release_tool::io::{copy_files, read_files, walk, write_files}
 use std::io::print
@@ -36,6 +38,21 @@ pub fn tool() -> u32 {
             return 3
         }
         return logged(String::from(f"r2 {a[5].as_str()}"))
+    }
+    let get = a.len() == 8 &&
+        a[2].as_str() == "r2" &&
+        a[3].as_str() == "object" &&
+        a[4].as_str() == "get" &&
+        a[6].as_str() == "--pipe" &&
+        a[7].as_str() == "--remote"
+    if get {
+        let Ok(all) = read_files(Vec::from([String::from(f"{ROOT}/r2/{a[5].as_str()}")])) else {
+            print("The specified key does not exist.")
+            return 1
+        }
+        let Some(t) = String::from_utf8(all[0].clone()) else { return 3 }
+        print(t.as_str())
+        return 0
     }
     let deploy = a.len() == 5 &&
         a[2].as_str() == "deploy" &&
