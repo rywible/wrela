@@ -2255,7 +2255,28 @@ judge's "after" on every named shot, and the rise named deliberate):
 - **G8 and G9**, already Blocked on their G-look; their measures with them (G8 shot 7's +48 %
   is its logs laid into that view; G9's on shot 3).
 
-The merged head's measures (G7 out), the twelve, three runs: "Part G closes, again".
+**The merged head's measures** (G7 out of the vale; `build/fast-final`, the twelve, three runs each),
+main → merged:
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px |
+|---|---|---|---|---|
+| 1 the forest floor | 23.58 → 24.08 | 18.65 → 21.92 | 0.0182 → 0.0149 | 3 → 3 |
+| 2 the canopy against the sun | 25.41 → 24.96 | 4.23 → 7.70 | 0.0385 → 0.0387 | 3 → 4 |
+| 3 an old oak | 36.08 → 32.72 | 1.98 → 2.08 | 0.0559 → 0.0693 | 3 → 3 |
+| 4 the fall | 23.59 → 26.13 | 10.61 → 10.87 | 0.0056 → 0.0053 | 5 → 5 |
+| 5 the band's face | 25.59 → 28.79 | 0.84 → 0.72 | 0.0078 → 0.0081 | 3 → 2 |
+| 6 the meadow at evening | 25.46 → 25.65 | 44.40 → 44.16 | 0.0056 → 0.0055 | 2 → 2 |
+| 7 dawn in the hollow | 28.84 → 28.19 | 6.02 → 8.63 | 0.0038 → 0.0042 | 3 → 3 |
+| 8 dusk from the crest | 36.21 → 35.82 | 9.24 → 9.54 | 0.0020 → 0.0025 | 2 → 2 |
+| 9 grazing at the edge | 25.11 → 25.06 | 26.25 → 29.93 | 0.0046 → 0.0048 | 3 → 3 |
+| 10 down the trail | 26.37 → 26.89 | 34.10 → 35.15 | 0.0059 → 0.0059 | 3 → 3 |
+| 11 the fallen beech | 23.08 → 25.20 | 29.44 → 20.31 | 0.0200 → 0.0222 | 4 → 5 |
+| 12 the wood under cloud | 28.10 → 28.22 | 82.93 → 87.29 | 0.0076 → 0.0076 | 3 → 3 |
+
+PSNR up on seven shots, down on five (most on shot 3, G1's and G9's: Blocked); flicker up on
+eight, by 2 to 82 %: shot 2's is G3's leaves (named deliberate), shot 9's G4's PCSS (named
+deliberate), shot 7's G8's logs (Blocked with G8), shot 1's G3's and G8's (Blocked), shots 4, 8,
+10 and 12 within 3 to 5 % (a run's own spread is up to 13 %, docs/lookdev.md).
 
 ### Part G closes, again: Blocked
 
