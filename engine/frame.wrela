@@ -2499,6 +2499,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                     self.sky.dome,
                     self.linear,
                     self.distance.volume,
+                    self.distance.albedo,
                 )
             }
             return
@@ -2570,6 +2571,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                             self.sky.dome,
                             self.linear,
                             self.distance.volume,
+                            self.distance.albedo,
                         )
                     }
                 } else {
@@ -2606,6 +2608,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                         self.sky.dome,
                         self.linear,
                         self.distance.volume,
+                        self.distance.albedo,
                         steer: if STEERED { steer } else { Steer {} },
                     )
                 }

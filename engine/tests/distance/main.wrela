@@ -23,8 +23,8 @@ use engine::view::{Camera, first_camera}
 use std::derive::tape
 use std::field::{Surface, cuboid}
 use std::gpu::{
-    ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, R32Float, Rgba16Float, Sampler, Slots,
-    Texture, Texture3d, buffer, buffer_of, dispatch, read,
+    ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, R32Float, Rgba16Float, Rgba8, Sampler,
+    Slots, Texture, Texture3d, buffer, buffer_of, dispatch, read,
 }
 use std::io::{Pending, print}
 
@@ -146,6 +146,7 @@ fn toward_trunk(
     t: Trace,
     density: Texture3d<Rgba16Float>,
     volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
     levels: Levels,
     texels: [Texel],
     sh: Shadows,
@@ -167,6 +168,7 @@ fn toward_trunk(
         t,
         density,
         volume,
+        colours,
         levels,
         texels,
         from,
@@ -270,6 +272,7 @@ fn ask(s: mut State) {
             t,
             density: probes.density,
             volume: f.distance.volume,
+            colours: f.distance.albedo,
             levels: f.clipmap.levels(),
             texels: f.clipmap.texels(),
             sh: sh,

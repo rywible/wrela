@@ -27,12 +27,12 @@ use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
     Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, R32Float, Rgba16Float,
-    Sampler, Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label,
+    Rgba8, Sampler, Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label,
     texture3d, writable_texture, write,
 }
 use std::math::PI
 use switches::Switches
-use distance::{DistanceGrid, NO_DISTANCE, distance_at, distance_normal}
+use distance::{DistanceGrid, NO_DISTANCE, albedo_at, distance_at, distance_normal}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::Camera
 
@@ -176,6 +176,9 @@ pub struct Occluder: Copy + GpuData {
     pub radius: f32,
     pub b: vec3,
     pub solid: f32,
+    /// A solid one's surface colour (`distance::pack_albedo`; 0: none), the solids' distance
+    /// volume's surface cache's (§G1).
+    pub albedo: u32 = 0,
 }
 
 /// The occluders a row of `cook_occluders`'s groups cooks.
@@ -286,9 +289,6 @@ pub struct Trace: Copy + GpuData {
 /// How near a ray comes to a solid in the distance volume before it's met it (m).
 const SOLID_HIT: f32 = 0.1
 
-/// What a solid a ray meets reflects (bark and stone, near enough).
-const SOLID_ALBEDO = vec3(0.18, 0.16, 0.14)
-
 /// The light round the point over `xz`, `above` metres up, averaged over every facing (the light
 /// a mote of air scatters, each way alike), its sun's part times `sun`: from the nearer layer's
 /// probes' constant terms alone (four samples of the maps, where `held_at` takes ten), or the
@@ -350,6 +350,7 @@ pub fn trace(
     t: Trace,
     density: Texture3d<Rgba16Float>,
     volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
     levels: Levels,
     texels: [Texel],
     from: vec3,
@@ -430,8 +431,10 @@ pub fn trace(
         }
         let free = distance_at(t.solids, volume, p)
         if free < SOLID_HIT && !from_surface {
-            // A solid: its surface lit as the ground's is.
+            // A solid: its surface lit as the ground's is, its colour the surface cache's (§G1:
+            // the nearest solid's, as the volume was cooked).
             let n = distance_normal(t.solids, volume, p)
+            let solid = albedo_at(t.solids, colours, p)
             let lit = statically_sunlit(sh, p, n, near, far, cmp, 1.0)
             let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
             if t.bounced != 0 {
@@ -445,16 +448,12 @@ pub fn trace(
                     n: n,
                 )
                 return (
-                    light + trans * SOLID_ALBEDO * probe_light(h.sky, n),
-                    sun_light + trans * SOLID_ALBEDO * (sun + probe_light(h.sun, n)),
+                    light + trans * solid * probe_light(h.sky, n),
+                    sun_light + trans * solid * (sun + probe_light(h.sun, n)),
                     x,
                 )
             }
-            return (
-                light + trans * SOLID_ALBEDO * open_light(maps, n),
-                sun_light + trans * SOLID_ALBEDO * sun,
-                x,
-            )
+            return (light + trans * solid * open_light(maps, n), sun_light + trans * solid * sun, x)
         }
         x += clamp(free, step, 2.0 * step)
     }
@@ -625,6 +624,7 @@ pub fn bake(
     strip: Strip,
     density: Texture3d<Rgba16Float>,
     volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -672,6 +672,7 @@ pub fn bake(
             t,
             density,
             volume,
+            colours,
             levels,
             texels,
             p,
@@ -713,6 +714,7 @@ pub fn trace_again(
     strip: Strip,
     density: Texture3d<Rgba16Float>,
     volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -745,6 +747,7 @@ pub fn trace_again(
         t,
         density,
         volume,
+        colours,
         levels,
         texels,
         p,
@@ -1721,6 +1724,7 @@ impl Baked {
         dome: Texture<Rgba16Float>,
         s: Sampler,
         volume: Texture3d<R32Float>,
+        colours: Texture3d<Rgba8>,
         steer: Steer = Steer {},
     ) {
         let total = self.grid.cols * self.grid.cols
@@ -1755,6 +1759,7 @@ impl Baked {
                     strip,
                     density: self.density,
                     volume: volume,
+                    colours: colours,
                     levels: levels,
                     texels: texels,
                     near: near,
@@ -1810,6 +1815,7 @@ impl Baked {
                 strip,
                 density: self.density,
                 volume: volume,
+                colours: colours,
                 levels: levels,
                 texels: texels,
                 near: near,
@@ -1889,6 +1895,7 @@ pub fn reference(
     scene: Texture<Rgba16Float>,
     density: Texture3d<Rgba16Float>,
     volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
     levels: Levels,
     texels: [Texel],
     maps: Texture<Rgba16Float>,
@@ -1950,6 +1957,7 @@ pub fn reference(
             at.t,
             density,
             volume,
+            colours,
             levels,
             texels,
             from,

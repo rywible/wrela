@@ -1,0 +1,322 @@
+// The probes' surface cache (§G1, `distance::Distance::albedo`): a red wall (a thick capsule of
+// a red bark) on flat ground, drawn through `engine::frame` until its distance volume is cooked.
+// Then probes' rays are traced (`probes::trace`): toward the wall's sunlit side, its shaded side,
+// and the open ground beside it, with the volume and without it.
+
+use engine::air::hazy
+use engine::distance::{Capsule, Solids, pack_albedo}
+use engine::frame::{Aim, Frame, Gathered, Quality, Scene}
+use engine::switches::Approved
+use styles::physical::Physical
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid, trace}
+use engine::shadow::{Shadows, shadows}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat, Levels, Texel}
+use engine::view::{Camera, first_camera}
+use std::gpu::{
+    ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, R32Float, Rgba16Float, Rgba8, Sampler,
+    Slots, Texture, Texture3d, buffer, dispatch, read, texture3d,
+}
+use std::io::{Pending, print}
+
+const SUN = vec3(0.3, 0.8, 0.5)
+const EYE = vec3(0.0, 1.6, 0.0)
+
+/// The wall: a capsule 2 m round from the ground to 6 m up, 12 m along +z; its bark red.
+const WALL = Capsule { a: vec3(0.0, -1.0, 12.0), radius: 2.0, b: vec3(0.0, 6.0, 12.0) }
+const RED = vec3(0.6, 0.06, 0.05)
+
+pub struct Walled {
+    weather: Weather,
+}
+
+impl Scene for Walled {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        if since == 1 {
+            return None
+        }
+        let wall = Capsule {
+            a: WALL.a - origin,
+            b: WALL.b - origin,
+            albedo: pack_albedo(RED),
+            ..WALL,
+        }
+        Some(Solids { capsules: Vec::from([wall]), version: 1 })
+    }
+}
+
+/// The rays: 0 toward the wall's sunlit side (from 6 m past it, along -z); 1 toward its shaded side
+/// (from 6 m before it, along +z); 2 and 3 down to the open ground 20 m to its side. Each its light
+/// (the sky's part and the sun's summed), then the sun's alone.
+@compute(4)
+fn rays(
+    t: Trace,
+    density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
+    colours: Texture3d<Rgba8>,
+    levels: Levels,
+    texels: [Texel],
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    seen: [u32],
+    origin: vec3,
+    out: mut Slots<vec4>,
+    sun_out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    let (from, dir) = if id.x == 0 { (vec3(0.0, 2.0, 18.0), vec3(0.0, 0.0, -1.0)) } else if id.x ==
+        1 {
+        (vec3(0.0, 2.0, 6.0), vec3(0.0, 0.0, 1.0))
+    } else {
+        (vec3(-20.0, 3.0, 0.0), normalize(vec3(0.0, -1.0, 0.3)))
+    }
+    let (l, sun, hit) = trace(
+        t,
+        density,
+        volume,
+        colours,
+        levels,
+        texels,
+        from - origin,
+        dir,
+        sh,
+        near,
+        far,
+        cmp,
+        view,
+        dome,
+        maps,
+        s,
+        seen,
+    )
+    out[id] = vec4(l + sun, hit)
+    sun_out[id] = vec4(sun, 0.0)
+}
+
+pub struct State {
+    frame: Frame<Gathered, Approved, Physical>,
+    scene: Walled,
+    asked: Vec<Pending<vec4>>,
+    pub light: Vec<vec4>,
+    pub sun: Vec<vec4>,
+    /// The rays again with no colours cooked (an empty cache: what the probes read before §G1).
+    pub bare: Vec<vec4>,
+    pub cooked_at: u32,
+}
+
+pub fn init() -> State {
+    let air = hazy(SUN, SUN_TOP, eye: EYE.y)
+    let frame: Frame<Gathered, Approved, Physical> = Frame::new(
+        Quality { measured: false },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(EYE, EYE + vec3(0.0, 0.0, 20.0), 0.82, width: 320, height: 180),
+        grid(EYE.xz, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        EYE.xz,
+    )
+    State {
+        frame,
+        scene: Walled {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.0,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(0.0),
+            },
+        },
+        asked: Vec::new(),
+        light: Vec::new(),
+        sun: Vec::new(),
+        bare: Vec::new(),
+        cooked_at: 0,
+    }
+}
+
+fn ask(s: mut State) {
+    borrow f = s.frame
+    let g = f.distance.read()
+    let o = f.origin
+    let q = f.quality().shadows
+    let sh = shadows(
+        f.light.sun,
+        f.near.cascade(),
+        f.far.cascade(),
+        moving_at: EYE,
+        moving_span: q.moving_span,
+        moving_side: q.moving_side,
+    )
+    borrow probes = f.probes.using
+    let t = Trace { solids: g, ..s.scene.trace(f.light, probes.grid) }
+    var r: GpuBuffer<vec4> = buffer(4)
+    var u: GpuBuffer<vec4> = buffer(4)
+    dispatch(
+        rays.bind(
+            t,
+            density: probes.density,
+            volume: f.distance.volume,
+            colours: f.distance.albedo,
+            levels: f.clipmap.levels(),
+            texels: f.clipmap.texels(),
+            sh: sh,
+            near: f.near.front,
+            far: f.far.front,
+            cmp: f.cmp,
+            view: f.tables.view,
+            dome: f.sky.dome,
+            maps: probes.maps,
+            s: f.linear,
+            seen: probes.seen.items(),
+            origin: o,
+            out: mut r,
+            sun_out: mut u,
+        ),
+        over: 4,
+    )
+    s.asked.push(read(r.items()))
+    s.asked.push(read(u.items()))
+    let none = texture3d::<Rgba8>(width: 1, height: 1, depth: 1)
+    var b: GpuBuffer<vec4> = buffer(4)
+    var bs: GpuBuffer<vec4> = buffer(4)
+    dispatch(
+        rays.bind(
+            t,
+            density: probes.density,
+            volume: f.distance.volume,
+            colours: none,
+            levels: f.clipmap.levels(),
+            texels: f.clipmap.texels(),
+            sh: sh,
+            near: f.near.front,
+            far: f.far.front,
+            cmp: f.cmp,
+            view: f.tables.view,
+            dome: f.sky.dome,
+            maps: probes.maps,
+            s: f.linear,
+            seen: probes.seen.items(),
+            origin: o,
+            out: mut b,
+            sun_out: mut bs,
+        ),
+        over: 4,
+    )
+    s.asked.push(read(b.items()))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: EYE, at: EYE + vec3(0.0, 0.0, 20.0), fovy: 0.82, moving_at: EYE }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    if s.cooked_at == 0 && s.frame.distance.cooked && s.frame.probes.done() {
+        s.cooked_at = s.frame.ran
+        ask(mut s)
+    }
+    if s.asked.len() == 3 && s.bare.is_empty() {
+        match s.asked[2].poll() {
+            Some(Ok(v)) => s.bare = take v,
+            _ => {},
+        }
+    }
+    if s.asked.len() == 3 && s.light.is_empty() {
+        match s.asked[0].poll() {
+            Some(Ok(v)) => s.light = take v,
+            _ => {},
+        }
+    }
+    if s.asked.len() == 3 && s.sun.is_empty() {
+        match s.asked[1].poll() {
+            Some(Ok(v)) => s.sun = take v,
+            _ => {},
+        }
+    }
+}
+
+/// A colour's hue (degrees, 0 to 360).
+fn hue(c: vec3) -> f32 {
+    let hi = max(c.x, max(c.y, c.z))
+    let lo = min(c.x, min(c.y, c.z))
+    let d = max(hi - lo, 1.0e-6)
+    let h = if hi == c.x { ((c.y - c.z) / d) % 6.0 } else if hi == c.y {
+        (c.z - c.x) / d + 2.0
+    } else {
+        (c.x - c.y) / d + 4.0
+    }
+    (h * 60.0 + 360.0) % 360.0
+}
+
+/// The hue between two hues (degrees, the short way round).
+fn apart(a: f32, b: f32) -> f32 {
+    let d = abs(a - b) % 360.0
+    min(d, 360.0 - d)
+}
+
+/// A probe's ray that meets the red wall's sunlit side brings back a red bounce: its hue within
+/// 10° of the wall's.
+@test(frames: 200, gpu: true)
+fn a_red_wall_bounces_red(s: State) {
+    assert(s.light.len() == 4, f"cooked at frame {s.cooked_at}: {s.light.len()} rays read back")
+    let c = s.light[0].xyz
+    print(
+        f"the sunlit side: went {s.light[0].w:.2} m, light {c} (hue {hue(c):.1}°, the wall's {hue(RED):.1}°)",
+    )
+    assert(abs(s.light[0].w - 4.0) < 0.5, f"the ray stopped {s.light[0].w} m on, not at the wall")
+    assert(apart(hue(c), hue(RED)) <= 10.0, f"its bounce's hue {hue(c)}°, the wall's {hue(RED)}°")
+}
+
+/// The wall's side away from the sun brings back none of the sun's light.
+@test(frames: 200, gpu: true)
+fn a_shaded_side_brings_back_no_sun(s: State) {
+    assert(s.sun.len() == 4, f"{s.sun.len()} rays read back")
+    print(f"the shaded side: went {s.light[1].w:.2} m, its sun {s.sun[1].xyz}")
+    assert(abs(s.light[1].w - 4.0) < 0.5, f"the ray stopped {s.light[1].w} m on, not at the wall")
+    assert(length(s.sun[1].xyz) == 0.0, f"the shaded side's sun {s.sun[1].xyz}")
+}
+
+/// The open ground's bounce is what it was before the cache (the same ray with an empty one):
+/// within 1/255.
+@test(frames: 200, gpu: true)
+fn the_open_grounds_bounce_is_unchanged(s: State) {
+    assert(s.light.len() == 4 && s.bare.len() == 4, f"{s.light.len()}, {s.bare.len()} read back")
+    let d = abs(s.light[2].xyz - s.bare[2].xyz)
+    print(f"the open ground: {s.light[2]} with the cache, {s.bare[2]} with none")
+    assert(max(d.x, max(d.y, d.z)) <= 1.0 / 255.0, f"the ground's bounce moved by {d}")
+    // And the wall's is the cache's: with none, it's the old grey's.
+    assert(apart(hue(s.bare[0].xyz), hue(RED)) > 10.0, "the wall's bounce was red before the cache")
+}
