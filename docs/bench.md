@@ -2312,6 +2312,11 @@ The development panel through the part (0 of 8 every time; sums of the five rows
 The sealed panel, once a round: F10 85.76; G7 82.39; G4 86.12; G3 81.87; G1 83.62; G8 and G9 82.13;
 G10 82.11 and 82.88; the last head 83.88 (0 of 12 each).
 
+After these panels, G7's contrast left the vale for its measures (7137ab89: "G-look's measures",
+above). Its judges had rated the vale with it and without it equal on all twelve shots, and the
+development panel didn't move with it (51.01 → 51.13), so these tallies stand for the merged head
+within the panels' own spread; they weren't run again.
+
 **Blocked**, the gate's number (pairs won or equal) at 0 of 8 through eight items and every lever
 on them. The losses fell to 47.99 with G8 and G9 and have held within 48.75 to 50.62 since: three
 rounds of the same items differ by up to 1.9, the panels' judges' own spread run to run (G0 to G7,
