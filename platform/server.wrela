@@ -589,6 +589,7 @@ pub enum Step: Copy + Eq {
     FinishAccount,
     ClearScan,
     ClearNext,
+    ReleaseAccount,
     PostingRead,
     PostingBest,
     BestRunsRead,

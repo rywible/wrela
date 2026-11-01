@@ -15,10 +15,11 @@
 //   board, each sum to its whole board, and the account's name and runs to its search shard, by
 //   upserts of its own revision.
 // - **Its deletion** fences new records (`Account::deleting`), ends every session and passkey at
-//   once, sends a removal to each board, whole board, code shard, replay shard, its name's shard and
-//   its search shard, and clears the store only once each removal is said done; a mark (`z`), kept
-//   before the clear begins and past what it clears, stays, so nothing of it comes back. A message to itself (`Note::Finish`) finishes a deletion an
-//   instance dropped part way.
+//   once, sends a removal to each board, whole board, code shard, replay shard and its search
+//   shard, then, once each of those is said done, lets its name go (the boards' and the search's
+//   keys by name are the next holder's then), and clears the store once that's said done too.
+//   A mark (`z`), kept before the clear begins and past what it clears, stays, so nothing of it comes
+//   back. A message to itself (`Note::Finish`) finishes a deletion an instance dropped part way.
 
 use account::{
     ACCOUNT, AGREED, Account, Agreement, CEREMONY_BYTES, CODES, CODE_BYTES, COUNTERS, CSRF_BYTES,
@@ -79,8 +80,11 @@ pub enum Checked: Clone + Serialize {
     Rejected { why: String },
 }
 
-/// The last a deletion's sweep left (`y`): every removal is sent.
+/// The last a deletion's sweep left (`y`): every removal is sent but its name's (`NAME_KEPT`), or
+/// that one too (`NAME_RELEASED`).
 const SWEPT: Text = "y"
+const NAME_KEPT: u8 = 0
+const NAME_RELEASED: u8 = 1
 
 fn me_of(a: Account, recovery: bool) -> Me {
     Me {
@@ -1240,22 +1244,32 @@ impl<G: Game> Engine<G> {
             Step::RemovedScan => {
                 let Some(es) = entries(answer) else { return }
                 var pending = 0
-                var swept = false
+                var swept: Option<Vec<u8>> = None
                 for e in es {
                     if e.key == under(SWEPT) {
-                        swept = true
+                        swept = Some(e.value.clone())
                     } else if !lately(self.gone, e.key) {
                         pending += 1
                     }
                 }
-                if self.latest(under(SWEPT), []).is_some() {
-                    swept = true
+                if let Some(v) = self.latest(under(SWEPT), []) {
+                    swept = Some(take v)
                 }
-                if pending == 0 && swept {
-                    self.clear(take j)
+                let Some(mark) = swept else {
+                    self.done(j)
                     return
                 }
-                self.done(j)
+                if pending > 0 {
+                    self.done(j)
+                    return
+                }
+                if mark == Vec::from([NAME_KEPT]) {
+                    // Every other removal is done: the name is let go now (its account read for
+                    // it), pending until its shard says so too.
+                    self.get(key(ACCOUNT, []), Step::ReleaseAccount, take j)
+                    return
+                }
+                self.clear(take j)
             },
             Step::FinishSwept => {
                 // Swept already: nothing to finish but what comes back said done.
@@ -1298,6 +1312,18 @@ impl<G: Game> Engine<G> {
                 self.random(1, Step::ClearNext, take j)
             },
             Step::ClearNext => self.clear(take j),
+            Step::ReleaseAccount => {
+                if let Some(a) = self.account_of(answer) {
+                    let release = Note::Release {
+                        name: a.name,
+                        owner: self.handle.clone(),
+                        generation: a.generation,
+                    }
+                    self.pend(under("n"), names_instance(a.name).as_str(), release)
+                    self.keep(under(SWEPT), Vec::from([NAME_RELEASED]))
+                }
+                self.done(j)
+            },
             Step::PostingRead => {
                 let p: Option<Posting> = got(answer)
                 j.n = if self.agreed_to(p) { 1 } else { 0 }
@@ -1811,16 +1837,12 @@ impl<G: Game> Engine<G> {
             self.scan_range(take from, under("x/"), CLEARED, Step::DeleteScan, take j)
             return
         }
-        // Its name, and its search entry; then the sweep is done.
-        let release = Note::Release {
-            name: a.name,
-            owner: self.handle.clone(),
-            generation: a.generation,
-        }
-        self.pend(under("n"), names_instance(a.name).as_str(), release)
+        // Its search entry; then the sweep is done. Its name is let go only once every removal is
+        // said done (`RemovedScan`): the boards' and the search's keys by name are shared with
+        // whoever holds the name next, so none of this account's may land after.
         let unlisted = Note::Listed { handle: self.handle.clone(), revision, listing: Vec::new() }
         self.pend(under("l"), search_instance(letter_of(a.name.front)).as_str(), unlisted)
-        self.keep(under(SWEPT), Vec::new())
+        self.keep(under(SWEPT), Vec::from([NAME_KEPT]))
         // The mark that it's gone, kept now, before any of its store is cleared: a clear dropped
         // after its last page still leaves it, so a held sign-up for its handle is refused.
         self.keep(under(GONE), Vec::new())
@@ -1833,7 +1855,7 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Every removal is said done: the store is cleared, a page at a time, then its mark kept.
+    /// Every removal is said done: the store is cleared, a page at a time, its mark kept.
     fn clear(mut self, job: take Job) {
         self.deleting = true
         self.scan_range(Vec::new(), under(GONE), CLEARED, Step::ClearScan, take job)

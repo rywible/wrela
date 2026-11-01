@@ -2919,6 +2919,61 @@ fn a_deletion_clears_its_store_only_once_every_removal_is_done() {
 }
 
 @test
+fn a_deleted_accounts_late_removals_never_take_its_name_from_the_next_to_hold_it() {
+    var h = host()
+    let seed = seed_of(title: 2, front: 0, back: 0, epithet: 5)
+    let (a, token) = named(mut h, 1, 5, seed)
+    post(mut h, 1, token, 20)
+    let csrf = fresh(mut h, 1, 5, a)
+    // Its boards and search don't hear its removals yet.
+    for p in ["board/", "whole/", "search/"] {
+        h.holding.push(String::from(p))
+    }
+    let Reply::Done = h.say(1, Request::Delete { csrf })[0].clone() else { panic("deleted") }
+    // Another draws its name while they wait, and posts.
+    let (b, tb) = named(mut h, 2, 6, seed)
+    post(mut h, 2, tb, 30)
+    // They're heard; then a third draws the name, and posts.
+    h.holding.clear()
+    h.settle()
+    let (c, tc) = named(mut h, 3, 7, seed)
+    post(mut h, 3, tc, 40)
+    // Each holder of a name is found by it, and placed under it.
+    for s in [b.clone(), c.clone()] {
+        let n = names::parse(s.name.as_str()).unwrap()
+        let noun = String::from(names::FRONTS[n.front])
+        let found = h.read(
+            9,
+            Request::Names {
+                game: String::from("toy"),
+                title: String::new(),
+                noun: noun.clone(),
+                epithet: String::new(),
+            },
+        ).0
+        let Reply::Names { found } = found else { panic("names") }
+        var mine = false
+        for f in found {
+            if f.name == s.name {
+                mine = true
+            }
+        }
+        assert(mine, f"{s.name} is found")
+        let Reply::Around { .. } = h.read(9, around(s.name.as_str(), 0)).0 else {
+            panic(f"{s.name} is placed")
+        }
+    }
+    assert(b.name != a.name && c.name == a.name, "free only once its removals were done")
+    assert(nothing_left_of(h, a), "the first is gone")
+}
+
+/// Whether nothing of deleted account `s` is left in its own store but its mark.
+fn nothing_left_of(h: Host, s: Signed) -> bool {
+    let store = h.store_of(s.at().as_str())
+    store.len() == 1 && store[0].key == Vec::from(String::from(account::GONE).as_bytes())
+}
+
+@test
 fn a_ranking_that_fails_is_answered_saved_and_its_retry_takes_the_first_run() {
     var h = host()
     let (_, token) = uploader(mut h, 1, 5)
