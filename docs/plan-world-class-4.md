@@ -47,9 +47,10 @@ measures it again whole on the M4 at its end. Between here and there it adds a c
 class, so progress shows before the twelve pairs move: **for each class this plan builds (the
 fall, the water's reflections, solid things near the eye, foliage near the eye, bark and the
 floor, the creature), its class panel (§0.5 G-class) moves from losing to equal on the shots where
-that class shows, while the M4's sustained GPU p50 for the vale ends no slower than Part A's
-baseline of it (A4): each part spends at most its budget (§0.5 G-M4's table), and D3's single pass
-for the cards is the saving that pays for them (hypothesis H9).** A class that can't reach equal ends Blocked with its trajectory, as plan three's
+that class shows, while each part's own cost on the M4 stays within its budget (§0.5 G-M4's table:
+5.0 ms of GPU in all, **proposed**), so the vale's sustained GPU p50 ends within Part A's baseline
+(A4) plus those budgets, and, if D3's single pass for the cards saves what hypothesis H9 bets,
+no slower than the baseline.** The claim says which it was. A class that can't reach equal ends Blocked with its trajectory, as plan three's
 did; the claim says which classes did.
 
 Fidelity is still judged against freely licensed photographs of the real subjects by agents
@@ -124,28 +125,31 @@ three §0.5). New kinds:
   for motion, the gait's own measures (§G0). Each rung also has its bytes **resident** (every level
   kept, not only those drawn), and its GPU ms to draw and to realize. The table goes in
   `docs/bench.md` before the class's first build step. A candidate is built only where its rung
-  shows today's error over the class's threshold (a pixel; 30 dB PSNR for image error,
-  **proposed**) at a distance the shots use.
+  shows today's error past the class's threshold at a distance the shots use: **surface error over
+  a pixel, or image error under 30 dB PSNR** (**proposed**), with fixtures on both sides of each
+  (a 2 px surface builds, a 0.5 px one doesn't; 20 dB builds, 40 dB doesn't).
 - **G-class** (a small panel on the class): the shots where the class shows (development shots,
   and the class's own development shot under G-select), each against its public reference, eight
   agent judges in fresh contexts with calibration controls, B5's brief, the class's rubric row
   named in the brief. Its tally is read for that class's sentences. The gate, per pair: the class's
   named faults (the part lists its words) in no judge's notes, and **at least four of the eight
-  judges prefer the still or rate the pair equal** (the pair's median judgement equal or better).
-  This is stronger than G-reference's per-pair safeguard (no pair lost worse than 6 to 2,
-  `studio/compare/tally.wrela`), and is its own rule with its own tally test: two judges not
-  against fails, four passes. A G-class panel never uses the sealed twelve.
+  judges prefer the still or rate the pair equal** (a count, not the pair's median: four "equal"
+  and four against passes the count while its median is −0.5 in `studio/compare/tally.wrela`).
+  This is stronger than G-reference's per-pair safeguard (no pair lost worse than 6 to 2), and is
+  its own rule with its own tally test: two not against fails; four equal and four against
+  passes; four for and four against passes. A G-class panel never uses the sealed twelve.
 - **G-select** (the selection rule's test): a synthetic tally whose only fault is on a class no
   development shot shows must open that class's development shot and put its item on the menu; a
   tool test in `studio/compare` holds it, and the plan's menu (§A1) is regenerated from both panels'
   sentences before each part.
 - **G-M4** (D44): a performance gate's numbers from the M4, pasted from Ryan's run with its report
   path; a Linux number in its place is a skipped step (plan three's shortcut 3). **The rule, every
-  part:** the part's switch defaults **on** only if the vale's sustained (600 s) GPU p50 with it on
-  is within the A4 baseline plus the sum of the budgets of the parts merged so far (D3's measured
-  saving subtracted), and its paced p99 no worse than the baseline's plus the same; else it ships
-  **off** with its numbers, as a hypothesis does, and the part's class claim says so. The budgets
-  (GPU ms, **proposed**):
+  part, its own:** on the M4, the vale's sustained (600 s) walk with the part's switch on and off,
+  in one build otherwise, back to back; the part's switch defaults **on** only if its change, on
+  against off, is within its own budget in the GPU p50 and in the paced p99, and, where its table
+  names a CPU budget, in the CPU frame's p50. A budget doesn't transfer between parts. D's is net:
+  its solids' cost and D3's saving measured together. A part over its budget ships **off** with
+  its numbers, as a hypothesis does, and its class claim says so. The budgets (ms, **proposed**):
 
   | Part | Budget | Why |
   |---|---|---|
@@ -156,7 +160,8 @@ three §0.5). New kinds:
   | F, bark and floor | 1.0 | relief evaluated per pixel near |
   | G, the creature | 1.0 GPU (fur) and 0.3 CPU (the body) | in its two shots |
 
-  At Part I the claim (D43) reads the vale's p50 against the baseline: no slower.
+  At Part I the claim (D43) reads the vale's p50 against A4's baseline: within the budgets' 5.0 ms
+  (B to G's GPU), and whether H9's saving brought it under the baseline.
 - **G-motion-sim** (§G): the simulated gaits' tests: a walk, a trot and a bound on level ground,
   15° and 30° slopes, a 0.3 m step, uneven ground, and a shove recovered. Feasibility is the
   simulated body's, not the kinematic walker's (whose measure counts every frame without a
