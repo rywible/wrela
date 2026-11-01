@@ -117,12 +117,9 @@ pub struct Body: Copy {
     /// nearer level on a grade, its centre of mass over its feet).
     pub follow: f32 = 1.0,
     /// How far a smooth body sways its trunk across toward its planted feet (a share of the way
-    /// to their centroid, each foot weighted by where it is in its stance: none as it lands or
-    /// lifts), and its walk's cycle that weighs them (its feet's phase offsets and its duty, as
-    /// `Walk` has them): 0, no sway.
+    /// to their centroid, each foot weighted by where it is in its walk's stance: none as it lands
+    /// or lifts): 0, no sway.
     pub sway: f32 = 0.0,
-    pub offsets: [f32; 4] = [0.0; 4],
-    pub duty: f32 = 0.65,
     /// How far its head's chain nods as it walks (m: half the range its first spring's target
     /// moves along its trunk's up, `nodded`): 0, none.
     pub nod: f32 = 0.0,
@@ -208,14 +205,15 @@ fn swayed(w: Walker, b: Body) -> vec3 {
 
 /// Where a smooth body's sway would put its trunk across its heading (m): `Body::sway` of the way
 /// from its root to its planted feet's centroid, each foot weighed by sin(π · its stance's share
-/// gone) (none as it lands or lifts).
-fn lean_toward(w: Walker, b: Body) -> f32 {
+/// gone) as it walks `walk` (none as it lands or lifts), or, standing, each alike.
+fn lean_toward(w: Walker, b: Body, walk: Walk) -> f32 {
+    let moving = w.speed > MOVING
     var centre = vec2(0.0)
     var weight = 0.0
     for i in 0..4 {
-        let t = (w.phase + b.offsets[i]) % 1.0
-        if w.feet[i].planted && t < b.duty {
-            let k = sin(PI * t / b.duty)
+        let t = (w.phase + walk.offsets[i]) % 1.0
+        if w.feet[i].planted && (t < walk.duty || !moving) {
+            let k = if moving { sin(PI * t / walk.duty) } else { 1.0 }
             centre += w.feet[i].at.xz * k
             weight += k
         }
@@ -227,14 +225,14 @@ fn lean_toward(w: Walker, b: Body) -> f32 {
     dot(centre / weight - w.root.pos.xz, across) * b.sway
 }
 
-/// A smooth body's lean eased over `dt` s toward where its sway would put it (`lean_toward`):
-/// critically damped at `LEAN_RATE`, its acceleration no more than `LEAN_ACCEL` (its weight
-/// shifted, not thrown: the target jumps as a foot's weight comes and goes).
-fn ease_lean(w: mut Walker, b: Body, dt: f32) {
+/// A smooth body's lean eased over `dt` s toward where its sway would put it walking `walk`
+/// (`lean_toward`): critically damped at `LEAN_RATE`, its acceleration no more than `LEAN_ACCEL`
+/// (its weight shifted, not thrown: the target jumps as a foot's weight comes and goes).
+fn ease_lean(w: mut Walker, b: Body, walk: Walk, dt: f32) {
     if b.sway == 0.0 {
         return
     }
-    let to = lean_toward(w, b)
+    let to = lean_toward(w, b, walk)
     let k = LEAN_RATE
     let a = clamp(k * k * (to - w.lean) - 2.0 * k * w.lean_rate, -LEAN_ACCEL, LEAN_ACCEL)
     w.lean_rate += a * dt
@@ -533,7 +531,7 @@ pub fn step<T: Terrain, P: Path>(
     w.along = best
     // The cycle: faster with speed; a stride's length follows.
     let cadence = walk.cadence.x + walk.cadence.y * w.speed
-    let moving = w.speed > 0.02
+    let moving = w.speed > MOVING
     if moving {
         w.phase = (w.phase + dt * cadence) % 1.0
     }
@@ -576,33 +574,42 @@ pub fn step<T: Terrain, P: Path>(
         }
         w.feet[i] = foot
     }
-    ease_lean(mut w, b, dt)
+    ease_lean(mut w, b, walk, dt)
     settle_body(mut w, b, dt)
-    // The springs: each bone's tip follows where its rigid pose puts it (the head's first nodded
-    // as it walks), critically damped.
+    // The springs: each bone's tip follows where its rigid pose puts it (`spring_target`),
+    // critically damped.
     let m = frame_of(w, b)
-    let walking = min(w.speed / max(walk.speed, 0.01), 1.0)
     for i in 0..b.spring_bones.len() {
-        let tip = if i == 0 { nodded(w, b, walking) } else { b.spring_tips[i] }
-        w.springs[i].follow(apply(m, tip), b.stiffness[i], dt)
+        w.springs[i].follow(apply(m, spring_target(w, b, walk, i)), b.stiffness[i], dt)
     }
 }
 
-/// The head's chain's first spring's target as walker `w` walks (`walking`: a share of its walk's
-/// speed): its rest tip lowered by `Body::nod` as one forefoot carries it alone and raised as
-/// both do, twice a stride (a walking ungulate's head is highest in its forelimbs' double support
-/// and lowest in their single support: Loscher et al. 2016). Its forefeet's carrying is each
-/// planted forefoot's sin(π · its stance's share gone), against its range over the cycle.
-fn nodded(w: Walker, b: Body, walking: f32) -> vec3 {
+/// How fast a walker goes (m/s) to count as moving: its cycle advances, and its feet keep their
+/// stances (stopped, every foot is planted).
+const MOVING: f32 = 0.02
+
+/// Where spring `i`'s tip is as walker `w` walks `walk` (the body's space): its rest tip, the head
+/// chain's first nodded as it walks (`nodded`).
+pub fn spring_target(w: Walker, b: Body, walk: Walk, i: u32) -> vec3 {
+    if i == 0 { nodded(w, b, walk) } else { b.spring_tips[i] }
+}
+
+/// The head's chain's first spring's target as walker `w` walks `walk` (as far as it's up to its
+/// walk's speed): its rest tip lowered by `Body::nod` as one forefoot carries it alone and raised
+/// as both do, twice a stride (a walking ungulate's head is highest in its forelimbs' double
+/// support and lowest in their single support: Loscher et al. 2016). Its forefeet's carrying is
+/// each planted forefoot's sin(π · its stance's share gone), against its range over the cycle.
+fn nodded(w: Walker, b: Body, walk: Walk) -> vec3 {
     if b.nod == 0.0 {
         return b.spring_tips[0]
     }
+    let walking = min(w.speed / max(walk.speed, 0.01), 1.0)
     let carried = |phase: f32| {
         var sum = 0.0
         for i in 0..2 {
-            let t = (phase + b.offsets[i]) % 1.0
-            if t < b.duty {
-                sum += sin(PI * t / b.duty)
+            let t = (phase + walk.offsets[i]) % 1.0
+            if t < walk.duty {
+                sum += sin(PI * t / walk.duty)
             }
         }
         sum

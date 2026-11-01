@@ -3625,7 +3625,7 @@ age 1 29.67 kg against the curve's 27.91 (6 %); age 0.5 between in every handle;
 twice. Its coat's wavelength 14.22 texels (0.1264 m), 2.0 times on a body twice as large; 61 spots
 at age 0.1, the largest 0.54 % of the map, none at 1; the same map by seed and another by
 another; no seam (one chart). A heavier genome's thigh 1.4997 times the section; the muscles as the
-optimized walk sizes them 14.51 kg of 29.67 (49 %: Blocked, F5 below); the same muscles twice.
+optimized walk sizes them 15.43 kg of 29.67 (52 %: Blocked, F5 below); the same muscles twice.
 
 **F5, the gaits optimized** (`wrela tool gait -- --generations 80 --seconds 60 --write`, 22 min
 40 s on 12 threads; CMA-ES from seed 5, 8 a generation; each candidate 60 s after setting off, a
@@ -3691,26 +3691,33 @@ walker's state, eased, and the strides to a rolling window; each searched again:
 | 19 | 4 m/s² | 20 s | mean | 0.57 | 0; 0.04 | 64 % | — |
 | 20 | 3 m/s² | 20 s | mean | 1.05 | 0.02 | 63 % | — |
 | 21 | 4 m/s² | 60 s | mean | 0.56 | 0; 0 | 40 % | 15.9 cm (the drop's fifth stride 1.8 % outside) |
-| **22** | 4 m/s² | 60 s | worst stride | **0.50** | **0; 0** | **49 %** | **9.3 cm** |
+| **22** | 4 m/s² | 60 s | worst stride | **0.50** | **0; 0** | **49 %** (52 %: below) | **9.3 cm** |
 
 - **Blocked: every gait's feasibility.** The level walk's worst stride is 37 % infeasible (32 % of
   its frames), the 30° walk's 92 %; the trot and the bound's 76–100 %. The sway's acceleration
-  bounded didn't lower it (run 16's 29 %, these 31–37 %). Next lever: a ballistic flight phase for
-  the trot and the bound, and the walk's contact forces allowed a tangential share past the
-  friction cone's (the allocation's bound) where a hoof grips.
-- **Blocked: the muscles' share**, 49 % of the body against 30–45 %; the walks searched sized them
-  40–64 %, every group scaled alike by the genome's gallop foot force over the walk's peak (a walk
-  with a lower peak foot force scales its torques higher); its test holds 0.49. Next lever: the
-  muscles' share in the gait's objective, or the gallop's loads found by its own search, not a
-  walk's scaled.
+  bounded didn't lower it (run 16's 29 %, these 31–37 %). An infeasible frame is one whose
+  required wrench the planted feet can't carry as point forces (`engine::loads::allocate`: each
+  vertical force at least 0, the horizontal free, so no friction bound to relax): its moment about
+  a two-foot line, or past one foot, or none planted. Next lever: the lean's target set where the
+  required wrench's centre of pressure stays inside the support (a zero-moment point's, from the
+  centre of mass's acceleration, not the planted feet's centroid), then a ballistic flight phase
+  for the trot and the bound.
+- **Blocked: the muscles' share**, 52 % of the body against 30–45 % (15.43 of 29.67 kg). The
+  walks searched sized them 40–64 % (the runs' column, each foot's force then in the growth
+  curve's 27.91 kg's weights; the review found the loads are the integrated body's 29.67 kg, and
+  read in its weights the baked walk's are 52 %: `wrela tool gait -- --grow --write`), every group
+  scaled alike by the genome's gallop foot force over the walk's peak (a walk with a lower peak
+  foot force scales its torques higher); its test holds 0.52. Next lever: the muscles' share in
+  the gait's objective, or the gallop's loads found by its own search, not a walk's scaled.
 - **Blocked: a swinging sole goes 9.3 cm into the log** before its swing's top (the clearance over
-  the log's top holds, by 0.1 mm); its test holds 0.094. Next lever: the swing's lift sampled
-  against the posed sole along its arc, more finely.
+  the log's top holds, by 0.1 mm); its test holds 0.094. Next lever: the swing's lift sized once
+  as it lifts (it's sized again each tick toward a landing that moves with the body, so its arc can
+  change under it mid-swing), sampled against the posed sole along its arc, more finely.
 - **Blocked: the 0.3 m step's walk, the trot and the bound** (invalid as above).
-- **G-profile:** the grazer's walk is 10.0 µs a frame natively (3,600 frames of a step and its
-  palette on uneven ground, before the sway, the vault and the nod, which add a few dozen
-  operations a step), within 0.2 ms of C6's frame. Its grazing pose is found once a hold. The M4's
-  to re-measure.
+- **G-profile:** the grazer's walk is 13.8 µs a frame natively (3,600 frames of a step and its
+  palette on uneven ground, the vale's doe walking its baked walk, its lean, vault and nod
+  included; 13.7–13.9 over three runs; 10.0 before them), within 0.2 ms of C6's frame. Its grazing
+  pose is found once a hold. The M4's to re-measure.
 
 ## F7, the grazer touching the world (2026-10-31, toolchain 0.16.0)
 

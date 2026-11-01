@@ -142,18 +142,19 @@ pub struct Sized: Copy {
 /// Muscle's density (kg/m³: Mendez and Keys 1960's 1.06 g/cm³).
 pub const MUSCLE_DENSITY: f32 = 1060.0
 
-/// Each group's size (`GROUPS`' order) for a kit animal of proportions `q` and genome `g` at `age`
-/// bearing `loads`: its peak torque over the loads' feasible frames (`engine::loads::peaks`; a limb's the
-/// larger of its two sides'), scaled to the genome's strongest effort (its peak foot force,
-/// `MuscleGenes::effort`, over the loads' own), over the genome's stress and its moment arm (the
+/// Each group's size (`GROUPS`' order) for a kit animal of proportions `q` and genome `g` bearing
+/// `loads` (found for a body of `mass` kg: its segments'): its peak torque over the loads' feasible
+/// frames (`engine::loads::peaks`; a limb's the larger of its two sides'), scaled to the genome's
+/// strongest effort (its peak foot force, `MuscleGenes::effort`, over the loads' own, each in
+/// that body's weights), over the genome's stress and its moment arm (the
 /// limb's radius where it crosses its joint: a muscle wraps the joint at the limb's surface; the
 /// back's epaxials over the vertebrae, `BACK_ARM` of the chest's depth; the neck's half its
 /// radius).
-pub fn muscles(g: CreatureGenome, q: Quadruped, loads: Loads, age: f32 = 1.0) -> [Sized; 7] {
+pub fn muscles(g: CreatureGenome, q: Quadruped, loads: Loads, mass: f32) -> [Sized; 7] {
     let s = skeleton(q)
     let f = frame(q)
     let peak = peaks(loads)
-    let margin = g.muscle.effort / max(peak_foot(loads, genome::mass_at(g.allometry, age)), 1.0e-3)
+    let margin = g.muscle.effort / max(peak_foot(loads, mass), 1.0e-3)
     var out = [Sized { section: 0.0, arm: 0.0, length: 0.0, radius: 0.0, mass: 0.0 }; 7]
     for i in 0..7 {
         let gr = GROUPS[i]

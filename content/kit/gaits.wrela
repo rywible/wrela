@@ -378,8 +378,6 @@ pub fn body_of(q: Quadruped, gait: Gait) -> Body {
     b.smooth = gait.smooth
     if gait.smooth {
         b.sway = SWAY
-        b.offsets = gait.walk.offsets
-        b.duty = gait.walk.duty
         b.nod = NOD * q.withers
     }
     b
@@ -388,7 +386,8 @@ pub fn body_of(q: Quadruped, gait: Gait) -> Body {
 /// How far a smooth gait's head nods against its trunk (`engine::gait::Body::nod`), a share of
 /// its withers' height: a walking horse's head's vertical range (9.1 cm) and its thorax's (3.2 cm),
 /// out of phase (Loscher et al. 2016), half their sum over its withers' 1.6 m (**proposed**: a
-/// warmblood's height).
+/// warmblood's height). The walker's trunk vaults the other way (highest mid-stance, as the head
+/// is lowest), so its head's own range is that less the vault's: about 4 cm on the grown doe.
 pub const NOD: f32 = 0.038
 
 /// How far a smooth gait's trunk sways toward its planted feet (`engine::gait::Body::sway`,

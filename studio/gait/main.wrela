@@ -2,6 +2,7 @@
 //
 // ```text
 // wrela tool gait -- [--generations <n>] [--seconds <s>] [--write]
+// wrela tool gait -- --grow [--write]
 // ```
 //
 // For each pace (walk, trot, bound: `kit::gaits::PACES`) on each ground (level, 15° and 30° up, a
@@ -14,6 +15,8 @@
 // as `content/kit/walks.wrela` (`WALKS`, pace by pace, each pace's grounds in `GROUNDS`' order),
 // and the vale's grazer grown from the level walk as `content/kit/grown.wrela` (its muscles sized
 // from that walk's loads, the grown animal's and the vale's grazer's, and its coat's map: `grow`).
+// `--grow` searches nothing: it grows the grazer from the level walk `kit::walks` has, and
+// `--write` writes `content/kit/grown.wrela` alone (the muscles' rule changed, the walks not).
 
 use kit::coat::{chart_of, coat}
 use kit::gaits::{
@@ -23,6 +26,7 @@ use kit::gaits::{
 use kit::muscles::{Sized, muscle_mass, muscles}
 use kit::roe::{COAT_SEED, VALE_AGE, walk_at}
 use kit::genome::{ROE, grown_segments, quadruped_at}
+use kit::walks::WALKS
 use engine::loads::Segments
 use std::io::print
 use std::tool::{ToolError, args}
@@ -78,13 +82,14 @@ fn grow(level: Gait, segs: Segments) -> String {
     let total = segs.total
     let grown_run = run_with(ROE, q, segs, level, Pace::Walk, Ground {}, SIZING, down: false)
     // The vale's grazer grown, its walk the grown animal's own; else its walk at its age.
-    let vale_run = if VALE_AGE == 1.0 { grown_run.clone() } else {
+    let (vale_run, vale_mass) = if VALE_AGE == 1.0 { (grown_run.clone(), total) } else {
         let vale_walk = walk_at(ROE, level, VALE_AGE)
         let fsegs = grown_segments(ROE, VALE_AGE)
-        run_with(ROE, fq, fsegs, vale_walk, Pace::Walk, Ground {}, SIZING, down: false)
+        let mass = fsegs.total
+        (run_with(ROE, fq, fsegs, vale_walk, Pace::Walk, Ground {}, SIZING, down: false), mass)
     }
-    let gm = muscles(ROE, q, grown_run.loads)
-    let fm = muscles(ROE, fq, vale_run.loads, age: VALE_AGE)
+    let gm = muscles(ROE, q, grown_run.loads, total)
+    let fm = muscles(ROE, fq, vale_run.loads, vale_mass)
     print(
         f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}, the vale's grazer's {muscle_mass(fm):.2} kg (its walk {line(vale_run.score).as_str()})",
     )
@@ -130,6 +135,7 @@ fn run(given: [String]) -> Result<(), ToolError> {
     var generations = 12
     var seconds = 8.0
     var write = false
+    var grow_only = false
     var paces = 3
     for i in 0..given.len() {
         let a = given[i].as_str()
@@ -141,6 +147,8 @@ fn run(given: [String]) -> Result<(), ToolError> {
             paces = u32(given[i + 1].as_str().parse_f32().unwrap_or(3.0))
         } else if a == "--write" {
             write = true
+        } else if a == "--grow" {
+            grow_only = true
         }
     }
     if write && paces < PACES.len() {
@@ -149,6 +157,14 @@ fn run(given: [String]) -> Result<(), ToolError> {
     }
     let q = quadruped_at(ROE, 1.0)
     let segs = grown_segments(ROE, 1.0)
+    if grow_only {
+        let grown = grow(WALKS[0], segs)
+        if write {
+            write_file("ws/content/kit/grown.wrela", Vec::from([Vec::from(grown.as_bytes())]))?
+            print("gait: wrote content/kit/grown.wrela")
+        }
+        return Ok(())
+    }
     var out = String::from(
         "// The grazer's gaits optimized in simulation (kit::gaits, docs/plan-world-class-3.md §F5):\n// written by `wrela tool gait -- --write`; each pace's walk on each ground (`gaits::GROUNDS`'\n// order), pace by pace (`gaits::PACES`). Don't edit: run the tool again.\n\nuse engine::gait::Walk\nuse gaits::Gait\n\npub const WALKS: [Gait; 15] = [\n",
     )

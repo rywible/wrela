@@ -4,8 +4,8 @@
 //
 // - anticipation: before a limb's swing, its foot's heel rolls up about its toe by `anticipate`
 //   over the last `anticipate_s` seconds of its stance (the step's wind-up; the toe stays planted);
-// - follow-through: the secondary chains' sway from their rigid pose (the gait's springs carry it)
-//   scaled by 1 + `overshoot`;
+// - follow-through: the secondary chains' sway from their rigid pose (the gait's springs carry it;
+//   the head's nod is the gait's, not sway) scaled by 1 + `overshoot`;
 // - exaggeration: a swinging foot's lift over the ground and the body's bob about its running
 //   height scaled by 1 + `exaggerate` (lowered again where a planted leg couldn't reach);
 // - holds: on twos (`on_twos`), the pose made on every other frame and held between, as hand
@@ -17,7 +17,7 @@
 // reach.
 
 use creature::Skeleton
-use gait::{Body, Palette, Walk, Walker, drop_to_reach, frame_of, palette}
+use gait::{Body, Palette, Walk, Walker, drop_to_reach, frame_of, palette, spring_target}
 use style::Style
 use terrain::Terrain
 use std::units::deg
@@ -141,12 +141,14 @@ pub fn stylize<T: Terrain>(
             }
         }
     }
-    // Follow-through: each spring's sway from its rigid tip scaled.
+    // Follow-through: each spring's sway from where its rigid pose puts it (the gait's nod
+    // included: `spring_target`) scaled.
     if m.overshoot != 0.0 {
         let (was, now) = (frame_of(w, b), frame_of(v, b))
         for i in 0..b.spring_bones.len() {
-            let sway = w.springs[i].pos - (was * vec4(b.spring_tips[i], 1.0)).xyz
-            v.springs[i].pos = (now * vec4(b.spring_tips[i], 1.0)).xyz + sway * (1.0 + m.overshoot)
+            let tip = spring_target(w, b, walk, i)
+            let sway = w.springs[i].pos - (was * vec4(tip, 1.0)).xyz
+            v.springs[i].pos = (now * vec4(tip, 1.0)).xyz + sway * (1.0 + m.overshoot)
         }
     }
     let p = palette(s, b, v, heel: heel)

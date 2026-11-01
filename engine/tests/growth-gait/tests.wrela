@@ -243,7 +243,7 @@ fn searched() -> Vec<f32> {
 fn the_baked_muscles_are_the_walks() {
     let q = kit::genome::quadruped_at(ROE, 1.0)
     let r = run(ROE, WALKS[LEVEL], Pace::Walk, Ground {}, kit::gaits::SIZING, down: false)
-    let m = kit::muscles::muscles(ROE, q, r.loads)
+    let m = kit::muscles::muscles(ROE, q, r.loads, kit::genome::grown_segments(ROE, 1.0).total)
     for i in 0..7 {
         assert(
             bitcast_u32(m[i].section) == bitcast_u32(kit::grown::GROWN_MUSCLES[i].section),

@@ -220,6 +220,9 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
         _ => None,
     }
     let from = s.shots.from
+    // This frame's footfalls alone (`Stage::emit` bursts them as the frame draws; one that
+    // doesn't draw drops them rather than burst them late).
+    s.stage.footfalls.clear()
     match cast {
         Some(i) => if lookbook::SHOTS[i].name == WALKS_IN {
             s.grazing = None
