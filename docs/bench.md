@@ -1794,6 +1794,94 @@ that named it named the clouds and the foliage, outside G5's scope (the rocks, t
 built things); no judge's sentence on any pair names a rock's or a crag's facets. If a later
 panel names them, G5.1 is the item.
 
+### 2026-11-01: G1, bounce light from a surface cache, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G1 (D8's "falls off naturally under the canopy" against the render's
+"no bounce"; D1's "flat"). Linux pop-os (Radeon "Lucienne"), **not the M4 Air**.
+
+**What changed.** The solids' distance volume holds each voxel's nearest solid's colour
+(`distance::Distance::albedo`, Rgba8, the volume's 192×64×192: **9.4 MB**), cooked with its
+distance; a trunk's colour is its kind's bark (`plant::bark_of`, carried on the trees' solid
+occluders into the landscape's capsules). A probe's ray that meets a solid lights its colour
+(`distance::albedo_at`) where every solid was one grey. **Deviation:** the second texture, each
+voxel's direct sun (`lit`, 18.9 MB), isn't built: the trace already lights a hit through the
+cascades as it bakes, so it would cache what's read anyway.
+
+**Tests** (`engine/tests/surface-cache`): a red wall's sunlit side bounces red (hue 1.6° against
+the wall's 1.1°: within 10°); its shaded side brings back no sun (0); the open ground's bounce is
+what it was (the same ray with an empty cache: equal to the bit), and the wall's was grey before.
+
+**Cost and memory:** the steady frame's labels as G4's within 0.05 ms (the cook runs at load and
+as the eye moves, a slab a frame; its walk's labels are the M4's to measure); the volume's share
++9.4 MB.
+
+**G-look on shots 1, 3 and 12** (blind, one judge, calibrated): equal, equal, equal ("the two
+sides looked the same"). The stills move most on D5 (46 % of pixels by over 4/255) and D3 (16 %).
+
+**The development panel** (`build/g1-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 2.75, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.25, 2.00, 1.00, 0.38 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.38, 1.00, 0.00 | 3.00, 2.50, 2.75, 2.88, 2.50 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.38, 2.00, 1.00 | 2.25, 3.00, 2.12, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.88, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.00, 2.00 | 3.00, 3.00, 3.00, 2.38, 3.00 |
+
+0 of 8. Losses **artifacts 15.12, colour 9.25, depth 8.88, value 8.25, light 7.62** (their sum
+49.12, against G3's 49.36 and G0's 51.01). Named: G7, G3 and G1, all built.
+
+**The sealed panel, for the record** (`build/g1-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.88, 1.38, 2.00, 1.12, 0.12 | 2.12, 3.00, 2.62, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.12, 1.88, 2.00, 2.00, 0.50 | 2.12, 3.00, 2.50, 2.50, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.12, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.00, 1.88, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.75, 1.50, 0.00 | 2.00, 3.00, 2.88, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.38, 1.25, 0.50 | 2.75, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.25, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.75, 0.00 | 2.50, 2.62, 2.00, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.62, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.38, 2.00, 1.00 | 3.00, 3.00, 2.00, 2.75, 3.00 |
+
+0 of 12. Losses artifacts 30.00, colour 16.00, depth 14.62, value 11.62, light 11.38 (sum 83.62).
+
+### Part G closes: Blocked
+
+Every item the development panel's ranking named is built, each with both panels (G7, G4, G3,
+G1; G5 decided by its rung), and the development panel still fails G-reference's three rules:
+
+| After | Pairs won or equal | Share of 64 | artifacts | colour | value | depth | light | Sum |
+|---|---|---|---|---|---|---|---|---|
+| G0 (Part F) | 0 of 8 | 0 % | 16.00 | 9.38 | 8.38 | 8.25 | 9.00 | 51.01 |
+| G7 | 0 of 8 | 0 % | 15.88 | 9.62 | 9.00 | 8.88 | 7.75 | 51.13 |
+| G4 | 0 of 8 | 0 % | 15.75 | 9.38 | 8.38 | 8.50 | 7.75 | 49.76 |
+| G3 | 0 of 8 | 0 % | 16.00 | 9.12 | 7.62 | 9.12 | 7.50 | 49.36 |
+| G1 | 0 of 8 | 0 % | 15.12 | 9.25 | 8.25 | 8.88 | 7.62 | 49.12 |
+
+The sealed panel, once an item: F10 85.76; G7 82.39; G4 86.12; G3 81.87; G1 83.62 (0 of 12 each).
+
+**Blocked**, the gate's number (pairs won or equal) at 0 of 8 through four built items, the losses
+down 1.9 of 51 (4 %). What the judges fault is off the menu. After G1, the development judges'
+artifact sentences name (counted over their eight files): **the bark's tiling and magnified
+texels, 44 sentences in 7 of the 8 pairs** ("an obviously tiling rectangular bark texture
+magnified to blockiness", "a repeated dash pattern"); **the fallen logs interpenetrating, floating
+or lying at implausible angles, 24 in 5** ("logs passing through each other and the ground",
+"identical cylinder logs lying at implausible criss-cross angles"); the leaves' cards, 18 in 5;
+the logs untextured, 12 in 4; the ground smeared or barren, 11 in 4; faceted trunks, 10 in 2 (a near limb is 14-sided, `plant::SIDES`: where the facets come from
+isn't traced). **The next items, in that order:**
+bark that doesn't repeat or magnify (its tile's 2 m round and 40 m along at 256 × 4096 texels,
+1 cm a texel, two to three tiles round an old oak: a detail layer under magnification and the
+tiles offset round the limb), the logs laid on the ground by their own contact (no
+interpenetration with trunks, logs or the slope), and the leaves' cards. Not built in this run.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
