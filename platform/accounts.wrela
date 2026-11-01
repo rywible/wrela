@@ -1039,53 +1039,24 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why })
                     return
                 }
-                self.get(key(ACCOUNT, []), Step::RecoverAccount, take j)
-            },
-            Step::RecoverAccount => {
-                let a = self.live_account(answer)
-                if a.is_none() {
-                    self.back(
-                        conn,
-                        Back::Refused { why: String::from("That code's account is gone.") },
-                    )
-                    return
-                }
-                // Another request used it while this one read its account.
-                if lately(self.gone, code_key(j.hash)) {
-                    let why = String::from("We don't know that code, or it's already been used.")
-                    self.back(conn, Back::Refused { why })
-                    return
-                }
-                // Used up, and every other session ends: the account's sessions' generation goes
-                // on, so none made before opens anything, however many there are.
-                self.forget(code_key(j.hash))
-                let Some(was) = take a else { return }
-                var next = was.clone()
-                next.sessions = was.sessions + 1
-                self.keep(key(ACCOUNT, []), save(next.clone()))
-                j.account = Some(take next)
+                // Everything a recovery needs is read first, and written in one call once its
+                // session is ready: one that fails part way leaves the code, and every session.
                 self.get(key(COUNTERS, []), Step::RecoverCounters, take j)
             },
             Step::RecoverCounters => {
-                let revision = self.next_revision(self.counters(answer), runs: 0)
-                let note = Note::Code { hash: j.hash.clone(), revision, owner: Vec::new() }
-                self.tell(codes_instance(j.hash).as_str(), note, [])
-                // The ended sessions' records, a page of them cleared now (the rest go as they're
-                // seen, or with the account).
+                j.message = answer.clone()
+                // The sessions it ends, a page of them cleared with it (the rest go as they're
+                // seen, or with the account: its generation ends them all).
                 self.scan(under("s/"), CLEARED, Step::RecoverSessions, take j)
             },
             Step::RecoverSessions => {
                 let Some(scan) = self.scanned(j, answer) else { return }
-                borrow es = scan.entries
-                for e in es {
-                    self.forget(e.key.clone())
+                for e in scan.entries {
+                    j.keys.push(e.key.clone())
                 }
-                self.unbind(Vec::new())
                 self.random(TOKEN_BYTES + CSRF_BYTES, Step::RecoverSecrets, take j)
             },
             Step::RecoverSecrets => {
-                let Some(a) = j.account.clone() else { return }
-                let Some(Inner::Recover { cookie, .. }) = j.inner.clone() else { return }
                 if answer.len() < TOKEN_BYTES + CSRF_BYTES {
                     self.back(
                         conn,
@@ -1093,14 +1064,46 @@ impl<G: Game> Engine<G> {
                     )
                     return
                 }
+                j.views = Vec::from([answer.clone()])
+                // The account last, as it is now.
+                self.get(key(ACCOUNT, []), Step::RecoverAccount, take j)
+            },
+            Step::RecoverAccount => {
+                let Some(was) = self.live_account(answer) else {
+                    self.back(
+                        conn,
+                        Back::Refused { why: String::from("That code's account is gone.") },
+                    )
+                    return
+                }
+                // Another request used it, or new codes replaced it, while this one read.
+                if self.deleting || lately(self.gone, code_key(j.hash)) {
+                    let why = String::from("We don't know that code, or it's already been used.")
+                    self.back(conn, Back::Refused { why })
+                    return
+                }
+                let Some(Inner::Recover { cookie, .. }) = j.inner.clone() else { return }
+                // Used up, and every other session ends: the account's sessions' generation goes
+                // on, so none made before opens anything, however many there are.
+                self.forget(code_key(j.hash))
+                var next = was.clone()
+                next.sessions = was.sessions + 1
+                self.keep(key(ACCOUNT, []), save(next.clone()))
+                let revision = self.next_revision(self.counters(j.message), runs: 0)
+                let note = Note::Code { hash: j.hash.clone(), revision, owner: Vec::new() }
+                self.tell(codes_instance(j.hash).as_str(), note, [])
+                for k in j.keys {
+                    self.forget(k.clone())
+                }
+                self.unbind(Vec::new())
                 let (cookie, _, s) = self.new_session(
                     cookie,
-                    answer,
+                    j.views[0],
                     recovery: true,
-                    generation: a.sessions,
+                    generation: next.sessions,
                 )
                 let csrf = s.csrf.clone()
-                self.back(conn, Back::Session { cookie, csrf, me: me_of(a, recovery: true) })
+                self.back(conn, Back::Session { cookie, csrf, me: me_of(next, recovery: true) })
             },
             Step::AddCredential => {
                 if value(answer).is_some() {

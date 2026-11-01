@@ -3287,3 +3287,20 @@ fn a_page_numbered_past_any_board_is_refused() {
     }
     assert(places[0].place == wire::MOST_FROM + 1)
 }
+
+@test
+fn a_recovery_that_fails_after_its_code_is_checked_leaves_the_code_and_every_session() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    for step in [server::Step::RecoverSecrets, server::Step::RecoverAccount] {
+        let conns = h.send(3, [Request::Recover { code: s.codes[0].clone() }], public: false)
+        fail_at(mut h, s.at().as_str(), step)
+        h.settle()
+        assert(refused([h.answers(3, conns)[0].reply.clone()]), "refused, to try again")
+        let Reply::Welcome { me, .. } = h.say(1, Request::Me)[0].clone() else { panic("welcome") }
+        assert(me.signed_in, "no session ended")
+        assert(live_codes(h) == CODES, "the code still its account's at its shard")
+    }
+    let rs = h.say(3, Request::Recover { code: s.codes[0].clone() })
+    assert(session_of(rs).is_some(), f"the code still signs in: {why_of(rs[0])}")
+}
