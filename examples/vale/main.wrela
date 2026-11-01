@@ -84,10 +84,21 @@ pub struct Vale {
     grazing: Option<(f32, grazer::Grazing)>,
 }
 
-/// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye along its
-/// look, `TRAIL_AT` m from it at the shot's still.
+/// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye and across its
+/// look (`TRAIL_ACROSS`, `TRAIL_TURN`), about `TRAIL_AT` m from it at the shot's still.
 pub const WALKS_IN: Text = "down the trail"
 pub const TRAIL_AT: f32 = 10.0
+
+/// How far off the shot's look it sets off (radians), and how far across its line to the eye its
+/// way turns (toward the look): three-quarters on, so its legs' stride shows (head on, the motion
+/// review's judges couldn't read its gait, §F9).
+pub const TRAIL_ACROSS: f32 = 0.35
+pub const TRAIL_TURN: f32 = 0.7
+
+/// `v` (on the plane) turned by `a` radians.
+fn turned(v: vec2, a: f32) -> vec2 {
+    vec2(v.x * cos(a) - v.y * sin(a), v.x * sin(a) + v.y * cos(a))
+}
 
 /// How far from facing the eye the grazer grazes (radians: three-quarters on, its side and its
 /// face both seen).
@@ -217,13 +228,18 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 None => true,
             }
             if fresh {
-                // From far enough up the trail that it's `TRAIL_AT` from the eye at the shot's
-                // still (`engine::shot::SETTLE` in; its speed eased up over its first half second).
-                let toward = normalize(at.xz - eye.xz)
+                // From far enough up the trail that it's about `TRAIL_AT` from the eye at the
+                // shot's still (`engine::shot::SETTLE` in; its speed eased up over its first half
+                // second), `TRAIL_ACROSS` off the shot's look, its way `TRAIL_TURN` across its line
+                // to the eye, toward the look.
+                let look = normalize(at.xz - eye.xz)
                 let lead = grazer::walk().walk.speed * (engine::shot::SETTLE - 0.5)
-                s.walking = Some(
-                    (from, grazer::set_off(eye.xz + toward * (TRAIL_AT + lead), eye.xz)),
-                )
+                let start = eye.xz + turned(look, TRAIL_ACROSS) * (TRAIL_AT + lead)
+                let to_eye = normalize(eye.xz - start)
+                let middle = normalize(eye.xz + look * (TRAIL_AT + lead) - start)
+                let (one, other) = (turned(to_eye, TRAIL_TURN), turned(to_eye, -TRAIL_TURN))
+                let way = if dot(one, middle) > dot(other, middle) { one } else { other }
+                s.walking = Some((from, grazer::set_off(start, start + way * (2.0 * TRAIL_AT))))
             }
             if let Some((f, w)) = s.walking {
                 var w = w

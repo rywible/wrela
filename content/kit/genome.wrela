@@ -108,7 +108,9 @@ pub struct CreatureGenome: Copy {
 /// thirds grown by its first autumn (60–70 % of its mass: Animal Diversity Web), so the logistic's
 /// rate is 8.5 a year to maturity (**proposed**: a year). The handles and the exponents are
 /// **proposed** (a fawn's legs and head large for its body, its neck short: Huxley's negative
-/// allometry of the limbs and the head). So are the gait's ranges; the hind legs' lag keeps a
+/// allometry of the limbs and the head). So are the gait's ranges (a swing lifts at least 7 cm:
+/// a roe's hooves clear the grass, and the motion review's judges saw a lower one as no step at
+/// all, §F9); the hind legs' lag keeps a
 /// walk among Hildebrand's lateral-sequence walks, an ungulate's (a hind foot's lead on its side's
 /// fore from a tenth of a cycle to two fifths: short of the half that's a trot's, Hildebrand 1965).
 pub const ROE: CreatureGenome = CreatureGenome {
@@ -179,7 +181,7 @@ pub const ROE: CreatureGenome = CreatureGenome {
     muscle: MuscleGenes { stress: 3.0e5, effort: 3.0 },
     gait: GaitGenes {
         duty: vec2(0.5, 0.85),
-        lift: vec2(0.04, 0.16),
+        lift: vec2(0.07, 0.16),
         cadence: vec2(0.6, 2.6),
         lag: vec2(-0.15, 0.15),
         crouch: vec2(0.0, 0.2),
