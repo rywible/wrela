@@ -1282,6 +1282,61 @@ fn a_deletion_a_dropped_instance_left_is_finished_by_the_next() {
 }
 
 @test
+fn a_run_an_instance_dropped_before_ranking_it_is_ranked_by_the_next() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let (_, a) = uploader(mut e, mut h, 1, 5)
+    // Played and kept (its run written), then the instance is dropped before any ranking commits.
+    let first = toy(0, claimed: 30, moves: 30, m: 2)
+    let up = |t: Vec<u8>, replay: Vec<u8>| -> Request {
+        Request::Upload { token: t.clone(), game: String::from("toy"), replay: replay.clone() }
+    }
+    h.call(mut e, [(900, h.asked(1, up(a.clone(), first.clone()), public: false))])
+    until(mut e, mut h, "u/", 20)
+    assert(h.keys("b/") == 0 && h.keys("q/") == 1, "played, not ranked, still queued")
+    h.waiting.clear()
+    h.closing.clear()
+    var next = engine(Toy {}, RP, ORIGIN, VERSIONS)
+    h.call(mut next, [])
+    h.settle(mut next)
+    // Any% and 100% (every move even) of course 0, once each.
+    assert(h.keys("q/") == 0 && h.keys("b/") == 2 && h.keys("u/") == 1, f"{h.keys("b/")} ranked")
+    let Reply::Verified { place, .. } = upload(mut next, mut h, 1, a, first) else {
+        panic("posted again, it hears it's on the board")
+    }
+    assert(place == 1)
+    // The account's other course, dropped part way through its ranking: its any% best written,
+    // the whole game's sum not yet. The next ranks it again to the same, with nothing twice, and
+    // the sum written (any% and 100% of both courses, and the whole game's of each).
+    let second = toy(1, claimed: 20, moves: 20, m: 2)
+    h.call(mut next, [(901, h.asked(1, up(a.clone(), second.clone()), public: false))])
+    var k = 0
+    while h.keys("b/") == 2 && k < 40 {
+        h.call(mut next, [])
+        k += 1
+    }
+    assert(h.keys("b/") == 3, f"{h.keys("b/")} part ranked")
+    h.waiting.clear()
+    h.closing.clear()
+    var third = engine(Toy {}, RP, ORIGIN, VERSIONS)
+    h.call(mut third, [])
+    h.settle(mut third)
+    assert(h.keys("q/") == 0 && h.keys("b/") == 6 && h.keys("u/") == 2, f"{h.keys("b/")} ranked")
+    let (r, _) = h.read(
+        mut third,
+        2,
+        Request::Board { game: String::from("toy"), course: WHOLE, category: ANY, from: 0 },
+    )
+    let Reply::Board { places, .. } = r else { panic("the whole game's board") }
+    assert(places.len() == 1 && places[0].ticks == 50, "its sum, once")
+    let Reply::Verified { place, .. } = upload(mut third, mut h, 1, a, second) else {
+        panic("on the board")
+    }
+    assert(place == 1)
+}
+
+@test
 fn a_run_verified_while_its_account_is_deleted_leaves_nothing() {
     let both = started()
     var e = take both.0

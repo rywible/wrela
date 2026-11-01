@@ -33,7 +33,10 @@
 // An upload is bounded (its bytes, its ticks, an account's runs an hour, the queue's length), and
 // the queue plays one run at a time, `PLAY_TICKS` ticks a call, so a run an attacker chose holds up
 // the server's other requests a bounded time each call. The queue is in the store, so it goes on
-// after the instance is dropped; the upload's request is answered when its run is.
+// after the instance is dropped; the upload's request is answered when its run is. A run played and
+// kept stays first in the queue while it is ranked (`Queued::ranking`), and its upload is marked
+// verified only in the call of its last ranking writes, so an instance dropped part way leaves it
+// for the next to rank again.
 //
 // **Agreement** is recorded, never assumed: an account is made only with the current Terms and
 // Privacy Policy agreed to and its player 13 or older, and a run is posted only once the account
@@ -225,7 +228,10 @@ pub struct Run: Clone + Serialize {
     pub replay: Vec<u8>,
 }
 
-/// A run waiting to be verified (`q/<uploaded>/<run>`), and who to tell.
+/// A run waiting to be verified (`q/<uploaded>/<run>`), and who to tell. Once played and kept
+/// (`ranking`: its run written, whether it counts for 100% in `full`), it stays in the queue until
+/// every write that ranks it has committed, so an instance dropped while ranking it leaves it for
+/// the next to rank again; only then is its upload marked verified.
 pub struct Queued: Clone + Serialize {
     pub id: u64,
     pub account: u64,
@@ -236,6 +242,8 @@ pub struct Queued: Clone + Serialize {
     pub ticks: u32,
     pub uploaded: u64,
     pub replay: Vec<u8>,
+    pub ranking: bool = false,
+    pub full: bool = false,
 }
 
 /// An account's best on a board (`a/<id>/b<board key>`): the run, its time, the board's key that
@@ -852,13 +860,20 @@ impl<G: Game> Engine<G> {
         match answer {
             Some(bytes) => self.advance(take job, bytes),
             None => {
-                // A run's ranking can't finish: its upload hears so. A deletion's mark stays, and
+                // A queued run's account or ranking can't be read: it stays first in the queue, read
+                // again in a later call, and its upload waits for it. Its place alone, once it's
+                // ranked, is said can't be: posted again, it hears it. A deletion's mark stays, and
                 // the next call takes it up again.
                 if let Some(q) = job.queued {
-                    let why = String::from(
-                        "We couldn't finish checking that run. Try again later.",
-                    )
-                    self.tell(q.id, Reply::Refused { why })
+                    if job.step == Step::FinishPlace {
+                        let why = String::from(
+                            "We couldn't finish checking that run. Try again later.",
+                        )
+                        self.tell(q.id, Reply::Refused { why })
+                    } else {
+                        self.queue_waiting = true
+                        self.queue_written = self.call
+                    }
                 }
                 if is_deletion(job.step) {
                     self.deletions_waiting = true
@@ -2762,6 +2777,11 @@ impl<G: Game> Engine<G> {
                     )
                     return
                 }
+                if q.ranking {
+                    // Played before, and its ranking left unfinished: ranked again.
+                    self.rank(j.keys[0].clone(), q.clone())
+                    return
+                }
                 let run = self.game.start(q.replay)
                 self.verifying = Some(Verifying { key: j.keys[0].clone(), queued: q.clone(), run })
             },
@@ -3040,16 +3060,12 @@ impl<G: Game> Engine<G> {
                         self.nudge_next()
                         self.verifying = take taken
                     },
-                    Some(result) => {
-                        self.delete(v.key.clone())
-                        self.queue_waiting = true
-                        self.queue_written = self.call
-                        self.played(v.queued.clone(), result)
-                    },
+                    Some(result) => self.played(v.key.clone(), v.queued.clone(), result),
                 }
             },
             None => {
-                if self.queue_waiting && self.queue_scan.is_none() {
+                // The run being ranked is still the queue's first: it's taken again only after.
+                if self.queue_waiting && self.queue_scan.is_none() && !self.ranking() {
                     if self.call <= self.queue_written {
                         // The queue was written this call: read it in the next, which a byte
                         // asked for brings at once.
@@ -3167,61 +3183,83 @@ impl<G: Game> Engine<G> {
         self.queue_scan = Some(0)
     }
 
-    /// A run played to its end: refused, or kept and ranked.
-    fn played(mut self, q: Queued, result: Result<Outcome, Text>) {
+    /// The run queued at `key` played to its end: refused, out of the queue at once; or kept, still
+    /// queued while it is ranked (`rank`).
+    fn played(mut self, key: Vec<u8>, q: Queued, result: Result<Outcome, Text>) {
         self.touched.push((q.account, self.call))
-        match result {
-            Err(why) => {
-                self.checked(q, Checked::Rejected { why: String::from(why) })
-                self.tell(q.id, Reply::Rejected { why: String::from(why) })
-            },
+        let refused = match result {
+            Err(why) => Some(String::from(why)),
             Ok(o) => {
                 if o.ticks != q.ticks {
-                    let why = String::from("That run's time doesn't match its moves.")
-                    self.checked(q, Checked::Rejected { why: why.clone() })
-                    self.tell(q.id, Reply::Rejected { why })
-                    return
-                }
-                let r = Run {
-                    id: q.id,
-                    account: q.account,
-                    game: q.game.clone(),
-                    board: q.board,
-                    course: q.course,
-                    ticks: o.ticks,
-                    full: o.full,
-                    uploaded: q.uploaded,
-                    replay: q.replay.clone(),
-                }
-                self.put(run_key(r.id), r.clone())
-                var id8: Vec<u8> = Vec::new()
-                append_u64(mut id8, r.id)
-                // Its replay by its hash, a public read now.
-                self.checked(
-                    q,
-                    Checked::Verified { board: r.board, course: r.course, ticks: r.ticks },
-                )
-                self.put(
-                    indexed(r.account, OF_RUN, id8),
-                    RunIndex {
-                        game: r.game.clone(),
-                        board: r.board,
-                        course: r.course,
-                        ticks: r.ticks,
-                        full: r.full,
-                        uploaded: r.uploaded,
-                    },
-                )
-                var job = blank_job(0, Request::Watch { run: r.id })
-                job.queued = Some(q.clone())
-                job.tries = o.ticks
-                job.categories.push(ANY)
-                if o.full {
-                    job.categories.push(FULL)
-                }
-                self.next_best(take job)
+                    Some(String::from("That run's time doesn't match its moves."))
+                } else { None }
             },
         }
+        if let Some(why) = refused {
+            self.delete(key.clone())
+            self.queue_waiting = true
+            self.queue_written = self.call
+            self.checked(q, Checked::Rejected { why: why.clone() })
+            self.tell(q.id, Reply::Rejected { why: why.clone() })
+            return
+        }
+        let Ok(o) = result else { return }
+        let r = Run {
+            id: q.id,
+            account: q.account,
+            game: q.game.clone(),
+            board: q.board,
+            course: q.course,
+            ticks: o.ticks,
+            full: o.full,
+            uploaded: q.uploaded,
+            replay: q.replay.clone(),
+        }
+        self.put(run_key(r.id), r.clone())
+        var id8: Vec<u8> = Vec::new()
+        append_u64(mut id8, r.id)
+        self.put(
+            indexed(r.account, OF_RUN, id8),
+            RunIndex {
+                game: r.game.clone(),
+                board: r.board,
+                course: r.course,
+                ticks: r.ticks,
+                full: r.full,
+                uploaded: r.uploaded,
+            },
+        )
+        // Ranking, as the queue says, so a dropped instance's successor ranks it.
+        var ranking = q.clone()
+        ranking.ranking = true
+        ranking.full = o.full
+        self.put(key.clone(), ranking.clone())
+        self.rank(key.clone(), take ranking)
+    }
+
+    /// Ranks the played run queued at `key` (`q`, `ranking`): its bests and places, each category
+    /// in turn, then its upload marked verified and its queue entry gone, in the call of its last
+    /// ranking writes. Ranking it again after a part committed comes to the same.
+    fn rank(mut self, key: take Vec<u8>, q: Queued) {
+        var job = blank_job(0, Request::Watch { run: q.id })
+        job.queued = Some(q.clone())
+        job.keys.push(take key)
+        job.tries = q.ticks
+        job.categories.push(ANY)
+        if q.full {
+            job.categories.push(FULL)
+        }
+        self.next_best(take job)
+    }
+
+    /// Whether a played run is being ranked: the queue's first, until it's done.
+    fn ranking(self) -> bool {
+        for j in self.jobs {
+            if j.queued.is_some() && (j.step == Step::FinishBest || j.step == Step::FinishBests) {
+                return true
+            }
+        }
+        false
     }
 
     /// The next category of the finished run: read the account's best there.
@@ -3229,7 +3267,13 @@ impl<G: Game> Engine<G> {
         var j = take job
         let Some(q) = j.queued.clone() else { return }
         if j.categories.is_empty() {
-            // Ranked: its place on the any% board.
+            // Ranked, as this call's writes commit: its upload verified, and its replay by its
+            // hash a public read, as it leaves the queue. Then its place on the any% board.
+            self.checked(q, Checked::Verified { board: q.board, course: q.course, ticks: j.tries })
+            self.delete(j.keys[0].clone())
+            self.queue_waiting = true
+            self.queue_written = self.call
+            self.touched.push((q.account, self.call))
             let from = board_prefix(q.game, q.board, q.course, ANY)
             let to = ranked_key(q.game, q.board, q.course, ANY, j.tries, q.account)
             self.scan_range(take from, take to, MOST_PLACE, Step::FinishPlace, take j)
@@ -3250,21 +3294,34 @@ impl<G: Game> Engine<G> {
             Some(v) => best_of(v),
             None => None,
         }
+        let mine = match old {
+            Some(b) => b.run == q.id,
+            None => false,
+        }
         if let Some(b) = old {
-            if b.ticks <= j.tries {
+            if b.ticks <= j.tries && !mine {
                 // Not better than the account's best.
                 self.next_best(take j)
                 return
             }
-            self.delete(b.ranked.clone())
+            if !mine {
+                self.delete(b.ranked.clone())
+            }
         }
-        let ranked = ranked_key(q.game, q.board, q.course, j.category, j.tries, q.account)
-        let replay = hashed(q.replay)
-        self.put(ranked.clone(), Ranked { name: q.name.clone(), run: q.id, replay: replay.clone() })
-        self.put(
-            best_key(q.account, q.game, q.board, q.course, j.category),
-            Best { run: q.id, ticks: j.tries, ranked, replay },
-        )
+        if !mine {
+            // (This run's best already, written by a ranking a dropped instance left: kept, and
+            // the whole game's sum worked out again.)
+            let ranked = ranked_key(q.game, q.board, q.course, j.category, j.tries, q.account)
+            let replay = hashed(q.replay)
+            self.put(
+                ranked.clone(),
+                Ranked { name: q.name.clone(), run: q.id, replay: replay.clone() },
+            )
+            self.put(
+                best_key(q.account, q.game, q.board, q.course, j.category),
+                Best { run: q.id, ticks: j.tries, ranked, replay },
+            )
+        }
         // A new best changes the whole game's sum: read every best of the account's.
         self.scan(
             bests_prefix(q.account, q.game, q.board),
@@ -3304,10 +3361,12 @@ impl<G: Game> Engine<G> {
         courses.push(q.course)
         sum += j.tries
         if courses.len() == self.game.courses() {
-            if let Some(b) = whole_old {
-                self.delete(b.ranked.clone())
-            }
             let ranked = whole_key(q.game, q.board, j.category, sum, q.account)
+            if let Some(b) = whole_old {
+                if b.ranked != ranked {
+                    self.delete(b.ranked.clone())
+                }
+            }
             self.put(ranked.clone(), Ranked { name: q.name.clone(), run: 0, replay: Vec::new() })
             self.put(
                 best_key(q.account, q.game, q.board, WHOLE, j.category),
