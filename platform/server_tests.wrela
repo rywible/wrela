@@ -2115,6 +2115,32 @@ fn a_deletion_a_dropped_instance_left_is_finished_by_the_next() {
     assert(nothing_left(h, s), "finished by the next, from its own message")
 }
 
+@test
+fn a_deletion_dropped_after_its_last_clear_keeps_its_mark_and_a_held_sign_up_is_refused() {
+    var h = host()
+    let begun = h.say(1, begin(REGISTER))
+    let (c, handle) = (challenge_of(begun), handle_of(begun))
+    let token = h.cookie(1, server::CEREMONY)
+    let Some(made) = session_of(h.say(1, register(handle, c, 5))) else { panic("made") }
+    var s = made.clone()
+    s.handle = handle.clone()
+    let _ = h.send(1, [Request::Delete { csrf: s.csrf.clone() }], public: false)
+    // Its last records cleared, and the instance dropped before it hears the clear is done.
+    var k = 0
+    while k < 400 && record(h, s, account::ACCOUNT).is_some() {
+        let _ = h.step()
+        k += 1
+    }
+    assert(k < 400, "cleared")
+    h.drop_instance(s.at().as_str())
+    h.settle()
+    assert(nothing_left(h, s), "its mark kept")
+    // The sign-up's challenge, its cookie kept back, within its life: refused.
+    h.keep(1, server::CEREMONY, token)
+    assert(refused(h.say(1, register(handle, c, 6))), "its handle isn't made again")
+    assert(h.keys(s.at().as_str(), "a") == 0)
+}
+
 // ---- agreement, posting and the public reads -----------------------------------------------------
 
 @test

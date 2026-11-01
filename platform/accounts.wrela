@@ -16,8 +16,8 @@
 //   upserts of its own revision.
 // - **Its deletion** fences new records (`Account::deleting`), ends every session and passkey at
 //   once, sends a removal to each board, whole board, code shard, replay shard, its name's shard and
-//   its search shard, and clears the store only once each removal is said done; a mark (`z`) stays,
-//   so nothing of it comes back. A message to itself (`Note::Finish`) finishes a deletion an
+//   its search shard, and clears the store only once each removal is said done; a mark (`z`), kept
+//   before the clear begins and past what it clears, stays, so nothing of it comes back. A message to itself (`Note::Finish`) finishes a deletion an
 //   instance dropped part way.
 
 use account::{
@@ -1285,8 +1285,8 @@ impl<G: Game> Engine<G> {
             Step::ClearScan => {
                 let Some(es) = entries(answer) else { return }
                 if es.is_empty() {
-                    // Cleared: only the mark is left, so nothing of it comes back.
-                    self.put_bytes(under(GONE), Vec::new())
+                    // Cleared: only the mark is left (kept before clearing began, past the range
+                    // cleared), so nothing of it comes back.
                     self.deleting = false
                     self.done(j)
                     return
@@ -1821,6 +1821,9 @@ impl<G: Game> Engine<G> {
         let unlisted = Note::Listed { handle: self.handle.clone(), revision, listing: Vec::new() }
         self.pend(under("l"), search_instance(letter_of(a.name.front)).as_str(), unlisted)
         self.keep(under(SWEPT), Vec::new())
+        // The mark that it's gone, kept now, before any of its store is cleared: a clear dropped
+        // after its last page still leaves it, so a held sign-up for its handle is refused.
+        self.keep(under(GONE), Vec::new())
         self.deleting = false
         let Some(i) = self.conn_index(j.conn) else { return }
         if self.conns[i].via == server::Via::Http {
