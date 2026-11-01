@@ -144,6 +144,11 @@ pub struct Online {
     held: Vec<(Vec<u8>, Replay)>,
     pins: Vec<Vec<u8>>,
     wanted: Option<(Vec<u8>, String, u32)>,
+    /// What to say of the run the player chose while it comes, or why it didn't
+    /// (`watch_note`); and the replays whose last fetch failed, not fetched ahead again until
+    /// the player asks for one or comes back to the leaderboard.
+    watch_note: String,
+    failed: Vec<Vec<u8>>,
     watch: Option<(Replay, String, u32)>,
     /// The search last asked for (its title, noun and epithet), how many names it found, their
     /// runs as boards (each course and category's, fastest first: `found_places`), and what to
@@ -226,6 +231,8 @@ pub fn online() -> Online {
         held: Vec::new(),
         pins: Vec::new(),
         wanted: None,
+        watch_note: String::new(),
+        failed: Vec::new(),
         watch: None,
         query: Vec::new(),
         found: 0,
@@ -684,8 +691,13 @@ pub fn consent(o: mut Online, post: bool, best_runs: bool) {
 /// Whether the player is on the leaderboard, each frame. Leaving it is Not now to the screen of
 /// what posting makes public.
 pub fn browsing(o: mut Online, on: bool) {
-    if o.here && !on && o.consenting.is_some() {
-        consent(mut o, post: false, best_runs: false)
+    if o.here && !on {
+        if o.consenting.is_some() {
+            consent(mut o, post: false, best_runs: false)
+        }
+        // What was chosen there goes with it; a replay that failed is tried again next time.
+        cancel_watch(mut o)
+        o.failed.clear()
     }
     o.here = on
 }
@@ -839,18 +851,24 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             // Not known: asked again when the run is next due.
             _ => {},
         },
-        Asked::Watch { name, place } => match answer {
-            Answer::Run { replay, .. } => {
+        Asked::Watch { name, place } => {
+            // Still wanted: the player hasn't left or chosen another meanwhile.
+            if o.wanted != Some((Vec::new(), name.clone(), place)) {
+                return
+            }
+            o.wanted = None
+            o.watch_note.clear()
+            if let Answer::Run { replay, .. } = answer {
                 if let Ok(r) = boards::read(replay) {
                     o.watch = Some((take r, name.clone(), place))
+                    return
                 }
-            },
-            _ => {},
-        },
-        Asked::Replay { hash } => {
-            if let Answer::Run { replay, .. } = answer {
-                came(mut o, hash.clone(), replay)
             }
+            o.watch_note = String::from("Can't load that run. Check your connection and try again.")
+        },
+        Asked::Replay { hash } => match answer {
+            Answer::Run { replay, .. } => came(mut o, hash.clone(), replay),
+            _ => not_come(mut o, hash.clone()),
         },
         Asked::Names { query, course } => {
             if query != o.query {
@@ -1181,7 +1199,7 @@ pub fn fetch_rows(o: mut Online, places: [Place]) {
 /// Asks for the replay whose hash is `hash`, behind the player's asks, unless it's held or asked:
 /// for what the player asked brings (a board's rows, the places above the account's).
 fn fetch(o: mut Online, hash: Vec<u8>) {
-    if hash.len() != 32 || is_held(o, hash) {
+    if hash.len() != 32 || is_held(o, hash) || has_hash(o.failed, hash) {
         return
     }
     let Some(run) = run_of(o, hash) else { return }
@@ -1217,6 +1235,8 @@ pub fn fetch_now(o: mut Online, hash: Vec<u8>) {
         touch(mut o, hash)
         return
     }
+    // Asked for again, it's tried again.
+    o.failed.retain(|h| h != hash)
     fetch(mut o, hash)
     let asked = Asked::Replay { hash: hash.clone() }
     for i in 0..o.fetches.len() {
@@ -1232,22 +1252,63 @@ pub fn fetch_now(o: mut Online, hash: Vec<u8>) {
 /// and a run of this game; watched if it's the one the player chose.
 fn came(o: mut Online, hash: Vec<u8>, bytes: [u8]) {
     if Vec::from(sha256(bytes)) != hash {
+        not_come(mut o, hash)
         return
     }
-    let Ok(r) = boards::read(bytes) else { return }
+    let Ok(r) = boards::read(bytes) else {
+        not_come(mut o, hash)
+        return
+    }
     hold(mut o, hash, r)
     let wanted = o.wanted.clone()
     if let Some((h, name, place)) = wanted {
         if h == hash {
             o.wanted = None
+            o.watch_note.clear()
             o.watch = Some((take r, name.clone(), place))
         }
     }
 }
 
-/// Watches the run at `place`: at once if its replay is held, else when it comes (a whole game's
-/// place is several runs, and isn't watched).
+/// The replay whose hash is `hash` didn't come (the console couldn't ask, the server couldn't
+/// answer, or its bytes weren't the run's): it isn't fetched ahead again for now, and if the
+/// player chose it, they hear so.
+fn not_come(o: mut Online, hash: Vec<u8>) {
+    if !has_hash(o.failed, hash) {
+        o.failed.push(hash.clone())
+    }
+    let wanted = o.wanted.clone()
+    if let Some((h, _, _)) = wanted {
+        if h == hash {
+            o.wanted = None
+            o.watch_note = String::from("Can't load that run. Check your connection and try again.")
+        }
+    }
+}
+
+/// Whether the replay whose hash is `hash` was asked for and didn't come.
+pub fn not_came(o: Online, hash: Vec<u8>) -> bool {
+    has_hash(o.failed, hash)
+}
+
+/// What to say of the run the player chose to watch: that it's coming, or that it didn't; empty
+/// once it plays, or when there's nothing to say.
+pub fn watch_note(o: Online) -> String {
+    o.watch_note.clone()
+}
+
+/// The run the player chose to watch, given up: they left the leaderboard, or moved to another
+/// board. Nothing plays when it comes, and nothing is said of it.
+pub fn cancel_watch(o: mut Online) {
+    o.wanted = None
+    o.watch_note.clear()
+}
+
+/// Watches the run at `place`: at once if its replay is held, else when it comes, saying it's
+/// coming meanwhile; the run chosen before is given up (a whole game's place is several runs, and
+/// isn't watched).
 pub fn watch_place(o: mut Online, place: Place) {
+    cancel_watch(mut o)
     if !place.replay.is_empty() {
         if let Some(r) = held(o, place.replay) {
             touch(mut o, place.replay)
@@ -1255,14 +1316,24 @@ pub fn watch_place(o: mut Online, place: Place) {
             return
         }
         o.wanted = Some((place.replay.clone(), place.name.clone(), place.place))
+        o.watch_note = String::from("Loading the run…")
         fetch_now(mut o, place.replay.clone())
+        if !asking(o, Asked::Replay { hash: place.replay.clone() }) {
+            not_come(mut o, place.replay.clone())
+        }
         return
     }
-    if place.run.is_none() || o.flying.is_some() && o.asks.len() > 4 {
+    if place.run.is_none() {
         return
     }
     let watched = Asked::Watch { name: place.name.clone(), place: place.place }
-    let _ = ask(mut o, Ask::Watch { run: place.run.clone() }, take watched, By::Player)
+    o.wanted = Some((Vec::new(), place.name.clone(), place.place))
+    o.watch_note = String::from("Loading the run…")
+    if !asking(o, watched) &&
+        !ask(mut o, Ask::Watch { run: place.run.clone() }, watched.clone(), By::Player) {
+        o.wanted = None
+        o.watch_note = String::from("Open the game from wrela.dev to watch the world's runs.")
+    }
 }
 
 /// A world's run that has come to watch, whose it is and its place, once.
@@ -2184,4 +2255,60 @@ fn past_the_first_thousand_the_run_above_is_the_one_above_in_the_slice() {
         }
     }
     assert(fetched == Vec::from([62, 63, 64]), f"{fetched.len()} fetched")
+}
+
+@test
+fn a_chosen_run_says_its_coming_or_why_not_and_leaving_or_choosing_another_gives_it_up() {
+    var o = signed_in()
+    browsing(mut o, on: true)
+    let (one, two) = (save(real(1)), save(real(2)))
+    var first = place(3, "Sir Wobblesnout the Unhurried", 950)
+    first.replay = Vec::from(sha256(one))
+    var second = place(4, "Lord Snufflepaw the Plucky", 960)
+    second.replay = Vec::from(sha256(two))
+    given(mut o, Vec::from([first.clone(), second.clone()]), 2)
+    o.fetches.clear()
+    watch_place(mut o, first.clone())
+    assert(watch_note(o) == String::from("Loading the run…"), "it's coming")
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Failed { why: String::from("Busy."), retry_after: 5 })
+    assert(take_watch(mut o).is_none() && not_came(o, first.replay), "it didn't come")
+    assert(watch_note(o).as_str().starts_with("Can't load that run."), "and the player hears so")
+    // Not fetched ahead again on its own; chosen again, it's asked again.
+    fetch(mut o, first.replay.clone())
+    assert(o.fetches.is_empty(), "not fetched ahead")
+    watch_place(mut o, first.clone())
+    assert(o.asks.len() == 1 && watch_note(o) == String::from("Loading the run…"), "asked again")
+    // Another chosen meanwhile: the first plays no more when it comes, and is held.
+    let (_, asked_first) = o.asks.remove(0)
+    watch_place(mut o, second.clone())
+    let (_, asked_second) = o.asks.remove(0)
+    answered(mut o, asked_first, Answer::Run { run: first.run.clone(), replay: one.clone() })
+    assert(take_watch(mut o).is_none() && is_held(o, first.replay), "given up, held")
+    // Leaving the leaderboard gives up the second too.
+    browsing(mut o, on: false)
+    assert(watch_note(o).is_empty(), "nothing said")
+    answered(mut o, asked_second, Answer::Run { run: second.run.clone(), replay: two.clone() })
+    assert(take_watch(mut o).is_none() && is_held(o, second.replay), "left: nothing plays")
+    // A held run chosen while another is coming plays, and the other doesn't after it.
+    browsing(mut o, on: true)
+    o.held.clear()
+    came(mut o, second.replay.clone(), two.clone())
+    watch_place(mut o, first.clone())
+    let (_, asked_first) = o.asks.remove(0)
+    watch_place(mut o, second.clone())
+    assert(take_watch(mut o).is_some(), "held: at once")
+    answered(mut o, asked_first, Answer::Run { run: first.run.clone(), replay: one.clone() })
+    assert(take_watch(mut o).is_none(), "the one before given up")
+    // Bytes that aren't the run's own didn't come either.
+    browsing(mut o, on: true)
+    var third = place(5, "Count Muddlenose the Serene", 970)
+    third.replay = Vec::filled(32, u8(77))
+    o.boards.clear()
+    given(mut o, Vec::from([third.clone()]), 1)
+    o.fetches.clear()
+    watch_place(mut o, third.clone())
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Run { run: third.run.clone(), replay: one })
+    assert(watch_note(o).as_str().starts_with("Can't load"), "not the run's own")
 }

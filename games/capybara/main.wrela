@@ -878,13 +878,15 @@ fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen:
     if s.search_changed && time - s.search_at > SEARCH_AFTER {
         ask_search(mut s)
     }
-    // A world's run to race, once its replay has come.
+    // A world's run to race, once its replay has come; given up if it can't.
     let wanted = s.race_wanted.clone()
     if let Some((hash, name)) = wanted {
         if let Some(r) = online::held(s.online, hash) {
             s.race = Some((take r, name.clone()))
             s.race_wanted = None
             s.trail_of = 0
+        } else if online::not_came(s.online, hash) {
+            s.race_wanted = None
         }
     }
     // The ghost's replay, and the one a race waits for, stay held while they're used.
@@ -1428,6 +1430,10 @@ fn over_title(s: Lab, c: u32) -> String {
             }
         },
         None => {},
+    }
+    // A world's run to race whose replay is on its way: given up if it can't come.
+    if let Some((_, name)) = s.race_wanted {
+        return f"Racing {name}"
     }
     String::from("A day at the zoo")
 }
@@ -2211,6 +2217,7 @@ fn open_watch(s: mut Lab, r: take Replay) {
 
 /// The leaderboard on board `b`: a world's board opens at the account's place, if it has one.
 fn to_board(s: mut Lab, b: u32) {
+    online::cancel_watch(mut s.online)
     s.board = b
     s.row = 0
     s.near = true
@@ -2615,14 +2622,19 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
     footer(mut s.list, s.fonts, items, s.device, screen)
 }
 
-/// What the runs card says at its foot, beside Back: the reminder to save the account's recovery
-/// codes after a post, while they're still to be saved.
+/// What the runs card says at its foot, beside Back: that the run chosen is coming, or why it
+/// didn't; else the reminder to save the account's recovery codes after a post, while they're
+/// still to be saved.
 fn runs_note(s: mut Lab, screen: vec2, size: f32) {
-    let Some(line) = online::reminder(s.online) else { return }
-    s.reminder_seen = true
+    var line = online::watch_note(s.online)
+    if line.is_empty() {
+        let Some(codes) = online::reminder(s.online) else { return }
+        s.reminder_seen = true
+        line = String::from(codes)
+    }
     let (r, _) = runs_frame(screen)
     let back = back_rect(screen)
-    let lines = wrap_note(s.fonts, line, size * 0.75, back.x - r.x - size * 2.4)
+    let lines = wrap_note(s.fonts, line.as_str(), size * 0.75, back.x - r.x - size * 2.4)
     for k in 0..lines.len() {
         let _ = s.list.text(
             s.fonts,
