@@ -677,8 +677,8 @@ wrote it). Every claim was checked against the source before its decision.
 | 2 | A-F3, B-F4 | The cumulative rule let budgets transfer, could switch off a net saving, and missed G's CPU budget | Accepted | Each part's own on/off change within its own budget; D net of D3; the CPU p50 checked |
 | 3 | A-F3, B-F4 | D43 still implied H9 meant no slowdown | Accepted | "No slower" is Part I's measured whole-scene result |
 
-Round 3 found nothing new; its one disputed line was fixed after it, as the council's rules allow
-a plan's third round to close.
+Round 3 found nothing new; its one disputed line was fixed after it and not reviewed again (three
+rounds at most, as Ryan asked).
 
 ## 11. For Ryan: the questions only you can answer
 
