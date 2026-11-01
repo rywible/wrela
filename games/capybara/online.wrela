@@ -785,7 +785,7 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             o.posting = false
             match answer {
                 Answer::Verified { place, ticks, .. } => {
-                    set_status(mut o, hash.clone(), f"{ordinal(place)} in the world")
+                    set_status(mut o, hash.clone(), placed_as(place))
                     mark_uploaded(mut o, hash.clone())
                     unwait(mut o, hash)
                     // The server's time for it, which it played: the account's best where it's
@@ -947,6 +947,15 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
             }
         },
     }
+}
+
+/// What a posted run's place says: "2nd in the world"; past the places the boards count (0), that
+/// it's on them, unnumbered.
+pub fn placed_as(place: u32) -> String {
+    if place == 0 {
+        return String::from("Past the top 1,000 in the world")
+    }
+    f"{ordinal(place)} in the world"
 }
 
 /// `n` as a place: 1st, 2nd, 3rd, 4th...
@@ -1680,6 +1689,17 @@ fn a_post_carries_the_games_token_and_its_answer_says_how_it_went() {
     post(mut o, r.clone())
     assert(o.asks.is_empty() && status(o, fingerprint(r)) == String::from("Posted"))
     assert(reminder(o).is_none(), "no codes to save, no reminder")
+}
+
+@test
+fn a_run_posted_past_the_places_counted_says_so_unnumbered() {
+    var o = signed_in()
+    let r = mine(5000)
+    post(mut o, r.clone())
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: 5000, place: 0 })
+    let said = status(o, fingerprint(r))
+    assert(said == String::from("Past the top 1,000 in the world"), said.as_str())
 }
 
 @test

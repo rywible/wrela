@@ -167,6 +167,11 @@ impl<G: Game> Engine<G> {
             },
             Step::RankCount => {
                 let Some(es) = entries(answer) else { return }
+                if es.len() == MOST_PLACE {
+                    // Past the places counted: unnumbered, as a slice says it (0).
+                    self.back(conn, Back::Place { place: 0 })
+                    return
+                }
                 var ahead: u32 = 0
                 for e in es {
                     if !lately(self.gone, e.key) {

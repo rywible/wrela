@@ -2781,6 +2781,24 @@ fn the_thousand_and_first_moves_up_when_a_place_above_goes() {
 }
 
 @test
+fn a_run_past_the_places_counted_is_said_unnumbered() {
+    var h = host()
+    crowd(mut h, server::MOST_PLACE - 1)
+    let (_, ta) = named(mut h, 1, 5, seed_of(title: 47, front: 63, back: 47, epithet: 127))
+    let slow = toy(0, claimed: 1500, moves: 1500, m: 2)
+    let Reply::Verified { place, .. } = upload(mut h, 1, ta, slow) else { panic("verified") }
+    assert(place == server::MOST_PLACE, f"the last counted: {place}")
+    // One more ahead: it's past the places counted, and so is a slower run, unnumbered.
+    crowd(mut h, server::MOST_PLACE)
+    let Reply::Verified { place, .. } = upload(mut h, 1, ta, slow) else { panic("verified") }
+    assert(place == 0, f"posted again, past them: {place}")
+    let (_, tb) = named(mut h, 2, 6, seed_of(title: 46, front: 63, back: 47, epithet: 127))
+    let slower = toy(0, claimed: 1600, moves: 1600, m: 2)
+    let Reply::Verified { place, .. } = upload(mut h, 2, tb, slower) else { panic("verified") }
+    assert(place == 0, f"past them: {place}")
+}
+
+@test
 fn a_deep_page_reads_after_the_last_and_is_numbered_from_it() {
     var h = host()
     let n = server::MOST_PLACE + 8

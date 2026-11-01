@@ -61,7 +61,8 @@ pub enum Ask: Clone + Serialize {
 pub enum Answer: Clone + Serialize {
     /// Nothing asked yet.
     Nothing,
-    /// An upload's run, on the boards at `place`; or refused, and why. A run posted again is
+    /// An upload's run, on the boards at `place` (0: past the first thousand, which aren't
+    /// counted further); or refused, and why. A run posted again is
     /// answered with what came of it the first time (`Verified`, at its place now, or `Rejected`,
     /// for the same reason), so `Verified` is what says a run is on the boards, never a refusal's
     /// words. For an upload, `Rejected` is for good: that replay can never go on this board (what

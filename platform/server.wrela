@@ -286,6 +286,7 @@ pub enum Back: Clone + Serialize {
     Recorded { run: RunRef, ticks: u32, best: Note },
     Mine,
     Other,
+    /// A run's place (0: past the first `MOST_PLACE`, unnumbered).
     Place { place: u32 },
     /// A search's names, each with its place in the index's order (`by_title`'s).
     Found { found: Vec<Listed> },

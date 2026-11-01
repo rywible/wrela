@@ -246,6 +246,7 @@ pub enum Reply: Clone + Serialize {
     /// whole record, so the parts joined are the JSON.
     Export { text: String, next: Vec<u8>, last: bool },
     Done,
+    /// An upload's run, on the boards at `place` (0: past the first `MOST_PLACE`, unnumbered).
     Verified { run: RunRef, ticks: u32, place: u32 },
     Rejected { why: String },
     /// A board's page: its places, how many there are as far as the page saw (past its own when
