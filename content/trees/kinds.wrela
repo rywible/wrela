@@ -604,8 +604,12 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
     p
 }
 
-/// The roots of a grown wood's fallen tree's root plate (**proposed**).
+/// The roots of a grown wood's fallen tree's root plate, and the plate's radius and thickness as
+/// shares of its trunk's radius (**proposed**: an upturned beech's or oak's plate is a few times
+/// its trunk across, a few tens of centimetres thick).
 const ROOTS: u32 = 12
+const PLATE_WIDE: f32 = 1.9
+const PLATE_THICK: f32 = 0.7
 
 /// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
 /// radius at the foot: crooked a little, its torn roots or stump at the foot. In a grown wood
@@ -660,6 +664,19 @@ fn log(s: u32, long: f32, girth: f32, grown: bool) -> Plant {
     // over its last piece: kept to a few centimetres, a cap; tapering roots read as spikes, and
     // four straight cones as a star: E8's lookdev and its judge). Each from the log's seed.
     let foot = vec3(0.0, girth, 0.1)
+    // The plate itself (§G10): the disc of torn ground the roots grip, standing on end, a little
+    // wider than they reach from the trunk and a third of the trunk's girth thick, its lower half
+    // buried (the roots alone, twelve blunt arms round the foot, read as a star: the development
+    // panel's star-shaped root caps).
+    p.tube(
+        [
+            foot - vec3(0.0, 0.0, PLATE_THICK * girth),
+            foot - vec3(0.0, 0.0, 0.6 * PLATE_THICK * girth),
+            foot - vec3(0.0, 0.0, 0.1 * PLATE_THICK * girth),
+            foot,
+        ],
+        [girth * 0.6, girth * PLATE_WIDE, girth * PLATE_WIDE, girth * 0.8],
+    )
     for i in 0..ROOTS {
         let a = TAU * (f32(i) + 0.7 * rand(s, 10 + i)) / f32(ROOTS)
         let out = vec3(cos(a), sin(a), 0.0)
