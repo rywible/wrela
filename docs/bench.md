@@ -2038,6 +2038,73 @@ trunk meeting the ground "in a hard line, no root flare", and the leaves as cut-
 0 of 12. Losses artifacts 29.00, colour 17.75, depth 13.38, value 13.25, light 8.75 (sum 82.13,
 against G1's 83.62).
 
+
+### 2026-11-01: G10, the wood's form (named from the panel's sentences), and the levers on G8 and G9
+
+From G8 and G9's panel (above): the logs' and roots' ends (7 notes), trunks meeting the ground
+"in a hard line, no root flare" (10 in 4 pairs), faceted trunks (10 in 3) and the magnified
+bark's stairs (31). Built (Linux pop-os, Radeon "Lucienne", not the M4 Air):
+
+- **A log's broken end is its end grain** (`plant::limb_end`, `plant::end_grain`): pale wood
+  ringed out from its heart, darker as it rots, its point facing out along the limb, where the
+  bark's round pattern was drawn in to a star (`a_logs_end_is_ringed_wood_not_its_bark_drawn_in`).
+- **The root plate is a disc** of torn ground behind the roots, 1.9 trunk radii across and 0.7
+  thick (`kinds::log`'s `PLATE_WIDE`, `PLATE_THICK`, **proposed**): twelve blunt roots alone read
+  as a star.
+- **A limb 20 sides round** (`plant::SIDES`, 14 before: a near old trunk's facets were a hand
+  wide).
+- **A trunk's foot flared into five buttresses** (`plant::root_flare`): **taken out** after the
+  panel (below).
+- G9's lever: magnified, the bark tile read through a cubic B-spline before its edges are
+  sharpened (`plant::smooth_read`, Sigg and Hadwiger 2005: the bilinear read's texel grid showed
+  as stairs down the sharpened edges).
+- G8's lever (G-look's final round on G8: a log turned across a crest or over another hung in
+  the air): a way is taken only if half the log's length lies within half its radius of the
+  ground (`supported`; `a_log_across_a_crest_is_laid_where_the_ground_holds_it`: straight over
+  a ridge it doesn't; laid, it does).
+
+**The development panel** (`build/g10-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.12, 0.88 | 2.00, 3.00, 2.88, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 0.75, 1.00, 0.00, 0.00 | 3.00, 2.62, 2.75, 2.88, 2.75 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.25, 3.00, 3.00, 2.12, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.50, 2.00, 1.00 | 2.12, 3.00, 2.00, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.75, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 1.00, 1.50 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 15.38, colour 9.75, depth 9.75, value 8.12, light 7.62: **sum 50.62,
+up from G8 and G9's 47.99.** D3 fell (its depth 1.25 → 0.00, colour 1.50 → 0.75): its camera
+stands at its oak's foot, which the flare brought into the frame ("a wall of bark", "the camera
+pressed against the trunk"); D8's judges read the buttresses' kink as "a faceted, polygonal
+trunk base" (faceted: 10 → 19 notes; root flare and base: 10 → 19). The notes on log and root
+ends fell 7 → 4, the bark tiled or repeated 20 → 14. **The flare is taken out** (e83a1a6e), and the
+magnified bark sharpened twice at most, not four times (its near furrows read as "extruded
+plastic", "a stencilled pattern"): 295ef776.
+
+**The sealed panel, for the record** (`build/g10-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.50, 1.00, 2.00, 1.00, 0.00 | 2.25, 3.00, 2.75, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.12, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.62, 2.00, 2.00, 1.00 | 2.00, 3.00, 2.12, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.50, 1.12, 1.00, 0.12, 0.12 | 2.00, 3.00, 2.25, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.75, 1.88, 0.00 | 2.12, 3.00, 2.88, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.62, 1.25, 1.00 | 2.88, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.25, 1.00, 1.00, 0.50, 0.50 | 2.12, 2.62, 2.00, 2.38, 2.88 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 0.75, 1.12, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.50, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.12, 2.00, 1.00 | 3.00, 3.00, 2.25, 2.50, 3.00 |
+
+0 of 12. Losses artifacts 28.25, colour 17.12, depth 14.12, value 12.00, light 10.62 (sum 82.11,
+against 82.13).
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
