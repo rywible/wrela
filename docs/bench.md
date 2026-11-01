@@ -2188,6 +2188,75 @@ under main. A frame's call 60.38 → 60.58 ms (this iGPU's vale is far over budg
 are §C6's). **The M4's to re-measure**, with the walk's cook and its memory (below).
 
 
+### 2026-11-01: Part G's walk and memory, and G-look's measures
+
+Linux pop-os (Radeon "Lucienne", RADV), Chrome headless through `std::tool::browser`, **not the M4
+Air**. `wrela tool bench -- --scene vale-walk --no-docs --sustained 120`, main (808e39ba) and the
+part's head:
+
+| Build | GPU span p50 / p95 / p99 ms | Interval p50 / p99 ms | Playable ms | GPU peak MiB | Sustained 120 s, minute 1 / last |
+|---|---|---|---|---|---|
+| main | 55.34 / 184.54 / 211.94 | 57.38 / 216.36 | 10,575 | 579.8 | 55.54 / 55.54 |
+| head | 57.12 / 186.60 / 213.36 | 58.95 / 216.49 | 11,601 | 606.4 | 57.01 / 57.01 |
+
+On the walk the frame is 1.8 ms (3 %) dearer, where the first view's steady passes were 0.95 ms
+cheaper ("Part G's cost"): the walk moves, so the probes re-bake and the cook run. The GPU peak
+rises 26.6 MiB, 9.4 of it G1's colour volume (`distance` 14.3 → 23.7 MB in the frame's shares);
+the rest is the second static cascade's map held at the peak's frame in this run and not in
+main's (`shadows` 33.6 or 50.3 MB from frame to frame in both). Both builds are over G-memory's
+512 MiB here (main's 579.8 too): the M4's numbers decide it (§C4: 508.2 there).
+
+**G-look's measures, (2) and (3)** (`wrela tool lookbook -- … --fast --psnr --runs 3`, the twelve,
+each the median of three; PSNR and SSIM against the build's own frozen-time reference; flicker
+×10⁻⁶; `build/fast-main` in a worktree of 808e39ba, `build/fast-head`), main → head:
+
+| Shot | PSNR dB | SSIM | flicker | pop | trail px |
+|---|---|---|---|---|---|
+| 1 the forest floor | 23.58 → 22.91 | 0.774 → 0.784 | 18.65 → 26.95 | 0.0182 → 0.0165 | 3 → 3 |
+| 2 the canopy against the sun | 25.41 → 23.93 | 0.863 → 0.850 | 4.23 → 8.74 | 0.0385 → 0.0415 | 3 → 4 |
+| 3 an old oak | 36.08 → 31.97 | 0.971 → 0.928 | 1.98 → 2.46 | 0.0559 → 0.0782 | 3 → 3 |
+| 4 the fall | 23.59 → 24.86 | 0.723 → 0.849 | 10.61 → 13.87 | 0.0056 → 0.0061 | 5 → 5 |
+| 5 the band's face | 25.59 → 27.46 | 0.802 → 0.851 | 0.84 → 0.88 | 0.0078 → 0.0092 | 3 → 2 |
+| 6 the meadow at evening | 25.46 → 24.47 | 0.800 → 0.787 | 44.40 → 54.51 | 0.0056 → 0.0061 | 2 → 2 |
+| 7 dawn in the hollow | 28.84 → 27.23 | 0.874 → 0.857 | 6.02 → 11.01 | 0.0038 → 0.0046 | 3 → 3 |
+| 8 dusk from the crest | 36.21 → 36.00 | 0.932 → 0.927 | 9.24 → 9.15 | 0.0020 → 0.0024 | 2 → 2 |
+| 9 grazing at the edge | 25.11 → 23.82 | 0.839 → 0.830 | 26.25 → 38.16 | 0.0046 → 0.0054 | 3 → 3 |
+| 10 down the trail | 26.37 → 25.77 | 0.812 → 0.807 | 34.10 → 41.55 | 0.0059 → 0.0066 | 3 → 3 |
+| 11 the fallen beech | 23.08 → 23.95 | 0.767 → 0.832 | 29.44 → 26.03 | 0.0200 → 0.0249 | 4 → 4 |
+| 12 the wood under cloud | 28.10 → 27.03 | 0.798 → 0.782 | 82.93 → 111.42 | 0.0076 → 0.0089 | 3 → 3 |
+
+Flicker rose on ten of twelve, PSNR fell on eight. Each item's share, by one run of six shots each
+with the head less that item (`build/fast-a-*`; flicker ×10⁻⁶, the head's / without the item):
+
+| Shot | the head | less G7 | less G4 | less G3 | less G1 | less G8 | less G9 |
+|---|---|---|---|---|---|---|---|
+| 1 the forest floor | 26.94 | 21.90 | 26.59 | 25.13 | 26.96 | 24.79 | 27.01 |
+| 2 the canopy against the sun | 8.74 | 7.67 | 8.30 | **5.15** | 8.74 | 8.71 | 8.54 |
+| 3 an old oak | 2.47 | 2.09 | 2.49 | 2.47 | **1.94** | 2.88 | 2.55 |
+| 7 dawn in the hollow | 11.02 | 8.63 | 11.04 | 10.94 | 11.09 | **7.46** | 11.09 |
+| 9 grazing at the edge | 38.19 | 29.92 | **31.39** | 37.63 | 38.34 | 40.97 | 38.33 |
+| 12 the wood under cloud | 111.87 | **80.72** | 111.42 | 111.87 | 110.92 | 113.61 | 111.50 |
+
+And PSNR: G7 took about a dB off every shot; G1 1.7 dB and G9 1.8 dB off the old oak's (shot 3,
+with pop 0.0679 → 0.0782 by G9). The decisions, by §0.5 (a measure that rises needs the calibrated
+judge's "after" on every named shot, and the rise named deliberate):
+
+- **G7, out of the vale** (7137ab89): its contrast raised flicker 14–39 % on every shot measured
+  (its mid-tones' slope squares the frame-to-frame noise) and its judges rated it equal on all
+  twelve. The engine keeps the knob (`Look::contrast`, 1 by default).
+- **G4, named deliberate:** PCSS's soft edges flicker more under the jitter on shot 9 (+22 %);
+  its judges preferred it on both its shots.
+- **G3, named deliberate on shot 2** (the canopy against the sun, +70 %: the leaves' light
+  through them glows and shimmers, the point of G3, its judge "after"); **Blocked** on shot 1 (+7
+  %, judged equal). Next lever: the light through a leaf in the temporal history's clamp.
+- **G1, Blocked on shot 3** (the old oak: flicker +27 %, PSNR −1.7 dB, judged equal): the shade
+  now reads the solids' coloured hits, whose normals come from the distance volume's 25 cm voxels.
+  Next lever: a solid hit's normal from its capsule, not the volume's gradient.
+- **G8 and G9**, already Blocked on their G-look; their measures with them (G8 shot 7's +48 %
+  is its logs laid into that view; G9's on shot 3).
+
+The merged head's measures (G7 out), the twelve, three runs: "Part G closes, again".
+
 ### Part G closes, again: Blocked
 
 **The development panel at the last head** (`build/glast-panel`; the twelve's stills
