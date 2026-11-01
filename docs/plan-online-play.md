@@ -555,3 +555,76 @@ Checked: `wrela check` and `wrela test` for the platform (66), the console (69),
 capybara (179), studio/release and studio/deploy, and `wrela suite fmt`. Kept: sign-ups closed on
 the live server; offline play makes no request; nothing posts without the account's consent.
 Not run: the console and the game together in a browser against `wrangler dev`.
+
+**Code review (xhigh)** (2026-10-31, over the branch at `19d18e4f`): fourteen findings, each
+checked against the code first; all held, and all are fixed. Each new test was seen to fail with
+the code it guards broken (or before the fix), then pass.
+
+1. *A page's `from` was unbounded* (`board_asked`, ranking.wrela's `BoardScan`): `from + k + 1`
+   overflowed and trapped the board's instance from a public `GET`. Fixed (`5e09b099`): `from` is at
+   most `wire::MOST_FROM` (2^30), refused at the edge and again at the board. Test:
+   `a_page_numbered_past_any_board_is_refused` (`from` = `u32::MAX` trapped before).
+2. *A removal said done twice could clear the store before the name was let go* (`RemovedScan` counted
+   pending removals from a scan that missed the name's, written that call, while it read `SWEPT` with
+   it). Fixed at the root by 10 (`60827431`). Test:
+   `a_removal_said_done_twice_never_clears_the_store_before_the_name_is_let_go`.
+3. *A cached public read made the known best slower than `Verified` said* (games/capybara/online.wrela),
+   so a slower run could post itself. Fixed (`7bc2910d`): `learn` keeps the fastest time known, and
+   no answer says "no place" once there is one; an account's best never gets slower. Test:
+   `a_cached_place_never_makes_a_verified_best_slower`.
+4. *A recovery committed the code's deletion and the sessions' generation before its session was
+   made.* Fixed (`278bb0a4`): it reads its counters, the sessions it ends, its secrets and then the
+   account, and writes everything in that last call. Test:
+   `a_recovery_that_fails_after_its_code_is_checked_leaves_the_code_and_every_session` (a failed
+   random, a failed read of the account).
+5. *Keep, Reroll and New codes didn't mark a request under way, and two New codes at once left two
+   sets valid.* Fixed: the console's `press` marks every press that sends busy, so it sends once
+   (`c9793170`); the server reads the codes there last, merged with any written lately, and lets
+   each go at the new set's revision, so only the last set opens the account (`a89d102f`). Tests:
+   `a_press_that_sends_a_request_sends_it_once_until_its_answer_comes` (console; a test can't do IO,
+   so it tests `press`), `new_codes_asked_twice_at_once_leave_one_set`.
+6. *Game tokens outlived recovery, a revoke and signing out.* Fixed (`6673014e`): a token names the
+   session that made it (`GameToken::session`), and an upload is admitted only while that session
+   stands and is of the account's generation (`AdmitSession`). A fresh sign-in in the same browser
+   ends the old session's tokens too; the console asks for a new token then (`give_game_account`).
+   Test: `a_games_token_ends_with_the_session_that_made_it`.
+7. *An archived board's upload was checked against this build's `claim`* and rejected for good
+   without reaching its verifier. Fixed (`37483bb1`): only this build's board is claimed at the edge;
+   an older board's goes to its verifier, whose `Verdict` now carries the course (wrela-verify-1's
+   `Verdict::course`; no verifier has been published, so nothing reads the old form), and the
+   unused `course` and `ticks` of `Inner::Admit` go. Test:
+   `a_run_of_an_archived_board_is_bounded_by_its_own_verifier` (the toy's version 8 has one course,
+   version 7's verifier two).
+8. *A failed tag check left a sign-up `registering`.* Fixed (`5cbb801f`): `signing_up` counts
+   `TagChecked` of a `REGISTER` among a sign-up's steps, for `failed` and `step_refused`. Test:
+   `a_sign_up_whose_tag_check_fails_lets_the_next_begin`.
+9. *`forget` left a key in `written`*, so `latest` read a kept-then-forgotten key's old value. Fixed
+   (`8e363338`): `put_bytes` and `delete` let go of what was remembered of a key, so it's written or
+   gone, never both. Test: `a_key_kept_then_forgotten_reads_as_gone`.
+10. *Scans filtered `gone` by hand and ignored `written`.* Fixed (`60827431`): a scan's job keeps its
+    `Span`, and `Engine::scanned` reads every scan's answer with what the instance wrote and deleted
+    lately, as `latest` does a `get`'s, at every scan site (sessions, revokes, codes, passkeys,
+    tokens, exports, the sweep, removals, the clear, records, ranks, pages, slices, searches);
+    `Scanned::full` and `last` say whether to page on, and where from.
+11. *`shown_game` cloned the game's answer every frame.* Fixed (`f1849d3c`): it's copied as a call
+    goes.
+12. *A clear kept every key it deleted in `gone`* for its whole job. Fixed (`a4c04c7b`): the clear
+    deletes without remembering (nothing reads a cleared account's records). Test:
+    `a_deletions_clear_remembers_none_of_what_it_deletes` (605 keys remembered before, under 64 now).
+13. *Dead `Engine::admitted` and an unread `j.seed`.* Gone (`93f3c1c5`).
+14. *studio/release's `listed` repeated site.wrela's `contains`.* Fixed (`ecd98902`): `contains` is
+    `pub(package)`, used by the addresses and by `described`.
+
+**Security review** (2026-10-31; one finding below its threshold, taken since it's cheap and it's
+the privacy promise): a deleted account's replay at `/api/public/run/<handle>/<n>` was cached
+`public, max-age=31536000, immutable`. The privacy policy did say so ("up to a year"), but a
+deletion that leaves a replay in caches for a year keeps less of the promise than it needs to, at
+no gain: a replay is fetched rarely. Fixed (`1d8b6b27`): `RUN_AGE` is a day (`public,
+max-age=86400, immutable`), and the policy says "up to a day" (its version is today's, so nothing
+is asked again); step 14's "cached for a year" is a day now.
+
+Checked: `wrela check` and `wrela test` for the platform (75), the console (70), its server (1),
+the capybara (180), studio/release (42) and studio/deploy (32), and `wrela suite fmt`. Kept:
+sign-ups closed on the live server (`close_sign_ups` unchanged); offline play makes no request;
+nothing posts without the account's consent (`AdmitConsent` unchanged). Not run: the console and
+the game together against `wrangler dev`.
