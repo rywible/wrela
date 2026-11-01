@@ -17,6 +17,7 @@ measured in docs/bench.md, and his to set.
 | `NEURAL` (`--set`) | off | the great tree's far crowns read through its net (`content/kit/great_tree_net.wrela`, B14.2) | 13.86 dB against its atlas; every kind through a net: the frame 25× (docs/bench.md, B14) |
 | `CASCADES` | off | radiance cascades over the solids' volume light the sky's term in place of the probes' and the occlusion (B14.4); `Quality::cascades`' `spacing` 8, `steps` 16 | 3.2 ms at the coarsest rung, 13.1 at the finest (asked: 2.0) |
 | `LEARNED` (`--set`) | off | temporal AA's share of each frame from a small net (`content/kit/rejector_net.wrela`, B14.3) | docs/bench.md, B14 |
+| `GROWN_WOOD` (`--set`, main.wrela) | off | the vale's grown wood (plan three's §E): the trees' kinds grown (`trees::kinds::kind_plant`'s `grown`, and every table and fork read from them), the fallen trees rotting, the grass's flora grown (`engine::grass::Grass::new`), the bark's, the ground's and the rock beds' moss, lichen and litter caused (`Bark::grown`, `land::cover::wood_floor`, `RockLook::grown`); off, the floor is drawn as before §E (D40: it adopts in §H1) | off: the floor's stills against the merge base's (docs/bench.md, "E: the floor and the clearing kept") |
 
 ## The air (`stage::fog`, `engine::fog::FogField`)
 

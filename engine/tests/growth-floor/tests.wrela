@@ -1,0 +1,76 @@
+// The floor's small causes (docs/plan-world-class-3.md §E4), each measured from the function
+// the floor's drawing calls.
+
+use engine::growth::{
+    LICHEN, MOSS, PATCH, bare_share, fungi_on, lichen_patch, lichen_tile, litter_at, moss_at,
+    moss_patches, moss_tile, rot_of,
+}
+use trees::kinds::{LOG_LONG, LOG_SHORT, kind_plant}
+use trees::species::{HABITS, Species}
+
+/// Moss covers a test log's upper, wetter half more than its lower: over its patches (its
+/// reaction-diffusion's, a cell 4 cm) along 2 m of it, its upward faces against its downward.
+@test
+fn moss_takes_a_logs_upper_wetter_half() {
+    let wet = engine::substance::history_of(0.4, 1.0, 0.3, 0.7, 1.0)
+    var upper = 0.0
+    var lower = 0.0
+    for i in 0..50 {
+        let at = vec2(f32(i) * 0.04, 0.0)
+        let patch = 0.35 + 0.3 * moss_tile(0, at * 25.0)
+        upper += moss_at(wet, vec3(0.0, 1.0, 0.0), 3.0, patch)
+        lower += moss_at(wet, vec3(0.0, -1.0, 0.0), 3.0, patch)
+    }
+    assert(upper > 2.0 * lower && upper > 0.0, f"moss {upper / 50.0} above, {lower / 50.0} below")
+}
+
+/// The litter under a closed canopy is at least three times the open's, in every season.
+@test
+fn litter_lies_thick_under_a_closed_canopy() {
+    for k in 0..8 {
+        let season = f32(k) / 8.0
+        let (closed, open) = (litter_at(1.0, season), litter_at(0.0, season))
+        assert(closed >= 3.0 * open, f"season {season}: closed {closed}, open {open}")
+    }
+}
+
+/// A beech fallen 20 years ago (20 m tall) has no bark on 60 % of it and at least one bracket; the
+/// fallen trees' kinds are grown, and carry brackets that show past their rot.
+@test
+fn a_tree_fallen_twenty_years_has_lost_its_bark_and_grows_brackets() {
+    let rot = rot_of(20.0, HABITS[Species::Beech].rots, 20.0)
+    assert(bare_share(rot) >= 0.6, f"rot {rot}: {bare_share(rot)} of its bark gone")
+    assert(fungi_on(rot, 17.0, 3).len() >= 1, f"rot {rot}: no bracket")
+    assert(fungi_on(0.1, 17.0, 3).len() == 0, "a fresh fall fruits")
+    for k in [LOG_SHORT, LOG_LONG] {
+        let p = kind_plant(k, grown: true)
+        assert(p.limbs.len() > 2 && p.clumps.len() >= 1, f"log kind {k}: {p.limbs.len()} limbs")
+        assert(p.leaves.after > 0.0 && p.bark.rots > 0.0, f"log kind {k}: its rot unread")
+    }
+}
+
+/// The moss's and the lichen's patches grown again here are the build's to the byte, and neither
+/// is empty nor full.
+@test(tool, budget: 600)
+fn the_patches_grow_the_same_and_hold_patches() {
+    let moss = moss_patches()
+    for i in 0..(2 * PATCH * PATCH / 4) {
+        assert(moss[i] == MOSS[i], f"moss word {i} differs")
+    }
+    let lichen = lichen_patch()
+    for i in 0..(PATCH * PATCH / 4) {
+        assert(lichen[i] == LICHEN[i], f"lichen word {i} differs")
+    }
+    var m = 0.0
+    var l = 0.0
+    for y in 0..PATCH {
+        for x in 0..PATCH {
+            let p = vec2(f32(x), f32(y))
+            m += if moss_tile(0, p) > 0.5 { 1.0 } else { 0.0 }
+            l += if lichen_tile(p) > 0.5 { 1.0 } else { 0.0 }
+        }
+    }
+    let n = f32(PATCH * PATCH)
+    assert(m / n > 0.05 && m / n < 0.8, f"the wet moss covers {m / n}")
+    assert(l / n > 0.1 && l / n < 0.8, f"the lichen covers {l / n}")
+}

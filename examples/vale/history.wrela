@@ -224,7 +224,7 @@ fn wild(land: Land, year: i32) -> Start {
 /// Each standing tree's fork chosen among its neighbours, as the floor's are.
 pub fn forked(h: take History) -> History {
     let all = h.trees.clone()
-    History { trees: trees::kinds::forked(take all), ..h }
+    History { trees: trees::kinds::forked(take all, grown: true), ..h }
 }
 
 /// Its bake, at the floor's grain (`land::grow::BAKE`): a file a tile and the far layer.

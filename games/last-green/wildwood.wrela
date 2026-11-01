@@ -142,7 +142,13 @@ pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
             }
             for tr in candidates {
                 if wild && standing_trunk(tr.state, tr.tall) && length(tr.at - p) < reach {
-                    out.push(vec4(tr.at, max(trees::kinds::drawn_girth(tr), 0.04), 0.0))
+                    out.push(
+                        vec4(
+                            tr.at,
+                            max(trees::kinds::drawn_girth(tr, main::GROWN_WOOD), 0.04),
+                            0.0,
+                        ),
+                    )
                 } else if tr.state == State::Log && length(tr.at - p) < reach + logs::REACH {
                     for log in logs::obstacles(
                         [tr],

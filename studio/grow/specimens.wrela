@@ -1,0 +1,183 @@
+// A specimen (docs/plan-world-class-3.md §E1.5): a species' tree grown at a site, converted,
+// measured and written (main.wrela says what the tool writes).
+
+use engine::growth::{Genome, Site, genome_hash, grow_graph, into_plant, side_view, values_of}
+use engine::plant::{Bark, Leaves}
+use std::time::now
+use std::tool::ToolError
+use std::tool::blob::Data
+use std::tool::image
+use toolkit::whole::{blob_of, chunked, write_file, write_png}
+use trees::genomes::genomes
+
+/// The species' names, in `Species`' order.
+pub const NAMES = trees::lines::SPECIES_NAMES
+
+/// The lights a specimen grows in, and each one's share of the open's light a year.
+pub const LIGHTS: [Text; 3] = ["open", "edge", "under"]
+pub const SHARES: [f32; 3] = [1.0, 0.5, 0.25]
+
+/// The specimen page's ages (years).
+pub const AGES: [f32; 4] = [10.0, 40.0, 100.0, 200.0]
+
+/// The side view's longer side (pixels: §E6's 1024).
+const SIDE: u32 = 1024
+
+/// A specimen asked for.
+pub struct Ask: Copy {
+    pub species: u32,
+    pub age: f32,
+    pub light: u32,
+    pub wind: f32,
+    pub stand: f32,
+    pub seed: u32,
+}
+
+/// What a specimen measured.
+pub struct Specimen {
+    pub ask: Ask,
+    pub nodes: u32,
+    pub limbs: u32,
+    pub chains: u32,
+    pub height: f32,
+    pub centroid: vec3,
+    pub iou: f32,
+    pub volume: f32,
+    pub grow_ms: f64,
+    pub convert_ms: f64,
+    pub json: String,
+    pub side: (u32, u32, Vec<u8>),
+}
+
+/// The index of `s` in `names`, if it's there.
+pub fn index_of(names: [Text], s: str) -> Option<u32> {
+    for i in 0..names.len() {
+        if names[i] == s {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// The light a year for a specimen of `age` in light `light` (`LIGHTS`): none for the open (the
+/// growth's own full light).
+pub fn light_of(age: f32, light: u32) -> Vec<f32> {
+    light_a_year(age, SHARES[light])
+}
+
+/// A tree's light a year over `age` years at `share` of the open's: none for the open's own.
+pub fn light_a_year(age: f32, share: f32) -> Vec<f32> {
+    if share >= 1.0 { Vec::new() } else { Vec::filled(u32(ceil(max(age, 1.0))), share) }
+}
+
+/// A specimen grown, converted and measured.
+pub fn specimen(a: Ask) -> Specimen {
+    let g: Genome = genomes()[a.species]
+    let site = Site { age: a.age, wind: a.wind, light: SHARES[a.light], stand: a.stand }
+    let light = light_of(a.age, a.light)
+    let began = now()
+    let t = grow_graph(g, site, light, vec2(0.0), [], a.seed)
+    let grown = now()
+    let (p, c) = into_plant(t, g, Leaves {}, Bark {})
+    let done = now()
+    // The crown's centroid: its clumps' middle, weighed by their volume.
+    var sum = vec3(0.0)
+    var w = 0.0
+    for k in 0..p.clumps.len() {
+        let cl = p.clumps[k]
+        let v = cl.radius * cl.radius * cl.radius
+        sum += cl.centre * v
+        w += v
+    }
+    let centroid = if w > 0.0 { sum / w } else { vec3(0.0) }
+    var values = String::new()
+    let vs = values_of(g)
+    for i in 0..vs.len() {
+        let sep = if i == 0 { "" } else { "," }
+        values = String::from(f"{values}{sep}{vs[i]}")
+    }
+    let (grow_ms, convert_ms) = ((grown - began) * 1000.0, (done - grown) * 1000.0)
+    let json = String::from(
+        f"{{\"species\":\"{NAMES[a.species]}\",\"age\":{a.age},\"light\":\"{LIGHTS[a.light]}\",\"wind\":{a.wind},\"stand\":{a.stand},\"seed\":{a.seed},\"genome\":{genome_hash(vs)},\"values\":[{values}],\"nodes\":{t.nodes.len()},\"limbs\":{c.limbs},\"chains\":{c.chains},\"clumps\":{c.clumps},\"height\":{t.height},\"centroid\":[{centroid.x},{centroid.y},{centroid.z}],\"iou\":{c.iou},\"volume\":{c.volume},\"grow_ms\":{grow_ms},\"convert_ms\":{convert_ms}}}\n",
+    )
+    Specimen {
+        ask: a,
+        nodes: t.nodes.len(),
+        limbs: c.limbs,
+        chains: c.chains,
+        height: t.height,
+        centroid,
+        iou: c.iou,
+        volume: c.volume,
+        grow_ms,
+        convert_ms,
+        json,
+        side: side_view(p, SIDE),
+    }
+}
+
+/// A specimen written to `dir` (its `side.png` and `grown.json`).
+pub fn write(s: take Specimen, dir: str) -> Result<(), ToolError> {
+    write_file(f"{dir}/grown.json", chunked(Vec::from(s.json.as_bytes())))?
+    let (w, h, px) = take s.side
+    let pixels = blob_of(chunked(take px))?
+    write_png(image::Image { width: w, height: h, rgba: Data::Blob(pixels) }, f"{dir}/side.png")
+}
+
+/// The page of specimens `done` (each its directory's name and its measures), in `dir`.
+pub fn page(done: [(String, Specimen)]) -> String {
+    var rows = String::new()
+    for (name, s) in done {
+        rows = String::from(
+            f"{rows}<figure><img src=\"{name}/side.png\" alt=\"{name}\" loading=\"lazy\"><figcaption><b>{name}</b><span>{s.nodes} nodes · {s.limbs}/{s.chains} limbs · {s.height} m · IoU {s.iou} · {f32(s.grow_ms)} ms</span></figcaption></figure>\n",
+        )
+    }
+    String::from(f"{PAGE_HEAD}{rows}</div>\n")
+}
+
+/// The page's head: its tokens (light, and dark where the viewer asks), its type and its grid.
+const PAGE_HEAD: Text = "<!doctype html>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n<title>Grown specimens</title>\n<meta name=\"claude:viewport-fit-sides\" content=\"cover\">\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono&display=swap\">\n<style>\n:root{--bg:#f6f5f1;--fg:#1d211c;--muted:#5c6459;--rule:#d9d8cf;--display:'Fraunces',Georgia,serif;--body:'IBM Plex Sans',system-ui,sans-serif;--mono:'IBM Plex Mono',ui-monospace,monospace}\n@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){--bg:#141713;--fg:#e4e6df;--muted:#9aa394;--rule:#30352e;color-scheme:dark}}\n:root[data-theme=\"dark\"]{--bg:#141713;--fg:#e4e6df;--muted:#9aa394;--rule:#30352e;color-scheme:dark}\nbody{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--body);padding-block:24px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}\nh1{font:600 2rem/1.15 var(--display);margin:0 0 8px;text-wrap:balance}\np{max-width:65ch;color:var(--muted);margin:0 0 20px}\n.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}\nfigure{margin:0;min-width:0}\nimg{width:100%;max-width:100%;display:block;border:1px solid var(--rule);background:#fff}\nfigcaption{display:flex;flex-direction:column;gap:2px;padding-top:6px}\nb{font-weight:500}\nspan{font:.75rem/1.4 var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}\n</style>\n<h1>Grown specimens</h1>\n<p>Each of the floor's seven species grown from its genome (docs/plan-world-class-3.md §E1.5) at 10, 40, 100 and 200 years, in the open, at a forest's edge (half the open's light) and under a canopy (a quarter), side on: its wood dark over its crown. Each with its graph's nodes, its plant's limbs of its chains, its height, the conversion's woody IoU and the milliseconds it took to grow.</p>\n<div class=\"grid\">\n"
+
+impl Specimen {
+    /// Its measures, its side view left out (a page's row).
+    pub fn clone_measures(self) -> Specimen {
+        Specimen {
+            ask: self.ask,
+            nodes: self.nodes,
+            limbs: self.limbs,
+            chains: self.chains,
+            height: self.height,
+            centroid: self.centroid,
+            iou: self.iou,
+            volume: self.volume,
+            grow_ms: self.grow_ms,
+            convert_ms: self.convert_ms,
+            json: String::new(),
+            side: (0, 0, Vec::new()),
+        }
+    }
+}
+
+/// Each of the trees' kinds side on (`kind_plant`), `<dir>/<k>.png`, and `<dir>/index.html`.
+pub fn kinds_page(dir: str) -> Result<(), ToolError> {
+    var rows = String::new()
+    for k in 0..trees::kinds::KINDS {
+        let p = trees::kinds::kind_plant(k, grown: true)
+        let (w, h, px) = side_view(p, 512)
+        write_png(
+            image::Image { width: w, height: h, rgba: Data::Blob(blob_of(chunked(take px))?) },
+            f"{dir}/{k}.png",
+        )?
+        let how = match trees::archetypes::archetype(k) {
+            Some(a) => String::from(f"{NAMES[a.species]}, {a.age} years, stand {a.stand}"),
+            None => String::from("authored"),
+        }
+        rows = String::from(
+            f"{rows}<figure><img src=\"{k}.png\" alt=\"kind {k}\" loading=\"lazy\"><figcaption><b>kind {k}</b><span>{how} · {p.limbs.len()} limbs · {p.clumps.len()} clumps</span></figcaption></figure>\n",
+        )
+    }
+    write_file(
+        f"{dir}/index.html",
+        chunked(Vec::from(String::from(f"{PAGE_HEAD}{rows}</div>\n").as_bytes())),
+    )
+}

@@ -1,0 +1,9 @@
+# The floor's small causes grown (docs/plan-world-class-3.md §E4): moss, lichen, litter, deadwood
+# and fungi from their causes (engine::growth), and the fallen trees as the floor draws them
+# (trees::kinds), on the CPU.
+[package]
+name = "growth_floor_tests"
+
+[dependencies]
+engine = { workspace = true }
+trees = { workspace = true }

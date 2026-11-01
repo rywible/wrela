@@ -1,0 +1,10 @@
+# What the vale draws and where each came from (engine::growth::Provenance, docs/plan-world-class-3.md
+# §E0): its wood's kinds (content/trees's), its floor's species (engine::grass's) and its ground's
+# small causes' fields, each grown or authored; the count of authored ones reaches 0 by §E8
+# (G-grown). The floor (games/last-green) plants the same kinds and species.
+[package]
+name = "growth_provenance_tests"
+
+[dependencies]
+engine = { workspace = true }
+trees = { workspace = true }

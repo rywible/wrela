@@ -47,6 +47,24 @@ over its slope), as the floor's geology reads it; on a floodplain, as wet as its
 leave it (1 beside the stream, 0.55 at the floor's edge). The stream's bed is gley and peat, its
 floodplains alluvium, its crests thin.
 
+The ground (§E5: `landscape::SOIL_ALBEDO`, `SOIL_ROUGH`, `THIN_STONES`, `wetted`; **proposed**):
+each kind's soil where it shows, its meadow over it in the open and the wood's floor under the
+canopy. The history's wetness at the ground (`fields.z`) darkens whatever covers it, soaked to
+0.65 of its albedo (`land::cover::wood_floor`: water in its pores, Lekner and Dorf 1988), and
+smooths it, soaked to 0.7 of its roughness. The clearing and the floor keep their ground until
+H1.
+
+| Kind | Albedo (linear) | Roughness | Reads as |
+|---|---|---|---|
+| Rock | the rock's own (`rock_albedo`) | 0.85 | the band's grit, the shale |
+| Thin | (0.105, 0.09, 0.07) | 0.92 | stony: its stones a third of its ground, in patches |
+| Loam | (0.085, 0.062, 0.042) | 0.9 | brown earth |
+| Colluvium | (0.07, 0.05, 0.034) | 0.88 | deeper, darker earth at the slopes' feet |
+| Alluvium | (0.065, 0.052, 0.036) | 0.85 | dark loam on the floodplains |
+| Gley | (0.06, 0.062, 0.05) | 0.65 | grey and wet |
+| Peat | (0.03, 0.024, 0.018) | 0.6 | black |
+| The mere's bed | (0.045, 0.04, 0.03) | 0.5 | silt under the water |
+
 ## The water (`water.wrela`)
 
 Laid by `land::water::lay_with` over the land: the main stream in three courses (above the fall,
@@ -188,8 +206,18 @@ hand). Part E fills it.
 | The soil | grown (`land::soil` from the land's shape and water) |
 | The water | grown (laid from the land's drainage) |
 | Where trees stand, their ages, deaths and falls | grown (`land::grow`) |
-| The trees' forms | authored (`trees::kinds`, the floor's species' kinds) |
+| The trees' forms | grown: each living kind an archetype grown at build from its species' genome (`trees::archetypes`, `engine::growth`); the 24 trees nearest the eye grown from their own records (`land::stage::near_trees`), the 6 within 40 m of the first eye before it's playable, each kept in the page's storage by its growth's every input (§E7); the far layer's crowns the forest kinds' archetypes |
+| The standing dead | grown: each snag kind (a broad-leaved snag, a burnt one, a stump, a forked one, a pine's) a tree grown from its genome, broken at its form's height and its wood under its form's thickness shed (`archetypes::dead`, `growth::die`; the forked one's fork a gale's in its youth) |
+| The floor's plants | grown: the 33 species' rows from their genomes (`engine::grass::GENOMES`: rosettes, tussocks, fronds), the fern's and bracken's fronds by the place's light, the sward by light and wetness |
+| The fallen trees | grown: a grown trunk laid along its fall, its bark lost and its bracket fungi by its rot (on the vale's tiles, 4,914 fallen trees, 20,848 brackets, 74 % of their bark gone) |
+| Moss | grown: a reaction-diffusion's patches on the ground, the logs and the trunks by wetness and light (6 % of the vale's ground in its causes) |
+| Lichen | grown: on old bark by age (4,278 trees old enough). The vale's crags are its terrain's rock, whose lichen is the terrain's detail tile (authored); the diffusion-limited growth's crusts (`growth::LICHEN`) are a rock bed's (`rock::RockLook::grown`), which only the floor draws, behind its switch (`GROWN_WOOD`) |
+| Litter | grown: its depth by the canopy over it and the season (0.50 deep on average over the vale's tiles) |
+| The fallen trees' root plates | authored: the hand's roots on a grown trunk (12 short roots, blunt-ended: **proposed**) |
 | The ground's cover | authored (rules over grown fields: `land::cover`) |
-| The rock's look | authored |
+| The rock's look | authored (the terrain's rock and its lichen: `terrain`'s detail tile) |
 | The sky and the clouds | authored (the floor's) |
 | The creature | none yet (Part F) |
+
+Every plant instance the vale draws is grown (G-grown: 0 of 26,922 authored, E8). The kinds list
+it shares with the floor still holds the floor's great tree and two far kinds no program places.

@@ -852,7 +852,13 @@ fn taped_shape<C, K: Creature<C>>(k: K) -> Option<ShapeTape> {
 /// Rock's look (`engine::rock`) for what's rough stone, its ground and the water near it (the
 /// realizer sets where it is).
 fn rock_look(ground: f32, water: f32, seed: u32) -> RockLook {
-    RockLook { to_world: translate(vec3(0.0)), ground, water, seed }
+    RockLook {
+        to_world: translate(vec3(0.0)),
+        ground,
+        water,
+        seed,
+        grown: if main::GROWN_WOOD { 1 } else { 0 },
+    }
 }
 
 /// A standing slab `half` its size each way, turned at random.
@@ -1052,6 +1058,7 @@ pub fn bank_prototype(index: u32) -> Realized {
             ground: foot,
             water: foot + 0.3 - 0.6,
             seed: bank_seed(index),
+            grown: if main::GROWN_WOOD { 1 } else { 0 },
         },
     )
 }

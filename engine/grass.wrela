@@ -20,6 +20,10 @@
 // - Within a level, a cell's blade is kept while its rank among its siblings is under the
 //   density the distance asks, and it shrinks away as it is dropped, so nothing pops.
 
+use growth::{
+    FLORA_SITE, FROND, FloraGenome, Grown, Provenance, ROSETTE, Site, TUSSOCK, flora_grown,
+    flora_values, genome_hash, grow_tussock,
+}
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use switches::Switches
@@ -297,7 +301,8 @@ pub fn place(
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = density_scale(keep, k)
     let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
-    let grass = rand(seed, 3) < cover.a * at.thin
+    let dense = if flora.grown == 0 { 1.0 } else { sward_density(flora, t.flora) }
+    let grass = rand(seed, 3) < cover.a * at.thin * dense
     // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
     // the meadow's drifts of flowers (`bloom_drift`).
     let wxz = xz + keyed
@@ -494,11 +499,567 @@ pub struct Species: Copy + GpuData {
     pub blooms: f32,
     /// How much it likes worn, trodden ground (0: it's worn away there).
     pub worn: f32 = 0.0,
+    /// Its genome's hash (`growth::genome_hash`) where a growth program makes its shape (§E3), or
+    /// 0: authored (`species_provenance`).
+    pub genome: u32 = 0,
 }
 
-/// The wood's floor's species (0 is none: the generic herb). Ferns and bracken are kinds of their
+/// Species `i`'s provenance in the grown flora (`SPECIES`): its genome's growth, or authored
+/// where it has none (the hand's flora's, `HAND_SPECIES`, are all authored).
+pub fn species_provenance(i: u32) -> Provenance {
+    let g = SPECIES[i].genome
+    if g == 0 {
+        return Provenance::Authored
+    }
+    Provenance::Grown(Grown { genome: g, site: FLORA_SITE, seed: 0 })
+}
+
+/// The wood's floor's species' genomes (§E3; 0 is none: the generic herb), each grown into its
+/// row by its program (`growth::grow_rosette`, `grow_tussock`, `grow_frond`) at `FLORA_SITE`: the
+/// rows hold no shape a program doesn't derive (`SPECIES`). Ferns and bracken are kinds of their
 /// own (`FERN`, `BRACKEN`).
-pub const SPECIES = [
+pub const GENOMES: [FloraGenome; SPECIES_N] = [
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.1052,
+        width: 0.13,
+        stiff: 0.2633,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.075, 0.13, 0.04),
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.0, 1.0),
+        light: vec2(0.0, 1.0),
+    },
+    // Bluebell: strap leaves, a haze of blue flowers; acid to neutral soil, shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: STRAP,
+        length: 0.3157,
+        width: 0.022,
+        stiff: 0.4212,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.035, 0.085, 0.03),
+        acid: vec2(0.3, 0.9),
+        wet: vec2(0.0, 0.65),
+        light: vec2(0.05, 0.5),
+        bloom: 3,
+        blooms: 0.55,
+    },
+    // Dog's mercury: carpets of upright leaves on base-rich soil, in shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.2526,
+        width: 0.06,
+        stiff: 0.7369,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.11, 0.03),
+        acid: vec2(0.0, 0.4),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.0, 0.5),
+    },
+    // Ramsons: broad bright leaves and white flowers on damp, rich soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.2947,
+        width: 0.07,
+        stiff: 0.5264,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.07, 0.15, 0.04),
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.4, 0.95),
+        light: vec2(0.0, 0.55),
+        bloom: 1,
+        blooms: 0.35,
+    },
+    // Wood anemone: small leaves and white flowers, in light shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.1263,
+        width: 0.05,
+        stiff: 0.5790,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.12, 0.035),
+        acid: vec2(0.15, 0.75),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.1, 0.6),
+        bloom: 1,
+        blooms: 0.6,
+    },
+    // Bramble: arching canes of dark leaflets where light comes through: gaps and edges.
+    FloraGenome {
+        program: FROND,
+        shape: BRACKEN,
+        length: 0.7893,
+        width: 0.3,
+        stiff: 0.0002,
+        count: 6.0,
+        shade: 0.5,
+        colour: vec3(0.035, 0.07, 0.025),
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.0, 0.75),
+        light: vec2(0.25, 0.85),
+        bloom: 1,
+        blooms: 0.05,
+    },
+    // Foxglove: tall spikes of purple flowers in glades, on acid soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: STRAP,
+        length: 1.1576,
+        width: 0.05,
+        stiff: 0.8948,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.11, 0.04),
+        acid: vec2(0.5, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.35, 1.0),
+        bloom: 3,
+        blooms: 0.9,
+    },
+    // Nettle: upright, on rich and worn ground, at edges.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.7367,
+        width: 0.07,
+        stiff: 0.8421,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.10, 0.03),
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.3, 1.0),
+        worn: 1.0,
+    },
+    // Pendulous sedge: long arching leaves in the wet.
+    FloraGenome {
+        program: TUSSOCK,
+        shape: STRAP,
+        length: 0.6314,
+        width: 0.025,
+        stiff: 0.0528,
+        count: 24.0,
+        shade: 0.5,
+        colour: vec3(0.09, 0.13, 0.035),
+        acid: vec2(0.0, 0.8),
+        wet: vec2(0.5, 1.0),
+        light: vec2(0.0, 0.8),
+    },
+    // Bilberry: low shrubby leaves on acid soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.3157,
+        width: 0.06,
+        stiff: 0.7895,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.10, 0.025),
+        acid: vec2(0.6, 1.0),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.15, 0.75),
+    },
+    // Wavy hair-grass: fine tufts on acid soil.
+    FloraGenome {
+        program: TUSSOCK,
+        shape: STRAP,
+        length: 0.3683,
+        width: 0.012,
+        stiff: 0.3686,
+        count: 24.0,
+        shade: 0.5,
+        colour: vec3(0.11, 0.14, 0.045),
+        acid: vec2(0.55, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.2, 0.9),
+    },
+    // Moss in cushions where it's damp and shaded.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.0526,
+        width: 0.14,
+        stiff: 0.0528,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.07, 0.13, 0.02),
+        acid: vec2(0.0, 1.0),
+        wet: vec2(0.3, 1.0),
+        light: vec2(0.0, 0.4),
+    },
+    // Ivy: dark carpets in deep shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.0631,
+        width: 0.08,
+        stiff: 0.1581,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.025, 0.055, 0.02),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.8),
+        light: vec2(0.0, 0.3),
+    },
+    // Wood sorrel: pale trefoil leaves on acid, moist soil in shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.0737,
+        width: 0.05,
+        stiff: 0.4738,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.08, 0.15, 0.045),
+        acid: vec2(0.5, 1.0),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.0, 0.4),
+        bloom: 1,
+        blooms: 0.3,
+    },
+    // Yellow pimpernel and bugle: low, with yellow and blue flowers, on wet rich soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.1052,
+        width: 0.05,
+        stiff: 0.4738,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.10, 0.035),
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.45, 1.0),
+        light: vec2(0.05, 0.7),
+        bloom: 2,
+        blooms: 0.4,
+    },
+    // Hart's-tongue fern: broad glossy straps on damp, base-rich banks in shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: STRAP,
+        length: 0.3683,
+        width: 0.05,
+        stiff: 0.3686,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.13, 0.03),
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.4, 1.0),
+        light: vec2(0.0, 0.4),
+    },
+    // Wood melick: fine, pale grass in shade on neutral soil.
+    FloraGenome {
+        program: TUSSOCK,
+        shape: STRAP,
+        length: 0.3157,
+        width: 0.01,
+        stiff: 0.2633,
+        count: 24.0,
+        shade: 0.5,
+        colour: vec3(0.08, 0.13, 0.04),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.7),
+        light: vec2(0.05, 0.5),
+    },
+    // Red campion: pink flowers in light shade and at the wood's edges.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.5262,
+        width: 0.05,
+        stiff: 0.7895,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.09, 0.03),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.2, 0.8),
+        light: vec2(0.2, 0.8),
+        bloom: 4,
+        blooms: 0.5,
+    },
+    // Herb Robert: low, red-stemmed, small pink flowers, in shade on stony ground.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.2105,
+        width: 0.06,
+        stiff: 0.4738,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.065, 0.09, 0.03),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.7),
+        light: vec2(0.05, 0.6),
+        bloom: 4,
+        blooms: 0.4,
+    },
+    // Enchanter's nightshade: small white flowers on damp ground in shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.3683,
+        width: 0.05,
+        stiff: 0.6843,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.11, 0.035),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.3, 0.9),
+        light: vec2(0.0, 0.45),
+        bloom: 1,
+        blooms: 0.4,
+    },
+    // Lesser celandine and primrose: low, yellow flowers in damp light shade.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.0947,
+        width: 0.07,
+        stiff: 0.2633,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.12, 0.03),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.3, 0.9),
+        light: vec2(0.1, 0.65),
+        bloom: 2,
+        blooms: 0.5,
+    },
+    // The open's species (the knapweed and crested dog's-tail meadow; acid grassland on acid
+    // soil; rush pasture in the wet), mixed into the grass where the canopy opens.
+    // Common knapweed: purple heads on neutral soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.5788,
+        width: 0.04,
+        stiff: 0.8421,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.09, 0.035),
+        acid: vec2(0.0, 0.65),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.6, 1.0),
+        bloom: 3,
+        blooms: 0.6,
+    },
+    // Ox-eye daisy: white heads on dry, neutral soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.4736,
+        width: 0.04,
+        stiff: 0.7895,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.11, 0.035),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.6, 1.0),
+        bloom: 1,
+        blooms: 0.7,
+    },
+    // Meadow buttercup: yellow on damp, rich soil.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.4210,
+        width: 0.05,
+        stiff: 0.7369,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.12, 0.03),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.55, 1.0),
+        bloom: 2,
+        blooms: 0.6,
+    },
+    // Ribwort plantain: a rosette of ribbed straps, its dark spikes; on worn ground too.
+    FloraGenome {
+        program: ROSETTE,
+        shape: STRAP,
+        length: 0.2631,
+        width: 0.035,
+        stiff: 0.3686,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.10, 0.04),
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.55, 1.0),
+        worn: 0.7,
+    },
+    // Yarrow: feathery leaves, flat white heads, on dry ground.
+    FloraGenome {
+        program: FROND,
+        shape: BRACKEN,
+        length: 0.3683,
+        width: 0.08,
+        stiff: 0.6843,
+        count: 6.0,
+        shade: 0.5,
+        colour: vec3(0.07, 0.11, 0.05),
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.5),
+        light: vec2(0.6, 1.0),
+        bloom: 1,
+        blooms: 0.5,
+    },
+    // Broad-leaved dock: big dark leaves on rich, trodden ground by paths.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.4210,
+        width: 0.14,
+        stiff: 0.4738,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.04, 0.08, 0.025),
+        acid: vec2(0.0, 0.5),
+        wet: vec2(0.2, 0.9),
+        light: vec2(0.45, 1.0),
+        worn: 1.0,
+    },
+    // Soft rush: dense stiff tufts, dark, in the wet.
+    FloraGenome {
+        program: TUSSOCK,
+        shape: STRAP,
+        length: 0.7893,
+        width: 0.012,
+        stiff: 0.9158,
+        count: 24.0,
+        shade: 0.5,
+        colour: vec3(0.04, 0.09, 0.03),
+        acid: vec2(0.2, 1.0),
+        wet: vec2(0.6, 1.0),
+        light: vec2(0.4, 1.0),
+    },
+    // Creeping thistle: spiny, purple, on worn and grazed ground.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.6841,
+        width: 0.05,
+        stiff: 0.8948,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.10, 0.05),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.55, 1.0),
+        bloom: 3,
+        blooms: 0.4,
+        worn: 0.8,
+    },
+    // Tormentil and heath bedstraw: low, yellow and white, on acid grassland.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.1052,
+        width: 0.04,
+        stiff: 0.3686,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.05, 0.10, 0.03),
+        acid: vec2(0.55, 1.0),
+        wet: vec2(0.0, 0.8),
+        light: vec2(0.5, 1.0),
+        bloom: 2,
+        blooms: 0.6,
+    },
+    // Red clover: low trefoils and pink heads in the sward.
+    FloraGenome {
+        program: ROSETTE,
+        shape: HERB,
+        length: 0.1894,
+        width: 0.06,
+        stiff: 0.4738,
+        count: 7.0,
+        shade: 0.5,
+        colour: vec3(0.06, 0.12, 0.045),
+        acid: vec2(0.0, 0.6),
+        wet: vec2(0.1, 0.8),
+        light: vec2(0.6, 1.0),
+        bloom: 4,
+        blooms: 0.5,
+    },
+    // Cock's-foot: coarse blue-green tussocks.
+    FloraGenome {
+        program: TUSSOCK,
+        shape: STRAP,
+        length: 0.6314,
+        width: 0.02,
+        stiff: 0.4738,
+        count: 24.0,
+        shade: 0.5,
+        colour: vec3(0.07, 0.11, 0.07),
+        acid: vec2(0.0, 0.7),
+        wet: vec2(0.0, 0.7),
+        light: vec2(0.5, 1.0),
+    },
+    // Ling heather: low dark shrubs, pink-purple in flower, on dry acid ground.
+    FloraGenome {
+        program: FROND,
+        shape: BRACKEN,
+        length: 0.3683,
+        width: 0.12,
+        stiff: 0.7895,
+        count: 6.0,
+        shade: 0.5,
+        colour: vec3(0.035, 0.055, 0.03),
+        acid: vec2(0.7, 1.0),
+        wet: vec2(0.0, 0.6),
+        light: vec2(0.5, 1.0),
+        bloom: 4,
+        blooms: 0.6,
+    },
+]
+
+/// The species as the grass draws them: each genome grown at the row's site (`species_row`).
+pub const SPECIES: [Species; SPECIES_N] = species_rows()
+
+fn species_rows() -> [Species; SPECIES_N] {
+    var out = [species_row(GENOMES[0], FLORA_SITE); SPECIES_N]
+    for i in 1..SPECIES_N {
+        out[i] = species_row(GENOMES[i], FLORA_SITE)
+    }
+    out
+}
+
+/// Genome `g` grown at `site` (`growth::flora_grown`) as a row: its height, width and droop its
+/// growth's, its colour, ranges, flowers and liking for trodden ground its genome's.
+pub fn species_row(g: FloraGenome, site: Site) -> Species {
+    let grown = flora_grown(g, site)
+    Species {
+        colour: g.colour,
+        shape: g.shape,
+        acid: g.acid,
+        wet: g.wet,
+        light: g.light,
+        tall: grown.x,
+        wide: grown.y,
+        bend: grown.z,
+        bloom: g.bloom,
+        blooms: g.blooms,
+        worn: g.worn,
+        genome: genome_hash(flora_values(g)),
+    }
+}
+
+/// The wood's floor's species as the hand set them (0 is none: the generic herb), before they were
+/// grown (§E3): the flora of a program that hasn't adopted the grown one (`HAND_FLORA`, D40).
+pub const HAND_SPECIES: [Species; SPECIES_N] = [
     Species {
         colour: vec3(0.075, 0.13, 0.04),
         shape: HERB,
@@ -944,6 +1505,140 @@ const RUSH: u32 = 27
 /// kernel's ninth in a debug build, past WebGPU's eight a stage).
 pub struct Flora: Copy + GpuData {
     pub species: [Species; SPECIES_N],
+    /// A fern's and bracken's fronds grown at four lights (`FLORA_LIGHTS`): height, width, droop.
+    pub ferns: [vec4; 4],
+    pub brackens: [vec4; 4],
+    /// The fern's and bracken's habitats: light from, to, wetness from, to.
+    pub fern_range: vec4,
+    pub bracken_range: vec4,
+    /// A grass's tillers against the open's (`growth::grow_tussock`) at four wetnesses (rows) and
+    /// four lights (each row's components), `FLORA_LIGHTS` both: the sward's density.
+    pub sward: [vec4; 4],
+    /// Whether it's grown (1: `flora_at`'s) or the hand's (0: `HAND_FLORA`, whose ferns' and
+    /// bracken's sizes, kinds' shares and sward are as before §E3, and the tables above unread).
+    pub grown: u32,
+}
+
+/// The flora as the hand set it (`HAND_SPECIES`): a program's that hasn't adopted the grown one
+/// (`Grass::new`'s `grown`: the floor's and the clearing's, D40).
+pub const HAND_FLORA: Flora = Flora {
+    species: HAND_SPECIES,
+    ferns: [vec4(0.0); 4],
+    brackens: [vec4(0.0); 4],
+    fern_range: vec4(0.0),
+    bracken_range: vec4(0.0),
+    sward: [vec4(1.0); 4],
+    grown: 0,
+}
+
+/// The floor's flora a season grown (`flora_at`), at build.
+pub const FLORA: Flora = flora_at(1.0)
+
+/// The lights (and wetnesses) the floor's tables are grown at.
+pub const FLORA_LIGHTS: [f32; 4] = [0.125, 0.375, 0.625, 0.875]
+
+/// The wood's fern (male fern, *Dryopteris filix-mas*: fronds to about 0.6 m in the wood's shade,
+/// larger in deeper shade, in moist ground) and bracken (*Pteridium aquilinum*: to about a metre
+/// where light comes through, on drier ground), grown by `growth::grow_frond` (**proposed**: the
+/// sizes the floor drew them at).
+pub const FERN_GENOME: FloraGenome = FloraGenome {
+    program: FROND,
+    shape: FERN,
+    length: 0.54,
+    width: 0.2,
+    stiff: 0.105,
+    count: 8.0,
+    shade: 0.6,
+    colour: vec3(0.05, 0.11, 0.03),
+    acid: vec2(0.0, 1.0),
+    wet: vec2(0.25, 0.75),
+    light: vec2(0.0, 0.35),
+}
+pub const BRACKEN_GENOME: FloraGenome = FloraGenome {
+    program: FROND,
+    shape: BRACKEN,
+    length: 1.0,
+    width: 0.32,
+    stiff: 0.368,
+    count: 6.0,
+    shade: 0.3,
+    colour: vec3(0.06, 0.12, 0.03),
+    acid: vec2(0.0, 1.0),
+    wet: vec2(0.0, 0.7),
+    light: vec2(0.25, 0.85),
+}
+
+/// The floor's flora at a season's age (§E3, `growth::flora_at`'s): its species' rows, its fern's
+/// and bracken's fronds by light, their habitats, and the sward's density by wetness and light.
+pub fn flora_at(age: f32) -> Flora {
+    var ferns = [vec4(0.0); 4]
+    var brackens = [vec4(0.0); 4]
+    var sward = [vec4(0.0); 4]
+    let open = grow_tussock(SWARD_GENOME, Site { light: 1.0, wetness: 0.55, age: max(age, 1.0) })
+    for i in 0..4 {
+        let l = FLORA_LIGHTS[i]
+        ferns[i] = vec4(flora_grown(FERN_GENOME, Site { light: l, wetness: 0.5, age }), 0.0)
+        brackens[i] = vec4(flora_grown(BRACKEN_GENOME, Site { light: l, wetness: 0.4, age }), 0.0)
+        var row = vec4(0.0)
+        for j in 0..4 {
+            let t = grow_tussock(
+                SWARD_GENOME,
+                Site { light: FLORA_LIGHTS[j], wetness: FLORA_LIGHTS[i], age: max(age, 1.0) },
+            )
+            row[j] = f32(t.tillers) / f32(max(open.tillers, 1))
+        }
+        sward[i] = row
+    }
+    Flora {
+        species: SPECIES,
+        ferns,
+        brackens,
+        fern_range: vec4(FERN_GENOME.light, FERN_GENOME.wet),
+        bracken_range: vec4(BRACKEN_GENOME.light, BRACKEN_GENOME.wet),
+        sward,
+        grown: 1,
+    }
+}
+
+/// The meadow's sward's grass (its tillers: a cock's-foot's habit, `GENOMES`).
+const SWARD_GENOME: FloraGenome = GENOMES[32]
+
+/// `table`'s value at `x` (0 to 1), between its four (`FLORA_LIGHTS`).
+fn between4(table: vec4, x: f32) -> f32 {
+    let u = clamp((x - 0.125) * 4.0, 0.0, 3.0)
+    let i = min(u32(floor(u)), 2)
+    mix(table[i], table[i + 1], u - f32(i))
+}
+
+/// A frond table's (`Flora::ferns`, `brackens`) height, width and droop at `light`.
+fn frond_at(table: [vec4; 4], light: f32) -> vec3 {
+    let u = clamp((light - 0.125) * 4.0, 0.0, 3.0)
+    let i = min(u32(floor(u)), 2)
+    mix(table[i].xyz, table[i + 1].xyz, vec3(u - f32(i)))
+}
+
+/// The sward's density at habitat `h` (`Cover::flora`: its wetness y and light z) against the
+/// open's: a grass's tillers there (open and moist: dense; under a canopy, or dry or soaked: few).
+pub fn sward_density(flora: Flora, h: vec4) -> f32 {
+    let u = clamp((h.y - 0.125) * 4.0, 0.0, 3.0)
+    let i = min(u32(floor(u)), 2)
+    mix(between4(flora.sward[i], h.z), between4(flora.sward[i + 1], h.z), u - f32(i))
+}
+
+/// The wood's floor's kinds' weights where its cover gives `under` (its fern's, bracken's and
+/// herbs' patches, y z w) and its habitat is `h` (wetness y, light z): each patch's share by how
+/// its kind's habitat suits the place (a fern in moist shade, bracken in a gap's light on drier
+/// ground): fern, bracken, herb.
+pub fn kind_shares(flora: Flora, under: vec4, h: vec4) -> vec3 {
+    let within = |x: f32, lo: f32, hi: f32| smoothstep(lo - 0.15, lo, x) *
+        smoothstep(hi + 0.15, hi, x)
+    let fr = flora.fern_range
+    let br = flora.bracken_range
+    vec3(
+        under.y * within(h.z, fr.x, fr.y) * within(h.y, fr.z, fr.w),
+        under.z * within(h.z, br.x, br.y) * within(h.y, br.z, br.w),
+        under.w,
+    )
 }
 
 /// How well species `i` suits a habitat `h` (`Cover::flora`: acidity, wetness, light): 1 within
@@ -1078,10 +1773,12 @@ fn under_plant(
     if occupied <= 0.0 {
         return
     }
-    let r = rand(p.seed, 10) * (u.y + u.z + u.w)
-    let kind = if p.forb || rand(p.seed, 34) < rush_habitat(t.flora) || r >= u.y + u.z {
+    // Its kind by the place's habitat (`kind_shares`; a hand's flora, by its patches alone).
+    let shares = if flora.grown == 0 { u.yzw } else { kind_shares(flora, u, t.flora) }
+    let r = rand(p.seed, 10) * (shares.x + shares.y + shares.z)
+    let kind = if p.forb || rand(p.seed, 34) < rush_habitat(t.flora) || r >= shares.x + shares.y {
         HERB
-    } else if r < u.y { FERN } else { BRACKEN }
+    } else if r < shares.x { FERN } else { BRACKEN }
     let v = rand(p.seed, 4)
     // Each kind's size: a fern's arching frond, bracken's taller and flatter, a herb's low leaf;
     // never narrower than a blade's spacing here, so the far ones still cover.
@@ -1094,10 +1791,17 @@ fn under_plant(
     let (tall, wide, bend) = if sp > 0 {
         // Each species keeps its habit: rush stems stay upright while strap leaves arch.
         (leaf_height(spec) * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
-    } else if kind == FERN {
+    } else if kind == FERN && flora.grown == 0 {
         (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
-    } else if kind == BRACKEN {
+    } else if kind == BRACKEN && flora.grown == 0 {
         (0.75 + 0.45 * v, 0.32, 0.5 + 0.2 * rand(p.seed, 7))
+    } else if kind == FERN {
+        // Its frond grown at the place's light (`flora_at`: a shade fern's larger).
+        let f = frond_at(flora.ferns, t.flora.z)
+        (f.x * (0.72 + 0.56 * v), f.y, f.z * (0.88 + 0.24 * rand(p.seed, 7)))
+    } else if kind == BRACKEN {
+        let f = frond_at(flora.brackens, t.flora.z)
+        (f.x * (0.77 + 0.46 * v), f.y, f.z * (0.83 + 0.34 * rand(p.seed, 7)))
     } else {
         // A broad leaf, low and spreading (wood sorrel, dog's mercury): upright and narrow, it
         // read as grass under the beeches.
@@ -1291,9 +1995,11 @@ pub struct Grass {
     kept: Vec<Kept>,
     /// Each tier's group of blades' indices (`group_indices`).
     indices: GpuBuffer<u32>,
-    /// The wood's floor's species (`SPECIES`), where kernels and shaders read them: a constant
+    /// The wood's floor's species (its flora's), where kernels and shaders read them: a constant
     /// array indexed by a value is copied into each invocation.
     species: GpuBuffer<Species>,
+    /// Its flora: grown (`FLORA`) or the hand's (`HAND_FLORA`).
+    flora: Flora,
 }
 
 /// What a ring's placement was made from: its cells, the render origin's offset (`keyed`), the
@@ -1324,7 +2030,10 @@ const UNPLACED = Kept {
 }
 
 impl Grass {
-    pub fn new() -> Grass {
+    /// A program's grass, its flora `grown` (§E3: the vale's) or the hand's (`HAND_FLORA`: the
+    /// floor's and the clearing's until they adopt it, D40).
+    pub fn new(grown: bool) -> Grass {
+        let flora = if grown { FLORA } else { HAND_FLORA }
         var rings: Vec<AppendBuffer<Blade>> = Vec::new()
         var flowers: Vec<AppendBuffer<Flower>> = Vec::new()
         var kept: Vec<Kept> = Vec::new()
@@ -1346,7 +2055,8 @@ impl Grass {
             calls: 0,
             kept,
             indices: buffer_of(group_indices()),
-            species: buffer_of(SPECIES),
+            species: buffer_of(flora.species),
+            flora,
         }
     }
 
@@ -1374,7 +2084,7 @@ impl Grass {
     ) {
         let half = atan(cam.tan_half * cam.aspect) + 0.15
         let ahead = cos(half + 0.35)
-        let flora = Flora { species: SPECIES }
+        let flora = self.flora
         let keyed = cam.keyed()
         let probed = vec4(grid.corner, grid.spacing, f32(grid.cols))
         var changed = false
@@ -2143,7 +2853,7 @@ fn species_scoring_every_one(flora: Flora, w: vec2, h: vec4, seed: u32) -> u32 {
 /// edges, where `within` turns 0.
 @test
 fn species_passed_over_could_not_have_been_chosen() {
-    let flora = Flora { species: SPECIES }
+    let flora = FLORA
     let unit = Box2 { lo: vec2(-0.2), hi: vec2(1.2) }
     for i in 0..4096 {
         let a = unit.sample(11, i)
@@ -2170,7 +2880,7 @@ fn species_passed_over_could_not_have_been_chosen() {
 
 @test
 fn wet_banks_grow_upright_rush_without_changing_dry_meadows() {
-    let flora = Flora { species: SPECIES }
+    let flora = FLORA
     var wet = 0
     var dry = 0
     for i in 0..128 {
@@ -2437,7 +3147,7 @@ fn flowering_herbs_keep_leaves_below_their_flower_stems() {
 
 @test
 fn rosette_leaves_keep_one_species_across_density_samples() {
-    let flora = Flora { species: SPECIES }
+    let flora = FLORA
     for habitat in [vec4(0.3, 0.4, 0.8, 0.0), vec4(0.8, 0.75, 0.4, 0.0)] {
         for x in -8..8 {
             for z in -8..8 {

@@ -287,14 +287,29 @@ fn fast_shot(
         }
         write_png(take img, f"{stills}-{name}.png")?
     }
-    // The dolly, unbroken, for pop.
+    // The dolly, unbroken, for pop; the two frames of its worst step kept, to show what popped.
     d.press(Key::F11)
     var dolly = Pop::new()
     var last_rgba: Vec<u8> = Vec::new()
+    var worst: (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new())
     for _ in 0..FAST_DOLLY {
         let f = d.screen()?
-        last_rgba = f.clone()
+        let before = dolly.pop
+        let previous = replace(mut last_rgba, f.clone())
         dolly.add(luma(f))
+        if dolly.pop > before {
+            worst = (take previous, last_rgba.clone())
+        }
+    }
+    for (name, rgba) in [("pop-a", take worst.0), ("pop-b", take worst.1)] {
+        if rgba.len() > 0 {
+            let img = image::Image {
+                width: w,
+                height,
+                rgba: Data::Blob(blob_of(chunked(rgba.clone()))?),
+            }
+            write_png(take img, f"{stills}-{name}.png")?
+        }
     }
     // Paused where the dolly ended, and settled: the moving frame against play settled there.
     let moving = dolly.last.clone()

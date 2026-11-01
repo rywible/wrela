@@ -6,8 +6,9 @@
 //   1.2 m deep (a band's depth warped by a noise), each its own tone between two;
 // - **cracks**: Worley's edge distance (Worley, A Cellular Texture Basis Function, 1996): the
 //   joints between cells darkened where a vertex lies near one;
-// - **lichen**: on faces less steep than 30°, more than half a metre above the ground, in
-//   patches: a grey-green, a fifth of the colour at most;
+// - **lichen**: on faces less steep than 30°, more than half a metre above the ground, in the
+//   crusts a diffusion-limited growth lays (`growth::LICHEN`, §E4): a grey-green, a fifth of the
+//   colour at most;
 // - **wetness**: within 0.6 m of the nearest water's level: darker (0.6 of it) and glossier
 //   (roughness 0.35).
 //
@@ -16,6 +17,7 @@
 
 use character::Shaded
 use creature::Parts
+use growth::lichen_tile
 use noise::{hash3, noise3}
 use realize::{SkinVertex, Tally}
 use stone::Rock
@@ -24,7 +26,9 @@ use std::gpu::{GlobalId, Slots, Unorm8x4}
 /// A rock's look: where its vertices are in the world (`to_world`, the realized mesh's own space
 /// to render space), its bedding (a unit vector, in render space), its bands' mean depth (m),
 /// the ground's and the nearest water's level there (render space; the water's far below for
-/// none), and its seed; `on` 0 cooks the field's own colour (`stone::PLAIN_ROCK`).
+/// none), and its seed; `on` 0 cooks the field's own colour (`stone::PLAIN_ROCK`); `grown` 1 lays
+/// its lichen as its crusts grow (§E4: `growth::lichen_tile`), 0 in a noise's patches (a program
+/// that hasn't adopted the grown wood's causes: the floor's, D40).
 pub struct RockLook: Copy + GpuData {
     pub to_world: mat4,
     pub bedding: vec3 = vec3(0.0, 1.0, 0.0),
@@ -33,6 +37,7 @@ pub struct RockLook: Copy + GpuData {
     pub water: f32 = -1.0e9,
     pub seed: u32 = 0,
     pub on: u32 = 1,
+    pub grown: u32 = 0,
 }
 
 /// The two tones a band lies between (times the rock's own colour), the darkening along a crack,
@@ -81,10 +86,17 @@ pub fn rock_surface(look: RockLook, base: vec3, w: vec3, n: vec3) -> (vec3, f32)
     // Cracks: the joints of 1.6 m cells.
     let edge = worley_edge(w / 1.6, look.seed)
     a *= 1.0 - CRACK * (1.0 - smoothstep(0.0, 0.06, edge))
-    // Lichen: gentle faces above the ground, in patches.
+    // Lichen by its causes (§E4): on faces open to the sky and the rain (gentle), clear of the
+    // ground's damp and shade (high), in its crusts as a diffusion-limited growth lays them
+    // (`growth::lichen_tile`, a cell 8 cm, read across the face's two widest axes).
     let gentle = smoothstep(0.82, 0.9, n.y)
     let high = smoothstep(0.4, 0.6, w.y - look.ground)
-    let patch = smoothstep(0.45, 0.75, noise3(w * 0.8 + vec3(s * 3.0)))
+    let patch = if look.grown == 0 {
+        smoothstep(0.45, 0.75, noise3(w * 0.8 + vec3(s * 3.0)))
+    } else {
+        let across = if abs(n.y) > 0.7 { w.xz } else if abs(n.x) > abs(n.z) { w.zy } else { w.xy }
+        smoothstep(0.3, 0.7, lichen_tile(across * 12.0 + vec2(s * 3.0)))
+    }
     a = mix(a, LICHEN, LICHEN_MOST * gentle * high * patch)
     // Wetness: near the water's level.
     let wet = 1.0 - smoothstep(0.5, 0.6, w.y - look.water)

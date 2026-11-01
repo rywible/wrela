@@ -39,8 +39,9 @@
 //
 // The warmup (60 frames unless `--warmup` says) isn't counted, nor are a walk's frames before
 // its start (`Scene::walks`), nor a run's before 60 after its program prints `playable` (the
-// load's, covered: `counted_from`). `--frames` cuts every scene's
-// measured frames to that many (to try the tool). The report is written to
+// load's, covered: `counted_from`). `--frames` cuts every scene's measured frames to that many
+// (to try the tool); `--size WxH` draws every scene at that size (for a machine whose GPU loses
+// its device at a scene's own: its numbers compare runs on it). The report is written to
 // `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
 // `docs/bench.md` under a heading of its date and machine (unless `--no-docs`). `--compare`
 // prints each scene's change from an earlier report, named by the tool's roots
@@ -90,6 +91,10 @@ pub struct Options: Clone {
     /// The look each scene's program is built in (`--look`: `wrela build --set LOOK=<type>`,
     /// `engine::style`, such as `styles::fixtures::Every`), or empty for its own.
     pub look: String = String::new(),
+    /// The size every scene is drawn at instead of its own (`--size WxH`), or 0 × 0: for a machine
+    /// whose GPU can't hold a scene at its size (its numbers then compare runs on it, no more).
+    pub width: u32 = 0,
+    pub height: u32 = 0,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -168,6 +173,11 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         } else if a == "--look" {
             o.look = value(k)?
             k += 2
+        } else if a == "--size" {
+            let (w, h) = toolkit::command::size_of(value(k)?.as_str())?
+            o.width = w
+            o.height = h
+            k += 2
         } else {
             return None
         }
@@ -210,6 +220,10 @@ pub fn chosen(o: Options) -> Vec<Scene> {
             var c = s.clone()
             if o.frames > 0 {
                 c.frames = o.frames
+            }
+            if o.width > 0 && o.height > 0 {
+                c.width = o.width
+                c.height = o.height
             }
             out.push(take c)
         }

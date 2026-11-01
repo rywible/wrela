@@ -106,6 +106,18 @@ fn light(s: mut Vale, hour: f32, skies: Skies, eye: f32) {
 }
 
 pub fn init() -> Vale {
+    // The archetypes grown at build, as this host holds them (§E7's hashes: the same everywhere).
+    var h = std::hash::Hasher::new()
+    borrow grown = trees::archetypes::GROWN
+    for i in 0..(grown.len() / 4) {
+        h.write_u32(land::bake::get_u32(grown, 4 * i))
+    }
+    for i in (4 * (grown.len() / 4))..grown.len() {
+        h.write_u32(u32(grown[i]))
+    }
+    print(
+        f"grown: the archetypes, {trees::archetypes::GROWN.len()} bytes; their hash {h.finish():016x}",
+    )
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
@@ -237,4 +249,94 @@ fn the_vale_draws_its_forest_from_its_history(s: Vale) {
         f"the vale: {s.stage.land.own.len()} tiles, {n} trees loaded; the wood at frame {wood}, playable at frame {playable}",
     )
     assert(n > 1000, f"{n} trees loaded")
+}
+
+/// The trees near the eye drawn as themselves (docs/plan-world-class-3.md §E1.3): after its first
+/// frames, the vale's near individuals are drawn, each within `NEAR` of the eye, each grown from
+/// its own record (its growth's seed the record's); every other instance is its kind's archetype.
+@test(frames: 900, gpu: true)
+fn the_trees_near_the_eye_are_their_own(s: Vale) {
+    let eye = s.stage.land.eye
+    var drawn = 0
+    for o in s.stage.land.near {
+        if !o.drawn {
+            continue
+        }
+        drawn += 1
+        let d = length(o.at - vec2(eye.x, eye.z))
+        assert(d < land::stage::NEAR + 30.0, f"an individual {d} m from the eye")
+        var seed = 0
+        for g in s.stage.land.grounds {
+            for t in g.trees {
+                if length(t.at - o.at) < 1.0e-2 {
+                    seed = t.seed
+                }
+            }
+        }
+        assert(o.seed == seed, f"an individual grown from seed {o.seed}, its record's {seed}")
+    }
+    print(f"the vale: {drawn} of {s.stage.land.near.len()} near trees drawn as themselves")
+    assert(drawn >= 8, f"{drawn} near trees drawn as themselves")
+}
+
+/// The floor's small causes placed on the vale (docs/plan-world-class-3.md §E4), counted over its
+/// tiles as they've come: its fallen trees and their brackets and lost bark (by each one's rot), the
+/// litter's mean depth and the share of its ground in moss's causes (by its fields' light and
+/// wetness), and its trees old enough to carry lichen. Printed for its design.md's "What is grown".
+@test(frames: 400, gpu: true)
+fn the_vales_small_causes_are_placed(s: Vale) {
+    var logs = 0
+    var brackets = 0
+    var bare = 0.0
+    var lichened = 0
+    for a in s.stage.land.own {
+        for p in a.placed {
+            let h = p.at.history.decode()
+            if p.kind == trees::kinds::LOG_SHORT || p.kind == trees::kinds::LOG_LONG {
+                logs += 1
+                brackets += engine::growth::fungi_on(
+                    h.x,
+                    12.0 * p.at.scale,
+                    u32(abs(p.at.at.x * 7.0 + p.at.at.z * 13.0)),
+                ).len()
+                bare += engine::growth::bare_share(h.x)
+            } else if engine::growth::lichen_of(h) > 0.5 {
+                lichened += 1
+            }
+        }
+    }
+    var litter = 0.0
+    var mossy = 0
+    var cells = 0
+    for g in s.stage.land.grounds {
+        let n = g.fields.len() / 4
+        for i in 0..n {
+            let light = f32(g.fields[4 * i]) / 255.0
+            let wet = f32(g.fields[4 * i + 2]) / 255.0
+            litter += engine::growth::litter_at(1.0 - light, land::cover::LITTER_SEASON)
+            if wet > 0.4 && light < 0.5 {
+                mossy += 1
+            }
+            cells += 1
+        }
+    }
+    print(
+        f"the vale's small causes: {logs} fallen trees, {brackets} brackets, {bare / f32(max(logs, 1))} of their bark gone; litter {litter / f32(max(cells, 1))} deep; {f32(mossy) / f32(max(cells, 1))} of the ground in moss's causes; {lichened} trees old enough for lichen",
+    )
+    assert(logs > 0 && cells > 0, "no fallen tree, or no ground")
+}
+
+/// The first ring of near trees (§E7: the `FIRST_N` nearest within 40 m of the first eye) grown and
+/// drawn as themselves within the frames (none as its archetype: `Landscape::ring_fallen_back`),
+/// each grown (nothing is kept in a test's storage). Its
+/// time is printed, not judged: a frame test's host runs its parallel work on few helpers, so the
+/// ring's growths queue; the budget (1,000 ms) is measured with a played page's helpers by
+/// `wrela tool grow -- --hash` (docs/bench.md "E7").
+@test(frames: 900, gpu: true)
+fn the_first_ring_grows_before_the_vale_is_ready(s: Vale) {
+    borrow land = s.stage.land
+    let Some(ms) = land.ring_ms else { panic("the first ring wasn't drawn within 900 frames") }
+    print(f"the first ring: {land.ring.len()} trees in {ms} ms")
+    assert(land.ring.len() == land::stage::FIRST_N, f"{land.ring.len()} trees in the first ring")
+    assert(land.ring_fallen_back == 0, f"{land.ring_fallen_back} of the ring drawn as archetypes")
 }

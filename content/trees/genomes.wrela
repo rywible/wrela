@@ -1,0 +1,202 @@
+// The floor's species' genomes (docs/plan-world-class-3.md §E1.1): what each species' self-
+// organizing growth reads (`engine::growth::Genome`, `grow_graph`), in `species::Species`' order.
+// Where a parameter has a source, it's named (docs/citations.md); the rest is **proposed** from
+// the species' habit (`species::habits`: its height, its life, its crown) and its field guides'
+// descriptions.
+//
+// - `apical`: apical control, Palubicki et al. 2009 §4 (decurrent broadleaves low, excurrent
+//   conifers and pioneers high), its values **proposed** within it.
+// - `divergence`: phyllotaxis, Prusinkiewicz and Lindenmayer 1990 ch. 4: 137.5° (the golden
+//   angle) for most broadleaves, 180° for the two-ranked beech and alder.
+// - `internode`, `phototropism`, `gravitropism`, `shed_*`: Palubicki 2009 §4.2–4.3's terms, their
+//   values **proposed** (the shoot a year from the habit's `rate`).
+// - `pipe`: Shinozaki et al. 1964 (2 for a pure pipe model; more where wood thickens faster).
+// - `bark`, `cracks`: Lefebvre and Neyret 2002's fracture terms, **proposed** (§E1.4).
+// - `wind_*`: Jaffe 1973's thigmomorphogenesis (the effect; the numbers **proposed**).
+// - `lifespan`, `tallest`: the habit's.
+
+use engine::growth::Genome
+use species::{HABITS, Species}
+
+/// Each species' genome (`Genome`), in `Species`' order.
+pub fn genomes() -> [Genome; Species] {
+    let h = HABITS
+    [
+        // Oak: decurrent, wide-angled and slow; light-hungry, so it sheds its shaded limbs.
+        Genome {
+            apical: 0.15,
+            branching: 55.0,
+            branching_spread: 15.0,
+            divergence: 137.5,
+            internode: 0.5,
+            internode_shade: 0.3,
+            phototropism: 0.25,
+            gravitropism: 0.12,
+            shed_light: 0.12,
+            shed_years: 6.0,
+            pipe: 2.2,
+            bark: 0.0012,
+            cracks: 0.9,
+            leaf_sun: 0.10,
+            leaf_shade: 0.13,
+            leaf_density: 6.0,
+            wind_shorten: 0.35,
+            wind_thicken: 1.0,
+            lifespan: h[Species::Oak].lifespan,
+            tallest: h[Species::Oak].tallest,
+            rate: h[Species::Oak].rate,
+            crown: h[Species::Oak].crown,
+        },
+        // Beech: shade-tolerant (it keeps shaded limbs long), two-ranked, a moderate leader; its bole
+        // slenderer than an oak's (a higher pipe exponent: thinner for its leaves).
+        Genome {
+            apical: 0.35,
+            branching: 45.0,
+            branching_spread: 10.0,
+            divergence: 180.0,
+            internode: 0.4,
+            internode_shade: 0.45,
+            phototropism: 0.3,
+            gravitropism: 0.15,
+            shed_light: 0.08,
+            shed_years: 8.0,
+            pipe: 2.3,
+            bark: 0.0003,
+            cracks: 0.15,
+            leaf_sun: 0.08,
+            leaf_shade: 0.11,
+            leaf_density: 8.0,
+            wind_shorten: 0.3,
+            wind_thicken: 0.35,
+            lifespan: h[Species::Beech].lifespan,
+            tallest: h[Species::Beech].tallest,
+            rate: h[Species::Beech].rate,
+            crown: h[Species::Beech].crown,
+        },
+        // Birch: a pioneer with a strong leader, narrow-angled and fast, light-hungry.
+        Genome {
+            apical: 0.7,
+            branching: 35.0,
+            branching_spread: 10.0,
+            divergence: 137.5,
+            internode: 0.6,
+            internode_shade: 0.25,
+            phototropism: 0.35,
+            gravitropism: 0.18,
+            shed_light: 0.22,
+            shed_years: 3.0,
+            pipe: 2.0,
+            bark: 0.0004,
+            cracks: 0.35,
+            leaf_sun: 0.05,
+            leaf_shade: 0.07,
+            leaf_density: 5.0,
+            wind_shorten: 0.3,
+            wind_thicken: 0.3,
+            lifespan: h[Species::Birch].lifespan,
+            tallest: h[Species::Birch].tallest,
+            rate: h[Species::Birch].rate,
+            crown: h[Species::Birch].crown,
+        },
+        // Hawthorn: a shrub, no leader to speak of, wide and dense.
+        Genome {
+            apical: 0.05,
+            branching: 60.0,
+            branching_spread: 20.0,
+            divergence: 137.5,
+            internode: 0.2,
+            internode_shade: 0.35,
+            phototropism: 0.2,
+            gravitropism: 0.08,
+            shed_light: 0.12,
+            shed_years: 5.0,
+            pipe: 2.3,
+            bark: 0.0006,
+            cracks: 0.5,
+            leaf_sun: 0.04,
+            leaf_shade: 0.05,
+            leaf_density: 7.0,
+            wind_shorten: 0.4,
+            wind_thicken: 0.4,
+            lifespan: h[Species::Thorn].lifespan,
+            tallest: h[Species::Thorn].tallest,
+            rate: h[Species::Thorn].rate,
+            crown: h[Species::Thorn].crown,
+        },
+        // Blackthorn: a low suckering thicket shrub.
+        Genome {
+            apical: 0.03,
+            branching: 65.0,
+            branching_spread: 20.0,
+            divergence: 137.5,
+            internode: 0.18,
+            internode_shade: 0.3,
+            phototropism: 0.2,
+            gravitropism: 0.06,
+            shed_light: 0.15,
+            shed_years: 4.0,
+            pipe: 2.3,
+            bark: 0.0005,
+            cracks: 0.4,
+            leaf_sun: 0.035,
+            leaf_shade: 0.045,
+            leaf_density: 7.0,
+            wind_shorten: 0.4,
+            wind_thicken: 0.4,
+            lifespan: h[Species::Sloe].lifespan,
+            tallest: h[Species::Sloe].tallest,
+            rate: h[Species::Sloe].rate,
+            crown: h[Species::Sloe].crown,
+        },
+        // Pine: excurrent, its laterals near level, light-hungry (a bare lower trunk in a stand).
+        Genome {
+            apical: 0.95,
+            branching: 75.0,
+            branching_spread: 8.0,
+            divergence: 137.5,
+            internode: 0.55,
+            internode_shade: 0.2,
+            phototropism: 0.2,
+            gravitropism: 0.3,
+            shed_light: 0.25,
+            shed_years: 3.0,
+            pipe: 2.0,
+            bark: 0.0015,
+            cracks: 0.7,
+            leaf_sun: 0.08,
+            leaf_shade: 0.09,
+            leaf_density: 9.0,
+            wind_shorten: 0.3,
+            wind_thicken: 0.35,
+            lifespan: h[Species::Pine].lifespan,
+            tallest: h[Species::Pine].tallest,
+            rate: h[Species::Pine].rate,
+            crown: h[Species::Pine].crown,
+        },
+        // Alder: a moderate leader, two-ranked, of wet ground.
+        Genome {
+            apical: 0.55,
+            branching: 45.0,
+            branching_spread: 12.0,
+            divergence: 180.0,
+            internode: 0.45,
+            internode_shade: 0.3,
+            phototropism: 0.3,
+            gravitropism: 0.15,
+            shed_light: 0.18,
+            shed_years: 4.0,
+            pipe: 2.1,
+            bark: 0.0007,
+            cracks: 0.5,
+            leaf_sun: 0.07,
+            leaf_shade: 0.09,
+            leaf_density: 6.0,
+            wind_shorten: 0.3,
+            wind_thicken: 0.35,
+            lifespan: h[Species::Alder].lifespan,
+            tallest: h[Species::Alder].tallest,
+            rate: h[Species::Alder].rate,
+            crown: h[Species::Alder].crown,
+        },
+    ]
+}

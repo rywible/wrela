@@ -166,7 +166,7 @@ pub struct State {
 pub fn init() -> State {
     // The great tree as the Last Green bakes it: its kinds' seeds are their places plus one
     // (`stage::cook_load`), and the great tree's is the first (`trees::GREAT`).
-    let k = kind(great_tree(), 1, leaf_atlas(6), sampler())
+    let k = kind(great_tree().widened(), 1, leaf_atlas(6), sampler())
     var out: GpuBuffer<f32> = buffer(ATLAS * ATLAS * 8)
     // Sixty-four rows a dispatch (a dispatch has at most 65,535 workgroups a side).
     let band = 64 * ATLAS * 8

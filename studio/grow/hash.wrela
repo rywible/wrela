@@ -1,0 +1,156 @@
+// The grown structures' hashes (`wrela tool grow -- --hash --package <pkg>`, docs/plan-world-class-3.md
+// §E7): a program that grows (the vale) prints its archetypes' hash at its start and its first
+// ring's when that ring is drawn (`grown: ...`, `land::stage`); this builds it, runs it twice
+// natively (each from empty storage, so each grows) and once in Chrome, and compares the lines.
+// Equal lines are the growth's determinism (G-grown); a difference is a fault to find, not a
+// tolerance to add.
+
+use std::input::Script
+use std::io::print
+use std::tool::ToolError
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::files
+use std::tool::toolchain
+use toolkit::driven::{dashed, untrapped}
+use toolkit::page::run_page
+use toolkit::whole::read_file
+
+/// How many frames a run is given to draw its first ring (natively a run stops at the ring's
+/// line, `STEP` frames at a time), and the size it's drawn at.
+const FRAMES: u32 = 900
+const STEP: u32 = 30
+const PAGE_FRAMES: u32 = 360
+
+/// The helpers each run has (a page in test mode has one unless it's told; a played page has
+/// the cores less two): the same on both hosts.
+const WORKERS: u32 = 8
+const WIDTH: u32 = 960
+const HEIGHT: u32 = 540
+
+/// The `grown:` lines of a run's output, each without its time (the line's milliseconds differ
+/// run to run; its trees, its bytes and its hashes don't).
+fn grown_lines(lines: [String]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        let t = l.as_str()
+        let Some(at) = t.find("grown: ") else { continue }
+        let line = t.slice(at, t.len())
+        out.push(String::from(without_time(line)))
+    }
+    out
+}
+
+/// A `grown:` line with its times taken out (` in <n> ms`, and `; the slowest ...` up to its `)`).
+fn without_time(line: str) -> String {
+    let Some(a) = line.find(" in ") else { return String::from(line) }
+    let rest = line.slice(a + 4, line.len())
+    let Some(b) = rest.find(" ms") else { return String::from(line) }
+    let cut = String::from(f"{line.slice(0, a)}{rest.slice(b + 3, rest.len())}")
+    let c = cut.as_str()
+    let Some(x) = c.find("; the slowest") else { return String::from(c) }
+    let tail = c.slice(x, c.len())
+    let Some(y) = tail.find(")") else { return String::from(c) }
+    String::from(f"{c.slice(0, x)}{tail.slice(y, tail.len())}")
+}
+
+/// The time a `grown: the first ring` line gives (ms), if it does.
+fn time_of(lines: [String]) -> Option<String> {
+    for l in lines {
+        let t = l.as_str()
+        if t.find("grown: the first ring").is_none() {
+            continue
+        }
+        let a = t.find(" in ")?
+        let rest = t.slice(a + 4, t.len())
+        let b = rest.find(" ms")?
+        return Some(String::from(rest.slice(0, b)))
+    }
+    None
+}
+
+/// Package `pkg` (in the root `ws`) built into `out` and run twice natively and once in Chrome:
+/// each run's `grown:` lines printed, and an error unless all three are the same.
+pub fn hashes(ws: str, out: str, pkg: str) -> Result<(), ToolError> {
+    let dir = String::from(f"{out}/hash-{dashed(pkg)}")
+    var options = toolchain::options()
+    options.optimize = true
+    options.timeout = 600.0
+    let built = toolchain::build(f"{ws}/{pkg}", dir.as_str(), options).wait()?
+    if !built.ok {
+        for d in built.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{pkg} didn't build"))
+    }
+    var runs: Vec<(String, Vec<String>)> = Vec::new()
+    for k in 0..2 {
+        // From empty storage: each run grows its trees (a kept shape isn't grown).
+        let _ = files::remove_all(f"{dir}/storage").wait()
+        var load = drive::gpu()
+        load.width = WIDTH
+        load.height = HEIGHT
+        load.timeout = 600.0
+        load.workers = WORKERS
+        let b = drive::load(dir.as_str(), load).wait()?.build
+        var init = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
+        var lines = drive::lines(mut init)?
+        var ran = 0
+        while ran < FRAMES && time_of(lines).is_none() {
+            var seen = untrapped(
+                "the frames",
+                drive::steps(b, [Step::Frames(STEP, Script::frames())], timeout: 600.0).wait()?,
+            )?
+            for l in drive::lines(mut seen)? {
+                lines.push(l.clone())
+            }
+            ran += STEP
+        }
+        let _ = drive::close(b).wait()
+        runs.push((String::from(f"native {k + 1}"), take lines))
+    }
+    run_page(
+        dir.as_str(),
+        f"#test&frames={PAGE_FRAMES}&width={WIDTH}&height={HEIGHT}&fps=60&workers={WORKERS}",
+        WIDTH,
+        HEIGHT,
+        timeout: 600.0,
+    )?
+    let log = read_file(f"{dir}/results/console.log", "the page's console")?
+    let Some(text) = String::from_utf8(take log) else {
+        return Err(ToolError::new("the page's console isn't text"))
+    }
+    var page: Vec<String> = Vec::new()
+    for (a, b) in text.as_str().lines() {
+        page.push(String::from(text.as_str().slice(a, b)))
+    }
+    runs.push((String::from("Chrome"), take page))
+    var first: Vec<String> = Vec::new()
+    var same = true
+    for k in 0..runs.len() {
+        let (name, lines) = (runs[k].0.clone(), grown_lines(runs[k].1))
+        let ms = match time_of(runs[k].1) {
+            Some(t) => take t,
+            None => String::from("?"),
+        }
+        print(f"{name} (the first ring in {ms} ms):")
+        for l in lines {
+            print(f"  {l}")
+        }
+        if lines.len() < 2 {
+            return Err(ToolError::new(f"{name}: no first ring's line within {FRAMES} frames"))
+        }
+        if k == 0 {
+            first = lines.clone()
+        } else if lines != first {
+            same = false
+        }
+    }
+    if !same {
+        return Err(ToolError::new("the grown hashes differ between the runs: a determinism fault"))
+    }
+    print("grow: the hashes are the same in every run")
+    Ok(())
+}

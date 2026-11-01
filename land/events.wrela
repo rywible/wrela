@@ -5,8 +5,9 @@
 // puts in that year. Nothing outside the package calls it.
 
 use grow::{
-    Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,
-    State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear, world,
+    Cause, Cx, FALL, FIRE, Fields, GALE, Grid, Habit, Heap, LIGHTNING, Land, Mark, Memories,
+    NEIGHBOURS, NEVER, NONE, Shaper, State, Tree, UNBROWSED, grazed_bare, mark, noted, rotate,
+    sapling, shaped, tear, world,
 }
 use engine::noise::{noise2, rand}
 use place::{Event, EventKind}
@@ -65,6 +66,11 @@ fn gale(
             let blow = 1.0 - smoothstep(0.85 * reach, 1.2 * reach, d)
             if blow <= 0.0 {
                 continue
+            }
+            // What the gale was to it, whatever it did (§E2: its growth reads the year and how
+            // hard).
+            if gust == 0 {
+                t = noted(t, year, GALE, blow * share)
             }
             let h = habits[t.kind]
             let c = g.cell_at(t.at)
@@ -146,6 +152,13 @@ fn gale(
                 t.state = State::Gone
                 t.died = year
                 t.cause = Cause::Wind
+            }
+        }
+        // A standing tree the thrown came down beside: its crown torn on that side (§E2).
+        if t.state == State::Alive && shelter.holds(t.at) {
+            let torn = near[shelter.cell_at(t.at)]
+            if torn > 0.2 {
+                t = noted(t, year, FALL, torn)
             }
         }
     }
@@ -402,6 +415,7 @@ fn scorch(trees: mut Vec<Tree>, habits: [Habit], g: Grid, heat: [f32], year: i32
                 t.died = year
                 t.cause = Cause::Fire
                 t.shaped = shaped(Shaper::Event, ei)
+                t = noted(t, year, FIRE, hot)
             }
         }
     }
@@ -475,6 +489,7 @@ pub(package) fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
                         t.cause = Cause::Lightning
                         t.state = State::Snag
                         t.shaped = shaped(Shaper::Event, ei)
+                        t = noted(t, year, LIGHTNING, 1.0)
                     }
                 },
                 EventKind::Gaps { block, chance, radius } => {
@@ -896,4 +911,51 @@ fn stand(
         }
         y += apart
     }
+}
+
+/// A gale's year and strength are in what befell every tall tree it reached, thrown or standing
+/// (§E2's `Tree::events`), and in no tree beyond it.
+@test
+fn a_gale_is_in_the_events_of_the_trees_it_reached() {
+    let land = open_land(80.0)
+    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.8)]
+    var trees: Vec<Tree> = Vec::new()
+    stand(
+        mut trees,
+        habits,
+        vec2(-30.0, -30.0),
+        vec2(30.0, 30.0),
+        apart: 6.0,
+        tall: 14.0,
+        girth: 0.35,
+    )
+    var f = test_fields(land.grid)
+    gale(
+        mut trees,
+        land,
+        habits,
+        mut f,
+        vec2(-30.0, 0.0),
+        reach: 25.0,
+        share: 0.6,
+        dir: vec2(1.0, 0.0),
+        year: 40,
+        ei: 0,
+    )
+    var reached = 0
+    for t in trees {
+        let d = length(t.at - vec2(-30.0, 0.0))
+        var has = false
+        for e in t.events {
+            has = has || (e.kind == grow::GALE && e.year == 40 && e.strength > 0)
+        }
+        if d < 0.8 * 25.0 - 8.0 {
+            assert(has, f"a tree {d} m from the gale has no gale in its events")
+            reached += 1
+        }
+        if d > 1.2 * 25.0 + 8.0 {
+            assert(!has, f"a tree {d} m off took the gale")
+        }
+    }
+    assert(reached > 4, f"{reached} trees reached")
 }

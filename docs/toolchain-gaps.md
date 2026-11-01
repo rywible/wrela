@@ -18,6 +18,13 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Proposed:** `host::underlay(id, on)`: the surface `id` (opened, not shown) is drawn behind this program, which is now composited with premultiplied alpha (the canvas reconfigured `alphaMode: "premultiplied"`, the screen pass's alpha kept), the surface getting no input and no audio (muted, or told so with its `environment`, as reduced motion is); `on: false` puts both back. The opener draws its screen with alpha where the game should show (the console: its hero's gradient over a clear screen). A frame budget should stay the opener's: a host that strains (`strained` in console/main.wrela) closes the surface.
 - **Meanwhile:** the home shows the game's hero, a still the release ships (`catalog.tsv`'s hero column), drifting a little with the pointer. Nothing is worked around: no flipbook, no frame of the game's in the console.
 - **Status:** open. With it: a catalog column naming the game's attract build and start (`capybara/#attract`), the console opening it once the home has rested on a game for a few seconds and fading the hero out over it, and the game's `#attract` start (the game's own work: a searched route a level, on a loop, its HUD and sound off).
+### A constant can't hold a value over about 200 KiB
+
+- **Needed:** a grown veteran tree as a `plant::Plant` (docs/plan-world-class-3.md §E1.2): its woody silhouette within IoU 0.97 of its growth graph takes up to 5,563 limbs (a 100-year hawthorn), so `MAX_LIMBS` at 4,096 or more, a `Plant` of 256 KiB.
+- **What happens:** toolchain 0.11.1 traps computing the constants that hold a `Plant` (`trees::kinds`' `SHAPES`, which builds each kind's plant, and `FALLEN_LIMBS`): "computing the constant `SHAPES` trapped: an index out of range, an integer overflow, or a value too large for the stack". At `MAX_LIMBS` 2,048 (128 KiB) they compute.
+- **Found:** 2026-10-30, raising `MAX_LIMBS` for E1.2.
+- **Meanwhile:** `MAX_LIMBS` is 2,048; the thinnest limbs past it are drawn by the crown's clumps, and the conversion's IoU at 2,048 is the measured floor (0.87, docs/bench.md "E1.2"), the plan's 0.97 Blocked.
+- **Status:** open: a larger stack for constant evaluation, or values of that size held off it.
 
 ### A driven frame doesn't say its passes' targets or GPU times
 

@@ -1,0 +1,45 @@
+// The vale's drawn things and their provenance (docs/plan-world-class-3.md §E0, G-grown): every
+// kind its wood draws (`trees::kinds::plants(grown: true)`, the vale's; the floor's are the hand's
+// until it adopts them, D40),
+// every species its grass places (`engine::grass::SPECIES`), and its ground's small causes' fields
+// (`engine::growth::FIELDS`); the authored ones counted.
+
+use engine::grass::{SPECIES_N, species_provenance}
+use engine::growth::{FIELDS, field_provenance}
+use std::io::print
+use trees::kinds::{KINDS, provenance}
+
+/// How many of the drawn things the vale's and the floor's kinds list holds are authored now: each
+/// part of §E that grows a kind of them lowered it (63 at E0; 47 at E1.3, the 16 living kinds
+/// grown; 14 at E3, the 33 species grown; 8 at E4, the fields and the fallen trees grown; 3 at
+/// E8, the standing dead grown). The 3 are the great tree (the floor's, a character of its lore:
+/// H1 keeps it) and the two far kinds no program places; the vale places none of them, and its
+/// own count, over its instances, is 0 (`vale_land_tests::every_plant_the_vale_draws_is_grown`).
+const AUTHORED_NOW: u32 = 3
+
+@test
+fn the_vales_authored_things_are_counted_and_fall() {
+    var kinds = 0
+    for k in 0..KINDS {
+        if provenance(k, grown: true).authored() {
+            kinds += 1
+        }
+    }
+    var species = 0
+    for i in 0..SPECIES_N {
+        if species_provenance(i).authored() {
+            species += 1
+        }
+    }
+    var fields = 0
+    for i in 0..FIELDS.len() {
+        if field_provenance(i).authored() {
+            fields += 1
+        }
+    }
+    let all = kinds + species + fields
+    print(
+        f"authored: {kinds} of {KINDS} kinds, {species} of {SPECIES_N} species, {fields} of {FIELDS.len()} fields: {all}",
+    )
+    assert(all <= AUTHORED_NOW, f"{all} authored, more than the {AUTHORED_NOW} now")
+}

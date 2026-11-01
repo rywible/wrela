@@ -31,7 +31,7 @@ use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
 use plant::{
     CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Plant, Wind, cook_outlines,
-    level_cards,
+    level_cards, level_limbs,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -485,24 +485,23 @@ impl Chosen {
     /// list's draws' template from its kind: a way's lists one after another, a kind each (list
     /// `way * kinds + kind`), so its draws are one multi-draw. A second phase (`late`) has room
     /// only for the camera's (`ways` more than 1).
-    fn lay_out(mut self, kinds: [Kind], far_kinds: [u32], per_kind: [u32], ways: u32) {
+    fn lay_out(mut self, counts: [vec2u], per_kind: [u32], ways: u32) {
         self.lists.clear()
         var first = 0
         var held = 0
         var templates: Vec<ListDraws> = Vec::new()
-        for k in 0..(kinds.len() + far_kinds.len()) {
+        for k in 0..counts.len() {
             held += per_kind[k]
         }
         for way in 0..ways {
-            for k in 0..(kinds.len() + far_kinds.len()) {
+            for k in 0..counts.len() {
                 let n = per_kind[k]
-                borrow kd = kinds[if k < kinds.len() { k } else { far_kinds[k - kinds.len()] }]
                 let how = if ways == 1 { 1 } else { way }
                 self.lists.push(List { kind: k, how, first, room: n })
                 first += (n + 31) / 32 * 32
                 let near = how < CARD_LEVELS
-                let cards = if near { level_cards(kd.card_count, how) } else { 0 }
-                let limbs = if near { kd.limb_count } else { 0 }
+                let cards = if near { level_cards(counts[k].x, how) } else { 0 }
+                let limbs = if near { level_limbs(counts[k].y, how) } else { 0 }
                 let d = |indices: u32| DrawIndexedArgs {
                     indices,
                     instances: 0,
@@ -642,6 +641,9 @@ impl Chosen {
 /// way's draws bind the same for every kind, and are one multi-draw.
 pub struct Pool {
     pub kinds: GpuBuffer<KindDesc>,
+    /// Each kind's description as `kinds` holds it (a near individual's taken from its
+    /// archetype's: `Wood::set_near`).
+    pub descs: Vec<KindDesc> = Vec::new(),
     pub cards: GpuBuffer<Card>,
     pub orders: GpuBuffer<u32>,
     pub limbs: GpuBuffer<Tube<4>>,
@@ -859,7 +861,8 @@ impl Pooling {
         for f in far_kinds {
             descs.push(descs[f])
         }
-        p.kinds = buffer_of(descs, at_least: 1)
+        p.kinds = buffer_of(descs.clone(), at_least: 1)
+        p.descs = take descs
         p
     }
 }
@@ -888,6 +891,8 @@ pub struct Wood {
     /// of its own drawn only far (a far layer's: never as cards, nor in the shadows).
     pub far_kinds: Vec<u32>,
     pub atlas: Texture<Rgba8>,
+    /// The moss's patches on bark (`growth::MOSS`), bound where limbs are drawn.
+    pub moss: GpuBuffer<u32>,
     outlines: GpuBuffer<vec2>,
     /// Bark's ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
     /// sampler that repeats them.
@@ -933,6 +938,23 @@ pub struct Wood {
     /// gives one, `switches::Switches::NEURAL`).
     neural: Neural,
     net: GpuBuffer<Half2>,
+    /// The near individuals (§E1.3, `reserve_near`): each one's archetype (`NO_KIND`: free), its
+    /// cards and limbs, the room each has (cards, limbs), and where the first's starts in the
+    /// pool (its cards, orders and limbs).
+    near_of: Vec<u32> = Vec::new(),
+    near_counts: Vec<vec2u> = Vec::new(),
+    near_room: vec2u = vec2u(0),
+    near_at: vec3u = vec3u(0),
+}
+
+/// Instance `at`'s kind rewritten in place (its tint's high half, `impostor::of_kind`):
+/// dispatched over `at + 1` invocations, the last its own (a `Slots` is indexed by the invocation
+/// alone, and a span of the one instance would start off a storage binding's 256-byte alignment).
+@compute(64)
+fn retargeted(every: mut Slots<Instance>, at: u32, kind: u32, id: GlobalId) {
+    if id.x == at {
+        every[id] = of_kind(every[id], kind)
+    }
 }
 
 impl Wood {
@@ -989,6 +1011,7 @@ impl Wood {
         let ridges = plant::cook_ridges()
         let coarse = plant::cook_coarse(ridges)
         var w = Wood {
+            moss: buffer_of(Vec::from(growth::MOSS), at_least: 1),
             kinds,
             far_kinds,
             atlas,
@@ -1092,12 +1115,36 @@ impl Wood {
 
     /// All the kinds its instances name: its own and its far ones.
     pub fn all_kinds(self) -> u32 {
-        self.kinds.len() + self.far_kinds.len()
+        self.kinds.len() + self.far_kinds.len() + self.near_of.len()
     }
 
     /// The kind kind `k` is drawn as: its own, or a far kind's own.
     pub fn own(self, k: u32) -> u32 {
-        if k < self.kinds.len() { k } else { self.far_kinds[k - self.kinds.len()] }
+        let (own, far) = (self.kinds.len(), self.far_kinds.len())
+        if k < own { k } else if k < own + far { self.far_kinds[k - own] } else {
+            let a = self.near_of[k - own - far]
+            if a == NO_KIND { 0 } else { a }
+        }
+    }
+
+    /// Whether kind `k` is a far kind (drawn only far).
+    fn is_far(self, k: u32) -> bool {
+        k >= self.kinds.len() && k < self.kinds.len() + self.far_kinds.len()
+    }
+
+    /// Each kind's cards and limbs (a far kind's its own kind's; a near individual's its own).
+    fn counts(self) -> Vec<vec2u> {
+        var out: Vec<vec2u> = Vec::new()
+        let own = self.kinds.len() + self.far_kinds.len()
+        for k in 0..self.all_kinds() {
+            out.push(
+                if k < own {
+                    borrow kd = self.kinds[self.own(k)]
+                    vec2u(kd.card_count, kd.limb_count)
+                } else { self.near_counts[k - own] },
+            )
+        }
+        out
     }
 
     /// How kind `k`'s instances choose their level: a far kind's are past their cards from the
@@ -1105,8 +1152,8 @@ impl Wood {
     pub fn lod(self, k: u32) -> Lod {
         borrow kind = self.kinds[self.own(k)]
         Lod {
-            cards_to: if k < self.kinds.len() { self.cards_to } else { 1.0e-3 },
-            cards_limit: if k < self.kinds.len() { self.cards_limit } else { 1.0e-3 },
+            cards_to: if self.is_far(k) { 1.0e-3 } else { self.cards_to },
+            cards_limit: if self.is_far(k) { 1.0e-3 } else { self.cards_limit },
             impostor_px: self.impostor_px,
             impostors_to: self.impostors_to,
             leaf: kind.plant.leaves.size,
@@ -1115,6 +1162,142 @@ impl Wood {
             card_px: self.card_px,
             cell: self.cell,
         }
+    }
+
+    /// Room for `n` near individuals (§E1.3: a tree near the eye grown from its own record, its
+    /// own cards and limbs), each up to `cards` cards and `limbs` limbs: kinds after the far ones,
+    /// each drawn as its archetype is (its levels, and past its cards its archetype's impostor
+    /// and volume) until `set_near` gives it its own. Before any tile is loaded.
+    pub fn reserve_near(mut self, n: u32, cards: u32, limbs: u32) {
+        let at = vec3u(self.pool.cards.len(), self.pool.orders.len(), self.pool.limbs.len())
+        var c: GpuBuffer<Card> = buffer(at.x + n * cards)
+        var o: GpuBuffer<u32> = buffer(at.y + n * CORNERS * cards)
+        var l: GpuBuffer<Tube<4>> = buffer(at.z + n * limbs)
+        copy(
+            from: self.pool.cards.span(start: 0, count: at.x),
+            to: c.span_mut(start: 0, count: at.x),
+        )
+        copy(
+            from: self.pool.orders.span(start: 0, count: at.y),
+            to: o.span_mut(start: 0, count: at.y),
+        )
+        copy(
+            from: self.pool.limbs.span(start: 0, count: at.z),
+            to: l.span_mut(start: 0, count: at.z),
+        )
+        self.pool.cards = take c
+        self.pool.orders = take o
+        self.pool.limbs = take l
+        for i in 0..n {
+            var d = self.pool.descs[0]
+            d.card_count = 0
+            d.limb_count = 0
+            d.card_first = at.x + i * cards
+            d.order_first = at.y + i * CORNERS * cards
+            d.limb_first = at.z + i * limbs
+            self.pool.descs.push(d)
+        }
+        self.pool.kinds = buffer_of(self.pool.descs.clone(), at_least: 1)
+        self.near_of = Vec::filled(n, NO_KIND)
+        self.near_counts = Vec::filled(n, vec2u(0))
+        self.near_room = vec2u(cards, limbs)
+        self.near_at = at
+        var most = cards
+        var most_limbs = limbs
+        for k in self.kinds {
+            most = max(most, k.card_count)
+            most_limbs = max(most_limbs, k.limb_count)
+        }
+        self.card_triangles = buffer_of(card_indices(most))
+        self.limb_triangles = buffer_of(limb_indices(most_limbs))
+        let all = self.all_kinds()
+        for i in 0..self.slots.len() {
+            while self.slots[i].kinds.len() < all {
+                self.slots[i].kinds.push(0)
+            }
+        }
+        self.lods = buffer(max(all, 1))
+        self.write_lods()
+        self.laid = false
+    }
+
+    /// The near individuals' kinds' first index (`reserve_near`): individual `i` is this plus `i`.
+    pub fn near_kind(self, i: u32) -> u32 {
+        self.kinds.len() + self.far_kinds.len() + i
+    }
+
+    /// Near individual `i` cooked (`k`, without an impostor: `vegetation::kind_near`), its
+    /// archetype `of` (whose impostor, volume and levels it borrows): its cards, orders and limbs
+    /// into its room, its description written; or nothing, and false, if they don't fit (its
+    /// cards' orders index all of its cards, a block a corner, so a share of them can't be
+    /// kept: it's drawn as its archetype).
+    pub fn set_near(mut self, i: u32, k: Kind, of: u32) -> bool {
+        if k.card_count > self.near_room.x || k.limb_count > self.near_room.y {
+            return false
+        }
+        let (c, l) = (k.card_count, k.limb_count)
+        let at = self.near_at
+        let (cf, of_, lf) = (
+            at.x + i * self.near_room.x,
+            at.y + i * CORNERS * self.near_room.x,
+            at.z + i * self.near_room.y,
+        )
+        if c > 0 {
+            copy(
+                from: k.cards.span(start: 0, count: c),
+                to: self.pool.cards.span_mut(start: cf, count: c),
+            )
+            copy(
+                from: k.orders.span(start: 0, count: CORNERS * c),
+                to: self.pool.orders.span_mut(start: of_, count: CORNERS * c),
+            )
+        }
+        if l > 0 {
+            copy(
+                from: k.limbs.span(start: 0, count: l),
+                to: self.pool.limbs.span_mut(start: lf, count: l),
+            )
+        }
+        var d = self.pool.descs[of]
+        d.card_first = cf
+        d.card_count = c
+        d.order_first = of_
+        d.limb_first = lf
+        d.limb_count = l
+        let kind = self.near_kind(i)
+        self.pool.descs[kind] = d
+        write(mut self.pool.kinds, kind, [d])
+        self.near_of[i] = of
+        self.near_counts[i] = vec2u(c, l)
+        self.write_lods()
+        self.laid = false
+        true
+    }
+
+    /// Near individual `i` given up (its instances retargeted to their archetypes first).
+    pub fn free_near(mut self, i: u32) {
+        let kind = self.near_kind(i)
+        self.pool.descs[kind].card_count = 0
+        self.pool.descs[kind].limb_count = 0
+        write(mut self.pool.kinds, kind, [self.pool.descs[kind]])
+        self.near_of[i] = NO_KIND
+        self.near_counts[i] = vec2u(0)
+        self.laid = false
+    }
+
+    /// Instance `index` of tile `t`'s own trees drawn as kind `to`, not `from` (a tree's archetype
+    /// and its near individual, one for the other).
+    pub fn retarget(mut self, t: vec2i, index: u32, from: u32, to: u32) {
+        let Some(i) = self.slot_of(t) else { return }
+        if index >= self.slots[i].count {
+            return
+        }
+        self.slots[i].kinds[from] -= min(self.slots[i].kinds[from], 1)
+        self.slots[i].kinds[to] += 1
+        let at = i * SLOT + index
+        write(mut self.metadata, at, [to])
+        dispatch(retargeted.bind(mut self.every, at, to), over: at + 1)
+        self.laid = false
     }
 
     /// The kinds' levels, to the GPU (after a change of where they hand over).
@@ -1251,12 +1434,13 @@ impl Wood {
     fn lay_out(mut self) {
         if !self.laid {
             var per = self.per_kind()
-            self.seen.lay_out(self.kinds, self.far_kinds, per, WAYS)
+            let counts = self.counts()
+            self.seen.lay_out(counts, per, WAYS)
             // The far layer casts no shadow of its own (the cascades' trees are the tiles').
-            for k in self.kinds.len()..self.all_kinds() {
+            for k in self.kinds.len()..(self.kinds.len() + self.far_kinds.len()) {
                 per[k] = 0
             }
-            self.shadowed.lay_out(self.kinds, self.far_kinds, per, 1)
+            self.shadowed.lay_out(counts, per, 1)
             // The loaded runs: each occupied slot's instances, numbered on.
             var runs: Vec<u32> = Vec::new()
             var total = 0
@@ -1561,6 +1745,7 @@ impl Wood {
                     limbs: self.pool.limbs,
                     instances: ph.instances.span(start: 0, count: self.seen.places),
                     marks: ph.marks.span(start: 0, count: self.seen.places),
+                    moss: self.moss,
                 ),
                 bark_shade.bind(
                     lt,
