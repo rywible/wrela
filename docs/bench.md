@@ -1646,6 +1646,70 @@ D1)**; G7 and G5 no longer named. The next item is G4.
 0 of 12. Losses artifacts 29.50, colour 15.88, depth 14.38, value 12.25, light 10.38 (F10's
 28.75, 16.75, 15.50, 13.88, 10.88: their sum 82.39 against 85.76).
 
+### 2026-11-01: G4, shadows at Epic, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G4, named by the development panel's re-ranking after G7 (D5's and
+D1's "hard" shadows). Linux pop-os (Radeon "Lucienne"), **not the M4 Air**.
+
+**What changed.** PCSS on at `Epic` (`tier::Tiered`); the moving map softened as the static maps
+are (its blocker search and 12-tap filter over its own 79 m of depth, `Shadows::moving_depth`).
+Not taken: the near cascade at 4096 (the vale's GPU peak is already 579.5 MiB against 512, §E1.3:
+memory doesn't allow); the blocker search at half size (below).
+
+**Cost** (`wrela profile examples/vale --serial --size 1920x1080 --warmup 600 --frames 300`, the
+vale's first view, GPU medians, before → after): vegetation 11.669 → 12.110, terrain 4.837 →
+5.008, water 4.459 → 4.652, fog 1.363 → 1.493 ms; the rest within 0.01. **+0.94 ms** on this
+iGPU, whose vale frame runs 61 ms against the M4's 17.8 (§E1.3): about 0.28 ms there if it scales
+with the frame. The plan's 0.8 ms is the M4's: **re-measure there**, and build the half-size
+blocker search only if it's over.
+
+**Tests** (`engine/tests/shadow-pcss`): the post's foot sharper than its tip
+(`a_higher_blocker_casts_a_wider_penumbra`: 13 texels under a blocker 16 m up, 2 under one 1 m up);
+`the_cascades_seam_shows_no_line` (along a soft edge from the near map alone out past the far
+map's, a quarter texel apart: 0.07/255 between neighbours at most, against 1/255).
+
+**G-look on shots 1 and 6** (blind, one judge, before against after, calibrated against an
+eight-pass blur, which it rejected): shot 1, after ("a's shadows are smooth and grounded while
+b's carry a dithered, hatch-like noise in the penumbrae"); shot 6, before ("b's over-softened
+shadows flatten the scene": the evening sun is low, its blockers far, the penumbra wide).
+
+**The development panel** (`build/g4-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.88, 3.00, 2.50, 2.88, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.00, 0.12 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.12, 0.88, 0.00 | 3.00, 2.50, 2.50, 2.88, 2.50 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.25, 2.00, 1.38, 2.00, 1.00 | 2.12, 3.00, 2.38, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.88, 2.50, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.88, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.12, 3.00 |
+
+0 of 8. Losses **artifacts 15.75, colour 9.38, depth 8.50, value 8.38, light 7.75** (G7's 15.88,
+9.62, 8.88, 9.00, 7.75: their sum 49.76 against 51.13). Re-ranked: G7 (2.88, D3), G3 (2.00, D2), G4
+(2.00), G1 (1.25, D8 and D1); G7 and G4 are built. The next item is G3.
+
+**The sealed panel, for the record** (`build/g4-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.25, 0.12 | 2.00, 3.00, 2.88, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.88, 0.38 | 2.00, 3.00, 2.38, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.12, 1.88, 0.25 | 2.00, 3.00, 2.50, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.25, 1.25, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.00, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.25, 2.00, 1.00, 2.00, 0.88 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.50, 1.38, 0.00 | 2.12, 3.00, 3.00, 2.62, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.62, 1.12, 0.50 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.50, 0.00 | 2.38, 3.00, 2.25, 2.75, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.62, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.38, 2.00, 1.00 | 3.00, 3.00, 2.25, 3.00, 3.00 |
+
+0 of 12. Losses artifacts 30.88, depth 16.25, colour 15.75, value 12.62, light 10.62 (their sum
+86.12 against G7's 82.39: the panels' judges differ by a few points run to run).
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
