@@ -1,0 +1,195 @@
+// Part G's menu (plan three's §G0): what the development panel's losses pick to build next. Each
+// of the map's rows names the rubric rows it answers, the shot classes whose pairs can name it (a
+// class's development shot: 1 → D1, 2 → D2, 3 → D3, 4 → D4, 6 → D5, 8 → D6, 9 → D7, 12 → D8; none:
+// any pair), the words in the judges' sentences that name it, and its item.
+//
+// A pair names an item when its class is the item's (or the item takes any) and a judge's
+// sentence on one of the item's rows holds one of its words. An item's loss is what the still lost
+// on the item's rows (the reference's mean less the still's) summed over the pairs that name it;
+// the items are taken in the order of their losses, ties by how many pairs name them, and an item
+// no pair names isn't built.
+
+use tally::{PairTally, Tally}
+use std::string::String
+
+/// A row of the map: its item, the rubric rows it answers (`tally::ROWS`' indices), the classes
+/// whose pairs can name it (empty: any), and the words that name it.
+pub struct MenuRow: Copy {
+    pub item: Text,
+    pub rows: [u32; 2],
+    pub row_count: u32,
+    pub classes: [u32; 2],
+    pub class_count: u32,
+    pub words: [Text; 5],
+    pub word_count: u32,
+}
+
+/// The rubric rows' indices (`tally::ROWS`).
+const LIGHT: u32 = 0
+const COLOUR: u32 = 1
+const VALUE: u32 = 2
+const DEPTH: u32 = 3
+const ARTIFACTS: u32 = 4
+
+/// §G0's map.
+pub const MENU: [MenuRow; 7] = [
+    MenuRow {
+        item: "G1",
+        rows: [LIGHT, LIGHT],
+        row_count: 1,
+        classes: [12, 1],
+        class_count: 2,
+        words: [
+            "flat",
+            "no bounce",
+            "the shade is dead",
+            "the wood's interior",
+            "under the canopy",
+        ],
+        word_count: 5,
+    },
+    MenuRow {
+        item: "G2",
+        rows: [LIGHT, ARTIFACTS],
+        row_count: 2,
+        classes: [4, 8],
+        class_count: 2,
+        words: ["reflection", "the mere", "the water", "", ""],
+        word_count: 3,
+    },
+    MenuRow {
+        item: "G3",
+        rows: [LIGHT, COLOUR],
+        row_count: 2,
+        classes: [2, 2],
+        class_count: 1,
+        words: ["the leaves glow", "translucent", "backlit", "", ""],
+        word_count: 3,
+    },
+    MenuRow {
+        item: "G4",
+        rows: [ARTIFACTS, ARTIFACTS],
+        row_count: 1,
+        classes: [6, 1],
+        class_count: 2,
+        words: ["shadows", "hard", "aliased edge of the shadow", "", ""],
+        word_count: 3,
+    },
+    MenuRow {
+        item: "G5",
+        rows: [DEPTH, ARTIFACTS],
+        row_count: 2,
+        classes: [8, 8],
+        class_count: 1,
+        words: ["soft at distance", "the far trees", "blobby", "", ""],
+        word_count: 3,
+    },
+    MenuRow {
+        item: "G6",
+        rows: [ARTIFACTS, COLOUR],
+        row_count: 2,
+        classes: [4, 4],
+        class_count: 1,
+        words: ["the fall", "spray", "foam", "", ""],
+        word_count: 3,
+    },
+    MenuRow {
+        item: "G7",
+        rows: [COLOUR, VALUE],
+        row_count: 2,
+        classes: [0, 0],
+        class_count: 0,
+        words: ["washed out", "the range", "too dark", "the sky's colour", ""],
+        word_count: 4,
+    },
+]
+
+/// The development shots' classes, D1 to D8 (`vale::lookbook`'s development shots, in order).
+pub const DEVELOPMENT_CLASSES: [u32; 8] = [1, 2, 3, 4, 6, 8, 9, 12]
+
+/// An item the panel names: its name, its loss and how many pairs name it.
+pub struct Named: Clone {
+    pub item: String,
+    pub loss: f32,
+    pub pairs: u32,
+}
+
+/// `s` with its ASCII capitals lowered.
+fn lower(s: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        out.push(if b >= 65 && b <= 90 { b + 32 } else { b })
+    }
+    String::from_utf8(take out).unwrap_or(String::from(s))
+}
+
+/// Whether pair `p` (of class `class`) names `m`: its class is one of `m`'s (or `m` takes any) and
+/// a judge's sentence on one of `m`'s rows holds one of its words.
+pub fn names(m: MenuRow, p: PairTally, class: u32) -> bool {
+    var of_class = m.class_count == 0
+    for k in 0..m.class_count {
+        of_class = of_class || m.classes[k] == class
+    }
+    if !of_class {
+        return false
+    }
+    for r in 0..m.row_count {
+        let row = m.rows[r]
+        if row >= p.notes.len() {
+            continue
+        }
+        for note in p.notes[row] {
+            let text = lower(note.as_str())
+            for w in 0..m.word_count {
+                if text.as_str().find(m.words[w]).is_some() {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The items `t`'s pairs name (each pair's class `classes[pair - 1]`), most lost first, ties by
+/// how many pairs name them.
+pub fn ranked_items(t: Tally, classes: [u32]) -> Vec<Named> {
+    var out: Vec<Named> = Vec::new()
+    for m in MENU {
+        var loss = 0.0
+        var pairs = 0
+        for p in t.pairs {
+            let class = if p.pair >= 1 && p.pair <= classes.len() { classes[p.pair - 1] } else {
+                0
+            }
+            if !names(m, p, class) {
+                continue
+            }
+            pairs += 1
+            for r in 0..m.row_count {
+                loss += p.reference_means[m.rows[r]] - p.still_means[m.rows[r]]
+            }
+        }
+        if pairs > 0 {
+            out.push(Named { item: String::from(m.item), loss, pairs })
+        }
+    }
+    out.sort_by(|a, b| a.loss > b.loss || (a.loss == b.loss && a.pairs > b.pairs))
+    out
+}
+
+/// The items no pair of `t` names: not needed unless a later panel names them.
+pub fn unnamed(t: Tally, classes: [u32]) -> Vec<String> {
+    let named = ranked_items(t, classes)
+    var out: Vec<String> = Vec::new()
+    for m in MENU {
+        var found = false
+        for n in named {
+            found = found || n.item.as_str() == m.item
+        }
+        if !found {
+            out.push(String::from(m.item))
+        }
+    }
+    out
+}

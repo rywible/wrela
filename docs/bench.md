@@ -1478,6 +1478,82 @@ like confetti over the trail and the water, the cylinder root plates and the sme
 half a metre tall at 6 m and 10 m; E8 drew a larger stand-in). Every judge's file is in
 `build/f10-panel/judges/`.
 
+### 2026-11-01: the development panel and Part G's ranking (G0), toolchain 0.18.0
+
+docs/plan-world-class-3.md §G0: the vale at `main` after Part F (808e39ba), its eight development
+shots (D1–D8) at 1920×1080 through `Physical` (`build/stills-g0`, `wrela tool lookbook --
+build/stills-g0 --package examples/vale --stills --size 1920x1080 12 13 14 15 16 17 18 19`, Linux
+pop-os, Radeon "Lucienne") against the development set's references (each checked against its
+SHA-256), seed 5, eight agent judges in fresh contexts given E8's brief; all eight passed both
+calibration pairs. The development panel ranks Part G's work and stops it; the sealed twelve are
+tallied once per item for the record only.
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/g0-panel --a build/stills-g0 --set development --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/g0-panel --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.75, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 1.50, 1.00, 2.00, 1.00, 0.00 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.88, 0.00 | 3.00, 2.38, 2.38, 2.88, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 2.25, 3.00, 2.00, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.88, 3.00, 2.88, 2.25, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.62, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.00, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: lost worse than
+6 to 2; majority: 0 of 8 (fails: 4). **Fails.**
+
+**(1) The five rows' losses** (the reference's mean less the still's, summed over the eight
+pairs, from `tally.json`): **artifacts 16.00, colour 9.38, light 9.00, value 8.38, depth 8.25.**
+
+**(2) Each pair's worst row** and what its judges said (every sentence is in
+`build/g0-panel/tally.md` and `judges/`):
+
+- D5 the shore at evening, artifacts: "scattered untextured cylinder logs lying at implausible
+  angles, plain pale trunk columns and a smeared ground texture".
+- D4 the stream, artifacts: "stair-stepped pixelated shadow maps", "faceted low-poly trunks",
+  "logs that pass through each other"; "no stream is visible".
+- D6 the vale from the west, light: "the land gets no rim or key from the low sun".
+- D3 another old oak, artifacts: "an obviously tiling rectangular bark texture magnified to
+  blockiness and a trunk whose flat lower edge hovers over the ground".
+- D1 the forest floor, artifacts: "a branch passing straight through the trunk", "a repeated dash
+  pattern" of bark, "a translucent glassy streak" over the ground.
+- D8 the wood under cloud, artifacts: "identical cylinder logs lying at implausible criss-cross
+  angles, pinched radial log ends, tiled bark".
+- D7 the creature in the wood, artifacts: "an untextured mannequin-like creature on stick legs",
+  "a detached shadow blob", "a repeating leaf-litter tile".
+- D2 the canopy against the sun, value: "a two-value silhouette against the sky with few middle
+  tones on the forms".
+
+**(3) The order** (`studio/compare`'s `menu`: an item is named when a pair of its classes has a
+judge's sentence on its rows holding its words; its loss is its rows' over the pairs naming it;
+the map's words and classes are §G0's, tested by `every_menu_row_names_a_development_shot` and
+`synthetic_losses_select_their_items`):
+
+1. **G7, colour and value** (4.75 lost, 2 pairs): D1's "its trunks and background are washed out"
+   (value) and D3's "the range" (value: the photo's tone-mapping compresses it; the render's
+   trunk "a repeated light-dark stripe with no form shading").
+2. **G3, leaves against the light** (2.25, 1 pair): D2's "acid-green translucent leaves against
+   near-black" against the render's "dull" blue-grey silhouettes (colour, light; five sentences).
+3. **G5, virtual geometry from fields** (2.00, 1 pair): D6's "blobby" (artifacts: "blobby clouds"
+   with "a grid of identical cylinder logs"; two sentences).
+4. **G1, bounce light** (1.62, 2 pairs): D8's "falls off naturally under the canopy" against the
+   render's light with "almost no occlusion or contact shadow" and D1's "the foliage shading is
+   flat" (light; ten sentences).
+
+**(4) Not named:** G2 (reflections), G4 (shadows at Epic) and G6 (the fall): not needed unless a
+later panel names them. (D4's "pixelated shadow maps" is G4's sentence, but the map gives G4 the
+classes 6 and 1, and D4 is class 4: by the rule it isn't named.)
+
+What decides the panel is mostly off the menu: artifacts lead by 6.6, and its sentences name
+the bark's tiling and stretch, the fallen logs' placement and interpenetration, faceted trunks,
+the creature untextured, and the stream not drawn. Once the four named items are built, if the
+panel still fails, those are the items the implementer names next (§G0's rule).
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three

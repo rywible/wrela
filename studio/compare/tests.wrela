@@ -304,3 +304,99 @@ fn the_references_and_shots_are_the_baselines() {
         f"the shots changed since the baseline: {h}",
     )
 }
+
+/// Every row of §G0's map names an existing development shot: each class it names is one of the
+/// development set's (D1 to D8, in the references' order), whose shot is the lookbook's `Dk`.
+@test
+fn every_menu_row_names_a_development_shot() {
+    var k = 0
+    for r in VALE {
+        if r.set != "development" {
+            continue
+        }
+        assert(
+            r.shot_class == menu::DEVELOPMENT_CLASSES[k],
+            f"development reference {k}: class {r.shot_class}, the menu's {menu::DEVELOPMENT_CLASSES[k]}",
+        )
+        k += 1
+    }
+    assert(k == 8, f"{k} development references")
+    for m in menu::MENU {
+        for c in 0..m.class_count {
+            var found = false
+            for d in 0..8 {
+                if menu::DEVELOPMENT_CLASSES[d] == m.classes[c] {
+                    let shot = vale::lookbook::SHOTS[vale::lookbook::EVALUATION + d]
+                    assert(
+                        shot.name.starts_with(f"D{d + 1} "),
+                        f"{m.item}: class {m.classes[c]}'s shot is {shot.name}",
+                    )
+                    found = true
+                }
+            }
+            assert(found, f"{m.item}: class {m.classes[c]} has no development shot")
+        }
+    }
+}
+
+/// A development tally of eight pairs (D1 to D8's classes), every row lost by one point, but
+/// pair `lost` (from 1) lost by 2.5 on `rows` with every judge's sentence on them `sentence`.
+fn tally_losing(lost: u32, rows: [u32], sentence: str) -> tally::Tally {
+    var t = tally::Tally {
+        complete: true,
+        why: String::new(),
+        used: Vec::new(),
+        rejected: Vec::new(),
+        pairs: Vec::new(),
+        share: 0.0,
+        overall: false,
+        per_pair: false,
+        majority: 0,
+        majority_ok: false,
+        passed: false,
+    }
+    for p in 1..9 {
+        var pt = tally::PairTally {
+            pair: p,
+            still: 0,
+            equal: 0,
+            reference: 8,
+            median: -1.0,
+            still_means: [2.0; 5],
+            reference_means: [3.0; 5],
+            notes: Vec::from_fn(5, |k| Vec::from([String::from("j0: much the same as the other")])),
+        }
+        if p == lost {
+            for r in rows {
+                pt.still_means[r] = 0.5
+                pt.notes[r] = Vec::from([String::from(sentence)])
+            }
+        }
+        t.pairs.push(take pt)
+    }
+    t
+}
+
+/// Synthetic reflection, backlighting and spray losses select G2, G3 and G6 first.
+@test
+fn synthetic_losses_select_their_items() {
+    let classes = menu::DEVELOPMENT_CLASSES
+    let cases = [
+        (6, [0, 4], "j0: The mere shows no Reflections of the trees", "G2"),
+        (2, [0, 1], "j0: the leaves don't glow where they're backlit", "G3"),
+        (4, [4, 1], "j0: the fall's spray reads as grey noise", "G6"),
+    ]
+    for (pair, rows, sentence, item) in cases {
+        let ranked = menu::ranked_items(tally_losing(pair, rows, sentence), classes)
+        assert(ranked.len() > 0, f"{item}'s loss names nothing")
+        assert(
+            ranked[0].item.as_str() == item,
+            f"{item}'s loss selects {ranked[0].item.as_str()} first",
+        )
+    }
+    // Sentences that name nothing build nothing.
+    assert(
+        menu::ranked_items(tally_losing(1, [0, 0], "j0: much the same"), classes).is_empty(),
+        "an unnamed loss selected an item",
+    )
+}
