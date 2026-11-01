@@ -90,6 +90,19 @@ fn ranged(p: Text, x: u32) -> Vec<u8> {
     key(p, [u8(x >> 8), u8(x & 255)])
 }
 
+/// The range of a search's index `p` for part `x` (a title, or a noun's first half), after
+/// `ranges` (starts and ends, in order): the last range made longer if it ends where this starts.
+fn in_range(ranges: mut Vec<Vec<u8>>, p: Text, x: u32) {
+    let from = ranged(p, x)
+    let n = ranges.len()
+    if n >= 2 && ranges[n - 1] == from {
+        ranges[n - 1] = ranged(p, x + 1)
+        return
+    }
+    ranges.push(take from)
+    ranges.push(ranged(p, x + 1))
+}
+
 /// `n<name's key>`: a name at its names shard.
 fn name_key(n: Name) -> Vec<u8> {
     key("n", names::key(n))
@@ -217,21 +230,20 @@ impl<G: Game> Engine<G> {
     }
 
     /// A search's ranges, each a start and an end in `job.keys`: by noun, each first half of this
-    /// letter that the noun may start with; by title (no noun), each title.
+    /// letter that the noun may start with; by title (no noun), each title. Neighbours are one
+    /// range, read as one.
     fn search(mut self, job: take Job, title: str, noun: str, epithet: str) {
         var j = take job
         let m = matching(title, noun, epithet)
         if noun.is_empty() {
             for t in m.titles {
-                j.keys.push(ranged("t", t))
-                j.keys.push(ranged("t", t + 1))
+                in_range(mut j.keys, "t", t)
             }
         } else {
             let me = self.letter()
             for f in m.fronts {
                 if letter_of(f) == me {
-                    j.keys.push(ranged("n", f))
-                    j.keys.push(ranged("n", f + 1))
+                    in_range(mut j.keys, "n", f)
                 }
             }
         }
@@ -452,4 +464,12 @@ fn a_search_shards_keys_read_back_in_both_orders() {
     assert(name_of(by_noun(n)) == Some(n) && name_of(by_title(n)) == Some(n))
     assert(by_title(names::draw(0)) < by_title(names::draw(1)), "by title first")
     assert(name_of([1, 2, 3]).is_none())
+    var ranges: Vec<Vec<u8>> = Vec::new()
+    for t in [3, 4, 5, 9] {
+        in_range(mut ranges, "t", t)
+    }
+    assert(ranges.len() == 4, "neighbours are one range")
+    assert(
+        ranges[0] == ranged("t", 3) && ranges[1] == ranged("t", 6) && ranges[3] == ranged("t", 10),
+    )
 }
