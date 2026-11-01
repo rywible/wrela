@@ -656,14 +656,12 @@ pub struct Engine<G: Game> {
     /// A code shard's tries in the last minute.
     pub(package) tries: Vec<u64>,
     /// An account's: the highest revision and run number it has given out while this instance ran
-    /// (each read from its store too, so they go on after it's dropped); whether a registration or
-    /// a deletion is under way here; and the uploads admitted lately (the hour, the call), which a
-    /// read of the hour's count made before they committed doesn't count.
+    /// (each read from its store too, so they go on after it's dropped), and whether a registration
+    /// or a deletion is under way here.
     pub(package) revision: u64,
     pub(package) runs: u32,
     pub(package) registering: bool,
     pub(package) deleting: bool,
-    pub(package) admitted: Vec<(u64, u64)>,
     /// The edge's searches over every letter's shard: the request, the names found, the shards
     /// still to answer.
     pub(package) searching: Vec<(u32, Vec<Listed>, u32)>,
@@ -704,7 +702,6 @@ pub fn engine<G: Game>(
         runs: 0,
         registering: false,
         deleting: false,
-        admitted: Vec::new(),
         searching: Vec::new(),
     }
 }
@@ -1268,7 +1265,6 @@ impl<G: Game> Engine<G> {
         let call = self.call
         self.gone.retain(|g| g.1 >= oldest || g.1 + 1 >= call)
         self.written.retain(|w| w.2 >= oldest || w.2 + 1 >= call)
-        self.admitted.retain(|a| a.1 >= oldest || a.1 + 1 >= call)
     }
 }
 

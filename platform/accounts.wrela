@@ -1455,7 +1455,6 @@ impl<G: Game> Engine<G> {
                     self.record_new(take j)
                     return
                 }
-                j.seed = self.call
                 self.get(rate_key(self.now / HOUR), Step::AdmitRate, take j)
             },
             Step::AdmitBest => {
