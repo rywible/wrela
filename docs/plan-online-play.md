@@ -335,7 +335,8 @@ and the list above:
 - **The game's side** is the least it needed to compile against the new link (link.wrela): a place's
   run is a `RunRef`, `Ask::Watch { run }` reads a replay (`Ask::Replay` is gone; the game finds a
   hash's run among the places it shows), `Answer::Verified` and `Answer::Run` carry a `RunRef`, and
-  `Ask::Upload` carries its board. A separate pass finishes the game's side.
+  `Ask::Upload` carries its board. A separate pass finished the game's side (§5, "The game's and
+  the console's side").
 
 Checked: `wrela test platform` (58 tests: every assertion of the one-object server carried over where
 it still applies, the queue's gone with it; and the council's list, each broken in the code it guards
@@ -391,3 +392,53 @@ Ryan). Still to do, in the game: the posting screen, keeping and retrying waitin
 categories' bests, every visible row prefetched, the leaderboard opening at the player's place,
 racing past place 1,000, and a replay that fails to arrive. Steps 11–14 then rebuild the server,
 and the review battery runs again over all of it.
+
+**The game's and the console's side** (2026-10-31, after steps 11–14; the council's findings
+against them, each fixed where its tests reach it and the test seen to fail with the fix broken):
+
+1. *The first-post explanation and the recovery-codes reminder must show.* The console can't come
+   over the game it shows in toolchain 0.18.0 (docs/toolchain-gaps.md, "A program can't come back
+   over the program it shows"), so the console's dialog over the game is not built; recorded as a
+   gap. Fixed in the game instead, as design.md had it: the screen was held (`consenting`) but never
+   drawn. Now games/capybara/screens.wrela's `posting_card` draws posting.wrela's words over the
+   leaderboard, keeps the run, and Post (recorded through the console, `Ask::Consent`) or Not now
+   (or leaving the leaderboard) goes back to it; after a post, while the codes wait, the goal's
+   card and the leaderboard's foot say `SAVE_CODES` until the next attempt.
+2. *Public reads through `fetch_public`.* Already done (console/account.wrela's `request`: boards,
+   slices, searches by `GET` of `PUBLIC`, replays at `run_path`); account requests keep `fetch`.
+3. *A newcomer's first post, and both categories' places.* `Unplaced` was already "no place yet".
+   Fixed: a best run asks the slice round the account's place on each board it counts for, any% and
+   100%, and goes only once both are known and it beats one; the account's bests then come from
+   the server's played time in `Verified`.
+4. *Transient failures keep waiting runs.* Fixed: a post by hand waits in storage like a best run;
+   `Failed` waits twice as long each time (30 s to 30 min), its count stored with the run, offline
+   and signed-out answers wait 30 s uncounted, and only `Rejected` drops it. The console already
+   answered 429, 5xx and network failures as `Failed`. The online stores now reuse main.wrela's
+   `Storing`, so a load that failed is made again and never stored over.
+5. *A failed settings or consent fetch isn't an opt-out.* The console already kept it unknown and
+   asked again (`Known`, `posting_known`). Fixed in the game: nothing is posted, and no screen
+   shown, while `posting_known` is false.
+6. *Every row shown prefetched.* Fixed: all eight rows (seven under the search's line) of the
+   window shown, and every search result shown; `HELD` 40, so both categories of a board and of the
+   search, the places above, the ghost's and a race's stay held; a test ties the rows shown
+   (`window`, `shown_rows`) to the rows fetched.
+7. *The leaderboard opens at the player's place.* Fixed: a world's board opens on the slice round
+   the account's place (or its page, if it's on it), the three places above over it and the focus
+   on it; up and down move past the rows shown, the rows from the top asking for the next page
+   (`more`); Home or a trigger goes between the top and the player's place.
+8. *The run above past place 1,000.* Fixed: the ghost's run above, the account's place and the
+   places above it fetched ahead are found by position in the page or the slice, not by number.
+9. *Replay selection's states.* Fixed: "Loading the run…" while a chosen replay comes, "Can't load
+   that run. Check your connection and try again." when it doesn't (and it isn't fetched ahead again
+   until chosen); choosing another, another board or leaving gives it up, and a race whose run can't
+   come is dropped.
+10. *Accessibility of the agreement and the posting screen.* The 0.18.0 host has a semantic tree
+   (`std::semantics`, `host::publish`). The console's Create account already published its boxes,
+   links, dialog and buttons with their state and took their presses (`console/account.wrela`'s
+   tests). The game's posting screen now does too (`posting_tree`: a modal dialog, its words as
+   text, the box a checkbox with `checked`, Post and Not now buttons with the focus, their presses
+   and the dialog's dismissal handled).
+
+Kept: offline play makes no request (the asks still need a console, and the background ones an
+account); nothing is posted before the account agrees, by the screen's Post or the console's page;
+sign-ups stay closed on the live server (console/server/serve.wrela's `close_sign_ups`).

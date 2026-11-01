@@ -24,6 +24,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** each removal carries an id (server.wrela's `Letter::confirm`), its receiver sends a `Note::Removed` back in the call that applies it, and the account keeps each pending (`x/<id>`) until it hears; the last one clears the store (platform/accounts.wrela).
 - **Status:** open: an event for a message acknowledged, or an outbox the sender can read.
 
+### A program can't come back over the program it shows
+
+- **Needed:** the console's own dialog over a game it shows, the game kept as it is: the screen of what posting makes public before an account's first post (docs/plan-online-play.md step 4), the console's words and its semantic tree, coming up when the player posts from the game, holding the run, and going back to the game after Post or Not now (the council's finding, 2026-10-31).
+- **What happens:** toolchain 0.18.0's browser host has no way back: `host::show` hides the opener's canvas (`surface/show`: `this.canvas.style.visibility = "hidden"`), and only the shown surface's close shows it again (`#shown = null` in its `close`). `host::underlay` refuses a surface that's shown (`surface/underlay`: "the program surface is shown in this one's place"), and `std::host` has nothing else that un-shows a surface without closing it (`show`, `underlay`, `close`, `return_to_parent`, which closes the game). So a console that wants to come over its game must close it, and the attempt and the game's state with it.
+- **Found:** 2026-10-31, finishing the game's and the console's side of online play.
+- **Evidence:** runtime/browser/src/platform.ts at wrela-compiler `c3eaac3` (v0.18.0), the services `surface/show` and `surface/underlay` and the surface's `close`; `wrela doc std::host::show` ("Shows a program in place of this one").
+- **Meanwhile:** the game shows the screen itself, in platform/posting.wrela's words (the ones the console's account page shows), over its leaderboard, with its own semantic tree (games/capybara/screens.wrela's `posting_card` and `posting_tree`: a modal dialog, the box a checkbox with its state, Post and Not now buttons), and sends the player's Post to the console to record (`link.wrela`'s `Ask::Consent`). Nothing of the console's is faked in the game.
+- **Status:** open: a way to bring the opener back over a surface it shows and hand the surface back after (say `host::cover(id, on)`: the opener's canvas over the shown surface, which keeps running, muted and taking no input, as `underlay` does), so a console's dialog can come over its game.
+
 ### A fake site can't answer with a header
 
 - **Needed:** the deploy's Zstandard check (studio/deploy `verify_zstd`, docs/plan-online-play.md step 12) tested end to end on a fake site that answers a WASM with `content-encoding: zstd`, as one with the zone's Compression Rule set does, and the deploy passing with the rule required.
