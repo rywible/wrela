@@ -1534,16 +1534,16 @@ pub fn smooth_read(t: Texture<Rgba8>, s: Sampler, uv: vec2, size: vec2) -> vec4 
 /// Patterns `t` read by a pixel `texels` of their texels wide, magnified (under a texel): their
 /// shapes' edges (ridges, plates, bands; not the mottle, a soft tone) steepened about their middles
 /// as the texels grow past a pixel, to `MAGNIFIED` times at most, so a near trunk's fissures keep
-/// edges about a pixel and a half wide, not its texels' bilinear ramps many pixels wide (the
-/// development panel's magnified, blurred bark, §G9; the idea of Green's magnified distance fields,
-/// SIGGRAPH 2007).
+/// edges half as wide as its texels' ramps, not many pixels of blur (the development panel's
+/// magnified, blurred bark, §G9; the idea of Green's magnified distance fields, SIGGRAPH 2007;
+/// at 4 times, the near oak's furrows read as a stencil, "extruded plastic").
 pub fn sharpened(t: vec4, texels: f32) -> vec4 {
     let k = clamp(0.6 / max(texels, 1.0e-3), 1.0, MAGNIFIED)
     vec4(saturate((t.rgb - vec3(0.5)) * k + vec3(0.5)), t.a)
 }
 
 /// How much steeper a magnified pattern's edges get at most (`sharpened`).
-pub const MAGNIFIED: f32 = 4.0
+pub const MAGNIFIED: f32 = 2.0
 
 /// The patterns' mean texel, about: what a far trunk's bark shows (`bark_at`).
 pub const BARK_MEAN = vec4(0.75, 0.75, 0.92, 0.6)
@@ -2229,7 +2229,7 @@ fn no_two_trunks_show_the_same_bark() {
 }
 
 /// A magnified pattern keeps its edges (§G9): an edge a texel and a half wide, read by pixels an
-/// eighth of a texel wide, rises from a tenth to nine tenths over no more than 3.5 pixels (12
+/// eighth of a texel wide, rises from a tenth to nine tenths over no more than 6.5 pixels (12
 /// unsharpened); read a texel a pixel or coarser, it's as it was.
 @test
 fn magnified_bark_keeps_its_edges() {
@@ -2249,7 +2249,7 @@ fn magnified_bark_keeps_its_edges() {
         }
         hi - lo
     }
-    assert(edge(0.125) <= 3.5, f"a magnified edge spans {edge(0.125)} pixels")
+    assert(edge(0.125) <= 6.5, f"a magnified edge spans {edge(0.125)} pixels")
     for texels in [1.0, 2.0] {
         let t = vec4(0.3, 0.7, 0.45, 0.6)
         assert(sharpened(t, texels) == t, f"a pattern {texels} texels a pixel was changed")
