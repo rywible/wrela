@@ -7,7 +7,7 @@
 
 use climber::draw::{CastWolf, Drawn, cast_wolf}
 use land::bake::{Decisions, Far}
-use engine::character::{Cast, PartOf, cast}
+use engine::character::PartOf
 use engine::cook::Work
 use land::stream::{tile_distance, tile_radius}
 use tower::door::Doorway

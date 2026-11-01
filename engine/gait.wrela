@@ -791,6 +791,16 @@ impl Spring {
 
 // ---- bones posed on the CPU -----------------------------------------------------------------
 
+/// `bones` (world space) less the render space's origin `origin`.
+pub fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
+    var out = bones
+    let shift = std::transform::translate(-origin)
+    for i in 0..MAX_BONES {
+        out[i] = shift * bones[i]
+    }
+    out
+}
+
 /// Bone matrices for one pose (rest space to world), as CPU code poses a creature (`palette`).
 pub struct Palette: Copy + GpuData {
     pub bones: [mat4; MAX_BONES],

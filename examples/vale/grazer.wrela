@@ -13,15 +13,14 @@ use engine::terrain::{Cover, Terrain}
 use kit::gaits::{DT, body_of}
 use kit::genome::{ROE, quadruped_at}
 use kit::grown::{VALE_COAT, VALE_MUSCLES}
-use kit::muscles::MuscledParts
 use kit::quadruped::{frame, skeleton}
-use kit::roe::{CoatLook, VALE_AGE, Face, Hide, attend, faced, roe, walk_at}
+use kit::roe::{CoatLook, VALE_AGE, Face, attended_to, roe, walk_at}
 use kit::walks::WALKS
 use landscape::height_at
 use std::quat::Quat
 
 /// The grazer as a stage keeps it while its mesh is realized.
-pub type Grazer = engine::creature::Body<MuscledParts<Hide>>
+pub type Grazer = kit::roe::Roe
 
 /// The grazer, grown.
 pub fn grazer() -> Grazer {
@@ -57,7 +56,7 @@ impl land::senses::Occluders for Open {
 
 /// Palette `bones` (world space) with its face turned to the eye at `eye` where it senses it
 /// (`land::senses::sense`: a still, silent watcher, seen in its field within its sight), back to
-/// rest where it doesn't; `face` eased over `dt` s (`kit::roe::attend`), `root` where it stands.
+/// rest where it doesn't; `face` eased over `dt` s (`kit::roe::attended_to`), `root` where it stands.
 pub fn attended(
     face: mut Face,
     bones: [mat4; MAX_BONES],
@@ -72,24 +71,9 @@ pub fn attended(
         loud: 0.0,
     }
     let st = land::senses::sense(SENSES, root, it, Open {})
-    let toward = if max(st.seen, st.heard) > land::senses::FAINT {
-        let head = bones[SKELETON.find("head").index]
-        Some((engine::distance::rigid_inverse(head) * vec4(eye, 1.0)).xyz)
-    } else { None }
-    attend(mut face, Q, toward, dt)
-    faced(bones, SKELETON, Q, face)
+    let toward = if max(st.seen, st.heard) > land::senses::FAINT { Some(eye) } else { None }
+    attended_to(mut face, bones, SKELETON, Q, toward, dt)
 }
-
-/// How it's realized: cells no larger than 6 mm (its cannons are under 2 cm thick: the engine's
-/// 2 cm cells lose them), its skin's weights falling off over 2 cm (the engine's 5 cm blends a
-/// roe's hock into its gaskin: a part's weight falls off within its own length).
-pub const REALIZED = engine::look::CreatureLook {
-    surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
-    deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
-}
-
-/// The frames a slice of its realization takes each.
-pub const SLICES: u32 = 1
 
 /// Its proportions and its skeleton at its age.
 pub const Q = quadruped_at(ROE, VALE_AGE)
@@ -168,16 +152,6 @@ pub fn walking(w: mut Walking, m: Motion, at: f32, eye: vec3) -> [mat4; MAX_BONE
     w.drawn = at
     let bones = stylize(mut w.style, m, Relief {}, s, BODY, WALK.walk, w.walker, dt).bones
     attended(mut w.face, bones, w.walker.root, eye, dt)
-}
-
-/// `bones` (world space) less the render space's origin `origin`.
-pub fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
-    var out = bones
-    let shift = std::transform::translate(-origin)
-    for i in 0..MAX_BONES {
-        out[i] = shift * bones[i]
-    }
-    out
 }
 
 /// How far the grazer lowers its body and reaches its forefeet ahead as it grazes (shares of its

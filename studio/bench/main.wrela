@@ -92,8 +92,8 @@ pub struct Options: Clone {
     /// `engine::style`, such as `styles::fixtures::Every`), or empty for its own.
     pub look: String = String::new(),
     /// Constants each scene's program is built with (`--set NAME=VALUE`, repeatable: `wrela build
-    /// --set`, such as the floor's `GROWN_WOOD=true`), none for its own.
-    pub sets: Vec<String> = Vec::new(),
+    /// --set`, such as the floor's `GROWN_WOOD=true`; only with `--scene`), none for its own.
+    pub sets: Vec<toolchain::Set> = Vec::new(),
     /// The size every scene is drawn at instead of its own (`--size WxH`), or 0 × 0: for a machine
     /// whose GPU can't hold a scene at its size (its numbers then compare runs on it, no more).
     pub width: u32 = 0,
@@ -178,10 +178,13 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             k += 2
         } else if a == "--set" {
             let v = value(k)?
-            if v.as_str().split("=").len() < 2 {
-                return None
-            }
-            o.sets.push(take v)
+            let eq = v.as_str().find("=")?
+            o.sets.push(
+                toolchain::Set {
+                    name: String::from(v.as_str().slice(0, eq)),
+                    value: String::from(v.as_str().slice(eq + 1, v.len())),
+                },
+            )
             k += 2
         } else if a == "--size" {
             let (w, h) = toolkit::command::size_of(value(k)?.as_str())?
@@ -191,6 +194,10 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         } else {
             return None
         }
+    }
+    // A constant is set on the programs named (the bench can't tell which name it).
+    if !o.sets.is_empty() && o.scenes.is_empty() {
+        return None
     }
     // A look is set on a program that names one (`Scene::looked`).
     if !o.look.is_empty() {
@@ -399,28 +406,26 @@ pub fn labelled(name: str, tier: str, look: str) -> String {
 
 /// A row's name `label` with the constants its program was built with (`sets`), where there are
 /// any (`last-green-walk [GROWN_WOOD=true]`).
-pub fn with_sets(label: take String, sets: [String]) -> String {
+pub fn with_sets(label: take String, sets: [toolchain::Set]) -> String {
     if sets.is_empty() {
         return label
     }
     var out = String::from(f"{label.as_str()} [")
     for i in 0..sets.len() {
         out.push_str(if i == 0 { "" } else { ", " })
-        out.push_str(sets[i].as_str())
+        out.push_str(f"{sets[i].name.as_str()}={sets[i].value.as_str()}")
     }
     out.push_str("]")
     out
 }
 
-/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier`, in `look`
-/// (each the program's own if empty) and with the constants `sets` (`NAME=VALUE`) unless an
-/// earlier scene's was (`build`), and its gate script written beside it: the build's directory and
-/// the script's file there.
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` at the options' tier, in
+/// their look (each the program's own if empty) and with their constants unless an earlier
+/// scene's was (`build`), and its gate script written beside it: the build's directory and the
+/// script's file there.
 fn prepared(
     s: Scene,
-    tier: str,
-    look: str,
-    sets: [String],
+    o: Options,
     build: bool,
     ws: str,
     out: str,
@@ -430,24 +435,14 @@ fn prepared(
         var options = toolchain::options()
         options.optimize = true
         options.timeout = 600.0
-        if tier.len() > 0 {
-            options.set.push(
-                toolchain::Set { name: String::from("TIER"), value: String::from(tier) },
-            )
+        if !o.tier.is_empty() {
+            options.set.push(toolchain::Set { name: String::from("TIER"), value: o.tier.clone() })
         }
-        if look.len() > 0 {
-            options.set.push(
-                toolchain::Set { name: String::from("LOOK"), value: String::from(look) },
-            )
+        if !o.look.is_empty() {
+            options.set.push(toolchain::Set { name: String::from("LOOK"), value: o.look.clone() })
         }
-        for v in sets {
-            let (a, b) = v.as_str().split("=")[0]
-            options.set.push(
-                toolchain::Set {
-                    name: String::from(v.as_str().slice(a, b)),
-                    value: String::from(v.as_str().slice(b + 1, v.len())),
-                },
-            )
+        for v in o.sets {
+            options.set.push(v.clone())
         }
         let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
         if !built.ok {
@@ -532,7 +527,7 @@ pub fn starts(
     out: str,
     kept: str,
 ) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
-    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), o.sets, build, ws, out)?
+    let (dir, input_file) = prepared(s, o, build, ws, out)?
     let frames = min(o.warmup + s.frames, STARTS_FRAMES)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
@@ -580,7 +575,7 @@ pub fn measure(
     for r in RUNS {
         runs.push(String::from(f"{kept}/{s.name}/{r}"))
     }
-    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), o.sets, build, ws, out)?
+    let (dir, input_file) = prepared(s, o, build, ws, out)?
     let input = script(s.name)
     // A walk's frames count from its start (`Scene::walks`), after its load.
     let from = max(o.warmup, s.walks)

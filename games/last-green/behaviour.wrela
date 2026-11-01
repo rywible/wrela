@@ -168,9 +168,9 @@ fn draw(f: mut Fawn) -> f32 {
 
 /// The way straight ahead, from where it is: what its walker follows, so the gait's own steering
 /// holds its heading (the fawn turns itself, `turn_toward`).
-struct Ahead: Copy {
-    from: vec2,
-    dir: vec2,
+pub struct Ahead: Copy {
+    pub from: vec2,
+    pub dir: vec2,
 }
 
 impl Path for Ahead {

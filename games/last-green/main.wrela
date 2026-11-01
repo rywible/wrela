@@ -111,8 +111,8 @@ pub const LEARNED: bool = false
 /// games/last-green --set GROWN_WOOD=true`).
 pub const GROWN_WOOD: bool = false
 
-/// Whether the floor's fawn is grown (plan three's §F, the vale's grazer's: the roe grown from its
-/// genome to a fawn's age, `fawns`) or the hand's: the hand's until the floor adopts it (D40,
+/// Whether the floor's fawn is grown (plan three's §F: the roe grown from its genome as the vale's
+/// grazer, `fawns`) or the hand's: the hand's until the floor adopts it (D40,
 /// §H1: `wrela build games/last-green --set GROWN_FAWN=true`).
 pub const GROWN_FAWN: bool = false
 
@@ -1077,7 +1077,7 @@ pub fn test_course_points(c: u32, from: u32) -> CourseRow {
 pub fn test_settled(s: Floor) -> f32 {
     let eye = s.frame.cam.eye.xz
     let still = !engine::frame::Scene::loading(s.stage) &&
-        !s.stage.fawn.unsettled() &&
+        !s.stage.fawn.realizing() &&
         (!s.stage.wolf.on || s.stage.wolf.realized.is_some()) &&
         !s.frame.ready.arriving
     if still && s.frame.lit(s.stage, eye, eye + s.frame.cam.origin.xz) { 1.0 } else { 0.0 }

@@ -93,8 +93,8 @@ fn a_look_is_set_on_a_program_that_names_one() {
     assert(labelled("herd", "", "").as_str() == "herd")
 }
 
-/// `--set NAME=VALUE` builds every scene's program with that constant (each one given, in order),
-/// and names them in each row; one without its `=` is a usage error.
+/// `--set NAME=VALUE` builds the named scenes' programs with that constant (each one given, in
+/// order), and names them in each row; one without its `=`, or without `--scene`, is a usage error.
 @test
 fn a_set_builds_with_its_constant_and_names_it() {
     let Some(o) = parse_args(
@@ -102,8 +102,14 @@ fn a_set_builds_with_its_constant_and_names_it() {
             ["--scene", "last-green-walk", "--set", "GROWN_WOOD=true", "--set", "GROWN_FAWN=true"],
         ),
     ) else { panic("the grown floor") }
-    assert(o.sets.len() == 2 && o.sets[1].as_str() == "GROWN_FAWN=true")
-    assert(parse_args(texts(["--set", "GROWN_WOOD"])).is_none(), "a set without its value")
+    assert(
+        o.sets.len() == 2 &&
+            o.sets[1].name.as_str() == "GROWN_FAWN" &&
+            o.sets[1].value.as_str() == "true",
+    )
+    let without = texts(["--scene", "last-green-walk", "--set", "GROWN_WOOD"])
+    assert(parse_args(without).is_none(), "a set without its value")
+    assert(parse_args(texts(["--set", "GROWN_WOOD=true"])).is_none(), "a set on every scene")
     let named = with_sets(labelled("last-green-walk", "Low", ""), o.sets)
     assert(
         named.as_str() == "last-green-walk (Low) [GROWN_WOOD=true, GROWN_FAWN=true]",

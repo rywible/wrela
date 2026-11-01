@@ -1,84 +1,63 @@
 // The floor's fawn as drawn (D40, §H1): the hand's (`fawn::character`, M5's young deer), or with
-// `main::GROWN_FAWN` the roe grown from its genome to a fawn's age (plan three's §F, as the vale's
-// grazer: `kit::roe` at `kit::roe::FAWN_AGE`, its muscles sized from its walk and its coat's
-// spots grown at that age, `kit::grown`), the other not built. Where a shot casts it, it stands
-// where the shot puts it; in play the grown one walks after the sim's fawn (`behaviour::Fawn`),
-// its own walker stepped toward where the sim's stands, and its face attends to the player as
-// the sim's senses notice them (F8: its ears and eyes turned, `kit::roe::attend`).
+// `main::GROWN_FAWN` the roe grown from its genome as the vale's grazer (plan three's §F:
+// `kit::roe` at `kit::roe::VALE_AGE`, its muscles sized from its walk and its coat grown at that
+// age, `kit::grown`), the other not built. Where a shot casts it, it stands where the shot puts
+// it; in play the grown one walks after the sim's fawn (`behaviour::Fawn`), its own walker stepped
+// toward where the sim's stands at the sim's pace, and its face attends to the player as the sim's
+// senses notice them (F8: its ears and eyes turned, `kit::roe::attended_to`).
 
-use behaviour::Fawn
+use behaviour::{Ahead, Fawn}
 use engine::character::{Cast, PartOf, cast}
 use engine::creature::MAX_BONES
+use engine::gait::{Walker, palette, shifted, stand, step}
 use engine::lit::Lighting
-use engine::gait::{Path, Walker, palette, stand, step}
 use engine::style::Style
 use engine::switches::Switches
 use engine::view::Camera
 use ground::GROUND
 use kit::gaits::{DT, body_of}
 use kit::genome::{ROE, quadruped_at}
-use kit::grown::{FAWN_COAT, FAWN_MUSCLES}
-use kit::muscles::MuscledParts
+use kit::grown::{VALE_COAT, VALE_MUSCLES}
 use kit::quadruped::skeleton
-use kit::roe::{CoatLook, FAWN_AGE, Face, Hide, attend, faced, roe, walk_at}
+use kit::roe::{
+    CoatLook, Face, Hide, REALIZED, Roe, SLICES, VALE_AGE, attended_to, look_of, roe, walk_at,
+}
 use kit::walks::WALKS
 use std::gpu::RenderPass
 
-/// The grown fawn, as a stage keeps it while its mesh is realized.
-pub type Roe = engine::creature::Body<MuscledParts<Hide>>
+/// The grown fawn's proportions, its skeleton, its walk (the optimized walk on level ground at
+/// its age) and the walker's body of it, as the vale's grazer's.
+const QUADRUPED = quadruped_at(ROE, VALE_AGE)
+const SKELETON = skeleton(QUADRUPED)
+const WALK = walk_at(ROE, WALKS[0], VALE_AGE)
+const BODY = body_of(QUADRUPED, WALK)
 
-/// Its proportions, its skeleton, its walk (the optimized walk on level ground at its age) and
-/// the walker's body of it, as the vale's grazer's at its own age.
-pub const Q = quadruped_at(ROE, FAWN_AGE)
-pub const SKELETON = skeleton(Q)
-pub const WALK = walk_at(ROE, WALKS[0], FAWN_AGE)
-pub const BODY = body_of(Q, WALK)
-
-/// How it's realized: the vale's grazer's cells (its hooves and eyes kept).
-pub const REALIZED = engine::look::CreatureLook {
-    surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
-    deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
-}
-
-/// How far behind the sim's fawn it may fall before it's stood where that one is (m): the sim's
-/// trots and flights outrun its walk.
-pub const FALLS_BEHIND: f32 = 1.5
+/// How far behind the sim's fawn it may fall before it's stood where that one is (m).
+const FALLS_BEHIND: f32 = 1.5
 
 /// How near the sim's fawn it stops (m).
-pub const ARRIVED: f32 = 0.15
+const ARRIVED: f32 = 0.15
 
-/// A straight way from `from` to `to` (on the plane).
-pub struct Way: Copy {
-    pub from: vec2,
-    pub to: vec2,
-}
+/// The most of a pause it catches up on, its walker's steps and its face's easing (s): a held
+/// shot, a frozen frame or a hidden tab isn't walked through in one frame.
+const CATCH_UP: f32 = 0.25
 
-impl Path for Way {
-    fn at(self, s: f32) -> vec2 {
-        self.from + normalize(self.to - self.from) * s
-    }
-
-    fn length(self) -> f32 {
-        length(self.to - self.from)
-    }
-}
-
-/// The grown fawn's walker and face as it follows the sim's, and the time (s) it's been stepped
-/// to and was last drawn at.
-pub struct Following: Copy {
-    pub walker: Option<Walker> = None,
-    pub face: Face = Face {},
-    pub stepped: f32 = 0.0,
-    pub drawn: f32 = 0.0,
+/// The grown fawn's walker and face as it follows the sim's, the time (s) it's been stepped to,
+/// and the time it was last drawn at.
+struct Following: Copy {
+    walker: Option<Walker> = None,
+    face: Face = Face {},
+    stepped: f32 = 0.0,
+    drawn: f32 = 0.0,
 }
 
 /// The floor's fawn: the one `main::GROWN_FAWN` chooses, posed, drawn and realized as a cast (each
-/// kind's list holds it or nothing: the stage holds no room for the other's on the stack, where
-/// the floor's init has little to spare).
+/// kind's list holds it or nothing: the stage holds no room for a cast on the stack, where the
+/// floor's init has little to spare).
 pub struct Fawns {
-    pub hand: Vec<Cast<fawn::creature::Coat, fawn::character::Grown, fawn::character::FawnLook>>,
-    pub grown: Vec<Cast<Hide, Roe, CoatLook>>,
-    pub following: Following,
+    hand: Vec<Cast<fawn::creature::Coat, fawn::character::Grown, fawn::character::FawnLook>>,
+    grown: Vec<Cast<Hide, Roe, CoatLook>>,
+    following: Following,
 }
 
 /// The floor's fawn, as `main::GROWN_FAWN` chooses.
@@ -87,10 +66,10 @@ pub fn fawns() -> Fawns {
     if main::GROWN_FAWN {
         out.grown.push(
             cast(
-                roe(ROE, FAWN_AGE, FAWN_MUSCLES),
-                kit::roe::look_of(ROE, FAWN_AGE, FAWN_COAT),
+                roe(ROE, VALE_AGE, VALE_MUSCLES),
+                look_of(ROE, VALE_AGE, VALE_COAT),
                 REALIZED,
-                1,
+                SLICES,
             ),
         )
     } else {
@@ -106,33 +85,6 @@ pub fn fawns() -> Fawns {
     out
 }
 
-/// `bones` (world space) less the render space's origin `origin`.
-fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
-    var out = bones
-    let shift = std::transform::translate(-origin)
-    for i in 0..MAX_BONES {
-        out[i] = shift * bones[i]
-    }
-    out
-}
-
-/// `bones` (world space) with the face turned to `toward` (world space) where it's given, back to
-/// rest where it isn't; eased over `dt` s.
-fn attended(
-    face: mut Face,
-    bones: [mat4; MAX_BONES],
-    toward: Option<vec3>,
-    dt: f32,
-) -> [mat4; MAX_BONES] {
-    let head = bones[SKELETON.find("head").index]
-    let local = match toward {
-        Some(t) => Some((engine::distance::rigid_inverse(head) * vec4(t, 1.0)).xyz),
-        None => None,
-    }
-    attend(mut face, Q, local, dt)
-    faced(bones, SKELETON, Q, face)
-}
-
 impl Fawns {
     /// Whether it's drawn this frame and not yet realized (a slice of its mesh is due).
     pub fn realizing(self) -> bool {
@@ -142,7 +94,7 @@ impl Fawns {
         self.hand.len() > 0 && self.hand[0].realizing()
     }
 
-    /// A slice of its mesh realized.
+    /// A slice of its mesh realized (each kind's realizer built only for the kind chosen).
     pub fn realize(mut self) {
         if main::GROWN_FAWN {
             for i in 0..self.grown.len() {
@@ -155,20 +107,16 @@ impl Fawns {
         }
     }
 
-    /// Whether it's drawn this frame, and not realized yet.
-    pub fn unsettled(self) -> bool {
-        if main::GROWN_FAWN {
-            return self.grown.len() > 0 && self.grown[0].on && self.grown[0].realized.is_none()
-        }
-        self.hand.len() > 0 && self.hand[0].on && self.hand[0].realized.is_none()
-    }
-
     /// Its mesh's and its palettes' bytes.
     pub fn bytes(self) -> u64 {
-        if main::GROWN_FAWN {
-            return if self.grown.len() > 0 { self.grown[0].bytes() } else { 0 }
+        var out: u64 = 0
+        for c in self.hand {
+            out += c.bytes()
         }
-        if self.hand.len() > 0 { self.hand[0].bytes() } else { 0 }
+        for c in self.grown {
+            out += c.bytes()
+        }
+        out
     }
 
     /// Not drawn this frame.
@@ -180,6 +128,16 @@ impl Fawns {
             self.grown[i].hide()
         }
         self.following.walker = None
+    }
+
+    /// This frame's palette `bones` (render space), and whether it's in the moving shadow map.
+    fn pose(mut self, bones: [mat4; MAX_BONES], shadowed: bool, moved: bool) {
+        for i in 0..self.hand.len() {
+            self.hand[i].pose(bones, shadowed: shadowed, moved: moved)
+        }
+        for i in 0..self.grown.len() {
+            self.grown[i].pose(bones, shadowed: shadowed, moved: moved)
+        }
     }
 
     /// Standing at rest where a shot casts it, its feet at `feet` (render space, the render
@@ -194,28 +152,13 @@ impl Fawns {
         origin: vec3,
         moved: bool,
     ) {
-        if !main::GROWN_FAWN {
-            for i in 0..self.hand.len() {
-                self.hand[i].pose(
-                    fawn::character::at_rest(feet, heading),
-                    shadowed: true,
-                    moved: moved,
-                )
-            }
-            return
-        }
-        let w = stand(GROUND, BODY, (feet + origin).xz, heading)
-        let dt = clamp(time - self.following.drawn, 0.0, 0.25)
-        self.following.drawn = time
-        let bones = attended(
-            mut self.following.face,
-            palette(SKELETON, BODY, w).bones,
-            Some(eye),
-            dt,
-        )
-        for i in 0..self.grown.len() {
-            self.grown[i].pose(shifted(bones, origin), shadowed: true, moved: moved)
-        }
+        let bones = if main::GROWN_FAWN {
+            // In play again after the shot, it stands where the sim's fawn is.
+            self.following.walker = None
+            let w = stand(GROUND, BODY, (feet + origin).xz, heading)
+            self.faced(palette(SKELETON, BODY, w).bones, Some(eye), time, origin)
+        } else { fawn::character::at_rest(feet, heading) }
+        self.pose(bones, shadowed: true, moved: moved)
     }
 
     /// As the sim's fawn `f` is this frame (between its ticks), at the frame's time `time` (s),
@@ -229,92 +172,92 @@ impl Fawns {
         shadowed: bool,
         moved: bool,
     ) {
-        if !main::GROWN_FAWN {
-            for i in 0..self.hand.len() {
-                self.hand[i].pose(
-                    behaviour::palette(f, origin),
-                    shadowed: shadowed,
-                    moved: moved,
-                )
-            }
-            return
+        let bones = if main::GROWN_FAWN { self.followed(f, player, time, origin) } else {
+            behaviour::palette(f, origin)
         }
+        self.pose(bones, shadowed: shadowed, moved: moved)
+    }
+
+    /// The grown fawn's palette (render space) after the sim's fawn `f`: stood where it is when it's
+    /// first drawn or has fallen `FALLS_BEHIND` behind, else stepped at the walker's rate until the
+    /// frame's time (the same steps whatever the frame rate, `CATCH_UP` s of them at most) toward
+    /// it at its pace, or turning its way on the spot once there; its way straight ahead and
+    /// unending, as the sim's own (`behaviour::Ahead`).
+    fn followed(mut self, f: Fawn, player: vec3, time: f32, origin: vec3) -> [mat4; MAX_BONES] {
         let root = f.walker.root
         let to = root.pos.xz
-        // Stood where the sim's is when it's first drawn, or fallen too far behind.
-        let w = match self.following.walker {
-            Some(w) => if length(w.root.pos.xz - to) > FALLS_BEHIND { None } else { Some(w) },
-            None => None,
-        }
-        var walker = match w {
-            Some(w) => w,
-            None => {
+        var walker = match self.following.walker {
+            Some(w) if length(w.root.pos.xz - to) <= FALLS_BEHIND => w,
+            _ => {
                 self.following.stepped = time
                 stand(GROUND, BODY, to, root.heading)
             },
         }
-        // Stepped at the walker's rate until the frame's time: the same steps whatever the frame
-        // rate; toward the sim's, or on the spot facing its way once there.
+        self.following.stepped = max(self.following.stepped, time - CATCH_UP)
+        var walk = WALK.walk
+        walk.speed = max(f.walker.speed, walk.speed)
         while self.following.stepped + DT <= time {
             let from = walker.root.pos.xz
             let go = length(to - from) > ARRIVED
-            let ahead = from + vec2(sin(root.heading), cos(root.heading))
-            let way = Way { from, to: if go { to } else { ahead } }
-            step(mut walker, GROUND, way, BODY, WALK.walk, go: go, dt: DT)
+            let dir = if go { normalize(to - from) } else { root.forward().xz }
+            if go {
+                walker.speed = max(walker.speed, f.walker.speed)
+            }
+            walker.along = 0.0
+            step(mut walker, GROUND, Ahead { from, dir }, BODY, walk, go: go, dt: DT)
             self.following.stepped += DT
         }
         self.following.walker = Some(walker)
-        let dt = clamp(time - self.following.drawn, 0.0, 0.25)
-        self.following.drawn = time
         // Its face to the player while the sim's senses notice them.
         let toward = if f.aware.level > land::senses::FAINT { Some(player) } else { None }
-        let bones = attended(
-            mut self.following.face,
-            palette(SKELETON, BODY, walker).bones,
-            toward,
-            dt,
+        self.faced(palette(SKELETON, BODY, walker).bones, toward, time, origin)
+    }
+
+    /// `bones` (world space) with the grown fawn's face turned toward `toward` (world space) where
+    /// it's given, eased since it was last drawn (`CATCH_UP` s at most), less the render space's
+    /// origin `origin`.
+    fn faced(
+        mut self,
+        bones: [mat4; MAX_BONES],
+        toward: Option<vec3>,
+        time: f32,
+        origin: vec3,
+    ) -> [mat4; MAX_BONES] {
+        let dt = clamp(time - self.following.drawn, 0.0, CATCH_UP)
+        self.following.drawn = time
+        shifted(
+            attended_to(mut self.following.face, bones, SKELETON, QUADRUPED, toward, dt),
+            origin,
         )
-        for i in 0..self.grown.len() {
-            self.grown[i].pose(shifted(bones, origin), shadowed: shadowed, moved: moved)
-        }
     }
 
     /// In the moving shadow map.
     pub fn shadow<P: RenderPass>(self, pass: P, view: mat4) {
-        if main::GROWN_FAWN {
-            for c in self.grown {
-                c.shadow(pass, view)
-            }
-        } else {
-            for c in self.hand {
-                c.shadow(pass, view)
-            }
+        for c in self.hand {
+            c.shadow(pass, view)
+        }
+        for c in self.grown {
+            c.shadow(pass, view)
         }
     }
 
     /// In the scene, lit by `lt`.
     pub fn draw<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
-        if main::GROWN_FAWN {
-            for c in self.grown {
-                c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
-            }
-        } else {
-            for c in self.hand {
-                c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
-            }
+        for c in self.hand {
+            c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+        }
+        for c in self.grown {
+            c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
         }
     }
 
     /// Its motion: its palette against its last.
     pub fn motion<P: RenderPass>(self, pass: P, cam: Camera) {
-        if main::GROWN_FAWN {
-            for c in self.grown {
-                c.motion(pass, cam)
-            }
-        } else {
-            for c in self.hand {
-                c.motion(pass, cam)
-            }
+        for c in self.hand {
+            c.motion(pass, cam)
+        }
+        for c in self.grown {
+            c.motion(pass, cam)
         }
     }
 }
