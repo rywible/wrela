@@ -257,23 +257,41 @@ pub fn out_of_support(p: vec2, feet: [vec2]) -> bool {
     outside(p, feet) > if feet.len() <= 2 { BAND } else { 0.0 }
 }
 
-/// The largest share of a stride's frames `feasible` says aren't (strides of `stride` frames, a
-/// partial last one too).
-pub fn worst_stride(feasible: [bool], stride: u32) -> f32 {
+/// The largest share of the frames `counted` marks that `hit` marks too, over any `window`
+/// frames running (rolled a frame at a time: a stride's however the cycle falls on its frames;
+/// the run's if it's shorter).
+pub fn worst_share(hit: [bool], counted: [bool], window: u32) -> f32 {
+    let n = max(min(window, hit.len()), 1)
+    var hits = 0
+    var count = 0
     var worst = 0.0
-    var first = 0
-    while first < feasible.len() {
-        let last = min(first + stride, feasible.len())
-        var n = 0
-        for t in first..last {
-            if !feasible[t] {
-                n += 1
+    for t in 0..hit.len() {
+        if counted[t] {
+            count += 1
+            if hit[t] {
+                hits += 1
             }
         }
-        worst = max(worst, f32(n) / f32(last - first))
-        first = last
+        if t >= n && counted[t - n] {
+            count -= 1
+            if hit[t - n] {
+                hits -= 1
+            }
+        }
+        if t + 1 >= n && count > 0 {
+            worst = max(worst, f32(hits) / f32(count))
+        }
     }
     worst
+}
+
+/// The largest share of any `stride` frames running that `feasible` says aren't (`worst_share`).
+pub fn worst_stride(feasible: [bool], stride: u32) -> f32 {
+    var bad: Vec<bool> = Vec::new()
+    for f in feasible {
+        bad.push(!f)
+    }
+    worst_share(bad, Vec::filled(feasible.len(), value: true), stride)
 }
 
 /// The band round a support of one foot or two (m) a centre of mass may lie in: a trot's diagonal
@@ -362,9 +380,16 @@ pub fn body_of(q: Quadruped, gait: Gait) -> Body {
         b.sway = SWAY
         b.offsets = gait.walk.offsets
         b.duty = gait.walk.duty
+        b.nod = NOD * q.withers
     }
     b
 }
+
+/// How far a smooth gait's head nods against its trunk (`engine::gait::Body::nod`), a share of
+/// its withers' height: a walking horse's head's vertical range (9.1 cm) and its thorax's (3.2 cm),
+/// out of phase (Loscher et al. 2016), half their sum over its withers' 1.6 m (**proposed**: a
+/// warmblood's height).
+pub const NOD: f32 = 0.038
 
 /// How far a smooth gait's trunk sways toward its planted feet (`engine::gait::Body::sway`,
 /// **proposed**: most of the way, its centre of mass over its support as a walking quadruped's
@@ -420,14 +445,15 @@ pub fn run_with(
     var swinging = [false; 4]
     var was_planted = [w.feet[0].planted, w.feet[1].planted, w.feet[2].planted, w.feet[3].planted]
     // The centre of mass's ground projection against the support, each frame with a foot down,
-    // by stride (a stride: one cycle of the walk at its cadence).
+    // by stride (a stride: one cycle of the walk at its cadence, its frames rounded up).
     let cadence = walk.cadence.x + walk.cadence.y * walk.speed
-    let stride = max(u32(1.0 / (cadence * DT)), 1)
+    let stride = max(u32(ceil(1.0 / (cadence * DT))), 1)
     var down_frames = 0
     var out_frames = 0
     var stride_down = 0
     var stride_out = 0
-    var worst = 0.0
+    var downs: Vec<bool> = Vec::new()
+    var outs: Vec<bool> = Vec::new()
     var strides: Vec<vec2> = Vec::new()
     let legs = s.legs()
     for k in 0..frames {
@@ -471,10 +497,13 @@ pub fn run_with(
                 pierce = max(pierce, under - sole.y)
             }
         }
+        let out = feet.len() > 0 && out_of_support(com.xz, feet)
+        downs.push(feet.len() > 0)
+        outs.push(out)
         if feet.len() > 0 {
             down_frames += 1
             stride_down += 1
-            if out_of_support(com.xz, feet) {
+            if out {
                 out_frames += 1
                 stride_out += 1
             }
@@ -482,7 +511,6 @@ pub fn run_with(
         if (k + 1) % stride == 0 {
             let share = f32(stride_out) / f32(max(stride_down, 1))
             strides.push(vec2(share, length((w.root.pos - start).xz)))
-            worst = max(worst, share)
             stride_down = 0
             stride_out = 0
         }
@@ -498,6 +526,7 @@ pub fn run_with(
     }
     let infeasible = f32(bad) / f32(max(loads.feasible.len(), 1))
     let stride_infeasible = worst_stride(loads.feasible, stride)
+    let worst = worst_share(outs, downs, stride)
     let e = effort(loads, segs.parent, DT, distance)
     let stability = f32(out_frames) / f32(max(down_frames, 1))
     let fell = worst > 0.25
@@ -505,10 +534,11 @@ pub fn run_with(
     let clear = if clearance > 1.0e8 { 1.0 } else { clearance }
     let valid = stride_infeasible <= 0.05
     let weight = segs.total * 9.81
-    // Stability and a hanging foot weigh most (a gait that tips or leaves a foot behind isn't
-    // bought by effort), then the swing's clearance and the speed.
+    // Stability (its worst stride's: a lapse in one stride isn't averaged away) and a hanging foot
+    // weigh most (a gait that tips or leaves a foot behind isn't bought by effort), then the
+    // swing's clearance and the speed.
     var total = e / weight +
-        100.0 * stability +
+        100.0 * worst +
         100.0 * max(gap - CLEARANCE, 0.0) / CLEARANCE +
         10.0 * max(CLEARANCE - clear, 0.0) / CLEARANCE +
         100.0 * max(pierce - PIERCE, 0.0) / CLEARANCE +

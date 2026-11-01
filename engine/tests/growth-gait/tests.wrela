@@ -6,7 +6,9 @@
 use kit::gaits::{Ground, HAND, Pace, effort, gait_at, run, score, score_with}
 use kit::genome::ROE
 use kit::walks::WALKS
+use engine::gait::{frame_of, stand}
 use engine::loads::Loads
+use engine::terrain::Flat
 
 /// The optimized walk on level ground, on 30°, and on uneven ground (`kit::walks`' order).
 const LEVEL: u32 = 0
@@ -64,6 +66,33 @@ fn a_failed_stride_isnt_diluted() {
     let run_share = 12.0 / 600.0
     let worst = kit::gaits::worst_stride(feasible, stride: 24)
     assert(run_share <= 0.05 && worst > 0.05, f"the run's {run_share}, the worst stride's {worst}")
+    // Four failed frames across a 41-frame bucket's edge: two each side, under 5 % of each bucket,
+    // nearly a tenth of the stride that holds them.
+    var crossing: Vec<bool> = Vec::filled(600, value: true)
+    for t in 39..43 {
+        crossing[t] = false
+    }
+    let worst = kit::gaits::worst_stride(crossing, stride: 41)
+    assert(abs(worst - 4.0 / 41.0) < 1.0e-6, f"a stride across the bucket's edge {worst}")
+}
+
+/// A swaying body stood away from the origin stands as it does at the origin, moved there: its
+/// feet and its frame alike.
+@test
+fn a_swaying_body_stands_the_same_anywhere() {
+    let b = kit::gaits::body_of(kit::genome::quadruped_at(ROE, 1.0), WALKS[LEVEL])
+    assert(b.sway > 0.0, "the walk doesn't sway")
+    let heading = 0.7
+    let at = stand(Flat {}, b, vec2(0.0), heading)
+    let off = vec3(10.0, 0.0, -4.0)
+    let there = stand(Flat {}, b, off.xz, heading)
+    for i in 0..4 {
+        let d = length(there.feet[i].at - at.feet[i].at - off)
+        assert(d < 1.0e-4, f"foot {i} stands {d} m from where it stands at the origin, moved")
+    }
+    let (m, n) = (frame_of(at, b), frame_of(there, b))
+    let d = length((n * vec4(0.0, 0.0, 0.0, 1.0)).xyz - (m * vec4(0.0, 0.0, 0.0, 1.0)).xyz - off)
+    assert(d < 1.0e-4, f"its frame stands {d} m off")
 }
 
 /// A centre of mass 2 cm outside a three-foot support is outside it (a hull has no band); beside
@@ -128,7 +157,7 @@ fn the_walk_steps_over_a_log() {
 }
 
 /// How deep a swinging sole went into the log, as recorded (m): the Blocked gate's.
-const LOG_PIERCE: f32 = 0.14
+const LOG_PIERCE: f32 = 0.094
 
 /// After a 0.2 m drop, its stability is back to none within 3 strides.
 @test(tool, budget: 600)
@@ -152,9 +181,6 @@ fn the_walk_recovers_from_a_drop_within_three_strides() {
 
 /// The optimized walk spends less than the hand-set walk (the clearing's, on the walker as the
 /// engine had it before §F5) on level ground, per metre: `EFFORT_SHARE` of it at most.
-/// **Blocked** (docs/bench.md, "F5"): the plan asks 0.9; the walk that holds its centre of mass
-/// over its hull (its sway) spends 0.9007 of it, the search's 120 generations no lower; next lever,
-/// the sway's acceleration bounded (it spends effort, and a fifth of its frames are infeasible).
 @test(tool, budget: 600)
 fn the_optimized_walk_spends_less_than_the_hand_set() {
     let (o, h) = (
@@ -167,8 +193,8 @@ fn the_optimized_walk_spends_less_than_the_hand_set() {
     )
 }
 
-/// The optimized walk's effort against the hand-set's, as recorded: the Blocked gate's.
-const EFFORT_SHARE: f32 = 0.901
+/// The optimized walk's effort against the hand-set's at most (the plan's: 10 % under it).
+const EFFORT_SHARE: f32 = 0.9
 
 /// The search is the same from its seed: two searches of two generations each pick the same walk,
 /// to the bit.

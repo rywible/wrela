@@ -3625,48 +3625,52 @@ age 1 29.67 kg against the curve's 27.91 (6 %); age 0.5 between in every handle;
 twice. Its coat's wavelength 14.22 texels (0.1264 m), 2.0 times on a body twice as large; 61 spots
 at age 0.1, the largest 0.54 % of the map, none at 1; the same map by seed and another by
 another; no seam (one chart). A heavier genome's thigh 1.4997 times the section; the muscles as the
-optimized walk sizes them 15.37 kg of 29.67 (52 %: Blocked, F5 below); the same muscles twice.
+optimized walk sizes them 14.51 kg of 29.67 (49 %: Blocked, F5 below); the same muscles twice.
 
-**F5, the gaits optimized** (`wrela tool gait -- --generations 120 --seconds 20 --write`, 11 min
-2 s on 12 threads; CMA-ES from seed 5, 8 a generation; each candidate 20 s after setting off, a
+**F5, the gaits optimized** (`wrela tool gait -- --generations 80 --seconds 60 --write`, 22 min
+40 s on 12 threads; CMA-ES from seed 5, 8 a generation; each candidate 60 s after setting off, a
 grade's up it and down it). The walker is kinematic; the measures are `kit::gaits`' (effort |τ·ω|
 per metre over the feasible frames, the secondary chains frozen; the share of frames the centre of
 mass is outside the support of the feet planted through the frame, a hull held to its edge and a
-line or a point to a 4 cm band; a planted foot's gap; a swing's clearance over the ground's top
-and how deep a swinging sole dips under the ground; speed; each stride's infeasible share, over 5 %
-invalid). A smooth body sways its trunk 0.8 of the way toward its planted feet and vaults over its
-planted legs. The best total by generation, and the result:
+line or a point to a 4 cm band, scored by its worst stride; a planted foot's gap; a swing's
+clearance over the ground's top and how deep a swinging sole dips under the ground; speed; each
+stride's infeasible share, over 5 % invalid; a stride is any cycle's frames running, rolled a frame
+at a time). A smooth body leans its trunk 0.8 of the way toward its planted feet, eased (a
+critically damped 20 rad/s, its acceleration at most 4 m/s²), and vaults over its planted legs. The
+best total by generation, and the result:
 
-| Gait | total at gen 1 / 20 / 40 / 80 / 120 | effort (J/m) | outside | gap (m) | clearance (m) | pierce (m) | infeasible (worst stride) |
+| Gait | total at gen 1 / 20 / 40 / 80 | effort (J/m) | outside (worst stride) | gap (m) | clearance (m) | pierce (m) | infeasible (worst stride) |
 |---|---|---|---|---|---|---|---|
-| walk, level | 142.5 / 117.6 / 115.7 / 112.9 / 112.9 | 359.8 | 0.000 | 0.007 | 0.030 | 0.000 | 0.232 (0.293) invalid |
-| walk, 15° | 601.0 / 139.1 / 130.8 / 129.4 / 128.6 | 514.8 | 0.058 | 0.013 | 0.027 | 0.000 | 0.433 (0.451) invalid |
-| walk, 30° | 1018.4 / 159.3 / 142.2 / 136.5 / 136.5 | 539.6 | 0.000 | 0.009 | 0.054 | 0.000 | 0.781 (0.870) invalid |
-| walk, a 0.3 m step | 1068.8 / 143.4 / 143.4 / 143.4 / 143.4 | 240.4 | 0.001 | 0.014 | 0.021 | 0.000 | 0.850 (1.000) invalid |
-| walk, uneven | 300.0 / 138.2 / 127.7 / 127.7 / 127.6 | 2555.3 | 0.007 | 0.000 | 0.038 | 0.000 | 0.363 (0.431) invalid |
-| trot, level | 432.4 / 143.0 / 135.1 / 131.0 / 129.4 | 491.3 | 0.068 | 0.000 | 0.021 | 0.000 | 0.418 (0.522) invalid |
-| trot, 15° | 952.9 / 218.2 / 173.0 / 172.8 / 172.8 | 698.4 | 0.229 | 0.019 | 0.027 | 0.000 | 0.967 (1.000) invalid |
-| trot, 30° | 1287.4 / 562.0 / 466.4 / 425.4 / 424.0 | 283.9 | 0.173 | 0.082 | −0.014 | 0.014 | 0.971 (1.000) invalid |
-| trot, a 0.3 m step | 1947.3 / 409.7 / 374.9 / 200.1 / 200.1 | 18.0 | 0.237 | 0.016 | 0.020 | 0.010 | 0.992 (1.000) invalid |
-| trot, uneven | 720.5 / 153.9 / 145.5 / 142.0 / 139.4 | 1823.8 | 0.067 | 0.000 | 0.077 | 0.000 | 0.528 (0.652) invalid |
-| bound, level | 1304.7 / 622.3 / 622.3 / 622.3 / 622.3 | 393.1 | 0.809 | 0.079 | 0.091 | 0.000 | 0.866 (0.917) invalid |
-| bound, 15° | 1394.5 / 772.6 / 754.7 / 746.1 / 745.9 | 181.8 | 0.873 | 0.097 | −0.017 | 0.023 | 0.928 (1.000) invalid |
-| bound, 30° | 2552.2 / 1435.6 / 1390.5 / 1332.5 / 1332.5 | 1580.1 | 0.960 | 0.172 | −0.067 | 0.107 | 0.947 (1.000) invalid |
-| bound, a 0.3 m step | 1606.5 / 885.9 / 798.6 / 798.6 / 721.5 | 19.7 | 0.952 | 0.086 | 0.021 | 0.014 | 0.973 (1.000) invalid |
-| bound, uneven | 1099.1 / 696.2 / 678.4 / 659.6 / 657.4 | 656.5 | 0.780 | 0.087 | 0.022 | 0.000 | 0.835 (1.000) invalid |
+| walk, level | 149.5 / 122.9 / 118.0 / 116.8 | 200.7 | 0.000 (0.000) | 0.012 | 0.044 | 0.000 | 0.323 (0.368) invalid |
+| walk, 15° | 617.7 / 152.8 / 144.4 / 139.7 | 446.2 | 0.100 (0.122) | 0.000 | 0.024 | 0.000 | 0.626 (0.659) invalid |
+| walk, 30° | 1019.9 / 157.3 / 150.9 / 144.9 | 1616.6 | 0.000 (0.000) | 0.019 | 0.056 | 0.000 | 0.843 (0.923) invalid |
+| walk, a 0.3 m step | 1078.3 / 156.4 / 152.3 / 151.9 | 104.0 | 0.050 (0.080) | 0.006 | 0.020 | 0.000 | 0.870 (0.960) invalid |
+| walk, uneven | 321.3 / 133.3 / 120.4 / 118.2 | 1550.2 | 0.000 (0.000) | 0.016 | 0.053 | 0.000 | 0.258 (0.404) invalid |
+| trot, level | 428.1 / 142.3 / 137.8 / 136.6 | 563.8 | 0.000 (0.000) | 0.019 | 0.122 | 0.000 | 0.692 (0.760) invalid |
+| trot, 15° | 901.3 / 169.9 / 160.4 / 158.6 | 381.7 | 0.120 (0.174) | 0.015 | 0.005 | 0.000 | 0.782 (0.875) invalid |
+| trot, 30° | 1258.9 / 528.3 / 394.7 / 379.7 | 169.8 | 0.156 (0.217) | 0.065 | −0.014 | 0.021 | 0.918 (1.000) invalid |
+| trot, a 0.3 m step | 1940.6 / 454.4 / 302.9 / 302.9 | 344.9 | 0.153 (0.200) | 0.036 | 0.031 | 0.017 | 0.842 (0.920) invalid |
+| trot, uneven | 746.8 / 155.0 / 142.8 / 139.3 | 3175.7 | 0.068 (0.083) | 0.016 | 0.051 | 0.000 | 0.401 (0.792) invalid |
+| bound, level | 1315.0 / 713.7 / 665.2 / 660.0 | 423.7 | 0.796 (0.850) | 0.086 | 0.022 | 0.000 | 0.833 (0.917) invalid |
+| bound, 15° | 1404.2 / 825.8 / 771.2 / 749.8 | 283.6 | 0.796 (0.850) | 0.108 | −0.012 | 0.018 | 0.896 (0.958) invalid |
+| bound, 30° | 2564.1 / 1421.2 / 1391.3 / 1367.2 | 1417.7 | 0.961 (1.000) | 0.190 | −0.062 | 0.106 | 0.945 (0.958) invalid |
+| bound, a 0.3 m step | 1608.7 / 885.3 / 847.7 / 834.7 | 49.1 | 0.919 (0.957) | 0.110 | 0.050 | 0.013 | 0.956 (1.000) invalid |
+| bound, uneven | 1116.7 / 737.5 / 707.3 / 686.7 | 359.2 | 0.815 (0.900) | 0.090 | 0.025 | 0.000 | 0.870 (0.958) invalid |
 
-The hand-set walk (the clearing's, on the walker as it was) on level ground over the same 20 s:
-**399.4 J/m** → the optimized **359.8 J/m**, 0.9007 of it (the plan asks 0.9; it's 76 % outside its
-hull and its worst stride 67 % infeasible on these measures, its effort over its feasible frames).
-The 30° walk holds the plan's gate: none of 60 s outside its support, up or down, a planted foot at
-most 0.9 cm off its sole.
+The hand-set walk (the clearing's, on the walker as it was) on level ground over the same 60 s:
+**404.8 J/m** → the optimized **200.7 J/m**, 0.50 of it (the plan asks at most 0.9; the hand-set
+walk is 76 % outside its hull and its worst stride 68 % infeasible on these measures, its effort
+over its feasible frames). The 30° walk holds the plan's gate: none of 60 s outside its support,
+up or down, a planted foot at most 1.9 cm off its sole. After a 0.2 m drop no stride is outside
+its support from the fourth past it; over the 0.3 m log the swing's top clears it.
 
-The tests (`engine/tests/growth-gait`, 12): the head's spring can't move the effort (to 1e-6);
+The tests (`engine/tests/growth-gait`, 13): the head's spring can't move the effort (to 1e-6);
 equal peaks and unequal power differ; a fixture's effort 20 J/m by hand within 5 %; a failed stride
-isn't diluted; a hull has no band; a hop invalid; the 30° walk holds its support and its feet; a
-log's top cleared; after a 0.2 m drop no stride outside its support from the fourth past it; the
-search the same from its seed; the baked muscles the walk's to the bit; the effort under the
-hand-set walk's (its recorded 0.901).
+isn't diluted, nor one across a bucket's edge (4 of 41 frames: 9.8 %, not two buckets' 4.9 %); a
+hull has no band; a swaying body stands the same anywhere (its feet and frame 10 m from the origin
+its own, moved); a hop invalid; the 30° walk holds its support and its feet; a log's top cleared; a
+drop recovered by the fourth stride; the search the same from its seed; the baked muscles the
+walk's to the bit; the effort under 0.9 of the hand-set walk's.
 
 The levers on the 30° walk, in order, each searched again: the support as the feet planted
 through the frame's step; the hind legs' lag bounded to Hildebrand's lateral-sequence walks; a
@@ -3674,25 +3678,39 @@ smooth body's trunk pitched about its hips' middle; its feet set down plumb unde
 height held over the ground averaged along its length; its crouch's range to 0.2 m; a touchdown
 placed where the foot came down; each candidate 20 s; then (the council's first round holding a
 hull to its edge, the walk outside its hull a sixth of the time) the trunk's sway toward its
-planted feet (none: 0.168 outside on level; half the way: 0.020; 0.8: 0) and its vault.
+planted feet (none: 0.168 outside on level; half the way: 0.020; 0.8: 0) and its vault. The
+council's second round (the sway set by each frame's weights, its start pulled toward the world's
+origin; fixed buckets for a stride; the sway's acceleration untried) moved the sway into the
+walker's state, eased, and the strides to a rolling window; each searched again:
 
-- **Blocked: every gait's feasibility.** The level walk's worst stride is 29 % infeasible (23 % of
-  its frames), the 30° walk's 87 %; the trot and the bound's 57–100 %. The sway that holds the
-  centre of mass over the hull asks lateral accelerations the feet can't carry; half the sway
-  didn't help (28 %). Next lever: the sway's acceleration bounded (a sway eased over a step, not
-  set by the frame's weights), then a ballistic flight phase for the trot and the bound.
-- **Blocked: the effort**, 0.9007 of the hand-set walk's against 0.9 (the sway's cost; 120
-  generations no lower than 80); its test holds 0.901. Next lever: the sway bounded, as above.
-- **Blocked: the muscles' share**, 52 % of the body against 30–45 % (the swaying walk's joints
-  peak higher); its test holds 0.52. Next lever: as above, then the sizing read from a stride's
-  feasible frames' peak.
-- **Blocked: a swinging sole goes 13.5 cm into the log** before its swing's top (the clearance
-  over the log's top holds); its test holds 0.14. Next lever: the swing's lift sampled against the
-  posed sole along its arc, more finely.
+| Run | the sway's acceleration bound | candidate | stability scored | level effort (of the hand-set's) | 30° outside (over the candidate's run; the test's 60 s) | muscles | log pierce |
+|---|---|---|---|---|---|---|---|
+| 16 (round 1) | none | 20 s | mean | 0.90 | 0; 0 | 52 % | 13.5 cm |
+| 17 | 2 m/s² | 20 s | mean | 0.84 | 0.19 | 41 % | — |
+| 18 | 2 m/s², 120 generations | 20 s | mean | 1.04 | 0.19 | 62 % | — |
+| 19 | 4 m/s² | 20 s | mean | 0.57 | 0; 0.04 | 64 % | — |
+| 20 | 3 m/s² | 20 s | mean | 1.05 | 0.02 | 63 % | — |
+| 21 | 4 m/s² | 60 s | mean | 0.56 | 0; 0 | 40 % | 15.9 cm (the drop's fifth stride 1.8 % outside) |
+| **22** | 4 m/s² | 60 s | worst stride | **0.50** | **0; 0** | **49 %** | **9.3 cm** |
+
+- **Blocked: every gait's feasibility.** The level walk's worst stride is 37 % infeasible (32 % of
+  its frames), the 30° walk's 92 %; the trot and the bound's 76–100 %. The sway's acceleration
+  bounded didn't lower it (run 16's 29 %, these 31–37 %). Next lever: a ballistic flight phase for
+  the trot and the bound, and the walk's contact forces allowed a tangential share past the
+  friction cone's (the allocation's bound) where a hoof grips.
+- **Blocked: the muscles' share**, 49 % of the body against 30–45 %; the walks searched sized them
+  40–64 %, every group scaled alike by the genome's gallop foot force over the walk's peak (a walk
+  with a lower peak foot force scales its torques higher); its test holds 0.49. Next lever: the
+  muscles' share in the gait's objective, or the gallop's loads found by its own search, not a
+  walk's scaled.
+- **Blocked: a swinging sole goes 9.3 cm into the log** before its swing's top (the clearance over
+  the log's top holds, by 0.1 mm); its test holds 0.094. Next lever: the swing's lift sampled
+  against the posed sole along its arc, more finely.
 - **Blocked: the 0.3 m step's walk, the trot and the bound** (invalid as above).
 - **G-profile:** the grazer's walk is 10.0 µs a frame natively (3,600 frames of a step and its
-  palette on uneven ground, before the sway and the vault, which add a few dozen operations a
-  step), within 0.2 ms of C6's frame. Its grazing pose is found once a hold. The M4's to re-measure.
+  palette on uneven ground, before the sway, the vault and the nod, which add a few dozen
+  operations a step), within 0.2 ms of C6's frame. Its grazing pose is found once a hold. The M4's
+  to re-measure.
 
 ## F7, the grazer touching the world (2026-10-31, toolchain 0.16.0)
 
@@ -3727,13 +3745,17 @@ Linux pop-os (Radeon "Lucienne"): the vale's frames rendered here.
   reference: an adult roe buck filmed side on, walking across a meadow's edge, the camera panning
   with it. Frame rates: the vale's 60 rendered, the footage's video; both sampled at 10.
 - **Calibration:** the vale's strip against itself held on every third frame and against its
-  eight-pass blur: every judge of both rounds preferred the vale's strip each time (none rejected).
+  eight-pass blur: no judge of any round preferred a degraded strip (none rejected). Rounds 1 and
+  2's judges preferred the vale's each time; rounds 3 and 4 rated some pairs equal (round 3: the
+  blur, judges 1, 4 and 6; the held frames, judges 1 and 2; round 4: the blur, judges 2, 5, 6 and
+  8; the held frames, judge 6), which the rule doesn't reject.
 
 | Round | The vale's strip | Vale / equal / reference | Share | The vale's means (weight, timing, contact, secondary, readability) | The reference's |
 |---|---|---|---|---|---|
 | 1 | head on (a 23° field, since withdrawn: the panels' shot is frozen) | 0 / 0 / 8 | 0 % | 1.00, 1.00, 1.00, 0.88, 1.00 | 3.00, 3.00, 2.38, 2.50, 3.00 |
 | 2 | three-quarters on, its swing at least 7 cm, 4K cropped | 0 / 0 / 8 | 0 % | 1.00, 1.25, 1.00, 0.88, 1.38 | 3.00, 3.00, 2.75, 2.38, 3.00 |
 | 3 | the grown doe; its trunk swaying over its planted feet and vaulting over its legs (F5's walker, the plan's first named lever) | 0 / 0 / 8 | 0 % | 1.00, 1.00, 1.00, 0.12, 2.00 | 3.00, 3.00, 2.38, 2.12, 2.75 |
+| 4 | its head nodding twice a stride, ±2.7 cm against its trunk, through its neck's spring (Loscher et al. 2016's ungulate walk), on the walk the council's second round re-searched (its sway eased, its strides rolled) | 0 / 0 / 8 | 0 % | 1.00, 1.38, 1.00, 0.25, 1.75 | 3.00, 3.00, 2.38, 2.12, 2.75 |
 
 Round 2's judges on the vale's clip (its five rows' scores, then their sentences on weight and
 secondary motion; every sentence and both rounds' files are in `build/f9-motion*/judges/`):
@@ -3747,20 +3769,25 @@ secondary motion; every sentence and both rounds' files are in `build/f9-motion*
 - judge-7 (the vale's 1 / 1 / 1 / 1 / 1): The body glides at constant height over thin, stiff legs, with no bob or settle to show mass landing on each footfall. The head reorients slowly toward camera, but it doesn't nod with the stride, the ears stay fixed and no tail follow-through is visible.
 - judge-8 (the vale's 1 / 1 / 1 / 1 / 1): The fawn's body stays level and rigid over its legs with no dip or settle as feet take weight, so it feels weightless next to the real deer. The head holds one upright angle throughout with no stride-linked nod, and the ears and tail stay still.
 
-**G-motion: Blocked**, 0 % against 40 % in three rounds, every row lost (round 3: weight 2.00,
-timing 2.00, contact 1.38, secondary 2.00, readability 0.75 of 3). Round 3 took the plan's first
+**G-motion: Blocked**, 0 % against 40 % in four rounds, every row lost (round 4: weight 1.00,
+timing 1.38, contact 1.00, secondary 0.25, readability 1.75 of 3, the reference's 3.00, 3.00, 2.38,
+2.12, 2.75). Round 4 took the record's next lever, the head's nod driven by the stride: the judges
+saw at most "a faint head bob" (secondary 0.12 → 0.25), and "the body floats level over thin
+legs" again decided weight. Round 3 took the plan's first
 named lever, F5's walker (its trunk's sway and an inverted pendulum's vault, a bob of 7 mm on the
 doe): readability rose (1.38 → 2.00), weight didn't move ("the torso glides as a rigid block with
 almost no rise and fall"), and secondary motion fell (0.88 → 0.12: "head and ears stay fixed").
 The plan's second, F6's parameters, would break F6's own gate (the physical look's motion is none,
 its pose the gait's to the bit), so it isn't taken. The judges agree on what decides it: the body
 rides level over its legs (no rise and fall, no settle onto a footfall: the kinematic walker
-holds its height over its planted feet's mean), the head neither nods nor settles with the stride,
-the moving hind legs leave translucent ghosts (temporal AA without the skinned legs' motion), and
-pale specks at its feet (the litter's puffs) read as artifacts. Next levers: the vault's depth
-searched with the effort (7 mm is the pendulum at the doe's stride; the judges want a body that
-visibly settles), the head's nod driven by the stride (its springs carry none of a level body),
-the character's motion vectors for its swinging legs, and the puffs fainter.
+holds its height over its planted feet's mean, its vault a few millimetres), the head's motion is
+too small to see at the shot's 10 m, and the legs read thin and stiff. The translucent shapes at
+its hind legs that rounds 2 and 3 named are the stream's surface round its hooves (the trail
+crosses the shallows; the character's motion target carries its palette against its last, so it
+isn't temporal AA's). Next levers: the trunk's settle onto each footfall (a stance leg's
+compliance, its fetlock's give, in the walker; its effort searched with it), the nod's range
+against the shot's distance (the cited ±2.7 cm is a fifth of the doe's head at 10 m), and the
+puffs fainter.
 
 ## F2–F8, G-look on the creature's shots (2026-11-01, toolchain 0.16.0)
 
