@@ -2028,7 +2028,7 @@ pub fn occluders_into(
         }
         let at = engine::plant::Instance { at: x, ..p.at }
         borrow plant = plants[p.kind]
-        let wood = engine::distance::pack_albedo(plant.bark)
+        let wood = plant.wood
         for c in plant.clumps {
             // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
             let r = c.radius * c.squash
@@ -2039,7 +2039,7 @@ pub fn occluders_into(
                         a: at.place(c.centre - side * reach),
                         radius: r * at.scale,
                         b: at.place(c.centre + side * reach),
-                        solid: 0.0,
+                        solid: 0,
                     },
                 )
                 if reach <= 0.0 {
@@ -2052,7 +2052,7 @@ pub fn occluders_into(
             for k in 0..3 {
                 let (a, b, radius) = engine::plant::inner_wood_capsule(l, k, at)
                 if radius > 0.0 {
-                    out.push(engine::probes::Occluder { a, radius, b, solid: 1.0, albedo: wood })
+                    out.push(engine::probes::Occluder { a, radius, b, solid: wood })
                 }
             }
         }
@@ -2064,8 +2064,7 @@ pub fn occluders_into(
                     a: at.place(c.a),
                     radius: c.radius * at.scale * engine::plant::CORE_PLACED,
                     b: at.place(c.b),
-                    solid: 1.0,
-                    albedo: wood,
+                    solid: wood,
                 },
             )
         }

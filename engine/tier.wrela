@@ -23,7 +23,7 @@ pub trait Tiers: Switches {
 }
 
 /// The switches of `T`'s tier (**proposed**): `T`'s own, each that a tier turns off off from it on.
-/// `Epic`: `T`'s, with the soft shadows on (§G4: the panel named the shadows' hard, aliased edges). `High`: the contact shadows and the reflections off. `Medium`: `High`'s, with the
+/// `Epic`: `T`'s. `High`: the contact shadows and the reflections off. `Medium`: `High`'s, with the
 /// probes' sights off. `Low`: `Medium`'s, with the fog, the distance volume and the ambient
 /// occlusion off. None halves the clouds' dome (the plan had `High` do it): it marches a quarter
 /// of the texels and upsamples the whole dome after, which since the dome's marched every other
@@ -39,7 +39,7 @@ impl<T: Tiers> Switches for Tiered<T> {
     const DISTANCE: bool = T::DISTANCE && T::TIER != Tier::Low
     const AMBIENT: bool = T::AMBIENT && T::TIER != Tier::Low
     const OCCLUSION: bool = T::OCCLUSION
-    const PCSS: bool = T::PCSS || T::TIER == Tier::Epic
+    const PCSS: bool = T::PCSS && T::TIER == Tier::Epic
     const HALVED: bool = T::HALVED
     const CASCADES: bool = T::CASCADES
     const NEURAL: bool = T::NEURAL

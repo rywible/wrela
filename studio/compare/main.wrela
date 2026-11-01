@@ -416,10 +416,11 @@ fn tally_md(t: tally::Tally, key: std::json::Doc) -> String {
         classes.push(u32(key.num(key.get(k, "class").unwrap_or(0)).unwrap_or(0.0)))
     }
     out.push_str("\nThe menu (§G0), the items the pairs name, most lost first:\n\n")
-    for n in menu::ranked_items(t, classes) {
+    let named = menu::ranked_items(t, classes)
+    for n in named {
         out.push_str(f"- {n.item.as_str()}: {n.loss:.2} lost, named by {n.pairs} pairs\n")
     }
-    let unnamed = menu::unnamed(t, classes)
+    let unnamed = menu::unnamed(named)
     if !unnamed.is_empty() {
         out.push_str("- Not named (not needed unless a later panel names them):")
         for u in unnamed {

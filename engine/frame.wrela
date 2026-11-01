@@ -1278,18 +1278,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             quality,
             debug: Debug { off: Flags::none() },
             look: Look {},
-            metering: Metering {
-                base: 0.62,
-                // The band the meter reads is 2.1 times the scene's geometric mean the Last
-                // Green's look was picked at (0.136), as the start's view and its walk measure.
-                reference: 0.286,
-                strength: 0.85,
-                lo: 0.15,
-                hi: 8.0,
-                rate: 0.05,
-                flash: 1.25,
-                fresh: 0,
-            },
+            metering: paint::METERING,
             cam: first,
             light,
             air,

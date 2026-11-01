@@ -12,16 +12,14 @@
 use tally::{PairTally, Tally}
 use std::string::String
 
-/// A row of the map: its item, the rubric rows it answers (`tally::ROWS`' indices), the classes
-/// whose pairs can name it (empty: any), and the words that name it.
+/// A row of the map: its item, the rubric rows it answers (`tally::ROWS`' indices, a row twice
+/// when it answers one), the classes whose pairs can name it (0: any), and the words that name it
+/// (the unused ones empty).
 pub struct MenuRow: Copy {
     pub item: Text,
     pub rows: [u32; 2],
-    pub row_count: u32,
     pub classes: [u32; 2],
-    pub class_count: u32,
     pub words: [Text; 5],
-    pub word_count: u32,
 }
 
 /// The rubric rows' indices (`tally::ROWS`).
@@ -36,9 +34,7 @@ pub const MENU: [MenuRow; 7] = [
     MenuRow {
         item: "G1",
         rows: [LIGHT, LIGHT],
-        row_count: 1,
         classes: [12, 1],
-        class_count: 2,
         words: [
             "flat",
             "no bounce",
@@ -46,66 +42,44 @@ pub const MENU: [MenuRow; 7] = [
             "the wood's interior",
             "under the canopy",
         ],
-        word_count: 5,
     },
     MenuRow {
         item: "G2",
         rows: [LIGHT, ARTIFACTS],
-        row_count: 2,
         classes: [4, 8],
-        class_count: 2,
         words: ["reflection", "the mere", "the water", "", ""],
-        word_count: 3,
     },
     MenuRow {
         item: "G3",
         rows: [LIGHT, COLOUR],
-        row_count: 2,
         classes: [2, 2],
-        class_count: 1,
         words: ["the leaves glow", "translucent", "backlit", "", ""],
-        word_count: 3,
     },
     MenuRow {
         item: "G4",
         rows: [ARTIFACTS, ARTIFACTS],
-        row_count: 1,
         classes: [6, 1],
-        class_count: 2,
         words: ["shadows", "hard", "aliased edge of the shadow", "", ""],
-        word_count: 3,
     },
     MenuRow {
         item: "G5",
         rows: [DEPTH, ARTIFACTS],
-        row_count: 2,
         classes: [8, 8],
-        class_count: 1,
         words: ["soft at distance", "the far trees", "blobby", "", ""],
-        word_count: 3,
     },
     MenuRow {
         item: "G6",
         rows: [ARTIFACTS, COLOUR],
-        row_count: 2,
         classes: [4, 4],
-        class_count: 1,
         words: ["the fall", "spray", "foam", "", ""],
-        word_count: 3,
     },
     MenuRow {
         item: "G7",
         rows: [COLOUR, VALUE],
-        row_count: 2,
         classes: [0, 0],
-        class_count: 0,
         words: ["washed out", "the range", "too dark", "the sky's colour", ""],
-        word_count: 4,
     },
 ]
-
-/// The development shots' classes, D1 to D8 (`vale::lookbook`'s development shots, in order).
-pub const DEVELOPMENT_CLASSES: [u32; 8] = [1, 2, 3, 4, 6, 8, 9, 12]
 
 /// An item the panel names: its name, its loss and how many pairs name it.
 pub struct Named: Clone {
@@ -127,22 +101,18 @@ fn lower(s: str) -> String {
 /// Whether pair `p` (of class `class`) names `m`: its class is one of `m`'s (or `m` takes any) and
 /// a judge's sentence on one of `m`'s rows holds one of its words.
 pub fn names(m: MenuRow, p: PairTally, class: u32) -> bool {
-    var of_class = m.class_count == 0
-    for k in 0..m.class_count {
-        of_class = of_class || m.classes[k] == class
-    }
-    if !of_class {
+    if m.classes[0] != 0 && m.classes[0] != class && m.classes[1] != class {
         return false
     }
-    for r in 0..m.row_count {
+    for r in 0..2 {
         let row = m.rows[r]
-        if row >= p.notes.len() {
+        if (r == 1 && row == m.rows[0]) || row >= p.notes.len() {
             continue
         }
         for note in p.notes[row] {
             let text = lower(note.as_str())
-            for w in 0..m.word_count {
-                if text.as_str().find(m.words[w]).is_some() {
+            for w in m.words {
+                if !w.is_empty() && text.as_str().find(w).is_some() {
                     return true
                 }
             }
@@ -166,8 +136,10 @@ pub fn ranked_items(t: Tally, classes: [u32]) -> Vec<Named> {
                 continue
             }
             pairs += 1
-            for r in 0..m.row_count {
-                loss += p.reference_means[m.rows[r]] - p.still_means[m.rows[r]]
+            for r in 0..2 {
+                if r == 0 || m.rows[1] != m.rows[0] {
+                    loss += p.reference_means[m.rows[r]] - p.still_means[m.rows[r]]
+                }
             }
         }
         if pairs > 0 {
@@ -178,14 +150,16 @@ pub fn ranked_items(t: Tally, classes: [u32]) -> Vec<Named> {
     out
 }
 
-/// The items no pair of `t` names: not needed unless a later panel names them.
-pub fn unnamed(t: Tally, classes: [u32]) -> Vec<String> {
-    let named = ranked_items(t, classes)
+/// The items `named` (`ranked_items`') leaves out: not needed unless a later panel names them.
+pub fn unnamed(named: [Named]) -> Vec<String> {
     var out: Vec<String> = Vec::new()
     for m in MENU {
         var found = false
         for n in named {
-            found = found || n.item.as_str() == m.item
+            if n.item.as_str() == m.item {
+                found = true
+                break
+            }
         }
         if !found {
             out.push(String::from(m.item))

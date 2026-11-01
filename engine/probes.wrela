@@ -169,16 +169,16 @@ impl ProbeGrid {
 /// denser than any crown (1 at most).
 const SOLID: f32 = 1.5
 
-/// An occluder to cook into the volume: a sphere (a clump of leaves: `solid` 0; or a stone: 1)
+/// An occluder to cook into the volume: a sphere (a clump of leaves: `solid` 0; or a stone: not)
 /// or a capsule from `a` to `b` (a limb: solid), `radius` wide.
 pub struct Occluder: Copy + GpuData {
     pub a: vec3,
     pub radius: f32,
     pub b: vec3,
-    pub solid: f32,
-    /// A solid one's surface colour (`distance::pack_albedo`; 0: none), the solids' distance
-    /// volume's surface cache's (§G1).
-    pub albedo: u32 = 0,
+    /// Whether it's solid, and its surface's colour if so (`distance::pack_albedo`, never 0;
+    /// `distance::SOLID` for one of no colour of its own: the solids' distance volume's surface
+    /// cache's, §G1), or 0, a clump's leaves.
+    pub solid: u32,
 }
 
 /// The occluders a row of `cook_occluders`'s groups cooks.
@@ -219,7 +219,7 @@ pub fn cook_occluders(
         let t = clamp(dot(p - o.a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
         let d = length(p - o.a - ab * t) / max(o.radius, 1.0e-3)
         // Leaves thin toward a clump's edge; wood and stone are solid to theirs.
-        let density = if o.solid > 0.5 {
+        let density = if o.solid != 0 {
             20.0 * (1.0 - smoothstep(0.85, 1.15, d))
         } else {
             1.0 - smoothstep(0.55, 1.05, d)

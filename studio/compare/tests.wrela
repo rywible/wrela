@@ -305,36 +305,40 @@ fn the_references_and_shots_are_the_baselines() {
     )
 }
 
+/// The development shots' classes, D1 to D8 (the references' development set, in its order).
+fn development_classes() -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for r in VALE {
+        if r.set == "development" {
+            out.push(r.shot_class)
+        }
+    }
+    out
+}
+
 /// Every row of §G0's map names an existing development shot: each class it names is one of the
 /// development set's (D1 to D8, in the references' order), whose shot is the lookbook's `Dk`.
 @test
 fn every_menu_row_names_a_development_shot() {
-    var k = 0
-    for r in VALE {
-        if r.set != "development" {
-            continue
-        }
-        assert(
-            r.shot_class == menu::DEVELOPMENT_CLASSES[k],
-            f"development reference {k}: class {r.shot_class}, the menu's {menu::DEVELOPMENT_CLASSES[k]}",
-        )
-        k += 1
-    }
-    assert(k == 8, f"{k} development references")
+    let classes = development_classes()
+    assert(classes.len() == 8, f"{classes.len()} development references")
     for m in menu::MENU {
-        for c in 0..m.class_count {
+        for c in m.classes {
+            if c == 0 {
+                continue
+            }
             var found = false
             for d in 0..8 {
-                if menu::DEVELOPMENT_CLASSES[d] == m.classes[c] {
+                if classes[d] == c {
                     let shot = vale::lookbook::SHOTS[vale::lookbook::EVALUATION + d]
                     assert(
                         shot.name.starts_with(f"D{d + 1} "),
-                        f"{m.item}: class {m.classes[c]}'s shot is {shot.name}",
+                        f"{m.item}: class {c}'s shot is {shot.name}",
                     )
                     found = true
                 }
             }
-            assert(found, f"{m.item}: class {m.classes[c]} has no development shot")
+            assert(found, f"{m.item}: class {c} has no development shot")
         }
     }
 }
@@ -380,7 +384,7 @@ fn tally_losing(lost: u32, rows: [u32], sentence: str) -> tally::Tally {
 /// Synthetic reflection, backlighting and spray losses select G2, G3 and G6 first.
 @test
 fn synthetic_losses_select_their_items() {
-    let classes = menu::DEVELOPMENT_CLASSES
+    let classes = development_classes()
     let cases = [
         (6, [0, 4], "j0: The mere shows no Reflections of the trees", "G2"),
         (2, [0, 1], "j0: the leaves don't glow where they're backlit", "G3"),

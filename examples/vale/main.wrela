@@ -44,7 +44,10 @@ pub const TIER: Tier = Tier::Epic
 /// The vale's switches: its tier's (`engine::tier::Tiered`), each else at its approved value.
 pub struct ValeTier {}
 
-impl Switches for ValeTier {}
+impl Switches for ValeTier {
+    /// The soft shadows (§G4: the panel named the shadows' hard, aliased edges), at `Epic`.
+    const PCSS: bool = true
+}
 
 impl Tiers for ValeTier {
     const TIER: Tier = TIER
@@ -104,6 +107,12 @@ fn turned(v: vec2, a: f32) -> vec2 {
 /// face both seen).
 pub const GRAZING_TURN: f32 = 0.9
 
+/// The vale's contrast about the tone curve's pivot (`engine::paint::Look::contrast`), and how far
+/// its meter may raise the exposure (`engine::paint::Metering::hi`), **proposed** (§G7: searched on
+/// the eight development shots, docs/bench.md "G7").
+pub const CONTRAST: f32 = 1.2
+pub const METERING_HI: f32 = 8.0
+
 /// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
 pub const WALK_HOUR: f32 = 10.5
 pub const WALK_SKIES: Skies = Skies::Fair
@@ -146,7 +155,7 @@ pub fn init() -> Vale {
     let eye = start_eye()
     let at = eye + vec3(0.0, 0.0, 1.0)
     let (air, light) = lit(WALK_HOUR, WALK_SKIES, eye.y)
-    let f: Frame<Shared, Tiered<ValeTier>, LOOK> = Frame::new(
+    var f: Frame<Shared, Tiered<ValeTier>, LOOK> = Frame::new(
         quality(),
         light,
         air,
@@ -155,6 +164,10 @@ pub fn init() -> Vale {
         probe_grid(eye.xz, vec2(0.0), TILES),
         eye.xz,
     )
+    // The vale's look (§G7): its contrast, and its meter's ceiling above the engine's (its evening
+    // and dusk views sat at 4).
+    f.look.contrast = CONTRAST
+    f.metering.hi = METERING_HI
     Vale {
         frame: f,
         stage: stage(),

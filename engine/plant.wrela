@@ -165,8 +165,9 @@ pub struct Occluding: Clone {
     pub cores: Vec<Core>,
     pub limbs: Vec<Tube<4>>,
     pub clumps: Vec<Clump>,
-    /// Its bark's colour (between its dark and its light), its wood's as the probes' rays see it.
-    pub bark: vec3 = vec3(0.23, 0.185, 0.14),
+    /// Its bark's colour (`bark_of`), packed as a solid occluder's (`probes::Occluder::solid`):
+    /// its wood's as the probes' rays see it.
+    pub wood: u32,
 }
 
 /// A straight core inside a limb's piece, in its plant's frame (`inner_wood_capsule` with no
@@ -220,7 +221,14 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
             for i in 0..p.clumps.len() {
                 clumps.push(p.clumps[i])
             }
-            out.push(Occluding { cores: Vec::new(), limbs, clumps, bark: bark_of(p.bark) })
+            out.push(
+                Occluding {
+                    cores: Vec::new(),
+                    limbs,
+                    clumps,
+                    wood: distance::pack_albedo(bark_of(p.bark)),
+                },
+            )
             continue
         }
         var radii: Vec<f32> = Vec::new()
@@ -244,7 +252,14 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
                 }
             }
         }
-        out.push(Occluding { cores, limbs: Vec::new(), clumps, bark: bark_of(p.bark) })
+        out.push(
+            Occluding {
+                cores,
+                limbs: Vec::new(),
+                clumps,
+                wood: distance::pack_albedo(bark_of(p.bark)),
+            },
+        )
     }
     out
 }

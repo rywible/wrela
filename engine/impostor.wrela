@@ -1269,7 +1269,7 @@ fn a_lone_leaf_glows_against_the_sun_and_the_crowns_core_doesnt() {
     let l = normalize(vec3(0.3, 0.5, 1.0))
     let v = -l
     let shown = |depth: f32| dot(leaf_through(through, depth, v, l), light::LUMA) *
-        (0.25 + 0.75 * pow(max(dot(-v, l), 0.0), 3.0))
+        light::backlit(v, l)
     assert(shown(0.0) >= 0.3, f"a lone card lets through {shown(0.0)} of the sun")
     assert(shown(THICK * 2.0) < 0.05, f"the crown's core lets through {shown(THICK * 2.0)}")
 }

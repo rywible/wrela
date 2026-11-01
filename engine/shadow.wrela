@@ -245,6 +245,10 @@ pub fn sunlit(
     pcss: bool = true,
 ) -> f32 {
     let lit = statically_sunlit(sh, world, n, near, far, s, soft, pcss: pcss)
+    // Already in the static shadow: the moving map can't darken it further.
+    if lit <= 0.0 {
+        return 0.0
+    }
     let at = world + n * (sh.moving_texel * 1.5)
     let (m, _) = if pcss && sh.soft_pcss != 0 {
         soft_lookup(

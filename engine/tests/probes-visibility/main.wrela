@@ -49,7 +49,14 @@ pub struct Walls {
 fn wall(out: mut Vec<Occluder>, a: vec2, b: vec2) {
     for k in 0..21 {
         let y = f32(k) * 0.5
-        out.push(Occluder { a: vec3(a.x, y, a.y), radius: 0.5, b: vec3(b.x, y, b.y), solid: 1.0 })
+        out.push(
+            Occluder {
+                a: vec3(a.x, y, a.y),
+                radius: 0.5,
+                b: vec3(b.x, y, b.y),
+                solid: engine::distance::SOLID,
+            },
+        )
     }
 }
 
@@ -58,7 +65,12 @@ fn roof(out: mut Vec<Occluder>, from: f32, to: f32) {
     var x = from
     while x <= to {
         out.push(
-            Occluder { a: vec3(x, 10.0, -12.0), radius: 0.5, b: vec3(x, 10.0, 12.0), solid: 1.0 },
+            Occluder {
+                a: vec3(x, 10.0, -12.0),
+                radius: 0.5,
+                b: vec3(x, 10.0, 12.0),
+                solid: engine::distance::SOLID,
+            },
         )
         x += 0.5
     }

@@ -15,8 +15,8 @@
 // `DISTANCE_SLABS` slabs, one a frame (`Work::Distance`).
 
 use std::gpu::{
-    GlobalId, GpuBuffer, R32Float, Rgba8, Texels3d, Texture3d, buffer, buffer_of, dispatch, label,
-    texture3d, write,
+    GlobalId, GpuBuffer, R32Float, Rgba8, Texels3d, Texture3d, Unorm8x4, buffer, buffer_of,
+    dispatch, label, texture3d, write,
 }
 use std::mem::size_of
 use std::stage::interpret
@@ -57,27 +57,20 @@ pub struct Capsule: Copy + GpuData {
 /// What a solid with no colour of its own reflects (bark and stone, near enough).
 pub const SOLID_ALBEDO = vec3(0.18, 0.16, 0.14)
 
-/// `c` (linear, 0 to 1 each) as a capsule's `albedo`: eight bits a channel, the fourth 255 (so a
-/// colour of black isn't none).
+/// `c` (linear, 0 to 1 each) as a capsule's `albedo` (`Unorm8x4`'s bits), its alpha 1 (so a colour
+/// of black isn't none, 0).
 pub fn pack_albedo(c: vec3) -> u32 {
-    let q = vec3u(round(clamp(c, vec3(0.0), vec3(1.0)) * 255.0))
-    q.x | (q.y << 8) | (q.z << 16) | (255 << 24)
+    Unorm8x4::encode(vec4(saturate(c), 1.0)).bits
 }
 
-/// A capsule's `albedo` as a colour (linear): `SOLID_ALBEDO` for none.
-pub fn unpack_albedo(a: u32) -> vec3 {
-    if a == 0 {
-        return SOLID_ALBEDO
-    }
-    vec3(f32(a & 255), f32((a >> 8) & 255), f32((a >> 16) & 255)) / 255.0
-}
+/// A solid with no colour of its own, packed (`SOLID_ALBEDO`): a probes' occluder's `solid`.
+pub const SOLID: u32 = pack_albedo(SOLID_ALBEDO)
 
 /// The colour of the solid nearest the volume's voxel at `p` (render space: `albedo`, cooked with
 /// its distance), `SOLID_ALBEDO` where none is near or the volume holds none.
 pub fn albedo_at(g: DistanceGrid, albedo: Texture3d<Rgba8>, p: vec3) -> vec3 {
     let w = vec3i(floor(p / g.voxel))
-    let lo = g.origin
-    if g.on == 0 || !inside_box(w, lo, lo + vec3i(g.dims)) || !inside_box(w, g.lo, g.hi) {
+    if g.on == 0 || !held(g, w) {
         return SOLID_ALBEDO
     }
     let t = texel_of(g, w)
@@ -345,10 +338,11 @@ pub fn cook_distance(
     for i in 0..entry.y {
         let k = list[entry.x + i]
         if k & SHAPE_BIT == 0 {
-            let c = to_capsule(capsules[k], p)
+            let cap = capsules[k]
+            let c = to_capsule(cap, p)
             if c < dist {
                 dist = c
-                nearest = capsules[k].albedo
+                nearest = cap.albedo
             }
         } else {
             let s = shapes[k & !SHAPE_BIT]
@@ -363,8 +357,8 @@ pub fn cook_distance(
         }
     }
     out.store(id, dist)
-    let c = unpack_albedo(nearest)
-    colour.store(id, vec4(c, if nearest == 0 { 0.0 } else { 1.0 }))
+    // (None, 0, decodes to alpha 0: `albedo_at` reads `SOLID_ALBEDO` there.)
+    colour.store(id, Unorm8x4 { bits: nearest }.decode())
 }
 
 /// Entry `k` added to the lists of the bins (`BINS`, from `corner`) that come within

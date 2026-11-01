@@ -44,6 +44,9 @@ pub struct Look: Copy + GpuData {
     /// light, rolled off above SDR white toward `peak`, where the display shows it so).
     pub output: u32 = 0,
     pub peak: f32 = 4.0,
+    /// The exposed light's contrast about `light::PIVOT` (`light::tone_contrast`, §G7): 1 is
+    /// `light::tone`'s curve, as it was.
+    pub contrast: f32 = 1.0,
 }
 
 /// An HDR screen's light from the scene's (`c`, exposed): linear, as it is up to SDR white
@@ -175,6 +178,20 @@ pub struct Metering: Copy + GpuData {
     pub rate: f32,
     pub flash: f32,
     pub fresh: u32,
+}
+
+/// How the frame meters unless its program says otherwise (`Frame::metering`).
+pub const METERING = Metering {
+    base: 0.62,
+    // The band the meter reads is 2.1 times the scene's geometric mean the Last Green's look was
+    // picked at (0.136), as the start's view and its walk measure.
+    reference: 0.286,
+    strength: 0.85,
+    lo: 0.15,
+    hi: 4.0,
+    rate: 0.05,
+    flash: 1.25,
+    fresh: 0,
 }
 
 /// The metered exposure (`meter`), the luminance it was metered from, and the scene's geometric
@@ -421,16 +438,7 @@ fn the_meter_reads_the_band_from_the_median_up() {
 /// exposure (a strength under 1 meters part of the difference away, never all of it, nor past it).
 @test
 fn metering_keeps_the_scenes_order() {
-    let m = Metering {
-        base: 0.62,
-        reference: 0.286,
-        strength: 0.85,
-        lo: 0.15,
-        hi: 8.0,
-        rate: 0.05,
-        flash: 1.25,
-        fresh: 1,
-    }
+    let m = Metering { hi: 8.0, fresh: 1, ..METERING }
     var shown: Vec<f32> = Vec::new()
     for stop in [-9.0, -6.0, -5.0, -4.0, -2.0, -1.0, 0.0, 1.0] {
         // A scene of two tones a stop either side of `stop`, half its pixels each.

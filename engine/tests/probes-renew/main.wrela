@@ -20,7 +20,12 @@ fn probes() -> ProbeGrid {
 }
 
 /// A solid trunk at the middle, 4 m thick, 12 m tall.
-const TRUNK = Occluder { a: vec3(0.0, 0.0, 0.0), radius: 2.0, b: vec3(0.0, 12.0, 0.0), solid: 1.0 }
+const TRUNK = Occluder {
+    a: vec3(0.0, 0.0, 0.0),
+    radius: 2.0,
+    b: vec3(0.0, 12.0, 0.0),
+    solid: engine::distance::SOLID,
+}
 
 /// The density at the trunk's middle.
 @compute(1)

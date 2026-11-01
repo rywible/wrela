@@ -120,7 +120,7 @@ const F0: f32 = 0.04
 
 /// How much sun comes through a thin surface seen from `v`: most when the eye looks toward the
 /// sun through it.
-fn backlit(v: vec3, l: vec3) -> f32 {
+pub fn backlit(v: vec3, l: vec3) -> f32 {
     0.25 + 0.75 * pow(max(dot(-v, l), 0.0), 3.0)
 }
 
@@ -284,23 +284,19 @@ pub const PIVOT: f32 = 0.1
 /// `aces` up to `KNEE`, then rolling off toward white as an exponential from it, its value and its
 /// slope continuous there (the fit itself reaches 1 at 7.24 and clips past it).
 pub fn soft_shoulder(x: vec3) -> vec3 {
-    let k = vec3(KNEE)
-    let at = aces(k)
-    // The fit's slope at the knee (its derivative, the quotient rule).
-    let (num, den) = (KNEE * (2.51 * KNEE + 0.03), KNEE * (2.43 * KNEE + 0.59) + 0.14)
-    let slope = ((5.02 * KNEE + 0.03) * den - num * (4.86 * KNEE + 0.59)) / (den * den)
-    let rest = vec3(1.0) - at
-    let over = vec3(1.0) - rest * exp(-(x - k) * slope / rest)
-    let fit = aces(x)
-    vec3(
-        if x.x > KNEE { over.x } else { fit.x },
-        if x.y > KNEE { over.y } else { fit.y },
-        if x.z > KNEE { over.z } else { fit.z },
-    )
+    let over = vec3(1.0) - (1.0 - KNEE_AT) * exp((vec3(KNEE) - x) * KNEE_RATE)
+    // (The two meet at the knee, so which side takes it doesn't matter.)
+    mix(aces(x), over, step(vec3(KNEE), x))
 }
 
-/// Where `soft_shoulder` leaves the fit (linear, exposed).
+/// Where `soft_shoulder` leaves the fit (linear, exposed), the fit's value there, and how fast the
+/// exponential after it closes on white: the fit's slope there (a central difference of `aces`
+/// itself) over what's left to white.
 pub const KNEE: f32 = 3.0
+const KNEE_AT: f32 = aces(vec3(KNEE)).x
+const KNEE_RATE: f32 = (aces(vec3(KNEE + 1.0e-3)).x - aces(vec3(KNEE - 1.0e-3)).x) /
+    2.0e-3 /
+    (1.0 - KNEE_AT)
 
 /// A filmic shoulder: a fit of the ACES curve, from linear light to [0, 1].
 pub fn aces(x: vec3) -> vec3 {
