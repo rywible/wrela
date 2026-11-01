@@ -875,13 +875,12 @@ impl<G: Game> Engine<G> {
             return
         }
         self.now = max(self.now, e.time)
-        borrow inner = e.inner
         match self.kind {
-            Kind::Account => self.account_called(conn, inner),
+            Kind::Account => self.account_called(conn, take e.inner),
             Kind::Names | Kind::Codes | Kind::Replays | Kind::Search => {
-                self.shard_called(conn, inner)
+                self.shard_called(conn, e.inner)
             },
-            Kind::Board | Kind::Whole => self.board_called(conn, inner),
+            Kind::Board | Kind::Whole => self.board_called(conn, e.inner),
             _ => self.back(conn, Back::Refused { why: String::from("Nothing here.") }),
         }
     }
@@ -1178,9 +1177,9 @@ impl<G: Game> Engine<G> {
     }
 
     /// Calls instance `to` with `inner`, as of now: its answer is a `Back`'s bytes.
-    pub(package) fn ask(mut self, to: str, inner: Inner, step: Step, job: take Job) {
+    pub(package) fn ask(mut self, to: str, inner: take Inner, step: Step, job: take Job) {
         let t = self.next_ticket()
-        let body = save(Envelope { time: self.now, inner: inner.clone() })
+        let body = save(Envelope { time: self.now, inner })
         self.out.push(Command::Call { ticket: t, to: String::from(to), body })
         self.wait(t, step, take job)
     }

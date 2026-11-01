@@ -27,6 +27,7 @@ use server::{
     blank_job, board_instance, ceremony_message, challenge_of, codes_instance, letters, nobody,
     read, replays_instance, search_instance, searchable,
 }
+use std::collections::replace
 use std::hash::sha256::sha256
 use wire::{
     ADD_PASSKEY, ANY, Agreed, FULL, Found, MOST_FOUND, MOST_REPLAY, NOT_AGREED, REGISTER, Reply,
@@ -45,7 +46,7 @@ impl<G: Game> Engine<G> {
     // ---- where a request goes ------------------------------------------------------------------
 
     /// Request `conn`, at the edge: sent on to its instance, or answered here.
-    pub(package) fn edge_http(mut self, conn: u32, request: Request) {
+    pub(package) fn edge_http(mut self, conn: u32, request: take Request) {
         let Some(i) = self.conn_index(conn) else { return }
         let cookie = self.conns[i].cookie.clone()
         let own = match held_parts(cookie) {
@@ -91,7 +92,7 @@ impl<G: Game> Engine<G> {
                 return
             },
             Request::Upload { .. } => {
-                self.edge_upload(conn, request.clone())
+                self.edge_upload(conn, take request)
                 return
             },
             Request::Board { .. } | Request::Around { .. } => {
@@ -283,7 +284,7 @@ impl<G: Game> Engine<G> {
                 let to = account_instance(handle)
                 j.handle = handle.clone()
                 let inner = Inner::Recover { hash: j.hash.clone(), cookie }
-                self.ask(to.as_str(), inner, Step::EdgeRecover, take j)
+                self.ask(to.as_str(), take inner, Step::EdgeRecover, take j)
             },
             Back::Refused { why } => self.reply(j.conn, Reply::Refused { why: why.clone() }),
             _ => self.refuse(j.conn, "We don't know that code, or it's already been used."),
@@ -314,7 +315,7 @@ impl<G: Game> Engine<G> {
 
     /// An upload: what can be refused without asking anyone is, and its account is asked whether it
     /// may go up.
-    fn edge_upload(mut self, conn: u32, request: Request) {
+    fn edge_upload(mut self, conn: u32, request: take Request) {
         let Request::Upload { token, game, board, replay } = request else { return }
         if game.as_str() != self.game.id() {
             self.reply(
@@ -348,23 +349,25 @@ impl<G: Game> Engine<G> {
                 return
             },
         }
-        var j = blank_job(conn, request.clone())
-        j.handle = take handle
-        j.message = take secret
-        j.hash = Vec::from(sha256(replay))
-        j.course = claim.course
-        j.ticks = claim.ticks
-        j.n = board
+        let hash = Vec::from(sha256(replay))
         let inner = Inner::Admit {
-            token: j.message.clone(),
+            token: secret.clone(),
             game: game.clone(),
             board,
-            hash: j.hash.clone(),
+            hash: hash.clone(),
             course: claim.course,
             ticks: claim.ticks,
         }
+        // The job keeps the request, its replay with it, for the plays and the record to come.
+        var j = blank_job(conn, take request)
+        j.handle = take handle
+        j.message = take secret
+        j.hash = take hash
+        j.course = claim.course
+        j.ticks = claim.ticks
+        j.n = board
         let to = account_instance(j.handle)
-        self.ask(to.as_str(), inner, Step::EdgeAdmit, take j)
+        self.ask(to.as_str(), take inner, Step::EdgeAdmit, take j)
     }
 
     /// The account's answer to an upload's admission: played, or what came of it before.
@@ -393,7 +396,7 @@ impl<G: Game> Engine<G> {
                 return
             },
         }
-        let Request::Upload { replay, .. } = j.request.clone() else { return }
+        let Request::Upload { replay, .. } = j.request else { return }
         if j.n == self.game.board() {
             // This build's board: played here, all of it.
             let verdict = self.play(replay, j.ticks)
@@ -439,32 +442,36 @@ impl<G: Game> Engine<G> {
         }
         let inner = Inner::Own { hash: j.hash.clone(), owner: j.handle.clone() }
         let to = replays_instance(j.hash)
-        self.ask(to.as_str(), inner, Step::EdgeOwn, take j)
+        self.ask(to.as_str(), take inner, Step::EdgeOwn, take j)
     }
 
     fn record(mut self, job: take Job) {
-        let j = take job
-        let Request::Upload { replay, .. } = j.request.clone() else { return }
+        var j = take job
+        // The replay goes to the account with the record: the edge needs it no more.
+        let replay = match mut j.request {
+            Request::Upload { replay, .. } => replace(mut replay, Vec::new()),
+            _ => return,
+        }
         let Some(verdict) = j.verdict.clone() else { return }
         let inner = Inner::Record {
             token: j.message.clone(),
             board: j.n,
             course: j.course,
             verdict,
-            replay: replay.clone(),
+            replay,
         }
         let to = account_instance(j.handle)
-        self.ask(to.as_str(), inner, Step::EdgeRecord, take j)
+        self.ask(to.as_str(), take inner, Step::EdgeRecord, take j)
     }
 
     /// Ranks the recorded run at its board: the account's best there (`best`, as the account told
     /// it), then the run's place.
     fn rank(mut self, job: take Job, best: Note) {
         let j = take job
-        let Request::Upload { game, .. } = j.request.clone() else { return }
+        let Request::Upload { game, .. } = j.request else { return }
         let to = board_instance(game, j.n, j.course, ANY)
         let inner = Inner::Rank { best: best.clone(), ticks: j.ticks, handle: j.handle.clone() }
-        self.ask(to.as_str(), inner, Step::EdgeRank, take j)
+        self.ask(to.as_str(), take inner, Step::EdgeRank, take j)
     }
 
     /// A ranking that didn't come: the run is kept, and posting it again ranks it.
@@ -522,7 +529,7 @@ impl<G: Game> Engine<G> {
                 noun: noun.clone(),
                 epithet: epithet.clone(),
             }
-            self.ask(search_instance(l).as_str(), inner, Step::EdgeSearch, take j)
+            self.ask(search_instance(l).as_str(), take inner, Step::EdgeSearch, take j)
         }
     }
 

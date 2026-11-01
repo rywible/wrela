@@ -417,23 +417,25 @@ impl<G: Game> Engine<G> {
                 let Note::Listed { handle, revision, listing } = j.note.clone() else { return }
                 let k = listed_key(handle)
                 let e: Option<SearchEntry> = self.latest_as(k, answer)
+                let at = if listing.is_empty() { Vec::new() } else { names::key(listing[0].name) }
                 if let Some(e) = e {
                     if revision <= e.revision {
                         self.done(j)
                         return
                     }
+                    // Under the same name, its rows are written over, not deleted first.
                     if let Some(old) = names::from_key(e.key) {
-                        self.forget(by_noun(old))
-                        self.forget(by_title(old))
+                        if e.key != at {
+                            self.forget(by_noun(old))
+                            self.forget(by_title(old))
+                        }
                     }
                 }
-                var at: Vec<u8> = Vec::new()
                 if !listing.is_empty() {
                     borrow l = listing[0]
                     let row = save(SearchRow { handle: handle.clone(), listing: l.clone() })
                     self.keep(by_noun(l.name), row.clone())
                     self.keep(by_title(l.name), take row)
-                    at = names::key(l.name)
                 }
                 self.keep(take k, save(SearchEntry { revision, key: at }))
                 self.done(j)

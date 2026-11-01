@@ -121,8 +121,11 @@ impl<G: Game> Engine<G> {
             if revision <= e.revision {
                 return
             }
-            if e.present {
+            // What goes where it was is written over, not deleted first.
+            if e.present && (best.is_empty() || best[0].ticks != e.ticks) {
                 self.forget(place_key(e.ticks, handle))
+            }
+            if e.present && (best.is_empty() || best[0].key != e.key) {
                 self.forget(named_key(e.key))
             }
         }

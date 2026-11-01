@@ -35,6 +35,7 @@ use server::{
     letter_of, names_instance, nobody, read, replays_instance, same_bytes, search_instance,
     starts_with,
 }
+use std::collections::replace
 use std::crypto::verified
 use std::fmt::json_text
 use std::hash::sha256::{hex, sha256}
@@ -583,7 +584,7 @@ impl<G: Game> Engine<G> {
         let j = take job
         let n = draw(j.seed)
         let inner = Inner::Claim { name: n, owner: self.handle.clone() }
-        self.ask(names_instance(n).as_str(), inner, step, take j)
+        self.ask(names_instance(n).as_str(), take inner, step, take j)
     }
 
     /// Writes recovery codes from `bytes` at revision `revision`, each told its shard: the codes as
@@ -689,11 +690,7 @@ impl<G: Game> Engine<G> {
                 j.n = n
                 j.course = course
                 j.ticks = ticks
-                let board = match j.inner.clone() {
-                    Some(Inner::Admit { board, .. }) => board,
-                    Some(Inner::Record { board, .. }) => board,
-                    _ => return,
-                }
+                let Some(board) = upload_board(j.inner) else { return }
                 let k = key("b/", board_part(self.game.id(), board, course, ANY))
                 self.get(take k, Step::AdmitBest, take j)
             },
@@ -702,21 +699,17 @@ impl<G: Game> Engine<G> {
 
     // ---- calls and messages ------------------------------------------------------------------------
 
-    /// Call `conn` to this account, from the edge.
-    pub(package) fn account_called(mut self, conn: u32, inner: Inner) {
-        var j = blank_job(conn, Request::Me)
-        j.inner = Some(inner.clone())
-        match inner {
-            Inner::Recover { hash, .. } => {
-                j.hash = hash.clone()
-                self.get(code_key(hash), Step::RecoverCode, take j)
-            },
-            Inner::Admit { token, .. } => {
+    /// Call `conn` to this account, from the edge: kept in its job (a run's replay with it).
+    pub(package) fn account_called(mut self, conn: u32, inner: take Inner) {
+        // What it reads first, and the hash it's about: a code's, or a replay's.
+        let (k, step, hash) = match inner {
+            Inner::Recover { hash, .. } => (code_key(hash), Step::RecoverCode, hash.clone()),
+            Inner::Admit { token, hash, .. } => {
                 if self.deleting {
                     self.back(conn, Back::Refused { why: String::from("That account is gone.") })
                     return
                 }
-                self.get(token_key(hashed(token)), Step::AdmitToken, take j)
+                (token_key(hashed(token)), Step::AdmitToken, hash.clone())
             },
             Inner::Record { replay, .. } => {
                 if self.recording() {
@@ -724,14 +717,18 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why })
                     return
                 }
-                j.hash = Vec::from(sha256(replay))
-                self.get(key(ACCOUNT, []), Step::RecordAccount, take j)
+                (key(ACCOUNT, []), Step::RecordAccount, Vec::from(sha256(replay)))
             },
-            _ => self.back(
-                conn,
-                Back::Refused { why: String::from("An account doesn't answer that.") },
-            ),
+            _ => {
+                let why = String::from("An account doesn't answer that.")
+                self.back(conn, Back::Refused { why })
+                return
+            },
         }
+        var j = blank_job(conn, Request::Me)
+        j.hash = take hash
+        j.inner = Some(take inner)
+        self.get(take k, step, take j)
     }
 
     /// A message to this account.
@@ -1377,18 +1374,14 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why })
                     return
                 }
-                let Some(Inner::Admit { hash, board, .. }) = j.inner.clone() else { return }
-                self.get(outcome_key(hash, board), Step::AdmitOutcome, take j)
+                let Some(board) = upload_board(j.inner) else { return }
+                self.get(outcome_key(j.hash, board), Step::AdmitOutcome, take j)
             },
             Step::AdmitOutcome | Step::RecordOutcome => {
                 // The replay uploaded before to this version of the boards: what came of it,
                 // rather than another run.
-                let (hash, board) = match j.inner.clone() {
-                    Some(Inner::Admit { hash, board, .. }) => (hash.clone(), board),
-                    Some(Inner::Record { board, .. }) => (j.hash.clone(), board),
-                    _ => return,
-                }
-                let c: Option<Checked> = self.latest_as(outcome_key(hash, board), answer)
+                let Some(board) = upload_board(j.inner) else { return }
+                let c: Option<Checked> = self.latest_as(outcome_key(j.hash, board), answer)
                 if let Some(c) = c {
                     self.recorded_before(take j, c)
                     return
@@ -1429,12 +1422,11 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why: String::from("That account is gone.") })
                     return
                 }
-                let Some(Inner::Admit { hash, .. }) = j.inner.clone() else { return }
                 var counted: Vec<u8> = Vec::new()
                 std::store::append_u32(mut counted, count + 1)
                 self.keep(rate_key(self.now / HOUR), take counted)
                 // Its replay's shard is asked to make it this account's: its deletion lets it go.
-                self.put_bytes(owned_key(hash), Vec::new())
+                self.put_bytes(owned_key(j.hash), Vec::new())
                 self.back(conn, Back::Admitted)
             },
             Step::RecordAccount => {
@@ -1444,14 +1436,14 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 j.account = take a
-                let Some(Inner::Record { board, .. }) = j.inner.clone() else { return }
+                let Some(board) = upload_board(j.inner) else { return }
                 self.get(outcome_key(j.hash, board), Step::RecordOutcome, take j)
             },
             Step::RecordCounters => {
                 // The run's number is the next.
                 j.seed = self.next_revision(self.counters(answer), runs: 1)
                 j.n = self.runs
-                let Some(Inner::Record { board, .. }) = j.inner.clone() else { return }
+                let Some(board) = upload_board(j.inner) else { return }
                 let prefix = key("b/", board_part(self.game.id(), board, course: 0, category: 0))
                 let cut = prefix.len() - 8
                 self.scan(
@@ -1499,7 +1491,7 @@ impl<G: Game> Engine<G> {
     /// A run admitted and played: refused, kept as refused; or kept, with its bests.
     fn record_new(mut self, job: take Job) {
         let j = take job
-        let Some(Inner::Record { verdict, board, .. }) = j.inner.clone() else { return }
+        let Some(Inner::Record { verdict, board, .. }) = j.inner else { return }
         if !verdict.ok {
             self.keep(
                 outcome_key(j.hash, board),
@@ -1515,12 +1507,15 @@ impl<G: Game> Engine<G> {
     /// beats replaced and told its board, each whole-game sum that changes with them told its whole
     /// board, and the account's runs told its search shard.
     fn record_bests(mut self, job: take Job, answer: Vec<u8>) {
-        let j = take job
+        var j = take job
         let Some(es) = entries(answer) else { return }
         let Some(a) = j.account.clone() else { return }
-        let Some(Inner::Record { board, course, verdict, replay, .. }) = j.inner.clone() else {
-            return
+        // The replay is the run's now: taken out of the call it came in.
+        let replay = match mut j.inner {
+            Some(Inner::Record { replay, .. }) => replace(mut replay, Vec::new()),
+            _ => return,
         }
+        let Some(Inner::Record { board, course, verdict, .. }) = j.inner else { return }
         if self.deleting {
             self.back(j.conn, Back::Refused { why: String::from("That account is gone.") })
             return
@@ -1549,7 +1544,7 @@ impl<G: Game> Engine<G> {
                 ticks: verdict.ticks,
                 full: verdict.full,
                 uploaded: self.now,
-                replay: replay.clone(),
+                replay,
             },
         )
         self.keep(
@@ -1834,6 +1829,15 @@ impl<G: Game> Engine<G> {
     fn clear(mut self, job: take Job) {
         self.deleting = true
         self.scan_range(Vec::new(), under(GONE), CLEARED, Step::ClearScan, take job)
+    }
+}
+
+/// The board version of the upload whose call is `inner` (an `Admit` or a `Record`).
+fn upload_board(inner: Option<Inner>) -> Option<u32> {
+    match inner {
+        Some(Inner::Admit { board, .. }) => Some(board),
+        Some(Inner::Record { board, .. }) => Some(board),
+        _ => None,
     }
 }
 
