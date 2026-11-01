@@ -31,11 +31,12 @@ use wire::{
 
 /// A game whose replay is its course, the time it claims (4 bytes) and its moves: a run's time is
 /// how many moves it has, and it counts for 100% when every move is even. Its boards are version
-/// `board`, and an older version `old`'s verifier is archived (0: none).
+/// `board`, and version 7's verifier is archived (so a build of version 7 plays its own).
 struct Toy: Copy {
     board: u32 = 7,
-    old: u32 = 0,
 }
+
+const TOY_ARCHIVED: [(u32, Text); 1] = [(7, "verifiers/toy/7/0123abcd")]
 
 struct ToyRun {
     moves: Vec<u8>,
@@ -86,11 +87,8 @@ impl Game for Toy {
         Some(Ok(Outcome { ticks: run.moves.len(), full }))
     }
 
-    fn archived(self, board: u32) -> Option<String> {
-        if self.old != 0 && board == self.old {
-            return Some(String::from(f"verifiers/toy/{board}/0123abcd"))
-        }
-        None
+    fn archived(self) -> [(u32, Text)] {
+        TOY_ARCHIVED
     }
 }
 
@@ -611,7 +609,7 @@ impl Host {
                         self.instances[i].waiting.push((ticket, None))
                         continue
                     }
-                    var old = engine(Toy { board, old: 0 }, RP, ORIGIN, self.versions, "")
+                    var old = engine(Toy { board }, RP, ORIGIN, self.versions, "")
                     old.begin()
                     old.called(1, body)
                     old.end()
@@ -2373,7 +2371,7 @@ fn a_run_posted_again_on_a_new_version_of_the_boards_is_played_on_it() {
     }
     // A change to play starts version 8, and version 7's verifier is archived: the same replay is
     // a new run there, played again.
-    h.deploy(Toy { board: 8, old: 7 }, VERSIONS)
+    h.deploy(Toy { board: 8 }, VERSIONS)
     let Reply::Verified { run, place, .. } = upload(mut h, 1, token, good) else {
         panic("verified on version 8")
     }

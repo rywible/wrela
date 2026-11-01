@@ -115,13 +115,8 @@ impl Game for Capybara {
         Some(Ok(Outcome { ticks: w.finished, full: (w.snacks & all) == all }))
     }
 
-    fn archived(self, board: u32) -> Option<String> {
-        for (b, path) in ARCHIVED {
-            if b == board && b != BOARD {
-                return Some(String::from(path))
-            }
-        }
-        None
+    fn archived(self) -> [(u32, Text)] {
+        ARCHIVED
     }
 }
 

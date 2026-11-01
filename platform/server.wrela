@@ -98,10 +98,11 @@ pub trait Game {
     /// came to, or why its claim isn't what the rules make of it.
     fn play(self, run: mut Self::Run, ticks: u32) -> Option<Result<Outcome, Text>>
 
-    /// The archived verifier of board version `board`, an older one than this build's, if its
-    /// release kept one: its path in the host's store of builds (`std::server::call_build`,
-    /// `verifiers/<game>/<board>/<sha256>`). None: that board is closed.
-    fn archived(self, board: u32) -> Option<String>
+    /// Each older board version whose runs still go up, and its archived verifier: the version
+    /// and its path in the host's store of builds (`std::server::call_build`,
+    /// `verifiers/<game>/<board>/<sha256>`), as its last release kept it. A version left out is
+    /// closed; this build's own, if it's there, is played here (`Engine::archived`).
+    fn archived(self) -> [(u32, Text)]
 }
 
 /// The versions of what a player agrees to, as the console's build has them (console/legal.wrela):
@@ -1237,6 +1238,20 @@ impl<G: Game> Engine<G> {
     pub(package) fn latest_as<T: Serialize>(self, key: [u8], answer: [u8]) -> Option<T> {
         let v = self.latest(key, answer)?
         read(v)
+    }
+
+    /// The archived verifier of board version `board` (`Game::archived`), if it's an older one than
+    /// this build's and its release kept one. None: that board is closed, or it's this build's.
+    pub(package) fn archived(self, board: u32) -> Option<String> {
+        if board == self.game.board() {
+            return None
+        }
+        for (b, path) in self.game.archived() {
+            if b == board {
+                return Some(String::from(path))
+            }
+        }
+        None
     }
 
     /// Lets go of what was deleted or written lately once no read made before it can still be

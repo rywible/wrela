@@ -331,7 +331,7 @@ impl<G: Game> Engine<G> {
             )
             return
         }
-        if board != self.game.board() && self.game.archived(board).is_none() {
+        if board != self.game.board() && self.archived(board).is_none() {
             let why = String::from(
                 "That version of the game's boards is closed. Update the game to post.",
             )
@@ -404,7 +404,7 @@ impl<G: Game> Engine<G> {
             return
         }
         // An older board's: its archived build plays it, with its own sim.
-        let Some(artifact) = self.game.archived(j.n) else { return }
+        let Some(artifact) = self.archived(j.n) else { return }
         let t = self.next_ticket()
         let body = std::serialize::save(Verify { board: j.n, replay: replay.clone() })
         self.out.push(server::Command::CallBuild { ticket: t, artifact, body })
