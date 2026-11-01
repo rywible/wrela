@@ -1,0 +1,9 @@
+# The grazer grown from its genome (docs/plan-world-class-3.md §F1–§F4): its body plan's handles,
+# its proportions with its age, its mass against its growth curve, its coat and its muscles, on the
+# CPU.
+[package]
+name = "growth_creature_tests"
+
+[dependencies]
+engine = { workspace = true }
+kit = { workspace = true }

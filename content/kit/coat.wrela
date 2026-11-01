@@ -1,0 +1,145 @@
+// A creature's coat pattern grown (docs/plan-world-class-3.md §F3): a Gray-Scott reaction-diffusion
+// (Pearson 1993's parameterization of Turing's 1952 mechanism) run on a map of the body's side,
+// its rest space's along-and-up (z, y) over the body's length and height (the kit's parts have no
+// shared surface parameterization: one chart for the whole body, so no part's pattern meets
+// another's at a seam), its wavelength set by scaling the diffusion rates to the genome's
+// (`CoatGenes::wavelength`, a share of the body's length: the chart's texels are the body's, so the
+// pattern scales with it). A juvenile's spots fade by the genome's `fade` (`spots_at`).
+//
+// `coat` grows the map (`COAT_STEPS` steps from a seeded start); `pattern_at` reads it where a
+// point of the body is, the visible pattern at an age.
+
+use genome::CoatGenes
+use quadruped::{Quadruped, frame}
+
+/// The map's texels along the body (tail to nose) and up it (belly to back).
+pub const MAP_W: u32 = 128
+pub const MAP_H: u32 = 64
+
+/// Its words: a texel a byte.
+pub const COAT_WORDS: u32 = MAP_W * MAP_H / 4
+
+/// The reaction-diffusion's steps (**proposed**: the plan's 2,000).
+pub const COAT_STEPS: u32 = 2000
+
+/// The wavelength (texels) the pattern takes at `CoatGenes`' own diffusion rates, as measured
+/// (`a_patterns_wavelength_follows_its_bodys_size` reads the maps' Fourier peaks): the rates are
+/// scaled by (wanted / this)² to give the genome's wavelength.
+pub const NATURAL: f32 = 14.2
+
+/// A coat's map: each texel's pattern (0 to 255: the second species' share at the last step, its
+/// largest 255), and where the chart lies in the body's rest space: its corner (z, y) and its size
+/// (m).
+pub struct CoatMap: Copy + GpuData {
+    pub words: [u32; COAT_WORDS],
+    pub lo: vec2,
+    pub size: vec2,
+}
+
+/// The coat `g` grows on a body whose rest space spans `lo` to `lo + size` (z along it, y up it,
+/// m), from `seed`: Gray-Scott's two species, u everywhere 1 and v 0 but in seeded patches, stepped
+/// `COAT_STEPS` times (an explicit step, its Laplacian the five-point one, the map wrapping round
+/// along and clamped up), the diffusion rates scaled to the wavelength `g` asks of the body's
+/// length.
+pub fn coat(g: CoatGenes, lo: vec2, size: vec2, seed: u32) -> CoatMap {
+    let (w, h) = (MAP_W, MAP_H)
+    let n = w * h
+    // The wavelength in texels the genome asks (a share of the body's length, over the map's
+    // texels along it), and the rates that give it.
+    let want = g.wavelength * f32(w)
+    let scale = (want / NATURAL) * (want / NATURAL)
+    let (du, dv) = (g.du * scale, g.dv * scale)
+    // A step's size: within the explicit step's stability (4·D·dt under 1).
+    let dt = min(1.0, 0.9 / (4.0 * max(du, dv)))
+    var u: Vec<f32> = Vec::filled(n, 1.0)
+    var v: Vec<f32> = Vec::filled(n, 0.0)
+    // Seeded patches of v (a texel's chance 1 in 40, a 3 × 3 patch round it).
+    for i in 0..n {
+        if engine::noise::rand(seed, i) < 0.025 {
+            let (x, y) = (i % w, i / w)
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    let xx = (x + dx + w - 1) % w
+                    let yy = min(max(y + dy, 1) - 1, h - 1)
+                    let j = yy * w + xx
+                    u[j] = 0.5
+                    v[j] = 0.25
+                }
+            }
+        }
+    }
+    var nu: Vec<f32> = Vec::filled(n, 0.0)
+    var nv: Vec<f32> = Vec::filled(n, 0.0)
+    for _ in 0..COAT_STEPS {
+        for y in 0..h {
+            let (up, down) = (min(y + 1, h - 1), if y == 0 { 0 } else { y - 1 })
+            for x in 0..w {
+                let (left, right) = ((x + w - 1) % w, (x + 1) % w)
+                let i = y * w + x
+                let lu = u[y * w + left] +
+                    u[y * w + right] +
+                    u[up * w + x] +
+                    u[down * w + x] -
+                    4.0 * u[i]
+                let lv = v[y * w + left] +
+                    v[y * w + right] +
+                    v[up * w + x] +
+                    v[down * w + x] -
+                    4.0 * v[i]
+                let uvv = u[i] * v[i] * v[i]
+                nu[i] = u[i] + dt * (du * lu - uvv + g.feed * (1.0 - u[i]))
+                nv[i] = v[i] + dt * (dv * lv + uvv - (g.feed + g.kill) * v[i])
+            }
+        }
+        var was_u = take u
+        var was_v = take v
+        u = take nu
+        v = take nv
+        nu = take was_u
+        nv = take was_v
+    }
+    var most = 1.0e-6
+    for i in 0..n {
+        most = max(most, v[i])
+    }
+    var out = CoatMap { words: [0; COAT_WORDS], lo, size }
+    for i in 0..n {
+        let b = u32(round(clamp(v[i] / most, 0.0, 1.0) * 255.0))
+        out.words[i / 4] |= b << (8 * (i % 4))
+    }
+    out
+}
+
+/// Texel (`x`, `y`)'s pattern, 0 to 1.
+pub fn texel(m: CoatMap, x: u32, y: u32) -> f32 {
+    let i = min(y, MAP_H - 1) * MAP_W + x % MAP_W
+    f32((m.words[i / 4] >> (8 * (i % 4))) & 255) / 255.0
+}
+
+/// How visible a juvenile's spots are at `age` (a share of maturity): whole at birth, gone by the
+/// genome's `fade`.
+pub fn spots_at(g: CoatGenes, age: f32) -> f32 {
+    1.0 - smoothstep(0.0, g.fade, age)
+}
+
+/// The coat's pattern at `rest` (a point of the body's rest space), as visible at `age`
+/// (`spots_at`), bilinear between the texels its chart puts it among.
+pub fn pattern_at(m: CoatMap, g: CoatGenes, rest: vec3, age: f32) -> f32 {
+    let t = (vec2(rest.z, rest.y) - m.lo) / m.size * vec2(f32(MAP_W), f32(MAP_H)) - vec2(0.5)
+    let c = clamp(t, vec2(0.0), vec2(f32(MAP_W) - 1.001, f32(MAP_H) - 1.001))
+    let (x, y) = (u32(floor(c.x)), u32(floor(c.y)))
+    let f = c - floor(c)
+    let a = mix(texel(m, x, y), texel(m, x + 1, y), f.x)
+    let b = mix(texel(m, x, y + 1), texel(m, x + 1, y + 1), f.x)
+    mix(a, b, f.y) * spots_at(g, age)
+}
+
+/// The chart of a body of proportions `q`: its rest space's z from behind its rump to its nose,
+/// and its y from the ground to over its ears (its corner and its size, m).
+pub fn chart_of(q: Quadruped) -> (vec2, vec2) {
+    let f = frame(q)
+    let nose = f.head + f.forward * (1.2 * f.head_length)
+    let lo = vec2(-0.6 * q.length, 0.0)
+    let hi = vec2(max(nose.z, f.head.z) + 0.05 * q.withers, f.head.y + f.head_length)
+    (lo, hi - lo)
+}

@@ -68,6 +68,12 @@ pub struct Quadruped: Copy {
     /// The legs' thickness (1 is the base's), and what they end in.
     pub legs: f32,
     pub feet: Feet,
+    /// How high the knees and hocks stand, against the base's (1): a deer's long cannons above 1.
+    pub cannon: f32 = 1.0,
+    /// The feet's size, the eyes' and the brows', each against the base's (1).
+    pub hoof: f32 = 1.0,
+    pub eye: f32 = 1.0,
+    pub brow: f32 = 1.0,
 }
 
 /// A dog-like body: about a wolf's or a big dog's proportions, on paws.
@@ -219,14 +225,14 @@ pub fn frame(q: Quadruped) -> Frame {
         [
             vec3(x * 0.62, w - 0.62 * d, fz - 0.02 * l),
             vec3(x * 0.66, w - 1.0 * d, fz - 0.07 * l),
-            vec3(x * 0.6, 0.3 * w, fz - 0.06 * l),
+            vec3(x * 0.6, 0.3 * w * q.cannon, fz - 0.06 * l),
             vec3(x * 0.58, 0.1 * w, fz - 0.05 * l),
         ]
     } else {
         [
             vec3(x * 0.62, w - 0.6 * d, fz - 0.02 * l),
             vec3(x * 0.66, w - 1.0 * d, fz - 0.09 * l),
-            vec3(x * 0.6, 0.17 * w, fz - 0.07 * l),
+            vec3(x * 0.6, 0.17 * w * q.cannon, fz - 0.07 * l),
             vec3(x * 0.58, 0.035 * w, fz - 0.03 * l),
         ]
     }
@@ -237,14 +243,14 @@ pub fn frame(q: Quadruped) -> Frame {
         [
             vec3(x * 0.62, hy - 0.4 * d, hz),
             vec3(x * 0.72, hy - 0.88 * d, hz + 0.035 * l),
-            vec3(x * 0.6, 0.38 * w, hz - 0.06 * l),
+            vec3(x * 0.6, 0.38 * w * q.cannon, hz - 0.06 * l),
             vec3(x * 0.58, 0.1 * w, hz - 0.05 * l),
         ]
     } else {
         [
             vec3(x * 0.62, hy - 0.4 * d, hz),
             vec3(x * 0.7, hy - 0.92 * d, hz + 0.08 * l),
-            vec3(x * 0.6, 0.27 * w, hz - 0.07 * l),
+            vec3(x * 0.6, 0.27 * w * q.cannon, hz - 0.07 * l),
             vec3(x * 0.58, 0.035 * w, hz - 0.03 * l),
         ]
     }
@@ -370,7 +376,7 @@ fn foot<C: Copy + GpuData>(q: Quadruped, r: f32, at: vec3, look: Look<C>) -> Wit
     let hooves = q.feet == Feet::Hooves
     Foot {
         hoof: select(if_false: 0, if_true: 1, cond: hooves),
-        size: if hooves { 3.2 * r * 0.55 } else { 2.6 * r * 0.55 },
+        size: (if hooves { 3.2 * r * 0.55 } else { 2.6 * r * 0.55 }) * q.hoof,
         drop: at.y,
     }.with(look.feet)
 }
@@ -558,7 +564,7 @@ pub fn head<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Grou
                 .join(
                     "brow",
                     bone,
-                    oval(vec3(0.08 * hl, 0.06 * hl, 0.1 * hl))
+                    oval(vec3(0.08 * hl, 0.06 * hl, 0.1 * hl) * q.brow)
                         .translate(side * 0.14 * hl + fw * 0.18 * hl + up * 0.3 * deep * hl)
                         .with(look.head),
                     seam: smooth(0.05 * hl),
@@ -567,7 +573,7 @@ pub fn head<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Grou
                 .join(
                     "eye",
                     bone,
-                    sphere(0.045 * hl)
+                    sphere(0.045 * hl * q.eye)
                         .translate(side * 0.2 * hl + fw * 0.22 * hl + up * 0.16 * deep * hl)
                         .with(look.eyes),
                     seam: smooth(0.015 * hl),

@@ -1,0 +1,264 @@
+// The grazer grown from its genome (kit::genome, §F1–§F2): its handles met by its body as built,
+// a fawn's long legs and large head, its mass against its growth curve, its proportions moving
+// one way with its age, and the same body twice.
+
+use kit::genome::{Flesh, ROE, grown_body, grown_mass, mass_at, quadruped_at}
+use kit::quadruped::{Quadruped, frame, plain}
+use std::field::Surface
+use std::io::print
+
+/// How far up from `y0` (m) the body's surface is first reached going up (`up`) or down, at `x`
+/// and `z` in its rest space, by steps of a millimetre.
+fn surface_at<S: Surface>(f: S, x: f32, z: f32, y0: f32, up: bool) -> f32 {
+    var y = y0
+    for _ in 0..3000 {
+        if f.distance(vec3(x, y, z)) < 0.0 {
+            return y
+        }
+        y += if up { 0.001 } else { -0.001 }
+    }
+    y
+}
+
+/// F1: built from its genome at age 1, its withers stand at the plan's height and its chest is
+/// as deep as the plan's share of it, each within 4 % (the withers' top is the back over the
+/// withers' joint; the chest's depth is the kit's: from the withers' top to the brisket, under the
+/// chest's joint).
+@test
+fn the_grazers_body_meets_its_handles() {
+    let q = quadruped_at(ROE, 1.0)
+    let f = frame(q)
+    let b = grown_body(ROE, 1.0, plain(Flesh {})).field()
+    let top = surface_at(b, 0.0, f.withers.z, 2.0, up: false)
+    let brisket = surface_at(b, 0.0, f.chest.z, 0.15, up: true)
+    let depth = top - brisket
+    let (want_w, want_d) = (ROE.plan.withers, ROE.plan.chest_depth * ROE.plan.withers)
+    print(f"withers {top} m (plan {want_w}), chest {depth} m deep (plan {want_d})")
+    assert(abs(top - want_w) <= 0.04 * want_w, f"the withers at {top} m, not {want_w}")
+    assert(abs(depth - want_d) <= 0.04 * want_d, f"the chest {depth} m deep, not {want_d}")
+}
+
+/// F2: a fawn (age 0.1) has legs long for its height and a head large for its body: its legs'
+/// length over its withers' (withers less the chest's depth) at least 1.15 times the grown
+/// animal's, and its head's over its body's length at least 1.2 times.
+@test
+fn a_fawn_has_long_legs_and_a_large_head() {
+    let (young, grown) = (quadruped_at(ROE, 0.1), quadruped_at(ROE, 1.0))
+    let legs = |q: Quadruped| 1.0 - q.chest_depth
+    let head = |q: Quadruped| q.head_length * q.withers / q.length
+    let (l, h) = (legs(young) / legs(grown), head(young) / head(grown))
+    print(
+        f"at 0.1: legs {l}x, head {h}x the grown animal's shares; mass {mass_at(ROE.allometry, 0.1)} kg",
+    )
+    assert(l >= 1.15, f"the fawn's legs {l} times the grown share")
+    assert(h >= 1.2, f"the fawn's head {h} times the grown share")
+}
+
+/// F2: its mass integrated over its body at age 1 within 10 % of its genome's grown mass.
+@test
+fn the_grazers_mass_is_its_growth_curves() {
+    let m = grown_mass(ROE, 1.0, finest: 0.01)
+    let want = mass_at(ROE.allometry, 1.0)
+    print(f"integrated {m} kg at age 1, the curve {want} kg")
+    assert(abs(m - want) <= 0.1 * want, f"{m} kg against {want}")
+}
+
+/// F2: at age 0.5 every handle lies between the fawn's (0.1) and the grown animal's.
+@test
+fn its_proportions_move_one_way_with_its_age() {
+    let (a, m, b) = (quadruped_at(ROE, 0.1), quadruped_at(ROE, 0.5), quadruped_at(ROE, 1.0))
+    let between = |x: f32, lo: f32, hi: f32| x >= min(lo, hi) - 1.0e-6 && x <= max(lo, hi) + 1.0e-6
+    let names = [
+        "withers",
+        "length",
+        "chest",
+        "neck",
+        "head",
+        "muzzle",
+        "ears",
+        "tail",
+        "cannon",
+        "hoof",
+        "eye",
+        "brow",
+    ]
+    let of = |q: Quadruped| [
+        q.withers,
+        q.length,
+        q.chest_depth,
+        q.neck_length,
+        q.head_length,
+        q.muzzle,
+        q.ears,
+        q.tail_length,
+        q.cannon,
+        q.hoof,
+        q.eye,
+        q.brow,
+    ]
+    let (va, vm, vb) = (of(a), of(m), of(b))
+    for i in 0..12 {
+        assert(
+            between(vm[i], va[i], vb[i]),
+            f"{names[i]} at 0.5 is {vm[i]}, not between {va[i]} and {vb[i]}",
+        )
+    }
+}
+
+/// F2: the same genome and age give the same body, to the bit.
+@test
+fn the_same_genome_grows_the_same_body() {
+    let (a, b) = (
+        grown_body(ROE, 0.3, plain(Flesh {})).field(),
+        grown_body(ROE, 0.3, plain(Flesh {})).field(),
+    )
+    for i in 0..64 {
+        let p = vec3(f32(i % 4) * 0.1 - 0.15, f32(i / 4 % 4) * 0.2, f32(i / 16) * 0.25 - 0.4)
+        assert(
+            bitcast_u32(a.distance(p)) == bitcast_u32(b.distance(p)),
+            f"the bodies differ at {p}",
+        )
+    }
+}
+
+// ---- the coat (§F3) ------------------------------------------------------------------------------
+
+use kit::coat::{CoatMap, MAP_H, MAP_W, chart_of, coat, pattern_at, spots_at, texel}
+
+/// The map's wavelength along it (texels): the period of the strongest frequency (past the
+/// first) of each row's discrete Fourier transform, the rows' powers summed.
+fn wavelength_of(m: CoatMap) -> f32 {
+    var power = [0.0; 65]
+    for y in 0..MAP_H {
+        for f in 1..65 {
+            var re = 0.0
+            var im = 0.0
+            for x in 0..MAP_W {
+                let a = std::math::TAU * f32(f * x) / f32(MAP_W)
+                re += texel(m, x, y) * cos(a)
+                im += texel(m, x, y) * sin(a)
+            }
+            power[f] += re * re + im * im
+        }
+    }
+    var best = 1
+    for f in 1..65 {
+        if power[f] > power[best] {
+            best = f
+        }
+    }
+    f32(MAP_W) / f32(best)
+}
+
+/// The connected patches (4-neighbours) of the map where its pattern at `age` is over half, and
+/// the largest one's share of the map.
+fn spots(m: CoatMap, age: f32) -> (u32, f32) {
+    let n = MAP_W * MAP_H
+    var seen: Vec<bool> = Vec::filled(n, false)
+    let fade = spots_at(ROE.coat, age)
+    let on = |i: u32| texel(m, i % MAP_W, i / MAP_W) * fade > 0.5
+    var count = 0
+    var largest = 0
+    var stack: Vec<u32> = Vec::new()
+    for start in 0..n {
+        if seen[start] || !on(start) {
+            continue
+        }
+        count += 1
+        var size = 0
+        stack.push(start)
+        seen[start] = true
+        while let Some(i) = stack.pop() {
+            size += 1
+            let (x, y) = (i % MAP_W, i / MAP_W)
+            let near = [
+                y * MAP_W + (x + 1) % MAP_W,
+                y * MAP_W + (x + MAP_W - 1) % MAP_W,
+                min(y + 1, MAP_H - 1) * MAP_W + x,
+                (if y == 0 { 0 } else { y - 1 }) * MAP_W + x,
+            ]
+            for j in near {
+                if !seen[j] && on(j) {
+                    seen[j] = true
+                    stack.push(j)
+                }
+            }
+        }
+        largest = max(largest, size)
+    }
+    (count, f32(largest) / f32(n))
+}
+
+/// The grown roe's coat (its chart over its grown body), from seed 7.
+fn roe_coat(seed: u32) -> CoatMap {
+    let (lo, size) = chart_of(quadruped_at(ROE, 1.0))
+    coat(ROE.coat, lo, size, seed)
+}
+
+/// F3: on a body twice as large, the pattern's wavelength (in metres: its texels' over the
+/// chart's size) is within 20 % of twice the smaller body's; each is the genome's share of its
+/// body's length within 20 %.
+@test
+fn a_patterns_wavelength_follows_its_bodys_size() {
+    let (lo, size) = chart_of(quadruped_at(ROE, 1.0))
+    let (small, large) = (coat(ROE.coat, lo, size, 7), coat(ROE.coat, lo * 2.0, size * 2.0, 7))
+    let metres = |m: CoatMap| wavelength_of(m) * m.size.x / f32(MAP_W)
+    let (a, b) = (metres(small), metres(large))
+    print(f"wavelength {wavelength_of(small)} texels, {a} m; twice the body {b} m ({b / a}x)")
+    assert(abs(b / a - 2.0) <= 0.4, f"twice the body: {b / a} times the wavelength")
+    let want = ROE.coat.wavelength * size.x
+    assert(abs(a - want) <= 0.2 * want, f"the wavelength {a} m, the genome's {want}")
+}
+
+/// F3: a fawn (age 0.1) has spots (over 30 patches, none over 2 % of the map); the grown animal
+/// (age 1) under 5.
+@test
+fn a_fawns_spots_fade_as_it_grows() {
+    let m = roe_coat(7)
+    let (young, largest) = spots(m, 0.1)
+    let (grown, _) = spots(m, 1.0)
+    print(f"spots: {young} at 0.1 (the largest {largest} of the map), {grown} at 1")
+    assert(young > 30 && largest < 0.02, f"{young} spots, the largest {largest}")
+    assert(grown < 5, f"{grown} spots on the grown animal")
+}
+
+/// F3: the same seed grows the same coat, to the byte; another seed another.
+@test
+fn a_coat_is_its_seeds() {
+    let (a, b, c) = (roe_coat(7), roe_coat(7), roe_coat(8))
+    var differ = 0
+    for i in 0..a.words.len() {
+        assert(a.words[i] == b.words[i], f"word {i} differs between two growths")
+        if a.words[i] != c.words[i] {
+            differ += 1
+        }
+    }
+    assert(differ > a.words.len() / 4, f"another seed changed {differ} words")
+}
+
+/// F3: no seam where the neck meets the chest: along a line through the join, no step between
+/// samples a texel apart is larger than the largest between two neighbouring texels of the map.
+@test
+fn the_coat_has_no_seam_at_a_join() {
+    let m = roe_coat(7)
+    var most = 0.0
+    for y in 0..MAP_H {
+        for x in 0..MAP_W {
+            most = max(most, abs(texel(m, x + 1, y) - texel(m, x, y)))
+            if y + 1 < MAP_H {
+                most = max(most, abs(texel(m, x, y + 1) - texel(m, x, y)))
+            }
+        }
+    }
+    let f = frame(quadruped_at(ROE, 1.0))
+    let (a, b) = (f.chest + vec3(0.0, 0.1, -0.1), f.neck + (f.neck - f.chest) * 0.5)
+    let step = m.size.x / f32(MAP_W)
+    let n = u32(length(b - a) / step) + 1
+    var last = pattern_at(m, ROE.coat, a, 0.0)
+    for k in 1..(n + 1) {
+        let p = mix(a, b, vec3(f32(k) / f32(n)))
+        let now = pattern_at(m, ROE.coat, p, 0.0)
+        assert(abs(now - last) <= most + 1.0e-4, f"a step of {abs(now - last)} at {p}")
+        last = now
+    }
+}
