@@ -436,7 +436,7 @@ pub fn name_char(b: u8) -> bool {
 }
 
 /// `b` in lower case, ASCII only.
-fn lower_byte(b: u8) -> u8 {
+pub(package) fn lower_byte(b: u8) -> u8 {
     if b >= 65 && b <= 90 { b + 32 } else { b }
 }
 

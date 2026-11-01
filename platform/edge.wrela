@@ -20,7 +20,7 @@
 // (studio/release's `api_script`; docs/toolchain.md says how they're set).
 
 use account::{
-    CEREMONY_BYTES, CHALLENGE_LIFE, HANDLE_BYTES, HELD_BYTES, account_instance, code_hash, part,
+    CEREMONY_BYTES, CHALLENGE_LIFE, HANDLE_BYTES, account_instance, code_hash, held_parts, part,
 }
 use server::{
     Back, CLOSED, Engine, Game, Inner, Job, KEY_BYTES, NONCE_BYTES, Note, PLAY_TICKS, Step, Verdict,
@@ -48,9 +48,10 @@ impl<G: Game> Engine<G> {
     pub(package) fn edge_http(mut self, conn: u32, request: Request) {
         let Some(i) = self.conn_index(conn) else { return }
         let cookie = self.conns[i].cookie.clone()
-        let own = if cookie.len() == HELD_BYTES {
-            Some(account_instance(part(cookie, 0, HANDLE_BYTES)))
-        } else { None }
+        let own = match held_parts(cookie) {
+            Some((handle, _)) => Some(account_instance(handle)),
+            None => None,
+        }
         match request {
             Request::Begin { ceremony, agreed, .. } => {
                 if ceremony == REGISTER || ceremony == SIGN_IN {
@@ -322,7 +323,7 @@ impl<G: Game> Engine<G> {
             self.reply(conn, Reply::Rejected { why })
             return
         }
-        if token.len() != HELD_BYTES {
+        let Some((handle, secret)) = held_parts(token) else {
             self.refuse(conn, "Sign in at the console to upload.")
             return
         }
@@ -334,8 +335,8 @@ impl<G: Game> Engine<G> {
             },
         }
         var j = blank_job(conn, request.clone())
-        j.handle = part(token, 0, HANDLE_BYTES)
-        j.message = part(token, HANDLE_BYTES, HELD_BYTES - HANDLE_BYTES)
+        j.handle = take handle
+        j.message = take secret
         j.hash = Vec::from(sha256(replay))
         j.course = claim.course
         j.ticks = claim.ticks
@@ -431,10 +432,10 @@ impl<G: Game> Engine<G> {
 
     fn record(mut self, job: take Job) {
         let j = take job
-        let Request::Upload { token, replay, .. } = j.request.clone() else { return }
+        let Request::Upload { replay, .. } = j.request.clone() else { return }
         let Some(verdict) = j.verdict.clone() else { return }
         let inner = Inner::Record {
-            token: part(token, HANDLE_BYTES, HELD_BYTES - HANDLE_BYTES),
+            token: j.message.clone(),
             board: j.n,
             course: j.course,
             verdict,
@@ -484,8 +485,7 @@ impl<G: Game> Engine<G> {
         }
         if !noun.is_empty() {
             // The noun's letter's shard alone holds them.
-            let b = noun.byte(0)
-            let l = if b >= 65 && b <= 90 { b + 32 } else { b }
+            let l = names::lower_byte(noun.byte(0))
             var known = false
             for x in letters() {
                 if x == l {

@@ -418,8 +418,7 @@ pub fn replays_instance(hash: [u8]) -> String {
 
 /// The letter a noun starts with, in lower case.
 pub fn letter_of(front: u32) -> u8 {
-    let b = names::FRONTS[front].byte(0)
-    if b >= 65 && b <= 90 { b + 32 } else { b }
+    names::lower_byte(names::FRONTS[front].byte(0))
 }
 
 /// The search shard of the names whose noun starts with `letter` (lower case).

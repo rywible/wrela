@@ -23,9 +23,9 @@ use account::{
     ACCOUNT, AGREED, Account, Agreement, CEREMONY_BYTES, CODES, CODE_BYTES, COUNTERS, CSRF_BYTES,
     Counters, FRESH, GONE, GameToken, HANDLE_BYTES, HELD_BYTES, HOUR, MOST_PASSKEYS, POSTING,
     POST_BEST, Passkey, PostBest, Posting, REROLLS, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE,
-    account_instance, code, code_hash, code_key, hashed, key, outcome_key, owned_key, part,
-    passkey_key, pending_key, public_id, rate_key, run_key, session_key, spent_key, token_key,
-    u32_at, u64_at, under,
+    account_instance, code, code_hash, code_key, hashed, held, held_parts, key, outcome_key,
+    owned_key, part, passkey_key, pending_key, public_id, rate_key, run_key, session_key, spent_key,
+    token_key, u32_at, u64_at, under,
 }
 use names::{Name, draw}
 use server::{
@@ -125,13 +125,16 @@ impl<G: Game> Engine<G> {
     /// Reads the session request `conn`'s cookie is for, then does its request.
     fn hello(mut self, conn: u32, request: Request) {
         let Some(i) = self.conn_index(conn) else { return }
-        let cookie = self.conns[i].cookie.clone()
-        if cookie.len() != HELD_BYTES || !same_bytes(part(cookie, 0, HANDLE_BYTES), self.handle) {
+        let Some((owner, secret)) = held_parts(self.conns[i].cookie) else {
+            self.no_session(conn, request)
+            return
+        }
+        if !same_bytes(owner, self.handle) {
             self.no_session(conn, request)
             return
         }
         var j = blank_job(conn, request.clone())
-        j.hash = hashed(part(cookie, HANDLE_BYTES, TOKEN_BYTES))
+        j.hash = hashed(secret)
         self.get(session_key(j.hash), Step::HelloSession, take j)
     }
 
@@ -381,9 +384,8 @@ impl<G: Game> Engine<G> {
     fn new_session(mut self, old: [u8], secrets: [u8], recovery: bool) -> (Vec<u8>, Vec<u8>) {
         let token = part(secrets, 0, TOKEN_BYTES)
         let csrf = part(secrets, TOKEN_BYTES, CSRF_BYTES)
-        if old.len() == HELD_BYTES {
-            let owner = part(old, 0, HANDLE_BYTES)
-            let was = hashed(part(old, HANDLE_BYTES, TOKEN_BYTES))
+        if let Some((owner, secret)) = held_parts(old) {
+            let was = hashed(secret)
             if same_bytes(owner, self.handle) {
                 self.forget(session_key(was))
             } else {
@@ -399,11 +401,7 @@ impl<G: Game> Engine<G> {
             recovery,
         }
         self.put(session_key(hashed(token)), s)
-        var cookie = self.handle.clone()
-        for b in token {
-            cookie.push(b)
-        }
-        (cookie, csrf)
+        (held(self.handle, token), csrf)
     }
 
     /// A session begun for request `conn` (its cookie set), answered with it.
@@ -1282,10 +1280,7 @@ impl<G: Game> Engine<G> {
                         expires: self.now + TOKEN_LIFE,
                     },
                 )
-                var token = self.handle.clone()
-                for b in secret {
-                    token.push(b)
-                }
+                let token = held(self.handle, secret)
                 self.reply(conn, Reply::Token { token, expires_in: u32(TOKEN_LIFE / 1000) })
             },
             Step::ExportScan => self.export_scan(take j, answer),

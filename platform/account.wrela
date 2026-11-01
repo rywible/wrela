@@ -210,6 +210,21 @@ pub fn pending_key(id: [u8]) -> Vec<u8> {
     key("x/", id)
 }
 
+/// A session's cookie or a game's token: the account's handle, then the secret.
+pub fn held(handle: [u8], secret: [u8]) -> Vec<u8> {
+    var out = Vec::from(handle)
+    with_bytes(mut out, secret)
+    out
+}
+
+/// The handle and the secret of a session's cookie or a game's token, if it can be one.
+pub fn held_parts(bytes: [u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    if bytes.len() != HELD_BYTES {
+        return None
+    }
+    Some((part(bytes, at: 0, n: HANDLE_BYTES), part(bytes, at: HANDLE_BYTES, n: TOKEN_BYTES)))
+}
+
 /// The start of every key under the prefix `p`.
 pub fn under(p: Text) -> Vec<u8> {
     key(p, [])
@@ -397,6 +412,9 @@ fn an_accounts_records_sort_by_what_reads_them_and_numbers_sort_as_numbers() {
     assert(run_key(4294967295) < end && passkey_key([9]) < under("u/"))
     assert(spent_key(5, [255]) < spent_key(6, [0]), "by when it expires")
     assert(public_id(hashed([1, 2, 3])).len() == 8)
+    let token = held([1; HANDLE_BYTES], [2; TOKEN_BYTES])
+    assert(held_parts(token) == Some((Vec::from([1; HANDLE_BYTES]), Vec::from([2; TOKEN_BYTES]))))
+    assert(held_parts([1; HANDLE_BYTES]).is_none(), "a handle alone")
     assert(u64_at([0, 0, 0, 0, 0, 0, 1, 2], 0) == 258 && u32_at([0, 0, 1, 2], 0) == 258)
     assert(account_instance([0, 171, 255]).as_str() == "account/00abff")
     assert(std::server::instance_name(account_instance([7; HANDLE_BYTES]).as_str()))

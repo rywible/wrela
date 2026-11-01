@@ -279,21 +279,11 @@ pub fn run_of(path: str) -> Option<RunRef> {
         return None
     }
     let digits = path.slice(at + handle_digits + 1, path.len())
-    if digits.len() > 10 || (digits.len() > 1 && digits.byte(0) == 48) {
+    if digits.len() > 1 && digits.byte(0) == 48 {
         return None
     }
-    var n: u64 = 0
-    for i in 0..digits.len() {
-        let c = digits.byte(i)
-        if c < 48 || c > 57 {
-            return None
-        }
-        n = n * 10 + u64(c - 48)
-    }
-    if n > 4294967295 {
-        return None
-    }
-    Some(RunRef { handle, n: u32(n) })
+    let n = digits.parse_u32()?
+    Some(RunRef { handle, n })
 }
 
 @test
