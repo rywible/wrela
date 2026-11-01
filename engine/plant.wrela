@@ -1505,14 +1505,15 @@ pub fn smooth_read(t: Texture<Rgba8>, s: Sampler, uv: vec2, size: vec2) -> vec4 
 }
 
 /// Patterns `t` read by a pixel `texels` of their texels wide, magnified (under a texel): their
-/// shapes' edges (ridges, plates, bands; not the mottle, a soft tone) steepened about their middles
+/// shapes' edges (ridges and plates; not the bands, a beech's lenticels sharpened into bricks, nor
+/// the mottle, a soft tone) steepened about their middles
 /// as the texels grow past a pixel, to `MAGNIFIED` times at most, so a near trunk's fissures keep
 /// edges half as wide as its texels' ramps, not many pixels of blur (the development panel's
 /// magnified, blurred bark, §G9; the idea of Green's magnified distance fields, SIGGRAPH 2007;
 /// at 4 times, the near oak's furrows read as a stencil, "extruded plastic").
 pub fn sharpened(t: vec4, texels: f32) -> vec4 {
     let k = clamp(0.6 / max(texels, 1.0e-3), 1.0, MAGNIFIED)
-    vec4(saturate((t.rgb - vec3(0.5)) * k + vec3(0.5)), t.a)
+    vec4(saturate((t.rg - vec2(0.5)) * k + vec2(0.5)), t.b, t.a)
 }
 
 /// How much steeper a magnified pattern's edges get at most (`sharpened`).

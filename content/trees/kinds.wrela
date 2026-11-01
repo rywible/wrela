@@ -617,7 +617,9 @@ fn log(s: u32, long: f32, girth: f32, grown: bool) -> Plant {
         light: vec3(0.30, 0.26, 0.20),
         moss: vec3(0.07, 0.11, 0.03),
         rots: if grown { 1.0 } else { 0.0 },
-        grain: vec3(0.6, 0.2, 0.2),
+        // Cracked into plates as it dries and loosens, more than a living oak's long furrows (as
+        // those, G-look's judge read a log's bark as "corrugated ripples", "regularly banded").
+        grain: vec3(0.25, 0.55, 0.2),
     }
     // Grown, its leaves its bracket fungi's (§E4: cream and brown shelves, shown past their rot),
     // its shape grown (`archetypes::laid`); by hand, no leaves.
