@@ -15,7 +15,7 @@ use std::math::PI
 
 /// The growth's version: a change to any growth program that changes what it grows bumps it, so a
 /// cached growth keyed by it is grown again (§E7).
-pub const VERSION: u32 = 3
+pub const VERSION: u32 = 4
 
 /// Where an organism grew, as its growth reads it: its light (0 to 1, the open sky's 1), the
 /// ground's wetness (0 to 1), the slope (radians), its exposure to the wind (0 to 1), the shade
@@ -2359,14 +2359,23 @@ pub fn grow_key(g: Grow) -> u64 {
     }
     h.write_u32(g.seed)
     h.write_u32(canonical_bits(g.height))
+    // What the conversion fits a shape into (the plant's, outside this file's `VERSION`).
+    h.write_u32(MAX_LIMBS)
+    h.write_u32(MAX_CLUMPS)
     h.finish()
 }
 
-/// Where a near individual's shape is kept in the program's storage (`std::io::store`): under its
-/// key (`grow_key`).
+/// Where a near individual's shape is kept in the program's storage (`std::io::store`): one of
+/// `KEPT` places, by its key (`grow_key`), the key kept with it (`shape_bytes`), so another tree's
+/// shape there is a miss. The storage holds at most `KEPT` shapes (nothing in it is ever
+/// removed: a place a tree writes over is another's it held).
 pub fn grown_path(key: u64) -> String {
-    String::from(f"grown/{key:016x}")
+    String::from(f"grown/{key % u64(KEPT)}")
 }
+
+/// How many near individuals' shapes the storage keeps (**proposed**: about 33 MB at a veteran's
+/// 128 KiB).
+pub const KEPT: u32 = 256
 
 /// A shape's every float and count folded to a word (§E7's determinism: equal on every host or a
 /// fault to find).
@@ -2408,10 +2417,14 @@ fn shape_words(s: Shape) -> Vec<u32> {
     w
 }
 
-/// A shape as bytes to keep (`std::io::store`: a veteran's 2,048 limbs are 128 KiB).
-pub fn shape_bytes(s: Shape) -> Vec<u8> {
-    var out: Vec<u8> = Vec::new()
-    for w in shape_words(s) {
+/// A shape as bytes to keep under `key` (`std::io::store`: a veteran's 2,048 limbs are 128 KiB):
+/// its words (`shape_words`) with the key after the magic and the version.
+pub fn shape_bytes(s: Shape, key: u64) -> Vec<u8> {
+    var words = shape_words(s)
+    words.insert(2, u32(key >> 32))
+    words.insert(2, u32(key & 0xFFFFFFFF))
+    var out: Vec<u8> = Vec::with_capacity(4 * words.len())
+    for w in words {
         out.push(u8(w & 255))
         out.push(u8((w >> 8) & 255))
         out.push(u8((w >> 16) & 255))
@@ -2425,19 +2438,23 @@ fn le_word(b: [u8], i: u32) -> u32 {
     u32(b[4 * i]) | (u32(b[4 * i + 1]) << 8) | (u32(b[4 * i + 2]) << 16) | (u32(b[4 * i + 3]) << 24)
 }
 
-/// A kept shape read back (`shape_bytes`): none if the bytes aren't one this `VERSION` wrote.
-pub fn shape_from_bytes(b: [u8]) -> Option<Shape> {
+/// A kept shape read back (`shape_bytes`): none if the bytes aren't one this `VERSION` wrote for
+/// `key`, or their counts aren't a plant's.
+pub fn shape_from_bytes(b: [u8], key: u64) -> Option<Shape> {
     let word = |i: u32| le_word(b, i)
     let f = |i: u32| bitcast_f32(le_word(b, i))
-    if b.len() < 16 || b.len() % 4 != 0 || word(0) != SHAPE_MAGIC || word(1) != VERSION {
+    if b.len() < 24 || b.len() % 4 != 0 || word(0) != SHAPE_MAGIC || word(1) != VERSION {
         return None
     }
-    let (nl, nc) = (word(2), word(3))
-    if b.len() / 4 != 4 + 16 * nl + 5 * nc + 5 {
+    if word(2) != u32(key & 0xFFFFFFFF) || word(3) != u32(key >> 32) {
+        return None
+    }
+    let (nl, nc) = (word(4), word(5))
+    if nl > MAX_LIMBS || nc > MAX_CLUMPS || b.len() / 4 != 6 + 16 * nl + 5 * nc + 5 {
         return None
     }
     var limbs: Vec<Tube<4>> = Vec::with_capacity(nl)
-    var at = 4
+    var at = 6
     for _ in 0..nl {
         var points = [vec3(0.0); 4]
         var radii = [0.0; 4]

@@ -423,7 +423,7 @@ fn a_kept_shape_comes_back_and_its_key_names_every_input() {
     let a = grow_individual(near_oak(30.0))
     let again = grow_individual(near_oak(30.0))
     assert(shape_hash(a) == shape_hash(again), "the same growth grown twice differs")
-    let Some(back) = shape_from_bytes(shape_bytes(a)) else {
+    let Some(back) = shape_from_bytes(shape_bytes(a, 7), 7) else {
         panic("a kept shape didn't read back")
     }
     assert(shape_hash(back) == shape_hash(a), "a kept shape read back differs")
@@ -431,9 +431,10 @@ fn a_kept_shape_comes_back_and_its_key_names_every_input() {
         back.limbs.len() == a.limbs.len() && back.clumps.len() == a.clumps.len(),
         "a kept shape's counts",
     )
-    var bytes = shape_bytes(a)
+    assert(shape_from_bytes(shape_bytes(a, 7), 8).is_none(), "another key's shape was read")
+    var bytes = shape_bytes(a, 7)
     bytes[4] = bytes[4] + 1
-    assert(shape_from_bytes(bytes).is_none(), "another version's shape was read")
+    assert(shape_from_bytes(bytes, 7).is_none(), "another version's shape was read")
     assert(
         grow_key(near_oak(30.0)) == grow_key(near_oak(30.0)),
         "the same growth keyed twice differs",

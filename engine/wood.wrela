@@ -1228,10 +1228,14 @@ impl Wood {
 
     /// Near individual `i` cooked (`k`, without an impostor: `vegetation::kind_near`), its
     /// archetype `of` (whose impostor, volume and levels it borrows): its cards, orders and limbs
-    /// into its room (as many as fit), its description written.
-    pub fn set_near(mut self, i: u32, k: Kind, of: u32) {
-        let c = min(k.card_count, self.near_room.x)
-        let l = min(k.limb_count, self.near_room.y)
+    /// into its room, its description written; or nothing, and false, if they don't fit (its
+    /// cards' orders index all of its cards, a block a corner, so a share of them can't be
+    /// kept: it's drawn as its archetype).
+    pub fn set_near(mut self, i: u32, k: Kind, of: u32) -> bool {
+        if k.card_count > self.near_room.x || k.limb_count > self.near_room.y {
+            return false
+        }
+        let (c, l) = (k.card_count, k.limb_count)
         let at = self.near_at
         let (cf, of_, lf) = (
             at.x + i * self.near_room.x,
@@ -1267,6 +1271,7 @@ impl Wood {
         self.near_counts[i] = vec2u(c, l)
         self.write_lods()
         self.laid = false
+        true
     }
 
     /// Near individual `i` given up (its instances retargeted to their archetypes first).

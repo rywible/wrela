@@ -190,6 +190,9 @@ pub struct Landscape<T: Tiles> {
     /// The first ring (§E7): the `FIRST_N` nearest trees chosen within `FIRST_RING` of the eye,
     /// each its tile and its instance there, as last chosen.
     pub ring: Vec<(vec2i, u32)>,
+    /// Whether the ring was chosen with every tile that could hold it in the wood (`ring_tiles_in`):
+    /// one chosen before them is incomplete, an empty one most of all.
+    pub ring_complete: bool = false,
     pub ring_from: Option<f64> = None,
     pub ring_said: bool = false,
     /// The milliseconds the first ring took, from its first choosing to its last tree drawn, once
@@ -232,6 +235,9 @@ pub struct NearOne {
     pub bark: Bark = Bark {},
     pub blend: f32 = 1.1,
     pub drawn: bool = false,
+    /// Whether it's drawn as itself once drawn (not, if its cards outgrew its room in the wood:
+    /// `Wood::set_near`, then as its archetype).
+    pub itself: bool = false,
     pub used: bool = false,
 }
 
@@ -769,7 +775,7 @@ pub fn near_ready<T: Tiles>(s: Landscape<T>) -> bool {
     if s.near.len() == 0 {
         return true
     }
-    if !s.near_chosen {
+    if !s.near_chosen || !s.ring_complete {
         return false
     }
     for (tile, j) in s.ring {
@@ -781,6 +787,21 @@ pub fn near_ready<T: Tiles>(s: Landscape<T>) -> bool {
         }
         if !drawn {
             return false
+        }
+    }
+    true
+}
+
+/// Whether every tile within `FIRST_RING` of `eye` is in wood `w` (its instances placed), so a
+/// ring chosen now holds every tree it could.
+fn ring_tiles_in(w: Wood, eye: vec2) -> bool {
+    let at = place::tile_of(eye)
+    for j in (at.y - 1)..(at.y + 2) {
+        for i in (at.x - 1)..(at.x + 2) {
+            let t = vec2i(i, j)
+            if tile_distance(t, eye) < FIRST_RING && w.slot_of(t).is_none() {
+                return false
+            }
         }
     }
     true
@@ -1243,10 +1264,10 @@ pub fn stream<T: Tiles>(s: mut Landscape<T>, c: mut Cooks, clipmap: mut Clipmap,
     // A tile in or out changes the near cascade's casters. The far cascade keeps what it drew
     // of the far layer (the tiles' own trees loaded or dropped beyond the near cascade change
     // its shadows too little to draw it all again, which costs 13 ms a strip in Chrome).
-    if changed {
+    // A near tree drawn as itself, or as its archetype again, changes them too.
+    if near_trees(mut s, eye) || changed {
         c.near_changed = true
     }
-    near_trees(mut s, eye)
 }
 
 /// The probes' grid round `at` (render space, the render origin `o` taken off) over `tiles`' land.
@@ -1351,12 +1372,14 @@ pub fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
 /// up, and the new ones' growths started (`NEAR_GROWING` at a time, `NEAR_LOADING` while tiles
 /// come, the nearest first). A tile
 /// dropped gives up its individuals; one loaded again draws them as themselves again.
-pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
+pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) -> bool {
     if s.near.len() == 0 {
-        return
+        return false
     }
-    let Some(taken) = replace(mut s.wood, None) else { return }
+    let Some(taken) = replace(mut s.wood, None) else { return false }
     var w = take taken
+    // Whether any instance's kind changed (the near cascade's casters with it).
+    var recast = false
     // Growths finished, and individuals whose tile went or came again.
     for i in 0..s.near.len() {
         if !s.near[i].used {
@@ -1383,6 +1406,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
                 w.free_near(i)
                 s.near[i].used = false
                 s.near[i].drawn = false
+                s.near[i].itself = false
             }
             continue
         }
@@ -1394,7 +1418,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
             s.near[i].cached = None
             let Some(g) = replace(mut s.near[i].waiting, None) else { continue }
             let kept = match answer {
-                Ok(bytes) => shape_from_bytes(bytes),
+                Ok(bytes) => shape_from_bytes(bytes, s.near[i].key),
                 Err(_) => None,
             }
             match take kept {
@@ -1418,7 +1442,9 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
             // Its plant made of its shape here, its cards' orders found on a helper.
             let Some(task) = replace(mut s.near[i].growing, None) else { continue }
             let shape = (take task).join()
-            s.storing.push(store(grown_path(s.near[i].key).as_str(), shape_bytes(shape)))
+            s.storing.push(
+                store(grown_path(s.near[i].key).as_str(), shape_bytes(shape, s.near[i].key)),
+            )
             start_ordering(mut s.near[i], take shape)
         } else if ordered {
             let Some(task) = replace(mut s.near[i].ordering, None) else { continue }
@@ -1428,14 +1454,18 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
             var p = engine::plant::plant(s.near[i].leaves, s.near[i].bark)
             plant_of(shape, s.near[i].leaves, s.near[i].bark, s.near[i].blend, mut p)
             let k = kind_near(p, seed: s.near[i].index + 1, found: take orders)
-            w.set_near(i, k, s.near[i].archetype)
-            w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
+            s.near[i].itself = w.set_near(i, k, s.near[i].archetype)
+            if s.near[i].itself {
+                w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
+                recast = true
+            }
             s.near[i].drawn = true
             s.near[i].drawn_ms = f32(1000.0 * (now() - s.near[i].chosen_at))
             s.near[i].slot = at
-        } else if s.near[i].drawn && s.near[i].slot != at {
+        } else if s.near[i].itself && s.near[i].slot != at {
             // Its tile loaded again, its instance its archetype's: drawn as itself again.
             w.retarget(s.near[i].tile, s.near[i].index, s.near[i].archetype, w.near_kind(i))
+            recast = true
             s.near[i].slot = at
         }
     }
@@ -1498,7 +1528,9 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
                 }
             }
         }
-        // The first ring: the nearest chosen within `FIRST_RING`.
+        // The first ring: the nearest chosen within `FIRST_RING`, complete once every tile that
+        // could hold it was in the wood when it was chosen.
+        s.ring_complete = ring_tiles_in(w, eye)
         s.ring.clear()
         for (tile, j, _, t) in chosen {
             if s.ring.len() < FIRST_N && length(t.at - eye) < FIRST_RING {
@@ -1517,12 +1549,14 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
                 }
             }
             if !kept {
-                if s.near[i].drawn {
+                if s.near[i].itself {
                     w.retarget(s.near[i].tile, s.near[i].index, w.near_kind(i), s.near[i].archetype)
+                    recast = true
                 }
                 w.free_near(i)
                 s.near[i].used = false
                 s.near[i].drawn = false
+                s.near[i].itself = false
             }
         }
         // The new ones' growths, a few at a time.
@@ -1583,6 +1617,7 @@ pub fn near_trees<T: Tiles>(s: mut Landscape<T>, eye: vec2) {
         }
     }
     s.wood = Some(take w)
+    recast
 }
 
 /// A pending request's answer, once it has come (its `poll`, through the option that holds it).
