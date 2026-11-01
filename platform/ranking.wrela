@@ -11,10 +11,9 @@
 // The edge ranks an upload here (`Inner::Rank`): the account's best as its account told it, applied
 // as its message would be (which may come before or after), then the run's place.
 
-use account::{HANDLE_BYTES, part, u32_at}
+use account::{HANDLE_BYTES, key, part, u32_at, under}
 use server::{
-    Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, lately, read,
-    text_key,
+    Back, Engine, Game, Inner, Job, MOST_PLACE, Note, Ranked, Step, blank_job, got, lately, read,
 }
 use std::serialize::{Serialize, save}
 use std::store::{append_u32, entries, past}
@@ -30,29 +29,19 @@ pub struct Entry: Clone + Serialize {
 }
 
 fn entry_key(handle: [u8]) -> Vec<u8> {
-    var k = text_key("a")
-    for b in handle {
-        k.push(b)
-    }
-    k
+    key("a", handle)
 }
 
 /// `r<ticks><handle>`: a place.
 pub fn place_key(ticks: u32, handle: [u8]) -> Vec<u8> {
-    var k = text_key("r")
+    var k = under("r")
     append_u32(mut k, ticks)
-    for b in handle {
-        k.push(b)
-    }
+    account::with_bytes(mut k, handle)
     k
 }
 
 fn named_key(name: [u8]) -> Vec<u8> {
-    var k = text_key("n")
-    for b in name {
-        k.push(b)
-    }
-    k
+    key("n", name)
 }
 
 /// The place numbered `number` from its entry (`key`, `value`).
@@ -80,7 +69,7 @@ impl<G: Game> Engine<G> {
             Request::Board { from, .. } => {
                 var j = take job
                 j.n = from
-                self.scan(text_key("r"), from + BOARD_PAGE + 1, Step::BoardScan, take j)
+                self.scan(under("r"), from + BOARD_PAGE + 1, Step::BoardScan, take j)
             },
             Request::Around { name, .. } => {
                 // One answer for any name without a place here, so a slice never says whether an
@@ -127,10 +116,7 @@ impl<G: Game> Engine<G> {
     fn apply(mut self, note: Note, answer: [u8]) {
         let Note::Best { handle, revision, best } = note else { return }
         let k = entry_key(handle)
-        let old: Option<Entry> = match self.latest(k, answer) {
-            Some(v) => read(v),
-            None => None,
-        }
+        let old: Option<Entry> = self.latest_as(k, answer)
         if let Some(e) = old {
             if revision <= e.revision {
                 return
@@ -166,7 +152,7 @@ impl<G: Game> Engine<G> {
                 let Some(Inner::Rank { ticks, handle, .. }) = j.inner.clone() else { return }
                 // The places ahead of a run of `ticks` by its account, as many as are counted.
                 let to = place_key(ticks, handle)
-                self.scan_range(text_key("r"), take to, MOST_PLACE, Step::RankCount, take j)
+                self.scan_range(under("r"), take to, MOST_PLACE, Step::RankCount, take j)
             },
             Step::RankCount => {
                 let Some(es) = entries(answer) else { return }
@@ -197,7 +183,7 @@ impl<G: Game> Engine<G> {
                 self.get(entry_key(handle), Step::AroundEntry, take j)
             },
             Step::AroundEntry => {
-                let e: Option<Entry> = got_entry(answer)
+                let e: Option<Entry> = got(answer)
                 let Some(e) = e else {
                     self.reply(conn, Reply::Unplaced)
                     return
@@ -210,7 +196,7 @@ impl<G: Game> Engine<G> {
                 // are the places just above.
                 j.hash = place_key(e.ticks, j.handle)
                 let to = j.hash.clone()
-                self.scan_range(text_key("r"), take to, MOST_PLACE, Step::AroundCount, take j)
+                self.scan_range(under("r"), take to, MOST_PLACE, Step::AroundCount, take j)
             },
             Step::AroundCount => {
                 let Some(es) = entries(answer) else { return }
@@ -218,7 +204,7 @@ impl<G: Game> Engine<G> {
                     // Past the places counted: those just above are read from it, unnumbered.
                     j.tries = 0
                     let to = j.hash.clone()
-                    self.scan_down(text_key("r"), take to, AROUND, Step::AroundAbove, take j)
+                    self.scan_down(under("r"), take to, AROUND, Step::AroundAbove, take j)
                     return
                 }
                 j.tries = es.len() + 1
@@ -267,13 +253,9 @@ impl<G: Game> Engine<G> {
     fn around_below(mut self, job: take Job) {
         var j = take job
         j.n = j.keys.len()
-        let to = past(text_key("r")).unwrap_or(Vec::new())
+        let to = past(under("r")).unwrap_or(Vec::new())
         self.scan_range(j.hash.clone(), take to, AROUND + 1, Step::AroundBelow, take j)
     }
-}
-
-fn got_entry(answer: [u8]) -> Option<Entry> {
-    server::got(answer)
 }
 
 @test

@@ -33,7 +33,7 @@ use server::{
     Listing, NONCE_BYTES, Note, PRUNED, RUN_AGE, Ranked, Step, TAG_BYTES, blank_job, board_instance,
     board_part, ceremony_message, challenge_of, challenge_parts, codes_instance, got, lately,
     letter_of, names_instance, nobody, read, replays_instance, same_bytes, search_instance,
-    starts_with, text_key,
+    starts_with,
 }
 use std::crypto::verified
 use std::fmt::json_text
@@ -614,14 +614,12 @@ impl<G: Game> Engine<G> {
 
     /// The counters a read answered `answer` with, as this instance last wrote them.
     fn counters(self, answer: [u8]) -> Option<Counters> {
-        let v = self.latest(key(COUNTERS, []), answer)?
-        read(v)
+        self.latest_as(key(COUNTERS, []), answer)
     }
 
     /// The account a read answered `answer` with, as this instance last wrote it.
     fn account_of(self, answer: [u8]) -> Option<Account> {
-        let v = self.latest(key(ACCOUNT, []), answer)?
-        read(v)
+        self.latest_as(key(ACCOUNT, []), answer)
     }
 
     // ---- a sign-in ------------------------------------------------------------------------------
@@ -738,7 +736,7 @@ impl<G: Game> Engine<G> {
                 self.forget(pending_key(id))
                 // What's left to be said done, and whether every removal went.
                 let from = under("x/")
-                let to = text_key("z")
+                let to = under("z")
                 self.scan_range(take from, take to, 64, Step::RemovedScan, take j)
             },
             Note::Finish => self.get(key(SWEPT, []), Step::FinishSwept, take j),
@@ -1298,13 +1296,13 @@ impl<G: Game> Engine<G> {
                 var pending = 0
                 var swept = false
                 for e in es {
-                    if e.key == text_key(SWEPT) {
+                    if e.key == under(SWEPT) {
                         swept = true
                     } else if !lately(self.gone, e.key) {
                         pending += 1
                     }
                 }
-                if self.latest(text_key(SWEPT), []).is_some() {
+                if self.latest(under(SWEPT), []).is_some() {
                     swept = true
                 }
                 if pending == 0 && swept {
@@ -1315,7 +1313,7 @@ impl<G: Game> Engine<G> {
             },
             Step::FinishSwept => {
                 // Swept already: nothing to finish but what comes back said done.
-                if self.latest(text_key(SWEPT), answer).is_some() {
+                if self.latest(under(SWEPT), answer).is_some() {
                     self.done(j)
                     return
                 }
@@ -1342,7 +1340,7 @@ impl<G: Game> Engine<G> {
                 let Some(es) = entries(answer) else { return }
                 if es.is_empty() {
                     // Cleared: only the mark is left, so nothing of it comes back.
-                    self.put_bytes(text_key(GONE), Vec::new())
+                    self.put_bytes(under(GONE), Vec::new())
                     self.deleting = false
                     self.done(j)
                     return
@@ -1455,10 +1453,7 @@ impl<G: Game> Engine<G> {
                     Some(Inner::Record { board, .. }) => (j.hash.clone(), board),
                     _ => return,
                 }
-                let c = match self.latest(outcome_key(hash, board), answer) {
-                    Some(v) => read::<Checked>(v),
-                    None => None,
-                }
+                let c: Option<Checked> = self.latest_as(outcome_key(hash, board), answer)
                 if let Some(c) = c {
                     self.recorded_before(take j, c)
                     return
@@ -1472,10 +1467,7 @@ impl<G: Game> Engine<G> {
             },
             Step::AdmitBest => {
                 let Some(a) = j.account.clone() else { return }
-                let b = match value(answer) {
-                    Some(v) => read::<Best>(v),
-                    None => None,
-                }
+                let b = got::<Best>(answer)
                 let revision = match b {
                     Some(b) => b.revision,
                     None => 0,
@@ -1846,35 +1838,29 @@ impl<G: Game> Engine<G> {
         let Some(a) = j.account.clone() else { return }
         if j.step == Step::DeleteCounters {
             j.seed = self.next_revision(self.counters(answer))
-            self.scan_range(Vec::new(), text_key("x/"), CLEARED, Step::DeleteScan, take j)
+            self.scan_range(Vec::new(), under("x/"), CLEARED, Step::DeleteScan, take j)
             return
         }
         let Some(es) = entries(answer) else { return }
         let revision = j.seed
         for e in es {
             let k = e.key.clone()
-            if starts_with(k, text_key("s/")) || starts_with(k, text_key("c/")) {
+            if starts_with(k, under("s/")) || starts_with(k, under("c/")) {
                 self.forget(take k)
-            } else if starts_with(k, text_key("t/")) {
+            } else if starts_with(k, under("t/")) {
                 self.delete(take k)
-            } else if starts_with(k, text_key("r/")) {
+            } else if starts_with(k, under("r/")) {
                 let h = part(k, 2, k.len() - 2)
-                var id = text_key("r")
-                for b in h {
-                    id.push(b)
-                }
+                let id = key("r", h)
                 let note = Note::Code { hash: h.clone(), revision, owner: Vec::new() }
                 self.pend(id, codes_instance(h).as_str(), note)
                 self.forget(take k)
-            } else if starts_with(k, text_key("q/")) {
+            } else if starts_with(k, under("q/")) {
                 let h = part(k, 2, k.len() - 2)
-                var id = text_key("q")
-                for b in h {
-                    id.push(b)
-                }
+                let id = key("q", h)
                 let note = Note::Disown { hash: h.clone(), owner: self.handle.clone() }
                 self.pend(id, replays_instance(h).as_str(), note)
-            } else if starts_with(k, text_key("b/")) {
+            } else if starts_with(k, under("b/")) {
                 // A best: its game, version, course and category after `b/`.
                 let rest = part(k, 2, k.len() - 2)
                 let Some(zero) = find_zero(rest) else { continue }
@@ -1885,10 +1871,7 @@ impl<G: Game> Engine<G> {
                 let board = u32_at(rest, zero + 1)
                 let course = u32_at(rest, zero + 5)
                 let category = u32_at(rest, zero + 9)
-                var id = text_key("b")
-                for b in rest {
-                    id.push(b)
-                }
+                let id = key("b", rest)
                 let note = self.best_note(a, course, None, revision)
                 let to = board_instance(game.as_str(), board, course, category)
                 self.pend(id, to.as_str(), note)
@@ -1898,7 +1881,7 @@ impl<G: Game> Engine<G> {
             borrow last = es[es.len() - 1].key
             var from = last.clone()
             from.push(0)
-            self.scan_range(take from, text_key("x/"), CLEARED, Step::DeleteScan, take j)
+            self.scan_range(take from, under("x/"), CLEARED, Step::DeleteScan, take j)
             return
         }
         // Its name, and its search entry; then the sweep is done.
@@ -1907,10 +1890,10 @@ impl<G: Game> Engine<G> {
             owner: self.handle.clone(),
             generation: a.generation,
         }
-        self.pend(text_key("n"), names_instance(a.name).as_str(), release)
+        self.pend(under("n"), names_instance(a.name).as_str(), release)
         let unlisted = Note::Listed { handle: self.handle.clone(), revision, listing: Vec::new() }
-        self.pend(text_key("l"), search_instance(letter_of(a.name.front)).as_str(), unlisted)
-        self.keep(text_key(SWEPT), Vec::new())
+        self.pend(under("l"), search_instance(letter_of(a.name.front)).as_str(), unlisted)
+        self.keep(under(SWEPT), Vec::new())
         self.deleting = false
         let Some(i) = self.conn_index(j.conn) else { return }
         if self.conns[i].via == server::Via::Http {
@@ -1923,7 +1906,7 @@ impl<G: Game> Engine<G> {
     /// Every removal is said done: the store is cleared, a page at a time, then its mark kept.
     fn clear(mut self, job: take Job) {
         self.deleting = true
-        self.scan_range(Vec::new(), text_key(GONE), CLEARED, Step::ClearScan, take job)
+        self.scan_range(Vec::new(), under(GONE), CLEARED, Step::ClearScan, take job)
     }
 }
 
@@ -1961,7 +1944,7 @@ fn export_head(a: Account) -> String {
 /// One of an account's records as JSON, after the ones before it: none for what's only the
 /// server's bookkeeping.
 fn export_entry(out: mut String, k: [u8], value: [u8]) {
-    let at = |p: Text| -> bool { starts_with(k, text_key(p)) }
+    let at = |p: Text| -> bool { starts_with(k, under(p)) }
     let rest = if k.len() > 2 { part(k, 2, k.len() - 2) } else { Vec::new() }
     var one = String::new()
     if at("c/") {
@@ -1992,7 +1975,7 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
     } else if at("v/") || at("q/") {
         let hash = part(rest, 0, min(rest.len(), 32))
         one.push_str(f"{{\"uploaded_replay_sha256\":\"{hex(hash)}\"}}")
-    } else if same_bytes(k, text_key(AGREED)) {
+    } else if same_bytes(k, under(AGREED)) {
         one.push_str("{\"agreed\":")
         match read::<Agreement>(value) {
             Some(g) => one.push_str(
@@ -2001,14 +1984,14 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
             None => one.push_str("null"),
         }
         one.push_str("}")
-    } else if same_bytes(k, text_key(POSTING)) {
+    } else if same_bytes(k, under(POSTING)) {
         one.push_str("{\"posting\":")
         match read::<Posting>(value) {
             Some(p) => one.push_str(f"{{\"agreed_version\":{p.version},\"at\":{p.at}}}"),
             None => one.push_str("null"),
         }
         one.push_str("}")
-    } else if same_bytes(k, text_key(POST_BEST)) {
+    } else if same_bytes(k, under(POST_BEST)) {
         one.push_str("{\"post_best_runs\":")
         match read::<PostBest>(value) {
             Some(b) => one.push_str(f"{{\"on\":{b.on},\"at\":{b.at}}}"),

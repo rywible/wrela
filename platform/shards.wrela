@@ -15,10 +15,11 @@
 //   twice: by noun (`n`), so a search with a noun reads its ranges of one shard, and by title (`t`),
 //   so a search by a title alone reads its title's range of every shard.
 
+use account::{key, under}
 use names::{Name, matches, matching}
 use server::{
     ALL_TRIES, Back, Engine, Game, Inner, Job, Kind, Listed, Listing, MOST_SCANNED, Note,
-    RANGE_PAGE, Step, blank_job, lately, letter_of, read, searchable, text_key,
+    RANGE_PAGE, Step, blank_job, got, lately, letter_of, read, searchable,
 }
 use std::serialize::{Serialize, save}
 use std::store::entries
@@ -52,28 +53,20 @@ pub struct SearchRow: Clone + Serialize {
     pub listing: Listing,
 }
 
-fn two(out: mut Vec<u8>, x: u32) {
-    out.push(u8(x >> 8))
-    out.push(u8(x & 255))
-}
-
 /// `n<front><back><title><epithet>`: a name in a search shard, by its noun.
 pub fn by_noun(n: Name) -> Vec<u8> {
-    var k = text_key("n")
+    var k = under("n")
     for p in [n.front, n.back, n.title, n.epithet] {
-        two(mut k, p)
+        k.push(u8(p >> 8))
+        k.push(u8(p & 255))
     }
     k
 }
 
-/// `t<title><front><back><epithet>`: a name in a search shard, by its title: the index's order, in
-/// which a search's names come.
+/// `t<name's key>`: a name in a search shard, by its title (`names::key` is title first): the
+/// index's order, in which a search's names come.
 pub fn by_title(n: Name) -> Vec<u8> {
-    var k = text_key("t")
-    for p in [n.title, n.front, n.back, n.epithet] {
-        two(mut k, p)
-    }
-    k
+    key("t", names::key(n))
 }
 
 /// The name of an index's key (`by_noun`'s or `by_title`'s), if it is one.
@@ -81,10 +74,11 @@ fn name_of(k: [u8]) -> Option<Name> {
     if k.len() != 9 {
         return None
     }
+    if k[0] != 110 {
+        return names::from_key(account::part(k, at: 1, n: 8))
+    }
     let at = |i: u32| -> u32 { (u32(k[1 + 2 * i]) << 8) | u32(k[2 + 2 * i]) }
-    let n = if k[0] == 110 {
-        Name { front: at(0), back: at(1), title: at(2), epithet: at(3) }
-    } else { Name { title: at(0), front: at(1), back: at(2), epithet: at(3) } }
+    let n = Name { front: at(0), back: at(1), title: at(2), epithet: at(3) }
     if !names::valid(n) {
         return None
     }
@@ -93,17 +87,27 @@ fn name_of(k: [u8]) -> Option<Name> {
 
 /// A one-letter key's prefix with `x` after it, two bytes.
 fn ranged(p: Text, x: u32) -> Vec<u8> {
-    var k = text_key(p)
-    two(mut k, x)
-    k
+    key(p, [u8(x >> 8), u8(x & 255)])
 }
 
+/// `n<name's key>`: a name at its names shard.
 fn name_key(n: Name) -> Vec<u8> {
-    var k = text_key("n")
-    for b in names::key(n) {
-        k.push(b)
-    }
-    k
+    key("n", names::key(n))
+}
+
+/// `c<hash>`: a recovery code at its codes shard.
+fn code_key(hash: [u8]) -> Vec<u8> {
+    key("c", hash)
+}
+
+/// `r<hash>`: a replay at its replays shard.
+fn replay_key(hash: [u8]) -> Vec<u8> {
+    key("r", hash)
+}
+
+/// `a<handle>`: an account at its search shard.
+fn listed_key(handle: [u8]) -> Vec<u8> {
+    key("a", handle)
 }
 
 impl<G: Game> Engine<G> {
@@ -131,22 +135,14 @@ impl<G: Game> Engine<G> {
                     return
                 }
                 self.tries.push(self.now)
-                var k = text_key("c")
-                for b in hash {
-                    k.push(b)
-                }
-                self.get(take k, Step::LookupRead, take j)
+                self.get(code_key(hash), Step::LookupRead, take j)
             },
             Inner::Own { hash, .. } => {
                 if self.kind != Kind::Replays {
                     self.back(conn, Back::Refused { why: String::from("Not a replays shard.") })
                     return
                 }
-                var k = text_key("r")
-                for b in hash {
-                    k.push(b)
-                }
-                self.get(take k, Step::OwnRead, take j)
+                self.get(replay_key(hash), Step::OwnRead, take j)
             },
             Inner::Search { title, noun, epithet } => {
                 if self.kind != Kind::Search {
@@ -180,31 +176,19 @@ impl<G: Game> Engine<G> {
             },
             Note::Code { hash, .. } => {
                 if self.kind == Kind::Codes {
-                    var k = text_key("c")
-                    for b in hash {
-                        k.push(b)
-                    }
-                    self.get(take k, Step::CodeNoteRead, take j)
+                    self.get(code_key(hash), Step::CodeNoteRead, take j)
                     return
                 }
             },
             Note::Disown { hash, .. } => {
                 if self.kind == Kind::Replays {
-                    var k = text_key("r")
-                    for b in hash {
-                        k.push(b)
-                    }
-                    self.get(take k, Step::DisownRead, take j)
+                    self.get(replay_key(hash), Step::DisownRead, take j)
                     return
                 }
             },
             Note::Listed { handle, .. } => {
                 if self.kind == Kind::Search {
-                    var k = text_key("a")
-                    for b in handle {
-                        k.push(b)
-                    }
-                    self.get(take k, Step::ListedRead, take j)
+                    self.get(listed_key(handle), Step::ListedRead, take j)
                     return
                 }
             },
@@ -318,10 +302,7 @@ impl<G: Game> Engine<G> {
             Step::ClaimRead => {
                 let Some(Inner::Claim { name, owner }) = j.inner.clone() else { return }
                 let k = name_key(name)
-                let e: Option<NameEntry> = match self.latest(k, answer) {
-                    Some(v) => read(v),
-                    None => None,
-                }
+                let e: Option<NameEntry> = self.latest_as(k, answer)
                 let generation = match e {
                     Some(e) => {
                         if !e.owner.is_empty() {
@@ -352,10 +333,7 @@ impl<G: Game> Engine<G> {
                     _ => return,
                 }
                 let k = name_key(name)
-                let e: Option<NameEntry> = match self.latest(k, answer) {
-                    Some(v) => read(v),
-                    None => None,
-                }
+                let e: Option<NameEntry> = self.latest_as(k, answer)
                 // Only its owner's, at its generation: a late one changes nothing of a later
                 // claim's.
                 if let Some(e) = e {
@@ -369,10 +347,7 @@ impl<G: Game> Engine<G> {
                 self.done(j)
             },
             Step::LookupRead => {
-                let e: Option<CodeEntry> = match value_of(answer) {
-                    Some(v) => read(v),
-                    None => None,
-                }
+                let e: Option<CodeEntry> = got(answer)
                 match e {
                     Some(e) => {
                         if !e.owner.is_empty() {
@@ -387,14 +362,8 @@ impl<G: Game> Engine<G> {
             },
             Step::CodeNoteRead => {
                 let Note::Code { hash, revision, owner } = j.note.clone() else { return }
-                var k = text_key("c")
-                for b in hash {
-                    k.push(b)
-                }
-                let e: Option<CodeEntry> = match self.latest(k, answer) {
-                    Some(v) => read(v),
-                    None => None,
-                }
+                let k = code_key(hash)
+                let e: Option<CodeEntry> = self.latest_as(k, answer)
                 let newer = match e {
                     Some(e) => revision > e.revision,
                     None => true,
@@ -406,10 +375,7 @@ impl<G: Game> Engine<G> {
             },
             Step::OwnRead => {
                 let Some(Inner::Own { hash, owner }) = j.inner.clone() else { return }
-                var k = text_key("r")
-                for b in hash {
-                    k.push(b)
-                }
+                let k = replay_key(hash)
                 let mine = match self.latest(k, answer) {
                     // Free: its own now.
                     None => true,
@@ -433,10 +399,7 @@ impl<G: Game> Engine<G> {
             },
             Step::DisownRead => {
                 let Note::Disown { hash, owner } = j.note.clone() else { return }
-                var k = text_key("r")
-                for b in hash {
-                    k.push(b)
-                }
+                let k = replay_key(hash)
                 let held = match self.latest(k, answer) {
                     Some(v) => v.len() == owner.len() && server::same_bytes(v, owner),
                     None => true,
@@ -445,23 +408,15 @@ impl<G: Game> Engine<G> {
                     // Let go, and kept let go by it, so an upload of its still under way when it
                     // was deleted never makes it its own again.
                     var gone = Vec::from([u8(0)])
-                    for b in owner {
-                        gone.push(b)
-                    }
+                    account::with_bytes(mut gone, owner)
                     self.keep(take k, take gone)
                 }
                 self.done(j)
             },
             Step::ListedRead => {
                 let Note::Listed { handle, revision, listing } = j.note.clone() else { return }
-                var k = text_key("a")
-                for b in handle {
-                    k.push(b)
-                }
-                let e: Option<SearchEntry> = match self.latest(k, answer) {
-                    Some(v) => read(v),
-                    None => None,
-                }
+                let k = listed_key(handle)
+                let e: Option<SearchEntry> = self.latest_as(k, answer)
                 if let Some(e) = e {
                     if revision <= e.revision {
                         self.done(j)
@@ -487,10 +442,6 @@ impl<G: Game> Engine<G> {
             _ => {},
         }
     }
-}
-
-fn value_of(answer: [u8]) -> Option<Vec<u8>> {
-    std::store::value(answer)
 }
 
 @test

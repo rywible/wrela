@@ -48,7 +48,7 @@
 // (each read is answered on the next), so each instance remembers what it wrote and deleted lately
 // (`gone`, `written`): a read made before such a call committed isn't trusted for that key.
 
-use account::{HANDLE_BYTES, account_instance, part, u64_at, unhex}
+use account::{HANDLE_BYTES, account_instance, part, u64_at, under, unhex, with_bytes}
 use names::Name
 use std::collections::replace
 use std::crypto::Signature
@@ -286,7 +286,7 @@ pub enum Back: Clone + Serialize {
     Mine,
     Other,
     Place { place: u32 },
-    /// A search's names, each with its place in the index's order (`listed_key`'s).
+    /// A search's names, each with its place in the index's order (`by_title`'s).
     Found { found: Vec<Listed> },
     /// For good (a run that never goes up): why.
     Rejected { why: String },
@@ -798,11 +798,6 @@ pub(package) fn recent(xs: mut Vec<u64>, now: u64, window: u64) {
     }
 }
 
-/// The text of `key` (ASCII), as a store key's start.
-pub(package) fn text_key(p: Text) -> Vec<u8> {
-    Vec::from(String::from(p).as_bytes())
-}
-
 impl<G: Game> Engine<G> {
     // ---- the host's side --------------------------------------------------------------------
 
@@ -1250,6 +1245,13 @@ impl<G: Game> Engine<G> {
         value(answer)
     }
 
+    /// What is at `key` as `latest` sees it, as a `T`: none for no value, or one that doesn't
+    /// read.
+    pub(package) fn latest_as<T: Serialize>(self, key: [u8], answer: [u8]) -> Option<T> {
+        let v = self.latest(key, answer)?
+        read(v)
+    }
+
     /// Lets go of what was deleted or written lately once no read made before it can still be
     /// used: kept while a job that began by then is under way, and for the call after (a read made
     /// in a call is answered in the next).
@@ -1290,21 +1292,15 @@ pub fn ceremony_message(
     expires: u64,
     agreed: wire::Agreed,
 ) -> Vec<u8> {
-    var m = text_key("wrela-ceremony-1")
+    var m = under("wrela-ceremony-1")
     m.push(u8(kind))
     append_u32(mut m, agreed.terms)
     append_u32(mut m, agreed.privacy)
     m.push(if agreed.of_age { u8(1) } else { u8(0) })
-    for b in token {
-        m.push(b)
-    }
+    with_bytes(mut m, token)
     m.push(u8(handle.len()))
-    for b in handle {
-        m.push(b)
-    }
-    for b in nonce {
-        m.push(b)
-    }
+    with_bytes(mut m, handle)
+    with_bytes(mut m, nonce)
     append_u64(mut m, expires)
     m
 }
@@ -1313,9 +1309,7 @@ pub fn ceremony_message(
 pub fn challenge_of(nonce: [u8], expires: u64, tag: [u8]) -> Vec<u8> {
     var c = Vec::from(nonce)
     append_u64(mut c, expires)
-    for i in 0..TAG_BYTES {
-        c.push(tag[i])
-    }
+    with_bytes(mut c, part(tag, 0, TAG_BYTES))
     c
 }
 
@@ -1330,10 +1324,7 @@ pub fn challenge_parts(c: [u8]) -> Option<(Vec<u8>, u64, Vec<u8>)> {
 /// What a board's places are of: its game, version, course and category, as an account keeps its
 /// best there (`b/<this>`).
 pub fn board_part(game: str, board: u32, course: u32, category: u32) -> Vec<u8> {
-    var k: Vec<u8> = Vec::new()
-    for i in 0..game.len() {
-        k.push(game.byte(i))
-    }
+    var k = Vec::from(String::from(game).as_bytes())
     k.push(0)
     append_u32(mut k, board)
     append_u32(mut k, course)
