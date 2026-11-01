@@ -1094,6 +1094,32 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     (centre, n, radius, vec2(side / f32(SIDES), walked + along * length(b - a)))
 }
 
+/// How far a limb's point `p` (of `LIMB_POINTS`) is into its end (§G10): 1 at the point its last
+/// ring closes to, 0 elsewhere (a fragment between reads how far in toward that point it is: its
+/// broken end's face, out from its axis).
+pub fn limb_end(p: u32) -> f32 {
+    let piece = p / ((RINGS + 1) * (SIDES + 1))
+    let ring = (p % ((RINGS + 1) * (SIDES + 1))) / (SIDES + 1)
+    if piece == 2 && ring == RINGS { 1.0 } else { 0.0 }
+}
+
+/// A broken end's wood, `end` in from its rim (`limb_end`) and `rot` rotten (0 to 1): its end
+/// grain, pale and fresh to dark and soft, its growth rings round its heart (`END_RINGS` across
+/// it), its heart darker: wood, not the bark's pattern drawn in round it to a star (the
+/// development panel's star-shaped, radial log ends, §G10).
+pub fn end_grain(end: f32, rot: f32) -> vec3 {
+    let out = 1.0 - saturate(end)
+    let rings = 0.5 + 0.5 * cos(TAU * out * END_RINGS)
+    let heart = 0.8 + 0.2 * smoothstep(0.0, 0.35, out)
+    mix(FRESH_WOOD, ROTTEN_WOOD, vec3(saturate(rot))) * heart * (0.88 + 0.12 * rings)
+}
+
+/// End grain's colour, fresh and rotten (linear: a broken oak's or beech's pale heartwood, and a
+/// decayed log's dark brown, **proposed**), and how many growth rings its end shows across.
+pub const FRESH_WOOD = vec3(0.46, 0.37, 0.25)
+pub const ROTTEN_WOOD = vec3(0.17, 0.13, 0.09)
+pub const END_RINGS: f32 = 9.0
+
 // ---- instances ---------------------------------------------------------------------------------
 
 /// A plant placed in the world: where its base is, its turn about +y, its tint (added to its
@@ -2201,4 +2227,45 @@ fn magnified_bark_keeps_its_edges() {
         let t = vec4(0.3, 0.7, 0.45, 0.6)
         assert(sharpened(t, texels) == t, f"a pattern {texels} texels a pixel was changed")
     }
+}
+
+/// A limb's broken end is its last ring's point alone (§G10: `limb_end`), and its end grain is
+/// ringed out from its heart and darker as it rots, the same all round it (no star).
+@test
+fn a_logs_end_is_ringed_wood_not_its_bark_drawn_in() {
+    var ends = 0
+    for p in 0..LIMB_POINTS {
+        if limb_end(p) > 0.5 {
+            ends += 1
+            let (_, _, radius, _) = limb_point(
+                Tube {
+                    points: [
+                        vec3(0.0),
+                        vec3(0.0, 1.0, 0.0),
+                        vec3(0.0, 2.0, 0.0),
+                        vec3(0.0, 3.0, 0.0),
+                    ],
+                    radii: [0.3, 0.3, 0.3, 0.3],
+                },
+                p,
+            )
+            assert(radius == 0.0, f"point {p} is an end but its radius is {radius}")
+        }
+    }
+    assert(ends == SIDES + 1, f"{ends} points are ends")
+    // Its rings: across it, its tone rises and falls several times.
+    var turns = 0
+    var last = 0.0
+    var rising = true
+    for k in 0..200 {
+        let y = dot(end_grain(f32(k) / 200.0, 0.0), vec3(0.2126, 0.7152, 0.0722))
+        if k > 0 && (y > last) != rising {
+            turns += 1
+            rising = y > last
+        }
+        last = y
+    }
+    assert(turns >= 10, f"its end shows {turns / 2} rings")
+    let (fresh, rotten) = (end_grain(0.5, 0.0), end_grain(0.5, 1.0))
+    assert(length(rotten) < 0.5 * length(fresh), "a rotten end isn't darker than a fresh one")
 }

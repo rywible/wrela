@@ -530,6 +530,8 @@ pub struct BarkVertex: Copy {
     pub kind: Flat<u32>,
     /// Its instance's history (`plant::Instance::history`).
     pub history: Flat<u32>,
+    /// How far into its limb's broken end it is (`plant::limb_end`).
+    pub end: f32,
 }
 
 /// `n` limbs' triangles: each limb's points (`limb_corner`).
@@ -608,7 +610,14 @@ pub fn limb(
 ) -> BarkVertex {
     let (world, n, along, on_moss) = limb_world(v.index, i.index, kinds, limbs, instances)
     let inst = instances[i.index]
-    let bark = kinds[kind_of(inst)].bake.bark
+    let kd = kinds[kind_of(inst)]
+    let bark = kd.bake.bark
+    // Its broken end's point faces out along its limb (§G10), not round it as its last ring's do.
+    let end = plant::limb_end(v.index % LIMB_POINTS)
+    let n = if end > 0.5 {
+        let limb = limbs[kd.limb_first + v.index / LIMB_POINTS]
+        inst.turn_normal(normalize(limb.points[3] - limb.points[2]), limb.points[3].y)
+    } else { n }
     let mossed = if bark.grown == 0.0 {
         mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7))
     } else {
@@ -629,6 +638,7 @@ pub fn limb(
         keep: Flat { value: marks[i.index].x },
         kind: Flat { value: kind_of(inst) },
         history: Flat { value: inst.history.bits },
+        end,
     }
 }
 
@@ -768,8 +778,12 @@ pub fn bark_shade<Q: Switches, Y: Style>(
         bark.lichen.xyz,
         vec3(bark.lichen.w * lichened * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
     )
+    // A broken end's wood where its limb closes over its last ring (§G10: `plant::end_grain`), its
+    // bark a rim round it, and its face as smooth as its form: no bark's relief.
+    let ended = smoothstep(0.08, 0.3, b.end)
+    albedo = mix(albedo, plant::end_grain(b.end, bark.rots * history.x), vec3(ended))
     let a = Y::palette(lt.light, style::BARK, history, mix(albedo, bark.moss, vec3(b.moss)))
-    let ln = lit_normal::<Y>(n, smooth_n, smooth_n)
+    let ln = lit_normal::<Y>(normalize(mix(n, smooth_n, vec3(ended))), smooth_n, smooth_n)
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, ln, sky_n: ln, soft: 1.5)
     let lit = Lit { albedo: a, n: ln, sun, sky, through: vec3(0.0) }
