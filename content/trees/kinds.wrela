@@ -1831,9 +1831,17 @@ pub fn fallen_limbs(p: Placed, grown: bool) -> Bounded<Tube<4>, FALLEN_ROOM> {
 
 /// The instances of a tile's trees, `height(p)` the ground's height: the great oak (the kept
 /// tree), each tree the history kept, living, standing dead or fallen, of the kinds `grown` or
-/// the hand's.
+/// the hand's; a fallen tree laid clear of the trunks standing and the logs before it (`laid`).
 pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32, grown: bool) -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
+    // The trunks a fallen tree lies among: each one's foot (x, z) and radius.
+    var standing: Vec<vec3> = Vec::new()
+    for t in trees {
+        if t.pinned || (t.state == State::Alive && t.tall > 1.2) || t.state == State::Snag {
+            standing.push(vec3(t.at.x, t.at.y, t.girth))
+        }
+    }
+    var lying: Vec<Tube<4>> = Vec::new()
     for t in trees {
         let y = height(t.at)
         if t.pinned {
@@ -1889,10 +1897,141 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32, present: i32, grown: bool)
                 ),
             )
         } else if t.state == State::Log {
-            out.push(fallen_placement(t, height, present, grown))
+            if let Some(p) = laid(t, height, present, grown, standing, lying) {
+                lying.push(log_wood(p, grown))
+                out.push(p)
+            }
         }
     }
     out
+}
+
+/// A fallen tree laid among the trunks `standing` (each one's foot, x and z, and radius) and the
+/// logs `lying` before it (their trunks' wood, `log_wood`), so it passes through none (§G8: the
+/// development panel's logs through each other and through trunks): the way it fell, else turned
+/// the least of `TURNS` steps of `TURN` either way that clears them (`clearance`); else the
+/// clearest way, broken short (its length `BREAK` at a time) until it's clear; none if it isn't
+/// clear at a quarter of its length (a tree hung up in its neighbours).
+fn laid(
+    t: Tree,
+    height: fn(vec2) -> f32,
+    present: i32,
+    grown: bool,
+    standing: [vec3],
+    lying: [Tube<4>],
+) -> Option<Placed> {
+    let base = if length(t.fall) > 0.05 { t.fall } else {
+        let a = TAU * rand(t.seed, 90)
+        vec2(sin(a), cos(a))
+    }
+    var clearest = t
+    var most = -1.0e9
+    for k in 0..2 * TURNS + 1 {
+        let side = if k % 2 == 1 { 1.0 } else { -1.0 }
+        var u = t
+        u.fall = rotate(base, TURN * f32((k + 1) / 2) * side)
+        let p = fallen_placement(u, height, present, grown)
+        let c = clearance(log_wood(p, grown), standing, lying)
+        if c >= 0.0 {
+            return Some(p)
+        }
+        if c > most {
+            most = c
+            clearest = u
+        }
+    }
+    var u = clearest
+    for _ in 0..8 {
+        u.tall *= BREAK
+        if u.tall < 0.25 * t.tall {
+            break
+        }
+        let p = fallen_placement(u, height, present, grown)
+        if clearance(log_wood(p, grown), standing, lying) >= 0.0 {
+            return Some(p)
+        }
+    }
+    None
+}
+
+/// A fallen tree's turns from the way it fell (`laid`: 15° each, to 90° either way), and how much
+/// of its length a break leaves.
+const TURN: f32 = PI / 12.0
+const TURNS: u32 = 6
+const BREAK: f32 = 0.85
+
+/// How far apart wood must be (m) beyond its radii: a standing trunk's flare and a log's bark.
+pub const CLEAR: f32 = 0.05
+
+/// A placed log's trunk, in the world (`fallen_limbs`' first).
+fn log_wood(p: Placed, grown: bool) -> Tube<4> {
+    var trunk = trunk_of(p.kind, grown)
+    for j in 0..4 {
+        trunk.points[j] = p.at.place(trunk.points[j])
+        trunk.radii[j] *= p.at.scale
+    }
+    trunk
+}
+
+/// The least room (m) between log `wood` and the trunks `standing` (feet and radii: upright, so
+/// apart on the plane) and the logs `lying`, less `CLEAR`: below 0 where they meet.
+pub fn clearance(wood: Tube<4>, standing: [vec3], lying: [Tube<4>]) -> f32 {
+    var least = 1.0e9
+    for j in 0..3 {
+        let (a, b) = (wood.points[j], wood.points[j + 1])
+        let r = max(wood.radii[j], wood.radii[j + 1])
+        for s in standing {
+            // Near enough to matter only.
+            if length(s.xy - 0.5 * (a.xz + b.xz)) - s.z - r > length(b.xz - a.xz) {
+                continue
+            }
+            least = min(least, distance_to_segment(s.xy, a.xz, b.xz) - s.z - r)
+        }
+        for other in lying {
+            for i in 0..3 {
+                let (c, d) = (other.points[i], other.points[i + 1])
+                let q = max(other.radii[i], other.radii[i + 1])
+                least = min(least, segments_apart(a, b, c, d) - r - q)
+            }
+        }
+    }
+    least - CLEAR
+}
+
+/// How far point `p` is from the segment `a` to `b` (on the plane).
+fn distance_to_segment(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-9), 0.0, 1.0)
+    length(p - a - ab * t)
+}
+
+/// How near the segments `a` to `b` and `c` to `d` come (Ericson, *Real-Time Collision
+/// Detection*, §5.1.9: the closest points of two segments).
+pub fn segments_apart(a: vec3, b: vec3, c: vec3, d: vec3) -> f32 {
+    let (u, v, w) = (b - a, d - c, a - c)
+    let (uu, vv, uv, uw, vw) = (dot(u, u), dot(v, v), dot(u, v), dot(u, w), dot(v, w))
+    var s = 0.0
+    var t = 0.0
+    if uu <= 1.0e-9 && vv <= 1.0e-9 {
+        return length(a - c)
+    }
+    if uu <= 1.0e-9 {
+        t = clamp(vw / vv, 0.0, 1.0)
+    } else if vv <= 1.0e-9 {
+        s = clamp(-uw / uu, 0.0, 1.0)
+    } else {
+        let den = uu * vv - uv * uv
+        s = if den > 1.0e-9 { clamp((uv * vw - vv * uw) / den, 0.0, 1.0) } else { 0.0 }
+        t = (uv * s + vw) / vv
+        if t < 0.0 {
+            t = 0.0
+            s = clamp(-uw / uu, 0.0, 1.0)
+        } else if t > 1.0 {
+            t = 1.0
+            s = clamp((uv - uw) / uu, 0.0, 1.0)
+        }
+    }
+    length((a + u * s) - (c + v * t))
 }
 
 /// A living tree's history (`engine::substance::history_of`, as its instance holds it): its age
@@ -2516,4 +2655,76 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
         assert(placed([kept], |q| 0.0, now, grown: true)[0].at.yaw == 0.0, "the great oak turned")
     }
     assert(hi - lo > HEADING, f"the trees' turns span {hi - lo}: they stand alike")
+}
+
+/// Fallen trees lie clear of the trunks standing round them and of each other (§G8): in a stand of
+/// oaks 5 m apart, every third one fallen, each toward its neighbours, laid by `placed`; every
+/// log's trunk is `CLEAR` past its radius from each standing trunk's and each other log's (a
+/// check of its own: points along each log's axis), and most of the logs are kept.
+@test
+fn fallen_logs_lie_clear_of_trunks_and_of_each_other() {
+    let now: i32 = 900
+    let habits = species::HABITS
+    for grown in [false, true] {
+        var trees: Vec<Tree> = Vec::new()
+        var fallen = 0
+        for i in 0..36 {
+            let at = vec2(f32(i % 6), f32(i / 6)) * 5.0
+            var t = land::grow::grown(
+                at,
+                OAK,
+                born: 0,
+                year: 120,
+                seed: u32(i),
+                h: habits[OAK],
+                open: false,
+            )
+            if i % 3 == 1 {
+                t.state = State::Log
+                t.fell = now - 5
+                // Toward the stand's middle, or along a row of trunks.
+                t.fall = if i % 2 == 0 { normalize(vec2(12.5) - at) } else { vec2(1.0, 0.0) }
+                fallen += 1
+            }
+            trees.push(t)
+        }
+        let placed = placed(trees, |q| 0.0, now, grown)
+        var logs: Vec<Tube<4>> = Vec::new()
+        for p in placed {
+            if p.kind == LOG_SHORT || p.kind == LOG_LONG {
+                logs.push(log_wood(p, grown))
+            }
+        }
+        assert(
+            logs.len() * 3 >= fallen * 2,
+            f"grown {grown}: {logs.len()} of {fallen} logs laid",
+        )
+        // Along each log's axis: its distance to each standing trunk's and each other log's.
+        let along = |w: Tube<4>, f: f32| {
+            let k = min(u32(f * 3.0), 2)
+            let t = f * 3.0 - f32(k)
+            (mix(w.points[k], w.points[k + 1], t), mix(w.radii[k], w.radii[k + 1], t))
+        }
+        for i in 0..logs.len() {
+            for n in 0..33 {
+                let (p, r) = along(logs[i], f32(n) / 32.0)
+                for t in trees {
+                    if t.state == State::Alive && t.tall > 1.2 {
+                        let d = length(p.xz - t.at) - r - t.girth
+                        assert(d >= 0.0, f"grown {grown}: log {i} meets a trunk, {d} m")
+                    }
+                }
+                for j in 0..logs.len() {
+                    if j == i {
+                        continue
+                    }
+                    for m in 0..33 {
+                        let (q, s) = along(logs[j], f32(m) / 32.0)
+                        let d = length(p - q) - r - s
+                        assert(d >= -0.02, f"grown {grown}: logs {i} and {j} meet, {d} m")
+                    }
+                }
+            }
+        }
+    }
 }
