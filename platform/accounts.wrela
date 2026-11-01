@@ -223,7 +223,8 @@ impl<G: Game> Engine<G> {
             },
             Request::NewCodes { csrf } => {
                 let Some(_) = self.fresh(conn, csrf, recovery: false) else { return }
-                self.scan(under("r/"), 4 * CODES, Step::CodesScan, take job)
+                // The new codes' bytes first, the codes there are read last, as they are then.
+                self.get(key(COUNTERS, []), Step::CodesCounters, take job)
             },
             Request::Sessions => {
                 let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
@@ -607,7 +608,8 @@ impl<G: Game> Engine<G> {
         for k in 0..CODES {
             let c = code(part(bytes, k * CODE_BYTES, CODE_BYTES))
             let Some(h) = code_hash(c.as_str()) else { panic("a code reads back") }
-            self.put_bytes(code_key(h), Vec::new())
+            // Remembered written, so codes made at once with these are read with them.
+            self.keep(code_key(h), Vec::new())
             let note = Note::Code { hash: h.clone(), revision, owner: self.handle.clone() }
             self.tell(codes_instance(h).as_str(), note, [])
             codes.push(take c)
@@ -1182,24 +1184,8 @@ impl<G: Game> Engine<G> {
                 }
                 self.reply(conn, Reply::Passkeys { passkeys: list })
             },
-            Step::CodesScan => {
-                let Some(scan) = self.scanned(j, answer) else { return }
-                borrow es = scan.entries
-                let skip = under("r/").len()
-                for e in es {
-                    j.keys.push(part(e.key, skip, e.key.len() - skip))
-                    self.forget(e.key.clone())
-                }
-                self.get(key(COUNTERS, []), Step::CodesCounters, take j)
-            },
             Step::CodesCounters => {
-                let revision = self.next_revision(self.counters(answer), runs: 0)
-                // The old codes let go at their shards, at the same revision the new are told at.
-                for h in j.keys {
-                    let note = Note::Code { hash: h.clone(), revision, owner: Vec::new() }
-                    self.tell(codes_instance(h).as_str(), note, [])
-                }
-                j.seed = revision
+                j.message = answer.clone()
                 self.random(CODES * CODE_BYTES, Step::CodesRandom, take j)
             },
             Step::CodesRandom => {
@@ -1207,7 +1193,23 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "We couldn't make new codes. Try again.")
                     return
                 }
-                let codes = self.write_codes(answer, j.seed)
+                j.views = Vec::from([answer.clone()])
+                self.scan(under("r/"), 4 * CODES, Step::CodesScan, take j)
+            },
+            Step::CodesScan => {
+                // Every code there is now, with those another request wrote lately (`scanned`),
+                // is let go at the revision the new are told at, so only the last set made opens
+                // the account.
+                let Some(scan) = self.scanned(j, answer) else { return }
+                let revision = self.next_revision(self.counters(j.message), runs: 0)
+                let skip = under("r/").len()
+                for e in scan.entries {
+                    let h = part(e.key, skip, e.key.len() - skip)
+                    let note = Note::Code { hash: h.clone(), revision, owner: Vec::new() }
+                    self.tell(codes_instance(h).as_str(), note, [])
+                    self.forget(e.key.clone())
+                }
+                let codes = self.write_codes(j.views[0], revision)
                 self.reply(conn, Reply::Codes { codes })
             },
             Step::SessionsScan | Step::RevokeScan => {

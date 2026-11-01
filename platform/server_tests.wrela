@@ -3304,3 +3304,33 @@ fn a_recovery_that_fails_after_its_code_is_checked_leaves_the_code_and_every_ses
     let rs = h.say(3, Request::Recover { code: s.codes[0].clone() })
     assert(session_of(rs).is_some(), f"the code still signs in: {why_of(rs[0])}")
 }
+
+@test
+fn new_codes_asked_twice_at_once_leave_one_set() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let ask = Request::NewCodes { csrf: s.csrf.clone() }
+    let both = h.together(1, [ask.clone(), ask.clone()])
+    assert(h.keys(s.at().as_str(), "r/") == CODES && live_codes(h) == CODES, "one set")
+    // The set kept is one answer's, whole: the other's, never seen twice, opens nothing.
+    let store = h.store_of(s.at().as_str())
+    var whole = 0
+    for a in both {
+        let Reply::Codes { codes } = a.reply.clone() else { panic(f"codes: {why_of(a.reply)}") }
+        var kept = 0
+        for c in codes {
+            let Some(hash) = account::code_hash(c.as_str()) else { panic("a code") }
+            for e in store {
+                if e.key == account::code_key(hash) {
+                    kept += 1
+                }
+            }
+        }
+        assert(kept == 0 || kept == CODES, f"{kept} of a set")
+        if kept == CODES {
+            whole += 1
+        }
+    }
+    assert(whole == 1, f"{whole} sets")
+    assert(refused(h.say(3, Request::Recover { code: s.codes[0].clone() })), "the first set's gone")
+}
