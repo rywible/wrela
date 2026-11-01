@@ -439,6 +439,15 @@ against them, each fixed where its tests reach it and the test seen to fail with
    text, the box a checkbox with `checked`, Post and Not now buttons with the focus, their presses
    and the dialog's dismissal handled).
 
+Played (2026-10-31, `wrela run games/capybara` in the Claude app's browser pane, the screen forced
+up by a local change not committed, since a game opened alone has no console or account): the
+screen draws over the leaderboard as designed; the dialog takes the keyboard (Tab, Shift+Tab,
+Space, Enter, Esc), the drawn focus follows, the box's state reads back as `aria-checked`, Not now
+and Esc return to the leaderboard and Post closes it, the keys going back to the game after. It
+found a trap in the sim, fixed: the host's focus-out (an `Assist::Focus` on node 0) underflowed
+world.wrela's `item_of`. Not played: the whole loop in the console against `wrangler dev`, which
+needs a passkey sign-up (a person) and a release's layout of the console with its games.
+
 Kept: offline play makes no request (the asks still need a console, and the background ones an
 account); nothing is posted before the account agrees, by the screen's Post or the console's page;
 sign-ups stay closed on the live server (console/server/serve.wrela's `close_sign_ups`).
