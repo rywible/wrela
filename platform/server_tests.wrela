@@ -3246,3 +3246,26 @@ fn a_removal_said_done_twice_never_clears_the_store_before_the_name_is_let_go() 
     h.settle()
     assert(nothing_left(h, s), "then it is")
 }
+
+@test
+fn a_deletions_clear_remembers_none_of_what_it_deletes() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let at = s.at()
+    // More records than two pages of the clear, none of which the sweep ends itself.
+    let i = h.instance(at.as_str())
+    for k in 0..600 {
+        put_entry(mut h.instances[i].store, account::spent_key(u64(k), [1]), [])
+    }
+    let _ = h.send(1, [Request::Delete { csrf: s.csrf.clone() }], public: false)
+    var most = 0
+    var k = 0
+    while k < 4000 && h.step() {
+        let i = h.instance(at.as_str())
+        most = max(most, h.instances[i].engine.gone.len())
+        k += 1
+    }
+    h.settle()
+    assert(nothing_left_of(h, s), "cleared")
+    assert(most < 64, f"{most} keys remembered gone")
+}

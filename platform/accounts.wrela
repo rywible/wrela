@@ -1349,8 +1349,9 @@ impl<G: Game> Engine<G> {
                     self.done(j)
                     return
                 }
+                // Deleted, not remembered gone: nothing reads a cleared account's records.
                 for e in es {
-                    self.forget(e.key.clone())
+                    self.delete(e.key.clone())
                 }
                 // A scan now would be answered before these deletes commit: the next waits a call.
                 self.random(1, Step::ClearNext, take j)
