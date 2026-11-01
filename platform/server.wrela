@@ -52,11 +52,11 @@
 use account::{
     Account, Agreement, CHALLENGE_BYTES, CHALLENGE_LIFE, CODES, CODE_BYTES, CSRF_BYTES, FRESH,
     GameToken, HANDLE_BYTES, HOUR, MINUTE, MOST_PASSKEYS, OF_AGREED, OF_BEST, OF_CODE, OF_HOUR,
-    OF_PASSKEY, OF_POSTING, OF_REPLAY, OF_RUN, OF_SESSION, OF_TOKEN, Passkey, Posting, REROLLS,
-    Recovery, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE, account_key, agreement_key,
-    ceremonies, ceremony_key, code, code_hash, code_key, hashed, indexed, name_key, passkey_key,
-    posted_key, posting_key, public_id, session_key, token_key, u32_at, u64_at, under_account,
-    with_bytes, CEREMONY_BYTES,
+    OF_PASSKEY, OF_POSTING, OF_POST_BEST, OF_REPLAY, OF_RUN, OF_SESSION, OF_TOKEN, Passkey,
+    PostBest, Posting, REROLLS, Recovery, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE,
+    account_key, agreement_key, ceremonies, ceremony_key, code, code_hash, code_key, hashed,
+    indexed, name_key, passkey_key, post_best_key, posted_key, posting_key, public_id, session_key,
+    token_key, u32_at, u64_at, under_account, with_bytes, CEREMONY_BYTES,
 }
 use names::{Matching, Name, draw}
 use std::collections::replace
@@ -503,6 +503,7 @@ enum Step: Copy + Eq {
     BoardScan,
     WatchRun,
     PostingRead,
+    PostingBest,
     BestRunsRead,
     UploadConsent,
     ReplayIndex,
@@ -1141,14 +1142,12 @@ impl<G: Game> Engine<G> {
             (category == ANY || category == FULL)
     }
 
-    /// What posting record `p` (none: never chosen) says, as the console reads it.
-    fn posting_reply(self, p: Option<Posting>) -> Reply {
+    /// Whether agreement `p` (none: never agreed) is to the current version of what posting makes
+    /// public.
+    fn agreed_to(self, p: Option<Posting>) -> bool {
         match p {
-            Some(p) => Reply::Posting {
-                agreed: p.version == self.versions.posting,
-                best_runs: p.best_runs,
-            },
-            None => Reply::Posting { agreed: false, best_runs: false },
+            Some(p) => p.version == self.versions.posting,
+            None => false,
         }
     }
 
@@ -1443,6 +1442,7 @@ impl<G: Game> Engine<G> {
             },
             Request::Posting => {
                 let Some(c) = self.signed_in(conn, None, recovery: true) else { return }
+                job.id = c.account
                 self.get(posting_key(c.account), Step::PostingRead, take job)
             },
             Request::Consent { csrf, version, best_runs } => {
@@ -1456,15 +1456,19 @@ impl<G: Game> Engine<G> {
                     )
                     return
                 }
-                let p = Posting { version, at: self.now, best_runs }
-                self.put(posting_key(c.account), p.clone())
+                // The agreement and the setting chosen with it, each in its own record.
+                self.put(posting_key(c.account), Posting { version, at: self.now })
+                self.put(post_best_key(c.account), PostBest { on: best_runs, at: self.now })
                 self.touched.push((c.account, self.call))
-                self.reply(conn, self.posting_reply(Some(take p)))
+                self.reply(conn, Reply::Posting { agreed: true, best_runs })
             },
             Request::BestRuns { csrf, on } => {
                 let Some(c) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
                     return
                 }
+                // The setting alone, written as asked: the agreement is only read, for the answer.
+                self.put(post_best_key(c.account), PostBest { on, at: self.now })
+                self.touched.push((c.account, self.call))
                 job.id = c.account
                 job.n = if on { 1 } else { 0 }
                 self.get(posting_key(c.account), Step::BestRunsRead, take job)
@@ -2553,18 +2557,22 @@ impl<G: Game> Engine<G> {
             },
             Step::PostingRead => {
                 let p: Option<Posting> = got(answer)
-                self.reply(conn, self.posting_reply(p))
+                j.n = if self.agreed_to(take p) { 1 } else { 0 }
+                self.get(post_best_key(j.id), Step::PostingBest, take j)
+            },
+            Step::PostingBest => {
+                // Off until chosen.
+                let b: Option<PostBest> = got(answer)
+                let best_runs = match b {
+                    Some(b) => b.on,
+                    None => false,
+                }
+                self.reply(conn, Reply::Posting { agreed: j.n == 1, best_runs })
             },
             Step::BestRunsRead => {
                 let p: Option<Posting> = got(answer)
-                var kept = match p {
-                    Some(p) => p.clone(),
-                    None => Posting { version: 0, at: 0, best_runs: false },
-                }
-                kept.best_runs = j.n == 1
-                self.put(posting_key(j.id), kept.clone())
-                self.touched.push((j.id, self.call))
-                self.reply(conn, self.posting_reply(Some(take kept)))
+                let agreed = self.agreed_to(take p)
+                self.reply(conn, Reply::Posting { agreed, best_runs: j.n == 1 })
             },
             Step::ReplayIndex => {
                 // A verified run's, and only that.
@@ -3040,7 +3048,7 @@ impl<G: Game> Engine<G> {
             }
         }
         for j in self.jobs {
-            if (is_upload(j.step) || j.step == Step::BestRunsRead) && j.id == account {
+            if is_upload(j.step) && j.id == account {
                 return true
             }
             if let Some(q) = j.queued {
@@ -3456,9 +3464,14 @@ fn export_entry(out: mut String, of: u8, rest: [u8], value: [u8]) {
     } else if of == OF_POSTING {
         out.push_str("{\"posting\":")
         match read::<Posting>(value) {
-            Some(p) => out.push_str(
-                f"{{\"agreed_version\":{p.version},\"at\":{p.at},\"post_best_runs\":{p.best_runs}}}",
-            ),
+            Some(p) => out.push_str(f"{{\"agreed_version\":{p.version},\"at\":{p.at}}}"),
+            None => out.push_str("null"),
+        }
+        out.push_str("}")
+    } else if of == OF_POST_BEST {
+        out.push_str("{\"post_best_runs\":")
+        match read::<PostBest>(value) {
+            Some(b) => out.push_str(f"{{\"on\":{b.on},\"at\":{b.at}}}"),
             None => out.push_str("null"),
         }
         out.push_str("}")

@@ -106,12 +106,18 @@ pub struct Agreement: Clone + Serialize {
     pub at: u64,
 }
 
-/// What an account chose of posting (`a/<id>/o`): the version of what posting makes public it
-/// agreed to (0: none) and when, and whether the game posts its best runs.
+/// What an account agreed to of posting (`a/<id>/o`): the version of what posting makes public
+/// (platform/posting.wrela) and when.
 pub struct Posting: Clone + Serialize {
     pub version: u32,
     pub at: u64,
-    pub best_runs: bool,
+}
+
+/// Whether the game posts the account's best runs, and when that was chosen (`a/<id>/e`): a record
+/// apart from the agreement, so a change to either writes only its own and never undoes the other.
+pub struct PostBest: Clone + Serialize {
+    pub on: bool,
+    pub at: u64,
 }
 
 // ---- keys --------------------------------------------------------------------------------------
@@ -151,6 +157,7 @@ pub const OF_TOKEN: u8 = 116
 pub const OF_HOUR: u8 = 104
 pub const OF_AGREED: u8 = 103
 pub const OF_POSTING: u8 = 111
+pub const OF_POST_BEST: u8 = 101
 /// `a/<id>/v<hash>`: a replay's hash the account claimed by uploading it (server.wrela's
 /// `Uploaded`), so it goes with the account.
 pub const OF_REPLAY: u8 = 118
@@ -168,9 +175,14 @@ pub fn agreement_key(id: u64) -> Vec<u8> {
     indexed(id, OF_AGREED, [])
 }
 
-/// `a/<id>/o`: what the account chose of posting.
+/// `a/<id>/o`: what the account agreed to of posting.
 pub fn posting_key(id: u64) -> Vec<u8> {
     indexed(id, OF_POSTING, [])
+}
+
+/// `a/<id>/e`: whether the account posts its best runs.
+pub fn post_best_key(id: u64) -> Vec<u8> {
+    indexed(id, OF_POST_BEST, [])
 }
 
 /// `c/<credential ID>`: a passkey.

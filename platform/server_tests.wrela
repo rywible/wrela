@@ -1484,6 +1484,34 @@ fn a_post_needs_consent_and_the_best_runs_setting_is_kept() {
 }
 
 @test
+fn the_best_runs_setting_never_undoes_a_consent_made_beside_it() {
+    let both = started()
+    var e = take both.0
+    var h = take both.1
+    let s = sign_up(mut e, mut h, 1, 5)
+    let _ = h.say(mut e, 1, Request::Keep { csrf: s.csrf.clone() })
+    let consent = |best: bool| -> Request {
+        Request::Consent { csrf: s.csrf.clone(), version: 5, best_runs: best }
+    }
+    let best = |on: bool| -> Request { Request::BestRuns { csrf: s.csrf.clone(), on } }
+    // The setting asked as the consent comes, in one call: each reads before the other writes.
+    let _ = h.together(mut e, 1, [best(true), consent(true)])
+    let Reply::Posting { agreed, best_runs } = h.say(mut e, 1, Request::Posting)[0].clone() else {
+        panic("posting")
+    }
+    assert(agreed && best_runs, "the consent kept, and the setting")
+    // Off beside a consent that turned it on: the last asked wins, and the consent stays.
+    let _ = h.together(mut e, 1, [consent(true), best(false)])
+    let Reply::Posting { agreed, best_runs } = h.say(mut e, 1, Request::Posting)[0].clone() else {
+        panic("posting")
+    }
+    assert(agreed && !best_runs, "off, still agreed")
+    let Some(v) = record(h, account::OF_POST_BEST) else { panic("the setting, apart") }
+    let b: Result<account::PostBest, LoadError> = load(take v)
+    assert(!(take b).unwrap().on)
+}
+
+@test
 fn a_replay_is_read_by_its_hash_and_kept_for_a_year() {
     let both = started()
     var e = take both.0
