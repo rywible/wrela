@@ -6,7 +6,7 @@ use engine::character::highlight
 use engine::light::{LUMA, Light, Lit}
 use engine::style::Style
 use kit::genome::{ROE, quadruped_at}
-use kit::roe::{FAWN_AGE, Face, attend}
+use kit::roe::{VALE_AGE, Face, attend}
 use styles::cel::Cel
 use styles::physical::Physical
 use std::math::PI
@@ -131,7 +131,7 @@ fn the_cel_highlight_is_one_band() {
 /// turn they settle at).
 @test
 fn the_ears_turn_toward_a_sound_within_half_a_second() {
-    let q = quadruped_at(ROE, FAWN_AGE)
+    let q = quadruped_at(ROE, VALE_AGE)
     let f = kit::quadruped::frame(q)
     for side in [-1.0, 1.0] {
         let sound = f.head + vec3(3.0 * side, 0.0, 0.5)

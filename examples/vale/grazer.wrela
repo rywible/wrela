@@ -1,4 +1,4 @@
-// The vale's grazer (docs/plan-world-class-3.md §F2–F5): a roe fawn grown from its genome
+// The vale's grazer (docs/plan-world-class-3.md §F2–F5): a roe doe grown from its genome
 // (`kit::roe`: its proportions at its age, its muscles sized from its optimized walk's loads, its
 // coat's spots grown by reaction-diffusion), cast where a shot casts it. In "down the trail" it
 // walks toward the eye on its optimized walk (`kit::walks`, the level ground's, at its age by
@@ -12,10 +12,10 @@ use engine::creature::MAX_BONES
 use engine::terrain::{Cover, Terrain}
 use kit::gaits::{CLEARANCE, DT, Gait}
 use kit::genome::{ROE, quadruped_at}
-use kit::grown::{FAWN_COAT, FAWN_MUSCLES}
+use kit::grown::{VALE_COAT, VALE_MUSCLES}
 use kit::muscles::{MuscledParts, walker_body}
 use kit::quadruped::{frame, skeleton}
-use kit::roe::{CoatLook, FAWN_AGE, Face, Hide, attend, faced, roe, walk_at}
+use kit::roe::{CoatLook, VALE_AGE, Face, Hide, attend, faced, roe, walk_at}
 use kit::walks::WALKS
 use landscape::height_at
 use std::quat::Quat
@@ -25,12 +25,12 @@ pub type Grazer = engine::creature::Body<MuscledParts<Hide>>
 
 /// The grazer, grown.
 pub fn grazer() -> Grazer {
-    roe(ROE, FAWN_AGE, FAWN_MUSCLES)
+    roe(ROE, VALE_AGE, VALE_MUSCLES)
 }
 
 /// Its look: its hide, its coat's spots at its age, its eyes' irises through their corneas.
 pub fn look() -> CoatLook {
-    kit::roe::look_of(ROE, FAWN_AGE, FAWN_COAT)
+    kit::roe::look_of(ROE, VALE_AGE, VALE_COAT)
 }
 
 /// What it senses with (`land::senses`, **proposed**: a roe's: its eye at its head's height, a
@@ -65,7 +65,7 @@ pub fn attended(
     eye: vec3,
     dt: f32,
 ) -> [mat4; MAX_BONES] {
-    let q = quadruped_at(ROE, FAWN_AGE)
+    let q = quadruped_at(ROE, VALE_AGE)
     let it = land::senses::Presence {
         at: vec3(eye.x, height_at(eye.xz), eye.z),
         velocity: vec2(0.0),
@@ -83,7 +83,7 @@ pub fn attended(
 
 /// How it's realized: cells no larger than 6 mm (its cannons are under 2 cm thick: the engine's
 /// 2 cm cells lose them), its skin's weights falling off over 2 cm (the engine's 5 cm blends a
-/// fawn's hock into its gaskin: a part's weight falls off within its own length).
+/// roe's hock into its gaskin: a part's weight falls off within its own length).
 pub const REALIZED = engine::look::CreatureLook {
     surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
     deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
@@ -94,13 +94,13 @@ pub const SLICES: u32 = 1
 
 /// Its walk: the optimized walk on level ground (`kit::walks`' first), at its age.
 pub fn walk() -> Gait {
-    walk_at(ROE, WALKS[0], FAWN_AGE)
+    walk_at(ROE, WALKS[0], VALE_AGE)
 }
 
 /// The walker's body of it, walking `walk()`.
 pub fn body() -> Body {
     let g = walk()
-    var b = walker_body(quadruped_at(ROE, FAWN_AGE), g.head_k, g.tail_k)
+    var b = walker_body(quadruped_at(ROE, VALE_AGE), g.head_k, g.tail_k)
     b.clear = CLEARANCE
     b.crouch = g.crouch
     b.follow = g.follow
@@ -170,7 +170,7 @@ pub fn walk_to(w: mut Walking, until: f32) {
 /// the world's motion `m` (`engine::motion::stylize`: the physical world's is the gait's pose),
 /// its face attending to the eye at `eye` (`attended`).
 pub fn walking(w: mut Walking, m: Motion, at: f32, eye: vec3) -> [mat4; MAX_BONES] {
-    let s = skeleton(quadruped_at(ROE, FAWN_AGE))
+    let s = skeleton(quadruped_at(ROE, VALE_AGE))
     let dt = max(at - w.drawn, 0.0)
     w.drawn = at
     let bones = stylize(mut w.style, m, Relief {}, s, body(), walk().walk, w.walker, dt).bones
@@ -187,11 +187,10 @@ pub fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
     out
 }
 
-/// How far a grazing fawn lowers its body and reaches its forefeet ahead (shares of its
-/// withers' height, **proposed**: its legs are long for its neck, so it splays them to reach the
-/// grass).
-pub const GRAZING_CROUCH: f32 = 0.12
-pub const GRAZING_REACH: f32 = 0.18
+/// How far the grazer lowers its body and reaches its forefeet ahead as it grazes (shares of its
+/// withers' height, **proposed**: a little, its neck long enough to reach the grass).
+pub const GRAZING_CROUCH: f32 = 0.06
+pub const GRAZING_REACH: f32 = 0.1
 
 /// It grazing: its palette (world space), and the walker and body it stands as (what it pushes
 /// through the grass: `kit::roe::pushes`).
@@ -213,7 +212,7 @@ pub fn grazing_now(g: mut Grazing, at: f32, eye: vec3) -> [mat4; MAX_BONES] {
 
 /// What it pushes through the grass (render space, less `origin`) standing as `w` with body `b`.
 pub fn pushes(b: Body, w: Walker, origin: vec3) -> [Push; PUSHES] {
-    kit::roe::pushes(quadruped_at(ROE, FAWN_AGE), b, w, origin)
+    kit::roe::pushes(quadruped_at(ROE, VALE_AGE), b, w, origin)
 }
 
 /// It grazing (`Grazing`), standing at `at` (on the plane) facing `heading` (radians from +z
@@ -223,7 +222,7 @@ pub fn pushes(b: Body, w: Walker, origin: vec3) -> [Push; PUSHES] {
 /// (the least turn of the neck that brings it there, of a grid of the two's turns), or as near
 /// as they turn.
 pub fn grazing(at: vec2, heading: f32) -> Grazing {
-    let q = quadruped_at(ROE, FAWN_AGE)
+    let q = quadruped_at(ROE, VALE_AGE)
     let s = skeleton(q)
     var b = body()
     b.crouch = GRAZING_CROUCH * q.withers

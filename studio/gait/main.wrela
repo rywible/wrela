@@ -13,7 +13,7 @@
 // then each result's score, and the hand-set walk's on each ground. `--write` writes the results
 // as `content/kit/walks.wrela` (`WALKS`, pace by pace, each pace's grounds in `GROUNDS`' order),
 // and the vale's grazer grown from the level walk as `content/kit/grown.wrela` (its muscles sized
-// from that walk's loads, the grown animal's and the fawn's, and the fawn's coat's map: `grow`).
+// from that walk's loads, the grown animal's and the vale's grazer's, and its coat's map: `grow`).
 
 use kit::coat::{chart_of, coat}
 use kit::gaits::{
@@ -21,7 +21,7 @@ use kit::gaits::{
     run_with,
 }
 use kit::muscles::{Sized, muscle_mass, muscles}
-use kit::roe::{COAT_SEED, FAWN_AGE, walk_at}
+use kit::roe::{COAT_SEED, VALE_AGE, walk_at}
 use kit::genome::{DENSITY, Flesh, ROE, grown_body, quadruped_at}
 use kit::quadruped::plain
 use engine::loads::{Segments, segments_of}
@@ -74,26 +74,26 @@ fn line(s: Score) -> String {
 }
 
 /// The vale's grazer grown, as Wrela source (`kit::grown`): the muscles of the grown animal and of
-/// the fawn (`kit::roe::FAWN_AGE`) sized from `level` (the optimized walk on level ground; the
-/// fawn's by dynamic similarity, `roe::walk_at`) over `SIZING` s, and the fawn's coat's map
+/// the vale's grazer (at `kit::roe::VALE_AGE`) sized from `level` (the optimized walk on level
+/// ground; at another age by dynamic similarity, `roe::walk_at`) over `SIZING` s, and its coat's map
 /// (`kit::coat::coat`, from `roe::COAT_SEED`). `segs` are the grown animal's segments.
 fn grow(level: Gait, segs: Segments) -> String {
     let q = quadruped_at(ROE, 1.0)
-    let fq = quadruped_at(ROE, FAWN_AGE)
+    let fq = quadruped_at(ROE, VALE_AGE)
     let fsegs = segments_of(
-        grown_body(ROE, FAWN_AGE, plain(Flesh {})),
+        grown_body(ROE, VALE_AGE, plain(Flesh {})),
         |c: Flesh| DENSITY,
         finest: 0.01,
         height: fq.withers,
     )
     let total = segs.total
     let grown_run = run_with(ROE, q, segs, level, Pace::Walk, Ground {}, SIZING, down: false)
-    let fawn_walk = walk_at(ROE, level, FAWN_AGE)
-    let fawn_run = run_with(ROE, fq, fsegs, fawn_walk, Pace::Walk, Ground {}, SIZING, down: false)
+    let vale_walk = walk_at(ROE, level, VALE_AGE)
+    let vale_run = run_with(ROE, fq, fsegs, vale_walk, Pace::Walk, Ground {}, SIZING, down: false)
     let gm = muscles(ROE, q, grown_run.loads)
-    let fm = muscles(ROE, fq, fawn_run.loads, age: FAWN_AGE)
+    let fm = muscles(ROE, fq, vale_run.loads, age: VALE_AGE)
     print(
-        f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}, the fawn's {muscle_mass(fm):.2} kg (its walk {line(fawn_run.score).as_str()})",
+        f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}, the vale's grazer's {muscle_mass(fm):.2} kg (its walk {line(vale_run.score).as_str()})",
     )
     let (lo, size) = chart_of(fq)
     let map = coat(ROE.coat, lo, size, COAT_SEED)
@@ -101,7 +101,7 @@ fn grow(level: Gait, segs: Segments) -> String {
         "// The vale's grazer grown (kit::roe, docs/plan-world-class-3.md §F3–F5): written by `wrela tool\n// gait -- --write`. Don't edit: run the tool again.\n\nuse coat::CoatMap\nuse muscles::Sized\n\n",
     )
     out.push_str(
-        f"pub const GROWN_MUSCLES: [Sized; 7] = {sized(gm).as_str()}\n\npub const FAWN_MUSCLES: [Sized; 7] = {sized(fm).as_str()}\n\npub const FAWN_COAT: CoatMap = CoatMap {{\n    words: [",
+        f"pub const GROWN_MUSCLES: [Sized; 7] = {sized(gm).as_str()}\n\npub const VALE_MUSCLES: [Sized; 7] = {sized(fm).as_str()}\n\npub const VALE_COAT: CoatMap = CoatMap {{\n    words: [",
     )
     for i in 0..map.words.len() {
         out.push_str(if i % 8 == 0 { "\n        " } else { " " })

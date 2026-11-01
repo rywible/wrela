@@ -1427,6 +1427,57 @@ marks and squiggles on the rock face (4), the fallen trees' root plates (1, 3), 
 pole trunks far off, and leaf cards scattered like confetti on the soil (2). Every judge's file is
 in `build/e8-panel/judges/`.
 
+### 2026-11-01: the fourth panel (F10), the grown creature, toolchain 0.16.0
+
+docs/plan-world-class-3.md §F10: the vale with Part F's grazer (a roe fawn grown from its genome,
+grazing in shot 9 and walking toward the eye in shot 10), its twelve evaluation stills at
+1920×1080 through `Physical` (`build/stills-f10`, `wrela tool lookbook -- build/stills-f10
+--package examples/vale --stills --size 1920x1080 0 … 11` on Linux pop-os, Radeon "Lucienne")
+against the same references (each checked against its SHA-256), B5's seed (5), eight agent judges
+in fresh contexts given E8's brief; all eight passed both calibration pairs. The hashes asserted:
+shots `88c877da…`, manifest `b78df49e…` (the baseline's).
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/f10-panel --a build/stills-f10 --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/f10-panel --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.88, 1.38, 1.88, 1.00, 0.38 | 2.00, 3.00, 2.75, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.12, 1.88, 2.00, 2.00, 1.00 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.50, 2.00, 2.00, 0.75 | 2.00, 3.00, 2.25, 2.50, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.38, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.75, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.62, 1.00, 1.38, 1.62, 0.12 | 2.00, 3.00, 2.88, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 1.88, 1.12, 1.00, 1.00 | 2.75, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.12, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.88, 0.00 | 2.50, 2.88, 2.12, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.75, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.38, 2.75, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: a pair lost worse
+than 6 to 2; majority: 0 pairs won or equal (fails). **Fails.**
+
+Ranked losses: artifacts 28.75, colour 16.75, depth 15.50, value 13.88, light 10.88.
+
+| Panel | Pairs won or equal | Share of 96 | artifacts | colour | value | depth | light |
+|---|---|---|---|---|---|---|---|
+| B5 (the baseline) | 0 of 12 | 0 % | 26.75 | 15.88 | 14.38 | 13.62 | 12.50 |
+| D11 (physical) | 0 of 12 | 0 % | 26.62 | 16.25 | 14.12 | 12.50 | 9.50 |
+| E8 (the grown vale) | 0 of 12 | 0 % | 29.12 | 16.50 | 12.25 | 13.25 | 8.75 |
+| **F10 (the grown creature)** | **0 of 12** | **0 %** | **28.75** | **16.75** | **13.88** | **15.50** | **10.88** |
+
+**H6** ("did the creature shots move?"): no. Both creature pairs are still lost 0 / 0 / 8, and
+their rows fell a little: "down the trail" (pair 7) 2.00, 1.00, 2.00, 1.75, 0.00 at E8 → 1.62,
+1.00, 1.38, 1.62, 0.12; "grazing at the edge" (pair 8) 2.00, 2.00, 1.75, 1.75, 1.00 → 2.00, 1.88,
+1.12, 1.00, 1.00. What decides them isn't the creature: the judges fault the leaf cards floating
+like confetti over the trail and the water, the cylinder root plates and the smeared ground (pair
+7), and the empty brown slope with no atmosphere (pair 8), where the fawn reads "tiny" (a roe fawn
+half a metre tall at 6 m and 10 m; E8 drew a larger stand-in). Every judge's file is in
+`build/f10-panel/judges/`.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
@@ -3653,3 +3704,89 @@ bare ground or litter (`particles::puff`, 12). The tests (`engine/tests/interact
 examples/vale --serial --size 1920x1080 --warmup 600 --frames 300` natively at F6 (f63ef9b5) and
 with the pushes, GPU median: **vegetation 11.675 → 11.682 ms, its prepass 5.697 → 5.705 ms**
 (+0.01 ms each, within 0.2); no `particles` label in either (the first view has no emitter near).
+
+## F9, the motion review (G-motion) (2026-11-01, toolchain 0.16.0)
+
+docs/plan-world-class-3.md §F9; the rubric and rules in docs/lookdev.md, "The motion review".
+Linux pop-os (Radeon "Lucienne"): the vale's frames rendered here.
+
+- **The clips.** The vale's: shot 10's three seconds from its still (`wrela tool studio/motion
+  --write ws=. -- <out> --package examples/vale --frames-only --size 3840x2160 trail`), frames
+  300–474 every sixth (10 a second), the fawn walking at its optimized walk (`kit::walks`' level
+  walk at its age). The reference: `vale-motion-walk`, "Roe deer in England" by Peter Trimming,
+  CC BY 2.0 (https://creativecommons.org/licenses/by/2.0),
+  https://commons.wikimedia.org/wiki/File:Roe_deer_in_England.webm (its copy's SHA-256 checked:
+  `da075f7e…`), seconds 94.0–96.9 of its record's 30–100 s (the buck walking steadily), its frames
+  extracted at 10 a second by headless Chrome seeking the clip (no frame interpolated; extracted and
+  cropped, noted with the credit). Each shown whole and cropped round its animal (`build/f9-private/
+  pack-r2.py`), 30 frames a sheet.
+- **The conditions.** The vale's: a rendered roe fawn (age 0.2, 0.48 m at the withers, spotted)
+  walking three-quarters on toward a still camera at about 10 m in late afternoon sun; the
+  reference: an adult roe buck filmed side on, walking across a meadow's edge, the camera panning
+  with it. Frame rates: the vale's 60 rendered, the footage's video; both sampled at 10.
+- **Calibration:** the vale's strip against itself held on every third frame and against its
+  eight-pass blur: every judge of both rounds preferred the vale's strip each time (none rejected).
+
+| Round | The vale's strip | Vale / equal / reference | Share | The vale's means (weight, timing, contact, secondary, readability) | The reference's |
+|---|---|---|---|---|---|
+| 1 | head on (a 23° field, since withdrawn: the panels' shot is frozen) | 0 / 0 / 8 | 0 % | 1.00, 1.00, 1.00, 0.88, 1.00 | 3.00, 3.00, 2.38, 2.50, 3.00 |
+| 2 | three-quarters on, its swing at least 7 cm, 4K cropped | 0 / 0 / 8 | 0 % | 1.00, 1.25, 1.00, 0.88, 1.38 | 3.00, 3.00, 2.75, 2.38, 3.00 |
+
+Round 2's judges on the vale's clip (its five rows' scores, then their sentences on weight and
+secondary motion; every sentence and both rounds' files are in `build/f9-motion*/judges/`):
+
+- judge-1 (the vale's 1 / 2 / 1 / 1 / 2): The body stays almost level and the thin legs swing under it without any visible compression or settling, so the fawn reads light, close to floating. The head stays upright with only a small bob and a late turn toward the camera around 2.1 s, the ears don't move on their own, and the tail is barely visible.
+- judge-2 (the vale's 1 / 1 / 1 / 1 / 2): The body rides at a nearly constant height over thin, quick legs and never visibly drops or settles onto a footfall, so the fawn looks light, like a puppet. The head stays stiffly upright and doesn't bob with the stride; it turns from profile to face the camera around 2.1 s, but I see no follow-through in the ears or tail.
+- judge-3 (the vale's 1 / 1 / 1 / 1 / 1): The body glides at a constant height while the legs move beneath it, with no visible dip or settle onto each footfall. The head and ears stay mostly upright, with small changes in angle that seem to follow the camera's turn rather than the steps, and no tail motion is visible.
+- judge-4 (the vale's 1 / 1 / 1 / 0 / 1): The body stands on its legs, but it rides at a near-constant height with no sink or rise as each foot lands, so it feels light and rigid next to the real deer. The head and ears hold a fixed attitude with no nod or settle as the legs move, and there is no tail motion to see.
+- judge-5 (the vale's 1 / 2 / 1 / 1 / 2): The torso rides almost flat with little rise or fall, so the fawn looks light and floaty rather than settling its mass onto each step. The head stays locked in one pose and the ears and tail show no follow-through or settle.
+- judge-6 (the vale's 1 / 1 / 1 / 1 / 1): The fawn's body rides almost level over its legs, with little visible dip or settle as each foot lands, so it reads light and puppet-like next to the real deer. The head is held stiffly upright and only turns slowly toward the camera late in the clip, and the ears and tail show no follow-through.
+- judge-7 (the vale's 1 / 1 / 1 / 1 / 1): The body glides at constant height over thin, stiff legs, with no bob or settle to show mass landing on each footfall. The head reorients slowly toward camera, but it doesn't nod with the stride, the ears stay fixed and no tail follow-through is visible.
+- judge-8 (the vale's 1 / 1 / 1 / 1 / 1): The fawn's body stays level and rigid over its legs with no dip or settle as feet take weight, so it feels weightless next to the real deer. The head holds one upright angle throughout with no stride-linked nod, and the ears and tail stay still.
+
+**G-motion: Blocked**, 0 % against 40 %, every row lost (weight 2.00, timing 1.75, contact 1.75,
+readability 1.62, secondary 1.50 of 3, round 2). The judges agree on what decides it: the body
+rides level over its legs (no rise and fall, no settle onto a footfall: the kinematic walker
+holds its height over its planted feet's mean), the head neither nods nor settles with the stride,
+the moving hind legs leave translucent ghosts (temporal AA without the skinned legs' motion), and
+pale specks at its feet (the litter's puffs) read as artifacts. Next levers, in the plan's order:
+F5's objective (a body that vaults over its stance legs: an inverted pendulum's rise and fall,
+and the head's nod coupled to the stride, both searched), then F6's parameters (the physical
+look's motion is none); and the character's motion vectors for its swinging legs, and the puffs
+fainter.
+
+## F2–F8, G-look on the creature's shots (2026-11-01, toolchain 0.16.0)
+
+Linux pop-os (Radeon "Lucienne"), not the M4 Air: measures and judgements, no timing.
+
+**(1) Pairs:** E8's stills (`build/stills-e8`: the floor's fawn stand-in, standing at rest) against
+Part F's (`build/stills-f-doe`: the grown roe doe, grazing in 9, walking in 10), shots 9 and 10;
+D7 rendered (`build/stills-f-doe/18-…`), no E8 still of it to pair. **(2–3) The measures**
+(`wrela tool lookbook -- build/glook-f --package examples/vale --fast --runs 3 8 9 18`, held to
+E8's `build/vale-e8b`): every shot holds its bars; E8 → F:
+
+| Shot | flicker | pop | still_pop | trail | clipped |
+|---|---|---|---|---|---|
+| 08 grazing at the edge | 2.97e-5 → 2.54e-5 | 0.00464 → 0.00460 | 0.00112 → 0.00107 | 3 → 3 | 0 → 0 |
+| 09 down the trail | 3.60e-5 → 3.41e-5 | 0.00600 → 0.00597 | 0.00200 → 0.00197 | 3 → 3 | 0 → 0 |
+| 18 D7 the creature in the wood | (none at E8) → 1.05e-5 | → 0.00948 | → 0.00074 | → 4 | → 0 |
+
+**(4) The judge** (blind, fresh context each round, the order of pairs and sides from a seed,
+calibrated on each round's still against its eight-pass blur, which it always rejected):
+
+| Round | The creature | Shot 9 | Shot 10 | What it said |
+|---|---|---|---|---|
+| 1 | the fawn (age 0.2) | E8 | E8 | "a tiny flat-orange fawn with stick legs"; "a speck-sized deer … reads wrong in size" |
+| 2 | the grown doe, fox-red | E8 | E8 | "a flat, over-saturated orange shape that looks pasted on" |
+| 3 | the doe, a muted russet | E8 | **F** | 10: "reads more clearly as an animal and as a scale cue"; 9: "melts into the ground" |
+| 4 | the doe, a deep russet | E8 | **equal** | 9: "a salmon deer [that] blends into the ground and looks plastic" |
+
+Each round's lever came from the round before: the doe for the fawn's size (the vale's creature
+is now grown, `kit::roe::VALE_AGE` 1), its hide desaturated and then darkened. **Shot 10: the doe
+preferred (round 3) and equal (round 4). Shot 9: Blocked**, the judge preferring E8's stand-in
+four rounds running; its hide's albedo no longer moves it (a 30 % darker back came out barely
+darker in the sun: the doe's lit back is sRGB 191, 154, 118 against the soil's 141, 121, 95), so
+the next lever is the creature's lit value, not its colour: the character shading's band light
+(`character::character_shade`'s `cel`) lights it about 40 % brighter and flatter than the ground
+it stands on. F9's motion panel and F10's panel judged the fawn; the doe walks the same optimized
+walk, unscaled.

@@ -22,22 +22,24 @@ pub struct Hide: Copy + GpuData + Blend {
     pub eye: f32 = 0.0,
 }
 
-/// The vale's grazer's age (a share of maturity): a fawn in its first summer, two months or so,
-/// its spots fading (**proposed**).
-pub const FAWN_AGE: f32 = 0.2
+/// The vale's grazer's age (a share of maturity): grown, a doe (**proposed**: a fawn at 0.2, its
+/// spots showing, read as too small against the vale's shots' references and their judges, §F2).
+pub const VALE_AGE: f32 = 1.0
 
 /// Its seed for the coat's pattern.
 pub const COAT_SEED: u32 = 7
 
-/// A roe's summer coat by region (linear albedo, **proposed**: a fox-red back over a buff belly,
+/// A roe's summer coat by region (linear albedo, **proposed**: a russet back over a buff belly,
 /// greyer legs, a darker head and muzzle, a black nose, a pale rump; the vale's earlier fawn's
-/// red-brown read cream in the vale's sun and was darkened and reddened to a roe's).
+/// red-brown read cream in the vale's sun, a redder one as over-saturated orange, pasted on (§F2's
+/// G-look judge), a muted one as melting into the sunlit soil: a deep russet, its red twice its
+/// green, darker than the ground it stands on).
 pub const LOOK: Look<Hide> = Look {
-    back: Hide { albedo: rgb(r: 0.26, g: 0.085, b: 0.025), spotted: 1.0 },
-    belly: Hide { albedo: rgb(r: 0.4, g: 0.25, b: 0.12) },
-    legs: Hide { albedo: rgb(r: 0.14, g: 0.08, b: 0.04) },
+    back: Hide { albedo: rgb(r: 0.11, g: 0.055, b: 0.028), spotted: 1.0 },
+    belly: Hide { albedo: rgb(r: 0.3, g: 0.2, b: 0.12) },
+    legs: Hide { albedo: rgb(r: 0.09, g: 0.06, b: 0.04) },
     feet: Hide { albedo: rgb(r: 0.0572, g: 0.0437, b: 0.0306) },
-    head: Hide { albedo: rgb(r: 0.2, g: 0.09, b: 0.035) },
+    head: Hide { albedo: rgb(r: 0.1, g: 0.055, b: 0.03) },
     muzzle: Hide { albedo: rgb(r: 0.13, g: 0.075, b: 0.042) },
     ears: Hide { albedo: rgb(r: 0.16, g: 0.09, b: 0.05) },
     eyes: Hide { albedo: rgb(r: 0.0208, g: 0.0138, b: 0.009), rough: 0.05, eye: 1.0 },

@@ -264,8 +264,9 @@ pub type MuscledParts<C> = Then<QuadrupedParts<C>, engine::creature::Group<Muscl
 
 /// The kit's body of proportions `q` coloured by `look`, with the muscles `m` sized
 /// (`muscles`): each group's belly an anatomy kit's spindle (`anatomy::muscle`) from its origin's
-/// joint to its insertion's, its line of action its moment arm off theirs (`OUTWARD`), its belly's
-/// radius its section's, blended into the body over the skin's width; a limb's pair one each
+/// joint to its insertion's, its line of action its moment arm off theirs (`OUTWARD`) and its
+/// centre half its radius inside that (a belly fills the limb under its skin, not set on it), its
+/// belly's radius its section's, blended into the body over the skin's width; a limb's pair one each
 /// side, an axial group's a pair beside the midline (`BESIDE`), each half its section. A group's
 /// belly inside the authored body changes nothing.
 pub fn muscled<C: Copy + GpuData>(
@@ -283,7 +284,7 @@ pub fn muscled<C: Copy + GpuData>(
         let b = s.rest(s.find(gr.to))
         let radius = if gr.limb { m[i].radius } else { m[i].radius * sqrt(0.5) }
         let beside = if gr.limb { vec3(0.0) } else { vec3(BESIDE * f.half_width, 0.0, 0.0) }
-        let off = OUTWARD[i] * m[i].arm + beside
+        let off = OUTWARD[i] * max(m[i].arm - 0.5 * radius, 0.0) + beside
         (from, anatomy::muscle(off, b - a + off, radius))
     }
     let skin = smooth(0.6 * f.leg)

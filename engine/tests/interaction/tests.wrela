@@ -9,7 +9,7 @@ use kit::gaits::Ground
 use kit::genome::{ROE, quadruped_at}
 use kit::muscles::walker_body
 use kit::quadruped::frame
-use kit::roe::{FAWN_AGE, pushes}
+use kit::roe::{VALE_AGE, pushes}
 use std::math::PI
 
 /// The angle (degrees) a blade standing upright at `root`, 0.3 m tall, leans from upright as
@@ -21,7 +21,7 @@ fn lean(root: vec3, c: Contact) -> f32 {
 
 /// The fawn standing at the origin on level ground: its pushes and its body's line's ends.
 fn standing() -> (Contact, vec3, vec3) {
-    let q = quadruped_at(ROE, FAWN_AGE)
+    let q = quadruped_at(ROE, VALE_AGE)
     var b = walker_body(q, 70.0, 28.0)
     b.smooth = true
     let w = stand(Ground {}, b, vec2(0.0), 0.0)

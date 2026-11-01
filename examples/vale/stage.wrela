@@ -132,7 +132,7 @@ pub const NEAR_N: u32 = 24
 /// The vale's one source.
 pub const TILES = ValeTiles { bake: 0 }
 
-/// The vale's stage: its landscape and its creature (its grazer, a roe fawn grown from its genome,
+/// The vale's stage: its landscape and its creature (its grazer, a roe doe grown from its genome,
 /// drawn where a shot casts it: `grazer`); the grass's footprints none (one off the map, as the grass reads a
 /// buffer of them); and the shot's weather its sky's cooked with.
 pub struct Stage {
