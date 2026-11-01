@@ -1,0 +1,597 @@
+// A creature's gaits scored in simulation (docs/plan-world-class-3.md §F5). The walker
+// (`engine::gait`) is kinematic: a planted foot never slides by construction and its springs'
+// energy isn't locomotion's cost, so a gait is scored by what its poses show, measured so the
+// secondary springs can't game it:
+//
+// - effort: the sum over the joints of |τ · ω| (the joint's torque, `engine::loads`, times its
+//   angular velocity against its parent's) over the feasible frames, per metre travelled (a
+//   mechanical-work proxy, J/m); the head's, the neck's and the tail's chains frozen at their rest
+//   pose in the poses it reads (`frozen`: their masses ride rigidly on the body), so their springs
+//   move it neither way;
+// - stability: the share of the frames with a foot down whose centre of mass's ground projection
+//   lies outside the support (the feet planted through the frame's step: their hull, or, two feet
+//   or one, a 4 cm band round their line or point), a fall when over a quarter of any stride's;
+// - contact: a planted foot's gap from its posed sole (on a slope or a step the body's reach can
+//   leave it hanging), each swing's clearance over the ground's highest under its arc (under
+//   2 cm is a penalty) and how deep a swinging sole dips under the ground under it (a log met
+//   before the swing's top);
+// - speed: the error against the gait's target speed;
+// - a gait with over 5 % of a stride's frames infeasible (`engine::loads::INFEASIBLE`) is invalid.
+//
+// `optimize` (studio/gait) searches each pace's walk on each terrain (`GROUNDS`) by CMA-ES and
+// writes the results (`kit::walks`); `score` measures one.
+
+use engine::gait::{Body, Walk, frame_of, stand, step}
+use engine::loads::{Loads, Pose, Segments, joint_loads}
+use engine::terrain::{Cover, Terrain}
+use engine::noise::noise2
+use genome::{CreatureGenome, grown_segments, quadruped_at}
+use muscles::{Ahead, pose_of, walker_body}
+use quadruped::{Quadruped, skeleton}
+
+/// A gait: the walker's walk, its springs' stiffness (the head's chain's and the tail's), and
+/// how far below its rest height its body goes (`engine::gait::Body::crouch`).
+pub struct Gait: Copy {
+    pub walk: Walk,
+    pub head_k: f32,
+    pub tail_k: f32,
+    pub crouch: f32 = 0.0,
+    pub follow: f32 = 1.0,
+    /// Whether the walker walks smooth (`engine::gait::Body::smooth`): every optimized gait does;
+    /// the hand-set walk as the engine walked it before §F5 doesn't.
+    pub smooth: bool = true,
+}
+
+/// The paces: a walk (a lateral sequence: each side's hind then its fore), a trot (diagonal
+/// pairs together) and a bound (the fore pair together, then the hind pair).
+pub enum Pace: Copy + Eq {
+    Walk,
+    Trot,
+    Bound,
+}
+
+pub const PACES: [Pace; 3] = [Pace::Walk, Pace::Trot, Pace::Bound]
+
+/// A pace's legs' phases (the kit's legs: fore left, fore right, hind left, hind right) and its
+/// target speed (m/s: **proposed**, a roe's walk, trot and bound).
+pub fn phases(p: Pace) -> [f32; 4] {
+    match p {
+        Pace::Walk => [0.75, 0.25, 0.5, 0.0],
+        Pace::Trot => [0.0, 0.5, 0.5, 0.0],
+        Pace::Bound => [0.0, 0.0, 0.5, 0.5],
+    }
+}
+
+pub fn target(p: Pace) -> f32 {
+    match p {
+        Pace::Walk => 0.95,
+        Pace::Trot => 2.2,
+        Pace::Bound => 3.5,
+    }
+}
+
+/// The ground a gait walks: level, a grade (rising along +z: negative falls), a step up or down
+/// (`step` m, at `at` m along), a log across the way (its radius `log`, at `at`), or uneven (the
+/// vale's relief's kind: two octaves of noise, `amplitude` m).
+pub struct Ground: Copy + GpuData {
+    pub grade: f32 = 0.0,
+    pub step: f32 = 0.0,
+    pub log: f32 = 0.0,
+    pub at: f32 = 4.0,
+    pub amplitude: f32 = 0.0,
+}
+
+impl Terrain for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        var h = tan(self.grade) * z
+        if z > self.at {
+            h += self.step
+        }
+        let dz = z - self.at
+        if self.log > 0.0 && abs(dz) < self.log {
+            h += self.log + sqrt(self.log * self.log - dz * dz)
+        }
+        if self.amplitude > 0.0 {
+            let p = vec2(x, z)
+            h += self.amplitude *
+                (noise2(p / 4.0) * 0.7 + noise2(p / 1.3 + vec2(7.1, 3.3)) * 0.3 - 0.5)
+        }
+        h
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: vec3(0.3), grass: 0.0 }
+    }
+}
+
+/// The grounds each pace is optimized on (`kit::walks`' order within a pace): level, 15° and 30°
+/// up, a 0.3 m step, and uneven.
+pub const GROUNDS: [Ground; 5] = [
+    Ground {},
+    Ground { grade: 0.2617994 },
+    Ground { grade: 0.5235988 },
+    Ground { step: 0.3, at: 4.0 },
+    Ground { amplitude: 0.3 },
+]
+
+pub const GROUND_NAMES: [Text; 5] = ["level", "15°", "30°", "a 0.3 m step", "uneven"]
+
+/// The hand-set walk (the clearing's creature's, `examples/clearing`'s `WALK` and its springs, on
+/// the walker as the engine had it before §F5: not smooth): the *now* the optimized walk's effort
+/// is held against.
+pub const HAND: Gait = Gait {
+    walk: Walk { speed: 0.95 },
+    head_k: 70.0,
+    tail_k: 28.0,
+    smooth: false,
+}
+
+/// A run's score, its strides' stability (each stride's share of its frames with a foot down
+/// whose centre of mass was outside the support, and how far along it had come, m), and its
+/// loads (`engine::loads::joint_loads`, the secondary chains frozen: `frozen`).
+pub struct Run: Clone {
+    pub score: Score,
+    pub strides: Vec<vec2>,
+    pub loads: Loads,
+}
+
+/// What a gait's run measured (`score`).
+pub struct Score: Copy {
+    /// Its effort (J/m, `effort`).
+    pub effort: f32,
+    /// The share of the frames with a foot down whose centre of mass was outside the support,
+    /// and the largest share of any stride's.
+    pub stability: f32,
+    pub worst_stride: f32,
+    pub fell: bool,
+    /// The largest gap between a planted foot and its posed sole (m), the least clearance of a
+    /// swing over the ground's highest under it (m), and the deepest a swinging sole went under
+    /// the ground under it (m: through a log, say, before its swing's top).
+    pub gap: f32,
+    pub clearance: f32,
+    pub pierce: f32 = 0.0,
+    /// Its mean speed's error against the pace's target (m/s).
+    pub speed: f32,
+    /// The share of its frames infeasible, the largest share of any stride's, and whether it's
+    /// valid (no stride's over 5 %: a stride's failure isn't diluted by the run's others).
+    pub infeasible: f32,
+    pub stride_infeasible: f32 = 0.0,
+    pub valid: bool,
+    /// The total the optimizer lowers.
+    pub total: f32,
+}
+
+/// The chains frozen in the poses the effort reads: the neck's and the head's (its ears and its
+/// eyes) ride the chest, the tail's the pelvis.
+fn frozen(s: engine::creature::Skeleton, p: Pose) -> Pose {
+    var out = p.clone()
+    let (chest, pelvis) = (s.find("chest").index, s.find("pelvis").index)
+    for name in ["neck", "head", "ear left", "ear right", "eye left", "eye right"] {
+        out.bones[s.find(name).index] = p.bones[chest]
+    }
+    for name in ["tail 0", "tail 1", "tail 2", "tail 3"] {
+        out.bones[s.find(name).index] = p.bones[pelvis]
+    }
+    out
+}
+
+/// The effort of `loads` (J/m): over its feasible frames, `dt` apart, the sum over its joints but
+/// the root's of |τ · (ω − ω of its parent)|, over `distance` m travelled.
+pub fn effort(loads: Loads, parent: [u32], dt: f32, distance: f32) -> f32 {
+    var work = 0.0
+    for t in 0..loads.torques.len() {
+        if !loads.feasible[t] {
+            continue
+        }
+        for j in 0..loads.torques[t].len() {
+            let p = parent[j]
+            if p == j {
+                continue
+            }
+            work += abs(dot(loads.torques[t][j], loads.omegas[t][j] - loads.omegas[t][p])) * dt
+        }
+    }
+    work / max(distance, 1.0e-3)
+}
+
+/// The distance from `p` to the planted feet's support (0 inside it): their hull's for three or
+/// more, the segment's for two, the point's for one (on the ground's plane).
+fn outside(p: vec2, feet: [vec2]) -> f32 {
+    let n = feet.len()
+    if n == 1 {
+        return length(p - feet[0])
+    }
+    if n == 2 {
+        return segment(p, feet[0], feet[1])
+    }
+    // The hull: inside if on the same side of every edge of the feet's convex hull (gift
+    // wrapping, the feet's order fixed).
+    var hull: Vec<vec2> = Vec::new()
+    var start = 0
+    for k in 1..n {
+        if feet[k].x < feet[start].x || (feet[k].x == feet[start].x && feet[k].y < feet[start].y) {
+            start = k
+        }
+    }
+    var at = start
+    for _ in 0..(n + 1) {
+        hull.push(feet[at])
+        var next = (at + 1) % n
+        for k in 0..n {
+            let c = cross2(feet[next] - feet[at], feet[k] - feet[at])
+            if c < 0.0 {
+                next = k
+            }
+        }
+        at = next
+        if at == start {
+            break
+        }
+    }
+    var inside = true
+    var nearest = 1.0e9
+    for k in 0..hull.len() {
+        let (a, b) = (hull[k], hull[(k + 1) % hull.len()])
+        if cross2(b - a, p - a) < 0.0 {
+            inside = false
+        }
+        nearest = min(nearest, segment(p, a, b))
+    }
+    if inside { 0.0 } else { nearest }
+}
+
+fn cross2(a: vec2, b: vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
+    let d = b - a
+    let t = clamp(dot(p - a, d) / max(dot(d, d), 1.0e-9), 0.0, 1.0)
+    length(p - (a + d * t))
+}
+
+/// Whether a centre of mass over `p` (on the ground's plane) is outside the support of `feet`:
+/// past a hull's edge (three feet or four), or more than `BAND` from a line or a point (two feet
+/// or one: a trot's diagonal pair).
+pub fn out_of_support(p: vec2, feet: [vec2]) -> bool {
+    outside(p, feet) > if feet.len() <= 2 { BAND } else { 0.0 }
+}
+
+/// The largest share of the frames `counted` marks that `hit` marks too, over any `window`
+/// frames running (rolled a frame at a time: a stride's however the cycle falls on its frames;
+/// the run's if it's shorter).
+pub fn worst_share(hit: [bool], counted: [bool], window: u32) -> f32 {
+    let n = max(min(window, hit.len()), 1)
+    var hits = 0
+    var count = 0
+    var worst = 0.0
+    for t in 0..hit.len() {
+        if counted[t] {
+            count += 1
+            if hit[t] {
+                hits += 1
+            }
+        }
+        if t >= n && counted[t - n] {
+            count -= 1
+            if hit[t - n] {
+                hits -= 1
+            }
+        }
+        if t + 1 >= n && count > 0 {
+            worst = max(worst, f32(hits) / f32(count))
+        }
+    }
+    worst
+}
+
+/// The largest share of any `stride` frames running that `feasible` says aren't (`worst_share`).
+pub fn worst_stride(feasible: [bool], stride: u32) -> f32 {
+    var bad: Vec<bool> = Vec::new()
+    for f in feasible {
+        bad.push(!f)
+    }
+    worst_share(bad, Vec::filled(feasible.len(), value: true), stride)
+}
+
+/// The band round a support of one foot or two (m) a centre of mass may lie in: a trot's diagonal
+/// pair's line's (a hull of three feet or four is held to its edge).
+pub const BAND: f32 = 0.04
+
+/// How far a swinging sole may dip under the ground under it (m): the posed sole's own error.
+pub const PIERCE: f32 = 0.005
+
+/// The least clearance a swing keeps (m).
+pub const CLEARANCE: f32 = 0.02
+
+/// Genome `g`'s grown animal's run of `gait` at pace `p` on `ground` for `seconds` (after
+/// `SETTLE` frames of setting off), its frames `DT` apart: its effort, stability, contact, speed
+/// and feasibility (`Score`). A grade's run goes up it, or down it (`down`: the walk turned).
+pub fn score(
+    g: CreatureGenome,
+    gait: Gait,
+    p: Pace,
+    ground: Ground,
+    seconds: f32,
+    down: bool,
+) -> Score {
+    run(g, gait, p, ground, seconds, down).score
+}
+
+/// `score`'s run, its strides kept (`Run`).
+pub fn run(
+    g: CreatureGenome,
+    gait: Gait,
+    p: Pace,
+    ground: Ground,
+    seconds: f32,
+    down: bool,
+) -> Run {
+    let q = quadruped_at(g, 1.0)
+    let segs = grown_segments(g, 1.0)
+    run_with(g, q, segs, gait, p, ground, seconds, down)
+}
+
+/// A candidate's score on `ground` as the optimizer weighs it: a grade's up it and down it (each
+/// field the worse, the totals' mean), another's as `score_with`'s.
+pub fn both_ways(
+    g: CreatureGenome,
+    q: Quadruped,
+    segs: Segments,
+    gait: Gait,
+    p: Pace,
+    ground: Ground,
+    seconds: f32,
+) -> Score {
+    let up = score_with(g, q, segs.clone(), gait, p, ground, seconds, down: false)
+    if ground.grade == 0.0 {
+        return up
+    }
+    let down = score_with(g, q, segs, gait, p, ground, seconds, down: true)
+    Score {
+        effort: 0.5 * (up.effort + down.effort),
+        stability: max(up.stability, down.stability),
+        worst_stride: max(up.worst_stride, down.worst_stride),
+        fell: up.fell || down.fell,
+        gap: max(up.gap, down.gap),
+        clearance: min(up.clearance, down.clearance),
+        pierce: max(up.pierce, down.pierce),
+        speed: max(up.speed, down.speed),
+        infeasible: max(up.infeasible, down.infeasible),
+        stride_infeasible: max(up.stride_infeasible, down.stride_infeasible),
+        valid: up.valid && down.valid,
+        total: 0.5 * (up.total + down.total),
+    }
+}
+
+/// How long the walks that size the muscles run (s: the plan's 20), as the gait tool sizes them
+/// (`kit::grown`).
+pub const SIZING: f32 = 20.0
+
+/// The walker's body of a kit animal of proportions `q` walking `gait`: its springs', its crouch's,
+/// its pitch's follow and its smoothness, keeping `CLEARANCE` over the ground under its swings.
+pub fn body_of(q: Quadruped, gait: Gait) -> Body {
+    var b = walker_body(q, gait.head_k, gait.tail_k)
+    b.clear = CLEARANCE
+    b.crouch = gait.crouch
+    b.follow = gait.follow
+    b.smooth = gait.smooth
+    if gait.smooth {
+        b.sway = SWAY
+        b.nod = NOD * q.withers
+    }
+    b
+}
+
+/// How far a smooth gait's head nods against its trunk (`engine::gait::Body::nod`), a share of
+/// its withers' height: a walking horse's head's vertical range (9.1 cm) and its thorax's (3.2 cm),
+/// out of phase (Loscher et al. 2016), half their sum over its withers' 1.6 m (**proposed**: a
+/// warmblood's height). The walker's trunk vaults the other way (highest mid-stance, as the head
+/// is lowest), so its head's own range is that less the vault's: about 4 cm on the grown doe.
+pub const NOD: f32 = 0.038
+
+/// How far a smooth gait's trunk sways toward its planted feet (`engine::gait::Body::sway`,
+/// **proposed**: most of the way, its centre of mass over its support as a walking quadruped's
+/// shifts before it lifts a foot: half the way, or none, left it outside its hull a fiftieth to a
+/// sixth of the time).
+pub const SWAY: f32 = 0.8
+
+/// The frames a run sets off over, not scored, and its step.
+pub const SETTLE: u32 = 90
+pub const DT: f32 = 1.0 / 60.0
+
+/// `score` with the animal's proportions and segments given (an optimizer's runs share them).
+pub fn score_with(
+    g: CreatureGenome,
+    q: Quadruped,
+    segs: Segments,
+    gait: Gait,
+    p: Pace,
+    ground: Ground,
+    seconds: f32,
+    down: bool,
+) -> Score {
+    run_with(g, q, segs, gait, p, ground, seconds, down).score
+}
+
+/// `run` with the animal's proportions and segments given.
+pub fn run_with(
+    g: CreatureGenome,
+    q: Quadruped,
+    segs: Segments,
+    gait: Gait,
+    p: Pace,
+    ground: Ground,
+    seconds: f32,
+    down: bool,
+) -> Run {
+    let s = skeleton(q)
+    let b = body_of(q, gait)
+    let terrain = if down { Ground { grade: -ground.grade, ..ground } } else { ground }
+    let walk = gait.walk
+    var w = stand(terrain, b, vec2(0.0), 0.0)
+    for _ in 0..SETTLE {
+        step(mut w, terrain, Ahead {}, b, walk, go: true, dt: DT)
+    }
+    let frames = u32(seconds / DT)
+    let start = w.root.pos
+    var poses: Vec<Pose> = Vec::new()
+    var gap = 0.0
+    var clearance = 1.0e9
+    var pierce = 0.0
+    var swing_top = [-1.0e9; 4]
+    var ground_top = [-1.0e9; 4]
+    var swinging = [false; 4]
+    var was_planted = [w.feet[0].planted, w.feet[1].planted, w.feet[2].planted, w.feet[3].planted]
+    // The centre of mass's ground projection against the support, each frame with a foot down,
+    // by stride (a stride: one cycle of the walk at its cadence, its frames rounded up).
+    let cadence = walk.cadence.x + walk.cadence.y * walk.speed
+    let stride = max(u32(ceil(1.0 / (cadence * DT))), 1)
+    var down_frames = 0
+    var out_frames = 0
+    var stride_down = 0
+    var stride_out = 0
+    var downs: Vec<bool> = Vec::new()
+    var outs: Vec<bool> = Vec::new()
+    var strides: Vec<vec2> = Vec::new()
+    let legs = s.legs()
+    for k in 0..frames {
+        step(mut w, terrain, Ahead {}, b, walk, go: true, dt: DT)
+        let pose = pose_of(s, b, w)
+        // The centre of mass, as the segments place it.
+        var com = vec3(0.0)
+        var mass = 0.0
+        for i in 0..segs.mass.len() {
+            com += segs.mass[i] * (pose.bones[i] * vec4(segs.centre[i], 1.0)).xyz
+            mass += segs.mass[i]
+        }
+        com /= max(mass, 1.0e-9)
+        // The support: the feet planted at both ends of the frame's step (a lift and a landing
+        // within one step aren't ordered by its frames, so a gait keeps a step between them).
+        var feet: Vec<vec2> = Vec::new()
+        let up = (frame_of(w, b) * vec4(0.0, 1.0, 0.0, 0.0)).xyz
+        for i in 0..4 {
+            let foot = legs[i].joints[3]
+            let sole = (pose.bones[foot.index] * vec4(s.rest(foot), 1.0)).xyz -
+                up * b.foot_height[i]
+            if w.feet[i].planted && was_planted[i] {
+                feet.push(w.feet[i].at.xz)
+            }
+            was_planted[i] = w.feet[i].planted
+            if w.feet[i].planted {
+                gap = max(gap, length(sole - w.feet[i].at))
+                if swinging[i] {
+                    clearance = min(clearance, swing_top[i] - ground_top[i])
+                    swinging[i] = false
+                }
+            } else {
+                if !swinging[i] {
+                    swinging[i] = true
+                    swing_top[i] = -1.0e9
+                    ground_top[i] = -1.0e9
+                }
+                let under = terrain.height(sole.x, sole.z)
+                swing_top[i] = max(swing_top[i], sole.y)
+                ground_top[i] = max(ground_top[i], under)
+                pierce = max(pierce, under - sole.y)
+            }
+        }
+        let out = feet.len() > 0 && out_of_support(com.xz, feet)
+        downs.push(feet.len() > 0)
+        outs.push(out)
+        if feet.len() > 0 {
+            down_frames += 1
+            stride_down += 1
+            if out {
+                out_frames += 1
+                stride_out += 1
+            }
+        }
+        if (k + 1) % stride == 0 {
+            let share = f32(stride_out) / f32(max(stride_down, 1))
+            strides.push(vec2(share, length((w.root.pos - start).xz)))
+            stride_down = 0
+            stride_out = 0
+        }
+        poses.push(frozen(s, pose))
+    }
+    let loads = joint_loads(poses, segs.clone(), DT)
+    let distance = length((w.root.pos - start).xz)
+    var bad = 0
+    for f in loads.feasible {
+        if !f {
+            bad += 1
+        }
+    }
+    let infeasible = f32(bad) / f32(max(loads.feasible.len(), 1))
+    let stride_infeasible = worst_stride(loads.feasible, stride)
+    let worst = worst_share(outs, downs, stride)
+    let e = effort(loads, segs.parent, DT, distance)
+    let stability = f32(out_frames) / f32(max(down_frames, 1))
+    let fell = worst > 0.25
+    let speed = abs(distance / (f32(frames) * DT) - target(p))
+    let clear = if clearance > 1.0e8 { 1.0 } else { clearance }
+    let valid = stride_infeasible <= 0.05
+    let weight = segs.total * 9.81
+    // Stability (its worst stride's: a lapse in one stride isn't averaged away) and a hanging foot
+    // weigh most (a gait that tips or leaves a foot behind isn't bought by effort), then the
+    // swing's clearance and the speed.
+    var total = e / weight +
+        100.0 * worst +
+        100.0 * max(gap - CLEARANCE, 0.0) / CLEARANCE +
+        10.0 * max(CLEARANCE - clear, 0.0) / CLEARANCE +
+        100.0 * max(pierce - PIERCE, 0.0) / CLEARANCE +
+        2.0 * speed / target(p)
+    if fell {
+        total += 100.0
+    }
+    // Infeasible frames cost in proportion (the search's slope toward valid), and an invalid run
+    // past any valid one.
+    total += 50.0 * infeasible
+    if !valid {
+        total += 100.0
+    }
+    Run {
+        score: Score {
+            effort: e,
+            stability,
+            worst_stride: worst,
+            fell,
+            gap,
+            clearance: clear,
+            pierce,
+            speed,
+            infeasible,
+            stride_infeasible,
+            valid,
+            total,
+        },
+        strides,
+        loads,
+    }
+}
+
+/// The walk a point `x` of the optimizer's search (each of its six coordinates 0 to 1 across the
+/// genome's range: duty, lift, cadence, the hind legs' lag, the crouch and the pitch's follow)
+/// asks, from `HAND`'s.
+pub fn gait_at(g: CreatureGenome, p: Pace, x: [f32]) -> Gait {
+    let r = g.gait
+    let at = |i: u32, range: vec2| mix(range.x, range.y, clamp(x[i], 0.0, 1.0))
+    var walk = HAND.walk
+    walk.duty = at(0, r.duty)
+    walk.lift = at(1, r.lift)
+    walk.cadence = vec2(at(2, r.cadence), 0.0)
+    walk.offsets = phases(p)
+    let lag = at(3, r.lag)
+    walk.offsets[2] = (phases(p)[2] + lag + 1.0) % 1.0
+    walk.offsets[3] = (phases(p)[3] + lag + 1.0) % 1.0
+    walk.speed = target(p)
+    Gait {
+        walk,
+        head_k: HAND.head_k,
+        tail_k: HAND.tail_k,
+        crouch: at(4, r.crouch),
+        follow: at(5, r.follow),
+        smooth: true,
+    }
+}

@@ -1,0 +1,8 @@
+# The pose stylizer (engine::motion, docs/plan-world-class-3.md §F6): the gait's pose through it
+# unstyled, held on twos, wound up before a swing, and no planted foot moved.
+[package]
+name = "motion_style_tests"
+
+[dependencies]
+engine = { workspace = true }
+kit = { workspace = true }

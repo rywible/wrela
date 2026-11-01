@@ -136,10 +136,51 @@ the ground; every place is **proposed** until §B5's panel freezes the list.
 | D7 | the creature in the wood | (−64.4, 1.4, 58.4) | 14:00 | fair |
 | D8 | the wood under cloud | (150, 1.7, 301.6) | 13:00 | overcast |
 
-The creature's shots (9, 10, D7) draw the floor's fawn (`fawn::character`, a young deer, the
-creature the floor casts) standing at rest where the shot looks, facing the eye (`Shot::cast` 0);
-Part F grows the vale's grazer from its genome and gives it its gaits (shot 10's walk toward the
-eye).
+The creature's shots (9, 10, D7) draw the vale's grazer (`grazer.wrela`): in shot 10 it walks
+toward the eye along the shot's look, stepped from the shot's start, 10 m away at the still (§F9's
+strip is rendered at 3840 × 2160 and cropped round it, so its motion reads in the shot's own field); in 9 and D7 it grazes
+there, three-quarters on to the eye (`Shot::cast` 0).
+
+## The grazer (`grazer.wrela`, `kit::roe`)
+
+A roe doe, grown (age 1 of maturity, `kit::roe::VALE_AGE`) from the roe's genome
+(`kit::genome::ROE`, docs/plan-world-class-3.md §F1–F5): 0.72 m at the withers, 28 kg. (It was a
+fawn in its first summer, age 0.2 and spotted; the look's judges read it as too small in the
+vale's shots, §F2's G-look.) Its authored part is its body plan's twelve handles and its face; the
+rest grows:
+
+- **Its growth.** Its mass follows a logistic from 1.6 kg at birth to 28 kg grown, its rate 8.5
+  a year to maturity (two thirds grown by its first autumn): 7.0 kg at its age. Each part follows
+  Huxley's y = b·x^k against that mass, b the grown animal's handle: the withers by 0.28, the
+  body's length 0.36, the chest 0.4, the neck 0.4, the head 0.22, the ears 0.2, the cannons 0.22
+  (a share grows by its exponent less its whole's). So a fawn's legs and head are large for its
+  body and its neck short: its legs 1.17 times the grown's share of it at age 0.1, its head 1.34
+  times.
+- **Its coat.** A Gray-Scott reaction-diffusion (feed 0.0367, kill 0.0649, the rates 0.16 and
+  0.08 scaled to the wavelength: Pearson's spots) run 2,000 steps on a 128 × 64 chart of its side
+  (its rest space's length and height: one chart, no seams), its wavelength a tenth of its body's
+  length (the rates by the square of wanted over natural, 14.2 texels); its spots fade by age
+  0.45 (`coat::spots_at`: none on the grown doe). Its hide's colours are by region (a fox-red
+  back, a buff belly, greyer legs), a fawn's spots cream over the back's (`roe::CoatLook`), baked
+  by the gait tool with its seed (`kit::grown`).
+- **Its muscles.** Sized by Alexander's rule from the loads of its optimized walk: each frame's
+  required wrench (the segments' masses, centres and inertias from its body's field) shared among
+  its planted feet by a bounded least squares (vertical forces non-negative, horizontals free, in
+  units of its weight and height, regularized by 1e-6), each joint's torque by Newton–Euler over
+  its subtree; each group's section its peak torque (scaled to a foot's 3 body weights) over
+  0.3 MPa and its moment arm, its belly the bones it spans. Drawn as the anatomy kit's spindles
+  over the kit's body (`muscles::muscled`): 12.3 kg of its 29.7.
+- **Its walk.** Optimized in simulation by CMA-ES (`studio/gait`), the walker **kinematic**: its
+  feet are planted by construction and its springs' energy isn't locomotion's cost, so a walk is
+  scored by what its poses show. Its measures: *effort*, the sum of |τ·ω| over its joints per
+  metre over the feasible frames (the head's, the neck's and the tail's chains frozen in the poses
+  it reads, so their springs can't game it); *stability*, the share of the frames its centre of
+  mass lies outside the support of the feet planted through the frame (a fall past a quarter of a
+  stride's); *contact*, a planted foot's gap from its sole and each swing's clearance over the
+  ground under it; *speed* against the pace's target; and *feasibility*, a frame whose wrench its
+  feet can't carry within 5 % (over 5 % of the frames, the walk is invalid). The vale's walk is
+  the level ground's (at another age it'd be scaled by dynamic similarity: its speed by the root
+  of its legs' length against the grown's, its cadence by its inverse).
 
 ## The walk (`walk.wrela`)
 
@@ -217,7 +258,7 @@ hand). Part E fills it.
 | The ground's cover | authored (rules over grown fields: `land::cover`) |
 | The rock's look | authored (the terrain's rock and its lichen: `terrain`'s detail tile) |
 | The sky and the clouds | authored (the floor's) |
-| The creature | none yet (Part F) |
+| The creature | grown: a roe doe from its genome, its proportions by its age, its coat by reaction-diffusion, its muscles from its walk's loads, its walk optimized in simulation (`grazer.wrela`, `kit::roe`); its body plan's handles and its hide's colours by region authored |
 
 Every plant instance the vale draws is grown (G-grown: 0 of 26,922 authored, E8). The kinds list
 it shares with the floor still holds the floor's great tree and two far kinds no program places.

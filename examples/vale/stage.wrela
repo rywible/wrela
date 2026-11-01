@@ -16,7 +16,9 @@ use engine::lit::Lighting
 use engine::switches::Switches
 use engine::style::Style
 use engine::memory::{Share, Usage}
-use engine::particles::Emits
+use engine::grass::{PUSHES, Push, with_pushes}
+use engine::particles::{Emits, PUFF, SPLASH, burst}
+use engine::water::WaterMesh
 use engine::plant::{Plant, Wind}
 use engine::probes::{Occluder, ProbeGrid, Trace}
 use engine::shadow::Shadows
@@ -25,8 +27,8 @@ use engine::terrain::{Clipmap, Texel}
 use engine::growth::Grow
 use engine::vegetation::Placed
 use engine::view::Camera
-use fawn::character::{FawnLook, Grown, REALIZED, SLICES, at_rest, grown}
-use fawn::creature::Coat
+use grazer::{Grazer, REALIZED, SLICES}
+use kit::roe::{CoatLook, Hide}
 use history::{BAKED, PRESENT, tiles_hi, tiles_lo}
 use land::bake::{Decisions, Far, WEAR_N, WET_N}
 use land::grow::Tree
@@ -130,12 +132,19 @@ pub const NEAR_N: u32 = 24
 /// The vale's one source.
 pub const TILES = ValeTiles { bake: 0 }
 
-/// The vale's stage: its landscape and its creature (the fawn, drawn where a shot casts it: its
-/// grown grazer is Part F's); the grass's footprints none (one off the map, as the grass reads a
+/// The vale's stage: its landscape and its creature (its grazer, a roe doe grown from its genome,
+/// drawn where a shot casts it: `grazer`); the grass's footprints none (one off the map, as the grass reads a
 /// buffer of them); and the shot's weather its sky's cooked with.
 pub struct Stage {
     pub land: Landscape<ValeTiles>,
-    pub fawn: Cast<Coat, Grown, FawnLook>,
+    pub grazer: Cast<Hide, Grazer, CoatLook>,
+    /// What the grazer pushes through the grass this frame (render space), and where its hooves
+    /// came down (render space, and the world's: a splash where it's in water, a puff of what's
+    /// on the ground where it's dry and bare).
+    pub pushes: [Push; PUSHES] = [Push {}; PUSHES],
+    pub footfalls: Vec<(vec3, vec3)> = Vec::new(),
+    /// The water as the sim reads it (`water::mesh`): where a hoof comes down in it.
+    water: WaterMesh,
     footprints: GpuBuffer<vec4>,
     pub skies: Skies = Skies::Fair,
 }
@@ -143,15 +152,17 @@ pub struct Stage {
 /// The vale's stage at load: its kinds the floor's species' (`trees::kinds`), its water laid
 /// (`water::mesh`), its tiles cooked from the first frame round the eye.
 pub fn stage() -> Stage {
+    let water = water::mesh()
     Stage {
         land: landscape(
             TILES,
             trees::kinds::plants(grown: true),
             trees::kinds::far_kinds(),
-            water::mesh(),
+            water.clone(),
             vec2i(0),
         ),
-        fawn: cast(grown(), FawnLook {}, REALIZED, SLICES),
+        grazer: cast(grazer::grazer(), grazer::look(), REALIZED, SLICES),
+        water,
         footprints: buffer_of([vec4(1.0e9, 1.0e9, 0.0, 0.0)], at_least: 1),
     }
 }
@@ -174,8 +185,24 @@ impl Scene for Stage {
         probe_grid(at, origin.xz, TILES)
     }
 
+    /// The falls' spray and foam, and the grazer's footfalls': a splash where a hoof came down in
+    /// water, a puff of the ground's colour where it came down on bare ground or litter.
     fn emit(mut self, e: mut Emits) {
         land::stage::emit(mut self.land, water::MISTS, mut e)
+        for k in 0..self.footfalls.len() {
+            let (at, world) = self.footfalls[k]
+            let seed = 0x9E37 + u32(self.land.sprayed) + k
+            let surface = self.water.height_at(world.xz)
+            if surface != engine::water::NONE && surface > world.y + 0.01 {
+                burst(mut e, SPLASH, vec3(at.x, at.y + surface - world.y, at.z), seed)
+            } else {
+                let ground = GROUND.cover(world, vec3(0.0, 1.0, 0.0))
+                if ground.grass < 0.5 {
+                    burst(mut e, PUFF, at, seed, tint: ground.albedo)
+                }
+            }
+        }
+        self.footfalls = Vec::new()
     }
 
     /// The air: a height fog, and a sphere of mist at the fall.
@@ -210,13 +237,13 @@ impl Scene for Stage {
     }
 
     /// The load's steps: the probes' occluders gathered round the eye, the kinds and the wood,
-    /// the tiles round the eye, and a slice of the fawn's mesh once it's wanted.
+    /// the tiles round the eye, and a slice of the grazer's mesh once it's wanted.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
         occlude(mut self.land, c.eye, c.origin)
         cook_wood(mut self.land, mut c, linear)
         stream(mut self.land, mut c, mut clipmap, c.eye)
-        if self.fawn.realizing() && c.planner.may(Work::Realize) {
-            self.fawn.realize()
+        if self.grazer.realizing() && c.planner.may(Work::Realize) {
+            self.grazer.realize()
         }
     }
 
@@ -224,10 +251,10 @@ impl Scene for Stage {
         land::stage::streamed(self.land, eye)
     }
 
-    /// Loading while the landscape is, or while the fawn's wanted (a shot casts it) and its mesh
+    /// Loading while the landscape is, or while the grazer's wanted (a shot casts it) and its mesh
     /// isn't realized: a shot's arrival waits for it.
     fn loading(self) -> bool {
-        land::stage::loading(self.land) || self.fawn.realizing()
+        land::stage::loading(self.land) || self.grazer.realizing()
     }
 
     /// The far cascade waits for all that casts into it at load: the far layer and the wood.
@@ -262,7 +289,7 @@ impl Scene for Stage {
         }
     }
 
-    /// The grass placed round the eye, and the wood's lists.
+    /// The grass placed round the eye, what pushes through it (the grazer), and the wood's lists.
     fn choose<Q: Switches, Y: Style>(
         mut self,
         lt: Lighting<Q, Y>,
@@ -271,6 +298,7 @@ impl Scene for Stage {
         hzb: Hzb,
     ) {
         self.land.eye = lt.cam.eye + lt.cam.origin
+        self.land.grass.contact = with_pushes(self.land.grass.contact, self.pushes)
         self.land.grass.place(
             lt.cam,
             lt.light,
@@ -346,18 +374,18 @@ impl Scene for Stage {
         }
     }
 
-    /// The moving map: the fawn.
+    /// The moving map: the grazer.
     fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
-        self.fawn.shadow(pass, view)
+        self.grazer.shadow(pass, view)
     }
 
     fn casts_moving(self) -> bool {
-        self.fawn.on && self.fawn.shadowed
+        self.grazer.on && self.grazer.shadowed
     }
 
-    /// The fawn.
+    /// The grazer.
     fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
-        self.fawn.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+        self.grazer.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
     }
 
     fn has_effects(self) -> bool {
@@ -369,10 +397,10 @@ impl Scene for Stage {
         draw_water(mut self.land, mut t, fx)
     }
 
-    /// The fawn's motion (its palette against its last), and the near grass's sway, the wind's,
+    /// The grazer's motion (its palette against its last), and the near grass's sway, the wind's,
     /// against last frame's.
     fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
-        self.fawn.motion(pass, cam)
+        self.grazer.motion(pass, cam)
         let last = match self.land.last_wind {
             Some(w) => w,
             None => wind,
@@ -388,13 +416,13 @@ impl Scene for Stage {
         self.land.last_contact = self.land.grass.contact
     }
 
-    /// The landscape's shares, and the fawn's mesh against the realizer's budget, as the floor's.
+    /// The landscape's shares, and the grazer's mesh against the realizer's budget, as the floor's.
     fn shares(self) -> Vec<Share> {
         var out = land::stage::shares(self.land)
         out.push(
             Share {
                 name: "realizer",
-                bytes: self.fawn.bytes(),
+                bytes: self.grazer.bytes(),
                 budget: engine::memory::REALIZER,
             },
         )

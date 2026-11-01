@@ -1,0 +1,157 @@
+// The pose stylizer (docs/plan-world-class-3.md §F6, D31): a filter over a walker's pose stream
+// between its gait and its skin, carrying the world style into motion (`style::Style`'s motion
+// constants, `Motion`):
+//
+// - anticipation: before a limb's swing, its foot's heel rolls up about its toe by `anticipate`
+//   over the last `anticipate_s` seconds of its stance (the step's wind-up; the toe stays planted);
+// - follow-through: the secondary chains' sway from their rigid pose (the gait's springs carry it;
+//   the head's nod is the gait's, not sway) scaled by 1 + `overshoot`;
+// - exaggeration: a swinging foot's lift over the ground and the body's bob about its running
+//   height scaled by 1 + `exaggerate` (lowered again where a planted leg couldn't reach);
+// - holds: on twos (`on_twos`), the pose made on every other frame and held between, as hand
+//   animation is (made again where a foot lands or lifts, so a planted foot is never held in the
+//   air).
+//
+// With every parameter 0 and holds off, `stylize` is the gait's palette exactly. It moves no
+// planted foot: a foot rolls about its planted toe, and the body's bob is held within its legs'
+// reach.
+
+use creature::Skeleton
+use gait::{Body, Palette, Walk, Walker, drop_to_reach, frame_of, palette, spring_target}
+use style::Style
+use terrain::Terrain
+use std::units::deg
+
+/// A world style's motion.
+pub struct Motion: Copy {
+    /// The heel's roll before a swing (radians) and over how long (s).
+    pub anticipate: f32 = 0.0,
+    pub anticipate_s: f32 = 0.08,
+    /// How much more the secondary chains sway than the gait's springs carry them.
+    pub overshoot: f32 = 0.0,
+    /// How much more a swing lifts and the body bobs.
+    pub exaggerate: f32 = 0.0,
+    /// Whether the pose is held on twos.
+    pub on_twos: bool = false,
+}
+
+impl Motion {
+    /// Whether it changes nothing: the gait's pose passes through.
+    pub fn none(self) -> bool {
+        self.anticipate == 0.0 && self.overshoot == 0.0 && self.exaggerate == 0.0 && !self.on_twos
+    }
+}
+
+/// Look `Y`'s motion (its `Style` constants).
+pub fn motion_of<Y: Style>() -> Motion {
+    Motion {
+        anticipate: Y::ANTICIPATE * deg,
+        anticipate_s: Y::ANTICIPATE_S,
+        overshoot: Y::OVERSHOOT,
+        exaggerate: Y::EXAGGERATE,
+        on_twos: Y::ON_TWOS,
+    }
+}
+
+/// What the stylizer keeps from frame to frame: how many frames it's made, the pose it holds (on
+/// twos), and the body's running height (its bob is about it).
+pub struct Stylizer: Copy {
+    pub frames: u32 = 0,
+    pub held: Palette,
+    pub mean: f32 = 0.0,
+    /// Whether the last frame was held (on twos, the next is made), and which feet were planted
+    /// in the pose it holds.
+    pub was_held: bool = false,
+    pub planted: [bool; 4] = [false; 4],
+}
+
+/// A stylizer that hasn't made a frame.
+pub fn stylizer() -> Stylizer {
+    Stylizer { held: Palette { bones: [std::transform::identity(); creature::MAX_BONES] } }
+}
+
+/// How fast the body's running height follows it (per second: slower than a stride).
+pub const MEAN_RATE: f32 = 2.0
+
+/// This frame's pose of skeleton `s`, walker `w` on `terrain` with body `b` walking `walk`, as
+/// `m` styles it, `dt` seconds since the last (`st` keeps what it needs between frames).
+pub fn stylize<T: Terrain>(
+    st: mut Stylizer,
+    m: Motion,
+    terrain: T,
+    s: Skeleton,
+    b: Body,
+    walk: Walk,
+    w: Walker,
+    dt: f32,
+) -> Palette {
+    if m.none() {
+        return palette(s, b, w)
+    }
+    st.mean = if st.frames == 0 { w.height } else {
+        st.mean + (w.height - st.mean) * (1.0 - exp(-dt * MEAN_RATE))
+    }
+    let first = st.frames == 0
+    st.frames += 1
+    // On twos the frame after a made pose holds it, unless a foot has landed or lifted since (a
+    // held pose would leave a planted foot in the air): then the pose is made again, and the twos
+    // count from it.
+    let planted = [w.feet[0].planted, w.feet[1].planted, w.feet[2].planted, w.feet[3].planted]
+    var still = true
+    for i in 0..4 {
+        still = still && planted[i] == st.planted[i]
+    }
+    if m.on_twos && !first && !st.was_held && still {
+        st.was_held = true
+        return st.held
+    }
+    st.was_held = false
+    st.planted = planted
+    // Anticipation: a planted foot's heel rolls up over the last of its stance.
+    var heel = [0.0; 4]
+    if m.anticipate != 0.0 && w.speed > 0.02 {
+        let cadence = walk.cadence.x + walk.cadence.y * w.speed
+        for i in 0..4 {
+            if w.feet[i].planted {
+                let t = (w.phase + walk.offsets[i]) % 1.0
+                let until = (walk.duty - t) / cadence
+                if until >= 0.0 && until < m.anticipate_s {
+                    heel[i] = m.anticipate * smoothstep(m.anticipate_s, 0.0, until)
+                }
+            }
+        }
+    }
+    var v = w
+    // Exaggeration: the body's bob, held within its planted legs' reach (their heels rolled), and
+    // each swing's lift.
+    if m.exaggerate != 0.0 {
+        v.height = w.height + m.exaggerate * (w.height - st.mean)
+        var drop = 0.0
+        for i in 0..4 {
+            if v.feet[i].planted {
+                drop = min(drop, drop_to_reach(v, b, i, heel: heel[i]))
+            }
+        }
+        v.height += drop
+        for i in 0..4 {
+            if !v.feet[i].planted {
+                let p = v.feet[i].at
+                let ground = terrain.height(p.x, p.z)
+                v.feet[i].at.y = ground + max(p.y - ground, 0.0) * (1.0 + m.exaggerate)
+            }
+        }
+    }
+    // Follow-through: each spring's sway from where its rigid pose puts it (the gait's nod
+    // included: `spring_target`) scaled.
+    if m.overshoot != 0.0 {
+        let (was, now) = (frame_of(w, b), frame_of(v, b))
+        for i in 0..b.spring_bones.len() {
+            let tip = spring_target(w, b, walk, i)
+            let sway = w.springs[i].pos - (was * vec4(tip, 1.0)).xyz
+            v.springs[i].pos = (now * vec4(tip, 1.0)).xyz + sway * (1.0 + m.overshoot)
+        }
+    }
+    let p = palette(s, b, v, heel: heel)
+    st.held = p
+    p
+}

@@ -1,0 +1,287 @@
+// The vale's grazer as drawn (docs/plan-world-class-3.md §F2–F5): a roe deer grown from its genome
+// (`genome::ROE`) to an age, its muscles sized by the rule from its optimized walk's loads and its
+// coat's pattern grown by reaction-diffusion, both baked by the gait tool (`kit::grown`); its
+// hide's colours by region (`LOOK`) and its coat's map read as its albedo's pattern (`CoatLook`);
+// and its walk at its age, the grown animal's scaled by dynamic similarity (`walk_at`).
+
+use coat::{CoatMap, pattern_at}
+use gaits::Gait
+use genome::{CoatGenes, CreatureGenome, quadruped_at}
+use muscles::{MuscledParts, Sized, muscled}
+use quadruped::Look
+use std::field::{Blend, Color, rgb}
+
+/// What a point of the roe carries: its hide's colour, and how much its coat's pattern shows
+/// there (the back's and the flanks': a fawn's spots run along them).
+pub struct Hide: Copy + GpuData + Blend {
+    pub albedo: Color,
+    pub spotted: f32 = 0.0,
+    /// How rough it is (the coat's matte; the eye's cornea polished), and whether it's an eye
+    /// (its iris seen through its cornea: `CoatLook`).
+    pub rough: f32 = 0.7,
+    pub eye: f32 = 0.0,
+}
+
+/// The vale's grazer's age (a share of maturity): grown, a doe (**proposed**: a fawn at 0.2, its
+/// spots showing, read as too small against the vale's shots' references and their judges, §F2).
+pub const VALE_AGE: f32 = 1.0
+
+/// Its seed for the coat's pattern.
+pub const COAT_SEED: u32 = 7
+
+/// A roe's summer coat by region (linear albedo, **proposed**: a russet back over a buff belly,
+/// greyer legs, a darker head and muzzle, a black nose, a pale rump; the vale's earlier fawn's
+/// red-brown read cream in the vale's sun, a redder one as over-saturated orange, pasted on (§F2's
+/// G-look judge), a muted one as melting into the sunlit soil: a deep russet, its red twice its
+/// green, darker than the ground it stands on).
+pub const LOOK: Look<Hide> = Look {
+    back: Hide { albedo: rgb(r: 0.11, g: 0.055, b: 0.028), spotted: 1.0 },
+    belly: Hide { albedo: rgb(r: 0.3, g: 0.2, b: 0.12) },
+    legs: Hide { albedo: rgb(r: 0.09, g: 0.06, b: 0.04) },
+    feet: Hide { albedo: rgb(r: 0.0572, g: 0.0437, b: 0.0306) },
+    head: Hide { albedo: rgb(r: 0.1, g: 0.055, b: 0.03) },
+    muzzle: Hide { albedo: rgb(r: 0.13, g: 0.075, b: 0.042) },
+    ears: Hide { albedo: rgb(r: 0.16, g: 0.09, b: 0.05) },
+    eyes: Hide { albedo: rgb(r: 0.0208, g: 0.0138, b: 0.009), rough: 0.05, eye: 1.0 },
+    nose: Hide { albedo: rgb(r: 0.02, g: 0.016, b: 0.013) },
+    tail: Hide { albedo: rgb(r: 0.6, g: 0.5, b: 0.38) },
+}
+
+/// A fawn's spots' colour (linear albedo: cream, **proposed**).
+pub const SPOT: vec3 = vec3(0.62, 0.5, 0.36)
+
+/// The roe's look (`engine::character::Look`): its hide's colour, its coat's pattern over it
+/// where the hide's spotted (the map's value at the point's place on the body's chart, as visible
+/// at its age: `coat::pattern_at`), a spot's edge a little sharpened.
+pub struct CoatLook: Copy + GpuData {
+    pub map: CoatMap,
+    pub genes: CoatGenes,
+    pub age: f32,
+    /// Its left eye: its centre and radius (rest space), and the way it looks.
+    pub eye: vec4,
+    pub gaze: vec3,
+}
+
+/// The cornea's refractive index (the human eye's, a mammal's: 1.376).
+pub const CORNEA: f32 = 1.376
+
+/// An eye's iris and pupil as shares of its radius: the iris's plane a third of the radius in
+/// from the cornea's apex, its rim, and the pupil's half-length and half-height (an ungulate's is
+/// a horizontal bar), **proposed**.
+pub const IRIS_DEPTH: f32 = 0.67
+pub const IRIS: f32 = 0.82
+pub const PUPIL: vec2 = vec2(0.42, 0.13)
+
+/// A roe's iris (dark brown) and pupil (black), linear albedo.
+pub const IRIS_COLOUR: vec3 = vec3(0.07, 0.035, 0.015)
+pub const PUPIL_COLOUR: vec3 = vec3(0.008, 0.007, 0.006)
+
+/// What an eye shows at `rest` (a point of its cornea; mirrored to the left eye): the ray that
+/// looks along its gaze bent into the cornea (Snell's law, `CORNEA`) and met at the iris's plane,
+/// the iris or the pupil where it lands (so the cornea magnifies them, as it does), the eye's own
+/// dark where it misses.
+pub fn iris_at(eye: vec4, gaze: vec3, rest: vec3, dark: vec3) -> vec3 {
+    let p = vec3(abs(rest.x), rest.y, rest.z)
+    let n = normalize(p - eye.xyz)
+    let bent = bent_in(-gaze, n, 1.0 / CORNEA)
+    let plane = eye.xyz + gaze * ((1.0 - IRIS_DEPTH) * eye.w)
+    let toward = dot(bent, gaze)
+    if toward > -1.0e-4 {
+        return dark
+    }
+    let hit = p + bent * (dot(plane - p, gaze) / toward)
+    let u = normalize(cross(vec3(0.0, 1.0, 0.0), gaze))
+    let v = cross(gaze, u)
+    let at = vec2(dot(hit - plane, u), dot(hit - plane, v)) / eye.w
+    if (at.x / PUPIL.x) * (at.x / PUPIL.x) + (at.y / PUPIL.y) * (at.y / PUPIL.y) < 1.0 {
+        return PUPIL_COLOUR
+    }
+    if length(at) < IRIS {
+        return IRIS_COLOUR
+    }
+    dark
+}
+
+/// Ray `i` bent through a surface of normal `n` (toward the side `i` comes from) by the ratio of
+/// the indices `eta` (Snell's law); none past the critical angle.
+fn bent_in(i: vec3, n: vec3, eta: f32) -> vec3 {
+    let c = dot(n, i)
+    let k = 1.0 - eta * eta * (1.0 - c * c)
+    if k < 0.0 {
+        return vec3(0.0)
+    }
+    i * eta - n * (eta * c + sqrt(k))
+}
+
+impl engine::character::Look<Hide> for CoatLook {
+    fn surface(self, c: Hide, rest: vec3, fp: f32) -> (vec3, f32) {
+        let hide = vec3(c.albedo.r, c.albedo.g, c.albedo.b)
+        if c.eye > 0.5 {
+            return (iris_at(self.eye, self.gaze, rest, hide), c.rough)
+        }
+        let spot = smoothstep(0.3, 0.6, pattern_at(self.map, self.genes, rest, self.age))
+        (mix(hide, SPOT, vec3(spot * c.spotted)), c.rough)
+    }
+}
+
+/// The look of the roe of genome `g` at `age`, its coat's map `map`: its eyes where its body
+/// has them, looking out to its side and a little ahead (**proposed**: a grazer's eyes are set
+/// to see round it).
+pub fn look_of(g: CreatureGenome, age: f32, map: CoatMap) -> CoatLook {
+    let q = quadruped_at(g, age)
+    let f = quadruped::frame(q)
+    let (_, eye) = quadruped::face_points(q)
+    let radius = quadruped::eye_radius(q)
+    CoatLook {
+        map,
+        genes: g.coat,
+        age,
+        eye: vec4(eye, radius),
+        gaze: normalize(vec3(0.85, 0.0, 0.0) + f.forward * 0.5),
+    }
+}
+
+/// The roe `g` grown to `age`, its muscles `m` (`muscles::muscles`, at that age).
+pub fn roe(
+    g: CreatureGenome,
+    age: f32,
+    m: [Sized; 7],
+) -> engine::creature::Body<MuscledParts<Hide>> {
+    muscled(quadruped_at(g, age), m, LOOK)
+}
+
+/// The grown animal's walk `gait` for `g` at `age`, by dynamic similarity (Alexander and Jayes
+/// 1983: animals of a shape at the same Froude number move alike): its speed by the square root
+/// of its legs' length against the grown's, its cadence by its inverse, its lift and its crouch
+/// by the ratio itself; its duty, its phases, its springs and its pitch's follow the same.
+pub fn walk_at(g: CreatureGenome, gait: Gait, age: f32) -> Gait {
+    let r = quadruped_at(g, age).withers / quadruped_at(g, 1.0).withers
+    let root = sqrt(r)
+    var out = gait
+    out.walk.speed = gait.walk.speed * root
+    out.walk.cadence = gait.walk.cadence / root
+    out.walk.lift = gait.walk.lift * r
+    out.crouch = gait.crouch * r
+    out
+}
+
+/// How the grazer pushes through the grass and the ferns (§F7, **proposed**): a hoof leans the
+/// blades within `HOOF_REACH` of it by up to `HOOF_LEAN` degrees (its leg sweeping through them:
+/// 22° at 0.3 m), its body those within `BODY_REACH` of the line from its chest to its rump by up
+/// to `BODY_LEAN` (12° at 0.5 m).
+pub const HOOF_REACH: f32 = 0.45
+pub const HOOF_LEAN: f32 = 40.0
+pub const BODY_REACH: f32 = 0.7
+pub const BODY_LEAN: f32 = 25.0
+
+/// What a grazer of proportions `q` walking as `w` (its body `b`) pushes through the grass
+/// (`engine::grass::Push`, render space: less `origin`): each hoof within a hoof's height or so of
+/// the ground (planted, or swinging low), and its body from its chest to its rump.
+pub fn pushes(
+    q: quadruped::Quadruped,
+    b: engine::gait::Body,
+    w: engine::gait::Walker,
+    origin: vec3,
+) -> [engine::grass::Push; engine::grass::PUSHES] {
+    let hoof = HOOF_LEAN * std::units::deg
+    var out = [engine::grass::Push {}; engine::grass::PUSHES]
+    for i in 0..4 {
+        let f = w.feet[i]
+        if f.planted || f.at.y - f.from.y < 0.1 * q.withers {
+            out[i] = engine::grass::push(f.at - origin, f.at - origin, HOOF_REACH, hoof)
+        }
+    }
+    let m = engine::gait::frame_of(w, b)
+    let fr = quadruped::frame(q)
+    let (chest, rump) = ((m * vec4(fr.chest, 1.0)).xyz, (m * vec4(fr.pelvis, 1.0)).xyz)
+    out[4] = engine::grass::push(
+        chest - origin,
+        rump - origin,
+        BODY_REACH,
+        BODY_LEAN * std::units::deg,
+    )
+    out
+}
+
+/// The face's attention (§F8): its ears' and its eyes' turn toward what it attends to (radians
+/// about the head's up, out from rest), each eased.
+pub struct Face: Copy {
+    /// Each side's turn (left, right).
+    pub ears: vec2 = vec2(0.0),
+    pub eyes: vec2 = vec2(0.0),
+}
+
+/// How far its ears and its eyes turn (radians, **proposed**: a deer's ears swivel a quarter turn
+/// and more each way, its eyes a little), and how fast they come round (per second: within a
+/// tenth of the way in half a second).
+pub const EARS_TURN: f32 = 1.4
+pub const EYES_TURN: f32 = 0.3
+pub const ATTENDS: f32 = 5.0
+
+/// The turn (radians about the head's `up`, positive toward its left) that points from `at` (an
+/// ear's root or an eye, rest space) toward `toward` (rest space, the head's), its rest's way
+/// `rest` (in the head's plane).
+fn turn_to(at: vec3, toward: vec3, up: vec3, rest: vec3) -> f32 {
+    let d = toward - at
+    let flat = d - up * dot(d, up)
+    let r = rest - up * dot(rest, up)
+    if length(flat) < 1.0e-5 || length(r) < 1.0e-5 {
+        return 0.0
+    }
+    let (a, b) = (normalize(r), normalize(flat))
+    atan2(dot(cross(a, b), up), dot(a, b))
+}
+
+/// `dt` seconds of attending: each ear and each eye turned from where it is toward `toward` (a
+/// point in the head's rest space, `None`: nothing to attend, back to rest), each within its
+/// reach, eased at `ATTENDS` a second; `q` the proportions, its ears at rest pointing up the
+/// head's way.
+pub fn attend(f: mut Face, q: quadruped::Quadruped, toward: Option<vec3>, dt: f32) {
+    let fr = quadruped::frame(q)
+    let (ear, eye) = quadruped::face_points(q)
+    let right = |p: vec3| vec3(-p.x, p.y, p.z)
+    let (ears, eyes) = match toward {
+        Some(t) => (
+            clamp(
+                vec2(turn_to(ear, t, fr.up, fr.forward), turn_to(right(ear), t, fr.up, fr.forward)),
+                vec2(-EARS_TURN),
+                vec2(EARS_TURN),
+            ),
+            clamp(
+                vec2(turn_to(eye, t, fr.up, fr.forward), turn_to(right(eye), t, fr.up, fr.forward)),
+                vec2(-EYES_TURN),
+                vec2(EYES_TURN),
+            ),
+        ),
+        None => (vec2(0.0), vec2(0.0)),
+    }
+    let k = 1.0 - exp(-ATTENDS * dt)
+    f.ears += (ears - f.ears) * k
+    f.eyes += (eyes - f.eyes) * k
+}
+
+/// Palette `bones` (of the roe of proportions `q`, its skeleton `s`) with its face turned as `f`
+/// says: each ear about its root and each eye about its centre by its side's turn about the
+/// head's up, carried by the head.
+pub fn faced(
+    bones: [mat4; engine::creature::MAX_BONES],
+    s: engine::creature::Skeleton,
+    q: quadruped::Quadruped,
+    f: Face,
+) -> [mat4; engine::creature::MAX_BONES] {
+    let fr = quadruped::frame(q)
+    let head = bones[s.find("head").index]
+    var out = bones
+    for (name, turn) in [
+        ("ear left", f.ears.x),
+        ("ear right", f.ears.y),
+        ("eye left", f.eyes.x),
+        ("eye right", f.eyes.y),
+    ] {
+        let b = s.find(name)
+        let at = s.rest(b)
+        out[b.index] = head *
+            engine::gait::bone_matrix(std::quat::Quat::axis_angle(fr.up, turn), at, at)
+    }
+    out
+}

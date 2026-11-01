@@ -2,7 +2,7 @@
 // woods' kinds cooked two a frame at load, then one tile of the engine's streamed wood), its
 // boulders, its grass and flowers, and the walking fawn.
 
-use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
+use creature::{Fawn, Grown, REALIZED, SKELETON, WALKER_BODY, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
@@ -468,7 +468,7 @@ impl Scene for Stage {
         if !self.creature_on() || self.fawn.realized.is_none() {
             return vec4(0.0, 0.0, -1.0, -1.0)
         }
-        let body = posed_bounds(self.walker, self.fawn.bounds, slack: 0.15)
+        let body = posed_bounds(self.walker, WALKER_BODY, self.fawn.bounds, slack: 0.15)
         seen_box(cam, out, body.lo, body.hi, margin: 6.0)
     }
 

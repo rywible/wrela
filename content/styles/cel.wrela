@@ -193,7 +193,7 @@ pub fn shade_of<K: Knob>(
     }
     if glossy(class, s.history.z) {
         let r = lit.n * (2.0 * dot(lit.n, v)) - v
-        c += light.sun_colour * (0.6 * lit.sun * step(HIGHLIGHT, dot(r, l)))
+        c += light.sun_colour * (engine::character::BAND * lit.sun * step(HIGHLIGHT, dot(r, l)))
     }
     c
 }
@@ -267,10 +267,22 @@ pub fn mark_of(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
     LINE_DARK * curve * long * near
 }
 
+/// The cel look's motion (`engine::motion`, §F6): a hand-drawn character's: a 4° wind-up over 0.08 s before each step, its head and tail swaying 30 % more, its strides and its bob a quarter higher, held on twos (**proposed**: the twelve
+/// principles' anticipation, follow-through, exaggeration and timing, Thomas and Johnston 1981).
+pub const ANTICIPATE: f32 = 4.0
+pub const OVERSHOOT: f32 = 0.3
+pub const EXAGGERATE: f32 = 0.25
+pub const ON_TWOS: bool = true
+
 impl Style for Cel {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::CREASES
+    const ANTICIPATE: f32 = ANTICIPATE
+    const OVERSHOOT: f32 = OVERSHOOT
+    const EXAGGERATE: f32 = EXAGGERATE
+    const ON_TWOS: bool = ON_TWOS
+    const HIGHLIGHT: f32 = HIGHLIGHT
     /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
     /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
     /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)
@@ -321,6 +333,11 @@ impl Style for CelFitting {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::CREASES
+    const ANTICIPATE: f32 = ANTICIPATE
+    const OVERSHOOT: f32 = OVERSHOOT
+    const EXAGGERATE: f32 = EXAGGERATE
+    const ON_TWOS: bool = ON_TWOS
+    const HIGHLIGHT: f32 = HIGHLIGHT
     /// Temporal AA as it is. (The plan proposed 0.8: holding a flat tone's history to the frame's
     /// colour undid temporal AA wherever the tone was flat, and the forest floor's flicker went
     /// 84 → 1,146 ×10⁻⁶, past its bar of 72; docs/bench.md, D4.)

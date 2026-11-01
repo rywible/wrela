@@ -2,7 +2,7 @@
 // its contact sheet's layout: what is pure of the tool, so its tests need no build.
 
 use audio_tool::sheet::Image
-use lookbook_tool::shots::{SETTLE_FRAMES, WS, choose}
+use lookbook_tool::shots::{BUILD, SETTLE_FRAMES, WS, choose}
 use toolkit::command::size_of
 use std::input::{Key, Script}
 use std::tool::files::rooted
@@ -16,7 +16,7 @@ pub struct Capture: Clone {
 }
 
 /// The captures' names, in the order the tool takes them when none is named.
-pub const NAMES: [Text; 8] = [
+pub const NAMES: [Text; 9] = [
     "walk",
     "reversal",
     "arrive-dark",
@@ -25,6 +25,7 @@ pub const NAMES: [Text; 8] = [
     "canopy",
     "water",
     "occlusion",
+    "trail",
 ]
 
 /// The capture named `name`, if there is one. Lookbook shots are chosen as a player would (L,
@@ -72,6 +73,10 @@ pub fn capture(name: str) -> Option<Capture> {
     } else if name == "occlusion" {
         // The fawn under the beeches passing behind trunks and ferns: 2 s.
         (choose(take s, at: 1, i: 17), SETTLE_FRAMES, SETTLE_FRAMES + 120)
+    } else if name == "trail" {
+        // The vale's "down the trail" (`--package examples/vale`), its grazer walking toward the
+        // eye: 3 s from its still (§F9's strip).
+        (choose(take s, at: 1, i: 9), SETTLE_FRAMES, SETTLE_FRAMES + 180)
     } else {
         return None
     }
@@ -134,19 +139,28 @@ pub fn compose(frames: [Vec<u8>], numbers: [u32], w: u32, h: u32) -> Image {
     img
 }
 
-pub const USAGE: Text = "usage: wrela tool motion -- <out-dir> [--size WxH] [capture ...]"
+pub const USAGE: Text = "usage: wrela tool motion -- <out-dir> [--size WxH] [--package <dir>] [--frames-only] [capture ...]"
 
-/// What a run makes: where (a root path), at what size, and which captures.
+/// What a run makes: where (a root path), at what size, from which build (a root path), whether
+/// it makes the clips (FFmpeg's) or the frames and sheets alone, and which captures.
 pub struct Options: Clone {
     pub out: String,
     pub width: u32,
     pub height: u32,
+    pub build: String,
+    pub clip: bool = true,
     pub captures: Vec<Capture>,
 }
 
 /// The options the command line gives, or what's wrong with it.
 pub fn parse_args(given: [String]) -> Result<Options, String> {
-    var o = Options { out: String::new(), width: 1280, height: 720, captures: Vec::new() }
+    var o = Options {
+        out: String::new(),
+        width: 1280,
+        height: 720,
+        build: String::from(BUILD),
+        captures: Vec::new(),
+    }
     var out: Option<String> = None
     var k = 0
     while k < given.len() {
@@ -159,6 +173,15 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             o.width = w
             o.height = h
             k += 1
+        } else if a == "--package" {
+            let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
+            let Some(path) = rooted(WS, next.as_str()) else {
+                return Err(String::from("--package takes a package's directory in the workspace"))
+            }
+            o.build = String::from(f"{path.as_str()}/build")
+            k += 1
+        } else if a == "--frames-only" {
+            o.clip = false
         } else if out.is_none() {
             let Some(path) = rooted(WS, a) else {
                 return Err(String::from(f"{a} isn't a directory in the workspace"))
@@ -168,7 +191,7 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             let Some(c) = capture(a) else {
                 return Err(
                     String::from(
-                        f"no capture {a}: the captures are walk, reversal, arrive-dark, arrive-sun, gust, canopy, water, occlusion",
+                        f"no capture {a}: the captures are walk, reversal, arrive-dark, arrive-sun, gust, canopy, water, occlusion, trail",
                     ),
                 )
             }
@@ -178,8 +201,12 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
     }
     let Some(path) = take out else { return Err(String::from(USAGE)) }
     o.out = take path
+    // With none named, the floor's (the vale's `trail` is named alone, with its package).
     if o.captures.is_empty() {
         for n in NAMES {
+            if n == "trail" {
+                continue
+            }
             let Some(c) = capture(n) else { panic("each name is a capture") }
             o.captures.push(take c)
         }

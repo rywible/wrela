@@ -1,0 +1,10 @@
+# The grazer's gaits optimized in simulation (docs/plan-world-class-3.md §F5): the effort proxy,
+# its frozen chains and fixtures, and the optimized walks (kit::walks) on slopes, a log and a drop.
+# Tool tests: a minute's walk and its loads run natively.
+[package]
+name = "growth_gait_tests"
+
+[dependencies]
+engine = { workspace = true }
+kit = { workspace = true }
+toolkit = { workspace = true }

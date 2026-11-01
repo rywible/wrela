@@ -12,7 +12,6 @@ use styles
 use styles::physical::Physical
 use engine::shadow::Cascade
 use engine::shot::{NO_CAST, Shots, Skies, place}
-use fawn::character::at_rest
 use engine::view::first_camera
 use land::stage::{fields_clipmap, probe_grid}
 use landscape::height_at
@@ -77,7 +76,33 @@ pub struct Vale {
     fit: [vec4; 2],
     /// How many frames the walk has run (none: it hasn't begun; W begins it).
     walked: Option<u32>,
+    /// The grazer's walk in "down the trail", while that shot's held: the shot's held since, and
+    /// the walk (`grazer::Walking`).
+    walking: Option<(f32, grazer::Walking)>,
+    /// The grazer's pose grazing in another cast shot, while it's held: the shot's held since, and
+    /// its palette (world space, `grazer::grazing`: found once a hold).
+    grazing: Option<(f32, grazer::Grazing)>,
 }
+
+/// The shot the grazer walks in (lookbook.wrela's "down the trail"): toward the eye and across its
+/// look (`TRAIL_ACROSS`, `TRAIL_TURN`), about `TRAIL_AT` m from it at the shot's still.
+pub const WALKS_IN: Text = "down the trail"
+pub const TRAIL_AT: f32 = 10.0
+
+/// How far off the shot's look it sets off (radians), and how far across its line to the eye its
+/// way turns (toward the look): three-quarters on, so its legs' stride shows (head on, the motion
+/// review's judges couldn't read its gait, §F9).
+pub const TRAIL_ACROSS: f32 = 0.35
+pub const TRAIL_TURN: f32 = 0.7
+
+/// `v` (on the plane) turned by `a` radians.
+fn turned(v: vec2, a: f32) -> vec2 {
+    vec2(v.x * cos(a) - v.y * sin(a), v.x * sin(a) + v.y * cos(a))
+}
+
+/// How far from facing the eye the grazer grazes (radians: three-quarters on, its side and its
+/// face both seen).
+pub const GRAZING_TURN: f32 = 0.9
 
 /// The hour and the weather of the walk, and of a camera held by a test (**proposed**).
 pub const WALK_HOUR: f32 = 10.5
@@ -139,6 +164,8 @@ pub fn init() -> Vale {
         hour: WALK_HOUR,
         fit: [vec4(0.0), vec4(0.0)],
         walked: None,
+        walking: None,
+        grazing: None,
     }
 }
 
@@ -184,21 +211,80 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
         },
     }
     light(mut s, hour, skies, eye.y)
-    // The fawn, where a held shot casts it (`Shot::cast`): standing at rest where the shot looks,
-    // facing the eye (Part F grows the vale's grazer and its gaits); not drawn otherwise.
-    let cast_at = match (s.held, s.shots.held) {
-        (None, Some(i)) => if lookbook::SHOTS[i].cast != NO_CAST { Some(at) } else { None },
+    // The grazer, where a held shot casts it (`Shot::cast`): walking toward the eye along its look
+    // in "down the trail", grazing there facing three-quarters from the eye in another;
+    // not drawn otherwise.
+    let origin = s.frame.origin
+    let cast = match (s.held, s.shots.held) {
+        (None, Some(i)) => if lookbook::SHOTS[i].cast != NO_CAST { Some(i) } else { None },
         _ => None,
     }
-    if let Some(p) = cast_at {
-        let feet = vec3(p.x, height_at(p.xz), p.z) - s.frame.origin
-        s.stage.fawn.pose(
-            at_rest(feet, atan2(eye.x - p.x, eye.z - p.z)),
-            shadowed: true,
-            moved: false,
-        )
-    } else {
-        s.stage.fawn.hide()
+    let from = s.shots.from
+    // This frame's footfalls alone (`Stage::emit` bursts them as the frame draws; one that
+    // doesn't draw drops them rather than burst them late).
+    s.stage.footfalls.clear()
+    match cast {
+        Some(i) => if lookbook::SHOTS[i].name == WALKS_IN {
+            s.grazing = None
+            let fresh = match s.walking {
+                Some((f, _)) => f != from,
+                None => true,
+            }
+            if fresh {
+                // From far enough up the trail that it's about `TRAIL_AT` from the eye at the
+                // shot's still (`engine::shot::SETTLE` in; its speed eased up over its first half
+                // second), `TRAIL_ACROSS` off the shot's look, its way `TRAIL_TURN` across its line
+                // to the eye, toward the look.
+                let look = normalize(at.xz - eye.xz)
+                let lead = grazer::WALK.walk.speed * (engine::shot::SETTLE - 0.5)
+                let start = eye.xz + turned(look, TRAIL_ACROSS) * (TRAIL_AT + lead)
+                let to_eye = normalize(eye.xz - start)
+                let middle = normalize(eye.xz + look * (TRAIL_AT + lead) - start)
+                let (one, other) = (turned(to_eye, TRAIL_TURN), turned(to_eye, -TRAIL_TURN))
+                let way = if dot(one, middle) > dot(other, middle) { one } else { other }
+                s.walking = Some((from, grazer::set_off(start, start + way * (2.0 * TRAIL_AT))))
+            }
+            if let Some((f, w)) = s.walking {
+                var w = w
+                let since = s.shots.since(time)
+                let was = w.walker.feet
+                grazer::walk_to(mut w, since)
+                // Where a hoof came down since the last frame (a splash or a puff: `Stage::emit`).
+                for i in 0..4 {
+                    let foot = w.walker.feet[i]
+                    if foot.planted && !was[i].planted {
+                        s.stage.footfalls.push((foot.at - origin, foot.at))
+                    }
+                }
+                let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since, eye)
+                s.stage.pushes = grazer::pushes(grazer::BODY, w.walker, origin)
+                s.walking = Some((f, w))
+                s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
+            }
+        } else {
+            s.walking = None
+            let fresh = match s.grazing {
+                Some((f, _)) => f != from,
+                None => true,
+            }
+            if fresh {
+                let heading = atan2(eye.x - at.x, eye.z - at.z) + GRAZING_TURN
+                s.grazing = Some((from, grazer::grazing(at.xz, heading)))
+            }
+            if let Some((f, g)) = s.grazing {
+                var g = g
+                let bones = grazer::grazing_now(mut g, s.shots.since(time), eye)
+                s.stage.pushes = grazer::pushes(g.body, g.walker, origin)
+                s.grazing = Some((f, g))
+                s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
+            }
+        },
+        None => {
+            s.walking = None
+            s.grazing = None
+            s.stage.pushes = [engine::grass::Push {}; engine::grass::PUSHES]
+            s.stage.grazer.hide()
+        },
     }
     let aim = Aim { eye, at, fovy, moving_at: eye }
     let _ = s.frame.begin(mut s.stage, aim, time, width, height)

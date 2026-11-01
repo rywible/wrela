@@ -1,0 +1,84 @@
+// The grazer touching the world (§F7): the grass leans from its hooves and its body
+// (`engine::grass::pushed`, its pushes `kit::roe::pushes`), and a footfall in water splashes
+// (`engine::particles::burst`'s `SPLASH`).
+
+use engine::gait::stand
+use engine::grass::{Contact, pushed, with_pushes}
+use engine::particles::{Emits, SPLASH, burst}
+use kit::gaits::Ground
+use kit::genome::{ROE, quadruped_at}
+use kit::muscles::walker_body
+use kit::quadruped::frame
+use kit::roe::{VALE_AGE, pushes}
+use std::math::PI
+
+/// The angle (degrees) a blade standing upright at `root`, 0.3 m tall, leans from upright as
+/// `c` pushes it.
+fn lean(root: vec3, c: Contact) -> f32 {
+    let tip = pushed(root + vec3(0.0, 0.3, 0.0), root, c)
+    acos(clamp(normalize(tip - root).y, -1.0, 1.0)) * 180.0 / PI
+}
+
+/// `c` with its push `i` alone.
+fn alone(c: Contact, i: u32) -> Contact {
+    var only = [engine::grass::Push {}; engine::grass::PUSHES]
+    only[i] = c.pushes[i]
+    with_pushes(Contact {}, only)
+}
+
+/// The vale's grazer standing at the origin on level ground, as it walks: its pushes and its body's line's ends.
+fn standing() -> (Contact, vec3, vec3) {
+    let q = quadruped_at(ROE, VALE_AGE)
+    let b = kit::gaits::body_of(q, kit::walks::WALKS[0])
+    let w = stand(Ground {}, b, vec2(0.0), 0.0)
+    let c = with_pushes(Contact {}, pushes(q, b, w, vec3(0.0)))
+    let m = engine::gait::frame_of(w, b)
+    let f = frame(q)
+    (c, (m * vec4(f.chest, 1.0)).xyz, (m * vec4(f.pelvis, 1.0)).xyz)
+}
+
+/// Blades within 0.3 m of a planted hoof (outside its body's reach of the others) lean at least
+/// 20° away from it.
+@test
+fn blades_by_a_hoof_bend_away() {
+    let (c, _, _) = standing()
+    for i in 0..4 {
+        let hoof = c.pushes[i].a.xyz
+        for k in 0..8 {
+            let a = 2.0 * PI * f32(k) / 8.0
+            for d in [0.05, 0.15, 0.3] {
+                let root = vec3(hoof.x + d * cos(a), 0.0, hoof.z + d * sin(a))
+                let l = lean(root, alone(c, i))
+                assert(l >= 20.0, f"a blade {d} m from hoof {i} leans {l}°")
+            }
+        }
+    }
+}
+
+/// A fern within 0.5 m of the grazer's chest, to its side, leans at least 10° away from it.
+@test
+fn a_fern_by_its_chest_leans_away() {
+    let (c, chest, rump) = standing()
+    let along = normalize((chest - rump).xz)
+    let side = vec2(-along.y, along.x)
+    for s in [-1.0, 1.0] {
+        let p = chest.xz + side * (0.5 * s)
+        let root = vec3(p.x, 0.0, p.y)
+        // Its lean from the body alone (the hooves' reach doesn't come so far).
+        let l = lean(root, alone(c, 4))
+        assert(l >= 10.0, f"a fern 0.5 m to the chest's side leans {l}°")
+        let tip = pushed(root + vec3(0.0, 0.3, 0.0), root, c)
+        assert(dot(tip.xz - root.xz, side * s) > 0.0, "the fern leaned toward the chest")
+    }
+}
+
+/// A footfall in water throws at least 20 drops, each up and out of the water.
+@test
+fn a_footfall_in_water_splashes() {
+    var e = Emits::new()
+    burst(mut e, SPLASH, vec3(1.0, 2.0, 3.0), seed: 7)
+    assert(e.list.len() >= 20, f"{e.list.len()} drops")
+    for p in e.list {
+        assert(p.vel.y > 0.0 && p.life > 0.0 && p.at.y >= 2.0, "a drop didn't leave the water")
+    }
+}

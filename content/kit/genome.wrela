@@ -1,0 +1,262 @@
+// A creature's genome (D35, docs/plan-world-class-3.md §F1): what's authored of it, its body plan
+// (`Plan`: the quadruped kit's skeleton and twelve shape handles), and what grows from it: its
+// proportions with its age (`Allometry`: Huxley's y = b·x^k against its body's mass, Huxley 1932),
+// its coat (`CoatGenes`: a reaction-diffusion's parameters), its muscles (`MuscleGenes`: a section
+// by the load it carries) and its gaits (`GaitGenes`: the ranges the gait's optimizer searches).
+// `ROE` is the vale's grazer's: a roe deer's (*Capreolus capreolus*), each number cited or
+// **proposed** (docs/citations.md, "The grazer's genome").
+//
+// An age is a share of the years to maturity: 0 born, 1 grown (`mass_at`). `quadruped_at` is the
+// kit's proportions at an age, `grown_body` its body, and `grown_mass` its mass integrated over it.
+
+use quadruped::{Feet, Look, Quadruped, QuadrupedParts, body}
+use engine::creature::Body
+use engine::physique::{Per, integrate}
+
+/// The body plan: the kit's proportions the handles don't set (`rest`: its body's length, its
+/// chest's width, its neck's angle, ...), and the twelve handles, each the grown animal's. The
+/// withers' height is in metres; the chest's depth, the neck's and the head's lengths and the
+/// rump's height are shares of the withers'; the muzzle and the ears shares of the head; the tail
+/// a share of the body's length; the cannons (how high the knees and hocks stand: the legs' lower
+/// share), the hooves, the eyes and the brows against the kit's base (1).
+pub struct Plan: Copy {
+    pub rest: Quadruped,
+    pub withers: f32,
+    pub chest_depth: f32,
+    pub neck_length: f32,
+    pub head_length: f32,
+    pub muzzle: f32,
+    pub ears: f32,
+    pub tail_length: f32,
+    pub cannon: f32,
+    pub hoof: f32,
+    pub rump: f32,
+    pub eye: f32,
+    pub brow: f32,
+}
+
+/// How the body grows: its mass at birth and grown (kg) and the logistic's rate between them
+/// (`mass_at`), and each part's exponent k in y = b·x^k, x the body's mass and b the grown
+/// value's (1/3 grows as the body does; under it a part is larger the younger, over it smaller).
+/// A share's exponent is its own length's: its share at an age is the grown share times s^(k − k')
+/// (s the mass against the grown, k' the exponent of what it's a share of).
+pub struct Allometry: Copy {
+    pub birth: f32,
+    pub adult: f32,
+    pub rate: f32,
+    pub withers: f32,
+    pub length: f32,
+    pub chest_depth: f32,
+    pub neck_length: f32,
+    pub head_length: f32,
+    pub muzzle: f32,
+    pub ears: f32,
+    pub tail_length: f32,
+    pub cannon: f32,
+    pub hoof: f32,
+    pub eye: f32,
+    pub brow: f32,
+}
+
+/// The coat's pattern: a Gray-Scott reaction-diffusion (Pearson 1993's parameterization of
+/// Turing's 1952 mechanism: `coat::coat`), its feed and kill rates and its two species' diffusion
+/// rates (per texel, a step's); its wavelength as a share of the body's length (the diffusion
+/// rates are scaled to it); and the age (a share of maturity) by which the juvenile's spots have
+/// faded.
+pub struct CoatGenes: Copy + GpuData {
+    pub feed: f32,
+    pub kill: f32,
+    pub du: f32,
+    pub dv: f32,
+    pub wavelength: f32,
+    pub fade: f32,
+}
+
+/// The muscles' rule (F4): the stress a muscle's section bears at its peak load (Pa: Alexander's
+/// constant-stress rule), and the strongest effort they're sized for: a foot's peak force at a
+/// gallop, in body weights (the loads they're sized from are scaled up to it).
+pub struct MuscleGenes: Copy {
+    pub stress: f32,
+    pub effort: f32,
+}
+
+/// The ranges the gait's optimizer searches (F5, `gaits::gait_at`), each low to high: the share of
+/// a cycle a foot is planted (its duty), its swing's lift (m), its cycles a second (its cadence),
+/// how far the hind legs' phases lag the pace's (a share of a cycle), how far below its rest
+/// height its body goes (m: its legs flexed, `engine::gait::Body::crouch`), and the share of its
+/// feet's slope its trunk pitches by (`Body::follow`).
+pub struct GaitGenes: Copy {
+    pub duty: vec2,
+    pub lift: vec2,
+    pub cadence: vec2,
+    pub lag: vec2,
+    pub crouch: vec2,
+    pub follow: vec2,
+}
+
+/// A creature's genome.
+pub struct CreatureGenome: Copy {
+    pub plan: Plan,
+    pub allometry: Allometry,
+    pub coat: CoatGenes,
+    pub muscle: MuscleGenes,
+    pub gait: GaitGenes,
+}
+
+/// The vale's grazer: a roe deer. Grown, 0.72 m at the withers and 28 kg (66–83 cm and
+/// 22.6–30 kg: Animal Diversity Web's account); born at 1.6 kg (1.3–1.9 kg: GBIF's account), two
+/// thirds grown by its first autumn (60–70 % of its mass: Animal Diversity Web), so the logistic's
+/// rate is 8.5 a year to maturity (**proposed**: a year). The handles and the exponents are
+/// **proposed** (a fawn's legs and head large for its body, its neck short: Huxley's negative
+/// allometry of the limbs and the head). So are the gait's ranges (a swing lifts at least 7 cm:
+/// a roe's hooves clear the grass, and the motion review's judges saw a lower one as no step at
+/// all, §F9); the hind legs' lag keeps a
+/// walk among Hildebrand's lateral-sequence walks, an ungulate's (a hind foot's lead on its side's
+/// fore from a tenth of a cycle to two fifths: short of the half that's a trot's, Hildebrand 1965).
+pub const ROE: CreatureGenome = CreatureGenome {
+    plan: Plan {
+        rest: Quadruped {
+            withers: 0.72,
+            length: 0.72,
+            chest_depth: 0.44,
+            chest_width: 0.4,
+            tuck: 0.62,
+            croup: 1.04,
+            hump: 0.0,
+            neck_length: 0.48,
+            neck_angle: 48.0,
+            neck_thickness: 0.19,
+            head_length: 0.3,
+            muzzle: 0.5,
+            head_depth: 0.52,
+            head_angle: 52.0,
+            snout: 0.6,
+            ears: 0.55,
+            ears_out: 35.0,
+            tail_length: 0.04,
+            tail_thickness: 0.06,
+            tail_hang: 80.0,
+            legs: 0.6,
+            feet: Feet::Hooves,
+            track: 1.4,
+        },
+        withers: 0.72,
+        chest_depth: 0.44,
+        neck_length: 0.48,
+        head_length: 0.3,
+        muzzle: 0.5,
+        ears: 0.55,
+        tail_length: 0.04,
+        cannon: 1.15,
+        hoof: 0.8,
+        rump: 1.04,
+        eye: 1.25,
+        brow: 0.8,
+    },
+    allometry: Allometry {
+        birth: 1.6,
+        adult: 28.0,
+        rate: 8.5,
+        withers: 0.28,
+        length: 0.36,
+        chest_depth: 0.4,
+        neck_length: 0.4,
+        head_length: 0.22,
+        muzzle: 0.36,
+        ears: 0.2,
+        tail_length: 0.33,
+        cannon: 0.22,
+        hoof: 0.3,
+        eye: 0.1,
+        brow: 0.36,
+    },
+    coat: CoatGenes {
+        feed: 0.0367,
+        kill: 0.0649,
+        du: 0.16,
+        dv: 0.08,
+        wavelength: 0.1,
+        fade: 0.45,
+    },
+    muscle: MuscleGenes { stress: 3.0e5, effort: 3.0 },
+    gait: GaitGenes {
+        duty: vec2(0.5, 0.85),
+        lift: vec2(0.07, 0.16),
+        cadence: vec2(0.6, 2.6),
+        lag: vec2(-0.15, 0.15),
+        crouch: vec2(0.0, 0.2),
+        follow: vec2(0.2, 1.0),
+    },
+}
+
+/// The body's mass (kg) at `age` (a share of maturity): a logistic from its birth mass toward its
+/// grown one, `adult / (1 + (adult / birth − 1) e^(−rate · age))`.
+pub fn mass_at(a: Allometry, age: f32) -> f32 {
+    a.adult / (1.0 + (a.adult / a.birth - 1.0) * exp(-a.rate * max(age, 0.0)))
+}
+
+/// The kit's proportions at `age`: each handle grown by its exponent from the grown animal's
+/// (`Allometry`), its body's mass against its mass at maturity (age 1, whose proportions are the
+/// handles).
+pub fn quadruped_at(g: CreatureGenome, age: f32) -> Quadruped {
+    let (p, k) = (g.plan, g.allometry)
+    let s = mass_at(k, age) / mass_at(k, 1.0)
+    let grow = |e: f32| pow(s, e)
+    Quadruped {
+        withers: p.withers / BACK * grow(k.withers),
+        length: p.rest.length * grow(k.length),
+        chest_depth: p.chest_depth * grow(k.chest_depth - k.withers),
+        neck_length: p.neck_length * grow(k.neck_length - k.withers),
+        head_length: p.head_length * grow(k.head_length - k.withers),
+        muzzle: p.muzzle * grow(k.muzzle - k.head_length),
+        ears: p.ears * grow(k.ears - k.head_length),
+        tail_length: p.tail_length * grow(k.tail_length - k.length),
+        croup: p.rump,
+        cannon: p.cannon * grow(k.cannon - k.withers),
+        hoof: p.hoof * grow(k.hoof - k.chest_depth),
+        eye: p.eye * grow(k.eye - k.head_length),
+        brow: p.brow * grow(k.brow - k.head_length),
+        ..p.rest,
+    }
+}
+
+/// How high the kit's back stands over its withers' joint, against the joint's height (measured:
+/// its torso's top at the withers): a plan's withers are the animal's, to the back's top.
+const BACK: f32 = 1.022
+
+/// The creature `g` grows into by `age`, coloured by `look`: the kit's body at its proportions
+/// then (`quadruped_at`).
+pub fn grown_body<C: Copy + GpuData>(
+    g: CreatureGenome,
+    age: f32,
+    look: Look<C>,
+) -> Body<QuadrupedParts<C>> {
+    body(quadruped_at(g, age), look)
+}
+
+/// A body's density (kg/m³): about water's, a mammal's flesh and bone together (**proposed**).
+pub const DENSITY: f32 = 1050.0
+
+/// The mass of `g`'s body at `age` integrated over its inside (`engine::physique::integrate`, at
+/// `DENSITY`, cells down to `finest` m), to hold against its growth curve (`mass_at`).
+pub fn grown_mass(g: CreatureGenome, age: f32, finest: f32) -> f32 {
+    let b = grown_body(g, age, quadruped::plain(Flesh {}))
+    integrate(b, |c: Flesh| DENSITY, Per::Whole, finest).total.mass
+}
+
+/// A body's channels where only its mass is wanted.
+pub struct Flesh: Copy + GpuData + std::field::Blend {
+    pub unit: f32 = 1.0,
+}
+
+/// The segments of `g`'s body at `age` (`engine::loads::segments_of`: each bone's mass, centre and
+/// inertia, at `DENSITY`, cells down to 1 cm), its standing height its withers': what its walk's
+/// loads are found from.
+pub fn grown_segments(g: CreatureGenome, age: f32) -> engine::loads::Segments {
+    engine::loads::segments_of(
+        grown_body(g, age, quadruped::plain(Flesh {})),
+        |c: Flesh| DENSITY,
+        finest: 0.01,
+        height: quadruped_at(g, age).withers,
+    )
+}

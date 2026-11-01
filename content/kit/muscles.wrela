@@ -1,0 +1,291 @@
+// A creature's muscles from the loads it carries (docs/plan-world-class-3.md §F4): its poses from
+// the walker (`engine::gait`), its loads from them by inverse dynamics (`engine::loads`), and each
+// muscle group's section sized by its joints' peak torque at a constant stress (Alexander's rule:
+// `MuscleGenes::stress`), its moment arm the limb's radius where it crosses the joint, its belly
+// the bone it spans. Before the gait is optimized (F5) the standing pose's loads size them;
+// after, the optimized walk's.
+
+use engine::gait::{Body, Path, Walker, palette}
+use engine::loads::{Contact, Loads, Pose, peaks}
+use engine::creature::{Inside, Placed, Skeleton, Then, group, smooth}
+use std::field::With
+use genome::CreatureGenome
+use quadruped::{Look, Quadruped, QuadrupedParts, body, frame, skeleton}
+
+/// The walker's body of a kit animal of proportions `q`: its springs on the neck and head
+/// (`head_k`) and the tail (`tail_k`).
+pub fn walker_body(q: Quadruped, head_k: f32, tail_k: f32) -> Body {
+    let s = skeleton(q)
+    let head = [s.find("neck"), s.find("head")]
+    let tail = [s.find("tail 0"), s.find("tail 1"), s.find("tail 2"), s.find("tail 3")]
+    engine::gait::body(s, head, tail, head_k, tail_k)
+}
+
+/// A straight path from the origin along +z.
+pub struct Ahead: Copy {}
+
+impl Path for Ahead {
+    fn at(self, s: f32) -> vec2 {
+        vec2(0.0, s)
+    }
+}
+
+/// Walker `w`'s pose: its palette's bones and its planted feet, each under its leg's foot bone.
+pub fn pose_of(s: Skeleton, b: Body, w: Walker) -> Pose {
+    let p = palette(s, b, w)
+    var bones: Vec<mat4> = Vec::new()
+    for i in 0..s.len() {
+        bones.push(p.bones[i])
+    }
+    var contacts: Vec<Contact> = Vec::new()
+    let legs = s.legs()
+    for i in 0..s.leg_count() {
+        if w.feet[i].planted {
+            contacts.push(Contact { at: w.feet[i].at, bone: legs[i].joints[3].index })
+        }
+    }
+    Pose { bones, contacts }
+}
+
+/// A kit animal standing at rest: three frames of its rest pose on its four feet (each sole under
+/// its foot joint, on the ground).
+pub fn standing(q: Quadruped) -> Vec<Pose> {
+    let s = skeleton(q)
+    var bones: Vec<mat4> = Vec::new()
+    for _ in 0..s.len() {
+        bones.push(std::transform::identity())
+    }
+    var contacts: Vec<Contact> = Vec::new()
+    let legs = s.legs()
+    for i in 0..s.leg_count() {
+        let foot = legs[i].joints[3]
+        let at = s.rest(foot)
+        contacts.push(Contact { at: vec3(at.x, 0.0, at.z), bone: foot.index })
+    }
+    let p = Pose { bones, contacts }
+    Vec::from([p.clone(), p.clone(), p.clone()])
+}
+
+/// The muscle groups: each its name, the bones it spans (its origin's joint and its insertion's,
+/// by name: a limb's left one, its right mirrored), the joints whose torques it bears (a limb's on
+/// both sides), and whether it's a limb's (one each side).
+pub struct Group: Copy {
+    pub name: Text,
+    pub from: Text,
+    pub to: Text,
+    pub bears: [Text; 4],
+    pub limb: bool,
+}
+
+pub const GROUPS: [Group; 7] = [
+    Group {
+        name: "thigh",
+        from: "hip left",
+        to: "stifle left",
+        bears: ["hip left", "stifle left", "hip right", "stifle right"],
+        limb: true,
+    },
+    Group {
+        name: "gaskin",
+        from: "stifle left",
+        to: "hock left",
+        bears: ["hock left", "hock left", "hock right", "hock right"],
+        limb: true,
+    },
+    Group {
+        name: "arm",
+        from: "shoulder left",
+        to: "elbow left",
+        bears: ["shoulder left", "elbow left", "shoulder right", "elbow right"],
+        limb: true,
+    },
+    Group {
+        name: "forearm",
+        from: "elbow left",
+        to: "knee left",
+        bears: ["knee left", "knee left", "knee right", "knee right"],
+        limb: true,
+    },
+    Group {
+        name: "back",
+        from: "pelvis",
+        to: "chest",
+        bears: ["lumbar", "chest", "lumbar", "chest"],
+        limb: false,
+    },
+    Group {
+        name: "neck",
+        from: "neck",
+        to: "head",
+        bears: ["neck", "head", "neck", "head"],
+        limb: false,
+    },
+    Group {
+        name: "girdle",
+        from: "scapula left",
+        to: "shoulder left",
+        bears: ["scapula left", "scapula left", "scapula right", "scapula right"],
+        limb: true,
+    },
+]
+
+/// A muscle group as sized: its section (m²), its moment arm (m), its belly's length (m), its
+/// radius (m, a round section's) and its mass (kg, both sides' for a limb's).
+pub struct Sized: Copy {
+    pub section: f32,
+    pub arm: f32,
+    pub length: f32,
+    pub radius: f32,
+    pub mass: f32,
+}
+
+/// Muscle's density (kg/m³: Mendez and Keys 1960's 1.06 g/cm³).
+pub const MUSCLE_DENSITY: f32 = 1060.0
+
+/// Each group's size (`GROUPS`' order) for a kit animal of proportions `q` and genome `g` bearing
+/// `loads` (found for a body of `mass` kg: its segments'): its peak torque over the loads' feasible
+/// frames (`engine::loads::peaks`; a limb's the larger of its two sides'), scaled to the genome's
+/// strongest effort (its peak foot force, `MuscleGenes::effort`, over the loads' own, each in
+/// that body's weights), over the genome's stress and its moment arm (the
+/// limb's radius where it crosses its joint: a muscle wraps the joint at the limb's surface; the
+/// back's epaxials over the vertebrae, `BACK_ARM` of the chest's depth; the neck's half its
+/// radius).
+pub fn muscles(g: CreatureGenome, q: Quadruped, loads: Loads, mass: f32) -> [Sized; 7] {
+    let s = skeleton(q)
+    let f = frame(q)
+    let peak = peaks(loads)
+    let margin = g.muscle.effort / max(peak_foot(loads, mass), 1.0e-3)
+    var out = [Sized { section: 0.0, arm: 0.0, length: 0.0, radius: 0.0, mass: 0.0 }; 7]
+    for i in 0..7 {
+        let gr = GROUPS[i]
+        var torque = 0.0
+        for name in gr.bears {
+            torque = max(torque, peak[s.find(name).index])
+        }
+        torque *= margin
+        let arm = if gr.limb { f.leg } else if gr.name == "back" { BACK_ARM * f.depth } else {
+            0.5 * q.neck_thickness * f.depth
+        }
+        let section = torque / (g.muscle.stress * max(arm, 1.0e-3))
+        let length = length(s.rest(s.find(gr.to)) - s.rest(s.find(gr.from)))
+        let sides = if gr.limb { 2.0 } else { 1.0 }
+        out[i] = Sized {
+            section,
+            arm,
+            length,
+            radius: sqrt(section / std::math::PI),
+            mass: sides * MUSCLE_DENSITY * section * length,
+        }
+    }
+    out
+}
+
+/// How far the epaxial muscles lie over the vertebrae they turn, as a share of the chest's depth
+/// (**proposed**: the vertebral body and its spines' half).
+pub const BACK_ARM: f32 = 0.15
+
+/// The largest force a planted foot of `loads` carries over its feasible frames, in body weights
+/// (`mass` kg).
+pub fn peak_foot(loads: Loads, mass: f32) -> f32 {
+    var most = 0.0
+    for t in 0..loads.forces.len() {
+        if !loads.feasible[t] {
+            continue
+        }
+        for f in loads.forces[t] {
+            most = max(most, length(f))
+        }
+    }
+    most / (mass * 9.81)
+}
+
+/// The muscles' total mass (kg).
+pub fn muscle_mass(m: [Sized; 7]) -> f32 {
+    var total = 0.0
+    for x in m {
+        total += x.mass
+    }
+    total
+}
+
+/// Where each group's belly lies off the line between its bones' joints (`GROUPS`' order; the
+/// left side's, a unit direction in rest space): the haunch's hamstrings behind and outside the
+/// thigh, the gastrocnemius behind the gaskin, the triceps behind the upper arm, the carpal
+/// extensors before the forearm, the epaxials over the spine, the neck's over its vertebrae, the
+/// scapula's muscles outside it (**proposed**: a deer's superficial muscles, as a dissection's
+/// drawings lay them).
+pub const OUTWARD: [vec3; 7] = [
+    vec3(0.35, 0.0, -0.94),
+    vec3(0.0, 0.0, -1.0),
+    vec3(0.3, 0.0, -0.95),
+    vec3(0.3, 0.0, 0.95),
+    vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+    vec3(1.0, 0.0, 0.0),
+]
+
+/// How far off the midline the paired axial muscles (the back's, the neck's) lie, as a share of
+/// the chest's half-width (**proposed**).
+pub const BESIDE: f32 = 0.3
+
+/// A muscle part: an anatomy kit's spindle on its bone, with channels.
+type MusclePart<C> = Placed<With<anatomy::Muscle, C>>
+
+/// The muscles' parts (`GROUPS`' order), each a mirrored pair.
+pub type MuscleParts<C> = Then<Then<Then<Then<Then<Then<MusclePart<C>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>, MusclePart<C>>
+
+/// A kit body with its muscles (`muscled`).
+pub type MuscledParts<C> = Then<QuadrupedParts<C>, engine::creature::Group<MuscleParts<C>>>
+
+/// The kit's body of proportions `q` coloured by `look`, with the muscles `m` sized
+/// (`muscles`): each group's belly an anatomy kit's spindle (`anatomy::muscle`) from its origin's
+/// joint to its insertion's, its line of action its moment arm off theirs (`OUTWARD`) and its
+/// centre half its radius inside that (a belly fills the limb under its skin, not set on it), its
+/// belly's radius its section's, blended into the body over the skin's width; a limb's pair one each
+/// side, an axial group's a pair beside the midline (`BESIDE`), each half its section. A group's
+/// belly inside the authored body changes nothing.
+pub fn muscled<C: Copy + GpuData>(
+    q: Quadruped,
+    m: [Sized; 7],
+    look: Look<C>,
+) -> engine::creature::Body<MuscledParts<C>> {
+    let s = skeleton(q)
+    let f = frame(q)
+    // Each group's spindle on its origin's bone, in that bone's space.
+    let spindle = |i: u32| {
+        let gr = GROUPS[i]
+        let from = s.find(gr.from)
+        let a = s.rest(from)
+        let b = s.rest(s.find(gr.to))
+        let radius = if gr.limb { m[i].radius } else { m[i].radius * sqrt(0.5) }
+        let beside = if gr.limb { vec3(0.0) } else { vec3(BESIDE * f.half_width, 0.0, 0.0) }
+        let off = OUTWARD[i] * max(m[i].arm - 0.5 * radius, 0.0) + beside
+        (from, anatomy::muscle(off, b - a + off, radius))
+    }
+    let skin = smooth(0.6 * f.leg)
+    let tint = [look.back, look.legs, look.legs, look.legs, look.back, look.back, look.back]
+    body(q, look).add(
+        group(
+            s,
+            "muscles",
+            |g: Inside| {
+                let (b0, m0) = spindle(0)
+                let (b1, m1) = spindle(1)
+                let (b2, m2) = spindle(2)
+                let (b3, m3) = spindle(3)
+                let (b4, m4) = spindle(4)
+                let (b5, m5) = spindle(5)
+                let (b6, m6) = spindle(6)
+                g.join(GROUPS[0].name, b0, m0.with(tint[0]), seam: skin)
+                    .join(GROUPS[1].name, b1, m1.with(tint[1]), seam: skin)
+                    .join(GROUPS[2].name, b2, m2.with(tint[2]), seam: skin)
+                    .join(GROUPS[3].name, b3, m3.with(tint[3]), seam: skin)
+                    .join(GROUPS[4].name, b4, m4.with(tint[4]), seam: skin)
+                    .join(GROUPS[5].name, b5, m5.with(tint[5]), seam: skin)
+                    .join(GROUPS[6].name, b6, m6.with(tint[6]), seam: skin)
+            },
+            seam: skin,
+            mirror: true,
+        ),
+    )
+}

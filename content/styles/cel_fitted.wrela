@@ -30,6 +30,12 @@ impl Style for CelFitted {
     const FLAT: f32 = Cel::FLAT
     const LINE_DARK: f32 = Cel::LINE_DARK
     const LINE_PX: f32 = Cel::LINE_PX
+    const ANTICIPATE: f32 = Cel::ANTICIPATE
+    const ANTICIPATE_S: f32 = Cel::ANTICIPATE_S
+    const OVERSHOOT: f32 = Cel::OVERSHOOT
+    const EXAGGERATE: f32 = Cel::EXAGGERATE
+    const ON_TWOS: bool = Cel::ON_TWOS
+    const HIGHLIGHT: f32 = Cel::HIGHLIGHT
     type Out = Written
 
     fn written(colour: vec4, s: Substance) -> Written {

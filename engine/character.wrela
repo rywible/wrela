@@ -331,6 +331,29 @@ pub fn character(
     }
 }
 
+/// How rough a character's part is to count as glossy (an eye's cornea, a wet nose): a banded
+/// look gives it one band of highlight, and the rest of the character none.
+pub const GLOSSY: f32 = 0.2
+
+/// A character's specular light at a point lit as `s` says, seen along `v`: the physical gloss
+/// (`light::gloss`: the sun's glint at its mirror direction, and what's reflected), or, in a
+/// look with a `HIGHLIGHT`, one band where a glossy part's reflection comes within its cosine of
+/// the sun (a cel eye's single highlight), and none elsewhere.
+pub fn highlight<Y: Style>(light: Light, s: Lit, v: vec3) -> vec3 {
+    if Y::HIGHLIGHT <= 0.0 || light.clay != 0 {
+        return gloss(light, s, v)
+    }
+    if s.rough >= GLOSSY {
+        return vec3(0.0)
+    }
+    let mirror = 2.0 * dot(v, s.n) * s.n - v
+    light.sun_colour * (BAND * s.sun * step(Y::HIGHLIGHT, dot(mirror, light.sun)))
+}
+
+/// How bright a banded look's highlight is, per unit of the sun's colour (the cel look's water's
+/// and wet stone's too).
+pub const BAND: f32 = 0.6
+
 /// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the
 /// sky light, through the haze; its tag the character's class and its part.
 @fragment
@@ -366,7 +389,7 @@ pub fn character_shade<Q: Switches, Y: Style>(
     let rough = min(1.0, sqrt(sqrt(r2 * r2 + 0.25 * (dot(dx, dx) + dot(dy, dy)))))
     // A polished surface reflects the screen and the specular probe (`lit::reflect`).
     let reflected = lit::reflect(lt, c.world, n, rough, reflected)
-    let specular = gloss(
+    let specular = highlight::<Y>(
         lt.light,
         Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },
         normalize(lt.cam.eye - c.world),

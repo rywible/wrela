@@ -68,6 +68,9 @@ pub struct Walker: Copy + Eq + Plain + StateHash + Serialize + SimState {
     /// its pitch (radians, nose up), each eased.
     pub height: f32,
     pub pitch: f32,
+    /// A smooth body's sway across its heading (m, `Body::sway`) and its rate (m/s).
+    pub lean: f32,
+    pub lean_rate: f32,
 }
 
 /// A path: a creature follows points along it, by distance (m).
@@ -95,7 +98,35 @@ pub struct Body: Copy {
     pub spring_bones: Bounded<u32, SPRINGS>,
     pub spring_tips: Bounded<vec3, SPRINGS>,
     pub stiffness: Bounded<f32, SPRINGS>,
+    /// How far a swinging foot keeps over the ground under its arc (m): it lifts higher where the
+    /// ground between its lift and its landing rises (a log, a step); 0 lifts by its walk's `lift`
+    /// alone, whatever's under it.
+    pub clear: f32 = 0.0,
+    /// How far below its rest height its body walks (m): its legs flexed, so a stride's foot is
+    /// within their reach (0: at its rest height, a leg straightened past its reach dropping the
+    /// body at once to it).
+    pub crouch: f32 = 0.0,
+    /// Whether its motion is smooth to its second derivative where the walk allows (a load's
+    /// inverse dynamics reads it, `loads`): a swing lifts by sin² of its progress (at rest as it
+    /// lifts and lands), its knee bends toward a fixed pole (`bend_pole`), its height follows its
+    /// planted feet's mean (not their lowest: a step's last foot up raised it at once) and its
+    /// pitch their slope, and a leg past its reach lowers the body over `DROP_EASE` (its foot
+    /// hanging meanwhile) rather than at once.
+    pub smooth: bool = false,
+    /// The share of its feet's slope its body pitches by (1: the slope's; less keeps its trunk
+    /// nearer level on a grade, its centre of mass over its feet).
+    pub follow: f32 = 1.0,
+    /// How far a smooth body sways its trunk across toward its planted feet (a share of the way
+    /// to their centroid, each foot weighted by where it is in its walk's stance: none as it lands
+    /// or lifts): 0, no sway.
+    pub sway: f32 = 0.0,
+    /// How far its head's chain nods as it walks (m: half the range its first spring's target
+    /// moves along its trunk's up, `nodded`): 0, none.
+    pub nod: f32 = 0.0,
 }
+
+/// How fast a smooth body (`Body::smooth`) lowers to a leg past its reach (per second).
+pub const DROP_EASE: f32 = 4.0
 
 /// The body a skeleton has for walking: its legs' rest soles and hips, and springs on the
 /// bones of two chains (each listed from its root): `head` (neck to head) and `tail`, `head_k`
@@ -146,6 +177,82 @@ pub fn body_frame(w: Walker) -> mat4 {
     translate(w.root.pos + vec3(0.0, w.height, 0.0)) * rotate_y(w.root.heading) * rotate_x(-w.pitch)
 }
 
+/// Walker `w`'s frame as body `b` walks: a smooth body's pitch turns its trunk about its hips'
+/// middle (its trunk tilts over its feet, its centre of mass staying over them on a grade);
+/// another's about its root's ground (`body_frame`).
+pub fn frame_of(w: Walker, b: Body) -> mat4 {
+    if !b.smooth {
+        return body_frame(w)
+    }
+    let pivot = vec3(
+        0.0,
+        0.25 * (b.hips[0].y + b.hips[1].y + b.hips[2].y + b.hips[3].y),
+        0.25 * (b.hips[0].z + b.hips[1].z + b.hips[2].z + b.hips[3].z),
+    )
+    translate(w.root.pos + vec3(0.0, w.height, 0.0) + swayed(w, b)) *
+        rotate_y(w.root.heading) *
+        translate(pivot) *
+        rotate_x(-w.pitch) *
+        translate(-pivot)
+}
+
+/// How far a smooth body's trunk sways across (world space, on the plane): its `Walker::lean`,
+/// across its heading.
+fn swayed(w: Walker, b: Body) -> vec3 {
+    let across = vec2(cos(w.root.heading), -sin(w.root.heading))
+    vec3(across.x * w.lean, 0.0, across.y * w.lean)
+}
+
+/// Where a smooth body's sway would put its trunk across its heading (m): `Body::sway` of the way
+/// from its root to its planted feet's centroid, each foot weighed by sin(π · its stance's share
+/// gone) as it walks `walk` (none as it lands or lifts), or, standing, each alike.
+fn lean_toward(w: Walker, b: Body, walk: Walk) -> f32 {
+    let moving = w.speed > MOVING
+    var centre = vec2(0.0)
+    var weight = 0.0
+    for i in 0..4 {
+        let t = (w.phase + walk.offsets[i]) % 1.0
+        if w.feet[i].planted && (t < walk.duty || !moving) {
+            let k = if moving { sin(PI * t / walk.duty) } else { 1.0 }
+            centre += w.feet[i].at.xz * k
+            weight += k
+        }
+    }
+    if weight < 1.0e-4 {
+        return w.lean
+    }
+    let across = vec2(cos(w.root.heading), -sin(w.root.heading))
+    dot(centre / weight - w.root.pos.xz, across) * b.sway
+}
+
+/// A smooth body's lean eased over `dt` s toward where its sway would put it walking `walk`
+/// (`lean_toward`): critically damped at `LEAN_RATE`, its acceleration no more than `LEAN_ACCEL`
+/// (its weight shifted, not thrown: the target jumps as a foot's weight comes and goes).
+fn ease_lean(w: mut Walker, b: Body, walk: Walk, dt: f32) {
+    if b.sway == 0.0 {
+        return
+    }
+    let to = lean_toward(w, b, walk)
+    let k = LEAN_RATE
+    let a = clamp(k * k * (to - w.lean) - 2.0 * k * w.lean_rate, -LEAN_ACCEL, LEAN_ACCEL)
+    w.lean_rate += a * dt
+    w.lean += w.lean_rate * dt
+}
+
+/// The sway's spring (rad/s) and its largest acceleration (m/s², **proposed**: a walk's lateral
+/// sway of a few centimetres a stride asks under 1 m/s²; twice that keeps up with it).
+pub const LEAN_RATE: f32 = 20.0
+pub const LEAN_ACCEL: f32 = 4.0
+
+/// Where leg `i`'s rest sole is as walker `w` stands in frame `m` (`frame_of`): a smooth body's
+/// plumb under its hip (its legs stand upright as its trunk tilts), another's carried by the frame.
+fn rest_sole(w: Walker, b: Body, m: mat4, i: u32) -> vec3 {
+    if !b.smooth {
+        return apply(m, b.soles[i])
+    }
+    apply(m, b.hips[i]) + (rotate_y(w.root.heading) * vec4(b.soles[i] - b.hips[i], 0.0)).xyz
+}
+
 /// A positive pitch follows higher forefeet: the body's nose goes up in world space.
 @test
 fn an_uphill_pitch_raises_the_front_of_the_body() {
@@ -164,8 +271,8 @@ fn an_uphill_pitch_raises_the_front_of_the_body() {
 /// A box holding the walker's body posed: `rest` (a box holding it at rest) carried by its
 /// body's frame, `slack` wider each way for what the pose moves past it (a leg's reach, a
 /// spring's sway).
-pub fn posed_bounds(w: Walker, rest: Box3, slack: f32) -> Box3 {
-    let m = body_frame(w)
+pub fn posed_bounds(w: Walker, b: Body, rest: Box3, slack: f32) -> Box3 {
+    let m = frame_of(w, b)
     var lo = vec3(1.0e9)
     var hi = vec3(-1.0e9)
     for i in 0..8 {
@@ -201,25 +308,45 @@ fn still(root: Transform) -> Walker {
         along: 0.0,
         height: 0.0,
         pitch: 0.0,
+        lean: 0.0,
+        lean_rate: 0.0,
     }
 }
 
 /// A walker standing at `at` on `terrain`, facing `heading`, its feet planted under it and its
 /// springs at rest.
 pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker {
-    var w = still(Transform { pos: vec3(at.x, terrain.height(at.x, at.y), at.y), heading })
-    let m = body_frame(w)
+    var w = still(Transform { pos: vec3(at.x, 0.0, at.y), heading })
+    w.root.pos.y = ground_under(terrain, b, w.root)
+    let m = frame_of(w, b)
     for i in 0..4 {
-        let rest = apply(m, b.soles[i])
+        let rest = rest_sole(w, b, m, i)
         let hit = below(terrain, rest)
         w.feet[i] = Foot { planted: true, at: hit.point, normal: hit.normal, from: hit.point }
     }
     settle_body(mut w, b, dt: 1.0)
-    let m = body_frame(w)
+    let m = frame_of(w, b)
     for i in 0..b.spring_bones.len() {
         w.springs[i] = Spring { pos: apply(m, b.spring_tips[i]), vel: vec3(0.0) }
     }
     w
+}
+
+/// The ground's height a body's height is held over at `root`: under it, or, for a smooth body,
+/// its mean along the body's length (fore sole to hind, five points: a step's edge passes under
+/// it as a ramp, not at once; a plane's is the same).
+fn ground_under<T: Terrain>(terrain: T, b: Body, root: Transform) -> f32 {
+    if !b.smooth {
+        return terrain.height(root.pos.x, root.pos.z)
+    }
+    let forward = root.forward()
+    let (fore, hind) = (0.5 * (b.soles[0].z + b.soles[1].z), 0.5 * (b.soles[2].z + b.soles[3].z))
+    var sum = 0.0
+    for k in 0..5 {
+        let p = root.pos + forward * mix(hind, fore, f32(k) / 4.0)
+        sum += terrain.height(p.x, p.z)
+    }
+    0.2 * sum
 }
 
 /// How much of a leg's length its reach is: a leg never straightens fully, so its knee bends
@@ -228,12 +355,17 @@ const REACH: f32 = 0.995
 
 /// How far the body must come down (m, 0 or less) for leg `i` to reach its foot: its hip moves
 /// along world up as its height changes, and its ankle's target is fixed (by the foot's place
-/// and the body's turn).
-fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
-    let m = body_frame(w)
+/// and the body's turn, its heel rolled up by `heel` radians as `palette` rolls it).
+pub fn drop_to_reach(w: Walker, b: Body, i: u32, heel: f32 = 0.0) -> f32 {
+    let m = frame_of(w, b)
     let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
     let hip = apply(m, b.hips[i])
-    let ankle = w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    let ankle = if heel == 0.0 {
+        w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    } else {
+        // Its heel rolled up about its toe, as `palette` rolls it.
+        apply(m, ankle_target(b, i, apply(rigid_inverse(m), w.feet[i].at), heel).0)
+    }
     let v = ankle - hip
     let r = b.reach[i]
     if dot(v, v) <= r * r {
@@ -292,6 +424,27 @@ fn a_pitched_body_lowers_along_world_up_to_reach_its_feet() {
     }
 }
 
+/// How far a smooth body rides down over its planted legs (m, 0 or less): each held at its rest
+/// length over its foot (an inverted pendulum's vault: lowest where its legs are spread farthest,
+/// at a stride's double support; highest mid-stance), their mean.
+fn vault(w: Walker, b: Body) -> f32 {
+    let m = frame_of(w, b)
+    var sum = 0.0
+    var n = 0.0
+    for i in 0..4 {
+        if w.feet[i].planted {
+            let rest = b.hips[i].y - b.foot_height[i]
+            let spread = length((apply(m, b.hips[i]) - w.feet[i].at).xz)
+            sum += sqrt(max(rest * rest - spread * spread, 0.0)) - rest
+            n += 1.0
+        }
+    }
+    sum / max(n, 1.0)
+}
+
+/// How fast a smooth body's height follows its feet and its vault (per second).
+pub const VAULT_EASE: f32 = 16.0
+
 /// Its body's height and pitch, eased toward what its feet ask: the pelvis as low as its lowest
 /// plant, and pitched by its fore feet's height over its hind's; then lowered at once as far as
 /// a leg needs to reach its foot, so no planted foot is dragged.
@@ -300,21 +453,45 @@ fn settle_body(w: mut Walker, b: Body, dt: f32) {
     var lowest = 1.0e9
     var fore = 0.0
     var hind = 0.0
+    var fores = 0.0
+    var hinds = 0.0
     for i in 0..4 {
+        // A smooth body reads its planted feet alone (a swinging foot's lift nodded it).
+        if b.smooth && !w.feet[i].planted {
+            continue
+        }
         let y = w.feet[i].at.y - ground
         lowest = min(lowest, y)
-        if i < 2 { fore += y } else { hind += y }
+        if i < 2 {
+            fore += y
+            fores += 1.0
+        } else {
+            hind += y
+            hinds += 1.0
+        }
+    }
+    if b.smooth {
+        // Its planted feet's mean height (fore and hind alike).
+        let f = fore / max(fores, 1.0)
+        let h = hind / max(hinds, 1.0)
+        lowest = 0.5 * (if fores > 0.0 { f } else { h } + if hinds > 0.0 { h } else { f })
+        fore = 2.0 * f
+        hind = 2.0 * h
     }
     let length = max(b.soles[0].z - b.soles[2].z, 0.1)
-    let want_pitch = atan2(0.5 * (fore - hind), length)
+    let want_pitch = atan2(0.5 * (fore - hind), length) * b.follow
     let ease = 1.0 - exp(-dt * 8.0)
-    w.height += (min(lowest, 0.0) - w.height) * ease
+    // A smooth body vaults over its planted legs (`vault`), eased quicker so its bob keeps up.
+    let (vaulted, rise) = if b.smooth { (vault(w, b), 1.0 - exp(-dt * VAULT_EASE)) } else {
+        (0.0, ease)
+    }
+    w.height += (min(lowest, 0.0) - b.crouch + vaulted - w.height) * rise
     w.pitch += (want_pitch - w.pitch) * ease
     var drop = 0.0
     for i in 0..4 {
         drop = min(drop, drop_to_reach(w, b, i))
     }
-    w.height += drop
+    w.height += if b.smooth { drop * (1.0 - exp(-dt * DROP_EASE)) } else { drop }
 }
 
 /// One tick of `dt` seconds of a walker following `path` over `terrain`, its body `b`, walking
@@ -339,7 +516,7 @@ pub fn step<T: Terrain, P: Path>(
     w.speed += (speed_to - w.speed) * (1.0 - exp(-dt * 2.0))
     w.turn = clamp(diff * walk.steer, -0.8, 0.8) * min(w.speed / max(walk.speed, 0.01), 1.0)
     w.root = w.root.advance(vec3(0.0, w.turn * dt, w.speed * dt))
-    w.root.pos.y = terrain.height(w.root.pos.x, w.root.pos.z)
+    w.root.pos.y = ground_under(terrain, b, w.root)
     // Its progress: the path's point nearest it, searched a little ahead of the last.
     var best = w.along
     var nearest = 1.0e9
@@ -354,12 +531,12 @@ pub fn step<T: Terrain, P: Path>(
     w.along = best
     // The cycle: faster with speed; a stride's length follows.
     let cadence = walk.cadence.x + walk.cadence.y * w.speed
-    let moving = w.speed > 0.02
+    let moving = w.speed > MOVING
     if moving {
         w.phase = (w.phase + dt * cadence) % 1.0
     }
     let travel = walk.duty * w.speed / cadence
-    let m = body_frame(w)
+    let m = frame_of(w, b)
     let forward = w.root.forward()
     for i in 0..4 {
         let t = (w.phase + walk.offsets[i]) % 1.0
@@ -367,8 +544,16 @@ pub fn step<T: Terrain, P: Path>(
         var foot = w.feet[i]
         if stance {
             if !foot.planted {
-                // Touchdown: where the ground is under its target.
-                let hit = below(terrain, landing(w, b, walk, i, travel, cadence, forward, m, t))
+                // Touchdown: where the ground is under its target (a smooth body's where it was
+                // as its foot came down, `t` of a cycle ago: its place doesn't hang on where the
+                // frames fall in the cycle).
+                let since = if b.smooth && moving { forward * (w.speed * t / cadence) } else {
+                    vec3(0.0)
+                }
+                let hit = below(
+                    terrain,
+                    landing(w, b, walk, i, travel, cadence, forward, m, t) - since,
+                )
                 foot = Foot { planted: true, at: hit.point, normal: hit.normal, from: foot.from }
             }
         } else {
@@ -380,17 +565,101 @@ pub fn step<T: Terrain, P: Path>(
             let s = (t - walk.duty) / (1.0 - walk.duty)
             let land = below(terrain, landing(w, b, walk, i, travel, cadence, forward, m, t))
             let e = s * s * (3.0 - 2.0 * s)
-            foot.at = mix(foot.from, land.point, vec3(e)) + vec3(0.0, walk.lift * sin(PI * s), 0.0)
+            let lift = swing_lift(terrain, foot.from, land.point, walk.lift, b.clear, b.smooth)
+            // A smooth body's foot lifts by sin² (at rest as it lifts and lands; C2 profiles, a
+            // smootherstep along and sin⁴ up, cost more mid-swing than they spared at its ends).
+            let arc = arc_at(s, b.smooth)
+            foot.at = mix(foot.from, land.point, vec3(e)) + vec3(0.0, lift * arc, 0.0)
             foot.normal = land.normal
         }
         w.feet[i] = foot
     }
+    ease_lean(mut w, b, walk, dt)
     settle_body(mut w, b, dt)
-    // The springs: each bone's tip follows where its rigid pose puts it, critically damped.
-    let m = body_frame(w)
+    // The springs: each bone's tip follows where its rigid pose puts it (`spring_target`),
+    // critically damped.
+    let m = frame_of(w, b)
     for i in 0..b.spring_bones.len() {
-        w.springs[i].follow(apply(m, b.spring_tips[i]), b.stiffness[i], dt)
+        w.springs[i].follow(apply(m, spring_target(w, b, walk, i)), b.stiffness[i], dt)
     }
+}
+
+/// How fast a walker goes (m/s) to count as moving: its cycle advances, and its feet keep their
+/// stances (stopped, every foot is planted).
+const MOVING: f32 = 0.02
+
+/// Where spring `i`'s tip is as walker `w` walks `walk` (the body's space): its rest tip, the head
+/// chain's first nodded as it walks (`nodded`).
+pub fn spring_target(w: Walker, b: Body, walk: Walk, i: u32) -> vec3 {
+    if i == 0 { nodded(w, b, walk) } else { b.spring_tips[i] }
+}
+
+/// The head's chain's first spring's target as walker `w` walks `walk` (as far as it's up to its
+/// walk's speed): its rest tip lowered by `Body::nod` as one forefoot carries it alone and raised
+/// as both do, twice a stride (a walking ungulate's head is highest in its forelimbs' double
+/// support and lowest in their single support: Loscher et al. 2016). Its forefeet's carrying is
+/// each planted forefoot's sin(π · its stance's share gone), against its range over the cycle.
+fn nodded(w: Walker, b: Body, walk: Walk) -> vec3 {
+    if b.nod == 0.0 {
+        return b.spring_tips[0]
+    }
+    let walking = min(w.speed / max(walk.speed, 0.01), 1.0)
+    let carried = |phase: f32| {
+        var sum = 0.0
+        for i in 0..2 {
+            let t = (phase + walk.offsets[i]) % 1.0
+            if t < walk.duty {
+                sum += sin(PI * t / walk.duty)
+            }
+        }
+        sum
+    }
+    var lo = 1.0e9
+    var hi = -1.0e9
+    for k in 0..NOD_SAMPLES {
+        let c = carried(f32(k) / f32(NOD_SAMPLES))
+        lo = min(lo, c)
+        hi = max(hi, c)
+    }
+    let share = (carried(w.phase) - lo) / max(hi - lo, 1.0e-4)
+    b.spring_tips[0] - vec3(0.0, b.nod * walking * (2.0 * share - 1.0), 0.0)
+}
+
+/// The phases a cycle is sampled at for its forefeet's range (`nodded`).
+const NOD_SAMPLES: u32 = 32
+
+/// A swing's lift at `s` of its way (0 to 1) as a share of its height: sin, or a smooth body's
+/// sin².
+fn arc_at(s: f32, smooth: bool) -> f32 {
+    let sn = sin(PI * s)
+    if smooth { sn * sn } else { sn }
+}
+
+/// How high a foot swinging from `from` to `to` lifts: `lift`, or, keeping `clear` over the
+/// ground under its arc (sampled at eighths of it), as much more as the ground there asks: its
+/// rise over the straight way between, over the arc's own height there, and `clear`.
+fn swing_lift<T: Terrain>(
+    terrain: T,
+    from: vec3,
+    to: vec3,
+    lift: f32,
+    clear: f32,
+    smooth: bool,
+) -> f32 {
+    if clear <= 0.0 {
+        return lift
+    }
+    var most = max(lift, clear)
+    for k in 1..8 {
+        let u = f32(k) / 8.0
+        let e = u * u * (3.0 - 2.0 * u)
+        let p = mix(from, to, vec3(e))
+        let rise = terrain.height(p.x, p.z) - p.y
+        if rise > 0.0 {
+            most = max(most, clear + rise / arc_at(u, smooth))
+        }
+    }
+    most
 }
 
 /// Where leg `i`'s foot lands: its rest sole where the body will be when it lands, ahead of
@@ -408,14 +677,14 @@ fn landing(
 ) -> vec3 {
     // How long until it lands (the rest of its swing), and the body's travel meanwhile.
     let until = if t >= walk.duty { (1.0 - t) / cadence } else { 0.0 }
-    apply(m, b.soles[i]) + forward * (w.speed * until + travel * 0.5)
+    rest_sole(w, b, m, i) + forward * (w.speed * until + travel * 0.5)
 }
 
 /// Spring `i`'s energy (its motion's and its stretch's, for its stiffness): a turn puts energy
 /// in, and it decays once the body moves steadily.
 pub fn energy_of(w: Walker, b: Body, i: u32) -> f32 {
     let sp = w.springs[i]
-    let d = sp.pos - apply(body_frame(w), b.spring_tips[i])
+    let d = sp.pos - apply(frame_of(w, b), b.spring_tips[i])
     0.5 * dot(sp.vel, sp.vel) + 0.5 * b.stiffness[i] * dot(d, d)
 }
 
@@ -430,6 +699,7 @@ pub fn between(a: Walker, b: Walker, alpha: f32) -> Walker {
     }
     out.height = mix(a.height, b.height, alpha)
     out.pitch = mix(a.pitch, b.pitch, alpha)
+    out.lean = mix(a.lean, b.lean, alpha)
     for i in 0..4 {
         out.feet[i].at = mix(a.feet[i].at, b.feet[i].at, vec3(alpha))
     }
@@ -446,10 +716,12 @@ fn about(r: Quat, at: vec3) -> mat4 {
 
 /// The palette that poses skeleton `s` as walker `w` stands: each leg's foot joint over its
 /// sole, its hip to its ankle bent by two-bone IK in the plane of its rest knee, its ankle and
-/// foot keeping their rest turn; each sprung bone turned toward its spring about its joint,
-/// carrying the bones below it; the rest as their parents go; all in the body's frame.
-pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
-    let m = body_frame(w)
+/// foot keeping their rest turn (or, by `heel[i]` radians, rolled up about its toe: the toe stays
+/// where it's planted, `engine::motion`'s anticipation); each sprung bone turned toward its
+/// spring about its joint, carrying the bones below it; the rest as their parents go; all in the
+/// body's frame.
+pub fn palette(s: Skeleton, b: Body, w: Walker, heel: [f32; 4] = [0.0; 4]) -> Palette {
+    let m = frame_of(w, b)
     let inv = rigid_inverse(m)
     // Each bone's matrix in the body's space: rest to posed.
     var mats = [identity(); MAX_BONES]
@@ -457,17 +729,17 @@ pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
     let legs = s.legs()
     for i in 0..s.leg_count() {
         let j = legs[i].joints
-        let (h, k, a, f) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]), s.rest(j[3]))
+        let (h, k, a) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]))
         // The foot joint's target, in the body's space: over its sole by its rest height.
-        let sole = apply(inv, w.feet[i].at)
-        let foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
-        let ankle_to = foot_to - (f - a)
-        let (knee, ankle) = bend(h, k, a, ankle_to)
+        let (ankle_to, roll) = ankle_target(b, i, apply(inv, w.feet[i].at), heel[i])
+        let (knee, ankle) = if b.smooth { bend_pole(h, k, a, ankle_to) } else {
+            bend(h, k, a, ankle_to)
+        }
         let upper = turn(normalize(k - h), normalize(knee - h))
         let lower = turn(normalize(a - k), normalize(ankle - knee))
         mats[j[0].index] = bone_matrix(upper, h, h)
         mats[j[1].index] = bone_matrix(lower, k, knee)
-        let below = bone_matrix(Quat::identity(), a, ankle)
+        let below = bone_matrix(roll, a, ankle)
         mats[j[2].index] = below
         mats[j[3].index] = below
         for x in j {
@@ -524,6 +796,23 @@ pub struct Palette: Copy + GpuData {
     pub bones: [mat4; MAX_BONES],
 }
 
+/// Leg `i`'s ankle's target in the body's space, its sole at `sole` there, and its foot's turn:
+/// its foot joint over its sole by its rest height, and its heel rolled up by `heel` radians about
+/// its toe (`TOE` of its height ahead of its sole: the toe stays where it's planted).
+fn ankle_target(b: Body, i: u32, sole: vec3, heel: f32) -> (vec3, Quat) {
+    var foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)
+    var roll = Quat::identity()
+    if heel != 0.0 {
+        roll = Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel)
+        foot_to = apply(about(roll, sole + vec3(0.0, 0.0, TOE * b.foot_height[i])), foot_to)
+    }
+    (foot_to - roll.rotate(b.ankle_to_foot[i]), roll)
+}
+
+/// How far ahead of its sole a foot's toe is, against its foot joint's height over its sole
+/// (**proposed**: a hoof's toe a little ahead of its fetlock).
+pub const TOE: f32 = 0.5
+
 /// The rotation that turns the unit vector `a` to the unit vector `b`, the short way.
 pub fn turn(a: vec3, b: vec3) -> Quat {
     let c = dot(a, b)
@@ -546,6 +835,21 @@ pub fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
 /// at `k` and `a`, when its end goes to `to`: in the plane of the rest bend, each bone keeping
 /// its length, and the end pulled no farther than the limb reaches.
 pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
+    bent(h, k, a, to, k - h)
+}
+
+/// `bend` with its knee turned toward a fixed pole: the rest knee's bend off the rest limb's line
+/// (from its root to its end), across the reach. `bend`'s side, the rest knee's offset across the
+/// reach, vanishes when the reach lies along it (a leg straight down mid-swing) and the knee flips
+/// side from one frame to the next; the pole's doesn't while the reach stays off the pole.
+pub fn bend_pole(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
+    let limb = if length(a - h) > 1.0e-6 { normalize(a - h) } else { normalize(k - h) }
+    bent(h, k, a, to, (k - h) - limb * dot(k - h, limb))
+}
+
+/// The two-bone solve `bend` and `bend_pole` share: the knee pushed across the reach toward
+/// `toward`'s part across it.
+fn bent(h: vec3, k: vec3, a: vec3, to: vec3, toward: vec3) -> (vec3, vec3) {
     let (l1, l2) = (length(k - h), length(a - k))
     let span = to - h
     let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)
@@ -555,9 +859,9 @@ pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
         // A folded rest limb has its end at its root; its first bone still gives a direction.
         normalize(k - h)
     }
-    // Across the reach, toward the rest knee.
-    let rest_out = (k - h) - dir * dot(k - h, dir)
-    let out = if length(rest_out) > 1.0e-6 { normalize(rest_out) } else {
+    // Across the reach, toward `toward`.
+    let across_reach = toward - dir * dot(toward, dir)
+    let out = if length(across_reach) > 1.0e-6 { normalize(across_reach) } else {
         let across = if abs(dir.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
         normalize(cross(dir, across))
     }

@@ -1,0 +1,268 @@
+// The gait tool (docs/plan-world-class-3.md §F5): the grazer's gaits optimized in simulation.
+//
+// ```text
+// wrela tool gait -- [--generations <n>] [--seconds <s>] [--write]
+// wrela tool gait -- --grow [--write]
+// ```
+//
+// For each pace (walk, trot, bound: `kit::gaits::PACES`) on each ground (level, 15° and 30° up, a
+// 0.3 m step, uneven: `GROUNDS`), CMA-ES (studio/toolkit's, `POPULATION` a generation, from
+// `SEED`) searches the grazer's genome's ranges (`gaits::gait_at`: duty, lift, cadence, the hind
+// legs' lag) from the hand-set walk's point, each candidate run for `--seconds` (8) after setting
+// off and scored (`gaits::both_ways`: a grade up it and down it) on the helpers at once, for `--generations` (12). Each
+// generation's best is printed (its total, effort, stability, gap, clearance, infeasible share);
+// then each result's score, and the hand-set walk's on each ground. `--write` writes the results
+// as `content/kit/walks.wrela` (`WALKS`, pace by pace, each pace's grounds in `GROUNDS`' order),
+// and the vale's grazer grown from the level walk as `content/kit/grown.wrela` (its muscles sized
+// from that walk's loads, the grown animal's and the vale's grazer's, and its coat's map: `grow`).
+// `--grow` searches nothing: it grows the grazer from the level walk `kit::walks` has, and
+// `--write` writes `content/kit/grown.wrela` alone (the muscles' rule changed, the walks not).
+
+use kit::coat::{chart_of, coat}
+use kit::gaits::{
+    GROUNDS, GROUND_NAMES, Gait, Ground, HAND, PACES, Pace, SIZING, Score, both_ways, gait_at,
+    run_with,
+}
+use kit::muscles::{Sized, muscle_mass, muscles}
+use kit::roe::{COAT_SEED, VALE_AGE, walk_at}
+use kit::genome::{ROE, grown_segments, quadruped_at}
+use kit::walks::WALKS
+use engine::loads::Segments
+use std::io::print
+use std::tool::{ToolError, args}
+use toolkit::cma::Cma
+use toolkit::whole::write_file
+
+pub const POPULATION: u32 = 8
+pub const SEED: u32 = 5
+
+/// A candidate to score on a helper: its point and what it's scored against.
+struct Candidate: Clone {
+    x: Vec<f32>,
+    pace: u32,
+    ground: Ground,
+    seconds: f32,
+    segs: Segments,
+}
+
+@deterministic
+fn scored(c: take Candidate) -> Score {
+    let p = PACES[c.pace]
+    let q = quadruped_at(ROE, 1.0)
+    both_ways(ROE, q, c.segs.clone(), gait_at(ROE, p, c.x), p, c.ground, c.seconds)
+}
+
+/// The search's start for pace `p`: the hand-set walk's point (its duty, lift, cadence at its
+/// speed and no lag), a quicker cadence for the trot and the bound.
+fn start(p: Pace) -> Vec<f32> {
+    let r = ROE.gait
+    let norm = |v: f32, range: vec2| (v - range.x) / (range.y - range.x)
+    let w = HAND.walk
+    let cadence = match p {
+        Pace::Walk => w.cadence.x + w.cadence.y * w.speed,
+        Pace::Trot => 1.6,
+        Pace::Bound => 2.0,
+    }
+    Vec::from([norm(w.duty, r.duty), norm(w.lift, r.lift), norm(cadence, r.cadence), 0.5, 0.0, 1.0])
+}
+
+fn line(s: Score) -> String {
+    String::from(
+        f"total {s.total:.3}, effort {s.effort:.1} J/m, stability {s.stability:.3} (worst stride {s.worst_stride:.3}), gap {s.gap:.3} m, clearance {s.clearance:.3} m, pierce {s.pierce:.3} m, speed err {s.speed:.3}, infeasible {s.infeasible:.3} (worst stride {s.stride_infeasible:.3}){if s.valid { "" } else { " INVALID" }}",
+    )
+}
+
+/// The vale's grazer grown, as Wrela source (`kit::grown`): the muscles of the grown animal and of
+/// the vale's grazer (at `kit::roe::VALE_AGE`) sized from `level` (the optimized walk on level
+/// ground; at another age by dynamic similarity, `roe::walk_at`) over `SIZING` s, and its coat's map
+/// (`kit::coat::coat`, from `roe::COAT_SEED`). `segs` are the grown animal's segments.
+fn grow(level: Gait, segs: Segments) -> String {
+    let q = quadruped_at(ROE, 1.0)
+    let fq = quadruped_at(ROE, VALE_AGE)
+    let total = segs.total
+    let grown_run = run_with(ROE, q, segs, level, Pace::Walk, Ground {}, SIZING, down: false)
+    // The vale's grazer grown, its walk the grown animal's own; else its walk at its age.
+    let (vale_run, vale_mass) = if VALE_AGE == 1.0 { (grown_run.clone(), total) } else {
+        let vale_walk = walk_at(ROE, level, VALE_AGE)
+        let fsegs = grown_segments(ROE, VALE_AGE)
+        let mass = fsegs.total
+        (run_with(ROE, fq, fsegs, vale_walk, Pace::Walk, Ground {}, SIZING, down: false), mass)
+    }
+    let gm = muscles(ROE, q, grown_run.loads, total)
+    let fm = muscles(ROE, fq, vale_run.loads, vale_mass)
+    print(
+        f"gait: the muscles from the optimized walk: grown {muscle_mass(gm):.2} kg of {total:.2}, the vale's grazer's {muscle_mass(fm):.2} kg (its walk {line(vale_run.score).as_str()})",
+    )
+    let (lo, size) = chart_of(fq)
+    let map = coat(ROE.coat, lo, size, COAT_SEED)
+    var out = String::from(
+        "// The vale's grazer grown (kit::roe, docs/plan-world-class-3.md §F3–F5): written by `wrela tool\n// gait -- --write`. Don't edit: run the tool again.\n\nuse coat::CoatMap\nuse muscles::Sized\n\n",
+    )
+    out.push_str(
+        f"pub const GROWN_MUSCLES: [Sized; 7] = {sized(gm).as_str()}\n\npub const VALE_MUSCLES: [Sized; 7] = {sized(fm).as_str()}\n\npub const VALE_COAT: CoatMap = CoatMap {{\n    words: [",
+    )
+    for i in 0..map.words.len() {
+        out.push_str(if i % 8 == 0 { "\n        " } else { " " })
+        out.push_str(f"{map.words[i]},")
+    }
+    out.push_str(
+        f"\n    ],\n    lo: vec2({map.lo.x}, {map.lo.y}),\n    size: vec2({map.size.x}, {map.size.y}),\n}}\n",
+    )
+    out
+}
+
+/// Muscles' sizes as a Wrela array.
+fn sized(m: [Sized; 7]) -> String {
+    var out = String::from("[")
+    for x in m {
+        out.push_str(
+            f"\n    Sized {{ section: {x.section}, arm: {x.arm}, length: {x.length}, radius: {x.radius}, mass: {x.mass} }},",
+        )
+    }
+    out.push_str("\n]")
+    out
+}
+
+/// A gait as Wrela source.
+fn source(g: Gait) -> String {
+    let w = g.walk
+    String::from(
+        f"    Gait {{\n        walk: Walk {{\n            speed: {w.speed},\n            duty: {w.duty},\n            lift: {w.lift},\n            offsets: [{w.offsets[0]}, {w.offsets[1]}, {w.offsets[2]}, {w.offsets[3]}],\n            cadence: vec2({w.cadence.x}, {w.cadence.y}),\n        }},\n        head_k: {g.head_k},\n        tail_k: {g.tail_k},\n        crouch: {g.crouch},\n        follow: {g.follow},\n    }},\n",
+    )
+}
+
+fn run(given: [String]) -> Result<(), ToolError> {
+    var generations = 12
+    var seconds = 8.0
+    var write = false
+    var grow_only = false
+    var paces = 3
+    for i in 0..given.len() {
+        let a = given[i].as_str()
+        if a == "--generations" && i + 1 < given.len() {
+            generations = u32(given[i + 1].as_str().parse_f32().unwrap_or(12.0))
+        } else if a == "--seconds" && i + 1 < given.len() {
+            seconds = given[i + 1].as_str().parse_f32().unwrap_or(8.0)
+        } else if a == "--paces" && i + 1 < given.len() {
+            paces = u32(given[i + 1].as_str().parse_f32().unwrap_or(3.0))
+        } else if a == "--write" {
+            write = true
+        } else if a == "--grow" {
+            grow_only = true
+        }
+    }
+    if write && paces < PACES.len() {
+        // `kit::walks` holds every pace's: a partial search would write a short table.
+        return Err(ToolError::new("--write searches every pace: drop --paces"))
+    }
+    let q = quadruped_at(ROE, 1.0)
+    let segs = grown_segments(ROE, 1.0)
+    if grow_only {
+        let grown = grow(WALKS[0], segs)
+        if write {
+            write_file("ws/content/kit/grown.wrela", Vec::from([Vec::from(grown.as_bytes())]))?
+            print("gait: wrote content/kit/grown.wrela")
+        }
+        return Ok(())
+    }
+    var out = String::from(
+        "// The grazer's gaits optimized in simulation (kit::gaits, docs/plan-world-class-3.md §F5):\n// written by `wrela tool gait -- --write`; each pace's walk on each ground (`gaits::GROUNDS`'\n// order), pace by pace (`gaits::PACES`). Don't edit: run the tool again.\n\nuse engine::gait::Walk\nuse gaits::Gait\n\npub const WALKS: [Gait; 15] = [\n",
+    )
+    var summary: Vec<String> = Vec::new()
+    var level = HAND
+    for pi in 0..min(paces, PACES.len()) {
+        let p = PACES[pi]
+        for gi in 0..GROUNDS.len() {
+            var cma = Cma::new(start(p), 0.2, SEED + pi * 10 + gi, lambda: POPULATION)
+            var best_x = start(p)
+            var best_score = scored(
+                Candidate {
+                    x: best_x.clone(),
+                    pace: pi,
+                    ground: GROUNDS[gi],
+                    seconds,
+                    segs: segs.clone(),
+                },
+            )
+            for gen in 0..generations {
+                let xs = cma.ask()
+                var tasks: Vec<std::par::Task<Score>> = Vec::new()
+                for x in xs {
+                    tasks.push(
+                        std::par::spawn(
+                            Candidate {
+                                x: x.clone(),
+                                pace: pi,
+                                ground: GROUNDS[gi],
+                                seconds,
+                                segs: segs.clone(),
+                            },
+                            scored,
+                        ),
+                    )
+                }
+                var totals: Vec<f32> = Vec::new()
+                for k in 0..xs.len() {
+                    let s = tasks.remove(0).join()
+                    totals.push(s.total)
+                    if s.total < best_score.total {
+                        best_x = xs[k].clone()
+                        best_score = s
+                    }
+                }
+                cma.tell(totals)
+                print(
+                    f"gait: pace {pi} on {GROUND_NAMES[gi]}, generation {gen + 1}: best {line(best_score).as_str()}",
+                )
+            }
+            let g = gait_at(ROE, p, best_x)
+            if pi == 0 && gi == 0 {
+                level = g
+            }
+            out.push_str(source(g).as_str())
+            summary.push(
+                String::from(
+                    f"pace {pi} on {GROUND_NAMES[gi]}: duty {g.walk.duty:.3}, lift {g.walk.lift:.3}, cadence {g.walk.cadence.x:.3}, crouch {g.crouch:.3}, follow {g.follow:.3}, offsets [{g.walk.offsets[0]:.3}, {g.walk.offsets[1]:.3}, {g.walk.offsets[2]:.3}, {g.walk.offsets[3]:.3}]: {line(best_score).as_str()}",
+                ),
+            )
+        }
+    }
+    out.push_str("]\n")
+    for gi in 0..GROUNDS.len() {
+        let s = scored(
+            Candidate {
+                x: start(Pace::Walk),
+                pace: 0,
+                ground: GROUNDS[gi],
+                seconds,
+                segs: segs.clone(),
+            },
+        )
+        let hand = both_ways(ROE, q, segs.clone(), HAND, Pace::Walk, GROUNDS[gi], seconds)
+        summary.push(
+            String::from(
+                f"the hand-set walk on {GROUND_NAMES[gi]}: {line(hand).as_str()} (its point: {line(s).as_str()})",
+            ),
+        )
+    }
+    for l in summary {
+        print(f"gait: {l.as_str()}")
+    }
+    let grown = grow(level, segs)
+    if write {
+        write_file("ws/content/kit/walks.wrela", Vec::from([Vec::from(out.as_bytes())]))?
+        write_file("ws/content/kit/grown.wrela", Vec::from([Vec::from(grown.as_bytes())]))?
+        print("gait: wrote content/kit/walks.wrela and content/kit/grown.wrela")
+    }
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    match run(args()) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"gait: {e.message()}")
+            1
+        },
+    }
+}

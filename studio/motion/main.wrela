@@ -3,13 +3,13 @@
 // a run of frames on the native host's GPU saved as they're drawn, into a directory.
 //
 // ```text
-// wrela tool motion -- <out-dir> [--size WxH] [capture ...]
+// wrela tool motion -- <out-dir> [--size WxH] [--package <dir>] [--frames-only] [capture ...]
 // ```
 //
-// The floor must be built (`wrela build games/last-green`). Paths are from the workspace's
-// directory (the root `ws`). Each capture is a script of the player's keys (a lookbook shot
-// chosen as a player would: L, its number, Enter) and the frames it keeps, at 60 a second
-// (captures.wrela):
+// The floor must be built (`wrela build games/last-green`), or the package `--package` names.
+// Paths are from the workspace's directory (the root `ws`). Each capture is a script of the
+// player's keys (a lookbook shot chosen as a player would: L, its number, Enter) and the frames
+// it keeps, at 60 a second (captures.wrela):
 //
 // - walk: the floor's walk at a run (P), from the gate, 4 s of it.
 // - reversal: a run from the gate, the camera turned hard left then hard right (the arrow keys
@@ -22,18 +22,20 @@
 // - water: the mere's move: 2 s.
 // - occlusion: the move of the fawn under the beeches, the stand-in and the fawn passing behind
 //   trunks and ferns: 2 s.
+// - trail: the vale's "down the trail" (`--package examples/vale`), its grazer walking toward the
+//   eye: 3 s from its still.
 //
 // The frames before a capture's first still run, so the temporal history is the same; only the
 // kept frames are read back, each encoded as a PNG (`std::tool::image`). Each capture is kept as
 // its frames (`<name>/NNNNN.png`, the frame's number), a clip (`<name>.mp4`, 60 fps,
 // near-lossless, which FFmpeg makes: the tool runs `ffmpeg`, which must be on `PATH`) and a
 // contact sheet of six frames at half size, each labelled by its frame (`<name>-sheet.webp`,
-// composed here). 1280x720 unless `--size` says otherwise. With no capture named, all of them,
-// one at a time.
+// composed here); `--frames-only` makes no clip. 1280x720 unless `--size` says otherwise. With
+// no capture named, all of them but the vale's `trail`, one at a time.
 
 use audio_tool::sheet::Image
 use captures::{Capture, Options, compose, parse_args, picks}
-use lookbook_tool::shots::{BUILD, shown_path}
+use lookbook_tool::shots::shown_path
 use std::io::print
 use std::tool::{Task, ToolError, args, spawn}
 use std::tool::blob
@@ -71,9 +73,16 @@ fn save(frame: take (image::Image, String)) -> Result<(), ToolError> {
     write_png(take img, path.as_str())
 }
 
-/// Capture `c` at `width` × `height` into `out` (a root path): its frames, its clip and its
-/// sheet. The clip's path.
-pub fn shoot(c: Capture, out: str, width: u32, height: u32) -> Result<String, ToolError> {
+/// Capture `c` of the build at `build` (a root path) at `width` × `height` into `out` (a root
+/// path): its frames, its clip (where `clip`) and its sheet. The clip's path, or the frames'.
+pub fn shoot(
+    c: Capture,
+    out: str,
+    width: u32,
+    height: u32,
+    build: str,
+    clip: bool,
+) -> Result<String, ToolError> {
     let frames = String::from(f"{out}/{c.name}")
     let _ = files::remove_all(frames.as_str()).wait()
     let _ = files::make_dirs(frames.as_str()).wait()?
@@ -81,7 +90,7 @@ pub fn shoot(c: Capture, out: str, width: u32, height: u32) -> Result<String, To
     options.width = width
     options.height = height
     options.timeout = 600.0
-    let b = drive::load(BUILD, options).wait()?.build
+    let b = drive::load(build, options).wait()?.build
     let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
     // The frames before the first kept one run alone, so the history is the same.
     let before = [Step::Frames(c.first, c.keys.clone())]
@@ -120,6 +129,11 @@ pub fn shoot(c: Capture, out: str, width: u32, height: u32) -> Result<String, To
         saving.remove(0).join()?
     }
     let _ = drive::close(b).wait()
+    let sheet = compose(cells, shown, half.width, half.height)
+    write_sheet(sheet, f"{out}/{c.name}-sheet.webp")?
+    if !clip {
+        return Ok(frames)
+    }
     let clip = String::from(f"{out}/{c.name}.mp4")
     let from = shown_path(frames.as_str())
     ffmpeg(
@@ -146,8 +160,6 @@ pub fn shoot(c: Capture, out: str, width: u32, height: u32) -> Result<String, To
             ],
         ),
     )?
-    let sheet = compose(cells, shown, half.width, half.height)
-    write_sheet(sheet, f"{out}/{c.name}-sheet.webp")?
     Ok(clip)
 }
 
@@ -178,7 +190,7 @@ pub fn tool() -> u32 {
         return 1
     }
     for c in o.captures {
-        match shoot(c, o.out.as_str(), o.width, o.height) {
+        match shoot(c, o.out.as_str(), o.width, o.height, o.build.as_str(), o.clip) {
             Ok(clip) => print(f"{c.name} {shown_path(clip.as_str())}"),
             Err(e) => {
                 print(f"capture {c.name} failed: {e.message()}")

@@ -1,0 +1,258 @@
+// The vale's grazer (docs/plan-world-class-3.md §F2–F5): a roe doe grown from its genome
+// (`kit::roe`: its proportions at its age, its muscles sized from its optimized walk's loads, its
+// coat's spots grown by reaction-diffusion), cast where a shot casts it. In "down the trail" it
+// walks toward the eye on its optimized walk (`kit::walks`, the level ground's, at its age by
+// dynamic similarity), stepped at the walker's rate from the shot's start, so every capture walks
+// the same frames; in another shot it grazes, its muzzle lowered to the ground.
+
+use engine::gait::{Body, Path, Walker, frame_of, palette, stand, step}
+use engine::grass::{PUSHES, Push}
+use engine::motion::{Motion, Stylizer, stylize, stylizer}
+use engine::creature::MAX_BONES
+use engine::terrain::{Cover, Terrain}
+use kit::gaits::{DT, body_of}
+use kit::genome::{ROE, quadruped_at}
+use kit::grown::{VALE_COAT, VALE_MUSCLES}
+use kit::muscles::MuscledParts
+use kit::quadruped::{frame, skeleton}
+use kit::roe::{CoatLook, VALE_AGE, Face, Hide, attend, faced, roe, walk_at}
+use kit::walks::WALKS
+use landscape::height_at
+use std::quat::Quat
+
+/// The grazer as a stage keeps it while its mesh is realized.
+pub type Grazer = engine::creature::Body<MuscledParts<Hide>>
+
+/// The grazer, grown.
+pub fn grazer() -> Grazer {
+    roe(ROE, VALE_AGE, VALE_MUSCLES)
+}
+
+/// Its look: its hide, its coat's spots at its age, its eyes' irises through their corneas.
+pub fn look() -> CoatLook {
+    kit::roe::look_of(ROE, VALE_AGE, VALE_COAT)
+}
+
+/// What it senses with (`land::senses`, **proposed**: a roe's: its eye at its head's height, a
+/// moving body seen at 40 m, keen within 35° of its way and seen dimly nearly all round, a run
+/// heard at 30 m).
+pub const SENSES = land::senses::Senses {
+    eye: 0.42,
+    sight: 40.0,
+    fov: 0.6,
+    around: 2.7,
+    side: 0.6,
+    hearing: 30.0,
+}
+
+/// Nothing between it and what it senses (the vale's shots are open where it stands).
+pub struct Open {}
+
+impl land::senses::Occluders for Open {
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32 {
+        1.0
+    }
+}
+
+/// Palette `bones` (world space) with its face turned to the eye at `eye` where it senses it
+/// (`land::senses::sense`: a still, silent watcher, seen in its field within its sight), back to
+/// rest where it doesn't; `face` eased over `dt` s (`kit::roe::attend`), `root` where it stands.
+pub fn attended(
+    face: mut Face,
+    bones: [mat4; MAX_BONES],
+    root: engine::sim::Transform,
+    eye: vec3,
+    dt: f32,
+) -> [mat4; MAX_BONES] {
+    let it = land::senses::Presence {
+        at: vec3(eye.x, height_at(eye.xz), eye.z),
+        velocity: vec2(0.0),
+        height: 1.7,
+        loud: 0.0,
+    }
+    let st = land::senses::sense(SENSES, root, it, Open {})
+    let toward = if max(st.seen, st.heard) > land::senses::FAINT {
+        let head = bones[SKELETON.find("head").index]
+        Some((engine::distance::rigid_inverse(head) * vec4(eye, 1.0)).xyz)
+    } else { None }
+    attend(mut face, Q, toward, dt)
+    faced(bones, SKELETON, Q, face)
+}
+
+/// How it's realized: cells no larger than 6 mm (its cannons are under 2 cm thick: the engine's
+/// 2 cm cells lose them), its skin's weights falling off over 2 cm (the engine's 5 cm blends a
+/// roe's hock into its gaskin: a part's weight falls off within its own length).
+pub const REALIZED = engine::look::CreatureLook {
+    surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
+    deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
+}
+
+/// The frames a slice of its realization takes each.
+pub const SLICES: u32 = 1
+
+/// Its proportions and its skeleton at its age.
+pub const Q = quadruped_at(ROE, VALE_AGE)
+pub const SKELETON = skeleton(Q)
+
+/// Its walk: the optimized walk on level ground (`kit::walks`' first), at its age.
+pub const WALK = walk_at(ROE, WALKS[0], VALE_AGE)
+
+/// The walker's body of it, walking `WALK`.
+pub const BODY = body_of(Q, WALK)
+
+/// The vale's relief as the walker's ground.
+pub struct Relief: Copy + GpuData {}
+
+impl Terrain for Relief {
+    fn height(self, x: f32, z: f32) -> f32 {
+        height_at(vec2(x, z))
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: vec3(0.3), grass: 0.0 }
+    }
+}
+
+/// A straight way from `from` to `to` (on the plane).
+pub struct Trail: Copy {
+    pub from: vec2,
+    pub to: vec2,
+}
+
+impl Path for Trail {
+    fn at(self, s: f32) -> vec2 {
+        self.from + normalize(self.to - self.from) * s
+    }
+
+    fn length(self) -> f32 {
+        length(self.to - self.from)
+    }
+}
+
+/// A walk in progress: its walker, its way, how far it's been stepped (s since it set off), its
+/// pose's stylizer (`engine::motion`), its face's attention, and when it last drew (s since it
+/// set off).
+pub struct Walking: Copy {
+    pub walker: Walker,
+    pub trail: Trail,
+    pub stepped: f32,
+    pub style: Stylizer,
+    pub face: Face = Face {},
+    pub drawn: f32 = 0.0,
+}
+
+/// The grazer setting off from `from` toward `to`, standing.
+pub fn set_off(from: vec2, to: vec2) -> Walking {
+    let d = to - from
+    let w = stand(Relief {}, BODY, from, atan2(d.x, d.y))
+    Walking { walker: w, trail: Trail { from, to }, stepped: 0.0, style: stylizer() }
+}
+
+/// `w` stepped at the walker's rate (`kit::gaits::DT`) until it's walked `until` s: the same
+/// steps whatever the frame rate.
+pub fn walk_to(w: mut Walking, until: f32) {
+    let (b, g) = (BODY, WALK)
+    while w.stepped + DT <= until {
+        step(mut w.walker, Relief {}, w.trail, b, g.walk, go: true, dt: DT)
+        w.stepped += DT
+    }
+}
+
+/// The palette of walk `w` as it's walked by now (`at` s since it set off: world space), styled by
+/// the world's motion `m` (`engine::motion::stylize`: the physical world's is the gait's pose),
+/// its face attending to the eye at `eye` (`attended`).
+pub fn walking(w: mut Walking, m: Motion, at: f32, eye: vec3) -> [mat4; MAX_BONES] {
+    let s = SKELETON
+    let dt = max(at - w.drawn, 0.0)
+    w.drawn = at
+    let bones = stylize(mut w.style, m, Relief {}, s, BODY, WALK.walk, w.walker, dt).bones
+    attended(mut w.face, bones, w.walker.root, eye, dt)
+}
+
+/// `bones` (world space) less the render space's origin `origin`.
+pub fn shifted(bones: [mat4; MAX_BONES], origin: vec3) -> [mat4; MAX_BONES] {
+    var out = bones
+    let shift = std::transform::translate(-origin)
+    for i in 0..MAX_BONES {
+        out[i] = shift * bones[i]
+    }
+    out
+}
+
+/// How far the grazer lowers its body and reaches its forefeet ahead as it grazes (shares of its
+/// withers' height, **proposed**: a little, its neck long enough to reach the grass).
+pub const GRAZING_CROUCH: f32 = 0.06
+pub const GRAZING_REACH: f32 = 0.1
+
+/// It grazing: its palette (world space), and the walker and body it stands as (what it pushes
+/// through the grass: `kit::roe::pushes`).
+pub struct Grazing: Copy {
+    pub bones: [mat4; MAX_BONES],
+    pub walker: Walker,
+    pub body: Body,
+    pub face: Face = Face {},
+    pub drawn: f32 = 0.0,
+}
+
+/// Its grazing palette by now (`at` s into the hold: world space), its face attending to the eye
+/// at `eye` (`attended`).
+pub fn grazing_now(g: mut Grazing, at: f32, eye: vec3) -> [mat4; MAX_BONES] {
+    let dt = max(at - g.drawn, 0.0)
+    g.drawn = at
+    attended(mut g.face, g.bones, g.walker.root, eye, dt)
+}
+
+/// What it pushes through the grass (render space, less `origin`) standing as `w` with body `b`.
+pub fn pushes(b: Body, w: Walker, origin: vec3) -> [Push; PUSHES] {
+    kit::roe::pushes(Q, b, w, origin)
+}
+
+/// It grazing (`Grazing`), standing at `at` (on the plane) facing `heading` (radians from +z
+/// toward +x): standing on its four feet as the walker sets it
+/// down there, lowered and its forefeet reached ahead (`GRAZING_CROUCH`, `GRAZING_REACH`), its
+/// neck turned down about its root and its head at the poll so its nose is 2 cm over the ground
+/// (the least turn of the neck that brings it there, of a grid of the two's turns), or as near
+/// as they turn.
+pub fn grazing(at: vec2, heading: f32) -> Grazing {
+    let q = Q
+    let s = skeleton(q)
+    var b = BODY
+    b.crouch = GRAZING_CROUCH * q.withers
+    var w = stand(Relief {}, b, at, heading)
+    let ahead = vec2(sin(heading), cos(heading)) * (GRAZING_REACH * q.withers)
+    for i in 0..2 {
+        let p = w.feet[i].at.xz + ahead
+        w.feet[i].at = vec3(p.x, height_at(p), p.y)
+    }
+    let m = frame_of(w, b)
+    let f = frame(q)
+    let (neck, head) = (s.find("neck"), s.find("head"))
+    let (root, poll) = (s.rest(neck), s.rest(head))
+    let nose = f.head + f.forward * (1.2 * f.head_length)
+    let x = vec3(1.0, 0.0, 0.0)
+    let bow = |a: f32| m * engine::gait::bone_matrix(Quat::axis_angle(x, a), root, root)
+    let nod = |n: f32| engine::gait::bone_matrix(Quat::axis_angle(x, n), poll, poll)
+    // The nose's height over the ground under it, its neck bowed by `a` and its head nodded by `n`.
+    let over = |a: f32, n: f32| {
+        let p = (bow(a) * nod(n) * vec4(nose, 1.0)).xyz
+        p.y - height_at(p.xz)
+    }
+    var best = (0.0, 0.0)
+    var least = 1.0e9
+    for i in 0..25 {
+        for k in 0..13 {
+            let (a, n) = (2.4 * f32(i) / 24.0, -0.3 + 1.3 * f32(k) / 12.0)
+            let miss = abs(over(a, n) - 0.02) + 0.01 * a
+            if miss < least {
+                least = miss
+                best = (a, n)
+            }
+        }
+    }
+    let p = palette(s, b, w)
+    var bones = p.bones
+    bones[neck.index] = bow(best.0)
+    bones[head.index] = bow(best.0) * nod(best.1)
+    Grazing { bones, walker: w, body: b }
+}
