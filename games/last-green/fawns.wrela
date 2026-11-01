@@ -72,41 +72,38 @@ pub struct Following: Copy {
     pub drawn: f32 = 0.0,
 }
 
-/// The floor's fawn: the one `main::GROWN_FAWN` chooses, posed, drawn and realized as a cast.
+/// The floor's fawn: the one `main::GROWN_FAWN` chooses, posed, drawn and realized as a cast (each
+/// kind's list holds it or nothing: the stage holds no room for the other's on the stack, where
+/// the floor's init has little to spare).
 pub struct Fawns {
-    pub hand: Option<Cast<fawn::creature::Coat, fawn::character::Grown, fawn::character::FawnLook>>,
-    pub grown: Option<Cast<Hide, Roe, CoatLook>>,
+    pub hand: Vec<Cast<fawn::creature::Coat, fawn::character::Grown, fawn::character::FawnLook>>,
+    pub grown: Vec<Cast<Hide, Roe, CoatLook>>,
     pub following: Following,
 }
 
 /// The floor's fawn, as `main::GROWN_FAWN` chooses.
 pub fn fawns() -> Fawns {
+    var out = Fawns { hand: Vec::new(), grown: Vec::new(), following: Following {} }
     if main::GROWN_FAWN {
-        return Fawns {
-            hand: None,
-            grown: Some(
-                cast(
-                    roe(ROE, FAWN_AGE, FAWN_MUSCLES),
-                    kit::roe::look_of(ROE, FAWN_AGE, FAWN_COAT),
-                    REALIZED,
-                    1,
-                ),
+        out.grown.push(
+            cast(
+                roe(ROE, FAWN_AGE, FAWN_MUSCLES),
+                kit::roe::look_of(ROE, FAWN_AGE, FAWN_COAT),
+                REALIZED,
+                1,
             ),
-            following: Following {},
-        }
-    }
-    Fawns {
-        hand: Some(
+        )
+    } else {
+        out.hand.push(
             cast(
                 fawn::character::grown(),
                 fawn::character::FawnLook {},
                 fawn::character::REALIZED,
                 fawn::character::SLICES,
             ),
-        ),
-        grown: None,
-        following: Following {},
+        )
     }
+    out
 }
 
 /// `bones` (world space) less the render space's origin `origin`.
@@ -140,28 +137,20 @@ impl Fawns {
     /// Whether it's drawn this frame and not yet realized (a slice of its mesh is due).
     pub fn realizing(self) -> bool {
         if main::GROWN_FAWN {
-            return match self.grown {
-                Some(c) => c.realizing(),
-                None => false,
-            }
+            return self.grown.len() > 0 && self.grown[0].realizing()
         }
-        match self.hand {
-            Some(c) => c.realizing(),
-            None => false,
-        }
+        self.hand.len() > 0 && self.hand[0].realizing()
     }
 
     /// A slice of its mesh realized.
     pub fn realize(mut self) {
         if main::GROWN_FAWN {
-            match mut self.grown {
-                Some(c) => c.realize(),
-                None => {},
+            for i in 0..self.grown.len() {
+                self.grown[i].realize()
             }
         } else {
-            match mut self.hand {
-                Some(c) => c.realize(),
-                None => {},
+            for i in 0..self.hand.len() {
+                self.hand[i].realize()
             }
         }
     }
@@ -169,40 +158,26 @@ impl Fawns {
     /// Whether it's drawn this frame, and not realized yet.
     pub fn unsettled(self) -> bool {
         if main::GROWN_FAWN {
-            return match self.grown {
-                Some(c) => c.on && c.realized.is_none(),
-                None => false,
-            }
+            return self.grown.len() > 0 && self.grown[0].on && self.grown[0].realized.is_none()
         }
-        match self.hand {
-            Some(c) => c.on && c.realized.is_none(),
-            None => false,
-        }
+        self.hand.len() > 0 && self.hand[0].on && self.hand[0].realized.is_none()
     }
 
     /// Its mesh's and its palettes' bytes.
     pub fn bytes(self) -> u64 {
         if main::GROWN_FAWN {
-            return match self.grown {
-                Some(c) => c.bytes(),
-                None => 0,
-            }
+            return if self.grown.len() > 0 { self.grown[0].bytes() } else { 0 }
         }
-        match self.hand {
-            Some(c) => c.bytes(),
-            None => 0,
-        }
+        if self.hand.len() > 0 { self.hand[0].bytes() } else { 0 }
     }
 
     /// Not drawn this frame.
     pub fn hide(mut self) {
-        match mut self.hand {
-            Some(c) => c.hide(),
-            None => {},
+        for i in 0..self.hand.len() {
+            self.hand[i].hide()
         }
-        match mut self.grown {
-            Some(c) => c.hide(),
-            None => {},
+        for i in 0..self.grown.len() {
+            self.grown[i].hide()
         }
         self.following.walker = None
     }
@@ -220,13 +195,12 @@ impl Fawns {
         moved: bool,
     ) {
         if !main::GROWN_FAWN {
-            match mut self.hand {
-                Some(c) => c.pose(
+            for i in 0..self.hand.len() {
+                self.hand[i].pose(
                     fawn::character::at_rest(feet, heading),
                     shadowed: true,
                     moved: moved,
-                ),
-                None => {},
+                )
             }
             return
         }
@@ -239,14 +213,13 @@ impl Fawns {
             Some(eye),
             dt,
         )
-        match mut self.grown {
-            Some(c) => c.pose(shifted(bones, origin), shadowed: true, moved: moved),
-            None => {},
+        for i in 0..self.grown.len() {
+            self.grown[i].pose(shifted(bones, origin), shadowed: true, moved: moved)
         }
     }
 
     /// As the sim's fawn `f` is this frame (between its ticks), at the frame's time `time` (s),
-    /// the player's head at `player` (world space); `origin` the render space's.
+    /// the player's eyes at `player` (world space); `origin` the render space's.
     pub fn following(
         mut self,
         f: Fawn,
@@ -257,9 +230,12 @@ impl Fawns {
         moved: bool,
     ) {
         if !main::GROWN_FAWN {
-            match mut self.hand {
-                Some(c) => c.pose(behaviour::palette(f, origin), shadowed: shadowed, moved: moved),
-                None => {},
+            for i in 0..self.hand.len() {
+                self.hand[i].pose(
+                    behaviour::palette(f, origin),
+                    shadowed: shadowed,
+                    moved: moved,
+                )
             }
             return
         }
@@ -278,13 +254,12 @@ impl Fawns {
             },
         }
         // Stepped at the walker's rate until the frame's time: the same steps whatever the frame
-        // rate.
+        // rate; toward the sim's, or on the spot facing its way once there.
         while self.following.stepped + DT <= time {
             let from = walker.root.pos.xz
             let go = length(to - from) > ARRIVED
-            let way = Way { from, to: if go { to } else {
-                from + vec2(sin(root.heading), cos(root.heading))
-            } }
+            let ahead = from + vec2(sin(root.heading), cos(root.heading))
+            let way = Way { from, to: if go { to } else { ahead } }
             step(mut walker, GROUND, way, BODY, WALK.walk, go: go, dt: DT)
             self.following.stepped += DT
         }
@@ -299,42 +274,47 @@ impl Fawns {
             toward,
             dt,
         )
-        match mut self.grown {
-            Some(c) => c.pose(shifted(bones, origin), shadowed: shadowed, moved: moved),
-            None => {},
+        for i in 0..self.grown.len() {
+            self.grown[i].pose(shifted(bones, origin), shadowed: shadowed, moved: moved)
         }
     }
 
     /// In the moving shadow map.
     pub fn shadow<P: RenderPass>(self, pass: P, view: mat4) {
         if main::GROWN_FAWN {
-            if let Some(c) = self.grown {
+            for c in self.grown {
                 c.shadow(pass, view)
             }
-        } else if let Some(c) = self.hand {
-            c.shadow(pass, view)
+        } else {
+            for c in self.hand {
+                c.shadow(pass, view)
+            }
         }
     }
 
     /// In the scene, lit by `lt`.
     pub fn draw<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
         if main::GROWN_FAWN {
-            if let Some(c) = self.grown {
+            for c in self.grown {
                 c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
             }
-        } else if let Some(c) = self.hand {
-            c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+        } else {
+            for c in self.hand {
+                c.draw(pass, lt, lt.cam, PartOf { of: [0; 64] })
+            }
         }
     }
 
     /// Its motion: its palette against its last.
     pub fn motion<P: RenderPass>(self, pass: P, cam: Camera) {
         if main::GROWN_FAWN {
-            if let Some(c) = self.grown {
+            for c in self.grown {
                 c.motion(pass, cam)
             }
-        } else if let Some(c) = self.hand {
-            c.motion(pass, cam)
+        } else {
+            for c in self.hand {
+                c.motion(pass, cam)
+            }
         }
     }
 }
