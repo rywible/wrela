@@ -5,14 +5,16 @@
 // posting. Offline, or opened alone, every run stays in the game's own storage, and nothing is
 // asked of the network unless the player is signed in or opened the World's board or the search.
 //
-// Posting is the player's choice. A post by hand first waits on the game's own screen of what
-// posting makes public (platform/posting.wrela's words: `consenting`), until the account has
-// agreed; the player's Post there is recorded through the console (`consent`, `Ask::Consent`). With "Post my best runs"
-// on (`Account::post_best`), a finished run that beats the account's place on its board, or is its
-// first there, is posted when the run ends; one made while the game can't post waits in the game's
-// storage (`WAITING`, beside `UPLOADED`) and is posted when the console next links with the
-// setting on. The runs posted are kept by their replays' SHA-256, apart from the game's progress,
-// so a posted run says so.
+// Posting is the player's choice. A post by hand waits in the game's storage (`WAITING`, beside
+// `UPLOADED`) until it can go: until what the account chose of posting is known (never taken as a
+// no meanwhile), then, if the account hasn't agreed to what posting makes public, on the game's
+// own screen of it (platform/posting.wrela's words: `consenting`), whose Post the console records
+// (`consent`, `Ask::Consent`). With "Post my best runs" on (`Account::post_best`), a finished run
+// waits too, and goes once the account's places on each board it counts for are known (the slices
+// around them; none there is its first) and it beats one. A post the server puts off
+// (`Answer::Failed`) waits longer each time, its count kept with it; only a rejection drops it.
+// The runs posted are kept by their replays' SHA-256, apart from the game's progress, so a posted
+// run says so.
 //
 // A board's places come with their replays' hashes. When its rows arrive, the replays of its first
 // rows and of the three places above the account's are fetched behind everything else and held
@@ -28,6 +30,7 @@ use std::host
 use platform::session::answer_of
 use std::io::{Pending, load, store}
 use std::serialize::{LoadError, Serialize, save}
+use main::Storing
 
 /// The leaderboard's boards, in its order: the world's, for the course shown, first; the search
 /// of the world's names; the player's own and the tool-assisted (main.wrela's `PLAYERS` and
@@ -40,10 +43,12 @@ pub const BOARDS: u32 = 5
 /// Where the posted runs' fingerprints are kept, and the runs waiting to be posted.
 const UPLOADED: Text = "capybara/uploaded"
 const WAITING: Text = "capybara/posting"
-/// A board shown is asked for again after this long (s), and a post the console couldn't make
-/// waits this long before it's tried again (s).
+/// A board shown is asked for again after this long (s); a post the console couldn't make (offline,
+/// or signed out) waits this long before it's tried again (s); and one the server put off waits
+/// longer each time it does, from `AGAIN` to `LONGEST` (`backoff`).
 const STALE: f32 = 30.0
 const AGAIN: f32 = 30.0
+const LONGEST: f32 = 1800.0
 /// The most replays held to watch and race (at most 48 KiB each, wire.wrela's `MOST_REPLAY`), the
 /// rows of a board shown (main.wrela's `world_rows`), the first rows of a board whose replays are
 /// fetched ahead, and the places above the account's fetched. Both categories of the world's board
@@ -58,8 +63,25 @@ struct Uploaded: Serialize {
     hashes: Vec<Vec<u8>>,
 }
 
+/// A run waiting to be posted, as it's stored: its replay, how many times the server put it off
+/// (`Answer::Failed`: each wait after is longer, and the count is kept with it, so a closed tab
+/// doesn't start over), and whether the player posted it by hand (it goes whatever the account's
+/// place, and with "Post my best runs" off).
+struct Wait: Clone + Serialize {
+    run: Replay,
+    tries: u32,
+    chosen: bool,
+}
+
 struct Waiting: Serialize {
-    runs: Vec<Replay>,
+    runs: Vec<Wait>,
+}
+
+/// A waiting run: its fingerprint, as stored, and when it may next be tried (the host's time, s).
+struct Queued: Clone {
+    hash: Vec<u8>,
+    wait: Wait,
+    at: f32,
 }
 
 /// What an ask in flight was, to read its answer.
@@ -106,15 +128,15 @@ pub struct Online {
     /// where it's known.
     known: Vec<(u32, u32, u32)>,
     statuses: Vec<(Vec<u8>, String)>,
-    /// The posted runs' fingerprints, and the runs waiting to be posted (one a course for any% and
-    /// one for 100%), each as stored and read (`Stored`).
+    /// The posted runs' fingerprints, and the runs waiting to be posted (the player's by hand
+    /// first, then the best runs found: one a course for any% and one for 100%), each as stored
+    /// and read (`Stored`).
     uploaded: Vec<Vec<u8>>,
     uploads: Stored,
-    waiting: Vec<(Vec<u8>, Replay)>,
+    waiting: Vec<Queued>,
     waits: Stored,
-    /// A post of a waiting run under way, and when the next may be tried (s).
+    /// A post of a waiting run under way.
     posting: bool,
-    again_at: f32,
     /// The replays held, by their hashes, the least recently used first; those never dropped
     /// while in use (`pin`); and the one the player chose to watch, whose it is and its place.
     held: Vec<(Vec<u8>, Replay)>,
@@ -131,39 +153,51 @@ pub struct Online {
     /// The run posted by hand while the account hasn't agreed to what posting makes public: the
     /// game shows posting.wrela's screen until the player chooses (`consent`).
     pub consenting: Option<Replay>,
+    /// Whether the player is on the leaderboard (`browsing`): the screen of what posting makes
+    /// public shows only there, and what the player asked for there goes when they leave.
+    here: bool,
+    /// Whether to remind the player to save the account's recovery codes: after a post, while
+    /// they're still to be saved, until the player has seen it (`reminder`, `reminded`).
+    remind: bool,
     time: f32,
 }
 
-/// One of the game's stores of its online state: its load and its store under way, whether what
-/// was stored has been read (a store before it would lose it), and whether it changed since it
-/// was last stored.
+/// One of the game's stores of its online state: its load and its store under way, and when each
+/// is due (main.wrela's `Storing`: never a store over what couldn't be read, and a load or a store
+/// that failed made again).
 struct Stored {
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
-    read: bool,
-    unsaved: bool,
+    storing: Storing,
 }
 
 fn stored() -> Stored {
-    Stored { loading: None, saving: None, read: false, unsaved: false }
+    Stored { loading: None, saving: None, storing: Storing {} }
 }
 
 impl Stored {
-    /// What was stored, once its load answers: its bytes, or none if nothing was (or it failed).
+    /// What was stored, once its load answers: its bytes; none if nothing was, or if the load
+    /// failed (it's made again, and nothing is stored over what it couldn't read meanwhile).
     fn loaded(mut self) -> Option<Vec<u8>> {
         let Some(result) = answer_of(mut self.loading) else { return None }
-        self.read = true
-        take result.ok()
+        match result {
+            Ok(bytes) => {
+                self.storing.loaded(read: true)
+                Some(bytes.clone())
+            },
+            Err(e) => {
+                self.storing.loaded(read: e.missing())
+                None
+            },
+        }
     }
 
-    /// Whether to store it now: it changed, what was stored is read, and no store is under way.
-    fn due(mut self) -> bool {
-        let _ = answer_of(mut self.saving)
-        let due = self.unsaved && self.read && self.saving.is_none()
-        if due {
-            self.unsaved = false
+    /// `dt` seconds on: whether to load it (again), and whether to store it now.
+    fn due(mut self, dt: f32) -> (bool, bool) {
+        if let Some(result) = answer_of(mut self.saving) {
+            self.storing.stored(ok: result.is_ok())
         }
-        due
+        self.storing.due(dt, loading: self.loading.is_some(), saving: self.saving.is_some())
     }
 }
 
@@ -187,7 +221,6 @@ pub fn online() -> Online {
         waiting: Vec::new(),
         waits: stored(),
         posting: false,
-        again_at: 0.0,
         held: Vec::new(),
         pins: Vec::new(),
         wanted: None,
@@ -197,6 +230,8 @@ pub fn online() -> Online {
         found_boards: Vec::new(),
         found_note: String::new(),
         consenting: None,
+        here: false,
+        remind: false,
         time: 0.0,
     }
 }
@@ -209,12 +244,11 @@ pub fn fingerprint(r: Replay) -> Vec<u8> {
 /// Each frame, at the host's time `time`: the stored runs read and stored, the console's call
 /// read, a waiting run posted if one may be, and an ask sent if one waits.
 pub fn update(o: mut Online, time: f32) {
+    let dt = max(time - o.time, 0.0)
     o.time = time
     if !o.started {
         o.started = true
         o.incoming = Some(host::receive())
-        o.uploads.loading = Some(load(UPLOADED))
-        o.waits.loading = Some(load(WAITING))
     }
     if let Some(bytes) = o.uploads.loaded() {
         let r: Result<Uploaded, LoadError> = std::serialize::load(take bytes)
@@ -227,18 +261,24 @@ pub fn update(o: mut Online, time: f32) {
     if let Some(bytes) = o.waits.loaded() {
         let r: Result<Waiting, LoadError> = std::serialize::load(take bytes)
         if let Ok(w) = r {
-            for run in w.runs {
-                wait(mut o, run.clone())
-            }
+            restore(mut o, w)
         }
     }
-    if o.uploads.due() {
+    let (loads, stores) = o.uploads.due(dt)
+    if loads {
+        o.uploads.loading = Some(load(UPLOADED))
+    }
+    if stores {
         o.uploads.saving = Some(store(UPLOADED, save(Uploaded { hashes: o.uploaded.clone() })))
     }
-    if o.waits.due() {
-        var runs: Vec<Replay> = Vec::with_capacity(o.waiting.len())
-        for (_, r) in o.waiting {
-            runs.push(r.clone())
+    let (loads, stores) = o.waits.due(dt)
+    if loads {
+        o.waits.loading = Some(load(WAITING))
+    }
+    if stores {
+        var runs: Vec<Wait> = Vec::with_capacity(o.waiting.len())
+        for q in o.waiting {
+            runs.push(q.wait.clone())
         }
         o.waits.saving = Some(store(WAITING, save(Waiting { runs })))
     }
@@ -307,7 +347,7 @@ fn mark_uploaded(o: mut Online, hash: Vec<u8>) {
         return
     }
     o.uploaded.push(hash.clone())
-    o.uploads.unsaved = true
+    o.uploads.storing.unsaved = true
 }
 
 // ---- asking ------------------------------------------------------------------------------------
@@ -425,26 +465,91 @@ pub fn beats(o: Online, r: Replay) -> bool {
     false
 }
 
-/// Run `r` among the waiting, beside its fingerprint: one a course for any% and one for 100%, the
-/// faster kept.
-fn wait(o: mut Online, r: Replay) {
-    let (course, full) = (r.course, counts(r, FULL))
-    for (_, w) in o.waiting {
-        if w.course == course && counts(w, FULL) == full && w.ticks <= r.ticks {
+/// How long a run the server has put off `tries` times waits before it's tried again (s): twice as
+/// long each time, from `AGAIN` up to `LONGEST`.
+fn backoff(tries: u32) -> f32 {
+    var wait = AGAIN
+    for _ in 1..min(tries, 16) {
+        wait = min(wait * 2.0, LONGEST)
+    }
+    wait
+}
+
+/// Which of the waiting runs has fingerprint `hash`, if one does.
+fn queued(o: Online, hash: [u8]) -> Option<u32> {
+    for i in 0..o.waiting.len() {
+        if o.waiting[i].hash == Vec::from(hash) {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// `w` among the waiting runs, to be tried from `at`: one the player posted by hand ahead of the
+/// rest, once; a best run found in its course and category's place, if it's the faster.
+fn queue(o: mut Online, w: Wait, at: f32) {
+    let hash = fingerprint(w.run)
+    if let Some(i) = queued(o, hash) {
+        if w.chosen && !o.waiting[i].wait.chosen {
+            // Posted by hand now: it goes first, whatever its place.
+            var q = o.waiting.remove(i)
+            q.wait.chosen = true
+            q.at = min(q.at, at)
+            o.waiting.insert(0, take q)
+            o.waits.storing.unsaved = true
+        }
+        return
+    }
+    if w.chosen {
+        o.waiting.insert(0, Queued { hash, wait: w.clone(), at })
+        o.waits.storing.unsaved = true
+        return
+    }
+    let (course, full) = (w.run.course, counts(w.run, FULL))
+    let slot = |q: Queued| !q.wait.chosen &&
+        q.wait.run.course == course &&
+        counts(q.wait.run, FULL) == full
+    for q in o.waiting {
+        if slot(q) && q.wait.run.ticks <= w.run.ticks {
             return
         }
     }
-    o.waiting.retain(|w| w.1.course != course || counts(w.1, FULL) != full)
-    o.waiting.push((fingerprint(r), r.clone()))
-    o.waits.unsaved = true
+    o.waiting.retain(|q| !slot(q))
+    o.waiting.push(Queued { hash, wait: w.clone(), at })
+    o.waits.storing.unsaved = true
+}
+
+/// The waiting runs as stored, read: each put off before waits as long again as it last did.
+fn restore(o: mut Online, w: Waiting) {
+    for k in w.runs {
+        let at = if k.tries > 0 { o.time + backoff(k.tries) } else { o.time }
+        queue(mut o, k.clone(), at)
+    }
+}
+
+/// Run `r` waiting to be posted: by hand (`chosen`), or as a best run found.
+fn wait(o: mut Online, r: Replay, chosen: bool) {
+    queue(mut o, Wait { run: r.clone(), tries: 0, chosen }, o.time)
 }
 
 fn unwait(o: mut Online, hash: Vec<u8>) {
     let before = o.waiting.len()
-    o.waiting.retain(|w| w.0 != hash)
+    o.waiting.retain(|q| q.hash != hash)
     if o.waiting.len() != before {
-        o.waits.unsaved = true
+        o.waits.storing.unsaved = true
     }
+}
+
+/// The waiting run with fingerprint `hash` put off: the server's `retry_after` seconds at least,
+/// and if the server put it off (`counted`), longer each time.
+fn put_off(o: mut Online, hash: Vec<u8>, retry_after: f32, counted: bool) {
+    let Some(i) = queued(o, hash) else { return }
+    if counted {
+        o.waiting[i].wait.tries += 1
+        o.waits.storing.unsaved = true
+    }
+    let wait = if counted { backoff(o.waiting[i].wait.tries) } else { AGAIN }
+    o.waiting[i].at = o.time + max(wait, retry_after)
 }
 
 /// A run the player has just finished (`r`, theirs and verified): it waits to be posted if it
@@ -459,41 +564,88 @@ pub fn finished(o: mut Online, r: Replay) {
     if o.linked && o.account.signed_in && o.account.posting_known && !o.account.post_best {
         return
     }
-    wait(mut o, r.clone())
+    wait(mut o, r.clone(), chosen: false)
     if posts_alone(o) {
         set_status(mut o, hash, String::from("Posting…"))
     }
 }
 
-/// The waiting runs posted, one at a time, while the game may post alone: each first waits for
-/// the account's place on its board (the slice around it), and goes only if it beats it. Nothing
-/// is done while that slice is asked; one that can't be asked waits `AGAIN`.
+/// Whether the game can post now for its account: linked to one that's signed in, with a token,
+/// whose choices of posting are known (until they are, nothing is taken as a choice).
+fn can_post(o: Online) -> bool {
+    o.linked && o.account.signed_in && !o.account.token.is_empty() && o.account.posting_known
+}
+
+/// The waiting runs posted, one at a time, each once it's due: one posted by hand as soon as the
+/// account has agreed to what posting makes public (until then, the screen of it, while the player
+/// is on the leaderboard: `consenting`); a best run found while the account posts its best runs,
+/// once the account's places on each board it counts for are known (the slices around them), and
+/// only if it beats one.
 fn pump(o: mut Online) {
-    if !posts_alone(o) || o.posting || o.time < o.again_at || o.waiting.is_empty() {
+    if o.posting || !can_post(o) {
         return
     }
-    let course = o.waiting[0].1.course
-    if posted(o, o.waiting[0].0) || known(o, course, ANY).is_some() && !beats(o, o.waiting[0].1) {
-        let hash = o.waiting[0].0.clone()
-        unwait(mut o, hash)
-        return
-    }
-    if known(o, course, ANY).is_none() {
-        if !asking(o, Asked::Around { course, category: ANY }) && !around(mut o, course, ANY) {
-            o.again_at = o.time + AGAIN
+    for i in 0..o.waiting.len() {
+        let q = o.waiting[i].clone()
+        if q.at > o.time {
+            continue
         }
+        if posted(o, q.hash) {
+            unwait(mut o, q.hash)
+            return
+        }
+        borrow r = q.wait.run
+        if q.wait.chosen {
+            if !o.account.may_post {
+                unwait(mut o, q.hash.clone())
+                if o.here && o.consenting.is_none() {
+                    o.consenting = Some(r.clone())
+                } else {
+                    set_status(mut o, q.hash, String::from("Not posted"))
+                }
+                return
+            }
+            upload(mut o, r, q.hash, By::Player)
+            return
+        }
+        if !posts_alone(o) {
+            continue
+        }
+        // Its places first, on each board it counts for, then whether it beats one.
+        var unknown = false
+        for category in [ANY, FULL] {
+            if counts(r, category) && known(o, r.course, category).is_none() {
+                unknown = true
+                if !asking(o, Asked::Around { course: r.course, category }) &&
+                    !around(mut o, r.course, category) {
+                    put_off(mut o, q.hash.clone(), AGAIN, counted: false)
+                }
+            }
+        }
+        if unknown {
+            return
+        }
+        if !beats(o, r) {
+            unwait(mut o, q.hash)
+            return
+        }
+        upload(mut o, r, q.hash, By::Alone)
         return
     }
-    let (hash, r) = o.waiting[0].clone()
+}
+
+/// Asks to post run `r` (its fingerprint `hash`) for `by`.
+fn upload(o: mut Online, r: Replay, hash: Vec<u8>, by: By) {
     let upload = Ask::Upload { token: o.account.token.clone(), board: BOARD, replay: save(r) }
-    if ask(mut o, take upload, Asked::Upload { run: r, hash: hash.clone() }, By::Alone) {
+    if ask(mut o, take upload, Asked::Upload { run: r.clone(), hash: hash.clone() }, by) {
         o.posting = true
         set_status(mut o, hash, String::from("Posting…"))
     }
 }
 
-/// Posts run `r` at the player's choice, unless it has been: the screen of what posting makes
-/// public first (`consenting`), until the account has agreed. Its status says how it went.
+/// Posts run `r` at the player's choice, unless it has been: it waits, first of all, until it can
+/// go (`pump`): the screen of what posting makes public first, until the account has agreed; and
+/// if the server can't take it now, tried again later. Its status says how it went.
 pub fn post(o: mut Online, r: Replay) {
     let hash = fingerprint(r)
     if posted(o, hash) {
@@ -509,12 +661,8 @@ pub fn post(o: mut Online, r: Replay) {
         return
     }
     set_status(mut o, hash.clone(), String::from("Posting…"))
-    if !o.account.may_post {
-        o.consenting = Some(r.clone())
-        return
-    }
-    let upload = Ask::Upload { token: o.account.token.clone(), board: BOARD, replay: save(r) }
-    let _ = ask(mut o, take upload, Asked::Upload { run: r.clone(), hash }, By::Player)
+    wait(mut o, r.clone(), chosen: true)
+    pump(mut o)
 }
 
 /// The player's choice on the screen of what posting makes public, for the run it was shown for:
@@ -529,6 +677,26 @@ pub fn consent(o: mut Online, post: bool, best_runs: bool) {
     }
     let agreed = Ask::Consent { version: posting::VERSION, best_runs }
     let _ = ask(mut o, take agreed, Asked::Consent { run: r }, By::Player)
+}
+
+/// Whether the player is on the leaderboard, each frame. Leaving it is Not now to the screen of
+/// what posting makes public.
+pub fn browsing(o: mut Online, on: bool) {
+    if o.here && !on && o.consenting.is_some() {
+        consent(mut o, post: false, best_runs: false)
+    }
+    o.here = on
+}
+
+/// The line to show after a post while the account's recovery codes are still to be saved
+/// (posting.wrela's `SAVE_CODES`), until the player has seen it.
+pub fn reminder(o: Online) -> Option<Text> {
+    if o.remind && o.account.save_codes { Some(posting::SAVE_CODES) } else { None }
+}
+
+/// The reminder seen: it isn't shown again this time the game is open.
+pub fn reminded(o: mut Online) {
+    o.remind = false
 }
 
 /// What to say of the run whose fingerprint is `hash`: how its post went, or that it was posted;
@@ -557,6 +725,8 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                     set_status(mut o, hash.clone(), f"{ordinal(place)} in the world")
                     mark_uploaded(mut o, hash.clone())
                     unwait(mut o, hash)
+                    // The server's time for it, which it played: the account's best where it's
+                    // better.
                     for category in [ANY, FULL] {
                         if counts(run, category) {
                             let before = known(o, run.course, category).unwrap_or(0)
@@ -565,25 +735,31 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                             }
                         }
                     }
+                    if o.account.save_codes {
+                        o.remind = true
+                    }
                     // The boards are asked for again when next shown, kept meanwhile.
                     for i in 0..o.boards.len() {
                         o.boards[i].at = o.time - STALE
                     }
                 },
+                // For good: that replay can never go on this board.
                 Answer::Rejected { why } => {
                     unwait(mut o, hash)
                     set_status(mut o, hash, why.clone())
                 },
+                // The console couldn't ask (offline, signed out): as it was, a while later.
                 Answer::Offline { why } => {
-                    o.again_at = o.time + AGAIN
+                    put_off(mut o, hash.clone(), AGAIN, counted: false)
                     set_status(mut o, hash, why.clone())
                 },
-                // Not now: the run stays waiting, tried again after a while.
+                // Not now: it waits, longer each time the server puts it off, and posting it
+                // again hears what came of it if it went up after all.
                 Answer::Failed { why, retry_after } => {
-                    o.again_at = o.time + max(f32(retry_after), 1.0)
+                    put_off(mut o, hash.clone(), f32(retry_after), counted: true)
                     set_status(mut o, hash, why.clone())
                 },
-                _ => {},
+                _ => put_off(mut o, hash, AGAIN, counted: false),
             }
         },
         Asked::Consent { run } => match answer {
@@ -644,7 +820,8 @@ fn answered(o: mut Online, asked: Asked, answer: Answer) {
                 learn(mut o, course, category, 0)
                 o.slices.retain(|b| b.course != course || b.category != category)
             },
-            _ => o.again_at = o.time + AGAIN,
+            // Not known: asked again when the run is next due.
+            _ => {},
         },
         Asked::Watch { name, place } => match answer {
             Answer::Run { replay, .. } => {
@@ -1247,6 +1424,11 @@ fn a_post_waits_on_the_players_consent_until_the_account_agrees() {
     var o = signed_in()
     o.account.may_post = false
     let r = mine(991)
+    // Off the leaderboard (where the screen shows), a post by hand isn't asked about.
+    post(mut o, r.clone())
+    assert(o.consenting.is_none() && o.waiting.is_empty(), "not shown off the board")
+    assert(status(o, fingerprint(r)) == String::from("Not posted"))
+    browsing(mut o, on: true)
     post(mut o, r.clone())
     assert(o.asks.is_empty() && o.consenting.is_some(), "the screen first, nothing asked")
     consent(mut o, post: false, best_runs: true)
@@ -1263,11 +1445,134 @@ fn a_post_waits_on_the_players_consent_until_the_account_agrees() {
     o.account.post_best = true
     answered(mut o, asked, Answer::Done)
     assert(o.account.may_post && o.account.post_best, "agreed")
-    let (ask, _) = o.asks.remove(0)
+    let (ask, asked) = o.asks.remove(0)
     let Ask::Upload { .. } = ask else { panic("then the upload") }
+    answered(mut o, asked, Answer::Verified { run: RunRef::none(), ticks: r.ticks, place: 3 })
     // Agreed, a post goes straight away.
     post(mut o, mine(992))
     let Ask::Upload { .. } = o.asks[0].0 else { panic("no screen again") }
+    // Leaving the leaderboard with the screen up is Not now.
+    var left = signed_in()
+    left.account.may_post = false
+    browsing(mut left, on: true)
+    post(mut left, r.clone())
+    browsing(mut left, on: false)
+    assert(left.consenting.is_none() && left.asks.is_empty(), "gone with the board")
+    assert(status(left, fingerprint(r)) == String::from("Not posted"))
+}
+
+@test
+fn a_post_waits_while_what_the_account_chose_is_unknown_and_unknown_is_never_no() {
+    var o = signed_in()
+    o.account.may_post = false
+    o.account.posting_known = false
+    browsing(mut o, on: true)
+    let r = mine(991)
+    post(mut o, r.clone())
+    assert(o.asks.is_empty() && o.consenting.is_none(), "neither asked nor refused")
+    assert(o.waiting.len() == 1 && status(o, fingerprint(r)) == String::from("Posting…"))
+    // Known, and agreed: it goes, with no screen.
+    o.account.posting_known = true
+    o.account.may_post = true
+    pump(mut o)
+    let Some((Ask::Upload { .. }, _)) = o.asks.pop() else { panic("posted once known") }
+    // Known, and not agreed: the screen, on the board.
+    var not = signed_in()
+    not.account.may_post = false
+    not.account.posting_known = false
+    browsing(mut not, on: true)
+    post(mut not, r.clone())
+    not.account.posting_known = true
+    pump(mut not)
+    assert(not.consenting.is_some() && not.asks.is_empty(), "the screen once it's known")
+}
+
+@test
+fn a_post_put_off_waits_longer_each_time_and_only_a_rejection_drops_it() {
+    var o = signed_in()
+    let r = mine(991)
+    let hash = fingerprint(r)
+    post(mut o, r.clone())
+    let (_, asked) = o.asks.remove(0)
+    let busy = Answer::Failed { why: String::from("Busy. Try again soon."), retry_after: 5 }
+    answered(mut o, asked, busy.clone())
+    assert(o.waiting.len() == 1 && o.waiting[0].wait.tries == 1, "kept, counted")
+    assert(o.waits.storing.unsaved, "and stored, with its count")
+    assert(o.waiting[0].at == AGAIN, "the first wait")
+    o.time = AGAIN - 1.0
+    pump(mut o)
+    assert(o.asks.is_empty(), "not before it's due")
+    o.time = AGAIN
+    pump(mut o)
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, busy)
+    assert(o.waiting[0].wait.tries == 2 && o.waiting[0].at == AGAIN + 2.0 * AGAIN, "twice as long")
+    // The console couldn't ask: tried again a while later, not counted against it.
+    o.time = 3.0 * AGAIN
+    pump(mut o)
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Offline { why: String::from("Can't reach the boards.") })
+    assert(o.waiting[0].wait.tries == 2 && o.waiting[0].at == 4.0 * AGAIN, "as it was")
+    // A closed tab keeps the count: read again, it waits as long as it last did.
+    var again = signed_in()
+    restore(mut again, Waiting { runs: Vec::from([o.waiting[0].wait.clone()]) })
+    assert(again.waiting.len() == 1 && again.waiting[0].at == backoff(2), "kept waiting")
+    assert(backoff(40) == LONGEST, "never longer than the longest")
+    // Rejected for good: dropped.
+    o.time = 4.0 * AGAIN
+    pump(mut o)
+    let (_, asked) = o.asks.remove(0)
+    answered(mut o, asked, Answer::Rejected { why: String::from("That run broke a rule.") })
+    assert(o.waiting.is_empty() && status(o, hash) == String::from("That run broke a rule."))
+}
+
+/// A run of the player's on the first level that counts for 100% too, `ticks` long.
+fn mine_full(ticks: u32) -> Replay {
+    var r = tool_assisted(WETLANDS)[1].clone()
+    r.who = YOU
+    r.ticks = ticks
+    r
+}
+
+@test
+fn a_best_run_waits_for_both_its_places_and_a_newcomers_first_post_goes() {
+    var o = signed_in()
+    o.account.post_best = true
+    let r = mine_full(3600)
+    assert(counts(r, FULL), "a 100% run")
+    finished(mut o, r.clone())
+    pump(mut o)
+    var asked: Vec<u32> = Vec::new()
+    for a in all_asks(o) {
+        if let Asked::Around { category, .. } = a {
+            asked.push(category)
+        }
+    }
+    assert(asked == Vec::from([ANY, FULL]), "both its places asked")
+    // No standing on either (the server's `Unplaced`): its first post.
+    let (_, any) = o.fetches.remove(0)
+    answered(mut o, any, Answer::Unplaced)
+    pump(mut o)
+    assert(o.asks.is_empty(), "not before its 100% place is known")
+    let (_, full) = o.fetches.remove(0)
+    answered(mut o, full, Answer::Unplaced)
+    pump(mut o)
+    let Some((Ask::Upload { replay, .. }, asked)) = o.asks.pop() else { panic("its first post") }
+    assert(replay == save(r))
+    answered(
+        mut o,
+        asked,
+        Answer::Verified { run: RunRef::none(), ticks: 3590, place: 40 },
+    )
+    assert(known(o, WETLANDS, ANY) == Some(3590) && known(o, WETLANDS, FULL) == Some(3590))
+    // A run slower on both boards than the account's places isn't posted.
+    finished(mut o, mine_full(3595))
+    assert(o.waiting.is_empty(), "beats neither")
+    // One that beats the 100% place alone is.
+    learn(mut o, WETLANDS, FULL, 3700)
+    finished(mut o, mine_full(3650))
+    pump(mut o)
+    let Some((Ask::Upload { .. }, _)) = o.asks.pop() else { panic("a better 100%") }
 }
 
 @test
@@ -1378,8 +1683,11 @@ fn runs_made_offline_wait_and_post_when_the_console_links() {
     var o = online()
     finished(mut o, mine(990))
     finished(mut o, mine(995))
-    assert(o.waiting.len() == 1 && o.waiting[0].1.ticks == 990, "the faster waits, stored")
-    assert(o.waits.unsaved && o.asks.is_empty() && o.fetches.is_empty(), "nothing asked offline")
+    assert(o.waiting.len() == 1 && o.waiting[0].wait.run.ticks == 990, "the faster waits, stored")
+    assert(
+        o.waits.storing.unsaved && o.asks.is_empty() && o.fetches.is_empty(),
+        "nothing asked offline",
+    )
     pump(mut o)
     assert(o.asks.is_empty() && o.fetches.is_empty(), "not linked")
     // Linked, the setting on: the account's place first, then the post.

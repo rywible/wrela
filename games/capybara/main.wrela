@@ -1435,17 +1435,17 @@ const RETRY: f32 = 2.0
 
 /// When the runs load and are stored: whether the stored ones have been read (or there were
 /// none), seconds until a request that failed is made again, and whether the runs changed since
-/// they were last stored.
-struct Storing: Copy {
-    read: bool = false,
+/// they were last stored. The online state's stores keep to it too (online.wrela).
+pub struct Storing: Copy {
+    pub read: bool = false,
     retry: f32 = 0.0,
-    unsaved: bool = false,
+    pub unsaved: bool = false,
 }
 
 impl Storing {
     /// After a load: of the stored runs, or of nothing stored, they're `read`; a load that failed
     /// otherwise is made again after `RETRY`.
-    fn loaded(mut self, read: bool) {
+    pub fn loaded(mut self, read: bool) {
         if read {
             self.read = true
         } else {
@@ -1454,7 +1454,7 @@ impl Storing {
     }
 
     /// After a store: one that failed is made again after `RETRY`, of the runs as they are then.
-    fn stored(mut self, ok: bool) {
+    pub fn stored(mut self, ok: bool) {
         if !ok {
             self.unsaved = true
             self.retry = RETRY
@@ -1464,7 +1464,7 @@ impl Storing {
     /// `dt` seconds on, with a load or a store still waiting or not: whether to load the runs now,
     /// and whether to store them now (they're then no longer unsaved). Never a store before the
     /// stored runs are read: storing over runs that couldn't be read would lose them.
-    fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
+    pub fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
         self.retry = max(self.retry - dt, 0.0)
         if self.retry > 0.0 {
             return (false, false)
