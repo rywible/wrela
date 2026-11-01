@@ -2407,6 +2407,132 @@ floating logs, the fall's flat sheet, an old oak's ghosted bark relief, a kinked
 judges name first is still artifacts and colour on every pair. Every pair's worst row and its
 eight sentences are in `build/h2-sealed/tally.md` (the tally's output, kept with the panel).
 
+Each pair's worst row, and its judges' sentences on it:
+
+- Pair 1, artifacts:
+  - j1: The photo is clean; the render has an implausible radial bundle of capsule-shaped roots, painted stripe textures, black outlines, a hard-edged flat water polygon and ground decals.
+  - j2: The photograph is clean; the render shows an implausible star-shaped cluster of capped cylinders, a hard cut-out water edge, a decal-like claw mark on the ground and repetitive banded bark.
+  - j3: The photo is clean; the render shows an implausible star-shaped root bundle, dark crescent marks on the ground, and a hard-edged water plane.
+  - j4: Photo is clean; the render shows implausible star-shaped capsule logs, a hard-edged water decal, black claw-like ground marks and stamped bark.
+  - j5: The photo is clean, and the render shows a cartoon cylinder root ball, a hard-edged sheet of water and stamped dark claw marks on the ground.
+  - j6: The photo is clean; the render shows an implausible radial cylinder cluster, a hard-edged water sheet, floating black stroke decals and outlined geometry.
+  - j7: The photo shows none; the render has an implausible radial cluster of identical cylinders for a root plate, a hard-edged flat water sheet, and floating dark arc decals on the ground.
+  - j8: The photo is clean; the render shows an implausible radial bundle of cylinders as a root ball, a hard-edged water slab, stray dark arc decals and drawn outlines.
+- Pair 2, artifacts:
+  - j1: The render has floating leaf-card litter scattered over bare dirt, cardboard-like logs, a hard-edged path and sprite-like foliage clumps; the photo has none.
+  - j2: The render's ground is covered in flickery confetti-like leaf cards, with floating straight logs and blobby foliage clumps; the photograph is clean.
+  - j3: The render shows leaf cards hovering over bare ground, floating logs, and a hard-edged pale plane in the foreground; the photo is clean.
+  - j4: The render scatters chunky floating leaf shards, has floating logs and plastic trunks, and leaves a barren ground plane; the photo is clean.
+  - j5: The render's floor is scattered with noisy leaf cards, logs resting implausibly and a hard-edged path at the bottom, while the photo is clean.
+  - j6: The render shows confetti-like leaf cards sprinkled over bare ground, hovering logs and blotchy foliage clusters; the photo is clean.
+  - j7: The photo is clean; the render has leaf decals scattered on bare dirt like confetti, floating logs, a pale flat path cutting the foreground, and a ring glitch on a trunk.
+  - j8: The photo is clean; the render's scattered leaf cards read as speckle noise, logs sit on top of the ground and a translucent band crosses the bottom of the frame.
+- Pair 3, artifacts:
+  - j1: The render has untextured grey cylinder trunks, a floating pale stump, blocky stylised bark on the left trunk and logs interpenetrating; the photo is clean.
+  - j2: The render shows blocky extruded bark on the foreground trunk, star-shaped log ends, featureless grey pole trunks and logs that barely sit on the ground; the photograph is clean.
+  - j3: The render shows untextured grey cylinder trunks, interpenetrating logs, blocky bark and an odd pale branch cluster; the photo is clean.
+  - j4: The render has brick-like extruded bark, intersecting logs, plain grey cylinder trunks and a floating white trunk base; the photo is clean.
+  - j5: The render shows untextured cylinder trunks, interpenetrating logs, lollipop trees and a stamped root disc, while the photo has none.
+  - j6: The render shows smooth untextured trunks, oversized bark relief, a floating log end, a stubby flower-like root end and lollipop trees; the photo is clean.
+  - j7: The photo is clean; the render has a blocky stamped bark pattern on the near trunk, untextured grey poles, a trunk base hanging in the air and logs that float or interpenetrate.
+  - j8: The photo is clean; the render has untextured grey poles, blocky bark on the near trunk, a cartoon root ball and a bare, smooth ground plane.
+- Pair 4, artifacts:
+  - j1: The photo is clean; the render has a repeated arrowhead decal pattern down the face, squiggle-line decals, smeared shadows and no sign of the banding the scene is named for.
+  - j2: The render shows rows of repeated triangular arrow decals, tiled squiggle marks, stretched blurry texture and facet seams; the photograph is clean.
+  - j3: The photo is clean; the render shows repeating triangular stamp marks, squiggle decal lines and a smeared texture.
+  - j4: The photo is clean; the render shows repeated stamped arrow decals, tiled squiggle lines and a smeared, stretched texture.
+  - j5: The render shows repeated triangular stamp decals, squiggle lines and a smeared texture with no bedding geometry, while the photo is clean.
+  - j6: The render shows repeated arrow-shaped decal stamps, tiled squiggle lines, smeared texture and no real geometry; the photo is clean.
+  - j7: The photo is clean; the render shows repeating triangular arrow stamps in diagonal rows and wavy line decals across a smeared surface.
+  - j8: The photo is clean; the render shows repeated triangular stamp decals, wavy line decals and a featureless, implausibly smooth face.
+- Pair 5, light:
+  - j1: The photo has sun breaking through the canopy and catching trunk sides, with shadowed undergrowth exactly where expected; the render's cloudy light is flat and gives no direction or modelling.
+  - j2: The photograph's sun slants through from the left, striping the trunks and the path with a natural falloff into shade; the render's overcast light gives no direction, and the ground has no falloff.
+  - j3: The photo's shafts on the trunks show direction, falling off into a dark understory; the render's flat overcast light gives no direction and no falloff on the ground.
+  - j4: The photo has shafts of dappled light on the trunks that fall off into the stand; the render's overcast light is flat, with no occlusion under the bush or on the ground.
+  - j5: The photo's sun breaks through in shafts that light trunks and path with green bounce in the shade, while the render's overcast is flat with no contact darkening on the bare slope.
+  - j6: The photo's dappled sun picks out the trunks and path, with believable falloff; the render's overcast light leaves its big ground plane uniformly lit and formless.
+  - j7: The photo has sun shafts striking the trunks with falloff into shade, while the render's overcast light is flat, and its huge foreground ground plane gets no shading cue.
+  - j8: The photo's dappled sun picks out the trunks with a readable direction and soft falloff; the render's overcast light leaves the large ground slab flat with no readable direction.
+- Pair 6, artifacts:
+  - j1: The photo is clean; the render has blocky tiled bark on the foreground log, blobby cloud shapes, a smeared low-detail far plain and dark outlines on trunks.
+  - j2: The render's clouds are cut-out puffs, the distant plain is a smeared texture and the bark is tiled; the photograph is clean.
+  - j3: The photo is clean; the render's distant plain is a blurry flat texture, its clouds look like cotton balls, the log bark is blocky and the trees are sparse cards.
+  - j4: The photo is clean; the render's distant plain is smeared and featureless, its clouds are blobby puffs, its log bark is blocky, and its slope logs float.
+  - j5: The render shows blocky log bark, blobby clouds and a flat far plane, while the photo is clean.
+  - j6: The render's distant plain is a smeared flat texture, its clouds are blobby and its log has plank-like bark; the photo is clean.
+  - j7: The photo is clean; the render has a smeared low-resolution far terrain, blocky tiled bark on the near log and blobby cloud shapes.
+  - j8: The photo is clean; the render has blobby clouds, a streaked featureless plain, repetitive tree instances and blocky bark on the log.
+- Pair 7, artifacts:
+  - j1: The render has a field of floating leaf cards, an outlined stick-legged deer, the implausible capsule root ball and banded water; the photo is clean.
+  - j2: The render shows thousands of flicker-prone leaf cards scattered like confetti, a star-shaped log cluster, a crude outlined deer and a flat grey water plane; the photograph is clean.
+  - j3: The render shows floating leaf cards, a stick-legged deer, a translucent water slab and an implausible root star; the photo is clean.
+  - j4: The render shows a noise-prone scatter of floating leaf shards, the radial capsule log cluster, a blended pale ground patch and a stick-legged deer; the photo is clean.
+  - j5: The render shows a crude outlined deer, noisy scattered leaf cards, a hard-edged pale blob and a cartoon root ball, while the photo is clean.
+  - j6: The render shows leaf-card confetti everywhere, a radial cylinder root hub, an outlined flat deer and cylinder trunks; the photo is clean.
+  - j7: The photo is clean; the render has a stick-legged outlined deer, a cloud of floating leaf cards, an implausible starburst root and hard water edges.
+  - j8: The photo is clean; the render is covered in floating leaf cards, has a stick-legged outlined deer and a cartoon root ball.
+- Pair 8, artifacts:
+  - j1: The render has an untextured deer, blocky bark, a trunk flaring into a cloth-like skirt, cutout foliage and a blurred ground; the photo is clean.
+  - j2: The render's deer is low-detail, its foliage is blobby cut-out clusters, the log ends are striped and the ground texture is smeared; the photograph is clean.
+  - j3: The render's deer is a smooth low-detail model, its ground texture is smeared and the trunk bases flare like skirts; the photo is clean.
+  - j4: The render has a plastic low-poly deer, a trunk base that flares like a cloth skirt, a banded log and cutout foliage; the photo is clean.
+  - j5: The render shows a smooth crude deer without a contact shadow, a flared skirt of geometry at a trunk base, cutout leaves and blank log ends, while the photo is clean.
+  - j6: The render shows an untextured mannequin deer floating without contact, stretched bark texture, a skirt-like flare at the trunk base and an outlined log; the photo is clean.
+  - j7: The photo is clean; the render has an untextured low-detail deer, bark texture stretched at the trunk bases, starburst log ends and blotchy foliage cards.
+  - j8: The photo is clean; the render has a low-detail deer floating without contact, blotchy foliage cards and a bare ground plane.
+- Pair 9, artifacts:
+  - j1: The photo is clean; the render has black outlines on trunks, a rectangular cloth-like panel hanging off a trunk, logs laid in parallel and stub branches.
+  - j2: The render shows hard black outlines, a flat rectangular card on a trunk, star-shaped log ends and plain cylinder trunks; the photograph is clean.
+  - j3: The photo is clean; the render shows black ink outlines on trunks, a flat card trunk with a visible rectangular edge, and logs in unnaturally parallel rows.
+  - j4: The photo is clean; the render has inconsistent ink outlines, a flat rectangular sheet behind the central trunk, stubby-branched logs and cutout foliage.
+  - j5: The render shows black outlines on trunks, a flat rectangular bark flap, rows of identical repeated logs and cutout leaves, while the photo is clean.
+  - j6: The render shows black outlines, a trunk with a rectangular sheet flap, flat card-like trunks and logs floating above the ground; the photo is clean.
+  - j7: The photo is clean; the render has ink outlines on edges, a rectangular bark card floating off a trunk, stacked intersecting logs and a kinked overhead branch.
+  - j8: The photo is clean; the render has drawn outlines, a visible rectangular card on a trunk, a floating branch across the top and plain cylinder logs.
+- Pair 10, artifacts:
+  - j1: The render has untextured plaster-like walls with polygon shards, floating grass blades, a log intersecting the ground and a flat strip for the waterfall; the photo is clean.
+  - j2: The render's camera sits almost inside the terrain; the waterfall is a flat cyan strip, the walls are blank and grass blades float; the photograph is clean.
+  - j3: The render shows untextured walls, a flat sliver of waterfall, floating grass blades and a smeared ground; the photo is clean apart from mild sharpening.
+  - j4: The render's walls are untextured plaster, its waterfall is a thin teal ribbon, and grass blades float; the photo is clean.
+  - j5: The render shows stretched smeared wall textures, a flat cyan sheet for the fall and floating grass cards, while the photo is clean.
+  - j6: The render shows featureless smeared walls, a camera almost in the ground, floating grass blades, a flat-sliver waterfall and pixelated shadow edges; the photo is clean.
+  - j7: The photo is clean; the render's waterfall is a thin flat blue card, the walls are untextured, and the camera nearly clips a ground mound with a few floating grass blades.
+  - j8: The photo is clean; the render's walls are featureless, the waterfall is a thin flat card and jagged edges show at the top.
+- Pair 11, artifacts:
+  - j1: The photo is clean; the render has plastic-looking bark slats, translucent ghosted overlapping layers and horizontal seams.
+  - j2: The render's bark is extruded plastic slabs with semi-transparent ghosted layers visible through the surface and seam lines; the photograph is clean.
+  - j3: The photo is clean; the render shows ghosted double-image layers, horizontal seams and implausible plastic ridges.
+  - j4: The photo is clean; the render's bark is extruded slabs with ghosted, translucent layering and horizontal seams.
+  - j5: The render shows the camera clipping into the trunk, horizontal tiling seams and glossy extruded ridges, while the photo is clean.
+  - j6: The render shows ghosted transparent layering, extruded plastic-looking bark geometry and camera clipping into the trunk; the photo is clean.
+  - j7: The photo is clean; the render shows ghosted double layers of bark relief, stretched smeared texture and a camera clipping into the trunk.
+  - j8: The photo is clean; the render shows ghosted, double-exposed layers and plastic-looking bevelled bark geometry.
+- Pair 12, artifacts:
+  - j1: The render has a branch with an implausible right-angle elbow, striped bark texture and blotchy dithered leaf cards; the photo is clean.
+  - j2: The render shows stair-stepped extruded bark, dithered blobby foliage edges and a pipe-like bent branch; the photograph is clean.
+  - j3: The render shows a right-angle kinked branch, plastic striped bark and blobby leaf cutouts; the photo is clean.
+  - j4: The render has slab-extruded bark, a sharply kinked branch, cutout foliage blobs and slight leaf noise; the photo is clean.
+  - j5: The render shows a branch kinked at a right angle, slab-stylised bark and mottled noise in the leaf clumps, while the photo is clean.
+  - j6: The render shows plank-like extruded bark with outlines, a sharply kinked branch with a flat seam and blotchy foliage clusters; the photo is clean.
+  - j7: The photo is clean; the render has stretched banded bark, a sharply kinked branch and blotchy foliage cards.
+  - j8: The photo is clean; the render has blocky plastic bark, a sharply kinked branch and blotchy leaf clusters.
+
+The menu (§G0), the items the pairs name, most lost first:
+
+- G7: 9.25 lost, named by 5 pairs
+- G2: 6.88 lost, named by 2 pairs
+- G6: 4.62 lost, named by 1 pairs
+- G5: 3.00 lost, named by 1 pairs
+- G1: 2.00 lost, named by 2 pairs
+- G4: 2.00 lost, named by 1 pairs
+- G3: 1.88 lost, named by 1 pairs
+
+The menu's ranking from this sealed tally (`studio/compare/menu.wrela`) names G2 (the water's
+reflections) and G6 (the fall) second and third. Part G never built them: its selection read the
+development panel (§G0), whose eight shots have no fall and no mere, so the faults these pairs
+name first (pairs 10 and 6) were never on its menu. Plan four opens with them.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
