@@ -31,8 +31,8 @@ leaderboard, and the friction to that is making an account"). So:
   game itself behind the console's home, and plain, warm copy.
 
 Not in this plan: friends, follows or lists (Ryan: "i don't want to build friends functionality
-yet"); verification in parallel and Durable Object sharding (design.md, "Fast under load": before
-a launch's crowd, as toolchain changes); live runs (design.md's anti-cheat layer 2).
+yet"); live runs (design.md's anti-cheat layer 2). Verification at the edge and a sharded server,
+first left out, came in on 2026-10-31 (steps 11–14).
 
 ## 2. The steps, in order
 
@@ -221,6 +221,80 @@ your passkeys' records… at once"), and stale names ("upload one from the Playe
 Test: the strings' tests updated; a list of every string changed, before and after, in the pull
 request's description.
 
+### Steps 11–14. On Cloudflare: delivery and a sharded server
+
+Folded in on 2026-10-31 (Ryan: "Fold into #351"), from a plan another session made and a council
+(gpt-6.1-sol and gpt-6-astra, three rounds, through the Codex CLI) reviewed. Its rule from Ryan:
+**no backwards compatibility**, since no accounts exist yet; the wire may change, and nothing is
+migrated. They need **toolchain 0.18.0** (rywible/wrela-compiler): build payloads at content
+addresses (`addresses.json`, `/b/`), the runtime scripts in one directory, named server instances
+with a `route` in the Worker, edge instances, `call`/`reply`, `send` with an outbox (at least once,
+an explicit `ack`), `me()`, `std::crypto::hmac`, a verifier artifact loaded with the Worker Loader
+(`call_build`), and a public fetch with no cookies that the browser may cache. This PR pins 0.18.0
+and merges only once its assets are published.
+
+**Step 11. Unchanged files stay cached across deploys.** Payloads (WASM, shaders, their `.lines`,
+streamed files) go to `/b/<sha256>.<ext>` and the runtime scripts to `/r/<sha256 of the set>/`,
+each `public, max-age=31536000, immutable`; `releases/<id>/` keeps only a release's own files
+(pages, `manifest.json`, `addresses.json`, `files.json`, `catalog.tsv`, `prefetch-<id>.txt`,
+`release.txt`). Bootstrap preloads and the console's prefetch name the `/b/` and `/r/` URLs. A
+Worker's assets are each kept release's own files plus the union of the blobs they name, each
+uploaded once. `MAX_FILES` 100,000; `KEEP` back to 14 days and the docs keep releases again (both
+cheap now: a kept release adds only its own few files). Checks: two releases differing only in the
+docs give the console and the capybara no new `/b/` or `/r/` URL; a cold game load in Chrome
+(rendering, helper threads, audio, streamed files) has no failed request.
+
+**Step 12. Zstandard.** Ryan adds the zone's Compression Rule once (Zstandard, Brotli, Gzip);
+docs/toolchain.md records it. The deploy checks the console's and capybara's WASM and runtime come
+back `content-encoding: zstd`. Kept only if zstd's bytes are within 5% of Brotli's (curl's
+`size_download`), recorded in docs/bench.md.
+
+**Step 13. Early Hints.** Ryan turns on the zone's Early Hints once. `_headers` mirrors each
+bootstrap page's preloads as `Link: <…>; rel=preload; as=fetch; crossorigin`. Checks: a 103 in
+`curl -sv --http2`; the WASM's `initiatorType` is `early-hints` in Chrome; its request start before
+and after, in docs/bench.md.
+
+**Step 14. The sharded server** (it replaces the one-object engine; nothing is migrated). One
+`WrelaServer` class, named instances:
+
+| Instance | Holds | Written by |
+| --- | --- | --- |
+| `account/<handle>` | the account, passkeys, sessions, recovery-code hashes, game tokens, runs and replays, bests and whole-game sums, upload counts; and (from steps 3–4) the sign-up agreement, the posting consent and the best-runs setting, each its own record | itself |
+| `names/<00..3f>` | name → owner and generation (uniqueness) | itself |
+| `search/<noun's first letter>` | normalized name → handle, in name order, for search by prefix | each owning account (an upsert; removed on rename or delete) |
+| `codes/<00..3f>` | recovery-code hash → handle | its accounts |
+| `board/<game>/<board>/<course>/<category>` | every account's best; pages and the slice around a place are range reads | its accounts |
+| `whole/<game>/<board>/<category>` | each account's whole-game sum | its accounts |
+
+- **Routing** (`route`, in the Worker): the session cookie `__Host-session = <handle>.<secret>` and
+  game tokens route to their account; sign-in by its passkey's user handle; `Register` by the handle
+  its challenge named; recovery to `codes/<prefix>`, then the account; boards, slices and replays to
+  their instance behind the Cache API; uploads to the edge. Each instance checks its own secrets.
+- **Replays by their run**, not a hash index: `RunRef { handle, n }` names a run (Watch, the board's
+  rows, the ghost), served at an immutable public path with the handle in it, cached for a year, so
+  no hash index is needed. A replay's SHA-256 is still how the game checks the bytes it got.
+- **Search**: the shard key is the noun's first letter, because the noun is what players remember;
+  a search with a noun reads one shard and filters by title there, a title alone fans out over the
+  shards (bounded), and an epithet alone is refused, as now.
+- **Ceremonies**: a challenge is `nonce ‖ expiry ‖ HMAC-SHA256(key, ceremony ‖ ceremony-cookie
+  token ‖ handle ‖ nonce ‖ expiry)` with a Worker secret (two, for rotation); `Register` finding its
+  handle's instance already made is a replay, refused; a sign-in nonce is kept spent for its life.
+- **Uploads at the edge**: `Admit` at the account (the token, the hourly limit, consent, the name
+  kept, a duplicate's original outcome by board version); the edge plays it (the current board in
+  its own module, an older one through `call_build` on its archived verifier in R2, else "board
+  closed"); `Record` at the account commits the run and its best and `send`s upserts to the board
+  and whole board; the edge `call`s the board for the place. A failed board call answers retryably,
+  and the retry takes the duplicate path. The queue and its limits go.
+- **Names**: `Claim` returns a generation; `Keep` and `Release` need the owner and generation; a
+  name change sends upserts to the account's boards and search.
+- **Delete and export** are the account's: delete fences new records, sends removals to its boards,
+  whole boards, names, search and code shards, and clears its store only once each is acknowledged.
+- **Limits**: per-client rate limits as now; recovery per code shard (30 a minute each).
+- Tests: the platform's fake host made multi-instance with every assertion carried over, plus the
+  council's list (a replayed challenge, upload versus delete, a delayed release after a new owner, a
+  held removal, 1,001 ranked accounts with a top one deleted, a failed board call and its retry), and
+  `wrangler dev` end to end with two browsers.
+
 ## 3. How a string is written
 
 docs/voice.md (step 10) holds the voice; until it's written, a step's strings follow these: short;
@@ -241,4 +315,23 @@ a person's words, not a document's; second person; a button says what it does ("
 
 ## 5. The reviews' findings
 
-(Filled in as the reviews come.)
+**`/simplify`** (2026-10-31; four reviewers: reuse, simplification, efficiency, altitude): about
+50 findings, deduplicated and applied, among them a race on duplicate replays across accounts,
+re-posts answered with their first outcome rather than matched by wording, posting only once a name
+is kept, the server's search and slice round trips, per-frame allocation in the game, one offline
+gate, a least-recently-used replay cache with the ghost pinned, and the attract start moved onto the
+play build at `capybara/#attract` (toolchain 0.17.0). Skipped: consent folded into the account record
+(kept apart, so each write touches only its own).
+
+**The council, round 1** (2026-10-31, through the Codex CLI; verdict "don't merge"): 16 findings.
+Fixed in the platform and console: the first-post explanation opening on a hidden console (the game
+now shows it, from shared words in `platform/posting.wrela`); account enumeration through the slice
+(one answer for any absence); an explicit "no place" answer; retryable failures told apart from
+rejections; a run marked verified only once its ranking committed; the consent and the setting as
+separate records; outcomes keyed by board version; the account pages' semantic tree; a failed
+settings load no longer read as an opt-out. Moved to toolchain 0.18.0: public reads without cookies
+and with the browser's cache. Not done: a backfill of the search index (there is no data, per
+Ryan). Still to do, in the game: the posting screen, keeping and retrying waiting runs, both
+categories' bests, every visible row prefetched, the leaderboard opening at the player's place,
+racing past place 1,000, and a replay that fails to arrive. Steps 11–14 then rebuild the server,
+and the review battery runs again over all of it.
