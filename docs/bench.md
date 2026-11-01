@@ -1915,6 +1915,9 @@ each rejected; keys in `build/g-private`). Levers between rounds:
   twice Fernando's penumbra), then its widest 24 → 6 texels (a low sun's far blockers spread the
   crown's dapples to a smear).
 
+Shots are numbered from 1 here, as the plan numbers them (G7's round-1 record above names them by
+the lookbook's index, from 0: its "shot 1" is the canopy against the sun, shot 2 here).
+
 | Item | Round 2 (`build/glook-*r2*`) | Round 3 (`build/glook-*r3`) |
 |---|---|---|
 | G7 | shots 1–6 equal; 7 (dawn) **after**; 8 (dusk) **before** ("washes out the sky"); 10 **before** (a "stray bright speck": none is in the pixels, 0 over 220 against under 160 in the other); 9, 11, 12 equal | 8 **before** at a ceiling of 6 ("a slightly washed-out lilac grade"); 10 equal: the ceiling went back to 4 |
