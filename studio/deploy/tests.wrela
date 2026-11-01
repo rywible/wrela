@@ -4,16 +4,19 @@
 // the kept releases it puts in each Worker's assets, what stops it before it changes anything,
 // and the Workers deployed in order, each serving the release and its kept ones as assets.
 
-use main::{Listing, Options, deploy, parse_args, verify, verify_api, verify_kept}
+use main::{
+    Listing, Options, ZSTD_RULE, deploy, found, keep_verifier, parse_args, verify, verify_api,
+    verify_kept, verify_zstd,
+}
 use policy::{
-    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, has, history_json, insert,
-    is_inside, kept, main_head, next_history, parse_stamp, quoted, read_history, read_listing,
-    read_release, redirected, stamp, uploads,
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, has, history_json,
+    insert, not_zstd, is_inside, is_shared, kept, main_head, next_history, parse_stamp, placed,
+    quoted, read_history, read_listing, read_release, redirected, stamp, uploads,
 }
 use release_tool::catalog::CATALOG
 use release_tool::io::{read_files, write_files}
 use release_tool::json::{Json, compact, member, text}
-use release_tool::site::{Report, api_config, release_json, replace_all, wrangler_config}
+use release_tool::site::{Report, Verifier, api_config, release_json, replace_all, wrangler_config}
 use release_tool::tree::hex_sha
 use std::tool::ToolError
 use std::tool::files
@@ -62,12 +65,12 @@ fn entry(release: str, until: Option<i64>, docs: bool) -> Deploy {
     }
 }
 
-/// A ended 20 days ago, B a day ago, and C is live.
+/// A ended 20 days ago, B 3 days ago, and C is live.
 fn history(docs: bool) -> Vec<Deploy> {
     Vec::from(
         [
             entry(A, Some(now() - 20 * DAY), docs: docs),
-            entry(B, Some(now() - DAY), docs: docs),
+            entry(B, Some(now() - 3 * DAY), docs: docs),
             entry(C, None, docs: docs),
         ],
     )
@@ -89,12 +92,12 @@ fn a_release_stays_for_its_window_after_it_stops_being_live() {
     assert(releases(kept(h, now(), C)).as_str() == "b")
     let after = next_history(h, D, "head", workers(docs: false), now())
     assert(releases(after).as_str() == "bcd")
-    assert(after[0].live_until == Some(now() - DAY))
+    assert(after[0].live_until == Some(now() - 3 * DAY))
     assert(after[1].live_until == Some(now()), "the live one ends now")
     assert(after[2].live_until.is_none() && after[2].live_from == now())
     assert(after[2].source.as_str() == "head" && after[2].workers.len() == 2)
     // A release exactly `KEEP` past its end is still kept; a second later it isn't.
-    let edge = Vec::from([entry(A, Some(now() - 2 * DAY), docs: false)])
+    let edge = Vec::from([entry(A, Some(now() - 14 * DAY), docs: false)])
     assert(kept(edge, now(), D).len() == 1)
     assert(kept(edge, now() + 1, D).is_empty())
     assert(releases(kept(edge, now(), A)).is_empty(), "a redeploy of it isn't kept beside itself")
@@ -205,6 +208,34 @@ fn a_listing_names_files_inside_its_release_by_their_sha256() {
     ]
     for b in bad {
         assert(read_listing(D, b.as_str()).is_err(), b.as_str())
+    }
+    // A shared file, at its content address from the Worker's root: a payload named by its
+    // SHA-256, or a runtime's script in its set's directory.
+    let set = hex_sha(String::from("set").as_bytes())
+    let Ok(shared) = read_listing(
+        D,
+        f"{{\"/b/{sha.as_str()}.wasm\": \"{sha.as_str()}\", \"/r/{set.as_str()}/main.js\": \"{sha.as_str()}\", \"session/addresses.json\": \"{sha.as_str()}\"}}",
+    ) else {
+        panic("reads")
+    }
+    assert(shared.len() == 3)
+    assert(placed(D, shared[0].0.as_str()).as_str() == f"b/{sha.as_str()}.wasm")
+    assert(placed(D, shared[1].0.as_str()).as_str() == f"r/{set.as_str()}/main.js")
+    assert(placed(D, "session/addresses.json").as_str() == f"releases/{D}/session/addresses.json")
+    assert(is_shared(f"/b/{sha.as_str()}") && is_shared(f"/b/{sha.as_str()}.lines"))
+    for bad in [
+        String::from(f"/b/{set.as_str()}.wasm"),
+        String::from(f"/b/{sha.as_str()}.wasm/x"),
+        String::from(f"/b/{sha.as_str()}."),
+        String::from("/b/x.wasm"),
+        String::from(f"/r/{set.as_str()}/a/main.js"),
+        String::from(f"/r/{set.as_str()}/.."),
+        String::from(f"/r/{set.as_str()}"),
+        String::from(f"/x/{sha.as_str()}.wasm"),
+        String::from(f"/releases/{D}/index.html"),
+    ] {
+        let one = String::from(f"{{\"{bad.as_str()}\": \"{sha.as_str()}\"}}")
+        assert(read_listing(D, one.as_str()).is_err(), bad.as_str())
     }
 }
 
@@ -324,6 +355,7 @@ fn a_release_names_one_console() {
         "head",
         D,
         "api-host",
+        verifier(),
         [
             Report {
                 worker: String::from("c"),
@@ -350,6 +382,7 @@ fn a_release_names_one_console() {
         "head",
         D,
         "api-host",
+        verifier(),
         [
             Report {
                 worker: String::from("d"),
@@ -362,7 +395,23 @@ fn a_release_names_one_console() {
         ],
     )
     assert(read_release(none.as_str()).is_err())
-    assert(read_release(release_json("head", "D", "api-host", [])).is_err(), "an invalid id")
+    assert(
+        read_release(release_json("head", "D", "api-host", verifier(), [])).is_err(),
+        "an invalid id",
+    )
+    // Its verifier: a path of the bucket of builds, and files each a plain name, its description
+    // among them.
+    assert(r.verifier.path.as_str() == "verifiers/toy/7/0123abcd" && r.verifier.files.len() == 2)
+    for (from, to) in [
+        ("\"verifiers/toy/7/0123abcd\"", "\"../toy\""),
+        ("\"verifiers/toy/7/0123abcd\"", "\"builds/toy\""),
+        ("\"main.js\"", "\"../main.js\""),
+        ("\"verifier.json\"", "\"game.wasm\""),
+        ("\"verifier\"", "\"verified\""),
+    ] {
+        let other = replace_all(one.as_str(), from, to)
+        assert(other.as_str() != one.as_str() && read_release(other.as_str()).is_err(), to)
+    }
     // A release with no server's Worker isn't one.
     for bad in ["", "../x", "a b"] {
         let other = replace_all(one.as_str(), "\"api\": \"api-host\"", f"\"api\": \"{bad}\"")
@@ -444,8 +493,10 @@ fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
     if docs && !docs_first {
         reports.push(docs_report.clone())
     }
-    put(mut out, "release.json", release_json(SOURCE, D, "api-host", reports).as_str())
+    put(mut out, "release.json", release_json(SOURCE, D, "api-host", verifier(), reports).as_str())
     put(mut out, "api-host.wrangler.json", api_host_config().as_str())
+    put(mut out, "api-host.server/verifier/main.js", "verify")
+    put(mut out, "api-host.server/verifier/verifier.json", "{\"schema\": \"wrela-verify-1\"}")
     for r in reports {
         let page = [("index.html", String::from("new"))]
         put(mut out, f"{r.worker.as_str()}/releases/{D}/index.html", "new")
@@ -502,6 +553,7 @@ fn options(dry_run: bool) -> Options {
         dry_run,
         limits: CLOUDFLARE,
         repository: String::from("https://github.com/rywible/wrela"),
+        zstd: false,
     }
 }
 
@@ -786,27 +838,139 @@ fn a_file_that_leaves_its_release_stops_the_deploy() {
     let _ = spoiled("invalid path", None, take escape)
 }
 
-/// The docs keep no release, and ask the live site for none, while the console and the game keep
-/// theirs; a game's missing release still stops the deploy.
+/// The docs keep each kept release they served, and none they never served (404); but a game's
+/// missing release stops the deploy, and so does a docs failure that isn't a 404.
 @test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
-fn the_docs_keep_no_release_but_a_game_must_keep_its_own() {
+fn the_docs_keep_what_they_served_and_skip_what_they_never_did() {
     var files = site(docs: true, docs_first: false)
+    // The docs served C, and never B.
     serve(mut files, "docs.example", C, [("index.html", String::from("docs"))])
     set_up(take files)
-    // A docs listing the deploy asked for would fail it.
-    for release in [B, C] {
-        faked(f"https://docs.example/releases/{release}/files.json", Fake::Status(503))
-    }
     if let Err(e) = deploy(options(dry_run: true)) {
         panic(e.message())
     }
-    for release in [B, C] {
-        assert(!there(f"scratch/docs-host/releases/{release}"), release)
-        assert(kept_file("game-host", release, "session/game.wasm") == Some(String::from(release)))
-    }
+    assert(kept_file("docs-host", C, "index.html") == Some(String::from("docs")), "the docs' C")
+    assert(!there(f"scratch/docs-host/releases/{B}"), "the docs' B")
+    // A docs failure that isn't a 404 stops it.
+    faked(f"https://docs.example/releases/{B}/files.json", Fake::Status(503))
+    failed(deploy(options(dry_run: true)), "HTTP 503")
     // A game's missing release stops it.
+    faked(f"https://docs.example/releases/{B}/files.json", Fake::Clear)
     faked(f"https://game.example/releases/{B}/files.json", Fake::Missing)
     failed(deploy(options(dry_run: true)), "HTTP 404")
+}
+
+// ---- Shared files ------------------------------------------------------------------------------
+
+/// The runtime's set that the tests' addressed releases share.
+fn set_of() -> String {
+    hex_sha(String::from("the runtime's set").as_bytes())
+}
+
+/// `release` in the layout of content addresses (release_tool::addresses) in `dir`, a fake
+/// site's or a Worker's directory of the release: its own files (its pages and its session's map,
+/// which names its WASM `wasm` and the shared tile) and the shared files it names (the WASM, the
+/// tile and the runtime's script), with its `files.json`.
+fn addressed(out: mut Vec<(String, Vec<u8>)>, dir: str, release: str, wasm: str) {
+    let sha = |body: str| hex_sha(String::from(body).as_bytes())
+    let wasm_at = String::from(f"/b/{sha(wasm).as_str()}.wasm")
+    let tile_at = String::from(f"/b/{sha("tile").as_str()}.bin")
+    let main_at = String::from(f"/r/{set_of().as_str()}/main.js")
+    let map = String::from(
+        f"{{\"files/floor/t1_-1.bin\": \"{tile_at.as_str()}\", \"game.wasm\": \"{wasm_at.as_str()}\"}}",
+    )
+    var listing: Vec<(String, Json)> = Vec::new()
+    for (path, body) in [
+        (wasm_at.clone(), String::from(wasm)),
+        (tile_at.clone(), String::from("tile")),
+        (main_at.clone(), String::from("main")),
+        (String::from("index.html"), String::from("new")),
+        (String::from("session/addresses.json"), map.clone()),
+        (String::from("session/index.html"), String::from(f"{release}'s page")),
+    ] {
+        put(mut out, f"{dir}/{placed(release, path.as_str()).as_str()}", body.as_str())
+        listing.push(member(path.as_str(), text(sha(body.as_str()).as_str())))
+    }
+    put(mut out, f"{dir}/releases/{release}/files.json", compact(Json::Obj(take listing)).as_str())
+}
+
+/// The live game serves C in the new layout, and the new release D shares its tile and runtime
+/// but not its WASM; B is as an older release wrote it, every file in it.
+fn shared_site() -> Vec<(String, Vec<u8>)> {
+    var files = site(docs: false, docs_first: false)
+    addressed(mut files, "sites/game.example", C, "C's wasm")
+    addressed(mut files, "game-host", D, "D's wasm")
+    files
+}
+
+/// A kept release's shared files that the new release has are in the Worker's directory once,
+/// and those it hasn't are fetched once, checked, and put there once: its release keeps only its
+/// own files.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+fn a_kept_releases_shared_files_are_fetched_and_kept_once() {
+    set_up(shared_site())
+    if let Err(e) = deploy(options(dry_run: true)) {
+        panic(e.message())
+    }
+    let wasm = hex_sha(String::from("C's wasm").as_bytes())
+    assert(read(staged("C's wasm").as_str()) == Some(String::from("C's wasm")), "fetched")
+    assert(read(f"scratch/game-host/b/{wasm.as_str()}.wasm") == Some(String::from("C's wasm")))
+    // The tile and the runtime are the new release's: not fetched, nor copied again.
+    assert(!there(staged("tile").as_str()) && !there(staged("main").as_str()), "fetched again")
+    assert(read(f"scratch/game-host/r/{set_of().as_str()}/main.js") == Some(String::from("main")))
+    assert(kept_file("game-host", C, "session/addresses.json").is_some(), "C's map")
+    assert(!there(f"scratch/game-host/releases/{C}/session/game.wasm"), "a release copy")
+    // D's 7 files (3 shared), C's own 4 and its WASM, and B's 3, as an older release has them:
+    // each shared file once.
+    let listed = match found("scratch/game-host") {
+        Ok(f) => take f,
+        Err(e) => panic(e.message()),
+    }
+    var names = String::new()
+    for f in listed {
+        names.push_str(f"{f.path.as_str()}\n")
+    }
+    assert(listed.len() == 15, names.as_str())
+}
+
+/// The plan's served-artifact check (docs/plan-online-play.md, step 11), on the site the fake
+/// Wrangler deploys: no release-relative copy of a moved file, and every target of every
+/// `addresses.json` there, the kept release's and the new one's.
+@test(
+    tool,
+    net: ["console.example", "game.example", "github.com"],
+    run: [("npx", "fakes/npx")],
+    budget: 300,
+)
+fn a_deployed_site_has_each_address_and_no_release_copy_of_a_moved_file() {
+    set_up(shared_site())
+    faked(REFS, Fake::Bytes(advertised(SOURCE)))
+    faked(f"https://console.example{main::API_PROBE}", Fake::Status(405))
+    if let Err(e) = deploy(options(dry_run: false)) {
+        panic(e.message())
+    }
+    let site = "scratch/sites/game.example"
+    let listed = match found(site) {
+        Ok(f) => take f,
+        Err(e) => panic(e.message()),
+    }
+    var maps = 0
+    for f in listed {
+        let p = f.path.as_str()
+        if !p.ends_with("/addresses.json") {
+            continue
+        }
+        maps += 1
+        let Some(body) = read(f"{site}/{p}") else { panic(p) }
+        let Some(doc) = std::json::parse(body.as_str()) else { panic(p) }
+        let dir = p.slice(0, p.len() - "addresses.json".len())
+        for (path, n) in doc.members(std::json::TOP) {
+            let Some(url) = doc.text(n) else { panic(p) }
+            assert(there(f"{site}{url.as_str()}"), url.as_str())
+            assert(!there(f"{site}/{dir}{path.as_str()}"), path.as_str())
+        }
+    }
+    assert(maps == 2, f"{maps} maps: C's and D's")
 }
 
 /// A Worker over its file limit fails the deploy; the limit counts the history the console
@@ -861,7 +1025,21 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
         Err(e) => panic(e.message()),
     }
     let Some(log) = read("scratch/npx.log") else { panic("wrangler never ran") }
-    assert(log.as_str() == "api-host\ngame-host\nconsole-host\ndocs-host\n", log.as_str())
+    let kept = "r2 wrela-builds/verifiers/toy/7/0123abcd/main.js\nr2 wrela-builds/verifiers/toy/7/0123abcd/verifier.json\n"
+    assert(log.as_str() == f"{kept}api-host\ngame-host\nconsole-host\ndocs-host\n", log.as_str())
+    // The server's verifier, kept in the bucket of builds before any Worker deployed.
+    let Some(v) = read("scratch/r2/wrela-builds/verifiers/toy/7/0123abcd/main.js") else {
+        panic("the verifier kept")
+    }
+    assert(v.as_str() == "verify")
+    // Kept again, as the next release of the same build keeps it: it's there, so nothing is put.
+    let Some(json) = read("scratch/release.json") else { panic("release.json") }
+    let Ok(rel) = read_release(json.as_str()) else { panic("the release") }
+    if let Err(e) = keep_verifier(rel, "scratch") {
+        panic(e.message())
+    }
+    let Some(again) = read("scratch/npx.log") else { panic("the log") }
+    assert(again == log, "put once")
     for (domain, release) in [
         ("console.example", B),
         ("game.example", B),
@@ -883,11 +1061,23 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
     assert(releases(after).as_str() == "bcd")
 }
 
+/// A release's verifier, as release.json names it.
+fn verifier() -> Verifier {
+    Verifier {
+        path: String::from("verifiers/toy/7/0123abcd"),
+        files: Vec::from([String::from("main.js"), String::from("verifier.json")]),
+    }
+}
+
 fn listed_release() -> Release {
     Release {
         source: String::from("head"),
         release: String::from(D),
         api: String::from("api-host"),
+        verifier: Verifier {
+            path: String::from("verifiers/toy/7/0123abcd"),
+            files: Vec::from([String::from("verifier.json")]),
+        },
         workers: Vec::from(
             [
                 worker("console-host", console: true, docs: false),
@@ -934,6 +1124,83 @@ fn failed_api(why: str) {
     match verify_api("console.example") {
         Ok(_) => panic(f"verified, but should fail with `{why}`"),
         Err(e) => assert(contains(e.message(), why), e.message()),
+    }
+}
+
+/// The deploy asks for each WASM module and runtime script as Zstandard, and only an answer of
+/// 200 with `content-encoding: zstd` is one.
+@test
+fn only_a_zstd_answer_is_zstandard() {
+    let sha = hex_sha(String::from("x").as_bytes())
+    let files = Vec::from(
+        [
+            (String::from(f"/b/{sha.as_str()}.bin"), sha.clone()),
+            (String::from(f"/b/{sha.as_str()}.wasm"), sha.clone()),
+            (String::from(f"/b/{sha.as_str()}.wgsl"), sha.clone()),
+            (String::from(f"/r/{sha.as_str()}/main.js"), sha.clone()),
+            (String::from("session/index.html"), sha.clone()),
+            (String::from("pages.js"), sha.clone()),
+        ],
+    )
+    let asked = compressed(files)
+    assert(asked.len() == 2, f"{asked.len()}")
+    assert(asked[0].as_str().ends_with(".wasm") && asked[1].as_str().ends_with("/main.js"))
+    assert(not_zstd("u", 200, Some(String::from("zstd"))).is_none())
+    for (status, encoding, why) in [
+        (200, Some(String::from("br")), "as br, not Zstandard"),
+        (200, Some(String::from("gzip")), "as gzip"),
+        (200, None, "uncompressed"),
+        (404, Some(String::from("zstd")), "HTTP 404"),
+    ] {
+        let Some(p) = not_zstd("u", status, encoding) else { panic(why) }
+        assert(contains(p.as_str(), why), p.as_str())
+    }
+    // Until Ryan sets the zone's rule, the check only warns.
+    assert(!ZSTD_RULE, "set: the deploy now fails without Zstandard")
+}
+
+/// On a site that serves no Zstandard (a fake site's answers are uncompressed), the check warns
+/// of each WASM and runtime script of the console and the games, but not the docs; with the rule
+/// set, it fails the deploy.
+@test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
+fn a_file_that_does_not_come_back_as_zstandard_warns_until_the_rule_is_set() {
+    var files = shared_site()
+    addressed(mut files, "sites/game.example", D, "D's wasm")
+    addressed(mut files, "docs-host", D, "the docs' wasm")
+    addressed(mut files, "sites/docs.example", D, "the docs' wasm")
+    set_up(take files)
+    var rel = listed_release()
+    rel.workers.push(worker("docs-host", console: false, docs: true))
+    for (k, domain) in [(0, "console.example"), (1, "game.example"), (2, "docs.example")] {
+        rel.workers[k].domain = String::from(domain)
+    }
+    let warned = match verify_zstd(rel, "scratch", required: false) {
+        Ok(w) => take w,
+        Err(e) => panic(e.message()),
+    }
+    var all = String::new()
+    for w in warned {
+        all.push_str(f"{w.as_str()}\n")
+    }
+    let wasm = hex_sha(String::from("D's wasm").as_bytes())
+    assert(warned.len() == 2, all.as_str())
+    assert(
+        contains(
+            all.as_str(),
+            f"https://game.example/b/{wasm.as_str()}.wasm comes back uncompressed",
+        ),
+        all.as_str(),
+    )
+    assert(
+        contains(
+            all.as_str(),
+            f"https://game.example/r/{set_of().as_str()}/main.js comes back uncompressed",
+        ),
+        all.as_str(),
+    )
+    match verify_zstd(rel, "scratch", required: true) {
+        Ok(_) => panic("passed without Zstandard"),
+        Err(e) => assert(contains(e.message(), "not as Zstandard"), e.message()),
     }
 }
 

@@ -21,7 +21,7 @@ use feel::{FEEL, HZ}
 use replay::Pose
 use sprites::{
     CAIMAN, CAPYBARA, CARROT, DRAFT, FLAG, GHOST, GOOSE, GULL, KOMODO, KUSUDAMA, PIGEON, SEAGULL,
-    SHADOW, SPARK, Sprite, YUZU,
+    SHADOW, Sprite, YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -762,21 +762,6 @@ pub fn sprites(
                 facing: s.facing,
                 kind: CAPYBARA,
                 surface: under(k, c, s.at + vec2(0.0, bob - sink)),
-            },
-        )
-    }
-    // A double jump still to come in the air: a yuzu-yellow star over its back (as Celeste's hair
-    // says a dash is ready), gone once it's spent.
-    if s.dying == 0 && mode == Some(Mode::Air) && s.jumps > 0 {
-        front.push(
-            Sprite {
-                pose: vec4(0.0, time * 2.0, 0.0, 0.0),
-                more: vec4(1.0, 0.84, 0.25, 0.95),
-                at: s.at + vec2(-0.2 * s.facing, 1.0 + 0.04 * sin(time * 7.0)),
-                half: vec2(0.17),
-                angle: 0.0,
-                facing: 1.0,
-                kind: SPARK,
             },
         )
     }

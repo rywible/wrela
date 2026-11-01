@@ -55,7 +55,9 @@ pub fn stage(
 
 // The home behind the text: the chosen game's hero, filling the screen, darkened behind the text
 // by a soft gradient in its own colour. Until its hero comes, its cover blurred in its place, and
-// before that its colour: never an empty dark.
+// before that its colour: never an empty dark. With the game playing itself behind the console
+// (attract.wrela), the hero fades out over it: the screen is see-through where the hero was, and
+// the gradient's dark stays over the game, so the text reads as it did.
 pub struct Backdrop: Copy + GpuData {
     // The hero's size and the cover's small copy's, in pixels: 0 while it isn't there.
     pub sizes: vec4,
@@ -67,6 +69,9 @@ pub struct Backdrop: Copy + GpuData {
     // The screen's size, how far across the text's side darkens (a fraction of the width), and
     // how high the dark along the bottom reaches (a fraction of the height).
     pub screen: vec4,
+    // How far the hero has faded out over the game behind (0: the hero alone, as without one);
+    // the rest unused.
+    pub behind: vec4,
 }
 
 // The pixel of an image of `size` that fills the screen (cropping its overflow, centred) at
@@ -126,8 +131,12 @@ pub fn backdrop(
     let high = 0.4 * (1.0 - smoothstep(0.0, 0.14, y))
     let shade = 1.0 - (1.0 - side) * (1.0 - low) * (1.0 - high)
     let dark = look.tint.xyz * 0.05 * look.tint.w
-    let shaded = mix(color, dark, shade) * look.look.y
-    vec4(shaded + vec3((grain(p) - 0.5) / 255.0), 1.0)
+    // Premultiplied: where the hero fades (`gone`), the game behind shows through as the hero
+    // did, under the same dark and light, `mix(game, dark, shade) * lit`; with none, opaque.
+    let gone = smoothstep(0.0, 1.0, look.behind.x)
+    let lit = look.look.y
+    let shaded = (mix(color, dark, shade) * (1.0 - gone) + dark * shade * gone) * lit
+    vec4(shaded + vec3((grain(p) - 0.5) / 255.0), 1.0 - gone * (1.0 - shade) * lit)
 }
 
 // A picture in a rectangle: a game's title art, or its cover on a tile.

@@ -159,7 +159,7 @@ pub fn built() -> Course {
 pub const SIGNS: [Sign; 1] = [
     Sign {
         at: vec2(9.0, 0.0),
-        heading: "Updrafts lift you",
+        heading: "Ride the updrafts",
         first: Act::Jump,
         second: Act::Jump,
         prompts: 0,

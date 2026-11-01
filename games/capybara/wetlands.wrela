@@ -145,12 +145,12 @@ pub fn built() -> Course {
         .checkpoint(vec2(224.0, 1.5))
 }
 
-/// Its signs, left to right: run and jump at the start, the double jump under the
-/// first ledge it reaches, water's speed before the first puddle, the slide on the deck before the
-/// big slide, and swimming before the lake.
+/// Its signs, left to right and 8 m apart at least: run and jump at the start, behind the
+/// capybara, the double jump under the first ledge it reaches, water's speed before the first
+/// puddle, the slide on the deck before the big slide, and swimming before the lake.
 pub const SIGNS: [Sign; 5] = [
     Sign {
-        at: vec2(4.0, 0.0),
+        at: vec2(0.0, 0.0),
         heading: "Run and jump",
         first: Act::Run,
         second: Act::Jump,
@@ -164,16 +164,16 @@ pub const SIGNS: [Sign; 5] = [
         first: Act::Jump,
         second: Act::Jump,
         prompts: 2,
-        line: "Again in the air",
+        line: "Jump again in the air",
         teaches: DOUBLE_JUMP,
     },
     Sign {
         at: vec2(32.4, 0.0),
-        heading: "Water is speed",
+        heading: "Splash for speed",
         first: Act::Run,
         second: Act::Run,
         prompts: 0,
-        line: "A splash makes you faster",
+        line: "Run through water to speed up",
         teaches: SPLASH,
     },
     Sign {
@@ -191,7 +191,7 @@ pub const SIGNS: [Sign; 5] = [
         first: Act::Jump,
         second: Act::Swim,
         prompts: 2,
-        line: "Up and down in turn: the dolphin kick",
+        line: "Press up and down in turn",
         teaches: SWIM,
     },
 ]

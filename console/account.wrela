@@ -1,29 +1,50 @@
-// The console's account: signing in with a passkey, the knighting (knighting.wrela), the account's
-// page (its passkeys, sessions, recovery codes, export and deletion), the legal pages (legal.wrela),
-// and what a game shown in the console asks of the boards (platform/link.wrela). It asks the
+// The console's account: signing in with a passkey, or making an account once the player agrees to
+// the Terms and the Privacy Policy and says they're 13 or older, the knighting (knighting.wrela),
+// the account's page (its recovery codes to save, whether it posts its best runs, its passkeys,
+// sessions, export and deletion), what posting makes public (shown once, before the first post),
+// the legal pages (legal.wrela), and what a game shown in the console asks of the boards
+// (platform/link.wrela). It asks the
 // console's server (platform/server.wrela) over HTTP on the console's own origin (std::http::fetch,
 // wire.wrela's paths), each request answered by one reply.
 //
 // It keeps to itself: the console's main.wrela only gives it its events, its time, a game shown
 // and closed, and a place to draw (a chip by the settings button, and its pages over everything
-// while open). While a page is open it takes the input.
+// while open). While a page is open it takes the input, and publishes the page as a semantic tree
+// (std::semantics, `publish`): a dialog of its text, its boxes with whether each is ticked, its
+// links, and its buttons with whether each can be pressed, so the keyboard and a screen reader
+// work on them as a page's own controls; their presses come back as `Event::Assist`.
 //
 // The session is a `__Host-` cookie the browser keeps and sends: HttpOnly, so no script reads it,
 // not even the console's. The console holds only the session's CSRF token, in memory, which the
 // server gives with each `Welcome`. A game, on its own origin, gets neither: only a token for its
 // boards (wire.wrela's `Token`).
+//
+// A new account's recovery codes come after its sign-up, not in it: the server gives them once,
+// and the console keeps them in memory only (never in storage) until the player says they're
+// saved, offering them on the account's page meanwhile (a game is told they wait,
+// `Account::save_codes`, and may remind the player to come here). Gone unsaved (the console
+// closed), new ones take a fresh passkey sign-in.
+//
+// What posting makes public (platform/posting.wrela) is shown here, on the account's page, before
+// "Post my best runs" is first turned on; a game shows the same words itself before a first post,
+// since the console is hidden while a game shows, and asks the console only to record the player's
+// choice (`Ask::Consent`).
 
 use knighting::{AGAIN, LENGTH}
 use platform::link::{Account as Linked, Answer, Ask, ToGame, from_game}
+use platform::posting
+use platform::session::answer_of
 use platform::wire::{
-    ACCOUNTS, ADD_PASSKEY, Me, PUBLIC, PasskeyView, REGISTER, Reply, Request, SIGN_IN, SessionView,
-    public,
+    ACCOUNTS, ADD_PASSKEY, Agreed, Me, NOT_AGREED, PUBLIC, PasskeyView, REGISTER, Reply, Request,
+    SIGN_IN, SessionView, public, run_path,
 }
+use std::hash::sha256::sha256
 use std::host
 use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use, use_passkey}
 use std::http::{Header, response}
-use std::input::{Button, Event, Key, PadButton}
+use std::input::{Assist, Button, Event, Key, PadButton}
 use std::io::{Pending, fetch}
+use std::semantics::{Node, Role, Sent}
 use std::serialize::{LoadError, load, save}
 use std::webauthn::base64url
 use ui::draw::{DrawList, Rect}
@@ -31,6 +52,9 @@ use ui::text::{Face, Fonts}
 
 /// Seconds before the server is asked again after it couldn't be reached.
 const RETRY: f32 = 5.0
+/// Seconds a client past the host's rate limits waits: they count a minute (studio/release's
+/// `RATE_LIMITS`).
+const LIMITED: f32 = 60.0
 /// How long the authenticator's prompt may wait for the person (WebAuthn's recommended default).
 const PROMPT_MS: u32 = 300000
 /// A game's token is asked for again this long before it expires (it lasts an hour).
@@ -53,6 +77,8 @@ const BODY: f32 = 15.0
 enum Page: Copy + Eq {
     Account,
     Choose,
+    Create,
+    Posting,
     Recover,
     Knighting,
     Codes,
@@ -65,12 +91,23 @@ enum Act: Copy + Eq {
     Chip,
     Close,
     SignIn,
+    /// Opens the page that makes an account; its boxes; and the account made.
     Create,
+    Agree,
+    OfAge,
+    CreateAccount,
     UseCode,
     SubmitCode,
     Keep,
     Reroll,
     CodesSaved,
+    SaveCodes,
+    Later,
+    /// Posting: the account's setting, the first post's screen's box, and its two choices.
+    BestRuns,
+    PostBest,
+    Post,
+    NotNow,
     Manage,
     AddPasskey,
     Remove { index: u32 },
@@ -88,11 +125,24 @@ enum Act: Copy + Eq {
 /// `Other`.
 enum Purpose: Copy + Eq {
     Other,
+    /// What the account chose of posting (`Request::Posting`): its failure is said to no one.
+    Posting,
     Name,
     Token,
     Export,
     Delete,
     Game,
+    Consent,
+    /// A game's `Ask::Consent`, carried to the server: its answer goes back to the game.
+    GameConsent,
+}
+
+/// Whether the console knows what the account chose of posting: not yet (or the last ask failed),
+/// asked, or told.
+enum Known: Copy + Eq {
+    Unknown,
+    Asking,
+    Known,
 }
 
 /// A game the console shows, and the call open to it.
@@ -102,8 +152,10 @@ struct GameLink {
     call: Option<Pending<u8>>,
     token: Vec<u8>,
     token_at: f32,
-    /// An ask carried to the server, waiting for its answer; and one waiting for a token.
+    /// An ask carried to the server, waiting for its answer (and whether it's an upload); and one
+    /// waiting for a token.
     asking: bool,
+    uploading: bool,
     waiting_token: bool,
     answer: Answer,
 }
@@ -114,13 +166,20 @@ pub struct Accounts {
     /// Whether the server answered the last request, and when to ask again if it didn't.
     connected: bool,
     retry_at: f32,
-    /// The requests under way, and what each was for.
-    waiting: Vec<(Pending<u8>, Purpose)>,
+    /// The requests under way, what each was for, and the account it was made for (`epoch`).
+    waiting: Vec<(Pending<u8>, Purpose, u32)>,
+    /// Counted up each time the console's account becomes another (`identify`): a reply to a
+    /// request made for the one before is dropped, but a game's own asks'.
+    epoch: u32,
     /// The session's CSRF token, as the server last gave it.
     csrf: Vec<u8>,
     pub me: Me,
     passkey: Option<Pending<u8>>,
+    /// The ceremony under way: what it's for, its challenge and the handle it's for, which its
+    /// finish carries back.
     ceremony: u32,
+    challenge: Vec<u8>,
+    handle: Vec<u8>,
     pub open: bool,
     page: Page,
     focus: u32,
@@ -145,6 +204,27 @@ pub struct Accounts {
     game: Option<GameLink>,
     time: f32,
     dirty: bool,
+    /// Making an account: its two boxes, ticked by the player.
+    agree: bool,
+    of_age: bool,
+    /// The page a legal page goes back to, and the control whose request is under way.
+    back: Page,
+    doing: Option<Act>,
+    /// Posting, as the server last said: whether it's known (and when to ask again after an ask
+    /// failed), whether the account has agreed to what posting makes public, and whether it posts
+    /// its best runs.
+    posting: Known,
+    posting_at: f32,
+    may_post: bool,
+    post_best: bool,
+    /// What posting shares, shown before "Post my best runs" is first turned on: its box.
+    consent_best: bool,
+    /// The page as last drawn, as a semantic tree: its nodes (the dialog first), the control each
+    /// acts as (an index of `shown`), and what was sent of it to the host.
+    nodes: Vec<Node>,
+    node_controls: Vec<Option<u32>>,
+    tree: Sent,
+    told: Vec<Pending<u8>>,
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
@@ -157,6 +237,7 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         connected: false,
         retry_at: 0.0,
         waiting: Vec::new(),
+        epoch: 0,
         csrf: Vec::new(),
         me: Me {
             signed_in: false,
@@ -167,6 +248,8 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         },
         passkey: None,
         ceremony: 0,
+        challenge: Vec::new(),
+        handle: Vec::new(),
         open: false,
         page: Page::Choose,
         focus: 0,
@@ -191,29 +274,34 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
         game: None,
         time: 0.0,
         dirty: true,
+        agree: false,
+        of_age: false,
+        back: Page::Choose,
+        doing: None,
+        posting: Known::Unknown,
+        posting_at: 0.0,
+        may_post: false,
+        post_best: false,
+        consent_best: false,
+        nodes: Vec::new(),
+        node_controls: Vec::new(),
+        tree: Sent {},
+        told: Vec::new(),
     }
-}
-
-fn poll(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut p {
-        Some(q) => answer = q.poll(),
-        None => {},
-    }
-    if answer.is_some() {
-        p = None
-    }
-    answer
 }
 
 // ---- the server ------------------------------------------------------------------------------
 
-/// Sends `request`, for `purpose`: a public read (a board, a run) by `GET`, so a cache may answer it,
-/// and anything else by `POST`.
+/// Sends `request`, for `purpose`: a public read (a board, a slice, a search, a run) by a public
+/// `GET`, with no cookie, so the browser's cache and the edge's may answer it, and anything else by
+/// `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
-    let asked = if public(request) {
+    let asked = if let Request::Watch { run } = request {
+        // A run's replay at its own path, which never changes: kept a day.
+        std::http::fetch_public(run_path(run).as_str(), [])
+    } else if public(request) {
         let q = base64url(save(request))
-        std::http::fetch("GET", String::from(f"{PUBLIC}?q={q}").as_str(), [], [])
+        std::http::fetch_public(String::from(f"{PUBLIC}?q={q}").as_str(), [])
     } else {
         let kind = Header {
             name: String::from("content-type"),
@@ -221,18 +309,77 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
         }
         std::http::fetch("POST", ACCOUNTS, [take kind], save(request))
     }
-    a.waiting.push((take asked, purpose))
+    a.waiting.push((take asked, purpose, a.epoch))
+}
+
+/// The console's account is `me` now: if it's another than it was (by its handle, whatever its
+/// name), nothing of the one before stays (`another_account`).
+fn identify(a: mut Accounts, me: take Me) {
+    if me.handle != a.me.handle {
+        another_account(mut a)
+    }
+    a.me = take me
+}
+
+/// The console's account became another (or none): what it knew of the one before goes (its
+/// choices of posting, its codes still to save, its passkeys and sessions shown, an export under
+/// way, the game's token), the new one's choices are asked for again, and replies to what was
+/// asked for the one before are dropped.
+fn another_account(a: mut Accounts) {
+    a.epoch += 1
+    a.posting = Known::Unknown
+    a.posting_at = 0.0
+    a.may_post = false
+    a.post_best = false
+    a.consent_best = false
+    a.codes.clear()
+    a.passkeys.clear()
+    a.sessions.clear()
+    a.export.clear()
+    match mut a.game {
+        Some(g) => {
+            g.token.clear()
+            g.token_at = -99999.0
+            g.waiting_token = false
+        },
+        None => {},
+    }
+}
+
+/// Whether a reply to a request for `purpose`, made for the account of `epoch`, is read: one made
+/// for the account the console has, or a game's own ask (its board, its run's post with its own
+/// token), whoever it was made for.
+fn keeps(a: Accounts, purpose: Purpose, epoch: u32) -> bool {
+    epoch == a.epoch || purpose == Purpose::Game
+}
+
+/// A reply to a request made for the account before (`another_account`): dropped. A game's
+/// consent carried for it is said to the game as not taken, so it can be asked again.
+fn dropped(a: mut Accounts, purpose: Purpose) {
+    a.dirty = true
+    a.busy = false
+    if purpose == Purpose::GameConsent {
+        let why = String::from("You're signed in to another account now. Post again to post as it.")
+        answer_game(mut a, Answer::Failed { why, retry_after: u32(RETRY) })
+    }
 }
 
 fn signed_out(a: mut Accounts) {
     a.csrf.clear()
-    a.me = Me {
-        signed_in: false,
-        name: String::new(),
-        fixed: false,
-        rerolls: 0,
-        must_add_passkey: false,
-    }
+    identify(
+        mut a,
+        Me {
+            signed_in: false,
+            name: String::new(),
+            fixed: false,
+            rerolls: 0,
+            must_add_passkey: false,
+        },
+    )
+    a.posting = Known::Unknown
+    a.may_post = false
+    a.post_best = false
+    a.codes.clear()
     if a.page != Page::Legal {
         a.page = Page::Choose
     }
@@ -240,7 +387,7 @@ fn signed_out(a: mut Accounts) {
 }
 
 /// A request's answer: its reply, or, if the server couldn't be reached or refused it before it
-/// was read (a limit, the host's refusal), a refusal said for a person.
+/// was read (a limit, the host's refusal), a failure said for a person, to be tried again.
 fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::IoError>) {
     let r = match result {
         Ok(bytes) => response(bytes),
@@ -250,7 +397,7 @@ fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::
         if r.status == 429 {
             let why = String::from("Too many tries. Wait a minute, then try again.")
             a.connected = true
-            replied(mut a, purpose, Reply::Refused { why })
+            failed(mut a, purpose, take why, LIMITED)
             return
         }
         if r.status == 200 {
@@ -266,17 +413,29 @@ fn answered(a: mut Accounts, purpose: Purpose, result: Result<Vec<u8>, std::io::
         // again, as when it can't be reached.
         if r.status >= 500 {
             let why = String::from(
-                "The server couldn't finish that just now. An upload may still count: look at the board in a minute.",
+                "Something went wrong on wrela.dev. A run you posted may still go up. Check the board in a minute.",
             )
             a.connected = false
             a.retry_at = a.time + RETRY
-            replied(mut a, purpose, Reply::Refused { why })
+            failed(mut a, purpose, take why, RETRY)
             return
         }
     }
     a.connected = false
     a.retry_at = a.time + RETRY
-    let why = String::from("The server can't be reached just now. Try again in a moment.")
+    let why = String::from("Can't reach wrela.dev. Check your connection and try again.")
+    failed(mut a, purpose, take why, RETRY)
+}
+
+/// A request for `purpose` got no answer from the server (`why`, said for a person), to be tried
+/// again no sooner than `after` seconds: a game hears that it may ask again, never that it was
+/// refused; the console's own pages say why.
+fn failed(a: mut Accounts, purpose: Purpose, why: take String, after: f32) {
+    if purpose == Purpose::Game || purpose == Purpose::GameConsent {
+        a.dirty = true
+        answer_game(mut a, Answer::Failed { why, retry_after: u32(after) })
+        return
+    }
     replied(mut a, purpose, Reply::Refused { why })
 }
 
@@ -288,10 +447,26 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         game_replied(mut a, reply)
         return
     }
+    if purpose == Purpose::Posting {
+        if posting_answered(mut a, reply) {
+            give_game_account(mut a)
+        }
+        return
+    }
+    if purpose == Purpose::GameConsent {
+        // The game's player agreed on its own screen: recorded, the game hears so with the account.
+        if posting_read(mut a, reply) {
+            give_game_account(mut a)
+            answer_game(mut a, Answer::Done)
+        } else {
+            game_replied(mut a, reply)
+        }
+        return
+    }
     match reply {
         Reply::Welcome { me, csrf } => {
             let was = a.me.signed_in
-            a.me = me.clone()
+            identify(mut a, me.clone())
             a.csrf = csrf.clone()
             if !me.signed_in {
                 if was {
@@ -300,14 +475,16 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             } else {
                 a.message.clear()
                 if a.page == Page::Knighting && purpose == Purpose::Name {
+                    // Sign-up ends at the knighting: the codes wait on the account's page.
                     if me.fixed {
-                        a.page = if a.codes.is_empty() { Page::Account } else { Page::Codes }
+                        a.page = Page::Account
                     } else {
                         a.knight_again = true
                         a.knight_t = 0.0
                     }
                 } else if a.page == Page::Recover ||
                     a.page == Page::Choose ||
+                    a.page == Page::Create ||
                     a.page == Page::Manage {
                     a.page = if me.fixed { Page::Account } else { Page::Knighting }
                     if a.page == Page::Knighting {
@@ -320,6 +497,8 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Challenge { ceremony, challenge, handle, exclude } => {
             a.ceremony = ceremony
+            a.challenge = challenge.clone()
+            a.handle = handle.clone()
             if ceremony == REGISTER {
                 // The account's handle is random; its passkey is shown as the console's.
                 let user = PasskeyUser {
@@ -361,7 +540,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Session { csrf, me, codes } => {
             a.csrf = csrf.clone()
-            a.me = me.clone()
+            identify(mut a, me.clone())
             a.message.clear()
             if !codes.is_empty() {
                 // A new account: knighted first, then its codes.
@@ -373,7 +552,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             } else if me.must_add_passkey {
                 a.page = Page::Manage
                 a.message = String::from(
-                    "You signed in with a recovery code. Add a passkey now: until you do, that's all this session can do.",
+                    "You signed in with a recovery code. Add a passkey now. Until you do, you can't do anything else.",
                 )
             } else {
                 a.page = if me.fixed { Page::Account } else { Page::Knighting }
@@ -387,6 +566,14 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         Reply::Codes { codes } => {
             a.codes = codes.clone()
             a.page = Page::Codes
+            give_game_account(mut a)
+        },
+        Reply::Posting { .. } => {
+            let _ = posting_read(mut a, reply)
+            if purpose == Purpose::Consent {
+                open_page(mut a, Page::Account)
+            }
+            give_game_account(mut a)
         },
         Reply::Passkeys { passkeys } => a.passkeys = passkeys.clone(),
         Reply::Sessions { sessions } => a.sessions = sessions.clone(),
@@ -404,7 +591,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         Reply::Done => {
             if purpose == Purpose::Delete {
                 signed_out(mut a)
-                a.message = String::from("Your account and everything we kept of it are deleted.")
+                a.message = String::from("Your account is deleted, with everything we kept of it.")
             }
         },
         Reply::Token { token, .. } => {
@@ -438,6 +625,27 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     }
 }
 
+/// What the account chose of posting, if `reply` says (`Reply::Posting`): whether it did.
+fn posting_read(a: mut Accounts, reply: Reply) -> bool {
+    let Reply::Posting { agreed, best_runs } = reply else { return false }
+    a.may_post = agreed
+    a.post_best = best_runs
+    a.posting = Known::Known
+    true
+}
+
+/// The answer to `Request::Posting`: whether it said what the account chose. If not (it couldn't
+/// be reached, or refused), it stays unknown, asked again a little later, and is never taken as a
+/// choice not to post.
+fn posting_answered(a: mut Accounts, reply: Reply) -> bool {
+    if posting_read(mut a, reply) {
+        return true
+    }
+    a.posting = Known::Unknown
+    a.posting_at = a.time + RETRY
+    false
+}
+
 // ---- the game shown ------------------------------------------------------------------------
 
 /// A game shows, in surface `surface`, its catalog key `id`: it's given the account.
@@ -445,6 +653,11 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
 /// ceremony or export in flight. The console reloads onto a new release only then.
 pub fn idle(a: Accounts) -> bool {
     !a.open && !a.busy && a.waiting.is_empty() && a.passkey.is_none() && a.export_file.is_none()
+}
+
+/// Whether its panel is open over the home.
+pub fn shown(a: Accounts) -> bool {
+    a.open
 }
 
 pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
@@ -456,6 +669,7 @@ pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
             token: Vec::new(),
             token_at: -99999.0,
             asking: false,
+            uploading: false,
             waiting_token: false,
             answer: Answer::Nothing,
         },
@@ -474,18 +688,44 @@ fn linked(a: Accounts) -> Linked {
         Some(g) => g.token.clone(),
         None => Vec::new(),
     }
-    Linked { signed_in: a.me.signed_in && !a.me.must_add_passkey, name: a.me.name.clone(), token }
+    Linked {
+        signed_in: a.me.signed_in && !a.me.must_add_passkey,
+        id: game_id(a.me.handle),
+        name: a.me.name.clone(),
+        token,
+        may_post: a.may_post,
+        post_best: a.post_best,
+        save_codes: !a.codes.is_empty(),
+        posting_known: a.posting == Known::Known,
+    }
 }
 
-/// Calls the game with the account and the answer to its last ask, once its token is fresh.
-/// What `send_game` needs of the game shown: its key, whether a call or an ask is open, when its
-/// token came, whether one is being fetched, and the answer it's owed.
+/// Who the account is, as a game is told it (`Linked::id`): a digest of its handle, which says
+/// nothing else of it (empty when signed out).
+fn game_id(handle: [u8]) -> Vec<u8> {
+    if handle.is_empty() {
+        return Vec::new()
+    }
+    var m = Vec::from(String::from("wrela-game-account").as_bytes())
+    for b in handle {
+        m.push(b)
+    }
+    let d = sha256(m)
+    var out: Vec<u8> = Vec::new()
+    for i in 0..16 {
+        out.push(d[i])
+    }
+    out
+}
+
+/// What `send_game` needs of the game shown to know whether to call it: its key, whether a call
+/// or an ask is open, when its token came, and whether one is being fetched. The answer it's owed
+/// is read only as a call goes.
 struct Shown {
     id: String,
     open: bool,
     token_at: f32,
     waiting_token: bool,
-    answer: Answer,
 }
 
 fn shown_game(a: Accounts) -> Option<Shown> {
@@ -496,13 +736,13 @@ fn shown_game(a: Accounts) -> Option<Shown> {
                 open: g.call.is_some() || g.asking,
                 token_at: g.token_at,
                 waiting_token: g.waiting_token,
-                answer: g.answer.clone(),
             },
         ),
         None => None,
     }
 }
 
+/// Calls the game with the account and the answer to its last ask, once its token is fresh.
 fn send_game(a: mut Accounts) {
     let Some(g) = shown_game(a) else { return }
     if g.open {
@@ -517,9 +757,10 @@ fn send_game(a: mut Accounts) {
         request(mut a, Request::Token { game: g.id.clone() }, Purpose::Token)
         return
     }
-    let call = ToGame { account: linked(a), answer: g.answer.clone() }
+    let account = linked(a)
     match mut a.game {
         Some(l) => {
+            let call = ToGame { account, answer: l.answer.clone() }
             l.waiting_token = false
             l.call = Some(host::send(l.surface, save(call)))
         },
@@ -528,7 +769,8 @@ fn send_game(a: mut Accounts) {
 }
 
 /// The account changed: the game hears of it with its next call, which comes now if none is
-/// open (one is open while the game holds it, until it asks).
+/// open (one is open while the game holds it, until it asks, or hands it back within
+/// `link::HEARTBEAT` with nothing to ask).
 fn give_game_account(a: mut Accounts) {
     match mut a.game {
         Some(g) => g.token_at = -99999.0,
@@ -537,25 +779,47 @@ fn give_game_account(a: mut Accounts) {
 }
 
 fn game_replied(a: mut Accounts, reply: Reply) {
-    let answer = match reply {
-        Reply::Verified { run, ticks, place } => Answer::Verified { run, ticks, place },
-        Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
-        Reply::Refused { why } => Answer::Rejected { why: why.clone() },
-        Reply::Board { places, total } => {
-            let (course, category) = match a.game {
-                Some(g) => match g.answer {
-                    Answer::Board { course, category, .. } => (course, category),
-                    _ => (0, 0),
-                },
-                None => (0, 0),
-            }
-            Answer::Board { course, category, places: places.clone(), total }
+    let (course, category, uploading) = match a.game {
+        Some(g) => match g.answer {
+            Answer::Board { course, category, .. } => (course, category, g.uploading),
+            _ => (0, 0, g.uploading),
         },
-        Reply::Run { run, replay, .. } => Answer::Run { run, replay: replay.clone() },
+        None => (0, 0, false),
+    }
+    answer_game(mut a, game_answer(reply, course, category, uploading))
+}
+
+/// What the server's `reply` to a game's ask tells the game: a board's page names its board
+/// (`course`, `category`), which the reply doesn't. An upload the server refused (`uploading`)
+/// can't be taken now, so it's tried again; one it rejected never goes up.
+fn game_answer(reply: Reply, course: u32, category: u32, uploading: bool) -> Answer {
+    match reply {
+        Reply::Verified { run, ticks, place } => Answer::Verified {
+            run: run.clone(),
+            ticks,
+            place,
+        },
+        Reply::Rejected { why } => Answer::Rejected { why: why.clone() },
+        Reply::Refused { why } => {
+            if uploading {
+                Answer::Failed { why: why.clone(), retry_after: u32(RETRY) }
+            } else { Answer::Rejected { why: why.clone() } }
+        },
+        Reply::Board { places, total, next } => {
+            Answer::Board { course, category, places: places.clone(), total, next: next.clone() }
+        },
+        Reply::Run { run, replay, .. } => Answer::Run { run: run.clone(), replay: replay.clone() },
+        Reply::Around { places, at } => Answer::Around { places: places.clone(), at },
+        Reply::Unplaced => Answer::Unplaced,
+        Reply::Names { found } => Answer::Names { found: found.clone() },
         _ => Answer::Offline {
-            why: String::from("The boards sent something this console doesn't read."),
+            why: String::from("The boards sent something the console can't read."),
         },
     }
+}
+
+/// The answer to the game's ask: its next call takes it.
+fn answer_game(a: mut Accounts, answer: take Answer) {
     match mut a.game {
         Some(g) => {
             g.asking = false
@@ -579,40 +843,92 @@ fn game_asked(a: mut Accounts, bytes: [u8]) {
         send_game(mut a)
         return
     }
-    let r = match ask {
-        Ask::Upload { token, replay } => Request::Upload {
-            token: token.clone(),
-            game: g.id.clone(),
-            replay: replay.clone(),
-        },
-        Ask::Board { course, category, from } => {
-            match mut a.game {
-                Some(l) => l.answer = Answer::Board {
+    if let Ask::Board { course, category, .. } = ask {
+        // Its reply names no board: the answer kept says which.
+        match mut a.game {
+            Some(l) => {
+                l.answer = Answer::Board {
                     course,
                     category,
                     places: Vec::new(),
                     total: 0,
-                },
-                None => {},
-            }
-            Request::Board { game: g.id.clone(), course, category, from }
-        },
-        Ask::Watch { run } => Request::Watch { run },
+                    next: Vec::new(),
+                }
+            },
+            None => {},
+        }
+    }
+    let (r, purpose) = carried(ask, g.id.as_str(), a.csrf)
+    let uploading = match r {
+        Request::Upload { .. } => true,
+        _ => false,
     }
     match mut a.game {
-        Some(l) => l.asking = true,
+        Some(l) => {
+            l.asking = true
+            l.uploading = uploading
+        },
         None => {},
     }
-    request(mut a, r, Purpose::Game)
+    request(mut a, r, purpose)
+}
+
+/// The request that carries game `game`'s `ask` to the server, and what it's for: a session's
+/// change (the consent) carries the session's CSRF token `csrf`.
+fn carried(ask: Ask, game: str, csrf: [u8]) -> (Request, Purpose) {
+    let id = String::from(game)
+    let r = match ask {
+        // Never carried: `answer_now` answers it.
+        Ask::Nothing => Request::Me,
+        Ask::Upload { token, board, replay } => Request::Upload {
+            token: token.clone(),
+            game: id,
+            board,
+            replay: replay.clone(),
+        },
+        Ask::Board { course, category, from, after } => Request::Board {
+            game: id,
+            course,
+            category,
+            from,
+            after: after.clone(),
+        },
+        Ask::Watch { run } => Request::Watch { run: run.clone() },
+        Ask::Around { course, category, name } => Request::Around {
+            game: id,
+            course,
+            category,
+            name: name.clone(),
+        },
+        Ask::Names { title, noun, epithet } => Request::Names {
+            game: id,
+            title: title.clone(),
+            noun: noun.clone(),
+            epithet: epithet.clone(),
+        },
+        // The player's choice on the game's own screen, recorded as the console's own is.
+        Ask::Consent { version, best_runs } => {
+            let r = Request::Consent { csrf: Vec::from(csrf), version, best_runs }
+            return (take r, Purpose::GameConsent)
+        },
+    }
+    (take r, Purpose::Game)
 }
 
 /// The answer to a game's `ask` that the console gives at once, without the server: no server yet,
 /// offline, or an upload while signed out.
 fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer> {
+    // The game handed the call back with nothing to ask: called again at once, with the account
+    // as it is now.
+    if let Ask::Nothing = ask {
+        return Some(Answer::Nothing)
+    }
     if !online {
         return Some(
             Answer::Offline {
-                why: String::from("The world's boards open soon. Your runs stay saved here."),
+                why: String::from(
+                    "The world's boards open soon. Your runs are saved on this device.",
+                ),
             },
         )
     }
@@ -620,24 +936,33 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
         return Some(
             Answer::Offline {
                 why: String::from(
-                    "The boards can't be reached. Your runs stay saved here; try again later.",
+                    "Can't reach the boards. Your runs are saved on this device. Try again later.",
                 ),
             },
         )
     }
-    if let Ask::Upload { .. } = ask {
-        if !me.signed_in || !me.fixed || me.must_add_passkey {
-            return Some(
-                Answer::Offline {
-                    why: String::from("Sign in at the console to upload: press F10, then Sign in."),
-                },
-            )
-        }
+    let posting = match ask {
+        Ask::Upload { .. } | Ask::Consent { .. } => true,
+        _ => false,
+    }
+    if posting && (!me.signed_in || !me.fixed || me.must_add_passkey) {
+        return Some(
+            Answer::Offline {
+                why: String::from(posting::SIGN_IN),
+            },
+        )
     }
     None
 }
 
 // ---- each frame ----------------------------------------------------------------------------
+
+/// Whether what the account chose of posting is to be asked at `time`: it's signed in, the server
+/// can be reached, and it isn't known or asked, nor waiting after a failed ask.
+fn wants_posting(a: Accounts, time: f32) -> bool {
+    let whole = a.me.signed_in && !a.me.must_add_passkey
+    a.online && a.connected && whole && a.posting == Known::Unknown && time >= a.posting_at
+}
 
 /// Polls what the account waits on, at the host's time `time`: whether anything it shows changed.
 pub fn update(a: mut Accounts, time: f32) -> bool {
@@ -647,17 +972,26 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
         request(mut a, Request::Me, Purpose::Other)
     }
+    // What the account chose of posting, once it's signed in: asked until it's said.
+    if wants_posting(a, time) {
+        a.posting = Known::Asking
+        request(mut a, Request::Posting, Purpose::Posting)
+    }
     var i = 0
     while i < a.waiting.len() {
         match a.waiting[i].0.poll() {
             Some(result) => {
-                let (_, purpose) = a.waiting.remove(i)
-                answered(mut a, purpose, take result)
+                let (_, purpose, epoch) = a.waiting.remove(i)
+                if keeps(a, purpose, epoch) {
+                    answered(mut a, purpose, take result)
+                } else {
+                    dropped(mut a, purpose)
+                }
             },
             None => i += 1,
         }
     }
-    if let Some(result) = poll(mut a.passkey) {
+    if let Some(result) = answer_of(mut a.passkey) {
         a.dirty = true
         a.busy = false
         match result {
@@ -665,6 +999,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                 if a.ceremony == SIGN_IN {
                     if let Some(u) = read_passkey_use(bytes) {
                         let r = Request::SignIn {
+                            challenge: a.challenge.clone(),
                             id: u.id.clone(),
                             client_data: u.client_data.clone(),
                             authenticator_data: u.authenticator_data.clone(),
@@ -677,6 +1012,9 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                 } else if let Some(p) = read_new_passkey(bytes) {
                     let r = if a.ceremony == REGISTER {
                         Request::Register {
+                            handle: a.handle.clone(),
+                            challenge: a.challenge.clone(),
+                            agreed: agreed_now(),
                             id: p.id.clone(),
                             client_data: p.client_data.clone(),
                             attestation: p.attestation.clone(),
@@ -684,6 +1022,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                     } else {
                         Request::AddPasskey {
                             csrf: a.csrf.clone(),
+                            challenge: a.challenge.clone(),
                             id: p.id.clone(),
                             client_data: p.client_data.clone(),
                             attestation: p.attestation.clone(),
@@ -694,17 +1033,26 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
                 }
             },
             Err(_) => a.message = String::from(
-                "The passkey prompt was closed, or this browser can't make passkeys here.",
+                "The passkey prompt closed, or this browser can't use passkeys. Try again, or use another browser.",
             ),
         }
     }
-    let _ = poll(mut a.export_file)
+    let _ = answer_of(mut a.export_file)
+    // What the semantic tree sent, done with.
+    i = 0
+    while i < a.told.len() {
+        if a.told[i].poll().is_some() {
+            let _ = a.told.remove(i)
+        } else {
+            i += 1
+        }
+    }
     // The game's reply to the console's call: its next ask.
     var asked: Option<Vec<u8>> = None
     var gone = false
     match mut a.game {
         Some(g) => {
-            match poll(mut g.call) {
+            match answer_of(mut g.call) {
                 Some(Ok(bytes)) => asked = Some(take bytes),
                 Some(Err(_)) => gone = true,
                 None => {},
@@ -722,12 +1070,12 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
         send_game(mut a)
     }
     for i in 0..a.licences.len() {
-        if let Some(result) = poll(mut a.licences[i]) {
+        if let Some(result) = answer_of(mut a.licences[i]) {
             a.dirty = true
             a.licence_text[i] = match result {
                 Ok(bytes) => String::from_utf8(bytes.clone()).unwrap_or(String::new()),
                 Err(_) => String::from(
-                    f"({legal::LICENCES[i]} ships beside the console in a release.)",
+                    f"({legal::LICENCES[i]} comes with the console in a release.)",
                 ),
             }
         }
@@ -758,8 +1106,90 @@ fn open_page(a: mut Accounts, page: Page) {
     }
 }
 
+/// Whether `x` sends a request whose answer it waits for: not again until it comes.
+fn sends(x: Act) -> bool {
+    match x {
+        Act::SignIn | Act::CreateAccount | Act::SubmitCode | Act::AddPasskey | Act::ConfirmDelete => {
+            true
+        },
+        Act::Post | Act::BestRuns | Act::Keep | Act::Reroll | Act::NewCodes => true,
+        _ => false,
+    }
+}
+
+/// What a control says while its request is under way.
+fn under_way(x: Act) -> Text {
+    match x {
+        Act::SignIn | Act::AddPasskey => "Waiting for your passkey…",
+        Act::CreateAccount => "Making your passkey…",
+        Act::SubmitCode => "Checking your code…",
+        Act::ConfirmDelete => "Deleting…",
+        _ => "Saving…",
+    }
+}
+
+/// The request that makes an account, if both its boxes are ticked: it carries the versions agreed
+/// to, which the server checks against its own.
+fn create_request(a: Accounts) -> Option<Request> {
+    if !a.agree || !a.of_age {
+        return None
+    }
+    Some(Request::Begin { ceremony: REGISTER, csrf: Vec::new(), agreed: agreed_now() })
+}
+
+/// What a player who ticked both boxes agrees to: this build's Terms and Privacy Policy, and that
+/// they're 13 or older. A sign-up's finish carries it again, as its challenge was made for it.
+fn agreed_now() -> Agreed {
+    Agreed { terms: legal::TERMS_VERSION, privacy: legal::PRIVACY_VERSION, of_age: true }
+}
+
+/// Where Back goes from the page open: a legal page back where it was opened from (making an
+/// account keeps its boxes), anything else to the account's page, or the first page signed out.
+fn returns_to(a: Accounts) -> Page {
+    if a.page == Page::Legal && a.back != Page::Legal {
+        a.back
+    } else if a.me.signed_in { Page::Account } else { Page::Choose }
+}
+
+/// The account page's buttons below its setting: its codes to save first, while they wait.
+fn account_items(a: Accounts) -> Vec<(Act, Text, bool)> {
+    var items: Vec<(Act, Text, bool)> = Vec::new()
+    if !a.codes.is_empty() {
+        items.push((Act::SaveCodes, "Save your recovery codes", true))
+    }
+    items.push((Act::Manage, "Passkeys and sessions", false))
+    items.push((Act::Export, "Export my data", false))
+    items.push((Act::Delete, "Delete account", false))
+    items.push((Act::SignOut, "Sign out", false))
+    items.push((Act::Close, "Close", a.codes.is_empty()))
+    items
+}
+
+/// Whether turning on "Post my best runs" shows what posting shares first: it does until the
+/// account has agreed.
+fn asks_consent_first(a: Accounts) -> bool {
+    !a.may_post && !a.post_best
+}
+
+/// Whether press `x` goes on: one that sends a request doesn't while another is under way, and
+/// marks one under way (`busy`, until its answer comes), so pressed twice it sends once.
+fn press(a: mut Accounts, x: Act) -> bool {
+    if !sends(x) {
+        return true
+    }
+    if a.busy {
+        return false
+    }
+    a.doing = Some(x)
+    a.busy = true
+    true
+}
+
 fn act(a: mut Accounts, x: Act) {
     a.dirty = true
+    if !press(mut a, x) {
+        return
+    }
     match x {
         Act::Chip => {
             a.open = true
@@ -781,18 +1211,26 @@ fn act(a: mut Accounts, x: Act) {
             a.message.clear()
             request(
                 mut a,
-                Request::Begin { ceremony: SIGN_IN, csrf: Vec::new() },
+                Request::Begin { ceremony: SIGN_IN, csrf: Vec::new(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
-            a.busy = true
         },
         Act::Create => {
-            request(
-                mut a,
-                Request::Begin { ceremony: REGISTER, csrf: Vec::new() },
-                Purpose::Other,
-            )
-            a.busy = true
+            a.agree = false
+            a.of_age = false
+            open_page(mut a, Page::Create)
+        },
+        Act::Agree => a.agree = !a.agree,
+        Act::OfAge => a.of_age = !a.of_age,
+        Act::CreateAccount => {
+            let Some(r) = create_request(a) else {
+                a.doing = None
+                a.busy = false
+                a.message = String::from("Tick both boxes to create your account.")
+                return
+            }
+            a.message.clear()
+            request(mut a, r, Purpose::Other)
         },
         Act::UseCode => {
             a.typed.clear()
@@ -800,7 +1238,6 @@ fn act(a: mut Accounts, x: Act) {
         },
         Act::SubmitCode => {
             request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Other)
-            a.busy = true
         },
         Act::Keep => {
             request(mut a, Request::Keep { csrf: a.csrf.clone() }, Purpose::Name)
@@ -810,16 +1247,40 @@ fn act(a: mut Accounts, x: Act) {
         },
         Act::CodesSaved => {
             a.codes.clear()
+            give_game_account(mut a)
             open_page(mut a, Page::Account)
         },
+        Act::SaveCodes => open_page(mut a, Page::Codes),
+        Act::Later => open_page(mut a, Page::Account),
+        Act::BestRuns => {
+            if asks_consent_first(a) {
+                // Turned on before any post: what posting shares, first.
+                a.doing = None
+                a.busy = false
+                a.consent_best = true
+                open_page(mut a, Page::Posting)
+                return
+            }
+            let r = Request::BestRuns { csrf: a.csrf.clone(), on: !a.post_best }
+            request(mut a, r, Purpose::Other)
+        },
+        Act::PostBest => a.consent_best = !a.consent_best,
+        Act::Post => {
+            let r = Request::Consent {
+                csrf: a.csrf.clone(),
+                version: posting::VERSION,
+                best_runs: a.consent_best,
+            }
+            request(mut a, r, Purpose::Consent)
+        },
+        Act::NotNow => open_page(mut a, Page::Account),
         Act::Manage => open_page(mut a, Page::Manage),
         Act::AddPasskey => {
             request(
                 mut a,
-                Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone() },
+                Request::Begin { ceremony: ADD_PASSKEY, csrf: a.csrf.clone(), agreed: NOT_AGREED },
                 Purpose::Other,
             )
-            a.busy = true
         },
         Act::Remove { index } => {
             if index < a.passkeys.len() {
@@ -847,12 +1308,11 @@ fn act(a: mut Accounts, x: Act) {
         Act::Export => {
             a.export.clear()
             request(mut a, Request::Export { after: Vec::new() }, Purpose::Export)
-            a.message = String::from("Gathering your data...")
+            a.message = String::from("Getting your data ready…")
         },
         Act::Delete => open_page(mut a, Page::Delete),
         Act::ConfirmDelete => {
             request(mut a, Request::Delete { csrf: a.csrf.clone() }, Purpose::Delete)
-            a.busy = true
         },
         Act::SignOut => {
             request(mut a, Request::SignOut { csrf: a.csrf.clone() }, Purpose::Other)
@@ -862,11 +1322,7 @@ fn act(a: mut Accounts, x: Act) {
                 a.open = false
                 return
             }
-            let page = if a.me.signed_in && a.page != Page::Account {
-                Page::Account
-            } else if a.me.signed_in {
-                Page::Account
-            } else { Page::Choose }
+            let page = returns_to(a)
             if a.page == page || (a.page == Page::Account && a.me.signed_in) {
                 a.open = false
             } else {
@@ -874,6 +1330,9 @@ fn act(a: mut Accounts, x: Act) {
             }
         },
         Act::Legal { page } => {
+            if a.page != Page::Legal {
+                a.back = a.page
+            }
             open_page(mut a, Page::Legal)
             a.legal = page
             if page == legal::CREDITS && a.licences.is_empty() {
@@ -917,6 +1376,13 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             }
         },
         Event::Wheel { delta, .. } => a.scroll = max(a.scroll + delta.y / zoom, 0.0),
+        Event::Assist { node, action } => {
+            if !knighting {
+                if let Some(x) = assisted(mut a, node, action) {
+                    act(mut a, x)
+                }
+            }
+        },
         Event::KeyDown { key, repeat, mods } => {
             if key == Key::Escape && !knighting {
                 act(mut a, Act::Back)
@@ -966,7 +1432,88 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
     true
 }
 
+/// What the keyboard or a screen reader did to node `node` of the page's tree (`action`): the
+/// control to act as, if it pressed one (or dismissed the dialog: Back). A focus moved to a
+/// control is the console's focus too.
+fn assisted(a: mut Accounts, node: u32, action: Assist) -> Option<Act> {
+    if node == 0 || node > a.node_controls.len() {
+        return None
+    }
+    if node == 1 && action == Assist::Dismiss {
+        return Some(Act::Back)
+    }
+    let Some(i) = a.node_controls[node - 1] else { return None }
+    if i >= a.shown.len() {
+        return None
+    }
+    if action == Assist::Focus {
+        a.focus = i
+        return None
+    }
+    if action == Assist::Activate { Some(a.shown[i].0) } else { None }
+}
+
+/// Publishes the page as last drawn as the console's semantic tree, named as the page is
+/// (`wrela`), with the canvas's view `view` (device pixels); none while no page is open.
+pub fn publish(a: mut Accounts, view: vec4) {
+    let nodes = if a.open { a.nodes.clone() } else { Vec::new() }
+    host::publish(mut a.told, mut a.tree, "wrela", nodes, view)
+}
+
 // ---- drawing ---------------------------------------------------------------------------------
+
+/// Adds a part of the page to its tree, in reading order under the dialog: what it is, its name,
+/// where it is (logical pixels), and the control it acts as, if it's one.
+fn said(
+    a: mut Accounts,
+    role: Role,
+    label: str,
+    r: Rect,
+    zoom: f32,
+    control: Option<u32> = None,
+    checked: bool = false,
+    disabled: bool = false,
+    level: u32 = 0,
+) {
+    let at = z(r, zoom)
+    let focused = match control {
+        Some(i) => i == a.focus,
+        None => false,
+    }
+    a.nodes.push(
+        Node {
+            id: a.nodes.len() + 1,
+            parent: 1,
+            role,
+            label: String::from(label),
+            rect: vec4(at.x, at.y, at.w, at.h),
+            checked,
+            disabled,
+            focused,
+            level,
+        },
+    )
+    a.node_controls.push(control)
+}
+
+/// Writes `s` wrapped to `width` from `at`, as `paragraph` does, and adds it to the page's tree:
+/// the height it took.
+fn para(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    s: str,
+    size: f32,
+    at: vec2,
+    width: f32,
+    color: vec4,
+    zoom: f32,
+    face: Face = Face::Sans,
+) -> f32 {
+    let h = paragraph(mut d, fonts, s, size, at, width, color, zoom, face)
+    said(mut a, Role::Text, s, Rect::new(at.x, at.y, width, h), zoom)
+    h
+}
 
 /// What drawing needs: the list, the fonts, the zoom.
 struct Pen {
@@ -1051,6 +1598,7 @@ fn button(
     zoom: f32,
     primary: bool = false,
     danger: bool = false,
+    disabled: bool = false,
 ) {
     let index = a.controls.len()
     a.controls.push((x, r))
@@ -1058,13 +1606,29 @@ fn button(
         Some(p) => r.contains(p),
         None => false,
     }
-    let fill = if danger { DANGER } else if primary { INK } else if hover { RAISED } else {
-        SECONDARY
+    // While its request is under way, it says what's happening.
+    let label = if a.busy && a.doing == Some(x) { String::from(under_way(x)) } else {
+        String::from(label)
     }
+    said(mut a, Role::Button, label.as_str(), r, zoom, control: Some(index), disabled: disabled)
+    let primary = primary && !disabled
+    let fill = if danger { DANGER } else if primary { INK } else if hover && !disabled {
+        RAISED
+    } else { SECONDARY }
     d.rect(z(r, zoom), fill, RADIUS * zoom)
     if !primary && !danger {
         d.ring(z(r, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
     }
+    focus_ring(a, mut d, index, r, zoom)
+    let w = measure(fonts, label.as_str(), LABEL * zoom, Face::Sans) / zoom
+    let c = r.center()
+    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
+    let ink = if primary { DARK } else if disabled { MUTED } else { INK }
+    write(mut d, fonts, label.as_str(), LABEL, vec2(c.x - w * 0.5, top), ink, zoom)
+}
+
+/// Draws the focus ring around `r` if it's the focused control, `index` in the list.
+fn focus_ring(a: Accounts, d: mut DrawList, index: u32, r: Rect, zoom: f32) {
     if index == a.focus {
         d.ring(
             z(r.shrink(-3.0), zoom),
@@ -1073,12 +1637,70 @@ fn button(
             max(round(2.0 * zoom), 1.0),
         )
     }
-    let w = measure(fonts, label, LABEL * zoom, Face::Sans) / zoom
-    let c = r.center()
-    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
-    write(mut d, fonts, label, LABEL, vec2(c.x - w * 0.5, top), if primary { DARK } else {
-        INK
-    }, zoom)
+}
+
+/// A box the player ticks, `on` or not, with `label` after it, in a row of height 32 from `at`. A
+/// box whose words are drawn apart (with links in them) is named by `spoken`.
+fn checkbox(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: Act,
+    at: vec2,
+    w: f32,
+    label: str,
+    on: bool,
+    zoom: f32,
+    spoken: Text = "",
+) {
+    let r = Rect::new(at.x, at.y, w, 32.0)
+    let index = a.controls.len()
+    a.controls.push((x, r))
+    let name = if label.is_empty() { String::from(spoken) } else { String::from(label) }
+    said(mut a, Role::Checkbox, name.as_str(), r, zoom, control: Some(index), checked: on)
+    let b = Rect::new(at.x, at.y + 6.0, w: 20.0, h: 20.0)
+    if on {
+        d.rect(z(b, zoom), INK, 5.0 * zoom)
+        // A tick.
+        let p = |u: f32, v: f32| -> vec2 { vec2(b.x + u * 20.0, b.y + v * 20.0) * zoom }
+        let width = max(round(2.0 * zoom), 1.0)
+        d.line(p(0.25, 0.52), p(0.43, 0.7), DARK, width)
+        d.line(p(0.43, 0.7), p(0.76, 0.3), DARK, width)
+    } else {
+        d.rect(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.06), 5.0 * zoom)
+        d.ring(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.45), 5.0 * zoom, max(round(1.5 * zoom), 1.0))
+    }
+    focus_ring(a, mut d, index, Rect::new(b.x, b.y, b.w, b.h), zoom)
+    let top = at.y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY
+    write(mut d, fonts, label, BODY, vec2(at.x + 32.0, top), INK, zoom)
+}
+
+/// A link: underlined words, `label` from `at` at `size`, which act as `x`: how wide it is.
+fn link(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: Act,
+    at: vec2,
+    label: str,
+    size: f32,
+    zoom: f32,
+) -> f32 {
+    let w = measure(fonts, label, size * zoom, Face::Sans) / zoom
+    let r = Rect::new(at.x - 2.0, at.y - 4.0, w + 4.0, size + 10.0)
+    let index = a.controls.len()
+    a.controls.push((x, r))
+    said(mut a, Role::Link, label, r, zoom, control: Some(index))
+    write(mut d, fonts, label, size, at, INK, zoom)
+    let base = at.y + size * 1.15
+    d.line(
+        vec2(at.x, base) * zoom,
+        vec2(at.x + w, base) * zoom,
+        vec4(INK.xyz, 0.6),
+        max(round(zoom), 1.0),
+    )
+    focus_ring(a, mut d, index, r, zoom)
+    w
 }
 
 /// A column of buttons from `y`, each the sheet's width: where it ended.
@@ -1132,6 +1754,8 @@ pub fn draw(
     reduced: bool,
 ) {
     a.controls.clear()
+    a.nodes.clear()
+    a.node_controls.clear()
     // The chip, left of the settings button.
     let chip_label = if !a.online { String::from("Health and legal") } else if a.me.signed_in {
         a.me.name.clone()
@@ -1154,6 +1778,10 @@ pub fn draw(
     }
     a.controls.clear()
     if a.page == Page::Knighting {
+        // The tree's dialog, named by the name drawn.
+        let name = a.me.name.clone()
+        a.nodes.push(Node { id: 1, role: Role::Dialog, label: name, modal: true })
+        a.node_controls.push(None)
         let again = a.knight_again
         knighting::draw(mut d, fonts, a.knight_t, a.me.name.as_str(), again, w, h, zoom, reduced)
         let done = reduced || a.knight_t >= (if again { AGAIN } else { LENGTH })
@@ -1161,9 +1789,11 @@ pub fn draw(
             let bw = min(300.0, w - 48.0)
             let x = w * 0.5 - bw * 0.5
             var y = h * 0.58
-            let note = "A name is yours alone: no one else on wrela will ever have it."
+            let note = "No one else on wrela will ever have this name."
             let nw = measure(fonts, note, BODY * zoom, Face::Sans) / zoom
-            write(mut d, fonts, note, BODY, vec2(w * 0.5 - min(nw, w - 48.0) * 0.5, y), MUTED, zoom)
+            let at = vec2(w * 0.5 - min(nw, w - 48.0) * 0.5, y)
+            write(mut d, fonts, note, BODY, at, MUTED, zoom)
+            said(mut a, Role::Text, note, Rect::new(at.x, at.y, nw, BODY * 1.5), zoom)
             y += 36.0
             button(
                 mut a,
@@ -1188,7 +1818,9 @@ pub fn draw(
                 )
             }
             if !a.message.is_empty() {
-                write(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
+                let m = a.message.clone()
+                write(mut d, fonts, m.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
+                said(mut a, Role::Text, m.as_str(), Rect::new(x, y + 100.0, bw, 20.0), zoom)
             }
         }
         a.shown = a.controls.clone()
@@ -1207,7 +1839,9 @@ pub fn draw(
     var y = sheet.y + 26.0
     let title = match a.page {
         Page::Account => "Your account",
-        Page::Choose => "Accounts",
+        Page::Choose => "Your account",
+        Page::Create => "Create account",
+        Page::Posting => posting::TITLE,
         Page::Recover => "Use a recovery code",
         Page::Codes => "Your recovery codes",
         Page::Manage => "Passkeys and sessions",
@@ -1216,13 +1850,27 @@ pub fn draw(
         Page::Knighting => "",
     }
     write(mut d, fonts, title, 22.0, vec2(x, y), INK, zoom)
+    // The tree: a dialog named by the page's title, its heading first.
+    let sz = z(sheet, zoom)
+    a.nodes.push(
+        Node {
+            id: 1,
+            role: Role::Dialog,
+            label: String::from(title),
+            modal: true,
+            rect: vec4(sz.x, sz.y, sz.w, sz.h),
+        },
+    )
+    a.node_controls.push(None)
+    said(mut a, Role::Heading, title, Rect::new(x, y, iw, 30.0), zoom, level: 1)
     y += 44.0
     match a.page {
         Page::Choose => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
-                "An account puts your runs on the world's leaderboards. There's no email and no password: you sign in with a passkey on this device, and we give you a name.",
+                "With an account, your runs go on the world's leaderboards. You sign in with a passkey on this device. There's no email and no password. We give you a name.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1230,31 +1878,191 @@ pub fn draw(
                 zoom,
             )
             y += 18.0
-            let items = [
-                (Act::SignIn, "Sign in with a passkey", true),
-                (Act::Create, "Create an account", false),
-                (Act::UseCode, "Use a recovery code", false),
-                (Act::Close, "Not now", false),
-            ]
+            y = stack(mut a, mut d, fonts, [(Act::SignIn, "Sign in", true)], x, y, iw, zoom)
+            let _ = link(
+                mut a,
+                mut d,
+                fonts,
+                Act::UseCode,
+                vec2(x, y),
+                "Lost your passkey?",
+                13.0,
+                zoom,
+            )
+            y += 34.0
+            let items = [(Act::Create, "Create account", false), (Act::Close, "Not now", false)]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+        },
+        Page::Create => {
+            y += para(
+                mut a,
+                mut d,
+                fonts,
+                "You'll make a passkey on this device, then we draw your name.",
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 16.0
+            // The first box's words hold the two pages' links, each opening its page and coming back.
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::Agree,
+                vec2(x, y),
+                28.0,
+                "",
+                a.agree,
+                zoom,
+                spoken: "I agree to the Terms and the Privacy Policy",
+            )
+            let words = vec2(x + 32.0, y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY)
+            var at = words.x
+            let gap = |s: str| -> f32 { measure(fonts, s, BODY * zoom, Face::Sans) / zoom }
+            write(mut d, fonts, "I agree to the", BODY, vec2(at, words.y), INK, zoom)
+            at += gap("I agree to the ")
+            at += link(
+                mut a,
+                mut d,
+                fonts,
+                Act::Legal { page: legal::TERMS },
+                vec2(at, words.y),
+                "Terms",
+                BODY,
+                zoom,
+            )
+            write(mut d, fonts, " and the", BODY, vec2(at, words.y), INK, zoom)
+            at += gap(" and the ")
+            var line = words.y
+            if at + gap("Privacy Policy") > x + iw {
+                at = words.x
+                line += BODY * 1.5
+            }
+            let _ = link(
+                mut a,
+                mut d,
+                fonts,
+                Act::Legal { page: legal::PRIVACY },
+                vec2(at, line),
+                "Privacy Policy",
+                BODY,
+                zoom,
+            )
+            y += 40.0 + (line - words.y)
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::OfAge,
+                vec2(x, y),
+                iw,
+                "I'm 13 or older",
+                a.of_age,
+                zoom,
+            )
+            y += 50.0
+            let ready = a.agree && a.of_age
+            button(
+                mut a,
+                mut d,
+                fonts,
+                Act::CreateAccount,
+                Rect::new(x, y, iw, 40.0),
+                "Create account",
+                zoom,
+                primary: true,
+                disabled: !ready,
+            )
+            y += 48.0
+            y = stack(mut a, mut d, fonts, [(Act::Back, "Back", false)], x, y, iw, zoom)
+        },
+        Page::Posting => {
+            y += para(
+                mut a,
+                mut d,
+                fonts,
+                posting::LEAD,
+                BODY,
+                vec2(x, y),
+                iw,
+                MUTED,
+                zoom,
+            )
+            y += 8.0
+            for item in posting::SHARED {
+                d.ellipse(z(Rect::new(x + 3.0, y + BODY * 0.55, w: 5.0, h: 5.0), zoom), INK)
+                y += para(
+                    mut a,
+                    mut d,
+                    fonts,
+                    item,
+                    BODY,
+                    vec2(x + 16.0, y),
+                    iw - 16.0,
+                    INK,
+                    zoom,
+                ) +
+                    4.0
+            }
+            y += 8.0
+            y += para(mut a, mut d, fonts, posting::NEVER, BODY, vec2(x, y), iw, MUTED, zoom)
+            y += 14.0
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::PostBest,
+                vec2(x, y),
+                iw,
+                posting::BEST_RUNS,
+                a.consent_best,
+                zoom,
+            )
+            y += 32.0
+            y += para(
+                mut a,
+                mut d,
+                fonts,
+                posting::BEST_RUNS_NOTE,
+                13.0,
+                vec2(x + 32.0, y),
+                iw - 32.0,
+                MUTED,
+                zoom,
+            )
+            y += 14.0
+            let items = [(Act::Post, "Agree", true), (Act::NotNow, posting::NOT_NOW, false)]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Account => {
-            write(mut d, fonts, a.me.name.as_str(), 18.0, vec2(x, y), INK, zoom)
+            let name = a.me.name.clone()
+            write(mut d, fonts, name.as_str(), 18.0, vec2(x, y), INK, zoom)
+            said(mut a, Role::Text, name.as_str(), Rect::new(x, y, iw, 27.0), zoom)
             y += 40.0
-            let items = [
-                (Act::Manage, "Passkeys and sessions", false),
-                (Act::Export, "Export my data", false),
-                (Act::Delete, "Delete account", false),
-                (Act::SignOut, "Sign out", false),
-                (Act::Close, "Close", true),
-            ]
+            checkbox(
+                mut a,
+                mut d,
+                fonts,
+                Act::BestRuns,
+                vec2(x, y),
+                iw,
+                "Post my best runs",
+                a.post_best,
+                zoom,
+            )
+            y += 44.0
+            let items = account_items(a)
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Recover => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
-                "Type one of the ten codes you were given when you made your account. It works once, ends every other session, and then you add a new passkey.",
+                "Type one of the ten codes you got when you made your account. Each code works once. It signs you out everywhere else, then you add a new passkey.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1263,6 +2071,8 @@ pub fn draw(
             )
             y += 14.0
             let field = Rect::new(x, y, iw, 44.0)
+            let typed = String::from(f"Recovery code: {a.typed}")
+            said(mut a, Role::Text, typed.as_str(), field, zoom)
             d.rect(z(field, zoom), vec4(1.0, 1.0, 1.0, 0.06), RADIUS * zoom)
             d.ring(z(field, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
             var shown = a.typed.clone()
@@ -1282,10 +2092,11 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Codes => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
-                "Keep these somewhere safe, away from this device: on paper, or in a password manager. Each signs in once if you lose your passkeys. We won't show them again.",
+                "Keep these somewhere safe and away from this device, like on paper or in a password manager. If you lose your passkeys, each code signs you in once. After you save them, we won't show them again.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1296,6 +2107,14 @@ pub fn draw(
             for i in 0..a.codes.len() {
                 let col = f32(i % 2) * iw * 0.5
                 let row = f32(i / 2) * 28.0
+                let code = a.codes[i].clone()
+                said(
+                    mut a,
+                    Role::Text,
+                    code.as_str(),
+                    Rect::new(x + col, y + row, iw * 0.5, 24.0),
+                    zoom,
+                )
                 write(
                     mut d,
                     fonts,
@@ -1308,23 +2127,16 @@ pub fn draw(
                 )
             }
             y += f32((a.codes.len() + 1) / 2) * 28.0 + 16.0
-            y = stack(
-                mut a,
-                mut d,
-                fonts,
-                [(Act::CodesSaved, "I've saved them", true)],
-                x,
-                y,
-                iw,
-                zoom,
-            )
+            let items = [(Act::CodesSaved, "I've saved them", true), (Act::Later, "Later", false)]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Manage => {
             write(mut d, fonts, "Passkeys", 13.0, vec2(x, y), MUTED, zoom)
             y += 24.0
             for i in 0..min(a.passkeys.len(), 6) {
-                let label = f"Passkey {i + 1} ({platform::account::hex(short(a.passkeys[i].id))})"
+                let label = f"Passkey {i + 1} ({std::hash::sha256::hex(short(a.passkeys[i].id))})"
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
                 button(
                     mut a,
                     mut d,
@@ -1351,11 +2163,12 @@ pub fn draw(
             for i in 0..min(a.sessions.len(), 5) {
                 let s = a.sessions[i].clone()
                 let label = if s.this {
-                    f"This console ({platform::account::hex(short(s.id))})"
+                    f"This console ({std::hash::sha256::hex(short(s.id))})"
                 } else {
-                    f"Session {platform::account::hex(short(s.id))}"
+                    f"Session {std::hash::sha256::hex(short(s.id))}"
                 }
                 write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
                 if !s.this {
                     button(
                         mut a,
@@ -1363,7 +2176,7 @@ pub fn draw(
                         fonts,
                         Act::Revoke { index: i },
                         Rect::new(x + iw - 90.0, y, w: 90.0, h: 34.0),
-                        "End",
+                        "Sign out",
                         zoom,
                     )
                 }
@@ -1373,10 +2186,11 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y + 6.0, iw, zoom)
         },
         Page::Delete => {
-            y += paragraph(
+            y += para(
+                mut a,
                 mut d,
                 fonts,
-                "This deletes your passkeys' records, your sessions, your recovery codes, every run you uploaded and your name, at once. It can't be undone. Your saves on this device stay.",
+                "This deletes your account and everything in it. You can't undo it. Your saves on this device stay.",
                 BODY,
                 vec2(x, y),
                 iw,
@@ -1399,12 +2213,15 @@ pub fn draw(
             for p in legal::paragraphs(a.legal) {
                 if p.as_str().starts_with("# ") {
                     py += 10.0
-                    write(mut d, fonts, p.as_str().slice(2, p.len()), 17.0, vec2(x, py), INK, zoom)
+                    let heading = p.as_str().slice(2, p.len())
+                    write(mut d, fonts, heading, 17.0, vec2(x, py), INK, zoom)
+                    said(mut a, Role::Heading, heading, Rect::new(x, py, iw, 26.0), zoom, level: 2)
                     py += 30.0
                 } else if p.as_str().starts_with("- ") {
                     // A point: a dot, as the fonts hold no bullet.
                     d.ellipse(z(Rect::new(x + 3.0, py + BODY * 0.55, w: 5.0, h: 5.0), zoom), MUTED)
-                    py += paragraph(
+                    py += para(
+                        mut a,
                         mut d,
                         fonts,
                         p.as_str().slice(2, p.len()),
@@ -1416,7 +2233,17 @@ pub fn draw(
                     ) +
                         4.0
                 } else {
-                    py += paragraph(mut d, fonts, p.as_str(), BODY, vec2(x, py), iw, MUTED, zoom) +
+                    py += para(
+                        mut a,
+                        mut d,
+                        fonts,
+                        p.as_str(),
+                        BODY,
+                        vec2(x, py),
+                        iw,
+                        MUTED,
+                        zoom,
+                    ) +
                         8.0
                 }
             }
@@ -1425,9 +2252,10 @@ pub fn draw(
                     py += 10.0
                     write(mut d, fonts, legal::LICENCES[i], 15.0, vec2(x, py), INK, zoom)
                     py += 26.0
-                    borrow text = a.licence_text[i]
+                    let text = a.licence_text[i].clone()
                     for (from, to) in text.as_str().lines() {
-                        py += paragraph(
+                        py += para(
+                            mut a,
                             mut d,
                             fonts,
                             text.as_str().slice(from, to),
@@ -1474,22 +2302,18 @@ pub fn draw(
         Page::Knighting => {},
     }
     if a.busy {
-        write(
-            mut d,
-            fonts,
-            "Waiting for your passkey or the server...",
-            13.0,
-            vec2(x, y + 4.0),
-            MUTED,
-            zoom,
-        )
+        let waiting = "Waiting for your passkey or wrela.dev…"
+        write(mut d, fonts, waiting, 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        said(mut a, Role::Text, waiting, Rect::new(x, y + 4.0, iw, 20.0), zoom)
         y += 22.0
     } else if !a.connected && a.page != Page::Legal {
-        write(mut d, fonts, "Connecting to wrela.dev...", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        write(mut d, fonts, "Connecting…", 13.0, vec2(x, y + 4.0), MUTED, zoom)
+        said(mut a, Role::Text, "Connecting…", Rect::new(x, y + 4.0, iw, 20.0), zoom)
         y += 22.0
     }
     if !a.message.is_empty() && a.page != Page::Legal {
-        y += paragraph(mut d, fonts, a.message.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
+        let m = a.message.clone()
+        y += para(mut a, mut d, fonts, m.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
     }
     if a.page != Page::Legal {
         legal_row(mut a, mut d, fonts, x, sheet.bottom() - 52.0, iw, zoom)
@@ -1534,7 +2358,7 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
         rerolls: 0,
         must_add_passkey: false,
     }
-    let up = Ask::Upload { token: Vec::from([5; 32]), replay: Vec::from([1]) }
+    let up = Ask::Upload { token: Vec::from([5; 32]), board: 3, replay: Vec::from([1]) }
     let Some(Answer::Offline { .. }) = answer_now(
         me,
         online: true,
@@ -1568,7 +2392,7 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
             out,
             online: true,
             connected: true,
-            ask: Ask::Board { course: 0, category: 0, from: 0 },
+            ask: Ask::Board { course: 0, category: 0, from: 0, after: Vec::new() },
         ).is_none(),
         "anyone may look at a board",
     )
@@ -1576,8 +2400,307 @@ fn a_game_is_told_at_once_when_the_console_cant_ask() {
         me,
         online: false,
         connected: true,
-        ask: Ask::Board { course: 0, category: 0, from: 0 },
+        ask: Ask::Board { course: 0, category: 0, from: 0, after: Vec::new() },
     ) else {
         panic("no server yet")
     }
+}
+
+@test
+fn making_an_account_waits_for_both_boxes_and_carries_the_versions_agreed_to() {
+    var a = new("wrela.dev", online: true)
+    a.page = Page::Create
+    assert(create_request(a).is_none(), "both unticked")
+    a.agree = true
+    assert(create_request(a).is_none(), "one box isn't both")
+    a.agree = false
+    a.of_age = true
+    assert(create_request(a).is_none(), "nor the other")
+    a.agree = true
+    let Some(Request::Begin { ceremony, agreed, .. }) = create_request(a) else {
+        panic("ready")
+    }
+    assert(ceremony == REGISTER && agreed.of_age)
+    assert(agreed.terms == legal::TERMS_VERSION && agreed.privacy == legal::PRIVACY_VERSION)
+    // A legal page opened from its link goes back to the page that opened it.
+    a.back = Page::Create
+    a.page = Page::Legal
+    assert(returns_to(a) == Page::Create)
+    a.back = Page::Legal
+    assert(returns_to(a) == Page::Choose, "signed out, the first page")
+    assert(sends(Act::CreateAccount) && sends(Act::Post) && !sends(Act::Agree), "sent once")
+}
+
+@test
+fn recovery_codes_wait_on_the_account_page_until_saved() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(account_items(a)[0].0 == Act::Manage && !linked(a).save_codes, "none to save")
+    for k in 0..10 {
+        a.codes.push(String::from(f"CODE-{k}"))
+    }
+    let items = account_items(a)
+    assert(items[0].0 == Act::SaveCodes && items[0].2, "offered first")
+    assert(linked(a).save_codes, "a game may remind")
+}
+
+@test
+fn posting_waits_for_agreement_and_the_game_hears_it() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(!linked(a).may_post && asks_consent_first(a), "not until agreed")
+    a.may_post = true
+    a.post_best = true
+    assert(linked(a).may_post && linked(a).post_best && !asks_consent_first(a))
+    let agreed = Ask::Consent { version: posting::VERSION, best_runs: true }
+    let Some(Answer::Offline { .. }) = answer_now(
+        a.me,
+        online: true,
+        connected: false,
+        ask: agreed.clone(),
+    ) else {
+        panic("offline")
+    }
+    var out = a.me.clone()
+    out.signed_in = false
+    assert(
+        answer_now(out, online: true, connected: true, ask: agreed.clone()).is_some(),
+        "signed out",
+    )
+}
+
+@test
+fn a_games_consent_is_its_players_choice_recorded_without_the_consoles_page() {
+    let ask = Ask::Consent { version: posting::VERSION, best_runs: true }
+    let (r, purpose) = carried(ask, "capybara", [7, 7])
+    let Request::Consent { csrf, version, best_runs } = r else { panic("the consent, relayed") }
+    assert(purpose == Purpose::GameConsent && csrf == Vec::from([7, 7]))
+    assert(version == posting::VERSION && best_runs, "what the player read and chose")
+    let run = platform::wire::RunRef { handle: Vec::from([3; 16]), n: 3 }
+    let (_, other) = carried(Ask::Watch { run }, "capybara", [7, 7])
+    assert(other == Purpose::Game)
+    // Recorded: the game's account says so, and the console's own pages stay closed (a game shown
+    // hides the console).
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    assert(!posting_read(mut a, Reply::Done) && !linked(a).may_post, "not a choice")
+    assert(posting_read(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    assert(linked(a).may_post && linked(a).post_best && !a.open, "agreed, nothing opened")
+}
+
+@test
+fn posting_unknown_is_asked_until_its_known_and_never_an_opt_out() {
+    var a = new("wrela.dev", online: true)
+    a.me.signed_in = true
+    a.me.fixed = true
+    a.connected = true
+    assert(wants_posting(a, 0.0) && !linked(a).posting_known, "asked, unknown meanwhile")
+    a.posting = Known::Asking
+    assert(!wants_posting(a, 0.0), "once at a time")
+    // The ask failed (unreachable, refused): unknown again, and asked again after a while.
+    a.time = 10.0
+    assert(!posting_answered(mut a, Reply::Refused { why: String::from("Try again.") }))
+    assert(a.posting == Known::Unknown && !linked(a).posting_known && a.message.is_empty())
+    assert(!wants_posting(a, 10.0) && wants_posting(a, 10.0 + RETRY), "after a while")
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
+    let l = linked(a)
+    assert(l.posting_known && l.may_post && !l.post_best && !wants_posting(a, 99.0), "known")
+}
+
+/// Account `h`'s `Me`, knighted, named `name`.
+fn me_of(h: u8, name: Text) -> Me {
+    Me {
+        signed_in: true,
+        name: String::from(name),
+        fixed: true,
+        rerolls: 0,
+        must_add_passkey: false,
+        handle: Vec::from([h; 16]),
+    }
+}
+
+@test
+fn another_account_signed_in_keeps_nothing_of_the_one_before() {
+    var a = new("wrela.dev", online: true)
+    a.connected = true
+    a.game = Some(
+        GameLink {
+            surface: 1,
+            id: String::from("capybara"),
+            call: None,
+            token: Vec::new(),
+            token_at: 0.0,
+            asking: false,
+            uploading: false,
+            waiting_token: false,
+            answer: Answer::Nothing,
+        },
+    )
+    // A new account, its codes still to save, posting its best runs, its game's token given.
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    a.codes.push(String::from("CODE-1"))
+    let was = a.epoch
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    match mut a.game {
+        Some(g) => g.token = Vec::from([7; 48]),
+        None => {},
+    }
+    let first = linked(a)
+    assert(first.post_best && first.save_codes && !first.id.is_empty(), "the first's")
+    // From "Sign in again first", another account's passkey: it agreed, but posts nothing alone.
+    identify(mut a, me_of(2, "Dame Puddlefoot"))
+    let l = linked(a)
+    assert(!l.posting_known && !l.may_post && !l.post_best, "its choices not yet known")
+    assert(!l.save_codes && l.token.is_empty() && l.id != first.id, "nothing of the first's")
+    assert(wants_posting(a, a.time), "its choices asked for")
+    // What was asked for the first is dropped as it comes; the game's own asks aren't.
+    assert(!keeps(a, Purpose::Posting, was) && !keeps(a, Purpose::Other, was))
+    assert(!keeps(a, Purpose::GameConsent, was) && keeps(a, Purpose::Game, was))
+    assert(keeps(a, Purpose::Posting, a.epoch))
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: false }))
+    let l = linked(a)
+    assert(l.posting_known && l.may_post && !l.post_best, "its own choices")
+    // The same account again (a fresh sign-in) keeps what it had.
+    identify(mut a, me_of(2, "Dame Puddlefoot"))
+    assert(linked(a).posting_known && keeps(a, Purpose::Posting, a.epoch), "the same account")
+}
+
+@test
+fn a_game_handing_its_call_back_is_called_again_with_the_account_heard_of_since() {
+    var a = new("wrela.dev", online: true)
+    // The game's call went before the console knew whose session it is: signed out.
+    let held = linked(a)
+    assert(!held.signed_in && !held.posting_known)
+    // The session comes late, then its choices of posting, later still.
+    a.connected = true
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    assert(posting_answered(mut a, Reply::Posting { agreed: true, best_runs: true }))
+    // The game hands its call back with nothing to ask: answered at once, with no request, and
+    // the next call carries the account as it is now.
+    let Some(back) = from_game(save(platform::link::FromGame { ask: Ask::Nothing })) else {
+        panic("an ask")
+    }
+    let Some(Answer::Nothing) = answer_now(a.me, a.online, a.connected, back.clone()) else {
+        panic("answered at once")
+    }
+    let Some(Answer::Nothing) = answer_now(a.me, a.online, connected: false, ask: back) else {
+        panic("offline too")
+    }
+    let now = linked(a)
+    assert(now.signed_in && now.posting_known && now.may_post && now.post_best, "as it is now")
+}
+
+@test
+fn a_name_with_no_place_on_a_board_is_said_so_to_the_game() {
+    let Answer::Unplaced = game_answer(
+        Reply::Unplaced,
+        course: 0,
+        category: 0,
+        uploading: false,
+    ) else {
+        panic("no place, said")
+    }
+    let Answer::Board { course, category, .. } = game_answer(
+        Reply::Board { places: Vec::new(), total: 0, next: Vec::new() },
+        course: 3,
+        category: 1,
+        uploading: false,
+    ) else {
+        panic("a board")
+    }
+    assert(course == 3 && category == 1, "the board asked for")
+}
+
+@test
+fn an_upload_that_cant_be_taken_now_is_tried_again_and_a_rejected_one_isnt() {
+    let busy = Reply::Refused { why: String::from("The boards are busy.") }
+    let Answer::Failed { retry_after, .. } = game_answer(
+        busy.clone(),
+        course: 0,
+        category: 0,
+        uploading: true,
+    ) else {
+        panic("tried again")
+    }
+    assert(retry_after == u32(RETRY))
+    let Answer::Rejected { .. } = game_answer(
+        Reply::Rejected { why: String::from("That run's time doesn't match its moves.") },
+        course: 0,
+        category: 0,
+        uploading: true,
+    ) else {
+        panic("for good")
+    }
+    // Another ask's refusal is said for the person (a search too wide, say).
+    let Answer::Rejected { .. } = game_answer(busy, course: 0, category: 0, uploading: false) else {
+        panic("said")
+    }
+}
+
+/// The node of `a`'s tree whose role is `role` and whose name is `label`: its number.
+fn node_of(a: Accounts, role: Role, label: Text) -> u32 {
+    for n in a.nodes {
+        if n.role == role && n.label.as_str() == label {
+            return n.id
+        }
+    }
+    0
+}
+
+@test
+fn the_agreement_is_a_tree_of_boxes_links_and_buttons_a_screen_reader_can_use() {
+    var a = new("wrela.dev", online: true)
+    a.connected = true
+    a.open = true
+    a.page = Page::Create
+    let fonts = Fonts::load()
+    var d = DrawList::new()
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(a.nodes[0].role == Role::Dialog && a.nodes[0].label.as_str() == "Create account")
+    let agree = node_of(a, Role::Checkbox, "I agree to the Terms and the Privacy Policy")
+    let of_age = node_of(a, Role::Checkbox, "I'm 13 or older")
+    let create = node_of(a, Role::Button, "Create account")
+    assert(agree != 0 && of_age != 0 && create != 0, "named boxes and the button")
+    assert(node_of(a, Role::Link, "Terms") != 0 && node_of(a, Role::Link, "Privacy Policy") != 0)
+    assert(!a.nodes[agree - 1].checked && a.nodes[create - 1].disabled, "unticked, can't press")
+    assert(std::semantics::problem(a.nodes).is_none(), "a tree the host takes")
+    // Pressed by a screen reader, each box acts as a click does; ticked, the button can be pressed.
+    let Some(Act::Agree) = assisted(mut a, agree, Assist::Activate) else { panic("the box") }
+    let Some(Act::Legal { page }) = assisted(
+        mut a,
+        node_of(a, Role::Link, "Privacy Policy"),
+        Assist::Activate,
+    ) else {
+        panic("the link")
+    }
+    assert(page == legal::PRIVACY)
+    let _ = assisted(mut a, of_age, Assist::Focus)
+    assert(a.shown[a.focus].0 == Act::OfAge, "its focus, the console's")
+    let Some(Act::Back) = assisted(mut a, 1, Assist::Dismiss) else { panic("dismissed") }
+    a.agree = true
+    a.of_age = true
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(a.nodes[agree - 1].checked && !a.nodes[create - 1].disabled, "ticked, can press")
+    // The text of what posting shares, before the setting is first turned on.
+    a.page = Page::Posting
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    assert(node_of(a, Role::Text, posting::NEVER) != 0 && node_of(a, Role::Button, "Agree") != 0)
+}
+
+@test
+fn a_press_that_sends_a_request_sends_it_once_until_its_answer_comes() {
+    for x in [Act::Keep, Act::Reroll, Act::NewCodes, Act::SignIn, Act::ConfirmDelete] {
+        var a = new("wrela.dev", online: true)
+        a.me = me_of(1, "Sir Wobblesnout the Unhurried")
+        assert(press(mut a, x) && a.doing == Some(x), "the first goes")
+        assert(!press(mut a, x), "the second sends nothing")
+        // Its answer comes (`replied`, which does IO a test can't).
+        a.busy = false
+        assert(press(mut a, x), "again once answered")
+    }
+    var a = new("wrela.dev", online: true)
+    assert(press(mut a, Act::Agree) && press(mut a, Act::Agree) && !a.busy, "a box sends nothing")
 }

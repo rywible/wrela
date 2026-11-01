@@ -15,6 +15,7 @@ use brand::facet::MarkRun
 use brand::manrope::MANROPE
 use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
+use platform::session::answer_of
 use std::gpu::{
     Blend, GpuBuffer, RenderPass, Rgba8, Rgba16Float, Sampler, Texture, begin_pass,
     begin_screen_pass, buffer, buffer_of, draw, mip_levels, sampler, texture, write,
@@ -264,6 +265,9 @@ pub struct Console {
     message: String,
     pixel_ratio: f32,
     reduced: bool,
+    /// Whether the host shows a semantic tree, as its environment says: the account's pages
+    /// publish theirs (account.wrela).
+    semantics: bool,
     intro_until: f32,
     focus: Action,
     controls: Vec<Control>,
@@ -336,6 +340,8 @@ pub struct Console {
     // onto the newest release once its home was left alone (update.wrela).
     update: update::Update,
     active_at: f32,
+    // The chosen game playing itself behind the home, once it has rested there (attract.wrela).
+    attract: attract::Attract,
 }
 
 // Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
@@ -419,6 +425,7 @@ pub fn init() -> Console {
         message: String::new(),
         pixel_ratio: 1.0,
         reduced: false,
+        semantics: false,
         intro_until: OPENING_SECONDS,
         focus: Action::Play,
         controls: Vec::new(),
@@ -471,17 +478,8 @@ pub fn init() -> Console {
         account: account::new(RP_ID, ONLINE),
         update: update::new(),
         active_at: 0.0,
+        attract: attract::new(),
     }
-}
-
-fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
-    var answer = None
-    match mut pending {
-        Some(p) => answer = p.poll(),
-        None => {},
-    }
-    if answer.is_some() { pending = None }
-    answer
 }
 
 fn call(s: mut Console, request: Request, step: Step) {
@@ -630,21 +628,21 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
         Step::List | Step::Prepare | Step::Start | Step::Export | Step::Import => {
             let result: Result<Reply, LoadError> = load(bytes.clone())
             let Ok(reply) = result else {
-                failed(mut s, "The game sent an unsupported response.")
+                failed(mut s, "The game sent something the console can't read.")
                 return
             }
             match reply {
                 Reply::Error { message } => failed(mut s, message),
                 Reply::Saves { entries } => {
                     if entries.len() > 256 {
-                        failed(mut s, "The game sent too many saves.")
+                        failed(mut s, "The game has more saves than the console can list.")
                         return
                     }
                     for entry in entries {
                         if !valid_key(entry.slot) ||
                             entry.label.len() > 160 ||
                             entry.description.len() > 512 {
-                            failed(mut s, "The game sent unsupported save details.")
+                            failed(mut s, "The game sent a save the console can't read.")
                             return
                         }
                     }
@@ -666,7 +664,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
                 },
                 Reply::Exported { bytes } => {
                     let Some(plan) = s.exporting else {
-                        failed(mut s, "The game sent an unsupported response.")
+                        failed(mut s, "The game sent something the console can't read.")
                         return
                     }
                     let name = export_name(plan)
@@ -708,7 +706,7 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     if let Some(text) = String::from_utf8(bytes.clone()) {
         if let Some(cards) = parse(text) { return Ok(cards.clone()) }
     }
-    Err(String::from("The game library could not be read."))
+    Err(String::from("Can't read the list of games. Reload to try again."))
 }
 
 // Covers within reach of the selection hold textures and requests: enough for the shelf.
@@ -749,12 +747,12 @@ fn arrive(f: mut Fetched, art: Art, wanted: bool, role: Role) -> bool {
         f.load = Some(fetch(art.path))
         f.requested = true
     }
-    if let Some(result) = poll(mut f.load) {
+    if let Some(result) = answer_of(mut f.load) {
         if let Ok(bytes) = result {
             f.decode = Some(host::decode_image(bytes, art.width, art.height))
         }
     }
-    let Some(result) = poll(mut f.decode) else { return false }
+    let Some(result) = answer_of(mut f.decode) else { return false }
     if let Ok(bytes) = result {
         // The host decodes only art of the size the catalog says.
         if bytes.len() == art.width * art.height * 4 {
@@ -843,13 +841,13 @@ fn near_cover(index: u32, selected: u32) -> bool {
 }
 
 fn update(s: mut Console) {
-    if let Some(Ok(bytes)) = poll(mut s.address) {
+    if let Some(Ok(bytes)) = answer_of(mut s.address) {
         // The answer to the replacement is empty, so this happens once.
         if let Some(kept) = without_fragment(bytes) {
             s.address = Some(host::replace_address(kept.as_str()))
         }
     }
-    if let Some(result) = poll(mut s.environment) {
+    if let Some(result) = answer_of(mut s.environment) {
         s.dirty = true
         s.reloaded = Some(false)
         if let Ok(bytes) = result {
@@ -857,9 +855,10 @@ fn update(s: mut Console) {
             if !bytes.is_empty() { s.reduced = env.reduced_motion }
             s.reloaded = Some(env.reloaded)
             if let Some(ratio) = env.pixel_ratio { s.pixel_ratio = clamp(ratio, 0.5, 4.0) }
+            s.semantics = env.capabilities & host::SEMANTICS != 0
         }
     }
-    if let Some(result) = poll(mut s.profile_load) {
+    if let Some(result) = answer_of(mut s.profile_load) {
         s.dirty = true
         s.profile_ready = true
         if let Ok(bytes) = result {
@@ -871,7 +870,7 @@ fn update(s: mut Console) {
             }
         }
     }
-    if let Some(result) = poll(mut s.catalog_load) {
+    if let Some(result) = answer_of(mut s.catalog_load) {
         s.dirty = true
         match result {
             Ok(bytes) => match catalog_result(bytes) {
@@ -889,7 +888,7 @@ fn update(s: mut Console) {
                 Err(message) => s.message = message.clone(),
             },
             Err(_) => s.message = String::from(
-                "The game library could not load. Check your connection and reload.",
+                "Can't load the games. Check your connection and reload.",
             ),
         }
     }
@@ -907,17 +906,17 @@ fn update(s: mut Console) {
         if arrive(mut s.heroes[i], card.hero, chosen, Role::Hero) { s.dirty = true }
         if arrive(mut s.logos[i], card.logo, chosen, Role::Title) { s.dirty = true }
     }
-    if let Some(Ok(bytes)) = poll(mut s.music_load) {
+    if let Some(Ok(bytes)) = answer_of(mut s.music_load) {
         s.music = bytes.is_empty() || bytes[0] != 0
     }
-    let _ = poll(mut s.music_write)
-    if let Some(result) = poll(mut s.profile_write) {
+    let _ = answer_of(mut s.music_write)
+    if let Some(result) = answer_of(mut s.profile_write) {
         if result.is_err() {
             s.dirty = true
-            s.message = String::from("Your profile could not be saved on this device.")
+            s.message = String::from("Can't save your profile on this device.")
         }
     }
-    if let Some(result) = poll(mut s.pending) {
+    if let Some(result) = answer_of(mut s.pending) {
         s.dirty = true
         match result {
             Ok(bytes) => answer(mut s, bytes.clone()),
@@ -927,7 +926,7 @@ fn update(s: mut Console) {
             } else { quietly_retry(mut s) },
         }
     }
-    if poll(mut s.closing).is_some() {
+    if answer_of(mut s.closing).is_some() {
         s.dirty = true
         account::game_closed(mut s.account)
         // A game that was starting or playing has closed; a session closed only to change the
@@ -942,10 +941,37 @@ fn update(s: mut Console) {
         s.retry_at = 0.0
         s.need_open = true
     }
-    let _ = poll(mut s.cursor)
+    let _ = answer_of(mut s.cursor)
     fulfill_play(mut s)
     if account::update(mut s.account, s.presentation) { s.dirty = true }
     update::update(mut s.update, s.presentation, safe_to_reload(s), s.active_at)
+}
+
+// The chosen game playing itself behind the home (attract.wrela): its build opened, shown and
+// closed as the home is. The home rests on it while `settled` (past the opening, the library in)
+// on the Games pane with no sheet or the account's panel over it, nothing starting or shown.
+// Whether it must be drawn.
+fn play_behind(s: mut Console, dt: f32, motion: bool, settled: bool) -> bool {
+    if s.cards.is_empty() { return false }
+    let fetched = s.prefetch_list.is_none() &&
+        s.prefetching.is_none() &&
+        s.selected < s.prefetched.len() &&
+        s.prefetched[s.selected]
+    let opening = if s.step == Step::Open { 1 } else { 0 }
+    let open = if s.handle.is_some() { 1 } else { 0 }
+    let closing = if s.closing.is_some() { 1 } else { 0 }
+    let home = attract::Home {
+        selected: s.selected,
+        address: !s.cards[s.selected].attract.is_empty(),
+        resting: settled && s.pane == Pane::Games && s.sheet < 0.01 && !account::shown(s.account),
+        playing: !browsing(s.step) || s.play_intent.is_some(),
+        strained: s.coarser > 0,
+        motion,
+        fetched,
+        surfaces: opening + open + closing,
+    }
+    let address = s.cards[s.selected].attract.clone()
+    attract::update(mut s.attract, home, address.as_str(), dt)
 }
 
 // Whether the console may reload now without losing anything: past the opening, on the games
@@ -1006,12 +1032,12 @@ fn act(s: mut Console, action: Action) {
         },
         Action::SaveProfile => {
             if s.profile.name.trim().is_empty() {
-                s.message = String::from("Enter a name for this profile.")
+                s.message = String::from("Type a name for your profile.")
                 return
             }
             let bytes = save(s.profile)
             s.profile_write = Some(store("console/profile", bytes))
-            s.message = String::from("Profile saved.")
+            s.message = String::from("Name saved.")
         },
         Action::Game { index } => {
             // The selected game's own action is to play it: continue, or begin.
@@ -1354,7 +1380,7 @@ fn status(s: Console) -> String {
 }
 
 fn empty_library_message(message: str) -> String {
-    if message.is_empty() { String::from("Loading games") } else { message.to_string() }
+    if message.is_empty() { String::from("Loading games…") } else { message.to_string() }
 }
 
 // A button's label: Play's says where it continues (`SaveInfo::place`), once there's a save.
@@ -1396,8 +1422,9 @@ fn shelf_offset(selected: u32, width: f32, gap: f32, w: f32, margin: f32) -> f32
 }
 
 // The home: the chosen game owns the screen. Its hero fills it behind everything (drawn by the
-// GPU, `backdrop`); at the left, from the bottom up, its actions, its progress, its tagline and its
-// title art. With more than one game, a shelf of covers along the bottom chooses among them; with
+// GPU, `backdrop`), and once the home has rested on it, the game plays itself there in the hero's
+// place (attract.wrela); at the left, from the bottom up, its actions, its progress, its tagline
+// and its title art. With more than one game, a shelf of covers along the bottom chooses among them; with
 // one, a quiet line says more are coming.
 fn library(s: mut Console, w: f32, h: f32, margin: f32) {
     if s.cards.is_empty() {
@@ -1596,8 +1623,8 @@ fn saves(s: mut Console, w: f32, h: f32) {
     let first = s.marked / capacity * capacity
     let count = min(s.saves.len() - min(first, s.saves.len()), capacity)
     if count == 0 {
-        text(mut s, if s.step == Step::Open || s.step == Step::List { "Reading saves" } else {
-            "No saves yet"
+        text(mut s, if s.step == Step::Open || s.step == Step::List { "Loading your saves…" } else {
+            "No saves yet. Play, or import a save."
         }, 14.0, vec2(x, top), MUTED)
     }
     for i in first..first + count {
@@ -1622,8 +1649,8 @@ fn saves(s: mut Console, w: f32, h: f32) {
         y += 50.0
     }
     let cell = (width - 10.0) * 0.5
-    button(mut s, Action::Export, Rect::new(x, y, cell, 38.0), row + 1, "Export")
-    button(mut s, Action::Import, Rect::new(x + cell + 10.0, y, cell, 38.0), row + 1, "Import")
+    button(mut s, Action::Export, Rect::new(x, y, cell, 38.0), row + 1, "Export save")
+    button(mut s, Action::Import, Rect::new(x + cell + 10.0, y, cell, 38.0), row + 1, "Import save")
     let state = status(s)
     if !state.is_empty() {
         let size = fitted(s, state, 13.0, width, Face::Sans)
@@ -1658,7 +1685,7 @@ fn settings(s: mut Console, w: f32, h: f32) {
         Action::SaveProfile,
         Rect::new(x, y: 194.0, w: 120.0, h: 38.0),
         2,
-        "Save",
+        "Save name",
         primary: true,
     )
     // The home's music: the chosen game's theme, softly.
@@ -1884,15 +1911,19 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         if s.hero_in != hero || s.logo_in != logo { eased = false }
     }
     drive_theme(mut s, phase.library)
+    if play_behind(mut s, dt, motion, settled: !room_shows && !intro) { eased = false }
     // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
     // the opening's slow turn and the camera's breath at the idle rate. The canvas keeps the last
     // frame, so a settled home draws nothing.
+    // Glyphs asked of the host (an ellipsis: the console's fonts are Latin-1) are drawn as they
+    // come.
     let busy = s.dirty ||
         !s.settled ||
         !eased ||
         intro ||
         (width, height) != s.drawn_size ||
-        account::animating(s.account)
+        account::animating(s.account) ||
+        s.renderer.waiting()
     let editing = s.pane == Pane::Settings && s.focus == Action::Name
     let since = match s.drawn_at {
         Some(at) => Some(time - at),
@@ -1934,6 +1965,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             if games { s.controls.truncate(before) } else { footer(mut s, w, h, margin) }
         }
         account::draw(mut s.account, mut s.draw, s.fonts, w, h, margin, s.zoom, s.reduced)
+        if s.semantics {
+            let view = vec4(0.0, 0.0, f32(width), f32(height))
+            account::publish(mut s.account, view)
+        }
     }
     // Over anything it can press, the pointer becomes a hand.
     let over = match s.pointer {
@@ -1944,6 +1979,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.pointing = over
         s.cursor = Some(host::cursor(if over { "pointer" } else { "default" }))
     }
+    // What the fonts haven't is asked of the host's, and drawn once it has come.
+    let asking = s.renderer.waiting()
+    s.renderer.fetch(mut s.fonts, s.draw)
+    if asking && !s.renderer.waiting() { s.dirty = true }
     s.renderer.upload(s.draw)
     // The artifact, where the opening or the room has it, traced for the room's camera: only
     // while the room shows, the opening's or, with no game to show yet, the home's.
@@ -1974,7 +2013,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             s.inked[k] = vec4(0.0)
         }
     }
-    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    // Clear where the game behind the home shows (attract.wrela); opaque black otherwise.
+    let clear = if s.attract.shown > 0.0 { vec4(0.0) } else { vec4(0.0, 0.0, 0.0, 1.0) }
+    let pass = begin_screen_pass(clear: clear)
     if room_shows {
         draw(
             pass,
@@ -2013,6 +2054,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 if aspect >= 1.2 { 0.62 } else { 1.2 },
                 if many || aspect < 1.2 { 0.62 } else { 0.5 },
             ),
+            behind: vec4(s.attract.shown, 0.0, 0.0, 0.0),
         }
         if let Some(hero) = s.heroes[i].image {
             if let Some(cover) = s.covers[i].small {
@@ -2175,7 +2217,7 @@ fn drive_theme(s: mut Console, library: f32) {
         borrow path = s.cards[chosen].theme
         s.theme_load = if path.is_empty() { None } else { Some(fetch(path)) }
     }
-    if let Some(Ok(bytes)) = poll(mut s.theme_load) {
+    if let Some(Ok(bytes)) = answer_of(mut s.theme_load) {
         if let Some(text) = String::from_utf8(bytes.clone()) { s.theme = theme::read(text) }
     }
     let wanted = if s.music && library >= 1.0 && browsing(s.step) && s.closing.is_none() {
@@ -2237,8 +2279,8 @@ fn ink(s: mut Console, k: u32, at: vec3) {
 // browsed, not while a game starts. Each game's list is beside the catalog
 // (studio/release/site.wrela's `prefetch_list`).
 fn prefetch_games(s: mut Console) {
-    if let Some(_) = poll(mut s.prefetching) { s.prefetched[s.prefetch_game] = true }
-    if let Some(result) = poll(mut s.prefetch_list) {
+    if let Some(_) = answer_of(mut s.prefetching) { s.prefetched[s.prefetch_game] = true }
+    if let Some(result) = answer_of(mut s.prefetch_list) {
         match result {
             Ok(bytes) => s.prefetching = Some(host::prefetch(bytes)),
             Err(_) => s.prefetched[s.prefetch_game] = true,
@@ -2479,7 +2521,7 @@ fn an_export_keeps_the_requested_slot_when_selection_changes() {
 @test
 fn an_invalid_utf8_catalog_finishes_with_an_error() {
     match catalog_result(Vec::<u8>::from([255])) {
-        Err(message) => assert(message == "The game library could not be read."),
+        Err(message) => assert(message == "Can't read the list of games. Reload to try again."),
         Ok(_) => assert(false, "Invalid UTF-8 is a catalog completion error"),
     }
 }
@@ -2496,9 +2538,9 @@ fn every_valid_game_key_has_a_downloadable_export_name() {
 
 @test
 fn an_empty_library_displays_its_error_instead_of_loading() {
-    let message = "The game library could not be read."
+    let message = "Can't read the list of games. Reload to try again."
     assert(empty_library_message(message) == message)
-    assert(empty_library_message("") == "Loading games")
+    assert(empty_library_message("") == "Loading games…")
 }
 
 @test
@@ -2659,8 +2701,15 @@ pub const ORIGIN: Text = "https://wrela.dev"
 /// health warning and the legal pages.
 pub const ONLINE: bool = true
 
+/// The server, taking the versions of the legal pages and of what posting makes public that this
+/// build shows (legal.wrela).
 pub fn serve_init() -> console_server::serve::Server {
-    console_server::serve::init(RP_ID, ORIGIN)
+    let versions = platform::server::Versions {
+        terms: legal::TERMS_VERSION,
+        privacy: legal::PRIVACY_VERSION,
+        posting: platform::posting::VERSION,
+    }
+    console_server::serve::init(RP_ID, ORIGIN, versions)
 }
 
 pub fn serve(s: mut console_server::serve::Server, time: f32) {

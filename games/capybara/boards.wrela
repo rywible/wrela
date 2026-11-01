@@ -5,8 +5,10 @@
 // time, the snacks and the deaths from what the sim made of its pads, never from what the replay
 // says: a run whose claim the rules can't make is refused. It is `replay::verify`, split over calls.
 //
-// A board is one version of play (`replay::BOARD`): this build verifies only runs of its own
-// version, and the lab has no board.
+// A board is one version of play (`replay::BOARD`): this build verifies runs of its own version,
+// and an older version's runs are played by that version's archived verifier (`ARCHIVED`), which
+// each release keeps (studio/release, studio/deploy: `verifiers/capybara/<board>/<sha256>` in the
+// `WRELA_BUILDS` bucket). The lab has no board.
 
 use course::{LEVELS, course}
 use pad::{MOST_HOLDS, pad_of}
@@ -20,6 +22,12 @@ pub const GAME: Text = "capybara"
 
 /// The capybara's boards, for the console's server.
 pub struct Capybara {}
+
+/// Each older version of the boards whose runs still go up, and its archived verifier: the board
+/// version and the path its last release kept it at (that release's `release.json`, `verifier`).
+/// When `replay::BOARD` goes up, the version before it is added here, or its board closes. None
+/// yet: version 3 is the first with a verifier kept.
+pub const ARCHIVED: [(u32, Text); 0] = []
 
 /// A replay being played: where it is in its holds, and the sim.
 pub struct Playing {
@@ -105,6 +113,10 @@ impl Game for Capybara {
         }
         let all = course(w.course).every_snack()
         Some(Ok(Outcome { ticks: w.finished, full: (w.snacks & all) == all }))
+    }
+
+    fn archived(self) -> [(u32, Text)] {
+        ARCHIVED
     }
 }
 

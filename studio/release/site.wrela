@@ -3,7 +3,7 @@
 // catalog, prefetch lists and card, the docs page's head and text, and the storage namespace each
 // bootstrap names.
 
-use catalog::{Catalog, Console, Docs, Game, origin_of}
+use catalog::{Catalog, Console, Docs, Game, attract_build, attract_fragment, origin_of}
 use json::{Json, compact, indented, member, member_of, member_of_obj, text}
 use pages::{Page, escape, group_of, groups, stem}
 
@@ -98,8 +98,9 @@ pub fn docs_headers(home: str) -> String {
     h
 }
 
-/// What every Worker's headers end with: a release's files are kept, its entry points never.
-pub const CACHE_RULES: Text = "/releases/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n/deploys.json\n  Cache-Control: no-cache\n"
+/// What every Worker's headers end with: a release's files, and the payloads and runtimes at
+/// their content addresses (addresses.wrela), are kept; its entry points never.
+pub const CACHE_RULES: Text = "/releases/*\n  Cache-Control: public, max-age=31536000, immutable\n/b/*\n  Cache-Control: public, max-age=31536000, immutable\n/r/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n/deploys.json\n  Cache-Control: no-cache\n"
 
 /// A top entry of the docs' Worker before its release is put in `releases/`: its name, whether
 /// it's a directory, and for a directory whether a Markdown file is somewhere inside it.
@@ -120,6 +121,7 @@ pub fn docs_redirects(tops: [Top], release: str) -> String {
         } else if !t.dir &&
             (suffix(name) == ".txt" || suffix(name) == ".json") &&
             name != "manifest.json" &&
+            name != "addresses.json" &&
             name != "files.json" {
             out.push_str(f"/{name} /releases/{release}/{name} 302\n")
         }
@@ -253,7 +255,7 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     body.push(String::from(f"<p>{text}</p>"))
     body.push(
         String::from(
-            "<p>These pages are a Wrela program that draws with WebGPU. Here they are as plain pages, for a browser that can't run it.</p>",
+            "<p>These docs are a Wrela program that draws with WebGPU. If your browser can't run it, here they are as plain pages.</p>",
         ),
     )
     for g in groups {
@@ -297,7 +299,7 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     body.push(String::from("</ul>"))
     body.push(
         String::from(
-            f"<p>An address of these docs names its page after <code>#</code>, and a heading on it after <code>:</code>. <code>{home}/#std/arena:arena-insert</code> is the heading <code>arena-insert</code> of <a href=\"{home}/std/arena.md\">{home}/std/arena.md</a>.</p>",
+            f"<p>In an address, the page's name comes after <code>#</code> and a heading's after <code>:</code>. So <code>{home}/#std/arena:arena-insert</code> is the heading <code>arena-insert</code> on <a href=\"{home}/std/arena.md\">{home}/std/arena.md</a>.</p>",
         ),
     )
     body.push(String::from("</main>"))
@@ -309,7 +311,8 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
     (head, all)
 }
 
-fn contains(names: [String], name: str) -> bool {
+/// Whether `names` holds `name`.
+pub(package) fn contains(names: [String], name: str) -> bool {
     for n in names {
         if n.as_str() == name {
             return true
@@ -318,11 +321,49 @@ fn contains(names: [String], name: str) -> bool {
     false
 }
 
+/// The Worker secrets the console's server makes and checks its ceremonies' challenges with
+/// (platform/edge.wrela): the key in use and the one before it, so a challenge made just before a
+/// rotation still finishes. `wrangler secret put` sets each (docs/toolchain.md); the Worker gives
+/// them to the program as the request headers `KEY_HEADERS` says, which it removes from what a
+/// client sent first, since a program reads no Worker variable (docs/toolchain-gaps.md).
+pub const KEY_SECRETS: [Text; 2] = ["WRELA_CEREMONY_KEY", "WRELA_CEREMONY_KEY_OLD"]
+pub const KEY_HEADERS: [Text; 2] = ["x-wrela-key", "x-wrela-key-old"]
+
+/// The path of the requests whose ceremonies the keys are for: a `POST` there (platform/wire.wrela's
+/// `ACCOUNTS`, which a test checks) is the only request the Worker gives them to.
+pub const KEYED: Text = "/api/accounts"
+
+/// The R2 bucket of archived builds' verifiers (toolchain 0.18.0's `call_build`, its binding
+/// `WRELA_BUILDS`): each release's deploy puts its server's verifier there (`verifier_path`).
+pub const BUILDS_BUCKET: Text = "wrela-builds"
+
+/// Where a release's server's verifier is kept in `BUILDS_BUCKET`: `verifiers/<game>/<board>/` and
+/// the SHA-256 of its files (addresses.wrela's `runtime_hash` of each one's name and SHA-256).
+pub fn verifier_path(game: str, board: u32, sha: str) -> String {
+    String::from(f"verifiers/{game}/{board}/{sha}")
+}
+
+/// A release's server's verifier: where it's kept (`verifier_path`), and its files' names, each
+/// in `<api>.server/verifier/` (main.wrela's `server_dir`).
+pub struct Verifier: Clone {
+    pub path: String,
+    pub files: Vec<String>,
+}
+
+/// The file of a verifier that says what it is (`wrela-verify-1`): every verifier has it.
+pub const VERIFIER_JSON: Text = "verifier.json"
+
+/// Whether a verifier's `files` (their names) include its `VERIFIER_JSON`.
+pub fn described(files: [String]) -> bool {
+    contains(files, VERIFIER_JSON)
+}
+
 /// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable
 /// Objects, the server's and its rooms', and gives each request to the host's routers (`api`, then
-/// `rooms`: toolchain 0.15.0's `server/cloudflare.js`, in the directory `server` beside the
-/// script), which the Worker's routes bring only on the server's paths. A request neither answers
-/// is a 404.
+/// `rooms`: toolchain 0.18.0's `server/cloudflare.js`, in the directory `server` beside the
+/// script), which the Worker's routes bring only on the server's paths, with the ceremonies' keys
+/// (`KEY_SECRETS`) as the headers `KEY_HEADERS` on a `POST` to `KEYED` alone, and any a client
+/// sent removed from every request. A request neither answers is a 404.
 pub fn api_script(server: str) -> String {
     var out = String::from(
         "// The console's server (studio/release/site.wrela). Written by the release tool.\n",
@@ -331,10 +372,29 @@ pub fn api_script(server: str) -> String {
         f"import {{ WrelaServer, WrelaRoom, api, rooms }} from \"./{server}/cloudflare.js\";\n",
     )
     out.push_str("export { WrelaServer, WrelaRoom };\n")
+    out.push_str(
+        "// The ceremonies' keys, from the Worker's secrets, never from a client, and only where a\n",
+    )
+    out.push_str("// ceremony is.\n")
+    out.push_str("function keyed(request, env) {\n")
+    out.push_str("  const headers = new Headers(request.headers);\n")
+    for header in KEY_HEADERS {
+        out.push_str(f"  headers.delete(\"{header}\");\n")
+    }
+    out.push_str(
+        f"  if (request.method === \"POST\" && new URL(request.url).pathname === \"{KEYED}\") {{\n",
+    )
+    for k in 0..2 {
+        let (secret, header) = (KEY_SECRETS[k], KEY_HEADERS[k])
+        out.push_str(f"    if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
+    }
+    out.push_str("  }\n")
+    out.push_str("  return new Request(request, { headers });\n")
+    out.push_str("}\n")
     out.push_str("export default {\n")
     out.push_str("  async fetch(request, env, ctx) {\n")
     out.push_str(
-        "    const answered = (await api(request, env, { ctx: ctx })) ?? (await rooms(request, env));\n",
+        "    const answered = (await api(keyed(request, env), env, { ctx: ctx })) ?? (await rooms(request, env));\n",
     )
     out.push_str("    return answered ?? new Response(null, { status: 404 });\n")
     out.push_str("  },\n")
@@ -403,7 +463,7 @@ pub fn ico(pngs: [(Vec<u8>, u32)]) -> Vec<u8> {
 
 /// What every Worker answers a request no file matches with (`404.html`, with a 404): a short page
 /// in the docs' colours, which leads to the start.
-pub const NOT_FOUND: Text = "<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Not found</title>\n<style>body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; background: #09090B; color: #E4E4E7; } @media (prefers-color-scheme: light) { body { background: #FFFFFF; color: #18181B; } } a { color: inherit; }</style>\n<main>\n<h1>Not here</h1>\n<p>Nothing is at this address. <a href=\"/\">Go to the start</a>.</p>\n</main>\n"
+pub const NOT_FOUND: Text = "<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Page not found</title>\n<style>body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; background: #09090B; color: #E4E4E7; } @media (prefers-color-scheme: light) { body { background: #FFFFFF; color: #18181B; } } a { color: inherit; }</style>\n<main>\n<h1>Page not found</h1>\n<p>There's nothing at this address. <a href=\"/\">Go to the home page</a>.</p>\n</main>\n"
 
 /// A Worker's Wrangler configuration: its directory as its assets, on its custom domain only, and
 /// no script. A request no file matches gets its `404.html` with a 404 (`404-page`). Cloudflare bills a request only when it runs a Worker's script, and a Worker that
@@ -576,6 +636,11 @@ fn server_members(
         c.push((k.clone(), v.clone()))
     }
     c.push(member("ratelimits", Json::List(take bindings)))
+    // The archived builds' verifiers, for `call_build` (the build names its Worker Loader).
+    var bucket: Vec<(String, Json)> = Vec::new()
+    bucket.push(member("binding", text("WRELA_BUILDS")))
+    bucket.push(member("bucket_name", text(BUILDS_BUCKET)))
+    c.push(member("r2_buckets", Json::List(Vec::from([Json::Obj(take bucket)]))))
     Ok(())
 }
 
@@ -590,6 +655,8 @@ pub fn catalog_json(c: Catalog) -> Json {
     console.push(member("api", text(c.console.api)))
     console.push(member("zone", text(c.console.zone)))
     console.push(member("api_from", text(c.console.api_from)))
+    console.push(member("boards", text(c.console.boards)))
+    console.push(member("board", Json::Int(u64(c.console.board))))
     var packages: Vec<Json> = Vec::new()
     for p in c.docs.packages {
         packages.push(text(p))
@@ -613,6 +680,7 @@ pub fn catalog_json(c: Catalog) -> Json {
         game.push(member("domain", text(g.domain)))
         game.push(member("session", text(g.session)))
         game.push(member("builds", Json::Obj(take builds)))
+        game.push(member("attract", text(g.attract)))
         game.push(member("cover", text(g.cover)))
         game.push(member("hero", text(g.hero)))
         game.push(member("logo", text(g.logo)))
@@ -635,7 +703,8 @@ pub struct Shipped: Clone {
 }
 
 /// A game's line of the console's catalog, between tabs: its id, title and session's address;
-/// its cover's, hero's and title art's files and sizes; its tagline; and its theme's file.
+/// its cover's, hero's and title art's files and sizes; its tagline; its theme's file; and the
+/// address where it plays itself, its fragment kept (empty for none).
 pub fn catalog_line(
     game: Game,
     release: str,
@@ -651,7 +720,14 @@ pub fn catalog_line(
     for art in [cover.clone(), hero.clone(), logo.clone()] {
         line.push_str(f"\t{art.name.as_str()}\t{art.width}\t{art.height}")
     }
-    line.push_str(f"\t{game.tagline}\t{theme}")
+    line.push_str(f"\t{game.tagline}\t{theme}\t")
+    if !game.attract.is_empty() {
+        line.push_str(f"{o.as_str()}/releases/{release}/{attract_build(game.attract)}/")
+        let fragment = attract_fragment(game.attract)
+        if !fragment.is_empty() {
+            line.push_str(f"#{fragment}")
+        }
+    }
     line
 }
 
@@ -680,15 +756,27 @@ pub fn prefetched(path: str) -> bool {
 }
 
 /// What the console fetches of a game ahead of time, once it's idle: each build's files that
-/// `prefetched` keeps, by their address. `builds` holds each build's name and its files' paths,
-/// in `fetch_order`, its paths sorted by their parts.
-pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<String>)]) -> String {
+/// `prefetched` keeps, by their address, each once. `builds` holds each build's name and its
+/// files, in `fetch_order`, each its path in the build and its URL on the game's origin if it
+/// moved to a content address (addresses.wrela), else empty for its release's copy; its paths
+/// sorted by their parts.
+pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<(String, String)>)]) -> String {
     let o = origin_of(game.domain)
     var out = String::new()
+    var seen: Vec<String> = Vec::new()
     for (name, paths) in builds {
-        for p in paths {
-            if prefetched(p.as_str()) {
-                out.push_str(f"{o.as_str()}/releases/{release}/{name}/{p.as_str()}\n")
+        for (p, url) in paths {
+            if !prefetched(p.as_str()) {
+                continue
+            }
+            let line = if url.is_empty() {
+                String::from(f"{o.as_str()}/releases/{release}/{name}/{p.as_str()}")
+            } else {
+                String::from(f"{o.as_str()}{url.as_str()}")
+            }
+            if !contains(seen, line.as_str()) {
+                out.push_str(f"{line.as_str()}\n")
+                seen.push(take line)
             }
         }
     }
@@ -696,6 +784,69 @@ pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<String>)]) ->
         out.push_str("\n")
     }
     out
+}
+
+/// The URLs a page preloads as fetches (`<link rel="preload" href="..." as="fetch" ...>`), in
+/// its order.
+pub fn preloads(page: str) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    var at = 0
+    while at < page.len() {
+        let rest = page.slice(at, page.len())
+        let Some(start) = rest.find("<link ") else { break }
+        let tag_from = rest.slice(start, rest.len())
+        let Some(end) = tag_from.find(">") else { break }
+        let tag = tag_from.slice(0, end)
+        at += start + end + 1
+        if tag.find(" rel=\"preload\"").is_none() || tag.find(" as=\"fetch\"").is_none() {
+            continue
+        }
+        let Some(h) = tag.find(" href=\"") else { continue }
+        let value = tag.slice(h + 7, tag.len())
+        let Some(q) = value.find("\"") else { continue }
+        out.push(String::from(value.slice(0, q)))
+    }
+    out
+}
+
+/// The `_headers` rule for a page served at `path` that preloads `preloaded` (`preloads`), each
+/// relative to `base` (the page's directory, or its `<base>`) unless it's root-absolute: each
+/// as a `Link` header, which a zone with Early Hints sends ahead of the page, as a 103. Empty
+/// for a page that preloads nothing. Or why not: a URL that leaves the origin or its directory,
+/// or that a header can't carry.
+pub fn early_hints(path: str, base: str, preloaded: [String]) -> Result<String, String> {
+    if preloaded.is_empty() {
+        return Ok(String::new())
+    }
+    var out = String::from(f"{path}\n")
+    for u in preloaded {
+        let s = u.as_str()
+        var plain = !s.is_empty() && !s.starts_with("//")
+        for i in 0..s.len() {
+            let b = s.byte(i)
+            plain = plain &&
+                b > 32 &&
+                b < 127 &&
+                b != 60 &&
+                b != 62 &&
+                b != 44 &&
+                b != 59 &&
+                b != 34 &&
+                b != 92 &&
+                b != 58
+        }
+        for (a, b) in s.split("/") {
+            if s.slice(a, b) == ".." {
+                plain = false
+            }
+        }
+        if !plain {
+            return Err(String::from(f"a page at {path} preloads '{s}', which a header can't name"))
+        }
+        let url = if s.starts_with("/") { String::from(s) } else { String::from(f"{base}{s}") }
+        out.push_str(f"  Link: <{url.as_str()}>; rel=preload; as=fetch; crossorigin\n")
+    }
+    Ok(out)
 }
 
 /// A bootstrap page with the storage namespace its program keeps its files under: the same in
@@ -715,9 +866,16 @@ pub struct Report: Clone {
     pub bytes: u64,
 }
 
-/// `release.json`: the release's source revision, its id, the console's server's Worker, and each
-/// Worker's report.
-pub fn release_json(source: str, release: str, api: str, workers: [Report]) -> String {
+/// `release.json`: the release's source revision, its id, the console's server's Worker, its
+/// verifier (which the deploy puts in `BUILDS_BUCKET`, and which a later build names for this
+/// board: games/capybara/boards.wrela's `ARCHIVED`), and each Worker's report.
+pub fn release_json(
+    source: str,
+    release: str,
+    api: str,
+    verifier: Verifier,
+    workers: [Report],
+) -> String {
     var list: Vec<Json> = Vec::new()
     for w in workers {
         var m: Vec<(String, Json)> = Vec::new()
@@ -733,6 +891,14 @@ pub fn release_json(source: str, release: str, api: str, workers: [Report]) -> S
     top.push(member("source", text(source)))
     top.push(member("release", text(release)))
     top.push(member("api", text(api)))
+    var files: Vec<Json> = Vec::new()
+    for f in verifier.files {
+        files.push(text(f.as_str()))
+    }
+    var v: Vec<(String, Json)> = Vec::new()
+    v.push(member("path", text(verifier.path.as_str())))
+    v.push(member("files", Json::List(take files)))
+    top.push(member("verifier", Json::Obj(take v)))
     top.push(member("workers", Json::List(take list)))
     indented(Json::Obj(take top))
 }

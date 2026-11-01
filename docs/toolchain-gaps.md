@@ -6,18 +6,51 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-### A program can't show another program playing behind its own canvas
+### A server can't read its Worker's secrets
 
-- **Needed:** attract mode on the console's home (Ryan, 2026-10-30: "I really like the idea of the game playing by itself behind the home screen"): the chosen game's own build, playing one of its replays with no input and no sound, behind the home's text in place of its hero. The capybara game can: every run is a replay (`games/capybara/replay.wrela`), its searched runs are constants (`routes_<level>.wrela`), and a start of its own (`#attract` in its address, read with `host::address`) could play one on a loop.
-- **What happens:** toolchain 0.11.1's browser host (as 0.10.3's) lays each program a page opens (`host::open`) in an iframe filling the page *behind* the opener's canvas (`runtime/browser/src/platform.ts` `#open`: `position:fixed;inset:0;z-index:0;pointer-events:none`, under the canvas's `z-index:1`), so it is drawn already, but the canvas is configured opaque (`runtime/browser/src/worker.ts:121`, `ctx.configure({ ..., alphaMode: "opaque" })`), so nothing behind it can show: a screen pass's alpha is dropped. `host::show` is the only way to see a surface, and it hides the opener (`surface/show`: `this.canvas.style.visibility = "hidden"`). The native host opens no surfaces at all.
-- **Found:** 2026-10-30, redesigning the console's home (the PR that adds hero art, title art, taglines and themes to the catalog).
-- **Weighed:**
-  - *The game's build behind the console's canvas* (this entry): the game's own renderer, at the device's size and rate, for the cost of a few KB of catalog; the build is the one the player is about to play, so its files are fetched ahead anyway. It needs the toolchain change below, and a start of the game's own.
-  - *A clip the release renders* with the game's renderer (`wrela-host --png --every K` frames, as the lookbook does): no video decoder in std or the hosts, so it would be a flipbook of `host::decode_image` frames: 6 s at 12 frames a second at 960×540 is 72 textures, about 150 MB of GPU memory and 3 MB to download, blurry behind a 1080p screen. Rejected.
-  - *A `<video>` the host plays*: an encoder in the release (none in `std::tool::image`) and the same transparent canvas. No better than the game itself.
-- **Proposed:** `host::underlay(id, on)`: the surface `id` (opened, not shown) is drawn behind this program, which is now composited with premultiplied alpha (the canvas reconfigured `alphaMode: "premultiplied"`, the screen pass's alpha kept), the surface getting no input and no audio (muted, or told so with its `environment`, as reduced motion is); `on: false` puts both back. The opener draws its screen with alpha where the game should show (the console: its hero's gradient over a clear screen). A frame budget should stay the opener's: a host that strains (`strained` in console/main.wrela) closes the surface.
-- **Meanwhile:** the home shows the game's hero, a still the release ships (`catalog.tsv`'s hero column), drifting a little with the pointer. Nothing is worked around: no flipbook, no frame of the game's in the console.
-- **Status:** open. With it: a catalog column naming the game's attract build and start (`capybara/#attract`), the console opening it once the home has rested on a game for a few seconds and fading the hero out over it, and the game's `#attract` start (the game's own work: a searched route a level, on a loop, its HUD and sound off).
+- **Needed:** the console's server making and checking its ceremonies' challenges with a key no one else holds (docs/plan-online-play.md step 14: `nonce ‖ expiry ‖ HMAC-SHA256(key, ...)`, "a Worker secret, two for rotation"), set with `wrangler secret put` and never in the repository.
+- **What happens:** toolchain 0.18.0 gives a server program no way to read a Worker variable or secret: `std::server`, `std::http` and `std::crypto` have none, and the Cloudflare host reads only its own (`WRELA_ORIGINS`, `WRELA_LIMITS`, `WRELA_PRINT`).
+- **Found:** 2026-10-31, building the sharded server.
+- **Evidence:** runtime/cloudflare/src/cloudflare.ts's `Env` (wrela-compiler at `c3eaac3`, 0.18.0) names only the host's bindings and variables, and `api` passes the program a request's allowlisted headers alone (`seenByServer`); spec §19.5 lists no service for them.
+- **Meanwhile:** the API Worker's script (studio/release/site.wrela's `api_script`) removes any `x-wrela-key` and `x-wrela-key-old` header a client sent and sets them from the secrets `WRELA_CEREMONY_KEY` and `WRELA_CEREMONY_KEY_OLD` before it calls `api`, and the program reads its keys from those headers (console/server/serve.wrela). A request dispatched to an instance carries them on, so no instance keeps them.
+- **Status:** open: a server service that reads a named secret (say `std::server::secret(name)`), as `std::tool::secret` does for a tool.
+
+### An instance can't hear that its messages were delivered
+
+- **Needed:** an account's deletion clearing its store only once each removal it sent (to its boards, code shards, names shard and others) has taken effect (docs/plan-online-play.md step 14, "clears its store only once each is acknowledged").
+- **What happens:** toolchain 0.18.0's outbox drops a message once its receiver acknowledges it (`std::server::ack`), and tells the sender nothing: no event says a message went, or that the outbox is empty.
+- **Found:** 2026-10-31, building the sharded server's deletion.
+- **Evidence:** runtime/cloudflare/src/host.ts's `deliver` (wrela-compiler at `c3eaac3`) calls `store.acknowledged(m.id)` and nothing more; `std::server` has no event for it.
+- **Meanwhile:** each removal carries an id (server.wrela's `Letter::confirm`), its receiver sends a `Note::Removed` back in the call that applies it, and the account keeps each pending (`x/<id>`) until it hears; the last one clears the store (platform/accounts.wrela).
+- **Status:** open: an event for a message acknowledged, or an outbox the sender can read. The acknowledgements stay until then (/simplify's second pass, 2026-10-31): the account's last clear must not drop messages still in its outbox, and the host doesn't say whether clearing an instance's store (`deleteAll`) keeps its outbox.
+
+### A program can't come back over the program it shows
+
+- **Needed:** the console's own dialog over a game it shows, the game kept as it is: the screen of what posting makes public before an account's first post (docs/plan-online-play.md step 4), the console's words and its semantic tree, coming up when the player posts from the game, holding the run, and going back to the game after Post or Not now (the council's finding, 2026-10-31).
+- **What happens:** toolchain 0.18.0's browser host has no way back: `host::show` hides the opener's canvas (`surface/show`: `this.canvas.style.visibility = "hidden"`), and only the shown surface's close shows it again (`#shown = null` in its `close`). `host::underlay` refuses a surface that's shown (`surface/underlay`: "the program surface is shown in this one's place"), and `std::host` has nothing else that un-shows a surface without closing it (`show`, `underlay`, `close`, `return_to_parent`, which closes the game). So a console that wants to come over its game must close it, and the attempt and the game's state with it.
+- **Found:** 2026-10-31, finishing the game's and the console's side of online play.
+- **Evidence:** runtime/browser/src/platform.ts at wrela-compiler `c3eaac3` (v0.18.0), the services `surface/show` and `surface/underlay` and the surface's `close`; `wrela doc std::host::show` ("Shows a program in place of this one").
+- **Meanwhile:** the game shows the screen itself, in platform/posting.wrela's words (the ones the console's account page shows), over its leaderboard, with its own semantic tree (games/capybara/screens.wrela's `posting_card` and `posting_tree`: a modal dialog, the box a checkbox with its state, Post and Not now buttons), and sends the player's Post to the console to record (`link.wrela`'s `Ask::Consent`). Nothing of the console's is faked in the game.
+- **Status:** open: a way to bring the opener back over a surface it shows and hand the surface back after (say `host::cover(id, on)`: the opener's canvas over the shown surface, which keeps running, muted and taking no input, as `underlay` does), so a console's dialog can come over its game.
+
+### A fake site can't answer with a header
+
+- **Needed:** the deploy's Zstandard check (studio/deploy `verify_zstd`, docs/plan-online-play.md step 12) tested end to end on a fake site that answers a WASM with `content-encoding: zstd`, as one with the zone's Compression Rule set does, and the deploy passing with the rule required.
+- **What happens:** toolchain 0.17.0's fake sites answer with `content-length` alone, and `std::tool::testing::Fake` sets a status, a 404, a body, a delay or failures, never a header.
+- **Found:** 2026-10-31, writing the Zstandard check.
+- **Evidence:** `fake` in runtime/native/src/tool/http.rs (wrela-compiler at `a4ad713`, 0.17.0) builds every answer's headers from `length(n)`, a `content-length` only.
+- **Meanwhile:** the answer's rule is a test of code (`not_zstd`: only a 200 with `content-encoding: zstd` passes), and a tool test checks that on fake sites every console and game WASM and runtime script is a warning, or with the rule required the deploy's failure (studio/deploy/tests.wrela).
+- **Status:** open: a `Fake` of headers (say `Fake::Headers(Vec<Header>)`, added to the file's answer).
+
+### A driven build can't be given an address
+
+- **Needed:** the capybara's attract tool test (games/capybara/tests/attract) driving the play build as the console opens it, at `capybara/#attract`, so the test's build decides it plays itself from its address as a browser's does.
+- **What happens:** toolchain 0.17.0's native host (and so `std::tool::drive` and `@test(frames: n)`) fails `host::address` (`nav/location`): `drive::Load` has no address, and `wrela-host` takes none.
+- **Found:** 2026-10-31, moving the attract start into the play build (docs/plan-online-play.md step 9).
+- **Evidence:** a program that polls `host::address()` from `init` under `wrela-host` 0.17.0 gets `Err` on its first frame.
+- **Meanwhile:** the game takes a failed address as the game played, and the tool test calls the export `play_itself` after `init`, which does what an address of `#attract` does (games/capybara/main.wrela); the address's own rule (`role_of`) is a test of code.
+- **Status:** open: an address in `drive::Load` and `wrela-host --address`, which `nav/location` then answers.
+
 ### A constant can't hold a value over about 200 KiB
 
 - **Needed:** a grown veteran tree as a `plant::Plant` (docs/plan-world-class-3.md §E1.2): its woody silhouette within IoU 0.97 of its growth graph takes up to 5,563 limbs (a 100-year hawthorn), so `MAX_LIMBS` at 4,096 or more, a `Plant` of 256 KiB.
@@ -184,6 +217,37 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open.
 
 ## Fixed
+
+### A client can't fetch a public read without its cookies, or with the browser's cache
+
+- **Needed:** the console's public reads (a board's page, a slice, a run's replay by its hash, a search of names: platform/wire.wrela's `PUBLIC` and `REPLAYS`) sent with no cookie, so nothing in them can tie a reader to an account, and kept by the browser's own cache, so a replay asked for again (its path never changes, `immutable` for a year) costs no request at all.
+- **What happens:** toolchain 0.17.0's `std::http::fetch` sends the origin's cookies with every request and skips the browser's cache: its browser host calls `fetch` with `credentials: "same-origin"`, `redirect: "error"` and `cache: "no-store"`, for every method. Nothing in `std::http` asks for `credentials: "omit"` or the default cache mode.
+- **Found:** 2026-10-31, the council's review of the online-play branch (rywible/wrela, `capybara/design-online-play`).
+- **Evidence:** the browser host bundled in 0.17.0's `wrela` (`strings ~/.wrela/toolchains/0.17.0/bin/wrela`) holds `credentials:"same-origin",redirect:"error",cache:"no-store"` in the `fetch` it makes for `http/fetch`; `wrela doc std::http::fetch` (0.17.0) says it is sent "with the origin's cookies".
+- **Meanwhile:** a public read needs no account and the server ties none to it: it reads no session for one and sets no cookie on its answer (server.wrela's `sessionless`; server_tests.wrela's `a_public_read_is_no_sessions_and_sets_no_cookie`), so its answer is the same for everyone and Cloudflare's edge cache serves it (`cache-control: public`, server.wrela's `BOARD_AGE`, `RUN_AGE`, `REPLAY_AGE`). The browser asks the edge again each time; the capybara holds the replays it fetched in memory (games/capybara/online.wrela's `HELD`).
+- **Status:** fixed in toolchain 0.18.0: `std::http::fetch_public(path, headers)`, a `GET` with no cookies that the browser's cache may answer. The console sends every public read with it (console/account.wrela's `request`), and a run's replay is read at its own path (wire.wrela's `run_path`), `immutable` for a year.
+
+### A program can't be opened at an address with a fragment
+
+- **Needed:** the capybara's attract start in its play build, opened as `capybara/#attract` and read with `host::address` ("A program can't show another program playing behind its own canvas", fixed), so the console fetches one build of the game, ahead of time, for both.
+- **What happens:** toolchain 0.16.0's browser host refuses to open it: `host::open`'s URL goes through `programUrl` (`runtime/browser/src/platform.ts`), which throws "program URLs cannot contain credentials, queries or fragments" for any `#` or `?`, so the open fails.
+- **Found:** 2026-10-31, building the console's attract mode (docs/plan-online-play.md step 9).
+- **Evidence:** wrela-compiler 36156fa, `runtime/browser/src/platform.ts` `programUrl`: `if (url.username || url.password || url.hash || url.search) throw ...`, called by `#open` before the frame is made.
+- **Meanwhile (until 0.17.0):** the attract start was a build of its own: the capybara's package with `ATTRACT` set (`--set ATTRACT=true`), which the release builds beside the play build (studio/release/catalog.wrela's `Build::set`). It cost a second build of the game in each release, and its files fetched apart from the play build's.
+- **Status:** closed by toolchain 0.17.0: `host::open` takes an address with a fragment (`capybara/#attract`; no query, credentials or `#test`), and the opened program reads it, its fragment kept, with `host::address`. Done with it: the separate `attract` build is gone, and with it `Build::set` and its `NAME=VALUE` check in studio/release (nothing else set constants); the catalog's `attract` names the play build and its fragment (`capybara#attract`, written in `catalog.tsv` as `.../capybara/#attract`), and `check` holds its build to one of the game's and its fragment to a plain token that isn't `test`. The capybara starts neutral (a frame of sky, no sound, nothing stored or asked), and once its address answers decides once whether it plays itself (games/capybara/attract.wrela's `Role` and `role_of`); playing itself, the frames never start its voice, its storage, the world's boards, its keys, its semantic tree or its link to the console. The console fetches one build of the game for both.
+
+### A program can't show another program playing behind its own canvas
+
+- **Needed:** attract mode on the console's home (Ryan, 2026-10-30: "I really like the idea of the game playing by itself behind the home screen"): the chosen game's own build, playing one of its replays with no input and no sound, behind the home's text in place of its hero. The capybara game can: every run is a replay (`games/capybara/replay.wrela`), its searched runs are constants (`routes_<level>.wrela`), and a start of its own (`#attract` in its address, read with `host::address`) could play one on a loop.
+- **What happens:** toolchain 0.11.1's browser host (as 0.10.3's) lays each program a page opens (`host::open`) in an iframe filling the page *behind* the opener's canvas (`runtime/browser/src/platform.ts` `#open`: `position:fixed;inset:0;z-index:0;pointer-events:none`, under the canvas's `z-index:1`), so it is drawn already, but the canvas is configured opaque (`runtime/browser/src/worker.ts:121`, `ctx.configure({ ..., alphaMode: "opaque" })`), so nothing behind it can show: a screen pass's alpha is dropped. `host::show` is the only way to see a surface, and it hides the opener (`surface/show`: `this.canvas.style.visibility = "hidden"`). The native host opens no surfaces at all.
+- **Found:** 2026-10-30, redesigning the console's home (the PR that adds hero art, title art, taglines and themes to the catalog).
+- **Weighed:**
+  - *The game's build behind the console's canvas* (this entry): the game's own renderer, at the device's size and rate, for the cost of a few KB of catalog; the build is the one the player is about to play, so its files are fetched ahead anyway. It needs the toolchain change below, and a start of the game's own.
+  - *A clip the release renders* with the game's renderer (`wrela-host --png --every K` frames, as the lookbook does): no video decoder in std or the hosts, so it would be a flipbook of `host::decode_image` frames: 6 s at 12 frames a second at 960×540 is 72 textures, about 150 MB of GPU memory and 3 MB to download, blurry behind a 1080p screen. Rejected.
+  - *A `<video>` the host plays*: an encoder in the release (none in `std::tool::image`) and the same transparent canvas. No better than the game itself.
+- **Proposed:** `host::underlay(id, on)`: the surface `id` (opened, not shown) is drawn behind this program, which is now composited with premultiplied alpha (the canvas reconfigured `alphaMode: "premultiplied"`, the screen pass's alpha kept), the surface getting no input and no audio (muted, or told so with its `environment`, as reduced motion is); `on: false` puts both back. The opener draws its screen with alpha where the game should show (the console: its hero's gradient over a clear screen). A frame budget should stay the opener's: a host that strains (`strained` in console/main.wrela) closes the surface.
+- **Meanwhile:** until 0.16.0, the home showed the game's hero, a still the release ships (`catalog.tsv`'s hero column), drifting a little with the pointer. Nothing was worked around: no flipbook, no frame of the game's in the console.
+- **Status:** closed by toolchain 0.16.0's `host::underlay` (the browser host's `surface/underlay`; the program behind muted and given no input, the canvas composited premultiplied). Built with it (docs/plan-online-play.md step 9; the look is proposed until Ryan sees it): `catalog.tsv`'s last column names each game's attract build (studio/release/catalog.wrela's `Game::attract`, empty for none; a catalog without the column reads as none); the console (console/attract.wrela) opens it once the home has rested on a game three seconds with nothing fetched ahead under way, waits for its first frame (`host::wait_ready`), underlays it and fades the hero out over a second, the backdrop's alpha following the fade and its dark gradient kept over the game (console/paint.wrela); it closes as the selection moves or a sheet or the account's panel covers the home (the hero fading back in), and at once when a game starts or shows or the host strains (`strained`). A host that declines (the native one) or a build that fails turns it off for the page's load, and the home is as it was. The capybara's attract build (games/capybara/attract.wrela) plays the route search's human any% run of each level (`HUMAN_ANY`), level after level and round again, with no HUD, menus, sound, input, storage or network. Until 0.17.0 it was a build of its own (`--set ATTRACT=true`), not `capybara/#attract`: 0.16.0's browser host opened no program at an address with a fragment ("A program can't be opened at an address with a fragment", fixed); since, it is the play build opened at `capybara/#attract`.
 
 ### A fragment can't return its look's associated type
 
@@ -409,13 +473,67 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the release left the console's server build out, and the console was built with `ONLINE = false`.
 - **Status:** fixed in toolchain 0.13.0 (rywible/wrela-compiler#46): a server build also writes `server/cloudflare.js` (a Durable Object that runs it beside its SQLite store, and the Worker's router, `api`) and `server/cloudflare.json` (its Wrangler members). The release puts them in the console's Worker (studio/release/site.wrela), on Workers Paid: Free's 10 ms of CPU a Durable Object invocation is too little to verify a run, since the host runs calls for up to 250 ms before it hands on to the object's alarm (Ryan chose Paid, 2026-10-31). WebSocket rooms came in 0.14.0, which the console doesn't use yet.
 
+### A store can't count its keys without reading their values
+
+- **Needed:** a board's place for a run (platform/ranking.wrela's `RankCount` and `AroundCount`): how many places are ahead of it, up to `MOST_PLACE`.
+- **What happens:** toolchain 0.18.0's `std::store::scan` gives each entry's key and value, so counting a thousand places reads a thousand `Ranked` records (each a name, a run and a replay's hash) only to count them, toward the host's 1 MiB a scan.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (efficiency).
+- **Evidence:** compiler/std/store.wrela's `scan(from, to, limit, down)` and `entries`, which hold `Entry { key, value }`; there is no keys-only form or count.
+- **Meanwhile:** the board scans the places ahead with their values and counts them.
+- **Status:** open: a keys-only scan (`store::keys(from, to, limit)`) or a count (`store::count(from, to, limit) -> u32`).
+
+### Instance code can't be tested on a fake host of std's
+
+- **Needed:** each of the console's server's instances written as code that calls `std::store`, `std::crypto` and `std::server` itself, a request's steps one after another, rather than a state machine that hands its host `Command`s and waits on tickets (platform/server.wrela's `Job` and its hundred `Step`s), and tested on a host of many instances.
+- **What happens:** toolchain 0.18.0's tests run std's server services against nothing: a test can't make instances, deliver their calls and messages, or hold and fail them, so code that calls std directly can't be tested beyond one instance.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude: a Job and a Step for each kind of instance).
+- **Evidence:** platform/server_tests.wrela's fake host, which drives the engine's `Command`s; `std::server`'s services answer only on a real host.
+- **Meanwhile:** the engine stays a state machine over its host, and the platform's tests run it on its own fake host of many instances (`wrela test platform`).
+- **Status:** open: a fake multi-instance host in `std::testing` (instances, their stores, outboxes and calls, with holds and failures a test sets), as 0.18.0's Cloudflare host behaves.
+
+### A test can't run a program and the program it shows together
+
+- **Needed:** the console and the capybara run together in one test, over their channel (`host::send`, `receive`, `reply`), with the console's session and posting replies held and let go, so a stall between them (the council's round 2, finding 8: a game told "signed out" holding its call, the console unable to tell it of a later sign-in) is seen as it happens.
+- **What happens:** toolchain 0.18.0's tests can't do I/O (`error[E0600]: ... is a test, which the build runs, which can't io`), and the channel's calls are I/O, so neither program's update can run in a test; nor can a package's test reach another program's package.
+- **Found:** 2026-10-31, the council's round 2 on #351.
+- **Evidence:** `wrela test console` refusing a test that called `replied` (it can reach `create_passkey`); runtime/browser/src/platform.ts at wrela-compiler `c3eaac3` (v0.18.0), the services `surface/call`, `channel/receive` and `channel/reply`.
+- **Meanwhile:** the rule both sides keep is platform/link.wrela's (`HEARTBEAT`, `Ask::Nothing`), and each side is tested on the bytes the other sends: the game hands a held call back and acts on the next call's account (games/capybara/online.wrela's `next_reply`), and the console answers the hand-back at once with the account as it is now (console/account.wrela's `answer_now`, `linked`).
+- **Status:** open: a test host for a program's channel (`std::testing`: calls a test sends and replies it reads, as the browser host's `We` carries them), or tests that drive two programs' updates.
+
+### A modal dialog opens on its first control, and the focus asked for once isn't asked again
+
+- **Needed:** the capybara's screen of what posting makes public (games/capybara/screens.wrela's `posting_tree`) opening with the focus on Post each time it comes up.
+- **What happens:** the browser host focuses a modal dialog's first control as it opens, whatever node says `focused`, and then moves the focus to the `focused` node only when that node's id differs from the last one asked for, which it keeps when that node goes. So a dialog that comes up again with the same ids opens on its first control (the box), not on Post.
+- **Found:** 2026-10-31, playing the posting screen; /simplify's second pass asked for the workaround to go.
+- **Evidence:** runtime/browser/src/semantics.ts at wrela-compiler `a4ad713` (v0.17.0; 0.18.0's source isn't checked out here, and 0.18.0 behaves the same in play): `#dialogs` focuses `querySelector(FOCUSABLE)` of a dialog newly open, and `update`'s `if (asked !== this.#focused)` sets `#focused` only on a change, while the loop that removes the nodes that went leaves it.
+- **Meanwhile:** the game numbers the screen's nodes anew each time it comes up (main.wrela's `consents`), so its Post is a new id the host focuses.
+- **Status:** open: a modal dialog that opens on its `focused` node if it has one, and `#focused` cleared when its node goes.
+
+### A release can't read the board version its game builds
+
+- **Needed:** the release's catalog naming the board version the console's server verifies (studio/release/catalog.wrela's `console.board`), under which each release keeps its verifier, as games/capybara/replay.wrela's `BOARD` says it.
+- **What happens:** a tool can't read a package's constant: the catalog repeats it, and a test reads replay.wrela's source for the line (studio/release/tests.wrela's `the_catalogs_board_is_the_games`).
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude).
+- **Evidence:** `std::tool::toolchain` builds a package and reads its manifest, which records `--set`s but not a constant's value; `wrela build --report consts` prints the constants a build computes, not a `pub const` that's a literal.
+- **Meanwhile:** the catalog says the version, and the test ties it to the source.
+- **Status:** open: a server build's manifest naming its `Game::board`, or a tool's way to read a package's `pub const`.
+
+### A server build doesn't bind the bucket its archived builds are in
+
+- **Needed:** the console's server playing an older board's runs with that board's archived verifier (`std::server::call_build`), which the host reads from an R2 bucket bound as `WRELA_BUILDS`.
+- **What happens:** toolchain 0.18.0's `server/cloudflare.json` gives the Worker Loader's binding (`WRELA_LOADER`) and not the bucket's, so each release adds it to the API Worker's configuration itself.
+- **Found:** 2026-10-31, /simplify's second pass over the sharded server (altitude).
+- **Evidence:** studio/release/site.wrela's `server_members` (for `api_config`) pushes an `r2_buckets` member (`WRELA_BUILDS`, `BUILDS_BUCKET`) after the build's members.
+- **Meanwhile:** the release adds the binding, its bucket named by `BUILDS_BUCKET`.
+- **Status:** open: `server/cloudflare.json` binding the bucket `call_build` reads, named by the build or a `wrela build` option.
+
 ### A call's reads don't see its writes
 
 - **Needed:** a single-use key taken once, and a unique key claimed once, by the console's server: a passkey ceremony's challenge (used once, even by two requests in one call), an account's name (no two accounts with one), and the verification queue read after an upload writes it.
 - **What happens:** `std::store`'s reads are answered on the next call, from the store as it was before the call's writes, which commit when the call returns (language.md §19.4; toolchain 0.13.0's Cloudflare host does the same). So two requests in one call both read a challenge before either's delete commits, and a read made in the call that wrote a key misses it.
 - **Found:** 2026-10-31, moving the console's server to HTTP, where a challenge moved from a connection's memory to the store.
-- **Meanwhile:** the engine remembers what it used or wrote lately and checks it before trusting a read (platform/server.wrela: `spent` for challenges, `recent_names` for names, `queue_written` for the queue). Each new key of the kind needs its own list.
-- **Status:** open: an atomic take (`store::take(key)`: read and delete in one) and claim (`store::put_new(key, value) -> bool`), which one Durable Object or one SQLite file can do in a statement, or a call's reads answered after its writes commit.
+- **Meanwhile:** the engine remembers what it deleted and wrote lately (platform/server.wrela's `gone` and `written`, read through `Engine::latest` and `latest_as`) and checks them before trusting a read, keeping each as long as a job begun before it may still read it (`forget_old`); toolchain 0.18.0 is the same (2026-10-31, the sharded server). Every read of a key the instance writes has to go through it.
+- **Status:** open: a call's reads seeing its own writes and those of the calls before whose writes haven't committed (read-your-writes, as a Durable Object's own storage gives in one invocation), or an atomic take (`store::take(key)`: read and delete in one) and claim (`store::put_new(key, value) -> bool`), which one Durable Object or one SQLite file can do in a statement. Raised again by /simplify's second pass over the sharded server (2026-10-31).
 
 ### `wrela-serve` keeps a room's printed lines to itself
 

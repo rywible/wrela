@@ -49,7 +49,7 @@ pub const MOST_RUNS: u32 = COURSES * 2 * KEPT
 
 /// A finished attempt: its course, who made it, its time (the clock's ticks on reaching the goal),
 /// the snacks it found (a bit each), its deaths, and its pads.
-pub struct Replay: Clone + Serialize {
+pub struct Replay: Clone + Eq + Serialize {
     pub course: u32,
     pub who: u32,
     pub ticks: u32,
@@ -232,7 +232,7 @@ pub fn tool_assisted(c: u32) -> Vec<Replay> {
 }
 
 /// A recorded run as `who`'s replay, cut at the goal.
-fn recorded(c: u32, run: [Hold], who: u32) -> Replay {
+pub fn recorded(c: u32, run: [Hold], who: u32) -> Replay {
     var holds: Vec<Hold> = Vec::new()
     var w = world(c)
     for h in run {
@@ -281,6 +281,32 @@ pub fn splits(trail: [Pose]) -> Vec<u32> {
         }
     }
     out
+}
+
+/// Where an attempt lost the most time to the ghost's run, after it reached the goal: the stretch
+/// (0 to the first checkpoint, `i` from checkpoint `i`; the last, from the last checkpoint both
+/// reached to the goal) and the ticks it lost there, from the attempt's clock at each checkpoint
+/// (`mine`) and at the goal (`finished`), and the ghost's (`theirs`, `splits`; `end`, its time).
+/// None if it lost no time anywhere.
+pub fn most_lost(mine: [u32], finished: u32, theirs: [u32], end: u32) -> Option<(u32, u32)> {
+    let n = min(mine.len(), theirs.len())
+    var best: Option<(u32, u32)> = None
+    var was = 0
+    var ghost_was = 0
+    for i in 0..n + 1 {
+        let (now, ghost_now) = if i < n { (mine[i], theirs[i]) } else { (finished, end) }
+        let lost = (i32(now) - i32(was)) - (i32(ghost_now) - i32(ghost_was))
+        var worse = lost > 0
+        if let Some((_, most)) = best {
+            worse = lost > i32(most)
+        }
+        if worse {
+            best = Some((i, u32(lost)))
+        }
+        was = now
+        ghost_was = ghost_now
+    }
+    best
 }
 
 /// The poses of `r`: the first before its first tick, then one after each tick to its end.
@@ -481,4 +507,17 @@ fn a_runs_splits_are_the_ticks_it_first_reached_each_checkpoint() {
             assert(at[i] > at[i - 1], "in order")
         }
     }
+}
+
+@test
+fn where_the_most_time_went_is_the_stretch_that_lost_the_most() {
+    // Ahead to the first flag, 30 ticks lost to the second, 96 lost from it to the goal.
+    let mine = [100, 260]
+    let theirs = [110, 240]
+    assert(most_lost(mine, 400, theirs, 284) == Some((2, 96)), "the last stretch")
+    assert(most_lost(mine, 300, theirs, 284) == Some((1, 30)), "the second")
+    // Ahead the whole way, nothing lost.
+    assert(most_lost([90, 200], 240, theirs, 284).is_none())
+    // A checkpoint only one of them reached isn't compared; the goal is.
+    assert(most_lost([100], 300, [], 250) == Some((0, 50)))
 }

@@ -732,14 +732,19 @@ fn carrot(q: vec2, s: Sprite, px: f32) -> vec4 {
 }
 
 /// A zoo's sign, from its middle: a wooden post, and on it a board, a cream panel in a wooden
-/// frame, its middle 1.1 m above the sprite's, which the frames write on (signs.wrela).
-fn sign(q: vec2, px: f32) -> vec4 {
+/// frame, which the frames write on (signs.wrela). Its pose is the board's half-size, its middle
+/// over the sprite's and its rim (`sign_sprites`); the post stands from the sprite's foot.
+fn sign(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let (board, mid, rim) = (s.pose.xy, s.pose.z, s.pose.w)
+    let foot = 0.05 - s.half.y
+    let post = vec2(0.0, (foot - 0.07 + mid) * 0.5)
+    let tall = (mid - foot + 0.07) * 0.5
     var c = vec4(0.0)
     let wood = Paint { albedo: vec3(0.6, 0.44, 0.3), gloss: 0.0, thick: 0.05, glow: 0.0 }
-    c = layer(c, |p: vec2| rbox(p - vec2(0.0, -0.85), vec2(0.07, 1.12), 0.03), q, wood, px)
-    c = layer(c, |p: vec2| rbox(p - vec2(0.0, 1.1), vec2(1.35, 0.8), 0.1), q, wood, px)
+    c = layer(c, |p: vec2| rbox(p - post, vec2(0.07, tall), 0.03), q, wood, px)
+    c = layer(c, |p: vec2| rbox(p - vec2(0.0, mid), board, 0.1), q, wood, px)
     let panel = Paint { albedo: vec3(0.97, 0.94, 0.85), gloss: 0.0, thick: 0.02, glow: 0.0 }
-    layer(c, |p: vec2| rbox(p - vec2(0.0, 1.1), vec2(1.24, 0.69), 0.06), q, panel, px)
+    layer(c, |p: vec2| rbox(p - vec2(0.0, mid), board - vec2(rim), 0.06), q, panel, px)
 }
 
 /// A yuzu: a bumpy yellow citrus with a leaf.
@@ -1008,7 +1013,7 @@ pub fn sprite(v: QuadPoint, sprites: [Sprite], st: Stage) -> Over {
         let c = carrot(q, s, st.px)
         vec4(blend(c.xyz, vec3(0.97, 0.94, 0.86), s.more.x * 0.55), c.w * (1.0 - 0.3 * s.more.x))
     } else if s.kind == SIGN {
-        sign(q, st.px)
+        sign(q, s, st.px)
     } else if s.kind == YUZU {
         yuzu(q, s, st.px)
     } else if s.kind == FLAG {

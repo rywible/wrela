@@ -186,8 +186,9 @@ fn mark_prepare<G: Game>(s: mut Session<G>) {
     s.phase = Phase::MarkPrepare
 }
 
-/// What `pending` has answered, if it has; then nothing is pending.
-fn answer_of(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, IoError>> {
+/// What `pending` has answered, if it has; then nothing is pending. For a request kept in an
+/// `Option` while it's under way and polled each frame: the console's and its games' use it too.
+pub fn answer_of(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, IoError>> {
     var answer = None
     match mut pending {
         Some(p) => answer = p.poll(),
@@ -480,7 +481,7 @@ pub fn frame<G: Game>(s: mut Session<G>) {
             let request: Result<Request, LoadError> = load(take call.bytes)
             match request {
                 Ok(r) => begin(mut s, r),
-                Err(_) => error(mut s, "Unsupported session message."),
+                Err(_) => error(mut s, "The console sent something the game can't read."),
             }
         }
     }

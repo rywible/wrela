@@ -11,9 +11,9 @@ use std::json::{Doc, Kind as JsonKind, TOP, parse as parse_json}
 use std::tool::files::Kind
 
 /// How long a release stays after it stops being live, in seconds: a tab left open that long
-/// can still play. A tab holds its release for a session (a game streams its files as it plays),
-/// not for weeks, and each kept release is fetched again and uploaded with every deploy: 2 days.
-pub const KEEP: i64 = 2 * 24 * 3600
+/// can still play. A kept release adds only its own few files (its pages and lists), since what
+/// it shares with the others is at content addresses (release_tool::addresses), so 14 days.
+pub const KEEP: i64 = 14 * 24 * 3600
 
 /// A deploy the history lists: its release, the commit it was built from, its Workers, and when it
 /// went live and stopped being live (`None` while it's live), each in seconds since 1970.
@@ -295,7 +295,8 @@ pub fn is_sha(s: str) -> bool {
 }
 
 /// The files the `files.json` of `release` lists, each its path and SHA-256, by path, or why it
-/// isn't one: each path stays in its release (`is_inside`), and each digest is a SHA-256's.
+/// isn't one: each path stays in its release (`is_inside`) or is a shared one (`is_shared`, whose
+/// payload's name is its SHA-256), and each digest is a SHA-256's.
 pub fn read_listing(release: str, json: str) -> Result<Vec<(String, String)>, String> {
     let Some(doc) = parse_json(json) else {
         return Err(String::from(f"{release}: its files.json isn't JSON"))
@@ -305,7 +306,8 @@ pub fn read_listing(release: str, json: str) -> Result<Vec<(String, String)>, St
     }
     var out: Vec<(String, String)> = Vec::new()
     for (path, n) in doc.members(TOP) {
-        if !is_inside(path.as_str()) {
+        let shared = path.as_str().starts_with("/")
+        if !(if shared { is_shared(path.as_str()) } else { is_inside(path.as_str()) }) {
             return Err(String::from(f"{release}: invalid path '{path.as_str()}'"))
         }
         let Some(digest) = doc.text(n) else {
@@ -313,6 +315,10 @@ pub fn read_listing(release: str, json: str) -> Result<Vec<(String, String)>, St
         }
         if !is_sha(digest.as_str()) {
             return Err(String::from(f"{release}: {path.as_str()} has no SHA-256"))
+        }
+        if path.as_str().starts_with("/b/") &&
+            path.as_str().slice(from: 3, to: 67) != digest.as_str() {
+            return Err(String::from(f"{release}: {path.as_str()} isn't named by its SHA-256"))
         }
         out.push((path.clone(), take digest))
     }
@@ -416,6 +422,52 @@ pub fn is_inside(path: str) -> bool {
     true
 }
 
+/// Whether `path`, a path a `files.json` lists, is one its release shares with others, at a
+/// content address from its Worker's root: a payload, `/b/<sha256>` and an extension of letters
+/// and digits if it has one, or a runtime's script, `/r/<sha256 of the set>/<name>`, its name a
+/// part `is_inside` would take.
+pub fn is_shared(path: str) -> bool {
+    if path.starts_with("/b/") {
+        let name = path.slice(3, path.len())
+        if name.len() < 64 || !is_sha(name.slice(from: 0, to: 64)) {
+            return false
+        }
+        let ext = name.slice(64, name.len())
+        if ext.is_empty() {
+            return true
+        }
+        if ext.len() < 2 || ext.byte(0) != 46 {
+            return false
+        }
+        for i in 1..ext.len() {
+            let b = ext.byte(i)
+            if !((b >= 48 && b <= 57) || (b >= 97 && b <= 122) || (b >= 65 && b <= 90)) {
+                return false
+            }
+        }
+        return true
+    }
+    if path.starts_with("/r/") {
+        let rest = path.slice(3, path.len())
+        if rest.len() < 66 || !is_sha(rest.slice(from: 0, to: 64)) || rest.byte(64) != 47 {
+            return false
+        }
+        let name = rest.slice(65, rest.len())
+        return is_inside(name) && name.find("/").is_none()
+    }
+    false
+}
+
+/// Where a file a release's `files.json` lists is in its Worker's directory: a shared one at its
+/// path from the root (`b/<sha>.wasm`), any other in the release (`releases/<id>/<path>`).
+pub fn placed(release: str, path: str) -> String {
+    if path.starts_with("/") {
+        String::from(path.slice(1, path.len()))
+    } else {
+        String::from(f"releases/{release}/{path}")
+    }
+}
+
 /// `path` as a URL's path: each byte but a letter, a digit, `_`, `.`, `-`, `~` and `/` as `%XX`,
 /// as Python's `urllib.parse.quote` writes it.
 pub fn quoted(path: str) -> String {
@@ -442,6 +494,41 @@ pub fn quoted(path: str) -> String {
     out
 }
 
+// ---- Zstandard ---------------------------------------------------------------------------------
+
+/// The files of a release's listing (`read_listing`) that the deploy asks for as Zstandard: its
+/// WASM modules (`/b/<sha>.wasm`) and its runtime's scripts (`/r/<set>/<name>.js`), each by its
+/// path from the Worker's root.
+pub fn compressed(files: [(String, String)]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for (path, _) in files {
+        let p = path.as_str()
+        if (p.starts_with("/b/") && p.ends_with(".wasm")) ||
+            (p.starts_with("/r/") && p.ends_with(".js")) {
+            out.push(path.clone())
+        }
+    }
+    out
+}
+
+/// What's wrong with the answer to a `GET` of `url` that asked for Zstandard, if anything: a
+/// status that isn't 200, or a `content-encoding` that isn't `zstd`.
+pub fn not_zstd(url: str, status: u16, encoding: Option<String>) -> Option<String> {
+    if status != 200 {
+        return Some(String::from(f"GET {url}: HTTP {status}"))
+    }
+    match encoding {
+        Some(e) => {
+            if e.as_str().trim() == "zstd" {
+                None
+            } else {
+                Some(String::from(f"{url} comes back as {e.as_str().trim()}, not Zstandard"))
+            }
+        },
+        None => Some(String::from(f"{url} comes back uncompressed, not as Zstandard")),
+    }
+}
+
 // ---- Workers -----------------------------------------------------------------------------------
 
 /// A Worker of the release, as `release.json` says: its name and domain, and whether it's the
@@ -459,12 +546,15 @@ pub struct Release: Clone {
     pub source: String,
     pub release: String,
     pub api: String,
+    /// Where its server's verifier is kept in the bucket of builds, and its files' names.
+    pub verifier: release_tool::site::Verifier,
     pub workers: Vec<Worker>,
 }
 
 /// The release a `release.json` describes, or why it doesn't: its id must be a release's, it must
-/// name the console's server's Worker (a release component, as the catalog's names are), and
-/// exactly one Worker must be the console.
+/// name the console's server's Worker (a release component, as the catalog's names are) and its
+/// verifier (a path of the bucket of builds, and files each a plain name, `verifier.json` among
+/// them), and exactly one Worker must be the console.
 pub fn read_release(json: str) -> Result<Release, String> {
     let Some(d) = parse_json(json) else { return Err(String::from("release.json isn't JSON")) }
     let Some(s) = d.get(TOP, "source") else {
@@ -522,7 +612,36 @@ pub fn read_release(json: str) -> Result<Release, String> {
     if consoles != 1 {
         return Err(String::from("release.json needs exactly one console"))
     }
-    Ok(Release { source, release, api, workers })
+    let Some(v) = d.get(TOP, "verifier") else {
+        return Err(String::from("release.json names no verifier"))
+    }
+    let path = match d.get(v, "path") {
+        Some(p) => d.text(p).unwrap_or(String::new()),
+        None => String::new(),
+    }
+    if !path.as_str().starts_with("verifiers/") || !std::server::artifact_path(path.as_str()) {
+        return Err(String::from(f"invalid verifier's path in release.json: '{path.as_str()}'"))
+    }
+    let Some(fs) = d.get(v, "files") else {
+        return Err(String::from("release.json's verifier has no files"))
+    }
+    var files: Vec<String> = Vec::new()
+    for k in 0..d.count(fs) {
+        let Some(f) = d.at(fs, k) else { return Err(String::from("a verifier's file is missing")) }
+        let Some(name) = d.text(f) else {
+            return Err(String::from("a verifier's file isn't text"))
+        }
+        let n = name.as_str()
+        if n.find("/").is_some() || !std::server::artifact_path(n) {
+            return Err(String::from(f"invalid verifier's file in release.json: '{n}'"))
+        }
+        files.push(name.clone())
+    }
+    if !release_tool::site::described(files) {
+        return Err(String::from("release.json's verifier has no verifier.json"))
+    }
+    let verifier = release_tool::site::Verifier { path, files }
+    Ok(Release { source, release, api, verifier, workers })
 }
 
 /// The console's Worker of `r`.

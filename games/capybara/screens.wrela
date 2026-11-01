@@ -11,7 +11,7 @@
 
 use feel::HZ
 use ink::INK
-use settings::{Settings, ghost_name}
+use settings::{Settings, ghost_name, ghost_of}
 use std::input::PadButton
 use std::math::TAU
 use std::semantics::{Node, Role}
@@ -21,7 +21,9 @@ use ui::glyphs::{
     select_button, shoulder, start_button,
 }
 use ui::text::{Face, Fonts}
-use world::{CLOCK, GHOST, MENU, MUSIC, OPTIONS, PAGE_NODE, node}
+use world::{CLOCK, GHOST, MENU, MUSIC, OPTIONS, PAGE_NODE, POSTING, SEE_OPTIONS, node}
+use platform::posting
+use online::ordinal
 
 /// The cards' colours: their ink, the ink of what's said softly, their cream, the yuzu of the
 /// item with the focus, the paler wash of the item under the pointer, and the inks of a split
@@ -84,7 +86,7 @@ fn width_of(fonts: Fonts, face: Face, text: str, size: f32) -> f32 {
 }
 
 /// `text` centred on `x`, its top at `y`.
-fn centred(
+pub fn centred(
     list: mut DrawList,
     fonts: Fonts,
     face: Face,
@@ -128,7 +130,14 @@ pub enum Act: Copy + Eq {
     /// A watched run: again from its start.
     Again,
     /// A run of the player's: to the world's board.
-    Upload,
+    Post,
+    /// The run with the focus, or watched, raced as the ghost (world.wrela's `races`).
+    Race,
+    /// The search for a name (world.wrela's `finds`), and done with it (Enter: Space types).
+    Find,
+    Done,
+    /// A world's board: between its top and the account's place.
+    Places,
 }
 
 /// A prompt: its glyphs, and what it does.
@@ -144,10 +153,12 @@ const GAP: f32 = 0.18
 pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
     let g = size * GAP
     if device == Device::Pad {
-        if a == Act::Pause || a == Act::Restart {
+        if a == Act::Pause || a == Act::Restart || a == Act::Race {
             size * 1.3
         } else if a == Act::Boards {
             size * 2.8 + g
+        } else if a == Act::Places {
+            key_width(fonts, "LT", size)
         } else if a == Act::Music { 0.0 } else { size }
     } else if a == Act::Run || a == Act::Change || a == Act::Swim || a == Act::Move {
         2.0 * size + g
@@ -155,6 +166,12 @@ pub fn act_width(fonts: Fonts, a: Act, device: Device, size: f32) -> f32 {
         key_width(fonts, "Space", size)
     } else if a == Act::Back || a == Act::Pause {
         key_width(fonts, "Esc", size)
+    } else if a == Act::Again {
+        key_width(fonts, "Home", size)
+    } else if a == Act::Done {
+        key_width(fonts, "Enter", size)
+    } else if a == Act::Places {
+        key_width(fonts, "Home", size)
     } else if a == Act::Boards { key_width(fonts, "Tab", size) } else { size }
 }
 
@@ -177,18 +194,20 @@ pub fn act(
             dpad(mut list, ARM_UP | ARM_DOWN, at, size, i)
         } else if a == Act::Slide {
             dpad(mut list, ARM_DOWN, at, size, i)
-        } else if a == Act::Jump || a == Act::Choose {
+        } else if a == Act::Jump || a == Act::Choose || a == Act::Done {
             face_button(mut list, PadButton::South, at, size, i)
         } else if a == Act::Back {
             face_button(mut list, PadButton::East, at, size, i)
-        } else if a == Act::Again {
+        } else if a == Act::Find {
             face_button(mut list, PadButton::West, at, size, i)
-        } else if a == Act::Upload {
+        } else if a == Act::Post || a == Act::Again {
             face_button(mut list, PadButton::North, at, size, i)
         } else if a == Act::Pause {
             start_button(mut list, at, size, i)
-        } else if a == Act::Restart {
+        } else if a == Act::Restart || a == Act::Race {
             select_button(mut list, at, size, i)
+        } else if a == Act::Places {
+            key(mut list, fonts, "LT", at, size, i)
         } else if a == Act::Boards {
             let w = shoulder(mut list, fonts, right: false, at: at, size: size, ink: i)
             w +
@@ -214,12 +233,20 @@ pub fn act(
         key(mut list, fonts, "Space", at, size, i)
     } else if a == Act::Back || a == Act::Pause {
         key(mut list, fonts, "Esc", at, size, i)
-    } else if a == Act::Restart || a == Act::Again {
+    } else if a == Act::Restart || a == Act::Race {
         key(mut list, fonts, "R", at, size, i)
+    } else if a == Act::Again {
+        key(mut list, fonts, "Home", at, size, i)
     } else if a == Act::Music {
         key(mut list, fonts, "M", at, size, i)
-    } else if a == Act::Upload {
+    } else if a == Act::Post {
         key(mut list, fonts, "U", at, size, i)
+    } else if a == Act::Find {
+        key(mut list, fonts, "F", at, size, i)
+    } else if a == Act::Done {
+        key(mut list, fonts, "Enter", at, size, i)
+    } else if a == Act::Places {
+        key(mut list, fonts, "Home", at, size, i)
     } else { key(mut list, fonts, "Tab", at, size, i) }
 }
 
@@ -309,9 +336,10 @@ pub fn start_rect(screen: vec2) -> Rect {
     Rect::new(screen.x * 0.5 - u * 16.0, screen.y * 0.7 - u * 5.0, u * 32.0, u * 10.0)
 }
 
-/// The level's title: its name on a ribbon across the page, `alpha` of it (it fades and rises as
-/// play begins), and while the game waits on it, how to start and how to open the menu, the start
-/// breathing (`time`, s).
+/// The level's title: its name on a ribbon across the page under the line `over` ("A day at the
+/// zoo", or the run a race is against), `alpha` of it (it fades and rises as play begins), and
+/// while the game waits on it, how to start and how to open the menu, the start breathing (`time`,
+/// s).
 pub fn title(
     list: mut DrawList,
     fonts: Fonts,
@@ -321,6 +349,7 @@ pub fn title(
     alpha: f32,
     waiting: bool,
     time: f32,
+    over: str,
 ) {
     let u = unit(screen)
     let size = u * 6.4
@@ -354,7 +383,7 @@ pub fn title(
         mut list,
         fonts,
         Face::Sans,
-        "A day at the zoo",
+        over,
         u * 2.6,
         screen.x * 0.5,
         r.y + u * 2.2,
@@ -399,8 +428,15 @@ pub fn title(
 
 // ---- lists: the menu and the options -----------------------------------------------------------
 
-/// The menu's labels, top to bottom (world.wrela's `RESUME`...).
-pub const MENU_LABELS: [Text; 6] = ["Resume", "Restart", "Levels", "Runs", "Options", "Controls"]
+/// The menu's labels, in order (world.wrela's `RESUME`...): the column, then the row under it.
+pub const MENU_LABELS: [Text; 6] = [
+    "Resume",
+    "Restart",
+    "Leaderboard",
+    "Levels",
+    "Options",
+    "Controls",
+]
 
 /// The options' labels (world.wrela's `MUSIC`...).
 pub const OPTION_LABELS: [Text; 4] = ["Music", "Clock", "Ghost", "Back"]
@@ -409,32 +445,39 @@ pub const OPTION_LABELS: [Text; 4] = ["Music", "Clock", "Ghost", "Back"]
 const PANEL: f32 = 46.0
 const BETWEEN: f32 = 3.0
 
-/// A list page's shape, in units: its card's width, its items, and the room under them for a
-/// note (the options say what the focused one does).
-fn shape(page: u32) -> (f32, u32, f32) {
-    if page == OPTIONS { (56.0, 4, 9.0) } else { (40.0, 6, 0.0) }
+/// A list page's shape, in units: its card's width, its items, their rows' height, the size of
+/// their labels, and the room under them for a note (the options say what the focused one does).
+/// The menu's rows are taller, larger targets for a pointer and a glance.
+fn shape(page: u32) -> (f32, u32, f32, f32, f32) {
+    if page == OPTIONS { (56.0, 4, 8.0, 4.2, 9.0) } else { (58.0, 6, 10.0, 4.8, 0.0) }
 }
 
 /// Whether `screen` is wide enough for the facts beside the menu.
 fn wide(screen: vec2) -> bool {
-    screen.x >= unit(screen) * (40.0 + BETWEEN + PANEL + 8.0)
+    screen.x >= unit(screen) * (58.0 + BETWEEN + PANEL + 8.0)
 }
 
-/// Where list page `page` (`MENU`, `OPTIONS`) is on `screen`: its card, and each item's rect.
-/// The menu stands to the left of the facts beside it, where there's room.
+/// Where list page `page` (`MENU`, `OPTIONS`) is on `screen`: its card, and each item's rect. The
+/// menu's last two items share its last row (world.wrela's `menu_moved`), and the menu stands to
+/// the left of the facts beside it, where there's room.
 pub fn list_rects(screen: vec2, page: u32) -> (Rect, Vec<Rect>) {
     let u = unit(screen)
-    let (width, count, note) = shape(page)
+    let (width, count, tall, _, note) = shape(page)
+    let rows = if page == MENU { count - 1 } else { count }
     let w = min(u * width, screen.x - u * 4.0)
-    let row = u * 8.0
-    let h = u * (12.0 + note) + row * f32(count)
+    let row = u * tall
+    let h = u * (12.0 + note) + row * f32(rows)
     let x = if page == MENU && wide(screen) {
         (screen.x - (w + u * (BETWEEN + PANEL))) * 0.5
     } else { (screen.x - w) * 0.5 }
     let r = Rect::new(x, (screen.y - h) * 0.5 - u * 3.0, w, h)
+    let inner = w - u * 4.4
     var items: Vec<Rect> = Vec::new()
     for i in 0..count {
-        items.push(Rect::new(r.x + u * 2.2, r.y + u * 10.0 + f32(i) * row, w - u * 4.4, row - u))
+        let paired = page == MENU && i >= SEE_OPTIONS
+        let (k, half) = if paired { (rows - 1, (inner - u) * 0.5) } else { (i, inner) }
+        let left = r.x + u * 2.2 + if paired { f32(i - SEE_OPTIONS) * (half + u) } else { 0.0 }
+        items.push(Rect::new(left, r.y + u * 10.0 + f32(k) * row, half, row - u))
     }
     (r, items)
 }
@@ -484,19 +527,37 @@ pub fn list(
         vec2(r.x + u * 3.4, r.y + u * 3.6),
         SOFT,
     )
-    let size = u * 4.2
+    if page == MENU {
+        // A faint line over the row the last two items share.
+        let y = items[SEE_OPTIONS].y - u * 0.5
+        list.line(
+            vec2(r.x + u * 3.4, y),
+            vec2(r.right() - u * 3.4, y),
+            vec4(INK, 0.2),
+            width: max(u * 0.2, 1.0),
+        )
+    }
+    let (_, _, _, label, _) = shape(page)
+    let size = u * label
     let line = fonts.font(Face::Sans).line_height(size)
     for i in 0..labels.len() {
         let item = items[i]
+        // The focus: washed in yuzu, ringed in ink and marked.
         if i == focus {
             list.rect(item, YUZU, radius: u * 1.4)
+            list.ring(item, INKED, radius: u * 1.4, width: max(u * 0.35, 2.0))
             let m = vec2(item.x + u * 2.0, item.y + item.h * 0.5)
             list.diamond(Rect::new(m.x - u * 0.9, m.y - u * 0.9, u * 1.8, u * 1.8), INKED)
         } else if hover == Some(i) {
             list.rect(item, LIT, radius: u * 1.4)
         }
         let y = item.y + (item.h - line) * 0.5
-        let _ = say(mut list, fonts, Face::Sans, labels[i], size, vec2(item.x + u * 4.4, y), INKED)
+        // A label that shares its row sits in the middle of its half.
+        let lw = width_of(fonts, Face::Sans, labels[i], size)
+        let x = if page == MENU && i >= SEE_OPTIONS { item.x + (item.w - lw) * 0.5 + u } else {
+            item.x + u * 4.4
+        }
+        let _ = say(mut list, fonts, Face::Sans, labels[i], size, vec2(x, y), INKED)
         if i < values.len() && values[i].len() > 0 {
             let v = values[i].as_str()
             let vs = size * 0.86
@@ -526,17 +587,40 @@ pub struct Facts: Copy {
     pub deaths: u32,
     /// The player's best time on the course (ticks), or 0 without one.
     pub best: u32,
+    /// The player's place on the course's world board (any%), or 0 without one.
+    pub place: u32 = 0,
 }
 
-/// The attempt's facts, on a card beside the list, if the screen is wide enough: the course's
-/// name, its time, its snacks, its deaths and the best time.
+/// The facts panel's rows, top to bottom, for `f`: the time, the best, the snacks and the world
+/// place, the best and the place only where there's one.
+pub fn fact_rows(f: Facts) -> Vec<u32> {
+    var out = Vec::from([TIME_ROW])
+    if f.best > 0 {
+        out.push(BEST_ROW)
+    }
+    out.push(SNACKS_ROW)
+    if f.place > 0 {
+        out.push(PLACE_ROW)
+    }
+    out
+}
+
+/// The facts panel's rows (`fact_rows`).
+pub const TIME_ROW: u32 = 0
+pub const BEST_ROW: u32 = 1
+pub const SNACKS_ROW: u32 = 2
+pub const PLACE_ROW: u32 = 3
+
+/// The attempt's facts, plainly, on a card beside the list, if the screen is wide enough: the
+/// course's name, then its time, the best, the snacks and the world place (`fact_rows`).
 pub fn facts(list: mut DrawList, fonts: Fonts, screen: vec2, f: Facts) {
     if !wide(screen) {
         return
     }
     let u = unit(screen)
     let (beside, _) = list_rects(screen, MENU)
-    let rows = if f.best > 0 { 4 } else { 3 }
+    let shown = fact_rows(f)
+    let rows = shown.len()
     let r = Rect::new(
         beside.right() + u * BETWEEN,
         beside.y,
@@ -555,18 +639,18 @@ pub fn facts(list: mut DrawList, fonts: Fonts, screen: vec2, f: Facts) {
     var y = r.y + u * 12.0
     let label = u * 2.8
     let value = u * 3.6
-    for i in 0..rows {
-        let name = ["Time", "Snacks", "Deaths", "Best"][i]
+    for i in shown {
+        let name = ["Time", "Best", "Snacks", "World"][i]
         let _ = say(mut list, fonts, Face::Sans, name, label, vec2(left, y + u * 0.6), SOFT)
         let x = left + u * 13.0
-        if i == 1 {
+        if i == SNACKS_ROW {
             for k in 0..f.snacks {
                 carrot(mut list, vec2(x + f32(k) * u * 3.6, y), u * 4.4, found: k < f.found)
             }
         } else {
-            let text = if i == 0 { seconds(f.ticks) } else if i == 2 { f"{f.deaths}" } else {
+            let text = if i == TIME_ROW { seconds(f.ticks) } else if i == BEST_ROW {
                 seconds(f.best)
-            }
+            } else { ordinal(f.place) }
             let _ = say(mut list, fonts, Face::Mono, text.as_str(), value, vec2(x, y), INKED)
         }
         y += u * 6.4
@@ -611,12 +695,13 @@ pub fn carrot(list: mut DrawList, at: vec2, size: f32, found: bool, alpha: f32 =
     }
 }
 
-/// What the options' values say, from `s`.
-pub fn option_values(s: Settings) -> Vec<String> {
+/// What the options' values say, from `s`, for a player with a place on the course's world board
+/// (`place`) or without.
+pub fn option_values(s: Settings, place: bool = false) -> Vec<String> {
     var out: Vec<String> = Vec::new()
     out.push(String::from(if s.music { "On" } else { "Off" }))
     out.push(String::from(if s.clock { "On" } else { "Off" }))
-    out.push(String::from(ghost_name(s.ghost)))
+    out.push(String::from(ghost_name(ghost_of(s, place))))
     out.push(String::new())
     out
 }
@@ -624,11 +709,11 @@ pub fn option_values(s: Settings) -> Vec<String> {
 /// What option `item` does, said under the options.
 pub fn option_about(item: u32) -> Text {
     if item == MUSIC {
-        "The song. The sounds play either way."
+        "Turn the song on or off. Sound effects stay on."
     } else if item == CLOCK {
-        "The time, and at each checkpoint how far ahead or behind your ghost's run you are."
+        "Shows your time, and how far ahead or behind your ghost you are at each flag."
     } else if item == GHOST {
-        "A pale capybara that runs a past run beside you."
+        "Race a pale capybara that replays a run. Pick whose."
     } else { "" }
 }
 
@@ -666,12 +751,14 @@ pub fn controls(list: mut DrawList, fonts: Fonts, screen: vec2, device: Device, 
     let pad = device == Device::Pad
     let rows = [
         ("Run", Act::Run, Act::Run, ""),
-        ("Jump", Act::Jump, Act::Jump, "Again in the air to jump again"),
-        ("Slide", Act::Slide, Act::Slide, "Hold while running, or landing on a slope"),
-        ("Swim", Act::Jump, Act::Swim, "Up and down in turn: the dolphin kick"),
+        ("Jump", Act::Jump, Act::Jump, "Press again in the air to double jump"),
+        ("Slide", Act::Slide, Act::Slide, "Hold while you run, or as you land on a slope"),
+        ("Swim", Act::Jump, Act::Swim, "Press up and down in turn to dolphin kick"),
         ("Restart", Act::Restart, Act::Restart, ""),
         ("Pause", Act::Pause, Act::Pause, ""),
-        ("Music", Act::Music, Act::Music, if pad { "In the options" } else { "Off and on" }),
+        ("Music", Act::Music, Act::Music, if pad { "Change it in Options" } else {
+            "Turn it off and on"
+        }),
     ]
     for (name, first, second, about) in rows {
         let line = fonts.font(Face::Sans).line_height(label)
@@ -695,7 +782,7 @@ pub fn controls(list: mut DrawList, fonts: Fonts, screen: vec2, device: Device, 
         y += u * 7.6
     }
     let other = if pad { "On the keyboard? Press any key." } else {
-        "Playing with a controller? Press any of its buttons."
+        "Using a controller? Press any button."
     }
     let _ = say(mut list, fonts, Face::Sans, other, note, vec2(left, r.bottom() - u * 7.0), SOFT)
     list.rect(back, if hover { LIT } else { YUZU }, radius: u * 1.4)
@@ -842,6 +929,8 @@ pub fn map(
 /// whether it's the player's best (`before`: their best before this run, 0 without one), the
 /// snacks found, the deaths, and how to go on to the next level (with `more`), play again or open
 /// the menu; `alpha` of it. At the last level's goal (`ending`), the capybara has its snack at last.
+/// Under the snacks, the lines `notes`: against a ghost, where the most time went; posted, the
+/// world place the run took, or why it didn't.
 pub fn goal_card(
     list: mut DrawList,
     fonts: Fonts,
@@ -854,10 +943,12 @@ pub fn goal_card(
     ending: bool = false,
     game: u32 = 0,
     best_game: u32 = 0,
+    notes: [String],
 ) {
     let u = unit(screen)
     let w = min(screen.x - u * 6.0, u * 80.0)
-    let h = u * 44.0
+    let lines = notes.len() + if game > 0 { 1 } else { 0 }
+    let h = u * (41.0 + 3.8 * f32(max(lines, 1)))
     let r = Rect::new(
         (screen.x - w) * 0.5,
         screen.y * 0.56 - h * 0.5 + (1.0 - alpha) * u * 4.0,
@@ -890,7 +981,7 @@ pub fn goal_card(
         r.y + u * 14.0,
         faded(INKED, alpha),
     )
-    let best = if before == 0 || f.ticks < before { String::from("A new best!") } else {
+    let best = if before == 0 || f.ticks < before { String::from("New best") } else {
         let b = seconds(before)
         f"Best {b}"
     }
@@ -935,8 +1026,8 @@ pub fn goal_card(
     if game > 0 {
         let t = seconds(game)
         let b = seconds(best_game)
-        let line = if game <= best_game { f"The whole zoo in {t}: your best!" } else {
-            f"The whole zoo in {t} (best {b})"
+        let line = if game <= best_game { f"The whole zoo in {t}. That's your best." } else {
+            f"The whole zoo in {t}. Your best is {b}."
         }
         centred(
             mut list,
@@ -947,6 +1038,19 @@ pub fn goal_card(
             x,
             r.y + u * 32.6,
             faded(GOLD, alpha),
+        )
+    }
+    let first = if game > 0 { 1 } else { 0 }
+    for i in 0..notes.len() {
+        centred(
+            mut list,
+            fonts,
+            Face::Sans,
+            notes[i].as_str(),
+            u * 2.8,
+            x,
+            r.y + u * (32.6 + 3.8 * f32(first + i)),
+            faded(SOFT, alpha),
         )
     }
     var choices: Vec<Prompt> = Vec::new()
@@ -1025,6 +1129,307 @@ pub fn clock(
     }
 }
 
+// ---- the screen of what posting makes public --------------------------------------------------
+
+/// The screen's controls, in focus order: the box that posts the account's best runs, Post, and
+/// Not now (their nodes' items on world.wrela's `POSTING`), and its words after them.
+pub const POSTING_BOX: u32 = 0
+pub const POSTING_POST: u32 = 1
+pub const POSTING_NOT_NOW: u32 = 2
+pub const POSTING_ITEMS: u32 = 3
+const POSTING_WORDS: u32 = 3
+
+/// A line of the screen's words: what it says, where (its top left), how large, and whether it's
+/// said softly.
+pub struct Line: Clone {
+    pub text: String,
+    pub at: vec2,
+    pub size: f32,
+    pub soft: bool,
+}
+
+/// `text` wrapped to `width` at `size` among `lines`, its first line's top left at (`x`, `y`), as
+/// one paragraph: where the line under it starts.
+fn words(
+    lines: mut Vec<Line>,
+    paragraphs: mut Vec<(u32, u32)>,
+    fonts: Fonts,
+    text: str,
+    x: f32,
+    width: f32,
+    y: f32,
+    size: f32,
+    soft: bool,
+) -> f32 {
+    borrow font = fonts.font(Face::Sans)
+    let first = lines.len()
+    var at = y
+    for (a, b) in font.wrap(text, size, width) {
+        lines.push(Line { text: String::from(text.slice(a, b)), at: vec2(x, at), size, soft })
+        at += font.line_height(size)
+    }
+    paragraphs.push((first, lines.len()))
+    at
+}
+
+/// The screen laid out for `screen`: its card, its words line by line, and its controls
+/// (`POSTING_BOX`, `POSTING_POST`, `POSTING_NOT_NOW`), and which line each paragraph starts on.
+pub struct Laid: Clone {
+    pub card: Rect,
+    pub lines: Vec<Line>,
+    pub paragraphs: Vec<(u32, u32)>,
+    pub controls: Vec<Rect>,
+}
+
+/// The screen of what posting makes public, as a game shows it before an account's first post
+/// (platform/posting.wrela's words, the same the console's account page shows), laid out for
+/// `screen`.
+pub fn posting_laid(fonts: Fonts, screen: vec2) -> Laid {
+    let u = unit(screen)
+    let size = u * 2.6
+    let w = min(screen.x - u * 6.0, size * 30.0)
+    let pad = size * 1.2
+    let iw = w - pad * 2.0
+    var lines: Vec<Line> = Vec::new()
+    var paragraphs: Vec<(u32, u32)> = Vec::new()
+    var y = pad
+    y = words(
+        mut lines,
+        mut paragraphs,
+        fonts,
+        posting::TITLE,
+        pad,
+        iw,
+        y,
+        size * 1.25,
+        soft: false,
+    )
+    y = words(
+        mut lines,
+        mut paragraphs,
+        fonts,
+        posting::LEAD,
+        pad,
+        iw,
+        y + size * 0.5,
+        size,
+        soft: false,
+    )
+    let dot = size * 1.1
+    for item in posting::SHARED {
+        y += size * 0.3
+        lines.push(
+            Line { text: String::from("·"), at: vec2(pad + size * 0.3, y), size, soft: false },
+        )
+        y = words(mut lines, mut paragraphs, fonts, item, pad + dot, iw - dot, y, size, soft: false)
+    }
+    y = words(
+        mut lines,
+        mut paragraphs,
+        fonts,
+        posting::NEVER,
+        pad,
+        iw,
+        y + size * 0.5,
+        size,
+        soft: true,
+    )
+    y += size * 0.9
+    let tick = size * 1.3
+    let box = Rect::new(pad, y, tick, tick)
+    let x = pad + tick + size * 0.6
+    let room = iw - tick - size * 0.6
+    let _ = words(
+        mut lines,
+        mut paragraphs,
+        fonts,
+        posting::BEST_RUNS,
+        x,
+        room,
+        y,
+        size,
+        soft: false,
+    )
+    y = words(
+        mut lines,
+        mut paragraphs,
+        fonts,
+        posting::BEST_RUNS_NOTE,
+        x,
+        room,
+        y + tick + size * 0.2,
+        size * 0.85,
+        soft: true,
+    )
+    y += size * 0.9
+    let bw = size * 7.0
+    let bh = size * 2.2
+    let post = Rect::new(pad, y, bw, bh)
+    let not_now = Rect::new(pad + bw + size * 0.8, y, bw, bh)
+    let h = y + bh + pad
+    let origin = vec2((screen.x - w) * 0.5, max((screen.y - h) * 0.5 - u * 3.0, u))
+    for i in 0..lines.len() {
+        lines[i].at += origin
+    }
+    let at = |r: Rect| Rect::new(r.x + origin.x, r.y + origin.y, r.w, r.h)
+    // The box and its words are one control, which a click anywhere on them ticks.
+    let row = Rect::new(box.x, box.y, iw, tick)
+    Laid {
+        card: Rect::new(origin.x, origin.y, w, h),
+        lines,
+        paragraphs,
+        controls: Vec::from([at(row), at(post), at(not_now)]),
+    }
+}
+
+/// The screen drawn over the leaderboard: its card, its words, the box (ticked if `best_runs`),
+/// and its two buttons, Post the primary one; the control with the focus (`focus`) ringed, and
+/// the one under the pointer (`hover`) lit.
+pub fn posting_card(
+    list: mut DrawList,
+    fonts: Fonts,
+    screen: vec2,
+    laid: Laid,
+    best_runs: bool,
+    focus: u32,
+    hover: Option<u32>,
+) {
+    let u = unit(screen)
+    list.rect(Rect::new(x: 0.0, y: 0.0, w: screen.x, h: screen.y), vec4(INK, 0.35))
+    card(mut list, laid.card, u)
+    let line = max(u * 0.3, 1.5)
+    // The focus and the pointer's wash first, under the words.
+    for i in 0..POSTING_ITEMS {
+        let r = laid.controls[i]
+        if i == focus {
+            list.rect(
+                Rect::new(r.x - u * 0.6, r.y - u * 0.6, r.w + u * 1.2, r.h + u * 1.2),
+                YUZU,
+                radius: u * 1.4,
+            )
+        } else if hover == Some(i) {
+            list.rect(r, LIT, radius: u * 1.0)
+        }
+    }
+    for l in laid.lines {
+        let _ = list.text(fonts, Face::Sans, l.text.as_str(), l.size, l.at, if l.soft {
+            SOFT
+        } else { INKED })
+    }
+    // The box: an inked square, a tick in it when on.
+    let row = laid.controls[POSTING_BOX]
+    let b = Rect::new(row.x, row.y, row.h, row.h)
+    list.rect(b, INKED, radius: u * 0.6)
+    list.rect(b.shrink(line), CARD, radius: u * 0.6 - line)
+    if best_runs {
+        let (x, y, s) = (b.x, b.y, b.w)
+        list.line(
+            vec2(x + s * 0.22, y + s * 0.52),
+            vec2(x + s * 0.42, y + s * 0.72),
+            INKED,
+            width: line * 1.6,
+        )
+        list.line(
+            vec2(x + s * 0.42, y + s * 0.72),
+            vec2(x + s * 0.8, y + s * 0.28),
+            INKED,
+            width: line * 1.6,
+        )
+    }
+    for (i, word, primary) in [
+        (POSTING_POST, posting::POST, true),
+        (POSTING_NOT_NOW, posting::NOT_NOW, false),
+    ] {
+        let r = laid.controls[i]
+        list.rect(r, if primary { INKED } else { vec4(INK, 0.12) }, radius: u * 1.0)
+        let size = r.h * 0.45
+        centred(
+            mut list,
+            fonts,
+            Face::Sans,
+            word,
+            size,
+            r.x + r.w * 0.5,
+            r.y + (r.h - size) * 0.45,
+            if primary {
+                CARD
+            } else { INKED },
+        )
+    }
+}
+
+/// The screen's semantic tree: a modal dialog named by its title, its words as text, the box as a
+/// checkbox (ticked if `best_runs`), and Post and Not now as buttons, the one with the focus
+/// (`focus`) focused, each at its place on the screen (`laid`, moved by `origin`). A modal dialog
+/// takes the keyboard into the host's tree: Tab and Shift+Tab go round its controls (each an
+/// `Assist::Focus`), Space or Enter presses one, and Esc dismisses it; a controller's d-pad moves
+/// the game's focus, which the tree follows. A press comes
+/// back as `Event::Assist` on its node (world.wrela's `node`, on the page `POSTING`); a dismissal
+/// of the dialog is Not now.
+pub fn posting_tree(
+    chosen: u32,
+    laid: Laid,
+    origin: vec2,
+    best_runs: bool,
+    focus: u32,
+) -> Vec<Node> {
+    let place = |r: Rect| vec4(r.x + origin.x, r.y + origin.y, r.w, r.h)
+    let root = node(chosen, POSTING, PAGE_NODE)
+    var nodes = Vec::from(
+        [
+            Node {
+                id: root,
+                role: Role::Dialog,
+                label: String::from(posting::TITLE),
+                modal: true,
+                rect: place(laid.card),
+            },
+        ],
+    )
+    // Each paragraph of words after the title, as one text: the lead, what's shared, what isn't,
+    // and the box's note (the box's own words are its label).
+    var words: Vec<(Text, u32)> = Vec::from([(posting::LEAD, 1)])
+    for i in 0..posting::SHARED.len() {
+        words.push((posting::SHARED[i], 2 + i))
+    }
+    words.push((posting::NEVER, 2 + posting::SHARED.len()))
+    words.push((posting::BEST_RUNS_NOTE, 4 + posting::SHARED.len()))
+    for k in 0..words.len() {
+        let (text, p) = words[k]
+        let (first, end) = laid.paragraphs[p]
+        let top = laid.lines[first].at
+        let bottom = laid.lines[end - 1].at.y + laid.lines[end - 1].size * 1.3
+        nodes.push(
+            Node {
+                id: node(chosen, POSTING, POSTING_WORDS + k),
+                parent: root,
+                role: Role::Text,
+                label: String::from(text),
+                rect: place(Rect::new(top.x, top.y, laid.card.right() - top.x, bottom - top.y)),
+            },
+        )
+    }
+    let controls = [
+        (POSTING_BOX, Role::Checkbox, posting::BEST_RUNS),
+        (POSTING_POST, Role::Button, posting::POST),
+        (POSTING_NOT_NOW, Role::Button, posting::NOT_NOW),
+    ]
+    for (i, role, label) in controls {
+        nodes.push(
+            Node {
+                id: node(chosen, POSTING, i),
+                parent: root,
+                role,
+                label: String::from(label),
+                rect: place(laid.controls[i]),
+                checked: i == POSTING_BOX && best_runs,
+                focused: i == focus,
+            },
+        )
+    }
+    nodes
+}
+
 // ---- the semantic tree -------------------------------------------------------------------------
 
 /// Page `page`'s semantic tree, after `chosen` choices in the menus: the page, a menu named
@@ -1066,12 +1471,48 @@ fn a_list_s_items_are_on_its_card_one_under_another() {
     assert(items.len() == MENU_LABELS.len())
     for i in 0..items.len() {
         assert(r.encloses(items[i]), f"item {i} on the card")
-        if i > 0 {
+        if i == world::SEE_CONTROLS {
+            assert(items[i].y == items[i - 1].y && items[i].x >= items[i - 1].right(), "beside")
+        } else if i > 0 {
             assert(items[i].y >= items[i - 1].bottom(), "under the one before")
         }
     }
     let (narrow, _) = list_rects(vec2(400.0, 720.0), MENU)
     assert(abs(narrow.center().x - 200.0) < 1.0, "alone and centred on a narrow screen")
+}
+
+@test
+fn the_menu_puts_the_essentials_first_in_rows_a_glance_and_a_thumb_can_find() {
+    assert(
+        MENU_LABELS[world::RESUME] == "Resume" &&
+            MENU_LABELS[world::RESTART] == "Restart" &&
+            MENU_LABELS[world::SEE_BOARD] == "Leaderboard" &&
+            MENU_LABELS[world::SEE_MAP] == "Levels" &&
+            MENU_LABELS[world::SEE_OPTIONS] == "Options" &&
+            MENU_LABELS[world::SEE_CONTROLS] == "Controls",
+        "in order",
+    )
+    let screen = vec2(1280.0, 720.0)
+    let u = unit(screen)
+    let (r, items) = list_rects(screen, MENU)
+    let (_, options) = list_rects(screen, OPTIONS)
+    let fonts = Fonts::load()
+    let (_, _, _, label, _) = shape(MENU)
+    for i in 0..items.len() {
+        assert(items[i].h >= u * 9.0 && items[i].h > options[0].h, f"item {i} a taller row")
+        // Room for the focus's mark at its left, and a margin at its right.
+        let w = width_of(fonts, Face::Sans, MENU_LABELS[i], u * label)
+        assert(w + u * 6.0 <= items[i].w, f"{MENU_LABELS[i]} fits its row, {w / u} units")
+    }
+    assert(r.bottom() < screen.y - u * 9.0, "clear of the prompts at the foot")
+}
+
+@test
+fn the_facts_say_the_attempt_plainly_with_the_best_and_the_place_where_there_are_some() {
+    let f = Facts { name: "Wetlands", ticks: 600, found: 1, snacks: 5, deaths: 3, best: 0 }
+    assert(fact_rows(f) == Vec::from([TIME_ROW, SNACKS_ROW]), "no best, no place")
+    let both = Facts { best: 1200, place: 4, ..f }
+    assert(fact_rows(both) == Vec::from([TIME_ROW, BEST_ROW, SNACKS_ROW, PLACE_ROW]))
 }
 
 @test
@@ -1085,6 +1526,8 @@ fn a_page_s_tree_names_its_items_by_their_nodes() {
     assert(nodes[2].id == node(7, world::MENU, 1) && nodes[2].label.as_str() == "Restart")
     assert(nodes[2].parent == nodes[0].id && nodes[2].rect.z > 0.0)
     assert(nodes[2].role == Role::MenuItem, "a menu item, which a pointer presses")
+    // A screen reader reads them in the menu's order, the leaderboard third.
+    assert(nodes[3].label.as_str() == "Leaderboard" && nodes[6].label.as_str() == "Controls")
 }
 
 @test
@@ -1111,4 +1554,62 @@ fn a_controller_has_no_button_for_the_music_and_the_row_leaves_it_out() {
         30.0,
     )
     assert(both == one, f"{both} {one}")
+}
+
+@test
+fn the_screen_of_what_posting_makes_public_is_a_dialog_with_its_box_and_buttons() {
+    let fonts = Fonts::load()
+    for screen in [vec2(1280.0, 720.0), vec2(640.0, 360.0), vec2(800.0, 1200.0)] {
+        let laid = posting_laid(fonts, screen)
+        assert(
+            laid.card.x >= 0.0 && laid.card.bottom() <= screen.y && laid.card.right() <= screen.x,
+            "on the screen",
+        )
+        for l in laid.lines {
+            assert(l.at.y >= laid.card.y && l.at.y + l.size <= laid.card.bottom(), "words inside")
+        }
+        let (bx, post, not_now) = (
+            laid.controls[POSTING_BOX],
+            laid.controls[POSTING_POST],
+            laid.controls[POSTING_NOT_NOW],
+        )
+        assert(bx.bottom() <= post.y && post.right() < not_now.x, "apart, the box over them")
+        assert(post.bottom() <= laid.card.bottom(), "the buttons inside")
+    }
+    let laid = posting_laid(fonts, vec2(1280.0, 720.0))
+    let origin = vec2(10.0, 20.0)
+    let nodes = posting_tree(3, laid, origin, best_runs: true, focus: POSTING_POST)
+    assert(std::semantics::problem(nodes).is_none(), "a tree a host takes")
+    assert(nodes[0].role == Role::Dialog && nodes[0].modal, "a modal dialog first")
+    assert(nodes[0].label.as_str() == posting::TITLE)
+    let of = |role: Role, label: str| -> Option<Node> {
+        for n in nodes {
+            if n.role == role && n.label.as_str() == label {
+                return Some(n.clone())
+            }
+        }
+        None
+    }
+    let Some(b) = of(Role::Checkbox, posting::BEST_RUNS) else { panic("the box, labelled") }
+    assert(b.checked && b.parent == nodes[0].id, "ticked, in the dialog")
+    assert(b.rect.x == laid.controls[POSTING_BOX].x + origin.x, "where it's drawn")
+    let Some(p) = of(Role::Button, posting::POST) else { panic("Post") }
+    let Some(n) = of(Role::Button, posting::NOT_NOW) else { panic("Not now") }
+    assert(p.focused && !n.focused, "the focus said")
+    assert(world::item_of(p.id) == (POSTING, POSTING_POST), "its press comes back as Post")
+    assert(world::item_of(n.id) == (POSTING, POSTING_NOT_NOW))
+    // Every word the player agrees to is read out.
+    for text in posting::SHARED {
+        assert(of(Role::Text, text).is_some(), text)
+    }
+    assert(of(Role::Text, posting::LEAD).is_some() && of(Role::Text, posting::NEVER).is_some())
+    assert(of(Role::Text, posting::BEST_RUNS_NOTE).is_some())
+    let unticked = posting_tree(3, laid, origin, best_runs: false, focus: POSTING_BOX)
+    var b = unticked[0].clone()
+    for n in unticked {
+        if n.role == Role::Checkbox {
+            b = n.clone()
+        }
+    }
+    assert(!b.checked && b.focused, "unticked, focused")
 }

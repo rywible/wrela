@@ -12,14 +12,17 @@
 //
 // Paused, the world stands still and its clock with it. The game opens paused on the level's title
 // (`TITLE`): a jump's key, Enter, a click or a controller's A plays. Esc, P or a controller's Start
-// pauses, on the pause's menu (`MENU`): resume, restart, the runs, the options and the controls.
+// pauses, on the pause's menu (`MENU`): resume, restart, the leaderboard, the levels, the options
+// and the controls.
 // The menus are the sim's (engine::menu), so a restart chosen in one replays from the tick log:
 // the arrows, the d-pad or the stick move the focus, a jump's key, Enter or A chooses, and Esc,
 // Backspace or B backs out. A press on a menu's node (the frames publish each page's items as a
 // semantic tree) chooses it too, by its number (`node`). The options (the music, the clock, the
 // ghost) are the frames', kept in the game's storage: the sim counts the steps a player takes on
 // each (`World::turns`), and the frames take them. On the runs' page the frames take the keys and
-// clicks (replay.wrela's runs, to watch or race as a ghost), and the sim only closes it.
+// clicks (replay.wrela's runs, to watch or race as a ghost), and the sim only closes it, opens the
+// search for a name (`FIND`, where the frames take the typing), and starts a race (`races`): the
+// level again from its title, the run raced as the ghost.
 //
 // The ticker steps a `Live`: the world, its attempt's run as it's played (pad.wrela's `Run`), so
 // a finished attempt is a replay, and what happened, counted tick by tick for the frames (`Tally`).
@@ -53,12 +56,29 @@ pub const RUNS: u32 = 2
 pub const OPTIONS: u32 = 3
 pub const CONTROLS: u32 = 4
 pub const MAP: u32 = 5
+/// The leaderboard's search for a name, over the runs' page: the keys type, so only a few close it.
+pub const FIND: u32 = 6
+/// Not a page of the sim's: the screen of what posting makes public, which the frames show over
+/// the runs' page before an account's first post, and whose keys they take (screens.wrela's
+/// `posting_card`). Its nodes are numbered as a page's, so the sim, on the runs' page, lets them be;
+/// leaving the runs' page is Not now.
+pub const POSTING: u32 = 7
 
-/// The menu's items, top to bottom.
+/// The runs' page's nodes, which the frames publish: back, a race (watching), the board of the
+/// search (its tab), and on it its parts' boxes, the title's first (`RUNS_PART + part`). A press
+/// on the search's tab or one of its boxes opens the search.
+pub const RUNS_BACK: u32 = 0
+pub const RUNS_RACE: u32 = 1
+pub const RUNS_SEARCH: u32 = 2
+pub const RUNS_PART: u32 = 3
+
+/// The menu's items, in the order a player meets them: the essentials first, Resume and Restart,
+/// then the leaderboard (the runs' page) and the levels, a column; under it Options and Controls
+/// side by side (`menu_moved`).
 pub const RESUME: u32 = 0
 pub const RESTART: u32 = 1
-pub const SEE_MAP: u32 = 2
-pub const SEE_RUNS: u32 = 3
+pub const SEE_BOARD: u32 = 2
+pub const SEE_MAP: u32 = 3
 pub const SEE_OPTIONS: u32 = 4
 pub const SEE_CONTROLS: u32 = 5
 pub const MENU_ITEMS: u32 = 6
@@ -84,11 +104,18 @@ pub fn node(chosen: u32, page: u32, item: u32) -> u32 {
     1 + (chosen % 1024) * NODES + page * 16 + item
 }
 
-/// The page and the item of node `n` (`node`).
+/// The page and the item of node `n` (`node`). Node 0, which the host's focus leaving the tree
+/// is on (an `Assist::Focus`), is on no page.
 pub fn item_of(n: u32) -> (u32, u32) {
+    if n == 0 {
+        return (NO_PAGE, 0)
+    }
     let k = (n - 1) % NODES
     (k / 16, k % 16)
 }
+
+/// The page of no node: node 0's (`item_of`).
+const NO_PAGE: u32 = 0xffffffff
 
 /// How near the capybara's middle must come to a snack or a yuzu to take it (m).
 const REACH: f32 = 0.8
@@ -363,6 +390,20 @@ fn nav_of(w: mut World, e: Event) -> Option<Nav> {
     nav
 }
 
+/// The menu's focus after `nav`. Up and down go round the column and the row under it (down from
+/// the levels to Options, up from Resume to Options), and left and right cross the row, so every
+/// item is two presses from Resume at most: Controls is up and right, the levels up twice.
+pub fn menu_moved(nav: Nav, focus: u32) -> u32 {
+    let row = focus == SEE_OPTIONS || focus == SEE_CONTROLS
+    if nav == Nav::Down {
+        if row { RESUME } else { focus + 1 }
+    } else if nav == Nav::Up {
+        if row { SEE_MAP } else if focus == RESUME { SEE_OPTIONS } else { focus - 1 }
+    } else if (nav == Nav::Left || nav == Nav::Right) && row {
+        if focus == SEE_OPTIONS { SEE_CONTROLS } else { SEE_OPTIONS }
+    } else { focus }
+}
+
 /// Pauses `w`, on the menu.
 fn pause(w: mut World) {
     w.paused = true
@@ -380,7 +421,7 @@ fn choose(w: mut World, item: u32) {
     } else if item == SEE_MAP {
         w.page = MAP
         w.focus = if w.course < LEVELS { w.course } else { 0 }
-    } else if item == SEE_RUNS {
+    } else if item == SEE_BOARD {
         w.page = RUNS
     } else if item == SEE_OPTIONS {
         w.page = OPTIONS
@@ -407,10 +448,62 @@ fn turn(w: mut World, item: u32, by: i32) {
     w.turns[item] += by
 }
 
+/// Whether event `e` starts a race on the runs' page: R, or a controller's Select (both restart in
+/// play). The frames read it too, for the run to race.
+pub fn races(e: Event) -> bool {
+    match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::R && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 && pressed && button == PadButton::Select
+        },
+        _ => false,
+    }
+}
+
+/// Whether event `e` opens the search on the runs' page: F as it comes up (so the character it
+/// types, in whatever layout, came while the runs were shown, and isn't typed into the search),
+/// or a controller's West (X).
+pub fn finds(e: Event) -> bool {
+    match e {
+        Event::KeyUp { key, .. } => key == Key::F,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 && pressed && button == PadButton::West
+        },
+        _ => false,
+    }
+}
+
+/// Whether event `e` closes the search, back to the runs: Esc or Enter, or a controller's South,
+/// East or Start. Nothing that types does.
+pub fn leaves_find(e: Event) -> bool {
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            !repeat && (key == Key::Escape || key == Key::Enter || key == Key::NumpadEnter)
+        },
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 &&
+                pressed &&
+                (button == PadButton::South ||
+                    button == PadButton::East ||
+                    button == PadButton::Start)
+        },
+        _ => false,
+    }
+}
+
+/// A race: the level again, standing on its title until a press starts it.
+fn race(w: mut World) {
+    restart(mut w, w.course)
+    w.chosen += 1
+    w.paused = true
+    w.page = TITLE
+}
+
 /// Paused, event `e` (`nav` in the menus) on the page shown.
 fn paused(w: mut World, e: Event, nav: Option<Nav>) {
-    // R and Tab work as they do in play, but on the runs, whose keys are the frames'.
-    if w.page != RUNS {
+    // R and Tab work as they do in play, but on the runs and the search, whose keys are the
+    // frames'.
+    if w.page != RUNS && w.page != FIND {
         if let Event::KeyDown { key, repeat, .. } = e {
             if !repeat && key == Key::R {
                 restart(mut w, w.course)
@@ -460,11 +553,13 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
         } else if nav == Some(Nav::Choose) {
             choose(mut w, w.focus)
         } else if let Some(n) = nav {
-            w.focus = moved(n, focus: w.focus, count: MENU_ITEMS)
+            w.focus = menu_moved(n, w.focus)
         }
     } else if w.page == OPTIONS {
         if let Some(item) = pressed {
-            turn(mut w, item, by: 1)
+            if item < OPTION_ITEMS {
+                turn(mut w, item, by: 1)
+            }
         } else if back_out {
             back(mut w, SEE_OPTIONS)
         } else if nav == Some(Nav::Choose) || nav == Some(Nav::Right) {
@@ -500,9 +595,19 @@ fn paused(w: mut World, e: Event, nav: Option<Nav>) {
             w.focus = moved(n, focus: w.focus, count: LEVELS)
         }
     } else if w.page == RUNS {
-        // The runs' keys are the frames'; only backing out is the sim's.
-        if back_out || pressed.is_some() {
-            back(mut w, SEE_RUNS)
+        // The runs' keys are the frames'; only backing out, the search and a race are the sim's.
+        if races(e) || pressed == Some(RUNS_RACE) {
+            race(mut w)
+        } else if finds(e) || pressed == Some(RUNS_SEARCH) || pressed.unwrap_or(0) >= RUNS_PART {
+            w.chosen += 1
+            w.page = FIND
+        } else if back_out || pressed.is_some() {
+            back(mut w, SEE_BOARD)
+        }
+    } else if w.page == FIND {
+        if dismissed || pressed.is_some() || leaves_find(e) {
+            w.chosen += 1
+            w.page = RUNS
         }
     }
 }
@@ -960,7 +1065,7 @@ fn the_menu_moves_its_focus_and_chooses_a_restart() {
     assert(w.focus == RESTART, "down a row")
     tick_with(mut w, [down(Key::Up)])
     tick_with(mut w, [down(Key::Up)])
-    assert(w.focus == SEE_CONTROLS, "and round from the top")
+    assert(w.focus == SEE_OPTIONS, "and round from the top, to the row at the foot")
     tick_with(mut w, [down(Key::Down)])
     tick_with(mut w, [down(Key::Down)])
     tick_with(mut w, [down(Key::Space)])
@@ -987,6 +1092,50 @@ fn a_controller_and_its_stick_work_the_menu() {
     assert(w.page == MENU && w.focus == SEE_OPTIONS, "B backs out, to the item it came from")
     tick_with(mut w, [press(PadButton::East)])
     assert(!w.paused, "and from the menu, plays")
+}
+
+@test
+fn every_item_of_the_menu_is_two_presses_from_resume_at_most() {
+    // The fewest presses to each item from Resume, by the arrows alone.
+    var far: [u32; 6] = [99, 99, 99, 99, 99, 99]
+    far[RESUME] = 0
+    for step in 0..MENU_ITEMS {
+        for i in 0..MENU_ITEMS {
+            if far[i] != step {
+                continue
+            }
+            for n in [Nav::Up, Nav::Down, Nav::Left, Nav::Right] {
+                let j = menu_moved(n, i)
+                far[j] = min(far[j], step + 1)
+            }
+        }
+    }
+    for i in 0..MENU_ITEMS {
+        assert(far[i] <= 2, f"item {i} is {far[i]} presses away")
+    }
+    // The essentials first, the leaderboard straight after.
+    assert(RESUME == 0 && RESTART == 1 && SEE_BOARD == 2 && SEE_MAP == 3)
+    // In the sim, from the keys: Esc, up and right, Enter opens the controls.
+    var w = started(WETLANDS)
+    for key in [Key::Escape, Key::Up, Key::Right, Key::Enter] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.paused && w.page == CONTROLS, "the controls")
+    tick_with(mut w, [down(Key::Escape)])
+    assert(w.page == MENU && w.focus == SEE_CONTROLS, "back to the item it came from")
+    for key in [Key::Up, Key::Up, Key::Enter] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.page == RUNS, "up the column to the leaderboard")
+    // The stick crosses the row, and goes round it.
+    assert(menu_moved(Nav::Left, SEE_OPTIONS) == SEE_CONTROLS)
+    assert(menu_moved(Nav::Right, RESTART) == RESTART, "the column doesn't cross")
+    assert(
+        menu_moved(Nav::Down, SEE_CONTROLS) == RESUME &&
+            menu_moved(Nav::Down, SEE_MAP) == SEE_OPTIONS,
+    )
 }
 
 @test
@@ -1021,14 +1170,25 @@ fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
     tick_with(mut w, [assist(node(w.chosen, OPTIONS, PAGE_NODE), Assist::Dismiss)])
     assert(w.page == MENU, "the page dismissed")
     assert(item_of(node(chosen: 3000, page: CONTROLS, item: PAGE_NODE)) == (CONTROLS, PAGE_NODE))
+    // The focus leaving the tree (the host's focus on node 0) is on no page: nothing happens, on
+    // the menu or on the runs, where the screen of what posting makes public has its nodes.
+    let before = w
+    tick_with(mut w, [assist(0, Assist::Focus)])
+    assert(w == before, "node 0 changes nothing")
+    choose(mut w, SEE_BOARD)
+    tick_with(
+        mut w,
+        [assist(0, Assist::Focus), assist(node(w.chosen, POSTING, 1), Assist::Activate)],
+    )
+    assert(w.page == RUNS, "the posting screen's presses are the frames'")
 }
 
 @test
 fn on_the_runs_only_backing_out_is_the_sims() {
     var w = started(WETLANDS)
     tick_with(mut w, [down(Key::Escape)])
-    choose(mut w, SEE_RUNS)
-    for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::Up, Key::Down] {
+    choose(mut w, SEE_BOARD)
+    for key in [Key::Space, Key::Enter, Key::U, Key::Tab, Key::Up, Key::Down] {
         tick_with(mut w, [down(key)])
         tick_with(mut w, [up(key)])
     }
@@ -1037,10 +1197,63 @@ fn on_the_runs_only_backing_out_is_the_sims() {
         "the keys are the frames'",
     )
     tick_with(mut w, [down(Key::Backspace)])
-    assert(w.paused && w.page == MENU && w.focus == SEE_RUNS, "Backspace backs out")
-    choose(mut w, SEE_RUNS)
+    assert(w.paused && w.page == MENU && w.focus == SEE_BOARD, "Backspace backs out")
+    choose(mut w, SEE_BOARD)
     tick_with(mut w, [down(Key::Escape)])
     assert(w.page == MENU, "and Esc")
+}
+
+@test
+fn on_the_runs_f_opens_the_search_whose_typing_is_the_frames_and_r_races() {
+    var w = started(WETLANDS)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [down(Key::F)])
+    assert(w.page == RUNS, "not while F is down: what it types comes first")
+    tick_with(mut w, [up(Key::F)])
+    assert(w.page == FIND, "the search")
+    // Typing a name, Backspace and P (which back out and pause elsewhere) and R stay in it.
+    for key in [Key::P, Key::R, Key::Backspace, Key::Space, Key::Z, Key::Tab, Key::Down] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(w.paused && w.page == FIND && w.attempt == 0, "the keys type")
+    tick_with(mut w, [down(Key::Enter)])
+    assert(w.page == RUNS, "Enter searches, back on the runs")
+    tick_with(mut w, [press(PadButton::West)])
+    tick_with(mut w, [press(PadButton::East)])
+    assert(w.page == RUNS, "and a controller's X and B")
+    // A race: the level again, on its title, the options' steps kept.
+    w.turns = [0, 0, 2]
+    let attempt = w.attempt
+    tick_with(mut w, [down(Key::R)])
+    assert(w.paused && w.page == TITLE && w.attempt == attempt + 1 && w.course == WETLANDS)
+    assert(w.ticks == 0 && w.turns == [0, 0, 2], "from the start")
+    tick_with(mut w, [down(Key::Space)])
+    assert(!w.paused, "a press starts it")
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [assist(node(w.chosen, RUNS, RUNS_RACE), Assist::Activate)])
+    assert(w.page == TITLE, "the race's node too")
+}
+
+@test
+fn choosing_the_searchs_tab_or_one_of_its_boxes_opens_it() {
+    for item in [RUNS_SEARCH, RUNS_PART, RUNS_PART + 1, RUNS_PART + 2] {
+        var w = started(WETLANDS)
+        tick_with(mut w, [down(Key::Escape)])
+        choose(mut w, SEE_BOARD)
+        tick_with(mut w, [assist(node(w.chosen, RUNS, item), Assist::Activate)])
+        assert(w.paused && w.page == FIND, f"node {item}")
+        // Pressing the tab while typing searches, back on the runs.
+        tick_with(mut w, [assist(node(w.chosen, FIND, 0), Assist::Activate)])
+        assert(w.page == RUNS, f"node {item}: back")
+    }
+    var w = started(WETLANDS)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_BOARD)
+    tick_with(mut w, [assist(node(w.chosen, RUNS, RUNS_BACK), Assist::Activate)])
+    assert(w.page == MENU, "back is back")
 }
 
 @test

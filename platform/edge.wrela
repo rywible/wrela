@@ -1,0 +1,722 @@
+// The server's edge (server.wrela): every request comes here first, to a fresh instance with no
+// store, which sends it on to the instance that answers it or answers it itself.
+//
+// - **Where each goes.** A session's requests go to its account (`__Host-session` names the
+//   account's handle before its secret), a sign-up to the account its challenge was made for, a
+//   sign-in to the account its passkey names (`user`: every passkey is discoverable, so the
+//   authenticator always gives it), a run's replay to its account, a board's page and a slice to
+//   that board, and a search by a noun to that noun's letter's shard.
+// - **What it answers itself.** A sign-up's or a sign-in's challenge, made with a Worker secret
+//   (`Asked::keys`), so no instance keeps a challenge that may never be used; a recovery, through
+//   the code's shard (its tries a minute) and then its account; an upload, admitted by the
+//   account, played here, owned at its replay's shard, recorded by the account and ranked by its
+//   board; a search by a title alone, over every letter's shard; and a replay an archived build's
+//   verifier is asked to play (`call_build`, wrela-verify-1).
+//
+// **The keys.** A ceremony's challenge carries its nonce, when it expires and an HMAC-SHA256 tag
+// of what it's for (`server::ceremony_message`). The API Worker gives the program its two secrets
+// as the request headers `x-wrela-key` (the key in use) and `x-wrela-key-old` (the one before, so
+// challenges made just before a rotation still finish), having removed any a client sent
+// (studio/release's `api_script`; docs/toolchain.md says how they're set).
+
+use account::{
+    CEREMONY_BYTES, CHALLENGE_LIFE, HANDLE_BYTES, account_instance, code_hash, held_parts, part,
+}
+use server::{
+    Back, CLOSED, Claim, Engine, Game, Inner, Job, KEY_BYTES, NONCE_BYTES, Note, PLAY_TICKS, Step,
+    Verdict, blank_job, board_instance, ceremony_message, challenge_of, codes_instance, letters,
+    nobody, read, replays_instance, search_instance, searchable,
+}
+use std::collections::replace
+use std::hash::sha256::sha256
+use wire::{
+    ADD_PASSKEY, ANY, Agreed, CURSOR_BYTES, FULL, Found, MOST_FOUND, MOST_FROM, MOST_REPLAY,
+    NOT_AGREED, REGISTER, Reply, Request, SIGN_IN, WHOLE,
+}
+
+/// What a verifier is asked (`call_build`'s request under wrela-verify-1): what replay `replay`
+/// comes to on board version `board`. Its answer is a `server::Verdict`. Both stay as they are for
+/// as long as an archived build may be asked, so a newer server reads an older verifier's answer.
+pub struct Verify: Clone + std::serialize::Serialize {
+    pub board: u32,
+    pub replay: Vec<u8>,
+}
+
+impl<G: Game> Engine<G> {
+    // ---- where a request goes ------------------------------------------------------------------
+
+    /// Request `conn`, at the edge: sent on to its instance, or answered here.
+    pub(package) fn edge_http(mut self, conn: u32, request: take Request) {
+        let Some(i) = self.conn_index(conn) else { return }
+        let cookie = self.conns[i].cookie.clone()
+        let own = match held_parts(cookie) {
+            Some((handle, _)) => Some(account_instance(handle)),
+            None => None,
+        }
+        match request {
+            Request::Begin { ceremony, agreed, .. } => {
+                if ceremony == REGISTER || ceremony == SIGN_IN {
+                    self.edge_begin(conn, ceremony, agreed, own.is_some())
+                    return
+                }
+                if ceremony != ADD_PASSKEY {
+                    self.refuse(conn, "That isn't a sign-in or a sign-up.")
+                    return
+                }
+            },
+            Request::Register { handle, .. } => {
+                if !self.sign_ups {
+                    self.refuse(conn, CLOSED)
+                    return
+                }
+                if handle.len() != HANDLE_BYTES {
+                    self.refuse(conn, "That sign-up has expired. Start again.")
+                    return
+                }
+                self.dispatch(conn, account_instance(handle))
+                return
+            },
+            Request::SignIn { user, .. } => {
+                if user.len() != HANDLE_BYTES {
+                    self.refuse(
+                        conn,
+                        "We don't know that passkey. Its account may have been deleted.",
+                    )
+                    return
+                }
+                self.dispatch(conn, account_instance(user))
+                return
+            },
+            Request::Recover { code } => {
+                self.edge_recover(conn, code)
+                return
+            },
+            Request::Upload { .. } => {
+                self.edge_upload(conn, take request)
+                return
+            },
+            Request::Board { .. } | Request::Around { .. } => {
+                match self.board_asked(request) {
+                    Some(to) => self.dispatch(conn, take to),
+                    None => self.refuse(conn, "That board doesn't exist."),
+                }
+                return
+            },
+            Request::Watch { run } => {
+                if run.handle.len() != HANDLE_BYTES {
+                    self.refuse(conn, "That run is gone.")
+                    return
+                }
+                self.dispatch(conn, account_instance(run.handle))
+                return
+            },
+            Request::Names { .. } => {
+                self.edge_names(conn, request.clone())
+                return
+            },
+            _ => {},
+        }
+        // A session's own: to its account, which reads its session there. A cookie that can't
+        // be a session's is cleared.
+        match own {
+            Some(to) => self.dispatch(conn, to.clone()),
+            None => self.no_session(conn, request),
+        }
+    }
+
+    /// Request `conn` sent on to instance `to`, which answers it.
+    fn dispatch(mut self, conn: u32, to: take String) {
+        let Some(i) = self.conn_index(conn) else { return }
+        if self.conns[i].answered {
+            return
+        }
+        self.conns[i].answered = true
+        self.out.push(server::Command::Dispatch { conn, to })
+    }
+
+    /// The board instance a page or a slice asks for, if it's one of this game's boards and a
+    /// request it takes.
+    fn board_asked(self, request: Request) -> Option<String> {
+        let (game, course, category) = match request {
+            Request::Board { game, course, category, from, after } => {
+                // A page after another names where it ends; the first starts at the top. None is
+                // numbered past any board's places.
+                let first = after.is_empty() && from == 0
+                if !first && (after.len() != CURSOR_BYTES || from == 0 || from > MOST_FROM) {
+                    return None
+                }
+                (game.clone(), course, category)
+            },
+            Request::Around { game, course, category, .. } => (game.clone(), course, category),
+            _ => return None,
+        }
+        if !self.board_known(game, course, category) {
+            return None
+        }
+        Some(board_instance(game, self.game.board(), course, category))
+    }
+
+    /// Whether `game` has a board for `course` (or WHOLE) and `category` here.
+    pub(package) fn board_known(self, game: str, course: u32, category: u32) -> bool {
+        game == self.game.id() &&
+            (course < self.game.courses() || course == WHOLE) &&
+            (category == ANY || category == FULL)
+    }
+
+    /// Why a new account can't be made with `agreed`, if it can't: it must agree to the current
+    /// Terms and Privacy Policy, and its player be 13 or older.
+    pub(package) fn disagreed(self, agreed: Agreed) -> Option<Text> {
+        if !agreed.of_age {
+            return Some("You need to be 13 or older to make an account.")
+        }
+        if agreed.terms == 0 || agreed.privacy == 0 {
+            return Some("Agree to the Terms and the Privacy Policy to make an account.")
+        }
+        if agreed.terms != self.versions.terms || agreed.privacy != self.versions.privacy {
+            return Some(
+                "The Terms or the Privacy Policy changed since this page loaded. Reload the page and read them again.",
+            )
+        }
+        None
+    }
+
+    /// The key request `conn`'s challenges are made with now, if the Worker gave one long enough.
+    pub(package) fn signing_key(self, conn: u32) -> Option<Vec<u8>> {
+        let i = self.conn_index(conn)?
+        if self.conns[i].keys.is_empty() || self.conns[i].keys[0].len() < KEY_BYTES {
+            return None
+        }
+        Some(self.conns[i].keys[0].clone())
+    }
+
+    // ---- a ceremony's start --------------------------------------------------------------------
+
+    /// A sign-up's or a sign-in's challenge: a nonce and the browser's token (and a new account's
+    /// handle), then the tag.
+    fn edge_begin(mut self, conn: u32, ceremony: u32, agreed: Agreed, signed_in: bool) {
+        if ceremony == REGISTER {
+            if !self.sign_ups {
+                self.refuse(conn, CLOSED)
+                return
+            }
+            if signed_in {
+                self.refuse(conn, "Sign out first to make another account.")
+                return
+            }
+            if let Some(why) = self.disagreed(agreed) {
+                self.refuse(conn, why)
+                return
+            }
+        }
+        var j = blank_job(conn, Request::Me)
+        j.n = ceremony
+        j.agreed = if ceremony == REGISTER { agreed } else { NOT_AGREED }
+        self.begin_challenge(take j)
+    }
+
+    /// A ceremony's challenge for request `job.conn`, here or at an account (an added passkey's):
+    /// `job.n` is the ceremony, `job.agreed` what a sign-up agreed to, `job.handle` the account it's
+    /// for (a new account's is drawn here; none for a sign-in) and `job.keys` the passkeys it
+    /// excludes. Random bytes for its nonce and the browser's token, then its tag.
+    pub(package) fn begin_challenge(mut self, job: take Job) {
+        let j = take job
+        if self.signing_key(j.conn).is_none() {
+            self.refuse(j.conn, "Signing in isn't working on our end right now. Try again later.")
+            return
+        }
+        let handle = if j.n == REGISTER { HANDLE_BYTES } else { 0 }
+        self.random(NONCE_BYTES + CEREMONY_BYTES + handle, Step::ChallengeRandom, take j)
+    }
+
+    pub(package) fn challenge_random(mut self, job: take Job, answer: Vec<u8>) {
+        var j = take job
+        let handle = if j.n == REGISTER { HANDLE_BYTES } else { 0 }
+        if answer.len() < NONCE_BYTES + CEREMONY_BYTES + handle {
+            self.refuse(j.conn, "We couldn't start that. Try again.")
+            return
+        }
+        j.message = part(answer, 0, NONCE_BYTES)
+        j.hash = part(answer, NONCE_BYTES, CEREMONY_BYTES)
+        if j.n == REGISTER {
+            j.handle = part(answer, NONCE_BYTES + CEREMONY_BYTES, handle)
+        }
+        j.expires = self.now + CHALLENGE_LIFE
+        let Some(key) = self.signing_key(j.conn) else { return }
+        let m = ceremony_message(j.n, j.hash, j.handle, j.message, j.expires, j.agreed)
+        self.hmac(key, m, Step::ChallengeTag, take j)
+    }
+
+    pub(package) fn challenge_tag(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        if answer.len() < 32 {
+            self.refuse(j.conn, "We couldn't start that. Try again.")
+            return
+        }
+        let challenge = challenge_of(j.message, j.expires, answer)
+        // The browser keeps its token, which the tag covers: only it can finish this.
+        self.cookie(j.conn, server::CEREMONY, j.hash.clone(), u32(CHALLENGE_LIFE / 1000))
+        self.reply(
+            j.conn,
+            Reply::Challenge {
+                ceremony: j.n,
+                challenge,
+                handle: j.handle.clone(),
+                exclude: j.keys.clone(),
+            },
+        )
+    }
+
+    // ---- a recovery ----------------------------------------------------------------------------
+
+    fn edge_recover(mut self, conn: u32, code: String) {
+        let Some(hash) = code_hash(code.as_str()) else {
+            self.refuse(conn, "That isn't a recovery code. A code has 16 letters and digits.")
+            return
+        }
+        var j = blank_job(conn, Request::Me)
+        j.hash = hash.clone()
+        self.ask(codes_instance(hash).as_str(), Inner::Lookup { hash }, Step::EdgeLookup, take j)
+    }
+
+    fn recover_owner(mut self, job: take Job, back: Back) {
+        var j = take job
+        match back {
+            Back::Owner { handle } => {
+                let Some(i) = self.conn_index(j.conn) else { return }
+                let cookie = self.conns[i].cookie.clone()
+                let to = account_instance(handle)
+                j.handle = handle.clone()
+                let inner = Inner::Recover { hash: j.hash.clone(), cookie }
+                self.ask(to.as_str(), take inner, Step::EdgeRecover, take j)
+            },
+            Back::Refused { why } => self.reply(j.conn, Reply::Refused { why: why.clone() }),
+            _ => self.refuse(j.conn, "We don't know that code, or it's already been used."),
+        }
+    }
+
+    fn recovered(mut self, job: take Job, back: Back) {
+        let j = take job
+        match back {
+            Back::Session { cookie, csrf, me } => {
+                self.cookie(
+                    j.conn,
+                    server::SESSION,
+                    cookie.clone(),
+                    u32(account::SESSION_LIFE / 1000),
+                )
+                self.reply(
+                    j.conn,
+                    Reply::Session { csrf: csrf.clone(), me: me.clone(), codes: Vec::new() },
+                )
+            },
+            Back::Refused { why } => self.reply(j.conn, Reply::Refused { why: why.clone() }),
+            _ => self.refuse(j.conn, "We don't know that code, or it's already been used."),
+        }
+    }
+
+    // ---- an upload ------------------------------------------------------------------------------
+
+    /// An upload: what can be refused without asking anyone is, and its account is asked whether it
+    /// may go up.
+    fn edge_upload(mut self, conn: u32, request: take Request) {
+        let Request::Upload { token, game, board, replay } = request else { return }
+        if game.as_str() != self.game.id() {
+            self.reply(
+                conn,
+                Reply::Rejected { why: String::from("That game has no boards on wrela.dev.") },
+            )
+            return
+        }
+        if replay.len() > MOST_REPLAY {
+            self.reply(
+                conn,
+                Reply::Rejected { why: String::from("That run is too long to upload.") },
+            )
+            return
+        }
+        let current = board == self.game.board()
+        if !current && self.archived(board).is_none() {
+            let why = String::from(
+                "That version of the game's boards is closed. Update the game to post.",
+            )
+            self.reply(conn, Reply::Rejected { why })
+            return
+        }
+        let Some((handle, secret)) = held_parts(token) else {
+            self.refuse(conn, "Sign in at the console to upload.")
+            return
+        }
+        // This build's board's runs are bounded by its rules here; an older board's only by its
+        // own verifier's, whose verdict says its course.
+        let claim = if current {
+            match self.game.claim(replay) {
+                Ok(c) => c,
+                Err(why) => {
+                    self.reply(conn, Reply::Rejected { why: String::from(why) })
+                    return
+                },
+            }
+        } else { Claim { course: 0, ticks: 0 } }
+        let hash = Vec::from(sha256(replay))
+        let inner = Inner::Admit {
+            token: secret.clone(),
+            game: game.clone(),
+            board,
+            hash: hash.clone(),
+        }
+        // The job keeps the request, its replay with it, for the plays and the record to come.
+        var j = blank_job(conn, take request)
+        j.handle = take handle
+        j.message = take secret
+        j.hash = take hash
+        j.course = claim.course
+        j.ticks = claim.ticks
+        j.n = board
+        let to = account_instance(j.handle)
+        self.ask(to.as_str(), take inner, Step::EdgeAdmit, take j)
+    }
+
+    /// The account's answer to an upload's admission: played, or what came of it before.
+    fn admitted(mut self, job: take Job, back: Back) {
+        var j = take job
+        match back {
+            Back::Admitted => {},
+            Back::Recorded { run, ticks, best } => {
+                // Recorded before: ranked again (an upsert its board may have already), for its
+                // place now.
+                j.run = run.clone()
+                j.ticks = ticks
+                self.rank(take j, best.clone())
+                return
+            },
+            Back::Rejected { why } => {
+                self.reply(j.conn, Reply::Rejected { why: why.clone() })
+                return
+            },
+            Back::Refused { why } => {
+                self.reply(j.conn, Reply::Refused { why: why.clone() })
+                return
+            },
+            _ => {
+                self.refuse(j.conn, "Something went wrong on our end. Try again in a moment.")
+                return
+            },
+        }
+        let Request::Upload { replay, .. } = j.request else { return }
+        if j.n == self.game.board() {
+            // This build's board: played here, all of it.
+            let verdict = self.play(replay, Claim { course: j.course, ticks: j.ticks })
+            self.played(take j, verdict)
+            return
+        }
+        // An older board's: its archived build plays it, with its own sim.
+        let Some(artifact) = self.archived(j.n) else { return }
+        let t = self.next_ticket()
+        let body = std::serialize::save(Verify { board: j.n, replay: replay.clone() })
+        self.out.push(server::Command::CallBuild { ticket: t, artifact, body })
+        j.ticket = t
+        j.step = Step::EdgeVerify
+        self.push_job(take j)
+    }
+
+    /// What `replay`, claiming `claim`, comes to on this build's board.
+    pub(package) fn play(self, replay: [u8], claim: Claim) -> Verdict {
+        var run = self.game.start(replay)
+        loop {
+            match self.game.play(mut run, PLAY_TICKS) {
+                None => continue,
+                Some(Err(why)) => return refused_verdict(why),
+                Some(Ok(o)) => {
+                    let ok = o.ticks == claim.ticks
+                    let why = if ok { String::new() } else {
+                        String::from("That run's time doesn't match its moves.")
+                    }
+                    return Verdict { ok, ticks: o.ticks, full: o.full, why, course: claim.course }
+                },
+            }
+        }
+    }
+
+    /// A run played: a good one is owned at its replay's shard, then recorded; one refused is
+    /// recorded as refused, so posted again it hears the same.
+    fn played(mut self, job: take Job, verdict: Verdict) {
+        var j = take job
+        j.verdict = Some(verdict.clone())
+        if !verdict.ok {
+            self.record(take j)
+            return
+        }
+        let inner = Inner::Own { hash: j.hash.clone(), owner: j.handle.clone() }
+        let to = replays_instance(j.hash)
+        self.ask(to.as_str(), take inner, Step::EdgeOwn, take j)
+    }
+
+    fn record(mut self, job: take Job) {
+        var j = take job
+        // The replay goes to the account with the record: the edge needs it no more.
+        let replay = match mut j.request {
+            Request::Upload { replay, .. } => replace(mut replay, Vec::new()),
+            _ => return,
+        }
+        let Some(verdict) = j.verdict.clone() else { return }
+        let inner = Inner::Record {
+            token: j.message.clone(),
+            board: j.n,
+            course: j.course,
+            verdict,
+            replay,
+        }
+        let to = account_instance(j.handle)
+        self.ask(to.as_str(), take inner, Step::EdgeRecord, take j)
+    }
+
+    /// Ranks the recorded run at its board: the account's best there (`best`, as the account told
+    /// it), then the run's place.
+    fn rank(mut self, job: take Job, best: Note) {
+        let j = take job
+        let Request::Upload { game, .. } = j.request else { return }
+        let to = board_instance(game, j.n, j.course, ANY)
+        let inner = Inner::Rank { best: best.clone(), ticks: j.ticks, handle: j.handle.clone() }
+        self.ask(to.as_str(), take inner, Step::EdgeRank, take j)
+    }
+
+    /// A ranking that didn't come: the run is kept, and posting it again ranks it.
+    fn unranked(mut self, conn: u32) {
+        self.refuse(
+            conn,
+            "Your run is saved, but its place didn't come back. Post it again in a moment.",
+        )
+    }
+
+    // ---- a search by a title alone ---------------------------------------------------------------
+
+    fn edge_names(mut self, conn: u32, request: Request) {
+        let Request::Names { game, title, noun, epithet } = request else { return }
+        if game.as_str() != self.game.id() {
+            self.refuse(conn, "That game has no boards on wrela.dev.")
+            return
+        }
+        if !searchable(title) || !searchable(noun) || !searchable(epithet) {
+            self.refuse(conn, "A name has only letters, spaces and hyphens.")
+            return
+        }
+        if title.is_empty() && noun.is_empty() {
+            if epithet.is_empty() {
+                self.refuse(conn, "Type part of a name to search.")
+            } else {
+                self.refuse(conn, "Type more of the name to search. Try its title or its noun.")
+            }
+            return
+        }
+        if !noun.is_empty() {
+            // The noun's letter's shard alone holds them.
+            let l = names::lower_byte(noun.byte(0))
+            var known = false
+            for x in letters() {
+                if x == l {
+                    known = true
+                }
+            }
+            if !known {
+                self.reply(conn, Reply::Names { found: Vec::new() })
+                return
+            }
+            self.dispatch(conn, search_instance(l))
+            return
+        }
+        // A title alone: every letter's shard, each its first names by title, merged.
+        let ls = letters()
+        self.searching.push((conn, Vec::new(), ls.len()))
+        for l in ls {
+            var j = blank_job(conn, request.clone())
+            j.n = u32(l)
+            let inner = Inner::Search {
+                title: title.clone(),
+                noun: noun.clone(),
+                epithet: epithet.clone(),
+            }
+            self.ask(search_instance(l).as_str(), take inner, Step::EdgeSearch, take j)
+        }
+    }
+
+    fn searched(mut self, job: take Job, back: Back) {
+        let j = take job
+        var at: Option<u32> = None
+        for i in 0..self.searching.len() {
+            if self.searching[i].0 == j.conn {
+                at = Some(i)
+            }
+        }
+        // Refused already: another shard failed.
+        let Some(i) = at else { return }
+        let Back::Found { found } = back else {
+            let _ = self.searching.remove(i)
+            self.refuse(j.conn, "Search is busy. Try again in a moment.")
+            return
+        }
+        for f in found {
+            self.searching[i].1.push(f.clone())
+        }
+        self.searching[i].2 -= 1
+        if self.searching[i].2 > 0 {
+            return
+        }
+        var s = self.searching.remove(i)
+        s.1.sort_by(|a, b| a.order < b.order)
+        var out: Vec<Found> = Vec::new()
+        for f in s.1 {
+            if out.len() < MOST_FOUND {
+                out.push(f.found.clone())
+            }
+        }
+        self.reply(j.conn, Reply::Names { found: out })
+    }
+
+    // ---- a verifier's call ----------------------------------------------------------------------
+
+    /// Call `conn` to the edge: an archived build's verifier asked to play a replay
+    /// (wrela-verify-1). Its answer is a `Verdict`.
+    pub(package) fn edge_verify(mut self, conn: u32, body: [u8]) {
+        let asked: Option<Verify> = read(body)
+        let verdict = match asked {
+            Some(v) => {
+                if v.board != self.game.board() {
+                    refused_verdict("That run is for another version of the game.")
+                } else {
+                    match self.game.claim(v.replay) {
+                        Ok(c) => self.play(v.replay, c),
+                        Err(why) => refused_verdict(why),
+                    }
+                }
+            },
+            None => refused_verdict("That isn't a run of this game."),
+        }
+        let Some(i) = self.conn_index(conn) else { return }
+        self.conns[i].answered = true
+        self.out.push(server::Command::Reply { conn, body: std::serialize::save(verdict) })
+    }
+
+    // ---- answers --------------------------------------------------------------------------------
+
+    pub(package) fn edge_answer(mut self, job: take Job, answer: Vec<u8>) {
+        let j = take job
+        match j.step {
+            Step::ChallengeRandom => self.challenge_random(take j, answer),
+            Step::ChallengeTag => self.challenge_tag(take j, answer),
+            Step::EdgeVerify => {
+                // An archived build's verdict; none that reads is the build's failure.
+                let v: Option<Verdict> = read(answer)
+                match v {
+                    // Its course is the verifier's, as its claim read it.
+                    Some(v) => {
+                        var r = take j
+                        r.course = v.course
+                        self.played(take r, v)
+                    },
+                    None => self.refuse(j.conn, "We couldn't check that run. Try again later."),
+                }
+            },
+            _ => {
+                let back: Option<Back> = read(answer)
+                let Some(back) = back else {
+                    self.edge_unanswered(take j)
+                    return
+                }
+                match j.step {
+                    Step::EdgeLookup => self.recover_owner(take j, back),
+                    Step::EdgeRecover => self.recovered(take j, back),
+                    Step::EdgeAdmit => self.admitted(take j, back),
+                    Step::EdgeOwn => match back {
+                        Back::Mine => self.record(take j),
+                        Back::Other => {
+                            let why = String::from("That run is already on the boards.")
+                            self.reply(j.conn, Reply::Rejected { why })
+                        },
+                        _ => self.refuse(
+                            j.conn,
+                            "Something went wrong on our end. Try again in a moment.",
+                        ),
+                    },
+                    Step::EdgeRecord => match back {
+                        Back::Recorded { run, ticks, best } => {
+                            var r = take j
+                            r.run = run.clone()
+                            r.ticks = ticks
+                            self.rank(take r, best.clone())
+                        },
+                        Back::Rejected { why } => self.reply(
+                            j.conn,
+                            Reply::Rejected { why: why.clone() },
+                        ),
+                        Back::Refused { why } => self.reply(
+                            j.conn,
+                            Reply::Refused { why: why.clone() },
+                        ),
+                        _ => self.refuse(
+                            j.conn,
+                            "Something went wrong on our end. Try again in a moment.",
+                        ),
+                    },
+                    Step::EdgeRank => match back {
+                        Back::Place { place } => {
+                            let reply = Reply::Verified {
+                                run: j.run.clone(),
+                                ticks: j.ticks,
+                                place,
+                            }
+                            self.reply(j.conn, take reply)
+                        },
+                        _ => self.unranked(j.conn),
+                    },
+                    Step::EdgeSearch => self.searched(take j, back),
+                    _ => {},
+                }
+            },
+        }
+    }
+
+    /// A call's answer that doesn't read, or none came: as `edge_failed`.
+    fn edge_unanswered(mut self, job: take Job) {
+        let j = take job
+        if !self.edge_failed(j) {
+            self.refuse(j.conn, "Something went wrong on our end. Try again in a moment.")
+        }
+    }
+
+    /// A job's call failed: whether it was answered here. A failed ranking says the run is kept, to
+    /// be posted again; a search's failed shard fails the search.
+    pub(package) fn edge_failed(mut self, job: Job) -> bool {
+        if job.step == Step::EdgeRank {
+            self.unranked(job.conn)
+            return true
+        }
+        if job.step == Step::EdgeSearch {
+            let before = self.searching.len()
+            self.searching.retain(|s| s.0 != job.conn)
+            if self.searching.len() < before {
+                self.refuse(job.conn, "Search is busy. Try again in a moment.")
+            }
+            return true
+        }
+        false
+    }
+}
+
+/// A replay that doesn't come to what it claims, and why.
+fn refused_verdict(why: str) -> Verdict {
+    Verdict { ok: false, ticks: 0, full: false, why: String::from(why), course: 0 }
+}
+
+@test
+fn a_verifiers_call_and_answer_keep_their_form() {
+    // wrela-verify-1 is read by builds of other versions: its bytes don't change.
+    let v = std::serialize::save(Verify { board: 3, replay: Vec::from([1, 2]) })
+    let back: Option<Verify> = read(v)
+    let Some(back) = back else { panic("a call") }
+    assert(back.board == 3 && back.replay == Vec::from([1, 2]))
+    let w = std::serialize::save(
+        Verdict { ok: true, ticks: 9, full: false, why: String::new(), course: 1 },
+    )
+    let verdict: Option<Verdict> = read(w)
+    assert(verdict.is_some() && read::<Verify>([1, 2, 3]).is_none())
+}

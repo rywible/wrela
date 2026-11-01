@@ -163,11 +163,11 @@ pub fn built() -> Course {
 pub const SIGNS: [Sign; 1] = [
     Sign {
         at: vec2(8.0, 0.0),
-        heading: "Ice is slippery",
+        heading: "Slippery ice",
         first: Act::Run,
         second: Act::Run,
         prompts: 0,
-        line: "Stops and turns slide on",
+        line: "Stop and turn early",
         teaches: 0,
     },
 ]

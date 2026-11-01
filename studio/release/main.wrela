@@ -19,8 +19,8 @@
 //   within 1920×1080, `hero-<16 hex>.webp`), its title art (within 1200×480, with its alpha,
 //   `title-<16 hex>.webp`) and its theme (`theme-<16 hex>.txt`, as it is). The console reads them
 //   with `catalog.tsv` (a line a game: its id, title, session's address, each image's file and
-//   size, its tagline and its theme's file) and fetches each game's runtime, WASM and shaders
-//   ahead of time from `prefetch-<id>.txt`.
+//   size, its tagline, its theme's file and the address where it plays itself) and
+//   fetches each game's runtime, WASM and shaders ahead of time from `prefetch-<id>.txt`.
 // - **The docs**: the docs' program, the reference docs `wrela doc --export` writes of std and
 //   the docs' packages beside it (a file of the export can't take the place of one of the
 //   program's), and each page of the export as plain HTML (pages.wrela).
@@ -34,10 +34,15 @@
 // Each Worker serves its release under `releases/<id>/` with `files.json` (each file's SHA-256,
 // for a later deploy to keep), from an entry page that names that release (`<base>`), with
 // headers and redirects (site.wrela), as static assets alone: `<worker>.wrangler.json` configures
-// it. The console's server is a Worker of its own, on the console's API paths (`<api>.worker.js`
-// and `<api>.wrangler.json`, its build beside them), and `release.json` says what the release
-// holds.
+// it. What a release shares with the next is at content addresses at the Worker's root
+// (addresses.wrela): each build's payloads under `b/`, its runtime under `r/`, which its page,
+// its `addresses.json` and the console's prefetch lists name; `files.json` lists them by their
+// root-absolute paths (`/b/<sha>.wasm`). Each page's preloads are `Link` headers too, for Early
+// Hints. The console's server is a Worker of its own, on the console's API paths
+// (`<api>.worker.js` and `<api>.wrangler.json`, its build beside them), and `release.json` says
+// what the release holds.
 
+use addresses::{Build, Moved, address, in_dir, runtime_hash}
 use catalog::{CATALOG, Catalog, Game, check, origin_of, paths}
 use json::{Json, from_doc}
 use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_files}
@@ -45,8 +50,9 @@ use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
 use site::{
     CACHE_RULES, FAVICONS, NOT_FOUND, Report, Shipped, Top, api_config, api_script, card,
-    catalog_json, catalog_line, docs_headers, docs_page, docs_redirects, fetch_order, headers, ico,
-    prefetch_list, release_json, replace_all, with_storage, wrangler_config,
+    catalog_json, catalog_line, docs_headers, docs_page, docs_redirects, early_hints, fetch_order,
+    VERIFIER_JSON, Verifier, described, headers, ico, prefetch_list, preloads, release_json,
+    replace_all, verifier_path, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use std::io::print
@@ -58,7 +64,7 @@ use std::tool::files::{Entry, Kind}
 use std::tool::image
 use std::tool::image::{Image, Size}
 use std::tool::toolchain
-use tree::{Source, Tree, check_files, files_json, frame, hex_sha}
+use tree::{Source, Tree, before_by_parts, check_files, files_json, frame, hex_sha}
 
 /// The roots: the workspace, read; the builds' stage; the release.
 pub const WS: Text = "ws"
@@ -449,6 +455,53 @@ fn release(revision: str) -> Result<String, ToolError> {
     }
     let release = fingerprint(mut projects)?
     let r = release.as_str()
+    // Each build's payloads and runtime at their content addresses, its page pointed at them and
+    // its map beside its manifest: each build by its project, its directory and its files, in
+    // `plan`'s order.
+    var owners: Vec<(u32, String, Vec<String>)> = Vec::new()
+    for k in 0..2 {
+        var shipped: Vec<String> = Vec::new()
+        for f in outputs[k] {
+            if !is_marker(f.as_str()) && !(k == 0 && f.as_str().starts_with("server/")) {
+                shipped.push(f.clone())
+            }
+        }
+        owners.push((k, String::new(), take shipped))
+    }
+    var o = 2
+    for g in 0..c.games.len() {
+        for b in c.games[g].builds {
+            var shipped: Vec<String> = Vec::new()
+            for f in outputs[o] {
+                if !is_marker(f.as_str()) {
+                    shipped.push(f.clone())
+                }
+            }
+            owners.push((2 + g, String::from(b.name), take shipped))
+            o += 1
+        }
+    }
+    var manifest_paths: Vec<String> = Vec::new()
+    for i in 0..plan.len() {
+        manifest_paths.push(String::from(f"{plan[i].out.as_str()}/manifest.json"))
+    }
+    var manifests = read_files(manifest_paths)?
+    var builds_of: Vec<Vec<Build>> = Vec::new()
+    for _ in 0..projects.len() {
+        builds_of.push(Vec::new())
+    }
+    for i in 0..owners.len() {
+        let (k, dir, shipped) = owners[i].clone()
+        let Some(text) = String::from_utf8(replace(mut manifests[i], Vec::new())) else {
+            return Err(ToolError::new(f"{plan[i].out.as_str()}/manifest.json isn't UTF-8"))
+        }
+        builds_of[k].push(Build { dir, files: shipped, manifest: text })
+    }
+    var moved: Vec<Moved> = Vec::new()
+    for k in 0..projects.len() {
+        moved.push(address(mut projects[k].tree, builds_of[k]).map_err(own)?)
+        projects[k].tree.sort()
+    }
     // The console's catalog and prefetch lists, and the headers and redirects that name them.
     var catalog_text = String::new()
     for g in 0..c.games.len() {
@@ -469,15 +522,33 @@ fn release(revision: str) -> Result<String, ToolError> {
     projects[0].tree.put_bytes("release.txt", String::from(f"{r}\n").as_bytes())
     for g in 0..c.games.len() {
         borrow game = c.games[g]
-        var lists: Vec<(Text, Vec<String>)> = Vec::new()
+        var lists: Vec<(Text, Vec<(String, String)>)> = Vec::new()
         for name in fetch_order(game) {
-            var paths_of: Vec<String> = Vec::new()
             let prefix = String::from(f"{name}/")
+            var paths_of: Vec<(String, String)> = Vec::new()
             for e in projects[2 + g].tree.entries {
                 if e.path.as_str().starts_with(prefix.as_str()) {
-                    paths_of.push(String::from(e.path.as_str().slice(prefix.len(), e.path.len())))
+                    paths_of.push(
+                        (
+                            String::from(e.path.as_str().slice(prefix.len(), e.path.len())),
+                            String::new(),
+                        ),
+                    )
                 }
             }
+            for (path, url) in moved[2 + g].urls {
+                if path.as_str().starts_with(prefix.as_str()) {
+                    paths_of.push(
+                        (String::from(path.as_str().slice(prefix.len(), path.len())), url.clone()),
+                    )
+                }
+            }
+            paths_of.sort_by(
+                |a: (String, String), b: (String, String)| before_by_parts(
+                    a.0.as_str(),
+                    b.0.as_str(),
+                ),
+            )
             lists.push((name, take paths_of))
         }
         let list = prefetch_list(game, r, lists)
@@ -554,42 +625,7 @@ fn release(revision: str) -> Result<String, ToolError> {
             }
         }
         var f = project(p.role, p.worker.as_str(), p.domain.as_str(), p.namespace.as_str())
-        var versioned = Tree::new()
-        for e in p.tree.entries {
-            let path = e.path.as_str()
-            let cut = match path.find("/") {
-                Some(i) => i,
-                None => path.len(),
-            }
-            let top = path.slice(0, cut)
-            if top == "releases" || top == "_headers" || top == "_redirects" {
-                f.tree.entries.push(e.clone())
-            } else {
-                var moved = e.clone()
-                moved.path = String::from(f"releases/{r}/{path}")
-                f.tree.entries.push(take moved)
-                versioned.entries.push(e.clone())
-            }
-        }
-        if let Some(text) = take entry {
-            f.tree.put_bytes("index.html", text.as_bytes())
-        }
-        f.tree.put_bytes(f"releases/{r}/files.json", files_json(versioned.entries).as_bytes())
-        // Beside its releases, as `_headers` is: its favicon and its 404 page.
-        f.tree.put_bytes("favicon.ico", favicon)
-        f.tree.put_bytes("404.html", String::from(NOT_FOUND).as_bytes())
-        let Some(h) = f.tree.find("_headers") else { return Err(ToolError::new("no _headers")) }
-        let Source::Bytes(old) = f.tree.entries[h].source else {
-            return Err(ToolError::new("_headers"))
-        }
-        let Some(given) = String::from_utf8(old.clone()) else {
-            return Err(ToolError::new("_headers"))
-        }
-        var all_headers = given.clone()
-        all_headers.push_str(CACHE_RULES)
-        f.tree.put_bytes("_headers", all_headers.as_bytes())
-        f.tree.sort()
-        check_files(f.tree.entries).map_err(own)?
+        f.tree = served(p.tree, moved[k], r, take entry, favicon).map_err(own)?
         finals.push(take f)
     }
     // The console's server: its build's files beside its Worker's script, and the members of its
@@ -626,6 +662,12 @@ fn release(revision: str) -> Result<String, ToolError> {
     if server_members.is_empty() {
         return Err(ToolError::new("the console's build has no server (server/cloudflare.json)"))
     }
+    let verifier = verifier_of(
+        server_files,
+        console_out.as_str(),
+        c.console.boards,
+        c.console.board,
+    )?
     // Written: each Worker's files and its configuration, the server's Worker's script and
     // configuration, and what the release holds.
     var writes: Vec<(String, Vec<u8>)> = Vec::new()
@@ -683,7 +725,7 @@ fn release(revision: str) -> Result<String, ToolError> {
             )
         }
     }
-    let report = release_json(revision, r, api, reports)
+    let report = release_json(revision, r, api, verifier, reports)
     var report_file = report.clone()
     report_file.push_str("\n")
     writes.push((String::from(f"{OUT}/release.json"), Vec::from(report_file.as_bytes())))
@@ -692,6 +734,131 @@ fn release(revision: str) -> Result<String, ToolError> {
     // The stage, emptied.
     empty(WORK)?
     Ok(report)
+}
+
+/// The console's server build's verifier (toolchain 0.18.0's `server/verifier/`, among `files`, the
+/// build's in `out`): its files' names, and where the deploy keeps it for board version `board` of
+/// `game` (`verifier_path`, by the SHA-256 of its files). Or why there's none: a server build
+/// without one, or one whose description isn't `wrela-verify-1`'s.
+pub fn verifier_of(
+    files: [String],
+    out: str,
+    game: str,
+    board: u32,
+) -> Result<Verifier, ToolError> {
+    var names: Vec<String> = Vec::new()
+    var paths: Vec<String> = Vec::new()
+    for f in files {
+        if f.as_str().starts_with("server/verifier/") {
+            names.push(String::from(f.as_str().slice("server/verifier/".len(), f.len())))
+            paths.push(String::from(f"{out}/{f.as_str()}"))
+        }
+    }
+    if !described(names) {
+        return Err(
+            ToolError::new(
+                "the console's server build has no verifier (server/verifier/verifier.json)",
+            ),
+        )
+    }
+    let bytes = read_files(paths)?
+    var hashed: Vec<(String, String)> = Vec::new()
+    for k in 0..names.len() {
+        if names[k].as_str() == VERIFIER_JSON {
+            let Some(t) = String::from_utf8(bytes[k].clone()) else {
+                return Err(ToolError::new("the server's verifier.json isn't UTF-8"))
+            }
+            if t.as_str().find("\"wrela-verify-1\"").is_none() {
+                return Err(ToolError::new("the server's verifier isn't wrela-verify-1's"))
+            }
+        }
+        hashed.push((names[k].clone(), hex_sha(bytes[k])))
+    }
+    hashed.sort_by(|a, b| a.0 < b.0)
+    var sorted: Vec<String> = Vec::new()
+    for (n, _) in hashed {
+        sorted.push(n.clone())
+    }
+    let path = verifier_path(game, board, runtime_hash(hashed).as_str())
+    print(
+        f"the server's verifier: {path.as_str()} (record it in the game's ARCHIVED when its board closes)",
+    )
+    Ok(Verifier { path, files: sorted })
+}
+
+/// A Worker's files as it serves them, from `tree` (its files at their paths in the release,
+/// sorted by their parts, its `_headers` among them) and what `address` moved out of it: its
+/// release under `releases/<release>/` with its `files.json`, which lists what moved by its
+/// root-absolute path; what moved at the root (`b/`, `r/`); its entry page if it has one
+/// (`entry`, which names the release as its `<base>`); its favicon and 404 page; and its headers,
+/// with each page's preloads as `Link` headers (`early_hints`) and `CACHE_RULES` last. Or why it
+/// can't ship (`check_files`, `early_hints`).
+pub fn served(
+    tree: Tree,
+    moved: Moved,
+    release: str,
+    entry: take Option<String>,
+    favicon: [u8],
+) -> Result<Tree, String> {
+    var out = Tree::new()
+    var versioned: Vec<tree::Entry> = Vec::new()
+    for e in moved.files {
+        var listed = e.clone()
+        listed.path = String::from(f"/{e.path.as_str()}")
+        versioned.push(take listed)
+        out.entries.push(e.clone())
+    }
+    var hints = String::new()
+    for e in tree.entries {
+        let path = e.path.as_str()
+        let cut = match path.find("/") {
+            Some(i) => i,
+            None => path.len(),
+        }
+        let top = path.slice(0, cut)
+        if top == "releases" || top == "_headers" || top == "_redirects" {
+            out.entries.push(e.clone())
+            continue
+        }
+        var moved_to = e.clone()
+        moved_to.path = String::from(f"releases/{release}/{path}")
+        // A bootstrap page's preloads, from the address it's served at (its directory).
+        if path == "index.html" || path.ends_with("/index.html") {
+            if let Source::Bytes(b) = e.source {
+                let Some(text) = String::from_utf8(b.clone()) else {
+                    return Err(String::from(f"{path} isn't UTF-8"))
+                }
+                let dir = path.slice(0, path.len() - "index.html".len())
+                let at = String::from(f"/releases/{release}/{dir}")
+                hints.push_str(
+                    early_hints(at.as_str(), at.as_str(), preloads(text.as_str()))?.as_str(),
+                )
+            }
+        }
+        out.entries.push(take moved_to)
+        versioned.push(e.clone())
+    }
+    if let Some(text) = take entry {
+        let base = String::from(f"/releases/{release}/")
+        hints.push_str(early_hints("/", base.as_str(), preloads(text.as_str()))?.as_str())
+        out.put_bytes("index.html", text.as_bytes())
+    }
+    out.put_bytes(f"releases/{release}/files.json", files_json(versioned).as_bytes())
+    // Beside its releases, as `_headers` is: its favicon and its 404 page.
+    out.put_bytes("favicon.ico", favicon)
+    out.put_bytes("404.html", String::from(NOT_FOUND).as_bytes())
+    let Some(h) = out.find("_headers") else { return Err(String::from("no _headers")) }
+    let Source::Bytes(old) = out.entries[h].source else { return Err(String::from("_headers")) }
+    let Some(given) = String::from_utf8(old.clone()) else {
+        return Err(String::from("_headers isn't UTF-8"))
+    }
+    var all_headers = given.clone()
+    all_headers.push_str(hints.as_str())
+    all_headers.push_str(CACHE_RULES)
+    out.put_bytes("_headers", all_headers.as_bytes())
+    out.sort()
+    check_files(out.entries)?
+    Ok(out)
 }
 
 /// Whether a build's file is its output's own record (`.wrela-build`), which doesn't ship.

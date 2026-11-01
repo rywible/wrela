@@ -1,21 +1,27 @@
 // The messages between the console and its server, over HTTP to the server's own origin
 // (std::http): the console sends a `Request` as a request's body, and the server answers it with one
-// `Reply` as the response's. Both are `Serialize`d. A public read (a board, a run) may go as a `GET`
-// whose query is the request (`PUBLIC`), so the host can keep its answer in Cloudflare's cache;
-// everything else is a `POST` to `ACCOUNTS`.
+// `Reply` as the response's. Both are `Serialize`d. A public read (a board, a slice, a run, a search)
+// goes as a `GET` whose query is the request (`PUBLIC`), with `std::http::fetch_public`: no cookie
+// goes, and the browser's cache and the edge's keep its answer. Everything else is a `POST` to
+// `ACCOUNTS`.
 //
-// The session is the `__Host-session` cookie, which the browser keeps and a script never reads;
-// a ceremony's is the `__Host-ceremony` cookie, so only the browser that began it can finish it. A
-// request that changes the account also carries the session's CSRF token (`csrf`), which the server
-// compares with the session's: a second check behind the cookie's `SameSite=Strict` and the
-// host's refusal of another site's `Origin`.
+// The session is the `__Host-session` cookie, which the browser keeps and a script never reads: the
+// account's handle, then the session's secret, so the server's edge sends it to the account's
+// instance (server.wrela). A ceremony's is the `__Host-ceremony` cookie, so only the browser that
+// began it can finish it. A request that changes the account also carries the session's CSRF token
+// (`csrf`), which the server compares with the session's: a second check behind the cookie's
+// `SameSite=Strict` and the host's refusal of another site's `Origin`.
 
+use std::hash::sha256::hex
 use std::serialize::Serialize
 
 /// Where the console sends its requests: a `POST` with the request as its body, or a `GET` of a
-/// public read with the request in base64url after `?q=`.
+/// public read with the request in base64url after `?q=`. A run's replay is also at a path of its
+/// own, its account's handle in hexadecimal and its number (`run_path`): it never changes, so a
+/// cache keeps it a day (server.wrela's `RUN_AGE`). It is under `PUBLIC`, so the host's limit on public reads counts it too.
 pub const ACCOUNTS: Text = "/api/accounts"
 pub const PUBLIC: Text = "/api/public"
+pub const RUNS: Text = "/api/public/run/"
 
 /// The ceremonies a challenge is for.
 pub const REGISTER: u32 = 0
@@ -34,17 +40,68 @@ pub const MOST_REPLAY: u32 = 49152
 pub const EXPORT_PART: u32 = 262144
 /// The most entries a board's page holds.
 pub const BOARD_PAGE: u32 = 20
+/// The most places a page may be numbered after (`Request::Board`'s `from`): far past any board's,
+/// and its places' numbers still a `u32`.
+pub const MOST_FROM: u32 = 1 << 30
+/// The bytes of a page's `next`: a place's time and its account's handle.
+pub const CURSOR_BYTES: u32 = 4 + account::HANDLE_BYTES
+/// The places a slice holds above an account's place, and below it.
+pub const AROUND: u32 = 5
+/// The most names a search finds, and the most bytes of each part it is given.
+pub const MOST_FOUND: u32 = 20
+pub const MOST_PART: u32 = 32
+
+/// What a new account agreed to: the Terms' and the Privacy Policy's versions (console/legal.wrela's
+/// `TERMS_VERSION` and `PRIVACY_VERSION`), and that its player is 13 or older. A sign-in or a
+/// passkey added agrees to nothing (`NOT_AGREED`).
+pub struct Agreed: Copy + Eq + Serialize {
+    pub terms: u32,
+    pub privacy: u32,
+    pub of_age: bool,
+}
+
+pub const NOT_AGREED: Agreed = Agreed { terms: 0, privacy: 0, of_age: false }
+
+/// A run: its account's handle and its number in that account. A board's place, a search's
+/// standing and an upload's answer name one, and its replay is read by it (`Watch`). A whole game's
+/// place is several runs, and names none (`none`).
+pub struct RunRef: Clone + Eq + Serialize {
+    pub handle: Vec<u8>,
+    pub n: u32,
+}
+
+impl RunRef {
+    /// No run: a whole game's place.
+    pub fn none() -> RunRef {
+        RunRef { handle: Vec::new(), n: 0 }
+    }
+
+    pub fn is_none(self) -> bool {
+        self.handle.is_empty()
+    }
+}
 
 pub enum Request: Clone + Serialize {
     /// The account the session cookie is for, if any, and the session's CSRF token. Asked when the
     /// console starts: a session resumed this way is no longer fresh.
     Me,
-    /// A challenge for `ceremony` (REGISTER, SIGN_IN, ADD_PASSKEY).
-    Begin { ceremony: u32, csrf: Vec<u8> },
-    /// A new account's first passkey, over the REGISTER challenge.
-    Register { id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
-    /// A sign-in with a passkey, over the SIGN_IN challenge.
+    /// A challenge for `ceremony` (REGISTER, SIGN_IN, ADD_PASSKEY). A new account's (REGISTER)
+    /// carries what its player agreed to, which must be the current versions.
+    Begin { ceremony: u32, csrf: Vec<u8>, agreed: Agreed },
+    /// A new account's first passkey, over the REGISTER challenge, for the handle it gave, with what
+    /// its player agreed to as the challenge was asked (which the challenge's tag covers).
+    Register {
+        handle: Vec<u8>,
+        challenge: Vec<u8>,
+        agreed: Agreed,
+        id: Vec<u8>,
+        client_data: Vec<u8>,
+        attestation: Vec<u8>,
+    },
+    /// A sign-in with a passkey, over the SIGN_IN challenge: `user` is the account's handle, which
+    /// the authenticator gives (every passkey is discoverable).
     SignIn {
+        challenge: Vec<u8>,
         id: Vec<u8>,
         client_data: Vec<u8>,
         authenticator_data: Vec<u8>,
@@ -57,7 +114,13 @@ pub enum Request: Clone + Serialize {
     Reroll { csrf: Vec<u8> },
     Keep { csrf: Vec<u8> },
     /// Another passkey, over the ADD_PASSKEY challenge.
-    AddPasskey { csrf: Vec<u8>, id: Vec<u8>, client_data: Vec<u8>, attestation: Vec<u8> },
+    AddPasskey {
+        csrf: Vec<u8>,
+        challenge: Vec<u8>,
+        id: Vec<u8>,
+        client_data: Vec<u8>,
+        attestation: Vec<u8>,
+    },
     RemovePasskey { csrf: Vec<u8>, id: Vec<u8> },
     Passkeys,
     /// New recovery codes in place of the old.
@@ -73,20 +136,47 @@ pub enum Request: Clone + Serialize {
     Export { after: Vec<u8> },
     /// Deletes the account and everything kept of it.
     Delete { csrf: Vec<u8> },
-    /// A run for `game`'s board, as its replay's bytes, with a game's token. It is answered once
-    /// the run is verified: `Verified` or `Rejected`.
-    Upload { token: Vec<u8>, game: String, replay: Vec<u8> },
-    /// A page of a board: `course` (or WHOLE) and `category`, from place `from` (0 the fastest).
-    Board { game: String, course: u32, category: u32, from: u32 },
-    /// A run's replay, to watch.
-    Watch { run: u64 },
+    /// Whether the account has agreed to what posting makes public, and whether it posts its best
+    /// runs: answered by `Posting`.
+    Posting,
+    /// Agrees to what posting makes public (`version`, posting.wrela's `VERSION`), and sets
+    /// whether the game posts the account's best runs.
+    Consent { csrf: Vec<u8>, version: u32, best_runs: bool },
+    /// Turns posting the account's best runs on or off.
+    BestRuns { csrf: Vec<u8>, on: bool },
+    /// A run for `game`'s board version `board` (the game's build of play), as its replay's bytes,
+    /// with a game's token, from an account that has kept its name and agreed to what posting
+    /// makes public. It is answered once the run is checked and ranked: `Verified`, or `Rejected`
+    /// when it can never go on the board (what playing it found, its bytes, another account's copy,
+    /// a board that's closed); or `Refused` when it can't be taken now (its token, its account's
+    /// choices, the hour, a ranking that didn't finish), to be tried again. The same replay
+    /// uploaded again by its account is answered with what came of it the first time (its place
+    /// now, or the same reason).
+    Upload { token: Vec<u8>, game: String, board: u32, replay: Vec<u8> },
+    /// A page of a board: `course` (or WHOLE) and `category`, from the fastest (`after` empty), or
+    /// just after the last page (`after` its `next`), whose places are numbered after `from` (the
+    /// places before it: 0 for the first page). A page deep down reads only its own places.
+    Board { game: String, course: u32, category: u32, from: u32, after: Vec<u8> },
+    /// A run's replay, to watch or race, answered by `Run`: sent as a `GET` of `run_path(run)`,
+    /// never changing, so a cache keeps it a day.
+    Watch { run: RunRef },
+    /// The places around `name`'s on a board (`course` or WHOLE, and `category`): `AROUND` above
+    /// it, its own, and `AROUND` below; or `Unplaced`, if the name has no place there. Only names
+    /// with runs on the boards are read, so it says nothing of an account that never posted.
+    Around { game: String, course: u32, category: u32, name: String },
+    /// The names on `game`'s boards whose title, noun and epithet start with these (any case; an
+    /// empty part matches any, but an epithet alone is too wide), at most `MOST_FOUND`, each with
+    /// its runs on the boards.
+    Names { game: String, title: String, noun: String, epithet: String },
 }
 
 /// Whether `r` is a public read, sent by `GET` to `PUBLIC`: the same answer for everyone, so a
 /// cache may keep it. Anything else goes by `POST` to `ACCOUNTS`.
 pub fn public(r: Request) -> bool {
     match r {
-        Request::Board { .. } | Request::Watch { .. } => true,
+        Request::Board { .. } | Request::Watch { .. } | Request::Around { .. } | Request::Names {
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -99,6 +189,9 @@ pub struct Me: Clone + Serialize {
     pub rerolls: u32,
     /// Signed in with a recovery code: a passkey must be added before anything else.
     pub must_add_passkey: bool,
+    /// The account's handle (empty when signed out): who it is, whatever its name, so the console
+    /// knows another account from the one it had.
+    pub handle: Vec<u8> = Vec::new(),
 }
 
 pub struct PasskeyView: Clone + Serialize {
@@ -116,16 +209,37 @@ pub struct SessionView: Clone + Serialize {
 
 /// A place on a board.
 pub struct Place: Clone + Serialize {
+    /// Its number from 1, the fastest; 0 in a slice past the first `MOST_PLACE` (server.wrela).
     pub place: u32,
     pub name: String,
     pub ticks: u32,
-    /// The run to watch (0 for a whole game's place, which is several runs).
-    pub run: u64,
+    /// The run to watch (none for a whole game's place, which is several runs).
+    pub run: RunRef,
+    /// Its replay's SHA-256, which the bytes `Watch` brings must have: empty for a whole game's
+    /// place.
+    pub replay: Vec<u8>,
+}
+
+/// An account's run on one of a game's boards, as a search shows it: the board, the time, the run
+/// and its replay's hash (as `Place`'s). Its number on the board is the slice's (`Around`).
+pub struct Standing: Clone + Serialize {
+    pub course: u32,
+    pub category: u32,
+    pub ticks: u32,
+    pub run: RunRef,
+    pub replay: Vec<u8>,
+}
+
+/// A name a search found, and its runs on the boards.
+pub struct Found: Clone + Serialize {
+    pub name: String,
+    pub standings: Vec<Standing>,
 }
 
 pub enum Reply: Clone + Serialize {
     /// The session's account (or nobody), after `Me` or a change, and the session's CSRF token.
     Welcome { me: Me, csrf: Vec<u8> },
+    /// A ceremony's challenge, and the handle a passkey made over it is for (none for a sign-in).
     Challenge { ceremony: u32, challenge: Vec<u8>, handle: Vec<u8>, exclude: Vec<Vec<u8>> },
     /// A session begun (its cookie set): its CSRF token, for the console to keep while it runs, and
     /// with a new account its recovery codes, shown once.
@@ -138,10 +252,71 @@ pub enum Reply: Clone + Serialize {
     /// whole record, so the parts joined are the JSON.
     Export { text: String, next: Vec<u8>, last: bool },
     Done,
-    Verified { run: u64, ticks: u32, place: u32 },
+    /// An upload's run, on the boards at `place` (0: past the first `MOST_PLACE`, unnumbered).
+    Verified { run: RunRef, ticks: u32, place: u32 },
     Rejected { why: String },
-    Board { places: Vec<Place>, total: u32 },
-    Run { run: u64, game: String, replay: Vec<u8> },
+    /// A board's page: its places, how many there are as far as the page saw (past its own when
+    /// there are more), and where the next page starts (`Request::Board`'s `after`).
+    Board { places: Vec<Place>, total: u32, next: Vec<u8> },
+    Run { run: RunRef, game: String, replay: Vec<u8> },
+    /// Whether the account agreed to the current version of what posting makes public, and whether
+    /// it posts its best runs.
+    Posting { agreed: bool, best_runs: bool },
+    /// A slice of a board: the places around an account's, which is place `at` (0: past the first
+    /// `MOST_PLACE`).
+    Around { places: Vec<Place>, at: u32 },
+    /// The name asked about (`Around`) has no place on that board: no run of its there, no run on
+    /// any board, or no such name. One answer for all of them, so a slice never says whether an
+    /// account exists.
+    Unplaced,
+    Names { found: Vec<Found> },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
+}
+
+/// The path of run `run`'s replay: `RUNS`, its account's handle in hexadecimal, `/`, its number.
+pub fn run_path(run: RunRef) -> String {
+    String::from(f"{RUNS}{hex(run.handle)}/{run.n}")
+}
+
+/// The run a replay's path names (`run_path`'s): none unless it is `RUNS`, 32 lowercase
+/// hexadecimal digits, `/` and a number without a leading zero.
+pub fn run_of(path: str) -> Option<RunRef> {
+    let handle_digits = 2 * account::HANDLE_BYTES
+    if !path.starts_with(RUNS) || path.len() < RUNS.len() + handle_digits + 2 {
+        return None
+    }
+    let at = RUNS.len()
+    let handle = account::unhex(path.slice(at, at + handle_digits))?
+    if path.byte(at + handle_digits) != 47 {
+        return None
+    }
+    let digits = path.slice(at + handle_digits + 1, path.len())
+    if digits.len() > 1 && digits.byte(0) == 48 {
+        return None
+    }
+    let n = digits.parse_u32()?
+    Some(RunRef { handle, n })
+}
+
+@test
+fn a_runs_path_names_its_account_and_number() {
+    let run = RunRef { handle: Vec::from([171; 16]), n: 1234 }
+    let path = run_path(run)
+    assert(path.as_str() == "/api/public/run/abababababababababababababababab/1234", path.as_str())
+    assert(run_of(path.as_str()) == Some(run.clone()), "read back")
+    let max = RunRef { handle: Vec::from([0; 16]), n: 4294967295 }
+    assert(run_of(run_path(max).as_str()) == Some(max.clone()), "the last number")
+    for wrong in [
+        "/api/public/run/ABABABABABABABABABABABABABABABAB/1",
+        "/api/public/run/abab/1",
+        "/api/public/run/abababababababababababababababab/",
+        "/api/public/run/abababababababababababababababab/01",
+        "/api/public/run/abababababababababababababababab/4294967296",
+        "/api/public/run/abababababababababababababababab-1",
+        "/api/public/replay/abababababababababababababababab/1",
+    ] {
+        assert(run_of(wrong).is_none(), wrong)
+    }
+    assert(RunRef::none().is_none() && !run.is_none())
 }

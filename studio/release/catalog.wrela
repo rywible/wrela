@@ -16,7 +16,11 @@ pub struct Build: Clone {
 
 /// A game: its id (its storage namespace and its prefetch list), its title, its Worker and
 /// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
-/// rendered. What the console's home shows of it while it's chosen, each left empty for none:
+/// rendered; and where it plays itself (`attract`, empty for none): one of its builds, and after
+/// a `#` the fragment that build reads from its address (`capybara#attract`, opened at
+/// `capybara/#attract`), which the console's home shows behind its text once it has rested on the
+/// game a few seconds. What the console's home shows of it while it's chosen, each left empty for
+/// none:
 /// its hero, a PNG that Wrela rendered, full-bleed behind the home's text, which stands on its
 /// left; its title art, a PNG with alpha, in place of its title; its tagline, a line that sells
 /// it; and its theme, a melody the home plays softly, as text: its tempo in quarter notes a
@@ -28,6 +32,7 @@ pub struct Game: Clone {
     pub domain: Text,
     pub session: Text,
     pub builds: Vec<Build>,
+    pub attract: Text,
     pub cover: Text,
     pub hero: Text,
     pub logo: Text,
@@ -37,8 +42,13 @@ pub struct Game: Clone {
 
 /// The console: its package, Worker, domain, and the one-line description its page has; the
 /// Worker its server runs in (`api`), on the console's domain's API paths, as a route of its
-/// Cloudflare zone (`zone`, the domain or one it's under); and the Worker the server ran in
-/// before (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over.
+/// Cloudflare zone (`zone`, the domain or one it's under); the Worker the server ran in before
+/// (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over; and what
+/// its server's verifier plays: the game whose boards it ranks (`boards`) and their version
+/// (`board`, games/capybara/replay.wrela's `BOARD`, which a test checks). Each release keeps that
+/// verifier at `verifiers/<boards>/<board>/<sha256 of its files>/` in the bucket of builds
+/// (site.wrela's `BUILDS_BUCKET`), so a later build, of a later board, plays this board's runs with
+/// it (games/capybara/boards.wrela's `ARCHIVED`).
 pub struct Console: Clone {
     pub dir: Text,
     pub worker: Text,
@@ -47,6 +57,8 @@ pub struct Console: Clone {
     pub api: Text,
     pub zone: Text,
     pub api_from: Text,
+    pub boards: Text,
+    pub board: u32,
 }
 
 /// The reference docs: a Wrela program (`package`) beside the docs that `wrela doc --export`
@@ -74,18 +86,20 @@ pub const CATALOG: Catalog = Catalog {
         dir: "console",
         worker: "wrela-console",
         domain: "wrela.dev",
-        description: "Games made in Wrela, a language and engine for games that run in the browser.",
+        description: "Games that run in your browser, built with the Wrela language and engine.",
         api: "wrela-console-api",
         zone: "wrela.dev",
         // The server ran in the console's Worker until 2026-10-31, when its first deploy here
         // took its class over (rywible/wrela#348); there's nothing left to take.
         api_from: "",
+        boards: "capybara",
+        board: 3,
     },
     docs: Docs {
         dir: "docsite",
         worker: "wrela-docs",
         domain: "docs.wrela.dev",
-        description: "The reference for Wrela: the language, its standard library, the engine, ui and platform packages, and the studio's tool.",
+        description: "The Wrela reference. It covers the language, its standard library, the engine, the ui and platform packages, and the studio's tool.",
         packages: Vec::from(["engine", "land", "ui", "platform", "studio/tool"]),
     },
     games: Vec::from(
@@ -102,10 +116,14 @@ pub const CATALOG: Catalog = Catalog {
                         Build { name: "capybara", dir: "games/capybara" },
                     ],
                 ),
+                // The play build, playing its searched runs by itself with no sound and no HUD
+                // when its address says `#attract` (games/capybara/attract.wrela): toolchain
+                // 0.17.0 opens a program at an address with a fragment.
+                attract: "capybara#attract",
                 cover: "games/capybara/cover.png",
                 hero: "games/capybara/hero.png",
                 logo: "",
-                tagline: "A day at the zoo: nine habitats to run, swim and slide through.",
+                tagline: "Run, swim and slide through nine habitats at the zoo.",
                 theme: "games/capybara/theme.txt",
             },
         ],
@@ -153,6 +171,22 @@ fn component(value: str) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from(f"invalid release component: '{value}'"))
+    }
+}
+
+/// The build of a game's `attract` (before its `#`, if it has one).
+pub fn attract_build(attract: str) -> borrow str {
+    match attract.find("#") {
+        Some(k) => attract.slice(0, k),
+        None => attract,
+    }
+}
+
+/// The fragment of a game's `attract` (after its `#`; empty if it has none).
+pub fn attract_fragment(attract: str) -> borrow str {
+    match attract.find("#") {
+        Some(k) => attract.slice(k + 1, attract.len()),
+        None => attract.slice(from: 0, to: 0),
     }
 }
 
@@ -211,8 +245,10 @@ fn first_label(domain: str) -> borrow str {
 /// Why `c` can't be released, if it can't: a part that isn't a component, a Worker or a domain
 /// two projects share, a console outside its zone, a game on one of the project's own hosts, a
 /// title or description that isn't one line, a tagline that isn't one line or is longer than the
-/// console shows, a session that isn't one of its game's builds, or a build with a reserved
-/// name. Whether its packages and covers are there is the tool's to check (`paths`).
+/// console shows, a session or an attract build that isn't one of its game's builds (or an
+/// attract build that is its session), an attract fragment that isn't a plain token (a component)
+/// or asks for test mode, which a host won't open, or a build with a reserved name. Whether its
+/// packages and covers are there is the tool's to check (`paths`).
 pub fn check(c: Catalog) -> Result<(), String> {
     var workers: Vec<String> = Vec::new()
     var domains: Vec<String> = Vec::new()
@@ -277,6 +313,23 @@ pub fn check(c: Catalog) -> Result<(), String> {
         }
         if !session {
             return Err(String::from("the session build is missing"))
+        }
+        if !game.attract.is_empty() {
+            let build = attract_build(game.attract)
+            var attract = false
+            for b in game.builds {
+                if b.name == build {
+                    attract = true
+                }
+            }
+            if !attract || build == game.session {
+                return Err(String::from(f"the attract build of {game.id} isn't one of its own"))
+            }
+            let fragment = attract_fragment(game.attract)
+            let marked = game.attract.find("#").is_some()
+            if marked && (!is_component(fragment) || fragment.starts_with("test")) {
+                return Err(String::from(f"invalid attract fragment for {game.id}: '{fragment}'"))
+            }
         }
         var names: Vec<String> = Vec::new()
         for b in game.builds {

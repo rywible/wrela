@@ -28,7 +28,7 @@ const KEYS: [(u32, Key); 5] = [
 
 /// A recorded run of level `level` as a script of frames at 120 a second, one tick a frame: on the
 /// first level, Enter on the first frame, to leave the title the game opens on (a tick that
-/// doesn't step); on another, Esc, down twice and Enter to its levels' map, right to the level and
+/// doesn't step); on another, Esc, up twice and Enter to its levels' map, right to the level and
 /// Enter. Then from the next frame each hold's keys go down or up where its bits change. A press
 /// of jump held on is a release and a press in its frame, and a press not held on is a tap: down
 /// and up in its frame. Run it with `--fps 120`.
@@ -42,7 +42,7 @@ pub fn script_of(level: u32, run: [Hold]) -> Script {
     }
     var s = Script::frames()
     var f = 1
-    for key in [Key::Escape, Key::Down, Key::Down, Key::Enter] {
+    for key in [Key::Escape, Key::Up, Key::Up, Key::Enter] {
         s = take s.key_down(f, key)
         s = take s.key_up(f + 1, key)
         f += 2
@@ -107,8 +107,9 @@ fn to_lab() -> Script {
 }
 
 /// The runs, at 1280x720 and 60 frames a second: Esc opens the menu from the title the game opens
-/// on, down three times and Enter choose the runs, Tab switches to the tool-assisted board, the pointer
-/// rests on its fastest any% run, then clicks it to watch it.
+/// on, down twice and Enter choose the leaderboard (opened alone, it shows the player's runs), Tab
+/// switches to the tool-assisted board, the pointer rests on its fastest any% run, then clicks it
+/// to watch it.
 pub const RUNS: Script = Script::frames()
     .key_down(1, Key::Escape)
     .key_up(2, Key::Escape)
@@ -116,8 +117,6 @@ pub const RUNS: Script = Script::frames()
     .key_up(4, Key::Down)
     .key_down(5, Key::Down)
     .key_up(6, Key::Down)
-    .key_down(7, Key::Down)
-    .key_up(8, Key::Down)
     .key_down(9, Key::Enter)
     .key_up(10, Key::Enter)
     .key_down(12, Key::Tab)
@@ -153,6 +152,49 @@ pub const GHOST: Script = Script::frames()
     .key_down(21, Key::Escape)
     .key_up(22, Key::Escape)
     .key_down(24, Key::D)
+
+/// The leaderboard's search, at 60 frames a second: Esc, down twice and Enter open the
+/// leaderboard, F opens the search, and "si", a space ("Sir"), "wob" are typed, its completions
+/// under the noun. Opened alone, it says where the world's names are.
+pub const SEARCH: Script = Script::frames()
+    .press(1, Key::Escape)
+    .press(3, Key::Down)
+    .press(5, Key::Down)
+    .press(9, Key::Enter)
+    .press(12, Key::F)
+    .text(16, "si")
+    .text(18, " ")
+    .text(20, "wob")
+
+/// Watching a run, at 60 frames a second: the leaderboard as `SEARCH` opens it, Tab to the
+/// tool-assisted runs, and Enter watches the fastest any%, its bar offering Race.
+pub const WATCHED: Script = Script::frames()
+    .press(1, Key::Escape)
+    .press(3, Key::Down)
+    .press(5, Key::Down)
+    .press(9, Key::Enter)
+    .press(12, Key::Tab)
+    .press(15, Key::Enter)
+
+/// A race, at 120 frames a second: the leaderboard's tool-assisted runs as `WATCHED` opens them,
+/// down to the second fastest any%, R races it from the level's title, Enter starts it, and the
+/// first level's searched human line plays to the goal, whose card says where it lost the most
+/// time.
+pub const RACE: Script = raced()
+
+fn raced() -> Script {
+    let s = Script::frames()
+        .press(1, Key::Escape)
+        .press(3, Key::Down)
+        .press(5, Key::Down)
+        .press(9, Key::Enter)
+        .press(12, Key::Tab)
+        .press(14, Key::Down)
+        .press(15, Key::R)
+        .key_down(18, Key::Enter)
+        .key_up(19, Key::Enter)
+    keys_of(take s, routes_home::HUMAN_ANY, first: 19)
+}
 
 /// Each level's searched human-possible any% run (searched.wrela), as `LEVEL`, for stills and
 /// clips of the level: none until the level is searched.

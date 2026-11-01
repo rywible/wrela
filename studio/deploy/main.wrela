@@ -12,26 +12,31 @@
 //
 // **Where kept releases are.** Each Worker serves static assets alone, so Cloudflare runs no
 // script, and bills nothing, for any request of theirs (release_tool::site::wrangler_config).
-// Its assets are the new release and each release it keeps, beside it under `releases/<id>/`. So
-// a deploy fetches each kept release from the live site before any Worker changes: its listing
-// (`files.json`), as its Worker serves it, and each file it lists, once, checked against its
-// SHA-256, into the Worker's directory in the release. A file that doesn't arrive, or doesn't
-// match, stops the deploy before anything changes, and so does a Worker over the file limits.
-// The docs keep none: nothing pins their releases, each release is mostly new pages (each names
-// its commit), and a reader's tab that finds a page gone reloads. The console's server is a Worker of its own (`release.json`'s `api`), on
-// the console's API paths.
+// Its assets are the new release and each release it keeps, beside it under `releases/<id>/`,
+// and the union of the shared files they name, each once: the payloads under `b/` and the
+// runtimes under `r/` (release_tool::addresses), which a release's `files.json` lists by their
+// root-absolute paths. So a deploy fetches each kept release from the live site before any
+// Worker changes: its listing (`files.json`), as its Worker serves it, and each file it lists
+// that the Worker's directory doesn't have yet, once, checked against its SHA-256. A file that
+// doesn't arrive, or doesn't match, stops the deploy before anything changes, and so does a
+// Worker over the file limits. A kept release the docs Worker answers 404 for never went live
+// there, and no reader holds it: the docs keep the rest. The console's server is a Worker of its
+// own (`release.json`'s `api`), on the console's API paths.
 //
 // With `--require-main-head`, a deploy whose commit is no longer the head of `main` (as GitHub's
 // git service advertises it, as `git ls-remote` reads it) stops before it changes anything.
 //
 // Wrangler deploys each Worker (`npx --yes wrangler@<WRANGLER>`, granted as `npx`), with the
-// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. The console's
-// server deploys first, since the games and the console that call it are the release's; then the
+// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. First the
+// release's server's verifier goes into the bucket of builds (`keep_verifier`), so a later build
+// can play this board's runs; then the console's server deploys, since the games and the console
+// that call it are the release's; then the
 // games, and then the console, so a console never offers a game release its Worker doesn't serve
 // yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
 // and games up to date. Each Worker must serve the new release, byte for byte, and each kept
 // release's listing, the console must list the new release as the one live release, and the
-// console's API paths must reach its server, before the deploy passes. The log says what each Worker keeps, what Wrangler said of each Worker and
+// console's API paths must reach its server, before the deploy passes. Then each WASM and runtime
+// script of the console and the games must come back as Zstandard (`ZSTD_RULE`). The log says what each Worker keeps, what Wrangler said of each Worker and
 // that each serves its releases.
 //
 // `--dry-run` does all but run Wrangler: it fetches the kept releases into the release and writes
@@ -39,9 +44,9 @@
 // if only to empty values, for a dry run too.
 
 use policy::{
-    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, history_json, home, insert,
-    kept, main_head, next_history, quoted, read_history, read_listing, read_release, redirected,
-    uploads,
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, history_json,
+    home, insert, kept, main_head, next_history, not_zstd, placed, quoted, read_history,
+    read_listing, read_release, redirected, uploads,
 }
 use release_tool::io::{copy_files, data_bytes, read_files, write_files}
 use release_tool::tree::hex_sha
@@ -88,6 +93,15 @@ pub const BACKOFF: [f64; 4] = [1.0, 2.0, 4.0, 8.0]
 /// before any Worker runs.
 pub const API_PROBE: Text = "/api/accounts"
 
+/// Whether Ryan has set the zone's Compression Rule (Zstandard, then Brotli, then Gzip:
+/// docs/toolchain.md, "Delivery"). Once it's set, a WASM or runtime script of the console or a game
+/// that doesn't come back with `content-encoding: zstd` fails the deploy; until then the log
+/// warns of each.
+pub const ZSTD_RULE: bool = false
+
+/// What the Zstandard check asks for, as a browser that takes both does.
+pub const ACCEPT_ENCODING: Text = "zstd, br"
+
 /// How many times a Worker is asked whether it serves the new release, and the seconds between.
 pub const TRIES: u32 = 12
 pub const BETWEEN_TRIES: f64 = 5.0
@@ -95,14 +109,16 @@ pub const BETWEEN_TRIES: f64 = 5.0
 pub const USAGE: Text = "usage: wrela tool deploy -- [--require-main-head] [--dry-run]"
 
 /// What a deploy does: the root its release is in, whether it stops unless its commit is the
-/// head of `main`, whether it stops before Wrangler runs, the Workers' limits, and the
-/// repository whose `main` it checks.
+/// head of `main`, whether it stops before Wrangler runs, the Workers' limits, the repository
+/// whose `main` it checks, and whether a file that doesn't come back as Zstandard fails it
+/// (`ZSTD_RULE`).
 pub struct Options: Clone {
     pub root: String,
     pub require_main_head: bool,
     pub dry_run: bool,
     pub limits: Limits,
     pub repository: String,
+    pub zstd: bool,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -113,6 +129,7 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         dry_run: false,
         limits: CLOUDFLARE,
         repository: String::from(REPOSITORY),
+        zstd: ZSTD_RULE,
     }
     for a in given {
         if a.as_str() == "--require-main-head" && !o.require_main_head {
@@ -431,10 +448,15 @@ fn named(names: [String], name: str) -> bool {
     false
 }
 
-/// The listing of `release` that `w` serves.
-pub fn served_listing(release: str, w: Worker) -> Result<Listing, ToolError> {
+/// The listing of `release` that `w` serves, or `None` if `w` is the docs and they never served
+/// it (404).
+pub fn served_listing(release: str, w: Worker) -> Result<Option<Listing>, ToolError> {
     let url = String::from(f"https://{w.domain.as_str()}/releases/{release}/files.json")
     let g = get(url.as_str())?
+    if g.status == 404 && w.docs {
+        print(f"{w.worker.as_str()} never served {release}")
+        return Ok(None)
+    }
     if g.status != 200 {
         return Err(ToolError::new(f"GET {url.as_str()}: HTTP {g.status}"))
     }
@@ -442,7 +464,16 @@ pub fn served_listing(release: str, w: Worker) -> Result<Listing, ToolError> {
         return Err(ToolError::new(f"{release}: its files.json isn't UTF-8"))
     }
     let files = read_listing(release, text.as_str()).map_err(own)?
-    Ok(Listing { worker: w.clone(), release: String::from(release), files, body: g.body.clone() })
+    Ok(
+        Some(
+            Listing {
+                worker: w.clone(),
+                release: String::from(release),
+                files,
+                body: g.body.clone(),
+            },
+        ),
+    )
 }
 
 /// Fetches each of `wanted` (a file's URL on the live site, and its SHA-256) into `STAGE` in
@@ -476,17 +507,22 @@ pub fn fetch_files(wanted: [(String, String)], root: str) -> Result<(), ToolErro
 }
 
 /// The files of the new release `rel`, read from `root` before anything changes: each a SHA-256
-/// and the root path of a file that has it, sorted by SHA-256. A Worker whose listing is missing
-/// or isn't one stops the deploy.
+/// and the root path of a file that has it (in its release, or a shared one at its Worker's
+/// root: `placed`), sorted by SHA-256. A Worker whose listing is missing or isn't one stops the
+/// deploy.
 pub fn new_files(rel: Release, root: str) -> Result<Vec<(String, String)>, ToolError> {
     var out: Vec<(String, String)> = Vec::new()
+    let r = rel.release.as_str()
     for w in rel.workers {
-        let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{rel.release.as_str()}")
-        let Some(text) = String::from_utf8(read_one(f"{dir.as_str()}/files.json")?) else {
-            return Err(ToolError::new(f"{dir.as_str()}/files.json isn't UTF-8"))
+        let dir = String::from(f"{root}/{w.worker.as_str()}")
+        let listing = String::from(f"{dir.as_str()}/releases/{r}/files.json")
+        let Some(text) = String::from_utf8(read_one(listing.as_str())?) else {
+            return Err(ToolError::new(f"{listing.as_str()} isn't UTF-8"))
         }
-        for (path, sha) in read_listing(rel.release.as_str(), text.as_str()).map_err(own)? {
-            out.push((sha.clone(), String::from(f"{dir.as_str()}/{path.as_str()}")))
+        for (path, sha) in read_listing(r, text.as_str()).map_err(own)? {
+            out.push(
+                (sha.clone(), String::from(f"{dir.as_str()}/{placed(r, path.as_str()).as_str()}")),
+            )
         }
     }
     out.sort_by(|a: (String, String), b: (String, String)| a.0 < b.0)
@@ -513,9 +549,11 @@ fn file_with(files: [(String, String)], sha: str) -> Option<String> {
 
 /// Each release that a deploy of `rel` at `at`, after `deploys`, keeps, put beside the new one in
 /// the directory of each of its Workers in `root`: its listing as the Worker serves it, and each
-/// file that lists, copied from the new release (`local`, `new_files`) if it has it, else fetched
-/// from the live site into `STAGE`, each once, all at once (`fetch_files`) and each checked
-/// against its SHA-256. The listing of each kept release on each of its Workers.
+/// file that lists (its own in its release, a shared one at the root, once a Worker: `placed`),
+/// copied from the new release (`local`, `new_files`) if it has it, else fetched from the live
+/// site into `STAGE`, each once, all at once (`fetch_files`) and each checked against its
+/// SHA-256. A shared file the new release has is in the Worker's directory already. The listing
+/// of each kept release on each of its Workers.
 pub fn keep(
     rel: Release,
     deploys: [Deploy],
@@ -529,17 +567,39 @@ pub fn keep(
     var copies: Vec<(String, String)> = Vec::new()
     var writes: Vec<(String, Vec<u8>)> = Vec::new()
     var listed: Vec<Listing> = Vec::new()
+    // The shared files each Worker's directory has: a sorted set of root paths, the new
+    // release's first, so none is copied onto itself.
+    var there: Vec<String> = Vec::new()
+    for (_, path) in local {
+        for w in rel.workers {
+            for store in ["b", "r"] {
+                if path.as_str().starts_with(f"{root}/{w.worker.as_str()}/{store}/") {
+                    let _ = insert(mut there, path.as_str())
+                }
+            }
+        }
+    }
     for d in kept(deploys, at, rel.release.as_str()) {
         for w in rel.workers {
-            // A Worker the kept release didn't have (a game added since) keeps nothing, and nor
-            // do the docs.
-            if w.docs || !named(d.workers, w.worker.as_str()) {
+            // A Worker the kept release didn't have (a game added since) keeps nothing.
+            if !named(d.workers, w.worker.as_str()) {
                 continue
             }
-            let l = served_listing(d.release.as_str(), w)?
-            let dir = String::from(f"{root}/{w.worker.as_str()}/releases/{d.release.as_str()}")
+            let Some(l) = served_listing(d.release.as_str(), w)? else { continue }
+            let worker_dir = String::from(f"{root}/{w.worker.as_str()}")
+            let dir = String::from(f"{worker_dir.as_str()}/releases/{d.release.as_str()}")
             var fetched = 0
+            var shared = 0
             for (path, sha) in l.files {
+                let to = String::from(
+                    f"{worker_dir.as_str()}/{placed(d.release.as_str(), path.as_str()).as_str()}",
+                )
+                if path.as_str().starts_with("/") {
+                    shared += 1
+                    if !insert(mut there, to.as_str()) {
+                        continue
+                    }
+                }
                 let from = match file_with(local, sha.as_str()) {
                     Some(f) => take f,
                     None => {
@@ -547,7 +607,7 @@ pub fn keep(
                             fetches.push(
                                 (
                                     String::from(
-                                        f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/{quoted(path.as_str()).as_str()}",
+                                        f"https://{w.domain.as_str()}/{quoted(placed(d.release.as_str(), path.as_str()).as_str()).as_str()}",
                                     ),
                                     sha.clone(),
                                 ),
@@ -557,11 +617,11 @@ pub fn keep(
                         String::from(f"{root}/{STAGE}/{sha.as_str()}")
                     },
                 }
-                copies.push((take from, String::from(f"{dir.as_str()}/{path.as_str()}")))
+                copies.push((take from, take to))
             }
             writes.push((String::from(f"{dir.as_str()}/files.json"), l.body.clone()))
             print(
-                f"{w.worker.as_str()} keeps {d.release.as_str()}: {l.files.len()} files, {fetched} to fetch from {w.domain.as_str()}",
+                f"{w.worker.as_str()} keeps {d.release.as_str()}: {l.files.len()} files ({shared} shared), {fetched} to fetch from {w.domain.as_str()}",
             )
             listed.push(take l)
         }
@@ -611,6 +671,29 @@ fn said(ran: run::Ran) -> Result<String, ToolError> {
     Ok(out)
 }
 
+/// Runs Wrangler with `args` in `root` (`what`, as its errors name it): its exit status and what
+/// it said.
+fn wrangler_ran(args: [String], root: str, what: str) -> Result<(i32, String), ToolError> {
+    let ran = run::run(wrangler(args, root))
+        .wait()
+        .map_err(|e| ToolError::new(f"{what}: {e.message()}"))?
+    let out = said(ran)?
+    Ok((ran.status, out))
+}
+
+/// Runs Wrangler with `args` in `root` (`what`, as its errors name it): what it said, or, if it
+/// failed, an error once what it said is printed.
+fn run_wrangler(args: [String], root: str, what: str) -> Result<String, ToolError> {
+    let (status, out) = wrangler_ran(args, root, what)?
+    if status != 0 {
+        if !out.is_empty() {
+            print(out.as_str())
+        }
+        return Err(ToolError::new(f"{what} exited {status}"))
+    }
+    Ok(out)
+}
+
 /// Deploys the Worker that `<worker>.wrangler.json` in `root` configures, saying what Wrangler
 /// said.
 pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
@@ -618,15 +701,54 @@ pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
         [String::from("deploy"), String::from("--config"), String::from(f"{worker}.wrangler.json")],
     )
     print(f"{worker}: wrangler deploy")
-    let ran = run::run(wrangler(args, root))
-        .wait()
-        .map_err(|e| ToolError::new(f"wrangler deploy of {worker}: {e.message()}"))?
-    let out = said(ran)?
+    let out = run_wrangler(args, root, f"wrangler deploy of {worker}")?
     if !out.is_empty() {
         print(out.as_str())
     }
-    if ran.status != 0 {
-        return Err(ToolError::new(f"wrangler deploy of {worker} exited {ran.status}"))
+    Ok(())
+}
+
+/// Puts the release's server's verifier in the bucket of builds (release_tool::site's
+/// `BUILDS_BUCKET`), at its path, a file at a time, before any Worker deploys: a later build plays
+/// this board's runs with it (toolchain 0.18.0's `call_build`). Its path names its files' bytes, so
+/// one whose `verifier.json` is there already (each release of the same build's) is that one, and
+/// isn't put again.
+pub fn keep_verifier(rel: Release, root: str) -> Result<(), ToolError> {
+    let bucket = release_tool::site::BUILDS_BUCKET
+    let at = String::from(f"{bucket}/{rel.verifier.path.as_str()}")
+    print(f"the server's verifier: {at.as_str()}")
+    let described = String::from(f"{at.as_str()}/{release_tool::site::VERIFIER_JSON}")
+    let probe = Vec::from(
+        [
+            String::from("r2"),
+            String::from("object"),
+            String::from("get"),
+            described.clone(),
+            String::from("--pipe"),
+            String::from("--remote"),
+        ],
+    )
+    // Any failure (none there, or Wrangler's own) puts it, which says what went wrong.
+    let (status, _) = wrangler_ran(probe, root, f"wrangler r2 object get {described.as_str()}")?
+    if status == 0 {
+        print("  kept already")
+        return Ok(())
+    }
+    for f in rel.verifier.files {
+        let key = String::from(f"{at.as_str()}/{f.as_str()}")
+        let file = String::from(f"{rel.api.as_str()}.server/verifier/{f.as_str()}")
+        let args = Vec::from(
+            [
+                String::from("r2"),
+                String::from("object"),
+                String::from("put"),
+                key.clone(),
+                String::from("--file"),
+                take file,
+                String::from("--remote"),
+            ],
+        )
+        let _ = run_wrangler(args, root, f"wrangler r2 object put {key.as_str()}")?
     }
     Ok(())
 }
@@ -683,6 +805,7 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
         print("a dry run: nothing deployed")
         return Ok(after)
     }
+    keep_verifier(rel, root)?
     deploy_worker(rel.api.as_str(), root)?
     for w in deploy_order(rel.workers) {
         deploy_worker(w.worker.as_str(), root)?
@@ -690,6 +813,7 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
     verify(rel, root)?
     verify_kept(listings)?
     verify_api(console.domain.as_str())?
+    let _ = verify_zstd(rel, root, o.zstd)?
     Ok(after)
 }
 
@@ -774,6 +898,56 @@ pub fn verify_api(domain: str) -> Result<(), ToolError> {
         }
     }
     Err(ToolError::new(f"POST {url.as_str()} doesn't reach the console's server: {last.as_str()}"))
+}
+
+/// Asks each WASM and runtime script of the new release `rel` (in `root`) on the console and the
+/// games (`compressed`) for Zstandard or Brotli (`ACCEPT_ENCODING`), and says which didn't come
+/// back as Zstandard (`not_zstd`): each a warning in the log, or, if `required`, the deploy's
+/// failure. The warnings.
+pub fn verify_zstd(rel: Release, root: str, required: bool) -> Result<Vec<String>, ToolError> {
+    var problems: Vec<String> = Vec::new()
+    var asked = 0
+    let r = rel.release.as_str()
+    for w in rel.workers {
+        if w.docs {
+            continue
+        }
+        let listing = read_one(f"{root}/{w.worker.as_str()}/releases/{r}/files.json")?
+        let Some(text) = String::from_utf8(take listing) else {
+            return Err(ToolError::new(f"{w.worker.as_str()}'s files.json isn't UTF-8"))
+        }
+        for path in compressed(read_listing(r, text.as_str()).map_err(own)?) {
+            let url = String::from(f"https://{w.domain.as_str()}{quoted(path.as_str()).as_str()}")
+            var req = request(url.as_str())
+            req.headers.push(
+                Header {
+                    name: String::from("Accept-Encoding"),
+                    value: String::from(ACCEPT_ENCODING),
+                },
+            )
+            asked += 1
+            let problem = match http::fetch(take req).wait() {
+                Ok(got) => not_zstd(url.as_str(), got.status, got.header("content-encoding")),
+                Err(e) => Some(String::from(f"GET {url.as_str()}: {e.message()}")),
+            }
+            if let Some(p) = problem {
+                problems.push(p.clone())
+            }
+        }
+    }
+    if problems.is_empty() {
+        print(f"each of {asked} WASM modules and runtime scripts comes back as Zstandard")
+        return Ok(problems)
+    }
+    if required {
+        return Err(ToolError::new(problems[0].as_str()))
+    }
+    for p in problems {
+        print(
+            f"warning: {p.as_str()} (until the zone's Compression Rule is set: docs/toolchain.md)",
+        )
+    }
+    Ok(problems)
 }
 
 /// Waits until each Worker serves each of `listings`, its kept releases, byte for byte, as its

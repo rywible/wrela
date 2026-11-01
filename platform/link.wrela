@@ -8,38 +8,99 @@
 // the console sends a `ToGame` (the account as it is, and the answer to the game's last ask), and
 // the game keeps that call until it has something to ask, then replies with it (`FromGame`). The
 // console carries the ask to the server and calls again with the answer. So there is always one
-// call open while the game shows, and nothing is asked twice. A game that doesn't take part never
-// receives, and the console's call waits unanswered until the game closes.
+// call open while the game shows, and nothing is asked twice. With nothing to ask, the game hands
+// the call back (`Ask::Nothing`) once it has held it `HEARTBEAT`, and the console calls again at
+// once, so the account as it is now (a sign-in, what it chose of posting) reaches the game within
+// that, never only once the game asks something. A game that doesn't take part never receives,
+// and the console's call waits unanswered until the game closes.
 
 use std::serialize::{LoadError, Serialize, load, save}
-use wire::Place
+use wire::{Found, Place, RunRef}
 
 /// The account, as a game may know it: its name and a token for the game's boards (empty when
-/// signed out, or before the name is fixed).
+/// signed out, or before the name is fixed), whether it may post (it has agreed to what posting
+/// makes public: until then the game shows posting.wrela's words, and asks `Consent` once the
+/// player chooses Post), whether it posts its best runs, and whether its recovery codes are still
+/// to be saved (the console holds them on its account page until they are: after a post the game
+/// may show posting.wrela's `SAVE_CODES`). `may_post` and `post_best` are what the server said only
+/// once `posting_known`: until then (the console hasn't heard, or couldn't ask) they're unknown,
+/// never a choice not to post.
 pub struct Account: Clone + Eq + Serialize {
     pub signed_in: bool,
+    /// Who the account is, whatever its name (empty when signed out): what the game keeps of it is
+    /// its, and goes when it's another.
+    pub id: Vec<u8> = Vec::new(),
     pub name: String,
     pub token: Vec<u8>,
+    pub may_post: bool = false,
+    pub post_best: bool = false,
+    pub save_codes: bool = false,
+    pub posting_known: bool = false,
 }
+
+/// How long a game holds the console's call with nothing to ask before it hands it back (s): so
+/// long, at most, before it hears the account changed. Well within the host's two minutes for a
+/// call.
+pub const HEARTBEAT: f32 = 2.0
 
 /// What a game may ask.
 pub enum Ask: Clone + Serialize {
-    /// A run for the game's board: its replay's bytes, and the token it was given.
-    Upload { token: Vec<u8>, replay: Vec<u8> },
-    /// A page of a board, from place `from` (`wire::WHOLE` for a whole game's).
-    Board { course: u32, category: u32, from: u32 },
-    /// A run on a board, to watch.
-    Watch { run: u64 },
+    /// Nothing: the call handed back after `HEARTBEAT`, so the console calls again with the
+    /// account as it is now (and `Answer::Nothing`). It's never carried to the server.
+    Nothing,
+    /// A run for the game's board version `board` (its build of play's): its replay's bytes, and
+    /// the token it was given.
+    Upload { token: Vec<u8>, board: u32, replay: Vec<u8> },
+    /// A page of a board (`wire::WHOLE` for a whole game's): the first (`from` 0, `after` empty),
+    /// or the one after the `from` places it has, from the last page's `next` (`after`).
+    Board { course: u32, category: u32, from: u32, after: Vec<u8> },
+    /// A run's replay (a place's `run`), to watch or race: answered by `Run`, whose bytes the game
+    /// checks against the place's `replay` hash. It never changes, so the browser's cache and the
+    /// edge's keep it, and asking again costs the server nothing.
+    Watch { run: RunRef },
+    /// The places around `name`'s on a board (`wire::WHOLE` for a whole game's): answered by
+    /// `Around`, or by `Unplaced` when the name has no place there.
+    Around { course: u32, category: u32, name: String },
+    /// The names whose title, noun and epithet start with these (an empty part matches any).
+    Names { title: String, noun: String, epithet: String },
+    /// The player chose Post on the game's own screen of what posting makes public
+    /// (posting.wrela's words, at `version`, its `VERSION`), with posting.wrela's `BEST_RUNS` box
+    /// ticked or not (`best_runs`): the console records the agreement with the server and answers
+    /// `Done`, its call's account then saying `may_post` and `post_best`; or why not. A game asks it
+    /// only after the player's choice, never on its own, and never for Not now.
+    Consent { version: u32, best_runs: bool },
 }
 
 /// The answer to a game's last ask.
 pub enum Answer: Clone + Serialize {
     /// Nothing asked yet.
     Nothing,
-    Verified { run: u64, ticks: u32, place: u32 },
+    /// An upload's run, on the boards at `place` (0: past the first thousand, which aren't
+    /// counted further); or refused, and why. A run posted again is
+    /// answered with what came of it the first time (`Verified`, at its place now, or `Rejected`,
+    /// for the same reason), so `Verified` is what says a run is on the boards, never a refusal's
+    /// words. For an upload, `Rejected` is for good: that replay can never go on this board (what
+    /// playing it found, its bytes, or another account's copy). For another ask it's the server's
+    /// refusal, said for a person.
+    Verified { run: RunRef, ticks: u32, place: u32 },
     Rejected { why: String },
-    Board { course: u32, category: u32, places: Vec<Place>, total: u32 },
-    Run { run: u64, replay: Vec<u8> },
+    /// No answer now, to be asked again no sooner than `retry_after` seconds: the server couldn't
+    /// be reached or finish, or was busy, or over a limit; or, for an upload, it can't be taken
+    /// yet (its token, the account's choices, the hour, a ranking that didn't finish). An upload's
+    /// run is to be kept: it may even be on the boards already, and its upload again hears what came
+    /// of it.
+    Failed { why: String, retry_after: u32 },
+    Board { course: u32, category: u32, places: Vec<Place>, total: u32, next: Vec<u8> },
+    Run { run: RunRef, replay: Vec<u8> },
+    /// A slice of a board: the places around the name asked for, which is place `at` (0: past the
+    /// first thousand).
+    Around { places: Vec<Place>, at: u32 },
+    /// The name asked about (`Around`) has no place on that board: the account has no run there
+    /// (yet), so any run of its would be its first.
+    Unplaced,
+    Names { found: Vec<Found> },
+    /// The agreement (`Consent`) is recorded: what it changed is in the call's account.
+    Done,
     /// The console couldn't ask: offline, or signed out, said for a person.
     Offline { why: String },
 }
@@ -80,18 +141,26 @@ fn the_link_reads_back_and_refuses_what_isnt_one() {
             name: String::from("Sir Wobblesnout the Unhurried"),
             token: Vec::from([1, 2]),
         },
-        answer: Answer::Verified { run: 7, ticks: 991, place: 2 },
+        answer: Answer::Verified {
+            run: RunRef { handle: Vec::from([3; 16]), n: 7 },
+            ticks: 991,
+            place: 2,
+        },
     }
     let Some(back) = to_game(save(call)) else { panic("a call") }
     assert(back.account.name == call.account.name && back.account.token == call.account.token)
-    let Answer::Verified { place, .. } = back.answer else { panic("its answer") }
-    assert(place == 2)
-    let ask = FromGame { ask: Ask::Upload { token: Vec::from([1, 2]), replay: Vec::from([9; 40]) } }
-    let Some(Ask::Upload { replay, .. }) = from_game(save(ask)) else { panic("an ask") }
-    assert(replay.len() == 40)
+    assert(!back.account.may_post && !back.account.save_codes, "nothing allowed unless said")
+    assert(!back.account.posting_known, "unknown unless said")
+    let Answer::Verified { place, run, .. } = back.answer else { panic("its answer") }
+    assert(place == 2 && run.n == 7 && run.handle.len() == 16)
+    let ask = FromGame {
+        ask: Ask::Upload { token: Vec::from([1, 2]), board: 3, replay: Vec::from([9; 40]) },
+    }
+    let Some(Ask::Upload { replay, board, .. }) = from_game(save(ask)) else { panic("an ask") }
+    assert(replay.len() == 40 && board == 3)
     assert(from_game([1, 2, 3]).is_none() && to_game([]).is_none())
     let big = FromGame {
-        ask: Ask::Upload { token: Vec::new(), replay: Vec::filled(MOST_ASK, u8(0)) },
+        ask: Ask::Upload { token: Vec::new(), board: 3, replay: Vec::filled(MOST_ASK, u8(0)) },
     }
     assert(from_game(save(big)).is_none(), "too large")
 }

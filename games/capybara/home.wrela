@@ -132,16 +132,16 @@ pub const SIGNS: [Sign; 5] = [
         first: Act::Jump,
         second: Act::Jump,
         prompts: 2,
-        line: "Again in the air",
+        line: "Jump again in the air",
         teaches: DOUBLE_JUMP,
     },
     Sign {
         at: vec2(67.5, 0.0),
-        heading: "Water is speed",
+        heading: "Splash for speed",
         first: Act::Run,
         second: Act::Run,
         prompts: 0,
-        line: "A splash makes you faster",
+        line: "Run through water to speed up",
         teaches: SPLASH,
     },
     Sign {
@@ -159,7 +159,7 @@ pub const SIGNS: [Sign; 5] = [
         first: Act::Jump,
         second: Act::Swim,
         prompts: 2,
-        line: "Up and down in turn: the dolphin kick",
+        line: "Press up and down in turn",
         teaches: SWIM,
     },
 ]

@@ -8,7 +8,7 @@
 // on the first frame.
 //
 // The game opens on the level's title; Esc, P or a controller's Start pauses on a menu: resume,
-// restart, the runs, the options and the controls. The pages and their focus are the sim's
+// restart, the leaderboard, the levels, the options and the controls. The pages and their focus are the sim's
 // (world.wrela); the frames draw them, with the keys or the controller's buttons the player last
 // used (ui::glyphs), and publish each as a semantic tree, so a click or a screen reader works
 // them too. While playing, the screen holds only the snacks' count at the top left, and the clock
@@ -21,11 +21,15 @@
 // lab). A controller: the stick or pad, South or East to jump, Select to restart.
 //
 // Runs (replay.wrela): each finished attempt is a replay, and the best few of each category are
-// kept in the game's storage. The menu's Runs shows them: two boards, the player's runs and the
-// tool-assisted runs (the route search's, made by a program, never ranked with a player's), each
-// any% and 100%. Choosing a run watches it (watch.wrela). The ghost that runs beside the player
-// (the options) is their best, a tool-assisted run, or none; with the clock shown, each
-// checkpoint's split is against it.
+// kept in the game's storage. The menu's Leaderboard shows them beside the world's: the world's
+// board first, a search of its names (search.wrela), the player's runs, the tool-assisted runs
+// (the route search's, made by a program, never ranked with a player's) and the world's whole
+// game, each any% and 100%. Choosing a run watches it (watch.wrela), and R races it: the level
+// again with that run as the ghost. The ghost that runs beside the player (the options) is their
+// best, a tool-assisted run, the world's run above their place or its record, or none; with the
+// clock shown, each checkpoint's split is against it, and the goal's card says where the most time
+// went. A finished run is posted to the world's board when the account asks for its best runs
+// to be (online.wrela), and the card says its place.
 //
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
@@ -59,25 +63,36 @@ use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
 use std::io::{Pending, load, print, store}
 use replay::{
-    ANY, AUTOPILOT, FULL, HUMAN, Pose, Replay, YOU, counts, replay, splits, tool_assisted, trail,
-    verify,
+    ANY, AUTOPILOT, FULL, HUMAN, Pose, Replay, YOU, counts, most_lost, replay, splits,
+    tool_assisted, trail, verify,
 }
 use progress::{Progress, SAVE}
 use platform::presentation::Link
+use platform::wire::Place
 use screens::{
     Act, CARD, Facts, INKED, MENU_LABELS, OPTION_LABELS, Prompt, SOFT, card, clock, controls, Stop,
     controls_rects, facts, footer, goal_card, list_rects, map, map_rects, option_about,
     option_values, seconds, start_rect, title, tree, unit,
 }
-use settings::{AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, SETTINGS, Settings, decode, encode, turned}
-use signs::{learned, sign_words}
+use settings::{
+    ABOVE_GHOST, AUTOPILOT_GHOST, BEST_GHOST, HUMAN_GHOST, RECORD_GHOST, SETTINGS, Settings, decode,
+    encode, ghost_of, turned,
+}
+use signs::{Card, Wraps, learned, sign_card, sign_words}
 use std::host
 use std::semantics::{Node, Sent}
 use watch::{SPEEDS, Watch, watch}
 use ui::glyphs::{Device, device_of}
 use ui::text::{Face, Fonts}
 use waves::{Pond, water, water_mesh, water_vertex}
-use world::{CONTROLS, MAP, MENU, OPTIONS, RUNS, Snap, TITLE, live, present_live, tick_live}
+use world::{
+    CONTROLS, FIND, MAP, MENU, OPTIONS, RUNS, RUNS_BACK, RUNS_PART, RUNS_RACE, RUNS_SEARCH, Snap,
+    TITLE, finds, leaves_find, live, present_live, races, tick_live,
+}
+use search::Search
+use online::By
+use attract::{Role, role_of}
+use platform::session::answer_of
 use engine::menu::{Nav, Stick}
 
 /// A developer's build (`wrela build games/capybara --set DEV=true`): Tab plays the next course,
@@ -97,10 +112,14 @@ const FIRST: u32 = HOME
 /// The most sprites drawn: the cast's and the particles'.
 const SPRITES: u32 = 1024
 
-/// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
-/// tool-assisted board").
-const PLAYERS: u32 = 0
-const ASSISTED: u32 = 1
+/// The leaderboard's boards after the world's and its search (online.wrela's `WORLD` and
+/// `SEARCH`): the player's runs, and the tool-assisted runs (design.md: "a separate tool-assisted
+/// board").
+const PLAYERS: u32 = 2
+const ASSISTED: u32 = 3
+
+/// How long after the last key a search is asked for while it's typed (s).
+const SEARCH_AFTER: f32 = 0.4
 
 /// How far a watched run seeks at a press (ticks): five seconds.
 const SEEK: u32 = 600
@@ -205,10 +224,12 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The signs' words, drawn into the scene behind the cast (signs.wrela), with the one
-    /// renderer's atlas.
+    /// The signs' words, drawn into the scene over the water and behind the cast (signs.wrela),
+    /// with the one renderer's atlas; and the card that keeps the sign in reach on the screen.
     signs: Uploaded,
     sign_list: DrawList,
+    sign_card: Card,
+    sign_wraps: Wraps,
     /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
     /// from frame to frame, so no frame makes them).
     back: Vec<Sprite>,
@@ -238,11 +259,13 @@ pub struct Lab {
     kept: u32,
     /// The tool-assisted runs of a course, and which (made when the runs' page or a ghost first
     /// asks: each is the sim playing the run, and making them delayed the first frame and each
-    /// change of level), the board shown (`PLAYERS` or `ASSISTED`), and the run with the focus on
-    /// it: its category's column and its row.
+    /// change of level), the board shown (online.wrela's `WORLD`..., `PLAYERS`, `ASSISTED`),
+    /// whether the leaderboard was open the last frame, and the run with the focus on it: its
+    /// category's column and its row.
     assisted: Vec<Replay>,
     assisted_of: Option<u32>,
     board: u32,
+    browsed: bool,
     column: u32,
     row: u32,
     /// The trail the ghost follows, the clock at each checkpoint it reached (its splits), and the
@@ -271,10 +294,65 @@ pub struct Lab {
     nav: Stick,
     /// The link to the console that opened the game (`console`).
     console: Link,
-    /// The world's boards and uploads (online.wrela), and whose the run watched is when it is the
-    /// world's (empty for the player's own and the tool-assisted ones).
+    /// The world's boards and posts (online.wrela), and whose the run watched is and its place
+    /// when it is the world's (empty and 0 for the player's own and the tool-assisted ones; 0 for
+    /// a run the search found).
     online: online::Online,
     watch_name: String,
+    watch_place: u32,
+    /// The search for a name (search.wrela), whether it changed since it was last asked for and
+    /// when, and whether the F that opens it is down (what it types isn't typed into it).
+    search: Search,
+    search_changed: bool,
+    search_at: f32,
+    opener: bool,
+    /// The run raced (R on the leaderboard) and whose it is: the ghost on its course until another
+    /// ghost is chosen; and a world's run to race whose replay is on its way (its hash, whose).
+    race: Option<(Replay, String)>,
+    race_wanted: Option<(Vec<u8>, String)>,
+    /// The world's run the ghost follows, by its replay's hash (empty for none), and whose.
+    ghost_hash: Vec<u8>,
+    ghost_name: String,
+    /// The attempt's clock at each checkpoint it reached, where the most time went against the
+    /// ghost's run once it reached the goal, and its run's fingerprint once kept (empty before),
+    /// for the card's word on its post.
+    mine: Vec<u32>,
+    lost: String,
+    finished_print: Vec<u8>,
+    /// The signed-in player's place on the live course's world board (any%; 0 for none), worked
+    /// out once a frame; and the fingerprints of the player's runs of a course and category as
+    /// the board lists them (online.wrela's `fingerprint`), worked out once until the runs change.
+    place: u32,
+    prints: Vec<(u32, u32, Vec<Vec<u8>>)>,
+    /// The screen of what posting makes public, while it's up (online.wrela's `consenting`):
+    /// whether its box is ticked and which control has the focus (screens.wrela's `POSTING_BOX`...),
+    /// and its layout, for the screen size it was laid out at (`lay_posting`).
+    posting_best: bool,
+    posting_focus: u32,
+    posting_laid: Option<(vec2, screens::Laid)>,
+    /// The world's boards as the leaderboard shows them: around the account's place (`near`: the
+    /// slice round it, or its page if the account is on it) or from the top; the first row shown
+    /// of each category's (any%, 100%), and whether it has been put at the account's place yet.
+    /// And whether the account has a place on the live course's board at all, numbered or not.
+    near: bool,
+    first: [u32; 2],
+    anchored: [bool; 2],
+    placed: bool,
+    /// The rows of each category whose replays were last fetched ahead (`rows_key`).
+    fetched: [u64; 2],
+    /// Whether the screen of what posting makes public was up last frame, and how many times it has
+    /// come up: its nodes are numbered anew each time, so the host starts each with the focus on
+    /// Post, not where the last one's was left.
+    consent_up: bool,
+    consents: u32,
+    /// Whether the reminder to save the recovery codes was shown since the attempt began.
+    reminder_seen: bool,
+    /// What the game is, decided once its address answers (attract.wrela's `Role`): until then
+    /// nothing is drawn, played, stored or asked for. The game played (`Play`) or playing itself
+    /// (`Attract`, opened at `#attract` behind the console's home).
+    role: Role,
+    address: Option<Pending<u8>>,
+    attract: attract::Attract,
 }
 
 pub fn init() -> Lab {
@@ -299,7 +377,8 @@ pub fn init() -> Lab {
         last: None,
         voice: None,
         settings: Settings {},
-        loading_settings: Some(load(SETTINGS)),
+        // Loaded once the game is played (`store_settings`, `store_progress`).
+        loading_settings: None,
         saving_settings: None,
         storing_settings: Storing {},
         music_on: true,
@@ -316,6 +395,8 @@ pub fn init() -> Lab {
         list: DrawList::new(),
         signs: Uploaded::new(),
         sign_list: DrawList::new(),
+        sign_card: Card {},
+        sign_wraps: Wraps {},
         back: Vec::with_capacity(SPRITES),
         front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
@@ -325,18 +406,44 @@ pub fn init() -> Lab {
         tree: Sent {},
         told: Vec::new(),
         progress: progress::fresh(),
-        loading: Some(load(SAVE)),
+        loading: None,
         saving: None,
         unread: None,
         storing: Storing {},
         kept: 0xffffffff,
         assisted: Vec::new(),
         assisted_of: None,
-        board: PLAYERS,
+        board: online::WORLD,
+        browsed: false,
         column: ANY,
         row: 0,
         online: online::online(),
         watch_name: String::new(),
+        watch_place: 0,
+        search: search::search(),
+        search_changed: false,
+        search_at: 0.0,
+        opener: false,
+        race: None,
+        race_wanted: None,
+        ghost_hash: Vec::new(),
+        ghost_name: String::new(),
+        mine: Vec::new(),
+        lost: String::new(),
+        finished_print: Vec::new(),
+        place: 0,
+        prints: Vec::new(),
+        posting_best: false,
+        posting_focus: screens::POSTING_POST,
+        posting_laid: None,
+        near: true,
+        first: [0; 2],
+        anchored: [false; 2],
+        placed: false,
+        fetched: [0; 2],
+        consent_up: false,
+        consents: 0,
+        reminder_seen: false,
         trail: Vec::new(),
         splits: Vec::new(),
         trail_of: 0,
@@ -353,6 +460,9 @@ pub fn init() -> Lab {
         pointer: vec2(-1.0),
         nav: Stick {},
         console: Link::new(),
+        role: Role::Deciding,
+        address: Some(host::address()),
+        attract: attract::attract(),
     }
 }
 
@@ -400,8 +510,12 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
-    if s.voice.is_none() {
-        s.voice = Some(sound::start(music::music()))
+    // Until the address says what the game is, a frame of the margins' sky alone: no HUD, no
+    // sound, nothing stored or asked.
+    if !decided(mut s) {
+        let out = begin_screen_pass(clear: MARGINS)
+        out.present()
+        return
     }
     // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
     phase("sim")
@@ -413,54 +527,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
-    online::update(mut s.online, time)
-    if let Some((r, name)) = online::take_watch(mut s.online) {
-        open_watch(mut s, r.clone())
-        s.watch_name = name.clone()
+    if s.role == Role::Attract {
+        s.attract.play(mut s.watching)
+    } else {
+        played(mut s, live_snap, time, dt, origin, screen)
     }
-    store_progress(mut s, dt)
-    store_settings(mut s, dt)
-    if live_snap.finished > 0 {
-        // The best before this run, before it's kept among the runs.
-        let key = live_snap.course << 16 | (live_snap.attempt & 0xffff)
-        if key != s.finish_key {
-            s.finish_key = key
-            s.best_before = best(s, live_snap.course)
-        }
-    }
-    keep_finished(mut s, live_snap)
-    // F3 shows the readout, and M turns the music off and on. The frames' keys are their own: the
-    // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
-    // board's and the watch's.
-    let browsing = live_snap.paused == 1 && live_snap.page == RUNS
-    for raw in events() {
-        s.console.event(raw)
-        let e = in_play(raw, origin)
-        if let Some(d) = device_of(e) {
-            s.device = d
-        }
-        if let Event::PointerMove { at, .. } = e {
-            s.pointer = at
-        }
-        if let Event::KeyDown { key, repeat, .. } = e {
-            if key == Key::F3 && !repeat {
-                s.readout = !s.readout
-            } else if key == Key::M && !repeat {
-                s.settings.music = !s.settings.music
-                s.storing_settings.unsaved = true
-            }
-        }
-        if browsing {
-            browse(mut s, e, live_snap.course, screen)
-        } else {
-            let _ = s.nav.nav(e)
-        }
-    }
-    if !browsing {
-        s.watching = None
-    }
-    settle(mut s, live_snap, dt)
-    s.idle += dt
     // A watched run, or play.
     var snap = live_snap
     var lag = live_lag
@@ -507,6 +578,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         framed(s.camera, half, c.ends)
     }
     react(mut s.cast, snap, c, dt, eye, half)
+    if snap.paused == 0 && !watching {
+        s.sign_card.next(snap.course, s.settings.learned, snap.at, eye, half, dt)
+    }
     // What happened, to the voice.
     match mut s.voice {
         Some(v) => {
@@ -551,6 +625,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.sign_list.clear(scene_size)
     sign_words(
         mut s.sign_list,
+        mut s.sign_wraps,
         s.fonts,
         snap.course,
         s.settings.learned,
@@ -628,7 +703,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: behind,
     )
-    s.renderer.draw_uploaded(scene, s.signs, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
     label("water copy")
@@ -650,6 +724,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         ),
         vertices: s.ground.water_n,
     )
+    // The signs' words over the water, so it never bends them, and behind the cast.
+    s.renderer.draw_uploaded(wet, s.signs, scene_size)
     let ahead = Stage { first: behind, ..stage }
     draw(
         wet,
@@ -684,8 +760,157 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.draw(out, screen)
     out.present()
     playable(mut s)
-    publish(mut s, snap, play)
-    console(mut s)
+    if s.role == Role::Attract {
+        s.attract.ready(s.playable_at.is_some())
+    } else {
+        publish(mut s, snap, play)
+        console(mut s)
+    }
+}
+
+/// Whether the game knows what it is: once its address answers, it plays itself if the address
+/// says `#attract` (attract.wrela's `role_of`), and is played otherwise, as it is where the host
+/// can't say (the native host).
+fn decided(s: mut Lab) -> bool {
+    if s.role != Role::Deciding {
+        return true
+    }
+    let Some(answer) = answer_of(mut s.address) else { return false }
+    begin(
+        mut s,
+        match answer {
+            Ok(bytes) => role_of(bytes),
+            Err(_) => Role::Play,
+        },
+    )
+    true
+}
+
+/// The game becomes `role`: played, its voice starts (its storage loads, and its link and the
+/// world's boards start, as the frames go: `played`); playing itself, it has none of them.
+fn begin(s: mut Lab, role: Role) {
+    s.role = role
+    s.address = None
+    if role == Role::Play {
+        s.voice = Some(sound::start(music::music()))
+    }
+}
+
+/// Plays itself, as the address `#attract` makes it, for a host that has no address to give (the
+/// native host and `std::tool::drive`'s: docs/toolchain-gaps.md): called before the first frame,
+/// as the attract tool test does.
+pub fn play_itself(s: mut Lab) {
+    if s.role == Role::Deciding {
+        begin(mut s, Role::Attract)
+    }
+}
+
+/// The player's part of the frame, from the sim's snapshot `live_snap` at the host's `time`, `dt`
+/// seconds on, the play area `screen` pixels at `origin`: the world's boards and the stored
+/// progress and settings kept up, the finished run kept, the frames' keys and clicks, the search
+/// asked once the typing pauses, a race's replay, the watch closed off the leaderboard, and what
+/// the frames keep up with from the sim (`settle`).
+fn played(s: mut Lab, live_snap: Snap, time: f32, dt: f32, origin: vec2, screen: vec2) {
+    s.place = online::my_place(s.online, live_snap.course, ANY)
+    s.placed = online::placed(s.online, live_snap.course, ANY)
+    online::update(mut s.online, time)
+    if let Some((r, name, place)) = online::take_watch(mut s.online) {
+        open_watch(mut s, r.clone())
+        s.watch_name = name.clone()
+        s.watch_place = place
+    }
+    store_progress(mut s, dt)
+    store_settings(mut s, dt)
+    if live_snap.finished > 0 {
+        // The best before this run, before it's kept among the runs.
+        let key = live_snap.course << 16 | (live_snap.attempt & 0xffff)
+        if key != s.finish_key {
+            s.finish_key = key
+            s.best_before = best(s, live_snap.course)
+        }
+    }
+    keep_finished(mut s, live_snap)
+    // F3 shows the readout, and M turns the music off and on. The frames' keys are their own: the
+    // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
+    // board's and the watch's.
+    let browsing = live_snap.paused == 1 && live_snap.page == RUNS
+    let finding = live_snap.paused == 1 && live_snap.page == FIND
+    if (browsing || finding) && !s.browsed {
+        // The leaderboard opens on the world's board; opened alone, with no world to show, on
+        // the player's runs.
+        s.board = if s.online.linked { online::WORLD } else { PLAYERS }
+        to_board(mut s, s.board)
+    }
+    if finding {
+        s.board = online::SEARCH
+    }
+    s.browsed = browsing || finding
+    online::browsing(mut s.online, browsing)
+    // The screen of what posting makes public comes up with its box unticked, the focus on Post.
+    let consenting = browsing && s.online.consenting.is_some()
+    if consenting && !s.consent_up {
+        s.posting_best = false
+        s.posting_focus = screens::POSTING_POST
+        s.consents += 1
+    }
+    s.consent_up = consenting
+    // The reminder to save the recovery codes, once seen, goes with the attempt it was seen on.
+    if s.reminder_seen && !browsing && live_snap.finished == 0 {
+        online::reminded(mut s.online)
+        s.reminder_seen = false
+    }
+    for raw in events() {
+        s.console.event(raw)
+        let e = in_play(raw, origin)
+        if let Some(d) = device_of(e) {
+            s.device = d
+        }
+        if let Event::PointerMove { at, .. } = e {
+            s.pointer = at
+        }
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::F3 && !repeat {
+                s.readout = !s.readout
+            } else if key == Key::M && !repeat {
+                s.settings.music = !s.settings.music
+                s.storing_settings.unsaved = true
+            }
+        }
+        if finding {
+            find(mut s, e, screen, time)
+        } else if browsing && s.online.consenting.is_some() {
+            consenting_input(mut s, e, screen)
+        } else if browsing {
+            browse(mut s, e, live_snap.course, screen)
+        } else {
+            let _ = s.nav.nav(e)
+        }
+    }
+    // The search asked for once the typing pauses.
+    if s.search_changed && time - s.search_at > SEARCH_AFTER {
+        ask_search(mut s)
+    }
+    // A world's run to race, once its replay has come; given up if it can't.
+    let wanted = s.race_wanted.clone()
+    if let Some((hash, name)) = wanted {
+        if let Some(r) = online::held(s.online, hash) {
+            s.race = Some((take r, name.clone()))
+            s.race_wanted = None
+            s.trail_of = 0
+        } else if online::not_came(s.online, hash) {
+            s.race_wanted = None
+        }
+    }
+    // The ghost's replay, and the one a race waits for, stay held while they're used.
+    match s.race_wanted {
+        Some((hash, _)) => online::pin(mut s.online, s.ghost_hash, hash),
+        None => online::pin(mut s.online, s.ghost_hash, Vec::new()),
+    }
+    if !browsing {
+        s.watching = None
+    }
+    settle(mut s, live_snap, dt)
+    s.idle += dt
 }
 
 /// The console's link (platform::presentation): the game tells it once it's playable, and goes
@@ -803,6 +1028,7 @@ fn facts_of(s: Lab, snap: Snap) -> Facts {
         snacks: c.snacks.len(),
         deaths: snap.deaths,
         best: best(s, snap.course),
+        place: s.place,
     }
 }
 
@@ -812,8 +1038,14 @@ fn facts_of(s: Lab, snap: Snap) -> Facts {
 fn settle(s: mut Lab, live: Snap, dt: f32) {
     match s.turns {
         Some(before) => {
-            if before != live.turns && turned(mut s.settings, before, live.turns) {
+            let place = has_place(s)
+            if before != live.turns && turned(mut s.settings, before, live.turns, place) {
                 s.storing_settings.unsaved = true
+                if before[2] != live.turns[2] {
+                    // Another ghost chosen: the race is over.
+                    s.race = None
+                    s.race_wanted = None
+                }
             }
         },
         None => {},
@@ -843,9 +1075,13 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
         s.split_attempt = live.attempt
         s.split_checkpoint = 0
         s.split = None
+        s.mine.clear()
     }
     if live.checkpoint > s.split_checkpoint {
         s.split_checkpoint = live.checkpoint
+        while s.mine.len() < live.checkpoint {
+            s.mine.push(live.ticks)
+        }
         if live.checkpoint <= s.splits.len() {
             s.split = Some(i32(live.ticks) - i32(s.splits[live.checkpoint - 1]))
             s.split_age = 0.0
@@ -853,13 +1089,40 @@ fn settle(s: mut Lab, live: Snap, dt: f32) {
     }
     s.split_age += dt
     if live.finished > 0 {
-        if s.finish_age == 0.0 && s.trail.len() > 1 {
-            s.split = Some(i32(live.finished) - i32(s.trail.len() - 1))
-            s.split_age = 0.0
+        if s.finish_age == 0.0 {
+            s.lost = String::new()
+            if s.trail.len() > 1 {
+                let end = s.trail.len() - 1
+                s.split = Some(i32(live.finished) - i32(end))
+                s.split_age = 0.0
+                s.lost = lost_words(
+                    most_lost(s.mine, live.finished, s.splits, end),
+                    min(s.mine.len(), s.splits.len()),
+                )
+            }
         }
         s.finish_age += dt
     } else {
         s.finish_age = 0.0
+    }
+}
+
+/// Where the most time went against the ghost (`most_lost`: the stretch and the ticks), as the
+/// goal's card says it, with `flags` checkpoints compared.
+fn lost_words(lost: Option<(u32, u32)>, flags: u32) -> String {
+    let Some((stretch, ticks)) = lost else {
+        return String::from("You never fell behind the ghost")
+    }
+    let t = seconds(ticks)
+    if flags == 0 {
+        f"You finished {t} s behind the ghost"
+    } else if stretch == 0 {
+        f"You lost the most time before the first flag ({t} s)"
+    } else if stretch == flags {
+        f"You lost the most time after the last flag ({t} s)"
+    } else {
+        let flag = online::ordinal(stretch)
+        f"You lost the most time after the {flag} flag ({t} s)"
     }
 }
 
@@ -910,7 +1173,7 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
         return
     }
     var nodes: Vec<Node> = Vec::new()
-    if snap.paused == 1 && s.watching.is_none() {
+    if snap.paused == 1 && (s.watching.is_none() || snap.page == RUNS) {
         let page = snap.page
         // The page's heading, its items' labels, and where they are in the play area.
         var parts: Option<(Text, Vec<Text>, Vec<Rect>)> = None
@@ -926,8 +1189,40 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
         } else if page == CONTROLS {
             let (_, back) = controls_rects(screen)
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
+        } else if page == RUNS && s.online.consenting.is_some() {
+            // The screen of what posting makes public, a modal dialog over the leaderboard.
+            lay_posting(mut s, screen)
+            let Some((_, laid)) = s.posting_laid else { return }
+            nodes = screens::posting_tree(
+                snap.chosen + s.consents,
+                laid,
+                origin,
+                best_runs: s.posting_best,
+                focus: s.posting_focus,
+            )
         } else if page == RUNS {
-            parts = Some(("Runs", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
+            // Back and the search's tab on the board, and its parts' boxes while it's shown; Race
+            // while a run is watched (world.wrela's `RUNS_BACK`, `RUNS_RACE`, `RUNS_SEARCH`,
+            // `RUNS_PART`). A press on the tab or a box opens the search.
+            let none = Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0)
+            var rects = Vec::from([none, none, none, none, none, none])
+            if s.watching.is_some() {
+                rects[RUNS_RACE] = race_rect(screen)
+            } else {
+                rects[RUNS_BACK] = back_rect(screen)
+                rects[RUNS_SEARCH] = board_rect(screen, online::SEARCH)
+                if s.board == online::SEARCH {
+                    for p in 0..search::PARTS {
+                        rects[RUNS_PART + p] = part_rect(screen, p)
+                    }
+                }
+            }
+            let labels = Vec::from(["Back", "Race", "Search names", "Title", "Name", "Epithet"])
+            parts = Some(("Leaderboard", take labels, take rects))
+        } else if page == FIND {
+            // Its tab again searches, back on the board.
+            let tab = board_rect(screen, online::SEARCH)
+            parts = Some(("Search names", Vec::from(["Search"]), Vec::from([tab])))
         } else if page == MAP {
             let (_, rects) = map_rects(screen, LEVELS)
             var names: Vec<Text> = Vec::new()
@@ -963,7 +1258,7 @@ fn hovered(s: Lab, screen: vec2, page: u32) -> Option<u32> {
 /// drawn on the plane of play, in ink: cast.wrela.)
 fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     s.list.clear(screen)
-    if HERO {
+    if HERO || s.role == Role::Attract {
         return
     }
     let u = unit(screen)
@@ -975,6 +1270,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     if snap.paused == 1 {
         let page = snap.page
         if page == TITLE {
+            let over = over_title(s, snap.course)
             title(
                 mut s.list,
                 s.fonts,
@@ -984,8 +1280,13 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
                 1.0,
                 waiting: true,
                 time: time,
+                over: over.as_str(),
             )
         } else if page == MENU {
+            // The course's world board, asked for while the menu shows in the background (only
+            // for a player who is signed in, so play stays offline otherwise: online.wrela's
+            // `By`): the facts say the player's place, and the leaderboard opens on it.
+            online::want(mut s.online, snap.course, ANY, By::Background)
             let hover = hovered(s, screen, MENU)
             screens::list(
                 mut s.list,
@@ -1012,7 +1313,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             )
         } else if page == OPTIONS {
             let hover = hovered(s, screen, OPTIONS)
-            let values = option_values(s.settings)
+            let values = option_values(s.settings, place: has_place(s))
             screens::list(
                 mut s.list,
                 s.fonts,
@@ -1040,8 +1341,8 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             let (_, back) = controls_rects(screen)
             let hover = d == Device::Keys && back.contains(s.pointer)
             controls(mut s.list, s.fonts, screen, d, hover)
-        } else if page == RUNS {
-            runs_card(mut s, snap.course, screen)
+        } else if page == RUNS || page == FIND {
+            runs_card(mut s, snap.course, screen, finding: page == FIND)
         } else if page == MAP {
             var stops: Vec<Stop> = Vec::new()
             for c in 0..LEVELS {
@@ -1063,10 +1364,17 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
         }
         return
     }
-    // The title, fading as the first attempt begins.
+    // The title, fading as the first attempt begins, and as it goes, the card of the sign in
+    // reach (signs.wrela).
     let since = f32(snap.ticks) / f32(HZ)
-    if snap.attempt == 0 && since < 2.4 {
-        let alpha = 1.0 - smoothstep(0.6, 2.4, since)
+    let titled = if snap.attempt == 0 { 1.0 - smoothstep(0.6, 2.4, since) } else { 0.0 }
+    if snap.finished == 0 {
+        let alpha = s.sign_card.alpha() * (1.0 - titled)
+        sign_card(mut s.list, mut s.sign_wraps, s.fonts, s.sign_card, d, screen, alpha)
+    }
+    if titled > 0.0 {
+        let alpha = titled
+        let over = over_title(s, snap.course)
         title(
             mut s.list,
             s.fonts,
@@ -1076,6 +1384,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             alpha,
             waiting: false,
             time: time,
+            over: over.as_str(),
         )
     }
     if s.settings.clock {
@@ -1085,6 +1394,11 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     if snap.finished > 0 && s.finish_age > FINISH_CARD {
         let alpha = smoothstep(FINISH_CARD, FINISH_CARD + 0.5, s.finish_age)
         let more = world::next(snap.course).is_some()
+        var notes = goal_notes(s)
+        if let Some(line) = online::reminder(s.online) {
+            notes.push(String::from(line))
+            s.reminder_seen = true
+        }
         goal_card(
             mut s.list,
             s.fonts,
@@ -1097,6 +1411,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
             ending: cast::ending(snap),
             game: snap.game,
             best_game: s.progress.game,
+            notes: notes,
         )
     }
     if s.readout {
@@ -1119,6 +1434,45 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
     }
 }
 
+/// The line over the level's title: whose run a race is against, or the game's.
+fn over_title(s: Lab, c: u32) -> String {
+    match s.race {
+        Some((r, name)) => {
+            if r.course == c {
+                return f"Racing {name}"
+            }
+        },
+        None => {},
+    }
+    // A world's run to race whose replay is on its way: given up if it can't come.
+    if let Some((_, name)) = s.race_wanted {
+        return f"Racing {name}"
+    }
+    String::from("A day at the zoo")
+}
+
+/// What the goal's card says under the snacks: against a ghost, where the most time went; and how
+/// the run's post went, if it's being posted.
+fn goal_notes(s: Lab) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    if !s.lost.is_empty() {
+        out.push(s.lost.clone())
+    }
+    if !s.finished_print.is_empty() {
+        let said = online::status(s.online, s.finished_print)
+        if !said.is_empty() {
+            out.push(take said)
+        }
+    }
+    out
+}
+
+/// Whether the signed-in player has a place on the live course's world board (any%), as last
+/// given.
+fn has_place(s: Lab) -> bool {
+    s.placed
+}
+
 // ---- runs ----------------------------------------------------------------------------------------
 
 /// Keeps the attempt in `snap` once it reaches the goal: its course's record, and its run if it's
@@ -1132,10 +1486,18 @@ fn keep_finished(s: mut Lab, snap: Snap) {
     if s.progress.finished(snap.course, ticks: snap.finished, snacks: snap.snacks) {
         s.storing.unsaved = true
     }
+    s.finished_print.clear()
     if let Some(r) = replay(snap, YOU) {
-        if verify(r) && s.progress.runs.add(take r) {
-            s.storing.unsaved = true
-            s.trail_of = 0
+        if verify(r) {
+            // To the world's board, if it beats the account's place there and the account posts
+            // its best runs (or waiting until it can: online.wrela).
+            online::finished(mut s.online, r.clone())
+            s.finished_print = online::fingerprint(r)
+            if s.progress.runs.add(take r) {
+                s.storing.unsaved = true
+                s.trail_of = 0
+                s.prints.clear()
+            }
         }
     }
 }
@@ -1145,17 +1507,17 @@ const RETRY: f32 = 2.0
 
 /// When the runs load and are stored: whether the stored ones have been read (or there were
 /// none), seconds until a request that failed is made again, and whether the runs changed since
-/// they were last stored.
-struct Storing: Copy {
-    read: bool = false,
+/// they were last stored. The online state's stores keep to it too (online.wrela).
+pub struct Storing: Copy {
+    pub read: bool = false,
     retry: f32 = 0.0,
-    unsaved: bool = false,
+    pub unsaved: bool = false,
 }
 
 impl Storing {
     /// After a load: of the stored runs, or of nothing stored, they're `read`; a load that failed
     /// otherwise is made again after `RETRY`.
-    fn loaded(mut self, read: bool) {
+    pub fn loaded(mut self, read: bool) {
         if read {
             self.read = true
         } else {
@@ -1164,7 +1526,7 @@ impl Storing {
     }
 
     /// After a store: one that failed is made again after `RETRY`, of the runs as they are then.
-    fn stored(mut self, ok: bool) {
+    pub fn stored(mut self, ok: bool) {
         if !ok {
             self.unsaved = true
             self.retry = RETRY
@@ -1174,7 +1536,7 @@ impl Storing {
     /// `dt` seconds on, with a load or a store still waiting or not: whether to load the runs now,
     /// and whether to store them now (they're then no longer unsaved). Never a store before the
     /// stored runs are read: storing over runs that couldn't be read would lose them.
-    fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
+    pub fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
         self.retry = max(self.retry - dt, 0.0)
         if self.retry > 0.0 {
             return (false, false)
@@ -1206,6 +1568,7 @@ fn store_progress(s: mut Lab, dt: f32) {
                 }
                 s.progress = progress::merged(stored, s.progress.clone())
                 s.trail_of = 0
+                s.prints.clear()
                 s.storing.loaded(read: true)
             },
             Err(e) => s.storing.loaded(read: e.missing()),
@@ -1290,6 +1653,22 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     assisted(s, c, category)
 }
 
+/// Which of `s.prints` holds the fingerprints of the player's runs of course `c` that count for
+/// `category`, in `listed`'s order: worked out the first time, and again once the runs change.
+fn prints_of(s: mut Lab, c: u32, category: u32) -> u32 {
+    for k in 0..s.prints.len() {
+        if s.prints[k].0 == c && s.prints[k].1 == category {
+            return k
+        }
+    }
+    var hashes: Vec<Vec<u8>> = Vec::new()
+    for r in s.progress.runs.ranked(c, category) {
+        hashes.push(online::fingerprint(r))
+    }
+    s.prints.push((c, category, take hashes))
+    s.prints.len() - 1
+}
+
 /// Course `c`'s tool-assisted runs made, if they aren't.
 fn made_assisted(s: mut Lab, c: u32) {
     if s.assisted_of != Some(c) {
@@ -1312,10 +1691,25 @@ fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     out
 }
 
-/// The ghost's run on course `c` (the options' ghost): the player's best any% run, or the fastest
-/// any% run of the robot or of the human line.
+/// The ghost's run on course `c`: the run raced, or the options' ghost: the player's best any%
+/// run, the fastest any% run of the robot or of the human line, or a world's run held (the record,
+/// or the one above the player's place).
 fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
-    let g = s.settings.ghost
+    match s.race {
+        Some((r, _)) => {
+            if r.course == c {
+                return Some(r.clone())
+            }
+        },
+        None => {},
+    }
+    let g = ghost_of(s.settings, has_place(s))
+    if g == ABOVE_GHOST || g == RECORD_GHOST {
+        if s.ghost_hash.is_empty() {
+            return None
+        }
+        return online::held(s.online, s.ghost_hash)
+    }
     if g == BEST_GHOST {
         let best = s.progress.runs.ranked(c, ANY)
         if best.len() > 0 {
@@ -1340,14 +1734,45 @@ fn who_name(who: u32) -> Text {
 }
 
 /// The trail of the ghost's run on course `c`, and its splits, worked out again when the course,
-/// the ghost or the player's runs change.
+/// the ghost, the player's runs or the world's run it follows change. A world's ghost asks for its
+/// board only for a player who is signed in (play stays offline otherwise), and for its run's
+/// replay once the board names it: the trail is the run's own, and starts once it has come.
 fn follow_ghost(s: mut Lab, c: u32) {
-    let key = (c + 1) << 8 | s.settings.ghost
-    if key == s.trail_of {
+    match s.race {
+        Some((r, _)) => {
+            if r.course != c {
+                s.race = None
+            }
+        },
+        None => {},
+    }
+    let g = ghost_of(s.settings, has_place(s))
+    var hash: Vec<u8> = Vec::new()
+    // Signed in (online.wrela's `By::Background`), the course's board once: whether the player
+    // has a place (the ghost at first is the run above it), and a world's ghost's run.
+    let world_ghost = g == ABOVE_GHOST || g == RECORD_GHOST
+    if world_ghost || !s.settings.chosen {
+        online::want_once(mut s.online, c, ANY)
+    }
+    if s.race.is_none() && world_ghost {
+        if let Some(h) = online::ghost_hash(s.online, c, record: g == RECORD_GHOST) {
+            hash = h.clone()
+            online::fetch_now(mut s.online, h)
+        }
+    }
+    // A world's run counts once its replay is held.
+    let ready = !hash.is_empty() && online::is_held(s.online, hash)
+    let key = (c + 1) << 8 | g << 1 | if ready { 1 } else { 0 }
+    if key == s.trail_of && hash == s.ghost_hash {
         return
     }
     s.trail_of = key
-    if s.settings.ghost == AUTOPILOT_GHOST || s.settings.ghost == HUMAN_GHOST {
+    s.ghost_name = match online::whose(s.online, c, hash) {
+        Some((name, _)) => name.clone(),
+        None => String::new(),
+    }
+    s.ghost_hash = take hash
+    if g == AUTOPILOT_GHOST || g == HUMAN_GHOST {
         made_assisted(mut s, c)
     }
     s.trail = match ghost_run(s, c) {
@@ -1369,10 +1794,35 @@ fn runs_frame(screen: vec2) -> (Rect, f32) {
 /// Where board `b`'s name is on the runs card, which a click chooses.
 fn board_rect(screen: vec2, b: u32) -> Rect {
     let (r, size) = runs_frame(screen)
-    let gap = size * 0.5
-    let w = min(size * 8.0, (r.w - size * 2.4 - gap * 3.0) / 4.0)
-    let x = r.x + r.w * 0.5 - (w * 4.0 + gap * 3.0) * 0.5 + f32(b) * (w + gap)
+    let gap = size * 0.4
+    let n = f32(online::BOARDS)
+    let w = min(size * 8.0, (r.w - size * 2.4 - gap * (n - 1.0)) / n)
+    let x = r.x + r.w * 0.5 - (w * n + gap * (n - 1.0)) * 0.5 + f32(b) * (w + gap)
     Rect::new(x, r.y + size * 3.2, w, size * 1.6)
+}
+
+/// The first row a board's places take: the search's line takes the first (online.wrela's
+/// `shown_rows`).
+fn first_row(board: u32) -> u32 {
+    if board == online::SEARCH { 1 } else { 0 }
+}
+
+/// Where the search's part `part` is on the runs card: the title, the noun, and after "the", the
+/// epithet.
+fn part_rect(screen: vec2, part: u32) -> Rect {
+    let (r, size) = runs_frame(screen)
+    let gap = size * 0.5
+    let the = size * 2.2
+    let room = r.w - size * 2.4 - the - gap * 3.0
+    let widths = [room * 0.3, room * 0.4, room * 0.3]
+    var x = r.x + size * 1.2
+    for p in 0..part {
+        x += widths[p] + gap
+        if p == search::NOUN {
+            x += the + gap
+        }
+    }
+    Rect::new(x, r.y + size * 5.4, widths[part], size * 1.9)
 }
 
 /// Where row `i` of a category's list is on the runs card.
@@ -1390,13 +1840,41 @@ fn back_rect(screen: vec2) -> Rect {
 }
 
 /// A key or click while the runs are open (the sim leaves them to the frames, and only closes the
-/// page). On the board: up and down move the focus along a category's runs, left and right
-/// between the categories, Tab or a controller's shoulders switch boards, and choosing a run (or a
-/// click on it) watches it. Watching: Space or A pauses and plays, left and right seek, up and down
-/// change the speed, and R or X starts it again.
+/// page, opens the search and starts a race). On the board: up and down move the focus along a
+/// category's runs, left and right between the categories, Tab or a controller's shoulders switch
+/// boards, choosing a run (or a click on it) watches it, R or Select races it, and U or Y posts one
+/// of the player's own. Watching: Space or A pauses and plays, left and right seek, up and down
+/// change the speed, Home or Y starts it again, and R or Select races it.
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
     made_assisted(mut s, c)
     let nav = s.nav.nav(e)
+    // F opens the search as it comes up (world.wrela's `finds`); while it's down, what it types
+    // isn't typed into the search, whatever the keyboard's layout.
+    if let Event::KeyDown { key, repeat, .. } = e {
+        if key == Key::F && !repeat {
+            s.opener = true
+        }
+    }
+    if finds(e) {
+        s.opener = false
+        return
+    }
+    // A press on the search's tab or one of its boxes: the sim opens it, on that part.
+    if pressed_node(s, e, RUNS_SEARCH) {
+        s.board = online::SEARCH
+        return
+    }
+    for p in 0..search::PARTS {
+        if pressed_node(s, e, RUNS_PART + p) {
+            s.board = online::SEARCH
+            s.search.to(p)
+            return
+        }
+    }
+    if races(e) || pressed_node(s, e, RUNS_RACE) {
+        race_focused(mut s, c)
+        return
+    }
     var watched = false
     match mut s.watching {
         Some(w) => {
@@ -1405,9 +1883,9 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
                 s.idle = 0.0
             }
             let again = match e {
-                Event::KeyDown { key, repeat, .. } => key == Key::R && !repeat,
+                Event::KeyDown { key, repeat, .. } => key == Key::Home && !repeat,
                 Event::PadButton { pad, button, pressed, .. } => {
-                    pad == 0 && pressed && button == PadButton::West
+                    pad == 0 && pressed && button == PadButton::North
                 },
                 _ => false,
             }
@@ -1443,31 +1921,54 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         },
         _ => false,
     }
-    let upload = match e {
+    let post = match e {
         Event::KeyDown { key, repeat, .. } => key == Key::U && !repeat,
         Event::PadButton { pad, button, pressed, .. } => pad == 0 &&
             pressed &&
             button == PadButton::North,
         _ => false,
     }
-    let world = s.board == online::WORLD || s.board == online::WHOLE_GAME
+    // Home or a controller's trigger: between the top of a world's board and the account's place.
+    let jump = match e {
+        Event::KeyDown { key, repeat, .. } => key == Key::Home && !repeat,
+        Event::PadButton { pad, button, pressed, .. } => {
+            pad == 0 &&
+                pressed &&
+                (button == PadButton::LeftTrigger || button == PadButton::RightTrigger)
+        },
+        _ => false,
+    }
+    let world = worldly(s.board)
     if switch {
-        s.board = (s.board + 1) % online::BOARDS
+        to_board(mut s, (s.board + 1) % online::BOARDS)
+    } else if jump && jumps(s, c) {
+        s.near = !s.near
+        s.first = [0; 2]
+        s.anchored = [false; 2]
         s.row = 0
-    } else if upload && s.board == PLAYERS {
+    } else if post && s.board == PLAYERS {
         let runs = listed(s, c, s.column)
         if runs.len() > 0 {
-            online::upload(mut s.online, runs[min(s.row, runs.len() - 1)].clone())
+            online::post(mut s.online, runs[min(s.row, runs.len() - 1)].clone())
         }
     } else if nav == Some(Nav::Choose) && world {
-        let (places, _) = online::places(s.online, online::board_course(s.board, c), s.column)
+        let places = board_places(mut s, c, s.column)
         if places.len() > 0 {
             online::watch_place(mut s.online, places[min(s.row, places.len() - 1)].clone())
         }
     } else if nav == Some(Nav::Up) {
-        s.row = if s.row > 0 { s.row - 1 } else { 0 }
+        if s.row > 0 {
+            s.row -= 1
+        } else if world && s.first[s.column] > 0 {
+            // Past the top row shown: the board moves down one.
+            s.first[s.column] -= 1
+        }
     } else if nav == Some(Nav::Down) {
-        s.row += 1
+        if !world || s.row + 1 < rows(mut s, c, s.column) {
+            s.row += 1
+        } else {
+            scroll_down(mut s, c)
+        }
     } else if nav == Some(Nav::Left) || nav == Some(Nav::Right) {
         s.column = if nav == Some(Nav::Left) { ANY } else { FULL }
     } else if nav == Some(Nav::Choose) {
@@ -1477,18 +1978,16 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
             open_watch(mut s, runs[i].clone())
         }
     }
-    s.row = min(s.row, max(rows(s, c, s.column), 1) - 1)
+    let (column, row) = (s.column, s.row)
+    s.row = min(row, max(rows(mut s, c, column), 1) - 1)
     if let Event::PointerDown { at, .. } = e {
         s.pointer = at
+        let first = first_row(s.board)
         if world {
             for category in [ANY, FULL] {
-                let (places, _) = online::places(
-                    s.online,
-                    online::board_course(s.board, c),
-                    category,
-                )
+                let places = board_places(mut s, c, category)
                 for i in 0..places.len() {
-                    if row_rect(screen, category, i).contains(at) {
+                    if row_rect(screen, category, i + first).contains(at) {
                         s.column = category
                         s.row = i
                         online::watch_place(mut s.online, places[i].clone())
@@ -1498,48 +1997,397 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         }
         for b in 0..online::BOARDS {
             if board_rect(screen, b).contains(at) {
-                s.board = b
-                s.row = 0
+                to_board(mut s, b)
             }
         }
-        for category in [ANY, FULL] {
-            let runs = listed(s, c, category)
-            for i in 0..runs.len() {
-                if row_rect(screen, category, i).contains(at) {
-                    s.column = category
-                    s.row = i
-                    open_watch(mut s, runs[i].clone())
+        if !world {
+            for category in [ANY, FULL] {
+                let runs = listed(s, c, category)
+                for i in 0..runs.len() {
+                    if row_rect(screen, category, i).contains(at) {
+                        s.column = category
+                        s.row = i
+                        open_watch(mut s, runs[i].clone())
+                    }
                 }
             }
         }
     }
 }
 
+/// A key, a click or a press on a node while the screen of what posting makes public is up, over
+/// the leaderboard. In a browser the dialog takes the keyboard (screens.wrela's `posting_tree`):
+/// its presses, focus and dismissal come as `Event::Assist`. Elsewhere, and on a controller, up and
+/// down go between the box and the buttons, left and right between the buttons, and choosing (a
+/// jump's key, Enter or A, or a click) ticks the box or presses the button; B leaves the
+/// leaderboard, which is Not now. Post
+/// records the player's agreement through the console (online.wrela's `consent`), and the run
+/// goes.
+fn consenting_input(s: mut Lab, e: Event, screen: vec2) {
+    let nav = s.nav.nav(e)
+    var chosen: Option<u32> = None
+    if let Event::Assist { node, action } = e {
+        let (page, item) = world::item_of(node)
+        if node != 0 && page == world::POSTING {
+            if item == world::PAGE_NODE && action == std::input::Assist::Dismiss {
+                chosen = Some(screens::POSTING_NOT_NOW)
+            } else if item < screens::POSTING_ITEMS {
+                if action == std::input::Assist::Activate {
+                    chosen = Some(item)
+                } else if action == std::input::Assist::Focus {
+                    s.posting_focus = item
+                }
+            }
+        }
+    }
+    if let Event::PointerDown { at, .. } = e {
+        s.pointer = at
+        lay_posting(mut s, screen)
+        let Some((_, laid)) = s.posting_laid else { return }
+        let controls = laid.controls.clone()
+        for i in 0..screens::POSTING_ITEMS {
+            if controls[i].contains(at) {
+                s.posting_focus = i
+                chosen = Some(i)
+            }
+        }
+    }
+    let focus = s.posting_focus
+    if nav == Some(Nav::Choose) {
+        chosen = Some(focus)
+    } else if nav == Some(Nav::Up) {
+        s.posting_focus = screens::POSTING_BOX
+    } else if nav == Some(Nav::Down) && focus == screens::POSTING_BOX {
+        s.posting_focus = screens::POSTING_POST
+    } else if nav == Some(Nav::Left) && focus == screens::POSTING_NOT_NOW {
+        s.posting_focus = screens::POSTING_POST
+    } else if nav == Some(Nav::Right) && focus == screens::POSTING_POST {
+        s.posting_focus = screens::POSTING_NOT_NOW
+    }
+    match chosen {
+        Some(i) => {
+            if i == screens::POSTING_BOX {
+                s.posting_best = !s.posting_best
+            } else {
+                online::consent(
+                    mut s.online,
+                    post: i == screens::POSTING_POST,
+                    best_runs: s.posting_best,
+                )
+            }
+        },
+        None => {},
+    }
+}
+
+/// The screen of what posting makes public laid out for `screen` (`posting_laid`): once a size,
+/// not each time it's drawn, pressed or published.
+fn lay_posting(s: mut Lab, screen: vec2) {
+    let laid_for = match s.posting_laid {
+        Some((at, _)) => at.x == screen.x && at.y == screen.y,
+        None => false,
+    }
+    if !laid_for {
+        s.posting_laid = Some((screen, screens::posting_laid(s.fonts, screen)))
+    }
+}
+
+/// Whether event `e` is a press on the runs' page's node `item`, as the sim reads it.
+fn pressed_node(s: Lab, e: Event, item: u32) -> bool {
+    if let Event::Assist { node, action } = e {
+        let (page, i) = world::item_of(node)
+        return node != 0 && page == RUNS && i == item && action == std::input::Assist::Activate
+    }
+    false
+}
+
+/// Whether board `b` is one of the world's: its places come from the console's server.
+fn worldly(b: u32) -> bool {
+    b == online::WORLD || b == online::SEARCH || b == online::WHOLE_GAME
+}
+
+/// A race (the sim restarts the level on its title): the run watched, or the one with the focus,
+/// as the ghost. A world's run whose replay isn't held yet is asked for, and becomes the ghost
+/// when it comes.
+fn race_focused(s: mut Lab, c: u32) {
+    s.race_wanted = None
+    var named = s.watch_name.clone()
+    var chosen: Option<Replay> = None
+    match s.watching {
+        Some(w) => chosen = Some(w.replay.clone()),
+        None => {},
+    }
+    if chosen.is_none() && worldly(s.board) {
+        let places = board_places(mut s, c, s.column)
+        if places.len() > 0 {
+            borrow p = places[min(s.row, places.len() - 1)]
+            named = p.name.clone()
+            match online::held(s.online, p.replay) {
+                Some(r) => chosen = Some(take r),
+                None => {
+                    if !p.replay.is_empty() {
+                        s.race_wanted = Some((p.replay.clone(), p.name.clone()))
+                        online::fetch_now(mut s.online, p.replay.clone())
+                    }
+                },
+            }
+        }
+    } else if chosen.is_none() {
+        let runs = listed(s, c, s.column)
+        if runs.len() > 0 {
+            let r = runs[min(s.row, runs.len() - 1)].clone()
+            named = String::new()
+            chosen = Some(take r)
+        }
+    }
+    if let Some(r) = chosen {
+        if r.course == c {
+            if named.is_empty() {
+                named = String::from(if r.who == YOU { "your run" } else if r.who == HUMAN {
+                    "the human line"
+                } else { "the robot" })
+            }
+            s.race = Some((r.clone(), take named))
+        }
+    }
+    s.trail_of = 0
+}
+
+/// A key, a character or a click while the search is open (the sim leaves its keys to the frames,
+/// and closes it on Esc, Enter, or a controller's A, B or Start). Typing goes to the part with the
+/// focus, which completes from its list; Backspace takes a character off; up and down (or Tab) go
+/// between the parts; left and right pick among the part's completions, as a controller does; and
+/// closing it searches at once.
+fn find(s: mut Lab, e: Event, screen: vec2, time: f32) {
+    var changed = false
+    match e {
+        Event::Text { char } => {
+            // What the F that opened the search typed, if it came after: not typed into it.
+            if !s.opener {
+                changed = s.search.typed(char)
+            }
+        },
+        Event::KeyUp { key, .. } => {
+            if key == Key::F {
+                s.opener = false
+            }
+        },
+        Event::KeyDown { key, repeat, .. } => {
+            // Another key: what it types is the player's.
+            s.opener = false
+            if key == Key::Backspace {
+                changed = s.search.erase()
+            } else if key == Key::Up && s.search.part > 0 {
+                s.search.to(s.search.part - 1)
+            } else if key == Key::Down || (key == Key::Tab && !repeat) {
+                s.search.to(if key == Key::Tab { (s.search.part + 1) % search::PARTS } else {
+                    s.search.part + 1
+                })
+            } else if key == Key::Left || key == Key::Right {
+                changed = s.search.turn(if key == Key::Left { -1 } else { 1 })
+            }
+        },
+        Event::PadButton { pad, button, pressed, .. } => {
+            if pad == 0 && pressed {
+                if button == PadButton::Up && s.search.part > 0 {
+                    s.search.to(s.search.part - 1)
+                } else if button == PadButton::Down {
+                    s.search.to(s.search.part + 1)
+                } else if button == PadButton::Left || button == PadButton::Right {
+                    changed = s.search.turn(if button == PadButton::Left { -1 } else { 1 })
+                }
+            }
+        },
+        Event::PointerDown { at, .. } => {
+            s.pointer = at
+            for p in 0..search::PARTS {
+                if part_rect(screen, p).contains(at) {
+                    s.search.to(p)
+                }
+            }
+        },
+        _ => {},
+    }
+    if changed {
+        s.search_changed = true
+        s.search_at = time
+        s.row = 0
+    }
+    var done = leaves_find(e)
+    if let Event::Assist { node, action } = e {
+        let (page, _) = world::item_of(node)
+        done = node != 0 && page == FIND && action == std::input::Assist::Activate
+    }
+    if done {
+        s.search.to(s.search.part)
+        ask_search(mut s)
+        s.row = 0
+    }
+}
+
+/// The search asked for, as its parts stand.
+fn ask_search(s: mut Lab) {
+    s.search_changed = false
+    let (title, noun, epithet) = (
+        s.search.value(search::TITLE),
+        s.search.value(search::NOUN),
+        s.search.value(search::EPITHET),
+    )
+    online::search(mut s.online, s.shown, title.as_str(), noun.as_str(), epithet.as_str())
+}
+
 /// Watches run `r` from its start.
 fn open_watch(s: mut Lab, r: take Replay) {
     s.watching = Some(watch(take r))
     s.watch_name = String::new()
+    s.watch_place = 0
     s.idle = 0.0
 }
 
+/// The leaderboard on board `b`: a world's board opens at the account's place, if it has one.
+fn to_board(s: mut Lab, b: u32) {
+    online::cancel_watch(mut s.online)
+    s.board = b
+    s.row = 0
+    s.near = true
+    s.first = [0; 2]
+    s.anchored = [false; 2]
+}
+
+/// Whether the board shown can move between its top and the account's place: a world's board,
+/// not its search, on which the account has a place, in the category with the focus.
+fn jumps(s: Lab, c: u32) -> bool {
+    if s.board != online::WORLD && s.board != online::WHOLE_GAME {
+        return false
+    }
+    online::placed(s.online, online::board_course(s.board, c), s.column)
+}
+
+/// Down past the last row shown of a world's board: the board moves up one, asking for its next
+/// page when the rows from the top run out.
+fn scroll_down(s: mut Lab, c: u32) {
+    let k = s.column
+    let all = board_list(s, c, k)
+    if s.first[k] + online::shown_rows(s.board) < all.len() {
+        s.first[k] += 1
+    } else if s.board != online::SEARCH && !near_slice(s, c, k) {
+        online::more(mut s.online, online::board_course(s.board, c), k)
+    }
+}
+
+/// Whether the world's board shown for `category` is the slice round the account's place.
+fn near_slice(s: Lab, c: u32, category: u32) -> bool {
+    s.near && !online::slice(s.online, online::board_course(s.board, c), category).is_empty()
+}
+
 /// How many rows the board shown has for course `c` and `category`.
-fn rows(s: Lab, c: u32, category: u32) -> u32 {
-    if s.board == online::WORLD || s.board == online::WHOLE_GAME {
-        let (places, _) = online::places(s.online, online::board_course(s.board, c), category)
-        return places.len()
+fn rows(s: mut Lab, c: u32, category: u32) -> u32 {
+    if worldly(s.board) {
+        return board_places(mut s, c, category).len()
     }
     listed(s, c, category).len()
 }
 
-/// The world's board for course `c` (or the whole game) and `category` on the runs card: each
-/// place's account name and time, fastest first, from the console's server (online.wrela).
-fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32) {
+/// What the rows `places` are, for fetching their replays ahead only when they change: their
+/// replays' bytes, and how many replays had been let go (online.wrela's `let_go`), as an FNV-1a
+/// hash.
+fn rows_key(o: online::Online, places: [Place]) -> u64 {
+    let prime: u64 = 1099511628211
+    var h: u64 = 14695981039346656037 ^ u64(online::let_go(o))
+    for p in places {
+        for b in p.replay {
+            h = (h ^ u64(b)).wrapping_mul(prime)
+        }
+        h = (h ^ 256).wrapping_mul(prime)
+    }
+    h
+}
+
+/// All the places of the world's board shown for course `c` and `category`: its search's; or the
+/// world's (or its whole game's) round the account's place when the leaderboard is near it and
+/// the slice has come, else its pages from the top.
+fn board_list(s: Lab, c: u32, category: u32) -> Vec<Place> {
+    if s.board == online::SEARCH {
+        return online::found_places(s.online, c, category)
+    }
     let course = online::board_course(s.board, c)
-    online::want(mut s.online, course, category)
-    let (places, note) = online::places(s.online, course, category)
-    let head = row_rect(screen, category, 0)
+    if near_slice(s, c, category) {
+        return online::slice(s.online, course, category)
+    }
+    let (places, _) = online::places(s.online, course, category)
+    places
+}
+
+/// The rows of the world's board shown for course `c` and `category`, as many as it shows from the
+/// first (`first`): near the account's place, put there once it's among them.
+fn board_places(s: mut Lab, c: u32, category: u32) -> Vec<Place> {
+    let all = board_list(s, c, category)
+    let shown = online::shown_rows(s.board)
+    if s.near && !s.anchored[category] && s.board != online::SEARCH && s.online.account.signed_in {
+        borrow name = s.online.account.name
+        if let Some((first, mine)) = online::anchor(all, name.as_str(), s.board) {
+            s.first[category] = first
+            s.anchored[category] = true
+            if category == s.column {
+                s.row = mine - first
+            }
+        }
+    }
+    s.first[category] = min(s.first[category], max(all.len(), shown) - shown)
+    online::window(all, s.first[category], s.board)
+}
+
+/// The world's board for course `c` (or the whole game) and `category` on the runs card: each
+/// place's account name and time, fastest first, from the console's server (online.wrela). The
+/// search's own note (what to type, that it's searching, or why it can't) is said once, across both
+/// categories when neither has a run; and a search board says no note while its completions are
+/// open (`finding`), so the list never covers it.
+fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, finding: bool) {
+    let first = first_row(s.board)
+    var places: Vec<Place> = Vec::new()
+    var note = String::new()
+    var whole = false
+    if s.board == online::SEARCH {
+        places = online::found_places(s.online, c, category)
+        let (names, said) = online::found(s.online)
+        if !said.is_empty() || s.search.blank() {
+            note = if s.search.blank() { String::from("Type a name to find its runs.") } else {
+                said.clone()
+            }
+            whole = true
+        } else if places.is_empty() && names > 0 {
+            note = String::from("They haven't run this level yet.")
+        }
+        if finding && !s.search.completed.is_empty() {
+            note.clear()
+        }
+    } else {
+        let course = online::board_course(s.board, c)
+        online::want(mut s.online, course, category, By::Player)
+        note = online::board_note(s.online, course, category)
+    }
+    if !places.is_empty() || s.board != online::SEARCH {
+        // The rows shown, from the first: each one's replay fetched ahead, so choosing it plays at
+        // once; asked again only once the rows change, or a replay is let go.
+        places = board_places(mut s, c, category)
+        let key = rows_key(s.online, places)
+        if key != s.fetched[category] {
+            s.fetched[category] = key
+            online::fetch_rows(mut s.online, places)
+        }
+    }
+    let head = row_rect(screen, category, first)
     if places.is_empty() {
-        let lines = wrap_note(s.fonts, note.as_str(), size * 0.8, head.w - size * 0.8)
+        var width = head.w
+        if whole {
+            if category != ANY {
+                return
+            }
+            if online::found_places(s.online, c, FULL).is_empty() {
+                width = row_rect(screen, FULL, first).right() - head.x
+            }
+        }
+        let lines = wrap_note(s.fonts, note.as_str(), size * 0.8, width - size * 0.8)
         for k in 0..lines.len() {
             let _ = s.list.text(
                 s.fonts,
@@ -1554,18 +2402,23 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32) {
     }
     let gold = vec4(0.62, 0.42, 0.08, 1.0)
     let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
-    for i in 0..min(places.len(), 8) {
-        let row = row_rect(screen, category, i)
+    for i in 0..places.len() {
+        let row = row_rect(screen, category, i + first)
         if category == s.column && i == s.row {
             s.list.rect(row, yuzu, radius: size * 0.4)
         }
         borrow p = places[i]
         let colour = if p.place == 1 { gold } else { INKED }
         let y = row.y + size * 0.25
+        // A search knows no place: its rows are numbered by time. Past the first thousand a slice
+        // numbers none.
+        let number = if p.place > 0 { f"{p.place}" } else if s.board == online::SEARCH {
+            f"{s.first[category] + i + 1}"
+        } else { String::from("·") }
         let _ = s.list.text(
             s.fonts,
             Face::Mono,
-            f"{p.place}".as_str(),
+            number.as_str(),
             size,
             vec2(row.x + size * 0.5, y),
             SOFT,
@@ -1622,10 +2475,12 @@ fn wrap_note(fonts: Fonts, s: str, size: f32, width: f32) -> Vec<String> {
     lines
 }
 
-/// The runs card, over the paused page: the boards, each category's runs, fastest first, who
-/// made each and its time, the one with the focus washed in yuzu; a back button; and how to use
-/// them.
-fn runs_card(s: mut Lab, c: u32, screen: vec2) {
+/// The leaderboard, over the paused page: the boards (the world's first, then its search, the
+/// player's own and the tool-assisted, as filters of it, and the whole game), each category's runs,
+/// fastest first, who made each and its time, the one with the focus washed in yuzu; the search's
+/// line on its board (`finding`: typed in, with its part's completions; choosing its tab or a box
+/// opens it, as F does); a back button; and how to use them.
+fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
     made_assisted(mut s, c)
     let (r, size) = runs_frame(screen)
     let u = unit(screen)
@@ -1634,7 +2489,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
     let pointing = s.device == Device::Keys
     card(mut s.list, r, u)
-    let title = f"Runs: {course::name(c)}"
+    let title = f"Leaderboard  ·  {course::name(c)}"
     let _ = s.list.text(
         s.fonts,
         Face::Sans,
@@ -1646,11 +2501,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
     // The boards' names: the one shown filled in, the other lit under the pointer.
     for b in 0..online::BOARDS {
         let tab = board_rect(screen, b)
-        let name = if b == PLAYERS { "Yours" } else if b == ASSISTED {
-            "Tool-assisted"
-        } else if b == online::WORLD {
-            "World"
-        } else { "Whole game" }
+        let name = board_name(b)
         if b == s.board {
             s.list.rect(tab, INKED, radius: size * 0.8)
         } else if pointing && tab.contains(s.pointer) {
@@ -1666,8 +2517,11 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
             if b == s.board { CARD } else { INKED },
         )
     }
+    if s.board == online::SEARCH {
+        search_line(mut s, screen, size, finding)
+    }
     for category in [ANY, FULL] {
-        let head = row_rect(screen, category, 0)
+        let head = row_rect(screen, category, first_row(s.board))
         let name = if category == ANY { "Any%" } else { "100%" }
         let _ = s.list.text(
             s.fonts,
@@ -1677,16 +2531,19 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
             vec2(head.x + size * 0.4, head.y - size * 2.0),
             INKED,
         )
-        if s.board == online::WORLD || s.board == online::WHOLE_GAME {
-            world_rows(mut s, c, category, screen, size)
+        if worldly(s.board) {
+            world_rows(mut s, c, category, screen, size, finding)
             continue
         }
         let runs = listed(s, c, category)
+        let printed = if s.board == PLAYERS { prints_of(mut s, c, category) } else { 0 }
         if runs.len() == 0 {
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
-                if s.board == PLAYERS { "None yet: reach the goal" } else { "None" },
+                if s.board == PLAYERS { "No runs yet. Reach the goal." } else {
+                    "No tool-assisted runs yet"
+                },
                 size * 0.9,
                 vec2(head.x + size * 0.4, head.y + size * 0.2),
                 SOFT,
@@ -1712,9 +2569,9 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
                 SOFT,
             )
             let _ = s.list.text(s.fonts, Face::Sans, who, size, vec2(row.x + size * 1.9, y), colour)
-            if s.board == PLAYERS {
-                // How its upload went, if it was asked.
-                let said = online::status(s.online, run)
+            if s.board == PLAYERS && i < s.prints[printed].2.len() {
+                // How its post went, if it was asked.
+                let said = online::status(s.online, s.prints[printed].2[i])
                 if !said.is_empty() {
                     let _ = s.list.text(
                         s.fonts,
@@ -1751,18 +2608,214 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
         vec2(back.x + (back.w - bw) * 0.5, back.y + size * 0.35),
         INKED,
     )
-    var items = Vec::from([Prompt { act: Act::Choose, say: "Watch" }])
-    if s.board == PLAYERS {
-        items.push(Prompt { act: Act::Upload, say: "Upload" })
+    if finding {
+        search_picks(mut s, screen, size)
+        footer(
+            mut s.list,
+            s.fonts,
+            [
+                Prompt { act: Act::Change, say: "Pick" },
+                Prompt { act: Act::Move, say: "Part" },
+                Prompt { act: Act::Done, say: "Search" },
+            ],
+            s.device,
+            screen,
+        )
+        return
     }
-    items.push(Prompt { act: Act::Boards, say: "Boards" })
+    if s.online.consenting.is_some() {
+        lay_posting(mut s, screen)
+        let Some((_, laid)) = s.posting_laid else { return }
+        var hover: Option<u32> = None
+        for i in 0..screens::POSTING_ITEMS {
+            if pointing && laid.controls[i].contains(s.pointer) {
+                hover = Some(i)
+            }
+        }
+        screens::posting_card(
+            mut s.list,
+            s.fonts,
+            screen,
+            laid,
+            best_runs: s.posting_best,
+            focus: s.posting_focus,
+            hover: hover,
+        )
+        footer(
+            mut s.list,
+            s.fonts,
+            [
+                // The keys go round the dialog in the host's tree, with Tab (`posting_tree`).
+                Prompt {
+                    act: if s.device == Device::Pad { Act::Move } else { Act::Boards },
+                    say: "Move",
+                },
+                Prompt { act: Act::Choose, say: "Choose" },
+                Prompt { act: Act::Back, say: "Not now" },
+            ],
+            s.device,
+            screen,
+        )
+        return
+    }
+    runs_note(mut s, screen, size)
+    var items = Vec::from(
+        [Prompt { act: Act::Choose, say: "Watch" }, Prompt { act: Act::Race, say: "Race" }],
+    )
+    if s.board == PLAYERS {
+        items.push(Prompt { act: Act::Post, say: "Post" })
+    }
+    if jumps(s, c) {
+        items.push(Prompt { act: Act::Places, say: if s.near { "Top" } else { "Your place" } })
+    }
+    items.push(Prompt { act: Act::Find, say: "Search" })
+    items.push(Prompt { act: Act::Boards, say: "Next board" })
     items.push(Prompt { act: Act::Back, say: "Back" })
     footer(mut s.list, s.fonts, items, s.device, screen)
 }
 
-/// Watching: a bar at the foot of the page, as a video player's: who made the run, its category
-/// and its time; whether it plays; how far through it is; its speed; and for a few seconds after
-/// the last key, the prompts.
+/// What the runs card says at its foot, beside Back: that the run chosen is coming, or why it
+/// didn't; else the reminder to save the account's recovery codes after a post, while they're
+/// still to be saved.
+fn runs_note(s: mut Lab, screen: vec2, size: f32) {
+    var line = online::watch_note(s.online)
+    if line.is_empty() {
+        let Some(codes) = online::reminder(s.online) else { return }
+        s.reminder_seen = true
+        line = String::from(codes)
+    }
+    let (r, _) = runs_frame(screen)
+    let back = back_rect(screen)
+    let lines = wrap_note(s.fonts, line.as_str(), size * 0.75, back.x - r.x - size * 2.4)
+    for k in 0..lines.len() {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            lines[k].as_str(),
+            size * 0.75,
+            vec2(r.x + size * 1.2, back.y + size * 0.1 + f32(k) * size * 0.95),
+            INKED,
+        )
+    }
+}
+
+/// The search's line on its board: each part's box, what it holds (or what it's for, soft), and
+/// while it's typed in (`finding`), the part with the focus outlined, its hint and a caret.
+fn search_line(s: mut Lab, screen: vec2, size: f32, finding: bool) {
+    let yuzu = vec4(1.0, 0.84, 0.32, 1.0)
+    let paper = vec4(1.0, 0.99, 0.96, 1.0)
+    let text = size * 0.9
+    for p in 0..search::PARTS {
+        let box = part_rect(screen, p)
+        let focused = finding && p == s.search.part
+        if focused {
+            s.list.rect(
+                Rect::new(
+                    box.x - size * 0.15,
+                    box.y - size * 0.15,
+                    box.w + size * 0.3,
+                    box.h + size * 0.3,
+                ),
+                yuzu,
+                radius: size * 0.55,
+            )
+        }
+        s.list.rect(box, INKED, radius: size * 0.45)
+        s.list.rect(box.shrink(max(size * 0.08, 1.5)), paper, radius: size * 0.4)
+        let value = s.search.value(p)
+        let at = vec2(box.x + size * 0.45, box.y + (box.h - text) * 0.5 - size * 0.05)
+        if value.is_empty() && !focused {
+            let what = if p == search::TITLE { "Title" } else if p == search::NOUN { "Name" } else {
+                "Epithet"
+            }
+            let _ = s.list.text(s.fonts, Face::Sans, what, text, at, SOFT)
+            continue
+        }
+        let vw = s.list.text(s.fonts, Face::Sans, value.as_str(), text, at, INKED)
+        if focused {
+            let hint = s.search.hint()
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                hint.as_str(),
+                text,
+                at + vec2(vw, 0.0),
+                vec4(INK, 0.38),
+            )
+            let x = at.x + vw + size * 0.05
+            if s.search.pick == 0 {
+                s.list.line(
+                    vec2(x, box.y + size * 0.35),
+                    vec2(x, box.bottom() - size * 0.35),
+                    INKED,
+                    width: max(size * 0.08, 1.5),
+                )
+            }
+        }
+        if p == search::NOUN {
+            let the = vec2(box.right() + size * 0.9, at.y)
+            let _ = s.list.text(s.fonts, Face::Sans, "the", text, the, SOFT)
+        }
+    }
+}
+
+/// While the search is typed in, the completions of the part with the focus, under it: the first
+/// few, the one picked washed in yuzu.
+fn search_picks(s: mut Lab, screen: vec2, size: f32) {
+    let part = s.search.part
+    borrow all = s.search.completed
+    if all.is_empty() {
+        return
+    }
+    let u = unit(screen)
+    let box = part_rect(screen, part)
+    let shown = min(all.len(), 5)
+    // The picks round the one picked, so a controller sees where it is in the list.
+    let from = if s.search.pick > 3 { min(s.search.pick - 3, all.len() - shown) } else { 0 }
+    let line = size * 1.35
+    let r = Rect::new(
+        box.x,
+        box.bottom() + size * 0.3,
+        max(box.w, size * 9.0),
+        line * f32(shown) + size * 0.6,
+    )
+    card(mut s.list, r, u * 0.6)
+    for k in 0..shown {
+        let i = from + k
+        let row = Rect::new(
+            r.x + size * 0.3,
+            r.y + size * 0.3 + f32(k) * line,
+            r.w - size * 0.6,
+            line,
+        )
+        if s.search.pick == i + 1 {
+            s.list.rect(row, vec4(1.0, 0.84, 0.32, 1.0), radius: size * 0.35)
+        }
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            all[i].as_str(),
+            size * 0.85,
+            vec2(row.x + size * 0.3, row.y + size * 0.2),
+            INKED,
+        )
+    }
+}
+
+/// Board `b`'s name on the leaderboard.
+fn board_name(b: u32) -> Text {
+    if b == online::WORLD {
+        "World"
+    } else if b == online::SEARCH {
+        "Search"
+    } else if b == PLAYERS {
+        "Yours"
+    } else if b == ASSISTED { "Tool-assisted" } else { "Whole game" }
+}
+
+/// Watching: a bar at the foot of the page, as a video player's: who made the run (a world's run:
+/// the account and its place), its category and its time; whether it plays; how far through it
+/// is; its speed; and for a few seconds after the last key, the prompts (`watch_prompts`).
 fn watch_bar(s: mut Lab, screen: vec2) {
     let u = unit(screen)
     let size = u * 2.6
@@ -1773,7 +2826,10 @@ fn watch_bar(s: mut Lab, screen: vec2) {
                 named.clone()
             }
             let category = if counts(w.replay, FULL) { "100%" } else { "Any%" }
-            (f"{who}  ·  {category}", w.tick, w.end(), w.playing, SPEEDS[w.speed])
+            let label = if s.watch_place > 0 {
+                f"{who}  ·  {online::ordinal(s.watch_place)}  ·  {category}"
+            } else { f"{who}  ·  {category}" }
+            (take label, w.tick, w.end(), w.playing, SPEEDS[w.speed])
         },
         None => return,
     }
@@ -1804,7 +2860,7 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     )
     // How far through: a line, the part played inked.
     let left = r.x + u * 8.6
-    let right = r.right() - u * 22.0
+    let right = r.right() - u * 37.0
     let y = r.y + u * 6.0
     let done = left + (right - left) * saturate(f32(tick) / f32(max(end, 1)))
     s.list.line(vec2(left, y), vec2(right, y), vec4(INK, 0.25), width: u * 0.6)
@@ -1828,18 +2884,39 @@ fn watch_bar(s: mut Lab, screen: vec2) {
         vec2(right + u * 2.0, r.y + u * 4.8),
         SOFT,
     )
+    // Race: the level again, this run the ghost (R, Select, or a click), its key or button on it.
+    let race = race_rect(screen)
+    let pointing = s.device == Device::Keys && race.contains(s.pointer)
+    s.list.rect(race, if pointing { vec4(0.94, 0.88, 0.72, 1.0) } else {
+        vec4(1.0, 0.84, 0.32, 1.0)
+    }, radius: u * 1.4)
+    let glyph = u * 3.0
+    let gw = screens::act_width(s.fonts, Act::Race, s.device, glyph)
+    let rw = s.fonts.font(Face::Sans).measure("Race", size)
+    let gap = if gw > 0.0 { u * 1.0 } else { 0.0 }
+    let left = race.x + (race.w - gw - gap - rw) * 0.5
+    let _ = screens::act(
+        mut s.list,
+        s.fonts,
+        Act::Race,
+        s.device,
+        vec2(left, race.y + (race.h - glyph) * 0.5),
+        glyph,
+    )
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        "Race",
+        size,
+        vec2(left + gw + gap, race.y + (race.h - size) * 0.5 - u * 0.2),
+        INKED,
+    )
     let alpha = 1.0 - smoothstep(IDLE, IDLE + 0.5, s.idle)
     if alpha > 0.0 {
         let _ = screens::prompts(
             mut s.list,
             s.fonts,
-            [
-                Prompt { act: Act::Choose, say: "Play" },
-                Prompt { act: Act::Change, say: "Seek" },
-                Prompt { act: Act::Move, say: "Speed" },
-                Prompt { act: Act::Again, say: "Again" },
-                Prompt { act: Act::Back, say: "Back" },
-            ],
+            watch_prompts(),
             s.device,
             vec2(screen.x * 0.5, r.y - u * 5.0),
             u * 3.6,
@@ -1847,6 +2924,28 @@ fn watch_bar(s: mut Lab, screen: vec2) {
             backed: true,
         )
     }
+}
+
+/// Where the watch's race button is: at the bar's right end.
+fn race_rect(screen: vec2) -> Rect {
+    let u = unit(screen)
+    let w = min(screen.x - u * 6.0, u * 110.0)
+    let right = (screen.x + w) * 0.5
+    Rect::new(right - u * 14.0, screen.y - u * 11.6, u * 12.4, u * 5.8)
+}
+
+/// What the watch's prompts offer: play, seek, the speed, again from the start, and back. The race
+/// against the run as the ghost (docs/plan-online-play.md, step 6) is the bar's button, its key on it.
+fn watch_prompts() -> Vec<Prompt> {
+    Vec::from(
+        [
+            Prompt { act: Act::Choose, say: "Play" },
+            Prompt { act: Act::Change, say: "Seek" },
+            Prompt { act: Act::Move, say: "Speed" },
+            Prompt { act: Act::Again, say: "Again" },
+            Prompt { act: Act::Back, say: "Back" },
+        ],
+    )
 }
 
 /// The watched run's time (ticks), or 0.
@@ -1930,4 +3029,13 @@ fn a_frame_isnt_drawn_between_two_places_across_a_cut() {
     assert(mixed(a, b, 0.5).at == start, "across a cut")
     b.tally.cuts = 0
     assert(mixed(a, b, 0.5).at == start + vec2(15.0, 0.0), "without one")
+}
+
+@test
+fn the_watch_offers_race_once_on_its_bars_button_not_in_its_prompts() {
+    for p in watch_prompts() {
+        assert(p.act != Act::Race, f"{p.say}: the bar's button is the race")
+    }
+    let r = race_rect(vec2(1280.0, 720.0))
+    assert(r.w > 0.0 && r.right() <= 1280.0 && r.bottom() <= 720.0, "the button, on the screen")
 }
