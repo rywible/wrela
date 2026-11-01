@@ -1710,6 +1710,90 @@ shadows flatten the scene": the evening sun is low, its blockers far, the penumb
 0 of 12. Losses artifacts 30.88, depth 16.25, colour 15.75, value 12.62, light 10.62 (their sum
 86.12 against G7's 82.39: the panels' judges differ by a few points run to run).
 
+### 2026-11-01: G3, leaves against the light, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G3 (D2: "acid-green translucent leaves against near-black"). Linux
+pop-os (Radeon "Lucienne"), not the M4 Air.
+
+**What changed.** A leaf's light through it, `sun × transmission × (1 − thickness) × vein`
+(`impostor::leaf_through`): its thickness from how deep in its crown its card is (`THICK` 1.5 m,
+**proposed**), the sun's transmission past the canopy its shadow lookup's (the shading passes
+don't carry the probes' density volume the plan names; the leaf's own shadow, cast by every
+crown's cards, is that transmission: a deviation), its veins the atlas's tissue (eight pinnate
+pairs beside a narrower midrib, `plant::secondary_veins`), its lobe toward the sun 0.35 → 1.3
+(**proposed**). The core's 0.4 floor is gone.
+
+**Tests** (`engine`): `a_lone_leaf_glows_against_the_sun_and_the_crowns_core_doesnt` (a lone card
+at least 0.3 of the sun, the core under 0.05); `a_leafs_veins_cover_a_tenth_of_it` (**14.3 %** of
+the blades over eight seeds' sprigs; the first widths gave 27.6 %).
+
+**G-look on shot 2** (blind, one judge, calibrated): **after** ("a keeps the canopy dark where it
+faces away from the sun, so the backlit leaves glow against it, while b's uniformly bright,
+saturated foliage flattens the forms"); light 2 → 3, colour 1 → 2, value 2 → 3. Shot 1 equal.
+
+**The development panel** (`build/g3-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.00, 0.00 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 0.75, 0.00 | 2.88, 2.25, 2.50, 2.88, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 3.00, 2.75, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 16.00, colour 9.12, depth 9.12, value 7.62, light 7.50 (their sum 49.36
+against G4's 49.76); D2's own rows barely moved (still 2.00, 2.00, 2.00, 1.00, 1.62). Re-ranked:
+G7 (5.75, 3 pairs), G3 (2.00), G4 (2.00), **G5 (2.00, D6)**, **G1 (1.50, D8 and D1)**; the named
+items not built are G5 and G1, in that order.
+
+**The sealed panel, for the record** (`build/g3-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.62, 2.00, 1.25, 0.12 | 2.25, 3.00, 2.62, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.12, 2.00, 0.75 | 2.12, 3.00, 2.25, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.25, 1.25, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.25, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.75, 1.50, 0.00 | 2.25, 3.00, 2.88, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.50, 1.25, 0.88 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.12, 2.12, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.12, 1.00, 1.12, 0.75, 0.00 | 2.12, 2.75, 2.00, 2.38, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.88, 1.00, 1.12, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.12, 2.88, 3.00 |
+
+0 of 12. Losses artifacts 29.38, colour 15.75, depth 14.62, value 11.62, light 10.50 (their sum
+81.87, the least of the four sealed panels so far).
+
+### 2026-11-01: G5.0, the prototype rung (virtual geometry from fields): does not proceed
+
+docs/plan-world-class-3.md §G5, named after G3 by D6's "blobby" (two sentences: "blobby clouds"
+and "blobby foliage"). The rung asks one crag through the pruned extraction at four distances
+against today's levels: the stills, the pixel difference, the cost, the bytes. **Deviation:** the
+rung is worked from the realizer's own numbers, not rendered (no harness draws a crag's beds both
+ways; the cluster path that could, `engine::virtual`, left the game at B11c). A crag's beds today
+are extracted once at their cell (the near level's largest, 4 cm, `blockouts::far_band`'s; a
+crag's beds have no far level), so on the floor's 1080p and 0.82 rad (`PER_METRE` 1242.4) a cell
+covers:
+
+| Eye at | Today's cell | The pruned extraction's | Its vertices, against today's |
+|---|---|---|---|
+| 10 m | 4.97 px | 0.5 px | 99× |
+| 25 m | 1.99 px | 0.5 px | 16× |
+| 50 m | 0.99 px | 0.5 px | 4× |
+| 100 m | 0.50 px | 0.5 px | 1× |
+
+So the pruned extraction would add detail only within about 50 m (a crag's cell is a pixel or
+under past it), at up to a hundred times today's vertices at 10 m; the cluster spike (S1a,
+`examples/clusters`) is its cost's record. **The rung decides G5.1 does not proceed:** the pair
+that named it named the clouds and the foliage, outside G5's scope (the rocks, the crags and the
+built things); no judge's sentence on any pair names a rock's or a crag's facets. If a later
+panel names them, G5.1 is the item.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
