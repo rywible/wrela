@@ -1161,8 +1161,9 @@ fn only_a_zstd_answer_is_zstandard() {
         let Some(p) = not_zstd("u", status, encoding) else { panic(why) }
         assert(contains(p.as_str(), why), p.as_str())
     }
-    // Until Ryan sets the zone's rule, the check only warns.
-    assert(!ZSTD_RULE, "set: the deploy now fails without Zstandard")
+    // The zone's rule is set (2026-11-01, docs/bench.md "Zstandard against Brotli"): a WASM module
+    // or runtime script that doesn't come back as Zstandard fails the deploy.
+    assert(ZSTD_RULE, "unset: the deploy only warns without Zstandard")
 }
 
 /// On a site that serves no Zstandard (a fake site's answers are uncompressed), the check warns

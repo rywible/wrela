@@ -97,7 +97,7 @@ pub const API_PROBE: Text = "/api/accounts"
 /// docs/toolchain.md, "Delivery"). Once it's set, a WASM or runtime script of the console or a game
 /// that doesn't come back with `content-encoding: zstd` fails the deploy; until then the log
 /// warns of each.
-pub const ZSTD_RULE: bool = false
+pub const ZSTD_RULE: bool = true
 
 /// What the Zstandard check asks for, as a browser that takes both does.
 pub const ACCEPT_ENCODING: Text = "zstd, br"
