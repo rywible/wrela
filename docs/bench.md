@@ -2354,6 +2354,185 @@ less alike; bark a field near the eye, not a magnified tile (the ridges' own `ri
 pixel is under a texel); the leaves' cards with relief and thickness; a trunk's foot that meets
 the ground without moving the shots' near trunks into the camera.
 
+### 2026-11-01: the final panel (H2), Part H's head, toolchain 0.18.0
+
+docs/plan-world-class-3.md §H2.2 (D38): the vale as the plan leaves it (Part G merged, G7 out of
+the vale, the probes' solids fix; Part H changes nothing the vale draws), its twelve evaluation
+stills at 1920×1080 (`build/stills-h2`, `wrela tool lookbook -- build/stills-h2 --package
+examples/vale --stills --size 1920x1080 0 … 11`, Linux pop-os, Radeon "Lucienne") against the
+same references, B5's seed (5) and mode (attributed), eight agent judges in fresh contexts given
+B5's brief; all eight passed both calibration pairs (none rejected). The hashes equal B5's:
+shots `88c877da27abda2b01a81d2777a35b66b533f7c5b82902306b64c2825ede6ca1`, manifest
+`b78df49ef41682168868ef3443f88f0d7a423eaf4f8d0595d938924b551bdaf3` (`build/h2-sealed/key.json`;
+every judge's file in `build/h2-sealed/judges/`).
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/h2-sealed --a build/h2-twelve --set evaluation --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/h2-sealed --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.50, 1.88, 1.12, 0.25 | 2.12, 3.00, 2.75, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.25, 2.00, 2.00, 2.00, 1.00 | 2.00, 2.88, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.50, 2.00, 2.00, 0.88 | 2.00, 2.88, 2.62, 2.25, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.62, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.88, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.38, 1.75, 0.00 | 2.12, 3.00, 3.00, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.75, 1.88, 1.50, 1.12, 0.88 | 2.50, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.12, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.62, 1.00, 1.00, 0.62, 0.25 | 2.62, 2.88, 2.00, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.00, 2.75, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: every pair lost 8
+to 0; majority: 0 pairs won or equal (fails). **Fails.**
+
+Ranked losses: artifacts 28.75, colour 16.62, depth 15.00, value 13.50, light 9.88 (their sum 83.75).
+
+| Panel | Pairs won or equal | Share of 96 | artifacts | colour | value | depth | light | Sum |
+|---|---|---|---|---|---|---|---|---|
+| B5 (the baseline) | 0 of 12 | 0 % | 26.75 | 15.88 | 14.38 | 13.62 | 12.50 | 83.13 |
+| D11 (physical) | 0 of 12 | 0 % | 26.62 | 16.25 | 14.12 | 12.50 | 9.50 | 78.99 |
+| E8 (the grown vale) | 0 of 12 | 0 % | 29.12 | 16.50 | 12.25 | 13.25 | 8.75 | 79.87 |
+| F10 (the grown creature) | 0 of 12 | 0 % | 28.75 | 16.75 | 13.88 | 15.50 | 10.88 | 85.76 |
+| G, the last head | 0 of 12 | 0 % | 29.38 | 17.50 | 13.00 | 14.88 | 9.12 | 83.88 |
+| **H2 (the plan's end)** | **0 of 12** | **0 %** | **28.75** | **16.62** | **13.50** | **15.00** | **9.88** | **83.75** |
+
+**G-reference: misses**, on all three rules, as it did at B5. Across the plan the light row's
+losses fell (12.50 → 9.88) and artifacts rose (26.75 → 28.75: the grown wood's forms are new
+faults, the judges' sentences say which: the fallen beech's radial root plate, leaf-card litter,
+floating logs, the fall's flat sheet, an old oak's ghosted bark relief, a kinked limb). What the
+judges name first is still artifacts and colour on every pair. Every pair's worst row and its
+eight sentences are in `build/h2-sealed/tally.md` (the tally's output, kept with the panel).
+
+Each pair's worst row, and its judges' sentences on it:
+
+- Pair 1, artifacts:
+  - j1: The photo is clean; the render has an implausible radial bundle of capsule-shaped roots, painted stripe textures, black outlines, a hard-edged flat water polygon and ground decals.
+  - j2: The photograph is clean; the render shows an implausible star-shaped cluster of capped cylinders, a hard cut-out water edge, a decal-like claw mark on the ground and repetitive banded bark.
+  - j3: The photo is clean; the render shows an implausible star-shaped root bundle, dark crescent marks on the ground, and a hard-edged water plane.
+  - j4: Photo is clean; the render shows implausible star-shaped capsule logs, a hard-edged water decal, black claw-like ground marks and stamped bark.
+  - j5: The photo is clean, and the render shows a cartoon cylinder root ball, a hard-edged sheet of water and stamped dark claw marks on the ground.
+  - j6: The photo is clean; the render shows an implausible radial cylinder cluster, a hard-edged water sheet, floating black stroke decals and outlined geometry.
+  - j7: The photo shows none; the render has an implausible radial cluster of identical cylinders for a root plate, a hard-edged flat water sheet, and floating dark arc decals on the ground.
+  - j8: The photo is clean; the render shows an implausible radial bundle of cylinders as a root ball, a hard-edged water slab, stray dark arc decals and drawn outlines.
+- Pair 2, artifacts:
+  - j1: The render has floating leaf-card litter scattered over bare dirt, cardboard-like logs, a hard-edged path and sprite-like foliage clumps; the photo has none.
+  - j2: The render's ground is covered in flickery confetti-like leaf cards, with floating straight logs and blobby foliage clumps; the photograph is clean.
+  - j3: The render shows leaf cards hovering over bare ground, floating logs, and a hard-edged pale plane in the foreground; the photo is clean.
+  - j4: The render scatters chunky floating leaf shards, has floating logs and plastic trunks, and leaves a barren ground plane; the photo is clean.
+  - j5: The render's floor is scattered with noisy leaf cards, logs resting implausibly and a hard-edged path at the bottom, while the photo is clean.
+  - j6: The render shows confetti-like leaf cards sprinkled over bare ground, hovering logs and blotchy foliage clusters; the photo is clean.
+  - j7: The photo is clean; the render has leaf decals scattered on bare dirt like confetti, floating logs, a pale flat path cutting the foreground, and a ring glitch on a trunk.
+  - j8: The photo is clean; the render's scattered leaf cards read as speckle noise, logs sit on top of the ground and a translucent band crosses the bottom of the frame.
+- Pair 3, artifacts:
+  - j1: The render has untextured grey cylinder trunks, a floating pale stump, blocky stylised bark on the left trunk and logs interpenetrating; the photo is clean.
+  - j2: The render shows blocky extruded bark on the foreground trunk, star-shaped log ends, featureless grey pole trunks and logs that barely sit on the ground; the photograph is clean.
+  - j3: The render shows untextured grey cylinder trunks, interpenetrating logs, blocky bark and an odd pale branch cluster; the photo is clean.
+  - j4: The render has brick-like extruded bark, intersecting logs, plain grey cylinder trunks and a floating white trunk base; the photo is clean.
+  - j5: The render shows untextured cylinder trunks, interpenetrating logs, lollipop trees and a stamped root disc, while the photo has none.
+  - j6: The render shows smooth untextured trunks, oversized bark relief, a floating log end, a stubby flower-like root end and lollipop trees; the photo is clean.
+  - j7: The photo is clean; the render has a blocky stamped bark pattern on the near trunk, untextured grey poles, a trunk base hanging in the air and logs that float or interpenetrate.
+  - j8: The photo is clean; the render has untextured grey poles, blocky bark on the near trunk, a cartoon root ball and a bare, smooth ground plane.
+- Pair 4, artifacts:
+  - j1: The photo is clean; the render has a repeated arrowhead decal pattern down the face, squiggle-line decals, smeared shadows and no sign of the banding the scene is named for.
+  - j2: The render shows rows of repeated triangular arrow decals, tiled squiggle marks, stretched blurry texture and facet seams; the photograph is clean.
+  - j3: The photo is clean; the render shows repeating triangular stamp marks, squiggle decal lines and a smeared texture.
+  - j4: The photo is clean; the render shows repeated stamped arrow decals, tiled squiggle lines and a smeared, stretched texture.
+  - j5: The render shows repeated triangular stamp decals, squiggle lines and a smeared texture with no bedding geometry, while the photo is clean.
+  - j6: The render shows repeated arrow-shaped decal stamps, tiled squiggle lines, smeared texture and no real geometry; the photo is clean.
+  - j7: The photo is clean; the render shows repeating triangular arrow stamps in diagonal rows and wavy line decals across a smeared surface.
+  - j8: The photo is clean; the render shows repeated triangular stamp decals, wavy line decals and a featureless, implausibly smooth face.
+- Pair 5, light:
+  - j1: The photo has sun breaking through the canopy and catching trunk sides, with shadowed undergrowth exactly where expected; the render's cloudy light is flat and gives no direction or modelling.
+  - j2: The photograph's sun slants through from the left, striping the trunks and the path with a natural falloff into shade; the render's overcast light gives no direction, and the ground has no falloff.
+  - j3: The photo's shafts on the trunks show direction, falling off into a dark understory; the render's flat overcast light gives no direction and no falloff on the ground.
+  - j4: The photo has shafts of dappled light on the trunks that fall off into the stand; the render's overcast light is flat, with no occlusion under the bush or on the ground.
+  - j5: The photo's sun breaks through in shafts that light trunks and path with green bounce in the shade, while the render's overcast is flat with no contact darkening on the bare slope.
+  - j6: The photo's dappled sun picks out the trunks and path, with believable falloff; the render's overcast light leaves its big ground plane uniformly lit and formless.
+  - j7: The photo has sun shafts striking the trunks with falloff into shade, while the render's overcast light is flat, and its huge foreground ground plane gets no shading cue.
+  - j8: The photo's dappled sun picks out the trunks with a readable direction and soft falloff; the render's overcast light leaves the large ground slab flat with no readable direction.
+- Pair 6, artifacts:
+  - j1: The photo is clean; the render has blocky tiled bark on the foreground log, blobby cloud shapes, a smeared low-detail far plain and dark outlines on trunks.
+  - j2: The render's clouds are cut-out puffs, the distant plain is a smeared texture and the bark is tiled; the photograph is clean.
+  - j3: The photo is clean; the render's distant plain is a blurry flat texture, its clouds look like cotton balls, the log bark is blocky and the trees are sparse cards.
+  - j4: The photo is clean; the render's distant plain is smeared and featureless, its clouds are blobby puffs, its log bark is blocky, and its slope logs float.
+  - j5: The render shows blocky log bark, blobby clouds and a flat far plane, while the photo is clean.
+  - j6: The render's distant plain is a smeared flat texture, its clouds are blobby and its log has plank-like bark; the photo is clean.
+  - j7: The photo is clean; the render has a smeared low-resolution far terrain, blocky tiled bark on the near log and blobby cloud shapes.
+  - j8: The photo is clean; the render has blobby clouds, a streaked featureless plain, repetitive tree instances and blocky bark on the log.
+- Pair 7, artifacts:
+  - j1: The render has a field of floating leaf cards, an outlined stick-legged deer, the implausible capsule root ball and banded water; the photo is clean.
+  - j2: The render shows thousands of flicker-prone leaf cards scattered like confetti, a star-shaped log cluster, a crude outlined deer and a flat grey water plane; the photograph is clean.
+  - j3: The render shows floating leaf cards, a stick-legged deer, a translucent water slab and an implausible root star; the photo is clean.
+  - j4: The render shows a noise-prone scatter of floating leaf shards, the radial capsule log cluster, a blended pale ground patch and a stick-legged deer; the photo is clean.
+  - j5: The render shows a crude outlined deer, noisy scattered leaf cards, a hard-edged pale blob and a cartoon root ball, while the photo is clean.
+  - j6: The render shows leaf-card confetti everywhere, a radial cylinder root hub, an outlined flat deer and cylinder trunks; the photo is clean.
+  - j7: The photo is clean; the render has a stick-legged outlined deer, a cloud of floating leaf cards, an implausible starburst root and hard water edges.
+  - j8: The photo is clean; the render is covered in floating leaf cards, has a stick-legged outlined deer and a cartoon root ball.
+- Pair 8, artifacts:
+  - j1: The render has an untextured deer, blocky bark, a trunk flaring into a cloth-like skirt, cutout foliage and a blurred ground; the photo is clean.
+  - j2: The render's deer is low-detail, its foliage is blobby cut-out clusters, the log ends are striped and the ground texture is smeared; the photograph is clean.
+  - j3: The render's deer is a smooth low-detail model, its ground texture is smeared and the trunk bases flare like skirts; the photo is clean.
+  - j4: The render has a plastic low-poly deer, a trunk base that flares like a cloth skirt, a banded log and cutout foliage; the photo is clean.
+  - j5: The render shows a smooth crude deer without a contact shadow, a flared skirt of geometry at a trunk base, cutout leaves and blank log ends, while the photo is clean.
+  - j6: The render shows an untextured mannequin deer floating without contact, stretched bark texture, a skirt-like flare at the trunk base and an outlined log; the photo is clean.
+  - j7: The photo is clean; the render has an untextured low-detail deer, bark texture stretched at the trunk bases, starburst log ends and blotchy foliage cards.
+  - j8: The photo is clean; the render has a low-detail deer floating without contact, blotchy foliage cards and a bare ground plane.
+- Pair 9, artifacts:
+  - j1: The photo is clean; the render has black outlines on trunks, a rectangular cloth-like panel hanging off a trunk, logs laid in parallel and stub branches.
+  - j2: The render shows hard black outlines, a flat rectangular card on a trunk, star-shaped log ends and plain cylinder trunks; the photograph is clean.
+  - j3: The photo is clean; the render shows black ink outlines on trunks, a flat card trunk with a visible rectangular edge, and logs in unnaturally parallel rows.
+  - j4: The photo is clean; the render has inconsistent ink outlines, a flat rectangular sheet behind the central trunk, stubby-branched logs and cutout foliage.
+  - j5: The render shows black outlines on trunks, a flat rectangular bark flap, rows of identical repeated logs and cutout leaves, while the photo is clean.
+  - j6: The render shows black outlines, a trunk with a rectangular sheet flap, flat card-like trunks and logs floating above the ground; the photo is clean.
+  - j7: The photo is clean; the render has ink outlines on edges, a rectangular bark card floating off a trunk, stacked intersecting logs and a kinked overhead branch.
+  - j8: The photo is clean; the render has drawn outlines, a visible rectangular card on a trunk, a floating branch across the top and plain cylinder logs.
+- Pair 10, artifacts:
+  - j1: The render has untextured plaster-like walls with polygon shards, floating grass blades, a log intersecting the ground and a flat strip for the waterfall; the photo is clean.
+  - j2: The render's camera sits almost inside the terrain; the waterfall is a flat cyan strip, the walls are blank and grass blades float; the photograph is clean.
+  - j3: The render shows untextured walls, a flat sliver of waterfall, floating grass blades and a smeared ground; the photo is clean apart from mild sharpening.
+  - j4: The render's walls are untextured plaster, its waterfall is a thin teal ribbon, and grass blades float; the photo is clean.
+  - j5: The render shows stretched smeared wall textures, a flat cyan sheet for the fall and floating grass cards, while the photo is clean.
+  - j6: The render shows featureless smeared walls, a camera almost in the ground, floating grass blades, a flat-sliver waterfall and pixelated shadow edges; the photo is clean.
+  - j7: The photo is clean; the render's waterfall is a thin flat blue card, the walls are untextured, and the camera nearly clips a ground mound with a few floating grass blades.
+  - j8: The photo is clean; the render's walls are featureless, the waterfall is a thin flat card and jagged edges show at the top.
+- Pair 11, artifacts:
+  - j1: The photo is clean; the render has plastic-looking bark slats, translucent ghosted overlapping layers and horizontal seams.
+  - j2: The render's bark is extruded plastic slabs with semi-transparent ghosted layers visible through the surface and seam lines; the photograph is clean.
+  - j3: The photo is clean; the render shows ghosted double-image layers, horizontal seams and implausible plastic ridges.
+  - j4: The photo is clean; the render's bark is extruded slabs with ghosted, translucent layering and horizontal seams.
+  - j5: The render shows the camera clipping into the trunk, horizontal tiling seams and glossy extruded ridges, while the photo is clean.
+  - j6: The render shows ghosted transparent layering, extruded plastic-looking bark geometry and camera clipping into the trunk; the photo is clean.
+  - j7: The photo is clean; the render shows ghosted double layers of bark relief, stretched smeared texture and a camera clipping into the trunk.
+  - j8: The photo is clean; the render shows ghosted, double-exposed layers and plastic-looking bevelled bark geometry.
+- Pair 12, artifacts:
+  - j1: The render has a branch with an implausible right-angle elbow, striped bark texture and blotchy dithered leaf cards; the photo is clean.
+  - j2: The render shows stair-stepped extruded bark, dithered blobby foliage edges and a pipe-like bent branch; the photograph is clean.
+  - j3: The render shows a right-angle kinked branch, plastic striped bark and blobby leaf cutouts; the photo is clean.
+  - j4: The render has slab-extruded bark, a sharply kinked branch, cutout foliage blobs and slight leaf noise; the photo is clean.
+  - j5: The render shows a branch kinked at a right angle, slab-stylised bark and mottled noise in the leaf clumps, while the photo is clean.
+  - j6: The render shows plank-like extruded bark with outlines, a sharply kinked branch with a flat seam and blotchy foliage clusters; the photo is clean.
+  - j7: The photo is clean; the render has stretched banded bark, a sharply kinked branch and blotchy foliage cards.
+  - j8: The photo is clean; the render has blocky plastic bark, a sharply kinked branch and blotchy leaf clusters.
+
+The menu (§G0), the items the pairs name, most lost first:
+
+- G7: 9.25 lost, named by 5 pairs
+- G2: 6.88 lost, named by 2 pairs
+- G6: 4.62 lost, named by 1 pairs
+- G5: 3.00 lost, named by 1 pairs
+- G1: 2.00 lost, named by 2 pairs
+- G4: 2.00 lost, named by 1 pairs
+- G3: 1.88 lost, named by 1 pairs
+
+The menu's ranking from this sealed tally (`studio/compare/menu.wrela`) names G2 (the water's
+reflections) and G6 (the fall) second and third. Part G never built them: its selection read the
+development panel (§G0), whose eight shots have no fall and no mere, so the faults these pairs
+name first (pairs 10 and 6) were never on its menu. Plan four opens with them.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
@@ -3436,33 +3615,54 @@ of its shading pass. The prepass and the shading pass each draw every card.
 
 ## Whether D27 holds
 
-docs/plan-world-class-3.md §0.1, D27 (**proposed**). The table has a row per gate per scene per
-device, each cell "holds", "misses by ..." or "blocked: ...". Part C started it with the M4's
-performance rows; Part H finishes it. The M4 Air numbers are Chrome at 1080p, Epic,
-toolchain 0.10.3: the frame from C6's 600 s sustained run, memory from the same run's GPU peak,
-and the starts from C5's three-run medians (salts new to the machine).
+docs/plan-world-class-3.md §0.1, D27 (**proposed**). A row per gate per scene per device, each
+cell "holds", "misses by ..." or "blocked: ...". Part C started it with the M4's performance
+rows; Part H finishes it (§H2). The M4 Air's numbers are Chrome at 1080p, `Epic`, toolchain
+0.10.3: the frame from C6's 600 s sustained run, memory from the same run's GPU peak, and the
+starts from C5's three-run medians (salts new to the machine). Parts D–H changed both scenes'
+frames since, and this plan's last machine was Linux (Radeon "Lucienne"), not the M4: each M4
+cell is C's number, **to measure again on the M4** with the scenes as Part H leaves them (the
+last column says what this machine measured, which is no stand-in for the M4's).
 
 | Gate | Scene | M4 Air | Note |
 |---|---|---|---|
-| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.37 ms (18.37) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). |
-| | floor | misses by 1.34 ms (13.34) | Its fog is 6.5 ms serial, beside the cards. |
+| GPU frame p50 < 12 ms, after 600 s | vale | misses by 6.37 ms (18.37) | Its two vegetation passes draw every card twice, 18.8 ms serial (C6). Here: 57.12 ms (Part G's walk). |
+| | floor | misses by 1.34 ms (13.34) | Its fog is 6.5 ms serial, beside the cards. Here: 32.20 ms (H1). |
 | Paced p99 < 20 ms | vale | misses by 11.48 ms (31.48) | The same frames' overruns. |
 | | floor | misses by 15.45 ms (35.45) | |
 | 0 of 1,200 paced frames over 33 ms | vale | misses by 6 | |
 | | floor | misses by 27 | |
-| 1,200 frames begun within 20.4 s, one in flight | vale | misses (42.9 a second; 58.8 needed) | |
-| | floor | holds, by 0.02 a second (58.84) | Within run-to-run noise: the 120 s Epic run after it begun 56.9. |
-| GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | It held 478.8 at playable. Its walk now runs 1,260 frames (C4's 1,020, under 512 at 508.2), and the probes baked round the moving eye are what grows. |
-| | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). C4's calibration lever, which took ~24.5 MiB off, was reverted in review: its count missed quads past the room it calibrated in. |
-| Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). |
-| | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. |
-| Warm start < 3 s | vale | **holds** (2.21) | |
-| | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. |
-| Lower tiers measured, each under the one above | vale, floor | **holds** (C7) | Epic > High > Medium > Low on both. |
+| 1,200 frames begun within 20.4 s, one in flight, at most 12 intervals over 25 ms | vale | misses (42.9 a second; 58.8 needed) | |
+| | floor | misses: its starts hold by 0.02 a second (58.84), but at least 27 intervals were over 25 ms (12 allowed: the same run's 27 over 33 ms) | Its starts within run-to-run noise: the 120 s Epic run after it began 56.9. |
+| GPU memory < 512 MiB | vale | misses by 27.8 MiB (539.8 peak) | Here 606.4 (Part G's walk: G1's colour volume +9.4 MB among it). |
+| | floor | misses by 223.6 MiB (735.6) | Its built things' realizations (C4). Here 743.7. |
+| Cold start < 5 s | vale | misses by 1.69 s (6.69) | Compile-bound at the GPU process's pace (C5). Here 10.4 s. |
+| | floor | misses by 8.33 s (13.33) | Its creature fields' realizer pipelines. Here 36.9 s. |
+| Warm start < 3 s | vale | **holds** (2.21) | Here 7.5 s. |
+| | floor | misses by 2.38 s (5.38) | Load-bound: its frames 3-102. Here 14.6 s. |
+| Lower tiers measured, each under the one above | vale, floor | held at C7, before Parts D–H; to measure again | Epic > High > Medium > Low on both at C7; Part H changed no tier, Parts D–G changed what each draws. |
+| Fidelity (G-reference: ≥ 50 % of 96, no pair worse than 6–2, ≥ 6 pairs won or equal) | vale | misses: 0 % of 96 (50 % needed), every pair lost 8–0, 0 of 12 pairs won or equal | The stills are the same on any device; H2's panel ("Public visual references"). |
+| Every plant grown (G-grown) | vale | **holds** on this machine; blocked: the M4's Chrome run | 26,156 instances, 0 authored; the growth's hashes the same in two native runs and Chrome here ("H2"). |
+| Every creature grown from its genome | vale | **holds** (Part F) | The grazer grown (`kit::roe`): its proportions, muscles and coat from its genome, its body plan and face authored. |
+| Its motion (G-motion, ≥ 40 %) | vale | blocked: 0 % in four rounds (F9) | |
+| Steerable (G-steer, IoU ≥ 0.85) | vale | **holds** for the oak (0.874) and the beech (0.880); blocked: the birch (0.689) | E6. |
+| Four styles, no change to `engine/` | vale | **holds** (D10, again at H2) | `wrela tool styles -- --check`: `Cel`, `Painterly`, `Ink` and the two fitted looks each added in a commit that changes no engine file; `Physical` the engine's own. Coherence: `Cel` holds its 60 bars, `Painterly` 59, `Ink` Blocked ("D4–D7b"). |
+| Size (the runtime ≤ 1 MB, program and shaders ≤ 6 MB gzipped, cold load ≤ 8 MiB) | vale, floor | **holds** | 26 KB; the vale 3.23 MB, the floor 5.59 MB; their cold loads 4.0 and 6.0 MiB ("H2"). |
 | Other devices | all | blocked: deferred to a later plan (D37) | |
-| Fidelity (G-reference) | vale | pending: Part G's review | |
-| Grown plants and creatures (G-grown) | vale | pending: Parts E and F | |
-| Four styles, no change to `engine/` | vale | **holds** (D10) | `wrela tool styles -- --check`: `Cel`, `Painterly`, `Ink` and the two fitted looks each added in a commit that changes no engine file; `Physical` the engine's own. Coherence: `Cel` holds its 60 bars, `Painterly` 59, `Ink` Blocked ("D4–D7b"). | |
+
+**The claim** (D27): **it doesn't hold, on the one device it names.** On the M4 Air the vale misses
+every frame-time gate (its GPU median 18.37 ms against 12, its p99 31.48 against 20, 6 frames
+over 33 ms, 42.9 frames begun a second against 58.8), its memory by 27.8 MiB and its cold start by
+1.69 s, and holds its warm start; the floor misses every one. Its fidelity misses
+on every judge's ballot: at H2's final panel no judge preferred a still or rated one equal on any of the twelve pairs (0 of 96), the same as at B5. What it claims of content holds: every plant in the vale is
+grown (none authored) and its growth hashes the same across hosts here; its creature is grown
+from a genome; it renders through four looks with no change to `engine/`; its runtime, program
+and shaders fit their sizes. The tiers below `Epic` were measured and ordered at C7. Every M4 number here
+is C's, from before Parts D–H, and is to measure again on that machine: until then each M4 cell
+is a historical one, not the plan's final measure; no other device has a row (D37). Plan three
+isn't complete in the sense of its claim: D27 doesn't hold, and its Part G closed Blocked without
+building G2 (the water's reflections), G5.1 (virtual geometry from fields) or G6 (the fall), which
+the final panel's menu names. Plan four (`docs/plan-world-class-4.md`) opens with them.
 
 ## The hypotheses (docs/plan-world-class-3.md §7)
 
@@ -3471,13 +3671,13 @@ Each ships only if its own gate says it pays; each gets its outcome here when it
 | ID | Hypothesis | Decided at | Outcome |
 |---|---|---|---|
 | H1 | Specialization alone (C1) recovers at least 2 ms of the clearing's GPU frame and 3 ms of the floor's | C1, C6 | not held: compiling the switches out moved nothing (the clearing 12.39 → 12.68 ms GPU p50; its fog and distance volume were off at run time already: "C1, every switch a constant") |
-| H2 | Most of the visual-review gain comes from the grown floor (E3–E5), not from lighting | E8's panel against D11's | pending |
+| H2 | Most of the visual-review gain comes from the grown floor (E3–E5), not from lighting | E8's panel against D11's | not held: there was no gain to attribute. E8 lost every pair 0 / 0 / 8 as D11 did, and no row moved by more than 2.5 (artifacts 26.62 → 29.12, value 14.12 → 12.25, light 9.50 → 8.75: "the third panel (E8)") |
 | H3 | Mark coherence (D7) is the hardest problem in Part D and the bars will be held by `Cel` and `Ink` before `Painterly` | D7's table | half held: mark coherence was the hardest problem (Ink is Blocked on it), but `Painterly` holds 59 of 60 bars and `Ink` none of its flicker bars ("D4–D7b, the looks' coherence") |
 | H4 | The learned style beats hand-tuned `Painterly` on flicker and pop at equal preference | D9 | withdrawn (D41): the learned style is deferred until Ryan rules on docs/citations.md's rule |
-| H5 | Growth is byte-identical across devices on the CPU without fixed-point arithmetic | E7's hashes | pending |
-| H6 | Motion, not rendering, decides the creature shots (9, 10) | F10's panel against E8's | pending |
-| H7 | Bounce colour (G1) moves the "light" row more than any other single item | G1's panel | pending |
-| H8 | The vale needs no more than three of Part G's items to reach G-reference | G's tallies | pending |
+| H5 | Growth is byte-identical across devices on the CPU without fixed-point arithmetic | E7's hashes | held on this machine: two native runs and Chrome gave the same archetypes' and first ring's hashes at E7 and again at Part H's head ("Part H, the final gates"); the M4's Chrome, the third device, is to re-measure |
+| H6 | Motion, not rendering, decides the creature shots (9, 10) | F10's panel against E8's | not held: neither decided them. Both creature pairs stayed lost 0 / 0 / 8 at F10, and the judges faulted the leaf cards, the root plates, the smeared ground and the empty slope, not the creature's motion or its rendering ("the fourth panel (F10)"); G-motion stayed Blocked at 0 % ("F9") |
+| H7 | Bounce colour (G1) moves the "light" row more than any other single item | G1's panel | not held: on the development panel G1 moved the light row's losses 7.50 → 7.62 (G3's to G1's); the most any item moved it was G7's 9.00 → 7.75, within the panel's run-to-run spread, and G7 later left the vale ("G1, bounce light"; "Part G closes, again") |
+| H8 | The vale needs no more than three of Part G's items to reach G-reference | G's tallies | not held: eight items (G7, G4, G3, G1, G8, G9 and G10's four parts) left the development panel at 0 of 8 pairs (losses 51.01 → 49.88) and the sealed twelve at 0 of 12 ("Part G closes, again: Blocked") |
 
 ## D1, the substance (2026-10-30, toolchain 0.11.0)
 
@@ -4722,3 +4922,296 @@ darker in the sun: the doe's lit back is sRGB 191, 154, 118 against the soil's 1
 the next lever is the creature's lit value, not its colour: the character shading's band light
 (`character::character_shade`'s `cel`) lights it about 40 % brighter and flatter than the ground
 it stands on. F10's panel and F9's first two rounds judged the fawn; F9's rounds 3 and 4 the doe.
+
+## H1, the floor adopts (2026-11-01, toolchain 0.18.0)
+
+docs/plan-world-class-3.md §H1 (D40). Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**:
+the stills, the judges and the pixel comparisons hold anywhere; every timing here is this
+machine's, and the M4's are to measure (listed in "Whether D27 holds").
+
+**The switches.** Each capability the vale proved is a constant of the floor's build
+(`games/last-green/main.wrela`), off unless `--set`:
+
+- `GROWN_WOOD` (Part E's, unchanged here): the floor's kinds grown, its flora and its causes.
+- `GROWN_FAWN` (new): the roe grown from its genome as the vale's grazer (`kit::roe` at
+  `VALE_AGE`, its `VALE_MUSCLES` and `VALE_COAT`) in the hand fawn's place
+  (`games/last-green/fawns.wrela`). A shot stands it where it casts the fawn, its face attending
+  to the eye; in play its own walker walks after the sim's fawn at its pace (its way straight
+  ahead, as the sim's: `behaviour::Ahead`), its face to the player while the sim's senses notice
+  them (F8). The two ages tried before it (0.3, 0.45) were grown by `wrela tool gait -- --grow
+  --write` at those ages; they are gone with the switch's own tables (/simplify).
+- `LOOK` (new, a type, as the vale's): `--set LOOK=styles::cel::Cel` builds the cel floor. The
+  plan's `pub const STYLE` is `pub type LOOK`, since a look is a type (docs/toolchain.md).
+- `TIER` (C7's).
+
+The great tree stays authored under every switch (`trees::great_tree`: a character of the lore;
+games/last-green/design.md).
+
+**The builds** (`wrela pipelines games/last-green --set GROWN_WOOD=… --set GROWN_FAWN=… --set
+LOOK=… --set TIER=…`, all 32): each builds; the pipelines are the same with either grown switch
+on or off.
+
+| Tier | Physical | Cel |
+|---|---|---|
+| Epic | 170 (147 entry points) | 171 (148) |
+| High | 168 (145) | 169 (146) |
+| Medium | 166 (143) | 167 (144) |
+| Low | 162 (139) | 163 (140) |
+
+**A stack the floor's init didn't have.** The stage first held room for both fawns' casts by
+value (the other none), and the floor's init then overflowed its stack building the kinds'
+plants (a wasm trap in `trees::kinds::log`; each `Plant` is 128 KiB, passed by value). Bisected
+over Part G's 46 commits and this one: every Part G commit gets through, this one didn't. Each
+fawn is now held in a list (`Fawns`), the one built or none (docs/toolchain-gaps.md).
+
+**The grown floor** (`GROWN_WOOD` and `GROWN_FAWN`): the 23 shots' stills (`wrela tool lookbook --
+build/f-<name> --stills --capture --size 1920x1080`, the floor built each way), blind pairs
+against the floor as it is, three agent judges in fresh contexts (the shots split 9, 9 and 8,
+each pack with a calibration pair, all three passed). **"Before" on 18 of 23**, "after" on 4,
+equal on 1:
+
+| Shot | Preferred | Before / after (the rows' sum) | The judge's why (its sides a and b) |
+|---|---|---|---|
+| floor 00 the clearing | before | 13 / 11 | A's backlit, darker tree gives stronger light and value structure at a similar artifact cost. |
+| floor 01 wood pasture | before | 14 / 9 | B's spreading trees and canopy shade give real light, value and depth where A reads as repeated lollipops. |
+| floor 02 beech high forest | before | 14 / 9 | A is a convincing, well-layered wood, while B's floating vines and visible leaf cards break plausibility. |
+| floor 03 the old road | before | 12 / 10 | A's fuller, rim-lit trees model the light and layer the depth better, while both share similar log and hillside flaws. |
+| floor 04 the crags top | before | 8 / 8 | Both share the black occluder, and A's varied broadleaf canopy reads more natural than B's repeated cones. |
+| floor 05 the towers foot | before | 10 / 9 | B's full grass and naturally spreading trees remove A's visible tuft pattern and lollipop forms. |
+| floor 06 the ring | after | 10 / 12 | A's sun-dappled clearing reads the light and values clearly, while B's dark foreground and hard stalks cost more than its better haze gains. |
+| floor 07 the mere | after | 9 / 10 | B's floating black leaf sprites read as stray artifacts against the sky, while the rest of the scene is close. |
+| floor 08 the stream in the wood | before | 12 / 9 | b's flared trunk and canopy shade make the plateau feel like it sits under trees, where a looks like a bare lit set. |
+| floor 09 the waterfall | before | 9 / 8 | The scenes match, but a's crowned rim trees add scale and life that b's sparse stub lacks. |
+| floor 10 the burn | before | 11 / 9 | a's snags read as varied broken trunks, while b's identical forked poles break the illusion despite its better logs. |
+| floor 11 the windthrow | after | 9 / 12 | b's logs have real cylindrical form and girth and its centre tree a believable crown, where a's logs read as flat sticks. |
+| floor 12 the plateaus edge | equal | 10 / 10 | The two are nearly identical apart from the distant forest texture, and neither difference is large enough to choose on. |
+| floor 13 the towns site | before | 13 / 9 | b's trees have believable layered crowns over a deep understorey, while a's spherical bushes and tufted poles look artificial. |
+| floor 14 the wardens arena | before | 10 / 10 | b's crowns and the forked pale trunk at left read as grown trees in a deep wood, which outweighs its odd orange branch stubs. |
+| floor 15 the wildwood | before | 13 / 8 | b's flared, tapering, bark-modelled trunks and raking sun read as an old wood, whereas a's trunks look like posts in a tangle. |
+| floor 16 the fawn in the glade | before | 12 / 10 | B's dense, canopied wood with a shaded floor and layered trunks beats a's sparse lollipop clearing. |
+| floor 17 the fawn under the beeches | before | 12 / 9 | A's trees, root flares and dappled floor are far more convincing despite the clipping, while b's poles and stacked logs read as primitives. |
+| floor 18 the fawn by the stream | after | 8 / 9 | B's view down the ravine gives clearer depth and its shrub is a more plausible form than a's fan of sticks, though a keeps the fawn in view. |
+| floor 19 the climbers robe | before | 12 / 9 | B's thick, canopied trees and visible fawn make a deep, readable wood where a looks like a sparse plantation. |
+| floor 20 the climber close | before | 12 / 10 | B's thick, layered trunks and canopy give a convincing wood with stronger value and depth. |
+| floor 21 the climbers hood | before | 11 / 9 | A's trees have believable spreading crowns and the floor is dense, while b's logs and snags look like primitives. |
+| floor 22 the climbers train | before | 10 / 7 | A reads as a lit wood with canopy and floor shadow, while b is a bare grove of stacked cylinders with floating stray geometry. |
+
+What the judges fault: crowns read as "lollipops" and "repeated cones" on thin bare boles ("posts",
+"a sparse plantation"), floating vines and leaf cards (the wildwood's and the beech forest's
+looping thin limbs), identical forked snags, logs as "stacked cylinders", trunks without the
+hand's flared feet. **Not adopted: `GROWN_WOOD` stays off (Blocked).**
+
+G-look's measures (2) and (3) for the switch alone (`GROWN_WOOD`, the hand's fawn), run after the
+council asked for them: the floor's 23 on the fast instrument with PSNR, each build's
+(`wrela tool lookbook -- build/fast-floor-<name> --fast --psnr 0 … 22`, `base2` against `wood`):
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px |
+|---|---|---|---|---|
+| floor 00-the-clearing | 30.26 → 31.30 | 11.86 → 14.20 | 0.0040 → 0.0038 | 2 → 2 |
+| floor 01-wood-pasture | 26.33 → 26.45 | 31.26 → 18.64 | 0.0054 → 0.0051 | 2 → 2 |
+| floor 02-beech-high-forest | 21.68 → 20.08 | 55.07 → 49.55 | 0.0109 → 0.0118 | 2 → 3 |
+| floor 03-the-old-road | 29.63 → 28.91 | 11.17 → 10.47 | 0.0040 → 0.0035 | 3 → 3 |
+| floor 04-the-crags-top | 38.09 → 38.22 | 5.36 → 5.49 | 0.0013 → 0.0013 | 2 → 2 |
+| floor 05-the-towers-foot | 34.41 → 34.76 | 5.29 → 5.33 | 0.0023 → 0.0018 | 2 → 2 |
+| floor 06-the-ring | 25.49 → 24.46 | 89.17 → 45.97 | 0.0082 → 0.0075 | 2 → 2 |
+| floor 07-the-mere | 34.10 → 34.54 | 35.86 → 30.16 | 0.0032 → 0.0030 | 2 → 2 |
+| floor 08-the-stream-in-the-wood | 25.47 → 26.75 | 13.57 → 14.02 | 0.0062 → 0.0053 | 3 → 3 |
+| floor 09-the-waterfall | 38.17 → 36.87 | 7.15 → 7.07 | 0.0018 → 0.0016 | 3 → 2 |
+| floor 10-the-burn | 27.39 → 27.22 | 24.75 → 16.20 | 0.0047 → 0.0053 | 2 → 2 |
+| floor 11-the-windthrow | 27.92 → 28.30 | 7.30 → 7.57 | 0.0110 → 0.0091 | 3 → 3 |
+| floor 12-the-plateaus-edge | 38.06 → 38.39 | 4.67 → 4.92 | 0.0028 → 0.0028 | 3 → 2 |
+| floor 13-the-towns-site | 24.33 → 25.02 | 36.04 → 23.82 | 0.0063 → 0.0056 | 2 → 2 |
+| floor 14-the-wardens-arena | 22.97 → 23.27 | 47.66 → 30.70 | 0.0070 → 0.0065 | 2 → 2 |
+| floor 15-the-wildwood | 24.78 → 22.99 | 43.23 → 38.96 | 0.1053 → 0.0594 | 6 → 2 |
+| floor 16-the-fawn-in-the-glade | 23.88 → 28.27 | 86.70 → 59.24 | 0.0085 → 0.0061 | 3 → 3 |
+| floor 17-the-fawn-under-the-beeches | 24.14 → 22.89 | 92.24 → 77.15 | 0.0116 → 0.0103 | 3 → 2 |
+| floor 18-the-fawn-by-the-stream | 23.28 → 27.53 | 48.78 → 36.14 | 0.0070 → 0.0058 | 3 → 3 |
+| floor 19-the-climbers-robe | 23.86 → 26.67 | 85.68 → 73.59 | 0.0101 → 0.0076 | 3 → 2 |
+| floor 20-the-climber-close | 24.44 → 26.27 | 121.45 → 112.99 | 0.0143 → 0.0105 | 3 → 3 |
+| floor 21-the-climbers-hood | 25.55 → 28.51 | 75.90 → 76.69 | 0.0114 → 0.0106 | 4 → 4 |
+| floor 22-the-climbers-train | 25.73 → 27.86 | 109.71 → 93.34 | 0.0103 → 0.0086 | 3 → 3 |
+
+PSNR down on 7 of 23; flicker up past a run's spread (13 %) on 1; pop on 0
+
+The grown wood's flicker is down on 16 shots and up on 7, past a run's spread only on the
+clearing's (+20 %); its pop up past the spread on none; its PSNR up on 16. The measures favour it
+where the judges didn't.
+
+**A lever tried: the forest kinds grown in the open** (the council's round 1 asked for the levers to
+be tried, not named). Every living kind's archetype grown at `stand` 0 (the open) instead of its
+forest stand (1 for the oak and the beech, 0.6 for the birch, the pine and the alder), for one
+build of the floor with `GROWN_WOOD` (`scratchpad/p-open.py`, not committed), its 23 stills judged
+blind against the floor as it is by three judges in fresh contexts (all three calibrations
+passed): **after on 13, before on 9, equal on 1** (from 4 / 18 / 1 without it). The judges credit
+"natural, varied crowns and branching" over the hand's "stylised lollipop clump" and "cloned
+canopies", and still fault "branches loop around the trunk in implausible coils", snags as
+"Y-forked poles", logs as "parallel cylinders", and the denser canopy's murk ("walls off the view
+and flattens light"). The archetypes are `trees::archetypes::GROWN`, which the vale draws too:
+with the lever, `wrela same examples/vale` (60 frames, against its build before) differs in its
+commands from frame 0, so it moves the vale's trees, and **it isn't merged**: Ryan's rule is that it
+merges only if the vale's panels say it helps, and they weren't run. The floor's own archetypes
+(the lever for the floor alone) or the vale's panels with it are plan four's (its §11).
+Next levers, after it: the looping whip limbs culled, the snags' forms, the trunks' flared feet.
+
+**The grown fawn alone** (`GROWN_FAWN`, the hand's wood; its four shots: the fawn in the glade,
+under the beeches, by the stream, and the climber's robe), one judge in a fresh context a round,
+calibrated:
+
+| Its age | The glade | Under the beeches | By the stream | The robe | The judge |
+|---|---|---|---|---|---|
+| 0.45 (21 kg, 0.66 m at the withers) | before | before | after | before | "reads as a miniature" beside the climber |
+| 1.0 (as the vale's grazer, 0.72 m) | **after** | before | **after** | before | "shaded, muted and scaled like part of the scene" where the hand's is "a flat saturated orange cutout"; under the beeches and in the robe's shot it is "an implausibly small speck" |
+
+(At 0.3, 12 kg and 0.57 m, the grown floor's judge read the fawn as tiny, and it wasn't judged
+alone.) **Not adopted: `GROWN_FAWN` stays off (Blocked), at 1.0.** The two shots it loses are
+composed for the hand's fawn, about 0.9 m at the withers (`fawn::character::SIZE` 0.6 of the
+grazer), which the log and the distance hide a roe behind. Next levers: those two shots'
+placements for a roe's size, or a larger deer's genome (a fallow deer's 0.9 m): both are Ryan's
+calls on the floor's content.
+
+**The cel floor** (`--set LOOK=styles::cel::Cel`, the floor as it is), G-look for a new style:
+
+- (1) Its 23 stills: `build/f-cel` (1920 × 1080).
+- (2) and (3) The fast instrument against the physical floor's bars (`wrela tool lookbook --
+  build/fast-floor-cel --fast --look styles::cel::Cel --bars build/fast-floor-phys 0 … 22`):
+  flicker and pop at most 1.5 times the physical's, trail at most its plus a pixel. **22 of 23
+  hold**; the wildwood's trail misses, 12 px against 5 (the median of three runs of each look).
+- (4) Three agent judges in fresh contexts scored the stills without a pair on the rubric and
+  a *style* row (the treatment consistent across the picture, as one hand drew it), each pack
+  with a control (a still's eight-pass blur among them; each scored it under its original). Means
+  over the 23: **light 1.96, colour 2.09, value 1.91, depth 2.17, artifacts 1.13, style 1.04**
+  (the vale's cel stills at D4–D6: 1.67, 1.58, 1.67, 1.50, 1.00, and 0.67 on the style row
+  against its painting set).
+
+| Shot | Light, colour, value, depth, artifacts, style | Flicker ×10⁻⁶ (bar) | Pop (bar) | Trail px (bar) | |
+|---|---|---|---|---|---|
+| floor 00 the clearing | 2, 3, 2, 3, 1, 1 | 9.28 (17.78) | 0.0030 (0.0060) | 2 (3) | holds |
+| floor 01 wood pasture | 2, 2, 2, 2, 1, 1 | 26.02 (46.88) | 0.0049 (0.0080) | 2 (3) | holds |
+| floor 02 beech high forest | 3, 3, 3, 3, 2, 2 | 34.17 (86.08) | 0.0070 (0.0161) | 2 (3) | holds |
+| floor 03 the old road | 2, 1, 1, 2, 1, 1 | 7.15 (16.76) | 0.0031 (0.0060) | 3 (4) | holds |
+| floor 04 the crags top | 0, 1, 0, 1, 0, 0 | 3.08 (8.03) | 0.0010 (0.0020) | 2 (3) | holds |
+| floor 05 the towers foot | 2, 2, 2, 1, 1, 2 | 6.71 (7.92) | 0.0025 (0.0034) | 2 (3) | holds |
+| floor 06 the ring | 2, 2, 2, 2, 1, 1 | 75.93 (133.76) | 0.0074 (0.0123) | 2 (3) | holds |
+| floor 07 the mere | 2, 1, 2, 1, 1, 0 | 32.01 (53.80) | 0.0023 (0.0047) | 1 (3) | holds |
+| floor 08 the stream in the wood | 2, 3, 2, 3, 1, 2 | 13.09 (20.35) | 0.0035 (0.0092) | 2 (4) | holds |
+| floor 09 the waterfall | 1, 1, 1, 1, 1, 1 | 6.96 (10.71) | 0.0017 (0.0028) | 2 (3) | holds |
+| floor 10 the burn | 2, 2, 2, 2, 1, 2 | 19.00 (37.07) | 0.0043 (0.0071) | 2 (3) | holds |
+| floor 11 the windthrow | 2, 2, 2, 3, 1, 2 | 6.08 (11.03) | 0.0044 (0.0166) | 3 (4) | holds |
+| floor 12 the plateaus edge | 1, 2, 1, 2, 1, 1 | 3.47 (6.99) | 0.0020 (0.0042) | 4 (4) | holds |
+| floor 13 the towns site | 2, 3, 2, 2, 2, 2 | 26.90 (54.07) | 0.0059 (0.0094) | 2 (3) | holds |
+| floor 14 the wardens arena | 2, 2, 2, 3, 2, 2 | 38.44 (71.09) | 0.0061 (0.0104) | 2 (3) | holds |
+| floor 15 the wildwood | 3, 3, 3, 3, 2, 2 | 26.57 (55.78) | 0.1251 (0.1597) | 12 (5) | misses (median of three, each look) |
+| floor 16 the fawn in the glade | 2, 2, 2, 2, 1, 0 | 80.17 (130.05) | 0.0072 (0.0127) | 3 (4) | holds |
+| floor 17 the fawn under the beeches | 3, 3, 3, 3, 1, 1 | 89.01 (138.37) | 0.0061 (0.0174) | 2 (3) | holds |
+| floor 18 the fawn by the stream | 2, 2, 2, 1, 1, 1 | 36.79 (73.18) | 0.0052 (0.0110) | 3 (4) | holds |
+| floor 19 the climbers robe | 2, 2, 2, 3, 1, 0 | 77.98 (128.52) | 0.0078 (0.0152) | 2 (3) | holds |
+| floor 20 the climber close | 2, 2, 2, 2, 1, 0 | 106.92 (182.12) | 0.0099 (0.0216) | 2 (4) | holds |
+| floor 21 the climbers hood | 2, 2, 2, 2, 1, 0 | 69.06 (114.28) | 0.0101 (0.0170) | 4 (5) | holds |
+| floor 22 the climbers train | 2, 2, 2, 3, 1, 0 | 83.41 (164.62) | 0.0083 (0.0155) | 3 (4) | holds |
+
+The judges see the cel treatment in the foliage, the bark and the clouds, and not on the
+climber's cloak or the fawn ("soft and photographic"), nor in the dense ground cover's noise. The
+characters are lit by their own shading (`content/climber/draw.wrela`'s garment, `engine::character`),
+which reaches the look's substance (`Style::written`) but not its `shade`; the grass goes through
+it (`lit::shown`). The cel floor builds and is judged; the floor's look stays `Physical` (the
+plan's default). **Blocked:** the wildwood's trail. Next lever: the cel outlines' history under
+temporal AA at the near trunk's silhouette. The characters shaded through the look is the next
+item for its style row.
+
+**G-pixels** (`wrela same <pkg> --against <build> --frames 240 --size 1280x720`):
+
+- The herd: **the same** as `build/base-0.9/herd` (240 frames, the same commands and pipelines,
+  its last frame within 0.00).
+- The climber lab: its last frame **within 0.00** of `build/base-0.9/climber-lab`, its commands
+  differing from frame 0 (the engine's command stream, Parts C–G).
+- The capybara: differs from `build/base-0.9/capybara` (its last frame 4.42 from it, 10 % of its
+  channels): the game itself changed since 0.9.0 (rywible/wrela#343, #345, #351, other sessions'
+  work). Against its own last change's build (b3081e38, #351, built here on 0.18.0) it is **the
+  same** (240 frames, the same commands). So Parts F, G and H moved none of its pixels.
+- `build/base-0.9` was gone from the disk: rebuilt as §B0 made it, from 807f9c08^ on 0.9.0 (`wrela
+  build <pkg> -o build/base-0.9/<name>`; 0.9.0's build has no `--release`).
+
+**The floor's walk at `Epic`** (this machine's Chrome at 1080p; `wrela tool bench -- --scene
+last-green-walk --sustained 120 --no-docs`, and `--look styles::cel::Cel`, and `--starts 3`):
+
+| Build | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | GPU peak MiB | Sustained 120 s (minute 1, last) |
+|---|---|---|---|---|
+| the floor | 32.20 / 126.76 / 182.52 | 33.45 / 75.49 / 152.69 | 743.7 | 31.88, 31.94 (1.00) |
+| the cel floor | 32.62 / 127.36 / 183.76 | 34.02 / 75.99 / 154.24 | 763.2 | 32.48, 32.51 (1.00) |
+
+The starts, medians of three: **cold 36.9 s** (36.95, 36.83, 37.07), **warm 14.6 s** (14.38, 14.78,
+14.62); the first frame 11.4 s cold, 3.0 s warm. Here the floor's gates all miss as they did on
+the M4 at C5–C6 (docs/bench.md, "Whether D27 holds"): the M4's numbers are the gates', to measure
+again there with Part H's switches.
+
+The grown floor's optimized build runs past the 600 s a tool's build may take
+(docs/toolchain-gaps.md), so the bench can't build it: its frame against the floor's is
+`wrela profile` (natively, 1920 × 1080, three pairs interleaved):
+
+| Pass (ms, the median of the pairs' runs) | The floor | Grown (`GROWN_WOOD`, `GROWN_FAWN`) |
+|---|---|---|
+| **GPU frame span** | **34.11** | **32.02** (−6.1 %) |
+| vegetation | 6.31 | 4.97 |
+| vegetation prepass | 6.02 | 3.16 |
+| terrain | 2.26 | 3.98 |
+| shadows far | 11.37 | 18.83 |
+| probes again | 2.64 | 2.26 |
+| motion | 1.01 | 0.51 |
+| creature | 1.05 | 1.08 |
+| look | 2.88 | 2.97 |
+
+(`wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/floor-default --pairs
+3`, 60 warmup and 120 measured frames at the floor's start; the other passes within 0.1 ms.) The
+grown kinds draw fewer cards (the vegetation passes), the caused ground costs the terrain 1.7 ms,
+and the far cascade draws more (its range 7.96–11.67 against 17.83–19.16).
+
+## H2, the final gates (2026-11-01, toolchain 0.18.0)
+
+docs/plan-world-class-3.md §H2. Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: the
+gates defined on the M4 (G-sustained, G-memory, G-cold, G-warm, G-tier, G-grown's Chrome run and
+its time) are recorded here as this machine's numbers and listed to measure there. The thirteen:
+
+1. **`wrela suite`** on 0.18.0 (the plan's 0.10.0 is long past: main's pin, rywible/wrela#351):
+   **148 of 150 checks pass** (23 m 58 s, before the review's fixes). The two that fail,
+   `engine/tests/frame` (2 of 16) and `examples/vale` (3 of 4), are the debug build's budget under
+   the suite's load ("a step of work … past twice the playing budget"); each passes alone, as do
+   `fmt`, `content/kit` and `games/last-green`, and, after the review's and the council's fixes,
+   `fmt`, `games/last-green` (103 tests) and `studio/bench` (22). It isn't an all-pass suite: the
+   budget panics under load are plan three's throughout.
+2. **G-reference** (D38): **misses**, the final panel under "Public visual references" (above): 0 of
+   96 judgements prefer the still or rate it equal, every pair lost 8 to 0, the shots' and the
+   manifest's hashes B5's.
+3. **G-sustained** (the M4's): not measured here. The last M4 numbers are C6's (the vale's GPU p50
+   18.37 ms, the floor's 13.34: "Whether D27 holds"). Here, 120 s sustained, the vale's walk 57.12
+   ms (Part G's, "Part G's walk and memory") and the floor's 32.20 ms: no comparison with the M4's.
+4. **G-memory:** the GPU peak on the walk here, the vale 606.4 MiB (Part G's) and the floor 743.7
+   MiB: both over 512, as on the M4 at C4–C6 (the vale 539.8, the floor 735.6).
+5. **G-cold, G-warm** (medians of three, here): the floor cold 36.9 s, warm 14.6 s; the vale's
+   cold 10.4 s (11.03, 10.29, 10.42), warm 7.5 s (7.50, 7.17, 8.67). The M4's at C5: the vale 6.69 / 2.21 s, the floor 13.33 / 5.38 s.
+6. **G-tier:** held at C7 (each lower tier cheaper than the one above, on both scenes), before Parts
+   D–H; to measure again on the M4 (Part H changes no tier; Parts D–G changed what each draws). The floor's pipelines per tier: Epic 170, High 168, Medium 166, Low 162.
+7. **G-grown:** **holds here.** `examples/vale/tests/land`'s `every_plant_the_vale_draws_is_grown`:
+   26,156 instances, 0 authored (E8 counted 26,922: Part G's logs laid where the ground holds them,
+   or not at all). `wrela tool grow -- --hash --package examples/vale`: two native runs and one in
+   Chrome, the archetypes' hash `a003a12bbd48d613` (508,280 bytes) and the first ring's shapes'
+   `362677e6de00fa1d` in each, the same as at E7; the first ring in 545 and 503 ms natively and
+   880 ms in Chrome (the plan's 1,000 ms). The archetypes' growth at build, 19.7 s here (E7). The
+   M4's Chrome run, the third device, is to measure there.
+8. **G-steer** (E6, unchanged since): the identity fits 0.874 (the oak) and 0.880 (the beech) hold
+   0.85; the birch's 0.689 is Blocked ("E6, steering"); the photo fits 0.761 and 0.659, recorded.
+9. **G-style:** `wrela tool styles -- --check` holds: each of the six looks builds the vale (109–111
+   pipelines), and each look's file was added in a commit that changed no engine file (`cel.wrela`
+   in ca931cda, `painterly.wrela` in 525ef4c9, `ink.wrela` in 7269c195, the two fitted looks in
+   ee285c32; `physical.wrela` the engine's own). The coherence table and bars: D4–D7b's (`Cel` holds
+   its 60, `Painterly` 59, `Ink` Blocked), and the cel floor's 22 of 23 ("H1").
+10. **G-motion:** **Blocked** at F9 (0 % against 40 %, four rounds: "F9, the motion review").
+11. **G-size:** **holds.** `wrela build <pkg> --optimize` (Binaryen's `wasm-opt`, as the release
+    ships a game): the runtime (`main.js`) 77,796 bytes, **26.0 KB gzipped** (≤ 1 MB). The vale's
+    program and shaders 9.25 MB raw, **3.23 MB gzipped** (2.49 + 0.74); the floor's 18.03 MB raw,
+    **5.59 MB gzipped** (4.02 + 1.58), against ≤ 6 MB. The floor's cold load as served, 6.0 MiB
+    (its walk's "Loaded MiB", ≤ 8); the vale's 4.0 MiB. No `.br` or `.gz` in either build (D26).
+    The release itself (`wrela tool release`) now ships the console, the docs and the capybara alone
+    (rywible/wrela#343 onward), so the two scenes are measured from their own builds.
+12. **G-pixels:** the herd the same as `build/base-0.9`, the climber lab's last frame within 0.00 of
+    it, the capybara the same as its own last change's build ("H1").
+13. **G-bench:** "Whether D27 holds" (above), finished here: a row per gate per scene per device.

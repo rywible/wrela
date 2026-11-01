@@ -27,8 +27,8 @@ use engine::terrain::{Clipmap, Texel}
 use engine::growth::Grow
 use engine::vegetation::Placed
 use engine::view::Camera
-use grazer::{Grazer, REALIZED, SLICES}
-use kit::roe::{CoatLook, Hide}
+use grazer::Grazer
+use kit::roe::{CoatLook, Hide, REALIZED, SLICES}
 use history::{BAKED, PRESENT, tiles_hi, tiles_lo}
 use land::bake::{Decisions, Far, WEAR_N, WET_N}
 use land::grow::Tree

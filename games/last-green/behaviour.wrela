@@ -117,6 +117,10 @@ pub const BOUND = Walk {
     cadence: vec2(1.2, 0.25),
 }
 
+/// The player's height (m): what the fawn's senses see of it, and where the grown fawn looks
+/// when it notices it.
+pub const PLAYER_HEIGHT: f32 = 1.7
+
 /// How fast it gets up to its gait's speed (per second: an ease), and turns on the spot
 /// (radians a second, slower as it goes faster).
 pub const ACCELERATE: f32 = 6.0
@@ -157,7 +161,7 @@ pub fn spawn_fawn<G: Terrain>(ground: G) -> Fawn {
 /// (a run, 1).
 pub fn presence(at: vec3, velocity: vec2) -> Presence {
     let loud = clamp(length(velocity) / land::player::RUN, 0.0, 1.0)
-    Presence { at, velocity, height: 1.7, loud }
+    Presence { at, velocity, height: PLAYER_HEIGHT, loud }
 }
 
 /// Its next random draw, in [0, 1).
@@ -168,9 +172,9 @@ fn draw(f: mut Fawn) -> f32 {
 
 /// The way straight ahead, from where it is: what its walker follows, so the gait's own steering
 /// holds its heading (the fawn turns itself, `turn_toward`).
-struct Ahead: Copy {
-    from: vec2,
-    dir: vec2,
+pub struct Ahead: Copy {
+    pub from: vec2,
+    pub dir: vec2,
 }
 
 impl Path for Ahead {
@@ -180,7 +184,7 @@ impl Path for Ahead {
 }
 
 /// Its heading turned toward `want` (radians), by `PIVOT` a second at most, slower at a bound.
-fn turn_toward(w: mut Walker, want: f32, dt: f32) {
+pub fn turn_toward(w: mut Walker, want: f32, dt: f32) {
     let diff = short_way(want - w.root.heading, TAU)
     let rate = PIVOT * (1.0 - 0.6 * clamp(w.speed / BOUND.speed, 0.0, 1.0))
     w.root.heading += clamp(diff, -rate * dt, rate * dt)

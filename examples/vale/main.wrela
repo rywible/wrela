@@ -262,7 +262,11 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 let bones = grazer::walking(mut w, engine::motion::motion_of::<LOOK>(), since, eye)
                 s.stage.pushes = grazer::pushes(grazer::BODY, w.walker, origin)
                 s.walking = Some((f, w))
-                s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
+                s.stage.grazer.pose(
+                    engine::gait::shifted(bones, origin),
+                    shadowed: true,
+                    moved: false,
+                )
             }
         } else {
             s.walking = None
@@ -279,7 +283,11 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
                 let bones = grazer::grazing_now(mut g, s.shots.since(time), eye)
                 s.stage.pushes = grazer::pushes(g.body, g.walker, origin)
                 s.grazing = Some((f, g))
-                s.stage.grazer.pose(grazer::shifted(bones, origin), shadowed: true, moved: false)
+                s.stage.grazer.pose(
+                    engine::gait::shifted(bones, origin),
+                    shadowed: true,
+                    moved: false,
+                )
             }
         },
         None => {

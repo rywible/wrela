@@ -1,8 +1,9 @@
-// The vale's grazer as drawn (docs/plan-world-class-3.md §F2–F5): a roe deer grown from its genome
-// (`genome::ROE`) to an age, its muscles sized by the rule from its optimized walk's loads and its
-// coat's pattern grown by reaction-diffusion, both baked by the gait tool (`kit::grown`); its
-// hide's colours by region (`LOOK`) and its coat's map read as its albedo's pattern (`CoatLook`);
-// and its walk at its age, the grown animal's scaled by dynamic similarity (`walk_at`).
+// The vale's grazer as drawn, and the floor's grown fawn (docs/plan-world-class-3.md §F2–F5, §H1):
+// a roe deer grown from its genome (`genome::ROE`) to an age, its muscles sized by the rule from
+// its optimized walk's loads and its coat's pattern grown by reaction-diffusion, both baked by the
+// gait tool (`kit::grown`); its hide's colours by region (`LOOK`) and its coat's map read as its
+// albedo's pattern (`CoatLook`); its walk at its age, the grown animal's scaled by dynamic
+// similarity (`walk_at`); how it's realized, and its face attending.
 
 use coat::{CoatMap, pattern_at}
 use gaits::Gait
@@ -141,6 +142,20 @@ pub fn look_of(g: CreatureGenome, age: f32, map: CoatMap) -> CoatLook {
     }
 }
 
+/// A roe as a stage keeps it while its mesh is realized (`roe`'s).
+pub type Roe = engine::creature::Body<MuscledParts<Hide>>
+
+/// How a roe is realized: cells no larger than 6 mm (its cannons are under 2 cm thick: the
+/// engine's 2 cm cells lose them), its skin's weights falling off over 2 cm (the engine's 5 cm
+/// blends a roe's hock into its gaskin: a part's weight falls off within its own length).
+pub const REALIZED = engine::look::CreatureLook {
+    surface: engine::look::Mesh { tolerance: 2mm, largest: 6mm, radius: 1cm },
+    deform: engine::look::Skin { weights: engine::look::ByPart { falloff: 2cm } },
+}
+
+/// The frames a slice of its realization takes each.
+pub const SLICES: u32 = 1
+
 /// The roe `g` grown to `age`, its muscles `m` (`muscles::muscles`, at that age).
 pub fn roe(
     g: CreatureGenome,
@@ -258,6 +273,26 @@ pub fn attend(f: mut Face, q: quadruped::Quadruped, toward: Option<vec3>, dt: f3
     let k = 1.0 - exp(-ATTENDS * dt)
     f.ears += (ears - f.ears) * k
     f.eyes += (eyes - f.eyes) * k
+}
+
+/// Palette `bones` (world space, of the roe of proportions `q`, its skeleton `s`) with its face
+/// turned toward `toward` (world space) where it's given, back to rest where it isn't, `f` eased
+/// over `dt` s (`attend`, `faced`).
+pub fn attended_to(
+    f: mut Face,
+    bones: [mat4; engine::creature::MAX_BONES],
+    s: engine::creature::Skeleton,
+    q: quadruped::Quadruped,
+    toward: Option<vec3>,
+    dt: f32,
+) -> [mat4; engine::creature::MAX_BONES] {
+    let head = bones[s.find("head").index]
+    let local = match toward {
+        Some(t) => Some((engine::distance::rigid_inverse(head) * vec4(t, 1.0)).xyz),
+        None => None,
+    }
+    attend(mut f, q, local, dt)
+    faced(bones, s, q, f)
 }
 
 /// Palette `bones` (of the roe of proportions `q`, its skeleton `s`) with its face turned as `f`
