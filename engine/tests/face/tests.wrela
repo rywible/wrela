@@ -127,8 +127,8 @@ fn the_cel_highlight_is_one_band() {
     )
 }
 
-/// A sound to the fawn's side: its ears come round within half a second (nine tenths of the
-/// turn they settle at).
+/// A sound to the grazer's side: each ear comes round toward it within half a second (nine
+/// tenths of the turn it settles at), both ears turning the same way.
 @test
 fn the_ears_turn_toward_a_sound_within_half_a_second() {
     let q = quadruped_at(ROE, VALE_AGE)
@@ -137,16 +137,17 @@ fn the_ears_turn_toward_a_sound_within_half_a_second() {
         let sound = f.head + vec3(3.0 * side, 0.0, 0.5)
         var settled = Face {}
         for _ in 0..600 {
-            attend(mut settled, q, Some(sound), 1.0 / 60.0)
+            attend(mut settled, q, Some(sound), dt: 1.0 / 60.0)
         }
         var face = Face {}
         for _ in 0..30 {
-            attend(mut face, q, Some(sound), 1.0 / 60.0)
+            attend(mut face, q, Some(sound), dt: 1.0 / 60.0)
         }
-        assert(abs(settled.ears) > 0.2, f"the ears settled at {settled.ears} rad: no turn to test")
-        assert(
-            face.ears / settled.ears >= 0.9,
-            f"after 0.5 s the ears {face.ears} of {settled.ears} rad",
-        )
+        for (now, end) in [(face.ears.x, settled.ears.x), (face.ears.y, settled.ears.y)] {
+            assert(abs(end) > 0.2, f"an ear settled at {end} rad: no turn to test")
+            assert(now / end >= 0.9, f"after 0.5 s an ear {now} of {end} rad")
+        }
+        assert(settled.ears.x * settled.ears.y > 0.0, f"the ears turned apart: {settled.ears}")
+        assert(settled.ears.x * side > 0.0, f"the ears turned away from a sound at {side}")
     }
 }

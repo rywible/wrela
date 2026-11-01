@@ -206,8 +206,9 @@ pub fn pushes(
 /// The face's attention (§F8): its ears' and its eyes' turn toward what it attends to (radians
 /// about the head's up, out from rest), each eased.
 pub struct Face: Copy {
-    pub ears: f32 = 0.0,
-    pub eyes: f32 = 0.0,
+    /// Each side's turn (left, right).
+    pub ears: vec2 = vec2(0.0),
+    pub eyes: vec2 = vec2(0.0),
 }
 
 /// How far its ears and its eyes turn (radians, **proposed**: a deer's ears swivel a quarter turn
@@ -217,8 +218,8 @@ pub const EARS_TURN: f32 = 1.4
 pub const EYES_TURN: f32 = 0.3
 pub const ATTENDS: f32 = 5.0
 
-/// The turn (radians about the head's `up`, positive toward its left) that points from `at` (the
-/// left ear's root or eye, rest space) toward `toward` (rest space, the head's), its rest's way
+/// The turn (radians about the head's `up`, positive toward its left) that points from `at` (an
+/// ear's root or an eye, rest space) toward `toward` (rest space, the head's), its rest's way
 /// `rest` (in the head's plane).
 fn turn_to(at: vec3, toward: vec3, up: vec3, rest: vec3) -> f32 {
     let d = toward - at
@@ -231,27 +232,37 @@ fn turn_to(at: vec3, toward: vec3, up: vec3, rest: vec3) -> f32 {
     atan2(dot(cross(a, b), up), dot(a, b))
 }
 
-/// `dt` seconds of attending: the ears and the eyes turned toward `toward` (a point in the head's
-/// rest space, `None`: nothing to attend, back to rest), each within its reach, eased at
-/// `ATTENDS` a second; `q` the proportions, its ears at rest pointing up the head's way.
+/// `dt` seconds of attending: each ear and each eye turned from where it is toward `toward` (a
+/// point in the head's rest space, `None`: nothing to attend, back to rest), each within its
+/// reach, eased at `ATTENDS` a second; `q` the proportions, its ears at rest pointing up the
+/// head's way.
 pub fn attend(f: mut Face, q: quadruped::Quadruped, toward: Option<vec3>, dt: f32) {
     let fr = quadruped::frame(q)
     let (ear, eye) = quadruped::face_points(q)
+    let right = |p: vec3| vec3(-p.x, p.y, p.z)
     let (ears, eyes) = match toward {
         Some(t) => (
-            clamp(turn_to(ear, t, fr.up, fr.forward), -EARS_TURN, EARS_TURN),
-            clamp(turn_to(eye, t, fr.up, fr.forward), -EYES_TURN, EYES_TURN),
+            clamp(
+                vec2(turn_to(ear, t, fr.up, fr.forward), turn_to(right(ear), t, fr.up, fr.forward)),
+                vec2(-EARS_TURN),
+                vec2(EARS_TURN),
+            ),
+            clamp(
+                vec2(turn_to(eye, t, fr.up, fr.forward), turn_to(right(eye), t, fr.up, fr.forward)),
+                vec2(-EYES_TURN),
+                vec2(EYES_TURN),
+            ),
         ),
-        None => (0.0, 0.0),
+        None => (vec2(0.0), vec2(0.0)),
     }
     let k = 1.0 - exp(-ATTENDS * dt)
     f.ears += (ears - f.ears) * k
     f.eyes += (eyes - f.eyes) * k
 }
 
-/// Palette `bones` (of the roe of proportions `q`, its skeleton `s`) with its face turned as `f` says: each ear
-/// about its root and each eye about its centre by the face's turn about the head's up (the right
-/// side's mirrored), carried by the head.
+/// Palette `bones` (of the roe of proportions `q`, its skeleton `s`) with its face turned as `f`
+/// says: each ear about its root and each eye about its centre by its side's turn about the
+/// head's up, carried by the head.
 pub fn faced(
     bones: [mat4; engine::creature::MAX_BONES],
     s: engine::creature::Skeleton,
@@ -262,17 +273,15 @@ pub fn faced(
     let head = bones[s.find("head").index]
     var out = bones
     for (name, turn) in [
-        ("ear left", f.ears),
-        ("ear right", -f.ears),
-        ("eye left", f.eyes),
-        ("eye right", -f.eyes),
+        ("ear left", f.ears.x),
+        ("ear right", f.ears.y),
+        ("eye left", f.eyes.x),
+        ("eye right", f.eyes.y),
     ] {
         let b = s.find(name)
         let at = s.rest(b)
-        let up = vec3(-fr.up.x, fr.up.y, fr.up.z)
-        out[b.index] = head * engine::gait::bone_matrix(std::quat::Quat::axis_angle(if at.x < 0.0 {
-            up
-        } else { fr.up }, turn), at, at)
+        out[b.index] = head *
+            engine::gait::bone_matrix(std::quat::Quat::axis_angle(fr.up, turn), at, at)
     }
     out
 }

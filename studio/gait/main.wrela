@@ -64,7 +64,7 @@ fn start(p: Pace) -> Vec<f32> {
 
 fn line(s: Score) -> String {
     String::from(
-        f"total {s.total:.3}, effort {s.effort:.1} J/m, stability {s.stability:.3} (worst stride {s.worst_stride:.3}), gap {s.gap:.3} m, clearance {s.clearance:.3} m, speed err {s.speed:.3}, infeasible {s.infeasible:.3}{if s.valid { "" } else { " INVALID" }}",
+        f"total {s.total:.3}, effort {s.effort:.1} J/m, stability {s.stability:.3} (worst stride {s.worst_stride:.3}), gap {s.gap:.3} m, clearance {s.clearance:.3} m, pierce {s.pierce:.3} m, speed err {s.speed:.3}, infeasible {s.infeasible:.3} (worst stride {s.stride_infeasible:.3}){if s.valid { "" } else { " INVALID" }}",
     )
 }
 
@@ -142,6 +142,10 @@ fn run(given: [String]) -> Result<(), ToolError> {
         } else if a == "--write" {
             write = true
         }
+    }
+    if write && paces < PACES.len() {
+        // `kit::walks` holds every pace's: a partial search would write a short table.
+        return Err(ToolError::new("--write searches every pace: drop --paces"))
     }
     let q = quadruped_at(ROE, 1.0)
     let segs = grown_segments(ROE, 1.0)

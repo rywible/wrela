@@ -113,6 +113,13 @@ pub struct Body: Copy {
     /// The share of its feet's slope its body pitches by (1: the slope's; less keeps its trunk
     /// nearer level on a grade, its centre of mass over its feet).
     pub follow: f32 = 1.0,
+    /// How far a smooth body sways its trunk across toward its planted feet (a share of the way
+    /// to their centroid, each foot weighted by where it is in its stance: none as it lands or
+    /// lifts), and its walk's cycle that weighs them (its feet's phase offsets and its duty, as
+    /// `Walk` has them): 0, no sway.
+    pub sway: f32 = 0.0,
+    pub offsets: [f32; 4] = [0.0; 4],
+    pub duty: f32 = 0.65,
 }
 
 /// How fast a smooth body (`Body::smooth`) lowers to a leg past its reach (per second).
@@ -179,11 +186,36 @@ pub fn frame_of(w: Walker, b: Body) -> mat4 {
         0.25 * (b.hips[0].y + b.hips[1].y + b.hips[2].y + b.hips[3].y),
         0.25 * (b.hips[0].z + b.hips[1].z + b.hips[2].z + b.hips[3].z),
     )
-    translate(w.root.pos + vec3(0.0, w.height, 0.0)) *
+    translate(w.root.pos + vec3(0.0, w.height, 0.0) + swayed(w, b)) *
         rotate_y(w.root.heading) *
         translate(pivot) *
         rotate_x(-w.pitch) *
         translate(-pivot)
+}
+
+/// How far a smooth body's trunk sways across (world space, on the plane): `Body::sway` of the way
+/// from its root to its planted feet's centroid, across its heading, each foot weighed by
+/// sin(π · its stance's share gone) (none as it lands or lifts, so the sway is continuous).
+fn swayed(w: Walker, b: Body) -> vec3 {
+    if b.sway == 0.0 {
+        return vec3(0.0)
+    }
+    var centre = vec2(0.0)
+    var weight = 0.0
+    for i in 0..4 {
+        let t = (w.phase + b.offsets[i]) % 1.0
+        if w.feet[i].planted && t < b.duty {
+            let k = sin(PI * t / b.duty)
+            centre += w.feet[i].at.xz * k
+            weight += k
+        }
+    }
+    if weight < 1.0e-4 {
+        return vec3(0.0)
+    }
+    let across = vec2(cos(w.root.heading), -sin(w.root.heading))
+    let off = dot(centre / weight - w.root.pos.xz, across) * b.sway
+    vec3(across.x * off, 0.0, across.y * off)
 }
 
 /// Where leg `i`'s rest sole is as walker `w` stands in frame `m` (`frame_of`): a smooth body's
@@ -364,6 +396,27 @@ fn a_pitched_body_lowers_along_world_up_to_reach_its_feet() {
     }
 }
 
+/// How far a smooth body rides down over its planted legs (m, 0 or less): each held at its rest
+/// length over its foot (an inverted pendulum's vault: lowest where its legs are spread farthest,
+/// at a stride's double support; highest mid-stance), their mean.
+fn vault(w: Walker, b: Body) -> f32 {
+    let m = frame_of(w, b)
+    var sum = 0.0
+    var n = 0.0
+    for i in 0..4 {
+        if w.feet[i].planted {
+            let rest = b.hips[i].y - b.foot_height[i]
+            let spread = length((apply(m, b.hips[i]) - w.feet[i].at).xz)
+            sum += sqrt(max(rest * rest - spread * spread, 0.0)) - rest
+            n += 1.0
+        }
+    }
+    sum / max(n, 1.0)
+}
+
+/// How fast a smooth body's height follows its feet and its vault (per second).
+pub const VAULT_EASE: f32 = 16.0
+
 /// Its body's height and pitch, eased toward what its feet ask: the pelvis as low as its lowest
 /// plant, and pitched by its fore feet's height over its hind's; then lowered at once as far as
 /// a leg needs to reach its foot, so no planted foot is dragged.
@@ -400,7 +453,11 @@ fn settle_body(w: mut Walker, b: Body, dt: f32) {
     let length = max(b.soles[0].z - b.soles[2].z, 0.1)
     let want_pitch = atan2(0.5 * (fore - hind), length) * b.follow
     let ease = 1.0 - exp(-dt * 8.0)
-    w.height += (min(lowest, 0.0) - b.crouch - w.height) * ease
+    // A smooth body vaults over its planted legs (`vault`), eased quicker so its bob keeps up.
+    let (vaulted, rise) = if b.smooth { (vault(w, b), 1.0 - exp(-dt * VAULT_EASE)) } else {
+        (0.0, ease)
+    }
+    w.height += (min(lowest, 0.0) - b.crouch + vaulted - w.height) * rise
     w.pitch += (want_pitch - w.pitch) * ease
     var drop = 0.0
     for i in 0..4 {

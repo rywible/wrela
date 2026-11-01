@@ -12,10 +12,11 @@
 //   lies outside the support (the feet planted through the frame's step: their hull, or, two feet
 //   or one, a 4 cm band round their line or point), a fall when over a quarter of any stride's;
 // - contact: a planted foot's gap from its posed sole (on a slope or a step the body's reach can
-//   leave it hanging) and each swing's clearance over the ground's highest under its arc (under
-//   2 cm is a penalty);
+//   leave it hanging), each swing's clearance over the ground's highest under its arc (under
+//   2 cm is a penalty) and how deep a swinging sole dips under the ground under it (a log met
+//   before the swing's top);
 // - speed: the error against the gait's target speed;
-// - a gait with over 5 % of its frames infeasible (`engine::loads::INFEASIBLE`) is invalid.
+// - a gait with over 5 % of a stride's frames infeasible (`engine::loads::INFEASIBLE`) is invalid.
 //
 // `optimize` (studio/gait) searches each pace's walk on each terrain (`GROUNDS`) by CMA-ES and
 // writes the results (`kit::walks`); `score` measures one.
@@ -143,14 +144,18 @@ pub struct Score: Copy {
     pub stability: f32,
     pub worst_stride: f32,
     pub fell: bool,
-    /// The largest gap between a planted foot and its posed sole (m), and the least clearance of
-    /// a swing over the ground's highest under it (m).
+    /// The largest gap between a planted foot and its posed sole (m), the least clearance of a
+    /// swing over the ground's highest under it (m), and the deepest a swinging sole went under
+    /// the ground under it (m: through a log, say, before its swing's top).
     pub gap: f32,
     pub clearance: f32,
+    pub pierce: f32 = 0.0,
     /// Its mean speed's error against the pace's target (m/s).
     pub speed: f32,
-    /// The share of its frames infeasible, and whether it's valid (that share at most 5 %).
+    /// The share of its frames infeasible, the largest share of any stride's, and whether it's
+    /// valid (no stride's over 5 %: a stride's failure isn't diluted by the run's others).
     pub infeasible: f32,
+    pub stride_infeasible: f32 = 0.0,
     pub valid: bool,
     /// The total the optimizer lowers.
     pub total: f32,
@@ -245,9 +250,38 @@ fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
     length(p - (a + d * t))
 }
 
-/// The band round the support (m) a centre of mass may lie in: a trot's diagonal pair's line's, and
-/// (a walk's centre of mass sways about its feet, not over them) a hull's.
+/// Whether a centre of mass over `p` (on the ground's plane) is outside the support of `feet`:
+/// past a hull's edge (three feet or four), or more than `BAND` from a line or a point (two feet
+/// or one: a trot's diagonal pair).
+pub fn out_of_support(p: vec2, feet: [vec2]) -> bool {
+    outside(p, feet) > if feet.len() <= 2 { BAND } else { 0.0 }
+}
+
+/// The largest share of a stride's frames `feasible` says aren't (strides of `stride` frames, a
+/// partial last one too).
+pub fn worst_stride(feasible: [bool], stride: u32) -> f32 {
+    var worst = 0.0
+    var first = 0
+    while first < feasible.len() {
+        let last = min(first + stride, feasible.len())
+        var n = 0
+        for t in first..last {
+            if !feasible[t] {
+                n += 1
+            }
+        }
+        worst = max(worst, f32(n) / f32(last - first))
+        first = last
+    }
+    worst
+}
+
+/// The band round a support of one foot or two (m) a centre of mass may lie in: a trot's diagonal
+/// pair's line's (a hull of three feet or four is held to its edge).
 pub const BAND: f32 = 0.04
+
+/// How far a swinging sole may dip under the ground under it (m): the posed sole's own error.
+pub const PIERCE: f32 = 0.005
 
 /// The least clearance a swing keeps (m).
 pub const CLEARANCE: f32 = 0.02
@@ -303,8 +337,10 @@ pub fn both_ways(
         fell: up.fell || down.fell,
         gap: max(up.gap, down.gap),
         clearance: min(up.clearance, down.clearance),
+        pierce: max(up.pierce, down.pierce),
         speed: max(up.speed, down.speed),
         infeasible: max(up.infeasible, down.infeasible),
+        stride_infeasible: max(up.stride_infeasible, down.stride_infeasible),
         valid: up.valid && down.valid,
         total: 0.5 * (up.total + down.total),
     }
@@ -322,8 +358,19 @@ pub fn body_of(q: Quadruped, gait: Gait) -> Body {
     b.crouch = gait.crouch
     b.follow = gait.follow
     b.smooth = gait.smooth
+    if gait.smooth {
+        b.sway = SWAY
+        b.offsets = gait.walk.offsets
+        b.duty = gait.walk.duty
+    }
     b
 }
+
+/// How far a smooth gait's trunk sways toward its planted feet (`engine::gait::Body::sway`,
+/// **proposed**: most of the way, its centre of mass over its support as a walking quadruped's
+/// shifts before it lifts a foot: half the way, or none, left it outside its hull a fiftieth to a
+/// sixth of the time).
+pub const SWAY: f32 = 0.8
 
 /// The frames a run sets off over, not scored, and its step.
 pub const SETTLE: u32 = 90
@@ -367,6 +414,7 @@ pub fn run_with(
     var poses: Vec<Pose> = Vec::new()
     var gap = 0.0
     var clearance = 1.0e9
+    var pierce = 0.0
     var swing_top = [-1.0e9; 4]
     var ground_top = [-1.0e9; 4]
     var swinging = [false; 4]
@@ -417,14 +465,16 @@ pub fn run_with(
                     swing_top[i] = -1.0e9
                     ground_top[i] = -1.0e9
                 }
+                let under = terrain.height(sole.x, sole.z)
                 swing_top[i] = max(swing_top[i], sole.y)
-                ground_top[i] = max(ground_top[i], terrain.height(sole.x, sole.z))
+                ground_top[i] = max(ground_top[i], under)
+                pierce = max(pierce, under - sole.y)
             }
         }
         if feet.len() > 0 {
             down_frames += 1
             stride_down += 1
-            if outside(com.xz, feet) > BAND {
+            if out_of_support(com.xz, feet) {
                 out_frames += 1
                 stride_out += 1
             }
@@ -447,12 +497,13 @@ pub fn run_with(
         }
     }
     let infeasible = f32(bad) / f32(max(loads.feasible.len(), 1))
+    let stride_infeasible = worst_stride(loads.feasible, stride)
     let e = effort(loads, segs.parent, DT, distance)
     let stability = f32(out_frames) / f32(max(down_frames, 1))
     let fell = worst > 0.25
     let speed = abs(distance / (f32(frames) * DT) - target(p))
     let clear = if clearance > 1.0e8 { 1.0 } else { clearance }
-    let valid = infeasible <= 0.05
+    let valid = stride_infeasible <= 0.05
     let weight = segs.total * 9.81
     // Stability and a hanging foot weigh most (a gait that tips or leaves a foot behind isn't
     // bought by effort), then the swing's clearance and the speed.
@@ -460,6 +511,7 @@ pub fn run_with(
         100.0 * stability +
         100.0 * max(gap - CLEARANCE, 0.0) / CLEARANCE +
         10.0 * max(CLEARANCE - clear, 0.0) / CLEARANCE +
+        100.0 * max(pierce - PIERCE, 0.0) / CLEARANCE +
         2.0 * speed / target(p)
     if fell {
         total += 100.0
@@ -478,8 +530,10 @@ pub fn run_with(
             fell,
             gap,
             clearance: clear,
+            pierce,
             speed,
             infeasible,
+            stride_infeasible,
             valid,
             total,
         },

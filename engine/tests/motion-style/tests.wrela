@@ -65,25 +65,41 @@ fn unstyled_its_the_gaits_pose() {
     }
 }
 
-/// On twos, the pose changes only on even frames: each odd frame holds the frame before's.
+/// On twos, the frame after a made pose holds it, unless a foot has landed or lifted since:
+/// no two frames in a row are held, and every frame after a made one whose feet are as they were
+/// holds it; at least a third of the frames are held.
 @test
-fn on_twos_it_changes_only_on_even_frames() {
+fn on_twos_it_holds_every_other_pose_but_at_a_footfall() {
     let g = WALKS[0]
     let b = body_of(g)
     let s = skeleton(quadruped_at(ROE, 1.0))
     var st = stylizer()
     var last = Palette { bones: [std::transform::identity(); engine::creature::MAX_BONES] }
+    var last_planted = [false; 4]
+    var last_held = false
+    var held = 0
     var k = 0
     for w in walked(g, b) {
         let p = stylize(mut st, STYLED, Ground { amplitude: 0.3 }, s, b, g.walk, w, DT)
-        if k % 2 == 1 {
-            assert(same(p, last, s.len()), f"frame {k} moved")
-        } else if k > 0 {
-            assert(!same(p, last, s.len()), f"frame {k} held")
+        let planted = [w.feet[0].planted, w.feet[1].planted, w.feet[2].planted, w.feet[3].planted]
+        let is_held = k > 0 && same(p, last, s.len())
+        if k > 0 {
+            let still = planted[0] == last_planted[0] &&
+                planted[1] == last_planted[1] &&
+                planted[2] == last_planted[2] &&
+                planted[3] == last_planted[3]
+            assert(!(is_held && last_held), f"frames {k - 1} and {k} both held")
+            assert(is_held == (!last_held && still), f"frame {k}: held {is_held}")
+        }
+        if is_held {
+            held += 1
         }
         last = p
+        last_planted = planted
+        last_held = is_held
         k += 1
     }
+    assert(held * 3 >= FRAMES, f"only {held} of {FRAMES} frames held")
 }
 
 /// Each leg's wind-up (its heel's roll) begins `anticipate_s` before its foot lifts, within a
@@ -139,9 +155,10 @@ pub fn same_bone(a: Palette, b: Palette, i: u32) -> bool {
     true
 }
 
-/// Styled, no planted foot moves: each planted foot's toe (the point its heel rolls about) is no
-/// further from where it's planted than the gait's own pose puts it (a gait's leg can hang a
-/// millimetre or two short of its foot), within 0.1 mm.
+/// Styled (on twos too), no planted foot moves: each planted foot's toe (the point its heel rolls
+/// about) is no further from where it's planted than the gait's own pose puts it (a gait's leg can
+/// hang a millimetre or two short of its foot), within half a millimetre (a leg solved near its
+/// full reach).
 @test
 fn it_moves_no_planted_foot() {
     let g = WALKS[0]
@@ -152,7 +169,7 @@ fn it_moves_no_planted_foot() {
     for w in walked(g, b) {
         let p = stylize(
             mut st,
-            Motion { on_twos: false, ..STYLED },
+            STYLED,
             Ground { amplitude: 0.3 },
             s,
             b,
@@ -171,7 +188,7 @@ fn it_moves_no_planted_foot() {
                 let styled = length((p.bones[j.index] * toe).xyz - planted)
                 let own = length((gait.bones[j.index] * toe).xyz - planted)
                 assert(
-                    styled <= own + 1.0e-4,
+                    styled <= own + 5.0e-4,
                     f"leg {i}'s planted toe {styled} m off, the gait's {own}",
                 )
             }

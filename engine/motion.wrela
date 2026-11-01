@@ -9,7 +9,8 @@
 // - exaggeration: a swinging foot's lift over the ground and the body's bob about its running
 //   height scaled by 1 + `exaggerate` (lowered again where a planted leg couldn't reach);
 // - holds: on twos (`on_twos`), the pose made on every other frame and held between, as hand
-//   animation is.
+//   animation is (made again where a foot lands or lifts, so a planted foot is never held in the
+//   air).
 //
 // With every parameter 0 and holds off, `stylize` is the gait's palette exactly. It moves no
 // planted foot: a foot rolls about its planted toe, and the body's bob is held within its legs'
@@ -58,6 +59,10 @@ pub struct Stylizer: Copy {
     pub frames: u32 = 0,
     pub held: Palette,
     pub mean: f32 = 0.0,
+    /// Whether the last frame was held (on twos, the next is made), and which feet were planted
+    /// in the pose it holds.
+    pub was_held: bool = false,
+    pub planted: [bool; 4] = [false; 4],
 }
 
 /// A stylizer that hasn't made a frame.
@@ -86,11 +91,22 @@ pub fn stylize<T: Terrain>(
     st.mean = if st.frames == 0 { w.height } else {
         st.mean + (w.height - st.mean) * (1.0 - exp(-dt * MEAN_RATE))
     }
-    let made = st.frames
+    let first = st.frames == 0
     st.frames += 1
-    if m.on_twos && made % 2 == 1 {
+    // On twos the frame after a made pose holds it, unless a foot has landed or lifted since (a
+    // held pose would leave a planted foot in the air): then the pose is made again, and the twos
+    // count from it.
+    let planted = [w.feet[0].planted, w.feet[1].planted, w.feet[2].planted, w.feet[3].planted]
+    var still = true
+    for i in 0..4 {
+        still = still && planted[i] == st.planted[i]
+    }
+    if m.on_twos && !first && !st.was_held && still {
+        st.was_held = true
         return st.held
     }
+    st.was_held = false
+    st.planted = planted
     // Anticipation: a planted foot's heel rolls up over the last of its stance.
     var heel = [0.0; 4]
     if m.anticipate != 0.0 && w.speed > 0.02 {
