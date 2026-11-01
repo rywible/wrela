@@ -48,7 +48,7 @@
 // (each read is answered on the next), so each instance remembers what it wrote and deleted lately
 // (`gone`, `written`): a read made before such a call committed isn't trusted for that key.
 
-use account::{CEREMONY_BYTES, HANDLE_BYTES, account_instance, part, u64_at, unhex}
+use account::{HANDLE_BYTES, account_instance, part, u64_at, unhex}
 use names::Name
 use std::collections::replace
 use std::crypto::Signature
@@ -491,8 +491,6 @@ pub struct Conn: Clone {
     pub ceremony: Vec<u8>,
     pub keys: Vec<Vec<u8>>,
     pub cookies: Vec<Cookie>,
-    /// A call's or a message's sender.
-    pub from: String,
 }
 
 /// A request, a call or a message under way, waiting on its ticket: what it has learned so far.
@@ -510,7 +508,6 @@ pub struct Job: Clone {
     pub confirm: Vec<u8>,
     pub from: String,
     pub account: Option<account::Account>,
-    pub counters: Option<account::Counters>,
     pub session: Option<account::Session>,
     pub passkey: Option<account::Passkey>,
     pub credential: Option<std::webauthn::Credential>,
@@ -525,7 +522,6 @@ pub struct Job: Clone {
     pub n: u32,
     pub course: u32,
     pub ticks: u32,
-    pub category: u32,
     pub expires: u64,
     pub run: RunRef,
     pub best: Note,
@@ -723,7 +719,6 @@ pub(package) fn blank_job(conn: u32, request: take Request) -> Job {
         confirm: Vec::new(),
         from: String::new(),
         account: None,
-        counters: None,
         session: None,
         passkey: None,
         credential: None,
@@ -738,7 +733,6 @@ pub(package) fn blank_job(conn: u32, request: take Request) -> Job {
         n: 0,
         course: 0,
         ticks: 0,
-        category: 0,
         expires: 0,
         run: RunRef::none(),
         best: Note::Nothing,
@@ -864,7 +858,6 @@ impl<G: Game> Engine<G> {
                 ceremony: asked.ceremony.clone(),
                 keys: asked.keys.clone(),
                 cookies: Vec::new(),
-                from: String::new(),
             },
         )
         let parsed: Option<Request> = read(asked.body)
@@ -885,12 +878,10 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Call `conn` from instance `from` (empty: the edge, or a verifier's host): an `Envelope`.
-    pub fn called(mut self, conn: u32, from: str, body: [u8]) {
+    /// Call `conn`: an `Envelope` (at the edge, a verifier's `Verify`).
+    pub fn called(mut self, conn: u32, body: [u8]) {
         self.closed(conn)
-        var c = self.blank_conn(conn, Via::Call)
-        c.from = String::from(from)
-        self.conns.push(take c)
+        self.conns.push(self.blank_conn(conn, Via::Call))
         if self.kind == Kind::Edge {
             self.edge_verify(conn, body)
             return
@@ -912,13 +903,10 @@ impl<G: Game> Engine<G> {
         }
     }
 
-    /// Message `conn` from instance `from`, whose id is `id`: a `Letter`.
-    pub fn delivered(mut self, conn: u32, from: str, id: u64, body: [u8]) {
-        let _ = id
+    /// Message `conn` from instance `from`: a `Letter`.
+    pub fn delivered(mut self, conn: u32, from: str, body: [u8]) {
         self.closed(conn)
-        var c = self.blank_conn(conn, Via::Message)
-        c.from = String::from(from)
-        self.conns.push(take c)
+        self.conns.push(self.blank_conn(conn, Via::Message))
         let parsed: Option<Letter> = read(body)
         let Some(l) = take parsed else {
             // What can't be read never will be: taken, so it doesn't come again.
@@ -982,7 +970,6 @@ impl<G: Game> Engine<G> {
             ceremony: Vec::new(),
             keys: Vec::new(),
             cookies: Vec::new(),
-            from: String::new(),
         }
     }
 
@@ -1173,21 +1160,6 @@ impl<G: Game> Engine<G> {
         self.scan_range(take prefix, take to, limit, step, take job)
     }
 
-    /// The entries under `prefix` after `key`, `limit` at most.
-    pub(package) fn scan_after(
-        mut self,
-        key: take Vec<u8>,
-        prefix: [u8],
-        limit: u32,
-        step: Step,
-        job: take Job,
-    ) {
-        var from = take key
-        from.push(0)
-        let to = std::store::past(prefix).unwrap_or(Vec::new())
-        self.scan_range(take from, take to, limit, step, take job)
-    }
-
     pub(package) fn random(mut self, n: u32, step: Step, job: take Job) {
         let t = self.next_ticket()
         self.out.push(Command::Random { ticket: t, n })
@@ -1353,18 +1325,6 @@ pub fn challenge_parts(c: [u8]) -> Option<(Vec<u8>, u64, Vec<u8>)> {
         return None
     }
     Some((part(c, 0, NONCE_BYTES), u64_at(c, NONCE_BYTES), part(c, NONCE_BYTES + 8, TAG_BYTES)))
-}
-
-/// Whether ceremony cookie `token` can be one (the browser's token).
-pub fn ceremony_token(token: [u8]) -> bool {
-    token.len() == CEREMONY_BYTES
-}
-
-/// `key` with `n` appended big-endian, as a store key's part.
-pub fn with_u32(key: [u8], n: u32) -> Vec<u8> {
-    var k = Vec::from(key)
-    append_u32(mut k, n)
-    k
 }
 
 /// What a board's places are of: its game, version, course and category, as an account keeps its

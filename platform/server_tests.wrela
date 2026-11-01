@@ -128,8 +128,8 @@ struct Kept: Clone {
 /// What an instance hears on its next call.
 enum Heard: Clone {
     Http { conn: u32, asked: Asked },
-    Call { conn: u32, from: String, body: Vec<u8> },
-    Message { conn: u32, from: String, id: u64, body: Vec<u8> },
+    Call { conn: u32, body: Vec<u8> },
+    Message { conn: u32, from: String, body: Vec<u8> },
     Closed { conn: u32 },
 }
 
@@ -424,12 +424,13 @@ impl Host {
             self.next_conn += 1
             let conn = self.next_conn
             let at = self.instance(to.as_str())
-            let Some(c) = self.index_of(caller) else { continue }
-            let from = self.instances[c].name.clone()
+            if self.index_of(caller).is_none() {
+                continue
+            }
             self.open.push(
                 Open { conn, at: self.instances[at].id, waits: Waits::Call { caller, ticket } },
             )
-            self.instances[at].heard.push(Heard::Call { conn, from, body: body.clone() })
+            self.instances[at].heard.push(Heard::Call { conn, body: body.clone() })
         }
     }
 
@@ -475,13 +476,9 @@ impl Host {
         for h in heard {
             match h {
                 Heard::Http { conn, asked } => self.instances[i].engine.http(conn, asked.clone()),
-                Heard::Call { conn, from, body } => self.instances[i].engine.called(
-                    conn,
-                    from.as_str(),
-                    body,
-                ),
-                Heard::Message { conn, from, id, body } => {
-                    self.instances[i].engine.delivered(conn, from.as_str(), id, body)
+                Heard::Call { conn, body } => self.instances[i].engine.called(conn, body),
+                Heard::Message { conn, from, body } => {
+                    self.instances[i].engine.delivered(conn, from.as_str(), body)
                 },
                 Heard::Closed { conn } => self.instances[i].engine.closed(conn),
             }
@@ -583,7 +580,6 @@ impl Host {
                     self.next_conn += 1
                     let conn = self.next_conn
                     let at = self.instance(to.as_str())
-                    let from = self.instances[i].name.clone()
                     self.open.push(
                         Open {
                             conn,
@@ -591,7 +587,7 @@ impl Host {
                             waits: Waits::Call { caller: me, ticket },
                         },
                     )
-                    self.instances[at].heard.push(Heard::Call { conn, from, body: body.clone() })
+                    self.instances[at].heard.push(Heard::Call { conn, body: body.clone() })
                 },
                 Command::Reply { conn, body } => {
                     let Some(o) = self.open_at(conn) else { continue }
@@ -621,7 +617,7 @@ impl Host {
                     }
                     var old = engine(Toy { board, old: 0 }, RP, ORIGIN, self.versions, "")
                     old.begin()
-                    old.called(1, "", body)
+                    old.called(1, body)
                     old.end()
                     var reply: Option<Vec<u8>> = None
                     for k in old.commands() {
@@ -655,7 +651,7 @@ impl Host {
         self.next_message += 1
         let id = self.next_message
         self.instances[at].heard.push(
-            Heard::Message { conn, from: String::from(from), id, body: Vec::from(body) },
+            Heard::Message { conn, from: String::from(from), body: Vec::from(body) },
         )
         self.open.push(
             Open { conn, at: self.instances[at].id, waits: Waits::Message { sender: 0, id } },
@@ -701,7 +697,7 @@ impl Host {
                     )
                     self.log.push((from.clone(), s.to.clone(), s.body.clone()))
                     self.instances[at].heard.push(
-                        Heard::Message { conn, from, id: s.id, body: s.body.clone() },
+                        Heard::Message { conn, from, body: s.body.clone() },
                     )
                     any = true
                 }

@@ -91,9 +91,9 @@ fn once(e: mut Engine<Capybara>, asked: mut Vec<(u32, Pending<u8>)>) {
                 if let Some(r) = request(conn, bytes) {
                     http(mut e, r)
                 } else if let Some(c) = called(conn, bytes) {
-                    e.called(conn, c.from.as_str(), c.body)
+                    e.called(conn, c.body)
                 } else if let Some(m) = delivered(conn, bytes) {
-                    e.delivered(conn, m.from.as_str(), m.id, m.body)
+                    e.delivered(conn, m.from.as_str(), m.body)
                 }
             },
             // A connection opens with its message; its close is the engine's to hear.
@@ -209,7 +209,7 @@ fn query_bytes(query: str) -> Option<Vec<u8>> {
 }
 
 /// The bytes of base64url text without padding (RFC 4648 §5), or none if it isn't that.
-pub fn unbase64url(s: str) -> Option<Vec<u8>> {
+fn unbase64url(s: str) -> Option<Vec<u8>> {
     if s.len() % 4 == 1 {
         return None
     }
