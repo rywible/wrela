@@ -325,9 +325,11 @@ pub struct Lab {
     place: u32,
     prints: Vec<(u32, u32, Vec<Vec<u8>>)>,
     /// The screen of what posting makes public, while it's up (online.wrela's `consenting`):
-    /// whether its box is ticked and which control has the focus (screens.wrela's `POSTING_BOX`...).
+    /// whether its box is ticked and which control has the focus (screens.wrela's `POSTING_BOX`...),
+    /// and its layout, for the screen size it was laid out at (`lay_posting`).
     posting_best: bool,
     posting_focus: u32,
+    posting_laid: Option<(vec2, screens::Laid)>,
     /// The world's boards as the leaderboard shows them: around the account's place (`near`: the
     /// slice round it, or its page if the account is on it) or from the top; the first row shown
     /// of each category's (any%, 100%), and whether it has been put at the account's place yet.
@@ -336,6 +338,8 @@ pub struct Lab {
     first: [u32; 2],
     anchored: [bool; 2],
     placed: bool,
+    /// The rows of each category whose replays were last fetched ahead (`rows_key`).
+    fetched: [u64; 2],
     /// Whether the screen of what posting makes public was up last frame, and how many times it has
     /// come up: its nodes are numbered anew each time, so the host starts each with the focus on
     /// Post, not where the last one's was left.
@@ -431,10 +435,12 @@ pub fn init() -> Lab {
         prints: Vec::new(),
         posting_best: false,
         posting_focus: screens::POSTING_POST,
+        posting_laid: None,
         near: true,
         first: [0; 2],
         anchored: [false; 2],
         placed: false,
+        fetched: [0; 2],
         consent_up: false,
         consents: 0,
         reminder_seen: false,
@@ -1185,7 +1191,8 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
             parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS && s.online.consenting.is_some() {
             // The screen of what posting makes public, a modal dialog over the leaderboard.
-            let laid = screens::posting_laid(s.fonts, screen)
+            lay_posting(mut s, screen)
+            let Some((_, laid)) = s.posting_laid else { return }
             nodes = screens::posting_tree(
                 snap.chosen + s.consents,
                 laid,
@@ -2035,9 +2042,11 @@ fn consenting_input(s: mut Lab, e: Event, screen: vec2) {
     }
     if let Event::PointerDown { at, .. } = e {
         s.pointer = at
-        let laid = screens::posting_laid(s.fonts, screen)
+        lay_posting(mut s, screen)
+        let Some((_, laid)) = s.posting_laid else { return }
+        let controls = laid.controls.clone()
         for i in 0..screens::POSTING_ITEMS {
-            if laid.controls[i].contains(at) {
+            if controls[i].contains(at) {
                 s.posting_focus = i
                 chosen = Some(i)
             }
@@ -2068,6 +2077,18 @@ fn consenting_input(s: mut Lab, e: Event, screen: vec2) {
             }
         },
         None => {},
+    }
+}
+
+/// The screen of what posting makes public laid out for `screen` (`posting_laid`): once a size,
+/// not each time it's drawn, pressed or published.
+fn lay_posting(s: mut Lab, screen: vec2) {
+    let laid_for = match s.posting_laid {
+        Some((at, _)) => at.x == screen.x && at.y == screen.y,
+        None => false,
+    }
+    if !laid_for {
+        s.posting_laid = Some((screen, screens::posting_laid(s.fonts, screen)))
     }
 }
 
@@ -2267,6 +2288,21 @@ fn rows(s: mut Lab, c: u32, category: u32) -> u32 {
     listed(s, c, category).len()
 }
 
+/// What the rows `places` are, for fetching their replays ahead only when they change: their
+/// replays' bytes, and how many replays had been let go (online.wrela's `let_go`), as an FNV-1a
+/// hash.
+fn rows_key(o: online::Online, places: [Place]) -> u64 {
+    let prime: u64 = 1099511628211
+    var h: u64 = 14695981039346656037 ^ u64(online::let_go(o))
+    for p in places {
+        for b in p.replay {
+            h = (h ^ u64(b)).wrapping_mul(prime)
+        }
+        h = (h ^ 256).wrapping_mul(prime)
+    }
+    h
+}
+
 /// All the places of the world's board shown for course `c` and `category`: its search's; or the
 /// world's (or its whole game's) round the account's place when the leaderboard is near it and
 /// the slice has come, else its pages from the top.
@@ -2328,14 +2364,17 @@ fn world_rows(s: mut Lab, c: u32, category: u32, screen: vec2, size: f32, findin
     } else {
         let course = online::board_course(s.board, c)
         online::want(mut s.online, course, category, By::Player)
-        let (_, said) = online::places(s.online, course, category)
-        note = take said
+        note = online::board_note(s.online, course, category)
     }
     if !places.is_empty() || s.board != online::SEARCH {
         // The rows shown, from the first: each one's replay fetched ahead, so choosing it plays at
-        // once.
+        // once; asked again only once the rows change, or a replay is let go.
         places = board_places(mut s, c, category)
-        online::fetch_rows(mut s.online, places)
+        let key = rows_key(s.online, places)
+        if key != s.fetched[category] {
+            s.fetched[category] = key
+            online::fetch_rows(mut s.online, places)
+        }
     }
     let head = row_rect(screen, category, first)
     if places.is_empty() {
@@ -2585,7 +2624,8 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2, finding: bool) {
         return
     }
     if s.online.consenting.is_some() {
-        let laid = screens::posting_laid(s.fonts, screen)
+        lay_posting(mut s, screen)
+        let Some((_, laid)) = s.posting_laid else { return }
         var hover: Option<u32> = None
         for i in 0..screens::POSTING_ITEMS {
             if pointing && laid.controls[i].contains(s.pointer) {

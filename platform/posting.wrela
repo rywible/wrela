@@ -30,6 +30,10 @@ pub const BEST_RUNS_NOTE: Text = "Each new personal best goes up when the run en
 pub const POST: Text = "Post"
 pub const NOT_NOW: Text = "Not now"
 
+/// Why a run can't be posted yet, whether the game sees it first or the console tells it: the
+/// player isn't signed in (or hasn't kept a name, or must add a passkey first).
+pub const SIGN_IN: Text = "Sign in at the console to post. Press F10, then Sign in."
+
 /// The line a game shows after a post while the account's recovery codes are still to be saved
 /// (link.wrela's `Account::save_codes`): the console keeps them on its account page.
 pub const SAVE_CODES: Text = "Save your recovery codes from the console's account page."

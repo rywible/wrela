@@ -861,7 +861,7 @@ fn answer_now(me: Me, online: bool, connected: bool, ask: Ask) -> Option<Answer>
     if posting && (!me.signed_in || !me.fixed || me.must_add_passkey) {
         return Some(
             Answer::Offline {
-                why: String::from("Sign in at the console to post. Press F10, then Sign in."),
+                why: String::from(posting::SIGN_IN),
             },
         )
     }
