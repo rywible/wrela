@@ -964,7 +964,7 @@ impl<G: Game> Engine<G> {
             return
         }
         if self.kind == Kind::Account {
-            if accounts::signs_up(j.step) {
+            if accounts::signing_up(j) {
                 self.registering = false
             }
             if j.step == Step::DeleteCounters || j.step == Step::DeleteScan {

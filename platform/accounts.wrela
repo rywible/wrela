@@ -581,7 +581,7 @@ impl<G: Game> Engine<G> {
 
     /// Refuses `job`'s request, as `why`: a sign-up's step lets the next sign-up here begin.
     fn step_refused(mut self, job: Job, why: Text) {
-        if signs_up(job.step) {
+        if signing_up(job) {
             self.registering = false
         }
         self.refuse(job.conn, why)
@@ -1945,6 +1945,12 @@ pub(package) fn signs_up(step: Step) -> bool {
         step == Step::RegisterSeed ||
         step == Step::RegisterClaim ||
         step == Step::RegisterSecrets
+}
+
+/// Whether `job` is a new account's, at any of its steps: its own, or its ceremony's tag check
+/// (`TagChecked`, which a sign-in and an added passkey share).
+pub(package) fn signing_up(job: Job) -> bool {
+    signs_up(job.step) || (job.step == Step::TagChecked && job.n == REGISTER)
 }
 
 /// Why a name couldn't be drawn at `step`: a new account's, or a draw again's.

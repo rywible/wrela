@@ -1287,6 +1287,32 @@ fn fresh(h: mut Host, conn: u32, id: u8, s: Signed) -> Vec<u8> {
     f.csrf.clone()
 }
 
+/// Steps the host until instance `name` waits on an ask at `step`, then fails that ask: its answer
+/// is none, as when the host's store, its randomness or a call fails.
+fn fail_at(h: mut Host, name: str, step: server::Step) {
+    var k = 0
+    while k < 400 {
+        let i = h.instance(name)
+        var ticket: Option<u32> = None
+        for j in h.instances[i].engine.jobs {
+            if j.step == step {
+                ticket = Some(j.ticket)
+            }
+        }
+        if let Some(t) = ticket {
+            for w in 0..h.instances[i].waiting.len() {
+                if h.instances[i].waiting[w].0 == t {
+                    h.instances[i].waiting[w].1 = None
+                    return
+                }
+            }
+        }
+        let _ = h.step()
+        k += 1
+    }
+    panic("it never waited there")
+}
+
 // ---- tests ------------------------------------------------------------------------------------------
 
 @test
@@ -3159,4 +3185,23 @@ fn a_key_kept_then_forgotten_reads_as_gone() {
     assert(e.latest([1], [1, 9]).is_none(), "gone, not what was kept before")
     e.keep(Vec::from([1]), Vec::from([3]))
     assert(e.latest([1], [0]) == Some(Vec::from([3])), "kept again")
+}
+
+@test
+fn a_sign_up_whose_tag_check_fails_lets_the_next_begin() {
+    var h = host()
+    // Two sign-ups for one handle: each begun with the same random bytes.
+    let bytes: Vec<u8> = Vec::filled(NONCE_BYTES + CEREMONY_BYTES + HANDLE_BYTES, u8(3))
+    h.given.push(bytes.clone())
+    let first = h.say(1, begin(REGISTER))
+    let handle = handle_of(first)
+    let conns = h.send(1, [register(handle, challenge_of(first), 5)], public: false)
+    fail_at(mut h, account_instance(handle).as_str(), server::Step::TagChecked)
+    h.settle()
+    assert(refused([h.answers(1, conns)[0].reply.clone()]), "refused, to try again")
+    h.given.push(bytes.clone())
+    let again = h.say(1, begin(REGISTER))
+    assert(handle_of(again) == handle, "the same handle")
+    let rs = h.say(1, register(handle, challenge_of(again), 5))
+    assert(session_of(rs).is_some(), f"the next sign-up goes on: {why_of(rs[0])}")
 }
