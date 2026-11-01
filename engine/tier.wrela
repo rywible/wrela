@@ -39,7 +39,7 @@ impl<T: Tiers> Switches for Tiered<T> {
     const DISTANCE: bool = T::DISTANCE && T::TIER != Tier::Low
     const AMBIENT: bool = T::AMBIENT && T::TIER != Tier::Low
     const OCCLUSION: bool = T::OCCLUSION
-    const PCSS: bool = T::PCSS
+    const PCSS: bool = T::PCSS && T::TIER == Tier::Epic
     const HALVED: bool = T::HALVED
     const CASCADES: bool = T::CASCADES
     const NEURAL: bool = T::NEURAL

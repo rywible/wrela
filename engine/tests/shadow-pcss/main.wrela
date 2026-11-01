@@ -7,6 +7,11 @@
 // The near map's view is the identity (a point's x and y are its place on the map, its z its
 // depth): its texels left of the middle hold the blocker, high in the top half and low in the
 // bottom, the rest clear.
+//
+// And the cascades' seam (§G4): a second map holding an edge along x (a blocker 4 m over the
+// receivers below the middle), read as the near map (the identity) and as the far (the same
+// texels over twice the span), along the edge from inside the near map out past it, through the
+// band where the near map fades into the far.
 
 use engine::frame::full
 use engine::shadow::{Cascade, Shadows, shadows, statically_sunlit}
@@ -38,6 +43,32 @@ fn blocker(p: FragCoord) -> WithDepth<vec4> {
 
 /// How many receivers a row reads, a texel apart across the map's middle.
 const ACROSS: u32 = 128
+
+/// The seam's map: a blocker 4 m over the receivers below its middle.
+@fragment
+fn ledge(p: FragCoord) -> WithDepth<vec4> {
+    let t = vec2u(p.position.xy)
+    WithDepth { color: vec4(0.0), depth: if t.y >= SIDE / 2 { over(4.0) } else { 1.0 } }
+}
+
+/// How many receivers the seam's row reads: near-clip x from 0.5 to 1.1, a quarter texel apart.
+const ALONG: u32 = 768
+
+/// Receiver `id.x` along the seam's edge: its light.
+@compute(64)
+fn along(
+    sh: Shadows,
+    map: DepthTexture,
+    cmp: ComparisonSampler,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= ALONG {
+        return
+    }
+    let x = 0.5 + (f32(id.x) + 0.5) / f32(ALONG) * 0.6
+    out[id] = statically_sunlit(sh, vec3(x, 0.0, RECEIVER), vec3(0.0), map, map, cmp, 1.5)
+}
 
 /// Receiver `id.x` of row `id.y` (0: under the high blocker, 1: under the low): its light.
 @compute(64)
@@ -110,6 +141,33 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             std::gpu::dispatch(across.bind(sh, map, cmp, out: mut out), over: (ACROSS, 2))
             s.asked.push(read(out.items()))
         }
+        // The seam: the near map the identity, the far the same texels over twice the span.
+        var edge = depth_texture(width: SIDE, height: SIDE)
+        let q = begin_depth_pass(mut edge, clear_depth: 1.0)
+        draw(
+            q,
+            full.bind(z: 0.5),
+            ledge,
+            vertices: 3,
+            depth: Depth { compare: Compare::Always, write: true },
+        )
+        q.end()
+        let half = mat4(
+            vec4(0.5, 0.0, 0.0, 0.0),
+            vec4(0.0, 0.5, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0),
+        )
+        let seam = Shadows {
+            far: half,
+            far_texel: 2.0 * TEXEL,
+            texel_uv: vec3(1.0 / f32(SIDE)),
+            soft_pcss: 1,
+            ..base,
+        }
+        var row: GpuBuffer<f32> = buffer(ALONG)
+        std::gpu::dispatch(along.bind(seam, edge, cmp, out: mut row), over: (ALONG, 1))
+        s.asked.push(read(row.items()))
         return
     }
     while s.got.len() < s.asked.len() {
@@ -141,7 +199,7 @@ fn penumbra(row: [f32]) -> u32 {
 /// `soft_pcss` 0 both penumbrae are the filter's few texels.
 @test(frames: 8, gpu: true)
 fn a_higher_blocker_casts_a_wider_penumbra(s: State) {
-    assert(s.got.len() == 2, f"{s.got.len()} reads came back")
+    assert(s.got.len() == 3, f"{s.got.len()} reads came back")
     let row = |k: u32, r: u32| {
         var out: Vec<f32> = Vec::new()
         for i in 0..ACROSS {
@@ -154,4 +212,27 @@ fn a_higher_blocker_casts_a_wider_penumbra(s: State) {
     print(f"penumbra in texels: PCF {pcf_high} high, {pcf_low} low; PCSS {high} high, {low} low")
     assert(pcf_high == pcf_low, "PCF's penumbra depends on the blocker's height")
     assert(high > low && high >= 2 * low, f"PCSS: {high} high against {low} low")
+}
+
+/// The cascades' seam shows no line (§G4): along a soft shadow's edge, from where the near map
+/// holds the point alone out past where the far map does, no receiver's light is more than 1/255
+/// from its neighbour's (a quarter texel apart), though the near map's penumbra and the far's
+/// differ.
+@test(frames: 8, gpu: true)
+fn the_cascades_seam_shows_no_line(s: State) {
+    assert(s.got.len() == 3, f"{s.got.len()} reads came back")
+    borrow row = s.got[2]
+    var most = 0.0
+    var at = 0
+    for i in 1..ALONG {
+        let d = abs(row[i] - row[i - 1])
+        if d > most {
+            most = d
+            at = i
+        }
+    }
+    print(
+        f"across the seam: {row[0]} near, {row[ALONG - 1]} far, the most between neighbours {most * 255.0}/255 at {at}",
+    )
+    assert(most <= 1.0 / 255.0, f"a line at receiver {at}: {most * 255.0}/255 from its neighbour")
 }

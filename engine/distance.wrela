@@ -15,8 +15,8 @@
 // `DISTANCE_SLABS` slabs, one a frame (`Work::Distance`).
 
 use std::gpu::{
-    GlobalId, GpuBuffer, R32Float, Texels3d, Texture3d, buffer, buffer_of, dispatch, label,
-    texture3d, write,
+    GlobalId, GpuBuffer, R32Float, Rgba8, Texels3d, Texture3d, Unorm8x4, buffer, buffer_of,
+    dispatch, label, texture3d, write,
 }
 use std::mem::size_of
 use std::stage::interpret
@@ -45,12 +45,37 @@ pub const RECENTRE: f32 = 8.0
 const BELOW: f32 = 8.0
 
 /// A solid capsule from `a` to `b`, `radius` round (a trunk's or a limb's; a stone's, `a` and
-/// `b` alike), in render space.
+/// `b` alike), in render space; its surface's colour (`albedo`, `pack_albedo`'s: 0 for none,
+/// `SOLID_ALBEDO` read).
 pub struct Capsule: Copy + GpuData {
     pub a: vec3,
     pub radius: f32,
     pub b: vec3,
-    pub spare: f32 = 0.0,
+    pub albedo: u32 = 0,
+}
+
+/// What a solid with no colour of its own reflects (bark and stone, near enough).
+pub const SOLID_ALBEDO = vec3(0.18, 0.16, 0.14)
+
+/// `c` (linear, 0 to 1 each) as a capsule's `albedo` (`Unorm8x4`'s bits), its alpha 1 (so a colour
+/// of black isn't none, 0).
+pub fn pack_albedo(c: vec3) -> u32 {
+    Unorm8x4::encode(vec4(saturate(c), 1.0)).bits
+}
+
+/// A solid with no colour of its own, packed (`SOLID_ALBEDO`): a probes' occluder's `solid`.
+pub const SOLID: u32 = pack_albedo(SOLID_ALBEDO)
+
+/// The colour of the solid nearest the volume's voxel at `p` (render space: `albedo`, cooked with
+/// its distance), `SOLID_ALBEDO` where none is near or the volume holds none.
+pub fn albedo_at(g: DistanceGrid, albedo: Texture3d<Rgba8>, p: vec3) -> vec3 {
+    let w = vec3i(floor(p / g.voxel))
+    if g.on == 0 || !held(g, w) {
+        return SOLID_ALBEDO
+    }
+    let t = texel_of(g, w)
+    let c = albedo.load(x: t.x, y: t.y, z: t.z)
+    if c.a < 0.5 { SOLID_ALBEDO } else { c.rgb }
 }
 
 /// A solid shape: a tape of its field (`stone::ShapeTape`), read at a point turned into its own
@@ -124,6 +149,13 @@ fn at(volume: Texture3d<R32Float>, g: DistanceGrid, w: vec3i) -> f32 {
 /// Whether world voxel `w` is in the volume and holds its distance.
 fn held(g: DistanceGrid, w: vec3i) -> bool {
     inside_box(w, max(g.origin, g.lo), min(g.origin + vec3i(g.dims), g.hi))
+}
+
+/// Whether the volume holds the distance at `p` (render space): it's cooked, and the voxels round
+/// `p` (`distance_at`'s eight) are in it.
+pub fn holds(g: DistanceGrid, p: vec3) -> bool {
+    let w = vec3i(floor(p / g.voxel - vec3(0.5)))
+    g.on != 0 && held(g, w) && held(g, w + vec3i(1))
 }
 
 /// The distance from `p` (render space) to the nearest solid, at most `DISTANCE_FAR`, between
@@ -290,6 +322,7 @@ pub fn cook_distance(
     levels: Levels,
     texels: [Texel],
     out: mut Texels3d<R32Float>,
+    colour: mut Texels3d<Rgba8>,
     id: GlobalId,
 ) {
     if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
@@ -305,21 +338,34 @@ pub fn cook_distance(
     // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
     let (n, _, h) = ground_at(levels, texels, p.xz)
     var dist = min((p.y - h) * n.y, DISTANCE_FAR)
+    // The nearest solid's colour (none: the ground's, or nothing near).
+    var nearest = 0
     let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
     let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
     for i in 0..entry.y {
         let k = list[entry.x + i]
         if k & SHAPE_BIT == 0 {
-            dist = min(dist, to_capsule(capsules[k], p))
+            let cap = capsules[k]
+            let c = to_capsule(cap, p)
+            if c < dist {
+                dist = c
+                nearest = cap.albedo
+            }
         } else {
             let s = shapes[k & !SHAPE_BIT]
             // Its sphere first: a tape is read only where it could be nearer.
             if length(p - s.centre) - s.radius < dist {
-                dist = min(dist, interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz))
+                let d = interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz)
+                if d < dist {
+                    dist = d
+                    nearest = 0
+                }
             }
         }
     }
     out.store(id, dist)
+    // (None, 0, decodes to alpha 0: `albedo_at` reads `SOLID_ALBEDO` there.)
+    colour.store(id, Unorm8x4 { bits: nearest }.decode())
 }
 
 /// Entry `k` added to the lists of the bins (`BINS`, from `corner`) that come within
@@ -343,6 +389,9 @@ fn bin_into(lists: mut Vec<Vec<u32>>, corner: vec3, lo: vec3, hi: vec3, k: u32) 
 pub struct Distance {
     pub grid: DistanceGrid,
     pub volume: Texture3d<R32Float>,
+    /// Each voxel's nearest solid's colour (alpha 0: none, the ground's or nothing's), the
+    /// probes' rays' surface cache (§G1).
+    pub albedo: Texture3d<Rgba8>,
     capsules: GpuBuffer<Capsule>,
     shapes: GpuBuffer<Shape>,
     bins: GpuBuffer<vec2u>,
@@ -367,6 +416,9 @@ impl Distance {
             volume: if wanted { texture3d::<R32Float>(d.x, d.y, d.z) } else {
                 texture3d::<R32Float>(width: 1, height: 1, depth: 1)
             },
+            albedo: if wanted { texture3d::<Rgba8>(d.x, d.y, d.z) } else {
+                texture3d::<Rgba8>(width: 1, height: 1, depth: 1)
+            },
             capsules: buffer(1),
             shapes: buffer(1),
             bins: buffer(BINS.x * BINS.y * BINS.z),
@@ -384,6 +436,7 @@ impl Distance {
     /// The GPU bytes it holds.
     pub fn bytes(self) -> u64 {
         memory::texels(self.volume.width(), self.volume.height(), 4, d: self.volume.depth()) +
+            memory::texels(self.albedo.width(), self.albedo.height(), 4, d: self.albedo.depth()) +
             u64(self.capsules.len()) * u64(size_of::<Capsule>()) +
             u64(self.shapes.len()) * u64(size_of::<Shape>()) +
             u64(self.bins.len()) * 8 +
@@ -400,6 +453,15 @@ impl Distance {
             return DistanceGrid { on, lo: self.kept.lo, hi: self.kept.hi, ..self.grid }
         }
         DistanceGrid { on, ..self.grid }
+    }
+
+    /// The grid as the probes' rays step through it (`probes::Trace::solids`): `read`'s where it
+    /// holds the scene's solids, none where it holds the ground alone (`frame::Scene::solids`'
+    /// default), whose rays meet the occluders' solids by their density.
+    pub fn for_rays(self) -> DistanceGrid {
+        if self.solids.capsules.is_empty() && self.solids.shapes.is_empty() { NO_DISTANCE } else {
+            self.read()
+        }
     }
 
     /// Everything it holds dropped (the render origin moved: its voxels and its solids are of
@@ -525,6 +587,7 @@ impl Distance {
                 levels: levels,
                 texels: texels,
                 out: mut self.volume,
+                colour: mut self.albedo,
             ),
             over: (d.x, d.y, first + depth),
         )

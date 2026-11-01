@@ -76,7 +76,14 @@ impl Scene for Stand {
         }
         Some(
             Vec::from(
-                [Occluder { a: TREE_A - origin, radius: 3.0, b: TREE_B - origin, solid: 1.0 }],
+                [
+                    Occluder {
+                        a: TREE_A - origin,
+                        radius: 3.0,
+                        b: TREE_B - origin,
+                        solid: engine::distance::SOLID,
+                    },
+                ],
             ),
         )
     }

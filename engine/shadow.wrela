@@ -41,6 +41,9 @@ pub struct Shadows: Copy + GpuData {
     pub sun_size: f32 = 0.00925,
     pub near_depth: f32 = 499.0,
     pub far_depth: f32 = 5199.0,
+    /// The moving map's depth span (m: `shadows`' 1 to `2 × MOVING_REACH`), its soft lookup's as
+    /// the static maps'.
+    pub moving_depth: f32 = 2.0 * MOVING_REACH - 1.0,
 }
 
 /// Points on the unit disc, evenly spread (a Vogel spiral: the golden angle round, the square
@@ -51,9 +54,11 @@ fn disc(i: u32, n: u32) -> vec2 {
     vec2(cos(a), sin(a)) * r
 }
 
-/// How far the blocker search reaches (texels), and the soft filter's widest (texels).
+/// How far the blocker search reaches (texels), and the soft filter's widest (texels, its radius:
+/// a low sun's far blockers spread a crown's dappled gaps over 20 texels and more, and the
+/// spots went to a smear, G4's G-look on the meadow at evening; **proposed**).
 const SEARCH: f32 = 6.0
-const WIDEST: f32 = 24.0
+const WIDEST: f32 = 6.0
 
 /// Where the static cascades are: each a square `span` metres wide round `centre`, seen from
 /// `reach` metres toward the sun, `side` texels a side; and the sun its map was drawn from (a map
@@ -127,7 +132,7 @@ pub fn shadows(
     Shadows {
         near: sun_view(sun_of(near, s), near.centre, near.span, near.reach),
         far: sun_view(sun_of(far, s), far.centre, far.span, far.reach),
-        moving: sun_view(s, centre, moving_span, 40.0),
+        moving: sun_view(s, centre, moving_span, MOVING_REACH),
         right,
         near_texel: near.span / f32(near.side),
         up,
@@ -136,8 +141,12 @@ pub fn shadows(
         moving_texel: texel,
         near_depth: 2.0 * near.reach - 1.0,
         far_depth: 2.0 * far.reach - 1.0,
+        moving_depth: 2.0 * MOVING_REACH - 1.0,
     }
 }
+
+/// How far toward the sun the moving map is seen from (m).
+const MOVING_REACH: f32 = 40.0
 
 /// A symmetric filter in shadow texels. Comparison sampling filters each tap bilinearly.
 /// Rotating sparse taps each frame made static dappled shadows flicker, especially while
@@ -174,9 +183,9 @@ fn lookup(
 
 /// How lit `p` is in one static map (`view`'s, one of its texels `texel_uv` of its uv and
 /// `texel` metres, its depth's 0 to 1 `depth` metres), its penumbra as wide as the sun (`size`
-/// radians) makes it at the blockers' distance (`Shadows::soft_pcss`): the blockers within `SEARCH`
-/// texels found (8 taps), their mean depth, and a filter of 12 taps that wide (1 to `WIDEST`
-/// texels); biased `bias` in depth.
+/// radians across) makes it at the blockers' distance (`Shadows::soft_pcss`): the blockers within
+/// `SEARCH` texels found (8 taps), their mean depth, and a filter of 12 taps as wide as that
+/// penumbra (its radius 1 to `WIDEST` texels); biased `bias` in depth.
 fn soft_lookup(
     view: mat4,
     map: DepthTexture,
@@ -213,9 +222,10 @@ fn soft_lookup(
     if n == 0.0 {
         return (1.0, true)
     }
-    // The blockers' distance above the point (m), and the penumbra the sun's disc spreads there.
+    // The blockers' distance above the point (m), and the penumbra the sun's disc spreads there
+    // (`apart × size` across, Fernando 2005): the filter's radius is half of it.
     let apart = (lp.z - sum / n) * depth
-    let width = clamp(apart * size / texel, 1.0, WIDEST)
+    let width = clamp(0.5 * apart * size / texel, 1.0, WIDEST)
     var lit = 0.0
     for i in 0..12 {
         lit += map.sample_compare_level(s, uv + disc(i, 12) * width * texel_uv, lp.z - bias)
@@ -225,7 +235,8 @@ fn soft_lookup(
 
 /// How lit `world` is by the sun (0 to 1), its normal `n`: the static cascades (the near one
 /// where it holds the point, else the far) and the moving map, the darker of the two; `soft`
-/// texels of penumbra (`pcss` as `statically_sunlit`'s).
+/// texels of penumbra (`pcss` as `statically_sunlit`'s; with the soft shadows the moving map's
+/// penumbra is found as the static maps' are, so a creature's shadow softens as a tree's does).
 pub fn sunlit(
     sh: Shadows,
     world: vec3,
@@ -238,15 +249,24 @@ pub fn sunlit(
     pcss: bool = true,
 ) -> f32 {
     let lit = statically_sunlit(sh, world, n, near, far, s, soft, pcss: pcss)
-    let (m, _) = lookup(
-        sh.moving,
-        moving,
-        sh.texel_uv.z,
-        s,
-        world + n * (sh.moving_texel * 1.5),
-        1.5,
-        bias: 0.0008,
-    )
+    // Already in the static shadow: the moving map can't darken it further.
+    if lit <= 0.0 {
+        return 0.0
+    }
+    let at = world + n * (sh.moving_texel * 1.5)
+    let (m, _) = if pcss && sh.soft_pcss != 0 {
+        soft_lookup(
+            sh.moving,
+            moving,
+            sh.texel_uv.z,
+            sh.moving_texel,
+            sh.moving_depth,
+            sh.sun_size,
+            s,
+            at,
+            bias: 0.0008,
+        )
+    } else { lookup(sh.moving, moving, sh.texel_uv.z, s, at, 1.5, bias: 0.0008) }
     min(lit, m)
 }
 

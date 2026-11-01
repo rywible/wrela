@@ -247,6 +247,43 @@ pub fn segment_distance(p: vec3, a: vec3, b: vec3) -> f32 {
     length(p - (a + t * ab))
 }
 
+/// The closest two segments come: `a0`–`a1` and `b0`–`b1` (Ericson, *Real-Time Collision
+/// Detection*, §5.1.9: the closest points of two segments).
+pub fn segments_apart(a0: vec3, a1: vec3, b0: vec3, b1: vec3) -> f32 {
+    let d1 = a1 - a0
+    let d2 = b1 - b0
+    let r = a0 - b0
+    let a = dot(d1, d1)
+    let e = dot(d2, d2)
+    let f = dot(d2, r)
+    var s = 0.0
+    var t = 0.0
+    if a <= 1.0e-9 && e <= 1.0e-9 {
+        return length(r)
+    }
+    if a <= 1.0e-9 {
+        t = clamp(f / e, 0.0, 1.0)
+    } else {
+        let c = dot(d1, r)
+        if e <= 1.0e-9 {
+            s = clamp(-c / a, 0.0, 1.0)
+        } else {
+            let b = dot(d1, d2)
+            let den = a * e - b * b
+            s = if den > 1.0e-9 { clamp((b * f - c * e) / den, 0.0, 1.0) } else { 0.0 }
+            t = (b * s + f) / e
+            if t < 0.0 {
+                t = 0.0
+                s = clamp(-c / a, 0.0, 1.0)
+            } else if t > 1.0 {
+                t = 1.0
+                s = clamp((b - c) / a, 0.0, 1.0)
+            }
+        }
+    }
+    length((a0 + d1 * s) - (b0 + d2 * t))
+}
+
 // ---- mass by an adaptive octree -----------------------------------------------------------------
 
 /// What `adaptive_mass` finds: the mass (kg), the volume (m³), the centre of mass, and how many

@@ -372,8 +372,15 @@ pub fn solid_capsules<T: Tiles>(s: Landscape<T>, origin: vec3) -> Vec<Capsule> {
     var capsules: Vec<Capsule> = Vec::new()
     if let Some(o) = s.occluded {
         for c in o.1 {
-            if c.solid > 0.5 {
-                capsules.push(Capsule { a: c.a - origin, radius: c.radius, b: c.b - origin })
+            if c.solid != 0 {
+                capsules.push(
+                    Capsule {
+                        a: c.a - origin,
+                        radius: c.radius,
+                        b: c.b - origin,
+                        albedo: c.solid,
+                    },
+                )
             }
         }
     }

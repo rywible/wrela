@@ -165,6 +165,9 @@ pub struct Occluding: Clone {
     pub cores: Vec<Core>,
     pub limbs: Vec<Tube<4>>,
     pub clumps: Vec<Clump>,
+    /// Its bark's colour (`bark_of`), packed as a solid occluder's (`probes::Occluder::solid`):
+    /// its wood's as the probes' rays see it.
+    pub wood: u32,
 }
 
 /// A straight core inside a limb's piece, in its plant's frame (`inner_wood_capsule` with no
@@ -197,6 +200,11 @@ const NOWHERE: Instance = Instance {
 pub const OCCLUDER_LIMBS: u32 = 48
 pub const OCCLUDER_CLUMPS: u32 = 32
 
+/// A bark's colour as a whole, seen from afar: its dark and its light alike.
+pub fn bark_of(b: Bark) -> vec3 {
+    0.5 * (b.dark + b.light)
+}
+
 /// Each of `plants` as the probes' occluders read it: a grown kind's (`Bark::grown`) cores of
 /// its first `OCCLUDER_LIMBS` limbs, and its clumps as large as its `OCCLUDER_CLUMPS`th largest; a
 /// hand's limbs and clumps.
@@ -204,6 +212,8 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
     var out: Vec<Occluding> = Vec::new()
     for k in 0..plants.len() {
         borrow p = plants[k]
+        // Its wood's colour, as the probes' rays see it.
+        let wood = distance::pack_albedo(bark_of(p.bark))
         if p.bark.grown == 0.0 {
             var limbs: Vec<Tube<4>> = Vec::new()
             for i in 0..p.limbs.len() {
@@ -213,7 +223,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
             for i in 0..p.clumps.len() {
                 clumps.push(p.clumps[i])
             }
-            out.push(Occluding { cores: Vec::new(), limbs, clumps })
+            out.push(Occluding { cores: Vec::new(), limbs, clumps, wood })
             continue
         }
         var radii: Vec<f32> = Vec::new()
@@ -237,7 +247,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
                 }
             }
         }
-        out.push(Occluding { cores, limbs: Vec::new(), clumps })
+        out.push(Occluding { cores, limbs: Vec::new(), clumps, wood })
     }
     out
 }
@@ -858,6 +868,22 @@ fn in_leaf(uv: vec2, base: vec2, dir: vec2, len: f32) -> (f32, f32, f32) {
     (min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01), saturate(s), t / len)
 }
 
+/// How far a leaf's point (`along` its length 0 to 1, `across` it over its length) is from its
+/// secondary veins, as their tissue (0 on a vein, 1 off them): `VEINS` a side, leaving the midrib
+/// toward the tip at `VEIN_SLOPE` (a pinnate leaf's, as a beech's or an oak's), each fading out
+/// toward the tip and the base.
+pub fn secondary_veins(along: f32, across: f32) -> f32 {
+    let phase = (along - abs(across) * VEIN_SLOPE) * f32(VEINS)
+    let apart = abs(phase - round(phase)) / f32(VEINS)
+    let inside = smoothstep(0.04, 0.12, along) * (1.0 - smoothstep(0.85, 0.97, along))
+    mix(1.0, smoothstep(0.002, 0.006, apart), inside)
+}
+
+/// A leaf's secondary veins a side (a European beech's 4 to 9 pairs: Go Botany, docs/citations.md),
+/// and how far toward the tip they run per unit out from the midrib (**proposed**: 45°).
+pub const VEINS: u32 = 8
+pub const VEIN_SLOPE: f32 = 1.0
+
 /// How much of a leaf's length its own stalk is, from the stem to its blade.
 const LEAF_STALK: f32 = 0.08
 
@@ -879,7 +905,7 @@ pub fn sprig_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32, vec2) {
         if inside > best {
             best = inside
             which = i
-            let rib = smoothstep(0.012, 0.065, abs(across))
+            let rib = min(smoothstep(0.006, 0.03, abs(across)), secondary_veins(along, across))
             let fold = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
             tissue = vec2(rib, fold)
         }
@@ -1388,6 +1414,15 @@ pub fn bark_round(girth: f32) -> f32 {
     max(round(girth / BARK_ACROSS), 1.0)
 }
 
+/// Where on bark's tile the plant standing at `at` begins (round, in tiles, and along, m; `at` keyed
+/// to the world, `view::Camera::keyed`, so it's the same as the render origin moves): a draw from
+/// its place (a quarter metre's cell), so no two trunks show the same bark (every trunk read
+/// the tile from its corner: the development panel's repeating bark, §G9).
+pub fn bark_offset(at: vec3) -> vec2 {
+    let cell = floor(at.xz * 4.0)
+    vec2(noise::cell_draw(cell, 41), noise::cell_draw(cell, 42) * RIDGES_ALONG)
+}
+
 pub const RIDGES_W: u32 = 256
 pub const RIDGES_H: u32 = 4096
 
@@ -1437,19 +1472,66 @@ pub fn bark_at(
     texels: f32,
 ) -> (vec4, f32) {
     let level = log2(max(texels, 1.0)) / log2(f32(COARSE))
-    let a = fine.sample_level(s, uv)
+    // Magnified, the fine tile through a smooth cubic (its bilinear's texel grid showed as stairs
+    // down the sharpened edges: the development panel's stair-stepped bark texels, §G9).
+    let read = if texels < 1.0 {
+        smooth_read(fine, s, uv, vec2(f32(RIDGES_W), f32(RIDGES_H)))
+    } else { fine.sample_level(s, uv) }
+    let a = sharpened(read, texels)
     let b = coarse.sample_level(s, uv)
     let shown = 1.0 - smoothstep(1.0, 2.0, level)
     (mix(mix(a, b, vec4(saturate(level))), BARK_MEAN, vec4(1.0 - shown)), shown)
 }
 
-/// The patterns' mean texel, about: what a far trunk's bark shows (`bark_at`).
-pub const BARK_MEAN = vec4(0.75, 0.75, 0.92, 0.6)
+/// Texture `t` (`size` texels) at `uv` through a cubic B-spline (Sigg and Hadwiger, GPU Gems 2,
+/// ch. 20: four bilinear reads, each placed and weighted so their sum is the cubic's sixteen
+/// texels'): smooth across its texels' edges, where a bilinear read's slope jumps at each.
+pub fn smooth_read(t: Texture<Rgba8>, s: Sampler, uv: vec2, size: vec2) -> vec4 {
+    let p = uv * size - vec2(0.5)
+    let i = floor(p)
+    let f = p - i
+    let (f2, f3) = (f * f, f * f * f)
+    let w0 = (vec2(1.0) - 3.0 * f + 3.0 * f2 - f3) / 6.0
+    let w1 = (vec2(4.0) - 6.0 * f2 + 3.0 * f3) / 6.0
+    let w2 = (vec2(1.0) + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0
+    let w3 = f3 / 6.0
+    let (g0, g1) = (w0 + w1, w2 + w3)
+    // Where each pair's bilinear read lands (texel centres at half-texels).
+    let h0 = (i - vec2(0.5) + w1 / g0) / size
+    let h1 = (i + vec2(1.5) + w3 / g1) / size
+    let read = |x: f32, y: f32| t.sample_level(s, vec2(x, y))
+    g0.y * (g0.x * read(h0.x, h0.y) + g1.x * read(h1.x, h0.y)) +
+        g1.y * (g0.x * read(h0.x, h1.y) + g1.x * read(h1.x, h1.y))
+}
 
-/// A texel of the patterns' tile, wrapping each way.
+/// Patterns `t` read by a pixel `texels` of their texels wide, magnified (under a texel): their
+/// shapes' edges (ridges and plates; not the bands, a beech's lenticels sharpened into bricks, nor
+/// the mottle, a soft tone) steepened about their middles
+/// as the texels grow past a pixel, to `MAGNIFIED` times at most, so a near trunk's fissures keep
+/// edges half as wide as its texels' ramps, not many pixels of blur (the development panel's
+/// magnified, blurred bark, §G9; the idea of Green's magnified distance fields, SIGGRAPH 2007;
+/// at 4 times, the near oak's furrows read as a stencil, "extruded plastic").
+pub fn sharpened(t: vec4, texels: f32) -> vec4 {
+    let k = clamp(0.6 / max(texels, 1.0e-3), 1.0, MAGNIFIED)
+    vec4(saturate((t.rg - vec2(0.5)) * k + vec2(0.5)), t.b, t.a)
+}
+
+/// How much steeper a magnified pattern's edges get at most (`sharpened`).
+pub const MAGNIFIED: f32 = 2.0
+
+/// The patterns' mean texel (the tile's, measured: `bark_means_the_tiles_mean`; it was 0.75 for
+/// the ridges' before §G9's long furrows, and stale even then): what a far trunk's bark shows
+/// (`bark_at`).
+pub const BARK_MEAN = vec4(0.34, 0.63, 0.98, 0.64)
+
+/// A texel of the patterns' tile, wrapping each way (`tile_at`).
 @fragment
 fn ridge_texel(pixel: FragCoord) -> vec4 {
-    let uv = pixel.position.xy / vec2(f32(RIDGES_W), f32(RIDGES_H))
+    tile_at(pixel.position.xy / vec2(f32(RIDGES_W), f32(RIDGES_H)))
+}
+
+/// The patterns' tile at `uv` (0 to 1 each way): ridges, plates, bands and mottle.
+pub fn tile_at(uv: vec2) -> vec4 {
     let bands = band_at(vec2(uv.x, uv.y * RIDGES_ALONG * 20.0), 800)
     let mottle = noise::noise2_wrapped(
         vec2(uv.x * 5.0, uv.y * RIDGES_ALONG * 0.8),
@@ -1464,9 +1546,11 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
 /// Fissured bark at `uv` on the tile: 0 in a fissure, 1 on the face between. Its fissures are
 /// lenses, each a few tenths of a metre long: `lines` columns of them round the tile, their rows
 /// `rows` a metre along it, each column's rows set off by its own draw, each lens `0.8` to `1.6`
-/// rows long, so neighbours overlap and stagger, slanting across up to `slant` of a column from
-/// end to end, so they lean into their neighbours', and fading out at their ends (shallower, not
-/// narrower: a fissure's tip a texel wide broke into dashes). The faces between them merge and
+/// rows long (`long`: from its x, as many more as its y), so neighbours overlap and stagger,
+/// slanting across up to `slant` of a column from end to end, so they lean into their
+/// neighbours', and fading out at their ends: shallower, and with `taper` narrower too, toward a
+/// point no narrower than `TIP` each side (a fissure's tip a texel wide broke into dashes; square
+/// ends, as slots, §G9). The faces between them merge and
 /// part round the lenses' ends, a network of ridges (fissures that ran the whole tile read as
 /// stripes; a noise's middle as the fissure, as its contours' loops; a
 /// Voronoi's cells as shells), each `half` to `half + spread` m wide each side at its middle,
@@ -1480,6 +1564,8 @@ fn fissures(
     half: f32,
     spread: f32,
     cross: f32,
+    long: vec2 = vec2(0.8, 0.8),
+    taper: bool = false,
 ) -> f32 {
     let x = uv.x * f32(lines)
     let y = uv.y * RIDGES_ALONG * rows
@@ -1497,14 +1583,14 @@ fn fissures(
             let rw = noise::wrapped(r, period)
             let h = |n: i32| noise::hash2(cw * 131 + rw, seed + n)
             let start = f32(r) + off + 0.3 * h(2)
-            let long = 0.8 + 0.8 * h(3)
-            let t = (y - start) / long
+            let t = (y - start) / (long.x + long.y * h(3))
             if t > 0.0 && t < 1.0 {
                 let x0 = f32(c) + 0.5 + 0.7 * (h(4) - 0.5)
                 let at = x0 + slant * (2.0 * h(5) - 1.0) * (t - 0.5)
-                let wide = half + spread * h(6)
+                let middle = half + spread * h(6)
+                let wide = if taper { max(middle * pow(sin(PI * t), 0.6), TIP) } else { middle }
                 let d = abs(x - at) * across
-                let depth = smoothstep(0.0, 0.18, min(t, 1.0 - t))
+                let depth = smoothstep(0.0, if taper { 0.06 } else { 0.18 }, min(t, 1.0 - t))
                 face = min(face, 1.0 - depth * (1.0 - smoothstep(wide, wide + 0.012, d)))
             }
         }
@@ -1526,12 +1612,28 @@ fn fissures(
 }
 
 /// The ridges at `uv` on the tile (`ridge_texel`'s red): an oak's, alder's and char's bark, 24
-/// columns of fissures round a tile, mostly upright, 3 to 5 cm across at their middles, each
-/// about 30 to 55 cm long: an old oak's narrow interlaced ridges (sparse and leaning, its
-/// fissures read as hatching).
+/// columns of fissures round a tile, mostly upright, 2.8 to 4.4 cm across at their middles, tapering
+/// to points, each about 45 to 85 cm long, so they overlap and interlace: an old oak's narrow
+/// interlaced ridges between long furrows (sparse and leaning, its fissures read as hatching; as
+/// short square-ended lenses on a broad face, the development panel's slots and dashes, §G9).
 pub fn ridges_at(uv: vec2) -> f32 {
-    fissures(uv, lines: 24, rows: 3.0, slant: 0.45, seed: 0, half: 0.012, spread: 0.012, cross: 0.0)
+    fissures(
+        uv,
+        lines: 24,
+        rows: 3.0,
+        slant: 0.45,
+        seed: 0,
+        half: 0.014,
+        spread: 0.008,
+        cross: 0.0,
+        long: vec2(1.4, 1.2),
+        taper: true,
+    )
 }
+
+/// The narrowest a tapering fissure gets each side (m: `fissures`): over two of the tile's texels
+/// across, so a tip isn't a dash a texel wide.
+const TIP: f32 = 0.009
 
 /// The plates at `uv` on the tile (`ridge_texel`'s green): a pine's, 14 columns of fissures round
 /// a tile, wide and deep, the faces between cut across here and there into plates longer than wide,
@@ -2018,4 +2120,144 @@ fn a_card_placed_with_its_areas_found_once_is_where_card_place_puts_it() {
         let (b, pb, kb) = placed_card(p, areas, n, 7, id)
         assert(a == b && pa == pb && ka == kb, f"card {id} of {n} moved")
     }
+}
+
+/// A leaf's veins (its midrib and its secondaries, the atlas's tissue under a half) cover 5 to 15 %
+/// of its blade (§G3), over the sprigs of eight seeds.
+@test
+fn a_leafs_veins_cover_a_tenth_of_it() {
+    var blade = 0
+    var vein = 0
+    for seed in 0..8 {
+        for y in 0..160 {
+            for x in 0..160 {
+                let uv = (vec2(f32(x), f32(y)) + vec2(0.5)) / 80.0 - vec2(1.0)
+                let (m, _, tissue) = sprig_on(uv, seed, w: 0.002, n: 5)
+                // A blade's (the stem's and the stalks' tissue is 0, 0.5 exactly).
+                if m > 0.5 && !(tissue.x == 0.0 && tissue.y == 0.5) {
+                    blade += 1
+                    if tissue.x < 0.5 {
+                        vein += 1
+                    }
+                }
+            }
+        }
+    }
+    let share = f32(vein) / f32(max(blade, 1))
+    assert(share >= 0.05 && share <= 0.15, f"veins cover {share} of the blades")
+}
+
+/// An oak's bark is long furrows between narrow ridges (§G9: the development panel read short
+/// square-ended slots on a broad face): over the tile, its faces (the ridges' pattern over a half)
+/// cover 30 to 45 % of it (48 % before), and a furrow runs on (along the limb, at one place round
+/// it) 60 cm on average at least (32 cm before).
+@test
+fn an_oaks_bark_is_long_furrows_between_narrow_ridges() {
+    var faces = 0
+    var all = 0
+    var runs = 0
+    var run_texels = 0
+    // Down the tile at 32 places round it, every texel along.
+    for i in 0..32 {
+        let x = i * (RIDGES_W / 32) + 3
+        var run = 0
+        for y in 0..RIDGES_H {
+            let uv = (vec2(f32(x), f32(y)) + vec2(0.5)) / vec2(f32(RIDGES_W), f32(RIDGES_H))
+            let t = ridges_at(uv)
+            all += 1
+            if t > 0.5 {
+                faces += 1
+                if run > 0 {
+                    runs += 1
+                    run_texels += run
+                }
+                run = 0
+            } else {
+                run += 1
+            }
+        }
+    }
+    let share = f32(faces) / f32(all)
+    let along = f32(run_texels) / f32(max(runs, 1)) * RIDGES_ALONG / f32(RIDGES_H)
+    assert(share >= 0.3 && share <= 0.45, f"its faces cover {share} of the tile")
+    assert(along >= 0.6, f"its furrows run {along} m on average")
+}
+
+/// No two trunks near each other show the same bark, near enough (§G9): of 256 plants a metre
+/// apart, under one pair in a hundred of those within 3 m of each other begin on bark's tile
+/// within 2 cm round and 10 cm along of each other (as alike as the eye would see: a draw's
+/// chance is one in ten thousand), and their places spread over the tile.
+@test
+fn no_two_trunks_show_the_same_bark() {
+    var at: Vec<vec3> = Vec::new()
+    var mean = vec2(0.0)
+    var pairs = 0
+    var alike = 0
+    for i in 0..256 {
+        let p = vec3(f32(i % 16), 0.0, f32(i / 16))
+        let o = bark_offset(p)
+        at.push(p)
+        mean += vec2(o.x, o.y / RIDGES_ALONG) / 256.0
+        for j in 0..i {
+            if length(at[j] - p) > 3.0 {
+                continue
+            }
+            pairs += 1
+            let d = abs(bark_offset(at[j]) - o)
+            let round = min(d.x, 1.0 - d.x) * BARK_ACROSS
+            let along = min(d.y, RIDGES_ALONG - d.y)
+            if round < 0.02 && along < 0.1 {
+                alike += 1
+            }
+        }
+    }
+    assert(alike * 100 < pairs, f"{alike} of {pairs} near pairs share bark")
+    assert(length(mean - vec2(0.5)) < 0.1, f"their places bunch at {mean}")
+}
+
+/// A magnified pattern keeps its edges (§G9): an edge a texel and a half wide, read by pixels an
+/// eighth of a texel wide, rises from a tenth to nine tenths over no more than 6.5 pixels (12
+/// unsharpened); read a texel a pixel or coarser, it's as it was.
+@test
+fn magnified_bark_keeps_its_edges() {
+    let edge = |texels: f32| {
+        // Pixels across the edge, its ramp 1.5 texels wide: where it first passes 0.1 and 0.9.
+        var lo = -1.0
+        var hi = -1.0
+        for px in 0..200 {
+            let x = f32(px) * texels
+            let t = sharpened(vec4(saturate(x / 1.5 - 2.0), 0.0, 0.0, 0.0), texels).r
+            if lo < 0.0 && t > 0.1 {
+                lo = f32(px)
+            }
+            if hi < 0.0 && t > 0.9 {
+                hi = f32(px)
+            }
+        }
+        hi - lo
+    }
+    assert(edge(0.125) <= 6.5, f"a magnified edge spans {edge(0.125)} pixels")
+    for texels in [1.0, 2.0] {
+        let t = vec4(0.3, 0.7, 0.45, 0.6)
+        assert(sharpened(t, texels) == t, f"a pattern {texels} texels a pixel was changed")
+    }
+}
+
+/// The tile's mean is `BARK_MEAN` (a far trunk's bark fades to it: `bark_at`), each channel within
+/// 0.03, over a texel in 16 each way.
+@test
+fn bark_means_the_tiles_mean() {
+    var sum = vec4(0.0)
+    var n = 0.0
+    for j in 0..(RIDGES_H / 16) {
+        for i in 0..(RIDGES_W / 16) {
+            let uv = (vec2(f32(i * 16), f32(j * 16)) + vec2(0.5)) /
+                vec2(f32(RIDGES_W), f32(RIDGES_H))
+            sum += tile_at(uv)
+            n += 1.0
+        }
+    }
+    let mean = sum / n
+    let off = abs(mean - BARK_MEAN)
+    assert(max(max(off.x, off.y), max(off.z, off.w)) <= 0.03, f"the tile's mean is {mean}")
 }

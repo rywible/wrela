@@ -1,0 +1,178 @@
+// Part G's menu (plan three's §G0): what the development panel's losses pick to build next. Each
+// of the map's rows names the rubric rows it answers, the shot classes whose pairs can name it (a
+// class's development shot: 1 → D1, 2 → D2, 3 → D3, 4 → D4, 6 → D5, 8 → D6, 9 → D7, 12 → D8; none:
+// any pair), the words in the judges' sentences that name it, and its item.
+//
+// A pair names an item when its class is the item's (or the item takes any) and a judge's
+// sentence on one of the item's rows holds one of its words. An item's loss is what the still lost
+// on the item's rows (the reference's mean less the still's) summed over the pairs that name it;
+// the items are taken in the order of their losses, ties by how many pairs name them, and an item
+// no pair names isn't built.
+
+use tally::{PairTally, Tally}
+use std::string::String
+
+/// A row of the map: its item, the rubric rows it answers (`tally::ROWS`' indices, a row twice
+/// when it answers one), the classes whose pairs can name it (0: any), and the words that name it
+/// (the unused ones empty).
+pub struct MenuRow: Copy {
+    pub item: Text,
+    pub rows: [u32; 2],
+    pub classes: [u32; 2],
+    pub words: [Text; 5],
+}
+
+/// The rubric rows' indices (`tally::ROWS`).
+const LIGHT: u32 = 0
+const COLOUR: u32 = 1
+const VALUE: u32 = 2
+const DEPTH: u32 = 3
+const ARTIFACTS: u32 = 4
+
+/// §G0's map.
+pub const MENU: [MenuRow; 7] = [
+    MenuRow {
+        item: "G1",
+        rows: [LIGHT, LIGHT],
+        classes: [12, 1],
+        words: [
+            "flat",
+            "no bounce",
+            "the shade is dead",
+            "the wood's interior",
+            "under the canopy",
+        ],
+    },
+    MenuRow {
+        item: "G2",
+        rows: [LIGHT, ARTIFACTS],
+        classes: [4, 8],
+        words: ["reflection", "the mere", "the water", "", ""],
+    },
+    MenuRow {
+        item: "G3",
+        rows: [LIGHT, COLOUR],
+        classes: [2, 2],
+        words: ["the leaves glow", "translucent", "backlit", "", ""],
+    },
+    MenuRow {
+        item: "G4",
+        rows: [ARTIFACTS, ARTIFACTS],
+        classes: [6, 1],
+        words: ["shadows", "hard", "aliased edge of the shadow", "", ""],
+    },
+    MenuRow {
+        item: "G5",
+        rows: [DEPTH, ARTIFACTS],
+        classes: [8, 8],
+        words: ["soft at distance", "the far trees", "blobby", "", ""],
+    },
+    MenuRow {
+        item: "G6",
+        rows: [ARTIFACTS, COLOUR],
+        classes: [4, 4],
+        words: ["the fall", "spray", "foam", "", ""],
+    },
+    MenuRow {
+        item: "G7",
+        rows: [COLOUR, VALUE],
+        classes: [0, 0],
+        words: ["washed out", "the range", "too dark", "the sky's colour", ""],
+    },
+]
+
+/// An item the panel names: its name, its loss and how many pairs name it.
+pub struct Named: Clone {
+    pub item: String,
+    pub loss: f32,
+    pub pairs: u32,
+}
+
+/// `s` with its ASCII capitals lowered and its typographic apostrophes (’) plain (').
+fn lower(s: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    var i = 0
+    while i < s.len() {
+        if let Some((c, n)) = s.char_at(i) {
+            if c == 0x2019 {
+                out.push(39)
+                i += n
+                continue
+            }
+        }
+        let b = s.byte(i)
+        out.push(if b >= 65 && b <= 90 { b + 32 } else { b })
+        i += 1
+    }
+    String::from_utf8(take out).unwrap_or(String::from(s))
+}
+
+/// Whether pair `p` (of class `class`) names `m`: its class is one of `m`'s (or `m` takes any) and
+/// a judge's sentence on one of `m`'s rows holds one of its words.
+pub fn names(m: MenuRow, p: PairTally, class: u32) -> bool {
+    if m.classes[0] != 0 && m.classes[0] != class && m.classes[1] != class {
+        return false
+    }
+    for r in 0..2 {
+        let row = m.rows[r]
+        if (r == 1 && row == m.rows[0]) || row >= p.notes.len() {
+            continue
+        }
+        for note in p.notes[row] {
+            let text = lower(note.as_str())
+            for w in m.words {
+                if !w.is_empty() && text.as_str().find(w).is_some() {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The items `t`'s pairs name (each pair's class `classes[pair - 1]`), most lost first, ties by
+/// how many pairs name them.
+pub fn ranked_items(t: Tally, classes: [u32]) -> Vec<Named> {
+    var out: Vec<Named> = Vec::new()
+    for m in MENU {
+        var loss = 0.0
+        var pairs = 0
+        for p in t.pairs {
+            let class = if p.pair >= 1 && p.pair <= classes.len() { classes[p.pair - 1] } else {
+                0
+            }
+            if !names(m, p, class) {
+                continue
+            }
+            pairs += 1
+            for r in 0..2 {
+                if r == 0 || m.rows[1] != m.rows[0] {
+                    loss += p.reference_means[m.rows[r]] - p.still_means[m.rows[r]]
+                }
+            }
+        }
+        if pairs > 0 {
+            out.push(Named { item: String::from(m.item), loss, pairs })
+        }
+    }
+    out.sort_by(|a, b| a.loss > b.loss || (a.loss == b.loss && a.pairs > b.pairs))
+    out
+}
+
+/// The items `named` (`ranked_items`') leaves out: not needed unless a later panel names them.
+pub fn unnamed(named: [Named]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for m in MENU {
+        var found = false
+        for n in named {
+            if n.item.as_str() == m.item {
+                found = true
+                break
+            }
+        }
+        if !found {
+            out.push(String::from(m.item))
+        }
+    }
+    out
+}

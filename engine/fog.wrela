@@ -21,7 +21,7 @@
 
 use light::Light
 use style::Style
-use probes::{ProbeGrid, density_at, ground_under, mean_near}
+use probes::{ProbeGrid, ground_under, leaves_at, mean_near}
 use shadow::{Shadows, statically_sunlit}
 use sky::{Clouds, cloud_shadow, hg, sky_with_clouds}
 use std::gpu::{
@@ -170,11 +170,8 @@ pub fn inject(
     let dir = still.ray(px)
     let p = g.eye + dir * slice_depth(f32(id.z) + 0.5 + g.jitter)
     var sigma = density_of(h, spheres, g.spheres, p)
-    let crowns = density_at(grid, density, s, p)
-    // The crowns' leaves (a solid's density, a trunk's, isn't air).
-    if crowns <= 1.0 {
-        sigma += g.canopy * crowns
-    }
+    // The crowns' leaves (`probes::leaves_at`: a solid's density, a trunk's, isn't air).
+    sigma += g.canopy * leaves_at(grid, density, s, p)
     var c = vec4(0.0, 0.0, 0.0, sigma)
     if sigma > 0.0 {
         let shade = cloud_shadow(clouds, cloud, s, p)

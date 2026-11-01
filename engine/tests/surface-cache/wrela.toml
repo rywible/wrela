@@ -1,0 +1,9 @@
+# The probes' surface cache (docs/plan-world-class-3.md §G1): each solid's colour cooked into the
+# distance volume beside its distance, and a probe's ray that meets a solid lit with it, through
+# the real frame.
+[package]
+name = "surface_cache_tests"
+
+[dependencies]
+styles = { workspace = true }
+engine = { workspace = true }

@@ -409,6 +409,25 @@ fn tally_md(t: tally::Tally, key: std::json::Doc) -> String {
             out.push_str(f"  - {n.as_str()}\n")
         }
     }
+    // §G0's menu: the items the pairs name, in the order to build them.
+    var classes: Vec<u32> = Vec::new()
+    for i in 0..key.count(ps) {
+        let k = key.at(ps, i).unwrap_or(0)
+        classes.push(u32(key.num(key.get(k, "class").unwrap_or(0)).unwrap_or(0.0)))
+    }
+    out.push_str("\nThe menu (§G0), the items the pairs name, most lost first:\n\n")
+    let named = menu::ranked_items(t, classes)
+    for n in named {
+        out.push_str(f"- {n.item.as_str()}: {n.loss:.2} lost, named by {n.pairs} pairs\n")
+    }
+    let unnamed = menu::unnamed(named)
+    if !unnamed.is_empty() {
+        out.push_str("- Not named (not needed unless a later panel names them):")
+        for u in unnamed {
+            out.push_str(f" {u.as_str()}")
+        }
+        out.push_str("\n")
+    }
     out.push_str(
         f"\nJudges: {t.used.len()} used; rejected by the calibration: {t.rejected.len()}.\n",
     )

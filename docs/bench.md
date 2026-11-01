@@ -1478,6 +1478,882 @@ like confetti over the trail and the water, the cylinder root plates and the sme
 half a metre tall at 6 m and 10 m; E8 drew a larger stand-in). Every judge's file is in
 `build/f10-panel/judges/`.
 
+### 2026-11-01: the development panel and Part G's ranking (G0), toolchain 0.18.0
+
+docs/plan-world-class-3.md §G0: the vale at `main` after Part F (808e39ba), its eight development
+shots (D1–D8) at 1920×1080 through `Physical` (`build/stills-g0`, `wrela tool lookbook --
+build/stills-g0 --package examples/vale --stills --size 1920x1080 12 13 14 15 16 17 18 19`, Linux
+pop-os, Radeon "Lucienne") against the development set's references (each checked against its
+SHA-256), seed 5, eight agent judges in fresh contexts given E8's brief; all eight passed both
+calibration pairs. The development panel ranks Part G's work and stops it; the sealed twelve are
+tallied once per item for the record only.
+
+```sh
+wrela tool studio/compare --write ws=. --read refs=$WRELA_REFERENCE_DIR -- build/g0-panel --a build/stills-g0 --set development --seed 5 --refs-dir $WRELA_REFERENCE_DIR
+wrela tool studio/compare --write ws=. -- build/g0-panel --tally
+```
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.75, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 1.50, 1.00, 2.00, 1.00, 0.00 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.88, 0.00 | 3.00, 2.38, 2.38, 2.88, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 2.25, 3.00, 2.00, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.88, 3.00, 2.88, 2.25, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.62, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.00, 3.00 |
+
+Overall: 0.0 % prefer the still or rate the pair equal (fails: 50 %); per pair: lost worse than
+6 to 2; majority: 0 of 8 (fails: 4). **Fails.**
+
+**(1) The five rows' losses** (the reference's mean less the still's, summed over the eight
+pairs, from `tally.json`): **artifacts 16.00, colour 9.38, light 9.00, value 8.38, depth 8.25.**
+
+**(2) Each pair's worst row** and what its judges said (every sentence is in
+`build/g0-panel/tally.md` and `judges/`):
+
+- D5 the shore at evening, artifacts: "scattered untextured cylinder logs lying at implausible
+  angles, plain pale trunk columns and a smeared ground texture".
+- D4 the stream, artifacts: "stair-stepped pixelated shadow maps", "faceted low-poly trunks",
+  "logs that pass through each other"; "no stream is visible".
+- D6 the vale from the west, light: "the land gets no rim or key from the low sun".
+- D3 another old oak, artifacts: "an obviously tiling rectangular bark texture magnified to
+  blockiness and a trunk whose flat lower edge hovers over the ground".
+- D1 the forest floor, artifacts: "a branch passing straight through the trunk", "a repeated dash
+  pattern" of bark, "a translucent glassy streak" over the ground.
+- D8 the wood under cloud, artifacts: "identical cylinder logs lying at implausible criss-cross
+  angles, pinched radial log ends, tiled bark".
+- D7 the creature in the wood, artifacts: "an untextured mannequin-like creature on stick legs",
+  "a detached shadow blob", "a repeating leaf-litter tile".
+- D2 the canopy against the sun, value: "a two-value silhouette against the sky with few middle
+  tones on the forms".
+
+**(3) The order** (`studio/compare`'s `menu`: an item is named when a pair of its classes has a
+judge's sentence on its rows holding its words; its loss is its rows' over the pairs naming it;
+the map's words and classes are §G0's, tested by `every_menu_row_names_a_development_shot` and
+`synthetic_losses_select_their_items`):
+
+1. **G7, colour and value** (4.75 lost, 2 pairs): D1's "its trunks and background are washed out"
+   (value) and D3's "the range" (value: the photo's tone-mapping compresses it; the render's
+   trunk "a repeated light-dark stripe with no form shading").
+2. **G3, leaves against the light** (2.25, 1 pair): D2's "acid-green translucent leaves against
+   near-black" against the render's "dull" blue-grey silhouettes (colour, light; five sentences).
+3. **G5, virtual geometry from fields** (2.00, 1 pair): D6's "blobby" (artifacts: "blobby clouds"
+   with "a grid of identical cylinder logs"; two sentences).
+4. **G1, bounce light** (1.62, 2 pairs): D8's "falls off naturally under the canopy" against the
+   render's light with "almost no occlusion or contact shadow" and D1's "the foliage shading is
+   flat" (light; ten sentences).
+
+**(4) Not named:** G2 (reflections), G4 (shadows at Epic) and G6 (the fall): not needed unless a
+later panel names them. (D4's "pixelated shadow maps" is G4's sentence, but the map gives G4 the
+classes 6 and 1, and D4 is class 4: by the rule it isn't named.)
+
+What decides the panel is mostly off the menu: artifacts lead by 6.6, and its sentences name
+the bark's tiling and stretch, the fallen logs' placement and interpenetration, faceted trunks,
+the creature untextured, and the stream not drawn. Once the four named items are built, if the
+panel still fails, those are the items the implementer names next (§G0's rule).
+
+### 2026-11-01: G7, colour and value, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G7, the ranking's first item. Linux pop-os (Radeon "Lucienne"), not
+the M4 Air: measures and judgements, no timing.
+
+**What changed.** The physical look's curve (`styles::physical`, `light::tone_contrast`): the
+exposed light's contrast about 0.1 (a little under middle grey, where most of a metered band
+falls, so the median holds) raised to 1.2, and a shoulder that rolls the lights off toward white
+from 3.0 (`light::soft_shoulder`: the ACES fit, which clips from 7.24, continued as an exponential
+of the same value and slope). The meter's ceiling (`Metering::hi`) 4 → 8: the evening and dusk
+views sat at the old ceiling (D5's and D6's medians rose 61 → 78 and 24 → 39 when it lifted;
+a ceiling of 16 moved nothing further). Searched on the eight development shots alone (each
+variant's stills, `build/g7-*`): the meter's ceiling alone; the contrast 1.2 about 0.18 (medians
+fell, D6 7 % near black); about 0.1; with the meter's band from the lower quartile (everything
+brighter, D6 unmoved); 1.12; then 1.2 about 0.1 with the ceiling at 8. Not fitted to any
+reference's pixels.
+
+**Wrela's luma quartiles** (sRGB, 0–255; p5 / q1 / median / q3 / p95) and **clipped share** (a
+channel at 255, or every channel at 0; under 1 % on every shot, the gate), before → after:
+
+| Shot | Before | After | Clipped before → after |
+|---|---|---|---|
+| D1 | 39 / 61 / 80 / 116 / 184 | 31 / 55 / 76 / 119 / 197 | 0.00 → 0.00 % |
+| D2 | 63 / 89 / 114 / 154 / 204 | 58 / 88 / 119 / 165 / 218 | 0.03 → 0.04 % |
+| D3 | 30 / 59 / 86 / 112 / 174 | 23 / 54 / 84 / 116 / 187 | 0.00 → 0.00 % |
+| D4 | 25 / 42 / 74 / 124 / 197 | 18 / 35 / 71 / 130 / 210 | 0.00 → 0.00 % |
+| D5 | 32 / 46 / 61 / 83 / 122 | 38 / 57 / 78 / 109 / 157 | 0.00 → 0.00 % |
+| D6 | 3 / 15 / 24 / 43 / 174 | 4 / 24 / 39 / 71 / 217 | 0.39 → 0.49 % |
+| D7 | 18 / 61 / 97 / 127 / 174 | 11 / 55 / 98 / 134 / 187 | 0.00 → 0.00 % |
+| D8 | 39 / 70 / 88 / 114 / 161 | 32 / 65 / 87 / 118 / 173 | 0.00 → 0.00 % |
+
+The twelve, measured only (never tuned): every one under 1 % clipped after (the most, shot 7,
+dusk from the crest, 0.72 → 0.92 %, all of it black under the crest's foreground); their medians
+within 4 of before but shot 2 (52 → 72) and 7 (25 → 35), their p95 up 7 to 42. Every quartile
+of the twenty is in `build/stills-g7-before`, `build/stills-g7`, `build/stills-g0` and
+`build/g7-final` (the measure: Rec. 709 weights on the encoded values).
+
+**The sky's colour.** The air is Hillaire's (2020) precomputed atmosphere with Earth's Rayleigh
+and ozone values (docs/citations.md); D2's clear sky away from the sun reads xy (0.253, 0.261),
+CCT 17,000 K before and 20,800 K after (McCamy's cubic), inside the 3,758–34,573 K that
+Hernández-Andrés et al. measured over 2,600 daylight spectra in Granada (JOSA A 18(6), 2001).
+
+**Tests** (`engine`): `the_contrast_keeps_lumas_order_and_rolls_off_its_lights` (every doubling
+from a thousandth to 8 brighter and under 1; `tone`'s at a contrast of 1 below the knee; the
+shoulder continuous); `metering_keeps_the_scenes_order` (eight scenes two stops apart and a dusk
+past the old ceiling keep their order at their metered exposures).
+
+**G-look on all twelve** (blind, two judges of six shots each, before against after, 960×540,
+sides from a seed, each calibrated against an eight-pass blur, which both rejected): after
+preferred 2 (shot 2, the old oak: "brighter ridges give a slightly fuller value range"; shot 7:
+"lifts the shadows and haze so the forest forms and the recession into the distance actually
+read"), before preferred 2 (shot 1: "b's visible sun disk anchors the backlight"; shot 6: "A's
+orange cast overwhelms the foreground"), equal 8 ("indistinguishable by eye").
+
+**The development panel** (`build/g7-panel`, eight judges, all calibrated):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.25, 3.00, 2.50, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 1.25, 1.00, 1.88, 1.00, 0.00 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.25, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.88, 0.00 | 3.00, 2.62, 2.62, 2.88, 2.38 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.88, 1.00 | 2.12, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.38, 2.00, 1.38, 2.00, 1.00 | 2.12, 3.00, 2.25, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.88, 2.00, 1.00 | 2.75, 3.00, 3.00, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.88, 2.00, 2.00, 1.00, 1.50 | 3.00, 3.00, 3.00, 2.12, 3.00 |
+
+0 of 8 pairs. Losses **artifacts 15.88, colour 9.62, value 9.00, depth 8.88, light 7.75**
+(G0's 16.00, 9.38, 8.38, 8.25, 9.00: their sum 51.13 against 51.01, flat; light down 1.25,
+value and depth up 0.6 each). Re-ranked: **G4 (4.00, D5 and D1), G3 (2.12, D2), G1 (0.88, D8 and
+D1)**; G7 and G5 no longer named. The next item is G4.
+
+**The sealed panel, for the record** (`build/g7-sealed`, once for G7, not used to choose):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.88, 2.00, 1.12, 0.12 | 2.00, 3.00, 2.50, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.25, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.88, 2.00, 1.88, 0.75 | 2.00, 3.00, 2.25, 2.00, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.12, 1.12, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.38, 1.88, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.88, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.62, 1.00, 1.38, 1.38, 0.00 | 2.12, 3.00, 2.75, 2.62, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 1.25, 0.75 | 2.38, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.12, 2.12, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 0.88, 1.00, 1.00, 0.88, 0.00 | 2.38, 2.88, 2.12, 2.12, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.75, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.25, 2.00, 1.00 | 3.00, 3.00, 2.25, 2.62, 3.00 |
+
+0 of 12. Losses artifacts 29.50, colour 15.88, depth 14.38, value 12.25, light 10.38 (F10's
+28.75, 16.75, 15.50, 13.88, 10.88: their sum 82.39 against 85.76).
+
+### 2026-11-01: G4, shadows at Epic, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G4, named by the development panel's re-ranking after G7 (D5's and
+D1's "hard" shadows). Linux pop-os (Radeon "Lucienne"), **not the M4 Air**.
+
+**What changed.** PCSS on at `Epic` (`tier::Tiered`); the moving map softened as the static maps
+are (its blocker search and 12-tap filter over its own 79 m of depth, `Shadows::moving_depth`).
+Not taken: the near cascade at 4096 (the vale's GPU peak is already 579.5 MiB against 512, §E1.3:
+memory doesn't allow); the blocker search at half size (below).
+
+**Cost** (`wrela profile examples/vale --serial --size 1920x1080 --warmup 600 --frames 300`, the
+vale's first view, GPU medians, before → after): vegetation 11.669 → 12.110, terrain 4.837 →
+5.008, water 4.459 → 4.652, fog 1.363 → 1.493 ms; the rest within 0.01. **+0.94 ms** on this
+iGPU, whose vale frame runs 61 ms against the M4's 17.8 (§E1.3): about 0.28 ms there if it scales
+with the frame. The plan's 0.8 ms is the M4's: **re-measure there**, and build the half-size
+blocker search only if it's over.
+
+**Tests** (`engine/tests/shadow-pcss`): the post's foot sharper than its tip
+(`a_higher_blocker_casts_a_wider_penumbra`: 13 texels under a blocker 16 m up, 2 under one 1 m up);
+`the_cascades_seam_shows_no_line` (along a soft edge from the near map alone out past the far
+map's, a quarter texel apart: 0.07/255 between neighbours at most, against 1/255).
+
+**G-look on shots 1 and 6** (blind, one judge, before against after, calibrated against an
+eight-pass blur, which it rejected): shot 1, after ("a's shadows are smooth and grounded while
+b's carry a dithered, hatch-like noise in the penumbrae"); shot 6, before ("b's over-softened
+shadows flatten the scene": the evening sun is low, its blockers far, the penumbra wide).
+
+**The development panel** (`build/g4-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.88, 3.00, 2.50, 2.88, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.00, 0.12 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.12, 0.88, 0.00 | 3.00, 2.50, 2.50, 2.88, 2.50 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.25, 2.00, 1.38, 2.00, 1.00 | 2.12, 3.00, 2.38, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.88, 2.50, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.88, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.12, 3.00 |
+
+0 of 8. Losses **artifacts 15.75, colour 9.38, depth 8.50, value 8.38, light 7.75** (G7's 15.88,
+9.62, 8.88, 9.00, 7.75: their sum 49.76 against 51.13). Re-ranked: G7 (2.88, D3), G3 (2.00, D2), G4
+(2.00), G1 (1.25, D8 and D1); G7 and G4 are built. The next item is G3.
+
+**The sealed panel, for the record** (`build/g4-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.25, 0.12 | 2.00, 3.00, 2.88, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.88, 0.38 | 2.00, 3.00, 2.38, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.12, 1.88, 0.25 | 2.00, 3.00, 2.50, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.25, 1.25, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.00, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.25, 2.00, 1.00, 2.00, 0.88 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.50, 1.38, 0.00 | 2.12, 3.00, 3.00, 2.62, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.62, 1.12, 0.50 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.50, 0.00 | 2.38, 3.00, 2.25, 2.75, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.62, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.38, 2.00, 1.00 | 3.00, 3.00, 2.25, 3.00, 3.00 |
+
+0 of 12. Losses artifacts 30.88, depth 16.25, colour 15.75, value 12.62, light 10.62 (their sum
+86.12 against G7's 82.39: the panels' judges differ by a few points run to run).
+
+### 2026-11-01: G3, leaves against the light, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G3 (D2: "acid-green translucent leaves against near-black"). Linux
+pop-os (Radeon "Lucienne"), not the M4 Air.
+
+**What changed.** A leaf's light through it, `sun × transmission × (1 − thickness) × vein`
+(`impostor::leaf_through`): its thickness from how deep in its crown its card is (`THICK` 1.5 m,
+**proposed**), the sun's transmission past the canopy its shadow lookup's (the shading passes
+don't carry the probes' density volume the plan names; the leaf's own shadow, cast by every
+crown's cards, is that transmission: a deviation), its veins the atlas's tissue (eight pinnate
+pairs beside a narrower midrib, `plant::secondary_veins`), its lobe toward the sun 0.35 → 1.3
+(**proposed**). The core's 0.4 floor is gone.
+
+**Tests** (`engine`): `a_lone_leaf_glows_against_the_sun_and_the_crowns_core_doesnt` (a lone card
+at least 0.3 of the sun, the core under 0.05); `a_leafs_veins_cover_a_tenth_of_it` (**14.3 %** of
+the blades over eight seeds' sprigs; the first widths gave 27.6 %).
+
+**G-look on shot 2** (blind, one judge, calibrated): **after** ("a keeps the canopy dark where it
+faces away from the sun, so the backlit leaves glow against it, while b's uniformly bright,
+saturated foliage flattens the forms"); light 2 → 3, colour 1 → 2, value 2 → 3. Shot 1 equal.
+
+**The development panel** (`build/g3-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.00, 0.00 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 0.75, 0.00 | 2.88, 2.25, 2.50, 2.88, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 3.00, 2.75, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.00, 1.62 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 16.00, colour 9.12, depth 9.12, value 7.62, light 7.50 (their sum 49.36
+against G4's 49.76); D2's own rows barely moved (still 2.00, 2.00, 2.00, 1.00, 1.62). Re-ranked:
+G7 (5.75, 3 pairs), G3 (2.00), G4 (2.00), **G5 (2.00, D6)**, **G1 (1.50, D8 and D1)**; the named
+items not built are G5 and G1, in that order.
+
+**The sealed panel, for the record** (`build/g3-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.62, 2.00, 1.25, 0.12 | 2.25, 3.00, 2.62, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.12, 2.00, 0.75 | 2.12, 3.00, 2.25, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.25, 1.25, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.25, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.75, 1.50, 0.00 | 2.25, 3.00, 2.88, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.50, 1.25, 0.88 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.12, 2.12, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.12, 1.00, 1.12, 0.75, 0.00 | 2.12, 2.75, 2.00, 2.38, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.88, 1.00, 1.12, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.12, 2.88, 3.00 |
+
+0 of 12. Losses artifacts 29.38, colour 15.75, depth 14.62, value 11.62, light 10.50 (their sum
+81.87, the least of the four sealed panels so far).
+
+### 2026-11-01: G5.0, the prototype rung (virtual geometry from fields): does not proceed
+
+docs/plan-world-class-3.md §G5, named after G3 by D6's "blobby" (two sentences: "blobby clouds"
+and "blobby foliage"). The rung asks one crag through the pruned extraction at four distances
+against today's levels: the stills, the pixel difference, the cost, the bytes. **Deviation:** the
+rung is worked from the realizer's own numbers, not rendered (no harness draws a crag's beds both
+ways; the cluster path that could, `engine::virtual`, left the game at B11c). A crag's beds today
+are extracted once at their cell (the near level's largest, 4 cm, `blockouts::far_band`'s; a
+crag's beds have no far level), so on the floor's 1080p and 0.82 rad (`PER_METRE` 1242.4) a cell
+covers:
+
+| Eye at | Today's cell | The pruned extraction's | Its vertices, against today's |
+|---|---|---|---|
+| 10 m | 4.97 px | 0.5 px | 99× |
+| 25 m | 1.99 px | 0.5 px | 16× |
+| 50 m | 0.99 px | 0.5 px | 4× |
+| 100 m | 0.50 px | 0.5 px | 1× |
+
+So the pruned extraction would add detail only within about 50 m (a crag's cell is a pixel or
+under past it), at up to a hundred times today's vertices at 10 m; the cluster spike (S1a,
+`examples/clusters`) is its cost's record. **The rung decides G5.1 does not proceed:** the pair
+that named it named the clouds and the foliage, outside G5's scope (the rocks, the crags and the
+built things); no judge's sentence on any pair names a rock's or a crag's facets. If a later
+panel names them, G5.1 is the item.
+
+### 2026-11-01: G1, bounce light from a surface cache, toolchain 0.18.0
+
+docs/plan-world-class-3.md §G1 (D8's "falls off naturally under the canopy" against the render's
+"no bounce"; D1's "flat"). Linux pop-os (Radeon "Lucienne"), **not the M4 Air**.
+
+**What changed.** The solids' distance volume holds each voxel's nearest solid's colour
+(`distance::Distance::albedo`, Rgba8, the volume's 192×64×192: **9.4 MB**), cooked with its
+distance; a trunk's colour is its kind's bark (`plant::bark_of`, carried on the trees' solid
+occluders into the landscape's capsules). A probe's ray that meets a solid lights its colour
+(`distance::albedo_at`) where every solid was one grey. **Deviation:** the second texture, each
+voxel's direct sun (`lit`, 18.9 MB), isn't built: the trace already lights a hit through the
+cascades as it bakes, so it would cache what's read anyway.
+
+**Tests** (`engine/tests/surface-cache`): a red wall's sunlit side bounces red (hue 1.6° against
+the wall's 1.1°: within 10°); its shaded side brings back no sun (0); the open ground's bounce is
+what it was (the same ray with an empty cache: equal to the bit), and the wall's was grey before.
+
+**Cost and memory:** the steady frame's labels as G4's within 0.05 ms (the cook runs at load and
+as the eye moves, a slab a frame; its walk's labels are the M4's to measure); the volume's share
++9.4 MB.
+
+**G-look on shots 1, 3 and 12** (blind, one judge, calibrated): equal, equal, equal ("the two
+sides looked the same"). The stills move most on D5 (46 % of pixels by over 4/255) and D3 (16 %).
+
+**The development panel** (`build/g1-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 2.75, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.25, 2.00, 1.00, 0.38 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.50, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.38, 1.00, 0.00 | 3.00, 2.50, 2.75, 2.88, 2.50 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.38, 2.00, 1.00 | 2.25, 3.00, 2.12, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.88, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 1.00, 2.00 | 3.00, 3.00, 3.00, 2.38, 3.00 |
+
+0 of 8. Losses **artifacts 15.12, colour 9.25, depth 8.88, value 8.25, light 7.62** (their sum
+49.12, against G3's 49.36 and G0's 51.01). Named: G7, G3 and G1, all built.
+
+**The sealed panel, for the record** (`build/g1-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.88, 1.38, 2.00, 1.12, 0.12 | 2.12, 3.00, 2.62, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 0.88 | 2.00, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.12, 1.88, 2.00, 2.00, 0.50 | 2.12, 3.00, 2.50, 2.50, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.00, 1.12, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.00, 1.88, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.75, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.75, 1.50, 0.00 | 2.00, 3.00, 2.88, 2.38, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.38, 1.25, 0.50 | 2.75, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.25, 2.00, 2.12, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.00, 0.75, 0.00 | 2.50, 2.62, 2.00, 2.62, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 0.62, 1.00, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.38, 2.00, 1.00 | 3.00, 3.00, 2.00, 2.75, 3.00 |
+
+0 of 12. Losses artifacts 30.00, colour 16.00, depth 14.62, value 11.62, light 11.38 (sum 83.62).
+
+### Part G closes: Blocked
+
+Every item the development panel's ranking named is built, each with both panels (G7, G4, G3,
+G1; G5 decided by its rung), and the development panel still fails G-reference's three rules:
+
+| After | Pairs won or equal | Share of 64 | artifacts | colour | value | depth | light | Sum |
+|---|---|---|---|---|---|---|---|---|
+| G0 (Part F) | 0 of 8 | 0 % | 16.00 | 9.38 | 8.38 | 8.25 | 9.00 | 51.01 |
+| G7 | 0 of 8 | 0 % | 15.88 | 9.62 | 9.00 | 8.88 | 7.75 | 51.13 |
+| G4 | 0 of 8 | 0 % | 15.75 | 9.38 | 8.38 | 8.50 | 7.75 | 49.76 |
+| G3 | 0 of 8 | 0 % | 16.00 | 9.12 | 7.62 | 9.12 | 7.50 | 49.36 |
+| G1 | 0 of 8 | 0 % | 15.12 | 9.25 | 8.25 | 8.88 | 7.62 | 49.12 |
+
+The sealed panel, once an item: F10 85.76; G7 82.39; G4 86.12; G3 81.87; G1 83.62 (0 of 12 each).
+
+**Blocked**, the gate's number (pairs won or equal) at 0 of 8 through four built items, the losses
+down 1.9 of 51 (4 %). What the judges fault is off the menu. After G1, the development judges'
+artifact sentences name (counted over their eight files): **the bark's tiling and magnified
+texels, 44 sentences in 7 of the 8 pairs** ("an obviously tiling rectangular bark texture
+magnified to blockiness", "a repeated dash pattern"); **the fallen logs interpenetrating, floating
+or lying at implausible angles, 24 in 5** ("logs passing through each other and the ground",
+"identical cylinder logs lying at implausible criss-cross angles"); the leaves' cards, 18 in 5;
+the logs untextured, 12 in 4; the ground smeared or barren, 11 in 4; faceted trunks, 10 in 2 (a near limb is 14-sided, `plant::SIDES`: where the facets come from
+isn't traced). **The next items, in that order:**
+bark that doesn't repeat or magnify (its tile's 2 m round and 40 m along at 256 × 4096 texels,
+1 cm a texel, two to three tiles round an old oak: a detail layer under magnification and the
+tiles offset round the limb), the logs laid on the ground by their own contact (no
+interpenetration with trunks, logs or the slope), and the leaves' cards. Not built in this run.
+
+
+### 2026-11-01: Part G again, after the council (round 1)
+
+The council (codex: gpt-6.1-sol and gpt-6-astra, high effort, read-only) found the Blocked note
+above premature and four gaps under it; each is answered below, and the part goes on. The note
+above stands as what was recorded then.
+
+1. **G1's colour wasn't reached in the game** (both models). A trunk is a solid occluder of the
+   probes' density volume as well as the distance volume's, and a ray met its density (20, over
+   2 m voxels) and stopped as foliage before it read the distance volume's surface. Fixed
+   (3e57a8ac): the occluders cook the leaves' density and the solids' apart (red both, as before;
+   green the leaves'; blue the solids'), and with the distance volume a ray reads the leaves'
+   alone and meets a solid by the volume, in the leaves as in the open. The surface-cache test
+   gives its wall a density occluder as the game's trunks have: on the old trace its bounce reads
+   (0, 0, 0); now (1.76, 0.17, 0.12), hue 1.6° against the wall's 1.1°, by the open sky and by
+   the probes alike.
+2. **G-look's "before" preferences** (G7's shots 2 and 7, G4's shot 6) and its measures (2) and
+   (3) unsupplied. Rounds 2 and 3 below; the measures in "G-look's measures".
+3. **G5.0 not rendered.** It is now ("G5.0, rendered").
+4. **The menu's next items not built.** G8 (the logs), G9 (the bark), below.
+
+**G-look, rounds 2 and 3** (each item judged alone: the head against the head without it, the
+shots as in the rounds before; a fresh blind judge each, calibrated on an eight-pass blur, which
+each rejected; keys in `build/g-private`). Levers between rounds:
+
+- G7: the contrast on luminance (each channel scaled as its luminance, so a colour's saturation
+  is kept: a power on each channel turned dawn in the hollow's haze orange) and eased back above
+  1.0 so 8 comes out as it was (the sky beside the sun went 249 → 253 of 255 and its disc was
+  lost in it); then the meter's ceiling 8 → 6 → the engine's 4 (dusk from the crest washed out).
+- G4: PCSS's filter radius half the penumbra (it took the sun's angular diameter as its radius:
+  twice Fernando's penumbra), then its widest 24 → 6 texels (a low sun's far blockers spread the
+  crown's dapples to a smear).
+
+Shots are numbered from 1 here, as the plan numbers them (G7's round-1 record above names them by
+the lookbook's index, from 0: its "shot 1" is the canopy against the sun, shot 2 here).
+
+| Item | Round 2 (`build/glook-*r2*`) | Round 3 (`build/glook-*r3`) |
+|---|---|---|
+| G7 | shots 1–6 equal; 7 (dawn) **after**; 8 (dusk) **before** ("washes out the sky"); 10 **before** (a "stray bright speck": none is in the pixels, 0 over 220 against under 160 in the other); 9, 11, 12 equal | 8 **before** at a ceiling of 6 ("a slightly washed-out lilac grade"); 10 equal: the ceiling went back to 4 |
+| G4 | shot 1 **after** ("b's shadows are noisy and cross-hatched"); 6 **before** ("over-softened shadows flatten the ground") | 6 **after** ("soft, plausible dapples beat stair-stepped edges") |
+| G1 | shots 1 and 12 equal; 3 **before** ("a cold blue cast" on the trunk's shade: its blue less red rose 0.7 → 6.5 of 255 in the mid-tones) | 3 equal ("practically identical") |
+
+**The final round** (the head with G8 and G9 in, 3a8cf0e9's ceiling back at 4, against the head
+without each item; a fresh judge each, calibrated, which rejected the blur each time;
+`build/glook-*f*`): **G7**, all twelve shots equal (two judges of six); **G4**, shot 1 after
+("crisp, directional branch shadows and clean ground beat … noisy, dithered shadowing") and shot 6
+after ("the blocky, stepped patches on the ground give away the shadow technique" without it);
+**G1**, shots 1, 3 and 12 equal. No item's judge prefers "before" on a named shot.
+
+### 2026-11-01: G5.0, rendered: the rung decides
+
+docs/plan-world-class-3.md §G5.0, measured (`engine/tests/crag-rung`, 6fc3ecff; Linux pop-os,
+Radeon "Lucienne", not the M4 Air). **The worked numbers in "G5.0, the prototype rung" above are
+wrong:** a crag's beds aren't extracted at 4 cm but at 45 cm (`stone::realize_bed`, the floor's
+crags; the 4 cm was another built thing's near level). The rung: one piece of a crag's bed (a
+`stone::Bed`, 1.2 × 0.8 × 1.0 m, its joints, bedding and three chips) realized as
+`stone::realize_bed` realizes it today (its tolerance 50 cm, its cell 45 cm, its colours a cell of
+25 cm; the xhigh review's correction of the first run, which took 45 cm for all three) and at the
+floor's pixel footprint for an eye 10, 25, 50 and 100 m off (1080p at 0.82 rad:
+8 mm, 2 cm, 4 cm, 8 cm), each mesh's surface measured against the bed's own field
+(`realize::measured_error`), and each distance's two stills (1920 × 1080, `engine::plain`'s
+light) differenced:
+
+| Cell | Vertices | Bytes | Its surface's error | That error in pixels at 10 / 25 / 50 / 100 m | Its realize, host to readback |
+|---|---|---|---|---|---|
+| 45 cm (today) | 24 | 1,680 | 287.2 mm | **35.90** / 14.36 / 7.18 / 3.59 | 13.6 ms (its pipelines' first) |
+| 8 mm (10 m's pixel) | 102,230 | 7,359,720 | 0.60 mm | 0.07 at 10 m | 9.8 ms (50.1 under the GPU queue's load) |
+| 2 cm (25 m's) | 16,339 | 1,176,384 | 6.52 mm | 0.33 at 25 m | 2.3 ms |
+| 4 cm (50 m's) | 4,071 | 293,088 | 2.59 mm | 0.06 at 50 m | 1.8 ms |
+| 8 cm (100 m's) | 1,025 | 73,776 | 12.17 mm | 0.15 at 100 m | 0.9 ms |
+
+| Eye at | The piece's pixels | Today's still against the footprint's: over 8/255 | Mean difference |
+|---|---|---|---|
+| 10 m | 27,394 | 67.7 % | 33.4 / 255 |
+| 25 m | 4,393 | 66.3 % | 32.2 / 255 |
+| 50 m | 1,088 | 65.5 % | 31.1 / 255 |
+| 100 m | 275 | 65.5 % | 29.9 / 255 |
+
+Today's cell rounds a bed's edges by a cell and smooths its colour over it: its surface strays
+36 pixels from its field at 10 m and still 3.6 at 100 m, and two thirds of its pixels differ from
+the footprint's at every distance. The footprint's extraction holds within a third of a pixel
+everywhere, at 4,300 times the vertices at 10 m (7.4 MB for this piece alone) and 43 times at
+100 m. **The rung's verdict:** G5.1's extraction would change how the floor's crags read at
+every distance, and its cost needs the per-frame block tree the plan describes (a piece's 10 m
+extraction is 9.8 ms here: cached blocks, refined where the surface may be). **It isn't built in
+Part G:** the vale draws no realized crag (its band's face is the terrain's), and the
+development panel's pair that named G5 named its clouds and foliage ("blobby"), outside G5's
+scope; no judge's sentence names a crag. It is the floor's item when the floor's panel names its
+rock (Part H, D40).
+
+
+### 2026-11-01: G8 and G9, the logs and the bark (named from the panel's sentences)
+
+Every item the menu named was built and the development panel still failed, so (§G0) the next
+items are named from its judges' sentences, counted over G1's eight files (each judge's notes on
+a pair, by theme): **the logs** in all five pairs that show them (40 judges' notes; through each
+other and the trunks, floating or criss-crossed: 26 in 5 pairs), and **the bark** tiled or
+repeated (32 in 6 pairs) and magnified (23 in 4). Built together and judged by one panel round
+(a deviation: §G0 runs both panels after each item; the two touch different things). Linux
+pop-os (Radeon "Lucienne"), not the M4 Air.
+
+**G8, the logs laid by their own contact** (`content/trees/kinds.wrela` `laid`, `clearance`):
+a fallen tree is laid the way it fell unless its trunk meets a standing trunk or a log laid
+before it; then turned the least of six 15° steps either way that clears them all, by 5 cm
+past their radii (`CLEAR`); else the clearest way, broken short 15 % at a time until it's clear;
+none if it isn't clear at a quarter of its length. The test
+(`fallen_logs_lie_clear_of_trunks_and_of_each_other`: 36 oaks 5 m apart, every third fallen
+toward the stand's middle or along a row, the hand's kinds and the grown): every log's axis
+clear of every trunk and log, two thirds of them kept; without `laid` it fails (a log meets a
+trunk by 0.33 m).
+
+**G9, the bark** (`engine/plant.wrela`): an oak's fissures long and tapering to points
+(`fissures`' `long` 1.4–2.6 rows and `taper`, the tip no narrower than 9 mm a side), 2.8 to 4.4
+cm across at their middles, so the faces between are narrow interlaced ridges: over the tile the
+faces cover 33 % (48 % before) and a furrow runs 0.83 m on average (0.32 m before:
+`an_oaks_bark_is_long_furrows_between_narrow_ridges`); each plant's bark begins at its own place
+on the tile (`bark_offset`, from its foot's quarter-metre cell: `no_two_trunks_show_the_same_bark`);
+magnified, the pattern's edges steepened toward a pixel and a half (`sharpened`, Green 2007:
+`magnified_bark_keeps_its_edges`, 12 pixels → 3).
+
+**The development panel** (`build/g89-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.88, 3.00, 2.38, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.62, 2.00, 1.25, 0.88 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.50, 1.12, 1.25, 0.38 | 3.00, 2.62, 2.50, 3.00, 2.38 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 1.88, 2.00, 2.00, 1.00 | 2.38, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.38, 2.00, 1.50, 2.00, 1.00 | 2.12, 3.00, 2.50, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 2.75, 3.00, 2.62, 2.88, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 1.00, 1.88 | 3.00, 3.00, 3.00, 2.50, 3.00 |
+
+0 of 8. Losses **artifacts 14.25, depth 8.88, colour 8.62, value 8.62, light 7.62** (their sum
+47.99, against G1's 49.12 and G0's 51.01). The judges' notes by theme against G1's: the bark
+tiled or repeated 32 → 20 (D1 8 → 1), the logs through or floating 26 → 17, star-shaped log and
+root ends 17 → 7; but "magnified, stair-stepped bark texels" (31, in D5's and D3's near
+wood: the sharpening steepens a bilinear read whose texel grid then shows as stairs), D3's
+trunk meeting the ground "in a hard line, no root flare", and the leaves as cut-out cards (16 in
+7 pairs). The menu re-ranked: G7 (6.62), G3, G4, G5 (2.00 each), G1 (1.12), all built.
+
+**The sealed panel, for the record** (`build/g89-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.00, 2.00, 1.12, 0.25 | 2.00, 3.00, 3.00, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.25, 2.00, 2.00, 2.00, 1.00 | 2.00, 3.00, 2.25, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.50, 2.00, 2.00, 0.38 | 2.00, 3.00, 2.38, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.25, 1.00, 1.00, 0.00, 0.00 | 2.00, 3.00, 2.38, 1.88, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 1.88, 2.00, 1.75, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.25, 1.75, 0.00 | 2.00, 3.00, 3.00, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.88, 1.75, 1.62, 1.00, 0.88 | 2.75, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.50, 0.88, 1.00, 1.00, 0.38 | 2.12, 2.62, 2.00, 2.25, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 0.75, 1.00, 0.00, 0.12 | 3.00, 3.00, 3.00, 2.38, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.12, 2.00, 2.12, 2.00, 1.00 | 3.00, 3.00, 2.00, 2.50, 3.00 |
+
+0 of 12. Losses artifacts 29.00, colour 17.75, depth 13.38, value 13.25, light 8.75 (sum 82.13,
+against G1's 83.62).
+
+
+### 2026-11-01: G10, the wood's form (named from the panel's sentences), and the levers on G8 and G9
+
+From G8 and G9's panel (above): the logs' and roots' ends (7 notes), trunks meeting the ground
+"in a hard line, no root flare" (10 in 4 pairs), faceted trunks (10 in 3) and the magnified
+bark's stairs (31). Built (Linux pop-os, Radeon "Lucienne", not the M4 Air):
+
+- **A log's broken end is its end grain** (`plant::limb_end`, `plant::end_grain`): pale wood
+  ringed out from its heart, darker as it rots, its point facing out along the limb, where the
+  bark's round pattern was drawn in to a star (`a_logs_end_is_ringed_wood_not_its_bark_drawn_in`).
+- **The root plate is a disc** of torn ground behind the roots, 1.9 trunk radii across and 0.7
+  thick (`kinds::log`'s `PLATE_WIDE`, `PLATE_THICK`, **proposed**): twelve blunt roots alone read
+  as a star.
+- **A limb 20 sides round** (`plant::SIDES`, 14 before: a near old trunk's facets were a hand
+  wide).
+- **A trunk's foot flared into five buttresses** (`plant::root_flare`): **taken out** after the
+  panel (below).
+- G9's lever: magnified, the bark tile read through a cubic B-spline before its edges are
+  sharpened (`plant::smooth_read`, Sigg and Hadwiger 2005: the bilinear read's texel grid showed
+  as stairs down the sharpened edges).
+- G8's lever (G-look's final round on G8: a log turned across a crest or over another hung in
+  the air): a way is taken only if half the log's length lies within half its radius of the
+  ground (`supported`; `a_log_across_a_crest_is_laid_where_the_ground_holds_it`: straight over
+  a ridge it doesn't; laid, it does).
+
+**The development panel** (`build/g10-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.12, 0.88 | 2.00, 3.00, 2.88, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 0.75, 1.00, 0.00, 0.00 | 3.00, 2.62, 2.75, 2.88, 2.75 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.25, 3.00, 3.00, 2.12, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.50, 2.00, 1.00 | 2.12, 3.00, 2.00, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.75, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.75, 2.00, 2.00, 1.00, 1.50 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 15.38, colour 9.75, depth 9.75, value 8.12, light 7.62: **sum 50.62,
+up from G8 and G9's 47.99.** D3 fell (its depth 1.25 → 0.00, colour 1.50 → 0.75): its camera
+stands at its oak's foot, which the flare brought into the frame ("a wall of bark", "the camera
+pressed against the trunk"); D8's judges read the buttresses' kink as "a faceted, polygonal
+trunk base" (faceted: 10 → 19 notes; root flare and base: 10 → 19). The notes on log and root
+ends fell 7 → 4, the bark tiled or repeated 20 → 14. **The flare is taken out** (e83a1a6e), and the
+magnified bark sharpened twice at most, not four times (its near furrows read as "extruded
+plastic", "a stencilled pattern"): 295ef776.
+
+**The sealed panel, for the record** (`build/g10-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 1.50, 1.00, 2.00, 1.00, 0.00 | 2.25, 3.00, 2.75, 2.12, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.12, 3.00, 2.12, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.62, 2.00, 2.00, 1.00 | 2.00, 3.00, 2.12, 2.12, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.50, 1.12, 1.00, 0.12, 0.12 | 2.00, 3.00, 2.25, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 1.88, 1.00, 1.75, 1.88, 0.00 | 2.12, 3.00, 2.88, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.62, 1.25, 1.00 | 2.88, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.25, 1.00, 1.00, 0.50, 0.50 | 2.12, 2.62, 2.00, 2.38, 2.88 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 0.75, 1.12, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.50, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.12, 2.00, 1.00 | 3.00, 3.00, 2.25, 2.50, 3.00 |
+
+0 of 12. Losses artifacts 28.25, colour 17.12, depth 14.12, value 12.00, light 10.62 (sum 82.11,
+against 82.13).
+
+
+**The development panel again, the flare out** (`build/g10b-panel`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.75, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.38, 2.00, 1.00, 0.38 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 1.00, 0.25 | 3.00, 2.62, 2.75, 3.00, 2.62 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.25, 3.00, 3.00, 2.00, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.50, 2.00, 1.62, 2.00, 1.00 | 2.12, 3.00, 2.25, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 2.62, 2.75, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.88, 1.62, 1.88, 1.00, 1.12 | 3.00, 3.00, 3.00, 2.25, 3.00 |
+
+0 of 8. Losses artifacts 15.88, colour 9.62, depth 9.00, value 8.12, light 7.38: **sum 50.00**,
+still over G8 and G9's 47.99. The judges' notes: log and root ends 7 → 5, but now
+"mushroom-" and "bone-ended" logs and "capped" posts (the end grain lit pale on the break's
+cone, and the root plate's disc); faceted 19 → 6; the trunks' feet 19 → 12. The sealed panel
+(`build/g10b-sealed`): artifacts 29.00, colour 17.12, depth 14.38, value 12.50, light 9.88 (sum
+82.88).
+
+**G10's parts didn't move the panel** (the flare, the ends, the root plate, the twenty sides,
+two rounds: 50.62, then 50.00 against 47.99): all four are taken out (e83a1a6e, 14bafc3a,
+d5a8abe3, 22156280). The levers on G8 (its support) and G9 (its cubic read, its sharpening
+halved) stay, judged with G8 and G9 in "Part G closes, again".
+
+
+### 2026-11-01: G8 and G9, their G-look's last rounds
+
+Each judged alone (the head against the head without it, on all twelve shots, two fresh judges
+of six; calibrated on an eight-pass blur, which each rejected; numbered from 1 as the plan does).
+Levers between rounds: G8, a way taken only if half the log lies on the ground (`supported`), and
+the prefilter by the log's chord (council round 2); G9, the cubic read, the sharpening halved, a
+log's bark in plates and a beech's bands unsharpened.
+
+| Round | G8: after / before / equal | G9: after / before / equal |
+|---|---|---|
+| at G8 and G9's panel (`build/glook-g8f*`, `glook-g9f*`) | 4 / 4 / 4 | 4 / 3 / 5 |
+| with G8's support, G9's cubic read (`glook-g8z*`, `glook-g9z*`) | 5 / 4 / 3 | 5 / 3 / 4 |
+| the last head (`glook-g8l*`, `glook-g9l*`) | **7 / 2 / 3** | **6 / 1 / 5** |
+
+**Blocked, G-look on G8:** "before" on shot 11 (the fallen beech: "more of the scene with less of
+the blocky, plate-textured log bark", a log laid into the view) and shot 8 (dusk from the crest:
+"a plate-textured log with a smaller log stuck into it"). Next levers: the logs laid in the
+history, so a laid log's place is every reader's (the footing, the interest, the growth), and
+its clearance tested against every fallen limb (the root plate's too), not the trunk alone.
+**Blocked, G-look on G9:** "before" on shot 1 (the forest floor's near trunk: "stacked tiled
+blocks" against "real furrowed bark"). Next lever: that kind's own pattern (a beech's smooth bark
+under the oak's furrows' tile).
+
+### 2026-11-01: Part G's cost, the vale's frame
+
+`wrela profile examples/vale --serial --size 1920x1080 --warmup 600 --frames 300`, main (808e39ba)
+and the part's last head, on Linux pop-os (Radeon "Lucienne", RADV), **not the M4 Air**: GPU
+medians, ms.
+
+| Label | main | head | change |
+|---|---|---|---|
+| vegetation | 11.686 | 12.639 | +0.953 |
+| vegetation prepass | 5.707 | 5.528 | −0.179 |
+| terrain | 4.837 | 3.769 | −1.068 |
+| water | 4.460 | 3.488 | −0.972 |
+| temporal | 3.615 | 3.613 | 0 |
+| look | 2.692 | 2.831 | +0.139 |
+| bloom | 2.139 | 2.165 | +0.026 |
+| fog | 1.366 | 1.497 | +0.131 |
+| the rest | 3.001 | 3.028 | +0.027 |
+| **every frame's, summed** | **39.503** | **38.558** | **−0.945** |
+| probes again (a re-bake, every other frame) | 3.33 | 4.46 | +1.12 |
+
+The vegetation's rise is PCSS on the leaves and limbs and the bark's cubic read; terrain's and
+water's fall is PCSS's widest filter, 24 → 6 texels (its taps stay near each other: G4's own cost
+was +0.94 ms at 24). The re-bake's rise is the trace reading the distance volume each step in
+the leaves too (G1's fix), an average of +0.56 ms over the frames: on the whole, about 0.4 ms
+under main. A frame's call 60.38 → 60.58 ms (this iGPU's vale is far over budget: the M4's numbers
+are §C6's). **The M4's to re-measure**, with the walk's cook and its memory (below).
+
+
+### 2026-11-01: Part G's walk and memory, and G-look's measures
+
+Linux pop-os (Radeon "Lucienne", RADV), Chrome headless through `std::tool::browser`, **not the M4
+Air**. `wrela tool bench -- --scene vale-walk --no-docs --sustained 120`, main (808e39ba) and the
+part's head:
+
+| Build | GPU span p50 / p95 / p99 ms | Interval p50 / p99 ms | Playable ms | GPU peak MiB | Sustained 120 s, minute 1 / last |
+|---|---|---|---|---|---|
+| main | 55.34 / 184.54 / 211.94 | 57.38 / 216.36 | 10,575 | 579.8 | 55.54 / 55.54 |
+| head | 57.12 / 186.60 / 213.36 | 58.95 / 216.49 | 11,601 | 606.4 | 57.01 / 57.01 |
+
+On the walk the frame is 1.8 ms (3 %) dearer, where the first view's steady passes were 0.95 ms
+cheaper ("Part G's cost"): the walk moves, so the probes re-bake and the cook run. The GPU peak
+rises 26.6 MiB, 9.4 of it G1's colour volume (`distance` 14.3 → 23.7 MB in the frame's shares);
+the rest is the second static cascade's map held at the peak's frame in this run and not in
+main's (`shadows` 33.6 or 50.3 MB from frame to frame in both). Both builds are over G-memory's
+512 MiB here (main's 579.8 too): the M4's numbers decide it (§C4: 508.2 there).
+
+**G-look's measures, (2) and (3)** (`wrela tool lookbook -- … --fast --psnr --runs 3`, the twelve,
+each the median of three; PSNR and SSIM against the build's own frozen-time reference; flicker
+×10⁻⁶; `build/fast-main` in a worktree of 808e39ba, `build/fast-head`), main → head:
+
+| Shot | PSNR dB | SSIM | flicker | pop | trail px |
+|---|---|---|---|---|---|
+| 1 the forest floor | 23.58 → 22.91 | 0.774 → 0.784 | 18.65 → 26.95 | 0.0182 → 0.0165 | 3 → 3 |
+| 2 the canopy against the sun | 25.41 → 23.93 | 0.863 → 0.850 | 4.23 → 8.74 | 0.0385 → 0.0415 | 3 → 4 |
+| 3 an old oak | 36.08 → 31.97 | 0.971 → 0.928 | 1.98 → 2.46 | 0.0559 → 0.0782 | 3 → 3 |
+| 4 the fall | 23.59 → 24.86 | 0.723 → 0.849 | 10.61 → 13.87 | 0.0056 → 0.0061 | 5 → 5 |
+| 5 the band's face | 25.59 → 27.46 | 0.802 → 0.851 | 0.84 → 0.88 | 0.0078 → 0.0092 | 3 → 2 |
+| 6 the meadow at evening | 25.46 → 24.47 | 0.800 → 0.787 | 44.40 → 54.51 | 0.0056 → 0.0061 | 2 → 2 |
+| 7 dawn in the hollow | 28.84 → 27.23 | 0.874 → 0.857 | 6.02 → 11.01 | 0.0038 → 0.0046 | 3 → 3 |
+| 8 dusk from the crest | 36.21 → 36.00 | 0.932 → 0.927 | 9.24 → 9.15 | 0.0020 → 0.0024 | 2 → 2 |
+| 9 grazing at the edge | 25.11 → 23.82 | 0.839 → 0.830 | 26.25 → 38.16 | 0.0046 → 0.0054 | 3 → 3 |
+| 10 down the trail | 26.37 → 25.77 | 0.812 → 0.807 | 34.10 → 41.55 | 0.0059 → 0.0066 | 3 → 3 |
+| 11 the fallen beech | 23.08 → 23.95 | 0.767 → 0.832 | 29.44 → 26.03 | 0.0200 → 0.0249 | 4 → 4 |
+| 12 the wood under cloud | 28.10 → 27.03 | 0.798 → 0.782 | 82.93 → 111.42 | 0.0076 → 0.0089 | 3 → 3 |
+
+Flicker rose on ten of twelve, PSNR fell on eight. Each item's share, by one run of six shots each
+with the head less that item (`build/fast-a-*`; flicker ×10⁻⁶, the head's / without the item):
+
+| Shot | the head | less G7 | less G4 | less G3 | less G1 | less G8 | less G9 |
+|---|---|---|---|---|---|---|---|
+| 1 the forest floor | 26.94 | 21.90 | 26.59 | 25.13 | 26.96 | 24.79 | 27.01 |
+| 2 the canopy against the sun | 8.74 | 7.67 | 8.30 | **5.15** | 8.74 | 8.71 | 8.54 |
+| 3 an old oak | 2.47 | 2.09 | 2.49 | 2.47 | **1.94** | 2.88 | 2.55 |
+| 7 dawn in the hollow | 11.02 | 8.63 | 11.04 | 10.94 | 11.09 | **7.46** | 11.09 |
+| 9 grazing at the edge | 38.19 | 29.92 | **31.39** | 37.63 | 38.34 | 40.97 | 38.33 |
+| 12 the wood under cloud | 111.87 | **80.72** | 111.42 | 111.87 | 110.92 | 113.61 | 111.50 |
+
+And PSNR: G7 took about a dB off every shot; G1 1.7 dB and G9 1.8 dB off the old oak's (shot 3,
+with pop 0.0679 → 0.0782 by G9). The decisions, by §0.5 (a measure that rises needs the calibrated
+judge's "after" on every named shot, and the rise named deliberate):
+
+- **G7, out of the vale** (7137ab89): its contrast raised flicker 14–39 % on every shot measured
+  (its mid-tones' slope squares the frame-to-frame noise) and its judges rated it equal on all
+  twelve. The engine keeps the knob (`Look::contrast`, 1 by default).
+- **G4, named deliberate:** PCSS's soft edges flicker more under the jitter on shot 9 (+22 %);
+  its judges preferred it on both its shots.
+- **G3, named deliberate on shot 2** (the canopy against the sun, +70 %: the leaves' light
+  through them glows and shimmers, the point of G3, its judge "after"); **Blocked** on shot 1 (+7
+  %, judged equal). Next lever: the light through a leaf in the temporal history's clamp.
+- **G1, Blocked on shot 3** (the old oak: flicker +27 %, PSNR −1.7 dB, judged equal): the shade
+  now reads the solids' coloured hits, whose normals come from the distance volume's 25 cm voxels.
+  Next lever: a solid hit's normal from its capsule, not the volume's gradient.
+- **G8 and G9**, already Blocked on their G-look; their measures with them (G8 shot 7's +48 %
+  is its logs laid into that view; G9's on shot 3).
+
+**The merged head's measures** (G7 out of the vale; `build/fast-final`, the twelve, three runs each),
+main → merged:
+
+| Shot | PSNR dB | flicker ×10⁻⁶ | pop | trail px |
+|---|---|---|---|---|
+| 1 the forest floor | 23.58 → 24.08 | 18.65 → 21.92 | 0.0182 → 0.0149 | 3 → 3 |
+| 2 the canopy against the sun | 25.41 → 24.96 | 4.23 → 7.70 | 0.0385 → 0.0387 | 3 → 4 |
+| 3 an old oak | 36.08 → 32.72 | 1.98 → 2.08 | 0.0559 → 0.0693 | 3 → 3 |
+| 4 the fall | 23.59 → 26.13 | 10.61 → 10.87 | 0.0056 → 0.0053 | 5 → 5 |
+| 5 the band's face | 25.59 → 28.79 | 0.84 → 0.72 | 0.0078 → 0.0081 | 3 → 2 |
+| 6 the meadow at evening | 25.46 → 25.65 | 44.40 → 44.16 | 0.0056 → 0.0055 | 2 → 2 |
+| 7 dawn in the hollow | 28.84 → 28.19 | 6.02 → 8.63 | 0.0038 → 0.0042 | 3 → 3 |
+| 8 dusk from the crest | 36.21 → 35.82 | 9.24 → 9.54 | 0.0020 → 0.0025 | 2 → 2 |
+| 9 grazing at the edge | 25.11 → 25.06 | 26.25 → 29.93 | 0.0046 → 0.0048 | 3 → 3 |
+| 10 down the trail | 26.37 → 26.89 | 34.10 → 35.15 | 0.0059 → 0.0059 | 3 → 3 |
+| 11 the fallen beech | 23.08 → 25.20 | 29.44 → 20.31 | 0.0200 → 0.0222 | 4 → 5 |
+| 12 the wood under cloud | 28.10 → 28.22 | 82.93 → 87.29 | 0.0076 → 0.0076 | 3 → 3 |
+
+PSNR up on seven shots, down on five (most on shot 3, G1's and G9's: Blocked); flicker up on
+eight, by 2 to 82 %: shot 2's is G3's leaves (named deliberate), shot 9's G4's PCSS (named
+deliberate), shot 7's G8's logs (Blocked with G8), shot 1's G3's and G8's (Blocked), shots 4, 8,
+10 and 12 within 3 to 5 % (a run's own spread is up to 13 %, docs/lookdev.md).
+
+### Part G closes, again: Blocked
+
+**The development panel at the last head** (`build/glast-panel`; the twelve's stills
+`build/v-head9`, the eight's `build/v-head10d`, at 54ff586e's code):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | D5-the-shore-at-evening | vale-d5-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.50, 3.00, 2.25, 3.00, 3.00 |
+| 2 | D4-the-stream | vale-d4-water | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.00, 0.88 | 2.00, 3.00, 3.00, 3.00, 3.00 |
+| 3 | D6-the-vale-from-the-west | vale-d6-vista | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 2.00 |
+| 4 | D3-another-old-oak | vale-d3-trunk | 0 / 0 / 8 | -1 | 1.00, 1.00, 1.25, 1.25, 0.00 | 3.00, 2.62, 2.88, 2.88, 2.50 |
+| 5 | D1-the-forest-floor | vale-d1-floor | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.12, 3.00, 3.00, 2.12, 3.00 |
+| 6 | D8-the-wood-under-cloud | vale-d8-overcast | 0 / 0 / 8 | -1 | 1.12, 2.00, 1.38, 2.00, 1.00 | 2.25, 3.00, 2.25, 3.00, 3.00 |
+| 7 | D7-the-creature-in-the-wood | vale-d7-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.62, 3.00, 3.00, 2.62, 3.00 |
+| 8 | D2-the-canopy-against-the-sun | vale-d2-canopy | 0 / 0 / 8 | -1 | 1.75, 2.00, 1.88, 1.00, 1.50 | 3.00, 3.00, 3.00, 2.50, 3.00 |
+
+0 of 8. Losses artifacts 15.12, colour 9.50, value 8.88, depth 8.88, light 7.50 (sum **49.88**).
+
+**The sealed panel, for the record** (`build/glast-sealed`):
+
+| Pair | Shot | Reference | Still / equal / reference | Median | Still's means (light, colour, value, depth, artifacts) | Reference's means |
+|---|---|---|---|---|---|---|
+| 1 | the-fallen-beech | vale-e11-deadwood | 0 / 0 / 8 | -1 | 2.00, 1.12, 2.00, 1.12, 0.00 | 2.00, 3.00, 2.75, 2.00, 3.00 |
+| 2 | the-meadow-at-evening | vale-e06-meadow | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 2.00, 2.88, 2.00, 3.00, 3.00 |
+| 3 | the-forest-floor | vale-e01-floor | 0 / 0 / 8 | -1 | 2.00, 1.50, 2.00, 2.00, 0.62 | 2.00, 3.00, 2.38, 2.00, 3.00 |
+| 4 | the-bands-face | vale-e05-rock | 0 / 0 / 8 | -1 | 1.50, 1.00, 1.00, 0.12, 0.00 | 2.00, 3.00, 2.50, 2.00, 3.00 |
+| 5 | the-wood-under-cloud | vale-e12-overcast | 0 / 0 / 8 | -1 | 1.00, 2.00, 1.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 2.88, 3.00 |
+| 6 | dusk-from-the-crest | vale-e08-vista | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.62, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 7 | down-the-trail | vale-e10-walking | 0 / 0 / 8 | -1 | 2.00, 1.00, 1.62, 1.50, 0.00 | 2.00, 3.00, 3.00, 2.25, 3.00 |
+| 8 | grazing-at-the-edge | vale-e09-deer | 0 / 0 / 8 | -1 | 2.00, 2.00, 1.75, 1.00, 0.88 | 2.88, 3.00, 3.00, 3.00, 3.00 |
+| 9 | dawn-in-the-hollow | vale-e07-mist | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 3.00, 3.00, 3.00 |
+| 10 | the-fall | vale-e04-water | 0 / 0 / 8 | -1 | 1.50, 1.00, 1.00, 0.50, 0.12 | 2.25, 2.88, 2.00, 2.38, 3.00 |
+| 11 | an-old-oak | vale-e03-trunk | 0 / 0 / 8 | -1 | 1.00, 0.62, 1.00, 0.00, 0.00 | 3.00, 3.00, 3.00, 2.62, 3.00 |
+| 12 | the-canopy-against-the-sun | vale-e02-canopy | 0 / 0 / 8 | -1 | 2.00, 2.00, 2.00, 2.00, 1.00 | 3.00, 3.00, 2.38, 3.00, 3.00 |
+
+0 of 12. Losses artifacts 29.38, colour 17.50, depth 14.88, value 13.00, light 9.12 (sum 83.88).
+
+The development panel through the part (0 of 8 every time; sums of the five rows' losses):
+
+| After | Sum | artifacts | colour | value | depth | light |
+|---|---|---|---|---|---|---|
+| G0 (Part F's head) | 51.01 | 16.00 | 9.38 | 8.38 | 8.25 | 9.00 |
+| G7 | 51.13 | 15.88 | 9.62 | 9.00 | 8.88 | 7.75 |
+| G4 | 49.76 | 15.75 | 9.38 | 8.38 | 8.50 | 7.75 |
+| G3 | 49.36 | 16.00 | 9.12 | 7.62 | 9.12 | 7.50 |
+| G1 | 49.12 | 15.12 | 9.25 | 8.25 | 8.88 | 7.62 |
+| G8 and G9 | **47.99** | 14.25 | 8.62 | 8.62 | 8.88 | 7.62 |
+| G10 | 50.62 | 15.38 | 9.75 | 8.12 | 9.75 | 7.62 |
+| G10, the flare out | 50.00 | 15.88 | 9.62 | 8.12 | 9.00 | 7.38 |
+| G10 out, G8 and G9's levers | 48.75 | 15.12 | 9.38 | 8.50 | 8.50 | 7.25 |
+| the last head (the council's and the review's fixes) | 49.88 | 15.12 | 9.50 | 8.88 | 8.88 | 7.50 |
+
+The sealed panel, once a round: F10 85.76; G7 82.39; G4 86.12; G3 81.87; G1 83.62; G8 and G9 82.13;
+G10 82.11 and 82.88; the last head 83.88 (0 of 12 each).
+
+After these panels, G7's contrast left the vale for its measures (7137ab89: "G-look's measures",
+above). Its judges had rated the vale with it and without it equal on all twelve shots, and the
+development panel didn't move with it (51.01 → 51.13), so these tallies stand for the merged head
+within the panels' own spread; they weren't run again.
+
+**Blocked**, the gate's number (pairs won or equal) at 0 of 8 through eight items and every lever
+on them. The losses fell to 47.99 with G8 and G9 and have held within 48.75 to 50.62 since: three
+rounds of the same items differ by up to 1.9, the panels' judges' own spread run to run (G0 to G7,
+no change of shot: 51.01 to 51.13). After G8 and G9, G10's four parts (the logs' end grain, the
+root plate's disc, the trunks' root flare, limbs twenty-sided) didn't move it and were taken out:
+the "several items stopped moving it" §G0 closes on. What the last panel's judges still fault
+(their notes on the eight, by theme; `build/glast-panel/judges`): the logs (44 notes in 6 pairs; 19
+in 5 through each other or floating), magnified or stretched textures (26 in 6: near bark and the
+logs'), bark tiling (25 in 5), the stream (18 in 3: D4's shot shows none of it, and the shots are
+fixed), the leaves as cards (14 in 5), a translucent plane (13 in 5: the stream's sheet), trunks
+and logs faceted (10 in 2). The next levers, in
+that order: the logs laid in the history (so every reader sees the laid log) and drawn fewer and
+less alike; bark a field near the eye, not a magnified tile (the ridges' own `ridges_at` where a
+pixel is under a texel); the leaves' cards with relief and thickness; a trunk's foot that meets
+the ground without moving the shots' near trunks into the camera.
+
 ## Public Unreal benchmarks (context only)
 
 None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three

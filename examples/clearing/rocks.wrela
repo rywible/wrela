@@ -75,7 +75,7 @@ pub fn occluders() -> Vec<Occluder> {
                 a: vec3(st.x, y, st.y),
                 radius: st.z * 1.05,
                 b: vec3(st.x, y, st.y),
-                solid: 1.0,
+                solid: engine::distance::SOLID,
             },
         )
     }

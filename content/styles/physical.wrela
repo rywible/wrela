@@ -3,7 +3,7 @@
 // it, a slot at a time (README.md).
 
 use engine::marks
-use engine::light::{Light, Lit, tone}
+use engine::light::{Light, Lit, contrasted, tone, tone_contrast}
 use engine::paint::{Develop, Exposure, graded, hdr_tone}
 use engine::style::Style
 use engine::substance::Substance
@@ -70,12 +70,15 @@ impl Style for Physical {
         if d.hdr != 0 && !clay {
             // Linear light with headroom (`hdr_tone`): no SDR curve, no display grade.
             let uv = px / d.out - vec2(0.5)
-            return vec4(
-                hdr_tone(paint * e.value, look.peak) * (1.0 - look.vignette * dot(uv, uv)),
-                1.0,
-            )
+            let x = paint * e.value
+            let lit = if look.contrast == 1.0 { x } else { contrasted(x, look.contrast) }
+            return vec4(hdr_tone(lit, look.peak) * (1.0 - look.vignette * dot(uv, uv)), 1.0)
         }
-        var c = graded(tone(paint, e.value), lut, s, look.grade)
+        // The look's contrast (`paint::Look::contrast`; at 1, the tone curve as it was).
+        let toned = if look.contrast == 1.0 { tone(paint, e.value) } else {
+            tone_contrast(paint, exposure: e.value, contrast: look.contrast)
+        }
+        var c = graded(toned, lut, s, look.grade)
         if clay {
             return vec4(c, 1.0)
         }

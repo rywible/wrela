@@ -107,8 +107,9 @@ pub trait Scene {
 
     /// What's solid round the eye (render space, the render origin `origin` taken off), for the
     /// distance volume (`distance`): `None` if it hasn't changed since version `since` (its
-    /// `Solids::version`), which the volume was last cooked from. None by default: the volume
-    /// holds the ground alone.
+    /// `Solids::version`), which the volume was last cooked from: every solid occluder among them
+    /// (the probes' rays meet solids by the volume where it holds some). None by default: the
+    /// volume holds the ground alone, and the rays meet the solid occluders by their density.
     fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
         None
     }
@@ -1278,18 +1279,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             quality,
             debug: Debug { off: Flags::none() },
             look: Look {},
-            metering: Metering {
-                base: 0.62,
-                // The band the meter reads is 2.1 times the scene's geometric mean the Last
-                // Green's look was picked at (0.136), as the start's view and its walk measure.
-                reference: 0.286,
-                strength: 0.85,
-                lo: 0.15,
-                hi: 4.0,
-                rate: 0.05,
-                flash: 1.25,
-                fresh: 0,
-            },
+            metering: paint::METERING,
             cam: first,
             light,
             air,
@@ -2450,9 +2440,10 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             return
         }
         let key = self.probe_key()
-        // The rays step through the solids' distance volume once it's cooked.
+        // The rays step through the solids' distance volume once it's cooked, if it holds the
+        // scene's solids.
         let trace = Trace {
-            solids: self.distance.read(),
+            solids: self.distance.for_rays(),
             ..scene.trace(self.light, self.probes.using.grid),
         }
         let texels = self.clipmap.texels()
@@ -2499,6 +2490,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                     self.sky.dome,
                     self.linear,
                     self.distance.volume,
+                    self.distance.albedo,
                 )
             }
             return
@@ -2570,6 +2562,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                             self.sky.dome,
                             self.linear,
                             self.distance.volume,
+                            self.distance.albedo,
                         )
                     }
                 } else {
@@ -2606,6 +2599,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                         self.sky.dome,
                         self.linear,
                         self.distance.volume,
+                        self.distance.albedo,
                         steer: if STEERED { steer } else { Steer {} },
                     )
                 }

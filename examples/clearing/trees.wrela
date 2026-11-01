@@ -214,7 +214,7 @@ pub fn occluders(
             let c = plant.clumps[i]
             let w = at.place(c.centre)
             out.push(
-                engine::probes::Occluder { a: w, radius: c.radius * at.scale, b: w, solid: 0.0 },
+                engine::probes::Occluder { a: w, radius: c.radius * at.scale, b: w, solid: 0 },
             )
         }
         for i in 0..plant.limbs.len() {
@@ -228,7 +228,7 @@ pub fn occluders(
                         // pale rings on logs, where the bark's sky light changed).
                         radius: 0.6 * min(l.radii[k], l.radii[k + 1]) * at.scale,
                         b: at.place(l.points[k + 1]),
-                        solid: 1.0,
+                        solid: engine::distance::SOLID,
                     },
                 )
             }

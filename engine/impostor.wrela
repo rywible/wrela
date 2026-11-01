@@ -74,8 +74,26 @@ pub fn leaf_sky_normal(n: vec3) -> vec3 {
     normalize(vec3(n.x, max(abs(n.y), 0.25), n.z))
 }
 
-/// How much brighter a leaf's light through it is with the sun right behind it (**proposed**).
-const AGAINST_SUN: f32 = 0.35
+/// How much brighter a leaf's light through it is with the sun right behind it (**proposed**: so a
+/// lone leaf against the sun shows a third of the sun's light, as the development set's backlit
+/// beech leaves read, vale-d2-canopy; §G3).
+const AGAINST_SUN: f32 = 1.3
+
+/// How deep in its crown (m) a leaf's light through it is gone: past it, the light that reaches a
+/// leaf has passed through others (**proposed**: a crown's outer leaves glow against the sun,
+/// its core's don't, §G3).
+pub const THICK: f32 = 1.5
+
+/// The light through a leaf `depth` metres inside its crown, per unit of the sun reaching it,
+/// seen along `v` with the sun toward `l`: its leaves' `through` (veins and all, as the atlas
+/// tissue gives it), less its thickness (`THICK`), more toward the sun (`AGAINST_SUN`) and as
+/// `light::matte` spreads it (`light::backlit`). `sun × transmission × (1 − thickness) × vein`,
+/// the sun's own transmission the shadows' (`leaf_light`).
+pub fn leaf_through(through: vec3, depth: f32, v: vec3, l: vec3) -> vec3 {
+    let thickness = smoothstep(0.0, THICK, depth)
+    let against = AGAINST_SUN * pow(max(dot(-v, l), 0.0), 8.0)
+    through * (1.0 - thickness) * (1.0 + against)
+}
 
 /// A leaf's light at `at`, the same for its cards (`vegetation::leaf_shade`), its impostor and
 /// its volume: its normal `n`, the sky light for a surface facing `sky_n` (its crown's normal,
@@ -112,16 +130,15 @@ pub fn leaf_light<Q: Switches, Y: Style>(
         shadow_at: at + lt.light.sun * SELF_SHADE,
     )
     let inside = 0.25 + 0.75 * ao
-    // Leaves against the sun (B13): a narrow lobe toward it, over the light through them that
-    // `light::matte` gives, where the eye looks toward the sun through the crown's edge (its
-    // outer leaves, the least shaded: `ao`); the sun's shadow keeps it to the lit leaves.
-    let against = AGAINST_SUN * pow(max(dot(-v, lt.light.sun), 0.0), 8.0) * ao
+    // Leaves against the sun (B13, §G3): the light through them (`leaf_through`), its narrow
+    // lobe toward the sun where the eye looks through the crown's edge, gone in its core; the
+    // sun's shadow (`sun`: what's passed the canopy toward the sun) keeps it to the lit leaves.
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
         sky: sky * inside,
-        through: through * (0.4 + 0.6 * ao) * (1.0 + against),
+        through: leaf_through(through, depth, v, lt.light.sun),
     }
     let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
     // Its gloss on its side that faces the eye (`facing`), summed by the look
@@ -1241,4 +1258,18 @@ fn two_sided_leaf_clusters_keep_sky_light_on_their_undersides() {
             "opposite sides of a leaf cluster disagree on sky access",
         )
     }
+}
+
+/// A lone leaf card against the sun lets through a third of its light and more (its leaves'
+/// default tissue, the eye looking into the sun past it); a card at its crown's core, under a
+/// twentieth (§G3).
+@test
+fn a_lone_leaf_glows_against_the_sun_and_the_crowns_core_doesnt() {
+    let through = plant::Leaves {}.through
+    let l = normalize(vec3(0.3, 0.5, 1.0))
+    let v = -l
+    let shown = |depth: f32| dot(leaf_through(through, depth, v, l), light::LUMA) *
+        light::backlit(v, l)
+    assert(shown(0.0) >= 0.3, f"a lone card lets through {shown(0.0)} of the sun")
+    assert(shown(THICK * 2.0) < 0.05, f"the crown's core lets through {shown(THICK * 2.0)}")
 }

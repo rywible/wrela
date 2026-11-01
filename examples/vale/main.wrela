@@ -44,7 +44,10 @@ pub const TIER: Tier = Tier::Epic
 /// The vale's switches: its tier's (`engine::tier::Tiered`), each else at its approved value.
 pub struct ValeTier {}
 
-impl Switches for ValeTier {}
+impl Switches for ValeTier {
+    /// The soft shadows (§G4: the panel named the shadows' hard, aliased edges), at `Epic`.
+    const PCSS: bool = true
+}
 
 impl Tiers for ValeTier {
     const TIER: Tier = TIER

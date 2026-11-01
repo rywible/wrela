@@ -1,0 +1,247 @@
+// Plan three's §G5.0, the prototype rung (virtual geometry from fields): one piece of a crag's bed
+// (a prism its joints and bedding planes cut, as `stone::Bed`: flat faces, hard edges, 1.2 by 0.8
+// by 1.0 m) realized at today's cell (`stone::realize_bed`'s 45 cm: the floor's crags) and at the
+// pixel's footprint for an eye 10, 25, 50 and 100 m off (the floor's 1080p at 0.82 rad: 8 mm a
+// pixel at 10 m), one at a time. Each mesh's vertices, its bytes, how far its surface strays from
+// the bed's own field (`realize::measured_error`), and the host's time from its dispatch to its
+// readback, read back and printed; then each distance's still (1920 × 1080, plain light:
+// `engine::plain`) of today's mesh and of that distance's own, read back and differenced: the
+// rung's record (docs/bench.md "G5.0").
+
+use engine::character::{ByChannels, colours}
+use engine::look::Mesh as Tolerance
+use engine::plain::{LIGHTS, coloured, skin_coloured, unlit_shadow, view}
+use engine::realize::{Mesh, SkinVertex, Tally, Quad, measured_error, realize_rigid}
+use engine::stone::{Bed, bed}
+use std::gpu::{
+    ComparisonSampler, Cull, GpuBuffer, Rgba8, TextureRead, Unorm8x4, begin_pass_with_depth, buffer,
+    comparison_sampler, depth_texture, draw, read, read_texture, texture, write,
+}
+use std::io::{Pending, print}
+use std::mem::size_of
+use std::time::now
+
+/// The piece: its four joints a little off square and off upright, its bedding over and under it,
+/// and three chips off its edges.
+const PIECE = Bed {
+    planes: [
+        vec4(0.99, 0.0, 0.14, 0.6),
+        vec4(-0.99, 0.05, -0.12, 0.6),
+        vec4(0.1, 0.0, 0.995, 0.4),
+        vec4(-0.08, 0.04, -0.996, 0.4),
+        vec4(0.05, 0.998, 0.03, 0.5),
+        vec4(0.7, 0.5, 0.51, 0.72),
+        vec4(-0.6, 0.6, 0.53, 0.68),
+        vec4(0.55, -0.45, -0.7, 0.62),
+        vec4(-0.04, -0.999, 0.02, 0.5),
+    ],
+    lo: vec3(-0.65, -0.55, -0.45),
+    hi: vec3(0.65, 0.55, 0.45),
+    seed: 7,
+}
+
+/// The floor's pixel at 1 m (m): 2 tan(0.41) / 1080.
+pub const PIXEL: f32 = 0.0008
+/// The eye's distances, and the cells: today's first, then each distance's footprint.
+pub const DISTANCES = [10.0, 25.0, 50.0, 100.0]
+pub const TODAY: f32 = 0.45
+
+pub struct Rung: Copy {
+    pub cell: f32,
+    pub tally: Option<Tally>,
+    pub error_um: Option<u32>,
+    pub seconds: f64,
+}
+
+pub struct State {
+    tallies: Vec<Pending<Tally>>,
+    errors: Vec<Pending<u32>>,
+    started: f64,
+    pub rungs: Vec<Rung>,
+    meshes: Vec<Mesh>,
+    colours: Vec<GpuBuffer<Unorm8x4>>,
+    /// The stills asked for (each distance's: today's, then its own), and what came back.
+    stills: Vec<TextureRead>,
+    pub shown: Vec<Vec<u8>>,
+}
+
+/// The stills' size.
+pub const WIDTH: u32 = 1920
+pub const HEIGHT: u32 = 1080
+
+/// Mesh `k` (`State::meshes`) seen from `d` m off, in plain light, its still read back.
+fn still(s: mut State, k: u32, d: f32) -> TextureRead {
+    var target = texture::<Rgba8>(width: WIDTH, height: HEIGHT)
+    var depth = depth_texture(WIDTH, HEIGHT)
+    var palettes: GpuBuffer<mat4> = buffer(1)
+    write(
+        mut palettes,
+        0,
+        [
+            mat4(
+                vec4(1.0, 0.0, 0.0, 0.0),
+                vec4(0.0, 1.0, 0.0, 0.0),
+                vec4(0.0, 0.0, 1.0, 0.0),
+                vec4(0.0, 0.0, 0.0, 1.0),
+            ),
+        ],
+    )
+    let eye = normalize(vec3(0.6, 0.35, 0.75)) * d
+    let v = view(
+        eye,
+        vec3(0.0),
+        fovy: 0.82,
+        aspect: f32(WIDTH) / f32(HEIGHT),
+        sun: vec3(0.4, 1.0, 0.3),
+        extent: 2.0,
+    )
+    let (shadow, cmp) = (unlit_shadow(), comparison_sampler())
+    let pass = begin_pass_with_depth(mut target, mut depth, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        pass,
+        skin_coloured.bind(
+            verts: s.meshes[k].verts.items(),
+            colours: s.colours[k].items(),
+            palettes: palettes.items(),
+            first: 0,
+            view: v,
+        ),
+        coloured.bind(
+            view: v,
+            lights: LIGHTS,
+            shadow: shadow,
+            shadow_sampler: cmp,
+        ),
+        indices: s.meshes[k].quads.items(),
+        indirect: s.meshes[k].draw.items(),
+        cull: Cull::Back,
+    )
+    pass.end()
+    read_texture(target.level(0))
+}
+
+fn cells() -> Vec<f32> {
+    var out = Vec::from([TODAY])
+    for d in DISTANCES {
+        out.push(d * PIXEL)
+    }
+    out
+}
+
+fn start(s: mut State) {
+    let cell = cells()[s.rungs.len()]
+    let b = bed(PIECE)
+    s.started = now()
+    // Today's as `stone::realize_bed` realizes a bed (its tolerance 50 cm, its colours a cell of
+    // 25 cm); the footprint's at its cell each.
+    let (tolerance, colour) = if s.rungs.is_empty() { (0.5, 0.25) } else { (cell, cell) }
+    let mesh = realize_rigid(b, Tolerance { tolerance, largest: cell })
+    s.tallies.push(read(mesh.tally.items()))
+    s.errors.push(measured_error(mesh, b.field()))
+    s.colours.push(colours(mesh, b.field(), ByChannels {}, colour))
+    s.meshes.push(take mesh)
+    s.rungs.push(Rung { cell, tally: None, error_um: None, seconds: 0.0 })
+}
+
+pub fn init() -> State {
+    var s = State {
+        tallies: Vec::new(),
+        errors: Vec::new(),
+        started: 0.0,
+        rungs: Vec::new(),
+        meshes: Vec::new(),
+        colours: Vec::new(),
+        stills: Vec::new(),
+        shown: Vec::new(),
+    }
+    start(mut s)
+    s
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let i = s.rungs.len() - 1
+    if s.rungs[i].tally.is_none() {
+        if let Some(Ok(v)) = s.tallies[i].poll() {
+            s.rungs[i].tally = Some(v[0])
+            s.rungs[i].seconds = now() - s.started
+        }
+    }
+    if s.rungs[i].error_um.is_none() {
+        if let Some(Ok(v)) = s.errors[i].poll() {
+            s.rungs[i].error_um = Some(v[0])
+        }
+    }
+    let done = s.rungs[i].tally.is_some() && s.rungs[i].error_um.is_some()
+    if done && s.rungs.len() < cells().len() {
+        start(mut s)
+    } else if done && s.stills.is_empty() {
+        // Each distance's two stills: today's mesh's (0), then the distance's own (k + 1).
+        for k in 0..DISTANCES.len() {
+            let d = DISTANCES[k]
+            let today = still(mut s, 0, d)
+            s.stills.push(take today)
+            let own = still(mut s, k + 1, d)
+            s.stills.push(take own)
+        }
+    }
+    while s.shown.len() < s.stills.len() {
+        let n = s.shown.len()
+        let Some(Ok(bytes)) = s.stills[n].poll() else { break }
+        s.shown.push(take bytes)
+    }
+}
+
+/// The rung's numbers, each cell's: its vertices, bytes (its vertices and quads as realized), its
+/// surface's error (mm), and that error in pixels at each distance; every cell's mesh came back
+/// whole (no room ran out).
+@test(frames: 400, gpu: true)
+fn the_rung_measures_today_and_the_footprint(s: State) {
+    assert(s.rungs.len() == 5, f"{s.rungs.len()} of 5 cells came back")
+    let per_vertex = size_of::<SkinVertex>()
+    let per_quad = size_of::<Quad>()
+    for k in 0..s.rungs.len() {
+        let r = s.rungs[k]
+        let Some(t) = r.tally else { panic(f"cell {r.cell}: no tally") }
+        let Some(e) = r.error_um else { panic(f"cell {r.cell}: no error") }
+        let bytes = u64(t.vertices) * u64(per_vertex) + u64(t.pushed_quads) * u64(per_quad)
+        let mm = f32(e) * 1.0e-3
+        var px = String::new()
+        for d in DISTANCES {
+            px.push_str(f" {mm * 1.0e-3 / (d * PIXEL):.2}")
+        }
+        print(
+            f"cell {r.cell * 100.0:.1} cm: {t.vertices} vertices, {t.pushed_quads} quads, {bytes} bytes, {t.live_blocks} live blocks, error {mm:.2} mm, in pixels at 10/25/50/100 m:{px.as_str()}, {r.seconds * 1000.0:.1} ms to its readback, flags {t.flags}",
+        )
+        assert(t.flags == 0, f"cell {r.cell}: its mesh ran out of room ({t.flags})")
+    }
+    // Each distance's stills: the pixels of either the piece covers, how many differ by over
+    // 8/255 in a channel, and their mean difference (of 255).
+    assert(s.shown.len() == 2 * DISTANCES.len(), f"{s.shown.len()} of 8 stills came back")
+    for k in 0..DISTANCES.len() {
+        borrow a = s.shown[2 * k]
+        borrow b = s.shown[2 * k + 1]
+        var covered = 0
+        var differ = 0
+        var sum = 0.0
+        for p in 0..(WIDTH * HEIGHT) {
+            let i = p * 4
+            let lit = |x: [u8]| u32(x[i]) + u32(x[i + 1]) + u32(x[i + 2]) > 0
+            if !lit(a) && !lit(b) {
+                continue
+            }
+            covered += 1
+            var most = 0
+            for c in 0..3 {
+                let d = if a[i + c] > b[i + c] { a[i + c] - b[i + c] } else { b[i + c] - a[i + c] }
+                most = max(most, u32(d))
+                sum += f32(d) / 3.0
+            }
+            if most > 8 {
+                differ += 1
+            }
+        }
+        print(
+            f"{DISTANCES[k]} m: the piece covers {covered} pixels; today's still and the footprint's differ by over 8/255 at {differ} ({100.0 * f32(differ) / f32(max(covered, 1)):.1} %), {sum / f32(max(covered, 1)):.2} of 255 on average",
+        )
+    }
+}
