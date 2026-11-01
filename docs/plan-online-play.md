@@ -290,6 +290,11 @@ and after, in docs/bench.md.
 - **Delete and export** are the account's: delete fences new records, sends removals to its boards,
   whole boards, names, search and code shards, and clears its store only once each is acknowledged.
 - **Limits**: per-client rate limits as now; recovery per code shard (30 a minute each).
+- **Sign-ups stay closed on the live server** until Ryan says otherwise (rywible/wrela#352: "until
+  his LLC and the legal pages are settled"). The sharded server keeps #352's switch: the console's
+  server build closes sign-ups at start, `Register` and its `Begin` are refused with a plain reason,
+  and the console's Create account shows that sign-ups are closed for now. Sign-in, recovery and
+  everything else work. Reopening is one line, and only on Ryan's word.
 - Tests: the platform's fake host made multi-instance with every assertion carried over, plus the
   council's list (a replayed challenge, upload versus delete, a delayed release after a new owner, a
   held removal, 1,001 ranked accounts with a top one deleted, a failed board call and its retry), and
