@@ -181,9 +181,9 @@ fn lookup(
 
 /// How lit `p` is in one static map (`view`'s, one of its texels `texel_uv` of its uv and
 /// `texel` metres, its depth's 0 to 1 `depth` metres), its penumbra as wide as the sun (`size`
-/// radians) makes it at the blockers' distance (`Shadows::soft_pcss`): the blockers within `SEARCH`
-/// texels found (8 taps), their mean depth, and a filter of 12 taps that wide (1 to `WIDEST`
-/// texels); biased `bias` in depth.
+/// radians across) makes it at the blockers' distance (`Shadows::soft_pcss`): the blockers within
+/// `SEARCH` texels found (8 taps), their mean depth, and a filter of 12 taps as wide as that
+/// penumbra (its radius 1 to `WIDEST` texels); biased `bias` in depth.
 fn soft_lookup(
     view: mat4,
     map: DepthTexture,
@@ -220,9 +220,10 @@ fn soft_lookup(
     if n == 0.0 {
         return (1.0, true)
     }
-    // The blockers' distance above the point (m), and the penumbra the sun's disc spreads there.
+    // The blockers' distance above the point (m), and the penumbra the sun's disc spreads there
+    // (`apart × size` across, Fernando 2005): the filter's radius is half of it.
     let apart = (lp.z - sum / n) * depth
-    let width = clamp(apart * size / texel, 1.0, WIDEST)
+    let width = clamp(0.5 * apart * size / texel, 1.0, WIDEST)
     var lit = 0.0
     for i in 0..12 {
         lit += map.sample_compare_level(s, uv + disc(i, 12) * width * texel_uv, lp.z - bias)

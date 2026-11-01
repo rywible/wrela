@@ -268,18 +268,37 @@ pub fn tone(c: vec3, exposure: f32) -> vec3 {
     vec3(srgb(t.x), srgb(t.y), srgb(t.z))
 }
 
-/// `tone` with the exposed light's contrast about `PIVOT` raised to `contrast` (1: `tone`'s below
-/// the shoulder's knee; over 1, its shadows deeper and its lights brighter), and a shoulder that
-/// rolls the lights off toward white rather than clipping them (`soft_shoulder`).
+/// `tone` with the exposed light's contrast about `PIVOT` raised to `contrast` (`contrasted`; 1:
+/// `tone`'s below the shoulder's knee), and a shoulder that rolls the lights off toward white
+/// rather than clipping them (`soft_shoulder`).
 pub fn tone_contrast(c: vec3, exposure: f32, contrast: f32) -> vec3 {
     let t = soft_shoulder(contrasted(c * exposure, contrast))
     vec3(srgb(t.x), srgb(t.y), srgb(t.z))
 }
 
-/// Exposed light `x` with its contrast about `PIVOT` raised to `contrast` (none below 0).
+/// Exposed light `x` (none below 0) with its contrast about `PIVOT` raised to `contrast`: its
+/// luminance's stops from `PIVOT` times `contrast` up to `UPPER` (over 1, its shadows deeper and
+/// its lights brighter), eased back above it so `WHITE` comes out as it was (a bright sky keeps
+/// the sun's disc apart from it, §G7's G-look); each channel scaled as its luminance is, so its
+/// colour's saturation is kept (a power on each channel raised it: a dawn's haze went orange).
 pub fn contrasted(x: vec3, contrast: f32) -> vec3 {
-    PIVOT * pow(max(x, vec3(0.0)) / PIVOT, vec3(contrast))
+    let c = max(x, vec3(0.0))
+    let y = dot(c, LUMA)
+    if y <= 0.0 {
+        return c
+    }
+    let stops = log2(y / PIVOT)
+    let (top, white) = (log2(UPPER / PIVOT), log2(WHITE / PIVOT))
+    let turned = if stops <= top { contrast * stops } else {
+        contrast * top + (stops - top) * (white - contrast * top) / (white - top)
+    }
+    c * (PIVOT * exp2(turned) / y)
 }
+
+/// Where `contrasted` eases its lights back (linear, exposed: a lit surface's white, about), and
+/// where they come out as they were (the ACES fit's top, as `KNEE` is a little under).
+pub const UPPER: f32 = 1.0
+pub const WHITE: f32 = 8.0
 
 /// The light a contrast turns about (linear, exposed): a little under middle grey, where most of a
 /// scene's metered band falls, so its median holds.
@@ -434,7 +453,8 @@ fn metallic_light_is_coloured_reflection_without_diffuse() {
 /// The physical look's curve keeps luma's order from deep shade to glare and rolls its lights off
 /// without clipping them (§G7): at a contrast of 1.2, every doubling of exposed light from a
 /// thousandth to 8 comes out brighter and under 1 (the fit alone clips from 7.24); at 1, it's
-/// `tone` below the knee; the shoulder is continuous at the knee.
+/// `tone` below the knee; the shoulder is continuous at the knee; a colour keeps its balance and
+/// `WHITE` comes out as it was.
 @test
 fn the_contrast_keeps_lumas_order_and_rolls_off_its_lights() {
     var last = -1.0
@@ -460,4 +480,13 @@ fn the_contrast_keeps_lumas_order_and_rolls_off_its_lights() {
     )
     assert(abs(above - below) < 1.0e-3, f"the shoulder jumps at the knee: {below} → {above}")
     assert(soft_shoulder(vec3(KNEE * 1.2)).x < 1.0, "the shoulder clips just past the knee")
+    // Its colour's saturation kept (each channel as its luminance), and `WHITE` as it was.
+    let orange = vec3(0.9, 0.45, 0.12)
+    let turned = contrasted(orange, 1.2)
+    assert(
+        abs(turned.x / turned.y - orange.x / orange.y) < 1.0e-4,
+        f"the contrast moved a colour's balance: {turned}",
+    )
+    let white = contrasted(vec3(WHITE), 1.2).x
+    assert(abs(white - WHITE) < 1.0e-3 * WHITE, f"{WHITE} comes out {white}")
 }
