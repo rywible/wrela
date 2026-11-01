@@ -137,14 +137,18 @@ impl Bark {
 }
 
 /// The most limbs and clumps a plant has (a crown of fine clumps over its whole shell takes over
-/// a hundred, and the branches that carry them out to it over thirty).
+/// a hundred, and the branches that carry them out to it over thirty; a grown one's limbs are its
+/// chains, thousands).
 pub const MAX_LIMBS: u32 = 2048
 pub const MAX_CLUMPS: u32 = 128
 
+/// The most limbs a hand's plant has (`HandPlant`: the great tree's, the far crowns').
+pub const HAND_LIMBS: u32 = 48
+
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
-/// frame (its base at the origin, +y up).
-pub struct Plant: Copy + GpuData {
-    pub limbs: Bounded<Tube<4>, MAX_LIMBS>,
+/// frame (its base at the origin, +y up), with room for `L` limbs.
+pub struct PlantOf<const L: u32>: Copy + GpuData {
+    pub limbs: Bounded<Tube<4>, L>,
     pub clumps: Bounded<Clump, MAX_CLUMPS>,
     pub leaves: Leaves,
     pub bark: Bark,
@@ -209,7 +213,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
             for i in 0..p.clumps.len() {
                 clumps.push(p.clumps[i])
             }
-            out.push(Occluding { cores: Vec::new(), limbs: take limbs, clumps: take clumps })
+            out.push(Occluding { cores: Vec::new(), limbs, clumps })
             continue
         }
         var radii: Vec<f32> = Vec::new()
@@ -233,7 +237,7 @@ pub fn occluding_of(plants: [Plant]) -> Vec<Occluding> {
                 }
             }
         }
-        out.push(Occluding { cores: take cores, limbs: Vec::new(), clumps: take clumps })
+        out.push(Occluding { cores, limbs: Vec::new(), clumps })
     }
     out
 }
@@ -287,12 +291,36 @@ pub fn inner_wood_capsule(limb: Tube<4>, piece: u32, at: Instance) -> (vec3, vec
     (a, b, radius)
 }
 
+/// A plant as the wood draws it: room for a grown one's limbs (128 KiB).
+pub type Plant = PlantOf<MAX_LIMBS>
+
+/// A plant built by hand, with room for a hand's limbs (3 KiB): small enough to carry where a
+/// grown one's room isn't (the lens's derivatives of its literals carry each of its numbers 17
+/// times over), widened to a `Plant` where it's drawn (`PlantOf::widened`).
+pub type HandPlant = PlantOf<HAND_LIMBS>
+
 /// A plant with no limbs or clumps yet, its leaves and bark as given.
 pub fn plant(leaves: Leaves, bark: Bark) -> Plant {
     Plant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
 }
 
-impl Plant {
+/// A hand's plant (`HandPlant`) with no limbs or clumps yet, its leaves and bark as given.
+pub fn hand_plant(leaves: Leaves, bark: Bark) -> HandPlant {
+    HandPlant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
+}
+
+impl<const L: u32> PlantOf<L> {
+    /// This plant in a grown plant's room (`Plant`), as the wood draws it.
+    pub fn widened(self) -> Plant {
+        var out = plant(leaves: self.leaves, bark: self.bark)
+        for i in 0..self.limbs.len() {
+            out.limbs.push(self.limbs[i])
+        }
+        out.clumps = self.clumps
+        out.blend = self.blend
+        out
+    }
+
     /// A limb from `from` to `to`, bending toward `bend` (a quadratic curve), its radius
     /// `r_from` at its start and `r_to` at its end.
     pub fn limb(mut self, from: vec3, bend: vec3, to: vec3, r_from: f32, r_to: f32) {
@@ -311,9 +339,9 @@ impl Plant {
     /// A limb through four points, its radius at each given: a trunk that flares at its root
     /// and tapers in one tube, with no seam where two tubes cross.
     pub fn tube(mut self, points: [vec3; 4], radii: [f32; 4]) {
-        // A limb past `MAX_LIMBS` is a fault a debug build names (§E1.2: none dropped silently).
+        // A limb past its room is a fault a debug build names (§E1.2: none dropped silently).
         if debug_build() {
-            assert(!self.limbs.is_full(), f"a plant's limbs past {MAX_LIMBS}")
+            assert(!self.limbs.is_full(), "a plant's limbs past its room")
         }
         if !self.limbs.is_full() {
             self.limbs.push(Tube { points, radii })
@@ -381,7 +409,7 @@ impl Plant {
     /// A clump of leaves at `at`, `radius` across and `squash` as tall (`Clump`).
     pub fn cushion(mut self, at: vec3, radius: f32, squash: f32) {
         if debug_build() {
-            assert(!self.clumps.is_full(), f"a plant's clumps past {MAX_CLUMPS}")
+            assert(!self.clumps.is_full(), "a plant's clumps past MAX_CLUMPS")
         }
         if !self.clumps.is_full() {
             self.clumps.push(Clump { centre: at, radius, squash })
@@ -482,7 +510,7 @@ impl Plant {
 }
 
 /// A plant's field: its limbs, and its crown as one soft solid. The lens draws it as clay.
-impl Surface for Plant {
+impl<const L: u32> Surface for PlantOf<L> {
     fn distance(self, p: vec3) -> f32 {
         let (crown, _) = self.crown(p)
         min(self.wood(p), crown)

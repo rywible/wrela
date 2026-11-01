@@ -82,7 +82,7 @@ fn run(given: [String]) -> Result<(), ToolError> {
                     print(
                         f"grow: {name}: {s.nodes} nodes, {s.limbs} of {s.chains} limbs, {s.height} m, IoU {s.iou}, grown in {s.grow_ms} ms, converted in {s.convert_ms} ms",
                     )
-                    var kept = s.clone_measures()
+                    let kept = s.clone_measures()
                     write(take s, f"{dir}/{name}")?
                     done.push((take name, take kept))
                 }

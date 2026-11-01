@@ -778,7 +778,7 @@ fn authored_plant(k: u32, grown: bool) -> Plant {
     // its outside more than once at lower cover; at the floor's earlier cover its cards cost a
     // third more of the frame: lookdev round 3's profile.)
     if k == GREAT {
-        great_tree()
+        great_tree().widened()
     } else if k == OAK_OPEN {
         broadleaf(
             101,
@@ -1139,7 +1139,7 @@ pub const HEADING: f32 = 0.7
 /// last ended, nearly as thick (a grown trunk's bole is one tube to a turn, then on in pieces:
 /// `engine::growth::chains_of`), not branches.
 fn trunk_pieces(p: Plant, grown: bool) -> Vec<bool> {
-    var trunk: Vec<bool> = Vec::filled(p.limbs.len(), false)
+    var trunk: Vec<bool> = Vec::filled(p.limbs.len(), value: false)
     if p.limbs.len() == 0 {
         return trunk
     }

@@ -135,11 +135,11 @@ pub struct Cover: Copy + GpuData {
     pub tall: f32 = 0.5,
     pub dry: f32 = 0.0,
     pub deep: f32 = 0.0,
+    pub rough: f32 = 0.0,
     pub flowers: vec4 = vec4(0.0),
     pub under: vec4 = vec4(0.0),
     pub flora: vec4 = vec4(0.0),
     pub materials: vec4 = vec4(0.0, 1.0, 0.0, 0.0),
-    pub rough: f32 = 0.0,
 }
 
 /// A ground's roughness where its cover doesn't set one (`Cover::rough`).

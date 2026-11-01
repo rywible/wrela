@@ -228,7 +228,7 @@ const DRAWS_EVENT: u32 = 0xD3A2646C
 /// Whether each node is continued: a live shoot goes on from it along its axis (one that isn't is
 /// a tip).
 fn continued_of(nodes: [Node]) -> Vec<bool> {
-    var continued: Vec<bool> = Vec::filled(nodes.len(), false)
+    var continued: Vec<bool> = Vec::filled(nodes.len(), value: false)
     for i in 1..nodes.len() {
         let nd = nodes[i]
         if nd.alive && nd.main && nd.parent >= 0 {
@@ -439,7 +439,7 @@ pub fn grow_traced(
         // split, then its own split between its main way on and its laterals.
         var vm_of: Vec<f32> = Vec::filled(n, 0.0)
         var vl_of: Vec<f32> = Vec::filled(n, 0.0)
-        var axis: Vec<bool> = Vec::filled(n, false)
+        var axis: Vec<bool> = Vec::filled(n, value: false)
         axis[0] = true
         for i in 0..n {
             let nd = t.nodes[i]
@@ -545,7 +545,7 @@ pub fn grow_traced(
                     normalize(
                         dir + space_dir * 0.6 + up * (g.gravitropism * (if leader { 1.0 } else {
                             0.4
-                        })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(-1.0, 1.0), rng.between(-0.5, 0.5), rng.between(-1.0, 1.0)),
+                        })) + (grad + towards * 0.5) * g.phototropism + 0.15 * vec3(rng.between(lo: -1.0, hi: 1.0), rng.between(lo: -0.5, hi: 0.5), rng.between(lo: -1.0, hi: 1.0)),
                     ),
                 ),
             )
@@ -562,7 +562,7 @@ pub fn grow_traced(
                 lateral_of(
                     dir,
                     phyllo,
-                    g.branching + g.branching_spread * rng.between(-1.0, 1.0),
+                    g.branching + g.branching_spread * rng.between(lo: -1.0, hi: 1.0),
                 )
             } else { vec3(0.0) }
             t.nodes.push(
@@ -800,7 +800,7 @@ fn sympodial(t: mut TreeGraph, g: Genome, year: f32, rng: mut Rng) {
     }
     let n = t.nodes.len()
     let continued = continued_of(t.nodes)
-    var axis: Vec<bool> = Vec::filled(n, false)
+    var axis: Vec<bool> = Vec::filled(n, value: false)
     axis[0] = true
     for i in 1..n {
         let nd = t.nodes[i]
@@ -843,7 +843,7 @@ fn compact(t: mut TreeGraph) {
 /// with its life (a dead tip bears none: its plant's clumps are cleared after it's converted).
 pub fn die(t: mut TreeGraph, broke: f32, shed: f32) {
     let n = t.nodes.len()
-    var gone: Vec<bool> = Vec::filled(n, false)
+    var gone: Vec<bool> = Vec::filled(n, value: false)
     for i in 1..n {
         let nd = t.nodes[i]
         let p = u32(max(nd.parent, 0))
@@ -1089,7 +1089,7 @@ impl Space {
             unit.push(vec4(q.x, sqrt(q.y), at.x, at.y))
         }
         Space {
-            free: Vec::filled(MARKERS, true),
+            free: Vec::filled(MARKERS, value: true),
             points: Vec::new(),
             unit,
             lo: vec3(0.0),
@@ -1286,7 +1286,7 @@ impl Shade {
 /// a knot on its parent and the rest gone (of the first `n` nodes: this year's growth aside).
 fn shed(t: mut TreeGraph, g: Genome, n: u32) {
     // Which branches grew this year: each node after the first `n` (this year's), and its line.
-    var grew: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    var grew: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
     var j = t.nodes.len()
     while j > 0 {
         j -= 1
@@ -1318,14 +1318,14 @@ fn shed(t: mut TreeGraph, g: Genome, n: u32) {
     }
     // Whether a node's own line goes on (a live shoot continues it): a main node whose line has
     // ended (a dead leader's stub, its laterals having taken over) is shed as a branch is.
-    var goes_on: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    var goes_on: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
     for i in 1..t.nodes.len() {
         let nd = t.nodes[i]
         if nd.alive && nd.main && nd.kind == SHOOT && nd.parent >= 0 {
             goes_on[u32(nd.parent)] = true
         }
     }
-    var dead: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    var dead: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
     for i in 1..n {
         let nd = t.nodes[i]
         if nd.parent >= 0 && dead[u32(nd.parent)] {
@@ -1369,7 +1369,7 @@ fn shed(t: mut TreeGraph, g: Genome, n: u32) {
 /// low; lightning scars it.
 fn befall(t: mut TreeGraph, e: GrowthEvent, site: Site, rng: mut Rng) {
     let n = t.nodes.len()
-    var gone: Vec<bool> = Vec::filled(n, false)
+    var gone: Vec<bool> = Vec::filled(n, value: false)
     if e.kind == GALE && e.strength > 0.3 {
         let at = t.height * (1.0 - 0.45 * e.strength * (0.5 + 0.5 * site.wind))
         // The leader standing tallest: down from the highest live shoot to the first of its line
@@ -1489,7 +1489,7 @@ fn straighten(t: mut TreeGraph) {
         }
         k = thickest[u32(k)]
     }
-    var on_axis: Vec<bool> = Vec::filled(n, false)
+    var on_axis: Vec<bool> = Vec::filled(n, value: false)
     var shift: Vec<vec2> = Vec::filled(n, vec2(0.0))
     k = 0
     while k >= 0 {
@@ -1677,7 +1677,7 @@ pub fn shape_of(t: TreeGraph, g: Genome, measured: bool = true) -> Shape {
     let all = chains_of(t)
     let kept = min(all.len(), MAX_LIMBS)
     var tubes: Vec<Tube<4>> = Vec::new()
-    var drawn: Vec<bool> = Vec::filled(t.nodes.len(), false)
+    var drawn: Vec<bool> = Vec::filled(t.nodes.len(), value: false)
     drawn[0] = true
     for c in 0..kept {
         tubes.push(chain_tube(t, all[c]))
@@ -1691,7 +1691,7 @@ pub fn shape_of(t: TreeGraph, g: Genome, measured: bool = true) -> Shape {
     // The woody silhouettes' IoU, unless it isn't wanted (a fit's thousands of candidates).
     let iou = if measured { woody_iou(t, tubes) } else { 0.0 }
     let converted = Converted { iou, volume, limbs: kept, chains: all.len(), clumps: clumps.len() }
-    Shape { limbs: take tubes, clumps, converted }
+    Shape { limbs: tubes, clumps, converted }
 }
 
 /// A chain's tube (`tube_through`), its end carried on past its last node by 0.6 of its radius
@@ -1726,7 +1726,7 @@ fn chains_of(t: TreeGraph) -> Vec<Chain> {
             children[u32(t.nodes[i].parent)] += 1
         }
     }
-    var drawn: Vec<bool> = Vec::filled(n, false)
+    var drawn: Vec<bool> = Vec::filled(n, value: false)
     for i in 0..n {
         drawn[i] = t.nodes[i].alive && (t.nodes[i].kind != KNOT || children[i] > 0)
     }
@@ -1744,7 +1744,7 @@ fn chains_of(t: TreeGraph) -> Vec<Chain> {
         }
     }
     // Whether a node bears a drawn branch (a drawn child it doesn't continue into).
-    var branches: Vec<bool> = Vec::filled(n, false)
+    var branches: Vec<bool> = Vec::filled(n, value: false)
     for i in 1..n {
         let q = t.nodes[i].parent
         if drawn[i] && q >= 0 && next[u32(q)] != i32(i) {
@@ -1791,7 +1791,7 @@ fn chains_of(t: TreeGraph) -> Vec<Chain> {
                 chains.push(
                     Chain {
                         foot: from,
-                        nodes: take run,
+                        nodes: run,
                         section: 0.0,
                         continues: after >= 0,
                         carried,
@@ -1804,7 +1804,7 @@ fn chains_of(t: TreeGraph) -> Vec<Chain> {
             k = next[u32(k)]
         }
         if run.len() > 0 {
-            chains.push(Chain { foot: from, nodes: take run, section: 0.0, carried })
+            chains.push(Chain { foot: from, nodes: run, section: 0.0, carried })
         }
     }
     for c in 0..chains.len() {
@@ -2110,8 +2110,8 @@ pub fn woody_iou(t: TreeGraph, tubes: [Tube<4>]) -> f32 {
     let sub = px / f32(SAMPLES_SIDE)
     let (w, h) = (u32((hi.x - lo.x) / px) + 1, u32((hi.y - lo.y) / px) + 1)
     let (sw, sh) = (w * SAMPLES_SIDE, h * SAMPLES_SIDE)
-    var graph: Vec<bool> = Vec::filled(sw * sh, false)
-    var plant_on: Vec<bool> = Vec::filled(sw * sh, false)
+    var graph: Vec<bool> = Vec::filled(sw * sh, value: false)
+    var plant_on: Vec<bool> = Vec::filled(sw * sh, value: false)
     // The graph's wood as the plant draws it: a shed branch's stub with nothing beyond it isn't
     // (`chains_of`).
     var children: Vec<u32> = Vec::filled(t.nodes.len(), 0)
@@ -2196,7 +2196,7 @@ pub fn side_view(p: Plant, px: u32) -> (u32, u32, Vec<u8>) {
     let sub = size / f32(SAMPLES_SIDE)
     let (w, h) = (u32((hi.x - lo.x) / size) + 1, u32((hi.y - lo.y) / size) + 1)
     let (sw, sh) = (w * SAMPLES_SIDE, h * SAMPLES_SIDE)
-    var wood: Vec<bool> = Vec::filled(sw * sh, false)
+    var wood: Vec<bool> = Vec::filled(sw * sh, value: false)
     for k in 0..p.limbs.len() {
         drawn(mut wood, sw, sh, lo, sub, p.limbs[k])
     }
@@ -2613,7 +2613,7 @@ pub const LICHEN: [u32; PATCH * PATCH / 4] = lichen_patch()
 
 pub fn lichen_patch() -> [u32; PATCH * PATCH / 4] {
     let n = PATCH
-    var on: Vec<bool> = Vec::filled(n * n, false)
+    var on: Vec<bool> = Vec::filled(n * n, value: false)
     var rng = Rng::of(Grown { genome: 13, site: Site {}, seed: 13 })
     for _ in 0..8 {
         on[u32(rng.unit() * f32(n * n - 1))] = true

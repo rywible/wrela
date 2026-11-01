@@ -120,7 +120,7 @@ pub fn silhouette(s: Shape) -> Vec<bool> {
         lo = min(lo, c.centre.xy - vec2(c.radius))
         hi = max(hi, c.centre.xy + vec2(c.radius))
     }
-    var mask: Vec<bool> = Vec::filled(MASK * MASK, false)
+    var mask: Vec<bool> = Vec::filled(MASK * MASK, value: false)
     if hi.x <= lo.x {
         return mask
     }
@@ -181,7 +181,7 @@ fn capsule_into(mask: mut Vec<bool>, corner: vec2, cell: f32, a: vec2, b: vec2, 
 /// Mask `m` closed by a disc `r` cells across: dilated, then eroded (a crown's gaps between its
 /// clumps, and a photo's between its leaves, filled; its outline kept).
 pub fn closed(m: [bool], r: i32) -> Vec<bool> {
-    spread(spread(m, r, true), r, false)
+    spread(spread(m, r, any: true), r, any: false)
 }
 
 /// The closing every mask a fit compares takes (cells): its crown's mass, not the sky between its
@@ -236,7 +236,7 @@ pub fn mask_of_image(rgba: [u8], w: u32, h: u32) -> Vec<bool> {
             }
         }
     }
-    var mask: Vec<bool> = Vec::filled(MASK * MASK, false)
+    var mask: Vec<bool> = Vec::filled(MASK * MASK, value: false)
     if hi.x <= lo.x {
         return mask
     }

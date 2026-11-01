@@ -862,17 +862,17 @@ fn test_tile_header(count: u32, lives: u32) -> Vec<u8> {
 @test
 fn malformed_tile_bytes_have_no_memory() {
     var cases: Vec<Vec<u8>> = Vec::new()
-    cases.push(test_tile_header(0, 0)) // truncated before the first plane
-    cases.push(test_tile_header(0, 4294967295)) // the declared lives don't fit
-    var zero = test_tile_header(0, 0)
+    cases.push(test_tile_header(count: 0, lives: 0)) // truncated before the first plane
+    cases.push(test_tile_header(count: 0, lives: 4294967295)) // the declared lives don't fit
+    var zero = test_tile_header(count: 0, lives: 0)
     var zero_run = Vec::from([0, 0, 0])
     zero.append(mut zero_run)
     cases.push(take zero) // a zero-length run never advances
-    var over = test_tile_header(0, 0)
+    var over = test_tile_header(count: 0, lives: 0)
     var long_run = Vec::from([0, 255, 255])
     over.append(mut long_run)
     cases.push(take over) // the run reaches past its plane
-    cases.push(test_tile_header(4294967295, 0)) // the declared tree bytes don't fit
+    cases.push(test_tile_header(count: 4294967295, lives: 0)) // the declared tree bytes don't fit
     for b in cases {
         assert(memory_in_tile(b, vec2(0.0)).mark == Mark::None, "malformed bytes have a memory")
     }

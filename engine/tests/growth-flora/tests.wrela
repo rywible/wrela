@@ -68,7 +68,10 @@ fn ferns_take_the_moist_shade_and_grass_the_light() {
     assert(ferns_moist_shade == ferns, f"{ferns_moist_shade} of {ferns} ferns in the moist shade")
     assert(fern_light / f32(ferns) < 0.3, f"the ferns' mean light {fern_light / f32(ferns)}")
     assert(dense > 10, f"{dense} places of dense sward")
-    assert(dense_light / f32(dense) > 0.6, f"the dense sward's mean light {dense_light / f32(dense)}")
+    assert(
+        dense_light / f32(dense) > 0.6,
+        f"the dense sward's mean light {dense_light / f32(dense)}",
+    )
 }
 
 /// The floor's flora grown twice is the same to the byte (each row's genome hash, height, width

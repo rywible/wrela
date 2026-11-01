@@ -248,13 +248,13 @@ pub fn reach(g: Goal) -> Reached {
     if lightning {
         checks.push((String::from(f"a lightning scar: {t.scarred}"), t.scarred))
     }
-    Reached { tree: take t, genome: gen, checks }
+    Reached { tree: t, genome: gen, checks }
 }
 
 /// The middle of a grown tree's live tips on the ground (from its foot), where its leaves are.
 pub fn crown_centroid(t: TreeGraph) -> vec2 {
     let n = t.nodes.len()
-    var has: Vec<bool> = Vec::filled(n, false)
+    var has: Vec<bool> = Vec::filled(n, value: false)
     for i in 1..n {
         if t.nodes[i].alive && t.nodes[i].parent >= 0 {
             has[u32(t.nodes[i].parent)] = true

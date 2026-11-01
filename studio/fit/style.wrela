@@ -5,7 +5,6 @@
 // structure (`against`). The search is CMA-ES (Hansen's tutorial, docs/citations.md) over the
 // style's fittable constants scaled to [0, 1], from a fixed seed.
 
-
 /// The side every image is brought within before its statistics: a painting's resolution and a
 /// still's differ, and an edge's share and a palette's size depend on it.
 pub const SIDE: u32 = 480
@@ -193,4 +192,3 @@ fn ssim_of(a: [u8], b: [u8], w: u32) -> f32 {
     }
     sum / f32(max(count, 1))
 }
-

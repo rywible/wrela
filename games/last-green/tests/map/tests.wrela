@@ -274,7 +274,10 @@ struct Package: Clone {
 /// `name`'s package with `main` as its main module and nothing else yet.
 fn map_package(name: str, main: take String) -> Package {
     var texts: Vec<(String, String)> = Vec::new()
-    texts.push((String::from("main.wrela"), take main))
+    // The floor's switch its ground reads (`main::GROWN_WOOD`, its main.wrela's: off).
+    var with_switch = take main
+    with_switch.push_str("\npub const GROWN_WOOD: bool = false\n")
+    texts.push((String::from("main.wrela"), take with_switch))
     // The species are content (content/trees), which the map's species.wrela re-exports.
     var content: Vec<(String, String)> = Vec::new()
     content.push((String::from("trees"), String::from("trees")))

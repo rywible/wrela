@@ -2985,8 +2985,16 @@ fn a_lifes_sample_ages_rise_strictly() {
 @test
 fn a_nurse_trees_shade_is_in_a_saplings_early_light() {
     let oak = living(600.0)
-    let nursed = lived_through(oak, 0, 0, 120, 5, 0, |y| if y < 30 { 0.15 } else { 0.9 })
-    let open = lived_through(oak, 0, 0, 120, 5, 0, |y| 0.9)
+    let nursed = lived_through(
+        oak,
+        born: 0,
+        from: 0,
+        to: 120,
+        step: 5,
+        start: 0,
+        light: |y| if y < 30 { 0.15 } else { 0.9 },
+    )
+    let open = lived_through(oak, born: 0, from: 0, to: 120, step: 5, start: 0, light: |y| 0.9)
     for k in 0..7 {
         assert(
             nursed.light_by_age[k] != open.light_by_age[k],
@@ -3021,7 +3029,9 @@ fn level_of(light: f32) -> u8 {
 @test
 fn a_lifes_unfinished_tail_runs_to_its_present_light() {
     let oak = living(600.0)
-    let t = lived_through(oak, 0, 0, 100, 5, 0, |y| if y < 80 { 0.4 } else { 0.9 })
+    let t = lived_through(oak, born: 0, from: 0, to: 100, step: 5, start: 0, light: |y| if y < 80 {
+        0.4
+    } else { 0.9 })
     assert(u32(t.written) == 16, f"{t.written} samples written to age 100")
     assert(abs(sample_age(oak, 16) - 178.125) < 0.01, "the next sample's age")
     let (at90, _) = light_at(t, oak, 90.0)
@@ -3032,7 +3042,7 @@ fn a_lifes_unfinished_tail_runs_to_its_present_light() {
     // Past its present it reads its present, not the unwritten tail.
     let (at130, _) = light_at(t, oak, 130.0)
     assert(at130 == at100, f"past its present it read {at130}")
-    let dead = lived_through(oak, 0, 0, 50, 5, 0, |y| 0.6)
+    let dead = lived_through(oak, born: 0, from: 0, to: 50, step: 5, start: 0, light: |y| 0.6)
     let (at50, _) = light_at(dead, oak, 50.0)
     let (at80, _) = light_at(dead, oak, 80.0)
     assert(at50 == at80, f"dead at 50, it read {at80} at 80")
@@ -3044,7 +3054,15 @@ fn a_lifes_unfinished_tail_runs_to_its_present_light() {
 fn a_tree_older_than_the_history_has_its_early_light_inferred() {
     for life in [50.0, 600.0] {
         let h = living(life)
-        let t = lived_through(h, -40, 0, 30, 5, 0, |y| 0.5 + 0.01 * f32(y))
+        let t = lived_through(
+            h,
+            born: -40,
+            from: 0,
+            to: 30,
+            step: 5,
+            start: 0,
+            light: |y| 0.5 + 0.01 * f32(y),
+        )
         assert(t.recorded_from > 0, f"lifespan {life}: no inferred samples")
         let (_, inferred) = light_at(t, h, 10.0)
         assert(inferred, f"lifespan {life}: age 10, before the history, not inferred")
@@ -3059,7 +3077,15 @@ fn a_tree_older_than_the_history_has_its_early_light_inferred() {
 fn long_lives_round_trip_and_read_every_age() {
     for (life, years) in [(300.0, 400), (600.0, 600), (1200.0, 1200), (300.0, 420)] {
         let h = living(life)
-        var t = lived_through(h, 0, 0, years, 5, 0, |y| 0.3 + 0.5 * f32(y % 97) / 97.0)
+        var t = lived_through(
+            h,
+            born: 0,
+            from: 0,
+            to: years,
+            step: 5,
+            start: 0,
+            light: |y| 0.3 + 0.5 * f32(y % 97) / 97.0,
+        )
         t.at = vec2(10.0, 10.0)
         let b = bake::as_baked(t)
         assert(
