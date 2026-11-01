@@ -620,6 +620,7 @@ pub enum Step: Copy + Eq {
     WatchAccount,
     WatchRun,
     AdmitToken,
+    AdmitSession,
     AdmitAccount,
     AdmitConsent,
     AdmitOutcome,

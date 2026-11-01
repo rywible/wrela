@@ -102,10 +102,11 @@ pub struct Session: Clone + Serialize {
 }
 
 /// A game's token (`t/<secret's hash>`): it can only submit runs, as this account, to `game`'s
-/// boards.
+/// boards, while the session that made it (its token's hash) stands.
 pub struct GameToken: Clone + Serialize {
     pub game: String,
     pub expires: u64,
+    pub session: Vec<u8>,
 }
 
 /// What an account agreed to when it was made (`g`): the Terms' and the Privacy Policy's versions

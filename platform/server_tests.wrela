@@ -2980,8 +2980,10 @@ fn a_search_reads_a_range_of_names_a_page_at_a_time() {
 @test
 fn a_run_uploaded_while_its_account_is_deleted_leaves_nothing() {
     var h = host()
-    let (s, token) = uploader(mut h, 1, 5)
+    let (s, _) = uploader(mut h, 1, 5)
     let csrf = fresh(mut h, 1, 5, s)
+    // The fresh sign-in's own token: the first ended with the session it replaced.
+    let token = token_of(mut h, 1)
     // Admitted and played; its replay's shard is slow to answer, and the deletion comes meanwhile,
     // its removals held, so the account is fenced and not yet cleared when the run comes back.
     h.pausing.push(String::from("replays/"))
@@ -3000,8 +3002,9 @@ fn a_run_uploaded_while_its_account_is_deleted_leaves_nothing() {
     h.settle()
     assert(nothing_left(h, s), "its replay let go with the rest")
     // Had its replay's shard heard of it only after the deletion, it's never its own again.
-    let (t, tk) = uploader(mut h, 3, 6)
+    let (t, _) = uploader(mut h, 3, 6)
     let c = fresh(mut h, 3, 6, t)
+    let tk = token_of(mut h, 3)
     h.pausing.push(String::from("replays/"))
     let late = h.send(4, [up(tk, toy(1, claimed: 402, moves: 402, m: 2))], public: false)
     h.settle()
@@ -3333,4 +3336,50 @@ fn new_codes_asked_twice_at_once_leave_one_set() {
     }
     assert(whole == 1, f"{whole} sets")
     assert(refused(h.say(3, Request::Recover { code: s.codes[0].clone() })), "the first set's gone")
+}
+
+/// Whether an upload of a new toy run of `moves` moves with `token` is refused, to sign in again.
+fn token_refused(h: mut Host, token: [u8], moves: u32) -> bool {
+    let r = upload(mut h, 9, token, toy(0, moves, moves, 2))
+    match r {
+        Reply::Refused { why } => why.as_str().find("Sign in").is_some(),
+        _ => false,
+    }
+}
+
+@test
+fn a_games_token_ends_with_the_session_that_made_it() {
+    var h = host()
+    let (s, token) = uploader(mut h, 1, 5)
+    post(mut h, 1, token, 10)
+    // Signed out.
+    let _ = h.say(1, Request::SignOut { csrf: s.csrf.clone() })
+    assert(token_refused(mut h, token, 11), "signed out")
+    // Revoked from another session.
+    h.good.push(Vec::from([4]))
+    let Some(_) = session_of(sign_in(mut h, 2, 5, s.handle, 0, [4])) else { panic("signed in") }
+    let t2 = token_of(mut h, 2)
+    let Some(third) = session_of(sign_in(mut h, 3, 5, s.handle, 0, [4])) else { panic("signed in") }
+    let Reply::Sessions { sessions } = h.say(2, Request::Sessions)[0].clone() else {
+        panic("its sessions")
+    }
+    var id: Vec<u8> = Vec::new()
+    for v in sessions {
+        if v.this {
+            id = v.id.clone()
+        }
+    }
+    let revoke = Request::Revoke { csrf: third.csrf.clone(), session: id }
+    let Reply::Sessions { .. } = h.say(3, revoke)[0].clone() else { panic("revoked") }
+    assert(token_refused(mut h, t2, 12), "revoked")
+    // Every session's, once a code recovers the account.
+    let t3 = token_of(mut h, 3)
+    let Some(_) = session_of(h.say(4, Request::Recover { code: s.codes[0].clone() })) else {
+        panic("recovered")
+    }
+    assert(token_refused(mut h, t3, 13), "recovered")
+    // A token of a session that stands still posts.
+    let Some(_) = session_of(sign_in(mut h, 5, 5, s.handle, 0, [4])) else { panic("signed in") }
+    let t5 = token_of(mut h, 5)
+    assert(!token_refused(mut h, t5, 14), "its session stands")
 }

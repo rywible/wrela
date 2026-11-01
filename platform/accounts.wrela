@@ -1274,12 +1274,21 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "We couldn't make a token. Try again.")
                     return
                 }
+                let Some(i) = self.conn_index(conn) else { return }
+                // Its session's: it ends with it (signed out, revoked, or every session a
+                // recovery ends).
+                let session = self.conns[i].session.clone()
+                if session.is_empty() {
+                    self.refuse(conn, "Sign in first.")
+                    return
+                }
                 let secret = part(answer, 0, TOKEN_BYTES)
                 self.put(
                     token_key(hashed(secret)),
                     GameToken {
                         game: String::from(self.game.id()),
                         expires: self.now + TOKEN_LIFE,
+                        session,
                     },
                 )
                 let token = held(self.handle, secret)
@@ -1429,12 +1438,40 @@ impl<G: Game> Engine<G> {
                     self.back(conn, Back::Refused { why })
                     return
                 }
+                // The session that made it, which must still stand.
+                j.views = Vec::from([t.session.clone()])
+                self.get(session_key(t.session), Step::AdmitSession, take j)
+            },
+            Step::AdmitSession => {
+                let s: Option<Session> = got(answer)
+                let k = session_key(j.views[0])
+                let s = if lately(self.gone, k) { None } else { take s }
+                let ended = match s {
+                    Some(s) => s.created + SESSION_LIFE < self.now,
+                    None => true,
+                }
+                if ended {
+                    let why = String::from("Sign in at the console again to upload.")
+                    self.back(conn, Back::Refused { why })
+                    return
+                }
+                j.session = take s
                 self.get(key(ACCOUNT, []), Step::AdmitAccount, take j)
             },
             Step::AdmitAccount => {
                 let a = if self.deleting { None } else { self.live_account(answer) }
                 let Some(a) = a else {
                     self.back(conn, Back::Refused { why: String::from("That account is gone.") })
+                    return
+                }
+                // Its session of a generation a recovery ended, or ended while this was read.
+                let generation = match j.session {
+                    Some(s) => s.generation,
+                    None => 0,
+                }
+                if generation < a.sessions || lately(self.gone, session_key(j.views[0])) {
+                    let why = String::from("Sign in at the console again to upload.")
+                    self.back(conn, Back::Refused { why })
                     return
                 }
                 // A board shows the name, so only a name that can't change goes on one.
