@@ -132,13 +132,21 @@ pub fn runtime_hash(scripts: [(String, String)]) -> String {
     hex(d.finish())
 }
 
-/// `addresses.json`: each payload's path in its build and its URL, compact, in the order given.
+/// The format the browser host reads a build's `addresses.json` as (toolchain 0.18.0's changelog).
+pub const FORMAT: Text = "wrela-addresses-1"
+
+/// `addresses.json`: its `format`, and as its `files` each payload's path in its build and its
+/// URL, compact, in the order given.
 pub fn addresses_json(map: [(String, String)]) -> String {
-    var members: Vec<(String, Json)> = Vec::new()
+    var files: Vec<(String, Json)> = Vec::new()
     for (path, url) in map {
-        members.push(member(path.as_str(), text(url.as_str())))
+        files.push(member(path.as_str(), text(url.as_str())))
     }
-    compact(Json::Obj(take members))
+    compact(
+        Json::Obj(
+            Vec::from([member("format", text(FORMAT)), member("files", Json::Obj(take files))]),
+        ),
+    )
 }
 
 /// `page` with each of `map`'s paths (each a file of its build, and its URL) that an attribute

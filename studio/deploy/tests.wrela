@@ -876,8 +876,11 @@ fn addressed(out: mut Vec<(String, Vec<u8>)>, dir: str, release: str, wasm: str)
     let wasm_at = String::from(f"/b/{sha(wasm).as_str()}.wasm")
     let tile_at = String::from(f"/b/{sha("tile").as_str()}.bin")
     let main_at = String::from(f"/r/{set_of().as_str()}/main.js")
-    let map = String::from(
-        f"{{\"files/floor/t1_-1.bin\": \"{tile_at.as_str()}\", \"game.wasm\": \"{wasm_at.as_str()}\"}}",
+    let map = release_tool::addresses::addresses_json(
+        [
+            (String::from("files/floor/t1_-1.bin"), tile_at.clone()),
+            (String::from("game.wasm"), wasm_at.clone()),
+        ],
     )
     var listing: Vec<(String, Json)> = Vec::new()
     for (path, body) in [
@@ -964,7 +967,10 @@ fn a_deployed_site_has_each_address_and_no_release_copy_of_a_moved_file() {
         let Some(body) = read(f"{site}/{p}") else { panic(p) }
         let Some(doc) = std::json::parse(body.as_str()) else { panic(p) }
         let dir = p.slice(0, p.len() - "addresses.json".len())
-        for (path, n) in doc.members(std::json::TOP) {
+        let Some(format) = doc.get(std::json::TOP, "format") else { panic(p) }
+        assert(doc.text(format) == Some(String::from("wrela-addresses-1")), p)
+        let Some(files) = doc.get(std::json::TOP, "files") else { panic(p) }
+        for (path, n) in doc.members(files) {
             let Some(url) = doc.text(n) else { panic(p) }
             assert(there(f"{site}{url.as_str()}"), url.as_str())
             assert(!there(f"{site}/{dir}{path.as_str()}"), path.as_str())
