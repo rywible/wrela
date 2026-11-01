@@ -284,14 +284,14 @@ fn every_plant_the_vale_draws_is_grown() {
     var authored = 0
     var by_kind = [0; trees::kinds::KINDS]
     for p in placed {
-        if trees::kinds::provenance(p.kind).authored() {
+        if trees::kinds::provenance(p.kind, grown: true).authored() {
             authored += 1
             by_kind[p.kind] += 1
         }
     }
     var far = 0
     for k in trees::kinds::far_kinds() {
-        if trees::kinds::provenance(k).authored() {
+        if trees::kinds::provenance(k, grown: true).authored() {
             far += 1
         }
     }

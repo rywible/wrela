@@ -73,15 +73,15 @@ pub fn wood_floor(
     )
     // Grown, how thick the litter lies by the canopy over it and the season
     // (`growth::litter_at`): thin under a gap's light, the soil showing through.
-    let deep = engine::growth::litter_at(1.0 - light, LITTER_SEASON)
     let litter = if grown {
+        let deep = engine::growth::litter_at(1.0 - light, LITTER_SEASON)
         mix(vec3(0.09, 0.07, 0.05), litter, vec3(smoothstep(0.1, 0.6, deep)))
     } else { litter }
     // Moss where it's damp under the canopy, grown in its reaction-diffusion's patches (a cell
     // 25 cm, the wet's crowded or the dry's scattered: `moss`, each class's at the point,
     // `moss_pair`; past a cell's width, its mean); by hand, in a noise's patches.
-    let patches = mix(if wet > 0.5 { moss.x } else { moss.y }, 0.3, smoothstep(0.1, 0.5, w))
     let mossy = if grown {
+        let patches = mix(if wet > 0.5 { moss.x } else { moss.y }, 0.3, smoothstep(0.1, 0.5, w))
         smoothstep(0.3, 0.6, patches) * smoothstep(0.25, 0.7, wet + 0.3) * (1.0 - open)
     } else {
         smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) * (1.0 - open)

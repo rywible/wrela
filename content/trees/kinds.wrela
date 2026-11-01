@@ -56,9 +56,13 @@ pub const OAK_ANCIENT: u32 = 24
 pub const BEECH_ANCIENT: u32 = 25
 pub const KINDS: u32 = 26
 
-/// Kind `k`'s provenance (`engine::growth::Provenance`): grown, for an archetype (its genome's
-/// hash, its site and its seed: `archetypes`), else a hand's shape.
-pub fn provenance(k: u32) -> Provenance {
+/// Kind `k`'s provenance (`engine::growth::Provenance`) among the kinds `grown` (`kind_plant`'s):
+/// grown, for an archetype (its genome's hash, its site and its seed: `archetypes`), else a hand's
+/// shape; every one a hand's among the hand's kinds.
+pub fn provenance(k: u32, grown: bool) -> Provenance {
+    if !grown {
+        return Provenance::Authored
+    }
     match archetypes::archetype(k) {
         Some(a) => {
             let g = genomes::genomes()[a.species]
@@ -2068,8 +2072,13 @@ pub fn occluders_into(
 
 @test
 fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
-    for kind in [LOG_SHORT, LOG_LONG] {
-        let p = kind_plant(kind, grown: false)
+    for (kind, grown) in [
+        (LOG_SHORT, false),
+        (LOG_LONG, false),
+        (LOG_SHORT, true),
+        (LOG_LONG, true),
+    ] {
+        let p = kind_plant(kind, grown)
         let trunk = p.limbs[0]
         let cap = length(trunk.points[3] - trunk.points[2])
         assert(cap <= trunk.radii[1] * 0.6, f"log {kind} has a {cap} m pointed end")
@@ -2079,8 +2088,13 @@ fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
 
 @test
 fn fallen_logs_rest_on_slopes_and_clear_intervening_ground() {
-    for kind in [LOG_SHORT, LOG_LONG] {
-        let trunk = trunk_of(kind, grown: false)
+    for (kind, grown) in [
+        (LOG_SHORT, false),
+        (LOG_LONG, false),
+        (LOG_SHORT, true),
+        (LOG_LONG, true),
+    ] {
+        let trunk = trunk_of(kind, grown)
         for slope in [-0.45, 0.0, 0.45] {
             for yaw in [0.0, 0.8, 2.7] {
                 let height = |p: vec2| 2.0 + slope * (sin(yaw) * p.x + cos(yaw) * p.y)

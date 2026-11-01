@@ -504,7 +504,8 @@ pub struct Species: Copy + GpuData {
     pub genome: u32 = 0,
 }
 
-/// Species `i`'s provenance (`SPECIES`): its genome's growth, or authored where it has none.
+/// Species `i`'s provenance in the grown flora (`SPECIES`): its genome's growth, or authored
+/// where it has none (the hand's flora's, `HAND_SPECIES`, are all authored).
 pub fn species_provenance(i: u32) -> Provenance {
     let g = SPECIES[i].genome
     if g == 0 {

@@ -1,5 +1,6 @@
 // The vale's drawn things and their provenance (docs/plan-world-class-3.md §E0, G-grown): every
-// kind its wood draws (`trees::kinds::plants`, which the vale and the floor pass their landscapes),
+// kind its wood draws (`trees::kinds::plants(grown: true)`, the vale's; the floor's are the hand's
+// until it adopts them, D40),
 // every species its grass places (`engine::grass::SPECIES`), and its ground's small causes' fields
 // (`engine::growth::FIELDS`); the authored ones counted.
 
@@ -20,7 +21,7 @@ const AUTHORED_NOW: u32 = 3
 fn the_vales_authored_things_are_counted_and_fall() {
     var kinds = 0
     for k in 0..KINDS {
-        if provenance(k).authored() {
+        if provenance(k, grown: true).authored() {
             kinds += 1
         }
     }
