@@ -42,8 +42,13 @@ pub struct Game: Clone {
 
 /// The console: its package, Worker, domain, and the one-line description its page has; the
 /// Worker its server runs in (`api`), on the console's domain's API paths, as a route of its
-/// Cloudflare zone (`zone`, the domain or one it's under); and the Worker the server ran in
-/// before (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over.
+/// Cloudflare zone (`zone`, the domain or one it's under); the Worker the server ran in before
+/// (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over; and what
+/// its server's verifier plays: the game whose boards it ranks (`boards`) and their version
+/// (`board`, games/capybara/replay.wrela's `BOARD`, which a test checks). Each release keeps that
+/// verifier at `verifiers/<boards>/<board>/<sha256 of its files>/` in the bucket of builds
+/// (site.wrela's `BUILDS_BUCKET`), so a later build, of a later board, plays this board's runs with
+/// it (games/capybara/boards.wrela's `ARCHIVED`).
 pub struct Console: Clone {
     pub dir: Text,
     pub worker: Text,
@@ -52,6 +57,8 @@ pub struct Console: Clone {
     pub api: Text,
     pub zone: Text,
     pub api_from: Text,
+    pub boards: Text,
+    pub board: u32,
 }
 
 /// The reference docs: a Wrela program (`package`) beside the docs that `wrela doc --export`
@@ -85,6 +92,8 @@ pub const CATALOG: Catalog = Catalog {
         // The server ran in the console's Worker until 2026-10-31, when its first deploy here
         // took its class over (rywible/wrela#348); there's nothing left to take.
         api_from: "",
+        boards: "capybara",
+        board: 3,
     },
     docs: Docs {
         dir: "docsite",

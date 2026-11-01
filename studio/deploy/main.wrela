@@ -27,8 +27,10 @@
 // git service advertises it, as `git ls-remote` reads it) stops before it changes anything.
 //
 // Wrangler deploys each Worker (`npx --yes wrangler@<WRANGLER>`, granted as `npx`), with the
-// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. The console's
-// server deploys first, since the games and the console that call it are the release's; then the
+// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. First the
+// release's server's verifier goes into the bucket of builds (`keep_verifier`), so a later build
+// can play this board's runs; then the console's server deploys, since the games and the console
+// that call it are the release's; then the
 // games, and then the console, so a console never offers a game release its Worker doesn't serve
 // yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
 // and games up to date. Each Worker must serve the new release, byte for byte, and each kept
@@ -689,6 +691,41 @@ pub fn deploy_worker(worker: str, root: str) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Puts the release's server's verifier in the bucket of builds (release_tool::site's
+/// `BUILDS_BUCKET`), at its path, a file at a time, before any Worker deploys: a later build plays
+/// this board's runs with it (toolchain 0.18.0's `call_build`). Its path names its files' bytes, so
+/// putting it again, as each release of the same build does, changes nothing.
+pub fn keep_verifier(rel: Release, root: str) -> Result<(), ToolError> {
+    let bucket = release_tool::site::BUILDS_BUCKET
+    print(f"the server's verifier: {bucket}/{rel.verifier.as_str()}")
+    for f in rel.verifier_files {
+        let key = String::from(f"{bucket}/{rel.verifier.as_str()}/{f.as_str()}")
+        let file = String::from(f"{rel.api.as_str()}.server/verifier/{f.as_str()}")
+        let args = Vec::from(
+            [
+                String::from("r2"),
+                String::from("object"),
+                String::from("put"),
+                key.clone(),
+                String::from("--file"),
+                take file,
+                String::from("--remote"),
+            ],
+        )
+        let ran = run::run(wrangler(args, root))
+            .wait()
+            .map_err(|e| ToolError::new(f"wrangler r2 object put {key.as_str()}: {e.message()}"))?
+        let out = said(ran)?
+        if ran.status != 0 {
+            if !out.is_empty() {
+                print(out.as_str())
+            }
+            return Err(ToolError::new(f"wrangler r2 object put {key.as_str()} exited {ran.status}"))
+        }
+    }
+    Ok(())
+}
+
 // ---- The deploy --------------------------------------------------------------------------------
 
 /// The seconds since 1970, now.
@@ -741,6 +778,7 @@ pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
         print("a dry run: nothing deployed")
         return Ok(after)
     }
+    keep_verifier(rel, root)?
     deploy_worker(rel.api.as_str(), root)?
     for w in deploy_order(rel.workers) {
         deploy_worker(w.worker.as_str(), root)?

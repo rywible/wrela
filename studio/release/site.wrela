@@ -320,11 +320,37 @@ fn contains(names: [String], name: str) -> bool {
     false
 }
 
+/// The Worker secrets the console's server makes and checks its ceremonies' challenges with
+/// (platform/edge.wrela): the key in use and the one before it, so a challenge made just before a
+/// rotation still finishes. `wrangler secret put` sets each (docs/toolchain.md); the Worker gives
+/// them to the program as the request headers `KEY_HEADERS` says, which it removes from what a
+/// client sent first, since a program reads no Worker variable (docs/toolchain-gaps.md).
+pub const KEY_SECRETS: [Text; 2] = ["WRELA_CEREMONY_KEY", "WRELA_CEREMONY_KEY_OLD"]
+pub const KEY_HEADERS: [Text; 2] = ["x-wrela-key", "x-wrela-key-old"]
+
+/// The R2 bucket of archived builds' verifiers (toolchain 0.18.0's `call_build`, its binding
+/// `WRELA_BUILDS`): each release's deploy puts its server's verifier there (`verifier_path`).
+pub const BUILDS_BUCKET: Text = "wrela-builds"
+
+/// Where a release's server's verifier is kept in `BUILDS_BUCKET`: `verifiers/<game>/<board>/` and
+/// the SHA-256 of its files (addresses.wrela's `runtime_hash` of each one's name and SHA-256).
+pub fn verifier_path(game: str, board: u32, sha: str) -> String {
+    String::from(f"verifiers/{game}/{board}/{sha}")
+}
+
+/// A release's server's verifier: where it's kept (`verifier_path`), and its files' names, each
+/// in `<api>.server/verifier/` (main.wrela's `server_dir`).
+pub struct Verifier: Clone {
+    pub path: String,
+    pub files: Vec<String>,
+}
+
 /// The console's server's Worker's script, `<api>.worker.js`: it exports the server's Durable
 /// Objects, the server's and its rooms', and gives each request to the host's routers (`api`, then
-/// `rooms`: toolchain 0.15.0's `server/cloudflare.js`, in the directory `server` beside the
-/// script), which the Worker's routes bring only on the server's paths. A request neither answers
-/// is a 404.
+/// `rooms`: toolchain 0.18.0's `server/cloudflare.js`, in the directory `server` beside the
+/// script), which the Worker's routes bring only on the server's paths, with the ceremonies' keys
+/// (`KEY_SECRETS`) as the headers `KEY_HEADERS` in place of any a client sent. A request neither
+/// answers is a 404.
 pub fn api_script(server: str) -> String {
     var out = String::from(
         "// The console's server (studio/release/site.wrela). Written by the release tool.\n",
@@ -333,10 +359,20 @@ pub fn api_script(server: str) -> String {
         f"import {{ WrelaServer, WrelaRoom, api, rooms }} from \"./{server}/cloudflare.js\";\n",
     )
     out.push_str("export { WrelaServer, WrelaRoom };\n")
+    out.push_str("// The ceremonies' keys, from the Worker's secrets, never from a client.\n")
+    out.push_str("function keyed(request, env) {\n")
+    out.push_str("  const headers = new Headers(request.headers);\n")
+    for k in 0..2 {
+        let (secret, header) = (KEY_SECRETS[k], KEY_HEADERS[k])
+        out.push_str(f"  headers.delete(\"{header}\");\n")
+        out.push_str(f"  if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
+    }
+    out.push_str("  return new Request(request, { headers });\n")
+    out.push_str("}\n")
     out.push_str("export default {\n")
     out.push_str("  async fetch(request, env, ctx) {\n")
     out.push_str(
-        "    const answered = (await api(request, env, { ctx: ctx })) ?? (await rooms(request, env));\n",
+        "    const answered = (await api(keyed(request, env), env, { ctx: ctx })) ?? (await rooms(request, env));\n",
     )
     out.push_str("    return answered ?? new Response(null, { status: 404 });\n")
     out.push_str("  },\n")
@@ -578,6 +614,11 @@ fn server_members(
         c.push((k.clone(), v.clone()))
     }
     c.push(member("ratelimits", Json::List(take bindings)))
+    // The archived builds' verifiers, for `call_build` (the build names its Worker Loader).
+    var bucket: Vec<(String, Json)> = Vec::new()
+    bucket.push(member("binding", text("WRELA_BUILDS")))
+    bucket.push(member("bucket_name", text(BUILDS_BUCKET)))
+    c.push(member("r2_buckets", Json::List(Vec::from([Json::Obj(take bucket)]))))
     Ok(())
 }
 
@@ -592,6 +633,8 @@ pub fn catalog_json(c: Catalog) -> Json {
     console.push(member("api", text(c.console.api)))
     console.push(member("zone", text(c.console.zone)))
     console.push(member("api_from", text(c.console.api_from)))
+    console.push(member("boards", text(c.console.boards)))
+    console.push(member("board", Json::Int(u64(c.console.board))))
     var packages: Vec<Json> = Vec::new()
     for p in c.docs.packages {
         packages.push(text(p))
@@ -801,9 +844,16 @@ pub struct Report: Clone {
     pub bytes: u64,
 }
 
-/// `release.json`: the release's source revision, its id, the console's server's Worker, and each
-/// Worker's report.
-pub fn release_json(source: str, release: str, api: str, workers: [Report]) -> String {
+/// `release.json`: the release's source revision, its id, the console's server's Worker, its
+/// verifier (which the deploy puts in `BUILDS_BUCKET`, and which a later build names for this
+/// board: games/capybara/boards.wrela's `ARCHIVED`), and each Worker's report.
+pub fn release_json(
+    source: str,
+    release: str,
+    api: str,
+    verifier: Verifier,
+    workers: [Report],
+) -> String {
     var list: Vec<Json> = Vec::new()
     for w in workers {
         var m: Vec<(String, Json)> = Vec::new()
@@ -819,6 +869,14 @@ pub fn release_json(source: str, release: str, api: str, workers: [Report]) -> S
     top.push(member("source", text(source)))
     top.push(member("release", text(release)))
     top.push(member("api", text(api)))
+    var files: Vec<Json> = Vec::new()
+    for f in verifier.files {
+        files.push(text(f.as_str()))
+    }
+    var v: Vec<(String, Json)> = Vec::new()
+    v.push(member("path", text(verifier.path.as_str())))
+    v.push(member("files", Json::List(take files)))
+    top.push(member("verifier", Json::Obj(take v)))
     top.push(member("workers", Json::List(take list)))
     indented(Json::Obj(take top))
 }

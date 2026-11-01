@@ -16,7 +16,7 @@ use policy::{
 use release_tool::catalog::CATALOG
 use release_tool::io::{read_files, write_files}
 use release_tool::json::{Json, compact, member, text}
-use release_tool::site::{Report, api_config, release_json, replace_all, wrangler_config}
+use release_tool::site::{Report, Verifier, api_config, release_json, replace_all, wrangler_config}
 use release_tool::tree::hex_sha
 use std::tool::ToolError
 use std::tool::files
@@ -355,6 +355,7 @@ fn a_release_names_one_console() {
         "head",
         D,
         "api-host",
+        verifier(),
         [
             Report {
                 worker: String::from("c"),
@@ -381,6 +382,7 @@ fn a_release_names_one_console() {
         "head",
         D,
         "api-host",
+        verifier(),
         [
             Report {
                 worker: String::from("d"),
@@ -393,7 +395,23 @@ fn a_release_names_one_console() {
         ],
     )
     assert(read_release(none.as_str()).is_err())
-    assert(read_release(release_json("head", "D", "api-host", [])).is_err(), "an invalid id")
+    assert(
+        read_release(release_json("head", "D", "api-host", verifier(), [])).is_err(),
+        "an invalid id",
+    )
+    // Its verifier: a path of the bucket of builds, and files each a plain name, its description
+    // among them.
+    assert(r.verifier.as_str() == "verifiers/toy/7/0123abcd" && r.verifier_files.len() == 2)
+    for (from, to) in [
+        ("\"verifiers/toy/7/0123abcd\"", "\"../toy\""),
+        ("\"verifiers/toy/7/0123abcd\"", "\"builds/toy\""),
+        ("\"main.js\"", "\"../main.js\""),
+        ("\"verifier.json\"", "\"game.wasm\""),
+        ("\"verifier\"", "\"verified\""),
+    ] {
+        let other = replace_all(one.as_str(), from, to)
+        assert(other.as_str() != one.as_str() && read_release(other.as_str()).is_err(), to)
+    }
     // A release with no server's Worker isn't one.
     for bad in ["", "../x", "a b"] {
         let other = replace_all(one.as_str(), "\"api\": \"api-host\"", f"\"api\": \"{bad}\"")
@@ -475,8 +493,10 @@ fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
     if docs && !docs_first {
         reports.push(docs_report.clone())
     }
-    put(mut out, "release.json", release_json(SOURCE, D, "api-host", reports).as_str())
+    put(mut out, "release.json", release_json(SOURCE, D, "api-host", verifier(), reports).as_str())
     put(mut out, "api-host.wrangler.json", api_host_config().as_str())
+    put(mut out, "api-host.server/verifier/main.js", "verify")
+    put(mut out, "api-host.server/verifier/verifier.json", "{\"schema\": \"wrela-verify-1\"}")
     for r in reports {
         let page = [("index.html", String::from("new"))]
         put(mut out, f"{r.worker.as_str()}/releases/{D}/index.html", "new")
@@ -1005,7 +1025,13 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
         Err(e) => panic(e.message()),
     }
     let Some(log) = read("scratch/npx.log") else { panic("wrangler never ran") }
-    assert(log.as_str() == "api-host\ngame-host\nconsole-host\ndocs-host\n", log.as_str())
+    let kept = "r2 wrela-builds/verifiers/toy/7/0123abcd/main.js\nr2 wrela-builds/verifiers/toy/7/0123abcd/verifier.json\n"
+    assert(log.as_str() == f"{kept}api-host\ngame-host\nconsole-host\ndocs-host\n", log.as_str())
+    // The server's verifier, kept in the bucket of builds before any Worker deployed.
+    let Some(v) = read("scratch/r2/wrela-builds/verifiers/toy/7/0123abcd/main.js") else {
+        panic("the verifier kept")
+    }
+    assert(v.as_str() == "verify")
     for (domain, release) in [
         ("console.example", B),
         ("game.example", B),
@@ -1027,11 +1053,21 @@ fn the_server_and_games_deploy_before_the_console_the_docs_after_and_each_serves
     assert(releases(after).as_str() == "bcd")
 }
 
+/// A release's verifier, as release.json names it.
+fn verifier() -> Verifier {
+    Verifier {
+        path: String::from("verifiers/toy/7/0123abcd"),
+        files: Vec::from([String::from("main.js"), String::from("verifier.json")]),
+    }
+}
+
 fn listed_release() -> Release {
     Release {
         source: String::from("head"),
         release: String::from(D),
         api: String::from("api-host"),
+        verifier: String::from("verifiers/toy/7/0123abcd"),
+        verifier_files: Vec::from([String::from("verifier.json")]),
         workers: Vec::from(
             [
                 worker("console-host", console: true, docs: false),

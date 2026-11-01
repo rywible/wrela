@@ -43,6 +43,8 @@ fn one_game(
             api: "api-host",
             zone: console_domain,
             api_from: "",
+            boards: "capybara",
+            board: 3,
         },
         docs: Docs {
             dir: "docsite",
@@ -375,12 +377,17 @@ fn each_worker_serves_its_assets_on_its_domain_only() {
             bytes: 12,
         },
     )
-    let r = release_json("abc1234", "0123456789abcdef0123", "api-host", reports)
+    let verifier = site::Verifier {
+        path: site::verifier_path("capybara", 3, "ab12"),
+        files: Vec::from([String::from("cloudflare.js"), String::from("verifier.json")]),
+    }
+    let r = release_json("abc1234", "0123456789abcdef0123", "api-host", verifier, reports)
     assert(
         contains(
             r.as_str(),
-            "{\n  \"source\": \"abc1234\",\n  \"release\": \"0123456789abcdef0123\",\n  \"api\": \"api-host\",\n  \"workers\": [\n    {\n      \"worker\": \"console-host\",",
+            "{\n  \"source\": \"abc1234\",\n  \"release\": \"0123456789abcdef0123\",\n  \"api\": \"api-host\",\n  \"verifier\": {\n    \"path\": \"verifiers/capybara/3/ab12\",\n    \"files\": [\n      \"cloudflare.js\",\n      \"verifier.json\"\n    ]\n  },\n  \"workers\": [\n    {\n      \"worker\": \"console-host\",",
         ),
+        r.as_str(),
     )
     assert(
         contains(
@@ -437,6 +444,8 @@ fn the_console_may_fetch_its_games_files_and_shows_a_card_where_shared() {
         api: "api-host",
         zone: "console.example",
         api_from: "",
+        boards: "capybara",
+        board: 3,
     }
     let c = card(console, "R", "cover-0123456789abcdef.webp")
     assert(contains(c.as_str(), "<meta name=\"description\" content=\"Games &amp; &lt;more&gt;\">"))
@@ -1109,6 +1118,21 @@ fn workspace_members_are_the_nearest_workspaces() {
     assert(workspace_of("twice").is_err(), "two members named great_tree")
 }
 
+/// The board version the catalog says the console's server verifies is the capybara's: its
+/// verifier is kept under that version, which a later build names when that board is older.
+@test(tool, read: [("ws", "../..")], budget: 30)
+fn the_catalogs_board_is_the_games() {
+    let Ok(all) = read_files(Vec::from([String::from("ws/games/capybara/replay.wrela")])) else {
+        panic("no replay.wrela")
+    }
+    let Some(source) = String::from_utf8(all[0].clone()) else { panic("not UTF-8") }
+    let line = String::from(f"\npub const BOARD: u32 = {CATALOG.console.board}\n")
+    assert(
+        CATALOG.console.boards == "capybara" && source.as_str().find(line.as_str()).is_some(),
+        line.as_str(),
+    )
+}
+
 /// A build's deadline fits the run's budget, with 5 minutes left for the covers and the
 /// writing: the deadline counts a build's wait behind the others, so it's most of the budget.
 @test(tool, read: [("ws", "../..")], budget: 30)
@@ -1228,11 +1252,30 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
             contains(s.as_str(), "export { WrelaServer, WrelaRoom };\n") &&
             contains(
                 s.as_str(),
-                "    const answered = (await api(request, env, { ctx: ctx })) ?? (await rooms(request, env));\n",
+                "    const answered = (await api(keyed(request, env), env, { ctx: ctx })) ?? (await rooms(request, env));\n",
             ) &&
             contains(s.as_str(), "    return answered ?? new Response(null, { status: 404 });\n"),
         s.as_str(),
     )
+    // The ceremonies' keys reach the program from the Worker's secrets alone: what a client sent
+    // under their names is removed first.
+    for k in 0..2 {
+        let (secret, header) = (site::KEY_SECRETS[k], site::KEY_HEADERS[k])
+        let removed = String::from(f"  headers.delete(\"{header}\");\n")
+        let given = String::from(f"  if (env.{secret}) headers.set(\"{header}\", env.{secret});\n")
+        let (Some(r), Some(g)) = (
+            s.as_str().find(removed.as_str()),
+            s.as_str().find(given.as_str()),
+        ) else {
+            panic(s.as_str())
+        }
+        assert(r < g, "removed, then set")
+    }
+    // The archived builds' bucket, for `call_build`.
+    let Some(buckets) = c.get(top, "r2_buckets") else { panic("r2_buckets") }
+    let b = c.at(buckets, 0).unwrap()
+    assert(c.text(c.get(b, "binding").unwrap()) == Some(String::from("WRELA_BUILDS")))
+    assert(c.text(c.get(b, "bucket_name").unwrap()) == Some(String::from(site::BUILDS_BUCKET)))
     // A build that names no paths, or a path that can't be a route (an exception, a `*` before
     // its path's end), has no Worker; nor has a transfer of migrations that make no new classes.
     for (given, from, why) in [

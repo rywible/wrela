@@ -4,8 +4,9 @@
 // custom domain, has no script (release_tool::site::wrangler_config): its site becomes its
 // assets directory. A Worker of a script alone (the console's server) has routes in a zone and no
 // assets, and changes no site. Either adds the Worker's name to `scratch/npx.log` (a line each, in
-// the order they ran) and prints what it uploaded. Any other command, or a configuration of
-// assets and a script, exits 2 or more.
+// the order they ran) and prints what it uploaded. `r2 object put <bucket>/<key> --file <path>
+// --remote` puts the file at `scratch/r2/<bucket>/<key>` and adds `r2 <bucket>/<key>` to the log.
+// Any other command, or a configuration of assets and a script, exits 2 or more.
 
 use release_tool::io::{copy_files, read_files, walk, write_files}
 use std::io::print
@@ -20,6 +21,21 @@ pub fn tool() -> u32 {
     let a = args()
     if a.len() < 3 || a[0].as_str() != "--yes" || a[1].as_str() != "wrangler@4.151.0" {
         return usage()
+    }
+    let put = a.len() == 9 &&
+        a[2].as_str() == "r2" &&
+        a[3].as_str() == "object" &&
+        a[4].as_str() == "put" &&
+        a[6].as_str() == "--file" &&
+        a[8].as_str() == "--remote"
+    if put {
+        // An object of the bucket: the file, copied where the bucket keeps it.
+        let from = String::from(f"{ROOT}/{a[7].as_str()}")
+        let to = String::from(f"{ROOT}/r2/{a[5].as_str()}")
+        if copy_files(Vec::from([(take from, take to)])).is_err() {
+            return 3
+        }
+        return logged(String::from(f"r2 {a[5].as_str()}"))
     }
     let deploy = a.len() == 5 &&
         a[2].as_str() == "deploy" &&
@@ -80,20 +96,28 @@ pub fn tool() -> u32 {
             1
         },
     }
-    // The log, a line added: it isn't there before the first run.
+    let wrote = logged(worker.clone())
+    if wrote != 0 {
+        return wrote
+    }
+    print(f"Uploaded {uploaded} files of {worker.as_str()} to {domain.as_str()}")
+    0
+}
+
+/// The log, a line added (`line`): it isn't there before the first run.
+fn logged(line: String) -> u32 {
     let log = String::from(f"{ROOT}/npx.log")
     var lines: Vec<u8> = Vec::new()
     if let Ok(all) = read_files(Vec::from([log.clone()])) {
         lines = all[0].clone()
     }
-    for b in worker.as_bytes() {
+    for b in line.as_bytes() {
         lines.push(b)
     }
     lines.push(10)
     if write_files(Vec::from([(take log, take lines)])).is_err() {
         return 7
     }
-    print(f"Uploaded {uploaded} files of {worker.as_str()} to {domain.as_str()}")
     0
 }
 

@@ -546,12 +546,17 @@ pub struct Release: Clone {
     pub source: String,
     pub release: String,
     pub api: String,
+    /// Where its server's verifier is kept in the bucket of builds, and its files' names
+    /// (release_tool::site's `Verifier`).
+    pub verifier: String,
+    pub verifier_files: Vec<String>,
     pub workers: Vec<Worker>,
 }
 
 /// The release a `release.json` describes, or why it doesn't: its id must be a release's, it must
-/// name the console's server's Worker (a release component, as the catalog's names are), and
-/// exactly one Worker must be the console.
+/// name the console's server's Worker (a release component, as the catalog's names are) and its
+/// verifier (a path of the bucket of builds, and files each a plain name, `verifier.json` among
+/// them), and exactly one Worker must be the console.
 pub fn read_release(json: str) -> Result<Release, String> {
     let Some(d) = parse_json(json) else { return Err(String::from("release.json isn't JSON")) }
     let Some(s) = d.get(TOP, "source") else {
@@ -609,7 +614,37 @@ pub fn read_release(json: str) -> Result<Release, String> {
     if consoles != 1 {
         return Err(String::from("release.json needs exactly one console"))
     }
-    Ok(Release { source, release, api, workers })
+    let Some(v) = d.get(TOP, "verifier") else {
+        return Err(String::from("release.json names no verifier"))
+    }
+    let path = match d.get(v, "path") {
+        Some(p) => d.text(p).unwrap_or(String::new()),
+        None => String::new(),
+    }
+    if !path.as_str().starts_with("verifiers/") || !std::server::artifact_path(path.as_str()) {
+        return Err(String::from(f"invalid verifier's path in release.json: '{path.as_str()}'"))
+    }
+    let Some(fs) = d.get(v, "files") else {
+        return Err(String::from("release.json's verifier has no files"))
+    }
+    var verifier_files: Vec<String> = Vec::new()
+    var described = false
+    for k in 0..d.count(fs) {
+        let Some(f) = d.at(fs, k) else { return Err(String::from("a verifier's file is missing")) }
+        let Some(name) = d.text(f) else {
+            return Err(String::from("a verifier's file isn't text"))
+        }
+        let n = name.as_str()
+        if n.find("/").is_some() || !std::server::artifact_path(n) {
+            return Err(String::from(f"invalid verifier's file in release.json: '{n}'"))
+        }
+        described = described || n == "verifier.json"
+        verifier_files.push(name.clone())
+    }
+    if !described {
+        return Err(String::from("release.json's verifier has no verifier.json"))
+    }
+    Ok(Release { source, release, api, verifier: path, verifier_files, workers })
 }
 
 /// The console's Worker of `r`.
