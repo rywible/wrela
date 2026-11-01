@@ -66,7 +66,7 @@ use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--look <type>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--sustained <s>] [--starts <n>] [--tier Epic|High|Medium|Low] [--look <type>] [--set NAME=VALUE]... [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -91,6 +91,9 @@ pub struct Options: Clone {
     /// The look each scene's program is built in (`--look`: `wrela build --set LOOK=<type>`,
     /// `engine::style`, such as `styles::fixtures::Every`), or empty for its own.
     pub look: String = String::new(),
+    /// Constants each scene's program is built with (`--set NAME=VALUE`, repeatable: `wrela build
+    /// --set`, such as the floor's `GROWN_WOOD=true`), none for its own.
+    pub sets: Vec<String> = Vec::new(),
     /// The size every scene is drawn at instead of its own (`--size WxH`), or 0 × 0: for a machine
     /// whose GPU can't hold a scene at its size (its numbers then compare runs on it, no more).
     pub width: u32 = 0,
@@ -172,6 +175,13 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             k += 2
         } else if a == "--look" {
             o.look = value(k)?
+            k += 2
+        } else if a == "--set" {
+            let v = value(k)?
+            if v.as_str().split("=").len() < 2 {
+                return None
+            }
+            o.sets.push(take v)
             k += 2
         } else if a == "--size" {
             let (w, h) = toolkit::command::size_of(value(k)?.as_str())?
@@ -387,13 +397,30 @@ pub fn labelled(name: str, tier: str, look: str) -> String {
     String::from(name)
 }
 
-/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier` and in
-/// `look` (each the program's own if empty) unless an earlier scene's was (`build`), and its gate
-/// script written beside it: the build's directory and the script's file there.
+/// A row's name `label` with the constants its program was built with (`sets`), where there are
+/// any (`last-green-walk [GROWN_WOOD=true]`).
+pub fn with_sets(label: take String, sets: [String]) -> String {
+    if sets.is_empty() {
+        return label
+    }
+    var out = String::from(f"{label.as_str()} [")
+    for i in 0..sets.len() {
+        out.push_str(if i == 0 { "" } else { ", " })
+        out.push_str(sets[i].as_str())
+    }
+    out.push_str("]")
+    out
+}
+
+/// Scene `s`'s package (in the root `ws`) built into the write root `out` at `tier`, in `look`
+/// (each the program's own if empty) and with the constants `sets` (`NAME=VALUE`) unless an
+/// earlier scene's was (`build`), and its gate script written beside it: the build's directory and
+/// the script's file there.
 fn prepared(
     s: Scene,
     tier: str,
     look: str,
+    sets: [String],
     build: bool,
     ws: str,
     out: str,
@@ -411,6 +438,15 @@ fn prepared(
         if look.len() > 0 {
             options.set.push(
                 toolchain::Set { name: String::from("LOOK"), value: String::from(look) },
+            )
+        }
+        for v in sets {
+            let (a, b) = v.as_str().split("=")[0]
+            options.set.push(
+                toolchain::Set {
+                    name: String::from(v.as_str().slice(a, b)),
+                    value: String::from(v.as_str().slice(b + 1, v.len())),
+                },
             )
         }
         let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
@@ -496,7 +532,7 @@ pub fn starts(
     out: str,
     kept: str,
 ) -> Result<(Vec<f64>, Vec<f64>), ToolError> {
-    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), o.sets, build, ws, out)?
     let frames = min(o.warmup + s.frames, STARTS_FRAMES)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let hash = page_hash(frames, s.width, s.height, o.workers, input_file.as_str())
@@ -544,7 +580,7 @@ pub fn measure(
     for r in RUNS {
         runs.push(String::from(f"{kept}/{s.name}/{r}"))
     }
-    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), build, ws, out)?
+    let (dir, input_file) = prepared(s, o.tier.as_str(), o.look.as_str(), o.sets, build, ws, out)?
     let input = script(s.name)
     // A walk's frames count from its start (`Scene::walks`), after its load.
     let from = max(o.warmup, s.walks)
@@ -716,7 +752,7 @@ pub fn measure(
         native = stats(take calls)
     }
     let m = Measured {
-        scene: labelled(s.name, o.tier.as_str(), o.look.as_str()),
+        scene: with_sets(labelled(s.name, o.tier.as_str(), o.look.as_str()), o.sets),
         span,
         interval: stats(take between),
         over_16,
