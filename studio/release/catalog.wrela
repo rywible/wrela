@@ -122,7 +122,8 @@ pub const CATALOG: Catalog = Catalog {
                 cover: "games/capybara/cover.png",
                 // The first frame of the attract build, 4:3 (games/capybara/main.wrela's `HERO`).
                 hero: "games/capybara/hero.png",
-                logo: "",
+                // The name set in the game's lettering (`wrela tool title`).
+                logo: "games/capybara/title.png",
                 // No tagline: the title and its actions alone (Ryan, 2026-11-01).
                 tagline: "",
                 theme: "games/capybara/theme.txt",

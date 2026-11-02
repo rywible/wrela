@@ -1,0 +1,204 @@
+// The title tool (`wrela tool title`): O'Capy's title art, its name set in its lettering
+// (games/capybara/lettering.wrela), which the release ships for the console's home in place of
+// the title (studio/release's catalog: `logo`); and every character of the lettering on a sheet,
+// to look at.
+//
+// ```text
+// wrela tool title
+// wrela tool title -- --specimen
+// ```
+//
+// The title art is games/capybara/title.png: the name's letters cream, ringed in the game's ink,
+// on a clear ground, as wide as `WIDE` pixels. The sheet is build/lettering/specimen.png: each
+// Latin-1 character in rows, then a line of the game's words. Both are drawn from the letters'
+// strokes on the CPU, a pixel's coverage its signed distance to the ink, so they're as sharp as
+// the strokes at any size.
+
+use capybara::lettering::{D, H, placed, to_segment}
+use std::io::print
+use std::tool::ToolError
+use std::tool::args
+use std::tool::image
+use toolkit::whole::{blob_of, chunked, write_png}
+use ui::ttf::{LATIN1, latin1}
+
+pub const USAGE: Text = "usage: wrela tool title [-- --specimen]"
+
+/// The title art's pixels per em, and its width (pixels).
+pub const TITLE_EM: f32 = 300.0
+
+/// The ink's width round a title letter (ems), and the colours: the letters' cream, the ink's
+/// brown (the signs' frames).
+const RIM: f32 = 0.05
+const CREAM: vec3 = vec3(1.0, 0.973, 0.906)
+const INK: vec3 = vec3(0.29, 0.184, 0.114)
+
+/// The specimen's pixels per em, and the paper's colour.
+const SHEET_EM: f32 = 64.0
+const PAPER: vec3 = vec3(0.965, 0.937, 0.851)
+
+/// How the title's letters bounce: each one's lift (ems) and tilt (degrees), in turn, round
+/// its middle at half the x-height. O'Capy has six.
+const BOUNCE: [vec2; 6] = [
+    vec2(0.0, -4.0),
+    vec2(0.05, 6.0),
+    vec2(0.03, -5.0),
+    vec2(-0.03, 4.0),
+    vec2(0.02, -3.0),
+    vec2(-0.02, 5.0),
+]
+
+/// The space the title adds between its letters (ems), so their rims don't run together.
+const TRACK: f32 = 0.035
+
+/// Text set in the lettering: each stroke's segment (pixels from the line's start at the
+/// baseline, up), and how far the text runs (pixels).
+struct Set {
+    segments: Vec<vec4>,
+    width: f32,
+}
+
+/// `text` set at `em` pixels per em from `at` (pixels, up), its `i`th letter lifted and tilted
+/// by `bounce[i]` (none past them).
+fn set(text: str, em: f32, at: vec2, bounce: [vec2]) -> Set {
+    var segments: Vec<vec4> = Vec::new()
+    var pen = 0.0
+    var i = 0
+    var n = 0
+    while i < text.len() {
+        let (c, len) = text.char_at(i).unwrap_or((63, 1))
+        i += len
+        let (s, advance) = placed(c)
+        let b = if n < bounce.len() { bounce[n] } else { vec2(0.0) }
+        n += 1
+        let turn = b.y * 0.017453292
+        let (cs, sn) = (cos(turn), sin(turn))
+        let middle = vec2(advance * 0.5, 0.26)
+        let place = |q: vec2| -> vec2 {
+            let r = q - middle
+            (vec2(r.x * cs - r.y * sn, r.x * sn + r.y * cs) + middle + vec2(0.0, b.x)) * em +
+                vec2(pen, 0.0) +
+                at
+        }
+        for path in s.paths {
+            for k in 0..path.len() {
+                let a = place(path[k])
+                let e = if k + 1 < path.len() { place(path[k + 1]) } else { a }
+                if k + 1 < path.len() || path.len() == 1 { segments.push(vec4(a.x, a.y, e.x, e.y)) }
+            }
+        }
+        pen += (advance + if bounce.is_empty() { 0.0 } else { TRACK }) * em
+    }
+    Set { segments, width: pen }
+}
+
+impl Set {
+    /// The distance from pixel `q` to the nearest stroke's middle (pixels), looking only at
+    /// segments within `reach`.
+    fn distance(self, q: vec2, reach: f32) -> f32 {
+        var d = 1.0e9
+        for g in self.segments {
+            if q.x < min(g.x, g.z) - reach || q.x > max(g.x, g.z) + reach { continue }
+            if q.y < min(g.y, g.w) - reach || q.y > max(g.y, g.w) + reach { continue }
+            d = min(d, to_segment(q, g.xy, g.zw))
+        }
+        d
+    }
+}
+
+/// An image `w` × `h` of RGBA8, rows from the top, as `shade` colours each pixel (its centre, up
+/// from the bottom row).
+fn painted(w: u32, h: u32, shade: fn(vec2) -> vec4) -> Result<image::Image, ToolError> {
+    var bytes: Vec<u8> = Vec::with_capacity(w * h * 4)
+    for row in 0..h {
+        for col in 0..w {
+            let c = shade(vec2(f32(col) + 0.5, f32(h - row) - 0.5))
+            for k in 0..4 {
+                bytes.push(u8(floor(clamp(c[k], 0.0, 1.0) * 255.0 + 0.5)))
+            }
+        }
+    }
+    let pixels = blob_of(chunked(take bytes))?
+    Ok(image::Image { width: w, height: h, rgba: std::tool::blob::Data::Blob(pixels) })
+}
+
+/// The title art: "O'Capy" cream, ringed in ink, on a clear ground.
+fn title() -> Result<(), ToolError> {
+    let em = TITLE_EM
+    let pad = (RIM + 0.04) * em
+    let line = set("O'Capy", em, vec2(pad, pad - (D - H - 0.05) * em), BOUNCE)
+    let w = u32(ceil(line.width + 2.0 * pad))
+    let h = u32(ceil((0.7 + H + 0.08 - (D - H - 0.05)) * em + 2.0 * pad))
+    let (half, rim) = (H * em, RIM * em)
+    let img = painted(w, h, |q| {
+        let d = line.distance(q, half + rim + 2.0)
+        let ink = clamp(half + rim - d + 0.5, 0.0, 1.0)
+        let fill = clamp(half - d + 0.5, 0.0, 1.0)
+        // Premultiplied over nothing, then straight: the cream inside the ink.
+        let colour = INK * (ink - fill) + CREAM * fill
+        if ink <= 0.0 { vec4(0.0) } else { vec4(colour / ink, ink) }
+    })?
+    write_png(take img, "game/title.png")?
+    print(f"title: wrote games/capybara/title.png, {w} x {h}")
+    Ok(())
+}
+
+/// The specimen: Latin-1 in rows of 24, then the game's words, ink on paper.
+fn specimen() -> Result<(), ToolError> {
+    let em = SHEET_EM
+    let per_row = 24
+    let rows = (LATIN1 + per_row - 1) / per_row
+    let cell = em * 0.9
+    let lines: [Text; 4] = [
+        "O'Capy: Run, swim and slide through nine habitats",
+        "Splash for speed! Run through water to speed up.",
+        "The Capybara Wetlands  0:42.18  Best 1:07.55",
+        "Pause  Restart  Options  Back  Leaderboard  Race",
+    ]
+    let w = u32(cell * f32(per_row) + em)
+    let h = u32(f32(rows) * em * 1.2 + f32(lines.len()) * em * 1.1 + em)
+    var sets: Vec<Set> = Vec::new()
+    for i in 0..LATIN1 {
+        let c = latin1(i)
+        let (col, row) = (i % per_row, i / per_row)
+        var text = String::new()
+        text.push_char(c)
+        let at = vec2(em * 0.5 + f32(col) * cell, f32(h) - em * 1.0 - f32(row) * em * 1.2)
+        sets.push(set(text.as_str(), em * 0.75, at, []))
+    }
+    for k in 0..lines.len() {
+        let y = f32(h) - em * 1.2 * f32(rows) - em * 1.0 - f32(k) * em * 1.1
+        sets.push(set(lines[k], em * 0.62, vec2(em * 0.5, y), []))
+    }
+    let half = H * em
+    let img = painted(w, h, |q| {
+        var d = 1.0e9
+        for s in sets {
+            d = min(d, s.distance(q, em))
+        }
+        let ink = clamp(half * 0.75 - d + 0.5, 0.0, 1.0)
+        let colour = PAPER * (1.0 - ink) + INK * ink
+        vec4(colour, 1.0)
+    })?
+    write_png(take img, "out/specimen.png")?
+    print(f"title: wrote build/lettering/specimen.png, {w} x {h}")
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let given = args()
+    let done = if given.is_empty() { title() } else if given.len() == 1 &&
+        given[0].as_str() == "--specimen" {
+        specimen()
+    } else {
+        print(USAGE)
+        return 2
+    }
+    match done {
+        Ok(_) => 0,
+        Err(e) => {
+            print(f"title: {e.message()}")
+            1
+        },
+    }
+}

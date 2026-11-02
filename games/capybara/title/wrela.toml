@@ -1,0 +1,9 @@
+# The title tool: O'Capy's title art set in its lettering (games/capybara/lettering.wrela), and a
+# sheet of every character of the lettering (main.wrela says how).
+[package]
+name = "capybara_title"
+
+[dependencies]
+capybara = { workspace = true }
+toolkit = { workspace = true }
+ui = { workspace = true }

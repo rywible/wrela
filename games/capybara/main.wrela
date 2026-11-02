@@ -361,7 +361,7 @@ pub struct Lab {
 
 pub fn init() -> Lab {
     let latest = run(live(FIRST), hz: HZ, step: tick_live, present: present_live)
-    let fonts = Fonts::load()
+    let fonts = lettering::fonts()
     let renderer = Renderer::new(fonts)
     let shown = cast(course(FIRST))
     Lab {

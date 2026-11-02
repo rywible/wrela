@@ -272,6 +272,13 @@ pub struct Console {
     stick: vec2,
     clicked: Option<vec2>,
     pressed: Option<vec2>,
+    // How the person can play (`touch_only`): whether a pointer has moved with no button held
+    // (a mouse's or a trackpad's hover), whether one is held, whether a press came with no hover
+    // ever before it (a touch screen's tap), and whether keys or a pad were used.
+    hovered: bool,
+    holding: bool,
+    tapped: bool,
+    keyed: bool,
     // Where the pointer is (logical pixels), what it is over, and the cursor shown for it.
     pointer: Option<vec2>,
     hover: Option<Action>,
@@ -429,6 +436,10 @@ pub fn init() -> Console {
         stick: vec2(0.0),
         clicked: None,
         pressed: None,
+        hovered: false,
+        holding: false,
+        tapped: false,
+        keyed: false,
         pointer: None,
         hover: None,
         glowing: None,
@@ -1294,7 +1305,7 @@ fn keycap(s: mut Console, at: vec2, cap: str, label: str) -> f32 {
 }
 
 fn footer(s: mut Console, w: f32, h: f32, margin: f32) {
-    if s.input == Input::Pointer || w < 560.0 { return }
+    if s.input == Input::Pointer || w < 560.0 || touch_only(s) { return }
     let (select, back) = if s.input == Input::Pad { ("A", "B") } else { ("Enter", "Esc") }
     var hints: Vec<(Text, Text)> = Vec::new()
     hints.push((select, "Select"))
@@ -1310,6 +1321,19 @@ fn footer(s: mut Console, w: f32, h: f32, margin: f32) {
     }
     var x = w - margin - total
     for hint in hints { x += keycap(mut s, vec2(x, h - 46.0), hint.0, hint.1) }
+}
+
+// The shortest side of a phone's screen, in CSS pixels, and past it a tablet's or a computer's.
+const PHONE_SIDE: f32 = 500.0
+
+// Whether the person seems to have a touch screen alone, which the games can't be played with
+// yet (Ryan, 2026-11-01: mobile is deferred, with a notice to play on a computer): a phone's
+// screen, or a tap with no pointer ever hovering first, unless keys or a pad have been used. The
+// host doesn't say what kind of pointer a press is (docs/toolchain-gaps.md).
+fn touch_only(s: Console) -> bool {
+    let side = min(s.drawn_size.0, s.drawn_size.1)
+    let phone = side > 0 && f32(side) / s.pixel_ratio < PHONE_SIDE
+    (phone || s.tapped) && !s.keyed
 }
 
 fn status(s: Console) -> String {
@@ -1429,6 +1453,10 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         let at = vec2(margin, line_top(s, Face::Sans, size, middle) + lift)
         text(mut s, card.title, size, at, vec4(INK.xyz, fade * (1.0 - s.logo_in)))
     }
+    if touch_only(s) {
+        notice(mut s, margin, top, room, fade)
+        return
+    }
     // The actions in a line, the first the call to action, then Try again after a failure. Too
     // wide for the screen, the call leaves out where it continues (the progress says), then the
     // buttons hug their labels, and then the quieter actions wait for Try again.
@@ -1457,6 +1485,24 @@ fn library(s: mut Console, w: f32, h: f32, margin: f32) {
         button(mut s, a, r, 1, labels[i], primary: primary)
         at = r.right() + 10.0
     }
+}
+
+// Where the actions would be, on a touch screen alone: what the games need, and where to play.
+fn notice(s: mut Console, margin: f32, top: f32, room: f32, fade: f32) {
+    let lines: [Text; 2] = ["Play on a computer", "The games need a keyboard or a gamepad for now."]
+    let first = fitted(s, lines[0], CALL + 2.0, room, Face::Sans)
+    let middle = top + 12.0
+    text(
+        mut s,
+        lines[0],
+        first,
+        vec2(margin, line_top(s, Face::Sans, first, middle)),
+        vec4(INK.xyz, fade),
+    )
+    let second = fitted(s, lines[1], 14.0, room, Face::Sans)
+    let below = middle + 26.0
+    let tone = vec4(INK.xyz, 0.72 * fade)
+    text(mut s, lines[1], second, vec2(margin, line_top(s, Face::Sans, second, below)), tone)
 }
 
 // The shelf: each game's cover on a flat tile along the bottom, in the catalog's order, the
@@ -1656,20 +1702,25 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             Event::PointerMove { at, .. } => {
                 s.pointer = Some(at / s.zoom)
                 s.input = Input::Pointer
+                if !s.holding { s.hovered = true }
             },
             Event::PointerDown { at, button: Button::Primary, .. } => {
                 s.pointer = Some(at / s.zoom)
                 s.pressed = Some(at)
                 s.intro_until = 0.0
                 s.input = Input::Pointer
+                s.holding = true
+                if !s.hovered { s.tapped = true }
             },
             Event::PointerUp { at, button: Button::Primary, .. } => {
                 s.clicked = Some(at)
                 s.intro_until = 0.0
                 s.input = Input::Pointer
+                s.holding = false
             },
             Event::KeyDown { key, repeat, mods } => {
                 s.input = Input::Keys
+                s.keyed = true
                 s.intro_until = 0.0
                 if key == Key::Enter && !repeat { s.enter = true }
                 if key == Key::Right { navigate(mut s, Move::Right) }
@@ -1682,6 +1733,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             },
             Event::PadButton { button, pressed: true, .. } => {
                 s.input = Input::Pad
+                s.keyed = true
                 s.intro_until = 0.0
                 if button == PadButton::South { s.enter = true }
                 if button == PadButton::East { open_pane(mut s, Pane::Games) }
