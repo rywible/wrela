@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A pointer event doesn't say which pointer, or what kind
+
+- **Needed:** the capybara played on a phone: a thumb held on an on-screen pad while the other taps jump, so two touches at once, each followed from press to release; and the console knowing a touch screen from a mouse, to say the games need a keyboard or a gamepad (Ryan, 2026-11-01: mobile deferred, "some sort of notice to switch to desktop to play").
+- **What happens:** toolchain 0.18.0's `Event::PointerMove`, `PointerDown` and `PointerUp` carry a position, a button and the modifiers alone. The browser host keeps each pointer by its `pointerId` and knows its `pointerType`, but passes neither on, so two touches arrive as one stream of presses and moves with no way to tell them apart, and a tap reads as a click.
+- **Found:** 2026-11-01, asked whether the game could work on mobile.
+- **Evidence:** `std::input::Event` (`wrela doc std::input::Event`, 0.18.0); runtime/browser/src/listen.ts's `press` and `sample` (wrela-compiler) key `pointers` by `e.pointerId` and put `pointerEvent(kind, x, y, button, modifiers)` with neither the id nor `e.pointerType`.
+- **Meanwhile:** no touch play. The console guesses a touch screen alone (console/main.wrela's `touch_only`: a screen under 500 CSS pixels on its shortest side, or a press with no hover ever before it, unless keys or a pad were used) and shows "Play on a computer" in place of its actions.
+- **Status:** open: a pointer's id and kind (mouse, pen, touch) on each pointer event, and the environment saying whether the device's main pointer is coarse.
+
 ### A server can't read its Worker's secrets
 
 - **Needed:** the console's server making and checking its ceremonies' challenges with a key no one else holds (docs/plan-online-play.md step 14: `nonce ‖ expiry ‖ HMAC-SHA256(key, ...)`, "a Worker secret, two for rotation"), set with `wrangler secret put` and never in the repository.

@@ -1496,7 +1496,7 @@ fn the_menu_puts_the_essentials_first_in_rows_a_glance_and_a_thumb_can_find() {
     let u = unit(screen)
     let (r, items) = list_rects(screen, MENU)
     let (_, options) = list_rects(screen, OPTIONS)
-    let fonts = Fonts::load()
+    let fonts = lettering::fonts()
     let (_, _, _, label, _) = shape(MENU)
     for i in 0..items.len() {
         assert(items[i].h >= u * 9.0 && items[i].h > options[0].h, f"item {i} a taller row")
@@ -1532,7 +1532,7 @@ fn a_page_s_tree_names_its_items_by_their_nodes() {
 
 @test
 fn a_controller_has_no_button_for_the_music_and_the_row_leaves_it_out() {
-    let fonts = Fonts::load()
+    let fonts = lettering::fonts()
     assert(act_width(fonts, Act::Music, Device::Pad, 30.0) == 0.0)
     assert(act_width(fonts, Act::Music, Device::Keys, 30.0) == 30.0)
     var l = DrawList::new()
@@ -1558,7 +1558,7 @@ fn a_controller_has_no_button_for_the_music_and_the_row_leaves_it_out() {
 
 @test
 fn the_screen_of_what_posting_makes_public_is_a_dialog_with_its_box_and_buttons() {
-    let fonts = Fonts::load()
+    let fonts = lettering::fonts()
     for screen in [vec2(1280.0, 720.0), vec2(640.0, 360.0), vec2(800.0, 1200.0)] {
         let laid = posting_laid(fonts, screen)
         assert(

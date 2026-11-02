@@ -28,6 +28,7 @@ members = [
     "games/capybara/route",
     "games/capybara/budget",
     "games/capybara/keys",
+    "games/capybara/title",
     "games/capybara/session",
     "games/capybara/tests/attract",
     "games/last-green/session",
@@ -238,6 +239,12 @@ write = ["game=games/capybara"]
 
 # The keys (games/capybara/keys): a page on which Ryan plays the game's piano from the computer's
 # keyboard over the music's accompaniment, and keeps the takes he likes in its takes.wrela.
+# The title tool (games/capybara/title): O'Capy's title art, set in its lettering, written as the
+# game's title.png; with `--specimen`, every character of the lettering on a sheet in build/lettering.
+[tools.title]
+package = "games/capybara/title"
+write = ["game=games/capybara", "out=build/lettering"]
+
 [tools.keys]
 package = "games/capybara/keys"
 read = ["ws=."]
