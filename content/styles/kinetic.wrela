@@ -14,10 +14,13 @@
 // - **Deliberately imperfect.** The marks boil (`BOIL_HZ`): every lattice is moved and every line
 //   wanders at each step and is held between (`engine::marks`), as a hand redraws a held drawing.
 //   The paper's tooth stays put; only the drawing moves.
-// - **The moment.** The program's intensity (`engine::frame::Frame::intensity`) rises with action:
-//   the light's contrast hardens, the shadows deepen toward the ink, the hatching thickens, the
-//   lines break into strokes (`LINE_FRACTURE`), and streaks gather round the frame's edge, then
-//   resolve as it falls. Quiet, it's painterly: soft paper, atmospheric depth, few marks.
+// - **The moment.** The program's intensity (`engine::frame::Frame::intensity`) rises with action,
+//   and the fighters carry it, as a fight's key animation does when it turns to rough sketches
+//   (fewer drawings a second, each drawn afresh): their lines double and triple, stray either side
+//   of the form and break (`SKETCH_*`, `engine::marks`), redrawn with each of their drawings;
+//   their shadow takes rough hatching on the screen's plane, redrawn the same way; their colour
+//   drains toward ink on paper (`DRAIN`). The world's light hardens and its shadows deepen with
+//   it; its lines stay clean. Quiet, it's painterly: soft paper, atmospheric depth, few marks.
 
 use cel::{PALETTE, ramp}
 use engine::light::{LUMA, Light, Lit}
@@ -71,22 +74,32 @@ pub const CREASE_PX: f32 = 10.0
 pub const CREASE_DARK: f32 = 0.7
 /// The lines: how much light they leave (`engine::paint::Look::line_dark`: near none, ink), their
 /// width the program's (`engine::paint::Look::line_px`, which it may thicken with the moment), how
-/// often a second the drawing is redrawn and how far a line wanders at each (on threes: 8 a
-/// second), and how much of a line breaks away at the moment's height.
+/// often a second the world's drawing is redrawn and how far a line wanders at each (on threes: 8
+/// a second).
 pub const LINE_DARK: f32 = 0.12
 pub const BOIL_HZ: f32 = 8.0
 pub const BOIL_PX: f32 = 0.9
-pub const LINE_FRACTURE: f32 = 0.55
+/// The fighters' lines at the moment's height: two more strokes each, straying up to 5 output
+/// pixels from the form, half of each broken away (`engine::style::Style::SKETCH_STROKES` …).
+pub const SKETCH_STROKES: f32 = 2.0
+pub const SKETCH_PX: f32 = 5.0
+pub const SKETCH_BREAK: f32 = 0.5
+/// How far a fighter's colour drains toward ink on paper at the moment's height (its luma, warmed
+/// toward the paper), from half the height up.
+pub const DRAIN: f32 = 0.7
+/// A fighter's rough hatching: its lines' angle on the screen (steeper than the world's: a fast
+/// hand's), and how much wider or finer each stroke is than the hatching's, by its seed.
+pub const ROUGH_ANGLE: f32 = 1.15
+pub const ROUGH_WIDE: f32 = 0.8
+/// Where a fighter's rough hatching comes in (of the density, 1 less its linear luma), and where
+/// its crossing does.
+pub const ROUGH_SHADE: f32 = 0.72
+pub const ROUGH_DEEP: f32 = 0.96
 /// The paper: its white, its tooth (a fibrous grain fixed to the screen), and the ink's colour
 /// (a warm black, not a pure one).
 pub const PAPER: vec3 = vec3(0.97, 0.94, 0.88)
 pub const TOOTH: f32 = 0.06
 pub const INK_COLOUR: vec3 = vec3(0.10, 0.07, 0.06)
-/// The moment's streaks: how many round the frame, from how far out (of the half diagonal), and
-/// how dark at the moment's height.
-pub const STREAKS: f32 = 140.0
-pub const STREAK_FROM: f32 = 0.55
-pub const STREAK_DARK: f32 = 0.55
 
 /// The Kinetic Ink look (`engine::style::Style`).
 pub struct Kinetic {}
@@ -135,6 +148,19 @@ fn hatch_lines(m: MarkSample, a: f32) -> f32 {
     1.0 - smoothstep(0.5 * HATCH_WIDE - 0.75, 0.5 * HATCH_WIDE + 0.75, d)
 }
 
+/// Rough strokes across angle `a` at the pixel (`m`, a fighter's screen lattice): one a cell, each
+/// `ROUGH_WIDE` wider or finer than the hatching's by its seed, and broken along its length where
+/// a noise of the cell and its place says, as a fast hand's hatching is.
+fn rough_lines(m: MarkSample, a: f32) -> f32 {
+    let across = -sin(a) * m.place.x + cos(a) * m.place.y
+    let along = cos(a) * m.place.x + sin(a) * m.place.y
+    let row = floor(across)
+    let w = HATCH_WIDE * (1.0 + ROUGH_WIDE * (hash2(i32(row), i32(m.seed & 1023)) - 0.5))
+    let d = abs(fract(across) - 0.5) * m.size_px
+    let kept = step(0.35, noise3(vec3(along * 0.7, row * 3.1, f32(m.seed & 255))))
+    kept * (1.0 - smoothstep(0.5 * w - 0.75, 0.5 * w + 0.75, d))
+}
+
 /// The hatching's ink at a pixel (0 to 1): its first layer at the hand's angle (`HATCH_ANGLE`)
 /// where the density passes `SHADE`, its second crossed at 60° past `DEEP` (lowered by the
 /// moment). A thin
@@ -145,10 +171,23 @@ pub fn hatched(m: MarkSample, intensity: f32) -> f32 {
     let first = smoothstep(SHADE - 0.06, SHADE + 0.06, density)
     let deep = DEEP - SURGE * intensity
     let second = smoothstep(deep - 0.06, deep + 0.06, density)
-    let thin = m.class == style::LEAVES ||
-        m.class == style::GRASS ||
-        m.class == style::FLOWER ||
-        m.class == style::CREATURE
+    // A fighter: a wash while quiet; rough strokes on the screen's plane as the moment rises
+    // (`engine::marks` gives a sketching look's character that lattice, redrawn with each of its
+    // drawings), each stroke its own width and broken along its length.
+    // Only in its real shadow (`ROUGH_SHADE`), crossed only where it's deepest (`ROUGH_DEEP`): a
+    // hand hatching a figure fast marks its shadow side, not the whole of it.
+    if m.class == style::CREATURE {
+        let wash = 0.3 * first + 0.25 * second
+        let rough = smoothstep(0.3, 0.8, intensity)
+        if rough <= 0.0 {
+            return wash
+        }
+        let shade = smoothstep(ROUGH_SHADE - 0.05, ROUGH_SHADE + 0.05, density)
+        let deepest = smoothstep(ROUGH_DEEP - 0.04, ROUGH_DEEP + 0.04, density)
+        let strokes = max(shade * rough_lines(m, ROUGH_ANGLE), deepest * rough_lines(m, -0.35))
+        return mix(wash, strokes, rough)
+    }
+    let thin = m.class == style::LEAVES || m.class == style::GRASS || m.class == style::FLOWER
     if thin {
         return 0.3 * first + 0.25 * second
     }
@@ -166,24 +205,6 @@ pub fn tooth(px: vec2) -> f32 {
     TOOTH * (0.7 * fibre + 0.3 * speck)
 }
 
-/// The moment's streaks at output pixel `px` (0 to 1): thin wedges round the frame's middle, from
-/// `STREAK_FROM` of the half diagonal out, as many as `STREAKS`, each present or not by a hash of
-/// its wedge and the drawing's step, coming in past half the moment's height.
-pub fn streak(px: vec2, d: Develop) -> f32 {
-    let intensity = d.moment.x
-    if intensity <= 0.5 {
-        return 0.0
-    }
-    let q = (px - 0.5 * d.out) / (0.5 * length(d.out))
-    let r = length(q)
-    let wedge = (atan2(q.y, q.x) / 6.2831853 + 0.5) * STREAKS
-    let cell = floor(wedge)
-    let on = step(0.62, hash2(i32(cell), i32(d.moment.y) * 7 + 3))
-    let thin = 1.0 - smoothstep(0.08, 0.3, abs(fract(wedge) - 0.5))
-    let out = smoothstep(STREAK_FROM, STREAK_FROM + 0.35, r)
-    on * thin * out * smoothstep(0.5, 1.0, intensity)
-}
-
 impl Style for Kinetic {
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
@@ -192,7 +213,9 @@ impl Style for Kinetic {
     const LINE_DARK: f32 = LINE_DARK
     const BOIL_HZ: f32 = BOIL_HZ
     const BOIL_PX: f32 = BOIL_PX
-    const LINE_FRACTURE: f32 = LINE_FRACTURE
+    const SKETCH_STROKES: f32 = SKETCH_STROKES
+    const SKETCH_PX: f32 = SKETCH_PX
+    const SKETCH_BREAK: f32 = SKETCH_BREAK
     const HIGHLIGHT: f32 = 0.92
     type Out = Written
 
@@ -219,7 +242,9 @@ impl Style for Kinetic {
     /// its own colours, which are its design.
     fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
         if class == style::CREATURE {
-            return albedo
+            let drain = DRAIN * smoothstep(0.5, 1.0, light.moment.x)
+            let paper = PAPER * (dot(albedo, LUMA) * 1.25)
+            return mix(albedo, paper, vec3(drain))
         }
         cel::palette_of::<Kinetic>(light, class, history, albedo)
     }
@@ -251,8 +276,8 @@ impl Style for Kinetic {
     }
 
     /// The physical look's exposure and tone, then the paper: its warm white under the image's
-    /// highlights, its tooth, the ink's warm black in the darks; the moment's streaks and a
-    /// vignette that closes in as it rises.
+    /// highlights, its tooth, the ink's warm black in the darks, and a light vignette (the frame's
+    /// edges hold nothing of the moment's: the fighters carry it).
     fn lens(
         paint: vec3,
         px: vec2,
@@ -267,10 +292,7 @@ impl Style for Kinetic {
         var c = mix(base, PAPER * l * 1.08, vec3(0.25 * smoothstep(0.5, 1.0, l)))
         c = mix(INK_COLOUR, c, vec3(smoothstep(0.0, 0.07, l) * 0.8 + 0.2))
         c = c * (1.0 + tooth(px))
-        let intensity = d.moment.x
-        c = mix(c, INK_COLOUR, vec3(STREAK_DARK * streak(px, d)))
         let uv = px / d.out - vec2(0.5)
-        let vignette = (0.35 + 0.9 * intensity) * dot(uv, uv)
-        vec4(c * (1.0 - vignette), 1.0)
+        vec4(c * (1.0 - 0.3 * dot(uv, uv)), 1.0)
     }
 }

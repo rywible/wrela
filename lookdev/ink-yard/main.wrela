@@ -11,10 +11,13 @@
 //
 //     wrela build lookdev/ink-yard --set LOOK=styles::physical::Physical --set SWITCHES=Realistic
 //
-// Its clip is drawn on twos (`DRAWINGS` a second, `engine::clip::held`); the camera and the sim
+// The fighter is drawn on twos (`DRAWINGS` a second); past half the moment's height on fours
+// (`FIGHT_DRAWINGS`), as a fight's key animation drops to rough drawings held longer, and the
+// frame redraws its sketched lines and hatching with each new drawing (`Frame::drawing`). The
+// camera and the sim
 // move every frame.
 
-use engine::clip::{Playhead, blended, held, palette, pose}
+use engine::clip::{Playhead, blended, palette, pose, rest}
 use engine::character::{ByChannels, cast, parts_of, placed}
 use engine::frame::{Aim, Frame, Gathered, Quality}
 use engine::light::sunlight
@@ -59,6 +62,8 @@ impl Switches for Realistic {}
 pub const CYCLE: f32 = 6.0
 pub const FIRST: f32 = 2.5
 pub const DRAWINGS: f32 = 12.0
+pub const FIGHT_DRAWINGS: f32 = 6.0
+pub const FIGHT_FROM: f32 = 0.5
 /// The blow's stop (seconds held as it lands), and how long a clip takes to cross into the next.
 pub const STOP: f32 = 0.12
 pub const CROSS: f32 = 0.12
@@ -80,6 +85,10 @@ pub struct State {
     /// The strike's playhead, and whether its blow has been stopped on.
     head: Playhead,
     stopped: bool,
+    /// The fighter's drawing: its pose, when it was drawn, and how many drawings there have been.
+    locals: [engine::clip::Local; engine::creature::MAX_BONES],
+    drawn_at: f32,
+    drawing: f32,
     last: Option<f32>,
     /// The moment's intensity, as the strike drives it.
     pub intensity: f32,
@@ -108,6 +117,9 @@ pub fn init() -> State {
         strike: strike(bones),
         head: Playhead {},
         stopped: false,
+        locals: [rest(); engine::creature::MAX_BONES],
+        drawn_at: -1.0e9,
+        drawing: 0.0,
         last: None,
         intensity: QUIET,
     }
@@ -164,12 +176,19 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         },
     }
     let in_strike = striking(time).is_some()
-    let quiet = pose(s.guard, held(t: time, fps: DRAWINGS))
-    let locals = if in_strike {
-        let t = s.head.t
-        let into = smoothstep(0.0, CROSS, t) * (1.0 - smoothstep(STRIKE - CROSS, STRIKE, t))
-        blended(quiet, pose(s.strike, held(t: t, fps: DRAWINGS)), into)
-    } else { quiet }
+    // A new drawing once the last has been held its time: on twos, on fours in the fight.
+    let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
+    if time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
+        let quiet = pose(s.guard, time)
+        s.locals = if in_strike {
+            let t = s.head.t
+            let into = smoothstep(0.0, CROSS, t) * (1.0 - smoothstep(STRIKE - CROSS, STRIKE, t))
+            blended(quiet, pose(s.strike, t), into)
+        } else { quiet }
+        s.drawn_at = time
+        s.drawing += 1.0
+    }
+    let locals = s.locals
     s.intensity = if in_strike { intensity_at(s.head.t) } else { QUIET }
     let root = placed(vec3(0.0, ground_at(vec2(0.0)), 0.0), 0.0)
     s.scene.fighter.pose(palette(s.skeleton, locals, root), shadowed: true, moved: false)
@@ -184,6 +203,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let at = vec3(0.0, 1.15, 0.0)
     let aim = Aim { eye, at, fovy: 0.8 - 0.22 * i * i, moving_at: vec3(0.0, 1.0, 0.0) }
     s.frame.intensity = i
+    s.frame.drawing = s.drawing
     s.frame.look.line_px = 1.8 + 1.6 * i
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)

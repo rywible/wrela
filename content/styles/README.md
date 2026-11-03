@@ -128,9 +128,11 @@ lookdev/ink-yard; its measures are docs/bench.md's "Kinetic Ink, the same scene 
 | `CREASE`, `CREASE_PX`, `CREASE_DARK` | 0.35, 10, 0.7 | creases as the cel look's, darker |
 | `LINE_DARK` | 0.12 | the lines' light (`paint::Look::line_dark`: near none, ink); their width is the program's (`line_px`), which the yard thickens with the moment |
 | `BOIL_HZ`, `BOIL_PX` | 8, 0.9 | the drawing redrawn 8 times a second (on threes): each step moves every mark's lattice and wanders each line by up to `BOIL_PX` output pixels, held between (`engine::marks`) |
-| `LINE_FRACTURE` | 0.55 | how much of a line breaks into strokes at the moment's height |
+| `SKETCH_STROKES`, `SKETCH_PX`, `SKETCH_BREAK` | 2, 5, 0.5 | a fighter's lines at the moment's height: two more strokes each, straying up to 5 output pixels either side of the form, half of each broken away; redrawn with each of its drawings (`engine::frame::Frame::drawing`), and none while they'd be too slight to see. The world's lines stay clean |
+| `ROUGH_ANGLE`, `ROUGH_WIDE`, `ROUGH_SHADE`, `ROUGH_DEEP` | 1.15, 0.8, 0.72, 0.96 | a fighter's hatching as the moment rises: rough strokes on the screen's plane (its lattice there, redrawn with its drawings), each its own width and broken along its length, in its real shadow, crossed in the deepest; a wash while quiet |
+| `DRAIN` | 0.7 | how far a fighter's colour drains toward ink on paper (its luma, warmed) from half the moment's height |
 | `PAPER`, `TOOTH`, `INK_COLOUR` | (0.97, 0.94, 0.88), 0.06, (0.10, 0.07, 0.06) | the paper under the highlights, its fibrous tooth (fixed to the screen: the drawing moves on it), the ink's warm black in the darks |
-| `STREAKS`, `STREAK_FROM`, `STREAK_DARK` | 140, 0.55, 0.55 | the moment's streaks round the frame's edge past half its height, redrawn each step |
+| (the frame's edges) | | hold nothing of the moment: a light vignette alone. The fighters carry it (Ryan, 2026-11-03: "the fraying and the movement on the lines of the moving character") |
 
 Its switches aren't the look's: a look is a type the frame's passes call, and turning a system
 off is the program's (`engine::switches`). The yard's `Inked` is the set Kinetic Ink is meant for:
