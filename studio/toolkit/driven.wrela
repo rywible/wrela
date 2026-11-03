@@ -21,7 +21,7 @@ pub fn number(s: Scalar) -> f64 {
     }
 }
 
-/// A package's path as one name, its slashes dashes (`games/last-green` → `games-last-green`):
+/// A package's path as one name, its slashes dashes (`engine/tests/frame` → `engine-tests-frame`):
 /// where a tool builds it.
 pub fn dashed(pkg: str) -> String {
     var out = String::new()

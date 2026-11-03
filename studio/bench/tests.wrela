@@ -9,7 +9,7 @@ use report::{
     hitches, Measured, SHOWN, Stats, compared, date_of, doc, gates, intervals, markdown,
     report_json, spans, stats, throughput, time_of,
 }
-use scenes::{SCENES, Scene, WALKS, script}
+use scenes::{SCENES, Scene, script}
 use std::tool::files
 use std::tool::serve
 
@@ -28,13 +28,13 @@ fn contains(haystack: str, needle: str) -> bool {
 @test
 fn the_command_line_names_scenes_and_cuts_frames() {
     let Some(o) = parse_args(
-        texts(["--scene", "herd", "--frames", "30", "--warmup", "10", "--no-native"]),
+        texts(["--scene", "frame-bare", "--frames", "30", "--warmup", "10", "--no-native"]),
     ) else {
-        panic("a short bench of the herd")
+        panic("a short bench of the bare frame")
     }
     assert(o.frames == 30 && o.warmup == 10 && !o.native && o.docs)
     let picked = chosen(o)
-    assert(picked.len() == 1 && picked[0].name == "herd" && picked[0].frames == 30)
+    assert(picked.len() == 1 && picked[0].name == "frame-bare" && picked[0].frames == 30)
     let Some(all) = parse_args(texts([])) else { panic("every scene") }
     assert(chosen(all).len() == SCENES.len())
     assert(parse_args(texts(["--scene", "nowhere"])).is_none(), "an unknown scene")
@@ -43,33 +43,31 @@ fn the_command_line_names_scenes_and_cuts_frames() {
 
 @test
 fn a_tier_is_one_of_the_four() {
-    let Some(o) = parse_args(texts(["--tier", "Medium", "--starts", "3"])) else {
-        panic("the vale at Medium")
-    }
-    assert(o.tier.as_str() == "Medium" && o.starts == 3)
     assert(parse_args(texts([])).unwrap().tier.is_empty(), "the program's own tier")
     assert(parse_args(texts(["--tier", "Ultra"])).is_none(), "no such tier")
-    assert(parse_args(texts(["--tier", "Low", "--scene", "herd"])).is_none(), "the herd has none")
+    // A scene whose program names no tier can't be benched at one.
+    assert(
+        parse_args(texts(["--tier", "Low", "--scene", "frame-bare"])).is_none(),
+        "the bare frame has none",
+    )
     // Every scene, at a tier: those whose programs name one.
-    let tiered = chosen(parse_args(texts(["--tier", "Low"])).unwrap())
-    assert(tiered.len() == 3, f"{tiered.len()} scenes at a tier")
-    for s in tiered {
-        assert(s.tiered, f"{s.name} has no tier")
+    for s in SCENES {
+        assert(!s.tiered, f"{s.name} has a tier")
     }
 }
 
-/// `--look` builds the scenes whose programs name a look (the floor's and the vale's), and names
-/// the look's type in each row; a scene whose program names none is a usage error.
+/// `--look` builds the scenes whose programs name a look, and names the look's type in each row;
+/// a scene whose program names none is a usage error.
 @test
 fn a_look_is_set_on_a_program_that_names_one() {
     let Some(o) = parse_args(texts(["--look", "styles::fixtures::Every"])) else {
-        panic("the vale in the full mask")
+        panic("the bare frame in the full mask")
     }
     assert(o.look.as_str() == "styles::fixtures::Every")
     let full = texts(
         [
             "--scene",
-            "vale-walk",
+            "frame-bare",
             "--look",
             "styles::fixtures::Every",
             "--sustained",
@@ -78,19 +76,14 @@ fn a_look_is_set_on_a_program_that_names_one() {
             "--no-native",
         ],
     )
-    assert(parse_args(full).is_some(), "the vale's walk in a look, sustained")
+    assert(parse_args(full).is_some(), "the bare frame in a look, sustained")
     let looked = chosen(o)
+    assert(looked.len() == 1 && looked[0].name == "frame-bare", f"{looked.len()} scenes in a look")
     assert(
-        looked.len() == 3 &&
-            looked[0].name == "last-green-shot" &&
-            looked[1].name == "last-green-walk" &&
-            looked[2].name == "vale-walk",
-        f"{looked.len()} scenes in a look",
+        labelled("frame-bare", "", "styles::fixtures::Every").as_str() == "frame-bare (Every)",
     )
-    assert(parse_args(texts(["--look", "x::Y", "--scene", "herd"])).is_none(), "the herd has none")
-    assert(labelled("vale-walk", "", "styles::fixtures::Every").as_str() == "vale-walk (Every)")
-    assert(labelled("vale-walk", "Low", "Cel").as_str() == "vale-walk (Low, Cel)")
-    assert(labelled("herd", "", "").as_str() == "herd")
+    assert(labelled("frame-bare", "Low", "Cel").as_str() == "frame-bare (Low, Cel)")
+    assert(labelled("frame-bare", "", "").as_str() == "frame-bare")
 }
 
 /// `--set NAME=VALUE` builds the named scenes' programs with that constant (each one given, in
@@ -98,28 +91,23 @@ fn a_look_is_set_on_a_program_that_names_one() {
 @test
 fn a_set_builds_with_its_constant_and_names_it() {
     let Some(o) = parse_args(
-        texts(
-            ["--scene", "last-green-walk", "--set", "GROWN_WOOD=true", "--set", "GROWN_FAWN=true"],
-        ),
-    ) else { panic("the grown floor") }
+        texts(["--scene", "frame-bare", "--set", "FOG=false", "--set", "GRAIN=true"]),
+    ) else { panic("the bare frame, clear") }
     assert(
         o.sets.len() == 2 &&
-            o.sets[1].name.as_str() == "GROWN_FAWN" &&
+            o.sets[1].name.as_str() == "GRAIN" &&
             o.sets[1].value.as_str() == "true",
     )
-    let without = texts(["--scene", "last-green-walk", "--set", "GROWN_WOOD"])
+    let without = texts(["--scene", "frame-bare", "--set", "FOG"])
     assert(parse_args(without).is_none(), "a set without its value")
-    assert(parse_args(texts(["--set", "GROWN_WOOD=true"])).is_none(), "a set on every scene")
-    for empty in ["=true", "GROWN_WOOD="] {
-        let v = texts(["--scene", "last-green-walk", "--set", empty])
+    assert(parse_args(texts(["--set", "FOG=false"])).is_none(), "a set on every scene")
+    for empty in ["=true", "FOG="] {
+        let v = texts(["--scene", "frame-bare", "--set", empty])
         assert(parse_args(v).is_none(), f"an empty name or value: {empty}")
     }
-    let named = with_sets(labelled("last-green-walk", "Low", ""), o.sets)
-    assert(
-        named.as_str() == "last-green-walk (Low) [GROWN_WOOD=true, GROWN_FAWN=true]",
-        named.as_str(),
-    )
-    assert(with_sets(String::from("herd"), []).as_str() == "herd")
+    let named = with_sets(labelled("frame-bare", "Low", ""), o.sets)
+    assert(named.as_str() == "frame-bare (Low) [FOG=false, GRAIN=true]", named.as_str())
+    assert(with_sets(String::from("frame-bare"), []).as_str() == "frame-bare")
 }
 
 @test
@@ -141,17 +129,8 @@ fn a_runs_counted_frames_begin_after_its_load_and_its_walks_start() {
 }
 
 @test
-fn each_gated_scene_has_its_gates_script() {
-    // The gates' own files' events (build/gates/CLEARING_PATH.json): H's code is 8.
-    assert(
-        contains(
-            script("clearing-path").as_json(),
-            "{\"frame\": 400, \"type\": \"keydown\", \"code\": 8}",
-        ),
-    )
-    assert(contains(script("last-green-walk").as_json(), f"{WALKS + 900}"))
-    assert(contains(script("capybara-run-large").as_json(), "573"))
-    assert(!contains(script("herd").as_json(), "frame"))
+fn the_bare_frame_scripts_itself() {
+    assert(!contains(script("frame-bare").as_json(), "frame"))
 }
 
 @test
@@ -256,14 +235,14 @@ fn a_paced_runs_hitches_name_their_heaviest_labels() {
     assert(h[1].unattributed())
 }
 
-/// The bench of a small scene (examples/hello-field, 30 frames after 10 of warmup, at 640 × 360)
+/// The bench of a small scene (studio/bench/fixtures/hello-field, 30 frames after 10 of warmup, at 640 × 360)
 /// keeps each run's results where the report names them, and its report has the warm start and
 /// the hitch table, an empty one or not.
 @test(tool, read: [("ws", "../..")], browser: true, budget: 600)
 fn a_bench_keeps_its_runs_and_reports_the_warm_start_and_the_hitches() {
     let s = Scene {
         name: "hello-field",
-        pkg: "examples/hello-field",
+        pkg: "studio/bench/fixtures/hello-field",
         frames: 30,
         width: 640,
         height: 360,
@@ -327,14 +306,14 @@ fn the_memory_shares_line_is_read() {
 /// machine's, is skipped; `--row` takes its row whole.
 @test
 fn the_command_line_serves_the_lan_and_takes_a_row() {
-    let Some(o) = parse_args(texts(["--lan", "--scene", "last-green-walk"])) else { panic("--lan") }
+    let Some(o) = parse_args(texts(["--lan", "--scene", "frame-bare"])) else { panic("--lan") }
     assert(o.lan && !o.native && o.row.is_empty())
     let Some(r) = parse_args(
-        texts(["--row", "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400"]),
+        texts(["--row", "M1 Air;frame-bare;16.7;17.1;33.4;2;5400"]),
     ) else {
         panic("--row")
     }
-    assert(r.row.as_str() == "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400" && !r.lan)
+    assert(r.row.as_str() == "M1 Air;frame-bare;16.7;17.1;33.4;2;5400" && !r.lan)
     assert(parse_args(texts(["--row"])).is_none())
 }
 
@@ -479,7 +458,7 @@ fn a_steady_19_ms_stream_fails_throughput_alone() {
 fn a_sustained_run_records_its_minutes_and_its_throughput() {
     let s = Scene {
         name: "hello-field",
-        pkg: "examples/hello-field",
+        pkg: "studio/bench/fixtures/hello-field",
         frames: 30,
         width: 640,
         height: 360,

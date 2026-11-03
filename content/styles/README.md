@@ -8,9 +8,9 @@ implementing `engine::style::Style` (docs/plan-world-class-3.md, Part D). Each i
 
 ## Making one
 
-Copy `physical.wrela` (today's image), change one slot at a time, and build the vale in it
-(`wrela build examples/vale --set LOOK=styles::<name>::<Name>`). `wrela tool styles -- --check`
-builds the vale in every look here and checks that adding one changed nothing in `engine/` (D10).
+Copy `physical.wrela` (today's image), change one slot at a time, and build a scene that names a
+look in it (`wrela build <scene> --set LOOK=styles::<name>::<Name>`). `wrela tool styles -- --check`
+builds a scene in every look here and checks that adding one changed nothing in `engine/` (D10).
 
 ## The slots
 
@@ -112,22 +112,10 @@ physical look's bars.
 
 ## Fitting a look
 
-`wrela tool fit -- --style <cel|painterly>` (studio/fit) searches a look's `FITTABLE` constants
-(its hand: the cel look's `TERMINATOR`, `PALETTE_N` and `HUE_PULL`; the painterly look's
-`PALETTE_N`, `HUE_PULL` and `SKY_SIMPLE`) by CMA-ES on a shot, against a set of paintings'
-statistics or one reference, and writes the result as a look of its own (`<Look>Fitted`):
-
-```bash
-wrela tool studio/fit --write ws=. --write out=build/fit --read refs=$WRELA_REFERENCE_DIR/styles -- --style cel --package examples/vale --shot D5 --reference-set refs/cel --out content/styles/cel_fitted.wrela
-```
-
-The search builds the program once, in the look's fitting variant (`<Look>Fitting`, whose fittable
-constants are the light's: `engine::style::Knob`), and sets each candidate through its `fit`
-export. Each range stops where the look still holds its coherence bars: fitted without that, the
-cel look's ramp went to 0.589 and an old oak's flicker missed its bar (5.77 ×10⁻⁶ against 1.64),
-and the painterly look's sky to 0.015 simplified and the canopy against the sun's missed (0.56
-against 0.42; 0.5 holds it); so `TERMINATOR` is at most 0.2 and `SKY_SIMPLE` at least 0.5
-(docs/bench.md, "D8").
+The cel and painterly looks' `<Look>Fitted` variants were fitted by CMA-ES against paintings'
+statistics with `wrela tool fit` (studio/fit at 5b9b305, removed with the vale it fitted on). Each
+range stopped where the look still held its coherence bars (docs/bench.md, "D8"); the fitted
+files are frozen data now.
 
 ## The fixtures
 

@@ -162,27 +162,15 @@ fn the_attract_address_is_one_of_the_games_own_builds_and_a_plain_fragment() {
     }
     c.games[0].attract = ""
     assert(check(c).is_ok(), "a game with none")
-    // The released capybara plays itself in its play build, opened at `#attract`: no build of its
-    // own.
-    borrow capybara = CATALOG.games[0]
-    assert(capybara.attract == "capybara#attract", capybara.attract)
-    assert(capybara.builds.len() == 2, "the session and the play build")
-    var found = false
-    for b in capybara.builds {
-        if b.name == attract_build(capybara.attract) {
-            found = true
-            assert(b.dir == "games/capybara")
-        }
-    }
-    assert(found, "the capybara plays itself in one of its builds")
     assert(build_options().set.is_empty() && build_options().optimize)
     // The fingerprint holds it: another attract address, another release.
-    let fingerprint = json::compact(catalog_json(CATALOG))
+    c.games[0].attract = "floor#attract"
+    let fingerprint = json::compact(catalog_json(c))
     assert(
-        contains(fingerprint.as_str(), "\"attract\": \"capybara#attract\""),
+        contains(fingerprint.as_str(), "\"attract\": \"floor#attract\""),
         fingerprint.as_str(),
     )
-    assert(contains(fingerprint.as_str(), "\"session\": \"games/capybara/session\""))
+    assert(contains(fingerprint.as_str(), "\"floor\": \"game\""), fingerprint.as_str())
 }
 
 @test
@@ -1119,21 +1107,6 @@ fn workspace_members_are_the_nearest_workspaces() {
     assert(members[1].0.as_str() == "great_tree" && members[1].1.as_str() == "fx/inner/great-tree")
     // Two members of one name are refused.
     assert(workspace_of("twice").is_err(), "two members named great_tree")
-}
-
-/// The board version the catalog says the console's server verifies is the capybara's: its
-/// verifier is kept under that version, which a later build names when that board is older.
-@test(tool, read: [("ws", "../..")], budget: 30)
-fn the_catalogs_board_is_the_games() {
-    let Ok(all) = read_files(Vec::from([String::from("ws/games/capybara/replay.wrela")])) else {
-        panic("no replay.wrela")
-    }
-    let Some(source) = String::from_utf8(all[0].clone()) else { panic("not UTF-8") }
-    let line = String::from(f"\npub const BOARD: u32 = {CATALOG.console.board}\n")
-    assert(
-        CATALOG.console.boards == "capybara" && source.as_str().find(line.as_str()).is_some(),
-        line.as_str(),
-    )
 }
 
 /// The path the Worker gives the ceremonies' keys to is the one the console posts its account's

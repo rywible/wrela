@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A GPU test needs a hardware GPU
+
+- **Needed:** the GPU tests, `wrela profile` and the tools that drive builds run on a machine without one: a cloud VM with Mesa's lavapipe (Vulkan on the CPU), where an agent works (Ryan, 2026-11-03), even though its timings aren't a GPU's.
+- **What happens:** toolchain 0.18.0's native host refuses the adapter ("GPU error: hardware GPU required; llvmpipe (LLVM 20.1.2, 256 bits) reports Cpu", E0706 as each GPU test starts), and its browser page refuses a fallback adapter ("hardware GPU required; WebGPU selected a fallback adapter"). Chrome 153's WebGPU on such a VM offers SwiftShader alone (`chrome://gpu`'s Dawn info: a Vulkan SwiftShader adapter and an OpenGL ES one in compatibility mode over ANGLE on lavapipe, no Vulkan lavapipe adapter), so the Chrome half of a test or a bench can't run there at all. Nothing asks for a software adapter on purpose.
+- **Found:** 2026-11-03, the cleanup before the Kinetic Ink spike, on an Ubuntu 24.04 VM with no GPU (`mesa-vulkan-drivers` 25.2.8).
+- **Evidence:** `wrela suite wrela::engine/tests/lights::` with lavapipe as the only Vulkan device: both tests fail as they start, with the message above; `wrela profile studio/bench/fixtures/hello-field --chrome` fails with the page's.
+- **Meanwhile:** outside the repository (an environment's setup, not code here), a Vulkan layer that reports lavapipe's device type as an integrated GPU lets the native host run: the GPU tests pass and `wrela profile` (native) measures. Its numbers are a CPU's, so they're read as relative only and never as a device's row in docs/bench.md. Chrome's numbers can't be had there.
+- **Status:** open: a host option, say `--allow-software-adapter` (and `WRELA_ALLOW_SOFTWARE=1` for tests), that admits a CPU adapter and marks every timing it reports as a software adapter's.
+
 ### A pointer event doesn't say which pointer, or what kind
 
 - **Needed:** the capybara played on a phone: a thumb held on an on-screen pad while the other taps jump, so two touches at once, each followed from press to release; and the console knowing a touch screen from a mouse, to say the games need a keyboard or a gamepad (Ryan, 2026-11-01: mobile deferred, "some sort of notice to switch to desktop to play").

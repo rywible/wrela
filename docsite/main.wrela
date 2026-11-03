@@ -1045,7 +1045,7 @@ fn front(index: Index) -> String {
             f"install `wrela` from [a toolchain release]({index.toolchain_repository.as_str()}/releases)"
         }
         md.push_str(
-            f"- To run a program, {install.as_str()}. Then, in a clone of [the repository]({index.repository.as_str()}), `wrela run examples/hello-field` serves it to your browser. `wrela` runs the toolchain release the repository pins.\n",
+            f"- To run a program, {install.as_str()}. Then, in a clone of [the repository]({index.repository.as_str()}), `wrela run studio/bench/fixtures/hello-field`, the smallest program, serves it to your browser. `wrela` runs the toolchain release the repository pins.\n",
         )
     }
     for g in groups_in(index) {

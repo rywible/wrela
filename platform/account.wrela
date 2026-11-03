@@ -1,4 +1,4 @@
-// What the console's server keeps of an account, and where (games/capybara/design.md, "Accounts and
+// What the console's server keeps of an account, and where (games/capybara/design.md at 5b9b305, "Accounts and
 // leaderboards"). An account is a random handle (the passkeys' user ID, and the name of the
 // server's instance that holds the account: `account/<handle in hex>`), a generated name
 // (names.wrela), its passkeys' public keys, its sessions, its recovery codes' hashes and its runs.

@@ -125,7 +125,7 @@ pub fn field_provenance(i: u32) -> Provenance {
 
 /// A tree species' genome (§E1.1): the parameters its self-organizing growth reads (Palubicki,
 /// Horel, Longay, Runions, Lane, Měch and Prusinkiewicz 2009), each species' values in
-/// content/trees/genomes.wrela with its source or **proposed**.
+/// content/trees/genomes.wrela at 5b9b305 with its source or **proposed**.
 pub struct Genome: Copy {
     /// Apical control: how much the leader suppresses its laterals (0 decurrent, 1 excurrent).
     pub apical: f32,
@@ -2172,7 +2172,7 @@ pub fn woody_iou(t: TreeGraph, tubes: [Tube<4>]) -> f32 {
 /// A grown plant side on (x across, y up), `px` pixels on its longer side, a pixel's colour by
 /// coverage (4 × 4 samples): its wood (`plant`'s tubes) dark, its crown (its clumps, by their
 /// fields' zero) a light green over it, the ground a line; RGBA8, rows top to bottom (the
-/// specimen tool's silhouette, `studio/grow`).
+/// specimen tool's silhouette, `studio/grow` at 5b9b305).
 pub fn side_view(p: Plant, px: u32) -> (u32, u32, Vec<u8>) {
     var lo = vec2(-0.5, 0.0)
     var hi = vec2(0.5, 0.5)

@@ -610,7 +610,7 @@ fn grid_at(nn: Neural, w: [Half2], x: u32, y: u32, k: u32) -> f32 {
 /// The net's eight values at view `cell`'s point `at` (on the atlas, 0 to 1), as the atlases
 /// hold them: the texel's colour and coverage, its normal (`oct_encode`), toward and depth (over
 /// `DEEPEST`); nothing outside the cell. Its inputs are the fit fixture's
-/// (`studio/fit/fixtures/impostor`): the view's place on the grid and the point's in its cell,
+/// (`studio/fit/fixtures/impostor` at 5b9b305): the view's place on the grid and the point's in its cell,
 /// then the grid's features there, bilinear.
 pub fn net_texel(nn: Neural, w: [Half2], at: vec2, cell: u32) -> [f32; 8] {
     let v = vec2u(cell % VIEWS, cell / VIEWS)

@@ -13,8 +13,8 @@
 
 use account::{CEREMONY_BYTES, CODES, HANDLE_BYTES, account_instance}
 use server::{
-    Asked, CHALLENGE_BYTES, Claim, Command, Cookie, Engine, Game, NONCE_BYTES, Outcome, Versions,
-    board_instance, engine,
+    Asked, CHALLENGE_BYTES, Claim, Command, Cookie, Engine, Game, NONCE_BYTES, NoBoards, Outcome,
+    Versions, board_instance, engine,
 }
 use std::collections::replace
 use std::crypto::{Signature, p256_key}
@@ -3406,4 +3406,14 @@ fn a_run_of_an_archived_board_is_bounded_by_its_own_verifier() {
     let r = h.say(1, up(token, toy(2, claimed: 5, moves: 5, m: 2), 7))[0].clone()
     let Reply::Rejected { why } = r else { panic(f"refused by its verifier: {why_of(r)}") }
     assert(why.as_str().find("isn't a run").is_some(), why.as_str())
+}
+
+/// A console whose games keep no boards (`NoBoards`) has no courses and no archived verifiers,
+/// and refuses every replay as a claim, so no upload is ever played.
+@test
+fn no_boards_has_no_courses_and_claims_no_replay() {
+    let g = NoBoards {}
+    assert(g.courses() == 0 && g.archived().len() == 0 && g.id() == "")
+    assert(g.claim([0, 1, 2, 3, 4, 5]).is_err(), "a replay is refused")
+    assert(g.claim([]).is_err(), "an empty replay is refused")
 }

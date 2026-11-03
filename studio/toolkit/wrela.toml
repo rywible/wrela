@@ -1,9 +1,5 @@
-# What the studio's tools share (studio/tool, studio/lookbook, studio/motion, studio/round,
-# studio/listening, studio/release, studio/reference and the audio tool): a driven build's trap
-# said, files and blobs moved whole, a page run in Chrome to its end, and a command line's size
-# read.
+# What the studio's tools share (studio/lookbook, studio/motion, studio/release, studio/bench, the
+# pass viewer and the audio tool): a driven build's trap said, files and blobs moved whole, a page
+# run in Chrome to its end, and a command line's size read.
 [package]
 name = "toolkit"
-
-[dependencies]
-engine = { workspace = true }
