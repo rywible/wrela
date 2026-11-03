@@ -3113,7 +3113,10 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                     sketch: self.sketch,
                 }
                 let lp = begin_pass(mut self.targets.scene_b)
-                fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
+                fullscreen(
+                    lp,
+                    lines.bind(d, self.targets.scene, self.targets.depth, self.targets.motion),
+                )
                 lp.end()
                 swap(mut self.targets.scene, mut self.targets.scene_b)
             }

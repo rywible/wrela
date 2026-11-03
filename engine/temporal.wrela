@@ -624,11 +624,13 @@ pub fn found_rows(
 /// What the motion target holds: in a pixel something moved in, where it was last frame
 /// relative to now (scene pixels, `now - last`), and 1 in z; in a pixel of thin geometry the wind
 /// bends (`deforming_of`), the same with 0.5 in z; elsewhere 0 (the camera's own motion is found
-/// from the depth).
+/// from the depth). Its w is a character's disarray (`character::Smear::disarray`: how far its
+/// surface there moved since its drawing before, which a sketching look's lines break by), 0
+/// for anything else.
 pub fn motion_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
     let now = cam.pixel(world)
     let then = cam.last_pixel(last_world)
-    vec4(now - then, 1.0, 1.0)
+    vec4(now - then, 1.0, 0.0)
 }
 
 /// `motion_of` for thin geometry the wind bends (grass): 0.5 in z, so a resolve reprojects its
@@ -637,5 +639,5 @@ pub fn motion_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
 pub fn deforming_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
     let now = cam.pixel(world)
     let then = cam.last_pixel(last_world)
-    vec4(now - then, 0.5, 1.0)
+    vec4(now - then, 0.5, 0.0)
 }

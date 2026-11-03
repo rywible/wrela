@@ -286,21 +286,43 @@ pub struct CharacterVertex: Copy {
     pub rough: f32 = 1.0,
     pub metallic: f32 = 0.0,
     pub part: Flat<u32>,
-    /// Its smear (`Smear`): the screen's direction its point moved in (xy), how far back toward
-    /// where it was it's drawn (z), and the share of that trail broken into streaks (w).
+    /// Its smear (`Smear`): the screen's direction its point moved in since the drawing before
+    /// (xy), how far back toward where it was it's drawn (z), and how much of its surface tears
+    /// open there (w: the smear's `tears` by how far it moved).
     pub trail: vec4 = vec4(0.0),
 }
 
-/// A character's smear (Basset, Bénard and Barla's motion-exaggerated geometry, SIGGRAPH 2024, in
-/// its plainest case): a new drawing's surfaces that face away from where they moved are drawn
-/// back toward where they were in the drawing before (`Cast::new_drawing`), as far as `amount`,
-/// and that trail is broken into streaks along the motion (`streaks` of it, drawn afresh with each
-/// drawing: `light::Light::moment`'s w), as a drawn smear is. The surfaces that face their motion are where the pose puts them, and the
-/// shadow is the pose's alone, so where the character is stays readable; a program decays it over
-/// a drawing's first frames. Presentation only: it moves nothing a sim reads.
+/// A character's smear, as a rough in-between drawing is drawn (Basset, Bénard and Barla's
+/// motion-exaggerated geometry, SIGGRAPH 2024, in its plainest case): a new drawing's surfaces that
+/// face away from where they moved are drawn back toward where they were in the drawing before
+/// (`Cast::new_drawing`), as far as `amount`, and its surface tears open in ragged pieces
+/// (`tears`), more where it moved farther; a program holds both for a drawing's first frames, then
+/// lets the drawing stand clean, so the smear is a drawing of its own, not a motion that eases.
+/// And `disarray`, held for the whole drawing: how much each part's lines break, by how far it
+/// moved since the drawing before (the motion target's w: `temporal::motion_of`), so what moves
+/// most comes apart and what holds still holds. The surfaces that face their motion are where
+/// the pose puts them, and the shadow is the pose's alone, so where the character is stays
+/// readable, and the bones in `steady` (a bit each, the first 32: the head a player reads the
+/// figure by) neither tear nor break their lines. Presentation only: it moves nothing a sim
+/// reads.
 pub struct Smear: Copy + GpuData {
     pub amount: f32 = 0.0,
-    pub streaks: f32 = 0.0,
+    pub tears: f32 = 0.0,
+    pub disarray: f32 = 0.0,
+    pub steady: u32 = 0,
+}
+
+/// Whether a vertex skinned mostly to bone `bone` is held steady by `sm` (`Smear::steady`).
+pub fn steady(sm: Smear, bone: u32) -> bool {
+    bone < 32 && ((sm.steady >> bone) & 1) != 0
+}
+
+/// How much a point that moved `px` scene pixels between two drawings is worth a smear's or a
+/// line's breaking (0 to 1): nothing under 10 pixels, all of it from 80. A whole body turning
+/// moves its middle a few tens of pixels and its hands and what they hold a hundred or more, so
+/// the extremities of a swing come apart and its middle and its head mostly hold.
+pub fn moved_interest(px: f32) -> f32 {
+    smoothstep(10.0, 80.0, px)
 }
 
 /// A point skinned now (`now`, its normal `n`) drawn back toward where it was (`then`) by `sm`:
@@ -351,12 +373,12 @@ pub fn character(
     let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
     let then = (skin_matrix(sv, from, 0) * vec4(sv.pos, 1.0)).xyz
     let (world, w) = smeared(now, then, n, smear)
-    // The motion's direction on the screen, for the streaks across it.
-    let a = cam.clip(now)
-    let b = cam.clip(then)
-    let along = a.xy / max(a.w, 1.0e-4) - b.xy / max(b.w, 1.0e-4)
-    let dir = if length(along) > 1.0e-5 { normalize(along * vec2(1.0, -1.0)) } else {
-        vec2(1.0, 0.0)
+    // The motion since the drawing before on the screen: its direction, for the tears' grain,
+    // and how far, for how much they open.
+    let along = cam.pixel(now) - cam.pixel(then)
+    let dir = if length(along) > 1.0e-3 { normalize(along) } else { vec2(1.0, 0.0) }
+    let tear = if steady(smear, sv.bones & 255) { 0.0 } else {
+        smear.tears * moved_interest(length(along))
     }
     let surface = materials[v.index]
     let c = surface.colour.decode()
@@ -368,7 +390,7 @@ pub fn character(
         rough: c.a,
         metallic: surface.metallic,
         part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
-        trail: vec4(dir, w, smear.streaks),
+        trail: vec4(dir, w, tear),
     }
 }
 
@@ -416,14 +438,15 @@ pub fn character_shade<Q: Switches, Y: Style>(
             discard()
         }
     }
-    // A smear's trail broken into streaks along its motion (`Smear`): across the motion's
-    // direction, bands of a noise keep the trail where it's under the noise, the rest open, more
-    // of it the farther back it was drawn. Redrawn with each drawing (the moment's w).
-    if c.trail.z > 0.02 && c.trail.w > 0.0 {
+    // A smear's tears (`Smear::tears`): the surface opens in ragged pieces a few pixels across,
+    // drawn out a little along the motion, more of it where the point moved farther, the same
+    // pieces for the whole of a drawing (the moment's w seeds them). The lines drawn round what's
+    // left are the smear's broken strokes.
+    if c.trail.w > 0.0 {
         let across = dot(pixel.position.xy, vec2(-c.trail.y, c.trail.x))
         let along = dot(pixel.position.xy, c.trail.xy)
-        let band = noise3(vec3(across / 4.5, along / 160.0, lt.light.moment.w * 3.7))
-        if band < c.trail.w * smoothstep(0.0, 0.5, c.trail.z) {
+        let piece = noise3(vec3(across / 5.0, along / 13.0, lt.light.moment.w * 3.7))
+        if piece < 0.75 * c.trail.w {
             discard()
         }
     }
@@ -489,6 +512,8 @@ pub struct MotionVertex: Copy {
     pub clip: ClipPosition,
     pub now: vec3,
     pub then: vec3,
+    /// A character's disarray there (`Smear::disarray`), for the motion target's w.
+    pub disarray: f32 = 0.0,
 }
 
 @vertex
@@ -516,7 +541,17 @@ pub fn character_motion(
         mat3(lm[0].xyz, lm[1].xyz, lm[2].xyz) * sv.normal,
         last_smear,
     )
-    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
+    let disarray = if steady(smear, sv.bones & 255) { 0.0 } else {
+        smear.disarray * moved_interest(length(cam.pixel(skinned) - cam.pixel(before)))
+    }
+    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then, disarray }
+}
+
+/// A character's motion, its disarray in w (`Smear::disarray`).
+@fragment
+pub fn character_moved(m: MotionVertex, cam: Camera) -> vec4 {
+    let v = motion_of(cam, m.now, m.then)
+    vec4(v.xyz, m.disarray)
 }
 
 /// A character's motion: where its point is on the target now against where it was.
@@ -767,7 +802,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                         last_smear: self.last_smear,
                         cam: cam,
                     ),
-                    motion.bind(cam),
+                    character_moved.bind(cam),
                     indices: c.mesh.quads.items(),
                     indirect: c.mesh.draw.items(),
                     cull: Cull::Back,
@@ -785,7 +820,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
 fn a_smear_draws_back_only_the_trailing_side() {
     let then = vec3(0.0, 1.0, 0.0)
     let now = vec3(1.0, 1.0, 0.0)
-    let sm = Smear { amount: 0.8, streaks: 0.5 }
+    let sm = Smear { amount: 0.8, tears: 0.5 }
     let (lead, w_lead) = smeared(now, then, vec3(1.0, 0.0, 0.0), sm)
     assert(lead == now && w_lead == 0.0, "the leading side moved")
     let (trail, w_trail) = smeared(now, then, vec3(-1.0, 0.0, 0.0), sm)
@@ -794,4 +829,14 @@ fn a_smear_draws_back_only_the_trailing_side() {
     assert(side == now && w_side == 0.0, "a side across the motion moved")
     let (still, _) = smeared(now, then, vec3(-1.0, 0.0, 0.0), Smear {})
     assert(still == now, "no smear, yet it moved")
+}
+
+/// A smear's steady bones (`Smear::steady`) are the ones its mask names, and none past the 32nd;
+/// what moves farther between drawings is worth more breaking, none under 10 pixels, all past 80.
+@test
+fn a_smears_steady_bones_and_its_interest() {
+    let sm = Smear { steady: (1 << 4) | (1 << 3) }
+    assert(steady(sm, 3) && steady(sm, 4) && !steady(sm, 5) && !steady(sm, 40), "the mask")
+    assert(moved_interest(5.0) == 0.0 && moved_interest(120.0) == 1.0, "its ends")
+    assert(moved_interest(30.0) < moved_interest(60.0), "farther, more")
 }
