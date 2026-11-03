@@ -1,0 +1,213 @@
+// The yard as the frame draws it (`engine::frame::Scene`): ground in low mounds, flat where the
+// fighter stands, seven standing stones in a ring round it (realized a frame each at load, then
+// static casters), and the fighter (`fighter`), cast into the moving shadow map.
+
+use engine::air::{Air, hazy}
+use engine::character::{ByChannels, Cast, PartOf}
+use engine::frame::{Cooks, Scene}
+use engine::light::{Light, SUN_TOP}
+use engine::lit::Lighting
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::shadow::{CASTER, Shadows}
+use engine::sky::{Gap, Weather}
+use engine::stone::{Realized, realize_stone, stone_shade, stone_shadow, stone_vertex}
+use engine::style::Style
+use engine::switches::Switches
+use engine::terrain::{Clipmap, Cover, Terrain}
+use engine::vegetation::nothing
+use engine::view::{Camera, NEAREST}
+use fighter::{Fighter, Paint}
+use std::gpu::{Cull, R32Uint, RenderPass, Sampler, Texture, draw}
+
+/// The sun: low on the fighter's left and a little ahead of it, so it's lit on one side and in
+/// shade on the other, its shadow long across the ground.
+pub const SUN = vec3(-0.8, 0.42, 0.42)
+
+/// The ring of stones: how many, how far out, how tall.
+pub const STONES: u32 = 7
+pub const RING: f32 = 8.5
+
+/// The yard's ground: low mounds, flat within 5 m of its middle; packed earth, paler where it's
+/// worn flat, darker on the slopes.
+pub struct Mounds: Copy + GpuData {}
+
+impl Terrain for Mounds {
+    fn height(self, x: f32, z: f32) -> f32 {
+        let r = length(vec2(x, z))
+        let rise = 0.7 * sin(x * 0.09 + 0.4) * cos(z * 0.07) +
+            0.3 * sin(x * 0.23 + 1.3) * sin(z * 0.19)
+        (rise + 0.5) * smoothstep(5.0, 13.0, r)
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        let worn = 1.0 - smoothstep(4.0, 9.0, length(at.xz))
+        let slope = 1.0 - saturate(n.y)
+        let earth = mix(vec3(0.30, 0.24, 0.16), vec3(0.42, 0.36, 0.25), vec3(worn))
+        Cover {
+            albedo: mix(earth, vec3(0.18, 0.16, 0.13), vec3(saturate(slope * 6.0))),
+            grass: 0.0,
+        }
+    }
+}
+
+/// The ground's height at a point of the world (x, z).
+pub fn ground_at(p: vec2) -> f32 {
+    Mounds {}.height(p.x, p.y)
+}
+
+/// Stone `k`'s place in the ring: its foot, its turn, its seed.
+fn stone_at(k: u32) -> (vec3, f32, u32) {
+    let a = f32(k) / f32(STONES) * 6.2831853 + 0.3
+    let r = RING + 1.2 * sin(f32(k) * 2.7)
+    let p = vec2(sin(a), cos(a)) * r
+    (vec3(p.x, ground_at(p) + 1.25, p.y), a * 1.7, 11 + k * 7)
+}
+
+/// The yard: its stones as they're realized, the fighter and its parts, and its weather.
+pub struct Yard {
+    pub stones: Vec<Realized>,
+    pub fighter: Cast<Paint, Fighter, ByChannels>,
+    pub parts: PartOf,
+    weather: Weather,
+}
+
+pub fn yard(fighter: take Cast<Paint, Fighter, ByChannels>, parts: PartOf) -> Yard {
+    Yard {
+        stones: Vec::new(),
+        fighter,
+        parts,
+        weather: Weather {
+            clouds: Vec::new(),
+            fair: 0.35,
+            gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+            wind: vec2(-5.5, 3.0),
+        },
+    }
+}
+
+/// The yard's air: a hazy evening's, its eye at a person's height.
+pub fn air_of(sun: vec3) -> Air {
+    hazy(normalize(sun), SUN_TOP, eye: 1.7)
+}
+
+impl Scene for Yard {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 17, spacing: 2.0, low: -4.0, high: 12.0, voxel: 1.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        ground_at(world)
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Mounds {}, eye, again)
+    }
+
+    /// A stone realized a step until the ring is whole; each fitted to its mesh once its counts
+    /// have come.
+    fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        if self.stones.len() < STONES {
+            let (at, turn, seed) = stone_at(self.stones.len())
+            self.stones.push(realize_stone(1.0, vec3(0.55, 1.5, 0.45), seed, at, turn))
+        }
+        for mut st in self.stones {
+            st.settle()
+        }
+    }
+
+    fn casters_complete(self) -> bool {
+        self.stones.len() == STONES
+    }
+
+    fn casters_ready(self, far: bool) -> bool {
+        self.stones.len() == STONES
+    }
+
+    fn ground_casts(self) -> bool {
+        true
+    }
+
+    /// The stones into a cascade's first strip (they're solids: once).
+    fn cast<P: RenderPass>(
+        self,
+        pass: P,
+        view: mat4,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        first: bool,
+    ) {
+        if !first {
+            return
+        }
+        for st in self.stones {
+            draw(
+                pass,
+                stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                nothing,
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.draw.items(),
+                depth_bias: CASTER,
+            )
+        }
+    }
+
+    fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
+        self.fighter.shadow(pass, view)
+    }
+
+    fn casts_moving(self) -> bool {
+        self.fighter.on
+    }
+
+    fn shade<P: RenderPass, Q: Switches, Y: Style>(
+        self,
+        pass: P,
+        lt: Lighting<Q, Y>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
+        for st in self.stones {
+            draw(
+                pass,
+                stone_vertex.bind(
+                    verts: st.mesh.verts.items(),
+                    colours: st.colours.items(),
+                    at: st.at,
+                    seed: st.seed,
+                    cam: lt.cam,
+                ),
+                stone_shade.bind(lt),
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.draw.items(),
+                cull: Cull::Back,
+                depth: NEAREST,
+            )
+        }
+    }
+
+    fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
+        self.fighter.draw(pass, lt, lt.cam, self.parts)
+    }
+
+    fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
+        self.fighter.motion(pass, cam)
+    }
+}

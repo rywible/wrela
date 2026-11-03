@@ -1,7 +1,7 @@
 // The styles tool (docs/plan-world-class-3.md §D10): the looks under content/styles.
 //
 // ```text
-// wrela tool styles -- --check [--package examples/vale]
+// wrela tool styles -- --check [--package lookdev/ink-yard]
 // wrela tool styles -- --record
 // wrela tool styles -- --page <out> --run <look>=<lookbook run> ...
 // ```
@@ -237,7 +237,7 @@ pub fn tool() -> u32 {
         let program = if given.len() == 3 && given[1].as_str() == "--package" {
             given[2].clone()
         } else {
-            String::from("examples/vale")
+            String::from("lookdev/ink-yard")
         }
         match check(program.as_str()) {
             Ok(true) => Ok(()),

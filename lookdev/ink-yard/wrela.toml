@@ -1,0 +1,11 @@
+# The yard: a look-development scene for Kinetic Ink (content/styles/kinetic.wrela), the MMO's
+# look: a duellist on mounded ground among standing stones, its strike hand keyed
+# (`engine::clip`), the moment's intensity rising with it. Built as the look and the switches it
+# ships with (`LOOK`, `SWITCHES`), or as the physical look on the approved switches, so the two can
+# be measured on the same scene.
+[package]
+name = "ink_yard"
+
+[dependencies]
+engine = { workspace = true }
+styles = { workspace = true }

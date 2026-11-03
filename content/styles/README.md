@@ -110,6 +110,33 @@ flicker at 20.6 ×10⁻⁶ against a bar of 17.1, and moved an old oak's trail o
 Its coherence is **Blocked** (docs/bench.md, D7b): its hatching flickers 3 to 150 times past the
 physical look's bars.
 
+### `Kinetic` (`kinetic.wrela`): Kinetic Ink, the MMO's look
+
+Ryan's brief (2026-11-03): "a cinematic, hand-drawn aesthetic built on a spatially coherent 3D
+world", ink contours, graphic light, atmospheric depth, deliberately imperfect, and a visual
+language that grows more expressive as action intensifies. Its look-development scene is
+lookdev/ink-yard; its measures are docs/bench.md's "Kinetic Ink, the same scene three ways".
+
+| Constant | Value | What it sets |
+|---|---|---|
+| `STEP`, `TERMINATOR` | 0.22, 0.08 | the sun's two bands' step (of the cosine times what reaches it) and its softness, softer still on leaves; harder as the moment rises |
+| `FILL`, `FILL_SURGE`, `COOL`, `SHADOW_SKY` | 0.34, 0.6, (0.62, 0.70, 0.95), 0.5 | the shadow side: a third of the sun's light (an illustrator's tone, not the physical sky's eighth), cooled, with the sky's over it; `FILL_SURGE` of it taken away at the moment's height |
+| `RIM`, `RIM_LIGHT` | 0.72, 0.55 | a band of sun where a solid form's edge turns from the eye toward it |
+| `PALETTE_N`, `HUE_PULL` | 3, 0.35 | the world's classes in three tones each (`cel::palette_of`); a character keeps its own colours |
+| `HATCH_PX`, `HATCH_WIDE`, `HATCH_ANGLE` | 11, 2.2, 0.75 | the hatching's lines apart and wide (output pixels), at one hand's diagonal: following the form's direction, rock's lumpy surface broke its lines into noise |
+| `SHADE`, `DEEP`, `SURGE`, `INK` | 0.3, 0.6, 0.3, 0.7 | the hatching's first layer past `SHADE` of the density (1 less the scene's linear luma), its second crossed at 60° past `DEEP`, lowered by `SURGE` at the moment's height; how much light a line takes. Leaves, grass, flowers and characters take a wash in place of lines |
+| `CREASE`, `CREASE_PX`, `CREASE_DARK` | 0.35, 10, 0.7 | creases as the cel look's, darker |
+| `LINE_DARK` | 0.12 | the lines' light (`paint::Look::line_dark`: near none, ink); their width is the program's (`line_px`), which the yard thickens with the moment |
+| `BOIL_HZ`, `BOIL_PX` | 8, 0.9 | the drawing redrawn 8 times a second (on threes): each step moves every mark's lattice and wanders each line by up to `BOIL_PX` output pixels, held between (`engine::marks`) |
+| `LINE_FRACTURE` | 0.55 | how much of a line breaks into strokes at the moment's height |
+| `PAPER`, `TOOTH`, `INK_COLOUR` | (0.97, 0.94, 0.88), 0.06, (0.10, 0.07, 0.06) | the paper under the highlights, its fibrous tooth (fixed to the screen: the drawing moves on it), the ink's warm black in the darks |
+| `STREAKS`, `STREAK_FROM`, `STREAK_DARK` | 140, 0.55, 0.55 | the moment's streaks round the frame's edge past half its height, redrawn each step |
+
+Its switches aren't the look's: a look is a type the frame's passes call, and turning a system
+off is the program's (`engine::switches`). The yard's `Inked` is the set Kinetic Ink is meant for:
+no clouds, no probes, no bloom, no froxel fog, no distance volume, no probes' sights, no screen
+reflections and no contact shadows. Measured, the look alone saves nothing (docs/bench.md).
+
 ## Fitting a look
 
 The cel and painterly looks' `<Look>Fitted` variants were fitted by CMA-ES against paintings'

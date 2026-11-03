@@ -22,11 +22,23 @@ pub struct Scene: Clone {
 }
 
 /// Every scene, in the order the report lists them: the engine's bare frame (flat ground, open
-/// sky, nobody: engine/tests/frame), the floor every lit program stands on.
-pub const SCENES: [Scene; 1] = [
+/// sky, nobody: engine/tests/frame), the floor every lit program stands on; and the yard
+/// (lookdev/ink-yard), Kinetic Ink's look-development scene, a duellist striking among standing
+/// stones (`--set LOOK=styles::physical::Physical --set SWITCHES=Realistic` for its physical
+/// build).
+pub const SCENES: [Scene; 2] = [
     Scene {
         name: "frame-bare",
         pkg: "engine/tests/frame",
+        frames: 600,
+        width: 1920,
+        height: 1080,
+        arrives: true,
+        looked: true,
+    },
+    Scene {
+        name: "ink-yard",
+        pkg: "lookdev/ink-yard",
         frames: 600,
         width: 1920,
         height: 1080,

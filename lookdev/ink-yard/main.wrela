@@ -1,0 +1,190 @@
+// The yard: Kinetic Ink's look-development scene (content/styles/kinetic.wrela). A duellist on
+// mounded ground among standing stones holds its guard, breathing; every `CYCLE` seconds it
+// strikes (fighter.wrela's clip: a coil, a snap, the blow held, a follow-through) and the moment's
+// intensity rises with it, then falls back to quiet. The camera circles slowly, and on the strike
+// it closes in and narrows (a punch-in), then eases back.
+//
+// Built as shipped it draws the look with the switches it ships with (`SWITCHES`, `Inked`: none
+// of the physically based systems a graphic look doesn't draw: no clouds' march, no probes, no
+// froxel fog, no distance volume, no screen reflections, no contact shadows, no bloom). For a
+// measure of what that saves, the same scene in the physical look on the approved switches:
+//
+//     wrela build lookdev/ink-yard --set LOOK=styles::physical::Physical --set SWITCHES=Realistic
+//
+// Its clip is drawn on twos (`DRAWINGS` a second, `engine::clip::held`); the camera and the sim
+// move every frame.
+
+use engine::clip::{Playhead, blended, held, palette, pose}
+use engine::character::{ByChannels, cast, parts_of, placed}
+use engine::frame::{Aim, Frame, Gathered, Quality}
+use engine::light::sunlight
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::probes::grid
+use engine::switches::Switches
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use fighter::{Bones, COILED, LANDED, STRIKE, STRUCK, fighter, guard, strike}
+use styles::kinetic::Kinetic
+use yard::{SUN, Yard, air_of, ground_at, yard}
+
+/// The look the yard draws in (`--set LOOK=styles::physical::Physical` for the physical one).
+pub type LOOK = Kinetic
+
+/// The switches it draws with (`--set SWITCHES=Realistic` for the approved ones).
+pub type SWITCHES = Inked
+
+/// Kinetic Ink's switches: what a graphic, illustrated look doesn't draw is built out. Its sky is
+/// the air's, clear, painted by the look's lens; the open sky lights everything; its shadows are
+/// the sun's cascades and the moving map, hard; ambient occlusion and occlusion culling stay.
+pub struct Inked {}
+
+impl Switches for Inked {
+    const CLOUDS: bool = false
+    const PROBES: bool = false
+    const BLOOM: bool = false
+    const FOG: bool = false
+    const DISTANCE: bool = false
+    const SIGHT: bool = false
+    const REFLECTIONS: bool = false
+    const CONTACT: bool = false
+}
+
+/// The approved switches (`engine::switches::Approved`'s): every system the physical look draws.
+pub struct Realistic {}
+
+impl Switches for Realistic {}
+
+/// How often a strike comes (seconds), when the first does, and the drawings a second the clip is
+/// held to (on twos).
+pub const CYCLE: f32 = 6.0
+pub const FIRST: f32 = 2.5
+pub const DRAWINGS: f32 = 12.0
+/// The blow's stop (seconds held as it lands), and how long a clip takes to cross into the next.
+pub const STOP: f32 = 0.12
+pub const CROSS: f32 = 0.12
+/// The moment's intensity at rest, at the coil's end, and how fast it falls after the blow (a
+/// second's share kept).
+pub const QUIET: f32 = 0.06
+pub const COIL: f32 = 0.5
+pub const FALL: f32 = 2.5
+
+const HOW = CreatureLook { surface: Tolerance { tolerance: 3.0e-3 } }
+
+pub struct State {
+    pub frame: Frame<Gathered, SWITCHES, LOOK>,
+    pub scene: Yard,
+    bones: Bones,
+    skeleton: engine::creature::Skeleton,
+    guard: engine::clip::Clip,
+    strike: engine::clip::Clip,
+    /// The strike's playhead, and whether its blow has been stopped on.
+    head: Playhead,
+    stopped: bool,
+    last: Option<f32>,
+    /// The moment's intensity, as the strike drives it.
+    pub intensity: f32,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let start = vec3(0.0, 1.7, 6.5)
+    let (body, skeleton, bones) = fighter()
+    let parts = parts_of(skeleton)
+    let frame: Frame<Gathered, SWITCHES, LOOK> = Frame::new(
+        Quality {},
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.25),
+        first_camera(start, vec3(0.0, 1.2, 0.0), 0.8, width: 320, height: 180),
+        grid(vec2(0.0), cols: 17, spacing: 2.0, low: -4.0, high: 12.0, voxel: 1.0),
+        vec2(0.0),
+    )
+    State {
+        frame,
+        scene: yard(cast(take body, ByChannels {}, HOW, slices: 16), parts),
+        bones,
+        skeleton,
+        guard: guard(bones),
+        strike: strike(bones),
+        head: Playhead {},
+        stopped: false,
+        last: None,
+        intensity: QUIET,
+    }
+}
+
+/// How far into a strike `time` is (seconds), or none: strikes begin at `FIRST` and every
+/// `CYCLE` after.
+fn striking(time: f32) -> Option<f32> {
+    if time < FIRST {
+        return None
+    }
+    let t = time - FIRST - floor((time - FIRST) / CYCLE) * CYCLE
+    if t < STRIKE { Some(t) } else { None }
+}
+
+/// The moment's intensity at `t` into a strike: rising through the coil, at its height from the
+/// snap through the stop, falling after it.
+fn intensity_at(t: f32) -> f32 {
+    if t < COILED {
+        return mix(QUIET, COIL, smoothstep(0.0, COILED, t))
+    }
+    if t < STRUCK {
+        return mix(COIL, 1.0, smoothstep(COILED, STRUCK, t))
+    }
+    if t < LANDED {
+        return 1.0
+    }
+    QUIET + (1.0 - QUIET) * exp(-FALL * (t - LANDED))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let dt = match s.last {
+        Some(l) => max(time - l, 0.0),
+        None => 0.0,
+    }
+    s.last = Some(time)
+    // The strike's playhead: from its start each cycle, stopped as its blow lands.
+    match striking(time) {
+        Some(t) => {
+            if t < dt + 1.0e-4 || s.head.t > STRIKE {
+                s.head = Playhead {}
+                s.stopped = false
+            } else {
+                s.head.advance(dt)
+            }
+            if !s.stopped && s.head.t >= STRUCK {
+                s.head.stop(STOP)
+                s.stopped = true
+            }
+        },
+        None => {
+            s.head = Playhead {}
+            s.stopped = false
+        },
+    }
+    let in_strike = striking(time).is_some()
+    let quiet = pose(s.guard, held(t: time, fps: DRAWINGS))
+    let locals = if in_strike {
+        let t = s.head.t
+        let into = smoothstep(0.0, CROSS, t) * (1.0 - smoothstep(STRIKE - CROSS, STRIKE, t))
+        blended(quiet, pose(s.strike, held(t: t, fps: DRAWINGS)), into)
+    } else { quiet }
+    s.intensity = if in_strike { intensity_at(s.head.t) } else { QUIET }
+    let root = placed(vec3(0.0, ground_at(vec2(0.0)), 0.0), 0.0)
+    s.scene.fighter.pose(palette(s.skeleton, locals, root), shadowed: true, moved: false)
+    if s.scene.fighter.realizing() {
+        s.scene.fighter.realize()
+    }
+    // The camera: a slow circle round the fighter, closing in and narrowing as the moment rises.
+    let i = s.intensity
+    let a = 0.35 + time * 0.08
+    let r = 4.6 - 1.2 * i * i
+    let eye = vec3(sin(a) * r, 1.55 - 0.25 * i, cos(a) * r)
+    let at = vec3(0.0, 1.15, 0.0)
+    let aim = Aim { eye, at, fovy: 0.8 - 0.22 * i * i, moving_at: vec3(0.0, 1.0, 0.0) }
+    s.frame.intensity = i
+    s.frame.look.line_px = 1.8 + 1.6 * i
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+}

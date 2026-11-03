@@ -78,7 +78,10 @@ fn a_look_is_set_on_a_program_that_names_one() {
     )
     assert(parse_args(full).is_some(), "the bare frame in a look, sustained")
     let looked = chosen(o)
-    assert(looked.len() == 1 && looked[0].name == "frame-bare", f"{looked.len()} scenes in a look")
+    assert(
+        looked.len() == 2 && looked[0].name == "frame-bare" && looked[1].name == "ink-yard",
+        f"{looked.len()} scenes in a look",
+    )
     assert(
         labelled("frame-bare", "", "styles::fixtures::Every").as_str() == "frame-bare (Every)",
     )
