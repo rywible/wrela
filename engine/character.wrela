@@ -14,6 +14,7 @@
 
 use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
+use noise::noise3
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
 use style
@@ -285,6 +286,34 @@ pub struct CharacterVertex: Copy {
     pub rough: f32 = 1.0,
     pub metallic: f32 = 0.0,
     pub part: Flat<u32>,
+    /// Its smear (`Smear`): the screen's direction its point moved in (xy), how far back toward
+    /// where it was it's drawn (z), and the share of that trail broken into streaks (w).
+    pub trail: vec4 = vec4(0.0),
+}
+
+/// A character's smear (Basset, Bénard and Barla's motion-exaggerated geometry, SIGGRAPH 2024, in
+/// its plainest case): a new drawing's surfaces that face away from where they moved are drawn
+/// back toward where they were in the drawing before (`Cast::new_drawing`), as far as `amount`,
+/// and that trail is broken into streaks along the motion (`streaks` of it, drawn afresh with each
+/// drawing: `light::Light::moment`'s w), as a drawn smear is. The surfaces that face their motion are where the pose puts them, and the
+/// shadow is the pose's alone, so where the character is stays readable; a program decays it over
+/// a drawing's first frames. Presentation only: it moves nothing a sim reads.
+pub struct Smear: Copy + GpuData {
+    pub amount: f32 = 0.0,
+    pub streaks: f32 = 0.0,
+}
+
+/// A point skinned now (`now`, its normal `n`) drawn back toward where it was (`then`) by `sm`:
+/// where it's drawn, and how far back (0 to `sm.amount`) it was drawn.
+pub fn smeared(now: vec3, then: vec3, n: vec3, sm: Smear) -> (vec3, f32) {
+    let d = now - then
+    let moved = length(d)
+    if sm.amount <= 0.0 || moved < 1.0e-4 {
+        return (now, 0.0)
+    }
+    let trailing = saturate(-dot(normalize(n), d / moved))
+    let w = sm.amount * smoothstep(0.05, 0.6, trailing)
+    (mix(now, then, vec3(w)), w)
 }
 
 /// Which part each bone is in, for the lines where parts meet: 0 the body (its trunk, its head
@@ -311,13 +340,24 @@ pub fn character(
     verts: [SkinVertex],
     materials: [Material],
     palettes: [mat4],
+    from: [mat4],
+    smear: Smear,
     parts: PartOf,
     cam: Camera,
 ) -> CharacterVertex {
     let sv = verts[v.index]
     let m = skin_matrix(sv, palettes, 0)
-    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let now = (m * vec4(sv.pos, 1.0)).xyz
     let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let then = (skin_matrix(sv, from, 0) * vec4(sv.pos, 1.0)).xyz
+    let (world, w) = smeared(now, then, n, smear)
+    // The motion's direction on the screen, for the streaks across it.
+    let a = cam.clip(now)
+    let b = cam.clip(then)
+    let along = a.xy / max(a.w, 1.0e-4) - b.xy / max(b.w, 1.0e-4)
+    let dir = if length(along) > 1.0e-5 { normalize(along * vec2(1.0, -1.0)) } else {
+        vec2(1.0, 0.0)
+    }
     let surface = materials[v.index]
     let c = surface.colour.decode()
     CharacterVertex {
@@ -328,6 +368,7 @@ pub fn character(
         rough: c.a,
         metallic: surface.metallic,
         part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
+        trail: vec4(dir, w, smear.streaks),
     }
 }
 
@@ -372,6 +413,17 @@ pub fn character_shade<Q: Switches, Y: Style>(
         ]
         let t = fract((bayer[q.y * 4 + q.x] + 0.5) / 16.0 + 0.618034 * f32(lt.cam.frame % 64))
         if t > near {
+            discard()
+        }
+    }
+    // A smear's trail broken into streaks along its motion (`Smear`): across the motion's
+    // direction, bands of a noise keep the trail where it's under the noise, the rest open, more
+    // of it the farther back it was drawn. Redrawn with each drawing (the moment's w).
+    if c.trail.z > 0.02 && c.trail.w > 0.0 {
+        let across = dot(pixel.position.xy, vec2(-c.trail.y, c.trail.x))
+        let along = dot(pixel.position.xy, c.trail.xy)
+        let band = noise3(vec3(across / 4.5, along / 160.0, lt.light.moment.w * 3.7))
+        if band < c.trail.w * smoothstep(0.0, 0.5, c.trail.z) {
             discard()
         }
     }
@@ -445,11 +497,25 @@ pub fn character_motion(
     verts: [SkinVertex],
     palettes: [mat4],
     last: [mat4],
+    from: [mat4],
+    smear: Smear,
+    last_smear: Smear,
     cam: Camera,
 ) -> MotionVertex {
     let sv = verts[v.index]
-    let now = (skin_matrix(sv, palettes, 0) * vec4(sv.pos, 1.0)).xyz
-    let then = (skin_matrix(sv, last, 0) * vec4(sv.pos, 1.0)).xyz
+    let m = skin_matrix(sv, palettes, 0)
+    let skinned = (m * vec4(sv.pos, 1.0)).xyz
+    let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let before = (skin_matrix(sv, from, 0) * vec4(sv.pos, 1.0)).xyz
+    let (now, _) = smeared(skinned, before, n, smear)
+    let lm = skin_matrix(sv, last, 0)
+    let was = (lm * vec4(sv.pos, 1.0)).xyz
+    let (then, _) = smeared(
+        was,
+        before,
+        mat3(lm[0].xyz, lm[1].xyz, lm[2].xyz) * sv.normal,
+        last_smear,
+    )
     MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
 }
 
@@ -487,6 +553,11 @@ pub struct Cast<C, K: creature::Creature<C>, L: Look<C>> {
     check: Option<Pending<u32>>,
     palette: GpuBuffer<mat4>,
     last: GpuBuffer<mat4>,
+    /// The drawing before this one's palette, which its smear reaches back to, and its smear
+    /// this frame and last (`Smear`, `new_drawing`).
+    from: GpuBuffer<mat4>,
+    smear: Smear,
+    last_smear: Smear,
     /// Whether it's drawn this frame, and whether it falls in the moving shadow map.
     pub on: bool,
     pub shadowed: bool,
@@ -510,6 +581,9 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
         check: None,
         palette: buffer(creature::MAX_BONES),
         last: buffer(creature::MAX_BONES),
+        from: buffer(creature::MAX_BONES),
+        smear: Smear {},
+        last_smear: Smear {},
         on: false,
         shadowed: false,
     }
@@ -518,7 +592,7 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
 impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
     /// The GPU bytes it holds: its mesh and materials once realized, and its bones' palettes.
     pub fn bytes(self) -> u64 {
-        let palettes = 2 * u64(creature::MAX_BONES) * 64
+        let palettes = 3 * u64(creature::MAX_BONES) * 64
         match self.realized {
             Some(r) => r.mesh.bytes() +
                 u64(r.materials.len()) * u64(size_of::<Material>()) +
@@ -563,7 +637,9 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         write(mut self.palette, 0, bones)
         if !self.on || moved {
             copy(from: self.palette.items(), to: self.last.items_mut())
+            copy(from: self.palette.items(), to: self.from.items_mut())
         }
+        self.last_smear = self.smear
         self.on = true
         self.shadowed = shadowed
         let measured = match mut self.check {
@@ -583,6 +659,17 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         if measured {
             self.check = None
         }
+    }
+
+    /// A new drawing begins: the palette it replaces is what its smear reaches back to. Called
+    /// before the new drawing's `pose`.
+    pub fn new_drawing(mut self) {
+        copy(from: self.palette.items(), to: self.from.items_mut())
+    }
+
+    /// Its smear this frame (`Smear`; none by default).
+    pub fn smear_by(mut self, s: Smear) {
+        self.smear = s
     }
 
     /// Whether it's wanted (posed this frame) and not yet realized: a slice of its mesh is due.
@@ -650,6 +737,8 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                         verts: c.mesh.verts.items(),
                         materials: c.materials.items(),
                         palettes: self.palette.items(),
+                        from: self.from.items(),
+                        smear: self.smear,
                         parts: parts,
                         cam: cam,
                     ),
@@ -673,6 +762,9 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                         verts: c.mesh.verts.items(),
                         palettes: self.palette.items(),
                         last: self.last.items(),
+                        from: self.from.items(),
+                        smear: self.smear,
+                        last_smear: self.last_smear,
                         cam: cam,
                     ),
                     motion.bind(cam),
@@ -684,4 +776,22 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
             }
         }
     }
+}
+
+/// A smear leaves where the character is plain: a surface that faces its motion is where its pose
+/// puts it, a trailing one is drawn back toward where it was by no more than the smear's amount,
+/// and with no smear nothing moves.
+@test
+fn a_smear_draws_back_only_the_trailing_side() {
+    let then = vec3(0.0, 1.0, 0.0)
+    let now = vec3(1.0, 1.0, 0.0)
+    let sm = Smear { amount: 0.8, streaks: 0.5 }
+    let (lead, w_lead) = smeared(now, then, vec3(1.0, 0.0, 0.0), sm)
+    assert(lead == now && w_lead == 0.0, "the leading side moved")
+    let (trail, w_trail) = smeared(now, then, vec3(-1.0, 0.0, 0.0), sm)
+    assert(abs(w_trail - 0.8) < 1.0e-5 && length(trail - vec3(0.2, 1.0, 0.0)) < 1.0e-5, f"{trail}")
+    let (side, w_side) = smeared(now, then, vec3(0.0, 1.0, 0.0), sm)
+    assert(side == now && w_side == 0.0, "a side across the motion moved")
+    let (still, _) = smeared(now, then, vec3(-1.0, 0.0, 0.0), Smear {})
+    assert(still == now, "no smear, yet it moved")
 }
