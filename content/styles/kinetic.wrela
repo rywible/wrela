@@ -1,0 +1,276 @@
+// The Kinetic Ink look (Ryan, 2026-11-03: "a cinematic, hand-drawn aesthetic built on a spatially
+// coherent 3D world ... expressive ink contours, rich atmospheric depth, bold silhouettes, and
+// dramatic, graphic lighting ... deliberately imperfect, with visible sketchwork"). Every constant
+// here is **proposed**.
+//
+// - **Graphic light on sculpted form.** The sun through two hard bands on the form's normal
+//   (`NORMAL` 1), the shadow side the sky's cool colour, the lit side the sun's warm one; a rim
+//   band where a form turns away from the eye toward the sun; the class's palette in a few tones,
+//   its hue pulled to its key (the cel look's `palette_of`).
+// - **Ink.** Silhouettes and creases (`marks::LINES`, `CREASES`), and hatching in the shadow alone
+//   (`marks::HATCH`: lines on the surface's lattice, a tonal art map's first layer and, as the
+//   moment rises, its second: Praun et al. 2001), coarse enough to hold under temporal AA's jitter
+//   where the ink look's fine hatching didn't (docs/bench.md, D4–D7b).
+// - **Deliberately imperfect.** The marks boil (`BOIL_HZ`): every lattice is moved and every line
+//   wanders at each step and is held between (`engine::marks`), as a hand redraws a held drawing.
+//   The paper's tooth stays put; only the drawing moves.
+// - **The moment.** The program's intensity (`engine::frame::Frame::intensity`) rises with action:
+//   the light's contrast hardens, the shadows deepen toward the ink, the hatching thickens, the
+//   lines break into strokes (`LINE_FRACTURE`), and streaks gather round the frame's edge, then
+//   resolve as it falls. Quiet, it's painterly: soft paper, atmospheric depth, few marks.
+
+use cel::{PALETTE, ramp}
+use engine::light::{LUMA, Light, Lit}
+use engine::marks
+use engine::marks::MarkSample
+use engine::noise::{hash2, noise3}
+use engine::paint::{Develop, Exposure}
+use engine::style
+use engine::style::{Knob, Style, knob}
+use engine::substance
+use engine::substance::{Substance, Written}
+use physical::Physical
+use std::gpu::{Rgba8, Sampler, Texture3d}
+
+/// The sun's two bands' step (of the cosine times what reaches it), and how soft it is: hard, as
+/// a brush lays a shadow's edge, but not so hard that a jittered sample's step flickers.
+pub const STEP: f32 = 0.22
+pub const TERMINATOR: f32 = 0.08
+/// The shadow side's light: a share of the sun's (`FILL`: an illustrator's shadow is a tone, a
+/// third of the light, not the physical sky's eighth; the hatching makes it read dark), cooled
+/// toward `COOL`, with the sky's own over it; deeper as the moment rises (`FILL_SURGE` of it
+/// taken away at the height). And how much of the sun's colour the lit side takes past the
+/// albedo's (its warmth).
+pub const COOL: vec3 = vec3(0.62, 0.70, 0.95)
+pub const FILL: f32 = 0.34
+pub const FILL_SURGE: f32 = 0.6
+pub const SHADOW_SKY: f32 = 0.5
+pub const WARM: f32 = 1.1
+/// A rim: where a form's edge turns from the eye toward the sun (the eye's grazing angle past
+/// `RIM`, the sun behind it), one band of the sun's light.
+pub const RIM: f32 = 0.72
+pub const RIM_LIGHT: f32 = 0.55
+/// How many tones a class's palette has, and how far a tone's hue is pulled to its class's key.
+pub const PALETTE_N: f32 = 3.0
+pub const HUE_PULL: f32 = 0.35
+/// The hatching: lines `HATCH_PX` apart (output pixels), `HATCH_WIDE` wide; its first layer past
+/// `SHADE` of the density (1 less the light), its second past `DEEP`, which the moment lowers by
+/// `SURGE`.
+pub const HATCH_PX: f32 = 11.0
+/// The hatching's angle on its lattice's plane (radians): one hand's diagonal everywhere, not the
+/// form's direction, which wanders on a lumpy surface (rock's) and broke its lines into noise.
+pub const HATCH_ANGLE: f32 = 0.75
+pub const HATCH_WIDE: f32 = 2.2
+pub const SHADE: f32 = 0.3
+pub const DEEP: f32 = 0.6
+pub const SURGE: f32 = 0.3
+pub const INK: f32 = 0.7
+/// The creases: as the cel look's, darker, and darker still as the moment rises.
+pub const CREASE: f32 = 0.35
+pub const CREASE_PX: f32 = 10.0
+pub const CREASE_DARK: f32 = 0.7
+/// The lines: how much light they leave (`engine::paint::Look::line_dark`: near none, ink), their
+/// width the program's (`engine::paint::Look::line_px`, which it may thicken with the moment), how
+/// often a second the drawing is redrawn and how far a line wanders at each (on threes: 8 a
+/// second), and how much of a line breaks away at the moment's height.
+pub const LINE_DARK: f32 = 0.12
+pub const BOIL_HZ: f32 = 8.0
+pub const BOIL_PX: f32 = 0.9
+pub const LINE_FRACTURE: f32 = 0.55
+/// The paper: its white, its tooth (a fibrous grain fixed to the screen), and the ink's colour
+/// (a warm black, not a pure one).
+pub const PAPER: vec3 = vec3(0.97, 0.94, 0.88)
+pub const TOOTH: f32 = 0.06
+pub const INK_COLOUR: vec3 = vec3(0.10, 0.07, 0.06)
+/// The moment's streaks: how many round the frame, from how far out (of the half diagonal), and
+/// how dark at the moment's height.
+pub const STREAKS: f32 = 140.0
+pub const STREAK_FROM: f32 = 0.55
+pub const STREAK_DARK: f32 = 0.55
+
+/// The Kinetic Ink look (`engine::style::Style`).
+pub struct Kinetic {}
+
+/// The cel look's palette's constants as this look sets them (`engine::style::Knob`: the
+/// terminator, the tones, the hue's pull), for `cel::palette_of`.
+const AT: [f32; 8] = [TERMINATOR, PALETTE_N, HUE_PULL, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+impl Knob for Kinetic {
+    fn at(i: u32) -> f32 {
+        AT[i]
+    }
+}
+
+/// The light at a surface: the sun through its two bands, harder as the moment rises; the shadow
+/// side the sky's light cooled; a rim of sun where the form turns from the eye toward it.
+pub fn shade_of(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+    let albedo = if light.clay != 0 { vec3(0.5) } else { lit.albedo }
+    let l = light.sun
+    let v = normalize(eye - world)
+    let intensity = light.moment.x
+    let soft = TERMINATOR * (1.0 - 0.6 * intensity) * if class == style::LEAVES { 3.0 } else { 1.0 }
+    let x = saturate(dot(lit.n, l)) * lit.sun
+    let sun = smoothstep(STEP - 0.5 * soft, STEP + 0.5 * soft, x)
+    let fill = FILL * (1.0 - FILL_SURGE * intensity)
+    let shadow = (light.sun_colour * fill + lit.sky * SHADOW_SKY) * COOL
+    var c = albedo * (light.sun_colour * (sun * WARM) + shadow)
+    // The rim: on solid forms, where the eye grazes the surface and the sun is behind it.
+    if class != style::GRASS && class != style::LEAVES && class != style::SKY {
+        let graze = 1.0 - saturate(dot(lit.n, v))
+        let behind = saturate(dot(-v, l) * 0.5 + 0.5) * lit.sun
+        let rim = smoothstep(RIM - 0.04, RIM + 0.04, graze) * smoothstep(0.35, 0.6, behind)
+        c += albedo * light.sun_colour * (RIM_LIGHT * rim)
+    }
+    if class == style::LEAVES {
+        c += lit.through * light.sun_colour * ramp(max(dot(-v, l), 0.0) * lit.sun, soft: 0.3)
+    }
+    c
+}
+
+/// Lines across angle `a` on the lattice's plane at the pixel (`m`): one a cell, `HATCH_WIDE`
+/// pixels wide, its edges a pixel and a half soft.
+fn hatch_lines(m: MarkSample, a: f32) -> f32 {
+    let across = -sin(a) * m.place.x + cos(a) * m.place.y
+    let d = abs(fract(across) - 0.5) * m.size_px
+    1.0 - smoothstep(0.5 * HATCH_WIDE - 0.75, 0.5 * HATCH_WIDE + 0.75, d)
+}
+
+/// The hatching's ink at a pixel (0 to 1): its first layer at the hand's angle (`HATCH_ANGLE`)
+/// where the density passes `SHADE`, its second crossed at 60° past `DEEP` (lowered by the
+/// moment). A thin
+/// thing (leaves, grass, flowers) and a character take a wash in its place: a thin thing's lines
+/// alias as its cards do, and a character moves through the world's lattice.
+pub fn hatched(m: MarkSample, intensity: f32) -> f32 {
+    let density = 1.0 - saturate(m.lit)
+    let first = smoothstep(SHADE - 0.06, SHADE + 0.06, density)
+    let deep = DEEP - SURGE * intensity
+    let second = smoothstep(deep - 0.06, deep + 0.06, density)
+    let thin = m.class == style::LEAVES ||
+        m.class == style::GRASS ||
+        m.class == style::FLOWER ||
+        m.class == style::CREATURE
+    if thin {
+        return 0.3 * first + 0.25 * second
+    }
+    max(
+        first * hatch_lines(m, HATCH_ANGLE),
+        second * hatch_lines(m, HATCH_ANGLE + 1.0471976),
+    )
+}
+
+/// The paper's tooth at output pixel `px`: a fibrous grain, fixed to the screen (the drawing moves
+/// on it; it doesn't), its fibres longer across than down.
+pub fn tooth(px: vec2) -> f32 {
+    let fibre = noise3(vec3(px.x / 9.0, px.y / 2.5, 0.5)) - 0.5
+    let speck = hash2(i32(px.x), i32(px.y)) - 0.5
+    TOOTH * (0.7 * fibre + 0.3 * speck)
+}
+
+/// The moment's streaks at output pixel `px` (0 to 1): thin wedges round the frame's middle, from
+/// `STREAK_FROM` of the half diagonal out, as many as `STREAKS`, each present or not by a hash of
+/// its wedge and the drawing's step, coming in past half the moment's height.
+pub fn streak(px: vec2, d: Develop) -> f32 {
+    let intensity = d.moment.x
+    if intensity <= 0.5 {
+        return 0.0
+    }
+    let q = (px - 0.5 * d.out) / (0.5 * length(d.out))
+    let r = length(q)
+    let wedge = (atan2(q.y, q.x) / 6.2831853 + 0.5) * STREAKS
+    let cell = floor(wedge)
+    let on = step(0.62, hash2(i32(cell), i32(d.moment.y) * 7 + 3))
+    let thin = 1.0 - smoothstep(0.08, 0.3, abs(fract(wedge) - 0.5))
+    let out = smoothstep(STREAK_FROM, STREAK_FROM + 0.35, r)
+    on * thin * out * smoothstep(0.5, 1.0, intensity)
+}
+
+impl Style for Kinetic {
+    const SUBSTANCE: u32 = substance::FORM | substance::TONE
+    const NORMAL: u32 = 1
+    const MARKS: u32 = marks::LINES | marks::CREASES | marks::HATCH
+    const ON_TWOS: bool = true
+    const LINE_DARK: f32 = LINE_DARK
+    const BOIL_HZ: f32 = BOIL_HZ
+    const BOIL_PX: f32 = BOIL_PX
+    const LINE_FRACTURE: f32 = LINE_FRACTURE
+    const HIGHLIGHT: f32 = 0.92
+    type Out = Written
+
+    fn written(colour: vec4, s: Substance) -> Written {
+        substance::written(colour, s)
+    }
+
+    fn shade(light: Light, lit: Lit, s: Substance, class: u32, world: vec3, eye: vec3) -> vec3 {
+        shade_of(light, lit, s, class, world, eye)
+    }
+
+    fn shade_leaf(
+        light: Light,
+        lit: Lit,
+        facing: vec3,
+        s: Substance,
+        world: vec3,
+        eye: vec3,
+    ) -> vec3 {
+        shade_of(light, lit, s, style::LEAVES, world, eye)
+    }
+
+    /// The world's classes in their palettes' few tones (`cel::palette_of`); a character keeps
+    /// its own colours, which are its design.
+    fn palette(light: Light, class: u32, history: vec4, albedo: vec3) -> vec3 {
+        if class == style::CREATURE {
+            return albedo
+        }
+        cel::palette_of::<Kinetic>(light, class, history, albedo)
+    }
+
+    /// The hatching (`marks::HATCH`) in the shadow, as ink over the image (a share of its light
+    /// taken toward the ink's), thicker as the moment rises; a crease as the cel look's, darker.
+    fn mark(m: MarkSample, s: Substance, depth_px: f32) -> f32 {
+        if m.kind == marks::HATCH {
+            return INK * hatched(m, m.intensity)
+        }
+        if m.kind == marks::CREASES {
+            let solid = m.class == style::GROUND ||
+                m.class == style::BARK ||
+                m.class == style::STONE ||
+                m.class == style::CREATURE
+            if !solid {
+                return 0.0
+            }
+            let curve = smoothstep(CREASE * 0.6, CREASE * 1.5, m.offset.x)
+            let long = smoothstep(CREASE_PX * 0.3, CREASE_PX, m.size_px)
+            let near = mix(1.0, 0.4, smoothstep(5.0, 80.0, m.distance))
+            return CREASE_DARK * curve * long * near
+        }
+        0.0
+    }
+
+    fn mark_px(kind: u32) -> f32 {
+        HATCH_PX
+    }
+
+    /// The physical look's exposure and tone, then the paper: its warm white under the image's
+    /// highlights, its tooth, the ink's warm black in the darks; the moment's streaks and a
+    /// vignette that closes in as it rises.
+    fn lens(
+        paint: vec3,
+        px: vec2,
+        d: Develop,
+        e: Exposure,
+        lut: Texture3d<Rgba8>,
+        s: Sampler,
+    ) -> vec4 {
+        let base = Physical::lens(paint, px, d, e, lut, s).rgb
+        let l = dot(base, LUMA)
+        // The paper shows through the light; the ink gathers in the dark.
+        var c = mix(base, PAPER * l * 1.08, vec3(0.25 * smoothstep(0.5, 1.0, l)))
+        c = mix(INK_COLOUR, c, vec3(smoothstep(0.0, 0.07, l) * 0.8 + 0.2))
+        c = c * (1.0 + tooth(px))
+        let intensity = d.moment.x
+        c = mix(c, INK_COLOUR, vec3(STREAK_DARK * streak(px, d)))
+        let uv = px / d.out - vec2(0.5)
+        let vignette = (0.35 + 0.9 * intensity) * dot(uv, uv)
+        vec4(c * (1.0 - vignette), 1.0)
+    }
+}
