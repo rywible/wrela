@@ -1203,9 +1203,15 @@ pub struct Frame<R: Resolver, Q: Switches, Y: Style> {
     /// How intense the program's moment is, 0 (quiet) to 1 (the height of an action), which a
     /// look draws by (`Light::moment`): the program sets it each frame, and the frame clamps it.
     pub intensity: f32,
-    /// This frame's moment (`light::Light::moment`): the intensity, the look's boil step and its
-    /// lines' wander.
+    /// Which drawing the program's characters are on (a number that changes as each new drawing
+    /// is shown: a clip held on twos changes it twelve times a second), which a look's sketched
+    /// lines are redrawn by; below 0, the look's boil step stands for it.
+    pub drawing: f32,
+    /// This frame's moment (`light::Light::moment`): the intensity, the look's boil step, its
+    /// lines' wander and the characters' drawing; and how the characters' lines are sketched
+    /// (`paint::Develop::sketch`).
     pub moment: vec4,
+    pub sketch: vec4,
     /// Whether a build that took over from another (hot reload) holds the screen it left: frames
     /// cook, and present nothing.
     pub hold: bool,
@@ -1406,7 +1412,9 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             last_time: None,
             hold: false,
             intensity: 0.0,
+            drawing: -1.0,
             moment: vec4(0.0),
+            sketch: vec4(0.0),
             air_cooked: Stale::new(),
             noise_cooked: false,
             noise_slices: 0,
@@ -1787,7 +1795,15 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         // frame's time (`Style::BOIL_HZ`), and its lines' wander.
         let step = if Y::BOIL_HZ > 0.0 { floor(self.time * Y::BOIL_HZ) } else { 0.0 }
         let intensity = clamp(self.intensity, 0.0, 1.0)
-        self.moment = vec4(intensity, step, Y::BOIL_PX, Y::LINE_FRACTURE * intensity)
+        let drawing = if self.drawing >= 0.0 { self.drawing } else { step }
+        self.moment = vec4(intensity, step, Y::BOIL_PX, drawing)
+        // None while it would be too slight to see (strokes straying under half a pixel, less
+        // than a quarter of another): the lines pass reads no sketch then.
+        let strokes = Y::SKETCH_STROKES * intensity
+        let stray = Y::SKETCH_PX * intensity
+        self.sketch = if strokes < 0.25 && stray < 0.5 { vec4(0.0) } else {
+            vec4(strokes, stray, Y::SKETCH_BREAK * intensity, 0.0)
+        }
         self.light.moment = self.moment
         let aim = self.debug.held.unwrap_or(aim)
         if self.debug.unsaid && !self.ready.arriving {
@@ -3054,7 +3070,14 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 fullscreen(
                     cp,
                     marks::marks_on::<Y>.bind(
-                        Develop { cam, look: self.look, out, view: 0, moment: self.moment },
+                        Develop {
+                            cam,
+                            look: self.look,
+                            out,
+                            view: 0,
+                            moment: self.moment,
+                            sketch: self.sketch,
+                        },
                         scene: self.targets.scene,
                         depth: self.targets.depth,
                         form: self.targets.form,
@@ -3081,7 +3104,14 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
                 if Y::LINE_PX >= 0.0 {
                     look.line_px = Y::LINE_PX
                 }
-                let d = Develop { cam, look, out, view: 0, moment: self.moment }
+                let d = Develop {
+                    cam,
+                    look,
+                    out,
+                    view: 0,
+                    moment: self.moment,
+                    sketch: self.sketch,
+                }
                 let lp = begin_pass(mut self.targets.scene_b)
                 fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
                 lp.end()
@@ -3164,6 +3194,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             view: self.debug.view,
             hdr: u32(hdr),
             moment: self.moment,
+            sketch: self.sketch,
         }
         // The dabs into the texture the water's copy held (done with by now), where the look has
         // them (`marks::DABS`).

@@ -38,8 +38,8 @@ pub struct Light: Copy + GpuData + Eq {
     /// intense it is (0 quiet, 1 the height of an action: `frame::Frame::intensity`), y the
     /// look's held step (whole `style::Style::BOIL_HZ` steps of the frame's time: what a boiled
     /// mark is redrawn by), z how far its lines wander at a step (output pixels,
-    /// `style::Style::BOIL_PX`), w how much of its lines breaks away (the intensity times
-    /// `style::Style::LINE_FRACTURE`). All 0 for a look that reads none.
+    /// `style::Style::BOIL_PX`), w the characters' drawing (`frame::Frame::drawing`: what a
+    /// character's sketched lines and marks are redrawn by). All 0 for a look that reads none.
     pub moment: vec4 = vec4(0.0),
 }
 

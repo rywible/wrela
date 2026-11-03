@@ -55,9 +55,15 @@ pub trait Style {
     const BOIL_HZ: f32 = 0.0
     /// How far its lines wander at a boil's step (output pixels).
     const BOIL_PX: f32 = 0.0
-    /// How much of its lines breaks away at the moment's height (0 to 1, by the moment's
-    /// intensity: `light::Light::moment`'s w): a line drawn fast, in broken strokes.
-    const LINE_FRACTURE: f32 = 0.0
+    /// Its characters' lines as the moment rises, each by the moment's intensity: how many more
+    /// strokes a line is drawn with (up to 2), how far each stroke strays from the form (output
+    /// pixels), and how much of each breaks away. Each is drawn afresh with each of the
+    /// character's drawings (`frame::Frame::drawing`), and a character's lattice marks are on the
+    /// screen's plane, redrawn the same way: a fight's rough linework, a flipbook of sketches. All
+    /// 0: a character's lines as the world's.
+    const SKETCH_STROKES: f32 = 0.0
+    const SKETCH_PX: f32 = 0.0
+    const SKETCH_BREAK: f32 = 0.0
     /// A character's glossy parts' highlight (an eye's cornea: `character::highlight`): 0, the
     /// sun's gloss as the physical light gives it; else one band, where the part's reflection
     /// comes within this cosine of the sun.

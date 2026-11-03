@@ -511,7 +511,14 @@ pub fn lines(
 ) -> vec4 {
     let p = pixel.position.xy
     let here = scene.load(x: u32(p.x), y: u32(p.y))
-    let l = scene_line(d, scene, depth, wandered(d, p), here.a) * unbroken(d, p)
+    let sketching = d.sketch.x + d.sketch.y + d.sketch.z > 0.0
+    let l = if !sketching {
+        scene_line(d, scene, depth, wandered(d, p), here.a)
+    } else if class_of(here.a) == class_of(CREATURE) {
+        sketched(d, scene, depth, p)
+    } else {
+        max(scene_line(d, scene, depth, wandered(d, p), here.a), sketched(d, scene, depth, p))
+    }
     vec4(here.rgb * mix(1.0, pow(d.look.line_dark, 2.2), l), here.a)
 }
 
@@ -532,18 +539,39 @@ fn wandered(d: Develop, p: vec2) -> vec2 {
     p + (wave * 2.0 - vec2(1.0)) * (w * per)
 }
 
-/// How much of a line at scene pixel `p` is drawn: all of it, or for a look whose lines break
-/// at the moment's height (`Develop::moment`'s w, the share that breaks away) its strokes with gaps
-/// between, about 9 output pixels a stroke, laid afresh at each of the look's steps.
-fn unbroken(d: Develop, p: vec2) -> f32 {
-    let f = d.moment.w
-    if f <= 0.0 {
-        return 1.0
-    }
+/// A character's line at scene pixel `p`, sketched (`Develop::sketch`): its edge read at up to
+/// three points about `p`, each moved along a smooth field of its own as far as `sketch`'s y (and
+/// the look's wander), drawn afresh with each of the character's drawings (`Develop::moment`'s w),
+/// each stroke broken where its own noise says (`sketch`'s z), the first always, the others as
+/// `sketch`'s x reaches them, each a little finer. A stroke read off `p` falls off the form where
+/// it strays out: lines either side of the silhouette, overlapping, broken, redrawn with every
+/// drawing, as a key animator's rough is.
+fn sketched(d: Develop, scene: Texture<Rgba16Float>, depth: DepthTexture, p: vec2) -> f32 {
     let per = d.cam.screen.y / d.out.y
-    let q = p / per / 9.0
-    let gap = noise3(vec3(q, d.moment.y * 3.3 + 101.0))
-    1.0 - f * smoothstep(0.5, 0.62, gap)
+    let s = d.sketch
+    let lim = d.cam.screen - vec2(1.0)
+    var line = 0.0
+    for k in 0..3 {
+        let on = if k == 0 { 1.0 } else { saturate(s.x - f32(k - 1)) }
+        if on <= 0.0 {
+            break
+        }
+        let seed = fract(d.moment.w * 0.618034) * 97.0 + f32(k) * 17.3
+        let u = p / per / 28.0
+        let wave = vec2(noise3(vec3(u, seed)), noise3(vec3(u + vec2(41.2, 7.7), seed + 5.0)))
+        let stray = (s.y + d.moment.z) * (1.0 + 0.5 * f32(k))
+        let q = clamp(p + (wave * 2.0 - vec2(1.0)) * (stray * per), vec2(0.0), lim)
+        let tag = scene.load(x: u32(q.x), y: u32(q.y)).a
+        if class_of(tag) == class_of(CREATURE) {
+            let near = d.cam.distance_of(depth.load(x: u32(q.x), y: u32(q.y)))
+            let r = d.look.line_px * (1.0 - 0.3 * f32(k)) * per
+            let edge = outline(d.cam, scene, depth, q, tag, near, r, kin_behind: false)
+            let gap = noise3(vec3(p / per / 7.0 + vec2(f32(k) * 13.1), seed + 2.0))
+            let kept = 1.0 - s.z * smoothstep(0.45, 0.6, gap)
+            line = max(line, edge * kept * on)
+        }
+    }
+    line
 }
 
 /// The world point at scene pixel `p`'s own centre, unjittered, and its depth: the jittered frame's
@@ -620,10 +648,17 @@ pub fn marks_on<Y: Style>(
     }
     let class = class_of_tag(here.a)
     let lit = dot(here.rgb, LUMA)
-    // The lattice's marks at the pixel's own centre (`centred`).
+    // The lattice's marks at the pixel's own centre (`centred`). A sketching look's character
+    // (`Style::SKETCH_STROKES`) takes its lattice on the screen's plane instead, a hundredth of a
+    // metre an output pixel, moved with each of its drawings (`Develop::moment`'s w): it moves
+    // through the world's lattice, and its held drawings hold the screen's.
     let (still, zc) = centred(cam, depth, p, z)
-    let at = still + cam.keyed()
-    let foot_c = cam.footprint(cam.distance_of(zc)) * per_out
+    let flat = Y::SKETCH_STROKES > 0.0 && class == style::CREATURE
+    let at = if flat { vec3(px / per_out * 0.01, 0.0) } else { still + cam.keyed() }
+    let n_l = if flat { vec3(0.0, 0.0, 1.0) } else { n }
+    let dir_l = if flat { vec3(1.0, 0.0, 0.0) } else { dir }
+    let foot_c = if flat { 0.01 } else { cam.footprint(cam.distance_of(zc)) * per_out }
+    let boil = if flat { d.moment.w + 1.0 } else { d.moment.y }
     var dark = 0.0
     if (Y::MARKS & CREASES) != 0 {
         dark += Y::mark(
@@ -639,14 +674,14 @@ pub fn marks_on<Y: Style>(
         dark += darkness::<Y>(
             STROKES,
             at,
-            n,
-            dir,
+            n_l,
+            dir_l,
             foot_c,
             s,
             distance,
             class,
             lit,
-            boil: d.moment.y,
+            boil: boil,
             intensity: d.moment.x,
         )
     }
@@ -654,14 +689,14 @@ pub fn marks_on<Y: Style>(
         dark += darkness::<Y>(
             HATCH,
             at,
-            n,
-            dir,
+            n_l,
+            dir_l,
             foot_c,
             s,
             distance,
             class,
             lit,
-            boil: d.moment.y,
+            boil: boil,
             intensity: d.moment.x,
         )
     }

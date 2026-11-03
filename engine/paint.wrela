@@ -303,6 +303,10 @@ pub struct Develop: Copy + GpuData {
     /// The program's moment (`light::Light::moment`): what the marks, the lines and the look's
     /// lens may draw by.
     pub moment: vec4 = vec4(0.0),
+    /// How the characters' lines are sketched now (`style::Style::SKETCH_STROKES` …, each by the
+    /// moment's intensity): x more strokes, y how far each strays (output pixels), z how much of
+    /// each breaks away; w unused.
+    pub sketch: vec4 = vec4(0.0),
 }
 
 /// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag
