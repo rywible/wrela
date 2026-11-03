@@ -1,0 +1,300 @@
+// Clips: a creature's bones keyed by hand, and played as hand animation is (Thomas and Johnston
+// 1981's timing and spacing; Motomura 2015's limited animation in 3D, "GuiltyGearXrd's Art Style:
+// The X Factor Between 2D and 3D", GDC). A key gives a bone's turn, its stretch (squash and stretch,
+// along the bone's own axes) and its shift from its rest place, at a time; how it goes to the next
+// key is its ease: held (the next drawing arrives at once), smooth, snapped (most of the way at
+// once, then settling: explosive acceleration) or even. A clip is its bones' tracks; it's sampled
+// at a time (`pose`), which a program may hold to a drawing rate (`held`: on twos at 12 a second)
+// and stop for a blow's impact (`Playhead::stop`), then turned into the palette a character is
+// skinned by (`palette`), as `character::pose_instances` turns a pose on the GPU.
+//
+// What a clip moves is presentation alone: a program's sim keeps its bodies where its rules put
+// them, and the clip, its holds and its stops are how a frame draws them (`present`).
+
+use creature::{Bone, MAX_BONES, Skeleton}
+use std::quat::Quat
+use std::transform::{identity, translate}
+
+/// How a key goes to the next: held (its pose kept until the next key's time, which arrives at
+/// once), smoothly (eased in and out), snapped (an ease-out cubic: most of the way at once, then
+/// settling) or evenly.
+pub const HOLD: u32 = 0
+pub const SMOOTH: u32 = 1
+pub const SNAP: u32 = 2
+pub const EVEN: u32 = 3
+
+/// A bone's pose against its rest: its turn about its joint, its stretch along its own axes (1
+/// each: none; a bone squashed to 0.7 along its length and 1.2 across keeps about its volume),
+/// and how far its joint is shifted from its rest place, in its parent's frame.
+pub struct Local: Copy {
+    pub turn: Quat,
+    pub stretch: vec3,
+    pub shift: vec3,
+}
+
+/// The rest pose's `Local`: no turn, no stretch, no shift.
+pub fn rest() -> Local {
+    Local { turn: Quat::identity(), stretch: vec3(1.0), shift: vec3(0.0) }
+}
+
+/// A key: a bone's pose at time `at` (seconds into its clip) and how it goes to the next.
+pub struct Key: Copy {
+    pub at: f32,
+    pub pose: Local,
+    pub ease: u32,
+}
+
+/// A key at `at` turned `turn`, stretched `stretch` and shifted `shift`, going on as `ease` says.
+pub fn key(
+    at: f32,
+    turn: Quat = Quat::identity(),
+    stretch: vec3 = vec3(1.0),
+    shift: vec3 = vec3(0.0),
+    ease: u32 = SMOOTH,
+) -> Key {
+    Key { at, pose: Local { turn, stretch, shift }, ease }
+}
+
+/// One bone's keys, in time order.
+pub struct Track: Clone {
+    pub bone: Bone,
+    pub keys: Vec<Key>,
+}
+
+/// A clip: its length (seconds), whether it loops, and its bones' tracks (a bone with none keeps
+/// its rest).
+pub struct Clip: Clone {
+    pub length: f32,
+    pub looped: bool,
+    pub tracks: Vec<Track>,
+}
+
+/// How far `ease` takes a key toward the next at `u` (0 to 1) of the way between their times.
+pub fn eased(ease: u32, u: f32) -> f32 {
+    let x = clamp(u, 0.0, 1.0)
+    if ease == HOLD {
+        return 0.0
+    }
+    if ease == SMOOTH {
+        return x * x * (3.0 - 2.0 * x)
+    }
+    if ease == SNAP {
+        let r = 1.0 - x
+        return 1.0 - r * r * r
+    }
+    x
+}
+
+/// `a` to `b`, `t` of the way: the turns along the shorter way, the stretches and shifts evenly.
+pub fn mixed(a: Local, b: Local, t: f32) -> Local {
+    Local {
+        turn: a.turn.nlerp(b.turn, t),
+        stretch: mix(a.stretch, b.stretch, vec3(t)),
+        shift: mix(a.shift, b.shift, vec3(t)),
+    }
+}
+
+/// A track's pose at `t`: its first key's before it, its last's after it, and between two keys
+/// the first eased toward the second by the first's ease.
+pub fn sampled(keys: [Key], t: f32) -> Local {
+    if keys.is_empty() {
+        return rest()
+    }
+    if t <= keys[0].at {
+        return keys[0].pose
+    }
+    for k in 1..keys.len() {
+        let (a, b) = (keys[k - 1], keys[k])
+        if t < b.at {
+            let span = max(b.at - a.at, 1.0e-6)
+            return mixed(a.pose, b.pose, eased(a.ease, (t - a.at) / span))
+        }
+    }
+    keys[keys.len() - 1].pose
+}
+
+/// `t` as a clip of `length` seconds plays it: wrapped if it loops, else held at its ends.
+pub fn clip_time(length: f32, looped: bool, t: f32) -> f32 {
+    if length <= 0.0 {
+        return 0.0
+    }
+    if looped {
+        return t - floor(t / length) * length
+    }
+    clamp(t, 0.0, length)
+}
+
+/// Every bone's pose in clip `c` at `t` (seconds), the bones without a track at rest.
+pub fn pose(c: Clip, t: f32) -> [Local; MAX_BONES] {
+    var out = [rest(); MAX_BONES]
+    let at = clip_time(c.length, c.looped, t)
+    for tr in c.tracks {
+        if tr.bone.index < MAX_BONES {
+            out[tr.bone.index] = sampled(tr.keys, at)
+        }
+    }
+    out
+}
+
+/// Two poses blended, `w` of the way from `a` to `b` (a clip crossing into the next).
+pub fn blended(a: [Local; MAX_BONES], b: [Local; MAX_BONES], w: f32) -> [Local; MAX_BONES] {
+    var out = a
+    for i in 0..MAX_BONES {
+        out[i] = mixed(a[i], b[i], w)
+    }
+    out
+}
+
+/// `t` held to drawings `fps` a second (0: every frame its own): the time of the drawing a frame
+/// shows, on twos at 12, on threes at 8. The same `t` gives the same drawing however the frames
+/// fall.
+pub fn held(t: f32, fps: f32) -> f32 {
+    if fps <= 0.0 {
+        return t
+    }
+    floor(t * fps + 1.0e-4) / fps
+}
+
+/// Where a clip is: its time, and the stop that holds it (a blow's impact: the drawing held a
+/// beat while what it hit takes it in) left to spend.
+pub struct Playhead: Copy {
+    pub t: f32 = 0.0,
+    pub stopped: f32 = 0.0,
+}
+
+impl Playhead {
+    /// Holds the clip for `seconds`, or for what's left of a stop already under way if that's
+    /// longer.
+    pub fn stop(mut self, seconds: f32) {
+        self.stopped = max(self.stopped, seconds)
+    }
+
+    /// `dt` seconds on: a stop's time spent first, the rest moving the clip.
+    pub fn advance(mut self, dt: f32) {
+        let spent = min(self.stopped, max(dt, 0.0))
+        self.stopped -= spent
+        self.t += max(dt, 0.0) - spent
+    }
+
+    /// Whether a stop holds the clip now.
+    pub fn stopping(self) -> bool {
+        self.stopped > 0.0
+    }
+}
+
+/// Bone `i`'s pose as a matrix in its joint's frame: shifted, turned, then stretched.
+fn local_matrix(l: Local) -> mat4 {
+    let r = l.turn.to_mat3()
+    let s = l.stretch
+    mat4(
+        vec4(r[0] * s.x, 0.0),
+        vec4(r[1] * s.y, 0.0),
+        vec4(r[2] * s.z, 0.0),
+        vec4(l.shift, 1.0),
+    )
+}
+
+/// The palette that skins skeleton `s` in pose `locals`, its root placed by `root` (rest space to
+/// the world: `character::placed`): each bone's matrix from rest space to the world, its parent's
+/// carried down to it, as `character::pose_instances` makes one on the GPU. Its bones are in
+/// order, each parent before its children (`creature::Skeleton`'s).
+pub fn palette(s: Skeleton, locals: [Local; MAX_BONES], root: mat4) -> [mat4; MAX_BONES] {
+    var world = [identity(); MAX_BONES]
+    var out = [root; MAX_BONES]
+    for i in 0..s.len() {
+        let bone = Bone { index: i }
+        let parent = s.parent(bone)
+        let at = s.rest(bone)
+        world[i] = if parent.index == i {
+            root * translate(at) * local_matrix(locals[i])
+        } else {
+            world[parent.index] * translate(at - s.rest(parent)) * local_matrix(locals[i])
+        }
+        out[i] = world[i] * translate(-at)
+    }
+    out
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The eases begin at their key and end at the next, a held one keeping its key to the end, a
+/// snapped one past halfway in its first quarter.
+@test
+fn each_ease_runs_from_its_key_to_the_next() {
+    for e in [SMOOTH, SNAP, EVEN] {
+        assert(eased(e, 0.0) == 0.0 && abs(eased(e, 1.0) - 1.0) < 1.0e-6, f"ease {e}")
+    }
+    assert(eased(HOLD, 0.99) == 0.0, "a held key keeps its pose")
+    assert(eased(SNAP, 0.25) > 0.5, f"a snap is quick: {eased(SNAP, 0.25)}")
+    assert(eased(SMOOTH, 0.5) == 0.5 && eased(SMOOTH, 0.1) < 0.1, "smooth eases in")
+}
+
+/// A track holds its first key before it and its last after it, and a held key's pose until the
+/// next key's time, when that one's arrives at once.
+@test
+fn a_track_holds_its_ends_and_its_held_keys() {
+    let up = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 1.0)
+    let keys = [
+        key(0.5, stretch: vec3(1.0, 0.5, 1.0), ease: HOLD),
+        key(1.0, turn: up, ease: EVEN),
+        key(2.0),
+    ]
+    assert(sampled(keys, 0.0).stretch.y == 0.5, "before its first key")
+    assert(sampled(keys, 0.99).stretch.y == 0.5, "a held key")
+    assert(sampled(keys, 1.0).turn == up && sampled(keys, 1.0).stretch.y == 1.0, "the next arrives")
+    let half = sampled(keys, 1.5).turn
+    assert(abs(dot(half.v, Quat::identity().nlerp(up, 0.5).v) - 1.0) < 1.0e-5, "even between")
+    assert(sampled(keys, 9.0).turn == Quat::identity(), "after its last key")
+}
+
+/// A drawing held on twos is the same for every frame within its twelfth of a second, and a
+/// looped clip's time wraps while an unlooped one's stops at its end.
+@test
+fn holds_and_clip_time() {
+    assert(
+        held(t: 0.08, fps: 12.0) == held(t: 0.0, fps: 12.0) && held(t: 0.083, fps: 12.0) == 0.0,
+        "within a drawing",
+    )
+    assert(abs(held(t: 0.1, fps: 12.0) - 1.0 / 12.0) < 1.0e-6, "the next drawing")
+    assert(held(t: 0.123, fps: 0.0) == 0.123, "every frame its own")
+    assert(
+        abs(clip_time(2.0, looped: true, t: 5.5) - 1.5) < 1.0e-6 &&
+            clip_time(2.0, looped: false, t: 5.5) == 2.0,
+    )
+}
+
+/// A stop holds the playhead for its time, then the clip moves on; a shorter stop under a longer
+/// one doesn't cut it short.
+@test
+fn a_stop_holds_the_playhead_then_lets_it_go() {
+    var p = Playhead {}
+    p.advance(0.1)
+    p.stop(0.05)
+    p.stop(0.01)
+    p.advance(0.03)
+    assert(abs(p.t - 0.1) < 1.0e-6 && p.stopping(), "held")
+    p.advance(0.03)
+    assert(abs(p.t - 0.11) < 1.0e-6 && !p.stopping(), f"moving again: {p.t}")
+}
+
+/// The rest pose's palette is the root's placement for every bone, and a turned elbow carries
+/// the hand round it while the shoulder stays.
+@test
+fn a_palette_carries_a_parents_turn_down_to_its_children() {
+    var s = Skeleton::new()
+    let root = s.root("shoulder", vec3(0.0, 1.0, 0.0))
+    let elbow = s.joint("elbow", root, vec3(0.3, 1.0, 0.0))
+    let hand = s.joint("hand", elbow, vec3(0.6, 1.0, 0.0))
+    let still = palette(s, [rest(); MAX_BONES], identity())
+    for i in 0..3 {
+        let p = still[i] * vec4(1.0, 2.0, 3.0, 1.0)
+        assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.0e-5, f"bone {i} moved at rest")
+    }
+    var locals = [rest(); MAX_BONES]
+    locals[elbow.index].turn = Quat::axis_angle(vec3(0.0, 0.0, 1.0), 1.5707963)
+    let bent = palette(s, locals, identity())
+    let at_hand = bent[hand.index] * vec4(0.6, 1.0, 0.0, 1.0)
+    assert(length(at_hand.xyz - vec3(0.3, 1.3, 0.0)) < 1.0e-4, f"the hand at {at_hand.xyz}")
+    let at_shoulder = bent[root.index] * vec4(0.0, 1.0, 0.0, 1.0)
+    assert(length(at_shoulder.xyz - vec3(0.0, 1.0, 0.0)) < 1.0e-5, "the shoulder stayed")
+}

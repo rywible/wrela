@@ -733,6 +733,12 @@ pub fn cook_shadow(
     out.store(id, vec4(vec3(exp(-od * EXTINCTION * 0.25)), 1.0))
 }
 
+/// A shadow map of no clouds: the whole sun at every texel (`new_sky` without its clouds).
+@compute(8, 8)
+fn unshadowed(out: mut Texels<Rgba16Float>, id: GlobalId) {
+    out.store(id, vec4(1.0))
+}
+
 /// How much of the sun reaches `world` past the clouds: the shadow map, moved with the field.
 /// Read through `s` (clamped): the map's coordinate is wrapped here, its seam half the map
 /// (24 km) from where the field started.
@@ -808,8 +814,24 @@ pub struct Sky {
 }
 
 /// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
-/// half the dome's size).
+/// half the dome's size). Without its clouds (`Switches::CLOUDS` off) each is a texel, never
+/// written but the shadow's: the dome's zero is a clear sky (`sky_with_clouds`), and the shadow
+/// is filled once with the whole sun (`unshadowed`).
 pub fn new_sky<Q: Switches>() -> Sky {
+    if !Q::CLOUDS {
+        var shadow = writable_texture::<Rgba16Float>(width: 1, height: 1)
+        dispatch(unshadowed.bind(out: mut shadow), over: shadow)
+        return Sky {
+            shape: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),
+            detail: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),
+            weather: writable_texture::<Rgba16Float>(width: 1, height: 1),
+            shadow,
+            dome: writable_texture::<Rgba16Float>(width: 1, height: 1),
+            half: writable_texture::<Rgba16Float>(width: 1, height: 1),
+            marched: buffer(1),
+            frames: 0,
+        }
+    }
     Sky {
         shape: texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
         detail: texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
@@ -826,13 +848,15 @@ pub fn new_sky<Q: Switches>() -> Sky {
 
 impl Sky {
     /// The GPU bytes its textures take (half floats: the noises, the weather, the clouds'
-    /// shadow and the dome).
+    /// shadow and the dome), as they're held.
     pub fn bytes(self) -> u64 {
-        memory::texels(SHAPE_SIDE, SHAPE_SIDE, 8, d: SHAPE_SIDE) +
-            memory::texels(DETAIL_SIDE, DETAIL_SIDE, 8, d: DETAIL_SIDE) +
-            memory::texels(WEATHER_SIDE, WEATHER_SIDE, 8) +
-            memory::texels(SHADOW_SIDE, SHADOW_SIDE, 8) +
-            memory::texels(SKY_W, SKY_H, 8) +
+        let side = self.shape.width()
+        let fine = self.detail.width()
+        memory::texels(side, side, 8, d: side) +
+            memory::texels(fine, fine, 8, d: fine) +
+            memory::texels(self.weather.width(), self.weather.height(), 8) +
+            memory::texels(self.shadow.width(), self.shadow.height(), 8) +
+            memory::texels(self.dome.width(), self.dome.height(), 8) +
             memory::texels(self.half.width(), self.half.height(), 8) +
             u64(self.marched.len()) * u64(size_of::<vec4>())
     }

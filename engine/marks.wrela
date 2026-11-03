@@ -68,6 +68,9 @@ pub struct MarkSample: Copy {
     /// The light of temporal AA's image there before any mark (its luma): what a look's hatching
     /// reads its tone from.
     pub lit: f32 = 0.0,
+    /// The program's moment's intensity (`light::Light::moment`'s x): what a look's marks may
+    /// thicken by.
+    pub intensity: f32 = 0.0,
 }
 
 /// A pixel's marks: the nearest of the finer octave's lattice (`fine`) and of the coarser one's
@@ -89,14 +92,28 @@ pub fn level_of(footprint: f32, size_px: f32) -> (i32, f32) {
 /// The mark of lattice level `level` nearest `at` (a point of a surface whose normal is `n`,
 /// marks running along `dir` there): the plane across `n` cut into cells `2^level` m wide, each
 /// holding one mark at a point hashed in it; of the four cells round `at`, the one whose mark is
-/// nearest in the mark's own measure (`offset`'s length).
-fn on_lattice(kind: u32, at: vec3, n: vec3, dir: vec3, level: i32, size_px: f32) -> MarkSample {
+/// nearest in the mark's own measure (`offset`'s length). A boiled look's step `boil`
+/// (`style::Style::BOIL_HZ`; 0: none) moves the lattice by a fraction of a cell hashed from it, so
+/// every mark is drawn again elsewhere each step and held between.
+fn on_lattice(
+    kind: u32,
+    at: vec3,
+    n: vec3,
+    dir: vec3,
+    level: i32,
+    size_px: f32,
+    boil: f32 = 0.0,
+) -> MarkSample {
     let cell = exp2(f32(level))
     // The plane's axes: `dir` in it, and across it; the lattice in the world's coordinates on
     // the plane nearest it (its normal's strongest axis), so a turn of the normal doesn't slide it.
     let a = abs(n)
     let plane = if a.x >= a.y && a.x >= a.z { 0 } else if a.y >= a.z { 1 } else { 2 }
-    let q = (if plane == 0 { at.zy } else if plane == 1 { at.xz } else { at.xy }) / cell
+    let b = i32(boil)
+    let moved = if boil > 0.0 {
+        vec2(hash2(b, level * 13 + 3), hash2(level * 17 + 5, b + 11))
+    } else { vec2(0.0) }
+    let q = (if plane == 0 { at.zy } else if plane == 1 { at.xz } else { at.xy }) / cell + moved
     let along = normalize(dir - n * dot(dir, n) + vec3(1.0e-6, 0.0, 0.0))
     let across = cross(n, along)
     let c = floor(q - vec2(0.5))
@@ -154,11 +171,19 @@ fn on_lattice(kind: u32, at: vec3, n: vec3, dir: vec3, level: i32, size_px: f32)
 /// coarser's at least), and the coarser one's share. Each octave's lattice is its own (its level in
 /// its seeds), so the coarser lattice of one octave is the finer one of the next: a mark doesn't
 /// change as the eye crosses an octave, it fades from one lattice to the other across it.
-pub fn sample(kind: u32, at: vec3, n: vec3, dir: vec3, footprint: f32, size_px: f32) -> Sampled {
+pub fn sample(
+    kind: u32,
+    at: vec3,
+    n: vec3,
+    dir: vec3,
+    footprint: f32,
+    size_px: f32,
+    boil: f32 = 0.0,
+) -> Sampled {
     let (k, f) = level_of(footprint, size_px)
     Sampled {
-        fine: on_lattice(kind, at, n, dir, k, exp2(f32(k)) / footprint),
-        coarse: on_lattice(kind, at, n, dir, k + 1, exp2(f32(k + 1)) / footprint),
+        fine: on_lattice(kind, at, n, dir, k, exp2(f32(k)) / footprint, boil),
+        coarse: on_lattice(kind, at, n, dir, k + 1, exp2(f32(k + 1)) / footprint, boil),
         f,
     }
 }
@@ -206,10 +231,12 @@ pub fn darkness<Y: Style>(
     distance: f32 = 0.0,
     class: u32 = 0,
     lit: f32 = 0.0,
+    boil: f32 = 0.0,
+    intensity: f32 = 0.0,
 ) -> f32 {
-    let m = sample(kind, at, n, dir, foot, Y::mark_px(kind))
-    let fine = MarkSample { distance, class, lit, ..m.fine }
-    let coarse = MarkSample { distance, class, lit, ..m.coarse }
+    let m = sample(kind, at, n, dir, foot, Y::mark_px(kind), boil)
+    let fine = MarkSample { distance, class, lit, intensity, ..m.fine }
+    let coarse = MarkSample { distance, class, lit, intensity, ..m.coarse }
     mix(Y::mark(fine, s, foot), Y::mark(coarse, s, foot), m.f)
 }
 
@@ -484,8 +511,39 @@ pub fn lines(
 ) -> vec4 {
     let p = pixel.position.xy
     let here = scene.load(x: u32(p.x), y: u32(p.y))
-    let l = scene_line(d, scene, depth, p, here.a)
+    let l = scene_line(d, scene, depth, wandered(d, p), here.a) * unbroken(d, p)
     vec4(here.rgb * mix(1.0, pow(d.look.line_dark, 2.2), l), here.a)
+}
+
+/// Where scene pixel `p` reads its line from: `p` itself, or for a boiled look (its moment's
+/// wander, `Develop::moment`'s z, in output pixels) moved along a smooth field of the screen,
+/// about 40 output pixels a wave, drawn afresh at each of the look's steps (its y): a line held
+/// for a step, then drawn again a little elsewhere, as a hand redraws it. The sky's edge wanders
+/// with it.
+fn wandered(d: Develop, p: vec2) -> vec2 {
+    let w = d.moment.z
+    if w <= 0.0 {
+        return p
+    }
+    let per = d.cam.screen.y / d.out.y
+    let u = p / per / 40.0
+    let t = d.moment.y * 7.13
+    let wave = vec2(noise3(vec3(u, t)), noise3(vec3(u + vec2(19.7, 3.1), t + 31.0)))
+    p + (wave * 2.0 - vec2(1.0)) * (w * per)
+}
+
+/// How much of a line at scene pixel `p` is drawn: all of it, or for a look whose lines break
+/// at the moment's height (`Develop::moment`'s w, the share that breaks away) its strokes with gaps
+/// between, about 9 output pixels a stroke, laid afresh at each of the look's steps.
+fn unbroken(d: Develop, p: vec2) -> f32 {
+    let f = d.moment.w
+    if f <= 0.0 {
+        return 1.0
+    }
+    let per = d.cam.screen.y / d.out.y
+    let q = p / per / 9.0
+    let gap = noise3(vec3(q, d.moment.y * 3.3 + 101.0))
+    1.0 - f * smoothstep(0.5, 0.62, gap)
 }
 
 /// The world point at scene pixel `p`'s own centre, unjittered, and its depth: the jittered frame's
@@ -578,10 +636,34 @@ pub fn marks_on<Y: Style>(
         )
     }
     if (Y::MARKS & STROKES) != 0 {
-        dark += darkness::<Y>(STROKES, at, n, dir, foot_c, s, distance, class, lit)
+        dark += darkness::<Y>(
+            STROKES,
+            at,
+            n,
+            dir,
+            foot_c,
+            s,
+            distance,
+            class,
+            lit,
+            boil: d.moment.y,
+            intensity: d.moment.x,
+        )
     }
     if (Y::MARKS & HATCH) != 0 {
-        dark += darkness::<Y>(HATCH, at, n, dir, foot_c, s, distance, class, lit)
+        dark += darkness::<Y>(
+            HATCH,
+            at,
+            n,
+            dir,
+            foot_c,
+            s,
+            distance,
+            class,
+            lit,
+            boil: d.moment.y,
+            intensity: d.moment.x,
+        )
     }
     // No darker than black: a look's marks summed (a crease over the ink look's densest hatching)
     // can come to more than the pixel's light.
@@ -734,4 +816,20 @@ fn terrain_rock_rejects_paint_on_flat_and_sloping_surfaces() {
         ground_grain(up: 0.4, material: vec4(0.0, 1.0, 0.0, 0.0)) == 0.0,
         "steep soil took ovals",
     )
+}
+
+/// A boiled lattice holds within a step and moves at the next: a point's mark is the same twice
+/// at one step, elsewhere on the lattice at the next, and elsewhere again from the unboiled one.
+@test
+fn a_boiled_lattice_holds_within_a_step_and_moves_at_the_next() {
+    let at = vec3(1.3, 0.2, 4.7)
+    let n = vec3(0.0, 1.0, 0.0)
+    let dir = vec3(1.0, 0.0, 0.0)
+    let a = sample(HATCH, at, n, dir, footprint: 0.01, size_px: 8.0, boil: 3.0)
+    let again = sample(HATCH, at, n, dir, footprint: 0.01, size_px: 8.0, boil: 3.0)
+    let next = sample(HATCH, at, n, dir, footprint: 0.01, size_px: 8.0, boil: 4.0)
+    let still = sample(HATCH, at, n, dir, footprint: 0.01, size_px: 8.0)
+    assert(a.fine.place == again.fine.place && a.fine.seed == again.fine.seed, "within a step")
+    assert(length(a.fine.place - next.fine.place) > 1.0e-3, "moved at the next step")
+    assert(length(a.fine.place - still.fine.place) > 1.0e-3, "moved from the unboiled lattice")
 }

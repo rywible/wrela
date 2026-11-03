@@ -26,14 +26,21 @@ use bare::{AHEAD, Bare, START, SUN, air_of, bare}
 pub type LOOK = Physical
 
 /// The bare scene's air: froxels, or clear (`engine/tests/switches` builds it both ways, `--set
-/// FOG=false`).
+/// FOG=false`); and its clouds, its probes and its bloom, each on or off the same way (`--set
+/// CLOUDS=false`, `PROBES`, `BLOOM`: a graphic look's switches).
 pub const FOG: bool = true
+pub const CLOUDS: bool = true
+pub const PROBES: bool = true
+pub const BLOOM: bool = true
 
-/// The fixture's switches: the approved, its air as `FOG` says.
+/// The fixture's switches: the approved, its air, clouds, probes and bloom as its constants say.
 pub struct Bared {}
 
 impl Switches for Bared {
     const FOG: bool = FOG
+    const CLOUDS: bool = CLOUDS
+    const PROBES: bool = PROBES
+    const BLOOM: bool = BLOOM
 }
 
 /// Where the sun moves to, and where the eye jumps to (the world's, m).

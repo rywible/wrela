@@ -39,6 +39,16 @@ pub trait Switches {
     /// Temporal AA's learned history rejector (B14.3, `temporal::learned_share`, its net given
     /// by `Frame::reject_by`).
     const LEARNED: bool = false
+    /// The clouds (`sky`): their noises, weather and shadow maps cooked, and their field marched
+    /// into the dome round the eye. Off, the sky is the air's alone, clear, with no clouds'
+    /// shadows; none of their textures is held, and the probes wait for no dome.
+    const CLOUDS: bool = true
+    /// The sky-light probes (`probes`): a grid baked round the eye on the GPU, with occlusion and
+    /// bounce. Off, the open sky's probe (`probes::open_sky`) lights everything, nothing is baked
+    /// or traced again, and nothing waits for the probes.
+    const PROBES: bool = true
+    /// The bloom (`paint`'s pyramid, from temporal AA's output): off, the develop has no glow.
+    const BLOOM: bool = true
 }
 
 /// The approved switches: every one at its default.

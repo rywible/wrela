@@ -44,6 +44,9 @@ impl<T: Tiers> Switches for Tiered<T> {
     const CASCADES: bool = T::CASCADES
     const NEURAL: bool = T::NEURAL
     const LEARNED: bool = T::LEARNED
+    const CLOUDS: bool = T::CLOUDS
+    const PROBES: bool = T::PROBES
+    const BLOOM: bool = T::BLOOM
 }
 
 impl Tier {

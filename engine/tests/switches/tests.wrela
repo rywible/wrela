@@ -1,6 +1,7 @@
-// The tool test: the frame fixture (engine/tests/frame, a bare scene) built twice, its air's
-// switch on and off (`--set FOG=false`: its switches' `FOG`), with the engine read from the
-// workspace, and each build's pipelines and shaders read from its manifest.
+// The tool tests: the frame fixture (engine/tests/frame, a bare scene) built with its air's switch
+// on and off (`--set FOG=false`: its switches' `FOG`), and with its clouds, probes and bloom off
+// (`CLOUDS`, `PROBES`, `BLOOM`), with the engine read from the workspace, and each build's
+// pipelines and shaders read from its manifest.
 
 use hosts::steps::{built, text_of}
 use std::io::print
@@ -43,18 +44,30 @@ fn text_at(d: Doc, n: u32, key: str) -> String {
     }
 }
 
+/// The clouds', the probes' and the bloom's entry points: the dome's march and the noise and
+/// weather it marches; the probes' bake and their tracing again; the bloom's pyramid.
+const CLOUD_ENTRIES: [Text; 3] = ["march_dome", "cook_noise", "cook_weather"]
+const PROBE_ENTRIES: [Text; 2] = ["bake", "trace_again"]
+const BLOOM_ENTRIES: [Text; 2] = ["bloom_down", "bloom_up"]
+
 /// The fixture built with its fog `fog`, read from its manifest.
 fn fixture(fog: bool) -> Built {
     let out = if fog { "scratch/fogged" } else { "scratch/clear" }
+    built_with(out, [("FOG", if fog { "true" } else { "false" })])
+}
+
+/// The fixture built into `out` with each of `sets` (a constant and its value), read from its
+/// manifest.
+fn built_with(out: str, sets: [(Text, Text)]) -> Built {
     var options = toolchain::options()
     options.overrides = Vec::from(
         [Override { name: String::from("engine"), dir: String::from("repo/engine") }],
     )
-    options.set = Vec::from(
-        [Set { name: String::from("FOG"), value: String::from(if fog { "true" } else {
-            "false"
-        }) }],
-    )
+    var given: Vec<Set> = Vec::new()
+    for (name, value) in sets {
+        given.push(Set { name: String::from(name), value: String::from(value) })
+    }
+    options.set = take given
     built("repo/engine/tests/frame", out, options, "the fixture builds")
     let manifest = text_of(f"{out}/manifest.json")
     let Some(d) = parse(manifest.as_str()) else { panic("the manifest is JSON") }
@@ -89,4 +102,29 @@ fn a_switch_thats_off_builds_none_of_its_path() {
     assert(has(off, "sky_shade"), "the clear build's sky")
     assert(on.shading > 0, "the fogged build's ground shading")
     assert(off.shading > 0 && off.shading < on.shading, "the clear build's shading is smaller")
+}
+
+/// With its clouds, its probes and its bloom off (a graphic look's switches), the bare scene builds
+/// none of the dome's march nor the noise and weather it marches, no probes' bake nor tracing
+/// again, and no bloom pyramid, which the approved build has; and fewer pipelines in all.
+@test(tool, read: [("repo", "../../..")], budget: 600)
+fn the_clouds_the_probes_and_the_bloom_switched_off_build_none_of_theirs() {
+    let on = built_with("scratch/approved", [("FOG", "true")])
+    let off = built_with(
+        "scratch/graphic",
+        [("CLOUDS", "false"), ("PROBES", "false"), ("BLOOM", "false")],
+    )
+    print(
+        f"approved: {on.entries.len()} pipelines; clouds, probes and bloom off: {off.entries.len()}",
+    )
+    for e in CLOUD_ENTRIES {
+        assert(has(on, e) && !has(off, e), f"the clouds' `{e}`")
+    }
+    for e in PROBE_ENTRIES {
+        assert(has(on, e) && !has(off, e), f"the probes' `{e}`")
+    }
+    for e in BLOOM_ENTRIES {
+        assert(has(on, e) && !has(off, e), f"the bloom's `{e}`")
+    }
+    assert(off.entries.len() < on.entries.len(), "fewer pipelines")
 }

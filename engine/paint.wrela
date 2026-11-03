@@ -300,6 +300,9 @@ pub struct Develop: Copy + GpuData {
     /// Whether the screen is shown HDR now (`std::gpu::screen_is`): the look's `output` asks,
     /// the host and the display decide.
     pub hdr: u32 = 0,
+    /// The program's moment (`light::Light::moment`): what the marks, the lines and the look's
+    /// lens may draw by.
+    pub moment: vec4 = vec4(0.0),
 }
 
 /// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag
@@ -370,8 +373,9 @@ pub fn develop<Y: Style>(
     // Bloom: the pyramid's top and the level under it brought up (`bloom_up`'s tent, here rather
     // than in a pass of its own), which hold the levels' light each once (a quarter of it, so as
     // much light is spread as before).
+    // None without the bloom (`levels` 0: `switches::Switches::BLOOM` off).
     let glow_at = px / d.out
-    var bloom = glow.sample_level(s, glow_at).rgb
+    var bloom = if levels > 0 { glow.sample_level(s, glow_at).rgb } else { vec3(0.0) }
     if levels > 1 {
         let size = vec2(f32(below.width()), f32(below.height()))
         let at = glow_at * size
