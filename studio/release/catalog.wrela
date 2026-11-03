@@ -17,8 +17,8 @@ pub struct Build: Clone {
 /// A game: its id (its storage namespace and its prefetch list), its title, its Worker and
 /// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
 /// rendered; and where it plays itself (`attract`, empty for none): one of its builds, and after
-/// a `#` the fragment that build reads from its address (`capybara#attract`, opened at
-/// `capybara/#attract`), which the console's home shows behind its text while the game is chosen.
+/// a `#` the fragment that build reads from its address (`game#attract`, opened at
+/// `game/#attract`), which the console's home shows behind its text while the game is chosen.
 /// What the console's home shows of it while it's chosen, each left empty for none:
 /// its hero, a PNG that Wrela rendered, full-bleed behind the home's text, which stands on its
 /// left; its title art, a PNG with alpha, in place of its title; its tagline, a line that sells
@@ -44,10 +44,10 @@ pub struct Game: Clone {
 /// Cloudflare zone (`zone`, the domain or one it's under); the Worker the server ran in before
 /// (`api_from`, empty for none), whose Durable Objects `api`'s first deploy takes over; and what
 /// its server's verifier plays: the game whose boards it ranks (`boards`) and their version
-/// (`board`, games/capybara/replay.wrela's `BOARD`, which a test checks). Each release keeps that
-/// verifier at `verifiers/<boards>/<board>/<sha256 of its files>/` in the bucket of builds
-/// (site.wrela's `BUILDS_BUCKET`), so a later build, of a later board, plays this board's runs with
-/// it (games/capybara/boards.wrela's `ARCHIVED`).
+/// (`board`, the game's own board version: `none` and 0 while no game keeps boards). Each release
+/// keeps that verifier at `verifiers/<boards>/<board>/<sha256 of its files>/` in the bucket of
+/// builds (site.wrela's `BUILDS_BUCKET`), so a later build, of a later board, plays this board's
+/// runs with it (a game's `platform::server::Game::archived`).
 pub struct Console: Clone {
     pub dir: Text,
     pub worker: Text,
@@ -77,9 +77,10 @@ pub struct Catalog: Clone {
     pub games: Vec<Game>,
 }
 
-/// The production release, wrela.dev: the capybara game alone, the first flagship game. Leapling
-/// and The Last Green were beta tests and stay in the workspace, out of the release (Ryan,
-/// 2026-10-30).
+/// The production release, wrela.dev: the console and the docs, with no games while the first
+/// of the next ones is made (Ryan, 2026-11-03: the capybara game, Leapling and The Last Green are
+/// gone from the workspace; the console shows none). No game keeps boards, so the server's
+/// verifier is kept under `none`, board 0.
 pub const CATALOG: Catalog = Catalog {
     console: Console {
         dir: "console",
@@ -91,45 +92,17 @@ pub const CATALOG: Catalog = Catalog {
         // The server ran in the console's Worker until 2026-10-31, when its first deploy here
         // took its class over (rywible/wrela#348); there's nothing left to take.
         api_from: "",
-        boards: "capybara",
-        board: 3,
+        boards: "none",
+        board: 0,
     },
     docs: Docs {
         dir: "docsite",
         worker: "wrela-docs",
         domain: "docs.wrela.dev",
-        description: "The Wrela reference. It covers the language, its standard library, the engine, the ui and platform packages, and the studio's tool.",
-        packages: Vec::from(["engine", "land", "ui", "platform", "studio/tool"]),
+        description: "The Wrela reference. It covers the language, its standard library, the engine, the ui and platform packages.",
+        packages: Vec::from(["engine", "land", "ui", "platform"]),
     },
-    games: Vec::from(
-        [
-            Game {
-                id: "capybara",
-                title: "O'Capy",
-                worker: "wrela-capybara",
-                domain: "capybara.wrela.dev",
-                session: "session",
-                builds: Vec::from(
-                    [
-                        Build { name: "session", dir: "games/capybara/session" },
-                        Build { name: "capybara", dir: "games/capybara" },
-                    ],
-                ),
-                // The play build, strolling through the levels by itself with no sound and no HUD
-                // when its address says `#attract` (games/capybara/attract.wrela): toolchain
-                // 0.17.0 opens a program at an address with a fragment.
-                attract: "capybara#attract",
-                cover: "games/capybara/cover.png",
-                // The first frame of the attract build, 4:3 (games/capybara/main.wrela's `HERO`).
-                hero: "games/capybara/hero.png",
-                // The name set in the game's lettering (`wrela tool title`).
-                logo: "games/capybara/title.png",
-                // No tagline: the title and its actions alone (Ryan, 2026-11-01).
-                tagline: "",
-                theme: "games/capybara/theme.txt",
-            },
-        ],
-    ),
+    games: Vec::new(),
 }
 
 /// The longest tagline, in bytes: the console's catalog takes no longer.
@@ -346,9 +319,6 @@ pub fn check(c: Catalog) -> Result<(), String> {
             }
             names.push(String::from(b.name))
         }
-    }
-    if seen.is_empty() {
-        return Err(String::from("the release needs at least one game"))
     }
     component(c.docs.worker)?
     if has(workers, c.docs.worker) || has(domains, c.docs.domain) {

@@ -15,60 +15,19 @@ members = [
     "docsite/tests/reader",
     "engine",
     "engine/tests/*",
-    "examples/*",
-    "examples/clearing/tests/checks",
-    "examples/gymnopedie/tests/piece",
-    "examples/herd/tests/layers",
-    "examples/herd/tests/raycasts",
-    "examples/herd/tests/realize",
-    "examples/vale/tests/land",
-    "examples/vale/tests/shots",
-    "games/*",
-    "games/capybara/scores",
-    "games/capybara/route",
-    "games/capybara/budget",
-    "games/capybara/keys",
-    "games/capybara/title",
-    "games/capybara/session",
-    "games/capybara/tests/attract",
-    "games/last-green/session",
-    "games/last-green/session/tests/export",
-    "games/last-green/stair",
-    "games/last-green/test-floor",
-    "games/last-green/tests/map",
-    "games/last-green/tests/stair",
-    "games/last-green/tower",
-    "games/leapling/session",
     "land",
     "land/tests/*",
     "platform",
-    "references",
-    "studio",
-    "studio/glue",
-    "studio/maplens",
-    "studio/maplens/glue",
-    "studio/courselens",
-    "studio/courselens/glue",
     "studio/audio",
     "studio/bench",
-    "studio/compare",
     "studio/passes",
-    "studio/export",
-    "studio/fit",
-    "studio/toolkit",
-    "studio/listening",
     "studio/lookbook",
     "studio/styles",
-    "studio/gait",
-    "studio/grow",
     "studio/motion",
-    "studio/round",
     "studio/serve",
-    "studio/reference",
     "studio/release",
     "studio/deploy",
-    "studio/tests/views",
-    "studio/tool",
+    "studio/toolkit",
     "ui",
     "ui/brand",
     "ui/tests/*",
@@ -106,27 +65,11 @@ allow = [
     "docs/voice.md",
     "docs/lookdev.md",
     "docs/devices.md",
-    "games/*/design.md",
-    "games/*/theme.txt",
-    "examples/vale/design.md",
     "content/styles/README.md",
     "studio/styles/history.log",
     ".gitignore",
     ".github/workflows/deploy.yml",
 ]
-# The studio's tool (studio/tool): the lens on a subject, built, served and run headless. It
-# reads the workspace and writes a subject's literals back through `wrela edit`'s code, so it
-# writes the workspace; its own output goes in build/studio.
-[tools.studio]
-package = "studio/tool"
-write = ["ws=.", "out=build/studio"]
-
-# The reference tool (studio/reference): replicas of reference meshes as packages, and how far a
-# package's surface is from its mesh's. It writes a replica where its command line says, in the
-# workspace; the packages it measures are built in build/reference.
-[tools.reference]
-package = "studio/reference"
-write = ["ws=.", "out=build/reference"]
 
 # The audio tool (studio/audio): a piece's take as a WAV file, its notes, numbers, MIDI and
 # sheet, and measurements of recordings (a note's partials, a piano model, clicks). It builds a
@@ -135,40 +78,23 @@ write = ["ws=.", "out=build/reference"]
 package = "studio/audio"
 write = ["ws=."]
 
-# The listening tool (studio/listening): blind listening tests of wrela's piano. It builds and
-# renders the pieces as the audio tool does, and writes the tests where its command line says, in
-# the workspace. sfizz's `sfizz_render` plays the sampled piano: it isn't vendored, so it must be
-# on PATH (a release from https://sfz.tools/sfizz/, its `bin/` on PATH).
-[tools.listening]
-package = "studio/listening"
-write = ["ws=."]
-run = ["sfizz_render"]
-
-# The lookbook tool (studio/lookbook): each shot of the floor's lookbook as a still on the native
-# host's GPU and a clip in Chrome. It reads the floor's build (games/last-green/build), serves it
-# to Chrome and writes the clips' keys and the page's results there, and writes the stills and
-# clips where its command line says, in the workspace.
+# The lookbook tool (studio/lookbook): each shot of a scene's lookbook as a still on the native
+# host's GPU and a clip in Chrome. It builds the scene's package, serves it to Chrome and writes
+# the clips' keys and the page's results in its build, and writes the stills and clips where its
+# command line says, in the workspace.
 [tools.lookbook]
 package = "studio/lookbook"
 write = ["ws=."]
 browser = true
 
-# The motion tool (studio/motion): short captures of the floor in motion on the native host's GPU.
-# It reads the floor's build and writes each capture's frames, clip and contact sheet where its
+# The motion tool (studio/motion): short captures of a scene in motion on the native host's GPU.
+# It reads the scene's build and writes each capture's frames, clip and contact sheet where its
 # command line says, in the workspace. FFmpeg (with x264) makes the clips: it isn't vendored, so
 # it must be on PATH (`brew install ffmpeg`, or the distribution's `ffmpeg` package).
 [tools.motion]
 package = "studio/motion"
 write = ["ws=."]
 run = ["ffmpeg"]
-
-# The round tool (studio/round): a play round of the floor in headless Chrome, summarized, then
-# its lookbook's stills. It serves the floor's build to Chrome and writes the round's keys and
-# the page's results there, and writes the round in target/rounds/round-<n>.
-[tools.round]
-package = "studio/round"
-write = ["ws=."]
-browser = true
 
 # The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
 # Chrome and natively. It reads the workspace's packages and builds each into build/bench, and
@@ -186,69 +112,18 @@ read = ["ws=."]
 write = ["out=build/passes"]
 browser = true
 
-# The export tool (studio/export): what Part C's brief takes from a game (`wrela tool export --
-# height|path <pkg> --out <file>`): the floor's ground as a 16-bit PNG, the walk's camera as JSON.
-# It builds the package into build/export and writes where its command line says, in the
-# workspace.
-[tools.export]
-package = "studio/export"
-write = ["ws=.", "out=build/export"]
-
-# The fit tool (studio/fit): a small network trained and written as source (`wrela tool fit --
-# --net sine --out content/...`), for the engine's experiments (docs/plan-world-class-2.md §B14).
-[tools.fit]
-package = "studio/fit"
-write = ["ws=.", "out=build/fit"]
-
-# The styles tool (studio/styles): each look under content/styles built into the vale, the
-# G-style check on the history (`git log`), and the four looks' page.
+# The styles tool (studio/styles): each look under content/styles built into a scene, the
+# G-style check on the history (`git log`), and the looks' page.
 [tools.styles]
 package = "studio/styles"
 write = ["ws=."]
 run = ["git"]
-
-# The gait tool (studio/gait): the grazer's gaits optimized in simulation, written as
-# content/kit/walks.wrela (§F5).
-[tools.gait]
-package = "studio/gait"
-write = ["ws=."]
-
-# The grow tool (studio/grow): a species' tree grown from its genome and site as a specimen (its
-# side view and grown.json), and the specimen page (docs/plan-world-class-3.md §E1.5).
-[tools.grow]
-package = "studio/grow"
-write = ["ws=.", "out=build/grow"]
-browser = true
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.
 [tools.serve]
 package = "studio/serve"
 write = ["ws=."]
-
-# The route tool (games/capybara/route): the route search's fastest runs of the capybara game's
-# first level. It writes them as the game's routes.wrela, in games/capybara.
-# The budget tool (games/capybara/budget): the capybara game's voice at its busiest, timed a
-# quantum at a time against its audio budget. It writes nothing.
-[tools.budget]
-package = "games/capybara/budget"
-
-[tools.route]
-package = "games/capybara/route"
-write = ["game=games/capybara"]
-
-# The keys (games/capybara/keys): a page on which Ryan plays the game's piano from the computer's
-# keyboard over the music's accompaniment, and keeps the takes he likes in its takes.wrela.
-# The title tool (games/capybara/title): O'Capy's title art, set in its lettering, written as the
-# game's title.png; with `--specimen`, every character of the lettering on a sheet in build/lettering.
-[tools.title]
-package = "games/capybara/title"
-write = ["game=games/capybara", "out=build/lettering"]
-
-[tools.keys]
-package = "games/capybara/keys"
-read = ["ws=."]
-write = ["keys=games/capybara/keys"]
 
 # The release tool (studio/release): a release of the console, its games and the docs for
 # Cloudflare Workers, which the deploy tool deploys. It reads the workspace, stages its builds in
@@ -257,8 +132,8 @@ write = ["keys=games/capybara/keys"]
 package = "studio/release"
 read = ["ws=."]
 write = ["out=build/release", "work=build/release-work"]
-# 90 minutes: a cold build on CI's 4-core runner (each of The Last Green's histories bakes for
-# minutes). Its builds may take most of it (studio/release/main.wrela's BUILD_TIMEOUT).
+# 90 minutes: a cold build on CI's 4-core runner; its builds may take most of it
+# (studio/release/main.wrela's BUILD_TIMEOUT).
 timeout = 5400
 
 # The deploy tool (studio/deploy): deploys the release in build/release to Cloudflare Workers,
@@ -269,7 +144,7 @@ timeout = 5400
 [tools.deploy]
 package = "studio/deploy"
 write = ["release=build/release"]
-net = ["wrela.dev", "docs.wrela.dev", "capybara.wrela.dev", "github.com"]
+net = ["wrela.dev", "docs.wrela.dev", "github.com"]
 run = ["npx"]
 secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 timeout = 3600

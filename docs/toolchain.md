@@ -8,7 +8,7 @@
 ## The working loop
 
 ```bash
-wrela check games/last-green              # types, borrows, effects: fast, no build
+wrela check console                       # types, borrows, effects: fast, no build
 wrela test engine frame_                  # the tests whose names hold `frame_`
 wrela suite wrela::engine/tests/frame::   # one member's tests, as the suite runs them
 wrela fmt engine/frame.wrela              # format in place (`--check` to only report)
@@ -38,10 +38,10 @@ wrela suite                               # everything, before a PR: fmt, allow,
 ## Running a program
 
 ```bash
-wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.10.0/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+wrela build engine/tests/frame -o build/cand/frame
+~/.wrela/toolchains/0.18.0/bin/wrela-host build/cand/frame --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
-wrela run games/capybara                               # serve it to a browser
+wrela run studio/bench/fixtures/hello-field            # serve it to a browser
 ```
 
 - `--input <script.json>` plays input events; `wrela script docsite scripts::KEYS -o keys.json` writes one from a `Script` constant.
@@ -49,7 +49,7 @@ wrela run games/capybara                               # serve it to a browser
 - A tool's `browser::navigate(b, url)` takes an open browser to a page again, in the same tab and profile, so its caches are warm: a page's warm run, after which `run(b, Script::new().wait(Until::done(), ...))` waits for that page's own result.
 - `--workers 1` makes a run repeat exactly. With more workers, work that streams or runs in parallel can land on other frames.
 - The hash covers every command byte submitted. Equal hashes mean equal commands; GPU pixels can still differ by a step or two between runs of one build.
-- A build keeps its storage beside it (`<build>/storage`). A game that stores settings (the capybara) draws differently once they're there, so start each comparison from the same storage.
+- A build keeps its storage beside it (`<build>/storage`). A program that stores settings draws differently once they're there, so start each comparison from the same storage.
 - `wrela-host --timestamps` prints each pass's GPU time; `--png`, `--every` and `--png-from` save frames; `--until TEXT` runs until the program prints `TEXT`.
 - `wrela-host --no-gpu <build> --ticks N --log out.ticks` runs a ticked program's ticks alone and records them; `--replay out.ticks` checks each tick's hash and names the first that differs.
 
@@ -62,7 +62,7 @@ The console's program has a server build: accounts and the games' boards (platfo
 - **The bucket of builds**, where each release's deploy keeps its server's verifier (`verifiers/<game>/<board>/<sha256>/`, release.json's `verifier`), which the API Worker binds as `WRELA_BUILDS`: `npx wrangler@4.151.0 r2 bucket create wrela-builds`. A new bucket, not the unused `wrela-releases`, so its name says what it holds (studio/release/site.wrela's `BUILDS_BUCKET`). The deploy's `CLOUDFLARE_API_TOKEN` then needs **Workers R2 Storage: Edit** beside its Workers permissions, since it puts each file with `wrangler r2 object put --remote` before any Worker deploys, unless `wrangler r2 object get ... --pipe --remote` finds the build's `verifier.json` there already (studio/deploy's `keep_verifier`).
 - **The ceremonies' keys**, two Worker secrets of the API Worker: `WRELA_CEREMONY_KEY`, the key a sign-up's and a sign-in's challenge is made with (an HMAC-SHA256 tag), and `WRELA_CEREMONY_KEY_OLD`, the one before it, which still finishes a challenge made just before a rotation. Each at least 32 bytes: `openssl rand -base64 48 | npx wrangler@4.151.0 secret put WRELA_CEREMONY_KEY --name wrela-console-api` (and the same for `WRELA_CEREMONY_KEY_OLD`, any other value until the first rotation). To rotate: put the current value into `WRELA_CEREMONY_KEY_OLD`, then a new one into `WRELA_CEREMONY_KEY`; a challenge lives 5 minutes, so the old one may go after that. A secret survives deploys, which never name it. The Worker gives them to the program as the headers `x-wrela-key` and `x-wrela-key-old` on a `POST` to `/api/accounts` alone, removing any a client sent from every request (docs/toolchain-gaps.md, "A server can't read its Worker's secrets"); without a key of 32 bytes the server begins no ceremony.
 
-**When a board closes** (games/capybara/replay.wrela's `BOARD` goes up): add the board before it and its last release's `release.json` `verifier` path to games/capybara/boards.wrela's `ARCHIVED`, and set studio/release's catalog `console.board` to the new one (a test checks it matches); runs of the old board go on through its archived verifier (`std::server::call_build`), and a board left out of `ARCHIVED` is closed.
+**When a board closes** (a game's board version goes up): add the board before it and its last release's `release.json` `verifier` path to the game's `platform::server::Game::archived`, and set studio/release's catalog `console.board` to the new one; runs of the old board go on through its archived verifier (`std::server::call_build`), and a board left out of `archived` is closed. No game keeps boards now: the server's game is `platform::server::NoBoards`, and the catalog's boards are `none`, board 0.
 
 To run it on this machine, in the real Workers runtime:
 
@@ -96,11 +96,11 @@ Ryan sets two things on the `wrela.dev` zone once, in the Cloudflare dashboard:
 ## Watching and measuring
 
 ```bash
-wrela trace games/capybara --watch capybara --frames 120 --csv --no-gpu
-wrela bisect games/capybara --until "capybara.z > 0" --frames 600
-wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base/last-green --pairs 3
-wrela same games/capybara --against build/base/capybara --frames 120   # behaves as the saved build?
-wrela profile games/last-green --chrome --compare build/base/last-green --pairs 3   # in headless Chrome
+wrela trace <pkg> --watch <field> --frames 120 --csv --no-gpu
+wrela bisect <pkg> --until "<field> > 0" --frames 600
+wrela profile engine/tests/frame --size 1920x1080 --workers 4 --compare build/base/frame --pairs 3
+wrela same engine/tests/frame --against build/base/frame --frames 120   # behaves as the saved build?
+wrela profile engine/tests/frame --chrome --compare build/base/frame --pairs 3   # in headless Chrome
 wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or the first tick that differs
 ```
 
@@ -115,7 +115,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - `wrela build --relaxed-simd` (release only) writes `game.relaxed.wasm` beside `game.wasm`: the code only `frame` reaches fuses its vector multiply-adds. Chrome loads it, Safari the standard one; `wrela-host --relaxed` and `wrela profile --relaxed-simd` run it natively. Both modules run the same ticks (`--compare-ticks`).
 - `wrela build <pkg> --report data` lists the twenty largest constants by their laid-out size, with each one's share of zero bytes, and the data section's total: a large constant read only at load is better shipped as a file (`std::io::Shipped`).
 - `wrela build <pkg> --report consts [--json]` lists each constant the build computes: its value's bytes, the fuel computing it used, this build's seconds on it, and whether it was computed or read from the cache. The cache is `<pkg>/build/consts/<version>`; its key is the constant's code, its fuel, the build's options, the bytes of each file it embeds and the toolchain's version, so another toolchain's entries are never read (0.10.0).
-- `wrela build <pkg> --set NAME=VALUE` (repeatable) builds with another value for a `pub const` of the program's `main.wrela`: a number, `true`/`false`, a quoted text, or a variant's name for a constant of a fieldless enum (`--set TIER=Medium` is `Tier::Medium`). Its uses fold with the value (a length it gives, an `if NAME`, a `match NAME`), and the manifest records the sets. `wrela pipelines`, `wrela same` and `std::tool::toolchain`'s `BuildOptions::set` take it; `wrela same` says two builds whose sets differ differ (0.10.0). It points a `pub type` of the program's `main.wrela` at another type too (0.11.0): `wrela build examples/vale --set LOOK=styles::fixtures::Every` builds the vale in that look (`engine::style`).
+- `wrela build <pkg> --set NAME=VALUE` (repeatable) builds with another value for a `pub const` of the program's `main.wrela`: a number, `true`/`false`, a quoted text, or a variant's name for a constant of a fieldless enum (`--set TIER=Medium` is `Tier::Medium`). Its uses fold with the value (a length it gives, an `if NAME`, a `match NAME`), and the manifest records the sets. `wrela pipelines`, `wrela same` and `std::tool::toolchain`'s `BuildOptions::set` take it; `wrela same` says two builds whose sets differ differ (0.10.0). It points a `pub type` of the program's `main.wrela` at another type too (0.11.0): `wrela build engine/tests/frame --set LOOK=styles::fixtures::Every` builds the bare frame in that look (`engine::style`).
 - `WRELA_FEATURES=none` (or a comma list to keep) hides optional GPU features from a program on the native host, and `wrela test` passes the same mask to Chrome.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
@@ -145,47 +145,20 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 
 | Tool                 | Does                                                                                                      |
 | -------------------- | --------------------------------------------------------------------------------------------------------- |
-| `lookbook`           | A program's lookbook shots as stills and clips (`--package examples/clearing`, `--stills`, `--view clay`) |
-| `motion`, `round`    | The Last Green in motion; a play round in Chrome                                                          |
-| `studio`             | The lens on a subject, a floor's map or a game's course                                                   |
+| `lookbook`           | A program's lookbook shots as stills and clips (`--package <pkg>`, `--stills`, `--view clay`)            |
+| `motion`             | A scene in motion: frames, a clip and a contact sheet                                                     |
+| `styles`             | Each look under content/styles built into a scene, and the check that adding one changed nothing in `engine/` |
 | `serve`              | A directory served to a browser                                                                           |
-| `audio`, `listening` | A piece's take and measurements; blind listening tests                                                    |
-| `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
-| `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
+| `audio`              | A piece's take and measurements                                                                           |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
-| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
-| `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene frame-bare`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
 | `passes`             | A frame's passes and dispatches, in order, as a page |
-| `grow`               | A tree grown from its species' genome and site as a specimen (`--species oak --age 180 --light open --wind 0.6 --seed 3 --out out/<dir>`: its side view and `grown.json`), every species' specimens as a page (`--specimens out/<dir>`), the trees' kinds side on (`--kinds out/<dir>`), a fit to a silhouette (`--fit <png> --species oak --out out/<dir>`), and a goal grown and checked (`--goal <goal.toml> --out out/<dir>`): below |
-| `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`); the impostor's ladder run and printed (`--net impostor --rungs ABCD`, the best run written with `--out`); or the learned rejector's truth, dataset, baseline and rung (`--net rejector --frames n [--out ...]`): `engine::neural` |
-
-### Growing and steering a tree (`wrela tool grow`)
-
-- `--fit <silhouette.png> --species <s>` finds the site (age, light, wind), the seed and each steered genome value's delta (±25 % of the species', `studio/grow/fit.wrela`'s `STEERED`) whose grown tree's side view best overlaps the silhouette: a tree dark on light, as `wrela tool grow` writes one or a photograph cut out by hand. Both masks are 96 cells a side, each scaled by its larger extent and centred on its bounds, and closed by 2 cells (a crown's mass). CMA-ES (`studio/toolkit/cma.wrela`) from a fixed seed: 400 evaluations, the trajectory printed every 20; it writes the best's `grown.json` (its IoU, evaluations and trajectory), `side.png`, `fitted.png` and `target.png`. A silhouette outside the workspace runs the tool as a package with it granted: `wrela tool studio/grow --write out=build/grow --read refs=<dir> -- --fit refs/<file>.png --species oak --out out/<dir>`.
-- `--goal <goal.toml>` grows a structured goal and checks what it can measure, failing if a check does: its height within 10 % (the genome's tallest scaled toward it), its crown's centroid toward `light_from`, a fork where it names a gale, a lightning scar where it names lightning. The format (`studio/grow/goal.wrela`'s header):
-
-```toml
-species = "oak"        # oak, beech, birch, hawthorn, blackthorn, pine, alder
-age = 180              # years
-exposure = 0.6         # to the wind, 0 to 1
-light = "open"         # open, edge or under (or a share of the open's, 0 to 1)
-light_from = "south"   # north, east, south or west: its crown leans that way
-height = 22            # m: grown within 10 %
-seed = 3
-
-[[event]]
-kind = "gale"          # gale, fire, browse, fall or lightning
-year = 40              # its age then
-strength = 0.9         # 0 to 1
-```
-
-- A tree's random draws are keyed by its seed and by what draws them (a shoot by its lineage, a year's space by its year), never by its genome's values or its site, so a steered value moves the tree it grows rather than drawing another one (docs/bench.md, "E6").
 
 ## Benching another device
 
 `wrela tool bench -- --starts <n> [--scene <name>]...` runs each scene's cold and warm starts alone, `n` of each, and prints each `playable_ms` and their medians (docs/plan-world-class-3.md §C5's three runs). A cold start's salt is new to the machine (the seconds since the epoch, a thousand to each): macOS keeps a shader cache an app, keyed by a shader's source, across Chrome's thrown-away profiles, and the salts 1, 2, 3, ... that the bench used before C5 were served from it, so its cold numbers before 2026-10-29 are starts with that cache warm. Each run's `results/starts.json` (0.10.2) says when each pipeline was built and each command that waited for one: what a start waited for.
 
-`wrela tool bench -- --tier <tier>` builds each scene whose program names a tier (`pub const TIER`, `engine::tier`) at that tier, and `--look <type>` each whose program names a look (`pub type LOOK`, `engine::style`) in that look (`--look styles::fixtures::Every`); a row names them, `vale-walk (Medium, Every)`. A scene whose program names neither is a usage error with the one it lacks.
+`wrela tool bench -- --tier <tier>` builds each scene whose program names a tier (`pub const TIER`, `engine::tier`) at that tier, and `--look <type>` each whose program names a look (`pub type LOOK`, `engine::style`) in that look (`--look styles::fixtures::Every`); a row names them, `frame-bare (Medium, Every)`. A scene whose program names neither is a usage error with the one it lacks.
 
 `wrela tool bench -- --lan [--scene <name>]...` measures the scenes on a device on this machine's network instead of here. It builds each scene, serves it to the LAN, and prints its four pages' URLs (gpu, play, cold, warm, each with `show=1`); a person opens them on the device in that order, each once the one before has finished, and the warm one twice (the tool says when). The device puts each run's results back, and the report names it by its adapter and its browser's user agent, under `docs/bench.md`'s "Devices". The native run is skipped: it would be this machine's.
 

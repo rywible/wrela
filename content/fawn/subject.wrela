@@ -1,8 +1,0 @@
-// What the lens shows of this package (`wrela tool studio -- content/fawn`): the fawn's field.
-
-use creature::{Coat, fawn}
-use std::field::Field
-
-pub fn subject() -> Field<Coat> {
-    fawn().field()
-}

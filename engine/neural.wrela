@@ -1,5 +1,5 @@
 // Small networks (B14.1): multilayer perceptrons of two hidden layers (ReLU, the output linear),
-// trained at build time and shipped as numbers (`studio/fit` writes them as source), evaluated
+// trained at build time and shipped as numbers (`studio/fit` at 5b9b305 wrote them as source), evaluated
 // in a shader (`eval_gpu`) or on the CPU (`eval`, every test's reference).
 //
 // A net's weights are one array in a fixed order (`Model`'s offsets): the first layer's weights

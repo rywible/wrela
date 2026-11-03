@@ -12,7 +12,7 @@
 // (linearly between bands' centres), a little smoothed. Measuring a level takes a window of a
 // third of a second, in which a fast decay falls a few dB, so a model made from measurements
 // alone plays quieter partials than it measured. `--against <dir>` closes that loop: it's the
-// same notes played by the model now in `--out` (by examples/piano), and the fit moves each
+// same notes played by the model now in `--out` (by examples/piano at 5b9b305), and the fit moves each
 // number by what separates its measurement from the recording's. A few rounds settle it.
 //
 // It writes the model as a wrela constant, `GRAND`, with its source said in a comment, formatted

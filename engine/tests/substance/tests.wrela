@@ -15,7 +15,6 @@ use std::json::{Doc, TOP, parse}
 use std::tool::toolchain
 use std::tool::toolchain::{Override, Set}
 use styles::physical::Physical
-use trees::species::{HABITS, Species}
 
 /// A unit vector from two numbers in [0, 1).
 fn unit(a: f32, b: f32) -> vec3 {
@@ -175,10 +174,11 @@ fn the_physical_looks_light_is_the_lights_own_sum() {
     }
 }
 
-/// A 200-year-old oak's history reads its age as its share of an oak's lifespan, within a byte.
+/// A 200-year-old oak's history reads its age as its share of an oak's lifespan (600 years),
+/// within a byte.
 @test
 fn an_old_oaks_history_reads_its_age() {
-    let life = HABITS[Species::Oak].lifespan
+    let life = 600.0
     let h = std::gpu::Unorm8x4::encode(
         history_of(200.0, life, light: 0.6, wet: 0.1, vigour: 0.8),
     ).decode()

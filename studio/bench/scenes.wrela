@@ -1,7 +1,7 @@
 // The scenes the bench measures (docs/plan-world-class.md §B1): each a package, its input
-// script, its frames and its size. The scripts are the gates' (build/gates in a checkout).
+// script, its frames and its size.
 
-use std::input::{Key, Script}
+use std::input::Script
 
 /// A scene: its name, its package (`pkg`) (from the workspace), the frames it measures after the
 /// warmup, its size, the frame its walk begins (`WALKS`: its counted frames begin there) or 0 for
@@ -21,107 +21,28 @@ pub struct Scene: Clone {
     pub looked: bool = false,
 }
 
-/// Every scene, in the order the report lists them.
-pub const SCENES: [Scene; 8] = [
+/// Every scene, in the order the report lists them: the engine's bare frame (flat ground, open
+/// sky, nobody: engine/tests/frame), the floor every lit program stands on.
+pub const SCENES: [Scene; 1] = [
     Scene {
-        name: "clearing-path",
-        pkg: "examples/clearing",
+        name: "frame-bare",
+        pkg: "engine/tests/frame",
         frames: 600,
         width: 1920,
         height: 1080,
         arrives: true,
-    },
-    Scene {
-        name: "last-green-shot",
-        pkg: "games/last-green",
-        frames: 480,
-        width: 1920,
-        height: 1080,
-        arrives: true,
-        tiered: true,
-        looked: true,
-    },
-    Scene {
-        name: "last-green-walk",
-        pkg: "games/last-green",
-        frames: 1200,
-        width: 1920,
-        height: 1080,
-        walks: WALKS,
-        arrives: true,
-        tiered: true,
-        looked: true,
-    },
-    Scene { name: "capybara-run", pkg: "games/capybara", frames: 600, width: 1920, height: 1080 },
-    Scene {
-        name: "capybara-run-large",
-        pkg: "games/capybara",
-        frames: 600,
-        width: 2940,
-        height: 1912,
-    },
-    Scene { name: "herd", pkg: "examples/herd", frames: 600, width: 1920, height: 1080 },
-    Scene { name: "leapling", pkg: "games/leapling", frames: 600, width: 1920, height: 1080 },
-    Scene {
-        name: "vale-walk",
-        pkg: "examples/vale",
-        frames: 1200,
-        width: 1920,
-        height: 1080,
-        walks: WALKS,
-        arrives: true,
-        tiered: true,
         looked: true,
     },
 ]
 
-/// The frame the walks begin (the floor's LG_WALK's from 240 in its gate's script): after they're
-/// playable in a saturated run too, whose frames
-/// race its helpers' jobs and fetches (at `Epic` it was playable at frames 232-239 there, and at
-/// about 100 paced; at `High`, whose load's frames are cheaper, natively at 269 and in Chrome not
-/// by frame 360). Begun before, the moving eye kept its near cascade from being whole, which its
-/// first probes wait for, and the run stayed covered (C6, C7).
+/// The frame a walking scene's walk begins: after it's playable in a saturated run too, whose
+/// frames race its helpers' jobs and fetches (the floor was playable at frames 232-239 at `Epic`;
+/// begun before, the moving eye kept its near cascade from being whole, which its first probes
+/// wait for, and the run stayed covered: docs/bench.md C6, C7).
 pub const WALKS: u32 = 900
 
-/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK from `WALKS`,
-/// CAPY_RUN), the vale's walk begun at `WALKS` (each loads at rest, then walks), or none.
+/// Scene `name`'s input: none (the bare frame scripts itself).
 pub fn script(name: str) -> Script {
-    if name == "clearing-path" {
-        return Script::frames()
-            .key_down(120, Key::Space)
-            .key_up(121, Key::Space)
-            .key_down(400, Key::H)
-            .key_up(401, Key::H)
-    }
-    if name == "last-green-shot" {
-        return Script::frames()
-            .key_down(240, Key::L)
-            .key_up(241, Key::L)
-            .key_down(242, Key::Digit3)
-            .key_up(243, Key::Digit3)
-            .key_down(244, Key::Enter)
-            .key_up(245, Key::Enter)
-    }
-    if name == "last-green-walk" {
-        return Script::frames()
-            .key_down(WALKS, Key::W)
-            .key_down(WALKS + 60, Key::ShiftLeft)
-            .key_up(WALKS + 900, Key::ShiftLeft)
-            .key_up(WALKS + 900, Key::W)
-    }
-    if name == "vale-walk" {
-        return Script::frames().key_down(WALKS, Key::W).key_up(WALKS + 1, Key::W)
-    }
-    if name == "capybara-run" || name == "capybara-run-large" {
-        return Script::frames()
-            .key_down(1, Key::Enter)
-            .key_down(1, Key::D)
-            .key_up(2, Key::Enter)
-            .key_down(281, Key::Space)
-            .key_up(330, Key::Space)
-            .key_down(350, Key::Space)
-            .key_up(400, Key::Space)
-            .key_down(573, Key::S)
-    }
+    let _ = name
     Script::frames()
 }

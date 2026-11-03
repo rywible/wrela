@@ -14,8 +14,7 @@
 // the Terms and the Privacy Policy are final (console/legal.wrela, rywible/wrela#352): signing in,
 // recovery and play without an account go on.
 
-use capybara::boards::Capybara
-use platform::server::{Asked, CEREMONY, Command, Engine, SESSION, Versions, engine}
+use platform::server::{Asked, CEREMONY, Command, Engine, NoBoards, SESSION, Versions, engine}
 use platform::wire::{ACCOUNTS, PUBLIC, RUNS, Request as Asking, run_of}
 use std::crypto
 use std::http::{Request, bytes, request, respond, session_cookie, text}
@@ -33,7 +32,7 @@ pub struct Server {
     rp_id: String,
     origin: String,
     versions: Versions,
-    engine: Option<Engine<Capybara>>,
+    engine: Option<Engine<NoBoards>>,
     asked: Vec<(u32, Pending<u8>)>,
 }
 
@@ -55,7 +54,7 @@ pub fn init(rp_id: str, origin: str, versions: Versions) -> Server {
 pub fn serve(s: mut Server, time: f32) {
     let _ = time
     if s.engine.is_none() {
-        var e = engine(Capybara {}, s.rp_id.as_str(), s.origin.as_str(), s.versions, me().as_str())
+        var e = engine(NoBoards {}, s.rp_id.as_str(), s.origin.as_str(), s.versions, me().as_str())
         // Sign-ups stay closed until Ryan says otherwise: reopening them is deleting this line.
         e.close_sign_ups()
         s.engine = Some(take e)
@@ -68,7 +67,7 @@ pub fn serve(s: mut Server, time: f32) {
 
 /// A call of the engine: the answers in, then the events, then its commands carried out, each
 /// request kept in `asked` until it's answered.
-fn once(e: mut Engine<Capybara>, asked: mut Vec<(u32, Pending<u8>)>) {
+fn once(e: mut Engine<NoBoards>, asked: mut Vec<(u32, Pending<u8>)>) {
     e.begin()
     var i = 0
     while i < asked.len() {
@@ -150,7 +149,7 @@ fn once(e: mut Engine<Capybara>, asked: mut Vec<(u32, Pending<u8>)>) {
 }
 
 /// A request to the engine, if it's one of wire.wrela's: else it is answered here.
-fn http(e: mut Engine<Capybara>, r: Request) {
+fn http(e: mut Engine<NoBoards>, r: Request) {
     let method = r.method.as_str()
     let path = r.path.as_str()
     let reads = method == "GET" || method == "HEAD"

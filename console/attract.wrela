@@ -7,7 +7,7 @@
 // "loads very slowly", when it opened only after the home had rested on the game three seconds).
 // Once the home shows its shelf with nothing over it, the console shows it behind (`host::underlay`)
 // and calls it (`host::send`): until then it holds its run on its first frame, which is the hero
-// (games/capybara/attract.wrela), so as the hero fades out over it in about `FADE_IN` seconds the
+// (games/capybara/attract.wrela at 5b9b305), so as the hero fades out over it in about `FADE_IN` seconds the
 // run starts from where the hero stood. The backdrop (paint.wrela) draws the hero with less alpha,
 // keeping the text's dark gradient, so the game shows through where the hero was. The program
 // behind is muted and hears no input.

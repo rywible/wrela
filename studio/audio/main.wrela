@@ -23,7 +23,7 @@
 // **A piece** is a program with three exports: `choose(...)`, called before its first frame with
 // `--take`'s numbers (`--take 1`, or `--take 60,64` for two), which says which take it plays (the
 // program's own choice without `--take`); `seconds() -> f32`, how long the take sounds; and
-// `describe()`, which prints the take as JSON lines (examples/gymnopedie has them). The tool
+// `describe()`, which prints the take as JSON lines (examples/gymnopedie at 5b9b305 had them). The tool
 // builds the piece through the toolchain into its `build/audio`, loads it on the native host's
 // CPU (`std::tool::drive`), runs `init`, `choose` and its first frame, and renders its voice
 // offline (`drive::audio`): the samples Chrome's AudioWorklet renders too.

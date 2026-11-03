@@ -1,5 +1,5 @@
 // The console's server: accounts, sessions and verified leaderboards, for every wrela game
-// (games/capybara/design.md, "Accounts and leaderboards"). The console's program runs it as its
+// (games/capybara/design.md at 5b9b305, "Accounts and leaderboards"). The console's program runs it as its
 // server build on Cloudflare (toolchain 0.18.0's host, language.md §19.5), answering HTTP requests
 // to wrela.dev's `/api/` (wire.wrela). A game reaches it only through the console (link.wrela),
 // since a server takes only its own program's clients (docs/toolchain-gaps.md, "A server takes one
@@ -73,7 +73,7 @@ pub struct Outcome: Copy {
 }
 
 /// A game's boards: its name, its board's version (its build of play: a change to play starts a
-/// new one, games/capybara/design.md, "Physics is locked at release"), its courses, how to check a
+/// new one, games/capybara/design.md at 5b9b305, "Physics is locked at release"), its courses, how to check a
 /// replay, and where an older version's verifier is kept.
 pub trait Game {
     /// A replay being played.
@@ -105,6 +105,48 @@ pub trait Game {
     /// closed; this build's own, if it's there, is played here (`Engine::archived`).
     fn archived(self) -> [(u32, Text)]
 }
+
+/// No game's boards: the server of a console whose games keep none. Accounts, sign-in and
+/// recovery go on; every upload is refused, and there are no boards to read.
+pub struct NoBoards {}
+
+impl Game for NoBoards {
+    type Run = ()
+
+    fn id(self) -> Text {
+        ""
+    }
+
+    fn board(self) -> u32 {
+        0
+    }
+
+    fn courses(self) -> u32 {
+        0
+    }
+
+    fn claim(self, replay: [u8]) -> Result<Claim, Text> {
+        let _ = replay
+        Err("No game keeps boards yet.")
+    }
+
+    fn start(self, replay: [u8]) -> () {
+        let _ = replay
+    }
+
+    fn play(self, run: mut (), ticks: u32) -> Option<Result<Outcome, Text>> {
+        let _ = run
+        let _ = ticks
+        Some(Err("No game keeps boards yet."))
+    }
+
+    fn archived(self) -> [(u32, Text)] {
+        NONE_ARCHIVED
+    }
+}
+
+/// `NoBoards`' archived verifiers: none.
+const NONE_ARCHIVED: [(u32, Text); 0] = []
 
 /// The versions of what a player agrees to, as the console's build has them (console/legal.wrela):
 /// the Terms and the Privacy Policy, at sign-up, and what posting makes public, before the first

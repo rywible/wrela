@@ -1,9 +1,0 @@
-# A small floor behind the stair's second door, to test the way between builds: walk in, decide
-# its fate, walk back out to the stair.
-[package]
-name = "test_floor"
-
-[dependencies]
-engine = { workspace = true }
-platform = { workspace = true }
-tower = { workspace = true }

@@ -868,7 +868,7 @@ pub struct Report: Clone {
 
 /// `release.json`: the release's source revision, its id, the console's server's Worker, its
 /// verifier (which the deploy puts in `BUILDS_BUCKET`, and which a later build names for this
-/// board: games/capybara/boards.wrela's `ARCHIVED`), and each Worker's report.
+/// board: its game's `platform::server::Game::archived`), and each Worker's report.
 pub fn release_json(
     source: str,
     release: str,
