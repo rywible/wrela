@@ -64,13 +64,16 @@ pub const FIRST: f32 = 2.5
 pub const DRAWINGS: f32 = 12.0
 pub const FIGHT_DRAWINGS: f32 = 6.0
 pub const FIGHT_FROM: f32 = 0.5
-/// The smear (`engine::character::Smear`) at the moment's height: how far a new drawing's trailing
-/// surfaces are drawn back toward the drawing before (0.8: the leading surfaces, and the shadow,
-/// are always the pose's own, so where the fighter is stays plain), how much of that trail breaks
-/// into streaks, and over how many frames it fades (4 at 60 a second: the smear is a drawing's
-/// first 67 ms, then the drawing holds clean).
-pub const SMEAR: f32 = 0.8
-pub const STREAKS: f32 = 0.65
+/// The smear (`engine::character::Smear`) at the moment's height, as a rough in-between drawing:
+/// for a new drawing's first `SMEAR_FRAMES` (4 at 60 a second, a fifteenth of a second: a drawing
+/// of its own), its trailing surfaces drawn back toward the drawing before by `SMEAR` and its
+/// surface torn open by `TEARS`, each the more where it moved farther; then the drawing stands
+/// clean, cut, not eased. And `DISARRAY` for the whole drawing: how much its lines come apart where
+/// it moved most. Its leading surfaces, its head and neck (`Smear::steady`) and its shadow are
+/// the pose's own, so where the fighter is and which way it faces stay plain.
+pub const SMEAR: f32 = 0.6
+pub const TEARS: f32 = 0.55
+pub const DISARRAY: f32 = 1.0
 pub const SMEAR_FRAMES: f32 = 4.0
 /// The blow's stop (seconds held as it lands), and how long a clip takes to cross into the next.
 pub const STOP: f32 = 0.12
@@ -207,10 +210,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.intensity = if in_strike { intensity_at(s.head.t) } else { QUIET }
     let root = placed(vec3(0.0, ground_at(vec2(0.0)), 0.0), 0.0)
     s.scene.fighter.pose(palette(s.skeleton, locals, root), shadowed: true, moved: false)
-    // The smear: a new drawing's first frames drawn back toward the one before, by the moment.
-    let fade = max(1.0 - s.since / SMEAR_FRAMES, 0.0)
+    // The smear: a new drawing's first frames a rough in-between, held, then cut; its disarray
+    // for the whole drawing; each by the moment.
+    let held = if s.since < SMEAR_FRAMES { 1.0 } else { 0.0 }
     let strength = smoothstep(0.3, 0.8, s.intensity)
-    s.scene.fighter.smear_by(Smear { amount: SMEAR * strength * fade, streaks: STREAKS * strength })
+    s.scene.fighter.smear_by(
+        Smear {
+            amount: SMEAR * strength * held,
+            tears: TEARS * strength * held,
+            disarray: DISARRAY * strength,
+            steady: (1 << s.bones.head.index) | (1 << s.bones.neck.index),
+        },
+    )
     if s.scene.fighter.realizing() {
         s.scene.fighter.realize()
     }
