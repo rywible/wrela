@@ -294,12 +294,6 @@ pub fn meter(
 /// (`silhouette`).
 pub struct Develop: Copy + GpuData {
     pub cam: Camera,
-    pub look: Look,
-    pub out: vec2,
-    pub view: u32 = 0,
-    /// Whether the screen is shown HDR now (`std::gpu::screen_is`): the look's `output` asks,
-    /// the host and the display decide.
-    pub hdr: u32 = 0,
     /// The program's moment (`light::Light::moment`): what the marks, the lines and the look's
     /// lens may draw by.
     pub moment: vec4 = vec4(0.0),
@@ -307,6 +301,16 @@ pub struct Develop: Copy + GpuData {
     /// moment's intensity): x more strokes, y how far each strays (output pixels), z how much of
     /// each breaks away; w unused.
     pub sketch: vec4 = vec4(0.0),
+    pub out: vec2,
+    pub look: Look,
+    pub view: u32 = 0,
+    /// Whether the screen is shown HDR now (`std::gpu::screen_is`): the look's `output` asks,
+    /// the host and the display decide.
+    pub hdr: u32 = 0,
+    /// How much this is an impact frame (0 to 1, `frame::Frame::impact`): what a look's lens may
+    /// turn the image into for a blow's few frames (a stark negative, as an animator's impact
+    /// frames are).
+    pub impact: f32 = 0.0,
 }
 
 /// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag

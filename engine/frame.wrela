@@ -1212,6 +1212,9 @@ pub struct Frame<R: Resolver, Q: Switches, Y: Style> {
     /// (`paint::Develop::sketch`).
     pub moment: vec4,
     pub sketch: vec4,
+    /// How much this frame is an impact frame (0 to 1), which the program sets for a blow's few
+    /// frames and the look's lens draws (`paint::Develop::impact`).
+    pub impact: f32,
     /// Whether a build that took over from another (hot reload) holds the screen it left: frames
     /// cook, and present nothing.
     pub hold: bool,
@@ -1415,6 +1418,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             drawing: -1.0,
             moment: vec4(0.0),
             sketch: vec4(0.0),
+            impact: 0.0,
             air_cooked: Stale::new(),
             noise_cooked: false,
             noise_slices: 0,
@@ -3198,6 +3202,7 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
             hdr: u32(hdr),
             moment: self.moment,
             sketch: self.sketch,
+            impact: saturate(self.impact),
         }
         // The dabs into the texture the water's copy held (done with by now), where the look has
         // them (`marks::DABS`).
