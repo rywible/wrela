@@ -1,0 +1,287 @@
+// The duel's arena as the frame draws it (`engine::frame::Scene`), the yard's (lookdev/ink-yard)
+// grown for a fight: ground flat for 12 m round its middle, low mounds past it, cratered where the
+// brawler lands (`Mounds::crater`); seven standing stones in a ring round it (realized a frame
+// each at load, then static casters); the two fighters, cast into the moving shadow map; the dust
+// a landing throws up; and the bars over the finished frame (`hud`).
+
+use engine::air::{Air, hazy}
+use engine::character::{ByChannels, Cast, PartOf}
+use engine::frame::{Cooks, Scene, full}
+use hud::{Hud, hud}
+use engine::particles::{Burst, Emits, burst}
+use engine::light::{Light, SUN_TOP}
+use engine::lit::Lighting
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::shadow::{CASTER, Shadows}
+use engine::sky::{Gap, Weather}
+use engine::stone::{Realized, realize_stone, stone_shade, stone_shadow, stone_vertex}
+use engine::style::Style
+use engine::switches::Switches
+use engine::terrain::{Clipmap, Cover, Terrain}
+use engine::vegetation::nothing
+use engine::view::{Camera, NEAREST}
+use body::{Figure, Paint}
+use std::gpu::{Cull, R32Uint, RenderPass, Sampler, ScreenPass, Texture, draw}
+
+/// The sun: near overhead, a little to the south-west, so the fighters are lit from wherever the
+/// lock-on camera circles round them (a low sun backlights half a fight into silhouettes), their
+/// shadows short and hard under them.
+pub const SUN = vec3(-0.3, 0.9, -0.32)
+
+/// The ring of stones: how many, how far out, how tall.
+pub const STONES: u32 = 7
+pub const RING: f32 = 15.5
+
+/// The arena's ground: low mounds, flat within 12 m of its middle; packed earth, paler where it's
+/// worn flat, darker on the slopes. And its crater, where a blow drove into it (`crater`: its
+/// middle's x and z, its radius and its depth; 0 deep, none): a bowl with a rim thrown up round it.
+pub struct Mounds: Copy + GpuData {
+    pub crater: vec4 = vec4(0.0),
+}
+
+impl Terrain for Mounds {
+    fn height(self, x: f32, z: f32) -> f32 {
+        let r = length(vec2(x, z))
+        let rise = 0.7 * sin(x * 0.09 + 0.4) * cos(z * 0.07) +
+            0.3 * sin(x * 0.23 + 1.3) * sin(z * 0.19)
+        (rise + 0.5) * smoothstep(12.0, 20.0, r) + cratered(self.crater, vec2(x, z))
+    }
+
+    fn steepest(self) -> f32 {
+        1.5
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        let worn = 1.0 - smoothstep(9.0, 14.0, length(at.xz))
+        let slope = 1.0 - saturate(n.y)
+        let earth = mix(vec3(0.30, 0.24, 0.16), vec3(0.42, 0.36, 0.25), vec3(worn))
+        Cover {
+            albedo: mix(earth, vec3(0.18, 0.16, 0.13), vec3(saturate(slope * 6.0))),
+            grass: 0.0,
+        }
+    }
+}
+
+/// A crater's height at `p` (`Mounds::crater`): down `depth` at its middle, a bowl out to its
+/// radius, a rim a quarter of its depth high just past it, nothing beyond.
+pub fn cratered(c: vec4, p: vec2) -> f32 {
+    if c.w <= 0.0 {
+        return 0.0
+    }
+    let r = length(p - c.xy) / c.z
+    let bowl = -c.w * (1.0 - smoothstep(0.0, 1.0, r * r))
+    let rim = 0.25 * c.w * exp(-((r - 1.05) * (r - 1.05)) / 0.02)
+    bowl + rim
+}
+
+/// The ground's height at a point of the world (x, z), cratered by `crater`.
+pub fn ground_at(p: vec2, crater: vec4 = vec4(0.0)) -> f32 {
+    Mounds { crater }.height(p.x, p.y)
+}
+
+/// Stone `k`'s place in the ring: its foot, its turn, its seed.
+fn stone_at(k: u32) -> (vec3, f32, u32) {
+    let a = f32(k) / f32(STONES) * 6.2831853 + 0.3
+    let r = RING + 1.2 * sin(f32(k) * 2.7)
+    let p = vec2(sin(a), cos(a)) * r
+    (vec3(p.x, ground_at(p) + 1.25, p.y), a * 1.7, 11 + k * 7)
+}
+
+/// A blow's dust: ninety dark clods of the arena's earth thrown up from round where it lands, a few
+/// metres and only a little out (a plume round the crater, not a fog), settling in under two
+/// seconds.
+pub const DUST = Burst {
+    count: 90,
+    spread: 1.0,
+    lift: 0.1,
+    life: vec2(0.6, 1.6),
+    out: vec2(0.4, 2.5),
+    up: vec2(2.0, 7.0),
+    size: vec2(0.02, 0.06),
+    colour: vec4(0.2, 0.16, 0.11, 0.95),
+    drag: 2.2,
+    grow: 0.15,
+}
+
+/// The arena: its stones as they're realized, its two fighters (the wanderer and the brawler) and
+/// their parts, its ground (its crater), the dust thrown up this frame, the bars and whether
+/// they're drawn, and its weather.
+pub struct Arena {
+    pub stones: Vec<Realized>,
+    pub wanderer: Cast<Paint, Figure, ByChannels>,
+    pub brawler: Cast<Paint, Figure, ByChannels>,
+    pub parts: PartOf,
+    pub ground: Mounds,
+    pub dust: Vec<vec3>,
+    pub hud: Hud,
+    pub bars: bool,
+    weather: Weather,
+}
+
+pub fn arena(
+    wanderer: take Cast<Paint, Figure, ByChannels>,
+    brawler: take Cast<Paint, Figure, ByChannels>,
+    parts: PartOf,
+) -> Arena {
+    Arena {
+        stones: Vec::new(),
+        wanderer,
+        brawler,
+        parts,
+        ground: Mounds {},
+        dust: Vec::new(),
+        hud: Hud {},
+        bars: false,
+        weather: Weather {
+            clouds: Vec::new(),
+            fair: 0.35,
+            gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+            wind: vec2(-5.5, 3.0),
+        },
+    }
+}
+
+/// The arena's air: a hazy evening's, its eye at a person's height.
+pub fn air_of(sun: vec3) -> Air {
+    hazy(normalize(sun), SUN_TOP, eye: 1.7)
+}
+
+impl Scene for Arena {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 17, spacing: 2.5, low: -4.0, high: 12.0, voxel: 1.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        self.ground.height(world.x, world.y)
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(self.ground, eye, again)
+    }
+
+    /// The bars, over the finished frame.
+    fn overlay(self, pass: ScreenPass, out: vec2) {
+        if self.bars {
+            draw(pass, full.bind(z: 0.5), hud.bind(h: self.hud), vertices: 3)
+        }
+    }
+
+    /// The dust a blow threw up this frame.
+    fn emit(mut self, e: mut Emits) {
+        for k in 0..self.dust.len() {
+            burst(mut e, DUST, self.dust[k], seed: 4001 + k)
+        }
+        self.dust.clear()
+    }
+
+    /// A stone realized a step until the ring is whole; each fitted to its mesh once its counts
+    /// have come.
+    fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        if self.stones.len() < STONES {
+            let (at, turn, seed) = stone_at(self.stones.len())
+            self.stones.push(realize_stone(1.0, vec3(0.55, 1.5, 0.45), seed, at, turn))
+        }
+        for mut st in self.stones {
+            st.settle()
+        }
+    }
+
+    fn casters_complete(self) -> bool {
+        self.stones.len() == STONES
+    }
+
+    fn casters_ready(self, far: bool) -> bool {
+        self.stones.len() == STONES
+    }
+
+    fn ground_casts(self) -> bool {
+        true
+    }
+
+    /// The stones into a cascade's first strip (they're solids: once).
+    fn cast<P: RenderPass>(
+        self,
+        pass: P,
+        view: mat4,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        first: bool,
+    ) {
+        if !first {
+            return
+        }
+        for st in self.stones {
+            draw(
+                pass,
+                stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                nothing,
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.draw.items(),
+                depth_bias: CASTER,
+            )
+        }
+    }
+
+    fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
+        self.wanderer.shadow(pass, view)
+        self.brawler.shadow(pass, view)
+    }
+
+    fn casts_moving(self) -> bool {
+        self.wanderer.on || self.brawler.on
+    }
+
+    fn shade<P: RenderPass, Q: Switches, Y: Style>(
+        self,
+        pass: P,
+        lt: Lighting<Q, Y>,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
+        for st in self.stones {
+            draw(
+                pass,
+                stone_vertex.bind(
+                    verts: st.mesh.verts.items(),
+                    colours: st.colours.items(),
+                    at: st.at,
+                    seed: st.seed,
+                    cam: lt.cam,
+                ),
+                stone_shade.bind(lt),
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.draw.items(),
+                cull: Cull::Back,
+                depth: NEAREST,
+            )
+        }
+    }
+
+    fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
+        self.wanderer.draw(pass, lt, lt.cam, self.parts)
+        self.brawler.draw(pass, lt, lt.cam, self.parts)
+    }
+
+    fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
+        self.wanderer.motion(pass, cam)
+        self.brawler.motion(pass, cam)
+    }
+}

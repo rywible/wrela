@@ -1,0 +1,579 @@
+// The duel: the MMO's combat feel's first playable test, in Kinetic Ink. The wanderer (you) faces
+// a brawler among standing stones. Read its wind-ups, dodge through its blows (a dodge is
+// untouchable for most of its first quarter second), answer its recoveries with a jab and a
+// cross or a hook, and fill its posture (each blow, and each of its blows dodged cleanly) until it
+// breaks; then, in front of it, the riposte: the uppercut that launches it.
+//
+//     W A S D, or the left stick        walk (the camera's way; locked on to the brawler)
+//     Space, or East (B / Circle)        dodge
+//     J or the left button, or RB/R1     jab (pressed again in it, a cross; at a broken
+//                                        brawler's front, the riposte)
+//     K or the right button, or RT/R2    hook
+//
+// The sim (`duel`) steps at 60 ticks a second on a timeline (engine::timeline), as a client
+// predicting its own game would; beside it the program runs the server's copy, which hears each
+// input `LAG` ticks late (two-thirds of a 200 ms round trip) and steps it at the tick it was
+// stamped with, and checks the two agree: in a fight against the world, every blow is the
+// client's own prediction, and the server's word, LAG later, is the same.
+//
+// The drawing (`present`, `motion`) never feeds back: poses, feet planted on the ground, the lean
+// and the flinch, held drawings on twos (fours as the moment rises), the smear, the impact frames,
+// the hit-stops' shake are how a frame shows what the sim decided. The player's own act always
+// draws at once (a new drawing on any change of what the wanderer is doing), so holding drawings
+// never delays a dodge.
+//
+// `--set AUTO=true` lets the test bot (`duel::Bot`: a person's 200 ms reactions) play, for
+// captures.
+
+use arena::{Arena, SUN, air_of, arena}
+use body::{BRAWLER, Bones, WANDERER, figure}
+use duel::{Bot, NEVER, World, advance, play, second, world}
+use engine::character::{ByChannels, Smear, cast, parts_of}
+use engine::clip::{Local, palette, rest}
+use engine::combat::{Act, HZ, Intent, Press}
+use engine::creature::{MAX_BONES, Skeleton}
+use engine::frame::{Aim, Change, Frame, Gathered, Quality}
+use engine::light::sunlight
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::noise::hash2
+use engine::probes::grid
+use engine::switches::Switches
+use engine::terrain::{Clipmap, Terrain}
+use engine::timeline::Timeline
+use engine::view::first_camera
+use hud::Hud
+use moves::{CONTACT, HOOK_N, JAB_N}
+use motion::{Carriage, carriage, carry, flinch}
+use pose::locals
+use poses::GUARD
+use present::{Clips, Placing, brawler, clips, placing_matrix, wanderer}
+use std::input::{Button, Event, Key, PadAxis, PadButton, events}
+use std::io::print
+use styles::kinetic::Kinetic
+
+/// The look the duel draws in, and the switches it draws with (`content/styles`: Kinetic Ink's).
+pub type LOOK = Kinetic
+
+pub type SWITCHES = Inked
+
+/// Kinetic Ink's switches (lookdev/ink-yard's): what a graphic look doesn't draw is built out.
+pub struct Inked {}
+
+impl Switches for Inked {
+    const CLOUDS: bool = false
+    const PROBES: bool = false
+    const BLOOM: bool = false
+    const FOG: bool = false
+    const DISTANCE: bool = false
+    const SIGHT: bool = false
+    const REFLECTIONS: bool = false
+    const CONTACT: bool = false
+}
+
+/// The approved switches (every system the realistic scenes draw), for a measure of what
+/// Kinetic Ink's save here: `--set LOOK=styles::physical::Physical --set SWITCHES=Realistic`.
+pub struct Realistic {}
+
+impl Switches for Realistic {}
+
+/// Whether the test bot plays (`--set AUTO=true`).
+pub const AUTO: bool = false
+
+/// How late the server hears an input (ticks): 7, two-thirds of a 200 ms round trip at 60 a
+/// second.
+pub const LAG: u32 = 7
+
+/// The drawings a second: on twos, and on fours past `FIGHT_FROM` of the moment's height.
+pub const DRAWINGS: f32 = 12.0
+pub const FIGHT_DRAWINGS: f32 = 6.0
+pub const FIGHT_FROM: f32 = 0.55
+
+/// The smear at the moment's height (engine::character::Smear; as the yard's).
+pub const SMEAR: f32 = 0.8
+pub const STROKES: f32 = 0.8
+pub const DISARRAY: f32 = 0.9
+pub const SMEAR_FRAMES: f32 = 4.0
+
+/// The impact frames after the riposte's contact, the launch and the landing (frames at 60 a
+/// second), and after a posture breaks.
+pub const CONTACT_FLASHES: [u32; 5] = [0, 1, 2, 7, 8]
+pub const LAUNCH_FLASHES: [u32; 2] = [0, 1]
+pub const LAND_FLASHES: [u32; 1] = [0]
+pub const BROKE_FLASHES: [u32; 1] = [0]
+
+/// The moment's intensity: at rest; in the brawler's second phase; and what each event adds.
+pub const QUIET: f32 = 0.08
+pub const PHASE_TWO: f32 = 0.3
+pub const ON_EVADE: f32 = 0.22
+pub const ON_HIT: f32 = 0.09
+pub const ON_TAKEN: f32 = 0.14
+pub const ON_BROKE: f32 = 0.4
+
+const HOW = CreatureLook { surface: Tolerance { tolerance: 3.0e-3 } }
+
+/// A body's drawing: its pose and placing, held until its next.
+struct Drawn: Copy {
+    locals: [Local; MAX_BONES],
+    root: mat4,
+}
+
+/// The keys and buttons held, and what was pressed since the last tick.
+struct Held: Copy {
+    up: bool = false,
+    down: bool = false,
+    left: bool = false,
+    right: bool = false,
+    stick: vec2 = vec2(0.0),
+    press: Press = Press::Nothing,
+}
+
+/// The camera: where its eye and its look are, and how fast each is going.
+struct Eye: Copy {
+    eye: vec3,
+    at: vec3,
+    ve: vec3 = vec3(0.0),
+    va: vec3 = vec3(0.0),
+    fovy: f32 = 0.8,
+}
+
+/// The events last drawn (by the tick each came), so a new one is drawn once.
+struct Seen: Copy {
+    hit_you: u32 = NEVER,
+    hit_foe: u32 = NEVER,
+    evaded: u32 = NEVER,
+    broke: u32 = NEVER,
+    contact: u32 = NEVER,
+    launch: u32 = NEVER,
+    landed: u32 = NEVER,
+    act: Act = Act::Ready,
+    move: u32 = 0,
+}
+
+pub struct State {
+    pub frame: Frame<Gathered, SWITCHES, LOOK>,
+    pub scene: Arena,
+    a: (Skeleton, Bones),
+    b: (Skeleton, Bones),
+    clips: Clips,
+    /// The client's timeline, and the server's copy: its world, the inputs in flight to it (each
+    /// the tick it's for), and how many ticks it has agreed and disagreed with the client.
+    timeline: Timeline<World, Intent>,
+    server: World,
+    flight: Vec<(u32, Intent)>,
+    pub agreed: u32,
+    pub disagreed: u32,
+    bot: Bot,
+    held: Held,
+    owed: f32,
+    last: Option<f32>,
+    ca: Carriage,
+    cb: Carriage,
+    da: Drawn,
+    db: Drawn,
+    drawn_at: f32,
+    drawing: f32,
+    since: f32,
+    seen: Seen,
+    /// When each event came (the frame's time), for its impact frames.
+    contact_at: f32,
+    launch_at: f32,
+    landed_at: f32,
+    broke_at: f32,
+    taken_at: f32,
+    pub intensity: f32,
+    cam: Eye,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let (one, sa, ka) = figure(WANDERER)
+    let (other, sb, kb) = figure(BRAWLER)
+    let w = world()
+    let start = vec3(0.6, 1.9, -7.4)
+    let frame: Frame<Gathered, SWITCHES, LOOK> = Frame::new(
+        Quality {},
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.25),
+        first_camera(start, vec3(0.0, 1.2, 0.0), 0.8, width: 320, height: 180),
+        grid(vec2(0.0), cols: 17, spacing: 2.5, low: -4.0, high: 12.0, voxel: 1.0),
+        vec2(0.0),
+    )
+    let you = vec3(w.you.pos.x, 0.0, w.you.pos.y)
+    let foe = vec3(w.foe.pos.x, 0.0, w.foe.pos.y)
+    let idle = Drawn {
+        locals: [rest(); MAX_BONES],
+        root: placing_matrix(Placing { at: you, heading: 0.0 }),
+    }
+    var scene = arena(
+        cast(take one, ByChannels {}, HOW, slices: 16),
+        cast(take other, ByChannels {}, HOW, slices: 16),
+        parts_of(sa),
+    )
+    scene.bars = true
+    State {
+        frame,
+        scene,
+        a: (sa, ka),
+        b: (sb, kb),
+        clips: clips(),
+        timeline: Timeline::new(w, history: 64),
+        server: w,
+        flight: Vec::new(),
+        agreed: 0,
+        disagreed: 0,
+        bot: Bot {},
+        held: Held {},
+        owed: 0.0,
+        last: None,
+        ca: carriage(you, w.you.heading, GUARD, WANDERER.tall),
+        cb: carriage(foe, w.foe.heading, GUARD, BRAWLER.tall),
+        da: idle,
+        db: idle,
+        drawn_at: -1.0e9,
+        drawing: 0.0,
+        since: 0.0,
+        seen: Seen {},
+        contact_at: -1.0e9,
+        launch_at: -1.0e9,
+        landed_at: -1.0e9,
+        broke_at: -1.0e9,
+        taken_at: -1.0e9,
+        intensity: QUIET,
+        cam: Eye { eye: start, at: vec3(0.0, 1.2, 0.0) },
+    }
+}
+
+/// What the keys, buttons and sticks say this frame: held ones remembered, presses kept for the
+/// next tick.
+fn listen(h: mut Held) {
+    for e in events() {
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                if key == Key::W { h.up = true }
+                if key == Key::S { h.down = true }
+                if key == Key::A { h.left = true }
+                if key == Key::D { h.right = true }
+                if !repeat {
+                    if key == Key::Space || key == Key::ShiftLeft { h.press = Press::Dodging }
+                    if key == Key::J { h.press = Press::Moves { index: JAB_N } }
+                    if key == Key::K { h.press = Press::Moves { index: HOOK_N } }
+                }
+            },
+            Event::KeyUp { key, .. } => {
+                if key == Key::W { h.up = false }
+                if key == Key::S { h.down = false }
+                if key == Key::A { h.left = false }
+                if key == Key::D { h.right = false }
+            },
+            Event::PointerDown { button, .. } => {
+                if button == Button::Primary { h.press = Press::Moves { index: JAB_N } }
+                if button == Button::Secondary { h.press = Press::Moves { index: HOOK_N } }
+            },
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 && pressed {
+                    if button == PadButton::East || button == PadButton::South {
+                        h.press = Press::Dodging
+                    }
+                    if button == PadButton::RightShoulder {
+                        h.press = Press::Moves { index: JAB_N }
+                    }
+                    if button == PadButton::RightTrigger {
+                        h.press = Press::Moves { index: HOOK_N }
+                    }
+                }
+            },
+            Event::PadAxis { pad, axis, value } => {
+                if pad == 0 && axis == PadAxis::LeftX { h.stick.x = value }
+                if pad == 0 && axis == PadAxis::LeftY { h.stick.y = -value }
+            },
+            _ => {},
+        }
+    }
+}
+
+/// The wanderer's intent from what's held: its walk turned from the camera's frame (x right, y
+/// ahead) into the world's, and its press, which is spent.
+fn intent_of(h: mut Held, cam: Eye) -> Intent {
+    var v = h.stick
+    if length(v) < 0.18 {
+        v = vec2(0.0)
+    }
+    if h.up { v.y += 1.0 }
+    if h.down { v.y -= 1.0 }
+    if h.right { v.x += 1.0 }
+    if h.left { v.x -= 1.0 }
+    if length(v) > 1.0 {
+        v = normalize(v)
+    }
+    let ahead = normalize(vec2(cam.at.x - cam.eye.x, cam.at.z - cam.eye.z) + vec2(1.0e-5, 0.0))
+    let right = vec2(ahead.y, -ahead.x)
+    let i = Intent { walk: right * v.x + ahead * v.y, press: h.press }
+    h.press = Press::Nothing
+    i
+}
+
+/// Whether `since` seconds after an event is one of its impact frames (frames at 60 a second).
+fn flashing(since: f32, flashes: [u32]) -> bool {
+    if since < 0.0 || since > 1.0 {
+        return false
+    }
+    let k = u32(floor(since * 60.0 + 0.01))
+    for f in flashes {
+        if f == k {
+            return true
+        }
+    }
+    false
+}
+
+/// The camera's spring toward `goal` (critically damped at `hz`).
+fn sprung(at: mut vec3, v: mut vec3, goal: vec3, dt: f32, hz: f32) {
+    let w = 6.2831853 * hz
+    let a = (goal - at) * (w * w) - v * (2.0 * w)
+    v = v + a * dt
+    at = at + v * dt
+}
+
+/// One tick: the wanderer's intent (or the bot's), the client's prediction, the input sent to
+/// the server, and the server stepping each input that's arrived, checked against the client.
+fn tick(s: mut State) {
+    let w = s.timeline.world()
+    let i = if AUTO { play(mut s.bot, w) } else { intent_of(mut s.held, s.cam) }
+    let t = s.timeline.tick()
+    s.timeline.advance(i, advance)
+    s.flight.push((t + LAG, i))
+    // The server: each input whose time has come, stepped at its own tick.
+    while s.flight.len() > 0 && s.flight[0].0 <= s.timeline.tick() {
+        let (_, input) = s.flight.remove(0)
+        advance(mut s.server, input)
+        let sv = s.server.tick - 1
+        if std::hash::state_hash(s.server) == s.timeline.checksum_at(sv) {
+            s.agreed += 1
+        } else {
+            s.disagreed += 1
+        }
+    }
+    if s.timeline.tick() % 600 == 0 {
+        print(
+            f"tick {s.timeline.tick()}: the server agrees on {s.agreed} ticks, differs on {s.disagreed}; wanderer {w.you.health}, brawler {w.foe.health}",
+        )
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let dt = match s.last {
+        Some(l) => clamp(time - l, 0.0, 0.1),
+        None => 0.0,
+    }
+    s.last = Some(time)
+    listen(mut s.held)
+    // The sim's ticks owed since the last frame.
+    // (Not while the frame is arriving: the fight begins when it can be seen.)
+    s.owed = if s.frame.ready.arriving { 0.0 } else { s.owed + dt }
+    while s.owed >= 1.0 / HZ - 1.0e-5 {
+        s.owed -= 1.0 / HZ
+        tick(mut s)
+    }
+    let w = s.timeline.world()
+    // ---- The events, drawn once each.
+    var forced = false
+    if w.you.act != s.seen.act || (w.you.act == Act::Attack && w.you.move != s.seen.move) {
+        forced = true
+    }
+    if w.you.act == Act::Attack && w.you.t == 0 {
+        forced = true
+    }
+    s.seen.act = w.you.act
+    s.seen.move = w.you.move
+    var bump = 0.0
+    if w.hit_you != s.seen.hit_you {
+        s.seen.hit_you = w.hit_you
+        let from = vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y)
+        flinch(mut s.ca, from, w.you.heading, 1.0)
+        s.taken_at = time
+        bump += ON_TAKEN
+        forced = true
+    }
+    if w.hit_foe != s.seen.hit_foe {
+        s.seen.hit_foe = w.hit_foe
+        let from = vec3(w.you.pos.x - w.foe.pos.x, 0.0, w.you.pos.y - w.foe.pos.y)
+        flinch(mut s.cb, from, w.foe.heading, 0.45)
+        bump += ON_HIT
+        forced = true
+    }
+    if w.evaded != s.seen.evaded {
+        s.seen.evaded = w.evaded
+        bump += ON_EVADE
+        forced = true
+    }
+    if w.broke != s.seen.broke {
+        s.seen.broke = w.broke
+        s.broke_at = time
+        bump += ON_BROKE
+        forced = true
+    }
+    if w.contact != s.seen.contact {
+        s.seen.contact = w.contact
+        s.contact_at = time
+        forced = true
+    }
+    if w.launch != s.seen.launch {
+        s.seen.launch = w.launch
+        if w.launch != NEVER {
+            s.launch_at = time
+        }
+        forced = true
+    }
+    if w.landed != s.seen.landed {
+        s.seen.landed = w.landed
+        if w.landed != NEVER {
+            s.landed_at = time
+            s.scene.ground.crater = w.crater
+            s.frame.changed(Change::Ground)
+            let g = s.scene.ground.height(w.foe.pos.x, w.foe.pos.y)
+            for k in 0..4 {
+                let a = f32(k) * 1.5707964 + 0.4
+                s.scene.dust.push(
+                    vec3(w.foe.pos.x + sin(a) * 1.4, g + 0.3, w.foe.pos.y + cos(a) * 1.4),
+                )
+            }
+        }
+        forced = true
+    }
+    // ---- The moment: raised by what happens, held a while, falling back to its rest.
+    let riposting = w.you.act == Act::Riposte || (w.launch != NEVER && w.landed == NEVER)
+    let floor = if second(w) { PHASE_TWO } else { QUIET }
+    if riposting {
+        s.intensity = mix(s.intensity, 1.0, 1.0 - exp(-dt * 10.0))
+    } else {
+        s.intensity = min(s.intensity + bump, 1.0)
+        let held_for = time - max(max(s.broke_at, s.taken_at), s.landed_at)
+        if held_for > 1.0 {
+            s.intensity = max(floor, s.intensity - dt * 0.18)
+        }
+        s.intensity = max(s.intensity, floor)
+    }
+    // ---- The bodies.
+    let (sa, ka) = s.a
+    let (sb, kb) = s.b
+    let ground = s.scene.ground
+    let ga = ground.height(w.you.pos.x, w.you.pos.y)
+    let gb = ground.height(w.foe.pos.x, w.foe.pos.y)
+    let (pa, la) = wanderer(w, s.clips, ga, time)
+    let (pb, lb) = brawler(w, s.clips, gb, time)
+    let ra = carry(mut s.ca, la.at, la.heading, pa, dt, WANDERER.tall, ground)
+    let rb = carry(mut s.cb, lb.at, lb.heading, pb, dt, BRAWLER.tall, ground)
+    // A body turned over (flung, lying) takes its pose's own feet, not the ground's.
+    let fa = if la.over == 0.0 { ra.feet } else { pose::feet_of(ra.pose, WANDERER.tall) }
+    let fb = if lb.over == 0.0 { rb.feet } else { pose::feet_of(rb.pose, BRAWLER.tall) }
+    let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
+    if forced || time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
+        s.da = Drawn {
+            locals: locals(ra.pose, fa, sa, ka, WANDERER.tall),
+            root: placing_matrix(la),
+        }
+        s.db = Drawn { locals: locals(rb.pose, fb, sb, kb, BRAWLER.tall), root: placing_matrix(lb) }
+        s.drawn_at = time
+        s.drawing += 1.0
+        s.since = 0.0
+        s.scene.wanderer.new_drawing()
+        s.scene.brawler.new_drawing()
+    } else {
+        s.since += 1.0
+    }
+    s.scene.wanderer.pose(palette(sa, s.da.locals, s.da.root), shadowed: true, moved: false)
+    s.scene.brawler.pose(palette(sb, s.db.locals, s.db.root), shadowed: true, moved: false)
+    if s.scene.wanderer.realizing() {
+        s.scene.wanderer.realize()
+    }
+    if s.scene.brawler.realizing() {
+        s.scene.brawler.realize()
+    }
+    let held = if s.since < SMEAR_FRAMES { 1.0 } else { 0.0 }
+    let strength = smoothstep(0.3, 0.8, s.intensity)
+    let steady_a = (1 << ka.head.index) | (1 << ka.neck.index)
+    let steady_b = (1 << kb.head.index) | (1 << kb.neck.index)
+    s.scene.wanderer.smear_by(
+        Smear {
+            amount: SMEAR * strength * held,
+            strokes: STROKES * strength * held,
+            disarray: DISARRAY * strength,
+            steady: steady_a,
+        },
+    )
+    s.scene.brawler.smear_by(
+        Smear {
+            amount: SMEAR * strength * held,
+            strokes: STROKES * strength * held,
+            disarray: DISARRAY * strength,
+            steady: steady_b,
+        },
+    )
+    let impact = flashing(time - s.contact_at, CONTACT_FLASHES) ||
+        flashing(time - s.launch_at, LAUNCH_FLASHES) ||
+        flashing(time - s.landed_at, LAND_FLASHES) ||
+        flashing(time - s.broke_at, BROKE_FLASHES)
+    s.frame.impact = if impact { 1.0 } else { 0.0 }
+    // ---- The camera: locked on, over the wanderer's shoulder; to the side and low for the
+    // riposte; watching the brawler fly; then back.
+    let you = vec3(w.you.pos.x, ga, w.you.pos.y)
+    let foe = vec3(w.foe.pos.x, gb + w.air, w.foe.pos.y)
+    let d = vec2(foe.x - you.x, foe.z - you.z)
+    let along = if length(d) > 0.3 { normalize(d) } else { vec2(0.0, 1.0) }
+    let ahead = vec3(along.x, 0.0, along.y)
+    let right = vec3(along.y, 0.0, -along.x)
+    var goal_eye = you - ahead * 3.4 + right * 0.85 + vec3(0.0, 2.0, 0.0)
+    var goal_at = mix(you + vec3(0.0, 1.45, 0.0), foe + vec3(0.0, 1.3, 0.0), vec3(0.45))
+    var fovy = 0.8
+    var hz = 2.6
+    if w.you.act == Act::Riposte && w.launch == NEVER {
+        let mid = mix(you, foe, vec3(0.5))
+        goal_eye = mid + right * 3.0 - ahead * 0.6 + vec3(0.0, 0.55, 0.0)
+        goal_at = mid + vec3(0.0, 1.25, 0.0)
+        fovy = 0.62
+        hz = 4.0
+    } else if w.launch != NEVER && (w.landed == NEVER || w.tick - w.landed < 40) {
+        goal_eye = you - ahead * 2.2 + right * 1.6 + vec3(0.0, 0.9, 0.0)
+        goal_at = foe + vec3(0.0, 1.0, 0.0)
+        fovy = 0.95
+        hz = 3.5
+    }
+    sprung(mut s.cam.eye, mut s.cam.ve, goal_eye, dt, hz)
+    sprung(mut s.cam.at, mut s.cam.va, goal_at, dt, hz * 1.6)
+    s.cam.fovy = mix(s.cam.fovy, fovy, 1.0 - exp(-dt * 6.0))
+    var eye = s.cam.eye
+    if w.stop > 0 {
+        let k = i32(time * 60.0)
+        let shake = vec3(hash2(k, 3) - 0.5, hash2(k, 7) - 0.5, hash2(k, 11) - 0.5) *
+            (0.02 + 0.05 * s.intensity)
+        eye = eye + shake
+    }
+    let aim = Aim { eye, at: s.cam.at, fovy: s.cam.fovy, moving_at: mix(you, foe, vec3(0.5)) }
+    // ---- The bars.
+    let taken = exp(-(time - s.taken_at) * 4.0)
+    s.scene.hud = Hud {
+        out: vec2(f32(width), f32(height)),
+        you: vec4(
+            w.you.health / duel::YOU.health,
+            w.you.stamina / duel::YOU.stamina,
+            s.scene.hud.you.z,
+            taken,
+        ),
+        foe: vec4(
+            w.foe.health / duel::FOE.health,
+            w.foe.posture / duel::FOE.posture,
+            s.scene.hud.foe.z,
+            0.0,
+        ),
+    }
+    // What was just lost shows pale, catching up.
+    s.scene.hud.you.z = max(s.scene.hud.you.x, s.scene.hud.you.z - dt * 0.35)
+    s.scene.hud.foe.z = max(s.scene.hud.foe.x, s.scene.hud.foe.z - dt * 0.35)
+    s.frame.intensity = s.intensity
+    s.frame.drawing = s.drawing
+    s.frame.look.line_px = 1.7 + 1.4 * s.intensity
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    let _ = CONTACT
+}

@@ -1,0 +1,115 @@
+// The duel's bars, drawn over the finished frame as ink on paper: the wanderer's health and
+// stamina at the top left; the brawler's health along the bottom and its posture above it,
+// growing from the middle out (the genre's posture bar: when it meets its ends, the brawler
+// breaks). Each bar is a strip of paper ruled in ink, its edges a little rough, as if drawn with
+// a brush; what's left of it is filled with its colour, and what was just lost shows pale a
+// moment longer.
+
+use engine::noise::hash2
+use std::gpu::{FragCoord, Over}
+
+/// What the bars show: the screen's size (pixels); the wanderer's health, stamina and the health
+/// it showed a moment ago (each 0 to 1); the brawler's health, posture and earlier health; and a
+/// flash (0 to 1) when the wanderer is struck.
+pub struct Hud: Copy + GpuData {
+    pub out: vec2 = vec2(1.0),
+    pub you: vec4 = vec4(1.0, 1.0, 1.0, 0.0),
+    pub foe: vec4 = vec4(1.0, 0.0, 1.0, 0.0),
+}
+
+const INK = vec3(0.09, 0.07, 0.06)
+const PAPER = vec3(0.93, 0.89, 0.8)
+const HEALTH = vec3(0.6, 0.11, 0.07)
+const STAMINA = vec3(0.45, 0.52, 0.22)
+const POSTURE = vec3(0.86, 0.55, 0.12)
+const BROKE = vec3(0.92, 0.25, 0.08)
+const LOST = vec3(0.95, 0.82, 0.55)
+
+/// `src` over `dst` (straight alpha).
+fn over(dst: vec4, src: vec4) -> vec4 {
+    let a = src.a + dst.a * (1.0 - src.a)
+    if a <= 0.0 {
+        return vec4(0.0)
+    }
+    vec4((src.rgb * src.a + dst.rgb * dst.a * (1.0 - src.a)) / a, a)
+}
+
+/// A bar at pixel `p`: its top left `at` and size `size` (pixels), filled from `from` to `to` of
+/// its length with `colour` (and pale to `lost`, what was just lost), `s` pixels a 1080th of the
+/// screen.
+fn bar(p: vec2, at: vec2, size: vec2, from: f32, to: f32, lost: f32, colour: vec3, s: f32) -> vec4 {
+    // The brush's edge: each few pixels along the bar a little in or out.
+    let k = i32(floor((p.x - at.x) / (4.0 * s)))
+    let rough = (hash2(k, i32(at.y)) - 0.5) * 2.2 * s
+    let ink = 2.0 * s
+    let x = p.x - at.x
+    let y = p.y - at.y
+    let left = -ink
+    let right = size.x + ink
+    let top = -ink + rough
+    let bottom = size.y + ink - rough
+    if x < left || x > right || y < top || y > bottom {
+        return vec4(0.0)
+    }
+    let inside = x >= 0.0 && x <= size.x && y >= rough && y <= size.y - rough
+    if !inside {
+        return vec4(INK, 0.95)
+    }
+    let u = x / size.x
+    if u >= from && u <= to {
+        // The fill, a little darker along its lower edge, as wet ink pools.
+        let pool = 1.0 - 0.25 * smoothstep(0.5, 1.0, y / size.y)
+        return vec4(colour * pool, 0.97)
+    }
+    if u >= from && u <= max(lost, to) {
+        return vec4(LOST, 0.9)
+    }
+    vec4(PAPER * 0.92, 0.75)
+}
+
+/// The bars at a pixel of the screen.
+@fragment
+pub fn hud(pixel: FragCoord, h: Hud) -> Over {
+    let p = pixel.position.xy
+    let s = h.out.y / 1080.0
+    var c = vec4(0.0)
+    // The wanderer's, top left.
+    c = over(
+        c,
+        bar(p, vec2(56.0, 48.0) * s, vec2(440.0, 13.0) * s, 0.0, h.you.x, h.you.z, HEALTH, s),
+    )
+    c = over(
+        c,
+        bar(p, vec2(56.0, 74.0) * s, vec2(300.0, 8.0) * s, 0.0, max(h.you.y, 0.0), 0.0, STAMINA, s),
+    )
+    // The brawler's: health along the bottom; posture above, from the middle out.
+    let w = h.out.x * 0.5
+    let x0 = (h.out.x - w) * 0.5
+    c = over(
+        c,
+        bar(p, vec2(x0, h.out.y - 74.0 * s), vec2(w, 11.0 * s), 0.0, h.foe.x, h.foe.z, HEALTH, s),
+    )
+    let half = 0.5 * clamp(h.foe.y, 0.0, 1.0)
+    let pw = w * 0.6
+    let colour = mix(POSTURE, BROKE, vec3(smoothstep(0.7, 1.0, h.foe.y)))
+    if half > 0.0 {
+        c = over(
+            c,
+            bar(
+                p,
+                vec2((h.out.x - pw) * 0.5, h.out.y - 100.0 * s),
+                vec2(pw, 7.0 * s),
+                0.5 - half,
+                0.5 + half,
+                0.0,
+                colour,
+                s,
+            ),
+        )
+    }
+    // A blow taken: the screen's edges darken a moment.
+    let uv = p / h.out - vec2(0.5)
+    let edge = smoothstep(0.3, 0.75, length(uv * vec2(1.0, 0.8))) * h.you.w
+    c = over(vec4(INK, edge * 0.6), c)
+    Over { color: c }
+}

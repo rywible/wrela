@@ -1,0 +1,488 @@
+// The duel as the sim runs it: the wanderer (the player) and the brawler (its mind this file's
+// `think`), stepped a tick at a time by engine::combat's rules; the hit-stop that freezes both on
+// a heavy blow; the brawler's posture, filled by the wanderer's blows and by each of its own blows
+// the wanderer dodges cleanly, and broken open to a riposte; the riposte's uppercut and the launch
+// it throws, the crater where the brawler lands. Every number here is sim state, the same on
+// every client, rolled back and replayed by engine::timeline; how the fight is drawn is
+// `present`'s.
+//
+// The events a drawing needs (a blow landed, a dodge made clean, a posture broken, the riposte's
+// contact, the launch and the landing) are kept as the tick each last came, so a client that
+// rolls back and replays draws them where they truly fell.
+
+use engine::combat::{
+    Act, Blow, Fighter, HZ, Intent, Press, Rules, begin_riposte, facing, fighter, heading_of,
+    riposte, step, strike,
+}
+use engine::noise::hash2
+use engine::sim::SimState
+use moves::{
+    BRAWLER_MOVES, CONTACT, CROSS_N, HAYMAKER_N, HOOK_N, JAB_N, LUNGE_N, ONE_N, RIPOSTE, SWEEP_N,
+    TWO_N, WANDERER_MOVES,
+}
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// No such tick yet: an event that hasn't come.
+pub const NEVER: u32 = 4294967295
+
+/// The wanderer's rules: quick on its feet, its stamina what limits it.
+pub const YOU = Rules { walk: 2.7, turn: 10.0 }
+
+/// The brawler's: twice and more the health, slower to turn, its posture settling slowly.
+pub const FOE = Rules {
+    health: 260.0,
+    walk: 1.6,
+    turn: 4.0,
+    settle: 6.0,
+    settle_after: 150,
+    broken: 130,
+    riposte_m: 1.9,
+}
+
+/// How far the arena's flat floor reaches (m from its middle): neither fighter goes past it.
+pub const FLOOR: f32 = 10.5
+
+/// How close two bodies come before they push apart (m).
+pub const BODIES: f32 = 0.8
+
+/// The hit-stops (ticks): a light blow landed, a heavy one, a blow taken, a posture broken, the
+/// riposte's contact, the landing.
+pub const STOP_LIGHT: u32 = 3
+pub const STOP_HEAVY: u32 = 6
+pub const STOP_TAKEN: u32 = 7
+pub const STOP_BROKE: u32 = 10
+pub const STOP_CONTACT: u32 = 21
+pub const STOP_LAND: u32 = 5
+
+/// What a dodge made clean through one of the brawler's blows adds to its posture.
+pub const CLEAN: f32 = 14.0
+
+/// The riposte: what it takes from the brawler's health; how long after the contact the launch
+/// comes (ticks, the stop aside); the launch's speeds (m/s: up, and on away); how long the
+/// brawler lies once it lands, and how long it takes to get up (ticks).
+pub const RIPOSTE_DAMAGE: f32 = 70.0
+pub const LAUNCH_AFTER: u32 = 8
+pub const LAUNCH_UP: f32 = 9.0
+pub const LAUNCH_AWAY: f32 = 4.5
+pub const LIES: u32 = 70
+pub const RISES: u32 = 45
+
+/// The crater a landing leaves (radius and depth, m).
+pub const CRATER = vec2(2.2, 0.4)
+
+/// The brawler's mind: the tick it may next choose, the move it means to chain into (its number
+/// and one; 0, none), and which way round it circles.
+pub struct Mind: Copy + Eq + StateHash + Serialize + SimState {
+    pub next: u32 = 90,
+    pub chain: u32 = 0,
+    pub circle: f32 = 1.0,
+}
+
+/// The duel: its tick; the wanderer and the brawler; the brawler's mind; the hit-stop's ticks
+/// left; the launch (the tick it came, where from and which way) and the brawler's height above
+/// the ground in it; the tick it landed; the crater (its middle's x and z, its radius and depth);
+/// and the tick each event last came.
+pub struct World: Copy + Eq + StateHash + Serialize + SimState {
+    pub tick: u32 = 0,
+    pub you: Fighter,
+    pub foe: Fighter,
+    pub mind: Mind = Mind {},
+    pub stop: u32 = 0,
+    pub launch: u32 = NEVER,
+    pub from: vec2 = vec2(0.0),
+    pub way: vec2 = vec2(0.0, 1.0),
+    pub air: f32 = 0.0,
+    pub landed: u32 = NEVER,
+    pub crater: vec4 = vec4(0.0),
+    pub hit_you: u32 = NEVER,
+    pub hit_foe: u32 = NEVER,
+    pub evaded: u32 = NEVER,
+    pub broke: u32 = NEVER,
+    pub contact: u32 = NEVER,
+    pub phase: u32 = NEVER,
+}
+
+/// The duel's start: the wanderer at the arena's south, the brawler at its north, facing.
+pub fn world() -> World {
+    World { you: fighter(vec2(0.0, -3.5), 0.0, YOU), foe: fighter(vec2(0.0, 3.5), 3.1415927, FOE) }
+}
+
+/// Whether the brawler is in its second phase (below half its health): faster, chaining.
+pub fn second(w: World) -> bool {
+    w.phase != NEVER
+}
+
+/// A random number for `tick` and `salt`, 0 to 1: the brawler's choices, the same on every
+/// client.
+fn chance(tick: u32, salt: i32) -> f32 {
+    hash2(i32(tick), salt)
+}
+
+/// The brawler's intent this tick: chaining a combination, choosing its next blow when it may
+/// (by how far off the wanderer is), and otherwise closing in, backing off or circling.
+@deterministic
+pub fn think(w: mut World) -> Intent {
+    let f = w.foe
+    let d = w.you.pos - f.pos
+    let n = length(d)
+    let toward = if n > 1.0e-3 { d / n } else { vec2(0.0, 1.0) }
+    let side = vec2(toward.y, -toward.x) * w.mind.circle
+    if f.act == Act::Attack {
+        // A chain: the one-two always; in the second phase, the two into the haymaker.
+        if f.move == ONE_N {
+            return Intent { press: Press::Moves { index: TWO_N } }
+        }
+        if f.move == TWO_N && w.mind.chain == HAYMAKER_N + 1 {
+            w.mind.chain = 0
+            return Intent { press: Press::Moves { index: HAYMAKER_N } }
+        }
+        return Intent {}
+    }
+    if f.act != Act::Ready {
+        return Intent {}
+    }
+    if w.tick >= w.mind.next && w.you.act != Act::Dead {
+        let r = chance(w.tick, 17)
+        let quick = second(w)
+        var pick = NEVER
+        if n > 3.4 {
+            if n < 5.6 && r < 0.75 {
+                pick = LUNGE_N
+            }
+        } else if n <= 2.3 {
+            pick = if r < 0.38 { ONE_N } else if r < 0.62 { SWEEP_N } else if r < 0.92 {
+                HAYMAKER_N
+            } else { NEVER }
+        } else if r < 0.45 {
+            pick = HAYMAKER_N
+        }
+        if pick != NEVER {
+            let m = BRAWLER_MOVES[pick]
+            let rest = if quick { 14.0 + 22.0 * chance(w.tick, 29) } else {
+                26.0 + 36.0 * chance(w.tick, 29)
+            }
+            w.mind.next = w.tick + m.length() + u32(rest)
+            w.mind.chain = if quick && pick == ONE_N && chance(w.tick, 41) < 0.6 {
+                HAYMAKER_N + 1
+            } else { 0 }
+            if chance(w.tick, 53) < 0.3 {
+                w.mind.circle = -w.mind.circle
+            }
+            return Intent { press: Press::Moves { index: pick } }
+        }
+        w.mind.next = w.tick + 20
+    }
+    // Between blows: close in from far, back off from too near, else circle, edging in.
+    let walk = if n > 3.0 { toward } else if n < 1.5 { -toward * 0.6 } else {
+        side * 0.55 + toward * 0.15
+    }
+    Intent { walk }
+}
+
+/// The wanderer's press as its combination makes it: a light press during a jab is a cross.
+fn combined(you: Fighter, press: Press) -> Press {
+    match press {
+        Press::Moves { index } => {
+            if index == JAB_N && you.act == Act::Attack && you.move == JAB_N {
+                Press::Moves { index: CROSS_N }
+            } else { press }
+        },
+        _ => press,
+    }
+}
+
+/// Keeps a fighter on the arena's floor.
+fn kept(p: vec2) -> vec2 {
+    let n = length(p)
+    if n > FLOOR { p * (FLOOR / n) } else { p }
+}
+
+/// One tick of the duel, the wanderer wanting `you`.
+@deterministic
+pub fn advance(w: mut World, you: Intent) {
+    w.tick += 1
+    if w.stop > 0 {
+        w.stop -= 1
+        return
+    }
+    let foe_wants = think(mut w)
+    // A light press near the broken brawler, from in front, is the riposte.
+    var mine = you
+    let light = match mine.press {
+        Press::Moves { index } => index == JAB_N,
+        _ => false,
+    }
+    if light && w.you.free(WANDERER_MOVES, YOU) && riposte(w.you, w.foe, FOE) {
+        let _ = begin_riposte(mut w.you, mut w.foe, FOE)
+        mine = Intent {}
+    }
+    mine.press = combined(w.you, mine.press)
+    step(mut w.you, mine, WANDERER_MOVES, YOU, w.foe.pos)
+    // The riposte runs on its own ticks: the contact, then the end.
+    if w.you.act == Act::Riposte {
+        if w.you.t == CONTACT {
+            w.foe.health = max(w.foe.health - RIPOSTE_DAMAGE, 0.0)
+            w.contact = w.tick
+            w.stop = STOP_CONTACT
+        }
+        if w.you.t == CONTACT + LAUNCH_AFTER {
+            w.launch = w.tick
+            w.from = w.foe.pos
+            w.way = facing(w.you.heading)
+        }
+        if w.you.t >= RIPOSTE {
+            w.you.recover()
+        }
+    }
+    // The brawler: flying, lying, getting up, or fighting.
+    if w.foe.act == Act::Taken {
+        flight(mut w)
+    } else {
+        step(mut w.foe, foe_wants, BRAWLER_MOVES, FOE, w.you.pos)
+    }
+    // The blows.
+    let mine_landed = strike(mut w.you, WANDERER_MOVES, mut w.foe, FOE)
+    match mine_landed {
+        Blow::Landed { broke } => {
+            w.hit_foe = w.tick
+            w.stop = if w.you.move == HOOK_N { STOP_HEAVY } else { STOP_LIGHT }
+            if broke {
+                w.broke = w.tick
+                w.stop = STOP_BROKE
+            }
+        },
+        _ => {},
+    }
+    let theirs = strike(mut w.foe, BRAWLER_MOVES, mut w.you, YOU)
+    match theirs {
+        Blow::Landed { .. } => {
+            w.hit_you = w.tick
+            w.stop = STOP_TAKEN
+        },
+        Blow::Evaded => {
+            w.evaded = w.tick
+            w.foe.posture = min(w.foe.posture + CLEAN, FOE.posture)
+            w.foe.calm = 0
+            if w.foe.posture >= FOE.posture && w.foe.act != Act::Broken {
+                w.foe.struck(0, FOE)
+                w.broke = w.tick
+                w.stop = STOP_BROKE
+            }
+        },
+        Blow::Nothing => {},
+    }
+    if w.phase == NEVER && w.foe.health < FOE.health * 0.5 {
+        w.phase = w.tick
+    }
+    // Bodies don't pass through each other, and stay on the floor.
+    if w.foe.act != Act::Taken {
+        let d = w.foe.pos - w.you.pos
+        let n = length(d)
+        if n < BODIES && n > 1.0e-4 {
+            let push = d / n * (BODIES - n) * 0.5
+            w.foe.pos = w.foe.pos + push
+            w.you.pos = w.you.pos - push
+        }
+        w.foe.pos = kept(w.foe.pos)
+    }
+    w.you.pos = kept(w.you.pos)
+}
+
+/// The brawler once the riposte has taken it: held snapped back until the launch, flung up and
+/// away, down where it lands (a crater there), lying, then getting up, or not, if the riposte
+/// emptied it.
+fn flight(w: mut World) {
+    if w.launch == NEVER {
+        return
+    }
+    if w.landed == NEVER {
+        let t = f32(w.tick - w.launch) / HZ
+        w.foe.pos = kept(w.from + w.way * LAUNCH_AWAY * t)
+        w.air = LAUNCH_UP * t - 4.9 * t * t
+        if w.air <= 0.0 && t > 0.1 {
+            w.air = 0.0
+            w.landed = w.tick
+            w.crater = vec4(w.foe.pos.x, w.foe.pos.y, CRATER.x, CRATER.y)
+            w.stop = STOP_LAND
+            w.foe.heading = heading_of(-w.way)
+        }
+        return
+    }
+    let since = w.tick - w.landed
+    if w.foe.health <= 0.0 {
+        if since > 20 {
+            w.foe.falls()
+        }
+        return
+    }
+    if since >= LIES + RISES {
+        w.foe.recover()
+        w.launch = NEVER
+        w.landed = NEVER
+    }
+}
+
+// ---- the test bot ----------------------------------------------------------------------------------
+
+/// A player for tests and captures: it sees the duel as it was `react` ticks ago (a person's
+/// reaction, 200 ms), dodges each of the brawler's blows so its invincible ticks cover the blow's
+/// first hitting tick (`dodges`: or never, a player who doesn't), punishes the brawler's recovery
+/// with a jab and a cross (a hook once its posture is high), keeps stamina for a dodge, and
+/// ripostes a broken brawler from in front.
+pub struct Bot: Clone {
+    pub react: u32 = 12,
+    pub dodges: bool = true,
+    seen: Vec<World> = Vec::new(),
+    dodge_at: u32 = NEVER,
+    planned: u32 = NEVER,
+    then_at: u32 = NEVER,
+    pressed: u32 = 0,
+}
+
+/// What the bot does this tick, the duel being `w`.
+pub fn play(b: mut Bot, w: World) -> Intent {
+    b.seen.push(w)
+    if b.seen.len() > b.react + 1 {
+        b.seen.remove(0)
+    }
+    let o = b.seen[0]
+    let f = o.foe
+    let me = w.you
+    let d = f.pos - me.pos
+    let n = length(d)
+    let toward = if n > 1.0e-3 { d / n } else { vec2(0.0, 1.0) }
+    let side = vec2(toward.y, -toward.x)
+    // A blow seen winding up: a dodge planned for its timing.
+    if b.dodges && f.act == Act::Attack {
+        let m = BRAWLER_MOVES[f.move]
+        let began = o.tick - f.t
+        if f.t < m.windup && b.planned != began * 8 + f.move {
+            b.planned = began * 8 + f.move
+            b.dodge_at = began + m.windup - 5
+            // The one always brings the two: a player who has learned it dodges both.
+            if f.move == ONE_N {
+                let one = BRAWLER_MOVES[ONE_N]
+                b.then_at = began + one.windup + one.active + BRAWLER_MOVES[TWO_N].windup - 4
+            }
+        }
+    }
+    if b.dodge_at == NEVER && b.then_at != NEVER && w.tick >= b.then_at {
+        b.then_at = NEVER
+        return Intent { walk: side * 0.8 - toward * 0.6, press: Press::Dodging }
+    }
+    if b.dodge_at != NEVER && w.tick >= b.dodge_at {
+        b.dodge_at = NEVER
+        let way = if f.move == LUNGE_N { side } else { side * 0.8 - toward * 0.6 }
+        return Intent { walk: way, press: Press::Dodging }
+    }
+    // A broken brawler: round to its front, then the riposte.
+    if w.foe.act == Act::Broken {
+        let front = w.foe.pos + facing(w.foe.heading) * 1.2
+        let to = front - me.pos
+        if length(to) > 0.35 {
+            return Intent { walk: normalize(to) }
+        }
+        return Intent { face: w.foe.pos - me.pos, press: Press::Moves { index: JAB_N } }
+    }
+    let open = f.act == Act::Attack &&
+        f.move != ONE_N &&
+        f.t >= BRAWLER_MOVES[f.move].windup + BRAWLER_MOVES[f.move].active
+    let idle = f.act == Act::Ready || f.act == Act::Staggered
+    let fresh = me.stamina > 30.0
+    if (open || (idle && w.tick < w.mind.next)) && fresh && w.foe.act != Act::Taken {
+        if n > 1.35 {
+            return Intent { walk: toward }
+        }
+        if me.act == Act::Ready || me.free(WANDERER_MOVES, YOU) {
+            if w.tick - b.pressed > 6 {
+                b.pressed = w.tick
+                let heavy = f.posture > 60.0 && me.stamina > 45.0
+                return Intent { press: Press::Moves { index: if heavy { HOOK_N } else { JAB_N } } }
+            }
+        }
+        return Intent {}
+    }
+    // Otherwise, out of reach, circling.
+    if n < 2.6 {
+        return Intent { walk: -toward * 0.7 + side * 0.3 }
+    }
+    Intent { walk: side * 0.4 }
+}
+
+/// Runs a duel with bot `b` for up to `ticks` ticks: the world at its end.
+pub fn bout(b: mut Bot, ticks: u32) -> World {
+    var w = world()
+    for _ in 0..ticks {
+        let i = play(mut b, w)
+        advance(mut w, i)
+        if w.you.act == Act::Dead || (w.foe.act == Act::Dead) {
+            break
+        }
+    }
+    w
+}
+
+/// A bot that dodges with a person's reaction wins: the brawler can be read and beaten.
+@test
+fn a_player_who_reads_the_brawler_beats_it() {
+    var b = Bot {}
+    let w = bout(mut b, ticks: 60 * 240)
+    assert(
+        w.foe.act == Act::Dead,
+        f"the brawler stands: {w.foe.health}, the wanderer {w.you.health}",
+    )
+    assert(w.you.health > 0.0)
+}
+
+/// One that never dodges loses: the fight takes reading, not trading.
+@test
+fn a_player_who_never_dodges_loses() {
+    var b = Bot { dodges: false }
+    let w = bout(mut b, ticks: 60 * 240)
+    assert(
+        w.you.act == Act::Dead,
+        f"the wanderer stands: {w.you.health}, the brawler {w.foe.health}",
+    )
+}
+
+/// The client's prediction and the server's word: a client that lost one of its own inputs (a
+/// dodge, so the fight goes differently from there) is told the true one `lag` ticks later, rolls
+/// back and replays (engine::timeline), and comes out on exactly the server's world.
+@test
+fn a_late_correction_brings_the_client_onto_the_server() {
+    let lag: u32 = 7
+    var b = Bot {}
+    var server = world()
+    var client: engine::timeline::Timeline<World, Intent> = engine::timeline::Timeline::new(
+        world(),
+        history: 64,
+    )
+    var lost = NEVER
+    var truth = Intent {}
+    for _ in 0..1200 {
+        let i = play(mut b, server)
+        advance(mut server, i)
+        // The client loses its first dodge on the way into its own timeline.
+        var predicted = i
+        if lost == NEVER && i.press == Press::Dodging {
+            lost = client.tick()
+            truth = i
+            predicted = Intent { walk: i.walk }
+        }
+        client.advance(predicted, advance)
+        if lost != NEVER && client.tick() == lost + lag {
+            assert(
+                client.checksum() != std::hash::state_hash(server),
+                "the lost dodge changed the fight",
+            )
+            let changed = client.correct(lost, truth, advance)
+            assert(changed > 0, "the replay changed the ticks after it")
+        }
+    }
+    assert(lost != NEVER, "the bot dodged")
+    assert(
+        client.checksum() == std::hash::state_hash(server),
+        "the client is on the server's world",
+    )
+}

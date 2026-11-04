@@ -1,0 +1,261 @@
+// Poses as an artist draws them: where the hips sit and how they turn, how the waist, chest and
+// head turn on them, which way each arm's upper and lower bones point (in the chest's frame, so a
+// turned chest carries its arms), and where each foot stands (in the body's ground frame, so the
+// legs are solved to reach it: a planted foot stays planted while the body moves over it). A pose
+// is its silhouette and its weight, not a list of joint angles.
+//
+// Beats key poses in time with the clip's eases (engine::clip: held, smooth, snapped, even), and
+// a beat sampled down the body's chain (`chained`) arrives at the hips first, then the waist, the
+// chest, the arms and last the hands: the successive breaking of joints that makes a blow come
+// from the ground up (Thomas and Johnston 1981, overlapping action; Richard Williams 2001, "The
+// Animator's Survival Kit": the hips lead).
+
+use body::Bones
+use engine::clip::{Local, eased, rest}
+use engine::creature::{MAX_BONES, Skeleton}
+use engine::gait::{bend_pole, turn}
+use std::quat::Quat
+
+/// A pose: the hips' shift (m, the body's ground frame: x its right, y up, z ahead) and turn
+/// (pitch forward, yaw left, roll: radians about x, y, z); the waist's, the chest's and the
+/// head's turns against what they sit on; each clavicle's shrug (right, left); where each arm's
+/// upper and lower bones point (the chest's frame); each arm's stretch (right, left: 1 is none);
+/// where each ankle stands (the ground frame); each heel's lift off the ground, rolling onto the
+/// ball (right, left, radians); each foot's turn out from ahead (right, left, radians); and how
+/// free each foot is of the ground (right, left: 0, planted where it stands until it steps; 1,
+/// where the pose puts it: a kick, a jump).
+/// Written for a figure 1.8 m tall; a taller build's shifts and feet scale with it.
+pub struct Pose: Copy {
+    pub lift: vec3 = vec3(0.0),
+    pub hips: vec3 = vec3(0.0),
+    pub waist: vec3 = vec3(0.0),
+    pub chest: vec3 = vec3(0.0),
+    pub head: vec3 = vec3(0.0),
+    pub shrug: vec2 = vec2(0.0),
+    pub upper_r: vec3,
+    pub fore_r: vec3,
+    pub upper_l: vec3,
+    pub fore_l: vec3,
+    pub reach: vec2 = vec2(1.0),
+    pub foot_r: vec3,
+    pub foot_l: vec3,
+    pub heel: vec2 = vec2(0.0),
+    pub toe_out: vec2 = vec2(0.2),
+    pub free: vec2 = vec2(0.0),
+}
+
+/// A turn from its pitch, yaw and roll (radians about x, y and z): yawed, then pitched, then
+/// rolled.
+pub fn euler(a: vec3) -> Quat {
+    Quat::axis_angle(vec3(0.0, 1.0, 0.0), a.y)
+        .mul(Quat::axis_angle(vec3(1.0, 0.0, 0.0), a.x))
+        .mul(
+            Quat::axis_angle(vec3(0.0, 0.0, 1.0), a.z),
+        )
+}
+
+/// Way `a` to way `b`, `u` of the way round (both unit vectors, not opposite).
+fn swung(a: vec3, b: vec3, u: f32) -> vec3 {
+    let m = mix(a, b, vec3(u))
+    if length(m) < 1.0e-5 { b } else { normalize(m) }
+}
+
+/// Pose `a` to pose `b`, `u` of the way.
+pub fn mixed(a: Pose, b: Pose, u: f32) -> Pose {
+    let v = vec3(u)
+    let w = vec2(u)
+    Pose {
+        lift: mix(a.lift, b.lift, v),
+        hips: mix(a.hips, b.hips, v),
+        waist: mix(a.waist, b.waist, v),
+        chest: mix(a.chest, b.chest, v),
+        head: mix(a.head, b.head, v),
+        shrug: mix(a.shrug, b.shrug, w),
+        upper_r: swung(normalize(a.upper_r), normalize(b.upper_r), u),
+        fore_r: swung(normalize(a.fore_r), normalize(b.fore_r), u),
+        upper_l: swung(normalize(a.upper_l), normalize(b.upper_l), u),
+        fore_l: swung(normalize(a.fore_l), normalize(b.fore_l), u),
+        reach: mix(a.reach, b.reach, w),
+        foot_r: mix(a.foot_r, b.foot_r, v),
+        foot_l: mix(a.foot_l, b.foot_l, v),
+        heel: mix(a.heel, b.heel, w),
+        toe_out: mix(a.toe_out, b.toe_out, w),
+        free: mix(a.free, b.free, w),
+    }
+}
+
+/// A pose at a time (s), and how it goes on to the next (`engine::clip`'s eases).
+pub struct Beat: Copy {
+    pub at: f32,
+    pub pose: Pose,
+    pub ease: u32,
+}
+
+/// Beats `beats` at time `t`: the pose between the beats either side, eased as the first says.
+pub fn sampled(beats: [Beat], t: f32) -> Pose {
+    if t <= beats[0].at {
+        return beats[0].pose
+    }
+    for k in 1..beats.len() {
+        let (a, b) = (beats[k - 1], beats[k])
+        if t < b.at {
+            let span = max(b.at - a.at, 1.0e-6)
+            return mixed(a.pose, b.pose, eased(a.ease, (t - a.at) / span))
+        }
+    }
+    beats[beats.len() - 1].pose
+}
+
+/// Beats `beats` at time `t`, down the body's chain: the hips and feet at `t`, the waist `lag`
+/// behind, the chest two, the head two and a half, the upper arms and shoulders three and the
+/// forearms four: a change of pose begins at the ground and arrives at the hands last.
+pub fn chained(beats: [Beat], t: f32, lag: f32) -> Pose {
+    var p = sampled(beats, t)
+    p.waist = sampled(beats, t - lag).waist
+    p.chest = sampled(beats, t - 2.0 * lag).chest
+    p.head = sampled(beats, t - 2.5 * lag).head
+    let arms = sampled(beats, t - 3.0 * lag)
+    p.shrug = arms.shrug
+    p.upper_r = arms.upper_r
+    p.upper_l = arms.upper_l
+    let hands = sampled(beats, t - 4.0 * lag)
+    p.fore_r = hands.fore_r
+    p.fore_l = hands.fore_l
+    p.reach = hands.reach
+    p
+}
+
+/// How far ahead of the ankle a foot's ball is (m, for a figure 1.8 m tall): what a lifted heel
+/// rolls over.
+pub const BALL: f32 = 0.13
+
+/// Where the feet actually stand (the ground frame: ankles, and each foot's yaw), which a body's
+/// planting decides (`motion`): a pose's feet are where it would like them.
+pub struct Feet: Copy {
+    pub r: vec3,
+    pub l: vec3,
+    pub yaw_r: f32,
+    pub yaw_l: f32,
+}
+
+/// Pose `p`'s own feet, turned out as it says.
+pub fn feet_of(p: Pose, tall: f32) -> Feet {
+    Feet { r: p.foot_r * tall, l: p.foot_l * tall, yaw_r: -p.toe_out.x, yaw_l: p.toe_out.y }
+}
+
+/// The turn that points a bone whose rest runs along `rest` along `want` (the ground frame),
+/// under a parent whose turns come to `above`.
+fn aimed(above: Quat, rest: vec3, want: vec3) -> Quat {
+    turn(normalize(rest), normalize(above.inverse().rotate(normalize(want))))
+}
+
+/// A leg's turns (hip, knee, ankle, toes) to put its ankle at `to` (the ground frame), the foot
+/// yawed `yaw` and its heel lifted `heel`, its hip at `hip` under hips turned `hips`; the hip's,
+/// knee's, ankle's and toes' rest places `h`, `k`, `a`.
+fn leg(
+    hips: Quat,
+    hip: vec3,
+    h: vec3,
+    k: vec3,
+    a: vec3,
+    to: vec3,
+    yaw: f32,
+    heel: f32,
+) -> [Quat; 4] {
+    let facing = Quat::axis_angle(vec3(0.0, 1.0, 0.0), yaw)
+    // The rest leg turned to face where its foot does, so its knee goes over its toes.
+    let k0 = hip + facing.rotate(k - h)
+    let a0 = hip + facing.rotate(a - h)
+    let (knee, ankle) = bend_pole(hip, k0, a0, to)
+    let hr = aimed(hips, k - h, knee - hip)
+    let kr = aimed(hips.mul(hr), a - k, ankle - knee)
+    let foot = facing.mul(Quat::axis_angle(vec3(1.0, 0.0, 0.0), heel))
+    let ar = hips.mul(hr).mul(kr).inverse().mul(foot)
+    [hr, kr, ar, Quat::axis_angle(vec3(1.0, 0.0, 0.0), -heel)]
+}
+
+/// How far below its own the hips must sit for each leg to reach its foot (`lean` keeps a little
+/// bend in the knee), given the hips' place `pelvis` and turn.
+fn sink(s: Skeleton, k: Bones, pelvis: vec3, hips: Quat, feet: Feet, lean: f32) -> f32 {
+    let p0 = s.rest(k.pelvis)
+    var most = 0.0
+    for (hip, knee, ankle, to) in [
+        (k.hip_r, k.knee_r, k.ankle_r, feet.r),
+        (k.hip_l, k.knee_l, k.ankle_l, feet.l),
+    ] {
+        let h = pelvis + hips.rotate(s.rest(hip) - p0)
+        let reach = (length(s.rest(knee) - s.rest(hip)) + length(s.rest(ankle) - s.rest(knee))) *
+            lean
+        let d = to - h
+        let flat = length(vec2(d.x, d.z))
+        if flat < reach {
+            let need = sqrt(reach * reach - flat * flat)
+            most = max(most, -d.y - need)
+        } else {
+            most = max(most, -d.y)
+        }
+    }
+    max(most, 0.0)
+}
+
+/// Pose `p` as each bone's turn (`engine::clip::Local`), its feet where `feet` says, for a body
+/// of skeleton `s` (its bones `k`) built `tall` times 1.8 m.
+pub fn locals(p: Pose, feet: Feet, s: Skeleton, k: Bones, tall: f32) -> [Local; MAX_BONES] {
+    var out = [rest(); MAX_BONES]
+    let qh = euler(p.hips)
+    let qw = euler(p.waist)
+    let qc = euler(p.chest)
+    // The hips: shifted as the pose says, and lower still where a leg couldn't reach its foot.
+    var lift = p.lift * tall
+    let p0 = s.rest(k.pelvis)
+    lift.y -= sink(s, k, p0 + lift, qh, feet, lean: 0.985)
+    out[k.pelvis.index] = Local { turn: qh, stretch: vec3(1.0), shift: lift }
+    out[k.spine.index] = Local { turn: qw, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[k.chest.index] = Local { turn: qc, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[k.neck.index] = Local { turn: euler(p.head * 0.4), stretch: vec3(1.0), shift: vec3(0.0) }
+    out[k.head.index] = Local { turn: euler(p.head * 0.6), stretch: vec3(1.0), shift: vec3(0.0) }
+    // The arms, from the chest's frame.
+    let torso = qh.mul(qw).mul(qc)
+    let cr = Quat::axis_angle(vec3(0.0, 0.0, 1.0), p.shrug.x)
+    let cl = Quat::axis_angle(vec3(0.0, 0.0, 1.0), -p.shrug.y)
+    out[k.clav_r.index] = Local { turn: cr, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[k.clav_l.index] = Local { turn: cl, stretch: vec3(1.0), shift: vec3(0.0) }
+    let sr = aimed(torso.mul(cr), s.rest(k.elbow_r) - s.rest(k.shoulder_r), torso.rotate(p.upper_r))
+    let er = aimed(
+        torso.mul(cr).mul(sr),
+        s.rest(k.wrist_r) - s.rest(k.elbow_r),
+        torso.rotate(p.fore_r),
+    )
+    let sl = aimed(torso.mul(cl), s.rest(k.elbow_l) - s.rest(k.shoulder_l), torso.rotate(p.upper_l))
+    let el = aimed(
+        torso.mul(cl).mul(sl),
+        s.rest(k.wrist_l) - s.rest(k.elbow_l),
+        torso.rotate(p.fore_l),
+    )
+    let ra = vec3(p.reach.x, 1.0, 1.0)
+    let la = vec3(p.reach.y, 1.0, 1.0)
+    out[k.shoulder_r.index] = Local { turn: sr, stretch: ra, shift: vec3(0.0) }
+    out[k.elbow_r.index] = Local { turn: er, stretch: ra, shift: vec3(0.0) }
+    out[k.shoulder_l.index] = Local { turn: sl, stretch: la, shift: vec3(0.0) }
+    out[k.elbow_l.index] = Local { turn: el, stretch: la, shift: vec3(0.0) }
+    // The legs, solved to their feet.
+    let pelvis = p0 + lift
+    for (hip, knee, ankle, toe, to, yaw, heel) in [
+        (k.hip_r, k.knee_r, k.ankle_r, k.toe_r, feet.r, feet.yaw_r, p.heel.x),
+        (k.hip_l, k.knee_l, k.ankle_l, k.toe_l, feet.l, feet.yaw_l, p.heel.y),
+    ] {
+        let h = pelvis + qh.rotate(s.rest(hip) - p0)
+        // A lifted heel rolls the foot over its ball: the ankle rises and comes back.
+        let ball = BALL * tall
+        let rolled = to +
+            Quat::axis_angle(vec3(0.0, 1.0, 0.0), yaw).rotate(
+                vec3(0.0, ball * sin(heel), -ball * (1.0 - cos(heel))),
+            )
+        let q = leg(qh, h, s.rest(hip), s.rest(knee), s.rest(ankle), rolled, yaw, heel)
+        out[hip.index] = Local { turn: q[0], stretch: vec3(1.0), shift: vec3(0.0) }
+        out[knee.index] = Local { turn: q[1], stretch: vec3(1.0), shift: vec3(0.0) }
+        out[ankle.index] = Local { turn: q[2], stretch: vec3(1.0), shift: vec3(0.0) }
+        out[toe.index] = Local { turn: q[3], stretch: vec3(1.0), shift: vec3(0.0) }
+    }
+    out
+}

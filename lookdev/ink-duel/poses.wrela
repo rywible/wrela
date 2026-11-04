@@ -1,0 +1,426 @@
+// The duel's key poses (`pose::Pose`): each a silhouette, written for a figure 1.8 m tall facing
+// +z (x its right), its arms in its chest's frame. A pose's weight is in its hips' height and turn
+// and where its feet stand; a blow's power in how far round the hips have come before the arm
+// goes.
+
+use pose::Pose
+
+/// Standing at rest, its arms out level: the skeleton's own pose.
+pub const REST = Pose {
+    upper_r: vec3(1.0, 0.0, 0.0),
+    fore_r: vec3(1.0, 0.0, 0.0),
+    upper_l: vec3(-1.0, 0.0, 0.0),
+    fore_l: vec3(-1.0, 0.0, 0.0),
+    foot_r: vec3(0.1, 0.085, -0.02),
+    foot_l: vec3(-0.1, 0.085, -0.02),
+    toe_out: vec2(0.0),
+}
+
+/// The guard: the left foot ahead and the right behind and turned out, the knees bent and the
+/// weight between them; the hips turned so the left side leads, the chest squaring back a little
+/// and hunched, the chin down behind the shoulders, the lead fist at the chin's height ahead and
+/// the rear one by the jaw, the rear heel up.
+pub const GUARD = Pose {
+    lift: vec3(0.0, -0.09, 0.0),
+    hips: vec3(0.04, 0.5, 0.0),
+    waist: vec3(0.04, -0.08, 0.0),
+    chest: vec3(0.1, -0.12, 0.0),
+    head: vec3(-0.12, -0.28, 0.0),
+    shrug: vec2(0.1, 0.12),
+    upper_r: vec3(0.25, -0.7, 0.65),
+    fore_r: vec3(-0.35, 0.85, 0.35),
+    upper_l: vec3(-0.1, -0.5, 0.86),
+    fore_l: vec3(0.3, 0.75, 0.6),
+    foot_r: vec3(0.17, 0.085, -0.2),
+    foot_l: vec3(-0.12, 0.085, 0.24),
+    heel: vec2(0.3, 0.0),
+    toe_out: vec2(0.6, 0.15),
+}
+
+/// The jab's load: a touch lower, the lead shoulder rolling in.
+pub const JAB_LOAD = Pose {
+    lift: vec3(0.0, -0.11, 0.0),
+    hips: vec3(0.06, 0.56, 0.0),
+    fore_l: vec3(0.25, 0.6, 0.75),
+    ..GUARD,
+}
+
+/// The jab: the lead arm straight to the head's height, its shoulder up by the chin, the hips
+/// and chest turned on into it, the rear fist home.
+pub const JAB = Pose {
+    lift: vec3(0.0, -0.1, 0.06),
+    hips: vec3(0.08, 0.66, 0.0),
+    chest: vec3(0.12, 0.06, 0.0),
+    head: vec3(-0.1, -0.5, 0.0),
+    shrug: vec2(0.1, 0.24),
+    upper_l: vec3(0.16, 0.06, 1.0),
+    fore_l: vec3(0.16, 0.04, 1.0),
+    reach: vec2(1.0, 1.08),
+    ..GUARD,
+}
+
+/// The cross's load: the weight back over the rear foot, the hips wound away.
+pub const CROSS_LOAD = Pose {
+    lift: vec3(0.0, -0.12, -0.04),
+    hips: vec3(0.06, 0.62, 0.0),
+    chest: vec3(0.12, 0.0, 0.0),
+    ..GUARD,
+}
+
+/// The cross: the rear hip driven round past square and the rear heel turned up and out, the
+/// rear arm straight through the target, the lead fist pulled back to the chin.
+pub const CROSS = Pose {
+    lift: vec3(0.0, -0.12, 0.1),
+    hips: vec3(0.12, -0.32, 0.0),
+    waist: vec3(0.06, -0.12, 0.0),
+    chest: vec3(0.1, -0.2, 0.0),
+    head: vec3(-0.08, 0.35, 0.0),
+    shrug: vec2(0.26, 0.1),
+    upper_r: vec3(-0.12, 0.08, 1.0),
+    fore_r: vec3(-0.12, 0.05, 1.0),
+    reach: vec2(1.1, 1.0),
+    upper_l: vec3(-0.15, -0.65, 0.72),
+    fore_l: vec3(0.45, 0.85, 0.2),
+    foot_r: vec3(0.17, 0.085, -0.2),
+    foot_l: vec3(-0.12, 0.085, 0.24),
+    heel: vec2(0.85, 0.0),
+    toe_out: vec2(0.1, 0.15),
+}
+
+/// The hook's load: sunk and wound deep the other way, the chest over the lead knee, the rear
+/// arm cocked wide.
+pub const HOOK_LOAD = Pose {
+    lift: vec3(0.0, -0.2, 0.02),
+    hips: vec3(0.12, 0.9, 0.0),
+    waist: vec3(0.1, 0.15, 0.08),
+    chest: vec3(0.18, 0.25, 0.1),
+    head: vec3(-0.1, -0.85, 0.0),
+    upper_r: vec3(0.75, -0.35, -0.3),
+    fore_r: vec3(0.1, 0.4, 0.9),
+    ..GUARD,
+}
+
+/// The hook: everything unwound past square, the rear arm bent at a right angle sweeping across
+/// at the ribs' height, the rear foot pivoted on its ball.
+pub const HOOK = Pose {
+    lift: vec3(0.0, -0.18, 0.12),
+    hips: vec3(0.14, -0.55, 0.0),
+    waist: vec3(0.08, -0.25, -0.06),
+    chest: vec3(0.14, -0.35, -0.1),
+    head: vec3(-0.06, 1.0, 0.0),
+    shrug: vec2(0.3, 0.12),
+    upper_r: vec3(-0.45, -0.1, 0.89),
+    fore_r: vec3(-0.98, 0.05, 0.2),
+    upper_l: vec3(-0.15, -0.65, 0.72),
+    fore_l: vec3(0.45, 0.85, 0.2),
+    foot_r: vec3(0.17, 0.085, -0.2),
+    foot_l: vec3(-0.12, 0.085, 0.24),
+    heel: vec2(0.9, 0.0),
+    toe_out: vec2(-0.2, 0.15),
+}
+
+/// A dodge's crouch, its lean put on by the way it goes (`motion`): low, the arms tucked.
+pub const DODGE = Pose {
+    lift: vec3(0.0, -0.24, 0.0),
+    hips: vec3(0.2, 0.4, 0.0),
+    chest: vec3(0.25, -0.1, 0.0),
+    head: vec3(-0.25, -0.3, 0.0),
+    shrug: vec2(0.18, 0.18),
+    upper_r: vec3(0.3, -0.75, 0.55),
+    fore_r: vec3(-0.4, 0.85, 0.3),
+    upper_l: vec3(-0.25, -0.7, 0.65),
+    fore_l: vec3(0.4, 0.85, 0.3),
+    foot_r: vec3(0.2, 0.085, -0.12),
+    foot_l: vec3(-0.18, 0.085, 0.16),
+    heel: vec2(0.4, 0.2),
+    toe_out: vec2(0.45, 0.2),
+}
+
+/// Struck: rocked back off the blow, the chin up, the guard knocked open.
+pub const STRUCK = Pose {
+    lift: vec3(0.0, -0.06, -0.08),
+    hips: vec3(-0.12, 0.3, 0.06),
+    waist: vec3(-0.12, 0.0, 0.0),
+    chest: vec3(-0.22, 0.12, 0.08),
+    head: vec3(-0.45, 0.2, 0.1),
+    shrug: vec2(0.2, 0.2),
+    upper_r: vec3(0.6, -0.55, 0.4),
+    fore_r: vec3(0.3, 0.6, 0.7),
+    upper_l: vec3(-0.6, -0.5, 0.45),
+    fore_l: vec3(-0.3, 0.55, 0.75),
+    ..GUARD,
+}
+
+/// Broken: the posture gone, the body folded over low knees, the arms hanging, the head down,
+/// swaying (`present`), open. (The arms are in the chest's frame: folded forward, hanging straight
+/// down is down and ahead of it.)
+pub const BROKEN = Pose {
+    lift: vec3(0.0, -0.34, -0.05),
+    hips: vec3(0.25, 0.2, 0.0),
+    waist: vec3(0.2, 0.0, 0.05),
+    chest: vec3(0.3, -0.05, 0.08),
+    head: vec3(0.45, 0.0, 0.15),
+    shrug: vec2(-0.1, -0.05),
+    upper_r: vec3(0.22, -0.72, 0.66),
+    fore_r: vec3(0.05, -0.6, 0.8),
+    upper_l: vec3(-0.18, -0.74, 0.65),
+    fore_l: vec3(0.0, -0.55, 0.84),
+    foot_r: vec3(0.2, 0.085, -0.15),
+    foot_l: vec3(-0.15, 0.085, 0.3),
+    heel: vec2(0.7, 0.0),
+    toe_out: vec2(0.4, 0.2),
+}
+
+/// The riposte's coil (the yard's uppercut, now on a body that can carry it): as low as it goes,
+/// turned away from the blow, the striking (right) fist dropped behind the hip, the chest folded
+/// over the lead knee.
+pub const COIL = Pose {
+    lift: vec3(0.0, -0.42, -0.06),
+    hips: vec3(0.25, 0.75, 0.0),
+    waist: vec3(0.15, 0.1, 0.0),
+    chest: vec3(0.3, 0.15, 0.05),
+    head: vec3(-0.35, -0.75, 0.0),
+    shrug: vec2(-0.05, 0.15),
+    upper_r: vec3(0.4, -0.85, -0.35),
+    fore_r: vec3(0.1, 0.1, 1.0),
+    upper_l: vec3(-0.2, -0.3, 0.93),
+    fore_l: vec3(0.35, 0.8, 0.45),
+    foot_r: vec3(0.22, 0.085, -0.38),
+    foot_l: vec3(-0.15, 0.085, 0.38),
+    heel: vec2(0.55, 0.0),
+    toe_out: vec2(0.5, 0.1),
+}
+
+/// The uppercut: rising through it off the ground, the striking side turned in, the fist driven
+/// up under the jaw, the other arm pulled back, the rear leg driving.
+pub const UPPERCUT = Pose {
+    lift: vec3(0.0, 0.1, 0.18),
+    hips: vec3(-0.08, -0.45, 0.0),
+    waist: vec3(-0.1, -0.15, 0.0),
+    chest: vec3(-0.18, -0.2, -0.05),
+    head: vec3(-0.25, 0.6, 0.0),
+    shrug: vec2(0.35, 0.0),
+    upper_r: vec3(-0.15, 0.45, 0.88),
+    fore_r: vec3(-0.25, 0.92, 0.3),
+    reach: vec2(1.15, 1.0),
+    upper_l: vec3(-0.4, -0.55, -0.73),
+    fore_l: vec3(0.1, 0.3, 0.95),
+    foot_r: vec3(0.17, 0.25, -0.35),
+    foot_l: vec3(-0.12, 0.2, 0.3),
+    heel: vec2(1.0, 0.6),
+    toe_out: vec2(0.1, 0.1),
+    free: vec2(1.0, 1.0),
+}
+
+/// The follow-through: higher still, the arm straight overhead, the body stretched long behind
+/// it, both feet off the ground.
+pub const OVERHEAD = Pose {
+    lift: vec3(0.0, 0.45, 0.3),
+    hips: vec3(-0.15, -0.5, 0.0),
+    waist: vec3(-0.1, -0.1, 0.0),
+    chest: vec3(-0.2, -0.1, -0.08),
+    head: vec3(-0.45, 0.4, 0.0),
+    shrug: vec2(0.45, 0.0),
+    upper_r: vec3(-0.05, 0.98, 0.15),
+    fore_r: vec3(0.0, 1.0, -0.05),
+    reach: vec2(1.1, 1.0),
+    upper_l: vec3(-0.4, -0.7, -0.6),
+    fore_l: vec3(0.0, -0.3, 0.95),
+    foot_r: vec3(0.15, 0.45, -0.45),
+    foot_l: vec3(-0.12, 0.6, 0.15),
+    heel: vec2(0.9, 0.5),
+    toe_out: vec2(0.1, 0.1),
+    free: vec2(1.0, 1.0),
+}
+
+/// Taken by the uppercut: the head snapped back, the chest arched, the arms flung out, the knees
+/// gone.
+pub const TAKEN = Pose {
+    lift: vec3(0.0, -0.05, -0.1),
+    hips: vec3(-0.2, 0.0, 0.0),
+    waist: vec3(-0.15, 0.0, 0.0),
+    chest: vec3(-0.4, 0.0, 0.0),
+    head: vec3(-0.8, 0.0, 0.0),
+    shrug: vec2(0.3, 0.3),
+    upper_r: vec3(0.8, 0.45, -0.35),
+    fore_r: vec3(0.85, 0.5, -0.2),
+    upper_l: vec3(-0.8, 0.45, -0.35),
+    fore_l: vec3(-0.85, 0.5, -0.2),
+    foot_r: vec3(0.15, 0.085, -0.05),
+    foot_l: vec3(-0.15, 0.085, 0.05),
+    heel: vec2(1.0, 1.0),
+    toe_out: vec2(0.2, 0.2),
+}
+
+/// Flung: arched back over its own momentum, its limbs trailing behind the flight, off the
+/// ground.
+pub const FLUNG = Pose {
+    lift: vec3(0.0, 0.1, 0.0),
+    hips: vec3(-0.3, 0.0, 0.0),
+    waist: vec3(-0.25, 0.0, 0.0),
+    chest: vec3(-0.45, 0.0, 0.0),
+    head: vec3(-0.6, 0.0, 0.0),
+    shrug: vec2(0.2, 0.2),
+    upper_r: vec3(0.45, -0.5, -0.75),
+    fore_r: vec3(0.3, -0.6, -0.75),
+    upper_l: vec3(-0.45, -0.5, -0.75),
+    fore_l: vec3(-0.3, -0.6, -0.75),
+    foot_r: vec3(0.12, 0.2, -0.5),
+    foot_l: vec3(-0.12, 0.3, -0.45),
+    heel: vec2(1.2, 1.2),
+    toe_out: vec2(0.1, 0.1),
+    free: vec2(1.0, 1.0),
+}
+
+/// Down: laid on its back (the body's root turned over by `motion`), its knees up a little, its
+/// arms out.
+pub const DOWN = Pose {
+    lift: vec3(0.0, 0.0, 0.0),
+    hips: vec3(0.0, 0.0, 0.0),
+    chest: vec3(0.05, 0.0, 0.0),
+    head: vec3(0.25, 0.3, 0.0),
+    upper_r: vec3(0.85, 0.0, 0.5),
+    fore_r: vec3(0.6, 0.0, 0.8),
+    upper_l: vec3(-0.9, 0.0, 0.4),
+    fore_l: vec3(-0.95, 0.0, 0.3),
+    foot_r: vec3(0.18, 0.2, 0.0),
+    foot_l: vec3(-0.14, 0.085, -0.05),
+    heel: vec2(0.0, 0.0),
+    toe_out: vec2(0.3, 0.3),
+    free: vec2(1.0, 1.0),
+}
+
+/// Back on one knee, getting up: the lead foot planted, the rear knee down, a hand on the
+/// thigh.
+pub const KNEEL = Pose {
+    lift: vec3(0.0, -0.48, 0.0),
+    hips: vec3(0.2, 0.2, 0.0),
+    chest: vec3(0.3, 0.0, 0.0),
+    head: vec3(-0.2, 0.0, 0.0),
+    upper_r: vec3(0.3, -0.8, 0.5),
+    fore_r: vec3(0.0, -0.6, 0.8),
+    upper_l: vec3(-0.15, -0.85, 0.5),
+    fore_l: vec3(0.2, -0.3, 0.93),
+    foot_r: vec3(0.16, 0.085, -0.38),
+    foot_l: vec3(-0.12, 0.085, 0.3),
+    heel: vec2(1.2, 0.0),
+    toe_out: vec2(0.2, 0.15),
+}
+
+/// The haymaker's lift: the right arm raised high behind the head, the body arched back over
+/// the rear leg, the lead arm out ahead for balance: what the delay holds.
+pub const HAY_LIFT = Pose {
+    lift: vec3(0.0, -0.04, -0.1),
+    hips: vec3(-0.08, 0.55, 0.0),
+    waist: vec3(-0.12, 0.1, 0.0),
+    chest: vec3(-0.28, 0.25, -0.1),
+    head: vec3(-0.05, -0.7, 0.0),
+    shrug: vec2(0.45, 0.1),
+    upper_r: vec3(0.3, 0.85, -0.42),
+    fore_r: vec3(-0.1, 0.55, -0.83),
+    upper_l: vec3(-0.25, 0.1, 0.96),
+    fore_l: vec3(0.15, 0.2, 0.97),
+    foot_r: vec3(0.17, 0.085, -0.28),
+    foot_l: vec3(-0.12, 0.085, 0.24),
+    heel: vec2(0.0, 0.0),
+    toe_out: vec2(0.6, 0.15),
+}
+
+/// The haymaker's hold, further still: the arm cocked to its limit, trembling with it.
+pub const HAY_COCKED = Pose {
+    chest: vec3(-0.34, 0.3, -0.12),
+    upper_r: vec3(0.35, 0.8, -0.5),
+    fore_r: vec3(-0.05, 0.4, -0.92),
+    lift: vec3(0.0, -0.06, -0.14),
+    ..HAY_LIFT,
+}
+
+/// The haymaker's fall: the fist hammered down through where the head was, the body folded over
+/// it, the lead foot stamped ahead.
+pub const HAY_DOWN = Pose {
+    lift: vec3(0.0, -0.3, 0.25),
+    hips: vec3(0.25, -0.2, 0.0),
+    waist: vec3(0.2, -0.1, 0.0),
+    chest: vec3(0.5, -0.15, 0.05),
+    head: vec3(0.1, 0.2, 0.0),
+    shrug: vec2(0.3, 0.05),
+    upper_r: vec3(-0.05, -0.25, 0.97),
+    fore_r: vec3(0.0, -0.75, 0.66),
+    reach: vec2(1.1, 1.0),
+    upper_l: vec3(-0.5, -0.8, -0.3),
+    fore_l: vec3(0.0, -0.7, 0.7),
+    foot_r: vec3(0.17, 0.085, -0.35),
+    foot_l: vec3(-0.12, 0.085, 0.5),
+    heel: vec2(0.8, 0.0),
+    toe_out: vec2(0.5, 0.15),
+}
+
+/// The lunge's load: sunk on the rear leg, the body drawn back, the rear fist chambered at the
+/// hip.
+pub const LUNGE_LOAD = Pose {
+    lift: vec3(0.0, -0.25, -0.15),
+    hips: vec3(0.05, 0.8, 0.0),
+    chest: vec3(0.1, 0.2, 0.0),
+    head: vec3(-0.15, -0.9, 0.0),
+    upper_r: vec3(0.35, -0.8, -0.48),
+    fore_r: vec3(0.0, 0.1, 1.0),
+    foot_r: vec3(0.2, 0.085, -0.4),
+    ..GUARD,
+}
+
+/// The lunge: thrown long off the rear leg, the body level behind the straight rear arm.
+pub const LUNGE = Pose {
+    lift: vec3(0.0, -0.22, 0.35),
+    hips: vec3(0.3, -0.35, 0.0),
+    waist: vec3(0.1, -0.1, 0.0),
+    chest: vec3(0.2, -0.2, 0.0),
+    head: vec3(-0.35, 0.4, 0.0),
+    shrug: vec2(0.3, 0.1),
+    upper_r: vec3(-0.1, 0.05, 1.0),
+    fore_r: vec3(-0.1, 0.05, 1.0),
+    reach: vec2(1.12, 1.0),
+    upper_l: vec3(-0.3, -0.55, -0.78),
+    fore_l: vec3(0.2, 0.5, 0.84),
+    foot_r: vec3(0.2, 0.085, -0.65),
+    foot_l: vec3(-0.12, 0.085, 0.55),
+    heel: vec2(0.9, 0.0),
+    toe_out: vec2(0.2, 0.1),
+}
+
+/// The sweep's wind: turned right round on the lead foot, the kicking (right) leg drawn back and
+/// the body over the lead knee.
+pub const SWEEP_WIND = Pose {
+    lift: vec3(0.0, -0.22, 0.0),
+    hips: vec3(0.15, 1.2, 0.0),
+    waist: vec3(0.1, 0.3, 0.0),
+    chest: vec3(0.15, 0.2, 0.0),
+    head: vec3(-0.2, -1.4, 0.0),
+    upper_r: vec3(0.75, -0.3, -0.4),
+    fore_r: vec3(0.2, 0.6, 0.6),
+    upper_l: vec3(-0.6, -0.4, 0.6),
+    fore_l: vec3(0.3, 0.6, 0.7),
+    foot_r: vec3(0.25, 0.12, -0.45),
+    foot_l: vec3(-0.08, 0.085, 0.2),
+    heel: vec2(0.6, 0.3),
+    toe_out: vec2(0.3, 0.6),
+    free: vec2(1.0, 0.0),
+}
+
+/// The sweep: the kicking leg swung low and wide across the front at the shins' height, the
+/// body leaning away over the standing leg.
+pub const SWEEP = Pose {
+    lift: vec3(0.0, -0.25, 0.0),
+    hips: vec3(0.1, -0.7, -0.25),
+    waist: vec3(0.05, -0.2, -0.1),
+    chest: vec3(0.1, -0.2, -0.15),
+    head: vec3(-0.1, 0.8, 0.0),
+    upper_r: vec3(0.7, -0.3, 0.6),
+    fore_r: vec3(0.5, 0.2, 0.84),
+    upper_l: vec3(-0.85, -0.1, -0.5),
+    fore_l: vec3(-0.6, 0.3, -0.7),
+    foot_r: vec3(-0.35, 0.3, 0.75),
+    foot_l: vec3(-0.08, 0.085, 0.2),
+    heel: vec2(-0.4, 0.4),
+    toe_out: vec2(-1.2, 0.8),
+    free: vec2(1.0, 0.0),
+}

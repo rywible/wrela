@@ -1,0 +1,250 @@
+// How a body carries a pose through the world (presentation alone: the sim's numbers never read
+// any of it): its feet planted where they land and held there while the body moves over them,
+// each stepping only once it's left too far behind where the pose wants it, toward where the body
+// will be (so footwork comes from movement, not from a walk cycle); the body leaning into its
+// acceleration and the head and chest whipped back by a blow and settling (damped springs, so
+// they overshoot as flesh does); and breathing.
+//
+// The springs are critically damped and underdamped damped springs (Holden 2021, "Spring-It-On"),
+// stepped semi-implicitly a frame at a time; the planting is the procedural-animation practice of
+// stepping when a foot strays past a threshold (Johansen 2009, "Automated Semi-Procedural
+// Animation for Character Locomotion").
+
+use arena::Mounds
+use engine::terrain::Terrain
+use pose::{Feet, Pose}
+use std::quat::Quat
+
+/// A foot strays this far (m, for a figure 1.8 m tall) from where its pose wants it before it
+/// steps; a turn of this much (radians) counts as a metre of it.
+pub const STRAY: f32 = 0.17
+pub const TURN_M: f32 = 0.35
+
+/// A step's length (s) at its quickest and slowest, and its lift (m) at its lowest and highest.
+pub const STEP_S = vec2(0.11, 0.24)
+pub const LIFT_M = vec2(0.03, 0.13)
+
+/// A damped spring of three values: where it is and how fast it's going.
+pub struct Spring: Copy {
+    pub at: vec3 = vec3(0.0),
+    pub v: vec3 = vec3(0.0),
+}
+
+impl Spring {
+    /// A step of `dt` toward `goal`, ringing at `hz` with damping ratio `zeta` (1: critically
+    /// damped, no overshoot; below, a ring).
+    pub fn toward(mut self, goal: vec3, dt: f32, hz: f32, zeta: f32) {
+        let w = 6.2831853 * hz
+        let a = (goal - self.at) * (w * w) - self.v * (2.0 * zeta * w)
+        self.v = self.v + a * dt
+        self.at = self.at + self.v * dt
+    }
+
+    /// A kick to its speed.
+    pub fn kick(mut self, dv: vec3) {
+        self.v = self.v + dv
+    }
+}
+
+/// A foot: where it stands (world) and which way it faces (yaw, world); and its step, if it's
+/// stepping: where from, its turn from, how far through (0 to 1), how long it takes, how high it
+/// lifts.
+pub struct Foot: Copy {
+    pub at: vec3,
+    pub yaw: f32,
+    pub stepping: bool = false,
+    pub from: vec3 = vec3(0.0),
+    pub from_yaw: f32 = 0.0,
+    pub u: f32 = 0.0,
+    pub span: f32 = 0.2,
+    pub lift: f32 = 0.05,
+}
+
+/// A body's carriage: its feet, its lean, its flinch, where its root was the last two frames,
+/// and how long it's breathed.
+pub struct Carriage: Copy {
+    pub r: Foot,
+    pub l: Foot,
+    pub lean: Spring = Spring {},
+    pub flinch: Spring = Spring {},
+    pub last: vec3,
+    pub velocity: vec3 = vec3(0.0),
+    pub breath: f32 = 0.0,
+    pub planted: bool = false,
+}
+
+/// A carriage for a body whose root is at `root` facing `heading`, its feet where `p` puts them.
+pub fn carriage(root: vec3, heading: f32, p: Pose, tall: f32) -> Carriage {
+    let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), heading)
+    Carriage {
+        r: Foot { at: root + q.rotate(p.foot_r * tall), yaw: heading - p.toe_out.x },
+        l: Foot { at: root + q.rotate(p.foot_l * tall), yaw: heading + p.toe_out.y },
+        last: root,
+    }
+}
+
+/// The short way from angle `a` to `b`.
+fn toward_angle(a: f32, b: f32) -> f32 {
+    let d = b - a
+    d - 6.2831853 * floor((d + 3.1415927) / 6.2831853)
+}
+
+/// A foot's step this frame: begun if it's strayed past `stray` and may step, carried through
+/// toward where it's wanted, landed.
+fn stepped(
+    f: mut Foot,
+    want: vec3,
+    want_yaw: f32,
+    ahead: vec3,
+    may: bool,
+    free: f32,
+    dt: f32,
+    tall: f32,
+    ground: f32,
+) {
+    if free > 0.5 {
+        // Off the ground (a kick, a jump): where the pose puts it, no planting.
+        f.at = want
+        f.yaw = want_yaw
+        f.stepping = false
+        return
+    }
+    let strayed = length(vec2(want.x - f.at.x, want.z - f.at.z)) +
+        TURN_M * abs(toward_angle(f.yaw, want_yaw))
+    if !f.stepping && may && strayed > STRAY * tall {
+        f.stepping = true
+        f.from = f.at
+        f.from_yaw = f.yaw
+        f.u = 0.0
+        let k = clamp(strayed / (0.6 * tall), 0.0, 1.0)
+        f.span = mix(STEP_S.x, STEP_S.y, k)
+        f.lift = mix(LIFT_M.x, LIFT_M.y, k) * tall
+    }
+    if !f.stepping {
+        f.at.y = ground
+        return
+    }
+    f.u = min(f.u + dt / f.span, 1.0)
+    // Toward where the body will be when it lands, so a moving body's steps lead it.
+    let to = want + ahead * (1.0 - f.u) * f.span
+    let e = f.u * f.u * (3.0 - 2.0 * f.u)
+    f.at = mix(f.from, vec3(to.x, ground, to.z), vec3(e)) +
+        vec3(0.0, f.lift * sin(3.1415927 * f.u), 0.0)
+    f.yaw = f.from_yaw + toward_angle(f.from_yaw, want_yaw) * e
+    if f.u >= 1.0 {
+        f.stepping = false
+        f.at.y = ground
+    }
+}
+
+/// What a body's carriage gives a pose this frame: where its feet stand (the ground frame) and
+/// the pose with its lean, its flinch, its breath and its heels' roll put on.
+pub struct Carried: Copy {
+    pub pose: Pose,
+    pub feet: Feet,
+}
+
+/// This frame of a body whose root is at `root` (world; on the ground) facing `heading`, posed
+/// `p`, `dt` after the last, built `tall`: its feet planted or stepping, its lean and flinch
+/// sprung, its breath drawn, on ground `ground`.
+pub fn carry(
+    c: mut Carriage,
+    root: vec3,
+    heading: f32,
+    p: Pose,
+    dt: f32,
+    tall: f32,
+    ground: Mounds,
+) -> Carried {
+    let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), heading)
+    let step = max(dt, 1.0e-4)
+    let v = (root - c.last) / step
+    let accel = (v - c.velocity) / step
+    c.velocity = mix(c.velocity, v, vec3(0.5))
+    c.last = root
+    // The feet: one steps at a time, unless the body is moving fast (a dodge, a lunge) or a
+    // foot is far behind.
+    let fast = length(vec2(c.velocity.x, c.velocity.z)) > 2.2
+    let want_r = root + q.rotate(p.foot_r * tall)
+    let want_l = root + q.rotate(p.foot_l * tall)
+    let ahead = vec3(c.velocity.x, 0.0, c.velocity.z) * 0.6
+    if !c.planted {
+        c.r.at = vec3(want_r.x, ground.height(want_r.x, want_r.z), want_r.z)
+        c.l.at = vec3(want_l.x, ground.height(want_l.x, want_l.z), want_l.z)
+        c.planted = true
+    }
+    let r_may = !c.l.stepping || fast
+    stepped(
+        mut c.r,
+        want_r,
+        heading - p.toe_out.x,
+        ahead,
+        r_may,
+        p.free.x,
+        dt,
+        tall,
+        ground.height(c.r.at.x, c.r.at.z),
+    )
+    let l_may = !c.r.stepping || fast
+    stepped(
+        mut c.l,
+        want_l,
+        heading + p.toe_out.y,
+        ahead,
+        l_may,
+        p.free.y,
+        dt,
+        tall,
+        ground.height(c.l.at.x, c.l.at.z),
+    )
+    // The lean: into the acceleration, in the body's own frame (forward pitches it over, sideways
+    // rolls it), and a little into its speed; sprung, so a stop rocks it back.
+    let local_a = q.inverse().rotate(accel)
+    let local_v = q.inverse().rotate(c.velocity)
+    let goal = vec3(
+        clamp(local_a.z * 0.012 + local_v.z * 0.03, -0.35, 0.35),
+        0.0,
+        clamp(-local_a.x * 0.012 - local_v.x * 0.03, -0.3, 0.3),
+    )
+    c.lean.toward(goal, dt, hz: 2.2, zeta: 0.55)
+    c.flinch.toward(vec3(0.0), dt, hz: 3.0, zeta: 0.32)
+    c.breath += dt
+    var out = p
+    let lean = c.lean.at
+    let flinch = c.flinch.at
+    let b = sin(c.breath * 6.2831853 * 0.28)
+    out.waist = out.waist + lean * 0.35 + flinch * 0.3
+    out.chest = out.chest + lean * 0.45 + flinch * 0.6 + vec3(-0.018 * b, 0.0, 0.0)
+    out.head = out.head - lean * 0.3 + flinch * 1.1
+    out.lift = out.lift + vec3(0.0, 0.006 * b, 0.0)
+    // A stepping foot's heel comes up as it pushes off.
+    if c.r.stepping {
+        out.heel.x = max(out.heel.x, 0.7 * sin(3.1415927 * min(c.r.u * 1.4, 1.0)))
+    }
+    if c.l.stepping {
+        out.heel.y = max(out.heel.y, 0.7 * sin(3.1415927 * min(c.l.u * 1.4, 1.0)))
+    }
+    // The feet into the ground frame; a planted foot's ankle at its height over the ground.
+    let inv = q.inverse()
+    let ankle = 0.085 * tall
+    let fr = inv.rotate(c.r.at - root) + vec3(0.0, if p.free.x > 0.5 { 0.0 } else { ankle }, 0.0)
+    let fl = inv.rotate(c.l.at - root) + vec3(0.0, if p.free.y > 0.5 { 0.0 } else { ankle }, 0.0)
+    Carried {
+        pose: out,
+        feet: Feet {
+            r: fr,
+            l: fl,
+            yaw_r: toward_angle(heading, c.r.yaw),
+            yaw_l: toward_angle(heading, c.l.yaw),
+        },
+    }
+}
+
+/// A blow's flinch: the head and chest knocked away from `from` (world, the way the blow came)
+/// by `force`, for a body facing `heading`.
+pub fn flinch(c: mut Carriage, from: vec3, heading: f32, force: f32) {
+    let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), heading)
+    let local = q.inverse().rotate(normalize(vec3(from.x, 0.0, from.z) + vec3(1.0e-4, 0.0, 0.0)))
+    // From ahead: pitched back; from a side: rolled and turned away.
+    c.flinch.kick(vec3(-local.z * 9.0, -local.x * 5.0, local.x * 6.0) * force)
+}

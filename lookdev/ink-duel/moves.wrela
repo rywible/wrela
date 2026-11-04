@@ -1,0 +1,265 @@
+// The duel's moves: each one's rules (`engine::combat::Move`: its wind-up, its hitting ticks and
+// its recovery, its reach and what it does) and its drawing (`pose::Beat`s keyed on the same
+// ticks, so a fist is out exactly while it can hit).
+//
+// The wanderer's are quick and cheap (a jab, a cross, a hook to the body): a fight is won by
+// answering, not trading. The brawler's are slow, heavy and readable, and each tells its timing in
+// its silhouette: a one-two; a haymaker raised high and held there (the genre's delayed blow: a
+// dodge on the lift is too early); a lunge from far off; a sweep low and wide.
+
+use engine::clip::{HOLD, SMOOTH, SNAP}
+use engine::combat::Move
+use pose::Beat
+use poses::{
+    COIL, CROSS, CROSS_LOAD, GUARD, HAY_COCKED, HAY_DOWN, HAY_LIFT, HOOK, HOOK_LOAD, JAB, JAB_LOAD,
+    LUNGE, LUNGE_LOAD, OVERHEAD, SWEEP, SWEEP_WIND, UPPERCUT,
+}
+
+/// The wanderer's moves, by number: the jab, the cross, the hook.
+pub const JAB_N: u32 = 0
+pub const CROSS_N: u32 = 1
+pub const HOOK_N: u32 = 2
+
+pub const WANDERER_MOVES: [Move; 3] = [
+    Move {
+        windup: 8,
+        active: 4,
+        recovery: 18,
+        reach: 1.55,
+        arc: 0.45,
+        damage: 7.0,
+        posture: 9.0,
+        stamina: 11.0,
+        lunge: 0.3,
+        track: 8.0,
+        cancel: 8,
+    },
+    Move {
+        windup: 10,
+        active: 4,
+        recovery: 22,
+        reach: 1.6,
+        arc: 0.45,
+        damage: 10.0,
+        posture: 13.0,
+        stamina: 14.0,
+        lunge: 0.4,
+        track: 6.0,
+        cancel: 9,
+    },
+    Move {
+        windup: 20,
+        active: 5,
+        recovery: 28,
+        reach: 1.5,
+        arc: 0.9,
+        damage: 16.0,
+        posture: 28.0,
+        stamina: 24.0,
+        lunge: 0.45,
+        track: 4.0,
+        cancel: 12,
+    },
+]
+
+/// The brawler's moves, by number: the one-two's jab and cross, the haymaker, the lunge, the
+/// sweep.
+pub const ONE_N: u32 = 0
+pub const TWO_N: u32 = 1
+pub const HAYMAKER_N: u32 = 2
+pub const LUNGE_N: u32 = 3
+pub const SWEEP_N: u32 = 4
+
+pub const BRAWLER_MOVES: [Move; 5] = [
+    Move {
+        windup: 22,
+        active: 4,
+        recovery: 12,
+        reach: 1.85,
+        arc: 0.5,
+        damage: 12.0,
+        posture: 0.0,
+        stamina: 0.0,
+        lunge: 0.4,
+        track: 5.0,
+        cancel: 0,
+        stagger: 16,
+    },
+    Move {
+        windup: 18,
+        active: 5,
+        recovery: 34,
+        reach: 1.95,
+        arc: 0.5,
+        damage: 16.0,
+        posture: 0.0,
+        stamina: 0.0,
+        lunge: 0.5,
+        track: 4.0,
+        stagger: 22,
+    },
+    Move {
+        windup: 62,
+        active: 6,
+        recovery: 44,
+        reach: 2.1,
+        arc: 0.65,
+        damage: 32.0,
+        posture: 0.0,
+        stamina: 0.0,
+        lunge: 1.1,
+        track: 2.6,
+        stagger: 40,
+    },
+    Move {
+        windup: 26,
+        active: 8,
+        recovery: 36,
+        reach: 1.7,
+        arc: 0.45,
+        damage: 22.0,
+        posture: 0.0,
+        stamina: 0.0,
+        lunge: 3.2,
+        track: 4.5,
+        stagger: 28,
+    },
+    Move {
+        windup: 22,
+        active: 9,
+        recovery: 38,
+        reach: 2.15,
+        arc: 1.4,
+        damage: 18.0,
+        posture: 0.0,
+        stamina: 0.0,
+        lunge: 0.3,
+        track: 3.0,
+        stagger: 32,
+    },
+]
+
+/// The riposte's ticks: the coil reached, held dead still until the snap, the fist's contact
+/// (the hit-stop begins), the follow-through's height, and the end, back on guard.
+pub const COILED: u32 = 22
+pub const STILL: u32 = 34
+pub const CONTACT: u32 = 40
+pub const OVER: u32 = 50
+pub const RIPOSTE: u32 = 120
+
+/// A beat `ticks` in (at 60 a second).
+fn at(ticks: f32, pose: pose::Pose, ease: u32) -> Beat {
+    Beat { at: ticks / 60.0, pose, ease }
+}
+
+/// The wanderer's move `n`'s beats.
+pub fn wanderer_beats(n: u32) -> Vec<Beat> {
+    if n == JAB_N {
+        return Vec::from(
+            [
+                at(0.0, GUARD, SNAP),
+                at(3.0, JAB_LOAD, SNAP),
+                at(8.0, JAB, HOLD),
+                at(13.0, JAB, SMOOTH),
+                at(30.0, GUARD, SMOOTH),
+            ],
+        )
+    }
+    if n == CROSS_N {
+        return Vec::from(
+            [
+                at(0.0, GUARD, SNAP),
+                at(4.0, CROSS_LOAD, SNAP),
+                at(10.0, CROSS, HOLD),
+                at(15.0, CROSS, SMOOTH),
+                at(36.0, GUARD, SMOOTH),
+            ],
+        )
+    }
+    Vec::from(
+        [
+            at(0.0, GUARD, SMOOTH),
+            at(13.0, HOOK_LOAD, HOLD),
+            at(15.0, HOOK_LOAD, SNAP),
+            at(20.0, HOOK, HOLD),
+            at(26.0, HOOK, SMOOTH),
+            at(53.0, GUARD, SMOOTH),
+        ],
+    )
+}
+
+/// The brawler's move `n`'s beats.
+pub fn brawler_beats(n: u32) -> Vec<Beat> {
+    if n == ONE_N {
+        return Vec::from(
+            [
+                at(0.0, GUARD, SMOOTH),
+                at(14.0, JAB_LOAD, SNAP),
+                at(22.0, JAB, HOLD),
+                at(27.0, JAB, SMOOTH),
+                at(38.0, CROSS_LOAD, SMOOTH),
+            ],
+        )
+    }
+    if n == TWO_N {
+        return Vec::from(
+            [
+                at(0.0, CROSS_LOAD, HOLD),
+                at(10.0, CROSS_LOAD, SNAP),
+                at(18.0, CROSS, HOLD),
+                at(25.0, CROSS, SMOOTH),
+                at(57.0, GUARD, SMOOTH),
+            ],
+        )
+    }
+    if n == HAYMAKER_N {
+        return Vec::from(
+            [
+                at(0.0, GUARD, SMOOTH),
+                at(16.0, HAY_LIFT, SMOOTH),
+                at(55.0, HAY_COCKED, HOLD),
+                at(57.0, HAY_COCKED, SNAP),
+                at(62.0, HAY_DOWN, HOLD),
+                at(80.0, HAY_DOWN, SMOOTH),
+                at(112.0, GUARD, SMOOTH),
+            ],
+        )
+    }
+    if n == LUNGE_N {
+        return Vec::from(
+            [
+                at(0.0, GUARD, SMOOTH),
+                at(16.0, LUNGE_LOAD, HOLD),
+                at(21.0, LUNGE_LOAD, SNAP),
+                at(28.0, LUNGE, HOLD),
+                at(40.0, LUNGE, SMOOTH),
+                at(70.0, GUARD, SMOOTH),
+            ],
+        )
+    }
+    Vec::from(
+        [
+            at(0.0, GUARD, SMOOTH),
+            at(18.0, SWEEP_WIND, SNAP),
+            at(26.0, SWEEP, HOLD),
+            at(32.0, SWEEP, SMOOTH),
+            at(69.0, GUARD, SMOOTH),
+        ],
+    )
+}
+
+/// The riposte's beats: down into the coil slowly, dead still, the snap up into the blow, on up
+/// into the follow-through, held high, back on guard.
+pub fn riposte_beats() -> Vec<Beat> {
+    Vec::from(
+        [
+            at(0.0, GUARD, SMOOTH),
+            at(f32(COILED), COIL, HOLD),
+            at(f32(STILL), COIL, SNAP),
+            at(f32(CONTACT), UPPERCUT, SNAP),
+            at(f32(OVER), OVERHEAD, HOLD),
+            at(90.0, OVERHEAD, SMOOTH),
+            at(f32(RIPOSTE), GUARD, SMOOTH),
+        ],
+    )
+}

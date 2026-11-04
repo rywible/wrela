@@ -1,0 +1,184 @@
+// What each fighter looks like this frame, from the sim's numbers (`duel::World`): its pose (a
+// move's beats down the body's chain, a dodge's crouch leaning the way it goes, a stagger, a
+// broken posture swaying, the riposte; the brawler taken, flung, down and getting up) and where
+// its body stands in the world (on the ground, or tumbling through the air, or laid on its back).
+// None of it feeds back: the sim decided every blow before any of this is drawn.
+
+use body::BRAWLER
+use duel::{LIES, NEVER, RISES, World}
+use engine::combat::{Act, Fighter, HZ}
+use engine::clip::{HOLD, SMOOTH, SNAP}
+use moves::{CONTACT, brawler_beats, riposte_beats, wanderer_beats}
+use pose::{Beat, Pose, chained, mixed, sampled}
+use poses::{BROKEN, DODGE, DOWN, FLUNG, GUARD, KNEEL, STRUCK, TAKEN}
+use std::quat::Quat
+use std::transform::{rotate_y, translate}
+
+/// How far behind the hips each link of the body's chain arrives (s): about a tick.
+pub const LAG: f32 = 0.014
+
+/// How fast the flung brawler tumbles (radians a second, about its own left-right axis).
+pub const TUMBLE: f32 = -7.0
+
+/// Every move's beats, made once.
+pub struct Clips: Clone {
+    pub wanderer: Vec<Vec<Beat>>,
+    pub brawler: Vec<Vec<Beat>>,
+    pub riposte: Vec<Beat>,
+    pub dodge: Vec<Beat>,
+}
+
+fn at(ticks: f32, pose: Pose, ease: u32) -> Beat {
+    Beat { at: ticks / 60.0, pose, ease }
+}
+
+pub fn clips() -> Clips {
+    var w: Vec<Vec<Beat>> = Vec::new()
+    for n in 0..3 {
+        w.push(wanderer_beats(n))
+    }
+    var b: Vec<Vec<Beat>> = Vec::new()
+    for n in 0..5 {
+        b.push(brawler_beats(n))
+    }
+    Clips {
+        wanderer: w,
+        brawler: b,
+        riposte: riposte_beats(),
+        dodge: Vec::from(
+            [
+                at(0.0, GUARD, SNAP),
+                at(4.0, DODGE, HOLD),
+                at(19.0, DODGE, SMOOTH),
+                at(32.0, GUARD, SMOOTH),
+            ],
+        ),
+    }
+}
+
+/// Where a body is put and how it lies: its root on the ground (or in the air), its heading, and
+/// how far it's turned over (radians about its own left-right axis: 0 upright, -π/2 on its back),
+/// about a pivot this high (m).
+pub struct Placing: Copy {
+    pub at: vec3,
+    pub heading: f32,
+    pub over: f32 = 0.0,
+    pub pivot: f32 = 0.0,
+}
+
+/// A placing as the matrix its skeleton is posed under.
+pub fn placing_matrix(p: Placing) -> mat4 {
+    let up = vec3(0.0, p.pivot, 0.0)
+    let r = Quat::axis_angle(vec3(1.0, 0.0, 0.0), p.over).to_mat3()
+    let over = mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(0.0, 0.0, 0.0, 1.0))
+    translate(p.at + up) * rotate_y(p.heading) * over * translate(-up)
+}
+
+/// A move's time (s) from its tick count.
+fn secs(t: u32) -> f32 {
+    f32(t) / HZ
+}
+
+/// A fighter's pose when it's doing what the rules run (ready, a move, a dodge, staggered,
+/// broken), its moves' beats `moves`.
+fn fighting(f: Fighter, moves: [Vec<Beat>], c: Clips, time: f32) -> Pose {
+    let t = secs(f.t)
+    match f.act {
+        Act::Attack => chained(moves[f.move], t, LAG),
+        Act::Dodge => {
+            var p = sampled(c.dodge, t)
+            // Leaning the way it goes, in its own frame.
+            let s = sin(f.heading)
+            let k = cos(f.heading)
+            let local = vec2(f.way.x * k - f.way.y * s, f.way.x * s + f.way.y * k)
+            let w = 1.0 - smoothstep(0.2, 0.5, t)
+            p.hips = p.hips + vec3(0.35 * local.y, 0.0, -0.4 * local.x) * w
+            p.chest = p.chest + vec3(0.2 * local.y, 0.0, -0.25 * local.x) * w
+            p
+        },
+        Act::Staggered => {
+            let length = secs(f.move)
+            let beats = [
+                Beat { at: 0.0, pose: GUARD, ease: SNAP },
+                Beat { at: 0.05, pose: STRUCK, ease: HOLD },
+                Beat { at: 0.05 + length * 0.3, pose: STRUCK, ease: SMOOTH },
+                Beat { at: length, pose: GUARD, ease: SMOOTH },
+            ]
+            sampled(beats, t)
+        },
+        Act::Broken => {
+            let beats = [
+                Beat { at: 0.0, pose: STRUCK, ease: SNAP },
+                Beat { at: 0.25, pose: BROKEN, ease: SMOOTH },
+            ]
+            var p = sampled(beats, t)
+            // Swaying where it stands, dazed.
+            let sway = sin(time * 2.3) * 0.12
+            p.hips = p.hips + vec3(0.0, sway * 0.5, sway)
+            p.head = p.head + vec3(0.1 * sin(time * 1.7), sway * 2.0, 0.0)
+            p
+        },
+        _ => GUARD,
+    }
+}
+
+/// The wanderer this frame: its pose and placing.
+pub fn wanderer(w: World, c: Clips, ground: f32, time: f32) -> (Pose, Placing) {
+    let f = w.you
+    let place = Placing { at: vec3(f.pos.x, ground, f.pos.y), heading: f.heading }
+    match f.act {
+        Act::Riposte => (chained(c.riposte, secs(f.t), LAG), place),
+        Act::Dead => (DOWN, Placing { over: -1.5707964, pivot: 0.12, ..place }),
+        _ => (fighting(f, c.wanderer, c, time), place),
+    }
+}
+
+/// The brawler this frame: fighting; or taken by the riposte (broken until the blow lands,
+/// snapped back until the launch, flung and tumbling, laid out where it landed, getting up).
+pub fn brawler(w: World, c: Clips, ground: f32, time: f32) -> (Pose, Placing) {
+    let f = w.foe
+    let tall = BRAWLER.tall
+    let place = Placing { at: vec3(f.pos.x, ground, f.pos.y), heading: f.heading }
+    let lying = Placing { over: -1.5707964, pivot: 0.13 * tall, ..place }
+    if f.act == Act::Dead {
+        return (DOWN, lying)
+    }
+    if f.act != Act::Taken {
+        return (fighting(f, c.brawler, c, time), place)
+    }
+    if w.launch == NEVER {
+        // The riposte's coil, then the blow.
+        let hit = w.you.act == Act::Riposte && w.you.t >= CONTACT
+        return (if hit { TAKEN } else {
+            fighting(Fighter { act: Act::Broken, ..f }, c.brawler, c, time)
+        }, place)
+    }
+    if w.landed == NEVER {
+        let t = f32(w.tick - w.launch) / HZ
+        let p = mixed(TAKEN, FLUNG, smoothstep(0.0, 0.15, t))
+        return (
+            p,
+            Placing {
+                at: vec3(f.pos.x, ground + w.air, f.pos.y),
+                heading: f.heading,
+                over: TUMBLE * t,
+                pivot: 1.0 * tall,
+            },
+        )
+    }
+    let since = f32(w.tick - w.landed) / HZ
+    let lie = f32(LIES) / HZ
+    let rise = f32(RISES) / HZ
+    if since < lie {
+        // Slammed down, a bounce, then still.
+        let bounce = 0.25 * max(0.0, sin(since * 9.0)) * exp(-since * 5.0)
+        return (DOWN, Placing { at: lying.at + vec3(0.0, bounce, 0.0), ..lying })
+    }
+    // Getting up: turned upright over the first half, through the kneel to the guard.
+    let u = clamp((since - lie) / rise, 0.0, 1.0)
+    let p = if u < 0.5 { mixed(DOWN, KNEEL, smoothstep(0.0, 0.5, u)) } else {
+        mixed(KNEEL, GUARD, smoothstep(0.5, 1.0, u))
+    }
+    let over = -1.5707964 * (1.0 - smoothstep(0.0, 0.5, u))
+    (p, Placing { over, pivot: 0.13 * tall, ..place })
+}
