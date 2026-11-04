@@ -5334,3 +5334,47 @@ The memory's shares: A's sky 64 bytes (B's 78.4 MB: the clouds' noise volumes an
 - **To measure on the M4:** these builds' GPU spans in Chrome and natively (`wrela tool bench --
   --scene ink-yard`, and `--look styles::physical::Physical --set SWITCHES=Realistic`), against
   the 12 ms frame; this machine can't run Chrome's WebGPU at all.
+
+## 2026-11-04: the duel, Kinetic Ink against the physical look, on a CPU's Vulkan (toolchain 0.18.0)
+
+What the first playable fight (lookdev/ink-duel: two fighters of 25 parts each on 21 bones, a
+ring of stones, the bars drawn over the frame) costs in Kinetic Ink with its switches (A) against
+the physical look on the approved switches (B), with the test bot playing (`--set AUTO=true`) so
+both run a fight.
+
+**The machine and its caveat:** the same as "Kinetic Ink, the same scene three ways": lavapipe
+on a GPU-less VM, **ratios indicative, milliseconds no GPU's**; pipelines, shader bytes, memory
+and the playable frame are the program's own.
+
+**The method:** `wrela build lookdev/ink-duel -o build/duel-<A|B> --set AUTO=true [--set
+LOOK=styles::physical::Physical --set SWITCHES=Realistic]`, then `wrela-host build/duel-<k>
+--frames 400 --fps 60 --size 960x540 --timestamps --serial`, one at a time. The duel's sim waits
+for the frame's arrival (`Frame::ready.arriving`), so each build's fight begins when it's seen:
+frames 200–399 are both fights' opening exchanges, but not the same ticks of them (B arrives
+later). A pass's cost is its GPU time summed over those 200 frames over 200.
+
+| | A: Kinetic Ink, its switches | B: physical, approved |
+|---|---|---|
+| Pipelines | **54** | 75 |
+| WGSL (`pipeline_*.wgsl`) | **1,285 KiB** | 1,817 KiB |
+| WASM (`game.wasm`) | 2,503 KiB | 2,805 KiB |
+| Playable at frame (cold, native) | **17** | 105 |
+| GPU memory held | **140.9 MB** | 229.5 MB |
+| GPU span, mean of frames 200–399 | **131.4 ms** | 235.1 ms |
+| GPU span, against B's | **0.56** | 1.00 |
+
+Each pass's mean ms a frame: terrain 36.9 (B 68.9), clouds 0 (47.0), temporal 22.5 (23.1), bloom
+0 (18.0), look 9.7 (15.5), lines 13.2 (6.7), marks 11.4 (0), ambient occlusion 6.5 (10.6),
+creature 7.2 (11.4), vegetation (the stones) 5.8 (8.0), shape 1.8 (0), reflections 0 (3.5),
+probes 0 (2.7), the rest (motion, moving shadow, sky, particles, cull, cooks) 11.7 (11.9); sums
+126.6 and 227.3.
+
+- **The fight keeps the look's saving:** 0.56 of B's frame, 28 % fewer pipelines, 39 % less
+  memory, playable at frame 17. The yard's uppercut, measured from its blow on, was 0.68: the
+  duel's camera sits over the ground more of the time, where the switches take out most.
+- **The two new bodies cost little over the yard's mannequins:** the creature pass 7.2 ms here
+  (the yard's two mannequins 8.7 in its blow), 54 pipelines against the yard's 53 (the bars' one).
+- **The sim and the server's copy cost nothing a frame can see:** a tick of the duel and its
+  check are CPU work of microseconds, not on the GPU.
+- **To measure on the M4:** `wrela tool bench -- --scene ink-duel`, and with `--look
+  styles::physical::Physical --set SWITCHES=Realistic`, against the 12 ms frame.
