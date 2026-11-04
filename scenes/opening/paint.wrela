@@ -176,7 +176,7 @@ fn lit_solid(
     }
     // The air between, eased: the isle keeps its colour and its form across the 3 km of it.
     let raw = world(h.light, lit, p, s.eye) + glow
-    mix(raw, hazed(aerial, smp, h.light, raw, p, s.eye), 0.45)
+    mix(raw, hazed(aerial, smp, h.light, raw, p, s.eye), 0.1)
 }
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
@@ -247,6 +247,110 @@ fn sea_shade(
     let line = 0.5 - foam
     let hazy = hazed(aerial, smp, h.light, c, p, s.eye)
     (hazy, line, detail * 0.6 + foam, n, cut)
+}
+
+/// The falls: water spilling off the plateau's lip, `FALLS` (the world's x, z, the lip's height
+/// and how wide it leaves it), thinning as it drops into a mist it never lands from.
+const FALLS = [
+    vec4(-505.0, 1702.0, 563.0, 11.0),
+    vec4(-640.0, 1722.0, 563.0, 8.0),
+    vec4(-380.0, 1718.0, 563.0, 7.0),
+]
+
+/// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).
+fn falls(
+    s: Shot,
+    h: Heaven,
+    aerial: Texture3d<Rgba16Float>,
+    smp: Sampler,
+    o: vec3,
+    d: vec3,
+    hit: f32,
+) -> vec4 {
+    var acc = vec4(0.0)
+    let dd = vec2(d.x, d.z)
+    let len2 = max(dot(dd, dd), 1.0e-6)
+    for i in 0..3 {
+        let f = FALLS[i]
+        let rel = vec2(o.x, o.z) - vec2(f.x, f.y)
+        let tc = -dot(rel, dd) / len2
+        if tc > 0.0 && tc < hit {
+            let p = o + d * tc
+            let drop = f.z - p.y
+            let across = length(vec2(p.x, p.z) - vec2(f.x, f.y))
+            let w = f.w * 0.7 + drop * 0.03
+            let side = dot(vec2(p.x, p.z) - vec2(f.x, f.y), normalize(vec2(-dd.y, dd.x)))
+            let streak = smoothstep(
+                0.35,
+                0.75,
+                noise(vec2(side * 0.6 + f32(i) * 7.0, drop * 0.02 - s.held * 0.9)),
+            )
+            let body = exp(-(across * across) / (w * w)) *
+                smoothstep(0.0, 6.0, drop) *
+                smoothstep(260.0, 60.0, drop)
+            let mist = exp(-(across * across) / (w * w * 9.0)) *
+                smoothstep(40.0, 180.0, drop) *
+                smoothstep(420.0, 200.0, drop) *
+                0.35
+            let a = clamp(
+                body * streak +
+                    mist * (0.6 + 0.4 * noise(vec2(side * 0.05, drop * 0.01 - s.held * 0.2))),
+                0.0,
+                0.9,
+            ) *
+                (1.0 - acc.a)
+            let lit = h.light.sun_colour * vec3(1.0, 0.86, 0.7) * 0.03 + vec3(0.16, 0.15, 0.16)
+            let col = mix(lit, hazed(aerial, smp, h.light, lit, p, s.eye), 0.5)
+            acc += vec4(col * a, a)
+        }
+    }
+    acc
+}
+
+/// A flock: gulls round the rock and nearer, each a dark V beating its wings. `BIRDS` (where,
+/// the world's; and how far each drifts).
+const BIRDS = [
+    vec4(-24.0, 21.0, 95.0, 1.0),
+    vec4(-20.0, 23.5, 99.0, 2.0),
+    vec4(-28.0, 19.5, 104.0, 3.0),
+    vec4(-390.0, 560.0, 1600.0, 4.0),
+    vec4(-420.0, 590.0, 1640.0, 5.0),
+    vec4(-350.0, 530.0, 1580.0, 6.0),
+    vec4(-300.0, 610.0, 1560.0, 7.0),
+    vec4(14.0, 12.0, 60.0, 8.0),
+]
+
+/// How much of a gull covers this pixel `px` (0 to 1), and how far it is.
+fn birds(s: Shot, px: vec2) -> vec2 {
+    let uv = (px * 2.0 - s.resolution) / s.resolution.y
+    var cover = 0.0
+    var far = 1.0e9
+    for i in 0..8 {
+        let b = BIRDS[i]
+        let at = vec3(b.x, b.y, b.z) +
+            vec3(
+                sin(s.held * 0.3 + b.w) * 6.0 + s.held * 4.0,
+                sin(s.held * 0.7 + b.w * 2.0) * 1.5,
+                cos(s.held * 0.25 + b.w) * 5.0,
+            )
+        let v = at - s.eye
+        let along = dot(v, s.forward)
+        if along > 1.0 {
+            let pb = vec2(dot(v, s.right), -dot(v, s.up)) * s.focal / along
+            let scale = s.resolution.y * 0.5 * s.focal / along
+            let q = (uv - pb) * s.resolution.y * 0.5 / max(scale, 1.0e-3)
+            let flap = sin(s.held * 7.0 + b.w * 1.7) * 0.35
+            let x = abs(q.x)
+            let wing = q.y + (x * (0.45 + flap) - x * x * 0.35)
+            let dist = abs(wing) * scale
+            let on = smoothstep(0.9, 0.3, dist) * step(x, 0.8) * smoothstep(0.0, 0.05, x + 0.02)
+            if on > cover {
+                cover = on
+                far = length(v)
+            }
+        }
+    }
+    vec2(cover, far)
 }
 
 @fragment
@@ -341,17 +445,25 @@ pub fn paint(
     } else {
         n = isle_normal(p, max(0.3, t * 0.0007))
         let (albedo, rough, metal, glow, l) = isle_material(p, n, id)
-        let sun = isle_shadow(p + n * 2.0, light.sun, 2.0) * cloud_shadow(clouds, cloud, smp, p)
+        let sun = isle_shadow(p + n * 2.0, light.sun, 2.0) *
+            mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
         let ao = isle_ao(p, n)
         c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, rough, metal, glow, sun, ao)
         line = l
-        weight = if id == ROCK { 0.22 } else { 0.28 }
+        weight = if id == ROCK { 0.55 } else { 0.5 }
+    }
+    // The falls, in front of what the ray met; the gulls in front of all.
+    let fall = falls(s, h, aerial, smp, o, d, t)
+    c = c * (1.0 - fall.a) + fall.rgb
+    let gull = birds(s, pixel.position.xy)
+    if gull.y < t {
+        c = mix(c, c * 0.12 + vec3(0.01), gull.x)
     }
     // The cathedral's shine: a warm light held in the air round it, far off, over all but the
     // skiff.
     if id != SKIFF && t > 400.0 {
         let k = max(dot(d, s.glow), 0.0)
-        let over = if id == SKY || id == SEA { 1.0 } else { 0.15 }
+        let over = if id == SKY || id == SEA { 1.0 } else { 0.0 }
         c += light.sun_colour *
             vec3(1.0, 0.78, 0.45) *
             (0.1 * pow(k, 60.0) + 0.3 * pow(k, 500.0)) *
