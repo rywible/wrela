@@ -1,0 +1,293 @@
+// A body's physics, on top of its animation (presentation alone: the sim's rules never read it):
+// a particle at each joint, pulled toward where the animation puts it, held together by its bones'
+// lengths and a few braces across the torso, falling under gravity, stopped by the ground and by
+// the other fighter's body (its capsules, fitted to its field). A blow is an impulse at the joints
+// it lands on, and the pull slackens a moment, so the body reels from it and the animation pulls
+// it back; with no pull at all it's a ragdoll (a landing, a knock-out). What the particles do goes
+// back to the drawing as each bone turned from where the animation had it to where its particles
+// are (`settled`), so the animation's own twists and the meshes stay as they were.
+//
+// Position-based dynamics as Jakobsen's "Advanced Character Physics" (GDC 2001) has it: Verlet
+// integration and constraints relaxed in turn, each projected directly on the positions. The
+// joints' masses are their segments' shares of the body's (Winter, "Biomechanics and Motor Control
+// of Human Movement", 4th ed. 2009, table 4.1), so a blow to the head moves the head and not the
+// hips.
+
+use arena::Mounds
+use body::Bones
+use engine::terrain::Terrain
+use engine::creature::{MAX_BONES, Skeleton}
+use engine::gait::turn
+use engine::physique::Capsule
+use std::transform::translate
+
+/// The particles: each bone's joint, by bone index (the skeleton's 21), then the top of the head
+/// and each fist's middle.
+pub const N: u32 = 24
+pub const HEAD_TOP: u32 = 21
+pub const FIST_R: u32 = 22
+pub const FIST_L: u32 = 23
+
+/// The pull toward the animation: how much of the way each step goes at full strength (a body
+/// standing on its own); how fast a slackened pull comes back (a second); and the gravity.
+pub const PULL: f32 = 0.35
+pub const RECOVER: f32 = 2.6
+pub const GRAVITY: f32 = -9.8
+
+/// A link between two particles and its rest length.
+struct Link: Copy {
+    a: u32,
+    b: u32,
+    len: f32,
+}
+
+/// A body's particles: where each is and was, its mass, its links; how strong the pull toward the
+/// animation is (0 to 1: 1 its own, 0 a ragdoll) and how strong it's going back to; and whether
+/// it's begun (its first frame puts the particles where the animation does).
+pub struct Body: Clone {
+    pub at: [vec3; N],
+    pub was: [vec3; N],
+    mass: [f32; N],
+    links: Vec<Link>,
+    pub strength: f32,
+    pub aim: f32,
+    begun: bool,
+}
+
+/// A skeleton's joint `i`'s child, the one its bone points to (none: itself).
+fn child_of(s: Skeleton, k: Bones, i: u32) -> u32 {
+    if i == k.pelvis.index { return k.spine.index }
+    if i == k.spine.index { return k.chest.index }
+    if i == k.chest.index { return k.neck.index }
+    if i == k.neck.index { return k.head.index }
+    if i == k.head.index { return HEAD_TOP }
+    if i == k.clav_r.index { return k.shoulder_r.index }
+    if i == k.shoulder_r.index { return k.elbow_r.index }
+    if i == k.elbow_r.index { return k.wrist_r.index }
+    if i == k.wrist_r.index { return FIST_R }
+    if i == k.clav_l.index { return k.shoulder_l.index }
+    if i == k.shoulder_l.index { return k.elbow_l.index }
+    if i == k.elbow_l.index { return k.wrist_l.index }
+    if i == k.wrist_l.index { return FIST_L }
+    if i == k.hip_r.index { return k.knee_r.index }
+    if i == k.knee_r.index { return k.ankle_r.index }
+    if i == k.ankle_r.index { return k.toe_r.index }
+    if i == k.hip_l.index { return k.knee_l.index }
+    if i == k.knee_l.index { return k.ankle_l.index }
+    if i == k.ankle_l.index { return k.toe_l.index }
+    let _ = s
+    i
+}
+
+/// Where each particle is at rest (the skeleton's joints, and the head's top and the fists ten
+/// and six centimetres past theirs, for a body `tall` times 1.8 m).
+fn rest_points(s: Skeleton, k: Bones, tall: f32) -> [vec3; N] {
+    var p = [vec3(0.0); N]
+    for i in 0..s.len() {
+        p[i] = s.rest(engine::creature::Bone { index: i })
+    }
+    p[HEAD_TOP] = s.rest(k.head) + vec3(0.0, 0.22, 0.0) * tall
+    p[FIST_R] = s.rest(k.wrist_r) + vec3(0.06, 0.0, 0.0) * tall
+    p[FIST_L] = s.rest(k.wrist_l) + vec3(-0.06, 0.0, 0.0) * tall
+    p
+}
+
+/// A body for skeleton `s` (its bones `k`), built `tall`.
+pub fn body(s: Skeleton, k: Bones, tall: f32) -> Body {
+    let rest = rest_points(s, k, tall)
+    var pairs: Vec<(u32, u32)> = Vec::new()
+    // Each bone from its joint to its child's.
+    for i in 0..s.len() {
+        let c = child_of(s, k, i)
+        if c != i {
+            pairs.push((i, c))
+        }
+    }
+    // The bones' parents: a clavicle and a hip hang from the chest and the pelvis.
+    pairs.push((k.chest.index, k.clav_r.index))
+    pairs.push((k.chest.index, k.clav_l.index))
+    pairs.push((k.pelvis.index, k.hip_r.index))
+    pairs.push((k.pelvis.index, k.hip_l.index))
+    // Braces: the torso a box that bends at the waist, not a chain that folds.
+    pairs.push((k.shoulder_r.index, k.shoulder_l.index))
+    pairs.push((k.hip_r.index, k.hip_l.index))
+    pairs.push((k.shoulder_r.index, k.hip_l.index))
+    pairs.push((k.shoulder_l.index, k.hip_r.index))
+    pairs.push((k.shoulder_r.index, k.hip_r.index))
+    pairs.push((k.shoulder_l.index, k.hip_l.index))
+    pairs.push((k.neck.index, k.shoulder_r.index))
+    pairs.push((k.neck.index, k.shoulder_l.index))
+    pairs.push((k.head.index, k.chest.index))
+    pairs.push((k.toe_r.index, k.knee_r.index))
+    pairs.push((k.toe_l.index, k.knee_l.index))
+    var links: Vec<Link> = Vec::new()
+    for (a, b) in pairs {
+        links.push(Link { a, b, len: length(rest[a] - rest[b]) })
+    }
+    // Masses: Winter's segment shares, each segment's at its joint.
+    var mass = [1.0; N]
+    mass[k.pelvis.index] = 14.2
+    mass[k.spine.index] = 13.9
+    mass[k.chest.index] = 21.6
+    mass[k.neck.index] = 2.0
+    mass[k.head.index] = 6.1
+    mass[HEAD_TOP] = 0.5
+    for (sh, el, wr, fi) in [
+        (k.shoulder_r.index, k.elbow_r.index, k.wrist_r.index, FIST_R),
+        (k.shoulder_l.index, k.elbow_l.index, k.wrist_l.index, FIST_L),
+    ] {
+        mass[sh] = 2.8
+        mass[el] = 1.6
+        mass[wr] = 0.6
+        mass[fi] = 0.3
+    }
+    for (hi, kn, an, to) in [
+        (k.hip_r.index, k.knee_r.index, k.ankle_r.index, k.toe_r.index),
+        (k.hip_l.index, k.knee_l.index, k.ankle_l.index, k.toe_l.index),
+    ] {
+        mass[hi] = 10.0
+        mass[kn] = 4.65
+        mass[an] = 1.45
+        mass[to] = 0.4
+    }
+    Body { at: rest, was: rest, mass, links, strength: 1.0, aim: 1.0, begun: false }
+}
+
+/// Where each particle is in palette `bones` (a posed skeleton `s`, its bones `k`): its joint
+/// where the palette puts it (a joint's rest point, through its own bone's matrix).
+pub fn points(bones: [mat4; MAX_BONES], s: Skeleton, k: Bones, tall: f32) -> [vec3; N] {
+    let rest = rest_points(s, k, tall)
+    var p = [vec3(0.0); N]
+    for i in 0..s.len() {
+        p[i] = (bones[i] * vec4(rest[i], 1.0)).xyz
+    }
+    p[HEAD_TOP] = (bones[k.head.index] * vec4(rest[HEAD_TOP], 1.0)).xyz
+    p[FIST_R] = (bones[k.wrist_r.index] * vec4(rest[FIST_R], 1.0)).xyz
+    p[FIST_L] = (bones[k.wrist_l.index] * vec4(rest[FIST_L], 1.0)).xyz
+    p
+}
+
+/// Particle `p` pushed out of capsules `caps` posed by `other` (`r` its own radius).
+fn kept_out(p: vec3, caps: [Capsule], other: [mat4; MAX_BONES], r: f32) -> vec3 {
+    var q = p
+    for c in caps {
+        let a = (other[c.bone.index] * vec4(c.a, 1.0)).xyz
+        let b = (other[c.bone.index] * vec4(c.b, 1.0)).xyz
+        let ab = b - a
+        let u = clamp(dot(q - a, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
+        let near = a + ab * u
+        let d = q - near
+        let n = length(d)
+        let reach = c.radius + r
+        if n < reach && n > 1.0e-5 {
+            q = near + d / n * reach
+        }
+    }
+    q
+}
+
+/// A step of `dt` of body `b` toward the animation's points `target`: its pull's strength coming
+/// back toward its aim, Verlet integration (gravity in proportion to its slack), the pull, the
+/// links, the ground (`floor`) and the other body (`caps` posed by
+/// `other`).
+pub fn step(
+    b: mut Body,
+    target: [vec3; N],
+    dt: f32,
+    floor: Mounds,
+    caps: [Capsule],
+    other: [mat4; MAX_BONES],
+) {
+    if !b.begun {
+        b.at = target
+        b.was = target
+        b.begun = true
+        return
+    }
+    b.strength = b.strength + (b.aim - b.strength) * min(dt * RECOVER, 1.0)
+    let subs: u32 = 3
+    let h = dt / f32(subs)
+    let slack = 1.0 - b.strength
+    for _ in 0..subs {
+        for i in 0..N {
+            let v = (b.at[i] - b.was[i]) * 0.985
+            b.was[i] = b.at[i]
+            b.at[i] = b.at[i] + v + vec3(0.0, GRAVITY * h * h * slack, 0.0)
+        }
+        // The pull toward the animation: stiff while strong, none in a ragdoll.
+        let pull = PULL * b.strength * b.strength
+        for i in 0..N {
+            b.at[i] = mix(b.at[i], target[i], vec3(pull))
+        }
+        for _ in 0..3 {
+            for l in b.links {
+                let d = b.at[l.b] - b.at[l.a]
+                let n = max(length(d), 1.0e-6)
+                let wa = 1.0 / b.mass[l.a]
+                let wb = 1.0 / b.mass[l.b]
+                let fix = d * ((n - l.len) / n / (wa + wb))
+                b.at[l.a] = b.at[l.a] + fix * wa
+                b.at[l.b] = b.at[l.b] - fix * wb
+            }
+            for i in 0..N {
+                // The ground, with friction: a point on it slides little.
+                let g = floor.height(b.at[i].x, b.at[i].z) + 0.04
+                if b.at[i].y < g {
+                    b.at[i].y = g
+                    b.was[i] = mix(b.was[i], b.at[i], vec3(0.6, 0.0, 0.6))
+                }
+                b.at[i] = kept_out(b.at[i], caps, other, 0.04)
+            }
+        }
+    }
+}
+
+/// A blow on body `b` at `at` (world), moving the particles near it by `dv` (m/s; nearer the more)
+/// and slackening its pull to `slack` (0 to 1) a moment.
+pub fn struck(b: mut Body, at: vec3, dv: vec3, slack: f32, dt: f32) {
+    for i in 0..N {
+        let w = exp(-length(b.at[i] - at) * 4.0)
+        // A Verlet particle's velocity is its step; moving where it was moves it.
+        b.was[i] = b.was[i] - dv * (w * dt)
+    }
+    b.strength = min(b.strength, 1.0 - slack)
+}
+
+/// Palette `anim` (the animation's) with each bone turned and moved from where the animation put
+/// it to where its particles are: the bone's joint at its particle, and its length along its
+/// particle's line to its child's.
+pub fn settled(
+    anim: [mat4; MAX_BONES],
+    b: Body,
+    target: [vec3; N],
+    s: Skeleton,
+    k: Bones,
+) -> [mat4; MAX_BONES] {
+    var out = anim
+    for i in 0..s.len() {
+        let c = child_of(s, k, i)
+        let pa = target[i]
+        let pp = b.at[i]
+        var r = mat4(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0),
+        )
+        if c != i {
+            let from = target[c] - pa
+            let to = b.at[c] - pp
+            if length(from) > 1.0e-5 && length(to) > 1.0e-5 {
+                let m = turn(normalize(from), normalize(to)).to_mat3()
+                r = mat4(
+                    vec4(m[0], 0.0),
+                    vec4(m[1], 0.0),
+                    vec4(m[2], 0.0),
+                    vec4(0.0, 0.0, 0.0, 1.0),
+                )
+            }
+        }
+        out[i] = translate(pp) * r * translate(-pa) * anim[i]
+    }
+    out
+}

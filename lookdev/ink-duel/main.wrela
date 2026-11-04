@@ -27,7 +27,7 @@
 
 use arena::{Arena, SUN, air_of, arena}
 use body::{BRAWLER, Bones, WANDERER, figure}
-use duel::{Bot, NEVER, World, advance, play, second, world}
+use duel::{Bot, LIES, NEVER, World, advance, play, second, world}
 use engine::character::{ByChannels, Smear, cast, parts_of}
 use engine::clip::{Local, palette, rest}
 use engine::combat::{Act, Fighter, HZ, Intent, Move, Press}
@@ -37,7 +37,7 @@ use engine::light::sunlight
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::distance::rigid_inverse
 use engine::noise::hash2
-use engine::physique::{Capsule, Per, fit_capsules}
+use engine::physique::Capsule
 use engine::probes::grid
 use engine::switches::Switches
 use engine::terrain::{Clipmap, Terrain}
@@ -46,6 +46,7 @@ use engine::view::first_camera
 use hud::Hud
 use moves::{BRAWLER_MOVES, COILED, CONTACT, HOOK_N, JAB_N, WANDERER_MOVES}
 use motion::{Carriage, carriage, carry, flinch}
+use physics::Body
 use pose::{Feet, Pose, locals}
 use poses::GUARD
 use present::{Clips, Placing, brawler, clips, placing_matrix, wanderer}
@@ -129,7 +130,7 @@ const HOW = CreatureLook { surface: Tolerance { tolerance: 3.0e-3 } }
 
 /// A body's drawing: its pose and placing, held until its next.
 struct Drawn: Copy {
-    locals: [Local; MAX_BONES],
+    bones: [mat4; MAX_BONES],
     root: mat4,
 }
 
@@ -204,7 +205,7 @@ pub struct State {
     clips: Clips,
     /// The capture being viewed (`MOCAP`), as poses at 60 a second.
     viewed: Vec<Pose>,
-    /// Each body's capsules (engine::physique, fitted to its field), for contact.
+    /// Each body's capsules (read off its parts: `body::capsules`), for contact.
     caps_a: Vec<Capsule>,
     caps_b: Vec<Capsule>,
     /// The client's timeline, and the server's copy: its world, the inputs in flight to it (each
@@ -229,6 +230,13 @@ pub struct State {
     /// Each fighter's change of clip, blended over (`Blend`).
     ba: Blend,
     bb: Blend,
+    /// Each body's physics.
+    pa: Body,
+    pb: Body,
+    /// The last blow's impact star: where (the world), when (the frame's time), how big (m).
+    star_at: vec3,
+    star_time: f32,
+    star_size: f32,
     /// When each fighter died (the frame's time; none yet, below 0).
     dead_a: f32,
     dead_b: f32,
@@ -247,8 +255,8 @@ pub fn init() -> State {
     let (one, sa, ka) = figure(WANDERER)
     let (other, sb, kb) = figure(BRAWLER)
     // Each body's capsules, a bone each, fitted to its field: what contact is tested against.
-    let caps_a = fit_capsules(one, Per::Bone, tolerance: 0.01)
-    let caps_b = fit_capsules(other, Per::Bone, tolerance: 0.01)
+    let caps_a = body::capsules(WANDERER)
+    let caps_b = body::capsules(BRAWLER)
     said("wanderer", caps_a, ka.chest.index)
     said("brawler", caps_b, kb.chest.index)
     let w = world()
@@ -265,7 +273,7 @@ pub fn init() -> State {
     let you = vec3(w.you.pos.x, 0.0, w.you.pos.y)
     let foe = vec3(w.foe.pos.x, 0.0, w.foe.pos.y)
     let idle = Drawn {
-        locals: [rest(); MAX_BONES],
+        bones: palette(sa, [rest(); MAX_BONES], placing_matrix(Placing { at: you, heading: 0.0 })),
         root: placing_matrix(Placing { at: you, heading: 0.0 }),
     }
     var scene = arena(
@@ -279,7 +287,7 @@ pub fn init() -> State {
         scene,
         a: (sa, ka),
         b: (sb, kb),
-        clips: clips(),
+        clips: CLIPS.clone(),
         viewed: viewed(),
         caps_a,
         caps_b,
@@ -304,6 +312,11 @@ pub fn init() -> State {
         bb: Blend { from: GUARD, last: GUARD },
         dead_a: -1.0,
         dead_b: -1.0,
+        star_at: vec3(0.0),
+        star_time: -1.0e9,
+        star_size: 0.0,
+        pa: physics::body(sa, ka, WANDERER.tall),
+        pb: physics::body(sb, kb, BRAWLER.tall),
         contact_at: -1.0e9,
         launch_at: -1.0e9,
         landed_at: -1.0e9,
@@ -474,6 +487,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.seen.hit_you = w.hit_you
         let from = vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y)
         flinch(mut s.ca, from, w.you.heading, 1.0)
+        let head = s.pa.at[s.a.1.head.index]
+        physics::struck(
+            mut s.pa,
+            head,
+            normalize(vec3(-from.x, 0.4, -from.z) + vec3(1.0e-4)) * 3.2,
+            0.75,
+            1.0 / 60.0,
+        )
         s.taken_at = time
         bump += ON_TAKEN
         forced = true
@@ -482,6 +503,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.seen.hit_foe = w.hit_foe
         let from = vec3(w.you.pos.x - w.foe.pos.x, 0.0, w.you.pos.y - w.foe.pos.y)
         flinch(mut s.cb, from, w.foe.heading, 0.45)
+        let heavy = w.you.move == HOOK_N
+        let at = if heavy { s.pb.at[s.b.1.chest.index] } else { s.pb.at[s.b.1.head.index] }
+        s.star_at = at
+        s.star_time = time
+        s.star_size = if heavy { 0.6 } else { 0.4 }
+        physics::struck(
+            mut s.pb,
+            at,
+            normalize(vec3(-from.x, 0.25, -from.z) + vec3(1.0e-4)) * if heavy { 2.6 } else { 1.8 },
+            if heavy { 0.6 } else { 0.4 },
+            1.0 / 60.0,
+        )
         bump += ON_HIT
         forced = true
     }
@@ -499,6 +532,19 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if w.contact != s.seen.contact {
         s.seen.contact = w.contact
         s.contact_at = time
+        // The uppercut's blow: the head driven up and back.
+        let head = s.pb.at[s.b.1.head.index]
+        s.star_at = head
+        s.star_time = time
+        s.star_size = 1.3
+        let back = vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y)
+        physics::struck(
+            mut s.pb,
+            head,
+            vec3(0.0, 4.5, 0.0) + normalize(back + vec3(1.0e-4)) * 1.5,
+            0.5,
+            1.0 / 60.0,
+        )
         forced = true
     }
     if w.launch != s.seen.launch {
@@ -590,22 +636,43 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             qa = pose::reached(qa, fa, sa, ka, WANDERER.tall, right: true, to: to, w: u)
         }
     }
+    // ---- Physics (`physics`): each body's particles pulled toward its animation, colliding
+    // with the ground and the other body; slack (a ragdoll) once laid out or felled.
+    let anim_a = palette(sa, locals(qa, fa, sa, ka, WANDERER.tall), ma)
+    let anim_b = palette(sb, locals(qb, fb, sb, kb, BRAWLER.tall), mb)
+    let ta = physics::points(anim_a, sa, ka, WANDERER.tall)
+    let tb = physics::points(anim_b, sb, kb, BRAWLER.tall)
+    s.pa.aim = if w.you.act == Act::Dead { 0.3 } else { 1.0 }
+    let laid = w.landed != NEVER && (w.foe.act == Act::Dead || w.tick - w.landed < LIES)
+    s.pb.aim = if laid { 0.0 } else if w.foe.act == Act::Dead { 0.3 } else { 1.0 }
+    physics::step(mut s.pa, ta, dt, ground, s.caps_b, anim_b)
+    physics::step(mut s.pb, tb, dt, ground, s.caps_a, anim_a)
+    let set_a = physics::settled(anim_a, s.pa, ta, sa, ka)
+    let set_b = physics::settled(anim_b, s.pb, tb, sb, kb)
     let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
     if forced || time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
-        // The smear reaches back to the drawing before, posed where each body is now: limbs'
-        // motion, not the body's travel.
-        s.scene.wanderer.new_drawing_from(palette(sa, s.da.locals, ma))
-        s.scene.brawler.new_drawing_from(palette(sb, s.db.locals, mb))
-        s.da = Drawn { locals: locals(qa, fa, sa, ka, WANDERER.tall), root: ma }
-        s.db = Drawn { locals: locals(qb, fb, sb, kb, BRAWLER.tall), root: mb }
+        // The smear reaches back to the drawing before, carried to where each body is now:
+        // limbs' motion, not the body's travel.
+        let carry_a = ma * rigid_inverse(s.da.root)
+        let carry_b = mb * rigid_inverse(s.db.root)
+        var from_a = s.da.bones
+        var from_b = s.db.bones
+        for i in 0..MAX_BONES {
+            from_a[i] = carry_a * from_a[i]
+            from_b[i] = carry_b * from_b[i]
+        }
+        s.scene.wanderer.new_drawing_from(from_a)
+        s.scene.brawler.new_drawing_from(from_b)
+        s.da = Drawn { bones: set_a, root: ma }
+        s.db = Drawn { bones: set_b, root: mb }
         s.drawn_at = time
         s.drawing += 1.0
         s.since = 0.0
     } else {
         s.since += 1.0
     }
-    s.scene.wanderer.pose(palette(sa, s.da.locals, s.da.root), shadowed: true, moved: false)
-    s.scene.brawler.pose(palette(sb, s.db.locals, s.db.root), shadowed: true, moved: false)
+    s.scene.wanderer.pose(s.da.bones, shadowed: true, moved: false)
+    s.scene.brawler.pose(s.db.bones, shadowed: true, moved: false)
     if s.scene.wanderer.realizing() {
         s.scene.wanderer.realize()
     }
@@ -641,11 +708,31 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // ---- The camera (`camera`).
     let you = vec3(w.you.pos.x, ga, w.you.pos.y)
     let foe = vec3(w.foe.pos.x, gb + w.air, w.foe.pos.y)
-    let aim = camera(mut s, w, you, foe, dt, time)
+    let aim = camera(mut s, w, you, foe, dt, time, f32(width) / max(f32(height), 1.0))
     // ---- The bars.
     let taken = exp(-(time - s.taken_at) * 4.0)
+    // The ink effects: the last blow's star where it landed, on screen; speed lines behind the
+    // launched brawler.
+    let size = vec2(f32(width), f32(height))
+    let (star_px, star_depth) = on_screen(aim, s.star_at, size)
+    let star_age = (time - s.star_time) / 0.22
+    let star_r = s.star_size / max(star_depth, 0.5) / tan(aim.fovy * 0.5) * size.y * 0.5
+    let flying = w.launch != NEVER && w.landed == NEVER
+    let (foe_px, _) = on_screen(aim, foe + vec3(0.0, 1.0, 0.0), size)
+    let (ahead_px, _) = on_screen(
+        aim,
+        foe + vec3(0.0, 1.0, 0.0) + vec3(w.way.x, 2.0, w.way.y) * 0.3,
+        size,
+    )
+    let way_px = ahead_px - foe_px
     s.scene.hud = Hud {
         out: vec2(f32(width), f32(height)),
+        star: vec4(star_px, star_r, if star_depth > 0.0 { star_age } else { 2.0 }),
+        star_seed: if s.star_time < 0.0 { 0.0 } else { f32(u32(s.star_time * 60.0) % 997) },
+        speed: vec4(foe_px, if flying { 1.0 - smoothstep(0.6, 1.4, time - s.launch_at) } else {
+            0.0
+        }, 0.0),
+        speed_way: if length(way_px) > 1.0e-3 { normalize(way_px) } else { vec2(0.0, -1.0) },
         you: vec4(
             w.you.health / duel::YOU.health,
             w.you.stamina / duel::YOU.stamina,
@@ -722,6 +809,24 @@ fn striking(f: Fighter, moves: [Move]) -> bool {
     f.t + 4 >= m.windup && f.t < m.windup + m.active + 10
 }
 
+/// Every clip (the captures parsed and retargeted): computed when the program is built, not when
+/// it starts.
+const CLIPS: Clips = clips()
+
+/// Where world point `p` falls on a screen of `size` pixels seen through `aim` (pixels from the
+/// top left), and how far ahead of the eye it is (behind it, below 0).
+fn on_screen(aim: Aim, p: vec3, size: vec2) -> (vec2, f32) {
+    let f = normalize(aim.at - aim.eye)
+    let r = normalize(cross(f, vec3(0.0, 1.0, 0.0)))
+    let u = cross(r, f)
+    let d = p - aim.eye
+    let z = dot(d, f)
+    let t = tan(aim.fovy * 0.5)
+    let x = dot(d, r) / max(z, 1.0e-3) / (t * size.x / size.y)
+    let y = dot(d, u) / max(z, 1.0e-3) / t
+    (vec2((x + 1.0) * 0.5 * size.x, (1.0 - y) * 0.5 * size.y), z)
+}
+
 /// Prints a body's chest capsule (`BODIES` in `duel` is set from it).
 fn said(name: str, caps: [Capsule], chest: u32) {
     for c in caps {
@@ -784,18 +889,61 @@ fn touching(
     out
 }
 
-/// How far round from behind the wanderer the camera sits (radians), to one side of the fight's
-/// line, so the two silhouettes never cover each other.
-pub const THETA: f32 = 0.6
+/// Where a camera can stand so two points `a` and `b` land at screen points `pa` and `pb` (each
+/// -1 to 1 across and up), for a vertical field of view `fovy` and an `aspect`: Lino and Christie's
+/// toric space (SIGGRAPH 2015, "Intuitive and Efficient Camera Control with the Toric Space"). The
+/// two rays to the screen points make an angle α, and every camera seeing `a` and `b` that far apart
+/// sits on a spindle torus round the line between them (the inscribed angle). On it: `dist` from
+/// `a` (the arc's angle at `a` that gives it, kept short of the line beyond `a`, where the two would
+/// overlap), `phi` up from level round the line, on the line's side `side`. Its eye, and a point it
+/// looks at that puts `a` and `b` where they're asked.
+fn toric(
+    a: vec3,
+    b: vec3,
+    pa: vec2,
+    pb: vec2,
+    fovy: f32,
+    aspect: f32,
+    dist: f32,
+    phi: f32,
+    side: f32,
+) -> (vec3, vec3) {
+    let t = tan(fovy * 0.5)
+    let ra = normalize(vec3(pa.x * t * aspect, pa.y * t, 1.0))
+    let rb = normalize(vec3(pb.x * t * aspect, pb.y * t, 1.0))
+    let alpha = acos(clamp(dot(ra, rb), -1.0, 1.0))
+    let ab = b - a
+    let d = max(length(ab), 1.0e-3)
+    let u = ab / d
+    let up = vec3(0.0, 1.0, 0.0)
+    let level = normalize(up - u * dot(u, up) + vec3(0.0, 1.0e-4, 0.0))
+    let across = cross(u, level) * side
+    let w = across * cos(phi) + level * sin(phi)
+    let k = min(dist * sin(alpha) / d, 1.0)
+    let beta = min(3.1415927 - asin(k) - alpha, (3.1415927 - alpha) * 0.96)
+    let ac = d * sin(alpha + beta) / sin(alpha)
+    let eye = a + (u * cos(beta) + w * sin(beta)) * ac
+    // The turn taking the camera's two rays onto the world's two directions to `a` and `b`.
+    let da = normalize(a - eye)
+    let db = normalize(b - eye)
+    let e2 = normalize(rb - ra * dot(ra, rb))
+    let g2 = normalize(db - da * dot(da, db))
+    let e3 = cross(ra, e2)
+    let g3 = cross(da, g2)
+    // The camera's ahead (0, 0, 1) in the rays' frame, then in the world's.
+    let ahead = vec3(ra.z, e2.z, e3.z)
+    let look = da * ahead.x + g2 * ahead.y + g3 * ahead.z
+    (eye, eye + look)
+}
 
-/// The camera this frame. Fighting: a two-shot from behind the wanderer and off to one side
-/// (`THETA`), far enough back to hold both bodies and the brawler's reach, looking past the
-/// wanderer at the brawler; it keeps to whichever side it's on, so it never swings across the
-/// line. The riposte: a cut to a low angle beside the two, looking up at where the fist will meet
+/// The camera this frame. Fighting: toric two-subject framing (`toric`): both fighters always in
+/// frame and apart on screen, the wanderer to one side and the brawler to the other, the camera as
+/// far back as the fight is wide; it keeps to whichever side of the fight's line it's on, so it
+/// never swings across it. The riposte: a cut to a low angle beside the two, looking up at where the fist will meet
 /// the jaw, pushing in through the coil. The launch: a cut to low behind the striker, set by the
 /// launch's line, holding its follow-through and the brawler flying, until it's been down a moment; then back to the two-shot, eased. A hit-stop shakes it and
 /// punches its field of view in.
-fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32) -> Aim {
+fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspect: f32) -> Aim {
     let up = vec3(0.0, 1.0, 0.0)
     let d = vec2(foe.x - you.x, foe.z - you.z)
     let n = length(d)
@@ -812,11 +960,25 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32) -> A
     var fovy = 0.78
     var hz = 2.2
     if mode == 0 {
-        let far = min(n, 8.0)
-        let back = -ahead * cos(THETA) + side * sin(THETA)
-        goal_eye = you + back * (2.4 + 0.38 * far) + up * (1.3 + 0.07 * far)
-        goal_at = mix(you, ground_foe, vec3(0.55)) + up * 1.15
-        fovy = 0.74
+        // Toric framing (`toric`): the wanderer's chest a third in from one side of the frame and
+        // a little low, the brawler's a quarter in from the other; the camera on its side of the
+        // fight's line, as far from the wanderer as the fight is wide.
+        let a = you + up * 1.3
+        let b = ground_foe + up * 1.45
+        let sd = s.cam.side
+        let (eye, look) = toric(
+            a,
+            b,
+            vec2(0.36 * sd, -0.12),
+            vec2(-0.26 * sd, 0.06),
+            fovy,
+            aspect,
+            clamp(2.2 + 0.55 * length(b - a), 2.6, 6.5),
+            0.38,
+            sd,
+        )
+        goal_eye = eye
+        goal_at = look
     } else if mode == 1 {
         let mid = mix(you, ground_foe, vec3(0.5))
         let t = f32(w.you.t)
@@ -851,7 +1013,9 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32) -> A
         // Keep to the side it's on.
         let on = dot(s.cam.eye - you, right)
         if abs(on) > 0.4 {
-            s.cam.side = if on > 0.0 { 1.0 } else { -1.0 }
+            // (`toric`'s side is across the line from the wanderer to the brawler, its own
+            // left of the fight's line: the negative of `right`.)
+            s.cam.side = if on > 0.0 { -1.0 } else { 1.0 }
         }
     }
     var eye = s.cam.eye

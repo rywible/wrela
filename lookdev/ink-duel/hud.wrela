@@ -1,4 +1,5 @@
-// The duel's bars, drawn over the finished frame as ink on paper: the wanderer's health and
+// The duel's bars and its ink effects (a blow's impact star, a launched body's speed lines),
+// drawn over the finished frame as ink on paper: the wanderer's health and
 // stamina at the top left; the brawler's health along the bottom and its posture above it,
 // growing from the middle out (the genre's posture bar: when it meets its ends, the brawler
 // breaks). Each bar is a strip of paper ruled in ink, its edges a little rough, as if drawn with
@@ -12,9 +13,17 @@ use std::gpu::{FragCoord, Over}
 /// it showed a moment ago (each 0 to 1); the brawler's health, posture and earlier health; and a
 /// flash (0 to 1) when the wanderer is struck.
 pub struct Hud: Copy + GpuData {
-    pub out: vec2 = vec2(1.0),
-    pub you: vec4 = vec4(1.0, 1.0, 1.0, 0.0),
+    /// A blow's impact star: where (pixels), how big (pixels), how far through its life (0 to 1;
+    /// past 1, none); and its seed (below).
+    pub star: vec4 = vec4(0.0, 0.0, 0.0, 2.0),
     pub foe: vec4 = vec4(1.0, 0.0, 1.0, 0.0),
+    pub you: vec4 = vec4(1.0, 1.0, 1.0, 0.0),
+    /// Speed lines behind a launched body: where it is (pixels), how strong (0, none); and which
+    /// way it's going on screen (a unit vector, below).
+    pub speed: vec4 = vec4(0.0),
+    pub out: vec2 = vec2(1.0),
+    pub speed_way: vec2 = vec2(0.0, -1.0),
+    pub star_seed: f32 = 0.0,
 }
 
 const INK = vec3(0.09, 0.07, 0.06)
@@ -67,6 +76,63 @@ fn bar(p: vec2, at: vec2, size: vec2, from: f32, to: f32, lost: f32, colour: vec
     vec4(PAPER * 0.92, 0.75)
 }
 
+/// An impact star at pixel `p`: a jagged burst of ink round a paper-white core, its spikes each
+/// their own length by `seed`, growing and thinning through its life `age` (0 to 1).
+fn star(p: vec2, at: vec2, size: f32, age: f32, seed: f32) -> vec4 {
+    if age >= 1.0 || size <= 0.0 {
+        return vec4(0.0)
+    }
+    let d = p - at
+    let r = length(d) / (size * (0.7 + 0.6 * age))
+    if r > 1.4 {
+        return vec4(0.0)
+    }
+    let a = atan2(d.y, d.x)
+    let spikes = 11.0
+    let k = floor((a / 6.2831853 + 0.5) * spikes)
+    let within = fract((a / 6.2831853 + 0.5) * spikes)
+    let len = 0.45 + 0.55 * hash2(i32(k), i32(seed))
+    // A spike: widest at its root, a point at its tip.
+    let edge = len * (1.0 - abs(within - 0.5) * 2.0 * 0.85)
+    let core = 0.3 * (1.0 - age)
+    let fade = 1.0 - smoothstep(0.6, 1.0, age)
+    if r < core {
+        return vec4(PAPER, fade)
+    }
+    if r < edge {
+        let rim = smoothstep(edge - 0.06, edge, r)
+        return vec4(mix(INK, PAPER, vec3(0.0 * rim)), fade)
+    }
+    vec4(0.0)
+}
+
+/// Speed lines at pixel `p` behind a body at `at` going `way` (on screen): ink streaks parallel to
+/// its way, trailing behind it, broken and of their own lengths, `strength` of them.
+fn speed(p: vec2, at: vec2, way: vec2, strength: f32, s: f32) -> vec4 {
+    if strength <= 0.0 {
+        return vec4(0.0)
+    }
+    let across = vec2(-way.y, way.x)
+    let d = p - at
+    let back = -dot(d, way)
+    let side = dot(d, across)
+    if back < 0.0 || back > 700.0 * s || abs(side) > 260.0 * s {
+        return vec4(0.0)
+    }
+    let lane = floor(side / (9.0 * s))
+    let keep = hash2(i32(lane), 7)
+    let len = (180.0 + 520.0 * hash2(i32(lane), 13)) * s * strength
+    let start = 60.0 * s * hash2(i32(lane), 29)
+    if keep < 0.45 || back < start || back > start + len {
+        return vec4(0.0)
+    }
+    let w = (0.6 + 1.6 * hash2(i32(lane), 41)) * s
+    let x = abs(fract(side / (9.0 * s)) - 0.5) * 9.0 * s
+    let ink = 1.0 - smoothstep(w - 0.6, w + 0.6, x)
+    let fade = (1.0 - (back - start) / max(len, 1.0)) * strength
+    vec4(INK, ink * fade * (1.0 - smoothstep(180.0 * s, 260.0 * s, abs(side))))
+}
+
 /// The bars at a pixel of the screen.
 @fragment
 pub fn hud(pixel: FragCoord, h: Hud) -> Over {
@@ -107,6 +173,10 @@ pub fn hud(pixel: FragCoord, h: Hud) -> Over {
             ),
         )
     }
+    // The ink effects: speed lines under, the star over.
+    let lines = speed(p, h.speed.xy, h.speed_way, h.speed.z, s)
+    c = over(lines, c)
+    c = over(c, star(p, h.star.xy, h.star.z, h.star.w, h.star_seed))
     // A blow taken: the screen's edges darken a moment.
     let uv = p / h.out - vec2(0.5)
     let edge = smoothstep(0.3, 0.75, length(uv * vec2(1.0, 0.8))) * h.you.w
