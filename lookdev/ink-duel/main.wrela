@@ -9,6 +9,8 @@
 //     J or the left button, or RB/R1     jab (pressed again in it, a cross; at a broken
 //                                        brawler's front, the riposte)
 //     K or the right button, or RT/R2    hook
+//     L held, or LB/L1 held              guard (raised just as a blow comes, a deflect: the
+//                                        brawler's posture takes it; raised early, a block)
 //
 // The sim (`duel`) steps at 60 ticks a second on a timeline (engine::timeline), as a client
 // predicting its own game would; beside it the program runs the server's copy, which hears each
@@ -123,6 +125,7 @@ pub const QUIET: f32 = 0.08
 pub const PHASE_TWO: f32 = 0.3
 pub const ON_EVADE: f32 = 0.22
 pub const ON_HIT: f32 = 0.09
+pub const ON_DEFLECT: f32 = 0.16
 pub const ON_TAKEN: f32 = 0.14
 pub const ON_BROKE: f32 = 0.4
 
@@ -141,6 +144,7 @@ struct Held: Copy {
     left: bool = false,
     right: bool = false,
     stick: vec2 = vec2(0.0),
+    guard: bool = false,
     press: Press = Press::Nothing,
 }
 
@@ -196,6 +200,8 @@ struct Seen: Copy {
     hit_foe: u32 = NEVER,
     evaded: u32 = NEVER,
     broke: u32 = NEVER,
+    deflected: u32 = NEVER,
+    blocked: u32 = NEVER,
     contact: u32 = NEVER,
     launch: u32 = NEVER,
     landed: u32 = NEVER,
@@ -349,6 +355,7 @@ fn listen(h: mut Held) {
                 if key == Key::S { h.down = true }
                 if key == Key::A { h.left = true }
                 if key == Key::D { h.right = true }
+                if key == Key::L { h.guard = true }
                 if !repeat {
                     if key == Key::Space || key == Key::ShiftLeft { h.press = Press::Dodging }
                     if key == Key::J { h.press = Press::Moves { index: JAB_N } }
@@ -360,12 +367,14 @@ fn listen(h: mut Held) {
                 if key == Key::S { h.down = false }
                 if key == Key::A { h.left = false }
                 if key == Key::D { h.right = false }
+                if key == Key::L { h.guard = false }
             },
             Event::PointerDown { button, .. } => {
                 if button == Button::Primary { h.press = Press::Moves { index: JAB_N } }
                 if button == Button::Secondary { h.press = Press::Moves { index: HOOK_N } }
             },
             Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 && button == PadButton::LeftShoulder { h.guard = pressed }
                 if pad == 0 && pressed {
                     if button == PadButton::East || button == PadButton::South {
                         h.press = Press::Dodging
@@ -403,7 +412,7 @@ fn intent_of(h: mut Held, cam: Eye) -> Intent {
     }
     let ahead = normalize(vec2(cam.at.x - cam.eye.x, cam.at.z - cam.eye.z) + vec2(1.0e-5, 0.0))
     let right = vec2(ahead.y, -ahead.x)
-    let i = Intent { walk: right * v.x + ahead * v.y, press: h.press }
+    let i = Intent { walk: right * v.x + ahead * v.y, press: h.press, guard: h.guard }
     h.press = Press::Nothing
     i
 }
@@ -533,6 +542,38 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if w.evaded != s.seen.evaded {
         s.seen.evaded = w.evaded
         bump += ON_EVADE
+        forced = true
+    }
+    if w.deflected != s.seen.deflected || w.blocked != s.seen.blocked {
+        // A blow met on the guard: the ink's spark where the forearms took it; deflected, the
+        // brawler's arm thrown back off it and its chest after; blocked, the wanderer's guard
+        // driven in.
+        let deflect = w.deflected != s.seen.deflected
+        s.seen.deflected = w.deflected
+        s.seen.blocked = w.blocked
+        let guard = (s.pa.at[s.a.1.wrist_r.index] + s.pa.at[s.a.1.wrist_l.index]) * 0.5
+        s.star_at = guard
+        s.star_time = time
+        s.star_size = if deflect { 0.55 } else { 0.3 }
+        let back = normalize(
+            vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y) + vec3(1.0e-4),
+        )
+        if deflect {
+            for i in [s.b.1.wrist_r.index, s.b.1.wrist_l.index] {
+                physics::struck(
+                    mut s.pb,
+                    s.pb.at[i],
+                    (back + vec3(0.0, 0.5, 0.0)) * 2.4,
+                    0.3,
+                    1.0 / 60.0,
+                )
+            }
+            physics::struck(mut s.pb, s.pb.at[s.b.1.chest.index], back * 1.2, 0.25, 1.0 / 60.0)
+            bump += ON_DEFLECT
+        } else {
+            physics::struck(mut s.pa, guard, -back * 1.6, 0.25, 1.0 / 60.0)
+            bump += ON_HIT
+        }
         forced = true
     }
     if w.broke != s.seen.broke {

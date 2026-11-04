@@ -302,12 +302,34 @@ fn fighting(
             p.head = p.head + vec3(0.1 * sin(time * 1.7), sway * 2.0, 0.0)
             p
         },
+        Act::Guard => {
+            // The guard raised: the captured guard's legs and trunk, its forearms brought up
+            // before the face and crossing a little, the chest hunched over them; raised over a
+            // tenth of a second (a deflect lands inside its first few ticks, so the raise shows).
+            let p = guard_at(c.guard, time * bounce / 1.7 + bounce * 3.1)
+            raised(p, smoothstep(0.0, 0.1, t))
+        },
         _ => {
             // On guard: the captured guard, bouncing, looped (a lighter fighter's quicker,
             // `bounce` against the performer's own 1.7 a second); each fighter a little out of
             // step with the other.
             guard_at(c.guard, time * bounce / 1.7 + bounce * 3.1)
         },
+    }
+}
+
+/// `p` with its guard raised `u` of the way (0, as it was; 1, forearms up before the face).
+fn raised(p: Pose, u: f32) -> Pose {
+    let to = |a: vec3, b: vec3| normalize(mix(a, b, vec3(u)))
+    Pose {
+        upper_r: to(p.upper_r, vec3(0.32, -0.3, 0.9)),
+        fore_r: to(p.fore_r, vec3(-0.5, 0.82, 0.25)),
+        upper_l: to(p.upper_l, vec3(-0.3, -0.3, 0.9)),
+        fore_l: to(p.fore_l, vec3(0.45, 0.85, 0.25)),
+        chest: p.chest + vec3(0.12 * u, 0.0, 0.0),
+        head: p.head + vec3(0.1 * u, 0.0, 0.0),
+        shrug: p.shrug + vec2(0.08 * u),
+        ..p,
     }
 }
 

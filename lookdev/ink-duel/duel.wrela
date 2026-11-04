@@ -56,13 +56,14 @@ pub const YOU_SHARE: f32 = 0.7
 pub const RIPOSTE_GAP: f32 = 0.78
 
 /// The hit-stops (ticks): a light blow landed, a heavy one, a blow taken, a posture broken, the
-/// riposte's contact, the landing.
+/// riposte's contact, the landing, a deflect.
 pub const STOP_LIGHT: u32 = 3
 pub const STOP_HEAVY: u32 = 6
 pub const STOP_TAKEN: u32 = 7
 pub const STOP_BROKE: u32 = 10
 pub const STOP_CONTACT: u32 = 21
 pub const STOP_LAND: u32 = 5
+pub const STOP_DEFLECT: u32 = 8
 
 /// What a dodge made clean through one of the brawler's blows adds to its posture.
 pub const CLEAN: f32 = 14.0
@@ -107,6 +108,8 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub hit_you: u32 = NEVER,
     pub hit_foe: u32 = NEVER,
     pub evaded: u32 = NEVER,
+    pub deflected: u32 = NEVER,
+    pub blocked: u32 = NEVER,
     pub broke: u32 = NEVER,
     pub contact: u32 = NEVER,
     pub phase: u32 = NEVER,
@@ -279,7 +282,7 @@ pub fn advance(w: mut World, you: Intent) {
         },
         _ => {},
     }
-    let theirs = strike(mut w.foe, BRAWLER_MOVES, mut w.you, YOU)
+    let theirs = strike(mut w.foe, BRAWLER_MOVES, mut w.you, YOU, ra: FOE)
     match theirs {
         Blow::Landed { .. } => {
             w.hit_you = w.tick
@@ -294,6 +297,18 @@ pub fn advance(w: mut World, you: Intent) {
                 w.broke = w.tick
                 w.stop = STOP_BROKE
             }
+        },
+        Blow::Deflected { broke } => {
+            w.deflected = w.tick
+            w.stop = STOP_DEFLECT
+            if broke {
+                w.broke = w.tick
+                w.stop = STOP_BROKE
+            }
+        },
+        Blow::Blocked => {
+            w.blocked = w.tick
+            w.stop = STOP_LIGHT
         },
         Blow::Nothing => {},
     }
@@ -346,12 +361,16 @@ fn flight(w: mut World) {
 
 /// A player for tests and captures: it sees the duel as it was `react` ticks ago (a person's
 /// reaction, 200 ms), dodges each of the brawler's blows so its invincible ticks cover the blow's
-/// first hitting tick (`dodges`: or never, a player who doesn't), punishes the brawler's recovery
+/// first hitting tick (`dodges`: or never, a player who doesn't), deflects every other one-two with
+/// its guard raised just before each blow lands (`deflects`), punishes the brawler's recovery
 /// with a jab and a cross (a hook once its posture is high), keeps stamina for a dodge, and
 /// ripostes a broken brawler from in front.
 pub struct Bot: Clone {
     pub react: u32 = 12,
     pub dodges: bool = true,
+    pub deflects: bool = true,
+    deflecting: bool = false,
+    ones: u32 = 0,
     seen: Vec<World> = Vec::new(),
     dodge_at: u32 = NEVER,
     planned: u32 = NEVER,
@@ -381,6 +400,8 @@ pub fn play(b: mut Bot, w: World) -> Intent {
             b.dodge_at = began + m.windup - 5
             // The one always brings the two: a player who has learned it dodges both.
             if f.move == ONE_N {
+                b.ones += 1
+                b.deflecting = b.deflects && b.ones % 2 == 0
                 let one = BRAWLER_MOVES[ONE_N]
                 b.then_at = began + one.windup + one.active + BRAWLER_MOVES[TWO_N].windup - 4
             }
@@ -389,6 +410,22 @@ pub fn play(b: mut Bot, w: World) -> Intent {
     if b.dodge_at == NEVER && b.then_at != NEVER && w.tick >= b.then_at {
         b.then_at = NEVER
         return Intent { walk: side * 0.8 - toward * 0.6, press: Press::Dodging }
+    }
+    // The one-two's quick blows deflected instead, every other time it comes: the guard raised a
+    // few ticks before each lands (inside the deflect's window) and lowered after.
+    if b.deflecting {
+        for x in [b.dodge_at, b.then_at] {
+            if x != NEVER && w.tick + 3 >= x && w.tick <= x + 6 {
+                return Intent { guard: true, face: f.pos - me.pos }
+            }
+        }
+        if (b.dodge_at == NEVER || w.tick > b.dodge_at + 6) &&
+            (b.then_at == NEVER || w.tick > b.then_at + 6) {
+            b.deflecting = false
+            b.dodge_at = NEVER
+            b.then_at = NEVER
+        }
+        return Intent { face: f.pos - me.pos }
     }
     if b.dodge_at != NEVER && w.tick >= b.dodge_at {
         b.dodge_at = NEVER
