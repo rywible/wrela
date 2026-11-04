@@ -5,7 +5,7 @@
 // lines fray: they break into strands, throw off static, and the palette drains toward black
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
-use look::{INK, PAPER, SEA, SKY, Shot, band, hash2, luma, noise}
+use look::{INK, PAPER, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
 use engine::light::{Light, display}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
 
@@ -27,7 +27,7 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
     if abs(a.y - b.y) > 0.5 {
         // The horizon's a thin line; any other change of what was met, a full one.
         let horizon = (a.y == SKY && b.y == SEA) || (a.y == SEA && b.y == SKY)
-        let w = if horizon { 0.35 } else { max(near.w, 0.6) }
+        let w = if horizon { 0.0 } else { max(near.w, 0.6) }
         return w
     }
     if a.y == SKY {
@@ -54,17 +54,45 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
 
 /// The render, drawn: its values grouped into bands with brushy edges, and hatching laid in the
 /// shadows of solid things (on the sea, long level strokes). `s.style` says how much.
-fn styled(s: Shot, c: vec3, px: vec2, m: vec4, scale: f32, seed: f32) -> vec3 {
+fn styled(s: Shot, c: vec3, px: vec2, m: vec4, n: vec3, sun: vec3, scale: f32, seed: f32) -> vec3 {
     let l = max(luma(c), 1.0e-4)
-    // The brush's edge: the bands' boundaries broken by a slow noise and the paper's grain.
+    // The brush's edge: the bands' boundaries broken by a slow noise.
     let brush = (noise(px / (scale * 45.0) + vec2(seed * 0.05, 0.0)) - 0.5) * 0.6 +
-        (noise(px / (scale * 11.0) + vec2(0.0, seed * 0.1)) - 0.5) * 0.3 +
-        (noise(px / (scale * 2.5)) - 0.5) * 0.08
-    let steps = 6.0
+        (noise(px / (scale * 11.0) + vec2(0.0, seed * 0.1)) - 0.5) * 0.3
+    // A cloud is drawn in three values; the rest in six.
+    let cloud = if m.y == SKY { clamp((0.45 - m.z) * 4.0, 0.0, 1.0) } else { 0.0 }
+    let solid_far = if m.y > SEA + 0.5 { clamp((m.x - 9.0) / 2.0, 0.0, 1.0) } else { 0.0 }
+    let steps = mix(6.0, 5.0, cloud)
     let x = pow(l, 0.75) * steps + brush
     let q = (floor(x) + smoothstep(0.22, 0.78, fract(x))) / steps
     let banded = c * (pow(max(q, 0.0), 1.0 / 0.75) / l)
-    var o = mix(c, banded, (if m.y == SKY { 0.3 } else { 0.65 }) * s.style)
+    // How much: the sky's open blue a little, its clouds fully; the sea near more than far.
+    let sea_near = clamp((8.0 - m.x) / 2.5, 0.0, 1.0)
+    let amount = if m.y == SKY { mix(0.0, 0.12, cloud) } else if m.y == SEA {
+        mix(0.1, 0.4, sea_near)
+    } else {
+        mix(0.65, 0.15, solid_far)
+    }
+    var o = mix(c, banded, amount * s.style)
+    // Far off, what's solid in two planes: the faces the sun finds warmed, the rest cooled, so
+    // the mass models as a painter's light and shadow.
+    if solid_far > 0.0 {
+        let lit = band(dot(n, sun), 0.06, 0.05)
+        o *= mix(
+            vec3(1.0),
+            mix(vec3(0.92, 0.94, 1.03), vec3(1.14, 1.05, 0.94), lit),
+            solid_far * s.style,
+        )
+    }
+    // A cloud: its lit faces warmed toward peach, its shadows cooled a little.
+    if cloud > 0.05 {
+        let lit_side = smoothstep(0.3, 0.7, l)
+        o *= mix(
+            vec3(1.0),
+            mix(vec3(0.97, 0.9, 1.04), vec3(1.1, 0.99, 0.86), lit_side),
+            cloud * s.style,
+        )
+    }
     // Hatching: in the shadow band of what's solid, one way; deeper, crossed.
     let solid = m.y > SEA + 0.5
     let far = clamp((m.x - 8.0) / 3.0, 0.0, 1.0)
@@ -73,16 +101,43 @@ fn styled(s: Shot, c: vec3, px: vec2, m: vec4, scale: f32, seed: f32) -> vec3 {
     let h2 = 1.0 - band(abs(fract((px.x - px.y * 0.6) / (4.5 * scale) - wob) - 0.5), 0.14, 0.05)
     let gaps = band(noise(px / (scale * 5.0) + vec2(seed, 1.0)), 0.25, 0.1)
     if solid {
-        let shadow = 1.0 - band(l, 0.16, 0.04)
+        // The planes turned from the sun are hatched, however the air has lifted them; the
+        // darkest, crossed.
+        let turned = 1.0 - band(dot(n, sun), 0.02, 0.06)
+        let shadow = max(turned, 1.0 - band(l, 0.16, 0.04))
         let deep = 1.0 - band(l, 0.07, 0.03)
-        let hatch = max(h1 * shadow, h2 * deep) * gaps * (1.0 - 0.6 * far)
-        o = mix(o, o * 0.35 + INK * 0.05, hatch * 0.55 * s.style)
+        let hatch = max(h1 * shadow, h2 * deep) * gaps * (1.0 - far)
+        // (The skiff and its traveller, lit as a character is, hatched lightly.)
+        let light_hand = if m.y == SKIFF { 0.45 } else { 1.0 }
+        o = mix(o, o * 0.55, hatch * 0.5 * light_hand * s.style)
     } else if m.y == SEA {
         let lv = 1.0 - band(abs(fract(px.y / (3.5 * scale) + wob * 0.3) - 0.5), 0.12, 0.05)
         let dash = band(noise(vec2(px.x / (scale * 22.0) + seed, px.y / (scale * 3.5))), 0.55, 0.08)
         let shadow = 1.0 - band(l, 0.1, 0.04)
         let near = clamp((7.5 - m.x) / 2.0, 0.0, 1.0)
         o = mix(o, o * 0.4, lv * dash * shadow * near * 0.5 * s.style)
+        // Far out, the swell drawn as long level strokes: the light it holds, in glints along
+        // its backs, and its troughs' darker dashes, sparser and finer the further.
+        // (Only where the eye skims the water: seen from high up, level strokes read as scanlines.)
+        let skim = smoothstep(0.12, 0.04, -ray(s, px).y)
+        let far_sea = clamp((m.x - 6.0) / 2.0, 0.0, 1.0) *
+            (1.0 - clamp((m.x - 12.0) / 1.5, 0.0, 1.0)) *
+            skim
+        let row = px.y / (5.0 * scale) + wob * 0.2
+        let fine = 1.0 - band(abs(fract(row) - 0.5), 0.1, 0.05)
+        let lane = floor(row)
+        let long_ = band(
+            noise(vec2(px.x / (scale * 90.0) + lane * 7.3 + seed * 0.2, lane * 1.7)),
+            0.7,
+            0.05,
+        )
+        let glint_ = band(
+            noise(vec2(px.x / (scale * 50.0) + lane * 3.1 - seed * 0.2, lane * 2.9 + 40.0)),
+            0.74,
+            0.05,
+        )
+        o = mix(o, o * 0.78, fine * long_ * far_sea * 0.5 * s.style)
+        o = mix(o, o * 1.12, fine * glint_ * far_sea * 0.3 * s.style)
     }
     o
 }
@@ -112,10 +167,23 @@ pub fn ink(
     let px = pixel.position.xy
     let scale = size.y / 720.0
     let seed = s.held * 12.0
-    let c0 = display(light, at(colour, px, size).xyz)
+    var c0 = display(light, at(colour, px, size).xyz)
     let m0 = at(marks, px, size)
     let n0 = at8(normal, px, size)
-    let c0 = styled(s, c0, px, m0, scale, seed)
+    // Where one thing meets another (a silhouette), the colour softened with its neighbours', so
+    // the edge isn't the pixels' stair.
+    var meets = 0.0
+    var ring = vec3(0.0)
+    for i in 0..4 {
+        let q = px + AROUND[i]
+        let mq = at(marks, q, size)
+        if abs(mq.y - m0.y) > 0.5 || abs(mq.x - m0.x) > 0.3 {
+            meets = 1.0
+        }
+        ring += display(light, at(colour, q, size).xyz)
+    }
+    c0 = mix(c0, (c0 + ring) * 0.2, meets * 0.8)
+    let c0 = styled(s, c0, px, m0, n0.xyz * 2.0 - 1.0, light.sun, scale, seed)
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
     var local = n0.w
     for i in 0..4 {
@@ -125,14 +193,16 @@ pub fn ink(
     let energy = clamp(max(s.kinetic, local), 0.0, 1.0)
     // The pen's width: a hand's, wobbling along the line and boiling between drawings.
     let wob = noise(px / (scale * 40.0) + vec2(seed * 0.37, 0.0)) - 0.5
-    let r = scale * (1.15 + 0.7 * wob) * (1.0 + 0.15 * energy)
+    // Its weight with distance: the skiff's line heavy, the far rock's fine.
+    let depth = mix(1.25, 1.1, clamp((m0.x - 3.0) / 8.0, 0.0, 1.0))
+    let r = scale * (1.15 + 0.7 * wob) * (1.0 + 0.15 * energy) * depth
     // Strands: the line drawn again by a hand that doesn't quite find it, each stroke pushed off
     // along a slow wander of its own, the more so the more kinetic it is. Quiet, one strand.
     var line = 0.0
     for k in 0..3 {
         let kk = f32(k)
         // Quiet, a second strand faintly: the sketch's searching line.
-        let sketch = if k == 1 { 0.4 * s.style } else { 0.0 }
+        let sketch = if k == 1 { 0.25 * s.style } else { 0.0 }
         let lift = if k == 0 { 1.0 } else { max(band(energy, 0.12 + 0.12 * kk, 0.06), sketch) }
         let wander = vec2(
             noise(px / (scale * 14.0) + vec2(seed * 1.3 + kk * 17.0, kk * 5.0)),
@@ -152,7 +222,7 @@ pub fn ink(
         let kept = 1.0 - band(gaps, 1.0 - 0.6 * energy, 0.05) * band(energy, 0.1, 0.05)
         line = max(line, e * kept * lift * (if k == 0 { 1.0 } else { 0.85 }))
     }
-    line *= mix(1.0, 1.0, s.style)
+    line *= s.style
     // Kinetic, streaks: long thin strokes torn off the lines along one slant, as the frame's
     // ink is pulled out of it.
     let slant = normalize(vec2(1.0, -0.35))
@@ -205,7 +275,12 @@ pub fn ink(
         band(near_line, 0.5, 0.08)
     // Kinetic, the ink commits: a line is there or it isn't, no grey.
     let committed = mix(line, band(line, 0.45, 0.08), band(energy, 0.3, 0.1))
-    let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0)
+    // A cloud's contour broken, as a brush lifts; the far ink faint.
+    let lifted = if m0.y == SKY {
+        band(noise(px / (scale * 14.0) + vec2(seed * 0.4, 3.0)), 0.38, 0.08)
+    } else { 1.0 }
+    let faint = mix(1.0, 0.62, clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) * (1.0 - band(energy, 0.3, 0.1)))
+    let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0) * lifted * faint
     // The palette drains toward ink and paper as the energy rises past the middle: three values,
     // and hatching in the middle one, as a page of manga.
     var c = c0
@@ -227,7 +302,9 @@ pub fn ink(
     // The ink, warmer and thinner far off (what the first pass weighed), dark near.
     // Quiet, the ink is the form's own colour, deepened: it sits on the 3D form, not over it.
     // Kinetic, it turns to ink.
-    let ink_c = mix(c * c * 0.45, INK * 0.7, band(energy, 0.25, 0.15))
+    // Far off, the ink is the air's colour, deepened only a little.
+    let far_ink = if m0.y == SKY { 1.0 } else { clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) }
+    let ink_c = mix(mix(c * c * 0.45, c * 0.78, far_ink), INK * 0.7, band(energy, 0.25, 0.15))
     c = mix(c, ink_c, ink_line)
     // The sun's glints on the sea, drawn: four-pointed stars where it's brightest.
     let gcell = 9.0 * scale
@@ -236,7 +313,7 @@ pub fn ink(
     let gm = at(marks, gc, size)
     let gl = luma(display(light, at(colour, gc, size).xyz))
     let gh = hash2(gid + vec2(seed * 1.7, 11.0))
-    if gm.y == SEA && gl > 0.82 && gh < 0.45 * s.style {
+    if gm.y == SEA && gm.x < 7.0 && gl > 0.97 && gh < 0.45 * s.style {
         let rel = px - gc
         let arm = (2.5 + 4.0 * gh) * scale * smoothstep(0.82, 1.0, gl)
         let star = max(
@@ -247,10 +324,65 @@ pub fn ink(
         )
         c = mix(c, vec3(1.0, 0.96, 0.85), star * 0.9)
     }
+    // Toward the sun the sea glitters: points of it on the swell's backs, thick near the
+    // horizon under the sun, thinning toward the eye and away from the sun's side.
+    let dv = ray(s, px)
+    let toward = pow(
+        max(dot(normalize(vec2(dv.x, dv.z)), normalize(vec2(light.sun.x, light.sun.z))), 0.0),
+        60.0,
+    )
+    if m0.y == SEA {
+        // Between the sparks the swell's backs stand darker against the glare.
+        c *= 1.0 - 0.18 * toward * s.style
+    }
+    // The sparks sit in loose rows a swell apart, each row slid by its own amount so no grid shows,
+    // and gather in patches where a swell's face turns to the sun.
+    let scell = vec2(7.0, 2.6) * scale
+    let row = floor(px.y / scell.y)
+    let slide = hash2(vec2(row, seed * 1.3 + 4.0)) * scell.x
+    let col = floor((px.x + slide) / scell.x)
+    let patch = smoothstep(0.3, 0.7, noise(px / (22.0 * scale) + vec2(seed * 0.37, 2.0)))
+    for k in 0..3 {
+        let sid = vec2(col + f32(k) - 1.0, row)
+        let sh = hash2(sid + vec2(seed * 0.9, 21.0))
+        let centre = vec2(
+            (sid.x + 0.15 + 0.7 * hash2(sid + vec2(3.0, seed))) * scell.x - slide,
+            (sid.y + 0.25 + 0.5 * hash2(sid + vec2(seed, 8.0))) * scell.y,
+        )
+        let sm = at(marks, centre, size)
+        if sm.y == SEA && sm.x > 4.0 {
+            let horizonward = clamp((sm.x - 4.0) / 6.0, 0.0, 1.0)
+            let dense = toward * (0.35 + 0.65 * horizonward) * (0.25 + 0.75 * patch)
+            // Thickest where the water is already bright: on the faces of the swell that hold the sun.
+            let bright = smoothstep(0.35, 0.75, luma(c0))
+            if sh < dense * (0.45 + 0.9 * bright) * s.style {
+                let rel = px - centre
+                let len_ = (0.8 + 4.2 * pow(hash2(sid + vec2(seed, 5.0)), 2.0)) *
+                    scale *
+                    (1.6 - 0.8 * horizonward)
+                let spark = (1.0 - band(abs(rel.y), 0.5 * scale, 0.35 * scale)) *
+                    (1.0 - band(abs(rel.x), len_, len_ * 0.6))
+                c = mix(c, vec3(1.0, 0.97, 0.9), spark * 0.95)
+            }
+        }
+    }
+    // Round the sun, the sky's glare held down a little, so the eye isn't drawn off the frame.
+    if m0.y == SKY || m0.y == SEA {
+        // ...and a hot zone kept where the sun is, at the frame's edge by the horizon.
+        let toward_sun = max(dot(normalize(vec3(dv.x, dv.y * 0.5, dv.z)), light.sun), 0.0)
+        c *= mix(vec3(1.0), vec3(1.06, 0.96, 0.8), pow(toward_sun, 6.0) * s.style)
+        c = mix(c, vec3(1.0, 0.88, 0.64), clamp(pow(toward_sun, 90.0) * 0.4, 0.0, 0.45) * s.style)
+    }
+    // A painter's value: the middle tones pulled apart a little, so the light reads as light.
+    let lc = clamp(c, vec3(0.0), vec3(1.0))
+    c = mix(c, lc * lc * (vec3(3.0) - 2.0 * lc), 0.22 * s.style)
     // The paper: its tooth and fibres, and a vignette as a page's edge darkens.
     let tooth = noise(px / (1.3 * scale)) * 0.6 + noise(px / (6.0 * scale)) * 0.4
     c *= 0.975 + 0.035 * tooth
     let uv = px / size - vec2(0.5)
     c *= 1.0 - 0.18 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
+    // The top of the sky deepened to a richer blue, as a painter grades it, so the eye falls to
+    // the light.
+    c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), smoothstep(0.45, 0.0, px.y / size.y) * s.style)
     vec4(c, 1.0)
 }

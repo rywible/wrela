@@ -29,22 +29,19 @@ pub struct Heavens {
     cooked: u32,
 }
 
-/// The weather: great cumulus towering over the far sea, a field of fair-weather cloud beyond
-/// them, a clear stretch toward the sun, a slow drift.
+/// The weather: a bank of great cumulus on the far horizon, the tallest towering behind the
+/// isle; a few fair-weather clouds; the sky clear toward the low sun; a slow drift.
 fn weather() -> Weather {
     Weather {
         clouds: Vec::from(
             [
-                Cumulus { at: vec2(-5200.0, 9000.0), wide: 3800.0, tall: 0.95 },
-                Cumulus { at: vec2(1800.0, 11000.0), wide: 4200.0, tall: 0.85 },
-                Cumulus { at: vec2(-11000.0, 6000.0), wide: 3600.0, tall: 0.75 },
-                Cumulus { at: vec2(7600.0, 7400.0), wide: 3000.0, tall: 0.7 },
-                Cumulus { at: vec2(-1500.0, 15000.0), wide: 5200.0, tall: 1.0 },
-                Cumulus { at: vec2(12000.0, 13000.0), wide: 4400.0, tall: 0.8 },
+                Cumulus { at: vec2(14000.0, 17500.0), wide: 7000.0, tall: 3200.0 },
+                Cumulus { at: vec2(-7000.0, 21500.0), wide: 8000.0, tall: 1900.0 },
+                Cumulus { at: vec2(26000.0, 22000.0), wide: 10000.0, tall: 600.0 },
             ],
         ),
-        fair: 0.32,
-        gap: Gap { a: vec2(0.0, 0.0), b: vec2(5200.0, 9800.0), radius: 1500.0 },
+        fair: 0.0,
+        gap: Gap { a: vec2(0.0, 0.0), b: vec2(9000.0, -9000.0), radius: 3000.0 },
         wind: vec2(3.0, -1.5),
     }
 }
