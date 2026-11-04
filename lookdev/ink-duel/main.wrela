@@ -86,6 +86,12 @@ pub const SHEET: bool = false
 pub const VIEW: u32 = 0
 pub const SLOT: f32 = 2.4
 
+/// The capture viewer (`--set MOCAP=n`): no fight; clip `n` (1 the one-two, 2 the guard, 3 the
+/// duck, 4 the lunge, 5 the hook, 6 the backward fall, 7 the fall on the face) played on the wanderer,
+/// side on, from its frame `MOCAP_FROM` (at 60 a second), for choosing what the duel plays.
+pub const MOCAP: u32 = 0
+pub const MOCAP_FROM: u32 = 0
+
 /// Whether the test bot plays (`--set AUTO=true`).
 pub const AUTO: bool = false
 
@@ -150,6 +156,33 @@ struct Eye: Copy {
     side: f32 = 1.0,
 }
 
+/// A change of what a fighter plays (a new act or move), blended over `BLEND` seconds from the
+/// pose it was in, so a punch leaves the guard from where the guard was (a crossfade, which the
+/// legs' IK and the planted feet keep grounded).
+struct Blend: Copy {
+    act: Act = Act::Ready,
+    move: u32 = 0,
+    at: f32 = -1.0e9,
+    from: Pose,
+    last: Pose,
+}
+
+pub const BLEND: f32 = 0.1
+
+/// Pose `p` for a fighter doing `act` (move `move`), blended from where it was if that's new.
+fn blended(b: mut Blend, act: Act, move: u32, p: Pose, time: f32) -> Pose {
+    if act != b.act || (act == Act::Attack && move != b.move) {
+        b.from = b.last
+        b.at = time
+        b.act = act
+        b.move = move
+    }
+    let u = smoothstep(0.0, BLEND, time - b.at)
+    let out = if u < 1.0 { pose::mixed(b.from, p, u) } else { p }
+    b.last = out
+    out
+}
+
 /// The events last drawn (by the tick each came), so a new one is drawn once.
 struct Seen: Copy {
     hit_you: u32 = NEVER,
@@ -169,6 +202,8 @@ pub struct State {
     a: (Skeleton, Bones),
     b: (Skeleton, Bones),
     clips: Clips,
+    /// The capture being viewed (`MOCAP`), as poses at 60 a second.
+    viewed: Vec<Pose>,
     /// Each body's capsules (engine::physique, fitted to its field), for contact.
     caps_a: Vec<Capsule>,
     caps_b: Vec<Capsule>,
@@ -191,6 +226,9 @@ pub struct State {
     drawing: f32,
     since: f32,
     seen: Seen,
+    /// Each fighter's change of clip, blended over (`Blend`).
+    ba: Blend,
+    bb: Blend,
     /// When each event came (the frame's time), for its impact frames.
     contact_at: f32,
     launch_at: f32,
@@ -239,6 +277,7 @@ pub fn init() -> State {
         a: (sa, ka),
         b: (sb, kb),
         clips: clips(),
+        viewed: viewed(),
         caps_a,
         caps_b,
         timeline: Timeline::new(w, history: 64),
@@ -258,6 +297,8 @@ pub fn init() -> State {
         drawing: 0.0,
         since: 0.0,
         seen: Seen {},
+        ba: Blend { from: GUARD, last: GUARD },
+        bb: Blend { from: GUARD, last: GUARD },
         contact_at: -1.0e9,
         launch_at: -1.0e9,
         landed_at: -1.0e9,
@@ -400,6 +441,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         sheet(mut s, time, width, height)
         return
     }
+    if MOCAP != 0 {
+        view_capture(mut s, time, width, height)
+        return
+    }
     listen(mut s.held)
     // The sim's ticks owed since the last frame.
     // (Not while the frame is arriving: the fight begins when it can be seen.)
@@ -495,6 +540,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let gb = ground.height(w.foe.pos.x, w.foe.pos.y)
     let (pa, la) = wanderer(w, s.clips, ga, time)
     let (pb, lb) = brawler(w, s.clips, gb, time)
+    let pa = blended(mut s.ba, w.you.act, w.you.move, pa, time)
+    let pb = blended(mut s.bb, w.foe.act, w.foe.move, pb, time)
     let ra = carry(mut s.ca, la.at, la.heading, pa, dt, WANDERER.tall, ground)
     let rb = carry(mut s.cb, lb.at, lb.heading, pb, dt, BRAWLER.tall, ground)
     // A body turned over (flung, lying) takes its pose's own feet, not the ground's.
@@ -534,13 +581,15 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
     if forced || time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
+        // The smear reaches back to the drawing before, posed where each body is now: limbs'
+        // motion, not the body's travel.
+        s.scene.wanderer.new_drawing_from(palette(sa, s.da.locals, ma))
+        s.scene.brawler.new_drawing_from(palette(sb, s.db.locals, mb))
         s.da = Drawn { locals: locals(qa, fa, sa, ka, WANDERER.tall), root: ma }
         s.db = Drawn { locals: locals(qb, fb, sb, kb, BRAWLER.tall), root: mb }
         s.drawn_at = time
         s.drawing += 1.0
         s.since = 0.0
-        s.scene.wanderer.new_drawing()
-        s.scene.brawler.new_drawing()
     } else {
         s.since += 1.0
     }
@@ -620,19 +669,11 @@ fn sheet(s: mut State, time: f32, width: u32, height: u32) {
     let slot = u32(floor(t / SLOT))
     let u = t - f32(slot) * SLOT
     borrow c = s.clips
-    // The wanderer's: guard, jab, cross, hook, dodge, riposte; the brawler's: guard, one, two,
-    // haymaker, lunge, sweep, broken.
+    // The wanderer's: guard, jab, cross, hook, dodge, riposte, the fall; the brawler's: guard,
+    // one, two, haymaker, lunge, sweep, broken.
     let n = slot % 7
-    let pa = if n == 0 { GUARD } else if n <= 3 {
-        pose::chained(c.wanderer[n - 1], u, present::LAG)
-    } else if n == 4 {
-        pose::sampled(c.dodge, u)
-    } else if n == 5 { pose::chained(c.riposte, u, present::LAG) } else { GUARD }
-    let pb = if n == 0 { GUARD } else if n <= 5 {
-        pose::chained(c.brawler[n - 1], u, present::LAG)
-    } else {
-        poses::BROKEN
-    }
+    let pa = present::sheet_pose(0, n, u, c, time)
+    let pb = present::sheet_pose(1, n, u, c, time)
     let (sa, ka) = s.a
     let (sb, kb) = s.b
     let la = Placing { at: vec3(0.9, 0.0, 0.0), heading: 3.1415927 + 0.5 }
@@ -812,4 +853,63 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32) -> A
         fov = fov * 0.93
     }
     Aim { eye, at: s.cam.at, fovy: fov, moving_at: mix(you, foe, vec3(0.5)) }
+}
+
+/// The capture `MOCAP` names, as poses, from `MOCAP_FROM` (none when it names none).
+fn viewed() -> Vec<Pose> {
+    if MOCAP == 0 {
+        return Vec::new()
+    }
+    let c = if MOCAP == 1 {
+        retarget::capture(mocap::cmu::BOXER, mocap::cmu::JAB_CROSS, hz: 60.0, every: 1)
+    } else if MOCAP == 2 {
+        retarget::capture(mocap::cmu::BOXER, mocap::cmu::GUARD, hz: 60.0, every: 1)
+    } else if MOCAP == 3 {
+        retarget::capture(mocap::cmu::BOXER, mocap::cmu::DUCK, hz: 60.0, every: 1)
+    } else if MOCAP == 4 {
+        retarget::capture(mocap::cmu::BOXER, mocap::cmu::LUNGE, hz: 60.0, every: 1)
+    } else if MOCAP == 5 {
+        retarget::capture(mocap::cmu::HOOKER, mocap::cmu::HOOK, hz: 60.0, every: 1)
+    } else if MOCAP == 6 {
+        retarget::capture(mocap::cmu::FALLER, mocap::cmu::FALL_BACK, hz: 60.0, every: 1)
+    } else { retarget::capture(mocap::cmu::FALLER, mocap::cmu::FALL_FACE, hz: 60.0, every: 1) }
+    print(
+        f"capture {MOCAP}: {c.frames.len()} frames at {c.rate} a second, scale {c.scale:.3}, floor {c.floor:.2}",
+    )
+    retarget::poses_of(c, MOCAP_FROM, c.frames.len())
+}
+
+/// The capture viewer's frame: the capture played on the wanderer from when the frame has
+/// arrived, side on; the brawler beside it in its guard.
+fn view_capture(s: mut State, time: f32, width: u32, height: u32) {
+    if s.frame.ready.arriving {
+        s.owed = time
+    }
+    let t = max(time - s.owed, 0.0)
+    let p = retarget::played(s.viewed, 60.0, t)
+    let (sa, ka) = s.a
+    let (sb, kb) = s.b
+    let la = Placing { at: vec3(0.0, 0.0, 0.0), heading: 3.1415927 * 0.5 }
+    let lb = Placing { at: vec3(0.0, 0.0, 2.2), heading: -3.1415927 * 0.5 }
+    let da = locals(p, pose::feet_of(p, WANDERER.tall), sa, ka, WANDERER.tall)
+    let db = locals(GUARD, pose::feet_of(GUARD, BRAWLER.tall), sb, kb, BRAWLER.tall)
+    s.scene.wanderer.pose(palette(sa, da, placing_matrix(la)), shadowed: true, moved: false)
+    s.scene.brawler.pose(palette(sb, db, placing_matrix(lb)), shadowed: true, moved: false)
+    if s.scene.wanderer.realizing() {
+        s.scene.wanderer.realize()
+    }
+    if s.scene.brawler.realizing() {
+        s.scene.brawler.realize()
+    }
+    s.scene.bars = false
+    let aim = Aim {
+        eye: vec3(-4.6, 1.2, 1.0),
+        at: vec3(0.0, 1.0, 1.0),
+        fovy: 0.62,
+        moving_at: vec3(0.0, 1.0, 0.0),
+    }
+    s.frame.intensity = 0.08
+    s.frame.look.line_px = 1.9
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
 }

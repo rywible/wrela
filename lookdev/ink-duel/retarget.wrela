@@ -1,0 +1,323 @@
+// Motion capture onto the duel's bodies: each frame of a capture (engine::mocap, the CMU clips in
+// content/mocap) turned into a `pose::Pose`, so captured motion is played through the same
+// silhouette-space pose as everything else: its legs solved by IK to feet the body plants, its
+// arms bent onto what they strike, its hips, waist, chest and head turned as the performer's
+// were.
+//
+// - A capture's coordinates are y up with the performer's right at -x when facing +z; the
+//   engine's put a body's right at +x, so each point and turn is mirrored in x (`flip`).
+// - Its sizes are scaled by the ratio of the duel's leg (hip to ankle) to the performer's, so a
+//   foot lands where the duel's figure can reach it.
+// - The ground frame is under the pelvis, facing where the chest faces; what the performer's
+//   root did across the floor is left to the sim (a capture is played in place, and the sim
+//   moves the body).
+// - Turns are written as the pose writes them (pitch, yaw, roll: `pose::euler`), each against
+//   what it sits on; the waist and the chest share the turn from the pelvis to the thorax.
+
+use engine::mocap::{Posed, Rig, posed, read_motion, read_rig}
+use pose::{Pose, euler}
+use std::quat::Quat
+
+/// The duel's leg in the units a pose is written in (a figure 1.8 m tall): hip to ankle.
+pub const LEG: f32 = 0.865
+
+/// The performer's joints a pose is made from, by bone index in its rig.
+pub struct Joints: Copy {
+    pub root: u32,
+    pub lfemur: u32,
+    pub rfemur: u32,
+    pub ltibia: u32,
+    pub rtibia: u32,
+    pub lfoot: u32,
+    pub rfoot: u32,
+    pub ltoes: u32,
+    pub rtoes: u32,
+    pub thorax: u32,
+    pub head: u32,
+    pub lclavicle: u32,
+    pub rclavicle: u32,
+    pub lhumerus: u32,
+    pub rhumerus: u32,
+    pub lradius: u32,
+    pub rradius: u32,
+    pub lwrist: u32,
+    pub rwrist: u32,
+}
+
+fn joint(r: Rig, name: str) -> u32 {
+    match r.find(name) {
+        Some(i) => i,
+        None => panic(f"the capture's rig has no {name}"),
+    }
+}
+
+/// The joints of rig `r`.
+pub fn joints(r: Rig) -> Joints {
+    Joints {
+        root: joint(r, "root"),
+        lfemur: joint(r, "lfemur"),
+        rfemur: joint(r, "rfemur"),
+        ltibia: joint(r, "ltibia"),
+        rtibia: joint(r, "rtibia"),
+        lfoot: joint(r, "lfoot"),
+        rfoot: joint(r, "rfoot"),
+        ltoes: joint(r, "ltoes"),
+        rtoes: joint(r, "rtoes"),
+        thorax: joint(r, "thorax"),
+        head: joint(r, "head"),
+        lclavicle: joint(r, "lclavicle"),
+        rclavicle: joint(r, "rclavicle"),
+        lhumerus: joint(r, "lhumerus"),
+        rhumerus: joint(r, "rhumerus"),
+        lradius: joint(r, "lradius"),
+        rradius: joint(r, "rradius"),
+        lwrist: joint(r, "lwrist"),
+        rwrist: joint(r, "rwrist"),
+    }
+}
+
+/// A capture's point or way in the engine's frame: mirrored in x.
+fn flip(v: vec3) -> vec3 {
+    vec3(-v.x, v.y, v.z)
+}
+
+/// A bone's turn as the engine's frame: where it takes the body's right, up and ahead (the
+/// performer's right is -x in its own frame).
+struct Basis: Copy {
+    right: vec3,
+    up: vec3,
+    ahead: vec3,
+}
+
+fn basis(m: mat3) -> Basis {
+    Basis {
+        right: flip(m * vec3(-1.0, 0.0, 0.0)),
+        up: flip(m * vec3(0.0, 1.0, 0.0)),
+        ahead: flip(m * vec3(0.0, 0.0, 1.0)),
+    }
+}
+
+/// `v` in frame `b` (its right, up and ahead).
+fn into(b: Basis, v: vec3) -> vec3 {
+    vec3(dot(v, b.right), dot(v, b.up), dot(v, b.ahead))
+}
+
+/// The pitch, yaw and roll (`pose::euler`'s) of the turn whose right, up and ahead are `b`'s.
+fn angles(b: Basis) -> vec3 {
+    vec3(asin(clamp(-b.ahead.y, -1.0, 1.0)), atan2(b.ahead.x, b.ahead.z), atan2(b.right.y, b.up.y))
+}
+
+/// Frame `b` seen from frame `a`: each of its axes in `a`'s.
+fn within(a: Basis, b: Basis) -> Basis {
+    Basis { right: into(a, b.right), up: into(a, b.up), ahead: into(a, b.ahead) }
+}
+
+/// A quaternion's frame.
+fn basis_of(q: Quat) -> Basis {
+    Basis {
+        right: q.rotate(vec3(1.0, 0.0, 0.0)),
+        up: q.rotate(vec3(0.0, 1.0, 0.0)),
+        ahead: q.rotate(vec3(0.0, 0.0, 1.0)),
+    }
+}
+
+/// A capture ready to be posed: its rig, its frames' values, its joints, its scale into a
+/// pose's units, the floor's height (its own units), and the foot's rest pitch.
+pub struct Capture: Clone {
+    pub rig: Rig,
+    pub frames: Vec<Vec<f32>>,
+    pub joints: Joints,
+    pub scale: f32,
+    pub floor: f32,
+    pub rest_pitch: f32,
+    pub unit: f32,
+    /// Its frames a second (after `every`).
+    pub rate: f32,
+}
+
+/// The capture of skeleton `asf` and motion `amc`, every `every`th of its frames at `hz`.
+pub fn capture(asf: [u8], amc: [u8], hz: f32 = 120.0, every: u32 = 2) -> Capture {
+    let rig = read_rig(asf)
+    let frames = read_motion(rig, amc, every: every)
+    let j = joints(rig)
+    let unit = rig_unit(asf)
+    let scale = LEG / (rig.bones[j.lfemur].len + rig.bones[j.ltibia].len)
+    // The floor: the lowest a foot goes, less its ankle's height (the low tenth of the frames,
+    // so a stray low frame doesn't sink every other).
+    var lows: Vec<f32> = Vec::new()
+    for f in frames {
+        let p = posed(rig, f, unit)
+        lows.push(min(p.start[j.lfoot].y, p.start[j.rfoot].y))
+    }
+    lows.sort_by(|a, b| a < b)
+    let floor = lows[lows.len() / 10] - 0.085 / scale
+    let rest = rig.bones[j.lfoot].dir
+    Capture {
+        rig,
+        frames,
+        joints: j,
+        scale,
+        floor,
+        rest_pitch: asin(clamp(-normalize(rest).y, -1.0, 1.0)),
+        unit,
+        rate: hz / f32(every),
+    }
+}
+
+/// A rig's file's unit (the translation's: inches over its `length`), read as `read_rig` does.
+fn rig_unit(asf: [u8]) -> f32 {
+    // `read_rig` keeps lengths in metres; the root's translation is in the file's units, which
+    // the same `:units length` gives. Find it again.
+    let text_len = asf.len()
+    var i: u32 = 0
+    while i + 6 < text_len {
+        if asf[i] == 108 &&
+            asf[i + 1] == 101 &&
+            asf[i + 2] == 110 &&
+            asf[i + 3] == 103 &&
+            asf[i + 4] == 116 &&
+            asf[i + 5] == 104 {
+            // "length" in `:units`: the first one in the file.
+            var a = i + 6
+            while a < text_len && (asf[a] == 32 || asf[a] == 9) {
+                a += 1
+            }
+            var e = a
+            while e < text_len && asf[e] != 10 && asf[e] != 13 && asf[e] != 32 {
+                e += 1
+            }
+            return 2.54 / 100.0 / engine::mocap::number(asf, a, e)
+        }
+        i += 1
+    }
+    2.54 / 100.0
+}
+
+/// Joint `i`'s start in posed frame `p`, above floor `floor`, in the engine's frame and a pose's
+/// units (`scale`).
+fn pt(p: Posed, i: u32, floor: f32, scale: f32) -> vec3 {
+    flip(p.start[i] - vec3(0.0, floor, 0.0)) * scale
+}
+
+/// A foot of posed frame `p` (its ankle and ball joints) in ground frame `g` over `ground`: its
+/// ankle, its heel's lift (its pitch beyond `rest`) and its turn.
+fn foot_of(
+    p: Posed,
+    ankle: u32,
+    ball: u32,
+    floor: f32,
+    scale: f32,
+    g: Basis,
+    ground: vec3,
+    rest: f32,
+) -> (vec3, f32, f32) {
+    let a = pt(p, ankle, floor, scale)
+    let b = pt(p, ball, floor, scale)
+    let d = into(g, normalize(b - a))
+    let pitch = asin(clamp(-d.y, -1.0, 1.0))
+    (into(g, a - ground), max(pitch - rest, 0.0), atan2(d.x, d.z))
+}
+
+/// Frame `k` of capture `c` as a pose.
+pub fn pose_of(c: Capture, k: u32) -> Pose {
+    let j = c.joints
+    let p = posed(c.rig, c.frames[min(k, c.frames.len() - 1)], c.unit)
+    let s = c.scale
+    let fl = c.floor
+    let pelvis = basis(p.turn[j.root])
+    // The ground frame: under the pelvis, facing where the chest faces (a fighter's hips are
+    // turned from its target; its chest and head are what face it), found from the chest's
+    // left-to-right line, which stays level however the body bends or lies.
+    let across = basis(p.turn[j.thorax]).right
+    let h = atan2(-across.z, across.x)
+    let g = basis_of(Quat::axis_angle(vec3(0.0, 1.0, 0.0), h))
+    let root = pt(p, j.root, fl, s)
+    let ground = vec3(root.x, 0.0, root.z)
+    let hips = angles(within(g, pelvis))
+    let thorax = basis(p.turn[j.thorax])
+    let torso = angles(within(pelvis, thorax))
+    let head = angles(within(thorax, basis(p.turn[j.head])))
+    let qt = euler(hips).mul(euler(torso * 0.5)).mul(euler(torso * 0.5))
+    let chest = basis_of(qt)
+    let local = |v: vec3| into(chest, into(g, v))
+    let shoulder_r = pt(p, j.rhumerus, fl, s)
+    let shoulder_l = pt(p, j.lhumerus, fl, s)
+    let elbow_r = pt(p, j.rradius, fl, s)
+    let elbow_l = pt(p, j.lradius, fl, s)
+    let wrist_r = pt(p, j.rwrist, fl, s)
+    let wrist_l = pt(p, j.lwrist, fl, s)
+    let clav_r = local(shoulder_r - pt(p, j.rclavicle, fl, s))
+    let clav_l = local(shoulder_l - pt(p, j.lclavicle, fl, s))
+    // The feet: each ankle in the ground frame; its pitch (the heel's lift) and its turn.
+    let (fr, heel_r, yaw_r) = foot_of(p, j.rfoot, j.rtoes, fl, s, g, ground, c.rest_pitch)
+    let (fl2, heel_l, yaw_l) = foot_of(p, j.lfoot, j.ltoes, fl, s, g, ground, c.rest_pitch)
+    Pose {
+        lift: vec3(0.0, root.y - 0.98, 0.0),
+        hips: vec3(hips.x, hips.y, hips.z),
+        waist: torso * 0.5,
+        chest: torso * 0.5,
+        head,
+        shrug: vec2(
+            clamp(atan2(clav_r.y, abs(clav_r.x)), -0.3, 0.6),
+            clamp(atan2(clav_l.y, abs(clav_l.x)), -0.3, 0.6),
+        ),
+        upper_r: normalize(local(elbow_r - shoulder_r)),
+        fore_r: normalize(local(wrist_r - elbow_r)),
+        upper_l: normalize(local(elbow_l - shoulder_l)),
+        fore_l: normalize(local(wrist_l - elbow_l)),
+        reach: vec2(1.0),
+        foot_r: fr,
+        foot_l: fl2,
+        heel: vec2(heel_r, heel_l),
+        toe_out: vec2(-yaw_r, yaw_l),
+        free: vec2(smoothstep(0.12, 0.2, fr.y), smoothstep(0.12, 0.2, fl2.y)),
+    }
+}
+
+/// Pose `p` mirrored left for right: a southpaw's from an orthodox fighter's.
+pub fn mirrored(p: Pose) -> Pose {
+    let m = |v: vec3| vec3(-v.x, v.y, v.z)
+    let turn = |a: vec3| vec3(a.x, -a.y, -a.z)
+    Pose {
+        lift: m(p.lift),
+        hips: turn(p.hips),
+        waist: turn(p.waist),
+        chest: turn(p.chest),
+        head: turn(p.head),
+        shrug: vec2(p.shrug.y, p.shrug.x),
+        upper_r: m(p.upper_l),
+        fore_r: m(p.fore_l),
+        upper_l: m(p.upper_r),
+        fore_l: m(p.fore_r),
+        reach: vec2(p.reach.y, p.reach.x),
+        foot_r: m(p.foot_l),
+        foot_l: m(p.foot_r),
+        heel: vec2(p.heel.y, p.heel.x),
+        toe_out: vec2(p.toe_out.y, p.toe_out.x),
+        free: vec2(p.free.y, p.free.x),
+    }
+}
+
+/// Every frame of capture `c` from `from` to `to` (its own frames), as poses, mirrored if
+/// `mirror`.
+pub fn poses_of(c: Capture, from: u32, to: u32, mirror: bool = false) -> Vec<Pose> {
+    var out: Vec<Pose> = Vec::new()
+    for k in from..min(to, c.frames.len()) {
+        let p = pose_of(c, k)
+        out.push(if mirror { mirrored(p) } else { p })
+    }
+    out
+}
+
+/// Poses `ps` (at `rate` a second) at time `t` (s), between the frames either side.
+pub fn played(ps: [Pose], rate: f32, t: f32) -> Pose {
+    let f = clamp(t * rate, 0.0, f32(ps.len() - 1))
+    let a = u32(floor(f))
+    let b = min(a + 1, ps.len() - 1)
+    pose::mixed(ps[a], ps[b], f - f32(a))
+}
+
+/// The posed capture (for checks).
+pub fn posed_frame(c: Capture, k: u32) -> Posed {
+    posed(c.rig, c.frames[k], c.unit)
+}
