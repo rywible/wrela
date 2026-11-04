@@ -1,5 +1,5 @@
-// The skiff: a small open boat of planks, its two thwarts, and an oar shipped across it, where the
-// sea holds it (`Shot::boat` and its axes).
+// The skiff: a small open boat of planks, its two thwarts, and its traveller with a paddle,
+// where the sea holds it (`Shot::boat` and its axes).
 
 use look::{Shot, noise}
 
@@ -101,24 +101,64 @@ pub fn figure(q: vec3) -> f32 {
     d
 }
 
+/// The paddle as the stroke holds it (the skiff's frame): its grip's top and the blade's middle,
+/// and how far the blade is sunk (0 out of the water, 1 in it). At rest it lies across the
+/// traveller's knees, its blade over the side; paddling (`s.pull`), it reaches forward to the
+/// catch, is drawn back through the water past the hip, then lifted and swung forward again.
+pub fn paddle(s: Shot) -> (vec3, vec3, f32) {
+    let ph = fract(s.stroke)
+    let in_water = ph < 0.62
+    let u = if in_water { ph / 0.62 } else { (ph - 0.62) / 0.38 }
+    let e = u * u * (3.0 - 2.0 * u)
+    let z = if in_water { mix(-0.1, -1.15, e) } else { mix(-1.15, -0.1, e) }
+    let lift = if in_water { 0.0 } else { sin(u * 3.14159) }
+    let blade = vec3(0.8 + 0.08 * lift, -0.4 + 0.46 * lift, z)
+    let grip = vec3(0.16, 0.52 + 0.06 * lift, -0.62 + (z + 0.6) * 0.3)
+    // The paddle is 1.3 m from its grip to its blade's middle.
+    let along = normalize(blade - grip)
+    let rest_grip = vec3(-0.42, 0.2, -0.44)
+    let rest_blade = vec3(0.92, 0.14, -0.3)
+    let a = smoothstep(0.05, 0.45, abs(s.pull))
+    let g = mix(rest_grip, grip, a)
+    let b = mix(rest_blade, grip + along * 1.3, a)
+    let sunk = if in_water { smoothstep(0.0, 0.12, u) * smoothstep(1.0, 0.85, u) } else { 0.0 }
+    (g, b, sunk * a)
+}
+
+/// The paddle and the traveller's arms on it (`q`, the skiff's frame): the paddle's distance and
+/// the sleeves'.
+pub fn paddle_and_arms(s: Shot, q: vec3) -> vec2 {
+    let (g, b, _) = paddle(s)
+    let along = normalize(b - g)
+    // The shaft, its T-grip, and the blade: flat, its face square to the pull.
+    var wood = sd_capsule(q, g, b - along * 0.22, 0.017)
+    let across = normalize(cross(along, vec3(0.0, 0.0, 1.0)) + vec3(0.0, 0.0, 0.001))
+    wood = min(wood, sd_capsule(q, g - across * 0.06, g + across * 0.06, 0.02))
+    let bq = q - b
+    let face = normalize(cross(along, across))
+    wood = min(
+        wood,
+        sd_box(vec3(dot(bq, across), dot(bq, along), dot(bq, face)), vec3(0.085, 0.24, 0.012)) -
+            0.006,
+    )
+    // The arms, in the cloak's sleeves: the inboard hand on the grip, the other low on the shaft.
+    let a = smoothstep(0.05, 0.45, abs(s.pull))
+    let top = g + along * mix(0.25, 0.0, a)
+    let low = g + along * mix(0.8, 0.55, a)
+    var arms = sd_capsule(q, vec3(-0.17, 0.34, -0.7), top, 0.048)
+    arms = min(arms, sd_capsule(q, vec3(0.17, 0.34, -0.7), low, 0.048))
+    vec2(wood, arms)
+}
+
 /// The skiff at `p` (the world's): its distance.
 pub fn skiff(s: Shot, p: vec3) -> f32 {
     let q = local(s, p)
-    var d = min(hull(q), figure(q))
+    let pa = paddle_and_arms(s, q)
+    var d = min(min(hull(q), figure(q)), min(pa.x, pa.y))
     // Two thwarts and the stern's seat.
     d = min(d, sd_box(q - vec3(0.0, -0.10, 0.45), vec3(0.52, 0.025, 0.11)))
     d = min(d, sd_box(q - vec3(0.0, -0.12, -0.75), vec3(0.58, 0.025, 0.12)))
     d = min(d, sd_box(q - vec3(0.0, -0.05, -1.75), vec3(0.32, 0.025, 0.25)))
-    // The oar, shipped: its loom across the gunwales, its blade over the side.
-    d = min(d, sd_capsule(q, vec3(-0.30, 0.05, -0.10), vec3(1.45, -0.05, 1.10), 0.028))
-    let blade = q - vec3(1.62, -0.08, 1.24)
-    d = min(
-        d,
-        sd_box(
-            vec3(blade.x * 0.83 - blade.z * 0.56, blade.y, blade.x * 0.56 + blade.z * 0.83),
-            vec3(0.08, 0.012, 0.26),
-        ),
-    )
     d
 }
 
@@ -144,9 +184,14 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let inside = smoothstep(0.3, 0.6, dot(n, s.boat_y))
     a = mix(a, vec3(0.42, 0.30, 0.20), inside * 0.5)
     let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
+    // The paddle: oiled ash, darkened by the water.
+    let pa = paddle_and_arms(s, q)
+    if pa.x < 0.006 {
+        return (mix(vec3(0.28, 0.17, 0.09), vec3(0.4, 0.27, 0.15), grain), 0.5, 1.0)
+    }
     // The traveller's cloak: a weathered madder red, darker in its folds, its hood's lining
-    // shadowed.
-    if figure(q) < 0.006 {
+    // shadowed. Its sleeves too.
+    if figure(q) < 0.006 || pa.y < 0.006 {
         let fold = noise(vec2(atan2(q.z + 0.74, q.x) * 6.0, q.y * 3.0))
         let cloak = mix(vec3(0.32, 0.07, 0.05), vec3(0.5, 0.13, 0.08), fold)
         return (cloak, 0.9, sin(atan2(q.z + 0.74, q.x) * 5.0 + q.y * 3.0) + 0.92)

@@ -279,7 +279,7 @@ pub fn ink(
     let lifted = if m0.y == SKY {
         band(noise(px / (scale * 14.0) + vec2(seed * 0.4, 3.0)), 0.38, 0.08)
     } else { 1.0 }
-    let faint = mix(1.0, 0.62, clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) * (1.0 - band(energy, 0.3, 0.1)))
+    let faint = mix(1.0, 0.72, clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) * (1.0 - band(energy, 0.3, 0.1)))
     let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0) * lifted * faint
     // The palette drains toward ink and paper as the energy rises past the middle: three values,
     // and hatching in the middle one, as a page of manga.
@@ -327,10 +327,14 @@ pub fn ink(
     // Toward the sun the sea glitters: points of it on the swell's backs, thick near the
     // horizon under the sun, thinning toward the eye and away from the sun's side.
     let dv = ray(s, px)
+    // (Seen from high up, only round the sun's mirror point: as far below the horizon as the sun
+    // is above it, give or take what the waves' slopes throw.)
+    let mirror_dip = (-dv.y - light.sun.y) / 0.3
     let toward = pow(
         max(dot(normalize(vec2(dv.x, dv.z)), normalize(vec2(light.sun.x, light.sun.z))), 0.0),
         60.0,
-    )
+    ) *
+        exp(-mirror_dip * mirror_dip * 0.5)
     if m0.y == SEA {
         // Between the sparks the swell's backs stand darker against the glare.
         c *= 1.0 - 0.18 * toward * s.style
@@ -352,7 +356,9 @@ pub fn ink(
         let sm = at(marks, centre, size)
         if sm.y == SEA && sm.x > 4.0 {
             let horizonward = clamp((sm.x - 4.0) / 6.0, 0.0, 1.0)
-            let dense = toward * (0.35 + 0.65 * horizonward) * (0.25 + 0.75 * patch)
+            // (Not out where the sea is given to the air of the horizon.)
+            let given = 1.0 - smoothstep(13.2, 15.0, sm.x)
+            let dense = toward * (0.35 + 0.65 * horizonward) * (0.25 + 0.75 * patch) * given
             // Thickest where the water is already bright: on the faces of the swell that hold the sun.
             let bright = smoothstep(0.35, 0.75, luma(c0))
             if sh < dense * (0.45 + 0.9 * bright) * s.style {
@@ -383,6 +389,9 @@ pub fn ink(
     c *= 1.0 - 0.18 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
     // The top of the sky deepened to a richer blue, as a painter grades it, so the eye falls to
     // the light.
-    c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), smoothstep(0.45, 0.0, px.y / size.y) * s.style)
+    // (The sky alone: over the rock and its building it would grey them into the air.)
+    if m0.y == SKY {
+        c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), smoothstep(0.45, 0.0, px.y / size.y) * s.style)
+    }
     vec4(c, 1.0)
 }

@@ -36,7 +36,7 @@ fn weather() -> Weather {
         clouds: Vec::from(
             [
                 Cumulus { at: vec2(14000.0, 17500.0), wide: 7000.0, tall: 3200.0 },
-                Cumulus { at: vec2(-7000.0, 21500.0), wide: 8000.0, tall: 1900.0 },
+                Cumulus { at: vec2(-9800.0, 21500.0), wide: 8000.0, tall: 1900.0 },
                 Cumulus { at: vec2(26000.0, 22000.0), wide: 10000.0, tall: 600.0 },
             ],
         ),

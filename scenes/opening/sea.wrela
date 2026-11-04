@@ -105,16 +105,17 @@ pub fn normal(p: vec2, t: f32, detail: f32, e: f32) -> vec3 {
     normalize(vec3(-hx, 2.0 * e, -hz) / (2.0 * e) + vec3(ripple.x, 0.0, ripple.y))
 }
 
-/// Where the sea holds the skiff at time `t`, and its axes (across, up, along): it rides the
-/// swell, pitched and rolled by its slope, slowly turning.
-pub fn bob(t: f32) -> (vec3, vec3, vec3, vec3) {
-    let c = vec2(0.0, 0.0)
+/// Where the sea holds the skiff at time `t`, at `at` (x, z) and steered `steer` from its drift,
+/// and its axes (across, up, along): it rides the swell, pitched and rolled by its slope, slowly
+/// turning.
+pub fn bob(t: f32, at: vec2, steer: f32) -> (vec3, vec3, vec3, vec3) {
+    let c = at
     let y = height(c, t, 0.4) * 0.85 + 0.22
     let n = normal(c, t, 0.4, 1.6)
-    let yaw = -0.22 + 0.05 * sin(t * 0.23)
+    let yaw = -0.22 + 0.05 * sin(t * 0.23) + steer
     let along0 = vec3(sin(yaw), 0.0, cos(yaw))
     let up = normalize(mix(vec3(y: 1.0), n, 0.7))
     let across = normalize(cross(up, along0))
     let along = cross(across, up)
-    (vec3(0.0, y, 0.0), across, up, along)
+    (vec3(c.x, y, c.y), across, up, along)
 }

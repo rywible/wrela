@@ -10,12 +10,15 @@
 // draw. The second (`ink`) tones it for the screen and lays the ink on the forms, light when it's
 // quiet, fraying as the moment turns kinetic.
 //
-// The water and the skiff move on twos (`HELD`).
+// The water and the skiff move on twos (`HELD`). The player rows the skiff (`row`): W paddles,
+// S backs water, A and D steer, and the camera swings round after it.
 
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use paint::paint
 use ink::ink
+use row::{Rig, key, rest, step}
+use std::input::events
 use std::gpu::{
     ClipPosition, Rgba16Float, Rgba8, Sampler, Texture, VertexIndex, begin_pass3, begin_screen_pass,
     draw, texture,
@@ -44,11 +47,14 @@ pub struct State {
     normal: Texture<Rgba8>,
     width: u32,
     height: u32,
+    /// The skiff as the player rows it.
+    rig: Rig,
 }
 
 fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
     State {
         heavens,
+        rig: rest(),
         colour: texture(width: width, height: height),
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
@@ -77,7 +83,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let shot = Shot { style: STYLE, ..shot_at(START + time, width, height, KINETIC, VIEW) }
+    // The player's keys: W paddles, S backs water, A and D steer.
+    for e in events() {
+        key(mut s.rig, e)
+    }
+    step(mut s.rig, START + time)
+    let shot = Shot { style: STYLE, ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig) }
     s.heavens.step(shot.eye, shot.forward, START + time)
     borrow hv = s.heavens
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, clear: vec4(0.0))

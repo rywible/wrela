@@ -1,12 +1,13 @@
-// The rock floating in the sky and its cathedral, massive and far: an inverted mountain of
-// bedded stone hewn into planes, with spurs hanging under it and chunks drifting by; on its
-// plateau a gothic cathedral hundreds of metres tall, its nave and aisles, flying buttresses,
-// pinnacles, transept, crossing tower and spires gilded at their tips, its lancets and rose
-// window lit from within.
+// The rock floating in the sky and the one building on it, massive and far: an inverted mountain
+// of bedded stone hewn into planes, with spurs hanging under it; on its plateau a castle's keep of
+// the rock's own stone, battered, buttressed and machicolated, round towers at its corners, and
+// standing on it a gothic cathedral hundreds of metres tall: its nave and aisles, flying
+// buttresses, pinnacles, transept, lantern tower, twin west towers and their spires gilded at
+// their tips, its lancets and roses lit from within.
 //
 // Distances are built at a model's scale and drawn `SCALE` times it (`isle`).
 
-use look::{GILT, GLASS, HOUSE, ISLE, ROOF, ROCK, STONE, TILE, band, fbm3, hash3, noise, noise3}
+use look::{GILT, GLASS, ISLE, ROOF, ROCK, STONE, fbm3, hash3, noise, noise3}
 
 /// How much larger the isle is drawn than it's modelled.
 pub const SCALE: f32 = 4.5
@@ -104,30 +105,32 @@ fn hewn(q: vec3, s: f32, turn: f32) -> f32 {
     // Its fractures, running down it, and its beds' ledges.
     let fracture = 1.0 - abs(noise3(p * vec3(0.035, 0.006, 0.035)) * 2.0 - 1.0)
     d += fracture * fracture * 7.0
+    // (Not just under the plateau's lip, where a ledge would stand out against the sky as a
+    // slab of its own.)
+    let lip = smoothstep(-4.0, -34.0, p.y)
     d += smoothstep(
         0.3,
         0.55,
         fract(p.y / 23.0 + noise(vec2(ang * 3.0, 3.0)) * 0.9 + noise3(p * 0.03) * 0.6),
     ) *
-        2.2
+        2.2 *
+        lip
     // Its great ledges: a few deep beds, each overhanging the one under it.
-    d += smoothstep(0.15, 0.6, fract(p.y / 61.0 + noise(vec2(ang * 2.0, 9.0)) * 0.35)) * 4.5
+    d += smoothstep(0.15, 0.6, fract(p.y / 61.0 + noise(vec2(ang * 2.0, 9.0)) * 0.35)) * 4.5 * lip
     d += (fbm3(p * 0.04, 3) - 0.5) * 5.0 + (noise3(p * 0.35) - 0.5) * 1.0
     d * s
 }
 
-/// Where the cathedral stands on the plateau (the world's m, from the isle's centre), and its
-/// bay: every 9 m along nave and choir, a window, a buttress, a flyer.
-const SITE = vec3(-50.0, 72.0, -60.0)
+/// Where the cathedral stands on the plateau (the world's m, from the isle's centre: its floor,
+/// the keep's top, 156 m over the plateau), and its bay: every 9 m along nave and choir, a window,
+/// a buttress, a flyer.
+const SITE = vec3(0.0, 165.0, -30.0)
 const BAY: f32 = 9.0
-/// The hill the town climbs to the cathedral (the model's m): its crown, how high, how wide.
-const HILL_AT = vec2(-4.0, -13.0)
-const HILL: f32 = 16.0
-const HILL_FOOT: f32 = 72.0
 
-/// How far the cathedral is turned on its hill (radians): its west front swung toward the sea's
-/// eye, so its flank and its spires stand apart, not in one file.
-const TURN: f32 = 0.5
+/// How far the cathedral is turned on the plateau (radians): its length along the plateau's
+/// longer axis, its west front swung half toward the sea's eye, so its flank shows its length and
+/// its two west spires stand apart.
+const TURN: f32 = 2.69
 
 /// `w` (the world's m, from the isle's centre) in the cathedral's own frame and size.
 fn at_church(w: vec3) -> vec3 {
@@ -137,16 +140,9 @@ fn at_church(w: vec3) -> vec3 {
     vec3(c * r.x + n * r.z, r.y, -n * r.x + c * r.z) / GRAND
 }
 
-/// The hill's height at `xz` (the model's m), 0 at its foot.
-fn hill(xz: vec2) -> f32 {
-    HILL * smoothstep(HILL_FOOT, 14.0, length(xz - HILL_AT))
-}
-
-/// The town's lots (the world's m): a house to each, or a yard.
-const LOT: f32 = 18.0
 /// How much grander than the great cathedrals of the world this one is built: every part of it,
 /// its doors and its windows too.
-const GRAND: f32 = 2.0
+const GRAND: f32 = 3.0
 
 /// A pointed arch's outline (an equilateral lancet): `x` across it, `y` up from its sill,
 /// `hw` its half-width, `h` the height its arch springs at. Inside, negative.
@@ -175,9 +171,9 @@ fn roof_x(p: vec3, x0: f32, x1: f32, half: f32, eaves: f32, pitch: f32) -> f32 {
     max(max(abs(p.x - (x0 + x1) * 0.5) - (x1 - x0) * 0.5, eaves - p.y), slope)
 }
 
-/// One of the spire-forest's towers (the model's m, from its foot): an octagonal shaft `r` wide
-/// up to `h0`, ringed by string courses, then a spire that swells a little as it tapers to its
-/// tip at `h`, frilled with crockets. Its distance, and its gilded tip's.
+/// An octagonal tower and its spire (the model's m, from its foot): a shaft `r` wide up to `h0`,
+/// ringed by string courses, then a spire that swells a little as it tapers to its tip at `h`,
+/// frilled with crockets. Its distance, and its gilded tip's.
 fn spire_tower(p: vec3, r: f32, h0: f32, h: f32) -> vec2 {
     let a = abs(vec2(p.x, p.z))
     let o = max(max(a.x, a.y), (a.x + a.y) * 0.7071)
@@ -191,33 +187,90 @@ fn spire_tower(p: vec3, r: f32, h0: f32, h: f32) -> vec2 {
     vec2(min(shaft, spire), tip)
 }
 
-/// The flanks' and the apse's slender spires: where (x, |z|), the shaft's height and how wide.
-const APOSTLES = [
-    vec4(-30.0, 15.0, 78.0, 3.4),
-    vec4(-12.0, 15.5, 92.0, 3.6),
-    vec4(4.0, 16.0, 104.0, 3.8),
-    vec4(60.0, 16.0, 100.0, 3.8),
-    vec4(74.0, 15.0, 88.0, 3.5),
-    vec4(98.0, 18.0, 70.0, 3.2),
-    vec4(-48.0, 14.5, 66.0, 3.2),
-    vec4(108.0, 7.0, 60.0, 3.0),
-]
+/// The keep the cathedral stands on (the model's m, from `SITE`): 238 m by 120, 40 m high above
+/// the plateau and sunk into the rock below it, its walls battered out at the foot, ribbed with
+/// buttresses with blind arcades between them and arrow-slit lights, a machicolated gallery and
+/// battlements round its top; a round tower at each corner and two along each flank, each with
+/// its conical slate roof. Its stone, its slates and its lights.
+fn keep(p: vec3) -> vec3 {
+    let k = vec3(p.x - 17.0, p.y, abs(p.z))
+    let ax = abs(k.x)
+    let batter = max(-6.0 - p.y, 0.0) * 0.14
+    var wall = sd_box(k - vec3(0.0, -31.0, 0.0), vec3(119.0 + batter, 33.4, 60.0 + batter)) * 0.98
+    // Which face is nearer: a flank's (along x) or an end's (along z), and where along it.
+    let flank = k.z - 60.0 > ax - 119.0
+    let along = if flank { k.x } else { k.z }
+    let face = if flank { k.z } else { ax + 59.0 }
+    // Buttresses every 12 m, and between them blind arcades, each with a slit of light.
+    let pa = along - 12.0 * round(along / 12.0)
+    let pier = sd_box(
+        vec3(pa, p.y + 33.0, face - 60.0 - batter - 1.0),
+        vec3(1.7, 32.0, 2.2),
+    )
+    let ba = along - 12.0 * round((along - 6.0) / 12.0) - 6.0
+    let arch = lancet(ba, p.y + 50.0, 3.4, 30.0)
+    let blind = max(arch, 60.0 + batter - 1.3 - face)
+    wall = max(wall, -blind)
+    let slit = lancet(ba, p.y + 36.0, 0.55, 7.0)
+    wall = max(wall, -max(slit, 60.0 + batter - 3.0 - face))
+    var light = max(slit, abs(face - 60.0 - batter + 2.4) - 0.1)
+    wall = min(wall, pier)
+    // The machicolated gallery round the top, on its corbels, and the battlements on it.
+    wall = min(wall, sd_box(k - vec3(0.0, -0.4, 0.0), vec3(121.2, 2.8, 62.2)))
+    let ca = along - 2.2 * round(along / 2.2)
+    let corbel = max(abs(ca) - 0.5, max(abs(p.y + 4.3) - 1.2, face - 61.8))
+    wall = min(wall, max(corbel, 59.5 - face))
+    let parapet = max(
+        sd_box(k - vec3(0.0, 4.3, 0.0), vec3(121.2, 1.9, 62.2)),
+        -sd_box(k - vec3(0.0, 4.3, 0.0), vec3(120.0, 3.0, 61.0)),
+    )
+    let ga = along - 3.4 * round(along / 3.4)
+    wall = min(wall, max(parapet, -max(abs(ga) - 0.7, 4.6 - p.y)))
+    // The round towers: at the corners and along the flanks, battered, rising well over the wall
+    // walk, machicolated and battlemented, flat-topped as a fortress's are.
+    var slate = 1.0e5
+    let t1 = vec2(ax - 119.0, k.z - 60.0)
+    let t2 = vec2(ax - 52.0, k.z - 62.0)
+    let corner = length(t1) < length(t2) + 3.0
+    let tq = if corner { t1 } else { t2 }
+    let r = if corner { 12.0 } else { 9.0 }
+    let tr = length(tq)
+    let tb = max(-12.0 - p.y, 0.0) * 0.12
+    let top_ = if corner { 30.0 } else { 22.0 }
+    wall = min(wall, max(tr - r - tb, max(p.y - top_, -66.0 - p.y)) * 0.98)
+    wall = min(wall, max(tr - r - 1.6, abs(p.y - top_ + 0.6) - 2.6))
+    let tang = atan2(tq.y, tq.x)
+    let tm = (tang / 6.2832 * r * 6.2832 / 3.0)
+    let merlon = abs(tm - round(tm)) - 0.22
+    wall = min(
+        wall,
+        max(
+            max(abs(tr - r - 1.0) - 0.6, abs(p.y - top_ - 3.8) - 1.8),
+            -max(merlon, top_ + 3.4 - p.y),
+        ),
+    )
+    let tl = lancet((tm - round(tm)) * 3.0, p.y - top_ + 16.0, 0.6, 6.0)
+    wall = max(wall, -max(tl, r - 1.5 - tr))
+    light = min(light, max(tl, abs(tr - r + 0.6) - 0.1))
+    vec3(wall, slate, light)
+}
 
-/// The cathedral in true size, as the great gothic ones are built (the world's m, from `SITE`):
-/// nave and choir 144 m long in sixteen bays, double aisles, two tiers of flyers, a transept with
-/// roses, a crossing lantern and spire, an apse ringed by chapels, and twin west towers of
-/// 175 m. The distance and the material (`STONE`, `GILT`, `GLASS`, `ROOF`).
+/// The cathedral in true size, as the great gothic ones are built (the world's m, from `SITE`),
+/// on its keep: nave and choir 144 m long in sixteen bays, double aisles, two tiers of flyers, a
+/// transept with roses, a lantern tower and spire over the crossing, an apse ringed by chapels,
+/// and twin west towers of 175 m. The distance and the material (`STONE`, `GILT`, `GLASS`,
+/// `ROOF`).
 fn church(p: vec3) -> vec2 {
     // Far from it, its box.
-    let outer = sd_box(p - vec3(18.0, 140.0, 0.0), vec3(104.0, 142.0, 66.0))
+    let outer = sd_box(p - vec3(17.0, 60.0, 0.0), vec3(126.0, 127.0, 72.0))
     if outer > 4.0 {
         return vec2(outer, STONE)
     }
     let az = abs(p.z)
-    // The terrace it stands on.
-    var stone = sd_box(p - vec3(18.0, -9.0, 0.0), vec3(100.0, 11.4, 56.0))
-    var glass = 1.0e5
-    var roof = 1.0e5
+    let kp = keep(p)
+    var stone = kp.x
+    var glass = kp.z
+    var roof = kp.y
     var gilt = 1.0e5
     // The bay this point is in, along nave and choir (sixteen, from -58 to 86).
     let k = clamp(floor((p.x + 58.0) / BAY), 0.0, 15.0)
@@ -300,31 +353,25 @@ fn church(p: vec3) -> vec2 {
     let gable = max(abs(t.z - 45.6) - 0.6, max(44.0 - t.y, abs(t.x) * 1.45 + t.y - 58.5))
     stone = min(stone, gable)
     roof = min(roof, roof_x(vec3(t.z - 23.0, t.y, t.x), -23.0, 23.0, 10.0, 44.0, 1.45))
-    // The spire-forest: over the crossing the great tower, the tallest; round it four more;
-    // a tall one over the apse; and before each transept's front, four slender ones, a front
-    // of spires. Highest in the middle, falling away to the ends, as the eye climbs it.
-    let central = spire_tower(p - vec3(32.0, 0.0, 0.0), 15.0, 120.0, 272.0)
-    stone = min(stone, central.x)
-    gilt = min(gilt, central.y)
-    let ev = spire_tower(vec3(abs(p.x - 32.0) - 17.0, p.y, az - 17.0), 6.5, 95.0, 190.0)
-    stone = min(stone, ev.x)
-    gilt = min(gilt, ev.y)
-    let ap = spire_tower(p - vec3(86.0, 0.0, 0.0), 10.5, 100.0, 210.0)
-    stone = min(stone, ap.x)
-    gilt = min(gilt, ap.y)
-    let tx = abs(p.x - 32.0)
-    let inner = spire_tower(vec3(tx - 10.5, p.y, az - 50.0), 4.6, 62.0, 150.0)
-    let outer_t = spire_tower(vec3(tx - 20.0, p.y, az - 50.0), 4.4, 55.0, 130.0)
-    stone = min(stone, min(inner.x, outer_t.x))
-    gilt = min(gilt, min(inner.y, outer_t.y))
-    // And the forest's undergrowth: slender spires on the flanks' buttresses and round the apse,
-    // each its own height, so the crown climbs in many steps to the great tower.
-    for i in 0..8 {
-        let a_ = APOSTLES[i]
-        let sp = spire_tower(vec3(p.x - a_.x, p.y, az - a_.y), a_.w, a_.z, a_.z + 34.0 + a_.w * 9.0)
-        stone = min(stone, sp.x)
-        gilt = min(gilt, sp.y)
-    }
+    // Over the crossing, the lantern tower: square to the ridge and a stage above it, with its
+    // paired belfry lights and corner pinnacles; on it an octagon of tall lights; then its spire.
+    let c = vec3(p.x - 32.0, p.y, p.z)
+    let ca = abs(vec2(c.x, c.z))
+    var lantern = sd_box(c - vec3(0.0, 60.0, 0.0), vec3(11.5, 19.0, 11.5))
+    let cf = min(ca.x, ca.y)
+    let cd = max(ca.x, ca.y)
+    let cl = lancet(abs(cf) - 4.2, c.y - 52.0, 2.3, 16.0)
+    lantern = max(lantern, -max(cl, 8.5 - cd))
+    let cc = vec3(ca.x - 11.0, c.y, ca.y - 11.0)
+    lantern = min(lantern, sd_box(cc - vec3(0.0, 60.0, 0.0), vec3(1.9, 20.0, 1.9)))
+    stone = min(stone, sd_spire(cc - vec3(0.0, 80.0, 0.0), 2.1, 15.0))
+    let spire = spire_tower(c, 9.0, 99.0, 152.0)
+    let c8 = max(max(ca.x, ca.y), (ca.x + ca.y) * 0.7071)
+    let cang = atan2(c.z, c.x)
+    let cs = cang - 0.7854 * round(cang / 0.7854)
+    let ll = lancet(length(vec2(c.x, c.z)) * cs, c.y - 81.0, 1.7, 11.0)
+    stone = min(stone, max(min(lantern, spire.x), -max(ll, 7.2 - c8)))
+    gilt = min(gilt, spire.y)
     // The apse: the choir's end rounded, its tall windows, the ambulatory round it, and five
     // chapels ringing that, each with its own pointed roof.
     let a = vec3(p.x - 86.0, p.y, p.z)
@@ -438,87 +485,18 @@ fn church(p: vec3) -> vec2 {
     best
 }
 
-/// A shard broken off the rock: `hewn`, squashed by `squash` so each is its own shape.
-fn shard(q: vec3, s: f32, turn: f32, squash: vec3) -> f32 {
-    hewn(q * squash, s, turn) / max(squash.x, max(squash.y, squash.z))
-}
-
 /// The rock and its cathedral at `p` (the world's): the distance, and which material.
 pub fn isle(p: vec3) -> vec2 {
     let q = (p - ISLE) / SCALE / vec3(1.25, 1.0, 1.0)
     var d = hewn(q, 1.0, 0.0)
-    // The plateau's top, cut level; and the hill the town climbs, to the cathedral at its crown.
+    // The plateau's top, cut level.
     d = max(d, q.y - 2.0)
-    let rise = max(
-        max(q.y - hill(vec2(q.x, q.z)), -q.y - 6.0),
-        length(vec2(q.x, q.z) - HILL_AT) - HILL_FOOT,
-    )
-    d = min(d, rise * 0.9)
-    // Chunks drifting under it.
-    // Shards broken off it, trailing below and beside it, each its own shape.
-    d = min(d, shard(q - vec3(-122.0, -140.0, -30.0), 0.16, 1.3, vec3(1.0, 1.7, 0.7)))
-    d = min(d, shard(q - vec3(112.0, -92.0, -60.0), 0.11, 2.6, vec3(0.8, 1.3, 1.2)))
-    d = min(d, shard(q - vec3(36.0, -178.0, -10.0), 0.07, 4.1, vec3(1.3, 2.0, 0.9)))
-    d = min(d, shard(q - vec3(-60.0, -52.0, -165.0), 0.05, 0.4, vec3(1.0, 1.4, 1.5)))
-    d = min(d, shard(q - vec3(-18.0, -186.0, -40.0), 0.035, 5.3, vec3(1.6, 2.2, 1.0)))
-    d = min(d, shard(q - vec3(70.0, -150.0, -95.0), 0.03, 2.0, vec3(1.0, 1.8, 1.3)))
     var best = vec2(d * SCALE, ROCK)
     let c = church(at_church(p - ISLE))
     if c.x * GRAND < best.x {
         best = vec2(c.x * GRAND, c.y)
     }
-    let t = town(p - ISLE)
-    if t.x < best.x {
-        best = t
-    }
     best
-}
-
-/// The town packed round the cathedral's terrace, house against house to the plateau's edge:
-/// `w` from the isle's centre (the world's m). Its distance, and which (`HOUSE`, `TILE`).
-fn town(w: vec3) -> vec2 {
-    // Off the plateau's top and its hill, the slab the town stands in.
-    let slab = max(w.y - (HILL + 2.0) * SCALE - 30.0, -10.0 - w.y)
-    if slab > 0.0 {
-        return vec2(slab + 1.0, HOUSE)
-    }
-    // Off the plateau, how far it is.
-    let rm = length(vec2(w.x / (SCALE * 1.25), w.z / SCALE))
-    if rm > 84.0 {
-        return vec2((rm - 82.0) * SCALE, HOUSE)
-    }
-    let cell = floor(vec2(w.x, w.z) / LOT)
-    let mid = (cell + vec2(0.5)) * LOT
-    let l = vec2(w.x, w.z) - mid
-    let border = LOT * 0.5 - max(abs(l.x), abs(l.y))
-    let h1 = hash3(vec3(cell, 5.0))
-    let h2 = hash3(vec3(cell, 6.0))
-    let h3 = hash3(vec3(cell, 7.0))
-    let model = vec2(mid.x / (SCALE * 1.25), mid.y / SCALE)
-    let on_isle = length(model) < 82.0
-    let k = at_church(vec3(mid.x, 0.0, mid.y))
-    let by_church = k.x > -95.0 && k.x < 128.0 && abs(k.z) < 62.0
-    if !on_isle || by_church || h1 < 0.18 {
-        return vec2(max(border, 0.0) + 1.0, HOUSE)
-    }
-    // A house: its walls, its pitched roof along its longer side.
-    let hx = 3.5 + 3.5 * h2
-    let hz = 3.5 + 3.5 * h3
-    let tall = 5.0 + 11.0 * h1 * h1 + 6.0 * smoothstep(60.0, 20.0, length(model))
-    let top = max(hill(model), 0.0) * SCALE
-    let q = vec3(
-        l.x - (h3 - 0.5) * (LOT - 2.0 * hx - 2.0) * 0.5,
-        w.y - top,
-        l.y - (h2 - 0.5) * (LOT - 2.0 * hz - 2.0) * 0.5,
-    )
-    let walls = sd_box(q - vec3(0.0, tall * 0.5 - 14.0, 0.0), vec3(hx, tall * 0.5 + 14.0, hz))
-    let along_x = hx > hz
-    let across = if along_x { abs(q.z) } else { abs(q.x) }
-    let half = if along_x { hz } else { hx }
-    let length_ = if along_x { abs(q.x) - hx - 0.4 } else { abs(q.z) - hz - 0.4 }
-    let roof = max(length_, max(tall - q.y, (across * 1.0 + q.y - tall - half - 0.6) * 0.7071))
-    let house = if walls < roof { vec2(walls, HOUSE) } else { vec2(roof, TILE) }
-    vec2(min(house.x, max(border, 0.0) + 1.0), house.y)
 }
 
 /// The isle's normal at `p`, by its differences `e` m apart (a tetrahedron's four taps).
@@ -576,29 +554,6 @@ pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
             smoothstep(0.5, 0.7, noise3(q * 0.07))
         a = mix(a, vec3(0.12, 0.16, 0.08), moss * 0.7)
         (a, 0.9, 0.0, vec3(0.0), 1.0)
-    } else if id == HOUSE || id == TILE {
-        // The town: limewashed walls, ochre and white, and roofs of red tile or grey slate.
-        let w = p - ISLE
-        let cell = floor(vec2(w.x, w.z) / LOT)
-        let h = hash3(vec3(cell, 8.0))
-        let a = if id == HOUSE {
-            mix(vec3(0.72, 0.66, 0.55), vec3(0.62, 0.48, 0.32), h) * (0.9 + 0.2 * noise3(w * 0.5))
-        } else if h < 0.7 {
-            mix(vec3(0.42, 0.17, 0.09), vec3(0.55, 0.26, 0.13), hash3(vec3(cell, 9.0)))
-        } else {
-            vec3(0.2, 0.21, 0.24)
-        }
-        // A window lit here and there in a wall, the evening's first lamps.
-        // Each window its own: a pane between piers along the wall, between sills up it.
-        let along = (w.z * n.x - w.x * n.z) / 2.6 + h * 3.0
-        let up = w.y / 4.0 + h
-        let pane = (band(fract(along), 0.36, 0.04) - band(fract(along), 0.64, 0.04)) *
-            (band(fract(up), 0.4, 0.04) - band(fract(up), 0.62, 0.04))
-        let lit = hash3(vec3(floor(along), floor(up), h * 17.0 + 12.0)) < 0.3
-        let lamp = if id == HOUSE && lit && hash3(vec3(cell, 11.0)) < 0.5 {
-            vec3(1.0, 0.62, 0.28) * 0.9 * pane * smoothstep(0.4, 0.1, abs(n.y))
-        } else { vec3(0.0) }
-        (a, 0.85, 0.0, lamp, 1.0)
     } else if id == GILT {
         // Gilding: the crosses and the spires' tips, burnished.
         let wear = noise3(p * 0.3)
