@@ -370,7 +370,7 @@ pub const LUNGE_LOAD = Pose {
 
 /// The lunge: thrown long off the rear leg, the body level behind the straight rear arm.
 pub const LUNGE = Pose {
-    lift: vec3(0.0, -0.22, 0.35),
+    lift: vec3(0.0, -0.17, 0.2),
     hips: vec3(0.3, -0.35, 0.0),
     waist: vec3(0.1, -0.1, 0.0),
     chest: vec3(0.2, -0.2, 0.0),
@@ -381,8 +381,8 @@ pub const LUNGE = Pose {
     reach: vec2(1.12, 1.0),
     upper_l: vec3(-0.3, -0.55, -0.78),
     fore_l: vec3(0.2, 0.5, 0.84),
-    foot_r: vec3(0.2, 0.085, -0.65),
-    foot_l: vec3(-0.12, 0.085, 0.55),
+    foot_r: vec3(0.2, 0.085, -0.5),
+    foot_l: vec3(-0.12, 0.085, 0.42),
     heel: vec2(0.9, 0.0),
     toe_out: vec2(0.2, 0.1),
 }

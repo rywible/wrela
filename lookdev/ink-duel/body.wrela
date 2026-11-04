@@ -1,16 +1,15 @@
-// The duel's people: one humanoid body, built to a person's proportions (eight heads tall: the
-// figure drawing's canon), its forms the masses an anatomy class draws rather than a mannequin's
-// tubes: a ribcage wider at the top than the waist, a pelvis with the glutes behind it, the
-// trapezius sloping from the neck to the shoulder, deltoids capping the shoulders, a biceps and a
-// forearm's swell near the elbow, a quadriceps and a calf, a jaw and a nose, so the silhouette
-// reads as a person from any side. Its skeleton has clavicles (a shoulder shrugs), wrists and
+// The duel's people: one humanoid body, an anime figure's proportions (eight heads tall, long in
+// the leg, broad and square across the shoulders, narrow at the waist, a pointed chin, spiked
+// hair) drawn as an artist's mannequin: each limb one clean tapered form, each joint creased, so
+// the ink draws the figure's construction and its silhouette reads from any side without the
+// lumps of modelled muscle. Its skeleton has clavicles (a shoulder shrugs), wrists and
 // toes (a foot rolls off its ball), and is the same for every build; a build scales it and its
 // masses (`Build`), so a heavy brawler and a lean wanderer are one type, one set of pipelines.
 //
 // Andrew Loomis 1943, "Figure Drawing for All It's Worth": the eight-head figure and its masses.
 
 use engine::character::Shaded
-use engine::creature::{Body, Bone, Placed, Skeleton, Then, creature}
+use engine::creature::{Body, Bone, Placed, Skeleton, Then, crease, creature}
 use std::field::{Blend, Oval, RoundCone, Surface, Translate, With, oval, round_cone}
 
 /// A part's paint: its albedo, as the character's look reads it (`ByChannels`).
@@ -35,7 +34,7 @@ pub type Cone = Placed<With<RoundCone, Paint>>
 pub type Mass = Placed<With<Translate<Oval>, Paint>>
 
 /// The body: its parts, in the order `figure` joins them.
-pub type Figure = Body<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Mass, Mass>, Cone>, Mass>, Mass>, Cone>, Cone>, Mass>, Cone>, Cone>, Mass>, Mass>, Cone>, Mass>, Cone>, Mass>, Cone>, Mass>, Cone>, Cone>, Mass>, Cone>, Mass>, Cone>, Cone>>
+pub type Figure = Body<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Mass, Cone>, Mass>, Mass>, Cone>, Cone>, Mass>, Cone>, Mass>, Cone>, Cone>, Cone>, Cone>, Mass>, Cone>, Cone>, Mass>, Cone>, Cone>>
 
 /// Its bones, by name: its root (the pelvis), the small of its back, its chest, neck and head;
 /// each side's clavicle, shoulder, elbow and wrist; each side's hip, knee, ankle and toes (r: its
@@ -65,9 +64,11 @@ pub struct Bones: Copy {
 }
 
 /// A build: how tall (against 1.8 m), how broad across the shoulders and hips, how thick its
-/// masses are, and its colours: its coat (the torso and the upper arms, or its skin where it
-/// goes bare), its sash, its wraps (forearms and fists), its trousers, its skin and its hair; and
-/// its hair's shape (a tuft tied back, or a topknot: half axes and where on the head).
+/// forms are; its colours (its coat: the torso and upper arms, or its skin where it goes bare;
+/// its sash; its wraps on the forearms, fists and feet; its trousers; its skin; its hair); and its
+/// hair's shape: a cap (half axes, where on the head) and three spikes swept from it (the middle
+/// one's root and tip, and the side ones', mirrored), as an anime figure's hair reads in
+/// silhouette.
 pub struct Build: Copy {
     pub tall: f32 = 1.0,
     pub broad: f32 = 1.0,
@@ -78,37 +79,43 @@ pub struct Build: Copy {
     pub trousers: vec3,
     pub skin: vec3,
     pub hair: vec3,
-    pub hair_size: vec3,
-    pub hair_at: vec3,
+    pub cap: vec3,
+    pub cap_at: vec3,
+    pub spike: (vec3, vec3),
+    pub side: (vec3, vec3),
 }
 
-/// The wanderer: lean, in an indigo coat and a red sash, its forearms wrapped pale, its hair
-/// tied back.
+/// The wanderer: lean and long-legged, in an indigo coat and a red sash, its forearms wrapped
+/// pale, its hair swept back in spikes.
 pub const WANDERER = Build {
     coat: vec3(0.17, 0.19, 0.28),
-    sash: vec3(0.58, 0.08, 0.05),
-    wraps: vec3(0.80, 0.74, 0.62),
-    trousers: vec3(0.16, 0.16, 0.18),
-    skin: vec3(0.64, 0.45, 0.33),
-    hair: vec3(0.05, 0.04, 0.04),
-    hair_size: vec3(0.092, 0.075, 0.105),
-    hair_at: vec3(0.0, 0.165, -0.025),
+    sash: vec3(0.62, 0.08, 0.05),
+    wraps: vec3(0.82, 0.76, 0.64),
+    trousers: vec3(0.15, 0.15, 0.17),
+    skin: vec3(0.70, 0.52, 0.40),
+    hair: vec3(0.06, 0.05, 0.06),
+    cap: vec3(0.09, 0.07, 0.1),
+    cap_at: vec3(0.0, 0.16, -0.015),
+    spike: (vec3(0.0, 0.19, -0.03), vec3(0.0, 0.21, -0.23)),
+    side: (vec3(0.055, 0.17, -0.04), vec3(0.1, 0.14, -0.21)),
 }
 
 /// The brawler: a head taller and heavier, bare to the waist, in pale trousers and a blue sash,
-/// its wraps dark, a topknot.
+/// its wraps leather, its hair tied up in a topknot.
 pub const BRAWLER = Build {
     tall: 1.1,
-    broad: 1.16,
-    thick: 1.24,
-    coat: vec3(0.50, 0.33, 0.24),
-    sash: vec3(0.10, 0.20, 0.45),
-    wraps: vec3(0.12, 0.11, 0.11),
-    trousers: vec3(0.66, 0.62, 0.54),
-    skin: vec3(0.50, 0.33, 0.24),
+    broad: 1.18,
+    thick: 1.22,
+    coat: vec3(0.55, 0.37, 0.27),
+    sash: vec3(0.10, 0.20, 0.48),
+    wraps: vec3(0.42, 0.28, 0.2),
+    trousers: vec3(0.68, 0.64, 0.56),
+    skin: vec3(0.55, 0.37, 0.27),
     hair: vec3(0.05, 0.04, 0.04),
-    hair_size: vec3(0.045, 0.05, 0.045),
-    hair_at: vec3(0.0, 0.215, -0.045),
+    cap: vec3(0.084, 0.05, 0.09),
+    cap_at: vec3(0.0, 0.175, -0.02),
+    spike: (vec3(0.0, 0.2, -0.04), vec3(0.0, 0.29, -0.07)),
+    side: (vec3(0.03, 0.2, -0.04), vec3(0.035, 0.27, -0.08)),
 }
 
 /// The skeleton of a build `b`: standing at the origin facing +z, its arms out level (its rest),
@@ -224,8 +231,9 @@ impl Scale {
     }
 }
 
-/// The body of build `b`, on its skeleton: its masses and limbs, each on its bone, the paired
-/// ones mirrored onto the left.
+/// The body of build `b`, on its skeleton: an anime figure's forms, kept as a mannequin's (each
+/// limb one clean tapered form, its joints creased so the ink draws where one meets the next), the
+/// paired ones mirrored onto the left.
 pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
     let (s, k) = skeleton(b)
     let t = b.tall
@@ -234,164 +242,114 @@ pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
     // A head isn't thicker for a heavier build; a neck a little.
     let hz = Scale { t, g: t }
     let nz = Scale { t, g: t * sqrt(b.thick) }
+    let joint = crease(k: 0.035, depth: 0.009)
     let body = creature(s)
-        // The pelvis, wide at the hips, the glutes behind it.
+        // The pelvis; the waist, narrow over it; the sash round it.
         .join(
             "pelvis",
             k.pelvis,
-            z.mass(vec3(0.155 * b.broad, 0.105, 0.11), vec3(0.0, -0.035, -0.005), b.trousers),
+            z.mass(vec3(0.15 * b.broad, 0.1, 0.105), vec3(0.0, -0.03, 0.0), b.trousers),
         )
-        .join(
-            "glute",
-            k.pelvis,
-            z.mass(vec3(0.08, 0.095, 0.08), vec3(0.068 * b.broad, -0.075, -0.055), b.trousers),
-            mirror: true,
-        )
-        // The waist, narrowest above the hips; the sash round it.
         .join(
             "waist",
             k.spine,
-            z.cone(vec3(0.0, -0.07, 0.0), vec3(0.0, 0.1, 0.005), ra: 0.118, rc: 0.125, col: b.coat),
+            z.cone(vec3(0.0, -0.06, 0.0), vec3(0.0, 0.1, 0.005), ra: 0.108, rc: 0.122, col: b.coat),
         )
-        .join("sash", k.spine, z.mass(vec3(0.132, 0.045, 0.118), vec3(0.0, -0.065, 0.0), b.sash))
-        // The ribcage: wider at the top, deep; the chest's muscle in front.
-        .join(
-            "ribs",
-            k.chest,
-            z.mass(vec3(0.158 * b.broad, 0.165, 0.112), vec3(0.0, 0.07, 0.0), b.coat),
-        )
-        .join(
-            "lats",
-            k.chest,
-            z.cone(
-                vec3(0.0, -0.02, -0.03),
-                vec3(0.0, 0.14, -0.02),
-                ra: 0.105,
-                rc: 0.165 * b.broad,
-                col: b.coat,
-            ),
-        )
-        .join(
-            "trapezius",
-            k.chest,
-            z.cone(
-                vec3(0.0, 0.245, -0.025),
-                vec3(0.14 * b.broad, 0.2, -0.025),
-                ra: 0.055,
-                rc: 0.042,
-                col: b.coat,
-            ),
-            mirror: true,
-        )
+        .join("sash", k.spine, z.mass(vec3(0.128, 0.042, 0.115), vec3(0.0, -0.06, 0.0), b.sash))
+        // The chest, wide and deep at the top; the shoulders across it as one bar, square.
         .join(
             "chest",
             k.chest,
-            z.mass(vec3(0.07, 0.055, 0.04), vec3(0.06 * b.broad, 0.115, 0.072), b.coat),
-            mirror: true,
+            z.mass(vec3(0.16 * b.broad, 0.165, 0.112), vec3(0.0, 0.08, 0.005), b.coat),
         )
-        // The neck, leaning a little forward; the head: the skull, the jaw, the nose, the hair.
+        .join(
+            "shoulders",
+            k.chest,
+            z.cone(
+                vec3(-0.16 * b.broad, 0.19, -0.02),
+                vec3(0.16 * b.broad, 0.19, -0.02),
+                ra: 0.068,
+                rc: 0.068,
+                col: b.coat,
+            ),
+        )
+        // The neck; the head: the skull, the jaw tapering to a pointed chin, the hair.
         .join(
             "neck",
             k.neck,
             nz.cone(
-                vec3(0.0, -0.03, -0.005),
-                vec3(0.0, 0.08, 0.015),
-                ra: 0.056,
-                rc: 0.047,
+                vec3(0.0, -0.04, -0.005),
+                vec3(0.0, 0.08, 0.012),
+                ra: 0.052,
+                rc: 0.045,
                 col: b.skin,
             ),
+            seam: joint,
         )
+        .join("skull", k.head, hz.mass(vec3(0.08, 0.098, 0.094), vec3(0.0, 0.12, -0.005), b.skin))
         .join(
             "jaw",
             k.head,
             hz.cone(
-                vec3(0.0, 0.07, 0.01),
-                vec3(0.0, 0.025, 0.072),
-                ra: 0.064,
-                rc: 0.034,
+                vec3(0.0, 0.075, 0.015),
+                vec3(0.0, 0.018, 0.078),
+                ra: 0.066,
+                rc: 0.024,
                 col: b.skin,
             ),
         )
-        .join("skull", k.head, hz.mass(vec3(0.083, 0.105, 0.1), vec3(0.0, 0.118, -0.008), b.skin))
-        .join("hair", k.head, hz.mass(b.hair_size, b.hair_at, b.hair))
+        .join("hair", k.head, hz.mass(b.cap, b.cap_at, b.hair))
         .join(
-            "nose",
+            "spike",
             k.head,
-            hz.cone(
-                vec3(0.0, 0.11, 0.085),
-                vec3(0.0, 0.08, 0.1),
-                ra: 0.011,
-                rc: 0.015,
-                col: b.skin,
-            ),
+            hz.cone(b.spike.0, b.spike.1, ra: 0.05, rc: 0.008, col: b.hair),
         )
-        // The arms: a deltoid capping the shoulder, the upper arm and its biceps, the forearm
-        // swelling below the elbow and wrapped, the fist.
         .join(
-            "deltoid",
-            k.shoulder_r,
-            z.mass(vec3(0.078, 0.07, 0.078), vec3(0.025, 0.005, 0.0), b.coat),
+            "spikes",
+            k.head,
+            hz.cone(b.side.0, b.side.1, ra: 0.045, rc: 0.008, col: b.hair),
             mirror: true,
         )
+        // The arms: the upper arm, the forearm (wrapped), the fist, each creased at its joint.
         .join(
             "upper_arm",
             k.shoulder_r,
-            z.cone(vec3(0.0), vec3(0.29, 0.0, 0.0), ra: 0.052, rc: 0.04, col: b.coat),
-            mirror: true,
-        )
-        .join(
-            "biceps",
-            k.shoulder_r,
-            z.mass(vec3(0.075, 0.042, 0.044), vec3(0.15, 0.0, 0.012), b.coat),
+            z.cone(vec3(0.0), vec3(0.29, 0.0, 0.0), ra: 0.056, rc: 0.042, col: b.coat),
             mirror: true,
         )
         .join(
             "forearm",
             k.elbow_r,
-            z.cone(vec3(0.0), vec3(0.25, 0.0, 0.005), ra: 0.044, rc: 0.029, col: b.wraps),
-            mirror: true,
-        )
-        .join(
-            "forearm_swell",
-            k.elbow_r,
-            z.mass(vec3(0.065, 0.042, 0.038), vec3(0.065, 0.006, 0.0), b.wraps),
+            z.cone(vec3(0.0), vec3(0.25, 0.0, 0.005), ra: 0.047, rc: 0.032, col: b.wraps),
+            seam: joint,
             mirror: true,
         )
         .join(
             "fist",
             k.wrist_r,
-            z.cone(
-                vec3(0.025, 0.0, 0.0),
-                vec3(0.075, -0.005, 0.01),
-                ra: 0.038,
-                rc: 0.043,
-                col: b.wraps,
-            ),
+            z.mass(vec3(0.062, 0.042, 0.05), vec3(0.06, 0.0, 0.004), b.wraps),
+            seam: joint,
             mirror: true,
         )
-        // The legs: the thigh and its quadriceps, the shin and its calf, the foot and its toes.
+        // The legs: the thigh, the shin with its calf, the foot and its toes, each creased at its
+        // joint.
         .join(
             "thigh",
             k.hip_r,
-            z.cone(vec3(0.0), vec3(0.008, -0.44, 0.025), ra: 0.092, rc: 0.058, col: b.trousers),
-            mirror: true,
-        )
-        .join(
-            "quadriceps",
-            k.hip_r,
-            z.mass(vec3(0.07, 0.16, 0.072), vec3(0.008, -0.19, 0.03), b.trousers),
+            z.cone(vec3(0.0), vec3(0.006, -0.44, 0.022), ra: 0.09, rc: 0.056, col: b.trousers),
             mirror: true,
         )
         .join(
             "shin",
             k.knee_r,
-            z.cone(vec3(0.0), vec3(0.0, -0.425, -0.045), ra: 0.055, rc: 0.036, col: b.trousers),
+            z.cone(vec3(0.0), vec3(0.0, -0.425, -0.045), ra: 0.056, rc: 0.035, col: b.trousers),
+            seam: joint,
             mirror: true,
         )
         .join(
             "calf",
             k.knee_r,
-            z.mass(vec3(0.056, 0.115, 0.06), vec3(0.0, -0.13, -0.04), b.trousers),
+            z.mass(vec3(0.05, 0.11, 0.054), vec3(0.0, -0.13, -0.034), b.trousers),
             mirror: true,
         )
         .join(
@@ -404,6 +362,7 @@ pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
                 rc: 0.032,
                 col: b.wraps,
             ),
+            seam: joint,
             mirror: true,
         )
         .join(
@@ -418,6 +377,6 @@ pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
             ),
             mirror: true,
         )
-        .blend(0.028)
+        .blend(0.024)
     (body, s, k)
 }

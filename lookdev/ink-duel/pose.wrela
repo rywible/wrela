@@ -13,7 +13,7 @@
 use body::Bones
 use engine::clip::{Local, eased, rest}
 use engine::creature::{MAX_BONES, Skeleton}
-use engine::gait::{bend_pole, turn}
+use engine::gait::{bend, bend_pole, turn}
 use std::quat::Quat
 
 /// A pose: the hips' shift (m, the body's ground frame: x its right, y up, z ahead) and turn
@@ -206,9 +206,8 @@ pub fn locals(p: Pose, feet: Feet, s: Skeleton, k: Bones, tall: f32) -> [Local; 
     let qw = euler(p.waist)
     let qc = euler(p.chest)
     // The hips: shifted as the pose says, and lower still where a leg couldn't reach its foot.
-    var lift = p.lift * tall
+    let lift = lifted(p, feet, s, k, tall)
     let p0 = s.rest(k.pelvis)
-    lift.y -= sink(s, k, p0 + lift, qh, feet, lean: 0.985)
     out[k.pelvis.index] = Local { turn: qh, stretch: vec3(1.0), shift: lift }
     out[k.spine.index] = Local { turn: qw, stretch: vec3(1.0), shift: vec3(0.0) }
     out[k.chest.index] = Local { turn: qc, stretch: vec3(1.0), shift: vec3(0.0) }
@@ -260,3 +259,83 @@ pub fn locals(p: Pose, feet: Feet, s: Skeleton, k: Bones, tall: f32) -> [Local; 
     out
 }
 
+/// Pose `p`'s hips' shift (the ground frame): as it says, and lower still where a leg couldn't
+/// reach its foot in `feet`.
+pub fn lifted(p: Pose, feet: Feet, s: Skeleton, k: Bones, tall: f32) -> vec3 {
+    var lift = p.lift * tall
+    let p0 = s.rest(k.pelvis)
+    lift.y -= sink(s, k, p0 + lift, euler(p.hips), feet, lean: 0.985)
+    lift
+}
+
+/// How far beyond the wrist a fist's middle is (m, for a figure 1.8 m tall), and its half width.
+pub const FIST: f32 = 0.06
+pub const FIST_R: f32 = 0.05
+
+/// An arm of pose `p` in the ground frame: its shoulder, its elbow, its wrist and its fist's
+/// middle, the chest's turn, and its two bones' lengths; the right arm or the left.
+pub struct Arm: Copy {
+    pub shoulder: vec3,
+    pub elbow: vec3,
+    pub wrist: vec3,
+    pub fist: vec3,
+    pub torso: Quat,
+    pub upper: f32,
+    pub fore: f32,
+}
+
+/// Pose `p`'s `right` (or left) arm, its feet `feet`, for skeleton `s` (its bones `k`) built
+/// `tall`.
+pub fn arm(p: Pose, feet: Feet, s: Skeleton, k: Bones, tall: f32, right: bool) -> Arm {
+    let qh = euler(p.hips)
+    let qw = euler(p.waist)
+    let torso = qh.mul(qw).mul(euler(p.chest))
+    let p0 = s.rest(k.pelvis)
+    let pelvis = p0 + lifted(p, feet, s, k, tall)
+    let spine_p = pelvis + qh.rotate(s.rest(k.spine) - p0)
+    let chest_p = spine_p + qh.mul(qw).rotate(s.rest(k.chest) - s.rest(k.spine))
+    let (clav, sh, el, wr) = if right { (k.clav_r, k.shoulder_r, k.elbow_r, k.wrist_r) } else {
+        (k.clav_l, k.shoulder_l, k.elbow_l, k.wrist_l)
+    }
+    let cq = Quat::axis_angle(vec3(0.0, 0.0, 1.0), if right { p.shrug.x } else { -p.shrug.y })
+    let clav_p = chest_p + torso.rotate(s.rest(clav) - s.rest(k.chest))
+    let shoulder = clav_p + torso.mul(cq).rotate(s.rest(sh) - s.rest(clav))
+    let reach = if right { p.reach.x } else { p.reach.y }
+    let upper = length(s.rest(el) - s.rest(sh)) * reach
+    let fore = length(s.rest(wr) - s.rest(el)) * reach
+    let ud = torso.rotate(normalize(if right { p.upper_r } else { p.upper_l }))
+    let fd = torso.rotate(normalize(if right { p.fore_r } else { p.fore_l }))
+    let elbow = shoulder + ud * upper
+    let wrist = elbow + fd * fore
+    Arm { shoulder, elbow, wrist, fist: wrist + fd * FIST * tall, torso, upper, fore }
+}
+
+/// Pose `p` with its `right` (or left) fist's middle put at `to` (the ground frame), `w` of the
+/// way: the arm bent to reach it (its elbow on the side it already bends to), never stretched.
+pub fn reached(
+    p: Pose,
+    feet: Feet,
+    s: Skeleton,
+    k: Bones,
+    tall: f32,
+    right: bool,
+    to: vec3,
+    w: f32,
+) -> Pose {
+    let a = arm(p, feet, s, k, tall, right)
+    let fist = FIST * tall
+    let wrist_to = to - normalize(to - a.shoulder + vec3(0.0, 1.0e-5, 0.0)) * fist
+    let (e, wr) = bend(a.shoulder, a.elbow, a.wrist, mix(a.wrist, wrist_to, vec3(w)))
+    let inv = a.torso.inverse()
+    let up = inv.rotate(normalize(e - a.shoulder))
+    let fo = inv.rotate(normalize(wr - e))
+    var out = p
+    if right {
+        out.upper_r = up
+        out.fore_r = fo
+    } else {
+        out.upper_l = up
+        out.fore_l = fo
+    }
+    out
+}

@@ -30,21 +30,23 @@ use body::{BRAWLER, Bones, WANDERER, figure}
 use duel::{Bot, NEVER, World, advance, play, second, world}
 use engine::character::{ByChannels, Smear, cast, parts_of}
 use engine::clip::{Local, palette, rest}
-use engine::combat::{Act, HZ, Intent, Press}
+use engine::combat::{Act, Fighter, HZ, Intent, Move, Press}
 use engine::creature::{MAX_BONES, Skeleton}
 use engine::frame::{Aim, Change, Frame, Gathered, Quality}
 use engine::light::sunlight
 use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::distance::rigid_inverse
 use engine::noise::hash2
+use engine::physique::{Capsule, Per, fit_capsules}
 use engine::probes::grid
 use engine::switches::Switches
 use engine::terrain::{Clipmap, Terrain}
 use engine::timeline::Timeline
 use engine::view::first_camera
 use hud::Hud
-use moves::{CONTACT, HOOK_N, JAB_N}
+use moves::{BRAWLER_MOVES, COILED, CONTACT, HOOK_N, JAB_N, WANDERER_MOVES}
 use motion::{Carriage, carriage, carry, flinch}
-use pose::locals
+use pose::{Feet, Pose, locals}
 use poses::GUARD
 use present::{Clips, Placing, brawler, clips, placing_matrix, wanderer}
 use std::input::{Button, Event, Key, PadAxis, PadButton, events}
@@ -76,6 +78,14 @@ pub struct Realistic {}
 
 impl Switches for Realistic {}
 
+/// The pose sheet (`--set SHEET=true`): no fight; the wanderer and the brawler side by side,
+/// each playing its moves in turn (`SLOT` seconds each), seen from `VIEW` (0 three-quarters
+/// from the front, on the sun's side; 1 side on; 2 three-quarters from behind), for reviewing
+/// the drawing.
+pub const SHEET: bool = false
+pub const VIEW: u32 = 0
+pub const SLOT: f32 = 2.4
+
 /// Whether the test bot plays (`--set AUTO=true`).
 pub const AUTO: bool = false
 
@@ -90,8 +100,8 @@ pub const FIGHT_FROM: f32 = 0.55
 
 /// The smear at the moment's height (engine::character::Smear; as the yard's).
 pub const SMEAR: f32 = 0.8
-pub const STROKES: f32 = 0.8
-pub const DISARRAY: f32 = 0.9
+pub const STROKES: f32 = 0.55
+pub const DISARRAY: f32 = 0.6
 pub const SMEAR_FRAMES: f32 = 4.0
 
 /// The impact frames after the riposte's contact, the launch and the landing (frames at 60 a
@@ -134,6 +144,10 @@ struct Eye: Copy {
     ve: vec3 = vec3(0.0),
     va: vec3 = vec3(0.0),
     fovy: f32 = 0.8,
+    /// What it's doing (0 the two-shot, 1 the riposte, 2 watching the launch), and which side of
+    /// the fight's line it's on (1 or -1).
+    mode: u32 = 0,
+    side: f32 = 1.0,
 }
 
 /// The events last drawn (by the tick each came), so a new one is drawn once.
@@ -155,6 +169,9 @@ pub struct State {
     a: (Skeleton, Bones),
     b: (Skeleton, Bones),
     clips: Clips,
+    /// Each body's capsules (engine::physique, fitted to its field), for contact.
+    caps_a: Vec<Capsule>,
+    caps_b: Vec<Capsule>,
     /// The client's timeline, and the server's copy: its world, the inputs in flight to it (each
     /// the tick it's for), and how many ticks it has agreed and disagreed with the client.
     timeline: Timeline<World, Intent>,
@@ -188,6 +205,11 @@ pub fn init() -> State {
     let air = air_of(SUN)
     let (one, sa, ka) = figure(WANDERER)
     let (other, sb, kb) = figure(BRAWLER)
+    // Each body's capsules, a bone each, fitted to its field: what contact is tested against.
+    let caps_a = fit_capsules(one, Per::Bone, tolerance: 0.01)
+    let caps_b = fit_capsules(other, Per::Bone, tolerance: 0.01)
+    said("wanderer", caps_a, ka.chest.index)
+    said("brawler", caps_b, kb.chest.index)
     let w = world()
     let start = vec3(0.6, 1.9, -7.4)
     let frame: Frame<Gathered, SWITCHES, LOOK> = Frame::new(
@@ -217,6 +239,8 @@ pub fn init() -> State {
         a: (sa, ka),
         b: (sb, kb),
         clips: clips(),
+        caps_a,
+        caps_b,
         timeline: Timeline::new(w, history: 64),
         server: w,
         flight: Vec::new(),
@@ -327,12 +351,17 @@ fn flashing(since: f32, flashes: [u32]) -> bool {
     false
 }
 
-/// The camera's spring toward `goal` (critically damped at `hz`).
+/// The camera's spring toward `goal` (critically damped at `hz`), stepped in pieces short enough
+/// to stay stable however stiff it is (a single step goes unstable once `hz` × 2π × `dt` nears 1).
 fn sprung(at: mut vec3, v: mut vec3, goal: vec3, dt: f32, hz: f32) {
     let w = 6.2831853 * hz
-    let a = (goal - at) * (w * w) - v * (2.0 * w)
-    v = v + a * dt
-    at = at + v * dt
+    let n = max(ceil(w * dt / 0.2), 1.0)
+    let h = dt / n
+    for _ in 0..u32(n) {
+        let a = (goal - at) * (w * w) - v * (2.0 * w)
+        v = v + a * h
+        at = at + v * h
+    }
 }
 
 /// One tick: the wanderer's intent (or the bot's), the client's prediction, the input sent to
@@ -367,6 +396,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
+    if SHEET {
+        sheet(mut s, time, width, height)
+        return
+    }
     listen(mut s.held)
     // The sim's ticks owed since the last frame.
     // (Not while the frame is arriving: the fight begins when it can be seen.)
@@ -467,13 +500,42 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // A body turned over (flung, lying) takes its pose's own feet, not the ground's.
     let fa = if la.over == 0.0 { ra.feet } else { pose::feet_of(ra.pose, WANDERER.tall) }
     let fb = if lb.over == 0.0 { rb.feet } else { pose::feet_of(rb.pose, BRAWLER.tall) }
+    let ma = placing_matrix(la)
+    let mb = placing_matrix(lb)
+    // Contact: each fist kept on the other's surface, not in it (the other's capsules, fitted to
+    // its field, posed as it's drawn); and the riposte's fist put on the brawler's jaw.
+    let bare_a = palette(sa, locals(ra.pose, fa, sa, ka, WANDERER.tall), ma)
+    let bare_b = palette(sb, locals(rb.pose, fb, sb, kb, BRAWLER.tall), mb)
+    var qa = ra.pose
+    var qb = rb.pose
+    // (Only a fist that's striking: pushing a resting guard out of the other body would fling the
+    // arm wherever the nearest way out is.)
+    if la.over == 0.0 && lb.over == 0.0 {
+        if striking(w.you, WANDERER_MOVES) {
+            qa = touching(qa, fa, sa, ka, WANDERER.tall, ma, s.caps_b, bare_b)
+        }
+        if striking(w.foe, BRAWLER_MOVES) {
+            qb = touching(qb, fb, sb, kb, BRAWLER.tall, mb, s.caps_a, bare_a)
+        }
+    }
+    if w.you.act == Act::Riposte {
+        // The fist onto the jaw as it arrives, held through the impact frames, then let go to
+        // drive on up as the head snaps back (`present::SNAP_AFTER`).
+        let t = f32(w.you.t)
+        let after = if w.contact == NEVER { 0.0 } else { f32(w.tick - w.contact) }
+        let u = smoothstep(f32(CONTACT) - 6.0, f32(CONTACT), t) *
+            (1.0 - smoothstep(f32(present::SNAP_AFTER), f32(present::SNAP_AFTER) + 4.0, after))
+        if u > 0.0 {
+            let head = bare_b[kb.head.index] *
+                vec4(sb.rest(kb.head) + vec3(0.0, 0.01, 0.09) * BRAWLER.tall, 1.0)
+            let to = (rigid_inverse(ma) * head).xyz
+            qa = pose::reached(qa, fa, sa, ka, WANDERER.tall, right: true, to: to, w: u)
+        }
+    }
     let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
     if forced || time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
-        s.da = Drawn {
-            locals: locals(ra.pose, fa, sa, ka, WANDERER.tall),
-            root: placing_matrix(la),
-        }
-        s.db = Drawn { locals: locals(rb.pose, fb, sb, kb, BRAWLER.tall), root: placing_matrix(lb) }
+        s.da = Drawn { locals: locals(qa, fa, sa, ka, WANDERER.tall), root: ma }
+        s.db = Drawn { locals: locals(qb, fb, sb, kb, BRAWLER.tall), root: mb }
         s.drawn_at = time
         s.drawing += 1.0
         s.since = 0.0
@@ -490,8 +552,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.scene.brawler.realizing() {
         s.scene.brawler.realize()
     }
-    let held = if s.since < SMEAR_FRAMES { 1.0 } else { 0.0 }
-    let strength = smoothstep(0.3, 0.8, s.intensity)
+    let impact = flashing(time - s.contact_at, CONTACT_FLASHES) ||
+        flashing(time - s.launch_at, LAUNCH_FLASHES) ||
+        flashing(time - s.landed_at, LAND_FLASHES) ||
+        flashing(time - s.broke_at, BROKE_FLASHES)
+    s.frame.impact = if impact { 1.0 } else { 0.0 }
+    // The smear; none on an impact frame, whose stark silhouettes must read clean.
+    let held = if s.since < SMEAR_FRAMES && !impact { 1.0 } else { 0.0 }
+    let strength = smoothstep(0.3, 0.8, s.intensity) * if impact { 0.0 } else { 1.0 }
     let steady_a = (1 << ka.head.index) | (1 << ka.neck.index)
     let steady_b = (1 << kb.head.index) | (1 << kb.neck.index)
     s.scene.wanderer.smear_by(
@@ -510,46 +578,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             steady: steady_b,
         },
     )
-    let impact = flashing(time - s.contact_at, CONTACT_FLASHES) ||
-        flashing(time - s.launch_at, LAUNCH_FLASHES) ||
-        flashing(time - s.landed_at, LAND_FLASHES) ||
-        flashing(time - s.broke_at, BROKE_FLASHES)
-    s.frame.impact = if impact { 1.0 } else { 0.0 }
-    // ---- The camera: locked on, over the wanderer's shoulder; to the side and low for the
-    // riposte; watching the brawler fly; then back.
+    // ---- The camera (`camera`).
     let you = vec3(w.you.pos.x, ga, w.you.pos.y)
     let foe = vec3(w.foe.pos.x, gb + w.air, w.foe.pos.y)
-    let d = vec2(foe.x - you.x, foe.z - you.z)
-    let along = if length(d) > 0.3 { normalize(d) } else { vec2(0.0, 1.0) }
-    let ahead = vec3(along.x, 0.0, along.y)
-    let right = vec3(along.y, 0.0, -along.x)
-    var goal_eye = you - ahead * 3.4 + right * 0.85 + vec3(0.0, 2.0, 0.0)
-    var goal_at = mix(you + vec3(0.0, 1.45, 0.0), foe + vec3(0.0, 1.3, 0.0), vec3(0.45))
-    var fovy = 0.8
-    var hz = 2.6
-    if w.you.act == Act::Riposte && w.launch == NEVER {
-        let mid = mix(you, foe, vec3(0.5))
-        goal_eye = mid + right * 3.0 - ahead * 0.6 + vec3(0.0, 0.55, 0.0)
-        goal_at = mid + vec3(0.0, 1.25, 0.0)
-        fovy = 0.62
-        hz = 4.0
-    } else if w.launch != NEVER && (w.landed == NEVER || w.tick - w.landed < 40) {
-        goal_eye = you - ahead * 2.2 + right * 1.6 + vec3(0.0, 0.9, 0.0)
-        goal_at = foe + vec3(0.0, 1.0, 0.0)
-        fovy = 0.95
-        hz = 3.5
-    }
-    sprung(mut s.cam.eye, mut s.cam.ve, goal_eye, dt, hz)
-    sprung(mut s.cam.at, mut s.cam.va, goal_at, dt, hz * 1.6)
-    s.cam.fovy = mix(s.cam.fovy, fovy, 1.0 - exp(-dt * 6.0))
-    var eye = s.cam.eye
-    if w.stop > 0 {
-        let k = i32(time * 60.0)
-        let shake = vec3(hash2(k, 3) - 0.5, hash2(k, 7) - 0.5, hash2(k, 11) - 0.5) *
-            (0.02 + 0.05 * s.intensity)
-        eye = eye + shake
-    }
-    let aim = Aim { eye, at: s.cam.at, fovy: s.cam.fovy, moving_at: mix(you, foe, vec3(0.5)) }
+    let aim = camera(mut s, w, you, foe, dt, time)
     // ---- The bars.
     let taken = exp(-(time - s.taken_at) * 4.0)
     s.scene.hud = Hud {
@@ -576,4 +608,208 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)
     let _ = CONTACT
+}
+
+/// The pose sheet's frame: each fighter playing its moves in turn, from the start once the frame
+/// has arrived.
+fn sheet(s: mut State, time: f32, width: u32, height: u32) {
+    if s.frame.ready.arriving {
+        s.owed = time
+    }
+    let t = max(time - s.owed, 0.0)
+    let slot = u32(floor(t / SLOT))
+    let u = t - f32(slot) * SLOT
+    borrow c = s.clips
+    // The wanderer's: guard, jab, cross, hook, dodge, riposte; the brawler's: guard, one, two,
+    // haymaker, lunge, sweep, broken.
+    let n = slot % 7
+    let pa = if n == 0 { GUARD } else if n <= 3 {
+        pose::chained(c.wanderer[n - 1], u, present::LAG)
+    } else if n == 4 {
+        pose::sampled(c.dodge, u)
+    } else if n == 5 { pose::chained(c.riposte, u, present::LAG) } else { GUARD }
+    let pb = if n == 0 { GUARD } else if n <= 5 {
+        pose::chained(c.brawler[n - 1], u, present::LAG)
+    } else {
+        poses::BROKEN
+    }
+    let (sa, ka) = s.a
+    let (sb, kb) = s.b
+    let la = Placing { at: vec3(0.9, 0.0, 0.0), heading: 3.1415927 + 0.5 }
+    let lb = Placing { at: vec3(-1.0, 0.0, 0.0), heading: 3.1415927 - 0.5 }
+    let da = locals(pa, pose::feet_of(pa, WANDERER.tall), sa, ka, WANDERER.tall)
+    let db = locals(pb, pose::feet_of(pb, BRAWLER.tall), sb, kb, BRAWLER.tall)
+    s.scene.wanderer.pose(palette(sa, da, placing_matrix(la)), shadowed: true, moved: false)
+    s.scene.brawler.pose(palette(sb, db, placing_matrix(lb)), shadowed: true, moved: false)
+    if s.scene.wanderer.realizing() {
+        s.scene.wanderer.realize()
+    }
+    if s.scene.brawler.realizing() {
+        s.scene.brawler.realize()
+    }
+    s.scene.bars = false
+    let eye = if VIEW == 0 { vec3(0.6, 1.25, 5.2) } else if VIEW == 1 {
+        vec3(5.4, 1.25, 0.3)
+    } else {
+        vec3(-2.0, 1.4, -4.8)
+    }
+    let aim = Aim { eye, at: vec3(0.05, 0.95, 0.0), fovy: 0.62, moving_at: vec3(0.0, 1.0, 0.0) }
+    s.frame.intensity = 0.08
+    s.frame.look.line_px = 1.9
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+}
+
+/// Whether fighter `f`'s fist is out: a move from just before its hitting ticks to a little
+/// after.
+fn striking(f: Fighter, moves: [Move]) -> bool {
+    if f.act != Act::Attack {
+        return false
+    }
+    let m = moves[f.move]
+    f.t + 4 >= m.windup && f.t < m.windup + m.active + 10
+}
+
+/// Prints a body's chest capsule (`BODIES` in `duel` is set from it).
+fn said(name: str, caps: [Capsule], chest: u32) {
+    for c in caps {
+        if c.bone.index == chest {
+            print(f"the {name}'s chest capsule: radius {c.radius:.3} m, from {c.a} to {c.b}")
+        }
+    }
+}
+
+/// Pose `p` (its feet `feet`, its root `m`) with each fist kept on the surface of the other body
+/// (its capsules `caps`, posed by `other`) rather than in it: the arm bent to put the fist where it
+/// would just touch, twice over, so one capsule's push doesn't leave it in the next.
+fn touching(
+    p: Pose,
+    feet: Feet,
+    s: Skeleton,
+    k: Bones,
+    tall: f32,
+    m: mat4,
+    caps: [Capsule],
+    other: [mat4; MAX_BONES],
+) -> Pose {
+    var out = p
+    let inv = rigid_inverse(m)
+    let r = pose::FIST_R * tall
+    for right in [true, false] {
+        for _ in 0..2 {
+            let a = pose::arm(out, feet, s, k, tall, right)
+            let fist = (m * vec4(a.fist, 1.0)).xyz
+            var deepest = 0.0
+            var to = fist
+            for c in caps {
+                let pa = (other[c.bone.index] * vec4(c.a, 1.0)).xyz
+                let pb = (other[c.bone.index] * vec4(c.b, 1.0)).xyz
+                let ab = pb - pa
+                let u = clamp(dot(fist - pa, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
+                let q = pa + ab * u
+                let d = fist - q
+                let n = length(d)
+                let pen = c.radius + r - n
+                if pen > deepest && n > 1.0e-4 {
+                    deepest = pen
+                    to = q + d / n * (c.radius + r)
+                }
+            }
+            if deepest > 0.0 {
+                out = pose::reached(
+                    out,
+                    feet,
+                    s,
+                    k,
+                    tall,
+                    right,
+                    to: (inv * vec4(to, 1.0)).xyz,
+                    w: 1.0,
+                )
+            }
+        }
+    }
+    out
+}
+
+/// How far round from behind the wanderer the camera sits (radians), to one side of the fight's
+/// line, so the two silhouettes never cover each other.
+pub const THETA: f32 = 0.6
+
+/// The camera this frame. Fighting: a two-shot from behind the wanderer and off to one side
+/// (`THETA`), far enough back to hold both bodies and the brawler's reach, looking past the
+/// wanderer at the brawler; it keeps to whichever side it's on, so it never swings across the
+/// line. The riposte: a cut to a low angle beside the two, looking up at where the fist will meet
+/// the jaw, pushing in through the coil. The launch: a cut to low behind the striker, set by the
+/// launch's line, holding its follow-through and the brawler flying, until it's been down a moment; then back to the two-shot, eased. A hit-stop shakes it and
+/// punches its field of view in.
+fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32) -> Aim {
+    let up = vec3(0.0, 1.0, 0.0)
+    let d = vec2(foe.x - you.x, foe.z - you.z)
+    let n = length(d)
+    let along = if n > 0.3 { d / n } else { vec2(sin(w.you.heading), cos(w.you.heading)) }
+    let ahead = vec3(along.x, 0.0, along.y)
+    let right = vec3(along.y, 0.0, -along.x)
+    let riposte = w.you.act == Act::Riposte && w.launch == NEVER
+    let flying = w.launch != NEVER && (w.landed == NEVER || w.tick - w.landed < 50)
+    let mode: u32 = if riposte { 1 } else if flying { 2 } else { 0 }
+    let side = right * s.cam.side
+    let ground_foe = vec3(foe.x, you.y, foe.z)
+    var goal_eye = you
+    var goal_at = you
+    var fovy = 0.78
+    var hz = 2.2
+    if mode == 0 {
+        let far = min(n, 8.0)
+        let back = -ahead * cos(THETA) + side * sin(THETA)
+        goal_eye = you + back * (2.4 + 0.38 * far) + up * (1.3 + 0.07 * far)
+        goal_at = mix(you, ground_foe, vec3(0.55)) + up * 1.15
+        fovy = 0.74
+    } else if mode == 1 {
+        let mid = mix(you, ground_foe, vec3(0.5))
+        let t = f32(w.you.t)
+        goal_eye = mid + side * 2.3 - ahead * 0.35 + up * 0.4
+        goal_at = mid + up * mix(1.15, 1.6, smoothstep(f32(CONTACT) - 10.0, f32(CONTACT), t))
+        fovy = mix(0.74, 0.58, smoothstep(f32(COILED), f32(CONTACT), t))
+        hz = 6.0
+    } else {
+        // Low behind the striker, set by the launch's own line (so it holds still while the body
+        // flies), looking up past the striker's follow-through at the body it flung.
+        let way = vec3(w.way.x, 0.0, w.way.y)
+        let across = vec3(w.way.y, 0.0, -w.way.x) * s.cam.side
+        let from = vec3(w.from.x, you.y, w.from.y)
+        goal_eye = from - way * 3.4 + across * 1.8 + up * 0.7
+        goal_at = mix(you + up * 1.4, foe + up * 0.8, vec3(0.6))
+        fovy = 1.1
+        hz = 3.0
+    }
+    if mode != s.cam.mode && mode != 0 {
+        // A cut, as an animator cuts to the shot.
+        s.cam.eye = goal_eye
+        s.cam.at = goal_at
+        s.cam.ve = vec3(0.0)
+        s.cam.va = vec3(0.0)
+        s.cam.fovy = fovy
+    }
+    s.cam.mode = mode
+    sprung(mut s.cam.eye, mut s.cam.ve, goal_eye, dt, hz)
+    sprung(mut s.cam.at, mut s.cam.va, goal_at, dt, hz * 1.6)
+    s.cam.fovy = mix(s.cam.fovy, fovy, 1.0 - exp(-dt * 6.0))
+    if mode == 0 {
+        // Keep to the side it's on.
+        let on = dot(s.cam.eye - you, right)
+        if abs(on) > 0.4 {
+            s.cam.side = if on > 0.0 { 1.0 } else { -1.0 }
+        }
+    }
+    var eye = s.cam.eye
+    var fov = s.cam.fovy
+    if w.stop > 0 {
+        let k = i32(time * 60.0)
+        let shake = vec3(hash2(k, 3) - 0.5, hash2(k, 7) - 0.5, hash2(k, 11) - 0.5) *
+            (0.03 + 0.06 * s.intensity)
+        eye = eye + shake
+        fov = fov * 0.93
+    }
+    Aim { eye, at: s.cam.at, fovy: fov, moving_at: mix(you, foe, vec3(0.5)) }
 }

@@ -12,7 +12,7 @@
 
 use engine::combat::{
     Act, Blow, Fighter, HZ, Intent, Press, Rules, begin_riposte, facing, fighter, heading_of,
-    riposte, step, strike,
+    kept_apart, riposte, step, strike,
 }
 use engine::noise::hash2
 use engine::sim::SimState
@@ -43,8 +43,17 @@ pub const FOE = Rules {
 /// How far the arena's flat floor reaches (m from its middle): neither fighter goes past it.
 pub const FLOOR: f32 = 10.5
 
-/// How close two bodies come before they push apart (m).
-pub const BODIES: f32 = 0.8
+/// How close two bodies' middles come before they push apart (m): the wanderer's chest capsule
+/// (radius 0.225 m) and the brawler's (0.293 m), each fitted to its body's field by
+/// `engine::physique::fit_capsules` (the program prints them at its start), and the guard's fists
+/// held ahead of them (0.48 m), so neither body nor guard passes into the other. How much of a
+/// push the wanderer takes: the lighter body moves more.
+pub const BODIES: f32 = 1.0
+pub const YOU_SHARE: f32 = 0.7
+
+/// Where the riposte stands the wanderer: this far before the brawler's middle (m), square to it,
+/// so the uppercut's fist meets the brawler's jaw.
+pub const RIPOSTE_GAP: f32 = 0.78
 
 /// The hit-stops (ticks): a light blow landed, a heavy one, a blow taken, a posture broken, the
 /// riposte's contact, the landing.
@@ -215,6 +224,8 @@ pub fn advance(w: mut World, you: Intent) {
     }
     if light && w.you.free(WANDERER_MOVES, YOU) && riposte(w.you, w.foe, FOE) {
         let _ = begin_riposte(mut w.you, mut w.foe, FOE)
+        w.you.pos = w.foe.pos + facing(w.foe.heading) * RIPOSTE_GAP
+        w.you.heading = heading_of(w.foe.pos - w.you.pos)
         mine = Intent {}
     }
     mine.press = combined(w.you, mine.press)
@@ -277,13 +288,7 @@ pub fn advance(w: mut World, you: Intent) {
     }
     // Bodies don't pass through each other, and stay on the floor.
     if w.foe.act != Act::Taken {
-        let d = w.foe.pos - w.you.pos
-        let n = length(d)
-        if n < BODIES && n > 1.0e-4 {
-            let push = d / n * (BODIES - n) * 0.5
-            w.foe.pos = w.foe.pos + push
-            w.you.pos = w.you.pos - push
-        }
+        kept_apart(mut w.you, mut w.foe, apart: BODIES, share: YOU_SHARE)
         w.foe.pos = kept(w.foe.pos)
     }
     w.you.pos = kept(w.you.pos)

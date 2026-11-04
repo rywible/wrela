@@ -33,6 +33,7 @@ pub const WANDERER_MOVES: [Move; 3] = [
         lunge: 0.3,
         track: 8.0,
         cancel: 8,
+        push: 0.12,
     },
     Move {
         windup: 10,
@@ -46,6 +47,7 @@ pub const WANDERER_MOVES: [Move; 3] = [
         lunge: 0.4,
         track: 6.0,
         cancel: 9,
+        push: 0.18,
     },
     Move {
         windup: 20,
@@ -59,6 +61,7 @@ pub const WANDERER_MOVES: [Move; 3] = [
         lunge: 0.45,
         track: 4.0,
         cancel: 12,
+        push: 0.35,
     },
 ]
 
@@ -84,6 +87,7 @@ pub const BRAWLER_MOVES: [Move; 5] = [
         track: 5.0,
         cancel: 0,
         stagger: 16,
+        push: 0.35,
     },
     Move {
         windup: 18,
@@ -97,6 +101,7 @@ pub const BRAWLER_MOVES: [Move; 5] = [
         lunge: 0.5,
         track: 4.0,
         stagger: 22,
+        push: 0.5,
     },
     Move {
         windup: 62,
@@ -110,6 +115,7 @@ pub const BRAWLER_MOVES: [Move; 5] = [
         lunge: 1.1,
         track: 2.6,
         stagger: 40,
+        push: 1.2,
     },
     Move {
         windup: 26,
@@ -123,6 +129,7 @@ pub const BRAWLER_MOVES: [Move; 5] = [
         lunge: 3.2,
         track: 4.5,
         stagger: 28,
+        push: 0.9,
     },
     Move {
         windup: 22,
@@ -136,6 +143,7 @@ pub const BRAWLER_MOVES: [Move; 5] = [
         lunge: 0.3,
         track: 3.0,
         stagger: 32,
+        push: 0.7,
     },
 ]
 
