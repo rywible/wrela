@@ -64,6 +64,9 @@ pub const HATCH_PX: f32 = 11.0
 /// form's direction, which wanders on a lumpy surface (rock's) and broke its lines into noise.
 pub const HATCH_ANGLE: f32 = 0.75
 pub const HATCH_WIDE: f32 = 2.2
+/// Where the ground's hatching fades out (m from the eye), as ink's distance is drawn lighter.
+pub const HATCH_NEAR: f32 = 10.0
+pub const HATCH_FAR: f32 = 16.0
 pub const SHADE: f32 = 0.3
 pub const DEEP: f32 = 0.6
 pub const SURGE: f32 = 0.3
@@ -198,8 +201,12 @@ pub fn hatched(m: MarkSample, intensity: f32) -> f32 {
     }
     // The ground's shadows take one layer, broken as a hand's quick hatching is: crossed on open
     // flat ground, the lines read as a mesh fence laid on it.
+    // Faded out past `HATCH_FAR` (m): far off, its broken strokes, squashed by the grazing view,
+    // smudged into a band of blots at the foot of a rise.
     if m.class == style::GROUND {
-        return first * rough_lines(m, HATCH_ANGLE)
+        return first *
+            rough_lines(m, HATCH_ANGLE) *
+            (1.0 - smoothstep(HATCH_NEAR, HATCH_FAR, m.distance))
     }
     // A stone's shade the same broken layer, and its deepest a wash under it: crossed, a rock's
     // shade side went to a black lattice, a chain-link fence stood on end.
