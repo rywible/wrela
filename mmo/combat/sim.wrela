@@ -1,0 +1,373 @@
+// The fight: a party of up to `MAX_PARTY` players against one boss, stepped 60 times a second
+// from each player's inputs and nothing else, in whole numbers, so every peer and the room get
+// the same fight from the same inputs (`@deterministic`). A player's input is 14 bits: a stick (6
+// bits: 0 is still, else 1 + direction * 3 + magnitude, 16 directions and 3 magnitudes) and 8
+// buttons. What a player sends is when its input changes (`Change`), and a fight's input logs are
+// all of its changes.
+//
+// The rules are the backbone of the combat plan: stamina, committed actions with windups the boss
+// telegraphs, a parry that staggers, a dodge with invulnerable frames.
+
+use std::pack::Pack
+
+/// The most players in a fight.
+pub const MAX_PARTY: u32 = 4
+/// Frames a second.
+pub const HZ: u32 = 60
+/// The longest fight, in frames (ten minutes): past it, it's a draw.
+pub const MAX_FRAMES: u32 = 36000
+
+/// Button bits.
+pub const ATTACK: u32 = 1
+pub const PARRY: u32 = 2
+pub const DODGE: u32 = 4
+
+/// Positions are in 1/64 of a metre.
+const UNIT: i32 = 64
+const ARENA: i32 = 20 * 64
+const PLAYER_HP: i32 = 100
+const STAMINA: i32 = 100
+const BOSS_HP_EACH: i32 = 300
+
+// A player's attack: stamina, its frames (windup, active, recovery), reach and damage.
+const ATTACK_COST: i32 = 25
+const ATTACK_WINDUP: u32 = 10
+const ATTACK_ACTIVE: u32 = 4
+const ATTACK_RECOVERY: u32 = 14
+const ATTACK_REACH: i32 = 3 * 64
+const ATTACK_DAMAGE: i32 = 8
+// A parry: its window, then its recovery; a boss hit it meets staggers the boss.
+const PARRY_COST: i32 = 10
+const PARRY_WINDOW: u32 = 8
+const PARRY_RECOVERY: u32 = 12
+// A dodge: invulnerable while it lasts, moving fast.
+const DODGE_COST: i32 = 20
+const DODGE_FRAMES: u32 = 12
+const DODGE_SPEED: i32 = 20
+// The boss: its speed, its attack's frames (the windup is its tell), reach, damage, and stagger.
+const BOSS_SPEED: i32 = 4
+const BOSS_WINDUP: u32 = 24
+const BOSS_ACTIVE: u32 = 6
+const BOSS_RECOVERY: u32 = 30
+const BOSS_REACH: i32 = 5 * 32
+const BOSS_DAMAGE: i32 = 20
+const STAGGER: u32 = 60
+
+/// What a fighter is doing.
+const IDLE: u32 = 0
+const WINDUP: u32 = 1
+const ACTIVE: u32 = 2
+const RECOVER: u32 = 3
+const PARRYING: u32 = 4
+const DODGING: u32 = 5
+const STAGGERED: u32 = 6
+
+/// A player's input changed at `frame` to `input`.
+pub struct Change: Clone + Pack + Eq {
+    pub frame: u32,
+    pub input: u32,
+}
+
+/// A player's input log: every change, in order.
+pub struct Log: Clone + Pack + Eq {
+    pub changes: Vec<Change>,
+}
+
+/// How a fight ended.
+pub enum Winner: Clone + Pack + Eq {
+    Party,
+    Boss,
+    Draw,
+}
+
+/// A fight's outcome: what the room keeps, and what a player's own run must match.
+pub struct Outcome: Clone + Pack + Eq {
+    pub winner: Winner,
+    /// The frame it ended on.
+    pub frames: u32,
+    /// The damage each player dealt, in party order.
+    pub dealt: Vec<u32>,
+    pub boss_hp: i32,
+}
+
+struct Fighter: Clone {
+    x: i32,
+    z: i32,
+    hp: i32,
+    stamina: i32,
+    act: u32,
+    timer: u32,
+    /// Whether this attack has hit already.
+    landed: bool,
+    dx: i32,
+    dz: i32,
+    dealt: u32,
+}
+
+impl Fighter {
+    fn new(x: i32, z: i32, hp: i32) -> Fighter {
+        Fighter {
+            x,
+            z,
+            hp,
+            stamina: STAMINA,
+            act: IDLE,
+            timer: 0,
+            landed: false,
+            dx: 0,
+            dz: 0,
+            dealt: 0,
+        }
+    }
+}
+
+/// The 16 directions, as steps of 64 (cos and sin, rounded).
+const DIR_X: [i32; 16] = [64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24, 0, 24, 45, 59]
+const DIR_Z: [i32; 16] = [0, 24, 45, 59, 64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24]
+/// Speed at each magnitude, in units a frame.
+const SPEED: [i32; 3] = [2, 4, 6]
+
+fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
+    if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+fn abs(v: i32) -> i32 {
+    if v < 0 { -v } else { v }
+}
+
+/// The distance between two points, as the larger of its two sides plus half the smaller (an
+/// octagon: close to round, and whole numbers).
+fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
+    let dx = abs(ax - bx)
+    let dz = abs(az - bz)
+    if dx > dz { dx + dz / 2 } else { dz + dx / 2 }
+}
+
+/// A player's input at a frame, from its log: the last change at or before it.
+struct Cursor {
+    at: u32,
+    input: u32,
+}
+
+/// The fight, from its party's size and each player's input log.
+@deterministic
+pub fn run(players: u32, logs: [Log]) -> Outcome {
+    let n = if players > MAX_PARTY { MAX_PARTY } else { players }
+    var party: Vec<Fighter> = Vec::new()
+    var cursors: Vec<Cursor> = Vec::new()
+    var before: Vec<u32> = Vec::new()
+    for i in 0..n {
+        party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP))
+        cursors.push(Cursor { at: 0, input: 0 })
+        before.push(0)
+    }
+    var boss = Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n))
+    var frame: u32 = 0
+    var winner = Winner::Draw
+    while frame < MAX_FRAMES {
+        // Each player's input this frame.
+        for i in 0..n {
+            if i < logs.len() {
+                while cursors[i].at < logs[i].changes.len() &&
+                    logs[i].changes[cursors[i].at].frame <= frame {
+                    cursors[i].input = logs[i].changes[cursors[i].at].input
+                    cursors[i].at += 1
+                }
+            }
+        }
+        // The players act.
+        for i in 0..n {
+            let input = cursors[i].input
+            let pressed = input >> 6 & !(before[i] >> 6)
+            before[i] = input
+            var p = party[i].clone()
+            if p.hp <= 0 {
+                continue
+            }
+            step_player(mut p, input, pressed)
+            if p.act == ACTIVE &&
+                !p.landed &&
+                boss.hp > 0 &&
+                reach(p.x, p.z, boss.x, boss.z) <= ATTACK_REACH {
+                p.landed = true
+                boss.hp -= ATTACK_DAMAGE
+                p.dealt += u32(ATTACK_DAMAGE)
+            }
+            party[i] = take p
+        }
+        // The boss acts.
+        step_boss(mut boss, mut party)
+        frame += 1
+        if boss.hp <= 0 {
+            winner = Winner::Party
+            break
+        }
+        var standing = false
+        for i in 0..n {
+            if party[i].hp > 0 {
+                standing = true
+            }
+        }
+        if !standing {
+            winner = Winner::Boss
+            break
+        }
+    }
+    var dealt: Vec<u32> = Vec::new()
+    for i in 0..n {
+        dealt.push(party[i].dealt)
+    }
+    Outcome { winner, frames: frame, dealt, boss_hp: if boss.hp < 0 { 0 } else { boss.hp } }
+}
+
+@deterministic
+fn step_player(p: mut Fighter, input: u32, pressed: u32) {
+    let stick = input & 63
+    // An action runs its frames out; a new one starts only from idle.
+    if p.act != IDLE {
+        if p.timer > 0 {
+            p.timer -= 1
+        }
+        if p.timer == 0 {
+            if p.act == WINDUP {
+                p.act = ACTIVE
+                p.timer = ATTACK_ACTIVE
+            } else if p.act == ACTIVE {
+                p.act = RECOVER
+                p.timer = ATTACK_RECOVERY
+            } else if p.act == PARRYING {
+                p.act = RECOVER
+                p.timer = PARRY_RECOVERY
+            } else {
+                p.act = IDLE
+            }
+        }
+    } else {
+        if pressed & ATTACK != 0 && p.stamina >= ATTACK_COST {
+            p.stamina -= ATTACK_COST
+            p.act = WINDUP
+            p.timer = ATTACK_WINDUP
+            p.landed = false
+        } else if pressed & PARRY != 0 && p.stamina >= PARRY_COST {
+            p.stamina -= PARRY_COST
+            p.act = PARRYING
+            p.timer = PARRY_WINDOW
+        } else if pressed & DODGE != 0 && p.stamina >= DODGE_COST && stick != 0 {
+            p.stamina -= DODGE_COST
+            p.act = DODGING
+            p.timer = DODGE_FRAMES
+            let dir = (stick - 1) / 3
+            p.dx = DIR_X[dir] * DODGE_SPEED / 64
+            p.dz = DIR_Z[dir] * DODGE_SPEED / 64
+        }
+    }
+    if p.act == IDLE {
+        if p.stamina < STAMINA {
+            p.stamina += 1
+        }
+        if stick != 0 {
+            let dir = (stick - 1) / 3
+            let speed = SPEED[(stick - 1) % 3]
+            p.x += DIR_X[dir] * speed / 64
+            p.z += DIR_Z[dir] * speed / 64
+        }
+    } else if p.act == DODGING {
+        p.x += p.dx
+        p.z += p.dz
+    }
+    p.x = clamp(p.x, -ARENA, ARENA)
+    p.z = clamp(p.z, -ARENA, ARENA)
+}
+
+@deterministic
+fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
+    if boss.hp <= 0 {
+        return
+    }
+    // The nearest standing player, the first of equals.
+    var target: u32 = party.len()
+    var best: i32 = 0
+    for i in 0..party.len() {
+        if party[i].hp > 0 {
+            let d = reach(boss.x, boss.z, party[i].x, party[i].z)
+            if target == party.len() || d < best {
+                target = i
+                best = d
+            }
+        }
+    }
+    if boss.act != IDLE {
+        if boss.timer > 0 {
+            boss.timer -= 1
+        }
+        if boss.act == ACTIVE && !boss.landed {
+            // Its swing meets every player in reach once: a parry staggers it, a dodge passes.
+            var parried = false
+            for i in 0..party.len() {
+                var p = party[i].clone()
+                if p.hp > 0 && reach(boss.x, boss.z, p.x, p.z) <= BOSS_REACH {
+                    if p.act == PARRYING {
+                        parried = true
+                    } else if p.act != DODGING {
+                        p.hp -= BOSS_DAMAGE
+                    }
+                    party[i] = take p
+                }
+            }
+            boss.landed = true
+            if parried {
+                boss.act = STAGGERED
+                boss.timer = STAGGER
+                return
+            }
+        }
+        if boss.timer == 0 {
+            if boss.act == WINDUP {
+                boss.act = ACTIVE
+                boss.timer = BOSS_ACTIVE
+                boss.landed = false
+            } else if boss.act == ACTIVE {
+                boss.act = RECOVER
+                boss.timer = BOSS_RECOVERY
+            } else {
+                boss.act = IDLE
+            }
+        }
+        return
+    }
+    if target == party.len() {
+        return
+    }
+    if best <= BOSS_REACH {
+        boss.act = WINDUP
+        boss.timer = BOSS_WINDUP
+        return
+    }
+    let tx = party[target].x
+    let tz = party[target].z
+    boss.x += clamp(tx - boss.x, -BOSS_SPEED, BOSS_SPEED)
+    boss.z += clamp(tz - boss.z, -BOSS_SPEED, BOSS_SPEED)
+}
+
+/// Whether `log` is a log a player could send: changes in order of their frames, each a change,
+/// each an input of 14 bits with a stick that's one, before frame `end`, and at most `most` of them.
+pub fn well_formed(log: [Change], end: u32, most: u32) -> bool {
+    if log.len() > most {
+        return false
+    }
+    var last: u32 = 0
+    var prev: u32 = 0
+    for i in 0..log.len() {
+        let c = log[i].clone()
+        if c.frame >= end ||
+            (i > 0 && c.frame <= last) ||
+            c.input >= 16384 ||
+            (c.input & 63) > 48 ||
+            c.input == prev {
+            return false
+        }
+        last = c.frame
+        prev = c.input
+    }
+    true
+}

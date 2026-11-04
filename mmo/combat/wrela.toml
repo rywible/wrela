@@ -1,0 +1,5 @@
+# A party's fight against a boss, as a room (std::net) that orders only the fight's start and each
+# player's input log, and checks the outcome by running the fight again from the logs. The live
+# inputs go between the players over the room's relay (std::net::relay), never through the room.
+[package]
+name = "combat"
