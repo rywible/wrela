@@ -155,16 +155,18 @@ pub fn hud(pixel: FragCoord, h: Hud) -> Over {
         c,
         bar(p, vec2(x0, h.out.y - 74.0 * s), vec2(w, 11.0 * s), 0.0, h.foe.x, h.foe.z, HEALTH, s),
     )
+    // Posture: thick, growing from the middle out, burning toward the break.
     let half = 0.5 * clamp(h.foe.y, 0.0, 1.0)
     let pw = w * 0.6
-    let colour = mix(POSTURE, BROKE, vec3(smoothstep(0.7, 1.0, h.foe.y)))
+    let near = smoothstep(0.65, 1.0, h.foe.y)
+    let colour = mix(POSTURE, BROKE, vec3(near))
     if half > 0.0 {
         c = over(
             c,
             bar(
                 p,
-                vec2((h.out.x - pw) * 0.5, h.out.y - 100.0 * s),
-                vec2(pw, 7.0 * s),
+                vec2((h.out.x - pw) * 0.5, h.out.y - (106.0 + 4.0 * near) * s),
+                vec2(pw, (12.0 + 8.0 * near) * s),
                 0.5 - half,
                 0.5 + half,
                 0.0,

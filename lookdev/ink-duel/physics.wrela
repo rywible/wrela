@@ -31,7 +31,10 @@ pub const FIST_L: u32 = 23
 /// The pull toward the animation: how much of the way each step goes at full strength (a body
 /// standing on its own); how fast a slackened pull comes back (a second); and the gravity.
 pub const PULL: f32 = 0.35
-pub const RECOVER: f32 = 2.6
+pub const RECOVER: f32 = 4.0
+
+/// How far a particle of a body on its feet may stray from where its animation puts it (m).
+pub const STRAY: f32 = 0.18
 pub const GRAVITY: f32 = -9.8
 
 /// A link between two particles and its rest length.
@@ -237,6 +240,16 @@ pub fn step(
                     b.was[i] = mix(b.was[i], b.at[i], vec3(0.6, 0.0, 0.6))
                 }
                 b.at[i] = kept_out(b.at[i], caps, other, 0.04)
+            }
+        }
+        // A body on its feet strays from its animation only so far (`STRAY` at full strength,
+        // more as it slackens): a blow rocks it; it doesn't come apart.
+        let most = mix(2.0, STRAY, b.strength)
+        for i in 0..N {
+            let off = b.at[i] - target[i]
+            let n = length(off)
+            if n > most {
+                b.at[i] = target[i] + off * (most / n)
             }
         }
     }

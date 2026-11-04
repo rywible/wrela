@@ -86,7 +86,7 @@ pub struct Build: Copy {
 }
 
 /// The wanderer: lean and long-legged, in an indigo coat and a red sash, its forearms wrapped
-/// pale, its hair swept back in spikes.
+/// pale, its hair swept back into a tail.
 pub const WANDERER = Build {
     coat: vec3(0.17, 0.19, 0.28),
     sash: vec3(0.62, 0.08, 0.05),
@@ -96,16 +96,16 @@ pub const WANDERER = Build {
     hair: vec3(0.06, 0.05, 0.06),
     cap: vec3(0.09, 0.07, 0.1),
     cap_at: vec3(0.0, 0.16, -0.015),
-    spike: (vec3(0.0, 0.19, -0.03), vec3(0.0, 0.21, -0.23)),
-    side: (vec3(0.055, 0.17, -0.04), vec3(0.1, 0.14, -0.21)),
+    spike: (vec3(0.0, 0.15, -0.07), vec3(0.0, 0.05, -0.2)),
+    side: (vec3(0.06, 0.15, -0.03), vec3(0.085, 0.09, -0.11)),
 }
 
 /// The brawler: a head taller and heavier, bare to the waist, in pale trousers and a blue sash,
 /// its wraps leather, its hair tied up in a topknot.
 pub const BRAWLER = Build {
-    tall: 1.1,
-    broad: 1.18,
-    thick: 1.22,
+    tall: 1.12,
+    broad: 1.32,
+    thick: 1.42,
     coat: vec3(0.55, 0.37, 0.27),
     sash: vec3(0.10, 0.20, 0.48),
     wraps: vec3(0.42, 0.28, 0.2),
