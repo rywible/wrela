@@ -208,6 +208,10 @@ pub fn tooth(px: vec2) -> f32 {
 }
 
 impl Style for Kinetic {
+    // A character's shade: a lighter, cooler wash of its colour than the engine's (a fighter's dark
+    // coat read as a silhouette), and its edge's ink line strong.
+    const CEL_SHADE: f32 = 1.5
+    const CEL_EDGE: f32 = 0.6
     const SUBSTANCE: u32 = substance::FORM | substance::TONE
     const NORMAL: u32 = 1
     const MARKS: u32 = marks::LINES | marks::CREASES | marks::HATCH
