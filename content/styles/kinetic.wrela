@@ -99,6 +99,8 @@ pub const ROUGH_DEEP: f32 = 0.96
 /// (a warm black, not a pure one).
 pub const PAPER: vec3 = vec3(0.97, 0.94, 0.88)
 pub const TOOTH: f32 = 0.06
+/// Where an impact frame cuts the image's light (display-referred luma) into its two tones.
+pub const IMPACT_CUT: f32 = 0.34
 pub const INK_COLOUR: vec3 = vec3(0.10, 0.07, 0.06)
 
 /// The Kinetic Ink look (`engine::style::Style`).
@@ -277,7 +279,7 @@ impl Style for Kinetic {
 
     /// The physical look's exposure and tone, then the paper: its warm white under the image's
     /// highlights, its tooth, the ink's warm black in the darks, and a light vignette (the frame's
-    /// edges hold nothing of the moment's: the fighters carry it).
+    /// edges hold nothing of the moment's: the fighters carry it); and an impact frame's negative.
     fn lens(
         paint: vec3,
         px: vec2,
@@ -292,7 +294,16 @@ impl Style for Kinetic {
         var c = mix(base, PAPER * l * 1.08, vec3(0.25 * smoothstep(0.5, 1.0, l)))
         c = mix(INK_COLOUR, c, vec3(smoothstep(0.0, 0.07, l) * 0.8 + 0.2))
         c = c * (1.0 + tooth(px))
+        // An impact frame (`Develop::impact`): the image in two tones, negative, the light
+        // turned to ink and the dark to paper about `IMPACT_CUT` of its light, as an animator's
+        // impact frames are drawn.
+        let negative = mix(
+            PAPER,
+            INK_COLOUR,
+            vec3(smoothstep(IMPACT_CUT - 0.03, IMPACT_CUT + 0.03, l)),
+        )
+        c = mix(c, negative * (1.0 + tooth(px)), vec3(d.impact))
         let uv = px / d.out - vec2(0.5)
-        vec4(c * (1.0 - 0.3 * dot(uv, uv)), 1.0)
+        vec4(c * (1.0 - 0.3 * dot(uv, uv) * (1.0 - d.impact)), 1.0)
     }
 }

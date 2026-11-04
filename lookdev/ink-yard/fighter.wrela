@@ -1,14 +1,19 @@
-// The yard's fighter: a duellist of round cones on a humanoid skeleton (a body the MMO's
-// characters will outgrow, enough to judge a look's ink on a figure and its motion's force), and
-// its two clips, hand keyed (`engine::clip`): a quiet guard that breathes, and a strike: a
-// wind-up that coils (anticipation, squashed), a snap through (explosive, its blade arm smeared
-// long), the blow held as it lands (a stop), and a follow-through past the guard before it
-// settles back (Thomas and Johnston 1981's anticipation, squash and stretch, follow-through and
-// timing).
+// The yard's fighters: two of round cones on a humanoid skeleton (bodies the MMO's characters
+// will outgrow, enough to judge a look's ink on a figure and its motion's force), and their clips,
+// hand keyed (`engine::clip`): the uppercut. The striker coils low and deep, holds dead still a
+// beat, then rises through the blow in a jump, its fist driving up through the other's jaw; the
+// one it strikes is snapped back, held there a beat too long (the blow's delay), then flung into
+// the sky (`main.wrela` throws it). Thomas and Johnston 1981's anticipation, squash and stretch,
+// follow-through and timing, and an anime fight's held tension before release.
+//
+// The poses are written as where each limb points in the body's frame (`Shape`), turned into
+// each bone's turn against its parent's (`aimed`), so a pose is its silhouette, not a guess at
+// joint angles.
 
 use engine::character::{ByChannels, Shaded}
-use engine::clip::{Clip, EVEN, HOLD, SMOOTH, SNAP, Track, key}
+use engine::clip::{Clip, HOLD, Key, Local, SMOOTH, SNAP, Track, key, rest}
 use engine::creature::{Body, Bone, Placed, Skeleton, Then, creature}
+use engine::gait::turn
 use std::field::{Blend, RoundCone, Surface, With, round_cone}
 use std::quat::Quat
 
@@ -33,11 +38,13 @@ pub type Part = Placed<With<RoundCone, Paint>>
 /// The fighter's body: its sixteen parts, in the order `fighter` joins them.
 pub type Fighter = Body<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Then<Part, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>, Part>>
 
-/// Its colours: a dark coat, a sash, skin, the blade's steel.
+/// Their colours: the striker's dark coat and red sash, the struck one's pale coat and blue sash,
+/// and skin.
 pub const COAT = vec3(0.20, 0.22, 0.30)
 pub const SASH = vec3(0.55, 0.08, 0.05)
+pub const PALE = vec3(0.62, 0.58, 0.50)
+pub const BLUE = vec3(0.10, 0.20, 0.45)
 pub const SKIN = vec3(0.62, 0.42, 0.30)
-pub const STEEL = vec3(0.70, 0.72, 0.76)
 
 /// Its bones, by name: its root (the pelvis), spine, chest, neck, head; each arm's shoulder,
 /// elbow and hand; each leg's hip, knee and ankle (a = its right, at +x).
@@ -106,305 +113,271 @@ pub fn skeleton() -> (Skeleton, Bones) {
 }
 
 /// A round cone from `a` to `b` (its bone's space), `ra` and `rb` thick there, painted `c`.
-fn cone(a: vec3, b: vec3, ra: f32, rb: f32, c: vec3 = COAT) -> With<RoundCone, Paint> {
+fn cone(a: vec3, b: vec3, ra: f32, rb: f32, c: vec3) -> With<RoundCone, Paint> {
     round_cone(a, b, r_top: ra, r_bottom: rb).with(Paint { albedo: c })
 }
 
-/// The fighter: a coat over its hips and chest, a sash, its head, its limbs, and a long blade in
-/// its right hand (along +z from it, ahead of it at rest).
-pub fn fighter() -> (Fighter, Skeleton, Bones) {
+/// A fighter in `coat` and `sash`: a coat over its hips and chest, a sash, its head, its limbs,
+/// its fists.
+pub fn fighter(coat: vec3, sash: vec3) -> (Fighter, Skeleton, Bones) {
     let (s, b) = skeleton()
     let body = creature(s)
         .part(
             b.pelvis,
-            cone(vec3(0.0, -0.08, 0.0), vec3(0.0, 0.14, 0.0), ra: 0.19, rb: 0.16, c: COAT),
+            cone(vec3(0.0, -0.08, 0.0), vec3(0.0, 0.14, 0.0), ra: 0.19, rb: 0.16, c: coat),
         )
         .part(
             b.spine,
-            cone(vec3(0.0, -0.06, 0.0), vec3(0.0, 0.04, 0.0), ra: 0.17, rb: 0.17, c: SASH),
+            cone(vec3(0.0, -0.06, 0.0), vec3(0.0, 0.04, 0.0), ra: 0.17, rb: 0.17, c: sash),
         )
         .part(
             b.chest,
-            cone(vec3(0.0, -0.12, 0.01), vec3(0.0, 0.06, 0.0), ra: 0.18, rb: 0.21, c: COAT),
+            cone(vec3(0.0, -0.12, 0.01), vec3(0.0, 0.06, 0.0), ra: 0.18, rb: 0.21, c: coat),
         )
         .part(
             b.neck,
             cone(vec3(0.0, -0.02, 0.0), vec3(0.0, 0.06, 0.0), ra: 0.06, rb: 0.055, c: SKIN),
         )
         .part(b.head, cone(vec3(0.0, 0.08, 0.01), vec3(0.0, 0.17, 0.0), ra: 0.1, rb: 0.11, c: SKIN))
-        .part(b.shoulder_a, cone(vec3(0.0), vec3(0.27, 0.0, 0.0), ra: 0.075, rb: 0.06, c: COAT))
+        .part(b.shoulder_a, cone(vec3(0.0), vec3(0.27, 0.0, 0.0), ra: 0.075, rb: 0.06, c: coat))
         .part(b.elbow_a, cone(vec3(0.0), vec3(0.24, 0.0, 0.0), ra: 0.055, rb: 0.045, c: SKIN))
         .part(
             b.hand_a,
-            cone(vec3(0.03, 0.0, -0.1), vec3(0.03, 0.0, 1.0), ra: 0.03, rb: 0.01, c: STEEL),
+            cone(vec3(0.02, 0.0, 0.0), vec3(0.09, 0.0, 0.0), ra: 0.06, rb: 0.055, c: SKIN),
         )
-        .part(b.shoulder_b, cone(vec3(0.0), vec3(-0.27, 0.0, 0.0), ra: 0.075, rb: 0.06, c: COAT))
+        .part(b.shoulder_b, cone(vec3(0.0), vec3(-0.27, 0.0, 0.0), ra: 0.075, rb: 0.06, c: coat))
         .part(b.elbow_b, cone(vec3(0.0), vec3(-0.24, 0.0, 0.0), ra: 0.055, rb: 0.045, c: SKIN))
-        .part(b.hand_b, cone(vec3(0.0), vec3(-0.08, 0.0, 0.0), ra: 0.05, rb: 0.04, c: SKIN))
-        .part(b.hip_a, cone(vec3(0.0), vec3(0.01, -0.44, 0.02), ra: 0.09, rb: 0.07, c: COAT))
-        .part(b.knee_a, cone(vec3(0.0), vec3(0.0, -0.44, -0.02), ra: 0.065, rb: 0.05, c: COAT))
-        .part(b.ankle_a, cone(vec3(0.0), vec3(0.0, -0.05, 0.16), ra: 0.05, rb: 0.04, c: SASH))
-        .part(b.hip_b, cone(vec3(0.0), vec3(-0.01, -0.44, 0.02), ra: 0.09, rb: 0.07, c: COAT))
-        .part(b.knee_b, cone(vec3(0.0), vec3(0.0, -0.44, -0.02), ra: 0.065, rb: 0.05, c: COAT))
+        .part(
+            b.hand_b,
+            cone(vec3(-0.02, 0.0, 0.0), vec3(-0.09, 0.0, 0.0), ra: 0.06, rb: 0.055, c: SKIN),
+        )
+        .part(b.hip_a, cone(vec3(0.0), vec3(0.01, -0.44, 0.02), ra: 0.09, rb: 0.07, c: coat))
+        .part(b.knee_a, cone(vec3(0.0), vec3(0.0, -0.44, -0.02), ra: 0.065, rb: 0.05, c: coat))
+        .part(b.ankle_a, cone(vec3(0.0), vec3(0.0, -0.05, 0.16), ra: 0.05, rb: 0.04, c: sash))
+        .part(b.hip_b, cone(vec3(0.0), vec3(-0.01, -0.44, 0.02), ra: 0.09, rb: 0.07, c: coat))
+        .part(b.knee_b, cone(vec3(0.0), vec3(0.0, -0.44, -0.02), ra: 0.065, rb: 0.05, c: coat))
         .blend(0.04)
     (body, s, b)
 }
 
-/// A turn of `deg` degrees about `axis`.
-fn turned(axis: vec3, deg: f32) -> Quat {
-    Quat::axis_angle(axis, deg * 0.017453293)
-}
-
 const X = vec3(1.0, 0.0, 0.0)
-const Y = vec3(0.0, 1.0, 0.0)
-const Z = vec3(0.0, 0.0, 1.0)
 
-/// The guard: the blade arm down and forward, the other arm in front, knees a little bent; the
-/// chest's breath (a lift and a little stretch) and a slow sway, two seconds a breath.
-pub fn guard(b: Bones) -> Clip {
-    let breath = |at: f32, lift: f32| key(
-        at,
-        stretch: vec3(1.0 + lift, 1.0 + 0.5 * lift, 1.0 + lift),
-    )
-    Clip {
-        length: 2.0,
-        looped: true,
-        tracks: Vec::from(
-            [
-                Track {
-                    bone: b.chest,
-                    keys: Vec::from([breath(0.0, 0.0), breath(1.0, 0.03), breath(2.0, 0.0)]),
-                },
-                Track {
-                    bone: b.pelvis,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: turned(Y, -18.0), shift: vec3(0.0, -0.05, 0.0)),
-                            key(1.0, turn: turned(Y, -14.0), shift: vec3(0.0, -0.06, 0.0)),
-                            key(2.0, turn: turned(Y, -18.0), shift: vec3(0.0, -0.05, 0.0)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.shoulder_a,
-                    keys: Vec::from([key(0.0, turn: turned(Z, -62.0).mul(turned(Y, -25.0)))]),
-                },
-                Track { bone: b.elbow_a, keys: Vec::from([key(0.0, turn: turned(Y, -40.0))]) },
-                Track { bone: b.hand_a, keys: Vec::from([key(0.0, turn: turned(X, 25.0))]) },
-                Track {
-                    bone: b.shoulder_b,
-                    keys: Vec::from([key(0.0, turn: turned(Z, 55.0).mul(turned(Y, -35.0)))]),
-                },
-                Track { bone: b.elbow_b, keys: Vec::from([key(0.0, turn: turned(Y, 60.0))]) },
-                Track { bone: b.hip_a, keys: Vec::from([key(0.0, turn: turned(X, -12.0))]) },
-                Track { bone: b.knee_a, keys: Vec::from([key(0.0, turn: turned(X, 18.0))]) },
-                Track {
-                    bone: b.hip_b,
-                    keys: Vec::from([key(0.0, turn: turned(X, 10.0).mul(turned(Z, -6.0)))]),
-                },
-                Track { bone: b.knee_b, keys: Vec::from([key(0.0, turn: turned(X, 14.0))]) },
-            ],
-        ),
+/// A pose as its silhouette: the pelvis's turn and shift, the chest's and the head's turns (each
+/// against its parent), and where each arm's upper and lower bones and each leg's thigh and shin
+/// point, in the body's frame (+z ahead, +x its right, +y up), with each arm's stretch along its
+/// length (1: none).
+pub struct Shape: Copy {
+    pub pelvis: Quat = Quat::identity(),
+    pub shift: vec3 = vec3(0.0),
+    pub chest: Quat = Quat::identity(),
+    pub head: Quat = Quat::identity(),
+    pub upper_a: vec3,
+    pub fore_a: vec3,
+    pub upper_b: vec3,
+    pub fore_b: vec3,
+    pub thigh_a: vec3,
+    pub shin_a: vec3,
+    pub thigh_b: vec3,
+    pub shin_b: vec3,
+    pub reach_a: f32 = 1.0,
+}
+
+/// The turn that points a bone whose rest runs along `rest` along `want` (the body's frame), under
+/// a parent whose turns come to `above`.
+fn aimed(above: Quat, rest: vec3, want: vec3) -> Quat {
+    turn(normalize(rest), normalize(above.inverse().rotate(normalize(want))))
+}
+
+/// Shape `s` as each bone's pose (`engine::clip::Local`), for skeleton bones `b`.
+pub fn locals(s: Shape, b: Bones) -> [Local; engine::creature::MAX_BONES] {
+    var out = [rest(); engine::creature::MAX_BONES]
+    let body = s.pelvis.mul(s.chest)
+    out[b.pelvis.index] = Local { turn: s.pelvis, stretch: vec3(1.0), shift: s.shift }
+    out[b.chest.index] = Local { turn: s.chest, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[b.head.index] = Local { turn: s.head, stretch: vec3(1.0), shift: vec3(0.0) }
+    let sa = aimed(body, X, s.upper_a)
+    let ea = aimed(body.mul(sa), X, s.fore_a)
+    let sb = aimed(body, -X, s.upper_b)
+    let eb = aimed(body.mul(sb), -X, s.fore_b)
+    out[b.shoulder_a.index] = Local {
+        turn: sa,
+        stretch: vec3(s.reach_a, 1.0, 1.0),
+        shift: vec3(0.0),
+    }
+    out[b.elbow_a.index] = Local { turn: ea, stretch: vec3(s.reach_a, 1.0, 1.0), shift: vec3(0.0) }
+    out[b.shoulder_b.index] = Local { turn: sb, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[b.elbow_b.index] = Local { turn: eb, stretch: vec3(1.0), shift: vec3(0.0) }
+    let down = vec3(0.0, -1.0, 0.0)
+    let ha = aimed(s.pelvis, down, s.thigh_a)
+    let ka = aimed(s.pelvis.mul(ha), down, s.shin_a)
+    let hb = aimed(s.pelvis, down, s.thigh_b)
+    let kb = aimed(s.pelvis.mul(hb), down, s.shin_b)
+    out[b.hip_a.index] = Local { turn: ha, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[b.knee_a.index] = Local { turn: ka, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[b.hip_b.index] = Local { turn: hb, stretch: vec3(1.0), shift: vec3(0.0) }
+    out[b.knee_b.index] = Local { turn: kb, stretch: vec3(1.0), shift: vec3(0.0) }
+    out
+}
+
+/// The guard both stand in: weight low, fists up before the chin, the lead (left) foot ahead.
+pub const GUARD = Shape {
+    pelvis: Quat { v: vec4(0.0, 0.1305, 0.0, 0.9914) },
+    shift: vec3(0.0, -0.07, 0.0),
+    upper_a: vec3(0.2, -0.55, 0.8),
+    fore_a: vec3(-0.25, 0.85, 0.45),
+    upper_b: vec3(-0.2, -0.5, 0.85),
+    fore_b: vec3(0.25, 0.85, 0.45),
+    thigh_a: vec3(0.08, -0.95, -0.2),
+    shin_a: vec3(0.0, -1.0, -0.15),
+    thigh_b: vec3(-0.08, -0.93, 0.3),
+    shin_b: vec3(0.0, -1.0, 0.05),
+}
+
+/// The coil: as low as it goes, turned away from the blow, the striking (right) fist dropped
+/// behind the hip, the chest folded over the lead knee: everything wound to spring.
+pub const COIL = Shape {
+    pelvis: Quat { v: vec4(0.0, 0.3420, 0.0, 0.9397) },
+    shift: vec3(0.0, -0.36, -0.08),
+    chest: Quat { v: vec4(0.2156, 0.0851, 0.0189, 0.9726) },
+    upper_a: vec3(0.35, -0.8, -0.45),
+    fore_a: vec3(0.1, 0.15, 1.0),
+    upper_b: vec3(-0.25, -0.2, 0.95),
+    fore_b: vec3(0.3, 0.85, 0.4),
+    thigh_a: vec3(0.12, -0.45, -0.65),
+    shin_a: vec3(0.0, -0.9, -0.45),
+    thigh_b: vec3(-0.1, -0.5, 0.85),
+    shin_b: vec3(0.0, -0.98, -0.2),
+}
+
+/// The blow: rising through it, the striking side turned into it, the fist driven up and in under
+/// the other's jaw (the arm stretched a fifth longer), the other arm pulled back, the rear leg
+/// pushing off.
+pub const BLOW = Shape {
+    pelvis: Quat { v: vec4(0.0, -0.2164, 0.0, 0.9763) },
+    shift: vec3(0.0, 0.05, 0.22),
+    chest: Quat { v: vec4(-0.0692, -0.1302, 0.0091, 0.9890) },
+    upper_a: vec3(0.0, 0.25, 0.97),
+    fore_a: vec3(-0.35, 0.8, 0.5),
+    upper_b: vec3(-0.3, -0.6, -0.65),
+    fore_b: vec3(0.0, 0.3, 0.95),
+    thigh_a: vec3(0.05, -0.75, -0.65),
+    shin_a: vec3(0.0, -0.6, -0.8),
+    thigh_b: vec3(-0.05, -0.98, 0.2),
+    shin_b: vec3(0.0, -1.0, 0.0),
+    reach_a: 1.2,
+}
+
+/// The follow-through: higher still, the arm straight overhead, the body stretched long behind it.
+pub const OVERHEAD = Shape {
+    pelvis: Quat { v: vec4(0.0, -0.2588, 0.0, 0.9659) },
+    shift: vec3(0.0, 0.38, 0.4),
+    chest: Quat { v: vec4(-0.0868, -0.0868, 0.0076, 0.9924) },
+    upper_a: vec3(0.0, 0.95, 0.3),
+    fore_a: vec3(0.0, 1.0, -0.05),
+    upper_b: vec3(-0.35, -0.7, -0.6),
+    fore_b: vec3(0.0, -0.2, 1.0),
+    thigh_a: vec3(0.05, -0.8, -0.6),
+    shin_a: vec3(0.0, -0.5, -0.85),
+    thigh_b: vec3(-0.05, -0.98, 0.15),
+    shin_b: vec3(0.0, -0.95, -0.3),
+}
+
+/// The struck: its head snapped back, its chest arched, its arms flung out, its knees gone.
+pub const STRUCK_SHAPE = Shape {
+    pelvis: Quat { v: vec4(-0.0872, 0.0, 0.0, 0.9962) },
+    shift: vec3(0.0, 0.06, -0.06),
+    chest: Quat { v: vec4(-0.2588, 0.0, 0.0, 0.9659) },
+    head: Quat { v: vec4(-0.3827, 0.0, 0.0, 0.9239) },
+    upper_a: vec3(0.8, 0.45, -0.35),
+    fore_a: vec3(0.85, 0.5, -0.2),
+    upper_b: vec3(-0.8, 0.45, -0.35),
+    fore_b: vec3(-0.85, 0.5, -0.2),
+    thigh_a: vec3(0.1, -0.9, 0.4),
+    shin_a: vec3(0.0, -0.75, -0.65),
+    thigh_b: vec3(-0.1, -0.85, 0.5),
+    shin_b: vec3(0.0, -0.7, -0.7),
+}
+
+/// The flung: arched back over its own momentum, its limbs trailing behind the flight.
+pub const FLUNG = Shape {
+    pelvis: Quat { v: vec4(-0.1736, 0.0, 0.0, 0.9848) },
+    chest: Quat { v: vec4(-0.3827, 0.0, 0.0, 0.9239) },
+    head: Quat { v: vec4(-0.4226, 0.0, 0.0, 0.9063) },
+    upper_a: vec3(0.45, -0.5, -0.75),
+    fore_a: vec3(0.3, -0.6, -0.75),
+    upper_b: vec3(-0.45, -0.5, -0.75),
+    fore_b: vec3(-0.3, -0.6, -0.75),
+    thigh_a: vec3(0.1, -0.85, -0.5),
+    shin_a: vec3(0.0, -0.6, -0.8),
+    thigh_b: vec3(-0.1, -0.9, -0.4),
+    shin_b: vec3(0.0, -0.55, -0.85),
+}
+
+/// The uppercut's times (seconds into it, the program's stop aside): the coil's depth, the held
+/// stillness's end, the blow's arrival (the stop begins there), the struck one's launch (a beat
+/// after the stop), the follow-through's height, and the end, back on guard.
+pub const COILED: f32 = 0.55
+pub const STILL: f32 = 0.9
+pub const CONTACT: f32 = 0.98
+pub const LAUNCH: f32 = 1.16
+pub const OVER: f32 = 1.3
+pub const HELD: f32 = 2.6
+pub const UPPERCUT: f32 = 3.3
+
+/// Shape `s`'s keys at time `at`, each going on as `ease` says: a clip's tracks for every bone a
+/// shape sets.
+fn keyed(tracks: mut Vec<Track>, b: Bones, at: f32, s: Shape, ease: u32) {
+    let l = locals(s, b)
+    let bones = [
+        b.pelvis,
+        b.chest,
+        b.head,
+        b.shoulder_a,
+        b.elbow_a,
+        b.shoulder_b,
+        b.elbow_b,
+        b.hip_a,
+        b.knee_a,
+        b.hip_b,
+        b.knee_b,
+    ]
+    for k in 0..bones.len() {
+        let pose = l[bones[k].index]
+        if tracks.len() <= k {
+            tracks.push(Track { bone: bones[k], keys: Vec::new() })
+        }
+        tracks[k].keys.push(Key { at, pose, ease })
     }
 }
 
-/// The strike's times (seconds into it): the coil's end, the snap's, the blow held until, the
-/// follow-through's end, and the strike's.
-pub const COILED: f32 = 0.42
-pub const STRUCK: f32 = 0.5
-pub const LANDED: f32 = 0.62
-pub const FOLLOWED: f32 = 0.95
-pub const STRIKE: f32 = 1.5
+/// The guard, a clip of one pose.
+pub fn guard(b: Bones) -> Clip {
+    var tracks: Vec<Track> = Vec::new()
+    keyed(mut tracks, b, 0.0, GUARD, SMOOTH)
+    Clip { length: 1.0, looped: true, tracks }
+}
 
-/// The strike: from the guard it coils (the blade drawn back over the shoulder, the chest
-/// turned away and squashed, the hips low), snaps through in under a tenth of a second (the blade
-/// arm stretched long, a smear of its swing), holds the blow, follows through past the guard and
-/// settles back.
-pub fn strike(b: Bones) -> Clip {
-    let g = guard(b)
-    let rest_of = |bone: Bone| {
-        var at = key(0.0)
-        for t in g.tracks {
-            if t.bone == bone {
-                at = t.keys[0]
-            }
-        }
-        at.pose.turn
-    }
-    Clip {
-        length: STRIKE,
-        looped: false,
-        tracks: Vec::from(
-            [
-                Track {
-                    bone: b.pelvis,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: turned(Y, -18.0), shift: vec3(0.0, -0.05, 0.0)),
-                            key(
-                                COILED,
-                                turn: turned(Y, -40.0),
-                                shift: vec3(0.0, -0.14, -0.06),
-                                ease: SNAP,
-                            ),
-                            key(
-                                STRUCK,
-                                turn: turned(Y, 35.0),
-                                shift: vec3(0.0, -0.1, 0.22),
-                                ease: HOLD,
-                            ),
-                            key(LANDED, turn: turned(Y, 35.0), shift: vec3(0.0, -0.1, 0.22)),
-                            key(FOLLOWED, turn: turned(Y, 48.0), shift: vec3(0.0, -0.08, 0.28)),
-                            key(STRIKE, turn: turned(Y, -18.0), shift: vec3(0.0, -0.05, 0.0)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.chest,
-                    keys: Vec::from(
-                        [
-                            key(0.0),
-                            key(
-                                COILED,
-                                turn: turned(Y, -35.0).mul(turned(X, -8.0)),
-                                stretch: vec3(1.1, 0.86, 1.1),
-                                ease: SNAP,
-                            ),
-                            key(
-                                STRUCK,
-                                turn: turned(Y, 30.0).mul(turned(X, 12.0)),
-                                stretch: vec3(0.92, 1.14, 0.92),
-                                ease: HOLD,
-                            ),
-                            key(
-                                LANDED,
-                                turn: turned(Y, 30.0).mul(turned(X, 12.0)),
-                                stretch: vec3(0.95, 1.08, 0.95),
-                            ),
-                            key(FOLLOWED, turn: turned(Y, 40.0).mul(turned(X, 8.0))),
-                            key(STRIKE),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.shoulder_a,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.shoulder_a)),
-                            key(COILED, turn: turned(Z, 70.0).mul(turned(Y, 60.0)), ease: SNAP),
-                            key(
-                                STRUCK,
-                                turn: turned(Z, -35.0).mul(turned(Y, -75.0)),
-                                stretch: vec3(1.5, 0.85, 0.85),
-                                ease: HOLD,
-                            ),
-                            key(
-                                LANDED,
-                                turn: turned(Z, -35.0).mul(turned(Y, -75.0)),
-                                stretch: vec3(1.15, 0.95, 0.95),
-                            ),
-                            key(FOLLOWED, turn: turned(Z, -55.0).mul(turned(Y, -95.0))),
-                            key(STRIKE, turn: rest_of(b.shoulder_a)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.elbow_a,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.elbow_a)),
-                            key(COILED, turn: turned(Y, 95.0), ease: SNAP),
-                            key(
-                                STRUCK,
-                                turn: turned(Y, -5.0),
-                                stretch: vec3(1.6, 0.85, 0.85),
-                                ease: HOLD,
-                            ),
-                            key(LANDED, turn: turned(Y, -5.0), stretch: vec3(1.2, 0.95, 0.95)),
-                            key(FOLLOWED, turn: turned(Y, -15.0)),
-                            key(STRIKE, turn: rest_of(b.elbow_a)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.hand_a,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.hand_a)),
-                            key(COILED, turn: turned(X, -60.0), ease: SNAP),
-                            key(STRUCK, turn: turned(X, 10.0).mul(turned(Y, -20.0)), ease: HOLD),
-                            key(LANDED, turn: turned(X, 10.0).mul(turned(Y, -20.0))),
-                            key(FOLLOWED, turn: turned(X, 20.0).mul(turned(Y, -35.0))),
-                            key(STRIKE, turn: rest_of(b.hand_a)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.shoulder_b,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.shoulder_b)),
-                            key(COILED, turn: turned(Z, 20.0).mul(turned(Y, -70.0)), ease: SNAP),
-                            key(STRUCK, turn: turned(Z, 30.0).mul(turned(Y, 40.0)), ease: HOLD),
-                            key(LANDED, turn: turned(Z, 30.0).mul(turned(Y, 40.0))),
-                            key(STRIKE, turn: rest_of(b.shoulder_b)),
-                        ],
-                    ),
-                },
-                Track { bone: b.elbow_b, keys: Vec::from([key(0.0, turn: rest_of(b.elbow_b))]) },
-                Track {
-                    bone: b.hip_a,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.hip_a)),
-                            key(COILED, turn: turned(X, -25.0), ease: SNAP),
-                            key(STRUCK, turn: turned(X, -45.0), ease: HOLD),
-                            key(LANDED, turn: turned(X, -45.0)),
-                            key(STRIKE, turn: rest_of(b.hip_a)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.knee_a,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.knee_a)),
-                            key(COILED, turn: turned(X, 45.0), ease: SNAP),
-                            key(STRUCK, turn: turned(X, 55.0), ease: HOLD),
-                            key(LANDED, turn: turned(X, 55.0)),
-                            key(STRIKE, turn: rest_of(b.knee_a)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.hip_b,
-                    keys: Vec::from(
-                        [
-                            key(0.0, turn: rest_of(b.hip_b)),
-                            key(COILED, turn: turned(X, 15.0), ease: SNAP),
-                            key(STRUCK, turn: turned(X, 30.0), ease: HOLD),
-                            key(LANDED, turn: turned(X, 30.0)),
-                            key(STRIKE, turn: rest_of(b.hip_b)),
-                        ],
-                    ),
-                },
-                Track {
-                    bone: b.knee_b,
-                    keys: Vec::from([key(0.0, turn: rest_of(b.knee_b), ease: EVEN)]),
-                },
-                Track {
-                    bone: b.head,
-                    keys: Vec::from(
-                        [
-                            key(0.0),
-                            key(COILED, turn: turned(Y, 25.0), ease: SNAP),
-                            key(STRUCK, turn: turned(Y, -20.0), ease: HOLD),
-                            key(LANDED, turn: turned(Y, -20.0), ease: SMOOTH),
-                            key(STRIKE),
-                        ],
-                    ),
-                },
-            ],
-        ),
-    }
+/// The striker's uppercut: guard; down into the coil, slowly; dead still; the snap up into the
+/// blow (most of it at once); on up into the follow-through; held high; back on guard.
+pub fn uppercut(b: Bones) -> Clip {
+    var tracks: Vec<Track> = Vec::new()
+    keyed(mut tracks, b, 0.0, GUARD, SMOOTH)
+    keyed(mut tracks, b, COILED, COIL, HOLD)
+    keyed(mut tracks, b, STILL, COIL, SNAP)
+    keyed(mut tracks, b, CONTACT, BLOW, SNAP)
+    keyed(mut tracks, b, OVER, OVERHEAD, HOLD)
+    keyed(mut tracks, b, HELD, OVERHEAD, SMOOTH)
+    keyed(mut tracks, b, UPPERCUT, GUARD, SMOOTH)
+    Clip { length: UPPERCUT, looped: false, tracks }
+}
+
+/// The struck one's: guard until the blow, then snapped into the struck shape at once, held there
+/// a beat after the stop, then flung (its flight `main.wrela`'s).
+pub fn struck(b: Bones) -> Clip {
+    var tracks: Vec<Track> = Vec::new()
+    keyed(mut tracks, b, 0.0, GUARD, HOLD)
+    keyed(mut tracks, b, CONTACT, STRUCK_SHAPE, HOLD)
+    keyed(mut tracks, b, LAUNCH, STRUCK_SHAPE, SNAP)
+    keyed(mut tracks, b, LAUNCH + 0.12, FLUNG, HOLD)
+    Clip { length: UPPERCUT, looped: false, tracks }
 }

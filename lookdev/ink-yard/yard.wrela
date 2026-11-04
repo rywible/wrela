@@ -1,10 +1,12 @@
 // The yard as the frame draws it (`engine::frame::Scene`): ground in low mounds, flat where the
-// fighter stands, seven standing stones in a ring round it (realized a frame each at load, then
-// static casters), and the fighter (`fighter`), cast into the moving shadow map.
+// fighters stand, and cratered where a blow drives into it (`Mounds::crater`); seven standing
+// stones in a ring round them (realized a frame each at load, then static casters); the two
+// fighters (`fighter`), cast into the moving shadow map; and the dust a blow throws up.
 
 use engine::air::{Air, hazy}
 use engine::character::{ByChannels, Cast, PartOf}
 use engine::frame::{Cooks, Scene}
+use engine::particles::{Burst, Emits, burst}
 use engine::light::{Light, SUN_TOP}
 use engine::lit::Lighting
 use engine::plant::Wind
@@ -29,15 +31,22 @@ pub const STONES: u32 = 7
 pub const RING: f32 = 8.5
 
 /// The yard's ground: low mounds, flat within 5 m of its middle; packed earth, paler where it's
-/// worn flat, darker on the slopes.
-pub struct Mounds: Copy + GpuData {}
+/// worn flat, darker on the slopes. And its crater, where a blow drove into it (`crater`: its
+/// middle's x and z, its radius and its depth; 0 deep, none): a bowl with a rim thrown up round it.
+pub struct Mounds: Copy + GpuData {
+    pub crater: vec4 = vec4(0.0),
+}
 
 impl Terrain for Mounds {
     fn height(self, x: f32, z: f32) -> f32 {
         let r = length(vec2(x, z))
         let rise = 0.7 * sin(x * 0.09 + 0.4) * cos(z * 0.07) +
             0.3 * sin(x * 0.23 + 1.3) * sin(z * 0.19)
-        (rise + 0.5) * smoothstep(5.0, 13.0, r)
+        (rise + 0.5) * smoothstep(5.0, 13.0, r) + cratered(self.crater, vec2(x, z))
+    }
+
+    fn steepest(self) -> f32 {
+        1.5
     }
 
     fn cover(self, at: vec3, n: vec3) -> Cover {
@@ -51,9 +60,21 @@ impl Terrain for Mounds {
     }
 }
 
-/// The ground's height at a point of the world (x, z).
-pub fn ground_at(p: vec2) -> f32 {
-    Mounds {}.height(p.x, p.y)
+/// A crater's height at `p` (`Mounds::crater`): down `depth` at its middle, a bowl out to its
+/// radius, a rim a quarter of its depth high just past it, nothing beyond.
+pub fn cratered(c: vec4, p: vec2) -> f32 {
+    if c.w <= 0.0 {
+        return 0.0
+    }
+    let r = length(p - c.xy) / c.z
+    let bowl = -c.w * (1.0 - smoothstep(0.0, 1.0, r * r))
+    let rim = 0.25 * c.w * exp(-((r - 1.05) * (r - 1.05)) / 0.02)
+    bowl + rim
+}
+
+/// The ground's height at a point of the world (x, z), cratered by `crater`.
+pub fn ground_at(p: vec2, crater: vec4 = vec4(0.0)) -> f32 {
+    Mounds { crater }.height(p.x, p.y)
 }
 
 /// Stone `k`'s place in the ring: its foot, its turn, its seed.
@@ -64,19 +85,46 @@ fn stone_at(k: u32) -> (vec3, f32, u32) {
     (vec3(p.x, ground_at(p) + 1.25, p.y), a * 1.7, 11 + k * 7)
 }
 
-/// The yard: its stones as they're realized, the fighter and its parts, and its weather.
+/// A blow's dust: ninety dark clods of the yard's earth thrown up from round where it lands, a few
+/// metres and only a little out (a plume round the crater, not a fog), settling in under two
+/// seconds.
+pub const DUST = Burst {
+    count: 90,
+    spread: 1.0,
+    lift: 0.1,
+    life: vec2(0.6, 1.6),
+    out: vec2(0.4, 2.5),
+    up: vec2(2.0, 7.0),
+    size: vec2(0.02, 0.06),
+    colour: vec4(0.2, 0.16, 0.11, 0.95),
+    drag: 2.2,
+    grow: 0.15,
+}
+
+/// The yard: its stones as they're realized, its two fighters (the striker and the struck) and
+/// their parts, its ground (its crater), the dust it throws up this frame, and its weather.
 pub struct Yard {
     pub stones: Vec<Realized>,
-    pub fighter: Cast<Paint, Fighter, ByChannels>,
+    pub striker: Cast<Paint, Fighter, ByChannels>,
+    pub struck: Cast<Paint, Fighter, ByChannels>,
     pub parts: PartOf,
+    pub ground: Mounds,
+    pub dust: Vec<vec3>,
     weather: Weather,
 }
 
-pub fn yard(fighter: take Cast<Paint, Fighter, ByChannels>, parts: PartOf) -> Yard {
+pub fn yard(
+    striker: take Cast<Paint, Fighter, ByChannels>,
+    struck: take Cast<Paint, Fighter, ByChannels>,
+    parts: PartOf,
+) -> Yard {
     Yard {
         stones: Vec::new(),
-        fighter,
+        striker,
+        struck,
         parts,
+        ground: Mounds {},
+        dust: Vec::new(),
         weather: Weather {
             clouds: Vec::new(),
             fair: 0.35,
@@ -113,11 +161,19 @@ impl Scene for Yard {
     }
 
     fn height_at(self, world: vec2) -> f32 {
-        ground_at(world)
+        self.ground.height(world.x, world.y)
     }
 
     fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
-        clipmap.follow(Mounds {}, eye, again)
+        clipmap.follow(self.ground, eye, again)
+    }
+
+    /// The dust a blow threw up this frame.
+    fn emit(mut self, e: mut Emits) {
+        for k in 0..self.dust.len() {
+            burst(mut e, DUST, self.dust[k], seed: 4001 + k)
+        }
+        self.dust.clear()
     }
 
     /// A stone realized a step until the ring is whole; each fitted to its mesh once its counts
@@ -170,11 +226,12 @@ impl Scene for Yard {
     }
 
     fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
-        self.fighter.shadow(pass, view)
+        self.striker.shadow(pass, view)
+        self.struck.shadow(pass, view)
     }
 
     fn casts_moving(self) -> bool {
-        self.fighter.on
+        self.striker.on || self.struck.on
     }
 
     fn shade<P: RenderPass, Q: Switches, Y: Style>(
@@ -204,10 +261,12 @@ impl Scene for Yard {
     }
 
     fn characters<P: RenderPass, Q: Switches, Y: Style>(self, pass: P, lt: Lighting<Q, Y>) {
-        self.fighter.draw(pass, lt, lt.cam, self.parts)
+        self.striker.draw(pass, lt, lt.cam, self.parts)
+        self.struck.draw(pass, lt, lt.cam, self.parts)
     }
 
     fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
-        self.fighter.motion(pass, cam)
+        self.striker.motion(pass, cam)
+        self.struck.motion(pass, cam)
     }
 }

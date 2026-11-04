@@ -1,32 +1,46 @@
-// The yard: Kinetic Ink's look-development scene (content/styles/kinetic.wrela). A duellist on
-// mounded ground among standing stones holds its guard, breathing; every `CYCLE` seconds it
-// strikes (fighter.wrela's clip: a coil, a snap, the blow held, a follow-through) and the moment's
-// intensity rises with it, then falls back to quiet. The camera circles slowly, and on the strike
-// it closes in and narrows (a punch-in), then eases back.
+// The yard: Kinetic Ink's look-development scene (content/styles/kinetic.wrela), and the MMO's
+// first question of scale: one uppercut, at an anime fight's timing. Two fighters face each other
+// on mounded ground among standing stones. Every `CYCLE` seconds the striker (dark coat, red sash)
+// coils low and deep, holds dead still, then rises through the blow; the clock stops on the
+// contact (`STOP`, a hit-stop) while the frame flashes its impact frames; the struck one (pale
+// coat, blue sash) hangs snapped back a beat too long, then is flung into the sky, the ground
+// cratering under the blow and throwing up its dust as it goes. The camera sits low and close on
+// the coil, tight on the blow, then on its back watching the struck one go, then comes back to
+// the striker.
+//
+// The fighters are drawn on twos (`DRAWINGS` a second); past half the moment's height on fours
+// (`FIGHT_DRAWINGS`), the flight too, as a fight's key animation drops to rough drawings held
+// longer; a new drawing is forced on the blow and on the launch, so each lands on its frame. Each
+// new drawing's first frames are its smear (`engine::character::Smear`), and the frame redraws the
+// fighters' sketched lines with each drawing (`Frame::drawing`). The camera and the ground move
+// every frame.
 //
 // Built as shipped it draws the look with the switches it ships with (`SWITCHES`, `Inked`: none
-// of the physically based systems a graphic look doesn't draw: no clouds' march, no probes, no
-// froxel fog, no distance volume, no screen reflections, no contact shadows, no bloom). For a
-// measure of what that saves, the same scene in the physical look on the approved switches:
+// of the physically based systems a graphic look doesn't draw). For a measure of what that
+// saves, the same scene in the physical look on the approved switches:
 //
 //     wrela build lookdev/ink-yard --set LOOK=styles::physical::Physical --set SWITCHES=Realistic
 //
-// The fighter is drawn on twos (`DRAWINGS` a second); past half the moment's height on fours
-// (`FIGHT_DRAWINGS`), as a fight's key animation drops to rough drawings held longer, and the
-// frame redraws its sketched lines and hatching with each new drawing (`Frame::drawing`). The
-// camera and the sim
-// move every frame.
+// Everything here is presentation: in the MMO the sim decides the hit and the launch's path, and
+// the stop, the impact frames, the drawings and the smear are how a client draws them.
 
-use engine::clip::{Playhead, blended, palette, pose, rest}
 use engine::character::{ByChannels, Smear, cast, parts_of, placed}
-use engine::frame::{Aim, Frame, Gathered, Quality}
+use engine::clip::{Local, Playhead, palette, pose, rest}
+use engine::creature::{MAX_BONES, Skeleton}
+use engine::frame::{Aim, Change, Frame, Gathered, Quality}
 use engine::light::sunlight
 use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::noise::hash2
 use engine::probes::grid
 use engine::switches::Switches
 use engine::terrain::Clipmap
 use engine::view::first_camera
-use fighter::{Bones, COILED, LANDED, STRIKE, STRUCK, fighter, guard, strike}
+use fighter::{
+    BLUE, Bones, COAT, COILED, CONTACT, LAUNCH, PALE, SASH, STILL, UPPERCUT, fighter, guard, struck,
+    uppercut,
+}
+use std::quat::Quat
+use std::transform::translate
 use styles::kinetic::Kinetic
 use yard::{SUN, Yard, air_of, ground_at, yard}
 
@@ -57,112 +71,169 @@ pub struct Realistic {}
 
 impl Switches for Realistic {}
 
-/// How often a strike comes (seconds), when the first does, and the drawings a second the clip is
-/// held to (on twos).
+/// How often the uppercut comes (seconds), and when the first does.
 pub const CYCLE: f32 = 6.0
-pub const FIRST: f32 = 2.5
+pub const FIRST: f32 = 1.0
+/// The drawings a second: on twos, and on fours past `FIGHT_FROM` of the moment's height.
 pub const DRAWINGS: f32 = 12.0
 pub const FIGHT_DRAWINGS: f32 = 6.0
 pub const FIGHT_FROM: f32 = 0.5
-/// The smear (`engine::character::Smear`) at the moment's height, as a rough in-between drawing:
-/// for a new drawing's first `SMEAR_FRAMES` (4 at 60 a second, a fifteenth of a second: a drawing
-/// of its own), its trailing surfaces drawn back toward the drawing before by `SMEAR` and its
-/// trail drawn as strokes by `STROKES` (each the path of a point of the part: a blade's trail a fan
-/// of its points' arcs), each the more where it moved farther; then the drawing stands
-/// clean, cut, not eased. And `DISARRAY` for the whole drawing: how much its lines come apart where
-/// it moved most. Its leading surfaces, its head and neck (`Smear::steady`) and its shadow are
-/// the pose's own, so where the fighter is and which way it faces stay plain.
+/// The smear at the moment's height (`engine::character::Smear`), as a rough in-between drawing:
+/// for a new drawing's first `SMEAR_FRAMES` (4 at 60 a second), its trailing surfaces drawn back
+/// toward the drawing before by `SMEAR` and its trail drawn as `STROKES` (each the path of a point
+/// of the part), each the more where it moved farther; then the drawing stands clean, cut, not
+/// eased. And `DISARRAY` for the whole drawing: how much its lines come apart where it moved most.
+/// Its leading surfaces, its head and neck (`Smear::steady`) and its shadow are the pose's own, so
+/// where a fighter is and which way it faces stay plain.
 pub const SMEAR: f32 = 0.9
 pub const STROKES: f32 = 0.85
 pub const DISARRAY: f32 = 1.0
 pub const SMEAR_FRAMES: f32 = 4.0
-/// The blow's stop (seconds held as it lands), and how long a clip takes to cross into the next.
-pub const STOP: f32 = 0.12
-pub const CROSS: f32 = 0.12
-/// The moment's intensity at rest, at the coil's end, and how fast it falls after the blow (a
-/// second's share kept).
+/// The blow's stop (seconds the clock is held on the contact), and the impact frames: which
+/// frames at 60 a second after the contact are drawn as an impact frame (`Frame::impact`), and
+/// after the launch.
+pub const STOP: f32 = 0.35
+pub const CONTACT_FLASHES: [u32; 5] = [0, 1, 2, 7, 8]
+pub const LAUNCH_FLASHES: [u32; 2] = [0, 1]
+/// Where the struck one stands (m ahead of the striker), how it's flung (m/s: up, and on away),
+/// how fast it tumbles (radians a second), and the crater the blow leaves under the striker (its
+/// middle, radius and depth).
+pub const STAND: f32 = 0.85
+pub const FLIGHT = vec3(0.0, 46.0, 14.0)
+pub const TUMBLE: f32 = -6.5
+pub const CRATER = vec4(0.0, 0.0, 2.8, 0.5)
+/// The moment's intensity at rest.
 pub const QUIET: f32 = 0.06
-pub const COIL: f32 = 0.5
-pub const FALL: f32 = 2.5
 
 const HOW = CreatureLook { surface: Tolerance { tolerance: 3.0e-3 } }
+
+/// A fighter's drawing: its pose and where its root is, held until its next.
+struct Drawn: Copy {
+    locals: [Local; MAX_BONES],
+    root: mat4,
+}
 
 pub struct State {
     pub frame: Frame<Gathered, SWITCHES, LOOK>,
     pub scene: Yard,
     bones: Bones,
-    skeleton: engine::creature::Skeleton,
+    skeleton: Skeleton,
     guard: engine::clip::Clip,
-    strike: engine::clip::Clip,
-    /// The strike's playhead, and whether its blow has been stopped on.
+    uppercut: engine::clip::Clip,
+    struck: engine::clip::Clip,
+    /// The uppercut's clock (held by the stop), which cycle it's in, and when (the frame's time)
+    /// the blow and the launch came, if they have this cycle.
     head: Playhead,
-    stopped: bool,
-    /// The fighter's drawing: its pose, when it was drawn, and how many drawings there have been.
-    locals: [engine::clip::Local; engine::creature::MAX_BONES],
+    cycle: f32,
+    contact_at: Option<f32>,
+    launch_at: Option<f32>,
+    last: Option<f32>,
+    /// Each fighter's drawing, when the drawings were made, how many there have been, and the
+    /// frames since the last.
+    striker: Drawn,
+    hit: Drawn,
     drawn_at: f32,
     drawing: f32,
-    /// Frames since the fighter's drawing began.
     since: f32,
-    last: Option<f32>,
-    /// The moment's intensity, as the strike drives it.
+    /// The moment's intensity.
     pub intensity: f32,
 }
 
 pub fn init() -> State {
     let air = air_of(SUN)
-    let start = vec3(0.0, 1.7, 6.5)
-    let (body, skeleton, bones) = fighter()
+    let start = vec3(-3.6, 1.3, 1.6)
+    let (one, skeleton, bones) = fighter(COAT, SASH)
+    let (other, _, _) = fighter(PALE, BLUE)
     let parts = parts_of(skeleton)
     let frame: Frame<Gathered, SWITCHES, LOOK> = Frame::new(
         Quality {},
         sunlight(air),
         air,
         Clipmap::new(levels: 6, finest: 0.25),
-        first_camera(start, vec3(0.0, 1.2, 0.0), 0.8, width: 320, height: 180),
+        first_camera(start, vec3(0.0, 1.1, 0.4), 0.75, width: 320, height: 180),
         grid(vec2(0.0), cols: 17, spacing: 2.0, low: -4.0, high: 12.0, voxel: 1.0),
         vec2(0.0),
     )
+    let idle = Drawn { locals: [rest(); MAX_BONES], root: placed(vec3(0.0), 0.0) }
     State {
         frame,
-        scene: yard(cast(take body, ByChannels {}, HOW, slices: 16), parts),
+        scene: yard(
+            cast(take one, ByChannels {}, HOW, slices: 16),
+            cast(take other, ByChannels {}, HOW, slices: 16),
+            parts,
+        ),
         bones,
         skeleton,
         guard: guard(bones),
-        strike: strike(bones),
+        uppercut: uppercut(bones),
+        struck: struck(bones),
         head: Playhead {},
-        stopped: false,
-        locals: [rest(); engine::creature::MAX_BONES],
+        cycle: -1.0,
+        contact_at: None,
+        launch_at: None,
+        last: None,
+        striker: idle,
+        hit: idle,
         drawn_at: -1.0e9,
         drawing: 0.0,
         since: 0.0,
-        last: None,
         intensity: QUIET,
     }
 }
 
-/// How far into a strike `time` is (seconds), or none: strikes begin at `FIRST` and every
-/// `CYCLE` after.
-fn striking(time: f32) -> Option<f32> {
-    if time < FIRST {
-        return None
-    }
-    let t = time - FIRST - floor((time - FIRST) / CYCLE) * CYCLE
-    if t < STRIKE { Some(t) } else { None }
-}
-
-/// The moment's intensity at `t` into a strike: rising through the coil, at its height from the
-/// snap through the stop, falling after it.
+/// The moment's intensity at `t` into the uppercut (its clock's): rising through the coil, held
+/// taut through the stillness, at its height from the blow through the launch, falling after it.
 fn intensity_at(t: f32) -> f32 {
     if t < COILED {
-        return mix(QUIET, COIL, smoothstep(0.0, COILED, t))
+        return mix(0.1, 0.55, smoothstep(0.0, COILED, t))
     }
-    if t < STRUCK {
-        return mix(COIL, 1.0, smoothstep(COILED, STRUCK, t))
+    if t < STILL {
+        return mix(0.55, 0.75, (t - COILED) / (STILL - COILED))
     }
-    if t < LANDED {
+    if t < CONTACT {
+        return mix(0.75, 1.0, (t - STILL) / (CONTACT - STILL))
+    }
+    if t < LAUNCH + 0.4 {
         return 1.0
     }
-    QUIET + (1.0 - QUIET) * exp(-FALL * (t - LANDED))
+    QUIET + (1.0 - QUIET) * exp(-1.3 * (t - LAUNCH - 0.4))
+}
+
+/// Whether `since` seconds after an event is one of its impact frames (`flashes`, frames at 60 a
+/// second).
+fn flashing(since: Option<f32>, flashes: [u32]) -> bool {
+    let Some(t) = since else { return false }
+    let k = u32(max(floor(t * 60.0 + 0.01), 0.0))
+    for f in flashes {
+        if f == k {
+            return true
+        }
+    }
+    false
+}
+
+/// How long ago (the frame's time `now`) an event at `at` came, if it has.
+fn ago(at: Option<f32>, now: f32) -> Option<f32> {
+    match at {
+        Some(a) => Some(now - a),
+        None => None,
+    }
+}
+
+/// A turn of `angle` radians about x, as a matrix.
+fn tumbled(angle: f32) -> mat4 {
+    let r = Quat::axis_angle(vec3(1.0, 0.0, 0.0), angle).to_mat3()
+    mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(0.0, 0.0, 0.0, 1.0))
+}
+
+/// `a` to `b`, `t` of the way, for each of an aim's eye, target and field of view.
+fn toward(a: Aim, b: Aim, t: f32) -> Aim {
+    Aim {
+        eye: mix(a.eye, b.eye, vec3(t)),
+        at: mix(a.at, b.at, vec3(t)),
+        fovy: mix(a.fovy, b.fovy, t),
+        moving_at: mix(a.moving_at, b.moving_at, vec3(t)),
+    }
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
@@ -171,71 +242,155 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
-    // The strike's playhead: from its start each cycle, stopped as its blow lands.
-    match striking(time) {
-        Some(t) => {
-            if t < dt + 1.0e-4 || s.head.t > STRIKE {
-                s.head = Playhead {}
-                s.stopped = false
-            } else {
-                s.head.advance(dt)
-            }
-            if !s.stopped && s.head.t >= STRUCK {
-                s.head.stop(STOP)
-                s.stopped = true
-            }
-        },
-        None => {
-            s.head = Playhead {}
-            s.stopped = false
-        },
+    // The cycle: a new uppercut every `CYCLE` seconds, the ground whole again before it.
+    let c = time - FIRST
+    let cycle = if c < 0.0 { -1.0 } else { floor(c / CYCLE) }
+    var forced = false
+    if cycle != s.cycle {
+        s.cycle = cycle
+        s.head = Playhead {}
+        s.contact_at = None
+        s.launch_at = None
+        if s.scene.ground.crater.w > 0.0 {
+            s.scene.ground.crater = vec4(0.0)
+            s.frame.changed(Change::Ground)
+        }
+        forced = true
+    } else if cycle >= 0.0 {
+        s.head.advance(dt)
     }
-    let in_strike = striking(time).is_some()
-    // A new drawing once the last has been held its time: on twos, on fours in the fight.
+    let t = if cycle >= 0.0 { min(s.head.t, UPPERCUT) } else { 0.0 }
+    // The blow: the clock stopped on it, a new drawing on it.
+    if cycle >= 0.0 && s.contact_at.is_none() && t >= CONTACT {
+        s.head.t = CONTACT
+        s.head.stop(STOP)
+        s.contact_at = Some(time)
+        forced = true
+    }
+    // The launch, a beat after the stop: the ground craters, the dust goes up, a new drawing.
+    if cycle >= 0.0 && s.launch_at.is_none() && t >= LAUNCH {
+        s.launch_at = Some(time)
+        s.scene.ground.crater = CRATER
+        s.frame.changed(Change::Ground)
+        let g = ground_at(vec2(0.0), CRATER)
+        for k in 0..4 {
+            let a = f32(k) * 1.5707964 + 0.4
+            s.scene.dust.push(vec3(sin(a) * 1.6, g + 0.3, cos(a) * 1.6))
+        }
+        forced = true
+    }
+    s.intensity = if cycle >= 0.0 { intensity_at(s.head.t) } else { QUIET }
+    // A new drawing once the last has been held its time (on twos, on fours in the fight), or
+    // on the blow and the launch.
     let rate = if s.intensity >= FIGHT_FROM { FIGHT_DRAWINGS } else { DRAWINGS }
-    if time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
-        let quiet = pose(s.guard, time)
-        s.locals = if in_strike {
-            let t = s.head.t
-            let into = smoothstep(0.0, CROSS, t) * (1.0 - smoothstep(STRIKE - CROSS, STRIKE, t))
-            blended(quiet, pose(s.strike, t), into)
-        } else { quiet }
+    if forced || time - s.drawn_at >= 1.0 / rate - 1.0e-4 {
+        let crater = s.scene.ground.crater
+        let at = min(s.head.t, UPPERCUT)
+        s.striker = Drawn {
+            locals: if cycle >= 0.0 { pose(s.uppercut, at) } else { pose(s.guard, time) },
+            root: placed(vec3(0.0, ground_at(vec2(0.0), crater), 0.0), 0.0),
+        }
+        let feet = vec3(0.0, ground_at(vec2(0.0, STAND), crater), STAND)
+        let root = match s.launch_at {
+            Some(l) => {
+                let f = time - l
+                let up = vec3(0.0, 1.0, 0.0)
+                let p = feet + FLIGHT * f + vec3(0.0, -4.9 * f * f, 0.0)
+                translate(p + up) *
+                    placed(vec3(0.0), 3.1415927) *
+                    tumbled(TUMBLE * f) *
+                    translate(-up)
+            },
+            None => placed(feet, 3.1415927),
+        }
+        s.hit = Drawn {
+            locals: if cycle >= 0.0 { pose(s.struck, at) } else { pose(s.guard, time + 0.37) },
+            root,
+        }
         s.drawn_at = time
         s.drawing += 1.0
         s.since = 0.0
-        s.scene.fighter.new_drawing()
+        s.scene.striker.new_drawing()
+        s.scene.struck.new_drawing()
     } else {
         s.since += 1.0
     }
-    let locals = s.locals
-    s.intensity = if in_strike { intensity_at(s.head.t) } else { QUIET }
-    let root = placed(vec3(0.0, ground_at(vec2(0.0)), 0.0), 0.0)
-    s.scene.fighter.pose(palette(s.skeleton, locals, root), shadowed: true, moved: false)
+    s.scene.striker.pose(
+        palette(s.skeleton, s.striker.locals, s.striker.root),
+        shadowed: true,
+        moved: false,
+    )
+    s.scene.struck.pose(palette(s.skeleton, s.hit.locals, s.hit.root), shadowed: true, moved: false)
+    if s.scene.striker.realizing() {
+        s.scene.striker.realize()
+    }
+    if s.scene.struck.realizing() {
+        s.scene.struck.realize()
+    }
     // The smear: a new drawing's first frames a rough in-between, held, then cut; its disarray
     // for the whole drawing; each by the moment.
     let held = if s.since < SMEAR_FRAMES { 1.0 } else { 0.0 }
     let strength = smoothstep(0.3, 0.8, s.intensity)
-    s.scene.fighter.smear_by(
-        Smear {
-            amount: SMEAR * strength * held,
-            strokes: STROKES * strength * held,
-            disarray: DISARRAY * strength,
-            steady: (1 << s.bones.head.index) | (1 << s.bones.neck.index),
-        },
-    )
-    if s.scene.fighter.realizing() {
-        s.scene.fighter.realize()
+    let smear = Smear {
+        amount: SMEAR * strength * held,
+        strokes: STROKES * strength * held,
+        disarray: DISARRAY * strength,
+        steady: (1 << s.bones.head.index) | (1 << s.bones.neck.index),
     }
-    // The camera: a slow circle round the fighter, closing in and narrowing as the moment rises.
-    let i = s.intensity
-    let a = 0.35 + time * 0.08
-    let r = 4.6 - 1.2 * i * i
-    let eye = vec3(sin(a) * r, 1.55 - 0.25 * i, cos(a) * r)
-    let at = vec3(0.0, 1.15, 0.0)
-    let aim = Aim { eye, at, fovy: 0.8 - 0.22 * i * i, moving_at: vec3(0.0, 1.0, 0.0) }
-    s.frame.intensity = i
+    s.scene.striker.smear_by(smear)
+    s.scene.struck.smear_by(smear)
+    // The impact frames: on the blow, and on the launch.
+    let impact = flashing(ago(s.contact_at, time), CONTACT_FLASHES) ||
+        flashing(ago(s.launch_at, time), LAUNCH_FLASHES)
+    s.frame.impact = if impact { 1.0 } else { 0.0 }
+    // The camera: wide; low and close on the coil; tight on the blow, shaking while the clock is
+    // stopped; on its back watching the struck one go; back to the striker.
+    // (On the lit side, the sun over the camera's shoulder; on the clock unheld by the clip's end,
+    // so the last aim is reached.)
+    let tc = if cycle >= 0.0 { s.head.t } else { 0.0 }
+    let wide = Aim {
+        eye: vec3(-3.6, 1.3, 1.6),
+        at: vec3(0.0, 1.1, 0.42),
+        fovy: 0.75,
+        moving_at: vec3(0.0, 1.0, 0.4),
+    }
+    let low = Aim {
+        eye: vec3(-3.0, 0.6, 1.25),
+        at: vec3(0.0, 1.0, 0.45),
+        fovy: 0.72,
+        moving_at: vec3(0.0, 1.0, 0.4),
+    }
+    let tight = Aim {
+        eye: vec3(-2.6, 1.3, 0.9),
+        at: vec3(0.0, 1.5, 0.5),
+        fovy: 0.6,
+        moving_at: vec3(0.0, 1.0, 0.4),
+    }
+    let flying = s.hit.root * vec4(0.0, 1.0, 0.0, 1.0)
+    let watch = Aim {
+        eye: vec3(-3.2, 0.4, -0.9),
+        at: vec3(flying.x, min(flying.y, 60.0), flying.z),
+        fovy: 1.05,
+        moving_at: vec3(0.0, 1.0, 0.4),
+    }
+    let after = Aim {
+        eye: vec3(-3.8, 1.5, 1.8),
+        at: vec3(0.0, 1.1, 0.3),
+        fovy: 0.75,
+        moving_at: vec3(0.0, 1.0, 0.4),
+    }
+    var aim = toward(wide, low, smoothstep(0.0, COILED, tc))
+    aim = toward(aim, tight, smoothstep(STILL, CONTACT, tc))
+    aim = toward(aim, watch, smoothstep(LAUNCH, LAUNCH + 0.12, tc))
+    aim = toward(aim, after, smoothstep(LAUNCH + 1.4, LAUNCH + 2.2, tc))
+    if s.head.stopping() {
+        let k = i32(time * 60.0)
+        let shake = vec3(hash2(k, 3) - 0.5, hash2(k, 7) - 0.5, hash2(k, 11) - 0.5) * 0.06
+        aim.eye = aim.eye + shake
+    }
+    s.frame.intensity = s.intensity
     s.frame.drawing = s.drawing
-    s.frame.look.line_px = 1.8 + 1.6 * i
+    s.frame.look.line_px = 1.8 + 1.6 * s.intensity
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)
 }
