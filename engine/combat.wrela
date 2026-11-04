@@ -64,7 +64,10 @@ impl Move {
 /// after a blow it waits; walking speed (m/s) and turning speed (radians a second); a dodge's
 /// length, its invincible ticks (from, to), how far it carries and its cost; how long a press
 /// is held for (`buffer`); how long a broken posture leaves a fighter open, and how close and
-/// how square in front a riposte must be.
+/// how square in front a riposte must be; and the guard: how long after it's raised a blow is
+/// deflected rather than blocked (ticks), how fast a guarding fighter walks (of its walk), how
+/// much of a blocked blow's damage still gets through and how much of its posture, and how wide
+/// in front a guard covers (half the angle, radians).
 pub struct Rules: Copy {
     pub health: f32 = 100.0,
     pub stamina: f32 = 100.0,
@@ -83,15 +86,22 @@ pub struct Rules: Copy {
     pub broken: u32 = 110,
     pub riposte_m: f32 = 1.8,
     pub riposte_arc: f32 = 0.9,
+    pub deflect: u32 = 9,
+    pub guard_walk: f32 = 0.45,
+    pub chip: f32 = 0.2,
+    pub guard_posture: f32 = 0.5,
+    pub guard_arc: f32 = 1.2,
 }
 
 /// What a fighter is doing: ready to act (standing, walking); one of its moves; dodging;
+/// guarding (its guard raised: `Rules::deflect`);
 /// staggered by a blow; broken (its posture gone: open to a riposte); giving a riposte; taking
 /// one (out of the rules' hands until the game lets it go, `recover`); dead.
 pub enum Act: Copy + Eq + StateHash + Serialize + SimState + Fieldless {
     Ready,
     Attack,
     Dodge,
+    Guard,
     Staggered,
     Broken,
     Riposte,
@@ -107,11 +117,12 @@ pub enum Press: Copy + Eq + StateHash + Serialize + SimState {
 }
 
 /// What a fighter wants this tick: the way it would walk (world x, z; length up to 1), the way
-/// it would face (world x, z; none: as it is), and what it pressed.
+/// it would face (world x, z; none: as it is), what it pressed, and whether it holds its guard up.
 pub struct Intent: Copy + Eq + StateHash + Serialize + SimState {
     pub walk: vec2 = vec2(0.0),
     pub face: vec2 = vec2(0.0),
     pub press: Press = Press::Nothing,
+    pub guard: bool = false,
 }
 
 /// A fighter: where it stands (x, z), which way it faces (radians about +y, 0 facing +z), its
@@ -177,7 +188,7 @@ impl Fighter {
     /// it short, or at a dodge's end.
     pub fn free(self, moves: [Move], r: Rules) -> bool {
         match self.act {
-            Act::Ready => true,
+            Act::Ready | Act::Guard => true,
             Act::Attack => {
                 let m = moves[self.move]
                 self.t >= m.windup + m.active + min(m.cancel, m.recovery)
@@ -285,6 +296,12 @@ pub fn step(f: mut Fighter, intent: Intent, moves: [Move], r: Rules, target: vec
         },
         _ => {},
     }
+    // The guard: raised while it's held and the fighter is free, lowered when it isn't held.
+    if intent.guard && f.act == Act::Ready {
+        f.begin(Act::Guard)
+    } else if !intent.guard && f.act == Act::Guard {
+        f.begin(Act::Ready)
+    }
     // A buffered press begins once it may.
     if f.free(moves, r) && f.able() {
         match f.buffered {
@@ -318,6 +335,14 @@ pub fn step(f: mut Fighter, intent: Intent, moves: [Move], r: Rules, target: vec
             let n = length(w)
             if n > 0.01 {
                 f.pos = f.pos + w / max(n, 1.0) * r.walk * dt
+            }
+            f.heading = turned(f.heading, aim, r.turn * dt)
+        },
+        Act::Guard => {
+            let w = intent.walk
+            let n = length(w)
+            if n > 0.01 {
+                f.pos = f.pos + w / max(n, 1.0) * r.walk * r.guard_walk * dt
             }
             f.heading = turned(f.heading, aim, r.turn * dt)
         },
@@ -360,11 +385,14 @@ pub fn step(f: mut Fighter, intent: Intent, moves: [Move], r: Rules, target: vec
 }
 
 /// What a blow did: nothing; landed (and whether it broke the struck one's posture); or would
-/// have landed but the struck one was dodging through it (a clean dodge).
+/// have landed but the struck one was dodging through it (a clean dodge); blocked by its guard; or
+/// deflected by a guard raised just in time (and whether that broke the attacker's posture).
 pub enum Blow: Copy + Eq {
     Nothing,
     Landed { broke: bool },
     Evaded,
+    Blocked,
+    Deflected { broke: bool },
 }
 
 /// Whether target `b` is within move `m`'s reach and arc from fighter `a` (`radius`: `b`'s
@@ -383,15 +411,48 @@ pub fn within(a: Fighter, m: Move, b: Fighter, radius: f32) -> bool {
 }
 
 /// Fighter `a`'s blow on `b` this tick, if it's in its move's hitting ticks and hasn't landed:
-/// `b` struck (its health, posture, and its stagger or break), or evaded where it was dodging.
+/// `b` struck (its health, posture, and its stagger or break), evaded where it was dodging,
+/// blocked or deflected where its guard was up (`r` `b`'s rules, `ra` `a`'s).
 @deterministic
-pub fn strike(a: mut Fighter, moves: [Move], b: mut Fighter, r: Rules, radius: f32 = 0.35) -> Blow {
+pub fn strike(
+    a: mut Fighter,
+    moves: [Move],
+    b: mut Fighter,
+    r: Rules,
+    radius: f32 = 0.35,
+    ra: Rules = Rules {},
+) -> Blow {
     if a.act != Act::Attack || a.landed {
         return Blow::Nothing
     }
     let m = moves[a.move]
     if !m.hitting(a.t) || !within(a, m, b, radius) {
         return Blow::Nothing
+    }
+    // A guard raised against it from in front: deflected, if raised just in time (the attacker's
+    // posture takes the blow); else blocked (a little of its damage gets through, and the
+    // guard's posture and stamina take the rest).
+    if b.act == Act::Guard && abs(wrapped(heading_of(a.pos - b.pos) - b.heading)) <= r.guard_arc {
+        a.landed = true
+        if b.t < r.deflect {
+            a.posture = min(a.posture + 20.0 + m.damage, ra.posture)
+            a.calm = 0
+            if a.posture >= ra.posture {
+                a.struck(0, ra)
+                return Blow::Deflected { broke: true }
+            }
+            return Blow::Deflected { broke: false }
+        }
+        b.health = max(b.health - m.damage * r.chip, 0.0)
+        b.posture = min(b.posture + m.damage * r.guard_posture, r.posture)
+        b.stamina -= m.damage * 0.5
+        b.rested = 0
+        b.calm = 0
+        b.shove = b.shove + facing(a.heading) * m.push * 0.5
+        if b.posture >= r.posture {
+            b.struck(0, r)
+        }
+        return Blow::Blocked
     }
     if !b.touchable(r) {
         if b.act == Act::Dodge {
@@ -624,4 +685,30 @@ fn bodies_keep_apart_and_a_blow_knocks_back() {
         let _ = strike(mut c, pushed, mut d, r)
     }
     assert(d.pos.y > 1.45, f"knocked back to {d.pos.y}")
+}
+
+/// A guard raised just before a blow deflects it, the attacker's posture taking it; one held
+/// long blocks it, a little of its damage getting through.
+@test
+fn a_guard_in_time_deflects_and_one_held_long_blocks() {
+    let r = Rules {}
+    for (raised_at, deflected) in [(6, true), (0, false)] {
+        var a = fighter(vec2(0.0), 0.0, r)
+        var b = fighter(vec2(0.0, 1.0), 3.1415927, r)
+        var got = Blow::Nothing
+        for k in 0..16 {
+            step(mut a, if k == 0 { pressed(0) } else { Intent {} }, moves(), r, b.pos)
+            step(mut b, Intent { guard: k >= raised_at }, moves(), r, a.pos)
+            let blow = strike(mut a, moves(), mut b, r)
+            if blow != Blow::Nothing {
+                got = blow
+            }
+        }
+        if deflected {
+            assert(got == Blow::Deflected { broke: false } && b.health == 100.0, "deflected")
+            assert(a.posture > 0.0, "the attacker's posture took it")
+        } else {
+            assert(got == Blow::Blocked && b.health == 98.0, f"blocked: {b.health}")
+        }
+    }
 }
