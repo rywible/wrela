@@ -1,0 +1,124 @@
+// The engine's own sky over the opening: the air (`engine::air`: its scattering tables and its
+// aerial perspective), the sun's light through it (`engine::light`), and the clouds
+// (`engine::sky`: a field of cumulus marched into a dome round the eye, and their shadows), cooked
+// over the first frames and marched a phase of the dome each frame after.
+
+use engine::air::{Air, Tables, hazy, tables}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::sky::{Clouds, Cumulus, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
+use engine::switches::Switches
+use std::gpu::{Address, Sampler, sampler}
+use std::math::PI
+
+/// The engine's approved switches: the sky's march at full size.
+pub struct Approved {}
+
+impl Switches for Approved {}
+
+/// The heavens: the air and its light, its tables, the clouds, and how far their cook has come.
+pub struct Heavens {
+    pub air: Air,
+    pub light: Light,
+    pub tables: Tables,
+    pub sky: Sky,
+    pub clouds: Clouds,
+    pub linear: Sampler,
+    pub repeat: Sampler,
+    /// The cook's steps done: the tables (1), the noises (2), the weather and its shadow (3);
+    /// after, the dome marches.
+    cooked: u32,
+}
+
+/// The weather: great cumulus towering over the far sea, a field of fair-weather cloud beyond
+/// them, a clear stretch toward the sun, a slow drift.
+fn weather() -> Weather {
+    Weather {
+        clouds: Vec::from(
+            [
+                Cumulus { at: vec2(-5200.0, 9000.0), wide: 3800.0, tall: 0.95 },
+                Cumulus { at: vec2(1800.0, 11000.0), wide: 4200.0, tall: 0.85 },
+                Cumulus { at: vec2(-11000.0, 6000.0), wide: 3600.0, tall: 0.75 },
+                Cumulus { at: vec2(7600.0, 7400.0), wide: 3000.0, tall: 0.7 },
+                Cumulus { at: vec2(-1500.0, 15000.0), wide: 5200.0, tall: 1.0 },
+                Cumulus { at: vec2(12000.0, 13000.0), wide: 4400.0, tall: 0.8 },
+            ],
+        ),
+        fair: 0.32,
+        gap: Gap { a: vec2(0.0, 0.0), b: vec2(5200.0, 9800.0), radius: 1500.0 },
+        wind: vec2(3.0, -1.5),
+    }
+}
+
+/// The heavens, the sun toward `sun`, seen from an eye `eye` m over the sea; uncooked.
+pub fn heavens(sun: vec3, eye: f32) -> Heavens {
+    // The engine's hazy air, cleared to a sea day's: less haze, so a thing 3 km off keeps its
+    // form and its shadows.
+    let air = Air {
+        mie_scattering: 0.07,
+        mie_absorption: 0.008,
+        ..hazy(normalize(sun), SUN_TOP, eye),
+    }
+    // A touch brighter than the engine's default exposure: a sea under an open sky.
+    let light = Light { exposure: 0.72, ..sunlight(air) }
+    let sky = new_sky::<Approved>()
+    let clouds = sky.clouds::<Approved>(
+        light,
+        vec3(0.0, eye, 0.0),
+        drift: vec2(0.0),
+        still: true,
+        forward: vec3(0.0, 0.0, 1.0),
+        view: PI,
+    )
+    Heavens {
+        air,
+        light,
+        tables: tables(),
+        sky,
+        clouds,
+        linear: sampler(),
+        repeat: sampler(address: Address::Repeat),
+        cooked: 0,
+    }
+}
+
+impl Heavens {
+    /// This frame's step: a cook's, until all are in, then a phase of the dome from `eye`,
+    /// looking along `forward`, the clouds drifted to `time`.
+    pub fn step(mut self, eye: vec3, forward: vec3, time: f32) {
+        if self.cooked == 0 {
+            self.tables.cook(self.air, self.linear)
+        } else if self.cooked == 1 {
+            for k in 0..NOISE_SLICES {
+                self.sky.cook_noise_slice(k)
+            }
+        } else if self.cooked == 2 {
+            let w = weather()
+            for band in 0..MAP_BANDS {
+                self.sky.cook_weather_band(w, band)
+            }
+            self.sky.cook_shadow(self.light.sun, self.repeat, shadows: true)
+        } else {
+            let drift = weather().wind * time
+            self.clouds = self.sky.march::<Approved>(
+                self.air,
+                self.light,
+                self.tables,
+                eye,
+                drift: drift,
+                rep: self.repeat,
+                s: self.linear,
+                still: true,
+                forward: forward,
+                view: PI,
+            )
+        }
+        if self.cooked < 3 {
+            self.cooked += 1
+        }
+    }
+
+    /// Whether the dome has been marched whole.
+    pub fn whole(self) -> bool {
+        self.cooked >= 3 && self.sky.done()
+    }
+}

@@ -1,46 +1,44 @@
 // The first pass: each pixel's ray meets the sea, the skiff, the rock and its cathedral, or the
-// sky, and is painted in a few tones (cool shadows, warm light), with what the ink reads beside
-// its colour (`look`'s targets: distance, what it is, the line field and the line's weight, the
-// normal).
+// engine's sky, and is lit in 3D as the engine lights its world: the sun through the air
+// (`engine::light`), the clouds' shadows, soft shadows and ambient occlusion from the distance
+// fields, the sky's light and its reflection, and the air between the eye and what it sees
+// (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
+// a line field, the line's weight, the normal and the moment's energy.
 
-use look::{
-    CHURCH, COOL, ISLE, ROCK, SEA, SKIFF, SKY, Shot, WARM, band, fbm, hash2, luma, noise, ray,
-}
+use look::{GILT, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, noise, ray}
 use sea::{height, strokes}
 use sea::normal as sea_normal
-use sky::{Seen, haze, sky}
-use isle::{isle, isle_shade}
-use skiff::{dry, skiff, skiff_shade}
-use std::gpu::{FragCoord, Targets3}
+use isle::{bounds, isle, isle_material, isle_normal}
+use skiff::{dry, skiff, skiff_material, skiff_normal}
+use engine::light::{Light, Lit, hazed, sun_reflection, world}
+use engine::sky::{Clouds, cloud_shadow, clouded_sky, sky_with_clouds}
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Targets3, Texture, Texture3d}
+use std::math::PI
 
-/// What a ray met: how far, what (`look::SKY` …), where, its normal, and the line field there.
-pub struct Hit: Copy {
-    pub t: f32,
-    pub id: f32,
-    pub at: vec3,
+/// What the sky's light reads beside its textures: the light, and where the clouds are.
+pub struct Heaven: Copy {
+    light: Light,
+    clouds: Clouds,
 }
 
-/// Where the ray from `o` along `d` meets the sea (`d` going down), its far end `far` if it
-/// doesn't.
+/// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`.
 fn trace_sea(s: Shot, o: vec3, d: vec3, far: f32) -> f32 {
     if d.y >= -0.0005 {
         return far
     }
-    // From the plane a little over the crests, down to the surface by the height's differences.
     var t = (o.y - 0.9) / -d.y
     if t > far {
         return far
     }
     for _ in 0..10 {
         let p = o + d * t
-        let detail = clamp(1.0 - t / 260.0, 0.0, 1.0)
+        let detail = clamp(1.0 - t / 160.0, 0.0, 1.0)
         let f = p.y - height(vec2(p.x, p.z), s.held, detail)
         t += f / max(-d.y, 0.02) * 0.6
     }
     min(t, far)
 }
 
-/// A march of `field` from `lo` to `hi`: the distance where it meets it, or `hi`.
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var t = lo
     var hit = hi
@@ -62,99 +60,209 @@ fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var t = lo
     var hit = hi
     var i = 0
-    while i < 140 && t < hi {
+    while i < 220 && t < hi {
         let h = isle(o + d * t).x
-        if h < t * 0.0006 {
+        if h < t * 0.00025 {
             hit = t
             t = hi
         } else {
-            t += h * 0.85
+            t += h * 0.8
         }
         i += 1
     }
     hit
 }
 
-/// Where a ray from `o` along `d` meets a sphere at `c` of radius `r`: its near and far
-/// distances, or (far, far) if it misses.
-fn sphere(o: vec3, d: vec3, c: vec3, r: f32, far: f32) -> vec2 {
-    let oc = o - c
-    let b = dot(oc, d)
-    let k = dot(oc, oc) - r * r
-    let h = b * b - k
+/// Where a ray from `o` along `d` meets a sphere `b` (centre, radius): its near and far
+/// distances, or (far, far).
+fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
+    let oc = o - b.xyz
+    let k = dot(oc, d)
+    let c = dot(oc, oc) - b.w * b.w
+    let h = k * k - c
     if h < 0.0 {
         return vec2(far)
     }
     let q = sqrt(h)
-    vec2(max(-b - q, 0.0), -b + q)
+    vec2(max(-k - q, 0.0), -k + q)
 }
 
-/// The sea at `p`, seen along `d` from `t` away: its colour, line field, weight and normal.
-fn sea_shade(s: Shot, p: vec3, d: vec3, t: f32) -> (vec3, f32, f32, vec3, f32) {
+/// How much of the sun reaches `p` past the isle: a soft shadow marched toward it.
+fn isle_shadow(p: vec3, l: vec3, start: f32) -> f32 {
+    var t = start
+    var lit = 1.0
+    var i = 0
+    while i < 64 && t < 1800.0 && lit > 0.02 {
+        let h = isle(p + l * t).x
+        lit = min(lit, 10.0 * h / t)
+        t += clamp(h, 1.5, 60.0)
+        i += 1
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
+/// How much of the sky reaches `p` on the isle, facing `n`: five taps out along its normal.
+fn isle_ao(p: vec3, n: vec3) -> f32 {
+    var hidden = 0.0
+    var w = 1.0
+    for i in 1..6 {
+        let h = 4.0 * f32(i * i)
+        hidden += w * max(h - isle(p + n * h).x, 0.0) / h
+        w *= 0.6
+    }
+    clamp(1.0 - hidden * 0.55, 0.0, 1.0)
+}
+
+fn skiff_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
+    var t = 0.02
+    var lit = 1.0
+    for _ in 0..24 {
+        let h = skiff(s, p + l * t)
+        lit = min(lit, 12.0 * h / t)
+        t += clamp(h, 0.02, 0.4)
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
+fn skiff_ao(s: Shot, p: vec3, n: vec3) -> f32 {
+    var hidden = 0.0
+    var w = 1.0
+    for i in 1..5 {
+        let h = 0.04 * f32(i * i)
+        hidden += w * max(h - skiff(s, p + n * h), 0.0) / h
+        w *= 0.6
+    }
+    clamp(1.0 - hidden * 0.6, 0.0, 1.0)
+}
+
+/// A solid surface's light, as the engine's world takes it (`engine::light::world`): the sun
+/// through `sun` of shadow, the sky's light over it (`ao` of it reaching), its reflection, and
+/// what it gives itself; seen from the eye through the air.
+fn lit_solid(
+    s: Shot,
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    n: vec3,
+    d: vec3,
+    albedo: vec3,
+    rough: f32,
+    metal: f32,
+    glow: vec3,
+    sun: f32,
+    ao: f32,
+) -> vec3 {
+    let up = vec3(y: 1.0)
+    // The sky's light on it: the sky toward its normal, lifted toward the zenith, and the sea's
+    // light from below.
+    let skyward = clouded_sky(view, h.light, normalize(n + up * 0.6), dome, smp)
+    let below = h.light.sun_colour * vec3(0.03, 0.05, 0.06) * max(-n.y, 0.0)
+    let sky = (skyward * PI * (0.2 + 0.25 * max(n.y, 0.0)) + below) * (0.25 + 0.75 * ao * ao)
+    let r = d - 2.0 * dot(d, n) * n
+    let reflected = clouded_sky(view, h.light, normalize(vec3(r.x, abs(r.y), r.z)), dome, smp) * ao
+    let lit = Lit {
+        albedo,
+        n,
+        sun,
+        sky,
+        through: vec3(0.0),
+        rough,
+        metallic: metal,
+        reflected,
+        glint: 1.0,
+    }
+    // The air between, eased: the isle keeps its colour and its form across the 3 km of it.
+    let raw = world(h.light, lit, p, s.eye) + glow
+    mix(raw, hazed(aerial, smp, h.light, raw, p, s.eye), 0.45)
+}
+
+/// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
+fn sea_shade(
+    s: Shot,
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    d: vec3,
+    t: f32,
+) -> (vec3, f32, f32, vec3, f32) {
     let detail = clamp(1.0 - t / 160.0, 0.0, 1.0)
     let e = max(0.06, t * 0.012)
     let xz = vec2(p.x, p.z)
-    // Far off, the sea's normal settles toward the vertical: a painter's flat sheet of light
-    // there, not the swell's aliasing.
+    // Far off, the sea's normal settles toward the vertical, as its waves fall under a pixel.
     let n = normalize(
-        mix(sea_normal(xz, s.held, detail, e), vec3(y: 1.0), clamp(t / 700.0, 0.0, 0.85)),
+        mix(sea_normal(xz, s.held, detail, e), vec3(y: 1.0), clamp(t / 900.0, 0.0, 0.8)),
     )
-    let h = height(xz, s.held, detail)
-    // The body: three tones, by how the face turns to the sun and how high on the swell it is.
-    let far_fade = clamp(t / 500.0, 0.0, 1.0)
-    let facing = mix(dot(n, s.sun) * 0.5 + 0.5 + h * 0.25, 0.62, far_fade)
-    let deep = vec3(0.030, 0.10, 0.16)
-    let mid = vec3(0.045, 0.20, 0.27)
-    let light = vec3(0.20, 0.45, 0.48)
-    var body = mix(deep, mid, band(facing, 0.56, 0.03))
-    body = mix(body, light, band(facing, 0.74, 0.02) * detail)
-    // What it reflects: the sky, more of it at a slant, and the light's path toward the sun and the
-    // cathedral, broken into flecks.
+    let wave = height(xz, s.held, detail)
+    let l = h.light.sun
+    let v = -d
+    let nv = max(dot(n, v), 0.0)
+    // What reaches it of the sun: the clouds' shadow and the skiff's.
+    let near = skiff(s, p)
+    let boat_shadow = if near < 4.0 { skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l) } else { 1.0 }
+    let sun = cloud_shadow(h.clouds, cloud, smp, p) * boat_shadow
+    // The reflected sky and clouds, Fresnel's share of it (water's F0, 0.02), and the sun's glint.
     var r = d - 2.0 * dot(d, n) * n
     r.y = abs(r.y)
-    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, -d), 0.0), 5.0)
-    let seen = sky(s, r, false)
-    // The reflection in two tones, not a mirror's gradient: painted water.
-    let f2 = band(fres, 0.22, 0.04) * 0.55 + band(fres, 0.55, 0.05) * 0.35
-    let reflected = min(seen.c, vec3(1.2))
-    let smooth = clamp(t / 110.0, 0.0, 1.0)
-    var c = mix(body, reflected, mix(f2, fres, smooth) * 0.95)
-    // Far off, long horizontal strokes of light and shade, as a brush lays a distant sea.
-    let stroke = noise(vec2(xz.x * 0.012, xz.y * 0.09)) * 0.6 +
-        noise(vec2(xz.x * 0.03, xz.y * 0.25)) * 0.4
-    c *= mix(1.0, 0.86 + 0.28 * band(stroke, 0.5, 0.08), smooth * 0.8)
-    let sun_path = dot(r, s.sun)
-    let fleck = band(sun_path, 0.9992, 0.0002) *
-        band(noise(xz * vec2(4.0, 1.5) + vec2(s.held * 3.0)), 0.62, 0.03)
-    let glow_path = dot(
-        normalize(vec3(r.x, r.y * 0.35, r.z)),
-        normalize(vec3(s.glow.x, s.glow.y * 0.35, s.glow.z)),
-    )
-    let gleam = band(glow_path, 0.9993, 0.0002) * band(noise(xz * vec2(0.6, 0.15)), 0.62, 0.05)
-    c += WARM * 3.0 * fleck + vec3(1.0, 0.86, 0.55) * 1.4 * gleam
-    // Foam where the sea meets the skiff, and the bow's cut: where its lines fray, more when it
-    // slaps down.
-    let near = skiff(s, p)
+    let fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0)
+    // A rough sea doesn't mirror the clouds: what it reflects is part the sky toward the
+    // reflection, part the sky's mean light, more of the mean far off where the waves under a
+    // pixel turn every way.
+    let mirrored = sky_with_clouds(view, h.light, r, dome, smp).rgb
+    let spread = clouded_sky(view, h.light, normalize(r + vec3(0.0, 0.5, 0.0)), dome, smp)
+    let reflected = mix(mirrored, spread, 0.35 + 0.4 * (1.0 - detail))
+    let glint = h.light.sun_colour *
+        sun_reflection(n, l, v, 0.12 + 0.35 * clamp(t / 300.0, 0.0, 1.0), 0.02) *
+        sun
+    // The light that comes back up out of the water: deep blue-green, brighter through the
+    // crests lit from behind.
+    let sky_up = clouded_sky(view, h.light, vec3(y: 1.0), dome, smp) * PI
+    let body = vec3(0.006, 0.030, 0.038) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
+    let through = vec3(0.004, 0.035, 0.03) *
+        h.light.sun_colour *
+        sun *
+        behind *
+        max(wave, 0.0) *
+        detail
+    var c = (body + through) * (1.0 - fresnel) + reflected * fresnel + glint
+    // Foam where the sea meets the skiff, lit as a white surface is.
     let foam = band(-near, -0.05 - 0.07 * noise(xz * 4.0 + vec2(s.held * 3.0)), 0.015)
-    c = mix(c, vec3(0.88, 0.92, 0.90), foam)
+    let foam_light = vec3(0.8) * (h.light.sun_colour * max(dot(n, l), 0.0) * sun + sky_up) / PI
+    c = mix(c, foam_light, foam * 0.85)
+    // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
+    let footprint = t * 2.0 / (s.resolution.y * s.focal)
+    let crest_ink = strokes(xz, s.held, footprint, d, wave) * clamp(1.0 - t / 70.0, 0.0, 1.0)
+    c = mix(c, c * 1.6 + vec3(0.02, 0.04, 0.045), crest_ink.y * 0.35)
+    c = mix(c, c * 0.35, crest_ink.x * 0.45)
+    // The bow's cut: where the ink frays, more when it slaps down.
     let bow = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
     let cut = exp(-max(near, 0.0) / (0.18 + 0.25 * s.slap)) * (0.15 + 0.25 * bow + 0.45 * s.slap)
-    // The crests: a line where the sea stands highest, broken where the noise falls.
-    // The crests: ink strokes painted on the near sea, a pixel's footprint and more wide.
-    let footprint = t * 2.0 / (s.resolution.y * s.focal)
-    let crest_ink = strokes(xz, s.held, footprint, d, h) * clamp(1.0 - t / 90.0, 0.0, 1.0)
-    c = mix(c, vec3(0.62, 0.80, 0.80), crest_ink.y * 0.55 * clamp(1.0 - t / 45.0, 0.0, 1.0))
-    c = mix(c, vec3(0.03, 0.06, 0.10), crest_ink.x * 0.85)
-    // The foam's edge is the line field's zero.
     let line = 0.5 - foam
-    let a = haze(s, d, t)
-    c = mix(c, a, clamp(t / 2600.0, 0.0, 1.0) * 0.85)
-    (c, line, detail * 0.85 + foam, n, cut)
+    let hazy = hazed(aerial, smp, h.light, c, p, s.eye)
+    (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
 @fragment
-pub fn paint(pixel: FragCoord, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+pub fn paint(
+    pixel: FragCoord,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+) -> Targets3<vec4, vec4, vec4> {
     let s = shot
+    let h = Heaven { light, clouds }
     let px = pixel.position.xy
     let d = ray(s, px)
     let o = s.eye
@@ -166,7 +274,7 @@ pub fn paint(pixel: FragCoord, shot: Shot) -> Targets3<vec4, vec4, vec4> {
         t = ts
         id = SEA
     }
-    let bs = sphere(o, d, s.boat + s.boat_y * 0.3, 3.2, far)
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * 0.3, 3.2), far)
     // The sea inside the skiff isn't there: the ray goes on to the hull.
     if id == SEA && dry(s, o + d * t) {
         t = far
@@ -179,50 +287,75 @@ pub fn paint(pixel: FragCoord, shot: Shot) -> Targets3<vec4, vec4, vec4> {
             id = SKIFF
         }
     }
-    let is = sphere(o, d, ISLE + vec3(0.0, -60.0, 0.0), 285.0, far)
+    let is = sphere(o, d, bounds(), far)
     if is.x < t {
         let ti = march_isle(o, d, is.x, min(is.y, t))
         if ti < min(is.y, t) {
             t = ti
-            let what = isle(o + d * ti).y
-            id = what
+            id = isle(o + d * ti).y
         }
     }
     var c = vec3(0.0)
     var line = 1.0
     var weight = 0.0
     var n = vec3(y: 1.0)
-    // How kinetic this pixel is beyond the frame's own (`Shot::kinetic`): where the ink frays.
     var energy = 0.0
+    let p = o + d * t
     if id == SKY {
-        let seen = sky(s, d, true)
-        c = seen.c
-        line = seen.line
-        weight = seen.weight
+        let sky = sky_with_clouds(view, light, d, dome, smp)
+        c = sky.rgb
+        line = 0.45 - sky.a
         n = -d
     } else if id == SEA {
-        let p = o + d * t
-        let (sc, sl, sw, sn, se) = sea_shade(s, p, d, t)
-        energy = se
+        let (sc, sl, sw, sn, se) = sea_shade(s, h, view, aerial, dome, cloud, smp, p, d, t)
         c = sc
         line = sl
         weight = sw
         n = sn
+        energy = se
     } else if id == SKIFF {
-        let p = o + d * t
-        let (kc, kl, kn) = skiff_shade(s, p, d)
-        c = kc
+        n = skiff_normal(s, p)
+        let (albedo, rough, seam) = skiff_material(s, p, n)
+        let sun = skiff_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
+        let ao = skiff_ao(s, p, n)
+        c = lit_solid(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            smp,
+            p,
+            n,
+            d,
+            albedo,
+            rough,
+            0.0,
+            vec3(0.0),
+            sun,
+            ao,
+        )
+        line = seam
+        weight = 0.8
         energy = s.slap * 0.35
-        line = kl
-        weight = 1.0
-        n = kn
     } else {
-        let p = o + d * t
-        let (ic, il, iw, inn) = isle_shade(s, p, d, t, id)
-        c = ic
-        line = il
-        weight = iw
-        n = inn
+        n = isle_normal(p, max(0.3, t * 0.0007))
+        let (albedo, rough, metal, glow, l) = isle_material(p, n, id)
+        let sun = isle_shadow(p + n * 2.0, light.sun, 2.0) * cloud_shadow(clouds, cloud, smp, p)
+        let ao = isle_ao(p, n)
+        c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, rough, metal, glow, sun, ao)
+        line = l
+        weight = if id == ROCK { 0.22 } else { 0.28 }
+    }
+    // The cathedral's shine: a warm light held in the air round it, far off, over all but the
+    // skiff.
+    if id != SKIFF && t > 400.0 {
+        let k = max(dot(d, s.glow), 0.0)
+        let over = if id == SKY || id == SEA { 1.0 } else { 0.15 }
+        c += light.sun_colour *
+            vec3(1.0, 0.78, 0.45) *
+            (0.1 * pow(k, 60.0) + 0.3 * pow(k, 500.0)) *
+            over
     }
     Targets3 {
         first: vec4(c, 1.0),

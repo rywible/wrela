@@ -92,7 +92,11 @@ pub fn strokes(p: vec2, t: f32, px: f32, d: vec3, h: f32) -> vec2 {
 pub fn normal(p: vec2, t: f32, detail: f32, e: f32) -> vec3 {
     let hx = height(p + vec2(e, 0.0), t, detail) - height(p - vec2(e, 0.0), t, detail)
     let hz = height(p + vec2(0.0, e), t, detail) - height(p - vec2(0.0, e), t, detail)
-    normalize(vec3(-hx, 2.0 * e, -hz))
+    // Ripples under the waves, too small to trace: the normal's alone, gone where a pixel is wider.
+    let r = vec2(noise(p * 1.7 + vec2(t * 0.9, 0.0)), noise(p * 1.7 + vec2(13.0, t * 0.7))) -
+        vec2(0.5)
+    let ripple = r * 0.35 * detail * clamp(0.3 / e, 0.0, 1.0)
+    normalize(vec3(-hx, 2.0 * e, -hz) / (2.0 * e) + vec3(ripple.x, 0.0, ripple.y))
 }
 
 /// Where the sea holds the skiff at time `t`, and its axes (across, up, along): it rides the

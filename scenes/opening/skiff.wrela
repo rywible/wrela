@@ -1,7 +1,7 @@
 // The skiff: a small open boat of planks, its two thwarts, and an oar shipped across it, where the
 // sea holds it (`Shot::boat` and its axes).
 
-use look::{COOL, Shot, WARM, band, noise}
+use look::{Shot, noise}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
     let q = abs(p) - b
@@ -81,7 +81,7 @@ pub fn skiff(s: Shot, p: vec3) -> f32 {
     d
 }
 
-fn skiff_normal(s: Shot, p: vec3) -> vec3 {
+pub fn skiff_normal(s: Shot, p: vec3) -> vec3 {
     let e = 0.004
     let dx = skiff(s, p + vec3(e, 0.0, 0.0)) - skiff(s, p - vec3(e, 0.0, 0.0))
     let dy = skiff(s, p + vec3(0.0, e, 0.0)) - skiff(s, p - vec3(0.0, e, 0.0))
@@ -89,23 +89,18 @@ fn skiff_normal(s: Shot, p: vec3) -> vec3 {
     normalize(vec3(dx, dy, dz))
 }
 
-/// The skiff at `p`, seen along `d`: its colour, its line field (the planks' seams), its normal.
-pub fn skiff_shade(s: Shot, p: vec3, d: vec3) -> (vec3, f32, vec3) {
-    let n = skiff_normal(s, p)
+/// What the skiff is made of at `p` (the world's), facing `n`: its albedo, roughness and the
+/// ink's line field (the planks' seams).
+pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let q = local(s, p)
-    let ndl = dot(n, s.sun)
-    // Weathered wood, three tones; the inside of the hull a shade deeper.
-    let dark = vec3(0.10, 0.07, 0.10)
-    let mid = vec3(0.36, 0.20, 0.12)
-    let lit = vec3(0.80, 0.52, 0.30)
-    var c = mix(dark, mid, band(ndl, -0.25, 0.04))
-    c = mix(c, lit, band(ndl, 0.30, 0.03))
-    // The paint's band under the gunwale, faded.
-    let strake = band(q.y, -0.13, 0.01) * (1.0 - band(dot(n, s.boat_y), 0.6, 0.1))
-    c = mix(c, c * vec3(0.45, 0.75, 1.05) + vec3(0.02, 0.06, 0.1), strake * 0.8)
-    // The sky's cool in its turned-away faces, the light's warmth bounced from the sea.
-    c += COOL * 0.10 * max(n.y, 0.0) + WARM * 0.05 * max(-n.y, 0.0)
-    // The planks' seams.
+    // Weathered wood: grain along the planks, a faded blue strake under the gunwale, the inside
+    // paler where feet and sun have worn it.
+    let grain = noise(vec2(q.z * 3.0, q.y * 40.0 + q.x * 6.0))
+    var a = mix(vec3(0.20, 0.11, 0.06), vec3(0.36, 0.22, 0.12), grain)
+    let strake = smoothstep(-0.14, -0.12, q.y) * (1.0 - smoothstep(0.6, 0.7, dot(n, s.boat_y)))
+    a = mix(a, vec3(0.10, 0.20, 0.30), strake * 0.8)
+    let inside = smoothstep(0.3, 0.6, dot(n, s.boat_y))
+    a = mix(a, vec3(0.42, 0.30, 0.20), inside * 0.5)
     let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
-    (c, seam, n)
+    (a, 0.75, seam)
 }

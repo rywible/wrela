@@ -2,16 +2,18 @@
 // before anything happens, and far off a rock floating in the sky with a shining cathedral on top,
 // a crisp silhouette against the light, the one place to go.
 //
-// Two passes. The first paints the scene (`paint`): each pixel's ray meets the sea, the skiff, the
-// rock or the sky, and is lit as a painter would (a few tones each, cool shadows, warm light), and
-// beside its colour it writes what the ink needs: how far it is, what it is, its normal, and a
-// field whose zero is a line to draw (a wave's crest, a cloud's edge). The second (`ink`) draws
-// the lines where those change, wobbling as a hand's do, and lays the paper's grain over all.
+// The engine's sky over it (`heavens`: its air, its light and its clouds, cooked over the first
+// frames and marched a phase a frame). Then two passes. The first paints the scene in 3D (`paint`):
+// each pixel's ray meets the sea, the skiff, the rock or the sky, lit as the engine lights its
+// world, with soft shadows, ambient occlusion and the air's depth; beside its colour it writes
+// what the ink needs: how far it is, what it is, its normal, and a field whose zero is a line to
+// draw. The second (`ink`) tones it for the screen and lays the ink on the forms, light when it's
+// quiet, fraying as the moment turns kinetic.
 //
-// The quiet look is painterly (the art direction's "quiet = painterly"); the water and the skiff
-// move on twos (`HELD`).
+// The water and the skiff move on twos (`HELD`).
 
-use look::{Shot, shot_at}
+use heavens::{Heavens, heavens}
+use look::{SUN, Shot, shot_at}
 use paint::paint
 use ink::ink
 use std::gpu::{
@@ -30,6 +32,7 @@ pub const KINETIC: f32 = 0.0
 pub const VIEW: u32 = 0
 
 pub struct State {
+    heavens: Heavens,
     /// The painted scene, and what the ink reads beside it: (log₂ distance, what it is, the
     /// line field, the line's weight) and the normal.
     colour: Texture<Rgba16Float>,
@@ -39,8 +42,9 @@ pub struct State {
     height: u32,
 }
 
-fn targets(width: u32, height: u32) -> State {
+fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
     State {
+        heavens,
         colour: texture(width: width, height: height),
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
@@ -50,7 +54,7 @@ fn targets(width: u32, height: u32) -> State {
 }
 
 pub fn init() -> State {
-    targets(640, 360)
+    targets(heavens(SUN, 3.0), 640, 360)
 }
 
 /// One triangle that covers the screen.
@@ -63,17 +67,37 @@ fn cover(vertex: VertexIndex) -> ClipPosition {
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if width != s.width || height != s.height {
-        s = targets(width, height)
+        s.colour = texture(width: width, height: height)
+        s.marks = texture(width: width, height: height)
+        s.normal = texture(width: width, height: height)
+        s.width = width
+        s.height = height
     }
     let shot = shot_at(START + time, width, height, KINETIC, VIEW)
+    s.heavens.step(shot.eye, shot.forward, START + time)
+    borrow hv = s.heavens
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, clear: vec4(0.0))
-    draw(p, cover, paint.bind(shot: shot), vertices: 3)
+    draw(
+        p,
+        cover,
+        paint.bind(
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+        ),
+        vertices: 3,
+    )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         screen,
         cover,
-        ink.bind(shot: shot, colour: s.colour, marks: s.marks, normal: s.normal),
+        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
         vertices: 3,
     )
     screen.present()

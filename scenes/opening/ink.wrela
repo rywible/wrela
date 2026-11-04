@@ -5,7 +5,8 @@
 // lines fray: they break into strands, throw off static, and the palette drains toward black
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
-use look::{CHURCH, INK, PAPER, SEA, SKY, Shot, band, hash2, luma, noise}
+use look::{INK, PAPER, SEA, SKY, Shot, band, hash2, luma, noise}
+use engine::light::{Light, display}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
 
 /// A pixel's texel of a target, its coordinates clamped to it.
@@ -38,7 +39,7 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
     // A fold in depth: one thing in front of another part of itself.
     e = max(e, band(abs(a.x - b.x), 0.10, 0.03) * near.w)
     // A crease, on solid things.
-    if a.y > SEA + 0.5 {
+    if a.y > SEA + 0.5 && near.x < 9.0 {
         e = max(e, band(1.0 - dot(na, nb), 0.30, 0.08) * 0.8 * near.w)
     }
     // The line field's zero: crests, strata, seams.
@@ -63,6 +64,7 @@ const AROUND = [
 pub fn ink(
     pixel: FragCoord,
     shot: Shot,
+    light: Light,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
@@ -72,7 +74,7 @@ pub fn ink(
     let px = pixel.position.xy
     let scale = size.y / 720.0
     let seed = s.held * 12.0
-    let c0 = at(colour, px, size).xyz
+    let c0 = display(light, at(colour, px, size).xyz)
     let m0 = at(marks, px, size)
     let n0 = at8(normal, px, size)
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
@@ -138,7 +140,7 @@ pub fn ink(
         dash_len *
         band(h, 1.0 - 0.5 * energy, 0.01) *
         band(energy, 0.2, 0.05) *
-        band(near_line, 0.3, 0.1)
+        band(near_line, 0.5, 0.08)
     // Kinetic, the ink commits: a line is there or it isn't, no grey.
     let committed = mix(line, band(line, 0.45, 0.08), band(energy, 0.3, 0.1))
     let ink_line = clamp(max(committed, fleck), 0.0, 1.0)
@@ -157,14 +159,14 @@ pub fn ink(
     // The frame's own level alone drains it: a pixel's local fray never takes the colour.
     c = mix(c, bw, band(s.kinetic, 0.62, 0.22))
     // The ink, warmer and thinner far off (what the first pass weighed), dark near.
-    let ink_c = mix(INK, c * 0.35, 0.15 * (1.0 - energy)) * (1.0 - 0.3 * energy)
+    // Quiet, the ink is the form's own colour, deepened: it sits on the 3D form, not over it.
+    // Kinetic, it turns to ink.
+    let ink_c = mix(c * c * 0.45, INK * 0.7, band(energy, 0.25, 0.15))
     c = mix(c, ink_c, ink_line)
     // The paper: its tooth and fibres, and a vignette as a page's edge darkens.
     let tooth = noise(px / (1.3 * scale)) * 0.6 + noise(px / (6.0 * scale)) * 0.4
-    c *= 0.95 + 0.08 * tooth
+    c *= 0.975 + 0.035 * tooth
     let uv = px / size - vec2(0.5)
-    c *= 1.0 - 0.28 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
-    // A soft shoulder so the light rolls off rather than clips.
-    c = c / (vec3(1.0) + c * 0.18) * 1.12
+    c *= 1.0 - 0.18 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
     vec4(c, 1.0)
 }

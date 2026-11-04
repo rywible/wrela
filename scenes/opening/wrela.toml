@@ -3,3 +3,6 @@
 # two passes (the scene painted with what the ink needs beside it, then the ink and the paper).
 [package]
 name = "opening"
+
+[dependencies]
+engine = { workspace = true }
