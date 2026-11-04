@@ -24,6 +24,8 @@ pub struct Hud: Copy + GpuData {
     pub out: vec2 = vec2(1.0),
     pub speed_way: vec2 = vec2(0.0, -1.0),
     pub star_seed: f32 = 0.0,
+    /// The star's kind: 0, a blow's burst; 1, a deflect's spark (thin, many-pointed, no core).
+    pub star_sharp: f32 = 0.0,
 }
 
 const INK = vec3(0.09, 0.07, 0.06)
@@ -77,8 +79,9 @@ fn bar(p: vec2, at: vec2, size: vec2, from: f32, to: f32, lost: f32, colour: vec
 }
 
 /// An impact star at pixel `p`: a jagged burst of ink round a paper-white core, its spikes each
-/// their own length by `seed`, growing and thinning through its life `age` (0 to 1).
-fn star(p: vec2, at: vec2, size: f32, age: f32, seed: f32) -> vec4 {
+/// their own length by `seed`, growing and thinning through its life `age` (0 to 1); or, `sharp`,
+/// a deflect's spark: more spikes, needle-thin, and no core (steel turned, not flesh struck).
+fn star(p: vec2, at: vec2, size: f32, age: f32, seed: f32, sharp: f32) -> vec4 {
     if age >= 1.0 || size <= 0.0 {
         return vec4(0.0)
     }
@@ -88,13 +91,13 @@ fn star(p: vec2, at: vec2, size: f32, age: f32, seed: f32) -> vec4 {
         return vec4(0.0)
     }
     let a = atan2(d.y, d.x)
-    let spikes = 11.0
+    let spikes = mix(11.0, 17.0, sharp)
     let k = floor((a / 6.2831853 + 0.5) * spikes)
     let within = fract((a / 6.2831853 + 0.5) * spikes)
-    let len = 0.45 + 0.55 * hash2(i32(k), i32(seed))
-    // A spike: widest at its root, a point at its tip.
-    let edge = len * (1.0 - abs(within - 0.5) * 2.0 * 0.85)
-    let core = 0.3 * (1.0 - age)
+    let len = mix(0.45, 0.25, sharp) + mix(0.55, 0.85, sharp) * hash2(i32(k), i32(seed))
+    // A spike: widest at its root, a point at its tip (a spark's far thinner).
+    let edge = len * pow(1.0 - abs(within - 0.5) * 2.0 * 0.85, mix(1.0, 4.0, sharp))
+    let core = 0.2 * (1.0 - age) * (1.0 - sharp)
     let fade = 1.0 - smoothstep(0.6, 1.0, age)
     if r < core {
         return vec4(PAPER, fade)
@@ -178,7 +181,7 @@ pub fn hud(pixel: FragCoord, h: Hud) -> Over {
     // The ink effects: speed lines under, the star over.
     let lines = speed(p, h.speed.xy, h.speed_way, h.speed.z, s)
     c = over(lines, c)
-    c = over(c, star(p, h.star.xy, h.star.z, h.star.w, h.star_seed))
+    c = over(c, star(p, h.star.xy, h.star.z, h.star.w, h.star_seed, h.star_sharp))
     // A blow taken: the screen's edges darken a moment.
     let uv = p / h.out - vec2(0.5)
     let edge = smoothstep(0.3, 0.75, length(uv * vec2(1.0, 0.8))) * h.you.w

@@ -249,6 +249,8 @@ pub struct State {
     star_at: vec3,
     star_time: f32,
     star_size: f32,
+    /// The star a deflect's spark (1) or a blow's burst (0).
+    star_sharp: f32,
     /// When each fighter died (the frame's time; none yet, below 0).
     dead_a: f32,
     dead_b: f32,
@@ -327,6 +329,7 @@ pub fn init() -> State {
         star_at: vec3(0.0),
         star_time: -1.0e9,
         star_size: 0.0,
+        star_sharp: 0.0,
         pa: physics::body(sa, ka, WANDERER.tall),
         pb: physics::body(sb, kb, BRAWLER.tall),
         contact_at: -1.0e9,
@@ -529,6 +532,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.star_at = at
         s.star_time = time
         s.star_size = if heavy { 0.6 } else { 0.4 }
+        s.star_sharp = 0.0
         physics::struck(
             mut s.pb,
             at,
@@ -554,7 +558,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         let guard = (s.pa.at[s.a.1.wrist_r.index] + s.pa.at[s.a.1.wrist_l.index]) * 0.5
         s.star_at = guard
         s.star_time = time
-        s.star_size = if deflect { 0.55 } else { 0.3 }
+        s.star_size = if deflect { 0.7 } else { 0.3 }
+        s.star_sharp = if deflect { 1.0 } else { 0.0 }
         let back = normalize(
             vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y) + vec3(1.0e-4),
         )
@@ -590,6 +595,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.star_at = head
         s.star_time = time
         s.star_size = 1.3
+        s.star_sharp = 0.0
         let back = vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y)
         physics::struck(
             mut s.pb,
@@ -781,6 +787,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.scene.hud = Hud {
         out: vec2(f32(width), f32(height)),
         star: vec4(star_px, star_r, if star_depth > 0.0 { star_age } else { 2.0 }),
+        star_sharp: s.star_sharp,
         star_seed: if s.star_time < 0.0 { 0.0 } else { f32(u32(s.star_time * 60.0) % 997) },
         speed: vec4(foe_px, if flying { 1.0 - smoothstep(0.6, 1.4, time - s.launch_at) } else {
             0.0
