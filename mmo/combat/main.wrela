@@ -8,15 +8,13 @@
 // The costs this shape is for (the server design doc's budget): a fight of four is five proposals
 // and one store write, however long it lasts; its inputs cost the room nothing.
 
-use sim::{Change, Log, MAX_FRAMES, MAX_PARTY, Outcome, Winner}
+use sim::{Change, Log, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, Outcome, Winner}
 use std::input::{Event, events, payload}
 use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
 use std::net::{carry_out, compact, room}
 use std::pack::{Pack, pack, unpack}
 use std::store
 
-/// The most changes a log holds: about ten a second for the longest fight.
-pub const MAX_CHANGES: u32 = 6000
 /// How long after the first log the rest may take, in ms, before anyone may settle the fight
 /// without them (a player who left counts as standing still).
 pub const SETTLE_MS: u64 = 30000
@@ -28,8 +26,13 @@ pub const NOT_NOW: u32 = 1
 pub const BAD_PARTY: u32 = 2
 /// A log from a peer not in the fight, a second one, or one no player could send.
 pub const BAD_LOG: u32 = 3
-/// A settle before `SETTLE_MS`, or before any log.
+/// A settle before `SETTLE_MS` after the first log, or before any log while the fight could
+/// still be on.
 pub const TOO_SOON: u32 = 4
+
+/// The longest a fight can last, in room ms: past it and `SETTLE_MS` more, anyone may settle it,
+/// logs or none, so a party that left (or one that never fought) can't hold the room.
+pub const FIGHT_MS: u64 = 600000
 
 /// The room's state: the fight on (or the last one), and how many it has finished.
 pub struct Fight: Clone + Pack {
@@ -37,6 +40,8 @@ pub struct Fight: Clone + Pack {
     pub party: Vec<u32>,
     pub logs: Vec<Log>,
     pub sent: Vec<bool>,
+    /// When the fight began (room ms).
+    pub began_at: u64,
     /// When the first log came (room ms).
     pub first_at: u64,
     /// Whether the last fight is settled: then its outcome is `outcome`, and a new one may begin.
@@ -62,6 +67,7 @@ impl Fight {
             party: Vec::new(),
             logs: Vec::new(),
             sent: Vec::new(),
+            began_at: 0,
             first_at: 0,
             settled: false,
             outcome: Outcome { winner: Winner::Draw, frames: 0, dealt: Vec::new(), boss_hp: 0 },
@@ -141,6 +147,14 @@ impl Reduce<Act> for Fight {
                 if !self.on() {
                     return Verdict::Reject(NOT_NOW)
                 }
+                // Past the longest fight, anyone may settle it; before, a player in it, once a log
+                // came and the rest had their time.
+                if entry.at >= self.began_at + FIGHT_MS + SETTLE_MS {
+                    return Verdict::Accept
+                }
+                if self.slot(peer).is_none() {
+                    return Verdict::Reject(BAD_LOG)
+                }
                 if !self.any_sent() || entry.at < self.first_at + SETTLE_MS {
                     return Verdict::Reject(TOO_SOON)
                 }
@@ -163,6 +177,7 @@ impl Reduce<Act> for Fight {
                     self.sent.push(false)
                 }
                 self.settled = false
+                self.began_at = at
                 self.first_at = 0
             },
             Act::Log { changes, .. } => {
@@ -188,7 +203,8 @@ impl Reduce<Act> for Fight {
 }
 
 /// Where a finished fight's outcome is kept: `fights/`, the room's name, the room's time it
-/// finished, and its number in the room.
+/// began, and its number in the room. Both come from the journal, so writing it again (a call
+/// retried) writes the same row.
 pub fn key_of(name: str, at: u64, n: u32) -> Vec<u8> {
     var k: Vec<u8> = Vec::new()
     let prefix = "fights/"
@@ -236,8 +252,12 @@ pub fn serve(s: mut Server, time: f32) {
                     replayed = true
                 } else if conn >= POISONED {
                     carry_out(s.room.poisoned(conn - POISONED, take bytes))
+                    written(mut s)
                 } else {
+                    // A message decides one proposal at most, so it finishes one fight at most:
+                    // its outcome is written before the next can replace it.
                     carry_out(s.room.receive(conn, take bytes, at))
+                    written(mut s)
                 }
             },
             Event::Connection { conn, open, tag } => {
@@ -250,19 +270,21 @@ pub fn serve(s: mut Server, time: f32) {
             _ => {},
         }
     }
-    let f = s.room.state().clone()
     if replayed {
-        s.written = f.fights
-    } else if f.fights != s.written {
-        // The outcome: one row a fight, written with the call's records.
-        if f.settled {
-            store::put(key_of(room().as_str(), f.finished_at, f.fights), pack(f.outcome.clone()))
-        }
-        s.written = f.fights
+        s.written = s.room.state().fights
     }
     if s.room.since_snapshot() > COMPACT_AFTER {
         compact(pack(s.room.compact()))
     }
+}
+
+/// A fight just finished: its outcome, one row, written with the call's records.
+fn written(s: mut Server) {
+    let f = s.room.state().clone()
+    if f.fights != s.written && f.settled {
+        store::put(key_of(room().as_str(), f.began_at, f.fights), pack(f.outcome.clone()))
+    }
+    s.written = f.fights
 }
 
 // ---- tests --------------------------------------------------------------------------------------
@@ -360,4 +382,42 @@ fn a_log_no_player_could_send_is_refused() {
     var late: Vec<Change> = Vec::new()
     late.push(Change { frame: 100, input: 1 })
     assert(!sim::well_formed(late, 100, MAX_CHANGES), "a change past the end")
+    // The fight itself takes any input: a stick that isn't one is still.
+    var wild: Vec<Log> = Vec::new()
+    wild.push(Log { changes: stick })
+    var odd: Vec<Change> = Vec::new()
+    odd.push(Change { frame: 5, input: 63 })
+    wild.push(Log { changes: odd })
+    let _ = sim::run(2, wild)
+}
+
+@test
+fn the_longest_log_fits_one_message() {
+    // A message up to the room is at most 65472 bytes (the host's `MAX_UP`); a log of
+    // `MAX_CHANGES` changes at the largest frames and inputs, with a proposal's framing, fits.
+    var changes: Vec<Change> = Vec::new()
+    for i in 0..MAX_CHANGES {
+        changes.push(Change { frame: MAX_FRAMES - MAX_CHANGES + i, input: 16383 - (i & 1) })
+    }
+    let bytes = pack(Act::Log { changes, end: MAX_FRAMES })
+    assert(bytes.len() + 256 < 65472, "the longest log is one message")
+}
+
+@test
+fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
+    var fight = Fight::empty()
+    var party: Vec<u32> = Vec::new()
+    party.push(3)
+    fight.apply(entry(3, 1000, Act::Begin { party }))
+    // Its player leaves without a log: a stranger can't settle it yet, nor begin another.
+    assert(fight.check(entry(9, 2000, Act::Settle)) == Verdict::Reject(BAD_LOG))
+    var mine: Vec<u32> = Vec::new()
+    mine.push(9)
+    assert(
+        fight.check(entry(9, 2000, Act::Begin { party: mine.clone() })) == Verdict::Reject(NOT_NOW),
+    )
+    let late = 1000 + FIGHT_MS + SETTLE_MS
+    assert(fight.check(entry(9, late, Act::Settle)) == Verdict::Accept)
+    fight.apply(entry(9, late, Act::Settle))
+    assert(fight.check(entry(9, late, Act::Begin { party: mine })) == Verdict::Accept)
 }

@@ -4,12 +4,12 @@
 // costs is how many packets go, not their size: a player sends one when its input changes, and a
 // heartbeat every `HEARTBEAT` frames while it doesn't, which says how far its inputs are known.
 //
-// A packet, bits lowest first: `through` (16 bits, the frame its inputs are known to, wrapping),
-// `seq` (8 bits, the change number of the newest entry, wrapping), a count (2 bits), then each
-// change newest first: frames back from the one before (3-bit groups, each with a bit that says
+// A packet, bits lowest first: `through` (16 bits, the frame its inputs are known to: a fight's
+// frames all fit), `seq` (8 bits, the change number of the newest entry, wrapping), a count (2
+// bits), then each change newest first: frames back from the one before (3-bit groups, each with a bit that says
 // another follows) and its input (14 bits).
 
-use sim::Change
+use sim::{Change, MAX_CHANGES, MAX_FRAMES}
 
 /// The changes each packet repeats.
 pub const REDUNDANCY: u32 = 3
@@ -96,39 +96,38 @@ pub struct Packet: Clone {
     pub changes: Vec<Change>,
 }
 
-/// A packet's bytes.
-pub fn encode(p: Packet) -> Vec<u8> {
+/// A packet's bytes; none if it isn't one a sender makes (a frame past the fight's longest, a
+/// change after `through` or out of order, or more than `REDUNDANCY` changes).
+pub fn encode(p: Packet) -> Option<Vec<u8>> {
+    if p.through >= MAX_FRAMES || p.changes.len() > REDUNDANCY {
+        return None
+    }
     var w = Bits { bytes: Vec::new(), bit: 0 }
-    w.put(p.through & 65535, 16)
+    w.put(p.through, 16)
     w.put(p.seq & 255, 8)
     w.put(p.changes.len(), 2)
     var anchor = p.through
     for c in p.changes {
-        w.varint((anchor - c.frame) & 65535)
-        w.put(c.input, 14)
+        if c.frame > anchor {
+            return None
+        }
+        w.varint(anchor - c.frame)
+        w.put(c.input & 16383, 14)
         anchor = c.frame
     }
-    take w.bytes
+    Some(take w.bytes)
 }
 
-/// A packet's frame numbers in full, from their 16 bits and a frame known to be near.
-fn unwrap(f16: u32, near: u32) -> u32 {
-    var f = (near & 4294901760) | f16
-    if f > near && f - near > 32768 && f >= 65536 {
-        f -= 65536
-    } else if near > f && near - f > 32768 {
-        f += 65536
-    }
-    f
-}
-
-/// A packet from its bytes, its frames read near frame `near`; none if they aren't one.
-pub fn decode(bytes: [u8], near: u32) -> Option<Packet> {
+/// A packet from its bytes; none if they aren't one. A fight's frames all fit in 16 bits, so a
+/// frame past the longest fight isn't one.
+pub fn decode(bytes: [u8]) -> Option<Packet> {
     var r = Reader { at: 0 }
-    let Some(t16) = r.get(bytes, 16) else { return None }
+    let Some(through) = r.get(bytes, 16) else { return None }
     let Some(seq) = r.get(bytes, 8) else { return None }
     let Some(n) = r.get(bytes, 2) else { return None }
-    let through = unwrap(t16, near)
+    if through >= MAX_FRAMES {
+        return None
+    }
     var changes: Vec<Change> = Vec::new()
     var anchor = through
     for _ in 0..n {
@@ -158,8 +157,12 @@ impl Sender {
         Sender { recent: Vec::new(), seq: 0, input: 0, last_sent: 0, sent_any: false, dirty: false }
     }
 
-    /// This frame's input: the packet to send now, if one goes.
+    /// This frame's input: the packet to send now, if one goes. Frames rise, one fight's worth: a
+    /// frame before the last one sent, or past the longest fight, sends nothing.
     pub fn frame(mut self, frame: u32, input: u32) -> Option<Vec<u8>> {
+        if frame >= MAX_FRAMES || (self.sent_any && frame < self.last_sent) {
+            return None
+        }
         if input != self.input {
             self.input = input
             self.seq = (self.seq + 1) & 255
@@ -176,6 +179,10 @@ impl Sender {
         if !self.dirty && self.sent_any && frame - self.last_sent < HEARTBEAT {
             return None
         }
+        // Once a frame: a second change on a frame already sent goes with the next.
+        if self.sent_any && frame == self.last_sent {
+            return None
+        }
         self.last_sent = frame
         self.sent_any = true
         self.dirty = false
@@ -186,35 +193,43 @@ impl Sender {
                 changes.push(c.clone())
             }
         }
-        Some(encode(Packet { through: frame, seq: self.seq, changes }))
+        encode(Packet { through: frame, seq: self.seq, changes })
     }
 }
 
 /// The receiving side: a peer's input log rebuilt, how far it's known, and how many changes it
-/// lost past what the packets repeat (then the room's log is the truth: a resync).
+/// lost past what the packets repeat (then the room's log is the truth: a resync). Whatever the
+/// bytes, it keeps a log a player could send: changes in order, each a change, at most
+/// `MAX_CHANGES`; what isn't is counted lost.
 pub struct Receiver {
     pub log: Vec<Change>,
     pub through: u32,
     pub lost: u32,
     /// The change number of the newest change it has (0: none yet).
     seq: u32,
+    heard_any: bool,
 }
 
 impl Receiver {
     pub fn new() -> Receiver {
-        Receiver { log: Vec::new(), through: 0, lost: 0, seq: 0 }
+        Receiver { log: Vec::new(), through: 0, lost: 0, seq: 0, heard_any: false }
     }
 
     /// A packet's bytes, from the relay: false if they aren't one.
     pub fn heard(mut self, bytes: [u8]) -> bool {
-        let Some(p) = decode(bytes, self.through) else { return false }
-        if p.through > self.through {
-            self.through = p.through
+        let Some(p) = decode(bytes) else { return false }
+        // A sender sends once a frame, so a packet not past the newest is late, and says
+        // nothing new.
+        if self.heard_any && p.through <= self.through {
+            return true
         }
-        // How many changes the sender made since the newest it has; one from before (a late
-        // packet) is behind, and says nothing new.
+        self.heard_any = true
+        self.through = p.through
+        // How many changes the sender made since the newest it has (fewer than 256 lost in a
+        // row, which is over 25 seconds of play: past that, the count is short, never the log).
         let ahead = (p.seq + 256 - self.seq) & 255
-        if ahead == 0 || ahead >= 128 {
+        self.seq = p.seq
+        if ahead == 0 {
             return true
         }
         // The packet's entry `i` (newest first) is change `p.seq - i`: new if `i < ahead`.
@@ -222,13 +237,29 @@ impl Receiver {
         var fresh: u32 = 0
         for k in 0..n {
             let i = n - 1 - k
-            if i < ahead {
-                self.log.push(p.changes[i].clone())
+            if i < ahead && self.keep(p.changes[i].clone()) {
                 fresh += 1
             }
         }
-        self.lost += ahead - fresh
-        self.seq = p.seq
+        let missed = ahead - fresh
+        self.lost = if self.lost > 4294967295 - missed { 4294967295 } else { self.lost + missed }
+        true
+    }
+
+    /// Whether `c` goes on the log: after its last change, a change, a stick that's one, and
+    /// room for it.
+    fn keep(mut self, c: Change) -> bool {
+        let n = self.log.len()
+        if n >= MAX_CHANGES || (c.input & 63) > 48 {
+            return false
+        }
+        let (last, prev) = if n > 0 { (self.log[n - 1].frame, self.log[n - 1].input) } else {
+            (0, 0)
+        }
+        if (n > 0 && c.frame <= last) || c.input == prev {
+            return false
+        }
+        self.log.push(c.clone())
         true
     }
 }
@@ -306,15 +337,17 @@ fn send_all(period: u32, lose: u32) -> (u32, u32, Receiver, Vec<Change>) {
 @test
 fn a_packet_reads_back() {
     var changes: Vec<Change> = Vec::new()
-    changes.push(Change { frame: 70000, input: 16383 })
-    changes.push(Change { frame: 69990, input: 0 })
-    let bytes = encode(Packet { through: 70003, seq: 200, changes })
-    let Some(p) = decode(bytes, 69000) else { panic("it decodes") }
-    assert(p.through == 70003 && p.seq == 200 && p.changes.len() == 2)
+    changes.push(Change { frame: 30000, input: 16383 })
+    changes.push(Change { frame: 29990, input: 0 })
+    let Some(bytes) = encode(Packet { through: 30003, seq: 200, changes }) else {
+        panic("it encodes")
+    }
+    let Some(p) = decode(bytes) else { panic("it decodes") }
+    assert(p.through == 30003 && p.seq == 200 && p.changes.len() == 2)
     assert(
-        p.changes[0].frame == 70000 && p.changes[0].input == 16383 && p.changes[1].frame == 69990,
+        p.changes[0].frame == 30000 && p.changes[0].input == 16383 && p.changes[1].frame == 29990,
     )
-    assert(decode([u8(1), 2], 0).is_none(), "a short packet isn't one")
+    assert(decode([u8(1), 2]).is_none(), "a short packet isn't one")
 }
 
 @test
@@ -335,4 +368,28 @@ fn a_heavy_loss_is_counted_not_hidden() {
     let (_, _, rx, truth) = send_all(period: 5, lose: 4)
     assert(rx.lost > 0, "most packets lost loses changes")
     assert(u32(rx.log.len()) + rx.lost == truth.len(), "what's lost is all counted")
+}
+
+@test
+fn any_bytes_leave_a_log_a_player_could_send() {
+    // Hostile packets: every frame, input and change number, at random.
+    var rx = Receiver::new()
+    var seed: u32 = 99
+    for _ in 0..200000 {
+        var bytes: Vec<u8> = Vec::new()
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+        let len = 1 + (seed >> 24) % 12
+        for _ in 0..len {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+            bytes.push(u8(seed >> 24))
+        }
+        let _ = rx.heard(bytes)
+    }
+    assert(
+        sim::well_formed(rx.log.clone(), MAX_FRAMES, MAX_CHANGES),
+        "the log is one a player could send",
+    )
+    var logs: Vec<sim::Log> = Vec::new()
+    logs.push(sim::Log { changes: rx.log.clone() })
+    let _ = sim::run(1, logs)
 }

@@ -16,6 +16,8 @@ pub const MAX_PARTY: u32 = 4
 pub const HZ: u32 = 60
 /// The longest fight, in frames (ten minutes): past it, it's a draw.
 pub const MAX_FRAMES: u32 = 36000
+/// The most changes a player's log holds: about ten a second for the longest fight.
+pub const MAX_CHANGES: u32 = 6000
 
 /// Button bits.
 pub const ATTACK: u32 = 1
@@ -222,7 +224,9 @@ pub fn run(players: u32, logs: [Log]) -> Outcome {
 
 @deterministic
 fn step_player(p: mut Fighter, input: u32, pressed: u32) {
-    let stick = input & 63
+    // A stick that isn't one (past 48) is still: any input gives a fight, never a trap.
+    let raw = input & 63
+    let stick = if raw > 48 { 0 } else { raw }
     // An action runs its frames out; a new one starts only from idle.
     if p.act != IDLE {
         if p.timer > 0 {
