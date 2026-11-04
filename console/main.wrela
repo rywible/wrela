@@ -2622,6 +2622,11 @@ pub const ORIGIN: Text = "https://wrela.dev"
 /// Cloudflare). A build without one sets it false (`--set ONLINE=false`): its chip opens only the
 /// health warning and the legal pages.
 pub const ONLINE: bool = true
+/// Whether the server takes new accounts. Open while wrela.dev is private, behind Cloudflare
+/// Access, so only Ryan reaches it (docs/toolchain.md, "The private playtest"). Before the gate
+/// comes off, set this false unless the Terms and the Privacy Policy are final (legal.wrela,
+/// rywible/wrela#352): with it false, signing in, recovery and play without an account go on.
+pub const SIGN_UPS: bool = true
 
 /// The server, taking the versions of the legal pages and of what posting makes public that this
 /// build shows (legal.wrela).
@@ -2631,7 +2636,7 @@ pub fn serve_init() -> console_server::serve::Server {
         privacy: legal::PRIVACY_VERSION,
         posting: platform::posting::VERSION,
     }
-    console_server::serve::init(RP_ID, ORIGIN, versions)
+    console_server::serve::init(RP_ID, ORIGIN, versions, SIGN_UPS)
 }
 
 pub fn serve(s: mut console_server::serve::Server, time: f32) {

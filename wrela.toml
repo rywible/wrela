@@ -148,5 +148,5 @@ package = "studio/deploy"
 write = ["release=build/release"]
 net = ["wrela.dev", "docs.wrela.dev", "github.com"]
 run = ["npx"]
-secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WRELA_ACCESS_CLIENT_ID", "WRELA_ACCESS_CLIENT_SECRET"]
 timeout = 3600

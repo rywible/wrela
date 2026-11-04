@@ -39,6 +39,9 @@
 // script of the console and the games must come back as Zstandard (`ZSTD_RULE`). The log says what each Worker keeps, what Wrangler said of each Worker and
 // that each serves its releases.
 //
+// While wrela.dev is private, behind Cloudflare Access, every request of the deploy to it carries
+// the Access service token (`access_headers`), and no request elsewhere does.
+//
 // `--dry-run` does all but run Wrangler: it fetches the kept releases into the release and writes
 // `deploys.json`. The grants are the workspace's (`[tools.deploy]`), so the secrets must be set,
 // if only to empty values, for a dry run too.
@@ -176,14 +179,79 @@ fn failure(why: str) -> Failure {
     Failure { why: String::from(why), transport: false }
 }
 
-/// A `GET` of `url` as the deploy asks it of a live site.
+/// A `GET` of `url` as the deploy asks it of a live site, with the Access service token's headers
+/// if `url` is on a gated host (`access_headers`).
 fn request(url: str) -> http::Request {
     var req = http::get(url)
     req.headers.push(
         Header { name: String::from("User-Agent"), value: String::from("wrela-deploy") },
     )
+    let id = secret(ACCESS_SECRETS[0]).unwrap_or(String::new())
+    let key = secret(ACCESS_SECRETS[1]).unwrap_or(String::new())
+    // A secret pasted with a newline after it still works.
+    for h in access_headers(url, id.as_str().trim(), key.as_str().trim()) {
+        req.headers.push(h.clone())
+    }
     req.timeout = FETCH_TIMEOUT
     req
+}
+
+/// The hosts behind Cloudflare Access while the game is in development: only the people its
+/// policy names (Ryan) reach them in a browser, and the deploy reaches them with an Access service
+/// token (docs/toolchain.md, "The private playtest"). The docs aren't gated.
+pub const GATED: [Text; 1] = ["wrela.dev"]
+
+/// The secrets that hold the Access service token, its client ID and its client secret: the
+/// deploy sends them as the headers `CF-Access-Client-Id` and `CF-Access-Client-Secret`
+/// (developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+pub const ACCESS_SECRETS: [Text; 2] = ["WRELA_ACCESS_CLIENT_ID", "WRELA_ACCESS_CLIENT_SECRET"]
+
+/// The host of `url`, an `https` URL: its authority (what's between `https://` and the first
+/// `/`, `?` or `#` after it) up to a port's `:`, or `None` for any other URL, or one whose
+/// authority has user information (an `@` anywhere in it).
+pub fn https_host(url: str) -> Option<String> {
+    if !url.starts_with("https://") {
+        return None
+    }
+    var end = url.len()
+    var port = url.len()
+    for k in 8..url.len() {
+        let b = url.byte(k)
+        if b == 47 || b == 63 || b == 35 {
+            end = k
+            break
+        }
+        if b == 64 {
+            return None
+        }
+        if b == 58 && port == url.len() {
+            port = k
+        }
+    }
+    let host_end = if port < end { port } else { end }
+    Some(String::from(url.slice(8, host_end)))
+}
+
+/// The Access service token's headers for a request of `url`: both, if the token's `id` and
+/// `key` are set and `url` is an `https` URL on a host `GATED` names exactly, else none, so the
+/// token never goes anywhere else (the docs, GitHub).
+pub fn access_headers(url: str, id: str, key: str) -> Vec<Header> {
+    var out: Vec<Header> = Vec::new()
+    if id.is_empty() || key.is_empty() {
+        return out
+    }
+    let Some(host) = https_host(url) else { return out }
+    var gated = false
+    for g in GATED {
+        if host.as_str() == g {
+            gated = true
+        }
+    }
+    if gated {
+        out.push(Header { name: String::from("CF-Access-Client-Id"), value: String::from(id) })
+        out.push(Header { name: String::from("CF-Access-Client-Secret"), value: String::from(key) })
+    }
+    out
 }
 
 /// The most `GET`s of one try: the first and at most 5 redirects.

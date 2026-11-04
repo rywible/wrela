@@ -76,8 +76,24 @@ Then stage it in one Worker, which the release splits in two: the console's file
 - The router refuses a `POST` whose `Origin` isn't in `WRELA_ORIGINS` (403), and a client past a rate limit (429: studio/release's `RATE_LIMITS`, `WRELA_LIMITS`); the server never sees an address.
 - `WRELA_PRINT=1` in the Worker's variables sends the program's printed lines to its log.
 - Its tests run on a fake host of many instances that commits, answers, calls and delivers as 0.18.0's host does (`wrela test platform`).
-- Sign-ups are closed on the live server (console/server/serve.wrela's `close_sign_ups`, rywible/wrela#352) until Ryan reopens them: reopening is deleting that line.
+- Sign-ups follow console/main.wrela's `SIGN_UPS`: open while wrela.dev is private ("The private playtest"), and false before it goes public unless the Terms and the Privacy Policy are final (rywible/wrela#352).
 - `ONLINE` (console/main.wrela) is true; `--set ONLINE=false` builds a console without a server, whose chip opens only the health warning and the legal pages.
+
+## The private playtest
+
+While the game is in development, wrela.dev (the console and its `/api/*` server) is behind Cloudflare Access, so only Ryan reaches it, and sign-ups are open there (`SIGN_UPS`). docs.wrela.dev stays public. Access checks each request at Cloudflare's edge before any Worker runs (developers.cloudflare.com/workers/configuration/cloudflare-access/); the Workers have no `workers.dev` or preview URL to go around it (`workers_dev` and `preview_urls` false, studio/release/site.wrela). A hostname application, not a Worker one, since a Worker-level policy refuses WebSockets.
+
+The deploy fetches and checks the live site, so it sends an Access service token to the hosts studio/deploy's `GATED` names, and nowhere else: the production environment's secrets `WRELA_ACCESS_CLIENT_ID` and `WRELA_ACCESS_CLIENT_SECRET`, as `CF-Access-Client-Id` and `CF-Access-Client-Secret`. A local run of `wrela tool deploy` needs both set, if only to empty values.
+
+Set once, by Ryan, in the Cloudflare dashboard (one.dash.cloudflare.com), in this order:
+
+1. **Zero Trust** on the account, the Free plan (up to 50 users).
+2. **A service token**: Access controls, Service credentials, Service Tokens, Create Service Token, `wrela-deploy`, duration non-expiring. Its Client ID and Client Secret go straight into the repository's Settings, Environments, `production`, as the secrets `WRELA_ACCESS_CLIENT_ID` and `WRELA_ACCESS_CLIENT_SECRET` (the secret is shown once).
+3. **The application**: Access controls, Applications, Create new application, Self-hosted and private, public hostname `wrela.dev` with no path. Two policies: Allow, Include Emails, Ryan's address; and Service Auth, Include Service Token, `wrela-deploy`. Login method: one-time PIN to email.
+
+`curl -sI https://wrela.dev/` then answers a redirect to `<team>.cloudflareaccess.com` (or a 401/403), not the console, and the same with the token's two headers (`-H "CF-Access-Client-Id: ..." -H "CF-Access-Client-Secret: ..."`) answers 200. Only then may a change with `SIGN_UPS` true reach `main`, whose push deploys it: before the gate, it would open sign-ups to everyone. A game on a domain of its own joins `GATED` and the application as a public hostname.
+
+To go public: delete the application, set `SIGN_UPS` as the line above says, and leave the token's secrets empty or deleted.
 
 ## Delivery
 
