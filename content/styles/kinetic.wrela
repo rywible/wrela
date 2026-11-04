@@ -98,6 +98,9 @@ pub const ROUGH_DEEP: f32 = 0.96
 /// The paper: its white, its tooth (a fibrous grain fixed to the screen), and the ink's colour
 /// (a warm black, not a pure one).
 pub const PAPER: vec3 = vec3(0.97, 0.94, 0.88)
+/// A stone's one tone (linear): a pale, warm grey, so its shade side reads as a tone under the
+/// hatching and not a hole.
+pub const STONE_TONE: vec3 = vec3(0.34, 0.32, 0.29)
 pub const TOOTH: f32 = 0.06
 /// Where an impact frame cuts the image's light (display-referred luma) into its two tones.
 pub const IMPACT_CUT: f32 = 0.34
@@ -263,6 +266,12 @@ impl Style for Kinetic {
             let drain = DRAIN * smoothstep(0.5, 1.0, light.moment.x)
             let paper = PAPER * (dot(albedo, LUMA) * 1.25)
             return mix(albedo, paper, vec3(drain))
+        }
+        // A stone one flat, pale tone, its form left to the light and the hatching: its bands
+        // and lichen, stepped into the palette's few tones, broke into black and white blotches
+        // (a camouflage, not a rock).
+        if class == style::STONE {
+            return STONE_TONE
         }
         cel::palette_of::<Kinetic>(light, class, history, albedo)
     }
