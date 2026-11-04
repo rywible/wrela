@@ -5378,3 +5378,42 @@ probes 0 (2.7), the rest (motion, moving shadow, sky, particles, cull, cooks) 11
   check are CPU work of microseconds, not on the GPU.
 - **To measure on the M4:** `wrela tool bench -- --scene ink-duel`, and with `--look
   styles::physical::Physical --set SWITCHES=Realistic`, against the 12 ms frame.
+
+## 2026-11-04: the duel after round three (mocap, physics, the toric camera, guard), on a CPU's Vulkan (toolchain 0.18.0)
+
+The same two builds and method as "the duel, Kinetic Ink against the physical look" above, at
+commit 26858c15 (motion capture played and time-warped on both fighters, a position-based body
+tracking each, the toric camera, guard and deflect, the key light, the bodies' new parts): A,
+Kinetic Ink with its switches; B, the physical look on the approved switches.
+
+**The machine and its caveat:** lavapipe on a GPU-less VM, **ratios indicative, milliseconds no
+GPU's**.
+
+| | A: Kinetic Ink, its switches | B: physical, approved |
+|---|---|---|
+| Pipelines | **54** | 75 |
+| WGSL (`pipeline_*.wgsl`) | **1,278 KiB** | 1,814 KiB |
+| WASM (`game.wasm`) | 3,484 KiB | 3,784 KiB |
+| Playable at frame (cold, native) | **19** | 107 |
+| Memory held (the host's `memory shares: held`) | **339.3 MB** | 427.9 MB |
+| GPU span, mean of frames 200–399 | **149.0 ms** | 263.1 ms |
+| GPU span, against B's | **0.57** | 1.00 |
+
+Each pass's mean ms a frame: terrain 39.3 (B 79.3), clouds 0 (44.2), temporal 22.2 (22.3), bloom
+0 (18.0), marks 15.7 (0), lines 14.7 (8.0), look 10.1 (17.5), creature 11.0 (18.6), vegetation
+(the stones) 9.4 (15.4), ambient occlusion 8.1 (13.0), moving shadow 4.6 (4.8), motion 4.5 (4.6),
+shape 2.2 (0); sums 143.9 and 255.2.
+
+- **The look's saving holds through the round:** 0.57 of B's frame (0.56 before it).
+- **The new systems cost the CPU, not the GPU:** the captures are played from poses computed at
+  build (`CLIPS`, a constant), the physics is 24 points a body stepped three times a frame, the
+  camera a few dozen vector operations. The creature pass rose 3.8 ms (7.2 to 11.0): more parts
+  a body (hands, a nose, ears, a fringe), more triangles.
+- **Memory held rose about 200 MB in both builds** (A 140.9 to 339.3, B 229.5 to 427.9). The
+  same rise in both says it's not the look; the categories the host names (targets, shadows,
+  terrain, reflections …) sum to about 117 MB of A's, so the rise is in what it doesn't name,
+  most likely the bodies' and stones' realized meshes' room. Not yet traced: a follow-up.
+- **Posed fields (re-realizing a body from its field each frame) aren't viable here:** realizing
+  the load's meshes (two fighters, nine stones) took 564 ms of GPU time over frames 0–7
+  (`place_vertices` 403.5 ms, `cull_blocks` 160.6 ms), against a 16.7 ms frame. The bodies stay
+  rigid parts skinned to their bones.
