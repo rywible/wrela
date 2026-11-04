@@ -261,26 +261,30 @@ fn fighting(
     }
 }
 
-/// The wanderer this frame: its pose and placing.
-pub fn wanderer(w: World, c: Clips, ground: f32, time: f32) -> (Pose, Placing) {
+/// The wanderer this frame: its pose and placing (`dead_for`: how long it's been dead, s).
+pub fn wanderer(w: World, c: Clips, ground: f32, time: f32, dead_for: f32) -> (Pose, Placing) {
     let f = w.you
     let place = Placing { at: vec3(f.pos.x, ground, f.pos.y), heading: f.heading }
     match f.act {
         Act::Riposte => (chained(c.riposte, secs(f.t), LAG), place),
-        Act::Dead => (DOWN, Placing { over: -1.5707964, pivot: 0.12, ..place }),
+        Act::Dead => (frame_of(c.fall, dead_for * 60.0), place),
         _ => (fighting(f, c.wanderer, c.w_caps, WANDERER_MOVES, c, time, bounce: 1.7), place),
     }
 }
 
 /// The brawler this frame: fighting; or taken by the riposte (broken until the blow lands,
 /// snapped back until the launch, flung and tumbling, laid out where it landed, getting up).
-pub fn brawler(w: World, c: Clips, ground: f32, time: f32) -> (Pose, Placing) {
+pub fn brawler(w: World, c: Clips, ground: f32, time: f32, dead_for: f32) -> (Pose, Placing) {
     let f = w.foe
     let tall = BRAWLER.tall
     let place = Placing { at: vec3(f.pos.x, ground, f.pos.y), heading: f.heading }
     let lying = Placing { over: -1.5707964, pivot: 0.13 * tall, ..place }
     if f.act == Act::Dead {
-        return (DOWN, lying)
+        // Laid out where the riposte threw it; or, felled by a blow, falling onto its face.
+        if w.landed != NEVER {
+            return (DOWN, lying)
+        }
+        return (frame_of(c.fall, dead_for * 60.0), place)
     }
     if f.act != Act::Taken {
         return (fighting(f, c.brawler, c.b_caps, BRAWLER_MOVES, c, time, bounce: 1.1), place)

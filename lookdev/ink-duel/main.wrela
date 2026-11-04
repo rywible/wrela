@@ -229,6 +229,9 @@ pub struct State {
     /// Each fighter's change of clip, blended over (`Blend`).
     ba: Blend,
     bb: Blend,
+    /// When each fighter died (the frame's time; none yet, below 0).
+    dead_a: f32,
+    dead_b: f32,
     /// When each event came (the frame's time), for its impact frames.
     contact_at: f32,
     launch_at: f32,
@@ -299,6 +302,8 @@ pub fn init() -> State {
         seen: Seen {},
         ba: Blend { from: GUARD, last: GUARD },
         bb: Blend { from: GUARD, last: GUARD },
+        dead_a: -1.0,
+        dead_b: -1.0,
         contact_at: -1.0e9,
         launch_at: -1.0e9,
         landed_at: -1.0e9,
@@ -538,8 +543,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let ground = s.scene.ground
     let ga = ground.height(w.you.pos.x, w.you.pos.y)
     let gb = ground.height(w.foe.pos.x, w.foe.pos.y)
-    let (pa, la) = wanderer(w, s.clips, ga, time)
-    let (pb, lb) = brawler(w, s.clips, gb, time)
+    if w.you.act == Act::Dead && s.dead_a < 0.0 {
+        s.dead_a = time
+    }
+    if w.foe.act == Act::Dead && s.dead_b < 0.0 {
+        s.dead_b = time
+    }
+    let (pa, la) = wanderer(w, s.clips, ga, time, time - s.dead_a)
+    let (pb, lb) = brawler(w, s.clips, gb, time, time - s.dead_b)
     let pa = blended(mut s.ba, w.you.act, w.you.move, pa, time)
     let pb = blended(mut s.bb, w.foe.act, w.foe.move, pb, time)
     let ra = carry(mut s.ca, la.at, la.heading, pa, dt, WANDERER.tall, ground)
