@@ -36,7 +36,8 @@ pub enum Phase: Copy + Eq {
 
 /// A key: where it falls (`phase`, `u` of the way through it), its pose (or, `offset`, how far
 /// from the guide's pose there), which parts it poses (`pose::TRUNK` …; the rest follow the
-/// guide), how many ticks its drawing is held, and how it eases on to the next key.
+/// guide), how many ticks its drawing is held, how it eases on to the next key, and whether it's
+/// carried onto the capture's stance (`rebase`).
 pub struct Key: Copy {
     pub phase: Phase,
     pub u: f32 = 0.0,
@@ -45,6 +46,10 @@ pub struct Key: Copy {
     pub offset: bool = false,
     pub hold: f32 = 0.0,
     pub ease: u32 = SMOOTH,
+    /// Whether an absolute key's trunk, head and legs are carried onto the capture's own stance
+    /// (`rebased`: its hips' height, its lean), or set exactly as written (false: where the
+    /// capture's own lean fights the pose, as a boxer's side bend under an overhead blow).
+    pub rebase: bool = true,
 }
 
 /// A captured move: its poses (60 a second) and the frames that mark it (`Marks`).
@@ -208,7 +213,7 @@ pub fn keyed(guide: Captured, keys: [Key], push: f32, rest: Pose, m: Move) -> Ke
         let d = if key.offset {
             only(key.pose, key.parts)
         } else {
-            let target = rebased(key.pose, rest, from)
+            let target = if key.rebase { rebased(key.pose, rest, from) } else { key.pose }
             only(difference(target, guided(k, m, k.ticks[i])), key.parts)
         }
         k.d.push(d)

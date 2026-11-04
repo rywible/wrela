@@ -11,7 +11,7 @@
 use engine::clip::{HOLD, SMOOTH, SNAP}
 use engine::combat::Move
 use keyed::{Key, Phase}
-use pose::{ALL, Beat, HEAD, NONE, Pose, TRUNK, UPPER}
+use pose::{ALL, Beat, HEAD, LEGS, NONE, Pose, TRUNK, UPPER}
 use poses::{
     COIL, CROSS, CROSS_LOAD, GUARD, HAY_COCKED, HAY_DOWN, HAY_LIFT, HOOK, HOOK_LOAD, JAB, LUNGE,
     LUNGE_LOAD, OVERHEAD, SWEEP, SWEEP_WIND, UPPERCUT,
@@ -188,14 +188,18 @@ const JAB_HIT = Pose {
     ..JAB,
 }
 
-/// The cross cocked: the rear fist drawn back by the ear, the hips and chest wound away so the
-/// rear shoulder is behind.
+/// The cross cocked: the rear elbow drawn straight back and tight, the fist by the ear, the lead
+/// fist tucked at the chin, the hips and chest wound away so the rear shoulder is behind. (Its
+/// elbow out wide, both arms spread read as a grab.)
 const CROSS_COCK = Pose {
-    lift: vec3(0.0, -0.14, -0.08),
-    hips: vec3(0.06, 0.85, 0.0),
-    chest: vec3(0.06, 0.45, 0.0),
-    upper_r: vec3(0.55, -0.45, -0.7),
-    fore_r: vec3(0.05, 0.55, 0.83),
+    lift: vec3(0.0, -0.12, -0.08),
+    hips: vec3(0.04, 0.85, 0.0),
+    chest: vec3(0.0, 0.5, 0.0),
+    head: vec3(-0.12, -0.55, 0.0),
+    upper_r: vec3(0.28, -0.55, -0.79),
+    fore_r: vec3(0.0, 0.78, 0.63),
+    upper_l: vec3(-0.15, -0.65, 0.72),
+    fore_l: vec3(0.45, 0.85, 0.2),
     shrug: vec2(0.3, 0.1),
     ..CROSS_LOAD,
 }
@@ -203,9 +207,10 @@ const CROSS_COCK = Pose {
 /// The cross's hit: driven right through, the hips past square, the body leaning long behind the
 /// arm.
 const CROSS_HIT = Pose {
-    lift: vec3(0.0, -0.14, 0.18),
-    hips: vec3(0.16, -0.5, 0.0),
-    chest: vec3(0.26, -0.35, 0.0),
+    lift: vec3(0.0, -0.12, 0.18),
+    hips: vec3(0.08, -0.6, 0.0),
+    chest: vec3(0.12, -0.45, 0.0),
+    head: vec3(-0.12, 0.45, 0.0),
     reach: vec2(1.16, 1.0),
     ..CROSS,
 }
@@ -224,19 +229,60 @@ const HOOK_COIL = Pose {
 
 /// The hook's hit: unwound past square, the body thrown over the lead leg behind the swing.
 const HOOK_HIT = Pose {
-    lift: vec3(0.0, -0.2, 0.16),
-    hips: vec3(0.18, -0.8, 0.0),
-    chest: vec3(0.22, -0.55, -0.15),
+    lift: vec3(0.0, -0.18, 0.16),
+    hips: vec3(0.1, -0.85, 0.0),
+    chest: vec3(0.12, -0.6, -0.15),
+    head: vec3(-0.1, 1.0, 0.0),
     reach: vec2(1.1, 1.0),
     ..HOOK,
 }
 
-/// The lunge's hit, longer still: the body near level behind the arm.
+/// The hook's finish, held: turned on through, the arm still across, the head up and on the
+/// target.
+const HOOK_DONE = Pose {
+    hips: vec3(0.08, -1.0, 0.0),
+    chest: vec3(0.1, -0.8, -0.12),
+    head: vec3(-0.12, 1.15, 0.0),
+    ..HOOK_HIT,
+}
+
+/// The lunge's hit, longer: one line from the rear heel through the fist, the body no more than a
+/// third of the way to level (flatter, it read as a fall), the head up, the rear fist pulled back
+/// to the hip. The hips barely shift ahead of the feet: on a capture's wide stance, a shift the
+/// legs can't reach sinks the body into a fold.
 const LUNGE_HIT = Pose {
-    lift: vec3(0.0, -0.2, 0.28),
-    chest: vec3(0.32, -0.25, 0.0),
+    lift: vec3(0.0, -0.1, 0.12),
+    hips: vec3(0.12, -0.4, 0.0),
+    waist: vec3(0.05, -0.1, 0.0),
+    chest: vec3(0.1, -0.25, 0.0),
+    head: vec3(-0.3, 0.45, 0.0),
     reach: vec2(1.16, 1.0),
     ..LUNGE,
+}
+
+/// The haymaker cocked for its hold: twisted right away, the striking arm high behind the head,
+/// the lead arm reaching out to aim, the weight back over the rear leg.
+const HAY_HOLD = Pose {
+    hips: vec3(-0.06, 0.8, 0.0),
+    chest: vec3(-0.25, 0.6, -0.1),
+    head: vec3(-0.05, -1.1, 0.0),
+    upper_l: vec3(-0.1, 0.05, 1.0),
+    fore_l: vec3(0.05, 0.1, 1.0),
+    ..HAY_COCKED,
+}
+
+/// The haymaker's blow: the fist driven down through where the face was, the chest turned past
+/// square behind it (not folded over: bent past the hips, it read as a bow), the lead foot
+/// stamped ahead, the rear heel up.
+const HAY_HIT = Pose {
+    lift: vec3(0.0, -0.12, 0.1),
+    foot_l: vec3(-0.12, 0.085, 0.36),
+    hips: vec3(0.12, -0.35, 0.0),
+    waist: vec3(0.08, -0.15, 0.0),
+    chest: vec3(0.22, -0.4, 0.05),
+    head: vec3(-0.15, 0.4, 0.0),
+    fore_r: vec3(0.0, -0.45, 0.89),
+    ..HAY_DOWN,
 }
 
 /// The wanderer's move `n`'s keys, over its capture: quick, each snapping out of a short held
@@ -258,7 +304,9 @@ pub fn wanderer_keys(n: u32) -> Vec<Key> {
                     2.0,
                     SNAP,
                 ),
-                key(Phase::Active, 0.0, JAB_HIT, UPPER, 3.0, SMOOTH),
+                key(Phase::Active, 0.0, JAB_HIT, UPPER, 4.0, SMOOTH),
+                // The follow-through held, arm still out, the feet planted in stance.
+                key(Phase::Recovery, 0.1, JAB_HIT, UPPER | LEGS, 4.0, SMOOTH),
             ],
         )
     }
@@ -266,15 +314,8 @@ pub fn wanderer_keys(n: u32) -> Vec<Key> {
         return Vec::from(
             [
                 key(Phase::Windup, 0.5, CROSS_COCK, UPPER, 3.0, SNAP),
-                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 3.0, SMOOTH),
-                by(
-                    Phase::Recovery,
-                    0.15,
-                    Pose { chest: vec3(0.05, -0.15, 0.0), ..NONE },
-                    TRUNK,
-                    4.0,
-                    SMOOTH,
-                ),
+                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 4.0, SMOOTH),
+                key(Phase::Recovery, 0.12, CROSS_HIT, UPPER | LEGS, 5.0, SMOOTH),
             ],
         )
     }
@@ -282,15 +323,8 @@ pub fn wanderer_keys(n: u32) -> Vec<Key> {
         [
             key(Phase::Windup, 0.45, HOOK_COIL, UPPER, 6.0, SNAP),
             key(Phase::Active, 0.0, HOOK_HIT, UPPER, 4.0, SMOOTH),
-            // The finish held (a mie): the swing's overshoot, still turned through.
-            by(
-                Phase::Recovery,
-                0.12,
-                Pose { chest: vec3(0.0, -0.25, 0.0), head: vec3(0.0, 0.2, 0.0), ..NONE },
-                TRUNK | HEAD,
-                8.0,
-                SMOOTH,
-            ),
+            // The finish held (a mie): turned on through, the arm still across, the feet planted.
+            key(Phase::Recovery, 0.12, HOOK_DONE, UPPER | LEGS, 8.0, SMOOTH),
         ],
     )
 }
@@ -318,9 +352,9 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
                 key(
                     Phase::Active,
                     0.0,
-                    Pose { lift: vec3(0.0, -0.13, 0.16), chest: vec3(0.26, 0.16, 0.0), ..JAB_HIT },
+                    Pose { lift: vec3(0.0, -0.11, 0.1), chest: vec3(0.14, 0.2, 0.0), ..JAB_HIT },
                     UPPER,
-                    2.0,
+                    4.0,
                     SMOOTH,
                 ),
             ],
@@ -330,15 +364,10 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
         return Vec::from(
             [
                 key(Phase::Windup, 0.5, CROSS_COCK, UPPER, 4.0, SNAP),
-                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 3.0, SMOOTH),
-                by(
-                    Phase::Recovery,
-                    0.2,
-                    Pose { lift: vec3(0.0, -0.05, 0.08), chest: vec3(0.15, -0.1, 0.0), ..NONE },
-                    TRUNK,
-                    8.0,
-                    SMOOTH,
-                ),
+                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 4.0, SMOOTH),
+                // Overcommitted, held: still leaning through, the feet planted (the capture's
+                // knee lift, held, read as a flamingo).
+                key(Phase::Recovery, 0.15, CROSS_HIT, UPPER | LEGS, 8.0, SMOOTH),
             ],
         )
     }
@@ -347,9 +376,10 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
             [
                 key(Phase::Windup, 0.25, HAY_LIFT, UPPER, 0.0, SMOOTH),
                 // The delay: cocked at its limit and held there, then the snap down.
-                key(Phase::Windup, 0.5, HAY_COCKED, UPPER, 22.0, SNAP),
-                key(Phase::Active, 0.0, HAY_DOWN, UPPER, 5.0, SMOOTH),
-                key(Phase::Recovery, 0.25, HAY_DOWN, TRUNK | HEAD, 10.0, SMOOTH),
+                // (As written: the hook's performer leans to the side, which bowed these poses.)
+                Key { rebase: false, ..key(Phase::Windup, 0.5, HAY_HOLD, UPPER, 22.0, SNAP) },
+                Key { rebase: false, ..key(Phase::Active, 0.0, HAY_HIT, ALL, 5.0, SMOOTH) },
+                Key { rebase: false, ..key(Phase::Recovery, 0.2, HAY_HIT, ALL, 10.0, SMOOTH) },
             ],
         )
     }
@@ -358,6 +388,7 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
             [
                 key(Phase::Windup, 0.55, LUNGE_LOAD, UPPER, 6.0, SNAP),
                 key(Phase::Active, 0.0, LUNGE_HIT, UPPER, 5.0, SMOOTH),
+                key(Phase::Recovery, 0.12, LUNGE_HIT, UPPER | LEGS, 6.0, SMOOTH),
             ],
         )
     }

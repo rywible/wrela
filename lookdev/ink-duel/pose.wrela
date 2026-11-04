@@ -213,9 +213,12 @@ pub fn only(d: Pose, parts: u32) -> Pose {
 
 /// Pose `p` pushed `k` further from `rest` (0, as it is; 0.3, its trunk, head and arms a third
 /// again as far from `rest`): exaggeration (Thomas and Johnston 1981), the captured body's own
-/// departures made bigger. The feet are left where they stand (pushed, a stance outruns the legs).
+/// turns and reaches made bigger. The hips' height and the feet are left as they are: pushed, a
+/// sink became a squat and a stance outran the legs.
 pub fn pushed(p: Pose, rest: Pose, k: f32) -> Pose {
-    plus(p, only(difference(p, rest), UPPER), k)
+    var d = only(difference(p, rest), UPPER)
+    d.lift = vec3(0.0)
+    plus(p, d, k)
 }
 
 /// A pose at a time (s), and how it goes on to the next (`engine::clip`'s eases).
