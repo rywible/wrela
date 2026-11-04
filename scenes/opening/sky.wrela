@@ -1,0 +1,87 @@
+// The sky, painted: a warm horizon under a cool zenith in soft bands, a bank of sculptural cumulus
+// along the horizon in two tones, thin streaks high up, the sun's warmth, and round the cathedral
+// its own light, a halo with rays.
+
+use look::{COOL, Shot, WARM, band, fbm, noise}
+
+/// What the sky shows along a ray: its colour, the line field (a cloud's edge at its zero) and
+/// the line's weight.
+pub struct Seen: Copy {
+    pub c: vec3,
+    pub line: f32,
+    pub weight: f32,
+}
+
+/// The colour of the air toward the horizon, along `d`: what distance fades to.
+pub fn haze(s: Shot, d: vec3, t: f32) -> vec3 {
+    let sunward = max(
+        dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(s.sun.x, 0.0, s.sun.z))),
+        0.0,
+    )
+    mix(vec3(0.62, 0.70, 0.80), vec3(0.98, 0.84, 0.66), sunward * sunward)
+}
+
+/// The cathedral's light along `d`: its halo, and its rays turning slowly.
+pub fn shine(s: Shot, d: vec3) -> vec3 {
+    let a = acos(clamp(dot(d, s.glow), -1.0, 1.0))
+    let halo = exp(-a * 38.0) * 1.6 + exp(-a * 9.0) * 0.35
+    // Rays: by the angle round the glow, as streaks of uneven width.
+    let side = normalize(cross(s.glow, vec3(y: 1.0)))
+    let up = cross(side, s.glow)
+    let q = d - s.glow * dot(d, s.glow)
+    let round = atan2(dot(q, up), dot(q, side))
+    let streak = noise(vec2(round * 7.0, s.held * 0.4)) * noise(vec2(round * 23.0, 3.0))
+    let rays = band(streak, 0.50, 0.03) * exp(-a * 6.5) * 0.30
+    vec3(1.0, 0.86, 0.58) * (halo + rays)
+}
+
+/// The sky along `d` (`clouds`: with its clouds, or the sky alone, as the sea reflects it far off).
+pub fn sky(s: Shot, d: vec3, clouds: bool) -> Seen {
+    let e = max(d.y, 0.0)
+    let az = atan2(d.x, d.z)
+    // The gradient, in soft bands that a brush's wobble breaks.
+    let wob = (noise(vec2(az * 6.0, 1.7)) - 0.5) * 0.025
+    let h = e + wob
+    let stepped = floor(h * 14.0) / 14.0
+    let g = mix(h, stepped, 0.45)
+    let horizon = haze(s, d, 0.0)
+    let zenith = vec3(0.16, 0.34, 0.62)
+    var c = mix(horizon, zenith, pow(smoothstep(0.0, 0.75, g), 0.65))
+    // The sun: a warm wash, and its disc.
+    let sd = dot(d, s.sun)
+    c += WARM * pow(max(sd, 0.0), 24.0) * 0.55
+    if clouds {
+        c += WARM * band(sd, 0.9994, 0.0001) * 6.0
+    }
+    var line = 1.0
+    var weight = 0.0
+    if clouds {
+        // The cumulus bank: its top by the azimuth, billowed by noise, in two tones.
+        let top = 0.035 + 0.13 * pow(fbm(vec2(az * 2.2, 0.0), 4), 2.2) * 2.0
+        let billow = (fbm(vec2(az * 18.0, e * 60.0), 4) - 0.5) * 0.05
+        let dens = top + billow - e
+        let inside = band(dens, 0.0, 0.0015) * band(e, -0.002, 0.002)
+        let lit = band(
+            dens / max(top, 0.01) + (fbm(vec2(az * 9.0, e * 30.0 + 4.0), 3) - 0.5) * 0.7,
+            0.42,
+            0.04,
+        )
+        let toward = max(
+            dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(s.sun.x, 0.0, s.sun.z))),
+            0.0,
+        )
+        let shadow = mix(vec3(0.55, 0.55, 0.70), vec3(0.80, 0.66, 0.66), toward)
+        let bright = mix(vec3(0.98, 0.95, 0.90), vec3(1.0, 0.90, 0.74), toward)
+        let cloud = mix(bright, shadow, lit)
+        c = mix(c, cloud, inside)
+        line = -dens
+        weight = 0.55 * band(e, 0.0, 0.004)
+        // Streaks high up: long and thin, along the wind, faint lines of their own.
+        let uv = vec2(d.x, d.z) / (d.y + 0.08)
+        let st = fbm(vec2(uv.x * 0.9 + uv.y * 0.3, uv.y * 4.5) + vec2(s.time * 0.01, 0.0), 4)
+        let streak = band(st, 0.60, 0.03) * band(e, 0.10, 0.06) * (1.0 - inside)
+        c = mix(c, vec3(0.96, 0.92, 0.88), streak * 0.8)
+    }
+    c += shine(s, d)
+    Seen { c, line, weight }
+}

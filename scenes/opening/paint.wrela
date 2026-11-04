@@ -1,0 +1,232 @@
+// The first pass: each pixel's ray meets the sea, the skiff, the rock and its cathedral, or the
+// sky, and is painted in a few tones (cool shadows, warm light), with what the ink reads beside
+// its colour (`look`'s targets: distance, what it is, the line field and the line's weight, the
+// normal).
+
+use look::{
+    CHURCH, COOL, ISLE, ROCK, SEA, SKIFF, SKY, Shot, WARM, band, fbm, hash2, luma, noise, ray,
+}
+use sea::{height, strokes}
+use sea::normal as sea_normal
+use sky::{Seen, haze, sky}
+use isle::{isle, isle_shade}
+use skiff::{dry, skiff, skiff_shade}
+use std::gpu::{FragCoord, Targets3}
+
+/// What a ray met: how far, what (`look::SKY` …), where, its normal, and the line field there.
+pub struct Hit: Copy {
+    pub t: f32,
+    pub id: f32,
+    pub at: vec3,
+}
+
+/// Where the ray from `o` along `d` meets the sea (`d` going down), its far end `far` if it
+/// doesn't.
+fn trace_sea(s: Shot, o: vec3, d: vec3, far: f32) -> f32 {
+    if d.y >= -0.0005 {
+        return far
+    }
+    // From the plane a little over the crests, down to the surface by the height's differences.
+    var t = (o.y - 0.9) / -d.y
+    if t > far {
+        return far
+    }
+    for _ in 0..10 {
+        let p = o + d * t
+        let detail = clamp(1.0 - t / 260.0, 0.0, 1.0)
+        let f = p.y - height(vec2(p.x, p.z), s.held, detail)
+        t += f / max(-d.y, 0.02) * 0.6
+    }
+    min(t, far)
+}
+
+/// A march of `field` from `lo` to `hi`: the distance where it meets it, or `hi`.
+fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 80 && t < hi {
+        let h = skiff(s, o + d * t)
+        if h < 0.002 {
+            hit = t
+            t = hi
+        } else {
+            t += h * 0.8
+        }
+        i += 1
+    }
+    hit
+}
+
+fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 140 && t < hi {
+        let h = isle(o + d * t).x
+        if h < t * 0.0006 {
+            hit = t
+            t = hi
+        } else {
+            t += h * 0.85
+        }
+        i += 1
+    }
+    hit
+}
+
+/// Where a ray from `o` along `d` meets a sphere at `c` of radius `r`: its near and far
+/// distances, or (far, far) if it misses.
+fn sphere(o: vec3, d: vec3, c: vec3, r: f32, far: f32) -> vec2 {
+    let oc = o - c
+    let b = dot(oc, d)
+    let k = dot(oc, oc) - r * r
+    let h = b * b - k
+    if h < 0.0 {
+        return vec2(far)
+    }
+    let q = sqrt(h)
+    vec2(max(-b - q, 0.0), -b + q)
+}
+
+/// The sea at `p`, seen along `d` from `t` away: its colour, line field, weight and normal.
+fn sea_shade(s: Shot, p: vec3, d: vec3, t: f32) -> (vec3, f32, f32, vec3, f32) {
+    let detail = clamp(1.0 - t / 160.0, 0.0, 1.0)
+    let e = max(0.06, t * 0.012)
+    let xz = vec2(p.x, p.z)
+    // Far off, the sea's normal settles toward the vertical: a painter's flat sheet of light
+    // there, not the swell's aliasing.
+    let n = normalize(
+        mix(sea_normal(xz, s.held, detail, e), vec3(y: 1.0), clamp(t / 700.0, 0.0, 0.85)),
+    )
+    let h = height(xz, s.held, detail)
+    // The body: three tones, by how the face turns to the sun and how high on the swell it is.
+    let far_fade = clamp(t / 500.0, 0.0, 1.0)
+    let facing = mix(dot(n, s.sun) * 0.5 + 0.5 + h * 0.25, 0.62, far_fade)
+    let deep = vec3(0.030, 0.10, 0.16)
+    let mid = vec3(0.045, 0.20, 0.27)
+    let light = vec3(0.20, 0.45, 0.48)
+    var body = mix(deep, mid, band(facing, 0.56, 0.03))
+    body = mix(body, light, band(facing, 0.74, 0.02) * detail)
+    // What it reflects: the sky, more of it at a slant, and the light's path toward the sun and the
+    // cathedral, broken into flecks.
+    var r = d - 2.0 * dot(d, n) * n
+    r.y = abs(r.y)
+    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, -d), 0.0), 5.0)
+    let seen = sky(s, r, false)
+    // The reflection in two tones, not a mirror's gradient: painted water.
+    let f2 = band(fres, 0.22, 0.04) * 0.55 + band(fres, 0.55, 0.05) * 0.35
+    let reflected = min(seen.c, vec3(1.2))
+    let smooth = clamp(t / 110.0, 0.0, 1.0)
+    var c = mix(body, reflected, mix(f2, fres, smooth) * 0.95)
+    // Far off, long horizontal strokes of light and shade, as a brush lays a distant sea.
+    let stroke = noise(vec2(xz.x * 0.012, xz.y * 0.09)) * 0.6 +
+        noise(vec2(xz.x * 0.03, xz.y * 0.25)) * 0.4
+    c *= mix(1.0, 0.86 + 0.28 * band(stroke, 0.5, 0.08), smooth * 0.8)
+    let sun_path = dot(r, s.sun)
+    let fleck = band(sun_path, 0.9992, 0.0002) *
+        band(noise(xz * vec2(4.0, 1.5) + vec2(s.held * 3.0)), 0.62, 0.03)
+    let glow_path = dot(
+        normalize(vec3(r.x, r.y * 0.35, r.z)),
+        normalize(vec3(s.glow.x, s.glow.y * 0.35, s.glow.z)),
+    )
+    let gleam = band(glow_path, 0.9993, 0.0002) * band(noise(xz * vec2(0.6, 0.15)), 0.62, 0.05)
+    c += WARM * 3.0 * fleck + vec3(1.0, 0.86, 0.55) * 1.4 * gleam
+    // Foam where the sea meets the skiff, and the bow's cut: where its lines fray, more when it
+    // slaps down.
+    let near = skiff(s, p)
+    let foam = band(-near, -0.05 - 0.07 * noise(xz * 4.0 + vec2(s.held * 3.0)), 0.015)
+    c = mix(c, vec3(0.88, 0.92, 0.90), foam)
+    let bow = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
+    let cut = exp(-max(near, 0.0) / (0.18 + 0.25 * s.slap)) * (0.15 + 0.25 * bow + 0.45 * s.slap)
+    // The crests: a line where the sea stands highest, broken where the noise falls.
+    // The crests: ink strokes painted on the near sea, a pixel's footprint and more wide.
+    let footprint = t * 2.0 / (s.resolution.y * s.focal)
+    let crest_ink = strokes(xz, s.held, footprint, d, h) * clamp(1.0 - t / 90.0, 0.0, 1.0)
+    c = mix(c, vec3(0.62, 0.80, 0.80), crest_ink.y * 0.55 * clamp(1.0 - t / 45.0, 0.0, 1.0))
+    c = mix(c, vec3(0.03, 0.06, 0.10), crest_ink.x * 0.85)
+    // The foam's edge is the line field's zero.
+    let line = 0.5 - foam
+    let a = haze(s, d, t)
+    c = mix(c, a, clamp(t / 2600.0, 0.0, 1.0) * 0.85)
+    (c, line, detail * 0.85 + foam, n, cut)
+}
+
+@fragment
+pub fn paint(pixel: FragCoord, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let px = pixel.position.xy
+    let d = ray(s, px)
+    let o = s.eye
+    let far = 1.0e5
+    var t = far
+    var id = SKY
+    let ts = trace_sea(s, o, d, far)
+    if ts < far {
+        t = ts
+        id = SEA
+    }
+    let bs = sphere(o, d, s.boat + s.boat_y * 0.3, 3.2, far)
+    // The sea inside the skiff isn't there: the ray goes on to the hull.
+    if id == SEA && dry(s, o + d * t) {
+        t = far
+        id = SKY
+    }
+    if bs.x < t {
+        let tb = march_skiff(s, o, d, bs.x, min(bs.y, t))
+        if tb < min(bs.y, t) {
+            t = tb
+            id = SKIFF
+        }
+    }
+    let is = sphere(o, d, ISLE + vec3(0.0, -60.0, 0.0), 285.0, far)
+    if is.x < t {
+        let ti = march_isle(o, d, is.x, min(is.y, t))
+        if ti < min(is.y, t) {
+            t = ti
+            let what = isle(o + d * ti).y
+            id = what
+        }
+    }
+    var c = vec3(0.0)
+    var line = 1.0
+    var weight = 0.0
+    var n = vec3(y: 1.0)
+    // How kinetic this pixel is beyond the frame's own (`Shot::kinetic`): where the ink frays.
+    var energy = 0.0
+    if id == SKY {
+        let seen = sky(s, d, true)
+        c = seen.c
+        line = seen.line
+        weight = seen.weight
+        n = -d
+    } else if id == SEA {
+        let p = o + d * t
+        let (sc, sl, sw, sn, se) = sea_shade(s, p, d, t)
+        energy = se
+        c = sc
+        line = sl
+        weight = sw
+        n = sn
+    } else if id == SKIFF {
+        let p = o + d * t
+        let (kc, kl, kn) = skiff_shade(s, p, d)
+        c = kc
+        energy = s.slap * 0.35
+        line = kl
+        weight = 1.0
+        n = kn
+    } else {
+        let p = o + d * t
+        let (ic, il, iw, inn) = isle_shade(s, p, d, t, id)
+        c = ic
+        line = il
+        weight = iw
+        n = inn
+    }
+    Targets3 {
+        first: vec4(c, 1.0),
+        second: vec4(log2(max(t, 0.01)), id, line, weight),
+        third: vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)),
+    }
+}

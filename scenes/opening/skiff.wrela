@@ -1,0 +1,111 @@
+// The skiff: a small open boat of planks, its two thwarts, and an oar shipped across it, where the
+// sea holds it (`Shot::boat` and its axes).
+
+use look::{COOL, Shot, WARM, band, noise}
+
+fn sd_box(p: vec3, b: vec3) -> f32 {
+    let q = abs(p) - b
+    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+}
+
+fn sd_capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)
+    length(pa - ba * h) - r
+}
+
+/// The half-length of the hull (m), its beam's half and its depth.
+const LONG: f32 = 2.2
+const BEAM: f32 = 0.62
+const DEEP: f32 = 0.42
+
+/// `p` (the world's) in the skiff's frame: across, up, along.
+pub fn local(s: Shot, p: vec3) -> vec3 {
+    let r = p - s.boat
+    vec3(dot(r, s.boat_x), dot(r, s.boat_y), dot(r, s.boat_z))
+}
+
+/// The hull as a solid, from its gunwale's middle (`q`, the skiff's frame): what keeps the sea
+/// out of it.
+fn hull_solid(q: vec3) -> f32 {
+    let z = clamp(q.z / LONG, -1.0, 1.0)
+    let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
+    let w = max(BEAM * taper, 0.03)
+    let sheer = 0.16 * z * z + 0.05 * max(z, 0.0)
+    let y = q.y - sheer
+    let e = length(vec2(q.x / w, y / DEEP))
+    max((e - 1.0) * min(w, DEEP), abs(q.z) - LONG)
+}
+
+/// Whether the sea at `p` (the world's) lies inside the skiff, where it isn't drawn.
+pub fn dry(s: Shot, p: vec3) -> bool {
+    let q = local(s, p)
+    hull_solid(q) < -0.01 && q.y < 0.2
+}
+
+/// The hull's shell, from its gunwale's middle (`q`, the skiff's frame).
+fn hull(q: vec3) -> f32 {
+    let z = clamp(q.z / LONG, -1.0, 1.0)
+    // Pointed at the bow (+z), fuller at the stern; the sheer rising to both.
+    let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
+    let w = max(BEAM * taper, 0.03)
+    let sheer = 0.16 * z * z + 0.05 * max(z, 0.0)
+    let y = q.y - sheer
+    let e = length(vec2(q.x / w, y / DEEP))
+    var d = (e - 1.0) * min(w, DEEP)
+    d = max(d, abs(q.z) - LONG)
+    // A shell of planks 3 cm thick, open above its sheer.
+    d = abs(d + 0.02) - 0.025
+    max(d, y)
+}
+
+/// The skiff at `p` (the world's): its distance.
+pub fn skiff(s: Shot, p: vec3) -> f32 {
+    let q = local(s, p)
+    var d = hull(q)
+    // Two thwarts and the stern's seat.
+    d = min(d, sd_box(q - vec3(0.0, -0.10, 0.45), vec3(0.52, 0.025, 0.11)))
+    d = min(d, sd_box(q - vec3(0.0, -0.12, -0.75), vec3(0.58, 0.025, 0.12)))
+    d = min(d, sd_box(q - vec3(0.0, -0.05, -1.75), vec3(0.32, 0.025, 0.25)))
+    // The oar, shipped: its loom across the gunwales, its blade over the side.
+    d = min(d, sd_capsule(q, vec3(-0.30, 0.05, -0.10), vec3(1.45, -0.05, 1.10), 0.028))
+    let blade = q - vec3(1.62, -0.08, 1.24)
+    d = min(
+        d,
+        sd_box(
+            vec3(blade.x * 0.83 - blade.z * 0.56, blade.y, blade.x * 0.56 + blade.z * 0.83),
+            vec3(0.08, 0.012, 0.26),
+        ),
+    )
+    d
+}
+
+fn skiff_normal(s: Shot, p: vec3) -> vec3 {
+    let e = 0.004
+    let dx = skiff(s, p + vec3(e, 0.0, 0.0)) - skiff(s, p - vec3(e, 0.0, 0.0))
+    let dy = skiff(s, p + vec3(0.0, e, 0.0)) - skiff(s, p - vec3(0.0, e, 0.0))
+    let dz = skiff(s, p + vec3(0.0, 0.0, e)) - skiff(s, p - vec3(0.0, 0.0, e))
+    normalize(vec3(dx, dy, dz))
+}
+
+/// The skiff at `p`, seen along `d`: its colour, its line field (the planks' seams), its normal.
+pub fn skiff_shade(s: Shot, p: vec3, d: vec3) -> (vec3, f32, vec3) {
+    let n = skiff_normal(s, p)
+    let q = local(s, p)
+    let ndl = dot(n, s.sun)
+    // Weathered wood, three tones; the inside of the hull a shade deeper.
+    let dark = vec3(0.10, 0.07, 0.10)
+    let mid = vec3(0.36, 0.20, 0.12)
+    let lit = vec3(0.80, 0.52, 0.30)
+    var c = mix(dark, mid, band(ndl, -0.25, 0.04))
+    c = mix(c, lit, band(ndl, 0.30, 0.03))
+    // The paint's band under the gunwale, faded.
+    let strake = band(q.y, -0.13, 0.01) * (1.0 - band(dot(n, s.boat_y), 0.6, 0.1))
+    c = mix(c, c * vec3(0.45, 0.75, 1.05) + vec3(0.02, 0.06, 0.1), strake * 0.8)
+    // The sky's cool in its turned-away faces, the light's warmth bounced from the sea.
+    c += COOL * 0.10 * max(n.y, 0.0) + WARM * 0.05 * max(-n.y, 0.0)
+    // The planks' seams.
+    let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
+    (c, seam, n)
+}
