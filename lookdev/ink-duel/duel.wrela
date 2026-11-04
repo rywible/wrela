@@ -29,7 +29,8 @@ pub const NEVER: u32 = 4294967295
 /// The wanderer's rules: quick on its feet, its stamina what limits it.
 pub const YOU = Rules { walk: 2.7, turn: 10.0 }
 
-/// The brawler's: twice and more the health, slower to turn, its posture settling slowly.
+/// The brawler's: twice and more the health, slower to turn, its posture settling slowly; and only a
+/// riposte kills it (`deathblow`: the fight always ends on the uppercut).
 pub const FOE = Rules {
     health: 260.0,
     walk: 1.6,
@@ -38,6 +39,7 @@ pub const FOE = Rules {
     settle_after: 150,
     broken: 130,
     riposte_m: 1.9,
+    deathblow: true,
 }
 
 /// How far the arena's flat floor reaches (m from its middle): neither fighter goes past it.
