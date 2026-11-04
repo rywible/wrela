@@ -1,0 +1,27 @@
+The motion capture files in this directory (*.asf, *.amc) are from the CMU Graphics Lab Motion
+Capture Database, http://mocap.cs.cmu.edu/. They are NOT covered by this repository's MIT
+licence.
+
+The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with
+funding from NSF EIA-0196217.
+
+CMU's terms, as published on mocap.cs.cmu.edu (read 2026-11-04):
+
+- "This dataset of motions is free for all uses."
+- "This data is free for use in research projects. You may include this data in commercially-sold
+  products, but you may not resell this data directly, even in converted form."
+- FAQ, "How can I use this data?": "The motion capture data may be copied, modified, or
+  redistributed without permission."
+
+So: the games may ship these motions, and this repository may redistribute the files, but nobody
+may sell the data itself, as these files or converted from them.
+
+What's here, each trimmed from the database's trial (its first line says which frames, halved
+from 120 to 60 a second and renumbered from 1):
+
+  14.asf, 14_01-jab-cross.amc, 14_01-guard.amc, 14_01-duck.amc, 14_01-lunge.amc
+      subject 14 (various everyday behaviors), trial 1: boxing
+  13.asf, 13_17-hook.amc
+      subject 13 (various everyday behaviors), trial 17: boxing
+  90.asf, 90_18-fall-back.amc, 90_16-fall-face.amc
+      subject 90 (cartwheels; acrobatics; dances), trials 18 (RugPullFall) and 16 (fall on face)

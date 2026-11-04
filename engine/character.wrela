@@ -743,6 +743,14 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         copy(from: self.palette.items(), to: self.from.items_mut())
     }
 
+    /// A new drawing begins, its smear reaching back to `bones` (a palette): the drawing before,
+    /// but posed where the body is now, so the smear draws how the limbs moved and not how far
+    /// the whole body travelled (a dash's smear would otherwise drag the whole figure out
+    /// behind it).
+    pub fn new_drawing_from(mut self, bones: [mat4; creature::MAX_BONES]) {
+        write(mut self.from, 0, bones)
+    }
+
     /// Its smear this frame (`Smear`; none by default).
     pub fn smear_by(mut self, s: Smear) {
         self.smear = s

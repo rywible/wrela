@@ -1,0 +1,6 @@
+# Motion capture the games retarget to their bodies: clips from the CMU Graphics Lab Motion
+# Capture Database (mocap.cs.cmu.edu), each trimmed to what's used, in the Acclaim formats
+# (`.asf` skeletons, `.amc` motions) that `engine::mocap` reads. The data is CMU's, under its own
+# terms, not this repository's MIT licence: see cmu/LICENSE.txt.
+[package]
+name = "mocap"

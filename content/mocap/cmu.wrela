@@ -1,0 +1,20 @@
+// The CMU clips (mocap.cs.cmu.edu; under CMU's terms, not this repository's MIT licence:
+// cmu/LICENSE.txt), as the bytes of their files: each trimmed to what the duel plays, at 60
+// frames a second.
+
+/// Subject 14's skeleton, and its boxing: a jab and a cross, a guard (a second of it, bouncing),
+/// a duck, a lunging cross.
+pub const BOXER = embed("cmu/14.asf")
+pub const JAB_CROSS = embed("cmu/14_01-jab-cross.amc")
+pub const GUARD = embed("cmu/14_01-guard.amc")
+pub const DUCK = embed("cmu/14_01-duck.amc")
+pub const LUNGE = embed("cmu/14_01-lunge.amc")
+
+/// Subject 13's skeleton, and a rear hook from its boxing.
+pub const HOOKER = embed("cmu/13.asf")
+pub const HOOK = embed("cmu/13_17-hook.amc")
+
+/// Subject 90's skeleton, and its falls: pulled over backwards, and onto the face.
+pub const FALLER = embed("cmu/90.asf")
+pub const FALL_BACK = embed("cmu/90_18-fall-back.amc")
+pub const FALL_FACE = embed("cmu/90_16-fall-face.amc")

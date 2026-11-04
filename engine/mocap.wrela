@@ -1,0 +1,492 @@
+// Motion capture in the Acclaim formats (an `.asf` skeleton and an `.amc` motion, as the CMU
+// Graphics Lab Motion Capture Database publishes them): read, and played through the skeleton's
+// forward kinematics, so each frame gives every bone's start in the world and its turn.
+//
+// What it gives is the capture's own: its coordinates (y up, metres), its skeleton, its frame
+// rate. A game retargets it to its own bodies (the duel's: lookdev/ink-duel/retarget.wrela).
+//
+// The skeleton (`.asf`): each bone's direction and length at rest, its axis (the frame its
+// rotations are written in: three angles and their order) and its degrees of freedom; and the
+// hierarchy. A motion (`.amc`): a frame number, then each bone's values for its degrees of
+// freedom (the root's translation, then rotations; every rotation in degrees). A bone's turn is
+// its parent's, then `C · M · C⁻¹`, where `C` is its axis and `M` its rotations (x, then y, then
+// z); its end is its start plus its turn applied to its rest direction times its length.
+//
+// Acclaim's format as the CMU database documents it (mocap.cs.cmu.edu, "Info" and "Tools").
+
+/// A name as a number, for finding a bone by it: the 32-bit FNV-1a hash of its bytes.
+pub fn id(name: str) -> u32 {
+    var h: u32 = 2166136261
+    for i in 0..name.len() {
+        h = (h ^ u32(name.byte(i))).wrapping_mul(16777619)
+    }
+    h
+}
+
+/// The same hash of bytes `b[from..to]`.
+fn id_of(b: [u8], from: u32, to: u32) -> u32 {
+    var h: u32 = 2166136261
+    for i in from..to {
+        h = (h ^ u32(b[i])).wrapping_mul(16777619)
+    }
+    h
+}
+
+/// `m` transposed (a turn's inverse).
+fn transposed(m: mat3) -> mat3 {
+    mat3(
+        vec3(m[0].x, m[1].x, m[2].x),
+        vec3(m[0].y, m[1].y, m[2].y),
+        vec3(m[0].z, m[1].z, m[2].z),
+    )
+}
+
+/// A turn of `deg` degrees about axis `a` (0 x, 1 y, 2 z), as a matrix.
+fn about(a: u32, deg: f32) -> mat3 {
+    let r = deg * 0.017453292
+    let c = cos(r)
+    let s = sin(r)
+    if a == 0 {
+        return mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, c, s), vec3(0.0, -s, c))
+    }
+    if a == 1 {
+        return mat3(vec3(c, 0.0, -s), vec3(0.0, 1.0, 0.0), vec3(s, 0.0, c))
+    }
+    mat3(vec3(c, s, 0.0), vec3(-s, c, 0.0), vec3(0.0, 0.0, 1.0))
+}
+
+/// A bone of a capture's skeleton: its name's hash, its parent (its index; none for the root),
+/// its rest direction and length (metres), its axis `C` and its inverse, and which rotation each
+/// of its degrees of freedom is (0 x, 1 y, 2 z; 3 a translation's x, 4 y, 5 z), how many it has.
+pub struct Bone: Copy {
+    pub id: u32,
+    pub parent: i32,
+    pub dir: vec3,
+    pub len: f32,
+    pub c: mat3,
+    pub ci: mat3,
+    pub dof: [u32; 6],
+    pub dofs: u32,
+}
+
+/// A capture's skeleton: its bones, the root first.
+pub struct Rig: Clone {
+    pub bones: Vec<Bone>,
+}
+
+impl Rig {
+    /// The index of the bone named `name`, if it has one (`id`).
+    pub fn find(self, name: str) -> Option<u32> {
+        let h = id(name)
+        for i in 0..self.bones.len() {
+            if self.bones[i].id == h {
+                return Some(i)
+            }
+        }
+        None
+    }
+}
+
+/// A frame of a capture, played through its rig: each bone's start (the world, metres) and its
+/// turn, by bone; and its end.
+pub struct Posed: Clone {
+    pub start: Vec<vec3>,
+    pub end: Vec<vec3>,
+    pub turn: Vec<mat3>,
+}
+
+/// The lines of `b`: each one's first byte and the byte past its last.
+fn lines_of(b: [u8]) -> Vec<(u32, u32)> {
+    var out: Vec<(u32, u32)> = Vec::new()
+    var from: u32 = 0
+    for i in 0..b.len() {
+        if b[i] == 10 {
+            out.push((from, i))
+            from = i + 1
+        }
+    }
+    if from < b.len() {
+        out.push((from, b.len()))
+    }
+    out
+}
+
+/// The words of `b[from..to]`, split at spaces, tabs and carriage returns.
+fn words_of(b: [u8], from: u32, to: u32) -> Vec<(u32, u32)> {
+    var out: Vec<(u32, u32)> = Vec::new()
+    var start: i32 = -1
+    for i in from..to {
+        let c = b[i]
+        let space = c == 32 || c == 9 || c == 13
+        if space {
+            if start >= 0 {
+                out.push((u32(start), i))
+                start = -1
+            }
+        } else if start < 0 {
+            start = i32(i)
+        }
+    }
+    if start >= 0 {
+        out.push((u32(start), to))
+    }
+    out
+}
+
+/// The number written in `b[from..to]` (a sign, digits, a point and digits, an exponent).
+pub fn number(b: [u8], from: u32, to: u32) -> f32 {
+    var i = from
+    var neg = false
+    if i < to && (b[i] == 45 || b[i] == 43) {
+        neg = b[i] == 45
+        i += 1
+    }
+    var v: f64 = 0.0
+    while i < to && b[i] >= 48 && b[i] <= 57 {
+        v = v * 10.0 + f64(b[i] - 48)
+        i += 1
+    }
+    if i < to && b[i] == 46 {
+        i += 1
+        var scale: f64 = 0.1
+        while i < to && b[i] >= 48 && b[i] <= 57 {
+            v += f64(b[i] - 48) * scale
+            scale *= 0.1
+            i += 1
+        }
+    }
+    if i < to && (b[i] == 101 || b[i] == 69) {
+        i += 1
+        var eneg = false
+        if i < to && (b[i] == 45 || b[i] == 43) {
+            eneg = b[i] == 45
+            i += 1
+        }
+        var e: i32 = 0
+        while i < to && b[i] >= 48 && b[i] <= 57 {
+            e = e * 10 + i32(b[i] - 48)
+            i += 1
+        }
+        var p: f64 = 1.0
+        for _ in 0..u32(e) {
+            p *= 10.0
+        }
+        v = if eneg { v / p } else { v * p }
+    }
+    f32(if neg { -v } else { v })
+}
+
+/// Whether `b[from..to]` is the text `s`.
+fn is(b: [u8], from: u32, to: u32, s: str) -> bool {
+    if to - from != s.len() {
+        return false
+    }
+    for i in 0..s.len() {
+        if b[from + i] != s.byte(i) {
+            return false
+        }
+    }
+    true
+}
+
+/// A degree of freedom's name (`rx`, `ty`, ...) as `Bone::dof` numbers it.
+fn dof_of(b: [u8], from: u32, to: u32) -> u32 {
+    // (Upper or lower case: the root's `order` is written `TX`, a bone's `dof` `rx`.)
+    let axis = u32(b[from + 1] | 32) - 120
+    if (b[from] | 32) == 116 { axis + 3 } else { axis }
+}
+
+/// The skeleton an `.asf` file `b` describes, its lengths in metres (its `:units length` is the
+/// inverse of inches: each length / units × 2.54 cm).
+pub fn read_rig(b: [u8]) -> Rig {
+    let lines = lines_of(b)
+    var unit: f32 = 1.0
+    var bones: Vec<Bone> = Vec::new()
+    let identity = mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
+    // The root: a translation and three rotations, in its order.
+    bones.push(
+        Bone {
+            id: id("root"),
+            parent: -1,
+            dir: vec3(0.0),
+            len: 0.0,
+            c: identity,
+            ci: identity,
+            dof: [3, 4, 5, 0, 1, 2],
+            dofs: 6,
+        },
+    )
+    var section: u32 = 0
+    var cur = bones[0]
+    var names: Vec<u32> = Vec::new()
+    names.push(id("root"))
+    for (from, to) in lines {
+        let w = words_of(b, from, to)
+        if w.is_empty() {
+            continue
+        }
+        let (a0, a1) = w[0]
+        if b[a0] == 58 {
+            section = if is(b, a0, a1, ":units") { 1 } else if is(b, a0, a1, ":root") {
+                2
+            } else if is(b, a0, a1, ":bonedata") {
+                3
+            } else if is(b, a0, a1, ":hierarchy") { 4 } else { 0 }
+            continue
+        }
+        if section == 1 && is(b, a0, a1, "length") && w.len() > 1 {
+            unit = 2.54 / 100.0 / number(b, w[1].0, w[1].1)
+        }
+        if section == 2 && is(b, a0, a1, "order") {
+            for k in 1..w.len() {
+                bones[0].dof[k - 1] = dof_of(b, w[k].0, w[k].1)
+            }
+        }
+        if section == 3 {
+            if is(b, a0, a1, "begin") {
+                cur = Bone {
+                    id: 0,
+                    parent: 0,
+                    dir: vec3(0.0),
+                    len: 0.0,
+                    c: identity,
+                    ci: identity,
+                    dof: [0; 6],
+                    dofs: 0,
+                }
+            } else if is(b, a0, a1, "name") {
+                cur.id = id_of(b, w[1].0, w[1].1)
+            } else if is(b, a0, a1, "direction") {
+                cur.dir = vec3(
+                    number(b, w[1].0, w[1].1),
+                    number(b, w[2].0, w[2].1),
+                    number(b, w[3].0, w[3].1),
+                )
+            } else if is(b, a0, a1, "length") {
+                cur.len = number(b, w[1].0, w[1].1) * unit
+            } else if is(b, a0, a1, "axis") && w.len() >= 5 {
+                // Its angles, applied in the order written (`XYZ`: x first).
+                let (o0, _) = w[4]
+                var m = identity
+                for k in 0..3 {
+                    let ax = u32(b[o0 + k] | 32) - 120
+                    m = about(ax, number(b, w[1 + ax].0, w[1 + ax].1)) * m
+                }
+                cur.c = m
+                cur.ci = transposed(m)
+            } else if is(b, a0, a1, "dof") {
+                for k in 1..w.len() {
+                    cur.dof[k - 1] = dof_of(b, w[k].0, w[k].1)
+                }
+                cur.dofs = w.len() - 1
+            } else if is(b, a0, a1, "end") {
+                bones.push(cur)
+                names.push(cur.id)
+            }
+        }
+        if section == 4 && !is(b, a0, a1, "begin") && !is(b, a0, a1, "end") {
+            let p = id_of(b, a0, a1)
+            var pi: i32 = -1
+            for i in 0..names.len() {
+                if names[i] == p {
+                    pi = i32(i)
+                }
+            }
+            for k in 1..w.len() {
+                let c = id_of(b, w[k].0, w[k].1)
+                for i in 0..names.len() {
+                    if names[i] == c {
+                        bones[i].parent = pi
+                    }
+                }
+            }
+        }
+    }
+    Rig { bones }
+}
+
+/// Each frame of the `.amc` motion `b` for rig `r`, every `every`th (from the first), as the
+/// values of each bone's degrees of freedom (by bone; the frame's values in the order the rig
+/// gives them).
+pub fn read_motion(r: Rig, b: [u8], every: u32 = 1) -> Vec<Vec<f32>> {
+    let n = r.bones.len()
+    var frames: Vec<Vec<f32>> = Vec::new()
+    var cur: Vec<f32> = Vec::new()
+    var keep = false
+    var count: u32 = 0
+    for (from, to) in lines_of(b) {
+        let w = words_of(b, from, to)
+        if w.is_empty() {
+            continue
+        }
+        let (a0, a1) = w[0]
+        if b[a0] == 35 || b[a0] == 58 {
+            continue
+        }
+        if w.len() == 1 && b[a0] >= 48 && b[a0] <= 57 {
+            if keep {
+                frames.push(take cur)
+            }
+            keep = count % every == 0
+            count += 1
+            cur = Vec::from_fn(n * 6, |_| 0.0)
+            continue
+        }
+        if !keep {
+            continue
+        }
+        let h = id_of(b, a0, a1)
+        for i in 0..n {
+            if r.bones[i].id == h {
+                for k in 1..w.len() {
+                    if k <= 6 {
+                        cur[i * 6 + k - 1] = number(b, w[k].0, w[k].1)
+                    }
+                }
+            }
+        }
+    }
+    if keep {
+        frames.push(take cur)
+    }
+    frames
+}
+
+/// Frame `values` of rig `r` played through its forward kinematics (`read_motion`'s, its
+/// translation in the file's units, scaled to metres by `unit`).
+pub fn posed(r: Rig, values: [f32], unit: f32) -> Posed {
+    let n = r.bones.len()
+    let identity = mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
+    var start = Vec::from_fn(n, |_| vec3(0.0))
+    var end = Vec::from_fn(n, |_| vec3(0.0))
+    var turn = Vec::from_fn(n, |_| identity)
+    // Bones are listed after their parents in an `.asf`, the root first: one pass does.
+    for i in 0..n {
+        let bone = r.bones[i]
+        var t = vec3(0.0)
+        var deg = vec3(0.0)
+        for k in 0..bone.dofs {
+            let v = values[i * 6 + k]
+            let d = bone.dof[k]
+            if d < 3 {
+                deg[d] = v
+            } else {
+                t[d - 3] = v
+            }
+        }
+        let m = about(2, deg.z) * about(1, deg.y) * about(0, deg.x)
+        if bone.parent < 0 {
+            turn[i] = bone.c * m * bone.ci
+            start[i] = t * unit
+            end[i] = start[i]
+        } else {
+            let p = u32(bone.parent)
+            turn[i] = turn[p] * bone.c * m * bone.ci
+            start[i] = end[p]
+            end[i] = start[i] + turn[i] * (bone.dir * bone.len)
+        }
+    }
+    Posed { start, end, turn }
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A two-bone skeleton: the root, `upper` (up, three rotations), `lower` (along x from its end,
+/// its axis turned 90° about z, one rotation).
+fn asf() -> String {
+    var s = String::new()
+    s.push_str(":version 1.10\n")
+    s.push_str(":name VICON\n")
+    s.push_str(":units\n")
+    s.push_str("  mass 1.0\n")
+    s.push_str("  length 0.45\n")
+    s.push_str("  angle deg\n")
+    s.push_str(":root\n")
+    s.push_str("   order TX TY TZ RX RY RZ\n")
+    s.push_str("   axis XYZ\n")
+    s.push_str("   position 0 0 0\n")
+    s.push_str("   orientation 0 0 0\n")
+    s.push_str(":bonedata\n")
+    s.push_str("  begin\n")
+    s.push_str("     id 1\n")
+    s.push_str("     name upper\n")
+    s.push_str("     direction 0 1 0\n")
+    s.push_str("     length 4.5\n")
+    s.push_str("     axis 0 0 0 XYZ\n")
+    s.push_str("    dof rx ry rz\n")
+    s.push_str("  end\n")
+    s.push_str("  begin\n")
+    s.push_str("     id 2\n")
+    s.push_str("     name lower\n")
+    s.push_str("     direction 1 0 0\n")
+    s.push_str("     length 9\n")
+    s.push_str("     axis 0 0 90 XYZ\n")
+    s.push_str("    dof rx\n")
+    s.push_str("  end\n")
+    s.push_str(":hierarchy\n")
+    s.push_str("  begin\n")
+    s.push_str("    root upper\n")
+    s.push_str("    upper lower\n")
+    s.push_str("  end\n")
+    s
+}
+
+/// Its two frames.
+fn amc() -> String {
+    var s = String::new()
+    s.push_str(":FULLY-SPECIFIED\n")
+    s.push_str(":DEGREES\n")
+    s.push_str("1\n")
+    s.push_str("root 0 9 0 0 0 0\n")
+    s.push_str("upper 0 0 90\n")
+    s.push_str("lower 0\n")
+    s.push_str("2\n")
+    s.push_str("root 4.5 9 0 0 90 0\n")
+    s.push_str("upper 0 0 0\n")
+    s.push_str("lower 90\n")
+    s
+}
+
+/// A two-bone rig reads and plays: lengths in metres, the hierarchy, a root turn and a bone's
+/// axis.
+@test
+fn a_capture_reads_and_plays_through_its_rig() {
+    let asf_text = asf()
+    let amc_text = amc()
+    let rig = read_rig(asf_text.as_bytes())
+    assert(rig.bones.len() == 3, f"three bones: {rig.bones.len()}")
+    let upper = rig.find("upper").unwrap()
+    let lower = rig.find("lower").unwrap()
+    assert(rig.bones[lower].parent == i32(upper) && rig.bones[upper].parent == 0)
+    let unit = 2.54 / 100.0 / 0.45
+    assert(abs(rig.bones[upper].len - 4.5 * unit) < 1.0e-4, "lengths in metres")
+    let frames = read_motion(rig, amc_text.as_bytes())
+    assert(frames.len() == 2, f"two frames: {frames.len()}")
+    // Frame 1: the root at 9 units up, `upper` turned 90° about z (its +y end tipped to -x).
+    let a = posed(rig, frames[0], unit)
+    assert(abs(a.start[0].y - 9.0 * unit) < 1.0e-4, "the root's translation, in metres")
+    assert(
+        abs(a.end[upper].x + 4.5 * unit) < 1.0e-3 && abs(a.end[upper].y - 9.0 * unit) < 1.0e-3,
+        f"{a.end[upper]}",
+    )
+    // Frame 2: the root turned 90° about y; `lower` (axis 90° about z) turned 90° about its x.
+    let b = posed(rig, frames[1], unit)
+    assert(abs(b.start[0].x - 4.5 * unit) < 1.0e-4, "the root moved")
+    let along = b.end[lower] - b.start[lower]
+    assert(abs(length(along) - 9.0 * unit) < 1.0e-3, "a bone keeps its length")
+    // `lower` turns about its axis's x, which `C` takes to y: 90° about y, after the root's 90°
+    // about y: half a turn, +x to -x.
+    assert(abs(along.x + 9.0 * unit) < 1.0e-3, f"{along}")
+}
+
+/// Numbers read as written: signs, points and exponents.
+@test
+fn numbers_read_as_written() {
+    let text = String::from("-12.5 3e-2 7 +0.25 3.09607e-014")
+    let b = text.as_bytes()
+    let w = words_of(b, 0, b.len())
+    assert(number(b, w[0].0, w[0].1) == -12.5)
+    assert(abs(number(b, w[1].0, w[1].1) - 0.03) < 1.0e-7)
+    assert(number(b, w[2].0, w[2].1) == 7.0 && number(b, w[3].0, w[3].1) == 0.25)
+    assert(abs(number(b, w[4].0, w[4].1)) < 1.0e-12)
+}
