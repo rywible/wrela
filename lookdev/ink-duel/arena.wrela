@@ -24,10 +24,11 @@ use engine::view::{Camera, NEAREST}
 use body::{Figure, Paint}
 use std::gpu::{Cull, R32Uint, RenderPass, Sampler, ScreenPass, Texture, draw}
 
-/// The sun: near overhead, a little to the south-west, so the fighters are lit from wherever the
-/// lock-on camera circles round them (a low sun backlights half a fight into silhouettes), their
-/// shadows short and hard under them.
-pub const SUN = vec3(-0.3, 0.9, -0.32)
+/// The sun: about 50° up in the south-west, low enough that a stone's sides turn clearly to it or
+/// away (a high sun grazes them, and their lumps break into blotches of light and shade), high
+/// enough that a stone's shadow ends before the bowl's wall. A fighter it would backlight is lit
+/// by the look's key light instead (`Style::CEL_KEY`).
+pub const SUN = vec3(-0.45, 0.72, -0.42)
 
 /// The ring of stones: how many, how far out, how tall.
 pub const STONES: u32 = 9
