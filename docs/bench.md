@@ -5267,34 +5267,34 @@ shares`).
 | | A: Kinetic Ink, its switches | B: physical, approved | C: Kinetic Ink, approved |
 |---|---|---|---|
 | Pipelines (`wrela pipelines --json`) | **53** | 74 | 75 |
-| WGSL (`pipeline_*.wgsl`) | **1,183 KiB** | 1,654 KiB | 1,716 KiB |
-| WASM (`game.wasm`) | 2,025 KiB | 2,322 KiB | 2,331 KiB |
+| WGSL (`pipeline_*.wgsl`) | **1,182 KiB** | 1,654 KiB | 1,716 KiB |
+| WASM (`game.wasm`) | 2,039 KiB | 2,322 KiB | 2,331 KiB |
 | Playable at frame (cold, native) | **17** | 107 | 105 |
 | GPU memory held | **134.3 MB** | 222.9 MB | 232.2 MB |
-| GPU span, mean of frames 100–199 | **115.9 ms** | 252.8 ms | 248.6 ms |
-| GPU span, against B's | **0.46** | 1.00 | 0.98 |
-| GPU span, quiet (frames 100–149) and in the strike (160–199) | 112.6, 120.9 | 276.5, 227.5 | |
+| GPU span, mean of frames 100–199 | **117.7 ms** | 252.8 ms | 248.6 ms |
+| GPU span, against B's | **0.47** | 1.00 | 0.98 |
+| GPU span, quiet (frames 100–149) and in the strike (160–199) | 112.7, 124.4 | 276.5, 227.5 | |
 
 Each pass's mean ms a frame (frames 100–199):
 
 | Pass | A | B | C |
 |---|---|---|---|
-| terrain | 32.96 | 72.36 | 83.32 |
+| terrain | 32.95 | 72.36 | 83.32 |
 | clouds | 0 | 54.41 | 53.15 |
-| temporal | 22.05 | 20.60 | 21.83 |
+| temporal | 22.70 | 20.60 | 21.83 |
 | bloom (with the develop, where it runs) | 0 | 14.02 | 14.69 |
-| vegetation (the scene's shading: the stones) | 6.38 | 12.88 | 13.71 |
-| creature (A's with its smear) | 4.67 | 11.92 | 11.89 |
-| look (the develop where there's no bloom) | 7.80 | 11.83 | 0.81 |
+| vegetation (the scene's shading: the stones) | 6.41 | 12.88 | 13.71 |
+| creature (A's with its smear) | 5.04 | 11.92 | 11.89 |
+| look (the develop where there's no bloom) | 7.86 | 11.83 | 0.81 |
 | probes again | 0 | 11.65 | 3.25 |
 | probes bake | 0 | 10.00 | 0.32 |
-| ambient occlusion | 6.52 | 9.85 | 10.09 |
-| lines (A's fighters' sketched in the strike) | 11.31 | 5.47 | 7.34 |
-| marks (the hatching and the creases) | 10.53 | 0 | 6.97 |
-| shape (the substance's curvature) | 1.71 | 0 | 1.76 |
+| ambient occlusion | 6.70 | 9.85 | 10.09 |
+| lines (A's fighters' sketched in the strike) | 11.67 | 5.47 | 7.34 |
+| marks (the hatching and the creases) | 10.61 | 0 | 6.97 |
+| shape (the substance's curvature) | 1.81 | 0 | 1.76 |
 | reflections (copy and probe) | 0 | 3.15 | 3.41 |
-| the rest (moving shadow, sky, motion, prepass, cull, cooks) | 7.65 | 7.66 | 8.35 |
-| sum of the passes | 111.59 | 245.80 | 240.89 |
+| the rest (moving shadow, sky, motion, prepass, cull, cooks) | 7.77 | 7.66 | 8.35 |
+| sum of the passes | 113.51 | 245.80 | 240.89 |
 
 The memory's shares: A's sky 64 bytes (B's 78.4 MB: the clouds' noise volumes and dome), its fog
 24 bytes (16.6 MB), its distance volume 14 KB (18.9 MB), its probes 1.6 MB (2.4 MB); its targets
@@ -5303,20 +5303,20 @@ The memory's shares: A's sky 64 bytes (B's 78.4 MB: the clouds' noise volumes an
 - **The look alone captures nothing:** C is B's frame within 2 %, its pipelines one more, its
   memory 4 % more. A look decides how surfaces are shaded and marked (`engine::style`), not which
   systems run.
-- **The look with its switches captures it:** A's frame is 0.46 of B's (0.53 in the strike), its pipelines 28 % fewer
+- **The look with its switches captures it:** A's frame is 0.47 of B's (0.55 in the strike), its pipelines 28 % fewer
   (29 % less WGSL), its memory 40 % less, and it's playable at frame 17, not 107 (B's waits on the
   clouds' dome and the probes' first bake). The clouds (54 ms of B's 253), the probes (22 ms) and
   the bloom (14 ms) are what the new switches take out; the terrain's shading halves without the
   probes', fog's, reflections' and contact shadows' reads.
-- **What the ink costs:** the marks pass (the hatching and the creases, 10.5), the substance's
-  shape (1.7) and the lines (11.3 against B's 5.5): about 24 ms of A's 112 here. The fighter's
+- **What the ink costs:** the marks pass (the hatching and the creases, 10.6), the substance's
+  shape (1.8) and the lines (11.7 against B's 5.5): about 24 ms of A's 114 here. The fighter's
   sketched lines cost only in the strike, when they show (`Frame::sketch` is none while they'd be
   under half a pixel): A's lines 7.3 ms a frame quiet, 15.9 in the strike. On the M4 the cel
   look's creases and shape were 0.81 ms ("D4, the cel look's cost").
 - **What the smear costs** (`engine::character::Smear`: for a new drawing's first 4 frames, held,
-  its trailing surfaces drawn back toward the drawing before and its surface torn open, more where
-  it moved farther; the lines broken by the same for the whole drawing; the head and neck held
-  steady): the creature pass 4.37 → 4.67 ms and the motion pass 2.11 → 2.30 against the build
+  its trailing surfaces drawn back toward the drawing before as ink strokes, each a point's path;
+  the lines broken by how far each part moved for the whole drawing; the head and neck held
+  steady): the creature pass 4.37 → 5.04 ms and the motion pass 2.11 → 2.36 against the build
   before the smear, the skinning done twice in their vertex shaders. The shadow pass is the
   pose's alone.
 - **A's first measure**, before the moment moved from the frame's edges onto the fighter (the

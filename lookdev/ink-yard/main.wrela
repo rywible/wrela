@@ -67,12 +67,13 @@ pub const FIGHT_FROM: f32 = 0.5
 /// The smear (`engine::character::Smear`) at the moment's height, as a rough in-between drawing:
 /// for a new drawing's first `SMEAR_FRAMES` (4 at 60 a second, a fifteenth of a second: a drawing
 /// of its own), its trailing surfaces drawn back toward the drawing before by `SMEAR` and its
-/// surface torn open by `TEARS`, each the more where it moved farther; then the drawing stands
+/// trail drawn as strokes by `STROKES` (each the path of a point of the part: a blade's trail a fan
+/// of its points' arcs), each the more where it moved farther; then the drawing stands
 /// clean, cut, not eased. And `DISARRAY` for the whole drawing: how much its lines come apart where
 /// it moved most. Its leading surfaces, its head and neck (`Smear::steady`) and its shadow are
 /// the pose's own, so where the fighter is and which way it faces stay plain.
-pub const SMEAR: f32 = 0.6
-pub const TEARS: f32 = 0.55
+pub const SMEAR: f32 = 0.9
+pub const STROKES: f32 = 0.85
 pub const DISARRAY: f32 = 1.0
 pub const SMEAR_FRAMES: f32 = 4.0
 /// The blow's stop (seconds held as it lands), and how long a clip takes to cross into the next.
@@ -217,7 +218,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.scene.fighter.smear_by(
         Smear {
             amount: SMEAR * strength * held,
-            tears: TEARS * strength * held,
+            strokes: STROKES * strength * held,
             disarray: DISARRAY * strength,
             steady: (1 << s.bones.head.index) | (1 << s.bones.neck.index),
         },
