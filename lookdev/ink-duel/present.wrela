@@ -24,8 +24,10 @@ pub const LAG: f32 = 0.014
 /// impact frames, which show the fist meeting the jaw where it hung.
 pub const SNAP_AFTER: u32 = 3
 
-/// How fast the flung brawler tumbles (radians a second, about its own left-right axis).
-pub const TUMBLE: f32 = -7.0
+/// How fast the flung brawler tips back (radians a second, about its own left-right axis): a
+/// quarter turn over its 1.2 s flight, so it comes down flat on its back, as a heavy body thrown
+/// does (spinning over and over, it read as a doll).
+pub const TUMBLE: f32 = -1.3
 
 /// Where each captured move's beats fall in its clip (content/mocap/cmu/LICENSE.txt says which
 /// frames of which trial each clip is): the jab and the cross of subject 14's one-two; subject

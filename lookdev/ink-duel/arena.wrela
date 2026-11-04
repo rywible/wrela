@@ -106,12 +106,35 @@ pub fn ground_at(p: vec2, crater: vec4 = vec4(0.0)) -> f32 {
     Mounds { crater }.height(p.x, p.y)
 }
 
-/// Stone `k`'s place in the ring: its foot, its turn, its seed.
+/// Stone `k`'s place in the ring: its middle (a metre up, sunk well into the ground: higher, its
+/// ellipsoid narrowed to a point at the ground and it read as perched), its turn, its seed.
 fn stone_at(k: u32) -> (vec3, f32, u32) {
     let a = f32(k) / f32(STONES) * 6.2831853 + 0.3
     let r = RING + 1.2 * sin(f32(k) * 2.7)
     let p = vec2(sin(a), cos(a)) * r
-    (vec3(p.x, ground_at(p) + 1.6, p.y), a * 1.7, 11 + k * 7)
+    (vec3(p.x, ground_at(p) + 1.0, p.y), a * 1.7, 11 + k * 7)
+}
+
+/// How far along the line from `a` to `b` (0 to 1) it first passes behind a stone (within a
+/// metre of its middle across the ground, below its top); 1 when nothing stands in the way. For
+/// the camera: a stone is a black slab across the frame when it comes between the eye and the
+/// fight.
+pub fn stone_between(a: vec3, b: vec3) -> f32 {
+    var first = 1.0
+    for k in 0..STONES {
+        let (at, _, _) = stone_at(k)
+        let d = b.xz - a.xz
+        let dd = max(dot(d, d), 1.0e-6)
+        let u = clamp(dot(at.xz - a.xz, d) / dd, 0.0, 1.0)
+        let p = mix(a, b, vec3(u))
+        let top = at.y + 2.1
+        if length(p.xz - at.xz) < 1.0 && p.y < top {
+            // Back along the line to where it meets the metre round the stone.
+            let back = sqrt(max(1.0 - length(p.xz - at.xz) * length(p.xz - at.xz), 0.0)) / sqrt(dd)
+            first = min(first, max(u - back, 0.0))
+        }
+    }
+    first
 }
 
 /// A blow's dust: ninety dark clods of the arena's earth thrown up from round where it lands, a few

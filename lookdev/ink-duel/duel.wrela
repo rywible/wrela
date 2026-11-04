@@ -70,11 +70,13 @@ pub const CLEAN: f32 = 14.0
 
 /// The riposte: what it takes from the brawler's health; how long after the contact the launch
 /// comes (ticks, the stop aside); the launch's speeds (m/s: up, and on away); how long the
-/// brawler lies once it lands, and how long it takes to get up (ticks).
+/// brawler lies once it lands, and how long it takes to get up (ticks). The launch's top is under
+/// two metres and its landing under four away: a heavy body thrown, not a doll flung (at 9 m/s up,
+/// 4 m high and 8 away, it left the shot a speck).
 pub const RIPOSTE_DAMAGE: f32 = 70.0
 pub const LAUNCH_AFTER: u32 = 8
-pub const LAUNCH_UP: f32 = 9.0
-pub const LAUNCH_AWAY: f32 = 4.5
+pub const LAUNCH_UP: f32 = 6.0
+pub const LAUNCH_AWAY: f32 = 3.0
 pub const LIES: u32 = 70
 pub const RISES: u32 = 45
 
