@@ -21,13 +21,16 @@ use std::serialize::Serialize
 /// The ticks a second the rules count in.
 pub const HZ: f32 = 60.0
 
+/// How much of a knock-back is slid off each tick.
+pub const SLIDE: f32 = 0.2
+
 /// A move: its wind-up (ticks before it can hit), the ticks it can hit in, and its recovery; how
 /// far it reaches (m from the attacker's root, along its facing) and how wide (half the angle,
 /// radians); what it takes from the struck one's health and adds to its posture; what it costs
 /// the attacker in stamina; how far it carries the attacker forward over its wind-up and active
 /// ticks (m); how fast it turns toward its target in its wind-up (radians a second); when in its
-/// recovery a buffered press may cut it short (ticks); and how long it staggers the struck one
-/// (ticks; 0, it doesn't).
+/// recovery a buffered press may cut it short (ticks); how long it staggers the struck one
+/// (ticks; 0, it doesn't); and how far it knocks the struck one back (m).
 pub struct Move: Copy + Eq {
     pub windup: u32,
     pub active: u32,
@@ -41,6 +44,7 @@ pub struct Move: Copy + Eq {
     pub track: f32 = 0.0,
     pub cancel: u32 = 1000,
     pub stagger: u32 = 0,
+    pub push: f32 = 0.0,
 }
 
 impl Move {
@@ -113,7 +117,8 @@ pub struct Intent: Copy + Eq + StateHash + Serialize + SimState {
 /// A fighter: where it stands (x, z), which way it faces (radians about +y, 0 facing +z), its
 /// health, stamina and posture; what it's doing, which move, and for how many ticks; the ticks
 /// since it last spent stamina and since its posture last took a blow; whether its move has
-/// landed; the way its dodge goes; its buffered press and the tick it was pressed.
+/// landed; the way its dodge goes; its buffered press and the tick it was pressed; and the
+/// knock-back it has still to slide (m, x and z).
 pub struct Fighter: Copy + Eq + StateHash + Serialize + SimState {
     pub pos: vec2,
     pub heading: f32,
@@ -129,6 +134,7 @@ pub struct Fighter: Copy + Eq + StateHash + Serialize + SimState {
     pub way: vec2 = vec2(0.0, 1.0),
     pub buffered: Press = Press::Nothing,
     pub held: u32 = 0,
+    pub shove: vec2 = vec2(0.0),
 }
 
 /// A fighter at `pos` facing `heading`, whole.
@@ -335,6 +341,11 @@ pub fn step(f: mut Fighter, intent: Intent, moves: [Move], r: Rules, target: vec
         },
         _ => {},
     }
+    // A blow's knock-back, slid off over a few ticks.
+    if length(f.shove) > 1.0e-4 {
+        f.pos = f.pos + f.shove * SLIDE
+        f.shove = f.shove * (1.0 - SLIDE)
+    }
     // Stamina comes back a while after a spend; posture settles a while after a blow.
     if f.rested > r.regain_after && f.act != Act::Dodge {
         f.stamina = min(f.stamina + r.regain * dt, r.stamina)
@@ -389,6 +400,7 @@ pub fn strike(a: mut Fighter, moves: [Move], b: mut Fighter, r: Rules, radius: f
     b.health = max(b.health - m.damage, 0.0)
     b.posture = min(b.posture + m.posture, r.posture)
     b.calm = 0
+    b.shove = b.shove + facing(a.heading) * m.push
     if b.health <= 0.0 {
         b.begin(Act::Dead)
         return Blow::Landed { broke: false }
@@ -421,6 +433,21 @@ pub fn begin_riposte(a: mut Fighter, b: mut Fighter, r: Rules) -> bool {
     a.begin(Act::Riposte)
     b.taken()
     true
+}
+
+/// Two fighters' bodies pushed apart until they're `apart` (m) between their middles, `a` moving
+/// `share` of the way and `b` the rest (a heavier body moves less): no body passes into another,
+/// and each step of a lunge is short of a body's width, so none passes through.
+pub fn kept_apart(a: mut Fighter, b: mut Fighter, apart: f32, share: f32) {
+    let d = b.pos - a.pos
+    let n = length(d)
+    if n >= apart {
+        return
+    }
+    let way = if n > 1.0e-4 { d / n } else { facing(a.heading) }
+    let over = apart - n
+    a.pos = a.pos - way * over * share
+    b.pos = b.pos + way * over * (1.0 - share)
 }
 
 // ---- tests ---------------------------------------------------------------------------------------
@@ -568,4 +595,24 @@ fn a_blow_misses_outside_its_arc() {
     let ahead = fighter(vec2(0.0, 1.2), 0.0, r)
     assert(!within(a, JAB, beside, 0.2), "beside isn't in a jab's arc")
     assert(within(a, JAB, ahead, 0.2), "ahead is")
+}
+
+/// Bodies pushed apart end apart, the lighter moving more; a blow's knock-back slides the struck
+/// one back.
+@test
+fn bodies_keep_apart_and_a_blow_knocks_back() {
+    let r = Rules {}
+    var a = fighter(vec2(0.0), 0.0, r)
+    var b = fighter(vec2(0.0, 0.4), 3.1415927, r)
+    kept_apart(mut a, mut b, apart: 1.0, share: 0.7)
+    assert(abs(length(b.pos - a.pos) - 1.0) < 1.0e-5 && a.pos.y < -0.4, f"{a.pos} {b.pos}")
+    var c = fighter(vec2(0.0), 0.0, r)
+    var d = fighter(vec2(0.0, 1.0), 3.1415927, r)
+    let pushed = [Move { push: 0.5, ..JAB }]
+    for k in 0..40 {
+        step(mut c, if k == 0 { pressed(0) } else { Intent {} }, pushed, r, d.pos)
+        step(mut d, Intent {}, pushed, r, c.pos)
+        let _ = strike(mut c, pushed, mut d, r)
+    }
+    assert(d.pos.y > 1.45, f"knocked back to {d.pos.y}")
 }
