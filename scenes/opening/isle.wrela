@@ -10,7 +10,7 @@
 use look::{GILT, GLASS, ISLE, ROOF, ROCK, STONE, fbm3, hash3, noise, noise3}
 
 /// How much larger the isle is drawn than it's modelled.
-pub const SCALE: f32 = 4.5
+pub const SCALE: f32 = 6.3
 
 /// How tall the rock is under its plateau, and how wide its plateau (the model's m).
 const DROP: f32 = 210.0
@@ -62,6 +62,17 @@ const CUTS = [
 
 /// A rock hewn from an inverted mountain: `q` from its top's centre (the model's m), `s` its
 /// scale, `turn` its turn about the vertical.
+/// A mass hanging under the rock (the model's m): round `c` (x, z), from `top` down to its tip at
+/// `tip`, `r` wide at its top, gouged by its own crags.
+fn pendant(p: vec3, c: vec2, top: f32, tip: f32, r: f32, seed: f32) -> f32 {
+    let q = vec2(p.x, p.z) - c
+    let u = clamp((p.y - tip) / (top - tip), 0.0, 1.0)
+    let ang = atan2(q.y, q.x)
+    let crag = (noise(vec2(ang * 5.0 + seed, p.y * 0.02)) - 0.5) * r * 0.5 * u
+    let wide = r * pow(u, 0.7)
+    max((length(q) - wide - crag) * 0.6, max(p.y - top, tip - p.y))
+}
+
 fn hewn(q: vec3, s: f32, turn: f32) -> f32 {
     let c = cos(turn)
     let n = sin(turn)
@@ -74,7 +85,14 @@ fn hewn(q: vec3, s: f32, turn: f32) -> f32 {
     // Broad at the top, falling to a point, gouged by crags that run down it and ledged by its
     // beds.
     let k = clamp((p.y + DROP) / DROP, 0.0, 1.0)
-    let wide = TOP * pow(k, 0.85)
+    // Its flanks stepped in tiers, each overhanging the next, so it hangs in great broken masses,
+    // not one cone.
+    let tier = smoothstep(
+        0.55,
+        0.85,
+        fract(p.y / 41.0 + noise(vec2(atan2(p.z, p.x) * 2.0, 4.0)) * 0.5),
+    )
+    let wide = TOP * pow(k, 0.85) * (1.0 - 0.09 * tier * (1.0 - k * 0.6))
     let crag = (noise(vec2(ang * 4.0, p.y * 0.010)) - 0.5) * 46.0 * k +
         (noise(vec2(ang * 11.0, p.y * 0.03 + 7.0)) - 0.5) * 18.0
     let beds = abs(fract(p.y / 9.0 + noise(vec2(ang * 3.0, 1.0)) * 0.6) - 0.5) * 3.0
@@ -83,6 +101,11 @@ fn hewn(q: vec3, s: f32, turn: f32) -> f32 {
         let cut = CUTS[i]
         d = max(d, dot(p, normalize(vec3(cut.x, cut.y, cut.z))) - cut.w * 1.1)
     }
+    // Masses hanging under it, each its own crag and tip, breaking its underside into several.
+    d = min(d, pendant(p, vec2(-40.0, -22.0), -30.0, -168.0, 44.0, 1.0))
+    d = min(d, pendant(p, vec2(46.0, 26.0), -24.0, -128.0, 38.0, 4.0))
+    d = min(d, pendant(p, vec2(8.0, -52.0), -50.0, -150.0, 30.0, 7.0))
+    d = min(d, pendant(p, vec2(-12.0, 40.0), -40.0, -118.0, 30.0, 9.0))
     // Spurs hanging under it.
     let spur_a = vec2(p.x - 50.0, p.z + 18.0)
     let spur_b = vec2(p.x + 46.0, p.z - 10.0)
@@ -122,9 +145,9 @@ fn hewn(q: vec3, s: f32, turn: f32) -> f32 {
 }
 
 /// Where the cathedral stands on the plateau (the world's m, from the isle's centre: its floor,
-/// the keep's top, 156 m over the plateau), and its bay: every 9 m along nave and choir, a window,
+/// the keep's top, 218 m over the plateau), and its bay: every 9 m along nave and choir, a window,
 /// a buttress, a flyer.
-const SITE = vec3(0.0, 165.0, -30.0)
+const SITE = vec3(0.0, 231.0, -42.0)
 const BAY: f32 = 9.0
 
 /// How far the cathedral is turned on the plateau (radians): its length along the plateau's
@@ -142,7 +165,7 @@ fn at_church(w: vec3) -> vec3 {
 
 /// How much grander than the great cathedrals of the world this one is built: every part of it,
 /// its doors and its windows too.
-const GRAND: f32 = 3.0
+const GRAND: f32 = 4.2
 
 /// A pointed arch's outline (an equilateral lancet): `x` across it, `y` up from its sill,
 /// `hw` its half-width, `h` the height its arch springs at. Inside, negative.
@@ -262,7 +285,7 @@ fn keep(p: vec3) -> vec3 {
 /// `ROOF`).
 fn church(p: vec3) -> vec2 {
     // Far from it, its box.
-    let outer = sd_box(p - vec3(17.0, 60.0, 0.0), vec3(126.0, 127.0, 72.0))
+    let outer = sd_box(p - vec3(17.0, 76.0, 0.0), vec3(126.0, 145.0, 72.0))
     if outer > 4.0 {
         return vec2(outer, STONE)
     }
@@ -365,7 +388,7 @@ fn church(p: vec3) -> vec2 {
     let cc = vec3(ca.x - 11.0, c.y, ca.y - 11.0)
     lantern = min(lantern, sd_box(cc - vec3(0.0, 60.0, 0.0), vec3(1.9, 20.0, 1.9)))
     stone = min(stone, sd_spire(cc - vec3(0.0, 80.0, 0.0), 2.1, 15.0))
-    let spire = spire_tower(c, 9.0, 99.0, 152.0)
+    let spire = spire_tower(c, 10.5, 106.0, 215.0)
     let c8 = max(max(ca.x, ca.y), (ca.x + ca.y) * 0.7071)
     let cang = atan2(c.z, c.x)
     let cs = cang - 0.7854 * round(cang / 0.7854)

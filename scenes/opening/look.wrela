@@ -5,7 +5,7 @@ use sea::{HELD, bob, held}
 use row::Rig
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
-pub const ISLE = vec3(-1350.0, 1000.0, 5400.0)
+pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
 pub const SUN = vec3(0.3725, 0.1045, 0.9221)
 
 /// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
@@ -58,6 +58,9 @@ pub struct Shot: Copy + GpuData {
     pub turn: f32,
     pub pull: f32,
     pub stroke: f32,
+    /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
+    /// 1 painted CG, 2 cel and ink, 3 clean CG.
+    pub look: f32,
 }
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
@@ -78,13 +81,13 @@ pub fn shot_at(time: f32, width: u32, height: u32, kinetic: f32, view: u32, r: R
     let behind = turned(vec2(0.5, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let eye = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
-    let at = vec3(eye.x + ahead.x, 390.0, eye.z + ahead.y)
+    let at = vec3(eye.x + ahead.x, 622.0, eye.z + ahead.y)
     // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
     // cathedral from 900 m, the low sun raking across it from the left.
     let (eye, at, focal) = if view == 1 {
-        (ISLE + vec3(900.0, -400.0, -2800.0), ISLE + vec3(0.0, -150.0, 0.0), 1.6)
+        (ISLE + vec3(1260.0, -560.0, -3920.0), ISLE + vec3(0.0, -210.0, 0.0), 1.6)
     } else if view == 3 {
-        (ISLE + vec3(1500.0, 700.0, 300.0), ISLE + vec3(0.0, 330.0, -30.0), 1.5)
+        (ISLE + vec3(2100.0, 980.0, 420.0), ISLE + vec3(0.0, 460.0, -42.0), 1.5)
     } else if view == 2 {
         (vec3(4.5, 2.2, -3.0), vec3(0.0, 0.0, 0.5), 1.5)
     } else {
@@ -103,7 +106,7 @@ pub fn shot_at(time: f32, width: u32, height: u32, kinetic: f32, view: u32, r: R
         up,
         focal,
         sun: normalize(SUN),
-        glow: normalize(ISLE + vec3(0.0, 500.0, -30.0) - eye),
+        glow: normalize(ISLE + vec3(0.0, 700.0, -42.0) - eye),
         boat,
         boat_x: bx,
         boat_y: by,
@@ -115,6 +118,7 @@ pub fn shot_at(time: f32, width: u32, height: u32, kinetic: f32, view: u32, r: R
         turn: r.shown_turn,
         pull: r.shown_pull,
         stroke: r.shown_stroke,
+        look: 0.0,
     }
 }
 

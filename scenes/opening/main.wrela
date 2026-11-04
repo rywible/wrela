@@ -38,6 +38,10 @@ pub const VIEW: u32 = 0
 /// (`--set STYLE=0`), to see what the style is laid on.
 pub const STYLE: f32 = 1.0
 
+/// Which shading language draws everything, the skiff to the sky: 0 the drawn look, 1 painted CG,
+/// 2 cel and ink, 3 clean CG (`--set LOOK=2`).
+pub const LOOK: f32 = 0.0
+
 pub struct State {
     heavens: Heavens,
     /// The painted scene, and what the ink reads beside it: (log₂ distance, what it is, the
@@ -88,7 +92,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         key(mut s.rig, e)
     }
     step(mut s.rig, START + time)
-    let shot = Shot { style: STYLE, ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig) }
+    let shot = Shot {
+        style: STYLE,
+        look: LOOK,
+        ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig),
+    }
     s.heavens.step(shot.eye, shot.forward, START + time)
     borrow hv = s.heavens
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, clear: vec4(0.0))
