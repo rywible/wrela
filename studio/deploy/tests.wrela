@@ -5,8 +5,8 @@
 // and the Workers deployed in order, each serving the release and its kept ones as assets.
 
 use main::{
-    Listing, Options, ZSTD_RULE, deploy, found, keep_verifier, parse_args, verify, verify_api,
-    verify_kept, verify_zstd,
+    Listing, Options, ZSTD_RULE, access_headers, deploy, found, keep_verifier, parse_args, verify,
+    verify_api, verify_kept, verify_zstd,
 }
 use policy::{
     CLOUDFLARE, Deploy, Found, Limits, Release, Worker, compressed, deploy_order, has, history_json,
@@ -332,6 +332,31 @@ fn redirects_are_followed_only_on_their_origin() {
     ] {
         assert(redirected(from, off).is_none(), off)
     }
+}
+
+@test
+fn the_access_token_goes_to_the_gated_host_alone() {
+    let both = access_headers("https://wrela.dev/deploys.json", "id.access", "key")
+    assert(both.len() == 2, "the console's host gets the token")
+    assert(both[0].name.as_str() == "CF-Access-Client-Id" && both[0].value.as_str() == "id.access")
+    assert(both[1].name.as_str() == "CF-Access-Client-Secret" && both[1].value.as_str() == "key")
+    assert(access_headers("https://wrela.dev", "id", "key").len() == 2, "a bare origin")
+    assert(access_headers("https://wrela.dev:443/api/accounts", "id", "key").len() == 2, "a port")
+    for off in [
+        "https://docs.wrela.dev/index.html",
+        "https://wrela.devil/x",
+        "https://wrela.dev.evil.example/",
+        "https://wrela.dev@evil.example/",
+        "https://wrela.dev:x@github.com/",
+        "https://wrela.dev:443@github.com/",
+        "https://evil.example/?wrela.dev",
+        "http://wrela.dev/",
+        "https://github.com/rywible/wrela.git/info/refs?service=git-upload-pack",
+    ] {
+        assert(access_headers(off, "id", "key").is_empty(), off)
+    }
+    assert(access_headers("https://wrela.dev/", "", "key").is_empty(), "no client ID")
+    assert(access_headers("https://wrela.dev/", "id", "").is_empty(), "no client secret")
 }
 
 @test
@@ -1244,7 +1269,8 @@ fn a_worker_that_does_not_serve_a_kept_release_fails_the_deploy() {
 }
 
 /// The workspace grants the deploy tool the catalog's domains and GitHub alone, the pinned
-/// `npx`, and Cloudflare's secrets: a domain that the catalog gains is a grant to add.
+/// `npx`, and Cloudflare's secrets and the Access service token's: a domain that the catalog
+/// gains is a grant to add.
 @test(tool, read: [("ws", "../..")], budget: 30)
 fn the_deploy_tool_is_granted_the_catalogs_domains() {
     let Some(manifest) = read("ws/wrela.toml") else { panic("no wrela.toml") }
@@ -1272,7 +1298,10 @@ fn the_deploy_tool_is_granted_the_catalogs_domains() {
     }
     assert(contains(section, "\nrun = [\"npx\"]"), "npx")
     assert(
-        contains(section, "\nsecrets = [\"CLOUDFLARE_API_TOKEN\", \"CLOUDFLARE_ACCOUNT_ID\"]"),
+        contains(
+            section,
+            "\nsecrets = [\"CLOUDFLARE_API_TOKEN\", \"CLOUDFLARE_ACCOUNT_ID\", \"WRELA_ACCESS_CLIENT_ID\", \"WRELA_ACCESS_CLIENT_SECRET\"]",
+        ),
         "secrets",
     )
 }

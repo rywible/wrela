@@ -59,4 +59,8 @@ jobs:
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # The Access service token the deploy reaches the private wrela.dev with (studio/deploy's
+          # `GATED`); empty while there's none.
+          WRELA_ACCESS_CLIENT_ID: ${{ secrets.WRELA_ACCESS_CLIENT_ID }}
+          WRELA_ACCESS_CLIENT_SECRET: ${{ secrets.WRELA_ACCESS_CLIENT_SECRET }}
         run: wrela tool deploy -- --require-main-head

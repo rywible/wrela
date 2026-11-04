@@ -10,9 +10,10 @@
 // request is its time, its two cookies, the Worker's keys (`x-wrela-key` and `x-wrela-key-old`,
 // which the API Worker sets on a POST to `ACCOUNTS` alone: studio/release's `api_script`) and its
 // body; the paths are wire.wrela's (`ACCOUNTS` by POST, `PUBLIC` by GET with the request in its query, and a run's
-// replay at its path under `RUNS`), and anything else is not found. New accounts are closed until
-// the Terms and the Privacy Policy are final (console/legal.wrela, rywible/wrela#352): signing in,
-// recovery and play without an account go on.
+// replay at its path under `RUNS`), and anything else is not found. New accounts are taken only
+// if the build says so (console/main.wrela's `SIGN_UPS`): they're open while wrela.dev is private
+// behind Cloudflare Access, and closed otherwise until the Terms and the Privacy Policy are final
+// (console/legal.wrela, rywible/wrela#352); signing in, recovery and play without an account go on.
 
 use platform::server::{Asked, CEREMONY, Command, Engine, NoBoards, SESSION, Versions, engine}
 use platform::wire::{ACCOUNTS, PUBLIC, RUNS, Request as Asking, run_of}
@@ -32,18 +33,20 @@ pub struct Server {
     rp_id: String,
     origin: String,
     versions: Versions,
+    sign_ups: bool,
     engine: Option<Engine<NoBoards>>,
     asked: Vec<(u32, Pending<u8>)>,
 }
 
 /// The server for the console at `origin`, its passkeys for relying party `rp_id`, taking the
-/// agreements of `versions` (the console's legal pages').
+/// agreements of `versions` (the console's legal pages'), and new accounts if `sign_ups`.
 @server
-pub fn init(rp_id: str, origin: str, versions: Versions) -> Server {
+pub fn init(rp_id: str, origin: str, versions: Versions, sign_ups: bool) -> Server {
     Server {
         rp_id: rp_id.to_string(),
         origin: origin.to_string(),
         versions,
+        sign_ups,
         engine: None,
         asked: Vec::new(),
     }
@@ -55,8 +58,9 @@ pub fn serve(s: mut Server, time: f32) {
     let _ = time
     if s.engine.is_none() {
         var e = engine(NoBoards {}, s.rp_id.as_str(), s.origin.as_str(), s.versions, me().as_str())
-        // Sign-ups stay closed until Ryan says otherwise: reopening them is deleting this line.
-        e.close_sign_ups()
+        if !s.sign_ups {
+            e.close_sign_ups()
+        }
         s.engine = Some(take e)
     }
     match mut s.engine {
