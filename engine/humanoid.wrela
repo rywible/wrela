@@ -917,11 +917,13 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
         }
     }
     // Each limb's bone aimed where the take's points at rest (a T-pose against an A-pose). The
-    // spine, neck and head (VRM's first seven) keep the rig's own curve: a take's straight rest
-    // spine would otherwise pitch the rig's chest and head forward, a slouch.
+    // spine, neck and head (VRM's first seven) and the collarbones keep the rig's own set: a
+    // take's straight rest spine would otherwise pitch the rig's chest and head forward, a
+    // slouch, and its collarbones straight out would round the rig's shoulders forward.
     var align = [Quat::identity(); 55]
+    let (lc, rc) = (bone("leftShoulder"), bone("rightShoulder"))
     for v in AXIAL..55 {
-        if t_has[v] && s_has[v] {
+        if t_has[v] && s_has[v] && v != lc && v != rc {
             if let Some(dt) = aim(v, t_has, t_pos, vec3(0.0)) {
                 if let Some(ds) = aim(v, s_has, s_pos, s_end[v]) {
                     align[v] = arc(dt, ds)
@@ -1209,6 +1211,76 @@ pub fn with_hands(clip: Clip, from: Clip, frame: u32, rig: Rig, curl: f32) -> Cl
             let q = rig.bones[b].rest.q.nlerp(from.turns[frame * nb + b], curl)
             for f in 0..out.frames {
                 out.turns[f * nb + b] = q
+            }
+        }
+    }
+    out
+}
+
+/// The mean of some turns: their sum, each on the first's side, normalized.
+fn mean_turn(turns: Vec<Quat>, first: u32, stride: u32, count: u32) -> Quat {
+    var sum = vec4(0.0)
+    let a = turns[first].v
+    for k in 0..count {
+        let v = turns[first + k * stride].v
+        sum += if dot(v, a) < 0.0 { -v } else { v }
+    }
+    Quat { v: normalize(sum) }
+}
+
+/// A turn `g` times as far about its own axis.
+fn scaled(q: Quat, g: f32) -> Quat {
+    let v = if q.v.w < 0.0 { -q.v } else { q.v }
+    let axis = v.xyz
+    if length(axis) < 1.0e-7 {
+        return Quat::identity()
+    }
+    Quat::axis_angle(axis, 2.0 * acos(min(v.w, 1.0)) * g)
+}
+
+/// How a clip is made livelier (`livelier`): how much further its arms swing, and its spine
+/// sways and turns, about where they're carried, both 1 as taken.
+pub struct Lively: Copy {
+    pub swing: f32 = 1.0,
+    pub sway: f32 = 1.0,
+}
+
+/// `clip` livelier, as an animator pushes a take: each arm's bones (collarbone to hand) carried
+/// on average as `carriage` carries them (an idle's loose hang, the elbows a little bent) and
+/// swinging about that `how.swing` times as far as the take swings them; the spine's bones
+/// (spine to upper chest) swaying and turning `how.sway` times as far about their own mean. Each
+/// frame is changed on its own, so a looped clip still loops.
+pub fn livelier(clip: Clip, carriage: Clip, rig: Rig, how: Lively) -> Clip {
+    var out = clip.clone()
+    let nb = rig.bones.len()
+    let arms = [
+        "leftShoulder",
+        "leftUpperArm",
+        "leftLowerArm",
+        "leftHand",
+        "rightShoulder",
+        "rightUpperArm",
+        "rightLowerArm",
+        "rightHand",
+    ]
+    for name in arms {
+        let b = rig.find(name)
+        if b != NONE {
+            let own = mean_turn(clip.turns, b, nb, clip.frames)
+            let carried = mean_turn(carriage.turns, b, nb, carriage.frames)
+            for f in 0..clip.frames {
+                let d = clip.turns[f * nb + b].mul(own.inverse())
+                out.turns[f * nb + b] = scaled(d, how.swing).mul(carried)
+            }
+        }
+    }
+    for name in ["spine", "chest", "upperChest"] {
+        let b = rig.find(name)
+        if b != NONE {
+            let own = mean_turn(clip.turns, b, nb, clip.frames)
+            for f in 0..clip.frames {
+                let d = clip.turns[f * nb + b].mul(own.inverse())
+                out.turns[f * nb + b] = scaled(d, how.sway).mul(own)
             }
         }
     }

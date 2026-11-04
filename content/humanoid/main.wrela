@@ -105,7 +105,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let hips = base.t + base.q.rotate(pose.hips)
     let walking = SHOW == 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { SIDE } else { -0.55 }
-    let shot = shot_at(time, FOCUS, vec3(hips.x, 0.0, hips.z), width, height, FAR, side, KINETIC)
+    let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
+    let shot = shot_at(
+        time,
+        FOCUS,
+        vec3(hips.x, 0.0, hips.z),
+        width,
+        height,
+        FAR,
+        side,
+        KINETIC,
+        left,
+    )
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,
