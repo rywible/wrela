@@ -853,14 +853,11 @@ impl Take {
 // ---- clips: motion retargeted onto a rig ------------------------------------------------
 
 /// How a take is retargeted: whether its travel is turned to face +z (a take that walks off
-/// across a capture volume), whether it loops (its last frame meets its first), and whether its
-/// feet are planted.
+/// across a capture volume) and whether it loops (its last frame meets its first). A walk's feet
+/// are planted afterwards (`stride::humanised`).
 pub struct Retarget: Copy {
     pub face_ahead: bool = false,
     pub looped: bool = false,
-    /// Whether its feet are planted: held where they land while they bear weight, the legs
-    /// reaching them (`plant`).
-    pub planted: bool = false,
     /// Whether its neck and head are set to the rig's own carriage on average, keeping only how
     /// they move: a take whose rest has a straight neck (100STYLE's) holds a real neck's forward
     /// set as a turn, which on a rig whose rest is already set forward juts the head and drops
@@ -1043,9 +1040,6 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
     for f in 0..src.frames {
         at[f].y += lift
     }
-    if how.planted && how.looped && src.frames > 2 {
-        plant(rig, mut turns, at, src.frames, src.fps, travel)
-    }
     // The hips in their parent's space.
     let inv = rig.base.inverse()
     for f in 0..src.frames {
@@ -1065,7 +1059,7 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
 
 /// Each bone in the body's space in frame `f` of `turns` (a frame's bones in order), the hips
 /// at `hips` (the body's space).
-fn frame_world(rig: Rig, turns: [Quat], f: u32, hips: vec3) -> Vec<Rigid> {
+pub fn frame_world(rig: Rig, turns: [Quat], f: u32, hips: vec3) -> Vec<Rigid> {
     let nb = rig.bones.len()
     var out: Vec<Rigid> = Vec::filled(nb, Rigid::identity())
     for b in 0..nb {
@@ -1080,253 +1074,8 @@ fn frame_world(rig: Rig, turns: [Quat], f: u32, hips: vec3) -> Vec<Rigid> {
     out
 }
 
-/// How slowly a foot moves to bear weight (m/s), and how near its lowest it is (m).
-pub const PLANT_SPEED: f32 = 0.35
-pub const PLANT_RISE: f32 = 0.025
-
 /// The frames a looped take's end eases into its start's lead-in (`Take::looped`).
 pub const SEAM_EASE: u32 = 16
-
-/// The frames a foot eases into and out of its plant.
-pub const PLANT_EASE: u32 = 10
-
-/// A looped clip's feet planted: where an ankle is slow and low it bears weight, and it's held
-/// where it stands on average in that stance (its place on the ground; its height free, so the
-/// heel still lifts), the correction easing in and out over `PLANT_EASE` frames either side; each leg reaches its ankle by
-/// two-bone IK, bending in the plane it bends in, its foot's turn in the world kept. The last
-/// frame is the first again, a loop on (`travel`).
-fn plant(rig: Rig, turns: mut Vec<Quat>, at: [vec3], frames: u32, fps: f32, travel: vec3) {
-    let nb = rig.bones.len()
-    let n = frames - 1
-    for side in 0..2 {
-        let names = if side == 0 {
-            ["leftUpperLeg", "leftLowerLeg", "leftFoot"]
-        } else {
-            ["rightUpperLeg", "rightLowerLeg", "rightFoot"]
-        }
-        let (bu, bl, bf) = (rig.find(names[0]), rig.find(names[1]), rig.find(names[2]))
-        // The knee's hinge, from the rig's rest (its leg a little bent), in the shin's space.
-        let rw = rig.rest_world()
-        let hinge = rw[bl].q
-            .inverse()
-            .rotate(
-                normalize(cross(rw[bf].t - rw[bl].t, rw[bu].t - rw[bl].t)),
-            )
-        var ankle: Vec<vec3> = Vec::new()
-        for f in 0..n {
-            ankle.push(frame_world(rig, turns, f, at[f])[bf].t)
-        }
-        var low = 1.0e9
-        for p in ankle {
-            low = min(low, p.y)
-        }
-        // How fast it moves along the ground in each frame, and whether it bears weight.
-        var speed: Vec<f32> = Vec::new()
-        var on: Vec<bool> = Vec::new()
-        var any_off = n
-        for f in 0..n {
-            let prev = if f == 0 { ankle[n - 1] - travel } else { ankle[f - 1] }
-            let next = if f + 1 == n { ankle[0] + travel } else { ankle[f + 1] }
-            let v = length((next - prev).xz) * fps * 0.5
-            speed.push(v)
-            let bears = v < PLANT_SPEED && ankle[f].y < low + PLANT_RISE
-            on.push(bears)
-            if !bears {
-                any_off = f
-            }
-        }
-        if any_off == n {
-            continue
-        }
-        // How far each frame's ankle is moved to where it's wanted, and how much.
-        var want: Vec<vec3> = Vec::filled(n, vec3(0.0))
-        var weight: Vec<f32> = Vec::filled(n, 0.0)
-        // Unwrapped frame numbers, from an off frame a loop on, so none goes below zero.
-        let base = any_off + n * 2
-        var k = 1
-        while k <= n {
-            let u0 = base + k
-            if !on[u0 % n] {
-                k += 1
-                continue
-            }
-            // A stance: from u0 to u1, unwrapped.
-            var u1 = u0
-            while u1 + 1 <= base + n && on[(u1 + 1) % n] {
-                u1 += 1
-            }
-            // Held where it stands on average through the stance, so neither its landing nor
-            // its lift is pulled far from where the take has it.
-            var sum = vec3(0.0)
-            for u in u0..u1 + 1 {
-                sum += ankle[u % n] + travel * f32(u / n)
-            }
-            let anchor = sum / f32(u1 + 1 - u0)
-            for u in u0..u1 + 1 {
-                want[u % n] = anchor - travel * f32(u / n) - ankle[u % n]
-                weight[u % n] = 1.0
-            }
-            // Either side, the stance's first (last) correction eases in (out), smoothly, so the
-            // foot lands and lifts with no kick.
-            let into = anchor - travel * f32(u0 / n) - ankle[u0 % n]
-            let out_of = anchor - travel * f32(u1 / n) - ankle[u1 % n]
-            for d in 1..PLANT_EASE + 1 {
-                let w = smoothstep(0.0, 1.0, 1.0 - f32(d) / f32(PLANT_EASE + 1))
-                for (u, by) in [(u0 - d, into), (u1 + d, out_of)] {
-                    if weight[u % n] < w {
-                        want[u % n] = by
-                        weight[u % n] = w
-                    }
-                }
-            }
-            k = u1 - base + 1
-        }
-        // Every frame, so a leg's soft reach (`reach`) holds through its swing too.
-        for f in 0..n {
-            let w = frame_world(rig, turns, f, at[f])
-            let free = ankle[f]
-            let goal = vec3(
-                free.x + want[f].x * weight[f],
-                max(free.y, low),
-                free.z + want[f].z * weight[f],
-            )
-            let (hip, knee, foot) = (w[bu], w[bl], w[bf])
-            let (qu, ql) = reach(hip, knee, foot.t, goal, hinge)
-            let up = w[rig.bones[bu].parent]
-            turns[f * nb + bu] = up.q.inverse().mul(qu)
-            turns[f * nb + bl] = qu.inverse().mul(ql)
-            turns[f * nb + bf] = ql.inverse().mul(foot.q)
-        }
-    }
-    for b in 0..nb {
-        turns[n * nb + b] = turns[b]
-    }
-}
-
-/// Two-bone IK: the upper and lower bones' turns in the world that put the ankle (now at
-/// `ankle`) at `goal` from the hip, bending the knee about its hinge (`hinge`, in the shin's own
-/// space: a nearly straight leg's bend has no plane of its own, and one taken from it wanders,
-/// the knee swinging side to side).
-fn reach(hip: Rigid, knee: Rigid, ankle: vec3, goal: vec3, hinge: vec3) -> (Quat, Quat) {
-    let (h, k) = (hip.t, knee.t)
-    let l1 = length(k - h)
-    let l2 = length(ankle - k)
-    // Softly short of straight: past 97.5% of the leg's length the reach eases toward its whole
-    // length and never meets it, so a leg nearing straight doesn't lock with a pop (the ankle
-    // falls a little short instead) and a standing knee stays a little bent.
-    let whole = l1 + l2
-    let soft = 0.025 * whole
-    let far = length(goal - h)
-    let eased = if far > whole - soft {
-        whole - soft * exp(-(far - (whole - soft)) / soft)
-    } else {
-        far
-    }
-    let d = clamp(eased, abs(l1 - l2) + 1.0e-4, whole * 0.9999)
-    let qu = hip.q
-    var ql = knee.q
-    var a = ankle
-    // The knee's bend: its angle now, and the one that spans `d`.
-    let u = h - k
-    let v = ankle - k
-    let axis = knee.q.rotate(hinge)
-    {
-        let now = acos(clamp(dot(normalize(u), normalize(v)), -1.0, 1.0))
-        let wanted = acos(clamp((l1 * l1 + l2 * l2 - d * d) / (2.0 * l1 * l2), -1.0, 1.0))
-        let bend = Quat::axis_angle(axis, now - wanted)
-        ql = bend.mul(ql)
-        a = k + bend.rotate(v)
-    }
-    // The whole leg swung about the hip, so the ankle meets the goal.
-    let swing = arc(a - h, goal - h)
-    (swing.mul(qu), swing.mul(ql))
-}
-
-/// `clip` with its hands' fingers (VRM's thumb to little bones) held `curl` of the way from the rest
-/// (flat, open) to frame `frame` of `from`: a take without fingers (100STYLE's) given a loose hand.
-pub fn with_hands(clip: Clip, from: Clip, frame: u32, rig: Rig, curl: f32) -> Clip {
-    var out = clip.clone()
-    let nb = rig.bones.len()
-    for b in 0..nb {
-        if rig.bones[b].vrm >= 25 {
-            let q = rig.bones[b].rest.q.nlerp(from.turns[frame * nb + b], curl)
-            for f in 0..out.frames {
-                out.turns[f * nb + b] = q
-            }
-        }
-    }
-    out
-}
-
-/// The mean of some turns: their sum, each on the first's side, normalized.
-fn mean_turn(turns: Vec<Quat>, first: u32, stride: u32, count: u32) -> Quat {
-    var sum = vec4(0.0)
-    let a = turns[first].v
-    for k in 0..count {
-        let v = turns[first + k * stride].v
-        sum += if dot(v, a) < 0.0 { -v } else { v }
-    }
-    Quat { v: normalize(sum) }
-}
-
-/// A turn `g` times as far about its own axis.
-fn scaled(q: Quat, g: f32) -> Quat {
-    let v = if q.v.w < 0.0 { -q.v } else { q.v }
-    let axis = v.xyz
-    if length(axis) < 1.0e-7 {
-        return Quat::identity()
-    }
-    Quat::axis_angle(axis, 2.0 * acos(min(v.w, 1.0)) * g)
-}
-
-/// How a clip is made livelier (`livelier`): how much further its arms swing, and its spine
-/// sways and turns, about where they're carried, both 1 as taken.
-pub struct Lively: Copy {
-    pub swing: f32 = 1.0,
-    pub sway: f32 = 1.0,
-}
-
-/// `clip` livelier, as an animator pushes a take: each arm's bones (collarbone to hand) carried
-/// on average as `carriage` carries them (an idle's loose hang, the elbows a little bent) and
-/// swinging about that `how.swing` times as far as the take swings them; the spine's bones
-/// (spine to upper chest) swaying and turning `how.sway` times as far about their own mean. Each
-/// frame is changed on its own, so a looped clip still loops.
-pub fn livelier(clip: Clip, carriage: Clip, rig: Rig, how: Lively) -> Clip {
-    var out = clip.clone()
-    let nb = rig.bones.len()
-    let arms = [
-        "leftShoulder",
-        "leftUpperArm",
-        "leftLowerArm",
-        "leftHand",
-        "rightShoulder",
-        "rightUpperArm",
-        "rightLowerArm",
-        "rightHand",
-    ]
-    for name in arms {
-        let b = rig.find(name)
-        if b != NONE {
-            let own = mean_turn(clip.turns, b, nb, clip.frames)
-            let carried = mean_turn(carriage.turns, b, nb, carriage.frames)
-            for f in 0..clip.frames {
-                let d = clip.turns[f * nb + b].mul(own.inverse())
-                out.turns[f * nb + b] = scaled(d, how.swing).mul(carried)
-            }
-        }
-    }
-    for name in ["spine", "chest", "upperChest"] {
-        let b = rig.find(name)
-        if b != NONE {
-            let own = mean_turn(clip.turns, b, nb, clip.frames)
-            for f in 0..clip.frames {
-                let d = clip.turns[f * nb + b].mul(own.inverse())
-                out.turns[f * nb + b] = scaled(d, how.sway).mul(own)
-            }
-        }
-    }
-    out
-}
 
 /// A rig's rest pose as a clip of one frame: the bind pose (a T-pose for Quaternius's bodies).
 pub fn rest_clip(rig: Rig) -> Clip {

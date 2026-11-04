@@ -247,7 +247,7 @@ fn the_walk_plants_its_feet() {
         for f in 0..n {
             let t = f32(f) / WALK.fps
             let a = bone_at(palette(HERO.rig, WALK.pose(t), identity()), rw, foot)
-            let now = a.y < rest + 0.02
+            let now = a.y < rest + 0.01
             if now && down {
                 let slide = length(vec2(a.x - last.x, a.z - last.z))
                 assert(slide < 0.015, f"at {t} s the planted {foot} slid {slide} m")

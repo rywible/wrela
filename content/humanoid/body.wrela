@@ -2,10 +2,10 @@
 // Quaternius body on VRM's bones, its T-pose, an idle and a walk.
 
 use engine::humanoid
-use engine::humanoid::{
-    Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, Lively, Paint, Retarget, UNREAL,
-}
+use engine::humanoid::{Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, Paint, Retarget, UNREAL}
 use engine::bvh
+use engine::stride
+use engine::stride::Gait
 
 /// The body's colours, sRGB: its skin, its hair and brows, its eyes.
 pub const SKIN = vec3(0.86, 0.66, 0.52)
@@ -37,12 +37,12 @@ pub const IDLE: Clip = humanoid::retarget(
 )
 
 /// A 100STYLE walk (assets/neutral_fw.bvh.LICENSE.txt): the stride of the take that loops
-/// best, turned to walk ahead, its feet planted; its arms carried as the idle carries them and
-/// swinging further, its spine swaying more (`livelier`); its hands relaxed (the
-/// take has no fingers).
+/// best, turned to walk ahead, made human (`engine::stride`: its feet rolling heel to toe and
+/// planted, its pelvis, spine, head and arms as people carry them, its hands loose; the take
+/// has no fingers).
 @fuel(2 ** 40)
-pub const WALK: Clip = humanoid::with_hands(
-    humanoid::livelier(
+pub const WALK: Clip = stride::loose_hands(
+    stride::humanised(
         humanoid::retarget(
             humanoid::take_of_bvh(
                 bvh::read(embed("assets/neutral_fw.bvh")),
@@ -52,14 +52,11 @@ pub const WALK: Clip = humanoid::with_hands(
                 to: 138,
             ).looped(shortest: 60, longest: 110),
             HERO.rig.clone(),
-            Retarget { face_ahead: true, looped: true, planted: true, carried: true },
+            Retarget { face_ahead: true, looped: true, carried: true },
         ),
         IDLE.clone(),
         HERO.rig.clone(),
-        Lively { swing: 1.8, sway: 1.5 },
+        Gait {},
     ),
-    IDLE.clone(),
-    frame: 0,
-    rig: HERO.rig.clone(),
-    curl: 0.3,
+    HERO.rig.clone(),
 )
