@@ -83,7 +83,8 @@ impl Switches for Realistic {}
 
 /// The pose sheet (`--set SHEET=true`): no fight; the wanderer and the brawler side by side,
 /// each playing its moves in turn (`SLOT` seconds each), seen from `VIEW` (0 three-quarters
-/// from the front, on the sun's side; 1 side on; 2 three-quarters from behind), for reviewing
+/// from the front, on the sun's side; 1 side on; 2 three-quarters from behind; 3 the heads and
+/// shoulders, close), for reviewing
 /// the drawing.
 pub const SHEET: bool = false
 pub const VIEW: u32 = 0
@@ -603,7 +604,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         let head = s.pb.at[s.b.1.head.index]
         s.star_at = head
         s.star_time = time
-        s.star_size = 0.9
+        s.star_size = 0.55
         s.star_way = vec3(0.0, 1.0, 0.0)
         s.star_sharp = 0.0
         let back = vec3(w.foe.pos.x - w.you.pos.x, 0.0, w.foe.pos.y - w.you.pos.y)
@@ -865,10 +866,10 @@ fn sheet(s: mut State, time: f32, width: u32, height: u32) {
     s.scene.bars = false
     let eye = if VIEW == 0 { vec3(0.6, 1.25, 5.2) } else if VIEW == 1 {
         vec3(5.4, 1.25, 0.3)
-    } else {
-        vec3(-2.0, 1.4, -4.8)
-    }
-    let aim = Aim { eye, at: vec3(0.05, 0.95, 0.0), fovy: 0.62, moving_at: vec3(0.0, 1.0, 0.0) }
+    } else if VIEW == 2 { vec3(-2.0, 1.4, -4.8) } else { vec3(0.4, 1.85, 2.6) }
+    let at = if VIEW == 3 { vec3(0.0, 1.75, 0.0) } else { vec3(0.05, 0.95, 0.0) }
+    let fovy = if VIEW == 3 { 0.5 } else { 0.62 }
+    let aim = Aim { eye, at, fovy, moving_at: vec3(0.0, 1.0, 0.0) }
     s.frame.intensity = 0.08
     s.frame.look.line_px = 1.9
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
