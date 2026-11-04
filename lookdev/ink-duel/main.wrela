@@ -1081,12 +1081,13 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
         var sd = s.cam.side
         if s.cam.mode != 1 {
             s.cam.shot_side = sd
-            if stone_between(goal_at, mid + right * (2.3 * sd) + up * 0.4) < 1.0 {
+            if stone_between(goal_at, mid + right * (3.1 * sd) + up * 0.55) < 1.0 {
                 s.cam.shot_side = -sd
             }
         }
         sd = s.cam.shot_side
-        goal_eye = mid + right * (2.3 * sd) - ahead * 0.35 + up * 0.4
+        // Far enough off the line (3.1 m) that the broken brawler's near arm doesn't fill the frame.
+        goal_eye = mid + right * (3.1 * sd) - ahead * 0.35 + up * 0.55
         fovy = mix(0.74, 0.58, smoothstep(f32(COILED), f32(CONTACT), t))
         hz = 6.0
     } else {
