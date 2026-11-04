@@ -198,6 +198,11 @@ pub fn hatched(m: MarkSample, intensity: f32) -> f32 {
     if m.class == style::GROUND {
         return first * rough_lines(m, HATCH_ANGLE)
     }
+    // A stone's shade the same broken layer, and its deepest a wash under it: crossed, a rock's
+    // shade side went to a black lattice, a chain-link fence stood on end.
+    if m.class == style::STONE {
+        return max(first * rough_lines(m, HATCH_ANGLE), 0.3 * second)
+    }
     max(
         first * hatch_lines(m, HATCH_ANGLE),
         second * hatch_lines(m, HATCH_ANGLE + 1.0471976),
