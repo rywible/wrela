@@ -43,9 +43,8 @@ pub const STYLE: f32 = 1.0
 /// and ink (`--set LOOK=2`).
 pub const LOOK: f32 = 3.0
 
-/// Ink tethers from the rock's underside into the sea (`--set TETHERS=1`), and the cathedral lit
-/// from within, its stained glass beaming coloured light round over the sea (`--set LANTERN=1`).
-pub const TETHERS: f32 = 0.0
+/// The cathedral lit from within, its stained glass beaming coloured light round over the sea
+/// (`--set LANTERN=1`).
 pub const LANTERN: f32 = 0.0
 
 pub struct State {
@@ -101,7 +100,6 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let shot = Shot {
         style: STYLE,
         look: LOOK,
-        tethers: TETHERS,
         lantern: LANTERN,
         ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig),
     }

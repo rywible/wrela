@@ -538,7 +538,15 @@ pub fn isle_normal(p: vec3, e: f32) -> vec3 {
 
 /// What the isle is made of at `p` (the world's), facing `n`, material `id`: its albedo, its
 /// roughness, its metal, the light it gives (its lit windows) and the ink's line field there.
-pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
+/// How much of a pattern repeating every `period` m a pixel `foot` m wide can show: all of it
+/// while it spans four pixels, none once it spans two. (Finer, it would only crawl.)
+fn shown(period: f32, foot: f32) -> f32 {
+    1.0 - smoothstep(0.25 * period, 0.5 * period, foot)
+}
+
+/// (`foot`: how wide a pixel is there, m: the stone's courses and the lead's seams, finer than
+/// a pixel far off, are left to their average.)
+pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, vec3, f32) {
     let q = (p - ISLE) / SCALE
     if id == ROCK {
         // Bedded stone: warm sandstone and grey beds, darker toward the underside, the plateau's
@@ -585,8 +593,9 @@ pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
         // Lead, sheeted in bays with standing seams down the slope; dulled, a few sheets newer.
         let c = at_church(p - ISLE)
         let along = if abs(n.x) > abs(n.z) { c.z } else { c.x }
-        let seam = smoothstep(0.06, 0.0, abs(fract(along / 0.9) - 0.5) - 0.44)
-        let sheet = hash3(vec3(floor(along / 0.9), floor(c.y / 3.0), 1.0))
+        let lead_k = shown(0.9 * GRAND, foot)
+        let seam = smoothstep(0.06, 0.0, abs(fract(along / 0.9) - 0.5) - 0.44) * lead_k
+        let sheet = mix(0.5, hash3(vec3(floor(along / 0.9), floor(c.y / 3.0), 1.0)), lead_k)
         var a = mix(vec3(0.13, 0.15, 0.17), vec3(0.2, 0.22, 0.24), sheet)
         a *= 1.0 - 0.35 * seam
         (a, 0.55 + 0.2 * sheet, 0.25, vec3(0.0), 1.0)
@@ -602,8 +611,10 @@ pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
             0.08,
             0.0,
             min(abs(fract(c.y * 0.6) - 0.5), abs(fract((c.x + c.z) * 0.6) - 0.5)) - 0.42,
-        )
-        (vec3(0.02), 0.08, 0.0, tint * (1.0 - lead) * 5.0, 1.0)
+        ) *
+            shown(1.67 * GRAND, foot) +
+            0.15 * (1.0 - shown(1.67 * GRAND, foot))
+        (vec3(0.02), 0.08, 0.0, tint * (1.0 - lead) * 1.8, 1.0)
     } else {
         // Limestone in ashlar: courses 0.6 m, blocks staggered, each its own tint; rain's dark
         // streaks below every ledge; grime at the foot; lichen.
@@ -611,15 +622,21 @@ pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
         let along = if abs(n.x) > abs(n.z) { c.z } else { c.x }
         let row = floor(c.y / 0.6)
         let col = floor(along / 1.2 + row * 0.5)
-        let block = hash3(vec3(row, col, 3.0))
-        let joint = max(
-            smoothstep(0.05, 0.0, abs(fract(c.y / 0.6) - 0.5) - 0.44),
-            smoothstep(0.03, 0.0, abs(fract(along / 1.2 + row * 0.5) - 0.5) - 0.47),
-        ) *
+        let course_k = shown(0.6 * GRAND, foot)
+        let block = mix(0.5, hash3(vec3(row, col, 3.0)), shown(1.2 * GRAND, foot))
+        let joint = course_k *
+            max(
+                smoothstep(0.05, 0.0, abs(fract(c.y / 0.6) - 0.5) - 0.44),
+                smoothstep(0.03, 0.0, abs(fract(along / 1.2 + row * 0.5) - 0.5) - 0.47),
+            ) *
             smoothstep(0.7, 0.3, abs(n.y))
         var a = vec3(0.62, 0.56, 0.46) * (0.86 + 0.22 * block)
         a = mix(a, vec3(0.5, 0.52, 0.5), 0.3 * smoothstep(0.3, 0.8, noise3(c * 0.05)))
-        let streak = smoothstep(0.45, 0.9, noise(vec2(along * 0.9, c.y * 0.04))) *
+        let streak = mix(
+            0.25,
+            smoothstep(0.45, 0.9, noise(vec2(along * 0.9, c.y * 0.04))),
+            shown(1.1 * GRAND, foot),
+        ) *
             smoothstep(0.5, -0.2, n.y)
         a *= 1.0 - 0.45 * streak
         a *= 1.0 - 0.3 * smoothstep(12.0, 0.0, c.y)
@@ -628,71 +645,4 @@ pub fn isle_material(p: vec3, n: vec3, id: f32) -> (vec3, f32, f32, vec3, f32) {
         a = mix(a, vec3(0.36, 0.38, 0.22), lichen * 0.5)
         (a, 0.85, 0.0, vec3(0.0), 1.0)
     }
-}
-
-/// The ink tethers: where each hangs from the rock (the world's m, up inside its underside, so
-/// each comes out of the stone) and where it goes into the sea below, near under it: ink let down from the
-/// rock as a jellyfish lets down its tentacles, two of them thinner strands beside the others.
-const TETHER_TOP = [
-    vec3(-1996.0, 1180.0, 7362.0),
-    vec3(-1373.0, 1250.0, 7680.0),
-    vec3(-1642.0, 1200.0, 7180.0),
-    vec3(-1843.0, 1250.0, 7772.0),
-    vec3(-1629.0, 760.0, 7486.0),
-    vec3(-1990.0, 1150.0, 7375.0),
-    vec3(-1640.0, 820.0, 7480.0),
-]
-const TETHER_FOOT = [
-    vec3(-2190.0, -30.0, 7300.0),
-    vec3(-1150.0, -30.0, 7790.0),
-    vec3(-1660.0, -30.0, 6960.0),
-    vec3(-1990.0, -30.0, 7960.0),
-    vec3(-1560.0, -30.0, 7430.0),
-    vec3(-1880.0, -30.0, 7250.0),
-    vec3(-1450.0, -30.0, 7560.0),
-]
-
-/// Where tether `i` runs at `u` of the way down it (0 at the rock, 1 in the sea) at time `t`:
-/// sinuous as a hanging strand of something thick, its waves running slowly down it, swaying
-/// most midway, its ends held.
-pub fn tether_at(i: u32, u: f32, t: f32) -> vec3 {
-    let a = TETHER_TOP[i]
-    let b = TETHER_FOOT[i]
-    let fi = f32(i)
-    let free = pow(sin(u * 3.14159), 0.7)
-    let wave = vec2(
-        sin(u * 7.9 + fi * 1.9 - t * 0.35) * 46.0 + sin(u * 17.0 + fi * 3.1 - t * 0.6) * 14.0,
-        cos(u * 6.7 + fi * 2.7 - t * 0.29) * 40.0 + cos(u * 15.0 + fi * 0.7 - t * 0.5) * 12.0,
-    ) *
-        free
-    vec3(mix(a.x, b.x, u) + wave.x, mix(a.y, b.y, u), mix(a.z, b.z, u) + wave.y)
-}
-
-/// The tethers at `p` (the world's) at time `t`: the distance to the nearest. Each thick where it
-/// leaves the rock, drawn out thin as it falls, and gathering again where it meets the water.
-pub fn tethers(p: vec3, t: f32) -> f32 {
-    var d = 1.0e9
-    for i in 0..7 {
-        let a = TETHER_TOP[i]
-        let b = TETHER_FOOT[i]
-        let u = clamp((a.y - p.y) / (a.y - b.y), 0.0, 1.0)
-        let c = tether_at(i, u, t)
-        let thin = if i > 4 { 0.6 } else { 1.0 }
-        let r = (mix(28.0, 9.0, smoothstep(0.0, 0.4, u)) + 13.0 * smoothstep(0.9, 1.0, u)) * thin
-        // (Its strands twist round it as it runs.)
-        let rel = p - c
-        let twist = sin(atan2(rel.z, rel.x) * 3.0 + u * 60.0 + f32(i)) * 1.2 * thin
-        d = min(d, (length(rel) - r - twist) * 0.6)
-    }
-    d
-}
-
-/// The sphere that holds every tether.
-pub fn tether_bounds() -> vec4 {
-    vec4(-1640.0, 620.0, 7500.0, 1050.0)
-}
-
-/// Where tether `i` goes into the sea (x, z).
-pub fn tether_foot(i: u32) -> vec2 {
-    vec2(TETHER_FOOT[i].x, TETHER_FOOT[i].z)
 }

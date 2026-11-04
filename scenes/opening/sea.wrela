@@ -3,8 +3,9 @@
 
 use look::noise
 
-/// The rate the sea and the skiff are drawn at (a second's drawings): on twos at 24.
-pub const HELD: f32 = 12.0
+/// The rate the sea and the skiff are drawn at (a second's drawings): on ones at 24, as the clean
+/// look's world moves. (12 holds them on twos, as a hand-drawn film's are.)
+pub const HELD: f32 = 24.0
 
 /// `time` held to the last drawing.
 pub fn held(time: f32) -> f32 {
