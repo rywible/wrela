@@ -117,11 +117,12 @@ pub const DISARRAY: f32 = 0.35
 pub const SMEAR_FRAMES: f32 = 2.0
 
 /// The impact frames after the riposte's contact, the launch and the landing (frames at 60 a
-/// second), and after a posture breaks.
+/// second), after a posture breaks, and after a hook lands or a blow is deflected.
 pub const CONTACT_FLASHES: [u32; 5] = [0, 1, 2, 7, 8]
 pub const LAUNCH_FLASHES: [u32; 2] = [0, 1]
 pub const LAND_FLASHES: [u32; 1] = [0]
 pub const BROKE_FLASHES: [u32; 1] = [0]
+pub const HEAVY_FLASHES: [u32; 1] = [0]
 
 /// The moment's intensity: at rest; in the brawler's second phase; and what each event adds.
 pub const QUIET: f32 = 0.08
@@ -263,6 +264,8 @@ pub struct State {
     dead_b: f32,
     /// When each event came (the frame's time), for its impact frames.
     contact_at: f32,
+    /// When a heavy blow (a hook) last landed, or a blow was last deflected: its impact frame.
+    heavy_at: f32,
     launch_at: f32,
     landed_at: f32,
     broke_at: f32,
@@ -341,6 +344,7 @@ pub fn init() -> State {
         pa: physics::body(sa, ka, WANDERER.tall),
         pb: physics::body(sb, kb, BRAWLER.tall),
         contact_at: -1.0e9,
+        heavy_at: -1.0e9,
         launch_at: -1.0e9,
         landed_at: -1.0e9,
         broke_at: -1.0e9,
@@ -540,6 +544,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.star_at = at
         s.star_time = time
         s.star_size = if heavy { 0.42 } else { 0.28 }
+        if heavy {
+            s.heavy_at = time
+        }
         s.star_way = normalize(vec3(-from.x, 0.25, -from.z) + vec3(1.0e-4))
         s.star_sharp = 0.0
         physics::struck(
@@ -585,6 +592,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             }
             physics::struck(mut s.pb, s.pb.at[s.b.1.chest.index], back * 1.2, 0.25, 1.0 / 60.0)
             bump += ON_DEFLECT
+            s.heavy_at = time
         } else {
             physics::struck(mut s.pa, guard, -back * 1.6, 0.25, 1.0 / 60.0)
             bump += ON_HIT
@@ -752,7 +760,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let impact = flashing(time - s.contact_at, CONTACT_FLASHES) ||
         flashing(time - s.launch_at, LAUNCH_FLASHES) ||
         flashing(time - s.landed_at, LAND_FLASHES) ||
-        flashing(time - s.broke_at, BROKE_FLASHES)
+        flashing(time - s.broke_at, BROKE_FLASHES) ||
+        flashing(time - s.heavy_at, HEAVY_FLASHES)
     s.frame.impact = if impact { 1.0 } else { 0.0 }
     // The smear; none on an impact frame, whose stark silhouettes must read clean.
     let held = if s.since < SMEAR_FRAMES && !impact { 1.0 } else { 0.0 }
@@ -1040,8 +1049,9 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
     var hz = 2.2
     if mode == 0 {
         // Toric framing (`toric`): the wanderer's chest a third in from one side of the frame, the
-        // brawler's a quarter in from the other and a little higher (both clear of the bars below); the camera on its side of the
-        // fight's line, as far from the wanderer as the fight is wide.
+        // brawler's a quarter in from the other and a little higher, both above the middle (their
+        // feet clear of the bars below); the camera on its side of the fight's line, as far from
+        // the wanderer as the fight is wide.
         // The subjects smoothed, and the fight's width damped, so a dash or a knock-back doesn't
         // jerk the shot.
         s.cam.sa = mix(s.cam.sa, you, vec3(1.0 - exp(-dt * 8.0)))
@@ -1053,8 +1063,8 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
         let (eye, look) = toric(
             a,
             b,
-            vec2(0.34 * sd, 0.02),
-            vec2(-0.26 * sd, 0.14),
+            vec2(0.34 * sd, 0.1),
+            vec2(-0.26 * sd, 0.2),
             fovy,
             aspect,
             clamp(2.0 + 0.45 * s.cam.span, 2.5, 4.6),
