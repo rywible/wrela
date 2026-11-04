@@ -385,10 +385,13 @@ pub fn play(b: mut Bot, w: World) -> Intent {
     if w.foe.act == Act::Broken {
         let front = w.foe.pos + facing(w.foe.heading) * 1.2
         let to = front - me.pos
-        if length(to) > 0.35 {
-            return Intent { walk: normalize(to) }
+        if riposte(me, w.foe, FOE) && length(to) < 0.6 {
+            return Intent { face: w.foe.pos - me.pos, press: Press::Moves { index: JAB_N } }
         }
-        return Intent { face: w.foe.pos - me.pos, press: Press::Moves { index: JAB_N } }
+        if length(to) > 0.1 {
+            return Intent { walk: normalize(to), face: w.foe.pos - me.pos }
+        }
+        return Intent { face: w.foe.pos - me.pos }
     }
     let open = f.act == Act::Attack &&
         f.move != ONE_N &&

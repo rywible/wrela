@@ -209,7 +209,11 @@ impl Fighter {
     /// Breaks its posture (open to a riposte), or staggers it `ticks` (none: not at all).
     pub fn struck(mut self, stagger: u32, r: Rules) {
         if self.posture >= r.posture {
-            self.begin(Act::Broken)
+            // Broken once: a blow on a broken fighter doesn't break it again (nor keep it open
+            // longer).
+            if self.act != Act::Broken {
+                self.begin(Act::Broken)
+            }
             return
         }
         if stagger > 0 && self.act != Act::Broken {
@@ -583,6 +587,11 @@ fn a_full_posture_breaks_open_to_a_riposte() {
     assert(riposte(a, b, r), "open from in front")
     let behind = fighter(vec2(0.0, 2.0), 3.1415927, r)
     assert(!riposte(behind, b, r), "not from behind")
+    // Another blow on it doesn't start its broken time again.
+    let open = b.t
+    b.t = open + 30
+    b.struck(0, r)
+    assert(b.act == Act::Broken && b.t == open + 30, "struck while broken, it stays as broken")
     assert(begin_riposte(mut a, mut b, r) && b.act == Act::Taken && !b.touchable(r))
 }
 
