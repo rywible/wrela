@@ -1,6 +1,5 @@
 // The duel's arena as the frame draws it (`engine::frame::Scene`), the yard's (lookdev/ink-yard)
-// grown for a fight: ground flat for 12 m round its middle, low mounds past it, a bowl of ragged
-// rock walls climbing round it (`walls`), cratered where the brawler lands (`Mounds::crater`); nine
+// grown for a fight: a flat floor, a bowl of ragged rock walls climbing round it (`walls`), cratered where the brawler lands (`Mounds::crater`); nine
 // tall standing stones in a ring round it (realized a frame
 // each at load, then static casters); the two fighters, cast into the moving shadow map; the dust
 // a landing throws up; and the bars over the finished frame (`hud`).
@@ -34,7 +33,7 @@ pub const SUN = vec3(-0.3, 0.9, -0.32)
 pub const STONES: u32 = 9
 pub const RING: f32 = 12.0
 
-/// The arena's ground: low mounds, flat within 12 m of its middle; packed earth, paler where it's
+/// The arena's ground: flat, walled (`walls`); packed earth, paler where it's
 /// worn flat, darker on the slopes. And its crater, where a blow drove into it (`crater`: its
 /// middle's x and z, its radius and its depth; 0 deep, none): a bowl with a rim thrown up round it.
 pub struct Mounds: Copy + GpuData {
@@ -43,10 +42,9 @@ pub struct Mounds: Copy + GpuData {
 
 impl Terrain for Mounds {
     fn height(self, x: f32, z: f32) -> f32 {
-        let r = length(vec2(x, z))
-        let rise = 0.7 * sin(x * 0.09 + 0.4) * cos(z * 0.07) +
-            0.3 * sin(x * 0.23 + 1.3) * sin(z * 0.19)
-        (rise + 0.5) * smoothstep(12.0, 20.0, r) + walls(x, z) + cratered(self.crater, vec2(x, z))
+        // (Low mounds round the floor rippled the walls' foot, each ripple's shade side a dark
+        // blot behind every shot: the floor is flat and the walls rise smooth.)
+        walls(x, z) + cratered(self.crater, vec2(x, z))
     }
 
     fn steepest(self) -> f32 {
@@ -58,7 +56,7 @@ impl Terrain for Mounds {
         let slope = 1.0 - saturate(n.y)
         let earth = mix(vec3(0.30, 0.24, 0.16), vec3(0.42, 0.36, 0.25), vec3(worn))
         // The walls' rock: grey over the earth, darker where steepest.
-        let rock = mix(vec3(0.36, 0.34, 0.31), vec3(0.2, 0.19, 0.18), vec3(saturate(slope * 2.5)))
+        let rock = mix(vec3(0.52, 0.48, 0.42), vec3(0.4, 0.37, 0.33), vec3(saturate(slope * 2.5)))
         let walled = smoothstep(WALL_FROM, WALL_FROM + 3.0, length(at.xz))
         Cover {
             albedo: mix(
@@ -72,20 +70,22 @@ impl Terrain for Mounds {
 }
 
 /// The bowl's walls at (`x`, `z`): rock rising `WALL` metres from about `WALL_FROM` to
-/// `WALL_TO` from the middle, its edge ragged round the ring, broken into ledges as it climbs, so
+/// `WALL_TO` from the middle, its edge ragged round the ring, so
 /// every shot has a ground behind it and the arena's scale reads (an open plain read as nowhere).
-pub const WALL: f32 = 9.0
+/// Its rock pale, so its shade side reads as shade and not as a hole.
+pub const WALL: f32 = 6.0
 pub const WALL_FROM: f32 = 14.0
-pub const WALL_TO: f32 = 23.0
+pub const WALL_TO: f32 = 27.0
 
 pub fn walls(x: f32, z: f32) -> f32 {
     let r = length(vec2(x, z))
     let a = atan2(z, x)
-    let ragged = 1.6 * sin(a * 5.0 + 0.7) + 0.9 * sin(a * 11.0 + 2.1) + 0.5 * sin(a * 23.0 + 0.3)
+    let ragged = 0.6 * sin(a * 5.0 + 0.7) + 0.35 * sin(a * 11.0 + 2.1)
     let w = smoothstep(WALL_FROM + 0.4 * ragged, WALL_TO + ragged, r)
-    // Ledges: the climb stepped where a slow wave across it says.
-    let step = 0.8 * sin(r * 0.9 + a * 3.0) * w * (1.0 - w) * 4.0
-    WALL * w + step
+    // (Steep, lobed walls turned stretches of themselves from the high sun, and the look's two
+    // bands made each a black blot behind every shot: the walls rise gently and nearly round, so
+    // the sun reaches all of them.)
+    WALL * w
 }
 
 /// A crater's height at `p` (`Mounds::crater`): down `depth` at its middle, a bowl out to its
@@ -110,7 +110,7 @@ fn stone_at(k: u32) -> (vec3, f32, u32) {
     let a = f32(k) / f32(STONES) * 6.2831853 + 0.3
     let r = RING + 1.2 * sin(f32(k) * 2.7)
     let p = vec2(sin(a), cos(a)) * r
-    (vec3(p.x, ground_at(p) + 2.0, p.y), a * 1.7, 11 + k * 7)
+    (vec3(p.x, ground_at(p) + 1.6, p.y), a * 1.7, 11 + k * 7)
 }
 
 /// A blow's dust: ninety dark clods of the arena's earth thrown up from round where it lands, a few
@@ -221,7 +221,7 @@ impl Scene for Arena {
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
         if self.stones.len() < STONES {
             let (at, turn, seed) = stone_at(self.stones.len())
-            self.stones.push(realize_stone(1.0, vec3(0.8, 2.4, 0.7), seed, at, turn))
+            self.stones.push(realize_stone(1.0, vec3(0.75, 2.1, 0.65), seed, at, turn))
         }
         for mut st in self.stones {
             st.settle()

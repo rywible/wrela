@@ -902,7 +902,7 @@ fn touching(
 }
 
 /// The fastest the camera's look turns (radians a second).
-pub const TURN_RATE: f32 = 2.4
+pub const TURN_RATE: f32 = 4.0
 
 /// Where a camera can stand so two points `a` and `b` land at screen points `pa` and `pb` (each
 /// -1 to 1 across and up), for a vertical field of view `fovy` and an `aspect`: Lino and Christie's
@@ -993,8 +993,8 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
             vec2(-0.26 * sd, 0.14),
             fovy,
             aspect,
-            clamp(2.2 + 0.55 * s.cam.span, 2.6, 6.5),
-            0.38,
+            clamp(2.0 + 0.45 * s.cam.span, 2.5, 4.6),
+            0.14,
             sd,
         )
         goal_eye = eye
@@ -1029,29 +1029,6 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
     sprung(mut s.cam.eye, mut s.cam.ve, goal_eye, dt, hz)
     sprung(mut s.cam.at, mut s.cam.va, goal_at, dt, hz * 1.6)
     s.cam.fovy = mix(s.cam.fovy, fovy, 1.0 - exp(-dt * 6.0))
-    // The safe area: both fighters' chests and heads inside the frame's middle four fifths, else
-    // the camera backs away from what it looks at until they are (a hard constraint: a spring
-    // that lags a dash must never lose a fighter).
-    if mode == 0 {
-        for _ in 0..6 {
-            let probe = Aim { eye: s.cam.eye, at: s.cam.at, fovy: s.cam.fovy, moving_at: s.cam.at }
-            var worst = 0.0
-            for p in [
-                you + up * 1.2,
-                you + up * 1.85,
-                ground_foe + up * 1.3,
-                ground_foe + up * 2.05,
-            ] {
-                let (px, z) = on_screen(probe, p, vec2(aspect, 1.0))
-                let ndc = vec2(px.x / aspect * 2.0 - 1.0, 1.0 - px.y * 2.0)
-                worst = max(worst, if z <= 0.2 { 2.0 } else { max(abs(ndc.x), abs(ndc.y) * 1.1) })
-            }
-            if worst <= 0.82 {
-                break
-            }
-            s.cam.eye = s.cam.eye + (s.cam.eye - s.cam.at) * 0.12
-        }
-    }
     // The look's turn, at most `TURN_RATE` a second: no whip.
     let was = normalize(s.cam.look)
     let now = normalize(s.cam.at - s.cam.eye)
@@ -1065,6 +1042,33 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
     s.cam.look = normalize(s.cam.at - s.cam.eye)
     var eye = s.cam.eye
     var fov = s.cam.fovy
+    var look_at = s.cam.at
+    // The safe area: both fighters' chests and heads inside the frame's middle four fifths, else
+    // this frame's eye backs away from what it looks at until they are (a hard constraint for the
+    // frame drawn, not stored: a spring that lags a dash must never lose a fighter, and pushing
+    // the camera itself back would pile up frame on frame).
+    if mode == 0 {
+        for _ in 0..8 {
+            let probe = Aim { eye, at: look_at, fovy: fov, moving_at: look_at }
+            var worst = 0.0
+            for p in [
+                you + up * 1.2,
+                you + up * 1.85,
+                ground_foe + up * 1.3,
+                ground_foe + up * 2.05,
+            ] {
+                let (px, z) = on_screen(probe, p, vec2(aspect, 1.0))
+                let ndc = vec2(px.x / aspect * 2.0 - 1.0, 1.0 - px.y * 2.0)
+                worst = max(worst, if z <= 0.2 { 2.0 } else { max(abs(ndc.x), abs(ndc.y) * 1.1) })
+            }
+            if worst <= 0.84 {
+                break
+            }
+            // Back away, and turn toward the pair.
+            look_at = mix(look_at, mix(you, ground_foe, vec3(0.5)) + up * 1.3, vec3(0.25))
+            eye = eye + (eye - look_at) * 0.07
+        }
+    }
     if w.stop > 0 {
         let k = i32(time * 60.0)
         let shake = vec3(hash2(k, 3) - 0.5, hash2(k, 7) - 0.5, hash2(k, 11) - 0.5) *
@@ -1072,7 +1076,7 @@ fn camera(s: mut State, w: World, you: vec3, foe: vec3, dt: f32, time: f32, aspe
         eye = eye + shake
         fov = fov * 0.93
     }
-    Aim { eye, at: s.cam.at, fovy: fov, moving_at: mix(you, foe, vec3(0.5)) }
+    Aim { eye, at: look_at, fovy: fov, moving_at: mix(you, foe, vec3(0.5)) }
 }
 
 /// The capture `MOCAP` names, as poses, from `MOCAP_FROM` (none when it names none).
