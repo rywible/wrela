@@ -1,0 +1,306 @@
+// A move keyed over its guide: the captured motion is the guide, not the move. An author keys the
+// poses that make it a move (the anticipation wound past anything a boxer would do, the blow's
+// line of action, the follow-through held as a pose) and the capture fills what's between them,
+// bent to meet each key: motion warping (Witkin and Popović 1995), the key's difference from the
+// guide at its tick spread smoothly over the time either side of it, so the guide's weight, its
+// overlap and its small motions run on underneath poses no performer struck.
+//
+// The rest is anime's timing (Thomas and Johnston 1981 for the principles; Japanese limited
+// animation's holds and snaps for their use):
+// - a key may hold its drawing (`Key::hold`, ticks), and the motion after it snaps to the next key
+//   in the time that's left: the move's ticks are the rules', so a hold costs nothing to the sim
+//   and the blow still lands on its tick;
+// - the guide's own departures from guard can be pushed further (`Keyed::push`): exaggeration;
+// - keys are placed on the rules' phases (`Phase`), so retuning a move's wind-up moves its keys
+//   with it;
+// - a key may pose only some parts (`Key::parts`: the striking arm, the trunk), the rest following
+//   the guide; or be written as an offset from the guide (`Key::offset`: "the chest turned away
+//   another 0.4");
+// - with no guide (`none`), the keys alone are the move, over the guard.
+//
+// The result is played down the body's chain (the hips first, the hands last), as authored beats
+// are (`pose::chained`), in the move's real ticks so a held key lets the hands arrive.
+
+use engine::clip::{SMOOTH, eased}
+use engine::combat::Move
+use pose::{ALL, HEAD, LEGS, NONE, Pose, TRUNK, difference, lerped, only, plus, pushed}
+use std::string::Bytes
+
+/// Where in a move a key falls: one of the rules' phases (its wind-up, its hitting ticks, its
+/// recovery), `Key::u` of the way through it.
+pub enum Phase: Copy + Eq {
+    Windup,
+    Active,
+    Recovery,
+}
+
+/// A key: where it falls (`phase`, `u` of the way through it), its pose (or, `offset`, how far
+/// from the guide's pose there), which parts it poses (`pose::TRUNK` …; the rest follow the
+/// guide), how many ticks its drawing is held, and how it eases on to the next key.
+pub struct Key: Copy {
+    pub phase: Phase,
+    pub u: f32 = 0.0,
+    pub pose: Pose,
+    pub parts: u32 = ALL,
+    pub offset: bool = false,
+    pub hold: f32 = 0.0,
+    pub ease: u32 = SMOOTH,
+}
+
+/// A captured move: its poses (60 a second) and the frames that mark it (`Marks`).
+pub struct Captured: Clone {
+    pub poses: Vec<Pose>,
+    pub marks: Marks,
+}
+
+/// Where a captured move's beats fall in its clip (its frames, 60 a second): where it starts
+/// from guard, where it's chambered (a held blow's hold: none, -1), where its fist meets its
+/// target, and where it's back on guard. A move's ticks are fitted to them (`warped`), so the
+/// rules' timing is kept and the performer's motion fills it.
+pub struct Marks: Copy {
+    pub start: f32,
+    pub hold: f32 = -1.0,
+    pub contact: f32,
+    pub end: f32,
+}
+
+/// A move as it's drawn: its guide (none: the keys alone, over `rest`), its keys in order, how far
+/// the guide's departures from `rest` are pushed, the pose it's pushed from (the guide's first, or
+/// with none the guard), and (made from them
+/// once, `keyed`) each key's tick and its difference from the guide there.
+pub struct Keyed: Clone {
+    pub guide: Captured,
+    pub keys: Vec<Key>,
+    pub push: f32 = 0.0,
+    pub rest: Pose,
+    pub ticks: Vec<f32>,
+    pub d: Vec<Pose>,
+}
+
+/// The frame of a captured move's clip for its tick `t` (`m`'s marks, the rules' move `mv`): its
+/// wind-up from start to contact (through the hold: reached in its first third, held until its
+/// last eighth), its hitting ticks just past contact, its recovery back to guard.
+pub fn warped(m: Marks, mv: Move, t: f32) -> f32 {
+    let w = f32(mv.windup)
+    let a = f32(mv.active)
+    let r = f32(mv.recovery)
+    if t < w {
+        let u = t / max(w, 1.0)
+        if m.hold >= 0.0 {
+            if u < 0.33 {
+                return mix(m.start, m.hold, smoothstep(0.0, 0.33, u))
+            }
+            if u < 0.875 {
+                return m.hold
+            }
+            return mix(m.hold, m.contact, (u - 0.875) / 0.125)
+        }
+        return mix(m.start, m.contact, u)
+    }
+    let past = m.contact + min(a, 3.0)
+    if t < w + a {
+        return mix(m.contact, past, (t - w) / max(a, 1.0))
+    }
+    mix(past, m.end, clamp((t - w - a) / max(r, 1.0), 0.0, 1.0))
+}
+
+/// A captured clip at frame `f` (60 a second), between the frames either side.
+pub fn frame_of(ps: [Pose], f: f32) -> Pose {
+    retarget::played(ps, 60.0, f / 60.0)
+}
+
+/// A capture, loaded and retargeted, marked `marks`.
+pub fn captured(asf: Bytes, amc: Bytes, marks: Marks) -> Captured {
+    let c = retarget::capture(asf, amc, hz: 60.0, every: 1)
+    Captured { poses: retarget::poses_of(c, 0, c.frames.len()), marks }
+}
+
+/// No capture: a move keyed alone.
+pub fn none() -> Captured {
+    Captured { poses: Vec::new(), marks: Marks { start: 0.0, contact: 0.0, end: 0.0 } }
+}
+
+/// Key `k`'s tick in move `m`.
+pub fn tick_of(k: Key, m: Move) -> f32 {
+    let w = f32(m.windup)
+    let a = f32(m.active)
+    let r = f32(m.recovery)
+    match k.phase {
+        Phase::Windup => k.u * w,
+        Phase::Active => w + k.u * a,
+        Phase::Recovery => w + a + k.u * r,
+    }
+}
+
+/// The move's own time at its tick `t` (ticks `ticks` of keys `keys`, `end` its last tick), with
+/// the keys' holds taken out: from each key's tick to the end of its hold, its tick (the drawing
+/// held); from there to the next key's, the way between the two keys run in the time that's left
+/// (a snap, if the hold took most of it).
+pub fn motion_time(keys: [Key], ticks: [f32], end: f32, t: f32) -> f32 {
+    var from = 0.0
+    var at = 0.0
+    for i in 0..keys.len() {
+        let tk = ticks[i]
+        if t < tk {
+            let span = tk - from
+            if span <= 0.0 {
+                return tk
+            }
+            return mix(at, tk, clamp((t - from) / span, 0.0, 1.0))
+        }
+        if t < tk + keys[i].hold {
+            return tk
+        }
+        at = tk
+        from = max(tk + keys[i].hold, from)
+    }
+    if end <= from {
+        return end
+    }
+    mix(at, end, clamp((t - from) / (end - from), 0.0, 1.0))
+}
+
+/// The guide's pose at the move's own time `mt` (its tick, holds out), pushed.
+fn guided(k: Keyed, m: Move, mt: f32) -> Pose {
+    if k.guide.poses.is_empty() {
+        return k.rest
+    }
+    let g = frame_of(k.guide.poses, warped(k.guide.marks, m, mt))
+    if k.push == 0.0 { g } else { pushed(g, k.rest, k.push) }
+}
+
+/// Key pose `p`, written against the guard `written`, carried onto stance `onto`: its trunk, head
+/// and legs as far from `onto` as they were written from `written` (a capture stands its own way,
+/// its hips higher or lower; set as written, a key's hips dropped the body into a squat); its arms'
+/// ways as written (they're in the chest's frame, whatever the stance).
+fn rebased(p: Pose, written: Pose, onto: Pose) -> Pose {
+    let moved = plus(onto, only(difference(p, written), TRUNK | HEAD | LEGS), 1.0)
+    Pose {
+        upper_r: p.upper_r,
+        fore_r: p.fore_r,
+        upper_l: p.upper_l,
+        fore_l: p.fore_l,
+        reach: p.reach,
+        shrug: p.shrug,
+        ..moved,
+    }
+}
+
+/// A move keyed over its guide: `keys` (in order, written against the guard `rest`) over `guide`
+/// for the rules' move `m`, the guide's departures from its own first pose pushed `push` (pushed
+/// from an authored guard, the capture's own stance was pushed too, into a squat); each key's tick
+/// and its difference from the guide there worked out once.
+pub fn keyed(guide: Captured, keys: [Key], push: f32, rest: Pose, m: Move) -> Keyed {
+    let from = if guide.poses.is_empty() { rest } else { frame_of(guide.poses, guide.marks.start) }
+    var k = Keyed {
+        guide: guide.clone(),
+        keys: Vec::from(keys),
+        push,
+        rest: from,
+        ticks: Vec::new(),
+        d: Vec::new(),
+    }
+    for key in keys {
+        k.ticks.push(tick_of(key, m))
+    }
+    for i in 0..keys.len() {
+        let key = keys[i]
+        let d = if key.offset {
+            only(key.pose, key.parts)
+        } else {
+            let target = rebased(key.pose, rest, from)
+            only(difference(target, guided(k, m, k.ticks[i])), key.parts)
+        }
+        k.d.push(d)
+    }
+    k
+}
+
+/// The keys' difference from the guide at the move's own time `mt`: none at the move's start,
+/// each key's at its tick, eased from each to the next as the earlier says, back to none by the
+/// move's end (the guide alone takes it home to guard).
+fn displaced(k: Keyed, end: f32, mt: f32) -> Pose {
+    let n = k.keys.len()
+    let zero = NONE
+    if n == 0 {
+        return zero
+    }
+    if mt <= k.ticks[0] {
+        let u = mt / max(k.ticks[0], 1.0e-3)
+        return lerped(zero, k.d[0], eased(SMOOTH, u))
+    }
+    for i in 1..n {
+        if mt < k.ticks[i] {
+            let span = max(k.ticks[i] - k.ticks[i - 1], 1.0e-3)
+            let u = (mt - k.ticks[i - 1]) / span
+            return lerped(k.d[i - 1], k.d[i], eased(k.keys[i - 1].ease, u))
+        }
+    }
+    let last = k.ticks[n - 1]
+    let u = (mt - last) / max(end - last, 1.0e-3)
+    lerped(k.d[n - 1], zero, eased(k.keys[n - 1].ease, u))
+}
+
+/// The whole pose at tick `t` (not down the chain).
+fn whole(k: Keyed, m: Move, t: f32) -> Pose {
+    let end = f32(m.length())
+    let mt = motion_time(k.keys, k.ticks, end, max(t, 0.0))
+    plus(guided(k, m, mt), displaced(k, end, mt), 1.0)
+}
+
+/// Move `k` (the rules' `m`) at tick `t`, played down the body's chain: the hips and feet at `t`,
+/// the waist `lag` ticks behind, the chest two, the head two and a half, the upper arms three and
+/// the forearms four. Each link's tick has the holds taken out on its own, so a held key's drawing
+/// is reached by the hands too.
+pub fn keyed_at(k: Keyed, m: Move, t: f32, lag: f32) -> Pose {
+    var p = whole(k, m, t)
+    p.waist = whole(k, m, t - lag).waist
+    p.chest = whole(k, m, t - 2.0 * lag).chest
+    p.head = whole(k, m, t - 2.5 * lag).head
+    let arms = whole(k, m, t - 3.0 * lag)
+    p.shrug = arms.shrug
+    p.upper_r = arms.upper_r
+    p.upper_l = arms.upper_l
+    let hands = whole(k, m, t - 4.0 * lag)
+    p.fore_r = hands.fore_r
+    p.fore_l = hands.fore_l
+    p.reach = hands.reach
+    p
+}
+
+/// A move with one key held three ticks at its contact: the hold freezes the drawing at the key's
+/// tick and the motion after it runs the rest of the way in what's left.
+@test
+fn a_held_key_freezes_its_drawing_then_snaps_on() {
+    // The wanderer's cross: a wind-up of 10 ticks, 36 in all.
+    let m = moves::WANDERER_MOVES[moves::CROSS_N]
+    let end = f32(m.length())
+    let keys = [Key { phase: Phase::Active, pose: poses::GUARD, hold: 3.0 }]
+    let ticks = [tick_of(keys[0], m)]
+    assert(ticks[0] == 10.0, "the contact key on the wind-up's end")
+    assert(motion_time(keys, ticks, end, 5.0) == 5.0, "before the key, time as it is")
+    assert(motion_time(keys, ticks, end, 11.5) == 10.0, "held")
+    assert(motion_time(keys, ticks, end, end) == end, "at the end, the move's end")
+    let mid = motion_time(keys, ticks, end, 20.0)
+    assert(mid > 10.0 && mid < 20.0, f"after the hold, catching up: {mid}")
+}
+
+/// A key's pose is met exactly at its tick, whatever the guide does there; away from the keys
+/// the guide shows through.
+@test
+fn a_key_is_met_at_its_tick_and_the_guide_shows_between() {
+    let m = moves::WANDERER_MOVES[moves::CROSS_N]
+    let target = poses::JAB
+    let k = keyed(
+        none(),
+        [Key { phase: Phase::Active, pose: target, parts: pose::ARM_L }],
+        0.0,
+        poses::GUARD,
+        m,
+    )
+    let at = whole(k, m, 10.0)
+    assert(length(at.upper_l - normalize(target.upper_l)) < 1.0e-3, "the keyed arm met")
+    assert(length(at.chest - poses::GUARD.chest) < 1.0e-5, "the unkeyed trunk the guide's")
+    let after = whole(k, m, f32(m.length()))
+    assert(length(after.upper_l - normalize(poses::GUARD.upper_l)) < 1.0e-3, "home by the end")
+}

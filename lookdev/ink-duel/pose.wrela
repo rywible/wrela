@@ -84,6 +84,140 @@ pub fn mixed(a: Pose, b: Pose, u: f32) -> Pose {
     }
 }
 
+/// The parts of a pose, for a key that poses only some of them (`keyed::Key::parts`): the trunk
+/// (the hips' shift and turn, the waist's and the chest's turns), the head, each arm (its bones'
+/// ways, its stretch and its clavicle's shrug), and the legs (where the feet stand and how).
+pub const TRUNK: u32 = 1
+pub const HEAD: u32 = 2
+pub const ARM_R: u32 = 4
+pub const ARM_L: u32 = 8
+pub const LEGS: u32 = 16
+pub const ARMS: u32 = 12
+pub const UPPER: u32 = 15
+pub const ALL: u32 = 31
+
+/// No change: a pose of zeros, the start of a key written as an offset from its guide
+/// (`keyed::Key::offset`), e.g. `Pose { chest: vec3(0.0, -0.4, 0.0), ..NONE }`.
+pub const NONE = Pose {
+    upper_r: vec3(0.0),
+    fore_r: vec3(0.0),
+    upper_l: vec3(0.0),
+    fore_l: vec3(0.0),
+    reach: vec2(0.0),
+    foot_r: vec3(0.0),
+    foot_l: vec3(0.0),
+    toe_out: vec2(0.0),
+}
+
+/// `a` less `b`, field by field (an arm's way as a plain difference of its unit vectors): how far
+/// one pose is from another, to be added back (`plus`).
+pub fn difference(a: Pose, b: Pose) -> Pose {
+    Pose {
+        lift: a.lift - b.lift,
+        hips: a.hips - b.hips,
+        waist: a.waist - b.waist,
+        chest: a.chest - b.chest,
+        head: a.head - b.head,
+        shrug: a.shrug - b.shrug,
+        upper_r: a.upper_r - b.upper_r,
+        fore_r: a.fore_r - b.fore_r,
+        upper_l: a.upper_l - b.upper_l,
+        fore_l: a.fore_l - b.fore_l,
+        reach: a.reach - b.reach,
+        foot_r: a.foot_r - b.foot_r,
+        foot_l: a.foot_l - b.foot_l,
+        heel: a.heel - b.heel,
+        toe_out: a.toe_out - b.toe_out,
+        free: a.free - b.free,
+    }
+}
+
+/// Differences `a` to `b`, `u` of the way, field by field (unlike `mixed`, no arm's way is kept
+/// unit: these are changes, not poses).
+pub fn lerped(a: Pose, b: Pose, u: f32) -> Pose {
+    let v = vec3(u)
+    let w = vec2(u)
+    Pose {
+        lift: mix(a.lift, b.lift, v),
+        hips: mix(a.hips, b.hips, v),
+        waist: mix(a.waist, b.waist, v),
+        chest: mix(a.chest, b.chest, v),
+        head: mix(a.head, b.head, v),
+        shrug: mix(a.shrug, b.shrug, w),
+        upper_r: mix(a.upper_r, b.upper_r, v),
+        fore_r: mix(a.fore_r, b.fore_r, v),
+        upper_l: mix(a.upper_l, b.upper_l, v),
+        fore_l: mix(a.fore_l, b.fore_l, v),
+        reach: mix(a.reach, b.reach, w),
+        foot_r: mix(a.foot_r, b.foot_r, v),
+        foot_l: mix(a.foot_l, b.foot_l, v),
+        heel: mix(a.heel, b.heel, w),
+        toe_out: mix(a.toe_out, b.toe_out, w),
+        free: mix(a.free, b.free, w),
+    }
+}
+
+/// Pose `p` with `w` of difference `d` added, each arm's way brought back to unit length.
+pub fn plus(p: Pose, d: Pose, w: f32) -> Pose {
+    let way = |a: vec3, b: vec3| {
+        let m = a + b * w
+        if length(m) < 1.0e-5 { a } else { normalize(m) }
+    }
+    Pose {
+        lift: p.lift + d.lift * w,
+        hips: p.hips + d.hips * w,
+        waist: p.waist + d.waist * w,
+        chest: p.chest + d.chest * w,
+        head: p.head + d.head * w,
+        shrug: p.shrug + d.shrug * w,
+        upper_r: way(p.upper_r, d.upper_r),
+        fore_r: way(p.fore_r, d.fore_r),
+        upper_l: way(p.upper_l, d.upper_l),
+        fore_l: way(p.fore_l, d.fore_l),
+        reach: p.reach + d.reach * w,
+        foot_r: p.foot_r + d.foot_r * w,
+        foot_l: p.foot_l + d.foot_l * w,
+        heel: p.heel + d.heel * w,
+        toe_out: p.toe_out + d.toe_out * w,
+        free: p.free + d.free * w,
+    }
+}
+
+/// Difference `d` with only `parts` of it kept (`TRUNK` …), the rest none.
+pub fn only(d: Pose, parts: u32) -> Pose {
+    let trunk = (parts & TRUNK) != 0
+    let head = (parts & HEAD) != 0
+    let right = (parts & ARM_R) != 0
+    let left = (parts & ARM_L) != 0
+    let legs = (parts & LEGS) != 0
+    let z3 = vec3(0.0)
+    Pose {
+        lift: if trunk { d.lift } else { z3 },
+        hips: if trunk { d.hips } else { z3 },
+        waist: if trunk { d.waist } else { z3 },
+        chest: if trunk { d.chest } else { z3 },
+        head: if head { d.head } else { z3 },
+        shrug: vec2(if right { d.shrug.x } else { 0.0 }, if left { d.shrug.y } else { 0.0 }),
+        upper_r: if right { d.upper_r } else { z3 },
+        fore_r: if right { d.fore_r } else { z3 },
+        upper_l: if left { d.upper_l } else { z3 },
+        fore_l: if left { d.fore_l } else { z3 },
+        reach: vec2(if right { d.reach.x } else { 0.0 }, if left { d.reach.y } else { 0.0 }),
+        foot_r: if legs { d.foot_r } else { z3 },
+        foot_l: if legs { d.foot_l } else { z3 },
+        heel: if legs { d.heel } else { vec2(0.0) },
+        toe_out: if legs { d.toe_out } else { vec2(0.0) },
+        free: if legs { d.free } else { vec2(0.0) },
+    }
+}
+
+/// Pose `p` pushed `k` further from `rest` (0, as it is; 0.3, its trunk, head and arms a third
+/// again as far from `rest`): exaggeration (Thomas and Johnston 1981), the captured body's own
+/// departures made bigger. The feet are left where they stand (pushed, a stance outruns the legs).
+pub fn pushed(p: Pose, rest: Pose, k: f32) -> Pose {
+    plus(p, only(difference(p, rest), UPPER), k)
+}
+
 /// A pose at a time (s), and how it goes on to the next (`engine::clip`'s eases).
 pub struct Beat: Copy {
     pub at: f32,

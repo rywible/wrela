@@ -10,8 +10,10 @@ use engine::combat::{Act, Fighter, HZ}
 use engine::clip::{HOLD, SMOOTH, SNAP}
 use engine::combat::Move
 use mocap::cmu
-use moves::{BRAWLER_MOVES, CONTACT, WANDERER_MOVES, brawler_beats, riposte_beats, wanderer_beats}
-use std::string::Bytes
+use keyed::{Captured, Keyed, Marks, captured, frame_of, keyed, keyed_at, none}
+use moves::{
+    BRAWLER_MOVES, CONTACT, SWEEP_N, WANDERER_MOVES, brawler_keys, riposte_beats, wanderer_keys,
+}
 use pose::{Beat, Pose, chained, mixed, sampled}
 use poses::{BROKEN, DODGE, DOWN, FLUNG, GUARD, KNEEL, STRUCK, TAKEN}
 use std::quat::Quat
@@ -38,111 +40,23 @@ pub const HOOK_MARKS = Marks { start: 10.0, contact: 30.0, end: 50.0 }
 pub const LUNGE_MARKS = Marks { start: 4.0, contact: 28.0, end: 52.0 }
 pub const DUCK_MARKS = Marks { start: 0.0, contact: 15.0, end: 33.0 }
 
-/// How strongly each fighter telegraphs (`wound`): the brawler's wind-ups wound far back and held,
-/// to be read and dodged (the genre's tells, which a boxer's own motion hides); the wanderer's a
-/// touch, its blows quick.
-pub const BRAWLER_TELL: f32 = 1.0
-pub const WANDERER_TELL: f32 = 0.3
+/// How far each fighter's captured guide is pushed past the performer (`keyed::Keyed::push`): the
+/// wanderer's a third again, the brawler's, slower and heavier, two fifths.
+pub const W_PUSH: f32 = 0.3
+pub const B_PUSH: f32 = 0.4
 
-/// Whether move `n` (of `count`, rules `m`) is thrown with the right hand: the jab is the lead
-/// (left) hand's; everything else the rear's.
-fn right_handed(m: Move, n: u32, count: u32) -> bool {
-    let _ = m
-    let _ = count
-    n != 0
-}
-
-/// Pose `p` at tick `t` of move `m` with its tell put on, `tell` strong: through its wind-up the
-/// body sinks, winds away from the blow (the striking side drawn back), leans back over its rear
-/// leg and cocks the striking arm and shoulder, most at about three quarters of the wind-up, then
-/// all of it released into the blow (anticipation: Thomas and Johnston 1981).
-pub fn wound(p: Pose, m: Move, t: f32, tell: f32, right: bool) -> Pose {
-    let w = max(f32(m.windup), 1.0)
-    let u = t / w
-    if u >= 1.0 || tell <= 0.0 {
-        return p
-    }
-    let k = tell * smoothstep(0.0, 0.55, u) * (1.0 - smoothstep(0.82, 1.0, u))
-    let side = if right { 1.0 } else { -1.0 }
-    var q = p
-    q.lift = q.lift + vec3(0.0, -0.07, -0.05) * k
-    q.hips = q.hips + vec3(-0.04, 0.3 * side, 0.0) * k
-    q.chest = q.chest + vec3(-0.12, 0.4 * side, 0.0) * k
-    if right {
-        q.shrug.x = q.shrug.x + 0.25 * k
-        q.upper_r = normalize(q.upper_r + vec3(0.35, 0.15, -0.8) * k)
-        q.fore_r = normalize(q.fore_r + vec3(0.0, 0.4, -0.3) * k)
-    } else {
-        q.shrug.y = q.shrug.y + 0.25 * k
-        q.upper_l = normalize(q.upper_l + vec3(-0.35, 0.15, -0.8) * k)
-        q.fore_l = normalize(q.fore_l + vec3(0.0, 0.4, -0.3) * k)
-    }
-    q
-}
-
-/// Every move's beats, made once.
+/// Every move as it's drawn, made once (at the build: `main`'s `CLIPS`).
 pub struct Clips: Clone {
-    pub wanderer: Vec<Vec<Beat>>,
-    pub brawler: Vec<Vec<Beat>>,
+    /// Each fighter's moves, keyed over their captures (`keyed`).
+    pub w_moves: Vec<Keyed>,
+    pub b_moves: Vec<Keyed>,
     pub riposte: Vec<Beat>,
     pub dodge: Vec<Beat>,
-    /// The captured motion (content/mocap, retargeted: `retarget`): the guard, each fighter's
-    /// moves (none where a move is still keyed: the sweep), the duck a dodge plays, and the fall
-    /// onto the face a fighter dies in.
+    /// The captured motion that isn't a move (content/mocap, retargeted: `retarget`): the guard,
+    /// the duck a dodge plays, and the fall onto the face a fighter dies in.
     pub guard: Vec<Pose>,
-    pub w_caps: Vec<Captured>,
-    pub b_caps: Vec<Captured>,
     pub duck: Captured,
     pub fall: Vec<Pose>,
-}
-
-/// A captured move: its poses (60 a second) and the frames that mark it (`Marks`).
-pub struct Captured: Clone {
-    pub poses: Vec<Pose>,
-    pub marks: Marks,
-}
-
-/// Where a captured move's beats fall in its clip (its frames, 60 a second): where it starts
-/// from guard, where it's chambered (a held blow's hold: none, -1), where its fist meets its
-/// target, and where it's back on guard. A move's ticks are fitted to them (`warped`), so the
-/// rules' timing is kept and the performer's motion fills it.
-pub struct Marks: Copy {
-    pub start: f32,
-    pub hold: f32 = -1.0,
-    pub contact: f32,
-    pub end: f32,
-}
-
-/// The frame of a captured move's clip for its tick `t` (`m`'s marks, the rules' move `mv`): its
-/// wind-up from start to contact (through the hold: reached in its first third, held until its
-/// last eighth), its hitting ticks just past contact, its recovery back to guard.
-pub fn warped(m: Marks, mv: Move, t: f32) -> f32 {
-    let w = f32(mv.windup)
-    let a = f32(mv.active)
-    let r = f32(mv.recovery)
-    if t < w {
-        let u = t / max(w, 1.0)
-        if m.hold >= 0.0 {
-            if u < 0.33 {
-                return mix(m.start, m.hold, smoothstep(0.0, 0.33, u))
-            }
-            if u < 0.875 {
-                return m.hold
-            }
-            return mix(m.hold, m.contact, (u - 0.875) / 0.125)
-        }
-        return mix(m.start, m.contact, u)
-    }
-    let past = m.contact + min(a, 3.0)
-    if t < w + a {
-        return mix(m.contact, past, (t - w) / max(a, 1.0))
-    }
-    mix(past, m.end, clamp((t - w - a) / max(r, 1.0), 0.0, 1.0))
-}
-
-/// A captured clip at frame `f` (60 a second), between the frames either side.
-pub fn frame_of(ps: [Pose], f: f32) -> Pose {
-    retarget::played(ps, 60.0, f / 60.0)
 }
 
 /// The captured guard at time `time` (s), looped, its seam crossfaded over its last eighth.
@@ -157,32 +71,41 @@ pub fn guard_at(ps: [Pose], time: f32) -> Pose {
     frame_of(ps, f)
 }
 
-/// Loads the captures and retargets them.
-fn captured(asf: Bytes, amc: Bytes, marks: Marks) -> Captured {
-    let c = retarget::capture(asf, amc, hz: 60.0, every: 1)
-    Captured { poses: retarget::poses_of(c, 0, c.frames.len()), marks }
-}
-
-fn none() -> Captured {
-    Captured { poses: Vec::new(), marks: Marks { start: 0.0, contact: 0.0, end: 0.0 } }
-}
-
 fn at(ticks: f32, pose: Pose, ease: u32) -> Beat {
     Beat { at: ticks / 60.0, pose, ease }
 }
 
-pub fn clips() -> Clips {
-    var w: Vec<Vec<Beat>> = Vec::new()
+/// The clips. `keys`: the moves as authored (their keys over their captures, pushed); without,
+/// each capture alone, time-warped to the rules' ticks (`main`'s `GUIDES`: to see what the keys
+/// add).
+pub fn clips(keys: bool) -> Clips {
+    let jab_cross = |marks: Marks| captured(cmu::BOXER, cmu::JAB_CROSS, marks)
+    let w_guides = [
+        jab_cross(JAB_MARKS),
+        jab_cross(CROSS_MARKS),
+        captured(cmu::HOOKER, cmu::HOOK, HOOK_MARKS),
+    ]
+    let b_guides = [
+        jab_cross(JAB_MARKS),
+        jab_cross(CROSS_MARKS),
+        captured(cmu::HOOKER, cmu::HOOK, Marks { hold: 22.0, ..HOOK_MARKS }),
+        captured(cmu::BOXER, cmu::LUNGE, LUNGE_MARKS),
+        none(),
+    ]
+    var w: Vec<Keyed> = Vec::new()
     for n in 0..3 {
-        w.push(wanderer_beats(n))
+        let ks = if keys { wanderer_keys(n) } else { Vec::new() }
+        w.push(keyed(w_guides[n], ks, if keys { W_PUSH } else { 0.0 }, GUARD, WANDERER_MOVES[n]))
     }
-    var b: Vec<Vec<Beat>> = Vec::new()
+    var b: Vec<Keyed> = Vec::new()
     for n in 0..5 {
-        b.push(brawler_beats(n))
+        // (The sweep has no capture: without its keys it would be the guard alone.)
+        let ks = if keys || n == SWEEP_N { brawler_keys(n) } else { Vec::new() }
+        b.push(keyed(b_guides[n], ks, if keys { B_PUSH } else { 0.0 }, GUARD, BRAWLER_MOVES[n]))
     }
     Clips {
-        wanderer: w,
-        brawler: b,
+        w_moves: w,
+        b_moves: b,
         riposte: riposte_beats(),
         dodge: Vec::from(
             [
@@ -193,22 +116,6 @@ pub fn clips() -> Clips {
             ],
         ),
         guard: captured(cmu::BOXER, cmu::GUARD, Marks { start: 0.0, contact: 0.0, end: 0.0 }).poses,
-        w_caps: Vec::from(
-            [
-                captured(cmu::BOXER, cmu::JAB_CROSS, JAB_MARKS),
-                captured(cmu::BOXER, cmu::JAB_CROSS, CROSS_MARKS),
-                captured(cmu::HOOKER, cmu::HOOK, HOOK_MARKS),
-            ],
-        ),
-        b_caps: Vec::from(
-            [
-                captured(cmu::BOXER, cmu::JAB_CROSS, JAB_MARKS),
-                captured(cmu::BOXER, cmu::JAB_CROSS, CROSS_MARKS),
-                captured(cmu::HOOKER, cmu::HOOK, Marks { hold: 22.0, ..HOOK_MARKS }),
-                captured(cmu::BOXER, cmu::LUNGE, LUNGE_MARKS),
-                none(),
-            ],
-        ),
         duck: captured(cmu::BOXER, cmu::DUCK, DUCK_MARKS),
         fall: captured(
             cmu::FALLER,
@@ -243,33 +150,10 @@ fn secs(t: u32) -> f32 {
 
 /// A fighter's pose when it's doing what the rules run (ready, a move, a dodge, staggered,
 /// broken), its moves' beats `moves`, bouncing on guard `bounce` times a second.
-fn fighting(
-    f: Fighter,
-    moves: [Vec<Beat>],
-    caps: [Captured],
-    rules: [Move],
-    c: Clips,
-    time: f32,
-    bounce: f32,
-    tell: f32,
-) -> Pose {
+fn fighting(f: Fighter, moves: [Keyed], rules: [Move], c: Clips, time: f32, bounce: f32) -> Pose {
     let t = secs(f.t)
     match f.act {
-        Act::Attack => {
-            if caps[f.move].poses.is_empty() {
-                chained(moves[f.move], t, LAG)
-            } else {
-                borrow k = caps[f.move]
-                let p = frame_of(k.poses, warped(k.marks, rules[f.move], f32(f.t)))
-                wound(
-                    p,
-                    rules[f.move],
-                    f32(f.t),
-                    tell,
-                    right_handed(rules[f.move], f.move, rules.len()),
-                )
-            }
-        },
+        Act::Attack => keyed_at(moves[f.move], rules[f.move], f32(f.t), LAG * HZ),
         Act::Dodge => {
             let d = c.duck.marks
             var p = frame_of(c.duck.poses, mix(d.start, d.end, clamp(t * 60.0 / 32.0, 0.0, 1.0)))
@@ -342,19 +226,7 @@ pub fn wanderer(w: World, c: Clips, ground: f32, time: f32, dead_for: f32) -> (P
     match f.act {
         Act::Riposte => (chained(c.riposte, secs(f.t), LAG), place),
         Act::Dead => (frame_of(c.fall, dead_for * 60.0), place),
-        _ => (
-            fighting(
-                f,
-                c.wanderer,
-                c.w_caps,
-                WANDERER_MOVES,
-                c,
-                time,
-                bounce: 1.7,
-                tell: WANDERER_TELL,
-            ),
-            place,
-        ),
+        _ => (fighting(f, c.w_moves, WANDERER_MOVES, c, time, bounce: 1.7), place),
     }
 }
 
@@ -373,19 +245,7 @@ pub fn brawler(w: World, c: Clips, ground: f32, time: f32, dead_for: f32) -> (Po
         return (frame_of(c.fall, dead_for * 60.0), place)
     }
     if f.act != Act::Taken {
-        return (
-            fighting(
-                f,
-                c.brawler,
-                c.b_caps,
-                BRAWLER_MOVES,
-                c,
-                time,
-                bounce: 1.1,
-                tell: BRAWLER_TELL,
-            ),
-            place,
-        )
+        return (fighting(f, c.b_moves, BRAWLER_MOVES, c, time, bounce: 1.1), place)
     }
     if w.launch == NEVER {
         // The riposte's coil, then the blow.
@@ -440,39 +300,26 @@ pub fn sheet_pose(who: u32, slot: u32, u: f32, c: Clips, time: f32) -> Pose {
     let base = Fighter { pos: vec2(0.0), heading: 0.0, health: 1.0, stamina: 1.0, t: u32(u * 60.0) }
     if who == 0 {
         if slot == 0 {
-            return fighting(
-                base,
-                c.wanderer,
-                c.w_caps,
-                WANDERER_MOVES,
-                c,
-                time,
-                bounce: 1.7,
-                tell: WANDERER_TELL,
-            )
+            return fighting(base, c.w_moves, WANDERER_MOVES, c, time, bounce: 1.7)
         }
         if slot <= 3 {
             return fighting(
                 Fighter { act: Act::Attack, move: slot - 1, ..base },
-                c.wanderer,
-                c.w_caps,
+                c.w_moves,
                 WANDERER_MOVES,
                 c,
                 time,
                 bounce: 1.7,
-                tell: WANDERER_TELL,
             )
         }
         if slot == 4 {
             return fighting(
                 Fighter { act: Act::Dodge, way: vec2(1.0, 0.0), ..base },
-                c.wanderer,
-                c.w_caps,
+                c.w_moves,
                 WANDERER_MOVES,
                 c,
                 time,
                 bounce: 1.7,
-                tell: WANDERER_TELL,
             )
         }
         if slot == 5 {
@@ -481,37 +328,17 @@ pub fn sheet_pose(who: u32, slot: u32, u: f32, c: Clips, time: f32) -> Pose {
         return frame_of(c.fall, u * 60.0)
     }
     if slot == 0 {
-        return fighting(
-            base,
-            c.brawler,
-            c.b_caps,
-            BRAWLER_MOVES,
-            c,
-            time,
-            bounce: 1.1,
-            tell: BRAWLER_TELL,
-        )
+        return fighting(base, c.b_moves, BRAWLER_MOVES, c, time, bounce: 1.1)
     }
     if slot <= 5 {
         return fighting(
             Fighter { act: Act::Attack, move: slot - 1, ..base },
-            c.brawler,
-            c.b_caps,
+            c.b_moves,
             BRAWLER_MOVES,
             c,
             time,
             bounce: 1.1,
-            tell: BRAWLER_TELL,
         )
     }
-    fighting(
-        Fighter { act: Act::Broken, ..base },
-        c.brawler,
-        c.b_caps,
-        BRAWLER_MOVES,
-        c,
-        time,
-        bounce: 1.1,
-        tell: BRAWLER_TELL,
-    )
+    fighting(Fighter { act: Act::Broken, ..base }, c.b_moves, BRAWLER_MOVES, c, time, bounce: 1.1)
 }

@@ -87,6 +87,9 @@ impl Switches for Realistic {}
 /// shoulders, close), for reviewing
 /// the drawing.
 pub const SHEET: bool = false
+/// `--set GUIDES=true`: each move as its capture alone (time-warped to the rules' ticks, no keys,
+/// not pushed), to see what the authored keys add (`keyed`).
+pub const GUIDES: bool = false
 pub const VIEW: u32 = 0
 pub const SLOT: f32 = 2.4
 
@@ -897,7 +900,7 @@ fn striking(f: Fighter, moves: [Move]) -> bool {
 
 /// Every clip (the captures parsed and retargeted): computed when the program is built, not when
 /// it starts.
-const CLIPS: Clips = clips()
+const CLIPS: Clips = clips(keys: !GUIDES)
 
 /// Where world point `p` falls on a screen of `size` pixels seen through `aim` (pixels from the
 /// top left), and how far ahead of the eye it is (behind it, below 0).

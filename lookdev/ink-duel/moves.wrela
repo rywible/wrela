@@ -1,6 +1,7 @@
 // The duel's moves: each one's rules (`engine::combat::Move`: its wind-up, its hitting ticks and
-// its recovery, its reach and what it does) and its drawing (`pose::Beat`s keyed on the same
-// ticks, so a fist is out exactly while it can hit).
+// its recovery, its reach and what it does) and its drawing: keys (`keyed::Key`) on the same
+// phases, posed over a captured guide (`present::clips`), so a fist is out exactly while it can
+// hit and the move is the author's, not the performer's.
 //
 // The wanderer's are quick and cheap (a jab, a cross, a hook to the body): a fight is won by
 // answering, not trading. The brawler's are slow, heavy and readable, and each tells its timing in
@@ -9,10 +10,11 @@
 
 use engine::clip::{HOLD, SMOOTH, SNAP}
 use engine::combat::Move
-use pose::Beat
+use keyed::{Key, Phase}
+use pose::{ALL, Beat, HEAD, NONE, Pose, TRUNK, UPPER}
 use poses::{
-    COIL, CROSS, CROSS_LOAD, GUARD, HAY_COCKED, HAY_DOWN, HAY_LIFT, HOOK, HOOK_LOAD, JAB, JAB_LOAD,
-    LUNGE, LUNGE_LOAD, OVERHEAD, SWEEP, SWEEP_WIND, UPPERCUT,
+    COIL, CROSS, CROSS_LOAD, GUARD, HAY_COCKED, HAY_DOWN, HAY_LIFT, HOOK, HOOK_LOAD, JAB, LUNGE,
+    LUNGE_LOAD, OVERHEAD, SWEEP, SWEEP_WIND, UPPERCUT,
 }
 
 /// The wanderer's moves, by number: the jab, the cross, the hook.
@@ -160,98 +162,211 @@ fn at(ticks: f32, pose: pose::Pose, ease: u32) -> Beat {
     Beat { at: ticks / 60.0, pose, ease }
 }
 
-/// The wanderer's move `n`'s beats.
-pub fn wanderer_beats(n: u32) -> Vec<Beat> {
+/// A key on `phase`, `u` of the way through it: `pose`'s `parts` (absolute), held `hold` ticks,
+/// eased on as `ease` says.
+fn key(phase: Phase, u: f32, pose: Pose, parts: u32, hold: f32, ease: u32) -> Key {
+    Key { phase, u, pose, parts, hold, ease }
+}
+
+/// A key as an offset from the guide (`pose` built on `pose::NONE`).
+fn by(phase: Phase, u: f32, pose: Pose, parts: u32, hold: f32, ease: u32) -> Key {
+    Key { phase, u, pose, parts, offset: true, hold, ease }
+}
+
+// The keys' poses: each past anything the performer did, as an anime key is (the line of action
+// one long curve, the striking side all the way round), on the captured guard's body.
+
+/// The jab's hit: the lead arm thrown long, the body leaning in behind it, the lead shoulder up
+/// by the chin.
+const JAB_HIT = Pose {
+    lift: vec3(0.0, -0.11, 0.12),
+    chest: vec3(0.2, 0.14, 0.0),
+    upper_l: vec3(0.1, 0.1, 1.0),
+    fore_l: vec3(0.1, 0.08, 1.0),
+    reach: vec2(1.0, 1.14),
+    shrug: vec2(0.1, 0.3),
+    ..JAB,
+}
+
+/// The cross cocked: the rear fist drawn back by the ear, the hips and chest wound away so the
+/// rear shoulder is behind.
+const CROSS_COCK = Pose {
+    lift: vec3(0.0, -0.14, -0.08),
+    hips: vec3(0.06, 0.85, 0.0),
+    chest: vec3(0.06, 0.45, 0.0),
+    upper_r: vec3(0.55, -0.45, -0.7),
+    fore_r: vec3(0.05, 0.55, 0.83),
+    shrug: vec2(0.3, 0.1),
+    ..CROSS_LOAD,
+}
+
+/// The cross's hit: driven right through, the hips past square, the body leaning long behind the
+/// arm.
+const CROSS_HIT = Pose {
+    lift: vec3(0.0, -0.14, 0.18),
+    hips: vec3(0.16, -0.5, 0.0),
+    chest: vec3(0.26, -0.35, 0.0),
+    reach: vec2(1.16, 1.0),
+    ..CROSS,
+}
+
+/// The hook's coil: sunk deep, wound right round so the back half faces the foe, the rear arm
+/// cocked behind, the eyes still on the target.
+const HOOK_COIL = Pose {
+    lift: vec3(0.0, -0.27, -0.03),
+    hips: vec3(0.15, 1.05, 0.0),
+    chest: vec3(0.24, 0.45, 0.12),
+    head: vec3(-0.12, -1.0, 0.0),
+    upper_r: vec3(0.8, -0.2, -0.56),
+    fore_r: vec3(0.0, 0.5, 0.86),
+    ..HOOK_LOAD,
+}
+
+/// The hook's hit: unwound past square, the body thrown over the lead leg behind the swing.
+const HOOK_HIT = Pose {
+    lift: vec3(0.0, -0.2, 0.16),
+    hips: vec3(0.18, -0.8, 0.0),
+    chest: vec3(0.22, -0.55, -0.15),
+    reach: vec2(1.1, 1.0),
+    ..HOOK,
+}
+
+/// The lunge's hit, longer still: the body near level behind the arm.
+const LUNGE_HIT = Pose {
+    lift: vec3(0.0, -0.2, 0.28),
+    chest: vec3(0.32, -0.25, 0.0),
+    reach: vec2(1.16, 1.0),
+    ..LUNGE,
+}
+
+/// The wanderer's move `n`'s keys, over its capture: quick, each snapping out of a short held
+/// chamber and hitting with a held impact, the heavy hook coiled long and finished in a held pose.
+pub fn wanderer_keys(n: u32) -> Vec<Key> {
     if n == JAB_N {
         return Vec::from(
             [
-                at(0.0, GUARD, SNAP),
-                at(3.0, JAB_LOAD, SNAP),
-                at(8.0, JAB, HOLD),
-                at(13.0, JAB, SMOOTH),
-                at(30.0, GUARD, SMOOTH),
+                by(
+                    Phase::Windup,
+                    0.45,
+                    Pose {
+                        lift: vec3(0.0, -0.04, -0.04),
+                        chest: vec3(-0.05, -0.25, 0.0),
+                        head: vec3(0.05, 0.0, 0.0),
+                        ..NONE,
+                    },
+                    TRUNK | HEAD,
+                    2.0,
+                    SNAP,
+                ),
+                key(Phase::Active, 0.0, JAB_HIT, UPPER, 3.0, SMOOTH),
             ],
         )
     }
     if n == CROSS_N {
         return Vec::from(
             [
-                at(0.0, GUARD, SNAP),
-                at(4.0, CROSS_LOAD, SNAP),
-                at(10.0, CROSS, HOLD),
-                at(15.0, CROSS, SMOOTH),
-                at(36.0, GUARD, SMOOTH),
+                key(Phase::Windup, 0.5, CROSS_COCK, UPPER, 3.0, SNAP),
+                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 3.0, SMOOTH),
+                by(
+                    Phase::Recovery,
+                    0.15,
+                    Pose { chest: vec3(0.05, -0.15, 0.0), ..NONE },
+                    TRUNK,
+                    4.0,
+                    SMOOTH,
+                ),
             ],
         )
     }
     Vec::from(
         [
-            at(0.0, GUARD, SMOOTH),
-            at(13.0, HOOK_LOAD, HOLD),
-            at(15.0, HOOK_LOAD, SNAP),
-            at(20.0, HOOK, HOLD),
-            at(26.0, HOOK, SMOOTH),
-            at(53.0, GUARD, SMOOTH),
+            key(Phase::Windup, 0.45, HOOK_COIL, UPPER, 6.0, SNAP),
+            key(Phase::Active, 0.0, HOOK_HIT, UPPER, 4.0, SMOOTH),
+            // The finish held (a mie): the swing's overshoot, still turned through.
+            by(
+                Phase::Recovery,
+                0.12,
+                Pose { chest: vec3(0.0, -0.25, 0.0), head: vec3(0.0, 0.2, 0.0), ..NONE },
+                TRUNK | HEAD,
+                8.0,
+                SMOOTH,
+            ),
         ],
     )
 }
 
-/// The brawler's move `n`'s beats.
-pub fn brawler_beats(n: u32) -> Vec<Beat> {
+/// The brawler's move `n`'s keys, over its capture (the sweep alone has none): every wind-up held
+/// long enough to be read and dodged, every blow hitting with its body behind it, every recovery
+/// overcommitted and held, the opening to punish.
+pub fn brawler_keys(n: u32) -> Vec<Key> {
     if n == ONE_N {
         return Vec::from(
             [
-                at(0.0, GUARD, SMOOTH),
-                at(14.0, JAB_LOAD, SNAP),
-                at(22.0, JAB, HOLD),
-                at(27.0, JAB, SMOOTH),
-                at(38.0, CROSS_LOAD, SMOOTH),
+                by(
+                    Phase::Windup,
+                    0.55,
+                    Pose {
+                        lift: vec3(0.0, -0.07, -0.08),
+                        chest: vec3(-0.12, -0.35, 0.0),
+                        head: vec3(0.1, 0.0, 0.0),
+                        ..NONE,
+                    },
+                    TRUNK | HEAD,
+                    5.0,
+                    SNAP,
+                ),
+                key(
+                    Phase::Active,
+                    0.0,
+                    Pose { lift: vec3(0.0, -0.13, 0.16), chest: vec3(0.26, 0.16, 0.0), ..JAB_HIT },
+                    UPPER,
+                    2.0,
+                    SMOOTH,
+                ),
             ],
         )
     }
     if n == TWO_N {
         return Vec::from(
             [
-                at(0.0, CROSS_LOAD, HOLD),
-                at(10.0, CROSS_LOAD, SNAP),
-                at(18.0, CROSS, HOLD),
-                at(25.0, CROSS, SMOOTH),
-                at(57.0, GUARD, SMOOTH),
+                key(Phase::Windup, 0.5, CROSS_COCK, UPPER, 4.0, SNAP),
+                key(Phase::Active, 0.0, CROSS_HIT, UPPER, 3.0, SMOOTH),
+                by(
+                    Phase::Recovery,
+                    0.2,
+                    Pose { lift: vec3(0.0, -0.05, 0.08), chest: vec3(0.15, -0.1, 0.0), ..NONE },
+                    TRUNK,
+                    8.0,
+                    SMOOTH,
+                ),
             ],
         )
     }
     if n == HAYMAKER_N {
         return Vec::from(
             [
-                at(0.0, GUARD, SMOOTH),
-                at(16.0, HAY_LIFT, SMOOTH),
-                at(55.0, HAY_COCKED, HOLD),
-                at(57.0, HAY_COCKED, SNAP),
-                at(62.0, HAY_DOWN, HOLD),
-                at(80.0, HAY_DOWN, SMOOTH),
-                at(112.0, GUARD, SMOOTH),
+                key(Phase::Windup, 0.25, HAY_LIFT, UPPER, 0.0, SMOOTH),
+                // The delay: cocked at its limit and held there, then the snap down.
+                key(Phase::Windup, 0.5, HAY_COCKED, UPPER, 22.0, SNAP),
+                key(Phase::Active, 0.0, HAY_DOWN, UPPER, 5.0, SMOOTH),
+                key(Phase::Recovery, 0.25, HAY_DOWN, TRUNK | HEAD, 10.0, SMOOTH),
             ],
         )
     }
     if n == LUNGE_N {
         return Vec::from(
             [
-                at(0.0, GUARD, SMOOTH),
-                at(16.0, LUNGE_LOAD, HOLD),
-                at(21.0, LUNGE_LOAD, SNAP),
-                at(28.0, LUNGE, HOLD),
-                at(40.0, LUNGE, SMOOTH),
-                at(70.0, GUARD, SMOOTH),
+                key(Phase::Windup, 0.55, LUNGE_LOAD, UPPER, 6.0, SNAP),
+                key(Phase::Active, 0.0, LUNGE_HIT, UPPER, 5.0, SMOOTH),
             ],
         )
     }
+    // The sweep: no capture of one, so its keys are the whole of it, over the guard.
     Vec::from(
         [
-            at(0.0, GUARD, SMOOTH),
-            at(18.0, SWEEP_WIND, SNAP),
-            at(26.0, SWEEP, HOLD),
-            at(32.0, SWEEP, SMOOTH),
-            at(69.0, GUARD, SMOOTH),
+            key(Phase::Windup, 0.7, SWEEP_WIND, ALL, 2.0, SNAP),
+            key(Phase::Active, 0.0, SWEEP, ALL, 4.0, SMOOTH),
+            key(Phase::Recovery, 0.2, SWEEP, TRUNK | HEAD, 0.0, SMOOTH),
         ],
     )
 }
