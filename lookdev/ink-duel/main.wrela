@@ -837,7 +837,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.scene.hud.foe.z = max(s.scene.hud.foe.x, s.scene.hud.foe.z - dt * 0.35)
     s.frame.intensity = s.intensity
     s.frame.drawing = s.drawing
-    s.frame.look.line_px = 1.7 + 1.4 * s.intensity
+    s.frame.look.line_px = 2.6 + 1.4 * s.intensity
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)
     let _ = CONTACT
@@ -880,7 +880,7 @@ fn sheet(s: mut State, time: f32, width: u32, height: u32) {
     let fovy = if VIEW == 3 { 0.5 } else { 0.62 }
     let aim = Aim { eye, at, fovy, moving_at: vec3(0.0, 1.0, 0.0) }
     s.frame.intensity = 0.08
-    s.frame.look.line_px = 1.9
+    s.frame.look.line_px = 2.6
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)
 }
@@ -1233,7 +1233,7 @@ fn view_capture(s: mut State, time: f32, width: u32, height: u32) {
         moving_at: vec3(0.0, 1.0, 0.0),
     }
     s.frame.intensity = 0.08
-    s.frame.look.line_px = 1.9
+    s.frame.look.line_px = 2.6
     let _ = s.frame.begin(mut s.scene, aim, time, width, height)
     s.frame.draw(mut s.scene, aim)
 }

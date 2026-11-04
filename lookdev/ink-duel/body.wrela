@@ -77,6 +77,8 @@ pub struct Build: Copy {
     pub sash: vec3,
     pub wraps: vec3,
     pub trousers: vec3,
+    /// Its shoes: dark, so a foot reads as a foot and not a pale blob on the sand.
+    pub shoes: vec3,
     pub skin: vec3,
     pub hair: vec3,
     pub cap: vec3,
@@ -94,6 +96,7 @@ pub const WANDERER = Build {
     sash: vec3(0.62, 0.08, 0.05),
     wraps: vec3(0.82, 0.76, 0.64),
     trousers: vec3(0.15, 0.15, 0.17),
+    shoes: vec3(0.05, 0.045, 0.045),
     skin: vec3(0.62, 0.45, 0.34),
     hair: vec3(0.06, 0.05, 0.06),
     cap: vec3(0.09, 0.07, 0.1),
@@ -103,16 +106,18 @@ pub const WANDERER = Build {
     fringe: (vec3(0.03, 0.19, 0.05), vec3(0.055, 0.135, 0.1)),
 }
 
-/// The brawler: a head taller and heavier, bare to the waist, in pale trousers and a blue sash,
-/// its wraps leather, its hair tied up in a topknot.
+/// The brawler: a head taller and nearly half again as broad, bare to the waist, in dark trousers
+/// (pale, its legs vanished into the sand) and a blue sash, its wraps leather, its hair tied up in
+/// a topknot.
 pub const BRAWLER = Build {
     tall: 1.12,
-    broad: 1.32,
-    thick: 1.42,
+    broad: 1.45,
+    thick: 1.5,
     coat: vec3(0.55, 0.37, 0.27),
     sash: vec3(0.10, 0.20, 0.48),
     wraps: vec3(0.42, 0.28, 0.2),
-    trousers: vec3(0.68, 0.64, 0.56),
+    trousers: vec3(0.2, 0.13, 0.1),
+    shoes: vec3(0.09, 0.06, 0.045),
     skin: vec3(0.55, 0.37, 0.27),
     hair: vec3(0.05, 0.04, 0.04),
     cap: vec3(0.084, 0.05, 0.09),
@@ -420,7 +425,7 @@ pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
                 vec3(0.0, -0.05, 0.125),
                 ra: 0.042,
                 rc: 0.032,
-                col: b.wraps,
+                col: b.shoes,
             ),
             seam: joint,
             mirror: true,
@@ -433,7 +438,7 @@ pub fn figure(b: Build) -> (Figure, Skeleton, Bones) {
                 vec3(0.0, -0.01, 0.05),
                 ra: 0.03,
                 rc: 0.022,
-                col: b.wraps,
+                col: b.shoes,
             ),
             mirror: true,
         )
