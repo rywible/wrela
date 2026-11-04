@@ -1,0 +1,423 @@
+// A party's fight as a room (std::net): what the room orders is only the fight's start and, at its
+// end, each player's input log; it never sees the live inputs, which go between the players over
+// the room's relay (std::net::relay, codec.wrela). Every peer and the room run the fight again from
+// the logs (sim::run, in the reducer), so the outcome is the same everywhere, and a player whose
+// own run disagrees knows its inputs didn't arrive as it sent them. What's written is the outcome
+// alone: one store row a fight, and a journal row for its start and each log.
+//
+// The costs this shape is for (the server design doc's budget): a fight of four is five proposals
+// and one store write, however long it lasts; its inputs cost the room nothing.
+
+use sim::{Change, Log, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, Outcome, Winner}
+use std::input::{Event, events, payload}
+use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
+use std::net::{carry_out, compact, room}
+use std::pack::{Pack, pack, unpack}
+use std::store
+
+/// How long after the first log the rest may take, in ms, before anyone may settle the fight
+/// without them (a player who left counts as standing still).
+pub const SETTLE_MS: u64 = 30000
+
+// Why the room refuses a decision.
+/// A fight is on already, or none is.
+pub const NOT_NOW: u32 = 1
+/// A party that isn't one: empty, too big, the same peer twice, or without its proposer.
+pub const BAD_PARTY: u32 = 2
+/// A log from a peer not in the fight, a second one, or one no player could send.
+pub const BAD_LOG: u32 = 3
+/// A settle before `SETTLE_MS` after the first log, or before any log while the fight could
+/// still be on.
+pub const TOO_SOON: u32 = 4
+
+/// The longest a fight can last, in room ms: past it and `SETTLE_MS` more, anyone may settle it,
+/// logs or none, so a party that left (or one that never fought) can't hold the room.
+pub const FIGHT_MS: u64 = 600000
+
+/// The room's state: the fight on (or the last one), and how many it has finished.
+pub struct Fight: Clone + Pack {
+    /// The players, by peer, in their slots (empty: none yet).
+    pub party: Vec<u32>,
+    pub logs: Vec<Log>,
+    pub sent: Vec<bool>,
+    /// When the fight began (room ms).
+    pub began_at: u64,
+    /// When the first log came (room ms).
+    pub first_at: u64,
+    /// Whether the last fight is settled: then its outcome is `outcome`, and a new one may begin.
+    pub settled: bool,
+    pub outcome: Outcome,
+    pub fights: u32,
+    pub finished_at: u64,
+}
+
+/// A peer's decision.
+pub enum Act: Clone + Pack {
+    /// A fight starts, for these players.
+    Begin { party: Vec<u32> },
+    /// The proposer's input log, the fight having ended at frame `end` as it saw it.
+    Log { changes: Vec<Change>, end: u32 },
+    /// The fight is settled without the logs that didn't come.
+    Settle,
+}
+
+impl Fight {
+    pub fn empty() -> Fight {
+        Fight {
+            party: Vec::new(),
+            logs: Vec::new(),
+            sent: Vec::new(),
+            began_at: 0,
+            first_at: 0,
+            settled: false,
+            outcome: Outcome { winner: Winner::Draw, frames: 0, dealt: Vec::new(), boss_hp: 0 },
+            fights: 0,
+            finished_at: 0,
+        }
+    }
+
+    /// Whether a fight is on.
+    pub fn on(self) -> bool {
+        self.party.len() > 0 && !self.settled
+    }
+
+    fn slot(self, peer: u32) -> Option<u32> {
+        for i in 0..self.party.len() {
+            if self.party[i] == peer {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    fn any_sent(self) -> bool {
+        for s in self.sent.clone() {
+            if s {
+                return true
+            }
+        }
+        false
+    }
+
+    fn finish(mut self, at: u64) {
+        self.outcome = sim::run(self.party.len(), self.logs.clone())
+        self.settled = true
+        self.fights += 1
+        self.finished_at = at
+    }
+}
+
+impl Reduce<Act> for Fight {
+    fn check(self, entry: Entry<Act>) -> Verdict {
+        let peer = entry.id.peer
+        match entry.value {
+            Act::Begin { party } => {
+                if self.on() {
+                    return Verdict::Reject(NOT_NOW)
+                }
+                if party.len() == 0 || party.len() > MAX_PARTY {
+                    return Verdict::Reject(BAD_PARTY)
+                }
+                var has_proposer = false
+                for i in 0..party.len() {
+                    if party[i] == peer {
+                        has_proposer = true
+                    }
+                    for j in 0..i {
+                        if party[j] == party[i] {
+                            return Verdict::Reject(BAD_PARTY)
+                        }
+                    }
+                }
+                if has_proposer { Verdict::Accept } else { Verdict::Reject(BAD_PARTY) }
+            },
+            Act::Log { changes, end } => {
+                if !self.on() {
+                    return Verdict::Reject(NOT_NOW)
+                }
+                let Some(s) = self.slot(peer) else { return Verdict::Reject(BAD_LOG) }
+                if self.sent[s] ||
+                    end > MAX_FRAMES ||
+                    !sim::well_formed(changes, end, MAX_CHANGES) {
+                    return Verdict::Reject(BAD_LOG)
+                }
+                Verdict::Accept
+            },
+            Act::Settle => {
+                if !self.on() {
+                    return Verdict::Reject(NOT_NOW)
+                }
+                // Past the longest fight, anyone may settle it; before, a player in it, once a log
+                // came and the rest had their time.
+                if entry.at >= self.began_at + FIGHT_MS + SETTLE_MS {
+                    return Verdict::Accept
+                }
+                if self.slot(peer).is_none() {
+                    return Verdict::Reject(BAD_LOG)
+                }
+                if !self.any_sent() || entry.at < self.first_at + SETTLE_MS {
+                    return Verdict::Reject(TOO_SOON)
+                }
+                Verdict::Accept
+            },
+        }
+    }
+
+    fn apply(mut self, entry: Entry<Act>) {
+        let at = entry.at
+        let peer = entry.id.peer
+        match entry.value {
+            Act::Begin { party } => {
+                let n = party.len()
+                self.party = party.clone()
+                self.logs = Vec::new()
+                self.sent = Vec::new()
+                for _ in 0..n {
+                    self.logs.push(Log { changes: Vec::new() })
+                    self.sent.push(false)
+                }
+                self.settled = false
+                self.began_at = at
+                self.first_at = 0
+            },
+            Act::Log { changes, .. } => {
+                let Some(s) = self.slot(peer) else { return }
+                if !self.any_sent() {
+                    self.first_at = at
+                }
+                self.logs[s] = Log { changes: changes.clone() }
+                self.sent[s] = true
+                var all = true
+                for x in self.sent.clone() {
+                    if !x {
+                        all = false
+                    }
+                }
+                if all {
+                    self.finish(at)
+                }
+            },
+            Act::Settle => self.finish(at),
+        }
+    }
+}
+
+/// Where a finished fight's outcome is kept: `fights/`, the room's name, the room's time it
+/// began, and its number in the room. Both come from the journal, so writing it again (a call
+/// retried) writes the same row.
+pub fn key_of(name: str, at: u64, n: u32) -> Vec<u8> {
+    var k: Vec<u8> = Vec::new()
+    let prefix = "fights/"
+    for i in 0..prefix.len() {
+        k.push(prefix.byte(i))
+    }
+    for i in 0..name.len() {
+        k.push(name.byte(i))
+    }
+    k.push(47)
+    for i in 0..8 {
+        k.push(u8((at >> (8 * (7 - i))) & 255))
+    }
+    for i in 0..4 {
+        k.push(u8((n >> (8 * (3 - i))) & 255))
+    }
+    k
+}
+
+// ---- the server ---------------------------------------------------------------------------------
+
+pub struct Server {
+    room: Room<Fight, Act>,
+    /// The fights whose outcome is in the store.
+    written: u32,
+}
+
+pub fn serve_init() -> Server {
+    Server { room: Room::new(Fight::empty()), written: 0 }
+}
+
+pub fn serve(s: mut Server, time: f32) {
+    let at = u64(time * 1000.0)
+    var replayed = false
+    for e in events() {
+        match e {
+            Event::Message { conn, .. } => {
+                let Some(bytes) = payload(e) else { continue }
+                if conn == JOURNAL {
+                    // The room started again on this build: its outcomes were written as they came.
+                    match unpack::<Record<Fight, Act>>(take bytes) {
+                        Ok(r) => s.room.restore(r),
+                        Err(_) => panic("a journal record this program can't read"),
+                    }
+                    replayed = true
+                } else if conn >= POISONED {
+                    carry_out(s.room.poisoned(conn - POISONED, take bytes))
+                    written(mut s)
+                } else {
+                    // A message decides one proposal at most, so it finishes one fight at most:
+                    // its outcome is written before the next can replace it.
+                    carry_out(s.room.receive(conn, take bytes, at))
+                    written(mut s)
+                }
+            },
+            Event::Connection { conn, open, tag } => {
+                if open {
+                    s.room.opened(conn, tag)
+                } else {
+                    s.room.closed(conn)
+                }
+            },
+            _ => {},
+        }
+    }
+    if replayed {
+        s.written = s.room.state().fights
+    }
+    if s.room.since_snapshot() > COMPACT_AFTER {
+        compact(pack(s.room.compact()))
+    }
+}
+
+/// A fight just finished: its outcome, one row, written with the call's records.
+fn written(s: mut Server) {
+    let f = s.room.state().clone()
+    if f.fights != s.written && f.settled {
+        store::put(key_of(room().as_str(), f.began_at, f.fights), pack(f.outcome.clone()))
+    }
+    s.written = f.fights
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+fn entry(peer: u32, at: u64, value: take Act) -> Entry<Act> {
+    Entry { seq: 2, id: std::net::ProposalId { peer, session: 1, counter: 1 }, at, value }
+}
+
+/// A fight's logs, as two players who walk to the boss and swing at it, and their run.
+fn two_logs() -> Vec<Log> {
+    var a: Vec<Change> = Vec::new()
+    var b: Vec<Change> = Vec::new()
+    // Walk up (direction 4, full speed: 1 + 4 * 3 + 2), then attack over and over.
+    a.push(Change { frame: 0, input: 15 })
+    b.push(Change { frame: 0, input: 15 })
+    var f: u32 = 120
+    while f < 3000 {
+        a.push(Change { frame: f, input: 64 })
+        a.push(Change { frame: f + 2, input: 0 })
+        b.push(Change { frame: f + 5, input: 64 })
+        b.push(Change { frame: f + 7, input: 0 })
+        f += 40
+    }
+    var logs: Vec<Log> = Vec::new()
+    logs.push(Log { changes: a })
+    logs.push(Log { changes: b })
+    logs
+}
+
+@test
+fn the_same_logs_give_the_same_fight() {
+    let logs = two_logs()
+    let one = sim::run(2, logs.clone())
+    let two = sim::run(2, logs.clone())
+    assert(one == two)
+    assert(one.dealt[0] > 0 && one.dealt[1] > 0, "both players' swings land")
+    // A player who never swings gives another fight.
+    var other = logs.clone()
+    other[1].changes.truncate(1)
+    assert(sim::run(2, other) != one)
+}
+
+@test
+fn a_fight_begins_takes_each_log_once_and_settles_to_the_logs_run() {
+    var fight = Fight::empty()
+    var party: Vec<u32> = Vec::new()
+    party.push(3)
+    party.push(5)
+    let begin = entry(3, 0, Act::Begin { party: party.clone() })
+    assert(fight.check(begin.clone()) == Verdict::Accept)
+    fight.apply(begin)
+    let logs = two_logs()
+    // A peer not in the party can't send a log; one in it, once.
+    let stranger = entry(9, 10, Act::Log { changes: logs[0].changes.clone(), end: 3000 })
+    assert(fight.check(stranger) == Verdict::Reject(BAD_LOG))
+    let first = entry(3, 100, Act::Log { changes: logs[0].changes.clone(), end: 3000 })
+    assert(fight.check(first.clone()) == Verdict::Accept)
+    fight.apply(first.clone())
+    assert(fight.check(first) == Verdict::Reject(BAD_LOG))
+    assert(!fight.settled)
+    // Too soon to settle without the second.
+    assert(fight.check(entry(3, 200, Act::Settle)) == Verdict::Reject(TOO_SOON))
+    fight.apply(entry(5, 300, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    assert(fight.settled, "both logs in settle it")
+    assert(fight.outcome == sim::run(2, logs))
+    assert(fight.fights == 1 && !fight.on())
+}
+
+@test
+fn a_missing_log_is_settled_as_standing_still() {
+    var fight = Fight::empty()
+    var party: Vec<u32> = Vec::new()
+    party.push(3)
+    party.push(5)
+    fight.apply(entry(3, 0, Act::Begin { party }))
+    let logs = two_logs()
+    fight.apply(entry(3, 1000, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
+    assert(fight.check(entry(5, 1000 + SETTLE_MS, Act::Settle)) == Verdict::Accept)
+    fight.apply(entry(5, 1000 + SETTLE_MS, Act::Settle))
+    var only: Vec<Log> = Vec::new()
+    only.push(logs[0].clone())
+    only.push(Log { changes: Vec::new() })
+    assert(fight.settled && fight.outcome == sim::run(2, only))
+}
+
+@test
+fn a_log_no_player_could_send_is_refused() {
+    var bad: Vec<Change> = Vec::new()
+    bad.push(Change { frame: 5, input: 1 })
+    bad.push(Change { frame: 5, input: 2 })
+    assert(!sim::well_formed(bad, 100, MAX_CHANGES), "two changes on one frame")
+    var stick: Vec<Change> = Vec::new()
+    stick.push(Change { frame: 5, input: 49 })
+    assert(!sim::well_formed(stick, 100, MAX_CHANGES), "a stick that isn't one")
+    var late: Vec<Change> = Vec::new()
+    late.push(Change { frame: 100, input: 1 })
+    assert(!sim::well_formed(late, 100, MAX_CHANGES), "a change past the end")
+    // The fight itself takes any input: a stick that isn't one is still.
+    var wild: Vec<Log> = Vec::new()
+    wild.push(Log { changes: stick })
+    var odd: Vec<Change> = Vec::new()
+    odd.push(Change { frame: 5, input: 63 })
+    wild.push(Log { changes: odd })
+    let _ = sim::run(2, wild)
+}
+
+@test
+fn the_longest_log_fits_one_message() {
+    // A message up to the room is at most 65472 bytes (the host's `MAX_UP`); a log of
+    // `MAX_CHANGES` changes at the largest frames and inputs, with a proposal's framing, fits.
+    var changes: Vec<Change> = Vec::new()
+    for i in 0..MAX_CHANGES {
+        changes.push(Change { frame: MAX_FRAMES - MAX_CHANGES + i, input: 16383 - (i & 1) })
+    }
+    let bytes = pack(Act::Log { changes, end: MAX_FRAMES })
+    assert(bytes.len() + 256 < 65472, "the longest log is one message")
+}
+
+@test
+fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
+    var fight = Fight::empty()
+    var party: Vec<u32> = Vec::new()
+    party.push(3)
+    fight.apply(entry(3, 1000, Act::Begin { party }))
+    // Its player leaves without a log: a stranger can't settle it yet, nor begin another.
+    assert(fight.check(entry(9, 2000, Act::Settle)) == Verdict::Reject(BAD_LOG))
+    var mine: Vec<u32> = Vec::new()
+    mine.push(9)
+    assert(
+        fight.check(entry(9, 2000, Act::Begin { party: mine.clone() })) == Verdict::Reject(NOT_NOW),
+    )
+    let late = 1000 + FIGHT_MS + SETTLE_MS
+    assert(fight.check(entry(9, late, Act::Settle)) == Verdict::Accept)
+    fight.apply(entry(9, late, Act::Settle))
+    assert(fight.check(entry(9, late, Act::Begin { party: mine })) == Verdict::Accept)
+}
