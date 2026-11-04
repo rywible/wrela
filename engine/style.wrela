@@ -73,6 +73,10 @@ pub trait Style {
     /// turns from the eye, darkens it.
     const CEL_SHADE: f32 = 1.0
     const CEL_EDGE: f32 = 0.3
+    /// How far a character's key light comes round to the eye's side when the sun is behind it
+    /// (0, the sun as it is; 1, its way across the ground mirrored to face the eye, at the sun's
+    /// height and on its side): a character lit as a draughtsman lights it, never a silhouette.
+    const CEL_KEY: f32 = 0.0
 
     /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
     /// that reads no substance after the pass, or that and the substance's three
