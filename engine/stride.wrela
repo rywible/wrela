@@ -45,8 +45,8 @@ pub struct Gait: Copy {
     pub gaze: f32 = 0.25,
     /// How far the arm swings forward and back of hanging straight down (degrees), how far it
     /// hangs out from the side, and the elbow's bend with the arm back and forward.
-    pub arm_forward: f32 = 10.0,
-    pub arm_back: f32 = 18.0,
+    pub arm_forward: f32 = 13.0,
+    pub arm_back: f32 = 15.0,
     pub spread: f32 = 10.0,
     pub elbow_back: f32 = 13.0,
     pub elbow_forward: f32 = 35.0,
@@ -111,6 +111,23 @@ const REACH_IN: u32 = 12
 const POINT_IN: u32 = 6
 const POINT_FOR: u32 = 14
 const POINT_EASE: u32 = 6
+
+/// How much of the pelvis's turn the spine, chest and upper chest each take (each on top of the
+/// one below: their sum is the upper chest's), and how far a collarbone swings forward and back
+/// with its arm (degrees).
+const TRUNK_TURN: [f32; 3] = [0.5, -0.5, 0.0]
+const PROTRACT: f32 = 2.0
+
+/// How far the shoulders tilt against the pelvis's list, and the trunk leans over the standing
+/// leg, against it; the frames they answer it after; how much of the shoulders' tilt the head
+/// takes, and the frames later still it takes it; and the frames the arms' swing is set later
+/// than the take's.
+const SHOULDERS_TILT: f32 = 0.55
+const TRUNK_LEANS: f32 = 0.2
+const TRUNK_LAG: u32 = 6
+const HEAD_TILT: f32 = 0.3
+const HEAD_LAG: u32 = 2
+const ARM_LATE: f32 = 7.0
 
 /// How fast a knee's bending as its heel touches down (degrees a frame).
 const KNEE_ON: f32 = 1.0
@@ -877,7 +894,7 @@ pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
         for ai in 0..2 {
             let a = arms[ai]
             let off = if a.side > 0.0 { 0.0 } else { 0.5 * TAU }
-            let at = TAU * f32(f) / f32(n) - phase - off
+            let at = TAU * (f32(f) - ARM_LATE) / f32(n) - phase - off
             let angle = centre + reach_of * cos(at) + UNEVEN * odd_arms[2 * ai * n + f]
             let out_by = -ARM_IN * DEG * cos(at) + UNEVEN * odd_arms[(2 * ai + 1) * n + f]
             let (base, _) = arm_angles(c, a, rig, a.hang)
@@ -918,6 +935,113 @@ pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
             set_turn(rig, mut w, head, hq)
             for b in chest..nb {
                 two[f * nb + b] = w[b]
+            }
+        }
+    }
+    // The trunk carried with the pelvis, as a person's balances over the standing foot. The
+    // lower spine takes some of the pelvis's turn and the chest gives it back, the upper chest
+    // turning a little further against it (`TRUNK_TURN`, at the spine, chest and upper chest).
+    // From side to side, the trunk answers the pelvis's list `TRUNK_LAG` frames on: the shoulders
+    // tilting against it (`SHOULDERS_TILT` of it) and the trunk leaning over the standing leg
+    // (`TRUNK_LEANS` of it, at the neck from the hips), the bend between the pelvis and the
+    // shoulders run up the spine, most low (the chest's bend three times the upper chest's).
+    // The collarbones lie level with the chest, each carried forward and back with its arm
+    // (`PROTRACT`); the neck is kept as it was, the head too but for `HEAD_TILT` of the
+    // shoulders' tilt, `HEAD_LAG` frames later still. The lean is made even both ways.
+    {
+        let (lh, rh) = (legs[0].hip, legs[1].hip)
+        let (up, along) = (vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
+        var yaws: Vec<f32> = Vec::with_capacity(n)
+        var lists: Vec<f32> = Vec::with_capacity(n)
+        var mean_yaw = 0.0
+        var mean_list = 0.0
+        for f in 0..n {
+            let pel = two[f * nb + lh].t - two[f * nb + rh].t
+            yaws.push(-atan2(pel.z, pel.x))
+            lists.push(atan2(pel.y, pel.x))
+            mean_yaw += yaws[f] / f32(n)
+            mean_list += lists[f] / f32(n)
+        }
+        let trunk = [hips, rig.find("spine"), rig.find("chest"), chest, rig.find("neck")]
+        let (neck, head) = (trunk[4], rig.find("head"))
+        let collars = [rig.find("leftShoulder"), rig.find("rightShoulder")]
+        // A bone's tilt from side to side: its left's rise.
+        let tilt = |q: Quat, b: u32| -> f32 {
+            let left = q.rotate(rw[b].q.inverse().rotate(vec3(1.0, 0.0, 0.0)))
+            atan2(left.y, length(vec2(left.x, left.z)))
+        }
+        // Twice: the first time to see how far the lean comes out of true (the take's own bend
+        // under it, the bones' own offsets), the second with that taken off.
+        var leant: Vec<f32> = Vec::filled(n, 0.0)
+        var untrue: Vec<f32> = Vec::filled(n, 0.0)
+        for pass in 0..2 {
+            for f in 0..n {
+                var w: Vec<Rigid> = Vec::with_capacity(nb)
+                for b in 0..nb {
+                    w.push(two[f * nb + b])
+                }
+                let (nq, hq) = (w[neck].q, w[head].q)
+                let yaw = yaws[f] - mean_yaw
+                for k in 0..3 {
+                    turn_below(rig, mut w, trunk[k + 1], about(up, TRUNK_TURN[k] * yaw))
+                }
+                // The shoulders' tilt and the lean wanted, from the pelvis's list a moment ago, and
+                // the spine's tilts (spine, chest, upper chest) that make them.
+                let was = lists[(f + n - TRUNK_LAG) % n] - mean_list
+                let (shoulders, lean) = (-SHOULDERS_TILT * was, -TRUNK_LEANS * was - untrue[f])
+                var tall = [0.0, 0.0, 0.0, 0.0]
+                for k in 0..4 {
+                    tall[k] = w[trunk[k + 1]].t.y - w[trunk[k]].t.y
+                }
+                let below = tilt(w[hips].q, hips)
+                // Sideways at the neck from the hips (small angles, + to the right): the pelvis's
+                // part, then each piece's; the upper chest's bend `b3`, the chest's three times it.
+                let height = tall[0] + tall[1] + tall[2] + tall[3]
+                let b3 = (tall[0] * below +
+                    (tall[1] + tall[2] + tall[3]) * shoulders -
+                    height * lean) /
+                    (4.0 * tall[1] + tall[2])
+                let wanted = [shoulders - 4.0 * b3, shoulders - b3, shoulders]
+                for k in 0..3 {
+                    let b = trunk[k + 1]
+                    turn_below(rig, mut w, b, about(along, wanted[k] - tilt(w[b].q, b)))
+                }
+                // The collarbones level with the chest (their line's tilt the chest's), then swung
+                // with the arms.
+                for _ in 0..3 {
+                    let line = w[arms[0].upper].t - w[arms[1].upper].t
+                    let off = atan2(line.y, length(vec2(line.x, line.z))) - tilt(w[chest].q, chest)
+                    for c in collars {
+                        turn_below(rig, mut w, c, about(along, -off))
+                    }
+                }
+                for ai in 0..2 {
+                    let off = if arms[ai].side > 0.0 { 0.0 } else { 0.5 * TAU }
+                    let at = TAU * (f32(f) - ARM_LATE) / f32(n) - phase - off
+                    turn_below(
+                        rig,
+                        mut w,
+                        collars[ai],
+                        about(up, -arms[ai].side * PROTRACT * DEG * cos(at)),
+                    )
+                }
+                set_turn(rig, mut w, neck, nq)
+                set_turn(rig, mut w, head, hq)
+                if pass == 0 {
+                    let up_to = w[neck].t - w[hips].t
+                    leant[f] = -atan2(up_to.x, up_to.y)
+                    continue
+                }
+                // The head taking a little of the shoulders' tilt, a moment later.
+                let late = lists[(f + 2 * n - TRUNK_LAG - HEAD_LAG) % n] - mean_list
+                turn_below(rig, mut w, head, about(along, -HEAD_TILT * SHOULDERS_TILT * late))
+                for b in 0..nb {
+                    two[f * nb + b] = w[b]
+                }
+            }
+            // What's the same in both halves of the cycle: the lean's lopsidedness, taken off.
+            for f in 0..n {
+                untrue[f] = 0.5 * (leant[f] + leant[(f + n / 2) % n])
             }
         }
     }
