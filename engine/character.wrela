@@ -14,7 +14,7 @@
 
 use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
-use noise::noise3
+use noise::hash2
 use lit::{Lighting, sun_and_gloss, through_air}
 use switches::Switches
 use style
@@ -24,7 +24,7 @@ use realize::{Mesh, SkinVertex, Tally}
 use std::mem::size_of
 use std::gpu::{
     ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, LocalId, RenderPass, Slots, Unorm8x4,
-    VertexIndex, WorkgroupId, buffer, copy, discard, dispatch, draw, write,
+    VertexIndex, WorkgroupId, buffer, buffer_of, copy, discard, dispatch, draw, write,
 }
 use std::derive::Box3
 use std::io::{Pending, print}
@@ -286,30 +286,58 @@ pub struct CharacterVertex: Copy {
     pub rough: f32 = 1.0,
     pub metallic: f32 = 0.0,
     pub part: Flat<u32>,
-    /// Its smear (`Smear`): the screen's direction its point moved in since the drawing before
-    /// (xy), how far back toward where it was it's drawn (z), and how much of its surface tears
-    /// open there (w: the smear's `tears` by how far it moved).
+    /// Its smear (`Smear`): how far back toward where it was it's drawn, of the most it could be
+    /// (x, 0 to 1), how much of its trail is strokes (y: the smear's `strokes` by how far it
+    /// moved), its strand (z: how far its rest point is from its bone's joint, which a smear's
+    /// strokes are keyed by), and its bone (w).
     pub trail: vec4 = vec4(0.0),
 }
 
 /// A character's smear, as a rough in-between drawing is drawn (Basset, Bénard and Barla's
 /// motion-exaggerated geometry, SIGGRAPH 2024, in its plainest case): a new drawing's surfaces that
 /// face away from where they moved are drawn back toward where they were in the drawing before
-/// (`Cast::new_drawing`), as far as `amount`, and its surface tears open in ragged pieces
-/// (`tears`), more where it moved farther; a program holds both for a drawing's first frames, then
-/// lets the drawing stand clean, so the smear is a drawing of its own, not a motion that eases.
-/// And `disarray`, held for the whole drawing: how much each part's lines break, by how far it
-/// moved since the drawing before (the motion target's w: `temporal::motion_of`), so what moves
-/// most comes apart and what holds still holds. The surfaces that face their motion are where
-/// the pose puts them, and the shadow is the pose's alone, so where the character is stays
-/// readable, and the bones in `steady` (a bit each, the first 32: the head a player reads the
-/// figure by) neither tear nor break their lines. Presentation only: it moves nothing a sim
-/// reads.
+/// (`Cast::new_drawing`), as far as `amount`, and that trail is drawn as strokes, as an animator
+/// draws a smear: each stroke the path of a point of the part (its strand: how far the point is
+/// from its bone's joint, `STROKE_M` a stroke), so a blade's trail is a fan of its points' arcs; a
+/// few strokes left out, each its own width, bold or fine, all whole where they leave the body and
+/// tapering to a point at the trail's end (`strokes`: how much of the trail is gaps). A program
+/// holds both for a drawing's first frames, then lets the drawing stand clean, so the smear is a
+/// drawing of its own, not a motion that eases. And `disarray`, held for the whole drawing: how much
+/// each part's lines break, by how far it moved since the drawing before (the motion target's w:
+/// `temporal::motion_of`), so what moves most comes apart and what holds still holds. The surfaces
+/// that face their motion are where the pose puts them, and the shadow is the pose's alone, so
+/// where the character is stays readable, and the bones in `steady` (a bit each, the first 32: the
+/// head a player reads the figure by) neither smear nor break their lines. Presentation only: it
+/// moves nothing a sim reads.
 pub struct Smear: Copy + GpuData {
     pub amount: f32 = 0.0,
-    pub tears: f32 = 0.0,
+    pub strokes: f32 = 0.0,
     pub disarray: f32 = 0.0,
     pub steady: u32 = 0,
+}
+
+/// How far apart a smear's strokes are along a part (m, of its strand): a blade a metre long
+/// drawn in about twelve.
+pub const STROKE_M: f32 = 0.085
+
+/// Whether a smear's trail is drawn at a point whose strand is `strand` (m) on bone `bone`,
+/// drawn back `back` of the most it could be (0 at the body, 1 at the trail's end), its trail
+/// `gaps` strokes (`Smear::strokes`), for drawing `drawing`: on a stroke (each `STROKE_M` of the
+/// strand, a fifth of them left out by a hash of its place, the bone and the drawing; its width
+/// bold or fine by another), whole where it leaves the body and tapering to nothing at the end.
+pub fn on_stroke(strand: f32, bone: u32, back: f32, gaps: f32, drawing: f32) -> bool {
+    if gaps <= 0.0 || back <= 0.02 {
+        return true
+    }
+    let at = strand / STROKE_M
+    let id = i32(floor(at))
+    let d = i32(drawing) & 1023
+    let kept = hash2(id * 7 + i32(bone), d) > 0.2
+    let bold = mix(0.45, 0.9, hash2(id + 31, i32(bone) * 13 + d))
+    // Whole at the body (`back` near 0), tapering to a point at the trail's end.
+    let taper = 1.0 - smoothstep(0.1, 1.0, back)
+    let width = mix(1.0, bold * taper, gaps)
+    kept && abs(fract(at) - 0.5) < 0.5 * width || back < 0.1
 }
 
 /// Whether a vertex skinned mostly to bone `bone` is held steady by `sm` (`Smear::steady`).
@@ -364,6 +392,7 @@ pub fn character(
     palettes: [mat4],
     from: [mat4],
     smear: Smear,
+    rests: [vec4],
     parts: PartOf,
     cam: Camera,
 ) -> CharacterVertex {
@@ -372,14 +401,17 @@ pub fn character(
     let now = (m * vec4(sv.pos, 1.0)).xyz
     let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
     let then = (skin_matrix(sv, from, 0) * vec4(sv.pos, 1.0)).xyz
-    let (world, w) = smeared(now, then, n, smear)
-    // The motion since the drawing before on the screen: its direction, for the tears' grain,
-    // and how far, for how much they open.
-    let along = cam.pixel(now) - cam.pixel(then)
-    let dir = if length(along) > 1.0e-3 { normalize(along) } else { vec2(1.0, 0.0) }
-    let tear = if steady(smear, sv.bones & 255) { 0.0 } else {
-        smear.tears * moved_interest(length(along))
-    }
+    let (world, w) = smeared(now, then, n, if steady(smear, sv.bones & 255) { Smear {} } else {
+        smear
+    })
+    // How far it moved since the drawing before, on the screen, for how much of its trail is
+    // strokes; and its strand, which keys them.
+    let bone = sv.bones & 255
+    let moved = length(cam.pixel(now) - cam.pixel(then))
+    let held = steady(smear, bone)
+    let strokes = if held { 0.0 } else { smear.strokes * moved_interest(moved) }
+    let strand = length(sv.pos - rests[min(bone, creature::MAX_BONES - 1)].xyz)
+    let back = if smear.amount > 0.0 { w / smear.amount } else { 0.0 }
     let surface = materials[v.index]
     let c = surface.colour.decode()
     CharacterVertex {
@@ -390,7 +422,7 @@ pub fn character(
         rough: c.a,
         metallic: surface.metallic,
         part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
-        trail: vec4(dir, w, tear),
+        trail: vec4(back, strokes, strand, f32(bone)),
     }
 }
 
@@ -438,17 +470,11 @@ pub fn character_shade<Q: Switches, Y: Style>(
             discard()
         }
     }
-    // A smear's tears (`Smear::tears`): the surface opens in ragged pieces a few pixels across,
-    // drawn out a little along the motion, more of it where the point moved farther, the same
-    // pieces for the whole of a drawing (the moment's w seeds them). The lines drawn round what's
-    // left are the smear's broken strokes.
-    if c.trail.w > 0.0 {
-        let across = dot(pixel.position.xy, vec2(-c.trail.y, c.trail.x))
-        let along = dot(pixel.position.xy, c.trail.xy)
-        let piece = noise3(vec3(across / 5.0, along / 13.0, lt.light.moment.w * 3.7))
-        if piece < 0.75 * c.trail.w {
-            discard()
-        }
+    // A smear's trail drawn as strokes (`Smear`, `on_stroke`): off its strokes, nothing; on them,
+    // ink (below).
+    if c.trail.y > 0.0 &&
+        !on_stroke(c.trail.z, u32(c.trail.w + 0.5), c.trail.x, c.trail.y, lt.light.moment.w) {
+        discard()
     }
     let n = normalize(c.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, c.world, n, soft: 1.0)
@@ -469,7 +495,9 @@ pub fn character_shade<Q: Switches, Y: Style>(
         Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },
         normalize(lt.cam.eye - c.world),
     )
-    let colour = diffuse + specular
+    // A smear's stroke is ink: near black from where it leaves the body to its end.
+    let inked = smoothstep(0.1, 0.6, c.trail.x) * saturate(c.trail.y * 1.5)
+    let colour = (diffuse + specular) * (1.0 - 0.88 * inked)
     // A character's form is its mesh's (its surface realized from its fields), its own coarse
     // form; it has no history.
     let s = if Y::SUBSTANCE == 0 {
@@ -593,9 +621,20 @@ pub struct Cast<C, K: creature::Creature<C>, L: Look<C>> {
     from: GpuBuffer<mat4>,
     smear: Smear,
     last_smear: Smear,
+    /// Its bones' rest places (a smear's strands are measured from them).
+    rests: GpuBuffer<vec4>,
     /// Whether it's drawn this frame, and whether it falls in the moving shadow map.
     pub on: bool,
     pub shadowed: bool,
+}
+
+/// Skeleton `s`'s bones' rest places, a bone each.
+fn rests_of(s: Skeleton) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in 0..s.len() {
+        out.push(vec4(s.rest(Bone { index: i }), 0.0))
+    }
+    out
 }
 
 /// `creature`, to be realized as `how` says, `slices` frames a slice, coloured by `look`.
@@ -605,6 +644,7 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
     how: look::CreatureLook,
     slices: u32,
 ) -> Cast<C, K, L> {
+    let rests = buffer_of(rests_of(creature.skeleton()), at_least: creature::MAX_BONES)
     Cast {
         creature,
         look,
@@ -619,6 +659,7 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
         from: buffer(creature::MAX_BONES),
         smear: Smear {},
         last_smear: Smear {},
+        rests,
         on: false,
         shadowed: false,
     }
@@ -774,6 +815,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                         palettes: self.palette.items(),
                         from: self.from.items(),
                         smear: self.smear,
+                        rests: self.rests.items(),
                         parts: parts,
                         cam: cam,
                     ),
@@ -820,7 +862,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
 fn a_smear_draws_back_only_the_trailing_side() {
     let then = vec3(0.0, 1.0, 0.0)
     let now = vec3(1.0, 1.0, 0.0)
-    let sm = Smear { amount: 0.8, tears: 0.5 }
+    let sm = Smear { amount: 0.8, strokes: 0.5 }
     let (lead, w_lead) = smeared(now, then, vec3(1.0, 0.0, 0.0), sm)
     assert(lead == now && w_lead == 0.0, "the leading side moved")
     let (trail, w_trail) = smeared(now, then, vec3(-1.0, 0.0, 0.0), sm)
@@ -839,4 +881,25 @@ fn a_smears_steady_bones_and_its_interest() {
     assert(steady(sm, 3) && steady(sm, 4) && !steady(sm, 5) && !steady(sm, 40), "the mask")
     assert(moved_interest(5.0) == 0.0 && moved_interest(120.0) == 1.0, "its ends")
     assert(moved_interest(30.0) < moved_interest(60.0), "farther, more")
+}
+
+/// A smear's strokes (`on_stroke`) are whole where they leave the body and thin to their tails,
+/// keyed by the point's strand: the same strand is on or off its stroke wherever along the trail
+/// it's drawn, and a trail without strokes is drawn whole.
+@test
+fn a_smears_strokes_are_whole_at_the_body_and_taper_to_their_tails() {
+    var near = 0
+    var far = 0
+    for k in 0..400 {
+        let strand = f32(k) * 0.003
+        assert(on_stroke(strand, 7, back: 0.05, gaps: 1.0, drawing: 3.0), "whole at the body")
+        if on_stroke(strand, 7, back: 0.3, gaps: 1.0, drawing: 3.0) {
+            near += 1
+        }
+        if on_stroke(strand, 7, back: 0.8, gaps: 1.0, drawing: 3.0) {
+            far += 1
+        }
+        assert(on_stroke(strand, 7, back: 0.9, gaps: 0.0, drawing: 3.0), "no strokes: whole")
+    }
+    assert(near > far && far > 0 && near < 400, f"{near} near the body, {far} at the tails")
 }
