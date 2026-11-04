@@ -67,7 +67,9 @@ impl Move {
 /// how square in front a riposte must be; and the guard: how long after it's raised a blow is
 /// deflected rather than blocked (ticks), how fast a guarding fighter walks (of its walk), how
 /// much of a blocked blow's damage still gets through and how much of its posture, and how wide
-/// in front a guard covers (half the angle, radians).
+/// in front a guard covers (half the angle, radians); and whether only a riposte kills
+/// (`deathblow`: a blow that would leaves a sliver of health and breaks the posture, so the end is
+/// always a riposte, as Sekiro's deathblow).
 pub struct Rules: Copy {
     pub health: f32 = 100.0,
     pub stamina: f32 = 100.0,
@@ -91,6 +93,7 @@ pub struct Rules: Copy {
     pub chip: f32 = 0.2,
     pub guard_posture: f32 = 0.5,
     pub guard_arc: f32 = 1.2,
+    pub deathblow: bool = false,
 }
 
 /// What a fighter is doing: ready to act (standing, walking); one of its moves; dodging;
@@ -466,11 +469,17 @@ pub fn strike(
     b.posture = min(b.posture + m.posture, r.posture)
     b.calm = 0
     b.shove = b.shove + facing(a.heading) * m.push
+    let was = b.act == Act::Broken
     if b.health <= 0.0 {
+        if r.deathblow {
+            b.health = 1.0
+            b.posture = r.posture
+            b.struck(0, r)
+            return Blow::Landed { broke: !was }
+        }
         b.begin(Act::Dead)
         return Blow::Landed { broke: false }
     }
-    let was = b.act == Act::Broken
     b.struck(m.stagger, r)
     Blow::Landed { broke: !was && b.act == Act::Broken }
 }
@@ -685,6 +694,26 @@ fn bodies_keep_apart_and_a_blow_knocks_back() {
         let _ = strike(mut c, pushed, mut d, r)
     }
     assert(d.pos.y > 1.45, f"knocked back to {d.pos.y}")
+}
+
+/// Under a deathblow's rule a blow that would kill breaks the fighter instead, a sliver of its
+/// health left for the riposte.
+@test
+fn a_blow_that_would_kill_breaks_under_the_deathblow_rule() {
+    let r = Rules { deathblow: true }
+    var a = fighter(vec2(0.0), 0.0, r)
+    var b = fighter(vec2(0.0, 1.0), 3.1415927, r)
+    b.health = 1.0
+    var got = Blow::Nothing
+    for k in 0..16 {
+        step(mut a, if k == 0 { pressed(0) } else { Intent {} }, moves(), r, b.pos)
+        let blow = strike(mut a, moves(), mut b, r)
+        if blow != Blow::Nothing {
+            got = blow
+        }
+    }
+    assert(got == Blow::Landed { broke: true }, "broken, not killed")
+    assert(b.act == Act::Broken && b.health == 1.0, f"a sliver left: {b.health}")
 }
 
 /// A guard raised just before a blow deflects it, the attacker's posture taking it; one held
