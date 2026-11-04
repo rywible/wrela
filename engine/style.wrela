@@ -68,6 +68,11 @@ pub trait Style {
     /// sun's gloss as the physical light gives it; else one band, where the part's reflection
     /// comes within this cosine of the sun.
     const HIGHLIGHT: f32 = 0.0
+    /// A character's cel shading (`character::cel`): how light its shade side is (times the
+    /// engine's cool blue-grey, about a third of its colour), and how much its edge, where its form
+    /// turns from the eye, darkens it.
+    const CEL_SHADE: f32 = 1.0
+    const CEL_EDGE: f32 = 0.3
 
     /// What its shading passes' fragments write: the scene's colour alone (`vec4`) for a look
     /// that reads no substance after the pass, or that and the substance's three

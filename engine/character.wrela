@@ -481,7 +481,19 @@ pub fn character_shade<Q: Switches, Y: Style>(
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
     let albedo = clay_or(lt.light, Y::palette(lt.light, style::CREATURE, vec4(0.0), c.albedo))
     let metallic = if lt.light.clay != 0 { 0.0 } else { saturate(c.metallic) }
-    let diffuse = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye) * (1.0 - metallic)
+    let diffuse = cel(
+        lt.light,
+        albedo,
+        n,
+        sun,
+        sky,
+        open,
+        c.world,
+        lt.cam.eye,
+        Y::CEL_SHADE,
+        Y::CEL_EDGE,
+    ) *
+        (1.0 - metallic)
     // A bevel narrower than a pixel contains several normals. Broaden only its specular
     // lobe by that variance, so a polished edge does not flash as individual samples move.
     let dx = dpdx(n)
@@ -511,7 +523,9 @@ pub fn character_shade<Q: Switches, Y: Style>(
 /// terminator, the light one where the sun reaches it, the shade a cool blue-grey of its colour;
 /// a thin rim of its own lit colour only where the sun is behind it (never the sky's white, which
 /// read as a halo against the dark wood); and a thin line, a darker shade of its colour, where
-/// its form turns away from the eye, about a pixel and a half wide however far it is.
+/// its form turns away from the eye, about a pixel and a half wide however far it is (`shade` how
+/// light the shade is, `edged` how much the line darkens: the look's `Style::CEL_SHADE`,
+/// `CEL_EDGE`).
 fn cel(
     light: Light,
     albedo: vec3,
@@ -521,18 +535,20 @@ fn cel(
     open: vec3,
     world: vec3,
     eye: vec3,
+    shade: f32,
+    edged: f32,
 ) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
     let t = smoothstep(0.0, 0.03, dot(n, l)) * sun
     let lit = light.sun_colour * 0.75 + open * 0.5
-    let dark = vec3(0.36, 0.40, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
+    let dark = vec3(0.36, 0.40, 0.54) * shade * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
     let facing = dot(n, v)
     let behind = saturate(-dot(v, l))
     let rim = smoothstep(0.72, 0.9, 1.0 - max(facing, 0.0)) * behind * sun
     let banded = albedo * (mix(dark, lit, vec3(t)) + light.sun_colour * (rim * 0.6))
     let edge = 1.0 - smoothstep(1.0, 2.0, facing / max(fwidth(facing), 1.0e-4))
-    banded * (1.0 - 0.3 * edge)
+    banded * (1.0 - edged * edge)
 }
 
 /// What a character's motion vertex passes on: where its point is now and was last frame.
