@@ -48,7 +48,7 @@ pub const WALK: Clip = humanoid::with_hands(
             to: 138,
         ).looped(shortest: 60, longest: 110),
         HERO.rig.clone(),
-        Retarget { face_ahead: true, looped: true, planted: true },
+        Retarget { face_ahead: true, looped: true, planted: true, carried: true },
     ),
     IDLE.clone(),
     frame: 0,

@@ -31,6 +31,10 @@ pub const KINETIC: f32 = 0.0
 pub const FAR: f32 = 3.7
 pub const FOCUS: f32 = 0.95
 
+/// Which side of its front the camera sees the walk from (+ its left): `--set SIDE=8` is near
+/// its profile.
+pub const SIDE: f32 = 0.75
+
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
 const WALK_AT: f32 = 8.0
@@ -100,7 +104,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let base = HERO.rig.base
     let hips = base.t + base.q.rotate(pose.hips)
     let walking = SHOW == 3 || (SHOW == 0 && time >= WALK_AT)
-    let side = if walking { 0.75 } else { -0.55 }
+    let side = if walking { SIDE } else { -0.55 }
     let shot = shot_at(time, FOCUS, vec3(hips.x, 0.0, hips.z), width, height, FAR, side, KINETIC)
     let p = begin_pass3_with_depth(
         mut s.colour,

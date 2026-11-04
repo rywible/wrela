@@ -27,6 +27,9 @@ use bvh::Bvh
 /// No bone.
 pub const NONE: u32 = 4294967295
 
+/// The first of VRM's bones past its spine, neck, head and jaw.
+const AXIAL: u32 = 7
+
 /// VRM 1.0's humanoid bones, each parent before its children.
 pub const BONES: [Text; 55] = [
     "hips",
@@ -842,6 +845,11 @@ pub struct Retarget: Copy {
     /// Whether its feet are planted: held where they land while they bear weight, the legs
     /// reaching them (`plant`).
     pub planted: bool = false,
+    /// Whether its neck and head are set to the rig's own carriage on average, keeping only how
+    /// they move: a take whose rest has a straight neck (100STYLE's) holds a real neck's forward
+    /// set as a turn, which on a rig whose rest is already set forward juts the head and drops
+    /// the face to the floor.
+    pub carried: bool = false,
 }
 
 /// A clip on a rig: its frames a second, its frames, every frame's local turn of each of the
@@ -908,9 +916,11 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
             s_end[v] = sw[j].q.rotate(src.joints[j].end)
         }
     }
-    // Each rig bone aimed where the take's points at rest.
+    // Each limb's bone aimed where the take's points at rest (a T-pose against an A-pose). The
+    // spine, neck and head (VRM's first seven) keep the rig's own curve: a take's straight rest
+    // spine would otherwise pitch the rig's chest and head forward, a slouch.
     var align = [Quat::identity(); 55]
-    for v in 0..55 {
+    for v in AXIAL..55 {
         if t_has[v] && s_has[v] {
             if let Some(dt) = aim(v, t_has, t_pos, vec3(0.0)) {
                 if let Some(ds) = aim(v, s_has, s_pos, s_end[v]) {
@@ -939,6 +949,25 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
     }
     let ground = t_pos[bone("leftFoot")].y - k * low
     let start = vec3(first[hips].t.x, 0.0, first[hips].t.z)
+    // The neck's and head's mean turns from rest, taken off each frame's (`Retarget::carried`).
+    var carry = [Quat::identity(); 55]
+    if how.carried {
+        for v in [bone("neck"), bone("head")] {
+            let j = src.of[v]
+            if j != NONE {
+                var sum = vec4(0.0)
+                var first_v = vec4(0.0)
+                for f in 0..src.frames {
+                    let d = yaw.mul(src.world(f)[j].q).mul(sw[j].q.inverse()).v
+                    if f == 0 {
+                        first_v = d
+                    }
+                    sum += if dot(d, first_v) < 0.0 { -d } else { d }
+                }
+                carry[v] = Quat { v: normalize(sum) }.inverse()
+            }
+        }
+    }
     var turns: Vec<Quat> = Vec::with_capacity(src.frames * nb)
     var at: Vec<vec3> = Vec::with_capacity(src.frames)
     var world: Vec<Rigid> = Vec::filled(nb, Rigid::identity())
@@ -952,7 +981,7 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
                 up.q.mul(rb.rest.q)
             } else {
                 let delta = yaw.mul(w[j].q).mul(sw[j].q.inverse())
-                delta.mul(align[rb.vrm]).mul(rw[b].q)
+                delta.mul(carry[rb.vrm]).mul(align[rb.vrm]).mul(rw[b].q)
             }
             var t = up.t + up.q.rotate(rb.rest.t)
             if rb.parent == NONE {
