@@ -10,8 +10,8 @@
 
 use std::input::{Event, events, payload}
 use std::io::Pending
-use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
-use std::net::{carry_out, compact, room}
+use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, ProposalId, Record, Reduce, Room, Verdict}
+use std::net::{carry_out, close, compact, room}
 use std::pack::{Pack, pack, unpack}
 use std::store
 
@@ -28,6 +28,14 @@ pub const MAX_STEP: i32 = 8
 pub const TOO_FAR: u32 = 1
 /// A mark past `MAX_MARKS`.
 pub const FULL: u32 = 2
+/// A step past `MAX_REACH` from the island's middle.
+pub const OFF_ISLAND: u32 = 3
+/// How far from the middle a peer may stand, each way: a position never overflows.
+pub const MAX_REACH: i32 = 1000000
+/// The most events held while the save is read; a connection past it is closed, to come back.
+pub const MAX_HELD: u32 = 1024
+/// Failed reads of the save in a row before the held peers are let go.
+pub const MAX_TRIES: u32 = 3
 
 /// A peer on the island, and where it stands.
 pub struct Body: Clone + Pack {
@@ -77,7 +85,17 @@ impl Reduce<Act> for Island {
         match entry.value {
             Act::Step { dx, dz } => {
                 if dx < -MAX_STEP || dx > MAX_STEP || dz < -MAX_STEP || dz > MAX_STEP {
-                    Verdict::Reject(TOO_FAR)
+                    return Verdict::Reject(TOO_FAR)
+                }
+                var x = 0
+                var z = 0
+                if let Some(i) = self.body_at(entry.id.peer) {
+                    x = self.bodies[i].x
+                    z = self.bodies[i].z
+                }
+                let (nx, nz) = (x + dx, z + dz)
+                if nx < -MAX_REACH || nx > MAX_REACH || nz < -MAX_REACH || nz > MAX_REACH {
+                    Verdict::Reject(OFF_ISLAND)
                 } else {
                     Verdict::Accept
                 }
@@ -125,19 +143,20 @@ pub fn save_bytes(island: Island) -> Vec<u8> {
     out
 }
 
-/// The island a save holds, with no one on it: empty for none, or a save it can't read.
-pub fn load(bytes: Option<Vec<u8>>) -> Island {
-    let Some(b) = bytes else { return Island::empty() }
+/// The island a save holds, with no one on it: empty for no save, and `None` for a save this
+/// build can't read (another version, or malformed), which it must not write over.
+pub fn load(bytes: Option<Vec<u8>>) -> Option<Island> {
+    let Some(b) = bytes else { return Some(Island::empty()) }
     if b.len() == 0 || b[0] != SAVE_VERSION {
-        return Island::empty()
+        return None
     }
     var rest: Vec<u8> = Vec::with_capacity(b.len() - 1)
     for i in 1..b.len() {
         rest.push(b[i])
     }
     match unpack::<Save>(take rest) {
-        Ok(s) => Island { bodies: Vec::new(), marks: s.marks.clone() },
-        Err(_) => Island::empty(),
+        Ok(s) => Some(Island { bodies: Vec::new(), marks: s.marks.clone() }),
+        Err(_) => None,
     }
 }
 
@@ -179,8 +198,10 @@ pub struct Server {
     room: Room<Island, Act>,
     /// How many marks the store's save holds.
     saved: u32,
-    /// Whether this call read the journal back: its marks are saved already.
-    replayed: bool,
+    /// Whether the store's save is one this build can't read: then it's never written over.
+    unreadable: bool,
+    /// Failed reads of the save in a row.
+    tries: u32,
 }
 
 impl Server {
@@ -191,7 +212,8 @@ impl Server {
             held: Vec::new(),
             room: Room::new(Island::empty()),
             saved: 0,
-            replayed: false,
+            unreadable: false,
+            tries: 0,
         }
     }
 
@@ -207,6 +229,16 @@ impl Server {
             self.asked.push(store::get(key_of(room().as_str())))
         }
         if self.phase == LOADING {
+            if self.held.len() >= MAX_HELD {
+                // Too much waits: this connection goes, and its peer comes back (what it
+                // proposed is proposed again, once). Its close is held like any other.
+                match h {
+                    Held::Closed { .. } => self.held.push(take h),
+                    Held::Opened { conn, .. } => close(conn),
+                    Held::Message { conn, .. } => if conn < POISONED { close(conn) },
+                }
+                return
+            }
             self.held.push(take h)
         } else {
             self.feed(take h, at)
@@ -228,7 +260,8 @@ impl Server {
     }
 
     /// The save's answer, if it came: the log starts from the island it holds, kept as the
-    /// journal's first record, and the held events go to the room. A failed read asks again.
+    /// journal's first record, and the held events go to the room. A failed read asks again, at
+    /// most `MAX_TRIES` times in a row; then the held peers are let go, to come back later.
     fn loaded(mut self, at: u64) {
         if self.phase != LOADING {
             return
@@ -236,10 +269,28 @@ impl Server {
         let Some(answer) = self.asked[0].poll() else { return }
         self.asked.clear()
         let Ok(bytes) = answer else {
-            self.asked.push(store::get(key_of(room().as_str())))
+            self.tries += 1
+            if self.tries < MAX_TRIES {
+                self.asked.push(store::get(key_of(room().as_str())))
+                return
+            }
+            self.tries = 0
+            self.phase = FRESH
+            let held = replace(mut self.held, Vec::new())
+            for h in held {
+                match h {
+                    Held::Opened { conn, .. } => close(conn),
+                    _ => {},
+                }
+            }
             return
         }
-        let island = load(store::value(bytes))
+        self.tries = 0
+        var island = Island::empty()
+        match load(store::value(bytes)) {
+            Some(i) => island = take i,
+            None => self.unreadable = true,
+        }
         self.saved = island.marks.len()
         // Entry 1 is the save: a peer with less of the log is sent the state.
         let start: Record<Island, Act> = Record::Snapshot {
@@ -263,12 +314,7 @@ impl Server {
     /// records.
     fn checkpoint(mut self) {
         let n = self.room.state().marks.len()
-        if self.replayed {
-            self.saved = n
-            self.replayed = false
-            return
-        }
-        if n != self.saved {
+        if n != self.saved && !self.unreadable {
             store::put(key_of(room().as_str()), save_bytes(self.room.state()))
             self.saved = n
         }
@@ -288,12 +334,13 @@ pub fn serve(s: mut Server, time: f32) {
                 let Some(bytes) = payload(e) else { continue }
                 if conn == JOURNAL {
                     // The room started again on this build: its journal is the island.
+                    // Its marks were saved as they were placed.
                     s.phase = LIVE
-                    s.replayed = true
                     match unpack::<Record<Island, Act>>(take bytes) {
                         Ok(r) => s.room.restore(r),
                         Err(_) => panic("a journal record this program can't read"),
                     }
+                    s.saved = s.room.state().marks.len()
                 } else {
                     s.arrive(Held::Message { conn, bytes }, at)
                 }
@@ -324,16 +371,37 @@ fn a_save_reads_back_as_the_same_marks() {
     island.marks.push(Mark { by: 1, x: 3, z: -4 })
     island.marks.push(Mark { by: 2, x: 0, z: 9 })
     island.bodies.push(Body { peer: 1, x: 3, z: -4 })
-    let back = load(Some(save_bytes(island)))
+    let Some(back) = load(Some(save_bytes(island))) else { panic("its own save is readable") }
     assert(back.marks.len() == 2 && back.marks[0].z == -4 && back.marks[1].by == 2)
     assert(back.bodies.len() == 0, "who was here isn't kept")
 }
 
 @test
-fn a_save_of_another_version_or_none_starts_empty() {
-    assert(load(None).marks.len() == 0)
-    assert(load(Some(Vec::from([9, 1, 2]))).marks.len() == 0)
-    assert(load(Some(Vec::from([SAVE_VERSION, 255, 255, 255]))).marks.len() == 0)
+fn no_save_starts_empty_and_an_unreadable_one_is_kept_apart() {
+    let Some(none) = load(None) else { panic("no save is an empty island") }
+    assert(none.marks.len() == 0)
+    assert(load(Some(Vec::from([9, 1, 2]))).is_none(), "another version isn't read")
+    assert(load(Some(Vec::from([SAVE_VERSION, 255, 255, 255]))).is_none(), "nor a malformed one")
+}
+
+@test
+fn a_step_off_the_island_is_refused() {
+    var island = Island::empty()
+    island.bodies.push(Body { peer: 1, x: MAX_REACH - 2, z: 0 })
+    let near = Entry {
+        seq: 2,
+        id: ProposalId { peer: 1, session: 1, counter: 1 },
+        at: 0,
+        value: Act::Step { dx: 2, dz: 0 },
+    }
+    let far = Entry {
+        seq: 2,
+        id: ProposalId { peer: 1, session: 1, counter: 1 },
+        at: 0,
+        value: Act::Step { dx: 3, dz: 0 },
+    }
+    assert(island.check(near) == Verdict::Accept)
+    assert(island.check(far) == Verdict::Reject(OFF_ISLAND))
 }
 
 @test
