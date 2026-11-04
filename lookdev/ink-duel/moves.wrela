@@ -8,10 +8,10 @@
 // its silhouette: a one-two; a haymaker raised high and held there (the genre's delayed blow: a
 // dodge on the lift is too early); a lunge from far off; a sweep low and wide.
 
-use engine::clip::{HOLD, SMOOTH, SNAP}
+use engine::clip::{EVEN, HOLD, SMOOTH, SNAP}
 use engine::combat::Move
 use keyed::{Key, Phase}
-use pose::{ALL, Beat, HEAD, LEGS, NONE, Pose, TRUNK, UPPER}
+use pose::{ALL, ARM_R, Beat, HEAD, LEGS, NONE, Pose, TRUNK, UPPER}
 use poses::{
     COIL, CROSS, CROSS_LOAD, GUARD, HAY_COCKED, HAY_DOWN, HAY_LIFT, HOOK, HOOK_LOAD, JAB, LUNGE,
     LUNGE_LOAD, OVERHEAD, SWEEP, SWEEP_WIND, UPPERCUT,
@@ -252,12 +252,31 @@ const HOOK_DONE = Pose {
 /// legs can't reach sinks the body into a fold.
 const LUNGE_HIT = Pose {
     lift: vec3(0.0, -0.1, 0.12),
-    hips: vec3(0.12, -0.4, 0.0),
-    waist: vec3(0.05, -0.1, 0.0),
-    chest: vec3(0.1, -0.25, 0.0),
+    hips: vec3(0.12, -0.6, 0.0),
+    waist: vec3(0.05, -0.15, 0.0),
+    chest: vec3(0.1, -0.45, 0.0),
     head: vec3(-0.3, 0.45, 0.0),
     reach: vec2(1.16, 1.0),
     ..LUNGE,
+}
+
+// Breakdowns: the in-between that says which way a fist travels from one key to the next (left
+// to the interpolation, a fist drawn back at the hip swung down through the floor on its way
+// out, and the haymaker's fell limp before it came over).
+
+/// The lunge's fist on its way: the elbow come forward past the hip, the fist driving straight
+/// out at the chest's height.
+const LUNGE_DRIVE = Pose {
+    upper_r: vec3(0.3, -0.55, 0.78),
+    fore_r: vec3(-0.05, 0.05, 1.0),
+    ..LUNGE_HIT,
+}
+
+/// The haymaker's arm coming over the top: the elbow high and forward, the fist above the head.
+const HAY_OVER = Pose {
+    upper_r: vec3(0.2, 0.75, 0.63),
+    fore_r: vec3(-0.05, 0.35, 0.94),
+    ..HAY_HOLD,
 }
 
 /// The haymaker cocked for its hold: twisted right away, the striking arm high behind the head,
@@ -378,6 +397,7 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
                 // The delay: cocked at its limit and held there, then the snap down.
                 // (As written: the hook's performer leans to the side, which bowed these poses.)
                 Key { rebase: false, ..key(Phase::Windup, 0.5, HAY_HOLD, UPPER, 22.0, SNAP) },
+                key(Phase::Windup, 0.94, HAY_OVER, ARM_R, 0.0, EVEN),
                 Key { rebase: false, ..key(Phase::Active, 0.0, HAY_HIT, ALL, 5.0, SMOOTH) },
                 Key { rebase: false, ..key(Phase::Recovery, 0.2, HAY_HIT, ALL, 10.0, SMOOTH) },
             ],
@@ -387,6 +407,7 @@ pub fn brawler_keys(n: u32) -> Vec<Key> {
         return Vec::from(
             [
                 key(Phase::Windup, 0.55, LUNGE_LOAD, UPPER, 6.0, SNAP),
+                key(Phase::Windup, 0.88, LUNGE_DRIVE, ARM_R, 0.0, EVEN),
                 key(Phase::Active, 0.0, LUNGE_HIT, UPPER, 5.0, SMOOTH),
                 key(Phase::Recovery, 0.12, LUNGE_HIT, UPPER | LEGS, 6.0, SMOOTH),
             ],
