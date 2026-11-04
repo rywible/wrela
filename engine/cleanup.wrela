@@ -157,16 +157,17 @@ pub fn cleaned(clip: Clip, rig: Rig, how: Cleanup) -> Clip {
     out
 }
 
-/// Whether a clip moves its fingers at all.
+/// Whether a clip has its fingers: posed away from rest, or moving (a take without them leaves
+/// them as they rest; a jog's fists are held, but they're a take's).
 fn has_fingers(clip: Clip, rig: Rig) -> bool {
     let nb = rig.bones.len()
     for name in ["leftIndexProximal", "rightIndexProximal", "leftMiddleIntermediate"] {
         let b = rig.find(name)
         if b != NONE {
-            let first = clip.turns[b].v
+            let rest = rig.bones[b].rest.q.v
             for f in 0..clip.frames {
                 let q = clip.turns[f * nb + b].v
-                if min(length(q - first), length(q + first)) > 0.01 {
+                if min(length(q - rest), length(q + rest)) > 0.01 {
                     return true
                 }
             }
