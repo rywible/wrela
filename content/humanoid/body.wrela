@@ -34,17 +34,24 @@ pub const IDLE: Clip = humanoid::retarget(
     Retarget { looped: true },
 )
 
-/// A 100STYLE walk (assets/neutral_fw.bvh.LICENSE.txt): three strides, turned to walk ahead and
-/// looped.
+/// A 100STYLE walk (assets/neutral_fw.bvh.LICENSE.txt): the stride of the take that loops
+/// best, turned to walk ahead, its feet planted, its hands relaxed as the idle holds them (the
+/// take has no fingers).
 @fuel(2 ** 40)
-pub const WALK: Clip = humanoid::retarget(
-    humanoid::take_of_bvh(
-        bvh::read(embed("assets/neutral_fw.bvh")),
-        HUNDRED_STYLE,
-        HUNDRED_STYLE_ARM,
-        from: 0,
-        to: 138,
+pub const WALK: Clip = humanoid::with_hands(
+    humanoid::retarget(
+        humanoid::take_of_bvh(
+            bvh::read(embed("assets/neutral_fw.bvh")),
+            HUNDRED_STYLE,
+            HUNDRED_STYLE_ARM,
+            from: 0,
+            to: 138,
+        ).looped(shortest: 60, longest: 110),
+        HERO.rig.clone(),
+        Retarget { face_ahead: true, looped: true, planted: true },
     ),
-    HERO.rig.clone(),
-    Retarget { face_ahead: true, looped: true },
+    IDLE.clone(),
+    frame: 0,
+    rig: HERO.rig.clone(),
+    curl: 0.3,
 )

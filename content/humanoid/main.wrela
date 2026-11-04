@@ -26,6 +26,11 @@ pub const SHOW: u32 = 0
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
 
+/// The camera: how far off (m), and the height it frames (m): `--set FAR=1.2 --set FOCUS=0.2`
+/// looks at the feet.
+pub const FAR: f32 = 3.7
+pub const FOCUS: f32 = 0.95
+
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
 const WALK_AT: f32 = 8.0
@@ -96,7 +101,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let hips = base.t + base.q.rotate(pose.hips)
     let walking = SHOW == 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { 0.75 } else { -0.55 }
-    let shot = shot_at(time, vec3(hips.x, 0.0, hips.z), width, height, 3.7, side, KINETIC)
+    let shot = shot_at(time, FOCUS, vec3(hips.x, 0.0, hips.z), width, height, FAR, side, KINETIC)
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,
@@ -134,7 +139,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 }
 
 /// The body converts onto VRM's bones within the engine's 64, and its clips with it: the walk
-/// goes ahead (+z) about a stride pair a loop, and the idle stays where it stands.
+/// goes ahead (+z) a stride (two steps) a loop, and the idle stays where it stands.
 @test
 fn the_body_and_its_clips_convert() {
     let r = HERO.rig.clone()
@@ -142,7 +147,7 @@ fn the_body_and_its_clips_convert() {
     assert(r.find("hips") == 0 && r.find("leftToes") != humanoid::NONE)
     assert(HERO.verts.len() > 8000 && HERO.indices.len() % 3 == 0)
     assert(HERO.hi.y > 1.7 && HERO.hi.y < 1.9, f"the body stands {HERO.hi.y} m tall")
-    assert(WALK.travel.z > 1.5 && WALK.travel.z < 2.4, f"a walk's loop goes {WALK.travel} m")
+    assert(WALK.travel.z > 1.0 && WALK.travel.z < 1.4, f"a walk's loop goes {WALK.travel} m")
     assert(abs(WALK.travel.x) < 0.05)
     assert(length(IDLE.travel) < 0.05, f"the idle wanders {IDLE.travel} m a loop")
 }
@@ -198,5 +203,29 @@ fn the_walk_faces_ahead() {
         assert(left.x > 0.15 && abs(left.z) < 0.08, f"at {t} s the pelvis turned: {left}")
         assert(toes.z > abs(toes.x), f"at {t} s the left toes point {toes}")
         last = h.z
+    }
+}
+
+/// A planted foot stays put: frame to frame, an ankle down on the ground (within 2 cm of its
+/// height at rest) moves no more than 1.5 cm along it (a stance eases in and out).
+@test
+fn the_walk_plants_its_feet() {
+    let rw = HERO.rig.rest_world()
+    let n = WALK.frames - 1
+    for foot in ["leftFoot", "rightFoot"] {
+        let rest = rw[HERO.rig.find(foot)].t.y
+        var last = vec3(0.0)
+        var down = false
+        for f in 0..n {
+            let t = f32(f) / WALK.fps
+            let a = bone_at(palette(HERO.rig, WALK.pose(t), identity()), rw, foot)
+            let now = a.y < rest + 0.02
+            if now && down {
+                let slide = length(vec2(a.x - last.x, a.z - last.z))
+                assert(slide < 0.015, f"at {t} s the planted {foot} slid {slide} m")
+            }
+            down = now
+            last = a
+        }
     }
 }

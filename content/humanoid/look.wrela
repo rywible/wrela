@@ -30,10 +30,11 @@ pub struct Shot: Copy + GpuData {
     pub feet: vec3,
 }
 
-/// The shot of a body standing at `feet`: from its front left, a little above its chest, `far`
-/// metres off, framed on its middle.
+/// The shot of a body standing at `feet`: from `side` of its front (+x its left), a little above,
+/// `far` metres off, framed on the point `focus` metres over its feet.
 pub fn shot_at(
     time: f32,
+    focus: f32,
     feet: vec3,
     width: u32,
     height: u32,
@@ -41,7 +42,7 @@ pub fn shot_at(
     side: f32,
     kinetic: f32,
 ) -> Shot {
-    let at = feet + vec3(0.0, 0.95, 0.0)
+    let at = feet + vec3(0.0, focus, 0.0)
     let eye = at + normalize(vec3(side, 0.18, 1.0)) * far
     Shot {
         resolution: vec2(f32(width), f32(height)),
