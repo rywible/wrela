@@ -1,0 +1,898 @@
+// The cleanup every humanoid clip goes through once it's retargeted (`humanoid::retarget`): the
+// fixes the walk needed (`engine::stride`), made general, so a clip from mocap or from a library
+// comes out standing on the floor and moving as one body without tuning of its own. A clip's
+// review (`engine::review`) says what's left.
+//
+// - A loop whose seam jerks (a cut whose end doesn't quite meet its start) given the jump
+//   spread over the whole loop, and what's left smoothed, so it meets itself in motion as well
+//   as in pose.
+// - A loop that runs in place (its feet sliding back under it, as on a treadmill) given the
+//   travel its standing feet show, so they stand still while it goes.
+// - The floor found: the body raised or lowered so its feet stand on the floor, not in it.
+// - The trunk carried with the pelvis, in a clip that goes somewhere, about each stride's mean:
+//   the shoulders tilting against the pelvis's list a moment later, the trunk leaning over the
+//   standing leg (as far each way), the bend run up the spine (each piece bent across, so a
+//   trunk that leans ahead and turns keeps both), the neck between the shoulders and the head;
+//   the shoulders turning against the pelvis at least `COUNTER` as far as it turns; the
+//   collarbones level, each carried forward and back with its arm; the head taking a little of
+//   the shoulders' tilt.
+// - Each foot held where it comes to rest while it's down: whichever of heel and ball is lower
+//   held most, eased in as it lands and out as it leaves, on the floor (its pad giving up to
+//   `PAD` under the weight, no more); the legs reach the feet by two-bone IK, the hips lowered
+//   (smoothly) where a leg can't reach.
+// - A take without fingers given loose hands (`stride::loose_hands`).
+
+use std::collections::Vec
+use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
+use review::{runs_of, swing_of, unwrapped}
+use stride::{about, leg_of, loose_hands, reach, set_turn, shift, store, turn_below, worlds}
+
+/// What a clip's cleanup does: hold its feet (and find its floor and its travel), carry its
+/// trunk, loosen its hands.
+pub struct Cleanup: Copy {
+    pub feet: bool = true,
+    pub trunk: bool = true,
+    pub hands: bool = true,
+}
+
+const DEG: f32 = 0.017453292
+
+/// About a loop's seam, the time (s) each side of it that's smoothed, and how widely (s); and
+/// how many times the most the body jerks anywhere else it jerks at the seam for that to be
+/// smoothed. (A seam that meets itself is left as it is: smoothing it would soften the one
+/// stride that crosses it and not the other. Of the clips here, the 100STYLE run's cut seam
+/// jerks 49 times as hard, the Quaternius idle's 19 times, the jog's and the walk's under once.)
+const SEAM_OVER: f32 = 0.1
+const SEAM_WIDTH: f32 = 0.025
+const SEAM_POP: f32 = 3.0
+
+/// How low (m over its height at rest) and how slow (m/s along the floor) a heel or ball is,
+/// at most, when it's down, and the least time (s) it's down for; the speed (m/s) under which
+/// a loop's in place.
+const DOWN_LOW: f32 = 0.03
+const DOWN_SLOW: f32 = 0.3
+const DOWN_FOR: f32 = 0.06
+const IN_PLACE: f32 = 0.1
+
+/// How slow (m/s) a heel or ball that's low is, at most, to be held (the review's down, and the
+/// last frames it glides in and the first it slips out).
+const HOLD_SLOW: f32 = 0.6
+
+/// How long (s) a foot's hold eases in before it's down and out after, and how long it takes
+/// to settle once it's down; how far (m) its pad
+/// gives under the weight; how much of its length a leg reaches at most; how widely (frames)
+/// the hips' lowering is smoothed.
+const HOLD_EASE: f32 = 0.1
+const SETTLE: f32 = 0.05
+const PAD: f32 = 0.003
+const REACH: f32 = 0.995
+const DROP_WIDTH: f32 = 2.5
+
+/// About each touch, the time (s) over which the hips and the foot are eased (from
+/// `EASE_BEFORE` before to `EASE_AFTER` after, the foot from `FOOT_FROM` before to `FOOT_TILL`
+/// after); what each one's jerk weighs against the others' and the foot's give (from the floor)
+/// against its jerk; how straight a knee may come (degrees); the rounds and sweeps the easing
+/// takes; and how far (m) it moves either, at most (a take that bobs far, a jog's, would have
+/// its bob smoothed away).
+const EASE_BEFORE: f32 = 0.167
+const EASE_AFTER: f32 = 0.233
+const FOOT_FROM: f32 = 0.133
+const FOOT_TILL: f32 = 0.167
+const EASE_HIPS: f32 = 10.0
+const EASE_KNEE: f32 = 2.0
+const EASE_FOOT: f32 = 1.0
+const EASE_GIVE: f32 = 0.05
+const KNEE_FLOOR: f32 = 7.5
+const EASE_ROUNDS: u32 = 10
+const EASE_SWEEPS: u32 = 60
+const EASE_MOST: f32 = 0.01
+
+/// The trunk (`engine::stride`'s values, which a person was judged by): the least speed (m/s)
+/// of a clip that goes somewhere; how much of the pelvis's turn the spine, chest and upper chest
+/// each take; how far the shoulders tilt against the pelvis's list, and the trunk leans over
+/// the standing leg; how late (s) they answer it; how much of the shoulders' tilt the head takes
+/// and how much later; the least the shoulders turn against the pelvis (of its turn); and how
+/// far a collarbone swings with its arm (of the arm's swing), at most `PROTRACT_MOST` (degrees);
+/// and how many rounds the spine's tilts are set in.
+const GOES: f32 = 0.4
+const TRUNK_TURN: [f32; 3] = [0.5, -0.5, 0.0]
+const SHOULDERS_TILT: f32 = 0.55
+const TRUNK_LEANS: f32 = 0.2
+const TRUNK_LATE: f32 = 0.1
+const HEAD_TILT: f32 = 0.3
+const HEAD_LATE: f32 = 0.033
+const COUNTER: f32 = 0.6
+const PROTRACT: f32 = 0.13
+const PROTRACT_MOST: f32 = 3.0
+const TILT_ROUNDS: u32 = 3
+
+/// `clip` (on `rig`) cleaned up as `how` says (this module's opening).
+pub fn cleaned(clip: Clip, rig: Rig, how: Cleanup) -> Clip {
+    let nb = rig.bones.len()
+    let looped = clip.looped && clip.frames > 2
+    let n = if looped { clip.frames - 1 } else { clip.frames }
+    let fps = clip.fps
+    var c = if looped { seam_smoothed(clip, rig) } else { clip.clone() }
+    if how.feet {
+        c = on_the_floor(c, rig, n, looped)
+    }
+    let travel = rig.base.q.rotate(c.travel_local)
+    var two: Vec<Rigid> = Vec::with_capacity(n * nb)
+    for f in 0..n {
+        let w = worlds(rig, c, f)
+        for b in 0..nb {
+            two.push(w[b])
+        }
+    }
+    // How fast it goes, and how long its stride is.
+    let hips = rig.find("hips")
+    let span = if looped { f32(n) / fps } else { f32(max(n, 2) - 1) / fps }
+    let last = if looped { two[hips].t + travel } else { two[(n - 1) * nb + hips].t }
+    let d = last - two[hips].t
+    let speed = length(vec2(d.x, d.z)) / span
+    let over = if looped { n } else { max(u32(1.0 * fps), 3) }
+    if how.trunk && speed > GOES {
+        carry_trunk(rig, mut two, n, looped, fps, over)
+    }
+    if how.feet {
+        hold_feet(rig, mut two, n, looped, fps, travel)
+    }
+    var out = c.clone()
+    for f in 0..n {
+        var w: Vec<Rigid> = Vec::with_capacity(nb)
+        for b in 0..nb {
+            w.push(two[f * nb + b])
+        }
+        store(rig, w, mut out, f)
+    }
+    if looped {
+        for b in 0..nb {
+            out.turns[n * nb + b] = out.turns[b]
+        }
+        out.hips[n] = out.hips[0] + out.travel_local
+    }
+    if how.hands && !has_fingers(c, rig) {
+        out = loose_hands(out, rig)
+    }
+    out
+}
+
+/// Whether a clip moves its fingers at all.
+fn has_fingers(clip: Clip, rig: Rig) -> bool {
+    let nb = rig.bones.len()
+    for name in ["leftIndexProximal", "rightIndexProximal", "leftMiddleIntermediate"] {
+        let b = rig.find(name)
+        if b != NONE {
+            let first = clip.turns[b].v
+            for f in 0..clip.frames {
+                let q = clip.turns[f * nb + b].v
+                if min(length(q - first), length(q + first)) > 0.01 {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}
+
+/// A loop with its seam smoothed, if it jerks there (`SEAM_POP`): first the jump at the seam
+/// (where the cut's end doesn't meet its start) spread over the whole loop, a little each frame;
+/// then, if it still jerks there, the `SEAM_OVER` each side of it eased toward the loop's motion
+/// smoothed over `SEAM_WIDTH`, most at the seam.
+fn seam_smoothed(clip: Clip, rig: Rig) -> Clip {
+    let nb = rig.bones.len()
+    let n = clip.frames - 1
+    let fps = clip.fps
+    if n < 4 || seam_jerk(clip, nb, n) <= SEAM_POP {
+        return clip.clone()
+    }
+    // The jump: what each bone's turn (and the hips' place) would be across the seam, going on
+    // as it goes at the end and as it comes at the start, against what it is.
+    var c = clip.clone()
+    let t = clip.travel_local
+    for b in 0..nb {
+        let q = |f: u32| -> Quat { clip.turns[f * nb + b] }
+        let ahead = q(n - 1).mul(q(n - 2).inverse().mul(q(n - 1)))
+        let back = q(0).mul(q(1).inverse().mul(q(0)))
+        let d1 = q(0).mul(ahead.inverse())
+        let d2 = back.mul(q(n - 1).inverse())
+        let d2v = if dot(d1.v, d2.v) < 0.0 { -d2.v } else { d2.v }
+        let dv = normalize(d1.v + d2v)
+        let d = Quat { v: if dv.w < 0.0 { -dv } else { dv } }
+        for f in 0..n {
+            c.turns[f * nb + b] = Quat::identity().nlerp(d, f32(f) / f32(n)).mul(q(f))
+        }
+        c.turns[n * nb + b] = c.turns[b]
+    }
+    let h = clip.hips.clone()
+    let jump = 0.5 * (h[0] + t - (2.0 * h[n - 1] - h[n - 2]) + (2.0 * h[0] - h[1] + t - h[n - 1]))
+    for f in 0..n {
+        c.hips[f] = h[f] + jump * (f32(f) / f32(n))
+    }
+    c.hips[n] = c.hips[0] + t
+    if seam_jerk(c, nb, n) <= SEAM_POP {
+        return c
+    }
+    var out = c.clone()
+    let k = max(u32(SEAM_OVER * fps + 0.5), 2)
+    let width = max(SEAM_WIDTH * fps, 0.7)
+    let reach_of = u32(3.0 * width + 1.0)
+    for u in 0..2 * k {
+        // Frames k before the seam to k after it, and how near it each is.
+        let at = i32(u) - i32(k)
+        let f = u32((at + i32(n)) % i32(n))
+        let x = (f32(at) + 0.5) / f32(k)
+        let w = 1.0 - smoothstep(0.0, 1.0, abs(x))
+        for b in 0..nb {
+            let me = c.turns[f * nb + b].v
+            var sum = vec4(0.0)
+            var weights = 0.0
+            for g in 0..2 * reach_of + 1 {
+                let dg = f32(g) - f32(reach_of)
+                let h = u32((i32(f) + i32(g) - i32(reach_of) + 2 * i32(n)) % i32(n))
+                let q = c.turns[h * nb + b].v
+                let e = exp(-0.5 * dg * dg / (width * width))
+                let aligned = if dot(q, me) < 0.0 { -q } else { q }
+                sum += e * aligned
+                weights += e
+            }
+            let smooth = Quat { v: normalize(sum / weights) }
+            out.turns[f * nb + b] = c.turns[f * nb + b].nlerp(smooth, w)
+        }
+        var sum = vec3(0.0)
+        var weights = 0.0
+        for g in 0..2 * reach_of + 1 {
+            let dg = f32(g) - f32(reach_of)
+            let at_g = i32(f) + i32(g) - i32(reach_of)
+            let loops = if at_g >= 0 { at_g / i32(n) } else { (at_g - i32(n) + 1) / i32(n) }
+            let h = u32(at_g - loops * i32(n))
+            let e = exp(-0.5 * dg * dg / (width * width))
+            sum += e * (c.hips[h] + f32(loops) * t)
+            weights += e
+        }
+        out.hips[f] = mix(c.hips[f], sum / weights, vec3(w))
+    }
+    for b in 0..nb {
+        out.turns[n * nb + b] = out.turns[b]
+    }
+    out.hips[n] = out.hips[0] + t
+    out
+}
+
+/// How hard a loop jerks at its seam: the body's jerk there (each bone's turn's, together)
+/// against the most it jerks anywhere else (so a foot that lands there is no reason).
+fn seam_jerk(clip: Clip, nb: u32, n: u32) -> f32 {
+    let around = |f: i32| -> u32 { u32((f + 4 * i32(n)) % i32(n)) }
+    var at_seam = 0.0
+    var elsewhere = 0.0
+    for f in 0..n {
+        let g = i32(f)
+        var e = 0.0
+        for b in 0..nb {
+            let me = clip.turns[f * nb + b].v
+            let q = |h: i32| -> vec4 {
+                let v = clip.turns[around(h) * nb + b].v
+                if dot(v, me) < 0.0 { -v } else { v }
+            }
+            let j = q(g + 2) - 3.0 * q(g + 1) + 3.0 * q(g) - q(g - 1)
+            e += dot(j, j)
+        }
+        if f + 3 >= n || f < 2 {
+            at_seam = max(at_seam, e)
+        } else {
+            elsewhere = max(elsewhere, e)
+        }
+    }
+    at_seam / max(elsewhere, 1.0e-12)
+}
+
+/// A clip put on the floor: a loop that runs in place given its feet's travel, then the body
+/// raised or lowered so that where its feet are down they're on the floor.
+fn on_the_floor(clip: Clip, rig: Rig, n: u32, looped: bool) -> Clip {
+    let fps = clip.fps
+    var out = clip.clone()
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    // Each foot's lowest point (heel or ball) each frame, over the floor, and where it is.
+    var low_h: Vec<f32> = Vec::filled(2 * n, 0.0)
+    var low_at: Vec<vec3> = Vec::filled(2 * n, vec3(0.0))
+    for f in 0..n {
+        let w = worlds(rig, clip, f)
+        for li in 0..2 {
+            let l = legs[li]
+            let heel = w[l.ankle].t + w[l.ankle].q.rotate(l.heel)
+            let ball = w[l.toes].t + w[l.toes].q.rotate(l.ball)
+            let p = if heel.y < ball.y { heel } else { ball }
+            low_h[li * n + f] = p.y - l.floor
+            low_at[li * n + f] = p
+        }
+    }
+    let travel = rig.base.q.rotate(clip.travel_local)
+    if looped && length(vec2(travel.x, travel.z)) / (f32(n) / fps) < IN_PLACE {
+        // How fast the feet go along the floor where they're lowest (within 2 cm of it): the
+        // way the body goes, backwards.
+        var v = vec2(0.0)
+        var k = 0.0
+        for li in 0..2 {
+            var least = 1.0e9
+            for f in 0..n {
+                least = min(least, low_h[li * n + f])
+            }
+            for f in 0..n {
+                if low_h[li * n + f] < least + 0.02 {
+                    let (a, b) = (low_at[li * n + (f + n - 1) % n], low_at[li * n + (f + 1) % n])
+                    v += 0.5 * fps * vec2(b.x - a.x, b.z - a.z)
+                    k += 1.0
+                }
+            }
+        }
+        v /= max(k, 1.0)
+        if length(v) > DOWN_SLOW {
+            let loop_travel = vec3(-v.x, 0.0, -v.y) * (f32(n) / fps)
+            let local = rig.base.q.inverse().rotate(loop_travel)
+            for f in 0..clip.frames {
+                out.hips[f] += local * (f32(f) / f32(n))
+            }
+            out.travel = clip.travel + loop_travel
+            out.travel_local = clip.travel_local + local
+        }
+    }
+    // The floor: the median of the feet's lowest points where they're down (low and slow).
+    var downs: Vec<f32> = Vec::new()
+    for f in 0..n {
+        let w = worlds(rig, out, f)
+        let w_next = worlds(rig, out, if f + 1 < n { f + 1 } else { f })
+        for li in 0..2 {
+            let l = legs[li]
+            for (now, next) in [
+                (
+                    w[l.ankle].t + w[l.ankle].q.rotate(l.heel),
+                    w_next[l.ankle].t + w_next[l.ankle].q.rotate(l.heel),
+                ),
+                (
+                    w[l.toes].t + w[l.toes].q.rotate(l.ball),
+                    w_next[l.toes].t + w_next[l.toes].q.rotate(l.ball),
+                ),
+            ] {
+                let d = next - now
+                if now.y - l.floor < 0.05 && length(vec2(d.x, d.z)) * fps < DOWN_SLOW {
+                    downs.push(now.y - l.floor)
+                }
+            }
+        }
+    }
+    if downs.len() > 0 {
+        downs.sort_by(|a: f32, b: f32| a < b)
+        let floor = downs[downs.len() / 2]
+        if abs(floor) > 0.001 {
+            let local = rig.base.q.inverse().rotate(vec3(0.0, -floor, 0.0))
+            for f in 0..out.frames {
+                out.hips[f] += local
+            }
+        }
+    }
+    out
+}
+
+/// A point's place at frame `f` of `ps` (n a loop, carried on by `travel`; else held at the
+/// ends).
+fn at_frame(ps: [vec3], f: i32, looped: bool, travel: vec3) -> vec3 {
+    let n = i32(ps.len())
+    if looped {
+        let k = if f >= 0 { f / n } else { (f - n + 1) / n }
+        ps[u32(f - k * n)] + f32(k) * travel
+    } else {
+        ps[u32(clamp(f, 0, n - 1))]
+    }
+}
+
+/// The feet held while they're down (this module's opening), in `two` (n frames of the body's
+/// bones).
+fn hold_feet(rig: Rig, two: mut Vec<Rigid>, n: u32, looped: bool, fps: f32, travel: vec3) {
+    let nb = rig.bones.len()
+    let rw = rig.rest_world()
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    let ease = max(HOLD_EASE * fps, 1.0)
+    let down_for = max(u32(DOWN_FOR * fps + 0.5), 2)
+    var goals: Vec<vec3> = Vec::filled(2 * n, vec3(0.0))
+    // Each foot's touches (the first frame of each hold), and its lowest point's height over the
+    // floor where it's held, each frame (as against its ankle's).
+    var touches: Vec<Vec<u32>> = Vec::new()
+    var soles: Vec<f32> = Vec::filled(2 * n, 0.0)
+    for li in 0..2 {
+        let l = legs[li]
+        var heels: Vec<vec3> = Vec::with_capacity(n)
+        var balls: Vec<vec3> = Vec::with_capacity(n)
+        for f in 0..n {
+            let (a, t) = (two[f * nb + l.ankle], two[f * nb + l.toes])
+            heels.push(a.t + a.q.rotate(l.heel))
+            balls.push(t.t + t.q.rotate(l.ball))
+        }
+        // Which frames each is down.
+        var on: Vec<Vec<bool>> = Vec::new()
+        for pi in 0..2 {
+            let ps = if pi == 0 { heels.clone() } else { balls.clone() }
+            var low: Vec<bool> = Vec::with_capacity(n)
+            for f in 0..n {
+                let d = at_frame(ps, i32(f) + 1, looped, travel) -
+                    at_frame(ps, i32(f) - 1, looped, travel)
+                low.push(
+                    ps[f].y - l.floor < DOWN_LOW && 0.5 * length(vec2(d.x, d.z)) * fps < HOLD_SLOW,
+                )
+            }
+            var down: Vec<bool> = Vec::filled(n, value: false)
+            for (a, z) in runs_of(low, looped) {
+                if z + 1 - a >= down_for {
+                    for u in a..z + 1 {
+                        down[u % n] = true
+                    }
+                }
+            }
+            on.push(take down)
+        }
+        // Each frame down, how far the ankle's moved to hold the foot: from where it lands, each
+        // frame's slip of the lower of heel and ball (the one it rolls about) taken back, all of
+        // it once it's settled.
+        var held: Vec<bool> = Vec::filled(n, value: false)
+        for f in 0..n {
+            held[f] = on[0][f] || on[1][f]
+        }
+        var by: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        let settle = max(SETTLE * fps, 1.0)
+        var lands: Vec<u32> = Vec::new()
+        for (a, z) in runs_of(held.clone(), looped) {
+            lands.push(a)
+            // How far the foot's lowest point is off the floor, mostly, over the hold: what it's
+            // moved down (or up), all the hold through.
+            var lows: Vec<f32> = Vec::new()
+            for u in a..z + 1 {
+                let f = u % n
+                lows.push(min(heels[f].y, balls[f].y) - l.floor)
+            }
+            lows.sort_by(|x: f32, y: f32| x < y)
+            let mostly = lows[lows.len() / 2]
+            let off = if mostly > 0.0 { -mostly } else if mostly < -PAD { -PAD - mostly } else {
+                0.0
+            }
+            var slip = vec2(0.0)
+            for u in a..z + 1 {
+                let f = u % n
+                let (hd, bd) = (on[0][f], on[1][f])
+                let (hh, bh) = (heels[f].y - l.floor, balls[f].y - l.floor)
+                let w = if hd && bd {
+                    smoothstep(-0.01, 0.01, bh - hh)
+                } else if hd {
+                    1.0
+                } else {
+                    0.0
+                }
+                if u > a {
+                    let dh = at_frame(heels, i32(u), looped, travel) -
+                        at_frame(heels, i32(u) - 1, looped, travel)
+                    let db = at_frame(balls, i32(u), looped, travel) -
+                        at_frame(balls, i32(u) - 1, looped, travel)
+                    let d = w * dh + (1.0 - w) * db
+                    // All of it once it's settled, none as it leaves.
+                    let k = smoothstep(0.0, 1.0, f32(u - a) / settle) *
+                        smoothstep(0.0, 1.0, f32(z + 1 - u) / settle)
+                    slip -= k * vec2(d.x, d.z)
+                }
+                let up = max(off, -PAD - min(hh, bh))
+                by[f] = vec3(slip.x, up, slip.y)
+            }
+        }
+        // Between holds, eased from the one to the next over the swing between (smoothly, so
+        // the foot neither jerks as it leaves nor as it lands); before the first and after the
+        // last, eased in and out over `HOLD_EASE`.
+        var eased: Vec<vec3> = Vec::filled(n, vec3(0.0))
+        for f in 0..n {
+            if held[f] {
+                eased[f] = by[f]
+            } else {
+                var back = n
+                var ahead = n
+                for d in 1..n {
+                    if back == n && (looped || f >= d) && held[(f + n - d) % n] {
+                        back = d
+                    }
+                    if ahead == n && (looped || f + d < n) && held[(f + d) % n] {
+                        ahead = d
+                    }
+                }
+                if back < n && ahead < n {
+                    let x = smoothstep(0.0, 1.0, f32(back) / f32(back + ahead))
+                    eased[f] = by[(f + n - back) % n] * (1.0 - x) + by[(f + ahead) % n] * x
+                } else if back < n {
+                    eased[f] = by[(f + n - back) % n] *
+                        (1.0 - smoothstep(0.0, 1.0, f32(back) / ease))
+                } else if ahead < n {
+                    eased[f] = by[(f + ahead) % n] * (1.0 - smoothstep(0.0, 1.0, f32(ahead) / ease))
+                }
+            }
+        }
+        // Nowhere under the floor (beyond the pad's give), smoothly.
+        var under: Vec<f32> = Vec::filled(n, 0.0)
+        for f in 0..n {
+            let lowest = min(heels[f].y, balls[f].y) + eased[f].y - l.floor
+            under[f] = max(-PAD - lowest, 0.0)
+        }
+        let lifted = smoothed_above(under, DROP_WIDTH, looped)
+        for f in 0..n {
+            goals[li * n + f] = two[f * nb + l.ankle].t + eased[f] + vec3(0.0, lifted[f], 0.0)
+            soles[li * n + f] = min(heels[f].y, balls[f].y) - two[f * nb + l.ankle].t.y
+        }
+        touches.push(take lands)
+    }
+    // Where a leg can't reach its foot, the hips lowered: smoothly, never less than it needs.
+    var drop: Vec<f32> = Vec::filled(n, 0.0)
+    for f in 0..n {
+        for li in 0..2 {
+            let l = legs[li]
+            let (h, k, a) = (two[f * nb + l.hip].t, two[f * nb + l.knee].t, two[f * nb + l.ankle].t)
+            let most = REACH * (length(k - h) + length(a - k))
+            let g = goals[li * n + f]
+            let across = length(vec2(g.x - h.x, g.z - h.z))
+            if length(g - h) > most && across < most {
+                drop[f] = max(drop[f], (h.y - g.y) - sqrt(most * most - across * across))
+            }
+        }
+    }
+    var lowered = smoothed_above(drop, DROP_WIDTH, looped)
+    ease_touches(rig, two, n, looped, fps, touches, soles, mut goals, mut lowered)
+    for f in 0..n {
+        var w: Vec<Rigid> = Vec::with_capacity(nb)
+        for b in 0..nb {
+            w.push(two[f * nb + b])
+        }
+        shift(mut w, vec3(0.0, -lowered[f], 0.0))
+        for li in 0..2 {
+            let l = legs[li]
+            let (fq, tq) = (two[f * nb + l.ankle].q, two[f * nb + l.toes].q)
+            // The knee bends about the shin's left at rest (the body's left in a T-pose).
+            let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+            let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, goals[li * n + f], hinge)
+            set_turn(rig, mut w, l.hip, qu)
+            set_turn(rig, mut w, l.knee, ql)
+            set_turn(rig, mut w, l.ankle, fq)
+            set_turn(rig, mut w, l.toes, tq)
+        }
+        for b in 0..nb {
+            two[f * nb + b] = w[b]
+        }
+    }
+}
+
+/// The smooth series nowhere under `xs`: `xs` spread to its neighbours within twice `width`
+/// frames, blurred over `width`, and never less than `xs`.
+fn smoothed_above(xs: [f32], width: f32, looped: bool) -> Vec<f32> {
+    let n = xs.len()
+    let r = u32(2.0 * width + 0.5)
+    let near = |f: i32| -> u32 {
+        if looped { u32((f + 4 * i32(n)) % i32(n)) } else { u32(clamp(f, 0, i32(n) - 1)) }
+    }
+    var spread: Vec<f32> = Vec::filled(n, 0.0)
+    for f in 0..n {
+        for d in 0..2 * r + 1 {
+            spread[f] = max(spread[f], xs[near(i32(f) + i32(d) - i32(r))])
+        }
+    }
+    var out: Vec<f32> = Vec::filled(n, 0.0)
+    for f in 0..n {
+        var sum = 0.0
+        var weights = 0.0
+        for d in 0..2 * r + 1 {
+            let x = f32(d) - f32(r)
+            let e = exp(-0.5 * x * x / (width * width))
+            sum += e * spread[near(i32(f) + i32(d) - i32(r))]
+            weights += e
+        }
+        out[f] = max(sum / weights, xs[f])
+    }
+    out
+}
+
+/// The trunk carried with the pelvis (this module's opening), in `two` (n frames of the body's
+/// bones), about each stretch of `over` frames' mean (the whole loop's, looped).
+fn carry_trunk(rig: Rig, two: mut Vec<Rigid>, n: u32, looped: bool, fps: f32, over: u32) {
+    let nb = rig.bones.len()
+    let rw = rig.rest_world()
+    let up = vec3(0.0, 1.0, 0.0)
+    let (lh, rh) = (rig.find("leftUpperLeg"), rig.find("rightUpperLeg"))
+    let hips = rig.find("hips")
+    let trunk = [
+        hips,
+        rig.find("spine"),
+        rig.find("chest"),
+        rig.find("upperChest"),
+        rig.find("neck"),
+    ]
+    let (spine, neck, head) = (trunk[1], trunk[4], rig.find("head"))
+    let chest = trunk[3]
+    let collars = [rig.find("leftShoulder"), rig.find("rightShoulder")]
+    let uppers = [rig.find("leftUpperArm"), rig.find("rightUpperArm")]
+    let lowers = [rig.find("leftLowerArm"), rig.find("rightLowerArm")]
+    let sides = [1.0, -1.0]
+    // The pelvis's turn and list, the shoulders' turn, and each arm's swing ahead (degrees),
+    // each frame, and each about its mean.
+    var yaws: Vec<f32> = Vec::with_capacity(n)
+    var lists: Vec<f32> = Vec::with_capacity(n)
+    var shoulder_yaws: Vec<f32> = Vec::with_capacity(n)
+    var swings: Vec<f32> = Vec::filled(2 * n, 0.0)
+    var aheads: Vec<vec3> = Vec::with_capacity(n)
+    for f in 0..n {
+        let pel = two[f * nb + lh].t - two[f * nb + rh].t
+        let sh = two[f * nb + uppers[0]].t - two[f * nb + uppers[1]].t
+        yaws.push(atan2(-pel.z, pel.x) / DEG)
+        lists.push(atan2(pel.y, length(vec2(pel.x, pel.z))) / DEG)
+        shoulder_yaws.push(atan2(-sh.z, sh.x) / DEG)
+        let ahead = normalize(cross(vec3(pel.x, 0.0, pel.z), up))
+        aheads.push(ahead)
+        for ai in 0..2 {
+            let d = two[f * nb + lowers[ai]].t - two[f * nb + uppers[ai]].t
+            swings[ai * n + f] = atan2(dot(d, ahead), -d.y) / DEG
+        }
+    }
+    let yaw = swing_of(unwrapped(yaws), over, looped)
+    let list = swing_of(lists, over, looped)
+    let shoulder_yaw = swing_of(unwrapped(shoulder_yaws), over, looped)
+    var arm_swings: Vec<Vec<f32>> = Vec::new()
+    for ai in 0..2 {
+        var s: Vec<f32> = Vec::with_capacity(n)
+        for f in 0..n {
+            s.push(swings[ai * n + f])
+        }
+        arm_swings.push(swing_of(s, over, looped))
+    }
+    // How far the shoulders turn with the pelvis's turn (+ with it), and what's added to bring
+    // them to turn against it at least `COUNTER` as far.
+    var cov = 0.0
+    var var_yaw = 0.0
+    for f in 0..n {
+        cov += shoulder_yaw[f] * yaw[f]
+        var_yaw += yaw[f] * yaw[f]
+    }
+    let with = cov / max(var_yaw, 1.0e-6)
+    let counter = max(with + COUNTER, 0.0)
+    let late = u32(TRUNK_LATE * fps + 0.5)
+    let later = u32((TRUNK_LATE + HEAD_LATE) * fps + 0.5)
+    let before = |f: u32, by: u32| -> u32 {
+        if looped { (f + n - by % n) % n } else if f >= by { f - by } else { 0 }
+    }
+    // A piece's bend from side to side: its length's lean away from `left` (as a tilt that
+    // raises its left).
+    let bend = |d: vec3, left: vec3| -> f32 { -asin(clamp(dot(normalize(d), left), -1.0, 1.0)) }
+    // A bone's tilt from side to side about `along`: its left's rise.
+    let tilt = |q: Quat, b: u32| -> f32 {
+        let left = q.rotate(rw[b].q.inverse().rotate(vec3(1.0, 0.0, 0.0)))
+        atan2(left.y, length(vec2(left.x, left.z)))
+    }
+    // Twice: the first time to see how far the lean comes out of true, the second with that
+    // taken off.
+    var leant: Vec<f32> = Vec::filled(n, 0.0)
+    var untrue: Vec<f32> = Vec::filled(n, 0.0)
+    for pass in 0..2 {
+        for f in 0..n {
+            var w: Vec<Rigid> = Vec::with_capacity(nb)
+            for b in 0..nb {
+                w.push(two[f * nb + b])
+            }
+            let along = aheads[f]
+            let hq = w[head].q
+            // Each piece of the spine turned about its own length (so a trunk that leans ahead
+            // turns in itself, not out to the side).
+            let turn = yaw[f] * DEG
+            let shares = [0.5, 0.3, 0.2]
+            for k in 0..3 {
+                let axis = normalize(w[trunk[k + 2]].t - w[trunk[k + 1]].t)
+                let by = TRUNK_TURN[k] * turn - shares[k] * counter * turn
+                turn_below(rig, mut w, trunk[k + 1], about(axis, by))
+            }
+            // The shoulders' tilt and the lean wanted, from the pelvis's list a moment ago, and
+            // the spine's tilts (spine, chest, upper chest) that make them.
+            let was = list[before(f, late)] * DEG
+            let (shoulders, lean) = (-SHOULDERS_TILT * was, -TRUNK_LEANS * was - untrue[f])
+            var tall = [0.0, 0.0, 0.0, 0.0]
+            for k in 0..4 {
+                tall[k] = w[trunk[k + 1]].t.y - w[trunk[k]].t.y
+            }
+            let left = cross(up, along)
+            let below = bend(w[spine].t - w[hips].t, left)
+            let height = tall[0] + tall[1] + tall[2] + tall[3]
+            let b3 = (tall[0] * below + (tall[1] + tall[2] + tall[3]) * shoulders - height * lean) /
+                (4.0 * tall[1] + tall[2])
+            // The neck's between the shoulders' and the head's (a take's own roll of the neck,
+            // against its shoulders' rocking, would swing the head out to the side).
+            let head_was = list[before(f, later)] * DEG
+            let head_tilt = -HEAD_TILT * SHOULDERS_TILT * head_was
+            let wanted = [
+                shoulders - 4.0 * b3,
+                shoulders - b3,
+                shoulders,
+                0.5 * (shoulders + head_tilt),
+            ]
+            // Each piece bent across, about the line at right angles to its length and across:
+            // so its lean ahead stays and its turn in itself stays (a trunk that leans ahead
+            // and turns drops its leading shoulder, as it should). A few times over, as each
+            // turn moves the line a little.
+            for _ in 0..TILT_ROUNDS {
+                for k in 0..4 {
+                    let (b, tip) = (trunk[k + 1], if k < 3 { trunk[k + 2] } else { head })
+                    let u = normalize(w[tip].t - w[b].t)
+                    let axis = normalize(cross(left, u))
+                    turn_below(rig, mut w, b, about(axis, wanted[k] - bend(u, left)))
+                }
+            }
+            // The collarbones level with the chest, then swung with the arms.
+            for _ in 0..3 {
+                let line = w[uppers[0]].t - w[uppers[1]].t
+                let off = atan2(line.y, length(vec2(line.x, line.z))) - tilt(w[chest].q, chest)
+                for cb in collars {
+                    turn_below(rig, mut w, cb, about(along, -off))
+                }
+            }
+            for ai in 0..2 {
+                let p = clamp(PROTRACT * arm_swings[ai][f], -PROTRACT_MOST, PROTRACT_MOST)
+                turn_below(rig, mut w, collars[ai], about(up, -sides[ai] * p * DEG))
+            }
+            // The head kept turned as it was (where it looks).
+            set_turn(rig, mut w, head, hq)
+            if pass == 0 {
+                let up_to = w[neck].t - w[hips].t
+                leant[f] = -atan2(dot(up_to, left), up_to.y)
+                continue
+            }
+            // Its tilt a little of the shoulders', later: whatever its tilt was in the take.
+            turn_below(rig, mut w, head, about(along, head_tilt - tilt(w[head].q, head)))
+            for b in 0..nb {
+                two[f * nb + b] = w[b]
+            }
+        }
+        // What's the same in both halves of a stride (a loop's), or the lean's mean about then:
+        // what's lopsided in it, taken off.
+        if looped {
+            for f in 0..n {
+                untrue[f] = 0.5 * (leant[f] + leant[(f + n / 2) % n])
+            }
+        } else {
+            let swing = swing_of(leant.clone(), over, looped: false)
+            for f in 0..n {
+                untrue[f] = leant[f] - swing[f]
+            }
+        }
+    }
+}
+
+/// Through each touch, the hips, the foot and the knee eased together (`engine::stride`'s
+/// easing, which a person was judged by). A foot comes down and stops on the floor within a
+/// frame, which a knee near straight takes as a jolt, or the hips as a hop, if either takes it
+/// alone. So over the frames about each touch, the hips' height and the foot's are moved (a
+/// millimetre or two, never more than `EASE_MOST`) for the least jerk of the hips, the foot and
+/// the knee together (`EASE_HIPS`, `EASE_FOOT` and `EASE_KNEE` against each other): the foot
+/// settling onto the floor over a few frames (eased in from where it's first moved), its pad
+/// giving up to `PAD` under the weight (`EASE_GIVE` against how far), the knee never straighter
+/// than `KNEE_FLOOR`. By sweeps of coordinate descent, the knee's bend taken as straight in the
+/// hips' height over the foot's for `EASE_SWEEPS` sweeps at a time.
+fn ease_touches(
+    rig: Rig,
+    two: [Rigid],
+    n: u32,
+    looped: bool,
+    fps: f32,
+    touches: Vec<Vec<u32>>,
+    soles: [f32],
+    goals: mut Vec<vec3>,
+    lowered: mut Vec<f32>,
+) {
+    let nb = rig.bones.len()
+    let rw = rig.rest_world()
+    let hips = rig.find("hips")
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    let before = max(u32(EASE_BEFORE * fps + 0.5), 2)
+    let after = max(u32(EASE_AFTER * fps + 0.5), 2)
+    let foot_from = max(u32(FOOT_FROM * fps + 0.5), 1)
+    let foot_till = max(u32(FOOT_TILL * fps + 0.5), 1)
+    let bound = 1000.0 * EASE_MOST
+    for li in 0..2 {
+        let l = legs[li]
+        let (l1, l2) = (length(rw[l.knee].t - rw[l.hip].t), length(rw[l.ankle].t - rw[l.knee].t))
+        for touch in touches[li].clone() {
+            // The window about it (n's added so a loop's frames don't go under 0).
+            let lo = touch + n - before - 2
+            let m = before + after + 5
+            if !looped && (touch < before + 2 || touch + after + 3 > n) {
+                continue
+            }
+            // (In millimetres and degrees.)
+            var y0: Vec<f32> = Vec::with_capacity(m)
+            var h0: Vec<f32> = Vec::with_capacity(m)
+            var hip_at: Vec<vec3> = Vec::with_capacity(m)
+            var ankle_at: Vec<vec3> = Vec::with_capacity(m)
+            for w in 0..m {
+                let f = (lo + w) % n
+                let i = li * n + f
+                y0.push(1000.0 * (two[f * nb + hips].t.y - lowered[f]))
+                h0.push(1000.0 * (goals[i].y + soles[i] - l.floor))
+                hip_at.push(two[f * nb + l.hip].t - vec3(0.0, lowered[f], 0.0))
+                ankle_at.push(goals[i])
+            }
+            let bend = |w: u32, s: f32| -> f32 {
+                let d = length(hip_at[w] + vec3(0.0, 0.001 * s, 0.0) - ankle_at[w])
+                acos(clamp((d * d - l1 * l1 - l2 * l2) / (2.0 * l1 * l2), -1.0, 1.0)) / DEG
+            }
+            var lift: Vec<f32> = Vec::filled(m, 0.0)
+            var give: Vec<f32> = Vec::filled(m, 0.0)
+            var flat: Vec<f32> = Vec::filled(m, 0.0)
+            var rate: Vec<f32> = Vec::filled(m, 0.0)
+            for _round in 0..EASE_ROUNDS {
+                for w in 0..m {
+                    let s = lift[w] - give[w]
+                    let k = bend(w, s)
+                    rate[w] = max((k - bend(w, s + 0.1)) / 0.1, 1.0e-3)
+                    flat[w] = k + rate[w] * s
+                }
+                for _sweep in 0..EASE_SWEEPS {
+                    for w in 2..m - 2 {
+                        let u = lo + w
+                        let at_touch = touch + n
+                        let most = (flat[w] - KNEE_FLOOR) / rate[w]
+                        // The hips.
+                        var g = 0.0
+                        var h = 0.0
+                        for j in w - 1..w + 2 {
+                            let dj = if j == w { -2.0 } else { 1.0 }
+                            let ry = y0[j - 1] +
+                                lift[j - 1] -
+                                2.0 * (y0[j] + lift[j]) +
+                                y0[j + 1] +
+                                lift[j + 1]
+                            let rk = flat[j - 1] -
+                                rate[j - 1] * (lift[j - 1] - give[j - 1]) -
+                                2.0 * (flat[j] - rate[j] * (lift[j] - give[j])) +
+                                flat[j + 1] -
+                                rate[j + 1] * (lift[j + 1] - give[j + 1])
+                            g += dj * (EASE_HIPS * ry - EASE_KNEE * rate[w] * rk)
+                            h += dj * dj * (EASE_HIPS + EASE_KNEE * rate[w] * rate[w])
+                        }
+                        lift[w] = clamp(min(lift[w] - g / h, give[w] + most), -bound, bound)
+                        // The foot.
+                        if u + foot_from >= at_touch && u <= at_touch + foot_till {
+                            let landed = u >= at_touch
+                            g = if landed { EASE_GIVE * (h0[w] + give[w]) } else { 0.0 }
+                            h = if landed { EASE_GIVE } else { 0.0 }
+                            for j in w - 1..w + 2 {
+                                let dj = if j == w { -2.0 } else { 1.0 }
+                                let rh = h0[j - 1] +
+                                    give[j - 1] -
+                                    2.0 * (h0[j] + give[j]) +
+                                    h0[j + 1] +
+                                    give[j + 1]
+                                let rk = flat[j - 1] -
+                                    rate[j - 1] * (lift[j - 1] - give[j - 1]) -
+                                    2.0 * (flat[j] - rate[j] * (lift[j] - give[j])) +
+                                    flat[j + 1] -
+                                    rate[j + 1] * (lift[j + 1] - give[j + 1])
+                                g += dj * (EASE_FOOT * rh + EASE_KNEE * rate[w] * rk)
+                                h += dj * dj * (EASE_FOOT + EASE_KNEE * rate[w] * rate[w])
+                            }
+                            let least = if landed { -1000.0 * PAD } else { 0.0 } - h0[w]
+                            // (Eased in from nothing where the foot's first moved, so it
+                            // doesn't jump there.)
+                            let ramp = if landed { 1.0 } else {
+                                smoothstep(0.0, 1.0, f32(u + foot_from - at_touch) / f32(foot_from))
+                            }
+                            give[w] = clamp(
+                                max(max(give[w] - g / h, min(least, 0.0)), lift[w] - most),
+                                -bound * ramp,
+                                bound * ramp,
+                            )
+                        }
+                    }
+                }
+            }
+            for w in 2..m - 2 {
+                let f = (lo + w) % n
+                lowered[f] -= 0.001 * lift[w]
+                goals[li * n + f].y += 0.001 * give[w]
+            }
+        }
+    }
+}

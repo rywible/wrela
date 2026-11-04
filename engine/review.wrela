@@ -1,0 +1,770 @@
+// A clip's review: what an animator's eye looks for in a humanoid clip, measured, so that every
+// clip is checked as it's built and only those that need a look come to one. Each check gives a
+// number and, past its limit, a flag in plain words:
+//
+// - Feet: a foot that's down (low and all but still) slides along the floor, sinks into it, or
+//   stands above it; in a clip that goes somewhere, a foot that never comes down.
+// - Pops: a joint jumps, a spike in its jerk (the third difference of its place) many times its
+//   own usual, a loop's seam included.
+// - Knees: a knee that's straight under the weight (locked), or bends backwards.
+// - The trunk, in a clip that goes somewhere: the shoulders turning with the pelvis, not
+//   against it; the shoulders not tilting against the pelvis's list, a trunk that rides the
+//   hips (the tilt the top of the trunk's bend across the way: not the drop of a leading
+//   shoulder, which a trunk that leans ahead and turns shows); the head swaying from side to
+//   side much further than the hips.
+// - The arms, in a clip that goes somewhere: each swinging with the leg on its own side.
+// - The rhythm, in a loop that goes somewhere: one step quicker or longer than the other.
+//
+// A clip scores 10 less each flag's weight. The limits are set from how people move (see
+// `engine::stride`'s sources) and against a clip judged human by eye, the 100STYLE walk made
+// human (`engine::stride`), which passes each with room.
+
+use std::collections::Vec
+use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
+
+/// A clip's review: its score (out of 10), what's wrong with it, and every check's number.
+pub struct Review: Clone {
+    pub score: f32,
+    pub flags: Vec<String>,
+    pub numbers: Vec<String>,
+}
+
+impl Review {
+    /// The review as lines of text, headed by `name`.
+    pub fn text(self, name: str) -> String {
+        var s = f"{name}: {self.score:.1}/10"
+        if self.flags.len() == 0 {
+            s = f"{s}, nothing flagged"
+        }
+        for flag in self.flags.clone() {
+            s = f"{s}\n  flag: {flag}"
+        }
+        for n in self.numbers.clone() {
+            s = f"{s}\n  {n}"
+        }
+        s
+    }
+}
+
+/// How low (m over its height at rest) and how slow (m/s along the floor) a heel or ball is,
+/// at most, when it's down; the least time (s) a foot's down for; and how still (m/s) it is
+/// when it's standing.
+const DOWN_LOW: f32 = 0.03
+const DOWN_SLOW: f32 = 0.3
+const DOWN_FOR: f32 = 0.06
+const STILL: f32 = 0.1
+
+/// The fastest a foot may go along the floor where it's lowest (m/s).
+const SKID_MOST: f32 = 0.3
+
+/// How far a foot that's down may slide (m), sink into the floor (m), and stand above it (m).
+const SLIDE_MOST: f32 = 0.015
+const SINK_MOST: f32 = 0.008
+const ABOVE_MOST: f32 = 0.02
+
+/// How many times its usual (the median) a joint's jerk may spike, a leg's (whose foot stops
+/// on the floor) and the rest's; the least spike (m/s³) that counts; and the most the hips'
+/// usual jerk may be (m/s³).
+const POP_TIMES: f32 = 12.0
+const POP_TIMES_LEGS: f32 = 24.0
+const POP_LEAST: f32 = 500.0
+const JITTER: f32 = 600.0
+
+/// The straightest a knee under the weight may be (degrees), and how far back of its
+/// hip-to-ankle line its knee may come (m).
+const KNEE_LOCKED: f32 = 2.0
+const KNEE_BACK: f32 = 0.005
+
+/// The least the hips' speed along the floor (m/s) for a clip that goes somewhere; over how
+/// long (s) its path is the mean of its place, without a stride to go by; the most its
+/// shoulders' turn may go with the pelvis's (correlation: people's shoulders turn against the
+/// pelvis more the faster they go, and partly with it in a slow walk, Lamoth, Beek and Meijer,
+/// "Pelvis-thorax coordination in the transverse plane during gait", *Gait & Posture* 16(2),
+/// 2002), the least they tilt against its list (correlation, and as a share of
+/// it), and the pelvis's list (degrees, root mean square) under which that's not looked at; and
+/// the most the head sways as against the hips.
+const GOES: f32 = 0.4
+const PATH_OVER: f32 = 1.0
+const TURN_WITH: f32 = 0.5
+const TILT_AGAINST: f32 = 0.3
+const TILT_SHARE: f32 = 0.25
+const LIST_LEAST: f32 = 1.0
+const HEAD_SWAY: f32 = 1.5
+
+/// The most a hand's swing may go with its own side's foot (correlation), more than with the
+/// other's.
+const SAME_SIDE: f32 = 0.5
+const HEAD_SWAYS: f32 = 0.02
+
+/// How far a loop's steps may differ in time (a share of the loop) and length (a share of the
+/// mean).
+const RHYTHM_MOST: f32 = 0.05
+const STEPS_MOST: f32 = 0.1
+
+const DEG: f32 = 0.017453292
+
+/// What each flag takes off the score.
+const FOOT_WEIGHT: f32 = 1.5
+const POP_WEIGHT: f32 = 1.5
+const KNEE_WEIGHT: f32 = 1.0
+const TRUNK_WEIGHT: f32 = 1.0
+const ARMS_WEIGHT: f32 = 1.5
+const RHYTHM_WEIGHT: f32 = 1.0
+
+/// The joints whose pops are looked for.
+const JOINTS: [Text; 18] = [
+    "hips",
+    "chest",
+    "upperChest",
+    "neck",
+    "head",
+    "leftUpperArm",
+    "leftLowerArm",
+    "leftHand",
+    "rightUpperArm",
+    "rightLowerArm",
+    "rightHand",
+    "leftLowerLeg",
+    "leftFoot",
+    "leftToes",
+    "rightLowerLeg",
+    "rightFoot",
+    "rightToes",
+    "leftMiddleDistal",
+]
+
+/// Which of `JOINTS` are the legs'.
+const LEGGY: [bool; 18] = [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+]
+
+/// One side's leg, as the review sees it: its bones, and its heel's and ball's points in the
+/// foot's and toes' own space (on the sole), and the sole's height at rest.
+struct Foot: Copy {
+    side: f32,
+    hip: u32,
+    knee: u32,
+    ankle: u32,
+    toes: u32,
+    heel: vec3,
+    ball: vec3,
+    floor: f32,
+}
+
+fn foot_of(rig: Rig, side: f32) -> Foot {
+    let rw = rig.rest_world()
+    let s = if side > 0.0 { "left" } else { "right" }
+    let hip = rig.find(f"{s}UpperLeg".as_str())
+    let knee = rig.find(f"{s}LowerLeg".as_str())
+    let ankle = rig.find(f"{s}Foot".as_str())
+    let toes = rig.find(f"{s}Toes".as_str())
+    let (a, t) = (rw[ankle].t, rw[toes].t)
+    let floor = t.y - 0.02
+    let heel = vec3(a.x, floor, a.z - 0.32 * (t.z - a.z))
+    let ball = vec3(t.x, floor, t.z)
+    Foot {
+        side,
+        hip,
+        knee,
+        ankle,
+        toes,
+        heel: rw[ankle].q.inverse().rotate(heel - a),
+        ball: rw[toes].q.inverse().rotate(ball - t),
+        floor,
+    }
+}
+
+/// The mean of `xs`.
+fn mean_of(xs: [f32]) -> f32 {
+    var s = 0.0
+    for x in xs {
+        s += x
+    }
+    s / max(f32(xs.len()), 1.0)
+}
+
+/// The root mean square of `xs` about its mean.
+fn spread(xs: [f32]) -> f32 {
+    let m = mean_of(xs)
+    var s = 0.0
+    for x in xs {
+        s += (x - m) * (x - m)
+    }
+    sqrt(s / max(f32(xs.len()), 1.0))
+}
+
+/// How `a` goes with `b` taken `lag` frames before (correlation, -1 to 1): cyclic when
+/// `looped`, otherwise over the frames both have.
+fn goes_with(a: [f32], b: [f32], lag: u32, looped: bool) -> f32 {
+    let n = a.len()
+    var sa = 0.0
+    var sb = 0.0
+    var k = 0.0
+    for f in 0..n {
+        if looped || f >= lag {
+            sa += a[f]
+            sb += b[(f + n - lag) % n]
+            k += 1.0
+        }
+    }
+    let (ma, mb) = (sa / max(k, 1.0), sb / max(k, 1.0))
+    var ab = 0.0
+    var aa = 0.0
+    var bb = 0.0
+    for f in 0..n {
+        if looped || f >= lag {
+            let (x, y) = (a[f] - ma, b[(f + n - lag) % n] - mb)
+            ab += x * y
+            aa += x * x
+            bb += y * y
+        }
+    }
+    ab / max(sqrt(aa * bb), 1.0e-9)
+}
+
+/// `xs` less its mean over the `over` frames about each (the whole loop's mean when `looped`):
+/// how it swings about where it's going.
+pub fn swing_of(xs: [f32], over: u32, looped: bool) -> Vec<f32> {
+    let n = xs.len()
+    var out: Vec<f32> = Vec::with_capacity(n)
+    if looped {
+        let m = mean_of(xs)
+        for x in xs {
+            out.push(x - m)
+        }
+        return out
+    }
+    let half = over / 2
+    for f in 0..n {
+        let lo = if f > half { f - half } else { 0 }
+        let hi = min(f + half + 1, n)
+        var s = 0.0
+        for g in lo..hi {
+            s += xs[g]
+        }
+        out.push(xs[f] - s / f32(hi - lo))
+    }
+    out
+}
+
+/// Headings (degrees) made continuous: each within half a turn of the one before.
+pub fn unwrapped(xs: [f32]) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(xs.len())
+    for x in xs {
+        var y = x
+        if out.len() > 0 {
+            let last = out[out.len() - 1]
+            while y - last > 180.0 {
+                y -= 360.0
+            }
+            while last - y > 180.0 {
+                y += 360.0
+            }
+        }
+        out.push(y)
+    }
+    out
+}
+
+/// The cyclic runs (first and last frame, the last unwrapped past n) of `on`, or its runs from
+/// first to last frame when not `looped`.
+pub fn runs_of(on: [bool], looped: bool) -> Vec<(u32, u32)> {
+    let n = on.len()
+    var out: Vec<(u32, u32)> = Vec::new()
+    if !looped {
+        var f = 0
+        while f < n {
+            if on[f] {
+                var e = f
+                while e + 1 < n && on[e + 1] {
+                    e += 1
+                }
+                out.push((f, e))
+                f = e + 1
+            } else {
+                f += 1
+            }
+        }
+        return out
+    }
+    var off = n
+    for f in 0..n {
+        if !on[f] {
+            off = f
+        }
+    }
+    if off == n {
+        out.push((0, n - 1))
+        return out
+    }
+    var u = off + 1
+    while u <= off + n {
+        if on[u % n] {
+            var e = u
+            while e + 1 < off + n && on[(e + 1) % n] {
+                e += 1
+            }
+            out.push((u, e))
+            u = e + 1
+        } else {
+            u += 1
+        }
+    }
+    out
+}
+
+/// `clip` (on `rig`) reviewed.
+pub fn review(clip: Clip, rig: Rig) -> Review {
+    let nb = rig.bones.len()
+    let looped = clip.looped
+    let n = if looped { clip.frames - 1 } else { clip.frames }
+    let fps = clip.fps
+    let travel = rig.base.q.rotate(clip.travel_local)
+    var flags: Vec<String> = Vec::new()
+    var numbers: Vec<String> = Vec::new()
+    var lost = 0.0
+    // Every frame's bones in the body's space.
+    var all: Vec<Rigid> = Vec::with_capacity(n * nb)
+    for f in 0..n {
+        let base = rig.base
+        let w = frame_world(rig, clip.turns, f, base.t + base.q.rotate(clip.hips[f]))
+        for b in 0..nb {
+            all.push(w[b])
+        }
+    }
+    // A bone's place at frame `f` (any frame, a loop's carried on by its travel; a clip's held
+    // at its ends).
+    let place = |b: u32, f: i32| -> vec3 {
+        if looped {
+            let k = if f >= 0 { f / i32(n) } else { (f - i32(n) + 1) / i32(n) }
+            let g = u32(f - k * i32(n))
+            all[g * nb + b].t + f32(k) * travel
+        } else {
+            all[u32(clamp(f, 0, i32(n) - 1)) * nb + b].t
+        }
+    }
+    let hips = rig.find("hips")
+    // How far and how fast the clip goes.
+    var path_speed = 0.0
+    {
+        let a = place(hips, 0)
+        let z = if looped { place(hips, i32(n)) } else { place(hips, i32(n) - 1) }
+        let seconds = f32(if looped { n } else { n - 1 }) / fps
+        path_speed = length(vec2(z.x - a.x, z.z - a.z)) / max(seconds, 1.0e-3)
+    }
+    let goes = path_speed > GOES
+    numbers.push(f"{n} frames at {fps:.0} fps, looped {looped}, going {path_speed:.2} m/s")
+
+    // ---- the feet ----
+    let feet = [foot_of(rig, 1.0), foot_of(rig, -1.0)]
+    let down_for = max(u32(DOWN_FOR * fps + 0.5), 2)
+    var touches: Vec<Vec<u32>> = Vec::new()
+    var plants: Vec<Vec<vec3>> = Vec::new()
+    var down_any = false
+    for foot in feet {
+        let name = if foot.side > 0.0 { "left" } else { "right" }
+        var heels: Vec<vec3> = Vec::with_capacity(n)
+        var balls: Vec<vec3> = Vec::with_capacity(n)
+        for f in 0..n {
+            let (a, t) = (all[f * nb + foot.ankle], all[f * nb + foot.toes])
+            heels.push(a.t + a.q.rotate(foot.heel))
+            balls.push(t.t + t.q.rotate(foot.ball))
+        }
+        // A point's place at any frame, as `place`'s.
+        var worst_slide = 0.0
+        var deepest = 0.0
+        var lowest_still = 1.0e9
+        var stills = 0
+        // Each frame, the foot's lowest point (heel or ball) and how fast it goes.
+        var lowest: Vec<f32> = Vec::filled(n, 1.0e9)
+        var lowest_speed: Vec<f32> = Vec::filled(n, 0.0)
+        var down: Vec<bool> = Vec::filled(n, value: false)
+        for pi in 0..2 {
+            let ps = if pi == 0 { heels.clone() } else { balls.clone() }
+            let at = |f: i32| -> vec3 {
+                if looped {
+                    let k = if f >= 0 { f / i32(n) } else { (f - i32(n) + 1) / i32(n) }
+                    ps[u32(f - k * i32(n))] + f32(k) * travel
+                } else {
+                    ps[u32(clamp(f, 0, i32(n) - 1))]
+                }
+            }
+            var on: Vec<bool> = Vec::with_capacity(n)
+            var still: Vec<bool> = Vec::with_capacity(n)
+            for f in 0..n {
+                let d = at(i32(f) + 1) - at(i32(f) - 1)
+                let speed = 0.5 * length(vec2(d.x, d.z)) * fps
+                let high = ps[f].y - foot.floor
+                deepest = max(deepest, -high)
+                on.push(high < DOWN_LOW && speed < DOWN_SLOW)
+                still.push(speed < STILL)
+            }
+            for f in 0..n {
+                let d = at(i32(f) + 1) - at(i32(f) - 1)
+                if ps[f].y < lowest[f] {
+                    lowest[f] = ps[f].y
+                    lowest_speed[f] = 0.5 * length(vec2(d.x, d.z)) * fps
+                }
+            }
+            for (a, z) in runs_of(on.clone(), looped) {
+                if z + 1 - a >= down_for {
+                    let first = at(i32(a))
+                    for u in a..z + 1 {
+                        down[u % n] = true
+                        let p = at(i32(u))
+                        worst_slide = max(worst_slide, length(vec2(p.x - first.x, p.z - first.z)))
+                    }
+                }
+            }
+            for (a, z) in runs_of(still, looped) {
+                if z + 1 - a >= 6 {
+                    var h = 0.0
+                    for u in a..z + 1 {
+                        h += at(i32(u)).y - foot.floor
+                    }
+                    lowest_still = min(lowest_still, h / f32(z + 1 - a))
+                    stills += 1
+                }
+            }
+        }
+        // How fast the foot goes along the floor when it's lowest (within a centimetre of it).
+        var floor_of = 1.0e9
+        for h in lowest.clone() {
+            floor_of = min(floor_of, h)
+        }
+        var skid = 0.0
+        var k = 0.0
+        for f in 0..n {
+            if lowest[f] < floor_of + 0.01 {
+                skid += lowest_speed[f]
+                k += 1.0
+            }
+        }
+        skid /= max(k, 1.0)
+        // When and where each step lands: the first frame of each of the foot's runs down,
+        // and its heel's place there.
+        var lands: Vec<u32> = Vec::new()
+        var at_lands: Vec<vec3> = Vec::new()
+        for (a, z) in runs_of(down.clone(), looped) {
+            if z + 1 - a >= down_for {
+                lands.push(a % n)
+                at_lands.push(heels[a % n])
+                down_any = true
+            }
+        }
+        touches.push(lands.clone())
+        plants.push(take at_lands)
+        let above = if stills > 0 { lowest_still * 100.0 } else { 0.0 }
+        numbers.push(
+            f"{name} foot: {lands.len()} steps; slides {worst_slide * 100.0:.1} cm while down, sinks {deepest * 100.0:.1} cm, standing {above:.1} cm above the floor, going {skid:.2} m/s where it's lowest",
+        )
+        if goes && lands.len() == 0 {
+            flags.push(f"the {name} foot never comes down: the body floats")
+            lost += FOOT_WEIGHT
+        }
+        if worst_slide > SLIDE_MOST {
+            flags.push(f"the {name} foot slides {worst_slide * 100.0:.1} cm while it's down")
+            lost += FOOT_WEIGHT
+        }
+        if deepest > SINK_MOST {
+            flags.push(f"the {name} foot sinks {deepest * 100.0:.1} cm into the floor")
+            lost += FOOT_WEIGHT
+        }
+        if skid > SKID_MOST {
+            flags.push(
+                f"the {name} foot slides along the floor as on a treadmill ({skid:.2} m/s where it's lowest)",
+            )
+            lost += FOOT_WEIGHT
+        }
+        if stills > 0 && lowest_still > ABOVE_MOST {
+            flags.push(f"the {name} foot stands {lowest_still * 100.0:.1} cm above the floor")
+            lost += FOOT_WEIGHT
+        }
+    }
+
+    // ---- pops ----
+    var pops = 0
+    var worst_name: Text = ""
+    var worst_times = 0.0
+    var hips_jerk = 0.0
+    for ji in 0..JOINTS.len() {
+        let name = JOINTS[ji]
+        let b = rig.find(name)
+        if b == NONE {
+            continue
+        }
+        let (lo, hi) = if looped { (0, i32(n)) } else { (1, i32(n) - 2) }
+        var jerks: Vec<f32> = Vec::new()
+        var at_most = 0.0
+        var when = 0
+        for f in lo..hi {
+            let j = place(b, f + 2) - 3.0 * place(b, f + 1) + 3.0 * place(b, f) - place(b, f - 1)
+            let m = length(j) * fps * fps * fps
+            jerks.push(m)
+            if m > at_most {
+                at_most = m
+                when = f
+            }
+        }
+        // Its usual: the median, which a pop doesn't move.
+        var sorted = jerks.clone()
+        sorted.sort_by(|a: f32, b: f32| a < b)
+        let usual = if sorted.len() > 0 { sorted[sorted.len() / 2] } else { 0.0 }
+        let times = at_most / max(usual, 1.0e-6)
+        if times > worst_times {
+            worst_times = times
+            worst_name = name
+        }
+        let most = if LEGGY[ji] { POP_TIMES_LEGS } else { POP_TIMES }
+        if ji == 0 {
+            hips_jerk = usual
+        }
+        if times > most && at_most > POP_LEAST {
+            pops += 1
+            if pops <= 3 {
+                flags.push(
+                    f"the {name} pops at frame {when} ({times:.1} times its usual jerk, {at_most:.0} m/s³)",
+                )
+                lost += POP_WEIGHT
+            }
+        }
+    }
+    numbers.push(
+        f"pops: {pops}; the sharpest, the {worst_name}'s, {worst_times:.1} times its usual jerk; the hips' usual jerk {hips_jerk:.0} m/s³",
+    )
+    if hips_jerk > JITTER {
+        flags.push(f"the body jitters: the hips' jerk is {hips_jerk:.0} m/s³ frame on frame")
+        lost += POP_WEIGHT
+    }
+
+    // ---- the knees ----
+    {
+        var straightest = 180.0
+        var furthest_back = 0.0
+        for li in 0..2 {
+            let foot = feet[li]
+            let other = feet[1 - li]
+            for f in 0..n {
+                let (h, k, a) = (
+                    all[f * nb + foot.hip].t,
+                    all[f * nb + foot.knee].t,
+                    all[f * nb + foot.ankle].t,
+                )
+                let left = all[f * nb + feet[0].hip].t - all[f * nb + feet[1].hip].t
+                let ahead = normalize(cross(left, vec3(0.0, 1.0, 0.0)))
+                let (u, v) = (normalize(k - h), normalize(a - k))
+                let bend = acos(clamp(dot(u, v), -1.0, 1.0)) / DEG
+                // The knee's place off its hip-to-ankle line, ahead (+) or back.
+                let line = normalize(a - h)
+                let off = (k - h) - dot(k - h, line) * line
+                let fore = dot(off, ahead)
+                // Under the weight: its ankle the lower, near the floor.
+                let ankle_low = a.y < all[f * nb + other.ankle].t.y + 0.01
+                if ankle_low && a.y < rig.rest_world()[foot.ankle].t.y + 0.03 {
+                    straightest = min(straightest, bend)
+                }
+                furthest_back = max(furthest_back, -fore)
+            }
+        }
+        numbers.push(
+            f"knees: straightest under the weight {straightest:.1}°, furthest back of the line {furthest_back * 100.0:.1} cm",
+        )
+        if down_any && straightest < KNEE_LOCKED {
+            flags.push(f"a knee locks straight under the weight ({straightest:.1}°)")
+            lost += KNEE_WEIGHT
+        }
+        if furthest_back > KNEE_BACK {
+            flags.push(f"a knee bends backwards ({furthest_back * 100.0:.1} cm)")
+            lost += KNEE_WEIGHT
+        }
+    }
+
+    // ---- the trunk and the arms, going somewhere ----
+    if goes {
+        // Over a stride: how often each foot lands (a loop's a stride).
+        var stride = PATH_OVER * fps
+        if looped {
+            stride = f32(n)
+        } else {
+            var gaps = 0.0
+            var k = 0.0
+            for li in 0..2 {
+                let t = touches[li].clone()
+                if t.len() >= 2 {
+                    gaps += f32(t[t.len() - 1] - t[0]) / f32(t.len() - 1)
+                    k += 1.0
+                }
+            }
+            if k > 0.0 {
+                stride = gaps / k
+            }
+        }
+        let over = max(u32(stride), 3)
+        let (lu, ru) = (rig.find("leftUpperArm"), rig.find("rightUpperArm"))
+        let (top, neck) = (rig.find("upperChest"), rig.find("neck"))
+        var pel_turn: Vec<f32> = Vec::new()
+        var pel_list: Vec<f32> = Vec::new()
+        var sh_turn: Vec<f32> = Vec::new()
+        var tops: Vec<vec3> = Vec::new()
+        var hips_x: Vec<f32> = Vec::new()
+        var hips_z: Vec<f32> = Vec::new()
+        var head_x: Vec<f32> = Vec::new()
+        var head_z: Vec<f32> = Vec::new()
+        var left_x: Vec<f32> = Vec::new()
+        var left_z: Vec<f32> = Vec::new()
+        let head = rig.find("head")
+        for f in 0..n {
+            let p = all[f * nb + feet[0].hip].t - all[f * nb + feet[1].hip].t
+            let l = normalize(vec2(p.x, p.z))
+            left_x.push(l.x)
+            left_z.push(l.y)
+            let s = all[f * nb + lu].t - all[f * nb + ru].t
+            pel_turn.push(atan2(-p.z, p.x) / DEG)
+            pel_list.push(atan2(p.y, length(vec2(p.x, p.z))) / DEG)
+            sh_turn.push(atan2(-s.z, s.x) / DEG)
+            tops.push(normalize(all[f * nb + neck].t - all[f * nb + top].t))
+            // (A loop's travel taken off.)
+            let on = if looped { f32(f) / f32(n) * travel } else { vec3(0.0) }
+            let (h, e) = (place(hips, i32(f)) - on, place(head, i32(f)) - on)
+            hips_x.push(h.x)
+            hips_z.push(h.z)
+            head_x.push(e.x)
+            head_z.push(e.z)
+        }
+        let pt = swing_of(unwrapped(pel_turn), over, looped)
+        let st = swing_of(unwrapped(sh_turn), over, looped)
+        let pl = swing_of(pel_list, over, looped)
+        let turn_with = goes_with(st, pt, 0, looped)
+        // The side-to-side about the path: across the hips' mean way.
+        let gx = swing_of(hips_x, over, looped)
+        let gz = swing_of(hips_z, over, looped)
+        let ex = swing_of(head_x, over, looped)
+        let ez = swing_of(head_z, over, looped)
+        let way = normalize(vec2(travel.x, travel.z) + vec2(1.0e-6, 0.0))
+        // Each frame's left, across the way it's going: the pelvis's left about then.
+        let lx = swing_of(left_x.clone(), over, looped)
+        let lz = swing_of(left_z.clone(), over, looped)
+        var acrosses: Vec<vec2> = Vec::with_capacity(n)
+        for f in 0..n {
+            acrosses.push(normalize(vec2(left_x[f] - lx[f], left_z[f] - lz[f])))
+        }
+        var hips_side: Vec<f32> = Vec::new()
+        var head_side: Vec<f32> = Vec::new()
+        var sh_tilt: Vec<f32> = Vec::new()
+        for f in 0..n {
+            let a = acrosses[f]
+            hips_side.push(dot(vec2(gx[f], gz[f]), a))
+            head_side.push(dot(vec2(ex[f], ez[f]), a))
+            // The top of the trunk's bend across (as a tilt that raises its left).
+            sh_tilt.push(-asin(clamp(dot(tops[f], vec3(a.x, 0.0, a.y)), -1.0, 1.0)) / DEG)
+        }
+        let sl = swing_of(sh_tilt, over, looped)
+        var against = 1.0
+        for lag in 0..u32(0.15 * fps) + 1 {
+            against = min(against, goes_with(sl, pl, lag, looped))
+        }
+        let share = spread(sl) / max(spread(pl), 1.0e-6)
+        let head_sways = spread(head_side)
+        let sway = head_sways / max(spread(hips_side), 1.0e-6)
+        numbers.push(
+            f"trunk: the shoulders turn with the pelvis {turn_with:.2}, tilt with its list {against:.2} at best, {share:.2} of it; the head sways {sway:.2} times as far as the hips ({head_sways * 100.0:.1} cm)",
+        )
+        if turn_with > TURN_WITH {
+            flags.push(f"the shoulders turn with the hips, not against them ({turn_with:.2})")
+            lost += TRUNK_WEIGHT
+        }
+        if spread(pel_list) > LIST_LEAST && (against > -TILT_AGAINST || share < TILT_SHARE) {
+            flags.push(
+                f"the trunk rides on the hips: the shoulders don't tilt against the pelvis ({against:.2}, {share:.2} of it)",
+            )
+            lost += TRUNK_WEIGHT
+        }
+        if sway > HEAD_SWAY && head_sways > HEAD_SWAYS {
+            flags.push(f"the head sways {sway:.1} times as far as the hips")
+            lost += TRUNK_WEIGHT
+        }
+        // The arms: each hand's swing ahead with the opposite foot's, more than its own side's.
+        if down_any {
+            let names = [
+                ("leftHand", "rightFoot", "leftFoot"),
+                ("rightHand", "leftFoot", "rightFoot"),
+            ]
+            for (hand, across_foot, own_foot) in names {
+                var hz: Vec<f32> = Vec::new()
+                var az: Vec<f32> = Vec::new()
+                var oz: Vec<f32> = Vec::new()
+                let (bh, ba, bo) = (rig.find(hand), rig.find(across_foot), rig.find(own_foot))
+                for f in 0..n {
+                    let h = place(hips, i32(f))
+                    let (ph, pa, po) = (
+                        place(bh, i32(f)) - h,
+                        place(ba, i32(f)) - h,
+                        place(bo, i32(f)) - h,
+                    )
+                    let ahead = vec2(-acrosses[f].y, acrosses[f].x)
+                    hz.push(dot(vec2(ph.x, ph.z), ahead))
+                    az.push(dot(vec2(pa.x, pa.z), ahead))
+                    oz.push(dot(vec2(po.x, po.z), ahead))
+                }
+                let (with_across, with_own) = (
+                    goes_with(
+                        swing_of(hz.clone(), over, looped),
+                        swing_of(az, over, looped),
+                        0,
+                        looped,
+                    ),
+                    goes_with(swing_of(hz, over, looped), swing_of(oz, over, looped), 0, looped),
+                )
+                numbers.push(
+                    f"the {hand} swings with the opposite foot {with_across:.2}, its own {with_own:.2}",
+                )
+                if with_own > with_across && with_own > SAME_SIDE {
+                    flags.push(f"the {hand} swings with the leg on its own side")
+                    lost += ARMS_WEIGHT
+                }
+            }
+        }
+        // The rhythm: in a loop of one step each, each lands half the loop after the other,
+        // each step as long.
+        if looped && touches[0].len() == 1 && touches[1].len() == 1 {
+            let gap = f32((touches[0][0] + n - touches[1][0]) % n)
+            let uneven = abs(gap - 0.5 * f32(n)) / f32(n)
+            let left = plants[0][0] + if touches[0][0] < touches[1][0] { travel } else { vec3(0.0) }
+            let a = left - plants[1][0]
+            let b = plants[1][0] + travel - left
+            let (la, lb) = (dot(vec2(a.x, a.z), way), dot(vec2(b.x, b.z), way))
+            let longer = abs(la - lb) / max(0.5 * (la + lb), 1.0e-3)
+            numbers.push(
+                f"rhythm: the left lands {gap:.0} of {n} frames after the right; steps {la * 100.0:.0} and {lb * 100.0:.0} cm",
+            )
+            if uneven > RHYTHM_MOST {
+                flags.push(f"the steps' rhythm is uneven ({gap:.0} and {f32(n) - gap:.0} frames)")
+                lost += RHYTHM_WEIGHT
+            }
+            if longer > STEPS_MOST {
+                flags.push(
+                    f"one step is longer than the other ({la * 100.0:.0} and {lb * 100.0:.0} cm)",
+                )
+                lost += RHYTHM_WEIGHT
+            }
+        }
+    }
+    Review { score: max(10.0 - lost, 0.0), flags, numbers }
+}

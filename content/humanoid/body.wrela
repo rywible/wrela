@@ -1,9 +1,11 @@
 // The body and its clips, each converted when the program is built (`engine::humanoid`): the
-// Quaternius body on VRM's bones, its T-pose, an idle and a walk.
+// Quaternius body on VRM's bones, its T-pose, an idle, a walk, a run, walking turns and a jog.
 
 use engine::humanoid
 use engine::humanoid::{Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, Paint, Retarget, UNREAL}
 use engine::bvh
+use engine::cleanup
+use engine::cleanup::Cleanup
 use engine::stride
 use engine::stride::Gait
 
@@ -30,7 +32,7 @@ pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())
 
 /// Quaternius's idle (assets/ual1.glb.LICENSE.txt), on its own mannequin, retargeted.
 @fuel(2 ** 40)
-pub const IDLE: Clip = humanoid::retarget(
+pub const IDLE_RAW: Clip = humanoid::retarget(
     humanoid::take_of_gltf(embed("assets/ual1.glb"), "Idle_Loop", UNREAL, fps: 30.0),
     HERO.rig.clone(),
     Retarget { looped: true },
@@ -38,25 +40,73 @@ pub const IDLE: Clip = humanoid::retarget(
 
 /// A 100STYLE walk (assets/neutral_fw.bvh.LICENSE.txt): the stride of the take that loops
 /// best, turned to walk ahead, made human (`engine::stride`: its feet rolling heel to toe and
-/// planted, its pelvis, spine, head and arms as people carry them, its hands loose; the take
-/// has no fingers).
+/// planted, its pelvis, spine, head and arms as people carry them, its arms hung as the idle
+/// carries them, its hands loose; the take has no fingers).
 @fuel(2 ** 40)
 pub const WALK: Clip = stride::loose_hands(
-    stride::humanised(
-        humanoid::retarget(
-            humanoid::take_of_bvh(
-                bvh::read(embed("assets/neutral_fw.bvh")),
-                HUNDRED_STYLE,
-                HUNDRED_STYLE_ARM,
-                from: 0,
-                to: 138,
-            ).looped(shortest: 60, longest: 110),
-            HERO.rig.clone(),
-            Retarget { face_ahead: true, looped: true, carried: true },
-        ),
-        IDLE.clone(),
-        HERO.rig.clone(),
-        Gait {},
-    ),
+    stride::humanised(WALK_RAW.clone(), IDLE_RAW.clone(), HERO.rig.clone(), Gait {}),
     HERO.rig.clone(),
 )
+
+/// The walk as the take has it, retargeted and looped.
+@fuel(2 ** 40)
+pub const WALK_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_fw.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 138,
+    ).looped(shortest: 60, longest: 110),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, carried: true },
+)
+
+/// A 100STYLE run (assets/neutral_fr.bvh.LICENSE.txt), the stride that loops best, turned to
+/// run ahead.
+@fuel(2 ** 40)
+pub const RUN_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_fr.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 78,
+    ).looped(shortest: 30, longest: 76),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, carried: true },
+)
+
+/// 100STYLE's walking turns (assets/neutral_tr1.bvh.LICENSE.txt), as they come.
+@fuel(2 ** 40)
+pub const TURNS_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_tr1.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 180,
+    ),
+    HERO.rig.clone(),
+    Retarget { carried: true },
+)
+
+/// Quaternius's jog (assets/ual1.glb.LICENSE.txt), on its own mannequin, retargeted: it jogs in
+/// place.
+@fuel(2 ** 40)
+pub const JOG_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Jog_Fwd_Loop", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget { looped: true },
+)
+
+/// The idle, the run, the walking turns and the jog, each cleaned up as every clip is
+/// (`engine::cleanup`), and nothing more.
+@fuel(2 ** 40)
+pub const IDLE: Clip = cleanup::cleaned(IDLE_RAW.clone(), HERO.rig.clone(), Cleanup {})
+@fuel(2 ** 40)
+pub const RUN: Clip = cleanup::cleaned(RUN_RAW.clone(), HERO.rig.clone(), Cleanup {})
+@fuel(2 ** 40)
+pub const TURNS: Clip = cleanup::cleaned(TURNS_RAW.clone(), HERO.rig.clone(), Cleanup {})
+@fuel(2 ** 40)
+pub const JOG: Clip = cleanup::cleaned(JOG_RAW.clone(), HERO.rig.clone(), Cleanup {})

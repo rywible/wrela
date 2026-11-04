@@ -200,7 +200,7 @@ const ARM_IN: f32 = 3.0
 
 // ---- turns ------------------------------------------------------------------------------
 
-fn about(axis: vec3, angle: f32) -> Quat {
+pub fn about(axis: vec3, angle: f32) -> Quat {
     Quat::axis_angle(axis, angle)
 }
 
@@ -418,7 +418,7 @@ fn smoothed_only(xs: Vec<f32>) -> Vec<f32> {
 // ---- a frame's bones in the body's space ---------------------------------------------------
 
 /// Bone `b` and everything below it turned by `r` about the bone's place.
-fn turn_below(rig: Rig, w: mut Vec<Rigid>, b: u32, r: Quat) {
+pub fn turn_below(rig: Rig, w: mut Vec<Rigid>, b: u32, r: Quat) {
     let nb = rig.bones.len()
     let p = w[b].t
     var below: Vec<bool> = Vec::filled(nb, value: false)
@@ -432,27 +432,27 @@ fn turn_below(rig: Rig, w: mut Vec<Rigid>, b: u32, r: Quat) {
 }
 
 /// Bone `b` (and what's below it) turned to face `q` in the body's space.
-fn set_turn(rig: Rig, w: mut Vec<Rigid>, b: u32, q: Quat) {
+pub fn set_turn(rig: Rig, w: mut Vec<Rigid>, b: u32, q: Quat) {
     let r = q.mul(w[b].q.inverse())
     turn_below(rig, mut w, b, r)
 }
 
 /// The whole body moved by `by`.
-fn shift(w: mut Vec<Rigid>, by: vec3) {
+pub fn shift(w: mut Vec<Rigid>, by: vec3) {
     for b in 0..w.len() {
         w[b].t += by
     }
 }
 
 /// A clip's frame `f`, each bone in the body's space.
-fn worlds(rig: Rig, clip: Clip, f: u32) -> Vec<Rigid> {
+pub fn worlds(rig: Rig, clip: Clip, f: u32) -> Vec<Rigid> {
     let base = rig.base
     frame_world(rig, clip.turns, f, base.t + base.q.rotate(clip.hips[f]))
 }
 
 /// A frame's bones back to the clip: each bone's turn in its parent, and the hips' place in
 /// their parent's.
-fn store(rig: Rig, w: [Rigid], out: mut Clip, f: u32) {
+pub fn store(rig: Rig, w: [Rigid], out: mut Clip, f: u32) {
     let nb = rig.bones.len()
     for b in 0..nb {
         let up = rig.bones[b].parent
@@ -467,18 +467,18 @@ fn store(rig: Rig, w: [Rigid], out: mut Clip, f: u32) {
 
 /// One side's leg: its bones, its heel's and ball's points (in the foot's and toes' own space),
 /// and how high each is at rest (where it's on the floor).
-struct Leg: Copy {
-    side: f32,
-    hip: u32,
-    knee: u32,
-    ankle: u32,
-    toes: u32,
-    heel: vec3,
-    ball: vec3,
-    floor: f32,
+pub struct Leg: Copy {
+    pub side: f32,
+    pub hip: u32,
+    pub knee: u32,
+    pub ankle: u32,
+    pub toes: u32,
+    pub heel: vec3,
+    pub ball: vec3,
+    pub floor: f32,
 }
 
-fn leg_of(rig: Rig, side: f32) -> Leg {
+pub fn leg_of(rig: Rig, side: f32) -> Leg {
     let rw = rig.rest_world()
     let names = if side > 0.0 {
         ["leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"]
@@ -536,11 +536,11 @@ fn ball_pivot(l: Leg, a: vec3, q: Quat, toes_at: vec3) -> (vec3, vec3, f32) {
     (p, axis, hi)
 }
 
-fn heel_at(l: Leg, w: [Rigid]) -> vec3 {
+pub fn heel_at(l: Leg, w: [Rigid]) -> vec3 {
     w[l.ankle].t + w[l.ankle].q.rotate(l.heel)
 }
 
-fn ball_at(l: Leg, w: [Rigid]) -> vec3 {
+pub fn ball_at(l: Leg, w: [Rigid]) -> vec3 {
     w[l.toes].t + w[l.toes].q.rotate(l.ball)
 }
 
@@ -617,7 +617,7 @@ fn runs(on: Vec<bool>) -> Vec<(u32, u32)> {
 /// `ankle`) at `goal`, the knee bending about its hinge (`hinge`, in the shin's own space), the
 /// reach easing softly short of straight (the last 0.4% of the leg), so a straightening leg
 /// neither locks nor pops.
-fn reach(hip: Rigid, knee: Rigid, ankle: vec3, goal: vec3, hinge: vec3) -> (Quat, Quat) {
+pub fn reach(hip: Rigid, knee: Rigid, ankle: vec3, goal: vec3, hinge: vec3) -> (Quat, Quat) {
     let (h, k) = (hip.t, knee.t)
     let l1 = length(k - h)
     let l2 = length(ankle - k)

@@ -4,12 +4,19 @@
 // retargeted onto it and looped. Two passes, as the opening style test's: the scene painted in 3D
 // into what the ink reads (`paint`), then the ink and the paper (`ink`).
 //
-// `--set SHOW=1` holds the T-pose, `2` the idle, `3` the walk; `0` (the default) plays them in
-// turn: two seconds of T-pose, six of idle, then the walk.
+// `--set SHOW=1` holds the T-pose, `2` the idle, `3` the walk, `4` the run, `5` the walking
+// turns, `6` the jog; `0` (the default) plays them in turn: two seconds of T-pose, six of idle,
+// then the walk. `--set RAW=1` plays a clip as its take has it, before its cleanup
+// (`engine::cleanup`; the walk's, `engine::stride`).
 
-use body::{HERO, IDLE, T_POSE, WALK}
+use body::{
+    HERO, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+}
+use engine::cleanup
+use engine::cleanup::Cleanup
 use engine::humanoid
-use engine::humanoid::{BodyVertex, Pose, blend, palette}
+use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
+use engine::review::review
 use ink::ink
 use look::{Shot, shot_at}
 use paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
@@ -20,8 +27,10 @@ use std::gpu::{
 use std::io::print
 use std::transform::identity
 
-/// What plays: 0 each in turn, 1 the T-pose, 2 the idle, 3 the walk.
+/// What plays: 0 each in turn, 1 the T-pose, 2 the idle, 3 the walk, 4 the run, 5 the walking
+/// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
 pub const SHOW: u32 = 0
+pub const RAW: u32 = 0
 
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
@@ -72,10 +81,14 @@ pub fn init() -> State {
 /// The pose at `time`, and how far into its clip it's walked (for the camera to follow).
 fn pose_at(time: f32) -> Pose {
     let n = HERO.rig.bones.len()
+    let raw = RAW == 1
     match SHOW {
         1 => T_POSE.pose(0.0),
-        2 => IDLE.pose(time),
-        3 => WALK.pose(time),
+        2 => if raw { IDLE_RAW.pose(time) } else { IDLE.pose(time) },
+        3 => if raw { WALK_RAW.pose(time) } else { WALK.pose(time) },
+        4 => if raw { RUN_RAW.pose(time) } else { RUN.pose(time) },
+        5 => if raw { TURNS_RAW.pose(time) } else { TURNS.pose(time) },
+        6 => if raw { JOG_RAW.pose(time) } else { JOG.pose(time) },
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -88,11 +101,16 @@ fn pose_at(time: f32) -> Pose {
     }
 }
 
-/// The hips' place, on average over the walk's loop round `time`: a walk's steady path, an
-/// idle's spot.
+/// The hips' place, on average over a loop (or a second) round `time`: a walk's steady path,
+/// an idle's spot.
 fn steady_hips(time: f32) -> vec3 {
     let base = HERO.rig.base
-    let span = WALK.length()
+    let span = match SHOW {
+        4 => RUN.length(),
+        5 => 1.0,
+        6 => JOG.length(),
+        _ => WALK.length(),
+    }
     var sum = vec3(0.0)
     for k in 0..16 {
         let t = time + span * ((f32(k) + 0.5) / 16.0 - 0.5)
@@ -116,7 +134,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips.
     let hips = steady_hips(time)
-    let walking = SHOW == 3 || (SHOW == 0 && time >= WALK_AT)
+    let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     let shot = shot_at(
@@ -256,4 +274,46 @@ fn the_walk_plants_its_feet() {
             last = a
         }
     }
+}
+
+/// Every clip passes its review (`engine::review`: what an animator's eye looks for, measured):
+/// the walk made human (`engine::stride`), and each other take as the cleanup every clip goes
+/// through leaves it (`engine::cleanup`), untuned. The walk's take passes too, cleaned up in
+/// place of the walk's own making.
+@test
+fn every_clip_passes_its_review() {
+    let r = HERO.rig.clone()
+    passes("the walk", WALK.clone(), r.clone())
+    passes("the idle", IDLE.clone(), r.clone())
+    passes("the run", RUN.clone(), r.clone())
+    passes("the walking turns", TURNS.clone(), r.clone())
+    passes("the jog", JOG.clone(), r.clone())
+    passes("the walk's take, cleaned", cleanup::cleaned(WALK_RAW.clone(), r.clone(), Cleanup {}), r)
+}
+
+/// That a clip's review flags nothing.
+fn passes(name: str, clip: Clip, rig: humanoid::Rig) {
+    let rv = review(clip, rig)
+    assert(rv.flags.len() == 0, rv.text(name).as_str())
+}
+
+/// The review sees what's wrong with the takes as they come: the walk's feet sliding, the
+/// idle's sinking into the floor, the run's cut seam jumping, the jog running on the spot.
+@test
+fn the_review_sees_the_takes_faults() {
+    let r = HERO.rig.clone()
+    flags("the walk's take", WALK_RAW.clone(), r.clone(), "the left foot slides")
+    flags("the idle's take", IDLE_RAW.clone(), r.clone(), "the left foot sinks")
+    flags("the run's take", RUN_RAW.clone(), r.clone(), "the neck pops")
+    flags("the jog's take", JOG_RAW.clone(), r, "the left foot slides along the floor as on a")
+}
+
+/// That a clip's review has a flag that starts `what`.
+fn flags(name: str, clip: Clip, rig: humanoid::Rig, what: str) {
+    let rv = review(clip, rig)
+    var seen = false
+    for f in rv.flags.clone() {
+        seen = seen || f.as_str().starts_with(what)
+    }
+    assert(seen, f"{name}: no flag says {what}\n{rv.text(name)}")
 }
