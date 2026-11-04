@@ -1,0 +1,571 @@
+// Action combat's rules, for any game whose fights are read and answered rather than traded: a
+// move is a wind-up, a window it can hit in and a recovery (each a count of ticks); a fighter
+// spends stamina to act and to dodge, is untouchable for part of a dodge (its invincibility
+// frames), and has a posture that blows fill and that breaks, opening it to a riposte. A press
+// that comes too early is buffered and starts the moment the fighter can act.
+//
+// Everything here is sim state: plain values stepped once a tick (`HZ` a second) by
+// `@deterministic` code, so a timeline can roll it back and every client steps it the same
+// (engine::timeline). How a fight looks (its poses, smears, held drawings, impact frames and
+// hit-stops on screen) is the program's presentation of these numbers, never the other way: a
+// blow lands where the rules say, not where a drawing reaches.
+//
+// A game gives its moves (`Move`) and its rules (`Rules`), steps each fighter with its intent
+// (`step`), and asks whether each fighter's blow lands (`strike`). Its creatures' minds, its
+// launches and its arenas are its own.
+
+use sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// The ticks a second the rules count in.
+pub const HZ: f32 = 60.0
+
+/// A move: its wind-up (ticks before it can hit), the ticks it can hit in, and its recovery; how
+/// far it reaches (m from the attacker's root, along its facing) and how wide (half the angle,
+/// radians); what it takes from the struck one's health and adds to its posture; what it costs
+/// the attacker in stamina; how far it carries the attacker forward over its wind-up and active
+/// ticks (m); how fast it turns toward its target in its wind-up (radians a second); when in its
+/// recovery a buffered press may cut it short (ticks); and how long it staggers the struck one
+/// (ticks; 0, it doesn't).
+pub struct Move: Copy + Eq {
+    pub windup: u32,
+    pub active: u32,
+    pub recovery: u32,
+    pub reach: f32,
+    pub arc: f32,
+    pub damage: f32,
+    pub posture: f32,
+    pub stamina: f32,
+    pub lunge: f32 = 0.0,
+    pub track: f32 = 0.0,
+    pub cancel: u32 = 1000,
+    pub stagger: u32 = 0,
+}
+
+impl Move {
+    /// Its length, in ticks.
+    pub fn length(self) -> u32 {
+        self.windup + self.active + self.recovery
+    }
+
+    /// Whether tick `t` of it can hit.
+    pub fn hitting(self, t: u32) -> bool {
+        t >= self.windup && t < self.windup + self.active
+    }
+}
+
+/// A game's numbers for its fighters: the most health, stamina and posture; stamina's regain a
+/// second and how long after a spend it waits to start; posture's fall a second and how long
+/// after a blow it waits; walking speed (m/s) and turning speed (radians a second); a dodge's
+/// length, its invincible ticks (from, to), how far it carries and its cost; how long a press
+/// is held for (`buffer`); how long a broken posture leaves a fighter open, and how close and
+/// how square in front a riposte must be.
+pub struct Rules: Copy {
+    pub health: f32 = 100.0,
+    pub stamina: f32 = 100.0,
+    pub posture: f32 = 100.0,
+    pub regain: f32 = 45.0,
+    pub regain_after: u32 = 30,
+    pub settle: f32 = 12.0,
+    pub settle_after: u32 = 90,
+    pub walk: f32 = 3.2,
+    pub turn: f32 = 9.0,
+    pub dodge: u32 = 32,
+    pub untouchable: vec2 = vec2(2.0, 15.0),
+    pub dodge_m: f32 = 3.4,
+    pub dodge_cost: f32 = 18.0,
+    pub buffer: u32 = 12,
+    pub broken: u32 = 110,
+    pub riposte_m: f32 = 1.8,
+    pub riposte_arc: f32 = 0.9,
+}
+
+/// What a fighter is doing: ready to act (standing, walking); one of its moves; dodging;
+/// staggered by a blow; broken (its posture gone: open to a riposte); giving a riposte; taking
+/// one (out of the rules' hands until the game lets it go, `recover`); dead.
+pub enum Act: Copy + Eq + StateHash + Serialize + SimState + Fieldless {
+    Ready,
+    Attack,
+    Dodge,
+    Staggered,
+    Broken,
+    Riposte,
+    Taken,
+    Dead,
+}
+
+/// A press: none; a move (its number among the game's moves); a dodge.
+pub enum Press: Copy + Eq + StateHash + Serialize + SimState {
+    Nothing,
+    Moves { index: u32 },
+    Dodging,
+}
+
+/// What a fighter wants this tick: the way it would walk (world x, z; length up to 1), the way
+/// it would face (world x, z; none: as it is), and what it pressed.
+pub struct Intent: Copy + Eq + StateHash + Serialize + SimState {
+    pub walk: vec2 = vec2(0.0),
+    pub face: vec2 = vec2(0.0),
+    pub press: Press = Press::Nothing,
+}
+
+/// A fighter: where it stands (x, z), which way it faces (radians about +y, 0 facing +z), its
+/// health, stamina and posture; what it's doing, which move, and for how many ticks; the ticks
+/// since it last spent stamina and since its posture last took a blow; whether its move has
+/// landed; the way its dodge goes; its buffered press and the tick it was pressed.
+pub struct Fighter: Copy + Eq + StateHash + Serialize + SimState {
+    pub pos: vec2,
+    pub heading: f32,
+    pub health: f32,
+    pub stamina: f32,
+    pub posture: f32 = 0.0,
+    pub act: Act = Act::Ready,
+    pub move: u32 = 0,
+    pub t: u32 = 0,
+    pub rested: u32 = 1000,
+    pub calm: u32 = 1000,
+    pub landed: bool = false,
+    pub way: vec2 = vec2(0.0, 1.0),
+    pub buffered: Press = Press::Nothing,
+    pub held: u32 = 0,
+}
+
+/// A fighter at `pos` facing `heading`, whole.
+pub fn fighter(pos: vec2, heading: f32, r: Rules) -> Fighter {
+    Fighter { pos, heading, health: r.health, stamina: r.stamina }
+}
+
+/// The way a heading faces, on the ground (x, z).
+pub fn facing(heading: f32) -> vec2 {
+    vec2(sin(heading), cos(heading))
+}
+
+/// The heading that faces `way` (x, z).
+pub fn heading_of(way: vec2) -> f32 {
+    atan2(way.x, way.y)
+}
+
+/// `a` turned toward `b` by at most `most` radians, the short way round.
+pub fn turned(a: f32, b: f32, most: f32) -> f32 {
+    let d = wrapped(b - a)
+    a + clamp(d, -most, most)
+}
+
+/// An angle wrapped into -π to π.
+pub fn wrapped(a: f32) -> f32 {
+    a - 6.2831853 * floor((a + 3.1415927) / 6.2831853)
+}
+
+impl Fighter {
+    /// Whether it can be struck now: not dodging through its invincible ticks, not giving or
+    /// taking a riposte, not dead.
+    pub fn touchable(self, r: Rules) -> bool {
+        let dodging = self.act == Act::Dodge &&
+            f32(self.t) >= r.untouchable.x &&
+            f32(self.t) < r.untouchable.y
+        !(dodging || self.act == Act::Riposte || self.act == Act::Taken || self.act == Act::Dead)
+    }
+
+    /// Whether it's free to begin something: ready, or far enough into a move's recovery to cut
+    /// it short, or at a dodge's end.
+    pub fn free(self, moves: [Move], r: Rules) -> bool {
+        match self.act {
+            Act::Ready => true,
+            Act::Attack => {
+                let m = moves[self.move]
+                self.t >= m.windup + m.active + min(m.cancel, m.recovery)
+            },
+            Act::Dodge => self.t + 10 >= r.dodge,
+            _ => false,
+        }
+    }
+
+    /// Whether it may spend stamina: anything above none (a last action may take it below, as
+    /// the genre does).
+    pub fn able(self) -> bool {
+        self.stamina > 0.0
+    }
+
+    fn spend(mut self, cost: f32) {
+        self.stamina -= cost
+        self.rested = 0
+    }
+
+    fn begin(mut self, act: Act, move: u32 = 0) {
+        self.act = act
+        self.move = move
+        self.t = 0
+        self.landed = false
+        self.buffered = Press::Nothing
+    }
+
+    /// Breaks its posture (open to a riposte), or staggers it `ticks` (none: not at all).
+    pub fn struck(mut self, stagger: u32, r: Rules) {
+        if self.posture >= r.posture {
+            self.begin(Act::Broken)
+            return
+        }
+        if stagger > 0 && self.act != Act::Broken {
+            self.begin(Act::Staggered)
+            self.move = stagger
+        }
+    }
+
+    /// Takes a riposte: out of the rules' hands until `recover`.
+    pub fn taken(mut self) {
+        self.begin(Act::Taken)
+    }
+
+    /// Dead: out of the fight.
+    pub fn falls(mut self) {
+        self.begin(Act::Dead)
+    }
+
+    /// Back on its feet, ready, its posture whole again.
+    pub fn recover(mut self) {
+        self.begin(Act::Ready)
+        self.posture = 0.0
+    }
+}
+
+/// One tick of fighter `f`, wanting `intent`, its moves `moves`, facing toward `target` where
+/// it may: its press buffered or begun, its act run on, its walking, its dodging and its moves'
+/// lunges, its stamina regained and its posture settled.
+@deterministic
+pub fn step(f: mut Fighter, intent: Intent, moves: [Move], r: Rules, target: vec2) {
+    let dt = 1.0 / HZ
+    if f.act == Act::Dead {
+        return
+    }
+    // A press is held a while, so one a little early still counts.
+    if intent.press != Press::Nothing {
+        f.buffered = intent.press
+        f.held = 0
+    } else if f.buffered != Press::Nothing {
+        f.held += 1
+        if f.held > r.buffer {
+            f.buffered = Press::Nothing
+        }
+    }
+    f.t += 1
+    f.rested += 1
+    f.calm += 1
+    // The act's end.
+    match f.act {
+        Act::Attack => {
+            if f.t >= moves[f.move].length() {
+                f.begin(Act::Ready)
+            }
+        },
+        Act::Dodge => {
+            if f.t >= r.dodge {
+                f.begin(Act::Ready)
+            }
+        },
+        Act::Staggered => {
+            if f.t >= f.move {
+                f.begin(Act::Ready)
+            }
+        },
+        Act::Broken => {
+            if f.t >= r.broken {
+                f.recover()
+            }
+        },
+        _ => {},
+    }
+    // A buffered press begins once it may.
+    if f.free(moves, r) && f.able() {
+        match f.buffered {
+            Press::Moves { index } => {
+                if index < moves.len() {
+                    f.spend(moves[index].stamina)
+                    f.begin(Act::Attack, move: index)
+                }
+            },
+            Press::Dodging => {
+                let way = if length(intent.walk) > 0.2 { normalize(intent.walk) } else {
+                    -facing(f.heading)
+                }
+                f.spend(r.dodge_cost)
+                f.begin(Act::Dodge)
+                f.way = way
+            },
+            Press::Nothing => {},
+        }
+    }
+    let toward = target - f.pos
+    var aim = f.heading
+    if length(intent.face) > 0.01 {
+        aim = heading_of(intent.face)
+    } else if length(toward) > 0.01 {
+        aim = heading_of(toward)
+    }
+    match f.act {
+        Act::Ready => {
+            let w = intent.walk
+            let n = length(w)
+            if n > 0.01 {
+                f.pos = f.pos + w / max(n, 1.0) * r.walk * dt
+            }
+            f.heading = turned(f.heading, aim, r.turn * dt)
+        },
+        Act::Attack => {
+            let m = moves[f.move]
+            if f.t < m.windup {
+                f.heading = turned(f.heading, aim, m.track * dt)
+            }
+            if f.t < m.windup + m.active {
+                let reach = f32(m.windup + m.active)
+                // The lunge's distance spread over its ticks, eased: most of it late.
+                let u = f32(f.t) / reach
+                let du = (2.0 * u + 1.0 / reach) / reach
+                f.pos = f.pos + facing(f.heading) * m.lunge * du
+            }
+        },
+        Act::Dodge => {
+            // Fast out, slowing: its distance spread over its first two thirds, eased.
+            let span = f32(r.dodge) * 0.66
+            if f32(f.t) <= span {
+                let u = f32(f.t) / span
+                let du = 2.0 * (1.0 - u) / span
+                f.pos = f.pos + f.way * r.dodge_m * du
+            }
+        },
+        _ => {},
+    }
+    // Stamina comes back a while after a spend; posture settles a while after a blow.
+    if f.rested > r.regain_after && f.act != Act::Dodge {
+        f.stamina = min(f.stamina + r.regain * dt, r.stamina)
+    }
+    if f.calm > r.settle_after && f.act != Act::Broken {
+        f.posture = max(f.posture - r.settle * dt, 0.0)
+    }
+}
+
+/// What a blow did: nothing; landed (and whether it broke the struck one's posture); or would
+/// have landed but the struck one was dodging through it (a clean dodge).
+pub enum Blow: Copy + Eq {
+    Nothing,
+    Landed { broke: bool },
+    Evaded,
+}
+
+/// Whether target `b` is within move `m`'s reach and arc from fighter `a` (`radius`: `b`'s
+/// body's half width).
+pub fn within(a: Fighter, m: Move, b: Fighter, radius: f32) -> bool {
+    let d = b.pos - a.pos
+    let n = length(d)
+    if n > m.reach + radius {
+        return false
+    }
+    if n < radius {
+        return true
+    }
+    let off = abs(wrapped(heading_of(d) - a.heading))
+    off <= m.arc + atan(radius / n)
+}
+
+/// Fighter `a`'s blow on `b` this tick, if it's in its move's hitting ticks and hasn't landed:
+/// `b` struck (its health, posture, and its stagger or break), or evaded where it was dodging.
+@deterministic
+pub fn strike(a: mut Fighter, moves: [Move], b: mut Fighter, r: Rules, radius: f32 = 0.35) -> Blow {
+    if a.act != Act::Attack || a.landed {
+        return Blow::Nothing
+    }
+    let m = moves[a.move]
+    if !m.hitting(a.t) || !within(a, m, b, radius) {
+        return Blow::Nothing
+    }
+    if !b.touchable(r) {
+        if b.act == Act::Dodge {
+            a.landed = true
+            return Blow::Evaded
+        }
+        return Blow::Nothing
+    }
+    a.landed = true
+    b.health = max(b.health - m.damage, 0.0)
+    b.posture = min(b.posture + m.posture, r.posture)
+    b.calm = 0
+    if b.health <= 0.0 {
+        b.begin(Act::Dead)
+        return Blow::Landed { broke: false }
+    }
+    let was = b.act == Act::Broken
+    b.struck(m.stagger, r)
+    Blow::Landed { broke: !was && b.act == Act::Broken }
+}
+
+/// Whether `a` may riposte `b`: `b` broken, `a` close and square in front of it, facing it.
+pub fn riposte(a: Fighter, b: Fighter, r: Rules) -> bool {
+    if b.act != Act::Broken {
+        return false
+    }
+    let d = a.pos - b.pos
+    let n = length(d)
+    if n > r.riposte_m || n < 1.0e-3 {
+        return false
+    }
+    let front = abs(wrapped(heading_of(d) - b.heading)) <= r.riposte_arc
+    let facing_it = abs(wrapped(heading_of(-d) - a.heading)) <= r.riposte_arc
+    front && facing_it
+}
+
+/// Begins `a`'s riposte on `b` (`b` taken), when it may.
+pub fn begin_riposte(a: mut Fighter, b: mut Fighter, r: Rules) -> bool {
+    if !riposte(a, b, r) {
+        return false
+    }
+    a.begin(Act::Riposte)
+    b.taken()
+    true
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+const JAB = Move {
+    windup: 10,
+    active: 4,
+    recovery: 14,
+    reach: 1.4,
+    arc: 0.6,
+    damage: 10.0,
+    posture: 30.0,
+    stamina: 12.0,
+    cancel: 6,
+    stagger: 12,
+}
+
+fn moves() -> [Move; 1] {
+    [JAB]
+}
+
+fn pressed(index: u32) -> Intent {
+    Intent { press: Press::Moves { index } }
+}
+
+/// Runs `a`'s and `b`'s ticks, `a` jabbing on its first tick, `b` dodging on tick
+/// `dodge_at` (or never), for `ticks` ticks: what `a`'s blows did, the last that did anything.
+fn exchange(dodge_at: u32, ticks: u32) -> (Fighter, Fighter, Blow) {
+    let r = Rules {}
+    var a = fighter(vec2(0.0), 0.0, r)
+    var b = fighter(vec2(0.0, 1.0), 3.1415927, r)
+    var last = Blow::Nothing
+    for k in 0..ticks {
+        step(mut a, if k == 0 { pressed(0) } else { Intent {} }, moves(), r, b.pos)
+        let bi = if k == dodge_at { Intent { walk: vec2(1.0, 0.0), press: Press::Dodging } } else {
+            Intent {}
+        }
+        step(mut b, bi, moves(), r, a.pos)
+        // It dodges in place: the test is of its invincible ticks, not of its leaving reach.
+        b.pos = vec2(0.0, 1.0)
+        let blow = strike(mut a, moves(), mut b, r)
+        if blow != Blow::Nothing {
+            last = blow
+        }
+    }
+    (a, b, last)
+}
+
+/// A jab in reach lands in its active ticks, once, and staggers.
+@test
+fn a_blow_lands_once_in_its_window() {
+    let (a, b, blow) = exchange(dodge_at: 1000, ticks: 16)
+    assert(blow == Blow::Landed { broke: false }, "the jab landed")
+    assert(b.health == 90.0 && b.posture == 30.0, f"health {b.health}, posture {b.posture}")
+    assert(b.act == Act::Staggered, "a jab staggers")
+    assert(a.landed, "it lands once")
+}
+
+/// A dodge whose invincible ticks cover the jab's window evades it: no health lost, and the
+/// blow counts as evaded. One begun too late is struck before it's untouchable.
+@test
+fn a_dodge_through_the_window_evades_and_one_too_late_doesnt() {
+    // The jab can hit from its 10th tick: a dodge begun on tick 4 is untouchable from 6 to 19.
+    let (_, b, blow) = exchange(dodge_at: 4, ticks: 20)
+    assert(blow == Blow::Evaded && b.health == 100.0, f"evaded, health {b.health}")
+    // Begun on tick 9, it's not untouchable until 11: the jab lands on 10.
+    let (_, late, blow) = exchange(dodge_at: 9, ticks: 20)
+    assert(blow == Blow::Landed { broke: false } && late.health == 90.0, "too late")
+}
+
+/// Stamina gates actions: spent, nothing more begins until it's above none; it comes back a
+/// while after the last spend.
+@test
+fn stamina_gates_and_comes_back() {
+    let r = Rules {}
+    var a = fighter(vec2(0.0), 0.0, r)
+    a.stamina = 5.0
+    step(mut a, pressed(0), moves(), r, vec2(0.0, 5.0))
+    assert(a.act == Act::Attack && a.stamina < 0.0, "a last move may go below none")
+    for _ in 0..29 {
+        step(mut a, Intent {}, moves(), r, vec2(0.0, 5.0))
+    }
+    assert(a.act == Act::Ready, "its move is over")
+    step(mut a, pressed(0), moves(), r, vec2(0.0, 5.0))
+    assert(a.act == Act::Ready, f"spent ({a.stamina}), nothing begins")
+    for _ in 0..120 {
+        step(mut a, Intent {}, moves(), r, vec2(0.0, 5.0))
+    }
+    assert(a.stamina > 40.0, f"it came back: {a.stamina}")
+}
+
+/// A press during a move's wind-up is held and begins the next move as the first's recovery
+/// can be cut; one long before is dropped.
+@test
+fn a_press_is_buffered_into_the_next_move() {
+    let r = Rules {}
+    var a = fighter(vec2(0.0), 0.0, r)
+    step(mut a, pressed(0), moves(), r, vec2(0.0, 5.0))
+    var t = 1
+    while t < 8 {
+        step(mut a, Intent {}, moves(), r, vec2(0.0, 5.0))
+        t += 1
+    }
+    // Pressed at tick 8: the jab can be cut at 10 + 4 + 6 = 20, 12 ticks later, within the
+    // buffer's 12.
+    step(mut a, pressed(0), moves(), r, vec2(0.0, 5.0))
+    var restarted = false
+    for _ in 0..14 {
+        let before = a.t
+        step(mut a, Intent {}, moves(), r, vec2(0.0, 5.0))
+        if a.act == Act::Attack && a.t < before {
+            restarted = true
+        }
+    }
+    assert(restarted, "the buffered press began the next jab")
+}
+
+/// Posture filled breaks: the broken one is open to a riposte from in front, not from behind.
+@test
+fn a_full_posture_breaks_open_to_a_riposte() {
+    let r = Rules {}
+    var a = fighter(vec2(0.0), 0.0, r)
+    var b = fighter(vec2(0.0, 1.0), 3.1415927, r)
+    b.posture = 90.0
+    for k in 0..16 {
+        step(mut a, if k == 0 { pressed(0) } else { Intent {} }, moves(), r, b.pos)
+        let blow = strike(mut a, moves(), mut b, r)
+        if blow != Blow::Nothing {
+            assert(blow == Blow::Landed { broke: true }, "the blow broke it")
+        }
+    }
+    assert(b.act == Act::Broken, "broken")
+    assert(riposte(a, b, r), "open from in front")
+    let behind = fighter(vec2(0.0, 2.0), 3.1415927, r)
+    assert(!riposte(behind, b, r), "not from behind")
+    assert(begin_riposte(mut a, mut b, r) && b.act == Act::Taken && !b.touchable(r))
+}
+
+/// Out of a move's arc, it misses.
+@test
+fn a_blow_misses_outside_its_arc() {
+    let r = Rules {}
+    let a = fighter(vec2(0.0), 0.0, r)
+    let beside = fighter(vec2(1.0, 0.0), 0.0, r)
+    let ahead = fighter(vec2(0.0, 1.2), 0.0, r)
+    assert(!within(a, JAB, beside, 0.2), "beside isn't in a jab's arc")
+    assert(within(a, JAB, ahead, 0.2), "ahead is")
+}
