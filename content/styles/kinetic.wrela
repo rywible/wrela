@@ -193,6 +193,11 @@ pub fn hatched(m: MarkSample, intensity: f32) -> f32 {
     if thin {
         return 0.3 * first + 0.25 * second
     }
+    // The ground's shadows take one layer, broken as a hand's quick hatching is: crossed on open
+    // flat ground, the lines read as a mesh fence laid on it.
+    if m.class == style::GROUND {
+        return first * rough_lines(m, HATCH_ANGLE)
+    }
     max(
         first * hatch_lines(m, HATCH_ANGLE),
         second * hatch_lines(m, HATCH_ANGLE + 1.0471976),
