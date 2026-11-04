@@ -1,7 +1,7 @@
 // The skiff: a small open boat of planks, its two thwarts, and its traveller with a paddle,
 // where the sea holds it (`Shot::boat` and its axes).
 
-use look::{Shot, noise}
+use look::{Shot, hash2, noise}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
     let q = abs(p) - b
@@ -177,24 +177,65 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     // Weathered wood, its grain along the planks; the inside paler where feet and sun have
     // worn it.
     let grain = noise(vec2(q.z * 3.0, q.y * 40.0 + q.x * 6.0))
-    // Outside, a worn cream paint over the planks; a rust-red strake under the gunwale.
-    var a = mix(vec3(0.52, 0.46, 0.36), vec3(0.66, 0.6, 0.48), grain)
-    let strake = smoothstep(-0.14, -0.12, q.y) * (1.0 - smoothstep(0.6, 0.7, dot(n, s.boat_y)))
-    a = mix(a, vec3(0.42, 0.13, 0.07), strake * 0.85)
+    let fine = noise(vec2(q.z * 14.0, q.y * 160.0 + q.x * 20.0))
+    // Outside, varnished planks of a warm wood, each its own tone; under the gunwale a strake
+    // painted deep sea-green over a cream line; below the water's reach, a dark red-brown.
+    let plank = floor((q.y * 46.0 + q.z * 1.5) / 6.2831853)
+    let tone = hash2(vec2(plank, 3.0))
+    var a = mix(vec3(0.36, 0.17, 0.07), vec3(0.55, 0.3, 0.13), tone * 0.6 + grain * 0.4)
+    a *= 0.9 + 0.2 * fine
+    let outside = 1.0 - smoothstep(0.6, 0.7, dot(n, s.boat_y))
+    let sheer = 0.16 * (q.z / LONG) * (q.z / LONG)
+    let y = q.y - sheer
+    let strake = smoothstep(-0.12, -0.105, y) * outside
+    let cream = smoothstep(-0.15, -0.14, y) * (1.0 - smoothstep(-0.125, -0.115, y)) * outside
+    let bottom = (1.0 - smoothstep(-0.34, -0.32, y)) * outside
+    a = mix(a, vec3(0.04, 0.2, 0.19) * (0.85 + 0.3 * grain), strake)
+    a = mix(a, vec3(0.78, 0.7, 0.55), cream)
+    a = mix(a, vec3(0.2, 0.06, 0.04), bottom * 0.8)
+    // Inside, the wood paler and worn, the floorboards darker between the thwarts.
     let inside = smoothstep(0.3, 0.6, dot(n, s.boat_y))
-    a = mix(a, vec3(0.42, 0.30, 0.20), inside * 0.5)
+    a = mix(
+        a,
+        mix(vec3(0.46, 0.33, 0.2), vec3(0.3, 0.2, 0.12), smoothstep(-0.3, -0.36, q.y)),
+        inside * 0.7,
+    )
     let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
-    // The paddle: oiled ash, darkened by the water.
+    // The varnish holds the light: smoother on the outside, its paint smoother still.
+    let rough = mix(0.75, mix(0.42, 0.3, strake), outside)
+    // The paddle: oiled ash, darkened by the water; its blade painted sea-green, a red band at
+    // its throat.
     let pa = paddle_and_arms(s, q)
     if pa.x < 0.006 {
-        return (mix(vec3(0.28, 0.17, 0.09), vec3(0.4, 0.27, 0.15), grain), 0.5, 1.0)
+        let (_, blade, _) = paddle(s)
+        let on_blade = length(q - blade)
+        let ash = mix(vec3(0.3, 0.18, 0.09), vec3(0.46, 0.3, 0.16), grain)
+        let painted = mix(ash, vec3(0.05, 0.22, 0.2), smoothstep(0.22, 0.2, on_blade))
+        let band_ = smoothstep(0.24, 0.23, on_blade) * smoothstep(0.205, 0.215, on_blade)
+        return (mix(painted, vec3(0.5, 0.08, 0.05), band_), 0.45, 1.0)
     }
-    // The traveller's cloak: a weathered madder red, darker in its folds, its hood's lining
-    // shadowed. Its sleeves too.
+    // The traveller's cloak: a madder red, deeper in its folds, the folds falling in long
+    // runs from the shoulders; an ochre band woven round its hem; a leather strap across the
+    // back to a satchel at the hip. Its sleeves the cloak's.
     if figure(q) < 0.006 || pa.y < 0.006 {
-        let fold = noise(vec2(atan2(q.z + 0.74, q.x) * 6.0, q.y * 3.0))
-        let cloak = mix(vec3(0.32, 0.07, 0.05), vec3(0.5, 0.13, 0.08), fold)
-        return (cloak, 0.9, sin(atan2(q.z + 0.74, q.x) * 5.0 + q.y * 3.0) + 0.92)
+        let c = q - vec3(0.0, -0.075, -0.74)
+        let lean = vec3(c.x, c.y, c.z - c.y * 0.12)
+        let round = atan2(lean.z, lean.x)
+        let fold = noise(vec2(round * 6.0, lean.y * 2.2)) * 0.7 +
+            noise(vec2(round * 15.0, lean.y * 5.0)) * 0.3
+        var cloak = mix(vec3(0.28, 0.045, 0.04), vec3(0.58, 0.12, 0.07), fold)
+        // (The weave: a fine cross-thread, catching the light a little.)
+        cloak *= 0.92 + 0.16 * noise(vec2(round * 90.0, lean.y * 180.0))
+        let hem = smoothstep(0.03, 0.04, lean.y) * (1.0 - smoothstep(0.075, 0.085, lean.y))
+        cloak = mix(cloak, vec3(0.62, 0.42, 0.14) * (0.85 + 0.3 * fold), hem)
+        let strap_d = abs(dot(lean - vec3(0.0, 0.3, 0.0), normalize(vec3(0.75, 1.0, 0.0))))
+        let strap = (1.0 - smoothstep(0.022, 0.03, strap_d)) *
+            smoothstep(0.02, -0.02, lean.z) *
+            step(0.08, lean.y) *
+            step(lean.y, 0.5)
+        cloak = mix(cloak, vec3(0.2, 0.11, 0.06), strap)
+        let line_ = sin(round * 5.0 + lean.y * 3.0) + 0.92
+        return (cloak, mix(0.85, 0.55, strap), line_)
     }
-    (a, 0.75, seam)
+    (a, rough, seam)
 }

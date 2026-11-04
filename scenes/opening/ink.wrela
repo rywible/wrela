@@ -324,7 +324,7 @@ pub fn ink(
         let kept = 1.0 - band(gaps, 1.0 - 0.6 * energy, 0.05) * band(energy, 0.1, 0.05)
         line = max(line, e * kept * lift * (if k == 0 { 1.0 } else { 0.85 }))
     }
-    line *= s.style * (if clean { 0.0 } else if painted { 0.7 } else { 1.0 })
+    line *= s.style * (if painted { 0.7 } else { 1.0 })
     // Kinetic, streaks: long thin strokes torn off the lines along one slant, as the frame's
     // ink is pulled out of it.
     let slant = normalize(vec2(1.0, -0.35))
@@ -384,7 +384,15 @@ pub fn ink(
     let faint = if drawn {
         mix(1.0, 0.72, clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) * (1.0 - band(energy, 0.3, 0.1)))
     } else { 1.0 }
-    let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0) * lifted * faint
+    // (The clean look draws no ink while all is quiet: it comes only with action, the frame's
+    // own or the skiff's slap, and takes the frame as the moment rises.)
+    let action = if clean {
+        max(band(s.kinetic, 0.2, 0.1), band(s.slap, 0.3, 0.1) * band(local, 0.25, 0.1))
+    } else { 1.0 }
+    let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0) *
+        lifted *
+        faint *
+        action
     // The palette drains toward ink and paper as the energy rises past the middle: three values,
     // and hatching in the middle one, as a page of manga.
     var c = c0

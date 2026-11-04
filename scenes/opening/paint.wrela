@@ -5,10 +5,10 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use look::{GILT, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, noise, noise3, ray}
+use look::{GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, TETHER, Shot, band, noise, noise3, ray}
 use sea::{height, strokes}
 use sea::normal as sea_normal
-use isle::{SCALE, bounds, isle, isle_material, isle_normal}
+use isle::{SCALE, bounds, isle, isle_material, isle_normal, tether_bounds, tether_foot, tethers}
 use skiff::{dry, paddle, skiff, skiff_material, skiff_normal}
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_reflection, world}
 use engine::light::sky as clear_sky
@@ -92,6 +92,94 @@ fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
         i += 1
     }
     hit
+}
+
+/// The ink tethers met along the ray between `lo` and `hi`: where, or `hi`.
+fn march_tethers(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 140 && t < hi {
+        let h = tethers(o + d * t, s.held)
+        if h < t * 0.0004 {
+            hit = t
+            t = hi
+        } else {
+            t += h
+        }
+        i += 1
+    }
+    hit
+}
+
+fn tether_normal(s: Shot, p: vec3, e: f32) -> vec3 {
+    let dx = tethers(p + vec3(e, 0.0, 0.0), s.held) - tethers(p - vec3(e, 0.0, 0.0), s.held)
+    let dy = tethers(p + vec3(0.0, e, 0.0), s.held) - tethers(p - vec3(0.0, e, 0.0), s.held)
+    let dz = tethers(p + vec3(0.0, 0.0, e), s.held) - tethers(p - vec3(0.0, 0.0, e), s.held)
+    normalize(vec3(dx, dy, dz))
+}
+
+/// The cathedral's lantern: six beams of its stained glass's colours thrown from the heart of it
+/// out and down over the sea, turning slowly round as a lighthouse's do. Each beam's colour.
+const BEAM_TINT = [
+    vec3(0.95, 0.12, 0.1),
+    vec3(0.15, 0.3, 1.0),
+    vec3(1.0, 0.72, 0.2),
+    vec3(0.6, 0.15, 0.95),
+    vec3(0.1, 0.45, 1.0),
+    vec3(1.0, 0.3, 0.08),
+]
+
+/// Where the lantern's beams start (the world's), and beam `k`'s heading at time `t`.
+fn beam_apex() -> vec3 {
+    ISLE + vec3(0.0, 420.0, -42.0)
+}
+
+fn beam_heading(k: u32, t: f32) -> vec3 {
+    let az = t * 0.09 + f32(k) * 1.0471976
+    normalize(vec3(cos(az), -0.3, sin(az)))
+}
+
+/// How much of the beams a ray `o` + `d` t passes through before `hit`, and their light
+/// (premultiplied): at each beam, where the ray comes closest to its axis, a soft cone widening
+/// as it goes.
+fn beams(
+    s: Shot,
+    h: Heaven,
+    aerial: Texture3d<Rgba16Float>,
+    smp: Sampler,
+    o: vec3,
+    d: vec3,
+    hit: f32,
+) -> vec4 {
+    var acc = vec4(0.0)
+    let apex = beam_apex()
+    for k in 0..6 {
+        let e = beam_heading(k, s.held)
+        let len = apex.y / -e.y
+        let w0 = o - apex
+        let b = dot(d, e)
+        let den = max(1.0 - b * b, 1.0e-5)
+        let dd = dot(d, w0)
+        let ee = dot(e, w0)
+        let tt = (b * ee - dd) / den
+        let sc = clamp(ee + b * tt, 250.0, len)
+        let axis = apex + e * sc
+        let tr = max(dot(axis - o, d), 0.0)
+        if tr < hit {
+            let q = o + d * tr
+            let dist = length(q - axis)
+            let r = 16.0 + sc * 0.028
+            let dens = exp(-dist * dist / (r * r) * 2.0) *
+                smoothstep(250.0, 650.0, sc) *
+                (0.55 + 0.45 * smoothstep(len, len * 0.6, sc))
+            let a = clamp(dens * 0.42 * s.lantern, 0.0, 0.7) * (1.0 - acc.a)
+            let col = h.light.sun_colour * BEAM_TINT[k] * 0.26
+            let seen = mix(col, hazed(aerial, smp, h.light, col, q, s.eye), 0.5)
+            acc += vec4(seen * a, a)
+        }
+    }
+    acc
 }
 
 /// The isle met coarsely (for its reflection, where the sea blurs it): 90 steps, a loose hit.
@@ -418,7 +506,7 @@ fn sea_shade(
         smoothstep(0.3, 0.6, noise(xz * 7.0 + vec2(s.held * 2.0))) *
         sunk
     let wake = max(
-        max(arms, trail * 0.6) * step(0.0, back) * (0.4 + 0.45 * way),
+        max(arms, trail * 0.6) * step(0.0, back) * (0.15 + 0.7 * way),
         max(bow_wave * 0.7, swirl * 0.8),
     )
     let foam = band(-near, -0.05 - 0.07 * noise(xz * 4.0 + vec2(s.held * 3.0)), 0.015)
@@ -452,6 +540,33 @@ fn sea_shade(
     let bow = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
     let cut = exp(-max(near, 0.0) / (0.18 + 0.25 * s.slap)) * (0.15 + 0.25 * bow + 0.45 * s.slap)
     let line = 0.5 - foam
+    // Where the tethers go into the sea, the ink spreads in it: dark pools, ragged at their edges.
+    if s.tethers > 0.5 {
+        var stain = 0.0
+        for i in 0..7 {
+            let f = tether_foot(i)
+            let ragged = length(xz - f) + (noise(xz * 0.02 + vec2(f32(i) * 7.0)) - 0.5) * 70.0
+            stain = max(stain, smoothstep(170.0, 50.0, ragged))
+        }
+        c = mix(c, c * 0.16 + vec3(0.004, 0.003, 0.008), stain * 0.85)
+    }
+    // Where the lantern's beams fall on the water, its colours lie on the waves.
+    if s.lantern > 0.5 {
+        let apex = beam_apex()
+        for k in 0..6 {
+            let e = beam_heading(k, s.held)
+            let len = apex.y / -e.y
+            let foot = apex + e * len
+            let head = normalize(vec2(e.x, e.z))
+            let rel = xz - vec2(foot.x, foot.z)
+            let along = dot(rel, head)
+            let across = dot(rel, vec2(-head.y, head.x))
+            let r = 16.0 + len * 0.028
+            let pool = exp(-(along * along / (r * r * 4.0) + across * across / (r * r)))
+            let shimmer = 0.6 + 0.8 * smoothstep(0.4, 0.8, noise(xz * 0.05 + vec2(s.held * 0.3)))
+            c += h.light.sun_colour * BEAM_TINT[k] * 0.05 * pool * shimmer
+        }
+    }
     let aired = hazed(aerial, smp, h.light, c, p, s.eye)
     // Far out, the sea and the sky meet in the air: no ruled edge where they do.
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
@@ -631,6 +746,16 @@ pub fn paint(
             id = isle(o + d * ti).y
         }
     }
+    if s.tethers > 0.5 {
+        let tb = sphere(o, d, tether_bounds(), far)
+        if tb.x < t {
+            let tt = march_tethers(s, o, d, tb.x, min(tb.y, t))
+            if tt < min(tb.y, t) {
+                t = tt
+                id = TETHER
+            }
+        }
+    }
     var c = vec3(0.0)
     var line = 1.0
     var weight = 0.0
@@ -705,6 +830,34 @@ pub fn paint(
         line = seam
         weight = 0.8
         energy = s.slap * 0.35
+    } else if id == TETHER {
+        // Wet ink: near black, glossy, holding the sky along its length and the sun along its
+        // sun side.
+        n = tether_normal(s, p, max(0.5, t * 0.0012))
+        c = lit_solid(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            smp,
+            p,
+            n,
+            d,
+            vec3(0.012, 0.01, 0.022),
+            0.16,
+            0.0,
+            vec3(0.0),
+            1.0,
+            1.0,
+            0.55,
+            1.0,
+        )
+        let side = normalize(vec3(light.sun.x, 0.15, light.sun.z))
+        let edge_on = pow(1.0 - max(dot(n, -d), 0.0), 3.0) * max(dot(n, side), 0.0)
+        c += light.sun_colour * vec3(1.0, 0.8, 0.55) * 0.5 * edge_on
+        line = 1.0
+        weight = 0.55
     } else {
         // The rock's normal taken broad, so it models in planes, as hewn stone is drawn; the
         // cathedral's finer.
@@ -715,7 +868,7 @@ pub fn paint(
         let glow = if id == GILT {
             glow0 +
                 light.sun_colour * vec3(1.0, 0.74, 0.4) * (0.7 + 2.4 * max(dot(n, light.sun), 0.0))
-        } else { glow0 }
+        } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
         let sun = isle_shadow(p + n * 2.0, light.sun, 2.0) *
             mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
         let ao = isle_ao(p, n)
@@ -789,6 +942,10 @@ pub fn paint(
     // The falls, in front of what the ray met; the gulls in front of all.
     let fall = falls(s, h, aerial, smp, o, d, t)
     c = c * (1.0 - fall.a) + fall.rgb
+    if s.lantern > 0.5 {
+        let beam = beams(s, h, aerial, smp, o, d, t)
+        c = c * (1.0 - beam.a) + beam.rgb
+    }
     let gull = birds(s, pixel.position.xy)
     if gull.y < t {
         c = mix(c, c * mix(0.12, 0.75, clamp(gull.y / 1200.0, 0.0, 0.85)) + vec3(0.01), gull.x)

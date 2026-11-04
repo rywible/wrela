@@ -26,6 +26,7 @@ pub const GLASS: f32 = 7.0
 pub const ROOF: f32 = 8.0
 pub const HOUSE: f32 = 9.0
 pub const TILE: f32 = 10.0
+pub const TETHER: f32 = 11.0
 
 /// What the passes read: the screen, the camera's eye and its axes, the light, and the skiff's
 /// place and axes (as the sea carries it), the held time.
@@ -61,6 +62,11 @@ pub struct Shot: Copy + GpuData {
     /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
     /// 1 painted CG, 2 cel and ink, 3 clean CG.
     pub look: f32,
+    /// What holds the rock, and what it shines with (each 0 or 1): ink tethers from its
+    /// underside into the sea, as if the ocean anchors it; and the cathedral lit from within, its
+    /// stained glass throwing coloured beams round over the sea as a lighthouse's do.
+    pub tethers: f32,
+    pub lantern: f32,
 }
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
@@ -119,6 +125,8 @@ pub fn shot_at(time: f32, width: u32, height: u32, kinetic: f32, view: u32, r: R
         pull: r.shown_pull,
         stroke: r.shown_stroke,
         look: 0.0,
+        tethers: 0.0,
+        lantern: 0.0,
     }
 }
 
