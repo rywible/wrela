@@ -88,6 +88,19 @@ fn pose_at(time: f32) -> Pose {
     }
 }
 
+/// The hips' place, on average over the walk's loop round `time`: a walk's steady path, an
+/// idle's spot.
+fn steady_hips(time: f32) -> vec3 {
+    let base = HERO.rig.base
+    let span = WALK.length()
+    var sum = vec3(0.0)
+    for k in 0..16 {
+        let t = time + span * ((f32(k) + 0.5) / 16.0 - 0.5)
+        sum += base.t + base.q.rotate(pose_at(t).hips)
+    }
+    sum / 16.0
+}
+
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if width != s.width || height != s.height {
         s.colour = texture(width: width, height: height)
@@ -100,9 +113,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let pose = pose_at(time)
     let bones = palette(HERO.rig, pose, identity())
     write(mut s.palette, 0, bones)
-    // The camera follows the hips along the ground.
-    let base = HERO.rig.base
-    let hips = base.t + base.q.rotate(pose.hips)
+    // The camera follows the hips along the ground, steadily: where they are on average over a
+    // stride, so it neither surges with each step nor sways with the hips.
+    let hips = steady_hips(time)
     let walking = SHOW == 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
