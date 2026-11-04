@@ -1,0 +1,8 @@
+# A humanoid character base: Quaternius's Superhero Male (CC0) read from its glTF at build time
+# onto VRM 1.0's bones (engine::humanoid), standing in its T-pose, idling (Quaternius's Universal
+# Animation Library) and walking (a 100STYLE take, retargeted and looped), drawn in Kinetic Ink.
+[package]
+name = "humanoid"
+
+[dependencies]
+engine = { workspace = true }

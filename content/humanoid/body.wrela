@@ -1,0 +1,50 @@
+// The body and its clips, each converted when the program is built (`engine::humanoid`): the
+// Quaternius body on VRM's bones, its T-pose, an idle and a walk.
+
+use engine::humanoid
+use engine::humanoid::{Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, Paint, Retarget, UNREAL}
+use engine::bvh
+
+/// The body's colours, sRGB: its skin, its hair and brows, its eyes.
+pub const SKIN = vec3(0.86, 0.66, 0.52)
+pub const HAIR = vec3(0.16, 0.11, 0.09)
+pub const EYES = vec3(0.12, 0.09, 0.08)
+
+/// Quaternius's Superhero Male (assets/superhero_male.glb.LICENSE.txt).
+@fuel(2 ** 40)
+pub const HERO: Humanoid = humanoid::import(
+    embed("assets/superhero_male.glb"),
+    UNREAL,
+    [
+        Paint { material: "MI_Hair_1", albedo: HAIR },
+        Paint { material: "MI_Eyes", albedo: EYES },
+        Paint { material: "MI_Superhero_Male", albedo: SKIN },
+    ],
+    fallback: SKIN,
+)
+
+/// Its bind pose: a T-pose.
+pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())
+
+/// Quaternius's idle (assets/ual1.glb.LICENSE.txt), on its own mannequin, retargeted.
+@fuel(2 ** 40)
+pub const IDLE: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Idle_Loop", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget { looped: true },
+)
+
+/// A 100STYLE walk (assets/neutral_fw.bvh.LICENSE.txt): three strides, turned to walk ahead and
+/// looped.
+@fuel(2 ** 40)
+pub const WALK: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_fw.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 138,
+    ),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true },
+)

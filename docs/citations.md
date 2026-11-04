@@ -88,6 +88,9 @@ Photographs and footage from Wikimedia Commons, each licence read from its own p
 | Satie, Gymnopédie No. 1 (1888), the Mutopia Project's edition (Mutopia-2014/12/14-37) | Public domain | Transcribed into `examples/gymnopedie/score.wrela`, for wrela's piano to play. |
 | Inter and JetBrains Mono (`ui/fonts/`); Manrope (`ui/brand/fonts/`, set at weight 500 with fontTools) | SIL OFL 1.1, licences beside them | The interface's text. |
 | [ab_glyph](https://github.com/alexheretic/ab-glyph) 0.2 | Apache-2.0; used as a library | Drew `ui/tests/text/goldens/reference.png` once, from exact outline coverage, so the GPU's text can be compared with it. To draw it again, run `text::text_matches_a_reference_rasterizer` with `--ignored` (wrela-compiler, `compiler/tests/tests/suite/text.rs` at commit cc0be254). |
+| Quaternius, "Superhero_Male" of [Universal Base Characters](https://quaternius.com/packs/universalbasecharacters.html) (2025) (`content/humanoid/assets/superhero_male.glb`) | CC0 1.0; the pack page's licence kept dated in its `.LICENSE.txt` | The humanoid base's body: read at build time onto VRM 1.0's bones (`engine::humanoid`). Its textures aren't read yet; its materials are flat colours. |
+| Quaternius, [Universal Animation Library](https://quaternius.com/packs/universalanimationlibrary.html) (2025), standard glTF (`content/humanoid/assets/ual1.glb`) | CC0 1.0; licence beside it | `Idle_Loop`, retargeted onto the body. |
+| Ian Mason, Sebastian Starke and Taku Komura, [The 100STYLE Dataset](https://www.ianxmason.com/100style/) (2022), Neutral_FW frames 1836 to 1974 (`content/humanoid/assets/neutral_fw.bvh`) | CC BY 4.0; credit "The 100STYLE Dataset - Ian Mason", in its `.LICENSE.txt` | The humanoid's walk: retargeted onto the body at build time and looped. A game that ships it credits the dataset. |
 
 ## Methods the code follows
 
@@ -95,6 +98,7 @@ Each is our own Wrela code written from the published idea. No code was copied.
 
 | Source | Where | What it gives |
 |---|---|---|
+| [VRM 1.0 humanoid](https://github.com/vrm-c/vrm-specification/blob/master/specification/VRMC_vrm-1.0/humanoid.md) | `engine::humanoid::BONES` | The humanoid bones' names and which are required; only the names are used |
 | Lekner and Dorf, [Why some things are darker when wet](https://doi.org/10.1364/AO.27.001278), *Applied Optics* 27(7) (1988) | `land::cover::wood_floor`'s wet ground, `examples/vale/landscape.wrela`'s `wetted` | Wet ground darker: water in its pores reflects back what would have scattered out |
 | A. Chaigne and A. Askenfelt, "Numerical simulations of piano strings" (JASA 1994); B. Bank and others, "Physics-based sound synthesis of the piano" (2000); P. J. Huber, robust regression (1964) | `engine::piano` | Each partial's frequency-dependent decay, fitted to each key by Huber-weighted least squares |
 | G. Weinreich on coupled strings; H. Conklin on phantom partials | `engine::piano` | A unison's aftersound; partials from the string's stretch |

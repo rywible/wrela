@@ -1,0 +1,410 @@
+// glTF 2.0 in its binary container (GLB, registry.khronos.org/glTF/specs/2.0/glTF-2.0.html §4.4),
+// read at build time from a file `embed` gives: its JSON, its node tree, its skins, its meshes'
+// accessors and its animations' tracks. `engine::humanoid` turns these into a rig, a skinned mesh
+// and clips; this module knows nothing of bodies.
+//
+// What it reads: accessors of floats, normalized or plain integers, with or without a stride; a
+// node's translation, rotation and scale. What it refuses, by a panic that fails the build: a
+// sparse accessor, a node given as a matrix, a buffer outside the GLB's own binary chunk.
+
+use std::collections::Vec
+use std::json
+use std::json::{Doc, TOP}
+use std::string::String
+
+/// No node: a root's parent, a node without a mesh or a skin.
+pub const NONE: u32 = 4294967295
+
+/// A GLB read: its JSON document, and where its binary chunk lies in the file.
+pub struct Glb: Clone {
+    pub doc: Doc,
+    file: Bytes,
+    bin: u32,
+    bin_len: u32,
+}
+
+/// A node at rest: its name, its parent (`NONE` for a root), its transform as translation,
+/// rotation and scale, and its mesh and skin (`NONE` if it has none).
+pub struct Node: Clone {
+    pub name: String,
+    pub parent: u32,
+    pub t: vec3,
+    pub r: Quat,
+    pub s: vec3,
+    pub mesh: u32,
+    pub skin: u32,
+}
+
+/// What an animation's track drives of its node.
+pub enum Path: Copy + Eq {
+    Translation,
+    Rotation,
+    Scale,
+    /// Morph weights, which nothing here reads.
+    Weights,
+}
+
+/// One track of an animation: its node, what it drives, its keys' times (s) and values (3 or 4
+/// floats a key), and whether it steps between keys (else it's linear).
+pub struct Track: Clone {
+    pub node: u32,
+    pub path: Path,
+    pub times: Vec<f32>,
+    pub values: Vec<f32>,
+    pub step: bool,
+}
+
+/// The GLB `file` holds; a file that isn't one fails the build.
+pub fn read(file: Bytes) -> Glb {
+    assert(file.len() >= 20 && file.u32_le(0) == 0x46546C67, "not a GLB: no `glTF` magic")
+    assert(file.u32_le(4) == 2, "only glTF 2.0 GLBs are read")
+    let json_len = file.u32_le(12)
+    assert(file.u32_le(16) == 0x4E4F534A, "a GLB's first chunk must be its JSON")
+    var bytes: Vec<u8> = Vec::with_capacity(json_len)
+    for i in 0..json_len {
+        bytes.push(file.at(20 + i))
+    }
+    let Some(text) = String::from_utf8(take bytes) else { panic("a GLB's JSON isn't UTF-8") }
+    let Some(doc) = json::parse(text.as_str()) else { panic("a GLB's JSON doesn't parse") }
+    var bin = 0
+    var bin_len = 0
+    let next = 20 + json_len
+    if next + 8 <= file.len() {
+        assert(file.u32_le(next + 4) == 0x004E4942, "a GLB's second chunk must be its BIN")
+        bin_len = file.u32_le(next)
+        bin = next + 8
+    }
+    Glb { doc, file, bin, bin_len }
+}
+
+impl Glb {
+    /// Member `key` of object `n` as a number, or `or` where it has none.
+    pub fn num_or(self, n: u32, key: str, or: f64) -> f64 {
+        match self.doc.get(n, key) {
+            Some(v) => match self.doc.num(v) {
+                Some(x) => x,
+                None => or,
+            },
+            None => or,
+        }
+    }
+
+    /// Member `key` of object `n` as a whole number, or `NONE` where it has none.
+    pub fn index(self, n: u32, key: str) -> u32 {
+        match self.doc.get(n, key) {
+            Some(v) => match self.doc.num(v) {
+                Some(x) => u32(x),
+                None => NONE,
+            },
+            None => NONE,
+        }
+    }
+
+    /// Member `key` of object `n` as a text, or empty where it has none.
+    pub fn text(self, n: u32, key: str) -> String {
+        match self.doc.get(n, key) {
+            Some(v) => match self.doc.text(v) {
+                Some(s) => s,
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+    }
+
+    /// Element `i` of the top-level list `list` (`"nodes"`, `"accessors"`, ...).
+    pub fn item(self, list: str, i: u32) -> u32 {
+        let Some(l) = self.doc.get(TOP, list) else { panic(f"a GLB without `{list}`") }
+        let Some(n) = self.doc.at(l, i) else { panic(f"`{list}` has no element {i}") }
+        n
+    }
+
+    /// How many elements the top-level list `list` has (0 if it has none).
+    pub fn count(self, list: str) -> u32 {
+        match self.doc.get(TOP, list) {
+            Some(l) => self.doc.count(l),
+            None => 0,
+        }
+    }
+
+    /// `n`'s list member `key`, as whole numbers (empty where it has none).
+    pub fn indices(self, n: u32, key: str) -> Vec<u32> {
+        var out: Vec<u32> = Vec::new()
+        if let Some(l) = self.doc.get(n, key) {
+            for i in 0..self.doc.count(l) {
+                let Some(e) = self.doc.at(l, i) else { panic("a list's element went missing") }
+                let Some(x) = self.doc.num(e) else { panic(f"`{key}` holds a non-number") }
+                out.push(u32(x))
+            }
+        }
+        out
+    }
+
+    /// `n`'s list member `key` of numbers, or `or` where it has none.
+    fn floats_of(self, n: u32, key: str, or: [f32]) -> Vec<f32> {
+        var out: Vec<f32> = Vec::new()
+        match self.doc.get(n, key) {
+            Some(l) => {
+                for i in 0..self.doc.count(l) {
+                    let Some(e) = self.doc.at(l, i) else { panic("a list's element went missing") }
+                    let Some(x) = self.doc.num(e) else { panic(f"`{key}` holds a non-number") }
+                    out.push(f32(x))
+                }
+            },
+            None => {
+                for x in or {
+                    out.push(x)
+                }
+            },
+        }
+        out
+    }
+
+    /// Every node at rest, each with its parent.
+    pub fn nodes(self) -> Vec<Node> {
+        let n = self.count("nodes")
+        var out: Vec<Node> = Vec::new()
+        for i in 0..n {
+            let j = self.item("nodes", i)
+            assert(self.doc.get(j, "matrix").is_none(), "a node given as a matrix isn't read")
+            let t = self.floats_of(j, "translation", [0.0, 0.0, 0.0])
+            let r = self.floats_of(j, "rotation", [0.0, 0.0, 0.0, 1.0])
+            let s = self.floats_of(j, "scale", [1.0, 1.0, 1.0])
+            out.push(
+                Node {
+                    name: self.text(j, "name"),
+                    parent: NONE,
+                    t: vec3(t[0], t[1], t[2]),
+                    r: Quat { v: normalize(vec4(r[0], r[1], r[2], r[3])) },
+                    s: vec3(s[0], s[1], s[2]),
+                    mesh: self.index(j, "mesh"),
+                    skin: self.index(j, "skin"),
+                },
+            )
+        }
+        for i in 0..n {
+            for c in self.indices(self.item("nodes", i), "children") {
+                out[c].parent = i
+            }
+        }
+        out
+    }
+
+    /// The node named `name`, or `NONE`.
+    pub fn find(self, nodes: [Node], name: str) -> u32 {
+        for i in 0..nodes.len() {
+            if nodes[i].name.as_str() == name {
+                return i
+            }
+        }
+        NONE
+    }
+
+    /// How many elements accessor `a` has, and how many components each.
+    pub fn shape(self, a: u32) -> (u32, u32) {
+        let j = self.item("accessors", a)
+        let kind = self.text(j, "type")
+        let comps = match kind.as_str() {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            "MAT4" => 16,
+            _ => panic(f"an accessor of type `{kind}` isn't read"),
+        }
+        (self.index(j, "count"), comps)
+    }
+
+    /// Accessor `a`'s components, element by element, as floats: a normalized integer as its
+    /// fraction of its type's top, a plain one as itself.
+    pub fn floats(self, a: u32) -> Vec<f32> {
+        let j = self.item("accessors", a)
+        assert(self.doc.get(j, "sparse").is_none(), "a sparse accessor isn't read")
+        let (count, comps) = self.shape(a)
+        let ct = self.index(j, "componentType")
+        let normalized = match self.doc.get(j, "normalized") {
+            Some(v) => self.doc.is_true(v),
+            None => false,
+        }
+        let size = match ct {
+            5120 | 5121 => 1,
+            5122 | 5123 => 2,
+            5125 | 5126 => 4,
+            _ => panic(f"component type {ct} isn't read"),
+        }
+        let v = self.item("bufferViews", self.index(j, "bufferView"))
+        assert(self.index(v, "buffer") == 0, "only the GLB's own buffer is read")
+        let base = self.bin +
+            u32(self.num_or(v, "byteOffset", 0.0)) +
+            u32(self.num_or(j, "byteOffset", 0.0))
+        let stride = u32(self.num_or(v, "byteStride", f64(size * comps)))
+        assert(
+            count == 0 || base + stride * (count - 1) + size * comps <= self.bin + self.bin_len,
+            "an accessor runs past the GLB's binary chunk",
+        )
+        var out: Vec<f32> = Vec::with_capacity(count * comps)
+        let f = self.file
+        for e in 0..count {
+            for c in 0..comps {
+                let at = base + e * stride + c * size
+                let x = match ct {
+                    5126 => f.f32_le(at),
+                    5121 => if normalized { f32(f.at(at)) / 255.0 } else { f32(f.at(at)) },
+                    5123 => if normalized { f32(f.u16_le(at)) / 65535.0 } else {
+                        f32(f.u16_le(at))
+                    },
+                    5125 => f32(f.u32_le(at)),
+                    5120 => {
+                        let b = i32(f.at(at)) - (if f.at(at) >= 128 { 256 } else { 0 })
+                        if normalized { max(f32(b) / 127.0, -1.0) } else { f32(b) }
+                    },
+                    _ => {
+                        let h = i32(f.u16_le(at)) - (if f.u16_le(at) >= 32768 { 65536 } else { 0 })
+                        if normalized { max(f32(h) / 32767.0, -1.0) } else { f32(h) }
+                    },
+                }
+                out.push(x)
+            }
+        }
+        out
+    }
+
+    /// Accessor `a`'s components as whole numbers (indices, joints): an integer accessor's, read
+    /// exactly.
+    pub fn ints(self, a: u32) -> Vec<u32> {
+        let j = self.item("accessors", a)
+        let ct = self.index(j, "componentType")
+        assert(ct == 5121 || ct == 5123 || ct == 5125, "a whole-number accessor must be unsigned")
+        let fs = self.floats(a)
+        var out: Vec<u32> = Vec::with_capacity(fs.len())
+        for x in fs {
+            out.push(u32(x))
+        }
+        out
+    }
+
+    /// Accessor `a` as 4×4 matrices (column-major, as glTF writes them).
+    pub fn matrices(self, a: u32) -> Vec<mat4> {
+        let fs = self.floats(a)
+        var out: Vec<mat4> = Vec::new()
+        var i = 0
+        while i + 16 <= fs.len() {
+            out.push(
+                mat4(
+                    vec4(fs[i], fs[i + 1], fs[i + 2], fs[i + 3]),
+                    vec4(fs[i + 4], fs[i + 5], fs[i + 6], fs[i + 7]),
+                    vec4(fs[i + 8], fs[i + 9], fs[i + 10], fs[i + 11]),
+                    vec4(fs[i + 12], fs[i + 13], fs[i + 14], fs[i + 15]),
+                ),
+            )
+            i += 16
+        }
+        out
+    }
+
+    /// The animation named `name`, or `NONE`.
+    pub fn animation(self, name: str) -> u32 {
+        for i in 0..self.count("animations") {
+            if self.text(self.item("animations", i), "name").as_str() == name {
+                return i
+            }
+        }
+        NONE
+    }
+
+    /// Animation `a`'s tracks.
+    pub fn tracks(self, a: u32) -> Vec<Track> {
+        let an = self.item("animations", a)
+        let Some(channels) = self.doc.get(an, "channels") else {
+            panic("an animation has no channels")
+        }
+        let Some(samplers) = self.doc.get(an, "samplers") else {
+            panic("an animation has no samplers")
+        }
+        var out: Vec<Track> = Vec::new()
+        for c in 0..self.doc.count(channels) {
+            let Some(ch) = self.doc.at(channels, c) else { panic("a channel went missing") }
+            let Some(target) = self.doc.get(ch, "target") else { panic("a channel has no target") }
+            let node = self.index(target, "node")
+            if node == NONE {
+                continue
+            }
+            let path = match self.text(target, "path").as_str() {
+                "translation" => Path::Translation,
+                "rotation" => Path::Rotation,
+                "scale" => Path::Scale,
+                _ => Path::Weights,
+            }
+            if path == Path::Weights {
+                continue
+            }
+            let Some(s) = self.doc.at(samplers, self.index(ch, "sampler")) else {
+                panic("a channel's sampler is missing")
+            }
+            let how = self.text(s, "interpolation")
+            assert(how.as_str() != "CUBICSPLINE", "a cubic spline track isn't read")
+            out.push(
+                Track {
+                    node,
+                    path,
+                    times: self.floats(self.index(s, "input")),
+                    values: self.floats(self.index(s, "output")),
+                    step: how.as_str() == "STEP",
+                },
+            )
+        }
+        out
+    }
+}
+
+impl Node {
+    /// Its transform at rest: T · R · S.
+    pub fn matrix(self) -> mat4 {
+        trs(self.t, self.r, self.s)
+    }
+}
+
+/// The transform translating by `t`, turning by `r` and scaling by `s`, applied scale first.
+pub fn trs(t: vec3, r: Quat, s: vec3) -> mat4 {
+    let m = r.to_mat3()
+    mat4(vec4(m[0] * s.x, 0.0), vec4(m[1] * s.y, 0.0), vec4(m[2] * s.z, 0.0), vec4(t, 1.0))
+}
+
+/// Node `i`'s transform at rest in the scene: its own after each of its ancestors'.
+pub fn global(nodes: [Node], i: u32) -> mat4 {
+    var m = nodes[i].matrix()
+    var p = nodes[i].parent
+    while p != NONE {
+        m = nodes[p].matrix() * m
+        p = nodes[p].parent
+    }
+    m
+}
+
+/// A track's value at time `t` (s): `n` floats (3 or 4), held before its first key and after
+/// its last; a rotation's keys mixed the short way and normalized.
+pub fn sample(track: Track, t: f32, n: u32) -> vec4 {
+    let keys = track.times.len()
+    var k = 0
+    while k + 1 < keys && track.times[k + 1] <= t {
+        k += 1
+    }
+    let a = value_at(track, k, n)
+    if k + 1 >= keys || track.step || t <= track.times[k] {
+        return a
+    }
+    let b = value_at(track, k + 1, n)
+    let f = (t - track.times[k]) / max(track.times[k + 1] - track.times[k], 1.0e-6)
+    if track.path == Path::Rotation {
+        Quat { v: a }.nlerp(Quat { v: b }, f).v
+    } else {
+        mix(a, b, vec4(f))
+    }
+}
+
+fn value_at(track: Track, k: u32, n: u32) -> vec4 {
+    let i = k * n
+    borrow v = track.values
+    if n == 4 { vec4(v[i], v[i + 1], v[i + 2], v[i + 3]) } else {
+        vec4(v[i], v[i + 1], v[i + 2], 0.0)
+    }
+}

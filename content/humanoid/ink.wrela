@@ -1,0 +1,179 @@
+// The second pass: the ink and the paper, the opening style test's (Kinetic Ink), reading this
+// scene's targets: the backdrop and the ground in place of its sky and sea. A line is drawn where what the first pass wrote changes
+// between a pixel and its neighbours (what the ray met, how far, the normal's turn, the line
+// field's sign), a hand's width that wobbles and boils from drawing to drawing. Where the moment is
+// kinetic (the frame's `Shot::kinetic`, or a pixel's own: the bow's cut, the skiff's slap) the
+// lines fray: they break into strands, throw off static, and the palette drains toward black
+// and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
+
+use look::{BACKDROP, GROUND, INK, PAPER, Shot, band, hash2, luma, noise}
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
+
+/// A pixel's texel of a target, its coordinates clamped to it.
+fn at(t: Texture<Rgba16Float>, p: vec2, size: vec2) -> vec4 {
+    let q = clamp(p, vec2(0.0), size - vec2(1.0))
+    t.load(u32(q.x), u32(q.y))
+}
+
+fn at8(t: Texture<Rgba8>, p: vec2, size: vec2) -> vec4 {
+    let q = clamp(p, vec2(0.0), size - vec2(1.0))
+    t.load(u32(q.x), u32(q.y))
+}
+
+/// How much of a line lies between two samples: `a` and `b` what each met (`look`'s marks), `na`
+/// and `nb` their normals.
+fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
+    let near = if a.x < b.x { a } else { b }
+    if abs(a.y - b.y) > 0.5 {
+        // The horizon's a thin line; any other change of what was met, a full one.
+        let horizon = (a.y == BACKDROP && b.y == GROUND) || (a.y == GROUND && b.y == BACKDROP)
+        let w = if horizon { 0.35 } else { max(near.w, 0.6) }
+        return w
+    }
+    if a.y == BACKDROP {
+        return 0.0
+    }
+    var e = 0.0
+    // A fold in depth: one thing in front of another part of itself.
+    e = max(e, band(abs(a.x - b.x), edge: 0.10, soft: 0.03) * near.w)
+    // A crease, on solid things.
+    if a.y > GROUND + 0.5 {
+        e = max(e, band(1.0 - dot(na, nb), edge: 0.30, soft: 0.08) * 0.8 * near.w)
+    }
+    // The line field's zero: crests, strata, seams.
+    if (a.z < 0.0) != (b.z < 0.0) {
+        e = max(e, 0.7 * near.w)
+    }
+    e
+}
+
+const AROUND = [
+    vec2(1.0, 0.0),
+    vec2(-1.0, 0.0),
+    vec2(0.0, 1.0),
+    vec2(0.0, -1.0),
+    vec2(0.7071, 0.7071),
+    vec2(-0.7071, 0.7071),
+    vec2(0.7071, -0.7071),
+    vec2(-0.7071, -0.7071),
+]
+
+@fragment
+pub fn ink(
+    pixel: FragCoord,
+    shot: Shot,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+) -> vec4 {
+    let s = shot
+    let size = s.resolution
+    let px = pixel.position.xy
+    let scale = size.y / 720.0
+    let seed = s.held * 12.0
+    let c0 = display(at(colour, px, size).xyz)
+    let m0 = at(marks, px, size)
+    let n0 = at8(normal, px, size)
+    // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
+    var local = n0.w
+    for i in 0..4 {
+        let o = AROUND[i] * 5.0 * scale
+        local = max(local, at8(normal, px + o, size).w * 0.8)
+    }
+    let energy = clamp(max(s.kinetic, local), 0.0, 1.0)
+    // The pen's width: a hand's, wobbling along the line and boiling between drawings.
+    let wob = noise(px / (scale * 40.0) + vec2(seed * 0.37, 0.0)) - 0.5
+    let r = scale * (1.15 + 0.7 * wob) * (1.0 + 0.5 * energy)
+    // Strands: the line drawn again by a hand that doesn't quite find it, each stroke pushed off
+    // along a slow wander of its own, the more so the more kinetic it is. Quiet, one strand.
+    var line = 0.0
+    for k in 0..3 {
+        let kk = f32(k)
+        let lift = if k == 0 { 1.0 } else { band(energy, 0.12 + 0.12 * kk, 0.06) }
+        let wander = vec2(
+            noise(px / (scale * 14.0) + vec2(seed * 1.3 + kk * 17.0, kk * 5.0)),
+            noise(px / (scale * 14.0) + vec2(kk * 9.0, seed * 0.9 + kk * 23.0)),
+        ) -
+            vec2(0.5)
+        let shove = wander * scale * (1.0 + 7.0 * energy) * (if k == 0 { 0.6 } else { 1.0 + kk })
+        var e = 0.0
+        for i in 0..8 {
+            let q = px + shove + AROUND[i] * r * (if k == 0 { 1.0 } else { 0.6 })
+            let mq = at(marks, q, size)
+            let nq = at8(normal, q, size)
+            e = max(e, edge(m0, mq, n0.xyz * 2.0 - 1.0, nq.xyz * 2.0 - 1.0))
+        }
+        // Each strand breaks where its own slow noise falls: dashes, then fragments.
+        let gaps = noise(px / (scale * 9.0) + vec2(seed * 2.3 + kk * 41.0, kk * 13.0))
+        let kept = 1.0 - band(gaps, 1.0 - 0.6 * energy, 0.05) * band(energy, edge: 0.1, soft: 0.05)
+        line = max(line, e * kept * lift * (if k == 0 { 1.0 } else { 0.85 }))
+    }
+    // Flecks thrown off the line: short dashes in cells round it, sparse, each its own angle.
+    let cell = 7.0 * scale
+    let id = floor(px / cell)
+    let h = hash2(id + vec2(seed * 3.1, 7.0))
+    let centre = (id +
+        vec2(0.25 + 0.5 * hash2(id + vec2(1.0, seed)), 0.25 + 0.5 * hash2(id + vec2(seed, 2.0)))) *
+        cell
+    let turn = hash2(id + vec2(seed * 5.7, 3.0)) * 3.14159
+    let axis = vec2(cos(turn), sin(turn))
+    let rel = px - centre
+    let dash = 1.0 - band(abs(dot(rel, vec2(-axis.y, axis.x))), 0.7 * scale, 0.3 * scale)
+    let dash_len = 1.0 - band(abs(dot(rel, axis)), 2.2 * scale, 0.6 * scale)
+    var near_line = 0.0
+    for i in 0..4 {
+        let q = centre + AROUND[i] * r * 3.0
+        near_line = max(
+            near_line,
+            edge(
+                at(marks, centre, size),
+                at(marks, q, size),
+                at8(normal, centre, size).xyz * 2.0 - 1.0,
+                at8(normal, q, size).xyz * 2.0 - 1.0,
+            ),
+        )
+    }
+    let fleck = dash *
+        dash_len *
+        band(h, 1.0 - 0.5 * energy, 0.01) *
+        band(energy, edge: 0.2, soft: 0.05) *
+        band(near_line, edge: 0.3, soft: 0.1)
+    // Kinetic, the ink commits: a line is there or it isn't, no grey.
+    let committed = mix(
+        line,
+        band(line, edge: 0.45, soft: 0.08),
+        band(energy, edge: 0.3, soft: 0.1),
+    )
+    let ink_line = clamp(max(committed, fleck), 0.0, 1.0)
+    // The palette drains toward ink and paper as the energy rises past the middle: three values,
+    // and hatching in the middle one, as a page of manga.
+    var c = c0
+    let v = pow(max(luma(c0), 0.0), 0.4545)
+    let tone = band(v, edge: 0.30, soft: 0.02) * 0.5 + band(v, edge: 0.60, soft: 0.02) * 0.5
+    let hatch_q = (px.x + px.y) / (5.0 * scale) +
+        (noise(px / (scale * 60.0) + vec2(seed)) - 0.5) * 0.4
+    let hatch = band(abs(fract(hatch_q) - 0.5), edge: 0.32, soft: 0.06)
+    let mid = mix(INK * 1.4, PAPER * 0.92, hatch)
+    let bw = if tone < 0.25 { mix(INK * 1.4, mid, tone * 4.0) } else {
+        mix(mid, PAPER, clamp(tone * 2.0 - 1.0, 0.0, 1.0))
+    }
+    // The frame's own level alone drains it: a pixel's local fray never takes the colour.
+    c = mix(c, bw, band(s.kinetic, edge: 0.62, soft: 0.22))
+    // The ink, warmer and thinner far off (what the first pass weighed), dark near.
+    // Quiet, the ink is the form's own colour, deepened: it sits on the 3D form, not over it.
+    // Kinetic, it turns to ink.
+    let ink_c = mix(c * c * 0.45, INK * 0.7, band(energy, edge: 0.25, soft: 0.15))
+    c = mix(c, ink_c, ink_line)
+    // The paper: its tooth and fibres, and a vignette as a page's edge darkens.
+    let tooth = noise(px / (1.3 * scale)) * 0.6 + noise(px / (6.0 * scale)) * 0.4
+    c *= 0.975 + 0.035 * tooth
+    let uv = px / size - vec2(0.5)
+    c *= 1.0 - 0.18 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
+    vec4(c, 1.0)
+}
+
+/// A linear colour for the screen: a soft shoulder, then sRGB's curve.
+fn display(c: vec3) -> vec3 {
+    let x = c / (vec3(1.0) + c * 0.12)
+    pow(max(x, vec3(0.0)), vec3(1.0 / 2.2))
+}
