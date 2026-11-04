@@ -1,0 +1,343 @@
+// An island a party shares: a room (`std::net`) named `island-<id>`, whose peers walk and place
+// marks. What the party does in a visit is the room's log; what the island keeps between visits,
+// its marks, is the store's, under `island/<room>`, in a versioned save that outlives a build. A
+// room's journal is its build's alone, so after a deploy the new build's room starts with an empty
+// journal: it reads the save first, holding its peers' events until the store answers, then
+// starts its log from the save.
+//
+// What crosses the network is decisions (`Act`), and what's written is outcomes: the save is put
+// only when a mark is placed, never for a step.
+
+use std::input::{Event, events, payload}
+use std::io::Pending
+use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
+use std::net::{carry_out, compact, room}
+use std::pack::{Pack, pack, unpack}
+use std::store
+
+/// The save's format: its first byte. A save of another version is read by a migration, or the
+/// island starts empty.
+pub const SAVE_VERSION: u8 = 1
+/// The most marks an island holds.
+pub const MAX_MARKS: u32 = 256
+/// The longest step a peer takes in one decision, each way.
+pub const MAX_STEP: i32 = 8
+
+// Why the island refuses a decision.
+/// A step longer than `MAX_STEP`.
+pub const TOO_FAR: u32 = 1
+/// A mark past `MAX_MARKS`.
+pub const FULL: u32 = 2
+
+/// A peer on the island, and where it stands.
+pub struct Body: Clone + Pack {
+    pub peer: u32,
+    pub x: i32,
+    pub z: i32,
+}
+
+/// A mark a peer placed: what the island keeps.
+pub struct Mark: Clone + Pack {
+    pub by: u32,
+    pub x: i32,
+    pub z: i32,
+}
+
+/// The island in a visit: who's here (for this visit only) and its marks (kept).
+pub struct Island: Clone + Pack {
+    pub bodies: Vec<Body>,
+    pub marks: Vec<Mark>,
+}
+
+/// A peer's decision.
+pub enum Act: Clone + Pack {
+    /// Walk by (`dx`, `dz`).
+    Step { dx: i32, dz: i32 },
+    /// Place a mark where it stands.
+    Place,
+}
+
+impl Island {
+    pub fn empty() -> Island {
+        Island { bodies: Vec::new(), marks: Vec::new() }
+    }
+
+    fn body_at(self, peer: u32) -> Option<u32> {
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].peer == peer {
+                return Some(i)
+            }
+        }
+        None
+    }
+}
+
+impl Reduce<Act> for Island {
+    fn check(self, entry: Entry<Act>) -> Verdict {
+        match entry.value {
+            Act::Step { dx, dz } => {
+                if dx < -MAX_STEP || dx > MAX_STEP || dz < -MAX_STEP || dz > MAX_STEP {
+                    Verdict::Reject(TOO_FAR)
+                } else {
+                    Verdict::Accept
+                }
+            },
+            Act::Place => if self.marks.len() >= MAX_MARKS { Verdict::Reject(FULL) } else {
+                Verdict::Accept
+            },
+        }
+    }
+
+    fn apply(mut self, entry: Entry<Act>) {
+        let peer = entry.id.peer
+        var i = self.bodies.len()
+        if let Some(k) = self.body_at(peer) {
+            i = k
+        } else {
+            self.bodies.push(Body { peer, x: 0, z: 0 })
+        }
+        match entry.value {
+            Act::Step { dx, dz } => {
+                self.bodies[i].x += dx
+                self.bodies[i].z += dz
+            },
+            Act::Place => {
+                let x = self.bodies[i].x
+                let z = self.bodies[i].z
+                self.marks.push(Mark { by: peer, x, z })
+            },
+        }
+    }
+}
+
+/// What the store keeps of an island: its marks.
+pub struct Save: Clone + Pack {
+    pub marks: Vec<Mark>,
+}
+
+/// The island's save: `SAVE_VERSION`, then its marks packed.
+pub fn save_bytes(island: Island) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    out.push(SAVE_VERSION)
+    for b in pack(Save { marks: island.marks.clone() }) {
+        out.push(b)
+    }
+    out
+}
+
+/// The island a save holds, with no one on it: empty for none, or a save it can't read.
+pub fn load(bytes: Option<Vec<u8>>) -> Island {
+    let Some(b) = bytes else { return Island::empty() }
+    if b.len() == 0 || b[0] != SAVE_VERSION {
+        return Island::empty()
+    }
+    var rest: Vec<u8> = Vec::with_capacity(b.len() - 1)
+    for i in 1..b.len() {
+        rest.push(b[i])
+    }
+    match unpack::<Save>(take rest) {
+        Ok(s) => Island { bodies: Vec::new(), marks: s.marks.clone() },
+        Err(_) => Island::empty(),
+    }
+}
+
+/// The island's key in the store: `island/` and the room's name.
+pub fn key_of(name: str) -> Vec<u8> {
+    var k: Vec<u8> = Vec::new()
+    let prefix = "island/"
+    for i in 0..prefix.len() {
+        k.push(prefix.byte(i))
+    }
+    for i in 0..name.len() {
+        k.push(name.byte(i))
+    }
+    k
+}
+
+// ---- the server ---------------------------------------------------------------------------------
+
+/// An event held while the island's save is read.
+enum Held: Clone {
+    Opened { conn: u32, tag: u32 },
+    Closed { conn: u32 },
+    Message { conn: u32, bytes: Vec<u8> },
+}
+
+/// Not started: no journal read back, no save asked for.
+const FRESH: u32 = 0
+/// The save is asked for; events wait.
+const LOADING: u32 = 1
+/// The log is running.
+const LIVE: u32 = 2
+
+/// The island's server: its room, and where it is in starting.
+pub struct Server {
+    phase: u32,
+    /// The save's read, while `LOADING` (one at most).
+    asked: Vec<Pending<u8>>,
+    held: Vec<Held>,
+    room: Room<Island, Act>,
+    /// How many marks the store's save holds.
+    saved: u32,
+    /// Whether this call read the journal back: its marks are saved already.
+    replayed: bool,
+}
+
+impl Server {
+    pub fn new() -> Server {
+        Server {
+            phase: FRESH,
+            asked: Vec::new(),
+            held: Vec::new(),
+            room: Room::new(Island::empty()),
+            saved: 0,
+            replayed: false,
+        }
+    }
+
+    /// The island's state, its log applied.
+    pub fn island(self) -> borrow Island {
+        self.room.state()
+    }
+
+    /// An event: taken by the room once it's live, held before.
+    fn arrive(mut self, h: take Held, at: u64) {
+        if self.phase == FRESH {
+            self.phase = LOADING
+            self.asked.push(store::get(key_of(room().as_str())))
+        }
+        if self.phase == LOADING {
+            self.held.push(take h)
+        } else {
+            self.feed(take h, at)
+        }
+    }
+
+    fn feed(mut self, h: take Held, at: u64) {
+        match take h {
+            Held::Opened { conn, tag } => self.room.opened(conn, tag),
+            Held::Closed { conn } => self.room.closed(conn),
+            Held::Message { conn, bytes } => {
+                if conn >= POISONED {
+                    carry_out(self.room.poisoned(conn - POISONED, take bytes))
+                } else {
+                    carry_out(self.room.receive(conn, take bytes, at))
+                }
+            },
+        }
+    }
+
+    /// The save's answer, if it came: the log starts from the island it holds, kept as the
+    /// journal's first record, and the held events go to the room. A failed read asks again.
+    fn loaded(mut self, at: u64) {
+        if self.phase != LOADING {
+            return
+        }
+        let Some(answer) = self.asked[0].poll() else { return }
+        self.asked.clear()
+        let Ok(bytes) = answer else {
+            self.asked.push(store::get(key_of(room().as_str())))
+            return
+        }
+        let island = load(store::value(bytes))
+        self.saved = island.marks.len()
+        // Entry 1 is the save: a peer with less of the log is sent the state.
+        let start: Record<Island, Act> = Record::Snapshot {
+            seq: 1,
+            state: island,
+            peers: Vec::new(),
+            next_peer: 1,
+        }
+        var fresh = Room::new(Island::empty())
+        fresh.restore(start.clone())
+        compact(pack(start))
+        self.room = take fresh
+        self.phase = LIVE
+        let held = replace(mut self.held, Vec::new())
+        for h in held {
+            self.feed(h.clone(), at)
+        }
+    }
+
+    /// The save put again once the marks changed: an outcome, so it's written with the call's
+    /// records.
+    fn checkpoint(mut self) {
+        let n = self.room.state().marks.len()
+        if self.replayed {
+            self.saved = n
+            self.replayed = false
+            return
+        }
+        if n != self.saved {
+            store::put(key_of(room().as_str()), save_bytes(self.room.state()))
+            self.saved = n
+        }
+    }
+}
+
+pub fn serve_init() -> Server {
+    Server::new()
+}
+
+pub fn serve(s: mut Server, time: f32) {
+    let at = u64(time * 1000.0)
+    s.loaded(at)
+    for e in events() {
+        match e {
+            Event::Message { conn, .. } => {
+                let Some(bytes) = payload(e) else { continue }
+                if conn == JOURNAL {
+                    // The room started again on this build: its journal is the island.
+                    s.phase = LIVE
+                    s.replayed = true
+                    match unpack::<Record<Island, Act>>(take bytes) {
+                        Ok(r) => s.room.restore(r),
+                        Err(_) => panic("a journal record this program can't read"),
+                    }
+                } else {
+                    s.arrive(Held::Message { conn, bytes }, at)
+                }
+            },
+            Event::Connection { conn, open, tag } => {
+                if open {
+                    s.arrive(Held::Opened { conn, tag }, at)
+                } else {
+                    s.arrive(Held::Closed { conn }, at)
+                }
+            },
+            _ => {},
+        }
+    }
+    if s.phase == LIVE {
+        s.checkpoint()
+        if s.room.since_snapshot() > COMPACT_AFTER {
+            compact(pack(s.room.compact()))
+        }
+    }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+@test
+fn a_save_reads_back_as_the_same_marks() {
+    var island = Island::empty()
+    island.marks.push(Mark { by: 1, x: 3, z: -4 })
+    island.marks.push(Mark { by: 2, x: 0, z: 9 })
+    island.bodies.push(Body { peer: 1, x: 3, z: -4 })
+    let back = load(Some(save_bytes(island)))
+    assert(back.marks.len() == 2 && back.marks[0].z == -4 && back.marks[1].by == 2)
+    assert(back.bodies.len() == 0, "who was here isn't kept")
+}
+
+@test
+fn a_save_of_another_version_or_none_starts_empty() {
+    assert(load(None).marks.len() == 0)
+    assert(load(Some(Vec::from([9, 1, 2]))).marks.len() == 0)
+    assert(load(Some(Vec::from([SAVE_VERSION, 255, 255, 255]))).marks.len() == 0)
+}
+
+@test
+fn the_key_is_the_rooms_name_under_island() {
+    let k = key_of("island-a")
+    assert(k.len() == 15 && k[0] == 105 && k[6] == 47 && k[14] == 97)
+}

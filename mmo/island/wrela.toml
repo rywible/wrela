@@ -1,0 +1,5 @@
+# The island prototype's server: one island a party shares, as a room (language.md §19), whose
+# lasting state is kept in the store so it outlives a deploy. A server build only, for now: its
+# peers in the tests speak `std::net`'s protocol directly.
+[package]
+name = "island"
