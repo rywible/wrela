@@ -550,7 +550,13 @@ fn cel(
     let flat = normalize(vec3(v.x, 0.0, v.z) + vec3(1.0e-5, 0.0, 0.0))
     let behind_by = max(-dot(l, flat), 0.0) * key
     let k = normalize(l + flat * (2.0 * behind_by))
-    let t = smoothstep(0.0, 0.03, dot(n, k)) * mix(sun, 1.0, min(behind_by * 2.0, 1.0))
+    // Two bands: the terminator's and the shadow's edges each stepped (a shadow map's soft edge,
+    // multiplied in, washed a band into a gradient).
+    let t = smoothstep(
+        0.4,
+        0.6,
+        smoothstep(0.0, 0.03, dot(n, k)) * mix(sun, 1.0, min(behind_by * 2.0, 1.0)),
+    )
     let lit = light.sun_colour * 0.75 + open * 0.5
     let dark = vec3(0.36, 0.40, 0.54) * shade * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
     let facing = dot(n, v)
