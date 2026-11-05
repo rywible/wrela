@@ -90,8 +90,8 @@ pub fn wanted(b: Boss, walked: f32, time: f32) -> Stance {
     }
     let a = ATTACKS[b.attack]
     // How far through the windup (0 to 1), and through the recovery.
-    let wound = if b.act == WINDUP && a.windup > 0 {
-        1.0 - f32(b.timer) / f32(a.windup)
+    let wound = if b.act == WINDUP && b.wind > 0 {
+        1.0 - f32(b.timer) / f32(b.wind)
     } else {
         0.0
     }

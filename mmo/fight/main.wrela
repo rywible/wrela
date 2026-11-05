@@ -104,6 +104,7 @@ pub struct Game {
     word_at: f32,
     help: bool,
     replayed: Option<bool>,
+    replay: Option<Replay>,
     statics: Vec<Block>,
     verts: GpuBuffer<BodyVertex>,
     indices: GpuBuffer<u32>,
@@ -188,6 +189,7 @@ pub fn init() -> Game {
         word_at: -10.0,
         help: true,
         replayed: None,
+        replay: None,
         statics: nave(),
         verts: buffer_of(HERO.verts),
         indices: buffer_of(HERO.indices),
@@ -220,6 +222,7 @@ fn again(s: mut Game) {
     s.fell_at = None
     s.won_at = None
     s.replayed = None
+    s.replay = None
     s.bot = Bot::new(skill: 92, seed: s.bot.input ^ 977)
 }
 
@@ -249,31 +252,50 @@ fn key_bit(key: Key) -> u32 {
     } else if key == Key::Down { C_DOWN } else { 0 }
 }
 
+/// Whether a press now starts the fight again: a moment after a death (the press isn't also a
+/// move), or after a win.
+fn ready_again(s: Game, time: f32) -> bool {
+    match s.fell_at {
+        Some(t) => return time - t > 1.2,
+        None => {},
+    }
+    match s.won_at {
+        Some(t) => time - t > 1.5,
+        None => false,
+    }
+}
+
 /// The player's events: held keys, presses flipped into the buttons, the pad, the lock.
 fn read_input(s: mut Game, time: f32) {
     for e in events() {
         match e {
             Event::KeyDown { key, repeat, .. } => {
                 s.held = s.held | key_bit(key)
-                if !repeat {
+                if !repeat && ready_again(s, time) {
+                    again(mut s)
+                } else if !repeat {
                     if key == Key::J { flip(mut s, JAB) }
                     if key == Key::K { flip(mut s, HEAVY) }
                     if key == Key::L || key == Key::Q { flip(mut s, PARRY) }
                     if key == Key::Space { flip(mut s, DODGE) }
                     if key == Key::Tab || key == Key::R { s.locked = !s.locked }
                     if key == Key::H { s.help = !s.help }
-                    if key == Key::Enter && s.won_at.is_some() { again(mut s) }
-                    if s.fell_at.is_some() && time - s.fell_at.unwrap() > 1.2 { again(mut s) }
                 }
             },
             Event::KeyUp { key, .. } => s.held = s.held & !key_bit(key),
             Event::PointerDown { button, .. } => {
+                if ready_again(s, time) {
+                    again(mut s)
+                    continue
+                }
                 if button == Button::Primary { flip(mut s, JAB) }
                 if button == Button::Secondary { flip(mut s, HEAVY) }
                 if button == Button::Middle { s.locked = !s.locked }
             },
             Event::PadButton { button, pressed, .. } => {
-                if pressed {
+                if pressed && ready_again(s, time) {
+                    again(mut s)
+                } else if pressed {
                     if button == PadButton::West || button == PadButton::RightShoulder {
                         flip(mut s, JAB)
                     }
@@ -287,7 +309,6 @@ fn read_input(s: mut Game, time: f32) {
                         flip(mut s, DODGE)
                     }
                     if button == PadButton::RightStick { s.locked = !s.locked }
-                    if button == PadButton::Start && s.won_at.is_some() { again(mut s) }
                 }
             },
             Event::PadAxis { axis, value, .. } => {
@@ -314,7 +335,8 @@ fn input_now(s: Game) -> u32 {
     var stick: u32 = 0
     if m > 0.2 {
         let fwd = vec3(sin(s.cam_yaw), 0.0, cos(s.cam_yaw))
-        let right = vec3(-fwd.z, 0.0, fwd.x) * -1.0
+        // The screen's right: forward across up (engine::view's camera).
+        let right = vec3(-fwd.z, 0.0, fwd.x)
         let d = fwd * y + right * x
         let h = heading_of(i32(d.x * 4096.0), i32(d.z * 4096.0))
         let keys = s.held & (K_UP | K_DOWN | K_LEFT | K_RIGHT) != 0
@@ -345,6 +367,44 @@ fn act_for(a: sim::Player, b: sim::Player) -> u32 {
     none
 }
 
+/// A fight's log being played again from its start, to check it gives the same fight: where it
+/// is, and the next change to take.
+struct Replay: Copy {
+    world: World,
+    at: u32,
+    input: u32,
+}
+
+/// Steps of a replay a frame: a ten-minute fight checks in a few seconds without a stall.
+const REPLAY_STEPS: u32 = 4000
+
+/// The replay stepped on a slice, and when it ends, whether it matched (`sim::run`'s loop).
+fn replaying(s: mut Game) {
+    var r = match s.replay {
+        Some(r) => r,
+        None => return,
+    }
+    var k: u32 = 0
+    while !r.world.over && k < REPLAY_STEPS {
+        while r.at < s.log.len() && s.log[r.at].frame <= r.world.steps {
+            r.input = s.log[r.at].input
+            r.at += 1
+        }
+        step(mut r.world, r.input)
+        k += 1
+    }
+    if r.world.over {
+        let w = s.world
+        s.replayed = Some(r.world == w)
+        s.replay = None
+        print(
+            f"fight over: {if w.winner == Winner::Player { "won" } else { "fell" }} at {f32(w.frame) / 60.0:.1} s, Idol at {w.boss.hp}; {s.log.len()} changes, replay {if s.replayed == Some(true) { "matches" } else { "DIFFERS" }}",
+        )
+    } else {
+        s.replay = Some(r)
+    }
+}
+
 /// The rules stepped on to `time`, as many 60ths of a second as have passed.
 fn advance(s: mut Game, time: f32, dt: f32) {
     s.since += dt
@@ -356,7 +416,7 @@ fn advance(s: mut Game, time: f32, dt: f32) {
             continue
         }
         let input = if DEMO == 1 { play(mut s.bot, s.world) } else { input_now(s) }
-        if input != s.input || s.log.is_empty() {
+        if input != s.input {
             s.log.push(Change { frame: s.world.steps, input })
             s.input = input
         }
@@ -390,23 +450,25 @@ fn advance(s: mut Game, time: f32, dt: f32) {
             s.shake = max(s.shake, 0.7)
         }
         if w.over {
-            if w.winner == Winner::Boss {
-                s.fell_at = Some(time)
-                s.deaths += 1
-            } else {
+            if w.winner == Winner::Player {
                 s.won_at = Some(time)
                 say(mut s, "IDOL FELLED", time)
+            } else {
+                // Dead, or out of time (ten minutes): back to the doors either way.
+                s.fell_at = Some(time)
+                s.deaths += 1
+                if w.winner == Winner::Draw {
+                    say(mut s, "OUT OF TIME", time)
+                }
             }
-            let (winner, frames, _) = run(s.log)
-            s.replayed = Some(winner == w.winner && frames == w.frame)
-            print(
-                f"fight over: {if w.winner == Winner::Player { "won" } else { "died" }} at {f32(w.frame) / 60.0:.1} s, Idol at {w.boss.hp}; {s.log.len()} changes, replay {if s.replayed == Some(true) { "matches" } else { "DIFFERS" }}",
-            )
+            // The log is played again over the next frames, a slice at a time.
+            s.replay = Some(Replay { world: World::start(), at: 0, input: 0 })
         }
     }
     if n == MOST_STEPS {
         s.since = 0.0
     }
+    replaying(mut s)
 }
 
 fn say(s: mut Game, word: str, time: f32) {
@@ -472,9 +534,9 @@ fn camera_goal(s: mut Game, dt: f32) -> (vec3, vec3) {
     let w = s.world
     let hero = s.mover.place
     let boss = vec3(f32(w.boss.x) / 256.0, 0.0, f32(w.boss.z) / 256.0)
-    var turn = s.pad_cam.x * 2.6
-    if s.held & C_LEFT != 0 { turn -= 2.2 }
-    if s.held & C_RIGHT != 0 { turn += 2.2 }
+    var turn = -s.pad_cam.x * 2.6
+    if s.held & C_LEFT != 0 { turn += 2.2 }
+    if s.held & C_RIGHT != 0 { turn -= 2.2 }
     var tilt = s.pad_cam.y * 1.4
     if s.held & C_UP != 0 { tilt -= 1.0 }
     if s.held & C_DOWN != 0 { tilt += 1.0 }
@@ -492,8 +554,8 @@ fn camera_goal(s: mut Game, dt: f32) -> (vec3, vec3) {
         if p.moved > 8 && abs(turn) < 0.01 {
             let goal = s.mover.heading
             let d = wrapped(goal - s.cam_yaw)
-            if abs(d) < 2.3 {
-                s.cam_yaw = wrapped(s.cam_yaw + d * (1.0 - exp2(-dt / 1.2)))
+            if abs(d) < 1.2 {
+                s.cam_yaw = wrapped(s.cam_yaw + d * (1.0 - exp2(-dt / 2.5)))
             }
         }
     }
@@ -594,8 +656,7 @@ pub fn frame(s: mut Game, time: f32, width: u32, height: u32) {
     }
     var mark = vec4(0.0)
     if w.boss.act == WINDUP && w.boss.attack == SLAM {
-        let a = sim::ATTACKS[SLAM]
-        let wound = 1.0 - f32(w.boss.timer) / f32(a.windup)
+        let wound = 1.0 - f32(w.boss.timer) / f32(max(w.boss.wind, 1))
         mark = vec4(
             f32(w.boss.at_x) / 256.0,
             f32(w.boss.at_z) / 256.0,

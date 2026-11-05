@@ -46,7 +46,7 @@ pub const HALF_LENGTH: i32 = 30 * 256
 pub const PLAYER_HP: i32 = 100
 /// Stamina, in quarters (400 is 100).
 pub const STAMINA: i32 = 400
-pub const BOSS_HP: i32 = 1400
+pub const BOSS_HP: i32 = 1250
 pub const BOSS_POISE: i32 = 130
 
 // The player's moves, in frames. A jab: quick, cheap, chained up to three; a heavy: slow, a lunge,
@@ -240,6 +240,8 @@ pub struct Boss: Copy + Eq {
     pub act: u32,
     pub timer: u32,
     pub attack: u32,
+    /// How long this windup is (a chained attack's is shorter): its tell's whole.
+    pub wind: u32,
     pub landed: bool,
     pub at_x: i32,
     pub at_z: i32,
@@ -438,6 +440,7 @@ impl World {
                 act: IDLE,
                 timer: 0,
                 attack: 0,
+                wind: 0,
                 landed: false,
                 at_x: 0,
                 at_z: 0,
@@ -551,7 +554,8 @@ fn free_for(p: Player, press: u32) -> bool {
     if press == DODGE {
         return into >= DODGE_CANCEL || (p.move_ == MOVE_JAB && into >= JAB_CHAIN)
     }
-    p.move_ == MOVE_JAB && (press == JAB || press == HEAVY) && into >= JAB_CHAIN
+    // A jab chains into the next of three, or into a heavy; the third waits to finish.
+    p.move_ == MOVE_JAB && into >= JAB_CHAIN && (press == HEAVY || (press == JAB && p.chain < 2))
 }
 
 /// The press it acts on: this frame's, or the one it's held, the newest first and dodge before
@@ -630,7 +634,7 @@ fn step_player(w: mut World, input: u32, pressed_now: u32) {
     // A new move, if it's free to start one and has stamina left (any left: a move may spend it
     // all, as Elden Ring's do).
     if press != 0 && free_for(p, press) && p.stamina > 0 {
-        let chained = p.act == RECOVER && p.move_ == MOVE_JAB && press == JAB
+        let chained = p.act == RECOVER && p.move_ == MOVE_JAB && press == JAB && p.chain < 2
         p.buffered = 0
         // A move aims: at the Idol's nearest part within reach of aiming, when locked on or when
         // the stick isn't asking elsewhere.
@@ -651,7 +655,7 @@ fn step_player(w: mut World, input: u32, pressed_now: u32) {
             p.act = WINDUP
             p.move_ = MOVE_JAB
             p.timer = if chained { JAB_WINDUP - 1 } else { JAB_WINDUP }
-            p.chain = if chained { (p.chain + 1) % 3 } else { 0 }
+            p.chain = if chained { p.chain + 1 } else { 0 }
             p.landed = false
         } else if press == HEAVY {
             p.stamina -= HEAVY_COST
@@ -826,6 +830,7 @@ fn begin(b: mut Boss, attack: u32) {
     b.act = WINDUP
     b.attack = attack
     b.timer = ATTACKS[attack].windup
+    b.wind = b.timer
     b.landed = false
 }
 
@@ -926,7 +931,7 @@ fn step_boss(w: mut World) {
         // It tracks the player over the first half of its windup, then it's committed.
         let p = w.player
         let to = heading_of(p.x - b.x, p.z - b.z)
-        if b.timer * 2 > attack.windup {
+        if b.timer * 2 > b.wind {
             b.facing = turned(b.facing, to, BOSS_TRACK)
         }
         if b.attack == SLAM {
@@ -951,7 +956,7 @@ fn step_boss(w: mut World) {
                     b.timer = REEL_FRAMES
                     b.combo = 0
                     w.parried_at = w.frame
-                    w.stop = STOP_HEAVY
+                    w.stop = max(w.stop, STOP_HEAVY)
                     // A parry that lands frees the player at once, its stamina partly back.
                     p.stamina = min(p.stamina + 80, STAMINA)
                     p.act = IDLE
@@ -976,7 +981,7 @@ fn step_boss(w: mut World) {
                 p.vx = vx
                 p.vz = vz
                 w.hurt_at = w.frame
-                w.stop = STOP_HURT
+                w.stop = max(w.stop, STOP_HURT)
                 w.player = p
             }
         }
@@ -1011,6 +1016,7 @@ fn step_boss(w: mut World) {
             }
             begin(mut b, next)
             b.timer = ATTACKS[next].windup * 2 / 3
+            b.wind = b.timer
         } else {
             b.act = IDLE
             b.combo = 0

@@ -173,3 +173,33 @@ fn jabs_wear_its_poise_until_it_kneels() {
     }
     assert(knelt, "blows to its shins never broke its poise")
 }
+
+@test
+fn jabs_chain_three_and_no_more() {
+    var w = World::start()
+    w.boss.rest = 100000
+    var input: u32 = 0
+    var starts = 0
+    var last = w.player
+    // Jab as fast as the keys allow, for a second: three in a chain, then a wait for the third
+    // to finish before the next starts.
+    for k in 0..60 {
+        if k % 2 == 0 {
+            input = input ^ JAB
+        }
+        w.boss.rest = 100000
+        step(mut w, input)
+        let p = w.player
+        if p.act == WINDUP && (last.act != WINDUP || p.chain != last.chain) {
+            starts += 1
+            if starts == 4 {
+                assert(
+                    p.chain == 0 && (last.act == IDLE || last.timer <= 1),
+                    f"a fourth jab chained (chain {p.chain})",
+                )
+            }
+        }
+        last = p
+    }
+    assert(starts >= 4, f"only {starts} jabs in a second")
+}
