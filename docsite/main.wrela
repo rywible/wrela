@@ -1150,7 +1150,7 @@ fn topic_title(t: u32) -> String {
 fn topic_modules(t: u32) -> String {
     String::from(match t {
         0 => "air cook frame light lit lod impostor paint plain probes shadow shafts sheet shot sky sprite temporal view",
-        1 => "character creature gait look physique realize",
+        1 => "bvh character cleanup creature gait gltf humanoid look physique realize review stride",
         2 => "grass loft plant stone sweep vegetation",
         3 => "terrain water wood",
         4 => "history noise present rng run sim spatial timeline",

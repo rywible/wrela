@@ -835,7 +835,7 @@ impl Take {
         var out = self.cut(a, b)
         // Its last frames eased into the frames that lead into its first, so the seam meets in
         // motion as well as in pose: at the end it moves as it moved into the start.
-        let k = min(a, SEAM_EASE)
+        let k = min(min(a, SEAM_EASE), b - a)
         let n = self.joints.len()
         let on = self.hips[b] - self.hips[a]
         for i in 1..k + 1 {
@@ -964,16 +964,31 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
     }
     let ground = t_pos[bone("leftFoot")].y - k * low
     let start = vec3(first[hips].t.x, 0.0, first[hips].t.z)
-    // The neck's and head's mean turns from rest, taken off each frame's (`Retarget::carried`).
+    // The neck's and head's mean turns from rest, taken off each frame's (`Retarget::carried`):
+    // each frame's about the way the body faces then (its travel, for a take turned to face
+    // ahead; else its hips', which a take that turns turns with), so where it faces isn't taken
+    // for how the neck's carried.
     var carry = [Quat::identity(); 55]
     if how.carried {
+        let (lu, ru) = (src.of[bone("leftUpperLeg")], src.of[bone("rightUpperLeg")])
+        let across = if lu != NONE && ru != NONE { sw[lu].t - sw[ru].t } else { vec3(0.0) }
+        let by_hips = !how.face_ahead && length(vec2(across.x, across.z)) > 1.0e-6
         for v in [bone("neck"), bone("head")] {
             let j = src.of[v]
             if j != NONE {
                 var sum = vec4(0.0)
                 var first_v = vec4(0.0)
                 for f in 0..src.frames {
-                    let d = yaw.mul(src.world(f)[j].q).mul(sw[j].q.inverse()).v
+                    let w = src.world(f)
+                    var faces = Quat::identity()
+                    if by_hips {
+                        let l = w[hips].q.mul(sw[hips].q.inverse()).rotate(across)
+                        faces = Quat::axis_angle(
+                            vec3(0.0, 1.0, 0.0),
+                            atan2(l.x, l.z) - atan2(across.x, across.z),
+                        )
+                    }
+                    let d = faces.inverse().mul(yaw.mul(w[j].q).mul(sw[j].q.inverse())).v
                     if f == 0 {
                         first_v = d
                     }

@@ -189,16 +189,6 @@ impl Glb {
         out
     }
 
-    /// The node named `name`, or `NONE`.
-    pub fn find(self, nodes: [Node], name: str) -> u32 {
-        for i in 0..nodes.len() {
-            if nodes[i].name.as_str() == name {
-                return i
-            }
-        }
-        NONE
-    }
-
     /// How many elements accessor `a` has, and how many components each.
     pub fn shape(self, a: u32) -> (u32, u32) {
         let j = self.item("accessors", a)
@@ -354,30 +344,6 @@ impl Glb {
         }
         out
     }
-}
-
-impl Node {
-    /// Its transform at rest: T · R · S.
-    pub fn matrix(self) -> mat4 {
-        trs(self.t, self.r, self.s)
-    }
-}
-
-/// The transform translating by `t`, turning by `r` and scaling by `s`, applied scale first.
-pub fn trs(t: vec3, r: Quat, s: vec3) -> mat4 {
-    let m = r.to_mat3()
-    mat4(vec4(m[0] * s.x, 0.0), vec4(m[1] * s.y, 0.0), vec4(m[2] * s.z, 0.0), vec4(t, 1.0))
-}
-
-/// Node `i`'s transform at rest in the scene: its own after each of its ancestors'.
-pub fn global(nodes: [Node], i: u32) -> mat4 {
-    var m = nodes[i].matrix()
-    var p = nodes[i].parent
-    while p != NONE {
-        m = nodes[p].matrix() * m
-        p = nodes[p].parent
-    }
-    m
 }
 
 /// A track's value at time `t` (s): `n` floats (3 or 4), held before its first key and after

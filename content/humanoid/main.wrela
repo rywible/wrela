@@ -17,6 +17,7 @@ use engine::cleanup::Cleanup
 use engine::humanoid
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
 use engine::review::review
+use engine::stride
 use ink::ink
 use look::{Shot, shot_at}
 use paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
@@ -297,6 +298,29 @@ fn the_review_sends_the_rest_for_a_look() {
     let r = HERO.rig.clone()
     flags("the walking turns", TURNS.clone(), r.clone(), "the body hops")
     flags("the jog", JOG.clone(), r, "the steps are too long")
+}
+
+/// A take that turns as it goes keeps its head on its body: the neck's carriage (the take's
+/// mean neck and head, `Retarget::carried`) is taken about the way the body faces each frame,
+/// not the room's, so the head faces with the chest on average (looking into each turn).
+@test
+fn the_turns_keep_the_head_with_the_body() {
+    let rig = HERO.rig.clone()
+    let rw = rig.rest_world()
+    let (head, chest) = (rig.find("head"), rig.find("upperChest"))
+    let ahead = |w: [humanoid::Rigid], b: u32| -> f32 {
+        let d = w[b].q.mul(rw[b].q.inverse()).rotate(vec3(0.0, 0.0, 1.0))
+        atan2(d.x, d.z)
+    }
+    var sum = 0.0
+    for f in 0..TURNS.frames {
+        let w = stride::worlds(rig.clone(), TURNS.clone(), f)
+        var off = ahead(w.clone(), head) - ahead(w, chest)
+        off -= 6.2831853 * floor((off + 3.14159265) / 6.2831853)
+        sum += off
+    }
+    let mean = sum / f32(TURNS.frames) * 57.29578
+    assert(abs(mean) < 5.0, f"the walking turns' head faces {mean:.1}° off the chest on average")
 }
 
 /// That a clip's review flags nothing.

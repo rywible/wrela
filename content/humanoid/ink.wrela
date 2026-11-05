@@ -1,10 +1,10 @@
-// The second pass: the ink and the paper, the opening style test's (Kinetic Ink), reading this
-// scene's targets: the backdrop and the ground in place of its sky and sea. A line is drawn where what the first pass wrote changes
-// between a pixel and its neighbours (what the ray met, how far, the normal's turn, the line
-// field's sign), a hand's width that wobbles and boils from drawing to drawing. Where the moment is
-// kinetic (the frame's `Shot::kinetic`, or a pixel's own: the bow's cut, the skiff's slap) the
-// lines fray: they break into strands, throw off static, and the palette drains toward black
-// and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
+// The second pass: the ink and the paper (the Kinetic Ink look), reading this scene's targets:
+// the backdrop and the ground. A line is drawn where what the first pass wrote changes between a
+// pixel and its neighbours (what the ray met, how far, the normal's turn, the line field's sign),
+// a hand's width that wobbles and boils from drawing to drawing. Where the moment is kinetic (the
+// frame's `Shot::kinetic`, or a pixel's own) the lines fray: they break into strands, throw off
+// static, and the palette drains toward black and white. Quiet, it's a painting with ink; at the
+// edges of a violent thing, chaos.
 
 use look::{BACKDROP, GROUND, INK, PAPER, Shot, band, hash2, luma, noise}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
@@ -40,7 +40,7 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
     if a.y > GROUND + 0.5 {
         e = max(e, band(1.0 - dot(na, nb), edge: 0.30, soft: 0.08) * 0.8 * near.w)
     }
-    // The line field's zero: crests, strata, seams.
+    // The line field's zero: seams.
     if (a.z < 0.0) != (b.z < 0.0) {
         e = max(e, 0.7 * near.w)
     }

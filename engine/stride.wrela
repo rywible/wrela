@@ -286,7 +286,7 @@ fn knee_pushes(since: f32, how: Gait) -> f32 {
 /// touched down (of a cycle), its toe leaving at `leaves`: from `HEEL_RISES`, slowly at first
 /// (`RISE_EARLY` of the way), then quickly as the toe's about to leave, to `RISE_TO`.
 fn heel_rise(since: f32, leaves: f32) -> f32 {
-    let t = clamp((since - HEEL_RISES) / (leaves - HEEL_RISES), 0.0, 1.0)
+    let t = clamp((since - HEEL_RISES) / max(leaves - HEEL_RISES, 1.0e-3), 0.0, 1.0)
     let t3 = t * t * t
     RISE_TO * DEG * (RISE_EARLY * t * sqrt(t) + (1.0 - RISE_EARLY) * t3 * t3)
 }
@@ -718,6 +718,7 @@ fn arm_of(rig: Rig, carriage: Clip, c: Chest, side: f32, spread: f32) -> Arm {
 /// `clip` (a looped walk ahead along +z, its feet not planted) made human as `how` says
 /// (this module's opening), its arms hung as `carriage` (an idle) carries them.
 pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
+    assert(clip.looped, "humanised: the walk isn't a loop")
     let nb = rig.bones.len()
     let n = clip.frames - 1
     var out = clip.clone()
@@ -1341,6 +1342,10 @@ pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
             }
         }
     }
+    assert(
+        all_touches[0].len() > 0 && all_touches[1].len() > 0,
+        "humanised: a foot never comes down",
+    )
     // The steps made even: each heel landing as far ahead of the hips as the other does (the
     // take's steps are a little uneven, which the pelvis's rise and fall would show).
     {
@@ -1772,11 +1777,15 @@ pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
         shift(mut w, vec3(0.0, -sink[f], 0.0))
         for li in 0..2 {
             let l = legs[li]
-            let hinge = rw[l.knee].q
-                .inverse()
-                .rotate(
-                    normalize(cross(rw[l.ankle].t - rw[l.knee].t, rw[l.hip].t - rw[l.knee].t)),
-                )
+            // The knee bends about the leg's own bend at rest, or (a leg straight or bent
+            // back at rest) about the body's left.
+            let bent = cross(rw[l.ankle].t - rw[l.knee].t, rw[l.hip].t - rw[l.knee].t)
+            let left = if length(bent) > 1.0e-4 && bent.x > 0.0 {
+                normalize(bent)
+            } else {
+                vec3(1.0, 0.0, 0.0)
+            }
+            let hinge = rw[l.knee].q.inverse().rotate(left)
             let goal = ankle_goal[li * n + f] -
                 vec3(0.0, sink[f] * (1.0 - fixed_by[li * n + f]), 0.0)
             let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, goal, hinge)
