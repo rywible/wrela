@@ -142,11 +142,12 @@ pub fn draw(
 ) {
     let t = if reduced { 99.0 } else if again { t0 + 1.0 } else { t0 }
     let z = |r: Rect| -> Rect { Rect::new(r.x * zoom, r.y * zoom, r.w * zoom, r.h * zoom) }
-    // The veil.
+    // The veil: from the dialog's own (black at 0.6), which it takes over, so the game never
+    // shows bare between the dialog and the name.
     let veil = if again { 1.0 } else { ease(through(t, 0.0, VEIL)) }
     d.rect(
         Rect::new(x: 0.0, y: 0.0, w: w * zoom, h: h * zoom),
-        vec4(0.02, 0.015, 0.01, 0.82 * veil),
+        vec4(0.02, 0.015, 0.01, 0.6 + 0.22 * veil),
     )
     // The ribbon: its width fits the name, and unrolls from the middle.
     let size = min(34.0, w / 22.0)

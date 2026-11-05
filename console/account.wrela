@@ -45,6 +45,8 @@ use std::http::{Header, response}
 use std::input::{Assist, Button, Event, Key, PadButton}
 use std::io::{Pending, fetch}
 use std::semantics::{Field, FieldKind, Node, Role, Sent, read_field_state}
+use ui::kit
+use ui::kit::{State, Variant}
 use std::serialize::{LoadError, load, save}
 use std::webauthn::base64url
 use ui::draw::{DrawList, Rect}
@@ -61,18 +63,21 @@ const PROMPT_MS: u32 = 300000
 const TOKEN_FRESH: f32 = 3000.0
 
 // The console's look (main.wrela's): near-white ink on near-black, quiet controls.
-const INK = vec4(0.98, 0.98, 0.98, 1.0)
-const MUTED = vec4(0.63, 0.63, 0.66, 1.0)
-const DARK = vec4(0.035, 0.035, 0.04, 1.0)
-const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
-const WARN = vec4(0.95, 0.74, 0.6, 1.0)
-const DANGER = vec4(0.86, 0.32, 0.28, 1.0)
-const BORDER = vec4(1.0, 1.0, 1.0, 0.1)
-const SECONDARY = vec4(0.15, 0.15, 0.16, 0.9)
-const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
-const RADIUS: f32 = 8.0
-const LABEL: f32 = 15.0
-const BODY: f32 = 15.0
+// The look is ui::kit's (shadcn/ui's dark theme): text, muted text, an error's words; a control's
+// corners, its label's size and the body text's; a control's height and the gap between two.
+const INK = kit::FG
+const MUTED = kit::MUTED_FG
+const WARN = kit::ERROR
+const BORDER = kit::BORDER
+const RADIUS: f32 = kit::RADIUS
+const LABEL: f32 = 14.0
+const BODY: f32 = 14.0
+const CONTROL: f32 = 36.0
+const GAP: f32 = 8.0
+/// A dialog's padding and width, and seconds it takes to fade in.
+const PAD: f32 = 24.0
+const SHEET_WIDTH: f32 = 440.0
+const OPEN_SECONDS: f32 = 0.2
 
 enum Page: Copy + Eq {
     Account,
@@ -242,6 +247,16 @@ pub struct Accounts {
     code_read: Option<Pending<u8>> = None,
     code_sent: String = String::new(),
     code_wanted: bool = false,
+    /// How each control looks: its hover eased in (by its index in `controls`), the one the
+    /// pointer pressed, and whether the keyboard moved the focus last (its ring shows only then).
+    hover: Vec<f32> = Vec::new(),
+    pressed: Option<u32> = None,
+    keyboard: bool = false,
+    /// Seconds since the frame before; how far the dialog has faded in; its height as eased
+    /// toward its page's.
+    dt: f32 = 0.0,
+    shown_t: f32 = 0.0,
+    sheet_h: f32 = 0.0,
     /// The recovery codes were downloaded: saving them is the next step.
     codes_kept: bool = false,
 }
@@ -1075,6 +1090,19 @@ fn wants_posting(a: Accounts, time: f32) -> bool {
 pub fn update(a: mut Accounts, time: f32) -> bool {
     let dt = max(time - a.time, 0.0)
     a.time = time
+    a.dt = min(dt, 0.1)
+    if a.open && a.shown_t < 1.0 {
+        a.shown_t = kit::ease(a.shown_t, 1.0, a.dt, OPEN_SECONDS)
+        a.dirty = true
+    } else if !a.open {
+        a.shown_t = 0.0
+        a.sheet_h = 0.0
+    }
+    for i in 0..a.hover.len() {
+        if a.hover[i] > 0.0 && a.hover[i] < 1.0 {
+            a.dirty = true
+        }
+    }
     // Whose session the cookie is, asked first, and again while the server can't be reached.
     if a.online && !a.connected && a.waiting.is_empty() && time >= a.retry_at {
         request(mut a, Request::Me, Purpose::Other)
@@ -1222,6 +1250,8 @@ fn previous_focus(a: Accounts) -> u32 {
 
 fn open_page(a: mut Accounts, page: Page) {
     a.page = page
+    a.hover.clear()
+    a.pressed = None
     // The recovery code's page has its field focused, not a button.
     a.focus = if page == Page::Recover { NO_FOCUS } else { 0 }
     if page == Page::Recover {
@@ -1297,9 +1327,9 @@ fn account_items(a: Accounts) -> Vec<(Act, Text, bool)> {
     }
     items.push((Act::Manage, "Passkeys and sessions", false))
     items.push((Act::Export, "Export my data", false))
-    items.push((Act::Delete, "Delete account", false))
     items.push((Act::SignOut, "Sign out", false))
-    items.push((Act::Close, "Close", a.codes.is_empty()))
+    // Last and set apart, where it isn't pressed for another (`stack` draws it destructive).
+    items.push((Act::Delete, "Delete account", false))
     items
 }
 
@@ -1510,6 +1540,32 @@ fn act(a: mut Accounts, x: Act) {
 /// Event `e` (positions in device pixels, `zoom` of them a logical pixel): whether the account
 /// took it, so the console doesn't.
 pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
+    if let Event::PointerDown { at, button: Button::Primary, .. } = e {
+        // Pressed: the control under it shows so until the press ends.
+        a.keyboard = false
+        a.pressed = None
+        for i in 0..a.shown.len() {
+            if a.shown[i].1.contains(at / zoom) && (a.open || a.shown[i].0 == Act::Chip) {
+                a.pressed = Some(i)
+            }
+        }
+        a.dirty = true
+        if !a.open { return a.pressed.is_some() }
+    }
+    if let Event::PointerUp { button: Button::Primary, .. } = e {
+        if a.pressed.is_some() { a.dirty = true }
+        a.pressed = None
+    }
+    if let Event::KeyDown { key, .. } = e {
+        if a.open &&
+            (key == Key::Tab ||
+                key == Key::Up ||
+                key == Key::Down ||
+                key == Key::Left ||
+                key == Key::Right) {
+            a.keyboard = true
+        }
+    }
     if !a.open {
         // Closed, the chip alone takes a click, and lights under the pointer.
         if let Event::PointerMove { at, .. } = e {
@@ -1532,7 +1588,10 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
         LENGTH
     })
     match e {
-        Event::PointerMove { at, .. } => a.pointer = Some(at / zoom),
+        Event::PointerMove { at, .. } => {
+            a.pointer = Some(at / zoom)
+            a.keyboard = false
+        },
         Event::PointerUp { at, button: Button::Primary, .. } => {
             let p = at / zoom
             for (x, r) in a.shown {
@@ -1622,6 +1681,12 @@ fn assisted(a: mut Accounts, node: u32, action: Assist) -> Option<Act> {
         return None
     }
     if action == Assist::Focus {
+        // The focus moving to another control is the keyboard's (or a screen reader's): a press
+        // doesn't move it, and a dialog that opens focuses the control already focused. Its ring
+        // shows.
+        if i != a.focus {
+            a.keyboard = true
+        }
         a.focus = i
         return None
     }
@@ -1715,8 +1780,10 @@ fn write(
     color: vec4,
     zoom: f32,
     face: Face = Face::Sans,
+    weight: f32 = -1.0,
 ) {
-    let _ = d.text(fonts, face, s, size * zoom, vec2(round(at.x * zoom), at.y * zoom), color)
+    let at = vec2(round(at.x * zoom), round(at.y * zoom))
+    let _ = d.text(fonts, face, s, size * zoom, at, color, weight: weight)
 }
 
 /// `s` broken into lines that fit `width` at `size`.
@@ -1774,32 +1841,43 @@ fn button(
     primary: bool = false,
     danger: bool = false,
     disabled: bool = false,
+    ghost: bool = false,
+    size: f32 = LABEL,
 ) {
     let index = a.controls.len()
     a.controls.push((x, r))
-    let hover = match a.pointer {
+    let loading = a.busy && a.doing == Some(x)
+    // While its request is under way, it says what's happening.
+    let label = if loading { String::from(under_way(x)) } else { String::from(label) }
+    said(mut a, Role::Button, label.as_str(), r, zoom, control: Some(index), disabled: disabled)
+    let variant = if danger && ghost { Variant::DestructiveGhost } else if danger {
+        Variant::Destructive
+    } else if primary { Variant::Primary } else if ghost {
+        Variant::Ghost
+    } else { Variant::Outline }
+    let st = look(mut a, index, r, disabled || (a.busy && !loading && sends(x)), loading)
+    kit::button(mut d, fonts, z(r, zoom), label.as_str(), variant, st, zoom, size)
+}
+
+/// How control `index` over `r` looks this frame: its hover eased toward the pointer's, pressed,
+/// focused by the keyboard, disabled or working.
+fn look(a: mut Accounts, index: u32, r: Rect, disabled: bool, loading: bool) -> State {
+    while a.hover.len() <= index {
+        a.hover.push(0.0)
+    }
+    let over = match a.pointer {
         Some(p) => r.contains(p),
         None => false,
     }
-    // While its request is under way, it says what's happening.
-    let label = if a.busy && a.doing == Some(x) { String::from(under_way(x)) } else {
-        String::from(label)
+    a.hover[index] = kit::ease(a.hover[index], if over && !a.keyboard { 1.0 } else { 0.0 }, a.dt)
+    State {
+        hover: a.hover[index],
+        pressed: a.pressed == Some(index) && over,
+        focused: a.keyboard && index == a.focus,
+        disabled,
+        loading,
+        time: a.time,
     }
-    said(mut a, Role::Button, label.as_str(), r, zoom, control: Some(index), disabled: disabled)
-    let primary = primary && !disabled
-    let fill = if danger { DANGER } else if primary { INK } else if hover && !disabled {
-        RAISED
-    } else { SECONDARY }
-    d.rect(z(r, zoom), fill, RADIUS * zoom)
-    if !primary && !danger {
-        d.ring(z(r, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
-    }
-    focus_ring(a, mut d, index, r, zoom)
-    let w = measure(fonts, label.as_str(), LABEL * zoom, Face::Sans) / zoom
-    let c = r.center()
-    let top = c.y - (fonts.font(Face::Sans).ascender - 0.36) * LABEL
-    let ink = if primary { DARK } else if disabled { MUTED } else { INK }
-    write(mut d, fonts, label.as_str(), LABEL, vec2(c.x - w * 0.5, top), ink, zoom)
 }
 
 /// Whether the pointer is over the chip, as last drawn: a hand over it, and its lighter fill.
@@ -1811,15 +1889,10 @@ pub fn over_chip(a: Accounts) -> bool {
     false
 }
 
-/// Draws the focus ring around `r` if it's the focused control, `index` in the list.
+/// Draws the focus ring around `r` if the keyboard put the focus on control `index`.
 fn focus_ring(a: Accounts, d: mut DrawList, index: u32, r: Rect, zoom: f32) {
-    if index == a.focus {
-        d.ring(
-            z(r.shrink(-3.0), zoom),
-            vec4(INK.xyz, 0.7),
-            (RADIUS + 3.0) * zoom,
-            max(round(2.0 * zoom), 1.0),
-        )
+    if a.keyboard && index == a.focus {
+        kit::focus_ring(mut d, z(r, zoom), 4.0 * zoom, zoom)
     }
 }
 
@@ -1842,21 +1915,11 @@ fn checkbox(
     a.controls.push((x, r))
     let name = if label.is_empty() { String::from(spoken) } else { String::from(label) }
     said(mut a, Role::Checkbox, name.as_str(), r, zoom, control: Some(index), checked: on)
-    let b = Rect::new(at.x, at.y + 6.0, w: 20.0, h: 20.0)
-    if on {
-        d.rect(z(b, zoom), INK, 5.0 * zoom)
-        // A tick.
-        let p = |u: f32, v: f32| -> vec2 { vec2(b.x + u * 20.0, b.y + v * 20.0) * zoom }
-        let width = max(round(2.0 * zoom), 1.0)
-        d.line(p(0.25, 0.52), p(0.43, 0.7), DARK, width)
-        d.line(p(0.43, 0.7), p(0.76, 0.3), DARK, width)
-    } else {
-        d.rect(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.06), 5.0 * zoom)
-        d.ring(z(b, zoom), vec4(1.0, 1.0, 1.0, 0.45), 5.0 * zoom, max(round(1.5 * zoom), 1.0))
-    }
-    focus_ring(a, mut d, index, Rect::new(b.x, b.y, b.w, b.h), zoom)
-    let top = at.y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY
-    write(mut d, fonts, label, BODY, vec2(at.x + 32.0, top), INK, zoom)
+    let st = look(mut a, index, r, disabled: false, loading: false)
+    let b = Rect::new(at.x, at.y + 8.0, w: 16.0, h: 16.0)
+    kit::checkbox(mut d, z(b, zoom), on, st, zoom)
+    let top = kit::centred_top(fonts, (at.y + 16.0) * zoom, BODY * zoom) / zoom
+    write(mut d, fonts, label, BODY, vec2(at.x + 28.0, top), INK, zoom, weight: kit::MEDIUM)
 }
 
 /// A link: underlined words, `label` from `at` at `size`, which act as `x`: how wide it is.
@@ -1869,22 +1932,44 @@ fn link(
     label: str,
     size: f32,
     zoom: f32,
+    inline: bool = false,
 ) -> f32 {
     let w = measure(fonts, label, size * zoom, Face::Sans) / zoom
     let r = Rect::new(at.x - 2.0, at.y - 4.0, w + 4.0, size + 10.0)
     let index = a.controls.len()
     a.controls.push((x, r))
     said(mut a, Role::Link, label, r, zoom, control: Some(index))
-    write(mut d, fonts, label, size, at, INK, zoom)
-    let base = at.y + size * 1.15
-    d.line(
-        vec2(at.x, base) * zoom,
-        vec2(at.x + w, base) * zoom,
-        vec4(INK.xyz, 0.6),
-        max(round(zoom), 1.0),
-    )
+    let st = look(mut a, index, r, disabled: false, loading: false)
+    let lit = if st.pressed { 1.0 } else { st.hover }
+    // A link in a sentence is the sentence's colour; one on its own is muted until pointed at.
+    let rest = if inline { INK } else { MUTED }
+    write(mut d, fonts, label, size, at, kit::mix(rest, INK, lit), zoom, weight: kit::MEDIUM)
+    // Underlined 4 px below the words (`underline-offset-4`), stronger under the pointer.
+    let base = round((at.y + size * 1.2) * zoom) + 0.5
+    let thick = max(round(zoom), 1.0)
+    let line = vec4(kit::mix(rest, INK, lit).xyz, 0.3 + 0.7 * lit)
+    d.line(vec2(round(at.x * zoom), base), vec2(round((at.x + w) * zoom), base), line, thick)
     focus_ring(a, mut d, index, r, zoom)
     w
+}
+
+/// The dialog's close button in its top right corner (`DialogClose`): an X, faint until the
+/// pointer is on it. Last in the focus order, as on the web.
+fn close_x(a: mut Accounts, d: mut DrawList, sheet: Rect, zoom: f32) {
+    let r = Rect::new(sheet.right() - 16.0 - 24.0, sheet.y + 16.0, w: 24.0, h: 24.0)
+    let index = a.controls.len()
+    a.controls.push((Act::Close, r))
+    said(mut a, Role::Button, "Close", r, zoom, control: Some(index))
+    let st = look(mut a, index, r, disabled: false, loading: false)
+    let zr = z(r, zoom)
+    d.rect(zr, vec4(kit::ACCENT.xyz, st.hover), 4.0 * zoom)
+    let ink = kit::mix(MUTED, INK, if st.pressed { 1.0 } else { st.hover })
+    let c = vec2(zr.x + zr.w * 0.5, zr.y + zr.h * 0.5)
+    let k = 4.5 * zoom
+    let w = max(1.5 * zoom, 1.0)
+    d.line(c + vec2(-k, -k), c + vec2(k, k), ink, w)
+    d.line(c + vec2(-k, k), c + vec2(k, -k), ink, w)
+    focus_ring(a, mut d, index, r, zoom)
 }
 
 /// A column of buttons from `y`, each the sheet's width: where it ended.
@@ -1901,28 +1986,65 @@ fn stack(
     var at = y
     for (act_of, label, primary) in items {
         let danger = act_of == Act::ConfirmDelete
-        button(mut a, mut d, fonts, act_of, Rect::new(x, at, w, 40.0), label, zoom, primary, danger)
-        at += 48.0
+        if act_of == Act::Delete {
+            // Set apart from the rest by a rule, and red only in its words (`text-destructive`).
+            at += 12.0
+            d.rect(z(Rect::new(x, at - 10.0, w, 1.0), zoom), BORDER)
+        }
+        let r = Rect::new(x, at, w, CONTROL)
+        let quiet = act_of == Act::Delete
+        button(
+            mut a,
+            mut d,
+            fonts,
+            act_of,
+            r,
+            label,
+            zoom,
+            primary,
+            danger: danger || quiet,
+            ghost: quiet,
+        )
+        at += CONTROL + GAP
     }
     at
 }
 
-/// The row of legal links at the sheet's foot.
-fn legal_row(a: mut Accounts, d: mut DrawList, fonts: Fonts, x: f32, y: f32, w: f32, zoom: f32) {
-    let gap = 8.0
-    let bw = (w - 3.0 * gap) / 4.0
+/// The row of legal links at the dialog's foot: small ghost buttons, centred. Where it ended.
+fn legal_row(
+    a: mut Accounts,
+    d: mut DrawList,
+    fonts: Fonts,
+    x: f32,
+    y: f32,
+    w: f32,
+    zoom: f32,
+) -> f32 {
+    let size = 12.0
+    var widths: Vec<f32> = Vec::new()
+    var total = 0.0
     for k in 0..legal::PAGES {
-        let label = legal::LINKS[k]
+        let bw = measure(fonts, legal::LINKS[k], size * zoom, Face::Sans) / zoom + 16.0
+        widths.push(bw)
+        total += bw
+    }
+    var at = round(x + (w - total) * 0.5)
+    for k in 0..legal::PAGES {
+        let r = Rect::new(at, y, widths[k], 28.0)
         button(
             mut a,
             mut d,
             fonts,
             Act::Legal { page: k },
-            Rect::new(x + f32(k) * (bw + gap), y, bw, 34.0),
-            label,
+            r,
+            legal::LINKS[k],
             zoom,
+            ghost: true,
+            size: size,
         )
+        at += widths[k]
     }
+    y + 28.0
 }
 
 /// Draws the chip, and the open page over everything (`w` by `h` logical pixels at `zoom`; the
@@ -1944,22 +2066,22 @@ pub fn draw(
     let chip_label = if !a.online { String::from("Health and legal") } else if a.me.signed_in {
         a.me.name.clone()
     } else { String::from("Sign in") }
+    // An outline button (`size="sm"`... at the default height), as wide as its words.
     let cw = min(
-        measure(fonts, chip_label.as_str(), 14.0 * zoom, Face::Sans) / zoom + 28.0,
-        w * 0.4,
+        measure(fonts, chip_label.as_str(), LABEL * zoom, Face::Sans) / zoom + 24.0,
+        w * 0.45,
     )
-    let chip = Rect::new(w - margin - cw, 22.0, cw, 40.0)
+    let chip = Rect::new(round(w - margin - cw), 24.0, round(cw), CONTROL)
     a.controls.push((Act::Chip, chip))
     if !a.open {
-        let hover = match a.pointer {
-            Some(p) => chip.contains(p),
-            None => false,
-        }
-        d.rect(z(chip, zoom), if hover { RAISED } else { SECONDARY }, 20.0 * zoom)
-        d.ring(z(chip, zoom), BORDER, 20.0 * zoom, max(round(zoom), 1.0))
-        d.push_clip(z(chip.shrink(10.0), zoom))
-        let top = chip.center().y - (fonts.font(Face::Sans).ascender - 0.36) * 14.0
-        write(mut d, fonts, chip_label.as_str(), 14.0, vec2(chip.x + 14.0, top), INK, zoom)
+        let st = look(mut a, 0, chip, disabled: false, loading: false)
+        let zc = z(chip, zoom)
+        kit::button(mut d, fonts, zc, "", Variant::Outline, st, zoom)
+        // Clipped at its sides only: a long name ends at the padding, and no descender is cut.
+        d.push_clip(Rect::new(zc.x + 12.0 * zoom, zc.y, max(zc.w - 24.0 * zoom, 0.0), zc.h))
+        let top = kit::centred_top(fonts, zc.y + zc.h * 0.5, LABEL * zoom) / zoom
+        let label = chip_label.as_str()
+        write(mut d, fonts, label, LABEL, vec2(chip.x + 12.0, top), INK, zoom, weight: kit::MEDIUM)
         d.pop_clip()
         a.shown = a.controls.clone()
         return
@@ -1988,7 +2110,7 @@ pub fn draw(
                 mut d,
                 fonts,
                 Act::Keep,
-                Rect::new(x, y, bw, 40.0),
+                Rect::new(x, y, bw, CONTROL),
                 "Keep this name",
                 zoom,
                 primary: true,
@@ -2000,31 +2122,58 @@ pub fn draw(
                     mut d,
                     fonts,
                     Act::Reroll,
-                    Rect::new(x, y + 48.0, bw, 40.0),
+                    Rect::new(x, y + CONTROL + GAP, bw, CONTROL),
                     label.as_str(),
                     zoom,
                 )
             }
             if !a.message.is_empty() {
                 let m = a.message.clone()
-                write(mut d, fonts, m.as_str(), 13.0, vec2(x, y + 100.0), WARN, zoom)
-                said(mut a, Role::Text, m.as_str(), Rect::new(x, y + 100.0, bw, 20.0), zoom)
+                write(
+                    mut d,
+                    fonts,
+                    m.as_str(),
+                    13.0,
+                    vec2(x, y + 2.0 * (CONTROL + GAP) + 8.0),
+                    WARN,
+                    zoom,
+                )
+                said(
+                    mut a,
+                    Role::Text,
+                    m.as_str(),
+                    Rect::new(x, y + 2.0 * (CONTROL + GAP) + 8.0, bw, 20.0),
+                    zoom,
+                )
             }
         }
         a.shown = a.controls.clone()
         return
     }
-    // A sheet over a dimmed console.
-    d.rect(Rect::new(x: 0.0, y: 0.0, w: w * zoom, h: h * zoom), vec4(0.0, 0.0, 0.0, 0.55))
+    // A dialog over the dimmed page (shadcn's `Dialog`): it fades in and rises a little, and its
+    // height is its page's (as last drawn), eased when the page changes.
+    let t = if reduced { 1.0 } else { 1.0 - (1.0 - a.shown_t) * (1.0 - a.shown_t) }
+    let was = d.alpha
+    d.alpha = was * t
+    d.rect(Rect::new(x: 0.0, y: 0.0, w: w * zoom, h: h * zoom), vec4(0.0, 0.0, 0.0, 0.6))
     let legal = a.page == Page::Legal
-    let sw = min(if legal { 720.0 } else { 460.0 }, w - 32.0)
-    let sh = min(h - 48.0, if legal { h - 48.0 } else { 600.0 })
-    let sheet = Rect::new(w * 0.5 - sw * 0.5, h * 0.5 - sh * 0.5, sw, sh)
-    d.rect(z(sheet, zoom), SHEET, 12.0 * zoom)
-    d.ring(z(sheet, zoom), BORDER, 12.0 * zoom, max(round(zoom), 1.0))
-    let x = sheet.x + 28.0
-    let iw = sw - 56.0
-    var y = sheet.y + 26.0
+    let sw = min(if legal { 720.0 } else { SHEET_WIDTH }, w - 32.0)
+    let wanted = if legal || a.sheet_h <= 0.0 { h - 48.0 } else { a.sheet_h }
+    let sh = min(h - 48.0, wanted)
+    let rise = (1.0 - t) * 8.0
+    let sheet = Rect::new(
+        round(w * 0.5 - sw * 0.5),
+        round(h * 0.5 - sh * 0.5 + rise),
+        round(sw),
+        sh,
+    )
+    kit::shadow(mut d, z(sheet, zoom), kit::CARD_RADIUS * zoom, zoom)
+    d.rect(z(sheet, zoom), kit::BG, kit::CARD_RADIUS * zoom)
+    d.ring(z(sheet, zoom), BORDER, kit::CARD_RADIUS * zoom, max(round(zoom), 1.0))
+    d.push_clip(z(sheet, zoom))
+    let x = sheet.x + PAD
+    let iw = sw - 2.0 * PAD
+    var y = sheet.y + PAD
     let title = match a.page {
         Page::Account => "Your account",
         Page::Choose => "Your account",
@@ -2037,7 +2186,7 @@ pub fn draw(
         Page::Legal => legal::TITLES[min(a.legal, legal::PAGES - 1)],
         Page::Knighting => "",
     }
-    write(mut d, fonts, title, 22.0, vec2(x, y), INK, zoom)
+    write(mut d, fonts, title, 18.0, vec2(x, y), INK, zoom, weight: kit::SEMIBOLD)
     // The tree: a dialog named by the page's title, its heading first.
     let sz = z(sheet, zoom)
     a.nodes.push(
@@ -2050,8 +2199,8 @@ pub fn draw(
         },
     )
     a.node_controls.push(None)
-    said(mut a, Role::Heading, title, Rect::new(x, y, iw, 30.0), zoom, level: 1)
-    y += 44.0
+    said(mut a, Role::Heading, title, Rect::new(x, y, iw, 24.0), zoom, level: 1)
+    y += 32.0
     match a.page {
         Page::Choose => {
             y += para(
@@ -2066,20 +2215,26 @@ pub fn draw(
                 zoom,
             )
             y += 18.0
-            y = stack(mut a, mut d, fonts, [(Act::SignIn, "Sign in", true)], x, y, iw, zoom)
+            let items = [
+                (Act::SignIn, "Sign in", true),
+                (Act::Create, "Create account", false),
+            ]
+            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+            let lost = "Lost your passkey?"
+            let lw = measure(fonts, lost, 13.0 * zoom, Face::Sans) / zoom
+            y += 4.0
             let _ = link(
                 mut a,
                 mut d,
                 fonts,
                 Act::UseCode,
-                vec2(x, y),
-                "Lost your passkey?",
+                vec2(round(x + (iw - lw) * 0.5), y),
+                lost,
                 13.0,
                 zoom,
             )
-            y += 34.0
-            let items = [(Act::Create, "Create account", false), (Act::Close, "Not now", false)]
-            y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+            y += 24.0
+            close_x(mut a, mut d, sheet, zoom)
         },
         Page::Create => {
             y += para(
@@ -2107,10 +2262,21 @@ pub fn draw(
                 zoom,
                 spoken: "I agree to the Terms and the Privacy Policy",
             )
-            let words = vec2(x + 32.0, y + 16.0 - (fonts.font(Face::Sans).ascender - 0.36) * BODY)
+            // As a box's own label is set (`checkbox`): 28 from its left, centred on the box.
+            let top = kit::centred_top(fonts, (y + 16.0) * zoom, BODY * zoom) / zoom
+            let words = vec2(x + 28.0, top)
             var at = words.x
             let gap = |s: str| -> f32 { measure(fonts, s, BODY * zoom, Face::Sans) / zoom }
-            write(mut d, fonts, "I agree to the", BODY, vec2(at, words.y), INK, zoom)
+            write(
+                mut d,
+                fonts,
+                "I agree to the",
+                BODY,
+                vec2(at, words.y),
+                INK,
+                zoom,
+                weight: kit::MEDIUM,
+            )
             at += gap("I agree to the ")
             at += link(
                 mut a,
@@ -2121,8 +2287,9 @@ pub fn draw(
                 "Terms",
                 BODY,
                 zoom,
+                inline: true,
             )
-            write(mut d, fonts, " and the", BODY, vec2(at, words.y), INK, zoom)
+            write(mut d, fonts, " and the", BODY, vec2(at, words.y), INK, zoom, weight: kit::MEDIUM)
             at += gap(" and the ")
             var line = words.y
             if at + gap("Privacy Policy") > x + iw {
@@ -2138,8 +2305,9 @@ pub fn draw(
                 "Privacy Policy",
                 BODY,
                 zoom,
+                inline: true,
             )
-            y += 40.0 + (line - words.y)
+            y += 36.0 + (line - words.y)
             checkbox(
                 mut a,
                 mut d,
@@ -2151,20 +2319,20 @@ pub fn draw(
                 a.of_age,
                 zoom,
             )
-            y += 50.0
+            y += 32.0 + 16.0
             let ready = a.agree && a.of_age
             button(
                 mut a,
                 mut d,
                 fonts,
                 Act::CreateAccount,
-                Rect::new(x, y, iw, 40.0),
+                Rect::new(x, y, iw, CONTROL),
                 "Create account",
                 zoom,
                 primary: true,
                 disabled: !ready,
             )
-            y += 48.0
+            y += CONTROL + GAP
             y = stack(mut a, mut d, fonts, [(Act::Back, "Back", false)], x, y, iw, zoom)
         },
         Page::Posting => {
@@ -2226,10 +2394,11 @@ pub fn draw(
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Account => {
+            // Who is signed in, as the dialog's description.
             let name = a.me.name.clone()
-            write(mut d, fonts, name.as_str(), 18.0, vec2(x, y), INK, zoom)
-            said(mut a, Role::Text, name.as_str(), Rect::new(x, y, iw, 27.0), zoom)
-            y += 40.0
+            let who = String::from(f"Signed in as {name}")
+            y += para(mut a, mut d, fonts, who.as_str(), BODY, vec2(x, y), iw, MUTED, zoom)
+            y += 16.0
             if !a.in_game {
                 checkbox(
                     mut a,
@@ -2246,6 +2415,7 @@ pub fn draw(
             }
             let items = account_items(a)
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
+            close_x(mut a, mut d, sheet, zoom)
         },
         Page::Recover => {
             y += para(
@@ -2260,7 +2430,7 @@ pub fn draw(
                 zoom,
             )
             y += 14.0
-            let field = Rect::new(x, y, iw, 44.0)
+            let field = Rect::new(x, y, iw, CONTROL)
             // A field of the host's, focused: what's typed goes there, from a keyboard, a
             // paste or a password manager, and the page reads it back (`read_code`).
             let at = z(field, zoom)
@@ -2283,21 +2453,36 @@ pub fn draw(
             )
             a.node_controls.push(None)
             a.code_node = a.nodes.len()
-            d.rect(z(field, zoom), vec4(1.0, 1.0, 1.0, 0.06), RADIUS * zoom)
-            d.ring(z(field, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
-            var shown = a.typed.clone()
-            shown.push_str("_")
-            write(
-                mut d,
-                fonts,
-                shown.as_str(),
-                18.0,
-                vec2(x + 12.0, y + 10.0),
-                INK,
-                zoom,
-                Face::Mono,
-            )
-            y += 60.0
+            // An input (`Input`): its fill and border, and while it has the focus (a field shows it
+            // from a pointer too) the ring; the code in mono, or its shape as a placeholder; a
+            // caret that blinks after it.
+            let zf = z(field, zoom)
+            let editing = a.focus == NO_FOCUS
+            d.rect(zf, kit::INPUT_BG, RADIUS * zoom)
+            if editing {
+                kit::focus_ring(mut d, zf, RADIUS * zoom, zoom)
+            } else {
+                d.ring(zf, kit::INPUT, RADIUS * zoom, max(round(zoom), 1.0))
+            }
+            let size = 15.0
+            let typed = a.typed.clone()
+            let empty = typed.is_empty()
+            let shown = if empty { String::from("XXXX-XXXX-XXXX-XXXX") } else { typed.clone() }
+            let shown = shown.as_str()
+            let top = kit::centred_top(fonts, zf.y + zf.h * 0.5, size * zoom, Face::Mono) / zoom
+            write(mut d, fonts, shown, size, vec2(x + 12.0, top), if empty { MUTED } else {
+                INK
+            }, zoom, Face::Mono)
+            if editing && fract(a.time) < 0.55 {
+                let tw = if empty { 0.0 } else {
+                    measure(fonts, shown, size * zoom, Face::Mono) / zoom
+                }
+                let cx = round((x + 12.0 + tw) * zoom) + 0.5
+                let h = round(18.0 * zoom)
+                let cy = round(zf.y + (zf.h - h) * 0.5)
+                d.line(vec2(cx, cy), vec2(cx, cy + h), INK, max(round(zoom), 1.0))
+            }
+            y += CONTROL + 16.0
             let items = [(Act::SubmitCode, "Sign in", true), (Act::Back, "Back", false)]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
@@ -2313,30 +2498,26 @@ pub fn draw(
                 MUTED,
                 zoom,
             )
-            y += 10.0
+            y += 16.0
+            // In a muted, bordered well (`bg-muted rounded-md`), two columns of mono, each
+            // centred in its half, so they read as one thing to copy down.
+            let rows = f32((a.codes.len() + 1) / 2)
+            let well = Rect::new(x, y, iw, rows * 26.0 + 24.0)
+            d.rect(z(well, zoom), kit::INPUT_BG, kit::RADIUS * zoom)
+            d.ring(z(well, zoom), BORDER, kit::RADIUS * zoom, max(round(zoom), 1.0))
+            let size = 14.0
             for i in 0..a.codes.len() {
-                let col = f32(i % 2) * iw * 0.5
-                let row = f32(i / 2) * 28.0
+                let half = (iw - 24.0) * 0.5
+                let cw = measure(fonts, a.codes[i].as_str(), size * zoom, Face::Mono) / zoom
+                let cx = x + 12.0 + f32(i % 2) * half + (half - cw) * 0.5
+                let cy = y + 12.0 + f32(i / 2) * 26.0
                 let code = a.codes[i].clone()
-                said(
-                    mut a,
-                    Role::Text,
-                    code.as_str(),
-                    Rect::new(x + col, y + row, iw * 0.5, 24.0),
-                    zoom,
-                )
-                write(
-                    mut d,
-                    fonts,
-                    a.codes[i].as_str(),
-                    16.0,
-                    vec2(x + col, y + row),
-                    INK,
-                    zoom,
-                    Face::Mono,
-                )
+                said(mut a, Role::Text, code.as_str(), Rect::new(cx, cy, cw, 22.0), zoom)
+                let top = kit::centred_top(fonts, (cy + 11.0) * zoom, size * zoom, Face::Mono) /
+                    zoom
+                write(mut d, fonts, code.as_str(), size, vec2(cx, top), INK, zoom, Face::Mono)
             }
-            y += f32((a.codes.len() + 1) / 2) * 28.0 + 16.0
+            y += well.h + 24.0
             let items = [
                 (Act::DownloadCodes, "Download them", !a.codes_kept),
                 (Act::CodesSaved, "I've saved them", a.codes_kept),
@@ -2348,16 +2529,18 @@ pub fn draw(
             y += 24.0
             for i in 0..min(a.passkeys.len(), 6) {
                 let label = f"Passkey {i + 1} ({std::hash::sha256::hex(short(a.passkeys[i].id))})"
-                write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
-                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
+                let top = kit::centred_top(fonts, (y + 16.0) * zoom, BODY * zoom) / zoom
+                write(mut d, fonts, label.as_str(), BODY, vec2(x, top), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 32.0), zoom)
                 button(
                     mut a,
                     mut d,
                     fonts,
                     Act::Remove { index: i },
-                    Rect::new(x + iw - 90.0, y, w: 90.0, h: 34.0),
+                    Rect::new(x + iw - 84.0, y, w: 84.0, h: 32.0),
                     "Remove",
                     zoom,
+                    size: 13.0,
                 )
                 y += 40.0
             }
@@ -2376,28 +2559,30 @@ pub fn draw(
             for i in 0..min(a.sessions.len(), 5) {
                 let s = a.sessions[i].clone()
                 let label = if s.this {
-                    f"This console ({std::hash::sha256::hex(short(s.id))})"
+                    f"This device ({std::hash::sha256::hex(short(s.id))})"
                 } else {
                     f"Session {std::hash::sha256::hex(short(s.id))}"
                 }
-                write(mut d, fonts, label.as_str(), BODY, vec2(x, y + 9.0), INK, zoom)
-                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 34.0), zoom)
+                let top = kit::centred_top(fonts, (y + 16.0) * zoom, BODY * zoom) / zoom
+                write(mut d, fonts, label.as_str(), BODY, vec2(x, top), INK, zoom)
+                said(mut a, Role::Text, label.as_str(), Rect::new(x, y, iw - 100.0, 32.0), zoom)
                 if !s.this {
                     button(
                         mut a,
                         mut d,
                         fonts,
                         Act::Revoke { index: i },
-                        Rect::new(x + iw - 90.0, y, w: 90.0, h: 34.0),
+                        Rect::new(x + iw - 84.0, y, w: 84.0, h: 32.0),
                         "Sign out",
                         zoom,
+                        size: 13.0,
                     )
                 }
                 y += 40.0
             }
             let items = [
                 (Act::NewCodes, "New recovery codes", false),
-                (Act::Back, "Back", !a.me.must_add_passkey),
+                (Act::Back, "Back", false),
             ]
             y = stack(mut a, mut d, fonts, items, x, y + 6.0, iw, zoom)
         },
@@ -2414,10 +2599,12 @@ pub fn draw(
                 zoom,
             )
             y += 18.0
+            // As an alert dialog has it: the way out first, and focused, so Enter never deletes;
+            // the destructive one last.
             let items = [
-                (Act::ConfirmDelete, "Delete everything", false),
+                (Act::Back, "Cancel", false),
                 (Act::SignIn, "Sign in again first", false),
-                (Act::Back, "Back", true),
+                (Act::ConfirmDelete, "Delete everything", false),
             ]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
@@ -2517,22 +2704,28 @@ pub fn draw(
         },
         Page::Knighting => {},
     }
-    if a.busy {
-        let waiting = "Waiting for your passkey or wrela.dev…"
-        write(mut d, fonts, waiting, 13.0, vec2(x, y + 4.0), MUTED, zoom)
-        said(mut a, Role::Text, waiting, Rect::new(x, y + 4.0, iw, 20.0), zoom)
-        y += 22.0
-    } else if !a.connected && a.page != Page::Legal {
+    // A request under way says so on its button (a spinner and what it waits for).
+    if !a.busy && !a.connected && a.page != Page::Legal {
         write(mut d, fonts, "Connecting…", 13.0, vec2(x, y + 4.0), MUTED, zoom)
         said(mut a, Role::Text, "Connecting…", Rect::new(x, y + 4.0, iw, 20.0), zoom)
-        y += 22.0
+        y += 24.0
     }
     if !a.message.is_empty() && a.page != Page::Legal {
         let m = a.message.clone()
-        y += para(mut a, mut d, fonts, m.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
+        y += 4.0 + para(mut a, mut d, fonts, m.as_str(), 13.0, vec2(x, y + 4.0), iw, WARN, zoom)
     }
     if a.page != Page::Legal {
-        legal_row(mut a, mut d, fonts, x, sheet.bottom() - 52.0, iw, zoom)
+        y += 12.0
+        y = legal_row(mut a, mut d, fonts, x, y, iw, zoom)
+    }
+    d.pop_clip()
+    d.alpha = was
+    // The height the page took: the dialog's next, eased there from the one before.
+    let page_h = y + PAD - 4.0 - sheet.y
+    a.sheet_h = if a.sheet_h <= 0.0 || reduced { page_h } else {
+        let k = min(a.dt / 0.12, 1.0)
+        let next = a.sheet_h + (page_h - a.sheet_h) * k
+        if abs(next - page_h) < 0.5 { page_h } else { next }
     }
     if a.focus != NO_FOCUS {
         a.focus = min(a.focus, max(a.controls.len(), 1) - 1)
@@ -2908,6 +3101,7 @@ fn the_agreement_is_a_tree_of_boxes_links_and_buttons_a_screen_reader_can_use() 
     a.page = Page::Create
     let fonts = Fonts::load()
     var d = DrawList::new()
+    d.clear(vec2(1280.0, 720.0))
     draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
     assert(a.nodes[0].role == Role::Dialog && a.nodes[0].label.as_str() == "Create account")
     let agree = node_of(a, Role::Checkbox, "I agree to the Terms and the Privacy Policy")

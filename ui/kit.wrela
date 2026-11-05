@@ -1,0 +1,193 @@
+// The look of wrela's own pages (the account, the MMO's title): tokens and painters after the
+// shadcn/ui dark theme (ui.shadcn.com/docs/theming, its neutral palette), so a button, a box to
+// tick, a focus ring and a dialog look and answer as a well-made web page's do. Each painter
+// draws one control in device pixels at scale `s` (logical pixels times `s`), in the state its
+// caller keeps: how far the pointer's hover has eased in, whether it's pressed, whether the
+// keyboard's focus is on it, whether it's disabled or working.
+
+use draw::{DrawList, Rect}
+use text::{Face, Fonts}
+
+// Colours: the background, text, muted text, and the borders of a card and of an input.
+pub const BG = vec4(0.039, 0.039, 0.039, 1.0)
+pub const FG = vec4(0.98, 0.98, 0.98, 1.0)
+pub const MUTED_FG = vec4(0.631, 0.631, 0.631, 1.0)
+pub const BORDER = vec4(1.0, 1.0, 1.0, 0.1)
+pub const INPUT = vec4(1.0, 1.0, 1.0, 0.15)
+/// An outline control's fill (`input/30`), and under the pointer (`input/50`).
+pub const INPUT_BG = vec4(1.0, 1.0, 1.0, 0.045)
+pub const INPUT_HOVER = vec4(1.0, 1.0, 1.0, 0.075)
+/// The primary control, under the pointer (`primary/90`), pressed, and its text.
+pub const PRIMARY = vec4(0.898, 0.898, 0.898, 1.0)
+pub const PRIMARY_HOVER = vec4(0.812, 0.812, 0.812, 1.0)
+pub const PRIMARY_PRESSED = vec4(0.74, 0.74, 0.74, 1.0)
+pub const PRIMARY_FG = vec4(0.09, 0.09, 0.09, 1.0)
+/// A ghost control's fill under the pointer (`accent`).
+pub const ACCENT = vec4(0.149, 0.149, 0.149, 1.0)
+/// The keyboard focus: a ring 3 px wide outside the control (`ring/50`), and its border.
+pub const RING = vec4(0.451, 0.451, 0.451, 0.5)
+pub const RING_BORDER = vec4(0.451, 0.451, 0.451, 1.0)
+/// A destructive control (`destructive/60`, `/50` under the pointer), and an error's words.
+pub const DESTRUCTIVE = vec4(0.62, 0.25, 0.25, 1.0)
+pub const DESTRUCTIVE_HOVER = vec4(0.55, 0.22, 0.22, 1.0)
+pub const ERROR = vec4(1.0, 0.39, 0.4, 1.0)
+
+/// Corners: a control's (`rounded-md`) and a card's or dialog's (`rounded-lg`), logical pixels.
+pub const RADIUS: f32 = 8.0
+pub const CARD_RADIUS: f32 = 10.0
+/// Stroke added to each side of a glyph, in ems: Inter Regular made medium (500) and semibold
+/// (600) for labels and titles.
+pub const MEDIUM: f32 = 0.009
+pub const SEMIBOLD: f32 = 0.018
+/// Seconds a hover eases in or out (`transition-all`, 150 ms).
+pub const HOVER_SECONDS: f32 = 0.15
+
+pub enum Variant: Copy + Eq {
+    Primary,
+    Outline,
+    Ghost,
+    Destructive,
+    /// A ghost whose words are the destructive colour, and whose fill under the pointer is too
+    /// (`variant="ghost"` with `text-destructive`, `hover:bg-destructive/10`).
+    DestructiveGhost,
+}
+
+/// What a control's caller knows of it this frame.
+pub struct State: Copy {
+    /// How far the pointer's hover has eased in: 0 to 1 (`ease`).
+    pub hover: f32 = 0.0,
+    pub pressed: bool = false,
+    /// The keyboard's focus is on it, and was put there by the keyboard: its ring shows.
+    pub focused: bool = false,
+    pub disabled: bool = false,
+    /// Its request is under way: a spinner, and it takes no press.
+    pub loading: bool = false,
+    /// Seconds, for the spinner's turn.
+    pub time: f32 = 0.0,
+}
+
+pub fn mix(a: vec4, b: vec4, t: f32) -> vec4 {
+    a + (b - a) * clamp(t, 0.0, 1.0)
+}
+
+/// `current` moved toward `target` over `dt` seconds, at a pace that takes `seconds` end to end.
+pub fn ease(current: f32, target: f32, dt: f32, seconds: f32 = HOVER_SECONDS) -> f32 {
+    let step = if seconds <= 0.0 { 1.0 } else { dt / seconds }
+    if target > current { min(current + step, target) } else { max(current - step, target) }
+}
+
+/// Where text of `size` pixels goes so its capitals sit centred on `y`: the top `text` takes.
+pub fn centred_top(fonts: Fonts, y: f32, size: f32, face: Face = Face::Sans) -> f32 {
+    round(y - (fonts.font(face).ascender - 0.3635) * size)
+}
+
+/// The keyboard focus's ring around `r` (corners `radius`): 3 px wide, outside it.
+pub fn focus_ring(d: mut DrawList, r: Rect, radius: f32, s: f32) {
+    let w = max(round(3.0 * s), 2.0)
+    d.ring(r.shrink(-w), RING, radius + w, width: w)
+    d.ring(r, RING_BORDER, radius, width: max(round(s), 1.0))
+}
+
+/// A soft shadow under a card `r` (`shadow-lg`): layers that widen and fade.
+pub fn shadow(d: mut DrawList, r: Rect, radius: f32, s: f32) {
+    for i in 0..6 {
+        let spread = f32(i + 1) * 4.0 * s
+        let at = Rect::new(
+            r.x - spread,
+            r.y - spread + 6.0 * s,
+            r.w + 2.0 * spread,
+            r.h + 2.0 * spread,
+        )
+        d.rect(at, vec4(0.0, 0.0, 0.0, 0.07), radius + spread)
+    }
+}
+
+/// A spinner (`Loader2`'s turn): eight strokes round `c`, `size` across, the brightest leading.
+pub fn spinner(d: mut DrawList, c: vec2, size: f32, color: vec4, time: f32) {
+    let lead = floor(fract(time * 1.25) * 8.0)
+    let r0 = size * 0.22
+    let r1 = size * 0.48
+    let w = max(size * 0.06, 1.0)
+    for i in 0..8 {
+        let k = f32(i)
+        let angle = k * 0.785398 - 1.570796
+        let dir = vec2(cos(angle), sin(angle))
+        let behind = (lead - k + 8.0) % 8.0
+        let alpha = 1.0 - behind / 9.0
+        d.line(c + dir * r0, c + dir * r1, vec4(color.xyz, color.w * alpha), w)
+    }
+}
+
+/// A button over `r` saying `label` at `size` (medium weight), in variant `v` and state `st`.
+pub fn button(
+    d: mut DrawList,
+    fonts: Fonts,
+    r: Rect,
+    label: str,
+    v: Variant,
+    st: State,
+    s: f32,
+    size: f32 = 14.0,
+) {
+    let radius = RADIUS * s
+    let was = d.alpha
+    if st.disabled {
+        d.alpha = was * 0.5
+    }
+    let live = !st.disabled && !st.loading
+    let hover = if live { st.hover } else { 0.0 }
+    let pressed = live && st.pressed
+    let (fill, ink) = match v {
+        Variant::Primary => (if pressed { PRIMARY_PRESSED } else {
+            mix(PRIMARY, PRIMARY_HOVER, hover)
+        }, PRIMARY_FG),
+        Variant::Outline => (if pressed { vec4(1.0, 1.0, 1.0, 0.1) } else {
+            mix(INPUT_BG, INPUT_HOVER, hover)
+        }, FG),
+        Variant::Ghost => (if pressed { vec4(0.2, 0.2, 0.2, 1.0) } else {
+            vec4(ACCENT.xyz, hover)
+        }, mix(MUTED_FG, FG, if pressed { 1.0 } else { hover })),
+        Variant::Destructive => (if pressed { vec4(0.48, 0.19, 0.19, 1.0) } else {
+            mix(DESTRUCTIVE, DESTRUCTIVE_HOVER, hover)
+        }, FG),
+        Variant::DestructiveGhost => (vec4(ERROR.xyz, if pressed { 0.16 } else {
+            0.1 * hover
+        }), ERROR),
+    }
+    d.rect(r, fill, radius)
+    if v == Variant::Outline {
+        d.ring(r, INPUT, radius, width: max(round(s), 1.0))
+    }
+    if st.focused && !st.disabled {
+        focus_ring(mut d, r, radius, s)
+    }
+    let px = size * s
+    let tw = fonts.font(Face::Sans).measure(label, px)
+    let icon = if st.loading { px + 8.0 * s } else { 0.0 }
+    let left = round(r.x + (r.w - tw - icon) * 0.5)
+    let top = centred_top(fonts, r.y + r.h * 0.5, px)
+    if st.loading {
+        spinner(mut d, vec2(left + px * 0.5, r.y + r.h * 0.5), px, ink, st.time)
+    }
+    let _ = d.text(fonts, Face::Sans, label, px, vec2(left + icon, top), ink, weight: MEDIUM)
+    d.alpha = was
+}
+
+/// A box to tick over `b` (16 by 16 logical pixels, `rounded-[4px]`), `on` or not.
+pub fn checkbox(d: mut DrawList, b: Rect, on: bool, st: State, s: f32) {
+    let radius = 4.0 * s
+    if on {
+        d.rect(b, PRIMARY, radius)
+        // The check (`CheckIcon`, 14 px in the box's 16).
+        let p = |u: f32, v: f32| -> vec2 { vec2(b.x + u * b.w, b.y + v * b.h) }
+        let w = max(1.6 * s, 1.0)
+        d.line(p(0.24, 0.53), p(0.42, 0.71), PRIMARY_FG, w)
+        d.line(p(0.42, 0.71), p(0.77, 0.32), PRIMARY_FG, w)
+    } else {
+        d.rect(b, mix(INPUT_BG, INPUT_HOVER, st.hover), radius)
+        d.ring(b, INPUT, radius, width: max(round(s), 1.0))
+    }
+    if st.focused {
+        focus_ring(mut d, b, radius, s)
+    }
+}

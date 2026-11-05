@@ -25,6 +25,8 @@ use std::hash::Hasher
 use std::input::{Button, Event, Key, PadAxis, PadButton, events, payload}
 use std::net::{Log, close, open, relay, send}
 use ui::draw::{DrawList, Rect, Renderer}
+use ui::kit
+use ui::kit::{State, Variant}
 use ui::text::{Face, Fonts}
 use rooms::{FIGHT_ROOM, ISLAND_ROOM}
 
@@ -174,6 +176,15 @@ pub struct Client {
     focus: u32,
     choices: Vec<(u32, Rect)>,
     pointer: Option<vec2>,
+    /// How far each choice's hover has eased in, the one the pointer pressed, whether the keyboard
+    /// (or a pad) moved the focus last, so its ring shows, and the frame's seconds.
+    hovers: Vec<f32>,
+    pressed: Option<u32>,
+    /// The maker's controls as last drawn (`MAKER_*`), and how far each one's hover has eased in.
+    maker: Vec<(u32, Rect)>,
+    maker_hovers: Vec<f32>,
+    keyboard: bool,
+    dt: f32,
     /// The account's pages are over the game: it draws without its words.
     hushed: bool,
     /// Whether it proposed something on the island this frame, and when it next says it's still
@@ -213,6 +224,12 @@ pub fn init() -> Client {
         focus: MAKE,
         choices: Vec::new(),
         pointer: None,
+        hovers: Vec::from([0.0, 0.0, 0.0]),
+        pressed: None,
+        maker: Vec::new(),
+        maker_hovers: Vec::new(),
+        keyboard: false,
+        dt: 0.0,
         hushed: false,
         said: false,
         here_at: 0.0,
@@ -465,6 +482,7 @@ pub fn frame<A: Account>(
         None => 0.0,
     }
     s.time = Some(time)
+    s.dt = dt
     if s.island.is_none() {
         let token = token_of(time, width, height)
         s.island = Some(Log::new(Island::empty(), token))
@@ -522,7 +540,39 @@ pub fn frame<A: Account>(
                 let Some(bytes) = payload(e) else { continue }
                 message(mut s, conn, take bytes)
             },
+            Event::PointerMove { at, .. } if making => {
+                s.pointer = Some(at)
+                s.keyboard = false
+            },
+            Event::PointerDown { at, button: Button::Primary, .. } if making => {
+                s.pressed = maker_at(s, at)
+            },
+            Event::PointerUp { at, button: Button::Primary, .. } if making => {
+                let was = s.pressed
+                s.pressed = None
+                let on = maker_at(s, at)
+                let Some(hit) = on else { continue }
+                if was != on {
+                    continue
+                }
+                let part = match s.character {
+                    Some(c) => c.part,
+                    None => 0,
+                }
+                if hit < MAKER_SAVE {
+                    // A part's ‹ or ›: that part, one choice back or on.
+                    maker_dy += i32(hit / 2) - i32(part)
+                    maker_dx += if hit % 2 == 0 { -1 } else { 1 }
+                } else if hit == MAKER_SAVE {
+                    maker_enter = true
+                } else if hit == MAKER_LEAVE {
+                    maker_escape = true
+                } else {
+                    maker_dy += i32(hit - MAKER_ROW) - i32(part)
+                }
+            },
             Event::KeyDown { key, .. } if making => {
+                s.keyboard = true
                 let bit = key_bit(key)
                 if bit == LEFT {
                     maker_dx -= 1
@@ -629,11 +679,17 @@ pub fn frame<A: Account>(
     }
     still_here(mut s, time)
     draw(mut s, width, height, mut account)
-    if !title_shown(s) || account.shown() {
+    if account.shown() {
         return Some(false)
     }
+    // A hand over what can be pressed: the title's choices, the maker's controls.
     let over = match s.pointer {
-        Some(p) => choice_at(s, p).is_some(),
+        Some(p) => if title_shown(s) { choice_at(s, p).is_some() } else if maker_open(s) {
+            match maker_at(s, p) {
+                Some(hit) => hit < MAKER_ROW,
+                None => false,
+            }
+        } else { false },
         None => false,
     }
     Some(over)
@@ -680,12 +736,25 @@ fn title_event<A: Account>(s: mut Client, e: Event, account: mut A) {
     match e {
         Event::PointerMove { at, .. } => {
             s.pointer = Some(at)
-            if let Some(c) = choice_at(s, at) {
+            s.keyboard = false
+        },
+        Event::PointerDown { at, button: Button::Primary, .. } => {
+            s.pressed = choice_at(s, at)
+            if let Some(c) = s.pressed {
+                // As a page's button takes the focus when clicked, without showing its ring.
                 s.focus = c
             }
         },
-        Event::PointerUp { at, button: Button::Primary, .. } => chosen = choice_at(s, at),
+        Event::PointerUp { at, button: Button::Primary, .. } => {
+            let was = s.pressed
+            s.pressed = None
+            let on = choice_at(s, at)
+            if on.is_some() && on == was {
+                chosen = on
+            }
+        },
         Event::KeyDown { key, repeat, mods } => {
+            s.keyboard = true
             if key == Key::Down || key == Key::S || (key == Key::Tab && !mods.shift) {
                 s.focus = (s.focus + 1) % 3
             } else if key == Key::Up || key == Key::W || (key == Key::Tab && mods.shift) {
@@ -695,6 +764,7 @@ fn title_event<A: Account>(s: mut Client, e: Event, account: mut A) {
             }
         },
         Event::PadButton { button, pressed: true, .. } => {
+            s.keyboard = true
             if button == PadButton::Down {
                 s.focus = (s.focus + 1) % 3
             } else if button == PadButton::Up {
@@ -740,6 +810,23 @@ pub fn close_all(s: mut Client) {
 }
 
 /// Whether the character maker has the screen.
+/// The maker's controls: part `p`'s ‹ is `2p` and its › `2p + 1`; then saving, leaving, and the
+/// rows themselves from `MAKER_ROW`.
+const MAKER_SAVE: u32 = 8
+const MAKER_LEAVE: u32 = 9
+const MAKER_ROW: u32 = 10
+
+/// The maker's control drawn under `at`, if one is.
+fn maker_at(s: Client, at: vec2) -> Option<u32> {
+    // Last drawn on top: the buttons before the rows they sit in.
+    for (c, r) in s.maker {
+        if r.contains(at) {
+            return Some(c)
+        }
+    }
+    None
+}
+
 fn maker_open(s: Client) -> bool {
     match s.character {
         Some(c) => c.stage == Stage::Making || c.stage == Stage::Saving,
@@ -1045,9 +1132,25 @@ fn draw<A: Account>(s: mut Client, width: u32, height: u32, account: mut A) {
         let title = if making { "Your character" } else if fight_on { "The fight" } else {
             "The island"
         }
-        let _ = s.list.text(s.fonts, Face::Sans, title, 28.0, vec2(24.0, 20.0), INK)
+        let k = clamp(min(w, h) / 720.0, 0.7, 3.0)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            title,
+            24.0 * k,
+            vec2(24.0 * k, 24.0 * k),
+            INK,
+            weight: kit::SEMIBOLD,
+        )
         let note = s.note.clone()
-        let _ = s.list.text(s.fonts, Face::Sans, note.as_str(), 18.0, vec2(24.0, h - 44.0), MUTED)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            note.as_str(),
+            14.0 * k,
+            vec2(24.0 * k, h - 40.0 * k),
+            MUTED,
+        )
     }
     account.draw(mut s.list, s.fonts, width, height)
     s.renderer.fetch(mut s.fonts, s.list)
@@ -1066,7 +1169,7 @@ fn centred(s: mut Client, text: str, size: f32, x: f32, y: f32, color: vec4) {
 /// The title over the island: the game's name, a line of it, and the choices of a player who
 /// isn't signed in (or, while the client asks, that it's finding them).
 fn draw_title(s: mut Client, w: f32, h: f32) {
-    s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(BG.xyz, 0.86))
+    s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(BG.xyz, 0.92))
     let k = clamp(min(h / 720.0, w / 420.0), 0.7, 3.0)
     let x = w / 2.0
     var y = h * 0.5 - 200.0 * k
@@ -1087,26 +1190,31 @@ fn draw_title(s: mut Client, w: f32, h: f32) {
         centred(mut s, "Finding you…", 18.0 * k, x, y + 14.0 * k, MUTED)
         return
     }
-    let bw = min(340.0 * k, w - 48.0)
-    let bh = 54.0 * k
+    // Full-width large buttons (`size="lg"`: 40 tall), the first primary, then outline, then
+    // ghost: one clear thing to do, and the rest quieter.
+    let bw = round(min(320.0 * k, w - 48.0))
+    let bh = round(40.0 * k)
     for i in 0..3 {
-        let r = Rect::new(x: round(x - bw / 2.0), y: round(y), w: round(bw), h: round(bh))
+        let r = Rect::new(x: round(x - bw / 2.0), y: round(y), w: bw, h: bh)
         s.choices.push((i, r))
-        let focused = s.focus == i
-        let first = i == MAKE
-        let fill = if first { INK } else if focused { vec4(1.0, 1.0, 1.0, 0.14) } else {
-            vec4(1.0, 1.0, 1.0, 0.06)
+        let over = match s.pointer {
+            Some(p) => r.contains(p),
+            None => false,
         }
-        s.list.rect(r, fill, radius: 12.0 * k)
-        if focused {
-            s.list.ring(r.shrink(-4.0 * k), MINE, radius: 15.0 * k, width: 2.0 * k)
+        s.hovers[i] = kit::ease(s.hovers[i], if over && !s.keyboard { 1.0 } else { 0.0 }, s.dt)
+        let st = State {
+            hover: s.hovers[i],
+            pressed: s.pressed == Some(i) && over,
+            focused: s.keyboard && s.focus == i,
         }
-        let ink = if first { BG } else { INK }
-        centred(mut s, CHOICES[i], 19.0 * k, x, r.y + (bh - 19.0 * k * 1.2) / 2.0, ink)
+        let v = if i == MAKE { Variant::Primary } else if i == SIGN_IN { Variant::Outline } else {
+            Variant::Ghost
+        }
+        kit::button(mut s.list, s.fonts, r, CHOICES[i], v, st, k, size: 15.0)
         y += bh + 12.0 * k
     }
-    y += 16.0 * k
-    centred(mut s, "Passkeys only: no email, no password.", 15.0 * k, x, y, MUTED)
+    y += 12.0 * k
+    centred(mut s, "Passkeys only: no email, no password.", 13.0 * k, x, y, MUTED)
 }
 
 fn draw_island(s: mut Client, middle: vec2, size: f32) {
@@ -1163,7 +1271,15 @@ fn draw_island(s: mut Client, middle: vec2, size: f32) {
     }
     let count = shown.len()
     let line = String::from(f"{count} on the island, {view.marks.len()} marks")
-    let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 16.0, vec2(24.0, 58.0), MUTED)
+    let k = clamp(size / 720.0, 0.7, 3.0)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        line.as_str(),
+        14.0 * k,
+        vec2(24.0 * k, 60.0 * k),
+        MUTED,
+    )
 }
 
 fn draw_maker(s: mut Client, middle: vec2, size: f32) {
@@ -1171,34 +1287,124 @@ fn draw_maker(s: mut Client, middle: vec2, size: f32) {
         Some(c) => (c.name, c.making, c.part, c.stage == Stage::Saving, c.message.clone(), c.made),
         None => return,
     }
+    let k = clamp(size / 720.0, 0.7, 3.0)
     let name = names::text(cname)
-    let _ = s.list.text(s.fonts, Face::Sans, name.as_str(), 24.0, vec2(24.0, 62.0), INK)
-    // The figure, and beside it each part and its choice, the chosen part marked.
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        name.as_str(),
+        16.0 * k,
+        vec2(24.0 * k, 60.0 * k),
+        MUTED,
+    )
+    // The figure, and beside it a panel: each part a row, its choice between a ‹ and a ›, the
+    // part the arrow keys move marked; under them, making it, or leaving.
     let tall = size * 0.5
-    let feet = middle + vec2(-size * 0.18, tall * 0.5)
+    let feet = middle + vec2(-size * 0.2, tall * 0.5)
     circle(mut s.list, feet, tall * 0.18, SAND)
     character::figure(mut s.list, making, feet, tall)
-    let x = middle.x + size * 0.04
+    s.maker.clear()
+    while s.maker_hovers.len() < MAKER_ROW + character::PARTS {
+        s.maker_hovers.push(0.0)
+    }
+    let pw = round(300.0 * k)
+    let row_h = round(44.0 * k)
+    let x = round(middle.x + size * 0.02)
+    let top = round(middle.y - (f32(character::PARTS) * row_h + 16.0 * k + 2.0 * 40.0 * k) * 0.5)
+    let icon = round(32.0 * k)
     for i in 0..character::PARTS {
-        let y = middle.y - 80.0 + 44.0 * f32(i)
+        let y = top + f32(i) * row_h
+        let row = Rect::new(x: x, y: y, w: pw, h: row_h - round(4.0 * k))
         let chosen = i == part
-        let color = if chosen { MINE } else { MUTED }
-        let n = character::part_of(making, i) + 1
-        let line = String::from(
-            f"{character::PART_NAMES[i]}   ‹ {n} of {platform::wire::LOOK_CHOICES} ›",
+        // The row: an accent fill when it's the arrows' part (`bg-accent`).
+        if chosen {
+            s.list.rect(row, kit::ACCENT, radius: kit::RADIUS * k)
+        }
+        let label = character::PART_NAMES[i]
+        let px = 14.0 * k
+        let ty = kit::centred_top(s.fonts, row.y + row.h * 0.5, px)
+        let ink = if chosen { kit::FG } else { kit::MUTED_FG }
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            label,
+            px,
+            vec2(row.x + 12.0 * k, ty),
+            ink,
+            weight: kit::MEDIUM,
         )
-        let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 20.0, vec2(x, y), color)
+        let n = character::part_of(making, i) + 1
+        let value = String::from(f"{n} of {platform::wire::LOOK_CHOICES}")
+        let next = Rect::new(
+            x: row.right() - round(6.0 * k) - icon,
+            y: row.y + round((row.h - icon) * 0.5),
+            w: icon,
+            h: icon,
+        )
+        let prev = Rect::new(x: next.x - round(72.0 * k) - icon, y: next.y, w: icon, h: icon)
+        let vw = s.fonts.font(Face::Sans).measure(value.as_str(), px)
+        let vx = round(prev.right() + (next.x - prev.right() - vw) * 0.5)
+        let _ = s.list.text(s.fonts, Face::Sans, value.as_str(), px, vec2(vx, ty), kit::FG)
+        for (hit, r, back) in [(2 * i, prev, true), (2 * i + 1, next, false)] {
+            s.maker.push((hit, r))
+            let st = maker_look(mut s, hit, r)
+            kit::button(mut s.list, s.fonts, r, "", Variant::Outline, st, k)
+            chevron(mut s.list, r, back, k, if st.hover > 0.0 || st.pressed { kit::FG } else {
+                kit::MUTED_FG
+            })
+        }
+        s.maker.push((MAKER_ROW + i, row))
     }
-    let hint = if saving {
-        String::from("Saving…")
-    } else if !message.is_empty() {
-        String::from(f"{message}  Escape leaves.")
-    } else if made {
-        String::from("Up and down choose, left and right change. Enter saves, Escape leaves.")
-    } else {
-        String::from("Up and down choose, left and right change. Enter makes your character.")
+    var y = top + f32(character::PARTS) * row_h + 12.0 * k
+    let bh = round(36.0 * k)
+    let save = Rect::new(x: x, y: round(y), w: pw, h: bh)
+    s.maker.push((MAKER_SAVE, save))
+    let label = if made { "Save" } else { "Make my character" }
+    var st = maker_look(mut s, MAKER_SAVE, save)
+    st.loading = saving
+    st.time = match s.time {
+        Some(t) => t,
+        None => 0.0,
     }
-    s.note = take hint
+    kit::button(mut s.list, s.fonts, save, if saving { "Saving…" } else {
+        label
+    }, Variant::Primary, st, k)
+    y += bh + 8.0 * k
+    let leave = Rect::new(x: x, y: round(y), w: pw, h: bh)
+    s.maker.push((MAKER_LEAVE, leave))
+    let st = maker_look(mut s, MAKER_LEAVE, leave)
+    kit::button(mut s.list, s.fonts, leave, if made { "Cancel" } else {
+        "Not now"
+    }, Variant::Ghost, st, k)
+    y += bh + 12.0 * k
+    if !message.is_empty() {
+        let _ = s.list.text(s.fonts, Face::Sans, message.as_str(), 13.0 * k, vec2(x, y), kit::ERROR)
+    }
+    s.note = String::from("The arrow keys choose too, and Enter makes it.")
+}
+
+/// How the maker's control `hit` over `r` looks this frame: its hover eased, pressed.
+fn maker_look(s: mut Client, hit: u32, r: Rect) -> State {
+    let over = match s.pointer {
+        Some(p) => r.contains(p),
+        None => false,
+    }
+    let i = hit
+    s.maker_hovers[i] = kit::ease(s.maker_hovers[i], if over && !s.keyboard { 1.0 } else {
+        0.0
+    }, s.dt)
+    State { hover: s.maker_hovers[i], pressed: s.pressed == Some(hit) && over }
+}
+
+/// A chevron in `r`, pointing back (left) or on (right): `ChevronLeft`'s two strokes.
+fn chevron(list: mut DrawList, r: Rect, back: bool, k: f32, color: vec4) {
+    let c = vec2(r.x + r.w * 0.5, r.y + r.h * 0.5)
+    let a = 4.5 * k
+    let side = if back { 1.0 } else { -1.0 }
+    let tip = c + vec2(-side * a * 0.6, 0.0)
+    let w = max(1.5 * k, 1.0)
+    list.line(c + vec2(side * a * 0.6, -a), tip, color, w)
+    list.line(tip, c + vec2(side * a * 0.6, a), color, w)
 }
 
 fn place(middle: vec2, px: f32, x: i32, z: i32) -> vec2 {
