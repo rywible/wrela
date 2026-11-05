@@ -1801,6 +1801,11 @@ pub fn humanised(clip: Clip, carriage: Clip, rig: Rig, how: Gait) -> Clip {
 /// thumb brought in to lie along the index, a little bent. (The rest is a T-pose, palms down,
 /// fingers out along x.)
 pub fn loose_hands(clip: Clip, rig: Rig) -> Clip {
+    curled_hands(clip, rig, 1.0)
+}
+
+/// The hands curled as `loose_hands`'s, `by` times as far: a runner's loose fists (`FISTS`).
+pub fn curled_hands(clip: Clip, rig: Rig, by: f32) -> Clip {
     var out = clip.clone()
     let rw = rig.rest_world()
     let fingers = ["Index", "Middle", "Ring", "Little"]
@@ -1824,7 +1829,7 @@ pub fn loose_hands(clip: Clip, rig: Rig) -> Clip {
                     let b = rig.find(f"{side}{fingers[i]}{joints[j]}".as_str())
                     if b != NONE {
                         let inv = rw[b].q.inverse()
-                        let curl = about(inv.rotate(axis), curls[j] * more[i] * DEG)
+                        let curl = about(inv.rotate(axis), by * curls[j] * more[i] * DEG)
                         let draw = if j == 0 {
                             about(inv.rotate(vec3(0.0, s, 0.0)), together[i] * DEG)
                         } else {
@@ -1844,8 +1849,8 @@ pub fn loose_hands(clip: Clip, rig: Rig) -> Clip {
             let axis = normalize(cross(normalize(rw[end].t - rw[base].t), palm))
             for (name, inward, curl) in [
                 ("ThumbMetacarpal", THUMB_IN, -28.0),
-                ("ThumbProximal", 0.0, 10.0),
-                ("ThumbDistal", 0.0, 12.0),
+                ("ThumbProximal", 0.0, 10.0 * by),
+                ("ThumbDistal", 0.0, 12.0 * by),
             ] {
                 let b = rig.find(f"{side}{name}".as_str())
                 if b != NONE {
@@ -1866,5 +1871,7 @@ pub fn loose_hands(clip: Clip, rig: Rig) -> Clip {
     out
 }
 
-/// How far the thumb comes in toward the index (degrees).
+/// How far the thumb comes in toward the index (degrees); and how far, as a relaxed hand's, a
+/// runner's loose fists curl (the knuckles about 45°, the middle joints about 65°).
 const THUMB_IN: f32 = 35.0
+pub const FISTS: f32 = 1.75

@@ -276,19 +276,27 @@ fn the_walk_plants_its_feet() {
     }
 }
 
-/// Every clip passes its review (`engine::review`: what an animator's eye looks for, measured):
-/// the walk made human (`engine::stride`), and each other take as the cleanup every clip goes
-/// through leaves it (`engine::cleanup`), untuned. The walk's take passes too, cleaned up in
-/// place of the walk's own making.
+/// Every clip that's ready passes its review (`engine::review`: what an animator's eye looks
+/// for, measured): the walk made human (`engine::stride`), and the idle and the run as the
+/// cleanup every clip goes through leaves them (`engine::cleanup`), untuned. The walk's take
+/// passes too, cleaned up in place of the walk's own making.
 @test
 fn every_clip_passes_its_review() {
     let r = HERO.rig.clone()
     passes("the walk", WALK.clone(), r.clone())
     passes("the idle", IDLE.clone(), r.clone())
     passes("the run", RUN.clone(), r.clone())
-    passes("the walking turns", TURNS.clone(), r.clone())
-    passes("the jog", JOG.clone(), r.clone())
     passes("the walk's take, cleaned", cleanup::cleaned(WALK_RAW.clone(), r.clone(), Cleanup {}), r)
+}
+
+/// What the cleanup can't make right, the review sends for a look: the walking turns' take
+/// hops mid-turn, and the jog (a library's cartoon, not a person's) bounds, its steps too long
+/// and too few for how fast its feet sweep.
+@test
+fn the_review_sends_the_rest_for_a_look() {
+    let r = HERO.rig.clone()
+    flags("the walking turns", TURNS.clone(), r.clone(), "the body hops")
+    flags("the jog", JOG.clone(), r, "the steps are too long")
 }
 
 /// That a clip's review flags nothing.
@@ -303,6 +311,7 @@ fn passes(name: str, clip: Clip, rig: humanoid::Rig) {
 fn the_review_sees_the_takes_faults() {
     let r = HERO.rig.clone()
     flags("the walk's take", WALK_RAW.clone(), r.clone(), "the left foot slides")
+    flags("the walk's take", WALK_RAW.clone(), r.clone(), "the left foot slips")
     flags("the idle's take", IDLE_RAW.clone(), r.clone(), "the left foot sinks")
     flags("the run's take", RUN_RAW.clone(), r.clone(), "the neck pops")
     flags("the jog's take", JOG_RAW.clone(), r, "the left foot slides along the floor as on a")

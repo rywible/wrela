@@ -9,6 +9,8 @@
 // - A loop that runs in place (its feet sliding back under it, as on a treadmill) given the
 //   travel its standing feet show, so they stand still while it goes.
 // - The floor found: the body raised or lowered so its feet stand on the floor, not in it.
+// - A loop that goes somewhere bouncing as high off each foot (the hips' height the mean of a
+//   frame's and the frame half the loop on's).
 // - The trunk carried with the pelvis, in a clip that goes somewhere, about each stride's mean:
 //   the shoulders tilting against the pelvis's list a moment later, the trunk leaning over the
 //   standing leg (as far each way), the bend run up the spine (each piece bent across, so a
@@ -19,13 +21,17 @@
 // - Each foot held where it comes to rest while it's down: whichever of heel and ball is lower
 //   held most, eased in as it lands and out as it leaves, on the floor (its pad giving up to
 //   `PAD` under the weight, no more); the legs reach the feet by two-bone IK, the hips lowered
-//   (smoothly) where a leg can't reach.
-// - A take without fingers given loose hands (`stride::loose_hands`).
+//   (smoothly) where a leg can't reach; in a walk, the hips and the foot eased about each
+//   touch (a run's landing jolt is its own).
+// - A take without fingers given loose hands (`stride::loose_hands`), a run's loosely in fists.
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
 use review::{runs_of, swing_of, unwrapped}
-use stride::{about, leg_of, loose_hands, reach, set_turn, shift, store, turn_below, worlds}
+use stride::{
+    FISTS, about, curled_hands, leg_of, loose_hands, reach, set_turn, shift, store, turn_below,
+    worlds,
+}
 
 /// What a clip's cleanup does: hold its feet (and find its floor and its travel), carry its
 /// trunk, loosen its hands.
@@ -67,6 +73,11 @@ const SETTLE: f32 = 0.05
 const PAD: f32 = 0.003
 const REACH: f32 = 0.995
 const DROP_WIDTH: f32 = 2.5
+
+/// How high (m) both feet are, at least, when the body's in the air, and the share of its frames
+/// a run is in the air, at least (`engine::review`'s).
+const FLIGHT: f32 = 0.02
+const RUNS_FLY: f32 = 0.1
 
 /// About each touch, the time (s) over which the hips and the foot are eased (from
 /// `EASE_BEFORE` before to `EASE_AFTER` after, the foot from `FOOT_FROM` before to `FOOT_TILL`
@@ -115,6 +126,10 @@ pub fn cleaned(clip: Clip, rig: Rig, how: Cleanup) -> Clip {
     var c = if looped { seam_smoothed(clip, rig) } else { clip.clone() }
     if how.feet {
         c = on_the_floor(c, rig, n, looped)
+        let t = rig.base.q.rotate(c.travel_local)
+        if looped && n >= 8 && length(vec2(t.x, t.z)) / (f32(n) / c.fps) > GOES {
+            c = evened_bounce(c, rig, n)
+        }
     }
     let travel = rig.base.q.rotate(c.travel_local)
     var two: Vec<Rigid> = Vec::with_capacity(n * nb)
@@ -152,7 +167,9 @@ pub fn cleaned(clip: Clip, rig: Rig, how: Cleanup) -> Clip {
         out.hips[n] = out.hips[0] + out.travel_local
     }
     if how.hands && !has_fingers(c, rig) {
-        out = loose_hands(out, rig)
+        out = if in_the_air(rig, two, n) { curled_hands(out, rig, FISTS) } else {
+            loose_hands(out, rig)
+        }
     }
     out
 }
@@ -374,6 +391,27 @@ fn on_the_floor(clip: Clip, rig: Rig, n: u32, looped: bool) -> Clip {
     out
 }
 
+/// A loop that goes somewhere with the hips' height the same in each of its steps: each frame's
+/// the mean of its own and the frame half the loop on's (the take's two steps, which a person
+/// takes alike, as alike as its feet and its trunk are made).
+fn evened_bounce(clip: Clip, rig: Rig, n: u32) -> Clip {
+    var out = clip.clone()
+    let base = rig.base
+    let height = |f: f32| -> f32 {
+        let i = u32(floor(f)) % n
+        let x = f - floor(f)
+        let (a, b) = (base.q.rotate(clip.hips[i]), base.q.rotate(clip.hips[(i + 1) % n]))
+        a.y * (1.0 - x) + b.y * x
+    }
+    for f in 0..n {
+        let w = base.q.rotate(clip.hips[f])
+        let y = 0.5 * (w.y + height(f32(f) + 0.5 * f32(n)))
+        out.hips[f] = base.q.inverse().rotate(vec3(w.x, y, w.z))
+    }
+    out.hips[n] = out.hips[0] + clip.travel_local
+    out
+}
+
 /// A point's place at frame `f` of `ps` (n a loop, carried on by `travel`; else held at the
 /// ends).
 fn at_frame(ps: [vec3], f: i32, looped: bool, travel: vec3) -> vec3 {
@@ -538,7 +576,11 @@ fn hold_feet(rig: Rig, two: mut Vec<Rigid>, n: u32, looped: bool, fps: f32, trav
         }
     }
     var lowered = smoothed_above(drop, DROP_WIDTH, looped)
-    ease_touches(rig, two, n, looped, fps, touches, soles, mut goals, mut lowered)
+    // (A run lands on a bent knee and takes the jolt, as people do, and its bounce is its own:
+    // the easing is a walk's.)
+    if !in_the_air(rig, two, n) {
+        ease_touches(rig, two, n, looped, fps, touches, soles, mut goals, mut lowered)
+    }
     for f in 0..n {
         var w: Vec<Rigid> = Vec::with_capacity(nb)
         for b in 0..nb {
@@ -560,6 +602,26 @@ fn hold_feet(rig: Rig, two: mut Vec<Rigid>, n: u32, looped: bool, fps: f32, trav
             two[f * nb + b] = w[b]
         }
     }
+}
+
+/// Whether a clip runs: both feet off the floor (`FLIGHT`) for `RUNS_FLY` of its frames, at
+/// least.
+fn in_the_air(rig: Rig, two: [Rigid], n: u32) -> bool {
+    let nb = rig.bones.len()
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    var flights = 0
+    for f in 0..n {
+        var up = true
+        for l in legs {
+            let (a, t) = (two[f * nb + l.ankle], two[f * nb + l.toes])
+            let low = min((a.t + a.q.rotate(l.heel)).y, (t.t + t.q.rotate(l.ball)).y) - l.floor
+            up = up && low > FLIGHT
+        }
+        if up {
+            flights += 1
+        }
+    }
+    f32(flights) > RUNS_FLY * f32(n)
 }
 
 /// The smooth series nowhere under `xs`: `xs` spread to its neighbours within twice `width`

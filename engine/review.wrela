@@ -3,7 +3,8 @@
 // number and, past its limit, a flag in plain words:
 //
 // - Feet: a foot that's down (low and all but still) slides along the floor, sinks into it, or
-//   stands above it; in a clip that goes somewhere, a foot that never comes down.
+//   stands above it; one on the floor slips from where it's planted (as a toe can, pushing
+//   off); in a clip that goes somewhere, a foot that never comes down.
 // - Pops: a joint jumps, a spike in its jerk (the third difference of its place) many times its
 //   own usual, a loop's seam included.
 // - Knees: a knee that's straight under the weight (locked), or bends backwards.
@@ -13,7 +14,10 @@
 //   shoulder, which a trunk that leans ahead and turns shows); the head swaying from side to
 //   side much further than the hips.
 // - The arms, in a clip that goes somewhere: each swinging with the leg on its own side.
-// - The rhythm, in a loop that goes somewhere: one step quicker or longer than the other.
+// - In the air: a clip that doesn't run, hopping (both feet off the floor).
+// - The rhythm, in a loop that goes somewhere: one step quicker or longer than the other, or
+//   bouncing higher off one foot; a run whose steps are too few and too long for its speed (a
+//   bound); the head turning from side to side as it goes.
 //
 // A clip scores 10 less each flag's weight. The limits are set from how people move (see
 // `engine::stride`'s sources) and against a clip judged human by eye, the 100STYLE walk made
@@ -57,8 +61,10 @@ const STILL: f32 = 0.1
 /// The fastest a foot may go along the floor where it's lowest (m/s).
 const SKID_MOST: f32 = 0.3
 
-/// How far a foot that's down may slide (m), sink into the floor (m), and stand above it (m).
+/// How far a foot that's down may slide (m), slip on the floor once it's planted, however fast
+/// (m), sink into the floor (m), and stand above it (m).
 const SLIDE_MOST: f32 = 0.015
+const SLIP_MOST: f32 = 0.025
 const SINK_MOST: f32 = 0.008
 const ABOVE_MOST: f32 = 0.02
 
@@ -97,9 +103,30 @@ const SAME_SIDE: f32 = 0.5
 const HEAD_SWAYS: f32 = 0.02
 
 /// How far a loop's steps may differ in time (a share of the loop) and length (a share of the
-/// mean).
+/// mean), and how high it bounces off each foot (a share of the mean, past `BOUNCE_LEAST` m)
+/// and at most (m: people running bob 6 to 12 cm);
+/// how near the floor (m) a foot has met it.
 const RHYTHM_MOST: f32 = 0.05
 const STEPS_MOST: f32 = 0.1
+const BOUNCE_MOST: f32 = 0.15
+const BOUNCE_LEAST: f32 = 0.01
+const BOB_MOST: f32 = 0.15
+const CONTACT: f32 = 0.01
+
+/// How high (m) both feet are, at least, when the body's in the air; the share of its frames a
+/// run is in the air, at least; the longest (s) a clip that doesn't run may be in the air (a
+/// hop); and a run's fewest steps a minute and longest step (of its hips' height at rest) (people
+/// at 5.7 m/s take about 180 steps a minute of about 1.9 m, about twice the hips' height;
+/// sprinters' are longer, few beyond 2.4 times).
+const FLIGHT: f32 = 0.02
+const RUNS_FLY: f32 = 0.1
+const HOP_FOR: f32 = 0.08
+const CADENCE_LEAST: f32 = 140.0
+const STEP_MOST: f32 = 2.4
+
+/// The most (degrees) the head turns each way about where it looks over a stride, in a clip
+/// that goes somewhere.
+const HEAD_TURNS: f32 = 6.0
 
 const DEG: f32 = 0.017453292
 
@@ -376,7 +403,9 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
     let feet = [foot_of(rig, 1.0), foot_of(rig, -1.0)]
     let down_for = max(u32(DOWN_FOR * fps + 0.5), 2)
     var touches: Vec<Vec<u32>> = Vec::new()
+    var contacts: Vec<Vec<u32>> = Vec::new()
     var plants: Vec<Vec<vec3>> = Vec::new()
+    var heights: Vec<f32> = Vec::filled(2 * n, 0.0)
     var down_any = false
     for foot in feet {
         let name = if foot.side > 0.0 { "left" } else { "right" }
@@ -389,6 +418,7 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
         }
         // A point's place at any frame, as `place`'s.
         var worst_slide = 0.0
+        var worst_slip = 0.0
         var deepest = 0.0
         var lowest_still = 1.0e9
         var stills = 0
@@ -433,6 +463,27 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
                     }
                 }
             }
+            // On the floor (within `CONTACT` of it), however fast: where it's lowest it's
+            // planted, and after that it doesn't slip from there (as a toe can, pushing off).
+            var touching: Vec<bool> = Vec::with_capacity(n)
+            for f in 0..n {
+                touching.push(ps[f].y - foot.floor < CONTACT)
+            }
+            for (a, z) in runs_of(touching, looped) {
+                if z + 1 - a >= down_for {
+                    var m = a
+                    for u in a..z + 1 {
+                        if at(i32(u)).y < at(i32(m)).y {
+                            m = u
+                        }
+                    }
+                    let planted = at(i32(m))
+                    for u in m..z + 1 {
+                        let p = at(i32(u))
+                        worst_slip = max(worst_slip, length(vec2(p.x - planted.x, p.z - planted.z)))
+                    }
+                }
+            }
             for (a, z) in runs_of(still, looped) {
                 if z + 1 - a >= 6 {
                     var h = 0.0
@@ -458,22 +509,41 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
             }
         }
         skid /= max(k, 1.0)
+        let li = if foot.side > 0.0 { 0 } else { 1 }
+        for f in 0..n {
+            heights[li * n + f] = lowest[f] - foot.floor
+        }
         // When and where each step lands: the first frame of each of the foot's runs down,
-        // and its heel's place there.
+        // and its heel's place there; and when it meets the floor, before it's still (its
+        // lowest point within `CONTACT` of it).
         var lands: Vec<u32> = Vec::new()
+        var meets: Vec<u32> = Vec::new()
         var at_lands: Vec<vec3> = Vec::new()
         for (a, z) in runs_of(down.clone(), looped) {
             if z + 1 - a >= down_for {
                 lands.push(a % n)
                 at_lands.push(heels[a % n])
                 down_any = true
+                var at = a % n
+                for _ in 0..n / 4 {
+                    if !looped && at == 0 {
+                        break
+                    }
+                    let b = (at + n - 1) % n
+                    if lowest[b] - foot.floor >= CONTACT {
+                        break
+                    }
+                    at = b
+                }
+                meets.push(at)
             }
         }
         touches.push(lands.clone())
+        contacts.push(take meets)
         plants.push(take at_lands)
         let above = if stills > 0 { lowest_still * 100.0 } else { 0.0 }
         numbers.push(
-            f"{name} foot: {lands.len()} steps; slides {worst_slide * 100.0:.1} cm while down, sinks {deepest * 100.0:.1} cm, standing {above:.1} cm above the floor, going {skid:.2} m/s where it's lowest",
+            f"{name} foot: {lands.len()} steps; slides {worst_slide * 100.0:.1} cm while down, slips {worst_slip * 100.0:.1} cm on the floor, sinks {deepest * 100.0:.1} cm, standing {above:.1} cm above the floor, going {skid:.2} m/s where it's lowest",
         )
         if goes && lands.len() == 0 {
             flags.push(f"the {name} foot never comes down: the body floats")
@@ -481,6 +551,12 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
         }
         if worst_slide > SLIDE_MOST {
             flags.push(f"the {name} foot slides {worst_slide * 100.0:.1} cm while it's down")
+            lost += FOOT_WEIGHT
+        }
+        if worst_slip > SLIP_MOST {
+            flags.push(
+                f"the {name} foot slips {worst_slip * 100.0:.1} cm on the floor once it's planted",
+            )
             lost += FOOT_WEIGHT
         }
         if deepest > SINK_MOST {
@@ -497,6 +573,38 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
             flags.push(f"the {name} foot stands {lowest_still * 100.0:.1} cm above the floor")
             lost += FOOT_WEIGHT
         }
+    }
+
+    // ---- in the air ----
+    // Each frame both feet are off the floor (`FLIGHT` over it): a run's flight, or else a hop.
+    var flying: Vec<bool> = Vec::with_capacity(n)
+    var flights = 0
+    for f in 0..n {
+        let up = heights[f] > FLIGHT && heights[n + f] > FLIGHT
+        flying.push(up)
+        if up {
+            flights += 1
+        }
+    }
+    let runs = f32(flights) > RUNS_FLY * f32(n)
+    if !runs {
+        var longest = 0
+        var at = 0
+        for (a, z) in runs_of(flying.clone(), looped) {
+            if z + 1 - a > longest {
+                longest = z + 1 - a
+                at = a % n
+            }
+        }
+        numbers.push(f"in the air: {flights} of {n} frames, at most {longest} together")
+        if f32(longest) >= HOP_FOR * fps {
+            flags.push(
+                f"the body hops: neither foot is on the floor for {longest} frames, from frame {at}",
+            )
+            lost += FOOT_WEIGHT
+        }
+    } else {
+        numbers.push(f"in the air: {flights} of {n} frames (it runs)")
     }
 
     // ---- pops ----
@@ -741,10 +849,11 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
                 }
             }
         }
-        // The rhythm: in a loop of one step each, each lands half the loop after the other,
-        // each step as long.
+        // The rhythm: in a loop of one step each, each lands (meets the floor) half the loop
+        // after the other, each step as long, the hips bobbing as far in each.
         if looped && touches[0].len() == 1 && touches[1].len() == 1 {
-            let gap = f32((touches[0][0] + n - touches[1][0]) % n)
+            let (cl, cr) = (contacts[0][0], contacts[1][0])
+            let gap = f32((cl + n - cr) % n)
             let uneven = abs(gap - 0.5 * f32(n)) / f32(n)
             let left = plants[0][0] + if touches[0][0] < touches[1][0] { travel } else { vec3(0.0) }
             let a = left - plants[1][0]
@@ -763,6 +872,75 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
                     f"one step is longer than the other ({la * 100.0:.0} and {lb * 100.0:.0} cm)",
                 )
                 lost += RHYTHM_WEIGHT
+            }
+            // How far the hips bob in each step (from one foot's landing to the other's).
+            var bobs = [0.0, 0.0]
+            for si in 0..2 {
+                let (from, till) = if si == 0 { (cr, cl) } else { (cl, cr) }
+                let span = (till + n - from) % n
+                var lo = 1.0e9
+                var hi = -1.0e9
+                for u in 0..span + 1 {
+                    let y = all[((from + u) % n) * nb + hips].t.y
+                    lo = min(lo, y)
+                    hi = max(hi, y)
+                }
+                bobs[si] = hi - lo
+            }
+            let bob = 0.5 * (bobs[0] + bobs[1])
+            numbers.push(f"bounce: the hips bob {bobs[0] * 100.0:.1} and {bobs[1] * 100.0:.1} cm")
+            if bob > BOB_MOST {
+                flags.push(f"it bounces too high ({bob * 100.0:.0} cm a step)")
+                lost += RHYTHM_WEIGHT
+            }
+            if bob > BOUNCE_LEAST && abs(bobs[0] - bobs[1]) / bob > BOUNCE_MOST {
+                flags.push(
+                    f"it bounces higher off one foot than the other ({bobs[0] * 100.0:.1} and {bobs[1] * 100.0:.1} cm)",
+                )
+                lost += RHYTHM_WEIGHT
+            }
+        }
+        // A run's steps against its speed: people run faster by quicker steps as well as longer
+        // ones, so a run of few, long steps is a bound.
+        if runs {
+            var steps = 0.0
+            for li in 0..2 {
+                steps += f32(contacts[li].len())
+            }
+            let seconds = f32(n) / fps
+            let cadence = 60.0 * steps / max(seconds, 1.0e-3)
+            let step = path_speed * 60.0 / max(cadence, 1.0)
+            let legs = rig.rest_world()[hips].t.y
+            numbers.push(
+                f"running: {cadence:.0} steps a minute, each {step:.2} m ({step / legs:.1} times the hips' height)",
+            )
+            if cadence < CADENCE_LEAST || step > STEP_MOST * legs {
+                flags.push(
+                    f"the steps are too long and too slow for its speed: a bound, not a run ({step:.2} m at {cadence:.0} steps a minute)",
+                )
+                lost += RHYTHM_WEIGHT
+            }
+        }
+        // The head's turn from side to side about where it looks over a stride, in a loop
+        // (a clip that turns may well lead with its head): people hold their gaze steady as
+        // they go.
+        if looped {
+            let head = rig.find("head")
+            let ahead = rig.rest_world()[head].q.inverse().rotate(vec3(0.0, 0.0, 1.0))
+            var yaws: Vec<f32> = Vec::with_capacity(n)
+            for f in 0..n {
+                let d = all[f * nb + head].q.rotate(ahead)
+                yaws.push(atan2(d.x, d.z) / DEG)
+            }
+            let swing = swing_of(unwrapped(yaws), over, looped)
+            var most = 0.0
+            for x in swing.clone() {
+                most = max(most, abs(x))
+            }
+            numbers.push(f"the head turns {most:.1}° each way about where it looks")
+            if most > HEAD_TURNS {
+                flags.push(f"the head turns {most:.0}° from side to side as it goes")
+                lost += TRUNK_WEIGHT
             }
         }
     }
