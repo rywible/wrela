@@ -1,32 +1,45 @@
 // Anime timing over a body's fight moves, for the drawing alone: the fight keeps its own exact
-// frames (`playback::timed`), and gameplay its body's place; what's shown of a one-off is drawn
-// on twos (a new drawing twelve times a second, each held), its strike snapped out past itself
-// for a moment (the impact frame) and held on contact (the hit's hold), and a fist or foot that
-// travels far between drawings smeared back along its path. Walking and running stay smooth.
+// frames, and gameplay its body's place. Each one-off is drawn as its own look says
+// (`Look`): a strike on twos (a new drawing twelve times a second, each held), a drawing put
+// down on its contact whatever the count (its authored hit, `ACTIVE`'s start), a flash on that
+// contact, and a fist or foot that travels far between drawings smeared back along its path; a
+// roll smooth. Walking and running stay smooth. The weight, the pause and the follow-through
+// are the move's own keys (`engine::keys`): nothing here invents a pose.
 //
 // After the animator's practice in limited animation (Japanese TV animation's drawings on twos
 // and threes, holds and impact frames) as Arc System Works brought it to 3D: Junya Motomura,
 // "GuiltyGearXrd's Art Style: The X Factor Between 2D and 3D", GDC 2015.
 
 use humanoid::{NONE, Pose, Rig, Rigid}
-use playback::{ACTIVE, Move, Mover, exp_of, layered, log_of}
+use playback::{ACTIVE, Move, Mover, layered}
 
-/// How the fight's moves are drawn: drawings a second (on twos at 24, twelve); how long (s) the
-/// strike's held on contact, and how long of that its impact frame shows, pushed past the strike
-/// by `push` of the last drawing's move into it, and how hard the picture flashes on it (the
-/// frame's kinetic, 0 to 1); and how far back a smear trails (`smear` of the travel since the
-/// last drawing, the limb stretched at most `smear_most` times its length), from how fast (m/s,
-/// against the body) a fist or foot must go to smear.
+/// How the fight's moves are drawn: drawings a second for a move on twos (twelve); how long (s)
+/// the picture flashes on a strike's contact and how hard (the frame's kinetic, 0 to 1); and
+/// how far back a smear trails (`smear` of the travel since the last drawing, the limb stretched
+/// at most `smear_most` times its length), from how fast (m/s, against the body) a fist or foot
+/// must go to smear.
 pub struct Anime: Copy {
     pub drawings: f32 = 12.0,
-    pub hold: f32 = 0.1,
     pub impact: f32 = 0.05,
-    pub push: f32 = 0.35,
     pub flash: f32 = 0.5,
     pub smear: f32 = 0.6,
     pub smear_most: f32 = 1.8,
     pub smear_from: f32 = 2.5,
 }
+
+/// How one move's drawn: on twos (else smooth, every frame), whether its contact flashes, and
+/// whether its fast limbs smear.
+pub struct Look: Copy {
+    pub twos: bool = false,
+    pub flash: bool = false,
+    pub smear: bool = false,
+}
+
+/// A strike's look: on twos, flashed on contact, smeared.
+pub const STRIKE: Look = Look { twos: true, flash: true, smear: true }
+
+/// A move drawn as it plays: smooth, no flash, no smear.
+pub const PLAIN: Look = Look {}
 
 /// A limb stretched back along its path: its end (the world) now, the way (unit) back toward
 /// where it was, and by how much (1 none).
@@ -50,7 +63,7 @@ const FROM = ["leftLowerArm", "rightLowerArm", "leftLowerLeg", "rightLowerLeg"]
 
 /// What's drawn of a body: the drawing it holds, where it was drawn (a whole-body move's drawn
 /// place steps with it), how long it's held, which one-off it's drawing, whether its strike's
-/// struck, how long the hit's hold and impact frame have left, where each limb's end was at the
+/// struck (its contact drawn), how long its flash has left, where each limb's end was at the
 /// last drawing, and each limb's smear.
 pub struct Drawer: Copy {
     pub drawing: Pose,
@@ -59,8 +72,6 @@ pub struct Drawer: Copy {
     pub on: bool,
     pub acting: u32,
     pub struck: bool,
-    pub contact: f32,
-    pub hold_left: f32,
     pub impact_left: f32,
     pub ends: [vec3; 4],
     pub smears: [Smear; 4],
@@ -75,8 +86,6 @@ impl Drawer {
             on: false,
             acting: NONE,
             struck: false,
-            contact: -1.0,
-            hold_left: 0.0,
             impact_left: 0.0,
             ends: [vec3(0.0); 4],
             smears: [Smear::none(); 4],
@@ -91,18 +100,6 @@ pub struct Drawn: Copy {
     pub place: mat4,
     pub impact: f32,
     pub smears: [Smear; 4],
-}
-
-/// `strike` pushed on past itself by `push` of the move into it from `before`: the impact
-/// frame's pose, every bone turned further the way it was turning, the hips carried on.
-pub fn pushed_past(strike: Pose, before: Pose, push: f32, bones: u32) -> Pose {
-    var out = strike
-    for b in 0..bones {
-        let into = strike.turns[b].mul(before.turns[b].inverse())
-        out.turns[b] = exp_of(log_of(into) * push).mul(strike.turns[b])
-    }
-    out.hips = strike.hips + (strike.hips - before.hips) * push
-    out
 }
 
 /// Where each limb's end is, drawn as `pose` at `place`.
@@ -161,56 +158,15 @@ fn draw_new(d: mut Drawer, rig: Rig, pose: Pose, place: mat4, how: Anime, smear:
     d.place = place
 }
 
-/// When (s) one-off `mv` lands: from the start of its hit window (`ACTIVE`), the moment the limb
-/// end that's travelled furthest through it reaches furthest from the hips (a fist at full
-/// stretch), or the window's middle if none goes anywhere.
-pub fn contact_of(mv: Move, rig: Rig) -> f32 {
-    let a = match mv.mark(ACTIVE) {
-        Some(a) => a,
-        None => return -1.0,
-    }
-    let start = ends_of(rig, mv.pose(a.from), std::transform::identity())
-    let end = ends_of(rig, mv.pose(a.till), std::transform::identity())
-    var limb = 0
-    var most = 0.0
-    for i in 0..4 {
-        let d = length(end[i] - start[i])
-        if d > most {
-            most = d
-            limb = i
-        }
-    }
-    if most < 0.05 {
-        return 0.5 * (a.from + a.till)
-    }
-    let hips_at = |t: f32| -> vec3 {
-        let p = mv.pose(t)
-        rig.base.t + rig.base.q.rotate(p.hips)
-    }
-    var best = a.from
-    var reach = 0.0
-    // Within the hit window (and a frame or two on): the hold lands while the fight says it hits.
-    let span = min(mv.length() - a.from, a.till - a.from + 0.034)
-    for k in 0..40 {
-        let t = a.from + span * f32(k) / 39.0
-        let e = ends_of(rig, mv.pose(t), std::transform::identity())[limb]
-        let r = length(e - hips_at(t))
-        if r > reach {
-            reach = r
-            best = t
-        }
-    }
-    best
-}
-
 /// One frame of body `m` (`pose`, shown at `place`, as `playback::step` gave it) as it's drawn:
-/// smooth while it walks and runs, its one-offs (`acts`) drawn on twos, struck, held and
-/// smeared by `how`. `mask` is the upper body's (a one-off over it alone steps it alone, the
-/// legs going on smooth). `dt` (s) on.
+/// smooth while it walks and runs, each of its one-offs (`acts`) as its look (`looks`) says, by
+/// `how`. `mask` is the upper body's (a one-off over it alone steps it alone, the legs going on
+/// smooth). `dt` (s) on.
 pub fn drawn(
     d: mut Drawer,
     m: Mover,
     acts: [Move],
+    looks: [Look],
     rig: Rig,
     mask: [f32; 64],
     pose: Pose,
@@ -219,72 +175,46 @@ pub fn drawn(
     dt: f32,
 ) -> Drawn {
     let bones = rig.bones.len()
-    if m.acting == NONE || m.acting >= acts.len() {
+    if m.acting == NONE || m.acting >= acts.len() || m.acting >= looks.len() {
         d.on = false
         d.acting = NONE
         return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4] }
     }
-    let period = 1.0 / max(how.drawings, 1.0)
+    let look = looks[m.acting]
+    if !look.twos && !look.flash && !look.smear {
+        d.on = false
+        d.acting = NONE
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4] }
+    }
+    let period = if look.twos { 1.0 / max(how.drawings, 1.0) } else { 0.0 }
     borrow mv = acts[m.acting]
+    let contact = match mv.mark(ACTIVE) {
+        Some(a) => a.from,
+        None => -1.0,
+    }
     if !d.on || d.acting != m.acting {
         // A one-off begun: its first drawing, now.
         draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
         d.on = true
         d.acting = m.acting
         d.struck = false
-        d.contact = contact_of(mv, rig)
         d.since = 0.0
-        d.hold_left = 0.0
         d.impact_left = 0.0
+    } else if !d.struck && contact >= 0.0 && m.act_time >= contact {
+        // Its contact: drawn now, whatever the count, and flashed.
+        d.struck = true
+        d.impact_left = if look.flash { how.impact } else { 0.0 }
+        draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
+        d.since = 0.0
     } else {
-        // The strike: the drawing's the strike pushed past itself (the impact frame), then the
-        // strike itself, held.
-        let strike = d.contact
-        if !d.struck && strike >= 0.0 && m.act_time >= strike {
-            d.struck = true
-            d.hold_left = how.hold
-            d.impact_left = how.impact
-            let at = mv.pose(strike)
-            let before = mv.pose(strike - period)
-            let shown = if m.upper { layered(pose, at, mask, 1.0, bones) } else { at }
-            let shown_before = if m.upper { layered(pose, before, mask, 1.0, bones) } else {
-                before
-            }
-            draw_new(
-                mut d,
-                rig,
-                pushed_past(shown, shown_before, how.push, bones),
-                place,
-                how,
-                smear: true,
-                arms: m.upper,
-            )
-            d.since = 0.0
-        } else if d.hold_left > 0.0 {
-            d.hold_left -= dt
-            if d.impact_left > 1.0e-3 {
-                d.impact_left -= dt
-                if d.impact_left <= 1.0e-3 {
-                    // The impact frame's done: the strike, held, unsmeared.
-                    let at = mv.pose(strike)
-                    d.drawing = if m.upper { layered(pose, at, mask, 1.0, bones) } else { at }
-                    d.smears = [Smear::none(); 4]
-                }
-            }
-            if d.hold_left <= 0.0 {
-                // Let go: the move as it's got to, at once, as a drawing does.
-                draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
-                d.since = 0.0
-            }
-        } else {
-            d.since += dt
-            if d.since >= period {
-                d.since -= period
-                draw_new(mut d, rig, pose, place, how, smear: true, arms: m.upper)
-            } else if d.since >= 0.5 * period {
-                // A smear's an in-between: half a drawing, then the limb's whole.
-                d.smears = [Smear::none(); 4]
-            }
+        d.impact_left -= dt
+        d.since += dt
+        if d.since >= period {
+            d.since = if period > 0.0 { d.since - period } else { 0.0 }
+            draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
+        } else if d.since >= 0.5 * period {
+            // A smear's an in-between: half a drawing, then the limb's whole.
+            d.smears = [Smear::none(); 4]
         }
     }
     let impact = if d.impact_left > 1.0e-3 { how.flash } else { 0.0 }
@@ -355,18 +285,4 @@ fn descends(rig: Rig, b: u32, root: u32) -> bool {
         at = rig.bones[at].parent
     }
     false
-}
-
-// ---- tests -----------------------------------------------------------------------------------
-
-@test
-fn a_strike_pushed_past_turns_further_the_way_it_turned() {
-    let a = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
-    var b = a
-    b.turns[3] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), 0.4)
-    b.hips = vec3(0.0, 0.0, 0.1)
-    let p = pushed_past(b, a, 0.5, 4)
-    let angle = 2.0 * acos(min(abs(p.turns[3].v.w), 1.0))
-    assert(abs(angle - 0.6) < 1.0e-3, f"pushed past to {angle} rad, not 0.6")
-    assert(abs(p.hips.z - 0.15) < 1.0e-5)
 }
