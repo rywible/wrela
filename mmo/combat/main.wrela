@@ -72,6 +72,8 @@ pub const HANDING: u32 = 4294967294
 /// How long, in room ms, a player who came back waits for its log to be handed to it before it
 /// may settle the fight (no one else is left to hand it).
 pub const HANDOFF_MS: u64 = 10000
+/// Frames a handoff may run ahead of the room's clock (a player's clock runs a little ahead).
+pub const HANDOFF_SLACK: u32 = 300
 
 /// The bosses, by the number an account's progress counts them by (platform/wire.wrela's
 /// `Beaten`): the cathedral's idol, the only one yet.
@@ -431,10 +433,14 @@ impl Reduce<Act> for Fight {
                     return Verdict::Reject(NOT_NOW)
                 }
                 let Some(s) = self.slot(peer) else { return Verdict::Reject(BAD_LOG) }
+                // A player who came back carries on from the input it was handed.
+                let before = if self.cuts[s] == UNCUT || self.cuts[s] == HANDING { 0 } else {
+                    sim::input_before(self.logs[s].changes, self.cuts[s])
+                }
                 if self.sent[s] ||
                     self.cuts[s] == HANDING ||
                     end > MAX_FRAMES ||
-                    !sim::well_formed(changes, end, MAX_CHANGES) {
+                    !sim::well_formed(changes, end, MAX_CHANGES, before) {
                     return Verdict::Reject(BAD_LOG)
                 }
                 if self.log_of(s, changes, end).len() > PLAYER_CHANGES {
@@ -480,10 +486,17 @@ impl Reduce<Act> for Fight {
                     return Verdict::Reject(NOT_NOW)
                 }
                 let Some(h) = self.slot(peer) else { return Verdict::Reject(BAD_LOG) }
-                if slot >= self.party.len() || slot == h || self.cuts[slot] != HANDING {
+                // Only a player its account signed hands a log on, so who did is known.
+                if slot >= self.party.len() ||
+                    slot == h ||
+                    !self.named[h] ||
+                    self.cuts[slot] != HANDING {
                     return Verdict::Reject(NOT_YOURS)
                 }
-                if upto > MAX_FRAMES || !sim::well_formed(changes, upto, MAX_CHANGES) {
+                // Nothing past the frame the fight can be at, by the room's clock, and a little.
+                let elapsed = if entry.at > self.began_at { entry.at - self.began_at } else { 0 }
+                let most = min(u64(MAX_FRAMES), elapsed * u64(sim::HZ) / 1000 + u64(HANDOFF_SLACK))
+                if u64(upto) > most || !sim::well_formed(changes, upto, MAX_CHANGES) {
                     return Verdict::Reject(BAD_LOG)
                 }
                 if changes.len() > PLAYER_CHANGES {
@@ -1098,40 +1111,46 @@ fn a_player_who_came_back_takes_its_slot_and_its_log_carries_on_from_what_was_he
     // 3's page reloaded: it's peer 11 now, wearing its card again.
     let back = |card: Card, seal: Seal| Act::Rejoin { card, seal }
     assert(
-        fight.check(entry(11, 900, back(card_of(1), sealed(false)))) == Verdict::Reject(NOT_YOURS),
+        fight.check(entry(11, 20000, back(card_of(1), sealed(false)))) ==
+            Verdict::Reject(NOT_YOURS),
     )
     assert(
-        fight.check(entry(11, 900, back(card_of(3), sealed(true)))) == Verdict::Reject(NOT_YOURS),
+        fight.check(entry(11, 20000, back(card_of(3), sealed(true)))) == Verdict::Reject(NOT_YOURS),
         "a card not in the fight",
     )
     assert(
-        fight.check(entry(5, 900, back(card_of(1), sealed(true)))) == Verdict::Reject(NOT_YOURS),
+        fight.check(entry(5, 20000, back(card_of(1), sealed(true)))) == Verdict::Reject(NOT_YOURS),
         "a player in the fight already",
     )
-    fight.apply(entry(11, 900, back(card_of(1), sealed(true))))
+    fight.apply(entry(11, 20000, back(card_of(1), sealed(true))))
     assert(
         fight.party == Vec::from([u32(11), 5]) &&
             fight.cuts[0] == HANDING &&
             fight.cuts[1] == UNCUT,
     )
-    let early = entry(11, 950, Act::Log { changes: Vec::new(), end: 3000 })
+    let early = entry(11, 20050, Act::Log { changes: Vec::new(), end: 3000 })
     assert(fight.check(early) == Verdict::Reject(BAD_LOG), "no log before its log so far")
     // 5 heard it through frame 1500.
     let heard = before(logs[0], 1500)
     let own = Act::Handoff { slot: 0, changes: heard.clone(), upto: 1500 }
-    assert(fight.check(entry(11, 960, own.clone())) == Verdict::Reject(NOT_YOURS), "not its own")
+    assert(fight.check(entry(11, 25000, own.clone())) == Verdict::Reject(NOT_YOURS), "not its own")
     let late: Vec<Change> = Vec::from([Change { frame: 1600, input: 15 }])
     let past = Act::Handoff { slot: 0, changes: late, upto: 1500 }
     assert(
-        fight.check(entry(5, 960, take past)) == Verdict::Reject(BAD_LOG),
+        fight.check(entry(5, 25000, take past)) == Verdict::Reject(BAD_LOG),
         "nothing past its frame",
     )
     let hand = Act::Handoff { slot: 0, changes: heard.clone(), upto: 1500 }
-    assert(fight.check(entry(5, 960, hand.clone())) == Verdict::Accept)
-    fight.apply(entry(5, 960, hand.clone()))
+    let early = Act::Handoff { slot: 0, changes: heard.clone(), upto: 1500 }
+    assert(
+        fight.check(entry(5, 10000, take early)) == Verdict::Reject(BAD_LOG),
+        "past the room's clock",
+    )
+    assert(fight.check(entry(5, 25000, hand.clone())) == Verdict::Accept)
+    fight.apply(entry(5, 25000, hand.clone()))
     assert(
         fight.cuts[0] == 1500 &&
-            fight.check(entry(5, 970, take hand)) == Verdict::Reject(NOT_YOURS),
+            fight.check(entry(5, 25100, take hand)) == Verdict::Reject(NOT_YOURS),
     )
     // Its own log from then on (what it sends from before the cut isn't taken), then 5's.
     var rest: Vec<Change> = Vec::new()
@@ -1141,8 +1160,8 @@ fn a_player_who_came_back_takes_its_slot_and_its_log_carries_on_from_what_was_he
             rest.push(c.clone())
         }
     }
-    fight.apply(entry(11, 2000, Act::Log { changes: rest, end: 3000 }))
-    fight.apply(entry(5, 2000, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    fight.apply(entry(11, 40000, Act::Log { changes: rest, end: 3000 }))
+    fight.apply(entry(5, 40000, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
     assert(fight.settled && fight.outcome == sim::run(2, logs), "the fight it would have been")
     fight.outcome.winner = Winner::Party
     assert(fight.winners() == Vec::from([card_of(1), card_of(2)]), "a winner still")

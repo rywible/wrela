@@ -406,6 +406,19 @@ impl Sender {
         }
     }
 
+    /// This player came back to a fight, its input `input` as it was handed back, and plays on
+    /// from frame `frame`. Its new changes start as everyone's do, from an input of 0, so the one
+    /// it was handed is said first, the frame before: then letting go of it is a change too.
+    pub fn resume(mut self, frame: u32, input: u32) {
+        if input == 0 || frame == 0 || self.made.len() > 0 {
+            return
+        }
+        let change = Change { frame: frame - 1, input }
+        self.made.push(Made { change, sent: false, first_sent: frame - 1, resent: false })
+        self.input = input
+        self.dirty = true
+    }
+
     /// Something new came from a player at frame `now`: it's owed an ack.
     pub fn owe(mut self, now: u32) {
         if !self.owed {
@@ -758,6 +771,12 @@ impl Link {
         if slot >= MAX_PARTY { 0 } else { self.rx[slot].through }
     }
 
+    /// This player came back to a fight, its input `input` as it was handed back, and plays on
+    /// from frame `frame` (past the frame it was handed at).
+    pub fn resume(mut self, frame: u32, input: u32) {
+        self.tx.resume(frame, input)
+    }
+
     /// Slot `slot` has a new player (one who came back to the fight): what's heard from it starts
     /// again, and it's sent everything again.
     pub fn fresh(mut self, slot: u32) {
@@ -1013,4 +1032,16 @@ fn a_press_flips_a_bit_and_letting_go_sends_nothing() {
     assert(enc.input(still, prev: 0, reads: chain, now: 0) == 0, "still waiting")
     assert(enc.input(still, prev: 0, reads: chain, now: chain) == 64, "read now: it flips")
     assert(enc.input(still, prev: 64, reads: chain, now: chain) == 64, "once")
+}
+
+@test
+fn a_player_back_in_a_fight_sends_a_change_from_the_input_it_was_handed() {
+    // Handed back holding the stick, it lets go: that's a change, though it's the input a new
+    // sender starts with.
+    var back = Link::new(me: 0, party: 2)
+    back.resume(100, 728)
+    let Some(bytes) = back.send(100, 0) else { panic("a packet goes") }
+    var other = Link::new(me: 1, party: 2)
+    let _ = other.heard(0, bytes, 100)
+    assert(other.change_at(0, 100) == Some(Change { frame: 100, input: 0 }), "it's heard")
 }

@@ -570,12 +570,13 @@ fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
 
 /// Whether `log` is a log a player could send: changes in order of their frames, each a change,
 /// each an input of 14 bits with a stick that's one, before frame `end`, and at most `most` of them.
-pub fn well_formed(log: [Change], end: u32, most: u32) -> bool {
+/// The input before the first is `before` (a log picked up again carries on from one).
+pub fn well_formed(log: [Change], end: u32, most: u32, before: u32 = 0) -> bool {
     if log.len() > most {
         return false
     }
     var last: u32 = 0
-    var prev: u32 = 0
+    var prev = before
     for i in 0..log.len() {
         let c = log[i].clone()
         if c.frame >= end ||
@@ -589,6 +590,17 @@ pub fn well_formed(log: [Change], end: u32, most: u32) -> bool {
         prev = c.input
     }
     true
+}
+
+/// The input `log` holds just before frame `cut`.
+pub fn input_before(log: [Change], cut: u32) -> u32 {
+    var input: u32 = 0
+    for c in log {
+        if c.frame < cut {
+            input = c.input
+        }
+    }
+    input
 }
 
 /// A player's log picked up again after it left: `before`'s changes before frame `cut` (what was
