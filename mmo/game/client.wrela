@@ -15,7 +15,7 @@
 // left stick, West attacks, North parries, South dodges, Start begins, Select waits.
 
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
-use combat::main::{Fight, PLAYER_CHANGES}
+use combat::main::{Fight, HANDING, PLAYER_CHANGES, UNCUT}
 use std::math::{cos, sin}
 use combat::sim::{
     ATTACK, Change, DODGE, HEAVY, LONGSWORD, MAX_FRAMES, PARRY, Seen, Winner, World, step,
@@ -26,7 +26,7 @@ use platform::names
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
 use std::input::{Button, Event, Key, PadAxis, PadButton, events, payload}
-use std::net::{Log, OUTDATED, close, open, relay, send}
+use std::net::{Log, OUTDATED, Reduce, Verdict, close, open, relay, send}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
 use ui::kit::{State, Variant}
@@ -73,6 +73,13 @@ const CHECKPOINT: u32 = 600
 const OUTCOME_SECONDS: f32 = 5.0
 /// The most fight frames a screen frame runs: a tab that fell behind catches up over a few.
 const MOST_STEPS: u32 = 30
+/// Frames run in one frame while a player who came back runs again what it played before.
+const REPLAY_STEPS: u32 = 120
+/// Seconds a player who came back waits for the others' logs before it runs the fight anyway,
+/// and for its own log to be handed to it before it settles the fight (no one else is left:
+/// the room's `HANDOFF_MS`, and a little).
+const CATCH_UP_SECONDS: f32 = 20.0
+const HANDOFF_SECONDS: f32 = 12.0
 /// Seconds between a waiting player's joins (the lobby forgets one silent for a minute), and
 /// between proposals to settle a fight that's taking too long (the room says when it may).
 const REJOIN: f32 = 30.0
@@ -145,6 +152,24 @@ struct Play {
     /// How the room settled it, once it has: what counts, whatever this client ran.
     settled: Option<Winner>,
     rollbacks: u32,
+    /// Each slot's log as the room picked it up when its player came back (`Act::Rejoin`), and
+    /// the frame it stands until (`cuts`): `UNCUT` while its player never left (what's heard is
+    /// its log), `HANDING` while the room waits for it (what was heard before stands, `bases`).
+    bases: Vec<Vec<Change>>,
+    cuts: Vec<u32>,
+    /// For each slot, when (room ms) the player who came back to it was handed its log by this
+    /// one, so it's offered once.
+    offered: Vec<u64>,
+    /// Whether this player came back to the fight and waits for its own log to be handed to it
+    /// (meanwhile it hands no one theirs: it hasn't heard them yet), sending acks at frame `idle`
+    /// (what the others said they're at), since `waited` (seconds), and when it next may settle
+    /// the fight if no one does (`settle_at`).
+    waiting: bool,
+    idle: u32,
+    waited: Option<f32>,
+    settle_at: f32,
+    /// How many changes of its own log were handed back to it: the room's log of it holds them.
+    kept: u32,
 }
 
 pub struct Client {
@@ -168,6 +193,8 @@ pub struct Client {
     again_for: u64,
     again: bool,
     settle_at: f32,
+    /// When this page next asks to come back to a fight it left (`Act::Rejoin`).
+    rejoin_at: f32,
     time: Option<f32>,
     note: String,
     character: Option<Character>,
@@ -248,6 +275,7 @@ pub fn init(origin: str) -> Client {
         again_for: 0,
         again: false,
         settle_at: 0.0,
+        rejoin_at: 0.0,
         time: None,
         note: String::from("Connecting…"),
         character: None,
@@ -514,7 +542,171 @@ fn new_play(began: u64, slot: u32, party: take Vec<u32>, armed: [u32]) -> Play {
         settled_at: None,
         settled: None,
         rollbacks: 0,
+        bases: fill(n, Vec::new()),
+        cuts: fill(n, UNCUT),
+        offered: fill(n, u64(0)),
+        waiting: false,
+        settle_at: 0.0,
+        kept: 0,
+        idle: 0,
+        waited: None,
     }
+}
+
+/// `n` of `v`.
+fn fill<T: Clone>(n: u32, v: T) -> Vec<T> {
+    var out: Vec<T> = Vec::new()
+    for _ in 0..n {
+        out.push(v.clone())
+    }
+    out
+}
+
+/// The input of `log` at `frame`: its last change at or before it.
+fn input_in(log: [Change], frame: u32) -> u32 {
+    var lo: u32 = 0
+    var hi = log.len()
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if log[mid].frame <= frame {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo == 0 { 0 } else { log[lo - 1].input }
+}
+
+/// Slot `j`'s input at frame `f` (another player's), as this client knows it: what's heard, or
+/// for a player who came back, the log the room picked up, then what it sent since.
+fn input_of(p: Play, j: u32, f: u32) -> u32 {
+    let cut = p.cuts[j]
+    if cut == UNCUT {
+        return p.link.at(j, f)
+    }
+    if cut == HANDING || f < cut {
+        return input_in(p.bases[j], f)
+    }
+    match p.link.change_at(j, f) {
+        Some(c) => if c.frame >= cut { c.input } else { input_in(p.bases[j], f) },
+        None => input_in(p.bases[j], f),
+    }
+}
+
+/// Slot `j`'s log (another player's) before frame `upto`, as this client knows it.
+fn history(p: Play, j: u32, upto: u32) -> Vec<Change> {
+    let none: Vec<Change> = Vec::new()
+    let cut = p.cuts[j]
+    if cut == UNCUT {
+        return combat::sim::spliced(p.link.log(j), NONE, none, upto)
+    }
+    if cut == HANDING {
+        return combat::sim::spliced(p.bases[j], NONE, none, upto)
+    }
+    combat::sim::spliced(p.bases[j], cut, p.link.log(j), upto)
+}
+
+/// The first frame whose input differs between logs `a` and `b` (`NONE`: none).
+fn first_difference(a: [Change], b: [Change]) -> u32 {
+    var k: u32 = 0
+    loop {
+        let in_a = k < a.len()
+        let in_b = k < b.len()
+        if !in_a && !in_b {
+            return NONE
+        }
+        if in_a && in_b && a[k] == b[k] {
+            k += 1
+            continue
+        }
+        var f = NONE
+        if in_a {
+            f = a[k].frame
+        }
+        if in_b && b[k].frame < f {
+            f = b[k].frame
+        }
+        return f
+    }
+}
+
+/// The fight as its room has it now (`room`, this player peer `me`): a player who came back to a
+/// slot is heard from again and sent everything, and once its log is handed to the room, it's
+/// what the fight runs from (rolling back if it isn't what was heard). Whether this player is
+/// still in the fight (not if it came back to it on another page), and the handoff it offers, if
+/// the room waits for one: what it heard of that player.
+fn follow(p: mut Play, room: Fight, me: u32) -> (bool, Option<combat::main::Act>) {
+    if room.began_at != p.began || !room.on() || room.party.len() != p.party.len() {
+        return (true, None)
+    }
+    if room.party[p.slot] != me {
+        return (false, None)
+    }
+    var offer: Option<combat::main::Act> = None
+    for j in 0..p.party.len() {
+        if j == p.slot {
+            continue
+        }
+        if room.party[j] != p.party[j] {
+            // Its player came back on a new page: what was heard of it stands until the room
+            // picks its log up.
+            let heard = history(p, j, NONE)
+            p.bases[j] = take heard
+            p.cuts[j] = HANDING
+            p.party[j] = room.party[j]
+            p.link.fresh(j)
+        }
+        let cut = room.cuts[j]
+        if cut != HANDING && cut != UNCUT && p.cuts[j] != cut {
+            let was = history(p, j, NONE)
+            p.bases[j] = room.logs[j].changes.clone()
+            p.cuts[j] = cut
+            let now = history(p, j, NONE)
+            let d = first_difference(was, now)
+            if d < p.back {
+                p.back = d
+            }
+        }
+        if cut == HANDING && !p.waiting && offer.is_none() && p.offered[j] != room.rejoined_at[j] {
+            p.offered[j] = room.rejoined_at[j]
+            let upto = p.frame
+            offer = Some(combat::main::Act::Handoff { slot: j, changes: history(p, j, upto), upto })
+        }
+    }
+    (true, offer)
+}
+
+/// The frame the others said they're at: where a player who came back picks the fight up.
+fn others_at(p: Play) -> u32 {
+    var most: u32 = 0
+    for j in 0..p.party.len() {
+        if j != p.slot && p.link.through(j) > most {
+            most = p.link.through(j)
+        }
+    }
+    most
+}
+
+/// This player came back to the fight, and its log so far is `base`, standing until `cut`: it
+/// runs the fight from the start, its own input as the log says until frame `from` (where the
+/// others are), then from the pad again, clock time `time`.
+fn pick_up(p: mut Play, base: [Change], cut: u32, time: f32) {
+    let from = max(max(cut, p.idle), others_at(p))
+    p.mine = Vec::new()
+    for f in 0..from {
+        p.mine.push(input_in(base, f))
+    }
+    p.prev = input_in(base, from)
+    p.link.resume(from, p.prev)
+    // The room's log of it holds the changes handed back too.
+    p.kept = 0
+    for c in base {
+        if c.frame < cut {
+            p.kept += 1
+        }
+    }
+    p.start = Some(time - f32(from) / 60.0)
+    p.waiting = false
 }
 
 /// Every player's input at frame `f`, as this client knows them.
@@ -524,7 +716,7 @@ fn inputs_at(p: Play, f: u32) -> Vec<u32> {
         if j == p.slot {
             ins.push(if f < p.mine.len() { p.mine[f] } else { p.prev })
         } else {
-            ins.push(p.link.at(j, f))
+            ins.push(input_of(p, j, f))
         }
     }
     ins
@@ -573,10 +765,19 @@ fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
     if f >= MAX_FRAMES {
         return None
     }
+    // A player who came back runs again what it played before: its input is known, and was sent.
+    if f < p.mine.len() {
+        let w = p.world.clone()
+        keep(mut p, f, w)
+        let ins = inputs_at(p, f)
+        step(mut p.world, ins)
+        p.frame += 1
+        return None
+    }
     // Once it's over, the input stands: what's sent past the end isn't the fight's. So it does
     // once a log is full.
     var input = p.prev
-    if !p.world.over && p.log.len() < PLAYER_CHANGES {
+    if !p.world.over && p.log.len() + p.kept < PLAYER_CHANGES {
         var now = inputs_at(p, f)
         now[p.slot] = p.prev
         let ready = p.world.reads(p.slot)
@@ -600,8 +801,11 @@ fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
 /// A packet from slot `slot` on the relay: the fight rolls back to the first frame it changes.
 fn heard(p: mut Play, slot: u32, bytes: [u8]) {
     if let Some(f) = p.link.heard(slot, bytes, p.frame) {
-        if f < p.back {
-            p.back = f
+        // What's sent by a player who came back counts from where its log was picked up.
+        let cut = p.cuts[slot]
+        let g = if cut == UNCUT { f } else if cut == HANDING { NONE } else { max(f, cut) }
+        if g < p.back {
+            p.back = g
         }
     }
 }
@@ -1222,11 +1426,33 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         s.settle_at = time + 4.0 * SETTLE_EVERY
         propose_fight(mut s, combat::main::Act::Settle)
     }
+    // A fight this page never played that its character is in, still to send its log: the page
+    // was reloaded mid-fight (or its connection lost), and it takes its place again.
+    if room.on() &&
+        room.began_at != s.last_began &&
+        me != 0 &&
+        slot_of(room.party, me).is_none() &&
+        time >= s.rejoin_at {
+        if let Some((card, seal)) = (match s.character {
+            Some(c) => character::card(c),
+            None => None,
+        }) {
+            if room.seat_of(card).is_some() {
+                s.rejoin_at = time + 2.0 * RETRY
+                propose_fight(mut s, combat::main::Act::Rejoin { card, seal })
+            }
+        }
+    }
     if room.on() && room.began_at != s.last_began && me != 0 {
         if let Some(slot) = slot_of(room.party, me) {
             s.last_began = room.began_at
             s.again = false
-            s.play = Some(new_play(room.began_at, slot, room.party.clone(), room.armed.clone()))
+            var p = new_play(room.began_at, slot, room.party.clone(), room.armed.clone())
+            if room.cuts[slot] != UNCUT {
+                // Back in it: its log so far comes from the others, through the room.
+                p.waiting = true
+            }
+            s.play = Some(take p)
             // The party's fight began: its invite was used.
             s.invite = String::new()
         }
@@ -1293,8 +1519,64 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
     let won = room.settled && won_as_me(s, room)
     var record: Option<Vec<u8>> = None
     let fight_name = fight_room(s)
+    let me = match s.fight {
+        Some(l) => l.peer(),
+        None => 0,
+    }
+    var offer: Option<combat::main::Act> = None
+    var lost = false
     match mut s.play {
         Some(p) => {
+            let (still, handoff) = follow(mut p, room, me)
+            lost = !still
+            offer = take handoff
+        },
+        None => {},
+    }
+    // Back to a fight it left, this player waits for its log so far, then runs the fight again.
+    var waiting = false
+    match mut s.play {
+        Some(p) if p.waiting && !lost => {
+            waiting = true
+            let at = others_at(p)
+            if at > p.idle {
+                p.idle = at
+            }
+            let idle = p.idle
+            let held = p.prev
+            if let Some(bytes) = p.link.send(idle, held) {
+                send(RELAY, bytes)
+            }
+            let since = match p.waited {
+                Some(t) => t,
+                None => time,
+            }
+            p.waited = Some(since)
+            let cut = if room.began_at == p.began && room.on() && p.slot < room.cuts.len() {
+                room.cuts[p.slot]
+            } else { HANDING }
+            if cut != HANDING && cut != UNCUT {
+                // Once the others' logs are heard (each resent whole to it), or a while on.
+                let known = p.link.known()
+                let heard_all = known == NONE || known + 1 >= p.idle
+                if heard_all || time - since > CATCH_UP_SECONDS {
+                    borrow base = room.logs[p.slot].changes
+                    pick_up(mut p, base, cut, time)
+                }
+            } else if time - since > HANDOFF_SECONDS && time >= p.settle_at && room.on() {
+                // No one handed it its log: no one else is left, and the fight is settled.
+                p.settle_at = time + SETTLE_EVERY
+                settle = true
+            }
+            if room.began_at != p.began || room.settled {
+                done = true
+            }
+            s.note = String::from("Back in your fight: catching up with your party…")
+        },
+        _ => {},
+    }
+    match mut s.play {
+        Some(p) if !waiting && !lost => {
             if p.back != NONE {
                 roll_back(mut p)
             }
@@ -1307,7 +1589,9 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
             p.start = Some(start)
             let due = u32(max(time - start, 0.0) * 60.0)
             var steps: u32 = 0
-            while p.frame < due && steps < MOST_STEPS {
+            // What it played before it left runs quicker (nothing's sent): it catches up.
+            let most = if p.frame < p.mine.len() { REPLAY_STEPS } else { MOST_STEPS }
+            while p.frame < due && steps < most {
                 if let Some(bytes) = tick(mut p, pad) {
                     send(RELAY, bytes)
                 }
@@ -1363,6 +1647,16 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
                 )
             }
         },
+        _ => {},
+    }
+    if lost {
+        // It came back to this fight on another page: that one plays it now.
+        s.play = None
+        s.note = String::from("You're in this fight on another page.")
+        return
+    }
+    match offer {
+        Some(act) => propose_fight(mut s, act.clone()),
         None => {},
     }
     if let Some(fight) = record {
@@ -1887,4 +2181,202 @@ fn an_invite_link_names_a_partys_room() {
     assert(party_of_address(Vec::from([47])).is_none(), "no fragment")
     let code = new_code(77, 1.5)
     assert(party_code(code.as_str()) && code != new_code(78, 1.5), code.as_str())
+}
+
+/// A packet on the way, from peer `peer`, to player `to`, landing at frame `at`.
+struct Packet: Clone {
+    at: u32,
+    peer: u32,
+    to: u32,
+    bytes: Vec<u8>,
+}
+
+/// `value`, as peer `peer` proposed it at room time `at`.
+fn proposed(
+    peer: u32,
+    at: u32,
+    value: take combat::main::Act,
+) -> std::net::Entry<combat::main::Act> {
+    std::net::Entry {
+        seq: 2,
+        id: std::net::ProposalId { peer, session: 1, counter: 1 },
+        at: u64(at),
+        value,
+    }
+}
+
+/// A card of name numbers `n`, a valid look.
+fn card_of(n: u32) -> Card {
+    Card::of(
+        names::Name { title: n, front: n, back: n, epithet: n },
+        platform::wire::Look { build: 1, skin: 1, hair: 1, cloth: 1 },
+    )
+}
+
+@test
+fn a_player_whose_page_reloaded_mid_fight_comes_back_and_everyone_agrees() {
+    let n: u32 = 3
+    var room = Fight::empty()
+    for i in 0..n {
+        let join = combat::main::Act::Join {
+            weapon: LONGSWORD,
+            card: card_of(i + 1),
+            seal: island::main::sealed(true),
+        }
+        room.apply(proposed(10 + i, 0, take join))
+    }
+    room.apply(proposed(peer: 10, at: 0, value: combat::main::Act::Begin))
+    let armed = room.armed.clone()
+    var peers: Vec<u32> = Vec::from([u32(10), 11, 12])
+    var plays: Vec<Play> = Vec::new()
+    var seeds: Vec<u32> = Vec::new()
+    var held: Vec<Pad> = Vec::new()
+    for i in 0..n {
+        plays.push(new_play(1, i, room.party.clone(), armed))
+        seeds.push(5 + 31 * i)
+        held.push(Pad { x: 0.0, z: 0.0, held: 0 })
+    }
+    room.began_at = 1
+    // The last player's page reloads at frame 900, and it's back (as peer 20) at 1300.
+    let gone_at: u32 = 900
+    let back_at: u32 = 1300
+    let delay: u32 = 4
+    var flights: Vec<Packet> = Vec::new()
+    var seed: u32 = 99
+    var away = false
+    for f in 0..6000 {
+        if f == gone_at {
+            away = true
+        }
+        if f == back_at {
+            let card = card_of(n)
+            let back = proposed(
+                20,
+                f * 1000 / 60,
+                combat::main::Act::Rejoin { card, seal: island::main::sealed(true) },
+            )
+            assert(room.check(back.clone()) == Verdict::Accept)
+            room.apply(back)
+            peers[n - 1] = 20
+            var p = new_play(1, n - 1, room.party.clone(), armed)
+            p.waiting = true
+            plays[n - 1] = take p
+            away = false
+        }
+        var later: Vec<Packet> = Vec::new()
+        for fl in flights.clone() {
+            if fl.at > f {
+                later.push(fl.clone())
+                continue
+            }
+            // A page that's gone hears nothing, and what the old one sent goes nowhere now.
+            if away && fl.to == n - 1 {
+                continue
+            }
+            if let Some(slot) = slot_of(plays[fl.to].party, fl.peer) {
+                heard(mut plays[fl.to], slot, fl.bytes)
+            }
+        }
+        flights = take later
+        for i in 0..n {
+            if away && i == n - 1 {
+                continue
+            }
+            let (still, offer) = follow(mut plays[i], room, peers[i])
+            assert(still)
+            if let Some(act) = offer {
+                let e = proposed(peers[i], f * 1000 / 60, act.clone())
+                if room.check(e.clone()) == Verdict::Accept {
+                    room.apply(e)
+                }
+            }
+            var out: Vec<Vec<u8>> = Vec::new()
+            if plays[i].waiting {
+                let at = others_at(plays[i])
+                if at > plays[i].idle {
+                    plays[i].idle = at
+                }
+                let idle = plays[i].idle
+                let prev = plays[i].prev
+                if let Some(bytes) = plays[i].link.send(idle, prev) {
+                    out.push(bytes.clone())
+                }
+                let cut = room.cuts[i]
+                let known = plays[i].link.known()
+                if cut != HANDING && cut != UNCUT && known != NONE && known + 1 >= plays[i].idle {
+                    let base = room.logs[i].changes.clone()
+                    pick_up(mut plays[i], base, cut, 0.0)
+                }
+            } else {
+                if plays[i].back != NONE {
+                    roll_back(mut plays[i])
+                }
+                if f % 7 == 0 {
+                    var sd = seeds[i]
+                    held[i] = hands(mut sd)
+                    seeds[i] = sd
+                }
+                // Back, it lets go of the stick it held as it left: its first change is to nothing.
+                if i == n - 1 && f >= back_at {
+                    held[i] = Pad { x: 0.0, z: 0.0, held: 0 }
+                }
+                let replaying = plays[i].frame < plays[i].mine.len()
+                let runs = if replaying { REPLAY_STEPS } else if plays[i].frame < f { 2 } else { 1 }
+                for _ in 0..runs {
+                    if plays[i].frame > f {
+                        break
+                    }
+                    if let Some(bytes) = tick(mut plays[i], held[i]) {
+                        out.push(bytes.clone())
+                    }
+                }
+            }
+            for bytes in out {
+                for j in 0..n {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+                    if j != i && (seed >> 8) % 100 >= 5 {
+                        flights.push(
+                            Packet { at: f + delay, peer: peers[i], to: j, bytes: bytes.clone() },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    for fl in flights.clone() {
+        if let Some(slot) = slot_of(plays[fl.to].party, fl.peer) {
+            heard(mut plays[fl.to], slot, fl.bytes)
+        }
+    }
+    assert(room.cuts[n - 1] != HANDING && room.cuts[n - 1] != UNCUT, "its log was handed back")
+    let handed = room.logs[n - 1].changes.clone()
+    assert(handed.len() > 0 && handed[handed.len() - 1].frame < gone_at, "what it played before")
+    let own = plays[n - 1].log.clone()
+    assert(own.len() > 0 && own[0].frame >= back_at, "and it played on")
+    for i in 0..n {
+        if plays[i].back != NONE {
+            roll_back(mut plays[i])
+        }
+        assert(plays[i].world.over, "the fight ends")
+        var changes: Vec<Change> = Vec::new()
+        for c in plays[i].log.clone() {
+            if c.frame < plays[i].world.frame {
+                changes.push(c.clone())
+            }
+        }
+        let log = proposed(
+            peers[i],
+            7000,
+            combat::main::Act::Log { changes, end: plays[i].world.frame },
+        )
+        assert(room.check(log.clone()) == Verdict::Accept)
+        room.apply(log)
+    }
+    assert(room.settled)
+    for p in plays {
+        assert(p.world.outcome() == room.outcome, "each player's fight is the room's")
+    }
+    std::io::print(
+        f"came back: frames {room.outcome.frames}, cut at {room.cuts[n - 1]}, held {input_in(handed, gone_at)}, then {own[0].input}",
+    )
 }

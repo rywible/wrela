@@ -246,6 +246,9 @@ pub struct Console {
     // The page's address, read once: a game's name left in it (a reload, a link) is dropped,
     // since the console opens at its library.
     address: Option<Pending<u8>>,
+    /// The MMO party whose invite fragment the address shows (`#party-<code>`), so a reload
+    /// mid-fight comes back to that party's room, and to the fight.
+    party_shown: Option<String>,
     pending: Option<Pending<u8>>,
     closing: Option<Pending<u8>>,
     // The session answering is for a selection made before.
@@ -414,6 +417,7 @@ pub fn init() -> Console {
         profile_write: None,
         environment: Some(host::environment()),
         address: Some(host::address()),
+        party_shown: None,
         mmo: Some(mmo::client::init(ORIGIN)),
         front: Some(mmo::front::init(faces())),
         pending: None,
@@ -863,7 +867,10 @@ fn near_cover(index: u32, selected: u32) -> bool {
 fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
         // An invite link (`#party-<code>`): the MMO fights with that party.
+        var party = false
         if let Some(code) = mmo::client::party_of_address(bytes) {
+            party = true
+            s.party_shown = Some(String::from(f"#{mmo::rooms::party_room(code.as_str())}"))
             s.front = None
             match mut s.mmo {
                 Some(m) => {
@@ -882,9 +889,12 @@ fn update(s: mut Console) {
             s.front = None
             account::left_game(mut s.account)
         }
-        // The answer to the replacement is empty, so this happens once.
-        if let Some(kept) = without_fragment(bytes) {
-            s.address = Some(host::replace_address(kept.as_str()))
+        // The answer to the replacement is empty, so this happens once. A party's invite stays,
+        // so a reload comes back to it.
+        if !party {
+            if let Some(kept) = without_fragment(bytes) {
+                s.address = Some(host::replace_address(kept.as_str()))
+            }
         }
     }
     if let Some(result) = answer_of(mut s.environment) {
@@ -1759,6 +1769,21 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             s.pointing = false
             s.cursor = Some(host::cursor("default"))
             return
+        }
+        // A party made here (an invite): the address shows it, so a reload comes back to it.
+        if s.address.is_none() {
+            match s.mmo {
+                Some(m) => {
+                    let fragment = mmo::client::party_fragment(m)
+                    if fragment.is_some() && fragment != s.party_shown {
+                        if let Some(f) = fragment.clone() {
+                            s.address = Some(host::replace_address(f.as_str()))
+                        }
+                        s.party_shown = take fragment
+                    }
+                },
+                None => {},
+            }
         }
         match mut s.mmo {
             Some(m) => {
