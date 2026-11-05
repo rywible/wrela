@@ -13,6 +13,7 @@ use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
 use isle::{SCALE, bounds, isle, isle_material, isle_normal}
 use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
+use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, world}
 use engine::light::sky as clear_sky
 use engine::sky::{Clouds, cloud_shadow, clouded_sky, sky_with_clouds}
@@ -1122,16 +1123,16 @@ fn falls(
             )
             // Lower down it clumps and breaks apart.
             let clump = smoothstep(
-                0.25 + 0.5 * smoothstep(120.0, 480.0, drop),
-                0.75,
+                0.2 + 0.45 * smoothstep(120.0, 480.0, drop),
+                0.95,
                 noise(vec2(side * 0.08 + fi, drop * 0.02 - s.held * 1.4)),
             )
             // (Softer at its edges, and thinning away down the cliff into its spray, not cut off.)
             let body = smoothstep(w, w * 0.15, across) *
-                smoothstep(0.0, 30.0, drop) *
+                smoothstep(-15.0, 70.0, drop) *
                 smoothstep(620.0, 140.0, drop) *
                 step(1.0, f.w) *
-                mix(1.0, clump, 0.8 * smoothstep(60.0, 300.0, drop))
+                mix(1.0, clump, 0.55 * smoothstep(60.0, 300.0, drop))
             let mist = exp(-(across * across) / (w * w * 22.0)) *
                 smoothstep(220.0, 560.0, drop) *
                 smoothstep(1400.0, 750.0, drop) *
@@ -1336,12 +1337,17 @@ fn sample(
             p,
             n,
             id,
-            t * 2.0 / (s.resolution.y * s.focal) / max(abs(dot(n, d)), 0.25),
+            foot(t, s.resolution.y, s.focal, dot(n, d)),
         )
         // The gilding shines: it holds the low sun, as if lit from within.
+        // (Far off, a cross or a finial is a speck: held down, or it beads as a model's would.)
+        let far_ = 1.0 - 0.8 * smoothstep(2500.0, 7000.0, t)
         let glow = if id == GILT {
             glow0 +
-                light.sun_colour * vec3(1.0, 0.74, 0.4) * (0.7 + 2.4 * max(dot(n, light.sun), 0.0))
+                light.sun_colour *
+                    vec3(1.0, 0.74, 0.4) *
+                    (0.7 + 2.4 * max(dot(n, light.sun), 0.0)) *
+                    far_
         } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
         let sun = isle_shadow(p + n * 2.0, light.sun, 2.0, hash2(px * 1.37)) *
             mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
@@ -1396,7 +1402,7 @@ fn sample(
         // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
         let hot = (if id == ROCK { 0.08 } else if id == GILT { 0.8 } else {
             1.0
-        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.85, smoothstep(2500.0, 7000.0, t)) })
+        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.3, smoothstep(2500.0, 7000.0, t)) })
         c += light.sun_colour * vec3(1.0, 0.78, 0.45) * hot * edge_on * mix(1.0, sun, 0.6)
         // The rock's great planes modelled as a painter would against the light: those turned
         // toward the sun's side warmed by it as it wraps round, those turned away left in a
