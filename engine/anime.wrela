@@ -189,7 +189,8 @@ pub fn contact_of(mv: Move, rig: Rig) -> f32 {
     }
     var best = a.from
     var reach = 0.0
-    let span = min(mv.length() - a.from, 3.0 * (a.till - a.from) + 0.1)
+    // Within the hit window (and a frame or two on): the hold lands while the fight says it hits.
+    let span = min(mv.length() - a.from, a.till - a.from + 0.034)
     for k in 0..40 {
         let t = a.from + span * f32(k) / 39.0
         let e = ends_of(rig, mv.pose(t), std::transform::identity())[limb]
@@ -261,9 +262,9 @@ pub fn drawn(
             d.since = 0.0
         } else if d.hold_left > 0.0 {
             d.hold_left -= dt
-            if d.impact_left > 0.0 {
+            if d.impact_left > 1.0e-3 {
                 d.impact_left -= dt
-                if d.impact_left <= 0.0 {
+                if d.impact_left <= 1.0e-3 {
                     // The impact frame's done: the strike, held, unsmeared.
                     let at = mv.pose(strike)
                     d.drawing = if m.upper { layered(pose, at, mask, 1.0, bones) } else { at }
@@ -286,14 +287,29 @@ pub fn drawn(
             }
         }
     }
-    let impact = if d.impact_left > 0.0 { how.flash } else { 0.0 }
+    let impact = if d.impact_left > 1.0e-3 { how.flash } else { 0.0 }
+    var shown = d.drawing
+    var at = d.place
     if m.upper {
-        // Over the upper body alone: the arms and trunk drawn, the legs going on smooth under
-        // them, where gameplay has the body.
-        let shown = layered(pose, d.drawing, mask, 1.0, bones)
-        return Drawn { pose: shown, place, impact, smears: d.smears }
+        // Over the upper body alone: the arms and trunk drawn (already layered when drawn, so
+        // shown whole), the legs going on smooth under them, where gameplay has the body.
+        var whole = [0.0; 64]
+        for b in 0..bones {
+            whole[b] = if mask[b] > 0.0 { 1.0 } else { 0.0 }
+        }
+        shown = layered(pose, d.drawing, whole, 1.0, bones)
+        at = place
     }
-    Drawn { pose: d.drawing, place: d.place, impact, smears: d.smears }
+    // Each smear stretches from where its limb's end is as shown now (the legs and place under an
+    // upper-body drawing go on moving).
+    var smears = d.smears
+    let ends = ends_of(rig, shown, at)
+    for i in 0..4 {
+        if smears[i].on {
+            smears[i].from = ends[i]
+        }
+    }
+    Drawn { pose: shown, place: at, impact, smears }
 }
 
 /// A palette (`humanoid::palette`) with its smears: each smearing limb's bones, from the one it
