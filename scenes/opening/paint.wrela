@@ -1128,13 +1128,13 @@ fn falls(
             )
             // (Softer at its edges, and thinning away down the cliff into its spray, not cut off.)
             let body = smoothstep(w, w * 0.15, across) *
-                smoothstep(0.0, 6.0, drop) *
-                smoothstep(900.0, 200.0, drop) *
+                smoothstep(0.0, 30.0, drop) *
+                smoothstep(620.0, 140.0, drop) *
                 step(1.0, f.w) *
-                mix(1.0, clump, 0.35 * smoothstep(120.0, 400.0, drop))
-            let mist = exp(-(across * across) / (w * w * 14.0)) *
-                smoothstep(120.0, 460.0, drop) *
-                smoothstep(1300.0, 650.0, drop) *
+                mix(1.0, clump, 0.8 * smoothstep(60.0, 300.0, drop))
+            let mist = exp(-(across * across) / (w * w * 22.0)) *
+                smoothstep(220.0, 560.0, drop) *
+                smoothstep(1400.0, 750.0, drop) *
                 step(1.0, f.w) *
                 0.3 *
                 (0.55 + 0.45 * noise(vec2(side * 0.05, drop * 0.01 - s.held * 0.2)))
@@ -1143,10 +1143,11 @@ fn falls(
             // between them cooler and darker, the mist a soft warm grey.
             let warm = h.light.sun_colour * vec3(1.0, 0.86, 0.66)
             let cool = vec3(0.16, 0.18, 0.22)
-            let water = cool + warm * (0.04 + 0.1 * sheet)
-            let haze_ = cool * 1.25 + warm * 0.07
+            // (Backlit, its spray glows warm: the low sun through it.)
+            let water = cool * 0.8 + warm * (0.08 + 0.12 * sheet)
+            let haze_ = cool * 1.1 + warm * 0.12
             let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
-            let col = mix(lit, hazed(aerial, smp, h.light, lit, p, s.eye), 0.5)
+            let col = hazed(aerial, smp, h.light, lit, p, s.eye)
             acc += vec4(col * a, a)
         }
     }
@@ -1345,10 +1346,12 @@ fn sample(
         let sun = isle_shadow(p + n * 2.0, light.sun, 2.0, hash2(px * 1.37)) *
             mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
         let ao = isle_ao(p, n)
-        // The rock far and blued; the cathedral, catching the light, less so.
+        // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
+        // little past it toward the sky's own colour, as a painter pushes back what's far; so the
+        // building sits on its rock, not over it, and both sit far off, not near and small.
         // Its underside, hung in its own shade, given to the air: the lower, the more of the sky.
         let below = clamp((ISLE.y - p.y) / (210.0 * SCALE), 0.0, 1.0)
-        let haze = if id == ROCK { 0.74 + 0.08 * pow(below, 1.6) } else { 0.58 }
+        let haze = 1.06 + 0.08 * pow(below, 1.6)
         let gloss = if id == ROCK { 0.0 } else { 1.0 }
         // (The rock lit by its planes more than its cracks: a crack's wall turned to the sun
         // catches it softly, not as a seam of gold.)
@@ -1377,6 +1380,11 @@ fn sample(
         if id == ROCK {
             c *= mix(1.0, 0.72, smoothstep(0.15, 0.9, below))
         }
+        // The keep's foot darker where it meets the plateau, in the rock's shade and the grime
+        // its rain runs down to: the building grows from its rock, not set on it.
+        if id == STONE {
+            c *= mix(0.62, 1.0, smoothstep(0.0, 70.0, p.y - (ISLE.y + 2.0 * SCALE)))
+        }
         // The sun behind it catches every edge turned its way: a hot rim down the spires' and the
         // rock's sun sides, against the light.
         let side = normalize(vec3(light.sun.x, 0.15, light.sun.z))
@@ -1388,7 +1396,7 @@ fn sample(
         // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
         let hot = (if id == ROCK { 0.08 } else if id == GILT { 0.8 } else {
             1.0
-        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.45, smoothstep(2500.0, 7000.0, t)) })
+        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.85, smoothstep(2500.0, 7000.0, t)) })
         c += light.sun_colour * vec3(1.0, 0.78, 0.45) * hot * edge_on * mix(1.0, sun, 0.6)
         // The rock's great planes modelled as a painter would against the light: those turned
         // toward the sun's side warmed by it as it wraps round, those turned away left in a

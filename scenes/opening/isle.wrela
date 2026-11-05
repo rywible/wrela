@@ -617,7 +617,10 @@ pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, v
         ) *
             shown(1.67 * GRAND, foot) +
             0.15 * (1.0 - shown(1.67 * GRAND, foot))
-        (vec3(0.02), 0.08, 0.0, tint * (1.0 - lead) * 1.8, 1.0)
+        // (And far off, a window's light no more than a warm speck: by day, from 8 km, a
+        // cathedral's windows are dark, not lamps.)
+        let far_dim = mix(0.12, 1.0, shown(1.67 * GRAND, foot))
+        (vec3(0.02), 0.08, 0.0, tint * (1.0 - lead) * 1.8 * far_dim, 1.0)
     } else {
         // Limestone in ashlar: courses 0.6 m, blocks staggered, each its own tint; rain's dark
         // streaks below every ledge; grime at the foot; lichen.
@@ -635,6 +638,9 @@ pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, v
             smoothstep(0.7, 0.3, abs(n.y))
         var a = vec3(0.62, 0.56, 0.46) * (0.86 + 0.22 * block)
         a = mix(a, vec3(0.5, 0.52, 0.5), 0.3 * smoothstep(0.3, 0.8, noise3(c * 0.05)))
+        // Weathered unevenly, wall by wall: paler where the sun bleaches it, darker where the
+        // rain stains it, in tall patches a far eye still reads.
+        a *= 0.8 + 0.4 * noise3(c * vec3(0.07, 0.018, 0.07) + vec3(3.3))
         let streak = mix(
             0.25,
             smoothstep(0.45, 0.9, noise(vec2(along * 0.9, c.y * 0.04))),
