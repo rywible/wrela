@@ -578,7 +578,7 @@ pub fn hilt_held(
 
 /// One arm (`side` +1 the left, -1 the right) reaching its hand's hold to `hold`, the hand turned
 /// to hold a sword framed `f` there (the hold at rest's frame carried to `f`), its elbow bent
-/// toward where it was. In place in `w` (the body's space).
+/// out to its own side. In place in `w` (the body's space).
 fn arm_onto(rig: Rig, w: mut Vec<Rigid>, side: f32, hold: vec3, f: Quat) {
     let rw = rig.rest_world()
     let name = if side > 0.0 { "left" } else { "right" }
@@ -595,7 +595,8 @@ fn arm_onto(rig: Rig, w: mut Vec<Rigid>, side: f32, hold: vec3, f: Quat) {
     let l1 = length(rw[l0].t - rw[u0].t)
     let l2 = length(rw[h0].t - rw[l0].t)
     let s = w[u0].t
-    let pole = w[l0].t - (s + wrist) * 0.5
+    // The elbow out to its own side and down, never across the middle (the forearms parallel).
+    let pole = vec3(side * 0.8, -0.6, -0.1)
     let (e, t) = elbow_at(s, wrist, l1, l2, pole)
     turn_below(rig, mut w, u0, arc(w[l0].t - w[u0].t, e - w[u0].t))
     turn_below(rig, mut w, l0, arc(w[h0].t - w[l0].t, t - w[l0].t))

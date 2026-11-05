@@ -318,30 +318,37 @@ pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
 /// The classic downward cut: raised over the head, held there, snapped straight down in three
 /// frames, stopped dead on its blow, settled, and back to guard (its sword `vertical_sword`).
 fn vertical() -> Move {
-    // The body of Mixamo's first slash (its gather, its lunge and planted settle), retimed to the
-    // keyed sword: its rise to its peak drawn out to the held top, its blow on the snap.
+    // The body of Mixamo's first slash, retimed to the keyed sword: its gather while the sword
+    // rises and holds, its lunge (the step in) on the three-frame snap so the stamp lands with
+    // the blow, its planted settle after.
     let m = once_of(embed("private/great_sword_slash.bvh"), 7, 36)
     let keys = [
         vec2(0.0, 0.0),
-        vec2(0.3, 0.25),
-        vec2(0.5, 0.333),
-        vec2(0.55, 0.467),
-        vec2(0.65, 0.467),
-        vec2(0.78, 0.6),
-        vec2(1.15, 0.95),
+        vec2(0.18, 0.06),
+        vec2(0.33, 0.09),
+        vec2(0.38, 0.467),
+        vec2(0.48, 0.467),
+        vec2(0.55, 0.53),
+        vec2(0.9, 0.95),
     ]
-    var v = playback::keyed_over(m, keys, blow: 0.55, free: 0.65, cancel: 0.8)
-    // Its trunk squared to the foe: the slash's twist (a diagonal cut's wind) taken out of the
-    // spine, so the shoulders face where the hips do and the cut comes down the middle.
+    var v = playback::keyed_over(m, keys, blow: 0.38, free: 0.48, cancel: 0.6)
+    // Its trunk squared to the foe ahead: the slash's twist (a diagonal cut's wind) taken out of
+    // the spine, and the hips' turn undone above them, so the shoulders face straight ahead and
+    // the cut comes down the middle.
     let rig = HERO.rig.clone()
     let n = v.clip.bones
-    for name in ["spine", "chest", "upperChest"] {
-        let b = rig.find(name)
-        if b != humanoid::NONE {
-            for f in 0..v.clip.frames {
+    let hips = rig.find("hips")
+    let spine = rig.find("spine")
+    for f in 0..v.clip.frames {
+        let hq = v.clip.turns[f * n + hips]
+        let turned = keys::twist_of(hq, vec3(0.0, 1.0, 0.0))
+        for name in ["spine", "chest", "upperChest"] {
+            let b = rig.find(name)
+            if b != humanoid::NONE {
                 let i = f * n + b
                 let q = v.clip.turns[i]
-                v.clip.turns[i] = q.mul(keys::twist_of(q, vec3(0.0, 1.0, 0.0)).inverse())
+                let swing = q.mul(keys::twist_of(q, vec3(0.0, 1.0, 0.0)).inverse())
+                v.clip.turns[i] = if b == spine { turned.inverse().mul(swing) } else { swing }
             }
         }
     }
@@ -350,34 +357,35 @@ fn vertical() -> Move {
 
 /// The classic cut's sword, keyed `time` into it: where the right hand holds it (from the upper
 /// chest, the body's space: +y up, +z ahead), the way its blade points and its edge leads.
-/// From the guard up over the head (jodan), held there loading back a little, snapped straight
-/// down the middle in three frames to stop level with the foe's chest, held dead on it, sunk a
-/// little lower in its settle, and back to guard.
+/// From the guard up over the head (jodan, hands a fist above and ahead of the brow), held there
+/// loading back a little, snapped straight down the middle in three evenly spaced frames to
+/// stop just below level at the foe's chest, held dead six frames, its point dipping as the body
+/// sinks into its front knee, and straight back up the middle to guard.
 pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
     // Keys: (time, the hold's place from the chest, the blade's angle up from ahead about the
     // body's left-right axis, degrees).
-    let times = [0.0, 0.3, 0.5, 0.55, 0.65, 0.78, 1.15]
+    let times = [0.0, 0.18, 0.33, 0.38, 0.48, 0.55, 0.9]
     let holds = [
-        vec3(0.0, -0.3, 0.42),
-        vec3(0.0, 0.56, 0.14),
-        vec3(0.0, 0.6, 0.08),
-        vec3(0.0, -0.1, 0.56),
-        vec3(0.0, -0.1, 0.56),
-        vec3(0.0, -0.2, 0.52),
-        vec3(0.0, -0.3, 0.42),
+        vec3(0.0, -0.35, 0.4),
+        vec3(0.0, 0.48, 0.3),
+        vec3(0.0, 0.52, 0.26),
+        vec3(0.0, -0.12, 0.58),
+        vec3(0.0, -0.12, 0.58),
+        vec3(0.0, -0.18, 0.56),
+        vec3(0.0, -0.35, 0.4),
     ]
-    let angles = [10.0, 145.0, 155.0, -18.0, -18.0, -28.0, 10.0]
+    let angles = [-5.0, 140.0, 150.0, -10.0, -10.0, -22.0, -5.0]
     var hold = holds[6]
     var angle = angles[6]
     for i in 1..7 {
         if time >= times[i - 1] && time <= times[i] {
             let x = (time - times[i - 1]) / (times[i] - times[i - 1])
             // The snap down accelerates into its blow; the rest ease in and out.
-            let k = if i == 3 { x * x } else { smoothstep(0.0, 1.0, x) }
+            let k = if i == 3 { x } else { smoothstep(0.0, 1.0, x) }
             hold = mix(holds[i - 1], holds[i], k)
             // Coming over the top, the hands arc up and out ahead rather than cutting a corner.
             if i == 3 {
-                hold += vec3(0.0, 0.12, 0.12) * sin(3.14159265 * k)
+                hold += vec3(0.0, 0.1, 0.1) * sin(3.14159265 * k)
             }
             angle = mix(angles[i - 1], angles[i], k)
         }
