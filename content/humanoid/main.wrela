@@ -302,7 +302,7 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
                 {
                     let m = mixamo::MOCAP_ACTS[act].clone()
                     let hit = m.mark(playback::ACTIVE).unwrap()
-                    s.mover.act_time > hit.from - 0.08 && s.mover.act_time < hit.from + 0.005
+                    s.mover.act_time > hit.from - 0.08 && s.mover.act_time < hit.from - 0.001
                 }
         } else {
             act != humanoid::NONE && blade::sweeps(act) &&
@@ -526,20 +526,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
         // The classic cut: its sword keyed (not the mocap's hands), both arms put on it, blended
         // in from the guard as it starts and back out as it ends.
-        let (held, grip, f) = if s.mover.acting == mixamo::M_VERTICAL {
-            let len = mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].length()
-            let t = floor(s.mover.act_time * 30.0) / 30.0
-            let on = smoothstep(0.0, 0.07, t) * (1.0 - smoothstep(len - 0.3, len, t))
+        // (With the one cut alone, its keyed guard held between cuts too: the sword never left
+        // to the mocap.)
+        let cutting = s.mover.acting == mixamo::M_VERTICAL
+        let (held, grip, f) = if cutting || ONE == 1 {
+            let t = if cutting { floor(s.mover.act_time * 30.0) / 30.0 } else { 0.0 }
+            let on = 1.0
             let w = humanoid::frame_world(rig, shown.turns, 0, rig.base.t + rig.base.q.rotate(shown.hips))
+            // Keyed in the body's space, straight ahead at the foe (the trunk's squared to it):
+            // up and out from the upper chest, across from the head (the middle of the body as
+            // it leans).
             let chest = w[rig.find("upperChest")].t
-            // Keyed in the body's space, straight ahead at the foe (the trunk's squared to it).
+            let centre = vec3(w[rig.find("head")].t.x, chest.y, chest.z)
             let (hold, blade, edge) = mixamo::vertical_sword(t)
             let u = f.rotate(vec3(0.0, 0.0, 1.0))
             let e = f.rotate(vec3(1.0, 0.0, 0.0))
             keys::sword_keyed(
                 rig,
                 shown,
-                mix(grip, chest + hold, on),
+                mix(grip, centre + hold, on),
                 normalize(mix(u, blade, on)),
                 normalize(mix(e, edge, on)),
                 mixamo::SPAN,

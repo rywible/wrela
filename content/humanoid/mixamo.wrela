@@ -324,14 +324,14 @@ fn vertical() -> Move {
     let m = once_of(embed("private/great_sword_slash.bvh"), 7, 36)
     let keys = [
         vec2(0.0, 0.0),
-        vec2(0.18, 0.06),
-        vec2(0.33, 0.09),
-        vec2(0.38, 0.467),
-        vec2(0.48, 0.467),
-        vec2(0.55, 0.53),
-        vec2(0.9, 0.95),
+        vec2(0.16, 0.06),
+        vec2(0.3, 0.09),
+        vec2(0.3667, 0.467),
+        vec2(0.4667, 0.467),
+        vec2(0.53, 0.53),
+        vec2(0.85, 0.95),
     ]
-    var v = playback::keyed_over(m, keys, blow: 0.38, free: 0.48, cancel: 0.6)
+    var v = playback::keyed_over(m, keys, blow: 0.3667, free: 0.4667, cancel: 0.6)
     // Its trunk squared to the foe ahead: the slash's twist (a diagonal cut's wind) taken out of
     // the spine, and the hips' turn undone above them, so the shoulders face straight ahead and
     // the cut comes down the middle.
@@ -351,6 +351,15 @@ fn vertical() -> Move {
                 v.clip.turns[i] = if b == spine { turned.inverse().mul(swing) } else { swing }
             }
         }
+        // The head upright, looking under the hands, not thrown about by the slash's wind.
+        let guard = IDLE_M.clip.pose(0.0)
+        for name in ["neck", "head"] {
+            let b = rig.find(name)
+            if b != humanoid::NONE {
+                let i = f * n + b
+                v.clip.turns[i] = v.clip.turns[i].nlerp(guard.turns[b], 0.75)
+            }
+        }
     }
     v
 }
@@ -364,15 +373,15 @@ fn vertical() -> Move {
 pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
     // Keys: (time, the hold's place from the chest, the blade's angle up from ahead about the
     // body's left-right axis, degrees).
-    let times = [0.0, 0.18, 0.33, 0.38, 0.48, 0.55, 0.9]
+    let times = [0.0, 0.16, 0.3, 0.3667, 0.4667, 0.53, 0.85]
     let holds = [
-        vec3(0.0, -0.35, 0.4),
-        vec3(0.0, 0.48, 0.3),
-        vec3(0.0, 0.52, 0.26),
-        vec3(0.0, -0.12, 0.58),
-        vec3(0.0, -0.12, 0.58),
-        vec3(0.0, -0.18, 0.56),
-        vec3(0.0, -0.35, 0.4),
+        vec3(0.0, -0.35, 0.42),
+        vec3(0.0, 0.5, 0.3),
+        vec3(0.0, 0.54, 0.26),
+        vec3(0.0, -0.14, 0.72),
+        vec3(0.0, -0.14, 0.72),
+        vec3(0.0, -0.2, 0.7),
+        vec3(0.0, -0.35, 0.42),
     ]
     let angles = [-5.0, 140.0, 150.0, -10.0, -10.0, -22.0, -5.0]
     var hold = holds[6]
