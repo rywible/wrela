@@ -250,9 +250,9 @@ impl Move {
         (local, hb - ha)
     }
 
-    /// How fast (m/s) gameplay carries a `pushed` one-off at `time` (s): nothing for its first
-    /// tenth of a second, building to its speed by `PUSH_IN` s, and easing off over its last
-    /// `PUSH_OUT` s (all but the last tenth), so it springs off and lands on its feet.
+    /// How fast (m/s) gameplay carries a `pushed` one-off at `time` (s): from its first frame,
+    /// as its feet push off, building to its speed by `PUSH_IN` s, and easing off over its last
+    /// `PUSH_OUT` s (nothing in the last tenth), so it lands on its feet.
     pub fn push_at(self, time: f32) -> f32 {
         let len = self.length()
         self.speed *
@@ -326,8 +326,8 @@ impl Move {
 
 /// `m`, a one-off, carried ahead at up to `speed` (m/s) by gameplay while it plays, on top of
 /// its root's own travel: a dodge roll keyed in place, given the fight's dodge speed. It's
-/// carried only once it's off its feet (`Move::push_at`), so it doesn't skate as it crouches to
-/// spring, nor as it gets up.
+/// carried from its first frame, as its feet sweep back to push off, and eased off as it gets up
+/// (`Move::push_at`), so it skates neither way.
 pub fn pushed(m: Move, speed: f32) -> Move {
     var out = m.clone()
     out.speed = speed
