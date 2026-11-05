@@ -221,9 +221,11 @@ fn domains_and_catalog_components_reject_header_and_path_injection() {
         "https://games.wrela.dev",
         Vec::from([String::from("https://one.games.wrela.dev")]),
         embedded: false,
+        rooms: true,
     )
     assert(contains(h.as_str(), "cross-origin-isolated=(self \"https://one.games.wrela.dev\")"))
     assert(contains(h.as_str(), "frame-ancestors 'none'"))
+    assert(contains(h.as_str(), "connect-src 'self' wss://games.wrela.dev https://one"))
     let none: [String; 0] = []
     let child = headers("https://games.wrela.dev", none, embedded: true)
     assert(contains(child.as_str(), "frame-ancestors https://games.wrela.dev"))
@@ -1291,4 +1293,9 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
             Err(e) => assert(contains(e.as_str(), why), e.as_str()),
         }
     }
+}
+
+@test
+fn the_console_finds_its_rooms_on_its_own_domain() {
+    assert(main::net_json("wrela.dev").as_str() == "{\"url\": \"wss://wrela.dev\"}\n")
 }

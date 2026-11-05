@@ -1,0 +1,51 @@
+// The MMO's rooms on a server: each room's instance runs the reducer its name says, an island's
+// (`island-…`, mmo/island) or a fight's (`fight-…`, mmo/combat). A room of another name closes
+// each connection that opens to it.
+
+use std::input::{Event, events}
+use std::net::{close, room}
+
+/// A room's server, by the kind its name says.
+pub enum Rooms {
+    Island(island::main::Server),
+    Fight(combat::main::Server),
+    Other,
+}
+
+/// The prefixes of the rooms' names.
+pub const ISLAND_PREFIX: Text = "island-"
+pub const FIGHT_PREFIX: Text = "fight-"
+
+/// The room this instance runs, by its name.
+@server
+pub fn init() -> Rooms {
+    of_name(room().as_str())
+}
+
+/// The room a name says: an island's, a fight's, or another.
+@server
+pub fn of_name(name: str) -> Rooms {
+    if name.starts_with(ISLAND_PREFIX) {
+        Rooms::Island(island::main::serve_init())
+    } else if name.starts_with(FIGHT_PREFIX) {
+        Rooms::Fight(combat::main::serve_init())
+    } else {
+        Rooms::Other
+    }
+}
+
+/// One call of the room's server.
+@server
+pub fn serve(r: mut Rooms, time: f32) {
+    match mut r {
+        Rooms::Island(s) => island::main::serve(mut s, time),
+        Rooms::Fight(s) => combat::main::serve(mut s, time),
+        Rooms::Other => {
+            for e in events() {
+                if let Event::Connection { conn, open: true, .. } = e {
+                    close(conn)
+                }
+            }
+        },
+    }
+}

@@ -188,6 +188,9 @@ struct Drawn: Copy {
 }
 
 pub struct Console {
+    /// The MMO's first client, which the page plays in place of the console when its address
+    /// ends in `#mmo` (mmo/game): while the MMO is private, only a link opens it.
+    mmo: Option<mmo::client::Client>,
     fonts: Fonts,
     renderer: Renderer,
     draw: DrawList,
@@ -399,6 +402,7 @@ pub fn init() -> Console {
         profile_write: None,
         environment: Some(host::environment()),
         address: Some(host::address()),
+        mmo: None,
         pending: None,
         closing: None,
         stale: false,
@@ -845,6 +849,10 @@ fn near_cover(index: u32, selected: u32) -> bool {
 
 fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
+        if is_mmo(bytes) {
+            s.mmo = Some(mmo::client::init())
+            return
+        }
         // The answer to the replacement is empty, so this happens once.
         if let Some(kept) = without_fragment(bytes) {
             s.address = Some(host::replace_address(kept.as_str()))
@@ -1681,6 +1689,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     }
     s.time = Some(time)
     update(mut s)
+    if s.mmo.is_some() {
+        match mut s.mmo {
+            Some(m) => mmo::client::frame(mut m, time, width, height),
+            None => {},
+        }
+        return
+    }
     if !s.decided {
         s.waited += dt
         if s.reloaded.is_some() || s.waited > 0.5 { decide_opening(mut s) }
@@ -2237,6 +2252,16 @@ fn decide_opening(s: mut Console) {
     if s.reloaded == Some(true) { s.presentation = max(s.presentation, RETURNING) }
 }
 
+// Whether an address (`host::address`) asks for the MMO: its fragment is `mmo`.
+fn is_mmo(address: [u8]) -> bool {
+    let n = address.len()
+    n >= 4 &&
+        address[n - 4] == 35 &&
+        address[n - 3] == 109 &&
+        address[n - 2] == 109 &&
+        address[n - 1] == 111
+}
+
 // An address (`host::address`) without its fragment, if it has one: the path and query.
 fn without_fragment(address: Vec<u8>) -> Option<String> {
     var kept: Vec<u8> = Vec::new()
@@ -2628,17 +2653,39 @@ pub const ONLINE: bool = true
 /// rywible/wrela#352): with it false, signing in, recovery and play without an account go on.
 pub const SIGN_UPS: bool = true
 
-/// The server, taking the versions of the legal pages and of what posting makes public that this
-/// build shows (legal.wrela).
-pub fn serve_init() -> console_server::serve::Server {
+/// The server: the console's, taking the versions of the legal pages and of what posting makes
+/// public that this build shows (legal.wrela), and in a room's instance the MMO's rooms
+/// (mmo/game/rooms.wrela). A room's instance is named `server` (`std::server::SERVER`), a name
+/// the console's own instances never have (theirs are `account/…`, `names/…` and the like, and the
+/// edge's is empty).
+pub struct Served {
+    console: console_server::serve::Server,
+    rooms: Option<mmo::rooms::Rooms>,
+    decided: bool,
+}
+
+pub fn serve_init() -> Served {
     let versions = platform::server::Versions {
         terms: legal::TERMS_VERSION,
         privacy: legal::PRIVACY_VERSION,
         posting: platform::posting::VERSION,
     }
-    console_server::serve::init(RP_ID, ORIGIN, versions, SIGN_UPS)
+    Served {
+        console: console_server::serve::init(RP_ID, ORIGIN, versions, SIGN_UPS),
+        rooms: None,
+        decided: false,
+    }
 }
 
-pub fn serve(s: mut console_server::serve::Server, time: f32) {
-    console_server::serve::serve(mut s, time)
+pub fn serve(s: mut Served, time: f32) {
+    if !s.decided {
+        s.decided = true
+        if std::server::me().as_str() == std::server::SERVER {
+            s.rooms = Some(mmo::rooms::init())
+        }
+    }
+    match mut s.rooms {
+        Some(r) => mmo::rooms::serve(mut r, time),
+        None => console_server::serve::serve(mut s.console, time),
+    }
 }

@@ -633,6 +633,15 @@ impl Receiver {
         if lo == 0 { 0 } else { self.log[lo - 1].input }
     }
 
+    /// The frame through which every change is heard: the newest packet's, if no change is
+    /// missing, else the last change before the first missing one.
+    pub fn known(self) -> u32 {
+        if self.contig == self.top {
+            return self.through
+        }
+        if self.contig == 0 { 0 } else { self.got[self.contig - 1].frame }
+    }
+
     /// The log heard so far.
     pub fn log(self) -> Vec<Change> {
         self.log.clone()
@@ -687,6 +696,20 @@ impl Link {
     /// Slot `slot`'s input at `frame`, from what's heard.
     pub fn at(self, slot: u32, frame: u32) -> u32 {
         if slot >= MAX_PARTY { 0 } else { self.rx[slot].at(frame) }
+    }
+
+    /// The frame through which every other player's inputs are heard.
+    pub fn known(self) -> u32 {
+        var k = NONE
+        for j in 0..self.party {
+            if j != self.me {
+                let f = self.rx[j].known()
+                if f < k {
+                    k = f
+                }
+            }
+        }
+        k
     }
 
     /// Slot `slot`'s log as heard.
