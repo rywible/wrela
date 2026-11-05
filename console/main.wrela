@@ -1726,7 +1726,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 }
                 // A deploy since this page loaded: the new version loads, back to the same
                 // party (its invite link's fragment), once no fight is being played.
-                if mmo::client::reload_due(m) && !s.update.asked && account::idle(s.account) {
+                if mmo::client::reload_due(m) &&
+                    !s.update.asked &&
+                    account::idle(s.account) &&
+                    update::confirm_newer(mut s.update, s.presentation) {
                     if let Some(fragment) = mmo::client::party_fragment(m) {
                         s.address = Some(host::replace_address(fragment.as_str()))
                     }
