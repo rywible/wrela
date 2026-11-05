@@ -24,7 +24,7 @@ use platform::names
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
 use std::input::{Button, Event, Key, PadAxis, PadButton, events, payload}
-use std::net::{Log, close, open, relay, send}
+use std::net::{Log, OUTDATED, close, open, relay, send}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
 use ui::kit::{State, Variant}
@@ -204,7 +204,19 @@ pub struct Client {
     invite: String,
     copying: Option<std::io::Pending<u8>>,
     copied: bool,
+    /// Whether the server runs another build than this page (a deploy since it loaded,
+    /// `std::net::OUTDATED`): no room opens again, so it stops trying, and the page reloads once
+    /// no fight is being played (`reload_due`).
+    outdated: bool,
+    /// When it heard so: a fight being played ends `OUTDATED_FIGHT` seconds on, if not before,
+    /// since the others' inputs can't come.
+    outdated_at: f32,
+    /// Whether the island connection opened and the room hasn't spoken on it yet.
+    rejoined: bool,
 }
+
+/// How long a fight goes on once the room's build is another (`outdated`), in seconds.
+const OUTDATED_FIGHT: f32 = 30.0
 
 /// A client on the page at `origin` (`https://wrela.dev`), which its invite links start with.
 pub fn init(origin: str) -> Client {
@@ -254,6 +266,27 @@ pub fn init(origin: str) -> Client {
         invite: String::new(),
         copying: None,
         copied: false,
+        outdated: false,
+        outdated_at: 0.0,
+        rejoined: false,
+    }
+}
+
+/// Whether the page should load the new version now: the server runs another build
+/// (`outdated`), and no fight is being played nor a character being made here.
+pub fn reload_due(s: Client) -> bool {
+    s.outdated && s.play.is_none() && !maker_open(s)
+}
+
+/// The party this client fights with, as an address's fragment (`#party-<code>`), so a reload
+/// comes back to it; none for the shared fight room.
+pub fn party_fragment(s: Client) -> Option<String> {
+    match s.party.clone() {
+        Some(code) => {
+            let room = party_room(code.as_str())
+            Some(String::from(f"#{room}"))
+        },
+        None => None,
     }
 }
 
@@ -607,9 +640,11 @@ pub fn frame<A: Account>(
     }
     let making = maker_open(s)
     let titled = title_shown(s)
-    keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
-    let fight_name = fight_room(s)
-    keep_open(mut s.fight_conn, FIGHT, fight_name.as_str(), time)
+    if !s.outdated {
+        keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
+        let fight_name = fight_room(s)
+        keep_open(mut s.fight_conn, FIGHT, fight_name.as_str(), time)
+    }
     let copy = match mut s.copying {
         Some(p) => p.poll(),
         None => None,
@@ -642,7 +677,13 @@ pub fn frame<A: Account>(
             continue
         }
         match e {
-            Event::Connection { conn, open, .. } => connection(mut s, conn, open, time),
+            Event::Connection { conn, open, tag } => {
+                if !open && tag == OUTDATED && !s.outdated {
+                    s.outdated = true
+                    s.outdated_at = time
+                }
+                connection(mut s, conn, open, time)
+            },
             Event::Message { conn, .. } => {
                 let Some(bytes) = payload(e) else { continue }
                 message(mut s, conn, take bytes)
@@ -992,15 +1033,10 @@ fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
             Some(l) => if is_open { send_all(ISLAND, l.connect()) } else { l.disconnect() },
             None => {},
         }
-        // A reconnect (after a long while, or to a room a deploy started fresh): the pass it
-        // wears may have expired, so it fetches another, and says who it is again.
-        if is_open {
-            s.told = None
-            match mut s.character {
-                Some(c) => character::refresh(mut c),
-                None => {},
-            }
-        }
+        // A reconnect (after a long while, or to a room a deploy started fresh): once the room
+        // answers (a socket that only opens to close, as another build's does, never does), the
+        // pass it wears may have expired, so it fetches another, and says who it is again.
+        s.rejoined = is_open
     } else if conn == FIGHT {
         if s.switching && !is_open {
             // Closed to change room: the party's room opens now, with a fresh log.
@@ -1025,6 +1061,14 @@ fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
 
 fn message(s: mut Client, conn: u32, bytes: take Vec<u8>) {
     if conn == ISLAND {
+        if s.rejoined {
+            s.rejoined = false
+            s.told = None
+            match mut s.character {
+                Some(c) => character::refresh(mut c),
+                None => {},
+            }
+        }
         match mut s.island {
             Some(l) => match l.receive(take bytes) {
                 Ok(out) => send_all(ISLAND, out),
@@ -1131,7 +1175,9 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
             s.invite = String::new()
         }
     }
-    s.note = if !s.island_conn.open || !s.fight_conn.open {
+    s.note = if s.outdated {
+        String::from("Wrela was updated. Loading the new version… (or reload the page)")
+    } else if !s.island_conn.open || !s.fight_conn.open {
         String::from("Connecting…")
     } else if room.on() {
         String::from(f"A fight is on ({room.party.len()} fighting).")
@@ -1173,6 +1219,8 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
         None => Fight::empty(),
     }
     let relay_open = s.relay_conn.open
+    let outdated = s.outdated
+    let cut = outdated && time - s.outdated_at > OUTDATED_FIGHT
     var log: Option<combat::main::Act> = None
     var settle = false
     var done = false
@@ -1219,7 +1267,8 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
             if room.began_at == p.began && room.settled && p.settled.is_none() {
                 p.settled = Some(room.outcome.winner.clone())
             }
-            if room.began_at != p.began || room.settled {
+            // A deploy took the room: no one settles this fight, so its end ends it here.
+            if room.began_at != p.began || room.settled || (outdated && (p.world.over || cut)) {
                 if p.settled_at.is_none() {
                     p.settled_at = Some(time)
                 }
@@ -1230,9 +1279,15 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
                 }
             }
             let relayed = if relay_open { "" } else { " (no relay: playing alone)" }
-            s.note = String::from(
-                f"Frame {p.frame}, {p.rollbacks} rollbacks{relayed}. J attacks, K parries, L dodges.",
-            )
+            s.note = if outdated {
+                String::from(
+                    "Wrela was updated: this fight can't be recorded. The new version loads in a moment.",
+                )
+            } else {
+                String::from(
+                    f"Frame {p.frame}, {p.rollbacks} rollbacks{relayed}. J attacks, K parries, L dodges.",
+                )
+            }
         },
         None => {},
     }

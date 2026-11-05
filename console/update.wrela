@@ -28,6 +28,8 @@ pub struct Update {
     /// Whether it has asked the host to reload, and the host's answer.
     pub asked: bool,
     reload: Option<Pending<u8>>,
+    /// When it next asks while the MMO waits for the new release (`confirm_newer`).
+    soon_at: f32,
 }
 
 pub fn new() -> Update {
@@ -39,6 +41,7 @@ pub fn new() -> Update {
         newer: false,
         asked: false,
         reload: None,
+        soon_at: 0.0,
     }
 }
 
@@ -127,6 +130,43 @@ pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
         u.asked = true
         u.reload = Some(std::host::reload())
     }
+}
+
+/// How often it asks which release is live while the MMO's rooms are another build's, in seconds.
+pub const SOON: f32 = 20.0
+
+/// Whether a reload would load another release, at `now`: the MMO's rooms say the server is
+/// another build (`mmo::client::reload_due`), and that's only worth a reload once `deploys.json`
+/// lists another release live. A deploy sends the rooms' Worker out before the console's, and
+/// one that fails between them leaves only this release to load; a reload then would load this
+/// one again and again. Until it's newer, it asks every `SOON` seconds. Outside a release (no
+/// `release.txt`) there's nothing to ask, and any reload is the newest.
+pub fn confirm_newer(u: mut Update, now: f32) -> bool {
+    if u.newer {
+        return true
+    }
+    if u.own_load.is_some() {
+        return false
+    }
+    if u.own.is_none() {
+        return true
+    }
+    if u.live_load.is_none() && now >= u.soon_at {
+        u.soon_at = now + SOON
+        let none: [http::Header; 0] = []
+        let empty: [u8; 0] = []
+        u.live_load = Some(http::fetch("GET", "/deploys.json", none, empty))
+    }
+    false
+}
+
+/// Reloads now, once (`confirm_newer`).
+pub fn reload_now(u: mut Update) {
+    if u.asked {
+        return
+    }
+    u.asked = true
+    u.reload = Some(std::host::reload())
 }
 
 const OWN: Text = "0123456789abcdef0123"
