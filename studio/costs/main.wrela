@@ -1,0 +1,590 @@
+// The costs tool (`wrela tool costs`): what the Cloudflare account has used so far this month,
+// against the Workers Paid plan's free allowances, and an alarm when a meter or the bill is on
+// pace past its limit.
+//
+// ```text
+// wrela tool costs -- [--budget DOLLARS]
+// ```
+//
+// It asks Cloudflare's GraphQL Analytics API (developers.cloudflare.com/analytics/graphql-api/)
+// once, with the secrets `CLOUDFLARE_API_TOKEN` (which needs Account Analytics: Read) and
+// `CLOUDFLARE_ACCOUNT_ID`, for the month so far: the Workers' requests and CPU time by Worker, the
+// Durable Objects' requests, active time, rows read and written and stored bytes, and R2's
+// operations and stored bytes. It prints a readout in Markdown, for a GitHub run's summary: each
+// meter's use so far, its pace (the use so far stretched to the whole month), the plan's free
+// allowance and what the pace would cost past it (`METERS`), and the month's bill at that pace
+// with the plan's $5.
+//
+// It exits 1 with an `ALARM` line for each meter on pace for `WARN` of its allowance or more, and
+// when the bill's pace is past `--budget` (`BUDGET` unless given); and exits 1 too when it can't
+// read the usage, so a monitor that stopped working is as loud as a bill. Otherwise 0.
+//
+// What it can't see, it says: the month is the calendar month in UTC, while Cloudflare bills from
+// the day the plan started; analytics are sampled and minutes late; a WebSocket message a
+// hibernating Durable Object takes counts as a request here, though Cloudflare bills 20 of them as
+// one, so the Durable Objects' requests read high (every room's socket hibernates, so none is
+// missed); a Durable Object's storage is its largest reading; and Realtime (the SFU relay) has no meter here:
+// its first 1,000 GB a month are free, about 31,000 party-hours of combat (docs: "Bandwidth").
+// Cloudflare's own budget alerts (Billing > Billable Usage) watch the dollars, a day late; this
+// watches the allowances before they cost anything.
+
+use std::fmt::json_text
+use std::io::print
+use std::json
+use std::json::{Doc, TOP}
+use std::tool::{ToolError, args, secret}
+use std::tool::blob::Data
+use std::tool::http
+use std::tool::http::Header
+use std::tool::time
+
+pub const USAGE: Text = "usage: wrela tool costs -- [--budget DOLLARS]"
+
+/// Cloudflare's GraphQL Analytics API.
+pub const GRAPHQL: Text = "https://api.cloudflare.com/client/v4/graphql"
+
+/// The secrets the tool reads: the API token and the account's ID.
+pub const SECRETS: [Text; 2] = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+/// The month's bill, in dollars, past which the tool raises an alarm: the project's ~$20 a month.
+pub const BUDGET: f64 = 20.0
+
+/// The Workers Paid plan's monthly fee, in dollars.
+pub const PLAN: f64 = 5.0
+
+/// How much of a free allowance a meter may be on pace for before the tool raises an alarm.
+pub const WARN: f64 = 0.8
+
+/// The fewest seconds of the month the pace is taken over (12 hours), so an hour into a month isn't
+/// stretched thirty days.
+pub const LEAST_ELAPSED: f64 = 43200.0
+
+/// A meter Cloudflare bills: its name, its unit, the plan's free allowance a month, and its price
+/// past that: `price` dollars a `per` units. A stored meter bills what's held (GB-months), so its
+/// pace is what it holds now, not its use stretched to the month.
+pub struct Meter: Copy {
+    pub name: Text,
+    pub unit: Text,
+    pub included: f64,
+    pub price: f64,
+    pub per: f64,
+    pub stored: bool,
+}
+
+/// The meters, in the order of `Usage::amounts`, at Workers Paid prices
+/// (developers.cloudflare.com/workers/platform/pricing/, durable-objects/platform/pricing/,
+/// r2/pricing/, read Nov 5 2026).
+pub const METERS: [Meter; 10] = [
+    Meter {
+        name: "Worker requests",
+        unit: "",
+        included: 10000000.0,
+        price: 0.30,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Worker CPU time",
+        unit: " ms",
+        included: 30000000.0,
+        price: 0.02,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Durable Object requests",
+        unit: "",
+        included: 1000000.0,
+        price: 0.15,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Durable Object time",
+        unit: " GB-s",
+        included: 400000.0,
+        price: 12.50,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Durable Object rows read",
+        unit: "",
+        included: 25000000000.0,
+        price: 0.001,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Durable Object rows written",
+        unit: "",
+        included: 50000000.0,
+        price: 1.00,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "Durable Object storage",
+        unit: " GB",
+        included: 5.0,
+        price: 0.20,
+        per: 1.0,
+        stored: true,
+    },
+    Meter {
+        name: "R2 class A operations",
+        unit: "",
+        included: 1000000.0,
+        price: 4.50,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter {
+        name: "R2 class B operations",
+        unit: "",
+        included: 10000000.0,
+        price: 0.36,
+        per: 1000000.0,
+        stored: false,
+    },
+    Meter { name: "R2 storage", unit: " GB", included: 10.0, price: 0.015, per: 1.0, stored: true },
+]
+
+/// A Durable Object's memory, which Cloudflare bills its active time at: 128 MB, in GB.
+pub const OBJECT_GB: f64 = 0.128
+
+const GB: f64 = 1000000000.0
+
+/// What the account used: each meter's amount (`METERS`' order), and each Worker's requests.
+pub struct Usage: Clone {
+    pub amounts: Vec<f64>,
+    pub workers: Vec<(String, f64)>,
+}
+
+/// The query for the month from `since` (a date, `YYYY-MM-DD`) of the account `account`.
+pub fn query(account: str, since: str) -> String {
+    let f = f"filter: {{date_geq: \"{since}\"}}"
+    var q = String::from(f"{{ viewer {{ accounts(filter: {{accountTag: \"{account}\"}}) {{ ")
+    q.push_str(
+        f"workers: workersInvocationsAdaptive(limit: 100, {f}) {{ sum {{ requests cpuTimeUs }} dimensions {{ scriptName }} }} ",
+    )
+    q.push_str(
+        f"calls: durableObjectsInvocationsAdaptiveGroups(limit: 100, {f}) {{ sum {{ requests }} }} ",
+    )
+    q.push_str(
+        f"periodic: durableObjectsPeriodicGroups(limit: 100, {f}) {{ sum {{ activeTime rowsRead rowsWritten }} }} ",
+    )
+    q.push_str(f"stored: durableObjectsStorageGroups(limit: 100, {f}) {{ max {{ storedBytes }} }} ")
+    q.push_str(
+        f"r2ops: r2OperationsAdaptiveGroups(limit: 100, {f}) {{ sum {{ requests }} dimensions {{ actionType }} }} ",
+    )
+    q.push_str(
+        f"r2stored: r2StorageAdaptiveGroups(limit: 100, {f}) {{ max {{ payloadSize metadataSize }} dimensions {{ date bucketName }} }} ",
+    )
+    q.push_str("} } }")
+    q
+}
+
+/// The body of the API request for `query`: `{"query": ...}`.
+pub fn body(query: str) -> String {
+    var out = String::from("{\"query\": \"")
+    json_text(mut out, query)
+    out.push_str("\"}")
+    out
+}
+
+/// An R2 operation's class: 0 for class A (writes and lists), 1 for class B (reads), 2 for the
+/// free ones (deletes and aborts) (developers.cloudflare.com/r2/pricing/#class-a-operations).
+pub fn r2_class(action: str) -> u32 {
+    if action.starts_with("Delete") || action == "AbortMultipartUpload" {
+        return 2
+    }
+    let a = action.starts_with("Put") ||
+        action.starts_with("Copy") ||
+        action.starts_with("List") ||
+        action.starts_with("UploadPart") ||
+        action == "CreateMultipartUpload" ||
+        action == "CompleteMultipartUpload" ||
+        action == "LifecycleStorageTierTransition"
+    if a { 0 } else { 1 }
+}
+
+/// The number at `path` (keys, one inside another) under node `n`, or 0 if there's none.
+fn number(d: Doc, n: u32, path: [Text]) -> f64 {
+    var at = n
+    for key in path {
+        let Some(next) = d.get(at, key) else { return 0.0 }
+        at = next
+    }
+    d.num(at).unwrap_or(0.0)
+}
+
+/// The groups of the dataset `name` of the account node `a`.
+fn groups(d: Doc, a: u32, name: str) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    let Some(list) = d.get(a, name) else { return out }
+    for i in 0..d.count(list) {
+        let Some(g) = d.at(list, i) else { continue }
+        out.push(g)
+    }
+    out
+}
+
+/// The usage an API answer `text` holds, or why it holds none: the API's errors, word for word.
+pub fn read_usage(text: str) -> Result<Usage, String> {
+    let Some(d) = json::parse(text) else { return Err(String::from("the answer isn't JSON")) }
+    if let Some(errors) = d.get(TOP, "errors") {
+        if d.count(errors) > 0 {
+            var why = String::new()
+            for i in 0..d.count(errors) {
+                let Some(e) = d.at(errors, i) else { continue }
+                let message = match d.get(e, "message") {
+                    Some(m) => d.text(m).unwrap_or(String::new()),
+                    None => String::new(),
+                }
+                if why.len() > 0 {
+                    why.push_str("; ")
+                }
+                why.push_str(message.as_str())
+            }
+            return Err(why)
+        }
+    }
+    let Some(data) = d.get(TOP, "data") else { return Err(String::from("the answer has no data")) }
+    let Some(viewer) = d.get(data, "viewer") else { return Err(String::from("no viewer")) }
+    let Some(accounts) = d.get(viewer, "accounts") else { return Err(String::from("no accounts")) }
+    let Some(a) = d.at(accounts, 0) else {
+        return Err(
+            String::from("no account: is CLOUDFLARE_ACCOUNT_ID right, and may the token read it?"),
+        )
+    }
+    var amounts: Vec<f64> = Vec::new()
+    for _ in 0..METERS.len() {
+        amounts.push(0.0)
+    }
+    var workers: Vec<(String, f64)> = Vec::new()
+    for g in groups(d, a, "workers") {
+        let requests = number(d, g, ["sum", "requests"])
+        amounts[0] += requests
+        amounts[1] += number(d, g, ["sum", "cpuTimeUs"]) / 1000.0
+        let name = match d.get(g, "dimensions") {
+            Some(dims) => match d.get(dims, "scriptName") {
+                Some(s) => d.text(s).unwrap_or(String::new()),
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+        workers.push((take name, requests))
+    }
+    workers.sort_by(|x: (String, f64), y: (String, f64)| x.1 > y.1)
+    for g in groups(d, a, "calls") {
+        amounts[2] += number(d, g, ["sum", "requests"])
+    }
+    for g in groups(d, a, "periodic") {
+        // Active time is in microseconds, billed at the object's 128 MB.
+        amounts[3] += number(d, g, ["sum", "activeTime"]) / 1000000.0 * OBJECT_GB
+        amounts[4] += number(d, g, ["sum", "rowsRead"])
+        amounts[5] += number(d, g, ["sum", "rowsWritten"])
+    }
+    var stored = 0.0
+    for g in groups(d, a, "stored") {
+        let b = number(d, g, ["max", "storedBytes"])
+        if b > stored {
+            stored = b
+        }
+    }
+    amounts[6] = stored / GB
+    for g in groups(d, a, "r2ops") {
+        let action = match d.get(g, "dimensions") {
+            Some(dims) => match d.get(dims, "actionType") {
+                Some(s) => d.text(s).unwrap_or(String::new()),
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+        let class = r2_class(action.as_str())
+        if class < 2 {
+            amounts[7 + class] += number(d, g, ["sum", "requests"])
+        }
+    }
+    // R2 bills what it holds: each day's buckets added up, the most of any day.
+    var days: Vec<(String, f64)> = Vec::new()
+    for g in groups(d, a, "r2stored") {
+        let day = match d.get(g, "dimensions") {
+            Some(dims) => match d.get(dims, "date") {
+                Some(s) => d.text(s).unwrap_or(String::new()),
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+        let b = number(d, g, ["max", "payloadSize"]) + number(d, g, ["max", "metadataSize"])
+        var found = false
+        for i in 0..days.len() {
+            if days[i].0.as_str() == day.as_str() {
+                days[i].1 += b
+                found = true
+            }
+        }
+        if !found {
+            days.push((take day, b))
+        }
+    }
+    for (_, b) in days {
+        if b / GB > amounts[9] {
+            amounts[9] = b / GB
+        }
+    }
+    Ok(Usage { amounts, workers })
+}
+
+// ---- The month ---------------------------------------------------------------------------------
+
+/// The days from 1970-01-01 to the date `y`-`m`-`d` (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { year - 1 } else { year }
+    let era = (if y >= 0 { y } else { y - 399 }) / 400
+    let yoe = y - era * 400
+    let mp = if m > 2 { m - 3 } else { m + 9 }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+/// The year and month of the day `days` after 1970-01-01 (`civil_from_days`).
+fn year_month(days: i64) -> (i64, i64) {
+    let z = days + 719468
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }
+    (if m <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 }, m)
+}
+
+/// The calendar month (UTC) the time `now` (seconds since 1970) is in: its first day as
+/// `YYYY-MM-DD`, its name, its length and how far into it `now` is, in seconds.
+pub struct Month: Clone {
+    pub since: String,
+    pub name: String,
+    pub seconds: f64,
+    pub elapsed: f64,
+}
+
+const MONTHS: [Text; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+
+pub fn month_of(now: i64) -> Month {
+    let (y, m) = year_month(now / 86400)
+    let first = days_from_civil(y, m: m, d: 1)
+    let next = if m == 12 { days_from_civil(y + 1, m: 1, d: 1) } else {
+        days_from_civil(y, m: m + 1, d: 1)
+    }
+    let mm = if m < 10 { f"0{m}" } else { f"{m}" }
+    Month {
+        since: String::from(f"{y}-{mm}-01"),
+        name: String::from(f"{MONTHS[u32(m - 1)]} {y}"),
+        seconds: f64(next - first) * 86400.0,
+        elapsed: f64(now - first * 86400),
+    }
+}
+
+// ---- The readout -------------------------------------------------------------------------------
+
+/// A readout: its Markdown, and its alarms (empty when nothing is on pace past its limit).
+pub struct Readout: Clone {
+    pub text: String,
+    pub alarms: Vec<String>,
+}
+
+/// `x` short: `812`, `34.5k`, `1.2M`, `3.4B`, or with two places under 10 (`0.25`).
+pub fn short(x: f64) -> String {
+    if x >= 1000000000.0 {
+        String::from(f"{x / 1000000000.0:.1}B")
+    } else if x >= 1000000.0 {
+        String::from(f"{x / 1000000.0:.1}M")
+    } else if x >= 1000.0 {
+        String::from(f"{x / 1000.0:.1}k")
+    } else if x >= 10.0 || x == 0.0 {
+        String::from(f"{x:.0}")
+    } else {
+        String::from(f"{x:.2}")
+    }
+}
+
+/// The month's pace of meter `m` from its use so far: a stored meter's amount as it is, any
+/// other's stretched from the month so far to the whole month.
+pub fn pace(m: Meter, used: f64, month: Month) -> f64 {
+    if m.stored {
+        return used
+    }
+    let elapsed = if month.elapsed > LEAST_ELAPSED { month.elapsed } else { LEAST_ELAPSED }
+    let whole = used * month.seconds / elapsed
+    if whole > used { whole } else { used }
+}
+
+/// What `amount` of meter `m` costs past its allowance, in dollars.
+pub fn cost(m: Meter, amount: f64) -> f64 {
+    if amount <= m.included { 0.0 } else { (amount - m.included) * m.price / m.per }
+}
+
+/// The readout of `usage` in `month`, against `budget` dollars.
+pub fn readout(usage: Usage, month: Month, budget: f64) -> Readout {
+    var text = String::new()
+    var alarms: Vec<String> = Vec::new()
+    let days = month.elapsed / 86400.0
+    let length = month.seconds / 86400.0
+    text.push_str(f"## Cloudflare usage, {month.name.as_str()} ({days:.1} of {length:.0} days)\n\n")
+    text.push_str(
+        "| Meter | So far | On pace for | Free each month | Of the free | Cost at pace |\n",
+    )
+    text.push_str("| --- | --: | --: | --: | --: | --: |\n")
+    var over = 0.0
+    for i in 0..METERS.len() {
+        let m = METERS[i]
+        let used = usage.amounts[i]
+        let p = pace(m, used, month)
+        let share = p / m.included
+        let c = cost(m, p)
+        over += c
+        let percent = share * 100.0
+        text.push_str(
+            f"| {m.name} | {short(used).as_str()}{m.unit} | {short(p).as_str()}{m.unit} | ",
+        )
+        text.push_str(f"{short(m.included).as_str()}{m.unit} | {percent:.0}% | ${c:.2} |\n")
+        if share >= WARN {
+            alarms.push(
+                String::from(
+                    f"{m.name} is on pace for {percent:.0}% of the plan's free {short(m.included).as_str()}{m.unit} this month (${c:.2} past it).",
+                ),
+            )
+        }
+    }
+    let total = PLAN + over
+    text.push_str(
+        f"\nThe month's bill at this pace: **${total:.2}** (the plan's ${PLAN:.2} + ${over:.2} past its allowances), against a budget of ${budget:.2}.\n",
+    )
+    if total > budget {
+        alarms.push(
+            String::from(
+                f"The month's bill is on pace for ${total:.2}, past the budget of ${budget:.2}.",
+            ),
+        )
+    }
+    if usage.workers.len() > 0 {
+        text.push_str("\nWorker requests so far, by Worker: ")
+        for i in 0..usage.workers.len() {
+            let (name, n) = usage.workers[i].clone()
+            if i > 0 {
+                text.push_str(", ")
+            }
+            text.push_str(f"{name.as_str()} {short(n).as_str()}")
+        }
+        text.push_str(".\n")
+    }
+    text.push_str(
+        "\nRead from Cloudflare's analytics, which are sampled and minutes late, for the calendar month in UTC (Cloudflare bills from the plan's start day). A WebSocket message counts as a Durable Object request here, though Cloudflare bills 20 as one. Realtime (the relay) isn't metered here: its first 1,000 GB a month are free.\n",
+    )
+    if alarms.len() > 0 {
+        text.push_str("\n")
+        for a in alarms {
+            text.push_str(f"**ALARM:** {a.as_str()}\n")
+        }
+    }
+    Readout { text, alarms }
+}
+
+// ---- The tool ----------------------------------------------------------------------------------
+
+/// The budget the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<f64> {
+    var budget = BUDGET
+    var i = 0
+    while i < given.len() {
+        if given[i].as_str() == "--budget" && i + 1 < given.len() {
+            let Some(b) = given[i + 1].as_str().parse_f64() else { return None }
+            if !(b > 0.0) {
+                return None
+            }
+            budget = b
+            i += 2
+        } else {
+            return None
+        }
+    }
+    Some(budget)
+}
+
+/// Asks the API for the usage of `account` in `month`, with `token`.
+pub fn fetch_usage(token: str, account: str, month: Month) -> Result<Usage, ToolError> {
+    var req = http::get(GRAPHQL)
+    req.method = String::from("POST")
+    req.headers.push(
+        Header { name: String::from("Authorization"), value: String::from(f"Bearer {token}") },
+    )
+    req.headers.push(
+        Header { name: String::from("Content-Type"), value: String::from("application/json") },
+    )
+    req.headers.push(
+        Header { name: String::from("User-Agent"), value: String::from("wrela-costs") },
+    )
+    req.body = Data::Bytes(
+        Vec::from(body(query(account, month.since.as_str()).as_str()).as_bytes()),
+    )
+    req.timeout = 60.0
+    let res = http::fetch(take req).wait()?
+    let Data::Bytes(bytes) = res.body.clone() else {
+        return Err(ToolError::new("the answer is too big"))
+    }
+    let Some(text) = String::from_utf8(bytes.clone()) else {
+        return Err(ToolError::new("the answer isn't UTF-8"))
+    }
+    match read_usage(text.as_str()) {
+        Ok(u) => Ok(u),
+        Err(why) => Err(ToolError::new(f"Cloudflare answered {res.status}: {why.as_str()}")),
+    }
+}
+
+pub fn tool() -> u32 {
+    let Some(budget) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    let token = secret(SECRETS[0]).unwrap_or(String::new())
+    let account = secret(SECRETS[1]).unwrap_or(String::new())
+    if token.as_str().trim().len() == 0 || account.as_str().trim().len() == 0 {
+        print("**ALARM:** costs: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set.")
+        return 1
+    }
+    let now = match time::utc_now().wait() {
+        Ok(t) => i64(t.seconds),
+        Err(e) => {
+            print(f"**ALARM:** costs: no clock: {e.message()}")
+            return 1
+        },
+    }
+    let month = month_of(now)
+    match fetch_usage(token.as_str().trim(), account.as_str().trim(), month.clone()) {
+        Ok(usage) => {
+            let r = readout(usage, month, budget)
+            print(r.text.as_str())
+            if r.alarms.len() > 0 { 1 } else { 0 }
+        },
+        Err(e) => {
+            print(f"**ALARM:** costs: couldn't read the usage: {e.message()}")
+            1
+        },
+    }
+}

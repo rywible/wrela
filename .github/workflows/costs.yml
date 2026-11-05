@@ -1,0 +1,79 @@
+# Reads the Cloudflare account's use this month each day (`wrela tool costs`, studio/costs) and
+# puts the readout in the run's summary. When a meter or the bill is on pace past its limit, or
+# the usage can't be read, the tool exits 1 and this opens an issue titled `ISSUE` (or comments on
+# the one already open), so GitHub emails the repository's owner. It runs with the toolchain the
+# workspace pins, as the deploy does, and with the `production` environment's Cloudflare token
+# and account, which only main can use: the token needs Account Analytics: Read.
+name: Costs
+
+on:
+  schedule:
+    # Each day at 14:00 UTC.
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Open an issue if the run raises an alarm"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  ISSUE: "Cloudflare cost alarm"
+
+jobs:
+  costs:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Where `wrela` keeps the release it would download itself: ~/.wrela/toolchains/X.Y.Z.
+      - name: The pinned toolchain
+        run: |
+          version=$(sed -n 's/^toolchain = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' wrela.toml | head -n 1)
+          if [ -z "$version" ]; then echo "error: wrela.toml pins no toolchain" >&2; exit 1; fi
+          name="wrela-$version-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/rywible/wrela-compiler/releases/download/v$version"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$name"
+          curl -fsSLO "$base/SHA256SUMS"
+          grep "  $name\$" SHA256SUMS | sha256sum -c -
+          dir="$HOME/.wrela/toolchains/$version"
+          mkdir -p "$dir"
+          tar xzf "$name" -C "$dir"
+          echo "$dir/bin" >> "$GITHUB_PATH"
+
+      - name: The month's usage
+        id: usage
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          wrela toolchain
+          wrela tool costs | tee "$RUNNER_TEMP/costs.md"
+
+      - name: The readout
+        if: always()
+        run: cat "$RUNNER_TEMP/costs.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: An issue for the alarm
+        if: failure() && (github.event_name == 'schedule' || inputs.issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          { cat "$RUNNER_TEMP/costs.md" 2>/dev/null || echo "The costs run failed before its readout."; echo; echo "From $run."; } > "$RUNNER_TEMP/issue.md"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE\" in:title" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE" --assignee "$GITHUB_REPOSITORY_OWNER" --body-file "$RUNNER_TEMP/issue.md" ||
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE" --body-file "$RUNNER_TEMP/issue.md"
+          fi
