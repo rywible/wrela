@@ -403,7 +403,7 @@ pub fn init() -> Console {
         profile_write: None,
         environment: Some(host::environment()),
         address: Some(host::address()),
-        mmo: Some(mmo::client::init()),
+        mmo: Some(mmo::client::init(ORIGIN)),
         pending: None,
         closing: None,
         stale: false,
@@ -850,6 +850,15 @@ fn near_cover(index: u32, selected: u32) -> bool {
 
 fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
+        // An invite link (`#party-<code>`): the MMO fights with that party.
+        if let Some(code) = mmo::client::party_of_address(bytes) {
+            match mut s.mmo {
+                Some(m) => {
+                    let _ = mmo::client::join_party(mut m, code.as_str())
+                },
+                None => {},
+            }
+        }
         if is_games(bytes) {
             // The games' home instead: the MMO's first frames let go of what they opened.
             match mut s.mmo {
