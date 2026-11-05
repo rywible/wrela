@@ -17,16 +17,38 @@ use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::main::{Fight, PLAYER_CHANGES}
 use std::math::{cos, sin}
 use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
-use character::{Character, Stage}
+use character::{Character, Stage, Why}
 use island::main::{Card, Island, MAX_STEP}
 use platform::names
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
-use std::input::{Event, Key, PadAxis, PadButton, events, payload}
+use std::input::{Button, Event, Key, PadAxis, PadButton, events, payload}
 use std::net::{Log, close, open, relay, send}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::text::{Face, Fonts}
 use rooms::{FIGHT_ROOM, ISLAND_ROOM}
+
+/// The wrela account, which the page that plays the client keeps (console/account.wrela): its chip
+/// in the corner, and its pages (signing in, making an account, its name, its recovery codes)
+/// over the game while they're open.
+pub trait Account {
+    /// Takes an input event, if it's the account's: every one while its pages are open.
+    fn event(mut self, e: Event) -> bool
+    /// Draws its chip, and its pages if they're open, over the game in `list`.
+    fn draw(mut self, list: mut DrawList, fonts: Fonts, width: u32, height: u32)
+    /// Opens its pages: to make an account (`create`), or to sign in.
+    fn open(mut self, create: bool)
+    /// Whether its pages are open.
+    fn shown(self) -> bool
+    /// Who is signed in, said so that it changes when someone signs in, out, or keeps a name.
+    fn who(self) -> String
+}
+
+// The title's choices, for a player who isn't signed in.
+const MAKE: u32 = 0
+const SIGN_IN: u32 = 1
+const AS_GUEST: u32 = 2
+const CHOICES: [Text; 3] = ["Create an account", "Sign in", "Play as a guest"]
 
 // Its connections.
 const ISLAND: u32 = 1
@@ -54,6 +76,8 @@ const SETTLE_EVERY: f32 = 15.0
 const WEAR_EVERY: f32 = 3.0
 /// Tellings of who this player is before giving up (the island refused it), until it changes.
 const WEAR_TRIES: u32 = 5
+/// Seconds between the island's "still here" steps (`island::main::HERE_MS`).
+const HERE_EVERY: f32 = 45.0
 const NONE: u32 = 4294967295
 
 // Held keys and buttons, as bits.
@@ -141,6 +165,21 @@ pub struct Client {
     /// The card last told the island, and how many times.
     told: Option<Card>,
     tellings: u32,
+    /// Who the account said is signed in (`Account::who`): the character is asked again when it
+    /// changes.
+    who: Option<String>,
+    /// The title's choices: whether the player chose to play as a guest, the one focused, where
+    /// each was drawn, and the pointer.
+    guest: bool,
+    focus: u32,
+    choices: Vec<(u32, Rect)>,
+    pointer: Option<vec2>,
+    /// The account's pages are over the game: it draws without its words.
+    hushed: bool,
+    /// Whether it proposed something on the island this frame, and when it next says it's still
+    /// there if it says nothing else.
+    said: bool,
+    here_at: f32,
 }
 
 pub fn init() -> Client {
@@ -169,6 +208,14 @@ pub fn init() -> Client {
         wear_at: 0.0,
         told: None,
         tellings: 0,
+        who: None,
+        guest: false,
+        focus: MAKE,
+        choices: Vec::new(),
+        pointer: None,
+        hushed: false,
+        said: false,
+        here_at: 0.0,
     }
 }
 
@@ -404,7 +451,15 @@ fn keep_open(c: mut Conn, conn: u32, room: str, now: f32) {
     }
 }
 
-pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
+/// One frame of the client, `account` over it: whether the pointer is over a choice it can press,
+/// for the page's cursor.
+pub fn frame<A: Account>(
+    s: mut Client,
+    time: f32,
+    width: u32,
+    height: u32,
+    account: mut A,
+) -> Option<bool> {
     let dt = match s.time {
         Some(t) => clamp(time - t, 0.0, 0.25),
         None => 0.0,
@@ -418,11 +473,25 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
     if s.character.is_none() {
         s.character = Some(character::start())
     }
+    // Someone signed in, out, or kept their name: their character is asked for again.
+    let who = account.who()
+    let changed = match s.who {
+        Some(w) => w != who,
+        None => false,
+    }
+    if changed {
+        s.character = Some(character::start())
+        s.told = None
+        s.guest = false
+        s.focus = MAKE
+    }
+    s.who = Some(take who)
     match mut s.character {
         Some(c) => character::update(mut c),
         None => {},
     }
     let making = maker_open(s)
+    let titled = title_shown(s)
     keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
     keep_open(mut s.fight_conn, FIGHT, FIGHT_ROOM, time)
     var pressed_join = false
@@ -434,6 +503,19 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
     var maker_enter = false
     var maker_escape = false
     for e in events() {
+        let net = match e {
+            Event::Connection { .. } => true,
+            Event::Message { .. } => true,
+            _ => false,
+        }
+        // The account's pages take what's theirs (every input while open); the title, the rest.
+        if !net && account.event(e) {
+            continue
+        }
+        if !net && titled {
+            title_event(mut s, e, mut account)
+            continue
+        }
         match e {
             Event::Connection { conn, open, .. } => connection(mut s, conn, open, time),
             Event::Message { conn, .. } => {
@@ -513,6 +595,11 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
         s.relay_conn.opening = true
         relay(RELAY, FIGHT)
     }
+    if account.shown() || titled {
+        // Nothing walks or fights under the account's pages or the title.
+        s.held = 0
+        s.stick = vec2(0.0, 0.0)
+    }
     if making {
         // The maker has the keys: nothing walks or fights meanwhile.
         s.held = 0
@@ -533,16 +620,98 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
         }
     }
     let pad = pad_of(s.held, s.stick)
-    if maker_open(s) {
-        draw(mut s, width, height)
+    if !maker_open(s) {
+        if s.play.is_some() {
+            fight_frame(mut s, pad, dt, time)
+        } else {
+            island_frame(mut s, pad, dt, time, pressed_join, pressed_begin, pressed_mark)
+        }
+    }
+    draw(mut s, width, height, mut account)
+    if !title_shown(s) || account.shown() {
+        return Some(false)
+    }
+    let over = match s.pointer {
+        Some(p) => choice_at(s, p).is_some(),
+        None => false,
+    }
+    Some(over)
+}
+
+// ---- the title ----------------------------------------------------------------------------------
+
+/// Whether the title has the screen: while the client asks who the player is, and for a player
+/// who isn't signed in until they choose to play as a guest.
+fn title_shown(s: Client) -> bool {
+    if s.guest {
+        return false
+    }
+    match s.character {
+        Some(c) => c.stage == Stage::Asking || (c.stage == Stage::Guest && c.why == Why::SignedOut),
+        None => true,
+    }
+}
+
+/// Whether the title shows its choices: once the client knows the player isn't signed in.
+fn choosing(s: Client) -> bool {
+    match s.character {
+        Some(c) => c.stage == Stage::Guest,
+        None => false,
+    }
+}
+
+/// The choice drawn under `at`, if one is.
+fn choice_at(s: Client, at: vec2) -> Option<u32> {
+    for (c, r) in s.choices {
+        if r.contains(at) {
+            return Some(c)
+        }
+    }
+    None
+}
+
+/// An input on the title: the pointer chooses, and so do the arrows (or a pad) and Enter.
+fn title_event<A: Account>(s: mut Client, e: Event, account: mut A) {
+    if !choosing(s) {
         return
     }
-    if s.play.is_some() {
-        fight_frame(mut s, pad, dt, time)
-    } else {
-        island_frame(mut s, pad, dt, time, pressed_join, pressed_begin, pressed_mark)
+    var chosen: Option<u32> = None
+    match e {
+        Event::PointerMove { at, .. } => {
+            s.pointer = Some(at)
+            if let Some(c) = choice_at(s, at) {
+                s.focus = c
+            }
+        },
+        Event::PointerUp { at, button: Button::Primary, .. } => chosen = choice_at(s, at),
+        Event::KeyDown { key, repeat, mods } => {
+            if key == Key::Down || key == Key::S || (key == Key::Tab && !mods.shift) {
+                s.focus = (s.focus + 1) % 3
+            } else if key == Key::Up || key == Key::W || (key == Key::Tab && mods.shift) {
+                s.focus = (s.focus + 2) % 3
+            } else if (key == Key::Enter || key == Key::Space) && !repeat {
+                chosen = Some(s.focus)
+            }
+        },
+        Event::PadButton { button, pressed: true, .. } => {
+            if button == PadButton::Down {
+                s.focus = (s.focus + 1) % 3
+            } else if button == PadButton::Up {
+                s.focus = (s.focus + 2) % 3
+            } else if button == PadButton::South || button == PadButton::Start {
+                chosen = Some(s.focus)
+            }
+        },
+        _ => {},
     }
-    draw(mut s, width, height)
+    let Some(c) = chosen else { return }
+    if c == MAKE {
+        account.open(true)
+    } else if c == SIGN_IN {
+        account.open(false)
+    } else if c == AS_GUEST {
+        s.guest = true
+    }
 }
 
 /// Whether the character maker has the screen.
@@ -645,6 +814,7 @@ fn message(s: mut Client, conn: u32, bytes: take Vec<u8>) {
 }
 
 fn propose_island(s: mut Client, act: take island::main::Act) {
+    s.said = true
     match mut s.island {
         Some(l) => if let Ok(out) = l.propose(take act) { send_all(ISLAND, out) },
         None => {},
@@ -676,6 +846,13 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         propose_island(mut s, island::main::Act::Place)
     }
     wear(mut s, time)
+    // Still here: a step of nothing, when nothing else was said for a while (`Island::present`).
+    if s.said {
+        s.said = false
+        s.here_at = time + HERE_EVERY
+    } else if s.island_conn.open && time >= s.here_at && !title_shown(s) {
+        propose_island(mut s, island::main::Act::Step { dx: 0, dz: 0 })
+    }
     // The fight room: wait, stop waiting, begin; and a fight that began for this player.
     let (me, view, room) = match s.fight {
         Some(l) => (l.peer(), l.view().clone(), l.committed().clone()),
@@ -819,7 +996,8 @@ fn circle(list: mut DrawList, at: vec2, r: f32, color: vec4) {
     list.ellipse(Rect::new(x: at.x - r, y: at.y - r, w: 2.0 * r, h: 2.0 * r), color)
 }
 
-fn draw(s: mut Client, width: u32, height: u32) {
+fn draw<A: Account>(s: mut Client, width: u32, height: u32, account: mut A) {
+    s.hushed = account.shown()
     let w = f32(width)
     let h = f32(height)
     let screen = vec2(w, h)
@@ -830,23 +1008,87 @@ fn draw(s: mut Client, width: u32, height: u32) {
     let fight_on = s.play.is_some()
     let making = maker_open(s)
     if making {
-        draw_maker(mut s, middle, size)
+        // Under the account's pages, the maker waits unseen: they come first.
+        if !s.hushed {
+            draw_maker(mut s, middle, size)
+        }
     } else if fight_on {
         draw_fight(mut s, middle, size)
     } else {
         draw_island(mut s, middle, size)
     }
-    let title = if making { "Your character" } else if fight_on { "The fight" } else {
-        "The island"
+    if title_shown(s) {
+        draw_title(mut s, w, h)
+    } else if account.shown() {
+        // The account's pages over the game: the game shows, but not its words.
+        s.choices.clear()
+    } else {
+        s.choices.clear()
+        let title = if making { "Your character" } else if fight_on { "The fight" } else {
+            "The island"
+        }
+        let _ = s.list.text(s.fonts, Face::Sans, title, 28.0, vec2(24.0, 20.0), INK)
+        let note = s.note.clone()
+        let _ = s.list.text(s.fonts, Face::Sans, note.as_str(), 18.0, vec2(24.0, h - 44.0), MUTED)
     }
-    let _ = s.list.text(s.fonts, Face::Sans, title, 28.0, vec2(24.0, 20.0), INK)
-    let note = s.note.clone()
-    let _ = s.list.text(s.fonts, Face::Sans, note.as_str(), 18.0, vec2(24.0, h - 44.0), MUTED)
+    account.draw(mut s.list, s.fonts, width, height)
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     let pass = begin_screen_pass(clear: BG)
     s.renderer.draw(pass, screen)
     pass.present()
+}
+
+/// `text` at `size`, centred on `x` with its top at `y`.
+fn centred(s: mut Client, text: str, size: f32, x: f32, y: f32, color: vec4) {
+    let width = s.fonts.font(Face::Sans).measure(text, size)
+    let _ = s.list.text(s.fonts, Face::Sans, text, size, vec2(round(x - width / 2.0), y), color)
+}
+
+/// The title over the island: the game's name, a line of it, and the choices of a player who
+/// isn't signed in (or, while the client asks, that it's finding them).
+fn draw_title(s: mut Client, w: f32, h: f32) {
+    s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(BG.xyz, 0.86))
+    let k = clamp(min(h / 720.0, w / 420.0), 0.7, 3.0)
+    let x = w / 2.0
+    var y = h * 0.5 - 200.0 * k
+    centred(mut s, "WRELA", 76.0 * k, x, y, INK)
+    y += 104.0 * k
+    let line = "You wake on a skiff. The sea goes on forever."
+    if s.fonts.font(Face::Sans).measure(line, 20.0 * k) <= w - 48.0 {
+        centred(mut s, line, 20.0 * k, x, y, MUTED)
+    } else {
+        // Too narrow for one line (a phone): two.
+        centred(mut s, "You wake on a skiff.", 20.0 * k, x, y, MUTED)
+        y += 28.0 * k
+        centred(mut s, "The sea goes on forever.", 20.0 * k, x, y, MUTED)
+    }
+    y += 64.0 * k
+    s.choices.clear()
+    if !choosing(s) {
+        centred(mut s, "Finding you…", 18.0 * k, x, y + 14.0 * k, MUTED)
+        return
+    }
+    let bw = min(340.0 * k, w - 48.0)
+    let bh = 54.0 * k
+    for i in 0..3 {
+        let r = Rect::new(x: round(x - bw / 2.0), y: round(y), w: round(bw), h: round(bh))
+        s.choices.push((i, r))
+        let focused = s.focus == i
+        let first = i == MAKE
+        let fill = if first { INK } else if focused { vec4(1.0, 1.0, 1.0, 0.14) } else {
+            vec4(1.0, 1.0, 1.0, 0.06)
+        }
+        s.list.rect(r, fill, radius: 12.0 * k)
+        if focused {
+            s.list.ring(r.shrink(-4.0 * k), MINE, radius: 15.0 * k, width: 2.0 * k)
+        }
+        let ink = if first { BG } else { INK }
+        centred(mut s, CHOICES[i], 19.0 * k, x, r.y + (bh - 19.0 * k * 1.2) / 2.0, ink)
+        y += bh + 12.0 * k
+    }
+    y += 16.0 * k
+    centred(mut s, "Passkeys only: no email, no password.", 15.0 * k, x, y, MUTED)
 }
 
 fn draw_island(s: mut Client, middle: vec2, size: f32) {
@@ -858,7 +1100,14 @@ fn draw_island(s: mut Client, middle: vec2, size: f32) {
         Some(l) => (l.peer(), l.view().clone()),
         None => return,
     }
-    for b in view.bodies {
+    // Under the title, the island is empty: it hasn't been joined yet.
+    let titled = title_shown(s)
+    let shown = view.present()
+    for i in shown {
+        if titled {
+            break
+        }
+        borrow b = view.bodies[i]
         let at = middle + vec2(f32(b.x), -f32(b.z)) * px
         let ring = if b.peer == me { MINE } else { OTHER }
         if b.worn {
@@ -884,11 +1133,17 @@ fn draw_island(s: mut Client, middle: vec2, size: f32) {
     }
     // Marks over the bodies: one is placed where its body stands.
     for m in view.marks {
+        if titled {
+            break
+        }
         let at = middle + vec2(f32(m.x), -f32(m.z)) * px
         s.list.diamond(Rect::new(x: at.x - 8.0, y: at.y - 8.0, w: 16.0, h: 16.0), BG)
         s.list.diamond(Rect::new(x: at.x - 6.0, y: at.y - 6.0, w: 12.0, h: 12.0), MARK)
     }
-    let count = view.bodies.len()
+    if title_shown(s) || s.hushed {
+        return
+    }
+    let count = shown.len()
     let line = String::from(f"{count} on the island, {view.marks.len()} marks")
     let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 16.0, vec2(24.0, 58.0), MUTED)
 }

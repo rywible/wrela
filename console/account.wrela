@@ -44,7 +44,7 @@ use std::host::{PasskeyUser, create_passkey, read_new_passkey, read_passkey_use,
 use std::http::{Header, response}
 use std::input::{Assist, Button, Event, Key, PadButton}
 use std::io::{Pending, fetch}
-use std::semantics::{Node, Role, Sent}
+use std::semantics::{Field, FieldKind, Node, Role, Sent, read_field_state}
 use std::serialize::{LoadError, load, save}
 use std::webauthn::base64url
 use ui::draw::{DrawList, Rect}
@@ -102,7 +102,8 @@ enum Act: Copy + Eq {
     Reroll,
     CodesSaved,
     SaveCodes,
-    Later,
+    /// The codes, downloaded as a text file to keep.
+    DownloadCodes,
     /// Posting: the account's setting, the first post's screen's box, and its two choices.
     BestRuns,
     PostBest,
@@ -225,6 +226,23 @@ pub struct Accounts {
     node_controls: Vec<Option<u32>>,
     tree: Sent,
     told: Vec<Pending<u8>>,
+    /// Where the console shows it over the MMO (`set_view`): its zoom, reduced motion, whether
+    /// the host reads a semantic tree; and whether it's the MMO's (its words are the game's, not
+    /// the games' boards').
+    view_zoom: f32 = 1.0,
+    view_reduced: bool = false,
+    view_semantics: bool = false,
+    in_game: bool = false,
+    /// The recovery code's field in the semantic tree (its node, 0: none), which holds the focus
+    /// while the code is typed: the newest revision the host said it has, the newest read, the
+    /// read under way, and the code last sent (it's sent once it's whole).
+    code_node: u32 = 0,
+    code_heard: u32 = 0,
+    code_seen: u32 = 0,
+    code_read: Option<Pending<u8>> = None,
+    code_sent: String = String::new(),
+    /// The recovery codes were downloaded: saving them is the next step.
+    codes_kept: bool = false,
 }
 
 /// The console's account, its passkeys for relying party `rp_id`. It asks the server whose session
@@ -382,6 +400,10 @@ fn signed_out(a: mut Accounts) {
     a.codes.clear()
     if a.page != Page::Legal {
         a.page = Page::Choose
+        // Signed out in the game: back to its title, which offers signing in again.
+        if a.in_game {
+            a.open = false
+        }
     }
     give_game_account(mut a)
 }
@@ -475,9 +497,16 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             } else {
                 a.message.clear()
                 if a.page == Page::Knighting && purpose == Purpose::Name {
-                    // Sign-up ends at the knighting: the codes wait on the account's page.
+                    // A name kept: a new account's recovery codes next, which it must save; then
+                    // back to the game, or the account's page.
                     if me.fixed {
-                        a.page = Page::Account
+                        if !a.codes.is_empty() {
+                            a.page = Page::Codes
+                        } else if a.in_game {
+                            a.open = false
+                        } else {
+                            a.page = Page::Account
+                        }
                     } else {
                         a.knight_again = true
                         a.knight_t = 0.0
@@ -486,6 +515,11 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
                     a.page == Page::Choose ||
                     a.page == Page::Create ||
                     a.page == Page::Manage {
+                    // Signed in (or a passkey added after a recovery code) from the game: back
+                    // to it.
+                    if a.in_game && me.fixed && !me.must_add_passkey {
+                        a.open = false
+                    }
                     a.page = if me.fixed { Page::Account } else { Page::Knighting }
                     if a.page == Page::Knighting {
                         a.knight_again = true
@@ -545,6 +579,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             if !codes.is_empty() {
                 // A new account: knighted first, then its codes.
                 a.codes = codes.clone()
+                a.codes_kept = false
                 a.page = Page::Knighting
                 a.knight_again = false
                 a.knight_t = 0.0
@@ -554,6 +589,9 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
                 a.message = String::from(
                     "You signed in with a recovery code. Add a passkey now. Until you do, you can't do anything else.",
                 )
+            } else if me.fixed && a.in_game {
+                // Signed in from the game: back to it.
+                a.open = false
             } else {
                 a.page = if me.fixed { Page::Account } else { Page::Knighting }
                 if !me.fixed {
@@ -565,6 +603,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         },
         Reply::Codes { codes } => {
             a.codes = codes.clone()
+            a.codes_kept = false
             a.page = Page::Codes
             give_game_account(mut a)
         },
@@ -658,6 +697,64 @@ pub fn idle(a: Accounts) -> bool {
 /// Whether its panel is open over the home.
 pub fn shown(a: Accounts) -> bool {
     a.open
+}
+
+/// How it's shown over the MMO: the console's zoom, whether motion is reduced, and whether the
+/// host reads a semantic tree.
+pub fn set_view(a: mut Accounts, zoom: f32, reduced: bool, semantics: bool) {
+    a.view_zoom = zoom
+    a.view_reduced = reduced
+    a.view_semantics = semantics
+    a.in_game = true
+}
+
+/// The console started its one voice (the home's themes): the knighting's fanfare stays silent,
+/// since a program that starts a second voice traps.
+pub fn voice_taken(a: mut Accounts) {
+    a.voice = true
+}
+
+// The account over the MMO (mmo/game/client.wrela's `Account`): its chip in the corner, and its
+// pages over the game while open, as over the home.
+impl mmo::client::Account for Accounts {
+    fn event(mut self, e: Event) -> bool {
+        let zoom = self.view_zoom
+        event(mut self, e, zoom)
+    }
+
+    fn draw(mut self, list: mut DrawList, fonts: Fonts, width: u32, height: u32) {
+        let zoom = self.view_zoom
+        let reduced = self.view_reduced
+        let (w, h) = (f32(width) / zoom, f32(height) / zoom)
+        draw(mut self, mut list, fonts, w, h, 24.0, zoom, reduced)
+        if self.view_semantics {
+            publish(mut self, vec4(0.0, 0.0, f32(width), f32(height)))
+        }
+    }
+
+    fn open(mut self, create: bool) {
+        if !self.online || self.me.signed_in {
+            act(mut self, Act::Chip)
+            return
+        }
+        self.open = true
+        if create {
+            act(mut self, Act::Create)
+        } else {
+            // Signing in asks for the passkey at once; its page stays, for a lost one.
+            open_page(mut self, Page::Choose)
+            act(mut self, Act::SignIn)
+        }
+    }
+
+    fn shown(self) -> bool {
+        self.open
+    }
+
+    fn who(self) -> String {
+        let handle = std::hash::sha256::hex(self.me.handle)
+        String::from(f"{self.me.signed_in}/{self.me.fixed}/{self.me.must_add_passkey}/{handle}")
+    }
 }
 
 pub fn game_shown(a: mut Accounts, surface: u32, id: str) {
@@ -1037,6 +1134,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
             ),
         }
     }
+    read_code(mut a)
     let _ = answer_of(mut a.export_file)
     // What the semantic tree sent, done with.
     i = 0
@@ -1094,9 +1192,12 @@ pub fn animating(a: Accounts) -> bool {
     a.open && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
 }
 
+const NO_FOCUS: u32 = 4294967295
+
 fn open_page(a: mut Accounts, page: Page) {
     a.page = page
-    a.focus = 0
+    // The recovery code's page has its field focused, not a button.
+    a.focus = if page == Page::Recover { NO_FOCUS } else { 0 }
     a.message.clear()
     a.scroll = 0.0
     a.dirty = true
@@ -1139,6 +1240,9 @@ fn create_request(a: Accounts) -> Option<Request> {
 
 /// What a player who ticked both boxes agrees to: this build's Terms and Privacy Policy, and that
 /// they're 13 or older. A sign-up's finish carries it again, as its challenge was made for it.
+const CHOOSE_BOARDS: Text = "With an account, your runs go on the world's leaderboards. You sign in with a passkey on this device. There's no email and no password. We give you a name."
+const CHOOSE_GAME: Text = "Your account keeps your character and everything they carry. You sign in with a passkey on this device: no email, no password. The sea gives you your name."
+
 fn agreed_now() -> Agreed {
     Agreed { terms: legal::TERMS_VERSION, privacy: legal::PRIVACY_VERSION, of_age: true }
 }
@@ -1248,10 +1352,25 @@ fn act(a: mut Accounts, x: Act) {
         Act::CodesSaved => {
             a.codes.clear()
             give_game_account(mut a)
-            open_page(mut a, Page::Account)
+            if a.in_game {
+                // Signed up in the game: back to it, where the character is made next.
+                a.open = false
+            } else {
+                open_page(mut a, Page::Account)
+            }
         },
         Act::SaveCodes => open_page(mut a, Page::Codes),
-        Act::Later => open_page(mut a, Page::Account),
+        Act::DownloadCodes => {
+            var text = String::from(f"wrela recovery codes for {a.me.name}\n")
+            text.push_str("Each code signs you in once if you lose your passkeys.\n\n")
+            for c in a.codes {
+                text.push_str(c.as_str())
+                text.push_str("\n")
+            }
+            let bytes = Vec::from(text.as_bytes())
+            a.export_file = Some(host::export_file("wrela-recovery-codes.txt", bytes))
+            a.codes_kept = true
+        },
         Act::BestRuns => {
             if asks_consent_first(a) {
                 // Turned on before any post: what posting shares, first.
@@ -1417,6 +1536,11 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
         Event::Text { char } => {
             if a.page == Page::Recover {
                 typed(mut a.typed, char)
+            }
+        },
+        Event::Field { node, revision } => {
+            if node == a.code_node && a.page == Page::Recover {
+                a.code_heard = max(a.code_heard, revision)
             }
         },
         Event::PadButton { button, pressed: true, .. } => {
@@ -1888,7 +2012,7 @@ pub fn draw(
                 mut a,
                 mut d,
                 fonts,
-                "With an account, your runs go on the world's leaderboards. You sign in with a passkey on this device. There's no email and no password. We give you a name.",
+                if a.in_game { CHOOSE_GAME } else { CHOOSE_BOARDS },
                 BODY,
                 vec2(x, y),
                 iw,
@@ -2060,18 +2184,20 @@ pub fn draw(
             write(mut d, fonts, name.as_str(), 18.0, vec2(x, y), INK, zoom)
             said(mut a, Role::Text, name.as_str(), Rect::new(x, y, iw, 27.0), zoom)
             y += 40.0
-            checkbox(
-                mut a,
-                mut d,
-                fonts,
-                Act::BestRuns,
-                vec2(x, y),
-                iw,
-                "Post my best runs",
-                a.post_best,
-                zoom,
-            )
-            y += 44.0
+            if !a.in_game {
+                checkbox(
+                    mut a,
+                    mut d,
+                    fonts,
+                    Act::BestRuns,
+                    vec2(x, y),
+                    iw,
+                    "Post my best runs",
+                    a.post_best,
+                    zoom,
+                )
+                y += 44.0
+            }
             let items = account_items(a)
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
@@ -2089,8 +2215,28 @@ pub fn draw(
             )
             y += 14.0
             let field = Rect::new(x, y, iw, 44.0)
-            let typed = String::from(f"Recovery code: {a.typed}")
-            said(mut a, Role::Text, typed.as_str(), field, zoom)
+            // A field of the host's, focused: what's typed goes there, from a keyboard, a
+            // paste or a password manager, and the page reads it back (`read_code`).
+            let at = z(field, zoom)
+            a.nodes.push(
+                Node {
+                    id: a.nodes.len() + 1,
+                    parent: 1,
+                    role: Role::Field,
+                    label: String::from("Recovery code"),
+                    rect: vec4(at.x, at.y, at.w, at.h),
+                    focused: true,
+                    field: Some(
+                        Field {
+                            kind: FieldKind::Text,
+                            name: String::from("recovery-code"),
+                            autocomplete: String::from("one-time-code"),
+                        },
+                    ),
+                },
+            )
+            a.node_controls.push(None)
+            a.code_node = a.nodes.len()
             d.rect(z(field, zoom), vec4(1.0, 1.0, 1.0, 0.06), RADIUS * zoom)
             d.ring(z(field, zoom), BORDER, RADIUS * zoom, max(round(zoom), 1.0))
             var shown = a.typed.clone()
@@ -2145,7 +2291,10 @@ pub fn draw(
                 )
             }
             y += f32((a.codes.len() + 1) / 2) * 28.0 + 16.0
-            let items = [(Act::CodesSaved, "I've saved them", true), (Act::Later, "Later", false)]
+            let items = [
+                (Act::DownloadCodes, "Download them", !a.codes_kept),
+                (Act::CodesSaved, "I've saved them", a.codes_kept),
+            ]
             y = stack(mut a, mut d, fonts, items, x, y, iw, zoom)
         },
         Page::Manage => {
@@ -2170,7 +2319,7 @@ pub fn draw(
                 mut a,
                 mut d,
                 fonts,
-                [(Act::AddPasskey, "Add a passkey", false)],
+                [(Act::AddPasskey, "Add a passkey", a.me.must_add_passkey)],
                 x,
                 y,
                 iw,
@@ -2200,7 +2349,10 @@ pub fn draw(
                 }
                 y += 40.0
             }
-            let items = [(Act::NewCodes, "New recovery codes", false), (Act::Back, "Back", true)]
+            let items = [
+                (Act::NewCodes, "New recovery codes", false),
+                (Act::Back, "Back", !a.me.must_add_passkey),
+            ]
             y = stack(mut a, mut d, fonts, items, x, y + 6.0, iw, zoom)
         },
         Page::Delete => {
@@ -2342,6 +2494,38 @@ pub fn draw(
 
 /// `char` typed into a recovery code: a code is letters, digits and hyphens, so nothing else can be
 /// typed, here or anywhere in the console.
+/// Reads the recovery code's field once the host says it changed, and sends the code once it's
+/// whole (16 letters and digits), as a person would press Sign in.
+fn read_code(a: mut Accounts) {
+    if a.page != Page::Recover {
+        a.code_read = None
+        return
+    }
+    if let Some(Ok(bytes)) = answer_of(mut a.code_read) {
+        if let Ok(state) = read_field_state(take bytes) {
+            a.code_seen = max(a.code_seen, state.revision)
+            a.typed.clear()
+            for b in state.text.as_bytes() {
+                typed(mut a.typed, u32(b))
+            }
+            a.dirty = true
+        }
+    }
+    if a.code_read.is_none() && a.code_heard > a.code_seen {
+        a.code_read = Some(host::field_state(a.code_node))
+    }
+    var letters = 0
+    for b in a.typed.as_bytes() {
+        if b != 45 {
+            letters += 1
+        }
+    }
+    if letters == 16 && !a.busy && a.typed != a.code_sent {
+        a.code_sent = a.typed.clone()
+        act(mut a, Act::SubmitCode)
+    }
+}
+
 fn typed(code: mut String, char: u32) {
     let c = if char >= 97 && char <= 122 { char - 32 } else { char }
     if code.len() < 24 && ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || c == 45) {
