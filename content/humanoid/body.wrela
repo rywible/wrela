@@ -40,7 +40,7 @@ pub const HERO: Humanoid = humanoid::import(
 /// its shading authored (`engine::toon`).
 @fuel(2 ** 40)
 pub const DRESSED: Humanoid = toon::authored(
-    hero::dressed(hero::slimmed(HERO.clone())),
+    hero::dressed(HERO.clone()),
     Authoring {},
 )
 
