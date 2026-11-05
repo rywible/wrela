@@ -1,0 +1,772 @@
+// The open sea, as an ocean's surface is: many thousand waves at once, each its own length,
+// heading and speed, their heights drawn from what the wind and a far storm's swell give a sea (a
+// directional wave spectrum), and summed on the GPU each frame by inverse FFT (Tessendorf's
+// method). Four tiles of it, each a band of wavelengths, laid over each other at sides that don't
+// divide each other, so no repeat lines up: the swell and the long waves (`big`), the waves a boat
+// rides (`mid`), the short waves (`fine`) and the ripples on them (`ripple`). Each texel of a
+// tile holds where its water has been carried (the crests lean and sharpen toward each other,
+// the troughs widen), its slope, how it's stretched or squeezed, and the foam left where a crest
+// broke; with mips, so a footprint reads what it holds of them and no more. A shader reads it
+// through `Waves` (`surface_at`, and `level_at` for a ray's march); what a footprint loses of
+// the waves too short for it comes back as the slopes' variance, for the light's roughness.
+//
+// The spectrum is JONSWAP's (Hasselmann et al. 1973): the wind's sea from the wind's speed and
+// its fetch, the swell from its height and period (scaled as Goda's normalization has it), each
+// spread round its heading as cos²ˢ (Longuet-Higgins et al. 1963), the wind's narrowest at its
+// peak (Mitsuyasu et al. 1975). The heights, the leaning crests (choppy displacement), the slopes
+// and the Jacobian a crest breaks where it folds follow J. Tessendorf, "Simulating Ocean Water"
+// (SIGGRAPH course notes, 2001).
+//
+// The CPU reads the same sea where a boat bears on it (`Swell::height`): the waves of the two
+// longer tiles that hold the most of its height, summed directly, so what floats rides what's
+// drawn.
+
+use noise::hash2u
+use std::gpu::{
+    Address, GlobalId, Rgba16Float, Rgba32Float, Sampler, Texels, Texture, dispatch, generate_mips,
+    label, mip_levels, sampler, writable_texture,
+}
+use std::io::print
+use std::math::{PI, TAU}
+
+/// A tile's side in texels, each way, and the FFT's passes each way (log₂ of it).
+pub const SIDE: u32 = 256
+const PASSES: u32 = 8
+
+/// Gravity (m/s²).
+const G: f32 = 9.81
+
+/// How long a broken crest's foam takes to fade to a third (s).
+const FOAM_FADE: f32 = 4.0
+
+/// What sea it is: the wind that raises it and the swell come from far off.
+pub struct SeaState: Copy + GpuData {
+    /// The way the wind blows (x, z: a unit vector), its speed 10 m up (m/s), and how much open
+    /// water it has blown over (m). A sea is fully grown by about 2.2 × 10⁴ U²/g of fetch, and
+    /// JONSWAP's fits hold short of it.
+    pub wind: vec2,
+    pub speed: f32,
+    pub fetch: f32,
+    /// The way the swell runs (a unit vector), its significant height (m: the mean of its highest
+    /// third) and its peak period (s). No swell at height 0.
+    pub swell: vec2,
+    pub swell_height: f32,
+    pub swell_period: f32,
+    /// How far the crests lean and sharpen toward each other: 0 round, 1 about where the steepest
+    /// fold.
+    pub chop: f32,
+    pub seed: u32,
+}
+
+/// One tile: its side (m), and the wavenumbers it holds (rad/m), from `lo` to below `hi`.
+pub struct Band: Copy + GpuData {
+    pub side: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub seed: u32,
+}
+
+/// The tiles' sides (m): the longest swell's, the waves a boat rides, the short waves, the
+/// ripples (down to 3.4 cm). None a multiple of another, so their repeats never line up.
+pub const SIDES = vec4(997.0, 131.0, 19.7, 4.3)
+
+/// How many tiles.
+pub const TILES: u32 = 4
+
+/// Tile `i`'s band: from where the tile before leaves off up to six of the next tile's longest
+/// waves (shorter than those, the next holds them: its own longest span too few texels of the
+/// one before's), the last up to the shortest its texels hold.
+pub fn band(i: u32) -> Band {
+    let lo = if i == 0 { 0.0 } else { 6.0 * TAU / SIDES[i] }
+    let hi = if i == TILES - 1 { PI * f32(SIDE) / SIDES[i] } else { 6.0 * TAU / SIDES[i + 1] }
+    Band { side: SIDES[i], lo, hi, seed: (i + 1).wrapping_mul(0x9e3779b9) }
+}
+
+// ---- the spectrum -------------------------------------------------------------------------------
+
+/// JONSWAP's density at angular frequency `w` (rad/s), in m²s: `alpha` its scale, `peak` its
+/// peak's frequency, `gamma` how far its peak is raised over Pierson and Moskowitz's.
+fn jonswap(w: f32, alpha: f32, peak: f32, gamma: f32) -> f32 {
+    let sigma = if w <= peak { 0.07 } else { 0.09 }
+    let r = exp(-(w - peak) * (w - peak) / (2.0 * sigma * sigma * peak * peak))
+    let q = peak / w
+    let q2 = q * q
+    alpha * G * G / pow(w, 5.0) * exp(-1.25 * q2 * q2) * pow(gamma, r)
+}
+
+/// The share of a sea's waves heading `a` (rad) off its own heading: cos²ˢ(a/2), its integral
+/// round the circle 1 (Γ(s+1) / (2√π Γ(s+½)), its Gammas' ratio taken as √(s+¼)).
+fn spread(a: f32, s: f32) -> f32 {
+    0.2821 * sqrt(s + 0.25) * pow(abs(cos(a * 0.5)), 2.0 * s)
+}
+
+/// The wind's sea's peak frequency (rad/s), from its fetch (JONSWAP's fit).
+fn wind_peak(sea: SeaState) -> f32 {
+    22.0 * pow(G * G / (sea.speed * sea.fetch), 1.0 / 3.0)
+}
+
+/// The wind's sea's significant height (m), from its fetch: H = 0.0016 √(gF/U²) U²/g
+/// (JONSWAP's fit).
+pub fn wind_height(sea: SeaState) -> f32 {
+    0.0016 * sqrt(G * sea.fetch / (sea.speed * sea.speed)) * sea.speed * sea.speed / G
+}
+
+/// JONSWAP's scale (α) for a sea of significant height `h` (m) peaking at `peak` (rad/s): its
+/// variance m₀ = h²/16 is Pierson and Moskowitz's αg²/5ω⁴ raised by its peak, 1/(1 - 0.287 ln
+/// γ) (Goda's normalization). (JONSWAP's own fit for α with its peak's gives a sea about 1.4 times
+/// as high as its fit for the height: the height is the one kept.)
+fn alpha_for(h: f32, peak: f32) -> f32 {
+    5.0 * pow(peak, 4.0) * h * h / 16.0 * (1.0 - 0.287 * log(3.3)) / (G * G)
+}
+
+/// The wind's sea's JONSWAP scale (α).
+pub fn wind_alpha(sea: SeaState) -> f32 {
+    alpha_for(wind_height(sea), wind_peak(sea))
+}
+
+/// The wind's sea's scale over its short waves, past twice its peak: JONSWAP's fit for α, from
+/// its fetch (0.076 (gF/U²)^-0.22), which was fitted to them. The short waves' level is what
+/// the eye reads as how rough the sea is, and it's the fit's, not the height's.
+pub fn tail_alpha(sea: SeaState) -> f32 {
+    0.076 * pow(G * sea.fetch / (sea.speed * sea.speed), -0.22)
+}
+
+/// The sea's directional spectrum at wavenumber `k` (rad/m, on x and z): its height's variance
+/// per (rad/m)², the wind's sea and the swell.
+pub fn density(sea: SeaState, k: vec2) -> f32 {
+    let kk = length(k)
+    if kk < 1.0e-6 {
+        return 0.0
+    }
+    // Deep water's waves: ω = √(gk). From ω to k, the density gains dω/dk over k.
+    let w = sqrt(G * kk)
+    let jacobian = G / (2.0 * w) / kk
+    let dir = k / kk
+    // The wind's sea: its peak from the fetch (JONSWAP's fits), its spread narrowest there.
+    let peak = wind_peak(sea)
+    let narrowest = 11.5 * pow(sea.speed * peak / G, -2.5)
+    let s = if w <= peak {
+        narrowest * pow(w / peak, 5.0)
+    } else {
+        narrowest * pow(w / peak, -2.5)
+    }
+    let off = acos(clamp(dot(dir, sea.wind), -1.0, 1.0))
+    let alpha = wind_alpha(sea)
+    let tail = mix(1.0, tail_alpha(sea) / alpha, smoothstep(1.3 * peak, 2.6 * peak, w))
+    let wind = jonswap(w, alpha, peak, 3.3) * tail * spread(off, max(s, 0.5))
+    // The swell, narrow round its heading.
+    var swell = 0.0
+    if sea.swell_height > 0.0 {
+        let sp = TAU / sea.swell_period
+        let sa = alpha_for(sea.swell_height, sp)
+        let soff = acos(clamp(dot(dir, sea.swell), -1.0, 1.0))
+        swell = jonswap(w, sa, sp, 3.3) * spread(soff, 24.0)
+    }
+    (wind + swell) * jacobian
+}
+
+/// A hash's top 24 bits as a value in [0, 1).
+fn unit(h: u32) -> f32 {
+    f32(h >> 8) * (1.0 / 16777216.0)
+}
+
+/// Two standard normal draws for lattice point `n` of seed `seed` (Box and Muller's).
+fn gauss(n: vec2i, seed: u32) -> vec2 {
+    let u = max(unit(hash2u(n.x, n.y, seed)), 1.0e-7)
+    let v = unit(hash2u(n.x, n.y, seed ^ 0x68e31da4))
+    vec2(cos(TAU * v), sin(TAU * v)) * sqrt(-2.0 * log(u))
+}
+
+/// Tile `b`'s wave `n` (its lattice point: -SIDE/2 to below SIDE/2 each way) as its
+/// wavenumber (rad/m).
+pub fn wavenumber(b: Band, n: vec2i) -> vec2 {
+    vec2(f32(n.x), f32(n.y)) * (TAU / b.side)
+}
+
+/// The complex amplitude of tile `b`'s wave `n` at time 0 (m): a normal draw scaled to the
+/// spectrum's variance there (its wave's crest is 2|h₀| over its mean, so its mean square is
+/// 2|h₀|², which sums to the spectrum's); none outside the tile's band.
+pub fn amplitude(sea: SeaState, b: Band, n: vec2i) -> vec2 {
+    let k = wavenumber(b, n)
+    let kk = length(k)
+    if kk <= 0.0 || kk < b.lo || kk >= b.hi {
+        return vec2(0.0)
+    }
+    gauss(n, sea.seed ^ b.seed) * (0.5 * sqrt(density(sea, k)) * (TAU / b.side))
+}
+
+// ---- the GPU's sum --------------------------------------------------------------------------
+
+/// Lattice point `i` (0 to SIDE - 1) as the wave it holds: 0 to SIDE/2 - 1, then the negatives.
+fn wave_of(i: u32) -> i32 {
+    if i < SIDE / 2 { i32(i) } else { i32(i) - i32(SIDE) }
+}
+
+/// `z` times i.
+fn times_i(z: vec2) -> vec2 {
+    vec2(-z.y, z.x)
+}
+
+fn cmul(a: vec2, b: vec2) -> vec2 {
+    vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)
+}
+
+/// Each wave of tile `b` at time `t`, as the inverse FFT reads them: four pairs of real fields,
+/// each pair one complex number (a real field's spectrum is its conjugate's mirror, so a + ib's
+/// inverse is the two fields at once). Into `heights` the displacement along x with the height,
+/// and the displacement along z with its shear (∂Dx/∂z); into `slopes` the height's slopes (∂h/∂x
+/// with ∂h/∂z) and the stretches (∂Dx/∂x with ∂Dz/∂z). The displacement carries the water toward
+/// a crest from either side (iκ̂h), so crests sharpen and troughs widen, and squeezes it there.
+@compute(8, 8)
+fn evolve(
+    sea: SeaState,
+    b: Band,
+    t: f32,
+    heights: mut Texels<Rgba32Float>,
+    slopes: mut Texels<Rgba32Float>,
+    id: GlobalId,
+) {
+    if id.x >= SIDE || id.y >= SIDE {
+        return
+    }
+    let n = vec2i(wave_of(id.x), wave_of(id.y))
+    let k = wavenumber(b, n)
+    let kk = length(k)
+    if kk <= 0.0 {
+        heights.store(id, vec4(0.0))
+        slopes.store(id, vec4(0.0))
+        return
+    }
+    let a = amplitude(sea, b, n)
+    let m = amplitude(sea, b, vec2i(-n.x, -n.y))
+    let phase = sqrt(G * kk) * t
+    let c = cos(phase)
+    let s = sin(phase)
+    // h₀(k) e^(-iωt), a wave running along k, and the conjugate of the one running along -k,
+    // h₀*(-k) e^(iωt): the height's spectrum is its own conjugate's mirror, so its sum is real.
+    let h = vec2(a.x * c + a.y * s, a.y * c - a.x * s) + vec2(m.x * c + m.y * s, m.x * s - m.y * c)
+    let u = k / kk
+    let ih = times_i(h)
+    let dx = ih * u.x
+    let dz = ih * u.y
+    let dxz = h * (-k.x * u.y)
+    let sx = ih * k.x
+    let sz = ih * k.y
+    let dxx = h * (-k.x * u.x)
+    let dzz = h * (-k.y * u.y)
+    heights.store(id, vec4(dx + ih, dz + times_i(dxz)))
+    slopes.store(id, vec4(sx + times_i(sz), dxx + times_i(dzz)))
+}
+
+/// `i`'s low PASSES bits reversed: where the FFT's first pass reads.
+fn reversed(i: u32) -> u32 {
+    var r: u32 = 0
+    for b in 0..PASSES {
+        r = (r << 1) | ((i >> b) & 1)
+    }
+    r
+}
+
+/// One pass (`pass`, 0 to PASSES - 1) of the inverse FFT along x (`across` 1) or along z (0),
+/// through two textures at once (`a`, `b` into `to_a`, `to_b`), each texel two complex numbers:
+/// radix 2, decimating in time, the first pass reading in bit-reversed order. Wave n's
+/// wavenumber is 2πn/L and texel m lies at mL/SIDE, so e^(ikx) is e^(2πi nm/SIDE): the plain
+/// inverse transform, unscaled.
+@compute(8, 8)
+fn butterfly(
+    pass: u32,
+    across: u32,
+    a: Texture<Rgba32Float>,
+    b: Texture<Rgba32Float>,
+    to_a: mut Texels<Rgba32Float>,
+    to_b: mut Texels<Rgba32Float>,
+    id: GlobalId,
+) {
+    if id.x >= SIDE || id.y >= SIDE {
+        return
+    }
+    let x = if across == 1 { id.x } else { id.y }
+    let half: u32 = 1 << pass
+    let j = x & (2 * half - 1)
+    let jj = j & (half - 1)
+    var top = x - j + jj
+    var bottom = top + half
+    if pass == 0 {
+        top = reversed(top)
+        bottom = reversed(bottom)
+    }
+    let angle = TAU * f32(jj) / f32(2 * half)
+    let w = vec2(cos(angle), sin(angle)) * (if j < half { 1.0 } else { -1.0 })
+    let pt = if across == 1 { vec2u(top, id.y) } else { vec2u(id.x, top) }
+    let pb = if across == 1 { vec2u(bottom, id.y) } else { vec2u(id.x, bottom) }
+    let at = a.load(x: pt.x, y: pt.y)
+    let ab = a.load(x: pb.x, y: pb.y)
+    let bt = b.load(x: pt.x, y: pt.y)
+    let bb = b.load(x: pb.x, y: pb.y)
+    to_a.store(id, vec4(at.xy + cmul(w, ab.xy), at.zw + cmul(w, ab.zw)))
+    to_b.store(id, vec4(bt.xy + cmul(w, bb.xy), bt.zw + cmul(w, bb.zw)))
+}
+
+/// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
+/// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
+/// frame's (`before`) faded over `dt` s, and fresh where a crest breaks: where the water is
+/// squeezed toward folding over, its Jacobian under `breaks` (white a deviation, `spread`, past
+/// it). Into `tilt`: its slopes and
+/// stretches (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z, leaned as the crests are).
+@compute(8, 8)
+fn settle(
+    chop: f32,
+    dt: f32,
+    breaks: f32,
+    spread: f32,
+    heights: Texture<Rgba32Float>,
+    slopes: Texture<Rgba32Float>,
+    before: Texture<Rgba16Float>,
+    shape: mut Texels<Rgba16Float>,
+    tilt: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= SIDE || id.y >= SIDE {
+        return
+    }
+    let hq = heights.load(x: id.x, y: id.y)
+    let sq = slopes.load(x: id.x, y: id.y)
+    let dxx = sq.z * chop
+    let dzz = sq.w * chop
+    let dxz = hq.w * chop
+    let squeezed = (1.0 + dxx) * (1.0 + dzz) - dxz * dxz
+    let old = before.load(x: id.x, y: id.y).w
+    let broke = clamp((breaks - squeezed) / spread, 0.0, 1.0)
+    let foam = max(old * exp(-dt / FOAM_FADE), broke)
+    shape.store(id, vec4(hq.x * chop, hq.y, hq.z * chop, foam))
+    tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
+}
+
+/// One tile's textures: its surface this frame (`shape`, `tilt`, with mips), and its shape the
+/// frame before (`before`), whose foam this frame's carries on.
+pub struct Tile {
+    pub band: Band,
+    pub shape: Texture<Rgba16Float>,
+    pub tilt: Texture<Rgba16Float>,
+    before: Texture<Rgba16Float>,
+    /// Where the tile's crests break: its Jacobian (1 flat, 0 folding), and its Jacobian's
+    /// deviation, over which its foam whitens. A linear sum's crests crowd less than a real
+    /// sea's steepest, which break short of folding: a crest breaks under 1 less a few of its
+    /// deviations (some thousandths of the water, as a moderate breeze's white horses cover;
+    /// the longest waves' the rarest, their texels too coarse for a white horse's shape, the
+    /// shorter waves' the most); the ripples never do.
+    breaks: f32,
+    spread: f32,
+}
+
+/// The mean square slope of `sea`'s waves in band `b` (each wave's k² 2|a|², summed as the
+/// spectrum's variance at k times k²): how far its Jacobian strays from 1, its deviation
+/// about the chop times the root of it (the stretches' sum is -k h).
+pub fn slope_variance(sea: SeaState, b: Band) -> f32 {
+    let dk = TAU / b.side
+    let reach = min(i32(ceil(b.hi / dk)), i32(SIDE / 2) - 1)
+    var sum = 0.0
+    for y in -reach..reach + 1 {
+        for x in -reach..reach + 1 {
+            let k = wavenumber(b, vec2i(x, y))
+            let kk = length(k)
+            if kk > 0.0 && kk >= b.lo && kk < b.hi {
+                sum += density(sea, k) * dk * dk * kk * kk
+            }
+        }
+    }
+    sum
+}
+
+/// Tile `i` of `sea`, its crests breaking where its Jacobian is `deviations` of its deviation
+/// under 1 (none at all, if 0).
+fn tile(sea: SeaState, i: u32, deviations: f32) -> Tile {
+    let levels = mip_levels(SIDE, SIDE)
+    let spread = sea.chop * sqrt(slope_variance(sea, band(i)))
+    Tile {
+        band: band(i),
+        shape: writable_texture::<Rgba16Float>(width: SIDE, height: SIDE, levels: levels),
+        tilt: writable_texture::<Rgba16Float>(width: SIDE, height: SIDE, levels: levels),
+        before: writable_texture::<Rgba16Float>(width: SIDE, height: SIDE, levels: levels),
+        breaks: if deviations > 0.0 { 1.0 - deviations * spread } else { -1.0e9 },
+        spread: max(spread, 1.0e-4),
+    }
+}
+
+/// The FFT's textures, which the tiles take in turn: the spectrum's two textures, and the two
+/// each pass writes into.
+struct Scratch {
+    a: Texture<Rgba32Float>,
+    b: Texture<Rgba32Float>,
+    to_a: Texture<Rgba32Float>,
+    to_b: Texture<Rgba32Float>,
+}
+
+/// Tile `tile` at time `t`, `dt` s after the last: its waves (`evolve`), summed along x and then
+/// along z, settled into its surface and its mips filled.
+fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
+    dispatch(evolve.bind(sea, tile.band, t, heights: mut f.a, slopes: mut f.b), over: (SIDE, SIDE))
+    for d in 0..2 {
+        for pass in 0..PASSES {
+            dispatch(
+                butterfly.bind(
+                    pass,
+                    1 - d,
+                    a: f.a,
+                    b: f.b,
+                    to_a: mut f.to_a,
+                    to_b: mut f.to_b,
+                ),
+                over: (SIDE, SIDE),
+            )
+            swap(mut f.a, mut f.to_a)
+            swap(mut f.b, mut f.to_b)
+        }
+    }
+    swap(mut tile.shape, mut tile.before)
+    dispatch(
+        settle.bind(
+            sea.chop,
+            dt,
+            tile.breaks,
+            tile.spread,
+            heights: f.a,
+            slopes: f.b,
+            before: tile.before,
+            shape: mut tile.shape,
+            tilt: mut tile.tilt,
+        ),
+        over: (SIDE, SIDE),
+    )
+    generate_mips(mut tile.shape, s)
+    generate_mips(mut tile.tilt, s)
+}
+
+/// What a shader needs of the ocean besides its textures: the tiles' sides (m); the slope
+/// variance each octave of the shortest waves holds (their spectrum falls as k⁻⁴, so each
+/// octave's is α ln 2 / 2), to roughen the light where a footprint loses them; the shortest
+/// wave's wavenumber (rad/m); and the crests' lean.
+pub struct Sea: Copy + GpuData {
+    pub sides: vec4,
+    pub octave: f32,
+    pub finest: f32,
+    pub chop: f32,
+}
+
+/// The ocean as a shader reads it: `Sea`, and each tile's surface (`*_shape`: displacement x,
+/// height, displacement z, foam; `*_tilt`: ∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z), through `s`
+/// (repeating, anisotropic).
+pub borrow struct Waves {
+    pub sea: Sea,
+    pub big_shape: borrow Texture<Rgba16Float>,
+    pub big_tilt: borrow Texture<Rgba16Float>,
+    pub mid_shape: borrow Texture<Rgba16Float>,
+    pub mid_tilt: borrow Texture<Rgba16Float>,
+    pub fine_shape: borrow Texture<Rgba16Float>,
+    pub fine_tilt: borrow Texture<Rgba16Float>,
+    pub ripple_shape: borrow Texture<Rgba16Float>,
+    pub ripple_tilt: borrow Texture<Rgba16Float>,
+    pub s: borrow Sampler,
+}
+
+/// The ocean: its sea, its four tiles and what sums them, and the waves the CPU reads
+/// (`swell`).
+pub struct Ocean {
+    pub sea: SeaState,
+    pub big: Tile,
+    pub mid: Tile,
+    pub fine: Tile,
+    pub ripple: Tile,
+    scratch: Scratch,
+    /// The surface's sampler (repeating, anisotropic), and the mips'.
+    pub s: Sampler,
+    mips: Sampler,
+    pub swell: Swell,
+    last: f32,
+}
+
+impl Ocean {
+    /// The ocean of `sea`, the CPU summing its `kept` loudest long waves, the mid tile's as
+    /// `mid` of them as the drawing shows them by a hull.
+    pub fn new(sea: SeaState, kept: u32, mid: f32) -> Ocean {
+        Ocean {
+            sea,
+            big: tile(sea, 0, 3.2),
+            mid: tile(sea, 1, 2.2),
+            fine: tile(sea, 2, 0.0),
+            ripple: tile(sea, 3, 0.0),
+            scratch: Scratch {
+                a: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
+                b: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
+                to_a: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
+                to_b: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
+            },
+            s: sampler(address: Address::Repeat, anisotropy: 16),
+            mips: sampler(address: Address::Repeat),
+            swell: Swell::new(sea, kept, mid),
+            last: -1.0,
+        }
+    }
+
+    /// The sea at time `t` (s): each tile summed and settled. The foam fades by the time since
+    /// the last (none the first time, nor when time runs back).
+    pub fn step(mut self, t: f32) {
+        let dt = if self.last < 0.0 { 0.0 } else { clamp(t - self.last, 0.0, 0.25) }
+        self.last = t
+        label("ocean")
+        run(self.sea, t, dt, mut self.big, mut self.scratch, self.mips)
+        run(self.sea, t, dt, mut self.mid, mut self.scratch, self.mips)
+        run(self.sea, t, dt, mut self.fine, mut self.scratch, self.mips)
+        run(self.sea, t, dt, mut self.ripple, mut self.scratch, self.mips)
+    }
+
+    /// What a shader needs of it beside its textures.
+    pub fn view(self) -> Sea {
+        Sea {
+            sides: SIDES,
+            octave: tail_alpha(self.sea) * 0.5 * log(2.0),
+            finest: band(TILES - 1).hi,
+            chop: self.sea.chop,
+        }
+    }
+
+    /// The GPU bytes its textures take: each tile's three with their mips, and the FFT's four.
+    pub fn bytes(self) -> u64 {
+        u64(3 * TILES) * memory::texels(SIDE, SIDE, 8) * 4 / 3 + 4 * memory::texels(SIDE, SIDE, 16)
+    }
+}
+
+// ---- reading it in a shader ---------------------------------------------------------------------
+
+/// Where lattice point `p` (x, z, m) lies on a tile `side` m across: texel m holds the water
+/// resting at m side / SIDE, its middle half a texel on.
+fn on_tile(p: vec2, side: f32) -> vec2 {
+    p / side + vec2(0.5 / f32(SIDE))
+}
+
+/// The ocean's shape at lattice point `p` (x, z, m: where the water rests, before it's carried):
+/// its displacement along x, its height, its displacement along z and its foam, each tile
+/// weighted by `w`, read through a footprint `du`, `dv` (m: how `p` changes a pixel across and a
+/// pixel down).
+pub fn shape_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
+    let s = o.sea.sides
+    o.big_shape.sample_grad(o.s, on_tile(p, s.x), du / s.x, dv / s.x) * w.x +
+        o.mid_shape.sample_grad(o.s, on_tile(p, s.y), du / s.y, dv / s.y) * w.y +
+        o.fine_shape.sample_grad(o.s, on_tile(p, s.z), du / s.z, dv / s.z) * w.z +
+        o.ripple_shape.sample_grad(o.s, on_tile(p, s.w), du / s.w, dv / s.w) * w.w
+}
+
+/// Its slopes and stretches at lattice point `p` (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z), as `shape_at`.
+pub fn tilt_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
+    let s = o.sea.sides
+    o.big_tilt.sample_grad(o.s, on_tile(p, s.x), du / s.x, dv / s.x) * w.x +
+        o.mid_tilt.sample_grad(o.s, on_tile(p, s.y), du / s.y, dv / s.y) * w.y +
+        o.fine_tilt.sample_grad(o.s, on_tile(p, s.z), du / s.z, dv / s.z) * w.z +
+        o.ripple_tilt.sample_grad(o.s, on_tile(p, s.w), du / s.w, dv / s.w) * w.w
+}
+
+/// The ocean's height at `p` (x, z: a place on the level, not which water is there), as a
+/// footprint `foot` m wide holds it: the two longer tiles alone, the mid one weighted `mid`, the
+/// water carried there found back in one step (from `p` less the displacement read at `p`). For a
+/// ray's march; the ripples, a few centimetres, are the shading's.
+pub fn level_at(o: Waves, p: vec2, foot: f32, mid: f32) -> f32 {
+    let s = o.sea.sides
+    let lb = log2(max(foot * f32(SIDE) / s.x, 1.0))
+    let lm = log2(max(foot * f32(SIDE) / s.y, 1.0))
+    let d = o.big_shape.sample_level(o.s, on_tile(p, s.x), lb) +
+        o.mid_shape.sample_level(o.s, on_tile(p, s.y), lm) * mid
+    let q = p - vec2(d.x, d.z)
+    o.big_shape.sample_level(o.s, on_tile(q, s.x), lb).y +
+        o.mid_shape.sample_level(o.s, on_tile(q, s.y), lm).y * mid
+}
+
+/// The ocean's surface at `p` (x, z on the level) as a footprint `du`, `dv` (m) holds it, each
+/// tile weighted by `w`: its height; its normal; its foam; how squeezed it is (1 flat, under 1
+/// where crests crowd, under 0 where they'd fold); the slope variance the footprint lost, from
+/// the octaves of waves too short for it, in the slope along each of its sides (`du`'s, `dv`'s);
+/// and the lattice point its water rests at (to lay patterns on, which ride with it).
+pub fn surface_at(
+    o: Waves,
+    p: vec2,
+    du: vec2,
+    dv: vec2,
+    w: vec4,
+) -> (f32, vec3, f32, f32, vec2, vec2) {
+    // The water carried to p, found back in two steps.
+    var q = p
+    for _ in 0..2 {
+        let d = shape_at(o, q, du, dv, w)
+        q = p - vec2(d.x, d.z)
+    }
+    let d = shape_at(o, q, du, dv, w)
+    let t = tilt_at(o, q, du, dv, w)
+    let sx = 1.0 + t.z
+    let sz = 1.0 + t.w
+    let n = normalize(vec3(-t.x / max(sx, 0.2), 1.0, -t.y / max(sz, 0.2)))
+    // Of the waves shorter than a footprint's two sides, the slopes lost: for each octave past
+    // what a side holds, half the octave's (one slope of its two), most of it in the slope along
+    // that side (the waves a side averages out run mostly along it) and the rest across.
+    let finest = o.sea.finest * w.w
+    let past_u = max(log2(finest * length(du) / PI), 0.0)
+    let past_v = max(log2(finest * length(dv) / PI), 0.0)
+    let lost = vec2(past_u * 0.75 + past_v * 0.25, past_v * 0.75 + past_u * 0.25) *
+        (o.sea.octave * 0.5)
+    (d.y, n, d.w, sx * sz, lost, q)
+}
+
+// ---- reading it on the CPU ----------------------------------------------------------------------
+
+/// A wave as the CPU sums it: its wavenumber (rad/m), its angular frequency (rad/s) and its
+/// complex amplitude at time 0 (m), and its mean square (2|a|², m²).
+pub struct Mode: Copy {
+    pub k: vec2,
+    pub w: f32,
+    pub a: vec2,
+    pub power: f32,
+}
+
+fn louder(a: Mode, b: Mode) -> bool {
+    a.power > b.power
+}
+
+/// The waves the CPU sums for a boat: the loudest of the two longer tiles' (the ripples are
+/// smaller than any hull feels), and the crests' lean; and how much of those tiles' height's
+/// variance they hold (`held`, 0 to 1).
+pub struct Swell: Clone {
+    pub modes: Vec<Mode>,
+    pub chop: f32,
+    pub held: f32,
+}
+
+impl Swell {
+    /// `sea`'s `kept` loudest waves of the big and mid tiles, the mid's weighted `mid`.
+    pub fn new(sea: SeaState, kept: u32, mid: f32) -> Swell {
+        var all: Vec<Mode> = Vec::new()
+        var total = 0.0
+        for i in 0..2 {
+            let b = band(i)
+            let weight = if i == 0 { 1.0 } else { mid }
+            // The band's waves lie within hi of the origin: the lattice points out to there.
+            let reach = min(i32(ceil(b.hi * b.side / TAU)), i32(SIDE / 2) - 1)
+            for y in -reach..reach + 1 {
+                for x in -reach..reach + 1 {
+                    let n = vec2i(x, y)
+                    let a = amplitude(sea, b, n) * weight
+                    let power = 2.0 * dot(a, a)
+                    if power > 0.0 {
+                        let k = wavenumber(b, n)
+                        total += power
+                        all.push(Mode { k, w: sqrt(G * length(k)), a, power })
+                    }
+                }
+            }
+        }
+        all.sort_by(louder)
+        var modes: Vec<Mode> = Vec::new()
+        var held = 0.0
+        for m in all {
+            if modes.len() < kept {
+                held += m.power
+                modes.push(m)
+            }
+        }
+        Swell { modes, chop: sea.chop, held: if total > 0.0 { held / total } else { 0.0 } }
+    }
+
+    /// Its displacement along x, height and displacement along z at lattice point `p` (x, z) at
+    /// time `t`: each wave 2 Re(a e^(i(k·p - ωt))), carried toward its crests (2 Re(iκ̂ a e^(...))).
+    pub fn shape(self, p: vec2, t: f32) -> vec3 {
+        var d = vec3(0.0)
+        for m in self.modes {
+            let phase = dot(m.k, p) - m.w * t
+            let c = cos(phase)
+            let s = sin(phase)
+            let re = m.a.x * c - m.a.y * s
+            let im = m.a.x * s + m.a.y * c
+            let u = m.k / length(m.k)
+            d += vec3(-u.x * im, re, -u.y * im) * 2.0
+        }
+        vec3(d.x * self.chop, d.y, d.z * self.chop)
+    }
+
+    /// Its height at `p` (x, z: a place on the level) at time `t`, the water carried there found
+    /// back in two steps (as the shading finds it).
+    pub fn height(self, p: vec2, t: f32) -> f32 {
+        var q = p
+        for _ in 0..2 {
+            let d = self.shape(q, t)
+            q = p - vec2(d.x, d.z)
+        }
+        self.shape(q, t).y
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A gentle sea: Beaufort 3 to 4 over a long swell.
+fn gentle() -> SeaState {
+    SeaState {
+        wind: normalize(vec2(-0.55, 0.835)),
+        speed: 5.5,
+        fetch: 60000.0,
+        swell: normalize(vec2(0.17, 0.985)),
+        swell_height: 0.8,
+        swell_period: 11.0,
+        chop: 0.9,
+        seed: 7,
+    }
+}
+
+/// The tiles' bands meet end to end, so no wave is summed twice or missed.
+@test
+fn the_bands_meet_end_to_end() {
+    assert(band(0).lo == 0.0)
+    for i in 1..TILES {
+        assert(band(i - 1).hi == band(i).lo, f"a gap or an overlap before tile {i}")
+    }
+    // Each tile's band lies within what its texels hold (under half its Nyquist), and its
+    // longest wave spans six of its own lattice's.
+    for i in 0..TILES {
+        let b = band(i)
+        assert(b.hi <= PI * f32(SIDE) / b.side * 1.0001, f"tile {i} past its Nyquist")
+        assert(i == 0 || b.lo >= 5.99 * TAU / b.side, f"tile {i}'s longest too coarse")
+    }
+}
+
+/// The spectrum's waves, summed as the tiles hold them, give the sea its significant height, the
+/// wind's sea's (`wind_height`) and the swell's, their variances adding, within 10 % (the short
+/// waves raised to the tail's level add a few %; the tiles hold no wave longer than the big
+/// one's side).
+@test
+fn the_waves_hold_the_seas_height() {
+    let sea = gentle()
+    var variance = 0.0
+    for i in 0..TILES {
+        let b = band(i)
+        let dk = TAU / b.side
+        let reach = min(i32(ceil(b.hi / dk)), i32(SIDE / 2) - 1)
+        for y in -reach..reach + 1 {
+            for x in -reach..reach + 1 {
+                let k = wavenumber(b, vec2i(x, y))
+                let kk = length(k)
+                if kk > 0.0 && kk >= b.lo && kk < b.hi {
+                    variance += density(sea, k) * dk * dk
+                }
+            }
+        }
+    }
+    let wind_h = 0.0016 * sqrt(G * sea.fetch / (sea.speed * sea.speed)) * sea.speed * sea.speed / G
+    let expected = sqrt(wind_h * wind_h + sea.swell_height * sea.swell_height)
+    let h = 4.0 * sqrt(variance)
+    print(f"significant height {h} m, expected {expected} m")
+    assert(abs(h - expected) < 0.1 * expected, f"{h} m, not {expected} m")
+}
+
+/// The CPU's loudest waves hold most of the long tiles' height, and a draw's mean square is the
+/// spectrum's (the amplitudes' scale).
+@test
+fn the_loudest_waves_hold_most_of_the_height() {
+    let sw = Swell::new(gentle(), 512, 1.0)
+    print(f"{sw.modes.len()} waves hold {sw.held * 100.0} % of the long tiles' variance")
+    assert(sw.held > 0.6, f"{sw.held}")
+}

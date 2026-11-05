@@ -26,7 +26,25 @@ fn seen(light: Light, c: vec3, clean: bool) -> vec3 {
         kept = mix(kept / top, vec3(1.0), clamp((top - 1.0) * 0.5, 0.0, 1.0))
     }
     let t = mix(per, kept, 0.35)
-    vec3(srgb(t.x), srgb(t.y), srgb(t.z))
+    // (Far past white, as the sun's glints on the water are, white: burnt out, as film is.)
+    let w = mix(t, vec3(1.0), smoothstep(3.0, 14.0, y))
+    vec3(srgb(w.x), srgb(w.y), srgb(w.z))
+}
+
+/// The glow round the sun's glints on the water: their light past white in the pixels round
+/// `px`, spread a few pixels as a lens spreads a point too bright for it.
+fn glare(colour: Texture<Rgba16Float>, light: Light, px: vec2, size: vec2, scale: f32) -> vec3 {
+    var g = vec3(0.0)
+    for i in 0..8 {
+        let a = f32(i) * 0.7853982 + 0.3927
+        for j in 0..2 {
+            let r = scale * (1.2 + 1.8 * f32(j))
+            let q = at(colour, px + vec2(cos(a), sin(a)) * r, size).xyz * light.exposure
+            let over = max(dot(q, LUMA) - 2.5, 0.0)
+            g += normalize(q + vec3(1.0e-4)) * (over / (1.0 + over * 0.15)) / (1.0 + f32(j) * 2.0)
+        }
+    }
+    g * 0.02
 }
 
 /// A pixel's texel of a target, its coordinates clamped to it.
@@ -523,9 +541,16 @@ pub fn ink(
     // Round the sun, the sky's glare held down a little, so the eye isn't drawn off the frame.
     if m0.y == SKY || m0.y == SEA {
         // ...and a hot zone kept where the sun is, at the frame's edge by the horizon.
+        // (Not on the sun's glints on the water: they burn white, as the sun's own mirror does.)
         let toward_sun = max(dot(normalize(vec3(dv.x, dv.y * 0.5, dv.z)), light.sun), 0.0)
-        c *= mix(vec3(1.0), vec3(1.06, 0.96, 0.8), pow(toward_sun, 6.0) * s.style)
-        c = mix(c, vec3(1.0, 0.88, 0.64), clamp(pow(toward_sun, 90.0) * 0.4, 0.0, 0.45) * s.style)
+        let kept = if m0.y == SEA { 1.0 - smoothstep(0.8, 0.97, luma(c)) } else { 1.0 }
+        c *= mix(vec3(1.0), vec3(1.06, 0.96, 0.8), pow(toward_sun, 6.0) * s.style * kept)
+        let hot = if m0.y == SEA { 0.0 } else { 1.0 }
+        c = mix(
+            c,
+            vec3(1.0, 0.88, 0.64),
+            clamp(pow(toward_sun, 90.0) * 0.4, 0.0, 0.45) * s.style * hot,
+        )
     }
     if drawn {
         // A painter's value: the middle tones pulled apart a little, so the light reads as light.
@@ -542,6 +567,9 @@ pub fn ink(
             0.4
         } else { 1.0 })
         c += bloom(colour, light, px, size, scale, clean) * glow_k * s.style
+        if m0.y == SEA {
+            c += glare(colour, light, px, size, scale) * s.style
+        }
         let lum = luma(c)
         let split = mix(vec3(0.86, 0.96, 1.1), vec3(1.07, 1.0, 0.88), smoothstep(0.12, 0.8, lum))
         c *= mix(vec3(1.0), split, s.style)

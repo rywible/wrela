@@ -1,0 +1,124 @@
+// The ocean's GPU sum against the CPU's (`engine::ocean`): its big and mid tiles summed by the
+// inverse FFT at a time, a few of their texels read back, and the same waves summed one by one
+// on the CPU at the places those texels hold (texel m at m L / SIDE).
+
+use engine::ocean::{Ocean, SIDE, SeaState, amplitude, band, wavenumber}
+use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Slots, Texture, buffer, dispatch, read}
+use std::io::{Pending, print}
+
+/// The time the tiles are summed at (s), and how many texels of each are read.
+const T: f32 = 3.7
+const PROBES: u32 = 8
+
+const SEA = SeaState {
+    wind: vec2(-0.55007, 0.83511),
+    speed: 7.0,
+    fetch: 90000.0,
+    swell: vec2(0.17007, 0.98543),
+    swell_height: 0.9,
+    swell_period: 12.0,
+    chop: 0.9,
+    seed: 7,
+}
+
+/// Probe `i`'s texel.
+fn texel(i: u32) -> vec2u {
+    vec2u((i * 37 + 11) % SIDE, (i * 91 + 5) % SIDE)
+}
+
+/// The big tile's shape at each probe's texel, then the mid tile's.
+@compute(64)
+fn probed(
+    big: Texture<Rgba16Float>,
+    mid: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 2 * PROBES {
+        return
+    }
+    let at = texel(id.x % PROBES)
+    out[id] = if id.x < PROBES { big.load(x: at.x, y: at.y) } else { mid.load(x: at.x, y: at.y) }
+}
+
+pub struct State {
+    ocean: Ocean,
+    asked: Option<Pending<vec4>>,
+    pub got: Vec<vec4>,
+    frames: u32,
+}
+
+pub fn init() -> State {
+    State { ocean: Ocean::new(SEA, 16, 1.0), asked: None, got: Vec::new(), frames: 0 }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.frames += 1
+    if s.frames == 2 {
+        s.ocean.step(T)
+        var out: GpuBuffer<vec4> = buffer(2 * PROBES)
+        dispatch(
+            probed.bind(big: s.ocean.big.shape, mid: s.ocean.mid.shape, out: mut out),
+            over: 2 * PROBES,
+        )
+        s.asked = Some(read(out.items()))
+    }
+    if s.got.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// Tile `i`'s displacement along x (leaned by the chop), height and displacement along z at
+/// its texel `at`, each of its waves summed: 2 Re(a e^(i(k·x - ωt))), and the displacement
+/// carried toward the crests.
+fn summed(i: u32, at: vec2u) -> vec3 {
+    let b = band(i)
+    let x = vec2(f32(at.x), f32(at.y)) * (b.side / f32(SIDE))
+    let reach = i32(SIDE / 2) - 1
+    var d = vec3(0.0)
+    for ny in -reach..reach + 1 {
+        for nx in -reach..reach + 1 {
+            let n = vec2i(nx, ny)
+            let a = amplitude(SEA, b, n)
+            if a.x != 0.0 || a.y != 0.0 {
+                let k = wavenumber(b, n)
+                let phase = dot(k, x) - sqrt(9.81 * length(k)) * T
+                let c = cos(phase)
+                let s = sin(phase)
+                let re = a.x * c - a.y * s
+                let im = a.x * s + a.y * c
+                let u = k / length(k)
+                d += vec3(-u.x * im * SEA.chop, re, -u.y * im * SEA.chop) * 2.0
+            }
+        }
+    }
+    d
+}
+
+/// Each probed texel of the big and mid tiles holds what its waves sum to there, within the
+/// half floats' rounding: the FFT's passes, their order and their signs.
+@test(frames: 8, gpu: true)
+fn the_fft_sums_the_waves(s: State) {
+    assert(s.got.len() == 2 * PROBES, f"{s.got.len()} read back")
+    var worst = 0.0
+    var spread = 0.0
+    for i in 0..2 {
+        for j in 0..PROBES {
+            let want = summed(i, texel(j))
+            let got = s.got[i * PROBES + j]
+            let off = max(max(abs(got.x - want.x), abs(got.y - want.y)), abs(got.z - want.z))
+            print(f"tile {i} texel {j}: height {got.y} m (summed {want.y}), x {got.x} ({want.x})")
+            worst = max(worst, off)
+            spread = max(spread, abs(want.y))
+        }
+    }
+    print(f"worst {worst} m of heights to {spread} m")
+    assert(spread > 0.05, "the waves are too low to tell")
+    assert(worst < 0.01 + 0.004 * spread, f"off by {worst} m")
+}

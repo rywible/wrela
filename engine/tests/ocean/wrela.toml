@@ -1,0 +1,7 @@
+# The open ocean (engine/ocean.wrela): its tiles' inverse FFT on the GPU read back against the
+# same waves summed one by one on the CPU.
+[package]
+name = "ocean_tests"
+
+[dependencies]
+engine = { workspace = true }

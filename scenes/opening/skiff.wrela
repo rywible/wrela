@@ -38,6 +38,12 @@ fn hull_solid(q: vec3) -> f32 {
     max((e - 1.0) * min(w, DEEP), abs(q.z) - LONG)
 }
 
+/// How far `p` (the world's) lies out from the hull's side, the solid hull as it is at `p`'s
+/// height: at the water, how far from its waterline.
+pub fn hull_off(s: Shot, p: vec3) -> f32 {
+    hull_solid(local(s, p))
+}
+
 /// Whether the sea at `p` (the world's) lies inside the skiff, where it isn't drawn.
 pub fn dry(s: Shot, p: vec3) -> bool {
     let q = local(s, p)
