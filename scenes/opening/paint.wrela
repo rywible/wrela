@@ -6,8 +6,8 @@
 // a line field, the line's weight, the normal and the moment's energy.
 
 use look::{
-    OVERCAST, fbm, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma,
-    noise, noise3, ray,
+    OVERCAST, fbm, ISLE as ISLE_AT, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band,
+    cells, hash2, luma, noise, noise3, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
@@ -72,7 +72,7 @@ fn aired(
 }
 
 /// How bright the storm's air is, against the clear air's light at the horizon.
-const STORM_AIR: f32 = 0.22
+const STORM_AIR: f32 = 0.17
 
 /// The overcast's deck along `d`: a low ceiling of storm cloud over the whole sky, lightest
 /// along the horizon (where the eye sees through the most air under it) and darkest overhead,
@@ -86,19 +86,23 @@ fn deck(view: Texture<Rgba16Float>, light: Light, d: vec3, smp: Sampler) -> vec3
     let up = max(d.y, 0.0)
     // The deck's underside, 900 m up, where the ray meets it (the far deck foreshortened into
     // bands near the horizon).
-    let p = d.xz / max(up, 0.09) * 0.9
+    let p = d.xz / (up + 0.05) * 0.9
     let roll = fbm(vec2(p.x * 0.55 + p.y * 0.25, p.y * 1.4 - p.x * 0.2) * 0.9, 5)
     let torn = fbm(p * 2.6 + vec2(7.0, 3.0), 4)
-    let billow = smoothstep(0.3, 0.75, roll)
+    let billow = smoothstep(0.32, 0.7, roll)
     // (Ragged scud under it, darker, torn along the wind.)
     let scud = smoothstep(0.6, 0.85, torn) * (1.0 - billow)
     let far = smoothstep(0.0, 0.32, up)
     // (Its texture fades out toward the horizon, where it would be finer than a pixel.)
-    let shown = smoothstep(0.03, 0.16, up)
-    let grey = mix(0.72, 0.24, far) * (1.0 - 0.45 * billow * shown) * (1.0 - 0.3 * scud * shown)
+    let shown = smoothstep(0.015, 0.12, up)
+    // (The billows' bellies near black: the weight of the storm over the eye.)
+    let grey = mix(0.5, 0.2, far) * (1.0 - 0.62 * billow * shown) * (1.0 - 0.3 * scud * shown)
     let behind = pow(max(dot(d, light.sun), 0.0), 5.0)
     let glow = behind * (1.0 - 0.6 * billow) * 0.4
-    horizon * (vec3(0.80, 0.86, 0.92) * grey + vec3(0.95, 0.93, 0.86) * glow)
+    horizon *
+        (vec3(0.80, 0.86, 0.92) * grey +
+            vec3(0.95, 0.93, 0.86) * glow +
+            vec3(0.82, 0.9, 1.0) * rift * 0.75)
 }
 
 /// The sky as the water mirrors it along `d`: `heaven`'s, without the sun's disc (the sun's own
@@ -422,7 +426,9 @@ fn lit_solid(
     // The sky's light on it: the sky toward its normal, lifted toward the zenith, and the sea's
     // light from below.
     // (The clear sky's, not the clouds': a cloud's patch in it would mottle a whole face.)
-    let skyward = clear_sky(view, smp, h.light, if cel { up } else { normalize(n + up * 0.6) })
+    let clear_light = clear_sky(view, smp, h.light, if cel { up } else { normalize(n + up * 0.6) })
+    // (Under the overcast, the deck's grey light: dimmer than the open sky's, and colourless.)
+    let skyward = mix(clear_light, vec3(luma(clear_light)) * vec3(0.8, 0.86, 0.92) * 0.55, OVERCAST)
     // (The sea under the low sun is bright: it throws a warm light up under what hangs over it.)
     let under = if cel { band(-n.y, 0.35, 0.04) * 0.6 } else { max(-n.y, 0.0) }
     let below = h.light.sun_colour * vec3(0.085, 0.07, 0.055) * under
@@ -430,7 +436,13 @@ fn lit_solid(
     let open = if cel { 0.22 + 0.12 * band(n.y, 0.35, 0.05) } else { 0.2 + 0.25 * max(n.y, 0.0) }
     let sky = (skyward * PI * open + below) * (0.25 + 0.75 * ao * ao)
     let r = d - 2.0 * dot(d, n) * n
-    let reflected = clouded_sky(view, h.light, normalize(vec3(r.x, abs(r.y), r.z)), dome, smp) * ao
+    let mirrored = normalize(vec3(r.x, abs(r.y), r.z))
+    let reflected = mix(
+        clouded_sky(view, h.light, mirrored, dome, smp),
+        deck(view, h.light, mirrored, smp),
+        OVERCAST,
+    ) *
+        ao
     let lit = Lit {
         albedo,
         n,
@@ -892,7 +904,7 @@ fn sea_shade(
     let bright = (0.4 + 0.6 * smoothstep(0.5, 1.4, mass)) * (0.7 + 0.5 * froth)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(0.02, 0.5, foam_k)
+    let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
     // Foam where the sea meets the skiff, lit as a white surface is.
     // The skiff's wake: two thin lines spreading from its stern as it drifts, and the stirred
     // water straight behind it.
@@ -985,7 +997,7 @@ fn sea_shade(
         PI
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
-    c += body * (1.0 - fresnel) * mix(2.6, 1.5, OVERCAST) * bubbles * (1.0 - white)
+    c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * bubbles * (1.0 - white)
     c = mix(c, foam_light * bright, white * 0.92)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
