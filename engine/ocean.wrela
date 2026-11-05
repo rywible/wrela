@@ -37,7 +37,7 @@ const PASSES: u32 = 8
 const G: f32 = 9.81
 
 /// How long a broken crest's foam takes to fade to a third (s).
-const FOAM_FADE: f32 = 4.0
+const FOAM_FADE: f32 = 6.0
 
 /// What sea it is: the wind that raises it and the swell come from far off.
 pub struct SeaState: Copy + GpuData {

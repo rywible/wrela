@@ -221,6 +221,29 @@ pub fn fbm3(p: vec3, n: u32) -> f32 {
     s / total
 }
 
+/// Cells at `p` (Worley's, one point a unit cell): how far to the nearest point and the next
+/// nearest. Their difference is small along the walls between cells, as foam's lace and a
+/// bubble raft's walls are.
+pub fn cells(p: vec2) -> vec2 {
+    let i = floor(p)
+    var f1 = 8.0
+    var f2 = 8.0
+    for y in 0..3 {
+        for x in 0..3 {
+            let c = i + vec2(f32(x) - 1.0, f32(y) - 1.0)
+            let at = c + vec2(hash2(c), hash2(c + vec2(19.1, 7.3))) * 0.9 + vec2(0.05)
+            let r = length(p - at)
+            if r < f1 {
+                f2 = f1
+                f1 = r
+            } else if r < f2 {
+                f2 = r
+            }
+        }
+    }
+    vec2(f1, f2)
+}
+
 /// A soft step of `x` across `edge`, `soft` wide: a painted tone's edge.
 pub fn band(x: f32, edge: f32, soft: f32) -> f32 {
     smoothstep(edge - soft, edge + soft, x)
