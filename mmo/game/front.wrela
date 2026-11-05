@@ -1,0 +1,506 @@
+// wrela.dev's front page: the opening (scenes/opening) plays live behind it, a skiff adrift on the
+// open sea under the floating cathedral, and the game's name and its actions stand at the left,
+// as the console's home stood over the capybara game playing itself (rywible/wrela#360). Play
+// hands the skiff to the player where it floats, with no account and nothing online: the camera
+// is the one the rowing uses, so the page's frame is the game's first. Play online goes to the
+// MMO's client (client.wrela), whose title signs in or makes an account; the account's chip in
+// the corner signs in from here too. Escape while rowing comes back to the page.
+//
+// The scene is drawn smaller than the screen when the device can't keep up (`budget`), then laid
+// over the whole screen, with the page's veil (darker at the left and the bottom, where the
+// words stand) easing away as the player takes the paddle.
+
+use client::Account
+use opening::played::{State as Scene, input, play, release, scene, way}
+use std::gpu::{
+    ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
+}
+use std::input::{Button, Event, Key, PadButton, events}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::kit
+use ui::kit::{State, Variant}
+use ui::text::{Face, Fonts}
+
+/// What the page is doing: showing its words over the scene, or the player rowing.
+pub enum Stage: Copy + Eq { Page, Rowing }
+
+/// What a frame of the page asks of the program it's in.
+pub enum Next: Copy + Eq {
+    /// Stay, with the pointer's shape: a hand over what can be pressed.
+    Stay { hand: bool },
+    /// The player chose to play online: the MMO's client takes the screen.
+    Online,
+}
+
+// The page's actions.
+const PLAY: u32 = 0
+const ONLINE: u32 = 1
+const ACTIONS: [Text; 2] = ["Play", "Play online"]
+const NONE: u32 = 4294967295
+
+/// The drawings the sky takes to cook before the scene shows (heavens: its dome over ~32).
+const COOKING: u32 = 36
+/// Seconds the scene takes to come up from black, and the page's words after it.
+const RISE: f32 = 1.6
+const WORDS_AFTER: f32 = 0.35
+/// Seconds the words take to go as the player takes the paddle, and to come back.
+const LEAVE: f32 = 0.45
+const RETURN: f32 = 0.6
+/// Seconds the rowing's keys stay shown once the skiff has way on it.
+const KEYS_FOR: f32 = 4.0
+
+/// The tallest the scene is drawn (pixels), and the shortest the budget takes it to.
+const TALLEST: f32 = 1080.0
+const SHORTEST: f32 = 360.0
+/// Seconds a drawing may take, on average, before the scene is drawn smaller; and under which it
+/// grows again.
+const SLOW: f32 = 1.0 / 48.0
+const QUICK: f32 = 1.0 / 57.0
+
+/// A screen narrower or shorter than this (logical pixels) is a phone's: the skiff needs keys.
+const PHONE_SIDE: f32 = 520.0
+
+/// What the veil's shader reads: the screen's size, how far the scene has come up from black,
+/// and how much of the page's veil lies over it.
+pub struct Veil: Copy + GpuData {
+    pub size: vec2,
+    pub shown: f32,
+    pub veil: f32,
+}
+
+pub struct Front {
+    scene: Scene,
+    smp: Sampler,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    pub stage: Stage,
+    /// The time the page began (s), and the frames it has drawn.
+    began: Option<f32>,
+    time: f32,
+    dt: f32,
+    drawings: u32,
+    /// How far the scene has come up (0 to 1), the words are in (0 to 1), and the veil.
+    shown: f32,
+    words: f32,
+    /// Seconds since the scene first showed.
+    since: f32,
+    /// The scene's height as drawn (pixels), and the drawings' average seconds.
+    tall: f32,
+    spent: f32,
+    resized_at: f32,
+    /// The actions' rectangles as last drawn, their hovers, the one pressed, the keyboard's focus
+    /// (shown once the keyboard moves it), and the pointer.
+    rects: Vec<Rect>,
+    hovers: Vec<f32>,
+    pressed: u32,
+    focus: u32,
+    keyboard: bool,
+    pointer: Option<vec2>,
+    /// How long the skiff has had way on it since Play, and how far the rowing's keys show.
+    rowed: f32,
+    keys: f32,
+    reduced: bool,
+}
+
+/// The page, its scene not yet drawn.
+pub fn init() -> Front {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Front {
+        scene: scene(width: 640, height: 360),
+        smp: sampler(),
+        fonts,
+        renderer,
+        list: DrawList::new(),
+        stage: Stage::Page,
+        began: None,
+        time: 0.0,
+        dt: 0.0,
+        drawings: 0,
+        shown: 0.0,
+        words: 0.0,
+        since: 0.0,
+        tall: 720.0,
+        spent: 1.0 / 60.0,
+        resized_at: 0.0,
+        rects: Vec::new(),
+        hovers: Vec::from([0.0, 0.0]),
+        pressed: NONE,
+        focus: PLAY,
+        keyboard: false,
+        pointer: None,
+        rowed: 0.0,
+        keys: 0.0,
+        reduced: false,
+    }
+}
+
+/// One triangle that covers the screen.
+@vertex
+fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+/// The scene laid over the screen, filtered up from its own size, under the page's veil: darker
+/// toward the left, where the words stand, and toward the bottom, where the actions are, so they
+/// read on any sky (the console's home's backdrop did the same over its hero).
+@fragment
+fn laid(pixel: FragCoord, v: Veil, image: Texture<Rgba8>, smp: Sampler) -> vec4 {
+    let uv = pixel.position.xy / v.size
+    let c = image.sample(smp, uv).xyz
+    // Measured from the bottom left, in screen heights, so a wide screen keeps its words' corner
+    // as dark as a narrow one.
+    let aspect = v.size.x / v.size.y
+    let from = vec2(uv.x * aspect, 1.0 - uv.y)
+    let side = 1.0 - smoothstep(0.0, 1.25, from.x)
+    let low = 1.0 - smoothstep(0.0, 0.62, from.y)
+    let corner = 1.0 - smoothstep(0.0, 1.05, length(from * vec2(0.8, 1.2)))
+    let dark = clamp(side * 0.42 + low * 0.38 + corner * 0.3, 0.0, 0.82) * v.veil
+    vec4(c * (1.0 - dark) * v.shown, 1.0)
+}
+
+/// Whether the screen, `w` by `h` logical pixels, is a phone's.
+fn phone(w: f32, h: f32) -> bool {
+    min(w, h) < PHONE_SIDE
+}
+
+/// The scene's height next: smaller when the drawings have run slow, larger again when quick,
+/// in steps, and no more often than every two seconds.
+fn budget(f: mut Front, height: f32) {
+    let most = min(height, TALLEST)
+    let least = min(SHORTEST, most)
+    if f.time - f.resized_at < 2.0 {
+        f.tall = clamp(f.tall, least, most)
+        return
+    }
+    let was = f.tall
+    if f.spent > SLOW {
+        f.tall = max(least, round(f.tall * 0.8 / 8.0) * 8.0)
+    } else if f.spent < QUICK && f.tall < most {
+        f.tall = min(most, round(f.tall * 1.15 / 8.0) * 8.0)
+    }
+    f.tall = clamp(f.tall, least, most)
+    if f.tall != was {
+        f.resized_at = f.time
+        f.spent = (SLOW + QUICK) * 0.5
+    }
+}
+
+/// Plays the page or the player's rowing for a frame, `width` by `height` pixels, `zoom` device
+/// pixels to a logical one, under `account`'s chip and pages (on the page alone).
+pub fn frame<A: Account>(
+    f: mut Front,
+    time: f32,
+    width: u32,
+    height: u32,
+    zoom: f32,
+    reduced: bool,
+    account: mut A,
+) -> Next {
+    let start = match f.began {
+        Some(t) => t,
+        None => {
+            f.began = Some(time)
+            time
+        },
+    }
+    let dt = clamp(time - start - f.time, 0.0, 0.25)
+    f.time = time - start
+    f.dt = dt
+    f.reduced = reduced
+    if f.drawings > 2 {
+        f.spent += (dt - f.spent) * 0.1
+    }
+    let k = zoom
+    let (w, h) = (f32(width), f32(height))
+    let on_phone = phone(w / k, h / k)
+    var chosen = NONE
+    var back = false
+    for e in events() {
+        if f.stage == Stage::Rowing {
+            match e {
+                Event::KeyDown { key: Key::Escape, .. } => back = true,
+                Event::PadButton { button: PadButton::Start, pressed: true, .. } => back = true,
+                _ => input(mut f.scene, e),
+            }
+            continue
+        }
+        // The account's pages take what's theirs (every input while they're open).
+        if account.event(e) {
+            continue
+        }
+        if f.words < 0.5 {
+            continue
+        }
+        match e {
+            Event::PointerMove { at, .. } => {
+                f.pointer = Some(at)
+                f.keyboard = false
+            },
+            Event::PointerDown { at, button: Button::Primary, .. } => {
+                f.pointer = Some(at)
+                f.pressed = action_at(f, at)
+            },
+            Event::PointerUp { at, button: Button::Primary, .. } => {
+                let on = action_at(f, at)
+                if on != NONE && on == f.pressed { chosen = on }
+                f.pressed = NONE
+            },
+            Event::KeyDown { key, repeat: false, mods } => {
+                if key == Key::Enter || key == Key::Space {
+                    chosen = f.focus
+                } else if key == Key::Tab || key == Key::Left || key == Key::Right {
+                    if f.keyboard || key != Key::Tab || !mods.shift {
+                        f.focus = if f.keyboard { 1 - f.focus } else { f.focus }
+                    }
+                    f.keyboard = true
+                } else if key == Key::W || key == Key::Up {
+                    // Rowing from the page is playing.
+                    chosen = PLAY
+                }
+            },
+            Event::PadButton { button, pressed: true, .. } => {
+                if button == PadButton::South { chosen = f.focus }
+                if button == PadButton::Left || button == PadButton::Right {
+                    if f.keyboard { f.focus = 1 - f.focus }
+                    f.keyboard = true
+                }
+            },
+            _ => {},
+        }
+    }
+    if on_phone && chosen == PLAY { chosen = NONE }
+    if chosen == ONLINE {
+        return Next::Online
+    }
+    if chosen == PLAY {
+        f.stage = Stage::Rowing
+        f.rowed = 0.0
+        f.pressed = NONE
+    }
+    if back {
+        release(mut f.scene)
+        f.stage = Stage::Page
+        f.focus = PLAY
+    }
+    // The scene, once the sky has cooked, comes up from black; the words after it.
+    f.drawings += 1
+    if f.drawings > COOKING {
+        f.since += dt
+    }
+    let rise = if reduced { 0.4 } else { RISE }
+    f.shown = smoothstep(0.0, 1.0, clamp(f.since / rise, 0.0, 1.0))
+    let words_target = if f.stage == Stage::Page && f.since > rise * WORDS_AFTER { 1.0 } else {
+        0.0
+    }
+    let pace = if words_target > f.words { if f.since < rise { rise * 0.8 } else { RETURN } } else {
+        LEAVE
+    }
+    f.words = kit::ease(f.words, words_target, dt, seconds: pace)
+    if f.stage == Stage::Rowing {
+        if abs(way(f.scene)) > 0.25 { f.rowed += dt }
+        let target = if f.rowed < KEYS_FOR && f.words < 0.05 { 1.0 } else { 0.0 }
+        f.keys = kit::ease(f.keys, target, dt, seconds: 0.5)
+    } else {
+        f.keys = kit::ease(f.keys, 0.0, dt, seconds: 0.2)
+    }
+    budget(mut f, h)
+    let tall = f.tall
+    let wide = max(round(tall * w / h), 1.0)
+    play(mut f.scene, f.time, u32(wide), u32(tall), 0.0)
+    // The page's words, the actions, and the account's chip and pages over them.
+    f.list.clear(vec2(w, h))
+    var hand = false
+    if f.words > 0.001 {
+        hand = draw_page(mut f, w, h, k, on_phone)
+    }
+    if f.keys > 0.001 {
+        draw_keys(mut f, w, h, k)
+    }
+    if f.stage == Stage::Page {
+        f.list.alpha = clamp(f.words * 1.5, 0.0, 1.0)
+        account.draw(mut f.list, f.fonts, width, height)
+        f.list.alpha = 1.0
+    }
+    f.renderer.fetch(mut f.fonts, f.list)
+    f.renderer.upload(f.list)
+    let veil = Veil { size: vec2(w, h), shown: f.shown, veil: f.words }
+    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(pass, cover, laid.bind(v: veil, image: f.scene.image, smp: f.smp), vertices: 3)
+    f.renderer.draw(pass, vec2(w, h))
+    pass.present()
+    Next::Stay { hand }
+}
+
+/// The action under `at`, or `NONE`.
+fn action_at(f: Front, at: vec2) -> u32 {
+    for i in 0..f.rects.len() {
+        if f.rects[i].contains(at) { return i }
+    }
+    NONE
+}
+
+/// `text` at `size` with `tracking` ems between its letters, its top left at `at`: its width.
+fn spaced(f: mut Front, text: str, size: f32, at: vec2, color: vec4, tracking: f32) -> f32 {
+    var x = at.x
+    for i in 0..text.len() {
+        let letter = text.slice(i, i + 1)
+        let advance = f.fonts.font(Face::Sans).measure(letter, size)
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            letter,
+            size,
+            vec2(round(x), at.y),
+            color,
+            weight: kit::SEMIBOLD,
+        )
+        x += advance + (if i + 1 < text.len() { tracking * size } else { 0.0 })
+    }
+    x - at.x
+}
+
+/// The page's words and actions at its bottom left, rising in as they come: the game's name,
+/// the line under it, and Play and Play online (on a phone, why there's no Play). Whether the
+/// pointer is over an action.
+fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
+    let fade = f.words
+    let eased = fade * fade * (3.0 - 2.0 * fade)
+    let lift = if f.reduced { 0.0 } else { (1.0 - eased) * 10.0 * k }
+    f.list.alpha = eased
+    let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
+    let bottom = h - margin
+    // The actions, a row along the bottom, 44 tall as the console's were.
+    let bh = round(44.0 * k)
+    let top = round(bottom - bh + lift)
+    var hand = false
+    f.rects.clear()
+    if on_phone {
+        let first = "Play on a computer"
+        let second = "Rowing the skiff needs a keyboard or a gamepad for now."
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            second,
+            14.0 * k,
+            vec2(margin, top + 26.0 * k),
+            vec4(kit::MUTED_FG.xyz, 1.0),
+        )
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            first,
+            17.0 * k,
+            vec2(margin, top),
+            kit::FG,
+            weight: kit::SEMIBOLD,
+        )
+    } else {
+        var x = margin
+        for i in 0..2 {
+            let label = ACTIONS[i]
+            let tw = f.fonts.font(Face::Sans).measure(label, 15.0 * k)
+            let bw = round(max(tw + 40.0 * k, (if i == PLAY { 148.0 } else { 0.0 }) * k))
+            let r = Rect::new(x, top, bw, bh)
+            f.rects.push(r)
+            let over = match f.pointer {
+                Some(p) => r.contains(p),
+                None => false,
+            }
+            if over && !f.keyboard { hand = true }
+            f.hovers[i] = kit::ease(f.hovers[i], if over && !f.keyboard { 1.0 } else { 0.0 }, f.dt)
+            let st = State {
+                hover: f.hovers[i],
+                pressed: f.pressed == i && over,
+                focused: f.keyboard && f.focus == i,
+            }
+            let v = if i == PLAY { Variant::Primary } else { Variant::Outline }
+            kit::button(mut f.list, f.fonts, r, label, v, st, k, size: 15.0)
+            x += bw + round(10.0 * k)
+        }
+    }
+    // Above them, the line, and the name standing on it.
+    let line = "You wake on a skiff. The sea goes on forever."
+    let line_size = 17.0 * k
+    let line_top = round(top - 34.0 * k - line_size)
+    let fits = f.fonts.font(Face::Sans).measure(line, line_size) <= w - margin * 2.0
+    let line_shown = if fits { line } else { "The sea goes on forever." }
+    let _ = f.list.text(
+        f.fonts,
+        Face::Sans,
+        line_shown,
+        line_size,
+        vec2(margin, line_top),
+        vec4(1.0, 1.0, 1.0, 0.82),
+    )
+    let name_size = round(clamp(min(w * 0.11, h * 0.15), 44.0 * k, 112.0 * k))
+    let name_top = round(line_top - 14.0 * k - name_size * 1.02)
+    let _ = spaced(
+        mut f,
+        "WRELA",
+        name_size,
+        vec2(margin - name_size * 0.04, name_top),
+        kit::FG,
+        0.08,
+    )
+    f.list.alpha = 1.0
+    hand
+}
+
+/// The rowing's keys, bottom centre, while the player finds them: each key in a small cap, and
+/// what it does.
+fn draw_keys(f: mut Front, w: f32, h: f32, k: f32) {
+    let alpha = f.keys
+    f.list.alpha = alpha
+    let pairs: [(Text, Text); 4] = [
+        ("W", "Row"),
+        ("A  D", "Steer"),
+        ("S", "Back water"),
+        ("Esc", "Menu"),
+    ]
+    let size = 13.0 * k
+    let cap_h = round(24.0 * k)
+    let pad = 8.0 * k
+    var total = 0.0
+    for p in pairs {
+        let kw = max(f.fonts.font(Face::Sans).measure(p.0, size) + pad * 2.0, cap_h)
+        total += kw + 8.0 * k + f.fonts.font(Face::Sans).measure(p.1, size) + 22.0 * k
+    }
+    total -= 22.0 * k
+    let y = round(h - 40.0 * k - cap_h)
+    var x = round((w - total) * 0.5)
+    // A quiet plate under them, so they read over bright water.
+    let plate = Rect::new(x - 14.0 * k, y - 10.0 * k, total + 28.0 * k, cap_h + 20.0 * k)
+    f.list.rect(plate, vec4(0.0, 0.0, 0.0, 0.42), kit::RADIUS * k + 4.0 * k)
+    for p in pairs {
+        let kw = round(max(f.fonts.font(Face::Sans).measure(p.0, size) + pad * 2.0, cap_h))
+        let cap = Rect::new(x, y, kw, cap_h)
+        f.list.rect(cap, vec4(1.0, 1.0, 1.0, 0.1), 5.0 * k)
+        f.list.ring(cap, vec4(1.0, 1.0, 1.0, 0.22), 5.0 * k, width: max(round(k), 1.0))
+        let tw = f.fonts.font(Face::Sans).measure(p.0, size)
+        let top = kit::centred_top(f.fonts, y + cap_h * 0.5, size)
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            p.0,
+            size,
+            vec2(round(x + (kw - tw) * 0.5), top),
+            kit::FG,
+            weight: kit::MEDIUM,
+        )
+        x += kw + 8.0 * k
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            p.1,
+            size,
+            vec2(round(x), top),
+            vec4(kit::FG.xyz, 0.8),
+        )
+        x += f.fonts.font(Face::Sans).measure(p.1, size) + 22.0 * k
+    }
+    f.list.alpha = 1.0
+}

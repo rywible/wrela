@@ -72,6 +72,14 @@ pub fn key(r: mut Rig, e: Event) {
     }
 }
 
+/// Every key let go: the hands off the paddle.
+pub fn let_go(r: mut Rig) {
+    r.forward = false
+    r.back = false
+    r.left = false
+    r.right = false
+}
+
 fn hold(r: mut Rig, key: Key, down: bool) {
     match key {
         Key::W => r.forward = down,

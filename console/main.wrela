@@ -191,6 +191,10 @@ pub struct Console {
     /// The MMO's client (mmo/game), which wrela.dev plays: the games' home shows in its place only
     /// when the address ends in `#games`. The account (`account`) shows over it.
     mmo: Option<mmo::client::Client>,
+    /// The front page the MMO opens on (mmo/game/front.wrela): the opening playing live behind
+    /// the game's name, Play (offline, no account) and Play online, which hands the screen to
+    /// `mmo`'s client. None once it has, or for an invite link, which goes straight online.
+    front: Option<mmo::front::Front>,
     fonts: Fonts,
     renderer: Renderer,
     draw: DrawList,
@@ -404,6 +408,7 @@ pub fn init() -> Console {
         environment: Some(host::environment()),
         address: Some(host::address()),
         mmo: Some(mmo::client::init(ORIGIN)),
+        front: Some(mmo::front::init()),
         pending: None,
         closing: None,
         stale: false,
@@ -852,6 +857,7 @@ fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
         // An invite link (`#party-<code>`): the MMO fights with that party.
         if let Some(code) = mmo::client::party_of_address(bytes) {
+            s.front = None
             match mut s.mmo {
                 Some(m) => {
                     let _ = mmo::client::join_party(mut m, code.as_str())
@@ -866,6 +872,7 @@ fn update(s: mut Console) {
                 None => {},
             }
             s.mmo = None
+            s.front = None
             account::left_game(mut s.account)
         }
         // The answer to the replacement is empty, so this happens once.
@@ -1710,6 +1717,37 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.presentation += dt
         s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
         account::set_view(mut s.account, s.zoom, s.reduced, s.semantics)
+        // The front page first; Play online hands the screen to the client from the next frame.
+        var online = false
+        match mut s.front {
+            Some(f) => {
+                match mmo::front::frame(
+                    mut f,
+                    time,
+                    width,
+                    height,
+                    s.zoom,
+                    s.reduced,
+                    mut s.account,
+                ) {
+                    mmo::front::Next::Stay { hand } => {
+                        if hand != s.pointing {
+                            s.pointing = hand
+                            s.cursor = Some(host::cursor(if hand { "pointer" } else { "default" }))
+                        }
+                        return
+                    },
+                    mmo::front::Next::Online => online = true,
+                }
+            },
+            None => {},
+        }
+        if online {
+            s.front = None
+            s.pointing = false
+            s.cursor = Some(host::cursor("default"))
+            return
+        }
         match mut s.mmo {
             Some(m) => {
                 if let Some(cursor) = mmo::client::frame(
