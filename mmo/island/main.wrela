@@ -12,7 +12,8 @@
 // account signed (platform/pass.wrela), and the server checks the pass before the room sees the
 // decision, with the Worker's ceremony keys (`std::server::secret`). It writes what it found into
 // the decision (`Seal::checked`) and takes the tag off, so the log tells every peer whether the
-// card is the account's and shows no one a pass to copy. Until the keys are read, events wait.
+// card is the account's and shows no one a pass to copy. The host answers the keys at once, so
+// nothing waits for them.
 
 use platform::names
 use platform::names::Name
@@ -28,7 +29,7 @@ use std::net::{carry_out, close, compact, room}
 use std::pack::{Pack, pack, unpack}
 use std::server::secret
 use std::store
-use std::time::{unix_ms, wall_clock}
+use std::time::unix_now
 
 /// The save's format: its first byte. A save of another version is read by a migration, or the
 /// island starts empty.
@@ -401,11 +402,6 @@ pub struct Server {
     unreadable: bool,
     /// Failed reads of the save in a row.
     tries: u32,
-    /// The reads of the pass keys' secrets (`pass::SECRETS`) and of the wall clock, once asked
-    /// and until all are answered, and their answers so far (none: failed, or not yet).
-    asked_keys: Vec<Pending<u8>>,
-    answered_keys: Vec<bool>,
-    key_answers: Vec<Option<Vec<u8>>>,
     /// Whether the keys were read (`keys`, those long enough: none, and no pass checks).
     keyed: bool,
     keys: Vec<[u8; 32]>,
@@ -423,9 +419,6 @@ impl Server {
             saved: 0,
             unreadable: false,
             tries: 0,
-            asked_keys: Vec::new(),
-            answered_keys: Vec::new(),
-            key_answers: Vec::new(),
             keyed: false,
             keys: Vec::new(),
             epoch: 0,
@@ -437,79 +430,33 @@ impl Server {
         self.room.state()
     }
 
-    /// Asks for the pass keys and the wall clock, once.
-    fn ask_keys(mut self) {
-        if self.keyed || !self.asked_keys.is_empty() {
-            return
-        }
-        for name in pass::SECRETS {
-            self.asked_keys.push(secret(name))
-        }
-        self.asked_keys.push(wall_clock())
-        for _ in 0..self.asked_keys.len() {
-            self.answered_keys.push(false)
-            self.key_answers.push(None)
-        }
-    }
-
-    /// The keys' and the clock's answers, once all came: a secret that isn't there, or is too
-    /// short, makes no key, and a clock that didn't answer leaves every pass expired; then the
-    /// held events go to the room, if it's live.
-    fn keys_read(mut self, at: u64) {
+    /// Reads the pass keys (`pass::SECRETS`) and the wall clock, once, in the call that asks
+    /// (the host answers both at once): a secret that isn't there, or is too short, makes no
+    /// key, and a clock that didn't answer leaves every pass expired.
+    fn read_keys(mut self, at: u64) {
         if self.keyed {
             return
         }
-        let n = self.asked_keys.len()
-        var all = n > 0
-        for i in 0..n {
-            if self.answered_keys[i] {
-                continue
-            }
-            match self.asked_keys[i].poll() {
-                Some(a) => {
-                    self.answered_keys[i] = true
-                    self.key_answers[i] = (take a).ok()
-                },
-                None => all = false,
-            }
-        }
-        if !all {
-            return
-        }
-        self.asked_keys.clear()
-        let answers = replace(mut self.key_answers, Vec::new())
-        for i in 0..n {
-            let Some(bytes) = answers[i].clone() else { continue }
-            if i + 1 < n {
+        self.keyed = true
+        for name in pass::SECRETS {
+            if let Some(bytes) = secret(name) {
                 if let Some(k) = pass::key_of(bytes) {
                     self.keys.push(k)
                 }
-            } else if let Some(ms) = unix_ms(bytes) {
-                self.epoch = if ms > at { ms - at } else { 0 }
             }
         }
-        self.keyed = true
-        self.release(at)
-    }
-
-    /// The held events, to the room, once it's live and the keys are read.
-    fn release(mut self, at: u64) {
-        if self.phase != LIVE || !self.keyed {
-            return
-        }
-        let held = replace(mut self.held, Vec::new())
-        for h in held {
-            self.feed(h.clone(), at)
+        if let Some(ms) = unix_now() {
+            self.epoch = if ms > at { ms - at } else { 0 }
         }
     }
 
-    /// An event: taken by the room once it's live and the keys are read, held before.
+    /// An event: taken by the room once it's live, held before.
     fn arrive(mut self, h: take Held, at: u64) {
         if self.phase == FRESH {
             self.phase = LOADING
             self.asked.push(store::get(key_of(room().as_str())))
         }
-        if self.phase == LOADING || !self.keyed {
+        if self.phase == LOADING {
             if self.held.len() >= MAX_HELD {
                 // Too much waits: this connection goes, and its peer comes back (what it
                 // proposed is proposed again, once). Its close is held like any other.
@@ -586,7 +533,10 @@ impl Server {
         compact(pack(start))
         self.room = take fresh
         self.phase = LIVE
-        self.release(at)
+        let held = replace(mut self.held, Vec::new())
+        for h in held {
+            self.feed(h.clone(), at)
+        }
     }
 
     /// The save put again once the marks changed: an outcome, so it's written with the call's
@@ -606,8 +556,7 @@ pub fn serve_init() -> Server {
 
 pub fn serve(s: mut Server, time: f32) {
     let at = u64(time * 1000.0)
-    s.ask_keys()
-    s.keys_read(at)
+    s.read_keys(at)
     s.loaded(at)
     for e in events() {
         match e {

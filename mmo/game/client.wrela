@@ -879,6 +879,15 @@ fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
             Some(l) => if is_open { send_all(ISLAND, l.connect()) } else { l.disconnect() },
             None => {},
         }
+        // A reconnect (after a long while, or to a room a deploy started fresh): the pass it
+        // wears may have expired, so it fetches another, and says who it is again.
+        if is_open {
+            s.told = None
+            match mut s.character {
+                Some(c) => character::refresh(mut c),
+                None => {},
+            }
+        }
     } else if conn == FIGHT {
         s.fight_conn = Conn { open: is_open, opening: false, retry_at: time + RETRY }
         match mut s.fight {

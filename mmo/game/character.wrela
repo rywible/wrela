@@ -194,6 +194,14 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
     next
 }
 
+/// Asks for the character again, for a fresh pass, when it's ready and nothing is asked: a pass
+/// expires (platform/pass.wrela's `LIFE_MS`), and a tab may stay open longer.
+pub fn refresh(c: mut Character) {
+    if c.stage == Stage::Ready && c.asked.is_none() {
+        ask(mut c, Request::Character)
+    }
+}
+
 /// Opens the maker on the character made, to change its look.
 pub fn change(c: mut Character) {
     if c.stage == Stage::Ready || (c.stage == Stage::Guest && c.why == Why::NotMade) {
