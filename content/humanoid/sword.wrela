@@ -12,6 +12,7 @@ use engine::humanoid
 use engine::humanoid::{BodyVertex, Humanoid}
 use engine::keys
 use body::HERO
+use dummy
 
 /// Its parts, for the paint (`BodyVertex::part`; the body's own are 0 to 5): the blade, the
 /// guard and its collar, the hilt's wrap and the pommel.
@@ -266,6 +267,10 @@ fn armed() -> Humanoid {
             }
         }
     }
+    // (And the training dummy it's tried on, and the hit's spark: shown only where the classic
+    // cut's shown alone; elsewhere their slots are left empty, so they're nowhere.)
+    dummy::added(mut out)
+    dummy::spark_added(mut out)
     out
 }
 

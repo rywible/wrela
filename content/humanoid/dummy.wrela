@@ -1,0 +1,246 @@
+// The training dummy the classic cut is tried on: a straw body on a wooden post, a crossbar for
+// arms and a straw head, standing on a wooden foot. Built as triangles when the program is built,
+// in its own frame: its foot's middle on the floor at the origin, facing -z (toward the hero).
+// Its post and body are one piece (palette slot `SLOT`, turned about its foot as it's struck);
+// its neck and head another (`HEAD_SLOT`), so the head can lag and nod after the body.
+
+use std::collections::Vec
+use engine::humanoid::{BodyVertex, Humanoid}
+
+/// Its part for the paint (`BodyVertex::part`): drawn in its own colours, like the sword.
+pub const PART: u32 = 10
+/// Palette slots: past the hero's 52 bones, before the sword's (55).
+pub const SLOT: u32 = 54
+pub const HEAD_SLOT: u32 = 53
+/// Where its head's middle is (its own frame), and its head's radius.
+pub const HEAD_AT: vec3 = vec3(0.0, 1.35, 0.0)
+pub const HEAD_R: f32 = 0.12
+/// How tall it stands to its head's top.
+pub const TALL: f32 = 1.47
+
+const WOOD = vec3(0.42, 0.29, 0.18)
+const STRAW = vec3(0.80, 0.68, 0.42)
+const BAND = vec3(0.62, 0.16, 0.12)
+
+fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
+}
+
+fn srgb8(c: vec3) -> u32 {
+    let q = clamp(c, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5)
+    pack(u32(q.x), u32(q.y), u32(q.z), 255)
+}
+
+/// One flat triangle, facing away from `inside`.
+fn tri(out: mut Humanoid, a: vec3, b: vec3, c: vec3, inside: vec3, colour: vec3, slot: u32) {
+    var n = cross(b - a, c - a)
+    if length(n) < 1.0e-9 {
+        return
+    }
+    let flip = dot(n, (a + b + c) / 3.0 - inside) < 0.0
+    if flip {
+        n = -n
+    }
+    let ps = if flip { [a, c, b] } else { [a, b, c] }
+    for p in ps {
+        let i = out.verts.len()
+        out.verts.push(
+            BodyVertex {
+                pos: p,
+                bones: pack(a: slot, b: 0, c: 0, d: 0),
+                normal: normalize(n),
+                weights: pack(a: 255, b: 0, c: 0, d: 0),
+                colour: srgb8(colour),
+                part: PART,
+                pad0: 0,
+                pad1: 0,
+            },
+        )
+        out.indices.push(i)
+    }
+}
+
+/// A ring of `sides` points round the upright through `c` (radius `r`).
+fn ring(c: vec3, r: f32, sides: u32) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for i in 0..sides {
+        let a = 6.2831853 * (f32(i) + 0.5) / f32(sides)
+        out.push(c + vec3(cos(a) * r, 0.0, sin(a) * r))
+    }
+    out
+}
+
+/// An upright tapering drum from `y0` (radius `r0`) to `y1` (`r1`), its ends closed.
+fn drum(out: mut Humanoid, y0: f32, y1: f32, r0: f32, r1: f32, colour: vec3, slot: u32) {
+    let sides = 10
+    let a = ring(vec3(0.0, y0, 0.0), r0, sides)
+    let b = ring(vec3(0.0, y1, 0.0), r1, sides)
+    let inside = vec3(0.0, 0.5 * (y0 + y1), 0.0)
+    for i in 0..sides {
+        let j = (i + 1) % sides
+        tri(mut out, a[i], a[j], b[j], inside, colour, slot)
+        tri(mut out, a[i], b[j], b[i], inside, colour, slot)
+        tri(mut out, a[i], a[j], vec3(0.0, y0, 0.0), inside, colour, slot)
+        tri(mut out, b[i], b[j], vec3(0.0, y1, 0.0), inside, colour, slot)
+    }
+}
+
+/// A box from `lo` to `hi`.
+fn block(out: mut Humanoid, lo: vec3, hi: vec3, colour: vec3, slot: u32) {
+    let c = (lo + hi) * 0.5
+    let p = |x: u32, y: u32, z: u32| -> vec3 {
+        vec3(if x == 0 { lo.x } else { hi.x }, if y == 0 { lo.y } else { hi.y }, if z == 0 { lo.z } else { hi.z })
+    }
+    let faces = [
+        [p(0, 0, 0), p(1, 0, 0), p(1, 1, 0), p(0, 1, 0)],
+        [p(0, 0, 1), p(1, 0, 1), p(1, 1, 1), p(0, 1, 1)],
+        [p(0, 0, 0), p(0, 1, 0), p(0, 1, 1), p(0, 0, 1)],
+        [p(1, 0, 0), p(1, 1, 0), p(1, 1, 1), p(1, 0, 1)],
+        [p(0, 0, 0), p(1, 0, 0), p(1, 0, 1), p(0, 0, 1)],
+        [p(0, 1, 0), p(1, 1, 0), p(1, 1, 1), p(0, 1, 1)],
+    ]
+    for f in faces {
+        tri(mut out, f[0], f[1], f[2], c, colour, slot)
+        tri(mut out, f[0], f[2], f[3], c, colour, slot)
+    }
+}
+
+/// A ball about `c`, radius `r`.
+fn ball(out: mut Humanoid, c: vec3, r: f32, colour: vec3, band: vec3, slot: u32) {
+    let rows = 7
+    let sides = 12
+    for i in 0..rows {
+        let a0 = 3.14159265 * f32(i) / f32(rows) - 1.5707963
+        let a1 = 3.14159265 * f32(i + 1) / f32(rows) - 1.5707963
+        // A red band round its brow: the mark the cut aims at.
+        let col = if i == rows - 3 { band } else { colour }
+        for j in 0..sides {
+            let b0 = 6.2831853 * f32(j) / f32(sides)
+            let b1 = 6.2831853 * f32(j + 1) / f32(sides)
+            let at = |a: f32, b: f32| -> vec3 { c + vec3(cos(a) * cos(b), sin(a), cos(a) * sin(b)) * r }
+            tri(mut out, at(a0, b0), at(a0, b1), at(a1, b1), c, col, slot)
+            tri(mut out, at(a0, b0), at(a1, b1), at(a1, b0), c, col, slot)
+        }
+    }
+}
+
+/// `out` with the dummy added after what's in it.
+pub fn added(out: mut Humanoid) {
+    block(mut out, vec3(-0.24, 0.0, -0.24), vec3(0.24, 0.06, 0.24), WOOD, SLOT)
+    drum(mut out, 0.06, 0.76, 0.05, 0.045, WOOD, SLOT)
+    drum(mut out, 0.72, 1.18, 0.15, 0.18, STRAW, SLOT)
+    block(mut out, vec3(-0.42, 1.04, -0.045), vec3(0.42, 1.12, 0.045), WOOD, SLOT)
+    drum(mut out, 1.16, 1.26, 0.05, 0.05, WOOD, HEAD_SLOT)
+    ball(mut out, HEAD_AT, HEAD_R, STRAW, BAND, HEAD_SLOT)
+}
+
+/// The spark's palette slot (the one left free), its part (painted flat, like the smear) and
+/// colour.
+pub const SPARK_SLOT: u32 = 52
+const SPARK_PART: u32 = 9
+const SPARK = vec3(1.0, 0.93, 0.62)
+
+/// `out` with the hit's spark added: a burst of thin streaks out from the origin, a unit long,
+/// fanned up and back over the half away from the blow (its frame's +y up, -z toward the hero).
+pub fn spark_added(out: mut Humanoid) {
+    let n = 11
+    for i in 0..n {
+        // Spread round the up axis, tipped from straight up out to nearly flat.
+        let a = 6.2831853 * (f32(i) + 0.3 * f32(i % 3)) / f32(n)
+        let tip = 0.25 + 1.1 * f32((i * 7) % n) / f32(n)
+        let way = normalize(vec3(sin(a) * tip, 1.0, cos(a) * tip * 0.8 + 0.25))
+        let long = 0.6 + 0.4 * f32((i * 5) % n) / f32(n)
+        let side = normalize(cross(way, vec3(0.31, 0.12, 0.94)))
+        let up = normalize(cross(side, way))
+        let w = 0.035
+        let base = way * 0.12
+        let end = way * long
+        for s in [side, up] {
+            let p = [base + s * w, base - s * w, end]
+            for k in 0..2 {
+                let ps = if k == 0 { [p[0], p[1], p[2]] } else { [p[0], p[2], p[1]] }
+                let nrm = normalize(cross(ps[1] - ps[0], ps[2] - ps[0]))
+                for q in ps {
+                    let at = out.verts.len()
+                    out.verts.push(
+                        BodyVertex {
+                            pos: q,
+                            bones: pack(a: SPARK_SLOT, b: 0, c: 0, d: 0),
+                            normal: nrm,
+                            weights: pack(a: 255, b: 0, c: 0, d: 0),
+                            colour: srgb8(SPARK),
+                            part: SPARK_PART,
+                            pad0: 0,
+                            pad1: 0,
+                        },
+                    )
+                    out.indices.push(at)
+                }
+            }
+        }
+    }
+}
+
+fn rigid(q: Quat, t: vec3) -> mat4 {
+    let m = q.to_mat3()
+    mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(t, 1.0))
+}
+
+fn scaled(m: mat4, s: f32) -> mat4 {
+    mat4(m[0] * s, m[1] * s, m[2] * s, m[3])
+}
+
+/// How the dummy takes a blow, `since` seconds after it (negative: not struck yet), held dead
+/// through the hit-stop's first `stop` seconds: the body tipped back from its foot and slid back
+/// a little, the head nodding after it on its own spring, the whole shaken a hair each drawing
+/// of the hit-stop. `how` scales the shake and the knock (the sandbox's sliders).
+pub struct Reaction: Copy {
+    pub tilt: f32,
+    pub nod: f32,
+    pub back: f32,
+    pub shake: vec3,
+    /// The spark's size (0: none).
+    pub spark: f32,
+}
+
+pub fn reaction(since: f32, stop: f32, knock: f32, shake: f32) -> Reaction {
+    if since < 0.0 {
+        return Reaction { tilt: 0.0, nod: 0.0, back: 0.0, shake: vec3(0.0), spark: 0.0 }
+    }
+    if since < stop {
+        // The hit pose, held: driven back and down by the blade, shaken each drawing.
+        let drawing = u32(since * 30.0 + 1.0e-3)
+        let s = if drawing % 2 == 0 { 1.0 } else { -1.0 }
+        let fade = 1.0 - since / max(stop, 1.0e-3)
+        return Reaction {
+            tilt: 0.07 * knock,
+            nod: 0.22 * knock,
+            back: 0.015 * knock,
+            shake: vec3(s * 0.012, 0.0, -s * 0.006) * shake * (0.4 + 0.6 * fade),
+            spark: 0.32 + 0.3 * (since / max(stop, 1.0e-3)),
+        }
+    }
+    let u = since - stop
+    Reaction {
+        tilt: knock * (0.07 * exp(-6.0 * u) + 0.26 * exp(-3.2 * u) * sin(9.0 * u)),
+        nod: knock * 0.22 * exp(-4.5 * u) * cos(12.0 * u),
+        back: knock * (0.015 + 0.075 * (1.0 - exp(-12.0 * u))),
+        shake: vec3(0.0),
+        spark: 0.0,
+    }
+}
+
+/// The dummy's palette (its body's, its head's and the spark's) standing `place` (the world's,
+/// its foot's middle, facing -z), as `r` has it.
+pub fn palette_of(place: mat4, r: Reaction) -> (mat4, mat4, mat4) {
+    let tipped = Quat::axis_angle(vec3(1.0, 0.0, 0.0), r.tilt)
+    let body = place * rigid(tipped, vec3(0.0, 0.0, r.back) + r.shake)
+    let neck = vec3(0.0, 1.18, 0.0)
+    let nod = Quat::axis_angle(vec3(1.0, 0.0, 0.0), r.nod)
+    let head = body * rigid(nod, neck - nod.rotate(neck))
+    let hit = HEAD_AT + vec3(0.0, HEAD_R, -0.03)
+    let spark = if r.spark > 0.0 { scaled(body * rigid(Quat::identity(), hit), r.spark) } else {
+        scaled(body * rigid(Quat::identity(), hit), 0.0)
+    }
+    (body, head, spark)
+}

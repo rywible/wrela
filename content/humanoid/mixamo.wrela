@@ -330,15 +330,52 @@ fn keyed_at(times: [f32], values: [f32], time: f32) -> f32 {
     v
 }
 
-/// The classic cut's beats (s): risen to jodan, the snap begun, the blow, the hit-stop's end,
-/// the settle, back at guard.
-pub const V_UP: f32 = 0.25
-pub const V_GO: f32 = 0.55
-pub const V_BLOW: f32 = 0.65
-pub const V_FREE: f32 = 0.75
-pub const V_SETTLE: f32 = 0.95
-pub const V_STILL: f32 = 1.02
-pub const V_DONE: f32 = 1.45
+/// The classic cut's frame data (frames at 60 a second): the source of its timing. Its beats
+/// below, the body's and the sword's keys, its hit-stop, and its windows all come from it, and
+/// `--set PROBE=4` prints the frames as played to check them against it.
+pub struct FrameData: Copy {
+    /// Startup: the raise to jodan, the hold there (the tell), the snap down to the blow.
+    pub raise: u32,
+    pub hold: u32,
+    pub snap: u32,
+    /// Active: frames from the blow its edge can hit.
+    pub active: u32,
+    /// The hit-stop held on the blow (both bodies dead still), then recovery: the sink into the
+    /// front knee, zanshin held, the step back to guard.
+    pub stop: u32,
+    pub sink: u32,
+    pub zanshin: u32,
+    pub back: u32,
+    /// From the blow (frames): the next press buffered from, and the cut cancellable into the
+    /// next move from.
+    pub buffer: u32,
+    pub cancel: u32,
+}
+
+pub const V_FRAMES: FrameData = FrameData {
+    raise: 15,
+    hold: 18,
+    snap: 6,
+    active: 3,
+    stop: 12,
+    sink: 8,
+    zanshin: 8,
+    back: 18,
+    buffer: 11,
+    cancel: 33,
+}
+
+const FPS: f32 = 60.0
+
+/// The classic cut's beats (s), from its frame data: risen to jodan, the snap begun, the blow,
+/// the hit-stop's end, sunk, zanshin's end, back at guard.
+pub const V_UP: f32 = f32(V_FRAMES.raise) / FPS
+pub const V_GO: f32 = f32(V_FRAMES.raise + V_FRAMES.hold) / FPS
+pub const V_BLOW: f32 = f32(V_FRAMES.raise + V_FRAMES.hold + V_FRAMES.snap) / FPS
+pub const V_FREE: f32 = V_BLOW + f32(V_FRAMES.stop) / FPS
+pub const V_SETTLE: f32 = V_FREE + f32(V_FRAMES.sink) / FPS
+pub const V_STILL: f32 = V_SETTLE + f32(V_FRAMES.zanshin) / FPS
+pub const V_DONE: f32 = V_STILL + f32(V_FRAMES.back) / FPS
 
 /// How far forward (radians) rotation `q` pitches the way ahead (+z): down below level, +.
 fn pitch_of(q: Quat) -> f32 {
@@ -361,49 +398,48 @@ fn keyed_v4(times: [f32], values: [vec4], time: f32) -> vec4 {
 
 /// The classic cut's footwork (the body's space, m and degrees): its beats, the hips' place,
 /// each foot's ball (x, z, its turn, its heel up) and lift. A kendo stance (right foot ahead, the
-/// left heel up); the right foot lifted through the snap and stamped down with the blow
-/// (fumikomi), the left toe pinned behind, its heel high; the left foot drawn up under the body
-/// as it sinks (hikitsuke); then back to guard a step at a time, the left foot first.
-const V_LIFT: f32 = 0.6
-const V_BACK1: f32 = 1.128
-const V_MID: f32 = 1.235
-const V_BACK2: f32 = 1.343
-const FOOT_TIMES: [f32; 12] = [0.0, V_UP, V_GO, V_LIFT, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_BACK1, V_MID, V_BACK2, V_DONE]
+/// left heel up); the right knee lifted through the snap and the foot stamped flat with the blow
+/// (fumikomi), the hips dropping on it; the left toe pinned behind, its heel high; a held
+/// zanshin; then the right foot steps back to guard.
+const V_LIFT: f32 = V_GO + 2.0 / FPS
+const V_OFF: f32 = V_STILL + 3.0 / FPS
+const V_BACK: f32 = V_STILL + 0.5 * f32(V_FRAMES.back) / FPS
+const V_SET: f32 = V_DONE - 3.0 / FPS
+const FOOT_TIMES: [f32; 12] = [0.0, V_UP, V_GO, V_LIFT, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_OFF, V_BACK, V_SET, V_DONE]
 const HIPS_AT: [vec4; 12] = [
-    vec4(0.0, 0.86, 0.0, 0.0),
-    vec4(0.0, 0.875, -0.03, 0.0),
-    vec4(0.0, 0.875, -0.03, 0.0),
-    vec4(0.0, 0.86, 0.12, 0.0),
-    vec4(0.0, 0.8, 0.36, 0.0),
-    vec4(0.0, 0.8, 0.36, 0.0),
-    vec4(0.0, 0.77, 0.4, 0.0),
-    vec4(0.0, 0.77, 0.4, 0.0),
-    vec4(0.0, 0.8, 0.33, 0.0),
-    vec4(0.0, 0.82, 0.22, 0.0),
-    vec4(0.0, 0.845, 0.11, 0.0),
-    vec4(0.0, 0.86, 0.0, 0.0),
+    vec4(0.0, 0.84, 0.0, 0.0),
+    vec4(0.0, 0.85, -0.03, 0.0),
+    vec4(0.0, 0.85, -0.03, 0.0),
+    vec4(0.0, 0.84, 0.08, 0.0),
+    vec4(0.0, 0.78, 0.26, 0.0),
+    vec4(0.0, 0.78, 0.26, 0.0),
+    vec4(0.0, 0.79, 0.28, 0.0),
+    vec4(0.0, 0.79, 0.28, 0.0),
+    vec4(0.0, 0.79, 0.27, 0.0),
+    vec4(0.0, 0.82, 0.13, 0.0),
+    vec4(0.0, 0.835, 0.02, 0.0),
+    vec4(0.0, 0.84, 0.0, 0.0),
 ]
 const LEFT_AT: [vec4; 12] = [
     vec4(0.13, -0.16, 0.0, 20.0),
     vec4(0.13, -0.16, 0.0, 20.0),
-    vec4(0.13, -0.16, 0.0, 22.0),
-    vec4(0.13, -0.16, 0.0, 32.0),
-    vec4(0.13, -0.15, 0.0, 45.0),
-    vec4(0.13, -0.15, 0.0, 45.0),
-    vec4(0.13, 0.2, 0.0, 25.0),
-    vec4(0.13, 0.2, 0.0, 25.0),
-    vec4(0.13, 0.02, 0.0, 15.0),
     vec4(0.13, -0.16, 0.0, 20.0),
+    vec4(0.13, -0.16, 0.0, 30.0),
+    vec4(0.13, -0.16, 0.0, 40.0),
+    vec4(0.13, -0.16, 0.0, 40.0),
+    vec4(0.13, -0.16, 0.0, 30.0),
+    vec4(0.13, -0.16, 0.0, 30.0),
+    vec4(0.13, -0.16, 0.0, 30.0),
+    vec4(0.13, -0.16, 0.0, 22.0),
     vec4(0.13, -0.16, 0.0, 20.0),
     vec4(0.13, -0.16, 0.0, 20.0),
 ]
-const LEFT_LIFT: [f32; 12] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+const LEFT_LIFT: [f32; 12] = [0.0; 12]
 const RIGHT_AT: [vec4; 12] = [
     vec4(-0.12, 0.22, 0.0, 0.0),
     vec4(-0.12, 0.22, 0.0, 0.0),
     vec4(-0.12, 0.22, 0.0, 0.0),
-    vec4(-0.12, 0.42, 0.0, -10.0),
-    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.4, 0.0, -15.0),
     vec4(-0.12, 0.62, 0.0, 0.0),
     vec4(-0.12, 0.62, 0.0, 0.0),
     vec4(-0.12, 0.62, 0.0, 0.0),
@@ -411,8 +447,9 @@ const RIGHT_AT: [vec4; 12] = [
     vec4(-0.12, 0.62, 0.0, 0.0),
     vec4(-0.12, 0.42, 0.0, 0.0),
     vec4(-0.12, 0.22, 0.0, 0.0),
+    vec4(-0.12, 0.22, 0.0, 0.0),
 ]
-const RIGHT_LIFT: [f32; 12] = [0.0, 0.0, 0.0, 0.08, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.04, 0.0]
+const RIGHT_LIFT: [f32; 12] = [0.0, 0.0, 0.0, 0.26, 0.0, 0.0, 0.0, 0.0, 0.04, 0.07, 0.04, 0.0]
 
 fn vertical() -> Move {
     // Mixamo's first slash, for its arms' and shoulders' life only, retimed to the keyed sword
@@ -429,7 +466,7 @@ fn vertical() -> Move {
         vec2(V_STILL, 0.56),
         vec2(V_DONE, 0.95),
     ]
-    var v = playback::keyed_over(m, keys, blow: V_BLOW, free: V_FREE, cancel: 1.1)
+    var v = playback::keyed_over(m, keys, blow: V_BLOW, free: V_FREE, cancel: V_BLOW + f32(V_FRAMES.cancel) / FPS, rate: FPS)
     let rig = HERO.rig.clone()
     let n = v.clip.bones
     let up = vec3(0.0, 1.0, 0.0)
@@ -439,7 +476,7 @@ fn vertical() -> Move {
     // The trunk's pitch (degrees, + forward): arched up tall into jodan, a little over the
     // front knee at the blow (the depth from the hips and the step, not the spine folding).
     let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
-    let pitches = [-8.0, -14.0, -16.0, -3.0, -3.0, -1.0, -1.0, -8.0]
+    let pitches = [-8.0, -16.0, -16.0, -3.0, -3.0, -1.0, -1.0, -8.0]
     // Into the blow (degrees): the right shoulder driven forward and the trunk turned a little
     // after it (the right side leads, as the right hand's further up the hilt), the left
     // shoulder drawn back, so both arms reach long down the hilt.
@@ -505,16 +542,16 @@ fn vertical() -> Move {
 pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
     let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
     let holds = [
-        vec3(0.0, -0.32, 0.40),
-        vec3(0.0, 0.74, 0.22),
-        vec3(0.0, 0.75, 0.20),
+        vec3(0.0, -0.32, 0.48),
+        vec3(0.0, 0.83, 0.28),
+        vec3(0.0, 0.83, 0.28),
         vec3(0.0, 0.06, 1.0),
         vec3(0.0, 0.06, 1.0),
         vec3(0.0, -0.04, 0.96),
         vec3(0.0, -0.04, 0.96),
-        vec3(0.0, -0.32, 0.40),
+        vec3(0.0, -0.32, 0.48),
     ]
-    let angles = [25.0, 135.0, 138.0, 10.0, 10.0, -4.0, -4.0, 25.0]
+    let angles = [15.0, 138.0, 138.0, 10.0, 10.0, 2.0, 2.0, 15.0]
     var hold = holds[7]
     var angle = angles[7]
     if time <= 0.0 {
@@ -639,7 +676,8 @@ pub const MOCAP_LOOKS: [Look; 7] = [
     Look { twos: true, flash: true, heavy: true, held: true },
     Look { twos: true, held: true },
     Look { twos: true, held: true },
-    Look { twos: true, held: true },
+    // The classic cut: its blow flashes (the page drained for a drawing), heavy.
+    Look { twos: true, flash: true, heavy: true, held: true },
 ]
 
 /// Which way and how far (0 to 1) act `act` leans the blade's point, `time` into it: a hit

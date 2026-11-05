@@ -30,6 +30,7 @@ use engine::anime::{Anime, Drawer}
 use engine::cleanup
 use engine::cleanup::Cleanup
 use sword::ARMED
+use dummy
 use engine::humanoid
 use engine::keys
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
@@ -45,7 +46,7 @@ use std::gpu::{
     begin_pass3_with_depth, begin_screen_pass, buffer_of, depth_texture, draw, texture, write,
 }
 use std::io::print
-use std::transform::identity
+use std::transform::{identity, translate}
 
 /// What plays: 0 each in turn, 1 the T-pose, 2 the idle, 3 the walk, 4 the run, 5 the walking
 /// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
@@ -79,6 +80,11 @@ pub const SWORD_SIDE: f32 = -0.5
 pub const HELD: f32 = 1.0
 pub const ONE: u32 = 0
 pub const PROBE: u32 = 0
+/// The one cut's dummy and feel (the sandbox's knobs): how far ahead the dummy stands (m), how
+/// hard the blow knocks it (1 as keyed), how hard the hit-stop shakes it and the camera.
+pub const DUMMY_AT: f32 = 1.62
+pub const KNOCK: f32 = 1.0
+pub const SHAKE: f32 = 1.0
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -116,6 +122,15 @@ pub fn init() -> State {
         for n in ["hips", "leftUpperLeg", "leftFoot", "leftToes", "rightFoot", "rightToes", "upperChest", "head"] {
             let t = rw[rig.find(n)].t
             print(f"rest {n} {t.x:.3} {t.y:.3} {t.z:.3}")
+        }
+        let mv = mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].clone()
+        for k in 14..22 {
+            let t = f32(k) / 30.0
+            let p = mv.clip.pose(t)
+            let w = humanoid::frame_world(rig, p.turns, 0, rig.base.t + rig.base.q.rotate(p.hips))
+            let r = w[rig.find("rightToes")].t
+            let a = w[rig.find("rightFoot")].t
+            print(f"t {t:.3} rtoes {r.x:.2} {r.y:.3} {r.z:.2} rfoot {a.y:.3} {a.z:.2} hips {p.hips.y:.3}")
         }
         let g = mixamo::IDLE_M.clip.pose(0.0)
         let w = humanoid::frame_world(rig, g.turns, 0, rig.base.t + rig.base.q.rotate(g.hips))
@@ -484,6 +499,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let game = SHOW == 11 || SHOW == 13 || SHOW == 15
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (played_pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
+    // (The one cut alone keys its own place: where the body stands, none of a change's drift.)
+    let place = if SHOW == 15 && ONE == 1 { translate(vec3(s.mover.place.x, 0.0, s.mover.place.z)) } else { place }
     // The one cut alone: its own keyed body, start to end, and its first pose (the guard) held
     // between cuts, so nothing blends in from the idle's wider stance.
     let pose = if SHOW == 15 && ONE == 1 {
@@ -603,7 +620,30 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if SHOW >= 13 {
         bones = blade_smeared(mut s, bones)
     }
+    // The training dummy, shown only with the one cut alone (elsewhere its slots hold nothing):
+    // struck on the blow, on the cut's own drawings, dead still but shaken through the
+    // hit-stop, then knocked back and nodding.
+    var shake = vec3(0.0)
+    if SHOW >= 13 {
+        let none = mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0, 0.0, 0.0, 1.0))
+        let (b, h, sp) = if SHOW == 15 && ONE == 1 {
+            let cutting = s.mover.acting == mixamo::M_VERTICAL
+            let at = if ANIME == 1 && s.drawer.on { s.drawer.at } else { s.mover.act_time }
+            let since = if cutting { at - mixamo::V_BLOW } else { -1.0 }
+            let r = dummy::reaction(since, mixamo::V_FREE - mixamo::V_BLOW, KNOCK, SHAKE)
+            shake = r.shake * 1.6
+            dummy::palette_of(shown_at * translate(vec3(0.0, 0.0, DUMMY_AT)), r)
+        } else {
+            (none, none, none)
+        }
+        bones[dummy::SLOT] = b
+        bones[dummy::HEAD_SLOT] = h
+        bones[dummy::SPARK_SLOT] = sp
+    }
     write(mut s.palette, 0, bones)
+    if PROBE == 4 && SHOW == 15 {
+        probe_frame(s, time, bones)
+    }
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
@@ -613,7 +653,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if ONE != 1 || length(s.follow) < 1.0e-6 {
         s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / if SHOW == 15 { 0.18 } else { 0.5 }))
     }
-    let hips = if SHOW == 13 || SHOW == 15 { s.follow } else if game { s.mover.place } else {
+    // (The one cut alone: framed between the hero and the dummy.)
+    let between = if SHOW == 15 && ONE == 1 { vec3(0.0, 0.0, DUMMY_AT * 0.45) } else { vec3(0.0) }
+    let hips = if SHOW == 13 || SHOW == 15 { s.follow + shake + between } else if game { s.mover.place } else {
         steady_hips(time)
     }
     let walking = (SHOW >= 3 && SHOW != 14) || (SHOW == 0 && time >= WALK_AT)
@@ -1155,4 +1197,36 @@ fn a_keyed_move_may_snap() {
     print(keyed.text("the idle with a snap, as a keyed move"))
     assert(judged.score < 10.0, "the locomotion review missed the snap")
     assert(keyed.score == 10.0, "the keyed review flagged the snap")
+}
+
+/// One frame's numbers for the automated checks (`--set PROBE=4`, read by the checker script):
+/// when it is, how far into the cut and which drawing; the sword's grip, guard, pommel and point;
+/// each hand's hold; each foot's toes and heel; each knee's and elbow's bend; the body's joints the
+/// blade must stay out of; the dummy's head. All in the world, metres.
+fn probe_frame(s: State, time: f32, bones: [mat4; 64]) {
+    let rig = HERO.rig.clone()
+    let rw = rig.rest_world()
+    let at = |name: str| -> vec3 {
+        let b = rig.find(name)
+        (bones[b] * vec4(rw[b].t, 1.0)).xyz
+    }
+    let v = |p: vec3| -> String { f"{p.x:.4},{p.y:.4},{p.z:.4}" }
+    let (g0, f0) = sword::at_rest()
+    let sw = bones[sword::SLOT]
+    let on = |p: vec3| -> vec3 { (sw * vec4(g0 + f0.rotate(p), 1.0)).xyz }
+    let grip = (sw * vec4(g0, 1.0)).xyz
+    let guard = on(vec3(0.0, 0.0, sword::GUARD_AT))
+    let pommel = on(vec3(0.0, 0.0, sword::POMMEL))
+    let tip = (sw * vec4(g0 + f0.rotate(sword::point()), 1.0)).xyz
+    let (gl0, _) = keys::hold_at_rest(rig, 1.0)
+    let rh = rig.find("rightHand")
+    let lh = rig.find("leftHand")
+    let right = (bones[rh] * vec4(g0, 1.0)).xyz
+    let left = (bones[lh] * vec4(gl0, 1.0)).xyz
+    let head = (bones[dummy::HEAD_SLOT] * vec4(dummy::HEAD_AT, 1.0)).xyz
+    let acting = if s.mover.acting == mixamo::M_VERTICAL { 1 } else { 0 }
+    let drawn = if s.drawer.on { s.drawer.at } else { -1.0 }
+    print(
+        f"P,{time:.4},{acting},{s.mover.act_time:.4},{drawn:.4},{v(grip)},{v(guard)},{v(pommel)},{v(tip)},{v(right)},{v(left)},{v(at("leftToes"))},{v(at("leftFoot"))},{v(at("rightToes"))},{v(at("rightFoot"))},{v(at("leftUpperLeg"))},{v(at("leftLowerLeg"))},{v(at("rightUpperLeg"))},{v(at("rightLowerLeg"))},{v(at("leftUpperArm"))},{v(at("leftLowerArm"))},{v(at("leftHand"))},{v(at("rightUpperArm"))},{v(at("rightLowerArm"))},{v(at("rightHand"))},{v(at("head"))},{v(at("neck"))},{v(at("upperChest"))},{v(at("chest"))},{v(at("spine"))},{v(at("hips"))},{v(head)}",
+    )
 }

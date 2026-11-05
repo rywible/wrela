@@ -301,9 +301,10 @@ pub fn drawn(
         d.at = m.act_time
         d.since = 0.0
     } else if d.struck && m.act_time < hold_till {
-        // The hit-stop: its contact's drawing held, dead still.
+        // The hit-stop: its contact's drawing held, dead still (and the next drawn the moment
+        // it ends).
         d.impact_left -= dt
-        d.since = 0.0
+        d.since = max(period - dt, 0.0)
     } else {
         d.impact_left -= dt
         d.since += dt

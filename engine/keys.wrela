@@ -630,7 +630,7 @@ fn arm_onto(rig: Rig, w: mut Vec<Rigid>, side: f32, hold: vec3, f: Quat) {
     let s = w[u0].t
     // The elbow down and out to its own side, never across the middle (the forearms parallel,
     // the elbows in under the hilt).
-    let pole = vec3(side * 0.25, -0.9, -0.1)
+    let pole = vec3(side * 0.05, -0.95, -0.1)
     let (e, t) = elbow_at(s, wrist, l1, l2, pole)
     turn_below(rig, mut w, u0, arc(w[l0].t - w[u0].t, e - w[u0].t))
     turn_below(rig, mut w, l0, arc(w[h0].t - w[l0].t, t - w[l0].t))
@@ -647,6 +647,9 @@ pub const RIGHT_FINGERS: [Text; 15] = [
     "rightRingProximal", "rightRingIntermediate", "rightRingDistal",
     "rightLittleProximal", "rightLittleIntermediate", "rightLittleDistal",
 ]
+
+/// How far (rad) the left fist's rolled over the hilt from the right's hold, about the blade.
+pub const LEFT_ROLL: f32 = 0.4
 
 /// A pose's arms put on a keyed sword: its right hand's hold at `grip` (the body's space), the
 /// blade along `blade`, its edge leading toward `edge`, the left hand `span` below the right on
@@ -707,7 +710,9 @@ pub fn sword_keyed(
     }
     let grip = at
     arm_onto(rig, mut w, -1.0, grip, f)
-    arm_onto(rig, mut w, 1.0, grip - u * span, f)
+    // (The left fist rolled over the hilt, its knuckles up and its wrist wrung in, not hung
+    // under it.)
+    arm_onto(rig, mut w, 1.0, grip - u * span, Quat::axis_angle(u, LEFT_ROLL).mul(f))
     var out = p
     for b in 0..nb {
         let up = rig.bones[b].parent

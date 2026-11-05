@@ -499,6 +499,7 @@ pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: 
     let half = min(0.5 * a, min(strike, len - strike))
     let (from, till) = (strike - half, strike + half)
     var c = src.clone()
+    c.fps = fps
     c.frames = n
     c.looped = false
     c.turns = Vec::with_capacity(n * src.bones)
@@ -595,10 +596,12 @@ pub fn struck(
 /// with a time in `m` (y), straight between (two keys at one time of `m` hold it: an anticipation's
 /// peak, a hit-stop); its blow at `blow` (s, the new move's), held still to `free`, the next move
 /// free to cut in from `cancel`. Before the first key and after the last, `m` as it was.
-pub fn keyed_over(m: Move, keys: [vec2], blow: f32, free: f32, cancel: f32) -> Move {
+pub fn keyed_over(m: Move, keys: [vec2], blow: f32, free: f32, cancel: f32, rate: f32 = 0.0) -> Move {
     borrow src = m.clip
     let len = src.length()
-    let fps = src.fps
+    // (Sampled at `rate` frames a second if given, else the source's: a move keyed to the
+    // frame wants its own frames, not the source's blended between.)
+    let fps = if rate > 0.0 { rate } else { src.fps }
     let k = keys.len()
     let last = keys[k - 1]
     let total = last.x + max(len - last.y, 0.0)
