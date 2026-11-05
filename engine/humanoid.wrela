@@ -360,8 +360,12 @@ pub struct BodyVertex: Copy + GpuData + Plain {
     pub weights: u32,
     pub colour: u32,
     pub part: u32,
-    pub pad0: u32,
-    pub pad1: u32,
+    /// How it's shaded and inked (`engine::toon`): four bytes, low first, its occlusion (how
+    /// readily it falls into shadow), its line's width, its kind, and one spare.
+    pub toon: u32,
+    /// The direction its outline is pushed out along (`engine::toon::octahedral`): its normal
+    /// averaged with every vertex's at the same point, so the outline doesn't tear at a seam.
+    pub outline: u32,
 }
 
 /// A body: its rig, its vertices and triangles, and the box it lies in at rest.
@@ -373,10 +377,16 @@ pub struct Humanoid: Clone {
     pub hi: vec3,
 }
 
-/// A material's colour: the glTF material named `material` drawn in `albedo` (sRGB, 0 to 1).
+/// A material's colour: the glTF material named `material` drawn in `albedo` (sRGB, 0 to 1); or,
+/// `textured`, in its base colour texture's colour where each vertex samples it (sRGB), so a
+/// body's skin keeps its flush, its lips and its knuckles.
 pub struct Paint: Copy {
     pub material: Text,
     pub albedo: vec3,
+    pub textured: bool = false,
+    /// What it is to the shading (`engine::toon`'s kinds: skin and cloth, hair, an eye), kept in
+    /// its vertices' `toon` word.
+    pub kind: u32 = 0,
 }
 
 /// Which part of the body a VRM bone is in, for the lines where parts meet: 0 the trunk, 1 the
@@ -540,14 +550,23 @@ pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec
             let ws = g.floats(g.index(attrs, "WEIGHTS_0"))
             let mat = g.index(prim, "material")
             var albedo = fallback
+            var textured = false
+            var kind = 0
             if mat != gltf::NONE {
                 let name = g.text(g.item("materials", mat), "name")
                 for paint in paints {
                     if paint.material == name.as_str() {
                         albedo = paint.albedo
+                        textured = paint.textured
+                        kind = paint.kind
                     }
                 }
             }
+            let source = if textured { g.base_colour_image(mat) } else { gltf::NONE }
+            let image = if source != gltf::NONE { Some(g.image(source)) } else { None }
+            let uv = if source != gltf::NONE {
+                g.floats(g.index(attrs, "TEXCOORD_0"))
+            } else { Vec::new() }
             let first = verts.len()
             let count = pos.len() / 3
             for i in 0..count {
@@ -589,10 +608,15 @@ pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec
                         bones: pack(idx[0], idx[1], idx[2], idx[3]),
                         normal: normalize(vec3(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2])),
                         weights: pack(q[0], q[1], q[2], q[3]),
-                        colour: srgb8(albedo),
+                        colour: srgb8(
+                            match image {
+                                Some(im) => im.sample(vec2(uv[i * 2], uv[i * 2 + 1])).xyz,
+                                None => albedo,
+                            },
+                        ),
                         part: part_of(rig.bones[idx[0]].vrm),
-                        pad0: 0,
-                        pad1: 0,
+                        toon: pack(a: 0, b: 255, c: kind, d: 0),
+                        outline: 0,
                     },
                 )
             }

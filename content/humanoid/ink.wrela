@@ -6,7 +6,7 @@
 // static, and the palette drains toward black and white. Quiet, it's a painting with ink; at the
 // edges of a violent thing, chaos.
 
-use look::{BACKDROP, GROUND, INK, PAPER, Shot, band, hash2, luma, noise}
+use look::{BACKDROP, GROUND, HULL, INK, PAPER, Shot, band, hash2, luma, noise}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
 
 /// A pixel's texel of a target, its coordinates clamped to it.
@@ -24,6 +24,10 @@ fn at8(t: Texture<Rgba8>, p: vec2, size: vec2) -> vec4 {
 /// and `nb` their normals.
 fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
     let near = if a.x < b.x { a } else { b }
+    // The body's outline is its own line: none is drawn round it.
+    if a.y == HULL || b.y == HULL {
+        return 0.0
+    }
     if abs(a.y - b.y) > 0.5 {
         // The horizon's a thin line; any other change of what was met, a full one.
         let horizon = (a.y == BACKDROP && b.y == GROUND) || (a.y == GROUND && b.y == BACKDROP)
@@ -84,7 +88,7 @@ pub fn ink(
     // The pen's width: a hand's, wobbling along the line and boiling between drawings; quiet, the
     // boil is slight, so a figure in motion keeps a steady line (the opening's quiet sea had none).
     let wob = noise(px / (scale * 40.0) + vec2(seed * 0.37, 0.0)) - 0.5
-    let r = scale * (1.15 + (0.35 + 0.35 * energy) * wob) * (1.0 + 0.5 * energy)
+    let r = scale * (1.0 + (0.1 + 0.6 * energy) * wob) * (1.0 + 0.5 * energy)
     // Strands: the line drawn again by a hand that doesn't quite find it, each stroke pushed off
     // along a slow wander of its own, the more so the more kinetic it is. Quiet, one strand.
     var line = 0.0

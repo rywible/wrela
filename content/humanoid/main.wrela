@@ -16,7 +16,7 @@
 // (stepping round) and walks it back, each change inertial.
 
 use body::{
-    ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
+    DRESSED, ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
     PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
@@ -30,7 +30,7 @@ use engine::review::review
 use engine::stride
 use ink::ink
 use look::{Shot, shot_at}
-use paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
+use paint::{backdrop, body, ground, hull, paint_backdrop, paint_body, paint_ground, paint_hull}
 use std::gpu::{
     ClipPosition, Cull, DepthTexture, GpuBuffer, Rgba16Float, Rgba8, Texture, VertexIndex,
     begin_pass3_with_depth, begin_screen_pass, buffer_of, depth_texture, draw, texture, write,
@@ -46,6 +46,18 @@ pub const RAW: u32 = 0
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
 pub const CUT: u32 = 0
+
+/// The camera taken round the body (radians, about its feet, + toward its left): `--set ORBIT=3.1`
+/// looks at its back.
+pub const ORBIT: f32 = 0.0
+
+/// The sun taken round the body (radians about the vertical): `--set SUN_TURN=1.2` lights it from
+/// its side and a little behind.
+pub const SUN_TURN: f32 = 0.0
+
+/// Which look the body is drawn in: 0 plain two-tone cel (the reference), 1 sea-lit ink, 2
+/// sea-lit ink with its shadows hatched (`paint::paint_body`).
+pub const LOOK: u32 = 1
 
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
@@ -82,11 +94,11 @@ pub struct State {
 
 pub fn init() -> State {
     print(
-        f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
+        f"humanoid: {HERO.rig.bones.len()} bones, {DRESSED.verts.len()} vertices, {DRESSED.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
     )
     State {
-        verts: buffer_of(HERO.verts),
-        indices: buffer_of(HERO.indices),
+        verts: buffer_of(DRESSED.verts),
+        indices: buffer_of(DRESSED.indices),
         palette: buffer_of([identity(); 64]),
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
@@ -226,7 +238,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
-    let shot = shot_at(
+    var shot = shot_at(
         time,
         FOCUS,
         vec3(hips.x, 0.0, hips.z),
@@ -237,6 +249,23 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         KINETIC,
         left,
     )
+    shot.look = f32(LOOK)
+    if SUN_TURN != 0.0 {
+        // The sun taken round the body by `SUN_TURN` (radians about the vertical).
+        let c = cos(SUN_TURN)
+        let s = sin(SUN_TURN)
+        let l = shot.sun
+        shot.sun = vec3(l.x * c + l.z * s, l.y, l.z * c - l.x * s)
+    }
+    if ORBIT != 0.0 {
+        // The camera taken round the body by `ORBIT`, about its feet.
+        let at = shot.feet + vec3(0.0, FOCUS, 0.0)
+        let off = shot.cam.eye - at
+        let c = cos(ORBIT)
+        let s = sin(ORBIT)
+        let eye = at + vec3(off.x * c + off.z * s, off.y, off.z * c - off.x * s)
+        shot.cam = engine::view::first_camera(eye, at, 0.62, width, height)
+    }
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,
@@ -258,8 +287,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         body.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
         paint_body.bind(shot: shot),
         indices: s.indices,
-        index_count: HERO.indices.len(),
+        index_count: DRESSED.indices.len(),
         cull: Cull::Back,
+        depth: engine::view::NEAREST,
+    )
+    // Its outline: the body again, pushed out, by its back faces (`paint::hull`).
+    draw(
+        p,
+        hull.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
+        paint_hull.bind(shot: shot),
+        indices: s.indices,
+        index_count: DRESSED.indices.len(),
+        cull: Cull::Front,
         depth: engine::view::NEAREST,
     )
     p.end()

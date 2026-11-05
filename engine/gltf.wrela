@@ -11,6 +11,8 @@ use std::collections::Vec
 use std::json
 use std::json::{Doc, TOP}
 use std::string::String
+use std::png
+use std::png::Image
 
 /// No node: a root's parent, a node without a mesh or a skin.
 pub const NONE: u32 = 4294967295
@@ -187,6 +189,37 @@ impl Glb {
             }
         }
         out
+    }
+
+    /// Image `i` (of the top-level `images`), its PNG in the GLB's own buffer, decoded; a
+    /// texture of another kind, or one that doesn't decode, fails the build.
+    pub fn image(self, i: u32) -> Image {
+        let j = self.item("images", i)
+        let kind = self.text(j, "mimeType")
+        assert(kind.as_str() == "image/png", f"an image of type `{kind}` isn't read (only PNG)")
+        let v = self.item("bufferViews", self.index(j, "bufferView"))
+        assert(self.index(v, "buffer") == 0, "only the GLB's own buffer is read")
+        let base = self.bin + u32(self.num_or(v, "byteOffset", 0.0))
+        let len = self.index(v, "byteLength")
+        assert(base + len <= self.bin + self.bin_len, "an image runs past the GLB's binary chunk")
+        var bytes: Vec<u8> = Vec::with_capacity(len)
+        for k in 0..len {
+            bytes.push(self.file.at(base + k))
+        }
+        let Some(img) = png::decode(bytes) else { panic("a GLB's PNG doesn't decode") }
+        img
+    }
+
+    /// The image material `m`'s base colour is drawn from, or `NONE` where it has none.
+    pub fn base_colour_image(self, m: u32) -> u32 {
+        let j = self.item("materials", m)
+        let Some(pbr) = self.doc.get(j, "pbrMetallicRoughness") else { return NONE }
+        let Some(tex) = self.doc.get(pbr, "baseColorTexture") else { return NONE }
+        let t = self.index(tex, "index")
+        if t == NONE {
+            return NONE
+        }
+        self.index(self.item("textures", t), "source")
     }
 
     /// How many elements accessor `a` has, and how many components each.

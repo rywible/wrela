@@ -1,0 +1,294 @@
+// A character's shading authored when the program is built, the way Guilty Gear Xrd's artists
+// author theirs by hand (Junya C. Motomura, "GuiltyGearXrd's Art Style: The X Factor Between 2D
+// and 3D", GDC 2015): each vertex says how readily it falls into shadow (their vertex colour's
+// "occlusion" channel), how wide its outline is drawn (their outline's width channel), and what it
+// is (skin and cloth, hair, an eye); a face is shaded by normals bent toward a simpler shape (their
+// hand-edited face normals), so its shadow falls in one clean shape; and the outline is pushed out
+// along normals averaged across the mesh's seams (their inverted hull), so it doesn't tear.
+//
+// Here none of it is painted: the occlusion is where the body's surface is concave (an armpit,
+// under the chin, between the fingers), measured over a few centimetres round each vertex; the
+// width thins toward the fingers and on the head; the face's normals bend toward the ellipsoid
+// round the head. The program's shaders read it back with `toon_of` and `outline_of`, and shade a
+// point lit or shaded by `lit`, one hard step (with a sliver of softness against aliasing).
+
+use std::collections::Vec
+use humanoid::{BodyVertex, Humanoid}
+
+/// What a vertex is to the shading: skin and cloth (its colour and the program's outfit decide),
+/// hair (a highlight rides it), an eye (never shaded nor inked), a garment drawn in its vertex's
+/// own colour (a cape, a scarf).
+pub const SKIN: u32 = 0
+pub const HAIR: u32 = 1
+pub const EYE: u32 = 2
+pub const CLOTH: u32 = 3
+
+/// How the authoring measures: the reach of the concavity round a vertex (m) and how strongly a
+/// concave place is put in shadow; how far the face's normals bend toward the head's ellipsoid
+/// (0 not at all, 1 wholly); each line's width on the fingers, the hands and the head (of a full
+/// line's).
+pub struct Authoring: Copy {
+    pub reach: f32 = 0.05,
+    pub deepen: f32 = 3.5,
+    pub face: f32 = 0.7,
+    pub fingers: f32 = 0.35,
+    pub hands: f32 = 0.55,
+    pub head: f32 = 0.7,
+    /// How far round a vertex its outline's direction is averaged (m).
+    pub smooth: f32 = 0.07,
+}
+
+/// A vertex's shading word, read back: its occlusion (0 to 1), its line's width (of a full one's)
+/// and its kind.
+pub struct Toon: Copy {
+    pub occlusion: f32,
+    pub width: f32,
+    pub kind: u32,
+}
+
+/// Packs four bytes, low first.
+fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
+}
+
+fn byte(x: f32) -> u32 {
+    u32(clamp(x, 0.0, 1.0) * 255.0 + 0.5)
+}
+
+/// The shading word of a vertex `occlusion` in shadow's reach, its line `width` of a full one's,
+/// of `kind`.
+pub fn toon_word(occlusion: f32, width: f32, kind: u32) -> u32 {
+    pack(byte(occlusion), byte(width), kind, 0)
+}
+
+/// A vertex's shading word, read back.
+pub fn toon_of(bits: u32) -> Toon {
+    Toon {
+        occlusion: f32(bits & 255) / 255.0,
+        width: f32((bits >> 8) & 255) / 255.0,
+        kind: (bits >> 16) & 255,
+    }
+}
+
+/// A unit direction in 32 bits: octahedral (Cigolle et al., "A Survey of Efficient Representations
+/// for Independent Unit Vectors", JCGT 2014), 16 bits a coordinate.
+pub fn octahedral(n: vec3) -> u32 {
+    let a = n / max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-9)
+    var e = vec2(a.x, a.y)
+    if a.z < 0.0 {
+        let sx = if a.x >= 0.0 { 1.0 } else { -1.0 }
+        let sy = if a.y >= 0.0 { 1.0 } else { -1.0 }
+        e = vec2((1.0 - abs(a.y)) * sx, (1.0 - abs(a.x)) * sy)
+    }
+    let q = clamp(e * 0.5 + vec2(0.5), vec2(0.0), vec2(1.0)) * 65535.0 + vec2(0.5)
+    u32(q.x) | (u32(q.y) << 16)
+}
+
+/// `octahedral`'s direction, read back.
+pub fn outline_of(bits: u32) -> vec3 {
+    let e = vec2(f32(bits & 65535), f32(bits >> 16)) / 65535.0 * 2.0 - vec2(1.0)
+    let z = 1.0 - abs(e.x) - abs(e.y)
+    let t = max(-z, 0.0)
+    let x = if e.x >= 0.0 { e.x - t } else { e.x + t }
+    let y = if e.y >= 0.0 { e.y - t } else { e.y + t }
+    normalize(vec3(x, y, z))
+}
+
+/// How lit a point is, 1 lit and 0 in shadow: one step, where its half-Lambert term (`ndl`, the
+/// cosine to the light, taken to 0..1) less its occlusion falls past the middle, `soft` either
+/// side of it.
+pub fn lit(ndl: f32, occlusion: f32, soft: f32) -> f32 {
+    let x = ndl * 0.5 + 0.5 - occlusion * 0.75
+    smoothstep(0.5 - soft, 0.5 + soft, x)
+}
+
+/// A uniform grid of points, `cell` metres a side: each cell's points, in order.
+struct Grid: Clone {
+    lo: vec3,
+    cell: f32,
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    start: Vec<u32>,
+    items: Vec<u32>,
+}
+
+fn grid_of(verts: [BodyVertex], cell: f32) -> Grid {
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for v in verts {
+        lo = min(lo, v.pos)
+        hi = max(hi, v.pos)
+    }
+    let nx = u32((hi.x - lo.x) / cell) + 1
+    let ny = u32((hi.y - lo.y) / cell) + 1
+    let nz = u32((hi.z - lo.z) / cell) + 1
+    var start: Vec<u32> = Vec::filled(nx * ny * nz + 1, 0)
+    var keys: Vec<u32> = Vec::with_capacity(verts.len())
+    for v in verts {
+        let c = cell_at(lo, cell, nx, ny, nz, v.pos)
+        let k = c.x + nx * (c.y + ny * c.z)
+        keys.push(k)
+        start[k + 1] += 1
+    }
+    for k in 0..nx * ny * nz {
+        start[k + 1] += start[k]
+    }
+    var fill = start.clone()
+    var items: Vec<u32> = Vec::filled(verts.len(), 0)
+    for i in 0..verts.len() {
+        let k = keys[i]
+        items[fill[k]] = i
+        fill[k] += 1
+    }
+    Grid { lo, cell, nx, ny, nz, start, items }
+}
+
+fn cell_at(lo: vec3, cell: f32, nx: u32, ny: u32, nz: u32, p: vec3) -> vec3u {
+    let c = (p - lo) / cell
+    vec3u(
+        min(u32(max(c.x, 0.0)), nx - 1),
+        min(u32(max(c.y, 0.0)), ny - 1),
+        min(u32(max(c.z, 0.0)), nz - 1),
+    )
+}
+
+impl Grid {
+    /// Every point in the 27 cells round `p`'s.
+    fn near(self, p: vec3) -> Vec<u32> {
+        let c = cell_at(self.lo, self.cell, self.nx, self.ny, self.nz, p)
+        var out: Vec<u32> = Vec::new()
+        for dz in 0..3 {
+            let z = i32(c.z) + i32(dz) - 1
+            if z < 0 || z >= i32(self.nz) {
+                continue
+            }
+            for dy in 0..3 {
+                let y = i32(c.y) + i32(dy) - 1
+                if y < 0 || y >= i32(self.ny) {
+                    continue
+                }
+                for dx in 0..3 {
+                    let x = i32(c.x) + i32(dx) - 1
+                    if x < 0 || x >= i32(self.nx) {
+                        continue
+                    }
+                    let k = u32(x) + self.nx * (u32(y) + self.ny * u32(z))
+                    for s in self.start[k]..self.start[k + 1] {
+                        out.push(self.items[s])
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `h` with its shading authored (as this module's comment says): each vertex's occlusion (where
+/// its kind is skin and cloth), its line's width (thinned by the bone it's on, of what it had),
+/// its outline's direction, and the face's normals bent toward the head's ellipsoid.
+pub fn authored(h: Humanoid, a: Authoring) -> Humanoid {
+    var out = h.clone()
+    let n = h.verts.len()
+    let g = grid_of(h.verts, max(a.reach, a.smooth))
+    let head = h.rig.find("head")
+    // The outline's direction, which cloth is shaded by too: the normals round a vertex (within
+    // `smooth`, a little on the hands, nothing past a sheet's other side) averaged, so the
+    // outline neither tears at a seam nor follows every muscle, and cloth drapes over them.
+    for i in 0..n {
+        let p = h.verts[i].pos
+        let ni = h.verts[i].normal
+        let vrm = h.rig.bones[h.verts[i].bones & 255].vrm
+        let r = if vrm >= 25 || vrm == 20 || vrm == 24 { 0.006 } else { a.smooth }
+        var sum = vec3(0.0)
+        for j in g.near(p) {
+            let q = h.verts[j]
+            let d = length(q.pos - p)
+            if d < r + 2.0e-4 && dot(q.normal, ni) > 0.2 {
+                sum += q.normal * (1.0 - d / (r + 4.0e-4))
+            }
+        }
+        out.verts[i].outline = octahedral(if length(sum) > 1.0e-6 { normalize(sum) } else { ni })
+    }
+    // The occlusion: how far the surface round a vertex rises above its tangent plane, weighed
+    // nearer the more.
+    var occ: Vec<f32> = Vec::filled(n, 0.0)
+    for i in 0..n {
+        let t = toon_of(h.verts[i].toon)
+        if t.kind != SKIN {
+            continue
+        }
+        let p = h.verts[i].pos
+        let ni = h.verts[i].normal
+        var rise = 0.0
+        var weight = 0.0
+        for j in g.near(p) {
+            if j == i || toon_of(h.verts[j].toon).kind != SKIN {
+                continue
+            }
+            let d = h.verts[j].pos - p
+            let r = length(d)
+            if r < 1.0e-4 || r > a.reach {
+                continue
+            }
+            let w = 1.0 - r / a.reach
+            rise += w * dot(d, ni) / r
+            weight += w
+        }
+        occ[i] = if weight > 0.0 { saturate((rise / weight - 0.04) * a.deepen) } else { 0.0 }
+    }
+    // Softened twice over its near neighbours, so the shadow's edge isn't blotched by the mesh.
+    for _pass in 0..2 {
+        var soft: Vec<f32> = Vec::filled(n, 0.0)
+        for i in 0..n {
+            if toon_of(h.verts[i].toon).kind != SKIN {
+                continue
+            }
+            let p = h.verts[i].pos
+            var sum = 0.0
+            var weight = 0.0
+            for j in g.near(p) {
+                if toon_of(h.verts[j].toon).kind != SKIN {
+                    continue
+                }
+                let r = length(h.verts[j].pos - p)
+                if r < a.reach * 0.5 {
+                    let w = 1.0 - r / (a.reach * 0.5)
+                    sum += w * occ[j]
+                    weight += w
+                }
+            }
+            soft[i] = if weight > 0.0 { sum / weight } else { occ[i] }
+        }
+        occ = take soft
+    }
+    // The head's ellipsoid: the box of what's on the head bone.
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for v in h.verts {
+        if (v.bones & 255) == head && toon_of(v.toon).kind == SKIN {
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+        }
+    }
+    let centre = (lo + hi) * 0.5 - vec3(0.0, 0.0, (hi.z - lo.z) * 0.08)
+    let radii = max((hi - lo) * 0.5, vec3(1.0e-3))
+    for i in 0..n {
+        let v = h.verts[i]
+        let t = toon_of(v.toon)
+        let vrm = h.rig.bones[v.bones & 255].vrm
+        let thin = if vrm >= 25 { a.fingers } else if vrm == 20 || vrm == 24 {
+            a.hands
+        } else if vrm >= 4 && vrm <= 8 {
+            a.head
+        } else { 1.0 }
+        out.verts[i].toon = toon_word(occ[i], t.width * thin, t.kind)
+        if (v.bones & 255) == head && t.kind == SKIN && a.face > 0.0 {
+            let e = normalize((v.pos - centre) / (radii * radii))
+            // The face (ahead of the head's middle) bends the most; the back of the head a little.
+            let k = a.face * mix(0.4, 1.0, saturate((v.pos.z - centre.z) / radii.z * 2.0 + 0.5))
+            out.verts[i].normal = normalize(mix(v.normal, e, vec3(k)))
+        }
+    }
+    out
+}

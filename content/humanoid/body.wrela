@@ -8,6 +8,8 @@ use engine::humanoid::{
     UNREAL,
 }
 use engine::bvh
+use engine::toon
+use engine::toon::Authoring
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::stride
@@ -20,18 +22,24 @@ pub const SKIN = vec3(0.86, 0.66, 0.52)
 pub const HAIR = vec3(0.16, 0.11, 0.09)
 pub const EYES = vec3(0.12, 0.09, 0.08)
 
-/// Quaternius's Superhero Male (assets/superhero_male.glb.LICENSE.txt).
+/// Quaternius's Superhero Male (assets/superhero_male.glb.LICENSE.txt): its skin and its eyes in
+/// their own textures' colours, its brows (the hair material) in `HAIR`.
 @fuel(2 ** 40)
 pub const HERO: Humanoid = humanoid::import(
     embed("assets/superhero_male.glb"),
     UNREAL,
     [
-        Paint { material: "MI_Hair_1", albedo: HAIR },
-        Paint { material: "MI_Eyes", albedo: EYES },
-        Paint { material: "MI_Superhero_Male", albedo: SKIN },
+        Paint { material: "MI_Hair_1", albedo: HAIR, kind: toon::HAIR },
+        Paint { material: "MI_Eyes", albedo: EYES, textured: true, kind: toon::EYE },
+        Paint { material: "MI_Superhero_Male", albedo: SKIN, textured: true },
     ],
     fallback: SKIN,
 )
+
+/// The hero as drawn: the body dressed (`hero::dressed`: hair, a scarf and a cape on its bones),
+/// its shading authored (`engine::toon`).
+@fuel(2 ** 40)
+pub const DRESSED: Humanoid = toon::authored(hero::dressed(HERO.clone()), Authoring {})
 
 /// Its bind pose: a T-pose.
 pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())

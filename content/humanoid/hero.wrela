@@ -1,0 +1,467 @@
+// The hero's design over the body: what's added to its mesh as geometry on its bones, made when
+// the program is built from the body's own shape (where its skull, its neck and its back are), so
+// it fits whatever body it's given. The body's clothes are painted on it (`paint::outfit`).
+//
+// - Hair: a cap over the skull (the head's own surface above a hairline, lifted off it, clipped
+//   clean along the line), and locks on it, each a tapered blade, swept back and up off the crown,
+//   a fringe falling over the brow. All on the head bone.
+// - A scarf: a thick roll round the base of the neck, on the neck and the upper chest.
+// - A cape: a sheet from the scarf over the shoulders' backs to below the knees, folded, flaring
+//   clear of the back and the legs; its top on the upper chest, its hem shared with the hips, so
+//   it neither lags a stoop nor swings through the legs. (How it swings is a later step's.)
+
+use std::collections::Vec
+use engine::humanoid::{BodyVertex, Humanoid}
+use engine::toon
+use look::noise
+
+/// The colours, sRGB: hair an ink black with the sea in it, the scarf and the cape's outside a
+/// deep sun-faded red, the cape's lining a darker one.
+pub const HAIR = vec3(0.17, 0.16, 0.21)
+pub const SCARF = vec3(0.62, 0.15, 0.12)
+pub const CAPE = vec3(0.56, 0.13, 0.11)
+pub const LINING = vec3(0.30, 0.09, 0.10)
+
+fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
+}
+
+fn srgb8(c: vec3) -> u32 {
+    let q = clamp(c, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5)
+    pack(a: u32(q.x), b: u32(q.y), c: u32(q.z), d: 255)
+}
+
+/// A mesh being added: its vertices and triangles.
+struct Mesh: Clone {
+    verts: Vec<BodyVertex>,
+    indices: Vec<u32>,
+}
+
+impl Mesh {
+    /// A vertex at `pos` facing `normal`, on bones `a` and `b` (`wa` of 255 on `a`).
+    fn vertex(
+        mut self,
+        pos: vec3,
+        normal: vec3,
+        a: u32,
+        b: u32,
+        wa: u32,
+        colour: vec3,
+        kind: u32,
+        width: f32,
+    ) -> u32 {
+        self.verts.push(
+            BodyVertex {
+                pos,
+                bones: pack(a: a, b: b, c: 0, d: 0),
+                normal: normalize(normal),
+                weights: pack(a: wa, b: 255 - wa, c: 0, d: 0),
+                colour: srgb8(colour),
+                part: 1,
+                toon: toon::toon_word(occlusion: 0.0, width: width, kind: kind),
+                outline: 0,
+            },
+        )
+        self.verts.len() - 1
+    }
+
+    fn tri(mut self, a: u32, b: u32, c: u32) {
+        self.indices.push(a)
+        self.indices.push(b)
+        self.indices.push(c)
+    }
+}
+
+/// Where the head is: the middle and half-extents of what's on its bone.
+struct Skull: Copy {
+    centre: vec3,
+    radii: vec3,
+}
+
+/// How far above the hairline a point of the head is (in the head's half-extents): the line high
+/// over the brow, dipping over the ears, low at the nape.
+fn above_hairline(s: Skull, p: vec3) -> f32 {
+    let u = (p - s.centre) / s.radii
+    let front = smoothstep(-0.2, 0.75, u.z)
+    let line = mix(-0.62, 0.42, front) + 0.10 * (1.0 - front) * (1.0 - abs(u.x))
+    u.y - line
+}
+
+/// `body` dressed (as this module's comment says).
+pub fn dressed(body: Humanoid) -> Humanoid {
+    borrow rig = body.rig
+    let head = rig.find("head")
+    let neck = rig.find("neck")
+    let upper = if rig.find("upperChest") != engine::humanoid::NONE {
+        rig.find("upperChest")
+    } else {
+        rig.find("chest")
+    }
+    let hips = rig.find("hips")
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for v in body.verts {
+        if (v.bones & 255) == head && toon::toon_of(v.toon).kind == toon::SKIN {
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+        }
+    }
+    let skull = Skull { centre: (lo + hi) * 0.5, radii: (hi - lo) * 0.5 }
+    var m = Mesh { verts: Vec::new(), indices: Vec::new() }
+    cap(mut m, body, skull, head)
+    locks(mut m, body, skull, head)
+    scarf(mut m, body, neck, upper)
+    cape(mut m, body, upper, hips)
+    var out = body.clone()
+    let base = out.verts.len()
+    for v in m.verts {
+        out.lo = min(out.lo, v.pos)
+        out.hi = max(out.hi, v.pos)
+        out.verts.push(v)
+    }
+    for i in m.indices {
+        out.indices.push(base + i)
+    }
+    out
+}
+
+/// The cap: each of the head's triangles above the hairline (clipped along it), lifted off the
+/// skull along its normals, more on the crown.
+fn cap(m: mut Mesh, body: Humanoid, s: Skull, head: u32) {
+    let n = body.indices.len() / 3
+    for t in 0..n {
+        let ia = body.indices[t * 3]
+        let ib = body.indices[t * 3 + 1]
+        let ic = body.indices[t * 3 + 2]
+        let a = body.verts[ia]
+        let b = body.verts[ib]
+        let c = body.verts[ic]
+        if (a.bones & 255) != head || (b.bones & 255) != head || (c.bones & 255) != head {
+            continue
+        }
+        if toon::toon_of(a.toon).kind != toon::SKIN {
+            continue
+        }
+        let fa = above_hairline(s, a.pos)
+        let fb = above_hairline(s, b.pos)
+        let fc = above_hairline(s, c.pos)
+        if fa <= 0.0 && fb <= 0.0 && fc <= 0.0 {
+            continue
+        }
+        // Clip the triangle to the side above the line (Sutherland–Hodgman, one plane).
+        let ps = [a.pos, b.pos, c.pos]
+        let ns = [a.normal, b.normal, c.normal]
+        let fs = [fa, fb, fc]
+        var cp: Vec<vec3> = Vec::new()
+        var cn: Vec<vec3> = Vec::new()
+        for k in 0..3 {
+            let j = (k + 1) % 3
+            if fs[k] > 0.0 {
+                cp.push(ps[k])
+                cn.push(ns[k])
+            }
+            if (fs[k] > 0.0) != (fs[j] > 0.0) {
+                let w = fs[k] / (fs[k] - fs[j])
+                cp.push(mix(ps[k], ps[j], vec3(w)))
+                cn.push(normalize(mix(ns[k], ns[j], vec3(w))))
+            }
+        }
+        var ids: Vec<u32> = Vec::new()
+        for k in 0..cp.len() {
+            let u = (cp[k] - s.centre) / s.radii
+            let lift = 0.006 +
+                0.016 * saturate(u.y * 0.8 + 0.3) +
+                0.006 * saturate(above_hairline(s, cp[k]) * 4.0)
+            // Shaded as the skull's ellipsoid is, so its light and its highlight fall in clean shapes.
+            let e = normalize((cp[k] - s.centre) / (s.radii * s.radii))
+            ids.push(m.vertex(cp[k] + cn[k] * lift, e, head, head, 255, HAIR, toon::HAIR, 1.0))
+        }
+        for k in 1..ids.len() - 1 {
+            m.tri(ids[0], ids[k], ids[k + 1])
+        }
+    }
+}
+
+/// The head's surface point nearest the direction `d` from its middle, and its normal.
+fn on_skull(body: Humanoid, s: Skull, head: u32, d: vec3) -> (vec3, vec3) {
+    var best = 0
+    var bv = -2.0
+    for i in 0..body.verts.len() {
+        let v = body.verts[i]
+        if (v.bones & 255) != head || toon::toon_of(v.toon).kind != toon::SKIN {
+            continue
+        }
+        let x = dot(normalize((v.pos - s.centre) / s.radii), d)
+        if x > bv {
+            bv = x
+            best = i
+        }
+    }
+    (body.verts[best].pos, body.verts[best].normal)
+}
+
+/// One lock: a blade from `root`, `long` metres along `dir` and bending by `bend` (m at its tip),
+/// `wide` at its root and flattened across `flat`, tapering to a point.
+fn lock(
+    m: mut Mesh,
+    head: u32,
+    root: vec3,
+    dir: vec3,
+    bend: vec3,
+    long: f32,
+    wide: f32,
+    flat: vec3,
+) {
+    var path = [vec3(0.0); 8]
+    for i in 0..8 {
+        let s = f32(i) / 7.0
+        path[i] = root + dir * long * s + bend * s * s
+    }
+    blade(mut m, head, path, wide, flat)
+}
+
+/// A blade along `path`, `wide` at its root and flattened across `flat`, tapering to a point: a
+/// flattened diamond in section.
+fn blade(m: mut Mesh, head: u32, path: [vec3; 8], wide: f32, flat: vec3) {
+    let up = normalize(flat)
+    var rings: Vec<u32> = Vec::new()
+    for i in 0..8 {
+        let s = f32(i) / 7.0
+        let ahead = normalize(if i == 7 { path[7] - path[6] } else { path[i + 1] - path[i] })
+        let side = normalize(cross(ahead, up))
+        let face = normalize(cross(side, ahead))
+        let w = wide * pow(1.0 - s * 0.97, 0.75)
+        let corners = [side * w, face * w * 0.42, -side * w, -face * w * 0.42]
+        let normals = [side, face, -side, -face]
+        for k in 0..4 {
+            rings.push(
+                m.vertex(path[i] + corners[k], normals[k], head, head, 255, HAIR, toon::HAIR, 0.8),
+            )
+        }
+    }
+    for i in 0..7 {
+        for k in 0..4 {
+            let j = (k + 1) % 4
+            let a = rings[i * 4 + k]
+            let b = rings[i * 4 + j]
+            let c = rings[(i + 1) * 4 + j]
+            let d = rings[(i + 1) * 4 + k]
+            m.tri(a, b, c)
+            m.tri(a, c, d)
+        }
+    }
+}
+
+/// The locks: the hair swept back off the brow by the sea wind and tied at the back of the head
+/// in a short tail (bound by a cord, in the scarf's red); broad locks over the crown lie along the
+/// skull toward the tie, and two loose ones fall either side of the brow, framing the face.
+fn locks(m: mut Mesh, body: Humanoid, s: Skull, head: u32) {
+    let back = vec3(0.0, 0.0, -1.0)
+    let down = vec3(0.0, -1.0, 0.0)
+    let r = s.radii.y
+    let (tie, tie_n) = on_skull(body, s, head, normalize(vec3(0.0, 0.25, -1.0)))
+    // Over the crown: each from near the hairline back to the tie, lying along the skull.
+    let lanes = [-0.62, -0.38, -0.13, 0.12, 0.36, 0.6]
+    for k in 0..6 {
+        let x = lanes[k]
+        let (p, nrm) = on_skull(body, s, head, normalize(vec3(x * 0.8, 0.7, 0.55)))
+        // Round the skull from its root to the tie, lifted off it a little, most mid-way.
+        var path = [vec3(0.0); 8]
+        let from = p - s.centre
+        let to = tie + tie_n * 0.015 - s.centre
+        for i in 0..8 {
+            let t = f32(i) / 7.0
+            let d = normalize(mix(from, to, vec3(t)))
+            let reach = mix(length(from), length(to), t) + 0.012 + 0.016 * sin(t * 3.14159)
+            path[i] = s.centre + d * reach
+        }
+        blade(mut m, head, path, r * 0.4, nrm)
+    }
+    // The tail: from the tie, out and down, in two locks, a little apart, and a cord round it.
+    for k in 0..2 {
+        let sx = if k == 0 { 0.25 } else { -0.2 }
+        let dir = normalize(back * 0.8 + down * 0.45 + vec3(sx * 0.3, 0.0, 0.0))
+        lock(
+            mut m,
+            head,
+            tie + tie_n * 0.012,
+            dir,
+            down * r * 0.9 + vec3(sx * 0.08, 0.0, 0.0),
+            r * (1.7 - 0.25 * f32(k)),
+            r * 0.36,
+            vec3(sx, 0.2, 1.0),
+        )
+    }
+    cord(mut m, head, tie + tie_n * 0.03, normalize(back * 0.8 + down * 0.45), r * 0.2)
+    // Loose either side of the brow.
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        let (p, nrm) = on_skull(body, s, head, normalize(vec3(sx * 0.68, 0.45, 0.55)))
+        let out = normalize(vec3(sx * 0.35, -0.75, 0.3) + nrm * 0.25)
+        let long = r * 0.85
+        lock(
+            mut m,
+            head,
+            p - nrm * 0.004,
+            out,
+            down * long * 0.35 + nrm * 0.012,
+            long,
+            r * 0.28,
+            nrm,
+        )
+    }
+}
+
+/// The cord round the tail: a short fat ring of the scarf's red about `axis` at `at`.
+fn cord(m: mut Mesh, head: u32, at: vec3, axis: vec3, radius: f32) {
+    let a = normalize(cross(axis, vec3(1.0, 0.0, 0.0)))
+    let b = cross(axis, a)
+    let around = 12
+    var ids: Vec<u32> = Vec::new()
+    for i in 0..around {
+        let t = f32(i) / f32(around) * 6.2831853
+        let d = a * cos(t) + b * sin(t)
+        for j in 0..2 {
+            let p = at + d * radius + axis * (f32(j) - 0.5) * radius * 0.9
+            ids.push(m.vertex(p, d, head, head, 255, SCARF, toon::CLOTH, 0.7))
+        }
+    }
+    for i in 0..around {
+        let i2 = (i + 1) % around
+        m.tri(ids[i * 2], ids[i2 * 2 + 1], ids[i2 * 2])
+        m.tri(ids[i * 2], ids[i * 2 + 1], ids[i2 * 2 + 1])
+    }
+}
+
+/// The neck's ring at height `y`: its middle in x and z and its mean radius, from the body's
+/// vertices within 2 cm of it near the middle.
+fn neck_ring(body: Humanoid, y: f32) -> (vec3, f32) {
+    var sum = vec3(0.0)
+    var n = 0.0
+    for v in body.verts {
+        if abs(v.pos.y - y) < 0.015 &&
+            abs(v.pos.x) < 0.075 &&
+            toon::toon_of(v.toon).kind == toon::SKIN {
+            sum += v.pos
+            n += 1.0
+        }
+    }
+    let c = sum / max(n, 1.0)
+    var r = 0.0
+    for v in body.verts {
+        if abs(v.pos.y - y) < 0.015 &&
+            abs(v.pos.x) < 0.075 &&
+            toon::toon_of(v.toon).kind == toon::SKIN {
+            r += length(vec2(v.pos.x - c.x, v.pos.z - c.z))
+        }
+    }
+    (vec3(c.x, y, c.z), r / max(n, 1.0))
+}
+
+/// The scarf: a thick roll round the neck's base, lower in front, its cloth bunched in lumps.
+fn scarf(m: mut Mesh, body: Humanoid, neck: u32, upper: u32) {
+    let (c, r) = neck_ring(body, 1.565)
+    let around = 32
+    let roll = 10
+    let thick = 0.04
+    var ids: Vec<u32> = Vec::new()
+    for i in 0..around {
+        let a = f32(i) / f32(around) * 6.2831853
+        let lump = 1.0 + 0.18 * (noise(vec2(f32(i) * 0.9, 1.7)) - 0.5)
+        let dir = vec3(sin(a), 0.0, cos(a))
+        let front = saturate(cos(a))
+        let mid = c + dir * (r + thick * 0.5) + vec3(0.0, -0.025 * front - 0.012, 0.0)
+        for j in 0..roll {
+            let b = f32(j) / f32(roll) * 6.2831853
+            let nrm = normalize(dir * cos(b) + vec3(0.0, sin(b), 0.0))
+            let p = mid + (dir * cos(b) * thick * lump + vec3(0.0, sin(b) * thick * 0.8, 0.0))
+            ids.push(m.vertex(p, nrm, upper, neck, 180, SCARF, toon::CLOTH, 1.0))
+        }
+    }
+    for i in 0..around {
+        let i2 = (i + 1) % around
+        for j in 0..roll {
+            let j2 = (j + 1) % roll
+            let a = ids[i * roll + j]
+            let b = ids[i2 * roll + j]
+            let cc = ids[i2 * roll + j2]
+            let d = ids[i * roll + j2]
+            m.tri(a, cc, b)
+            m.tri(a, d, cc)
+        }
+    }
+}
+
+/// The back's farthest point behind (least z) at height `y`, within `half` of the middle.
+fn back_at(body: Humanoid, y: f32, half: f32) -> f32 {
+    var z = 1.0e9
+    for v in body.verts {
+        if abs(v.pos.y - y) < 0.03 && abs(v.pos.x) < half {
+            z = min(z, v.pos.z)
+        }
+    }
+    z
+}
+
+/// The cape: two sheets back to back (its outside and its lining), hung from the scarf over the
+/// shoulders' backs, flaring and folding toward a hem below the knees.
+fn cape(m: mut Mesh, body: Humanoid, upper: u32, hips: u32) {
+    let top_y = 1.47
+    let hem_y = 0.5
+    let shoulders = back_at(body, y: 1.42, half: 0.16)
+    let seat = back_at(body, y: 0.85, half: 0.16)
+    let across = 18
+    let down = 22
+    let pos = |u: f32, v: f32| -> vec3 {
+        let half = mix(0.17, 0.36, pow(max(v, 0.0), 0.8))
+        let y = mix(top_y, hem_y, v) - 0.03 * u * u * (1.0 - v)
+        let clear = min(shoulders - 0.03, seat - 0.05 - 0.12 * v)
+        let z = mix(shoulders - 0.05, clear, smoothstep(0.0, 0.45, v)) -
+            0.1 * v * v +
+            0.06 * u * u * (1.0 - v) +
+            0.03 * v * sin(u * 9.4 + 0.6) +
+            0.012 * v * sin(u * 21.0)
+        vec3(u * half, y, z)
+    }
+    for layer in 0..2 {
+        let outside = layer == 0
+        var ids: Vec<u32> = Vec::new()
+        for j in 0..down + 1 {
+            let v = f32(j) / f32(down)
+            for i in 0..across + 1 {
+                let u = f32(i) / f32(across) * 2.0 - 1.0
+                let p = pos(u, v)
+                let du = pos(u + 0.01, v) - pos(u - 0.01, v)
+                let dv = pos(u, v + 0.01) - pos(u, v - 0.01)
+                // The outside faces back (-z), the lining toward the body.
+                var nrm = normalize(cross(du, dv))
+                if nrm.z > 0.0 {
+                    nrm = -nrm
+                }
+                if !outside {
+                    nrm = -nrm
+                }
+                let at = p + nrm * 0.002
+                let on_top = u32(255.0 * (1.0 - 0.75 * smoothstep(0.15, 1.0, v)) + 0.5)
+                let colour = if outside { CAPE } else { LINING }
+                ids.push(m.vertex(at, nrm, upper, hips, on_top, colour, toon::CLOTH, 0.85))
+            }
+        }
+        let w = across + 1
+        for j in 0..down {
+            for i in 0..across {
+                let a = ids[j * w + i]
+                let b = ids[j * w + i + 1]
+                let c = ids[(j + 1) * w + i + 1]
+                let d = ids[(j + 1) * w + i]
+                if outside {
+                    m.tri(a, b, c)
+                    m.tri(a, c, d)
+                } else {
+                    m.tri(a, c, b)
+                    m.tri(a, d, c)
+                }
+            }
+        }
+    }
+}

@@ -5,7 +5,9 @@
 // painted form in two values of its own colour, warm in the light and cool in the shade.
 
 use engine::humanoid::BodyVertex
-use look::{BACKDROP, BODY, COOL, GROUND, PAPER, Shot, WARM, band, noise}
+use engine::toon
+use engine::toon::{outline_of, toon_of}
+use look::{BACKDROP, BODY, COOL, GROUND, HULL, PAPER, Shot, WARM, band, noise}
 use std::gpu::{ClipPosition, Flat, FragCoord, Targets3, Unorm8x4, VertexIndex}
 
 /// How far the ground's page reaches round the body (m).
@@ -102,56 +104,79 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     )
 }
 
-/// The body's clothes, sRGB, blocked in value so its parts read in motion: a mid terracotta shirt,
-/// dark indigo trousers held by a darker belt, dark brown shoes, and pale wraps on its hands
-/// (light against the trousers they swing past).
-pub const SHIRT = vec3(0.76, 0.40, 0.28)
-pub const TROUSERS = vec3(0.21, 0.24, 0.37)
-pub const BELT = vec3(0.11, 0.085, 0.075)
-pub const SHOES = vec3(0.28, 0.18, 0.12)
-pub const WRAPS = vec3(0.90, 0.86, 0.76)
+/// The hero's clothes, sRGB, blocked in value so its parts read in motion: a deep sea-teal shirt,
+/// leather bracers on the forearms and a leather belt, dark slate trousers, and tall boots of a
+/// warmer leather, their cuffs turned down below the knee. The hands and the face are bare.
+pub const SHIRT = vec3(0.13, 0.33, 0.36)
+pub const BRACERS = vec3(0.36, 0.22, 0.13)
+pub const BELT = vec3(0.20, 0.12, 0.08)
+pub const BUCKLE = vec3(0.80, 0.64, 0.32)
+pub const TROUSERS = vec3(0.20, 0.21, 0.25)
+pub const BOOTS = vec3(0.30, 0.19, 0.12)
+pub const CUFFS = vec3(0.42, 0.28, 0.17)
+
+/// What a garment is to the shading: cloth (its shadow cool), leather (a hard little highlight)
+/// or metal (a bright one).
+pub const CLOTH: u32 = 0
+pub const LEATHER: u32 = 1
+pub const METAL: u32 = 2
 
 /// What the body wears where, by its point at rest (the bind T-pose, metres, +y up, +x its left,
-/// +z ahead): the colour (sRGB; none for its own skin) and the side of the line field it's on, the
-/// sign flipping across each edge of a garment so the ink draws it. Arms (out along x at rest):
-/// a sleeve to above the elbow, bare forearm, a wrap from the wrist. The rest: bare neck and head
-/// above a round neckline that dips in front, the shirt, a belt at the waist, trousers, shoes.
-fn outfit(p: vec3) -> (Option<vec3>, f32) {
+/// +z ahead): the colour (sRGB; none for its own skin), what it's made of, and the side of the
+/// line field it's on, the sign flipping across each edge of a garment so the ink draws it. Arms
+/// (out along x at rest): a sleeve to above the elbow, bare skin to a bracer from mid-forearm to
+/// the wrist, the bare hand. The rest: bare neck and head above a round neckline, the shirt, a
+/// belt with a buckle at the waist, trousers, and boots from below the knee, their cuffs turned.
+fn outfit(p: vec3) -> (Option<vec3>, u32, f32) {
     let ax = abs(p.x)
     if ax > 0.25 && p.y > 1.2 {
         if ax < 0.40 {
-            return (Some(SHIRT), -1.0)
+            return (Some(SHIRT), CLOTH, -1.0)
         }
-        if ax < 0.675 {
-            return (None, 1.0)
+        if ax < 0.47 {
+            return (None, CLOTH, 1.0)
         }
-        return (Some(WRAPS), -1.0)
+        if ax < 0.655 {
+            return (Some(BRACERS), LEATHER, -1.0)
+        }
+        return (None, CLOTH, 1.0)
     }
     // The neckline: a round scoop, lower in front, rising out over the shoulders.
     let scoop = mix(1.5, 1.445, saturate(p.z * 14.0)) + 0.075 * (ax / 0.11) * (ax / 0.11)
     if p.y > 1.64 || p.y > scoop {
-        return (None, 1.0)
+        return (None, CLOTH, 1.0)
     }
     if p.y > 1.02 {
-        return (Some(SHIRT), -1.0)
+        return (Some(SHIRT), CLOTH, -1.0)
     }
     if p.y > 0.955 {
-        return (Some(BELT), 1.0)
+        // The buckle: a square in front.
+        if p.z > 0.05 && ax < 0.035 && p.y > 0.962 && p.y < 1.013 {
+            return (Some(BUCKLE), METAL, -1.0)
+        }
+        return (Some(BELT), LEATHER, 1.0)
     }
-    if p.y > 0.135 {
-        return (Some(TROUSERS), -1.0)
+    if p.y > 0.46 {
+        return (Some(TROUSERS), CLOTH, -1.0)
     }
-    (Some(SHOES), 1.0)
+    if p.y > 0.40 {
+        return (Some(CUFFS), LEATHER, 1.0)
+    }
+    (Some(BOOTS), LEATHER, -1.0)
 }
 
-/// What the body's vertex passes on: its world point and normal, its colour and its part.
+/// What the body's vertex passes on: its world point, its normal and its outline's (the smoothed
+/// one cloth is shaded by), its colour, its point at rest, its part and its shading word
+/// (`engine::toon`).
 pub struct BodyOut: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
     pub normal: vec3,
+    pub smooth: vec3,
     pub albedo: vec3,
     pub rest: vec3,
     pub part: Flat<u32>,
+    pub toon: Flat<u32>,
 }
 
 /// A vertex's skinning matrix: its four bones' matrices in the palette, blended by its weights.
@@ -169,53 +194,200 @@ pub fn body(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) ->
     let sv = verts[v.index]
     let m = skin(sv, palette)
     let world = (m * vec4(sv.pos, 1.0)).xyz
-    let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let turn = mat3(m[0].xyz, m[1].xyz, m[2].xyz)
     let c = Unorm8x4 { bits: sv.colour }.decode().rgb
     BodyOut {
         clip: ClipPosition { position: shot.cam.clip(world) },
         world,
-        normal: n,
+        normal: turn * sv.normal,
+        smooth: turn * outline_of(sv.outline),
         albedo: c * c,
         rest: sv.pos,
         part: Flat { value: sv.part },
+        toon: Flat { value: sv.toon },
     }
 }
 
-/// The body painted in three values of what it wears (its skin where it's bare): light, a half
-/// tone where the form turns, and shade, the light warm and the shade cool; a thin rim round its
-/// edge, warm where the light's behind it and cool off the sky in the shade; a little darker
-/// toward its feet. Its far side's limbs (from the camera) are a step darker and cooler and their
-/// lines lighter, so the near and far arm and leg part as they cross.
+/// The outline's width, a full line's (m at 3.7 m off; it keeps its width on screen nearer, and
+/// thins a little farther off, as a pen's line would on a smaller drawing).
+pub const LINE: f32 = 0.0062
+
+/// What the outline's vertex passes on: its colour and its kind.
+pub struct HullOut: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub albedo: vec3,
+    pub rest: vec3,
+    pub toon: Flat<u32>,
+}
+
+/// The outline (an inverted hull): the body again, pushed out along its outline's direction by
+/// its line's width and drawn by its back faces alone, so it shows round the body's silhouette
+/// and wherever one part of it passes in front of another. In the sea-lit looks the light eats
+/// the line: heavy on the side away from the sun, thinning to a hair where the sun strikes, as a
+/// pen lifts off a lit edge.
+@vertex
+pub fn hull(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) -> HullOut {
+    let sv = verts[v.index]
+    let m = skin(sv, palette)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let o = normalize(mat3(m[0].xyz, m[1].xyz, m[2].xyz) * outline_of(sv.outline))
+    let t = toon_of(sv.toon)
+    let far = length(world - shot.cam.eye)
+    let eaten = if shot.look > 0.5 {
+        mix(1.55, 0.2, smoothstep(-0.15, 0.75, dot(o, shot.sun)))
+    } else {
+        1.0
+    }
+    let w = if t.kind == toon::EYE { 0.0 } else {
+        LINE * t.width * eaten * pow(far / 3.7, 0.7)
+    }
+    let pushed = world + o * w
+    let c = Unorm8x4 { bits: sv.colour }.decode().rgb
+    HullOut {
+        clip: ClipPosition { position: shot.cam.clip(pushed) },
+        world: pushed,
+        albedo: c * c,
+        rest: sv.pos,
+        toon: Flat { value: sv.toon },
+    }
+}
+
+/// What a point of the body is drawn in: its colour (linear), what it's made of, the side of the
+/// line field it's on, and whether it's bare skin.
+fn worn_at(albedo: vec3, rest: vec3, kind: u32) -> (vec3, u32, f32, bool) {
+    if kind != toon::SKIN {
+        return (albedo, CLOTH, 1.0, false)
+    }
+    let (worn, made, field) = outfit(rest)
+    match worn {
+        Some(c) => (c * c, made, field, false),
+        None => (albedo, CLOTH, field, true),
+    }
+}
+
+/// The outline's colour: what it rings, darkened and deepened (a warm dark of skin, a dark of
+/// cloth's own hue), never flat black.
+@fragment
+pub fn paint_hull(h: HullOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    let t = toon_of(h.toon.value)
+    let (albedo, _, _, _) = worn_at(h.albedo, h.rest, t.kind)
+    let deep = pow(albedo, vec3(1.35)) * 0.32 + vec3(0.012, 0.008, 0.014)
+    let d = h.world - shot.cam.eye
+    targets(deep, length(d), HULL, line: 1.0, weight: 0.0, n: -normalize(d))
+}
+
+/// The sea's light: what its water throws up into a body's shade, a deep green-teal.
+pub const SEA = vec3(0.10, 0.34, 0.36)
+/// The sun's: warm, a little gold.
+pub const SUN_LIGHT = vec3(1.0, 0.93, 0.82)
+
+/// Value noise in [0, 1] over a point at rest (two planes of the 2D noise, crossed).
+fn noise_at(p: vec3) -> f32 {
+    (noise(vec2(p.x + p.z * 0.7, p.y)) + noise(vec2(p.y + 3.1, p.z - p.x * 0.6))) * 0.5
+}
+
+/// The body painted, each material in two tones, lit and shaded, split by one hard step
+/// (`engine::toon::lit`) that its authored occlusion pushes into the hollows; the shade its own
+/// colour (skin's a warm flushed red, cloth's cooler, hair's deep), never grey; a hard highlight
+/// on hair, leather and metal; cloth shaded by its smoothed normal, so it drapes over the muscle
+/// beneath rather than showing it; the eyes unshaded.
+///
+/// That's look 0, a plain two-tone cel. Look 1, sea-lit ink, is this world's own: the sun warm
+/// and gold from above, the shade filled from below by the sea's green-teal; where light turns
+/// to shade the pen draws the turn, a brushed line on the shade's side that breaks and swells;
+/// a sliver of gold on the edges the sun catches. Look 2 hatches the shade too, the hatching
+/// fixed to the body (it doesn't swim as it moves), crossed in the deepest hollows.
+///
+/// A little darker toward its feet, and its far side's limbs (from the camera) a step darker,
+/// so the near and far arm and leg part as they cross.
 @fragment
 pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
-    let n = normalize(b.normal)
+    let t = toon_of(b.toon.value)
+    let (albedo, made, field, bare) = worn_at(b.albedo, b.rest, t.kind)
+    let cloth = !bare && t.kind == toon::SKIN
+    let n = normalize(if cloth || t.kind == toon::HAIR { b.smooth } else { b.normal })
     let v = normalize(shot.cam.eye - b.world)
     let l = shot.sun
-    let (worn, field) = outfit(b.rest)
-    let albedo = match worn {
-        Some(c) => c * c,
-        None => b.albedo,
-    }
+    let sea_lit = shot.look > 0.5
+    let light = if sea_lit { SUN_LIGHT * 1.12 } else { vec3(1.0, 0.95, 0.88) * 1.12 }
+    // Each material's shadow: what its light is multiplied by in the shade.
+    let tint = if bare { vec3(0.78, 0.50, 0.46) } else if t.kind == toon::HAIR {
+        vec3(0.42, 0.42, 0.55)
+    } else if made == CLOTH { vec3(0.50, 0.54, 0.70) } else { vec3(0.55, 0.47, 0.48) }
     let ndl = dot(n, l)
-    let lit_side = band(ndl, edge: 0.02, soft: 0.035)
-    let full = band(ndl, edge: 0.45, soft: 0.035)
-    let light = WARM * 1.08
-    let shade = mix(COOL, vec3(0.62, 0.56, 0.62), vec3(0.35)) * 0.58
-    let half = mix(shade, light, vec3(0.68))
-    var c = albedo * mix(shade, mix(half, light, vec3(full)), vec3(lit_side))
-    // The sky above lifts the tops of forms a little; the ground darkens what faces it.
-    c *= 0.9 + 0.1 * n.y
-    c *= mix(0.82, 1.0, saturate(b.world.y - shot.feet.y))
-    let edge = band(1.0 - max(dot(n, v), 0.0), edge: 0.74, soft: 0.05)
-    let back = saturate(-dot(v, l) + 0.35)
-    c += albedo * WARM * edge * (0.25 + 0.5 * back) * lit_side
-    c += COOL * edge * 0.10 * (1.0 - lit_side)
+    let occlusion = if cloth { t.occlusion * 0.35 } else { t.occlusion }
+    let x = ndl * 0.5 + 0.5 - occlusion * 0.75
+    let fx = max(fwidth(x), 1.0e-5)
+    let k = if t.kind == toon::EYE { 1.0 } else { toon::lit(ndl, occlusion, soft: 0.012) }
+    var shade = tint
+    if sea_lit {
+        // The sea under it fills the shade, the more the more a form faces down and out.
+        let below = saturate(0.55 - 0.45 * n.y)
+        shade = tint * 0.66 + SEA * below * 1.6
+    }
+    var c = albedo * light * mix(shade, vec3(1.0), vec3(k))
+    // A deeper shade where the hollows are deepest (under the chin, the armpits).
+    c *= 1.0 - 0.3 * band(occlusion, edge: 0.75, soft: 0.05)
+    // The highlight: a hard band where the half-way vector meets the normal, lit side only.
+    let h = normalize(l + v)
+    let nh = max(dot(n, h), 0.0)
+    if t.kind == toon::HAIR {
+        // Hair's: a band round the head (where its form turns from the sky, as an anime
+        // highlight runs), broken into strands along the hair.
+        let up = n.y + 0.25 * dot(n, l)
+        let strands = band(
+            noise(vec2(atan2(b.rest.x, b.rest.z) * 14.0, 0.5)),
+            edge: 0.35,
+            soft: 0.04,
+        )
+        let ring = band(up, edge: 0.55, soft: 0.01) *
+            (1.0 - band(up, edge: 0.68, soft: 0.01)) *
+            strands *
+            saturate(dot(n, v) * 2.0)
+        c += albedo * light * 1.6 * ring * k + vec3(0.05, 0.06, 0.08) * ring * k
+    } else if made == LEATHER && !bare {
+        c += vec3(0.10, 0.08, 0.06) * band(nh, edge: 0.93, soft: 0.01) * k
+    } else if made == METAL {
+        c += vec3(0.6, 0.5, 0.3) * band(nh, edge: 0.85, soft: 0.02) * k
+    }
+    if sea_lit && t.kind != toon::EYE {
+        // The sun's gold on the edges it catches.
+        let rim = band(1.0 - max(dot(n, v), 0.0), edge: 0.62, soft: 0.03) *
+            band(ndl, edge: 0.1, soft: 0.05)
+        c += albedo * vec3(1.0, 0.78, 0.42) * rim * 0.55 + vec3(0.06, 0.04, 0.0) * rim
+        // The turn, inked: a brushed line just on the shade's side of the step, swelling and
+        // breaking along the body (by its point at rest, so the strokes stay on it as it moves).
+        let px = (x - 0.5) / fx
+        let brush = noise_at(b.rest * 38.0)
+        let wide = 1.0 + 3.2 * brush
+        let kept = band(brush, edge: 0.3, soft: 0.06)
+        let turn = band(-px, edge: 0.0, soft: 0.6) * (1.0 - band(-px, wide, 0.7)) * kept
+        let deep = pow(albedo, vec3(1.35)) * 0.32 + vec3(0.012, 0.008, 0.014)
+        c = mix(c, deep, turn * 0.85)
+        if shot.look > 1.5 {
+            // Hatching in the shade, fixed to the body; crossed where it's deepest.
+            let gap = 0.011
+            let q = dot(b.rest, normalize(vec3(0.7, 1.0, 0.25))) / gap
+            let q2 = dot(b.rest, normalize(vec3(-0.8, 0.9, -0.3))) / gap
+            let one = 1.0 - band(abs(fract(q) - 0.5), edge: 0.12, soft: 0.05)
+            let two = (1.0 - band(abs(fract(q2) - 0.5), edge: 0.14, soft: 0.06)) *
+                band(occlusion + (1.0 - x), edge: 0.95, soft: 0.05)
+            let face = if b.part.value == 1 { 0.0 } else { 1.0 }
+            let hatch = max(one, two) * (1.0 - k) * band(brush, edge: 0.2, soft: 0.1) * face
+            c = mix(c, deep, hatch * 0.45)
+        }
+    }
+    // The sky above lifts the tops of forms a little; the ground darkens what's near it.
+    c *= 0.94 + 0.06 * n.y
+    c *= mix(0.88, 1.0, saturate((b.world.y - shot.feet.y) * 1.4))
     // The far side: a limb's side (by its x at rest) against the side the camera's on.
     let to_eye = shot.cam.eye - shot.feet
     let facing = dot(shot.left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
-    let side = if abs(b.rest.x) > 0.07 { sign(b.rest.x) } else { 0.0 }
+    let side = if abs(b.rest.x) > 0.07 && t.kind == toon::SKIN { sign(b.rest.x) } else { 0.0 }
     let far = saturate(-side * facing * 3.0)
-    c = mix(c, c * mix(COOL, vec3(1.0), vec3(0.55)) * 0.78, vec3(far))
-    let t = length(b.world - shot.cam.eye)
-    targets(c, t, BODY, line: field, weight: mix(0.8, 0.55, far), n: n)
+    c = mix(c, c * mix(COOL, vec3(1.0), vec3(0.7)) * 0.88, vec3(far))
+    let d = length(b.world - shot.cam.eye)
+    let weight = if t.kind == toon::EYE { 0.0 } else { mix(0.8, 0.6, far) }
+    targets(c, d, BODY, line: field, weight: weight, n: n)
 }
