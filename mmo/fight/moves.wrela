@@ -1,0 +1,85 @@
+// The hero's moves in the fight: placeholders, each a Quaternius keyed clip (assets of
+// content/humanoid, ual1.glb, CC0) bent to the rules' frames (`playback::timed`), so what the
+// player sees land is when it lands. They stand in until the motion work's hand-keyed,
+// contextual strikes arrive (a standing jab, a set straight, a running punch): swap a clip here
+// and the fight plays it.
+
+use humanoid::body::{HERO, HZ, UAL1}
+use engine::cleanup
+use engine::humanoid::{Clip, Retarget, UNREAL}
+use engine::playback
+use engine::playback::Move
+use sim::{
+    DODGE_FRAMES, DOWN_FRAMES, HEAVY_ACTIVE, HEAVY_RECOVERY, HEAVY_WINDUP, HIT_FRAMES, JAB_ACTIVE,
+    JAB_RECOVERY, JAB_WINDUP, PARRY_RECOVERY, PARRY_STARTUP, PARRY_WINDOW,
+}
+
+/// A clip of ual1.glb, retargeted onto the hero and held to its feet (`cleanup::KEYED`), in place.
+fn keyed(name: str) -> Move {
+    let raw = engine::humanoid::retarget(
+        engine::humanoid::take_of_gltf(UAL1, name, UNREAL, fps: 30.0),
+        HERO.rig.clone(),
+        Retarget {},
+    )
+    playback::moved(cleanup::cleaned(raw, HERO.rig.clone(), cleanup::KEYED), HERO.rig.clone())
+}
+
+/// `m` bent to `windup`, `active` and `recovery` frames about the moment its `hand` goes
+/// fastest (a strike), or about `at` of its length (anything else).
+fn fitted(m: Move, hand: str, at: f32, windup: u32, active: u32, recovery: u32) -> Move {
+    let strike = if hand.is_empty() { at * m.length() } else {
+        playback::strike_of(m.clone(), HERO.rig.clone(), hand)
+    }
+    playback::timed(m, strike, windup, active, recovery, HZ)
+}
+
+/// The acts, by index (`ACT_*`).
+pub const ACT_JAB: u32 = 0
+pub const ACT_HEAVY: u32 = 1
+pub const ACT_PARRY: u32 = 2
+pub const ACT_ROLL: u32 = 3
+pub const ACT_HIT: u32 = 4
+pub const ACT_DOWN: u32 = 5
+pub const ACT_DEATH: u32 = 6
+/// The jab with the other hand (a chain alternates).
+pub const ACT_JAB_2: u32 = 7
+
+/// Whether each act plays over the upper body alone, the legs going on beneath it.
+pub const UPPER: [bool; 8] = [true, false, true, false, false, false, false, true]
+
+@fuel(2 ** 40)
+pub const ACTS: [Move; 8] = [
+    fitted(keyed("Punch_Jab"), "leftHand", 0.0, JAB_WINDUP, JAB_ACTIVE, JAB_RECOVERY),
+    fitted(keyed("Punch_Cross"), "rightHand", 0.0, HEAVY_WINDUP, HEAVY_ACTIVE, HEAVY_RECOVERY),
+    fitted(
+        keyed("Spell_Simple_Shoot"),
+        "rightHand",
+        0.0,
+        PARRY_STARTUP,
+        PARRY_WINDOW,
+        PARRY_RECOVERY,
+    ),
+    fitted(keyed("Roll"), "", 0.35, windup: 6, active: 8, recovery: DODGE_FRAMES - 14),
+    fitted(keyed("Hit_Chest"), "", 0.2, windup: 3, active: 4, recovery: HIT_FRAMES - 7),
+    fitted(keyed("Hit_Head"), "", 0.2, windup: 4, active: 6, recovery: DOWN_FRAMES - 10),
+    keyed("Death01"),
+    fitted(keyed("Punch_Cross"), "rightHand", 0.0, JAB_WINDUP, JAB_ACTIVE, JAB_RECOVERY),
+]
+
+@test
+fn each_move_lasts_as_long_as_its_rules_say() {
+    let f = |n: u32| -> f32 { f32(n) / HZ }
+    for (i, frames) in [
+        (ACT_JAB, JAB_WINDUP + JAB_ACTIVE + JAB_RECOVERY),
+        (ACT_HEAVY, HEAVY_WINDUP + HEAVY_ACTIVE + HEAVY_RECOVERY),
+        (ACT_PARRY, PARRY_STARTUP + PARRY_WINDOW + PARRY_RECOVERY),
+        (ACT_ROLL, DODGE_FRAMES),
+        (ACT_HIT, HIT_FRAMES),
+        (ACT_DOWN, DOWN_FRAMES),
+    ] {
+        let len = ACTS[i].length()
+        std::io::print(f"act {i}: {len:.3} s, the rules' {f(frames):.3} s")
+        assert(abs(len - f(frames)) < 1.0 / 30.0 + 1.0e-3, f"act {i} lasts {len} s")
+    }
+    std::io::print(f"death: {ACTS[ACT_DEATH].length():.2} s")
+}

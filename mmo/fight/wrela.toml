@@ -1,0 +1,11 @@
+# The grey-box boss fight: the hero (content/humanoid's body and its playback) bare-fisted against
+# a blocky stand-in for the Idol, a three-handed giant, in a big plain nave, played on the
+# keyboard, mouse or a pad with a lock-on and a third-person camera. Its rules (sim.wrela) are
+# mmo/combat's moved onto a floor in 3D, deterministic so a run's log plays the same fight again.
+[package]
+name = "fight"
+
+[dependencies]
+engine = { workspace = true }
+humanoid = { workspace = true }
+ui = { workspace = true }

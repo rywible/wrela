@@ -1,0 +1,322 @@
+// The fight drawn plain (a grey box): the nave's floor, walls and pillars and the Idol as lit
+// blocks, the hero as content/humanoid's body, then one pass to the screen that outlines forms
+// where depth or normal break, hazes the far nave and keeps the HUD's room. Clean shading, no
+// look of its own: the look is the character and world work's, and lands later.
+
+use engine::humanoid::BodyVertex
+use humanoid::paint::skin
+use idol::Block
+use std::gpu::{ClipPosition, FragCoord, InstanceIndex, Rgba16Float, Targets2, Texture, VertexIndex}
+use engine::view::Camera
+
+/// What every shader reads: the camera, the light, the screen, the time, the soft shadows on the
+/// floor (x, z, radius, darkness: the hero's, the Idol's feet and hands), and the slam's mark
+/// (x, z, radius, how strongly it shows), and the hit flash on the screen.
+pub struct Shot: Copy + GpuData {
+    pub cam: Camera,
+    pub sun: vec3,
+    pub time: f32,
+    pub resolution: vec2,
+    pub flash: f32,
+    pub hurt: f32,
+    pub shadows: [vec4; 8],
+    pub mark: vec4,
+}
+
+/// The light through the nave's high windows: warm, from the left of the altar, high.
+pub const SUN = vec3(-0.45, 0.8, 0.35)
+const WARM = vec3(1.0, 0.88, 0.72)
+const SKY = vec3(0.42, 0.48, 0.62)
+const FOG = vec3(0.10, 0.105, 0.13)
+
+/// A cube's 36 corners (two triangles a face) and each face's normal.
+const CORNERS: [vec3; 8] = [
+    vec3(-1.0, -1.0, -1.0),
+    vec3(1.0, -1.0, -1.0),
+    vec3(1.0, 1.0, -1.0),
+    vec3(-1.0, 1.0, -1.0),
+    vec3(-1.0, -1.0, 1.0),
+    vec3(1.0, -1.0, 1.0),
+    vec3(1.0, 1.0, 1.0),
+    vec3(-1.0, 1.0, 1.0),
+]
+const FACES: [u32; 36] = [
+    0,
+    2,
+    1,
+    0,
+    3,
+    2, // -z
+    4,
+    5,
+    6,
+    4,
+    6,
+    7, // +z
+    0,
+    4,
+    7,
+    0,
+    7,
+    3, // -x
+    1,
+    2,
+    6,
+    1,
+    6,
+    5, // +x
+    0,
+    1,
+    5,
+    0,
+    5,
+    4, // -y
+    3,
+    7,
+    6,
+    3,
+    6,
+    2, // +y
+]
+const NORMALS: [vec3; 6] = [
+    vec3(0.0, 0.0, -1.0),
+    vec3(0.0, 0.0, 1.0),
+    vec3(-1.0, 0.0, 0.0),
+    vec3(1.0, 0.0, 0.0),
+    vec3(0.0, -1.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+]
+
+pub struct Lit: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub colour: vec4,
+}
+
+@vertex
+pub fn block(v: VertexIndex, i: InstanceIndex, blocks: [Block], shot: Shot) -> Lit {
+    let b = blocks[i.index]
+    let corner = CORNERS[FACES[v.index]]
+    let n = NORMALS[v.index / 6]
+    let m = b.model
+    let world = (m * vec4(corner, 1.0)).xyz
+    // The normal through a box's scaled axes: each axis over its length squared.
+    let (x, y, z) = (m[0].xyz, m[1].xyz, m[2].xyz)
+    let nw = x * (n.x / max(dot(x, x), 1.0e-8)) +
+        y * (n.y / max(dot(y, y), 1.0e-8)) +
+        z * (n.z / max(dot(z, z), 1.0e-8))
+    Lit {
+        clip: ClipPosition { position: shot.cam.clip(world) },
+        world,
+        normal: normalize(nw),
+        colour: b.colour,
+    }
+}
+
+/// The soft shadows on a point of the floor: each disc's darkness, falling off past its radius.
+fn shadowed(p: vec3, shot: Shot) -> f32 {
+    var dark = 0.0
+    for i in 0..8 {
+        let s = shot.shadows[i]
+        if s.w > 0.0 {
+            let d = length(p.xz - s.xy) / max(s.z, 0.01)
+            dark = max(dark, s.w * (1.0 - smoothstep(0.55, 1.0, d)) * saturate(1.0 - p.y * 0.4))
+        }
+    }
+    dark
+}
+
+/// Clean shading: the window light wrapped a little, the sky's fill from above, the floor's
+/// bounce from below; and a glow's own light.
+fn shade(albedo: vec3, n: vec3, p: vec3, glow: f32, shot: Shot) -> vec3 {
+    let l = normalize(shot.sun)
+    let ndl = dot(n, l)
+    let key = saturate(ndl * 0.85 + 0.15)
+    let fill = 0.5 + 0.5 * n.y
+    let bounce = saturate(-n.y) * 0.15
+    let shadow = 1.0 - 0.6 * shadowed(p, shot)
+    var c = albedo *
+        (WARM * key * 1.15 * shadow + SKY * fill * 0.35 + vec3(0.5, 0.42, 0.35) * bounce)
+    c += albedo * glow * 1.4
+    c
+}
+
+fn out(c: vec3, n: vec3, p: vec3, shot: Shot) -> Targets2<vec4, vec4> {
+    Targets2 { first: vec4(c, 1.0), second: vec4(n, length(p - shot.cam.eye)) }
+}
+
+@fragment
+pub fn paint_block(b: Lit, shot: Shot) -> Targets2<vec4, vec4> {
+    let n = normalize(b.normal)
+    let c = shade(b.colour.rgb, n, b.world, b.colour.a, shot)
+    out(c, n, b.world, shot)
+}
+
+/// What the floor's vertex passes on.
+pub struct FloorVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+}
+
+/// The nave's floor: its 36 by 60 m and the aisles beyond, in two triangles.
+@vertex
+pub fn floor_vertex(v: VertexIndex, shot: Shot) -> FloorVertex {
+    let corner = [
+        vec2(-1.0, -1.0),
+        vec2(1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, 1.0),
+    ]
+    let c = corner[v.index]
+    let world = vec3(c.x * 26.0, 0.0, c.y * 34.0)
+    FloorVertex { clip: ClipPosition { position: shot.cam.clip(world) }, world }
+}
+
+/// Flagstones of 2 m, a little uneven in value, their joints dark: a scale to read distance by.
+@fragment
+pub fn paint_floor(f: FloorVertex, shot: Shot) -> Targets2<vec4, vec4> {
+    let p = f.world
+    let cell = floor(p.xz / 2.0)
+    let h = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.547)
+    let g = abs(fract(p.xz / 2.0) - vec2(0.5))
+    let joint = 1.0 - smoothstep(0.47, 0.49, max(g.x, g.y))
+    var albedo = vec3(0.30, 0.29, 0.28) * (0.85 + 0.25 * h) * mix(0.55, 1.0, joint)
+    // The nave's runner: a darker band up the middle to the altar.
+    albedo *= if abs(p.x) < 2.0 { 0.72 } else { 1.0 }
+    var c = shade(albedo, vec3(0.0, 1.0, 0.0), p, 0.0, shot)
+    // The slam's mark: where all three hands will fall, a ring that tightens as it nears.
+    let m = shot.mark
+    if m.w > 0.0 {
+        let d = length(p.xz - m.xy)
+        let ring = 1.0 - smoothstep(0.0, 0.12, abs(d - m.z))
+        let inside = (1.0 - smoothstep(m.z - 0.1, m.z, d)) * 0.25
+        c = mix(c, vec3(1.0, 0.35, 0.1) * 0.9, vec3(saturate((ring + inside) * m.w)))
+    }
+    out(c, vec3(0.0, 1.0, 0.0), p, shot)
+}
+
+/// The hero's body, skinned (content/humanoid's), lit as the blocks are.
+pub struct BodyOut: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub rest: vec3,
+}
+
+@vertex
+pub fn body(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) -> BodyOut {
+    let sv = verts[v.index]
+    let m = skin(sv, palette)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let c = std::gpu::Unorm8x4 { bits: sv.colour }.decode().rgb
+    BodyOut {
+        clip: ClipPosition { position: shot.cam.clip(world) },
+        world,
+        normal: n,
+        albedo: c * c,
+        rest: sv.pos,
+    }
+}
+
+/// The hero dressed plainly so it reads against grey stone: a rust shirt, dark trousers, pale
+/// hand wraps (bare fists), by where each point is at rest.
+fn worn(p: vec3, skin: vec3) -> vec3 {
+    let ax = abs(p.x)
+    if ax > 0.25 && p.y > 1.2 {
+        if ax < 0.40 {
+            return vec3(0.55, 0.16, 0.08)
+        }
+        if ax < 0.675 {
+            return skin
+        }
+        return vec3(0.85, 0.80, 0.70)
+    }
+    if p.y > 1.5 {
+        return skin
+    }
+    if p.y > 1.02 {
+        return vec3(0.55, 0.16, 0.08)
+    }
+    if p.y > 0.955 {
+        return vec3(0.03, 0.025, 0.02)
+    }
+    if p.y > 0.135 {
+        return vec3(0.05, 0.06, 0.11)
+    }
+    vec3(0.08, 0.04, 0.025)
+}
+
+@fragment
+pub fn paint_body(b: BodyOut, shot: Shot) -> Targets2<vec4, vec4> {
+    let n = normalize(b.normal)
+    let albedo = worn(b.rest, b.albedo)
+    var c = shade(albedo, n, b.world, 0.0, shot)
+    // A rim off the windows, so the hero stands out of the stone.
+    let v = normalize(shot.cam.eye - b.world)
+    c += WARM * pow(1.0 - saturate(dot(n, v)), 3.0) * 0.35
+    c = mix(c, vec3(1.0, 0.2, 0.15), vec3(shot.hurt * 0.5))
+    out(c, n, b.world, shot)
+}
+
+/// The screen: a triangle over it all.
+@vertex
+pub fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+fn load(t: Texture<Rgba16Float>, p: vec2, size: vec2) -> vec4 {
+    let q = clamp(p, vec2(0.0), size - vec2(1.0))
+    t.load(u32(q.x), u32(q.y))
+}
+
+/// The frame: what's near crisp and outlined where depth or the form's turn breaks, the far nave
+/// hazed into the dark of its vaults, a vignette, and the screen's flash of a blow (white) or of
+/// a wound (red).
+@fragment
+pub fn compose(
+    pixel: FragCoord,
+    shot: Shot,
+    colour: Texture<Rgba16Float>,
+    shape: Texture<Rgba16Float>,
+) -> vec4 {
+    let size = shot.resolution
+    let px = pixel.position.xy
+    let c0 = load(colour, px, size).rgb
+    let s0 = load(shape, px, size)
+    let t0 = if s0.w <= 0.0 { 1.0e4 } else { s0.w }
+    var edge = 0.0
+    let r = max(1.0, size.y / 720.0)
+    for o in [vec2(r, 0.0), vec2(-r, 0.0), vec2(0.0, r), vec2(0.0, -r)] {
+        let s = load(shape, px + o, size)
+        let t = if s.w <= 0.0 { 1.0e4 } else { s.w }
+        let gap = abs(t - t0) / min(t, t0)
+        edge = max(edge, smoothstep(0.04, 0.09, gap))
+        if s.w > 0.0 && s0.w > 0.0 {
+            edge = max(edge, smoothstep(0.35, 0.6, 1.0 - dot(s.xyz, s0.xyz)) * 0.6)
+        }
+    }
+    // Lines fade with distance: the near is drawn, the far only shaded.
+    edge *= 1.0 - smoothstep(18.0, 45.0, t0)
+    var c = if s0.w <= 0.0 { FOG * 0.6 } else { c0 }
+    c = mix(c, c * 0.25, vec3(edge * 0.8))
+    let haze = 1.0 - exp(-max(t0 - 12.0, 0.0) / 55.0)
+    c = mix(c, FOG, vec3(haze))
+    // The vaults above: darkness rising.
+    let up = 1.0 - px.y / size.y
+    c *= 1.0 - 0.25 * smoothstep(0.6, 1.0, up) * (if s0.w <= 0.0 { 1.0 } else { 0.0 })
+    c = mix(c, vec3(1.0), vec3(shot.flash * 0.35))
+    let uv = px / size - vec2(0.5)
+    let v = length(uv * vec2(1.0, 1.2))
+    c *= 1.0 - 0.35 * smoothstep(0.3, 0.85, v)
+    c = mix(c, vec3(0.6, 0.02, 0.0), vec3(shot.hurt * smoothstep(0.25, 0.8, v) * 0.8))
+    // A soft shoulder, then the screen's curve.
+    let x = c / (vec3(1.0) + c * 0.25)
+    vec4(pow(max(x, vec3(0.0)), vec3(1.0 / 2.2)), 1.0)
+}

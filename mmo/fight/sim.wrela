@@ -1,0 +1,1040 @@
+// The grey-box boss fight's rules: one player, bare-fisted, against the Idol (the cathedral god's
+// statue come alive: a giant of stone with three heads and three hands), stepped 60 times a
+// second from the player's input and nothing else, in whole numbers, so a fight's input log
+// plays the same fight again anywhere (`@deterministic`: the replay check mmo/combat's room does).
+//
+// The backbone is mmo/combat's rules moved onto the floor of a room in 3D: stamina, committed
+// moves with windups, a parry that staggers, a dodge with invulnerable frames, a boss whose
+// windups are its tells. What's new is what a fist needs against a giant. A fist reaches only
+// what's low: the Idol's shins, always (its stone takes half); its three hands, while a slam
+// leaves them stuck in the floor; and its chest and heads only when it's brought down, on its
+// knees once its poise breaks (every blow to it wears its poise down) or reeling from a parry.
+// So the fight is: stay alive under the giant, chip its legs, punish its slams, parry its
+// swipes, and spend each knockdown on its heads.
+//
+// The player's input is 15 bits: the stick's heading (8 bits, 256 to a turn, 0 along +x and
+// a quarter turn along +z) and how hard it's pushed (2 bits: 0 still, 1 walk, 2 run), four
+// buttons, each pressed when its bit flips (a toggle, as mmo/combat's), and whether it's locked
+// on (a state, not a press: the moves aim at the Idol when it is).
+
+use std::pack::Pack
+
+/// Frames a second.
+pub const HZ: u32 = 60
+/// The longest fight (ten minutes): past it, it's a draw.
+pub const MAX_FRAMES: u32 = 36000
+
+/// The input's fields.
+pub const HEADING_BITS: u32 = 255
+pub const PUSH_SHIFT: u32 = 8
+pub const PUSH_BITS: u32 = 768
+pub const JAB: u32 = 1024
+pub const HEAVY: u32 = 2048
+pub const PARRY: u32 = 4096
+pub const DODGE: u32 = 8192
+pub const LOCKED: u32 = 16384
+pub const BUTTON_BITS: u32 = 15360
+/// The inputs that are inputs: 15 bits.
+pub const INPUT_BITS: u32 = 32767
+
+/// Positions are in 1/256 of a metre.
+pub const UNIT: i32 = 256
+/// The nave's floor: 18 m either side of its middle, 30 m from its doors (-z) to the altar (+z).
+pub const HALF_WIDTH: i32 = 18 * 256
+pub const HALF_LENGTH: i32 = 30 * 256
+
+pub const PLAYER_HP: i32 = 100
+/// Stamina, in quarters (400 is 100).
+pub const STAMINA: i32 = 400
+pub const BOSS_HP: i32 = 1400
+pub const BOSS_POISE: i32 = 130
+
+// The player's moves, in frames. A jab: quick, cheap, chained up to three; a heavy: slow, a lunge,
+// what breaks poise; a parry: a short window that sends a swipe back; a dodge: a roll whose
+// first frames nothing touches.
+pub const JAB_WINDUP: u32 = 5
+pub const JAB_ACTIVE: u32 = 3
+pub const JAB_RECOVERY: u32 = 13
+pub const HEAVY_WINDUP: u32 = 18
+pub const HEAVY_ACTIVE: u32 = 4
+pub const HEAVY_RECOVERY: u32 = 24
+pub const PARRY_STARTUP: u32 = 2
+pub const PARRY_WINDOW: u32 = 10
+pub const PARRY_RECOVERY: u32 = 18
+pub const DODGE_FRAMES: u32 = 22
+pub const DODGE_SAFE: u32 = 14
+pub const HIT_FRAMES: u32 = 24
+pub const DOWN_FRAMES: u32 = 56
+const JAB_COST: i32 = 48
+const HEAVY_COST: i32 = 112
+const PARRY_COST: i32 = 32
+const DODGE_COST: i32 = 80
+/// Frames after a spend before stamina comes back, and how fast it does (quarters a frame).
+const REST: u32 = 30
+const REGAIN: i32 = 3
+/// How many frames a press waits, made mid-move, for the move to let it go.
+const BUFFER: u32 = 12
+/// From which frame of a move's recovery the next move may cut it short: a jab into the next
+/// jab or a heavy, anything into a dodge.
+const JAB_CHAIN: u32 = 4
+const DODGE_CANCEL: u32 = 10
+/// How far a fist reaches from the body's middle (1/256 m), how far a move aims (it turns to
+/// the Idol's nearest part within this), and the heavy's lunge (1/256 m a frame).
+const FIST: i32 = 340
+const HEAVY_FIST: i32 = 420
+const AIM: i32 = 6 * 256
+const LUNGE: i32 = 14
+/// Damage of a jab and a heavy at full; poise each takes.
+const JAB_DAMAGE: i32 = 10
+const HEAVY_DAMAGE: i32 = 32
+const JAB_POISE: i32 = 7
+const HEAVY_POISE: i32 = 26
+/// Speeds (1/256 m a frame): a walk 1.6 m/s, a run 4 m/s, a roll's first frames 6 m/s.
+const WALK: i32 = 7
+const RUN: i32 = 17
+const ROLL: i32 = 26
+/// The player's body and the Idol's (radii, 1/256 m).
+const PLAYER_R: i32 = 100
+const BOSS_R: i32 = 330
+
+// What a body is doing.
+pub const IDLE: u32 = 0
+pub const WINDUP: u32 = 1
+pub const ACTIVE: u32 = 2
+pub const RECOVER: u32 = 3
+pub const PARRYING: u32 = 4
+pub const DODGING: u32 = 5
+pub const HIT: u32 = 6
+pub const DOWN: u32 = 7
+pub const DEAD: u32 = 8
+/// The Idol's own states: its slam's hands stuck in the floor, on its knees, reeling.
+pub const STUCK: u32 = 9
+pub const KNEEL: u32 = 10
+pub const REEL: u32 = 11
+pub const TURN: u32 = 12
+
+/// The player's moves (`Player::move_`).
+pub const NO_MOVE: u32 = 0
+pub const MOVE_JAB: u32 = 1
+pub const MOVE_HEAVY: u32 = 2
+
+/// The Idol's attacks (`Boss::attack`): a side hand's swipe (left, right), the middle hand's palm
+/// thrust straight ahead, all three hands slammed down, a stomp.
+pub const SWIPE_LEFT: u32 = 1
+pub const SWIPE_RIGHT: u32 = 2
+pub const PALM: u32 = 3
+pub const SLAM: u32 = 4
+pub const STOMP: u32 = 5
+
+/// An attack's frames, damage and reach (see `ATTACKS`).
+pub struct Attack: Copy {
+    pub windup: u32,
+    pub active: u32,
+    pub recovery: u32,
+    pub damage: i32,
+    pub parryable: bool,
+    /// Whether it knocks the player down rather than staggering them.
+    pub heavy: bool,
+}
+
+/// By `Boss::attack`; the swipes' tells are their arm drawn back across the body, the palm's the
+/// middle hand pulled into the chest, the slam's all three raised overhead, the stomp's a knee
+/// lifted.
+pub const ATTACKS: [Attack; 6] = [
+    Attack { windup: 0, active: 0, recovery: 0, damage: 0, parryable: false, heavy: false },
+    Attack { windup: 36, active: 8, recovery: 34, damage: 22, parryable: true, heavy: false },
+    Attack { windup: 36, active: 8, recovery: 34, damage: 22, parryable: true, heavy: false },
+    Attack { windup: 30, active: 6, recovery: 40, damage: 26, parryable: true, heavy: false },
+    Attack { windup: 54, active: 6, recovery: 18, damage: 40, parryable: false, heavy: true },
+    Attack { windup: 26, active: 5, recovery: 30, damage: 16, parryable: false, heavy: true },
+]
+/// Frames the Idol's hands stay stuck after a slam, on its knees after its poise breaks, reeling
+/// after a parry, and the least it waits between attacks (more at full health).
+pub const STUCK_FRAMES: u32 = 96
+pub const KNEEL_FRAMES: u32 = 170
+pub const REEL_FRAMES: u32 = 110
+const REST_LEAST: u32 = 26
+/// How far its swipe reaches (from its middle) and how wide (its arc's half, 256 to a turn); its
+/// palm's reach and half-width; where its slam lands ahead and how wide; its stomp's reach.
+pub const SWIPE_REACH: i32 = 5 * 256
+pub const SWIPE_ARC: i32 = 72
+pub const PALM_REACH: i32 = 6 * 256
+pub const PALM_HALF: i32 = 200
+pub const SLAM_AHEAD: i32 = 3 * 256 + 64
+pub const SLAM_R: i32 = 2 * 256 + 128
+pub const STOMP_R: i32 = 3 * 256 + 64
+/// The Idol walks at 1.5 m/s, and turns 2 a frame (of 256: 1.5 turns... 0.47 rad/s) winding up,
+/// 4 standing.
+const BOSS_WALK: i32 = 6
+const BOSS_TURN: i32 = 4
+const BOSS_TRACK: i32 = 2
+/// Where its parts are, about its middle and the way it faces (1/256 m: x to its left, z ahead):
+/// its shins, its hands stuck in the floor, its chest and heads when it's down.
+const SHIN_X: i32 = 190
+const SHIN_R: i32 = 130
+const HANDS_R: i32 = 200
+const CORE_AHEAD: i32 = 420
+const CORE_R: i32 = 260
+/// How much of a blow each part takes, in quarters: the shins half, the hands all, the heads
+/// twice over.
+const SHIN_SHARE: i32 = 2
+const HANDS_SHARE: i32 = 4
+const CORE_SHARE: i32 = 8
+/// Frames the fight holds on a blow that lands (hit-stop): a jab, a heavy, a heavy to the heads.
+const STOP_JAB: u32 = 3
+const STOP_HEAVY: u32 = 7
+const STOP_CRIT: u32 = 11
+const STOP_HURT: u32 = 5
+
+/// What the player's blow met (`World::struck`): nothing, the shins, the hands, the heads.
+pub const STRUCK_NONE: u32 = 0
+pub const STRUCK_SHIN: u32 = 1
+pub const STRUCK_HANDS: u32 = 2
+pub const STRUCK_CORE: u32 = 3
+
+/// A change of the player's input at `frame` to `input`.
+pub struct Change: Clone + Pack + Eq {
+    pub frame: u32,
+    pub input: u32,
+}
+
+/// How a fight ended.
+pub enum Winner: Copy + Pack + Eq {
+    Player,
+    Boss,
+    Draw,
+}
+
+/// The player: where (1/256 m), facing (256 to a turn), health, stamina (quarters), what it's
+/// doing and for how many frames more, which move, how far into a chain of jabs, the press it
+/// holds for later, and its push (a roll's, a lunge's, a blow's).
+pub struct Player: Copy + Eq {
+    pub x: i32,
+    pub z: i32,
+    pub facing: i32,
+    pub hp: i32,
+    pub stamina: i32,
+    pub act: u32,
+    pub timer: u32,
+    pub move_: u32,
+    pub chain: u32,
+    pub landed: bool,
+    pub rested: u32,
+    pub buffered: u32,
+    pub buffer_age: u32,
+    pub vx: i32,
+    pub vz: i32,
+    /// How fast it went this frame (1/256 m), for the body drawn over it.
+    pub moved: i32,
+}
+
+/// The Idol: where, facing, health, poise, what it's doing and for how many frames more, which
+/// attack, where its slam lands, how many attacks it's chained, its dice.
+pub struct Boss: Copy + Eq {
+    pub x: i32,
+    pub z: i32,
+    pub facing: i32,
+    pub hp: i32,
+    pub poise: i32,
+    pub calm: u32,
+    pub act: u32,
+    pub timer: u32,
+    pub attack: u32,
+    pub landed: bool,
+    pub at_x: i32,
+    pub at_z: i32,
+    pub combo: u32,
+    pub rest: u32,
+    pub behind: u32,
+    pub dice: u32,
+    pub moved: i32,
+}
+
+/// The fight at a frame.
+pub struct World: Copy + Eq {
+    pub frame: u32,
+    /// Steps taken, hit-stops' held ones too: what a log's changes count.
+    pub steps: u32,
+    pub player: Player,
+    pub boss: Boss,
+    /// The buttons as the rules last took them.
+    pub before: u32,
+    /// Frames the fight is held for a blow (hit-stop).
+    pub stop: u32,
+    /// The last blow the player landed: where, on which frame, and how much it did; the last
+    /// the player took.
+    pub struck: u32,
+    pub struck_at: u32,
+    pub struck_for: i32,
+    pub hurt_at: u32,
+    pub parried_at: u32,
+    pub over: bool,
+    pub winner: Winner,
+}
+
+/// Cosine and sine at each of 256 headings, times 1024.
+pub const COS: [i32; 256] = [
+    1024, 1024, 1023, 1021, 1019, 1016, 1013, 1009, 1004, 999, 993, 987, 980, 972, 964, 955, 946,
+    936, 926, 915, 903, 891, 878, 865, 851, 837, 822, 807, 792, 775, 759, 742, 724, 706, 688, 669,
+    650, 630, 610, 590, 569, 548, 526, 505, 483, 460, 438, 415, 392, 369, 345, 321, 297, 273, 249,
+    224, 200, 175, 150, 125, 100, 75, 50, 25, 0, -25, -50, -75, -100, -125, -150, -175, -200, -224,
+    -249, -273, -297, -321, -345, -369, -392, -415, -438, -460, -483, -505, -526, -548, -569, -590,
+    -610, -630, -650, -669, -688, -706, -724, -742, -759, -775, -792, -807, -822, -837, -851, -865,
+    -878, -891, -903, -915, -926, -936, -946, -955, -964, -972, -980, -987, -993, -999, -1004,
+    -1009, -1013, -1016, -1019, -1021, -1023, -1024, -1024, -1024, -1023, -1021, -1019, -1016,
+    -1013, -1009, -1004, -999, -993, -987, -980, -972, -964, -955, -946, -936, -926, -915, -903,
+    -891, -878, -865, -851, -837, -822, -807, -792, -775, -759, -742, -724, -706, -688, -669, -650,
+    -630, -610, -590, -569, -548, -526, -505, -483, -460, -438, -415, -392, -369, -345, -321, -297,
+    -273, -249, -224, -200, -175, -150, -125, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125, 150,
+    175, 200, 224, 249, 273, 297, 321, 345, 369, 392, 415, 438, 460, 483, 505, 526, 548, 569, 590,
+    610, 630, 650, 669, 688, 706, 724, 742, 759, 775, 792, 807, 822, 837, 851, 865, 878, 891, 903,
+    915, 926, 936, 946, 955, 964, 972, 980, 987, 993, 999, 1004, 1009, 1013, 1016, 1019, 1021, 1023,
+    1024,
+]
+pub const SIN: [i32; 256] = [
+    0, 25, 50, 75, 100, 125, 150, 175, 200, 224, 249, 273, 297, 321, 345, 369, 392, 415, 438, 460,
+    483, 505, 526, 548, 569, 590, 610, 630, 650, 669, 688, 706, 724, 742, 759, 775, 792, 807, 822,
+    837, 851, 865, 878, 891, 903, 915, 926, 936, 946, 955, 964, 972, 980, 987, 993, 999, 1004, 1009,
+    1013, 1016, 1019, 1021, 1023, 1024, 1024, 1024, 1023, 1021, 1019, 1016, 1013, 1009, 1004, 999,
+    993, 987, 980, 972, 964, 955, 946, 936, 926, 915, 903, 891, 878, 865, 851, 837, 822, 807, 792,
+    775, 759, 742, 724, 706, 688, 669, 650, 630, 610, 590, 569, 548, 526, 505, 483, 460, 438, 415,
+    392, 369, 345, 321, 297, 273, 249, 224, 200, 175, 150, 125, 100, 75, 50, 25, 0, -25, -50, -75,
+    -100, -125, -150, -175, -200, -224, -249, -273, -297, -321, -345, -369, -392, -415, -438, -460,
+    -483, -505, -526, -548, -569, -590, -610, -630, -650, -669, -688, -706, -724, -742, -759, -775,
+    -792, -807, -822, -837, -851, -865, -878, -891, -903, -915, -926, -936, -946, -955, -964, -972,
+    -980, -987, -993, -999, -1004, -1009, -1013, -1016, -1019, -1021, -1023, -1024, -1024, -1024,
+    -1023, -1021, -1019, -1016, -1013, -1009, -1004, -999, -993, -987, -980, -972, -964, -955, -946,
+    -936, -926, -915, -903, -891, -878, -865, -851, -837, -822, -807, -792, -775, -759, -742, -724,
+    -706, -688, -669, -650, -630, -610, -590, -569, -548, -526, -505, -483, -460, -438, -415, -392,
+    -369, -345, -321, -297, -273, -249, -224, -200, -175, -150, -125, -100, -75, -50, -25,
+]
+
+fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
+    if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+fn abs(v: i32) -> i32 {
+    if v < 0 { -v } else { v }
+}
+
+/// A heading's index, 0 to 255.
+fn wrap(h: i32) -> u32 {
+    u32(((h % 256) + 256) % 256)
+}
+
+/// How far `to` is from heading `from`, -128 to 127.
+pub fn turn_between(from: i32, to: i32) -> i32 {
+    let d = i32(wrap(to - from))
+    if d >= 128 { d - 256 } else { d }
+}
+
+/// `v` turned toward `goal` by at most `rate`.
+fn turned(v: i32, goal: i32, rate: i32) -> i32 {
+    i32(wrap(v + clamp(turn_between(v, goal), -rate, rate)))
+}
+
+/// The heading nearest the way from (0, 0) to (dx, dz): the one of 256 whose direction it's
+/// most along.
+pub fn heading_of(dx: i32, dz: i32) -> i32 {
+    if dx == 0 && dz == 0 {
+        return 0
+    }
+    // Scaled down so the products fit: 1/256 m over a 60 m floor is under 2^14.
+    var best: i32 = 0
+    var most: i32 = -2147483647
+    for h in 0..256 {
+        let d = dx * COS[h] + dz * SIN[h]
+        if d > most {
+            most = d
+            best = i32(h)
+        }
+    }
+    best
+}
+
+/// `n` units along heading `h`: its x and z.
+fn along(h: i32, n: i32) -> (i32, i32) {
+    let i = wrap(h)
+    (COS[i] * n / 1024, SIN[i] * n / 1024)
+}
+
+/// The distance between two points, as the larger of its sides plus 3/8 of the smaller (an
+/// octagon within 7% of round).
+pub fn distance(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
+    let dx = abs(ax - bx)
+    let dz = abs(az - bz)
+    if dx > dz { dx + dz * 3 / 8 } else { dz + dx * 3 / 8 }
+}
+
+/// A point about the Idol: `side` to its left, `ahead` in front, in the world.
+pub fn boss_point(b: Boss, side: i32, ahead: i32) -> (i32, i32) {
+    let i = wrap(b.facing)
+    // Its left is a quarter turn back from ahead (facing +z with +y up, +x is the left).
+    let j = wrap(b.facing - 64)
+    (b.x + (COS[i] * ahead + COS[j] * side) / 1024, b.z + (SIN[i] * ahead + SIN[j] * side) / 1024)
+}
+
+/// One of the Idol's parts a fist may hit: where, how big, and which.
+pub struct Part: Copy {
+    pub x: i32,
+    pub z: i32,
+    pub r: i32,
+    pub which: u32,
+}
+
+/// The parts of the Idol in a fist's reach now: its shins always, its hands while stuck, its
+/// chest and heads while it's down (on its knees, or reeling).
+pub fn parts(b: Boss) -> Vec<Part> {
+    var out: Vec<Part> = Vec::new()
+    if b.act == DEAD {
+        return out
+    }
+    let down = b.act == KNEEL || b.act == REEL
+    if down {
+        let (cx, cz) = boss_point(b, 0, CORE_AHEAD)
+        out.push(Part { x: cx, z: cz, r: CORE_R, which: STRUCK_CORE })
+    }
+    if b.act == STUCK {
+        out.push(Part { x: b.at_x, z: b.at_z, r: HANDS_R, which: STRUCK_HANDS })
+    }
+    for side in [SHIN_X, -SHIN_X] {
+        let (x, z) = boss_point(b, side, 0)
+        out.push(Part { x, z, r: SHIN_R, which: STRUCK_SHIN })
+    }
+    out
+}
+
+impl World {
+    /// The fight's first frame: the player at the doors, the Idol before the altar, facing them.
+    pub fn start() -> World {
+        World {
+            frame: 0,
+            steps: 0,
+            player: Player {
+                x: 0,
+                z: -22 * UNIT,
+                facing: 64,
+                hp: PLAYER_HP,
+                stamina: STAMINA,
+                act: IDLE,
+                timer: 0,
+                move_: NO_MOVE,
+                chain: 0,
+                landed: false,
+                rested: REST,
+                buffered: 0,
+                buffer_age: 0,
+                vx: 0,
+                vz: 0,
+                moved: 0,
+            },
+            boss: Boss {
+                x: 0,
+                z: 8 * UNIT,
+                facing: 192,
+                hp: BOSS_HP,
+                poise: BOSS_POISE,
+                calm: 0,
+                act: IDLE,
+                timer: 0,
+                attack: 0,
+                landed: false,
+                at_x: 0,
+                at_z: 0,
+                combo: 0,
+                rest: 90,
+                behind: 0,
+                dice: 2463534242,
+                moved: 0,
+            },
+            before: 0,
+            stop: 0,
+            struck: STRUCK_NONE,
+            struck_at: 0,
+            struck_for: 0,
+            hurt_at: 0,
+            parried_at: 0,
+            over: false,
+            winner: Winner::Draw,
+        }
+    }
+
+    /// Whether the Idol is in its second half: below half its health, it chains its attacks and
+    /// rests less.
+    pub fn enraged(self) -> bool {
+        self.boss.hp * 2 < BOSS_HP
+    }
+}
+
+/// The next of the Idol's dice (xorshift32), 0 to 99.
+fn roll(b: mut Boss) -> u32 {
+    var x = b.dice
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    b.dice = x
+    x % 100
+}
+
+/// One frame of the fight from the player's input. The buttons are pressed when their bits flip.
+@deterministic
+pub fn step(w: mut World, input: u32) {
+    if w.over {
+        return
+    }
+    w.steps += 1
+    let pressed = (input ^ w.before) & BUTTON_BITS
+    w.before = input & BUTTON_BITS
+    // A blow holds the fight a few frames (the press waits in the buffer meanwhile).
+    if w.stop > 0 {
+        w.stop -= 1
+        if pressed != 0 {
+            w.player.buffered = pressed
+            w.player.buffer_age = 0
+        }
+        return
+    }
+    step_player(mut w, input, pressed)
+    step_boss(mut w)
+    w.frame += 1
+    if w.boss.hp <= 0 && w.boss.act != DEAD {
+        w.boss.act = DEAD
+        w.boss.timer = 0
+    }
+    if w.player.hp <= 0 && w.player.act != DEAD {
+        w.player.act = DEAD
+        w.player.timer = 0
+    }
+    if w.boss.act == DEAD {
+        w.winner = Winner::Player
+        w.over = true
+    } else if w.player.act == DEAD {
+        w.winner = Winner::Boss
+        w.over = true
+    } else if w.frame >= MAX_FRAMES {
+        w.over = true
+    }
+}
+
+/// The fight from its input log, to its end: its winner, the frame it ended on and the Idol's
+/// health, as a room checks a run. A change is at the step it was made before (`World::steps`).
+@deterministic
+pub fn run(log: [Change]) -> (Winner, u32, i32) {
+    var w = World::start()
+    var at: u32 = 0
+    var input: u32 = 0
+    while !w.over && w.steps < MAX_FRAMES * 2 {
+        while at < log.len() && log[at].frame <= w.steps {
+            input = log[at].input
+            at += 1
+        }
+        step(mut w, input)
+    }
+    (w.winner, w.frame, w.boss.hp)
+}
+
+/// Whether the player can start a new move now: standing free, or late enough in a move's
+/// recovery to cut it for this one.
+fn free_for(p: Player, press: u32) -> bool {
+    if p.act == IDLE {
+        return true
+    }
+    if p.act != RECOVER {
+        return false
+    }
+    let total = if p.move_ == MOVE_JAB { JAB_RECOVERY } else if p.move_ == MOVE_HEAVY {
+        HEAVY_RECOVERY
+    } else {
+        PARRY_RECOVERY
+    }
+    let into = total - p.timer
+    if press == DODGE {
+        return into >= DODGE_CANCEL || (p.move_ == MOVE_JAB && into >= JAB_CHAIN)
+    }
+    p.move_ == MOVE_JAB && (press == JAB || press == HEAVY) && into >= JAB_CHAIN
+}
+
+/// The press it acts on: this frame's, or the one it's held, the newest first and dodge before
+/// the rest when two come at once (a panic button wins).
+fn wanted(pressed: u32) -> u32 {
+    if pressed & DODGE != 0 {
+        DODGE
+    } else if pressed & PARRY != 0 {
+        PARRY
+    } else if pressed & HEAVY != 0 {
+        HEAVY
+    } else if pressed & JAB != 0 {
+        JAB
+    } else {
+        0
+    }
+}
+
+/// The nearest of the Idol's parts in a fist's reach, from the player's middle: the way to it
+/// and how far, or none.
+fn nearest_part(w: World) -> Option<(Part, i32)> {
+    var best: Option<(Part, i32)> = None
+    for part in parts(w.boss) {
+        let d = distance(w.player.x, w.player.z, part.x, part.z) - part.r
+        let better = match best {
+            Some((_, e)) => d < e,
+            None => true,
+        }
+        if better {
+            best = Some((part, d))
+        }
+    }
+    best
+}
+
+@deterministic
+fn step_player(w: mut World, input: u32, pressed_now: u32) {
+    var p = w.player
+    p.moved = 0
+    if p.act == DEAD {
+        w.player = p
+        return
+    }
+    // A press made while it can't act waits a little for it.
+    var pressed = pressed_now
+    if pressed == 0 && p.buffered != 0 && p.buffer_age < BUFFER {
+        pressed = p.buffered
+    }
+    if p.buffer_age < 1000 {
+        p.buffer_age += 1
+    }
+    let press = wanted(pressed)
+    let push = (input & PUSH_BITS) >> PUSH_SHIFT
+    let heading = i32(input & HEADING_BITS)
+    let locked = input & LOCKED != 0
+    // A move ends, or goes on to its next part.
+    if p.act != IDLE && p.timer > 0 {
+        p.timer -= 1
+    }
+    if p.act != IDLE && p.timer == 0 {
+        if p.act == WINDUP {
+            p.act = ACTIVE
+            p.timer = if p.move_ == MOVE_JAB { JAB_ACTIVE } else { HEAVY_ACTIVE }
+        } else if p.act == ACTIVE {
+            p.act = RECOVER
+            p.timer = if p.move_ == MOVE_JAB { JAB_RECOVERY } else { HEAVY_RECOVERY }
+        } else if p.act == PARRYING {
+            p.act = RECOVER
+            p.timer = PARRY_RECOVERY
+        } else {
+            p.act = IDLE
+            p.move_ = NO_MOVE
+            p.chain = 0
+        }
+    }
+    // A new move, if it's free to start one and has stamina left (any left: a move may spend it
+    // all, as Elden Ring's do).
+    if press != 0 && free_for(p, press) && p.stamina > 0 {
+        let chained = p.act == RECOVER && p.move_ == MOVE_JAB && press == JAB
+        p.buffered = 0
+        // A move aims: at the Idol's nearest part within reach of aiming, when locked on or when
+        // the stick isn't asking elsewhere.
+        if press != DODGE {
+            match nearest_part(w) {
+                Some((part, d)) => {
+                    if locked || d < AIM {
+                        p.facing = heading_of(part.x - p.x, part.z - p.z)
+                    }
+                },
+                None => if locked {
+                    p.facing = heading_of(w.boss.x - p.x, w.boss.z - p.z)
+                },
+            }
+        }
+        if press == JAB {
+            p.stamina -= JAB_COST
+            p.act = WINDUP
+            p.move_ = MOVE_JAB
+            p.timer = if chained { JAB_WINDUP - 1 } else { JAB_WINDUP }
+            p.chain = if chained { (p.chain + 1) % 3 } else { 0 }
+            p.landed = false
+        } else if press == HEAVY {
+            p.stamina -= HEAVY_COST
+            p.act = WINDUP
+            p.move_ = MOVE_HEAVY
+            p.timer = HEAVY_WINDUP
+            p.chain = 0
+            p.landed = false
+        } else if press == PARRY {
+            p.stamina -= PARRY_COST
+            p.act = PARRYING
+            p.move_ = NO_MOVE
+            p.timer = PARRY_STARTUP + PARRY_WINDOW
+            p.chain = 0
+        } else {
+            p.stamina -= DODGE_COST
+            p.act = DODGING
+            p.move_ = NO_MOVE
+            p.timer = DODGE_FRAMES
+            p.chain = 0
+            // A roll goes where the stick says; let go, it goes back.
+            if push != 0 {
+                p.facing = heading
+            }
+            let way = if push != 0 { heading } else { p.facing + 128 }
+            let (vx, vz) = along(way, ROLL)
+            p.vx = vx
+            p.vz = vz
+        }
+        if p.stamina < 0 {
+            p.stamina = 0
+        }
+        p.rested = 0
+    } else if press != 0 && pressed_now != 0 {
+        p.buffered = pressed_now
+        p.buffer_age = 0
+    }
+    // Moving: walking and running while free, rolling, lunging, knocked back.
+    let ox = p.x
+    let oz = p.z
+    if p.act == IDLE {
+        if push != 0 {
+            let speed = if push == 1 { WALK } else { RUN }
+            p.facing = turned(p.facing, heading, 24)
+            let (dx, dz) = along(heading, speed)
+            p.x += dx
+            p.z += dz
+        } else if locked {
+            // Locked on and standing, it squares up to the Idol.
+            p.facing = turned(p.facing, heading_of(w.boss.x - p.x, w.boss.z - p.z), 8)
+        }
+    } else if p.act == DODGING {
+        // Fast at first, slowing over its last frames.
+        let into = DODGE_FRAMES - p.timer
+        let k = if into < 14 { 4 } else if into < 18 { 2 } else { 1 }
+        p.x += p.vx * k / 4
+        p.z += p.vz * k / 4
+    } else if p.act == WINDUP && p.move_ == MOVE_HEAVY {
+        let (dx, dz) = along(p.facing, LUNGE)
+        p.x += dx
+        p.z += dz
+    } else if p.act == HIT || p.act == DOWN {
+        p.x += p.vx
+        p.z += p.vz
+        p.vx = p.vx * 7 / 8
+        p.vz = p.vz * 7 / 8
+    }
+    // Stamina comes back once it's rested a while, never mid-move.
+    if p.act == IDLE || p.act == HIT {
+        if p.rested < REST {
+            p.rested += 1
+        } else if p.stamina < STAMINA {
+            p.stamina = min(p.stamina + REGAIN, STAMINA)
+        }
+    }
+    // The Idol's body is in the way, unless it's down; the walls keep it in.
+    let solid = w.boss.act != DEAD
+    if solid {
+        let d = distance(p.x, p.z, w.boss.x, w.boss.z)
+        let least = PLAYER_R + BOSS_R
+        if d < least {
+            let h = if d == 0 { p.facing + 128 } else {
+                heading_of(p.x - w.boss.x, p.z - w.boss.z)
+            }
+            let (dx, dz) = along(h, least)
+            p.x = w.boss.x + dx
+            p.z = w.boss.z + dz
+        }
+    }
+    p.x = clamp(p.x, -HALF_WIDTH + PLAYER_R, HALF_WIDTH - PLAYER_R)
+    p.z = clamp(p.z, -HALF_LENGTH + PLAYER_R, HALF_LENGTH - PLAYER_R)
+    p.moved = distance(p.x, p.z, ox, oz)
+    // A blow lands once, on its first active frame that meets a part.
+    if p.act == ACTIVE && !p.landed {
+        let reach = if p.move_ == MOVE_HEAVY { HEAVY_FIST } else { FIST }
+        let (fx, fz) = along(p.facing, reach)
+        // The fist's point and the body's middle: what's between them is hit.
+        var hit: Option<Part> = None
+        for part in parts(w.boss) {
+            let near = distance(p.x + fx, p.z + fz, part.x, part.z) <= part.r + 40 ||
+                distance(p.x + fx / 2, p.z + fz / 2, part.x, part.z) <= part.r
+            let better = match hit {
+                Some(h) => part.which > h.which,
+                None => true,
+            }
+            if near && better {
+                hit = Some(part)
+            }
+        }
+        match hit {
+            Some(part) => {
+                p.landed = true
+                let base = if p.move_ == MOVE_HEAVY { HEAVY_DAMAGE } else { JAB_DAMAGE }
+                let share = if part.which == STRUCK_CORE { CORE_SHARE } else if part.which ==
+                    STRUCK_HANDS {
+                    HANDS_SHARE
+                } else {
+                    SHIN_SHARE
+                }
+                let damage = base * share / 4
+                w.boss.hp -= damage
+                w.struck = part.which
+                w.struck_at = w.frame
+                w.struck_for = damage
+                // Poise wears while it stands; down, it's broken already.
+                if w.boss.act != KNEEL && w.boss.act != REEL {
+                    w.boss.poise -= if p.move_ == MOVE_HEAVY { HEAVY_POISE } else { JAB_POISE }
+                    w.boss.calm = 0
+                }
+                w.stop = if part.which == STRUCK_CORE && p.move_ == MOVE_HEAVY {
+                    STOP_CRIT
+                } else if p.move_ == MOVE_HEAVY {
+                    STOP_HEAVY
+                } else {
+                    STOP_JAB
+                }
+            },
+            None => {},
+        }
+    }
+    w.player = p
+}
+
+/// Whether the Idol's attack, active now, meets the player where they stand.
+fn meets(b: Boss, p: Player) -> bool {
+    let d = distance(b.x, b.z, p.x, p.z)
+    let a = b.attack
+    if a == SWIPE_LEFT || a == SWIPE_RIGHT {
+        let off = abs(turn_between(b.facing, heading_of(p.x - b.x, p.z - b.z)))
+        return d <= SWIPE_REACH && off <= SWIPE_ARC
+    }
+    if a == PALM {
+        // Along its facing and across it.
+        let i = wrap(b.facing)
+        let dx = p.x - b.x
+        let dz = p.z - b.z
+        let ahead = (dx * COS[i] + dz * SIN[i]) / 1024
+        let across = abs(dz * COS[i] - dx * SIN[i]) / 1024
+        return ahead > 0 && ahead <= PALM_REACH && across <= PALM_HALF + PLAYER_R
+    }
+    if a == SLAM {
+        return distance(b.at_x, b.at_z, p.x, p.z) <= SLAM_R
+    }
+    if a == STOMP {
+        return d <= STOMP_R
+    }
+    false
+}
+
+/// The Idol begins `attack`.
+fn begin(b: mut Boss, attack: u32) {
+    b.act = WINDUP
+    b.attack = attack
+    b.timer = ATTACKS[attack].windup
+    b.landed = false
+}
+
+/// What the Idol does next, standing free: an attack for where the player is, or a step closer.
+@deterministic
+fn choose(w: mut World) {
+    var b = w.boss
+    let p = w.player
+    let d = distance(b.x, b.z, p.x, p.z)
+    let to = heading_of(p.x - b.x, p.z - b.z)
+    let off = turn_between(b.facing, to)
+    // Three heads: it knows where the player is all round, and a player who stays behind it is
+    // stamped out.
+    if abs(off) > 80 && d < STOMP_R + 128 {
+        b.behind += 1
+    } else if b.behind > 0 {
+        b.behind -= 1
+    }
+    if b.rest > 0 {
+        b.rest -= 1
+        // Resting, it turns to face, and keeps its distance close.
+        b.facing = turned(b.facing, to, BOSS_TURN)
+        if d > SWIPE_REACH - 128 {
+            let (dx, dz) = along(b.facing, BOSS_WALK)
+            b.x += dx
+            b.z += dz
+            b.moved = BOSS_WALK
+        }
+        w.boss = b
+        return
+    }
+    let r = roll(mut b)
+    if d < 2 * 256 + 128 || b.behind > 40 {
+        // Close or behind: stomp, or turn into a swipe.
+        if r < 60 || b.behind > 40 {
+            begin(mut b, STOMP)
+        } else {
+            begin(mut b, if off > 0 { SWIPE_LEFT } else { SWIPE_RIGHT })
+        }
+        b.behind = 0
+    } else if abs(off) > 40 {
+        // Well aside: turn to face first.
+        b.facing = turned(b.facing, to, BOSS_TURN)
+    } else if d <= SWIPE_REACH - 64 {
+        if r < 38 {
+            begin(mut b, if off > 0 { SWIPE_LEFT } else { SWIPE_RIGHT })
+        } else if r < 64 {
+            begin(mut b, PALM)
+        } else {
+            begin(mut b, SLAM)
+        }
+    } else if d <= PALM_REACH - 64 && r < 45 {
+        begin(mut b, if r < 25 { PALM } else { SLAM })
+    } else {
+        // Far: walk at them.
+        b.facing = turned(b.facing, to, BOSS_TURN)
+        let (dx, dz) = along(b.facing, BOSS_WALK)
+        b.x += dx
+        b.z += dz
+        b.moved = BOSS_WALK
+    }
+    w.boss = b
+}
+
+@deterministic
+fn step_boss(w: mut World) {
+    var b = w.boss
+    b.moved = 0
+    if b.act == DEAD {
+        return
+    }
+    // Poise comes back, slowly, after a while without a blow.
+    if b.calm < 1000 {
+        b.calm += 1
+    }
+    if b.calm > 180 && b.poise < BOSS_POISE && w.frame % 2 == 0 {
+        b.poise += 1
+    }
+    // Broken: down on its knees, whatever it was doing.
+    if b.poise <= 0 && b.act != KNEEL {
+        b.act = KNEEL
+        b.timer = KNEEL_FRAMES
+        b.poise = BOSS_POISE
+        b.combo = 0
+        w.boss = b
+        return
+    }
+    if b.act == IDLE || b.act == TURN {
+        w.boss = b
+        choose(mut w)
+        return
+    }
+    if b.timer > 0 {
+        b.timer -= 1
+    }
+    let attack = ATTACKS[b.attack]
+    if b.act == WINDUP {
+        // It tracks the player over the first half of its windup, then it's committed.
+        let p = w.player
+        let to = heading_of(p.x - b.x, p.z - b.z)
+        if b.timer * 2 > attack.windup {
+            b.facing = turned(b.facing, to, BOSS_TRACK)
+        }
+        if b.attack == SLAM {
+            let (x, z) = boss_point(b, 0, SLAM_AHEAD)
+            b.at_x = x
+            b.at_z = z
+        }
+        if b.timer == 0 {
+            b.act = ACTIVE
+            b.timer = attack.active
+        }
+    } else if b.act == ACTIVE {
+        if !b.landed {
+            var p = w.player
+            let safe = p.act == DEAD || (p.act == DODGING && DODGE_FRAMES - p.timer < DODGE_SAFE)
+            if !safe && meets(b, p) {
+                b.landed = true
+                let in_window = p.act == PARRYING && p.timer <= PARRY_WINDOW
+                if attack.parryable && in_window {
+                    // Parried: it reels, its chest and heads low and open.
+                    b.act = REEL
+                    b.timer = REEL_FRAMES
+                    b.combo = 0
+                    w.parried_at = w.frame
+                    w.stop = STOP_HEAVY
+                    // A parry that lands frees the player at once, its stamina partly back.
+                    p.stamina = min(p.stamina + 80, STAMINA)
+                    p.act = IDLE
+                    p.timer = 0
+                    w.player = p
+                    w.boss = b
+                    return
+                }
+                p.hp -= attack.damage
+                p.act = if attack.heavy { DOWN } else { HIT }
+                p.timer = if attack.heavy { DOWN_FRAMES } else { HIT_FRAMES }
+                p.move_ = NO_MOVE
+                p.chain = 0
+                p.buffered = 0
+                let from_x = if b.attack == SLAM { b.at_x } else { b.x }
+                let from_z = if b.attack == SLAM { b.at_z } else { b.z }
+                let (vx, vz) = along(heading_of(p.x - from_x, p.z - from_z), if attack.heavy {
+                    30
+                } else {
+                    18
+                })
+                p.vx = vx
+                p.vz = vz
+                w.hurt_at = w.frame
+                w.stop = STOP_HURT
+                w.player = p
+            }
+        }
+        if b.timer == 0 {
+            if b.attack == SLAM {
+                b.act = STUCK
+                b.timer = STUCK_FRAMES
+            } else {
+                b.act = RECOVER
+                b.timer = attack.recovery
+            }
+        }
+    } else if b.timer == 0 {
+        // A recovery, a stuck slam, a knee or a reel ends; enraged, a swipe may chain into the
+        // other hand's or into the palm.
+        let chain = w.enraged() &&
+            b.act == RECOVER &&
+            b.combo < 2 &&
+            (b.attack == SWIPE_LEFT || b.attack == SWIPE_RIGHT)
+        if b.act == STUCK {
+            b.act = RECOVER
+            b.timer = attack.recovery
+            w.boss = b
+            return
+        }
+        if chain && roll(mut b) < 55 {
+            b.combo += 1
+            let next = if roll(mut b) < 50 { PALM } else if b.attack == SWIPE_LEFT {
+                SWIPE_RIGHT
+            } else {
+                SWIPE_LEFT
+            }
+            begin(mut b, next)
+            b.timer = ATTACKS[next].windup * 2 / 3
+        } else {
+            b.act = IDLE
+            b.combo = 0
+            b.rest = REST_LEAST + roll(mut b) % 30 + (if w.enraged() { 0 } else { 24 })
+        }
+    }
+    w.boss = b
+}
+
+/// Whether `log` is a log a player could send: in order of its steps, each a change, each an
+/// input of 15 bits, at most `most` of them.
+pub fn well_formed(log: [Change], most: u32) -> bool {
+    if log.len() > most {
+        return false
+    }
+    var last: u32 = 0
+    var prev: u32 = 0
+    for i in 0..log.len() {
+        let c = log[i].clone()
+        if (i > 0 && c.frame <= last) || c.input > INPUT_BITS || c.input == prev {
+            return false
+        }
+        last = c.frame
+        prev = c.input
+    }
+    true
+}
