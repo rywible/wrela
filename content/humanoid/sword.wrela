@@ -1,0 +1,220 @@
+// The hero's longsword: a two-handed blade a little longer than a katana's, single-edged, with a
+// slight curve, a small oval guard and a long wrapped hilt, built as triangles when the program
+// is built and held in the right hand (skinned wholly to it). The blade's faces are flat, so the
+// ink draws its ridge and the light catches one face at a time as it turns.
+//
+// Its frame (`engine::keys::hold_at_rest`): the right hand's grip at rest, the blade along +z out
+// of the thumb's side, the edge toward the fingertips. The left hand holds the hilt `keys::SPAN`
+// below the right.
+
+use std::collections::Vec
+use engine::humanoid
+use engine::humanoid::{BodyVertex, Humanoid}
+use engine::keys
+use body::HERO
+
+/// Its parts, for the paint (`BodyVertex::part`; the body's own are 0 to 5): the blade, the
+/// guard and its collar, the hilt's wrap and the pommel.
+pub const BLADE: u32 = 6
+pub const GUARD: u32 = 7
+pub const WRAP: u32 = 8
+
+/// Its colours, sRGB: pale steel, darkened bronze, a deep indigo wrap.
+pub const STEEL = vec3(0.93, 0.95, 0.98)
+pub const BRONZE = vec3(0.36, 0.26, 0.16)
+pub const CORD = vec3(0.13, 0.12, 0.20)
+
+/// Its measures (m, along the blade from the right hand's grip): the blade from its collar to
+/// its point, the guard, the hilt down to the pommel.
+pub const BLADE_FROM: f32 = 0.075
+pub const BLADE_LONG: f32 = 0.92
+pub const GUARD_AT: f32 = 0.05
+pub const POMMEL: f32 = -0.215
+
+/// Where the point is, in the sword's own frame (x the edge, y the flat, z the blade).
+pub fn point() -> vec3 {
+    vec3(-0.0345, 0.0, BLADE_FROM + BLADE_LONG)
+}
+
+fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
+}
+
+fn srgb8(c: vec3) -> u32 {
+    let q = clamp(c, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5)
+    pack(u32(q.x), u32(q.y), u32(q.z), 255)
+}
+
+/// A mesh being built: triangles, each flat (its own three vertices, its own normal), in the
+/// sword's own frame.
+struct Mesh {
+    pts: Vec<vec3>,
+    parts: Vec<u32>,
+}
+
+impl Mesh {
+    /// A triangle facing away from `inside` (a point within the solid).
+    fn tri(mut self, a: vec3, b: vec3, c: vec3, inside: vec3, part: u32) {
+        let n = cross(b - a, c - a)
+        if length(n) < 1.0e-9 {
+            return
+        }
+        if dot(n, (a + b + c) / 3.0 - inside) >= 0.0 {
+            self.pts.push(a)
+            self.pts.push(b)
+            self.pts.push(c)
+        } else {
+            self.pts.push(a)
+            self.pts.push(c)
+            self.pts.push(b)
+        }
+        self.parts.push(part)
+    }
+
+    /// Two rings of the same count joined side by side, and their ends closed if asked.
+    fn rings(mut self, a: [vec3], b: [vec3], inside: vec3, part: u32) {
+        let n = a.len()
+        for i in 0..n {
+            let j = (i + 1) % n
+            self.tri(a[i], a[j], b[j], inside, part)
+            self.tri(a[i], b[j], b[i], inside, part)
+        }
+    }
+
+    /// A ring closed by a fan to `centre`.
+    fn cap(mut self, a: [vec3], centre: vec3, inside: vec3, part: u32) {
+        let n = a.len()
+        for i in 0..n {
+            self.tri(a[i], a[(i + 1) % n], centre, inside, part)
+        }
+    }
+}
+
+/// An oval ring about the blade's line at `z`, `rx` across the edge and `ry` across the flat.
+fn oval(z: f32, rx: f32, ry: f32, sides: u32) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for i in 0..sides {
+        let a = 6.2831853 * f32(i) / f32(sides)
+        out.push(vec3(cos(a) * rx, sin(a) * ry, z))
+    }
+    out
+}
+
+/// The blade's section `s` of the way along (0 at its collar, 1 at its point): the edge, the
+/// ridge either side, the back's two corners; curved back away from the edge toward the point,
+/// tapering, and at the point all met.
+fn section(s: f32) -> Vec<vec3> {
+    let z = BLADE_FROM + BLADE_LONG * s
+    let bend = -0.022 * s * s
+    let w = mix(0.036, 0.029, s)
+    let t = mix(0.0085, 0.0055, s)
+    // The point: the last stretch sweeps the edge up to meet the back.
+    let tip = smoothstep(0.9, 1.0, s)
+    let edge = w * 0.5 * (1.0 - tip) + (-w * 0.5 + 0.004) * tip
+    let back = -w * 0.5
+    let thick = t * (1.0 - tip * 0.98)
+    var out: Vec<vec3> = Vec::new()
+    out.push(vec3(edge + bend, 0.0, z))
+    out.push(vec3(mix(back, edge, 0.4) + bend, thick * 0.5, z))
+    out.push(vec3(back + bend, thick * 0.32, z))
+    out.push(vec3(back + bend, -thick * 0.32, z))
+    out.push(vec3(mix(back, edge, 0.4) + bend, -thick * 0.5, z))
+    out
+}
+
+/// The sword in its own frame.
+fn built() -> Mesh {
+    var m = Mesh { pts: Vec::new(), parts: Vec::new() }
+    // The blade.
+    let n = 28
+    var last = section(0.0)
+    for k in 1..n + 1 {
+        let s = f32(k) / f32(n)
+        let next = section(s)
+        let mid = vec3(-0.005 - 0.022 * s * s, 0.0, BLADE_FROM + BLADE_LONG * (s - 0.5 / f32(n)))
+        if k < n {
+            m.rings(last, next, mid, BLADE)
+        } else {
+            let p = point()
+            for i in 0..5 {
+                m.tri(last[i], last[(i + 1) % 5], p, mid, BLADE)
+            }
+        }
+        last = take next
+    }
+    // The collar: a short sleeve where the blade meets the guard.
+    let c0 = oval(GUARD_AT + 0.012, rx: 0.021, ry: 0.009, sides: 8)
+    let c1 = oval(BLADE_FROM + 0.004, rx: 0.020, ry: 0.008, sides: 8)
+    m.rings(c0, c1, vec3(0.0, 0.0, 0.065), GUARD)
+    m.cap(c1, vec3(0.0, 0.0, BLADE_FROM + 0.004), vec3(0.0, 0.0, 0.065), GUARD)
+    // The guard: an oval plate.
+    let g0 = oval(GUARD_AT, rx: 0.044, ry: 0.035, sides: 18)
+    let g1 = oval(GUARD_AT + 0.012, rx: 0.044, ry: 0.035, sides: 18)
+    let gc = vec3(0.0, 0.0, GUARD_AT + 0.006)
+    m.rings(g0, g1, gc, GUARD)
+    m.cap(g0, vec3(0.0, 0.0, GUARD_AT), gc, GUARD)
+    m.cap(g1, vec3(0.0, 0.0, GUARD_AT + 0.012), gc, GUARD)
+    // The hilt: a long oval, a hair fuller in its middle.
+    let hn = 8
+    var h_last = oval(POMMEL + 0.012, rx: 0.0165, ry: 0.0135, sides: hn)
+    let steps = 6
+    for k in 1..steps + 1 {
+        let s = f32(k) / f32(steps)
+        let z = mix(POMMEL + 0.012, GUARD_AT, s)
+        let full = 1.0 + 0.06 * sin(3.14159 * s)
+        let ring = oval(z, 0.0165 * full, 0.0135 * full, hn)
+        m.rings(h_last, ring, vec3(0.0, 0.0, z - 0.01), WRAP)
+        h_last = take ring
+    }
+    // The pommel: a cap a little fuller than the hilt.
+    let p0 = oval(POMMEL, rx: 0.019, ry: 0.0155, sides: hn)
+    let p1 = oval(POMMEL + 0.012, rx: 0.019, ry: 0.0155, sides: hn)
+    let pc = vec3(0.0, 0.0, POMMEL + 0.006)
+    m.rings(p0, p1, pc, GUARD)
+    m.cap(p0, vec3(0.0, 0.0, POMMEL - 0.004), pc, GUARD)
+    m
+}
+
+/// The sword's place at rest in the body's space: the right hand's hold.
+pub fn at_rest() -> (vec3, Quat) {
+    keys::hold_at_rest(HERO.rig, -1.0)
+}
+
+/// The hero holding the sword: the body's vertices and the sword's after them, the sword's all
+/// on the right hand.
+@fuel(2 ** 40)
+pub const ARMED: Humanoid = armed()
+
+fn armed() -> Humanoid {
+    var out = HERO.clone()
+    let hand = out.rig.find("rightHand")
+    let (g, f) = at_rest()
+    let m = built()
+    let first = out.verts.len()
+    for k in 0..m.parts.len() {
+        let a = m.pts[k * 3]
+        let b = m.pts[k * 3 + 1]
+        let c = m.pts[k * 3 + 2]
+        let n = f.rotate(normalize(cross(b - a, c - a)))
+        let part = m.parts[k]
+        let colour = if part == BLADE { STEEL } else if part == GUARD { BRONZE } else { CORD }
+        for p in [a, b, c] {
+            out.verts.push(
+                BodyVertex {
+                    pos: g + f.rotate(p),
+                    bones: pack(a: hand, b: 0, c: 0, d: 0),
+                    normal: n,
+                    weights: pack(a: 255, b: 0, c: 0, d: 0),
+                    colour: srgb8(colour),
+                    part,
+                    pad0: 0,
+                    pad1: 0,
+                },
+            )
+        }
+    }
+    for i in first..out.verts.len() {
+        out.indices.push(i)
+    }
+    out
+}

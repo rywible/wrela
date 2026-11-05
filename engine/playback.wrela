@@ -862,9 +862,11 @@ pub fn step(
     var change = false
     var next_doing = m.doing
     var next_phase = m.phase
-    // A one-off begun.
+    // A one-off begun: from no other, or cutting one short within its `CANCEL` window (a
+    // combo's next hit).
     var new_act = false
-    if act != NONE && act < acts.len() && m.acting == NONE {
+    let free = m.acting == NONE || acts[m.acting].within(CANCEL, m.act_time)
+    if act != NONE && act < acts.len() && free {
         m.acting = act
         m.act_time = 0.0
         m.upper = upper

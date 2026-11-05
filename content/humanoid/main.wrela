@@ -13,15 +13,21 @@
 // `--set SHOW=11` plays the body as a game would (`engine::playback`): a scripted stick walks it
 // off (in the actor's own first steps), turns it, runs it, throws a punch over the run (timed
 // to the fight's attack frames), stops it (in his own last steps), rolls it, turns it on the spot
-// (stepping round) and walks it back, each change inertial.
+// (stepping round) and walks it back, each change inertial. `--set SHOW=13` has him hold the
+// longsword (`sword`, `blade`): standing in his stance, walking and running with it, and cutting,
+// drawn as anime is (`engine::anime`).
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
     PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
+use blade::{ACT_FIRST, ACT_HEAVY, ACT_SECOND, ACT_THIRD, SWORD_ACTS, SWORD_GAITS, SWORD_LOOKS}
+use engine::anime
+use engine::anime::{Anime, Drawer}
 use engine::cleanup
 use engine::cleanup::Cleanup
+use sword::ARMED
 use engine::humanoid
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
 use engine::playback
@@ -47,6 +53,10 @@ pub const RAW: u32 = 0
 /// cuts from move to move and lets the feet go where the moves put them.
 pub const CUT: u32 = 0
 
+/// The sword's moves drawn as anime is (`engine::anime`: on twos, the strike pushed past and
+/// held, smeared): `--set ANIME=0` draws them smooth.
+pub const ANIME: u32 = 1
+
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
 
@@ -58,6 +68,10 @@ pub const FOCUS: f32 = 0.95
 /// Which side of its front the camera sees the walk from (+ its left): `--set SIDE=8` is near
 /// its profile.
 pub const SIDE: f32 = 0.75
+
+/// Which side of its front the camera sees the sword's loop from (+ its left): its right
+/// three-quarters, the side the blade's on.
+pub const SWORD_SIDE: f32 = -0.5
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -78,6 +92,7 @@ pub struct State {
     mover: Mover,
     last: f32,
     mask: [f32; 64],
+    drawer: Drawer,
 }
 
 pub fn init() -> State {
@@ -85,8 +100,8 @@ pub fn init() -> State {
         f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
     )
     State {
-        verts: buffer_of(HERO.verts),
-        indices: buffer_of(HERO.indices),
+        verts: if SHOW == 13 { buffer_of(ARMED.verts) } else { buffer_of(HERO.verts) },
+        indices: if SHOW == 13 { buffer_of(ARMED.indices) } else { buffer_of(HERO.indices) },
         palette: buffer_of([identity(); 64]),
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
@@ -94,9 +109,14 @@ pub fn init() -> State {
         depth: depth_texture(width: 640, height: 360),
         width: 640,
         height: 360,
-        mover: Mover::standing(vec3(0.0), 0.0, GAITS),
+        mover: if SHOW == 13 {
+            Mover::standing(vec3(0.0), 0.0, SWORD_GAITS)
+        } else {
+            Mover::standing(vec3(0.0), 0.0, GAITS)
+        },
         last: 0.0,
         mask: playback::upper_body(HERO.rig),
+        drawer: Drawer::new(),
     }
 }
 
@@ -133,26 +153,64 @@ pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
     (stick, humanoid::NONE, false)
 }
 
+/// `SHOW=13`'s script: the sword's loop. He stands in his stance, walks off and back, runs, and
+/// cuts.
+pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
+    let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
+    let (walk, run) = (GAITS.walk.speed, GAITS.run.speed)
+    let stick = if time < 5.5 {
+        vec3(0.0)
+    } else if time < 8.5 {
+        dir(-90.0) * walk
+    } else if time < 11.0 {
+        dir(90.0) * run
+    } else {
+        vec3(0.0)
+    }
+    let at = |t: f32| -> bool { last < t && time >= t }
+    let beats = [
+        (1.0, ACT_FIRST),
+        (1.42, ACT_SECOND),
+        (1.82, ACT_THIRD),
+        (3.6, ACT_HEAVY),
+        (12.2, ACT_FIRST),
+        (12.62, ACT_SECOND),
+    ]
+    for (t, act) in beats {
+        if at(t) {
+            return (stick, act, false)
+        }
+    }
+    (stick, humanoid::NONE, false)
+}
+
 /// `SHOW=11`'s body stepped on to `time`: its pose and where it's drawn.
 fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
-    let (stick, act, upper) = script(s.last, time)
-    let pose = playback::step(
-        mut s.mover,
-        GAITS,
-        ACTS,
-        HERO.rig,
-        s.mask,
-        stick,
-        act,
-        upper,
-        if CUT == 1 {
-            Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false }
-        } else {
-            Handling {}
-        },
-        dt,
-    )
+    let how = if CUT == 1 {
+        Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false }
+    } else {
+        Handling {}
+    }
+    // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
+    let pose = if SHOW == 13 {
+        let (stick, act, upper) = sword_script(s.last, time)
+        playback::step(
+            mut s.mover,
+            SWORD_GAITS,
+            SWORD_ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
+    } else {
+        let (stick, act, upper) = script(s.last, time)
+        playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+    }
     s.last = time
     (pose, playback::placed(s.mover))
 }
@@ -215,18 +273,38 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let game = SHOW == 11
+    let game = SHOW == 11 || SHOW == 13
+    let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
-    let bones = palette(HERO.rig, pose, place)
+    var bones = palette(HERO.rig, pose, place)
+    var kinetic = KINETIC
+    var force = anime::Force::none()
+    if SHOW == 13 && ANIME == 1 {
+        let d = anime::drawn(
+            mut s.drawer,
+            s.mover,
+            SWORD_ACTS,
+            SWORD_LOOKS,
+            HERO.rig,
+            s.mask,
+            pose,
+            place,
+            Anime {},
+            dt,
+        )
+        bones = anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears)
+        kinetic = max(kinetic, d.impact)
+        force = d.force
+    }
     write(mut s.palette, 0, bones)
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
     let hips = if game { s.mover.place } else { steady_hips(time) }
     let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
-    let side = if walking { SIDE } else { -0.55 }
+    let side = if SHOW == 13 { SWORD_SIDE } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
-    let shot = shot_at(
+    var shot = shot_at(
         time,
         FOCUS,
         vec3(hips.x, 0.0, hips.z),
@@ -234,9 +312,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         height,
         FAR,
         side,
-        KINETIC,
+        kinetic,
         left,
     )
+    shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
+    shot.force_to = vec4(force.to, force.by)
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,
@@ -258,7 +338,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         body.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
         paint_body.bind(shot: shot),
         indices: s.indices,
-        index_count: HERO.indices.len(),
+        index_count: if SHOW == 13 { ARMED.indices.len() } else { HERO.indices.len() },
         cull: Cull::Back,
         depth: engine::view::NEAREST,
     )
