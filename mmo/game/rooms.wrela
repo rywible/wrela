@@ -20,7 +20,9 @@ pub const ISLAND_ROOM: Text = "island-1"
 pub const FIGHT_ROOM: Text = "fight-1"
 /// What a party's fight room's name starts with, then its code (`party_code`).
 pub const PARTY_PREFIX: Text = "party-"
-/// How many letters a party's code has: of `CODE_LETTERS`, 40 bits, so a code isn't guessed.
+/// How many letters a party's code has: of `CODE_LETTERS`, up to 40 bits. The client hashes it
+/// from its page's start and the moment of the press, so it's hard to guess, not secret: a party
+/// room holds a PvE fight, nothing anyone owns.
 pub const CODE_LEN: u32 = 8
 /// The letters a code is made of: lower case and digits, without the ones that look alike
 /// (0, 1, l, o), 32 of them.

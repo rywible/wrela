@@ -203,6 +203,7 @@ pub struct Client {
     /// The invite link made (P), shown until the party's fight begins, and its copy.
     invite: String,
     copying: Option<std::io::Pending<u8>>,
+    copied: bool,
 }
 
 /// A client on the page at `origin` (`https://wrela.dev`), which its invite links start with.
@@ -252,6 +253,7 @@ pub fn init(origin: str) -> Client {
         switching: false,
         invite: String::new(),
         copying: None,
+        copied: false,
     }
 }
 
@@ -326,6 +328,7 @@ fn invite(s: mut Client, time: f32) {
         return
     }
     s.invite = String::from(f"{s.origin}/#{party_room(code.as_str())}")
+    s.copied = false
     s.copying = Some(std::host::copy(s.invite.as_str()))
 }
 
@@ -607,12 +610,13 @@ pub fn frame<A: Account>(
     keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
     let fight_name = fight_room(s)
     keep_open(mut s.fight_conn, FIGHT, fight_name.as_str(), time)
-    let copied = match mut s.copying {
-        Some(p) => p.poll().is_some(),
-        None => false,
+    let copy = match mut s.copying {
+        Some(p) => p.poll(),
+        None => None,
     }
-    if copied {
+    if let Some(done) = copy {
         s.copying = None
+        s.copied = done.is_ok()
     }
     var pressed_join = false
     var pressed_invite = false
@@ -1123,6 +1127,8 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         if let Some(slot) = slot_of(room.party, me) {
             s.last_began = room.began_at
             s.play = Some(new_play(room.began_at, slot, room.party.clone()))
+            // The party's fight began: its invite was used.
+            s.invite = String::new()
         }
     }
     s.note = if !s.island_conn.open || !s.fight_conn.open {
@@ -1142,12 +1148,14 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
             f"F waits for a fight ({view.lobby.len()} waiting). P invites a friend. E places a mark.",
         )
     }
-    let inviting = !s.invite.is_empty() && !room.on() && !view.waiting(me)
+    let connected = s.island_conn.open && s.fight_conn.open
+    let inviting = connected && !s.invite.is_empty() && !room.on() && !view.waiting(me)
     if inviting {
         // Short, and alone, so the link fits: it's what the player came for.
-        s.note = String::from(
-            f"Invite link copied, send it to a friend: {s.invite}  F waits for a fight.",
-        )
+        let how = if s.copied { "Invite link copied, send it to a friend" } else {
+            "Send a friend this invite link"
+        }
+        s.note = String::from(f"{how}: {s.invite}  F waits for a fight.")
         return
     }
     match s.character {
