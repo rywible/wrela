@@ -45,7 +45,7 @@ const BANDS: u32 = 2
 const RISE: f32 = 1.6
 const WORDS_AFTER: f32 = 0.35
 /// Seconds from the page's first frame the words wait for the scene at most (over the poster).
-const WORDS_WAIT: f32 = 0.9
+const WORDS_WAIT: f32 = 0.4
 /// Seconds the words take to go as the player takes the paddle, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
@@ -68,12 +68,12 @@ const SETTLE: f32 = 0.2
 /// Where the horizon lies on the screen in the page's shot (a fraction of its height, from the
 /// top): the name stands wholly under it where the screen is tall enough, so the sea's line
 /// never cuts through its letters.
-const HORIZON: f32 = 0.715
+const HORIZON: f32 = 0.712
 
 /// The page's colours: the name's warm ivory, Play's fill and its hover, and the ink on it.
 const IVORY = vec4(0.957, 0.922, 0.867, 1.0)
 const PLAY_FILL = vec4(0.965, 0.937, 0.890, 1.0)
-const PLAY_HOVER = vec4(1.0, 1.0, 1.0, 1.0)
+const PLAY_HOVER = vec4(1.0, 0.969, 0.910, 1.0)
 const PLAY_INK = vec4(0.090, 0.071, 0.047, 1.0)
 /// The quieter action's glass: a dark fill and a faint edge, so it reads on any sky.
 const GLASS = vec4(0.039, 0.047, 0.071, 0.45)
@@ -499,13 +499,15 @@ fn spaced(
 }
 
 /// One of the page's actions over `r`: Play solid in warm ivory, the one to press; Play online in
-/// dark glass beside it. Its hover lifts it a pixel, and the keyboard's focus rings it in ivory.
+/// dark glass beside it. Its hover lifts it two pixels, and the keyboard's focus rings it in ivory.
 fn action(f: mut Front, i: u32, r: Rect, label: str, k: f32) {
     let hover = f.hovers[i]
     let pressed = f.pressed == i && hover > 0.5
     let radius = kit::RADIUS * k
     let was = f.list.alpha
-    let lifted = Rect::new(r.x, r.y - (if pressed { 0.0 } else { round(hover * k) }), r.w, r.h)
+    let lifted = Rect::new(r.x, r.y - (if pressed { 0.0 } else {
+        round(hover * 2.0 * k)
+    }), r.w, r.h)
     let ink = if i == PLAY {
         // Its shadow comes with the hover, as if it rose off the page.
         f.list.alpha = was * hover
@@ -549,7 +551,7 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     let lift = if f.reduced { 0.0 } else { (1.0 - eased) * 10.0 * k }
     f.list.alpha = eased
     let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
-    let bottom = h - round(clamp(h * 0.06, 24.0 * k, 56.0 * k))
+    let bottom = h - round(clamp(h * 0.05, 24.0 * k, 48.0 * k))
     // The actions, a row along the bottom.
     let bh = round(48.0 * k)
     let top = round(bottom - bh + lift)
@@ -578,7 +580,7 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     }
     // Above them, the line, and the name standing on it.
     let line_size = 17.0 * k
-    let line_top = round(top - 22.0 * k - line_size * 1.2)
+    let line_top = round(top - 18.0 * k - line_size * 1.2)
     let (long, short) = if on_phone {
         ("Play offline on a computer, with a keyboard or a gamepad.", "Play offline on a computer.")
     } else {
@@ -598,9 +600,9 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     // across the screen, up to a cap height of 100 pixels; sized where it rests, so it keeps its
     // size as it rises in. A screen too short for it under the horizon (a phone on its side)
     // sets it by its width alone, over the sea's line.
-    let baseline = line_top - round(20.0 * k)
+    let baseline = line_top - round(16.0 * k)
     let resting = baseline - round(lift)
-    let horizon = h * HORIZON + 24.0 * k
+    let horizon = h * HORIZON + 20.0 * k
     let width_at_one = f.fonts.font(Face::Mono).measure("WRELA", 1.0) + 4.0 * 0.02
     let across = (w - margin * 2.0) / width_at_one
     let under = (resting - horizon) / facet_cap()
