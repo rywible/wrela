@@ -559,16 +559,19 @@ pub fn frame<A: Account>(
                     Some(c) => c.part,
                     None => 0,
                 }
+                // A click says what it means outright (this part, this change), so it doesn't
+                // add up with another input of the same frame: the last says.
                 if hit < MAKER_SAVE {
                     // A part's ‹ or ›: that part, one choice back or on.
-                    maker_dy += i32(hit / 2) - i32(part)
-                    maker_dx += if hit % 2 == 0 { -1 } else { 1 }
+                    maker_dy = i32(hit / 2) - i32(part)
+                    maker_dx = if hit % 2 == 0 { -1 } else { 1 }
                 } else if hit == MAKER_SAVE {
                     maker_enter = true
                 } else if hit == MAKER_LEAVE {
                     maker_escape = true
                 } else {
-                    maker_dy += i32(hit - MAKER_ROW) - i32(part)
+                    maker_dy = i32(hit - MAKER_ROW) - i32(part)
+                    maker_dx = 0
                 }
             },
             Event::KeyDown { key, .. } if making => {

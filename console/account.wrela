@@ -257,6 +257,8 @@ pub struct Accounts {
     dt: f32 = 0.0,
     shown_t: f32 = 0.0,
     sheet_h: f32 = 0.0,
+    /// Where the sheet was last drawn (logical pixels): a control clipped outside it isn't hit.
+    sheet_at: Rect = Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0),
     /// The recovery codes were downloaded: saving them is the next step.
     codes_kept: bool = false,
 }
@@ -1098,7 +1100,8 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
         a.shown_t = 0.0
         a.sheet_h = 0.0
     }
-    for i in 0..a.hover.len() {
+    // Only controls drawn last frame ease: one gone (its page closed, its row removed) is still.
+    for i in 0..min(a.hover.len(), a.shown.len()) {
         if a.hover[i] > 0.0 && a.hover[i] < 1.0 {
             a.dirty = true
         }
@@ -1595,7 +1598,12 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
         Event::PointerUp { at, button: Button::Primary, .. } => {
             let p = at / zoom
             for (x, r) in a.shown {
-                if r.contains(p) && !knighting {
+                // While open, only what shows in the sheet: a tall page's clipped foot isn't hit.
+                let seen = !a.open ||
+                    x == Act::Chip ||
+                    a.page == Page::Knighting ||
+                    a.sheet_at.contains(p)
+                if r.contains(p) && seen && !knighting {
                     act(mut a, x)
                     return true
                 }
@@ -1649,6 +1657,8 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             }
         },
         Event::PadButton { button, pressed: true, .. } => {
+            // A pad moves the focus as the keyboard does: its ring shows.
+            a.keyboard = true
             if button == PadButton::South && !knighting && a.focus < a.shown.len() {
                 act(mut a, a.shown[a.focus].0)
             } else if button == PadButton::East && !knighting {
@@ -2170,6 +2180,7 @@ pub fn draw(
     kit::shadow(mut d, z(sheet, zoom), kit::CARD_RADIUS * zoom, zoom)
     d.rect(z(sheet, zoom), kit::BG, kit::CARD_RADIUS * zoom)
     d.ring(z(sheet, zoom), BORDER, kit::CARD_RADIUS * zoom, max(round(zoom), 1.0))
+    a.sheet_at = sheet
     d.push_clip(z(sheet, zoom))
     let x = sheet.x + PAD
     let iw = sw - 2.0 * PAD
