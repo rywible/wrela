@@ -221,6 +221,14 @@ pub fn release(s: mut State) {
     let_go(mut s.rig)
 }
 
+/// How far the camera has swung from the opening's bearing (rad, -π to π), following the
+/// steering: a program that wants the opening's shot back swings it by the opposite (`play`'s
+/// `orbit`).
+pub fn swung(s: State) -> f32 {
+    let a = s.rig.shown_look
+    a - 6.2831853 * floor((a + 3.1415927) / 6.2831853)
+}
+
 /// How fast the skiff moves through the water (m/s): whether the player has rowed it yet.
 pub fn way(s: State) -> f32 {
     s.rig.speed

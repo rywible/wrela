@@ -12,7 +12,7 @@
 // words alone, eases away as the player takes the paddle.
 
 use client::Account
-use opening::played::{State as Scene, input, play, ready, release, scene, way}
+use opening::played::{State as Scene, input, play, ready, release, scene, swung, way}
 use std::gpu::{
     ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
 }
@@ -49,6 +49,8 @@ const WORDS_WAIT: f32 = 0.9
 /// Seconds the words take to go as the player takes the paddle, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
+/// Seconds the camera takes (as a time constant) to swing back to the page's bearing, and away.
+const SWING: f32 = 0.6
 /// Seconds the rowing's keys stay shown once the skiff has way on it.
 const KEYS_FOR: f32 = 4.0
 
@@ -133,6 +135,9 @@ pub struct Front {
     /// How long the skiff has had way on it since Play, and how far the rowing's keys show.
     rowed: f32,
     keys: f32,
+    /// How far the page swings the camera round the skiff (rad): back to the opening's bearing
+    /// while the page shows, so the cathedral stands where it did wherever the player rowed.
+    orbit: f32,
     reduced: bool,
 }
 
@@ -172,6 +177,7 @@ pub fn init(fonts: take Fonts) -> Front {
         pointer: None,
         rowed: 0.0,
         keys: 0.0,
+        orbit: 0.0,
         reduced: false,
     }
 }
@@ -394,7 +400,11 @@ pub fn frame<A: Account>(
         f.drawn_at = f.asked
     }
     let (wide, high) = f.drawn_at
-    if play(mut f.scene, f.time, wide, high, orbit: 0.0, bands: BANDS) && ready(f.scene) {
+    let bearing = if f.stage == Stage::Page { -swung(f.scene) } else { 0.0 }
+    f.orbit = if reduced { bearing } else {
+        f.orbit + (bearing - f.orbit) * (1.0 - exp(-dt / SWING))
+    }
+    if play(mut f.scene, f.time, wide, high, orbit: f.orbit, bands: BANDS) && ready(f.scene) {
         f.cooked = true
     }
     // The page's words, the actions, and the account's chip and pages over them.
