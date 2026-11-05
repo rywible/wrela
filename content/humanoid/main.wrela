@@ -235,7 +235,7 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
             {
                 let m = SWORD_ACTS[act].clone()
                 let hit = m.mark(playback::ACTIVE).unwrap()
-                s.mover.act_time > hit.from - blade::snap_of(act) - 0.01 && s.mover.act_time < hit.from + 0.005
+                s.mover.act_time > hit.from - blade::snap_of(act) + 0.02 && s.mover.act_time < hit.from + 0.005
             }
         s.smearing = striking && far > 0.3
     }
