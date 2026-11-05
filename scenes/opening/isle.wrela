@@ -17,6 +17,9 @@ pub const SCALE: f32 = 6.3
 const DROP: f32 = 210.0
 const TOP: f32 = 118.0
 
+/// How high its plateau's top is over the isle's centre (the world's m).
+const PLATEAU: f32 = 2.0 * SCALE
+
 /// Where the isle's bounds are (the world's): a sphere round it.
 pub fn bounds() -> vec4 {
     vec4(ISLE + vec3(0.0, -55.0 * SCALE, 0.0), 300.0 * SCALE)
@@ -61,10 +64,6 @@ const CUTS = [
     vec4(-0.25, -0.15, 0.96, 106.0),
 ]
 
-/// A rock hewn from an inverted mountain: `q` from its top's centre (the model's m), `s` its
-/// scale, `turn` its turn about the vertical; `lid` how far over `q` its top is taken to be (0:
-/// where it is; far over, its sides alone, so a point under its top reads how far in from its
-/// brink it is).
 /// A mass hanging under the rock (the model's m): round `c` (x, z), from `top` down to its tip at
 /// `tip`, `r` wide at its top, gouged by its own crags.
 fn pendant(p: vec3, c: vec2, top: f32, tip: f32, r: f32, seed: f32) -> f32 {
@@ -76,6 +75,10 @@ fn pendant(p: vec3, c: vec2, top: f32, tip: f32, r: f32, seed: f32) -> f32 {
     max((length(q) - wide - crag) * 0.6, max(p.y - top, tip - p.y))
 }
 
+/// A rock hewn from an inverted mountain: `q` from its top's centre (the model's m), `s` its
+/// scale, `turn` its turn about the vertical; `lid` how far over `q` its top is taken to be (0:
+/// where it is; far over, its sides alone, so a point under its top reads how far in from its
+/// brink it is).
 fn hewn(q: vec3, s: f32, turn: f32, lid: f32) -> f32 {
     let c = cos(turn)
     let n = sin(turn)
@@ -526,19 +529,21 @@ fn town(w: vec3, edge: f32, ground: f32) -> vec2 {
     let ta = ang * round_ / 70.0
     let turret_at = (ta - round(ta)) * 70.0
     let turret_r = length(vec2(turret_at, edge + 6.0))
-    var wall = max(abs(edge + 6.0) - 2.0, w.y - 14.0)
-    wall = min(wall, max(turret_r - 5.0, w.y - 22.0))
-    var tile = sd_spire(vec3(turret_at, w.y - 22.0, edge + 6.0), 6.5, 15.0)
+    let wy0 = w.y - PLATEAU
+    var wall = max(abs(edge + 6.0) - 2.0, wy0 - 14.0)
+    wall = min(wall, max(turret_r - 5.0, wy0 - 22.0))
+    var tile = sd_spire(vec3(turret_at, wy0 - 22.0, edge + 6.0), 6.5, 15.0)
     // The houses: one to a 13 m lot (some lots empty, lanes between), from the rampart in to
     // 70 m, cut where the band ends. Each lot's house stays in its lot, so the four lots round the
     // nearest corner hold the nearest house.
     let cell = 13.0
     let corner = floor(vec2(w.x, w.z) / cell + vec2(0.5))
-    let band = max(-100.0 - edge, edge + 10.0)
+    let band = max(-96.0 - edge, edge + 10.0)
     // (Each house on its terrace.)
     let wy = w.y - ground
     var house = cell * 0.5
     var house_roof = cell * 0.5
+    var spire = cell * 0.5
     for i in 0..4 {
         let id = corner - vec2(f32(i % 2), f32(i / 2))
         let r = vec2(w.x, w.z) - (id + vec2(0.5)) * cell
@@ -547,23 +552,40 @@ fn town(w: vec3, edge: f32, ground: f32) -> vec2 {
         let h3 = hash2(id + vec2(3.7, 29.9))
         let h4 = hash2(id + vec2(41.2, 13.6))
         if h1 > 0.16 {
-            let half = vec2(2.8 + 2.0 * h2, 3.2 + 1.8 * h3)
+            // One lot in forty a tower: a belfry or a guild's, 28 to 56 m to its eaves under a
+            // steep slate cap, standing over the roofs, as a town's towers do.
+            let tower = h4 > 0.975
+            // (Each house near filling its lot, so their roofs run on together with lanes
+            // between, not stand apart as posts.)
+            let half = if tower { vec2(3.6 + 0.8 * h2) } else {
+                vec2(4.0 + 1.6 * h2, 4.4 + 1.4 * h3)
+            }
             let long_x = h4 < 0.5
-            let eaves = 8.0 + 9.0 * h1 * h1 + (if h4 > 0.94 { 18.0 } else { 0.0 })
+            let eaves = if tower { 28.0 + 28.0 * h3 } else {
+                7.0 + 8.0 * h1 * h1 + (if h4 > 0.9 { 7.0 } else { 0.0 })
+            }
             let body = sd_box(
                 vec3(r.x, wy - (eaves - 20.0) * 0.5, r.y),
                 vec3(half.x, (eaves + 20.0) * 0.5, half.y),
             )
-            // (Its roof pitched along its length, steep, as a northern town's are.)
-            let across = if long_x { abs(r.y) } else { abs(r.x) }
-            let span = if long_x { half.y } else { half.x }
-            let ridge = eaves + (span + 0.6) * 1.1
+            // (Its roof pitched along its length, steep, as a northern town's are; a tower's a
+            // pyramid, steeper.)
+            let across = if tower { max(abs(r.x), abs(r.y)) } else if long_x { abs(r.y) } else {
+                abs(r.x)
+            }
+            let span = if long_x || tower { half.y } else { half.x }
+            let pitch = if tower { 2.0 } else { 0.95 }
+            let ridge = eaves + (span + 0.6) * pitch
             let roof = max(
                 max(abs(r.x) - half.x - 0.6, abs(r.y) - half.y - 0.6),
-                max(eaves - wy, (across * 1.1 + wy - ridge) / 1.49),
+                max(eaves - wy, (across * pitch + wy - ridge) / sqrt(pitch * pitch + 1.0)),
             )
             house = min(house, max(body, band))
-            house_roof = min(house_roof, max(roof, band))
+            if tower {
+                spire = min(spire, max(roof, band))
+            } else {
+                house_roof = min(house_roof, max(roof, band))
+            }
         }
     }
     var best = vec2(wall, STONE)
@@ -574,19 +596,65 @@ fn town(w: vec3, edge: f32, ground: f32) -> vec2 {
     if tile < best.x {
         best = vec2(tile, TILE)
     }
+    if spire < best.x {
+        best = vec2(spire, ROOF)
+    }
     best
 }
 
-/// The lesser rocks that hang round it, broken from it: where each is (the world's m from the
-/// isle's centre) and how big, against it.
+/// The boulders that hang round it, broken from it: where each is (the world's m from the
+/// isle's centre) and how big (m). Each well clear of it, the sky between: a boulder that
+/// touches the rock's outline only reads as a lump on it. A few, of a boulder's own sizes, not
+/// the rock in small.
 const SHARDS = [
-    vec4(-1250.0, -640.0, -950.0, 0.13),
-    vec4(560.0, -840.0, -300.0, 0.07),
+    vec4(-930.0, -540.0, -380.0, 58.0),
+    vec4(820.0, -780.0, -300.0, 72.0),
+    vec4(705.0, -985.0, -340.0, 26.0),
 ]
 
-/// How each lies: its tilt (rad, about the view's cross axis) and how much flatter it is than
-/// the rock it broke from, a slab rather than a cone.
-const SHARD_LIE = [vec2(0.42, 1.8), vec2(-0.6, 1.2)]
+/// A boulder of radius `r` at `p` (from its centre, the world's m), `seed` its own: a lump of the
+/// rock's bedded stone, longer than it is tall, broken off along a few flat planes and knobbed.
+fn boulder(p: vec3, r: f32, seed: f32) -> f32 {
+    let far = length(p) - 1.35 * r
+    if far > 0.0 {
+        return far + 1.0
+    }
+    let (c, n) = (cos(seed * 2.3), sin(seed * 2.3))
+    let b = vec3(c * p.x - n * p.z, p.y, n * p.x + c * p.z)
+    let e = vec3(1.0, 0.62, 0.8) * r
+    var d = (length(b / e) - 1.0) * r * 0.62
+    d += (fbm3(b / r * 1.6 + vec3(seed * 7.1), 3) - 0.5) * r * 0.45
+    // Where it broke: flat faces, one up as its old top, the rest round it.
+    d = max(d, b.y - 0.36 * r)
+    d = max(d, dot(b, normalize(vec3(0.9, -0.3, 0.35 + seed * 0.2))) - 0.62 * r)
+    d = max(d, dot(b, normalize(vec3(-0.5, -0.6, -0.8 + seed * 0.3))) - 0.58 * r)
+    d * 0.8
+}
+
+/// The falls: water spilling off the plateau's lip (from the isle's centre, in the rock's model
+/// m: x, z, the lip's height, and how wide it leaves it; none where it's 0).
+pub const FALLS = [
+    vec4(11.1, -112.2, 2.0, 5.8),
+    vec4(-64.4, -100.0, 2.0, 4.0),
+    vec4(77.8, -103.3, 2.0, 0.0),
+]
+
+/// The notch each falls has worn in the lip it spills from (the world's m from the isle's
+/// centre): a bite into the brink, 22 m deep, flaring to its top. Negative inside.
+fn notches(w: vec3) -> f32 {
+    var cut = 1.0e5
+    for i in 0..3 {
+        let f = FALLS[i]
+        if f.w >= 1.0 {
+            let lip = f.z * SCALE
+            let r = length(vec2(w.x, w.z) - vec2(f.x, f.y) * SCALE)
+            let floor_ = lip - 22.0
+            let open = f.w * SCALE * 0.35 + max(w.y - floor_, 0.0) * 0.9
+            cut = min(cut, max(r - open, floor_ - w.y) * 0.74)
+        }
+    }
+    cut
+}
 
 /// The rock and its cathedral at `p` (the world's): the distance, and which material.
 pub fn isle(p: vec3) -> vec2 {
@@ -594,39 +662,35 @@ pub fn isle(p: vec3) -> vec2 {
     var d = hewn(q, 1.0, 0.0, 0.0)
     // The plateau's top, cut level.
     d = max(d, q.y - 2.0)
-    // The lesser rocks, each hewn as it is, smaller and turned.
-    for i in 0..2 {
+    // The boulders round it.
+    let w = p - ISLE
+    var rock = d * SCALE
+    for i in 0..3 {
         let sh = SHARDS[i]
-        let lie = SHARD_LIE[i]
-        let at0 = (p - ISLE - vec3(sh.x, sh.y, sh.z)) / SCALE / vec3(1.25, 1.0, 1.0)
-        let (ct, st) = (cos(lie.x), sin(lie.x))
-        let at = vec3(at0.x * ct - at0.y * st, (at0.x * st + at0.y * ct) * lie.y, at0.z)
-        let near = (length(at - vec3(0.0, -70.0 * sh.w, 0.0)) - 180.0 * sh.w) / lie.y
-        // (Its bound held off its face, so the march never takes the bound for the rock.)
-        d = min(d, if near > 0.0 { near + 1.0 } else {
-            hewn(at, sh.w, f32(i) * 2.1 + 0.7, 0.0) / lie.y
-        })
+        rock = min(rock, boulder(w - vec3(sh.x, sh.y, sh.z), sh.w, f32(i) + 1.0))
     }
-    var best = vec2(d * SCALE, ROCK)
+    var best = vec2(rock, ROCK)
     // The town on its lip: only in the slab over the plateau's rim, read against the rock's
     // side just under it (how far in from the brink each point is).
-    let w = p - ISLE
-    let slab = max(abs(w.y - 35.0) - 55.0, length(vec2(w.x / 1.25, w.z)) - 800.0)
+    let slab = max(abs(w.y - 100.0) - 120.0, length(vec2(w.x / 1.25, w.z)) - 800.0)
     if slab < 0.0 {
         let edge = hewn(vec3(q.x, -3.0, q.z), 1.0, 0.0, 1000.0) * SCALE * 0.75
-        if edge > -130.0 {
-            // The plateau's rim built up in terraces behind the rampart, each held by its wall,
-            // rising toward the keep: so the town on them climbs into sight from the sea below.
-            let inward = -edge
-            var fill = 1.0e5
-            for k in 0..4 {
-                let from = 12.0 + 22.0 * f32(k)
-                fill = min(fill, max((from - inward) * 0.9, w.y - 9.0 * f32(k + 1)))
-            }
-            if fill < best.x {
-                best = vec2(fill, STONE)
-            }
-            let ground = 9.0 * clamp(floor((inward - 12.0) / 22.0) + 1.0, 0.0, 4.0)
+        // The plateau built up in terraces behind the rampart, each held by its wall, climbing
+        // to the keep and under it, as a hill town climbs to its abbey: so the town on them
+        // rises into sight from the sea below and the keep grows out of it, no line between.
+        let inward = -edge
+        var fill = 1.0e5
+        for k in 0..7 {
+            let from = 12.0 + 11.0 * f32(k)
+            fill = min(fill, max((from - inward) * 0.9, w.y - PLATEAU - 15.0 * f32(k + 1)))
+        }
+        // (Its terraces the rock's own, cut in ledges: their walls bedded stone, their tops
+        // grassed, the cathedral's close round the keep a green.)
+        if fill < best.x {
+            best = vec2(fill, ROCK)
+        }
+        if edge > -110.0 {
+            let ground = PLATEAU + 15.0 * clamp(floor((inward - 12.0) / 11.0) + 1.0, 0.0, 7.0)
             let tn = town(w, edge, ground)
             if tn.x < best.x {
                 best = tn
@@ -637,6 +701,8 @@ pub fn isle(p: vec3) -> vec2 {
         // for a surface.)
         best = vec2(slab + 2.0, ROCK)
     }
+    // Where the falls leave it, their notches in its lip.
+    best = vec2(max(best.x, -notches(w)), best.y)
     let c = church(at_church(p - ISLE))
     if c.x * GRAND < best.x {
         best = vec2(c.x * GRAND, c.y)
@@ -719,8 +785,15 @@ pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, v
         // Lime-washed walls and stone, each house its own, its windows dark specks.
         let lot = floor(vec2(p.x - ISLE.x, p.z - ISLE.z) / 13.0)
         let h = hash2(lot + vec2(5.1, 2.2))
-        var a = mix(vec3(0.66, 0.6, 0.5), vec3(0.78, 0.74, 0.66), h)
-        a = mix(a, vec3(0.5, 0.44, 0.36), step(0.75, hash2(lot + vec2(9.9, 1.3))))
+        var a = mix(vec3(0.62, 0.57, 0.48), vec3(0.72, 0.68, 0.6), h)
+        // (Half of them bare stone, warm grey and ochre: a town of its rock, not of the
+        // cathedral's pale ashlar, so it doesn't melt into the keep from far off.)
+        let stone_ = mix(
+            vec3(0.38, 0.33, 0.28),
+            vec3(0.52, 0.44, 0.33),
+            hash2(lot + vec2(2.4, 7.7)),
+        )
+        a = mix(a, stone_, step(0.5, hash2(lot + vec2(9.9, 1.3))))
         let win = smoothstep(0.3, 0.1, abs(fract(p.y / 3.2) - 0.55)) *
             smoothstep(0.3, 0.1, abs(fract((p.x + p.z) / 2.6) - 0.5))
         a *= 1.0 - 0.55 * win * shown(2.6, foot) - 0.2 * (1.0 - shown(2.6, foot))

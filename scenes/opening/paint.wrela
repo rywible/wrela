@@ -11,7 +11,7 @@ use look::{
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
-use isle::{SCALE, bounds, isle, isle_material, isle_normal}
+use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, world}
@@ -1067,15 +1067,6 @@ fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
     vec4(acc.rgb, min(acc.a, 1.0)) * a
 }
 
-/// The falls: water spilling off the plateau's lip, `FALLS` (from the isle's centre, in the rock's
-/// model m: x, z, the lip's height, and how wide it leaves it), thinning as it drops into a mist
-/// it never lands from.
-const FALLS = [
-    vec4(11.1, -112.2, 2.0, 5.8),
-    vec4(-64.4, -100.0, 2.0, 4.0),
-    vec4(77.8, -103.3, 2.0, 0.0),
-]
-
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).
 /// Each falls as water does: a sheet of strands, bright where they catch the light, dark between
 /// where the rock shows through, fraying at its edges, clumping as it drops, then gone to mist.
@@ -1145,7 +1136,10 @@ fn falls(
             let warm = h.light.sun_colour * vec3(1.0, 0.86, 0.66)
             let cool = vec3(0.16, 0.18, 0.22)
             // (Backlit, its spray glows warm: the low sun through it.)
-            let water = cool * 0.8 + warm * (0.08 + 0.12 * sheet)
+            // (At its lip a smooth glassy sheet, dark as the cliff it leaves: it only whitens and
+            // glows as it breaks up falling, so its top is no bright mark of its own.)
+            let broken = smoothstep(20.0, 300.0, drop)
+            let water = cool * (0.3 + 0.5 * broken) + warm * (0.06 + 0.12 * sheet) * broken
             let haze_ = cool * 1.1 + warm * 0.12
             let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
             let col = hazed(aerial, smp, h.light, lit, p, s.eye)
@@ -1330,7 +1324,11 @@ fn sample(
     } else {
         // The rock's normal taken broad, so it models in planes, as hewn stone is drawn; the
         // cathedral's finer.
-        let broad = if id == ROCK { 0.0016 } else { 0.0007 }
+        // (Far off, the cathedral's too: an arcade or a tracery's ring finer than a pixel or two
+        // only beads in the low sun, a grid of gold specks, so its faces are lit as planes there.)
+        let broad = if id == ROCK { 0.0016 } else {
+            mix(0.0007, 0.0024, smoothstep(2000.0, 6000.0, t))
+        }
         n = isle_normal(p, max(0.3, t * broad))
         // (A pixel's footprint on the face, longer as the face turns from the eye.)
         let (albedo, rough, metal, glow0, l) = isle_material(
@@ -1349,7 +1347,9 @@ fn sample(
                     (0.7 + 2.4 * max(dot(n, light.sun), 0.0)) *
                     far_
         } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
-        let sun = isle_shadow(p + n * 2.0, light.sun, 2.0, hash2(px * 1.37)) *
+        // (Its shadows likewise: none from a recess too small for a pixel to hold.)
+        let lift = max(2.0, t * 0.0012)
+        let sun = isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37)) *
             mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
         let ao = isle_ao(p, n)
         // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
@@ -1386,10 +1386,11 @@ fn sample(
         if id == ROCK {
             c *= mix(1.0, 0.72, smoothstep(0.15, 0.9, below))
         }
-        // The keep's foot darker where it meets the plateau, in the rock's shade and the grime
-        // its rain runs down to: the building grows from its rock, not set on it.
+        // The keep's foot darker where it meets the town's top terraces, and the town's walls
+        // under it darker still, in their own shade and the grime their rain runs down to: the
+        // building grows from its rock, not set on it.
         if id == STONE {
-            c *= mix(0.62, 1.0, smoothstep(0.0, 70.0, p.y - (ISLE.y + 2.0 * SCALE)))
+            c *= mix(0.6, 1.0, smoothstep(30.0, 170.0, p.y - (ISLE.y + 2.0 * SCALE)))
         }
         // The sun behind it catches every edge turned its way: a hot rim down the spires' and the
         // rock's sun sides, against the light.
@@ -1402,7 +1403,7 @@ fn sample(
         // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
         let hot = (if id == ROCK { 0.08 } else if id == GILT { 0.8 } else {
             1.0
-        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.3, smoothstep(2500.0, 7000.0, t)) })
+        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.18, smoothstep(2500.0, 7000.0, t)) })
         c += light.sun_colour * vec3(1.0, 0.78, 0.45) * hot * edge_on * mix(1.0, sun, 0.6)
         // The rock's great planes modelled as a painter would against the light: those turned
         // toward the sun's side warmed by it as it wraps round, those turned away left in a
