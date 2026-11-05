@@ -29,20 +29,29 @@ pub struct Heavens {
     cooked: u32,
 }
 
-/// The weather: a bank of great cumulus on the far horizon, the tallest towering behind the
-/// isle; a few fair-weather clouds; the sky clear toward the low sun; a slow drift.
+/// The weather: overcast. A low deck of heavy cloud over the whole sky (great cumulus set close
+/// on a grid, so their discs run together, and every fair-weather cloud the noise allows between
+/// them), torn a little where the deck thins; no clear stretch toward the sun; a quick drift
+/// before the gale.
 fn weather() -> Weather {
+    var clouds: Vec<Cumulus> = Vec::new()
+    for i in 0..8 {
+        for j in 0..8 {
+            let jitter = vec2(f32((i * 7 + j * 3) % 5) - 2.0, f32((i * 3 + j * 5) % 5) - 2.0)
+            clouds.push(
+                Cumulus {
+                    at: vec2(f32(i) * 6000.0 - 21000.0, f32(j) * 6000.0 - 21000.0) + jitter * 700.0,
+                    wide: 12500.0,
+                    tall: 1700.0 + 260.0 * f32((i * 5 + j * 11) % 7),
+                },
+            )
+        }
+    }
     Weather {
-        clouds: Vec::from(
-            [
-                Cumulus { at: vec2(14000.0, 17500.0), wide: 7000.0, tall: 3200.0 },
-                Cumulus { at: vec2(-9800.0, 21500.0), wide: 8000.0, tall: 1900.0 },
-                Cumulus { at: vec2(26000.0, 22000.0), wide: 10000.0, tall: 600.0 },
-            ],
-        ),
-        fair: 0.0,
-        gap: Gap { a: vec2(0.0, 0.0), b: vec2(9000.0, -9000.0), radius: 3000.0 },
-        wind: vec2(3.0, -1.5),
+        clouds,
+        fair: 2.5,
+        gap: Gap { a: vec2(0.0, 0.0), b: vec2(0.0, 0.0), radius: 0.0 },
+        wind: vec2(9.0, -14.0),
     }
 }
 
@@ -51,12 +60,14 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
     // The engine's hazy air, cleared to a sea day's: less haze, so a thing 3 km off keeps its
     // form and its shadows.
     let air = Air {
-        mie_scattering: 0.08,
+        mie_scattering: 0.22,
         mie_absorption: 0.01,
         ..hazy(normalize(sun), SUN_TOP, eye),
     }
     // A touch brighter than the engine's default exposure: a sea under an open sky.
-    let light = Light { exposure: 0.72, ..sunlight(air) }
+    // Under the overcast, the sun's own light comes through the deck thinned to a fifth.
+    let open = sunlight(air)
+    let light = Light { exposure: 0.66, sun_colour: open.sun_colour * 0.22, ..open }
     let sky = new_sky::<Approved>()
     let clouds = sky.clouds::<Approved>(
         light,
