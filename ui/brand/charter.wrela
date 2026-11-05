@@ -1,0 +1,13 @@
+// Wrela Charter: the MMO's display face, for its name and its titles. IM FELL English SC (the
+// Fell types, as an old sea chart's lettering is engraved), made our own: a crossed W and an R
+// whose leg runs on in a long swash (fonts/charter.py). Baked into distance fields for the ui
+// layer's text (`Fonts::with_display`). Its licence, the SIL Open Font License, is in
+// fonts/OFL-WrelaCharter.txt.
+use ui::ttf::{Baked, bake}
+
+/// The capitals' height, in ems.
+pub const CAP: f32 = 0.692
+
+/// (Its outlines are rough, many points a glyph: more fuel than a smooth face's bake takes.)
+@fuel(2 ** 40)
+pub const CHARTER: Baked = bake(embed("fonts/WrelaCharter.ttf"), em: 40.0, spread: 4.0)

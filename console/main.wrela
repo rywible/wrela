@@ -13,6 +13,7 @@ use tesseract::{
 use brand::facet
 use brand::facet::MarkRun
 use brand::manrope::MANROPE
+use brand::charter::CHARTER
 use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use platform::session::answer_of
@@ -365,9 +366,10 @@ fn page_icons() -> Vec<Pending<u8>> {
     out
 }
 
-/// The console's faces: Manrope for words, and Wrela Facet (`Face::Mono`) for display.
+/// The console's faces: Manrope for words, Wrela Facet (`Face::Mono`) for display, and Wrela
+/// Charter (`Face::Display`) for the MMO's name and titles.
 fn faces() -> Fonts {
-    var fonts = Fonts::from_baked(MANROPE, facet::FONT)
+    var fonts = Fonts::from_baked(MANROPE, facet::FONT).with_display(CHARTER)
     // Manrope set a little closer and a little heavier, so short labels hold together.
     fonts.sans.tracking = -0.012
     fonts.sans.weight = 0.012

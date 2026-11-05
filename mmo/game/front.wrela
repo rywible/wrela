@@ -25,6 +25,7 @@ use std::io::{Pending, load, store}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
 use ui::text::{Face, Fonts}
+use brand::charter::CAP
 
 /// What the page is doing: showing the title over the scene, the player rowing, or paused.
 pub enum Stage: Copy + Eq { Page, Rowing, Paused }
@@ -182,8 +183,8 @@ pub struct Front {
     reduced: bool,
 }
 
-/// The page, its scene not yet drawn, in `fonts`: the console's, whose second face
-/// (`Face::Mono`) is its display face, Wrela Facet (ui/brand/facet.wrela), for the name.
+/// The page, its scene not yet drawn, in `fonts`: the console's, whose third face
+/// (`Face::Display`) is its display face, Wrela Charter (ui/brand/charter.wrela), for the name.
 pub fn init(fonts: take Fonts) -> Front {
     let renderer = Renderer::new(fonts)
     Front {
@@ -660,7 +661,7 @@ fn action(f: mut Front, id: u32, r: Rect, label: str, main: bool, k: f32) -> boo
     over && !f.keyboard
 }
 
-/// The title at the bottom left, rising in as it comes: the game's name in Wrela Facet, wholly
+/// The title at the bottom left, rising in as it comes: the game's name in Wrela Charter, wholly
 /// under the horizon, and Play under it (Continue once there's a save; on a phone, a line
 /// saying what it plays with instead). Whether the pointer is over Play.
 fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
@@ -700,31 +701,32 @@ fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
             c > 0.5
     }
     f.list.alpha = eased
-    // The name: Facet's capitals stand 0.70 em on their baseline, with nothing under it. As large
-    // as fits between Play and the horizon (with room to breathe under the sea's line) and across
-    // the screen, up to a cap height of 120 pixels; sized where it rests, so it keeps its size as
-    // it rises in. A screen too short for it under the horizon (a phone on its side) sets it by
-    // its width alone, over the sea's line.
-    let baseline = under_name - round(32.0 * k)
-    let resting = baseline - round(lift)
+    // The name, in Wrela Charter: its capitals stand `CAP` on their baseline, and the R's swash
+    // runs `SWASH` under it. As large as fits between Play and the horizon (with room to breathe
+    // under the sea's line) and across the screen, up to a cap height of 120 pixels; sized where
+    // it rests, so it keeps its size as it rises in. A screen too short for it under the horizon
+    // (a phone on its side) sets it by its width alone, over the sea's line.
+    let floor = under_name - round(24.0 * k)
+    let resting = floor - round(lift)
     let horizon = h * HORIZON + 20.0 * k
-    let width_at_one = f.fonts.font(Face::Mono).measure("WRELA", 1.0) + 4.0 * 0.02
+    let width_at_one = f.fonts.font(Face::Display).measure("WRELA", 1.0) + 4.0 * TRACKING
     let across = (w - margin * 2.0) / width_at_one
-    let under = (resting - horizon) / facet_cap()
+    let under = (resting - horizon) / (CAP + SWASH)
     let room = if under >= 40.0 * k { min(under, across) } else { across }
-    let size = round(clamp(room, 24.0 * k, 120.0 * k / facet_cap()))
-    let name_top = baseline - f.fonts.font(Face::Mono).ascender * size
-    // Facet sets its letters a little in from the pen: the W's foot lines up with Play.
-    let at = vec2(margin - round(size * 0.095), name_top)
-    let _ = spaced(mut f, Face::Mono, "WRELA", size, at, IVORY, 0.02)
+    let size = round(clamp(room, 24.0 * k, 120.0 * k / CAP))
+    let baseline = floor - round(size * SWASH)
+    let name_top = baseline - f.fonts.font(Face::Display).ascender * size
+    // (The W's left serif lines up with Play.)
+    let at = vec2(margin - round(size * 0.017), name_top)
+    let _ = spaced(mut f, Face::Display, "WRELA", size, at, IVORY, TRACKING)
     f.list.alpha = 1.0
     hand
 }
 
-/// Facet's capitals' height, in ems (ui/brand/facet.wrela's `CAP`).
-fn facet_cap() -> f32 {
-    0.70
-}
+/// How far the R's swash runs under the baseline, in ems (ui/brand/fonts/charter.py), and the
+/// name's letter spacing, in ems: set wide, as a chart's names are.
+const SWASH: f32 = 0.15
+const TRACKING: f32 = 0.06
 
 /// `text` in `face` at `size` with `tracking` ems between its letters, its top left at `at`:
 /// its width.
@@ -786,7 +788,7 @@ fn draw_menu(f: mut Front, w: f32, h: f32, k: f32) -> bool {
         ("Steer", "A", "D"),
         ("Pause", "Esc", ""),
     ]
-    let heading = round(22.0 * k)
+    let heading = round(28.0 * k)
     let ph = pad +
         heading +
         round(20.0 * k) +
@@ -809,12 +811,11 @@ fn draw_menu(f: mut Front, w: f32, h: f32, k: f32) -> bool {
     var y = py + pad
     let _ = f.list.text(
         f.fonts,
-        Face::Sans,
+        Face::Display,
         "Paused",
         heading,
         vec2(px + pad, y),
         IVORY,
-        weight: kit::SEMIBOLD,
     )
     y += heading + round(20.0 * k)
     var hand = false
