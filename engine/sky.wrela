@@ -36,6 +36,9 @@ use view::Camera
 pub const BASE: f32 = 1500.0
 pub const TOP: f32 = 5500.0
 
+/// How far an overcast's deck's base stands over the layer's (m; `Weather::overcast`).
+pub const DECK_BASE: f32 = 1000.0
+
 /// The height the clouds' sunlight is taken at, through the air: 1.5 km above the base, about
 /// halfway up a great cumulus (most clouds end far below `TOP`).
 const LIT_AT: f32 = BASE + 1500.0
@@ -112,6 +115,10 @@ pub struct Weather: Clone {
     pub fair: f32,
     pub gap: Gap,
     pub wind: vec2,
+    /// An overcast's share: a deck over the whole sky (its base `DECK_BASE` over the layer's), this much of it covered at the least,
+    /// its clouds 1.8 to 3 km tall (0: none, the sky only what the cumulus and fair-weather
+    /// clouds cover).
+    pub overcast: f32 = 0.0,
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -136,6 +143,10 @@ pub struct Clouds: Copy + GpuData {
     /// The march's texels a side of a dome texel: 1, or 2 for the half dome
     /// (`switches::Switches::HALVED`).
     pub scale: u32 = 1,
+    /// How much of a storm's deck the sky is (`Sky::gloom`), 0 to 1: the sun's light taken by
+    /// the cloud over each point all the way to its column's top, so a thick deck's underside
+    /// goes dark; its sky light dimmed below the tops, and the air in front of it lit less.
+    pub gloom: f32 = 0.0,
 }
 
 /// How many rounds a tile out of sight waits between its marches: it's marched one round in
@@ -300,6 +311,7 @@ pub fn cook_weather(
     count: u32,
     fair: f32,
     gap: Gap,
+    overcast: f32,
     from: u32,
     to: u32,
     out: mut Texels<Rgba16Float>,
@@ -326,6 +338,15 @@ pub fn cook_weather(
         cover = small
         tall = max(tall, 900.0 + 900.0 * n)
     }
+    // An overcast's deck over all of it, thicker and thinner in broad swells, its base lifted
+    // `DECK_BASE` over the layer's.
+    var lifted = 0.0
+    if overcast > 0.0 {
+        let swell = fbm2(xz * (6.0 / SPAN) + vec2(13.0, 71.0), 3)
+        cover = max(cover, overcast * (0.5 + 0.4 * swell))
+        tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1200.0 * swell))
+        lifted = overcast * DECK_BASE
+    }
     // Broken a little, so no cloud is a disc; and clear in the gap.
     let ab = gap.b - gap.a
     let along = saturate(dot(xz - gap.a, ab) / max(dot(ab, ab), 1.0))
@@ -333,7 +354,7 @@ pub fn cook_weather(
     let broken = cover * clear * (0.8 + 0.4 * fbm2(xz * (64.0 / SPAN) + vec2(5.0, 3.0), 3))
     // Keep one broad condensation level. Small coherent variations break the ruler edge;
     // they do not turn a fair-weather cloud's base into an upside-down mountain range.
-    let bottom = min(tall * 0.035, 65.0) * fbm2(xz * (40.0 / SPAN) + vec2(83.0, 19.0), 3)
+    let bottom = lifted + min(tall * 0.035, 65.0) * fbm2(xz * (40.0 / SPAN) + vec2(83.0, 19.0), 3)
     out.store(id, vec4(saturate(broken), saturate(tall / (TOP - BASE)), bottom / (TOP - BASE), 1.0))
 }
 
@@ -557,7 +578,12 @@ fn march(
                 // Let the full column develop its lighting gradient. Saturating at two thirds of
                 // its height flattened every upper billow into the same pale scoop.
                 let ambient = mix(below, above, vec3(smoothstep(0.08, 0.92, hf)))
-                let source = sun_light * to_sun + ambient
+                // Under a storm's deck: the column over the point darkens it, down to near black
+                // at the base of a deck kilometres thick.
+                let over = max(local_top - h, 0.0) * w.r
+                let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
+                let dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
+                let source = sun_light * to_sun * shut + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
                 lit += source * absorbed
@@ -573,9 +599,36 @@ fn march(
     }
     // Through the air in front of them, from their mean depth.
     let d = depth_sum / max(weight, 1.0e-6)
-    let ap = aerial.sample_level(s, aerial_uvw(c.sun, dir, d * 0.001))
+    let ap = stormy_air(aerial, s, c.sun, dir, d * 0.001, c.gloom)
     vec4(lit * ap.a + ap.rgb * cover, cover)
 }
+
+/// The air between the eye and what's `km` off along `dir` (`air::aerial_uvw`'s: its light in
+/// rgb, what's let through in alpha); under a storm's deck (`gloom`), the sun's light in it shut
+/// out as the deck shuts it from all below, and the air lit instead by the deck's grey: the
+/// same all round, as bright as the air's light square to the sun, the sun's glare in it gone.
+/// What the clouds are seen through, and what's seen under them.
+pub fn stormy_air(
+    aerial: Texture3d<Rgba16Float>,
+    s: Sampler,
+    sun: vec3,
+    dir: vec3,
+    km: f32,
+    gloom: f32,
+) -> vec4 {
+    let ap = aerial.sample_level(s, aerial_uvw(sun, dir, km))
+    if gloom <= 0.0 {
+        return ap
+    }
+    let side = normalize(vec3(-sun.z, 0.05, sun.x))
+    let far = aerial.sample_level(s, aerial_uvw(sun, side, 40.0))
+    let lit = dot(far.rgb / max(1.0 - far.a, 0.05), vec3(0.2126, 0.7152, 0.0722))
+    let grey = vec3(0.8, 0.85, 0.9) * lit * STORM_AIR * (1.0 - ap.a)
+    vec4(mix(ap.rgb, grey, gloom), ap.a)
+}
+
+/// How bright a storm's air is, against the open air's light square to the sun.
+const STORM_AIR: f32 = 0.25
 
 /// Where the frame's `k`th texel of the march is: its tile, `k` / its tile's texels of the
 /// frame's (the tiles numbered `phase` modulo `PHASES`), and in it, rows of `TILE` / `scale`.
@@ -805,6 +858,8 @@ pub struct Sky {
     pub half: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
+    /// The storm's share, 0 by default (`Clouds::gloom`).
+    pub gloom: f32,
 }
 
 /// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
@@ -821,6 +876,7 @@ pub fn new_sky<Q: Switches>() -> Sky {
         },
         marched: buffer(if Q::HALVED { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
+        gloom: 0.0,
     }
 }
 
@@ -868,6 +924,7 @@ impl Sky {
                 count: w.clouds.len(),
                 fair: w.fair,
                 gap: w.gap,
+                overcast: w.overcast,
                 from: band * rows,
                 to: (band + 1) * rows,
                 out: mut self.weather,
@@ -993,6 +1050,7 @@ impl Sky {
             sight: cos(min(view + TURN + TILE_RADIUS, PI)),
             round: self.frames / PHASES,
             scale: if Q::HALVED { 2 } else { 1 },
+            gloom: self.gloom,
         }
     }
 

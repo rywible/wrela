@@ -9,7 +9,7 @@ use row::Rig
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
 pub const SUN = vec3(0.3725, 0.42, 0.9221)
 /// How overcast the sky is, 0 (the engine's open sky and its clouds) to 1 (a storm's deck over
-/// all of it, the sun behind it; `paint::deck`).
+/// all of it, the sun behind it: `heavens`' weather, `engine::sky::Weather::overcast`).
 pub const OVERCAST: f32 = 1.0
 
 /// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
