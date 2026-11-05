@@ -245,7 +245,7 @@ impl Move {
 
     /// The first mark of `kind`, if it has one.
     pub fn mark(self, kind: u32) -> Option<Mark> {
-        for m in self.marks.clone() {
+        for m in self.marks {
             if m.kind == kind {
                 return Some(m)
             }
@@ -255,7 +255,7 @@ impl Move {
 
     /// Whether `time` (s) is within a mark of `kind`.
     pub fn within(self, kind: u32, time: f32) -> bool {
-        for m in self.marks.clone() {
+        for m in self.marks {
             if m.kind == kind && time >= m.from && time < m.till {
                 return true
             }
@@ -263,21 +263,21 @@ impl Move {
         false
     }
 
-    /// The marks of a moment (a footfall) passed going from `from` to `till` (s), a loop's
-    /// counted each time round: how many of `kind`.
+    /// The marks of a moment (a footfall) passed going from `from` to `till` (s), after `from`
+    /// and up to `till`, a loop's counted each time round: how many of `kind`.
     pub fn passed(self, kind: u32, from: f32, till: f32) -> u32 {
         if till <= from {
             return 0
         }
         let len = self.length()
         var count = 0
-        for m in self.marks.clone() {
+        for m in self.marks {
             if m.kind != kind {
                 continue
             }
             if self.clip.looped && len > 0.0 {
-                let k0 = ceil((from - m.from) / len)
-                let k1 = ceil((till - m.from) / len)
+                let k0 = floor((from - m.from) / len)
+                let k1 = floor((till - m.from) / len)
                 count += u32(max(k1 - k0, 0.0))
             } else if m.from > from && m.from <= till {
                 count += 1
@@ -413,8 +413,9 @@ pub fn strike_of(m: Move, rig: Rig, hand: str) -> f32 {
     (f32(at) - 0.5) / m.clip.fps
 }
 
-/// `m` retimed to the fight's frames (at `hz` a second): its start to its strike over the
-/// windup, its strike held through the active frames, and the rest over the recovery; marked
+/// `m` retimed to the fight's frames (at `hz` a second): its start to just before its strike
+/// (`strike_of`, on `m` itself) over the windup, its strike at its own pace through the active
+/// frames, and the rest over the recovery; marked
 /// with each window (and `CANCEL` over the last third of the recovery). The fight's rules own
 /// the timing and the clip bends to it, so what a player sees hit is when it hits.
 pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: f32) -> Move {
@@ -424,9 +425,11 @@ pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: 
     let fps = src.fps
     let n = max(u32(total * fps + 0.5), 2) + 1
     let len = src.length()
-    // Within the active frames the strike carries on through a sliver of the clip, so it lands
-    // rather than freezes: an impact frame's hold, not a stop.
-    let carry = min(0.25 * a, 0.5 * (len - strike))
+    // The active frames play the clip about its strike at its own pace (the fist at its
+    // fastest mid-window, where the fight says it hits); the windup and the recovery are
+    // squeezed or stretched to fit either side.
+    let half = min(0.5 * a, min(strike, len - strike))
+    let (from, till) = (strike - half, strike + half)
     var c = src.clone()
     c.frames = n
     c.looped = false
@@ -437,11 +440,11 @@ pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: 
     for f in 0..n {
         let t = f32(f) / fps
         let s = if t < w {
-            strike * (t / w)
+            from * (t / w)
         } else if t < w + a {
-            strike + carry * ((t - w) / a)
+            from + (till - from) * ((t - w) / a)
         } else {
-            strike + carry + (len - strike - carry) * ((t - w - a) / max(r, 1.0e-4))
+            till + (len - till) * ((t - w - a) / max(r, 1.0e-4))
         }
         let p = src.pose(min(s, len))
         for b in 0..src.bones {
@@ -617,6 +620,8 @@ pub struct Mover: Copy {
     pub dt_before: f32,
     pub feet: [Planted; 2],
     pub carried: f32,
+    pub drift: vec3,
+    pub drift_speed: vec3,
 }
 
 impl Mover {
@@ -642,6 +647,8 @@ impl Mover {
             dt_before: 1.0 / 60.0,
             feet: [Planted::loose(), Planted::loose()],
             carried: 0.0,
+            drift: vec3(0.0),
+            drift_speed: vec3(0.0),
         }
     }
 }
@@ -817,17 +824,26 @@ pub fn step(
     if change {
         let raw_before = pose_of(m.doing, m.phase, m.dt_before)
         m.inertia = begun(m.shown, m.shown_before, raw, raw_before, m.dt_before, bones)
-        // Where the hips were along the floor is where the body is: the gap is carried by
-        // gameplay's place, not glided over (a roll that ends off its root, an idle that stands a
-        // little aside of the walk's line), so the feet don't skate while it closes.
+        // The hips' gap along the floor (a roll that ends off its root, an idle that stands a
+        // little aside of the walk's line) closes as the whole body's drift from gameplay's place,
+        // not as the hips sliding over the feet; the planted feet hold while it does.
         let base = rig.base
+        let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
         let gap = base.q.rotate(m.inertia.hips)
+        let gap_speed = base.q.rotate(m.inertia.hips_speed)
         let along = vec3(gap.x, 0.0, gap.z)
-        m.place += Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading).rotate(along)
+        let along_speed = vec3(gap_speed.x, 0.0, gap_speed.z)
+        m.drift += turn.rotate(along)
+        m.drift_speed += turn.rotate(along_speed)
         m.inertia.hips -= base.q.inverse().rotate(along)
-    } else {
-        decay(mut m.inertia, how.change_half, dt, bones)
+        m.inertia.hips_speed -= base.q.inverse().rotate(along_speed)
     }
+    // A change begun is stepped on at once, as every frame of it is (Holden): else the body
+    // would show its last frame again, a held frame at each change.
+    decay(mut m.inertia, how.change_half, dt, bones)
+    let (d, dv) = decayed(m.drift, m.drift_speed, how.change_half, dt)
+    m.drift = d
+    m.drift_speed = dv
     let out = applied(m.inertia, raw, bones)
     m.shown_before = m.shown
     m.shown = out
@@ -849,17 +865,19 @@ pub struct Planted: Copy {
     pub hold: f32,
     pub down: bool,
     pub last: vec3,
+    pub fresh: bool,
 }
 
 impl Planted {
     pub fn loose() -> Planted {
-        Planted { at: vec3(0.0), hold: 0.0, down: false, last: vec3(0.0) }
+        Planted { at: vec3(0.0), hold: 0.0, down: false, last: vec3(0.0), fresh: true }
     }
 }
 
 /// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest and going slower
-/// than `PLANT_SLOW` (m/s) along the floor; how quickly (s) a hold takes and lets go; and the
-/// furthest (m) the animation may pull from where the foot's held before it lets go.
+/// than `PLANT_SLOW` (m/s) along the floor; how quickly (s) a hold takes and lets go (as the foot
+/// lifts); and the furthest (m) the animation may pull from where the foot's held, past which
+/// it's dragged.
 const PLANT_LOW: f32 = 0.04
 const PLANT_SLOW: f32 = 0.6
 const HOLD_IN: f32 = 0.05
@@ -874,7 +892,7 @@ const HOLD_MOST: f32 = 0.25
 /// through each, a foot on the ground stays put, and lets go as it lifts.
 pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pose {
     var out = pose
-    let world = Rigid { q: Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading), t: m.place }
+    let world = Rigid { q: Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading), t: m.place + m.drift }
     let hips = world.then(rig.base).then(Rigid { q: pose.turns[0], t: pose.hips })
     // Whether a foot's down is judged in the body's own frame, against the ground going under it:
     // a body turning on the spot or carried on by gameplay doesn't lift its feet.
@@ -886,7 +904,12 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
     ]
     for i in 0..2 {
         let (u, l, f) = sides[i]
-        if u == NONE || l == NONE || f == NONE || rig.bones[u].parent != 0 {
+        if u == NONE ||
+            l == NONE ||
+            f == NONE ||
+            rig.bones[u].parent != 0 ||
+            rig.bones[l].parent != u ||
+            rig.bones[f].parent != l {
             continue
         }
         let wu = hips.then(Rigid { q: pose.turns[u], t: rig.bones[u].rest.t })
@@ -903,6 +926,10 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
             .then(rig.bones[l].rest)
         let rest_y = rest_knee.then(rig.bones[f].rest).t.y
         var p = m.feet[i]
+        if p.fresh {
+            p.last = said
+            p.fresh = false
+        }
         let v = (said - p.last) / max(dt, 1.0e-4)
         let speed = length(vec2(v.x, v.z - ground))
         let down = said.y - rest_y < PLANT_LOW && speed < PLANT_SLOW
@@ -911,8 +938,15 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
             let k = p.hold * p.hold * (3.0 - 2.0 * p.hold)
             p.at = vec3(mix(a.x, p.at.x, k), a.y, mix(a.z, p.at.z, k))
         }
+        // A foot that's down is never let go while it's down: if the move pulls it further than
+        // `HOLD_MOST` from where it stands (a turn on the spot, a change to a wider stance), it's
+        // dragged along at that distance, as slowly as the move pulls.
         let far = length(vec2(a.x - p.at.x, a.z - p.at.z))
-        p.down = down && far < HOLD_MOST
+        if far > HOLD_MOST {
+            let k = HOLD_MOST / far
+            p.at = vec3(a.x + (p.at.x - a.x) * k, p.at.y, a.z + (p.at.z - a.z) * k)
+        }
+        p.down = down
         p.hold = if p.down { min(p.hold + dt / HOLD_IN, 1.0) } else {
             max(p.hold - dt / HOLD_OUT, 0.0)
         }
@@ -932,14 +966,16 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
     out
 }
 
-/// Where a body `m` is drawn: at its place, turned to its heading.
+/// Where a body `m` is drawn: at its place (and what's left of a change's drift from it), turned
+/// to its heading. `m.place` is gameplay's alone: a change never moves it.
 pub fn placed(m: Mover) -> mat4 {
+    let at = m.place + m.drift
     let (c, s) = (cos(m.heading), sin(m.heading))
     mat4(
         vec4(c, 0.0, -s, 0.0),
         vec4(0.0, 1.0, 0.0, 0.0),
         vec4(s, 0.0, c, 0.0),
-        vec4(m.place, 1.0),
+        vec4(at, 1.0),
     )
 }
 

@@ -237,12 +237,19 @@ pub const ROLL_RAW: Clip = humanoid::retarget(
 
 // ---- the moves a game plays (`engine::playback`) ------------------------------------------
 
-/// The idle, the walk and the run in place, their footfalls marked: the body's gaits.
+/// The idle, and ACCAD Male 2's walk and run (Ryan's pick of the walks; his run is a real
+/// 4 m/s run), in place, their footfalls marked: the body's gaits.
 @fuel(2 ** 40)
 pub const GAITS: Gaits = Gaits {
     idle: playback::with_steps(playback::moved(IDLE.clone(), HERO.rig.clone()), HERO.rig.clone()),
-    walk: playback::with_steps(playback::moved(WALK.clone(), HERO.rig.clone()), HERO.rig.clone()),
-    run: playback::with_steps(playback::moved(RUN.clone(), HERO.rig.clone()), HERO.rig.clone()),
+    walk: playback::with_steps(
+        playback::moved(ACCAD_M2_WALK.clone(), HERO.rig.clone()),
+        HERO.rig.clone(),
+    ),
+    run: playback::with_steps(
+        playback::moved(ACCAD_M2_RUN.clone(), HERO.rig.clone()),
+        HERO.rig.clone(),
+    ),
 }
 
 /// A player's attack's frames in the fight, at its 60 a second: windup (the tell), active (when
@@ -253,18 +260,18 @@ pub const ATTACK_WINDUP: u32 = 10
 pub const ATTACK_ACTIVE: u32 = 4
 pub const ATTACK_RECOVERY: u32 = 14
 
-/// The punch fitted to the attack's frames: its fist lands when the fight says it hits.
+/// The punch held to its feet (`cleanup::KEYED`), in place.
+@fuel(2 ** 40)
+pub const PUNCH_KEYED: Move = playback::moved(
+    cleanup::cleaned(PUNCH_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
+    HERO.rig.clone(),
+)
+
+/// The punch fitted to the attack's frames: its fist at its fastest when the fight says it hits.
 @fuel(2 ** 40)
 pub const PUNCH: Move = playback::timed(
-    playback::moved(
-        cleanup::cleaned(PUNCH_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
-        HERO.rig.clone(),
-    ),
-    playback::strike_of(
-        playback::moved(PUNCH_RAW.clone(), HERO.rig.clone()),
-        HERO.rig.clone(),
-        "rightHand",
-    ),
+    PUNCH_KEYED.clone(),
+    playback::strike_of(PUNCH_KEYED.clone(), HERO.rig.clone(), "rightHand"),
     ATTACK_WINDUP,
     ATTACK_ACTIVE,
     ATTACK_RECOVERY,
