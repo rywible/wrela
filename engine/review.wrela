@@ -104,7 +104,10 @@ const HEAD_SWAYS: f32 = 0.02
 
 /// How far a loop's steps may differ in time (a share of the loop) and length (a share of the
 /// mean), and how high it bounces off each foot (a share of the mean, past `BOUNCE_LEAST` m)
-/// and at most (m: people running bob 6 to 12 cm);
+/// and at most (m: people's centres of mass rise and fall about 9.5 cm a step running at
+/// 4.4 m/s (Tartaruga et al. 2012), 3 to 7% of their height at 2.8 to 3.3 m/s (Folland et al.
+/// 2017), about 12 cm at most for a body as tall as this one; the limit leaves a game's run a
+/// little more);
 /// how near the floor (m) a foot has met it.
 const RHYTHM_MOST: f32 = 0.05
 const STEPS_MOST: f32 = 0.1
@@ -116,8 +119,9 @@ const CONTACT: f32 = 0.01
 /// How high (m) both feet are, at least, when the body's in the air; the share of its frames a
 /// run is in the air, at least; the longest (s) a clip that doesn't run may be in the air (a
 /// hop); and a run's fewest steps a minute and longest step (of its hips' height at rest) (people
-/// at 5.7 m/s take about 180 steps a minute of about 1.9 m, about twice the hips' height;
-/// sprinters' are longer, few beyond 2.4 times).
+/// take about 157 steps a minute of 1.3 m running at 3.5 m/s, 176 of 1.7 m at 5.2 m/s, and even
+/// sprinting at 9 m/s steps of only about 2.05 m, about 2.2 times their hips' height: Dorn,
+/// Schache and Pandy 2012, Table 2's strides halved).
 const FLIGHT: f32 = 0.02
 const RUNS_FLY: f32 = 0.1
 const HOP_FOR: f32 = 0.08
