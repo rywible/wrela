@@ -6,8 +6,28 @@
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
 use look::{INK, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
-use engine::light::{Light, display}
+use engine::light::{LUMA, Light, aces, display, srgb}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
+
+/// The render's light as the clean look shows it: the filmic shoulder taken half on each channel,
+/// half on the light's luminance with its hue kept, so a bright orange sky rolls off toward a warm
+/// white and doesn't turn lemon as a curve on each channel turns it. (The other looks, `display`.)
+fn seen(light: Light, c: vec3, clean: bool) -> vec3 {
+    if !clean {
+        return display(light, c)
+    }
+    let x = max(c * light.exposure, vec3(0.0))
+    let y = dot(x, LUMA)
+    let per = aces(x)
+    var kept = x * (aces(vec3(y)).x / max(y, 1.0e-6))
+    // (Past white in a channel, toward white: the light's colour washes out as it brightens.)
+    let top = max(kept.x, max(kept.y, kept.z))
+    if top > 1.0 {
+        kept = mix(kept / top, vec3(1.0), clamp((top - 1.0) * 0.5, 0.0, 1.0))
+    }
+    let t = mix(per, kept, 0.35)
+    vec3(srgb(t.x), srgb(t.y), srgb(t.z))
+}
 
 /// A pixel's texel of a target, its coordinates clamped to it.
 fn at(t: Texture<Rgba16Float>, p: vec2, size: vec2) -> vec4 {
@@ -211,14 +231,21 @@ fn laid_in(colour: Texture<Rgba16Float>, light: Light, px: vec2, size: vec2, r: 
 
 /// The light that blooms off what's brightest round `px`, in a spiral of taps out to about 34 px
 /// (at 720 lines), each pixel's spiral turned its own way so no ring of copies shows.
-fn bloom(colour: Texture<Rgba16Float>, light: Light, px: vec2, size: vec2, scale: f32) -> vec3 {
+fn bloom(
+    colour: Texture<Rgba16Float>,
+    light: Light,
+    px: vec2,
+    size: vec2,
+    scale: f32,
+    clean: bool,
+) -> vec3 {
     var g = vec3(0.0)
     let spin = hash2(px) * 6.2831853
     for i in 0..16 {
         let fi = f32(i)
         let a = fi * 2.3999632 + spin
         let r = scale * (2.0 + 2.0 * fi)
-        let c = display(light, at(colour, px + vec2(cos(a), sin(a)) * r, size).xyz)
+        let c = seen(light, at(colour, px + vec2(cos(a), sin(a)) * r, size).xyz, clean)
         let over = max(luma(c) - 0.8, 0.0)
         g += c * over / (1.0 + fi * 0.18)
     }
@@ -250,13 +277,13 @@ pub fn ink(
     let px = pixel.position.xy
     let scale = size.y / 720.0
     let seed = s.held * 12.0
-    var c0 = display(light, at(colour, px, size).xyz)
-    let m0 = at(marks, px, size)
-    let n0 = at8(normal, px, size)
     let drawn = s.look < 0.5
     let painted = s.look > 0.5 && s.look < 1.5
     let cel = s.look > 1.5 && s.look < 2.5
     let clean = s.look > 2.5
+    var c0 = seen(light, at(colour, px, size).xyz, clean)
+    let m0 = at(marks, px, size)
+    let n0 = at8(normal, px, size)
     // The painted look lays the render in as strokes, everywhere alike but the open sky, the
     // brush finer on the building and the skiff.
     let in_cloud = m0.y == SKY && m0.z < 0.4
@@ -273,10 +300,12 @@ pub fn ink(
     for i in 0..4 {
         let q = px + AROUND[i]
         let mq = at(marks, q, size)
-        if abs(mq.y - m0.y) > 0.5 || abs(mq.x - m0.x) > 0.3 {
+        // (On the sea a smaller step in depth: a crest standing against the water behind it.)
+        let step_ = if m0.y == SEA { 0.15 } else { 0.3 }
+        if abs(mq.y - m0.y) > 0.5 || abs(mq.x - m0.x) > step_ {
             meets = 1.0
         }
-        ring += display(light, at(colour, q, size).xyz)
+        ring += seen(light, at(colour, q, size).xyz, clean)
     }
     c0 = mix(c0, (c0 + ring) * 0.2, meets * 0.8)
     let c0 = if drawn { styled(s, c0, px, m0, n0.xyz * 2.0 - 1.0, light.sun, scale, seed) } else {
@@ -452,7 +481,9 @@ pub fn ink(
         60.0,
     ) *
         exp(-mirror_dip * mirror_dip * 0.5)
-    if m0.y == SEA {
+    // (The clean look draws no sparks: its glitter is the sea's own, in the first pass, moving
+    // with the waves. Drawn sparks, each drawing's own, only fizz at 24 drawings a second.)
+    if m0.y == SEA && !clean {
         // Between the sparks the swell's backs stand darker against the glare.
         c *= 1.0 - 0.18 * toward * s.style
     }
@@ -463,7 +494,7 @@ pub fn ink(
     let slide = hash2(vec2(row, seed * 1.3 + 4.0)) * scell.x
     let col = floor((px.x + slide) / scell.x)
     let patch = smoothstep(0.3, 0.7, noise(px / (22.0 * scale) + vec2(seed * 0.37, 2.0)))
-    for k in 0..3 {
+    for k in 0..(if clean { 0 } else { 3 }) {
         let sid = vec2(col + f32(k) - 1.0, row)
         let sh = hash2(sid + vec2(seed * 0.9, 21.0))
         let centre = vec2(
@@ -510,7 +541,7 @@ pub fn ink(
         let glow_k = (if clean { 0.32 } else if cel { 0.3 } else { 0.35 }) * (if m0.y == SKIFF {
             0.4
         } else { 1.0 })
-        c += bloom(colour, light, px, size, scale) * glow_k * s.style
+        c += bloom(colour, light, px, size, scale, clean) * glow_k * s.style
         let lum = luma(c)
         let split = mix(vec3(0.86, 0.96, 1.1), vec3(1.07, 1.0, 0.88), smoothstep(0.12, 0.8, lum))
         c *= mix(vec3(1.0), split, s.style)
@@ -533,14 +564,45 @@ pub fn ink(
             c *= (0.97 + 0.05 * weave) * (1.0 - grain_k * 0.5 + grain_k * grain)
         }
     }
+    if clean {
+        // Nothing clips flat: what the grade pushed past white rolled back under it, the
+        // brightest washed toward a warm white, so the sky keeps its gradation to the sun.
+        let peak = max(c.x, max(c.y, c.z))
+        if peak > 0.88 {
+            let over = (peak - 0.88) / 0.12
+            let rolled = 0.88 + 0.1 * over / (1.0 + over)
+            c *= rolled / peak
+            c = mix(c, vec3(luma(c)) * vec3(1.05, 1.0, 0.9), smoothstep(0.88, 1.4, peak) * 0.2)
+        }
+        // ...and the sun itself the brightest thing in the frame: its disc white-hot, held over
+        // the roll.
+        if m0.y == SKY {
+            let at_sun = dot(dv, light.sun)
+            let disc = smoothstep(0.99994, 0.99997, at_sun)
+            let corona = pow(max(at_sun, 0.0), 6000.0)
+            c = mix(c, vec3(1.0, 0.98, 0.93), clamp(disc + corona * 0.5, 0.0, 1.0))
+        }
+    }
     // A vignette, as a lens's edge darkens.
     let uv = px / size - vec2(0.5)
     c *= 1.0 - (if drawn { 0.18 } else { 0.14 }) * pow(length(uv * vec2(1.0, 1.2)), 2.4)
     // The top of the sky deepened to a richer blue, as a painter grades it, so the eye falls to
     // the light.
     // (The sky alone: over the rock and its building it would grey them into the air.)
+    // (Clean, toward a clear deep blue at the sky's own brightness, and less toward the sun: a
+    // gold sky only darkened goes grey and mauve.)
     if m0.y == SKY {
-        c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), smoothstep(0.45, 0.0, px.y / size.y) * s.style)
+        let top_k = smoothstep(0.45, 0.0, px.y / size.y) * s.style
+        if clean {
+            let deep = vec3(0.34, 0.5, 0.82)
+            let away = 1.0 -
+                smoothstep(
+                    0.2,
+                    0.95,
+                    dot(normalize(vec2(dv.x, dv.z)), normalize(vec2(light.sun.x, light.sun.z))),
+                )
+            c = mix(c, deep * (luma(c) / luma(deep)) * 0.86, top_k * (0.25 + 0.3 * away))
+        } else { c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), top_k) }
     }
     vec4(c, 1.0)
 }
