@@ -548,8 +548,8 @@ pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
         vec3(0.0, -0.32, 0.48),
         vec3(0.0, 0.83, 0.34),
         vec3(0.0, 0.83, 0.34),
-        vec3(0.0, 0.2, 1.0),
-        vec3(0.0, 0.2, 1.0),
+        vec3(0.0, 0.225, 1.0),
+        vec3(0.0, 0.225, 1.0),
         vec3(0.0, -0.08, 0.5),
         vec3(0.0, -0.08, 0.5),
         vec3(0.0, -0.2, 0.48),
@@ -575,6 +575,11 @@ pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
             // Coming over the top, the hands arc up and out ahead rather than cutting a corner.
             if i == 3 {
                 hold += vec3(0.0, 0.12, 0.22) * sin(3.14159265 * k)
+            }
+            // Let go of the hit-stop, the edge rebounds a little off the crown as the head is
+            // knocked out from under it, before the point drops.
+            if i == 5 {
+                hold += vec3(0.0, 0.06, 0.0) * sin(3.14159265 * min(x / 0.7, 1.0))
             }
             angle = mix(angles[i - 1], angles[i], k)
         }

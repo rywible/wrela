@@ -384,7 +384,9 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
     let a1 = (s.hand_now * vec4(at_rest, 1.0)).xyz - pivot
     let a0 = (s.hand_was * vec4(at_rest, 1.0)).xyz - pivot
     for j in 0..sword::SMEAR_STEPS {
-        let k = f32(j) / f32(sword::SMEAR_STEPS - 1) * 0.92
+        // (Back over the nearer part of the sweep only: a crescent trailing the edge, not a fan
+        // over the whole of it.)
+        let k = f32(j) / f32(sword::SMEAR_STEPS - 1) * 0.55
         out[sword::SMEAR_SLOT + j] = if s.smearing {
             let q = q1.nlerp(q0, k)
             let way = Quat::identity().nlerp(arc_between(a1, a0), k).rotate(normalize(a1))
@@ -648,7 +650,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             let cutting = s.mover.acting == mixamo::M_VERTICAL
             let at = if ANIME == 1 && s.drawer.on { s.drawer.at } else { s.mover.act_time }
             let since = if cutting { at - mixamo::V_BLOW } else { -1.0 }
-            let r = dummy::reaction(since, mixamo::V_FREE - mixamo::V_BLOW, KNOCK, SHAKE)
+            var r = dummy::reaction(since, mixamo::V_FREE - mixamo::V_BLOW, KNOCK, SHAKE)
+            // (Its shake and spark run on the clock, not the held drawing, so the hit-stop
+            // shudders and the spark blooms while everything else is held dead.)
+            let live = dummy::reaction(if cutting { s.mover.act_time - mixamo::V_BLOW } else { -1.0 }, mixamo::V_FREE - mixamo::V_BLOW, KNOCK, SHAKE)
+            r.shake = live.shake
+            r.spark = live.spark
             shake = r.shake * 3.0
             dummy::palette_of(shown_at * translate(vec3(0.0, 0.0, DUMMY_AT)), r)
         } else {
@@ -1276,9 +1283,9 @@ fn cue_cut(s: mut State, at: mat4) {
     let place = (at * vec4(0.0, 0.0, 0.0, 1.0)).xyz
     let _ = s.cues.push(Cue::Listen { at: place + vec3(-2.5, 1.6, -1.5), forward: vec2(0.6, 0.8) })
     let passed = |t: f32| -> bool { now >= t && was < t }
-    // (The whoosh with the snap, heard rising into the cut and apart from the blow.)
-    if passed(mixamo::V_GO) {
-        let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 1.0, seed: 2 })
+    // (The whoosh as the blade gets going, under the blow, so the blow's the loudest thing.)
+    if passed(mixamo::V_GO + 1.0 / 60.0) {
+        let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 0.5, seed: 2 })
     }
     if passed(mixamo::V_BLOW) {
         let head = place + vec3(0.0, dummy::HEAD_AT.y, DUMMY_AT)
