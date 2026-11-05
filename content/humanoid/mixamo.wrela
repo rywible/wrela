@@ -202,7 +202,7 @@ fn leapt_cut(
     cancel: f32,
     tail: f32,
 ) -> Move {
-    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.4)
+    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.58)
     let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
     settled(playback::struck(m, blow, snap, quicken, hold, cancel, tail), 0.3)
 }
@@ -251,6 +251,22 @@ fn hit_of(file: Bytes, to: u32, knock: f32) -> Move {
             for f in 1..m.clip.frames {
                 let i = f * n + b
                 m.clip.turns[i] = first.nlerp(m.clip.turns[i], 0.45)
+            }
+        }
+    }
+    // The arms held in the guard's hold (on the chest, as the guard's are), so both hands stay
+    // on the hilt: the hit's sold by the trunk, the neck and the legs, not by letting go.
+    let guard = IDLE_M.clip.pose(0.0)
+    let arms = [
+        "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand",
+        "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
+    ]
+    for name in arms {
+        let b = rig.find(name)
+        if b != humanoid::NONE {
+            for f in 0..m.clip.frames {
+                let i = f * n + b
+                m.clip.turns[i] = m.clip.turns[i].nlerp(guard.turns[b], 0.85)
             }
         }
     }
@@ -347,9 +363,9 @@ pub const MOCAP_ACTS: [Move; 6] = [
     // A level cut back across.
     cut_key(
         embed("private/great_sword_slash_3.bvh"),
-        from: 14,
+        from: 19,
         to: 42,
-        blow: 0.4,
+        blow: 0.233,
         snap: 0.13,
         quicken: 2.0,
         hold: 0.08,
