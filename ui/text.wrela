@@ -32,6 +32,7 @@ fn baked(face: Face) -> borrow Baked {
     match face {
         Face::Sans => SANS,
         Face::Mono => MONO,
+        Face::Display => MONO,
     }
 }
 
@@ -41,6 +42,9 @@ pub enum Face: Copy + Eq {
     Sans,
     /// JetBrains Mono: monospace, for source and numbers in columns.
     Mono,
+    /// A program's display face, for titles (`Fonts::with_display`); the second face where it
+    /// gives none.
+    Display,
 }
 
 /// A glyph: its advance (ems), where its field sits from the pen (pixels at the font's `em`),
@@ -580,6 +584,9 @@ fn offset_uses_kerned_caret_positions() {
 pub struct Fonts: Clone {
     pub sans: Font,
     pub mono: Font,
+    /// The display face, when the program gave one (`with_display`): `Face::Display` draws with
+    /// it, or else with `mono`.
+    pub display: Option<Font>,
     pub width: u32,
     pub height: u32,
     pub baked: u32,
@@ -626,13 +633,38 @@ impl Fonts {
         let width = 1024
         let mid = pack(mut sans, width, 1)
         let baked = pack(mut mono, width, mid)
-        Fonts { sans, mono, width, height: baked + MADE_ROWS, baked, shelf: vec3u(1, baked, 0) }
+        Fonts {
+            sans,
+            mono,
+            display: None,
+            width,
+            height: baked + MADE_ROWS,
+            baked,
+            shelf: vec3u(1, baked, 0),
+        }
+    }
+
+    /// These fonts with a third, `Face::Display`'s, its glyphs placed in the atlas below the
+    /// others'. (Before any glyph is made: the made rows start below it.)
+    pub fn with_display(take self, b: Baked) -> Fonts {
+        var fonts = take self
+        var display = Font::from_baked(b)
+        let baked = pack(mut display, fonts.width, fonts.baked)
+        fonts.display = Some(take display)
+        fonts.baked = baked
+        fonts.height = baked + MADE_ROWS
+        fonts.shelf = vec3u(1, baked, 0)
+        fonts
     }
 
     pub fn font(self, face: Face) -> borrow Font {
         match face {
             Face::Sans => self.sans,
             Face::Mono => self.mono,
+            Face::Display => match self.display {
+                Some(d) => d,
+                None => self.mono,
+            },
         }
     }
 
@@ -640,6 +672,10 @@ impl Fonts {
         match face {
             Face::Sans => mut self.sans,
             Face::Mono => mut self.mono,
+            Face::Display => match mut self.display {
+                Some(d) => mut d,
+                None => mut self.mono,
+            },
         }
     }
 
@@ -664,8 +700,13 @@ impl Fonts {
     /// blue, rows from the top.
     pub fn atlas(self) -> Vec<u8> {
         var bytes: Vec<u8> = Vec::filled(self.width * self.baked * 4, 0)
-        for f in 0..2 {
-            borrow font = self.font(if f == 0 { Face::Sans } else { Face::Mono })
+        for f in 0..3 {
+            if f == 2 && self.display.is_none() {
+                continue
+            }
+            borrow font = self.font(if f == 0 { Face::Sans } else if f == 1 { Face::Mono } else {
+                Face::Display
+            })
             for i in 0..font.kerned {
                 let g = font.glyph(i)
                 for row in 0..g.height {

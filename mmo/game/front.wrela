@@ -1,29 +1,34 @@
-// wrela.dev's front page: the opening (scenes/opening) plays live behind it, a skiff adrift on the
-// open sea under the floating cathedral, and the game's name and its actions stand at the left,
-// as the console's home stood over the capybara game playing itself (rywible/wrela#360). Play
-// hands the skiff to the player where it floats, with no account and nothing online: the camera
-// is the one the rowing uses, so the page's frame is the game's first. Play online goes to the
-// MMO's client (client.wrela), whose title signs in or makes an account; the account's chip in
-// the corner signs in from here too. Escape while rowing comes back to the page.
+// wrela.dev's front page, which is the game's first screen: the opening (scenes/opening) plays
+// live, a skiff adrift on the open sea under the floating cathedral, with the game's name and
+// one action, Play (Continue once this device has a save), at the bottom left; the account's
+// chip stands in the corner. There's no load screen: the page holds black until the scene's
+// first drawing is ready, then the scene comes up out of it and the name after it.
+//
+// Play hands the skiff to the player where it floats, with no account and nothing online, and
+// the camera rises from the page's shot to the player's, up behind the skiff (`Rig::framing`).
+// Escape (or a pad's Start) pauses: a menu over the dimmed scene to resume, play online (the
+// MMO's client, client.wrela, which signs in or makes an account), or go back to the title, and
+// the controls. Where the skiff is, is saved on this device as the player rows (`SAVE`).
 //
 // The scene is drawn smaller than the screen when the device can't keep up (`budget`), then laid
-// over the whole screen. Until its first drawing is ready a still stands in for it (`poster`), so
-// the page never opens on black; and the page's veil, a shade in the bottom left corner under the
-// words alone, eases away as the player takes the paddle.
+// over the whole screen under the page's veil: a shade in the bottom left corner under the name
+// while the page shows, and the scene dimmed under the pause menu.
 
 use client::Account
-use opening::played::{State as Scene, input, play, ready, release, scene, swung, way}
+use opening::played::{State as Scene, input, play, put, ready, release, scene, swung, whereabouts}
+use platform::session::answer_of
 use std::gpu::{
     ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
 }
 use std::input::{Button, Event, Key, PadButton, events}
+use std::io::{Pending, load, store}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
-use ui::kit::{State, Variant}
 use ui::text::{Face, Fonts}
+use brand::charter::CAP
 
-/// What the page is doing: showing its words over the scene, or the player rowing.
-pub enum Stage: Copy + Eq { Page, Rowing }
+/// What the page is doing: showing the title over the scene, the player rowing, or paused.
+pub enum Stage: Copy + Eq { Page, Rowing, Paused }
 
 /// What a frame of the page asks of the program it's in.
 pub enum Next: Copy + Eq {
@@ -33,34 +38,56 @@ pub enum Next: Copy + Eq {
     Online,
 }
 
-// The page's actions.
+// The actions, by what they do: the title's Play, and the pause menu's.
 const PLAY: u32 = 0
-const ONLINE: u32 = 1
-const ACTIONS: [Text; 2] = ["Play", "Play online"]
+const RESUME: u32 = 1
+const ONLINE: u32 = 2
+const TITLE: u32 = 3
 const NONE: u32 = 4294967295
+/// The pause menu's actions, top to bottom, and what each says.
+const MENU: [u32; 3] = [RESUME, ONLINE, TITLE]
+const MENU_LABELS: [Text; 3] = ["Resume", "Play online", "Title screen"]
 
 /// The bands of rows a drawing of the scene is painted in, one a frame (`play`).
 const BANDS: u32 = 2
-/// Seconds the scene takes to come up from black, and the page's words after it.
-const RISE: f32 = 1.6
-const WORDS_AFTER: f32 = 0.35
-/// Seconds from the page's first frame the words wait for the scene at most (over the poster).
-const WORDS_WAIT: f32 = 0.4
+/// The opening: the name comes up over black at once (`NAME_AT` seconds in), a title card while
+/// the sky cooks; the scene then rises behind it (`RISE` seconds once its first drawing is
+/// ready), and Play comes in `CONTROLS_AFTER` of the way through that, or over the black anyway
+/// after `WORDS_GIVE_UP` seconds if the scene never does.
+const NAME_AT: f32 = 0.35
+const RISE: f32 = 2.4
+const CONTROLS_AFTER: f32 = 0.55
+const WORDS_GIVE_UP: f32 = 12.0
+/// Seconds the name takes to come up over the black.
+const NAME_IN: f32 = 1.4
 /// Seconds the words take to go as the player takes the paddle, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
+/// Seconds the camera takes to rise from the page's shot to the player's, and to come back down.
+const DOLLY: f32 = 1.6
 /// Seconds the camera takes (as a time constant) to swing back to the page's bearing, and away.
 const SWING: f32 = 0.6
-/// Seconds the rowing's keys stay shown once the skiff has way on it.
-const KEYS_FOR: f32 = 4.0
+/// Seconds the pause menu takes to come and go.
+const MENU_FADE: f32 = 0.18
+
+/// Where the skiff's whereabouts are kept on this device ("x z heading", metres and radians), and
+/// the seconds between saves while the player rows.
+const SAVE: Text = "mmo/skiff"
+const SAVE_EVERY: f32 = 10.0
 
 /// The tallest the scene is drawn (pixels), and the shortest the budget takes it to.
-const TALLEST: f32 = 1080.0
+const TALLEST: f32 = 1440.0
 const SHORTEST: f32 = 360.0
 /// Seconds a frame may take, on average, before the scene is drawn smaller; and under which it
 /// grows again. A screen slower than 60 a second raises both with its own frame (`base`).
 const SLOW: f32 = 1.0 / 48.0
 const QUICK: f32 = 1.0 / 57.0
+/// The same under the title, whose shot hardly moves: a sharp scene at 30 a second over a soft
+/// one at 60.
+const TITLE_SLOW: f32 = 1.0 / 30.0
+const TITLE_QUICK: f32 = 1.0 / 34.0
+/// How much the scene's drawing is sharpened as it's laid over the screen (`laid`).
+const SHARPEN: f32 = 0.45
 /// Seconds a new size of the scene's must hold before it's drawn at it: a window being dragged
 /// keeps the last drawing, stretched, instead of beginning one each frame and finishing none.
 const SETTLE: f32 = 0.2
@@ -70,25 +97,32 @@ const SETTLE: f32 = 0.2
 /// never cuts through its letters.
 const HORIZON: f32 = 0.712
 
-/// The page's colours: the name's warm ivory, Play's fill and its hover, and the ink on it.
+/// The page's colours: the name's warm ivory, the main action's fill and its hover, and the ink
+/// on it.
 const IVORY = vec4(0.957, 0.922, 0.867, 1.0)
 const PLAY_FILL = vec4(0.965, 0.937, 0.890, 1.0)
 const PLAY_HOVER = vec4(1.0, 0.969, 0.910, 1.0)
 const PLAY_INK = vec4(0.090, 0.071, 0.047, 1.0)
-/// The quieter action's glass: a dark fill and a faint edge, so it reads on any sky.
+/// The quieter actions' glass: a dark fill and a faint edge, so they read on any sky.
 const GLASS = vec4(0.039, 0.047, 0.071, 0.45)
 const GLASS_HOVER = vec4(0.039, 0.047, 0.071, 0.62)
 const GLASS_EDGE = vec4(1.0, 1.0, 1.0, 0.18)
+/// The pause menu's panel.
+const PANEL = vec4(0.035, 0.039, 0.055, 0.82)
+const MUTED = vec4(0.957, 0.922, 0.867, 0.62)
 
 /// A screen narrower or shorter than this (logical pixels) is a phone's: the skiff needs keys.
 const PHONE_SIDE: f32 = 520.0
 
-/// What the veil's shader reads: the screen's size, how far the scene has come up over its
-/// poster, and how much of the page's veil lies over it.
+/// What the veil's shader reads: the screen's size, how far the scene has come up out of black,
+/// how much of the page's shade lies over it, and how far it's dimmed under the pause menu.
 pub struct Veil: Copy + GpuData {
     pub size: vec2,
     pub shown: f32,
     pub veil: f32,
+    pub dim: f32,
+    /// A texel of the scene's drawing, across and down (in the screen's 0 to 1).
+    pub texel: vec2,
 }
 
 pub struct Front {
@@ -105,10 +139,14 @@ pub struct Front {
     drawings: u32,
     /// The scene has inked a drawing under a sky cooked whole: it may show.
     cooked: bool,
-    /// How far the scene has come up over the poster (0 to 1), and the words are in (0 to 1),
-    /// which is how much of the veil lies over it.
+    /// How far the scene has come up out of black (0 to 1), the title is in (0 to 1, which is
+    /// how much of the shade lies over the scene), and the pause menu.
     shown: f32,
     words: f32,
+    menu: f32,
+    /// How far the title's controls (Play, the account's chip) are in, 0 to 1: they come once the
+    /// scene is up, after the name.
+    controls: f32,
     /// Seconds since the scene first showed.
     since: f32,
     /// The scene's height as the budget would draw it (pixels); the frames' average seconds, and
@@ -127,25 +165,30 @@ pub struct Front {
     /// The size that last ran slow, kept under until `ceiling_until` (s).
     ceiling: f32,
     ceiling_until: f32,
-    /// The actions' rectangles as last drawn, their hovers, the one pressed, the keyboard's focus
-    /// (shown once the keyboard moves it), and the pointer.
-    rects: Vec<Rect>,
+    /// The actions as last drawn (each one's id and rectangle), their hovers by id, the one
+    /// pressed, the keyboard's focus (shown once the keyboard moves it), and the pointer.
+    rects: Vec<(u32, Rect)>,
     hovers: Vec<f32>,
     pressed: u32,
     focus: u32,
     keyboard: bool,
     pointer: Option<vec2>,
-    /// How long the skiff has had way on it since Play, and how far the rowing's keys show.
-    rowed: f32,
-    keys: f32,
-    /// How far the page swings the camera round the skiff (rad): back to the opening's bearing
-    /// while the page shows, so the cathedral stands where it did wherever the player rowed.
+    /// Where the camera stands (`Rig::framing`: 0 the page's shot, 1 the player's), and how far
+    /// the page swings it round the skiff (rad): back to the opening's bearing while the title
+    /// shows, so the cathedral stands where it did wherever the player rowed.
+    framing: f32,
     orbit: f32,
+    /// This device's save: being read, being written, whether there was one (Play says
+    /// Continue), and when it was last written (s).
+    save_load: Option<Pending<u8>>,
+    save_write: Option<Pending<u8>>,
+    saved: bool,
+    saved_at: f32,
     reduced: bool,
 }
 
-/// The page, its scene not yet drawn, in `fonts`: the console's, whose second face
-/// (`Face::Mono`) is its display face, Wrela Facet (ui/brand/facet.wrela), for the name.
+/// The page, its scene not yet drawn, in `fonts`: the console's, whose third face
+/// (`Face::Display`) is its display face, Wrela Charter (ui/brand/charter.wrela), for the name.
 pub fn init(fonts: take Fonts) -> Front {
     let renderer = Renderer::new(fonts)
     Front {
@@ -162,6 +205,8 @@ pub fn init(fonts: take Fonts) -> Front {
         cooked: false,
         shown: 0.0,
         words: 0.0,
+        menu: 0.0,
+        controls: 0.0,
         since: 0.0,
         tall: 720.0,
         spent: 1.0 / 60.0,
@@ -175,14 +220,17 @@ pub fn init(fonts: take Fonts) -> Front {
         ceiling: TALLEST,
         ceiling_until: 0.0,
         rects: Vec::new(),
-        hovers: Vec::from([0.0, 0.0]),
+        hovers: Vec::from([0.0, 0.0, 0.0, 0.0]),
         pressed: NONE,
         focus: PLAY,
         keyboard: false,
         pointer: None,
-        rowed: 0.0,
-        keys: 0.0,
+        framing: 0.0,
         orbit: 0.0,
+        save_load: Some(load(SAVE)),
+        save_write: None,
+        saved: false,
+        saved_at: 0.0,
         reduced: false,
     }
 }
@@ -195,47 +243,54 @@ fn cover(vertex: VertexIndex) -> ClipPosition {
     ClipPosition { position: vec4(x, y, 0.0, 1.0) }
 }
 
-/// The still that stands in for the scene until its first drawing (a cold load compiles the
-/// scene's shaders and cooks its sky first): the page's shot's colours, row by row at `y` (0 at
-/// the top), taken from a drawing of it. Cool high sky, gold toward the sun on the horizon, and
-/// the sea under it darkening toward the skiff.
-fn poster(y: f32) -> vec3 {
-    let high = vec3(0.576, 0.591, 0.668)
-    let pale = vec3(0.697, 0.658, 0.623)
-    let warm = vec3(0.817, 0.705, 0.515)
-    let gold = vec3(0.916, 0.779, 0.488)
-    let line = vec3(0.914, 0.748, 0.431)
-    let near = vec3(0.714, 0.609, 0.46)
-    let sea = vec3(0.575, 0.501, 0.395)
-    let deep = vec3(0.291, 0.289, 0.302)
-    var c = mix(high, pale, smoothstep(0.0, 0.2, y))
-    c = mix(c, warm, smoothstep(0.2, 0.4, y))
-    c = mix(c, gold, smoothstep(0.4, 0.6, y))
-    c = mix(c, line, smoothstep(0.6, HORIZON, y))
-    c = mix(c, near, smoothstep(HORIZON, HORIZON + 0.015, y))
-    c = mix(c, sea, smoothstep(HORIZON + 0.015, 0.85, y))
-    mix(c, deep, smoothstep(0.85, 1.0, y))
-}
-
-/// The scene laid over the screen, filtered up from its own size, over its poster until it has
-/// come up, under the page's veil: a shade in the bottom left corner, where the words and the
-/// actions stand, so they read on any sky. The rest of the shot is left as it is drawn: nothing
-/// above the middle of the screen is darkened by more than a few hundredths.
+/// The scene laid over the screen, filtered up from its own size and sharpened, up out of black
+/// as it comes, under the page's veil: a shade in the bottom left corner, where the name and
+/// Play stand, so they read on any sky (the rest of the shot left as it's drawn: nothing above the middle of
+/// the screen darkened by more than a few hundredths); and dimmed under the pause menu.
 @fragment
 fn laid(pixel: FragCoord, v: Veil, image: Texture<Rgba8>, smp: Sampler) -> vec4 {
     let uv = pixel.position.xy / v.size
-    let c = mix(poster(uv.y), image.sample(smp, uv).xyz, v.shown)
+    // Filtered up by Catmull-Rom's cubic (five bilinear reads, the corners' share dropped), which
+    // keeps the cathedral's edges crisp drawn smaller than the screen where a straight bilinear
+    // smears them; then sharpened a little against its neighbours a texel off, the more the
+    // further it's stretched.
+    let t = v.texel
+    let at = uv / t - vec2(0.5)
+    let base = floor(at)
+    let f = at - base
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let o12 = w2 / w12
+    let p0 = (base - vec2(0.5)) * t
+    let p3 = (base + vec2(2.5)) * t
+    let p12 = (base + vec2(0.5) + o12) * t
+    let cubic = image.sample(smp, vec2(p12.x, p0.y)).xyz * (w12.x * w0.y) +
+        image.sample(smp, vec2(p0.x, p12.y)).xyz * (w0.x * w12.y) +
+        image.sample(smp, p12).xyz * (w12.x * w12.y) +
+        image.sample(smp, vec2(p3.x, p12.y)).xyz * (w3.x * w12.y) +
+        image.sample(smp, vec2(p12.x, p3.y)).xyz * (w12.x * w3.y)
+    let middle = cubic / (w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y)
+    let round_it = (image.sample(smp, uv + vec2(t.x, 0.0)).xyz +
+        image.sample(smp, uv - vec2(t.x, 0.0)).xyz +
+        image.sample(smp, uv + vec2(0.0, t.y)).xyz +
+        image.sample(smp, uv - vec2(0.0, t.y)).xyz) *
+        0.25
+    let stretch = clamp(t.y * v.size.y - 1.0, 0.0, 1.0)
+    let c = max(middle + (middle - round_it) * (SHARPEN * (0.5 + stretch)), vec3(0.0)) * v.shown
     // Measured from the bottom left, in screen heights, so a wide screen keeps its words' corner
     // as dark as a narrow one.
     let aspect = v.size.x / v.size.y
     let from = vec2(uv.x * aspect, 1.0 - uv.y)
     // An ellipse a screen's height and a bit wide and half of one tall, round the corner...
     let reach = length(from / vec2(1.15, 0.58))
-    let corner = 0.72 * (1.0 - smoothstep(0.0, 1.0, reach))
-    // ...and a low band along the bottom, under the actions.
-    let low = 0.3 * (1.0 - smoothstep(0.0, 0.26, from.y))
+    let corner = 0.62 * (1.0 - smoothstep(0.0, 1.0, reach))
+    // ...and a low band along the bottom, under the action.
+    let low = 0.25 * (1.0 - smoothstep(0.0, 0.22, from.y))
     let dark = (1.0 - (1.0 - corner) * (1.0 - low)) * v.veil
-    vec4(c * (1.0 - dark), 1.0)
+    vec4(c * (1.0 - dark) * (1.0 - 0.5 * v.dim), 1.0)
 }
 
 /// Angle `a` (rad) brought within -π to π: the short way round.
@@ -243,9 +298,9 @@ fn wrapped(a: f32) -> f32 {
     a - 6.2831853 * floor((a + 3.1415927) / 6.2831853)
 }
 
-/// Whether the account's chip is there to press: on the page, once its words are in.
+/// Whether the account's chip is there to press: on the title, once its words are in.
 pub fn chip_live(f: Front) -> bool {
-    f.stage == Stage::Page && f.words >= 0.5
+    f.stage == Stage::Page && min(f.words, f.controls) >= 0.5
 }
 
 /// Whether the screen, `w` by `h` logical pixels, is a phone's.
@@ -258,8 +313,11 @@ fn phone(w: f32, h: f32) -> bool {
 /// A screen that shows fewer than 60 frames a second (`base`, its quickest frame) is held to its
 /// own pace, not to one it can't show.
 fn budget(f: mut Front, height: f32) {
-    let slow = max(SLOW, f.base * 1.25)
-    let quick = max(QUICK, f.base * 1.06)
+    // (Under the title the shot is all but still: it's drawn sharp at a slower pace, down to
+    // `TITLE_SLOW`, rather than smaller and soft.)
+    let title = f.stage == Stage::Page
+    let slow = max(if title { TITLE_SLOW } else { SLOW }, f.base * 1.25)
+    let quick = max(if title { TITLE_QUICK } else { QUICK }, f.base * 1.06)
     let most = min(height, TALLEST)
     let least = min(SHORTEST, most)
     // A size that ran slow isn't tried again for a while: the scene would only pop between two.
@@ -282,8 +340,40 @@ fn budget(f: mut Front, height: f32) {
     }
 }
 
-/// Plays the page or the player's rowing for a frame, `width` by `height` pixels, `zoom` device
-/// pixels to a logical one, under `account`'s chip and pages (on the page alone).
+/// The save read back ("x z heading"), if it reads as one.
+fn read_save(bytes: take Vec<u8>) -> Option<(vec2, f32)> {
+    let text = match String::from_utf8(take bytes) {
+        Some(t) => take t,
+        None => return None,
+    }
+    let s = text.as_str().trim()
+    let parts = s.split(" ")
+    if parts.len() != 3 { return None }
+    var v = [0.0, 0.0, 0.0]
+    for i in 0..3 {
+        let (from, to) = parts[i]
+        match s.slice(from, to).parse_f32() {
+            Some(x) => v[i] = x,
+            None => return None,
+        }
+    }
+    // (A save far out past any sea the game has drawn, or broken, isn't taken up.)
+    if abs(v[0]) > 1.0e6 || abs(v[1]) > 1.0e6 || abs(v[2]) > 1.0e4 { return None }
+    Some((vec2(v[0], v[1]), v[2]))
+}
+
+/// Saves where the skiff is on this device, unless a save is still being written.
+fn save(f: mut Front) {
+    if f.save_write.is_some() { return }
+    let (at, steer) = whereabouts(f.scene)
+    let text = f"{at.x} {at.y} {steer}"
+    f.save_write = Some(store(SAVE, text.as_bytes()))
+    f.saved_at = f.time
+}
+
+/// Plays the title, the player's rowing or the pause menu for a frame, `width` by `height`
+/// pixels, `zoom` device pixels to a logical one, under `account`'s chip and pages (on the
+/// title alone).
 pub fn frame<A: Account>(
     f: mut Front,
     time: f32,
@@ -314,99 +404,97 @@ pub fn frame<A: Account>(
             f.window_began = f.time
         }
     }
+    // This device's save, read once at the start: the skiff where it was left, and Continue.
+    if let Some(Ok(bytes)) = answer_of(mut f.save_load) {
+        if f.stage == Stage::Page {
+            if let Some((at, steer)) = read_save(take bytes) {
+                put(mut f.scene, at, steer)
+                f.saved = true
+            }
+        }
+    }
+    let _ = answer_of(mut f.save_write)
     let k = zoom
     let (w, h) = (max(f32(width), 1.0), max(f32(height), 1.0))
     let on_phone = phone(w / k, h / k)
     for e in events() {
         if f.stage == Stage::Rowing {
             match e {
-                Event::KeyDown { key: Key::Escape, .. } => back_to_page(mut f),
-                Event::PadButton { button: PadButton::Start, pressed: true, .. } => {
-                    back_to_page(mut f)
-                },
+                Event::KeyDown { key: Key::Escape, .. } => pause(mut f),
+                Event::PadButton { button: PadButton::Start, pressed: true, .. } => pause(mut f),
                 _ => input(mut f.scene, e),
             }
             continue
         }
-        // Nothing of the page's is pressed before it shows, the account's chip included; once
-        // its pages are open, they take every input.
-        if f.words < 0.5 && !account.shown() {
-            continue
+        if f.stage == Stage::Page {
+            // Nothing of the title's is pressed before it shows, the account's chip included;
+            // once its pages are open, they take every input.
+            if min(f.words, f.controls) < 0.5 && !account.shown() {
+                continue
+            }
+            if account.event(e) || account.shown() {
+                continue
+            }
         }
-        if account.event(e) || account.shown() {
-            continue
-        }
-        var chosen = NONE
-        match e {
-            Event::PointerMove { at, .. } => {
-                f.pointer = Some(at)
-                f.keyboard = false
-            },
-            Event::PointerDown { at, button: Button::Primary, .. } => {
-                f.pointer = Some(at)
-                f.pressed = action_at(f, at)
-            },
-            Event::PointerUp { at, button: Button::Primary, .. } => {
-                let on = action_at(f, at)
-                if on != NONE && on == f.pressed { chosen = on }
-                f.pressed = NONE
-            },
-            Event::KeyDown { key, repeat: false, .. } => {
-                if key == Key::Enter || key == Key::Space {
-                    chosen = f.focus
-                } else if key == Key::Tab || key == Key::Left || key == Key::Right {
-                    // The first press shows the ring where the focus is; the next moves it.
-                    if f.keyboard && !on_phone { f.focus = 1 - f.focus }
-                    f.keyboard = true
-                } else if key == Key::W || key == Key::Up {
-                    // Rowing from the page is playing.
-                    chosen = PLAY
-                }
-            },
-            Event::PadButton { button, pressed: true, .. } => {
-                if button == PadButton::South { chosen = f.focus }
-                if button == PadButton::Left || button == PadButton::Right {
-                    if f.keyboard && !on_phone { f.focus = 1 - f.focus }
-                    f.keyboard = true
-                }
-                if button == PadButton::Up { chosen = PLAY }
-            },
-            _ => {},
-        }
+        let chosen = choice(mut f, e, on_phone)
         if chosen == ONLINE {
+            save(mut f)
             return Next::Online
         }
         if chosen == PLAY && !on_phone {
             // At once, so the rest of this frame's input rows: and a stroke that chose it is
             // the first.
             f.stage = Stage::Rowing
-            f.rowed = 0.0
+            // (Rowing has its own pace: what ran slow under the title doesn't hold it under.)
+            f.ceiling_until = 0.0
             f.pressed = NONE
+            f.keyboard = false
             input(mut f.scene, e)
+        } else if chosen == RESUME {
+            f.stage = Stage::Rowing
+            f.pressed = NONE
+        } else if chosen == TITLE {
+            save(mut f)
+            release(mut f.scene)
+            f.stage = Stage::Page
+            f.focus = PLAY
+            f.pressed = NONE
+            f.saved = true
         }
     }
-    if on_phone { f.focus = ONLINE }
-    // The scene, once the sky has cooked, comes up over its poster; the words just after it, or
-    // over the poster if the scene is slow to come (a cold load compiles its shaders first).
+    if f.stage == Stage::Rowing && f.time - f.saved_at > SAVE_EVERY {
+        save(mut f)
+    }
+    // The name comes over black at once; the scene, once the sky has cooked, rises behind it,
+    // and Play after.
     f.drawings += 1
     if f.cooked {
         f.since += dt
     }
     let rise = if reduced { 0.4 } else { RISE }
     f.shown = smoothstep(0.0, 1.0, clamp(f.since / rise, 0.0, 1.0))
-    let due = f.since > rise * WORDS_AFTER || f.time > WORDS_WAIT
-    // (Under the account's pages, the page's own words step back: one thing to read at a time.)
+    let due = f.time > NAME_AT || reduced
+    let up = f.since > rise * CONTROLS_AFTER || f.time > WORDS_GIVE_UP
+    // (Under the account's pages, the title's own words step back: one thing to read at a time.)
     let words_target = if f.stage == Stage::Page && due && !account.shown() { 1.0 } else { 0.0 }
-    let pace = if words_target > f.words { if f.since < rise { rise * 0.8 } else { RETURN } } else {
-        LEAVE
+    let opening = f.controls < 0.999
+    let pace = if words_target <= f.words { LEAVE } else if opening { NAME_IN } else { RETURN }
+    f.words = kit::ease(f.words, words_target, dt, seconds: (if reduced { 0.0 } else { pace }))
+    f.controls = kit::ease(f.controls, if up { 1.0 } else { 0.0 }, dt, seconds: (if reduced {
+        0.0
+    } else { rise * 0.4 }))
+    f.menu = kit::ease(f.menu, if f.stage == Stage::Paused { 1.0 } else {
+        0.0
+    }, dt, seconds: (if reduced { 0.0 } else { MENU_FADE }))
+    // The camera: the player's while they play or pause, the title's shot under the title, and
+    // swung round to face the cathedral there.
+    let framing_target = if f.stage == Stage::Page { 0.0 } else { 1.0 }
+    f.framing = if reduced { framing_target } else {
+        kit::ease(f.framing, framing_target, dt, seconds: DOLLY)
     }
-    f.words = kit::ease(f.words, words_target, dt, seconds: pace)
-    if f.stage == Stage::Rowing {
-        if abs(way(f.scene)) > 0.25 { f.rowed += dt }
-        let target = if f.rowed < KEYS_FOR && f.words < 0.05 { 1.0 } else { 0.0 }
-        f.keys = kit::ease(f.keys, target, dt, seconds: 0.5)
-    } else {
-        f.keys = kit::ease(f.keys, 0.0, dt, seconds: 0.2)
+    let bearing = if f.stage == Stage::Page { -swung(f.scene) } else { 0.0 }
+    f.orbit = if reduced { bearing } else {
+        f.orbit + wrapped(bearing - f.orbit) * (1.0 - exp(-dt / SWING))
     }
     budget(mut f, h)
     // A new size is drawn once it has held (`SETTLE`), or at once for the first drawing.
@@ -420,31 +508,45 @@ pub fn frame<A: Account>(
         f.drawn_at = f.asked
     }
     let (wide, high) = f.drawn_at
-    let bearing = if f.stage == Stage::Page { -swung(f.scene) } else { 0.0 }
-    f.orbit = if reduced { bearing } else {
-        f.orbit + wrapped(bearing - f.orbit) * (1.0 - exp(-dt / SWING))
-    }
-    if play(mut f.scene, f.time, wide, high, orbit: f.orbit, bands: BANDS) && ready(f.scene) {
+    if play(
+        mut f.scene,
+        f.time,
+        wide,
+        high,
+        orbit: f.orbit,
+        framing: f.framing,
+        bands: BANDS,
+    ) &&
+        ready(f.scene) {
         f.cooked = true
     }
-    // The page's words, the actions, and the account's chip and pages over them.
+    // The title, or the pause menu, and the account's chip and pages over the title.
     f.list.clear(vec2(w, h))
+    f.rects.clear()
     var hand = false
     if f.words > 0.001 {
-        hand = draw_page(mut f, w, h, k, on_phone)
+        hand = draw_title(mut f, w, h, k, on_phone)
     }
-    if f.keys > 0.001 {
-        draw_keys(mut f, w, h, k)
+    if f.menu > 0.001 {
+        hand = draw_menu(mut f, w, h, k) || hand
     }
     if f.stage == Stage::Page {
         // The chip comes and goes with the words; the pages, once opened, are wholly there.
-        f.list.alpha = if account.shown() { 1.0 } else { clamp(f.words * 1.5, 0.0, 1.0) }
+        f.list.alpha = if account.shown() { 1.0 } else {
+            clamp(min(f.words, f.controls) * 1.5, 0.0, 1.0)
+        }
         account.draw(mut f.list, f.fonts, width, height)
         f.list.alpha = 1.0
     }
     f.renderer.fetch(mut f.fonts, f.list)
     f.renderer.upload(f.list)
-    let veil = Veil { size: vec2(w, h), shown: f.shown, veil: f.words }
+    let veil = Veil {
+        size: vec2(w, h),
+        shown: f.shown,
+        veil: f.words,
+        dim: f.menu,
+        texel: vec2(1.0 / f32(max(wide, 1)), 1.0 / f32(max(high, 1))),
+    }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(pass, cover, laid.bind(v: veil, image: f.scene.image, smp: f.smp), vertices: 3)
     f.renderer.draw(pass, vec2(w, h))
@@ -452,63 +554,109 @@ pub fn frame<A: Account>(
     Next::Stay { hand }
 }
 
-/// Back to the page from rowing: the hands off the paddle, the focus on Play.
-fn back_to_page(f: mut Front) {
+/// Paused: the hands off the paddle, where the skiff is saved, the menu's focus on Resume.
+fn pause(f: mut Front) {
     release(mut f.scene)
-    f.stage = Stage::Page
-    f.focus = PLAY
+    save(mut f)
+    f.stage = Stage::Paused
+    f.focus = RESUME
     f.pressed = NONE
+    f.keyboard = false
+}
+
+/// The action input event `e` chooses on the title or the pause menu (`NONE` if none), the
+/// pointer's hover and press and the keyboard's focus kept as it goes.
+fn choice(f: mut Front, e: Event, on_phone: bool) -> u32 {
+    let paused = f.stage == Stage::Paused
+    var chosen = NONE
+    match e {
+        Event::PointerMove { at, .. } => {
+            f.pointer = Some(at)
+            f.keyboard = false
+        },
+        Event::PointerDown { at, button: Button::Primary, .. } => {
+            f.pointer = Some(at)
+            f.pressed = action_at(f, at)
+        },
+        Event::PointerUp { at, button: Button::Primary, .. } => {
+            let on = action_at(f, at)
+            if on != NONE && on == f.pressed { chosen = on }
+            f.pressed = NONE
+        },
+        Event::KeyDown { key, repeat: false, .. } => {
+            if key == Key::Enter || key == Key::Space {
+                chosen = f.focus
+            } else if paused && key == Key::Escape {
+                chosen = RESUME
+            } else if paused && (key == Key::Up || key == Key::W) {
+                step_focus(mut f, back: true)
+            } else if paused && (key == Key::Down || key == Key::S || key == Key::Tab) {
+                step_focus(mut f, back: false)
+            } else if !paused && key == Key::Tab {
+                f.keyboard = true
+            } else if !paused && (key == Key::W || key == Key::Up) {
+                // Rowing from the title is playing.
+                chosen = PLAY
+            }
+        },
+        Event::PadButton { button, pressed: true, .. } => {
+            if button == PadButton::South {
+                chosen = f.focus
+            } else if paused && (button == PadButton::Start || button == PadButton::East) {
+                chosen = RESUME
+            } else if paused && button == PadButton::Up {
+                step_focus(mut f, back: true)
+            } else if paused && button == PadButton::Down {
+                step_focus(mut f, back: false)
+            } else if !paused && (button == PadButton::Up || button == PadButton::Start) {
+                chosen = PLAY
+            }
+        },
+        _ => {},
+    }
+    // (On a phone the title has no Play to choose.)
+    if chosen == PLAY && (paused || on_phone) { return NONE }
+    if chosen != PLAY && chosen != NONE && !paused { return NONE }
+    chosen
+}
+
+/// The pause menu's focus moved one up (`back`) or down, round its ends, and shown.
+fn step_focus(f: mut Front, back: bool) {
+    var at = 0
+    for i in 0..3 {
+        if MENU[i] == f.focus { at = i }
+    }
+    let next = if !f.keyboard { at } else if back { (at + 2) % 3 } else { (at + 1) % 3 }
+    f.focus = MENU[next]
+    f.keyboard = true
 }
 
 /// The action under `at`, or `NONE`.
 fn action_at(f: Front, at: vec2) -> u32 {
-    for i in 0..f.rects.len() {
-        if f.rects[i].contains(at) { return i }
+    for (id, r) in f.rects {
+        if r.contains(at) { return id }
     }
     NONE
 }
 
-/// `text` in `face` at `size` with `tracking` ems between its letters, its top left at `at`:
-/// its width.
-fn spaced(
-    f: mut Front,
-    face: Face,
-    text: str,
-    size: f32,
-    at: vec2,
-    color: vec4,
-    tracking: f32,
-    weight: f32 = -1.0,
-) -> f32 {
-    var x = at.x
-    for i in 0..text.len() {
-        let letter = text.slice(i, i + 1)
-        let advance = f.fonts.font(face).measure(letter, size)
-        let _ = f.list.text(
-            f.fonts,
-            face,
-            letter,
-            size,
-            vec2(round(x), at.y),
-            color,
-            weight: weight,
-        )
-        x += advance + (if i + 1 < text.len() { tracking * size } else { 0.0 })
+/// The action `id` over `r`, saying `label`, at `alpha`: the one to press (`main`) solid in
+/// warm ivory, the others in dark glass. Its hover lifts it two pixels, and the keyboard's focus
+/// rings it in ivory. Whether the pointer is over it.
+fn action(f: mut Front, id: u32, r: Rect, label: str, main: bool, k: f32) -> bool {
+    f.rects.push((id, r))
+    let over = match f.pointer {
+        Some(p) => r.contains(p),
+        None => false,
     }
-    x - at.x
-}
-
-/// One of the page's actions over `r`: Play solid in warm ivory, the one to press; Play online in
-/// dark glass beside it. Its hover lifts it two pixels, and the keyboard's focus rings it in ivory.
-fn action(f: mut Front, i: u32, r: Rect, label: str, k: f32) {
-    let hover = f.hovers[i]
-    let pressed = f.pressed == i && hover > 0.5
+    f.hovers[id] = kit::ease(f.hovers[id], if over && !f.keyboard { 1.0 } else { 0.0 }, f.dt)
+    let hover = f.hovers[id]
+    let pressed = f.pressed == id && over
     let radius = kit::RADIUS * k
     let was = f.list.alpha
     let lifted = Rect::new(r.x, r.y - (if pressed { 0.0 } else {
         round(hover * 2.0 * k)
     }), r.w, r.h)
-    let ink = if i == PLAY {
+    let ink = if main {
         // Its shadow comes with the hover, as if it rose off the page.
         f.list.alpha = was * hover
         kit::shadow(mut f.list, lifted, radius, k)
@@ -523,7 +671,7 @@ fn action(f: mut Front, i: u32, r: Rect, label: str, k: f32) {
         f.list.ring(lifted, GLASS_EDGE, radius, width: max(round(k), 1.0))
         IVORY
     }
-    if f.keyboard && f.focus == i {
+    if f.keyboard && f.focus == id {
         let gap = round(4.0 * k)
         f.list.ring(lifted.shrink(-gap), IVORY, radius + gap, width: max(round(2.0 * k), 2.0))
     }
@@ -539,141 +687,221 @@ fn action(f: mut Front, i: u32, r: Rect, label: str, k: f32) {
         ink,
         weight: kit::SEMIBOLD,
     )
+    over && !f.keyboard
 }
 
-/// The page's words and actions at its bottom left, rising in as they come: the game's name in
-/// Wrela Facet, wholly under the horizon; the line under it; and Play and Play online (on a
-/// phone, Play online alone, and the line says where Play is). Whether the pointer is over an
-/// action.
-fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
+/// The title at the bottom left, rising in as it comes: the game's name in Wrela Charter, wholly
+/// under the horizon, and Play under it (Continue once there's a save; on a phone, a line
+/// saying what it plays with instead). Whether the pointer is over Play.
+fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     let fade = f.words
     let eased = fade * fade * (3.0 - 2.0 * fade)
     let lift = if f.reduced { 0.0 } else { (1.0 - eased) * 10.0 * k }
     f.list.alpha = eased
     let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
-    let bottom = h - round(clamp(h * 0.05, 24.0 * k, 48.0 * k))
-    // The actions, a row along the bottom.
-    let bh = round(48.0 * k)
-    let top = round(bottom - bh + lift)
+    let bottom = h - round(clamp(h * 0.06, 24.0 * k, 56.0 * k))
     var hand = false
-    f.rects.clear()
-    var x = margin
-    for i in 0..2 {
-        if on_phone && i == PLAY {
-            // Rowing needs keys: on a phone, Play isn't there to press.
-            f.rects.push(Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0))
-            continue
-        }
-        let label = ACTIONS[i]
-        let tw = f.fonts.font(Face::Sans).measure(label, 16.0 * k)
-        let bw = round(max(tw + 56.0 * k, (if i == PLAY { 156.0 } else { 0.0 }) * k))
-        let r = Rect::new(x, top, bw, bh)
-        f.rects.push(r)
-        let over = match f.pointer {
-            Some(p) => r.contains(p),
-            None => false,
-        }
-        if over && !f.keyboard { hand = true }
-        f.hovers[i] = kit::ease(f.hovers[i], if over && !f.keyboard { 1.0 } else { 0.0 }, f.dt)
-        action(mut f, i, r, label, k)
-        x += bw + round(12.0 * k)
-    }
-    // Above them, the line, and the name standing on it.
-    let line_size = 17.0 * k
-    let line_top = round(top - 18.0 * k - line_size * 1.2)
-    let (long, short) = if on_phone {
-        ("Play offline on a computer, with a keyboard or a gamepad.", "Play offline on a computer.")
+    // Play, along the bottom, coming in once the scene is up (`controls`); on a phone, the line in
+    // its place. The name sits over where they rest, rising with its own fade.
+    let c = clamp(f.controls, 0.0, 1.0)
+    let shown_c = c * c * (3.0 - 2.0 * c)
+    let c_lift = if f.reduced { 0.0 } else { (1.0 - shown_c) * 8.0 * k }
+    f.list.alpha = eased * shown_c
+    let bh = round(48.0 * k)
+    let top = round(bottom - bh + c_lift)
+    var under_name = round(bottom - bh + lift)
+    if on_phone {
+        let size = 16.0 * k
+        let line_top = round(bottom - size * 1.3 + c_lift)
+        let _ = f.list.text(
+            f.fonts,
+            Face::Sans,
+            "Wrela plays with a keyboard or a gamepad.",
+            size,
+            vec2(margin, line_top),
+            MUTED,
+        )
+        under_name = round(bottom - size * 1.3 + lift)
     } else {
-        ("You wake on a skiff. The sea goes on forever.", "The sea goes on forever.")
+        let label = if f.saved { "Continue" } else { "Play" }
+        let tw = f.fonts.font(Face::Sans).measure(label, 16.0 * k)
+        let bw = round(max(tw + 64.0 * k, 168.0 * k))
+        hand = action(mut f, PLAY, Rect::new(margin, top, bw, bh), label, main: true, k: k) &&
+            c > 0.5
     }
-    let fits = f.fonts.font(Face::Sans).measure(long, line_size) <= w - margin * 2.0
-    let _ = f.list.text(
-        f.fonts,
-        Face::Sans,
-        if fits { long } else { short },
-        line_size,
-        vec2(margin, line_top),
-        vec4(IVORY.xyz, 0.86),
-    )
-    // The name: Facet's capitals stand 0.70 em on their baseline, with nothing under it. As large
-    // as fits between the line and the horizon (with room to breathe under the sea's line) and
-    // across the screen, up to a cap height of 100 pixels; sized where it rests, so it keeps its
-    // size as it rises in. A screen too short for it under the horizon (a phone on its side)
-    // sets it by its width alone, over the sea's line.
-    let baseline = line_top - round(16.0 * k)
-    let resting = baseline - round(lift)
+    f.list.alpha = eased
+    // The name, in Wrela Charter: its capitals stand `CAP` on their baseline, and the R's swash
+    // runs `SWASH` under it. As large as fits between Play and the horizon (with room to breathe
+    // under the sea's line) and across the screen, up to a cap height of 120 pixels; sized where
+    // it rests, so it keeps its size as it rises in. A screen too short for it under the horizon
+    // (a phone on its side) sets it by its width alone, over the sea's line.
+    let floor = under_name - round(24.0 * k)
+    let resting = floor - round(lift)
     let horizon = h * HORIZON + 20.0 * k
-    let width_at_one = f.fonts.font(Face::Mono).measure("WRELA", 1.0) + 4.0 * 0.02
+    let width_at_one = f.fonts.font(Face::Display).measure("WRELA", 1.0) + 4.0 * TRACKING
     let across = (w - margin * 2.0) / width_at_one
-    let under = (resting - horizon) / facet_cap()
+    let under = (resting - horizon) / (CAP + SWASH)
     let room = if under >= 40.0 * k { min(under, across) } else { across }
-    let size = round(clamp(room, 24.0 * k, 100.0 * k / facet_cap()))
-    let name_top = baseline - f.fonts.font(Face::Mono).ascender * size
-    // Facet sets its letters a little in from the pen: the W's foot lines up with the words.
-    let at = vec2(margin - round(size * 0.095), name_top)
-    let _ = spaced(mut f, Face::Mono, "WRELA", size, at, IVORY, 0.02)
+    let size = round(clamp(room, 24.0 * k, 120.0 * k / CAP))
+    let baseline = floor - round(size * SWASH)
+    let name_top = baseline - f.fonts.font(Face::Display).ascender * size
+    // (The W's left serif lines up with Play.)
+    let at = vec2(margin - round(size * 0.017), name_top)
+    let _ = spaced(mut f, Face::Display, "WRELA", size, at, IVORY, TRACKING)
     f.list.alpha = 1.0
     hand
 }
 
-/// Facet's capitals' height, in ems (ui/brand/facet.wrela's `CAP`).
-fn facet_cap() -> f32 {
-    0.70
+/// How far the R's swash runs under the baseline, in ems (ui/brand/fonts/charter.py), and the
+/// name's letter spacing, in ems: set wide, as a chart's names are.
+const SWASH: f32 = 0.15
+const TRACKING: f32 = 0.06
+
+/// `text` in `face` at `size` with `tracking` ems between its letters, its top left at `at`:
+/// its width.
+fn spaced(
+    f: mut Front,
+    face: Face,
+    text: str,
+    size: f32,
+    at: vec2,
+    color: vec4,
+    tracking: f32,
+) -> f32 {
+    var x = at.x
+    for i in 0..text.len() {
+        let letter = text.slice(i, i + 1)
+        let advance = f.fonts.font(face).measure(letter, size)
+        let _ = f.list.text(f.fonts, face, letter, size, vec2(round(x), at.y), color)
+        x += advance + (if i + 1 < text.len() { tracking * size } else { 0.0 })
+    }
+    x - at.x
 }
 
-/// The rowing's keys, bottom left, while the player finds them: each key in a small cap, and
-/// what it does.
-fn draw_keys(f: mut Front, w: f32, h: f32, k: f32) {
-    let alpha = f.keys
-    f.list.alpha = alpha
-    let pairs: [(Text, Text); 4] = [
-        ("W", "Row"),
-        ("A  D", "Steer"),
-        ("S", "Back water"),
-        ("Esc", "Menu"),
-    ]
+/// A key's cap at `x`, its top at `y`, saying `key`: its width.
+fn cap(f: mut Front, key: str, x: f32, y: f32, k: f32) -> f32 {
     let size = 13.0 * k
-    let cap_h = round(24.0 * k)
-    let pad = 8.0 * k
-    var total = 0.0
-    for p in pairs {
-        let kw = max(f.fonts.font(Face::Sans).measure(p.0, size) + pad * 2.0, cap_h)
-        total += kw + 8.0 * k + f.fonts.font(Face::Sans).measure(p.1, size) + 22.0 * k
+    let ch = round(24.0 * k)
+    let kw = round(max(f.fonts.font(Face::Sans).measure(key, size) + 16.0 * k, ch))
+    let r = Rect::new(x, y, kw, ch)
+    f.list.rect(r, vec4(1.0, 1.0, 1.0, 0.08), 5.0 * k)
+    f.list.ring(r, vec4(1.0, 1.0, 1.0, 0.2), 5.0 * k, width: max(round(k), 1.0))
+    let tw = f.fonts.font(Face::Sans).measure(key, size)
+    let top = kit::centred_top(f.fonts, y + ch * 0.5, size)
+    let _ = f.list.text(
+        f.fonts,
+        Face::Sans,
+        key,
+        size,
+        vec2(round(x + (kw - tw) * 0.5), top),
+        IVORY,
+        weight: kit::MEDIUM,
+    )
+    kw
+}
+
+/// The pause menu in the middle of the dimmed scene: Resume, Play online and the title, and
+/// under them the controls, each with its keys. Whether the pointer is over an action.
+fn draw_menu(f: mut Front, w: f32, h: f32, k: f32) -> bool {
+    let fade = f.menu
+    let eased = fade * fade * (3.0 - 2.0 * fade)
+    f.list.alpha = eased
+    let pad = round(28.0 * k)
+    let pw = round(min(380.0 * k, w - 32.0 * k))
+    let bh = round(44.0 * k)
+    let gap = round(10.0 * k)
+    let row = round(34.0 * k)
+    let controls: [(Text, Text, Text); 4] = [
+        ("Row", "W", "Up"),
+        ("Back water", "S", "Down"),
+        ("Steer", "A", "D"),
+        ("Pause", "Esc", ""),
+    ]
+    let heading = round(28.0 * k)
+    let ph = pad +
+        heading +
+        round(20.0 * k) +
+        (bh + gap) * 3.0 -
+        gap +
+        round(28.0 * k) +
+        round(14.0 * k) +
+        round(14.0 * k) +
+        row * 4.0 +
+        round(10.0 * k) +
+        round(36.0 * k) +
+        pad
+    let lift = if f.reduced { 0.0 } else { (1.0 - eased) * 8.0 * k }
+    let px = round((w - pw) * 0.5)
+    let py = round(max((h - ph) * 0.5, 16.0 * k) + lift)
+    let panel = Rect::new(px, py, pw, ph)
+    kit::shadow(mut f.list, panel, kit::CARD_RADIUS * k, k)
+    f.list.rect(panel, PANEL, kit::CARD_RADIUS * k)
+    f.list.ring(panel, vec4(1.0, 1.0, 1.0, 0.1), kit::CARD_RADIUS * k, width: max(round(k), 1.0))
+    var y = py + pad
+    let _ = f.list.text(
+        f.fonts,
+        Face::Display,
+        "Paused",
+        heading,
+        vec2(px + pad, y),
+        IVORY,
+    )
+    y += heading + round(20.0 * k)
+    var hand = false
+    for i in 0..3 {
+        let r = Rect::new(px + pad, y, pw - pad * 2.0, bh)
+        if action(mut f, MENU[i], r, MENU_LABELS[i], main: i == 0, k: k) { hand = true }
+        y += bh + gap
     }
-    total -= 22.0 * k
-    // At the bottom left, where the page's actions stood: the skiff is in the middle.
-    let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
-    let y = round(h - margin - cap_h + 10.0 * k)
-    var x = margin + round(14.0 * k)
-    // A quiet plate under them, so they read over bright water.
-    let plate = Rect::new(x - 14.0 * k, y - 10.0 * k, total + 28.0 * k, cap_h + 20.0 * k)
-    f.list.rect(plate, vec4(0.0, 0.0, 0.0, 0.42), kit::RADIUS * k + 4.0 * k)
-    for p in pairs {
-        let kw = round(max(f.fonts.font(Face::Sans).measure(p.0, size) + pad * 2.0, cap_h))
-        let cap = Rect::new(x, y, kw, cap_h)
-        f.list.rect(cap, vec4(1.0, 1.0, 1.0, 0.1), 5.0 * k)
-        f.list.ring(cap, vec4(1.0, 1.0, 1.0, 0.22), 5.0 * k, width: max(round(k), 1.0))
-        let tw = f.fonts.font(Face::Sans).measure(p.0, size)
-        let top = kit::centred_top(f.fonts, y + cap_h * 0.5, size)
-        let _ = f.list.text(
-            f.fonts,
-            Face::Sans,
-            p.0,
-            size,
-            vec2(round(x + (kw - tw) * 0.5), top),
-            kit::FG,
-            weight: kit::MEDIUM,
-        )
-        x += kw + 8.0 * k
-        let _ = f.list.text(
-            f.fonts,
-            Face::Sans,
-            p.1,
-            size,
-            vec2(round(x), top),
-            vec4(kit::FG.xyz, 0.8),
-        )
-        x += f.fonts.font(Face::Sans).measure(p.1, size) + 22.0 * k
+    y += round(28.0 * k) - gap
+    // The controls: a quiet heading, then each control and its keys.
+    f.list.rect(
+        Rect::new(px + pad, y - round(14.0 * k), pw - pad * 2.0, max(round(k), 1.0)),
+        vec4(
+            1.0,
+            1.0,
+            1.0,
+            0.1,
+        ),
+    )
+    let _ = f.list.text(
+        f.fonts,
+        Face::Sans,
+        "CONTROLS",
+        11.0 * k,
+        vec2(px + pad, y),
+        MUTED,
+        weight: kit::SEMIBOLD,
+    )
+    y += round(14.0 * k) + round(14.0 * k)
+    for (what, a, b) in controls {
+        let size = 14.0 * k
+        let ch = round(24.0 * k)
+        let top = kit::centred_top(f.fonts, y + ch * 0.5, size)
+        let _ = f.list.text(f.fonts, Face::Sans, what, size, vec2(px + pad, top), IVORY)
+        // The keys at the right, the second (if any) before the first's left.
+        var right = px + pw - pad
+        let second = b.len() > 0
+        if second {
+            let size2 = 13.0 * k
+            let bw = round(max(f.fonts.font(Face::Sans).measure(b, size2) + 16.0 * k, ch))
+            right -= bw
+            let _ = cap(mut f, b, right, y, k)
+            right -= round(6.0 * k)
+        }
+        let size1 = 13.0 * k
+        let aw = round(max(f.fonts.font(Face::Sans).measure(a, size1) + 16.0 * k, ch))
+        let _ = cap(mut f, a, right - aw, y, k)
+        y += row
+    }
+    y += round(10.0 * k)
+    for line in [
+        "On a gamepad: the left stick or the D-pad",
+        "rows and steers, and Start pauses.",
+    ] {
+        let _ = f.list.text(f.fonts, Face::Sans, line, 12.5 * k, vec2(px + pad, y), MUTED)
+        y += round(18.0 * k)
     }
     f.list.alpha = 1.0
+    hand
 }
