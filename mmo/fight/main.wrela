@@ -1,0 +1,888 @@
+// The grey-box boss fight, playable: the hero, bare-fisted, against the Idol in a big plain nave.
+// The rules (sim.wrela) step 60 times a second from the player's input; the hero's body
+// (content/humanoid's, played by engine::playback) and the Idol's blocks (idol.wrela) are drawn
+// over them, never ahead of them, so what's seen to hit is what hits. A death puts the hero back
+// at the doors in a few seconds. Each fight's input log is played again at its end and checked
+// against what happened (the replay check a room does).
+//
+// Keys: WASD move (hold Shift to walk), J or the left mouse button jabs (again, quickly, to chain
+// three), K or the right button throws a heavy, L or Q parries, Space dodges (a roll, the way
+// you're pushing, or back), Tab or the middle button or R locks on, the arrow keys turn the
+// camera, H hides the help. A pad: left stick moves, right stick turns the camera, X or RB jabs,
+// Y or RT heavies, LB parries, A or B dodges, the right stick's press locks on.
+//
+// `--set DEMO=1` lets the bot play (bot.wrela), for a capture.
+
+use bot::{Bot, play}
+use humanoid::body::{GAITS, HERO}
+use engine::humanoid::{BodyVertex, palette}
+use engine::playback
+use engine::playback::{Handling, Mover}
+use engine::view::{Camera, NEAREST, first_camera}
+use idol::{Block, Stance, blocks, cube, half_life, rest, sprung, wanted}
+use moves::{ACTS, ACT_DEATH, UPPER}
+use scene::{
+    SUN, Shot, block, body, compose, cover, floor_vertex, paint_block, paint_body, paint_floor,
+}
+use sim::{
+    ACTIVE, Change, DEAD, DODGE, DODGING, DOWN, HEAVY, HIT, IDLE, JAB, KNEEL, LOCKED, MOVE_HEAVY,
+    MOVE_JAB, PARRY, PARRYING, PUSH_SHIFT, RECOVER, REEL, SLAM, SLAM_R, STRUCK_CORE, STRUCK_HANDS,
+    STUCK, UNIT, WINDUP, Winner, World, heading_of, parts, run, step,
+}
+use std::gpu::{
+    DepthTexture, GpuBuffer, Rgba16Float, Texture, begin_pass2_with_depth, begin_screen_pass,
+    buffer_of, depth_texture, draw, texture, write,
+}
+use std::input::{Button, Event, Key, PadAxis, PadButton, events}
+use std::io::print
+use std::transform::identity
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts}
+
+/// 1: the bot plays.
+pub const DEMO: u32 = 0
+
+/// Seconds from a death to the doors, and the most fight steps a screen frame runs.
+const BACK_AFTER: f32 = 3.0
+const MOST_STEPS: u32 = 8
+/// The most blocks drawn: the nave's and the Idol's.
+const MOST_BLOCKS: u32 = 256
+
+// Held keys, as bits.
+const K_UP: u32 = 1
+const K_DOWN: u32 = 2
+const K_LEFT: u32 = 4
+const K_RIGHT: u32 = 8
+const K_WALK: u32 = 16
+const C_LEFT: u32 = 32
+const C_RIGHT: u32 = 64
+const C_UP: u32 = 128
+const C_DOWN: u32 = 256
+
+const INK = vec4(0.95, 0.94, 0.9, 1.0)
+const MUTED = vec4(0.72, 0.72, 0.74, 0.9)
+const SHADE = vec4(0.0, 0.0, 0.0, 0.55)
+const LIFE = vec4(0.78, 0.16, 0.12, 1.0)
+const BREATH = vec4(0.45, 0.75, 0.32, 1.0)
+const POISE = vec4(0.85, 0.78, 0.55, 1.0)
+const RED = vec4(0.85, 0.12, 0.08, 1.0)
+const GOLD = vec4(1.0, 0.85, 0.45, 1.0)
+
+pub struct Game {
+    world: World,
+    /// The world a step ago (drawn between the two).
+    was: World,
+    since: f32,
+    last: Option<f32>,
+    log: Vec<Change>,
+    input: u32,
+    held: u32,
+    buttons: u32,
+    locked: bool,
+    pad: vec2,
+    pad_cam: vec2,
+    bot: Bot,
+    /// The hero's body and the act the rules began for it since it was last drawn.
+    mover: Mover,
+    pending: u32,
+    mask: [f32; 64],
+    /// The Idol as drawn: its stance, how far it's walked, its heading (radians).
+    stance: Stance,
+    walked: f32,
+    yaw: f32,
+    /// The camera: its turn about the hero, its tilt, where it is and where it looks.
+    cam_yaw: f32,
+    cam_pitch: f32,
+    eye: vec3,
+    at: vec3,
+    shake: f32,
+    /// What the screen says: deaths, when the hero fell, when the fight was won, a word flashed.
+    deaths: u32,
+    fell_at: Option<f32>,
+    won_at: Option<f32>,
+    word: String,
+    word_at: f32,
+    help: bool,
+    replayed: Option<bool>,
+    replay: Option<Replay>,
+    statics: Vec<Block>,
+    verts: GpuBuffer<BodyVertex>,
+    indices: GpuBuffer<u32>,
+    palette: GpuBuffer<mat4>,
+    blocks: GpuBuffer<Block>,
+    colour: Texture<Rgba16Float>,
+    shape: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    width: u32,
+    height: u32,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+}
+
+/// The nave: walls, two rows of great pillars down its length, the altar's steps and the doors.
+fn nave() -> Vec<Block> {
+    var out: Vec<Block> = Vec::new()
+    let x = vec3(1.0, 0.0, 0.0)
+    let y = vec3(0.0, 1.0, 0.0)
+    let z = vec3(0.0, 0.0, 1.0)
+    let wall = vec4(0.24, 0.235, 0.23, 0.0)
+    let pillar = vec4(0.34, 0.33, 0.31, 0.0)
+    let trim = vec4(0.2, 0.195, 0.19, 0.0)
+    // The walls beyond the aisles, and the ends.
+    out.push(cube(vec3(26.0, 18.0, 0.0), vec3(1.0, 18.0, 34.0), x, y, z, wall))
+    out.push(cube(vec3(-26.0, 18.0, 0.0), vec3(1.0, 18.0, 34.0), x, y, z, wall))
+    out.push(cube(vec3(0.0, 18.0, 34.0), vec3(27.0, 18.0, 1.0), x, y, z, wall))
+    out.push(cube(vec3(0.0, 18.0, -34.0), vec3(27.0, 18.0, 1.0), x, y, z, wall))
+    // The doors the hero comes in by: a tall dark slab with a lintel.
+    out.push(cube(vec3(0.0, 4.5, -32.9), vec3(3.0, 4.5, 0.2), x, y, z, vec4(0.08, 0.07, 0.06, 0.0)))
+    out.push(cube(vec3(0.0, 9.4, -32.8), vec3(3.8, 0.4, 0.4), x, y, z, trim))
+    // Pillars: each 2 m square, 30 m tall, every 8 m, with a plinth.
+    for k in 0..8 {
+        let pz = -28.0 + f32(k) * 8.0
+        for side in [-1.0, 1.0] {
+            let px = side * 20.0
+            out.push(cube(vec3(px, 15.0, pz), vec3(1.0, 15.0, 1.0), x, y, z, pillar))
+            out.push(cube(vec3(px, 0.5, pz), vec3(1.4, 0.5, 1.4), x, y, z, trim))
+        }
+    }
+    // The altar's steps and the empty plinth the Idol stood on.
+    out.push(cube(vec3(0.0, 0.25, 30.0), vec3(10.0, 0.25, 4.0), x, y, z, trim))
+    out.push(cube(vec3(0.0, 0.75, 31.0), vec3(7.0, 0.25, 3.0), x, y, z, trim))
+    out.push(cube(vec3(0.0, 1.6, 31.5), vec3(3.0, 0.6, 2.0), x, y, z, pillar))
+    out
+}
+
+pub fn init() -> Game {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    let w = World::start()
+    let start = vec3(f32(w.player.x) / 256.0, 0.0, f32(w.player.z) / 256.0)
+    Game {
+        world: w,
+        was: w,
+        since: 0.0,
+        last: None,
+        log: Vec::new(),
+        input: 0,
+        held: 0,
+        buttons: 0,
+        locked: false,
+        pad: vec2(0.0),
+        pad_cam: vec2(0.0),
+        bot: Bot::new(skill: 92, seed: 20261105),
+        mover: Mover::standing(start, 0.0, GAITS),
+        pending: engine::humanoid::NONE,
+        mask: playback::upper_body(HERO.rig),
+        stance: rest(),
+        walked: 0.0,
+        yaw: 3.14159265,
+        cam_yaw: 0.0,
+        cam_pitch: 0.28,
+        eye: start + vec3(0.0, 2.6, -6.0),
+        at: start + vec3(0.0, 1.6, 0.0),
+        shake: 0.0,
+        deaths: 0,
+        fell_at: None,
+        won_at: None,
+        word: String::new(),
+        word_at: -10.0,
+        help: true,
+        replayed: None,
+        replay: None,
+        statics: nave(),
+        verts: buffer_of(HERO.verts),
+        indices: buffer_of(HERO.indices),
+        palette: buffer_of([identity(); 64]),
+        blocks: buffer_of([Block { model: identity(), colour: vec4(0.0) }; 256]),
+        colour: texture(width: 640, height: 360),
+        shape: texture(width: 640, height: 360),
+        depth: depth_texture(width: 640, height: 360),
+        width: 640,
+        height: 360,
+        fonts,
+        renderer,
+        list: DrawList::new(),
+    }
+}
+
+/// The fight from the doors again.
+fn again(s: mut Game) {
+    s.world = World::start()
+    s.was = s.world
+    s.log = Vec::new()
+    s.buttons = 0
+    s.input = 0
+    s.stance = rest()
+    s.yaw = 3.14159265
+    let start = vec3(f32(s.world.player.x) / 256.0, 0.0, f32(s.world.player.z) / 256.0)
+    s.mover = Mover::standing(start, 0.0, GAITS)
+    s.pending = engine::humanoid::NONE
+    s.cam_yaw = 0.0
+    s.fell_at = None
+    s.won_at = None
+    s.replayed = None
+    s.replay = None
+    s.bot = Bot::new(skill: 92, seed: s.bot.input ^ 977)
+}
+
+/// A sim heading (256 to a turn, 0 along +x, a quarter along +z) as the body's yaw (radians, 0
+/// along +z, a quarter turn along +x).
+fn yaw_of(h: i32) -> f32 {
+    let a = f32(h) * 6.2831853 / 256.0
+    atan2(cos(a), sin(a))
+}
+
+fn wrapped(a: f32) -> f32 {
+    a - 6.2831853 * floor((a + 3.14159265) / 6.2831853)
+}
+
+fn flip(s: mut Game, bit: u32) {
+    s.buttons = s.buttons ^ bit
+}
+
+fn key_bit(key: Key) -> u32 {
+    if key == Key::W { K_UP } else if key == Key::S { K_DOWN } else if key == Key::A {
+        K_LEFT
+    } else if key == Key::D { K_RIGHT } else if key == Key::ShiftLeft || key == Key::ShiftRight {
+        K_WALK
+    } else if key == Key::Left { C_LEFT } else if key == Key::Right { C_RIGHT } else if key ==
+        Key::Up {
+        C_UP
+    } else if key == Key::Down { C_DOWN } else { 0 }
+}
+
+/// Whether a press now starts the fight again: a moment after a death (the press isn't also a
+/// move), or after a win.
+fn ready_again(s: Game, time: f32) -> bool {
+    match s.fell_at {
+        Some(t) => return time - t > 1.2,
+        None => {},
+    }
+    match s.won_at {
+        Some(t) => time - t > 1.5,
+        None => false,
+    }
+}
+
+/// The player's events: held keys, presses flipped into the buttons, the pad, the lock.
+fn read_input(s: mut Game, time: f32) {
+    for e in events() {
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                s.held = s.held | key_bit(key)
+                if !repeat && ready_again(s, time) {
+                    again(mut s)
+                } else if !repeat {
+                    if key == Key::J { flip(mut s, JAB) }
+                    if key == Key::K { flip(mut s, HEAVY) }
+                    if key == Key::L || key == Key::Q { flip(mut s, PARRY) }
+                    if key == Key::Space { flip(mut s, DODGE) }
+                    if key == Key::Tab || key == Key::R { s.locked = !s.locked }
+                    if key == Key::H { s.help = !s.help }
+                }
+            },
+            Event::KeyUp { key, .. } => s.held = s.held & !key_bit(key),
+            Event::PointerDown { button, .. } => {
+                if ready_again(s, time) {
+                    again(mut s)
+                    continue
+                }
+                if button == Button::Primary { flip(mut s, JAB) }
+                if button == Button::Secondary { flip(mut s, HEAVY) }
+                if button == Button::Middle { s.locked = !s.locked }
+            },
+            Event::PadButton { button, pressed, .. } => {
+                if pressed && ready_again(s, time) {
+                    again(mut s)
+                } else if pressed {
+                    if button == PadButton::West || button == PadButton::RightShoulder {
+                        flip(mut s, JAB)
+                    }
+                    if button == PadButton::North || button == PadButton::RightTrigger {
+                        flip(mut s, HEAVY)
+                    }
+                    if button == PadButton::LeftShoulder || button == PadButton::LeftTrigger {
+                        flip(mut s, PARRY)
+                    }
+                    if button == PadButton::South || button == PadButton::East {
+                        flip(mut s, DODGE)
+                    }
+                    if button == PadButton::RightStick { s.locked = !s.locked }
+                }
+            },
+            Event::PadAxis { axis, value, .. } => {
+                let v = if abs(value) < 0.18 { 0.0 } else { value }
+                if axis == PadAxis::LeftX { s.pad.x = v }
+                if axis == PadAxis::LeftY { s.pad.y = v }
+                if axis == PadAxis::RightX { s.pad_cam.x = v }
+                if axis == PadAxis::RightY { s.pad_cam.y = v }
+            },
+            _ => {},
+        }
+    }
+}
+
+/// The input the rules get now: the stick turned from the camera's frame into the world's.
+fn input_now(s: Game) -> u32 {
+    var x = s.pad.x
+    var y = -s.pad.y
+    if s.held & K_RIGHT != 0 { x += 1.0 }
+    if s.held & K_LEFT != 0 { x -= 1.0 }
+    if s.held & K_UP != 0 { y += 1.0 }
+    if s.held & K_DOWN != 0 { y -= 1.0 }
+    let m = length(vec2(x, y))
+    var stick: u32 = 0
+    if m > 0.2 {
+        let fwd = vec3(sin(s.cam_yaw), 0.0, cos(s.cam_yaw))
+        // The screen's right: forward across up (engine::view's camera).
+        let right = vec3(-fwd.z, 0.0, fwd.x)
+        let d = fwd * y + right * x
+        let h = heading_of(i32(d.x * 4096.0), i32(d.z * 4096.0))
+        let keys = s.held & (K_UP | K_DOWN | K_LEFT | K_RIGHT) != 0
+        let walk = s.held & K_WALK != 0 || (!keys && m < 0.65)
+        stick = u32(h) | ((if walk { 1 } else { 2 }) << PUSH_SHIFT)
+    }
+    stick | s.buttons | (if s.locked { LOCKED } else { 0 })
+}
+
+/// What the hero's body begins for what the rules began between `a` and `b`.
+fn act_for(a: sim::Player, b: sim::Player) -> u32 {
+    let none = engine::humanoid::NONE
+    if b.act == a.act && b.move_ == a.move_ && b.chain == a.chain {
+        return none
+    }
+    if b.act == WINDUP && (a.act != WINDUP || b.chain != a.chain) {
+        return if b.move_ == MOVE_HEAVY { moves::ACT_HEAVY } else if b.chain % 2 == 1 {
+            moves::ACT_JAB_2
+        } else {
+            moves::ACT_JAB
+        }
+    }
+    if b.act == PARRYING && a.act != PARRYING { return moves::ACT_PARRY }
+    if b.act == DODGING && a.act != DODGING { return moves::ACT_ROLL }
+    if b.act == HIT && a.act != HIT { return moves::ACT_HIT }
+    if b.act == DOWN && a.act != DOWN { return moves::ACT_DOWN }
+    if b.act == DEAD && a.act != DEAD { return ACT_DEATH }
+    none
+}
+
+/// A fight's log being played again from its start, to check it gives the same fight: where it
+/// is, and the next change to take.
+struct Replay: Copy {
+    world: World,
+    at: u32,
+    input: u32,
+}
+
+/// Steps of a replay a frame: a ten-minute fight checks in a few seconds without a stall.
+const REPLAY_STEPS: u32 = 4000
+
+/// The replay stepped on a slice, and when it ends, whether it matched (`sim::run`'s loop).
+fn replaying(s: mut Game) {
+    var r = match s.replay {
+        Some(r) => r,
+        None => return,
+    }
+    var k: u32 = 0
+    while !r.world.over && k < REPLAY_STEPS {
+        while r.at < s.log.len() && s.log[r.at].frame <= r.world.steps {
+            r.input = s.log[r.at].input
+            r.at += 1
+        }
+        step(mut r.world, r.input)
+        k += 1
+    }
+    if r.world.over {
+        let w = s.world
+        s.replayed = Some(r.world == w)
+        s.replay = None
+        print(
+            f"fight over: {if w.winner == Winner::Player { "won" } else if w.winner == Winner::Boss { "died" } else { "out of time" }} at {f32(w.frame) / 60.0:.1} s, Idol at {w.boss.hp}; {s.log.len()} changes, replay {if s.replayed == Some(true) { "matches" } else { "DIFFERS" }}",
+        )
+    } else {
+        s.replay = Some(r)
+    }
+}
+
+/// The rules stepped on to `time`, as many 60ths of a second as have passed.
+fn advance(s: mut Game, time: f32, dt: f32) {
+    s.since += dt
+    var n: u32 = 0
+    while s.since >= 1.0 / 60.0 && n < MOST_STEPS {
+        s.since -= 1.0 / 60.0
+        n += 1
+        if s.world.over {
+            continue
+        }
+        let input = if DEMO == 1 { play(mut s.bot, s.world) } else { input_now(s) }
+        if input != s.input {
+            s.log.push(Change { frame: s.world.steps, input })
+            s.input = input
+        }
+        s.was = s.world
+        let before = s.world
+        step(mut s.world, input)
+        let a = act_for(before.player, s.world.player)
+        if a != engine::humanoid::NONE {
+            s.pending = a
+        }
+        // What the screen says of what happened.
+        let w = s.world
+        if w.struck_at == before.frame && w.struck != before.struck ||
+            w.struck_at != before.struck_at {
+            s.shake = max(s.shake, if w.struck == STRUCK_CORE { 0.5 } else { 0.18 })
+            if w.struck == STRUCK_CORE && w.player.move_ == MOVE_HEAVY {
+                say(mut s, "CRITICAL", time)
+            }
+        }
+        if w.parried_at != before.parried_at {
+            say(mut s, "PARRIED", time)
+            s.shake = max(s.shake, 0.35)
+        }
+        if w.boss.act == KNEEL && before.boss.act != KNEEL {
+            say(mut s, "BROKEN: STRIKE ITS HEADS", time)
+        }
+        if w.hurt_at != before.hurt_at {
+            s.shake = max(s.shake, 0.45)
+        }
+        if w.boss.act == ACTIVE && w.boss.attack == SLAM && before.boss.act != ACTIVE {
+            s.shake = max(s.shake, 0.7)
+        }
+        if w.over {
+            if w.winner == Winner::Player {
+                s.won_at = Some(time)
+                say(mut s, "IDOL FELLED", time)
+            } else {
+                // Dead, or out of time (ten minutes): back to the doors either way.
+                s.fell_at = Some(time)
+                // Out of time isn't a death.
+                if w.winner == Winner::Boss {
+                    s.deaths += 1
+                }
+            }
+            // The log is played again over the next frames, a slice at a time.
+            s.replay = Some(Replay { world: World::start(), at: 0, input: 0 })
+        }
+    }
+    if n == MOST_STEPS {
+        s.since = 0.0
+    }
+    replaying(mut s)
+}
+
+fn say(s: mut Game, word: str, time: f32) {
+    s.word = String::from(word)
+    s.word_at = time
+}
+
+/// The hero's body stepped on: going as the rules moved it, acting what they began, placed where
+/// they put it and facing as they face it.
+fn hero(s: mut Game, dt: f32, k: f32) -> mat4 {
+    let w = s.world
+    let p = w.player
+    let held = w.stop > 0
+    let dt_body = if held { dt * 0.04 } else { dt }
+    // Dead and fallen: the body holds where the fall left it.
+    let none = engine::humanoid::NONE
+    let fallen = p.act == DEAD && s.mover.acting == none && s.pending == none
+    if !fallen {
+        let speed = f32(p.moved) * 60.0 / 256.0
+        let h = s.input & sim::HEADING_BITS
+        let a = f32(h) * 6.2831853 / 256.0
+        let stick = if p.act == IDLE && speed > 0.05 {
+            vec3(cos(a), 0.0, sin(a)) * speed
+        } else {
+            vec3(0.0)
+        }
+        let act = s.pending
+        s.pending = none
+        if act != none {
+            // The rules cut what was playing short: so does the body.
+            s.mover.acting = none
+        }
+        let pose = playback::step(
+            mut s.mover,
+            GAITS,
+            ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            if act != none { UPPER[act] } else { false },
+            Handling {},
+            dt_body,
+        )
+        // Where the rules put it, between their last two steps.
+        let x = mix(f32(s.was.player.x), f32(p.x), k) / 256.0
+        let z = mix(f32(s.was.player.z), f32(p.z), k) / 256.0
+        s.mover.place = vec3(x, 0.0, z)
+        let goal = yaw_of(p.facing)
+        let turn = wrapped(goal - s.mover.heading)
+        s.mover.heading = wrapped(s.mover.heading + turn * (1.0 - exp2(-dt_body / 0.045)))
+        s.mover.spin = 0.0
+        let m = playback::placed(s.mover)
+        write(mut s.palette, 0, palette(HERO.rig, pose, m))
+        return m
+    }
+    playback::placed(s.mover)
+}
+
+/// The camera's eye and where it looks: behind the hero; locked on, behind the hero on the line
+/// from the Idol, framing both.
+fn camera_goal(s: mut Game, dt: f32) -> (vec3, vec3) {
+    let w = s.world
+    let hero = s.mover.place
+    let boss = vec3(f32(w.boss.x) / 256.0, 0.0, f32(w.boss.z) / 256.0)
+    var turn = -s.pad_cam.x * 2.6
+    if s.held & C_LEFT != 0 { turn += 2.2 }
+    if s.held & C_RIGHT != 0 { turn -= 2.2 }
+    var tilt = s.pad_cam.y * 1.4
+    if s.held & C_UP != 0 { tilt -= 1.0 }
+    if s.held & C_DOWN != 0 { tilt += 1.0 }
+    s.cam_pitch = clamp(s.cam_pitch + tilt * dt, -0.1, 0.9)
+    let locked = s.locked || DEMO == 1
+    if locked && w.boss.act != DEAD {
+        let away = hero - boss
+        let goal = atan2(-away.x, -away.z)
+        let d = wrapped(goal - s.cam_yaw)
+        s.cam_yaw = wrapped(s.cam_yaw + d * (1.0 - exp2(-dt / 0.12)))
+    } else {
+        s.cam_yaw = wrapped(s.cam_yaw + turn * dt)
+        // Running, it swings round behind, slowly.
+        let p = w.player
+        if p.moved > 8 && abs(turn) < 0.01 {
+            let goal = s.mover.heading
+            let d = wrapped(goal - s.cam_yaw)
+            if abs(d) < 1.2 {
+                s.cam_yaw = wrapped(s.cam_yaw + d * (1.0 - exp2(-dt / 2.5)))
+            }
+        }
+    }
+    let fwd = vec3(sin(s.cam_yaw), 0.0, cos(s.cam_yaw))
+    let near = length(vec2(hero.x - boss.x, hero.z - boss.z))
+    if locked && w.boss.act != DEAD {
+        // Framed on a point between the hero's shoulders and the Idol's chest, nearer the hero;
+        // close in, looking up to it.
+        let down = w.boss.act == KNEEL || w.boss.act == REEL
+        let chest = boss + vec3(0.0, if down { 2.0 } else { 4.4 }, 0.0)
+        let look = mix(hero + vec3(0.0, 1.5, 0.0), chest, if down { 0.35 } else { 0.42 })
+        let close = clamp((9.0 - near) / 7.0, 0.0, 1.0)
+        let back = 6.2 + 2.0 * close
+        let eye = hero - fwd * back + vec3(0.0, 2.3 + 0.6 * close + s.cam_pitch - 0.28, 0.0)
+        return (eye, look)
+    }
+    let look = hero + vec3(0.0, 1.55, 0.0)
+    let back = 5.6
+    let eye = look - fwd * (back * cos(s.cam_pitch)) + vec3(0.0, back * sin(s.cam_pitch), 0.0)
+    (eye, look)
+}
+
+/// Keeps the eye in the nave, off the floor.
+fn kept_in(e: vec3) -> vec3 {
+    vec3(clamp(e.x, -24.5, 24.5), clamp(e.y, 0.4, 30.0), clamp(e.z, -32.5, 32.5))
+}
+
+pub fn frame(s: mut Game, time: f32, width: u32, height: u32) {
+    if width != s.width || height != s.height {
+        s.colour = texture(width: width, height: height)
+        s.shape = texture(width: width, height: height)
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let dt = match s.last {
+        Some(t) => clamp(time - t, 0.0, 0.1),
+        None => 1.0 / 60.0,
+    }
+    s.last = Some(time)
+    read_input(mut s, time)
+    match s.fell_at {
+        Some(t) => if time - t > BACK_AFTER { again(mut s) },
+        None => {},
+    }
+    if DEMO == 1 {
+        match s.won_at {
+            Some(t) => if time - t > 4.0 { again(mut s) },
+            None => {},
+        }
+    }
+    advance(mut s, time, dt)
+    let k = clamp(s.since * 60.0, 0.0, 1.0)
+    let _ = hero(mut s, dt, k)
+    let w = s.world
+    // The Idol: its stance sprung after the one its rules want, held a moment on a blow.
+    let held = w.stop > 0
+    let dt_idol = if held { dt * 0.05 } else { dt }
+    s.walked += f32(w.boss.moved) / 256.0 * dt_idol * 60.0
+    s.stance = sprung(s.stance, wanted(w.boss, s.walked, time), half_life(w.boss), dt_idol)
+    let goal_yaw = yaw_of(w.boss.facing)
+    s.yaw = wrapped(s.yaw + wrapped(goal_yaw - s.yaw) * (1.0 - exp2(-dt_idol / 0.06)))
+    let boss_at = vec3(
+        mix(f32(s.was.boss.x), f32(w.boss.x), k) / 256.0,
+        0.0,
+        mix(f32(s.was.boss.z), f32(w.boss.z), k) / 256.0,
+    )
+    let flash = if w.frame - w.struck_at < 5 && w.struck_at > 0 { 1.0 } else { 0.0 }
+    var all = s.statics.clone()
+    blocks(s.stance, boss_at, s.yaw, flash, mut all)
+    let count = min(all.len(), MOST_BLOCKS)
+    while all.len() > MOST_BLOCKS {
+        let _ = all.pop()
+    }
+    write(mut s.blocks, 0, all)
+    // The camera, sprung after its goal, shaken by blows.
+    let (eye_goal, at_goal) = camera_goal(mut s, dt)
+    let ke = 1.0 - exp2(-dt / 0.07)
+    s.eye = kept_in(s.eye + (eye_goal - s.eye) * ke)
+    s.at = s.at + (at_goal - s.at) * (1.0 - exp2(-dt / 0.05))
+    s.shake = max(s.shake - dt * 2.2, 0.0)
+    let jolt = vec3(sin(time * 71.0), sin(time * 53.0 + 1.0), 0.0) * (s.shake * s.shake * 0.25)
+    let cam = first_camera(s.eye + jolt, s.at + jolt * 0.5, 1.05, width, height)
+    // The floor's shadows: the hero's, and the Idol's feet and body.
+    var shadows = [vec4(0.0); 8]
+    shadows[0] = vec4(s.mover.place.x, s.mover.place.z, 0.55, 0.65)
+    shadows[1] = vec4(boss_at.x, boss_at.z, 2.6, 0.45)
+    let face = vec3(sin(s.yaw), 0.0, cos(s.yaw))
+    let left = vec3(cos(s.yaw), 0.0, -sin(s.yaw))
+    for f in 0..2 {
+        let p = boss_at + left * s.stance.feet[f].x + face * s.stance.feet[f].z
+        shadows[2 + f] = vec4(p.x, p.z, 1.1, 0.6 * saturate(1.0 - s.stance.feet[f].y / 2.0))
+    }
+    for h in 0..3 {
+        let hp = s.stance.hands[h]
+        let p = boss_at + left * hp.x + face * hp.z
+        shadows[4 + h] = vec4(p.x, p.z, 0.9, 0.55 * saturate(1.0 - hp.y / 3.0))
+    }
+    var mark = vec4(0.0)
+    if w.boss.act == WINDUP && w.boss.attack == SLAM {
+        let wound = 1.0 - f32(w.boss.timer) / f32(max(w.boss.wind, 1))
+        mark = vec4(
+            f32(w.boss.at_x) / 256.0,
+            f32(w.boss.at_z) / 256.0,
+            f32(SLAM_R) / 256.0,
+            smoothstep(0.2, 0.9, wound) * 0.7,
+        )
+    }
+    let hurt = if w.hurt_at > 0 && w.frame - w.hurt_at < 20 {
+        1.0 - f32(w.frame - w.hurt_at) / 20.0
+    } else { 0.0 }
+    let shot = Shot {
+        cam,
+        sun: normalize(SUN),
+        time,
+        resolution: vec2(f32(width), f32(height)),
+        flash: if w.parried_at > 0 && w.frame - w.parried_at < 4 { 1.0 } else { 0.0 },
+        hurt: if w.player.act == DEAD { 0.6 } else { hurt },
+        shadows,
+        mark,
+    }
+    // The scene.
+    let p = begin_pass2_with_depth(
+        mut s.colour,
+        mut s.shape,
+        mut s.depth,
+        clear: vec4(0.0),
+        clear_depth: 0.0,
+    )
+    draw(
+        p,
+        floor_vertex.bind(shot: shot),
+        paint_floor.bind(shot: shot),
+        vertices: 6,
+        depth: NEAREST,
+    )
+    draw(
+        p,
+        block.bind(blocks: s.blocks.items(), shot: shot),
+        paint_block.bind(shot: shot),
+        vertices: 36,
+        instances: count,
+        depth: NEAREST,
+    )
+    draw(
+        p,
+        body.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
+        paint_body.bind(shot: shot),
+        indices: s.indices,
+        index_count: HERO.indices.len(),
+        depth: NEAREST,
+    )
+    p.end()
+    hud(mut s, time, cam, boss_at)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, cover, compose.bind(shot: shot, colour: s.colour, shape: s.shape), vertices: 3)
+    s.renderer.draw(screen, vec2(f32(width), f32(height)))
+    screen.present()
+}
+
+/// A bar: its back, then its share filled.
+fn bar(list: mut DrawList, r: Rect, share: f32, colour: vec4) {
+    list.rect(r.shrink(-2.0), SHADE, radius: 3.0)
+    list.rect(
+        Rect::new(x: r.x, y: r.y, w: r.w * clamp(share, 0.0, 1.0), h: r.h),
+        colour,
+        radius: 2.0,
+    )
+}
+
+/// What's drawn over the fight: the hero's health and stamina, the Idol's health and poise, the
+/// part a blow would land on, a word, a death, the help.
+fn hud(s: mut Game, time: f32, cam: Camera, boss_at: vec3) {
+    let w = f32(s.width)
+    let h = f32(s.height)
+    let u = clamp(h / 720.0, 0.6, 2.0)
+    s.list.clear(vec2(w, h))
+    let world = s.world
+    // The hero's bars, low on the left.
+    let x0 = 32.0 * u
+    bar(
+        mut s.list,
+        Rect::new(x: x0, y: h - 70.0 * u, w: 300.0 * u, h: 12.0 * u),
+        f32(world.player.hp) / f32(sim::PLAYER_HP),
+        LIFE,
+    )
+    bar(
+        mut s.list,
+        Rect::new(x: x0, y: h - 48.0 * u, w: 300.0 * u, h: 8.0 * u),
+        f32(world.player.stamina) / f32(sim::STAMINA),
+        BREATH,
+    )
+    // The Idol's, across the top.
+    let bw = min(640.0 * u, w - 80.0)
+    let bx = (w - bw) * 0.5
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        "The Idol of the Threefold God",
+        20.0 * u,
+        vec2(bx, 22.0 * u),
+        INK,
+    )
+    bar(
+        mut s.list,
+        Rect::new(x: bx, y: 52.0 * u, w: bw, h: 10.0 * u),
+        f32(world.boss.hp) / f32(sim::BOSS_HP),
+        LIFE,
+    )
+    bar(
+        mut s.list,
+        Rect::new(x: bx, y: 68.0 * u, w: bw, h: 4.0 * u),
+        f32(world.boss.poise) / f32(sim::BOSS_POISE),
+        POISE,
+    )
+    let line = f"Deaths {s.deaths}    {u32(f32(world.frame) / 60.0) / 60}:{u32(f32(world.frame) / 60.0) % 60 / 10}{u32(f32(world.frame) / 60.0) % 10}"
+    let _ = s.list.text(s.fonts, Face::Mono, line.as_str(), 15.0 * u, vec2(x0, 20.0 * u), MUTED)
+    // Locked on: a mark on the part a blow would land on now.
+    if (s.locked || DEMO == 1) && world.boss.act != DEAD {
+        let ps = parts(world.boss)
+        var best = ps[0]
+        for q in ps {
+            if q.which > best.which {
+                best = q
+            }
+        }
+        let y = if best.which == STRUCK_CORE { 2.0 } else if best.which == STRUCK_HANDS {
+            0.5
+        } else { 1.0 }
+        let at = vec3(f32(best.x) / 256.0, y, f32(best.z) / 256.0)
+        let c = cam.view_proj * vec4(at, 1.0)
+        if c.w > 0.0 {
+            let px = cam.pixel(at)
+            let r = (if best.which == STRUCK_CORE { 11.0 } else { 7.0 }) * u
+            s.list.diamond(
+                Rect::new(x: px.x - r, y: px.y - r, w: 2.0 * r, h: 2.0 * r),
+                if best.which == STRUCK_CORE { GOLD } else { INK },
+                width: 2.0,
+            )
+        }
+    }
+    // A word: what just happened.
+    let age = time - s.word_at
+    if age < 1.1 && !s.word.is_empty() {
+        let a = 1.0 - smoothstep(0.7, 1.1, age)
+        let size = 34.0 * u
+        let word = s.word.clone()
+        let tw = f32(word.len()) * size * 0.55
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            word.as_str(),
+            size,
+            vec2((w - tw) * 0.5, h * 0.3),
+            vec4(GOLD.xyz, a),
+        )
+    }
+    if s.fell_at.is_some() {
+        let size = 64.0 * u
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            if s.world.winner == Winner::Draw { "OUT OF TIME" } else { "YOU DIED" },
+            size,
+            vec2(w * 0.5 - (if s.world.winner == Winner::Draw { 3.2 } else {
+                2.4
+            }) * size, h * 0.42),
+            RED,
+        )
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Back at the doors in a moment (or press any key).",
+            18.0 * u,
+            vec2(w * 0.5 - 200.0 * u, h * 0.42 + size * 1.2),
+            MUTED,
+        )
+    }
+    if s.won_at.is_some() {
+        let size = 56.0 * u
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "IDOL FELLED",
+            size,
+            vec2(w * 0.5 - 3.0 * size, h * 0.42),
+            GOLD,
+        )
+        let t = f32(world.frame) / 60.0
+        let note = f"in {u32(t) / 60}:{u32(t) % 60 / 10}{u32(t) % 10}, after {s.deaths} deaths. Press any key to fight again."
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            note.as_str(),
+            18.0 * u,
+            vec2(w * 0.5 - 190.0 * u, h * 0.42 + size * 1.2),
+            MUTED,
+        )
+    }
+    if s.help {
+        let lines = [
+            "WASD move (Shift walks)   Arrows turn the camera",
+            "J / left click: jab (tap again to chain)",
+            "K / right click: heavy (breaks its poise)",
+            "L or Q: parry its swipes and its middle hand",
+            "Space: dodge   Tab / R: lock on   H: hide this",
+            "Its fists reach only what's low: hit its shins,",
+            "its hands when a slam sticks them in the floor,",
+            "and its heads when it's down on its knees.",
+        ]
+        var y = h - 230.0 * u
+        let x = w - 430.0 * u
+        s.list.rect(
+            Rect::new(x: x - 12.0 * u, y: y - 10.0 * u, w: 420.0 * u, h: 196.0 * u),
+            SHADE,
+            radius: 6.0,
+        )
+        for l in lines {
+            let _ = s.list.text(s.fonts, Face::Sans, l, 15.0 * u, vec2(x, y), MUTED)
+            y += 22.0 * u
+        }
+    }
+    let _ = boss_at
+}
+
+/// A few frames record draws the host takes.
+@test(frames: 3)
+fn frames_record_valid_draws() {}

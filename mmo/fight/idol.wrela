@@ -1,0 +1,439 @@
+// The Idol drawn as a grey box: a giant of stone blocks (6.4 m to the crowns of its three heads,
+// the player 1.8 m), posed from what the rules say it's doing. Each state has a stance: where its
+// hips are and how its trunk leans and twists, where each of its three hands and two feet go (in
+// its own space: x its left, y up, z ahead), which parts glow. The client springs the drawn stance
+// after the wanted one, slowly while it winds up (the tell is read), at once as it strikes
+// (the hit has weight because it arrives), and holds on the recovery. Arms and legs reach their
+// hands and feet with two bones each (`reach`).
+
+use sim::{
+    ACTIVE, ATTACKS, Boss, DEAD, IDLE, KNEEL, PALM, RECOVER, REEL, SLAM, SLAM_AHEAD, STOMP, STUCK,
+    SWIPE_LEFT, SWIPE_RIGHT, TURN, UNIT, WINDUP,
+}
+
+/// What the Idol's drawn from.
+pub struct Stance: Copy {
+    /// Its hips' height, and its trunk's lean forward, twist to its left and tilt to its left
+    /// (radians).
+    pub hips: f32,
+    pub lean: f32,
+    pub twist: f32,
+    pub tilt: f32,
+    /// Its left, right and middle hands, and its left and right feet, in its own space (m).
+    pub hands: [vec3; 3],
+    pub feet: [vec3; 2],
+    /// How the heads hang (forward, radians).
+    pub nod: f32,
+    /// How much each hand, the right foot and the heads glow (a tell, or an opening).
+    pub glow: [f32; 5],
+}
+
+/// Its proportions (m): the hips over the floor standing, the trunk's height, the shoulders'
+/// half-span, the legs' and arms' bones, the middle arm's.
+const HIPS: f32 = 2.9
+const TRUNK: f32 = 2.3
+const SHOULDER: f32 = 1.25
+const THIGH: f32 = 1.55
+const SHIN: f32 = 1.5
+const UPPER: f32 = 1.7
+const FORE: f32 = 1.6
+const MID_UPPER: f32 = 2.0
+const MID_FORE: f32 = 1.9
+
+/// Standing: hands hung, the middle one before its belly, feet apart.
+pub fn rest() -> Stance {
+    Stance {
+        hips: HIPS,
+        lean: 0.05,
+        twist: 0.0,
+        tilt: 0.0,
+        hands: [vec3(1.85, 2.3, 0.5), vec3(-1.85, 2.3, 0.5), vec3(0.0, 3.0, 1.6)],
+        feet: [vec3(0.75, 0.0, 0.1), vec3(-0.75, 0.0, 0.1)],
+        nod: 0.1,
+        glow: [0.0; 5],
+    }
+}
+
+fn lerp3(a: vec3, b: vec3, t: f32) -> vec3 {
+    a + (b - a) * t
+}
+
+fn ease(t: f32) -> f32 {
+    let u = clamp(t, 0.0, 1.0)
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// The swipe's hand along its arc, `t` from its start (0: drawn back across, far side) to its
+/// end (1: flung out on its own side), for the hand on `side` (1 its left, -1 its right).
+fn swipe_hand(side: f32, t: f32) -> vec3 {
+    let a = mix(-1.15, 1.6, t) * side
+    let r = 4.0
+    vec3(sin(a) * r, 1.15, cos(a) * r)
+}
+
+/// The stance it wants now, from the rules' boss `b` and how far it's walked (m, for its steps).
+/// `frames_in` is how many frames it's been in this state.
+pub fn wanted(b: Boss, walked: f32, time: f32) -> Stance {
+    var s = rest()
+    // Breathing.
+    s.hips += 0.04 * sin(time * 1.7)
+    s.hands[2].y += 0.08 * sin(time * 1.7 + 0.6)
+    // Walking: its feet step in turn, its hips sway.
+    let phase = walked / 2.4 * 6.2831853
+    let stepping = if b.act == IDLE || b.act == TURN { 1.0 } else { 0.0 }
+    if stepping > 0.0 {
+        let lift = |p: f32| -> f32 { max(sin(p), 0.0) * 0.45 }
+        s.feet[0] = s.feet[0] + vec3(0.0, lift(phase), 0.6 * cos(phase))
+        s.feet[1] = s.feet[1] + vec3(0.0, lift(phase + 3.14159), 0.6 * cos(phase + 3.14159))
+        s.tilt = 0.04 * sin(phase)
+        s.twist = 0.05 * cos(phase)
+    }
+    let a = ATTACKS[b.attack]
+    // How far through the windup (0 to 1), and through the recovery.
+    let wound = if b.act == WINDUP && b.wind > 0 {
+        1.0 - f32(b.timer) / f32(b.wind)
+    } else {
+        0.0
+    }
+    let recovered = if b.act == RECOVER && a.recovery > 0 {
+        1.0 - f32(b.timer) / f32(a.recovery)
+    } else {
+        0.0
+    }
+    let striking = b.act == ACTIVE
+    let attack = b.attack
+    if attack == SWIPE_LEFT || attack == SWIPE_RIGHT {
+        let side = if attack == SWIPE_LEFT { 1.0 } else { -1.0 }
+        let h = if attack == SWIPE_LEFT { 0 } else { 1 }
+        if b.act == WINDUP {
+            // Drawn back across the body, high, the trunk wound the other way.
+            let k = ease(wound * 1.3)
+            s.hands[h] = lerp3(s.hands[h], vec3(-0.9 * side, 4.4, -0.9), k)
+            s.twist = -0.55 * side * k
+            s.lean = 0.05 + 0.1 * k
+            s.hips -= 0.25 * k
+            s.glow[h] = ease(wound)
+        } else if striking {
+            let t = 1.0 - f32(b.timer) / f32(a.active)
+            s.hands[h] = swipe_hand(side, t)
+            s.twist = mix(-0.5, 0.6, t) * side
+            s.lean = 0.3
+            s.hips -= 0.35
+            s.glow[h] = 1.0
+        } else if b.act == RECOVER {
+            // Held where it ended, then back.
+            let k = ease((recovered - 0.4) / 0.6)
+            s.hands[h] = lerp3(swipe_hand(side, 1.0), s.hands[h], k)
+            s.twist = mix(0.6 * side, 0.0, k)
+            s.lean = mix(0.3, 0.05, k)
+            s.hips -= 0.35 * (1.0 - k)
+        }
+    } else if attack == PALM {
+        if b.act == WINDUP {
+            let k = ease(wound * 1.2)
+            s.hands[2] = lerp3(s.hands[2], vec3(0.0, 4.3, 0.3), k)
+            s.lean = 0.05 - 0.2 * k
+            s.hips += 0.1 * k
+            s.glow[2] = ease(wound)
+        } else if striking {
+            s.hands[2] = vec3(0.0, 1.1, 5.6)
+            s.lean = 0.55
+            s.hips -= 0.6
+            s.feet[0].z -= 0.5
+            s.feet[1].z += 0.9
+            s.glow[2] = 1.0
+        } else if b.act == RECOVER {
+            let k = ease((recovered - 0.45) / 0.55)
+            s.hands[2] = lerp3(vec3(0.0, 1.1, 5.6), s.hands[2], k)
+            s.lean = mix(0.55, 0.05, k)
+            s.hips -= 0.6 * (1.0 - k)
+        }
+    } else if attack == SLAM &&
+        (b.act == WINDUP || striking || b.act == STUCK || b.act == RECOVER) {
+        let down = [
+            vec3(0.55, 0.35, SLAM_AT),
+            vec3(-0.55, 0.35, SLAM_AT),
+            vec3(0.0, 0.4, SLAM_AT + 0.4),
+        ]
+        if b.act == WINDUP {
+            let k = ease(wound * 1.15)
+            s.hands[0] = lerp3(s.hands[0], vec3(0.9, 7.6, 0.2), k)
+            s.hands[1] = lerp3(s.hands[1], vec3(-0.9, 7.6, 0.2), k)
+            s.hands[2] = lerp3(s.hands[2], vec3(0.0, 8.0, -0.4), k)
+            s.lean = 0.05 - 0.3 * k
+            s.hips += 0.15 * k
+            s.nod = 0.1 - 0.4 * k
+            s.glow = [ease(wound); 5]
+            s.glow[3] = 0.0
+            s.glow[4] = 0.0
+        } else if striking || b.act == STUCK {
+            s.hands = down
+            s.lean = 0.95
+            s.hips = 1.9
+            s.feet[0].z -= 0.2
+            s.feet[1].z -= 0.2
+            s.nod = 0.4
+            // Stuck, the hands are what's open.
+            if b.act == STUCK {
+                let shake = 0.03 * sin(time * 40.0)
+                s.hands[0].x += shake
+                s.glow = [0.55, 0.55, 0.55, 0.0, 0.0]
+            } else {
+                s.glow = [1.0, 1.0, 1.0, 0.0, 0.0]
+            }
+        } else {
+            let k = ease(recovered)
+            for i in 0..3 {
+                s.hands[i] = lerp3(down[i], s.hands[i], k)
+            }
+            s.lean = mix(0.95, 0.05, k)
+            s.hips = mix(1.9, HIPS, k)
+        }
+    } else if attack == STOMP && (b.act == WINDUP || striking || b.act == RECOVER) {
+        if b.act == WINDUP {
+            let k = ease(wound * 1.2)
+            s.feet[1] = lerp3(s.feet[1], vec3(-0.85, 2.0, 0.5), k)
+            s.tilt = 0.18 * k
+            s.hands[0] = lerp3(s.hands[0], vec3(2.6, 3.6, 0.0), k)
+            s.hands[1] = lerp3(s.hands[1], vec3(-2.6, 3.8, 0.0), k)
+            s.hips += 0.2 * k
+            s.glow[3] = ease(wound)
+        } else if striking {
+            s.feet[1] = vec3(-0.85, 0.0, 0.5)
+            s.hips -= 0.45
+            s.lean = 0.25
+            s.glow[3] = 1.0
+        } else {
+            let k = ease(recovered)
+            s.hips -= 0.45 * (1.0 - k)
+            s.lean = mix(0.25, 0.05, k)
+        }
+    }
+    if b.act == KNEEL || b.act == REEL || b.act == DEAD {
+        // Down: on its knees (one knee, reeling), trunk forward, hands on the floor, its heads
+        // low and open.
+        let one = b.act == REEL
+        s.hips = if one { 1.85 } else { 1.45 }
+        s.lean = if b.act == DEAD { 1.35 } else { 0.85 }
+        s.twist = if one { 0.25 } else { 0.0 }
+        s.tilt = 0.0
+        s.feet[0] = vec3(0.75, 0.0, if one { 0.9 } else { -1.9 })
+        s.feet[1] = vec3(-0.75, 0.0, -1.9)
+        s.hands[0] = vec3(1.7, 0.0, 1.9)
+        s.hands[1] = vec3(-1.7, 0.0, 1.9)
+        s.hands[2] = vec3(0.0, 0.5, 1.4)
+        s.nod = 0.6
+        s.glow = [0.0, 0.0, 0.0, 0.0, if b.act == DEAD { 0.0 } else { 0.6 + 0.2 * sin(time * 6.0) }]
+        if b.act == DEAD {
+            s.hips = 0.9
+            s.feet[0] = vec3(0.75, 0.0, -2.2)
+        }
+    }
+    s
+}
+
+/// Where the slam lands ahead of the Idol (m).
+const SLAM_AT: f32 = 3.25
+
+/// How fast (half-life, s) the drawn stance springs after the wanted one now: slowly through a
+/// windup, at once on a strike, gently otherwise.
+pub fn half_life(b: Boss) -> f32 {
+    if b.act == ACTIVE {
+        0.025
+    } else if b.act == WINDUP {
+        0.12
+    } else if b.act == KNEEL || b.act == REEL || b.act == DEAD {
+        0.09
+    } else if b.act == STUCK {
+        0.03
+    } else {
+        0.14
+    }
+}
+
+/// `s` stepped toward `goal` by `dt` with half-life `half`.
+pub fn sprung(s: Stance, goal: Stance, half: f32, dt: f32) -> Stance {
+    let k = 1.0 - exp2(-dt / max(half, 1.0e-4))
+    var out = s
+    out.hips = mix(s.hips, goal.hips, k)
+    out.lean = mix(s.lean, goal.lean, k)
+    out.twist = mix(s.twist, goal.twist, k)
+    out.tilt = mix(s.tilt, goal.tilt, k)
+    out.nod = mix(s.nod, goal.nod, k)
+    for i in 0..3 {
+        out.hands[i] = lerp3(s.hands[i], goal.hands[i], k)
+    }
+    for i in 0..2 {
+        out.feet[i] = lerp3(s.feet[i], goal.feet[i], k)
+    }
+    for i in 0..5 {
+        out.glow[i] = mix(s.glow[i], goal.glow[i], min(k * 2.0, 1.0))
+    }
+    out
+}
+
+/// A block of the scene: its box (a unit cube's transform: columns its half-extents' axes and its
+/// centre), its colour (linear) and how much it glows.
+pub struct Block: Copy + GpuData {
+    pub model: mat4,
+    pub colour: vec4,
+}
+
+/// A block from `a` to `b`, `w` wide and `d` deep about the line, its width along `side` as far
+/// as it's square to the line.
+pub fn limb(a: vec3, b: vec3, side: vec3, colour: vec4, w: f32, d: f32) -> Block {
+    let y = normalize(b - a)
+    var x = side - y * dot(side, y)
+    if length(x) < 1.0e-3 {
+        x = vec3(1.0, 0.0, 0.0) - y * y.x
+    }
+    x = normalize(x)
+    let z = cross(x, y)
+    let h = 0.5 * length(b - a)
+    let c = 0.5 * (a + b)
+    Block {
+        model: mat4(
+            vec4(x * (0.5 * w), 0.0),
+            vec4(y * h, 0.0),
+            vec4(z * (0.5 * d), 0.0),
+            vec4(c, 1.0),
+        ),
+        colour,
+    }
+}
+
+/// A block at `c` with half-extents `h` along the frame `(x, y, z)`.
+pub fn cube(c: vec3, h: vec3, x: vec3, y: vec3, z: vec3, colour: vec4) -> Block {
+    Block {
+        model: mat4(vec4(x * h.x, 0.0), vec4(y * h.y, 0.0), vec4(z * h.z, 0.0), vec4(c, 1.0)),
+        colour,
+    }
+}
+
+/// Where a two-bone limb from `root` bends to put its end at `goal` (as near as it reaches):
+/// toward `pole`. Its middle joint and its end.
+pub fn reach(root: vec3, goal: vec3, first: f32, second: f32, pole: vec3) -> (vec3, vec3) {
+    let to = goal - root
+    let far = clamp(length(to), abs(first - second) + 1.0e-3, first + second - 1.0e-3)
+    let dir = if length(to) > 1.0e-4 { normalize(to) } else { vec3(0.0, -1.0, 0.0) }
+    let end = root + dir * far
+    // The law of cosines: how far along and how far out the middle joint is.
+    let along = (first * first - second * second + far * far) / (2.0 * far)
+    let out = sqrt(max(first * first - along * along, 0.0))
+    var bend = pole - dir * dot(pole, dir)
+    if length(bend) < 1.0e-4 {
+        bend = vec3(0.0, 0.0, 1.0) - dir * dir.z
+    }
+    bend = normalize(bend)
+    (root + dir * along + bend * out, end)
+}
+
+/// The stone's colour, and a glow's (a tell's hot orange; an opening's pale gold).
+const STONE = vec3(0.42, 0.40, 0.37)
+const STONE_DARK = vec3(0.30, 0.29, 0.27)
+pub const TELL = vec3(1.0, 0.42, 0.12)
+pub const OPEN = vec3(1.0, 0.85, 0.45)
+
+fn stone(glow: f32, hot: vec3, flash: f32, dark: bool) -> vec4 {
+    let base = if dark { STONE_DARK } else { STONE }
+    let c = mix(base, vec3(1.0), vec3(flash * 0.6))
+    // The colour's alpha is how much it glows: the shader adds the glow's colour to it.
+    vec4(mix(c, hot, vec3(glow * 0.6)), glow)
+}
+
+/// The Idol's blocks, stood at `at` (the floor, m) facing `yaw` (radians: 0 along +z, a
+/// quarter turn along +x), in stance `s`; `flash` whitens it a moment after a blow.
+pub fn blocks(s: Stance, at: vec3, yaw: f32, flash: f32, out: mut Vec<Block>) {
+    let face = vec3(sin(yaw), 0.0, cos(yaw))
+    let left_flat = vec3(cos(yaw), 0.0, -sin(yaw))
+    // Its own space in the world: x its left, y up, z ahead.
+    let world = |p: vec3| -> vec3 { at + left_flat * p.x + vec3(0.0, p.y, 0.0) + face * p.z }
+    let dir = |p: vec3| -> vec3 { left_flat * p.x + vec3(0.0, p.y, 0.0) + face * p.z }
+    // The trunk's frame: leaned forward about its left, twisted about up, tilted about ahead.
+    let tw = s.twist
+    let fwd0 = vec3(sin(tw), 0.0, cos(tw))
+    let left0 = vec3(cos(tw), 0.0, -sin(tw))
+    let up1 = vec3(0.0, cos(s.lean), 0.0) + fwd0 * sin(s.lean)
+    let fwd1 = fwd0 * cos(s.lean) - vec3(0.0, sin(s.lean), 0.0)
+    let up = normalize(up1 * cos(s.tilt) - left0 * sin(s.tilt))
+    let left = normalize(cross(up, fwd1))
+    let fwd = cross(left, up)
+    let (wl, wu, wf) = (dir(left), dir(up), dir(fwd))
+    let hips = world(vec3(0.0, s.hips, 0.0))
+    let chest = hips + wu * TRUNK
+    let glow_hot = |g: f32| -> vec4 { stone(g, TELL, flash, dark: false) }
+    let plain = stone(0.0, TELL, flash, dark: false)
+    let dark = stone(0.0, TELL, flash, dark: true)
+    // Pelvis and trunk: a wide block of a pelvis, a waist, a great chest.
+    out.push(cube(hips + wu * 0.1, vec3(1.0, 0.45, 0.65), wl, wu, wf, dark))
+    out.push(cube(hips + wu * 0.85, vec3(0.8, 0.45, 0.55), wl, wu, wf, plain))
+    out.push(cube(chest - wu * 0.55, vec3(1.35, 0.75, 0.8), wl, wu, wf, plain))
+    // Three heads on one wide neck: the middle ahead, the others turned out to either side, so
+    // nowhere round it is out of its sight.
+    let neck = chest + wu * 0.35
+    out.push(cube(neck, vec3(0.9, 0.2, 0.45), wl, wu, wf, dark))
+    let nod_up = normalize(wu * cos(s.nod) + wf * sin(s.nod))
+    let nod_fwd = normalize(cross(wl, nod_up))
+    let heads_glow = stone(s.glow[4], OPEN, flash, dark: false)
+    for k in 0..3 {
+        let side = f32(k) - 1.0
+        let turn = side * 1.1
+        let hf = normalize(nod_fwd * cos(turn) + wl * sin(turn))
+        let hl = normalize(cross(nod_up, hf))
+        let c = neck + wl * (side * 0.72) + nod_up * 0.6 + hf * (0.1 - abs(side) * 0.15)
+        let size = if k == 1 { vec3(0.36, 0.42, 0.36) } else { vec3(0.3, 0.36, 0.3) }
+        out.push(cube(c, size, hl, nod_up, hf, heads_glow))
+        // A brow, so each face reads which way it looks.
+        out.push(
+            cube(
+                c + hf * size.z + nod_up * 0.08,
+                vec3(size.x * 0.9, 0.06, 0.06),
+                hl,
+                nod_up,
+                hf,
+                dark,
+            ),
+        )
+    }
+    // The side arms, from the shoulders, elbows bending out and back; the middle arm from the
+    // breastbone, elbow bending down.
+    let shoulders = [
+        chest + wl * SHOULDER - wu * 0.15,
+        chest - wl * SHOULDER - wu * 0.15,
+        chest - wu * 0.75 + wf * 0.8,
+    ]
+    let lens = [(UPPER, FORE), (UPPER, FORE), (MID_UPPER, MID_FORE)]
+    for h in 0..3 {
+        let side = if h == 0 { 1.0 } else if h == 1 { -1.0 } else { 0.0 }
+        let goal = world(s.hands[h])
+        let pole = if h == 2 { -wu + wf * 0.2 } else { wl * side - wf * 0.6 - wu * 0.3 }
+        let (first, second) = lens[h]
+        let (elbow, hand) = reach(shoulders[h], goal, first, second, pole)
+        let g = s.glow[h]
+        out.push(cube(shoulders[h], vec3(0.42), wl, wu, wf, dark))
+        out.push(limb(shoulders[h], elbow, wf, plain, w: 0.62, d: 0.62))
+        out.push(limb(elbow, hand, wf, if g > 0.01 { glow_hot(g * 0.4) } else {
+            plain
+        }, w: 0.55, d: 0.55))
+        // The fist: a big block of a hand.
+        let along = normalize(hand - elbow)
+        out.push(limb(hand - along * 0.05, hand + along * 0.6, wf, glow_hot(g), w: 0.62, d: 0.5))
+    }
+    // The legs: hips to knees (bending forward) to feet, each foot a slab.
+    for f in 0..2 {
+        let side = if f == 0 { 1.0 } else { -1.0 }
+        let root = hips + wl * (0.62 * side) - wu * 0.3
+        let ankle = world(s.feet[f] + vec3(0.0, 0.32, 0.0))
+        let (knee, end) = reach(root, ankle, THIGH, SHIN, dir(vec3(0.15 * side, 0.0, 1.0)))
+        let g = if f == 1 { s.glow[3] } else { 0.0 }
+        out.push(limb(root, knee, wf, plain, w: 0.8, d: 0.8))
+        out.push(limb(knee, end, wf, if g > 0.01 { glow_hot(g * 0.5) } else {
+            dark
+        }, w: 0.7, d: 0.7))
+        out.push(cube(knee, vec3(0.42), wl, wu, wf, dark))
+        let foot_c = end + face * 0.3 - vec3(0.0, 0.16, 0.0)
+        out.push(
+            cube(foot_c, vec3(0.42, 0.16, 0.7), left_flat, vec3(0.0, 1.0, 0.0), face, glow_hot(g)),
+        )
+    }
+}

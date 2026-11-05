@@ -1,0 +1,142 @@
+// A bot that plays the fight as a fair player would: it reads the Idol's tells and nothing the
+// screen doesn't show (what the Idol is doing and how far into its windup), dodges what can't be
+// parried, parries or dodges its swipes and its palm, chips its shins while it stands, punishes
+// its slams on the stuck hands, and spends each knockdown on its heads. `skill` says how often it
+// reads a tell right (0 to 100). The tests tune the fight with it; the program plays it by
+// itself before a player takes over (`--set DEMO=1`).
+
+use sim::{
+    ACTIVE, ATTACKS, Boss, DODGE, DODGING, HEAVY, IDLE, JAB, KNEEL, LOCKED, PALM, PARRY, PUSH_SHIFT,
+    RECOVER, REEL, SLAM, SLAM_R, STOMP, STOMP_R, STUCK, SWIPE_REACH, WINDUP, World, boss_point,
+    distance, heading_of,
+}
+
+/// The bot's state: its input as it last sent it, its dice, its skill and how it read the
+/// current tell.
+pub struct Bot: Copy {
+    pub input: u32,
+    dice: u32,
+    pub skill: u32,
+    /// The attack whose tell it's read (0: none yet), and what it chose: dodge (1), parry (2),
+    /// or a mistake (3: it does nothing).
+    read: u32,
+    choice: u32,
+}
+
+impl Bot {
+    pub fn new(skill: u32, seed: u32) -> Bot {
+        Bot { input: LOCKED, dice: seed | 1, skill, read: 0, choice: 0 }
+    }
+}
+
+fn roll(b: mut Bot) -> u32 {
+    var x = b.dice
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    b.dice = x
+    x % 100
+}
+
+/// Toward (tx, tz), running, or still if it's there.
+fn toward(w: World, tx: i32, tz: i32, within: i32) -> u32 {
+    let p = w.player
+    if distance(p.x, p.z, tx, tz) <= within {
+        return 0
+    }
+    u32(heading_of(tx - p.x, tz - p.z)) | (2 << PUSH_SHIFT)
+}
+
+/// Away from (fx, fz), running.
+fn away(w: World, fx: i32, fz: i32) -> u32 {
+    let p = w.player
+    u32(heading_of(p.x - fx, p.z - fz)) | (2 << PUSH_SHIFT)
+}
+
+/// The bot's input for the next step.
+pub fn play(bot: mut Bot, w: World) -> u32 {
+    let p = w.player
+    let b = w.boss
+    var stick: u32 = 0
+    var press: u32 = 0
+    let d = distance(p.x, p.z, b.x, b.z)
+    if b.act != WINDUP && b.act != ACTIVE {
+        bot.read = 0
+    }
+    if b.act == WINDUP {
+        // A tell: read once, as it starts.
+        if bot.read != b.attack {
+            bot.read = b.attack
+            let r = roll(mut bot)
+            let right = r < bot.skill
+            bot.choice = if !right { 3 } else if ATTACKS[b.attack].parryable && roll(mut bot) < 55 {
+                2
+            } else {
+                1
+            }
+        }
+        let a = b.attack
+        // Whether it's in what the attack will hit, about as a player judges it.
+        let threatened = if a == SLAM {
+            distance(p.x, p.z, b.at_x, b.at_z) < SLAM_R + 160
+        } else if a == STOMP {
+            d < STOMP_R + 160
+        } else if a == PALM {
+            d < sim::PALM_REACH + 200
+        } else {
+            d < SWIPE_REACH + 400
+        }
+        if threatened &&
+            bot.choice == 1 &&
+            b.timer <= 6 &&
+            b.timer >= 3 &&
+            (p.act == IDLE || p.act == RECOVER) {
+            press = DODGE
+            let (fx, fz) = if a == SLAM { (b.at_x, b.at_z) } else { (b.x, b.z) }
+            // Out of a slam or a stomp; through a swipe, sideways.
+            stick = if a == SLAM || a == STOMP { away(w, fx, fz) } else {
+                u32(heading_of(p.x - b.x, p.z - b.z) + 64) % 256 | (2 << PUSH_SHIFT)
+            }
+        } else if threatened &&
+            bot.choice == 2 &&
+            b.timer <= 3 &&
+            b.timer >= 2 &&
+            (p.act == IDLE || p.act == RECOVER) {
+            press = PARRY
+        } else if bot.choice == 3 && threatened && p.act == IDLE {
+            // A mistake: greedy, it swings into the tell.
+            press = if b.timer % 9 == 0 { JAB } else { 0 }
+        } else if threatened && p.act == IDLE && b.timer > 14 {
+            stick = away(w, b.x, b.z)
+        }
+    } else if b.act == KNEEL || b.act == REEL {
+        let (cx, cz) = boss_point(b, side: 0, ahead: 420)
+        stick = toward(w, cx, cz, 300)
+        if stick == 0 || distance(p.x, p.z, cx, cz) < 520 {
+            press = if p.stamina > 200 && p.act == IDLE { HEAVY } else { JAB }
+        }
+    } else if b.act == STUCK {
+        stick = toward(w, b.at_x, b.at_z, 330)
+        if distance(p.x, p.z, b.at_x, b.at_z) < 560 {
+            press = if p.stamina > 260 && p.act == IDLE { HEAVY } else { JAB }
+        }
+    } else if p.stamina > 140 {
+        // Free: at the nearer shin, a jab or two.
+        let (sx, sz) = boss_point(b, if (p.x + p.z) % 2 == 0 { 190 } else { -190 }, 0)
+        stick = toward(w, sx, sz, 380)
+        if distance(p.x, p.z, sx, sz) < 520 && (p.act == IDLE || p.act == RECOVER) {
+            press = JAB
+        }
+    } else if d < 6 * 256 {
+        stick = away(w, b.x, b.z)
+    }
+    if p.act == DODGING {
+        press = 0
+    }
+    var input = (bot.input & !(255 | (3 << PUSH_SHIFT))) | stick
+    if press != 0 {
+        input = input ^ press
+    }
+    bot.input = input
+    input
+}

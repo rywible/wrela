@@ -1,0 +1,206 @@
+// The fight's rules, checked: a log plays the same fight again, each of the Idol's attacks does
+// what its tell promises, a fist reaches only what's low, and a fair player can win (the bot).
+
+use bot::{Bot, play}
+use sim::{
+    ACTIVE, Change, DODGE, DODGING, HEAVY, HIT, IDLE, JAB, KNEEL, LOCKED, PALM, PARRY, PLAYER_HP,
+    PUSH_SHIFT, REEL, SLAM, STOMP, STUCK, SWIPE_LEFT, UNIT, WINDUP, Winner, World, run, step,
+    well_formed,
+}
+use std::io::print
+
+/// A whole fight played by a bot of `skill`: its log and how it ended.
+fn bot_fight(skill: u32, seed: u32) -> (Vec<Change>, World) {
+    var w = World::start()
+    var bot = Bot::new(skill, seed)
+    var log: Vec<Change> = Vec::new()
+    var last: u32 = 0
+    while !w.over {
+        let input = play(mut bot, w)
+        if input != last {
+            log.push(Change { frame: w.steps, input })
+            last = input
+        }
+        step(mut w, input)
+    }
+    (log, w)
+}
+
+@test
+fn a_log_plays_the_same_fight_again() {
+    let (log, w) = bot_fight(skill: 80, seed: 7)
+    assert(well_formed(log, 100000), "the bot's log isn't one a player could send")
+    let (winner, frames, hp) = run(log)
+    assert(winner == w.winner && frames == w.frame && hp == w.boss.hp, "the replay differs")
+}
+
+/// A fair player wins often, never quickly; a careless one rarely; one who stands still dies, but
+/// not at once (the first attacks are tells it could read).
+@test
+fn a_fair_player_can_win_and_a_careless_one_rarely_does() {
+    for skill in [95, 80, 55] {
+        var wins = 0
+        var frames = 0
+        var left = 0
+        for seed in 0..12 {
+            let (_, w) = bot_fight(skill: skill, seed: 1000 + seed * 77)
+            if w.winner == Winner::Player {
+                wins += 1
+            }
+            frames += w.frame
+            left += w.boss.hp
+        }
+        print(
+            f"skill {skill}: won {wins} of 12, {f32(frames) / 12.0 / 60.0:.0} s a fight, the Idol left at {left / 12} on average",
+        )
+        if skill == 95 {
+            assert(wins >= 7, f"a skilled player won {wins} of 12")
+            assert(frames / 12 > 60 * 60, "a skilled player's fight is over in under a minute")
+        }
+        if skill == 55 {
+            assert(wins <= 4, f"a careless player won {wins} of 12")
+        }
+    }
+    var w = World::start()
+    while !w.over {
+        step(mut w, LOCKED)
+    }
+    print(f"standing still, the player lasts {f32(w.frame) / 60.0:.0} s")
+    assert(w.winner == Winner::Boss && w.frame > 20 * 60, "a still player dies too soon")
+}
+
+/// Steps the world with `input` until `until` says, at most `most` steps.
+fn until(w: mut World, input: u32, most: u32, done: fn(World) -> bool) -> bool {
+    for _ in 0..most {
+        if done(w) {
+            return true
+        }
+        step(mut w, input)
+    }
+    done(w)
+}
+
+/// A world with the player 3 m in front of the Idol, it about to begin `attack`.
+fn facing_attack(attack: u32) -> World {
+    var w = World::start()
+    w.player.x = 0
+    w.player.z = w.boss.z - 3 * UNIT
+    w.boss.rest = 0
+    w.boss.act = WINDUP
+    w.boss.attack = attack
+    w.boss.timer = sim::ATTACKS[attack].windup
+    w.boss.wind = w.boss.timer
+    w.boss.at_x = 0
+    w.boss.at_z = w.boss.z - sim::SLAM_AHEAD
+    w
+}
+
+@test
+fn a_parry_in_time_sends_a_swipe_back_and_opens_its_heads() {
+    var w = facing_attack(SWIPE_LEFT)
+    var input: u32 = LOCKED
+    let _ = until(mut w, input, 100, |w: World| -> bool { w.boss.timer == 3 })
+    input = input ^ PARRY
+    let reeled = until(mut w, input, 30, |w: World| -> bool { w.boss.act == REEL })
+    assert(reeled, "a parry in time didn't make the Idol reel")
+    assert(w.player.hp == PLAYER_HP, "the parried swipe hurt")
+    // Reeling, its chest and heads are in reach: a heavy there does four times a shin's.
+    let before = w.boss.hp
+    input = input ^ HEAVY
+    let _ = until(mut w, input, 60, |w: World| -> bool { w.struck_at > 0 && w.boss.hp < before })
+    assert(w.struck == sim::STRUCK_CORE, f"a heavy on the reeling Idol hit part {w.struck}")
+    print(f"a heavy to the heads: {before - w.boss.hp}")
+}
+
+@test
+fn a_slam_cant_be_parried_and_a_dodge_goes_through_it() {
+    var w = facing_attack(SLAM)
+    var input: u32 = LOCKED
+    let _ = until(mut w, input, 100, |w: World| -> bool { w.boss.timer == 3 })
+    input = input ^ PARRY
+    let _ = until(mut w, input, 30, |w: World| -> bool { w.boss.act == STUCK })
+    assert(w.player.hp < PLAYER_HP, "a parried slam didn't hurt")
+    var v = facing_attack(SLAM)
+    input = LOCKED
+    let _ = until(mut v, input, 100, |w: World| -> bool { w.boss.timer == 4 })
+    // A roll back: the stick let go.
+    input = input ^ DODGE
+    let _ = until(mut v, input, 30, |w: World| -> bool { w.boss.act == STUCK })
+    assert(v.player.hp == PLAYER_HP, "a dodge in time didn't pass the slam")
+    // Stuck, its hands are in reach.
+    var hit = false
+    input = (input & !1023) | (64 | (2 << PUSH_SHIFT))
+    for k in 0..80 {
+        if k % 12 == 0 {
+            input = input ^ JAB
+        }
+        step(mut v, input)
+        hit = hit || v.struck == sim::STRUCK_HANDS
+    }
+    assert(hit, "the stuck hands couldn't be hit")
+}
+
+@test
+fn a_stomp_answers_a_player_behind() {
+    var w = World::start()
+    w.boss.rest = 0
+    w.player.x = 0
+    w.player.z = w.boss.z + 2 * UNIT
+    var seen = false
+    for _ in 0..120 {
+        step(mut w, LOCKED)
+        seen = seen || (w.boss.act == WINDUP && w.boss.attack == STOMP)
+    }
+    assert(seen, "the Idol never stomped on a player behind it")
+}
+
+@test
+fn jabs_wear_its_poise_until_it_kneels() {
+    var w = World::start()
+    w.player.x = 0
+    w.player.z = w.boss.z - 560
+    w.boss.rest = 100000
+    w.player.stamina = 400
+    var input: u32 = LOCKED
+    var knelt = false
+    for k in 0..1200 {
+        if k % 10 == 0 {
+            input = input ^ (if k % 40 == 0 { HEAVY } else { JAB })
+        }
+        w.player.stamina = 400
+        w.boss.rest = 100000
+        step(mut w, input)
+        knelt = knelt || w.boss.act == KNEEL
+    }
+    assert(knelt, "blows to its shins never broke its poise")
+}
+
+@test
+fn jabs_chain_three_and_no_more() {
+    var w = World::start()
+    w.boss.rest = 100000
+    var input: u32 = 0
+    var starts = 0
+    var last = w.player
+    // Jab as fast as the keys allow, for a second: three in a chain, then a wait for the third
+    // to finish before the next starts.
+    for k in 0..60 {
+        if k % 2 == 0 {
+            input = input ^ JAB
+        }
+        w.boss.rest = 100000
+        step(mut w, input)
+        let p = w.player
+        if p.act == WINDUP && (last.act != WINDUP || p.chain != last.chain) {
+            starts += 1
+            if starts == 4 {
+                assert(
+                    p.chain == 0 && (last.act == IDLE || last.timer <= 1),
+                    f"a fourth jab chained (chain {p.chain})",
+                )
+            }
+        }
+        last = p
+    }
+    assert(starts >= 4, f"only {starts} jabs in a second")
+}

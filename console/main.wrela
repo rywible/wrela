@@ -191,6 +191,9 @@ pub struct Console {
     /// The MMO's first client, which the page plays in place of the console when its address
     /// ends in `#mmo` (mmo/game): while the MMO is private, only a link opens it.
     mmo: Option<mmo::client::Client>,
+    /// The grey-box boss fight (mmo/fight), played in place of the console when its address
+    /// ends in `#fight`: a private test of whether the fight is fun.
+    fight: Option<fight::main::Game>,
     fonts: Fonts,
     renderer: Renderer,
     draw: DrawList,
@@ -403,6 +406,7 @@ pub fn init() -> Console {
         environment: Some(host::environment()),
         address: Some(host::address()),
         mmo: None,
+        fight: None,
         pending: None,
         closing: None,
         stale: false,
@@ -851,6 +855,10 @@ fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
         if is_mmo(bytes) {
             s.mmo = Some(mmo::client::init())
+            return
+        }
+        if ends_with(bytes, "#fight") {
+            s.fight = Some(fight::main::init())
             return
         }
         // The answer to the replacement is empty, so this happens once.
@@ -1696,6 +1704,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
         return
     }
+    if s.fight.is_some() {
+        match mut s.fight {
+            Some(f) => fight::main::frame(mut f, time, width, height),
+            None => {},
+        }
+        return
+    }
     if !s.decided {
         s.waited += dt
         if s.reloaded.is_some() || s.waited > 0.5 { decide_opening(mut s) }
@@ -2260,6 +2275,21 @@ fn is_mmo(address: [u8]) -> bool {
         address[n - 3] == 109 &&
         address[n - 2] == 109 &&
         address[n - 1] == 111
+}
+
+// Whether an address (`host::address`) ends in `tail`.
+fn ends_with(address: [u8], tail: str) -> bool {
+    let n = address.len()
+    let k = tail.len()
+    if n < k {
+        return false
+    }
+    for i in 0..k {
+        if address[n - k + i] != tail.byte(i) {
+            return false
+        }
+    }
+    true
 }
 
 // An address (`host::address`) without its fragment, if it has one: the path and query.

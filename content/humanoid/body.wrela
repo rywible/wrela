@@ -33,6 +33,10 @@ pub const HERO: Humanoid = humanoid::import(
     fallback: SKIN,
 )
 
+/// Quaternius's Universal Animation Library (assets/ual1.glb.LICENSE.txt), for a program that
+/// takes more of its clips (mmo/fight).
+pub const UAL1: Bytes = embed("assets/ual1.glb")
+
 /// Its bind pose: a T-pose.
 pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())
 
