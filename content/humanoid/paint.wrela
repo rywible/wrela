@@ -104,14 +104,13 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     )
 }
 
-/// The hero's clothes under his coat and trousers (`hero`), sRGB: a black vest, a red sash at the
-/// waist, white cloth wraps round the forearms and the shins, straw sandals' soles under bare
-/// feet. Where the coat and the trousers cover the body, it's skin or what's under them.
-pub const VEST = vec3(0.07, 0.07, 0.09)
-pub const SASH = vec3(0.72, 0.15, 0.11)
-pub const WRAPS = vec3(0.92, 0.90, 0.84)
-pub const SOLES = vec3(0.45, 0.33, 0.18)
-pub const UNDER = vec3(0.80, 0.74, 0.62)
+/// What the hero wears painted on the body, sRGB: black boots and their dark soles (his jacket and
+/// trousers are shells over it, `hero`); under those, black.
+pub const BOOTS = vec3(0.065, 0.06, 0.065)
+pub const SOLES = vec3(0.16, 0.16, 0.17)
+pub const UNDER = vec3(0.06, 0.06, 0.07)
+/// The silver of the zips (as `hero::SILVER`).
+pub const ZIP = vec3(0.80, 0.82, 0.86)
 
 /// What a garment is to the shading: cloth (its shadow cool), leather (a hard little highlight)
 /// or metal (a bright one).
@@ -119,43 +118,51 @@ pub const CLOTH: u32 = 0
 pub const LEATHER: u32 = 1
 pub const METAL: u32 = 2
 
-/// Wrapped cloth's turns, by how far along a limb a point is (m): the side of the line field it's
-/// on flips at each turn's edge, so the ink draws the wrap.
-fn turns(along: f32) -> f32 {
-    if fract(along / 0.045) < 0.5 { 1.0 } else { -1.0 }
-}
-
 /// What the body wears where, by its point at rest (the bind T-pose, metres, +y up, +x its left,
 /// +z ahead): the colour (sRGB; none for its own skin), what it's made of, and the side of the
-/// line field it's on, the sign flipping across each edge of a garment so the ink draws it.
+/// line field it's on, the sign flipping across each edge so the ink draws it. The head, the neck,
+/// the hands are bare; the jacket and the trousers (`hero`'s shells) cover the rest down to the
+/// boots, which are painted here, on soles.
 fn outfit(p: vec3) -> (Option<vec3>, u32, f32) {
     let ax = abs(p.x)
     if ax > 0.25 && p.y > 1.2 {
-        if ax > 0.50 && ax < 0.655 {
-            return (Some(WRAPS), CLOTH, turns(ax + p.y * 0.25))
-        }
         return (None, CLOTH, 1.0)
     }
-    let scoop = mix(1.5, 1.40, saturate(p.z * 14.0)) + 0.075 * (ax / 0.11) * (ax / 0.11)
-    if p.y > 1.64 || p.y > scoop {
+    if p.y > 1.5 {
         return (None, CLOTH, 1.0)
     }
-    if p.y > 1.03 {
-        return (Some(VEST), CLOTH, -1.0)
-    }
-    if p.y > 0.92 {
-        return (Some(SASH), CLOTH, 1.0)
-    }
-    if p.y > 0.31 {
+    if p.y > 0.14 {
         return (Some(UNDER), CLOTH, -1.0)
     }
-    if p.y > 0.11 {
-        return (Some(WRAPS), CLOTH, turns(p.y + p.x * 0.3))
+    if p.y < 0.025 {
+        return (Some(SOLES), LEATHER, 1.0)
     }
-    if p.y < 0.022 {
-        return (Some(SOLES), LEATHER, -1.0)
+    (Some(BOOTS), LEATHER, -1.0)
+}
+
+/// The zips on the jacket and the trousers (at a point at rest): the jacket's down its front with
+/// its pull at the chest, a pocket's slanting across the chest and one up each forearm; a pocket's
+/// across the left thigh. Its silver teeth, and whether it's a zip.
+fn zip_at(p: vec3) -> bool {
+    let ax = abs(p.x)
+    let front = p.z > 0.0
+    if ax > 0.24 && p.y > 1.2 {
+        // Along the forearm's top, from the cuff.
+        return ax > 0.47 && ax < 0.64 && p.y > 1.455 && abs(p.z) < 0.006
     }
-    (None, CLOTH, 1.0)
+    if front && p.y > 0.86 && p.y < 1.62 && ax < 0.0055 {
+        return true
+    }
+    if front && p.y > 1.43 && p.y < 1.47 && ax < 0.009 {
+        return true
+    }
+    if front && p.x > 0.05 && p.x < 0.16 && abs(p.y - (1.36 - 0.5 * (p.x - 0.05))) < 0.004 {
+        return true
+    }
+    if front && p.x > 0.05 && p.x < 0.15 && abs(p.y - (0.72 + 0.2 * (p.x - 0.05))) < 0.004 {
+        return true
+    }
+    false
 }
 
 /// What the body's vertex passes on: its world point, its normal and its outline's (the smoothed
@@ -256,6 +263,21 @@ pub fn hull(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) ->
 /// What a point of the body is drawn in: its colour (linear), what it's made of, the side of the
 /// line field it's on, and whether it's bare skin.
 fn worn_at(albedo: vec3, rest: vec3, kind: u32) -> (vec3, u32, f32, bool) {
+    if kind == toon::METAL {
+        return (albedo, METAL, 1.0, false)
+    }
+    if kind == toon::PATTERN {
+        if zip_at(rest) {
+            return (ZIP * ZIP, METAL, -1.0, false)
+        }
+        // The jacket's ribbed hem and cuffs, a step darker, their edges inked.
+        let ax = abs(rest.x)
+        let rib = (rest.y > 0.86 && rest.y < 0.92 && ax < 0.25) || (ax > 0.6 && rest.y > 1.2)
+        if rib {
+            return (albedo * 0.6, CLOTH, -1.0, false)
+        }
+        return (albedo, CLOTH, 1.0, false)
+    }
     if kind != toon::SKIN {
         return (albedo, CLOTH, 1.0, false)
     }
@@ -312,7 +334,7 @@ fn noise_at(p: vec3) -> f32 {
 pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let t = toon_of(b.toon.value)
     let (worn, made, field, bare) = worn_at(b.albedo, b.rest, t.kind)
-    let albedo = if t.kind == toon::PATTERN { waves(worn, b.rest) } else { worn }
+    let albedo = worn
     let cloth = !bare && t.kind == toon::SKIN
     let n = normalize(if bare || t.kind == toon::EYE { b.normal } else { b.smooth })
     let v = normalize(shot.cam.eye - b.world)
@@ -322,7 +344,11 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     // Each material's shadow: what its light is multiplied by in the shade.
     let tint = if bare { vec3(0.78, 0.50, 0.46) } else if t.kind == toon::HAIR {
         vec3(0.42, 0.42, 0.55)
-    } else if made == CLOTH { vec3(0.50, 0.54, 0.70) } else { vec3(0.55, 0.47, 0.48) }
+    } else if made == CLOTH { vec3(0.50, 0.54, 0.70) } else if made == METAL {
+        vec3(0.30, 0.33, 0.42)
+    } else {
+        vec3(0.55, 0.47, 0.48)
+    }
     let ndl = dot(n, l)
     let occlusion = if cloth { t.occlusion * 0.35 } else { t.occlusion }
     let x = ndl * 0.5 + 0.5 - occlusion * 0.75
@@ -354,13 +380,14 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     } else if made == LEATHER && !bare {
         c += vec3(0.10, 0.08, 0.06) * band(nh, edge: 0.93, soft: 0.01) * k
     } else if made == METAL {
-        c += vec3(0.6, 0.5, 0.3) * band(nh, edge: 0.85, soft: 0.02) * k
+        c += vec3(0.9, 0.9, 0.95) * band(nh, edge: 0.8, soft: 0.02) +
+            albedo * 0.25 * band(dot(n, v), edge: 0.6, soft: 0.05)
     }
     if sea_lit && t.kind != toon::EYE {
         // The sun's gold on the edges it catches.
         let rim = band(1.0 - max(dot(n, v), 0.0), edge: 0.62, soft: 0.03) *
             band(ndl, edge: 0.1, soft: 0.05)
-        c += albedo * vec3(1.0, 0.78, 0.42) * rim * 0.55 + vec3(0.06, 0.04, 0.0) * rim
+        c += albedo * vec3(1.0, 0.78, 0.42) * rim * 0.55 + vec3(0.07, 0.075, 0.09) * rim
         // The turn, inked: a brushed line just on the shade's side of the step, swelling and
         // breaking along the body (by its point at rest, so the strokes stay on it as it moves).
         let px = (x - 0.5) / fx
@@ -396,42 +423,4 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let d = length(b.world - shot.cam.eye)
     let weight = if t.kind == toon::EYE { 0.0 } else { mix(0.8, 0.6, far) }
     targets(c, d, BODY, line: field, weight: weight, n: n)
-}
-
-/// The coat's pattern: breaking waves (seigaiha's overlapping rings) in bone white, along its hem
-/// and its tails and round its sleeves' ends; the rest the coat's plain blue. `c` the coat's
-/// colour (linear), `p` the point at rest.
-fn waves(c: vec3, p: vec3) -> vec3 {
-    let ax = abs(p.x)
-    let sleeve = ax > 0.24 && p.y > 1.2
-    let uv = if sleeve { vec2(p.z * 1.2 + p.y, ax) } else { vec2(atan2(p.x, p.z) * 0.24, p.y) }
-    let band_in = if sleeve { band(ax, edge: 0.4, soft: 0.004) } else {
-        1.0 - band(p.y, edge: 0.84, soft: 0.004)
-    }
-    if band_in <= 0.0 {
-        return c
-    }
-    // Rings round each cell's foot, the cells' rows offset by half; each cell's rings drawn over
-    // the ones below, as the pattern overlaps.
-    let cell = 0.075
-    let q = uv / cell
-    var ring = 0.0
-    var best = 1.0e9
-    for dy in 0..3 {
-        let row = floor(q.y) + f32(dy) - 1.0
-        let shift = if fract(row * 0.5) > 0.25 { 0.5 } else { 0.0 }
-        for dx in 0..3 {
-            let col = floor(q.x - shift) + f32(dx) - 1.0
-            let centre = vec2(col + shift + 0.5, row)
-            let d = length(q - centre)
-            // A semicircle above its foot; a lower row's lies over the rows above it.
-            if d < 0.72 && q.y > centre.y && centre.y < best {
-                best = centre.y
-                ring = d / 0.72
-            }
-        }
-    }
-    let lines = band(abs(fract(ring * 4.0) - 0.5), edge: 0.3, soft: 0.04)
-    let white = vec3(0.86, 0.83, 0.74)
-    mix(c, white * white, vec3((1.0 - lines) * band_in * (if best < 1.0e8 { 1.0 } else { 0.0 })))
 }

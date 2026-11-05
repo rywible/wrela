@@ -14,17 +14,15 @@ use std::collections::Vec
 use engine::humanoid::{BodyVertex, Humanoid}
 use engine::toon
 use look::noise
+use std::transform::inverse
 
-/// The colours, sRGB: hair an ink black with the sea in it, the scarf and the cape's outside a
-/// deep sun-faded red, the cape's lining a darker one.
-pub const HAIR = vec3(0.17, 0.16, 0.21)
-pub const SCARF = vec3(0.70, 0.16, 0.12)
-pub const COAT_BLUE = vec3(0.13, 0.15, 0.30)
-pub const LINING = vec3(0.55, 0.12, 0.10)
-pub const SAND = vec3(0.80, 0.74, 0.62)
-pub const BONE = vec3(0.90, 0.86, 0.74)
-pub const WOOD = vec3(0.36, 0.22, 0.12)
-pub const STONE = vec3(0.20, 0.62, 0.60)
+/// The colours, sRGB: hair an ink black with the sea in it; everything he wears black (the
+/// jacket a blue-black, the trousers a warmer one, so they part), and the silver of his chains
+/// and zips.
+pub const HAIR = vec3(0.13, 0.12, 0.16)
+pub const JACKET = vec3(0.075, 0.08, 0.10)
+pub const TROUSERS_BLACK = vec3(0.17, 0.165, 0.17)
+pub const SILVER = vec3(0.80, 0.82, 0.86)
 
 fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
     (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
@@ -113,10 +111,10 @@ pub fn dressed(body: Humanoid) -> Humanoid {
     var m = Mesh { verts: Vec::new(), indices: Vec::new() }
     cap(mut m, body, skull, head)
     locks(mut m, body, skull, head)
-    shell(mut m, body, COAT)
+    shell(mut m, body, JACKET_SHELL)
     shell(mut m, body, TROUSERS)
-    tails(mut m, body, hips)
-    beads(mut m, body, upper)
+    necklace(mut m, body, upper)
+    wallet_chain(mut m, body, hips)
     var out = body.clone()
     let base = out.verts.len()
     for v in m.verts {
@@ -350,7 +348,6 @@ fn locks(m: mut Mesh, body: Humanoid, s: Skull, head: u32) {
             vec3(sx, 0.2, 1.0),
         )
     }
-    headband(mut m, body, s, head)
     cord(mut m, head, tie + tie_n * 0.03, normalize(back * 0.8 + down * 0.45), r * 0.2)
     // Loose either side of the brow.
     for side in 0..2 {
@@ -382,7 +379,7 @@ fn cord(m: mut Mesh, head: u32, at: vec3, axis: vec3, radius: f32) {
         let d = a * cos(t) + b * sin(t)
         for j in 0..2 {
             let p = at + d * radius + axis * (f32(j) - 0.5) * radius * 0.9
-            ids.push(m.vertex(p, d, head, head, 255, SCARF, toon::CLOTH, 0.7))
+            ids.push(m.vertex(p, d, head, head, 255, SILVER, toon::METAL, 0.5))
         }
     }
     for i in 0..around {
@@ -393,49 +390,47 @@ fn cord(m: mut Mesh, head: u32, at: vec3, axis: vec3, radius: f32) {
 }
 
 /// The garments made as shells over the body: its own triangles in a region, lifted off it.
-pub const COAT: u32 = 0
+pub const JACKET_SHELL: u32 = 0
 pub const TROUSERS: u32 = 1
 
 /// How far inside garment `g`'s region a point at rest is (m; it's covered where it's above 0).
-/// The coat: the trunk from the waist to a high collar, open down the front in a V that widens
-/// toward the hem, and wide short sleeves to just past the elbow. The trousers: the legs from the
-/// waist to the shins, where the wraps gather them.
+/// The jacket: closed, from the hips to a tall collar, its sleeves to the wrists. The trousers:
+/// the legs from the waist to the boots.
 fn inside(g: u32, p: vec3) -> f32 {
     let ax = abs(p.x)
-    if g == COAT {
+    if g == JACKET_SHELL {
         if ax > 0.24 && p.y > 1.2 {
-            return 0.5 - ax
+            return 0.645 - ax
         }
-        let open = if p.z > 0.0 { ax - (0.045 + 0.16 * saturate((1.5 - p.y) / 0.55)) } else { 1.0 }
-        let collar = 1.63 - p.y - 0.06 * saturate(p.z * 12.0)
-        return min(min(p.y - 0.94, collar), open)
+        let collar = 1.64 - p.y - 0.035 * saturate(p.z * 12.0)
+        return min(p.y - 0.86, collar)
     }
     if ax > 0.24 && p.y > 1.2 {
         return -1.0
     }
-    min(p.y - 0.31, 1.0 - p.y)
+    min(p.y - 0.13, 1.0 - p.y)
 }
 
-/// How far garment `g` stands off the body at a point at rest (m): the coat a little, its collar
-/// and its sleeves more, the sleeves flaring wide toward their ends; the trousers wide through
-/// the thigh and the knee, gathered at the waist and into the wraps.
+/// How far garment `g` stands off the body at a point at rest (m): the jacket close, its collar
+/// standing off the neck and its cuffs a little loose; the trousers slim, a little slack at the
+/// knee and stacked over the boots.
 fn lift(g: u32, p: vec3) -> f32 {
     let ax = abs(p.x)
-    if g == COAT {
+    if g == JACKET_SHELL {
         if ax > 0.24 && p.y > 1.2 {
-            return 0.02 + 0.075 * smoothstep(0.3, 0.5, ax)
+            return 0.012 + 0.01 * smoothstep(0.55, 0.64, ax)
         }
-        return 0.018 + 0.012 * smoothstep(1.5, 1.6, p.y)
+        return 0.013 + 0.014 * smoothstep(1.52, 1.62, p.y)
     }
-    0.012 + 0.024 * smoothstep(0.97, 0.72, p.y) * smoothstep(0.31, 0.52, p.y)
+    0.01 + 0.012 * smoothstep(0.75, 0.5, p.y) + 0.01 * smoothstep(0.25, 0.14, p.y)
 }
 
 /// Garment `g`: each of the body's skin triangles in its region (clipped along its edge), lifted
 /// off the body along its normals, on the body's own bones and weights, so it moves as the body
 /// does.
 fn shell(m: mut Mesh, body: Humanoid, g: u32) {
-    let colour = if g == COAT { COAT_BLUE } else { SAND }
-    let kind = if g == COAT { toon::PATTERN } else { toon::CLOTH }
+    let colour = if g == JACKET_SHELL { JACKET } else { TROUSERS_BLACK }
+    let kind = toon::PATTERN
     let n = body.indices.len() / 3
     for t in 0..n {
         let vs = [
@@ -503,10 +498,10 @@ fn lifted(
 
 /// The body's farthest reach from its middle line at height `y`, toward angle `a` round it (0
 /// ahead, + toward its left), within 15° of it.
-fn reach_at(body: Humanoid, y: f32, a: f32) -> f32 {
+fn reach_at(body: Humanoid, y: f32, a: f32, half: f32) -> f32 {
     var r = 0.08
     for v in body.verts {
-        if abs(v.pos.y - y) < 0.025 && abs(v.pos.x) < 0.24 {
+        if abs(v.pos.y - y) < 0.025 && abs(v.pos.x) < half {
             let b = atan2(v.pos.x, v.pos.z)
             var d = abs(b - a)
             if d > 3.14159 {
@@ -520,94 +515,36 @@ fn reach_at(body: Humanoid, y: f32, a: f32) -> f32 {
     r
 }
 
-/// The coat's tails: a skirt from its hem at the waist to above the knee, open in front, flaring
-/// as it falls; outside in the coat's cloth, its lining dark. On the hips, its front panels
-/// sharing a little with the thigh on their side, so they swing with the legs.
-fn tails(m: mut Mesh, body: Humanoid, hips: u32) {
-    let left = body.rig.find("leftUpperLeg")
-    let right = body.rig.find("rightUpperLeg")
-    let around = 26
-    let down = 10
-    let top = 0.98
-    let hem = 0.56
-    let gap = 0.42
-    var reach: Vec<f32> = Vec::new()
-    for i in 0..around + 1 {
-        let a = gap + (6.2831853 - 2.0 * gap) * f32(i) / f32(around)
-        reach.push(reach_at(body, top, a) + 0.03)
-    }
-    for layer in 0..2 {
-        let outside = layer == 0
-        var ids: Vec<u32> = Vec::new()
-        for j in 0..down + 1 {
-            let v = f32(j) / f32(down)
-            for i in 0..around + 1 {
-                let a = gap + (6.2831853 - 2.0 * gap) * f32(i) / f32(around)
-                let dir = vec3(sin(a), 0.0, cos(a))
-                let r = reach[i] + 0.10 * v * v + 0.015 * v * sin(a * 7.0)
-                let p = vec3(0.0, mix(top, hem, v), 0.0) + dir * (r + (if outside { 0.003 } else {
-                    0.0
-                }))
-                let nrm = normalize(dir * (if outside { 1.0 } else { -1.0 }) + vec3(0.0, 0.15, 0.0))
-                let side = if sin(a) > 0.0 { left } else { right }
-                let front = saturate(cos(a) + 0.2)
-                let share = u32(255.0 * (1.0 - 0.45 * v * front) + 0.5)
-                let colour = if outside { COAT_BLUE } else { LINING }
-                let kind = if outside { toon::PATTERN } else { toon::CLOTH }
-                ids.push(m.vertex(p, nrm, hips, side, share, colour, kind, 0.9))
-            }
-        }
-        let w = around + 1
-        for j in 0..down {
-            for i in 0..around {
-                let a = ids[j * w + i]
-                let b = ids[j * w + i + 1]
-                let c = ids[(j + 1) * w + i + 1]
-                let d = ids[(j + 1) * w + i]
-                if outside {
-                    m.tri(a, c, b)
-                    m.tri(a, d, c)
-                } else {
-                    m.tri(a, b, c)
-                    m.tri(a, c, d)
-                }
-            }
+/// A chain of silver links along `path` (its points, in order), each link turned a quarter from
+/// the last, as a chain's are.
+fn chain(m: mut Mesh, a: u32, b: u32, wa: u32, path: [vec3]) {
+    for k in 0..path.len() - 1 {
+        let along = path[k + 1] - path[k]
+        let len = length(along)
+        let steps = max(u32(len / 0.011), 1)
+        for i in 0..steps {
+            let at = path[k] + along * ((f32(i) + 0.5) / f32(steps))
+            chain_link(mut m, a, b, wa, at, normalize(along), (k * 7 + i) % 2 == 0)
         }
     }
 }
 
-/// A string of beads round the neck, lying on the chest in the coat's opening, a carved stone
-/// at its lowest.
-fn beads(m: mut Mesh, body: Humanoid, upper: u32) {
-    let count = 22
-    for k in 0..count {
-        let a = (f32(k) / f32(count) - 0.5) * 4.6
-        let front = cos(a)
-        let r = 0.075 + 0.03 * front
-        let y = 1.50 - 0.13 * saturate(front) * saturate(front)
-        let base = vec3(sin(a) * r, y, 0.0)
-        let z = reach_at(body, y, a) * cos(a) + 0.012
-        let at = vec3(base.x, y, z)
-        let big = k == count / 2
-        let size = if big { 0.018 } else { 0.008 }
-        let colour = if big { STONE } else if k % 2 == 0 { BONE } else { WOOD }
-        bead(mut m, upper, at, size, colour)
-    }
-}
-
-/// A bead: an octahedron, `size` from its middle to each point.
-fn bead(m: mut Mesh, bone: u32, at: vec3, size: f32, colour: vec3) {
+fn chain_link(m: mut Mesh, a: u32, b: u32, wa: u32, at: vec3, along: vec3, turned: bool) {
+    let side0 = normalize(cross(along, vec3(0.0, 1.0, 0.1)))
+    let up0 = cross(side0, along)
+    let side = if turned { up0 } else { side0 }
+    let up = if turned { side0 } else { up0 }
     let dirs = [
-        vec3(1.0, 0.0, 0.0),
-        vec3(0.0, 1.0, 0.0),
-        vec3(0.0, 0.0, 1.0),
-        vec3(-1.0, 0.0, 0.0),
-        vec3(0.0, -1.0, 0.0),
-        vec3(0.0, 0.0, -1.0),
+        along * 0.007,
+        side * 0.0035,
+        up * 0.0012,
+        -along * 0.007,
+        -side * 0.0035,
+        -up * 0.0012,
     ]
     var ids: Vec<u32> = Vec::new()
     for d in dirs {
-        ids.push(m.vertex(at + d * size, d, bone, bone, 255, colour, toon::CLOTH, 0.5))
+        ids.push(m.vertex(at + d, normalize(d), a, b, wa, SILVER, toon::METAL, 0.45))
     }
     let faces = [
         (0, 1, 2),
@@ -619,59 +556,114 @@ fn bead(m: mut Mesh, bone: u32, at: vec3, size: f32, colour: vec3) {
         (4, 3, 5),
         (0, 4, 5),
     ]
-    for (a, b, c) in faces {
-        m.tri(ids[a], ids[b], ids[c])
+    for (i, j, k) in faces {
+        m.tri(ids[i], ids[j], ids[k])
     }
 }
 
-/// A headband (a sailor's hachimaki) in the sash's red, tied round the head along the hairline,
-/// its knot at the back and two tails thrown off it.
-fn headband(m: mut Mesh, body: Humanoid, s: Skull, head: u32) {
-    let around = 40
-    var ids: Vec<u32> = Vec::new()
-    for i in 0..around {
-        let a = f32(i) / f32(around) * 6.2831853
-        let front = cos(a) * 0.5 + 0.5
-        let d = normalize(vec3(sin(a), mix(0.05, 0.42, front), cos(a)))
-        let (p, nrm) = on_skull(body, s, head, d)
-        let out = normalize(vec3(sin(a), 0.0, cos(a)) * 0.8 + nrm * 0.2)
-        for j in 0..2 {
-            let up = (f32(j) - 0.5) * 0.034
-            ids.push(
-                m.vertex(
-                    p + out * 0.016 + vec3(0.0, up, 0.0),
-                    out,
-                    head,
-                    head,
-                    255,
-                    SCARF,
-                    toon::CLOTH,
-                    0.8,
-                ),
-            )
+/// A silver chain round the neck, over the jacket's collar, hanging to the chest.
+fn necklace(m: mut Mesh, body: Humanoid, upper: u32) {
+    var path: Vec<vec3> = Vec::new()
+    for k in 0..25 {
+        let a = (f32(k) / 24.0 - 0.5) * 6.0
+        let front = cos(a)
+        let y = 1.53 - 0.12 * saturate(front) * saturate(front)
+        let r = reach_at(body, y, a, 0.075 + 0.1 * saturate(1.53 - y) * 8.0) + 0.02
+        path.push(vec3(sin(a) * r, y, cos(a) * r))
+    }
+    chain(mut m, upper, upper, 255, path)
+}
+
+/// A wallet chain: from the trousers' front at the right hip, sagging past the thigh, to the back
+/// pocket; and a second, shorter loop under it.
+fn wallet_chain(m: mut Mesh, body: Humanoid, hips: u32) {
+    let right = body.rig.find("rightUpperLeg")
+    for loop_ in 0..2 {
+        let sag = 0.2 + 0.08 * f32(loop_)
+        var path: Vec<vec3> = Vec::new()
+        for k in 0..13 {
+            let t = f32(k) / 12.0
+            let a = -mix(0.9, 2.5, t)
+            let y = 0.95 - sag * sin(t * 3.14159)
+            let r = reach_at(body, y, a, 0.24) + 0.022
+            path.push(vec3(sin(a) * r, y, cos(a) * r))
+        }
+        chain(mut m, hips, right, 200, path)
+    }
+}
+
+/// How much of each bone's flesh `slimmed` keeps round it (of its distance from the bone's line),
+/// by VRM bone: the trunk narrowed, the neck and the shoulders slighter, the arms and the legs
+/// lean; the head, the hands and the feet as they are.
+fn keeps(vrm: u32) -> f32 {
+    if vrm == 0 {
+        0.9
+    } else if vrm <= 3 {
+        0.8
+    } else if vrm == 4 {
+        0.8
+    } else if vrm <= 8 {
+        1.0
+    } else if vrm == 9 || vrm == 13 {
+        0.8
+    } else if vrm == 10 || vrm == 14 {
+        0.84
+    } else if vrm <= 16 {
+        1.0
+    } else if vrm == 17 || vrm == 21 {
+        0.68
+    } else if vrm == 18 || vrm == 22 {
+        0.66
+    } else if vrm == 19 || vrm == 23 {
+        0.8
+    } else { 1.0 }
+}
+
+/// The nearest point to `p` on the segment from `a` to `b`.
+fn on_segment(p: vec3, a: vec3, b: vec3) -> vec3 {
+    let d = b - a
+    let t = saturate(dot(p - a, d) / max(dot(d, d), 1.0e-9))
+    a + d * t
+}
+
+/// `body` drawn to an anime hero's build rather than a bodybuilder's: each vertex drawn in toward
+/// its bones' lines (`keeps`, blended by its weights), so the trunk tapers to a narrow waist and
+/// the limbs run long and lean; and the head a size larger about the neck, as drawn heads are.
+/// Its rig is untouched: only where its skin lies at rest moves, so every clip plays on it.
+pub fn slimmed(body: Humanoid) -> Humanoid {
+    var out = body.clone()
+    borrow rig = body.rig
+    let n = rig.bones.len()
+    // Each bone's joint in the mesh's space, and the end of its line (its first child's joint, or
+    // itself).
+    var joint: Vec<vec3> = Vec::new()
+    for b in 0..n {
+        joint.push((inverse(rig.bones[b].ibm) * vec4(0.0, 0.0, 0.0, 1.0)).xyz)
+    }
+    var end: Vec<vec3> = joint.clone()
+    for b in 0..n {
+        let p = rig.bones[b].parent
+        if p != engine::humanoid::NONE && end[p] == joint[p] {
+            end[p] = joint[b]
         }
     }
-    for i in 0..around {
-        let i2 = (i + 1) % around
-        m.tri(ids[i * 2], ids[i2 * 2], ids[i2 * 2 + 1])
-        m.tri(ids[i * 2], ids[i2 * 2 + 1], ids[i * 2 + 1])
+    let head = rig.find("head")
+    for i in 0..body.verts.len() {
+        let v = body.verts[i]
+        let w = std::gpu::Unorm8x4 { bits: v.weights }.decode()
+        let ws = [w.x, w.y, w.z, w.w]
+        var at = vec3(0.0)
+        var on_head = 0.0
+        for k in 0..4 {
+            let b = (v.bones >> (8 * k)) & 255
+            let q = on_segment(v.pos, joint[b], end[b])
+            at += (q + (v.pos - q) * keeps(rig.bones[b].vrm)) * ws[k]
+            if b == head {
+                on_head += ws[k]
+            }
+        }
+        let big = joint[head] + (at - joint[head]) * 1.1
+        out.verts[i].pos = mix(at, big, vec3(on_head))
     }
-    let (knot, kn) = on_skull(body, s, head, normalize(vec3(0.15, 0.05, -1.0)))
-    let r = s.radii.y
-    for k in 0..2 {
-        let sx = if k == 0 { 0.5 } else { 0.1 }
-        let dir = normalize(vec3(sx, -0.55, -0.8))
-        tinted_lock(
-            mut m,
-            head,
-            knot + kn * 0.02,
-            dir,
-            vec3(0.0, -r * 0.4, 0.0),
-            r * (1.5 - 0.3 * f32(k)),
-            r * 0.2,
-            vec3(1.0, 0.0, 0.0),
-            SCARF,
-            toon::CLOTH,
-        )
-    }
+    out
 }

@@ -39,7 +39,10 @@ pub const HERO: Humanoid = humanoid::import(
 /// The hero as drawn: the body dressed (`hero::dressed`: hair, a scarf and a cape on its bones),
 /// its shading authored (`engine::toon`).
 @fuel(2 ** 40)
-pub const DRESSED: Humanoid = toon::authored(hero::dressed(HERO.clone()), Authoring {})
+pub const DRESSED: Humanoid = toon::authored(
+    hero::dressed(hero::slimmed(HERO.clone())),
+    Authoring {},
+)
 
 /// Its bind pose: a T-pose.
 pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())
