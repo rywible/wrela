@@ -241,6 +241,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
     var bones = palette(HERO.rig, pose, place)
     var kinetic = KINETIC
+    var force = anime::Force::none()
     if game && ANIME == 1 {
         let d = anime::drawn(
             mut s.drawer,
@@ -256,6 +257,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
         bones = anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears)
         kinetic = max(kinetic, d.impact)
+        force = d.force
     }
     write(mut s.palette, 0, bones)
     // The camera follows the hips along the ground, steadily: where they are on average over a
@@ -265,7 +267,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let walking = SHOW != 12 && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
     let side = if SHOW == 12 { -1.6 } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
-    let shot = shot_at(
+    var shot = shot_at(
         time,
         FOCUS,
         vec3(hips.x, 0.0, hips.z),
@@ -276,6 +278,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic,
         left,
     )
+    shot.force_from = vec4(force.from, 0.0)
+    shot.force_to = vec4(force.to, force.by)
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,

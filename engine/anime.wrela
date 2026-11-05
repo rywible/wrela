@@ -21,7 +21,7 @@ use playback::{ACTIVE, Move, Mover, layered}
 pub struct Anime: Copy {
     pub drawings: f32 = 12.0,
     pub impact: f32 = 0.05,
-    pub flash: f32 = 0.5,
+    pub flash: f32 = 0.3,
     pub smear: f32 = 0.6,
     pub smear_most: f32 = 1.8,
     pub smear_from: f32 = 2.5,
@@ -33,10 +33,12 @@ pub struct Look: Copy {
     pub twos: bool = false,
     pub flash: bool = false,
     pub smear: bool = false,
+    pub limb: u32 = 4,
 }
 
-/// A strike's look: on twos, flashed on contact, smeared.
-pub const STRIKE: Look = Look { twos: true, flash: true, smear: true }
+/// A strike's look: on twos, flashed on contact, smeared, its force along `limb` (0 the left
+/// arm, 1 the right, 2 and 3 the legs; 4 none).
+pub const STRIKE: Look = Look { twos: true, flash: true, smear: true, limb: 1 }
 
 /// A move drawn as it plays: smooth, no flash, no smear.
 pub const PLAIN: Look = Look {}
@@ -100,6 +102,77 @@ pub struct Drawn: Copy {
     pub place: mat4,
     pub impact: f32,
     pub smears: [Smear; 4],
+    pub force: Force,
+}
+
+/// Where a strike's force runs and how hard (0 to 1): from the limb's root (a shoulder, a hip)
+/// out through its end and on past it, rising as the strike snaps in, at its most on contact,
+/// dying away after; for the ink to pile its fury along.
+pub struct Force: Copy {
+    pub from: vec3,
+    pub to: vec3,
+    pub by: f32,
+}
+
+impl Force {
+    pub fn none() -> Force {
+        Force { from: vec3(0.0), to: vec3(0.0), by: 0.0 }
+    }
+}
+
+/// How long (s) a strike's force builds before its contact, and dies after it.
+const FORCE_IN: f32 = 0.09
+const FORCE_OUT: f32 = 0.22
+
+/// The bones a limb's force runs from (its root) to (its end).
+const ROOTS = ["leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg"]
+
+/// Bone `b`'s place, drawn as `pose` at `place`.
+fn bone_at(rig: Rig, pose: Pose, place: mat4, b: u32) -> vec3 {
+    var chain: [u32; 64] = [NONE; 64]
+    var n = 0
+    var at = b
+    while at != NONE && n < 64 {
+        chain[n] = at
+        n += 1
+        at = rig.bones[at].parent
+    }
+    var w = rig.base
+    var i = n
+    while i > 0 {
+        i -= 1
+        borrow rb = rig.bones[chain[i]]
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        w = w.then(Rigid { q: pose.turns[chain[i]], t })
+    }
+    (place * vec4(w.t, 1.0)).xyz
+}
+
+/// A strike's force at `time` (s into it), its contact at `contact`, along limb `limb`.
+fn force_of(rig: Rig, pose: Pose, place: mat4, limb: u32, time: f32, contact: f32) -> Force {
+    if limb >= 4 || contact < 0.0 {
+        return Force::none()
+    }
+    let by = if time < contact - FORCE_IN {
+        0.0
+    } else if time < contact {
+        let x = (time - (contact - FORCE_IN)) / FORCE_IN
+        x * x
+    } else {
+        let x = clamp(1.0 - (time - contact) / FORCE_OUT, 0.0, 1.0)
+        x * x
+    }
+    if by <= 0.0 {
+        return Force::none()
+    }
+    let (r, e) = (rig.find(ROOTS[limb]), rig.find(ENDS[limb]))
+    if r == NONE || e == NONE {
+        return Force::none()
+    }
+    let from = bone_at(rig, pose, place, r)
+    let end = bone_at(rig, pose, place, e)
+    let to = end + normalize(end - from + vec3(1.0e-5)) * 0.12
+    Force { from, to, by }
 }
 
 /// Where each limb's end is, drawn as `pose` at `place`.
@@ -178,13 +251,13 @@ pub fn drawn(
     if m.acting == NONE || m.acting >= acts.len() || m.acting >= looks.len() {
         d.on = false
         d.acting = NONE
-        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4] }
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
     }
     let look = looks[m.acting]
     if !look.twos && !look.flash && !look.smear {
         d.on = false
         d.acting = NONE
-        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4] }
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
     }
     let period = if look.twos { 1.0 / max(how.drawings, 1.0) } else { 0.0 }
     borrow mv = acts[m.acting]
@@ -239,7 +312,8 @@ pub fn drawn(
             smears[i].from = ends[i]
         }
     }
-    Drawn { pose: shown, place: at, impact, smears }
+    let force = force_of(rig, shown, at, look.limb, m.act_time, contact)
+    Drawn { pose: shown, place: at, impact, smears, force }
 }
 
 /// A palette (`humanoid::palette`) with its smears: each smearing limb's bones, from the one it
