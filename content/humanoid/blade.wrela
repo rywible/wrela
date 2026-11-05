@@ -14,7 +14,7 @@ use engine::keys::{Key, LINEAR, SETTLE, SMOOTH, SNAP, STEP}
 use engine::playback
 use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
 use body::{GAITS, HERO}
-use engine::anime::{LIGHT, Look, PLAIN, STRIKE}
+use engine::anime::{Look, PLAIN}
 
 /// The stance: the right foot ahead and the left back and turned out, both flat, the knees soft
 /// and the hips dropped and turned a little toward the left (the right side ahead); the trunk
@@ -30,7 +30,7 @@ pub fn stance() -> Key {
         look: vec3(0.0, 1.55, 3.0),
         fists: [vec3(0.10, 1.05, 0.20), vec3(-0.10, 1.05, 0.25)],
         elbows: [vec3(0.7, -1.0, -0.3), vec3(-0.7, -1.0, -0.3)],
-        feet: [vec4(0.18, -0.16, 32.0, 0.0), vec4(-0.07, 0.22, 10.0, 0.0)],
+        feet: [vec4(0.19, -0.22, 30.0, 16.0), vec4(-0.09, 0.24, 8.0, 0.0)],
         grip: vec3(0.0, 1.06, 0.32),
         blade: normalize(vec3(0.03, 0.62, 1.0)),
         edge: vec3(0.0, -1.0, 0.0),
@@ -202,22 +202,26 @@ fn arc_at(a: vec3, b: vec3, t: f32) -> vec3 {
     Quat::axis_angle(normalize(axis), acos(c) * t).rotate(a)
 }
 
-/// A cut's path: the blade's way where it's lifted (`from`), on contact (`through`) and driven
-/// past (`to`), each a great circle's arc.
+/// A cut's path: the blade's way where it's cocked (`from`), halfway through the strike
+/// (`through`), on contact at the end of the strike's arc (`hit`, where it stops dead on the
+/// blow), and where its follow-through carries it (`to`), each leg a great circle's arc.
 pub struct Path: Copy {
     pub from: vec3,
     pub through: vec3,
+    pub hit: vec3,
     pub to: vec3,
 }
 
-/// The blade's way `t` along a path (0 lifted, 0.5 on contact, 1 driven past), and its edge,
+/// The blade's way `t` along a path (0 cocked, 1 on contact, 2 followed through), and its edge,
 /// leading the way it goes.
 pub fn along(p: Path, t: f32) -> (vec3, vec3) {
     let way = |x: f32| -> vec3 {
         if x < 0.5 {
             arc_at(normalize(p.from), normalize(p.through), x * 2.0)
+        } else if x < 1.0 {
+            arc_at(normalize(p.through), normalize(p.hit), x * 2.0 - 1.0)
         } else {
-            arc_at(normalize(p.through), normalize(p.to), x * 2.0 - 1.0)
+            arc_at(normalize(p.hit), normalize(p.to), x - 1.0)
         }
     }
     let b = way(t)
@@ -277,12 +281,14 @@ fn stance_at(at: f32, ease: u32, by: f32) -> Key {
     k
 }
 
-/// A cut, as an animator times it: from `start` (the stance, or where the cut before it was
-/// held), the lift into the coil (`windup` s, eased), the coil held a beat (`hold`: the tell
-/// the eye reads), the strike snapped through to contact (`snap`, gathering speed all the way),
-/// driven on past it (`drive`, slowing), held there (`stay`), and settled back into the stance
-/// `rest_by` ahead (`settle`). From a cut held with its edge the other way, the hands first
-/// turn the blade over (`turn_over`).
+/// A cut, as an animator times it (at 60 a second): from `start` (the stance, or where the
+/// cut before it followed through to), the gather into the coil (`windup`, eased) and a quick
+/// cock deeper (`cock`: the last frames of the tell), the strike (`snap`, staged from the ground
+/// up), stopped dead on contact at the end of its arc (`impact`: the hit-stop), followed through
+/// by its weight past the target (`follow`, slowing), and settled back into the stance `rest_by`
+/// ahead (`settle`: fast out of the follow-through, slow into the guard). From a cut held with
+/// its edge the other way, the hands first turn the blade over (`turn_over`). `coil`, `hit` and
+/// `past` are the body cocked, on contact and followed through.
 pub struct Cut: Copy {
     pub path: Path,
     pub coil: Body,
@@ -290,33 +296,30 @@ pub struct Cut: Copy {
     pub past: Body,
     pub rest_by: f32,
     pub windup: f32,
-    pub hold: f32,
+    pub cock: f32,
     pub snap: f32,
-    pub drive: f32,
-    pub stay: f32,
+    pub impact: f32,
+    pub follow: f32,
     pub settle: f32,
     pub turn_over: bool = false,
 }
 
 impl Cut {
-    /// When it makes contact, when it's driven past, and when it's done holding.
+    /// When it makes contact, when it's through its hit-stop, and when it's followed through.
     pub fn contact(self) -> f32 {
-        self.windup + self.hold + self.snap
+        self.windup + self.cock + self.snap
+    }
+    pub fn released(self) -> f32 {
+        self.contact() + self.impact
     }
     pub fn driven(self) -> f32 {
-        self.contact() + self.drive
-    }
-    pub fn held(self) -> f32 {
-        self.driven() + self.stay
+        self.released() + self.follow
     }
 }
 
-/// The key a cut holds after its drive (the next cut in a combo begins from it).
+/// The key a cut's followed through to (the next cut in a combo begins from it).
 pub fn held_key(c: Cut) -> Key {
-    var past = c.past
-    past.trunk += vec3(1.0, 2.0 * sign(c.past.trunk.y - c.hit.trunk.y), 0.0)
-    past.travel += 0.01
-    beat(c.held(), SETTLE, past, c.path, 1.03)
+    beat(c.driven(), SETTLE, c.past, c.path, 2.0)
 }
 
 /// A cut's keys, from `start`.
@@ -327,7 +330,7 @@ pub fn cut_keys(c: Cut, start: Key) -> Vec<Key> {
     out.push(first)
     let lift = beat(c.windup, SMOOTH, c.coil, c.path, 0.0)
     if c.turn_over {
-        // Halfway into the lift, the blade on its flat: the wrists roll it over a quarter.
+        // Halfway into the gather, the blade on its flat: the wrists roll it over a quarter.
         var mid = keys::mixed(first, lift, 0.5)
         mid.at = c.windup * 0.5
         mid.ease = SMOOTH
@@ -335,223 +338,255 @@ pub fn cut_keys(c: Cut, start: Key) -> Vec<Key> {
         out.push(mid)
     }
     out.push(lift)
+    // The cock: a few frames further into the coil, settling.
     var deep = c.coil
-    deep.hips.y -= 0.005
-    deep.trunk.y += 3.0 * sign(c.coil.trunk.y)
-    deep.hands = c.coil.hands * 1.08
-    out.push(beat(c.windup + c.hold, SETTLE, deep, c.path, -0.04))
-    // The strike: gathering speed to contact, each drawing a little further than the last.
+    deep.hips.y -= 0.01
+    deep.trunk.y += 4.0 * sign(c.coil.trunk.y)
+    deep.hands = c.coil.hands * 1.06
+    out.push(beat(c.windup + c.cock, SETTLE, deep, c.path, -0.05))
+    // The strike, from the ground up: the hips turn first and arrive early, the trunk after
+    // them, the arms and the blade last of all, gathering speed and whipped through its last
+    // frames.
     let n = 4
     for i in 1..n + 1 {
         let u = f32(i) / f32(n)
-        let p = u * u
-        let at = c.windup + c.hold + c.snap * u
-        out.push(beat(at, LINEAR, body_mix(deep, c.hit, p), c.path, mix(-0.04, 0.5, p)))
+        let hips = 1.0 - (1.0 - u) * (1.0 - u) * (1.0 - u)
+        let trunk = 1.0 - (1.0 - u) * (1.0 - u)
+        let blade = u * u * (0.5 + 0.5 * u)
+        let at = c.windup + c.cock + c.snap * u
+        var b = body_mix(deep, c.hit, hips)
+        b.trunk = mix(deep.trunk, c.hit.trunk, vec3(trunk))
+        b.hands = mix(deep.hands, c.hit.hands, vec3(blade))
+        out.push(beat(at, LINEAR, b, c.path, mix(-0.05, 1.0, blade)))
     }
-    // Driven past: slowing.
-    let m = 3
+    // The hit-stop: stopped dead on the blow, the body still sinking into it a hair.
+    var stopped = c.hit
+    stopped.hips.y -= 0.01
+    stopped.trunk.x += 1.5
+    out.push(beat(c.released(), SETTLE, stopped, c.path, 1.02))
+    // The follow-through: released, the blade carried on past by its weight and slowing, the
+    // body carried with it.
+    let m = 4
     for i in 1..m + 1 {
         let u = f32(i) / f32(m)
         let p = 1.0 - (1.0 - u) * (1.0 - u)
-        let at = c.contact() + c.drive * u
-        out.push(beat(at, LINEAR, body_mix(c.hit, c.past, p), c.path, mix(0.5, 1.0, p)))
+        let at = c.released() + c.follow * u
+        out.push(beat(at, LINEAR, body_mix(stopped, c.past, p), c.path, mix(1.02, 2.0, p)))
     }
-    let hold = held_key(c)
-    out.push(hold)
-    // Back into the stance: most of the way, then settled.
-    var back = keys::mixed(hold, stance_at(0.0, SMOOTH, c.rest_by), 0.65)
-    back.at = c.held() + c.settle * 0.45
-    back.ease = SMOOTH
+    // Back into the guard: quickly most of the way, then eased home.
+    var back = keys::mixed(held_key(c), stance_at(0.0, SMOOTH, c.rest_by), 0.75)
+    back.at = c.driven() + c.settle * 0.4
+    back.ease = SETTLE
     out.push(back)
-    out.push(stance_at(c.held() + c.settle, SETTLE, c.rest_by))
+    out.push(stance_at(c.driven() + c.settle, SMOOTH, c.rest_by))
     out
 }
 
-/// A cut as a move: its keys about its root, and its windows (`playback`): the tell to contact,
-/// hitting from contact through its drive past, the recovery after, and when the next may cut
-/// it off (halfway through its hold).
+/// A cut as a move: its keys about its root, and its windows (`playback`): the tell to
+/// contact, hitting from contact into its follow-through, the recovery after, and when the next
+/// may cut it off (halfway through its follow-through: the next cut's gather overlaps it).
 fn cut_move(c: Cut, start: Key) -> Move {
     var m = travelling(cut_keys(c, start))
     let end = m.clip.length()
     m.marks = Vec::new()
     m.marks.push(Mark { kind: WINDUP, from: 0.0, till: c.contact() })
-    m.marks.push(Mark { kind: ACTIVE, from: c.contact(), till: c.driven() })
-    m.marks.push(Mark { kind: RECOVER, from: c.driven(), till: end })
-    m.marks.push(Mark { kind: CANCEL, from: c.driven() + c.stay * 0.5, till: end })
+    m.marks.push(Mark { kind: ACTIVE, from: c.contact(), till: c.released() + c.follow * 0.3 })
+    m.marks.push(Mark { kind: RECOVER, from: c.released() + c.follow * 0.3, till: end })
+    m.marks.push(Mark { kind: CANCEL, from: c.released() + c.follow * 0.5, till: end })
     m
 }
 
-/// The stance's feet, `by` ahead, the left's heel raised `heel` degrees.
-fn feet_at(by: f32, left_by: f32, right_by: f32, heel: f32) -> [vec4; 2] {
+
+/// The stance's feet, `by` ahead, each moved on (`left_by`, `right_by`), the rear heel raised
+/// `heel` degrees.
+fn feet_on(left: vec2, right: vec2, heel: f32) -> [vec4; 2] {
     let f = stance().feet
-    [f[0] + vec4(0.0, by + left_by, 0.0, heel), f[1] + vec4(0.0, by + right_by, 0.0, 0.0)]
+    [f[0] + vec4(left.x, left.y, 0.0, heel), f[1] + vec4(right.x, right.y, 0.0, 0.0)]
 }
 
-/// The first light cut (kesa-giri): the sword lifts over the right shoulder as the body coils
-/// right onto its back foot, held a beat, then cuts down across him to past the left hip, the
-/// right foot sliding in a step, the hips and trunk turning it through.
+/// The first light cut (kesa-giri): a quick gather up over the right shoulder (the hands beside
+/// the head, the face clear), cocked; then the hips turn it down across him, the right foot
+/// stepping in 30 cm on the strike and the pelvis dropping, the blade stopped dead at the left
+/// hip on the blow, and carried on past it low.
 pub fn first_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(-0.45, 0.75, -0.5),
-            through: vec3(0.08, 0.05, 1.0),
-            to: vec3(0.6, -0.72, -0.15),
+            from: vec3(-0.35, 0.75, -0.55),
+            through: vec3(-0.1, 0.25, 1.0),
+            hit: vec3(0.45, -0.35, 0.8),
+            to: vec3(0.7, -0.65, -0.1),
         },
         coil: Body {
-            hips: vec3(0.0, -0.085, -0.04),
-            turn: 6.0,
-            trunk: vec3(-3.0, -28.0, -3.0),
-            feet: feet_at(0.0, 0.0, 0.0, 0.0),
+            hips: vec3(0.0, -0.09, -0.05),
+            turn: 4.0,
+            trunk: vec3(-2.0, -26.0, -4.0),
+            feet: feet_on(vec2(0.0), vec2(0.0), 16.0),
             travel: 0.0,
-            hands: vec3(-0.12, 0.0, -0.05),
+            hands: vec3(-0.16, 0.02, -0.04),
         },
         hit: Body {
-            hips: vec3(0.01, -0.10, 0.12),
-            turn: 30.0,
-            trunk: vec3(8.0, 12.0, 2.0),
-            feet: feet_at(0.0, 0.06, 0.22, 14.0),
-            travel: 0.08,
+            hips: vec3(0.02, -0.15, 0.26),
+            turn: 34.0,
+            trunk: vec3(16.0, 16.0, 4.0),
+            feet: feet_on(vec2(0.0, 0.08), vec2(0.0, 0.30), 26.0),
+            travel: 0.2,
+            hands: vec3(0.04, -0.04, 0.04),
         },
         past: Body {
-            hips: vec3(0.03, -0.12, 0.15),
-            turn: 40.0,
-            trunk: vec3(16.0, 30.0, 4.0),
-            feet: feet_at(0.0, 0.06, 0.22, 14.0),
-            travel: 0.11,
+            hips: vec3(0.03, -0.14, 0.28),
+            turn: 42.0,
+            trunk: vec3(20.0, 30.0, 6.0),
+            feet: feet_on(vec2(0.0, 0.10), vec2(0.0, 0.30), 26.0),
+            travel: 0.22,
+            hands: vec3(0.08, 0.0, 0.06),
         },
-        rest_by: 0.18,
-        windup: 0.17,
-        hold: 0.07,
+        rest_by: 0.26,
+        windup: 0.15,
+        cock: 0.03,
         snap: 0.06,
-        drive: 0.05,
-        stay: 0.10,
-        settle: 0.40,
+        impact: 0.06,
+        follow: 0.17,
+        settle: 0.27,
     }
 }
 
-/// The second: from the first's hold, low on his left, the blade turned over and cut back up
-/// across him to over his right shoulder (gyaku-kesa), the rear foot drawn up under him.
+/// The second: from the first's follow-through, low on his left, the blade turned over and
+/// cocked; then cut back up across him (gyaku-kesa), the rear foot driving him on a step,
+/// stopped high on his right, the hands by the right shoulder and below the chin.
 pub fn second_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(0.62, -0.70, 0.25),
-            through: vec3(-0.05, 0.2, 1.0),
-            to: vec3(-0.55, 0.78, -0.1),
+            from: vec3(0.65, -0.6, 0.25),
+            through: vec3(0.1, -0.1, 1.0),
+            hit: vec3(-0.45, 0.42, 0.78),
+            to: vec3(-0.6, 0.7, -0.25),
         },
         coil: Body {
-            hips: vec3(0.03, -0.12, 0.04),
-            turn: 42.0,
-            trunk: vec3(14.0, 32.0, 4.0),
-            feet: feet_at(-0.11, 0.06, 0.22, 10.0),
+            hips: vec3(0.03, -0.14, 0.04),
+            turn: 44.0,
+            trunk: vec3(18.0, 34.0, 6.0),
+            feet: feet_on(vec2(0.0, -0.12), vec2(0.0, 0.08), 20.0),
             travel: 0.0,
+            hands: vec3(0.08, 0.0, 0.04),
         },
         hit: Body {
-            hips: vec3(0.0, -0.09, 0.08),
-            turn: 10.0,
-            trunk: vec3(4.0, -10.0, -2.0),
-            feet: feet_at(0.0, 0.08, 0.1, 6.0),
-            travel: 0.06,
+            hips: vec3(-0.01, -0.12, 0.16),
+            turn: 6.0,
+            trunk: vec3(6.0, -16.0, -4.0),
+            feet: feet_on(vec2(0.0, 0.08), vec2(0.0, 0.22), 18.0),
+            travel: 0.14,
+            hands: vec3(-0.06, -0.08, 0.04),
         },
         past: Body {
-            hips: vec3(-0.01, -0.08, 0.09),
-            turn: -2.0,
-            trunk: vec3(-2.0, -26.0, -4.0),
-            feet: feet_at(0.0, 0.08, 0.1, 6.0),
-            travel: 0.08,
+            hips: vec3(-0.02, -0.10, 0.17),
+            turn: -6.0,
+            trunk: vec3(0.0, -28.0, -6.0),
+            feet: feet_on(vec2(0.0, 0.08), vec2(0.0, 0.22), 18.0),
+            travel: 0.15,
+            hands: vec3(-0.12, -0.10, 0.0),
         },
-        rest_by: 0.1,
+        rest_by: 0.16,
         windup: 0.12,
-        hold: 0.03,
+        cock: 0.03,
         snap: 0.06,
-        drive: 0.06,
-        stay: 0.08,
-        settle: 0.40,
+        impact: 0.05,
+        follow: 0.17,
+        settle: 0.27,
         turn_over: true,
     }
 }
 
-/// The third, the combo's finisher: from the second's hold the sword drops to his right side,
-/// level, the body wound all the way round onto its back foot; then a full level cut across, a
-/// long step in and the hips turning it right through, held on his left.
+/// The third, the combo's finisher: from the second's follow-through the sword drops level to
+/// his right side, the body wound round onto its back foot; then a full level cut, a long step
+/// in and the hips turning it right through, stopped as it passes in front of his left side,
+/// and carried on round past it, the hands out on his left, clear of the chest.
 pub fn third_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(-0.85, 0.2, -0.5),
-            through: vec3(0.0, 0.02, 1.0),
-            to: vec3(0.85, -0.1, -0.5),
+            from: vec3(-0.9, 0.1, -0.4),
+            through: vec3(-0.3, 0.02, 1.0),
+            hit: vec3(0.6, 0.0, 0.8),
+            to: vec3(0.9, -0.12, -0.35),
         },
         coil: Body {
-            hips: vec3(-0.02, -0.10, -0.05),
-            turn: -12.0,
-            trunk: vec3(2.0, -38.0, -4.0),
-            feet: feet_at(0.0, 0.0, 0.0, 6.0),
+            hips: vec3(-0.03, -0.12, -0.06),
+            turn: -16.0,
+            trunk: vec3(4.0, -40.0, -6.0),
+            feet: feet_on(vec2(0.0), vec2(0.0), 18.0),
             travel: 0.0,
-            hands: vec3(0.0, -0.05, 0.0),
+            hands: vec3(-0.04, -0.06, 0.0),
         },
         hit: Body {
-            hips: vec3(0.0, -0.13, 0.20),
-            turn: 35.0,
-            trunk: vec3(10.0, 15.0, 0.0),
-            feet: feet_at(0.0, 0.10, 0.32, 20.0),
-            travel: 0.16,
+            hips: vec3(0.01, -0.17, 0.34),
+            turn: 38.0,
+            trunk: vec3(14.0, 20.0, 2.0),
+            feet: feet_on(vec2(0.0, 0.12), vec2(0.0, 0.38), 28.0),
+            travel: 0.26,
+            hands: vec3(0.06, -0.04, 0.06),
         },
         past: Body {
-            hips: vec3(0.03, -0.14, 0.24),
-            turn: 55.0,
-            trunk: vec3(14.0, 42.0, 6.0),
-            feet: feet_at(0.0, 0.10, 0.32, 20.0),
-            travel: 0.2,
+            hips: vec3(0.04, -0.16, 0.36),
+            turn: 58.0,
+            trunk: vec3(16.0, 46.0, 8.0),
+            feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.38), 28.0),
+            travel: 0.28,
+            hands: vec3(0.16, -0.02, 0.10),
         },
-        rest_by: 0.28,
+        rest_by: 0.34,
         windup: 0.18,
-        hold: 0.08,
+        cock: 0.04,
         snap: 0.07,
-        drive: 0.07,
-        stay: 0.16,
-        settle: 0.55,
+        impact: 0.07,
+        follow: 0.2,
+        settle: 0.38,
         turn_over: true,
     }
 }
 
-/// The heavy cut: the sword raised high over the head, the body drawn up and back (a long tell,
-/// held), then brought straight down with everything behind it, a long step in and the hips
-/// dropped deep, held on the impact low in front, and a slow recovery.
+/// The heavy cut: the sword raised high, the hands above the forehead and the face framed
+/// between the forearms (a long tell: up, then a slow sink into the back leg, the rear heel
+/// lifting), then brought straight down with everything behind it, a stamping step in and the
+/// hips dropped deep, stopped dead level with the foe's chin, held, then dropped on through to
+/// past the left knee, and a slow recovery.
 pub fn heavy_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(0.0, 0.6, -0.8),
-            through: vec3(0.0, 0.1, 1.0),
-            to: vec3(0.05, -0.8, 0.6),
+            from: vec3(0.0, 0.55, -0.83),
+            through: vec3(0.0, 0.9, 0.45),
+            hit: vec3(0.0, -0.12, 1.0),
+            to: vec3(0.3, -0.8, 0.5),
         },
         coil: Body {
-            hips: vec3(0.0, -0.05, -0.06),
+            hips: vec3(0.0, -0.11, -0.08),
             turn: 10.0,
-            trunk: vec3(-8.0, -6.0, 0.0),
-            feet: feet_at(0.0, 0.0, 0.0, 0.0),
+            trunk: vec3(-6.0, -4.0, 0.0),
+            feet: feet_on(vec2(0.0), vec2(0.0), 24.0),
             travel: 0.0,
-            hands: vec3(0.0, 0.22, -0.09),
+            hands: vec3(0.0, 0.26, -0.12),
         },
         hit: Body {
-            hips: vec3(0.0, -0.16, 0.26),
+            hips: vec3(0.0, -0.19, 0.38),
             turn: 22.0,
-            trunk: vec3(22.0, 4.0, 0.0),
-            feet: feet_at(0.0, 0.12, 0.38, 22.0),
-            travel: 0.2,
+            trunk: vec3(24.0, 4.0, 0.0),
+            feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.42), 30.0),
+            travel: 0.3,
+            hands: vec3(0.0, 0.02, 0.06),
         },
         past: Body {
-            hips: vec3(0.0, -0.19, 0.28),
-            turn: 24.0,
-            trunk: vec3(30.0, 6.0, 0.0),
-            feet: feet_at(0.0, 0.12, 0.38, 22.0),
-            travel: 0.22,
+            hips: vec3(0.0, -0.22, 0.40),
+            turn: 28.0,
+            trunk: vec3(34.0, 10.0, 2.0),
+            feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.42), 30.0),
+            travel: 0.32,
+            hands: vec3(0.06, 0.0, 0.08),
         },
-        rest_by: 0.3,
-        windup: 0.30,
-        hold: 0.22,
-        snap: 0.07,
-        drive: 0.06,
-        stay: 0.20,
-        settle: 0.6,
+        rest_by: 0.4,
+        windup: 0.28,
+        cock: 0.17,
+        snap: 0.09,
+        impact: 0.15,
+        follow: 0.27,
+        settle: 0.55,
     }
 }
 
@@ -570,12 +605,191 @@ pub const THIRD: Move = cut_move(third_cut(), after(second_cut()))
 @fuel(2 ** 40)
 pub const HEAVY: Move = cut_move(heavy_cut(), stance())
 
+// ---- dodges -----------------------------------------------------------------------------
+
+/// A dash (a backstep, a sidestep): low and quick along the floor, `by` (m, the body's space),
+/// the sword kept in its guard drawn in a little. It loads (sinks, the weight onto the foot it
+/// pushes off), pushes (both feet skimming the floor, the near foot first), lands on the far
+/// foot and sinks to take it, then rises back into the stance where it got to.
+pub fn dash_keys(by: vec3) -> Vec<Key> {
+    let lead = if by.x > 0.05 { 0 } else if by.x < -0.05 { 1 } else if by.z < 0.0 { 0 } else { 1 }
+    let push = 1 - lead
+    var out: Vec<Key> = Vec::new()
+    out.push(stance_at(0.0, SMOOTH, 0.0))
+    // The load.
+    var k = stance()
+    k.at = 0.06
+    k.ease = SMOOTH
+    k.hips.y = -0.11
+    k.hips = k.hips + by * 0.05
+    k.trunk.x += 4.0
+    k.grip = k.grip + vec3(0.0, -0.02, -0.04)
+    k.feet[push].w = 14.0
+    out.push(k)
+    // The push: off the floor, a third of the way, the lead foot reaching.
+    k = keys::shifted(stance(), by * 0.35)
+    k.at = 0.13
+    k.ease = SETTLE
+    k.hips.y = -0.06
+    k.trunk = stance().trunk + vec3(-by.z * 12.0, 0.0, by.x * 10.0)
+    k.grip = k.grip + vec3(0.0, 0.01, -0.06)
+    k.feet[lead] = k.feet[lead] + vec4(by.x * 0.35, by.z * 0.35, 0.0, 0.0)
+    k.feet[push] = k.feet[push] + vec4(-by.x * 0.2, -by.z * 0.2, 0.0, 28.0)
+    k.lifts = [0.035, 0.035]
+    out.push(k)
+    // The landing, on the lead foot, the other still skimming in.
+    k = keys::shifted(stance(), by * 0.85)
+    k.at = 0.24
+    k.ease = SMOOTH
+    k.hips.y = -0.10
+    k.trunk = stance().trunk + vec3(-by.z * 6.0, 0.0, by.x * 6.0)
+    k.grip = k.grip + vec3(0.0, -0.01, -0.05)
+    k.feet[push] = k.feet[push] + vec4(-by.x * 0.15, -by.z * 0.15, 0.0, 18.0)
+    k.lifts[push] = 0.03
+    out.push(k)
+    // Down on both, sunk to take it.
+    k = keys::shifted(stance(), by)
+    k.at = 0.32
+    k.ease = SETTLE
+    k.hips.y = -0.13
+    k.trunk.x += 3.0
+    k.grip = k.grip + vec3(0.0, -0.03, -0.03)
+    out.push(k)
+    out.push(stance_at(0.58, SMOOTH, 0.0))
+    var last = out[out.len() - 1]
+    last = keys::shifted(last, by)
+    out[out.len() - 1] = last
+    out
+}
+
+fn dash_move(by: vec3) -> Move {
+    var m = travelling(dash_keys(by))
+    let end = m.clip.length()
+    m.marks = Vec::new()
+    m.marks.push(Mark { kind: RECOVER, from: 0.32, till: end })
+    m.marks.push(Mark { kind: CANCEL, from: 0.36, till: end })
+    m
+}
+
+@fuel(2 ** 40)
+pub const BACKSTEP: Move = dash_move(vec3(0.0, 0.0, -0.75))
+@fuel(2 ** 40)
+pub const SIDESTEP_LEFT: Move = dash_move(vec3(0.7, 0.0, 0.0))
+@fuel(2 ** 40)
+pub const SIDESTEP_RIGHT: Move = dash_move(vec3(-0.7, 0.0, 0.0))
+
+/// `k`'s sword tipped back `deg` degrees (its point up, about the body's left) and swung `yaw`
+/// toward its left.
+fn tipped(k: Key, deg: f32, yaw: f32) -> Key {
+    var out = k
+    let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), yaw * 0.017453292)
+        .mul(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -deg * 0.017453292))
+    let f = keys::frame_of(k.blade, k.edge)
+    out.blade = q.rotate(f.rotate(vec3(0.0, 0.0, 1.0)))
+    out.edge = q.rotate(f.rotate(vec3(1.0, 0.0, 0.0)))
+    out
+}
+
+// ---- being hit ---------------------------------------------------------------------------
+
+/// Being hit: knocked from the stance by a blow from ahead, `by` how hard (0 a flinch, 1 a
+/// stagger). The head and chest snap back first (two frames: the hit lands before the body
+/// knows), the hips follow, the sword's point thrown up and off the line; a stagger carries him
+/// back a step and a half, the rear foot catching him, sunk low, before he gathers himself and
+/// comes back up into the stance.
+pub fn hit_keys(by: f32) -> Vec<Key> {
+    var out: Vec<Key> = Vec::new()
+    out.push(stance_at(0.0, SMOOTH, 0.0))
+    let back = -0.08 - 0.5 * by
+    // The snap: the head and chest thrown back, the arms with them.
+    var k = stance()
+    k.at = 0.035
+    k.ease = SETTLE
+    k.trunk = stance().trunk + vec3(-14.0 - 12.0 * by, 6.0 + 6.0 * by, 4.0)
+    k.look = vec3(0.0, 2.2 + 0.6 * by, 3.0)
+    k.hips = stance().hips + vec3(0.0, -0.01, -0.02)
+    k.grip = stance().grip + vec3(0.03, 0.06 + 0.08 * by, -0.08)
+    k = tipped(k, 22.0 + 20.0 * by, 10.0)
+    out.push(k)
+    // The body follows: carried back, the rear foot catching it.
+    k = keys::shifted(stance(), vec3(0.0, 0.0, back * 0.7))
+    k.at = 0.16 + 0.12 * by
+    k.ease = SETTLE
+    k.trunk = stance().trunk + vec3(-10.0 - 8.0 * by, 8.0 * by, 3.0)
+    k.look = k.look + vec3(0.0, 0.5, 0.0)
+    k.hips.y = -0.10 - 0.05 * by
+    k.grip = k.grip + vec3(0.04, 0.03 + 0.05 * by, -0.10)
+    k = tipped(k, 16.0 + 14.0 * by, 12.0)
+    k.feet[1] = k.feet[1] + vec4(0.0, -back * 0.45, 0.0, 0.0)
+    k.feet[0] = k.feet[0] + vec4(0.0, back * 0.25, 0.0, 10.0)
+    out.push(k)
+    // Caught low.
+    k = keys::shifted(stance(), vec3(0.0, 0.0, back))
+    k.at = 0.30 + 0.25 * by
+    k.ease = SETTLE
+    k.trunk = stance().trunk + vec3(4.0 * by, 4.0 * by, 0.0)
+    k.hips.y = -0.11 - 0.07 * by
+    k.grip = k.grip + vec3(0.0, -0.03, -0.06)
+    out.push(k)
+    out.push(stance_at(0.55 + 0.5 * by, SMOOTH, back))
+    out
+}
+
+fn hit_move(by: f32) -> Move {
+    var m = travelling(hit_keys(by))
+    let end = m.clip.length()
+    m.marks = Vec::new()
+    m.marks.push(Mark { kind: RECOVER, from: 0.0, till: end })
+    m
+}
+
+@fuel(2 ** 40)
+pub const FLINCH: Move = hit_move(0.0)
+@fuel(2 ** 40)
+pub const STAGGER: Move = hit_move(1.0)
+
+/// A cut's look: on twos, its force along the sword arm; not the arm stretched (the blade's
+/// own smear sweeps it: `sword::SMEAR`). A heavy one flashes on contact and drains the page.
+pub const CUT: Look = Look { twos: true, limb: 1 }
+pub const FINISH: Look = Look { twos: true, limb: 1, heavy: true }
+pub const HEAVY_CUT: Look = Look { twos: true, flash: true, limb: 1, heavy: true }
+
+/// Whether one-off `act` sweeps the blade (a cut).
+pub fn sweeps(act: u32) -> bool {
+    act <= ACT_HEAVY
+}
+
 /// The sword's one-offs, by index, and how each is drawn (`engine::anime`): the light cuts on
 /// twos and smeared, the finisher and the heavy cut as strikes (flashed, the page drained).
 pub const ACT_FIRST: u32 = 0
 pub const ACT_SECOND: u32 = 1
 pub const ACT_THIRD: u32 = 2
 pub const ACT_HEAVY: u32 = 3
+pub const ACT_BACKSTEP: u32 = 4
+pub const ACT_SIDESTEP_LEFT: u32 = 5
+pub const ACT_SIDESTEP_RIGHT: u32 = 6
+pub const ACT_FLINCH: u32 = 7
+pub const ACT_STAGGER: u32 = 8
 @fuel(2 ** 40)
-pub const SWORD_ACTS: [Move; 4] = [FIRST.clone(), SECOND.clone(), THIRD.clone(), HEAVY.clone()]
-pub const SWORD_LOOKS: [Look; 4] = [LIGHT, LIGHT, STRIKE, STRIKE]
+pub const SWORD_ACTS: [Move; 9] = [
+    FIRST.clone(),
+    SECOND.clone(),
+    THIRD.clone(),
+    HEAVY.clone(),
+    BACKSTEP.clone(),
+    SIDESTEP_LEFT.clone(),
+    SIDESTEP_RIGHT.clone(),
+    FLINCH.clone(),
+    STAGGER.clone(),
+]
+pub const SWORD_LOOKS: [Look; 9] = [
+    CUT,
+    CUT,
+    FINISH,
+    HEAVY_CUT,
+    PLAIN,
+    PLAIN,
+    PLAIN,
+    PLAIN,
+    PLAIN,
+]

@@ -66,7 +66,7 @@ pub struct Key: Copy {
 
 /// How far below the right hand's grip the left hand holds a hilt (m, along the blade, toward
 /// the pommel).
-pub const SPAN: f32 = 0.13
+pub const SPAN: f32 = 0.18
 
 /// Whether `k` holds a weapon.
 pub fn holds(k: Key) -> bool {
@@ -89,17 +89,27 @@ pub fn frame_of(blade: vec3, edge: vec3) -> Quat {
 }
 
 /// A hand's hold at rest, in the body's space at rest: where the middle of its fist is (a hilt's
-/// grip goes through it) and its grip's frame, the blade out of the thumb's side (ahead, +z, the
-/// arms out in the T-pose), the edge toward the hand's heel and fingertips (down) and a little
-/// out along the knuckles. `side` 1 the left hand, -1 the right.
+/// grip goes through it) and its grip's frame. A hilt lies across the palm on a slant, from the
+/// heel of the hand (the pommel's side) to the root of the forefinger (the blade's), so the blade
+/// comes out of the thumb's side angled on along the fingers, about 55° off the forearm, not
+/// square to it (the arms out in the T-pose, the fingers along x: ahead, +z, and out); the edge
+/// toward the fingertips' wrap (down) and a little out along the knuckles. `side` 1 the left
+/// hand, -1 the right.
 pub fn hold_at_rest(rig: Rig, side: f32) -> (vec3, Quat) {
     let rw = rig.rest_world()
     let name = if side > 0.0 { "left" } else { "right" }
     let h = rw[rig.find(f"{name}Hand".as_str())].t
     let m = rw[rig.find(f"{name}MiddleProximal".as_str())].t
-    let grip = h + (m - h) * 0.8 + vec3(0.0, -0.032, 0.0)
-    (grip, frame_of(vec3(0.0, 0.0, 1.0), vec3(0.5 * side, -1.0, 0.0)))
+    let grip = h + (m - h) * GRIP_IN + vec3(0.0, -GRIP_DOWN, 0.0)
+    (grip, frame_of(vec3(0.7 * side, 0.0, 1.0), vec3(GRIP_ROLL * side, -1.0, 0.0)))
 }
+
+/// Where a hilt goes through a fist: how far from the wrist toward the knuckles (of the way)
+/// and how far under the palm (m); and how far the back of the hand turns out from facing
+/// straight away from the edge.
+pub const GRIP_IN: f32 = 0.8
+pub const GRIP_DOWN: f32 = 0.032
+pub const GRIP_ROLL: f32 = 0.3
 
 /// The twist of `q` about `axis` (unit): the part of the turn about it.
 fn twist_of(q: Quat, axis: vec3) -> Quat {
@@ -264,22 +274,8 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         let u = normalize(k.blade)
         for i in 0..2 {
             let (g0, f0) = hold_at_rest(rig, if i == 0 { 1.0 } else { -1.0 })
-            var r = f.mul(f0.inverse())
+            let r = f.mul(f0.inverse())
             let g = if i == 0 { k.grip - u * SPAN } else { k.grip }
-            if i == 0 {
-                // The left hand isn't the sword's: it turns about the hilt to hold it from the
-                // side its shoulder's on, its forearm coming from there.
-                let d = r.rotate(rw[arms[i][2]].t - g0)
-                let dp = d - u * dot(d, u)
-                let s0 = w[arms[i][0]].t - g
-                let sp = s0 - u * dot(s0, u)
-                if length(dp) > 1.0e-4 && length(sp) > 1.0e-4 {
-                    let a = normalize(dp)
-                    let b = normalize(sp)
-                    let ang = atan2(dot(cross(a, b), u), dot(a, b))
-                    r = about(u, ang).mul(r)
-                }
-            }
             let wrist = g + r.rotate(rw[arms[i][2]].t - g0)
             on[i] = if i == 0 { saturate(k.two) } else { 1.0 }
             wrists[i] = k.fists[i] + (wrist - k.fists[i]) * on[i]

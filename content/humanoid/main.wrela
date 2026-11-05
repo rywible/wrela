@@ -22,7 +22,9 @@ use body::{
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
     PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
-use blade::{ACT_FIRST, ACT_HEAVY, ACT_SECOND, ACT_THIRD, SWORD_ACTS, SWORD_GAITS, SWORD_LOOKS}
+use blade::{
+    ACT_BACKSTEP, ACT_FIRST, ACT_FLINCH, ACT_HEAVY, ACT_SECOND,
+    ACT_SIDESTEP_LEFT, ACT_SIDESTEP_RIGHT, ACT_STAGGER, ACT_THIRD, SWORD_ACTS, SWORD_GAITS, SWORD_LOOKS}
 use engine::anime
 use engine::anime::{Anime, Drawer}
 use engine::cleanup
@@ -93,6 +95,13 @@ pub struct State {
     last: f32,
     mask: [f32; 64],
     drawer: Drawer,
+    /// Where the camera follows: the body's place, lagging it.
+    follow: vec3,
+    /// The sword hand's drawing now and the one before (its palette matrices), and whether the
+    /// blade's smeared between them.
+    hand_now: mat4,
+    hand_was: mat4,
+    smearing: bool,
 }
 
 pub fn init() -> State {
@@ -117,6 +126,10 @@ pub fn init() -> State {
         last: 0.0,
         mask: playback::upper_body(HERO.rig),
         drawer: Drawer::new(),
+        follow: vec3(0.0),
+        hand_now: identity(),
+        hand_was: identity(),
+        smearing: false,
     }
 }
 
@@ -158,11 +171,11 @@ pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
 pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
     let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
     let (walk, run) = (GAITS.walk.speed, GAITS.run.speed)
-    let stick = if time < 5.5 {
+    let stick = if time < 11.8 {
         vec3(0.0)
-    } else if time < 8.5 {
+    } else if time < 14.8 {
         dir(-90.0) * walk
-    } else if time < 11.0 {
+    } else if time < 17.3 {
         dir(90.0) * run
     } else {
         vec3(0.0)
@@ -170,11 +183,16 @@ pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
     let at = |t: f32| -> bool { last < t && time >= t }
     let beats = [
         (1.0, ACT_FIRST),
-        (1.42, ACT_SECOND),
-        (1.82, ACT_THIRD),
+        (1.40, ACT_SECOND),
+        (1.77, ACT_THIRD),
         (3.6, ACT_HEAVY),
-        (12.2, ACT_FIRST),
-        (12.62, ACT_SECOND),
+        (5.6, ACT_BACKSTEP),
+        (6.4, ACT_SIDESTEP_LEFT),
+        (7.1, ACT_SIDESTEP_RIGHT),
+        (9.2, ACT_FLINCH),
+        (10.2, ACT_STAGGER),
+        (18.6, ACT_FIRST),
+        (19.0, ACT_SECOND),
     ]
     for (t, act) in beats {
         if at(t) {
@@ -182,6 +200,69 @@ pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
         }
     }
     (stick, humanoid::NONE, false)
+}
+
+/// The turn taking `a`'s way to `b`'s.
+fn arc_between(a: vec3, b: vec3) -> Quat {
+    humanoid::arc(a, b)
+}
+
+/// A rigid matrix's turn and place.
+fn rigid_of(m: mat4) -> (Quat, vec3) {
+    (Quat::from_mat3(mat3(m[0].xyz, m[1].xyz, m[2].xyz)), m[3].xyz)
+}
+
+/// The sword's palette with its smear's slots set (`sword::SMEAR_SLOT`): on a new drawing of a
+/// cut whose point has come far since the last, swept back from the hand's place now to where
+/// it was drawn before, along the turn between; else all at the hand (no smear).
+fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
+    var out = palette
+    let hand = HERO.rig.find("rightHand")
+    let h = palette[hand]
+    var moved = false
+    for c in 0..3 {
+        moved = moved || length(h[c] - s.hand_now[c]) > 1.0e-4
+    }
+    if moved {
+        s.hand_was = s.hand_now
+        s.hand_now = h
+        let (g, f) = sword::at_rest()
+        let tip = g + f.rotate(sword::point())
+        let far = length((h * vec4(tip, 1.0)).xyz - (s.hand_was * vec4(tip, 1.0)).xyz)
+        let act = s.mover.acting
+        // Only through the strike: its last frames into contact and its drive past.
+        let striking = act != humanoid::NONE && blade::sweeps(act) &&
+            {
+                let m = SWORD_ACTS[act].clone()
+                let hit = m.mark(playback::ACTIVE).unwrap()
+                s.mover.act_time > hit.from - 0.09 && s.mover.act_time < hit.till + 0.02
+            }
+        s.smearing = striking && far > 0.3
+    }
+    // Swept about the chest, not straight across: the hand's place turned round it from
+    // where it was drawn to where it's drawn now, its turn along with it.
+    let rw = HERO.rig.rest_world()
+    let at_rest = rw[hand].t
+    let chest = HERO.rig.find("upperChest")
+    let pivot = (palette[chest] * vec4(rw[chest].t, 1.0)).xyz
+    let (q1, _) = rigid_of(s.hand_now)
+    let (q0, _) = rigid_of(s.hand_was)
+    let a1 = (s.hand_now * vec4(at_rest, 1.0)).xyz - pivot
+    let a0 = (s.hand_was * vec4(at_rest, 1.0)).xyz - pivot
+    for j in 0..sword::SMEAR_STEPS {
+        let k = f32(j) / f32(sword::SMEAR_STEPS - 1) * 0.92
+        out[sword::SMEAR_SLOT + j] = if s.smearing {
+            let q = q1.nlerp(q0, k)
+            let way = Quat::identity().nlerp(arc_between(a1, a0), k).rotate(normalize(a1))
+            let p = pivot + way * mix(length(a1), length(a0), k)
+            let m3 = q.to_mat3()
+            let t = p - q.rotate(at_rest)
+            mat4(vec4(m3[0], 0.0), vec4(m3[1], 0.0), vec4(m3[2], 0.0), vec4(t, 1.0))
+        } else {
+            h
+        }
+    }
+    out
 }
 
 /// `SHOW=11`'s body stepped on to `time`: its pose and where it's drawn.
@@ -296,11 +377,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic = max(kinetic, d.impact)
         force = d.force
     }
+    if SHOW == 13 {
+        bones = blade_smeared(mut s, bones)
+    }
     write(mut s.palette, 0, bones)
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if game { s.mover.place } else { steady_hips(time) }
+    // The sword's loop is followed lagging, so a dodge's travel shows.
+    s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / 0.5))
+    let hips = if SHOW == 13 { s.follow } else if game { s.mover.place } else {
+        steady_hips(time)
+    }
     let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if SHOW == 13 { SWORD_SIDE } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)

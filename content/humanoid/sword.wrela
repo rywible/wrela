@@ -18,18 +18,27 @@ use body::HERO
 pub const BLADE: u32 = 6
 pub const GUARD: u32 = 7
 pub const WRAP: u32 = 8
+pub const SMEAR: u32 = 9
+
+/// The blade's smear: a ribbon swept from where the blade is drawn back to where it was in the
+/// drawing before, through `SMEAR_STEPS` places between, each place a palette slot of its own
+/// past the body's bones (`SMEAR_SLOT` on). Its slots all at the blade's place, it has no area
+/// and isn't seen.
+pub const SMEAR_SLOT: u32 = 56
+pub const SMEAR_STEPS: u32 = 8
 
 /// Its colours, sRGB: pale steel, darkened bronze, a deep indigo wrap.
 pub const STEEL = vec3(0.93, 0.95, 0.98)
 pub const BRONZE = vec3(0.36, 0.26, 0.16)
 pub const CORD = vec3(0.13, 0.12, 0.20)
+pub const STREAK = vec3(0.98, 0.97, 0.93)
 
 /// Its measures (m, along the blade from the right hand's grip): the blade from its collar to
 /// its point, the guard, the hilt down to the pommel.
 pub const BLADE_FROM: f32 = 0.075
 pub const BLADE_LONG: f32 = 0.92
 pub const GUARD_AT: f32 = 0.05
-pub const POMMEL: f32 = -0.215
+pub const POMMEL: f32 = -0.29
 
 /// Where the point is, in the sword's own frame (x the edge, y the flat, z the blade).
 pub fn point() -> vec3 {
@@ -215,6 +224,44 @@ fn armed() -> Humanoid {
     }
     for i in first..out.verts.len() {
         out.indices.push(i)
+    }
+    // The smear: the blade's line from a third of the way up to its point, at each step's slot,
+    // joined step to step on both faces.
+    let rows = 10
+    let base = out.verts.len()
+    for j in 0..SMEAR_STEPS {
+        for r in 0..rows + 1 {
+            // A crescent: its tail drawn in toward the point, so it tapers back along the
+            // way the point went.
+            let fade = f32(j) / f32(SMEAR_STEPS - 1)
+            let t = mix(mix(0.3, 1.0, f32(r) / f32(rows)), 1.0, pow(fade, 1.3) * 0.8)
+            let z = BLADE_FROM + BLADE_LONG * t
+            let p = vec3(-0.022 * t * t, 0.0, z)
+            let colour = mix(STREAK, vec3(1.0), vec3(fade * 0.5))
+            out.verts.push(
+                BodyVertex {
+                    pos: g + f.rotate(p),
+                    bones: pack(a: SMEAR_SLOT + j, b: 0, c: 0, d: 0),
+                    normal: f.rotate(vec3(0.0, 1.0, 0.0)),
+                    weights: pack(a: 255, b: 0, c: 0, d: 0),
+                    colour: srgb8(colour),
+                    part: SMEAR,
+                    pad0: 0,
+                    pad1: 0,
+                },
+            )
+        }
+    }
+    for j in 0..SMEAR_STEPS - 1 {
+        for r in 0..rows {
+            let a = base + j * (rows + 1) + r
+            let b = a + 1
+            let c = a + rows + 1
+            let d = c + 1
+            for i in [a, b, d, a, d, c, a, d, b, a, c, d] {
+                out.indices.push(i)
+            }
+        }
     }
     out
 }

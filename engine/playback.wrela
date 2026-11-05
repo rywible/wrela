@@ -564,11 +564,22 @@ pub fn begun(was: Pose, before: Pose, to: Pose, to_before: Pose, dt: f32, bones:
         i.turns[b] = log_of(was.turns[b].mul(to_before.turns[b].inverse()))
         let spin_was = log_of(was.turns[b].mul(before.turns[b].inverse())) * k
         let spin_to = log_of(to.turns[b].mul(to_before.turns[b].inverse())) * k
-        i.spins[b] = spin_was - spin_to
+        i.spins[b] = limited(spin_was - spin_to, i.turns[b])
     }
     i.hips = was.hips - to_before.hips
-    i.hips_speed = (was.hips - before.hips - (to.hips - to_before.hips)) * k
+    i.hips_speed = limited((was.hips - before.hips - (to.hips - to_before.hips)) * k, i.hips)
     i
+}
+
+/// How fast an offset may set off, against how far it is (1/s): a change into a move that
+/// snaps from its first frame (a blow landing) doesn't take its snap away as an offset that
+/// would carry the body the other way, out past where it was.
+pub const SPIN_MOST: f32 = 20.0
+
+/// An offset's speed `v` held to `SPIN_MOST` times how far it is (`x`).
+fn limited(v: vec3, x: vec3) -> vec3 {
+    let most = SPIN_MOST * length(x)
+    if length(v) > most { v * (most / max(length(v), 1.0e-9)) } else { v }
 }
 
 /// Two inertial changes at once: the second begun from where the first had got to (the body
@@ -1238,7 +1249,9 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
         }
         let v = (said - p.last) / max(dt, 1.0e-4)
         let speed = length(vec2(v.x, v.z - ground))
-        let carried_on = m.pushed > 0.0
+        // A whole-body one-off places its own feet (a keyed step in to a cut): they're its, not
+        // the ground's to hold.
+        let carried_on = m.pushed > 0.0 || (m.acting != NONE && !m.upper)
         // A foot already down stays down until it lifts or truly sweeps away: the move's foot
         // drifts as a run's mixed into a walk, which is no step.
         let low = said.y - rest_y < PLANT_LOW
