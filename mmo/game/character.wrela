@@ -267,10 +267,10 @@ pub fn line(c: Character) -> String {
         Stage::Asking => String::from("Finding your character…"),
         Stage::Guest => match c.why {
             Why::SignedOut => String::from(
-                "Playing as a guest. Sign in at wrela.dev to make your character.",
+                "Playing as a guest. Sign in, top right, to make your character.",
             ),
             Why::NameNotKept => String::from(
-                "Playing as a guest. Keep your name at wrela.dev to make your character.",
+                "Playing as a guest. Keep your name, top right, to make your character.",
             ),
             Why::Unreachable => String::from(
                 "Playing as a guest: your account couldn't be reached.",

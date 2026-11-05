@@ -131,6 +131,8 @@ pub struct DrawList: Clone {
     pub wanted: Vec<Wanted>,
     stack: Vec<u32>,
     clip: u32,
+    /// What everything drawn next is multiplied by: 1 opaque, 0 unseen (a fade).
+    pub alpha: f32 = 1.0,
 }
 
 impl DrawList {
@@ -141,6 +143,7 @@ impl DrawList {
             wanted: Vec::new(),
             stack: Vec::new(),
             clip: 0,
+            alpha: 1.0,
         }
     }
 
@@ -150,6 +153,7 @@ impl DrawList {
         self.clips.clear()
         self.wanted.clear()
         self.stack.clear()
+        self.alpha = 1.0
         self.clips.push(vec4(0.0, 0.0, screen.x, screen.y))
         self.clip = 0
     }
@@ -180,12 +184,13 @@ impl DrawList {
         mut self,
         rect: vec4,
         uv: vec4,
-        color: Unorm8x4,
+        color: vec4,
         kind: u32,
         scale: f32 = 0.0,
         radius: f32 = 0.0,
         third: vec2 = vec2(0.0),
     ) {
+        let color = Unorm8x4::encode(vec4(color.xyz, color.w * self.alpha))
         self.quads.push(Quad { rect, uv, color, clip: self.clip, scale, radius, kind, third })
     }
 
@@ -195,7 +200,7 @@ impl DrawList {
             return
         }
         let radius = min(radius, 0.5 * min(r.w, r.h))
-        self.push(vec4(r.x, r.y, r.w, r.h), vec4(0.0), Unorm8x4::encode(color), BOX, radius: radius)
+        self.push(vec4(r.x, r.y, r.w, r.h), vec4(0.0), color, BOX, radius: radius)
     }
 
     /// The rounded outline of `r`, `width` pixels wide, inside it.
@@ -205,7 +210,7 @@ impl DrawList {
         }
         let radius = min(radius, 0.5 * min(r.w, r.h))
         let uv = vec4(width, 0.0, width, 0.0)
-        self.push(vec4(r.x, r.y, r.w, r.h), uv, Unorm8x4::encode(color), BOX, radius: radius)
+        self.push(vec4(r.x, r.y, r.w, r.h), uv, color, BOX, radius: radius)
     }
 
     /// The ellipse that fills `r`; with `width` above 0, only its outline, that wide inside it.
@@ -224,7 +229,7 @@ impl DrawList {
             return
         }
         let uv = vec4(width, 0.0, width, 0.0)
-        self.push(vec4(r.x, r.y, r.w, r.h), uv, Unorm8x4::encode(color), kind)
+        self.push(vec4(r.x, r.y, r.w, r.h), uv, color, kind)
     }
 
     /// A line from `a` to `b`, `width` pixels wide, with round ends.
@@ -236,7 +241,7 @@ impl DrawList {
         let h = 0.5 * width
         let lo = min(a, b) - vec2(h + 1.0)
         let hi = max(a, b) + vec2(h + 1.0)
-        self.push(vec4(lo, hi - lo), vec4(a, b), Unorm8x4::encode(color), LINE, radius: h)
+        self.push(vec4(lo, hi - lo), vec4(a, b), color, LINE, radius: h)
     }
 
     /// The triangle with corners `a`, `b` and `c`; with `width` above 0, only its outline, that
@@ -248,8 +253,7 @@ impl DrawList {
         // Its quad holds the corners, and a pixel more for the edge's smoothing.
         let lo = min(min(a, b), c) - vec2(1.0)
         let hi = max(max(a, b), c) + vec2(1.0)
-        let packed = Unorm8x4::encode(color)
-        self.push(vec4(lo, hi - lo), vec4(a, b), packed, TRIANGLE, radius: width, third: c)
+        self.push(vec4(lo, hi - lo), vec4(a, b), color, TRIANGLE, radius: width, third: c)
     }
 
     /// The outline of `r`, `width` pixels wide, inside it.
@@ -271,11 +275,13 @@ impl DrawList {
         size: f32,
         at: vec2,
         color: vec4,
+        weight: f32 = -1.0,
     ) -> f32 {
         borrow font = fonts.font(face)
+        // A weight given (ems of stroke each side) in place of the font's: medium, semibold.
+        let stroke = if weight >= 0.0 { weight } else { font.weight }
         let k = size / font.em
         let baseline = floor(at.y + font.ascender * size + 0.5)
-        let packed = Unorm8x4::encode(color)
         let scale = 2.0 * font.spread * k
         // The baker pads each field by its spread, rounded up, and a texel (ttf.wrela).
         let pad = ceil(font.spread) + 1.0
@@ -312,14 +318,14 @@ impl DrawList {
                         f32(g.atlas_x + g.width) / aw,
                         f32(g.atlas_y + g.height) / ah,
                     ),
-                    packed,
+                    color,
                     IMAGE,
                 )
             } else if g.width > 0 {
                 // The field reaches `pad` texels past the ink; only half a pixel of it is drawn,
                 // and the stroke the weight adds, so the quad covers the ink, those, and a half
                 // texel, for filtering.
-                let reach = (0.5 + font.weight * size) / k
+                let reach = (0.5 + stroke * size) / k
                 let inset = clamp(pad - reach - 0.5, 0.0, 0.5 * min(f32(g.width), f32(g.height)))
                 let x = pen + (g.left + inset) * k
                 let y = baseline - (g.top - inset) * k
@@ -330,10 +336,10 @@ impl DrawList {
                 self.push(
                     vec4(x, y, fw * k, fh * k),
                     vec4(u0, v0, u0 + fw / aw, v0 + fh / ah),
-                    packed,
+                    color,
                     BOX,
                     scale: scale,
-                    radius: font.weight * size,
+                    radius: stroke * size,
                 )
             }
             true

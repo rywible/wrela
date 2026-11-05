@@ -188,8 +188,8 @@ struct Drawn: Copy {
 }
 
 pub struct Console {
-    /// The MMO's first client, which the page plays in place of the console when its address
-    /// ends in `#mmo` (mmo/game): while the MMO is private, only a link opens it.
+    /// The MMO's client (mmo/game), which wrela.dev plays: the games' home shows in its place only
+    /// when the address ends in `#games`. The account (`account`) shows over it.
     mmo: Option<mmo::client::Client>,
     fonts: Fonts,
     renderer: Renderer,
@@ -309,8 +309,9 @@ pub struct Console {
     tint: vec4,
     // The theme's voice, the selection's theme as it's fetched and read, which game's theme the
     // voice holds, the level last asked of it and when it was asked to fall quiet; and the music
-    // setting, as it's read.
-    voice: RingWriter<Cue>,
+    // setting, as it's read. The voice starts with the home's first theme: a program has one
+    // voice, and the MMO's sign-up takes it for its fanfare when the home never shows.
+    voice: Option<RingWriter<Cue>>,
     theme_of: Option<u32>,
     theme_load: Option<Pending<u8>>,
     theme: Option<Theme>,
@@ -402,7 +403,7 @@ pub fn init() -> Console {
         profile_write: None,
         environment: Some(host::environment()),
         address: Some(host::address()),
-        mmo: None,
+        mmo: Some(mmo::client::init()),
         pending: None,
         closing: None,
         stale: false,
@@ -460,7 +461,7 @@ pub fn init() -> Console {
         prefetch_list: None,
         prefetching: None,
         tint: vec4(1.0, 1.0, 1.0, 0.0),
-        voice: theme::start(),
+        voice: None,
         theme_of: None,
         theme_load: None,
         theme: None,
@@ -849,9 +850,14 @@ fn near_cover(index: u32, selected: u32) -> bool {
 
 fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
-        if is_mmo(bytes) {
-            s.mmo = Some(mmo::client::init())
-            return
+        if is_games(bytes) {
+            // The games' home instead: the MMO's first frames let go of what they opened.
+            match mut s.mmo {
+                Some(m) => mmo::client::close_all(mut m),
+                None => {},
+            }
+            s.mmo = None
+            account::left_game(mut s.account)
         }
         // The answer to the replacement is empty, so this happens once.
         if let Some(kept) = without_fragment(bytes) {
@@ -903,13 +909,15 @@ fn update(s: mut Console) {
             ),
         }
     }
-    if s.need_open && s.profile_ready && s.step == Step::Idle {
+    // The MMO's page opens no game of the home's, and fetches none of its art.
+    let home = s.mmo.is_none()
+    if home && s.need_open && s.profile_ready && s.step == Step::Idle {
         for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
         open_selected(mut s)
     }
     // Only covers near the selection hold textures or requests, and only the chosen game's hero
     // and title art (and the one easing out's).
-    for i in 0..s.cards.len() {
+    for i in 0..(if home { s.cards.len() } else { 0 }) {
         borrow card = s.cards[i]
         let chosen = i == s.selected || i == s.title_shown
         let near = near_cover(i, s.selected)
@@ -1690,8 +1698,24 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.time = Some(time)
     update(mut s)
     if s.mmo.is_some() {
+        s.presentation += dt
+        s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
+        account::set_view(mut s.account, s.zoom, s.reduced, s.semantics)
         match mut s.mmo {
-            Some(m) => mmo::client::frame(mut m, time, width, height),
+            Some(m) => {
+                if let Some(cursor) = mmo::client::frame(
+                    mut m,
+                    time,
+                    width,
+                    height,
+                    mut s.account,
+                ) {
+                    if cursor != s.pointing {
+                        s.pointing = cursor
+                        s.cursor = Some(host::cursor(if cursor { "pointer" } else { "default" }))
+                    }
+                }
+            },
             None => {},
         }
         return
@@ -2145,8 +2169,29 @@ fn trace_room(
 // chosen, given to the voice once the voice has fallen quiet from the last game's, and its level
 // eased up or down. Quiet while a game opens or plays, with the music setting off, or with no
 // theme.
+// Asks the voice to ease to level `to`: false if its ring is full (or it hasn't started).
+fn voice_level(voice: mut Option<RingWriter<Cue>>, to: f32) -> bool {
+    match mut voice {
+        Some(v) => theme::level(mut v, to),
+        None => false,
+    }
+}
+
+// Gives the voice `t` to play: false if its ring is full (or it hasn't started).
+fn voice_send(voice: mut Option<RingWriter<Cue>>, t: Theme) -> bool {
+    match mut voice {
+        Some(v) => theme::send(mut v, t),
+        None => false,
+    }
+}
+
 fn drive_theme(s: mut Console, library: f32) {
     if s.cards.is_empty() { return }
+    if s.voice.is_none() {
+        // The fanfare of a sign-up may have taken the program's one voice: then the home is quiet.
+        if !account::take_voice(mut s.account) { return }
+        s.voice = Some(theme::start())
+    }
     let chosen = s.selected
     if s.theme_of != Some(chosen) {
         s.theme_of = Some(chosen)
@@ -2163,17 +2208,17 @@ fn drive_theme(s: mut Console, library: f32) {
     if s.theme_sent != Some(chosen) {
         if let Some(t) = s.theme {
             if s.voice_level > 0.0 {
-                if theme::level(mut s.voice, 0.0) {
+                if voice_level(mut s.voice, 0.0) {
                     s.voice_level = 0.0
                     s.quiet_at = s.presentation
                 }
             } else if s.presentation - s.quiet_at >= QUIET_SECONDS {
-                if theme::send(mut s.voice, t) { s.theme_sent = Some(chosen) }
+                if voice_send(mut s.voice, t) { s.theme_sent = Some(chosen) }
             }
         }
     }
     let level = if s.theme_sent == Some(chosen) { wanted } else { 0.0 }
-    if level != s.voice_level && theme::level(mut s.voice, level) {
+    if level != s.voice_level && voice_level(mut s.voice, level) {
         if level == 0.0 { s.quiet_at = s.presentation }
         s.voice_level = level
     }
@@ -2252,14 +2297,16 @@ fn decide_opening(s: mut Console) {
     if s.reloaded == Some(true) { s.presentation = max(s.presentation, RETURNING) }
 }
 
-// Whether an address (`host::address`) asks for the MMO: its fragment is `mmo`.
-fn is_mmo(address: [u8]) -> bool {
+// Whether an address (`host::address`) asks for the games' home rather than the MMO, which
+// wrela.dev opens: its fragment is `games`.
+fn is_games(address: [u8]) -> bool {
+    let tail: [u8; 6] = [35, 103, 97, 109, 101, 115]
     let n = address.len()
-    n >= 4 &&
-        address[n - 4] == 35 &&
-        address[n - 3] == 109 &&
-        address[n - 2] == 109 &&
-        address[n - 1] == 111
+    if n < 6 { return false }
+    for i in 0..6 {
+        if address[n - 6 + i] != tail[i] { return false }
+    }
+    true
 }
 
 // An address (`host::address`) without its fragment, if it has one: the path and query.
