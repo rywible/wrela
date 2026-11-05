@@ -917,9 +917,9 @@ pub struct Retarget: Copy {
     /// the face to the floor.
     pub carried: bool = false,
     /// Whether its rest is a frame it stands in (`Take::rested_as`), its feet flat on the floor:
-    /// each foot and its toes then take the take's heading at rest but keep the rig's own pitch,
-    /// so a foot its markers solve steeper than the other (or an actor's higher ankle) stands
-    /// as flat as the rig's.
+    /// each foot then takes the take's heading at rest but keeps the rig's own pitch, so a foot
+    /// its markers solve steeper than the other (or an actor's higher ankle) stands as flat as
+    /// the rig's. (The toes aim nowhere at rest, so they're never aligned.)
     pub stood: bool = false,
 }
 
@@ -957,12 +957,9 @@ fn aim(v: u32, has: [bool; 55], pos: [vec3; 55], end: vec3) -> Option<vec3> {
     None
 }
 
-/// Whether VRM bone `v` is a foot or its toes.
+/// Whether VRM bone `v` is a foot.
 fn flat_footed(v: u32) -> bool {
-    v == bone("leftFoot") ||
-        v == bone("rightFoot") ||
-        v == bone("leftToes") ||
-        v == bone("rightToes")
+    v == bone("leftFoot") || v == bone("rightFoot")
 }
 
 /// A leg's length at rest: its upper bone's and its lower bone's, from VRM bones' places.
