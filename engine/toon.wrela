@@ -17,11 +17,13 @@ use humanoid::{BodyVertex, Humanoid}
 
 /// What a vertex is to the shading: skin and cloth (its colour and the program's outfit decide),
 /// hair (a highlight rides it), an eye (never shaded nor inked), a garment drawn in its vertex's
-/// own colour (a cape, a scarf).
+/// own colour (a coat, a sash), or one patterned.
 pub const SKIN: u32 = 0
 pub const HAIR: u32 = 1
 pub const EYE: u32 = 2
 pub const CLOTH: u32 = 3
+/// A garment in its vertex's colour with the program's pattern on it.
+pub const PATTERN: u32 = 4
 
 /// How the authoring measures: the reach of the concavity round a vertex (m) and how strongly a
 /// concave place is put in shadow; how far the face's normals bend toward the head's ellipsoid
