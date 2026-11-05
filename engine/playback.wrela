@@ -334,6 +334,39 @@ pub fn pushed(m: Move, speed: f32) -> Move {
     out
 }
 
+/// `m` with its keys eased into each other: `passes` times, each frame a quarter of each neighbour
+/// and half its own (its first and last kept). A keyed one-off whose limbs whip from key to key
+/// (a roll, keyed at 30 a second) keeps its shape and timing but loses the jolt at each key; not
+/// for a move whose snap is the point (an impact frame).
+pub fn eased(m: Move, passes: u32) -> Move {
+    var out = m.clone()
+    let n = m.clip.frames
+    let nb = m.clip.bones
+    if n < 3 {
+        return out
+    }
+    for _ in 0..passes {
+        let was = out.clip.clone()
+        for f in 1..n - 1 {
+            for b in 0..nb {
+                let q = was.turns[f * nb + b].v
+                var a = was.turns[(f - 1) * nb + b].v
+                var c = was.turns[(f + 1) * nb + b].v
+                if dot(a, q) < 0.0 {
+                    a = -a
+                }
+                if dot(c, q) < 0.0 {
+                    c = -c
+                }
+                let mixed = 0.25 * a + 0.5 * q + 0.25 * c
+                out.clip.turns[f * nb + b] = Quat { v: normalize(mixed) }
+            }
+            out.clip.hips[f] = 0.25 * was.hips[f - 1] + 0.5 * was.hips[f] + 0.25 * was.hips[f + 1]
+        }
+    }
+    out
+}
+
 // ---- finding footfalls -------------------------------------------------------------------
 
 /// How high over its lowest a foot's ankle is, at most, as a share of how high it lifts, when
@@ -497,18 +530,19 @@ impl Inertia {
 }
 
 /// A change begun: the body showed `was` (and `before`, `dt` earlier), and now goes to `to`
-/// (which was `to_before` `dt` earlier). What it showed, and how it was moving, against the new
-/// move.
+/// (which was `to_before` `dt` earlier). What it showed, against what the new move showed at
+/// the same moment (`to_before`, so the frame stepped on from here goes on from `was` at its
+/// own speed, not the new move's too), and how it was moving against the new move.
 pub fn begun(was: Pose, before: Pose, to: Pose, to_before: Pose, dt: f32, bones: u32) -> Inertia {
     var i = Inertia::none()
     let k = 1.0 / max(dt, 1.0e-4)
     for b in 0..bones {
-        i.turns[b] = log_of(was.turns[b].mul(to.turns[b].inverse()))
+        i.turns[b] = log_of(was.turns[b].mul(to_before.turns[b].inverse()))
         let spin_was = log_of(was.turns[b].mul(before.turns[b].inverse())) * k
         let spin_to = log_of(to.turns[b].mul(to_before.turns[b].inverse())) * k
         i.spins[b] = spin_was - spin_to
     }
-    i.hips = was.hips - to.hips
+    i.hips = was.hips - to_before.hips
     i.hips_speed = (was.hips - before.hips - (to.hips - to_before.hips)) * k
     i
 }
@@ -711,6 +745,8 @@ pub struct Mover: Copy {
     /// keyed in place (a roll) now.
     pub through: f32,
     pub pushed: f32,
+    /// How fast (m/s) it was carried as its whole-body one-off began.
+    pub carry_in: f32,
 }
 
 impl Mover {
@@ -741,6 +777,7 @@ impl Mover {
             half: 0.09,
             through: 0.0,
             pushed: 0.0,
+            carry_in: 0.0,
         }
     }
 }
@@ -810,6 +847,7 @@ pub fn step(
         new_act = true
         change = true
         m.half = if upper { how.change_half } else { how.act_half }
+        m.carry_in = if upper { 0.0 } else { m.carried }
     }
     let whole = m.acting != NONE && !m.upper
     // Heading and speed spring after the stick (a whole-body one-off steers itself).
@@ -953,7 +991,10 @@ pub fn step(
         if !m.upper {
             let (d, turn) = mv.root_between(t0, t1)
             let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
-            let push = mv.push_at(0.5 * (t0 + t1))
+            // It keeps the speed it had going in, for as long as the push takes to build: a roll
+            // out of a walk doesn't stop dead first.
+            let mid = 0.5 * (t0 + t1)
+            let push = max(mv.push_at(mid), m.carry_in * (1.0 - smoothstep(0.0, PUSH_IN, mid)))
             m.place += q.rotate(d + vec3(0.0, 0.0, push * dt))
             m.carried = push
             m.pushed = push
@@ -1085,12 +1126,14 @@ impl Planted {
 }
 
 /// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest and going slower
-/// than `PLANT_SLOW` (m/s) along the floor (one down already, `PLANT_KEEP`); how quickly (s) a hold takes, and lets go as the foot
+/// than `PLANT_SLOW` (m/s) along the floor (one down already, `PLANT_KEEP`, while the move's
+/// pulled it less than `KEEP_FAR` (m) from where it's held); how quickly (s) a hold takes, and lets go as the foot
 /// lifts (`HOLD_OUT_PACE` over the body's speed, between `HOLD_OUT_LEAST` and `HOLD_OUT`); and
 /// the furthest (m) the animation may pull from where the foot's held, past which it's dragged.
 const PLANT_LOW: f32 = 0.025
 const PLANT_SLOW: f32 = 0.6
 const PLANT_KEEP: f32 = 1.6
+const KEEP_FAR: f32 = 0.15
 const HOLD_IN: f32 = 0.05
 const HOLD_OUT: f32 = 0.25
 const HOLD_OUT_PACE: f32 = 0.4
@@ -1172,8 +1215,9 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
         let carried_on = m.pushed > 0.0
         // A foot already down stays down until it lifts or truly sweeps away: the move's foot
         // drifts as a run's mixed into a walk, which is no step.
-        let slow = if p.down { PLANT_KEEP } else { PLANT_SLOW }
-        let down = said.y - rest_y < PLANT_LOW && speed < slow && !carried_on
+        let low = said.y - rest_y < PLANT_LOW
+        let kept = p.down && speed < PLANT_KEEP && p.gap < KEEP_FAR
+        let down = low && (speed < PLANT_SLOW || kept) && !carried_on
         if p.hold == 0.0 {
             p.yaw = yaw_now
         }

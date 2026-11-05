@@ -322,14 +322,18 @@ pub const PUNCH: Move = playback::timed(
     HZ,
 )
 
-/// The roll, at its own pace: Quaternius keyed it in place, so gameplay carries it ahead
+/// The roll, at its own pace, its keys eased into each other (`playback::eased`: they whip
+/// from one to the next): Quaternius keyed it in place, so gameplay carries it ahead
 /// (`ROLL_SPEED`, m/s), as the fight's dodge does.
 pub const ROLL_SPEED: f32 = 2.4
 @fuel(2 ** 40)
 pub const ROLL: Move = playback::pushed(
-    playback::moved(
-        cleanup::cleaned(ROLL_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
-        HERO.rig.clone(),
+    playback::eased(
+        playback::moved(
+            cleanup::cleaned(ROLL_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
+            HERO.rig.clone(),
+        ),
+        2,
     ),
     ROLL_SPEED,
 )
