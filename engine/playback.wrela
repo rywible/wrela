@@ -590,7 +590,7 @@ pub struct Gaits: Clone {
 /// on to its stop at `stop_pace` of it, so it stops within a step); the
 /// speed (m/s) under which, its stick let go, it stops; the phases it starts at (its right foot
 /// lifting, its left under it) and stops at (one foot passing the other); how quickly a change
-/// dies away (half-life, s); and whether its feet are held where they're put (`planted`).
+/// dies away (half-life, s), and one into or out of a whole-body one-off (a roll); and whether its feet are held where they're put (`planted`).
 pub struct Handling: Copy {
     pub speed_half: f32 = 0.18,
     pub turn_half: f32 = 0.09,
