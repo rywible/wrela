@@ -683,7 +683,7 @@ fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     // the screen, up to a cap height of 120 pixels; sized where it rests, so it keeps its size as
     // it rises in. A screen too short for it under the horizon (a phone on its side) sets it by
     // its width alone, over the sea's line.
-    let baseline = under_name - round(24.0 * k)
+    let baseline = under_name - round(32.0 * k)
     let resting = baseline - round(lift)
     let horizon = h * HORIZON + 20.0 * k
     let width_at_one = f.fonts.font(Face::Mono).measure("WRELA", 1.0) + 4.0 * 0.02
