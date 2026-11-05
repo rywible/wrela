@@ -249,17 +249,17 @@ pub fn frame<A: Account>(
                 if on != NONE && on == f.pressed { chosen = on }
                 f.pressed = NONE
             },
-            Event::KeyDown { key, repeat: false, mods } => {
+            Event::KeyDown { key, repeat: false, .. } => {
                 if key == Key::Enter || key == Key::Space {
                     chosen = f.focus
                 } else if key == Key::Tab || key == Key::Left || key == Key::Right {
-                    if f.keyboard || key != Key::Tab || !mods.shift {
-                        f.focus = if f.keyboard { 1 - f.focus } else { f.focus }
-                    }
+                    // The first press shows the ring where the focus is; the next moves it.
+                    if f.keyboard { f.focus = 1 - f.focus }
                     f.keyboard = true
                 } else if key == Key::W || key == Key::Up {
-                    // Rowing from the page is playing.
+                    // Rowing from the page is playing, and that stroke is the first.
                     chosen = PLAY
+                    input(mut f.scene, e)
                 }
             },
             Event::PadButton { button, pressed: true, .. } => {
@@ -308,6 +308,10 @@ pub fn frame<A: Account>(
         f.keys = kit::ease(f.keys, 0.0, dt, seconds: 0.2)
     }
     budget(mut f, h)
+    // TEMP (measuring; removed before review): the drawings' pace and the scene's size.
+    if f.drawings % 120 == 0 {
+        std::io::print(f"front: {f.spent * 1000.0} ms, scene {f.tall} tall, screen {w}x{h}")
+    }
     let tall = f.tall
     let wide = max(round(tall * w / h), 1.0)
     play(mut f.scene, f.time, u32(wide), u32(tall), 0.0)
@@ -437,7 +441,7 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
         vec4(1.0, 1.0, 1.0, 0.82),
     )
     let name_size = round(clamp(min(w * 0.11, h * 0.15), 44.0 * k, 112.0 * k))
-    let name_top = round(line_top - 14.0 * k - name_size * 1.02)
+    let name_top = round(line_top - 26.0 * k - name_size * 1.02)
     let _ = spaced(
         mut f,
         "WRELA",
