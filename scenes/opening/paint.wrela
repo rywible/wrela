@@ -655,9 +655,9 @@ const SPARK_GLINT: f32 = 1.5
 /// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
 fn lace_at(w: vec2) -> f32 {
     let warp = vec2(noise(w * 0.9 + vec2(2.1, 8.3)), noise(w * 0.9 + vec2(6.7, 3.9))) - vec2(0.5)
-    let c = cells(w * 5.0 + warp * 3.0)
+    let c = cells(w * 9.0 + warp * 4.0)
     // (A bubble's blot round each cell's point, sized by a noise, so they clot and scatter.)
-    let size = 0.05 + 0.3 * noise(w * 6.0 + vec2(5.0)) * noise(w * 1.7)
+    let size = 0.08 + 0.35 * noise(w * 6.0 + vec2(5.0)) * noise(w * 1.7)
     let blots = 1.0 - smoothstep(size * 0.4, size, c.x)
     let drifts = smoothstep(0.4, 0.7, fbm(w * 0.6 + warp, 3))
     blots * drifts
@@ -687,9 +687,9 @@ fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     let lane = 0.45 + 0.06 * behind
     calm = (1.0 - smoothstep(lane * 0.5, lane, abs(q.x))) *
         smoothstep(0.0, 1.0, behind) *
-        exp(-behind / (4.0 + 8.0 * way)) *
-        way *
-        0.35
+        exp(-behind / (5.0 + 10.0 * way)) *
+        smoothstep(0.0, 0.4, way) *
+        0.6
     // Ripples spreading from the hull as it rocks, three at a time, fading as they widen (read
     // round its waterline as a capsule), the more as it slaps down.
     let along = q.y - clamp(q.y, -1.7, 1.7)
@@ -714,11 +714,11 @@ fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         let (_, pb, sunk) = paddle(s)
         let bq = (q - vec2(pb.x, pb.z + 0.12)) / vec2(0.22, 0.34)
         let boil = (1.0 - smoothstep(0.35, 1.0, length(bq))) * sunk
-        foam = max(foam, boil * smoothstep(0.15, 0.6, lace + 0.3 * boil))
+        foam = max(foam, boil * smoothstep(0.05, 0.4, lace + 0.5 * boil))
         tilt += bq * (boil * 0.25 * sin(length(bq) * 9.0 - s.held * 14.0))
     }
     let ph = fract(s.stroke)
-    for k in 0..(if a > 0.0 && reach { 3 } else { 0 }) {
+    for k in 0..(if a > 0.0 && reach { 4 } else { 0 }) {
         let fk = f32(k)
         // Where the blade went in, `age` s ago, left astern since.
         let age = (ph + fk) / rate
@@ -734,26 +734,31 @@ fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         // to nothing in half a second.
         let ring = 0.07 + 0.55 * age
         let crown = exp(-pow(r - ring, 2.0) / (0.002 + 0.01 * age)) * smoothstep(0.5, 0.05, age)
-        foam = max(foam, crown * a * smoothstep(0.2, 0.55, lace))
+        foam = max(foam, crown * a * smoothstep(0.05, 0.4, lace + 0.3))
         // Where it came out: its two whirls, either side of the blade's path, each a dimple the
         // ripples are smoothed out of, a thread of foam wound into it, slowly unwinding.
         let out_age = (ph - 0.62 + fk) / rate
         if out_age > 0.0 {
             let exit = vec2(0.9, -1.15 - s.speed * out_age)
-            let wear = exp(-out_age / 2.4) * a
-            let rad = 0.13 + 0.05 * min(out_age, 2.0)
+            let wear = exp(-out_age / 4.0) * a
+            let rad = 0.16 + 0.06 * min(out_age, 3.0)
             for side in 0..2 {
                 let sg = f32(side) * 2.0 - 1.0
-                let e = exit + vec2(0.16 * sg, 0.0)
-                let v = q - e
-                let dq = length(v)
+                // (The outboard whirl the stronger, and neither round: each drawn out and
+                // wandering as the water carries it.)
+                let e = exit + vec2(0.16 * sg, 0.04 * sg)
+                let strength = if side == 1 { 1.0 } else { 0.55 }
+                let v = (q - e) * vec2(1.0, 0.75)
+                let dq = length(v) * (0.8 + 0.4 * noise(v * 9.0 + vec2(fk * 3.7 + sg)))
                 let inside = 1.0 - smoothstep(rad * 0.5, rad * 1.3, dq)
-                calm = max(calm, inside * wear * 0.8)
+                calm = max(calm, inside * wear * 0.8 * strength)
                 // (Its dimple: the water leaning in toward its eye.)
-                tilt -= v / max(dq, 1.0e-3) * (exp(-dq * dq / (rad * rad * 0.3)) * 0.35 * wear)
-                let turn = atan2(v.y, v.x) / 6.2832 * sg + dq / (0.09 + 0.03 * out_age)
-                let thread = smoothstep(0.4, 0.48, abs(fract(turn) - 0.5))
-                foam = max(foam, thread * inside * wear * 0.45 * smoothstep(0.2, 0.6, lace))
+                tilt -= v /
+                    max(dq, 1.0e-3) *
+                    (exp(-dq * dq / (rad * rad * 0.3)) * 0.35 * wear * strength)
+                // (Bubbles caught at its edge, in clots, not a ring.)
+                let edge = exp(-pow(dq - rad, 2.0) / (rad * rad * 0.2))
+                foam = max(foam, edge * wear * strength * 0.6 * smoothstep(0.25, 0.6, lace))
             }
         }
     }
@@ -1052,7 +1057,7 @@ fn sea_shade(
         smoothstep(0.3, 0.55, noise(vec2(along * 3.0 - s.held * 4.0, across * 3.0))) *
         way
     let wake = max(
-        max(arms, trail * 0.6) * step(0.0, back) * (0.85 * way),
+        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way),
         bow_wave * 0.7,
     )
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the
@@ -1218,7 +1223,7 @@ fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
             }
         }
     }
-    vec4(acc.rgb, min(acc.a, 1.0)) * a
+    vec4(acc.rgb, min(acc.a, 1.0)) * (a * 0.7)
 }
 
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).

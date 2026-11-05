@@ -443,10 +443,11 @@ fn field_in(
         let d = detail.sample_level(rep, q / DETAIL_SPAN)
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
         let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
-        s = saturate(above(s, from: wisp * 0.35))
+        s = saturate(above(s, from: wisp * mix(0.6, 0.35, w.a)))
     }
-    // Dense a little way in: a cloud's edge is sharp.
-    min(s * 3.0, 1.0)
+    // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
+    // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
+    min(s * mix(1.1, 3.0, w.a), 1.0)
 }
 
 /// The planet's radius under the world's y = 0 (m).
