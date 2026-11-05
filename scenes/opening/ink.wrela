@@ -576,9 +576,24 @@ pub fn ink(
         }
         // The sun's path on the water: a column of light under it, out to the horizon, brightest
         // where the waves already hold the light, so it stands over the sky it lies under.
-        if m0.y == SEA {
-            let path = toward * smoothstep(0.3, 0.85, luma(c))
-            c = mix(c, vec3(1.0, 0.97, 0.9), clamp(path * 0.6, 0.0, 0.65))
+        // (The glints are the crests brighter than the water either side of them, a ridge of light
+        // and not an edge's bright side: they move with the waves, steady, and the water between
+        // keeps its colour. Faint out by the horizon, where the sea mustn't stand brighter than
+        // the sky over it.)
+        if m0.y == SEA && toward > 0.01 {
+            let here = luma(seen(light, at(colour, px, size).xyz, clean))
+            var l4 = vec4(here)
+            for i in 0..4 {
+                let q = px + AROUND[i] * 2.0 * scale
+                if at(marks, q, size).y == SEA {
+                    l4[i] = luma(seen(light, at(colour, q, size).xyz, clean))
+                }
+            }
+            let ridge = max(min(here - l4.x, here - l4.y), min(here - l4.z, here - l4.w))
+            let lift = smoothstep(0.01, 0.06, ridge)
+            let out_ = mix(1.0, 0.25, smoothstep(8.5, 11.5, m0.x))
+            c *= 1.0 - 0.1 * toward * (1.0 - lift) * out_
+            c = mix(c, vec3(1.0, 0.97, 0.9), clamp(toward * (0.12 + 0.7 * lift) * out_, 0.0, 0.8))
         }
         // ...and the sun itself the brightest thing in the frame: its disc white-hot, held over
         // the roll.

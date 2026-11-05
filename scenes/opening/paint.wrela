@@ -691,9 +691,9 @@ fn falls(
                 (0.92 + 0.16 * noise(vec2(drop * 0.012 - s.held * 0.3, f32(i) * 5.0)))
             // The strands, running down as the water does.
             let fi = f32(i) * 7.0
-            let strand = noise(vec2(side / (w * 0.22 + 0.5) + fi, drop * 0.006 - s.held * 0.9)) *
+            let strand = noise(vec2(side / (w * 0.22 + 0.5) + fi, drop * 0.006 - s.held * 2.4)) *
                 0.65 +
-                noise(vec2(side / (w * 0.08 + 0.3) + fi * 2.0, drop * 0.02 - s.held * 2.2)) * 0.35
+                noise(vec2(side / (w * 0.08 + 0.3) + fi * 2.0, drop * 0.02 - s.held * 5.5)) * 0.35
             // (Strands finer than a pixel averaged out: far off the sheet is one soft fall.)
             let px_m = tc * 2.0 / (s.resolution.y * s.focal) / k
             let sheet = mix(
@@ -712,14 +712,14 @@ fn falls(
                 smoothstep(0.0, 6.0, drop) *
                 smoothstep(900.0, 200.0, drop) *
                 step(1.0, f.w) *
-                mix(1.0, clump, smoothstep(80.0, 300.0, drop))
+                mix(1.0, clump, 0.35 * smoothstep(120.0, 400.0, drop))
             let mist = exp(-(across * across) / (w * w * 14.0)) *
                 smoothstep(120.0, 460.0, drop) *
                 smoothstep(1300.0, 650.0, drop) *
                 step(1.0, f.w) *
                 0.3 *
                 (0.55 + 0.45 * noise(vec2(side * 0.05, drop * 0.01 - s.held * 0.2)))
-            let a = clamp(body * (0.35 + 0.65 * sheet) + mist, 0.0, 0.92) * (1.0 - acc.a)
+            let a = clamp(body * (0.6 + 0.4 * sheet) + mist, 0.0, 0.92) * (1.0 - acc.a)
             // Lit from behind and above: the strands' crowns warm with the low sun, the sheet
             // between them cooler and darker, the mist a soft warm grey.
             let warm = h.light.sun_colour * vec3(1.0, 0.86, 0.66)
