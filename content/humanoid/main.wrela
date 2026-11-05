@@ -552,7 +552,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             }
             let u = f.rotate(vec3(0.0, 0.0, 1.0))
             let e = f.rotate(vec3(1.0, 0.0, 0.0))
-            keys::sword_keyed(
+            let r = keys::sword_keyed(
                 rig,
                 shown,
                 mix(grip, centre + hold, on),
@@ -561,6 +561,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 mixamo::SPAN,
                 mixamo::FIST,
             )
+            if PROBE == 2 {
+                let (_, g2, _) = r
+                let rs = w[rig.find("rightUpperArm")].t
+                let ls = w[rig.find("leftUpperArm")].t
+                print(f"  chest {chest.x:.2} {chest.y:.2} {chest.z:.2} want {(centre + hold).z:.2} {(centre + hold).y:.2} got {g2.x:.2} {g2.y:.2} {g2.z:.2} rs {rs.x:.2} {rs.y:.2} {rs.z:.2} ls {ls.x:.2} {ls.y:.2} {ls.z:.2}")
+            }
+            r
         } else {
             (held, grip, f)
         }

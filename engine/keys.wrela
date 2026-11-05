@@ -597,7 +597,7 @@ fn arm_onto(rig: Rig, w: mut Vec<Rigid>, side: f32, hold: vec3, f: Quat) {
     let s = w[u0].t
     // The elbow down and out to its own side, never across the middle (the forearms parallel,
     // the elbows in under the hilt).
-    let pole = vec3(side * 0.5, -0.85, -0.1)
+    let pole = vec3(side * 0.25, -0.9, -0.1)
     let (e, t) = elbow_at(s, wrist, l1, l2, pole)
     turn_below(rig, mut w, u0, arc(w[l0].t - w[u0].t, e - w[u0].t))
     turn_below(rig, mut w, l0, arc(w[h0].t - w[l0].t, t - w[l0].t))

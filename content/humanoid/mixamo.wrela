@@ -70,7 +70,7 @@ fn part_of(file: Bytes, from: u32, to: u32) -> Take {
 
 /// How far down the hilt the left hand holds it, below the right (m): a great sword's long
 /// hilt, the hands a hand's width apart.
-pub const SPAN: f32 = 0.24
+pub const SPAN: f32 = 0.25
 
 /// The way the sword points from the right hand (`keys::sword_in_hands`): as the guard's two
 /// hands hold it (Mixamo's grip, not the keyed hold's).
@@ -336,13 +336,21 @@ pub const V_UP: f32 = 0.25
 pub const V_GO: f32 = 0.55
 pub const V_BLOW: f32 = 0.65
 pub const V_FREE: f32 = 0.75
-pub const V_SETTLE: f32 = 0.85
-pub const V_DONE: f32 = 1.05
+pub const V_SETTLE: f32 = 0.95
+pub const V_STILL: f32 = 1.02
+pub const V_DONE: f32 = 1.45
+
+/// How far forward (radians) rotation `q` pitches the way ahead (+z): down below level, +.
+fn pitch_of(q: Quat) -> f32 {
+    let fwd = q.rotate(vec3(0.0, 0.0, 1.0))
+    atan2(-fwd.y, length(vec2(fwd.x, fwd.z)))
+}
 
 fn vertical() -> Move {
-    // The body of Mixamo's first slash, retimed to the keyed sword: its gather while the sword
-    // rises, dead still through jodan's hold, its lunge (the step in) on the snap so the stamp
-    // lands with the blow, a dead hit-stop, its planted settle and recovery after.
+    // The legs and the hips' travel of Mixamo's first slash, retimed to the keyed sword: its
+    // gather while the sword rises, dead still through jodan's hold, its lunge (the step in) on
+    // the snap so the stamp lands with the blow, a dead hit-stop, a slow sink into the front
+    // knee, a beat held, and its own step back to guard at its own pace.
     let m = once_of(embed("private/great_sword_slash.bvh"), 7, 36)
     let keys = [
         vec2(0.0, 0.0),
@@ -351,44 +359,60 @@ fn vertical() -> Move {
         vec2(V_BLOW, 0.467),
         vec2(V_FREE, 0.467),
         vec2(V_SETTLE, 0.56),
+        vec2(V_STILL, 0.56),
         vec2(V_DONE, 0.95),
     ]
-    var v = playback::keyed_over(m, keys, blow: V_BLOW, free: V_FREE, cancel: 0.9)
-    // Square through it: the slash's wind (its hips swing sixty degrees, a diagonal cut's) taken
-    // out, the hips and trunk turned as the guard has them the whole way, so the cut comes down
-    // the middle and the stance never wheels.
+    var v = playback::keyed_over(m, keys, blow: V_BLOW, free: V_FREE, cancel: 1.1)
+    // Square and upright through it: the slash's wind (its hips swing sixty degrees and roll, a
+    // diagonal cut's) taken out. The hips keep the guard's turn and only pitch as the mocap's
+    // do; the trunk is the guard's own, pitched as keyed, so the cut comes down the middle and
+    // the stance never wheels or lists.
     let rig = HERO.rig.clone()
     let n = v.clip.bones
-    let up = vec3(0.0, 1.0, 0.0)
     let guard = IDLE_M.clip.pose(0.0)
-    // The trunk's pitch (degrees, + forward) keyed over the cut: arched up tall into jodan, over
-    // its front knee at the blow; the hips' drop (m): the weight sinking through the snap.
-    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_DONE]
-    let pitches = [0.0, -9.0, -11.0, 7.0, 7.0, 9.0, 0.0]
-    let drops = [0.0, 0.015, 0.015, -0.045, -0.045, -0.06, 0.0]
+    let hips = rig.find("hips")
+    let spine = rig.find("spine")
+    // The trunk's pitch (degrees, + forward) keyed over the cut: arched up tall into jodan,
+    // only a little over the front knee at the blow (the depth from the hips sinking, not the
+    // spine folding); the hips' drop (m): the weight sinking through the snap and the settle.
+    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
+    let pitches = [0.0, -8.0, -10.0, 11.0, 11.0, 13.0, 13.0, 0.0]
+    // Into the blow (degrees): the right shoulder driven forward and the trunk turned a little
+    // after it (the right side leads, as the right hand's further up the hilt), the left
+    // shoulder drawn back, so both arms reach long down the hilt.
+    let reaches = [0.0, 0.0, 0.0, 16.0, 16.0, 14.0, 14.0, 0.0]
+    let turns = [0.0, 0.0, 0.0, 14.0, 14.0, 12.0, 12.0, 0.0]
+    let drops = [0.0, 0.015, 0.015, -0.05, -0.05, -0.08, -0.08, 0.0]
+    let gp = pitch_of(guard.turns[hips])
     for f in 0..v.clip.frames {
         let t = f32(f) / v.clip.fps
-        for name in ["hips", "spine", "chest", "upperChest"] {
+        let hq = v.clip.turns[f * n + hips]
+        v.clip.turns[f * n + hips] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), pitch_of(hq) - gp).mul(guard.turns[hips])
+        for name in ["spine", "chest", "upperChest", "neck", "head"] {
             let b = rig.find(name)
             if b != humanoid::NONE {
-                let i = f * n + b
-                let q = v.clip.turns[i]
-                let swing = q.mul(keys::twist_of(q, up).inverse())
-                var turned = swing.mul(keys::twist_of(guard.turns[b], up))
-                if name == "spine" {
-                    turned = Quat::axis_angle(vec3(1.0, 0.0, 0.0), keyed_at(times, pitches, t) * 0.017453292).mul(turned)
+                v.clip.turns[f * n + b] = if b == spine {
+                    // Less the hips' own pitch, so the trunk's lean is the keyed one.
+                    Quat::axis_angle(vec3(1.0, 0.0, 0.0), keyed_at(times, pitches, t) * 0.017453292 - (pitch_of(hq) - gp))
+                        .mul(guard.turns[b])
+                } else {
+                    guard.turns[b]
                 }
-                v.clip.turns[i] = turned
             }
         }
         v.clip.hips[f] = v.clip.hips[f] + vec3(0.0, keyed_at(times, drops, t), 0.0)
-        // The head upright, looking under the hands, not thrown about by the slash's wind.
-        for name in ["neck", "head"] {
+        let r = keyed_at(times, reaches, t) * 0.017453292
+        for (name, by) in [("leftShoulder", 0.6), ("rightShoulder", 1.0)] {
             let b = rig.find(name)
             if b != humanoid::NONE {
                 let i = f * n + b
-                v.clip.turns[i] = v.clip.turns[i].nlerp(guard.turns[b], 0.75)
+                v.clip.turns[i] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), by * r).mul(v.clip.turns[i])
             }
+        }
+        let ch = rig.find("upperChest")
+        if ch != humanoid::NONE {
+            let i = f * n + ch
+            v.clip.turns[i] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), keyed_at(times, turns, t) * 0.017453292).mul(v.clip.turns[i])
         }
     }
     v
@@ -402,24 +426,25 @@ fn vertical() -> Move {
 /// the blade level at the foe's head, held dead, the point dipping as the body sinks, and
 /// straight back up the middle to guard.
 pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
-    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_DONE]
+    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
     let holds = [
-        vec3(0.0, -0.36, 0.40),
-        vec3(0.0, 0.72, 0.22),
-        vec3(0.0, 0.74, 0.18),
-        vec3(0.0, -0.04, 0.74),
-        vec3(0.0, -0.04, 0.74),
-        vec3(0.0, -0.12, 0.70),
-        vec3(0.0, -0.36, 0.40),
+        vec3(0.0, -0.32, 0.40),
+        vec3(0.0, 0.72, 0.24),
+        vec3(0.0, 0.74, 0.20),
+        vec3(0.0, 0.06, 1.0),
+        vec3(0.0, 0.06, 1.0),
+        vec3(0.0, -0.04, 0.96),
+        vec3(0.0, -0.04, 0.96),
+        vec3(0.0, -0.32, 0.40),
     ]
-    let angles = [16.0, 122.0, 132.0, -2.0, -2.0, -12.0, 16.0]
-    var hold = holds[6]
-    var angle = angles[6]
+    let angles = [25.0, 114.0, 120.0, 10.0, 10.0, -4.0, -4.0, 25.0]
+    var hold = holds[7]
+    var angle = angles[7]
     if time <= 0.0 {
         hold = holds[0]
         angle = angles[0]
     }
-    for i in 1..7 {
+    for i in 1..8 {
         if time >= times[i - 1] && time <= times[i] {
             let x = (time - times[i - 1]) / (times[i] - times[i - 1])
             // The snap down runs even (all speed, no ease); the rest ease in and out.
