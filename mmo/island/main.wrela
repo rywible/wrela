@@ -21,7 +21,7 @@ pub const SAVE_VERSION: u8 = 1
 /// The most marks an island holds.
 pub const MAX_MARKS: u32 = 256
 /// The longest step a peer takes in one decision, each way.
-pub const MAX_STEP: i32 = 8
+pub const MAX_STEP: i32 = 24
 
 // Why the island refuses a decision.
 /// A step longer than `MAX_STEP`.

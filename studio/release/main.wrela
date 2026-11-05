@@ -170,6 +170,11 @@ struct Planned: Clone {
     out: String,
 }
 
+/// Where a build's rooms are, as `net.json` beside it says: WebSockets to `domain`.
+pub fn net_json(domain: str) -> String {
+    String::from(f"{{\"url\": \"wss://{domain}\"}}\n")
+}
+
 /// Where the console's server build goes in the release: beside its Worker's script (`api`), and
 /// in no Worker's assets, since its module isn't for the public.
 pub fn server_dir(api: str) -> String {
@@ -522,6 +527,9 @@ fn release(revision: str) -> Result<String, ToolError> {
     // The console's own release, which it compares with the live one to move an open tab onto
     // the newest (console/update.wrela).
     projects[0].tree.put_bytes("release.txt", String::from(f"{r}\n").as_bytes())
+    // Where the console's rooms are (the MMO's, mmo/game): its own domain, whose server Worker
+    // takes `/room/` (language.md §19.6).
+    projects[0].tree.put_bytes("net.json", net_json(c.console.domain).as_bytes())
     for g in 0..c.games.len() {
         borrow game = c.games[g]
         var lists: Vec<(Text, Vec<(String, String)>)> = Vec::new()
@@ -562,7 +570,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     }
     projects[0].tree.put_bytes(
         "_headers",
-        headers(parent_origin.as_str(), children, embedded: false).as_bytes(),
+        headers(parent_origin.as_str(), children, embedded: false, rooms: true).as_bytes(),
     )
     let docs_origin = origin_of(c.docs.domain)
     projects[1].tree.put_bytes("_headers", docs_headers(docs_origin.as_str()).as_bytes())

@@ -2,8 +2,14 @@
 // from each player's inputs and nothing else, in whole numbers, so every peer and the room get
 // the same fight from the same inputs (`@deterministic`). A player's input is 14 bits: a stick (6
 // bits: 0 is still, else 1 + direction * 3 + magnitude, 16 directions and 3 magnitudes) and 8
-// buttons. What a player sends is when its input changes (`Change`), and a fight's input logs are
-// all of its changes.
+// buttons, of which the rules read three, each pressed when its bit flips (a toggle: letting go
+// changes nothing, so it sends nothing). What a player sends is when its input changes
+// (`Change`), and a fight's input logs are all of its changes.
+//
+// What the rules read of a player's input depends on what it's doing (`World::reads`): mid-swing,
+// mid-dodge or staggered, nothing. A bit they don't read changes nothing, then or later, so a
+// sender holds it and sends nothing (the bandwidth bench's "read-set masking": about a quarter
+// fewer packets, and the same fight).
 //
 // The rules are the backbone of the combat plan: stamina, committed actions with windups the boss
 // telegraphs, a parry that staggers, a dodge with invulnerable frames.
@@ -92,7 +98,7 @@ pub struct Outcome: Clone + Pack + Eq {
     pub boss_hp: i32,
 }
 
-struct Fighter: Clone {
+struct Fighter: Clone + Eq {
     x: i32,
     z: i32,
     hp: i32,
@@ -145,88 +151,188 @@ fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
     if dx > dz { dx + dz / 2 } else { dz + dx / 2 }
 }
 
-/// A player's input at a frame, from its log: the last change at or before it.
-struct Cursor {
-    at: u32,
-    input: u32,
+/// Which bits of a player's input the rules read: its stick, and its buttons.
+pub const STICK_BITS: u32 = 63
+pub const BUTTON_BITS: u32 = 448
+
+/// The fight at a frame: what each player and the boss are doing, each player's buttons as the
+/// rules last took them, and whether it's over. Stepped one frame at a time (`step`), so a client
+/// keeps it, rolls it back to a frame and steps it again when a late input arrives.
+pub struct World: Clone + Eq {
+    pub frame: u32,
+    party: Vec<Fighter>,
+    boss: Fighter,
+    /// Each player's buttons as of the frame before.
+    before: Vec<u32>,
+    pub over: bool,
+    pub winner: Winner,
 }
 
-/// The fight, from its party's size and each player's input log.
+/// A fighter as a client draws it: where it is, and what it's doing.
+pub struct Seen: Copy {
+    pub x: i32,
+    pub z: i32,
+    pub hp: i32,
+    pub stamina: i32,
+    /// 0 idle, 1 winding up, 2 striking, 3 recovering, 4 parrying, 5 dodging, 6 staggered.
+    pub act: u32,
+}
+
+impl World {
+    /// The fight's first frame, for a party of `players` (at most `MAX_PARTY`).
+    pub fn start(players: u32) -> World {
+        let n = if players > MAX_PARTY { MAX_PARTY } else { players }
+        var party: Vec<Fighter> = Vec::new()
+        var before: Vec<u32> = Vec::new()
+        for i in 0..n {
+            party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP))
+            before.push(0)
+        }
+        World {
+            frame: 0,
+            party,
+            boss: Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n)),
+            before,
+            over: false,
+            winner: Winner::Draw,
+        }
+    }
+
+    pub fn players(self) -> u32 {
+        self.party.len()
+    }
+
+    /// Player `i` as a client draws it.
+    pub fn player(self, i: u32) -> Seen {
+        seen(self.party[i].clone())
+    }
+
+    pub fn boss(self) -> Seen {
+        seen(self.boss.clone())
+    }
+
+    /// The bits of player `i`'s input that the next `step` reads (its read set): all of them while
+    /// it stands idle, none while an action it committed to runs or once it's down. A bit outside
+    /// it changes nothing in the fight, now or later, so a sender may hold it at its old value
+    /// and send nothing (codec.wrela).
+    pub fn reads(self, i: u32) -> u32 {
+        if self.over || i >= self.party.len() {
+            return 0
+        }
+        let p = self.party[i].clone()
+        if p.hp > 0 && p.act == IDLE { STICK_BITS | BUTTON_BITS } else { 0 }
+    }
+
+    /// What the rules will read of player `i`'s input `frames` steps from now, if every input
+    /// stays as `inputs` (the look-ahead): a sender sends a bit a little before it's read, so its
+    /// peers have it by then, and holds it while it isn't.
+    pub fn soon(self, i: u32, inputs: [u32], frames: u32) -> u32 {
+        var w = self.clone()
+        for _ in 0..frames {
+            step(mut w, inputs)
+        }
+        w.reads(i)
+    }
+
+    /// The outcome so far: who dealt what, and the boss's health.
+    pub fn outcome(self) -> Outcome {
+        var dealt: Vec<u32> = Vec::new()
+        for i in 0..self.party.len() {
+            dealt.push(self.party[i].dealt)
+        }
+        Outcome {
+            winner: self.winner.clone(),
+            frames: self.frame,
+            dealt,
+            boss_hp: if self.boss.hp < 0 { 0 } else { self.boss.hp },
+        }
+    }
+}
+
+fn seen(f: Fighter) -> Seen {
+    Seen { x: f.x, z: f.z, hp: f.hp, stamina: f.stamina, act: f.act }
+}
+
+/// One frame of the fight from each player's input (`inputs[i]`; a missing one is still). A
+/// button is pressed when its bit flips (a press is a toggle, so letting go sends nothing); the
+/// rules read only a player's read set (`World::reads`), and a flip outside it is spent.
+@deterministic
+pub fn step(w: mut World, inputs: [u32]) {
+    if w.over {
+        return
+    }
+    for i in 0..w.party.len() {
+        let input = if i < inputs.len() { inputs[i] } else { 0 }
+        let read = w.reads(i)
+        let pressed = ((input ^ w.before[i]) & read & BUTTON_BITS) >> 6
+        // A stick that isn't one (past 48) is still: any input gives a fight, never a trap.
+        let raw = input & read & STICK_BITS
+        let stick = if raw > 48 { 0 } else { raw }
+        w.before[i] = input & BUTTON_BITS
+        var p = w.party[i].clone()
+        if p.hp <= 0 {
+            continue
+        }
+        step_player(mut p, stick, pressed)
+        if p.act == ACTIVE &&
+            !p.landed &&
+            w.boss.hp > 0 &&
+            reach(p.x, p.z, w.boss.x, w.boss.z) <= ATTACK_REACH {
+            p.landed = true
+            w.boss.hp -= ATTACK_DAMAGE
+            p.dealt += u32(ATTACK_DAMAGE)
+        }
+        w.party[i] = take p
+    }
+    step_boss(mut w.boss, mut w.party)
+    w.frame += 1
+    if w.boss.hp <= 0 {
+        w.winner = Winner::Party
+        w.over = true
+        return
+    }
+    var standing = false
+    for i in 0..w.party.len() {
+        if w.party[i].hp > 0 {
+            standing = true
+        }
+    }
+    if !standing {
+        w.winner = Winner::Boss
+        w.over = true
+    } else if w.frame >= MAX_FRAMES {
+        w.over = true
+    }
+}
+
+/// The fight, from its party's size and each player's input log: every frame stepped from the
+/// last change at or before it.
 @deterministic
 pub fn run(players: u32, logs: [Log]) -> Outcome {
-    let n = if players > MAX_PARTY { MAX_PARTY } else { players }
-    var party: Vec<Fighter> = Vec::new()
-    var cursors: Vec<Cursor> = Vec::new()
-    var before: Vec<u32> = Vec::new()
-    for i in 0..n {
-        party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP))
-        cursors.push(Cursor { at: 0, input: 0 })
-        before.push(0)
+    var w = World::start(players)
+    let n = w.players()
+    var at: Vec<u32> = Vec::new()
+    var inputs: Vec<u32> = Vec::new()
+    for _ in 0..n {
+        at.push(0)
+        inputs.push(0)
     }
-    var boss = Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n))
-    var frame: u32 = 0
-    var winner = Winner::Draw
-    while frame < MAX_FRAMES {
-        // Each player's input this frame.
+    while !w.over {
         for i in 0..n {
             if i < logs.len() {
-                while cursors[i].at < logs[i].changes.len() &&
-                    logs[i].changes[cursors[i].at].frame <= frame {
-                    cursors[i].input = logs[i].changes[cursors[i].at].input
-                    cursors[i].at += 1
+                while at[i] < logs[i].changes.len() && logs[i].changes[at[i]].frame <= w.frame {
+                    inputs[i] = logs[i].changes[at[i]].input
+                    at[i] += 1
                 }
             }
         }
-        // The players act.
-        for i in 0..n {
-            let input = cursors[i].input
-            let pressed = input >> 6 & !(before[i] >> 6)
-            before[i] = input
-            var p = party[i].clone()
-            if p.hp <= 0 {
-                continue
-            }
-            step_player(mut p, input, pressed)
-            if p.act == ACTIVE &&
-                !p.landed &&
-                boss.hp > 0 &&
-                reach(p.x, p.z, boss.x, boss.z) <= ATTACK_REACH {
-                p.landed = true
-                boss.hp -= ATTACK_DAMAGE
-                p.dealt += u32(ATTACK_DAMAGE)
-            }
-            party[i] = take p
-        }
-        // The boss acts.
-        step_boss(mut boss, mut party)
-        frame += 1
-        if boss.hp <= 0 {
-            winner = Winner::Party
-            break
-        }
-        var standing = false
-        for i in 0..n {
-            if party[i].hp > 0 {
-                standing = true
-            }
-        }
-        if !standing {
-            winner = Winner::Boss
-            break
-        }
+        step(mut w, inputs)
     }
-    var dealt: Vec<u32> = Vec::new()
-    for i in 0..n {
-        dealt.push(party[i].dealt)
-    }
-    Outcome { winner, frames: frame, dealt, boss_hp: if boss.hp < 0 { 0 } else { boss.hp } }
+    w.outcome()
 }
 
 @deterministic
-fn step_player(p: mut Fighter, input: u32, pressed: u32) {
-    // A stick that isn't one (past 48) is still: any input gives a fight, never a trap.
-    let raw = input & 63
-    let stick = if raw > 48 { 0 } else { raw }
+fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
     // An action runs its frames out; a new one starts only from idle.
     if p.act != IDLE {
         if p.timer > 0 {
@@ -374,4 +480,72 @@ pub fn well_formed(log: [Change], end: u32, most: u32) -> bool {
         prev = c.input
     }
     true
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+fn next(seed: mut u32) -> u32 {
+    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+    seed >> 8
+}
+
+@test
+fn a_bit_the_rules_dont_read_changes_nothing_then_or_later() {
+    // Random fights of four; at each frame, every bit outside each player's read set flipped at
+    // random gives the same world, at once and after 60 more frames of the same inputs.
+    var seed: u32 = 12345
+    var w = World::start(4)
+    var inputs: Vec<u32> = Vec::new()
+    for _ in 0..4 {
+        inputs.push(0)
+    }
+    var checked: u32 = 0
+    while w.frame < 3000 && !w.over {
+        for i in 0..4 {
+            if next(mut seed) % 5 == 0 {
+                inputs[i] = (next(mut seed) & BUTTON_BITS) | (next(mut seed) % 49)
+            }
+        }
+        var other = inputs.clone()
+        for i in 0..4 {
+            other[i] = other[i] ^ (next(mut seed) & (STICK_BITS | BUTTON_BITS) & !w.reads(i))
+        }
+        var a = w.clone()
+        var b = w.clone()
+        step(mut a, inputs)
+        step(mut b, other)
+        // What differs is only the buttons as last taken, which an unread flip spends.
+        a.before = Vec::new()
+        b.before = Vec::new()
+        assert(a == b, "an unread bit changes nothing now")
+        if w.frame % 50 == 0 {
+            var c = w.clone()
+            var d = w.clone()
+            step(mut c, inputs)
+            step(mut d, other)
+            // Both then go on with what the sender actually holds: the same inputs, but each
+            // with the buttons it has (a flip spent stays spent).
+            var later = inputs.clone()
+            for k in 0..60 {
+                if k == 30 {
+                    for i in 0..4 {
+                        later[i] = later[i] ^ ATTACK << 6
+                    }
+                }
+                var mine = later.clone()
+                for i in 0..4 {
+                    mine[i] = (mine[i] & !BUTTON_BITS) |
+                        (d.before[i] ^ (later[i] ^ c.before[i]) & BUTTON_BITS)
+                }
+                step(mut c, later)
+                step(mut d, mine)
+            }
+            c.before = Vec::new()
+            d.before = Vec::new()
+            assert(c == d, "an unread bit changes nothing later")
+        }
+        step(mut w, inputs)
+        checked += 1
+    }
+    assert(checked > 1000, "the fight lasts")
 }

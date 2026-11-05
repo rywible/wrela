@@ -46,11 +46,17 @@ pub fn replace_all(s: str, from: str, to: str) -> String {
 
 /// A Worker's headers. Its assets are public; the origin-owned OPFS is never uploaded or served.
 /// `parent` is the console's origin; `children` are the origins its page may frame and fetch
-/// from; an `embedded` game's files are readable by the console.
-pub fn headers(parent: str, children: [String], embedded: bool) -> String {
+/// from; an `embedded` game's files are readable by the console. A page with `rooms` (the
+/// console's) may also open WebSockets to its own origin's rooms.
+pub fn headers(parent: str, children: [String], embedded: bool, rooms: bool = false) -> String {
     let ancestors = if embedded { String::from(parent) } else { String::from("'none'") }
     var frame_src = String::new()
     var connect_src = String::from("'self'")
+    // The console's own rooms, as WebSockets (net.json): 'self' covers them in browsers that
+    // follow CSP 3, and naming them covers the rest.
+    if rooms && parent.starts_with("https://") {
+        connect_src.push_str(f" wss://{parent.slice(8, parent.len())}")
+    }
     var policy = String::from("cross-origin-isolated=(self")
     for k in 0..children.len() {
         if k > 0 {

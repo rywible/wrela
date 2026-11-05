@@ -1,0 +1,913 @@
+// The MMO's first client, drawn flat and plain: it proves the rooms and the relay, not the look.
+// A player walks a shared island (the room `island-1`) and places marks there; waits in the fight
+// room's lobby (`fight-1`) and begins a fight for whoever waits. A fight's live inputs go over the
+// fight room's relay: each player runs the fight itself, predicting the others' inputs and rolling
+// back when they arrive, and sends its own log to the room at the end, which runs the fight again
+// to settle it. Its input layer is the bandwidth bench's four winners (combat::codec).
+//
+// Keys: WASD or the arrows walk and move; F waits for a fight (again: stops waiting); Enter begins
+// it; E places a mark. In a fight, J or Space attacks, K parries, L or Shift dodges. A pad: the
+// left stick, West attacks, North parries, South dodges, Start begins, Select waits.
+
+use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
+use combat::main::{Fight, PLAYER_CHANGES}
+use std::math::{cos, sin}
+use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
+use island::main::{Island, MAX_STEP}
+use std::gpu::begin_screen_pass
+use std::hash::Hasher
+use std::input::{Event, Key, PadAxis, PadButton, events, payload}
+use std::net::{Log, close, open, relay, send}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts}
+use rooms::{FIGHT_ROOM, ISLAND_ROOM}
+
+// Its connections.
+const ISLAND: u32 = 1
+const FIGHT: u32 = 2
+const RELAY: u32 = 3
+
+/// Seconds between a closed connection and the next try.
+const RETRY: f32 = 2.0
+/// Seconds between steps proposed on the island, and its walking speed in units a second.
+const STEP_EVERY: f32 = 0.5
+const WALK_SPEED: f32 = 40.0
+/// Frames of fight kept to roll back to (four seconds).
+const RING: u32 = 240
+/// Frames between the worlds kept for a rollback older than `RING` (ten seconds).
+const CHECKPOINT: u32 = 600
+/// Seconds a fight's outcome stays on screen.
+const OUTCOME_SECONDS: f32 = 5.0
+/// The most fight frames a screen frame runs: a tab that fell behind catches up over a few.
+const MOST_STEPS: u32 = 30
+/// Seconds between a waiting player's joins (the lobby forgets one silent for a minute), and
+/// between proposals to settle a fight that's taking too long (the room says when it may).
+const REJOIN: f32 = 30.0
+const SETTLE_EVERY: f32 = 15.0
+const NONE: u32 = 4294967295
+
+// Held keys and buttons, as bits.
+const LEFT: u32 = 1
+const RIGHT: u32 = 2
+const UP: u32 = 4
+const DOWN: u32 = 8
+const HIT: u32 = 16
+const GUARD: u32 = 32
+const EVADE: u32 = 64
+
+const BG = vec4(0.06, 0.07, 0.09, 1.0)
+const SEA = vec4(0.07, 0.16, 0.24, 1.0)
+const SAND = vec4(0.55, 0.5, 0.36, 1.0)
+const INK = vec4(0.95, 0.95, 0.95, 1.0)
+const MUTED = vec4(0.65, 0.66, 0.7, 1.0)
+const MINE = vec4(0.98, 0.78, 0.3, 1.0)
+const OTHER = vec4(0.45, 0.75, 0.98, 1.0)
+const MARK = vec4(0.9, 0.35, 0.3, 1.0)
+const BOSS = vec4(0.62, 0.3, 0.75, 1.0)
+const TELL = vec4(0.98, 0.25, 0.2, 1.0)
+
+/// A connection's state.
+struct Conn: Copy {
+    open: bool,
+    opening: bool,
+    retry_at: f32,
+}
+
+fn closed_conn() -> Conn {
+    Conn { open: false, opening: false, retry_at: 0.0 }
+}
+
+/// A fight this client plays in: the fight as it runs here, what it's kept to roll back, and its
+/// inputs, sent and heard.
+struct Play {
+    began: u64,
+    slot: u32,
+    party: Vec<u32>,
+    world: World,
+    /// The frame next to step.
+    frame: u32,
+    /// The world before each of the last `RING` frames, and before every `CHECKPOINT`th.
+    snaps: Vec<World>,
+    checkpoints: Vec<World>,
+    /// This player's input at each frame, and its changes (its log).
+    mine: Vec<u32>,
+    log: Vec<Change>,
+    link: Link,
+    enc: Encoder,
+    prev: u32,
+    /// The first frame whose inputs changed since it was stepped (`NONE`: none).
+    back: u32,
+    /// When this client began it (seconds): frame `n` is due `n / 60` seconds on.
+    start: Option<f32>,
+    logged: bool,
+    /// When the room settled it (seconds), once it has.
+    settled_at: Option<f32>,
+    /// How the room settled it, once it has: what counts, whatever this client ran.
+    settled: Option<Winner>,
+    rollbacks: u32,
+}
+
+pub struct Client {
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    island: Option<Log<Island, island::main::Act>>,
+    fight: Option<Log<Fight, combat::main::Act>>,
+    island_conn: Conn,
+    fight_conn: Conn,
+    relay_conn: Conn,
+    held: u32,
+    stick: vec2,
+    walk: vec2,
+    step_at: f32,
+    play: Option<Play>,
+    last_began: u64,
+    joined_at: f32,
+    settle_at: f32,
+    time: Option<f32>,
+    note: String,
+}
+
+pub fn init() -> Client {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Client {
+        fonts,
+        renderer,
+        list: DrawList::new(),
+        island: None,
+        fight: None,
+        island_conn: closed_conn(),
+        fight_conn: closed_conn(),
+        relay_conn: closed_conn(),
+        held: 0,
+        stick: vec2(0.0, 0.0),
+        walk: vec2(0.0, 0.0),
+        step_at: 0.0,
+        play: None,
+        last_began: 0,
+        joined_at: 0.0,
+        settle_at: 0.0,
+        time: None,
+        note: String::from("Connecting…"),
+    }
+}
+
+/// A token for this page: a number from the moment it started, which the rooms know it by while
+/// it's open. (Accounts will give a player one that lasts.)
+fn token_of(time: f32, width: u32, height: u32) -> u64 {
+    var h = Hasher::new()
+    h.write_u32(u32(fract(time) * 16777216.0))
+    h.write_u32(u32(time * 1000.0))
+    h.write_u32(width)
+    h.write_u32(height)
+    let t = h.finish()
+    if t == 0 { 1 } else { t }
+}
+
+fn key_bit(key: Key) -> u32 {
+    if key == Key::A || key == Key::Left {
+        LEFT
+    } else if key == Key::D || key == Key::Right {
+        RIGHT
+    } else if key == Key::W || key == Key::Up {
+        UP
+    } else if key == Key::S || key == Key::Down {
+        DOWN
+    } else if key == Key::J || key == Key::Space {
+        HIT
+    } else if key == Key::K {
+        GUARD
+    } else if key == Key::L || key == Key::ShiftLeft || key == Key::ShiftRight {
+        EVADE
+    } else {
+        0
+    }
+}
+
+fn pad_bit(button: PadButton) -> u32 {
+    if button == PadButton::West {
+        HIT
+    } else if button == PadButton::North {
+        GUARD
+    } else if button == PadButton::South {
+        EVADE
+    } else if button == PadButton::Left {
+        LEFT
+    } else if button == PadButton::Right {
+        RIGHT
+    } else if button == PadButton::Up {
+        UP
+    } else if button == PadButton::Down {
+        DOWN
+    } else {
+        0
+    }
+}
+
+/// The pad as the fight reads it: the stick (keys or the left stick; `z` away from the player)
+/// and the buttons held.
+fn pad_of(held: u32, stick: vec2) -> Pad {
+    var x = stick.x
+    var z = -stick.y
+    if held & LEFT != 0 {
+        x -= 1.0
+    }
+    if held & RIGHT != 0 {
+        x += 1.0
+    }
+    if held & UP != 0 {
+        z += 1.0
+    }
+    if held & DOWN != 0 {
+        z -= 1.0
+    }
+    let m = sqrt(x * x + z * z)
+    if m > 1.0 {
+        x = x / m
+        z = z / m
+    }
+    var buttons: u32 = 0
+    if held & HIT != 0 {
+        buttons = buttons | ATTACK
+    }
+    if held & GUARD != 0 {
+        buttons = buttons | PARRY
+    }
+    if held & EVADE != 0 {
+        buttons = buttons | DODGE
+    }
+    Pad { x, z, held: buttons }
+}
+
+fn send_all(conn: u32, messages: Vec<Vec<u8>>) {
+    for m in messages {
+        send(conn, m)
+    }
+}
+
+/// The party slot of peer `peer`.
+fn slot_of(party: [u32], peer: u32) -> Option<u32> {
+    for i in 0..party.len() {
+        if party[i] == peer {
+            return Some(i)
+        }
+    }
+    None
+}
+
+// ---- a fight ------------------------------------------------------------------------------------
+
+fn new_play(began: u64, slot: u32, party: take Vec<u32>) -> Play {
+    let n = party.len()
+    let world = World::start(n)
+    var snaps: Vec<World> = Vec::new()
+    for _ in 0..RING {
+        snaps.push(world.clone())
+    }
+    Play {
+        began,
+        slot,
+        party,
+        world,
+        frame: 0,
+        snaps,
+        checkpoints: Vec::new(),
+        mine: Vec::new(),
+        log: Vec::new(),
+        link: Link::new(slot, n),
+        enc: Encoder::new(),
+        prev: 0,
+        back: NONE,
+        start: None,
+        logged: false,
+        settled_at: None,
+        settled: None,
+        rollbacks: 0,
+    }
+}
+
+/// Every player's input at frame `f`, as this client knows them.
+fn inputs_at(p: Play, f: u32) -> Vec<u32> {
+    var ins: Vec<u32> = Vec::new()
+    for j in 0..p.party.len() {
+        if j == p.slot {
+            ins.push(if f < p.mine.len() { p.mine[f] } else { p.prev })
+        } else {
+            ins.push(p.link.at(j, f))
+        }
+    }
+    ins
+}
+
+/// Keeps `w`, the world before frame `f`, to roll back to.
+fn keep(p: mut Play, f: u32, w: World) {
+    p.snaps[f % RING] = w.clone()
+    if f % CHECKPOINT == 0 {
+        let k = f / CHECKPOINT
+        if k < p.checkpoints.len() {
+            p.checkpoints[k] = w.clone()
+        } else {
+            p.checkpoints.push(w.clone())
+        }
+    }
+}
+
+/// The fight again from the first frame whose inputs changed: from the world kept before it, or
+/// from the checkpoint before it if it's older than the ring (every input is still known).
+fn roll_back(p: mut Play) {
+    var from = p.back
+    p.back = NONE
+    if from >= p.frame {
+        return
+    }
+    var w = if p.frame - from >= RING {
+        from = from / CHECKPOINT * CHECKPOINT
+        p.checkpoints[from / CHECKPOINT].clone()
+    } else {
+        p.snaps[from % RING].clone()
+    }
+    for g in from..p.frame {
+        keep(mut p, g, w)
+        let ins = inputs_at(p, g)
+        step(mut w, ins)
+    }
+    p.world = take w
+    p.rollbacks += 1
+}
+
+/// One frame of the fight: this player's input from the pad, then the step; the packet to send
+/// on the relay, if one goes.
+fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
+    let f = p.frame
+    if f >= MAX_FRAMES {
+        return None
+    }
+    // Once it's over, the input stands: what's sent past the end isn't the fight's. So it does
+    // once a log is full.
+    var input = p.prev
+    if !p.world.over && p.log.len() < PLAYER_CHANGES {
+        var now = inputs_at(p, f)
+        now[p.slot] = p.prev
+        let reads = p.world.reads(p.slot) | p.world.soon(p.slot, now, LOOK_AHEAD)
+        input = p.enc.input(pad, prev: p.prev, reads: reads)
+    }
+    if input != p.prev {
+        p.log.push(Change { frame: f, input })
+    }
+    p.prev = input
+    p.mine.push(input)
+    let out = p.link.send(f, input)
+    let w = p.world.clone()
+    keep(mut p, f, w)
+    let ins = inputs_at(p, f)
+    step(mut p.world, ins)
+    p.frame += 1
+    out
+}
+
+/// A packet from slot `slot` on the relay: the fight rolls back to the first frame it changes.
+fn heard(p: mut Play, slot: u32, bytes: [u8]) {
+    if let Some(f) = p.link.heard(slot, bytes, p.frame) {
+        if f < p.back {
+            p.back = f
+        }
+    }
+}
+
+// ---- the frame ----------------------------------------------------------------------------------
+
+/// Opens connection `conn` to `room` when it's due.
+fn keep_open(c: mut Conn, conn: u32, room: str, now: f32) {
+    if !c.open && !c.opening && now >= c.retry_at {
+        c.opening = true
+        open(conn, room)
+    }
+}
+
+pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
+    let dt = match s.time {
+        Some(t) => clamp(time - t, 0.0, 0.25),
+        None => 0.0,
+    }
+    s.time = Some(time)
+    if s.island.is_none() {
+        let token = token_of(time, width, height)
+        s.island = Some(Log::new(Island::empty(), token))
+        s.fight = Some(Log::new(Fight::empty(), token))
+    }
+    keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
+    keep_open(mut s.fight_conn, FIGHT, FIGHT_ROOM, time)
+    var pressed_join = false
+    var pressed_begin = false
+    var pressed_mark = false
+    for e in events() {
+        match e {
+            Event::Connection { conn, open, .. } => connection(mut s, conn, open, time),
+            Event::Message { conn, .. } => {
+                let Some(bytes) = payload(e) else { continue }
+                message(mut s, conn, take bytes)
+            },
+            Event::KeyDown { key, repeat, .. } => {
+                s.held = s.held | key_bit(key)
+                if !repeat {
+                    if key == Key::F {
+                        pressed_join = true
+                    }
+                    if key == Key::Enter {
+                        pressed_begin = true
+                    }
+                    if key == Key::E {
+                        pressed_mark = true
+                    }
+                }
+            },
+            Event::KeyUp { key, .. } => s.held = s.held & !key_bit(key),
+            Event::PadButton { button, pressed, .. } => {
+                let bit = pad_bit(button)
+                s.held = if pressed { s.held | bit } else { s.held & !bit }
+                if pressed && button == PadButton::Select {
+                    pressed_join = true
+                }
+                if pressed && button == PadButton::Start {
+                    pressed_begin = true
+                }
+                if pressed && button == PadButton::East {
+                    pressed_mark = true
+                }
+            },
+            Event::PadAxis { axis, value, .. } => {
+                if axis == PadAxis::LeftX {
+                    s.stick.x = value
+                }
+                if axis == PadAxis::LeftY {
+                    s.stick.y = value
+                }
+            },
+            _ => {},
+        }
+    }
+    // The relay, once the fight room knows this peer.
+    let known = match s.fight {
+        Some(l) => l.peer() != 0,
+        None => false,
+    }
+    if s.fight_conn.open &&
+        known &&
+        !s.relay_conn.open &&
+        !s.relay_conn.opening &&
+        time >= s.relay_conn.retry_at {
+        s.relay_conn.opening = true
+        relay(RELAY, FIGHT)
+    }
+    let pad = pad_of(s.held, s.stick)
+    if s.play.is_some() {
+        fight_frame(mut s, pad, dt, time)
+    } else {
+        island_frame(mut s, pad, dt, time, pressed_join, pressed_begin, pressed_mark)
+    }
+    draw(mut s, width, height)
+}
+
+fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
+    if conn == ISLAND {
+        s.island_conn = Conn { open: is_open, opening: false, retry_at: time + RETRY }
+        match mut s.island {
+            Some(l) => if is_open { send_all(ISLAND, l.connect()) } else { l.disconnect() },
+            None => {},
+        }
+    } else if conn == FIGHT {
+        s.fight_conn = Conn { open: is_open, opening: false, retry_at: time + RETRY }
+        match mut s.fight {
+            Some(l) => if is_open { send_all(FIGHT, l.connect()) } else { l.disconnect() },
+            None => {},
+        }
+    } else if conn == RELAY {
+        // A relay may join four times a minute: a closed one waits longer.
+        s.relay_conn = Conn { open: is_open, opening: false, retry_at: time + 4.0 * RETRY }
+    }
+}
+
+fn message(s: mut Client, conn: u32, bytes: take Vec<u8>) {
+    if conn == ISLAND {
+        match mut s.island {
+            Some(l) => match l.receive(take bytes) {
+                Ok(out) => send_all(ISLAND, out),
+                Err(_) => close(ISLAND),
+            },
+            None => {},
+        }
+    } else if conn == FIGHT {
+        match mut s.fight {
+            Some(l) => match l.receive(take bytes) {
+                Ok(out) => send_all(FIGHT, out),
+                Err(_) => close(FIGHT),
+            },
+            None => {},
+        }
+    } else if conn == RELAY && bytes.len() >= 4 {
+        let tag = u32(bytes[0]) |
+            (u32(bytes[1]) << 8) |
+            (u32(bytes[2]) << 16) |
+            (u32(bytes[3]) << 24)
+        var body: Vec<u8> = Vec::new()
+        for i in 4..bytes.len() {
+            body.push(bytes[i])
+        }
+        match mut s.play {
+            Some(p) => {
+                if let Some(slot) = slot_of(p.party, tag) {
+                    heard(mut p, slot, body)
+                }
+            },
+            None => {},
+        }
+    }
+}
+
+fn propose_island(s: mut Client, act: take island::main::Act) {
+    match mut s.island {
+        Some(l) => if let Ok(out) = l.propose(take act) { send_all(ISLAND, out) },
+        None => {},
+    }
+}
+
+fn propose_fight(s: mut Client, act: take combat::main::Act) {
+    match mut s.fight {
+        Some(l) => if let Ok(out) = l.propose(take act) { send_all(FIGHT, out) },
+        None => {},
+    }
+}
+
+fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: bool, mark: bool) {
+    // Walking: the stick's way, a step proposed every `STEP_EVERY` seconds while it moves.
+    s.walk = s.walk + vec2(pad.x, -pad.z) * WALK_SPEED * dt
+    if time >= s.step_at && (abs(s.walk.x) >= 1.0 || abs(s.walk.y) >= 1.0) {
+        let most = f32(MAX_STEP)
+        let dx = clamp(round(s.walk.x), -most, most)
+        let dz = clamp(round(s.walk.y), -most, most)
+        s.walk = s.walk - vec2(dx, dz)
+        s.step_at = time + STEP_EVERY
+        propose_island(mut s, island::main::Act::Step { dx: i32(dx), dz: i32(dz) })
+    }
+    if pad.x == 0.0 && pad.z == 0.0 {
+        s.walk = vec2(0.0, 0.0)
+    }
+    if mark && s.island_conn.open {
+        propose_island(mut s, island::main::Act::Place)
+    }
+    // The fight room: wait, stop waiting, begin; and a fight that began for this player.
+    let (me, view, room) = match s.fight {
+        Some(l) => (l.peer(), l.view().clone(), l.committed().clone()),
+        None => return,
+    }
+    if join && me != 0 {
+        if view.waiting(me) {
+            propose_fight(mut s, combat::main::Act::Leave)
+        } else {
+            s.joined_at = time
+            propose_fight(mut s, combat::main::Act::Join)
+        }
+    }
+    if begin && me != 0 && view.waiting(me) && !view.on() {
+        propose_fight(mut s, combat::main::Act::Begin)
+    }
+    // Waiting goes on while this page is open: the lobby forgets a player silent a minute.
+    if me != 0 && view.waiting(me) && !view.on() && time - s.joined_at > REJOIN {
+        s.joined_at = time
+        propose_fight(mut s, combat::main::Act::Join)
+    }
+    // A fight whose players left holds the room: past the longest fight, anyone may settle it.
+    if me != 0 && room.on() && slot_of(room.party, me).is_none() && time >= s.settle_at {
+        s.settle_at = time + 4.0 * SETTLE_EVERY
+        propose_fight(mut s, combat::main::Act::Settle)
+    }
+    if room.on() && room.began_at != s.last_began && me != 0 {
+        if let Some(slot) = slot_of(room.party, me) {
+            s.last_began = room.began_at
+            s.play = Some(new_play(room.began_at, slot, room.party.clone()))
+        }
+    }
+    s.note = if !s.island_conn.open || !s.fight_conn.open {
+        String::from("Connecting…")
+    } else if room.on() {
+        String::from(f"A fight is on ({room.party.len()} fighting).")
+    } else if view.waiting(me) {
+        String::from(
+            f"Waiting for a fight with {view.lobby.len()}. Enter begins it, F stops waiting.",
+        )
+    } else {
+        String::from(f"F waits for a fight ({view.lobby.len()} waiting). E places a mark.")
+    }
+}
+
+fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
+    let room = match s.fight {
+        Some(l) => l.committed().clone(),
+        None => Fight::empty(),
+    }
+    let relay_open = s.relay_conn.open
+    var log: Option<combat::main::Act> = None
+    var settle = false
+    var done = false
+    match mut s.play {
+        Some(p) => {
+            if p.back != NONE {
+                roll_back(mut p)
+            }
+            // Frames keep to the clock, so a client that fell behind (a hidden tab, a hitch)
+            // catches up rather than staying behind the others.
+            let start = match p.start {
+                Some(t) => t,
+                None => time,
+            }
+            p.start = Some(start)
+            let due = u32(max(time - start, 0.0) * 60.0)
+            var steps: u32 = 0
+            while p.frame < due && steps < MOST_STEPS {
+                if let Some(bytes) = tick(mut p, pad) {
+                    send(RELAY, bytes)
+                }
+                steps += 1
+            }
+            // Over once every input it was run from is heard (before, a late one may undo it), or
+            // five seconds on, when a player who's quiet has likely left.
+            let heard_all = p.link.known() + 1 >= p.world.frame
+            if p.world.over && !p.logged && (heard_all || p.frame >= p.world.frame + 300) {
+                p.logged = true
+                // A change at or past the end, made while a late input hadn't ended it yet here,
+                // isn't the fight's.
+                var changes: Vec<Change> = Vec::new()
+                for c in p.log.clone() {
+                    if c.frame < p.world.frame {
+                        changes.push(c.clone())
+                    }
+                }
+                log = Some(combat::main::Act::Log { changes, end: p.world.frame })
+            }
+            // A player who left sends no log: once this one's is in, settle when the room lets.
+            if p.logged && room.on() && room.began_at == p.began && time >= s.settle_at {
+                settle = true
+            }
+            // The room settled this fight (or a later one began): its outcome shows a while.
+            if room.began_at == p.began && room.settled && p.settled.is_none() {
+                p.settled = Some(room.outcome.winner.clone())
+            }
+            if room.began_at != p.began || room.settled {
+                if p.settled_at.is_none() {
+                    p.settled_at = Some(time)
+                }
+            }
+            if let Some(at) = p.settled_at {
+                if time - at > OUTCOME_SECONDS {
+                    done = true
+                }
+            }
+            let relayed = if relay_open { "" } else { " (no relay: playing alone)" }
+            s.note = String::from(
+                f"Frame {p.frame}, {p.rollbacks} rollbacks{relayed}. J attacks, K parries, L dodges.",
+            )
+        },
+        None => {},
+    }
+    match log {
+        Some(act) => {
+            s.settle_at = time + SETTLE_EVERY
+            propose_fight(mut s, act.clone())
+        },
+        None => {},
+    }
+    if settle {
+        s.settle_at = time + SETTLE_EVERY
+        propose_fight(mut s, combat::main::Act::Settle)
+    }
+    if done {
+        s.play = None
+    }
+}
+
+// ---- drawing ------------------------------------------------------------------------------------
+
+fn circle(list: mut DrawList, at: vec2, r: f32, color: vec4) {
+    list.ellipse(Rect::new(x: at.x - r, y: at.y - r, w: 2.0 * r, h: 2.0 * r), color)
+}
+
+fn draw(s: mut Client, width: u32, height: u32) {
+    let w = f32(width)
+    let h = f32(height)
+    let screen = vec2(w, h)
+    s.list.clear(screen)
+    s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), BG)
+    let size = min(w, h)
+    let middle = vec2(w / 2.0, h / 2.0)
+    let fight_on = s.play.is_some()
+    if fight_on {
+        draw_fight(mut s, middle, size)
+    } else {
+        draw_island(mut s, middle, size)
+    }
+    let title = if fight_on { "The fight" } else { "The island" }
+    let _ = s.list.text(s.fonts, Face::Sans, title, 28.0, vec2(24.0, 20.0), INK)
+    let note = s.note.clone()
+    let _ = s.list.text(s.fonts, Face::Sans, note.as_str(), 18.0, vec2(24.0, h - 44.0), MUTED)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    let pass = begin_screen_pass(clear: BG)
+    s.renderer.draw(pass, screen)
+    pass.present()
+}
+
+fn draw_island(s: mut Client, middle: vec2, size: f32) {
+    // A unit is this many pixels; the island is a sandbar 160 units across.
+    let px = size / 400.0
+    circle(mut s.list, middle, size * 0.47, SEA)
+    circle(mut s.list, middle, 80.0 * px * 2.0, SAND)
+    let (me, view) = match s.island {
+        Some(l) => (l.peer(), l.view().clone()),
+        None => return,
+    }
+    for m in view.marks {
+        let at = middle + vec2(f32(m.x), -f32(m.z)) * px
+        s.list.diamond(Rect::new(x: at.x - 6.0, y: at.y - 6.0, w: 12.0, h: 12.0), MARK)
+    }
+    for b in view.bodies {
+        let at = middle + vec2(f32(b.x), -f32(b.z)) * px
+        circle(mut s.list, at, 9.0, if b.peer == me { MINE } else { OTHER })
+    }
+    let count = view.bodies.len()
+    let line = String::from(f"{count} on the island, {view.marks.len()} marks")
+    let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 16.0, vec2(24.0, 58.0), MUTED)
+}
+
+fn place(middle: vec2, px: f32, x: i32, z: i32) -> vec2 {
+    middle + vec2(f32(x), -f32(z)) / 64.0 * px
+}
+
+fn fighter_color(seen: Seen, base: vec4) -> vec4 {
+    if seen.hp <= 0 {
+        vec4(0.3, 0.3, 0.32, 1.0)
+    } else if seen.act == 5 {
+        vec4(base.xyz, 0.45)
+    } else if seen.act == 4 {
+        INK
+    } else if seen.act == 6 {
+        vec4(0.5, 0.5, 0.55, 1.0)
+    } else {
+        base
+    }
+}
+
+fn draw_fight(s: mut Client, middle: vec2, size: f32) {
+    let (world, slot, settled) = match s.play {
+        Some(p) => (p.world.clone(), p.slot, p.settled.clone()),
+        None => return,
+    }
+    // A metre is this many pixels: the arena is 40 metres across.
+    let px = size / 46.0
+    circle(mut s.list, middle, 20.0 * px, SEA)
+    let boss = world.boss()
+    let boss_color = if boss.act == 1 { TELL } else { fighter_color(boss, BOSS) }
+    circle(mut s.list, place(middle, px, boss.x, boss.z), 1.2 * px, boss_color)
+    for i in 0..world.players() {
+        let seen = world.player(i)
+        let base = if i == slot { MINE } else { OTHER }
+        circle(mut s.list, place(middle, px, seen.x, seen.z), 0.6 * px, fighter_color(seen, base))
+        let line = String::from(f"P{i + 1}  {seen.hp} hp  {seen.stamina} stamina")
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            line.as_str(),
+            15.0,
+            vec2(24.0, 60.0 + 20.0 * f32(i)),
+            base,
+        )
+    }
+    let boss_line = String::from(f"Boss  {boss.hp} hp")
+    let _ = s.list.text(s.fonts, Face::Mono, boss_line.as_str(), 15.0, vec2(24.0, 150.0), BOSS)
+    // The room's word once it's settled; until then, this client's.
+    let shown = match settled {
+        Some(w) => Some(w.clone()),
+        None => if world.over { Some(world.winner.clone()) } else { None },
+    }
+    if let Some(winner) = shown {
+        let verdict = match winner {
+            Winner::Party => "The party wins.",
+            Winner::Boss => "The boss wins.",
+            Winner::Draw => "A draw.",
+        }
+        let _ = s.list.text(s.fonts, Face::Sans, verdict, 32.0, middle - vec2(110.0, 20.0), INK)
+    }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// A packet on its way: from slot `from` to slot `to`, arriving at frame `at`.
+struct Flight: Clone {
+    at: u32,
+    from: u32,
+    to: u32,
+    bytes: Vec<u8>,
+}
+
+/// A made-up player's hands: the stick swings, and a button is held a few frames now and then.
+fn hands(seed: mut u32) -> Pad {
+    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+    let r = seed >> 8
+    let a = f32(r % 628) / 100.0
+    let held = if (r >> 10) % 9 == 0 { 1 << ((r >> 14) % 3) } else { 0 }
+    Pad { x: 0.9 * cos(a), z: 0.9 * sin(a) + 0.4, held }
+}
+
+/// A fight of `n` players, each running it as a client does, over a relay that delays each
+/// packet `delay` frames and loses `loss` in 100: each one's fight at the end, and the fight the
+/// room runs from their logs. The last player stalls `stall` frames from frame 300 (a hidden
+/// tab), then catches up two frames at a time.
+fn fight_of(n: u32, delay: u32, loss: u32, stall: u32 = 0) -> (Vec<Play>, combat::sim::Outcome) {
+    var party: Vec<u32> = Vec::new()
+    for i in 0..n {
+        party.push(10 + i)
+    }
+    var plays: Vec<Play> = Vec::new()
+    var seeds: Vec<u32> = Vec::new()
+    for i in 0..n {
+        plays.push(new_play(1, i, party.clone()))
+        seeds.push(3 + 17 * i)
+    }
+    var flights: Vec<Flight> = Vec::new()
+    var seed: u32 = 77
+    var held: Vec<Pad> = Vec::new()
+    for _ in 0..n {
+        held.push(Pad { x: 0.0, z: 0.0, held: 0 })
+    }
+    for f in 0..6000 {
+        var later: Vec<Flight> = Vec::new()
+        for fl in flights.clone() {
+            if fl.at <= f {
+                heard(mut plays[fl.to], fl.from, fl.bytes)
+            } else {
+                later.push(fl.clone())
+            }
+        }
+        flights = take later
+        for i in 0..n {
+            if plays[i].back != NONE {
+                roll_back(mut plays[i])
+            }
+            // A player keeps a pad the same for a while, as hands do.
+            if f % 7 == 0 {
+                var sd = seeds[i]
+                held[i] = hands(mut sd)
+                seeds[i] = sd
+            }
+            let stalled = i + 1 == n && f >= 300 && f < 300 + stall
+            let runs = if stalled { 0 } else if plays[i].frame < f { 2 } else { 1 }
+            for _ in 0..runs {
+                let Some(bytes) = tick(mut plays[i], held[i]) else { continue }
+                for j in 0..n {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+                    if j != i && (seed >> 8) % 100 >= loss {
+                        flights.push(Flight { at: f + delay, from: i, to: j, bytes: bytes.clone() })
+                    }
+                }
+            }
+        }
+    }
+    // The last packets land, and each player catches up.
+    for fl in flights.clone() {
+        heard(mut plays[fl.to], fl.from, fl.bytes)
+    }
+    var logs: Vec<combat::sim::Log> = Vec::new()
+    for i in 0..n {
+        if plays[i].back != NONE {
+            roll_back(mut plays[i])
+        }
+        var changes: Vec<Change> = Vec::new()
+        for c in plays[i].log.clone() {
+            if c.frame < plays[i].world.frame {
+                changes.push(c.clone())
+            }
+        }
+        logs.push(combat::sim::Log { changes })
+    }
+    let outcome = combat::sim::run(n, logs)
+    (plays, outcome)
+}
+
+@test
+fn every_player_sees_the_fight_the_room_settles() {
+    let (plays, outcome) = fight_of(n: 3, delay: 4, loss: 10)
+    for p in plays {
+        assert(p.world.over, "the fight ends")
+        assert(p.world.outcome() == outcome, "each player's fight is the room's")
+    }
+    std::io::print(f"rollbacks: {plays[0].rollbacks}, frames {outcome.frames}")
+}
+
+@test
+fn a_player_who_fell_far_behind_catches_up_and_agrees() {
+    // Seven seconds stalled: past what the others keep to roll back to.
+    let (plays, outcome) = fight_of(n: 2, delay: 3, loss: 5, stall: 400)
+    for p in plays {
+        assert(p.world.over && p.world.outcome() == outcome)
+    }
+}

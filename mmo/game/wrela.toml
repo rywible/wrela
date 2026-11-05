@@ -1,0 +1,10 @@
+# The MMO's first client and its rooms: an island a party walks (mmo/island) and a fight against a
+# boss (mmo/combat), whose live inputs go over the fight room's relay. It plays inside the console
+# (wrela.dev/#mmo), so it runs on the console's server, whose rooms are its own (rooms.wrela).
+[package]
+name = "mmo"
+
+[dependencies]
+combat = { workspace = true }
+island = { workspace = true }
+ui = { workspace = true }

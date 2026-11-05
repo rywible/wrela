@@ -1,20 +1,115 @@
-// A player's inputs on the room's relay (std::net::relay): sent the frame they change, never
-// resent, each packet carrying the last `REDUNDANCY` changes, so one lost packet costs nothing.
-// Every packet's bytes are a fifth of what the network adds to it (about 9 against 79), so what
-// costs is how many packets go, not their size: a player sends one when its input changes, and a
-// heartbeat every `HEARTBEAT` frames while it doesn't, which says how far its inputs are known.
+// A player's inputs on the room's relay (std::net::relay), which loses packets and never resends
+// them. Every packet's bytes cost far less than the packet itself (82 bytes on the wire for any
+// payload up to 4 bytes), so what costs is how many packets go. Four things keep that down, each
+// measured in the bandwidth bench (about 40% fewer packets than sending every change and a
+// heartbeat):
 //
-// A packet, bits lowest first: `through` (16 bits, the frame its inputs are known to: a fight's
-// frames all fit), `seq` (8 bits, the change number of the newest entry, wrapping), a count (2
-// bits), then each change newest first: frames back from the one before (3-bit groups, each with a bit that says
-// another follows) and its input (14 bits).
+// - The pad as an input (`Encoder`): the stick holds its direction and speed until it's clearly
+//   past the edge of the next one (hysteresis), so a thumb's wobble sends nothing; a button press
+//   flips its bit (a toggle), so letting go sends nothing; and a bit the rules won't read soon
+//   (`sim::World::soon`) holds its old value, so a press mid-swing sends nothing.
+// - Acks (`Sender`, `Receiver`): every packet says how many changes in a row its sender has heard
+//   from each player, and a sender repeats only what some player hasn't heard, after about a
+//   round trip (the shortest it measured lately), with a keepalive each second.
+//
+// A packet, bits lowest first: `through` (16 bits, the frame its sender's inputs are known to),
+// `seq` (16 bits, the newest change's number: a log holds fewer than 65536), a count (4 bits),
+// `skip` (how many of the newest it leaves out), whether acks follow (1 bit) and if so one for
+// each party slot (16 bits each, the number of the newest change heard in a row from that slot),
+// then each change newest first, numbered down from `seq - skip`: frames back from the one before
+// and its input (14 bits). Numbers that are frames back or `skip` are 3-bit groups, each with a
+// bit that says another follows.
 
-use sim::{Change, MAX_CHANGES, MAX_FRAMES}
+use sim::{BUTTON_BITS, Change, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, STICK_BITS}
+use std::math::{TAU, atan2, cos, sin}
 
-/// The changes each packet repeats.
-pub const REDUNDANCY: u32 = 3
-/// Frames between heartbeats while nothing changes (4 a second).
-pub const HEARTBEAT: u32 = 15
+/// The most changes a packet carries.
+pub const KEEP: u32 = 12
+/// Frames a change may wait for the next one before it goes (they go in one packet).
+pub const COALESCE: u32 = 2
+/// Frames between packets while nothing needs saying (one a second): it says the sender is there.
+pub const KEEPALIVE: u32 = 60
+/// Frames an ack may wait for a packet to ride on before it goes on its own.
+pub const ACK_DELAY: u32 = 20
+/// Frames the stick looks ahead: a bit the rules will read this soon goes now.
+pub const LOOK_AHEAD: u32 = 6
+/// The resend timer before a round trip is measured, and its bounds, in frames.
+pub const RTO_START: u32 = 20
+pub const RTO_MIN: u32 = 6
+pub const RTO_MAX: u32 = 60
+const NONE: u32 = 4294967295
+
+// ---- the pad ------------------------------------------------------------------------------------
+
+/// A pad this frame: the stick (each axis -1 to 1; `z` is away from the player, along the
+/// fight's `z`) and the buttons held (`sim::ATTACK`, `PARRY`, `DODGE`).
+pub struct Pad: Copy {
+    pub x: f32,
+    pub z: f32,
+    pub held: u32,
+}
+
+/// Turns the pad into the input a player sends, frame by frame.
+pub struct Encoder {
+    held: u32,
+}
+
+/// A speed band: below `lo` or from `hi` up, the stick has left it.
+const BAND_LO: [f32; 3] = [0.18, 0.5, 0.8]
+const BAND_HI: [f32; 3] = [0.6, 0.9, 9.0]
+
+fn wrap(a: f32) -> f32 {
+    a - TAU * floor(a / TAU + 0.5)
+}
+
+/// The stick's 6 bits (sim.wrela) for the pad's stick, given the last ones sent.
+pub fn stick_of(x: f32, z: f32, prev: u32) -> u32 {
+    let sect = TAU / 16.0
+    let m = sqrt(x * x + z * z)
+    var a = atan2(z, x)
+    if a < 0.0 {
+        a = a + TAU
+    }
+    var sector = u32(floor(a / sect + 0.5)) % 16
+    // 3 is still.
+    var speed: u32 = if m < 0.25 { 3 } else if m < 0.55 { 0 } else if m < 0.85 { 1 } else { 2 }
+    if prev != 0 && prev <= 48 {
+        // Stay in the last direction and speed until clearly past their edges.
+        let ps = (prev - 1) / 3
+        let pm = (prev - 1) % 3
+        if abs(wrap(a - f32(ps) * sect)) < sect / 2.0 + 0.12 {
+            sector = ps
+        }
+        if m >= BAND_LO[pm] && m < BAND_HI[pm] {
+            speed = pm
+        }
+    } else if m < 0.32 {
+        // From still, a stick starts a little past the dead zone.
+        speed = 3
+    }
+    if speed == 3 { 0 } else { 1 + sector * 3 + speed }
+}
+
+impl Encoder {
+    pub fn new() -> Encoder {
+        Encoder { held: 0 }
+    }
+
+    /// The input to send this frame. `prev` is the last frame's; `reads` the bits the rules read
+    /// now or within `LOOK_AHEAD` frames (`World::reads | World::soon`). A press flips its
+    /// button's bit; one the rules won't read is spent, and the stick holds while it isn't read.
+    pub fn input(mut self, pad: Pad, prev: u32, reads: u32) -> u32 {
+        let stick = if reads & STICK_BITS == 0 { prev & STICK_BITS } else {
+            stick_of(x: pad.x, z: pad.z, prev: prev & STICK_BITS)
+        }
+        let pressed = (pad.held & !self.held) & 7
+        self.held = pad.held
+        let buttons = (prev & BUTTON_BITS) ^ ((pressed << 6) & reads & BUTTON_BITS)
+        stick | buttons
+    }
+}
+
+// ---- bits ---------------------------------------------------------------------------------------
 
 struct Bits {
     bytes: Vec<u8>,
@@ -88,24 +183,40 @@ impl Reader {
     }
 }
 
-/// A packet: inputs known through frame `through`, and its newest changes, newest first, each with
-/// its change number.
+// ---- packets ------------------------------------------------------------------------------------
+
+/// A packet: its sender's inputs known through frame `through` and its newest change's number
+/// (`seq`, from 1; 0: none), a run of its changes, newest first, numbered down from `seq - skip`,
+/// and the newest change it has heard in a row from each party slot (`MAX_PARTY` of them; none:
+/// empty).
 pub struct Packet: Clone {
     pub through: u32,
     pub seq: u32,
+    pub skip: u32,
     pub changes: Vec<Change>,
+    pub acks: Vec<u32>,
 }
 
 /// A packet's bytes; none if it isn't one a sender makes (a frame past the fight's longest, a
-/// change after `through` or out of order, or more than `REDUNDANCY` changes).
+/// change number past a log's most, a change after `through` or out of order, too many changes,
+/// changes numbered below 1, or acks for other than every slot).
 pub fn encode(p: Packet) -> Option<Vec<u8>> {
-    if p.through >= MAX_FRAMES || p.changes.len() > REDUNDANCY {
+    if p.through >= MAX_FRAMES ||
+        p.seq > MAX_CHANGES ||
+        p.changes.len() > KEEP ||
+        p.skip + p.changes.len() > p.seq ||
+        (p.acks.len() != 0 && p.acks.len() != MAX_PARTY) {
         return None
     }
     var w = Bits { bytes: Vec::new(), bit: 0 }
     w.put(p.through, 16)
-    w.put(p.seq & 255, 8)
-    w.put(p.changes.len(), 2)
+    w.put(p.seq, 16)
+    w.put(p.changes.len(), 4)
+    w.varint(p.skip)
+    w.put(if p.acks.len() > 0 { 1 } else { 0 }, 1)
+    for a in p.acks {
+        w.put(if a > MAX_CHANGES { MAX_CHANGES } else { a }, 16)
+    }
     var anchor = p.through
     for c in p.changes {
         if c.frame > anchor {
@@ -118,15 +229,23 @@ pub fn encode(p: Packet) -> Option<Vec<u8>> {
     Some(take w.bytes)
 }
 
-/// A packet from its bytes; none if they aren't one. A fight's frames all fit in 16 bits, so a
-/// frame past the longest fight isn't one.
+/// A packet from its bytes; none if they aren't one.
 pub fn decode(bytes: [u8]) -> Option<Packet> {
     var r = Reader { at: 0 }
     let Some(through) = r.get(bytes, 16) else { return None }
-    let Some(seq) = r.get(bytes, 8) else { return None }
-    let Some(n) = r.get(bytes, 2) else { return None }
-    if through >= MAX_FRAMES {
+    let Some(seq) = r.get(bytes, 16) else { return None }
+    let Some(n) = r.get(bytes, 4) else { return None }
+    let Some(skip) = r.varint(bytes) else { return None }
+    let Some(has_acks) = r.get(bytes, 1) else { return None }
+    if through >= MAX_FRAMES || seq > MAX_CHANGES || n > KEEP || skip + n > seq {
         return None
+    }
+    var acks: Vec<u32> = Vec::new()
+    if has_acks == 1 {
+        for _ in 0..MAX_PARTY {
+            let Some(a) = r.get(bytes, 16) else { return None }
+            acks.push(a)
+        }
     }
     var changes: Vec<Change> = Vec::new()
     var anchor = through
@@ -139,128 +258,459 @@ pub fn decode(bytes: [u8]) -> Option<Packet> {
         anchor -= back
         changes.push(Change { frame: anchor, input })
     }
-    Some(Packet { through, seq, changes })
+    Some(Packet { through, seq, skip, changes, acks })
 }
 
-/// The sending side: its recent changes, and when a packet goes.
+// ---- sending ------------------------------------------------------------------------------------
+
+/// A change the sender made: the frame it first went, and whether a resend carried it (then its
+/// ack doesn't say how long a round trip takes). Change `n` is `made[n - 1]`.
+struct Made: Clone {
+    change: Change,
+    sent: bool,
+    first_sent: u32,
+    resent: bool,
+}
+
+/// The sending side: its changes, what each player has heard of them, and when a packet goes.
 pub struct Sender {
-    recent: Vec<Change>,
-    seq: u32,
+    me: u32,
+    made: Vec<Made>,
     input: u32,
     last_sent: u32,
     sent_any: bool,
     dirty: bool,
+    /// The newest change each slot has heard in a row (`NONE`: this sender, or no one there).
+    heard: Vec<u32>,
+    owed: bool,
+    owed_at: u32,
+    /// The shortest round trip measured lately (`NONE`: none yet), and in the window now
+    /// filling, of `samples` samples so far.
+    low: u32,
+    window_low: u32,
+    samples: u32,
+    /// Whether the last resend carried the oldest unheard changes (resends take turns: the
+    /// oldest, so a player far behind catches up, then the newest).
+    oldest_last: bool,
+    /// Frames before an unheard change goes again.
+    pub rto: u32,
 }
 
 impl Sender {
-    pub fn new() -> Sender {
-        Sender { recent: Vec::new(), seq: 0, input: 0, last_sent: 0, sent_any: false, dirty: false }
+    /// The sender in slot `me` of a party of `party`.
+    pub fn new(me: u32, party: u32) -> Sender {
+        var heard: Vec<u32> = Vec::new()
+        for j in 0..MAX_PARTY {
+            heard.push(if j == me || j >= party { NONE } else { 0 })
+        }
+        Sender {
+            me,
+            made: Vec::new(),
+            input: 0,
+            last_sent: 0,
+            sent_any: false,
+            dirty: false,
+            heard,
+            owed: false,
+            owed_at: 0,
+            low: NONE,
+            window_low: NONE,
+            samples: 0,
+            oldest_last: false,
+            rto: RTO_START,
+        }
     }
 
-    /// This frame's input: the packet to send now, if one goes. Frames rise, one fight's worth: a
-    /// frame before the last one sent, or past the longest fight, sends nothing.
-    pub fn frame(mut self, frame: u32, input: u32) -> Option<Vec<u8>> {
+    /// The newest change's number (0: none).
+    pub fn seq(self) -> u32 {
+        self.made.len()
+    }
+
+    /// The newest change every player has heard.
+    fn floor(self) -> u32 {
+        var m = NONE
+        for h in self.heard.clone() {
+            if h < m {
+                m = h
+            }
+        }
+        m
+    }
+
+    /// Slot `slot` says, at frame `now`, that it has heard this sender's changes in a row through
+    /// the one numbered `ack`.
+    pub fn acked(mut self, slot: u32, ack: u32, now: u32) {
+        if slot >= MAX_PARTY ||
+            self.heard[slot] == NONE ||
+            ack > self.seq() ||
+            ack <= self.heard[slot] {
+            return
+        }
+        self.heard[slot] = ack
+        // How long that change took to be heard, if one packet carried it there.
+        let m = self.made[ack - 1].clone()
+        if m.sent && !m.resent && now >= m.first_sent {
+            self.sample(now - m.first_sent)
+        }
+    }
+
+    /// A round trip, in frames. An ack may wait for a packet to ride on (`ACK_DELAY`), so most
+    /// round trips are longer than the network's: the shortest lately is the network's, and the
+    /// timer is that and half the wait, so a change lost goes again soon, and one heard rarely
+    /// goes twice.
+    fn sample(mut self, frames: u32) {
+        if frames < self.low {
+            self.low = frames
+        }
+        if frames < self.window_low {
+            self.window_low = frames
+        }
+        self.samples += 1
+        // A window's shortest replaces the last, so the timer follows a route that got longer.
+        if self.samples == 32 {
+            self.low = self.window_low
+            self.window_low = NONE
+            self.samples = 0
+        }
+        let rto = self.low + ACK_DELAY / 2 + 2
+        self.rto = if rto < RTO_MIN { RTO_MIN } else if rto > RTO_MAX { RTO_MAX } else { rto }
+    }
+
+    /// Slot `slot` left: it hears nothing more, so nothing waits for it.
+    pub fn gone(mut self, slot: u32) {
+        if slot < MAX_PARTY {
+            self.heard[slot] = NONE
+        }
+    }
+
+    /// Something new came from a player at frame `now`: it's owed an ack.
+    pub fn owe(mut self, now: u32) {
+        if !self.owed {
+            self.owed = true
+            self.owed_at = now
+        }
+    }
+
+    /// This frame's input, and what this player has heard from each slot (`Receiver::contig`):
+    /// the packet to send now, if one goes. Frames rise: one before the last sent, or past the
+    /// longest fight, sends nothing, and past `MAX_CHANGES` changes the input stands (a log
+    /// holds no more).
+    pub fn frame(mut self, frame: u32, input: u32, acks: [u32]) -> Option<Vec<u8>> {
         if frame >= MAX_FRAMES || (self.sent_any && frame < self.last_sent) {
             return None
         }
-        if input != self.input {
+        let n = self.made.len()
+        if n > 0 && frame < self.made[n - 1].change.frame {
+            return None
+        }
+        if input != self.input && n < MAX_CHANGES {
             self.input = input
-            self.seq = (self.seq + 1) & 255
-            var recent: Vec<Change> = Vec::new()
-            recent.push(Change { frame, input })
-            for c in self.recent.clone() {
-                if recent.len() < REDUNDANCY {
-                    recent.push(c.clone())
-                }
-            }
-            self.recent = take recent
+            self.made.push(
+                Made {
+                    change: Change { frame, input },
+                    sent: false,
+                    first_sent: frame,
+                    resent: false,
+                },
+            )
             self.dirty = true
         }
-        if !self.dirty && self.sent_any && frame - self.last_sent < HEARTBEAT {
+        let seq = self.made.len()
+        let since = if self.sent_any { frame - self.last_sent } else { NONE }
+        let floor = self.floor()
+        let unheard = floor != NONE && seq > floor
+        let due = self.dirty && since >= COALESCE
+        let resend = !due && unheard && since >= self.rto
+        let go = due ||
+            resend ||
+            since >= KEEPALIVE ||
+            (self.owed && frame - self.owed_at >= ACK_DELAY)
+        if !go {
             return None
         }
-        // Once a frame: a second change on a frame already sent goes with the next.
-        if self.sent_any && frame == self.last_sent {
-            return None
+        // The run of changes it carries, as numbers `low..high` (high not included): what someone
+        // hasn't heard, the newest first, or on every other resend the oldest; or else the
+        // newest, so a packet says the input.
+        var high = seq + 1
+        var low = if unheard { floor + 1 } else if seq > 0 { seq } else { 1 }
+        if high - low > KEEP {
+            if resend && !self.oldest_last {
+                high = low + KEEP
+                self.oldest_last = true
+            } else {
+                low = high - KEEP
+                self.oldest_last = false
+            }
+        }
+        var changes: Vec<Change> = Vec::new()
+        var k = high
+        while k > low {
+            k -= 1
+            let i = k - 1
+            changes.push(self.made[i].change.clone())
+            if !self.made[i].sent {
+                self.made[i].sent = true
+                self.made[i].first_sent = frame
+            } else if resend {
+                self.made[i].resent = true
+            }
         }
         self.last_sent = frame
         self.sent_any = true
         self.dirty = false
-        // A heartbeat soon after a change still repeats it: that covers a lost packet.
-        var changes: Vec<Change> = Vec::new()
-        for c in self.recent.clone() {
-            if frame - c.frame <= 2 * HEARTBEAT {
-                changes.push(c.clone())
-            }
+        self.owed = false
+        var heard: Vec<u32> = Vec::new()
+        for j in 0..MAX_PARTY {
+            heard.push(if j < acks.len() { acks[j] } else { 0 })
         }
-        encode(Packet { through: frame, seq: self.seq, changes })
+        encode(Packet { through: frame, seq, skip: seq + 1 - high, changes, acks: heard })
     }
 }
 
-/// The receiving side: a peer's input log rebuilt, how far it's known, and how many changes it
-/// lost past what the packets repeat (then the room's log is the truth: a resync). Whatever the
-/// bytes, it keeps a log a player could send: changes in order, each a change, at most
-/// `MAX_CHANGES`; what isn't is counted lost.
+// ---- receiving ----------------------------------------------------------------------------------
+
+/// What a packet told a receiver: whether it had changes it lacked (then the sender is owed an
+/// ack), the first frame whose input that changes (a client rolls back to it), and the sender's
+/// acks.
+pub struct Heard: Clone {
+    pub fresh: bool,
+    pub changed: Option<u32>,
+    pub acks: Vec<u32>,
+}
+
+/// The receiving side: a player's changes by number, as they come (in any order), and the log
+/// they make. Whatever the bytes, the log is one a player could send: changes in order, each a
+/// change, a stick that's one, at most `MAX_CHANGES`.
 pub struct Receiver {
-    pub log: Vec<Change>,
+    have: Vec<bool>,
+    got: Vec<Change>,
+    /// The newest change number heard in a row (0: none), and the newest a packet named.
+    pub contig: u32,
+    top: u32,
+    /// The frame the sender's inputs are known to.
     pub through: u32,
-    pub lost: u32,
-    /// The change number of the newest change it has (0: none yet).
-    seq: u32,
-    heard_any: bool,
+    log: Vec<Change>,
+    /// Each log entry's change number.
+    numbers: Vec<u32>,
 }
 
 impl Receiver {
     pub fn new() -> Receiver {
-        Receiver { log: Vec::new(), through: 0, lost: 0, seq: 0, heard_any: false }
+        Receiver {
+            have: Vec::new(),
+            got: Vec::new(),
+            contig: 0,
+            top: 0,
+            through: 0,
+            log: Vec::new(),
+            numbers: Vec::new(),
+        }
     }
 
-    /// A packet's bytes, from the relay: false if they aren't one.
-    pub fn heard(mut self, bytes: [u8]) -> bool {
-        let Some(p) = decode(bytes) else { return false }
-        // A sender sends once a frame, so a packet not past the newest is late, and says
-        // nothing new.
-        if self.heard_any && p.through <= self.through {
-            return true
-        }
-        self.heard_any = true
-        self.through = p.through
-        // How many changes the sender made since the newest it has (fewer than 256 lost in a
-        // row, which is over 25 seconds of play: past that, the count is short, never the log).
-        let ahead = (p.seq + 256 - self.seq) & 255
-        self.seq = p.seq
-        if ahead == 0 {
-            return true
-        }
-        // The packet's entry `i` (newest first) is change `p.seq - i`: new if `i < ahead`.
-        let n = p.changes.len()
-        var fresh: u32 = 0
-        for k in 0..n {
-            let i = n - 1 - k
-            if i < ahead && self.keep(p.changes[i].clone()) {
-                fresh += 1
+    /// A packet's bytes, from the relay: none if they aren't one.
+    pub fn heard(mut self, bytes: [u8]) -> Option<Heard> {
+        let Some(p) = decode(bytes) else { return None }
+        let newest = p.seq - p.skip
+        var fresh = false
+        var lowest = NONE
+        for i in 0..p.changes.len() {
+            let n = newest - i
+            let c = p.changes[i].clone()
+            if c.input >= 16384 || (c.input & 63) > 48 {
+                continue
+            }
+            while self.have.len() < n {
+                self.have.push(false)
+                self.got.push(Change { frame: 0, input: 0 })
+            }
+            if self.have[n - 1] {
+                continue
+            }
+            self.have[n - 1] = true
+            self.got[n - 1] = take c
+            fresh = true
+            if n < lowest {
+                lowest = n
             }
         }
-        let missed = ahead - fresh
-        self.lost = if self.lost > 4294967295 - missed { 4294967295 } else { self.lost + missed }
-        true
+        if p.seq > self.top {
+            self.top = p.seq
+        }
+        while self.contig < self.have.len() && self.have[self.contig] {
+            self.contig += 1
+        }
+        if p.through > self.through {
+            self.through = p.through
+        }
+        let changed = if fresh { self.relog(lowest) } else { None }
+        Some(Heard { fresh, changed, acks: p.acks.clone() })
     }
 
-    /// Whether `c` goes on the log: after its last change, a change, a stick that's one, and
-    /// room for it.
-    fn keep(mut self, c: Change) -> bool {
-        let n = self.log.len()
-        if n >= MAX_CHANGES || (c.input & 63) > 48 {
-            return false
+    /// The log again from change `from` on: the first frame whose input that changes.
+    fn relog(mut self, from: u32) -> Option<u32> {
+        // The entries before `from` stand.
+        var keep = self.log.len()
+        while keep > 0 && self.numbers[keep - 1] >= from {
+            keep -= 1
         }
-        let (last, prev) = if n > 0 { (self.log[n - 1].frame, self.log[n - 1].input) } else {
-            (0, 0)
+        var log: Vec<Change> = Vec::new()
+        var numbers: Vec<u32> = Vec::new()
+        for k in 0..keep {
+            log.push(self.log[k].clone())
+            numbers.push(self.numbers[k])
         }
-        if (n > 0 && c.frame <= last) || c.input == prev {
-            return false
+        var last: u32 = 0
+        var prev: u32 = 0
+        var any = keep > 0
+        if any {
+            last = log[keep - 1].frame
+            prev = log[keep - 1].input
         }
-        self.log.push(c.clone())
-        true
+        let start = if keep > 0 { numbers[keep - 1] + 1 } else { 1 }
+        for n in start..(self.have.len() + 1) {
+            if !self.have[n - 1] || log.len() >= MAX_CHANGES {
+                continue
+            }
+            let c = self.got[n - 1].clone()
+            if (any && c.frame <= last) || c.input == prev {
+                continue
+            }
+            last = c.frame
+            prev = c.input
+            any = true
+            log.push(take c)
+            numbers.push(n)
+        }
+        // The first entry that differs from the old log, old or new.
+        var changed: Option<u32> = None
+        var k = keep
+        loop {
+            let old = k < self.log.len()
+            let new = k < log.len()
+            if !old && !new {
+                break
+            }
+            if old && new && self.log[k] == log[k] {
+                k += 1
+                continue
+            }
+            var f = NONE
+            if old {
+                f = self.log[k].frame
+            }
+            if new && log[k].frame < f {
+                f = log[k].frame
+            }
+            changed = Some(f)
+            break
+        }
+        self.log = take log
+        self.numbers = take numbers
+        changed
+    }
+
+    /// The player's input at `frame`, from what's heard: its last change at or before it.
+    pub fn at(self, frame: u32) -> u32 {
+        var lo: u32 = 0
+        var hi = self.log.len()
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if self.log[mid].frame <= frame {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        if lo == 0 { 0 } else { self.log[lo - 1].input }
+    }
+
+    /// The frame through which every change is heard: the newest packet's, if no change is
+    /// missing, else the last change before the first missing one.
+    pub fn known(self) -> u32 {
+        if self.contig == self.top {
+            return self.through
+        }
+        if self.contig == 0 { 0 } else { self.got[self.contig - 1].frame }
+    }
+
+    /// The log heard so far.
+    pub fn log(self) -> Vec<Change> {
+        self.log.clone()
+    }
+}
+
+// ---- a player's link ----------------------------------------------------------------------------
+
+/// One player's side of a fight's inputs: what it sends, and what it hears from each slot.
+pub struct Link {
+    pub me: u32,
+    pub party: u32,
+    pub tx: Sender,
+    rx: Vec<Receiver>,
+}
+
+impl Link {
+    pub fn new(me: u32, party: u32) -> Link {
+        var rx: Vec<Receiver> = Vec::new()
+        for _ in 0..MAX_PARTY {
+            rx.push(Receiver::new())
+        }
+        Link { me, party, tx: Sender::new(me, party), rx }
+    }
+
+    /// This frame's input: the packet to send now, if one goes (none alone: no one to hear).
+    pub fn send(mut self, frame: u32, input: u32) -> Option<Vec<u8>> {
+        var acks: Vec<u32> = Vec::new()
+        for j in 0..MAX_PARTY {
+            acks.push(self.rx[j].contig)
+        }
+        let out = self.tx.frame(frame, input, acks)
+        if self.party < 2 { None } else { out }
+    }
+
+    /// A packet from slot `slot` at frame `now`: the first frame whose input it changes, if any
+    /// (a client rolls back to it).
+    pub fn heard(mut self, slot: u32, bytes: [u8], now: u32) -> Option<u32> {
+        if slot == self.me || slot >= self.party {
+            return None
+        }
+        let Some(h) = self.rx[slot].heard(bytes) else { return None }
+        if h.fresh {
+            self.tx.owe(now)
+        }
+        if self.me < h.acks.len() {
+            self.tx.acked(slot, h.acks[self.me], now)
+        }
+        h.changed
+    }
+
+    /// Slot `slot`'s input at `frame`, from what's heard.
+    pub fn at(self, slot: u32, frame: u32) -> u32 {
+        if slot >= MAX_PARTY { 0 } else { self.rx[slot].at(frame) }
+    }
+
+    /// The frame through which every other player's inputs are heard.
+    pub fn known(self) -> u32 {
+        var k = NONE
+        for j in 0..self.party {
+            if j != self.me {
+                let f = self.rx[j].known()
+                if f < k {
+                    k = f
+                }
+            }
+        }
+        k
+    }
+
+    /// Slot `slot`'s log as heard.
+    pub fn log(self, slot: u32) -> Vec<Change> {
+        self.rx[slot].log()
+    }
+
+    /// Slot `slot` left: nothing waits for it to hear.
+    pub fn gone(mut self, slot: u32) {
+        self.tx.gone(slot)
     }
 }
 
@@ -307,31 +757,80 @@ impl Hands {
     }
 }
 
-/// Ten minutes of a player's inputs sent with `lose` packets in each `period` lost (0: none):
-/// the packets sent, their bytes, and what the receiver rebuilt against what was sent.
-fn send_all(period: u32, lose: u32) -> (u32, u32, Receiver, Vec<Change>) {
-    var hands = Hands { seed: 7, stick: 0, held: 0, hold: 0, rest: 0 }
-    var tx = Sender::new()
-    var rx = Receiver::new()
-    var truth: Vec<Change> = Vec::new()
-    var last: u32 = 0
+/// A packet on its way: from slot `from` to slot `to`, arriving at frame `at`.
+struct Flight: Clone {
+    at: u32,
+    from: u32,
+    to: u32,
+    bytes: Vec<u8>,
+}
+
+/// What a fight's inputs did on the wire: each player's link, what each sent (its log), and the
+/// packets sent.
+struct Played {
+    links: Vec<Link>,
+    sent: Vec<Vec<Change>>,
+    packets: u32,
+}
+
+/// A party of `party` with made-up hands for `frames` frames, then still for ten seconds so the
+/// last changes are heard. Each packet reaches each player `delay` frames later, or is lost
+/// (`loss` in 100), and every packet is lost for `dark` frames from frame 600.
+fn play(party: u32, frames: u32, delay: u32, loss: u32, dark: u32 = 0) -> Played {
+    var links: Vec<Link> = Vec::new()
+    var hands: Vec<Hands> = Vec::new()
+    var sent: Vec<Vec<Change>> = Vec::new()
+    var last: Vec<u32> = Vec::new()
+    for i in 0..party {
+        links.push(Link::new(i, party))
+        hands.push(Hands { seed: 7 + i * 31, stick: 0, held: 0, hold: 0, rest: 0 })
+        sent.push(Vec::new())
+        last.push(0)
+    }
+    var flights: Vec<Flight> = Vec::new()
+    var seed: u32 = 4242
     var packets: u32 = 0
-    var bytes: u32 = 0
-    for f in 0..36000 {
-        let input = hands.input()
-        if input != last {
-            truth.push(Change { frame: f, input })
-            last = input
+    for f in 0..(frames + 600) {
+        // What arrives now.
+        var later: Vec<Flight> = Vec::new()
+        for fl in flights.clone() {
+            if fl.at <= f {
+                let _ = links[fl.to].heard(fl.from, fl.bytes, f)
+            } else {
+                later.push(fl.clone())
+            }
         }
-        if let Some(p) = tx.frame(f, input) {
-            packets += 1
-            bytes += p.len()
-            if packets % period >= lose {
-                let _ = rx.heard(p)
+        flights = take later
+        for i in 0..party {
+            let input = if f < frames { hands[i].input() } else { last[i] }
+            if input != last[i] {
+                sent[i].push(Change { frame: f, input })
+                last[i] = input
+            }
+            if let Some(p) = links[i].send(f, input) {
+                packets += 1
+                for j in 0..party {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
+                    if j != i && (seed >> 8) % 100 >= loss && (f < 600 || f >= 600 + dark) {
+                        flights.push(Flight { at: f + delay, from: i, to: j, bytes: p.clone() })
+                    }
+                }
             }
         }
     }
-    (packets, bytes, rx, truth)
+    Played { links, sent, packets }
+}
+
+/// Whether every player heard every other's log as it was sent.
+fn all_heard(p: Played) -> bool {
+    for i in 0..p.links.len() {
+        for j in 0..p.links.len() {
+            if i != j && p.links[i].log(j) != p.sent[j] {
+                return false
+            }
+        }
+    }
+    true
 }
 
 @test
@@ -339,35 +838,50 @@ fn a_packet_reads_back() {
     var changes: Vec<Change> = Vec::new()
     changes.push(Change { frame: 30000, input: 16383 })
     changes.push(Change { frame: 29990, input: 0 })
-    let Some(bytes) = encode(Packet { through: 30003, seq: 200, changes }) else {
+    var acks: Vec<u32> = Vec::new()
+    acks.push(0)
+    acks.push(255)
+    acks.push(17)
+    acks.push(3)
+    let Some(bytes) = encode(Packet { through: 30003, seq: 200, skip: 1, changes, acks }) else {
         panic("it encodes")
     }
     let Some(p) = decode(bytes) else { panic("it decodes") }
-    assert(p.through == 30003 && p.seq == 200 && p.changes.len() == 2)
+    assert(p.through == 30003 && p.seq == 200 && p.skip == 1 && p.changes.len() == 2)
     assert(
         p.changes[0].frame == 30000 && p.changes[0].input == 16383 && p.changes[1].frame == 29990,
     )
+    assert(p.acks.len() == 4 && p.acks[1] == 255 && p.acks[2] == 17)
     assert(decode([u8(1), 2]).is_none(), "a short packet isn't one")
 }
 
 @test
-fn every_change_arrives_with_no_loss_and_a_lost_packet_costs_nothing() {
-    let (packets, bytes, rx, truth) = send_all(period: 1, lose: 0)
-    assert(rx.log == truth && rx.lost == 0)
-    // About seven packets a second of about nine bytes.
-    assert(packets > 3600 && packets < 5400, "packets a second")
-    assert(bytes / packets < 12, "bytes a packet")
-    // One packet in twenty lost (5%): the next ones repeat what it carried.
-    let (_, _, lossy, truth2) = send_all(period: 20, lose: 1)
-    assert(lossy.log == truth2 && lossy.lost == 0)
+fn every_change_arrives_with_no_loss() {
+    let p = play(party: 4, frames: 18000, delay: 3, loss: 0)
+    std::io::print(f"no loss: {p.packets} packets, rto {p.links[0].tx.rto}")
+    assert(all_heard(p))
 }
 
 @test
-fn a_heavy_loss_is_counted_not_hidden() {
-    // Four packets of every five lost: past what the packets repeat.
-    let (_, _, rx, truth) = send_all(period: 5, lose: 4)
-    assert(rx.lost > 0, "most packets lost loses changes")
-    assert(u32(rx.log.len()) + rx.lost == truth.len(), "what's lost is all counted")
+fn every_change_arrives_with_a_fifth_lost() {
+    let p = play(party: 4, frames: 18000, delay: 6, loss: 20)
+    std::io::print(f"20% lost: {p.packets} packets, rto {p.links[0].tx.rto}")
+    assert(all_heard(p))
+}
+
+@test
+fn every_change_arrives_after_half_a_minute_dark() {
+    // Far more changes go unheard than a packet carries: resends take the oldest in turn.
+    let p = play(party: 3, frames: 6000, delay: 4, loss: 5, dark: 1800)
+    assert(all_heard(p))
+}
+
+@test
+fn the_resend_timer_follows_the_round_trip() {
+    let near = play(party: 2, frames: 6000, delay: 2, loss: 0)
+    let far = play(party: 2, frames: 6000, delay: 15, loss: 0)
+    std::io::print(f"rto near {near.links[0].tx.rto}, far {far.links[0].tx.rto}")
+    assert(near.links[0].tx.rto < far.links[0].tx.rto)
 }
 
 @test
@@ -378,7 +892,7 @@ fn any_bytes_leave_a_log_a_player_could_send() {
     for _ in 0..200000 {
         var bytes: Vec<u8> = Vec::new()
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
-        let len = 1 + (seed >> 24) % 12
+        let len = 1 + (seed >> 24) % 16
         for _ in 0..len {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
             bytes.push(u8(seed >> 24))
@@ -386,10 +900,50 @@ fn any_bytes_leave_a_log_a_player_could_send() {
         let _ = rx.heard(bytes)
     }
     assert(
-        sim::well_formed(rx.log.clone(), MAX_FRAMES, MAX_CHANGES),
+        sim::well_formed(rx.log(), MAX_FRAMES, MAX_CHANGES),
         "the log is one a player could send",
     )
     var logs: Vec<sim::Log> = Vec::new()
-    logs.push(sim::Log { changes: rx.log.clone() })
+    logs.push(sim::Log { changes: rx.log() })
     let _ = sim::run(1, logs)
+}
+
+@test
+fn a_wobbling_stick_sends_one_change() {
+    // Pushed most of the way, wobbling across the edge between two directions.
+    let edge = TAU / 32.0
+    var prev = stick_of(x: 0.7 * cos(edge - 0.02), z: 0.7 * sin(edge - 0.02), prev: 0)
+    var changes: u32 = 0
+    for k in 0..120 {
+        let a = edge + (if k % 2 == 0 { 0.05 } else { -0.05 })
+        let m = if k % 3 == 0 { 0.62 } else { 0.78 }
+        let s = stick_of(x: m * cos(a), z: m * sin(a), prev: prev)
+        if s != prev {
+            changes += 1
+        }
+        prev = s
+    }
+    assert(changes == 0, f"{changes} changes")
+    // A light touch from still is still; a clear push isn't.
+    assert(stick_of(x: 0.3, z: 0.0, prev: 0) == 0)
+    assert(stick_of(x: 0.4, z: 0.0, prev: 0) == 1)
+    // Past the edge by more than the margin, it turns.
+    assert(stick_of(x: 0.7 * cos(0.6), z: 0.7 * sin(0.6), prev: 2) != 2)
+}
+
+@test
+fn a_press_flips_a_bit_and_letting_go_sends_nothing() {
+    var enc = Encoder::new()
+    let all = STICK_BITS | BUTTON_BITS
+    let still = Pad { x: 0.0, z: 0.0, held: 0 }
+    let attack = Pad { x: 0.0, z: 0.0, held: sim::ATTACK }
+    let a = enc.input(attack, prev: 0, reads: all)
+    assert(a == 64, "a press flips its bit")
+    assert(enc.input(attack, prev: a, reads: all) == a, "holding it sends nothing")
+    assert(enc.input(still, prev: a, reads: all) == a, "letting go sends nothing")
+    assert(enc.input(attack, prev: a, reads: all) == 0, "the next press flips it back")
+    // Mid-swing the rules read nothing: a press then is spent, and the stick holds.
+    let _ = enc.input(still, prev: 0, reads: 0)
+    assert(enc.input(attack, prev: 0, reads: 0) == 0)
+    assert(enc.input(Pad { x: 1.0, z: 0.0, held: 0 }, prev: 0, reads: 0) == 0)
 }

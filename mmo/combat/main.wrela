@@ -5,6 +5,9 @@
 // own run disagrees knows its inputs didn't arrive as it sent them. What's written is the outcome
 // alone: one store row a fight, and a journal row for its start and each log.
 //
+// Players wait for a fight in the room's lobby (`Join`), and one of them begins it for whoever is
+// waiting.
+//
 // The costs this shape is for (the server design doc's budget): a fight of four is five proposals
 // and one store write, however long it lasts; its inputs cost the room nothing.
 
@@ -29,13 +32,33 @@ pub const BAD_LOG: u32 = 3
 /// A settle before `SETTLE_MS` after the first log, or before any log while the fight could
 /// still be on.
 pub const TOO_SOON: u32 = 4
+/// A join to a full lobby; a leave, or a begin, by a peer not in it.
+pub const NOT_WAITING: u32 = 5
+/// A log longer than a player's share of what the room's state holds (`PLAYER_CHANGES`).
+pub const TOO_LONG: u32 = 6
+
+/// How long a peer waits in the lobby, in room ms, unless it joins again: a peer that left
+/// without a word stops counting once it's past.
+pub const LOBBY_MS: u64 = 60000
+/// The most changes the logs of one fight hold together. A peer far behind is sent the room's
+/// state whole, in one message of at most 64 KiB, and a change packs into about 5 bytes.
+pub const MAX_LOGGED: u32 = 11000
+/// The most changes one player's log holds, so every player's fits with the others'.
+pub const PLAYER_CHANGES: u32 = MAX_LOGGED / MAX_PARTY
 
 /// The longest a fight can last, in room ms: past it and `SETTLE_MS` more, anyone may settle it,
 /// logs or none, so a party that left (or one that never fought) can't hold the room.
 pub const FIGHT_MS: u64 = 600000
+/// No peer's id: a room gives peers ids from 1.
+const NONE_PEER: u32 = 0
 
-/// The room's state: the fight on (or the last one), and how many it has finished.
+/// The room's state: who's waiting to fight, the fight on (or the last one), and how many it has
+/// finished.
 pub struct Fight: Clone + Pack {
+    /// The peers waiting for the next fight, in the order they joined, and when each last
+    /// joined (at most `MAX_PARTY` of them within `LOBBY_MS`).
+    pub lobby: Vec<u32>,
+    pub joined: Vec<u64>,
     /// The players, by peer, in their slots (empty: none yet).
     pub party: Vec<u32>,
     pub logs: Vec<Log>,
@@ -53,8 +76,12 @@ pub struct Fight: Clone + Pack {
 
 /// A peer's decision.
 pub enum Act: Clone + Pack {
-    /// A fight starts, for these players.
-    Begin { party: Vec<u32> },
+    /// The proposer waits for the next fight.
+    Join,
+    /// The proposer stops waiting.
+    Leave,
+    /// A fight starts, for whoever waits (the proposer among them).
+    Begin,
     /// The proposer's input log, the fight having ended at frame `end` as it saw it.
     Log { changes: Vec<Change>, end: u32 },
     /// The fight is settled without the logs that didn't come.
@@ -64,6 +91,8 @@ pub enum Act: Clone + Pack {
 impl Fight {
     pub fn empty() -> Fight {
         Fight {
+            lobby: Vec::new(),
+            joined: Vec::new(),
             party: Vec::new(),
             logs: Vec::new(),
             sent: Vec::new(),
@@ -90,6 +119,39 @@ impl Fight {
         None
     }
 
+    /// Whether `peer` waits for the next fight (as a client sees it: however long ago it joined).
+    pub fn waiting(self, peer: u32) -> bool {
+        for p in self.lobby.clone() {
+            if p == peer {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Whether `peer` waits at room time `at`: it joined within `LOBBY_MS`.
+    fn waits(self, peer: u32, at: u64) -> bool {
+        for i in 0..self.lobby.len() {
+            if self.lobby[i] == peer && at < self.joined[i] + LOBBY_MS {
+                return true
+            }
+        }
+        false
+    }
+
+    /// The lobby at room time `at`: who joined within `LOBBY_MS`, but `without`.
+    fn fresh(self, at: u64, without: u32) -> (Vec<u32>, Vec<u64>) {
+        var peers: Vec<u32> = Vec::new()
+        var times: Vec<u64> = Vec::new()
+        for i in 0..self.lobby.len() {
+            if self.lobby[i] != without && at < self.joined[i] + LOBBY_MS {
+                peers.push(self.lobby[i])
+                times.push(self.joined[i])
+            }
+        }
+        (peers, times)
+    }
+
     fn any_sent(self) -> bool {
         for s in self.sent.clone() {
             if s {
@@ -101,6 +163,8 @@ impl Fight {
 
     fn finish(mut self, at: u64) {
         self.outcome = sim::run(self.party.len(), self.logs.clone())
+        // The outcome is what's kept: the logs would make the state too big to send a peer.
+        self.logs = Vec::new()
         self.settled = true
         self.fights += 1
         self.finished_at = at
@@ -111,25 +175,23 @@ impl Reduce<Act> for Fight {
     fn check(self, entry: Entry<Act>) -> Verdict {
         let peer = entry.id.peer
         match entry.value {
-            Act::Begin { party } => {
+            Act::Join => {
+                // Joining again keeps a peer waiting.
+                let (others, _) = self.fresh(entry.at, peer)
+                if others.len() >= MAX_PARTY { Verdict::Reject(NOT_WAITING) } else {
+                    Verdict::Accept
+                }
+            },
+            Act::Leave => if self.waiting(peer) { Verdict::Accept } else {
+                Verdict::Reject(NOT_WAITING)
+            },
+            Act::Begin => {
                 if self.on() {
                     return Verdict::Reject(NOT_NOW)
                 }
-                if party.len() == 0 || party.len() > MAX_PARTY {
-                    return Verdict::Reject(BAD_PARTY)
+                if self.waits(peer, entry.at) { Verdict::Accept } else {
+                    Verdict::Reject(NOT_WAITING)
                 }
-                var has_proposer = false
-                for i in 0..party.len() {
-                    if party[i] == peer {
-                        has_proposer = true
-                    }
-                    for j in 0..i {
-                        if party[j] == party[i] {
-                            return Verdict::Reject(BAD_PARTY)
-                        }
-                    }
-                }
-                if has_proposer { Verdict::Accept } else { Verdict::Reject(BAD_PARTY) }
             },
             Act::Log { changes, end } => {
                 if !self.on() {
@@ -140,6 +202,9 @@ impl Reduce<Act> for Fight {
                     end > MAX_FRAMES ||
                     !sim::well_formed(changes, end, MAX_CHANGES) {
                     return Verdict::Reject(BAD_LOG)
+                }
+                if changes.len() > PLAYER_CHANGES {
+                    return Verdict::Reject(TOO_LONG)
                 }
                 Verdict::Accept
             },
@@ -167,8 +232,24 @@ impl Reduce<Act> for Fight {
         let at = entry.at
         let peer = entry.id.peer
         match entry.value {
-            Act::Begin { party } => {
+            Act::Join => {
+                let (peers, times) = self.fresh(at, peer)
+                self.lobby = take peers
+                self.joined = take times
+                self.lobby.push(peer)
+                self.joined.push(at)
+            },
+            Act::Leave => {
+                let (peers, times) = self.fresh(at, peer)
+                self.lobby = take peers
+                self.joined = take times
+            },
+            Act::Begin => {
+                // Whoever waits fights now.
+                let (party, _) = self.fresh(at, NONE_PEER)
                 let n = party.len()
+                self.lobby = Vec::new()
+                self.joined = Vec::new()
                 self.party = party.clone()
                 self.logs = Vec::new()
                 self.sent = Vec::new()
@@ -293,6 +374,16 @@ fn entry(peer: u32, at: u64, value: take Act) -> Entry<Act> {
     Entry { seq: 2, id: std::net::ProposalId { peer, session: 1, counter: 1 }, at, value }
 }
 
+/// A fight begun at `at` by the first of `peers`, each having joined just before.
+fn begun(fight: mut Fight, peers: [u32], at: u64) {
+    for p in peers {
+        fight.apply(entry(p, at, Act::Join))
+    }
+    let begin = entry(peers[0], at, Act::Begin)
+    assert(fight.check(begin.clone()) == Verdict::Accept)
+    fight.apply(begin)
+}
+
 /// A fight's logs, as two players who walk to the boss and swing at it, and their run.
 fn two_logs() -> Vec<Log> {
     var a: Vec<Change> = Vec::new()
@@ -330,12 +421,7 @@ fn the_same_logs_give_the_same_fight() {
 @test
 fn a_fight_begins_takes_each_log_once_and_settles_to_the_logs_run() {
     var fight = Fight::empty()
-    var party: Vec<u32> = Vec::new()
-    party.push(3)
-    party.push(5)
-    let begin = entry(3, 0, Act::Begin { party: party.clone() })
-    assert(fight.check(begin.clone()) == Verdict::Accept)
-    fight.apply(begin)
+    begun(mut fight, [u32(3), 5], 0)
     let logs = two_logs()
     // A peer not in the party can't send a log; one in it, once.
     let stranger = entry(9, 10, Act::Log { changes: logs[0].changes.clone(), end: 3000 })
@@ -351,15 +437,13 @@ fn a_fight_begins_takes_each_log_once_and_settles_to_the_logs_run() {
     assert(fight.settled, "both logs in settle it")
     assert(fight.outcome == sim::run(2, logs))
     assert(fight.fights == 1 && !fight.on())
+    assert(fight.logs.len() == 0, "a settled fight keeps its outcome, not its logs")
 }
 
 @test
 fn a_missing_log_is_settled_as_standing_still() {
     var fight = Fight::empty()
-    var party: Vec<u32> = Vec::new()
-    party.push(3)
-    party.push(5)
-    fight.apply(entry(3, 0, Act::Begin { party }))
+    begun(mut fight, [u32(3), 5], 0)
     let logs = two_logs()
     fight.apply(entry(3, 1000, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
     assert(fight.check(entry(5, 1000 + SETTLE_MS, Act::Settle)) == Verdict::Accept)
@@ -406,18 +490,66 @@ fn the_longest_log_fits_one_message() {
 @test
 fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
     var fight = Fight::empty()
-    var party: Vec<u32> = Vec::new()
-    party.push(3)
-    fight.apply(entry(3, 1000, Act::Begin { party }))
+    begun(mut fight, [u32(3)], 1000)
     // Its player leaves without a log: a stranger can't settle it yet, nor begin another.
     assert(fight.check(entry(9, 2000, Act::Settle)) == Verdict::Reject(BAD_LOG))
-    var mine: Vec<u32> = Vec::new()
-    mine.push(9)
-    assert(
-        fight.check(entry(9, 2000, Act::Begin { party: mine.clone() })) == Verdict::Reject(NOT_NOW),
-    )
+    fight.apply(entry(9, 2000, Act::Join))
+    assert(fight.check(entry(9, 2000, Act::Begin)) == Verdict::Reject(NOT_NOW))
     let late = 1000 + FIGHT_MS + SETTLE_MS
     assert(fight.check(entry(9, late, Act::Settle)) == Verdict::Accept)
     fight.apply(entry(9, late, Act::Settle))
-    assert(fight.check(entry(9, late, Act::Begin { party: mine })) == Verdict::Accept)
+    fight.apply(entry(9, late, Act::Join))
+    assert(fight.check(entry(9, late, Act::Begin)) == Verdict::Accept)
+}
+
+@test
+fn players_wait_in_the_lobby_until_a_fight_begins() {
+    var fight = Fight::empty()
+    assert(fight.check(entry(3, 0, Act::Begin)) == Verdict::Reject(NOT_WAITING), "only a waiter")
+    fight.apply(entry(3, 0, Act::Join))
+    fight.apply(entry(3, 1, Act::Join))
+    assert(fight.lobby.len() == 1, "joining again keeps one place")
+    fight.apply(entry(5, 2, Act::Join))
+    fight.apply(entry(7, 3, Act::Join))
+    fight.apply(entry(7, 4, Act::Leave))
+    assert(fight.check(entry(7, 5, Act::Leave)) == Verdict::Reject(NOT_WAITING))
+    assert(fight.lobby.len() == 2)
+    fight.apply(entry(3, 7, Act::Begin))
+    assert(fight.on() && fight.party.len() == 2 && fight.lobby.len() == 0, "whoever waited")
+    // Four waiting fill the lobby; one who joined a minute ago, and said nothing since, doesn't.
+    for p in 10..14 {
+        fight.apply(entry(p, 8, Act::Join))
+    }
+    assert(fight.check(entry(20, 9, Act::Join)) == Verdict::Reject(NOT_WAITING), "a full lobby")
+    for p in 11..14 {
+        fight.apply(entry(p, 30000, Act::Join))
+    }
+    let later = 8 + LOBBY_MS
+    assert(fight.check(entry(20, later, Act::Join)) == Verdict::Accept, "a place the silent left")
+    fight.apply(entry(20, later, Act::Join))
+    fight.apply(entry(3, later, Act::Settle))
+    assert(fight.check(entry(10, later, Act::Begin)) == Verdict::Reject(NOT_WAITING))
+}
+
+@test
+fn the_logs_of_a_fight_fit_the_state_a_peer_is_sent() {
+    var fight = Fight::empty()
+    begun(mut fight, [u32(1), 2, 3, 4], 0)
+    var changes: Vec<Change> = Vec::new()
+    for i in 0..(PLAYER_CHANGES + 1) {
+        changes.push(Change { frame: MAX_FRAMES - MAX_CHANGES + i, input: 15936 + (i & 1) * 48 })
+    }
+    let long = entry(1, 10, Act::Log { changes: changes.clone(), end: MAX_FRAMES })
+    assert(fight.check(long) == Verdict::Reject(TOO_LONG), "past a player's share")
+    let _ = changes.pop()
+    for p in 1..5 {
+        let e = entry(p, 10, Act::Log { changes: changes.clone(), end: MAX_FRAMES })
+        if p == 4 {
+            // The state whole, as a peer far behind is sent it, is one message.
+            assert(fight.check(e.clone()) == Verdict::Accept)
+            assert(pack(fight.clone()).len() + 256 < 65472, "the state is one message")
+        }
+        fight.apply(e)
+    }
+    assert(fight.settled)
 }
