@@ -1,0 +1,283 @@
+// Mixamo's Great Sword Pack (mocap of a two-handed great sword: idles, cuts, blocks, hits), its
+// FBX turned to BVH (`mixamorig:` taken off) and kept in `private/`, out of the repository: its
+// licence lets the game carry it but not the raw files be published.
+
+use std::collections::Vec
+use engine::bvh
+use engine::humanoid
+use engine::humanoid::{Clip, MIXAMO, NO_NAMES, Retarget, Take}
+use engine::playback
+use engine::playback::{Gaits, Move}
+use engine::anime::Look
+use engine::keys
+use body::HERO
+
+fn clip_of(file: Bytes, frames: u32) -> Clip {
+    let b = bvh::read(file)
+    let to = min(frames, b.frames) - 1
+    humanoid::retarget(
+        humanoid::take_of_bvh(b, MIXAMO, NO_NAMES, from: 0, to: to),
+        HERO.rig.clone(),
+        Retarget {},
+    )
+}
+
+/// The clips a reel plays, in turn.
+pub const COUNT: u32 = 10
+@fuel(2 ** 40)
+pub const REEL: [Clip; 10] = [
+    clip_of(embed("private/great_sword_idle.bvh"), 1000),
+    clip_of(embed("private/great_sword_slash.bvh"), 1000),
+    clip_of(embed("private/great_sword_slash_2.bvh"), 1000),
+    clip_of(embed("private/great_sword_slash_3.bvh"), 1000),
+    clip_of(embed("private/great_sword_slash_4.bvh"), 1000),
+    clip_of(embed("private/great_sword_slash_5.bvh"), 1000),
+    clip_of(embed("private/great_sword_attack.bvh"), 1000),
+    clip_of(embed("private/great_sword_high_spin_attack.bvh"), 1000),
+    clip_of(embed("private/great_sword_impact.bvh"), 1000),
+    clip_of(embed("private/great_sword_walk.bvh"), 1000),
+]
+
+/// Which clip plays at `time` and how far into it: each in turn, a beat of its first frame
+/// held before it and of its last after.
+pub fn reel_at(time: f32) -> (u32, f32) {
+    var t = time
+    for i in 0..COUNT {
+        let span = REEL[i].length() + 0.6
+        if t < span {
+            return (i, clamp(t - 0.3, 0.0, REEL[i].length()))
+        }
+        t -= span
+    }
+    (0, 0.0)
+}
+
+// ---- the loop played from mocap ------------------------------------------------------------
+
+fn take_from(file: Bytes) -> Take {
+    let b = bvh::read(file)
+    let to = b.frames - 1
+    humanoid::take_of_bvh(b, MIXAMO, NO_NAMES, from: 0, to: to)
+}
+
+/// Frames `from` to `to` of a take (Mixamo's at 30 a second), its still lead-in and tail cut.
+fn part_of(file: Bytes, from: u32, to: u32) -> Take {
+    let b = bvh::read(file)
+    let last = min(to, b.frames - 1)
+    humanoid::take_of_bvh(b, MIXAMO, NO_NAMES, from: from, to: last)
+}
+
+/// How far down the hilt the left hand holds it, below the right (m): a great sword's long
+/// hilt, the hands a hand's width apart.
+pub const SPAN: f32 = 0.24
+
+/// The way the sword points from the right hand (`keys::sword_in_hands`): as the guard's two
+/// hands hold it (Mixamo's grip, not the keyed hold's).
+@fuel(2 ** 40)
+pub const AIM: vec3 = aim_read()
+
+fn aim_read() -> vec3 {
+    let rig = HERO.rig.clone()
+    let c = humanoid::retarget(
+        take_from(embed("private/great_sword_idle.bvh")),
+        HERO.rig.clone(),
+        Retarget {},
+    )
+    let w = humanoid::frame_world(rig, c.turns, 0, rig.base.t + rig.base.q.rotate(c.hips[0]))
+    keys::aim_of(rig, w)
+}
+
+/// A take in place, looped as it is (an idle: Mixamo's loop end to end).
+fn idle_of(file: Bytes) -> Move {
+    var c = humanoid::retarget(take_from(file), HERO.rig.clone(), Retarget {})
+    c.looped = true
+    c.travel = vec3(0.0)
+    c.travel_local = vec3(0.0)
+    playback::moved(c, HERO.rig.clone())
+}
+
+/// A travelling take, the stride that loops best, turned to go ahead, its footfalls marked.
+fn gait_of(file: Bytes, shortest: u32, longest: u32) -> Move {
+    let c = humanoid::retarget(
+        take_from(file).looped(shortest: shortest, longest: longest),
+        HERO.rig.clone(),
+        Retarget { face_ahead: true, looped: true },
+    )
+    playback::with_steps(playback::moved(c, HERO.rig.clone()), HERO.rig.clone())
+}
+
+/// A one-off at its own pace, where it stands, its frames `from` to `to`.
+fn once_of(file: Bytes, from: u32, to: u32) -> Move {
+    var m = playback::moved(
+        humanoid::retarget(part_of(file, from, to), HERO.rig.clone(), Retarget {}),
+        HERO.rig.clone(),
+    )
+    // Each's cut toward the foe ahead and ends facing him: the hips' swing through it is the
+    // body's own, not the way the body faces.
+    m.heading = Vec::filled(m.clip.frames, 0.0)
+    m
+}
+
+/// When (s) in `m` its blow lands: between `lo` and `hi` (s), where its sword's point goes
+/// fastest as the blade comes to point `at` (the body's space: the way the cut meets its foe).
+/// The sword held as the hands hold it (`keys::sword_in_hands`), its point a blade's length
+/// past the grip.
+pub fn blow_of(m: Move, lo: f32, hi: f32, at: vec3) -> f32 {
+    let rig = HERO.rig.clone()
+    let c = m.clip.clone()
+    let aim = normalize(at)
+    var best = 0.0
+    var when = lo
+    var last = vec3(0.0)
+    for f in 0..c.frames {
+        let w = humanoid::frame_world(rig, c.turns, f, rig.base.t + rig.base.q.rotate(c.hips[f]))
+        let (grip, q) = keys::sword_in_hands(rig, w, AIM)
+        let u = q.rotate(vec3(0.0, 0.0, 1.0))
+        let tip = grip + u
+        let t = (f32(f) - 0.5) / c.fps
+        if f > 0 && t >= lo && t <= hi {
+            let facing = max(dot(u, aim), 0.0)
+            let v = length(tip - last) * facing * facing * facing * facing
+            if v > best {
+                best = v
+                when = t
+            }
+        }
+        last = tip
+    }
+    when
+}
+
+/// A cut timed as an animator would over its mocap (frames `from` to `to` of it, its blow where
+/// its point goes fastest between `lo` and `hi` seconds into those): the last `snap` seconds
+/// into the blow quickened, stopped dead on it for `hold`, the next cut free to come `cancel`
+/// after.
+fn cut_of(
+    file: Bytes,
+    from: u32,
+    to: u32,
+    lo: f32,
+    hi: f32,
+    at: vec3,
+    snap: f32,
+    quicken: f32,
+    hold: f32,
+    cancel: f32,
+) -> Move {
+    let m = once_of(file, from, to)
+    // (Stopped on the drawing the blade meets its foe, a beat before it's gone fastest past.)
+    let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
+    playback::struck(m, blow, snap, quicken, hold, cancel)
+}
+
+/// A hit taken, its knock played quickened (its first `knock` seconds `quicken` times as fast)
+/// and held a moment at its worst.
+fn hit_of(file: Bytes, to: u32, knock: f32) -> Move {
+    let m = once_of(file, 0, to)
+    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3)
+}
+
+@fuel(2 ** 40)
+pub const IDLE_M: Move = idle_of(embed("private/great_sword_idle.bvh"))
+/// The guard's hands closed on the hilt (its fingers held through a hit that lets go).
+@fuel(2 ** 40)
+pub const FIST: humanoid::Pose = IDLE_M.clip.pose(0.0)
+@fuel(2 ** 40)
+pub const WALK_M: Move = gait_of(embed("private/great_sword_walk.bvh"), shortest: 24, longest: 41)
+@fuel(2 ** 40)
+pub const RUN_M: Move = gait_of(embed("private/great_sword_run.bvh"), shortest: 12, longest: 22)
+
+/// The gaits: Mixamo's guard idle, its walk and run with the sword (set off into and stopped
+/// out of as a walk).
+@fuel(2 ** 40)
+pub const MOCAP_GAITS: Gaits = Gaits::of(
+    IDLE_M.clone(),
+    WALK_M.clone(),
+    RUN_M.clone(),
+    WALK_M.clone(),
+    WALK_M.clone(),
+    HERO.rig.clone(),
+)
+
+/// The one-offs: three cuts that chain (the last a spin), a heavy (a leaping blow down), and
+/// two hits taken.
+pub const M_FIRST: u32 = 0
+pub const M_SECOND: u32 = 1
+pub const M_THIRD: u32 = 2
+pub const M_HEAVY: u32 = 3
+pub const M_HIT: u32 = 4
+pub const M_HIT_HARD: u32 = 5
+
+@fuel(2 ** 40)
+pub const MOCAP_ACTS: [Move; 6] = [
+    // A rising flick, then up and over: the blow down from over the right shoulder.
+    cut_of(
+        embed("private/great_sword_slash.bvh"),
+        from: 7,
+        to: 36,
+        lo: 0.2,
+        hi: 0.7,
+        at: vec3(0.35, -0.55, 0.75),
+        snap: 0.1,
+        quicken: 1.5,
+        hold: 0.07,
+        cancel: 0.1,
+    ),
+    // A level cut back across.
+    cut_of(
+        embed("private/great_sword_slash_3.bvh"),
+        from: 17,
+        to: 42,
+        lo: 0.1,
+        hi: 0.6,
+        at: vec3(0.0, -0.1, 1.0),
+        snap: 0.1,
+        quicken: 1.5,
+        hold: 0.07,
+        cancel: 0.1,
+    ),
+    // The finisher: a spin, round into a cut.
+    cut_of(
+        embed("private/great_sword_high_spin_attack.bvh"),
+        from: 16,
+        to: 50,
+        lo: 0.57,
+        hi: 0.72,
+        at: vec3(0.0, -0.4, 0.9),
+        snap: 0.3,
+        quicken: 1.5,
+        hold: 0.1,
+        cancel: 0.2,
+    ),
+    // The heavy: a leap, and the blade brought down with it.
+    cut_of(
+        embed("private/great_sword_jump_attack.bvh"),
+        from: 8,
+        to: 37,
+        lo: 0.5,
+        hi: 1.1,
+        at: vec3(0.0, -0.75, 0.65),
+        snap: 0.16,
+        quicken: 1.3,
+        hold: 0.18,
+        cancel: 0.3,
+    ),
+    // Struck, the chest and head knocked back; struck hard, the knees buckling back.
+    hit_of(embed("private/great_sword_impact_3.bvh"), 37, 0.45),
+    hit_of(embed("private/great_sword_impact_2.bvh"), 35, 0.5),
+]
+
+/// How each's drawn: the cuts on twos, the heavy flashed.
+pub const MOCAP_LOOKS: [Look; 6] = [
+    Look { twos: true },
+    Look { twos: true },
+    Look { twos: true },
+    Look { twos: true, flash: true, heavy: true },
+    Look {},
+    Look {},
+]
+
+/// Whether an act is a cut (its blade smeared through its strike).
+pub fn sweeps(act: u32) -> bool {
+    act <= M_HEAVY
+}

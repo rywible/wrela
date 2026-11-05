@@ -394,3 +394,188 @@ pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     }
     curled_hands(c, rig, fist)
 }
+
+/// The sword's grip and frame as a played pose's hands hold it (`w`: each bone in the body's
+/// space): along the line from the left hand's hold through the right's while both are on it
+/// (mocap's hands close on a hilt that isn't there), else as the right hand alone holds it
+/// (its blade `aim`, the way it points from the right hand at rest: `hold_at_rest`'s, or one
+/// read off a take, `aim_of`); its edge as the right hand turns it.
+pub fn sword_in_hands(rig: Rig, w: [Rigid], aim: vec3) -> (vec3, Quat) {
+    let rw = rig.rest_world()
+    let (rh, lh) = (rig.find("rightHand"), rig.find("leftHand"))
+    let (gr0, fr0) = hold_at_rest(rig, -1.0)
+    let (gl0, _) = hold_at_rest(rig, 1.0)
+    let right = w[rh].q.mul(rw[rh].q.inverse())
+    let left = w[lh].q.mul(rw[lh].q.inverse())
+    let grip = w[rh].t + right.rotate(gr0 - rw[rh].t)
+    // The line through the two fists: knuckle to knuckle (the hold points sit off in each palm,
+    // turned with each hand, and swing the line about).
+    let (rk, lk) = (rig.find("rightMiddleProximal"), rig.find("leftMiddleProximal"))
+    let along = w[rk].t - w[lk].t
+    let d = length(along)
+    let alone = right.rotate(aim)
+    // Hands bunched (one over the other, the line between them noise), or the line turned
+    // well away from how the right hand holds it (the left hand off it): the right hand's.
+    let agree = if d > 1.0e-4 { dot(along / d, alone) } else { -1.0 }
+    let both = smoothstep(0.1, 0.16, d) * (1.0 - smoothstep(0.3, 0.42, d)) *
+        smoothstep(0.3, 0.6, agree)
+    var u = alone
+    if both > 0.0 {
+        u = normalize(mix(alone, along / d, vec3(both)))
+    }
+    var e = right.mul(fr0).rotate(vec3(1.0, 0.0, 0.0))
+    e = normalize(e - u * dot(e, u))
+    (grip, frame_of(u, e))
+}
+
+/// The sword's palette matrix for its grip and frame (`sword_in_hands`), its rest the right
+/// hand's hold.
+pub fn sword_matrix(rig: Rig, grip: vec3, f: Quat) -> mat4 {
+    let (g0, f0) = hold_at_rest(rig, -1.0)
+    let q = f.mul(f0.inverse())
+    let m = q.to_mat3()
+    let t = grip - q.rotate(g0)
+    mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(t, 1.0))
+}
+
+/// The left hand's fingers (VRM's names), closed round a hilt.
+pub const LEFT_FINGERS: [Text; 15] = [
+    "leftThumbMetacarpal", "leftThumbProximal", "leftThumbDistal",
+    "leftIndexProximal", "leftIndexIntermediate", "leftIndexDistal",
+    "leftMiddleProximal", "leftMiddleIntermediate", "leftMiddleDistal",
+    "leftRingProximal", "leftRingIntermediate", "leftRingDistal",
+    "leftLittleProximal", "leftLittleIntermediate", "leftLittleDistal",
+]
+
+/// `p` (a played pose) with the left hand put on the sword's hilt (`sword_in_hands`) `span`
+/// below the right, `on` of the way: the left arm reaching there, its elbow bent as it was,
+/// the hand turned round the hilt; and the sword's place (grip, frame) in the body's space.
+pub fn hilt_held(
+    rig: Rig,
+    pose: Pose,
+    on: f32,
+    span: f32,
+    aim: vec3,
+    fist: Pose,
+    blade: f32,
+) -> (Pose, vec3, Quat) {
+    let nb = rig.bones.len()
+    let rw = rig.rest_world()
+    // The left hand's fingers closed round the hilt as `fist`'s are (mocap lets go in a hit).
+    var p = pose
+    for n in LEFT_FINGERS {
+        let b = rig.find(n)
+        if b != NONE {
+            p.turns[b] = p.turns[b].nlerp(fist.turns[b], saturate(on))
+        }
+    }
+    var w = humanoid::frame_world(rig, p.turns, 0, rig.base.t + rig.base.q.rotate(p.hips))
+    let (grip, held) = sword_in_hands(rig, w, aim)
+    var f = held
+    // Its blade kept out of the head: a line through the face bent clear of it.
+    let hd = rig.find("head")
+    if hd != NONE && blade > 0.0 {
+        let u = f.rotate(vec3(0.0, 0.0, 1.0))
+        let v = w[hd].t + vec3(0.0, 0.05, 0.0) - grip
+        let along = dot(v, u)
+        let clear = 0.2
+        if along > 0.05 && along < blade {
+            var perp = v - u * along
+            if length(perp) < 1.0e-3 {
+                perp = f.rotate(vec3(1.0, 0.0, 0.0))
+            }
+            let dist = length(perp)
+            if dist < clear {
+                let nu = normalize(u - normalize(perp) * ((clear - dist) / along))
+                f = humanoid::arc(u, nu).mul(f)
+            }
+        }
+    }
+    // Its point kept above the floor (the body's space: the ground at nought): a blade brought
+    // down low stops on the ground, and the hands hold it there.
+    if blade > 0.0 {
+        let u = f.rotate(vec3(0.0, 0.0, 1.0))
+        if grip.y + u.y * blade < 0.04 && grip.y > 0.1 {
+            let want = clamp((0.04 - grip.y) / blade, -1.0, 1.0)
+            let flat = normalize(vec3(u.x, 0.0, u.z) + vec3(0.0, 0.0, 1.0e-4))
+            let nu = normalize(flat * sqrt(max(1.0 - want * want, 0.0)) + vec3(0.0, want, 0.0))
+            f = humanoid::arc(u, nu).mul(f)
+        }
+    }
+    let (u0, l0, h0) = (rig.find("leftUpperArm"), rig.find("leftLowerArm"), rig.find("leftHand"))
+    if on <= 0.0 || u0 == NONE || l0 == NONE || h0 == NONE {
+        return (p, grip, f)
+    }
+    let (gl0, fl0) = hold_at_rest(rig, 1.0)
+    let most = (length(rw[l0].t - rw[u0].t) + length(rw[h0].t - rw[l0].t)) * 0.96
+    // Out of the left arm's reach, the hilt's swung round the right hand toward the left
+    // shoulder till it's in it: both hands stay on.
+    let toward = -normalize(w[u0].t - grip)
+    let u_was = f.rotate(vec3(0.0, 0.0, 1.0))
+    let off_was = f.mul(fl0.inverse()).rotate(rw[h0].t - gl0)
+    if length(grip - u_was * span + off_was - w[u0].t) > most {
+        var k = 1
+        while k <= 12 {
+            let nu = normalize(mix(u_was, toward, f32(k) / 12.0))
+            let g = humanoid::arc(u_was, nu).mul(f)
+            let o = g.mul(fl0.inverse()).rotate(rw[h0].t - gl0)
+            if length(grip - nu * span + o - w[u0].t) <= most || k == 12 {
+                f = g
+                k = 13
+            } else {
+                k += 1
+            }
+        }
+    }
+    let u = f.rotate(vec3(0.0, 0.0, 1.0))
+    let r = f.mul(fl0.inverse())
+    // Where along the hilt the left hand can reach: `span` below the right if it can, else
+    // slid up or down the hilt to the nearest place it reaches (an arm straight, it holds on).
+    let off = r.rotate(rw[h0].t - gl0)
+    var target = grip - u * span + off
+    if length(target - w[u0].t) > most {
+        var best = 1.0e9
+        for k in 0..15 {
+            let x = mix(0.09, 0.32, f32(k) / 14.0)
+            let at = grip - u * x + off
+            let short = max(length(at - w[u0].t) - most, 0.0)
+            let score = short * 10.0 + abs(x - span)
+            if score < best {
+                best = score
+                target = at
+            }
+        }
+    }
+    let wrist = w[h0].t + (target - w[h0].t) * saturate(on)
+    let want = w[h0].q.nlerp(r.mul(rw[h0].q), saturate(on))
+    let l1 = length(rw[l0].t - rw[u0].t)
+    let l2 = length(rw[h0].t - rw[l0].t)
+    let s = w[u0].t
+    let pole = w[l0].t - (s + wrist) * 0.5
+    let (e, t) = elbow_at(s, wrist, l1, l2, pole)
+    turn_below(rig, mut w, u0, arc(w[l0].t - w[u0].t, e - w[u0].t))
+    turn_below(rig, mut w, l0, arc(w[h0].t - w[l0].t, t - w[l0].t))
+    let axis = normalize(t - e)
+    turn_below(rig, mut w, l0, twist_of(want.mul(w[h0].q.inverse()), axis))
+    turn_below(rig, mut w, h0, want.mul(w[h0].q.inverse()))
+    var out = p
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = pq.inverse().mul(w[b].q)
+    }
+    (out, grip, f)
+}
+
+/// The way a sword points from the right hand at rest (`sword_in_hands`'s `aim`) as a pose's
+/// two hands hold it (`w`): along the line from the left hand's hold through the right's.
+pub fn aim_of(rig: Rig, w: [Rigid]) -> vec3 {
+    let rw = rig.rest_world()
+    let (rh, lh) = (rig.find("rightHand"), rig.find("leftHand"))
+    let (gr0, _) = hold_at_rest(rig, -1.0)
+    let (gl0, _) = hold_at_rest(rig, 1.0)
+    let right = w[rh].q.mul(rw[rh].q.inverse())
+    let left = w[lh].q.mul(rw[lh].q.inverse())
+    let (rk, lk) = (rig.find("rightMiddleProximal"), rig.find("leftMiddleProximal"))
+    right.inverse().rotate(normalize(w[rk].t - w[lk].t))
+}

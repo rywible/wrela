@@ -20,6 +20,10 @@ pub const GUARD: u32 = 7
 pub const WRAP: u32 = 8
 pub const SMEAR: u32 = 9
 
+/// The palette slot the sword's own (past the body's bones): where it's drawn, each frame set to
+/// the right hand's (a keyed hold) or between both hands (mocap, `held_between`).
+pub const SLOT: u32 = 55
+
 /// The blade's smear: a ribbon swept from where the blade is drawn back to where it was in the
 /// drawing before, through `SMEAR_STEPS` places between, each place a palette slot of its own
 /// past the body's bones (`SMEAR_SLOT` on). Its slots all at the blade's place, it has no area
@@ -196,7 +200,6 @@ pub const ARMED: Humanoid = armed()
 
 fn armed() -> Humanoid {
     var out = HERO.clone()
-    let hand = out.rig.find("rightHand")
     let (g, f) = at_rest()
     let m = built()
     let first = out.verts.len()
@@ -211,7 +214,7 @@ fn armed() -> Humanoid {
             out.verts.push(
                 BodyVertex {
                     pos: g + f.rotate(p),
-                    bones: pack(a: hand, b: 0, c: 0, d: 0),
+                    bones: pack(a: SLOT, b: 0, c: 0, d: 0),
                     normal: n,
                     weights: pack(a: 255, b: 0, c: 0, d: 0),
                     colour: srgb8(colour),
@@ -264,4 +267,33 @@ fn armed() -> Humanoid {
         }
     }
     out
+}
+
+/// The sword's palette matrix held between both hands as `palette` has them: its grip where the
+/// right hand holds it, its hilt along the line from where the left hand holds it, its edge as
+/// the right hand turns it (mocap's hands close on a hilt that isn't there; this one's put in).
+pub fn held_between(palette: [mat4; 64]) -> mat4 {
+    let r = HERO.rig.find("rightHand")
+    let l = HERO.rig.find("leftHand")
+    let (g0, f0) = at_rest()
+    let (gl0, _) = keys::hold_at_rest(HERO.rig, 1.0)
+    let gr = (palette[r] * vec4(g0, 1.0)).xyz
+    let gl = (palette[l] * vec4(gl0, 1.0)).xyz
+    let along = gr - gl
+    let hand = mat3(palette[r][0].xyz, palette[r][1].xyz, palette[r][2].xyz)
+    let blade_was = normalize(hand * f0.rotate(vec3(0.0, 0.0, 1.0)))
+    // Both hands on it: the hilt runs from the left hand's hold through the right's; a hand
+    // come off it, the right hand's own hold.
+    let d = length(along)
+    let two = (1.0 - smoothstep(0.28, 0.45, d)) * smoothstep(0.03, 0.08, d)
+    let u = if two > 0.0 { normalize(mix(blade_was, along / max(d, 1.0e-4), vec3(two))) } else {
+        blade_was
+    }
+    var e = hand * f0.rotate(vec3(1.0, 0.0, 0.0))
+    e = normalize(e - u * dot(e, u))
+    let f = keys::frame_of(u, e)
+    let q = f.mul(f0.inverse())
+    let m = q.to_mat3()
+    let t = gr - q.rotate(g0)
+    mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(t, 1.0))
 }

@@ -531,6 +531,57 @@ pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: 
     Move { clip: c, root, heading, marks, speed: 0.0, stride: 0.0 }
 }
 
+/// `m` (a whole strike at its own pace: mocap) given an animator's timing about its strike
+/// (`strike`, s): its gather as it was, the last `snap` seconds into the blow played `quicken`
+/// times as fast, stopped dead on the blow for `hold` (the hit-stop), and the rest as it was.
+/// Marked: the tell up to the blow, hitting through the hold and a little after, the recovery
+/// after, and the next move free to cut in `cancel` after the hold.
+pub fn struck(m: Move, strike: f32, snap: f32, quicken: f32, hold: f32, cancel: f32) -> Move {
+    borrow src = m.clip
+    let len = src.length()
+    let fps = src.fps
+    let at = clamp(strike, 0.0, len)
+    let snap_from = max(at - snap, 0.0)
+    let gather = snap_from
+    let blow = gather + (at - snap_from) / quicken
+    let free = blow + hold
+    let total = free + (len - at)
+    let n = max(u32(total * fps + 0.5), 2) + 1
+    var c = src.clone()
+    c.frames = n
+    c.looped = false
+    c.turns = Vec::with_capacity(n * src.bones)
+    c.hips = Vec::with_capacity(n)
+    var root: Vec<vec3> = Vec::with_capacity(n)
+    var heading: Vec<f32> = Vec::with_capacity(n)
+    for f in 0..n {
+        let t = f32(f) / fps
+        let s = if t < gather {
+            t
+        } else if t < blow {
+            snap_from + (t - gather) * quicken
+        } else if t < free {
+            at
+        } else {
+            at + (t - free)
+        }
+        let p = src.pose(min(s, len))
+        for b in 0..src.bones {
+            c.turns.push(p.turns[b])
+        }
+        c.hips.push(p.hips)
+        let (rp, rh) = m.root_at(min(s, len))
+        root.push(rp)
+        heading.push(rh)
+    }
+    var marks: Vec<Mark> = Vec::new()
+    marks.push(Mark { kind: WINDUP, from: 0.0, till: blow })
+    marks.push(Mark { kind: ACTIVE, from: blow, till: free + 0.05 })
+    marks.push(Mark { kind: RECOVER, from: free + 0.05, till: total })
+    marks.push(Mark { kind: CANCEL, from: min(free + cancel, total), till: total })
+    Move { clip: c, root, heading, marks, speed: 0.0, stride: 0.0 }
+}
+
 // ---- inertial changes ----------------------------------------------------------------------
 
 /// What's left of a change from one move to another: each bone's offset from the new move (as

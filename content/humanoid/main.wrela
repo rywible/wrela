@@ -31,6 +31,7 @@ use engine::cleanup
 use engine::cleanup::Cleanup
 use sword::ARMED
 use engine::humanoid
+use engine::keys
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
 use engine::playback
 use engine::playback::{Handling, Mover}
@@ -74,6 +75,8 @@ pub const SIDE: f32 = 0.75
 /// Which side of its front the camera sees the sword's loop from (+ its left): its right
 /// three-quarters, the side the blade's on.
 pub const SWORD_SIDE: f32 = -0.5
+/// `SHOW=15`: how far the left hand is put on the hilt (0 as the mocap has it).
+pub const HELD: f32 = 1.0
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -109,8 +112,8 @@ pub fn init() -> State {
         f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
     )
     State {
-        verts: if SHOW == 13 { buffer_of(ARMED.verts) } else { buffer_of(HERO.verts) },
-        indices: if SHOW == 13 { buffer_of(ARMED.indices) } else { buffer_of(HERO.indices) },
+        verts: if SHOW >= 13 { buffer_of(ARMED.verts) } else { buffer_of(HERO.verts) },
+        indices: if SHOW >= 13 { buffer_of(ARMED.indices) } else { buffer_of(HERO.indices) },
         palette: buffer_of([identity(); 64]),
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
@@ -202,6 +205,45 @@ pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
     (stick, humanoid::NONE, false)
 }
 
+/// `SHOW=15`'s script: the loop from mocap. He stands on guard, cuts a three-cut combo, a
+/// heavy, takes two hits, walks off and back and runs, and cuts again.
+pub fn mocap_script(last: f32, time: f32) -> (vec3, u32, bool) {
+    let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
+    let (walk, run) = (mixamo::WALK_M.speed, mixamo::RUN_M.speed)
+    let stick = if time < 11.5 {
+        vec3(0.0)
+    } else if time < 14.0 {
+        dir(-90.0) * walk
+    } else if time < 16.5 {
+        dir(90.0) * run
+    } else {
+        vec3(0.0)
+    }
+    let at = |t: f32| -> bool { last < t && time >= t }
+    let m = |i: u32| -> f32 {
+        mixamo::MOCAP_ACTS[i].mark(playback::CANCEL).unwrap().from
+    }
+    let c1 = 1.0
+    let c2 = c1 + m(mixamo::M_FIRST) + 0.02
+    let c3 = c2 + m(mixamo::M_SECOND) + 0.02
+    let beats = [
+        (c1, mixamo::M_FIRST),
+        (c2, mixamo::M_SECOND),
+        (c3, mixamo::M_THIRD),
+        (5.6, mixamo::M_HEAVY),
+        (8.6, mixamo::M_HIT),
+        (10.0, mixamo::M_HIT_HARD),
+        (17.8, mixamo::M_FIRST),
+        (17.8 + m(mixamo::M_FIRST) + 0.02, mixamo::M_SECOND),
+    ]
+    for (t, act) in beats {
+        if at(t) {
+            return (stick, act, false)
+        }
+    }
+    (stick, humanoid::NONE, false)
+}
+
 /// The turn taking `a`'s way to `b`'s.
 fn arc_between(a: vec3, b: vec3) -> Quat {
     humanoid::arc(a, b)
@@ -218,7 +260,7 @@ fn rigid_of(m: mat4) -> (Quat, vec3) {
 fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
     var out = palette
     let hand = HERO.rig.find("rightHand")
-    let h = palette[hand]
+    let h = palette[sword::SLOT]
     var moved = false
     for c in 0..3 {
         moved = moved || length(h[c] - s.hand_now[c]) > 1.0e-4
@@ -231,12 +273,21 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
         let far = length((h * vec4(tip, 1.0)).xyz - (s.hand_was * vec4(tip, 1.0)).xyz)
         let act = s.mover.acting
         // Only on the strike's own drawings, up to contact: the contact pose is drawn clean.
-        let striking = act != humanoid::NONE && blade::sweeps(act) &&
-            {
-                let m = SWORD_ACTS[act].clone()
-                let hit = m.mark(playback::ACTIVE).unwrap()
-                s.mover.act_time > hit.from - blade::snap_of(act) + 0.02 && s.mover.act_time < hit.from + 0.005
-            }
+        let striking = if SHOW == 15 {
+            act != humanoid::NONE && mixamo::sweeps(act) &&
+                {
+                    let m = mixamo::MOCAP_ACTS[act].clone()
+                    let hit = m.mark(playback::ACTIVE).unwrap()
+                    s.mover.act_time > hit.from - 0.12 && s.mover.act_time < hit.from + 0.005
+                }
+        } else {
+            act != humanoid::NONE && blade::sweeps(act) &&
+                {
+                    let m = SWORD_ACTS[act].clone()
+                    let hit = m.mark(playback::ACTIVE).unwrap()
+                    s.mover.act_time > hit.from - blade::snap_of(act) + 0.02 && s.mover.act_time < hit.from + 0.005
+                }
+        }
         s.smearing = striking && far > 0.3
     }
     // Swept about the chest, not straight across: the hand's place turned round it from
@@ -244,7 +295,12 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
     let rw = HERO.rig.rest_world()
     let at_rest = rw[hand].t
     let chest = HERO.rig.find("upperChest")
-    let pivot = (palette[chest] * vec4(rw[chest].t, 1.0)).xyz
+    // (Mocap's cuts swing from the shoulders and wrists both: swept about the hands' own way.)
+    let pivot = if SHOW == 15 {
+        ((s.hand_now * vec4(rw[hand].t, 1.0)).xyz + (s.hand_was * vec4(rw[hand].t, 1.0)).xyz) * 0.5
+    } else {
+        (palette[chest] * vec4(rw[chest].t, 1.0)).xyz
+    }
     let (q1, _) = rigid_of(s.hand_now)
     let (q0, _) = rigid_of(s.hand_was)
     let a1 = (s.hand_now * vec4(at_rest, 1.0)).xyz - pivot
@@ -274,7 +330,21 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         Handling {}
     }
     // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
-    let pose = if SHOW == 13 {
+    let pose = if SHOW == 15 {
+        let (stick, act, upper) = mocap_script(s.last, time)
+        playback::step(
+            mut s.mover,
+            mixamo::MOCAP_GAITS,
+            mixamo::MOCAP_ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
+    } else if SHOW == 13 {
         let (stick, act, upper) = sword_script(s.last, time)
         playback::step(
             mut s.mover,
@@ -311,6 +381,10 @@ fn pose_at(time: f32) -> Pose {
         8 => if raw { ACCAD_M2_WALK_RAW.pose(time) } else { ACCAD_M2_WALK.pose(time) },
         9 => if raw { ACCAD_M1_RUN_RAW.pose(time) } else { ACCAD_M1_RUN.pose(time) },
         10 => if raw { ACCAD_M2_RUN_RAW.pose(time) } else { ACCAD_M2_RUN.pose(time) },
+        14 => {
+            let (i, t) = mixamo::reel_at(time)
+            mixamo::REEL[i].pose(t)
+        },
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -335,6 +409,7 @@ fn steady_hips(time: f32) -> vec3 {
         8 => ACCAD_M2_WALK.length(),
         9 => ACCAD_M1_RUN.length(),
         10 => ACCAD_M2_RUN.length(),
+        14 => 0.5,
         _ => WALK.length(),
     }
     var sum = vec3(0.0)
@@ -354,10 +429,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let game = SHOW == 11 || SHOW == 13
+    let game = SHOW == 11 || SHOW == 13 || SHOW == 15
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
-    let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
+    let (played_pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
+    let pose = played_pose
     var bones = palette(HERO.rig, pose, place)
+    var shown = pose
+    var shown_at = place
     var kinetic = KINETIC
     var force = anime::Force::none()
     if SHOW == 13 && ANIME == 1 {
@@ -378,7 +456,48 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic = max(kinetic, d.impact)
         force = d.force
     }
-    if SHOW == 13 {
+    if SHOW == 15 && ANIME == 1 {
+        let d = anime::drawn(
+            mut s.drawer,
+            s.mover,
+            mixamo::MOCAP_ACTS,
+            mixamo::MOCAP_LOOKS,
+            HERO.rig,
+            s.mask,
+            pose,
+            place,
+            Anime { drawings: 24.0, flash: 1.0 },
+            dt,
+        )
+        bones = palette(HERO.rig, d.pose, d.place)
+        shown = d.pose
+        shown_at = d.place
+        kinetic = max(kinetic, d.impact)
+        force = d.force
+    }
+    if SHOW == 15 {
+        // Placed as the drawn hands hold it (the body's space to the world's by the hips' bone).
+        borrow rig = HERO.rig
+        // Mocap's hands close on a hilt that isn't there: the sword's put where they hold it,
+        // and the left hand on its hilt.
+        // (Its point kept off the floor and out of the head, the hands on it wherever it goes.)
+        let (held, grip, f) = keys::hilt_held(
+            rig,
+            shown,
+            HELD,
+            mixamo::SPAN,
+            mixamo::AIM,
+            mixamo::FIST,
+            sword::BLADE_FROM + sword::BLADE_LONG,
+        )
+        bones = palette(rig, held, shown_at)
+        bones[sword::SLOT] = shown_at * keys::sword_matrix(rig, grip, f)
+    } else if SHOW == 13 {
+        bones[sword::SLOT] = bones[HERO.rig.find("rightHand")]
+    } else if SHOW == 14 {
+        bones[sword::SLOT] = sword::held_between(bones)
+    }
+    if SHOW >= 13 {
         bones = blade_smeared(mut s, bones)
     }
     write(mut s.palette, 0, bones)
@@ -386,20 +505,20 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
     // The sword's loop is followed lagging, so a dodge's travel shows.
-    s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / 0.5))
-    let hips = if SHOW == 13 { s.follow } else if game { s.mover.place } else {
+    s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / if SHOW == 15 { 0.18 } else { 0.5 }))
+    let hips = if SHOW == 13 || SHOW == 15 { s.follow } else if game { s.mover.place } else {
         steady_hips(time)
     }
-    let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
-    let side = if SHOW == 13 { SWORD_SIDE } else if walking { SIDE } else { -0.55 }
+    let walking = (SHOW >= 3 && SHOW != 14) || (SHOW == 0 && time >= WALK_AT)
+    let side = if SHOW >= 13 { SWORD_SIDE } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     var shot = shot_at(
         time,
-        FOCUS,
+        if SHOW == 15 { FOCUS + 0.3 } else { FOCUS },
         vec3(hips.x, 0.0, hips.z),
         width,
         height,
-        FAR,
+        if SHOW == 15 { FAR * 1.35 } else { FAR },
         side,
         kinetic,
         left,
@@ -427,7 +546,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         body.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
         paint_body.bind(shot: shot),
         indices: s.indices,
-        index_count: if SHOW == 13 { ARMED.indices.len() } else { HERO.indices.len() },
+        index_count: if SHOW >= 13 { ARMED.indices.len() } else { HERO.indices.len() },
         cull: Cull::Back,
         depth: engine::view::NEAREST,
     )
