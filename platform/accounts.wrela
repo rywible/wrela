@@ -1478,9 +1478,9 @@ impl<G: Game> Engine<G> {
                     },
                     Some(Back::Missing) => self.refuse(
                         conn,
-                        "That fight wasn't won by your character, or its room hasn't said so.",
+                        "its room has no win of your character's in that fight.",
                     ),
-                    _ => self.refuse(conn, "Couldn't reach the fights. Try again in a moment."),
+                    _ => self.refuse(conn, "the fights couldn't be reached."),
                 }
             },
             Step::RecordProgress => {

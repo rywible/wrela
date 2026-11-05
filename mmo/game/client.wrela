@@ -166,8 +166,6 @@ pub struct Client {
     /// The room time the last fight this player played to its end finished at, once its client
     /// said it's still there for the next (`AGAIN_MS`), and whether it's back at the doors.
     again_for: u64,
-    /// The last fight (by when it finished) this client looked at for a win to record.
-    recorded_for: u64,
     again: bool,
     settle_at: f32,
     time: Option<f32>,
@@ -248,7 +246,6 @@ pub fn init(origin: str) -> Client {
         last_began: 0,
         joined_at: 0.0,
         again_for: 0,
-        recorded_for: 0,
         again: false,
         settle_at: 0.0,
         time: None,
@@ -1203,17 +1200,6 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         s.joined_at = time
         propose_fight(mut s, join_act(s))
     }
-    // A fight this player won as its character: its account records it, once.
-    if me != 0 && room.fought_last(me) && room.finished_at != s.recorded_for {
-        s.recorded_for = room.finished_at
-        if won_as_me(s, room) {
-            let fight = room.id(fight_room(s).as_str())
-            match mut s.character {
-                Some(c) => character::record(mut c, take fight),
-                None => {},
-            }
-        }
-    }
     if join && me != 0 {
         s.again = false
         if view.waiting(me) {
@@ -1302,6 +1288,11 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
     var log: Option<combat::main::Act> = None
     var settle = false
     var done = false
+    // This fight, if its room settled it won with this player among the winners: its id, for
+    // the account to record, asked as the room settles it (the next may begin at once).
+    let won = room.settled && won_as_me(s, room)
+    var record: Option<Vec<u8>> = None
+    let fight_name = fight_room(s)
     match mut s.play {
         Some(p) => {
             if p.back != NONE {
@@ -1346,6 +1337,9 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
             // The room settled this fight (or a later one began): its outcome shows a while.
             if room.began_at == p.began && room.settled && p.settled.is_none() {
                 p.settled = Some(room.outcome.winner.clone())
+                if won {
+                    record = Some(room.id(fight_name.as_str()))
+                }
             }
             // A deploy took the room: no one settles this fight, so its end ends it here.
             if room.began_at != p.began || room.settled || (outdated && (p.world.over || cut)) {
@@ -1370,6 +1364,12 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
             }
         },
         None => {},
+    }
+    if let Some(fight) = record {
+        match mut s.character {
+            Some(c) => character::record(mut c, fight.clone()),
+            None => {},
+        }
     }
     match log {
         Some(act) => {
