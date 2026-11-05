@@ -1,7 +1,9 @@
 // The MMO's rooms on a server: each room's instance runs the reducer its name says, the island's
 // (`island-1`, mmo/island) or the fight's (`fight-1`, mmo/combat). Each room is a Durable Object
 // with a journal, so only these names are rooms for now: one of another name closes each
-// connection that opens to it, and costs nothing kept.
+// connection that opens to it, and costs nothing kept. A party's own fight (`party-<code>`, an
+// invite link's: `party_room`) is a fight room too, so friends fight apart from everyone else; one
+// nobody opens costs nothing, and its outcomes are kept under its own name.
 
 use std::input::{Event, events}
 use std::net::{close, room}
@@ -16,6 +18,47 @@ pub enum Rooms {
 /// The rooms' names (the client's: mmo/game/client.wrela).
 pub const ISLAND_ROOM: Text = "island-1"
 pub const FIGHT_ROOM: Text = "fight-1"
+/// What a party's fight room's name starts with, then its code (`party_code`).
+pub const PARTY_PREFIX: Text = "party-"
+/// How many letters a party's code has: of `CODE_LETTERS`, up to 40 bits. The client hashes it
+/// from its page's start and the moment of the press, so it's hard to guess, not secret: a party
+/// room holds a PvE fight, nothing anyone owns.
+pub const CODE_LEN: u32 = 8
+/// The letters a code is made of: lower case and digits, without the ones that look alike
+/// (0, 1, l, o), 32 of them.
+pub const CODE_LETTERS: Text = "23456789abcdefghijkmnpqrstuvwxyz"
+
+/// Whether `code` is a party's code: `CODE_LEN` of `CODE_LETTERS`.
+pub fn party_code(code: str) -> bool {
+    if code.len() != CODE_LEN {
+        return false
+    }
+    for i in 0..code.len() {
+        var known = false
+        for k in 0..CODE_LETTERS.len() {
+            known = known || CODE_LETTERS.byte(k) == code.byte(i)
+        }
+        if !known {
+            return false
+        }
+    }
+    true
+}
+
+/// The fight room of the party with `code`.
+pub fn party_room(code: str) -> String {
+    String::from(f"{PARTY_PREFIX}{code}")
+}
+
+/// The party code of a room's name, if it's a party's.
+pub fn code_of(name: str) -> Option<String> {
+    let n = PARTY_PREFIX.len()
+    if name.len() != n + CODE_LEN || !name.starts_with(PARTY_PREFIX) {
+        return None
+    }
+    let code = name.slice(n, name.len())
+    if party_code(code) { Some(String::from(code)) } else { None }
+}
 
 /// The room this instance runs, by its name.
 @server
@@ -28,7 +71,7 @@ pub fn init() -> Rooms {
 pub fn of_name(name: str) -> Rooms {
     if name == ISLAND_ROOM {
         Rooms::Island(island::main::serve_init())
-    } else if name == FIGHT_ROOM {
+    } else if name == FIGHT_ROOM || code_of(name).is_some() {
         Rooms::Fight(combat::main::serve_init())
     } else {
         Rooms::Other
@@ -49,4 +92,13 @@ pub fn serve(r: mut Rooms, time: f32) {
             }
         },
     }
+}
+
+@test
+fn a_party_room_is_a_fight_room_and_nothing_else_is() {
+    assert(party_code("ab23cd45") && !party_code("ab23cd4") && !party_code("ab23cd4l"))
+    assert(!party_code("AB23CD45") && !party_code("ab23cd456"))
+    assert(code_of(party_room("xyz23456").as_str()) == Some(String::from("xyz23456")))
+    assert(code_of("party-0bcdefgh").is_none() && code_of("fight-1").is_none())
+    assert(code_of("party-abcdefgh-x").is_none())
 }

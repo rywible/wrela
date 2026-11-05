@@ -9,7 +9,8 @@
 // island shows to everyone there; a player who isn't signed in plays as a guest.
 //
 // Keys: WASD or the arrows walk and move; F waits for a fight (again: stops waiting); Enter begins
-// it; E places a mark; C changes the character's look. In the maker, up and down choose a part,
+// it; E places a mark; C changes the character's look; P makes an invite link to a party's own
+// fight room (`party-<code>`), which a friend's link opens too. In the maker, up and down choose a part,
 // left and right its look, Enter saves and Escape leaves. In a fight, J or Space attacks, K parries, L or Shift dodges. A pad: the
 // left stick, West attacks, North parries, South dodges, Start begins, Select waits.
 
@@ -28,7 +29,7 @@ use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
 use ui::kit::{State, Variant}
 use ui::text::{Face, Fonts}
-use rooms::{FIGHT_ROOM, ISLAND_ROOM}
+use rooms::{CODE_LEN, CODE_LETTERS, FIGHT_ROOM, ISLAND_ROOM, party_code, party_room}
 
 /// The wrela account, which the page that plays the client keeps (console/account.wrela): its chip
 /// in the corner, and its pages (signing in, making an account, its name, its recovery codes)
@@ -191,9 +192,22 @@ pub struct Client {
     /// there if it says nothing else.
     said: bool,
     here_at: f32,
+    /// The page's origin, for an invite link (`https://wrela.dev`).
+    origin: String,
+    /// This page's token (`token_of`), and the party it fights with (its code; none: the shared
+    /// fight room), and whether its fight connection is closing to change room, its messages
+    /// dropped until it's closed.
+    token: u64,
+    party: Option<String>,
+    switching: bool,
+    /// The invite link made (P), shown until the party's fight begins, and its copy.
+    invite: String,
+    copying: Option<std::io::Pending<u8>>,
+    copied: bool,
 }
 
-pub fn init() -> Client {
+/// A client on the page at `origin` (`https://wrela.dev`), which its invite links start with.
+pub fn init(origin: str) -> Client {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     Client {
@@ -233,7 +247,89 @@ pub fn init() -> Client {
         hushed: false,
         said: false,
         here_at: 0.0,
+        origin: String::from(origin),
+        token: 0,
+        party: None,
+        switching: false,
+        invite: String::new(),
+        copying: None,
+        copied: false,
     }
+}
+
+/// The fight room this client fights in: its party's, or the shared one.
+fn fight_room(s: Client) -> String {
+    match s.party {
+        Some(code) => party_room(code.as_str()),
+        None => String::from(FIGHT_ROOM),
+    }
+}
+
+/// Fights with the party whose code is `code` (an invite link's) from now on, if it's a code and
+/// no fight holds this client: its fight connection closes and opens to the party's room.
+pub fn join_party(s: mut Client, code: str) -> bool {
+    if !party_code(code) || s.play.is_some() {
+        return false
+    }
+    if s.party == Some(String::from(code)) {
+        return true
+    }
+    s.party = Some(String::from(code))
+    if s.fight_conn.open || s.fight_conn.opening {
+        // The old room's messages are dropped until its close comes; then a fresh log opens.
+        s.switching = true
+        close(FIGHT)
+    } else if s.token != 0 {
+        s.fight = Some(Log::new(Fight::empty(), s.token))
+    }
+    true
+}
+
+/// The fragment of an address that opens a party's room: `#party-<code>`, its code.
+pub fn party_of_address(address: [u8]) -> Option<String> {
+    var at = address.len()
+    for i in 0..address.len() {
+        if address[i] == 35 {
+            at = i + 1
+            break
+        }
+    }
+    if at >= address.len() {
+        return None
+    }
+    var tail: Vec<u8> = Vec::new()
+    for i in at..address.len() {
+        tail.push(address[i])
+    }
+    let Some(text) = String::from_utf8(take tail) else { return None }
+    rooms::code_of(text.as_str())
+}
+
+/// A new party's code, from this page's token and the moment: `CODE_LEN` of `CODE_LETTERS`.
+fn new_code(token: u64, time: f32) -> String {
+    var h = Hasher::new()
+    h.write_u64(token)
+    h.write_u32(u32(fract(time) * 16777216.0))
+    h.write_u32(u32(time * 1000.0))
+    var x = h.finish()
+    var out = String::new()
+    for _ in 0..CODE_LEN {
+        let k = u32(x & 31)
+        out.push_str(CODE_LETTERS.slice(k, k + 1))
+        x = x >> 5
+    }
+    out
+}
+
+/// P: a new party for this client, whose link it shows and copies for a friend to open.
+fn invite(s: mut Client, time: f32) {
+    let code = new_code(s.token, time)
+    if !join_party(mut s, code.as_str()) {
+        return
+    }
+    s.invite = String::from(f"{s.origin}/#{party_room(code.as_str())}")
+    s.copied = false
+    s.copying = Some(std::host::copy(s.invite.as_str()))
 }
 
 /// A token for this page: a number from the moment it started, which the rooms know it by while
@@ -485,6 +581,7 @@ pub fn frame<A: Account>(
     s.dt = dt
     if s.island.is_none() {
         let token = token_of(time, width, height)
+        s.token = token
         s.island = Some(Log::new(Island::empty(), token))
         s.fight = Some(Log::new(Fight::empty(), token))
     }
@@ -511,8 +608,18 @@ pub fn frame<A: Account>(
     let making = maker_open(s)
     let titled = title_shown(s)
     keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
-    keep_open(mut s.fight_conn, FIGHT, FIGHT_ROOM, time)
+    let fight_name = fight_room(s)
+    keep_open(mut s.fight_conn, FIGHT, fight_name.as_str(), time)
+    let copy = match mut s.copying {
+        Some(p) => p.poll(),
+        None => None,
+    }
+    if let Some(done) = copy {
+        s.copying = None
+        s.copied = done.is_ok()
+    }
     var pressed_join = false
+    var pressed_invite = false
     var pressed_begin = false
     var pressed_mark = false
     var pressed_change = false
@@ -608,6 +715,9 @@ pub fn frame<A: Account>(
                     if key == Key::E {
                         pressed_mark = true
                     }
+                    if key == Key::P {
+                        pressed_invite = true
+                    }
                 }
             },
             Event::KeyUp { key, .. } => s.held = s.held & !key_bit(key),
@@ -665,6 +775,9 @@ pub fn frame<A: Account>(
     let waiting = match s.fight {
         Some(l) => l.view().waiting(l.peer()),
         None => false,
+    }
+    if pressed_invite && s.play.is_none() && !waiting && !maker_open(s) {
+        invite(mut s, time)
     }
     if pressed_change && s.play.is_none() && !waiting {
         match mut s.character {
@@ -889,6 +1002,16 @@ fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
             }
         }
     } else if conn == FIGHT {
+        if s.switching && !is_open {
+            // Closed to change room: the party's room opens now, with a fresh log.
+            s.switching = false
+            s.fight_conn = Conn { open: false, opening: false, retry_at: time }
+            s.fight = Some(Log::new(Fight::empty(), s.token))
+            if s.relay_conn.open || s.relay_conn.opening {
+                close(RELAY)
+            }
+            return
+        }
         s.fight_conn = Conn { open: is_open, opening: false, retry_at: time + RETRY }
         match mut s.fight {
             Some(l) => if is_open { send_all(FIGHT, l.connect()) } else { l.disconnect() },
@@ -910,6 +1033,10 @@ fn message(s: mut Client, conn: u32, bytes: take Vec<u8>) {
             None => {},
         }
     } else if conn == FIGHT {
+        if s.switching {
+            // The room it's leaving: nothing it says counts now.
+            return
+        }
         match mut s.fight {
             Some(l) => match l.receive(take bytes) {
                 Ok(out) => send_all(FIGHT, out),
@@ -1000,6 +1127,8 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         if let Some(slot) = slot_of(room.party, me) {
             s.last_began = room.began_at
             s.play = Some(new_play(room.began_at, slot, room.party.clone()))
+            // The party's fight began: its invite was used.
+            s.invite = String::new()
         }
     }
     s.note = if !s.island_conn.open || !s.fight_conn.open {
@@ -1010,8 +1139,24 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         String::from(
             f"Waiting for a fight with {view.lobby.len()}. Enter begins it, F stops waiting.",
         )
+    } else if s.party.is_some() {
+        String::from(
+            f"Your party's room: F waits for a fight ({view.lobby.len()} waiting). P makes a new invite.",
+        )
     } else {
-        String::from(f"F waits for a fight ({view.lobby.len()} waiting). E places a mark.")
+        String::from(
+            f"F waits for a fight ({view.lobby.len()} waiting). P invites a friend. E places a mark.",
+        )
+    }
+    let connected = s.island_conn.open && s.fight_conn.open
+    let inviting = connected && !s.invite.is_empty() && !room.on() && !view.waiting(me)
+    if inviting {
+        // Short, and alone, so the link fits: it's what the player came for.
+        let how = if s.copied { "Invite link copied, send it to a friend" } else {
+            "Send a friend this invite link"
+        }
+        s.note = String::from(f"{how}: {s.invite}  F waits for a fight.")
+        return
     }
     match s.character {
         Some(c) => {
@@ -1590,4 +1735,18 @@ fn a_player_who_fell_far_behind_catches_up_and_agrees() {
     for p in plays {
         assert(p.world.over && p.world.outcome() == outcome)
     }
+}
+
+@test
+fn an_invite_link_names_a_partys_room() {
+    let link = "https://wrela.dev/#party-ab23cd45"
+    var b: Vec<u8> = Vec::new()
+    for i in 0..link.len() {
+        b.push(link.byte(i))
+    }
+    assert(party_of_address(b) == Some(String::from("ab23cd45")))
+    assert(party_of_address(Vec::from([47, 35, 103])).is_none(), "another fragment")
+    assert(party_of_address(Vec::from([47])).is_none(), "no fragment")
+    let code = new_code(77, 1.5)
+    assert(party_code(code.as_str()) && code != new_code(78, 1.5), code.as_str())
 }
