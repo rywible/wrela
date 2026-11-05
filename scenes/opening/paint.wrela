@@ -73,7 +73,10 @@ fn into_the_air(
             disc: false,
         ).rgb
     }
-    let air = vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0)
+    // (Lighter toward the horizon itself, where the eye looks out under the deck's edge into
+    // farther air: the band the cathedral and the skiff stand dark against.)
+    let lift = mix(STORM_HORIZON, 1.0, smoothstep(0.0, STORM_LOW, d.y))
+    let air = vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0) * lift
     let deck_k = smoothstep(STORM_LOW * 0.35, STORM_LOW, d.y)
     vec4(mix(air, sky.rgb, deck_k), mix(1.0, sky.a, deck_k))
 }
@@ -81,6 +84,9 @@ fn into_the_air(
 /// The elevation (as a direction's y) the deck is sure to be under, from the eye: what's below
 /// it is the air the deck goes into.
 const STORM_LOW: f32 = 0.14
+
+/// How much lighter the air is at the horizon itself than under the deck.
+const STORM_HORIZON: f32 = 1.6
 
 /// How bright the air past the deck's reach is, against the open sky's there.
 const STORM_BEHIND: f32 = 0.2
@@ -1428,9 +1434,12 @@ fn sample(
         let cg = s.look > 0.5
         let cel = s.look > 1.5 && s.look < 2.5
         let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
+        // (Under the overcast, more of it: the deck's light all round is all it has.)
         let bounce = sea_light * PI * (if cg { 0.13 } else {
             0.22
-        }) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel { band(toward, 0.3, 0.04) } else { toward }))
+        }) * mix(1.0, 2.2, OVERCAST) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel {
+            band(toward, 0.3, 0.04)
+        } else { toward }))
         let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
             max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
         let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (if cel {
