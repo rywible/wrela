@@ -34,7 +34,7 @@ pub const BAD_LOG: u32 = 3
 pub const TOO_SOON: u32 = 4
 /// A join to a full lobby; a leave, or a begin, by a peer not in it.
 pub const NOT_WAITING: u32 = 5
-/// A log past what the room's state holds with the others (`MAX_LOGGED`).
+/// A log longer than a player's share of what the room's state holds (`PLAYER_CHANGES`).
 pub const TOO_LONG: u32 = 6
 
 /// How long a peer waits in the lobby, in room ms, unless it joins again: a peer that left
@@ -43,6 +43,8 @@ pub const LOBBY_MS: u64 = 60000
 /// The most changes the logs of one fight hold together. A peer far behind is sent the room's
 /// state whole, in one message of at most 64 KiB, and a change packs into about 5 bytes.
 pub const MAX_LOGGED: u32 = 11000
+/// The most changes one player's log holds, so every player's fits with the others'.
+pub const PLAYER_CHANGES: u32 = MAX_LOGGED / MAX_PARTY
 
 /// The longest a fight can last, in room ms: past it and `SETTLE_MS` more, anyone may settle it,
 /// logs or none, so a party that left (or one that never fought) can't hold the room.
@@ -210,7 +212,7 @@ impl Reduce<Act> for Fight {
                     !sim::well_formed(changes, end, MAX_CHANGES) {
                     return Verdict::Reject(BAD_LOG)
                 }
-                if self.logged() + changes.len() > MAX_LOGGED {
+                if changes.len() > PLAYER_CHANGES {
                     return Verdict::Reject(TOO_LONG)
                 }
                 Verdict::Accept
@@ -543,17 +545,20 @@ fn the_logs_of_a_fight_fit_the_state_a_peer_is_sent() {
     var fight = Fight::empty()
     begun(mut fight, [u32(1), 2, 3, 4], 0)
     var changes: Vec<Change> = Vec::new()
-    for i in 0..MAX_CHANGES {
+    for i in 0..(PLAYER_CHANGES + 1) {
         changes.push(Change { frame: MAX_FRAMES - MAX_CHANGES + i, input: 15936 + (i & 1) * 48 })
     }
-    fight.apply(entry(1, 10, Act::Log { changes: changes.clone(), end: MAX_FRAMES }))
-    let second = entry(2, 20, Act::Log { changes: changes.clone(), end: MAX_FRAMES })
-    assert(fight.check(second) == Verdict::Reject(TOO_LONG))
-    var some: Vec<Change> = Vec::new()
-    for i in 0..(MAX_LOGGED - MAX_CHANGES) {
-        some.push(changes[i].clone())
+    let long = entry(1, 10, Act::Log { changes: changes.clone(), end: MAX_FRAMES })
+    assert(fight.check(long) == Verdict::Reject(TOO_LONG), "past a player's share")
+    let _ = changes.pop()
+    for p in 1..5 {
+        let e = entry(p, 10, Act::Log { changes: changes.clone(), end: MAX_FRAMES })
+        if p == 4 {
+            // The state whole, as a peer far behind is sent it, is one message.
+            assert(fight.check(e.clone()) == Verdict::Accept)
+            assert(pack(fight.clone()).len() + 256 < 65472, "the state is one message")
+        }
+        fight.apply(e)
     }
-    fight.apply(entry(2, 20, Act::Log { changes: some, end: MAX_FRAMES }))
-    // The state whole, as a peer far behind is sent it, is one message.
-    assert(pack(fight.clone()).len() + 256 < 65472, "the state is one message")
+    assert(fight.settled)
 }

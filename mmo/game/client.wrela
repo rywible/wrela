@@ -10,9 +10,9 @@
 // left stick, West attacks, North parries, South dodges, Start begins, Select waits.
 
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
-use combat::main::Fight
+use combat::main::{Fight, PLAYER_CHANGES}
 use std::math::{cos, sin}
-use combat::sim::{ATTACK, Change, DODGE, MAX_CHANGES, MAX_FRAMES, PARRY, Seen, Winner, World, step}
+use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
 use island::main::{Island, MAX_STEP}
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
@@ -34,6 +34,8 @@ const STEP_EVERY: f32 = 0.5
 const WALK_SPEED: f32 = 40.0
 /// Frames of fight kept to roll back to (four seconds).
 const RING: u32 = 240
+/// Frames between the worlds kept for a rollback older than `RING` (ten seconds).
+const CHECKPOINT: u32 = 600
 /// Seconds a fight's outcome stays on screen.
 const OUTCOME_SECONDS: f32 = 5.0
 /// The most fight frames a screen frame runs: a tab that fell behind catches up over a few.
@@ -84,8 +86,9 @@ struct Play {
     world: World,
     /// The frame next to step.
     frame: u32,
-    /// The world before each of the last `RING` frames.
+    /// The world before each of the last `RING` frames, and before every `CHECKPOINT`th.
     snaps: Vec<World>,
+    checkpoints: Vec<World>,
     /// This player's input at each frame, and its changes (its log).
     mine: Vec<u32>,
     log: Vec<Change>,
@@ -269,6 +272,7 @@ fn new_play(began: u64, slot: u32, party: take Vec<u32>) -> Play {
         world,
         frame: 0,
         snaps,
+        checkpoints: Vec::new(),
         mine: Vec::new(),
         log: Vec::new(),
         link: Link::new(slot, n),
@@ -296,8 +300,21 @@ fn inputs_at(p: Play, f: u32) -> Vec<u32> {
     ins
 }
 
+/// Keeps `w`, the world before frame `f`, to roll back to.
+fn keep(p: mut Play, f: u32, w: World) {
+    p.snaps[f % RING] = w.clone()
+    if f % CHECKPOINT == 0 {
+        let k = f / CHECKPOINT
+        if k < p.checkpoints.len() {
+            p.checkpoints[k] = w.clone()
+        } else {
+            p.checkpoints.push(w.clone())
+        }
+    }
+}
+
 /// The fight again from the first frame whose inputs changed: from the world kept before it, or
-/// from the start if it's older than what's kept (every input is still known).
+/// from the checkpoint before it if it's older than the ring (every input is still known).
 fn roll_back(p: mut Play) {
     var from = p.back
     p.back = NONE
@@ -305,13 +322,13 @@ fn roll_back(p: mut Play) {
         return
     }
     var w = if p.frame - from >= RING {
-        from = 0
-        World::start(p.party.len())
+        from = from / CHECKPOINT * CHECKPOINT
+        p.checkpoints[from / CHECKPOINT].clone()
     } else {
         p.snaps[from % RING].clone()
     }
     for g in from..p.frame {
-        p.snaps[g % RING] = w.clone()
+        keep(mut p, g, w)
         let ins = inputs_at(p, g)
         step(mut w, ins)
     }
@@ -329,7 +346,7 @@ fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
     // Once it's over, the input stands: what's sent past the end isn't the fight's. So it does
     // once a log is full.
     var input = p.prev
-    if !p.world.over && p.log.len() < MAX_CHANGES {
+    if !p.world.over && p.log.len() < PLAYER_CHANGES {
         var now = inputs_at(p, f)
         now[p.slot] = p.prev
         let reads = p.world.reads(p.slot) | p.world.soon(p.slot, now, LOOK_AHEAD)
@@ -341,7 +358,8 @@ fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
     p.prev = input
     p.mine.push(input)
     let out = p.link.send(f, input)
-    p.snaps[f % RING] = p.world.clone()
+    let w = p.world.clone()
+    keep(mut p, f, w)
     let ins = inputs_at(p, f)
     step(mut p.world, ins)
     p.frame += 1
