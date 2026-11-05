@@ -149,27 +149,42 @@ pub fn blow_of(m: Move, lo: f32, hi: f32, at: vec3) -> f32 {
     when
 }
 
-/// A cut timed as an animator would over its mocap (frames `from` to `to` of it, its blow where
-/// its point goes fastest between `lo` and `hi` seconds into those): the last `snap` seconds
-/// into the blow quickened, stopped dead on it for `hold`, the next cut free to come `cancel`
-/// after, its follow-through played `tail` times as fast.
-fn cut_of(
+/// Each frame's (time, point speed m/s, blade's way) of frames `from` to `to` of a take (a
+/// probe for keying a cut's blow by eye).
+pub fn tip_track(file: Bytes, from: u32, to: u32) -> Vec<vec4> {
+    let m = once_of(file, from, to)
+    let rig = HERO.rig.clone()
+    borrow c = m.clip
+    var out: Vec<vec4> = Vec::new()
+    var last = vec3(0.0)
+    for f in 0..c.frames {
+        let w = humanoid::frame_world(rig, c.turns, f, rig.base.t + rig.base.q.rotate(c.hips[f]))
+        let (grip, q) = keys::sword_in_hands(rig, w, AIM)
+        let u = q.rotate(vec3(0.0, 0.0, 1.0))
+        let tip = grip + u
+        let v = if f > 0 { length(tip - last) * c.fps } else { 0.0 }
+        out.push(vec4(f32(f) / c.fps, v, u.y, tip.y))
+        last = tip
+    }
+    out
+}
+
+/// A cut keyed by eye over its mocap (frames `from` to `to`): its blade meeting the foe `blow`
+/// seconds in (where `tip_track` shows its point coming through the foe's height at speed), the
+/// last `snap` seconds into it quickened, stopped dead on it for `hold`, the next cut free to come
+/// `cancel` after, its follow-through played `tail` times as fast.
+fn cut_key(
     file: Bytes,
     from: u32,
     to: u32,
-    lo: f32,
-    hi: f32,
-    at: vec3,
+    blow: f32,
     snap: f32,
     quicken: f32,
     hold: f32,
     cancel: f32,
     tail: f32,
 ) -> Move {
-    let m = once_of(file, from, to)
-    // (Stopped on the drawing the blade meets its foe, a beat before it's gone fastest past.)
-    let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
-    playback::struck(m, blow, snap, quicken, hold, cancel, tail)
+    playback::struck(once_of(file, from, to), blow, snap, quicken, hold, cancel, tail)
 }
 
 /// A leaping cut (`cut_of`'s), its body lifted clear of the ground from `up` to `down` seconds
@@ -318,43 +333,37 @@ pub const M_HIT_HARD: u32 = 5
 @fuel(2 ** 40)
 pub const MOCAP_ACTS: [Move; 6] = [
     // A rising flick, then up and over: the blow down from over the right shoulder.
-    cut_of(
+    cut_key(
         embed("private/great_sword_slash.bvh"),
         from: 7,
         to: 36,
-        lo: 0.2,
-        hi: 0.7,
-        at: vec3(0.35, -0.55, 0.75),
-        snap: 0.1,
-        quicken: 1.5,
-        hold: 0.07,
+        blow: 0.467,
+        snap: 0.13,
+        quicken: 2.0,
+        hold: 0.08,
         cancel: 0.1,
         tail: 1.4,
     ),
     // A level cut back across.
-    cut_of(
+    cut_key(
         embed("private/great_sword_slash_3.bvh"),
         from: 14,
         to: 42,
-        lo: 0.35,
-        hi: 0.52,
-        at: vec3(0.0, -0.1, 1.0),
-        snap: 0.18,
-        quicken: 2.5,
-        hold: 0.07,
+        blow: 0.4,
+        snap: 0.13,
+        quicken: 2.0,
+        hold: 0.08,
         cancel: 0.1,
         tail: 1.4,
     ),
     // The finisher: a spin, round into a cut.
-    cut_of(
+    cut_key(
         embed("private/great_sword_high_spin_attack.bvh"),
         from: 16,
         to: 50,
-        lo: 0.57,
-        hi: 0.72,
-        at: vec3(0.0, -0.4, 0.9),
-        snap: 0.3,
-        quicken: 1.5,
+        blow: 0.667,
+        snap: 0.13,
+        quicken: 2.0,
         hold: 0.1,
         cancel: 0.2,
         tail: 1.3,
