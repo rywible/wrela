@@ -31,13 +31,14 @@ members = [
     "studio/serve",
     "studio/release",
     "studio/deploy",
+    "studio/costs",
     "studio/toolkit",
     "ui",
     "ui/brand",
     "ui/tests/*",
 ]
 # The files the workspace may hold: wrela sources and manifests, assets with their licences, a
-# game's theme, the prose, and the one CI file. Each of the `wrela` repository's files is one of
+# game's theme, the prose, and the CI files. Each of the `wrela` repository's files is one of
 # these.
 allow = [
     "**/*.wrela",
@@ -75,6 +76,7 @@ allow = [
     "studio/styles/history.log",
     ".gitignore",
     ".github/workflows/deploy.yml",
+    ".github/workflows/costs.yml",
 ]
 
 # The audio tool (studio/audio): a piece's take as a WAV file, its notes, numbers, MIDI and
@@ -147,6 +149,14 @@ timeout = 5400
 # and the kept releases it fetches from the live site (the catalog's domains,
 # studio/release/catalog.wrela), into the release, reads main's head on GitHub, and runs Wrangler
 # through `npx` to deploy, with Cloudflare's secrets, which only Wrangler gets.
+# The costs tool (studio/costs): the Cloudflare account's use this month against the plan's free
+# allowances, read from Cloudflare's analytics; it exits 1 with an alarm when a meter or the bill
+# is on pace past its limit. The costs workflow runs it each day.
+[tools.costs]
+package = "studio/costs"
+net = ["api.cloudflare.com"]
+secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
 [tools.deploy]
 package = "studio/deploy"
 write = ["release=build/release"]

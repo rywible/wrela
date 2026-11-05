@@ -155,6 +155,13 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - A program can read its labelled work's GPU time with `std::gpu::timed(label)`. A test may check that a time came, never how small it is.
 - Assert what would fail if the code broke. Before trusting a new test, break the code it guards and watch it fail.
 
+## Watching what it costs
+
+The project's budget is about $20 a month on Workers Paid. Two alarms watch it:
+
+- **The allowances, before they cost anything.** The Costs workflow (.github/workflows/costs.yml) runs `wrela tool costs` (studio/costs) each day at 14:00 UTC: it reads the month's use from Cloudflare's GraphQL Analytics API and puts a readout (each meter so far, its pace to the month's end, the free allowance and the cost past it) in the run's summary. A meter on pace for 80% of its allowance, a bill on pace past $20, or a run that can't read the usage opens an issue titled "Cloudflare cost alarm", or comments on the open one, assigned to Ryan, so GitHub emails him. It uses the `production` environment's `CLOUDFLARE_API_TOKEN`, which needs **Account Analytics: Read** besides the deploy's permissions. Run it by hand from the Actions tab (Costs, Run workflow).
+- **The dollars, a day late.** Cloudflare's own budget alert (dash.cloudflare.com, Manage Account, Billing, Billable Usage, Set Budget Alert) emails when the month's usage-based spend is projected past a threshold; it doesn't count the plan's $5 (developers.cloudflare.com/billing/manage/budget-alerts/). Ryan sets it in the dashboard; Cloudflare turns on a default one at $10 for pay-as-you-go accounts.
+
 ## The workspace's tools
 
 `wrela tool <name> -- <args>` runs a tool declared in `wrela.toml`, with the grants it declares.
@@ -167,6 +174,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`              | A piece's take and measurements                                                                           |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
+| `costs`              | The Cloudflare account's use this month against the plan's free allowances, with an alarm past them (CI runs it daily) |
 | `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene frame-bare`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
 | `passes`             | A frame's passes and dispatches, in order, as a page |
 
