@@ -1,0 +1,235 @@
+// The opening played by another program: wrela.dev's front page plays it live behind its own
+// screen, and its Play hands the skiff to the player. The page makes the scene (`scene`), passes
+// it the keys while the player rows (`input`), and each frame draws it into its `image` (`play`),
+// which it lays on its own screen.
+
+use main::{KINETIC, LANTERN, LOOK, START, STYLE}
+use heavens::{Heavens, heavens}
+use look::{SUN, Shot, shot_at}
+use sea::{MID_CALM, RIDDEN, SEA, held}
+use engine::ocean::{Ocean, Waves}
+use paint::paint
+use ink::ink
+use row::{Rig, key, let_go, rest, step}
+use std::collections::swap
+use std::input::Event
+use std::gpu::{
+    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
+}
+
+pub struct State {
+    pub(package) heavens: Heavens,
+    /// The open sea, summed each drawing.
+    pub(package) ocean: Ocean,
+    /// The painted scene, and what the ink reads beside it: (log₂ distance, what it is, the
+    /// line field, the line's weight) and the normal.
+    pub(package) colour: Texture<Rgba16Float>,
+    pub(package) marks: Texture<Rgba16Float>,
+    pub(package) normal: Texture<Rgba8>,
+    pub(package) width: u32,
+    pub(package) height: u32,
+    /// The skiff as the player rows it.
+    pub(package) rig: Rig,
+    /// The last drawing finished, inked, for a program that plays the scene behind its own
+    /// screen (`play`), and its size; and the texture the next is inked into before they swap,
+    /// so `image` is never one half drawn, nor blank while the scene changes size.
+    pub image: Texture<Rgba8>,
+    pub(package) image_size: (u32, u32),
+    pub(package) spare: Texture<Rgba8>,
+    pub(package) spare_size: (u32, u32),
+    /// The drawing (`sea::held`'s time) last begun for `image`, its shot, and the band of its rows
+    /// to paint next (0: none under way).
+    pub(package) drawn: f32,
+    pub(package) shot: Shot,
+    pub(package) band: u32,
+}
+
+pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
+    let ocean = Ocean::new(SEA, RIDDEN, MID_CALM)
+    let shot = shot_at(START, width, height, KINETIC, 0, rest(), ocean.swell)
+    State {
+        heavens,
+        ocean,
+        rig: rest(),
+        colour: texture(width: width, height: height),
+        marks: texture(width: width, height: height),
+        normal: texture(width: width, height: height),
+        image: texture(width: 1, height: 1),
+        image_size: (1, 1),
+        spare: texture(width: 1, height: 1),
+        spare_size: (1, 1),
+        drawn: -1.0,
+        shot,
+        band: 0,
+        width,
+        height,
+    }
+}
+
+/// One triangle that covers the screen.
+@vertex
+pub(package) fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+/// The targets made again at a new size.
+pub(package) fn sized(s: mut State, width: u32, height: u32) {
+    if width != s.width || height != s.height {
+        s.colour = texture(width: width, height: height)
+        s.marks = texture(width: width, height: height)
+        s.normal = texture(width: width, height: height)
+        s.width = width
+        s.height = height
+    }
+}
+
+/// The scene stepped on to `time` and painted (the first pass) from view `view`, the camera swung
+/// `orbit` radians round the skiff from where the rowing puts it, met `fine`ly (`Shot::fine`): the
+/// shot it was painted from.
+pub(package) fn painted(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+    step(mut s.rig, START + time)
+    let shot = prepared(mut s, time, view, orbit, fine)
+    paint_rows(mut s, shot, from: 0, to: s.height)
+    shot
+}
+
+/// The shot at `time`, the sky and the sea stepped on to it.
+fn prepared(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+    var rig = s.rig
+    rig.shown_look += orbit
+    let shot = Shot {
+        style: STYLE,
+        look: LOOK,
+        lantern: LANTERN,
+        fine,
+        ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
+    }
+    s.heavens.step(shot.eye, shot.forward, START + time)
+    // The sea as it is at this drawing.
+    s.ocean.step(held(START + time))
+    shot
+}
+
+/// Paints rows `from` to `to` of `shot` (the first pass), keeping the rest as they are.
+fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
+    borrow hv = s.heavens
+    let waves = Waves {
+        sea: s.ocean.view(),
+        big_shape: s.ocean.big.shape,
+        big_tilt: s.ocean.big.tilt,
+        mid_shape: s.ocean.mid.shape,
+        mid_tilt: s.ocean.mid.tilt,
+        fine_shape: s.ocean.fine.shape,
+        fine_tilt: s.ocean.fine.tilt,
+        ripple_shape: s.ocean.ripple.shape,
+        ripple_tilt: s.ocean.ripple.tilt,
+        s: s.ocean.s,
+    }
+    let width = s.width
+    let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
+    p.scissor(0, from, width, to - from)
+    draw(
+        p,
+        cover,
+        paint.bind(
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            waves: waves,
+        ),
+        vertices: 3,
+    )
+    p.end()
+}
+
+/// The scene for another program, drawn at `width` by `height`.
+pub fn scene(width: u32, height: u32) -> State {
+    targets(heavens(SUN, 3.0), width, height)
+}
+
+/// The scene stepped on to `time`, its drawings painted and inked into `image` at `width` by
+/// `height` (which may be smaller than the screen it's shown on), the camera swung `orbit` radians
+/// round the skiff. Live, a page has a frame's time for everything it draws, so a drawing's work
+/// is spread over the frames before the next: the scene moves on its own drawings (`HELD` a
+/// second, `sea::held`), so between them nothing in it changes. A new drawing's paint goes in
+/// `bands` bands of rows, one a frame, the ink after the last; `image` holds the last drawing
+/// inked meanwhile. A new size drops the drawing under way and begins one at once. Whether
+/// `image` is a new drawing.
+pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands: u32) -> bool {
+    step(mut s.rig, START + time)
+    if width != s.width || height != s.height {
+        sized(mut s, width, height)
+        s.band = 0
+        s.drawn = -1.0
+    }
+    let drawing = held(START + time)
+    if s.band == 0 {
+        if drawing == s.drawn {
+            return false
+        }
+        s.drawn = drawing
+        s.shot = prepared(mut s, time, 0, orbit, fine: 0.0)
+    }
+    let shot = s.shot
+    let n = max(bands, 1)
+    let from = height * s.band / n
+    let to = height * (s.band + 1) / n
+    paint_rows(mut s, shot, from, to)
+    s.band += 1
+    if s.band < n {
+        return false
+    }
+    s.band = 0
+    if s.spare_size != (width, height) {
+        s.spare = texture(width: width, height: height)
+        s.spare_size = (width, height)
+    }
+    borrow hv = s.heavens
+    let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        p,
+        cover,
+        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
+        vertices: 3,
+    )
+    p.end()
+    swap(mut s.image, mut s.spare)
+    swap(mut s.image_size, mut s.spare_size)
+    true
+}
+
+/// Whether the sky has cooked whole: the scene is fit to be seen.
+pub fn ready(s: State) -> bool {
+    s.heavens.whole()
+}
+
+/// The player's input event `e`, for the skiff: W or Up paddles, S or Down backs water, A and D
+/// (or Left and Right) steer.
+pub fn input(s: mut State, e: Event) {
+    key(mut s.rig, e)
+}
+
+/// The player's hands off the paddle: every key let go (the page took the keys away).
+pub fn release(s: mut State) {
+    let_go(mut s.rig)
+}
+
+/// How far the camera has swung from the opening's bearing (rad, -π to π), following the
+/// steering: a program that wants the opening's shot back swings it by the opposite (`play`'s
+/// `orbit`).
+pub fn swung(s: State) -> f32 {
+    let a = s.rig.shown_look
+    a - 6.2831853 * floor((a + 3.1415927) / 6.2831853)
+}
+
+/// How fast the skiff moves through the water (m/s): whether the player has rowed it yet.
+pub fn way(s: State) -> f32 {
+    s.rig.speed
+}

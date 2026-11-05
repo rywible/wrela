@@ -2089,6 +2089,8 @@ pub fn draw(
     if !a.open {
         let st = look(mut a, 0, chip, disabled: false, loading: false)
         let zc = z(chip, zoom)
+        // Dark glass under the outline, so the chip reads over a pale sky as well as the dark.
+        d.rect(zc, vec4(0.047, 0.055, 0.078, 0.55), kit::RADIUS * zoom)
         kit::button(mut d, fonts, zc, "", Variant::Outline, st, zoom)
         // Clipped at its sides only: a long name ends at the padding, and no descender is cut.
         d.push_clip(Rect::new(zc.x + 12.0 * zoom, zc.y, max(zc.w - 24.0 * zoom, 0.0), zc.h))

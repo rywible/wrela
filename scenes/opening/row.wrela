@@ -2,7 +2,7 @@
 // on the water: it gathers way slowly and keeps it, turns more as it moves, and the camera swings
 // round after it. What a frame draws is the rig as it stood at the last drawing (on twos).
 
-use std::input::{Event, Key}
+use std::input::{Event, Key, PadAxis, PadButton}
 use sea::{HELD}
 
 /// The skiff under the player's hands.
@@ -63,13 +63,40 @@ pub fn rest() -> Rig {
 }
 
 /// The rig after input event `e`: W or Up paddles ahead, S or Down backs, A and D (or Left and
-/// Right) steer.
+/// Right) steer; on a pad, the left stick or the D-pad the same way.
 pub fn key(r: mut Rig, e: Event) {
     match e {
-        Event::KeyDown { key, .. } => hold(mut r, key, true),
-        Event::KeyUp { key, .. } => hold(mut r, key, false),
+        Event::KeyDown { key, .. } => hold(mut r, key, down: true),
+        Event::KeyUp { key, .. } => hold(mut r, key, down: false),
+        Event::PadButton { button, pressed, .. } => {
+            if button == PadButton::Up { r.forward = pressed }
+            if button == PadButton::Down { r.back = pressed }
+            if button == PadButton::Left { r.left = pressed }
+            if button == PadButton::Right { r.right = pressed }
+        },
+        // (The stick past a third of its throw holds the way it leans; back in the middle, lets
+        // go. Up is negative.)
+        Event::PadAxis { axis: PadAxis::LeftY, value, .. } => {
+            r.forward = value < -STICK
+            r.back = value > STICK
+        },
+        Event::PadAxis { axis: PadAxis::LeftX, value, .. } => {
+            r.left = value < -STICK
+            r.right = value > STICK
+        },
         _ => {},
     }
+}
+
+/// How far the stick leans before it holds a way.
+const STICK: f32 = 0.35
+
+/// Every key let go: the hands off the paddle.
+pub fn let_go(r: mut Rig) {
+    r.forward = false
+    r.back = false
+    r.left = false
+    r.right = false
 }
 
 fn hold(r: mut Rig, key: Key, down: bool) {

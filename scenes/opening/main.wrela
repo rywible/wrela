@@ -15,18 +15,13 @@
 // `HELD` drawings a second. The player rows the skiff (`row`): W paddles, S backs water, A and
 // D steer, and the camera swings round after it.
 
-use heavens::{Heavens, heavens}
-use look::{SUN, Shot, shot_at}
-use sea::{MID_CALM, RIDDEN, SEA, held}
-use engine::ocean::{Ocean, Waves}
-use paint::paint
+use heavens::heavens
+use look::SUN
 use ink::ink
-use row::{Rig, key, rest, step}
+use played::{State, cover, painted, sized, targets}
+use row::key
 use std::input::events
-use std::gpu::{
-    ClipPosition, Rgba16Float, Rgba8, Sampler, Texture, VertexIndex, begin_pass3, begin_screen_pass,
-    draw, texture,
-}
+use std::gpu::{begin_screen_pass, draw}
 
 /// The time the scene starts at (s): the frames a test or a still draws begin here.
 pub const START: f32 = 0.0
@@ -52,100 +47,23 @@ pub const LOOK: f32 = 3.0
 /// (`--set LANTERN=1`).
 pub const LANTERN: f32 = 0.0
 
-pub struct State {
-    heavens: Heavens,
-    /// The open sea, summed each drawing.
-    ocean: Ocean,
-    /// The painted scene, and what the ink reads beside it: (log₂ distance, what it is, the
-    /// line field, the line's weight) and the normal.
-    colour: Texture<Rgba16Float>,
-    marks: Texture<Rgba16Float>,
-    normal: Texture<Rgba8>,
-    width: u32,
-    height: u32,
-    /// The skiff as the player rows it.
-    rig: Rig,
-}
-
-fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
-    State {
-        heavens,
-        ocean: Ocean::new(SEA, RIDDEN, MID_CALM),
-        rig: rest(),
-        colour: texture(width: width, height: height),
-        marks: texture(width: width, height: height),
-        normal: texture(width: width, height: height),
-        width,
-        height,
-    }
-}
+/// How finely the rock and the skiff are met: 1, each pixel near them four times over; 0, once,
+/// as wrela.dev's live page draws them (`--set FINE=0`, to see what it gives up).
+pub const FINE: f32 = 1.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }
 
-/// One triangle that covers the screen.
-@vertex
-fn cover(vertex: VertexIndex) -> ClipPosition {
-    let x = f32(vertex.index % 2) * 4.0 - 1.0
-    let y = f32(vertex.index / 2) * 4.0 - 1.0
-    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
-}
-
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
-    if width != s.width || height != s.height {
-        s.colour = texture(width: width, height: height)
-        s.marks = texture(width: width, height: height)
-        s.normal = texture(width: width, height: height)
-        s.width = width
-        s.height = height
-    }
+    sized(mut s, width, height)
     // The player's keys: W paddles, S backs water, A and D steer.
     for e in events() {
         key(mut s.rig, e)
     }
-    step(mut s.rig, START + time)
-    let shot = Shot {
-        style: STYLE,
-        look: LOOK,
-        lantern: LANTERN,
-        ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig, s.ocean.swell),
-    }
-    s.heavens.step(shot.eye, shot.forward, START + time)
-    // The sea as it is at this drawing.
-    s.ocean.step(held(START + time))
-    borrow hv = s.heavens
-    let waves = Waves {
-        sea: s.ocean.view(),
-        big_shape: s.ocean.big.shape,
-        big_tilt: s.ocean.big.tilt,
-        mid_shape: s.ocean.mid.shape,
-        mid_tilt: s.ocean.mid.tilt,
-        fine_shape: s.ocean.fine.shape,
-        fine_tilt: s.ocean.fine.tilt,
-        ripple_shape: s.ocean.ripple.shape,
-        ripple_tilt: s.ocean.ripple.tilt,
-        s: s.ocean.s,
-    }
-    let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, clear: vec4(0.0))
-    draw(
-        p,
-        cover,
-        paint.bind(
-            shot: shot,
-            light: hv.light,
-            clouds: hv.clouds,
-            view: hv.tables.view,
-            aerial: hv.tables.aerial,
-            dome: hv.sky.dome,
-            cloud: hv.sky.shadow,
-            smp: hv.linear,
-            waves: waves,
-        ),
-        vertices: 3,
-    )
-    p.end()
+    let shot = painted(mut s, time, VIEW, 0.0, fine: FINE)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    borrow hv = s.heavens
     draw(
         screen,
         cover,
