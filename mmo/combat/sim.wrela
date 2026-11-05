@@ -591,6 +591,33 @@ pub fn well_formed(log: [Change], end: u32, most: u32) -> bool {
     true
 }
 
+/// A player's log picked up again after it left: `before`'s changes before frame `cut` (what was
+/// heard of it), then `after`'s from `cut` on (its own, since it came back), all before frame
+/// `end`, each one a change.
+pub fn spliced(before: [Change], cut: u32, after: [Change], end: u32) -> Vec<Change> {
+    var out: Vec<Change> = Vec::new()
+    var prev: u32 = 0
+    for c in before {
+        if c.frame < cut &&
+            c.frame < end &&
+            c.input != prev &&
+            (out.is_empty() || c.frame > out[out.len() - 1].frame) {
+            prev = c.input
+            out.push(c.clone())
+        }
+    }
+    for c in after {
+        if c.frame >= cut &&
+            c.frame < end &&
+            c.input != prev &&
+            (out.is_empty() || c.frame > out[out.len() - 1].frame) {
+            prev = c.input
+            out.push(c.clone())
+        }
+    }
+    out
+}
+
 // ---- tests --------------------------------------------------------------------------------------
 
 fn next(seed: mut u32) -> u32 {
