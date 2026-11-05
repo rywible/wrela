@@ -76,7 +76,8 @@ pub fn sun_disc(light: Light, dir: vec3) -> vec3 {
 
 /// `colour` at `world` seen from `eye` through the air: dimmed by it, and with the light it
 /// scatters toward the eye on the way, from the air's aerial perspective table (`air`, through
-/// `s`, a linear sampler).
+/// `s`, a linear sampler). Take it in full: what's far holds all the air its distance holds,
+/// or it reads near and small (`far`).
 pub fn hazed(
     air: Texture3d<Rgba16Float>,
     s: Sampler,

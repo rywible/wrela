@@ -1,0 +1,246 @@
+// The skiff: a small open boat of planks, its two thwarts, and its traveller with a paddle,
+// where the sea holds it (`Shot::boat` and its axes).
+
+use look::{Shot, hash2, noise}
+
+fn sd_box(p: vec3, b: vec3) -> f32 {
+    let q = abs(p) - b
+    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+}
+
+fn sd_capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)
+    length(pa - ba * h) - r
+}
+
+/// The half-length of the hull (m), its beam's half and its depth.
+const LONG: f32 = 2.2
+const BEAM: f32 = 0.62
+const DEEP: f32 = 0.42
+
+/// `p` (the world's) in the skiff's frame: across, up, along.
+pub fn local(s: Shot, p: vec3) -> vec3 {
+    let r = p - s.boat
+    vec3(dot(r, s.boat_x), dot(r, s.boat_y), dot(r, s.boat_z))
+}
+
+/// The hull as a solid, from its gunwale's middle (`q`, the skiff's frame): what keeps the sea
+/// out of it.
+fn hull_solid(q: vec3) -> f32 {
+    let z = clamp(q.z / LONG, -1.0, 1.0)
+    let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
+    let w = max(BEAM * taper, 0.03)
+    let sheer = 0.16 * z * z + 0.05 * max(z, 0.0)
+    let y = q.y - sheer
+    let e = length(vec2(q.x / w, y / DEEP))
+    max((e - 1.0) * min(w, DEEP), abs(q.z) - LONG)
+}
+
+/// How far `p` (the world's) lies out from the hull's side, the solid hull as it is at `p`'s
+/// height: at the water, how far from its waterline.
+pub fn hull_off(s: Shot, p: vec3) -> f32 {
+    hull_solid(local(s, p))
+}
+
+/// Whether the sea at `p` (the world's) lies inside the skiff, where it isn't drawn.
+pub fn dry(s: Shot, p: vec3) -> bool {
+    let q = local(s, p)
+    hull_solid(q) < -0.01 && q.y < 0.2
+}
+
+/// The hull's shell, from its gunwale's middle (`q`, the skiff's frame).
+fn hull(q: vec3) -> f32 {
+    let z = clamp(q.z / LONG, -1.0, 1.0)
+    // Pointed at the bow (+z), fuller at the stern; the sheer rising to both.
+    let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
+    let w = max(BEAM * taper, 0.03)
+    let sheer = 0.16 * z * z + 0.05 * max(z, 0.0)
+    let y = q.y - sheer
+    let e = length(vec2(q.x / w, y / DEEP))
+    var d = (e - 1.0) * min(w, DEEP)
+    d = max(d, abs(q.z) - LONG)
+    // A shell of planks 3 cm thick, open above its sheer.
+    d = abs(d + 0.02) - 0.025
+    max(d, y)
+}
+
+/// A cone's frustum standing on y = 0: `r0` wide there, `r1` at `h`.
+fn sd_frustum(p: vec3, h: f32, r0: f32, r1: f32) -> f32 {
+    let q = vec2(length(vec2(p.x, p.z)), p.y)
+    let k1 = vec2(r1, h)
+    let k2 = vec2(r1 - r0, 2.0 * h)
+    let ca = vec2(q.x - min(q.x, if q.y < h * 0.5 { r0 } else { r1 }), abs(q.y - h * 0.5) - h * 0.5)
+    let cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0)
+    let s = if cb.x < 0.0 && ca.y < 0.0 { -1.0 } else { 1.0 }
+    s * sqrt(min(dot(ca, ca), dot(cb, cb)))
+}
+
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    mix(b, a, h) - k * h * (1.0 - h)
+}
+
+/// The traveller, sat on the middle thwart facing the bow, toward the rock: hooded, cloaked to
+/// the seat, forearms on the knees. From `q` (the skiff's frame).
+pub fn figure(q: vec3) -> f32 {
+    // Bowed a little forward, and its hood tipped back: it's looking up at the rock.
+    let c = q - vec3(0.0, -0.075, -0.74)
+    let lean = vec3(c.x, c.y, c.z - c.y * 0.12)
+    // The cloak: a bell, wide where it falls over the thwart, sloping to the hood; flattened
+    // front to back; its hem a little ragged.
+    let hem = 0.015 * sin(atan2(lean.z, lean.x) * 7.0)
+    var d = sd_frustum(vec3(lean.x, lean.y, lean.z * 1.2), 0.6, 0.34 + hem, 0.1) / 1.2
+    // The shoulders' round under it.
+    let sh = (lean - vec3(0.0, 0.4, 0.0)) / vec3(0.25, 0.15, 0.17)
+    d = smin(d, (length(sh) - 1.0) * 0.15, 0.07)
+    // The hood, a little larger than the head in it, its point peaked up and back, run into the
+    // shoulders as cloth falls.
+    let head = lean - vec3(0.0, 0.69, 0.0)
+    var hood = (length(head / vec3(0.135, 0.15, 0.15)) - 1.0) * 0.135
+    hood = smin(hood, sd_capsule(head, vec3(0.0, 0.05, -0.04), vec3(0.0, 0.17, -0.17), 0.035), 0.05)
+    d = smin(d, hood, 0.07)
+    // Knees drawn up toward the bow, under the cloak's fall.
+    let side = vec3(abs(c.x), c.y, c.z)
+    d = smin(d, sd_capsule(side, vec3(0.12, 0.06, 0.1), vec3(0.14, 0.17, 0.42), 0.075), 0.05)
+    d
+}
+
+/// The paddle as the stroke holds it (the skiff's frame): its grip's top and the blade's middle,
+/// and how far the blade is sunk (0 out of the water, 1 in it). At rest it lies across the
+/// traveller's knees, its blade over the side; paddling (`s.pull`), it reaches forward to the
+/// catch, is drawn back through the water past the hip, then lifted and swung forward again.
+pub fn paddle(s: Shot) -> (vec3, vec3, f32) {
+    let ph = fract(s.stroke)
+    let in_water = ph < 0.62
+    let u = if in_water { ph / 0.62 } else { (ph - 0.62) / 0.38 }
+    let e = u * u * (3.0 - 2.0 * u)
+    let z = if in_water { mix(-0.1, -1.15, e) } else { mix(-1.15, -0.1, e) }
+    let lift = if in_water { 0.0 } else { sin(u * 3.14159) }
+    let blade = vec3(0.8 + 0.08 * lift, -0.4 + 0.46 * lift, z)
+    let grip = vec3(0.16, 0.52 + 0.06 * lift, -0.62 + (z + 0.6) * 0.3)
+    // The paddle is 1.3 m from its grip to its blade's middle.
+    let along = normalize(blade - grip)
+    let rest_grip = vec3(-0.42, 0.2, -0.44)
+    let rest_blade = vec3(0.92, 0.14, -0.3)
+    let a = smoothstep(0.05, 0.45, abs(s.pull))
+    let g = mix(rest_grip, grip, a)
+    let b = mix(rest_blade, grip + along * 1.3, a)
+    let sunk = if in_water { smoothstep(0.0, 0.12, u) * smoothstep(1.0, 0.85, u) } else { 0.0 }
+    (g, b, sunk * a)
+}
+
+/// The paddle and the traveller's arms on it (`q`, the skiff's frame): the paddle's distance and
+/// the sleeves'.
+pub fn paddle_and_arms(s: Shot, q: vec3) -> vec2 {
+    let (g, b, _) = paddle(s)
+    let along = normalize(b - g)
+    // The shaft, its T-grip, and the blade: flat, its face square to the pull.
+    var wood = sd_capsule(q, g, b - along * 0.22, 0.021)
+    let across = normalize(cross(along, vec3(0.0, 0.0, 1.0)) + vec3(0.0, 0.0, 0.001))
+    wood = min(wood, sd_capsule(q, g - across * 0.06, g + across * 0.06, 0.02))
+    let bq = q - b
+    let face = normalize(cross(along, across))
+    wood = min(
+        wood,
+        sd_box(vec3(dot(bq, across), dot(bq, along), dot(bq, face)), vec3(0.085, 0.24, 0.012)) -
+            0.006,
+    )
+    // The arms, in the cloak's sleeves: the inboard hand on the grip, the other low on the shaft.
+    let a = smoothstep(0.05, 0.45, abs(s.pull))
+    let top = g + along * mix(0.25, 0.0, a)
+    let low = g + along * mix(0.8, 0.55, a)
+    var arms = sd_capsule(q, vec3(-0.17, 0.34, -0.7), top, 0.048)
+    arms = min(arms, sd_capsule(q, vec3(0.17, 0.34, -0.7), low, 0.048))
+    vec2(wood, arms)
+}
+
+/// The skiff at `p` (the world's): its distance.
+pub fn skiff(s: Shot, p: vec3) -> f32 {
+    let q = local(s, p)
+    let pa = paddle_and_arms(s, q)
+    var d = min(min(hull(q), figure(q)), min(pa.x, pa.y))
+    // Two thwarts and the stern's seat.
+    d = min(d, sd_box(q - vec3(0.0, -0.10, 0.45), vec3(0.52, 0.025, 0.11)))
+    d = min(d, sd_box(q - vec3(0.0, -0.12, -0.75), vec3(0.58, 0.025, 0.12)))
+    d = min(d, sd_box(q - vec3(0.0, -0.05, -1.75), vec3(0.32, 0.025, 0.25)))
+    d
+}
+
+pub fn skiff_normal(s: Shot, p: vec3) -> vec3 {
+    let e = 0.004
+    let dx = skiff(s, p + vec3(e, 0.0, 0.0)) - skiff(s, p - vec3(e, 0.0, 0.0))
+    let dy = skiff(s, p + vec3(0.0, e, 0.0)) - skiff(s, p - vec3(0.0, e, 0.0))
+    let dz = skiff(s, p + vec3(0.0, 0.0, e)) - skiff(s, p - vec3(0.0, 0.0, e))
+    normalize(vec3(dx, dy, dz))
+}
+
+/// What the skiff is made of at `p` (the world's), facing `n`: its albedo, roughness and the
+/// ink's line field (the planks' seams).
+pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
+    let q = local(s, p)
+    // Weathered wood, its grain along the planks; the inside paler where feet and sun have
+    // worn it.
+    let grain = noise(vec2(q.z * 3.0, q.y * 40.0 + q.x * 6.0))
+    let fine = noise(vec2(q.z * 14.0, q.y * 160.0 + q.x * 20.0))
+    // Outside, varnished planks of a warm wood, each its own tone; under the gunwale a strake
+    // painted deep sea-green over a cream line; below the water's reach, a dark red-brown.
+    let plank = floor((q.y * 46.0 + q.z * 1.5) / 6.2831853)
+    let tone = hash2(vec2(plank, 3.0))
+    var a = mix(vec3(0.36, 0.17, 0.07), vec3(0.55, 0.3, 0.13), tone * 0.6 + grain * 0.4)
+    a *= 0.9 + 0.2 * fine
+    let outside = 1.0 - smoothstep(0.6, 0.7, dot(n, s.boat_y))
+    let sheer = 0.16 * (q.z / LONG) * (q.z / LONG)
+    let y = q.y - sheer
+    let strake = smoothstep(-0.12, -0.105, y) * outside
+    let cream = smoothstep(-0.15, -0.14, y) * (1.0 - smoothstep(-0.125, -0.115, y)) * outside
+    let bottom = (1.0 - smoothstep(-0.34, -0.32, y)) * outside
+    a = mix(a, vec3(0.04, 0.2, 0.19) * (0.85 + 0.3 * grain), strake)
+    a = mix(a, vec3(0.78, 0.7, 0.55), cream)
+    a = mix(a, vec3(0.2, 0.06, 0.04), bottom * 0.8)
+    // Inside, the wood paler and worn, the floorboards darker between the thwarts.
+    let inside = smoothstep(0.3, 0.6, dot(n, s.boat_y))
+    a = mix(
+        a,
+        mix(vec3(0.46, 0.33, 0.2), vec3(0.3, 0.2, 0.12), smoothstep(-0.3, -0.36, q.y)),
+        inside * 0.7,
+    )
+    let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
+    // The varnish holds the light: smoother on the outside, its paint smoother still.
+    let rough = mix(0.75, mix(0.42, 0.3, strake), outside)
+    // The paddle: oiled ash, darkened by the water; its blade painted sea-green, a red band at
+    // its throat.
+    let pa = paddle_and_arms(s, q)
+    if pa.x < 0.006 {
+        let (_, blade, _) = paddle(s)
+        let on_blade = length(q - blade)
+        let ash = mix(vec3(0.3, 0.18, 0.09), vec3(0.46, 0.3, 0.16), grain)
+        let painted = mix(ash, vec3(0.05, 0.22, 0.2), smoothstep(0.22, 0.2, on_blade))
+        let band_ = smoothstep(0.24, 0.23, on_blade) * smoothstep(0.205, 0.215, on_blade)
+        return (mix(painted, vec3(0.5, 0.08, 0.05), band_), 0.45, 1.0)
+    }
+    // The traveller's cloak: a madder red, deeper in its folds, the folds falling in long
+    // runs from the shoulders; an ochre band woven round its hem; a leather strap across the
+    // back to a satchel at the hip. Its sleeves the cloak's.
+    if figure(q) < 0.006 || pa.y < 0.006 {
+        let c = q - vec3(0.0, -0.075, -0.74)
+        let lean = vec3(c.x, c.y, c.z - c.y * 0.12)
+        let round = atan2(lean.z, lean.x)
+        // (Broad folds, soft: wool, not grain. A weave finer than a pixel only streaks.)
+        let fold = noise(vec2(round * 3.5, lean.y * 1.8)) * 0.8 +
+            noise(vec2(round * 8.0, lean.y * 4.0)) * 0.2
+        var cloak = mix(vec3(0.34, 0.06, 0.045), vec3(0.56, 0.12, 0.07), fold)
+        let hem = smoothstep(0.03, 0.04, lean.y) * (1.0 - smoothstep(0.075, 0.085, lean.y))
+        cloak = mix(cloak, vec3(0.62, 0.42, 0.14) * (0.85 + 0.3 * fold), hem)
+        let strap_d = abs(dot(lean - vec3(0.0, 0.3, 0.0), normalize(vec3(0.75, 1.0, 0.0))))
+        let strap = (1.0 - smoothstep(0.022, 0.03, strap_d)) *
+            smoothstep(0.02, -0.02, lean.z) *
+            step(0.08, lean.y) *
+            step(lean.y, 0.5)
+        cloak = mix(cloak, vec3(0.2, 0.11, 0.06), strap)
+        let line_ = sin(round * 5.0 + lean.y * 3.0) + 0.92
+        return (cloak, mix(0.85, 0.55, strap), line_)
+    }
+    (a, rough, seam)
+}

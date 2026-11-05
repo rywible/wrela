@@ -1,0 +1,18 @@
+// What a far eye can hold. A big, far thing reads as big and far by two things: the size of its
+// parts, and its air. A pattern finer than a pixel fades to its mean (`shown`), and never crawls.
+// What's far takes all the air its distance holds (`light::hazed`, in full). A scene that holds
+// some of the air back makes a far thing read near and small, like a model held close. A big
+// thing is big by having more parts at their own size, not by being a smaller thing scaled up.
+
+/// How much of a pattern repeating every `period` m a pixel `foot` m wide can show: all of it
+/// while it spans four pixels, none once it spans two. (Finer, it would only crawl.)
+pub fn shown(period: f32, foot: f32) -> f32 {
+    1.0 - smoothstep(0.25 * period, 0.5 * period, foot)
+}
+
+/// How wide a pixel is on a surface `t` m off, met at `facing` (the cosine between the ray and
+/// the surface's normal), for a view `focal` deep on a screen `height` pixels tall (m). A face
+/// turned from the eye spreads a pixel longer.
+pub fn foot(t: f32, height: f32, focal: f32, facing: f32) -> f32 {
+    t * 2.0 / (height * focal) / max(abs(facing), 0.25)
+}

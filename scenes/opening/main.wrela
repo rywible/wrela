@@ -1,0 +1,160 @@
+// The opening, as a style test of Kinetic Ink: a skiff adrift on an endless ocean in the quiet
+// before anything happens, and far off a rock floating in the sky with a shining cathedral on top,
+// a crisp silhouette against the light, the one place to go.
+//
+// The engine's sky over it (`heavens`: its air, its light and its clouds, cooked over the first
+// frames and marched a phase a frame). Then two passes. The first paints the scene in 3D (`paint`):
+// each pixel's ray meets the sea, the skiff, the rock or the sky, lit as the engine lights its
+// world, with soft shadows, ambient occlusion and the air's depth; beside its colour it writes
+// what the ink needs: how far it is, what it is, its normal, and a field whose zero is a line to
+// draw. The second (`ink`) tones it for the screen and lays the ink on the forms, light when it's
+// quiet, fraying as the moment turns kinetic.
+//
+// The sea is an open ocean's (`engine::ocean`): its waves summed on the GPU each drawing, the
+// skiff riding the longest of them as the CPU sums them. The water and the skiff move at
+// `HELD` drawings a second. The player rows the skiff (`row`): W paddles, S backs water, A and
+// D steer, and the camera swings round after it.
+
+use heavens::{Heavens, heavens}
+use look::{SUN, Shot, shot_at}
+use sea::{MID_CALM, RIDDEN, SEA, held}
+use engine::ocean::{Ocean, Waves}
+use paint::paint
+use ink::ink
+use row::{Rig, key, rest, step}
+use std::input::events
+use std::gpu::{
+    ClipPosition, Rgba16Float, Rgba8, Sampler, Texture, VertexIndex, begin_pass3, begin_screen_pass,
+    draw, texture,
+}
+
+/// The time the scene starts at (s): the frames a test or a still draws begin here.
+pub const START: f32 = 0.0
+
+/// The whole frame's kinetic level, 0 (the quiet opening) to 1 (a fight's climax): how far every
+/// line frays and the palette drains toward black and white. `--set KINETIC=0.6` builds it louder.
+pub const KINETIC: f32 = 0.0
+
+/// Which view draws: 0 the opening's, 1 the rock near, 2 the skiff near, 3 the cathedral, 4
+/// the sea from over it, 5 toward the sun (`--set VIEW=1`).
+pub const VIEW: u32 = 0
+
+/// How much of the drawing lies over the render: 1, all of it; 0, the physical render alone
+/// (`--set STYLE=0`), to see what the style is laid on.
+pub const STYLE: f32 = 1.0
+
+/// Which shading language draws everything, the skiff to the sky: 3 clean CG (the chosen look:
+/// no ink till the action brings it), or for comparison 0 the drawn look, 1 painted CG, 2 cel
+/// and ink (`--set LOOK=2`).
+pub const LOOK: f32 = 3.0
+
+/// The cathedral lit from within, its stained glass beaming coloured light round over the sea
+/// (`--set LANTERN=1`).
+pub const LANTERN: f32 = 0.0
+
+pub struct State {
+    heavens: Heavens,
+    /// The open sea, summed each drawing.
+    ocean: Ocean,
+    /// The painted scene, and what the ink reads beside it: (log₂ distance, what it is, the
+    /// line field, the line's weight) and the normal.
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+    width: u32,
+    height: u32,
+    /// The skiff as the player rows it.
+    rig: Rig,
+}
+
+fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
+    State {
+        heavens,
+        ocean: Ocean::new(SEA, RIDDEN, MID_CALM),
+        rig: rest(),
+        colour: texture(width: width, height: height),
+        marks: texture(width: width, height: height),
+        normal: texture(width: width, height: height),
+        width,
+        height,
+    }
+}
+
+pub fn init() -> State {
+    targets(heavens(SUN, 3.0), 640, 360)
+}
+
+/// One triangle that covers the screen.
+@vertex
+fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if width != s.width || height != s.height {
+        s.colour = texture(width: width, height: height)
+        s.marks = texture(width: width, height: height)
+        s.normal = texture(width: width, height: height)
+        s.width = width
+        s.height = height
+    }
+    // The player's keys: W paddles, S backs water, A and D steer.
+    for e in events() {
+        key(mut s.rig, e)
+    }
+    step(mut s.rig, START + time)
+    let shot = Shot {
+        style: STYLE,
+        look: LOOK,
+        lantern: LANTERN,
+        ..shot_at(START + time, width, height, KINETIC, VIEW, s.rig, s.ocean.swell),
+    }
+    s.heavens.step(shot.eye, shot.forward, START + time)
+    // The sea as it is at this drawing.
+    s.ocean.step(held(START + time))
+    borrow hv = s.heavens
+    let waves = Waves {
+        sea: s.ocean.view(),
+        big_shape: s.ocean.big.shape,
+        big_tilt: s.ocean.big.tilt,
+        mid_shape: s.ocean.mid.shape,
+        mid_tilt: s.ocean.mid.tilt,
+        fine_shape: s.ocean.fine.shape,
+        fine_tilt: s.ocean.fine.tilt,
+        ripple_shape: s.ocean.ripple.shape,
+        ripple_tilt: s.ocean.ripple.tilt,
+        s: s.ocean.s,
+    }
+    let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, clear: vec4(0.0))
+    draw(
+        p,
+        cover,
+        paint.bind(
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            waves: waves,
+        ),
+        vertices: 3,
+    )
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        screen,
+        cover,
+        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
+        vertices: 3,
+    )
+    screen.present()
+}
+
+/// Each frame records draws the host accepts.
+@test(frames: 2)
+fn frames_record_valid_draws() {}

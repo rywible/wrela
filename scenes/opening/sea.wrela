@@ -1,0 +1,137 @@
+// The sea: an open ocean's (`engine::ocean`), a gentle wind's sea over a long swell, and how it
+// carries the skiff; and the few long waves the drawn looks lay their crests' strokes on.
+
+use look::noise
+use engine::ocean::{SeaState, Swell}
+
+/// The rate the sea and the skiff are drawn at (a second's drawings): on ones at 24, as the clean
+/// look's world moves. (12 holds them on twos, as a hand-drawn film's are.)
+pub const HELD: f32 = 24.0
+
+/// `time` held to the last drawing.
+pub fn held(time: f32) -> f32 {
+    floor(time * HELD) / HELD
+}
+
+/// The opening's sea: a moderate breeze of 7 m/s (Beaufort 4: small waves growing longer,
+/// fairly frequent white horses) blowing across 90 km, over a long swell from a storm far off,
+/// 0.9 m every 12 s, running the way the eye looks. A metre and a half of sea in all.
+pub const SEA = SeaState {
+    wind: vec2(-0.55007, 0.83511),
+    speed: 7.0,
+    fetch: 90000.0,
+    swell: vec2(0.17007, 0.98543),
+    swell_height: 0.9,
+    swell_period: 12.0,
+    chop: 0.9,
+    seed: 7,
+}
+
+/// How many of the long waves the CPU sums where the skiff rides (`engine::ocean::Swell`).
+pub const RIDDEN: u32 = 512
+
+/// One of the long waves the drawn looks (`look` under 3) lay their crests' strokes along: a
+/// direction, a length (m) and a height (m). (The clean look's sea is the ocean's alone.)
+struct Wave: Copy {
+    dir: vec2,
+    length: f32,
+    height: f32,
+}
+
+const WAVES = [
+    Wave { dir: vec2(0.20, 0.98), length: 46.0, height: 0.42 },
+    Wave { dir: vec2(-0.62, 0.78), length: 23.0, height: 0.25 },
+    Wave { dir: vec2(0.85, 0.53), length: 13.0, height: 0.16 },
+    Wave { dir: vec2(-0.30, 0.95), length: 7.1, height: 0.085 },
+    Wave { dir: vec2(0.55, -0.83), length: 4.3, height: 0.05 },
+    Wave { dir: vec2(-0.93, 0.36), length: 2.6, height: 0.03 },
+    Wave { dir: vec2(0.71, 0.70), length: 1.7, height: 0.02 },
+    Wave { dir: vec2(-0.18, -0.98), length: 1.1, height: 0.012 },
+]
+
+/// The ink of the crests' strokes at `p` and their pale lips (each 0 to 1): short curved strokes along the crests of the
+/// shorter waves, broken into dashes, each about `px` m wide here (a pixel's footprint, before the slant `d` foreshortens it)
+/// and gone where the wave's own height there is low.
+pub fn strokes(p: vec2, t: f32, px: f32, d: vec3, h: f32) -> vec2 {
+    let v = normalize(vec2(d.x, d.z))
+    // The crests bend: the plane warped by a slow noise before the waves are read on it.
+    let q = p + (vec2(noise(p * 0.045), noise(p * 0.045 + vec2(31.0, 7.0))) - vec2(0.5)) * 9.0
+    let slant = max(abs(d.y), 0.03)
+    var ink = 0.0
+    var light = 0.0
+    for i in 1..5 {
+        let w = WAVES[i]
+        let k = 6.2831853 / w.length
+        let speed = sqrt(9.81 / k)
+        let x = dot(w.dir, q) * k - t * speed * k + f32(i) * 1.7
+        // How far from the crest (m), and along it.
+        let signed = (fract((x - 1.5707963) / 6.2831853 + 0.5) - 0.5) * w.length
+        let off = abs(signed)
+        let along = dot(vec2(-w.dir.y, w.dir.x), q) / w.length
+        // A pixel's footprint across this crest: foreshortened by the slant as far as the crest
+        // runs across the view.
+        let toward = dot(w.dir, v)
+        let across = toward * slant
+        let side = dot(w.dir, vec2(-v.y, v.x))
+        let foot = px / sqrt(across * across + side * side)
+        let width = foot * (1.0 + 0.8 * noise(vec2(along * 3.0, f32(i))))
+        // A dash's width swells from its ends to its middle: a brush's stroke, not a bar.
+        let dash = smoothstep(
+            0.44,
+            0.62,
+            noise(vec2(along * 5.0 + f32(i) * 11.0, floor(x / 6.2831853) * 3.7)),
+        )
+        let stroke = 1.0 - smoothstep(width * dash * 0.7, width * dash * 1.3 + 0.0001, off)
+        let high = smoothstep(-0.05, 0.25, h)
+        ink = max(ink, stroke * high)
+        // The crest's lit lip, a pale stroke just ahead of the ink.
+        let lip = 1.0 -
+            smoothstep(width * dash * 0.6, width * dash * 1.4 + 0.0001, abs(signed + width * 2.4))
+        light = max(light, lip * high)
+    }
+    vec2(ink, light)
+}
+
+/// How much of the short waves there are by the skiff (at `rel` from it, `x` and `z` its
+/// across and along): in its lee they're broken, out past a hull's width they're whole.
+pub fn lee(rel: vec3, x: vec3, z: vec3) -> f32 {
+    let e = length(vec2(dot(rel, x) / 0.62, dot(rel, z) / 2.2))
+    mix(CALM, 1.0, smoothstep(1.0, 2.6, e))
+}
+
+/// What's left of the ripples along the skiff's hull, and of the waves it rides.
+const CALM: f32 = 0.35
+pub const MID_CALM: f32 = 0.6
+
+/// How much of each of the ocean's tiles there is where the short waves are `calm` (`lee`): the
+/// swell whole, the waves a boat rides broken a little by the hull, the short waves and the
+/// ripples most.
+pub fn tiles(calm: f32) -> vec4 {
+    vec4(1.0, mix(MID_CALM, 1.0, (calm - CALM) / (1.0 - CALM)), calm, calm)
+}
+
+/// Where the sea holds the skiff at time `t`, at `at` (x, z) and steered `steer` from its drift,
+/// and its axes (across, up, along): it rides the swell (`swell`, the ocean's long waves as the
+/// CPU sums them), pitched and rolled by its slope, slowly turning.
+pub fn bob(t: f32, at: vec2, steer: f32, swell: Swell) -> (vec3, vec3, vec3, vec3) {
+    let c = at
+    let yaw = -0.22 + 0.05 * sin(t * 0.23) + steer
+    let along0 = vec2(sin(yaw), cos(yaw))
+    let across0 = vec2(cos(yaw), -sin(yaw))
+    // The sea under it read where it bears on it: bow, stern and either side, as the water
+    // there is by the hull (its shorter waves broken in its lee: `MID_CALM`), so it sits in
+    // what's drawn.
+    let bow = swell.height(c + along0 * 1.5, t)
+    let stern = swell.height(c - along0 * 1.5, t)
+    let port = swell.height(c - across0 * 0.5, t)
+    let star = swell.height(c + across0 * 0.5, t)
+    let mid = swell.height(c, t)
+    let y = (bow + stern + port + star + mid * 2.0) / 6.0 + 0.2
+    // Pitched and rolled as those points lie, but not all the way: the hull's weight steadies it.
+    let along_ = normalize(vec3(along0.x, (bow - stern) / 3.0 * 0.8, along0.y))
+    let across_ = normalize(vec3(across0.x, (star - port) / 1.0 * 0.6, across0.y))
+    let up = normalize(cross(along_, across_))
+    let across = normalize(cross(up, along_))
+    let along = cross(across, up)
+    (vec3(c.x, y, c.y), across, up, along)
+}

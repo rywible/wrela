@@ -1,0 +1,255 @@
+// What both passes read (`Shot`: the camera, the light, the skiff where the sea has it this
+// frame), the scene's layout and palette, and the noise they paint with.
+
+use sea::{HELD, bob, held}
+use engine::ocean::Swell
+use row::Rig
+
+/// Where the rock floats (the world's, m: its plateau's centre), and the sun.
+pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
+pub const SUN = vec3(0.3725, 0.1045, 0.9221)
+
+/// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
+pub const INK = vec3(0.045, 0.035, 0.07)
+pub const PAPER = vec3(0.97, 0.94, 0.88)
+pub const COOL = vec3(0.32, 0.36, 0.58)
+pub const WARM = vec3(1.0, 0.82, 0.58)
+
+/// What a pixel's ray met: the sky, the sea, the skiff, the rock, the cathedral's stone and its
+/// gilding.
+pub const SKY: f32 = 1.0
+pub const SEA: f32 = 2.0
+pub const SKIFF: f32 = 3.0
+pub const ROCK: f32 = 4.0
+pub const STONE: f32 = 5.0
+pub const GILT: f32 = 6.0
+pub const GLASS: f32 = 7.0
+pub const ROOF: f32 = 8.0
+pub const HOUSE: f32 = 9.0
+pub const TILE: f32 = 10.0
+
+/// What the passes read: the screen, the camera's eye and its axes, the light, and the skiff's
+/// place and axes (as the sea carries it), the held time.
+pub struct Shot: Copy + GpuData {
+    pub resolution: vec2,
+    pub time: f32,
+    pub held: f32,
+    pub eye: vec3,
+    pub forward: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub focal: f32,
+    pub sun: vec3,
+    pub glow: vec3,
+    pub boat: vec3,
+    pub boat_x: vec3,
+    pub boat_y: vec3,
+    pub boat_z: vec3,
+    /// How kinetic the moment is, 0 (quiet) to 1 (the fight's climax): the whole frame's fray and
+    /// its pull toward black and white.
+    pub kinetic: f32,
+    /// How hard the skiff just met the water (0 to 1): its bounce, felt as fraying ink at the hull.
+    pub slap: f32,
+    /// How much of the drawing is laid over the render, 0 (the physical render alone, to judge it
+    /// by) to 1: the value bands, the hatching, the ink.
+    pub style: f32,
+    /// The skiff's way (m/s) and turning (rad/s), how hard it's paddled (-1 to 1) and the
+    /// stroke's phase (strokes).
+    pub speed: f32,
+    pub turn: f32,
+    pub pull: f32,
+    pub stroke: f32,
+    /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
+    /// 1 painted CG, 2 cel and ink, 3 clean CG.
+    pub look: f32,
+    /// The cathedral lit from within (0 or 1): its stained glass throwing coloured beams round
+    /// over the sea as a lighthouse's do.
+    pub lantern: f32,
+}
+
+/// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
+fn turned(v: vec2, a: f32) -> vec2 {
+    vec2(v.x * cos(a) + v.y * sin(a), v.y * cos(a) - v.x * sin(a))
+}
+
+/// The shot at `time`, the skiff where the player has rowed it (`r`) on the sea's long waves
+/// (`swell`): the camera behind the skiff and above it, swung round after its steering; at rest,
+/// the rock up and to the left.
+pub fn shot_at(
+    time: f32,
+    width: u32,
+    height: u32,
+    kinetic: f32,
+    view: u32,
+    r: Rig,
+    swell: Swell,
+) -> Shot {
+    let t = held(time)
+    let (boat, bx, by, bz) = bob(t, r.shown_at, r.shown_steer, swell)
+    // The bounce: how sharply the skiff's fall was stopped over the last drawings.
+    let dt = 1.0 / HELD
+    let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
+    let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
+    let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
+    let behind = turned(vec2(0.5, -21.0), r.shown_look)
+    let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
+    let eye = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
+    let at = vec3(eye.x + ahead.x, 622.0, eye.z + ahead.y)
+    // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
+    // cathedral from 900 m, the low sun raking across it from the left, the sea from 30 m over
+    // it, looking down its sun path, and the sun from the skiff's own eye.
+    let (eye, at, focal) = if view == 1 {
+        (ISLE + vec3(1260.0, -560.0, -3920.0), ISLE + vec3(0.0, -210.0, 0.0), 1.6)
+    } else if view == 3 {
+        (ISLE + vec3(2100.0, 980.0, 420.0), ISLE + vec3(0.0, 460.0, -42.0), 1.5)
+    } else if view == 4 {
+        (vec3(0.0, 30.0, -12.0), vec3(0.0, 0.0, 14.0), 1.2)
+    } else if view == 5 {
+        (eye, eye + vec3(SUN.x, 0.03, SUN.z) * 1000.0, 2.4)
+    } else if view == 2 {
+        (vec3(4.5, 2.2, -3.0), vec3(0.0, 0.0, 0.5), 1.5)
+    } else {
+        (eye, at, 3.7)
+    }
+    let forward = normalize(at - eye)
+    let right = normalize(cross(vec3(y: 1.0), forward))
+    let up = cross(forward, right)
+    Shot {
+        resolution: vec2(f32(width), f32(height)),
+        time,
+        held: t,
+        eye,
+        forward,
+        right,
+        up,
+        focal,
+        sun: normalize(SUN),
+        glow: normalize(ISLE + vec3(0.0, 700.0, -42.0) - eye),
+        boat,
+        boat_x: bx,
+        boat_y: by,
+        boat_z: bz,
+        kinetic,
+        slap: clamp((lift - 2.0) / 1.4, 0.0, 1.0),
+        style: 1.0,
+        speed: r.shown_speed,
+        turn: r.shown_turn,
+        pull: r.shown_pull,
+        stroke: r.shown_stroke,
+        look: 0.0,
+        lantern: 0.0,
+    }
+}
+
+/// The ray through pixel `px` (pixel centres at half-integers, y down).
+pub fn ray(s: Shot, px: vec2) -> vec3 {
+    let uv = (px * 2.0 - s.resolution) / s.resolution.y
+    normalize(s.forward * s.focal + s.right * uv.x - s.up * uv.y)
+}
+
+// ---- noise -------------------------------------------------------------------------------
+
+/// A hash of a point in [0, 1) (Hoskins's hash without sine).
+pub fn hash2(p: vec2) -> f32 {
+    var q = fract(vec3(p.x, p.y, p.x) * 0.1031)
+    q += dot(q, vec3(q.y, q.z, q.x) + 33.33)
+    fract((q.x + q.y) * q.z)
+}
+
+pub fn hash3(p: vec3) -> f32 {
+    var q = fract(p * 0.1031)
+    q += dot(q, vec3(q.z, q.y, q.x) + 31.32)
+    fract((q.x + q.y) * q.z)
+}
+
+/// Value noise in [0, 1].
+pub fn noise(p: vec2) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec2(3.0) - 2.0 * f)
+    let a = hash2(i)
+    let b = hash2(i + vec2(1.0, 0.0))
+    let c = hash2(i + vec2(0.0, 1.0))
+    let d = hash2(i + vec2(1.0, 1.0))
+    mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
+}
+
+pub fn noise3(p: vec3) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec3(3.0) - 2.0 * f)
+    let a = mix(
+        mix(hash3(i), hash3(i + vec3(1.0, 0.0, 0.0)), u.x),
+        mix(hash3(i + vec3(0.0, 1.0, 0.0)), hash3(i + vec3(1.0, 1.0, 0.0)), u.x),
+        u.y,
+    )
+    let b = mix(
+        mix(hash3(i + vec3(0.0, 0.0, 1.0)), hash3(i + vec3(1.0, 0.0, 1.0)), u.x),
+        mix(hash3(i + vec3(0.0, 1.0, 1.0)), hash3(i + vec3(1.0, 1.0, 1.0)), u.x),
+        u.y,
+    )
+    mix(a, b, u.z)
+}
+
+/// Fractal noise in about [0, 1]: `n` layers, each turned, twice the frequency, half as strong.
+pub fn fbm(p: vec2, n: u32) -> f32 {
+    var q = p
+    var s = 0.0
+    var a = 0.5
+    var total = 0.0
+    for _ in 0..n {
+        s += a * noise(q)
+        total += a
+        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+        a *= 0.5
+    }
+    s / total
+}
+
+pub fn fbm3(p: vec3, n: u32) -> f32 {
+    var q = p
+    var s = 0.0
+    var a = 0.5
+    var total = 0.0
+    for _ in 0..n {
+        s += a * noise3(q)
+        total += a
+        q = vec3(1.6 * q.x - 1.2 * q.z, q.y * 2.0 + 3.1, 1.2 * q.x + 1.6 * q.z) +
+            vec3(7.3, 0.0, -4.1)
+        a *= 0.5
+    }
+    s / total
+}
+
+/// Cells at `p` (Worley's, one point a unit cell): how far to the nearest point and the next
+/// nearest. Their difference is small along the walls between cells, as foam's lace and a
+/// bubble raft's walls are.
+pub fn cells(p: vec2) -> vec2 {
+    let i = floor(p)
+    var f1 = 8.0
+    var f2 = 8.0
+    for y in 0..3 {
+        for x in 0..3 {
+            let c = i + vec2(f32(x) - 1.0, f32(y) - 1.0)
+            let at = c + vec2(hash2(c), hash2(c + vec2(19.1, 7.3))) * 0.9 + vec2(0.05)
+            let r = length(p - at)
+            if r < f1 {
+                f2 = f1
+                f1 = r
+            } else if r < f2 {
+                f2 = r
+            }
+        }
+    }
+    vec2(f1, f2)
+}
+
+/// A soft step of `x` across `edge`, `soft` wide: a painted tone's edge.
+pub fn band(x: f32, edge: f32, soft: f32) -> f32 {
+    smoothstep(edge - soft, edge + soft, x)
+}
+
+/// The luma of a linear colour.
+pub fn luma(c: vec3) -> f32 {
+    dot(c, vec3(0.2126, 0.7152, 0.0722))
+}
