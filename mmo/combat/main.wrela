@@ -152,15 +152,6 @@ impl Fight {
         (peers, times)
     }
 
-    /// How many changes the logs hold.
-    fn logged(self) -> u32 {
-        var n: u32 = 0
-        for l in self.logs.clone() {
-            n += l.changes.len()
-        }
-        n
-    }
-
     fn any_sent(self) -> bool {
         for s in self.sent.clone() {
             if s {
