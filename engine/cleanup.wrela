@@ -42,6 +42,11 @@ pub struct Cleanup: Copy {
     pub hands: bool = true,
 }
 
+/// A hand-keyed combat move's cleanup: its feet held and set on the floor, nothing more. A
+/// lunge, a dodge or a dash attack goes somewhere fast, and the trunk's walking carriage would be
+/// stamped on it; its pose is the animator's.
+pub const KEYED: Cleanup = Cleanup { feet: true, trunk: false, hands: false }
+
 const DEG: f32 = 0.017453292
 
 /// About a loop's seam, the time (s) each side of it that's smoothed, and how widely (s); and

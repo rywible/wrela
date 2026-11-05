@@ -7,10 +7,13 @@ The page asks no other credit and states no other terms.
 What this file is: Male2_B1_StandToWalk.bvh of the actor's BVH archive,
 https://accad.osu.edu/sites/accad.osu.edu/files/Male2_bvh.zip (sha256
 f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1): Male 2 standing, then walking
-(120 frames a second); only its first frame is read, as the pose the actor's takes are rested
-as. Optical marker capture (ACCAD publishes each set's markers as C3D too), in centimetres.
+(120 frames a second). Its first frame is the pose the actor's takes are rested as, and its
+start (frames 100 to 330) is the body's start from standing. Optical marker capture (ACCAD publishes each set's markers as C3D too), in centimetres.
 
 sha256 deb6cf43aa2faaaccd734853dff8567736a49126e1263aee532478d49beea7c6
 
-Changes made here: none to the file. Only its first frame is read: engine::humanoid rests the
-actor's walk and run on it, the actor standing (its skeleton's own rest isn't a pose).
+Changes made here: none to the file. engine::humanoid rests the actor's walk and run on its
+first frame, the actor standing (its skeleton's own rest isn't a pose), and retargets its start
+onto the Quaternius body at build time (turned to face +z, scaled by the legs' lengths, its feet
+kept as flat as the body's own); engine::cleanup cleans it and engine::playback plays it, its
+root's travel carrying the body.
