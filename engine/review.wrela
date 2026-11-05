@@ -21,10 +21,26 @@
 //
 // A clip scores 10 less each flag's weight. The limits are set from how people move (see
 // `engine::stride`'s sources) and against a clip judged human by eye, the 100STYLE walk made
-// human (`engine::stride`), which passes each with room.
+// human (`engine::stride`), which passes each with room. So they judge mocap locomotion: a
+// hand-keyed combat move is reviewed with `KEYED`, which leaves out its pops, its time in the air
+// and its gait (`review_as`).
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
+
+/// Which of the review's judgements apply to a clip: its pops (and jitter), its time in the air
+/// (a hop), and, in a clip that goes somewhere, its gait (the trunk, the arms, the rhythm, a foot
+/// that never comes down). Mocap locomotion takes them all (`Checks {}`); a hand-keyed combat
+/// move none of them (`KEYED`), since a snap, an impact frame, a launch and a slam are exactly
+/// what it's for. Its feet and knees are judged either way.
+pub struct Checks: Copy {
+    pub pops: bool = true,
+    pub air: bool = true,
+    pub gait: bool = true,
+}
+
+/// A hand-keyed combat move's checks: its feet and knees alone.
+pub const KEYED: Checks = Checks { pops: false, air: false, gait: false }
 
 /// A clip's review: its score (out of 10), what's wrong with it, and every check's number.
 pub struct Review: Clone {
@@ -363,6 +379,11 @@ pub fn runs_of(on: [bool], looped: bool) -> Vec<(u32, u32)> {
 
 /// `clip` (on `rig`) reviewed.
 pub fn review(clip: Clip, rig: Rig) -> Review {
+    review_as(clip, rig, Checks {})
+}
+
+/// A clip's review, judging only what `checks` says applies to it.
+pub fn review_as(clip: Clip, rig: Rig, checks: Checks) -> Review {
     let nb = rig.bones.len()
     let looped = clip.looped
     let n = if looped { clip.frames - 1 } else { clip.frames }
@@ -400,7 +421,7 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
         let seconds = f32(if looped { n } else { n - 1 }) / fps
         path_speed = length(vec2(z.x - a.x, z.z - a.z)) / max(seconds, 1.0e-3)
     }
-    let goes = path_speed > GOES
+    let goes = path_speed > GOES && checks.gait
     numbers.push(f"{n} frames at {fps:.0} fps, looped {looped}, going {path_speed:.2} m/s")
 
     // ---- the feet ----
@@ -591,7 +612,7 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
         }
     }
     let runs = f32(flights) > RUNS_FLY * f32(n)
-    if !runs {
+    if !runs && checks.air {
         var longest = 0
         var at = 0
         for (a, z) in runs_of(flying.clone(), looped) {
@@ -648,7 +669,7 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
         if ji == 0 {
             hips_jerk = usual
         }
-        if times > most && at_most > POP_LEAST {
+        if checks.pops && times > most && at_most > POP_LEAST {
             pops += 1
             if pops <= 3 {
                 flags.push(
@@ -661,7 +682,7 @@ pub fn review(clip: Clip, rig: Rig) -> Review {
     numbers.push(
         f"pops: {pops}; the sharpest, the {worst_name}'s, {worst_times:.1} times its usual jerk; the hips' usual jerk {hips_jerk:.0} m/s³",
     )
-    if hips_jerk > JITTER {
+    if checks.pops && hips_jerk > JITTER {
         flags.push(f"the body jitters: the hips' jerk is {hips_jerk:.0} m/s³ frame on frame")
         lost += POP_WEIGHT
     }

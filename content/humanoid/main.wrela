@@ -9,16 +9,22 @@
 // runs; `0` (the default) plays them in turn: two seconds of T-pose, six of idle,
 // then the walk. `--set RAW=1` plays a clip as its take has it, before its cleanup
 // (`engine::cleanup`; the walk's, `engine::stride`).
+//
+// `--set SHOW=11` plays the body as a game would (`engine::playback`): a scripted stick walks it
+// off, turns it, runs it, throws a punch over the run (timed to the fight's attack frames),
+// stops it, rolls it, and walks it back, each change inertial.
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
-    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, HERO, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN,
-    RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
+    PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
+use engine::playback
+use engine::playback::{Handling, Mover}
 use engine::review::review
 use engine::stride
 use ink::ink
@@ -35,6 +41,10 @@ use std::transform::identity
 /// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
 pub const SHOW: u32 = 0
 pub const RAW: u32 = 0
+
+/// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
+/// cuts from move to move and lets the feet go where the moves put them.
+pub const CUT: u32 = 0
 
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
@@ -63,6 +73,9 @@ pub struct State {
     depth: DepthTexture,
     width: u32,
     height: u32,
+    /// `SHOW=11`'s body and when it was last stepped.
+    mover: Mover,
+    last: f32,
 }
 
 pub fn init() -> State {
@@ -79,7 +92,62 @@ pub fn init() -> State {
         depth: depth_texture(width: 640, height: 360),
         width: 640,
         height: 360,
+        mover: Mover::standing(vec3(0.0), 0.0, GAITS),
+        last: 0.0,
     }
+}
+
+/// `SHOW=11`'s script: the stick (the speed asked for along the floor, m/s) at `time`, and the
+/// one-off begun as time passes from `last` to `time` (`NONE` for none), whether over the upper
+/// body alone.
+pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
+    let at = |t: f32| -> bool { last < t && time >= t }
+    let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
+    let stick = if time < 1.5 {
+        vec3(0.0)
+    } else if time < 4.5 {
+        dir(0.0) * 1.0
+    } else if time < 7.0 {
+        dir(-70.0) * 1.0
+    } else if time < 10.5 {
+        dir(-70.0) * 2.0
+    } else if time < 12.0 {
+        dir(-70.0) * 0.9
+    } else if time < 14.5 {
+        vec3(0.0)
+    } else if time < 18.5 {
+        dir(150.0) * 1.0
+    } else {
+        vec3(0.0)
+    }
+    if at(8.8) {
+        return (stick, ACT_PUNCH, true)
+    }
+    if at(13.0) {
+        return (stick, ACT_ROLL, false)
+    }
+    (stick, humanoid::NONE, false)
+}
+
+/// `SHOW=11`'s body stepped on to `time`: its pose and where it's drawn.
+fn played(s: mut State, time: f32) -> (Pose, mat4) {
+    let dt = clamp(time - s.last, 1.0e-4, 0.1)
+    let (stick, act, upper) = script(s.last, time)
+    let mask = playback::upper_body(HERO.rig)
+    let pose = playback::step(
+        mut s.mover,
+        GAITS,
+        ACTS,
+        HERO.rig,
+        mask,
+        stick,
+        act,
+        upper,
+        if CUT == 1 { Handling { change_half: 1.0e-4, plant: false } } else { Handling {} },
+        dt,
+    )
+    s.last = time
+    (pose, playback::placed(s.mover))
 }
 
 /// The pose at `time`, and how far into its clip it's walked (for the camera to follow).
@@ -140,12 +208,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let pose = pose_at(time)
-    let bones = palette(HERO.rig, pose, identity())
+    let game = SHOW == 11
+    let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
+    let bones = palette(HERO.rig, pose, place)
     write(mut s.palette, 0, bones)
     // The camera follows the hips along the ground, steadily: where they are on average over a
-    // stride, so it neither surges with each step nor sways with the hips.
-    let hips = steady_hips(time)
+    // stride, so it neither surges with each step nor sways with the hips. A game's body is
+    // followed where gameplay puts it, which is steady already.
+    let hips = if game { s.mover.place } else { steady_hips(time) }
     let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
     let side = if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
@@ -396,4 +466,250 @@ fn flags(name: str, clip: Clip, rig: humanoid::Rig, what: str) {
         seen = seen || f.as_str().starts_with(what)
     }
     assert(seen, f"{name}: no flag says {what}\n{rv.text(name)}")
+}
+
+// ---- the body played as a game plays it (`engine::playback`) --------------------------------
+
+/// The walk and the run play in place, gameplay carrying them on, and each foot comes down once
+/// a loop, half a loop after the other; the idle stands.
+@test
+fn the_gaits_play_in_place_with_their_footfalls() {
+    for (name, m) in [("walk", GAITS.walk.clone()), ("run", GAITS.run.clone())] {
+        let a = m.pose(0.0).hips
+        let z = m.pose(m.length()).hips
+        assert(
+            length(vec2(z.x - a.x, z.z - a.z)) < 0.01,
+            f"the {name} moves {z - a} m a loop in place",
+        )
+        let l = m.mark(playback::STEP_LEFT)
+        let r = m.mark(playback::STEP_RIGHT)
+        assert(l.is_some() && r.is_some(), f"the {name} has no footfall marked")
+        assert(m.passed(playback::STEP_LEFT, 0.0, m.length()) == 1)
+        let apart = abs(r.unwrap().from - l.unwrap().from) / m.length()
+        print(
+            f"{name}: {m.speed:.2} m/s, {m.stride:.2} m a stride, left down at {l.unwrap().from:.3} s, right at {r.unwrap().from:.3} s ({apart:.2} of a loop apart)",
+        )
+        assert(apart > 0.4 && apart < 0.6, f"the {name}'s feet come down {apart} of a loop apart")
+    }
+    assert(
+        GAITS.walk.speed > 0.7 && GAITS.walk.speed < 1.6,
+        f"the walk goes {GAITS.walk.speed} m/s",
+    )
+    assert(GAITS.run.speed > GAITS.walk.speed + 0.3)
+    assert(GAITS.idle.marks.len() == 0, "the idle steps")
+}
+
+/// The ankles' heights over the floor on a pose.
+fn ankles(pose: Pose) -> (f32, f32) {
+    let m = palette(HERO.rig, pose, identity())
+    let rw = HERO.rig.rest_world()
+    (bone_at(m, rw, "leftFoot").y, bone_at(m, rw, "rightFoot").y)
+}
+
+/// The walk and the run mixed at one phase put the same foot down together: after phase 0 the
+/// left foot is the one on the ground in both, after one half the right.
+@test
+fn the_walk_and_the_run_keep_step() {
+    for (name, m) in [("walk", GAITS.walk.clone()), ("run", GAITS.run.clone())] {
+        // Over each foot's first quarter after it comes down, it's the lower.
+        var left_lower = 0.0
+        var right_lower = 0.0
+        for k in 0..10 {
+            let (l, r) = ankles(m.at_phase(f32(k) / 40.0))
+            left_lower += r - l
+            let (l2, r2) = ankles(m.at_phase(0.5 + f32(k) / 40.0))
+            right_lower += l2 - r2
+        }
+        print(
+            f"{name}: the left ankle is {left_lower * 10.0:.1} cm lower on average after phase 0, the right {right_lower * 10.0:.1} cm after one half",
+        )
+        assert(
+            left_lower > 0.0 && right_lower > 0.0,
+            f"the {name}'s footfalls aren't at its phases",
+        )
+    }
+}
+
+/// The punch is fitted to the fight's attack: as long as its frames, its windows where the fight
+/// has them, and its fist going fastest within the active frames. Reviewed as a hand-keyed move
+/// it isn't flagged for the snap it's for.
+@test
+fn the_punch_lands_when_the_fight_says() {
+    let total = f32(body::ATTACK_WINDUP + body::ATTACK_ACTIVE + body::ATTACK_RECOVERY) / body::HZ
+    assert(
+        abs(PUNCH.length() - total) < 1.0 / 30.0,
+        f"the punch lasts {PUNCH.length()} s, not {total}",
+    )
+    let active = PUNCH.mark(playback::ACTIVE).unwrap()
+    assert(abs(active.from - f32(body::ATTACK_WINDUP) / body::HZ) < 1.0e-4)
+    let strike = playback::strike_of(PUNCH, HERO.rig, "rightHand")
+    print(
+        f"the punch: {PUNCH.length():.3} s, hits from {active.from:.3} to {active.till:.3} s, its fist fastest at {strike:.3} s",
+    )
+    assert(
+        strike > active.from - 2.0 / 30.0 && strike < active.till + 2.0 / 30.0,
+        f"the fist is fastest at {strike} s, not when it hits",
+    )
+    let keyed = engine::review::review_as(PUNCH.clip.clone(), HERO.rig, engine::review::KEYED)
+    let judged = review(PUNCH.clip.clone(), HERO.rig)
+    print(keyed.text("the punch, as a keyed move"))
+    print(judged.text("the punch, as locomotion"))
+    assert(keyed.score >= judged.score, "the keyed review is harsher than the locomotion one")
+}
+
+/// The bones that carry the body's shape (not its fingers).
+const MAJOR: [Text; 16] = [
+    "hips",
+    "spine",
+    "chest",
+    "upperChest",
+    "neck",
+    "head",
+    "leftUpperArm",
+    "leftLowerArm",
+    "rightUpperArm",
+    "rightLowerArm",
+    "leftUpperLeg",
+    "leftLowerLeg",
+    "rightUpperLeg",
+    "rightLowerLeg",
+    "leftFoot",
+    "rightFoot",
+]
+
+/// A body played by `script` for `seconds` at `hz`: each frame, the most any joint moved (m), the
+/// frame it did, and how far a foot that's down slid (m) while it went at a walk or a run.
+@test
+fn a_played_body_moves_without_a_pop() {
+    let hz = 60.0
+    let rig = HERO.rig.clone()
+    let rw = rig.rest_world()
+    let mask = playback::upper_body(rig)
+    let rest_ankle = rw[rig.find("leftFoot")].t.y
+    var m = Mover::standing(vec3(0.0), 0.0, GAITS)
+    var last = 0.0
+    let joints = [
+        "hips",
+        "head",
+        "leftHand",
+        "rightHand",
+        "leftFoot",
+        "rightFoot",
+        "leftLowerLeg",
+        "rightLowerLeg",
+    ]
+    var was: Vec<vec3> = Vec::filled(joints.len(), vec3(0.0))
+    var worst = 0.0
+    var worst_at = 0.0
+    var worst_name: Text = ""
+    var since = 100
+    var doing = m.doing
+    var acting = m.acting
+    var slide = 0.0
+    var slide_at = 0.0
+    var slide_change = 0.0
+    var slide_change_at = 0.0
+    var prev_l = vec3(0.0)
+    var prev_r = vec3(0.0)
+    for f in 1..u32(20.0 * hz) {
+        let time = f32(f) / hz
+        let (stick, act, upper) = script(last, time)
+        let pose = playback::step(
+            mut m,
+            GAITS,
+            ACTS,
+            rig,
+            mask,
+            stick,
+            act,
+            upper,
+            Handling {},
+            1.0 / hz,
+        )
+        last = time
+        if m.doing != doing || m.acting != acting {
+            since = 0
+            // How far a cut would have jumped: the biggest turn the change hides.
+            var cut = 0.0
+            var cut_bone = 0
+            for name in MAJOR {
+                let b = rig.find(name)
+                let a = length(m.inertia.turns[b]) * 57.29578
+                if a > cut {
+                    cut = a
+                    cut_bone = b
+                }
+            }
+            print(
+                f"{time:.3} s: doing {m.doing}, acting {m.acting}, going {m.speed:.2} m/s, phase {m.phase:.2}; a cut would jump a bone {cut:.0}° (bone {cut_bone}, VRM {humanoid::BONES[rig.bones[cut_bone].vrm]})",
+            )
+            doing = m.doing
+            acting = m.acting
+        }
+        let pal = palette(rig, pose, playback::placed(m))
+        for j in 0..joints.len() {
+            let p = bone_at(pal, rw, joints[j])
+            if f > 1 && since < 4 && m.acting != ACT_ROLL {
+                // How far it moved in a frame, about a change (but the roll's own start, which is
+                // as fast as Quaternius keyed it).
+                let d = length(p - was[j])
+                if d > worst {
+                    worst = d
+                    worst_at = time
+                    worst_name = joints[j]
+                }
+            }
+            was[j] = p
+        }
+        let l = bone_at(pal, rw, "leftFoot")
+        let r = bone_at(pal, rw, "rightFoot")
+        if f > 1 && m.acting == humanoid::NONE {
+            for (now, before) in [(l, prev_l), (r, prev_r)] {
+                if now.y < rest_ankle + 0.015 && before.y < rest_ankle + 0.015 {
+                    let s = length(vec2(now.x - before.x, now.z - before.z)) * hz
+                    if since >= 20 && s > slide {
+                        slide = s
+                        slide_at = time
+                    }
+                    if since < 20 && s > slide_change {
+                        slide_change = s
+                        slide_change_at = time
+                    }
+                }
+            }
+        }
+        prev_l = l
+        prev_r = r
+        since += 1
+    }
+    print(
+        f"about a change, the most a joint moved in a frame: {worst * 100.0:.1} cm, the {worst_name} at {worst_at:.3} s",
+    )
+    print(
+        f"the fastest a foot on the floor went along it, steadily: {slide:.2} m/s at {slide_at:.3} s",
+    )
+    print(
+        f"the fastest a foot on the floor went along it in a change's first third of a second: {slide_change:.2} m/s at {slide_change_at:.3} s",
+    )
+    assert(m.doing == playback::STANDING, "the body didn't stop at the end")
+    assert(worst < 0.12, f"a change jumps a joint {worst} m in a frame")
+    assert(slide < 1.5, f"a foot on the floor skates at {slide} m/s")
+}
+
+/// An impact frame (an arm snapped to a pose for a frame) is a pop to the locomotion review and
+/// nothing to the keyed one, which judges only the feet and knees.
+@test
+fn a_keyed_move_may_snap() {
+    var c = IDLE.clone()
+    let b = HERO.rig.find("rightLowerArm")
+    let f = c.frames / 2
+    c.turns[f * c.bones + b] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), 1.5).mul(
+        c.turns[f * c.bones + b],
+    )
+    let judged = review(c.clone(), HERO.rig)
+    let keyed = engine::review::review_as(c, HERO.rig, engine::review::KEYED)
+    print(judged.text("the idle with a snap, as locomotion"))
+    print(keyed.text("the idle with a snap, as a keyed move"))
+    assert(judged.score < 10.0, "the locomotion review missed the snap")
+    assert(keyed.score == 10.0, "the keyed review flagged the snap")
 }

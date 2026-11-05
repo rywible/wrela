@@ -12,6 +12,8 @@ use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::stride
 use engine::stride::Gait
+use engine::playback
+use engine::playback::{Gaits, Move}
 
 /// The body's colours, sRGB: its skin, its hair and brows, its eyes.
 pub const SKIN = vec3(0.86, 0.66, 0.52)
@@ -217,3 +219,72 @@ pub const ACCAD_M2_RUN: Clip = cleanup::cleaned(
     HERO.rig.clone(),
     Cleanup {},
 )
+
+/// Quaternius's cross punch and roll (assets/ual1.glb.LICENSE.txt), hand-keyed, retargeted and
+/// held to their feet alone (`cleanup::KEYED`): their poses are the animator's.
+@fuel(2 ** 40)
+pub const PUNCH_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Punch_Cross", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget {},
+)
+@fuel(2 ** 40)
+pub const ROLL_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Roll", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget {},
+)
+
+// ---- the moves a game plays (`engine::playback`) ------------------------------------------
+
+/// The idle, the walk and the run in place, their footfalls marked: the body's gaits.
+@fuel(2 ** 40)
+pub const GAITS: Gaits = Gaits {
+    idle: playback::with_steps(playback::moved(IDLE.clone(), HERO.rig.clone()), HERO.rig.clone()),
+    walk: playback::with_steps(playback::moved(WALK.clone(), HERO.rig.clone()), HERO.rig.clone()),
+    run: playback::with_steps(playback::moved(RUN.clone(), HERO.rig.clone()), HERO.rig.clone()),
+}
+
+/// A player's attack's frames in the fight, at its 60 a second: windup (the tell), active (when
+/// it hits), recovery (committed and open): mmo/combat/sim.wrela's `ATTACK_WINDUP`,
+/// `ATTACK_ACTIVE` and `ATTACK_RECOVERY`.
+pub const HZ: f32 = 60.0
+pub const ATTACK_WINDUP: u32 = 10
+pub const ATTACK_ACTIVE: u32 = 4
+pub const ATTACK_RECOVERY: u32 = 14
+
+/// The punch fitted to the attack's frames: its fist lands when the fight says it hits.
+@fuel(2 ** 40)
+pub const PUNCH: Move = playback::timed(
+    playback::moved(
+        cleanup::cleaned(PUNCH_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
+        HERO.rig.clone(),
+    ),
+    playback::strike_of(
+        playback::moved(PUNCH_RAW.clone(), HERO.rig.clone()),
+        HERO.rig.clone(),
+        "rightHand",
+    ),
+    ATTACK_WINDUP,
+    ATTACK_ACTIVE,
+    ATTACK_RECOVERY,
+    HZ,
+)
+
+/// The roll, at its own pace: Quaternius keyed it in place, so gameplay carries it ahead
+/// (`ROLL_SPEED`, m/s), as the fight's dodge does.
+pub const ROLL_SPEED: f32 = 2.4
+@fuel(2 ** 40)
+pub const ROLL: Move = playback::pushed(
+    playback::moved(
+        cleanup::cleaned(ROLL_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
+        HERO.rig.clone(),
+    ),
+    ROLL_SPEED,
+)
+
+/// The one-offs a body acts, by index: the punch (`ACT_PUNCH`), the roll (`ACT_ROLL`).
+pub const ACT_PUNCH: u32 = 0
+pub const ACT_ROLL: u32 = 1
+@fuel(2 ** 40)
+pub const ACTS: [Move; 2] = [PUNCH.clone(), ROLL.clone()]
