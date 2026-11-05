@@ -1040,8 +1040,10 @@ fn sea_shade(
     )
     let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
         smoothstep(0.0, 1.0, behind_) *
-        smoothstep(14.0 + 30.0 * way, 3.0, behind_) *
-        exp(-behind_ / (16.0 + 30.0 * way)) *
+        // (A rowing boat's arms are ripples, not foam: white only close astern, gone in a
+        // few metres, never soft blots out by the eye.)
+        smoothstep(7.0 + 6.0 * way, 1.0, behind_) *
+        0.6 *
         broken *
         wavelets
     // Straight astern, the churned water it leaves: lace on the water that rides with it (laid

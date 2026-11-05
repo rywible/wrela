@@ -82,6 +82,10 @@ const SHORTEST: f32 = 360.0
 /// grows again. A screen slower than 60 a second raises both with its own frame (`base`).
 const SLOW: f32 = 1.0 / 48.0
 const QUICK: f32 = 1.0 / 57.0
+/// The same under the title, whose shot hardly moves: a sharp scene at 30 a second over a soft
+/// one at 60.
+const TITLE_SLOW: f32 = 1.0 / 30.0
+const TITLE_QUICK: f32 = 1.0 / 34.0
 /// How much the scene's drawing is sharpened as it's laid over the screen (`laid`).
 const SHARPEN: f32 = 0.45
 /// Seconds a new size of the scene's must hold before it's drawn at it: a window being dragged
@@ -309,8 +313,11 @@ fn phone(w: f32, h: f32) -> bool {
 /// A screen that shows fewer than 60 frames a second (`base`, its quickest frame) is held to its
 /// own pace, not to one it can't show.
 fn budget(f: mut Front, height: f32) {
-    let slow = max(SLOW, f.base * 1.25)
-    let quick = max(QUICK, f.base * 1.06)
+    // (Under the title the shot is all but still: it's drawn sharp at a slower pace, down to
+    // `TITLE_SLOW`, rather than smaller and soft.)
+    let title = f.stage == Stage::Page
+    let slow = max(if title { TITLE_SLOW } else { SLOW }, f.base * 1.25)
+    let quick = max(if title { TITLE_QUICK } else { QUICK }, f.base * 1.06)
     let most = min(height, TALLEST)
     let least = min(SHORTEST, most)
     // A size that ran slow isn't tried again for a while: the scene would only pop between two.
@@ -438,6 +445,8 @@ pub fn frame<A: Account>(
             // At once, so the rest of this frame's input rows: and a stroke that chose it is
             // the first.
             f.stage = Stage::Rowing
+            // (Rowing has its own pace: what ran slow under the title doesn't hold it under.)
+            f.ceiling_until = 0.0
             f.pressed = NONE
             f.keyboard = false
             input(mut f.scene, e)
