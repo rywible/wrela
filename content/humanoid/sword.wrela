@@ -34,7 +34,7 @@ pub const SMEAR_STEPS: u32 = 8
 /// Its colours, sRGB: pale steel, darkened bronze, a deep indigo wrap.
 pub const STEEL = vec3(0.93, 0.95, 0.98)
 pub const BRONZE = vec3(0.36, 0.26, 0.16)
-pub const CORD = vec3(0.13, 0.12, 0.20)
+pub const CORD = vec3(0.52, 0.34, 0.20)
 pub const STREAK = vec3(0.98, 0.97, 0.93)
 
 /// Its measures (m, along the blade from the right hand's grip): the blade from its collar to
@@ -42,7 +42,7 @@ pub const STREAK = vec3(0.98, 0.97, 0.93)
 pub const BLADE_FROM: f32 = 0.075
 pub const BLADE_LONG: f32 = 0.92
 pub const GUARD_AT: f32 = 0.05
-pub const POMMEL: f32 = -0.29
+pub const POMMEL: f32 = -0.33
 
 /// Where the point is, in the sword's own frame (x the edge, y the flat, z the blade).
 pub fn point() -> vec3 {
@@ -169,19 +169,19 @@ fn built() -> Mesh {
     m.cap(g1, vec3(0.0, 0.0, GUARD_AT + 0.012), gc, GUARD)
     // The hilt: a long oval, a hair fuller in its middle.
     let hn = 8
-    var h_last = oval(POMMEL + 0.012, rx: 0.0165, ry: 0.0135, sides: hn)
+    var h_last = oval(POMMEL + 0.012, rx: 0.022, ry: 0.019, sides: hn)
     let steps = 6
     for k in 1..steps + 1 {
         let s = f32(k) / f32(steps)
         let z = mix(POMMEL + 0.012, GUARD_AT, s)
         let full = 1.0 + 0.06 * sin(3.14159 * s)
-        let ring = oval(z, 0.0165 * full, 0.0135 * full, hn)
+        let ring = oval(z, 0.022 * full, 0.019 * full, hn)
         m.rings(h_last, ring, vec3(0.0, 0.0, z - 0.01), WRAP)
         h_last = take ring
     }
     // The pommel: a cap a little fuller than the hilt.
-    let p0 = oval(POMMEL, rx: 0.019, ry: 0.0155, sides: hn)
-    let p1 = oval(POMMEL + 0.012, rx: 0.019, ry: 0.0155, sides: hn)
+    let p0 = oval(POMMEL, rx: 0.026, ry: 0.023, sides: hn)
+    let p1 = oval(POMMEL + 0.012, rx: 0.026, ry: 0.023, sides: hn)
     let pc = vec3(0.0, 0.0, POMMEL + 0.006)
     m.rings(p0, p1, pc, GUARD)
     m.cap(p0, vec3(0.0, 0.0, POMMEL - 0.004), pc, GUARD)

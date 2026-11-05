@@ -210,7 +210,7 @@ fn hit_of(file: Bytes, to: u32, knock: f32) -> Move {
             }
         }
     }
-    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3, tail: 1.4)
+    playback::struck(m, knock, knock, quicken: 5.0, hold: 0.08, cancel: 0.3, tail: 1.4)
 }
 
 /// `m` with its hips lifted through a leap: from `up` to `down` seconds in, the body rising
@@ -331,9 +331,9 @@ pub const MOCAP_ACTS: [Move; 6] = [
         embed("private/great_sword_jump_attack.bvh"),
         from: 8,
         to: 35,
-        lo: 0.8,
-        hi: 0.93,
-        at: vec3(0.0, -0.75, 0.65),
+        lo: 0.85,
+        hi: 0.92,
+        at: vec3(0.0, -0.9, 0.45),
         snap: 0.35,
         quicken: 1.6,
         hold: 0.18,
@@ -345,14 +345,14 @@ pub const MOCAP_ACTS: [Move; 6] = [
     hit_of(embed("private/great_sword_impact_2.bvh"), 35, 0.5),
 ]
 
-/// How each's drawn: the cuts on twos, the heavy flashed.
+/// How each's drawn: all on twos, each contact held dead still, the heavy flashed.
 pub const MOCAP_LOOKS: [Look; 6] = [
     Look { twos: true, held: true },
     Look { twos: true, held: true },
     Look { twos: true, held: true },
     Look { twos: true, flash: true, heavy: true, held: true },
-    Look {},
-    Look {},
+    Look { twos: true, held: true },
+    Look { twos: true, held: true },
 ]
 
 /// How far a hit taken drops the guard's point forward and down (0 to 1), `time` into act
