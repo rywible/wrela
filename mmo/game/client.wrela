@@ -1194,6 +1194,11 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         String::from("Connecting…")
     } else if room.on() {
         String::from(f"A fight is on ({room.party.len()} fighting).")
+    } else if view.waiting(me) && view.fought_last(me) {
+        // Back at the doors after a fight: the party waits again, one press from the next.
+        String::from(
+            f"Back at the doors ({view.lobby.len()} ready). Enter goes again, F stops waiting.",
+        )
     } else if view.waiting(me) {
         String::from(
             f"Waiting for a fight with {view.lobby.len()}. Enter begins it, F stops waiting.",

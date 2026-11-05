@@ -6,7 +6,8 @@
 // alone: one store row a fight, and a journal row for its start and each log.
 //
 // Players wait for a fight in the room's lobby (`Join`), and one of them begins it for whoever is
-// waiting.
+// waiting. When a fight ends, its players who saw it through wait for the next at once, so a party
+// that fell is one press from going again.
 //
 // The costs this shape is for (the server design doc's budget): a fight of four is five proposals
 // and one store write, however long it lasts; its inputs cost the room nothing.
@@ -53,6 +54,16 @@ pub const PLAYER_CHANGES: u32 = MAX_LOGGED / MAX_PARTY
 pub const FIGHT_MS: u64 = 600000
 /// No peer's id: a room gives peers ids from 1.
 const NONE_PEER: u32 = 0
+
+/// Where `peer` is in `peers`, if it is.
+fn slot_in(peers: [u32], peer: u32) -> Option<u32> {
+    for i in 0..peers.len() {
+        if peers[i] == peer {
+            return Some(i)
+        }
+    }
+    None
+}
 
 /// The room's state: who's waiting to fight, the fight on (or the last one), and how many it has
 /// finished.
@@ -179,11 +190,45 @@ impl Fight {
 
     fn finish(mut self, at: u64) {
         self.outcome = sim::run_armed(self.armed, self.logs.clone())
+        // The players who saw it through (their logs came) wait for the next one at once, with
+        // the weapons they fought with, so a party that fell is one press from going again. Who
+        // left sent no log, and doesn't come back on its own. They come first; whoever waited
+        // during the fight stays while there's room.
+        let (peers, times, weapons) = self.fresh(at, NONE_PEER)
+        var lobby: Vec<u32> = Vec::new()
+        var joined: Vec<u64> = Vec::new()
+        var wielding: Vec<u32> = Vec::new()
+        for i in 0..self.party.len() {
+            if self.sent[i] {
+                lobby.push(self.party[i])
+                joined.push(at)
+                wielding.push(self.armed[i])
+            }
+        }
+        for i in 0..peers.len() {
+            if lobby.len() < MAX_PARTY && slot_in(lobby, peers[i]).is_none() {
+                lobby.push(peers[i])
+                joined.push(times[i])
+                wielding.push(weapons[i])
+            }
+        }
+        self.lobby = take lobby
+        self.joined = take joined
+        self.wielding = take wielding
         // The outcome is what's kept: the logs would make the state too big to send a peer.
         self.logs = Vec::new()
         self.settled = true
         self.fights += 1
         self.finished_at = at
+    }
+
+    /// Whether `peer` just fought the last fight and saw it through: it waits again because of it.
+    pub fn fought_last(self, peer: u32) -> bool {
+        if !self.settled {
+            return false
+        }
+        let Some(s) = self.slot(peer) else { return false }
+        self.sent[s]
     }
 }
 
@@ -476,6 +521,43 @@ fn a_missing_log_is_settled_as_standing_still() {
     only.push(logs[0].clone())
     only.push(Log { changes: Vec::new() })
     assert(fight.settled && fight.outcome == sim::run(2, only))
+}
+
+@test
+fn the_players_who_saw_a_fight_through_wait_for_the_next_at_once() {
+    var fight = Fight::empty()
+    begun(mut fight, [u32(3), 5], 0)
+    // Someone else waits in the room during the fight.
+    fight.apply(entry(8, 500, Act::Join { weapon: sim::FISTS }))
+    let logs = two_logs()
+    fight.apply(entry(3, 1000, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
+    fight.apply(entry(5, 1100, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    assert(fight.settled)
+    // Both fighters are back in the lobby with their weapons, first, and the one waiting stays.
+    assert(fight.lobby == Vec::from([u32(3), 5, 8]), "the party, then who waited")
+    assert(fight.wielding == Vec::from([LONGSWORD, LONGSWORD, sim::FISTS]))
+    assert(fight.fought_last(3) && fight.fought_last(5) && !fight.fought_last(8))
+    // One press goes again, for all three.
+    let again = entry(5, 4000, Act::Begin)
+    assert(fight.check(again.clone()) == Verdict::Accept)
+    fight.apply(again)
+    assert(fight.on() && fight.party == Vec::from([u32(3), 5, 8]))
+}
+
+@test
+fn a_player_who_left_mid_fight_doesnt_come_back_on_its_own() {
+    var fight = Fight::empty()
+    begun(mut fight, [u32(3), 5], 0)
+    let logs = two_logs()
+    fight.apply(entry(3, 1000, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
+    fight.apply(entry(3, 1000 + SETTLE_MS, Act::Settle))
+    assert(fight.settled && fight.lobby == Vec::from([u32(3)]), "5 sent no log")
+    assert(!fight.fought_last(5))
+    // The lobby forgets the returning player like any other, a minute on.
+    assert(
+        fight.check(entry(3, 1000 + SETTLE_MS + LOBBY_MS, Act::Begin)) ==
+            Verdict::Reject(NOT_WAITING),
+    )
 }
 
 @test
