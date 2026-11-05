@@ -6,8 +6,8 @@
 // a line field, the line's weight, the normal and the moment's energy.
 
 use look::{
-    OVERCAST, fbm, ISLE as ISLE_AT, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band,
-    cells, hash2, luma, noise, noise3, ray,
+    OVERCAST, fbm, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma,
+    noise, noise3, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
@@ -99,10 +99,7 @@ fn deck(view: Texture<Rgba16Float>, light: Light, d: vec3, smp: Sampler) -> vec3
     let grey = mix(0.5, 0.2, far) * (1.0 - 0.62 * billow * shown) * (1.0 - 0.3 * scud * shown)
     let behind = pow(max(dot(d, light.sun), 0.0), 5.0)
     let glow = behind * (1.0 - 0.6 * billow) * 0.4
-    horizon *
-        (vec3(0.80, 0.86, 0.92) * grey +
-            vec3(0.95, 0.93, 0.86) * glow +
-            vec3(0.82, 0.9, 1.0) * rift * 0.75)
+    horizon * (vec3(0.80, 0.86, 0.92) * grey + vec3(0.95, 0.93, 0.86) * glow)
 }
 
 /// The sky as the water mirrors it along `d`: `heaven`'s, without the sun's disc (the sun's own
