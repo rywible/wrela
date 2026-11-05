@@ -1246,10 +1246,11 @@ fn probe_frame(s: State, time: f32, bones: [mat4; 64]) {
     let right = (bones[rh] * vec4(g0, 1.0)).xyz
     let left = (bones[lh] * vec4(gl0, 1.0)).xyz
     let head = (bones[dummy::HEAD_SLOT] * vec4(dummy::HEAD_AT, 1.0)).xyz
+    let dummy_at = |p: vec3| -> vec3 { (bones[dummy::SLOT] * vec4(p, 1.0)).xyz }
     let acting = if s.mover.acting == mixamo::M_VERTICAL { 1 } else { 0 }
     let drawn = if s.drawer.on { s.drawer.at } else { -1.0 }
     print(
-        f"P,{time:.4},{acting},{s.mover.act_time:.4},{drawn:.4},{v(grip)},{v(guard)},{v(pommel)},{v(tip)},{v(right)},{v(left)},{v(at("leftToes"))},{v(at("leftFoot"))},{v(at("rightToes"))},{v(at("rightFoot"))},{v(at("leftUpperLeg"))},{v(at("leftLowerLeg"))},{v(at("rightUpperLeg"))},{v(at("rightLowerLeg"))},{v(at("leftUpperArm"))},{v(at("leftLowerArm"))},{v(at("leftHand"))},{v(at("rightUpperArm"))},{v(at("rightLowerArm"))},{v(at("rightHand"))},{v(at("head"))},{v(at("neck"))},{v(at("upperChest"))},{v(at("chest"))},{v(at("spine"))},{v(at("hips"))},{v(head)}",
+        f"P,{time:.4},{acting},{s.mover.act_time:.4},{drawn:.4},{v(grip)},{v(guard)},{v(pommel)},{v(tip)},{v(right)},{v(left)},{v(at("leftToes"))},{v(at("leftFoot"))},{v(at("rightToes"))},{v(at("rightFoot"))},{v(at("leftUpperLeg"))},{v(at("leftLowerLeg"))},{v(at("rightUpperLeg"))},{v(at("rightLowerLeg"))},{v(at("leftUpperArm"))},{v(at("leftLowerArm"))},{v(at("leftHand"))},{v(at("rightUpperArm"))},{v(at("rightLowerArm"))},{v(at("rightHand"))},{v(at("head"))},{v(at("neck"))},{v(at("upperChest"))},{v(at("chest"))},{v(at("spine"))},{v(at("hips"))},{v(head)},{v(dummy_at(vec3(0.0, 0.06, 0.0)))},{v(dummy_at(vec3(0.0, dummy::BODY_LOW, 0.0)))},{v(dummy_at(vec3(0.0, dummy::BODY_TOP, 0.0)))},{v(dummy_at(vec3(-0.42, dummy::BAR_Y, 0.0)))},{v(dummy_at(vec3(0.42, dummy::BAR_Y, 0.0)))}",
     )
 }
 

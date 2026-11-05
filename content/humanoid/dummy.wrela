@@ -19,6 +19,11 @@ pub const HEAD_R: f32 = 0.12
 /// on its crown with the arms long.
 pub const TALL: f32 = 1.32
 
+/// Its straw body's bottom and top, and its crossbar's height (its own frame).
+pub const BODY_LOW: f32 = 0.57
+pub const BODY_TOP: f32 = 1.03
+pub const BAR_Y: f32 = 0.93
+
 const WOOD = vec3(0.42, 0.29, 0.18)
 const STRAW = vec3(0.80, 0.68, 0.42)
 const BAND = vec3(0.62, 0.16, 0.12)
@@ -129,7 +134,7 @@ fn ball(out: mut Humanoid, c: vec3, r: f32, colour: vec3, band: vec3, slot: u32)
 pub fn added(out: mut Humanoid) {
     block(mut out, vec3(-0.24, 0.0, -0.24), vec3(0.24, 0.06, 0.24), WOOD, SLOT)
     drum(mut out, 0.06, 0.61, 0.05, 0.045, WOOD, SLOT)
-    drum(mut out, 0.57, 1.03, 0.15, 0.18, STRAW, SLOT)
+    drum(mut out, BODY_LOW, BODY_TOP, 0.15, 0.18, STRAW, SLOT)
     block(mut out, vec3(-0.42, 0.89, -0.045), vec3(0.42, 0.97, 0.045), WOOD, SLOT)
     drum(mut out, 1.01, 1.11, 0.05, 0.05, WOOD, HEAD_SLOT)
     ball(mut out, HEAD_AT, HEAD_R, STRAW, BAND, HEAD_SLOT)
@@ -223,7 +228,9 @@ pub fn reaction(since: f32, stop: f32, knock: f32, shake: f32) -> Reaction {
     }
     let u = since - stop
     Reaction {
-        tilt: knock * (0.07 * exp(-6.0 * u) + 0.42 * exp(-4.0 * u) * sin(9.0 * u)),
+        // Thrown back hard off the blade (past the point in four frames), then rocking slowly
+        // back up on its heavy post with a little wobble, never swinging back into the hero.
+        tilt: knock * (0.07 * exp(-6.0 * u) + 0.62 * (exp(-1.2 * u) - exp(-14.0 * u)) + 0.03 * exp(-3.0 * u) * sin(11.0 * u)),
         nod: knock * 0.22 * exp(-4.5 * u) * cos(12.0 * u),
         back: knock * (0.015 + 0.075 * (1.0 - exp(-12.0 * u))),
         shake: vec3(0.0),
